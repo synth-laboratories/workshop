@@ -616,6 +616,12 @@ export type CodexSessionRecord = {
 	presentationSummary?: string | null,
 	approvalPolicy?: string,
 	sandbox?: string,
+	/**
+	 *  Set when the previous process died holding this chat's turn. It is what
+	 *  lets the sidebar say "Workshop exited while this task was running"
+	 *  instead of silently showing an idle chat — or, worse, a live one.
+	 */
+	recovery?: RecoveryNotice | null,
 };
 
 export type CodexSessionRequest = {
@@ -1171,7 +1177,15 @@ export type McpContextGroup = {
 	enabledTools: { [key in string]: string[] },
 };
 
-export type MeasurementKind = "decode" | "observed_stream" | "end_to_end" | "provider_reported";
+export type MeasurementKind = "decode" |
+/**  A rate regressed from one output-text segment's own samples. */
+"observed_stream_segment" |
+/**
+ *  Turn-wide tokens over a gap-filtered denominator, recorded before
+ *  segment measurement existed. Kept readable, never treated as a
+ *  measurement: see migration 21.
+ */
+"legacy_observed_stream_estimate" | "end_to_end" | "provider_reported";
 
 export type MigrationApplyRequest = {
 	confirmationToken: string,
@@ -1688,6 +1702,53 @@ export type PluginStatus_Serialize = {
 	permissions?: PluginPermission_Serialize[],
 	lastActionReceiptId?: string | null,
 	detail?: string | null,
+};
+
+/**  The last thing this turn durably did before its owner disappeared. */
+export type RecoveryActivity = {
+	kind: string,
+	label?: string | null,
+	at: string,
+};
+
+/**
+ *  Everything the product needs to say what happened and what is safe next.
+ *
+ *  Persisted on the session row (`metadata.recovery`) and journalled as
+ *  [`RECOVERY_EVENT_KIND`], so a client that missed the event still sees it.
+ */
+export type RecoveryNotice = {
+	sessionId: string,
+	runId?: string | null,
+	reason: string,
+	previousOwnerInstanceId?: string | null,
+	lastHeartbeatAt?: string | null,
+	/**
+	 *  Which attempt a restart would be. `u32` rather than `i64`: this crosses
+	 *  the specta boundary, which forbids BigInt-style types, and a retry count
+	 *  has no business being one.
+	 */
+	recoveryAttempt: number,
+	/**  Whether replaying the prompt can be offered as a plain retry. */
+	restartable: boolean,
+	/**
+	 *  Whether an external action's outcome is unknown, so a retry could
+	 *  duplicate consequential work and a human must reconcile first.
+	 */
+	needsAttention: boolean,
+	externalObjectId?: string | null,
+	lastActivity?: RecoveryActivity | null,
+	lastUserMessage?: RecoveryPrompt | null,
+	recoveredAt: string,
+};
+
+/**
+ *  The operator-facing prompt that produced the abandoned turn, so Restart can
+ *  reuse it instead of asking the user to retype what they already sent.
+ */
+export type RecoveryPrompt = {
+	text: string,
+	clientMessageId?: string | null,
 };
 
 /**  What `remove` did, for the receipt. G7. */

@@ -1,4 +1,4 @@
-import type { Session } from "@synth/runtime-protocol";
+import type { RecoveryNotice, Session } from "@synth/runtime-protocol";
 import type { LandingState, LocalChat } from "../types/landing";
 import type { ConversationWorkspaceScope } from "../bridge";
 import type { DesktopPreferences } from "../preferences";
@@ -51,6 +51,9 @@ export type ComposerDockProps = {
 	setSteerError: (value: string | null) => void;
 	failedSend: FailedSend | null;
 	retryFailedSend: () => void;
+	/** Set when a previous Workshop process died holding this chat's turn. */
+	recoveryNotice?: RecoveryNotice | null;
+	onRestartRecovered?: (sessionId: string) => void;
 	defaultWorkspace: string | null;
 	workspaceScope: ConversationWorkspaceScope | null;
 	setWorkspaceScope: (scope: ConversationWorkspaceScope | null) => void;
@@ -68,6 +71,21 @@ export type ComposerDockProps = {
 	setUsageSheetOpen: (open: boolean) => void;
 	onStopActiveTurn: () => void;
 };
+
+/**
+ * One sentence, matching the send-failure line beside it: what happened, and
+ * what that means for retrying. The detail (attempt count, previous owner)
+ * stays in the journal.
+ */
+function recoveryMessage(notice: RecoveryNotice): string {
+	if (notice.needsAttention) {
+		return "Workshop exited while this task had work in flight. Check whether it completed before retrying.";
+	}
+	if (notice.externalObjectId) {
+		return `Workshop exited after this task started ${notice.externalObjectId}.`;
+	}
+	return "Workshop exited while this task was running.";
+}
 
 /**
  * Composer wiring seam — keeps ≤10 prop groups out of App.tsx.
@@ -96,6 +114,8 @@ export function ComposerDock({
 	setSteerError,
 	failedSend,
 	retryFailedSend,
+	recoveryNotice,
+	onRestartRecovered,
 	defaultWorkspace,
 	workspaceScope,
 	setWorkspaceScope,
@@ -180,9 +200,20 @@ export function ComposerDock({
 				activeEnterAction: preferences.submission.activeEnterAction,
 				steerSupported: Boolean(nativeCodex?.steerTurn),
 				steerError,
+				// A live send failure is about this attempt; a recovery notice is
+				// about the process that never got to finish the last one. The
+				// live one wins — it is the more recent thing the user did.
 				sendFailure: failedSend && failedSend.sessionId === activeChat?.id
 					? { message: failedSend.message, onRetry: retryFailedSend }
-					: null,
+					: recoveryNotice && activeChat?.id
+						? {
+							message: recoveryMessage(recoveryNotice),
+							actionLabel: "Restart",
+							onRetry: recoveryNotice.restartable && recoveryNotice.lastUserMessage?.text
+								? () => onRestartRecovered?.(activeChat.id)
+								: undefined
+						}
+						: null,
 				onSteer: async (text) => {
 					if (!activeSessionId || !nativeCodex?.steerTurn) {
 						setSteerError(STEER_UNSUPPORTED.message);

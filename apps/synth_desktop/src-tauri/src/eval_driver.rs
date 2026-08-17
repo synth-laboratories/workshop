@@ -1474,7 +1474,7 @@ async fn run_policy_rollout(
         start_body["task_world"] = task_world;
     }
     let started = std::time::Instant::now();
-    let (state, recovered) = visuals_ipc::start_rollout_idempotently(
+    let (initial_state, recovered) = visuals_ipc::start_rollout_idempotently(
         &client,
         &recovery_client,
         &base,
@@ -1483,8 +1483,20 @@ async fn run_policy_rollout(
     )
     .await
     .context("POST /rollouts after stream.subscribed")?;
+    // A policy-owned container may acknowledge the immutable rollout and run it
+    // asynchronously. Persist provenance as soon as start is accepted so a
+    // timeout or Desktop restart never makes the launched rollout undiscoverable.
+    core.update_container_last_rollout(container_id.to_string(), rollout_id.clone())
+        .await?;
+    let state = wait_for_policy_rollout_terminal(
+        &recovery_client,
+        &base,
+        &rollout_id,
+        initial_state,
+        Duration::from_secs(timeout_s),
+    )
+    .await?;
     let stream = declared_stream_descriptor(&state)?.or(Some(prepared_stream));
-    refuse_host_side_policy_loop(&state)?;
 
     let event_log = client
         .get(&poll_url)
@@ -1528,9 +1540,6 @@ async fn run_policy_rollout(
         },
     };
     let achievements = harvest_achievements(&events);
-
-    core.update_container_last_rollout(container_id.to_string(), rollout_id.clone())
-        .await?;
 
     let env_terminated = state
         .get("terminated")
@@ -1617,13 +1626,31 @@ async fn run_policy_rollout(
     }))
 }
 
-fn refuse_host_side_policy_loop(state: &Value) -> Result<()> {
-    if container_owned_policy_completed(state) {
-        Ok(())
-    } else {
-        bail!(
-            "policy_rollouts refuse a host-side model loop; container did not complete a policy-owned rollout"
-        )
+async fn wait_for_policy_rollout_terminal(
+    client: &reqwest::Client,
+    base: &str,
+    rollout_id: &str,
+    mut state: Value,
+    timeout: Duration,
+) -> Result<Value> {
+    let deadline = tokio::time::Instant::now() + timeout;
+    loop {
+        if container_owned_policy_completed(&state) {
+            return Ok(state);
+        }
+        if tokio::time::Instant::now() >= deadline {
+            let status = state
+                .get("status")
+                .and_then(Value::as_str)
+                .unwrap_or("unknown");
+            bail!(
+                "policy-owned rollout `{rollout_id}` remained `{status}` past the {timeout:?} deadline; the accepted rollout remains discoverable and may still complete"
+            );
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        if let Some(current) = visuals_ipc::get_rollout_status(client, base, rollout_id).await? {
+            state = current;
+        }
     }
 }
 
@@ -2128,7 +2155,9 @@ fn seed_from_task_instance(task_instance_id: &str) -> Result<i64> {
         .rsplit(':')
         .next()
         .and_then(|value| value.parse::<i64>().ok())
-        .context("taskInstanceId must end with an integer seed")?;
+        .context(
+            "taskInstanceId must end with an integer seed (for example, `craftax:test:2001`)",
+        )?;
     Ok(seed)
 }
 
@@ -2285,6 +2314,7 @@ mod tests {
             presentation_summary: None,
             approval_policy: "never".into(),
             sandbox: "workspace-write".into(),
+            recovery: None,
         };
         let binding = eval_provider_binding(&record);
         assert_eq!(binding.provider, "openrouter");
@@ -2366,10 +2396,16 @@ mod tests {
     }
 
     #[test]
-    fn refuse_host_side_policy_when_container_did_not_finish() {
-        assert!(refuse_host_side_policy_loop(&json!({"status": "running"})).is_err());
-        assert!(refuse_host_side_policy_loop(&json!({"terminated": true})).is_ok());
-        assert!(refuse_host_side_policy_loop(&json!({"status": "completed"})).is_ok());
+    fn recognizes_async_and_terminal_policy_states() {
+        assert!(!container_owned_policy_completed(
+            &json!({"status": "running"})
+        ));
+        assert!(container_owned_policy_completed(
+            &json!({"terminated": true})
+        ));
+        assert!(container_owned_policy_completed(
+            &json!({"status": "completed"})
+        ));
     }
 
     #[test]

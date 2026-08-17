@@ -19,6 +19,7 @@ use crate::session::approval::{ApprovalKind, ApprovalOrigin};
 use crate::session::SessionPersistence;
 use crate::storage::EventSource;
 
+use super::generation_speed::{monotonic_us, MEASUREMENT_EVENT};
 use super::home::persist_records;
 use super::proto::{
     default_approval_policy, select_approval_decision, AppServer, CodexResolver,
@@ -173,6 +174,11 @@ async fn read_stdout<R: tauri::Runtime>(
 ) {
     let mut lines = BufReader::new(stdout).lines();
     while let Ok(Some(line)) = lines.next_line().await {
+        // Stamped here, on the decoded frame, before parsing, redaction,
+        // persistence, IPC, or any renderer work. Generation speed is a claim
+        // about delivery, and every millisecond spent below this line would
+        // otherwise be charged to the model.
+        let received_at_us = monotonic_us();
         let Ok(message) = serde_json::from_str::<Value>(&line) else {
             continue;
         };
@@ -205,6 +211,9 @@ async fn read_stdout<R: tauri::Runtime>(
         // inference from response text, so EOF must not overwrite it as an
         // unhealthy local agent.
         let final_answer = is_final_agent_message(&method, &params);
+        if final_answer {
+            crate::recovery::crash_checkpoint(crate::recovery::checkpoints::BEFORE_FINAL_MESSAGE);
+        }
         if is_context_compaction_notification(&method, &params) {
             if let Some(source) = persistence
                 .pending_compact_sources
@@ -296,15 +305,34 @@ async fn read_stdout<R: tauri::Runtime>(
             .persistence
             .notify_codex_event(&app, session_id.clone(), method.clone(), params.clone())
             .await;
-        track_performance_event(
+        // Live provider traffic is the proof that this process still owns the
+        // turn. Refreshing here — rather than on a timer the renderer holds —
+        // is what keeps a long XHigh turn from being reconciled away while it
+        // is genuinely thinking, and what makes a dead one expire on its own.
+        persistence.persistence.heartbeat_turn(&session_id).await;
+        crate::recovery::crash_checkpoint(crate::recovery::checkpoints::AFTER_FIRST_ACTIVITY);
+        let measurements = track_performance_event(
             &persistence.persistence,
             &persistence.performance_trackers,
             &persistence.receipts,
             &session_id,
             &method,
             &params,
+            received_at_us,
         )
         .await;
+        // A finished segment goes onto the journal as its own event, so the
+        // transcript renders an authoritative backend measurement instead of
+        // recomputing a rate from deltas it saw after IPC and batching.
+        for measurement in &measurements {
+            let Ok(payload) = serde_json::to_value(measurement) else {
+                continue;
+            };
+            persistence
+                .persistence
+                .notify_codex_event(&app, session_id.clone(), MEASUREMENT_EVENT, payload)
+                .await;
+        }
         let terminal_method = if final_answer {
             "turn/completed"
         } else {
@@ -384,6 +412,9 @@ async fn read_stdout<R: tauri::Runtime>(
                 record.status = status.as_str().into();
             }
             let _ = persist_records(&persistence.records, &persistence.state_path).await;
+            // The turn is over; drop the claim before the durable run settles,
+            // so no window exists where a finished turn still looks live.
+            persistence.persistence.release_turn(&session_id).await;
             if let Ok(Some(session)) = persistence
                 .persistence
                 .get_session(session_id.clone())
@@ -439,6 +470,11 @@ async fn read_stdout<R: tauri::Runtime>(
         owns_current
     };
     if owned_attachment {
+        // The app-server is gone, so this process can no longer advance the
+        // turn whatever its records say. Release first: the durable
+        // interruption below is best-effort, and an unreleased claim would
+        // outlive it.
+        persistence.persistence.release_turn(&session_id).await;
         let was_running = {
             let mut records = persistence.records.write().await;
             records.get_mut(&session_id).is_some_and(|record| {
@@ -463,7 +499,10 @@ async fn read_stdout<R: tauri::Runtime>(
                     }),
                 )
                 .await;
-            finalize_performance_tracker(
+            // A segment cut off by the child's death is still evidence; publish
+            // it so the transcript can label it partial rather than silently
+            // showing nothing for an answer that was measurably arriving.
+            let measurements = finalize_performance_tracker(
                 &persistence.persistence,
                 &persistence.performance_trackers,
                 &persistence.receipts,
@@ -472,6 +511,15 @@ async fn read_stdout<R: tauri::Runtime>(
                 None,
             )
             .await;
+            for measurement in &measurements {
+                let Ok(payload) = serde_json::to_value(measurement) else {
+                    continue;
+                };
+                persistence
+                    .persistence
+                    .notify_codex_event(&app, session_id.clone(), MEASUREMENT_EVENT, payload)
+                    .await;
+            }
             if let Ok(Some(event)) = persistence
                 .persistence
                 .interrupt_active_run(&session_id, "app_server_exited")

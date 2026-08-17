@@ -88,10 +88,47 @@ impl CodexManager {
         approvals: Arc<ApprovalBroker>,
     ) -> Self {
         let state_path = root.join("threads.json");
-        let records = fs::read_to_string(&state_path)
+        let mut records: HashMap<String, CodexSessionRecord> = fs::read_to_string(&state_path)
             .ok()
             .and_then(|raw| serde_json::from_str(&raw).ok())
             .unwrap_or_default();
+        // This cache — not SQLite — is what the renderer lists Codex chats
+        // from at boot, so reconciling only the database left the sidebar
+        // still showing Working. Correct it here, before `list()` can be
+        // called, and carry the durable notice across so the UI can say what
+        // happened rather than just "not running".
+        let notices = persistence
+            .database()
+            .and_then(|database| {
+                database
+                    .with_conn(crate::recovery::pending_recovery_notices)
+                    .ok()
+            })
+            .unwrap_or_default();
+        let mut reconciled = 0_usize;
+        for record in records.values_mut() {
+            let notice = notices.get(&record.session_id);
+            if !SessionStatus::Running.equals_str(&record.status) && notice.is_none() {
+                continue;
+            }
+            if SessionStatus::Running.equals_str(&record.status) {
+                record.status = SessionStatus::Interrupted.as_str().into();
+                reconciled += 1;
+            }
+            record.recovery = notice.cloned();
+        }
+        if reconciled > 0 {
+            eprintln!(
+                "synth-desktop: {reconciled} Codex chat(s) were left running by a previous \
+                 process and are now interrupted"
+            );
+            if let Ok(body) = serde_json::to_vec_pretty(&records) {
+                let temporary = state_path.with_extension("json.tmp");
+                if fs::write(&temporary, body).is_ok() {
+                    let _ = fs::rename(temporary, &state_path);
+                }
+            }
+        }
         Self {
             sessions: Arc::new(RwLock::new(HashMap::new())),
             records: Arc::new(RwLock::new(records)),
@@ -344,6 +381,12 @@ impl CodexManager {
                     .clone()
                     .unwrap_or_else(default_approval_policy),
                 sandbox: request.sandbox.clone().unwrap_or_else(default_sandbox),
+                // Reattaching does not resolve the previous attempt. The notice
+                // survives until a new turn actually claims ownership, so a
+                // chat that is merely reopened still explains itself.
+                recovery: remembered
+                    .as_ref()
+                    .and_then(|record| record.recovery.clone()),
             },
         );
         self.persist_records().await?;
@@ -564,6 +607,12 @@ impl CodexManager {
         self.performance_trackers.lock().await.insert(
             request.session_id.clone(),
             TurnPerformanceTracker {
+                segments: super::generation_speed::TurnSegmentTracker::new(
+                    request.session_id.clone(),
+                    pending_turn_id.clone(),
+                    Some(provider.clone()),
+                    Some(session.model.clone()),
+                ),
                 provider,
                 model_id: session.model.clone(),
                 turn_id: pending_turn_id.clone(),
@@ -571,7 +620,6 @@ impl CodexManager {
                 started_at_ms,
                 first_output_at_ms: None,
                 last_output_at_ms: None,
-                generation_active_ms: 0,
                 usage: TurnTokenUsage::default(),
             },
         );
@@ -629,13 +677,26 @@ impl CodexManager {
             .remove(&request.session_id);
         self.set_automatic_title(&app, &request.session_id, &request.prompt, &session)
             .await;
+        // A turn that replaces a crashed one stays visibly a *new* attempt: the
+        // interrupted run keeps its history and this one records what it
+        // continues. Flipping the old run back to running would erase the fact
+        // that Workshop died mid-task.
+        let recovery = self.persistence.pending_recovery(&request.session_id).await;
+        let mut run_metadata = json!({"threadId": session.thread_id, "effort": effort});
+        if let (Some(recovery), Some(object)) = (&recovery, run_metadata.as_object_mut()) {
+            object.insert("recoveryAttempt".into(), json!(recovery.recovery_attempt));
+            object.insert("recoveredAfterCrash".into(), json!(true));
+            if let Some(previous) = &recovery.run_id {
+                object.insert("recoveredFromRunId".into(), json!(previous));
+            }
+        }
         let start_run = self.persistence.start_run(RunCreate {
             id: turn_id.clone(),
             session_id: request.session_id.clone(),
             mode: "codex_turn".into(),
             model: Some(session.model.clone()),
             adapter: None,
-            metadata: json!({"threadId": session.thread_id, "effort": effort}),
+            metadata: run_metadata,
             source: EventSource::Codex,
         });
         let mutation = match start_run.await {
@@ -654,6 +715,27 @@ impl CodexManager {
                 return Err(error.context("persist Codex run before exposing running state"));
             }
         };
+        // The durable run now exists; claim it for this boot epoch. Until this
+        // line lands, nothing may present the session as Working — that is the
+        // whole point of the claim.
+        if let Err(error) = self
+            .persistence
+            .claim_turn(
+                &request.session_id,
+                &turn_id,
+                Some(session.attachment_id.to_string()),
+            )
+            .await
+        {
+            eprintln!("could not claim turn ownership for {turn_id}: {error}");
+        }
+        if recovery.is_some() {
+            if let Some(record) = self.records.write().await.get_mut(&request.session_id) {
+                record.recovery = None;
+            }
+            self.persist_records().await?;
+        }
+        crate::recovery::crash_checkpoint(crate::recovery::checkpoints::AFTER_TURN_START);
         if early_terminal.is_none() {
             early_terminal = self
                 .early_terminal_turns
@@ -1133,6 +1215,12 @@ impl CodexManager {
             record.status = status.as_str().into();
         }
         self.persist_records().await?;
+        // Leaving a claim behind after the turn ended would keep the lease
+        // watchdog reporting work nobody is doing. Every status that is not
+        // Running is a terminal for the claim, whatever produced it.
+        if status != SessionStatus::Running {
+            self.persistence.release_turn(session_id).await;
+        }
         if let Ok(Some(mutation)) = self
             .persistence
             .transition_session(

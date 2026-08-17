@@ -346,12 +346,80 @@ impl SessionPersistence {
         Ok(mutation.event)
     }
 
+    /// The unresolved recovery notice for a session, if a previous turn was
+    /// abandoned. Read before a new run is created so the replacement attempt
+    /// can record what it is replacing.
+    pub async fn pending_recovery(
+        &self,
+        session_id: &str,
+    ) -> Option<crate::recovery::RecoveryNotice> {
+        let Self::Core(core) = self else {
+            return None;
+        };
+        let session_id = session_id.to_owned();
+        core.storage()
+            .database()
+            .run(move |conn| {
+                Ok(crate::recovery::pending_recovery_notices(conn)?.remove(&session_id))
+            })
+            .await
+            .ok()
+            .flatten()
+    }
+
+    /// Take the live ownership claim for a turn this process is running.
+    /// Returns the recovery attempt this turn continues (0 for a first try).
+    pub async fn claim_turn(
+        &self,
+        session_id: &str,
+        run_id: &str,
+        attachment_id: Option<String>,
+    ) -> Result<i64> {
+        let Self::Core(core) = self else {
+            return Ok(0);
+        };
+        core.claim_turn(session_id.to_owned(), run_id.to_owned(), attachment_id)
+            .await
+    }
+
+    /// Refresh the claim from live provider activity. Cheap to call on every
+    /// event: the write is rate-limited against the stored heartbeat.
+    pub async fn heartbeat_turn(&self, session_id: &str) {
+        let Self::Core(core) = self else {
+            return;
+        };
+        let _ = core.heartbeat_turn(session_id.to_owned()).await;
+    }
+
+    /// Give up the claim. A turn with no owner is not Working, so this must run
+    /// on every terminal path — including the failure ones.
+    pub async fn release_turn(&self, session_id: &str) {
+        let Self::Core(core) = self else {
+            return;
+        };
+        let _ = core.release_turn(session_id.to_owned()).await;
+    }
+
     pub async fn record_usage(&self, record: UsageRecord) -> Result<()> {
         let Self::Core(core) = self else {
             return Ok(());
         };
         let repository = UsageRecordsRepository::new(core.storage().database().clone());
         repository.record(record).await
+    }
+
+    /// Persist one observed generation-speed measurement together with the raw
+    /// samples it was derived from, so a displayed value stays recomputable.
+    pub async fn record_generation_speed(
+        &self,
+        row: crate::storage::GenerationSpeedRow,
+    ) -> Result<()> {
+        let Self::Core(core) = self else {
+            return Ok(());
+        };
+        let repository =
+            crate::storage::GenerationSpeedRepository::new(core.storage().database().clone());
+        repository.record(row).await
     }
 }
 

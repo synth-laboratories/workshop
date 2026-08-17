@@ -32,7 +32,7 @@ use std::{
 };
 use tauri::State;
 use tokio::process::{Child, Command};
-use tokio::sync::{broadcast, Mutex, RwLock};
+use tokio::sync::{broadcast, Mutex, OwnedSemaphorePermit, RwLock, Semaphore};
 
 // Channel pins, the floor, and the vocabulary lists all resolve from the one
 // contract table so a version has a single place to be read and changed.
@@ -48,6 +48,7 @@ pub const DEFAULT_RECIPE_SCHEMA_VERSION: &str = OPTIMIZERS_CONTRACT.recipe_schem
 pub const DEFAULT_ALGORITHM_VERSION: &str = "synth-optimizers-0.2.14";
 /// Optimizer-family visuals bind this slot. `live` and `jobs` are refused.
 pub const OPTIMIZER_VISUAL_SLOT: &str = "optimizer_run";
+const MAX_CONCURRENT_GEPA_RECIPES: usize = 2;
 const SELECTED_VERSION_FILE: &str = "selected_version";
 const SIGNING_KEY_FILE: &str = "signing.key";
 const API_KEY_FILE: &str = "api_key";
@@ -215,18 +216,22 @@ pub struct OptimizerManager {
     /// the `Child`, leaving `uv` descendants orphaned. Every production worker
     /// is its own process group and the supervisor drains these groups first.
     gepa_workers: Mutex<HashMap<String, GepaWorkerState>>,
+    gepa_capacity: Arc<Semaphore>,
     run_spools: Arc<Mutex<HashMap<String, RunSpoolState>>>,
     client: Client,
     /// Attached by the composition root once diagnostics exist.
     diagnostics: Arc<std::sync::OnceLock<Arc<crate::diagnostics::DiagnosticsService>>>,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Debug)]
 enum GepaWorkerState {
     /// The run id is atomically reserved while its process is being spawned.
     Starting,
     /// The isolated process group is owned by this supervisor.
-    Running { pid: u32 },
+    Running {
+        pid: u32,
+        _permit: Option<OwnedSemaphorePermit>,
+    },
 }
 
 impl OptimizerManager {
@@ -250,6 +255,7 @@ impl OptimizerManager {
             updates,
             runtime: Mutex::new(None),
             gepa_workers: Mutex::new(HashMap::new()),
+            gepa_capacity: Arc::new(Semaphore::new(MAX_CONCURRENT_GEPA_RECIPES)),
             run_spools: Arc::new(Mutex::new(HashMap::new())),
             client: crate::http::http_client(),
             diagnostics: Arc::new(std::sync::OnceLock::new()),
@@ -785,8 +791,9 @@ impl OptimizerManager {
     /// only product-resolved paths and the one allowlisted credential; package
     /// version, executable, and subcommand stay owned by this manager.
     ///
-    /// Two `optimizer_run_id`s may be live at once. This is a map of workers,
-    /// not a singleton that would serialize campaigns.
+    /// At most two `optimizer_run_id`s execute at once. Additional submitted
+    /// runs wait here in their durable `queued` state instead of launching
+    /// colliding child processes against the same optimizer workspace.
     pub async fn spawn_gepa_recipe(
         &self,
         run_id: &str,
@@ -816,6 +823,18 @@ impl OptimizerManager {
             }
         }
         self.ensure_memory_spool(run_id).await;
+        let permit = self
+            .gepa_capacity
+            .clone()
+            .acquire_owned()
+            .await
+            .map_err(|_| anyhow!("GEPA admission queue closed while `{run_id}` was waiting"))?;
+        if !matches!(
+            self.gepa_workers.lock().await.get(run_id),
+            Some(GepaWorkerState::Starting)
+        ) {
+            bail!("GEPA supervisor cancelled `{run_id}` while it was queued");
+        }
         match launch_gepa_recipe_process(
             &self.home,
             &selected.version,
@@ -833,7 +852,10 @@ impl OptimizerManager {
                     let mut workers = self.gepa_workers.lock().await;
                     match workers.get_mut(run_id) {
                         Some(state @ GepaWorkerState::Starting) => {
-                            *state = GepaWorkerState::Running { pid };
+                            *state = GepaWorkerState::Running {
+                                pid,
+                                _permit: Some(permit),
+                            };
                             true
                         }
                         Some(GepaWorkerState::Running { .. }) | None => false,
@@ -862,7 +884,7 @@ impl OptimizerManager {
 
     pub async fn terminate_gepa_recipe(&self, run_id: &str) {
         let state = self.gepa_workers.lock().await.remove(run_id);
-        if let Some(GepaWorkerState::Running { pid }) = state {
+        if let Some(GepaWorkerState::Running { pid, .. }) = state {
             terminate_process_groups(&[pid]).await;
         }
     }
@@ -1116,7 +1138,7 @@ impl OptimizerManager {
             .drain()
             .filter_map(|(_, state)| match state {
                 GepaWorkerState::Starting => None,
-                GepaWorkerState::Running { pid } => Some(pid),
+                GepaWorkerState::Running { pid, .. } => Some(pid),
             })
             .collect::<Vec<_>>();
         terminate_process_groups(&worker_pids).await;
@@ -1368,15 +1390,11 @@ async fn launch_sidecar_upstream(
     }
     let _ = run_spools;
     drop(listener);
-    let _ = addr;
-    drop(upstream_base_url);
 
     let gepa_home = optimizer_gepa_home(home);
     let db_path = optimizer_gepa_db(home);
     fs::create_dir_all(&gepa_home)?;
     let api_key = ensure_api_key(home)?;
-    let heartbeat_path = optimizer_service_heartbeat_path(&gepa_home, &db_path);
-    let _ = fs::remove_file(&heartbeat_path);
     let log = fs::OpenOptions::new()
         .create(true)
         .append(true)
@@ -1386,90 +1404,17 @@ async fn launch_sidecar_upstream(
     command
         .args(["gepa", "service", "--db"])
         .arg(&db_path)
-        .args(["--bind", "127.0.0.1:0"])
+        .args(["--bind", &addr.to_string()])
         .env("GEPA_HOME", &gepa_home)
         .env("SYNTH_OPTIMIZER_API_KEY", &api_key)
         .stdin(Stdio::null())
         .stdout(Stdio::from(log.try_clone()?))
         .stderr(Stdio::from(log))
         .kill_on_drop(true);
-    let mut child = command
+    let child = command
         .spawn()
         .context("spawn allowlisted synth-optimizers GEPA service")?;
-    let child_pid = child
-        .id()
-        .ok_or_else(|| anyhow!("optimizer service started without a process id"))?;
-    let deadline = tokio::time::Instant::now() + crate::limits::OPTIMIZER_SIDECAR_READY_WAIT;
-    while tokio::time::Instant::now() < deadline {
-        if let Some(status) = child
-            .try_wait()
-            .context("poll optimizer service during address discovery")?
-        {
-            bail!(
-                "optimizer service exited before publishing its address ({status}); see {}",
-                home.join("sidecar.log").display()
-            );
-        }
-        if let Some(base_url) =
-            read_optimizer_service_address(&heartbeat_path, &db_path, child_pid, &hit.version)?
-        {
-            return Ok((Some(child), base_url, None));
-        }
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
-    terminate_child(&mut child).await;
-    bail!(
-        "optimizer service did not publish its bound address within {:?}; see {}",
-        crate::limits::OPTIMIZER_SIDECAR_READY_WAIT,
-        home.join("sidecar.log").display()
-    )
-}
-
-fn optimizer_service_heartbeat_path(gepa_home: &Path, db_path: &Path) -> PathBuf {
-    gepa_home.join("services").join(format!(
-        "{}.json",
-        sha256_hex(db_path.to_string_lossy().as_bytes())
-    ))
-}
-
-fn read_optimizer_service_address(
-    heartbeat_path: &Path,
-    db_path: &Path,
-    child_pid: u32,
-    expected_version: &str,
-) -> Result<Option<String>> {
-    let body = match fs::read(heartbeat_path) {
-        Ok(body) => body,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(error) => return Err(error).context("read optimizer service discovery heartbeat"),
-    };
-    let heartbeat: Value =
-        serde_json::from_slice(&body).context("parse optimizer service discovery heartbeat")?;
-    if heartbeat.get("schema").and_then(Value::as_str) != Some("synth.gepa_service.whoami.v1")
-        || heartbeat.get("pid").and_then(Value::as_u64) != Some(u64::from(child_pid))
-        || heartbeat.get("db_path").and_then(Value::as_str)
-            != Some(db_path.to_string_lossy().as_ref())
-        || heartbeat.get("version").and_then(Value::as_str) != Some(expected_version)
-    {
-        return Ok(None);
-    }
-    let service_url = heartbeat
-        .get("service_url")
-        .and_then(Value::as_str)
-        .ok_or_else(|| anyhow!("optimizer service heartbeat omitted service_url"))?;
-    let parsed = reqwest::Url::parse(service_url)
-        .context("optimizer service heartbeat contained an invalid service_url")?;
-    let loopback = matches!(parsed.host_str(), Some("127.0.0.1") | Some("::1"));
-    if parsed.scheme() != "http"
-        || !loopback
-        || parsed.port().is_none()
-        || parsed.path() != "/"
-        || parsed.query().is_some()
-        || parsed.fragment().is_some()
-    {
-        bail!("optimizer service heartbeat advertised a non-loopback HTTP address");
-    }
-    Ok(Some(service_url.trim_end_matches('/').to_owned()))
+    Ok((Some(child), upstream_base_url, None))
 }
 
 #[cfg(unix)]
@@ -2562,53 +2507,25 @@ mod tests {
         (OptimizerManager::with_home(dir.path().to_path_buf()), dir)
     }
 
-    #[test]
-    fn service_discovery_accepts_only_the_spawned_instance() {
-        let dir = tempfile::tempdir().unwrap();
-        let manager_home = dir.path().join("manager");
-        let gepa_home = optimizer_gepa_home(&manager_home);
-        let db_path = optimizer_gepa_db(&manager_home);
-        let heartbeat_path = optimizer_service_heartbeat_path(&gepa_home, &db_path);
-        fs::create_dir_all(heartbeat_path.parent().unwrap()).unwrap();
-        let heartbeat = json!({
-            "schema": "synth.gepa_service.whoami.v1",
-            "pid": 4242,
-            "db_path": db_path.to_string_lossy(),
-            "version": DEFAULT_SIDECAR_VERSION,
-            "service_url": "http://127.0.0.1:49152"
-        });
-        fs::write(&heartbeat_path, serde_json::to_vec(&heartbeat).unwrap()).unwrap();
-
-        assert_eq!(
-            read_optimizer_service_address(
-                &heartbeat_path,
-                &db_path,
-                4242,
-                DEFAULT_SIDECAR_VERSION,
-            )
-            .unwrap()
-            .as_deref(),
-            Some("http://127.0.0.1:49152")
-        );
-        assert!(read_optimizer_service_address(
-            &heartbeat_path,
-            &db_path,
-            4243,
-            DEFAULT_SIDECAR_VERSION,
+    #[tokio::test]
+    async fn gepa_admission_queue_bounds_concurrent_children() {
+        let (manager, _) = manager();
+        let first = manager.gepa_capacity.clone().acquire_owned().await.unwrap();
+        let second = manager.gepa_capacity.clone().acquire_owned().await.unwrap();
+        assert!(tokio::time::timeout(
+            Duration::from_millis(10),
+            manager.gepa_capacity.clone().acquire_owned()
         )
-        .unwrap()
-        .is_none());
-
-        let mut remote = heartbeat;
-        remote["service_url"] = json!("http://example.com:49152");
-        fs::write(&heartbeat_path, serde_json::to_vec(&remote).unwrap()).unwrap();
-        assert!(read_optimizer_service_address(
-            &heartbeat_path,
-            &db_path,
-            4242,
-            DEFAULT_SIDECAR_VERSION,
-        )
+        .await
         .is_err());
+        drop(first);
+        assert!(tokio::time::timeout(
+            Duration::from_millis(100),
+            manager.gepa_capacity.clone().acquire_owned()
+        )
+        .await
+        .is_ok());
+        drop(second);
     }
 
     #[cfg(unix)]
@@ -2765,7 +2682,7 @@ mod tests {
         let pid = child.id().unwrap();
         manager.gepa_workers.lock().await.insert(
             "gepa_shutdown_probe".into(),
-            GepaWorkerState::Running { pid },
+            GepaWorkerState::Running { pid, _permit: None },
         );
 
         let supervisor = crate::services::ServiceSupervisor::new();
@@ -2803,7 +2720,7 @@ mod tests {
         let pid = child.id().unwrap();
         mgr.gepa_workers.lock().await.insert(
             "gepa_release_probe".into(),
-            GepaWorkerState::Running { pid },
+            GepaWorkerState::Running { pid, _permit: None },
         );
 
         mgr.release_gepa_recipe("gepa_release_probe").await;

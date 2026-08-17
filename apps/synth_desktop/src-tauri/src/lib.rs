@@ -39,6 +39,7 @@ mod limits;
 mod optimizers;
 mod plugins;
 pub mod presentation;
+pub mod recovery;
 mod reports;
 mod runtime;
 mod services;
@@ -3691,6 +3692,11 @@ pub fn run() {
             // All committed CoreRuntime events reach Tauri through this single
             // forwarder. Producers only journal and broadcast.
             core.spawn_forwarder(app.handle().clone());
+
+            // Backend-owned liveness. The renderer's turn watchdogs are cleared
+            // when its window unloads, so they cannot fence a turn whose owner
+            // died — this sweep can, with or without a window open.
+            core.spawn_lease_watchdog();
 
             let mut status_updates = laguna.subscribe();
             let status_handle = app.handle().clone();

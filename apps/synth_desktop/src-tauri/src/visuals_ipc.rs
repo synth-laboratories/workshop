@@ -284,7 +284,12 @@ async fn route_request(
     let started = std::time::Instant::now();
     let operation = redacted_operation(&request.path);
     let correlation = correlation_from_ipc_body(&request.body);
+    // Every agent tool call crosses this boundary, which makes it the one place
+    // fault injection can crash Workshop at a realistic point in a turn rather
+    // than at an arbitrary instruction.
+    crate::recovery::crash_checkpoint(crate::recovery::checkpoints::BEFORE_TOOL_DISPATCH);
     let response = route_request_inner(request, core, app, token).await;
+    crate::recovery::crash_checkpoint(crate::recovery::checkpoints::AFTER_TOOL_DISPATCH);
     let elapsed = started.elapsed();
     if !response.status.is_success() {
         record_ipc_failure(core, &operation, &response, correlation, elapsed);
@@ -698,6 +703,68 @@ pub(crate) async fn get_rollout_status(
         return Ok(None);
     }
     Ok(Some(response.error_for_status()?.json::<Value>().await?))
+}
+
+/// Open a durable receipt for a rollout launch, returning its id.
+///
+/// Best-effort by design: a receipt is a recovery aid, and failing the user's
+/// eval because bookkeeping could not be written would trade a rare wrong
+/// restart for a certain lost run. A missing receipt degrades recovery to
+/// "restartable", which is the pre-existing behaviour.
+async fn begin_rollout_receipt(
+    core: &CoreRuntime,
+    session_id: Option<&str>,
+    rollout_id: &str,
+    request: &Value,
+) -> Option<String> {
+    // Without a session there is nothing to attribute the action to, and
+    // recovery scopes receipts by run. Skip rather than write an orphan row.
+    let session_id = session_id?.to_owned();
+    let rollout_id = rollout_id.to_owned();
+    let request = request.clone();
+    core.storage()
+        .database()
+        .run_transaction(move |conn| {
+            let run_id: Option<String> = conn
+                .query_row(
+                    "SELECT active_run_id FROM sessions WHERE id = ?1",
+                    rusqlite::params![session_id],
+                    |row| row.get(0),
+                )
+                .ok()
+                .flatten();
+            let receipt = crate::recovery::receipts::begin(
+                conn,
+                &session_id,
+                run_id.as_deref(),
+                // The container owns rollout identity, so the caller-stable
+                // rollout id is already the idempotency key for this action.
+                &format!("rollout:{rollout_id}"),
+                "container.rollout.start",
+                &request,
+            )?;
+            Ok(receipt.tool_call_id)
+        })
+        .await
+        .ok()
+}
+
+async fn settle_rollout_receipt(
+    core: &CoreRuntime,
+    tool_call_id: Option<&str>,
+    external_object_id: Option<&str>,
+) {
+    let Some(tool_call_id) = tool_call_id.map(str::to_owned) else {
+        return;
+    };
+    let external_object_id = external_object_id.map(str::to_owned);
+    let _ = core
+        .storage()
+        .database()
+        .run(move |conn| {
+            crate::recovery::receipts::settle(conn, &tool_call_id, external_object_id.as_deref())
+        })
+        .await;
 }
 
 fn rollout_started(state: &Value) -> bool {
@@ -1417,6 +1484,11 @@ pub async fn dispatch(method: &str, path: &str, body: Value, core: &CoreRuntime)
                 .pointer("/cursor/high_water")
                 .cloned()
                 .unwrap_or(Value::Null);
+            if page.pointer("/cursor/closed").and_then(Value::as_bool) == Some(true) {
+                crate::recovery::crash_checkpoint(
+                    crate::recovery::checkpoints::AFTER_ROLLOUT_TERMINAL,
+                );
+            }
             Ok(
                 json!({"container_id": id, "rollout_id": rollout_id, "page": page, "next_cursor": next_cursor}),
             )
@@ -1524,15 +1596,34 @@ pub async fn dispatch(method: &str, path: &str, body: Value, core: &CoreRuntime)
             {
                 start_body["world_ref"] = world_ref;
             }
-            let (state, recovered) = start_rollout_idempotently(
+            // Launching a rollout spends real compute. Record that it is about
+            // to leave the process *before* it does, so a crash in the gap is
+            // recoverable as "outcome unknown" rather than replayed blind into a
+            // second paid run. See `recovery::receipts`.
+            let receipt = begin_rollout_receipt(
+                &core,
+                body.get("sessionRef")
+                    .or_else(|| body.get("session_id"))
+                    .and_then(Value::as_str),
+                rollout_id,
+                &start_body,
+            )
+            .await;
+            let started = start_rollout_idempotently(
                 &client,
                 &recovery_client,
                 &base,
                 rollout_id,
                 &start_body,
             )
-            .await
-            .context("POST /rollouts after stream.subscribed")?;
+            .await;
+            crate::recovery::crash_checkpoint(crate::recovery::checkpoints::AFTER_ROLLOUT_LAUNCH);
+            // A transport error is deliberately *not* recorded as failed: it
+            // does not prove the façade never accepted the rollout, and
+            // claiming it did is exactly how a duplicate gets launched later.
+            let (state, recovered) = started.context("POST /rollouts after stream.subscribed")?;
+            settle_rollout_receipt(&core, receipt.as_deref(), Some(rollout_id)).await;
+            crate::recovery::crash_checkpoint(crate::recovery::checkpoints::AFTER_TOOL_RECEIPT);
             core.update_container_last_rollout(id.to_string(), rollout_id.to_string())
                 .await?;
             Ok(

@@ -254,6 +254,11 @@ pub struct CodexSessionRecord {
     pub approval_policy: String,
     #[serde(default = "default_sandbox")]
     pub sandbox: String,
+    /// Set when the previous process died holding this chat's turn. It is what
+    /// lets the sidebar say "Workshop exited while this task was running"
+    /// instead of silently showing an idle chat — or, worse, a live one.
+    #[serde(default)]
+    pub recovery: Option<crate::recovery::RecoveryNotice>,
 }
 
 pub(crate) type Pending = Arc<Mutex<HashMap<u64, oneshot::Sender<Result<Value, String>>>>>;

@@ -15,6 +15,7 @@ use crate::storage::{
 };
 use crate::visuals::VisualRegistry;
 use anyhow::{Context, Result};
+use chrono::Utc;
 use serde_json::json;
 use std::{sync::Arc, time::Duration};
 use tauri::{AppHandle, Emitter};
@@ -56,6 +57,32 @@ impl CoreRuntime {
             eprintln!(
                 "synth-desktop: visual bindings backfill scanned {}, upgraded {}, refused {}",
                 backfill.scanned, backfill.upgraded, backfill.refused
+            );
+        }
+        // Reconcile before returning, not in a spawned task. Everything that can
+        // read a session — `listSessions`, the Codex record cache, the eval
+        // driver — goes through a CoreRuntime that already exists, so a task
+        // scheduled here would race the first read and let a dead `running` row
+        // reach the UI as Working. This is the boundary that must hold.
+        let recovered = storage
+            .database()
+            .transaction(|conn| {
+                crate::recovery::reconcile_orphaned_turns(
+                    conn,
+                    crate::instance::boot_epoch(),
+                    Utc::now(),
+                )
+            })
+            .context("reconcile abandoned turns at startup")?;
+        if !recovered.is_empty() {
+            eprintln!(
+                "synth-desktop: recovered {} abandoned turn(s) from a previous run ({})",
+                recovered.len(),
+                recovered
+                    .iter()
+                    .map(|notice| notice.session_id.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
             );
         }
         let backend = crate::synth_config::resolve().context("resolve Synth backend")?;
@@ -221,6 +248,149 @@ impl CoreRuntime {
         if let Some(event) = event {
             let _ = self.events_tx.send(event);
         }
+    }
+
+    /// Take the live claim on a turn this process is about to run, and clear any
+    /// recovery notice the session was still carrying. Returns the attempt
+    /// number, so a restarted turn is auditable as one.
+    pub async fn claim_turn(
+        &self,
+        session_id: String,
+        run_id: String,
+        attachment_id: Option<String>,
+    ) -> Result<i64> {
+        let instance_id = crate::instance::boot_epoch().to_owned();
+        self.storage
+            .database()
+            .run_transaction(move |conn| {
+                let previous_attempt =
+                    crate::recovery::clear_recovery_metadata(conn, &session_id)?.unwrap_or(0);
+                crate::recovery::ownership::claim(
+                    conn,
+                    &session_id,
+                    &run_id,
+                    &instance_id,
+                    attachment_id.as_deref(),
+                    previous_attempt,
+                    Utc::now(),
+                )?;
+                Ok(previous_attempt)
+            })
+            .await
+    }
+
+    /// Refresh the lease from live provider activity. Rate-limited against the
+    /// stored heartbeat so a chatty stream does not turn into a write storm.
+    pub async fn heartbeat_turn(&self, session_id: String) -> Result<bool> {
+        let instance_id = crate::instance::boot_epoch().to_owned();
+        self.storage
+            .database()
+            .run(move |conn| {
+                let now = Utc::now();
+                let Some(claim) = crate::recovery::ownership::load(conn, &session_id)? else {
+                    return Ok(false);
+                };
+                if claim.owner_instance_id != instance_id
+                    || !crate::recovery::ownership::heartbeat_due(&claim, now)
+                {
+                    return Ok(false);
+                }
+                crate::recovery::ownership::heartbeat(conn, &session_id, &instance_id, None, now)
+            })
+            .await
+    }
+
+    pub async fn release_turn(&self, session_id: String) -> Result<()> {
+        self.storage
+            .database()
+            .run(move |conn| crate::recovery::ownership::release(conn, &session_id))
+            .await
+    }
+
+    /// Sessions this process can honestly present as Working right now.
+    pub async fn live_turn_sessions(&self) -> Result<Vec<String>> {
+        let instance_id = crate::instance::boot_epoch().to_owned();
+        self.storage
+            .database()
+            .run(move |conn| {
+                let now = Utc::now();
+                Ok(
+                    crate::recovery::ownership::owned_sessions(conn, &instance_id)?
+                        .into_iter()
+                        .filter(|claim| claim.is_live(&instance_id, now))
+                        .map(|claim| claim.session_id)
+                        .collect(),
+                )
+            })
+            .await
+    }
+
+    /// Run one lease-expiry sweep and broadcast what it recovered.
+    ///
+    /// The renderer's watchdogs die with the window; this one does not. It also
+    /// covers the case the renderer cannot see at all — a turn whose owner is
+    /// this process but whose event pump has stopped refreshing the claim.
+    pub async fn sweep_expired_leases(&self) -> Result<usize> {
+        // Cheap read first: an idle Workshop must not take a write lock every
+        // five seconds just to discover it has nothing to do.
+        if !self
+            .storage
+            .database()
+            .run(crate::recovery::has_reconcilable_turns)
+            .await?
+        {
+            return Ok(0);
+        }
+        let instance_id = crate::instance::boot_epoch().to_owned();
+        let notices = self
+            .storage
+            .database()
+            .run_transaction(move |conn| {
+                crate::recovery::reconcile_orphaned_turns(conn, &instance_id, Utc::now())
+            })
+            .await?;
+        let recovered = notices.len();
+        for notice in notices {
+            eprintln!(
+                "synth-desktop: lease expired for session {} ({})",
+                notice.session_id, notice.reason
+            );
+            let _ = self
+                .append_and_broadcast(EventAppend {
+                    event_id: None,
+                    session_id: Some(notice.session_id.clone()),
+                    run_id: notice.run_id.clone(),
+                    source: EventSource::System,
+                    kind: "session/unhealthy".into(),
+                    payload: json!({
+                        "reason": notice.reason,
+                        "message": "This task stopped proving it was still running.",
+                        "recovery": notice.to_json(),
+                    }),
+                    remote_sequence: None,
+                    command_id: None,
+                    created_at: None,
+                })
+                .await;
+        }
+        Ok(recovered)
+    }
+
+    /// Backend-owned liveness. Starting this is what makes the invariant hold
+    /// with no window open at all.
+    pub fn spawn_lease_watchdog(self: &Arc<Self>) {
+        let core = self.clone();
+        tauri::async_runtime::spawn(async move {
+            let interval = crate::recovery::HEARTBEAT_INTERVAL
+                .to_std()
+                .unwrap_or(Duration::from_secs(5));
+            loop {
+                tokio::time::sleep(interval).await;
+                if let Err(error) = core.sweep_expired_leases().await {
+                    eprintln!("lease watchdog sweep failed: {error}");
+                }
+            }
+        });
     }
 
     pub async fn start_intern_provider(

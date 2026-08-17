@@ -35,6 +35,7 @@ export default function App() {
 						optimizersActive={c.view.kind === "optimizers"}
 						computerUseActive={c.view.kind === "computer-use"}
 						workingChatIds={c.workingChatIds}
+						chatPresence={c.chatPresence}
 						activeLocalDecodeTps={c.inferenceMonitor.snapshot?.active?.decodeTokensPerSecond == null
 							? null
 							: `${formatTps(c.inferenceMonitor.snapshot.active.decodeTokensPerSecond)} tok/s`}
@@ -242,6 +243,8 @@ export default function App() {
 						setSteerError={c.setSteerError}
 						failedSend={c.failedSend}
 						retryFailedSend={c.retryFailedSend}
+						recoveryNotice={c.view.kind === "chat" ? c.recoveryNotices[c.view.chatId] ?? null : null}
+						onRestartRecovered={c.restartRecoveredChat}
 						defaultWorkspace={c.defaultWorkspace}
 						workspaceScope={c.workspaceScope}
 						setWorkspaceScope={c.setWorkspaceScope}

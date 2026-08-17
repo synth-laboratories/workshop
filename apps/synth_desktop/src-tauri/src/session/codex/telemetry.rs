@@ -1,10 +1,22 @@
 //! Turn performance / usage telemetry for the Codex app-server pump.
+//!
+//! This module owns *turn-level* facts: token usage, time to first output,
+//! end-to-end latency, and cost. It deliberately no longer computes a
+//! generation rate. Turn-wide output tokens over a turn-wide (or gap-filtered)
+//! denominator mixes several model calls, tool execution, and reasoning into
+//! one ratio; the number it produced was dimensionally plausible and
+//! semantically invalid. Generation speed is measured per output-text segment
+//! in `super::generation_speed`, and only that measurement may be shown as
+//! token/s.
 use crate::domain::RunStatus;
-use crate::storage::{CostSource, MeasurementKind, UsageRecord};
+use crate::storage::{CostSource, GenerationSpeedRow, MeasurementKind, UsageRecord};
 use serde_json::Value;
 use std::{collections::HashMap, sync::Arc};
 use tokio::sync::Mutex;
 
+use super::generation_speed::{
+    protocol_event, GenerationSpeedMeasurement, SegmentPhase, SegmentStatus, TurnSegmentTracker,
+};
 use super::home::ProviderClass;
 
 #[derive(Clone, Debug, Default)]
@@ -25,15 +37,14 @@ pub(crate) struct TurnPerformanceTracker {
     pub(crate) started_at_ms: i64,
     pub(crate) first_output_at_ms: Option<i64>,
     pub(crate) last_output_at_ms: Option<i64>,
-    /// Sum of time between adjacent output deltas while the model is actively
-    /// generating. Long gaps are orchestration/tool time and are excluded.
-    pub(crate) generation_active_ms: i64,
     pub(crate) usage: TurnTokenUsage,
+    /// Per-segment generation-speed measurement for this turn. Separate from
+    /// every field above: those describe the turn, this describes one
+    /// uninterrupted stretch of one model response.
+    pub(crate) segments: TurnSegmentTracker,
 }
 
 pub(crate) type PerformanceTrackers = Arc<Mutex<HashMap<String, TurnPerformanceTracker>>>;
-
-const MAX_GENERATION_DELTA_GAP_MS: i64 = 2_000;
 
 pub(crate) fn is_context_compaction_notification(method: &str, params: &Value) -> bool {
     method == "thread/compacted"
@@ -140,6 +151,16 @@ pub(crate) fn is_output_delta(method: &str, params: &Value) -> bool {
             .is_some_and(|delta| !delta.is_empty())
 }
 
+/// Record one pump event against the turn's telemetry.
+///
+/// Returns the generation-speed measurements this event finalized, so the pump
+/// can publish them onto the journal. They are returned rather than emitted
+/// here because publishing needs the Tauri app handle and this module must stay
+/// usable from tests that have no app.
+///
+/// `received_at_us` is taken by the caller the instant the stream frame was
+/// decoded — before IPC, persistence, or any renderer work — because that
+/// instant, not this function's, is what "observed delivery" means.
 pub(crate) async fn track_performance_event(
     persistence: &crate::session::SessionPersistence,
     trackers: &PerformanceTrackers,
@@ -147,25 +168,22 @@ pub(crate) async fn track_performance_event(
     session_id: &str,
     method: &str,
     params: &Value,
-) {
+    received_at_us: i64,
+) -> Vec<GenerationSpeedMeasurement> {
     let now_ms = chrono::Utc::now().timestamp_millis();
     let terminal = matches!(
         method,
         "turn/completed" | "turn/failed" | "turn/interrupted"
     );
-    {
+    let finalized = {
         let mut trackers = trackers.lock().await;
         let Some(tracker) = trackers.get_mut(session_id) else {
-            return;
+            return Vec::new();
         };
         if is_output_delta(method, params) {
+            // Turn-level output bounds: they still serve time-to-first-token
+            // and end-to-end latency. They are never a generation denominator.
             tracker.first_output_at_ms.get_or_insert(now_ms);
-            if let Some(previous) = tracker.last_output_at_ms {
-                let gap = now_ms - previous;
-                if gap > 0 && gap <= MAX_GENERATION_DELTA_GAP_MS {
-                    tracker.generation_active_ms += gap;
-                }
-            }
             tracker.last_output_at_ms = Some(now_ms);
         }
         if method.to_ascii_lowercase().contains("usage") || terminal {
@@ -173,25 +191,114 @@ pub(crate) async fn track_performance_event(
                 tracker.usage = usage;
             }
         }
+        match protocol_event(method, params) {
+            Some(event) => tracker.segments.observe(event, received_at_us),
+            None => Vec::new(),
+        }
+    };
+    for measurement in &finalized {
+        if let Err(error) = persistence
+            .record_generation_speed(generation_speed_row(measurement))
+            .await
+        {
+            eprintln!("generation speed measurement could not be persisted: {error:#}");
+        }
     }
+    let mut finalized = finalized;
     if terminal {
         let status = match method {
             "turn/completed" => RunStatus::Completed.as_str(),
             "turn/failed" => RunStatus::Failed.as_str(),
             _ => RunStatus::Interrupted.as_str(),
         };
-        finalize_performance_tracker(
-            persistence,
-            trackers,
-            receipts,
-            session_id,
-            status,
-            Some(now_ms),
-        )
-        .await;
+        finalized.extend(
+            finalize_performance_tracker(
+                persistence,
+                trackers,
+                receipts,
+                session_id,
+                status,
+                Some(now_ms),
+            )
+            .await,
+        );
+    }
+    finalized
+}
+
+/// Project a measurement into its storage row. `samples` and `quality_flags`
+/// ride as JSON so the evidence stays with the conclusion in one row.
+pub(crate) fn generation_speed_row(measurement: &GenerationSpeedMeasurement) -> GenerationSpeedRow {
+    GenerationSpeedRow {
+        measurement_id: measurement.measurement_id.clone(),
+        schema_version: measurement.schema_version.to_owned(),
+        measurement_kind: measurement.measurement_kind.to_owned(),
+        session_id: measurement.session_id.clone(),
+        turn_id: measurement.turn_id.clone(),
+        response_id: measurement.key.response_id.clone(),
+        item_id: measurement.key.item_id.clone(),
+        output_index: measurement.key.output_index,
+        content_index: measurement.key.content_index,
+        phase: json_label(&measurement.phase),
+        status: json_label(&measurement.status),
+        tps: measurement.tps,
+        exact_tokens_after_first_sample: measurement.exact_tokens_after_first_sample,
+        duration_ms: measurement.duration_ms,
+        sample_count: measurement.sample_count as i64,
+        token_count_source: json_label(&measurement.token_count_source),
+        tokenizer_id: measurement.tokenizer_id.clone(),
+        clock_source: json_label(&measurement.clock_source),
+        unavailable_reason: measurement
+            .unavailable_reason
+            .as_ref()
+            .map(|reason| json_label(reason)),
+        quality_flags_json: serde_json::to_string(&measurement.quality_flags)
+            .unwrap_or_else(|_| "[]".into()),
+        samples_json: serde_json::to_string(&measurement.samples).unwrap_or_else(|_| "[]".into()),
+        provider: measurement.provider.clone(),
+        model_id: measurement.model_id.clone(),
+        created_at: chrono::Utc::now().to_rfc3339(),
     }
 }
 
+/// The snake_case name a serde enum serializes to, without hand-maintaining a
+/// second mapping that could drift from the wire contract.
+fn json_label<T: serde::Serialize>(value: &T) -> String {
+    serde_json::to_value(value)
+        .ok()
+        .and_then(|value| value.as_str().map(str::to_owned))
+        .unwrap_or_else(|| "unknown".into())
+}
+
+/// The one rate a per-request ledger row may carry for a turn: the completed
+/// final-answer segment's own measurement.
+///
+/// `None` when the turn produced no such segment, or produced more than one —
+/// two final answers are two measurements, and a row that can only hold one
+/// number must hold none rather than a blend.
+fn turn_headline_tps(tracker: &TurnPerformanceTracker) -> Option<f64> {
+    let publishable: Vec<&GenerationSpeedMeasurement> = tracker
+        .segments
+        .measurements()
+        .iter()
+        .filter(|measurement| {
+            measurement.is_publishable()
+                && measurement.phase == SegmentPhase::FinalAnswer
+                && measurement.status == SegmentStatus::Completed
+        })
+        .collect();
+    match publishable.as_slice() {
+        [only] => only.tps,
+        _ => None,
+    }
+}
+
+/// Close the turn: write its usage row, and return any generation-speed
+/// measurements this finalize produced so the caller can publish them.
+///
+/// The return value matters on the crash path. When the app-server dies
+/// mid-turn this is the only place a still-open segment is closed, and a
+/// measurement the transcript never receives is one the user cannot see.
 pub(crate) async fn finalize_performance_tracker(
     persistence: &crate::session::SessionPersistence,
     trackers: &PerformanceTrackers,
@@ -199,24 +306,35 @@ pub(crate) async fn finalize_performance_tracker(
     session_id: &str,
     status: &str,
     completed_at_ms: Option<i64>,
-) {
-    let Some(tracker) = trackers.lock().await.remove(session_id) else {
-        return;
+) -> Vec<GenerationSpeedMeasurement> {
+    let Some(mut tracker) = trackers.lock().await.remove(session_id) else {
+        return Vec::new();
     };
     let completed_at_ms = completed_at_ms.unwrap_or_else(|| chrono::Utc::now().timestamp_millis());
+    // Segments still open at finalize belong to a stream that ended without
+    // closing them; they are recorded as partial, never as headline evidence.
+    let finalized = tracker.segments.finish();
+    for measurement in &finalized {
+        if let Err(error) = persistence
+            .record_generation_speed(generation_speed_row(measurement))
+            .await
+        {
+            eprintln!("generation speed measurement could not be persisted: {error:#}");
+        }
+    }
     let output_tokens = tracker.usage.output_tokens.filter(|tokens| *tokens > 0);
-    let generation_seconds = (tracker.generation_active_ms as f64 / 1_000.0)
-        .is_normal()
-        .then_some(tracker.generation_active_ms as f64 / 1_000.0);
     let end_to_end_seconds = ((completed_at_ms - tracker.started_at_ms) as f64 / 1_000.0).max(0.0);
-    let observed_output_tps = output_tokens
-        .zip(generation_seconds)
-        .map(|(tokens, seconds)| tokens as f64 / seconds);
+    // The ledger's throughput column now carries a real measurement or nothing.
+    // Only a completed final-answer segment qualifies: it is the one segment
+    // whose scope a per-request row can honestly stand for. A turn with several
+    // answer segments has no single rate, and inventing one by blending them is
+    // the defect this replaced.
+    let observed_output_tps = turn_headline_tps(&tracker);
     let end_to_end_output_tps = output_tokens
         .filter(|_| end_to_end_seconds > 0.0)
         .map(|tokens| tokens as f64 / end_to_end_seconds);
     let measurement_kind = if observed_output_tps.is_some() {
-        MeasurementKind::ObservedStream
+        MeasurementKind::ObservedStreamSegment
     } else {
         MeasurementKind::EndToEnd
     };
@@ -296,6 +414,7 @@ pub(crate) async fn finalize_performance_tracker(
     if let Err(error) = persistence.record_usage(record).await {
         eprintln!("usage record could not be persisted: {error:#}");
     }
+    finalized
 }
 
 /// Sum of the settled charges a turn's receipts carried. A turn is allowed to

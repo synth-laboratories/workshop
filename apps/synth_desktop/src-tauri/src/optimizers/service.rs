@@ -284,6 +284,10 @@ impl OptimizerService {
         let run = self.get(optimizer_run_id.clone()).await?;
         if let Some(existing) = run.summary.get("optimizerResult").cloned() {
             if existing.get("schemaVersion").and_then(Value::as_str) == Some("optimizer_result.v1")
+                && (run.algorithm_id != "gepa"
+                    || existing
+                        .pointer("/metrics/heldoutMeasurement")
+                        .is_some_and(|value| !value.is_null()))
             {
                 return Ok(existing);
             }
@@ -1289,6 +1293,9 @@ async fn materialize_optimizer_result(
     let manifest_raw = manifest_path
         .as_ref()
         .and_then(|path| std::fs::read(path).ok());
+    let manifest = manifest_raw
+        .as_ref()
+        .and_then(|bytes| serde_json::from_slice::<Value>(bytes).ok());
     let mut artifact_refs = Vec::new();
     if let Some(bytes) = candidate_raw.as_ref() {
         if let Ok(digest) = service.visuals.content().put_bytes("blobs", bytes) {
@@ -1369,6 +1376,46 @@ async fn materialize_optimizer_result(
         selected_candidate["materializedDigest"] = json!(digest);
     }
     selected_candidate["frontierMember"] = json!(true);
+    let selection = run
+        .summary
+        .get("selection")
+        .cloned()
+        .filter(|value| !value.is_null())
+        .or_else(|| {
+            manifest.as_ref().and_then(|value| {
+                value
+                    .get("selection")
+                    .or_else(|| value.pointer("/best_candidate/acceptance_metadata/selection"))
+                    .cloned()
+                    .or_else(|| {
+                        let best = value.get("best_candidate")?;
+                        let candidate_id = best.get("candidate_id")?.clone();
+                        let parent_id = best.get("parent_id").cloned().unwrap_or(Value::Null);
+                        Some(json!({
+                            "candidateId": candidate_id,
+                            "parentId": parent_id,
+                            "accepted": !parent_id.is_null(),
+                            "acceptanceScore": best.get("acceptance_score").cloned().unwrap_or(Value::Null),
+                            "minibatchReward": best.get("minibatch_reward").cloned().unwrap_or(Value::Null)
+                        }))
+                    })
+            })
+        })
+        .unwrap_or(Value::Null);
+    let heldout = run
+        .summary
+        .get("heldout")
+        .cloned()
+        .filter(|value| !value.is_null())
+        .or_else(|| {
+            manifest.as_ref().and_then(|value| {
+                value
+                    .pointer("/best_candidate/heldout_reward")
+                    .filter(|value| !value.is_null())
+                    .map(|score| json!({"score": score, "split": "heldout"}))
+            })
+        })
+        .unwrap_or(Value::Null);
     Ok(json!({
         "schemaVersion": "optimizer_result.v1",
         "optimizerRunId": run.id,
@@ -1377,8 +1424,8 @@ async fn materialize_optimizer_result(
         "finalCursor": run.cursor_seq,
         "selectedCandidate": selected_candidate,
         "metrics": {
-            "selection": run.summary.get("selection").cloned().unwrap_or(Value::Null),
-            "heldoutMeasurement": run.summary.get("heldout").cloned().unwrap_or(Value::Null)
+            "selection": selection,
+            "heldoutMeasurement": heldout
         },
         "usage": serde_json::to_value(&run.usage).unwrap_or(Value::Null),
         "artifactRefs": artifact_refs,
@@ -4035,6 +4082,19 @@ pub(in crate::optimizers) mod tests {
             }"#,
         )
         .unwrap();
+        std::fs::write(
+            run_dir.join("result_manifest.json"),
+            r#"{
+                "best_candidate": {
+                    "candidate_id": "candidate_winner",
+                    "parent_id": "seed",
+                    "acceptance_score": 0.82,
+                    "minibatch_reward": 0.85,
+                    "heldout_reward": 0.80
+                }
+            }"#,
+        )
+        .unwrap();
         let (run, _) = svc
             .create(
                 serde_json::from_value(json!({
@@ -4054,9 +4114,7 @@ pub(in crate::optimizers) mod tests {
         let mut stored = run.clone();
         stored.status = "completed".into();
         stored.summary = json!({
-            "runDirectory": run_dir.display().to_string(),
-            "selection": {"score": 0.82},
-            "heldout": {"score": 0.80}
+            "runDirectory": run_dir.display().to_string()
         });
         svc.persist_run(stored).await.unwrap();
         let result = svc.get_result(run.id.clone()).await.unwrap();
@@ -4069,6 +4127,11 @@ pub(in crate::optimizers) mod tests {
             .as_str()
             .unwrap()
             .starts_with("sha256:"));
+        assert_eq!(result["metrics"]["selection"]["accepted"], json!(true));
+        assert_eq!(
+            result["metrics"]["heldoutMeasurement"],
+            json!({"score": 0.80, "split": "heldout"})
+        );
         let encoded = result.to_string();
         assert!(!encoded.contains("best_candidate.json"));
         assert!(!encoded.contains("runDirectory"));

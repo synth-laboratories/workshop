@@ -13,6 +13,10 @@ use super::home::{
     OPENROUTER_RESPONSES_BASE_URL,
 };
 
+use super::generation_speed::{
+    ols_tokens_per_second, protocol_event, ProtocolEvent, QualityFlag, SegmentPhase, SegmentStatus,
+    TokenCountSource, TurnSegmentTracker, UnavailableReason,
+};
 use super::manager::CodexManager;
 use super::proto::{
     is_detached_failure, select_approval_decision, CodexApprovalDecisionRequest,
@@ -23,7 +27,7 @@ use super::proto::{
 };
 use super::telemetry::{
     extract_turn_usage, finalize_performance_tracker, is_output_delta, settled_cost_from_receipts,
-    PerformanceTrackers, TurnPerformanceTracker, TurnTokenUsage,
+    track_performance_event, PerformanceTrackers, TurnPerformanceTracker, TurnTokenUsage,
 };
 use crate::core_runtime::CoreRuntime;
 use crate::credential_broker::{self, CredentialBroker};
@@ -33,7 +37,8 @@ use crate::domain::{
 };
 use crate::session::SessionPersistence;
 use crate::storage::{
-    CostSource, EventSource, MeasurementKind, UsageBreakdown, UsageRecord, UsageRecordsRepository,
+    CostSource, EventSource, GenerationSpeedRepository, MeasurementKind, UsageBreakdown,
+    UsageRecord, UsageRecordsRepository,
 };
 use crate::synth_config::MultiAgentVersion;
 use anyhow::anyhow;
@@ -421,14 +426,28 @@ async fn dead_approval_origin_expires_and_drains_pending_state() {
     })
     .await
     .expect("dead origin left an approval pending");
-    let events = core
-        .journal()
-        .session_events_after(request.session_id, 0, 100)
-        .await
-        .unwrap();
-    assert!(events.iter().any(|event| {
-        event.kind == "approval.expired" && event.payload["reason"] == "origin_process_exited"
-    }));
+    // Wait on the durable record, not only on the in-memory counter: the broker
+    // removes a request from `pending` before it journals the expiry, so
+    // `pending_len() == 0` is reached first and reading the journal right then
+    // is a race.
+    tokio::time::timeout(SETTLE_TIMEOUT, async {
+        loop {
+            let events = core
+                .journal()
+                .session_events_after(request.session_id.clone(), 0, 100)
+                .await
+                .unwrap();
+            if events.iter().any(|event| {
+                event.kind == "approval.expired"
+                    && event.payload["reason"] == "origin_process_exited"
+            }) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("dead origin never journalled its approval expiry");
 }
 
 #[tokio::test]
@@ -1043,6 +1062,7 @@ async fn turn_send_reattaches_a_restored_running_record_without_an_attachment() 
         presentation_summary: None,
         approval_policy: "never".into(),
         sandbox: "workspace-write".into(),
+        recovery: None,
     };
     fs::write(
         codex_root.join("threads.json"),
@@ -2584,8 +2604,9 @@ fn recognizes_answer_deltas_but_not_reasoning_or_empty_events() {
 // Session ids are unique per test: the broker's receipt store is
 // process-wide and these tests run in parallel.
 
-fn tracker_for(provider: &str, turn_id: &str) -> TurnPerformanceTracker {
+fn tracker_for(session_id: &str, provider: &str, turn_id: &str) -> TurnPerformanceTracker {
     TurnPerformanceTracker {
+        segments: TurnSegmentTracker::new(session_id, turn_id, Some(provider.into()), None),
         provider: provider.into(),
         model_id: "openrouter/poolside/laguna-s-2.1".into(),
         turn_id: turn_id.into(),
@@ -2593,7 +2614,6 @@ fn tracker_for(provider: &str, turn_id: &str) -> TurnPerformanceTracker {
         started_at_ms: 1_000,
         first_output_at_ms: Some(1_100),
         last_output_at_ms: Some(1_900),
-        generation_active_ms: 800,
         usage: TurnTokenUsage {
             input_tokens: Some(1_000),
             cached_input_tokens: None,
@@ -2631,10 +2651,10 @@ async fn finalize_turn(
     turn: &str,
 ) {
     let trackers: PerformanceTrackers = Arc::default();
-    trackers
-        .lock()
-        .await
-        .insert(session_id.to_owned(), tracker_for(provider, turn));
+    trackers.lock().await.insert(
+        session_id.to_owned(),
+        tracker_for(session_id, provider, turn),
+    );
     finalize_performance_tracker(
         &SessionPersistence::from_core(Some(core.clone())),
         &trackers,
@@ -2754,4 +2774,974 @@ async fn a_late_receipt_is_never_misattributed_to_the_next_turn() {
     assert_eq!(totals.billed_cost_usd, None);
     assert_eq!(totals.cost_source, CostSource::None);
     assert_eq!(receipts.drain(session).len(), 1);
+}
+
+/// The renderer lists Codex chats from this JSON cache, not from SQLite, so a
+/// database-only reconciliation still left the sidebar showing Working. The
+/// cache must be corrected before `list()` can be called at all.
+#[tokio::test]
+async fn a_running_record_left_by_a_dead_process_never_lists_as_running() {
+    let temp = tempdir().unwrap();
+    let codex_root = temp.path().join("codex");
+    fs::create_dir_all(&codex_root).unwrap();
+    let core = Arc::new(CoreRuntime::open(temp.path().join("core")).unwrap());
+    let sessions = SessionService::new(core.storage().database().clone());
+    let mut records = HashMap::new();
+    for seed in 201..=205 {
+        let session_id = format!("crashed-{seed}");
+        sessions
+            .create_or_update(SessionCreate {
+                id: session_id.clone(),
+                title: format!("Craftax seed {seed}"),
+                kind: SessionKind::Codex,
+                target: RuntimeTarget::from_codex_provider("openrouter", "gpt-5.6-luna"),
+                project_id: None,
+                remote_id: None,
+                codex_thread_id: Some(format!("thread-{seed}")),
+                status: SessionStatus::Ready,
+                state_generation: None,
+                metadata: json!({"titleOrigin": "automatic"}),
+                source: EventSource::Codex,
+            })
+            .await
+            .unwrap();
+        RunService::new(core.storage().database().clone())
+            .start(RunCreate {
+                id: format!("turn-{seed}"),
+                session_id: session_id.clone(),
+                mode: "codex_turn".into(),
+                model: Some("gpt-5.6-luna".into()),
+                adapter: None,
+                metadata: json!({"threadId": format!("thread-{seed}")}),
+                source: EventSource::Codex,
+            })
+            .await
+            .unwrap();
+        records.insert(
+            session_id.clone(),
+            CodexSessionRecord {
+                session_id,
+                thread_id: format!("thread-{seed}"),
+                workspace: temp.path().display().to_string(),
+                model: "gpt-5.6-luna".into(),
+                provider_name: "openrouter".into(),
+                provider_title: "OpenRouter Responses".into(),
+                base_url: "https://openrouter.ai/api/v1".into(),
+                status: SessionStatus::Running.as_str().into(),
+                title: Some(format!("Craftax seed {seed}")),
+                title_origin: Some("automatic".into()),
+                presentation_emotion: None,
+                presentation_summary: None,
+                approval_policy: "never".into(),
+                sandbox: "workspace-write".into(),
+                recovery: None,
+            },
+        );
+    }
+    fs::write(
+        codex_root.join("threads.json"),
+        serde_json::to_vec_pretty(&records).unwrap(),
+    )
+    .unwrap();
+
+    // One chat had actually claimed its turn before the crash; the other four
+    // died between `turn/start` and the claim. Both shapes must recover.
+    core.storage()
+        .database()
+        .transaction(|conn| {
+            crate::recovery::ownership::claim(
+                conn,
+                "crashed-201",
+                "turn-201",
+                "inst_previous_process",
+                Some("attach-dead"),
+                0,
+                chrono::Utc::now(),
+            )
+        })
+        .unwrap();
+    drop(core);
+
+    // The relaunch, through the production path: reconciliation happens inside
+    // CoreRuntime::open, before anything can read a session, and the manager is
+    // built afterward exactly as `setup` builds it.
+    let core = Arc::new(CoreRuntime::open(temp.path().join("core")).unwrap());
+    let manager = CodexManager::with_paths(
+        SessionPersistence::from_core(Some(core.clone())),
+        codex_root.clone(),
+        fixture_binary(),
+        CodexManager::test_broker(),
+    );
+
+    let listed = manager.list().await;
+    assert_eq!(listed.len(), 5);
+    for record in &listed {
+        assert_eq!(
+            record.status,
+            SessionStatus::Interrupted.as_str(),
+            "{} still lists as running",
+            record.session_id
+        );
+        let notice = record
+            .recovery
+            .as_ref()
+            .unwrap_or_else(|| panic!("{} lost its recovery notice", record.session_id));
+        assert_eq!(notice.reason, "workshop_restarted");
+        assert!(notice.restartable);
+        assert_eq!(notice.recovery_attempt, 1);
+    }
+    let claimed = listed
+        .iter()
+        .find(|record| record.session_id == "crashed-201")
+        .unwrap();
+    assert_eq!(
+        claimed
+            .recovery
+            .as_ref()
+            .unwrap()
+            .previous_owner_instance_id
+            .as_deref(),
+        Some("inst_previous_process")
+    );
+
+    // The correction is durable: a second process reading the same file sees it.
+    let reread: HashMap<String, CodexSessionRecord> =
+        serde_json::from_slice(&fs::read(codex_root.join("threads.json")).unwrap()).unwrap();
+    assert!(reread
+        .values()
+        .all(|record| record.status == SessionStatus::Interrupted.as_str()));
+}
+
+// ---- observed generation TPS, measured per output-text segment ----
+//
+// Fixtures are frozen protocol shapes, replayed through the same normalizer the
+// pump uses. `us` is the monotonic receipt clock; nothing here depends on wall
+// time, so a replay is deterministic.
+
+/// One Codex `item/agentMessage/delta`, optionally carrying the provider's
+/// exact running token count for that item.
+fn answer_delta(item: &str, text: &str, cumulative_tokens: Option<i64>) -> Value {
+    let mut params = json!({"delta": text, "itemId": item, "turnId": "turn-1"});
+    if let Some(tokens) = cumulative_tokens {
+        params["cumulativeOutputTokens"] = json!(tokens);
+    }
+    params
+}
+
+fn answer_started(item: &str, phase: &str) -> Value {
+    json!({"item": {"id": item, "type": "agentMessage", "phase": phase, "text": ""}})
+}
+
+fn answer_completed(item: &str, phase: &str, text: &str) -> Value {
+    json!({"item": {"id": item, "type": "agentMessage", "phase": phase, "text": text}})
+}
+
+fn tool_started(item: &str) -> Value {
+    json!({"item": {"id": item, "type": "commandExecution", "command": "ls", "status": "inProgress"}})
+}
+
+/// Replay `(method, params, receipt_microseconds)` through a fresh tracker.
+fn replay(
+    events: &[(&str, Value, i64)],
+) -> Vec<super::generation_speed::GenerationSpeedMeasurement> {
+    let mut tracker = TurnSegmentTracker::new("sess", "turn-1", Some("synth-cloud".into()), None);
+    for (method, params, at_us) in events {
+        if let Some(event) = protocol_event(method, params) {
+            tracker.observe(event, *at_us);
+        }
+    }
+    tracker.finish();
+    tracker.measurements().to_vec()
+}
+
+/// A clean answer segment: four deltas, exact cumulative counts, one second.
+fn clean_segment(item: &str, start_us: i64) -> Vec<(&'static str, Value, i64)> {
+    vec![
+        (
+            "item/started",
+            answer_started(item, "final_answer"),
+            start_us,
+        ),
+        (
+            "item/agentMessage/delta",
+            answer_delta(item, "a", Some(10)),
+            start_us,
+        ),
+        (
+            "item/agentMessage/delta",
+            answer_delta(item, "b", Some(30)),
+            start_us + 400_000,
+        ),
+        (
+            "item/agentMessage/delta",
+            answer_delta(item, "c", Some(50)),
+            start_us + 800_000,
+        ),
+        (
+            "item/agentMessage/delta",
+            answer_delta(item, "d", Some(70)),
+            start_us + 1_200_000,
+        ),
+        (
+            "item/completed",
+            answer_completed(item, "final_answer", "abcd"),
+            start_us + 1_200_000,
+        ),
+    ]
+}
+
+#[test]
+fn regression_slope_matches_the_exact_tokens_of_one_segment() {
+    // 60 tokens delivered across 1.2 s after the origin sample: 50 tok/s, and
+    // the origin's own 10 tokens are deliberately not in the numerator.
+    let measurements = replay(&clean_segment("msg_a", 0));
+    let [measurement] = measurements.as_slice() else {
+        panic!("expected exactly one segment, got {}", measurements.len());
+    };
+    assert!(
+        (measurement.tps.unwrap() - 50.0).abs() < 1e-9,
+        "{:?}",
+        measurement.tps
+    );
+    assert_eq!(measurement.exact_tokens_after_first_sample, 60);
+    assert_eq!(measurement.sample_count, 4);
+    assert_eq!(measurement.duration_ms, 1_200.0);
+    assert_eq!(measurement.status, SegmentStatus::Completed);
+    assert_eq!(measurement.phase, SegmentPhase::FinalAnswer);
+    assert_eq!(
+        measurement.token_count_source,
+        TokenCountSource::ProviderItemUsage
+    );
+    assert_eq!(measurement.unavailable_reason, None);
+    // The samples that produced the number travel with it.
+    assert_eq!(measurement.samples.len(), 4);
+}
+
+#[test]
+fn ordinary_least_squares_needs_spread_and_reports_tokens_per_second() {
+    assert_eq!(ols_tokens_per_second(&[]), None);
+    assert_eq!(ols_tokens_per_second(&[(0.0, 0.0)]), None);
+    // Every point at one instant: a burst, not a rate.
+    assert_eq!(ols_tokens_per_second(&[(0.0, 0.0), (0.0, 9.0)]), None);
+    let rate = ols_tokens_per_second(&[(0.0, 0.0), (1_000_000.0, 25.0)]).unwrap();
+    assert!((rate - 25.0).abs() < 1e-9);
+}
+
+#[test]
+fn a_burst_a_short_span_and_a_thin_segment_all_refuse_to_publish() {
+    let one_delta = replay(&[
+        ("item/started", answer_started("msg_b", "final_answer"), 0),
+        (
+            "item/agentMessage/delta",
+            answer_delta("msg_b", "hi", Some(40)),
+            0,
+        ),
+        (
+            "item/completed",
+            answer_completed("msg_b", "final_answer", "hi"),
+            10_000,
+        ),
+    ]);
+    assert_eq!(one_delta[0].tps, None);
+    assert_eq!(one_delta[0].status, SegmentStatus::Unavailable);
+    assert_eq!(
+        one_delta[0].unavailable_reason,
+        Some(UnavailableReason::InsufficientSamples)
+    );
+
+    // Four samples, but only 300 ms of them.
+    let mut fast = clean_segment("msg_c", 0);
+    for (index, event) in fast.iter_mut().enumerate() {
+        event.2 = index as i64 * 100_000;
+    }
+    let fast = replay(&fast);
+    assert_eq!(fast[0].tps, None);
+    assert_eq!(
+        fast[0].unavailable_reason,
+        Some(UnavailableReason::InsufficientDuration)
+    );
+
+    // Long enough, but only five tokens arrived after the origin sample.
+    let thin = replay(&[
+        (
+            "item/agentMessage/delta",
+            answer_delta("msg_d", "a", Some(10)),
+            0,
+        ),
+        (
+            "item/agentMessage/delta",
+            answer_delta("msg_d", "b", Some(11)),
+            400_000,
+        ),
+        (
+            "item/agentMessage/delta",
+            answer_delta("msg_d", "c", Some(13)),
+            800_000,
+        ),
+        (
+            "item/agentMessage/delta",
+            answer_delta("msg_d", "d", Some(15)),
+            1_200_000,
+        ),
+        (
+            "item/completed",
+            answer_completed("msg_d", "final_answer", "abcd"),
+            1_200_000,
+        ),
+    ]);
+    assert_eq!(thin[0].tps, None);
+    assert_eq!(
+        thin[0].unavailable_reason,
+        Some(UnavailableReason::InsufficientTokens)
+    );
+}
+
+#[test]
+fn a_five_second_silence_inside_an_open_part_stays_in_the_denominator() {
+    // The protocol never said this content part ended, so the quiet stretch is
+    // generation time. The deleted 2-second rule would have discarded it and
+    // roughly tripled the reported rate.
+    let item = "msg_pause";
+    let measurements = replay(&[
+        ("item/started", answer_started(item, "final_answer"), 0),
+        (
+            "item/agentMessage/delta",
+            answer_delta(item, "a", Some(0)),
+            0,
+        ),
+        (
+            "item/agentMessage/delta",
+            answer_delta(item, "b", Some(20)),
+            400_000,
+        ),
+        (
+            "item/agentMessage/delta",
+            answer_delta(item, "c", Some(40)),
+            800_000,
+        ),
+        // five seconds of nothing, same part still open
+        (
+            "item/agentMessage/delta",
+            answer_delta(item, "d", Some(60)),
+            5_800_000,
+        ),
+        (
+            "item/completed",
+            answer_completed(item, "final_answer", "abcd"),
+            5_800_000,
+        ),
+    ]);
+    let tps = measurements[0].tps.unwrap();
+    assert_eq!(measurements[0].duration_ms, 5_800.0);
+    assert!(
+        tps < 20.0,
+        "silence was excluded from the denominator: {tps}"
+    );
+}
+
+#[test]
+fn a_tool_call_ends_the_segment_and_output_after_it_starts_a_new_one() {
+    let mut events = clean_segment("msg_pre", 0);
+    events.pop(); // the tool arrives before this item ever completes
+    events.push(("item/started", tool_started("exec-1"), 2_000_000));
+    events.push((
+        "item/completed",
+        json!({"item": {"id": "exec-1", "type": "commandExecution"}}),
+        20_000_000,
+    ));
+    events.extend(clean_segment("msg_post", 21_000_000));
+    let measurements = replay(&events);
+
+    assert_eq!(
+        measurements.len(),
+        2,
+        "tool time merged two segments into one"
+    );
+    assert_eq!(measurements[0].key.item_id, "msg_pre");
+    assert_eq!(measurements[1].key.item_id, "msg_post");
+    // 18 s of tool execution sits between them and is in neither denominator.
+    assert_eq!(measurements[0].duration_ms, 1_200.0);
+    assert_eq!(measurements[1].duration_ms, 1_200.0);
+    assert!((measurements[1].tps.unwrap() - 50.0).abs() < 1e-9);
+}
+
+#[test]
+fn two_model_responses_in_one_turn_never_share_a_numerator_or_a_denominator() {
+    let mut events = clean_segment("msg_first", 0);
+    events.extend(clean_segment("msg_second", 10_000_000));
+    let measurements = replay(&events);
+    assert_eq!(measurements.len(), 2);
+    for measurement in &measurements {
+        assert_eq!(measurement.exact_tokens_after_first_sample, 60);
+        assert_eq!(measurement.duration_ms, 1_200.0);
+        assert!((measurement.tps.unwrap() - 50.0).abs() < 1e-9);
+    }
+    assert_ne!(measurements[0].key.item_id, measurements[1].key.item_id);
+    assert_ne!(
+        measurements[0].measurement_id,
+        measurements[1].measurement_id
+    );
+}
+
+#[test]
+fn reasoning_and_tool_argument_deltas_contribute_no_visible_answer_tokens() {
+    let baseline = replay(&clean_segment("msg_only", 0));
+    let mut noisy: Vec<(&str, Value, i64)> = vec![
+        (
+            "item/started",
+            json!({"item": {"id": "rs_1", "type": "reasoning"}}),
+            0,
+        ),
+        (
+            "item/reasoning/textDelta",
+            json!({"itemId": "rs_1", "delta": "thinking hard"}),
+            0,
+        ),
+        (
+            "item/completed",
+            json!({"item": {"id": "rs_1", "type": "reasoning"}}),
+            0,
+        ),
+    ];
+    noisy.extend(clean_segment("msg_only", 0));
+    noisy.push((
+        "response.function_call_arguments.delta",
+        json!({"item_id": "call_1", "delta": "{\"path\":\"/tmp\"}"}),
+        2_000_000,
+    ));
+    let measurements = replay(&noisy);
+    let answer = measurements
+        .iter()
+        .find(|measurement| measurement.key.item_id == "msg_only")
+        .expect("the answer segment survives");
+    assert_eq!(answer.tps, baseline[0].tps);
+    assert_eq!(answer.exact_tokens_after_first_sample, 60);
+    assert_eq!(answer.sample_count, baseline[0].sample_count);
+}
+
+#[test]
+fn turn_level_usage_is_never_borrowed_as_segment_usage() {
+    // The turn reported 322 output tokens across two answer segments and a
+    // reasoning item. That number describes none of them, and each segment says
+    // so by name rather than dividing by a denominator it does not own.
+    let item = "msg_scope";
+    let with_turn_usage = |text: &str, at: i64| {
+        (
+            "item/agentMessage/delta",
+            json!({
+                "delta": text,
+                "itemId": item,
+                "turnId": "turn-1",
+                "tokenUsage": {"last": {"outputTokens": 322, "reasoningOutputTokens": 133}}
+            }),
+            at,
+        )
+    };
+    let measurements = replay(&[
+        with_turn_usage("a", 0),
+        with_turn_usage("b", 400_000),
+        with_turn_usage("c", 800_000),
+        with_turn_usage("d", 1_200_000),
+        (
+            "item/completed",
+            answer_completed(item, "final_answer", "abcd"),
+            1_200_000,
+        ),
+    ]);
+    assert_eq!(measurements[0].tps, None);
+    assert_eq!(
+        measurements[0].unavailable_reason,
+        Some(UnavailableReason::UsageScopeMismatch)
+    );
+    assert_eq!(
+        measurements[0].token_count_source,
+        TokenCountSource::Unavailable
+    );
+}
+
+#[test]
+fn text_volume_never_becomes_a_token_count() {
+    // A long answer with no exact token source is unavailable, not estimated.
+    let item = "msg_prose";
+    let long = "a".repeat(4_000);
+    let measurements = replay(&[
+        (
+            "item/agentMessage/delta",
+            answer_delta(item, &long, None),
+            0,
+        ),
+        (
+            "item/agentMessage/delta",
+            answer_delta(item, &long, None),
+            400_000,
+        ),
+        (
+            "item/agentMessage/delta",
+            answer_delta(item, &long, None),
+            800_000,
+        ),
+        (
+            "item/agentMessage/delta",
+            answer_delta(item, &long, None),
+            1_200_000,
+        ),
+        (
+            "item/completed",
+            answer_completed(item, "final_answer", &long),
+            1_200_000,
+        ),
+    ]);
+    assert_eq!(measurements[0].tps, None);
+    assert_eq!(
+        measurements[0].unavailable_reason,
+        Some(UnavailableReason::MissingExactTokenSource)
+    );
+    assert_eq!(measurements[0].exact_tokens_after_first_sample, 0);
+}
+
+#[test]
+fn a_repeat_or_a_regression_in_the_protocol_sequence_disqualifies_the_segment() {
+    let item = "msg_seq";
+    let sequenced = |text: &str, tokens: i64, sequence: i64, at: i64| {
+        (
+            "response.output_text.delta",
+            json!({
+                "delta": text,
+                "item_id": item,
+                "output_index": 0,
+                "content_index": 0,
+                "sequence_number": sequence,
+                "cumulative_output_tokens": tokens
+            }),
+            at,
+        )
+    };
+    let done = (
+        "response.output_text.done",
+        json!({"item_id": item, "type": "message", "output_index": 0, "content_index": 0}),
+        1_600_000,
+    );
+
+    let intact = replay(&[
+        sequenced("a", 0, 1, 0),
+        sequenced("b", 20, 2, 400_000),
+        sequenced("c", 40, 3, 800_000),
+        sequenced("d", 60, 4, 1_200_000),
+        done.clone(),
+    ]);
+    assert!(intact[0].tps.is_some());
+    assert!(intact[0].quality_flags.is_empty());
+
+    // A skipped number is recorded but not fatal: samples carry cumulative
+    // token counts, so a missing delta drops a point from the regression
+    // without changing its slope. Many transports also number every event in
+    // the response, which makes holes between one part's deltas routine.
+    let gap = replay(&[
+        sequenced("a", 0, 1, 0),
+        sequenced("b", 20, 2, 400_000),
+        sequenced("d", 60, 9, 1_200_000),
+        sequenced("e", 80, 10, 1_600_000),
+        done.clone(),
+    ]);
+    let gapped = gap[0].tps.expect("a hole does not disqualify the segment");
+    assert!(gap[0]
+        .quality_flags
+        .contains(&QualityFlag::SequenceGapObserved));
+    // Same slope as the intact series: 50 tok/s. The hole did not inflate it.
+    assert!((gapped - 50.0).abs() < 1e-9, "{gapped}");
+
+    // A repeat adds a later timestamp carrying no new tokens, which flattens
+    // the slope, and a regression breaks the pairing outright. Neither is
+    // recoverable, so the segment publishes nothing.
+    for broken in [
+        vec![
+            sequenced("a", 0, 1, 0),
+            sequenced("b", 20, 2, 400_000),
+            sequenced("b", 20, 2, 800_000),
+            sequenced("c", 40, 3, 1_200_000),
+            done.clone(),
+        ],
+        vec![
+            sequenced("a", 0, 1, 0),
+            sequenced("b", 20, 3, 400_000),
+            sequenced("c", 40, 2, 800_000),
+            sequenced("d", 60, 4, 1_200_000),
+            done.clone(),
+        ],
+    ] {
+        let measurements = replay(&broken);
+        assert_eq!(measurements[0].tps, None);
+        assert_eq!(
+            measurements[0].unavailable_reason,
+            Some(UnavailableReason::SequenceGap)
+        );
+        assert!(measurements[0]
+            .quality_flags
+            .contains(&QualityFlag::OutOfOrderEvent));
+    }
+}
+#[test]
+fn batched_arrivals_are_flagged_and_do_not_count_as_distinct_samples() {
+    let item = "msg_batch";
+    let measurements = replay(&[
+        (
+            "item/agentMessage/delta",
+            answer_delta(item, "a", Some(0)),
+            0,
+        ),
+        (
+            "item/agentMessage/delta",
+            answer_delta(item, "b", Some(20)),
+            900_000,
+        ),
+        (
+            "item/agentMessage/delta",
+            answer_delta(item, "c", Some(40)),
+            900_000,
+        ),
+        (
+            "item/completed",
+            answer_completed(item, "final_answer", "abc"),
+            900_000,
+        ),
+    ]);
+    assert!(measurements[0]
+        .quality_flags
+        .contains(&QualityFlag::BatchedDelivery));
+    assert_eq!(measurements[0].sample_count, 3);
+    // Three arrivals but only two instants: not four distinct samples.
+    assert_eq!(
+        measurements[0].unavailable_reason,
+        Some(UnavailableReason::InsufficientSamples)
+    );
+}
+
+#[test]
+fn an_interrupted_segment_is_partial_and_never_a_completed_headline() {
+    let mut events = clean_segment("msg_cut", 0);
+    events.pop(); // no item/completed: the stream was cut
+    events.push(("turn/interrupted", json!({}), 1_300_000));
+    let measurements = replay(&events);
+    assert_eq!(measurements[0].status, SegmentStatus::Partial);
+    assert!(
+        measurements[0].tps.is_some(),
+        "partial evidence is still evidence"
+    );
+    assert!(
+        !measurements[0].is_publishable(),
+        "a partial segment must stay out of headline and history"
+    );
+}
+
+#[test]
+fn replaying_one_frozen_fixture_produces_an_identical_measurement() {
+    let mut events = clean_segment("msg_replay", 0);
+    events.extend(clean_segment("msg_replay_2", 9_000_000));
+    events.push(("turn/completed", json!({}), 11_000_000));
+    assert_eq!(replay(&events), replay(&events));
+}
+
+#[test]
+fn the_normalizer_maps_lifecycle_events_and_ignores_what_it_cannot_identify() {
+    assert!(matches!(
+        protocol_event("item/started", &answer_started("msg_x", "commentary")),
+        Some(ProtocolEvent::TextItemStarted { .. })
+    ));
+    assert!(matches!(
+        protocol_event(
+            "item/completed",
+            &answer_completed("msg_x", "final_answer", "hi")
+        ),
+        Some(ProtocolEvent::TextSegmentDone { .. })
+    ));
+    assert!(matches!(
+        protocol_event("item/started", &tool_started("exec-9")),
+        Some(ProtocolEvent::NonTextItem { .. })
+    ));
+    assert!(matches!(
+        protocol_event("turn/failed", &json!({})),
+        Some(ProtocolEvent::ResponseTerminal { interrupted: true })
+    ));
+    // An empty delta delivers nothing, and a delta without identity cannot be
+    // attributed to a segment: neither may open or extend a measurement.
+    assert!(protocol_event(
+        "item/agentMessage/delta",
+        &answer_delta("msg_x", "", Some(1))
+    )
+    .is_none());
+    assert!(protocol_event("item/agentMessage/delta", &json!({"delta": "hi"})).is_none());
+    assert!(protocol_event("thread/tokenUsage/updated", &json!({})).is_none());
+}
+
+/// A real captured turn — reasoning, an answer, shell and MCP tool calls, more
+/// reasoning, and a second answer — replayed through the same normalizer the
+/// pump uses. This is the agentic shape the turn-wide estimate handled worst.
+///
+/// Deltas are length-preserved placeholders and item payloads are trimmed to the
+/// fields segmentation reads; nothing about the identity, ordering, or arrival
+/// timing of the stream is altered.
+const REAL_TURN_FIXTURE: &str = include_str!("fixtures/codex_turn_answer_tools_answer.json");
+
+#[test]
+fn a_captured_codex_turn_segments_into_its_own_answers_and_publishes_no_rate() {
+    let events: Vec<Value> = serde_json::from_str(REAL_TURN_FIXTURE).unwrap();
+    let mut tracker = TurnSegmentTracker::new(
+        "sess",
+        "01a00d56-6d99-78b0-86db-39cb7ba3492a",
+        Some("synth-cloud".into()),
+        None,
+    );
+    for event in &events {
+        let method = event["method"].as_str().unwrap();
+        let at_us = event["receivedAtUs"].as_i64().unwrap();
+        if let Some(normalized) = protocol_event(method, &event["params"]) {
+            tracker.observe(normalized, at_us);
+        }
+    }
+    tracker.finish();
+    let measurements = tracker.measurements();
+
+    // The turn produced two answer items. Reasoning, the user message, and the
+    // tool item are not answer segments and produce nothing.
+    assert_eq!(measurements.len(), 2, "{measurements:#?}");
+    assert!(measurements
+        .iter()
+        .all(|measurement| measurement.key.item_id.starts_with("msg_")));
+    assert!(measurements
+        .iter()
+        .all(|measurement| measurement.phase == SegmentPhase::Commentary));
+    // Eighteen seconds of shell and MCP execution separate them and sit in
+    // neither denominator; a turn-wide figure would have spanned both answers.
+    let between =
+        measurements[1].samples[0].at_us - (measurements[0].samples.last().unwrap().at_us);
+    assert!(
+        between > 8_000_000,
+        "tool time between segments: {between} us"
+    );
+    assert!(measurements
+        .iter()
+        .all(|measurement| measurement.duration_ms < 2_000.0));
+    assert!(measurements
+        .iter()
+        .all(|measurement| measurement.sample_count > 4));
+
+    // This provider reports no per-item token usage, so no rate is published —
+    // the 545–643 tok/s figures the turn-wide estimate used to produce are gone,
+    // and nothing stands in for the tokens that were never reported.
+    for measurement in measurements {
+        assert_eq!(measurement.tps, None);
+        assert_eq!(measurement.status, SegmentStatus::Unavailable);
+        assert_eq!(
+            measurement.unavailable_reason,
+            Some(UnavailableReason::MissingExactTokenSource)
+        );
+        assert_eq!(measurement.exact_tokens_after_first_sample, 0);
+        // The evidence is still complete enough to audit the refusal.
+        assert!(measurement.duration_ms > 0.0);
+        assert_eq!(measurement.samples.len(), measurement.sample_count);
+    }
+}
+
+/// The same fixture with the provider's exact per-item counts supplied: the
+/// pipeline that refuses above publishes a rate the moment the tokens exist,
+/// and it comes from that one segment's samples.
+#[test]
+fn the_same_captured_turn_publishes_a_rate_once_exact_tokens_are_reported() {
+    let mut events: Vec<Value> = serde_json::from_str(REAL_TURN_FIXTURE).unwrap();
+    let mut running: std::collections::HashMap<String, i64> = std::collections::HashMap::new();
+    for event in &mut events {
+        if event["method"] != "item/agentMessage/delta" {
+            continue;
+        }
+        let item = event["params"]["itemId"].as_str().unwrap().to_owned();
+        let tokens = running.entry(item).or_insert(0);
+        *tokens += 1;
+        event["params"]["cumulativeOutputTokens"] = json!(*tokens);
+    }
+    let mut tracker = TurnSegmentTracker::new("sess", "turn", Some("synth-cloud".into()), None);
+    for event in &events {
+        if let Some(normalized) =
+            protocol_event(event["method"].as_str().unwrap(), &event["params"])
+        {
+            tracker.observe(normalized, event["receivedAtUs"].as_i64().unwrap());
+        }
+    }
+    tracker.finish();
+    let measurements = tracker.measurements();
+    assert_eq!(measurements.len(), 2);
+    for measurement in measurements {
+        let tps = measurement
+            .tps
+            .expect("exact tokens make the rate publishable");
+        assert!(tps.is_finite() && tps > 0.0, "{tps}");
+        assert_eq!(measurement.status, SegmentStatus::Completed);
+        assert_eq!(
+            measurement.token_count_source,
+            TokenCountSource::ProviderItemUsage
+        );
+        // Tokens and time share one scope: the rate is inside the bounds the
+        // segment's own first and last samples allow.
+        let seconds = measurement.duration_ms / 1_000.0;
+        let mean = measurement.exact_tokens_after_first_sample as f64 / seconds;
+        assert!(
+            tps > mean / 4.0 && tps < mean * 4.0,
+            "regressed {tps} is not of the same order as the segment mean {mean}"
+        );
+    }
+}
+
+/// The wired path: pump events in, a persisted measurement out.
+///
+/// Exercises `track_performance_event` itself — the same call the stdout pump
+/// makes — so the tracker, the token-authority checks, persistence, and the
+/// turn ledger are all covered by one replay rather than trusted separately.
+#[tokio::test]
+async fn the_pump_path_persists_one_measurement_per_segment_with_its_samples() {
+    let temp = tempdir().unwrap();
+    let core = Arc::new(CoreRuntime::open(temp.path().join("core")).unwrap());
+    let persistence = SessionPersistence::from_core(Some(core.clone()));
+    let receipts = credential_broker::ReceiptStore::new();
+    let session = "gs-pump";
+    let trackers: PerformanceTrackers = Arc::default();
+    trackers.lock().await.insert(
+        session.to_owned(),
+        tracker_for(session, "synth-cloud", "turn-gs"),
+    );
+
+    let item = "msg_pump";
+    let mut published = Vec::new();
+    let mut events = clean_segment(item, 0);
+    events.push(("turn/completed", json!({}), 2_000_000));
+    for (method, params, at_us) in &events {
+        published.extend(
+            track_performance_event(
+                &persistence,
+                &trackers,
+                &receipts,
+                session,
+                method,
+                params,
+                *at_us,
+            )
+            .await,
+        );
+    }
+    assert_eq!(published.len(), 1);
+    assert!((published[0].tps.unwrap() - 50.0).abs() < 1e-9);
+
+    let stored = GenerationSpeedRepository::new(core.storage().database().clone())
+        .for_turn(session.into(), "turn-gs".into())
+        .await
+        .unwrap();
+    let [row] = stored.as_slice() else {
+        panic!("expected one persisted measurement, got {}", stored.len());
+    };
+    assert_eq!(row.item_id, item);
+    assert_eq!(row.status, "completed");
+    assert_eq!(row.phase, "final_answer");
+    assert_eq!(row.token_count_source, "provider_item_usage");
+    assert_eq!(row.clock_source, "workshop_monotonic_receive");
+    assert_eq!(row.unavailable_reason, None);
+    assert_eq!(row.exact_tokens_after_first_sample, 60);
+
+    // The evidence is stored, not just the scalar: the row recomputes itself.
+    let samples: Vec<Value> = serde_json::from_str(&row.samples_json).unwrap();
+    assert_eq!(samples.len(), 4);
+    let points: Vec<(f64, f64)> = samples
+        .iter()
+        .map(|sample| {
+            (
+                sample["atUs"].as_f64().unwrap(),
+                sample["cumulativeTokens"].as_f64().unwrap(),
+            )
+        })
+        .collect();
+    let recomputed = ols_tokens_per_second(&points).unwrap();
+    assert!((recomputed - row.tps.unwrap()).abs() < 1e-9);
+
+    // The turn's ledger row carries that same segment's rate, labelled as a
+    // segment measurement — not a turn-wide ratio wearing the old name.
+    let totals = usage_totals(&core).await;
+    assert_eq!(totals.requests, 1);
+    assert!((totals.decode_tps_p50.unwrap() - 50.0).abs() < 1e-9);
+}
+
+/// The same replay without exact tokens: nothing is published, the refusal is
+/// recorded with its reason, and the ledger carries no rate at all.
+#[tokio::test]
+async fn a_segment_without_exact_tokens_records_its_refusal_and_leaves_the_ledger_rateless() {
+    let temp = tempdir().unwrap();
+    let core = Arc::new(CoreRuntime::open(temp.path().join("core")).unwrap());
+    let persistence = SessionPersistence::from_core(Some(core.clone()));
+    let receipts = credential_broker::ReceiptStore::new();
+    let session = "gs-pump-refuses";
+    let trackers: PerformanceTrackers = Arc::default();
+    trackers.lock().await.insert(
+        session.to_owned(),
+        tracker_for(session, "synth-cloud", "turn-gs"),
+    );
+
+    let item = "msg_refuse";
+    let events: Vec<(&str, Value, i64)> = vec![
+        ("item/started", answer_started(item, "final_answer"), 0),
+        ("item/agentMessage/delta", answer_delta(item, "a", None), 0),
+        (
+            "item/agentMessage/delta",
+            answer_delta(item, "b", None),
+            400_000,
+        ),
+        (
+            "item/agentMessage/delta",
+            answer_delta(item, "c", None),
+            800_000,
+        ),
+        (
+            "item/agentMessage/delta",
+            answer_delta(item, "d", None),
+            1_200_000,
+        ),
+        (
+            "item/completed",
+            answer_completed(item, "final_answer", "abcd"),
+            1_200_000,
+        ),
+        ("turn/completed", json!({}), 2_000_000),
+    ];
+    for (method, params, at_us) in &events {
+        track_performance_event(
+            &persistence,
+            &trackers,
+            &receipts,
+            session,
+            method,
+            params,
+            *at_us,
+        )
+        .await;
+    }
+
+    let stored = GenerationSpeedRepository::new(core.storage().database().clone())
+        .for_turn(session.into(), "turn-gs".into())
+        .await
+        .unwrap();
+    let [row] = stored.as_slice() else {
+        panic!("expected one persisted measurement, got {}", stored.len());
+    };
+    assert_eq!(row.tps, None);
+    assert_eq!(row.status, "unavailable");
+    assert_eq!(
+        row.unavailable_reason.as_deref(),
+        Some("missing_exact_token_source")
+    );
+    assert_eq!(row.sample_count, 4, "the timing evidence is still kept");
+
+    // The old formula would have divided 200 turn-level output tokens by the
+    // 1.2 s it kept and published ~167 tok/s here.
+    let totals = usage_totals(&core).await;
+    assert_eq!(totals.requests, 1);
+    assert_eq!(totals.decode_tps_p50, None);
+    assert!(
+        totals.end_to_end_tps_p50.is_some(),
+        "latency is still tracked"
+    );
 }

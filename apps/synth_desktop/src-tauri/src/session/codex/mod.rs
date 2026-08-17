@@ -1,5 +1,6 @@
 //! Codex SessionKind transport (app-server).
 mod event_pump;
+mod generation_speed;
 mod home;
 mod manager;
 mod proto;
