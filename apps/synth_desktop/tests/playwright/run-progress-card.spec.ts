@@ -268,6 +268,28 @@ test("the dialog opens over the card, traps focus, and returns focus on Escape",
 	await expect(expand).toBeFocused();
 });
 
+test("modal and card agree on phase, progress, usage, and status", async ({ page }) => {
+	await seed(page);
+	const cardPhase = (await page.getByTestId(`run-progress-phase-${RUN_ID}`).innerText()).trim();
+	const cardWork = (await page.getByTestId(`run-progress-work-${RUN_ID}`).innerText()).trim();
+	const cardUsage = (await page.getByTestId(`run-progress-usage-${RUN_ID}`).innerText()).trim();
+	const cardStatus = (await page.getByTestId(`run-progress-status-${RUN_ID}`).innerText()).trim();
+	await page.getByTestId(`run-progress-expand-${RUN_ID}`).click();
+	await expect(page.getByTestId(`run-progress-dialog-phase-${RUN_ID}`)).toContainText(cardPhase.split("\n")[0] ?? cardPhase);
+	await expect(page.getByTestId(`run-progress-dialog-work-${RUN_ID}`)).toContainText(cardWork);
+	await expect(page.getByTestId(`run-progress-dialog-status-${RUN_ID}`)).toHaveText(cardStatus);
+	await expect(page.getByTestId(`run-progress-usage-detail-${RUN_ID}`)).toContainText(cardUsage.includes("unavailable") ? "Unavailable" : "$0.40");
+});
+
+test("missing token fields in the dialog read Unavailable, never 0", async ({ page }) => {
+	await seed(page, { withCost: false });
+	await page.getByTestId(`run-progress-expand-${RUN_ID}`).click();
+	const usage = page.getByTestId(`run-progress-usage-detail-${RUN_ID}`);
+	await expect(usage).toContainText("Unavailable");
+	await expect(usage).not.toContainText("$0.00");
+	await expect(page.getByTestId(`run-progress-usage-${RUN_ID}`)).not.toHaveText(/^0$/);
+});
+
 test("closing and reopening the dialog neither replays history nor resets the run", async ({ page }) => {
 	await seed(page);
 	await expect(page.getByTestId(`run-progress-work-${RUN_ID}`)).toHaveText("8 / 100 rollouts");
