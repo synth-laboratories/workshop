@@ -163,13 +163,19 @@ fn run_cli(python: &Path, args: &[&str]) -> Result<Value> {
 }
 
 fn decode_cli_output(success: bool, status: &str, stdout: &[u8], stderr: &[u8]) -> Result<Value> {
-    let stdout = bounded_cli_text(stdout);
-    let stderr = bounded_cli_text(stderr);
-    let parsed: Value = serde_json::from_str(stdout.trim()).map_err(|error| {
+    // Parse the complete producer payload. Bounding before parsing turns every
+    // valid catalog larger than the diagnostic limit into fabricated malformed
+    // JSON (the Craftax catalog is about 12 KiB).
+    let stdout_text = String::from_utf8_lossy(stdout);
+    let parsed: Value = serde_json::from_str(stdout_text.trim()).map_err(|error| {
+        let stdout = bounded_cli_text(stdout);
+        let stderr = bounded_cli_text(stderr);
         anyhow!(
             "eval_cli_unparseable_stdout: status={status}; parse={error}; stdout={stdout:?}; stderr={stderr:?}"
         )
     })?;
+    let stdout = bounded_cli_text(stdout);
+    let stderr = bounded_cli_text(stderr);
     if parsed.get("ready").and_then(Value::as_bool) == Some(false) {
         bail!(
             "eval_cli_not_ready: valid readiness report from {status}; stdout={stdout:?}; stderr={stderr:?}"
@@ -1222,6 +1228,23 @@ mod tests {
             .to_string();
         assert!(malformed.contains("eval_cli_unparseable_stdout"));
         assert!(malformed.contains("\"not-json\""));
+    }
+
+    #[test]
+    fn eval_cli_parses_valid_payloads_larger_than_the_diagnostic_limit() {
+        let payload = json!({
+            "recipes": [{
+                "id": EVAL_CRAFTAX_SMOKE_RECIPE,
+                "description": "x".repeat(12_000),
+                "limits": { "trials": 2 }
+            }]
+        });
+        let encoded = serde_json::to_vec(&payload).unwrap();
+        assert!(encoded.len() > 2_000);
+        assert_eq!(
+            decode_cli_output(true, "exit status: 0", &encoded, b"").unwrap(),
+            payload
+        );
     }
 
     #[test]
