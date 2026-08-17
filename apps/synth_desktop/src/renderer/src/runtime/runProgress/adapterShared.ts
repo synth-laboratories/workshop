@@ -184,7 +184,13 @@ function visualRef(run: RunRecord): string | undefined {
 }
 
 function titleOf(run: RunRecord, kind: RunKind): string {
-	const workflow = kind === "gepa" ? "GEPA" : kind === "sft" ? "SFT" : "Evaluation";
+	const workflow = kind === "gepa"
+		? "GEPA"
+		: kind === "sft"
+			? "SFT"
+			: kind === "environment"
+				? "Environment"
+				: "Evaluation";
 	const subject = typeof run.objective === "string" && run.objective.length > 0 ? run.objective : run.id;
 	return `${workflow} · ${subject}`;
 }
@@ -232,6 +238,7 @@ export function baseProjection(input: AdapterInput, kind: RunKind): RunProgressP
 		details: [],
 		fullVisualRef: visualRef(input.run),
 		cursorSeq: input.cursorSeq,
+		terminalCursor: input.cursorSeq,
 		stale: input.stale
 	};
 }

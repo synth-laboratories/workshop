@@ -21,12 +21,13 @@
 export const RUN_PROGRESS_SCHEMA_VERSION = "run_progress.v1";
 
 /** Workflows that share the projection. `go-ex` and `dag` runs are not offered in chat. */
-export type RunKind = "eval" | "gepa" | "sft";
+export type RunKind = "eval" | "gepa" | "sft" | "environment";
 
 export type RunProgressStatus =
 	| "queued"
 	| "running"
 	| "paused"
+	| "interrupted"
 	| "completed"
 	| "failed"
 	| "cancelled";
@@ -180,6 +181,15 @@ export type RunProgressProjection = {
 	fullVisualRef?: string;
 	/** Durable event sequence this projection was computed at. */
 	cursorSeq: number;
+	/**
+	 * Frozen at terminal transition (O-5). Live runs equal `cursorSeq`.
+	 * Authoritative usage/result reduce only through this cursor.
+	 */
+	terminalCursor: number;
+	/** Newest post-terminal enrichment sequence, when an enrichment lane exists. */
+	enrichmentCursor?: number;
+	/** Count of enrichment-lane events withheld from the authoritative projection. */
+	enrichmentEventCount?: number;
 	/** The event history is known-incomplete; counts below are a floor, not a total. */
 	stale: boolean;
 };
@@ -205,7 +215,7 @@ export type RunProgressTranscriptItem = {
 	createdAt: string;
 };
 
-export const RUN_KINDS: readonly RunKind[] = ["eval", "gepa", "sft"];
+export const RUN_KINDS: readonly RunKind[] = ["eval", "gepa", "sft", "environment"];
 
 export function isRunKind(value: unknown): value is RunKind {
 	return typeof value === "string" && (RUN_KINDS as readonly string[]).includes(value);
@@ -236,6 +246,7 @@ export function normalizeRunStatus(status: string | null | undefined): RunProgre
 	if (value === "cancelled" || value === "canceled") return "cancelled";
 	if (value === "completed" || value === "succeeded") return "completed";
 	if (value === "paused") return "paused";
+	if (value === "interrupted" || value === "disconnected" || value === "stalled") return "interrupted";
 	if (value === "queued" || value === "created" || value === "pending" || value === "prepared") {
 		return "queued";
 	}

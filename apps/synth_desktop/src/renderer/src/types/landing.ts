@@ -124,7 +124,7 @@ export type LocalActivityLine = {
 	 */
 	optimizerRunId?: string;
 	/** The run's workflow, when the tool result declared one chat has a card for. */
-	runKind?: "eval" | "gepa" | "sft";
+	runKind?: "eval" | "gepa" | "sft" | "environment";
 	/**
 	 * Optional file path for read/write lines — drives Poolside-style file-type icons
 	 * (.md, .rs, .ts, .toml, …).

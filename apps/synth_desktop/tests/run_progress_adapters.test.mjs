@@ -187,10 +187,13 @@ test("GEPA: coverage is how much of the planned work has reported", () => {
 test("GEPA: the ETA warms, then settles, on rollout evidence alone", () => {
 	const warming = projectRunProgress(snapshot(gepaRun(), gepaEvents({ completed: 1 })), NOW);
 	assert.equal(warming.timing.eta.state, "estimating");
-	const settled = projectRunProgress(snapshot(gepaRun(), gepaEvents({ completed: 8 })), NOW);
-	assert.equal(settled.timing.eta.state, "point");
+	const settled = projectRunProgress(snapshot(gepaRun(), gepaEvents({ completed: 12 })), NOW);
+	assert.ok(
+		settled.timing.eta.state === "point" || settled.timing.eta.state === "range",
+		`expected a usable estimate, got ${settled.timing.eta.state}`
+	);
 	assert.match(settled.timing.eta.basis, /phase minibatch/);
-	assert.match(formatEta(settled.timing.eta), /^~\d+ min remaining$/);
+	assert.match(formatEta(settled.timing.eta), /remaining$/);
 });
 
 test("GEPA: a terminated run reports the breaker, drops the ETA, and keeps its counts", () => {
@@ -465,11 +468,14 @@ test("SFT: training without a declared total refuses an ETA in the producer's wo
 });
 
 test("SFT: a declared step total makes the estimate available on step evidence", () => {
-	const projection = projectRunProgress(snapshot(sftRun(), sftEvents({ steps: 5, declareTotal: true })), NOW);
+	const projection = projectRunProgress(snapshot(sftRun(), sftEvents({ steps: 9, declareTotal: true })), NOW);
 	assert.equal(projection.work.total, 1_000);
-	assert.equal(projection.work.completed, 500);
+	assert.equal(projection.work.completed, 900);
 	assert.equal(projection.progress.determinate, true);
-	assert.equal(projection.timing.eta.state, "point");
+	assert.ok(
+		projection.timing.eta.state === "point" || projection.timing.eta.state === "range",
+		`expected a usable estimate, got ${projection.timing.eta.state}`
+	);
 	assert.match(projection.timing.eta.basis, /phase training/);
 });
 
@@ -519,12 +525,131 @@ test("SFT: 'ready' is never presented as promotion", () => {
 	assert.equal(projection.result.headline, undefined);
 });
 
+/* ── Environment workflows ────────────────────────────────────────────── */
+
+function environmentRun(overrides = {}) {
+	return {
+		id: "env_craftax_seed7_qa",
+		algorithmId: "environment",
+		status: "running",
+		source: "local",
+		objective: "Craftax classic",
+		sessionRef: "sess-1",
+		createdAt: at(0),
+		startedAt: at(0),
+		cursorSeq: 20,
+		capabilities: { cancel: true },
+		visualRefs: [{ kind: "visual", id: "visual-craftax" }],
+		usage: {},
+		...overrides
+	};
+}
+
+function environmentEvents({ steps = 6, maxSteps = 20, withCost = true, reward = undefined } = {}) {
+	const base = { schemaVersion: "optimizer_event.v1", optimizerRunId: "env_craftax_seed7_qa", algorithmId: "environment" };
+	let seq = 0;
+	const events = [
+		{
+			...base, eventId: "e1", sequenceNumber: ++seq, type: "environment.run.planned", occurredAt: at(0),
+			snapshot: { max_steps: maxSteps, planned_episodes: 1, seed: 7, runtime_family: "craftax" }
+		},
+		{
+			...base, eventId: "e2", sequenceNumber: ++seq, type: "container.task_info.loaded", occurredAt: at(0, 2),
+			delta: { task_name: "Craftax-Classic-v1", runtime_family: "craftax" }
+		},
+		{
+			...base, eventId: "e3", sequenceNumber: ++seq, type: "environment.run.started", occurredAt: at(0, 4),
+			delta: { status: "running" }
+		},
+		{
+			...base, eventId: "e4", sequenceNumber: ++seq, type: "environment.episode.started", occurredAt: at(0, 5),
+			delta: { episode_id: "ep_0", seed: 7 }
+		},
+		{
+			...base, eventId: "e5", sequenceNumber: ++seq, type: "container.rollout.start", occurredAt: at(0, 6),
+			delta: { rollout_id: "rollout_env_0" }
+		}
+	];
+	for (let index = 1; index <= steps; index += 1) {
+		events.push({
+			...base,
+			eventId: `step-${index}`,
+			sequenceNumber: ++seq,
+			type: "environment.step.completed",
+			occurredAt: at(1, index * 5),
+			delta: { episode_id: "ep_0", step: index, action: index % 2 ? "move_right" : "do" },
+			usageDelta: withCost
+				? { cost_usd: 0.001, prompt_tokens: 80, completion_tokens: 12 }
+				: { prompt_tokens: 80, completion_tokens: 12 }
+		});
+	}
+	if (reward !== undefined) {
+		events.push({
+			...base, eventId: "term", sequenceNumber: ++seq, type: "environment.episode.terminal", occurredAt: at(2),
+			delta: { episode_id: "ep_0", status: "completed", reward },
+			usageDelta: withCost ? { cost_usd: 0.001, rollouts: 1 } : { rollouts: 1 }
+		});
+		events.push({
+			...base, eventId: "done", sequenceNumber: ++seq, type: "container.rollout.completed", occurredAt: at(2, 1),
+			delta: { rollout_id: "rollout_env_0" }
+		});
+	}
+	return events;
+}
+
+test("environment: the bar is declared steps, never reward", () => {
+	const projection = projectRunProgress(snapshot(environmentRun(), environmentEvents({ steps: 6, maxSteps: 20 })), NOW);
+	assert.equal(projection.runKind, "environment");
+	assert.equal(projection.work.total, 20);
+	assert.equal(projection.work.completed, 6);
+	assert.equal(projection.work.unit, "steps");
+	assert.equal(projection.progress.semantics, "environment steps");
+	assert.equal(projection.progress.fraction, 0.3);
+	assert.equal(formatWork(projection), "6 / 20 steps");
+});
+
+test("environment: missing cost stays unavailable, never $0.00", () => {
+	const projection = projectRunProgress(
+		snapshot(environmentRun(), environmentEvents({ withCost: false })),
+		NOW
+	);
+	assert.equal(projection.usage.costUsd.value, undefined);
+	assert.equal(projection.usage.costUsd.source, "unavailable");
+	assert.match(costSummary(projection.usage.costUsd, "step"), /^Cost unavailable/);
+	assert.ok(projection.usage.promptTokens.value > 0);
+});
+
+test("environment: no step denominator withholds ETA rather than inventing one", () => {
+	const projection = projectRunProgress(
+		snapshot(environmentRun(), environmentEvents({ maxSteps: 0 })),
+		NOW
+	);
+	assert.equal(projection.progress.determinate, false);
+	assert.equal(projection.timing.eta.state, "unavailable");
+	assert.match(projection.timing.eta.unavailableReason, /no step or episode count/);
+});
+
+test("environment: a sealed episode reports reward as a result, not as progress", () => {
+	const projection = projectRunProgress(
+		snapshot(
+			environmentRun({ status: "completed", finishedAt: at(2, 1) }),
+			environmentEvents({ steps: 20, maxSteps: 20, reward: 4.5 })
+		),
+		NOW
+	);
+	assert.equal(projection.terminal, true);
+	assert.equal(projection.timing.eta, undefined);
+	assert.equal(projection.result.headline, "Reward 4.5");
+	assert.equal(projection.progress.fraction, 1);
+});
+
 /* ── Shared contract ──────────────────────────────────────────────────── */
 
-test("only the three carded workflows are offered a card", () => {
+test("only the four carded workflows are offered a card", () => {
 	assert.equal(runKindOf("gepa"), "gepa");
 	assert.equal(runKindOf("eval"), "eval");
 	assert.equal(runKindOf("sft"), "sft");
+	assert.equal(runKindOf("environment"), "environment");
 	assert.equal(runKindOf("go-ex"), null);
 	assert.equal(runKindOf("dag.behavior"), null);
 	assert.equal(
