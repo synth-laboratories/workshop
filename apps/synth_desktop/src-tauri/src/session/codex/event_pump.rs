@@ -214,6 +214,14 @@ async fn read_stdout<R: tauri::Runtime>(
         if final_answer {
             crate::recovery::crash_checkpoint(crate::recovery::checkpoints::BEFORE_FINAL_MESSAGE);
         }
+        if (final_answer || method == "turn/completed") && final_answer_is_incomplete(&params) {
+            if let Some(object) = params.as_object_mut() {
+                object.insert("incomplete".into(), json!(true));
+                if let Some(item) = object.get_mut("item").and_then(Value::as_object_mut) {
+                    item.insert("incomplete".into(), json!(true));
+                }
+            }
+        }
         if is_context_compaction_notification(&method, &params) {
             if let Some(source) = persistence
                 .pending_compact_sources
@@ -583,6 +591,40 @@ fn is_final_agent_message(method: &str, params: &Value) -> bool {
         && matches!(phase.as_deref(), Some("final_answer"))
 }
 
+/// Detect truncated/incomplete finals from finish/stop reason or incomplete_details.
+/// The detectable EOF subset lands now; an upstream finish-reason field enriches it.
+fn final_answer_is_incomplete(params: &Value) -> bool {
+    let item = params.get("item").unwrap_or(params);
+    if item.get("incomplete_details").is_some()
+        || params.get("incomplete_details").is_some()
+        || item.get("incomplete").and_then(Value::as_bool) == Some(true)
+        || params.get("incomplete").and_then(Value::as_bool) == Some(true)
+    {
+        return true;
+    }
+    let reason = item
+        .get("finish_reason")
+        .or_else(|| item.get("finishReason"))
+        .or_else(|| item.get("stop_reason"))
+        .or_else(|| item.get("stopReason"))
+        .or_else(|| params.get("finish_reason"))
+        .or_else(|| params.get("finishReason"))
+        .or_else(|| params.get("status"))
+        .and_then(Value::as_str)
+        .map(str::to_ascii_lowercase);
+    matches!(
+        reason.as_deref(),
+        Some(
+            "length"
+                | "max_tokens"
+                | "max_output_tokens"
+                | "incomplete"
+                | "truncated"
+                | "content_filter"
+        )
+    )
+}
+
 async fn fail_malformed_approval<R: tauri::Runtime>(
     app: &AppHandle<R>,
     session_id: &str,
@@ -714,6 +756,37 @@ mod terminal_message_tests {
             }
         });
         assert!(!is_final_agent_message("item/completed", &commentary));
+    }
+
+    #[test]
+    fn truncated_final_answers_are_classified_incomplete() {
+        assert!(final_answer_is_incomplete(&json!({
+            "item": {
+                "type": "agentMessage",
+                "phase": "final_answer",
+                "finish_reason": "length",
+                "text": "partial"
+            }
+        })));
+        assert!(final_answer_is_incomplete(&json!({
+            "item": {
+                "type": "agentMessage",
+                "phase": "final_answer",
+                "incomplete_details": {"reason": "max_tokens"}
+            }
+        })));
+        assert!(final_answer_is_incomplete(&json!({
+            "finishReason": "max_output_tokens",
+            "item": {"type": "agentMessage", "phase": "final_answer"}
+        })));
+        assert!(!final_answer_is_incomplete(&json!({
+            "item": {
+                "type": "agentMessage",
+                "phase": "final_answer",
+                "finish_reason": "stop",
+                "text": "complete"
+            }
+        })));
     }
 }
 

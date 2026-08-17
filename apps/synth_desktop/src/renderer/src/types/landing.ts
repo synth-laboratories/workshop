@@ -31,6 +31,8 @@ export type ChatMessage = {
 	body: string;
 	at: string;
 	images?: Array<{ path: string; name: string; previewUrl: string }>;
+	/** Truncated provider final; render as "Incomplete answer". */
+	incomplete?: boolean;
 };
 
 /**

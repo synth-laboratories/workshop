@@ -29,6 +29,7 @@ type Props = {
 	warmingUp?: boolean;
 	onStop?: () => void;
 	onAdvanced?: () => void;
+	onContinueIncomplete?: (messageId: string) => void;
 	activityMode?: ToolActivityMode;
 	onActivityModeChange?: (mode: ToolActivityMode) => void;
 	outputsOpen?: boolean;
@@ -65,7 +66,17 @@ export function outputRuntimeIds(chat: LocalChat): string[] {
 export function OutputsPanel({ chat, openArtifactId, onOpenArtifact, openContainerId = null, onOpenContainer }: Pick<Props, "chat" | "openArtifactId" | "onOpenArtifact" | "openContainerId" | "onOpenContainer">) {
 	const artifacts = chat.artifacts ?? [];
 	const subagents = artifacts.filter((artifact) => artifact.templateId === "synth.subagents.v1");
-	const visuals = artifacts.filter((artifact) => artifact.templateId !== "synth.subagents.v1");
+	const experiments = artifacts.filter((artifact) =>
+		artifact.templateId === "synth.eval_campaign.v1" ||
+		artifact.templateId === "synth.optimizer_run.v1" ||
+		artifact.templateId === "synth.experiment.v1"
+	);
+	const visuals = artifacts.filter((artifact) =>
+		artifact.templateId !== "synth.subagents.v1" &&
+		artifact.templateId !== "synth.eval_campaign.v1" &&
+		artifact.templateId !== "synth.optimizer_run.v1" &&
+		artifact.templateId !== "synth.experiment.v1"
+	);
 	const containerIds = outputContainerIds(chat);
 	const runtimeIds = outputRuntimeIds(chat);
 	const hasResources = containerIds.length > 0 || runtimeIds.length > 0 || artifacts.length > 0;
@@ -87,6 +98,12 @@ export function OutputsPanel({ chat, openArtifactId, onOpenArtifact, openContain
 				<span><strong>Recipe-owned local runtime</strong><code>{id}</code></span>
 			</div>
 		))}</section> : null}
+		{experiments.length > 0 ? <section className="experiments-rail" data-testid="experiments-rail"><h3>Experiments</h3>{experiments.map((artifact) => {
+			const active = openArtifactId === artifact.id;
+			return <button key={artifact.id} type="button" className={`resource-shelf-row${active ? " active" : ""}`} onClick={() => onOpenArtifact(artifact.id)} title={active ? `Hide ${artifact.title}` : `Show ${artifact.title}`} aria-pressed={active} aria-label={active ? `Hide experiment ${artifact.title}` : `Show experiment ${artifact.title}`} data-testid={`experiment-row-${artifact.id}`}>
+				<span className="resource-shelf-icon" aria-hidden>▣</span><span><strong>{artifact.title}</strong><code>{artifact.templateId ?? artifact.kind}</code></span><span aria-hidden>›</span>
+			</button>;
+		})}</section> : null}
 		{subagents.length > 0 ? <section className="subagents-rail" data-testid="subagents-rail"><h3>Subagents</h3>{subagents.map((artifact) => {
 			const active = openArtifactId === artifact.id;
 			return <button key={artifact.id} type="button" className={`resource-shelf-row${active ? " active" : ""}`} onClick={() => onOpenArtifact(artifact.id)} title={active ? `Hide ${artifact.title}` : `Show ${artifact.title}`} aria-pressed={active} aria-label={active ? `Hide subagents ${artifact.title}` : `Show subagents ${artifact.title}`} data-testid={`visuals-icon-${artifact.id}`}>
@@ -648,6 +665,7 @@ export function ChatTranscript({
 	warmingUp = false,
 	onStop,
 	onAdvanced,
+	onContinueIncomplete,
 	activityMode = "grouped",
 	onActivityModeChange,
 	outputsOpen = false,
@@ -915,8 +933,18 @@ export function ChatTranscript({
 									<div className="local-system"><p>{m.body}</p><div className="message-actions"><CopyMessageButton body={m.body} /></div></div>
 								) : (
 									<div className={`local-assistant${showAdvancedAtMessage ? " local-assistant-with-advanced" : ""}`}>
-										<div className="local-assistant-content">
-											<p>{m.body}</p>
+										<div className={`local-assistant-content`}>
+											<p>{m.incomplete ? "Incomplete answer" : m.body}</p>
+											{m.incomplete ? (
+												<button
+													type="button"
+													className="message-continue"
+													data-testid={`incomplete-continue-${m.id}`}
+													onClick={() => onContinueIncomplete?.(m.id)}
+												>
+													Continue
+												</button>
+											) : null}
 											{showAdvancedAtMessage ? <button type="button" className="message-advanced" onClick={onAdvanced} aria-label="Open advanced trace">Advanced</button> : null}
 										</div>
 										<div className="assistant-message-footer">
