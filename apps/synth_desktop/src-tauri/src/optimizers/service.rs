@@ -757,10 +757,21 @@ impl OptimizerService {
     ) -> Result<(OptimizerRunRecord, Option<AppEvent>)> {
         let mut run = self.get(optimizer_run_id.clone()).await?;
         let presentation_session_ref = session_ref.or_else(|| run.session_ref.clone());
+        let short_id = run
+            .id
+            .chars()
+            .rev()
+            .take(8)
+            .collect::<String>()
+            .chars()
+            .rev()
+            .collect::<String>();
         let title = format!(
             "{} · {}",
-            algorithm_label(&run.algorithm_id),
-            run.objective.clone().unwrap_or_else(|| run.id.clone())
+            run.objective
+                .clone()
+                .unwrap_or_else(|| algorithm_label(&run.algorithm_id).to_string()),
+            short_id
         );
         let bindings = json!({
             "schemaVersion": VISUAL_BINDINGS_SCHEMA_VERSION,

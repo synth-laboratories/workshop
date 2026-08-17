@@ -58,12 +58,17 @@ export function outputContainerIds(chat: LocalChat): string[] {
 	return [...new Set(Object.values(chat.activityByMessageId ?? {}).flat().map((line) => line.containerId).filter((id): id is string => Boolean(id)))];
 }
 
+export function outputRuntimeIds(chat: LocalChat): string[] {
+	return [...new Set(Object.values(chat.activityByMessageId ?? {}).flat().map((line) => line.runtimeId).filter((id): id is string => Boolean(id)))];
+}
+
 export function OutputsPanel({ chat, openArtifactId, onOpenArtifact, openContainerId = null, onOpenContainer }: Pick<Props, "chat" | "openArtifactId" | "onOpenArtifact" | "openContainerId" | "onOpenContainer">) {
 	const artifacts = chat.artifacts ?? [];
 	const subagents = artifacts.filter((artifact) => artifact.templateId === "synth.subagents.v1");
 	const visuals = artifacts.filter((artifact) => artifact.templateId !== "synth.subagents.v1");
 	const containerIds = outputContainerIds(chat);
-	const hasResources = containerIds.length > 0 || artifacts.length > 0;
+	const runtimeIds = outputRuntimeIds(chat);
+	const hasResources = containerIds.length > 0 || runtimeIds.length > 0 || artifacts.length > 0;
 	return <div id="chat-resource-shelf" className="resource-shelf resource-shelf-docked" aria-label="Outputs" data-testid="resource-shelf">
 		{!hasResources ? <div className="resource-shelf-empty" data-testid="resource-shelf-empty">
 			<span className="resource-shelf-empty-icon" aria-hidden>
@@ -75,6 +80,12 @@ export function OutputsPanel({ chat, openArtifactId, onOpenArtifact, openContain
 			<button key={id} type="button" className={`resource-shelf-row container-rail-btn${openContainerId === id ? " active" : ""}`} onClick={() => onOpenContainer?.(openContainerId === id ? null : id)} aria-pressed={openContainerId === id} aria-label={openContainerId === id ? "Hide container inspector" : "Open container inspector"} data-testid={`container-icon-${id}`}>
 				<span className="resource-shelf-icon"><ContainerIcon /></span><span><strong>Container</strong><code>{id}</code></span><span aria-hidden>›</span>
 			</button>
+		))}</section> : null}
+		{runtimeIds.length > 0 ? <section className="runtimes-rail" data-testid="runtimes-rail"><h3>Runtimes</h3>{runtimeIds.map((id) => (
+			<div key={id} className="resource-shelf-row" data-testid={`runtime-row-${id}`}>
+				<span className="resource-shelf-icon" aria-hidden>⚙</span>
+				<span><strong>Recipe-owned local runtime</strong><code>{id}</code></span>
+			</div>
 		))}</section> : null}
 		{subagents.length > 0 ? <section className="subagents-rail" data-testid="subagents-rail"><h3>Subagents</h3>{subagents.map((artifact) => {
 			const active = openArtifactId === artifact.id;
@@ -659,7 +670,8 @@ export function ChatTranscript({
 	const activityByMessageId = chat.activityByMessageId ?? {};
 	const artifacts = chat.artifacts ?? [];
 	const containerIds = outputContainerIds(chat);
-	const hasResources = containerIds.length > 0 || artifacts.length > 0;
+	const runtimeIds = outputRuntimeIds(chat);
+	const hasResources = containerIds.length > 0 || runtimeIds.length > 0 || artifacts.length > 0;
 	const turnTpsLabels = useTurnPerformanceLabels(chat, events, running);
 	const finalAssistantMessageId = useMemo(() => {
 		for (let index = chat.messages.length - 1; index >= 0; index -= 1) {
@@ -856,7 +868,7 @@ export function ChatTranscript({
 					</div>
 				) : null}
 			</div>
-			<button type="button" className={`resource-shelf-trigger${outputsOpen ? " active" : ""}`} onClick={onToggleOutputs} aria-expanded={outputsOpen} aria-controls="workbench-side-panel" data-testid="resource-shelf-trigger"><span aria-hidden>☷</span> Outputs {hasResources ? <strong>{containerIds.length + artifacts.length}</strong> : null}</button>
+			<button type="button" className={`resource-shelf-trigger${outputsOpen ? " active" : ""}`} onClick={onToggleOutputs} aria-expanded={outputsOpen} aria-controls="workbench-side-panel" data-testid="resource-shelf-trigger"><span aria-hidden>☷</span> Outputs {hasResources ? <strong>{containerIds.length + runtimeIds.length + artifacts.length}</strong> : null}</button>
 			</div>
 			<div className="sr-only" role="status" aria-live="polite" data-testid="activity-live-region">{liveAnnouncement}</div>
 
@@ -908,7 +920,7 @@ export function ChatTranscript({
 											{showAdvancedAtMessage ? <button type="button" className="message-advanced" onClick={onAdvanced} aria-label="Open advanced trace">Advanced</button> : null}
 										</div>
 										<div className="assistant-message-footer">
-											{turnTpsLabels.byMessageId[m.id] ? <small className="message-throughput" data-testid={`assistant-generation-tps-${m.id}`} title={turnTpsLabels.byMessageId[m.id]!.detail ?? undefined} aria-label={`${turnTpsLabels.byMessageId[m.id]!.generation}${turnTpsLabels.byMessageId[m.id]!.worked ? `. Elapsed work time ${turnTpsLabels.byMessageId[m.id]!.worked!.slice(7)}` : ""}`}>{turnTpsLabels.byMessageId[m.id]!.generation}{turnTpsLabels.byMessageId[m.id]!.worked ? ` · ${turnTpsLabels.byMessageId[m.id]!.worked}` : ""}</small> : null}
+											{turnTpsLabels.byMessageId[m.id] ? <small className="message-throughput" data-testid={`assistant-generation-tps-${m.id}`} title={turnTpsLabels.byMessageId[m.id]!.detail ?? undefined} aria-label={`${turnTpsLabels.byMessageId[m.id]!.generation}${turnTpsLabels.byMessageId[m.id]!.worked ? `. Elapsed work time ${turnTpsLabels.byMessageId[m.id]!.worked!.replace(/^Elapsed /, "")}` : ""}`}>{turnTpsLabels.byMessageId[m.id]!.generation}{turnTpsLabels.byMessageId[m.id]!.worked ? ` · ${turnTpsLabels.byMessageId[m.id]!.worked}` : ""}</small> : null}
 											<div className="message-actions"><CopyMessageButton body={m.body} /></div>
 										</div>
 									</div>

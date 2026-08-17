@@ -117,6 +117,8 @@ export type LocalActivityLine = {
 	artifactId?: string;
 	/** Opens the first-class container inspector associated with this MCP activity. */
 	containerId?: string;
+	/** Recipe-owned local runtime (local_process), distinct from a Synth Container. */
+	runtimeId?: string;
 	/**
 	 * Optional file path for read/write lines — drives Poolside-style file-type icons
 	 * (.md, .rs, .ts, .toml, …).

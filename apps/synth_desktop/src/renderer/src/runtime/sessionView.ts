@@ -767,6 +767,9 @@ function mcpToolActivity(
 		.join(" · ") || undefined;
 	const artifactId = server === "synth_visuals" ? visualIdForTool(item, args, tool) : undefined;
 	const containerId = server === "synth_containers" ? containerIdForTool(item, args, tool) : undefined;
+	const runtimeId = server === "synth_optimizers"
+		? (stringField(args, "optimizer_run_id") ?? stringField(nestedArgs, "optimizer_run_id"))
+		: undefined;
 	const visualOperation = server === "synth_visuals"
 		? (tool === "visual_manage" ? stringField(args, "operation") : tool.replace(/^visual_/, ""))
 		: undefined;
@@ -798,6 +801,7 @@ function mcpToolActivity(
 		kind: visualStage ? "visual_lifecycle" : artifactId ? "visual" : "working",
 		artifactId,
 		containerId,
+		runtimeId,
 		toolStatus,
 		durationMs,
 		visualStage

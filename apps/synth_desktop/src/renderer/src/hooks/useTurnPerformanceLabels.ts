@@ -183,7 +183,7 @@ export function turnPerformanceLabels(chat: LocalChat, events: RuntimeEvent[], r
 		}
 		const value = measurements.get(message.id);
 		const worked = isFinal && terminalAt != null && acceptedAt != null && terminalAt >= acceptedAt
-			? `Worked ${compactDuration(terminalAt - acceptedAt)}`
+			? `Elapsed ${compactDuration(terminalAt - acceptedAt)}`
 			: null;
 		byMessageId[message.id] = {
 			generation: generationLabel(value),

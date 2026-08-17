@@ -676,6 +676,11 @@ a,
 	display: contents;
 }
 
+.chat-section-entry[hidden],
+.chat-section-entry[data-hidden="true"] {
+	display: none !important;
+}
+
 .chat-row {
 	position: relative;
 	min-width: 0;
