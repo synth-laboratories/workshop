@@ -19,7 +19,7 @@ buildSync({
 	target: "es2022"
 });
 
-const { eventsToArtifacts } = await import(pathToFileURL(compiled).href);
+const { eventsToArtifacts, ownedChatArtifacts, openArtifactIdForChat } = await import(pathToFileURL(compiled).href);
 
 const runtimeEvent = (sequence, eventKind, payload) => ({
 	schemaVersion: "synth.desktop-runtime-event.v1",
@@ -204,4 +204,20 @@ test("five concurrent task-scoped visuals never leak into another chat's outputs
 		assert.equal(artifacts.length, 1, `${chat.sessionId} must keep one output`);
 		assert.equal(artifacts[0].id, chat.visual.id);
 	}
+});
+
+test("Outputs lists only this chat's owned visuals", () => {
+	const artifacts = [
+		{ id: "visual_own", title: "Own", templateId: "live.craftax.v1", ownerSessionId: "session_1" },
+		{ id: "visual_other", title: "Other", templateId: "live.craftax.v1", ownerSessionId: "session_2" },
+		{ id: "subagents", title: "Subagents", templateId: "synth.subagents.v1" }
+	];
+	const owned = ownedChatArtifacts("session_1", artifacts);
+	assert.deepEqual(owned.map((artifact) => artifact.id), ["visual_own", "subagents"]);
+});
+
+test("an open pane clears when the artifact is not in this chat", () => {
+	const artifacts = [{ id: "visual_own", title: "Own", templateId: "live.craftax.v1" }];
+	assert.equal(openArtifactIdForChat("visual_own", artifacts), "visual_own");
+	assert.equal(openArtifactIdForChat("visual_foreign", artifacts), null);
 });

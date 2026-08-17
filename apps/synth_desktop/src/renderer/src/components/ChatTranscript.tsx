@@ -10,7 +10,7 @@ import {
 	presentActivityLines,
 	type ToolActivityMode
 } from "../preferences";
-import { contextCompactionTokenSummary } from "../runtime/sessionView";
+import { contextCompactionTokenSummary, ownedChatArtifacts } from "../runtime/sessionView";
 import { useTurnPerformanceLabels } from "../hooks/useTurnPerformanceLabels";
 import "./PaidComputeApprovalModal.css";
 
@@ -63,7 +63,7 @@ export function outputRuntimeIds(chat: LocalChat): string[] {
 }
 
 export function OutputsPanel({ chat, openArtifactId, onOpenArtifact, openContainerId = null, onOpenContainer }: Pick<Props, "chat" | "openArtifactId" | "onOpenArtifact" | "openContainerId" | "onOpenContainer">) {
-	const artifacts = chat.artifacts ?? [];
+	const artifacts = ownedChatArtifacts(chat.id, chat.artifacts);
 	const subagents = artifacts.filter((artifact) => artifact.templateId === "synth.subagents.v1");
 	const visuals = artifacts.filter((artifact) => artifact.templateId !== "synth.subagents.v1");
 	const containerIds = outputContainerIds(chat);
@@ -444,6 +444,21 @@ function PaidComputeApprovalModal({ line, onApprove, onReject }: {
 	</div>;
 }
 
+function visualCardLabels(artifact: ArtifactRef): { authoring: string; extras: string[] } {
+	const authoring = artifact.status === "review" ? "In review"
+		: artifact.status === "ready" ? "Certified"
+			: artifact.status === "failed" ? "Needs attention" : "Draft";
+	const extras: string[] = [];
+	const evidence = artifact.metadata && typeof artifact.metadata.visualEvidence === "object"
+		? (artifact.metadata.visualEvidence as { state?: string }).state
+		: undefined;
+	if (evidence) extras.push(`evidence ${evidence}`);
+	if (artifact.foreign) extras.push("from another task");
+	if (artifact.metadata?.pinned === true) extras.push("pinned");
+	if (artifact.metadata?.sealed === true || artifact.metadata?.seal) extras.push("sealed");
+	return { authoring, extras };
+}
+
 function VisualCard({
 	artifact,
 	active,
@@ -453,9 +468,7 @@ function VisualCard({
 	active: boolean;
 	onToggle: () => void;
 }) {
-	const lifecycle = artifact.status === "review" ? "In review"
-		: artifact.status === "ready" ? "Ready"
-			: artifact.status === "failed" ? "Needs attention" : "Draft";
+	const { authoring, extras } = visualCardLabels(artifact);
 	return (
 		<button
 			type="button"
@@ -475,7 +488,10 @@ function VisualCard({
 			<span className="visual-card-body">
 				<span className="visual-card-title">{artifact.title}</span>
 				<span className="visual-card-meta">
-					<span className={`visual-card-status status-${artifact.status ?? "draft"}`}>{lifecycle}</span>
+					<span className={`visual-card-status status-${artifact.status ?? "draft"}`}>{authoring}</span>
+					{extras.map((extra) => (
+						<span key={extra} className="visual-card-facet"> · {extra}</span>
+					))}
 					{active ? " · open" : " · click to open"}
 				</span>
 			</span>

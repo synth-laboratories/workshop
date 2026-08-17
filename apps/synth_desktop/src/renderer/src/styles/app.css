@@ -6037,7 +6037,7 @@ html.sidebar-hidden .titlebar {
 
 .inventory-workbench.with-visual .visual-pane {
 	flex: 0 1 min(var(--visual-pane-width, 420px), calc(100% - 367px));
-	min-width: 0;
+	min-width: 320px;
 	border-left: 1px solid var(--color-border);
 }
 
@@ -7949,7 +7949,7 @@ html.sidebar-hidden .sidebar {
 	grid-template-columns:
 		minmax(380px, 1fr)
 		7px
-		minmax(260px, min(var(--visual-pane-width, 360px), calc(100% - 687px)))
+		minmax(320px, min(var(--visual-pane-width, 360px), calc(100% - 687px)))
 		minmax(0, 300px);
 }
 

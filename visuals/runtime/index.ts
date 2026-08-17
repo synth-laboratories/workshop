@@ -33,6 +33,10 @@ export {
   rememberLastKnownGood
 } from "./lastKnownGood.ts";
 export type { ProjectionSource, SelectedProjection } from "./lastKnownGood.ts";
+export {
+  consumeInjectedRendererCrash,
+  resetInjectedRendererCrashes
+} from "./crashInject.ts";
 export { presentRuntimeError, presentRuntimeErrorMessage } from "./presentError.ts";
 export type { PresentedRuntimeError } from "./presentError.ts";
 export { captureEvidenceKind, CAPTURE_REVIEW_PRODUCT_CLASSES } from "./captureEvidence.ts";

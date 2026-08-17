@@ -89,6 +89,10 @@ export type ArtifactRef = {
 	bindings?: import("@synth/runtime-protocol").VisualBindings | Record<string, unknown>;
 	/** Durable visual metadata, including presentation and authoring review receipts. */
 	metadata?: Record<string, unknown>;
+	/** Session that authored this visual. Read-only display never copies this. */
+	ownerSessionId?: string;
+	/** Cross-task discovery is labeled, never adopted as this chat's output. */
+	foreign?: boolean;
 	/** Durable authoring state projected for transcript and pane chrome. */
 	status?: "draft" | "review" | "ready" | "failed";
 };

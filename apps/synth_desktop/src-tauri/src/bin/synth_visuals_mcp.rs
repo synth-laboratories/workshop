@@ -145,11 +145,12 @@ fn parse_http_response(response: &str) -> Result<Value, String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        assert_review_viewport, managed_tool_name, parse_http_response, socket_addr, tools,
-        REVIEW_VIEWPORT_HEIGHT_MAX, REVIEW_VIEWPORT_HEIGHT_MIN, REVIEW_VIEWPORT_WIDTH_MAX,
-        REVIEW_VIEWPORT_WIDTH_MIN, VISUAL_OPERATIONS,
+        assert_review_viewport, label_listed_visuals, managed_tool_name, parse_http_response,
+        socket_addr, tools, visual_list_query, REVIEW_VIEWPORT_HEIGHT_MAX,
+        REVIEW_VIEWPORT_HEIGHT_MIN, REVIEW_VIEWPORT_WIDTH_MAX, REVIEW_VIEWPORT_WIDTH_MIN,
+        VISUAL_OPERATIONS,
     };
-    use serde_json::Value;
+    use serde_json::{json, Value};
 
     /// The compact review that failed acceptance was 390x844 — inside the
     /// public schema, outside an undocumented resolver floor of 640. One
@@ -338,6 +339,36 @@ mod tests {
     }
 
     #[test]
+    fn visual_list_defaults_to_the_bound_session_and_labels_instance_discovery() {
+        let bound = Some("session_a");
+        let (session_query, session_scope) = visual_list_query(&json!({}), bound);
+        assert_eq!(session_scope, "session");
+        assert_eq!(session_query["session_id"], json!("session_a"));
+
+        let (instance_query, instance_scope) =
+            visual_list_query(&json!({"scope": "instance"}), bound);
+        assert_eq!(instance_scope, "instance");
+        assert!(instance_query.get("session_id").is_none());
+
+        let labeled = label_listed_visuals(
+            json!({
+                "visuals": [
+                    {"id": "vis_a", "sessionId": "session_a"},
+                    {"id": "vis_b", "sessionId": "session_b"}
+                ]
+            }),
+            bound,
+            "instance",
+        );
+        assert_eq!(labeled["visuals"][0]["owned"], json!(true));
+        assert_eq!(labeled["visuals"][0]["foreign"], json!(false));
+        assert_eq!(labeled["visuals"][1]["owned"], json!(false));
+        assert_eq!(labeled["visuals"][1]["foreign"], json!(true));
+        assert_eq!(labeled["visuals"][1]["ownershipLabel"], json!("from another task"));
+        assert_eq!(labeled["visuals"][1]["discovery"], json!("instance"));
+    }
+
+    #[test]
     fn http_errors_preserve_the_actionable_server_detail() {
         let error = parse_http_response(
             "HTTP/1.1 400 Bad Request\r\nContent-Length: 34\r\n\r\n{\"error\":\"template_not_renderable\"}",
@@ -389,7 +420,7 @@ fn tools() -> Value {
         "tools": [
             {"name":"visual_manage","description":"Synth visuals. Use author-synth-diagrams; do not call MCP resources. Create/show, review PNGs wide and compact, then mark_ready. optimizer.* product visuals are exempt — report visualEvidence.state; never loop capture/repair. Mermaid in arguments.content.","inputSchema":{"type":"object","properties":{"operation":{"type":"string","description":"Visual operation."},"arguments":{"type":"object","description":"Operation arguments. capture_review returns a PNG and screenshot_path; review and mark_ready use the current revision. optimizer.* product visuals skip capture/review/mark_ready.","additionalProperties":true}},"required":["operation","arguments"],"additionalProperties":false}},
             {"name":"visual_list_templates","description":"List Synth visual templates","inputSchema":{"type":"object","properties":{"genre":{"type":"string"}},"additionalProperties":false}},
-            {"name":"visual_list","description":"List visuals in the local registry","inputSchema":{"type":"object","properties":{"search":{"type":"string"},"status":{"type":"string"},"session_id":{"type":"string"}},"additionalProperties":false}},
+            {"name":"visual_list","description":"List visuals in the local registry. Defaults to the bound session. Pass scope=instance for deliberate cross-task discovery; foreign rows are labeled.","inputSchema":{"type":"object","properties":{"search":{"type":"string"},"status":{"type":"string"},"session_id":{"type":"string"},"scope":{"type":"string","enum":["session","instance"],"description":"session (default) lists this task's visuals; instance lists the registry and labels foreign owners"}},"additionalProperties":false}},
             {"name":"visual_get","description":"Get a visual by id","inputSchema":{"type":"object","properties":{"visual_id":{"type":"string"}},"required":["visual_id"],"additionalProperties":false}},
             {"name":"visual_create","description":"Create a visual from a trusted registered template. Interactive live viewers are configured templates; arbitrary TSX is not executed.","inputSchema":{"type":"object","properties":{"template_id":{"type":"string"},"title":{"type":"string"},"content":{"type":"string"},"props":{"type":"object"},"visual_config":{"type":"object"},"presentation":{"type":"string","enum":["canvas","pane"]},"session_id":{"type":"string"},"instance_id":{"type":"string"}},"required":["template_id"],"additionalProperties":false}},
             {"name":"visual_create_from_template","description":"Alias of visual_create","inputSchema":{"type":"object","properties":{"template_id":{"type":"string"},"title":{"type":"string"},"props":{"type":"object"},"instance_id":{"type":"string"}},"required":["template_id"],"additionalProperties":false}},
@@ -480,6 +511,61 @@ fn tools() -> Value {
     result
 }
 
+/// List defaults to the bound session. `scope=instance` is deliberate
+/// cross-task discovery and must not inherit the bound session as a filter.
+fn visual_list_query(args: &Value, session_env: Option<&str>) -> (Value, String) {
+    let scope = args
+        .get("scope")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("session")
+        .to_string();
+    let mut query = args.clone();
+    if let Some(object) = query.as_object_mut() {
+        object.remove("scope");
+        if scope == "instance" {
+            object.remove("session_id");
+        } else if object
+            .get("session_id")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .is_none()
+        {
+            if let Some(session_id) = session_env.map(str::trim).filter(|value| !value.is_empty()) {
+                object.insert("session_id".into(), json!(session_id));
+            }
+        }
+    }
+    (query, scope)
+}
+
+fn label_listed_visuals(mut listed: Value, session_env: Option<&str>, scope: &str) -> Value {
+    let bound = session_env.map(str::trim).filter(|value| !value.is_empty());
+    if let Some(visuals) = listed.get_mut("visuals").and_then(Value::as_array_mut) {
+        for visual in visuals {
+            let owner = visual
+                .get("sessionId")
+                .or_else(|| visual.get("session_id"))
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty());
+            let owned = bound.is_some() && owner == bound;
+            let foreign = owner.is_some() && bound.is_some() && owner != bound;
+            if let Some(object) = visual.as_object_mut() {
+                object.insert("discovery".into(), json!(scope));
+                object.insert("owned".into(), json!(owned));
+                object.insert("foreign".into(), json!(foreign));
+                if foreign {
+                    object.insert("ownershipLabel".into(), json!("from another task"));
+                }
+            }
+        }
+    }
+    listed
+}
+
 /// The session this MCP server was spawned for, which is the only session it
 /// may author into. Desktop writes `SYNTH_SESSION_ID` into each per-conversation
 /// server config; without it a created visual would have no owner, and an
@@ -517,15 +603,9 @@ fn call_tool(name: &str, args: &Value) -> Result<Value, String> {
         }
         "visual_list_templates" => request("GET", "/v1/visuals/templates", None),
         "visual_list" => {
-            let mut query = args.clone();
-            if query.get("session_id").and_then(Value::as_str).is_none() {
-                if let Some(session_id) = session_env.as_deref().map(str::trim).filter(|value| !value.is_empty()) {
-                    if let Some(object) = query.as_object_mut() {
-                        object.insert("session_id".into(), json!(session_id));
-                    }
-                }
-            }
-            request("GET", "/v1/visuals", Some(query))
+            let (query, scope) = visual_list_query(args, session_env.as_deref());
+            let listed = request("GET", "/v1/visuals", Some(query))?;
+            Ok(label_listed_visuals(listed, session_env.as_deref(), &scope))
         }
         "visual_get" => {
             let id = args

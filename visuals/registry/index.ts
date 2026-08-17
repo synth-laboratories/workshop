@@ -118,6 +118,10 @@ export type { VisualTemplate, VisualTemplateMeta, VisualInstance, VisualBinding 
 export { bindTemplateSlots, subscribeLiveSlot, isVisualBindings, bindingSlots, propsFromBindings, resolveVisualBindings } from "../runtime/bind.ts";
 export { selectRenderedProjection, rememberLastKnownGood } from "../runtime/lastKnownGood.ts";
 export type { ProjectionSource, SelectedProjection } from "../runtime/lastKnownGood.ts";
+export {
+  consumeInjectedRendererCrash,
+  resetInjectedRendererCrashes
+} from "../runtime/crashInject.ts";
 export { presentRuntimeError, presentRuntimeErrorMessage } from "../runtime/presentError.ts";
 export { captureEvidenceKind, CAPTURE_REVIEW_PRODUCT_CLASSES } from "../runtime/captureEvidence.ts";
 export { decideVisualEvidence, visualEvidenceBlocksCompletion } from "../runtime/visualEvidence.ts";

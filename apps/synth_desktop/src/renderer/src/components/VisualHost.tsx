@@ -6,6 +6,7 @@ import {
 	createReplayClient,
 	isVisualBindings,
 	propsFromBindings,
+	consumeInjectedRendererCrash,
 	rememberLastKnownGood,
 	replayStreamsFromBindings,
 	resolveTemplate,
@@ -272,7 +273,14 @@ function TemplateVisualHost({ artifact }: { artifact: ArtifactRef }) {
 		() =>
 			resolvedBindings.slots.filter((binding) => {
 				if (binding.kind === "trace_v5") return true;
-				if (binding.kind === "live_sse" || binding.kind === "optimizer_run" || binding.kind === "inline") {
+				// Fixture streams are loaded by the shell's bundled examples, the
+				// same way live_sse and optimizer_run are subscribed outside bind.
+				if (
+					binding.kind === "live_sse"
+					|| binding.kind === "optimizer_run"
+					|| binding.kind === "inline"
+					|| binding.kind === "fixture"
+				) {
 					return false;
 				}
 				return binding.data === undefined;
@@ -739,7 +747,13 @@ function TemplateVisualHost({ artifact }: { artifact: ArtifactRef }) {
 		/>;
 	}
 	if (!Shell) return <p className="visual-loading">Loading visual shell…</p>;
-	if (artifact.metadata?.__crashRenderer === true) {
+	if (
+		consumeInjectedRendererCrash(
+			artifact.visualId ?? artifact.id,
+			typeof artifact.revision === "number" ? artifact.revision : null,
+			artifact.metadata?.__crashRenderer === true
+		)
+	) {
 		throw new Error("injected renderer crash");
 	}
 	const resolvedProps = selected.projection ?? { ...synchronouslyResolved.props, ...traceResolution.props };

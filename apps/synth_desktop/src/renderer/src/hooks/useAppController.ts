@@ -56,7 +56,8 @@ import {
 	sessionIsLocalChat,
 	sessionIsSync,
 	targetIdToExecutionTarget,
-	visualRecordToArtifact
+	visualRecordToArtifact,
+	openArtifactIdForChat
 } from "../runtime/sessionView";
 import { approvalModeFromConfig, codexStartRequest, coreEventToRuntime, createCodexSession, restoreCodexSession, type ApprovalMode, type ApprovalPolicy, type SandboxMode } from "../runtime/nativeCodex";
 import {
@@ -1091,7 +1092,7 @@ export function useAppController() {
 	useEffect(() => {
 		if (!openArtifactId) return;
 		const artifacts = activeChat?.artifacts ?? activeSync?.artifacts ?? [];
-		if (!artifacts.some((artifact) => artifact.id === openArtifactId)) {
+		if (!openArtifactIdForChat(openArtifactId, artifacts)) {
 			setOpenArtifactId(null);
 			openArtifactIdRef.current = null;
 			visualRequestGenerationRef.current += 1;
