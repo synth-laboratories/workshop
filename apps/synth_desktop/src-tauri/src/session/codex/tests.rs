@@ -973,6 +973,15 @@ async fn terminal_before_run_creation_reconciles_the_exact_turn() {
         .expect("run remains durable");
     assert_eq!(run.status, "completed");
     assert_eq!(run.outcome.unwrap()["turn"]["id"], turn_id);
+    assert!(
+        manager
+            .early_terminal_turns
+            .lock()
+            .await
+            .get(&request.session_id)
+            .is_none(),
+        "startup mailbox must be released after the durable run exists"
+    );
     let events = core
         .journal()
         .session_events_after(request.session_id.clone(), 0, 200)
@@ -996,6 +1005,49 @@ async fn terminal_before_run_creation_reconciles_the_exact_turn() {
             && event.payload["to"] == "completed"
     }));
 
+    manager.close(&request.session_id).await.unwrap();
+}
+
+#[tokio::test]
+async fn terminal_during_startup_mailbox_occupancy_completes_the_run() {
+    let temp = tempdir().unwrap();
+    let codex_root = temp.path().join("codex");
+    let core = Arc::new(CoreRuntime::open(temp.path().join("core")).unwrap());
+    let manager = CodexManager::with_paths(
+        SessionPersistence::from_core(Some(core.clone())),
+        codex_root.clone(),
+        fixture_binary(),
+        CodexManager::test_broker(),
+    );
+    let app = tauri::test::mock_app();
+    let request = test_request(temp.path(), "startup-mailbox");
+    arm_terminal_before_turn_start_response(&codex_root, &request.session_id);
+
+    let info = manager
+        .send_turn(
+            app.handle().clone(),
+            send_request(request.clone(), "terminal while turn/start is in flight"),
+        )
+        .await
+        .expect("mailbox terminal still completes the durable run");
+    let turn_id = info.turn_id.expect("fixture returns a turn id");
+    wait_for_run_status(&core, &turn_id, "completed").await;
+    assert!(
+        manager
+            .early_terminal_turns
+            .lock()
+            .await
+            .get(&request.session_id)
+            .is_none(),
+        "mailbox occupancy during turn/start must be released once the run exists"
+    );
+    let run = core
+        .runs()
+        .get(turn_id.clone())
+        .await
+        .unwrap()
+        .expect("run remains durable");
+    assert_eq!(run.status, "completed");
     manager.close(&request.session_id).await.unwrap();
 }
 
