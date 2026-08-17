@@ -304,7 +304,7 @@ function TemplateVisualHost({ artifact }: { artifact: ArtifactRef }) {
 		failure?: PublicError;
 	}>({ status: "idle", props: {} });
 	const [connectionState, setConnectionState] = useState<
-		"loading" | "replaying" | "subscribed" | "stale" | "reconnecting" | "terminal" | "failed"
+		"loading" | "replaying" | "bootstrapping" | "subscribed" | "stale" | "reconnecting" | "terminal" | "failed"
 	>("loading");
 
 	const visualIdentity = useMemo(
@@ -526,6 +526,9 @@ function TemplateVisualHost({ artifact }: { artifact: ArtifactRef }) {
 		let pending = Promise.resolve();
 		let stopPolling = false;
 		let postedReady = false;
+		let poll = 0;
+		let lastCursor = Number.NaN;
+		let lastStatus = "";
 		const terminal = new Set(["completed", "failed", "cancelled", "succeeded"]);
 		const readPersistedEvents = async (after: number) => {
 			let state: OptimizerEventCursorState = {
@@ -543,7 +546,7 @@ function TemplateVisualHost({ artifact }: { artifact: ArtifactRef }) {
 		};
 		const load = async (snapshot = false) => {
 			try {
-				if (!snapshot) setConnectionState((current) => current === "subscribed" ? "reconnecting" : current);
+				if (!snapshot) setConnectionState((current) => current === "subscribed" || current === "bootstrapping" ? "reconnecting" : current);
 				else setConnectionState("replaying");
 				const run = await bridges.optimizers!.get(optimizerRunId);
 				let next = await readPersistedEvents(snapshot ? 0 : current.cursor);
@@ -571,13 +574,19 @@ function TemplateVisualHost({ artifact }: { artifact: ArtifactRef }) {
 				}
 				current = next;
 				const runStatus = typeof run.status === "string" ? run.status : "";
-				if (terminal.has(runStatus)) {
+				const isTerminal = terminal.has(runStatus);
+				if (isTerminal) {
 					stopPolling = true;
+					if (poll) window.clearInterval(poll);
 				}
 				if (!cancelled) {
-					setOptimizerPayload({ run, events: current.events });
+					if (lastCursor !== current.cursor || lastStatus !== runStatus) {
+						lastCursor = current.cursor;
+						lastStatus = runStatus;
+						setOptimizerPayload({ run, events: current.events });
+					}
 					setOptimizerLoadError(null);
-					setConnectionState(terminal.has(runStatus) ? "terminal" : "subscribed");
+					setConnectionState(isTerminal ? "terminal" : current.events.length === 0 ? "bootstrapping" : "subscribed");
 					if (!postedReady) {
 						postedReady = true;
 						void bridges.optimizers?.recordVisualReady?.({
@@ -620,10 +629,13 @@ function TemplateVisualHost({ artifact }: { artifact: ArtifactRef }) {
 			const eventRunId = typeof event.payload?.optimizerRunId === "string"
 				? event.payload.optimizerRunId
 				: typeof event.payload?.optimizer_run_id === "string" ? event.payload.optimizer_run_id : null;
-			if (!eventRunId || eventRunId === optimizerRunId) enqueue(false);
+			if (eventRunId === optimizerRunId) enqueue(false);
 		});
-		const poll = window.setInterval(() => {
-			if (stopPolling) return;
+		poll = window.setInterval(() => {
+			if (stopPolling) {
+				window.clearInterval(poll);
+				return;
+			}
 			void bridges.optimizers!.refresh(optimizerRunId).catch(() => undefined);
 		}, 750);
 		return () => {
@@ -800,18 +812,20 @@ function VisualObservationBoundary({ artifact, children }: { artifact: ArtifactR
 /** A failed pane still has to be diagnosable. The sentence goes on top; the
  * stable code, the trace identity, and the remediation go underneath, because
  * "Trace data unavailable" alone sent agents into blind capture retries. */
-function VisualInvalidState({ title, detail, code, remediation, traceId }: {
+function VisualInvalidState({ title, detail, code, remediation, traceId, onRetry }: {
 	title: string;
 	detail: string;
 	code?: string;
 	remediation?: string;
 	traceId?: string;
+	onRetry?: () => void;
 }) {
 	return (
 		<div className="visual-invalid" role="alert" data-testid="visual-invalid" data-error-code={code}>
 			<strong>{title}</strong>
 			<p>{detail}</p>
 			{remediation ? <p className="visual-invalid-remediation">{remediation}</p> : null}
+			{onRetry ? <button type="button" className="visual-invalid-retry" onClick={onRetry}>Retry</button> : null}
 			{code || traceId ? (
 				<p className="visual-invalid-identity">
 					{code ? <code data-testid="visual-invalid-code">{code}</code> : null}
@@ -824,10 +838,15 @@ function VisualInvalidState({ title, detail, code, remediation, traceId }: {
 
 class VisualErrorBoundary extends Component<
 	{ children: ReactNode; visualId?: string; visualRevision?: number | null; templateId?: string | null },
-	{ error: Error | null }
+	{ error: Error | null; retry: number }
 > {
-	state: { error: Error | null } = { error: null };
+	state: { error: Error | null; retry: number } = { error: null, retry: 0 };
 	static getDerivedStateFromError(error: Error) { return { error }; }
+	componentDidUpdate(prevProps: VisualErrorBoundary["props"]) {
+		if (prevProps.visualRevision !== this.props.visualRevision && this.state.error) {
+			this.setState({ error: null });
+		}
+	}
 	componentDidCatch(error: Error, info: ErrorInfo) {
 		// `console.error` reaches a devtools console nobody has open. The
 		// structured record is what the agent can actually query, so the
@@ -848,8 +867,14 @@ class VisualErrorBoundary extends Component<
 		});
 	}
 	render() {
-		if (this.state.error) return <VisualInvalidState title="Visual failed to render" detail={this.state.error.message} />;
-		return <div className="visual-host-boundary">{this.props.children}</div>;
+		if (this.state.error) {
+			return <VisualInvalidState
+				title="Visual failed to render"
+				detail={this.state.error.message}
+				onRetry={() => this.setState((current) => ({ error: null, retry: current.retry + 1 }))}
+			/>;
+		}
+		return <div className="visual-host-boundary" key={this.state.retry}>{this.props.children}</div>;
 	}
 }
 

@@ -121,6 +121,12 @@ async function resolveBinding(
   }
 }
 
+function describeError(err: unknown): string {
+  if (err instanceof Error && err.message.trim()) return err.message;
+  if (typeof err === "string" && err.trim()) return err;
+  return "Binding resolution failed";
+}
+
 /**
  * Resolve all bindings for a template into slot payloads.
  * Does not open SSE streams — use `subscribeLiveSlot` for live.* templates.
@@ -178,7 +184,7 @@ export async function bindTemplateSlots(
           data: await resolveBinding(binding, ctx)
         });
       } catch (err) {
-        errors.push(err instanceof Error ? err.message : String(err));
+        errors.push(describeError(err));
       }
     }
     if (resolved.length > 0) {
