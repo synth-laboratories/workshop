@@ -567,7 +567,7 @@ function activityKind(eventKind: string): LocalActivityLine["kind"] {
 	return "working";
 }
 
-type SafeToolActivity = Pick<LocalActivityLine, "label" | "detail" | "path" | "kind" | "toolStatus" | "durationMs" | "visualStage" | "artifactId" | "containerId"> & { key: string };
+type SafeToolActivity = Pick<LocalActivityLine, "label" | "detail" | "path" | "kind" | "toolStatus" | "durationMs" | "visualStage" | "artifactId" | "containerId" | "optimizerRunId" | "runKind"> & { key: string };
 
 const VISUAL_MUTATION_TOOLS = new Set([
 	"visual_manage",
@@ -714,6 +714,36 @@ function visualIdForTool(
 	return stringField(args, "visual_id", "visualId", "instance_id", "instanceId", "id");
 }
 
+/** Workflows chat has a run-progress card for. Others stream but get no card. */
+const CARDED_RUN_KINDS = new Set(["eval", "gepa", "sft"]);
+
+/**
+ * The durable run a `synth_optimizers` call started or acted on.
+ *
+ * Read from the tool *result* — the run record the host returned — and only
+ * secondarily from the arguments, because an argument is a request and a result
+ * is a fact. Nothing is inferred from surrounding prose: a run id in an
+ * assistant sentence is text, not a subscription.
+ */
+function optimizerRunForTool(
+	item: Record<string, unknown>,
+	args: Record<string, unknown>
+): { optimizerRunId?: string; runKind?: LocalActivityLine["runKind"] } {
+	const structured = toolStructuredContent(item);
+	const run = structured ? nestedObject(structured, "run", "optimizerRun") ?? structured : undefined;
+	const id = (run && stringField(run, "id", "optimizerRunId", "optimizer_run_id"))
+		?? stringField(args, "optimizer_run_id", "optimizerRunId")
+		?? stringField(nestedObject(args, "arguments") ?? {}, "optimizer_run_id", "optimizerRunId");
+	if (!id) return {};
+	const algorithm = (run && stringField(run, "algorithmId", "algorithm_id")) ?? undefined;
+	return {
+		optimizerRunId: id,
+		...(algorithm && CARDED_RUN_KINDS.has(algorithm)
+			? { runKind: algorithm as LocalActivityLine["runKind"] }
+			: {})
+	};
+}
+
 function mcpToolActivity(
 	item: Record<string, unknown>,
 	args: Record<string, unknown>,
@@ -767,6 +797,7 @@ function mcpToolActivity(
 		.join(" · ") || undefined;
 	const artifactId = server === "synth_visuals" ? visualIdForTool(item, args, tool) : undefined;
 	const containerId = server === "synth_containers" ? containerIdForTool(item, args, tool) : undefined;
+	const optimizerRun = server === "synth_optimizers" ? optimizerRunForTool(item, args) : {};
 	const visualOperation = server === "synth_visuals"
 		? (tool === "visual_manage" ? stringField(args, "operation") : tool.replace(/^visual_/, ""))
 		: undefined;
@@ -798,6 +829,7 @@ function mcpToolActivity(
 		kind: visualStage ? "visual_lifecycle" : artifactId ? "visual" : "working",
 		artifactId,
 		containerId,
+		...optimizerRun,
 		toolStatus,
 		durationMs,
 		visualStage
@@ -1447,6 +1479,10 @@ export function eventsToLocalActivity(
 				existing.durationMs = safeTool.durationMs;
 				existing.artifactId = safeTool.artifactId;
 				existing.containerId = safeTool.containerId;
+				// A run id only ever arrives (never disappears): the call that
+				// returns the record often completes after the one that requested it.
+				if (safeTool.optimizerRunId) existing.optimizerRunId = safeTool.optimizerRunId;
+				if (safeTool.runKind) existing.runKind = safeTool.runKind;
 			} else {
 				if (safeTool.kind === "command") runActions.commands += 1;
 				if (safeTool.kind === "file_read") runActions.reads += 1;
@@ -1467,6 +1503,8 @@ export function eventsToLocalActivity(
 					visualStage: safeTool.visualStage,
 					artifactId: safeTool.artifactId,
 					containerId: safeTool.containerId,
+					optimizerRunId: safeTool.optimizerRunId,
+					runKind: safeTool.runKind,
 					toolStatus: safeTool.toolStatus,
 					durationMs: safeTool.durationMs
 				};
