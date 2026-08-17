@@ -935,17 +935,41 @@ pub(crate) async fn authorize_optimizer_recipe_start(
         .await
         .map_err(AppError::from)?;
     if should_open_visual {
-        if let Some(visual_id) = run
+        let published = run
             .visual_refs
             .iter()
             .find(|reference| reference.kind == "visual")
-            .map(|reference| reference.id.clone())
-        {
+            .map(|reference| reference.id.clone());
+        let visual_id = match published {
+            Some(visual_id) => Some(visual_id),
+            None => {
+                // Admission promised to open an output. A recipe whose service
+                // minted no visual must still get one bound to this run and this
+                // chat, or the run finishes with nothing in Outputs and nothing
+                // saying why.
+                let (opened, event) = state
+                    .optimizers()
+                    .open_visual_in_session(run.id.clone(), visual_session_ref.clone())
+                    .await
+                    .map_err(AppError::from)?;
+                publish_optimizer_event(app, state, event).await?;
+                opened
+                    .visual_refs
+                    .iter()
+                    .find(|reference| reference.kind == "visual")
+                    .map(|reference| reference.id.clone())
+            }
+        };
+        if let Some(visual_id) = visual_id {
             // Optimizer services create and show visuals internally, but their
             // returned event slot carries the optimizer lifecycle event. Emit
             // a fresh durable visual.show so the renderer receives ownership,
             // adds the visual to this chat's Outputs shelf, and opens the pane
             // without requiring a second agent tool call.
+            //
+            // The session here is the run's own conversation, never whichever
+            // chat happens to be focused: showing is publication into an owner,
+            // not a global pane change.
             let (_, event) = state
                 .visuals()
                 .show(visual_id.clone(), visual_session_ref)

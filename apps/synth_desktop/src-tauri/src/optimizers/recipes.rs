@@ -13,6 +13,7 @@ use std::{
 };
 use tokio::{sync::watch, time::sleep};
 
+use super::events::OptimizerEventDraft;
 use super::{
     manager::DEFAULT_ALGORITHM_VERSION,
     models::{
@@ -1187,28 +1188,16 @@ async fn append_recipe_artifacts(
     if artifacts.is_empty() {
         return Ok(());
     }
-    let run = service.get(run_id.to_string()).await?;
-    let event = OptimizerEventEnvelope {
-        schema_version: OPTIMIZER_EVENT_SCHEMA_VERSION.into(),
-        event_id: Some(format!("{run_id}:workshop:artifacts")),
-        event_type: "optimizer.recipe.artifacts".into(),
-        sequence_number: run.cursor_seq + 1,
-        occurred_at: chrono::Utc::now().to_rfc3339(),
-        optimizer_run_id: run_id.into(),
-        algorithm_id: "gepa".into(),
-        level: Some("info".into()),
-        item: None,
-        delta: serde_json::from_value(json!({
+    let mut draft = OptimizerEventDraft::new("optimizer.recipe.artifacts", "gepa")
+        .idempotency_key("workshop:artifacts")
+        .level("info")
+        .delta(serde_json::from_value(json!({
             "message": format!("Persisted {} optimizer artifacts", artifacts.len()),
-        }))?,
-        snapshot: None,
-        usage_delta: None,
-        artifact_refs: artifacts,
-        error: None,
-        raw: json!({ "source": "workshop_recipe" }),
-    };
+        }))?)
+        .raw(json!({ "source": "workshop_recipe" }));
+    draft.artifact_refs = artifacts;
     service
-        .append_events(run_id.to_string(), vec![event])
+        .append_event_payloads(run_id.to_string(), vec![draft])
         .await?;
     Ok(())
 }
@@ -1247,7 +1236,6 @@ async fn append_recipe_candidates(
             .get("status")
             .cloned()
             .unwrap_or_else(|| json!("evaluated"));
-        let sequence_number = run.cursor_seq + events.len() as u64 + 1;
         let mut delta = serde_json::Map::new();
         for key in ["train_reward", "heldout_reward", "minibatch_reward"] {
             if let Some(value) = candidate.get(key) {
@@ -1257,16 +1245,13 @@ async fn append_recipe_candidates(
         if let Some(parent_id) = candidate.get("parent_id") {
             delta.insert("parentId".into(), parent_id.clone());
         }
-        events.push(OptimizerEventEnvelope {
-            schema_version: OPTIMIZER_EVENT_SCHEMA_VERSION.into(),
-            event_id: Some(format!("{run_id}:candidate-artifact:{candidate_id}")),
-            event_type: "candidate.artifact.loaded".into(),
-            sequence_number,
-            occurred_at: chrono::Utc::now().to_rfc3339(),
-            optimizer_run_id: run_id.into(),
-            algorithm_id: "gepa".into(),
-            level: Some("info".into()),
-            item: Some(json!({
+        // Content-addressed identity: the same candidate reconciled twice is the
+        // same event, so a repeated reconcile re-offers it rather than minting a
+        // second sequence for it.
+        let mut draft = OptimizerEventDraft::new("candidate.artifact.loaded", "gepa")
+            .idempotency_key(format!("candidate-artifact:{candidate_id}"))
+            .level("info")
+            .item(json!({
                 "kind": "candidate",
                 "id": candidate_id,
                 "status": status,
@@ -1274,22 +1259,21 @@ async fn append_recipe_candidates(
                     "values": values,
                     "sourceArtifact": "candidate_registry.json"
                 }
-            })),
-            delta,
-            snapshot: None,
-            usage_delta: None,
-            artifact_refs: vec![json!({
-                "kind": "candidate_registry",
-                "id": registry_path,
-                "path": registry_path,
-                "title": "Candidate registry"
-            })],
-            error: None,
-            raw: json!({ "source": "candidate_registry.json", "index": index }),
-        });
+            }))
+            .delta(delta)
+            .raw(json!({ "source": "candidate_registry.json", "index": index }));
+        draft.artifact_refs = vec![json!({
+            "kind": "candidate_registry",
+            "id": registry_path,
+            "path": registry_path,
+            "title": "Candidate registry"
+        })];
+        events.push(draft);
     }
     if !events.is_empty() {
-        service.append_events(run_id.to_string(), events).await?;
+        service
+            .append_event_payloads(run_id.to_string(), events)
+            .await?;
     }
     Ok(())
 }
@@ -1600,26 +1584,16 @@ async fn append_status_event(
     event_type: &str,
     status: &str,
 ) -> Result<()> {
-    let run = service.get(run_id.to_string()).await?;
-    let event = OptimizerEventEnvelope {
-        schema_version: OPTIMIZER_EVENT_SCHEMA_VERSION.into(),
-        event_id: Some(format!("{run_id}:workshop:{}", run.cursor_seq + 1)),
-        event_type: event_type.into(),
-        sequence_number: run.cursor_seq + 1,
-        occurred_at: chrono::Utc::now().to_rfc3339(),
-        optimizer_run_id: run_id.into(),
-        algorithm_id: "gepa".into(),
-        level: None,
-        item: None,
-        delta: serde_json::from_value(json!({ "status": status }))?,
-        snapshot: None,
-        usage_delta: None,
-        artifact_refs: vec![],
-        error: None,
-        raw: json!({ "source": "workshop_recipe" }),
-    };
     service
-        .append_events(run_id.to_string(), vec![event])
+        .append_event_payloads(
+            run_id.to_string(),
+            vec![OptimizerEventDraft::new(event_type, "gepa")
+                // One lifecycle transition per run: a retried append re-offers
+                // the same event instead of minting a second one.
+                .idempotency_key(format!("workshop:lifecycle:{event_type}"))
+                .delta(serde_json::from_value(json!({ "status": status }))?)
+                .raw(json!({ "source": "workshop_recipe" }))],
+        )
         .await?;
     Ok(())
 }
@@ -1672,30 +1646,16 @@ async fn append_diagnostic_event(
         .and_then(|path| bounded_log_tail(path, 4_000).ok())
         .filter(|text| !text.trim().is_empty());
     let display_message = stderr_tail.as_deref().unwrap_or(&detail);
-    let mut event = OptimizerEventEnvelope {
-        schema_version: OPTIMIZER_EVENT_SCHEMA_VERSION.into(),
-        event_id: Some(format!("{run_id}:workshop:{}", run.cursor_seq + 1)),
-        event_type: "optimizer.recipe.diagnostic".into(),
-        sequence_number: run.cursor_seq + 1,
-        occurred_at: chrono::Utc::now().to_rfc3339(),
-        optimizer_run_id: run_id.into(),
-        algorithm_id: "gepa".into(),
-        level: Some("error".into()),
-        item: None,
-        delta: Default::default(),
-        snapshot: None,
-        usage_delta: None,
-        artifact_refs: vec![],
-        error: Some(json!({
+    let mut draft = OptimizerEventDraft::new("optimizer.recipe.diagnostic", "gepa")
+        .level("error")
+        .error(json!({
             "message": display_message.chars().take(1_000).collect::<String>(),
             "stderrTail": stderr_tail,
             "logPath": stderr_path,
-        })),
-        raw: json!({}),
-    };
-    event.delta.insert("status".into(), json!("failed"));
+        }));
+    draft.delta.insert("status".into(), json!("failed"));
     service
-        .append_events(run_id.to_string(), vec![event])
+        .append_event_payloads(run_id.to_string(), vec![draft])
         .await?;
 
     // The run evidence above stays authoritative. This makes the same failure
