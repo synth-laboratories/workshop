@@ -33,7 +33,7 @@ or filesystem search to discover this tool.
 | Operation | Arguments |
 | --- | --- |
 | `list_templates` | `{ "genre"?: string }` |
-| `list` | `{ "search"?: string, "status"?: string, "session_id"?: string }` |
+| `list` | `{ "search"?: string, "status"?: string, "session_id"?: string, "scope"?: "session" \| "instance" }` — defaults to this task; `scope: "instance"` is labeled cross-task discovery |
 | `get` | `{ "visual_id": string }` |
 | `create` | `{ "template_id": string, "title"?: string, "content"?: string, "props"?: object, "session_id"?: string, "instance_id"?: string }` |
 | `update` | `{ "visual_id": string, "title"?: string, "content"?: string, "bindings"?: object, "status"?: string }` — `bindings` must be the canonical envelope; prefer `bind` |
