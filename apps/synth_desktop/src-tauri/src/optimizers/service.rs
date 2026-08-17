@@ -1062,7 +1062,11 @@ impl OptimizerService {
                     terminal::STATUS_FAILED_EVIDENCE,
                     Some(degradation),
                 );
-                terminal::seal(conn, &run.id, &manifest)?;
+                let sealed = terminal::seal(conn, &run.id, &manifest)?;
+                if let Some(object) = run.summary.as_object_mut() {
+                    object.insert("terminalManifest".into(), sealed);
+                }
+                upsert_run(conn, &run)?;
                 let app_event = append_event(
                     conn,
                     EventAppend {
@@ -2125,18 +2129,25 @@ fn commit_validated_events(
         // bus stays quiet rather than waking every subscriber for no news.
         return Ok((run, None));
     }
-    upsert_run(conn, &run)?;
     let history = load_events_upto(conn, &run.id, run.cursor_seq)?;
-    let projected = project_from_events(&run, &history, None)
-        .with_context(|| format!("project optimizer run {} at {}", run.id, run.cursor_seq))?;
-    for slice in projected {
-        cache_slice(conn, &slice)?;
-    }
     if is_terminal_status(&run.status) {
         // Sealed at the cursor the terminal event advanced to, in the same
         // transaction that appended it. A later poll cannot replace it.
         let manifest = terminal::derive(&run, &history, &run.status, None);
-        terminal::seal(conn, &run.id, &manifest)?;
+        let sealed = terminal::seal(conn, &run.id, &manifest)?;
+        // Carried on the run record too, so every surface that already reads a
+        // run — the progress card, the MCP poll, restart recovery — reads the
+        // frozen numbers without a second round trip, and cannot re-derive
+        // different ones from a later cursor.
+        if let Some(object) = run.summary.as_object_mut() {
+            object.insert("terminalManifest".into(), sealed);
+        }
+    }
+    upsert_run(conn, &run)?;
+    let projected = project_from_events(&run, &history, None)
+        .with_context(|| format!("project optimizer run {} at {}", run.id, run.cursor_seq))?;
+    for slice in projected {
+        cache_slice(conn, &slice)?;
     }
     let app_event = append_event(
         conn,
