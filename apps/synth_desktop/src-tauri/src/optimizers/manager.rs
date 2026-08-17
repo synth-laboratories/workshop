@@ -14,6 +14,7 @@ use super::OptimizerService;
 use crate::error::AppError;
 use crate::ipc::{serve_json, JsonHttpRequest, JsonHttpResponse};
 use anyhow::{anyhow, bail, Context, Result};
+use fs2::FileExt;
 use hyper::StatusCode;
 use rand::RngCore;
 use reqwest::Client;
@@ -50,6 +51,7 @@ pub const DEFAULT_ALGORITHM_VERSION: &str = "synth-optimizers-0.2.14";
 pub const OPTIMIZER_VISUAL_SLOT: &str = "optimizer_run";
 const MAX_CONCURRENT_GEPA_RECIPES: usize = 2;
 const SELECTED_VERSION_FILE: &str = "selected_version";
+const SERVICE_LOCK_FILE: &str = "service.lock";
 const SIGNING_KEY_FILE: &str = "signing.key";
 const API_KEY_FILE: &str = "api_key";
 const PAYLOAD_FILE: &str = "payload.json";
@@ -195,6 +197,8 @@ struct SidecarRuntime {
     api_key: String,
     version: String,
     digest: String,
+    /// OS lock on `<home>/service.lock`. Dropping the runtime releases it.
+    _service_lock: Option<fs::File>,
 }
 
 /// One in-process event spool per `optimizer_run_id`. Two campaigns never share
@@ -489,6 +493,7 @@ impl OptimizerManager {
     }
 
     pub fn select_version(&self, version: &str) -> Result<OptimizerSidecarVersion> {
+        self.refuse_mutation_while_workers("select_version")?;
         enforce_version_floor(version)?;
         let hit = self
             .discover()?
@@ -549,6 +554,7 @@ impl OptimizerManager {
         &self,
         spec: OptimizerSidecarInstallSpec,
     ) -> Result<OptimizerSidecarVersion> {
+        self.refuse_mutation_while_workers("install")?;
         validate_version_id(&spec.version)?;
         enforce_version_floor(&spec.version)?;
         fs::create_dir_all(&self.home)?;
@@ -602,8 +608,33 @@ impl OptimizerManager {
                 self.set_status(status).await;
                 return Ok(self.status().await);
             }
+            let occupied = self.occupied_worker_count().await;
+            if occupied > 0 {
+                let running = status.version.as_deref().unwrap_or("unknown");
+                bail!(
+                    "refusing to start Optimizers `{selected}` while {occupied} run(s) are active on `{running}`"
+                );
+            }
             self.abort_runtime().await;
+        } else {
+            let occupied = self.occupied_worker_count().await;
+            let running = self
+                .runtime
+                .lock()
+                .await
+                .as_ref()
+                .map(|runtime| runtime.version.clone());
+            if occupied > 0 && running.as_deref().is_some_and(|version| version != selected) {
+                let running = running.unwrap_or_else(|| "unknown".into());
+                bail!(
+                    "refusing to start Optimizers `{selected}` while {occupied} run(s) are active on `{running}`"
+                );
+            }
+            // Release the previous sidecar (and service.lock) without draining
+            // recipe workers — this is same-version recovery, not a mutation.
+            self.abort_sidecar().await;
         }
+        let service_lock = acquire_service_lock(&self.home)?;
         self.set_status(OptimizerSidecarStatus {
             phase: "starting".into(),
             base_url: None,
@@ -645,6 +676,7 @@ impl OptimizerManager {
             api_key: api_key.clone(),
             version: hit.version.clone(),
             digest: hit.digest.clone(),
+            _service_lock: Some(service_lock),
         });
         // env.sh is written after the handshake, not here. Publishing the
         // address before the service has proven anything is what left a
@@ -903,6 +935,23 @@ impl OptimizerManager {
         ids
     }
 
+    async fn occupied_worker_count(&self) -> usize {
+        self.gepa_workers.lock().await.len()
+    }
+
+    fn refuse_mutation_while_workers(&self, action: &str) -> Result<()> {
+        let occupied = match self.gepa_workers.try_lock() {
+            Ok(workers) => workers.len(),
+            Err(_) => {
+                bail!("refusing to {action} Optimizers while worker state is locked");
+            }
+        };
+        if occupied > 0 {
+            bail!("refusing to {action} Optimizers while {occupied} worker(s) exist");
+        }
+        Ok(())
+    }
+
     /// Append one producer event to the in-process spool for `run_id`.
     /// Reading another run's page does not seal this spool.
     pub async fn append_spool_event(&self, run_id: &str, event: Value) -> Result<()> {
@@ -1128,9 +1177,6 @@ impl OptimizerManager {
     }
 
     async fn abort_runtime(&self) {
-        // The exported address describes a service that is about to stop
-        // existing. Every teardown goes through here.
-        clear_env_sh(&self.home);
         let worker_pids = self
             .gepa_workers
             .lock()
@@ -1142,6 +1188,13 @@ impl OptimizerManager {
             })
             .collect::<Vec<_>>();
         terminate_process_groups(&worker_pids).await;
+        self.abort_sidecar().await;
+    }
+
+    async fn abort_sidecar(&self) {
+        // The exported address describes a service that is about to stop
+        // existing. Every teardown goes through here.
+        clear_env_sh(&self.home);
         if let Some(mut runtime) = self.runtime.lock().await.take() {
             runtime.proxy_task.abort();
             if let Some(child) = runtime.child.as_mut() {
@@ -1177,6 +1230,21 @@ fn default_home() -> PathBuf {
     env::var_os("SYNTH_OPTIMIZER_HOME")
         .map(PathBuf::from)
         .unwrap_or_else(|| crate::instance::state_root().join("optimizers"))
+}
+
+fn acquire_service_lock(home: &Path) -> Result<fs::File> {
+    fs::create_dir_all(home)?;
+    let path = home.join(SERVICE_LOCK_FILE);
+    let file = fs::OpenOptions::new()
+        .create(true)
+        .read(true)
+        .write(true)
+        .open(&path)
+        .with_context(|| format!("open optimizer service lock {}", path.display()))?;
+    file.try_lock_exclusive().map_err(|error| {
+        anyhow!("optimizer service.lock is held by another process ({error})")
+    })?;
+    Ok(file)
 }
 
 fn bind_addr() -> std::net::SocketAddr {
@@ -3364,5 +3432,81 @@ mod tests {
         .unwrap();
         let error = load_verified_manifest(mgr.home(), Path::new(&installed.path)).unwrap_err();
         assert!(error.to_string().contains("schema") || error.to_string().contains("digest"));
+    }
+
+    #[tokio::test]
+    async fn refuses_runtime_mutation_while_runs_are_active() {
+        let (mgr, home) = manager();
+        mgr.install(Some(DEFAULT_SIDECAR_VERSION)).unwrap();
+        mgr.install(Some(DEV_SIDECAR_VERSION)).unwrap();
+        mgr.select_version(DEFAULT_SIDECAR_VERSION).unwrap();
+        mgr.start().await.unwrap();
+        // Occupancy is the guard. Do not call release_gepa_recipe / abort_runtime
+        // while this sentinel is present: pid 1 would become kill(-1) and
+        // signal every process the test can reach.
+        mgr.gepa_workers.lock().await.insert(
+            "gepa_live".into(),
+            GepaWorkerState::Starting,
+        );
+
+        let select = mgr.select_version(DEV_SIDECAR_VERSION).unwrap_err();
+        assert!(
+            select.to_string().contains("select_version"),
+            "select_version: {select}"
+        );
+        let install = mgr.install(Some(DEV_SIDECAR_VERSION)).unwrap_err();
+        assert!(
+            install.to_string().contains("install"),
+            "install: {install}"
+        );
+
+        fs::write(
+            home.path().join(SELECTED_VERSION_FILE),
+            format!("{DEV_SIDECAR_VERSION}\n"),
+        )
+        .unwrap();
+        let start = mgr.start().await.unwrap_err();
+        assert!(
+            start.to_string().contains("refusing to start"),
+            "version-changing start: {start}"
+        );
+        assert!(start.to_string().contains(DEV_SIDECAR_VERSION));
+
+        fs::write(
+            home.path().join(SELECTED_VERSION_FILE),
+            format!("{DEFAULT_SIDECAR_VERSION}\n"),
+        )
+        .unwrap();
+        let same_version = mgr.start().await.unwrap();
+        assert_eq!(same_version.phase, "ready");
+        assert_eq!(
+            same_version.version.as_deref(),
+            Some(DEFAULT_SIDECAR_VERSION)
+        );
+
+        mgr.gepa_workers.lock().await.remove("gepa_live");
+        let _ = mgr.stop().await;
+    }
+
+    #[tokio::test]
+    async fn service_lock_is_held_for_the_running_sidecar() {
+        let (mgr, home) = manager();
+        mgr.install(None).unwrap();
+        mgr.start().await.unwrap();
+        let lock_path = home.path().join(SERVICE_LOCK_FILE);
+        assert!(lock_path.is_file());
+        let contender = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&lock_path)
+            .unwrap();
+        let blocked = FileExt::try_lock_exclusive(&contender);
+        assert!(
+            blocked.is_err(),
+            "running sidecar must hold service.lock exclusively"
+        );
+        let _ = mgr.stop().await;
+        FileExt::try_lock_exclusive(&contender)
+            .expect("service.lock must be released after stop");
     }
 }
