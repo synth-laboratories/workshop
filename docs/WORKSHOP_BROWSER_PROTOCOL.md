@@ -10,12 +10,12 @@ Every observation and action identifies `sessionId`, `tabId`, `documentRevision`
 
 Browser state—including Playwright handles, ref maps, profiles, tabs, dialogs, downloads, and canonical page state—remains in the browser process. The transcript receives only bounded semantic text and metadata. Snapshot/query text defaults to 16,000 characters, has a 20,000-character hard ceiling, and supports cursors and focused subtree reads. No raw DOM tool exists. Password values are omitted at the page boundary.
 
-The Playwright child receives no Tauri IPC credential. Navigation is restricted to an operator-configured origin allowlist stored in a private Workshop app-data file and reloaded on every navigation. Only human-facing Tauri commands can mutate it; the agent's read-only `browser_status` tool can report but not change it. Localhost is allowed by host name with arbitrary development ports. Navigation, popups, dialogs, origins, and actions are written to the profile audit log. Uploads require explicit paths under a configured root; downloads use the managed profile directory. Consequential labels fail closed unless a future Workshop host confirmation broker authorizes the exact action.
+The Playwright child receives no Tauri IPC credential. Navigation is restricted to an operator-configured origin allowlist stored in a private Workshop app-data file and reloaded on every navigation. Only human-facing Tauri commands can mutate it; the agent's read-only `browser_status` tool can report but not change it. Localhost is allowed by host name with arbitrary development ports. Navigation, popups, dialogs, origins, and actions are written to the profile audit log. Uploads require explicit paths under a folder selected with Workshop's native picker; downloads use the managed profile directory. The host prepares every action against one tab/document revision, asks the existing durable approval broker for consequential actions, and consumes a one-time token before execution. Changed documents, expired/reused tokens, ambiguous locators, and already-handled dialogs fail closed.
 
 Routing is:
 
 - managed browser for ordinary sites and local web apps;
-- future claimed Chrome tab only for existing authenticated Chrome state;
+- opt-in claimed Chrome tab only for existing authenticated Chrome state; the loopback CDP endpoint and exact title/URL match require human approval, and Workshop never closes the claimed user tab;
 - signed native helper for native apps and explicitly requested Safari;
 - visual fallback only for canvas/WebGL or missing semantic coverage.
 
@@ -23,7 +23,9 @@ Routing is:
 
 `apps/synth_desktop/browser/playwright_backend.mjs` launches headed persistent Chromium by default. `SYNTH_BROWSER_HEADLESS=1` exists only for automated verification. Named profiles persist cookies/storage between sessions. Session closure touches only its own context and tabs.
 
-The reference backend is end-to-end viable in the development tree. Context Settings now reports backend/Node/Playwright/Chromium readiness and provides the human-only per-origin approval UI. Production packaging is not complete: Workshop still needs a signed, pinned Node/Playwright/Chromium runtime (or replacement host), updater integration, and installed-app verification. Until the host confirmation broker is connected, consequential browser actions remain disabled rather than silently self-approved. Claimed existing Chrome tabs are also future work.
+The reference backend is end-to-end viable in the development tree. Context Settings reports backend/Node/Playwright/Chromium readiness, service/crash state, restart control, per-origin approvals, and native upload-folder selection. The host owns and supervises the backend process; the MCP adapter is an authenticated loopback proxy. A pinned Node 24.18.0, Playwright 1.62.1, and full headed Chromium 151.0.7922.34 runtime is assembled from `runtime.lock.json`, checksummed, pruned, and ready for Developer-ID signing. The current Apple Silicon assembly is 491 MiB. `scripts/verify-browser-production-gates.sh` is the fail-closed installed-app, updater/profile, and live-helper gate. Developer ID credentials, notarization credentials, an installed update pair, and live TCC grants are external release inputs, so this source change does not itself claim those gates passed.
+
+Claimed Chrome is implemented but deliberately off by default (`SYNTH_BROWSER_ENABLE_CHROME_CLAIM=1`). Chrome must itself be launched with a loopback debugging endpoint. Claiming requires exact host approval and exactly one title/URL match; closing the Workshop session preserves the claimed tab and closes only tabs Workshop created. This is a privileged compatibility path, not the default browser route.
 
 ## Acceptance evidence (2026-08-16, Apple Silicon macOS)
 
@@ -36,7 +38,7 @@ The reference backend is end-to-end viable in the development tree. Context Sett
 
 Run deterministic verification with `node --test apps/synth_desktop/browser/playwright_backend.test.mjs`. Run the network-dependent smoke check with `node apps/synth_desktop/browser/acceptance.mjs`.
 
-## Embedded-engine bakeoff
+## Embedded-engine bakeoff and CEF gate
 
 Use identical pages, actions, safety checks, and measurement scripts for every candidate:
 
@@ -51,9 +53,12 @@ Use identical pages, actions, safety checks, and measurement scripts for every c
 
 Candidates:
 
-- **CEF + cef-rs — primary embedded POC.** Gate production on real Workshop evidence for child-surface embedding, event-loop coexistence, focus/keyboard/mouse/IME, resizing and multi-display behavior, profile persistence, packaging, hardened runtime, signing/notarization, updater behavior, GPU stability, and renderer/browser crash isolation.
+- **CEF + cef-rs — primary embedded POC.** Gate production on real Workshop evidence for child-surface embedding, event-loop coexistence, focus/keyboard/mouse/IME, resizing and multi-display behavior, profile persistence, packaging, hardened runtime, signing/notarization, updater behavior, GPU stability, and renderer/browser crash isolation. A protocol adapter or compile-only demo is not a pass. The POC must run inside a signed Workshop build and publish the acceptance receipt and measurements above.
 - **WRY/WKWebView semantic bridge — lightweight challenger.** Run in an isolated content process/boundary and prove the same semantic/ref contract; do not grant page script direct Tauri IPC.
 - **Servo WebView — 2–3 day adversarial compatibility test.** Exercise authentication, modern SPAs, accessibility semantics, downloads/uploads, WebGL, and failure isolation before considering further investment.
 - **Lightpanda — later background extraction only.** It is not a candidate for the visible managed browser.
 
 No candidate advances by demo quality alone; it must pass the same acceptance suite and publish the same measurements.
+The machine-checkable receipt gate is `scripts/check-embedded-browser-bakeoff.sh RECEIPT.json`; it requires all embedding, input, persistence, signing/updater, stability, protocol, and measurement fields above.
+
+CEF remains **not production-ready** in this branch: no CEF distribution, signing identity, notarization profile, or installed updater pair is present in the worktree, and no child-surface/GPU/crash-isolation receipt exists. Those are evidence gates, not safe assumptions the implementation can substitute for.

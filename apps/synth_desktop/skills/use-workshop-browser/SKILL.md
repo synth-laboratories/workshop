@@ -10,7 +10,7 @@ Use the `mcp__synth_browser__browser_*` tools for ordinary websites and local de
 Routing is strict:
 
 - Managed Workshop Browser: ordinary websites and local web apps.
-- A future claimed Chrome tab: only when the user needs an already-authenticated Chrome session and that capability is available.
+- Claimed Chrome tab: only when the user needs existing authenticated Chrome state, the operator explicitly enabled it, Chrome exposes a loopback CDP endpoint, and the exact claim receives human approval. Never use it by default.
 - Native Computer Use: native macOS apps and explicitly requested Safari.
 - Screenshots: fallback for canvas/WebGL or when semantic reads are insufficient.
 
@@ -26,6 +26,8 @@ Read narrowly:
 
 Targets are either a revision-bound `ref` assembled from the response metadata plus an element id such as `e1`, or a semantic `locator` such as `{"locator":{"role":"button","name":"Save","exact":true}}`. Direct locator actions are allowed without a prior snapshot, but ambiguity fails closed. A ref is bound to its session, tab, and document revision; after navigation or DOM mutation, discard it and query again.
 
-Actions are `browser_click`, `browser_fill`, `browser_press`, `browser_scroll`, and `browser_back`. Values filled into credential fields must come from the user/browser flow and must never be repeated in chat. Upload only explicit files the user selected. Downloads go only to the managed profile destination. Send, publish, purchase, delete, submit, and similar consequential actions require an exact Workshop confirmation; never work around a `confirmation_required` refusal.
+Actions are `browser_click`, `browser_fill`, `browser_press`, `browser_scroll`, and `browser_back`. Values filled into credential fields must come from the user/browser flow and must never be repeated in chat. Upload only explicit files beneath a folder the human selected in Context Settings. Downloads go only to the managed profile destination. Use `browser_list_dialogs` and `browser_handle_dialog` for native page dialogs, and `browser_audit` for a bounded event tail. Send, publish, purchase, delete, submit, dialog acceptance, upload, and similar consequential actions require an exact Workshop confirmation; never work around a refusal.
+
+Use `browser_claim_chrome` only for the authenticated-state exception above. Provide enough title/URL text to match exactly one existing tab. A disabled, ambiguous, non-loopback, or denied claim is final. Never close or repurpose the user's claimed tab; Workshop preserves it when the claimed session closes.
 
 Use `browser_new_tab`, `browser_list_tabs`, and `browser_close_tab` to manage only Workshop-created tabs. Close the session when the task is complete unless the user asked to keep it running. Never touch unrelated user tabs.
