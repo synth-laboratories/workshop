@@ -82,6 +82,26 @@ function tokenTotalFromPayload(payload: Record<string, unknown>): number | undef
 	return undefined;
 }
 
+/** Bounded human-readable rendering for exact-action approval metadata. */
+export function formatApprovalPayloadValue(value: unknown, depth = 0): string {
+	if (typeof value === "string") return value.slice(0, 240);
+	if (typeof value === "number" || typeof value === "boolean") return String(value);
+	if (Array.isArray(value)) {
+		const rendered = value.slice(0, 8).map((item) => formatApprovalPayloadValue(item, depth + 1));
+		if (value.length > 8) rendered.push(`+${value.length - 8} more`);
+		return rendered.join(", ");
+	}
+	if (value && typeof value === "object") {
+		if (depth >= 2) return "structured details";
+		return Object.entries(value as Record<string, unknown>)
+			.filter(([, item]) => item !== null && item !== undefined && item !== "")
+			.slice(0, 12)
+			.map(([key, item]) => `${key}=${formatApprovalPayloadValue(item, depth + 1)}`)
+			.join(", ");
+	}
+	return "";
+}
+
 export function targetIdToExecutionTarget(targetId: string, adapter: string | null = null): ExecutionTarget {
 	const remoteAdapter = null;
 	const catalogTarget = modelCatalogEntry(targetId);
