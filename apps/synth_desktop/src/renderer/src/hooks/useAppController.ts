@@ -1260,6 +1260,16 @@ export function useAppController() {
 			if (visualId) reconcileOpenVisual(visualId);
 		};
 		const unlisten = bridges.visuals.onEvent((event) => {
+			// Visual events are durable CoreRuntime session events, but Codex's
+			// provider bridge intentionally projects only provider traffic. Fold the
+			// visual lane into the active session store as it arrives so a visual
+			// created by an optimizer appears in Outputs immediately; otherwise the
+			// pane could open while the same chat incorrectly said "No outputs yet"
+			// until a full transcript rehydrate after restart.
+			if (event.sessionId) {
+				const runtimeEvent = appEventToRuntimeEvent(event);
+				if (runtimeEvent) dispatchRuntimeEvent(runtimeEvent, { updateStatus: false });
+			}
 			const visualId =
 				typeof event.payload?.visualId === "string" ? event.payload.visualId : null;
 			if (!visualId) return;
