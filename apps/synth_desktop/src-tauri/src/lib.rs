@@ -927,7 +927,7 @@ pub(crate) async fn authorize_optimizer_recipe_start(
     let run = state
         .optimizers()
         .attach_paid_compute_approval(
-            run,
+            run.id,
             &paid_approval_id,
             paid_cap.max_cost_usd_micros,
             paid_cap.max_rollouts,

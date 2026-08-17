@@ -482,23 +482,34 @@ impl OptimizerService {
 
     pub(crate) async fn attach_paid_compute_approval(
         &self,
-        mut run: OptimizerRunRecord,
+        optimizer_run_id: String,
         approval_id: &str,
         max_cost_usd_micros: Option<u64>,
         max_rollouts: Option<u64>,
     ) -> Result<OptimizerRunRecord> {
-        run.usage.extra.insert(
-            "paidComputeApproval".into(),
-            json!({
-                "approvalId": approval_id,
-                "cap": {
-                    "maxCostUsdMicros": max_cost_usd_micros,
-                    "maxRollouts": max_rollouts,
-                },
-                "receiptViolation": false,
-            }),
-        );
-        self.persist_run(run).await
+        let approval_id = approval_id.to_string();
+        let db = self.db.clone();
+        db.run_transaction(move |conn| {
+            // Admission may start a very fast worker before the approval
+            // receipt is attached. Always patch the current durable record;
+            // persisting the pre-start return value can rewind cursor_seq and
+            // erase streamed progress that arrived in the meantime.
+            let mut run = load_run(conn, &optimizer_run_id)?;
+            run.usage.extra.insert(
+                "paidComputeApproval".into(),
+                json!({
+                    "approvalId": approval_id,
+                    "cap": {
+                        "maxCostUsdMicros": max_cost_usd_micros,
+                        "maxRollouts": max_rollouts,
+                    },
+                    "receiptViolation": false,
+                }),
+            );
+            upsert_run(conn, &run)?;
+            Ok(run)
+        })
+        .await
     }
 
     pub async fn list(&self, query: OptimizerQuery) -> Result<Vec<OptimizerRunRecord>> {
@@ -1514,7 +1525,8 @@ async fn materialize_optimizer_result(
         use sha2::{Digest, Sha256};
         format!("sha256:{:x}", Sha256::digest(text.as_bytes()))
     });
-    if run.status == "completed"
+    if run.algorithm_id == "gepa"
+        && run.status == "completed"
         && prompt
             .as_deref()
             .map(str::trim)
@@ -3667,15 +3679,36 @@ pub(in crate::optimizers) mod tests {
             )
             .await
             .unwrap();
-        let run = svc
-            .attach_paid_compute_approval(run, "approval-paid", Some(500_000), Some(4))
+        let started = OptimizerEventEnvelope {
+            schema_version: OPTIMIZER_EVENT_SCHEMA_VERSION.into(),
+            event_id: Some("gepa_cap_probe:started".into()),
+            event_type: "optimizer.run.started".into(),
+            sequence_number: 1,
+            occurred_at: chrono::Utc::now().to_rfc3339(),
+            optimizer_run_id: run.id.clone(),
+            algorithm_id: "gepa".into(),
+            level: Some("info".into()),
+            item: None,
+            delta: Map::from_iter([("status".into(), json!("running"))]),
+            snapshot: None,
+            usage_delta: None,
+            artifact_refs: vec![],
+            error: None,
+            raw: json!({}),
+        };
+        svc.append_events(run.id.clone(), vec![started])
             .await
             .unwrap();
+        let run = svc
+            .attach_paid_compute_approval(run.id, "approval-paid", Some(500_000), Some(4))
+            .await
+            .unwrap();
+        assert_eq!(run.cursor_seq, 1, "approval patch must not rewind progress");
         let event = OptimizerEventEnvelope {
             schema_version: OPTIMIZER_EVENT_SCHEMA_VERSION.into(),
             event_id: Some("gepa_cap_probe:1".into()),
             event_type: "optimizer.usage".into(),
-            sequence_number: 1,
+            sequence_number: 2,
             occurred_at: chrono::Utc::now().to_rfc3339(),
             optimizer_run_id: run.id.clone(),
             algorithm_id: "gepa".into(),
