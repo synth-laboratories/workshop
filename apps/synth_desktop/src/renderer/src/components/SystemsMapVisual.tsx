@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { ArtifactRef } from "../types/landing";
 import { bridges } from "../runtime/desktopBridge";
+import { publicError } from "../runtime/publicError";
 
 function decodeBase64Utf8(base64: string): string {
 	const bytes = Uint8Array.from(atob(base64), (char) => char.charCodeAt(0));
@@ -51,7 +52,7 @@ export function SystemsMapVisual({ artifact }: { artifact: ArtifactRef }) {
 					setError(null);
 				}
 			} catch (reason) {
-				if (!cancelled) setError(reason instanceof Error ? reason.message : String(reason));
+				if (!cancelled) setError(publicError(reason));
 			}
 		})();
 		return () => { cancelled = true; };
@@ -74,7 +75,7 @@ export function SystemsMapVisual({ artifact }: { artifact: ArtifactRef }) {
 			link.click();
 			setNotice(`Exported ${link.download}`);
 		} catch (reason) {
-			setNotice(`Export failed: ${reason instanceof Error ? reason.message : String(reason)}`);
+			setNotice(`Export failed: ${publicError(reason)}`);
 		}
 	};
 	const endDrag = (pointerId?: number) => {

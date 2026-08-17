@@ -7,6 +7,7 @@ import {
 	dispatchRuntimeEvent,
 	replaceSessionEvents
 } from "../stores/sessionStore";
+import { publicError } from "../runtime/publicError";
 import type { InternBridge } from "../bridge";
 
 /**
@@ -96,7 +97,7 @@ export function useForeignSessionEventBridge(args: {
 				);
 			} catch (reason) {
 				if (!disposed) {
-					showToast(reason instanceof Error ? reason.message : String(reason));
+					showToast(publicError(reason));
 				}
 			}
 		}

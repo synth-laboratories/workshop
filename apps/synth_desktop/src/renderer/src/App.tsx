@@ -13,6 +13,7 @@ import {
 	promptsForConversation,
 	setToolActivityMode
 } from "./preferences";
+import { publicError } from "./runtime/publicError";
 import { MainRoutes } from "./routes";
 import { bridges } from "./runtime/desktopBridge";
 
@@ -56,7 +57,7 @@ export default function App() {
 							try {
 								c.setPreferences(renameConversation(id, title));
 							} catch (reason) {
-								c.showToast(reason instanceof Error ? reason.message : String(reason));
+								c.showToast(publicError(reason));
 							}
 						}}
 						onPinChat={(id, pinned) => c.setPreferences(pinConversation(id, pinned))}
@@ -95,7 +96,7 @@ export default function App() {
 								c.refreshAccountSummary();
 								c.showToast("Signed out of Synth");
 							} catch (reason) {
-								c.showToast(reason instanceof Error ? reason.message : String(reason));
+								c.showToast(publicError(reason));
 							}
 						}}
 						onPauseToggle={() => c.setDownloadPaused((v) => !v)}

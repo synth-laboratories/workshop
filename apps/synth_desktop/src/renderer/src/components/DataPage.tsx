@@ -7,6 +7,7 @@ import type {
 	UsageLedgerEntry,
 	VisualRecord
 } from "@synth/runtime-protocol";
+import { publicError } from "../runtime/publicError";
 
 import { CONTAINER_POLL_MS } from "../limits";
 import { bridges } from "../runtime/desktopBridge";
@@ -170,7 +171,7 @@ export function DataPage({
 			setUsage(nextUsage);
 			setCounts(nextCounts);
 		} catch (reason) {
-			setError(reason instanceof Error ? reason.message : String(reason));
+			setError(publicError(reason));
 		}
 	}, []);
 
@@ -235,7 +236,7 @@ export function DataPage({
 				}
 			}
 		} catch (reason) {
-			setError(reason instanceof Error ? reason.message : String(reason));
+			setError(publicError(reason));
 		} finally {
 			setBusyId(null);
 		}
@@ -277,7 +278,7 @@ export function DataPage({
 			await refresh();
 			setAttachOpen(false);
 		} catch (reason) {
-			setError(reason instanceof Error ? reason.message : String(reason));
+			setError(publicError(reason));
 		} finally { setBusyId(null); }
 	};
 
@@ -313,7 +314,7 @@ export function DataPage({
 			});
 			onOpenVisual(shown);
 		} catch (reason) {
-			setError(reason instanceof Error ? reason.message : String(reason));
+			setError(publicError(reason));
 		} finally {
 			setBusyId(null);
 		}

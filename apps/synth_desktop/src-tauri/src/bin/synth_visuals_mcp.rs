@@ -125,6 +125,13 @@ fn parse_http_response(response: &str) -> Result<Value, String> {
         .ok_or_else(|| "empty visuals IPC response".to_string())?;
     let parsed: Value = serde_json::from_str(body).map_err(|error| error.to_string())?;
     if !(200..300).contains(&status) {
+        // A structured failure keeps its shape across this boundary. Prefixing
+        // it with the HTTP status turned `{"code": …, "remediation": …}` into an
+        // opaque string, so the transcript lost the code and the tool-loop
+        // breaker could no longer tell one root cause from another.
+        if parsed.get("code").and_then(Value::as_str).is_some() {
+            return Err(parsed.to_string());
+        }
         let detail = parsed
             .get("error")
             .or_else(|| parsed.get("detail"))
@@ -469,6 +476,27 @@ fn tools() -> Value {
     result
 }
 
+/// The session this MCP server was spawned for, which is the only session it
+/// may author into. Desktop writes `SYNTH_SESSION_ID` into each per-conversation
+/// server config; without it a created visual would have no owner, and an
+/// ownerless visual in an instance-global registry is adoptable by any chat.
+fn require_session_identity(session_env: &Option<String>, action: &str) -> Result<String, String> {
+    session_env
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned)
+        .ok_or_else(|| {
+            json!({
+                "code": "visual_session_identity_missing",
+                "error": format!("this visuals server has no bound session, so it cannot {action}"),
+                "retryable": false,
+                "remediation": "Chat-created visuals are owned by their conversation. Start this MCP server from a Desktop session so SYNTH_SESSION_ID is bound."
+            })
+            .to_string()
+        })
+}
+
 fn call_tool(name: &str, args: &Value) -> Result<Value, String> {
     let session_env = env::var("SYNTH_SESSION_ID").ok();
     match name {
@@ -494,12 +522,17 @@ fn call_tool(name: &str, args: &Value) -> Result<Value, String> {
             request("GET", &format!("/v1/visuals/{id}"), None)
         }
         "visual_create" | "visual_create_from_template" => {
+            // Ownership is bound by the host, not claimed by the caller. An
+            // agent-supplied `session_id` would let one chat author outputs
+            // into another chat's rail, and an unowned visual lands in an
+            // instance-global registry where every chat can adopt it.
+            let session_id = require_session_identity(&session_env, "create a visual")?;
             let body = json!({
                 "templateId": args.get("template_id"),
                 "title": args.get("title"),
                 "bindings": args.get("props").or_else(|| args.get("bindings")).cloned().unwrap_or(json!({})),
                 "id": args.get("instance_id"),
-                "sessionId": args.get("session_id").cloned().or_else(|| session_env.clone().map(Value::String)),
+                "sessionId": session_id,
                 "sourceAgentId": "mcp",
                 "content": args.get("content"),
                 "metadata": {
@@ -719,10 +752,15 @@ fn call_tool(name: &str, args: &Value) -> Result<Value, String> {
                 .get("visual_id")
                 .and_then(Value::as_str)
                 .ok_or("visual_id required")?;
+            // A fork is the explicit way to take another chat's visual as your
+            // own work, so the copy is owned by *this* session and keeps a
+            // record of what it came from. Adopting the original silently is
+            // what this replaces.
+            let session_id = require_session_identity(&session_env, "fork a visual")?;
             request(
                 "POST",
                 &format!("/v1/visuals/{id}/fork"),
-                Some(json!({"title": args.get("title")})),
+                Some(json!({"title": args.get("title"), "sessionId": session_id})),
             )
         }
         "visual_archive" => {
@@ -977,18 +1015,47 @@ fn capture_review(args: &Value) -> Result<Value, String> {
         window_receipt = capture_desktop_review(id, width, height, &png_path)?;
         "desktop-window"
     };
+    // A rendered observation is evidence about the pane, and only templates
+    // that declare an observation contract are certified against it. Requiring
+    // one from every Desktop-rendered visual made capture deterministically
+    // impossible for contract-free templates such as the Trace inspector, with
+    // no path that could ever succeed.
     let observation = if capture_mode == "desktop-window" {
-        let value = request("GET", &format!("/v1/review-observations/{id}"), None)?
+        let response = request("GET", &format!("/v1/review-observations/{id}"), None)?;
+        let observed = response
             .get("observation")
             .cloned()
-            .ok_or("review observation response is missing observation")?;
-        if value.get("renderedRevision").and_then(Value::as_i64) != Some(revision) {
-            return Err(format!(
-                "captured pane rendered revision {:?}, but durable revision is {revision}",
-                value.get("renderedRevision").and_then(Value::as_i64)
-            ));
+            .filter(|value| !value.is_null());
+        let required = response
+            .get("required")
+            .and_then(Value::as_bool)
+            .unwrap_or(true);
+        match observed {
+            Some(value) => {
+                let rendered = value.get("renderedRevision").and_then(Value::as_i64);
+                if rendered != Some(revision) {
+                    return Err(json!({
+                        "code": "visual_observation_stale",
+                        "visual_id": id,
+                        "rendered_revision": rendered,
+                        "durable_revision": revision,
+                        "retryable": true,
+                        "remediation": "The open pane is rendering an older revision. Re-show the visual, wait for the pane to settle on the current revision, then capture again."
+                    }).to_string());
+                }
+                Some(value)
+            }
+            None if required => {
+                return Err(json!({
+                    "code": "visual_observation_unavailable",
+                    "visual_id": id,
+                    "revision": revision,
+                    "retryable": true,
+                    "remediation": "This template declares an observation contract, so the pane must publish a rendered observation. Show the visual in Desktop and let it finish rendering before capturing."
+                }).to_string())
+            }
+            None => None,
         }
-        Some(value)
     } else {
         None
     };

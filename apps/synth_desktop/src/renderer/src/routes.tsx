@@ -6,6 +6,7 @@ import type {
 	VisualInstanceRecord,
 	VisualRecord
 } from "@synth/runtime-protocol";
+import { publicError } from "./runtime/publicError";
 import type { ArtifactRef, LandingState, LocalChat } from "./types/landing";
 import type { AccountViewModel } from "./runtime/accountView";
 import type { DeviceUsageSummary } from "./components/UsageSheet";
@@ -248,7 +249,7 @@ export function MainRoutes(props: MainRoutesProps): ReactNode {
 									openVisualRecord(visual);
 									showToast(`Created visual · ${visual.title}`);
 								} catch (reason) {
-									showToast(String(reason));
+									showToast(publicError(reason));
 								}
 							})();
 						}}
@@ -281,7 +282,7 @@ export function MainRoutes(props: MainRoutesProps): ReactNode {
 									const visual = await bridges.visuals.get(visualId);
 									openVisualRecord(visual);
 								} catch (reason) {
-									showToast(String(reason));
+									showToast(publicError(reason));
 								}
 							})();
 						}}

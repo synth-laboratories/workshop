@@ -152,6 +152,88 @@ fn validate_readiness_observation(
     Ok(())
 }
 
+/// Decide readiness from the *latest* review at each viewport width, not from
+/// every review ever recorded against the revision.
+///
+/// A live visual legitimately fails review before its stream starts and passes
+/// once evidence is terminal, and neither transition changes the durable
+/// revision. Requiring every historical review to pass therefore turned an
+/// honest pre-start failure into a permanent veto, and agents worked around it
+/// by bumping the revision for cosmetic reasons. Superseded reviews stay in
+/// `authoringReviews` as provenance; they just stop being vetoes.
+///
+/// Each returned receipt binds the certifying capture to its revision, bindings
+/// digest, transport state, evidence counts, and viewport, so a later reader can
+/// tell a current pass from a stale one without re-deriving it.
+fn certification_receipts(
+    visual_id: &str,
+    revision: i64,
+    current_reviews: &[&Value],
+    required_checks: &[&'static str],
+    contract: Option<&TemplateObservationContract>,
+    bindings_digest: Option<&str>,
+) -> Result<Vec<Value>> {
+    let mut latest_by_width: BTreeMap<u64, &Value> = BTreeMap::new();
+    for review in current_reviews {
+        let Some(width) = review.pointer("/viewport/width").and_then(Value::as_u64) else {
+            continue;
+        };
+        latest_by_width.insert(width, review);
+    }
+    if latest_by_width.len() < 2 {
+        anyhow::bail!("visual readiness requires reviews at two distinct viewport widths");
+    }
+    let mut receipts = Vec::new();
+    for (width, review) in &latest_by_width {
+        for check in required_checks {
+            if review
+                .pointer(&format!("/checks/{check}"))
+                .and_then(Value::as_bool)
+                != Some(true)
+            {
+                anyhow::bail!(
+                    "the latest review at width {width} is not passing required check {check}; \
+                     capture and review this width again once it renders correctly"
+                );
+            }
+        }
+        let mut receipt = json!({
+            "revision": revision,
+            "viewportWidth": width,
+            "viewportHeight": review.pointer("/viewport/height").cloned().unwrap_or(Value::Null),
+            "screenshotPath": review.get("screenshotPath").cloned().unwrap_or(Value::Null),
+            "captureTime": review.get("captureTime").cloned().unwrap_or(Value::Null),
+            "reviewedAt": review.get("reviewedAt").cloned().unwrap_or(Value::Null),
+        });
+        if let Some(contract) = contract {
+            let digest =
+                bindings_digest.context("current visual revision is missing bindings digest")?;
+            let observation: RenderedVisualObservation = serde_json::from_value(
+                review
+                    .get("observations")
+                    .cloned()
+                    .filter(|value| !value.is_null())
+                    .with_context(|| {
+                        format!(
+                            "the latest review at width {width} carries no rendered observation; \
+                             capture this width again with the pane open"
+                        )
+                    })?,
+            )
+            .context("visual review rendered observations are invalid")?;
+            validate_readiness_observation(contract, visual_id, revision, digest, &observation)?;
+            receipt["bindingsDigest"] = json!(digest);
+            receipt["transportState"] = json!(observation.transport_state);
+            receipt["terminal"] = json!(observation.terminal);
+            receipt["renderedFrameCount"] = json!(observation.rendered_frame_count);
+            receipt["semanticEventCount"] = json!(observation.semantic_event_count);
+            receipt["observedAt"] = json!(observation.observed_at);
+        }
+        receipts.push(receipt);
+    }
+    Ok(receipts)
+}
+
 use anyhow::{Context, Result};
 use hyper::StatusCode;
 use serde::{Deserialize, Serialize};
@@ -450,6 +532,18 @@ async fn route_request_inner(
                 extra_headers: Vec::new(),
             }
         }
+        Err(error) if crate::error::error_is::<crate::error::StructuredFailure>(&error) => {
+            let body = error
+                .chain()
+                .find_map(|cause| cause.downcast_ref::<crate::error::StructuredFailure>())
+                .map(crate::error::StructuredFailure::to_json)
+                .unwrap_or_else(|| json!({"code": "internal", "error": error.to_string()}));
+            JsonHttpResponse {
+                status: StatusCode::BAD_REQUEST,
+                body,
+                extra_headers: Vec::new(),
+            }
+        }
         Err(error) if crate::error::error_is::<crate::plugins::PluginNotReady>(&error) => {
             let body = error
                 .downcast_ref::<crate::plugins::PluginNotReady>()
@@ -493,7 +587,21 @@ async fn dispatch_request(
         if visual_id.is_empty() || visual_id.contains('/') {
             anyhow::bail!("invalid review observation visual id");
         }
-        return Ok(json!({"observation": rendered_observation(visual_id)?}));
+        // An absent observation is an answer, not a failure. Whether it is a
+        // *fatal* answer depends on the template's contract, and only this side
+        // knows the template — so report both and let capture decide once.
+        let registry = core.visuals();
+        let required = match registry.get(visual_id.to_string()).await {
+            Ok(visual) => registry
+                .get_template(&visual.template_id)
+                .map(|template| template.observation_contract.is_some())
+                .unwrap_or(false),
+            Err(_) => false,
+        };
+        return Ok(json!({
+            "observation": rendered_observation(visual_id).ok(),
+            "required": required,
+        }));
     }
     if method == "POST" && path == "/v1/review-window/resize" {
         return resize_review_window(app, &json_body);
@@ -506,6 +614,9 @@ async fn dispatch_request(
     }
     if path.starts_with("/v1/optimizers") {
         return dispatch_optimizer(method, path, json_body, core, app).await;
+    }
+    if path.starts_with("/v1/campaigns") {
+        return dispatch_campaigns(method, path, json_body, core).await;
     }
     if path.starts_with("/v1/traces") {
         return dispatch_traces(method, path, json_body, core).await;
@@ -1431,7 +1542,46 @@ pub async fn dispatch(method: &str, path: &str, body: Value, core: &CoreRuntime)
             let state = get_rollout_status(&client, &base, rollout_id)
                 .await?
                 .context("unknown rollout")?;
-            Ok(json!({"container_id": id, "rollout_id": rollout_id, "state": state}))
+            // A terminal rollout that names its seal gets imported here, on the
+            // authoritative reconciliation an agent already performs. Sealing
+            // and discoverability were two separate authorities with no edge
+            // between them: Containers held a complete sealed trace and
+            // Workshop's index stayed empty, so the inspector could not resolve
+            // a trace that demonstrably existed.
+            let import = if state.get("terminated").and_then(Value::as_bool) == Some(true) {
+                // A campaign's terminal count comes from the container's own
+                // record, captured on the reconciliation the agent already
+                // performs — not from a later retelling of it.
+                if core
+                    .data()
+                    .campaign_for_rollout(rollout_id.to_string())
+                    .await?
+                    .is_some()
+                {
+                    core.data()
+                        .campaign_record_terminal(
+                            rollout_id.to_string(),
+                            state.clone(),
+                            chrono::Utc::now().to_rfc3339(),
+                        )
+                        .await?;
+                }
+                match import_terminal_trace(core, id, rollout_id, &state).await {
+                    Ok(value) => value,
+                    // Import is reconciliation, not the answer to this call.
+                    // A failure here must not hide the rollout state the caller
+                    // asked for; it is reported beside it.
+                    Err(error) => json!({"indexed": false, "error": error.to_string()}),
+                }
+            } else {
+                Value::Null
+            };
+            Ok(json!({
+                "container_id": id,
+                "rollout_id": rollout_id,
+                "state": state,
+                "trace_import": import,
+            }))
         }
         ("POST", path)
             if path.starts_with("/v1/containers/") && path.ends_with("/rollouts/poll") =>
@@ -1533,6 +1683,10 @@ pub async fn dispatch(method: &str, path: &str, body: Value, core: &CoreRuntime)
                 )?;
             }
             let task_instance_id = require_task_instance(&body)?;
+            // A planned rollout runs the plan. Silently starting campaign
+            // rollout 7 against a different seed would produce a distribution
+            // whose points do not mean what the plan says they mean.
+            require_campaign_plan_match(core, rollout_id, &body, &task_instance_id).await?;
             let poll_url = resolve_declared_url(&base, &declared_poll_url(stream)?)?;
             let telemetry = normalized_rollout_telemetry(body.get("telemetry"))?;
             let client = crate::http::http_client_builder()
@@ -1623,8 +1777,20 @@ pub async fn dispatch(method: &str, path: &str, body: Value, core: &CoreRuntime)
             crate::recovery::crash_checkpoint(crate::recovery::checkpoints::AFTER_TOOL_RECEIPT);
             core.update_container_last_rollout(id.to_string(), rollout_id.to_string())
                 .await?;
+            let campaign_id = core
+                .data()
+                .campaign_for_rollout(rollout_id.to_string())
+                .await?;
+            if campaign_id.is_some() {
+                core.data()
+                    .campaign_record_started(
+                        rollout_id.to_string(),
+                        chrono::Utc::now().to_rfc3339(),
+                    )
+                    .await?;
+            }
             Ok(
-                json!({"container_id":id,"rollout_id":rollout_id,"visual_id":visual_id,"visual_revision":visual.current_revision,"state":state,"subscription":subscription,"started":true,"recovered":recovered}),
+                json!({"container_id":id,"rollout_id":rollout_id,"visual_id":visual_id,"visual_revision":visual.current_revision,"state":state,"subscription":subscription,"started":true,"recovered":recovered,"campaign_id":campaign_id}),
             )
         }
         ("POST", path) if path.starts_with("/v1/containers/") && path.ends_with("/rollouts") => {
@@ -2021,45 +2187,29 @@ pub async fn dispatch(method: &str, path: &str, body: Value, core: &CoreRuntime)
             }
             let template = registry.get_template(&current.template_id)?;
             let required = required_authoring_checks(&template);
-            for review in &current_reviews {
-                for check in &required {
-                    if review
-                        .pointer(&format!("/checks/{check}"))
-                        .and_then(Value::as_bool)
-                        != Some(true)
-                    {
-                        anyhow::bail!("visual review is not passing required check {check}");
-                    }
-                }
-            }
-            if let Some(contract) = template.observation_contract.as_ref() {
+            let bindings_digest = if template.observation_contract.is_some() {
                 let durable = registry
                     .revisions(id.to_string())
                     .await?
                     .into_iter()
                     .find(|candidate| candidate.revision == revision)
                     .context("current visual revision record is missing")?;
-                let bindings_digest = durable
-                    .bindings_digest
-                    .as_deref()
-                    .context("current visual revision is missing bindings digest")?;
-                for review in &current_reviews {
-                    let observation: RenderedVisualObservation = serde_json::from_value(
-                        review
-                            .get("observations")
-                            .cloned()
-                            .context("visual review is missing rendered observations")?,
-                    )
-                    .context("visual review rendered observations are invalid")?;
-                    validate_readiness_observation(
-                        contract,
-                        id,
-                        revision,
-                        bindings_digest,
-                        &observation,
-                    )?;
-                }
-            }
+                Some(
+                    durable
+                        .bindings_digest
+                        .context("current visual revision is missing bindings digest")?,
+                )
+            } else {
+                None
+            };
+            let receipts = certification_receipts(
+                id,
+                revision,
+                &current_reviews,
+                &required,
+                template.observation_contract.as_ref(),
+                bindings_digest.as_deref(),
+            )?;
             if let Some(kind) = crate::visuals::systems::template_kind(&current.template_id) {
                 let asset = registry.visual_source(id.to_string()).await?;
                 let bytes = base64::engine::general_purpose::STANDARD
@@ -2075,14 +2225,17 @@ pub async fn dispatch(method: &str, path: &str, body: Value, core: &CoreRuntime)
                     );
                 }
             }
-            let widths: std::collections::BTreeSet<u64> = current_reviews
-                .iter()
-                .filter_map(|review| review.pointer("/viewport/width").and_then(Value::as_u64))
-                .collect();
-            if widths.len() < 2 {
-                anyhow::bail!("visual readiness requires reviews at two distinct viewport widths");
-            }
-            metadata.insert("qualityGate".into(), json!({"ready": true, "revision": revision, "reviewCount": current_reviews.len(), "readyAt": chrono::Utc::now().to_rfc3339()}));
+            metadata.insert(
+                "qualityGate".into(),
+                json!({
+                    "ready": true,
+                    "revision": revision,
+                    "reviewCount": current_reviews.len(),
+                    "certifiedBy": receipts,
+                    "supersededReviewCount": current_reviews.len() - receipts.len(),
+                    "readyAt": chrono::Utc::now().to_rfc3339(),
+                }),
+            );
             let (visual, event) = registry
                 .update(
                     id.to_string(),
@@ -2498,6 +2651,385 @@ async fn dispatch_diagnostics(
     }
 }
 
+/// Fail an inspector request with a code that names the recovery, not with
+/// "trace not found".
+///
+/// Containers sealed a trace and Workshop's index did not have it, because
+/// nothing carries a sealed trace across that boundary on its own. The agent
+/// could only guess at binding shapes and paths. Say which side is missing it,
+/// and which call fixes that.
+async fn require_indexed_trace(core: &CoreRuntime, trace_id: &str) -> Result<()> {
+    if core.data().get_trace(trace_id.to_string()).await.is_ok() {
+        return Ok(());
+    }
+    Err(anyhow::Error::new(
+        crate::error::StructuredFailure::new(
+            "trace_not_indexed",
+            format!("{trace_id} is not in this Workshop's trace index"),
+            "A container can hold a sealed trace this Workshop has never imported. Import it by identity with trace_manage import {container_id, rollout_id}, then open it.",
+        )
+        .retryable(false)
+        .with_details(json!({"traceId": trace_id})),
+    ))
+}
+
+/// Import the seal a terminal rollout record names, unless it is already
+/// indexed. Silent when the container announces no trace: a rollout that sealed
+/// nothing is not a failure.
+async fn import_terminal_trace(
+    core: &CoreRuntime,
+    container_id: &str,
+    rollout_id: &str,
+    state: &Value,
+) -> Result<Value> {
+    let Some(reference) = state.get("trace").filter(|value| value.is_object()) else {
+        return Ok(Value::Null);
+    };
+    if let Some(trace_id) = reference.get("trace_id").and_then(Value::as_str) {
+        if core.data().get_trace(trace_id.to_string()).await.is_ok() {
+            return Ok(json!({"indexed": true, "duplicate": true, "traceId": trace_id}));
+        }
+    }
+    import_container_trace(core, container_id, rollout_id).await
+}
+
+/// Import a container's sealed trace by identity.
+///
+/// The container registry is the trusted side of this call: the agent names a
+/// container and a rollout, and Workshop resolves the URL itself. No path or
+/// URL crosses the agent boundary, which is the reason the trace tools reject
+/// those arguments in the first place.
+///
+/// Preference order is deliberate. A full Trace V5 bundle archive is the only
+/// input that can be *trusted*, indexed, and projected for the inspector; a
+/// lite seal document is recorded as a provenance-bearing import but cannot be
+/// projected, and this says so rather than reporting a success the inspector
+/// will contradict.
+async fn import_container_trace(
+    core: &CoreRuntime,
+    container_id: &str,
+    rollout_id: &str,
+) -> Result<Value> {
+    let container = core.data().get_container(container_id.to_string()).await?;
+    let base = validated_loopback_rollout_base(
+        container
+            .base_url
+            .as_deref()
+            .context("container has no base URL")?,
+    )?;
+    let client = crate::http::http_client_builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .timeout(limits::VISUALS_IPC_ROLL_TIMEOUT)
+        .build()?;
+    let state = get_rollout_status(&client, &base, rollout_id)
+        .await?
+        .context("unknown rollout")?;
+    let reference = state.get("trace").filter(|value| value.is_object());
+    let staging = core.data().staging_root().join("container-seals");
+    fs::create_dir_all(&staging)?;
+
+    // A bundle archive first: only a self-contained Trace V5 archive can be
+    // trusted, indexed, and projected into the inspector.
+    let bundle_url = reference
+        .and_then(|value| value.get("bundle_url"))
+        .and_then(Value::as_str)
+        .map(str::to_owned)
+        .unwrap_or_else(|| format!("/rollouts/{rollout_id}/trace/bundle"));
+    let bundle = fetch_trace_artifact(&client, &base, &bundle_url).await?;
+    let (source_path, source_kind) = if let Some(bytes) = bundle {
+        let path = staging.join(format!("{rollout_id}.trace-bundle.zip"));
+        fs::write(&path, bytes)?;
+        (path, "container_bundle")
+    } else {
+        let seal_url = reference
+            .and_then(|value| value.get("url"))
+            .and_then(Value::as_str)
+            .map(str::to_owned)
+            .unwrap_or_else(|| format!("/rollouts/{rollout_id}/trace"));
+        let Some(bytes) = fetch_trace_artifact(&client, &base, &seal_url).await? else {
+            return Err(anyhow::Error::new(
+                crate::error::StructuredFailure::new(
+                    "trace_not_sealed_by_container",
+                    format!("{container_id} has no sealed trace for rollout {rollout_id}"),
+                    "Wait for the rollout to reach a terminal state, then import again. A running rollout has sealed nothing yet.",
+                )
+                .retryable(true)
+                .with_details(json!({"containerId": container_id, "rolloutId": rollout_id})),
+            ));
+        };
+        let path = staging.join(format!("{rollout_id}.trace-v5.json"));
+        fs::write(&path, bytes)?;
+        (path, "container_seal")
+    };
+
+    let result = core
+        .data()
+        .ingest_trace_bundle(crate::trace_ingest::TraceBundleIngestRequest {
+            source_path: source_path.display().to_string(),
+            source_kind: Some(source_kind.to_owned()),
+            title: Some(format!("{rollout_id} · {container_id}")),
+            source_uri: Some(format!("{base}/rollouts/{rollout_id}")),
+        })
+        .await;
+    let _ = fs::remove_file(&source_path);
+    let (result, event) = result?;
+    core.broadcast_committed(event);
+
+    let indexed: Vec<Value> = result
+        .traces
+        .iter()
+        .map(|trace| json!({"traceId": trace.id, "digest": trace.digest}))
+        .collect();
+    Ok(json!({
+        "containerId": container_id,
+        "rolloutId": rollout_id,
+        "sourceKind": source_kind,
+        "compatibilityLevel": result.compatibility_level,
+        "trusted": result.trusted,
+        "duplicate": result.duplicate,
+        // Inspectable only when the import produced indexed trace records. A
+        // lite seal is retained with its provenance but cannot be projected,
+        // and saying otherwise is how an agent ends up retrying an inspector
+        // that can never render.
+        "inspectable": !indexed.is_empty(),
+        "traces": indexed,
+        "note": if indexed.is_empty() {
+            "Imported as a provenance record only: this container returned a lite seal, not a self-contained Trace V5 bundle, so it cannot be projected into the inspector."
+        } else {
+            "Sealed Trace V5 is now indexed in Workshop."
+        },
+    }))
+}
+
+/// Fetch one trace artifact, treating 404 as "this container does not offer it"
+/// rather than as a failure.
+async fn fetch_trace_artifact(
+    client: &reqwest::Client,
+    base: &str,
+    route: &str,
+) -> Result<Option<Vec<u8>>> {
+    let url = resolve_declared_url(base, route)?;
+    let response = client.get(url).send().await;
+    let response = match response {
+        Ok(response) => response,
+        // A container that never implemented the route is a fallback, not an
+        // error worth failing the whole import over.
+        Err(_) => return Ok(None),
+    };
+    if response.status() == reqwest::StatusCode::NOT_FOUND {
+        return Ok(None);
+    }
+    let bytes = response.error_for_status()?.bytes().await?;
+    if bytes.len() as u64 > limits::MAX_IMPORTED_TRACE_BYTES {
+        anyhow::bail!(
+            "container trace artifact exceeded {} bytes",
+            limits::MAX_IMPORTED_TRACE_BYTES
+        );
+    }
+    Ok(Some(bytes.to_vec()))
+}
+
+/// The campaign surface: plan, reconcile, settle.
+///
+/// Reconcile and settle both read the container's authoritative rollout records
+/// rather than anything an agent reports, because the failure this contract
+/// exists for is an agent's own summary of work it did not do.
+async fn dispatch_campaigns(
+    method: &str,
+    path: &str,
+    body: Value,
+    core: &CoreRuntime,
+) -> Result<Value> {
+    match (method, path) {
+        ("POST", "/v1/campaigns") => {
+            let container_id = json_field(&body, "containerId", "container_id")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .context("campaign requires container_id")?
+                .to_owned();
+            // Resolve the container now: a plan that names a container this
+            // instance does not have is not a plan.
+            core.data().get_container(container_id.clone()).await?;
+            let expected = json_field(&body, "expectedRollouts", "expected_rollouts")
+                .and_then(Value::as_i64)
+                .context("campaign requires expected_rollouts")?;
+            let seeds = json_field(&body, "seeds", "seeds").and_then(Value::as_array);
+            let seed_start = json_field(&body, "seedStart", "seed_start").and_then(Value::as_i64);
+            let seeds = crate::campaigns::resolve_seeds(seeds, seed_start, expected)?;
+            let id = json_field(&body, "campaignId", "campaign_id")
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+                .unwrap_or_else(|| format!("camp_{}", Uuid::new_v4().simple()));
+            let request = crate::campaigns::CampaignCreate {
+                id,
+                session_id: json_field(&body, "sessionRef", "session_id")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned)
+                    .or_else(|| std::env::var("SYNTH_SESSION_ID").ok()),
+                container_id,
+                title: json_field(&body, "title", "title")
+                    .and_then(Value::as_str)
+                    .unwrap_or("Evaluation campaign")
+                    .to_owned(),
+                expected_rollouts: expected,
+                max_concurrency: json_field(&body, "maxConcurrency", "max_concurrency")
+                    .and_then(Value::as_i64)
+                    .unwrap_or(4),
+                policy_ref: require_caller_policy_ref(&body)?,
+                seeds,
+                task_instance_template: json_field(&body, "taskInstance", "task_instance_template")
+                    .and_then(Value::as_str)
+                    .unwrap_or("seed:{seed}")
+                    .to_owned(),
+                created_at: chrono::Utc::now().to_rfc3339(),
+            };
+            let campaign = core.data().campaign_create(request).await?;
+            Ok(json!({
+                "campaign": campaign,
+                "instruction": "Start every planned rollout with its own rollout_id, seed, and task_instance_id, then reconcile. A campaign settles complete only when every planned rollout has a terminal record.",
+            }))
+        }
+        ("GET", path) if path.starts_with("/v1/campaigns/") && !path.contains('/') => {
+            let id = path.trim_start_matches("/v1/campaigns/");
+            Ok(json!({"campaign": core.data().campaign_get(id.to_string()).await?}))
+        }
+        ("POST", path) if path.ends_with("/reconcile") => {
+            let id = path
+                .trim_start_matches("/v1/campaigns/")
+                .trim_end_matches("/reconcile")
+                .trim_end_matches('/');
+            Ok(json!({"campaign": reconcile_campaign(core, id).await?}))
+        }
+        ("POST", path) if path.ends_with("/result") => {
+            let id = path
+                .trim_start_matches("/v1/campaigns/")
+                .trim_end_matches("/result")
+                .trim_end_matches('/');
+            // Reconcile first, always. A result computed from stale local state
+            // is the same failure as an agent's own summary.
+            reconcile_campaign(core, id).await?;
+            core.data()
+                .campaign_settle(id.to_string(), chrono::Utc::now().to_rfc3339())
+                .await
+        }
+        ("GET", path) if path.starts_with("/v1/campaigns/") => {
+            let id = path.trim_start_matches("/v1/campaigns/").trim_end_matches('/');
+            Ok(json!({"campaign": core.data().campaign_get(id.to_string()).await?}))
+        }
+        _ => anyhow::bail!("unsupported campaign IPC route {method} {path}"),
+    }
+}
+
+/// Hold a campaign rollout to the plan it was allocated.
+///
+/// A rollout id that belongs to a campaign carries that campaign's seed and task
+/// instance. Starting it with different ones would leave a ten-point
+/// distribution whose points are not the ten the plan named, and nothing
+/// downstream could tell.
+async fn require_campaign_plan_match(
+    core: &CoreRuntime,
+    rollout_id: &str,
+    body: &Value,
+    task_instance_id: &str,
+) -> Result<()> {
+    let Some(campaign_id) = core
+        .data()
+        .campaign_for_rollout(rollout_id.to_string())
+        .await?
+    else {
+        return Ok(());
+    };
+    let campaign = core.data().campaign_get(campaign_id.clone()).await?;
+    let Some(plan) = campaign
+        .rollouts
+        .iter()
+        .find(|rollout| rollout.rollout_id == rollout_id)
+    else {
+        return Ok(());
+    };
+    let seed = body.get("seed").and_then(Value::as_i64);
+    if let Some(seed) = seed {
+        if seed != plan.seed {
+            return Err(anyhow::Error::new(
+                crate::error::StructuredFailure::new(
+                    "campaign_rollout_plan_mismatch",
+                    format!(
+                        "{rollout_id} is planned for seed {} in campaign {campaign_id}, not seed {seed}",
+                        plan.seed
+                    ),
+                    "Start each campaign rollout with the seed and task instance its plan allocated, or create a new campaign.",
+                )
+                .with_details(json!({
+                    "campaignId": campaign_id,
+                    "rolloutId": rollout_id,
+                    "plannedSeed": plan.seed,
+                    "requestedSeed": seed,
+                })),
+            ));
+        }
+    }
+    if task_instance_id != plan.task_instance_id {
+        return Err(anyhow::Error::new(
+            crate::error::StructuredFailure::new(
+                "campaign_rollout_plan_mismatch",
+                format!(
+                    "{rollout_id} is planned for task instance {} in campaign {campaign_id}, not {task_instance_id}",
+                    plan.task_instance_id
+                ),
+                "Start each campaign rollout with the seed and task instance its plan allocated, or create a new campaign.",
+            )
+            .with_details(json!({
+                "campaignId": campaign_id,
+                "rolloutId": rollout_id,
+                "plannedTaskInstanceId": plan.task_instance_id,
+                "requestedTaskInstanceId": task_instance_id,
+            })),
+        ));
+    }
+    Ok(())
+}
+
+/// Ask the container about every planned rollout and record what it says.
+async fn reconcile_campaign(core: &CoreRuntime, id: &str) -> Result<crate::campaigns::Campaign> {
+    let campaign = core.data().campaign_get(id.to_string()).await?;
+    let container = core
+        .data()
+        .get_container(campaign.container_id.clone())
+        .await?;
+    let base = validated_loopback_rollout_base(
+        container
+            .base_url
+            .as_deref()
+            .context("container has no base URL")?,
+    )?;
+    let client = crate::http::http_client_builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .timeout(limits::VISUALS_IPC_ROLL_TIMEOUT)
+        .build()?;
+    for rollout in &campaign.rollouts {
+        // A rollout already settled from its own authoritative record is not
+        // re-read; reconciliation is for the ones still in flight.
+        if matches!(rollout.status.as_str(), "terminal" | "failed") {
+            continue;
+        }
+        let Some(state) = get_rollout_status(&client, &base, &rollout.rollout_id).await? else {
+            continue;
+        };
+        let now = chrono::Utc::now().to_rfc3339();
+        if state.get("terminated").and_then(Value::as_bool) == Some(true) {
+            core.data()
+                .campaign_record_terminal(rollout.rollout_id.clone(), state, now)
+                .await?;
+        } else if state.get("started").and_then(Value::as_bool) == Some(true) {
+            core.data()
+                .campaign_record_started(rollout.rollout_id.clone(), now)
+                .await?;
+        }
+    }
+    core.data().campaign_get(id.to_string()).await
+}
+
 async fn dispatch_traces(
     method: &str,
     path: &str,
@@ -2583,8 +3115,26 @@ async fn dispatch_traces(
                 "visual": shown,
             }))
         }
+        ("POST", "/v1/traces/import") => {
+            let container_id = body
+                .get("container_id")
+                .or_else(|| body.get("containerId"))
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .context("trace import requires container_id")?;
+            let rollout_id = body
+                .get("rollout_id")
+                .or_else(|| body.get("rolloutId"))
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .context("trace import requires rollout_id")?;
+            import_container_trace(core, container_id, rollout_id).await
+        }
         ("POST", "/v1/traces/open") => {
             let id = trace_id()?;
+            require_indexed_trace(core, &id).await?;
             let visual = crate::presentation::ensure_trace_inspector(core, &id).await?;
             let session_id = body
                 .get("sessionRef")
@@ -2881,6 +3431,138 @@ mod tests {
             error: None,
             observed_at: chrono::Utc::now().to_rfc3339(),
         }
+    }
+
+    fn review(width: u64, passing: bool, observation: Option<&RenderedVisualObservation>) -> Value {
+        let checks: serde_json::Map<String, Value> = BASE_AUTHORING_CHECKS
+            .iter()
+            .chain(["screenshotInspected", "imageReplay"].iter())
+            .map(|check| ((*check).to_string(), json!(passing)))
+            .collect();
+        json!({
+            "revision": 14,
+            "viewport": {"width": width, "height": 900},
+            "checks": Value::Object(checks),
+            "findings": [],
+            "screenshotPath": format!("/tmp/vis_1-r14-{width}x900.png"),
+            "captureTime": "2026-08-17T01:00:00Z",
+            "observations": observation.map(|value| serde_json::to_value(value).unwrap()),
+            "reviewedAt": "2026-08-17T01:00:01Z",
+        })
+    }
+
+    /// Seeds 202/204: honest pre-start reviews (no frames yet) kept vetoing
+    /// readiness after terminal evidence arrived on the same revision, and the
+    /// only workaround was a cosmetic revision bump.
+    #[test]
+    fn certification_uses_the_latest_review_at_each_width_not_all_history() {
+        let contract = live_contract();
+        let mut pre_start = rendered_observation();
+        pre_start.transport_state = "connecting".into();
+        pre_start.rendered_frame_count = 0;
+        pre_start.terminal = false;
+        let terminal = rendered_observation();
+        let required = required_authoring_checks(
+            &crate::visuals::resolve_template("live.craftax.v1").unwrap(),
+        );
+
+        let failed_wide = review(1280, false, Some(&pre_start));
+        let failed_compact = review(640, false, Some(&pre_start));
+        let passed_wide = review(1280, true, Some(&terminal));
+        let passed_compact = review(640, true, Some(&terminal));
+        let history = vec![
+            &failed_wide,
+            &failed_compact,
+            &passed_wide,
+            &passed_compact,
+        ];
+
+        let receipts = certification_receipts(
+            "vis_1",
+            14,
+            &history,
+            &required,
+            Some(&contract),
+            Some("bindings-14"),
+        )
+        .expect("terminal evidence must certify over a superseded pre-start failure");
+        assert_eq!(receipts.len(), 2);
+        assert_eq!(receipts[0]["viewportWidth"], 640);
+        assert_eq!(receipts[1]["viewportWidth"], 1280);
+        // The receipt binds the pass to the evidence it was taken from.
+        assert_eq!(receipts[0]["bindingsDigest"], "bindings-14");
+        assert_eq!(receipts[0]["transportState"], "terminal");
+        assert_eq!(receipts[0]["renderedFrameCount"], 21);
+    }
+
+    /// The inverse: a later failure at one width is not certified around by an
+    /// earlier pass at that same width.
+    #[test]
+    fn certification_rejects_a_width_whose_latest_review_regressed() {
+        let contract = live_contract();
+        let terminal = rendered_observation();
+        let required = required_authoring_checks(
+            &crate::visuals::resolve_template("live.craftax.v1").unwrap(),
+        );
+        let passed_wide = review(1280, true, Some(&terminal));
+        let passed_compact = review(640, true, Some(&terminal));
+        let failed_compact = review(640, false, Some(&terminal));
+        let history = vec![&passed_wide, &passed_compact, &failed_compact];
+        let error = certification_receipts(
+            "vis_1",
+            14,
+            &history,
+            &required,
+            Some(&contract),
+            Some("bindings-14"),
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("width 640"), "{error}");
+    }
+
+    /// The Trace inspector renders no image frames. Its contract must still be
+    /// certifiable from a terminal projection, which is what makes the template
+    /// reviewable at all.
+    #[test]
+    fn certification_admits_a_frameless_terminal_projection() {
+        let template = crate::visuals::resolve_template("trace.rollout_inspector.v1").unwrap();
+        let contract = template
+            .observation_contract
+            .clone()
+            .expect("the trace inspector must declare an observation contract");
+        assert!(!required_authoring_checks(&template).contains(&"imageReplay"));
+        let mut observation = rendered_observation();
+        observation.rendered_frame_count = 0;
+        observation.rollout_count = 1;
+        let required = required_authoring_checks(&template);
+        let wide = review(1280, true, Some(&observation));
+        let compact = review(640, true, Some(&observation));
+        let receipts = certification_receipts(
+            "vis_1",
+            14,
+            &[&wide, &compact],
+            &required,
+            Some(&contract),
+            Some("bindings-14"),
+        )
+        .expect("a sealed trace projection is terminal evidence");
+        assert_eq!(receipts.len(), 2);
+    }
+
+    #[test]
+    fn certification_requires_two_distinct_widths() {
+        let required = required_authoring_checks(
+            &crate::visuals::resolve_template("live.craftax.v1").unwrap(),
+        );
+        let first = review(1280, true, None);
+        let second = review(1280, true, None);
+        assert!(
+            certification_receipts("vis_1", 14, &[&first, &second], &required, None, None)
+                .unwrap_err()
+                .to_string()
+                .contains("two distinct viewport widths")
+        );
     }
 
     #[test]

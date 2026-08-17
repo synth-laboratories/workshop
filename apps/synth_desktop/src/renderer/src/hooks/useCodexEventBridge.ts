@@ -4,6 +4,7 @@ import {
 	codexResumeRequest,
 	isCodexCompactionEvent
 } from "../runtime/codexTurn";
+import { publicError } from "../runtime/publicError";
 import { codexEventToRuntime } from "../runtime/nativeCodex";
 import { dispatchRuntimeEvent } from "../stores/sessionStore";
 import type { CodexBridge, CodexEvent } from "../bridge";
@@ -119,7 +120,7 @@ export function useCodexEventBridge(args: {
 					.then(() => showToast("Compacting context…"))
 					.catch((reason) => {
 						manualCompactionPendingRef.current.delete(event.sessionId);
-						showToast(reason instanceof Error ? reason.message : String(reason));
+						showToast(publicError(reason));
 					});
 			}
 			dispatchRuntimeEvent(runtimeEvent, {

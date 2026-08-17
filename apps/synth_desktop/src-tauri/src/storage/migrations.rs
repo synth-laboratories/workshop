@@ -24,6 +24,7 @@ const MIGRATIONS: &[&str] = &[
     MIGRATION_19,
     MIGRATION_20,
     MIGRATION_21,
+    MIGRATION_22,
 ];
 
 /// Apply every migration the database has not reached yet.
@@ -1338,6 +1339,58 @@ ON usage_records(status, completed_at_ms DESC);
 
 CREATE INDEX IF NOT EXISTS usage_records_window
 ON usage_records(completed_at_ms DESC);
+"#;
+
+/// Evaluation campaigns: the plan a set of rollouts belongs to.
+///
+/// Five chats were asked for one ten-rollout evaluation each and each produced a
+/// single rollout, because "evaluation" was a word in a prompt rather than a
+/// contract with a count. A campaign records how many terminal rollouts it owes
+/// and which seeds are its own, before any of them run.
+///
+/// A seed is unique *within* a campaign here; overlap between campaigns that are
+/// still open is rejected when the plan is created, since a seed reused by a
+/// later, unrelated experiment is legitimate and a permanent uniqueness
+/// constraint would forbid it.
+const MIGRATION_22: &str = r#"
+CREATE TABLE IF NOT EXISTS eval_campaigns (
+    id TEXT PRIMARY KEY,
+    session_id TEXT,
+    container_id TEXT NOT NULL,
+    title TEXT NOT NULL,
+    expected_rollouts INTEGER NOT NULL CHECK (expected_rollouts > 0),
+    max_concurrency INTEGER NOT NULL CHECK (max_concurrency > 0),
+    policy_ref_json TEXT NOT NULL,
+    plan_json TEXT NOT NULL,
+    status TEXT NOT NULL CHECK (status IN ('planned','running','complete','partial','failed')),
+    created_at TEXT NOT NULL,
+    started_at TEXT,
+    settled_at TEXT
+);
+
+CREATE INDEX IF NOT EXISTS eval_campaigns_session ON eval_campaigns(session_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS eval_campaign_rollouts (
+    campaign_id TEXT NOT NULL REFERENCES eval_campaigns(id) ON DELETE CASCADE,
+    rollout_id TEXT NOT NULL,
+    ordinal INTEGER NOT NULL,
+    seed INTEGER NOT NULL,
+    task_instance_id TEXT NOT NULL,
+    status TEXT NOT NULL CHECK (status IN ('planned','started','terminal','failed','missing')),
+    terminal_json TEXT,
+    started_at TEXT,
+    settled_at TEXT,
+    PRIMARY KEY (campaign_id, rollout_id)
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS eval_campaign_rollouts_ordinal
+ON eval_campaign_rollouts(campaign_id, ordinal);
+
+CREATE UNIQUE INDEX IF NOT EXISTS eval_campaign_rollout_identity
+ON eval_campaign_rollouts(rollout_id);
+
+CREATE UNIQUE INDEX IF NOT EXISTS eval_campaign_seed_identity
+ON eval_campaign_rollouts(campaign_id, seed);
 "#;
 
 #[cfg(test)]

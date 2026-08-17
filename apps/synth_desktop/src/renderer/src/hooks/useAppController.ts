@@ -18,6 +18,7 @@ import type {
 	VisualInstanceRecord,
 	VisualRecord
 } from "@synth/runtime-protocol";
+import { publicError } from "../runtime/publicError";
 import {
 	dispatchLocalSessionStatus,
 	dispatchRuntimeEvent,
@@ -390,7 +391,7 @@ export function useAppController() {
 	useEffect(() => {
 		let disposed = false;
 		void loadMachinePermissions().catch((reason) => {
-			if (!disposed) showToast(`Could not load machine permissions: ${reason instanceof Error ? reason.message : String(reason)}`);
+			if (!disposed) showToast(`Could not load machine permissions: ${publicError(reason)}`);
 		});
 		return () => { disposed = true; };
 	}, [loadMachinePermissions, showToast]);
@@ -657,7 +658,7 @@ export function useAppController() {
 		const mode = approvalModeFromConfig(nextApprovalPolicy, nextSandboxMode);
 		if (isDesktop) {
 			void bridges.config?.updateDesktopPermissions({ approvalPolicy: nextApprovalPolicy, sandboxMode: nextSandboxMode })
-				.catch((reason) => showToast(`Could not save machine permissions: ${reason instanceof Error ? reason.message : String(reason)}`));
+				.catch((reason) => showToast(`Could not save machine permissions: ${publicError(reason)}`));
 		}
 		if (!activeSessionId) {
 			setApprovalMode(mode); setApprovalPolicy(nextApprovalPolicy); setSandboxMode(nextSandboxMode);
@@ -678,7 +679,7 @@ export function useAppController() {
 		setPreferences(setPermissionPreferences(nextApprovalPolicy, nextSandboxMode));
 		const config = { approvalPolicy: nextApprovalPolicy, sandbox: nextSandboxMode };
 		patchSessionMetadata(activeSessionId, { approvalMode: mode, ...config });
-		void nativeCodex?.close(activeSessionId).catch((reason) => showToast(reason instanceof Error ? reason.message : String(reason)));
+		void nativeCodex?.close(activeSessionId).catch((reason) => showToast(publicError(reason)));
 	}, [activeSessionId, isDesktop, nativeCodex, showToast]);
 
 	useEffect(() => {
@@ -689,7 +690,7 @@ export function useAppController() {
 		if (session.metadata.approvalPolicy === approvalPolicy && session.metadata.sandbox === sandboxMode) return;
 		const mode = approvalModeFromConfig(approvalPolicy, sandboxMode);
 		patchSessionMetadata(activeSessionId, { approvalMode: mode, approvalPolicy, sandbox: sandboxMode });
-		void nativeCodex?.close(activeSessionId).catch((reason) => showToast(reason instanceof Error ? reason.message : String(reason)));
+		void nativeCodex?.close(activeSessionId).catch((reason) => showToast(publicError(reason)));
 	}, [activeSessionId, approvalPolicy, nativeCodex, sandboxMode, sessions, showToast]);
 
 	useEffect(() => {
@@ -1152,7 +1153,7 @@ export function useAppController() {
 			dispatchVisualRevision({ type: "close" });
 			setOpenContainer(container);
 		} catch (reason) {
-			showToast(reason instanceof Error ? reason.message : String(reason));
+			showToast(publicError(reason));
 		}
 	}, [openContainer?.id, showToast]);
 
@@ -1163,7 +1164,7 @@ export function useAppController() {
 			setOpenContainer(container);
 			showToast(`${container.name} · ${container.status}`);
 		} catch (reason) {
-			showToast(reason instanceof Error ? reason.message : String(reason));
+			showToast(publicError(reason));
 		}
 	}, [openContainer, showToast]);
 
@@ -1217,7 +1218,7 @@ export function useAppController() {
 			},
 			(reason) => {
 				if (openArtifactIdRef.current !== visualId || visualRequestGenerationRef.current !== generation) return;
-				dispatchVisualRevision({ type: "fail", id: visualId, generation, error: String(reason) });
+				dispatchVisualRevision({ type: "fail", id: visualId, generation, error: publicError(reason) });
 				if (pendingVisualRefreshRef.current?.generation === generation) pendingVisualRefreshRef.current = null;
 			}
 		);
@@ -1650,7 +1651,7 @@ export function useAppController() {
 
 	const onNewConversation = useCallback(() => {
 		void loadMachinePermissions()
-			.catch((reason) => showToast(`Could not load machine permissions: ${reason instanceof Error ? reason.message : String(reason)}`))
+			.catch((reason) => showToast(`Could not load machine permissions: ${publicError(reason)}`))
 				.finally(() => {
 					setView({ kind: "landing" });
 					setOpenArtifactId(null);
@@ -1722,7 +1723,7 @@ export function useAppController() {
 			showToast("Compacting context…");
 		} catch (reason) {
 			manualCompactionPendingRef.current.delete(activeSessionId);
-			showToast(reason instanceof Error ? reason.message : String(reason));
+			showToast(publicError(reason));
 		} finally {
 			setBusy(false);
 		}

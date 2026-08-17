@@ -79,7 +79,7 @@ fn request(method: &str, path: &str, body: Option<Value>) -> Result<Value, Strin
 
 fn tools() -> Value {
     json!({"tools":[
-        {"name":"trace_manage","description":"Inspect sealed Trace V5 archives, run typed read-only queries over the trace index, and open a trace in the Desktop right panel. Archives are never mutated and no SQL is accepted. Load the use-synth-traces skill.","inputSchema":{"type":"object","properties":{"operation":{"type":"string","enum":["list","get","open","query","snapshot","open_query"]},"arguments":{"type":"object","properties":{"trace_id":{"type":"string"},"snapshot_id":{"type":"string"},"query":{"type":"object","description":"Typed trace query. Fields are allow-listed and compile to a parameterized statement; a hard row cap applies."}},"additionalProperties":false}},"required":["operation"],"additionalProperties":false}}
+        {"name":"trace_manage","description":"Inspect sealed Trace V5 archives, run typed read-only queries over the trace index, import a container's sealed trace by identity, and open a trace in the Desktop right panel. Archives are never mutated and no SQL is accepted. Load the use-synth-traces skill.","inputSchema":{"type":"object","properties":{"operation":{"type":"string","enum":["list","get","open","query","snapshot","open_query","import"]},"arguments":{"type":"object","properties":{"trace_id":{"type":"string"},"snapshot_id":{"type":"string"},"container_id":{"type":"string","description":"import only: the registered container that sealed the trace. Workshop resolves its URL itself."},"rollout_id":{"type":"string","description":"import only: the rollout whose sealed trace to import."},"query":{"type":"object","description":"Typed trace query. Fields are allow-listed and compile to a parameterized statement; a hard row cap applies."}},"additionalProperties":false}},"required":["operation"],"additionalProperties":false}}
     ]})
 }
 
@@ -98,7 +98,16 @@ fn call_tool(name: &str, args: &Value) -> Result<Value, String> {
         for key in object.keys() {
             if !matches!(
                 key.as_str(),
-                "trace_id" | "snapshot_id" | "query" | "sessionRef" | "session_id"
+                "trace_id"
+                    | "snapshot_id"
+                    | "query"
+                    | "sessionRef"
+                    | "session_id"
+                    // Import names a container and a rollout, never a path or a
+                    // URL: Workshop resolves the container's address from its
+                    // own trusted registry.
+                    | "container_id"
+                    | "rollout_id"
             ) {
                 return Err(format!("trace arguments reject `{key}`"));
             }
@@ -111,6 +120,7 @@ fn call_tool(name: &str, args: &Value) -> Result<Value, String> {
         "query" => request("POST", "/v1/traces/query", Some(nested)),
         "snapshot" => request("POST", "/v1/traces/snapshot", Some(nested)),
         "open_query" => request("POST", "/v1/traces/open_query", Some(nested)),
+        "import" => request("POST", "/v1/traces/import", Some(nested)),
         other => Err(format!("unknown trace operation `{other}`")),
     }
 }
@@ -146,6 +156,27 @@ mod tests {
         let err = call_tool(
             "trace_manage",
             &json!({"operation":"open","arguments":{"trace_id":"t1","path":"/etc/passwd"}}),
+        )
+        .unwrap_err();
+        assert!(err.contains("reject"), "{err}");
+    }
+
+    /// Import exists because a container can seal a trace this Workshop has
+    /// never seen. It still may not take a path or a URL: identity in, resolved
+    /// address on the trusted side.
+    #[test]
+    fn import_takes_identities_and_still_refuses_paths() {
+        let catalog = tools();
+        let operations = catalog["tools"][0]["inputSchema"]["properties"]["operation"]["enum"]
+            .as_array()
+            .unwrap();
+        assert!(operations.iter().any(|value| value == "import"));
+        let encoded = catalog["tools"][0]["inputSchema"].to_string();
+        assert!(!encoded.contains("\"path\""));
+        assert!(!encoded.contains("\"url\""));
+        let err = call_tool(
+            "trace_manage",
+            &json!({"operation":"import","arguments":{"container_id":"ctr_1","bundle_path":"/tmp/x"}}),
         )
         .unwrap_err();
         assert!(err.contains("reject"), "{err}");

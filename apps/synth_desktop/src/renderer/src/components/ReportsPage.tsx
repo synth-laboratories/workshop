@@ -14,6 +14,7 @@ import type {
 	ReportVisibilityRequest,
 	ResearchLogEntry
 } from "../bridge";
+import { publicError } from "../runtime/publicError";
 
 type Tab = "all" | "draft" | "sealed" | "archived";
 type AppendixView = "ledger" | "lineage" | "inspector";
@@ -212,7 +213,7 @@ export function ReportsPage({ onBack }: Props) {
 			}
 			setError(null);
 		} catch (reason) {
-			setError(String(reason));
+			setError(publicError(reason));
 		} finally {
 			setLoading(false);
 		}
@@ -249,7 +250,7 @@ export function ReportsPage({ onBack }: Props) {
 			setCompareBundle(null);
 			await load(created.id);
 		} catch (reason) {
-			setError(String(reason));
+			setError(publicError(reason));
 		}
 	}
 
@@ -273,7 +274,7 @@ export function ReportsPage({ onBack }: Props) {
 			});
 			await load(selected.id);
 		} catch (reason) {
-			setError(String(reason));
+			setError(publicError(reason));
 		}
 	}
 
@@ -286,7 +287,7 @@ export function ReportsPage({ onBack }: Props) {
 			setCompareBundle(null);
 			await load(selected.id);
 		} catch (reason) {
-			setError(String(reason));
+			setError(publicError(reason));
 		}
 	}
 
@@ -295,7 +296,7 @@ export function ReportsPage({ onBack }: Props) {
 			setSealedBundle(await bridges.reports!.getSeal(receiptDigest));
 			setCompareBundle(null);
 		} catch (reason) {
-			setError(String(reason));
+			setError(publicError(reason));
 		}
 	}
 
@@ -305,7 +306,7 @@ export function ReportsPage({ onBack }: Props) {
 			if (!sealedBundle) setSealedBundle(bundle);
 			else setCompareBundle(bundle);
 		} catch (reason) {
-			setError(String(reason));
+			setError(publicError(reason));
 		}
 	}
 
@@ -322,7 +323,7 @@ export function ReportsPage({ onBack }: Props) {
 			});
 			await load(selected?.id);
 		} catch (reason) {
-			setError(String(reason));
+			setError(publicError(reason));
 		}
 	}
 
@@ -333,7 +334,7 @@ export function ReportsPage({ onBack }: Props) {
 			setSealedBundle(bundle);
 			setCompareBundle(null);
 		} catch (reason) {
-			setError(String(reason));
+			setError(publicError(reason));
 		}
 	}
 
@@ -345,7 +346,7 @@ export function ReportsPage({ onBack }: Props) {
 			}
 			await load(selected?.id);
 		} catch (reason) {
-			setError(String(reason));
+			setError(publicError(reason));
 		}
 	}
 
@@ -356,7 +357,7 @@ export function ReportsPage({ onBack }: Props) {
 			else await bridges.reports!.archive(selected.id);
 			await load(selected.id);
 		} catch (reason) {
-			setError(String(reason));
+			setError(publicError(reason));
 		}
 	}
 
@@ -395,7 +396,7 @@ export function ReportsPage({ onBack }: Props) {
 			setSelectedTraceIndex(Math.max(nextTraces.length - 1, 0));
 			await load(selected.id);
 		} catch (reason) {
-			setError(String(reason));
+			setError(publicError(reason));
 		}
 	}
 
@@ -409,7 +410,7 @@ export function ReportsPage({ onBack }: Props) {
 			setCommentBody("");
 			await load(selected.id);
 		} catch (reason) {
-			setError(String(reason));
+			setError(publicError(reason));
 		}
 	}
 
@@ -426,7 +427,7 @@ export function ReportsPage({ onBack }: Props) {
 			setExperimentTitle("");
 			await load(selected.id);
 		} catch (reason) {
-			setError(String(reason));
+			setError(publicError(reason));
 		}
 	}
 
@@ -443,7 +444,7 @@ export function ReportsPage({ onBack }: Props) {
 			setLogBody("");
 			await load(selected.id);
 		} catch (reason) {
-			setError(String(reason));
+			setError(publicError(reason));
 		}
 	}
 

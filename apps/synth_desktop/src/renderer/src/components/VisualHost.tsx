@@ -10,6 +10,7 @@ import {
 	resolveTemplate,
 	resolveVisualBindings
 } from "@synth/visuals";
+import { publicError, toPublicError, type PublicError } from "../runtime/publicError";
 import type { VisualAnnotation, VisualSeal, VisualSealBundle, VisualUpload } from "../bridge";
 import { loadVisualShell } from "../runtime/visualsLoader";
 import { bridges } from "../runtime/desktopBridge";
@@ -105,7 +106,7 @@ function SubagentsVisual({ artifact }: { artifact: ArtifactRef }) {
 			(reason) => {
 				if (!cancelled) {
 					setDetail(null);
-					setDetailError(reason instanceof Error ? reason.message : String(reason));
+					setDetailError(publicError(reason));
 				}
 			}
 		);
@@ -298,6 +299,9 @@ function TemplateVisualHost({ artifact }: { artifact: ArtifactRef }) {
 		status: "idle" | "loading" | "ready" | "error";
 		props: Record<string, unknown>;
 		error?: string;
+		/** Structured form of the same failure, so the pane can show the stable
+		 * code and its remediation instead of only a sentence. */
+		failure?: PublicError;
 	}>({ status: "idle", props: {} });
 	const [connectionState, setConnectionState] = useState<
 		"loading" | "replaying" | "subscribed" | "stale" | "reconnecting" | "terminal" | "failed"
@@ -380,7 +384,7 @@ function TemplateVisualHost({ artifact }: { artifact: ArtifactRef }) {
 					component: "visual-host",
 					event: "visual.shell.load_failed",
 					code: DIAGNOSTIC_CODES.visualShellLoadFailed,
-					message: reason instanceof Error ? reason.message : String(reason),
+					message: publicError(reason),
 					details: { templateId },
 				});
 			});
@@ -485,8 +489,9 @@ function TemplateVisualHost({ artifact }: { artifact: ArtifactRef }) {
 			})
 			.catch((reason) => {
 				if (cancelled) return;
-				const message = reason instanceof Error ? reason.message : String(reason);
-				setTraceResolution({ status: "error", props: {}, error: message });
+				const failure = toPublicError(reason, "Trace projection resolution failed");
+				const message = publicError(reason, "Trace projection resolution failed");
+				setTraceResolution({ status: "error", props: {}, error: message, failure });
 				reportDiagnostic({
 					...visualIdentity,
 					severity: "error",
@@ -589,7 +594,7 @@ function TemplateVisualHost({ artifact }: { artifact: ArtifactRef }) {
 				}
 			} catch (reason) {
 				if (!cancelled) {
-					const message = reason instanceof Error ? reason.message : String(reason);
+					const message = publicError(reason);
 					setOptimizerPayload(null);
 					setOptimizerLoadError(message);
 					setConnectionState("failed");
@@ -683,7 +688,13 @@ function TemplateVisualHost({ artifact }: { artifact: ArtifactRef }) {
 				: lower.includes("unsupported") || lower.includes("schema") ? "Unsupported trace schema"
 					: lower.includes("not found") || lower.includes("missing") || lower.includes("archive") ? "Sealed trace archive missing"
 						: lower.includes("unavailable") ? "Trace resolver unavailable" : "Trace data unavailable";
-		return <VisualInvalidState title={title} detail={detail} />;
+		return <VisualInvalidState
+			title={title}
+			detail={traceResolution.failure?.message ?? detail}
+			code={traceResolution.failure?.code}
+			remediation={traceResolution.failure?.remediation}
+			traceId={typeof traceBindings[0]?.source === "string" ? traceBindings[0].source : undefined}
+		/>;
 	}
 	if (!Shell) return <p className="visual-loading">Loading visual shell…</p>;
 	const resolvedProps = { ...synchronouslyResolved.props, ...traceResolution.props };
@@ -773,8 +784,29 @@ function VisualObservationBoundary({ artifact, children }: { artifact: ArtifactR
 	return <div ref={root} data-visual-observation-contract={contract?.schemaVersion}>{children}</div>;
 }
 
-function VisualInvalidState({ title, detail }: { title: string; detail: string }) {
-	return <div className="visual-invalid" role="alert" data-testid="visual-invalid"><strong>{title}</strong><p>{detail}</p></div>;
+/** A failed pane still has to be diagnosable. The sentence goes on top; the
+ * stable code, the trace identity, and the remediation go underneath, because
+ * "Trace data unavailable" alone sent agents into blind capture retries. */
+function VisualInvalidState({ title, detail, code, remediation, traceId }: {
+	title: string;
+	detail: string;
+	code?: string;
+	remediation?: string;
+	traceId?: string;
+}) {
+	return (
+		<div className="visual-invalid" role="alert" data-testid="visual-invalid" data-error-code={code}>
+			<strong>{title}</strong>
+			<p>{detail}</p>
+			{remediation ? <p className="visual-invalid-remediation">{remediation}</p> : null}
+			{code || traceId ? (
+				<p className="visual-invalid-identity">
+					{code ? <code data-testid="visual-invalid-code">{code}</code> : null}
+					{traceId ? <code data-testid="visual-invalid-trace">{traceId}</code> : null}
+				</p>
+			) : null}
+		</div>
+	);
 }
 
 class VisualErrorBoundary extends Component<
@@ -880,7 +912,7 @@ export function VisualPane({ artifact, onClose }: { artifact: ArtifactRef; onClo
 					setSeals(nextSeals);
 				}
 			})
-			.catch((reason) => { if (!cancelled) setArtifactError(String(reason)); });
+			.catch((reason) => { if (!cancelled) setArtifactError(publicError(reason)); });
 		return () => { cancelled = true; };
 	}, [visualId, revision]);
 
@@ -901,7 +933,7 @@ export function VisualPane({ artifact, onClose }: { artifact: ArtifactRef; onClo
 			setLabelPoint(null);
 			setLabelBody("");
 		} catch (reason) {
-			setArtifactError(String(reason));
+			setArtifactError(publicError(reason));
 		} finally {
 			setBusy(false);
 		}
@@ -916,7 +948,7 @@ export function VisualPane({ artifact, onClose }: { artifact: ArtifactRef; onClo
 			setSeals((current) => [nextSeal, ...current.filter((row) => row.receiptDigest !== nextSeal.receiptDigest)]);
 			setSealedBundle(await bridges.visuals.getSeal(nextSeal.receiptDigest));
 		} catch (reason) {
-			setArtifactError(String(reason));
+			setArtifactError(publicError(reason));
 		} finally {
 			setBusy(false);
 		}
@@ -935,7 +967,7 @@ export function VisualPane({ artifact, onClose }: { artifact: ArtifactRef; onClo
 			setCompareBundle(null);
 			setShareUpload(upload);
 		} catch (reason) {
-			setArtifactError(String(reason));
+			setArtifactError(publicError(reason));
 		} finally {
 			setBusy(false);
 		}
@@ -950,7 +982,7 @@ export function VisualPane({ artifact, onClose }: { artifact: ArtifactRef; onClo
 			if (!sealedBundle) setSealedBundle(bundle);
 			else setCompareBundle(bundle);
 		} catch (reason) {
-			setArtifactError(String(reason));
+			setArtifactError(publicError(reason));
 		} finally {
 			setBusy(false);
 		}
@@ -966,7 +998,7 @@ export function VisualPane({ artifact, onClose }: { artifact: ArtifactRef; onClo
 			setCompareBundle(null);
 			setShareUpload(null);
 		} catch (reason) {
-			setArtifactError(String(reason));
+			setArtifactError(publicError(reason));
 		} finally {
 			setBusy(false);
 		}
@@ -981,7 +1013,7 @@ export function VisualPane({ artifact, onClose }: { artifact: ArtifactRef; onClo
 			setShareUpload(upload);
 			if (upload.committedUrl) await navigator.clipboard?.writeText(upload.committedUrl).catch(() => undefined);
 		} catch (reason) {
-			setArtifactError(String(reason));
+			setArtifactError(publicError(reason));
 		} finally {
 			setBusy(false);
 		}

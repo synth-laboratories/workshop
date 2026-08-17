@@ -7,7 +7,7 @@ pub mod generation_speed;
 #[path = "../migration/mod.rs"]
 pub mod legacy_migration;
 mod live_spool;
-mod migrations;
+pub(crate) mod migrations;
 mod model_performance;
 mod models;
 pub mod usage_records;

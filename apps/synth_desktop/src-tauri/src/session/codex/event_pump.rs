@@ -88,7 +88,7 @@ pub(crate) struct EventPumpState {
     pub pending_compact_sources: Arc<Mutex<HashMap<String, String>>>,
     /// Typed terminal notifications that can race ahead of `turn/start`'s
     /// response. The manager consumes one when it creates that run.
-    pub early_terminal_turns: Arc<Mutex<HashMap<String, (String, Value)>>>,
+    pub early_terminal_turns: Arc<Mutex<HashMap<String, Option<(String, Value)>>>>,
     pub performance_trackers: PerformanceTrackers,
     pub receipts: Arc<crate::credential_broker::ReceiptStore>,
     pub approvals: Arc<crate::session::approval::ApprovalBroker>,
@@ -394,10 +394,22 @@ async fn read_stdout<R: tauri::Runtime>(
             terminal_method,
             "turn/completed" | "turn/failed" | "turn/interrupted"
         ) {
-            persistence.early_terminal_turns.lock().await.insert(
-                session_id.clone(),
-                (terminal_method.to_owned(), params.clone()),
-            );
+            // A pending entry means `turn/start` has not finished registering
+            // its durable run. Update that mailbox while holding its one lock;
+            // otherwise the manager could remove the marker in between the
+            // ownership check and this terminal write.
+            let manager_owns_terminal = {
+                let mut terminals = persistence.early_terminal_turns.lock().await;
+                if terminals.contains_key(&session_id) {
+                    terminals.insert(
+                        session_id.clone(),
+                        Some((terminal_method.to_owned(), params.clone())),
+                    );
+                    true
+                } else {
+                    false
+                }
+            };
             persistence
                 .pending_compact_sources
                 .lock()
@@ -415,45 +427,48 @@ async fn read_stdout<R: tauri::Runtime>(
             // The turn is over; drop the claim before the durable run settles,
             // so no window exists where a finished turn still looks live.
             persistence.persistence.release_turn(&session_id).await;
-            if let Ok(Some(session)) = persistence
-                .persistence
-                .get_session(session_id.clone())
-                .await
-            {
-                if let Some(run_id) = session.active_run_id {
-                    let run_status = match terminal_method {
-                        "turn/completed" => RunStatus::Completed,
-                        "turn/failed" => RunStatus::Failed,
-                        _ => RunStatus::Interrupted,
-                    };
-                    if let Some(runs) = persistence.persistence.runs() {
-                        if let Ok(mutation) = runs
-                            .transition(
-                                run_id,
-                                run_status,
-                                Some(params.clone()),
-                                EventSource::Codex,
-                            )
-                            .await
-                        {
-                            if let Some(event) = mutation.event {
-                                let _ = persistence.persistence.publish_event(&app, event).await;
-                            }
-                        }
-                    }
-                } else if let Ok(Some(mutation)) = persistence
+            if !manager_owns_terminal {
+                if let Ok(Some(session)) = persistence
                     .persistence
-                    .transition_session(
-                        session_id.clone(),
-                        status,
-                        EventSource::Codex,
-                        params.clone(),
-                    )
+                    .get_session(session_id.clone())
                     .await
                 {
-                    // No active run: still advance Session through the machine.
-                    if let Some(event) = mutation.event {
-                        let _ = persistence.persistence.publish_event(&app, event).await;
+                    if let Some(run_id) = session.active_run_id {
+                        let run_status = match terminal_method {
+                            "turn/completed" => RunStatus::Completed,
+                            "turn/failed" => RunStatus::Failed,
+                            _ => RunStatus::Interrupted,
+                        };
+                        if let Some(runs) = persistence.persistence.runs() {
+                            if let Ok(mutation) = runs
+                                .transition(
+                                    run_id,
+                                    run_status,
+                                    Some(params.clone()),
+                                    EventSource::Codex,
+                                )
+                                .await
+                            {
+                                if let Some(event) = mutation.event {
+                                    let _ =
+                                        persistence.persistence.publish_event(&app, event).await;
+                                }
+                            }
+                        }
+                    } else if let Ok(Some(mutation)) = persistence
+                        .persistence
+                        .transition_session(
+                            session_id.clone(),
+                            status,
+                            EventSource::Codex,
+                            params.clone(),
+                        )
+                        .await
+                    {
+                        // No active run: still advance Session through the machine.
+                        if let Some(event) = mutation.event {
+                            let _ = persistence.persistence.publish_event(&app, event).await;
+                        }
                     }
                 }
             }
@@ -475,10 +490,16 @@ async fn read_stdout<R: tauri::Runtime>(
         // interruption below is best-effort, and an unreleased claim would
         // outlive it.
         persistence.persistence.release_turn(&session_id).await;
+        let terminal_pending = persistence
+            .early_terminal_turns
+            .lock()
+            .await
+            .get(&session_id)
+            .is_some_and(Option::is_some);
         let was_running = {
             let mut records = persistence.records.write().await;
             records.get_mut(&session_id).is_some_and(|record| {
-                if !SessionStatus::Running.equals_str(&record.status) {
+                if terminal_pending || !SessionStatus::Running.equals_str(&record.status) {
                     return false;
                 }
                 record.status = SessionStatus::Interrupted.as_str().into();

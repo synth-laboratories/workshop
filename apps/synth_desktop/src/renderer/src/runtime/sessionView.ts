@@ -1569,13 +1569,65 @@ export function eventsToLocalActivity(
 
 export { assertLocalActivityPlacementInvariant } from "./activityPlacementInvariant";
 
+/** Operations that make a visual *this chat's* output.
+ *
+ * The durable visual registry is instance-global, so a visual returned by
+ * `list`, `get`, `show`, `capture_review`, or `review` is very often someone
+ * else's. Adopting on any call that happened to carry a visual record is how a
+ * chat claimed outputs it had merely looked at. Reading is not owning. */
+const VISUAL_OWNERSHIP_OPERATIONS = new Set([
+	"create",
+	"create_from_template",
+	"update",
+	"bind",
+	"bind_data_source",
+	"save",
+	"save_tsx",
+	"fork",
+	"archive"
+]);
+
+const VISUAL_OWNERSHIP_TOOLS = new Set([
+	"visual_create",
+	"visual_create_from_template",
+	"visual_update",
+	"visual_bind_data_source",
+	"visual_save",
+	"visual_save_tsx",
+	"visual_fork",
+	"visual_archive"
+]);
+
+function toolClaimsVisualOwnership(tool: string, args: Record<string, unknown>): boolean {
+	// `visual_manage` is one advertised tool covering every operation, so its
+	// name alone says nothing about whether this call authored anything.
+	if (tool === "visual_manage") {
+		const operation = (stringField(args, "operation") ?? "").toLowerCase();
+		return VISUAL_OWNERSHIP_OPERATIONS.has(operation);
+	}
+	return VISUAL_OWNERSHIP_TOOLS.has(tool);
+}
+
+/** A visual belongs to the session that created it, and to no other.
+ *
+ * A visual with no recorded owner stays adoptable, so chats that predate
+ * ownership keep their own rails. One that names a *different* owner is never
+ * adopted, however it arrived here. */
+function visualBelongsToSession(visual: Record<string, unknown>, sessionId: string): boolean {
+	const owner = stringField(visual, "sessionId", "session_id", "ownerSessionId", "owner_session_id");
+	return !owner || owner === sessionId;
+}
+
 function toolResultToArtifact(event: RuntimeEvent): ArtifactRef | undefined {
 	const item = eventItem(event);
 	const server = (stringField(item, "server", "pluginId", "plugin_id") ?? "").toLowerCase();
 	const tool = (stringField(item, "tool", "name", "toolName", "tool_name") ?? "").toLowerCase();
 	if (server !== "synth_visuals" || !VISUAL_MUTATION_TOOLS.has(tool)) return undefined;
+	const args = parseJsonObject(item.arguments) ?? {};
+	if (!toolClaimsVisualOwnership(tool, args)) return undefined;
 	const visual = visualFromToolResult(item);
 	if (!visual) return undefined;
+	if (!visualBelongsToSession(visual, event.sessionId)) return undefined;
 	const id = stringField(visual, "id", "visualId", "visual_id");
 	const templateId = stringField(visual, "templateId", "template_id");
 	if (!id || !templateId) return undefined;
@@ -1628,6 +1680,12 @@ export function eventsToArtifacts(events: RuntimeEvent[]): ArtifactRef[] {
 			continue;
 		}
 		const payload = event.payload ?? {};
+		// Showing a visual puts it in the pane; it does not make it this chat's
+		// output. The show event is journaled against whoever opened it, so the
+		// record's own owner is the only authority on that.
+		if (event.eventKind === "visual.show" && !visualBelongsToSession(payload, event.sessionId)) {
+			continue;
+		}
 		const id =
 			typeof payload.visualId === "string"
 				? payload.visualId

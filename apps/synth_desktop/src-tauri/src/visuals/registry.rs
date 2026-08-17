@@ -566,6 +566,11 @@ impl VisualRegistry {
                     "revision": record.current_revision,
                     "title": record.title,
                     "templateId": record.template_id,
+                    // Who *owns* this visual, which is not who opened it. The
+                    // registry is instance-global: without this, a chat that
+                    // displayed another chat's visual could not be told apart
+                    // from the chat that authored it.
+                    "ownerSessionId": record.session_id,
                 }),
                 remote_sequence: None,
                 command_id: None,
@@ -751,7 +756,20 @@ impl VisualRegistry {
         } else if systems::template_kind(&visual.template_id).is_some() {
             self.render_systems(id).await
         } else {
-            bail!("visual {id} has no dedicated renderer")
+            // Native rendering is for deterministic source-to-SVG templates.
+            // Every other template is a React shell that only exists once the
+            // Desktop pane renders it, so "no dedicated renderer" is not a
+            // defect to retry around — it is the wrong tool. Name the right one,
+            // with a code the tool-loop breaker can tell apart from a fault.
+            Err(anyhow!(crate::error::StructuredFailure::new(
+                "visual_renderer_not_native",
+                format!(
+                    "{} renders in the Desktop pane, not through a native renderer",
+                    visual.template_id
+                ),
+                "Show the visual in Desktop and use capture_review to produce review evidence; render is only for mermaid and systems diagrams.",
+            )
+            .with_details(json!({"visualId": id, "templateId": visual.template_id}))))
         }
     }
 

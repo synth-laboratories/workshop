@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import type { LagunaDownloadProgress, LagunaModelHit, LagunaStatus } from "../bridge";
 import { ProviderMark } from "./ProviderMark";
 import { bridges } from "../runtime/desktopBridge";
+import { publicError } from "../runtime/publicError";
 
 function formatBytes(bytes: number): string {
 	if (!Number.isFinite(bytes) || bytes <= 0) return "0 B";
@@ -44,7 +45,7 @@ export function OnDeviceModelsSettings({ lagunaPhase, onReloadLaguna }: Props) {
 		try {
 			setHits((await bridges.laguna?.listModels()) ?? []);
 		} catch (reason) {
-			setError(reason instanceof Error ? reason.message : String(reason));
+			setError(publicError(reason));
 		} finally {
 			setBusy(false);
 		}
@@ -73,7 +74,7 @@ export function OnDeviceModelsSettings({ lagunaPhase, onReloadLaguna }: Props) {
 			setReloadState("ready");
 			setReloadDetail(status.detail ?? "Model is ready.");
 		} catch (reason) {
-			setError(reason instanceof Error ? reason.message : String(reason));
+			setError(publicError(reason));
 		} finally {
 			setBusy(false);
 		}
@@ -88,7 +89,7 @@ export function OnDeviceModelsSettings({ lagunaPhase, onReloadLaguna }: Props) {
 			await bridges.laguna?.deleteModel(modelId);
 			setHits((await bridges.laguna?.listModels()) ?? []);
 		} catch (reason) {
-			setError(reason instanceof Error ? reason.message : String(reason));
+			setError(publicError(reason));
 		} finally {
 			setBusy(false);
 		}
@@ -103,7 +104,7 @@ export function OnDeviceModelsSettings({ lagunaPhase, onReloadLaguna }: Props) {
 			await bridges.laguna?.setModelDirectory(path);
 			setHits((await bridges.laguna?.listModels()) ?? []);
 		} catch (reason) {
-			setError(reason instanceof Error ? reason.message : String(reason));
+			setError(publicError(reason));
 		} finally {
 			setBusy(false);
 		}
@@ -116,7 +117,7 @@ export function OnDeviceModelsSettings({ lagunaPhase, onReloadLaguna }: Props) {
 			await bridges.laguna?.setModelDirectory(path);
 			setHits((await bridges.laguna?.listModels()) ?? []);
 		} catch (reason) {
-			setError(reason instanceof Error ? reason.message : String(reason));
+			setError(publicError(reason));
 		} finally {
 			setBusy(false);
 		}
@@ -131,7 +132,7 @@ export function OnDeviceModelsSettings({ lagunaPhase, onReloadLaguna }: Props) {
 			setReloadDetail(status.detail ?? "Laguna XS is ready.");
 		} catch (reason) {
 			setReloadState("error");
-			setReloadDetail(reason instanceof Error ? reason.message : String(reason));
+			setReloadDetail(publicError(reason));
 		}
 	};
 
