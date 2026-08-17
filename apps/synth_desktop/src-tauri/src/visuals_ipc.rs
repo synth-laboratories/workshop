@@ -496,6 +496,9 @@ async fn dispatch_request(
     if path.starts_with("/v1/plugins") {
         return dispatch_plugins(method, path, json_body, core, app).await;
     }
+    if path.starts_with("/v1/computer-use") {
+        return dispatch_computer_use(method, path, json_body, core, app).await;
+    }
     if method == "POST" && path == "/v1/sessions/present" {
         return present_session(app, core, json_body).await;
     }
@@ -2513,6 +2516,72 @@ async fn dispatch_traces(
             }))
         }
         _ => anyhow::bail!("unsupported trace IPC route {method} {path}"),
+    }
+}
+
+/// Computer Use over loopback IPC.
+///
+/// Three routes only. There is deliberately no install, enable, or remove here:
+/// the lifecycle of the plugin that hands an agent control of the machine is
+/// human-only, and the agent-facing adapter cannot reach what does not exist.
+/// See `docs/COMPUTER_USE.md` §4.
+async fn dispatch_computer_use(
+    method: &str,
+    path: &str,
+    body: Value,
+    core: &CoreRuntime,
+    app: &AppHandle,
+) -> Result<Value> {
+    let session_id = body
+        .get("sessionRef")
+        .or_else(|| body.get("session_id"))
+        .and_then(Value::as_str)
+        .map(str::to_owned)
+        .or_else(|| std::env::var("SYNTH_SESSION_ID").ok());
+
+    match (method, path) {
+        ("GET", "/v1/computer-use/status") => {
+            // Refreshing grants is best effort: a helper that is not installed
+            // yet must still produce a status that says so, rather than an
+            // error the agent cannot interpret.
+            let _ = core.computer_use().refresh_grants().await;
+            let status = core.computer_use().status().await;
+            let apps = match session_id.as_deref() {
+                Some(session) => core.computer_use().allowlisted_apps(session).await,
+                None => Vec::new(),
+            };
+            Ok(json!({ "status": status, "allowedApps": apps }))
+        }
+        ("POST", "/v1/computer-use/perform") => {
+            let session_id = session_id.ok_or_else(|| {
+                anyhow::anyhow!("computer use requires an agent session for approval")
+            })?;
+            let action: crate::computer_use::vocabulary::Action =
+                serde_json::from_value(body.clone())
+                    .map_err(|error| anyhow::anyhow!("unusable action: {error}"))?;
+            let broker = app
+                .try_state::<Arc<crate::session::approval::ApprovalBroker>>()
+                .ok_or_else(|| {
+                    anyhow::anyhow!("the approval broker is unavailable; refusing to act")
+                })?;
+            // Opening the run lazily keeps the agent from having to call a
+            // separate `begin`, which is a step it would forget and a state it
+            // would then have to recover from.
+            let store = crate::storage::content_store::ContentStore::new(
+                core.storage().content_root(),
+            );
+            let _ = core.computer_use().begin(&session_id, store).await;
+            core.computer_use()
+                .perform(app, broker.inner(), &session_id, action)
+                .await
+        }
+        ("POST", "/v1/computer-use/end") => {
+            if let Some(session) = session_id.as_deref() {
+                core.computer_use().end(session).await?;
+            }
+            Ok(json!({ "ended": true }))
+        }
+        _ => anyhow::bail!("unsupported computer-use IPC route {method} {path}"),
     }
 }
 

@@ -611,16 +611,24 @@ pub(crate) fn ensure_home(home: &Path, request: &CodexSessionStartRequest) -> Re
         let app_name = crate::instance::display_name();
         let bundle_id = crate::instance::bundle_id().unwrap_or_default();
         let mut existing = fs::read_to_string(home.join("config.toml")).unwrap_or_default();
-        for (server, binary) in [
-            ("synth_plugins", "synth-plugins-mcp"),
-            ("synth_containers", "synth-containers-mcp"),
-            ("synth_visuals", "synth-visuals-mcp"),
-            ("synth_optimizers", "synth-optimizers-mcp"),
-            ("synth_session", "synth-session-mcp"),
-            ("synth_traces", "synth-traces-mcp"),
-            ("synth_diagnostics", "synth-diagnostics-mcp"),
+        // The group is per server, not global. Computer Use has its own so it
+        // never inherits `bundled`'s always-on default — see
+        // `docs/COMPUTER_USE.md` §4.
+        for (server, binary, group) in [
+            ("synth_plugins", "synth-plugins-mcp", "bundled"),
+            ("synth_containers", "synth-containers-mcp", "bundled"),
+            ("synth_visuals", "synth-visuals-mcp", "bundled"),
+            ("synth_optimizers", "synth-optimizers-mcp", "bundled"),
+            ("synth_session", "synth-session-mcp", "bundled"),
+            ("synth_traces", "synth-traces-mcp", "bundled"),
+            ("synth_diagnostics", "synth-diagnostics-mcp", "bundled"),
+            (
+                "synth_computer_use",
+                "synth-computer-use-mcp",
+                crate::context::COMPUTER_USE_MCP_GROUP,
+            ),
         ] {
-            if !crate::context::mcp_group_enabled("bundled") {
+            if !crate::context::mcp_group_enabled(group) {
                 continue;
             }
             // A disabled plugin keeps its MCP server registered. Dropping it
@@ -946,6 +954,12 @@ pub(crate) fn mcp_enabled_tools(server: &str) -> &'static str {
         "synth_plugins" => "enabled_tools = [\"plugin_manage\"]\n",
         "synth_session" => "enabled_tools = [\"session_present\"]\n",
         "synth_diagnostics" => "enabled_tools = [\"diagnostics_manage\"]\n",
+        // `computer_use_status` stays advertised even when the plugin is not
+        // ready, so the agent can say what is missing instead of silently
+        // lacking the capability and improvising a worse path. G4.
+        "synth_computer_use" => {
+            "enabled_tools = [\"computer_use\", \"computer_use_status\"]\n"
+        }
         _ => "",
     }
 }

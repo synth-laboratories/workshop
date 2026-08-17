@@ -18,6 +18,7 @@ pub mod helper;
 pub mod lock;
 pub mod permissions;
 pub mod policy;
+pub mod service;
 pub mod session;
 pub mod trajectory;
 pub mod vocabulary;

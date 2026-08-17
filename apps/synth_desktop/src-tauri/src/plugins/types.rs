@@ -7,6 +7,11 @@ pub const PLUGIN_STATUS_SCHEMA: &str = "synth.plugin-status.v1";
 pub const PLUGIN_ACTION_RECEIPT_SCHEMA: &str = "synth.plugin-action-receipt.v1";
 pub const PLUGIN_NOT_READY_CODE: &str = "plugin_not_ready";
 pub const OPTIMIZERS_PLUGIN_ID: &str = "optimizers";
+/// Deliberately absent from the `plugin_id` enum in `bin/synth_plugins_mcp.rs`.
+/// See `docs/COMPUTER_USE.md` §4: the agent may read this plugin's status and
+/// nothing else, because the plugin that hands an agent control of the machine
+/// is not one an agent should be able to install, enable, or start.
+pub const COMPUTER_USE_PLUGIN_ID: &str = "computer-use";
 pub const PLUGIN_PUBLISHER: &str = "Synth Laboratories";
 pub const OFFICIAL_RELEASE_CHANNEL: &str = "official";
 pub const DEV_RELEASE_CHANNEL: &str = "dev";
