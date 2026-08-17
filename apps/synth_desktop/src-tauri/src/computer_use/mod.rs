@@ -13,9 +13,11 @@
 //!   keystroke delivered to the login window a moment later.
 
 pub mod allowlist;
+pub mod client;
 pub mod helper;
 pub mod lock;
 pub mod permissions;
 pub mod policy;
+pub mod session;
 pub mod trajectory;
 pub mod vocabulary;
