@@ -6,6 +6,7 @@ import {
 	type ExecutionTargetOption,
 	type LandingState
 } from "../types/landing";
+import { publicError } from "../runtime/publicError";
 import { ProviderMark, providerMarkForTarget } from "./ProviderMark";
 import type { ApprovalPolicy, SandboxMode } from "../runtime/nativeCodex";
 import {
@@ -899,7 +900,7 @@ export function Composer({
 				setValue((current) => (current.trim().length ? `${current.trim()} ${text.trim()}` : text.trim()));
 			}
 		} catch (reason) {
-			setVoiceError(reason instanceof Error ? reason.message : String(reason));
+			setVoiceError(publicError(reason));
 		} finally {
 			setTranscribing(false);
 		}
@@ -929,7 +930,7 @@ export function Composer({
 			recorder.start();
 			setRecording(true);
 		} catch (reason) {
-			setVoiceError(reason instanceof Error ? reason.message : String(reason));
+			setVoiceError(publicError(reason));
 			setRecording(false);
 		}
 	};
@@ -960,7 +961,7 @@ export function Composer({
 		// Load the model while the user is speaking, just like Laguna warms its
 		// inference model before the first token is needed.
 		void bridges.whisper?.warmSelected?.().catch((reason) => {
-			setVoiceError(reason instanceof Error ? reason.message : String(reason));
+			setVoiceError(publicError(reason));
 		});
 		await startRecording();
 	};

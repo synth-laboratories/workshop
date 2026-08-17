@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { ConversationWorkspaceScope, WorkspaceAccessMode, WorkspaceGrantRequest } from "../bridge";
 import { bridges } from "../runtime/desktopBridge";
+import { publicError } from "../runtime/publicError";
 
 function compactPath(path: string): string {
 	const home = "/Users/";
@@ -56,7 +57,7 @@ export function WorkspaceScopeChip({ sessionId, ensureSession, fallbackWorkspace
 			if (!targetSessionId) return;
 			const next = await bridges.workspaceScope.chooseAndAttach(targetSessionId, access);
 			if (next) onScopeChange(next);
-		} catch (reason) { onError(reason instanceof Error ? reason.message : String(reason)); }
+		} catch (reason) { onError(publicError(reason)); }
 		finally { setBusy(false); }
 	};
 	const addRecent = async (path: string) => {
@@ -66,14 +67,14 @@ export function WorkspaceScopeChip({ sessionId, ensureSession, fallbackWorkspace
 			const targetSessionId = sessionId ?? await ensureSession?.();
 			if (!targetSessionId) return;
 			onScopeChange(await bridges.workspaceScope.attachRecent(targetSessionId, path));
-		} catch (reason) { onError(reason instanceof Error ? reason.message : String(reason)); }
+		} catch (reason) { onError(publicError(reason)); }
 		finally { setBusy(false); }
 	};
 	const remove = async (path: string) => {
 		if (!sessionId || !bridges.workspaceScope) return;
 		setBusy(true);
 		try { onScopeChange(await bridges.workspaceScope.removeAttachment(sessionId, path)); }
-		catch (reason) { onError(reason instanceof Error ? reason.message : String(reason)); }
+		catch (reason) { onError(publicError(reason)); }
 		finally { setBusy(false); }
 	};
 	const resolveGrant = async (request: WorkspaceGrantRequest, approve: boolean) => {
@@ -83,7 +84,7 @@ export function WorkspaceScopeChip({ sessionId, ensureSession, fallbackWorkspace
 			if (approve) { const next=await bridges.workspaceScope.approveRequest(request.id); if(next) onScopeChange(next); }
 			else await bridges.workspaceScope.denyRequest(request.id);
 			if(sessionId) setGrants(await bridges.workspaceScope.listGrants(sessionId));
-		} catch(reason){onError(reason instanceof Error?reason.message:String(reason));} finally{setBusy(false);}
+		} catch(reason){onError(publicError(reason));} finally{setBusy(false);}
 	};
 
 	if (!workspace) return null;

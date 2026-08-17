@@ -3,6 +3,7 @@ import type { OptimizerAlgorithmInfo, OptimizerRunRecord } from "@synth/runtime-
 import type { OptimizerRecipeInfo, PluginActionReceipt, PluginLifecycleOperation, PluginStatus } from "../bridge/types";
 import { bridges } from "../runtime/desktopBridge";
 import { findPluginStatus, pluginPresentation, type PluginPresentation } from "../runtime/pluginPresentation";
+import { publicError } from "../runtime/publicError";
 
 type OptimizerGuide = {
 	id: "gepa" | "go-ex" | "sft" | "eval";
@@ -132,7 +133,7 @@ function stringifyDiagnostic(value: unknown): string | undefined {
 }
 
 /** Tauri errors are structured objects, never strings. Do not coerce one with
- * `String(error)`, which is how lifecycle failures became `[object Object]`. */
+ * `publicError(error)`, which is how lifecycle failures became `[object Object]`. */
 function presentError(reason: unknown): ErrorPresentation {
 	if (reason instanceof Error) return { message: reason.message };
 	if (typeof reason === "string") return { message: reason };
@@ -154,7 +155,7 @@ function optimizerDiagnostic(error: unknown): OptimizerDiagnostic | null {
 	const value = typeof error === "object" ? error as Record<string, unknown> : {};
 	const message = typeof error === "string"
 		? error
-		: typeof value.message === "string" ? value.message : String(error);
+		: typeof value.message === "string" ? value.message : publicError(error);
 	const raw = typeof value.stderrTail === "string" ? value.stderrTail : message;
 	const missingField = raw.match(/configuration error:\s*([a-z0-9_.]+)\s+is required and must be positive/i)?.[1];
 	if (missingField) {

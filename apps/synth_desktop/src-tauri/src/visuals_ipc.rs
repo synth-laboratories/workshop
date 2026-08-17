@@ -152,6 +152,88 @@ fn validate_readiness_observation(
     Ok(())
 }
 
+/// Decide readiness from the *latest* review at each viewport width, not from
+/// every review ever recorded against the revision.
+///
+/// A live visual legitimately fails review before its stream starts and passes
+/// once evidence is terminal, and neither transition changes the durable
+/// revision. Requiring every historical review to pass therefore turned an
+/// honest pre-start failure into a permanent veto, and agents worked around it
+/// by bumping the revision for cosmetic reasons. Superseded reviews stay in
+/// `authoringReviews` as provenance; they just stop being vetoes.
+///
+/// Each returned receipt binds the certifying capture to its revision, bindings
+/// digest, transport state, evidence counts, and viewport, so a later reader can
+/// tell a current pass from a stale one without re-deriving it.
+fn certification_receipts(
+    visual_id: &str,
+    revision: i64,
+    current_reviews: &[&Value],
+    required_checks: &[&'static str],
+    contract: Option<&TemplateObservationContract>,
+    bindings_digest: Option<&str>,
+) -> Result<Vec<Value>> {
+    let mut latest_by_width: BTreeMap<u64, &Value> = BTreeMap::new();
+    for review in current_reviews {
+        let Some(width) = review.pointer("/viewport/width").and_then(Value::as_u64) else {
+            continue;
+        };
+        latest_by_width.insert(width, review);
+    }
+    if latest_by_width.len() < 2 {
+        anyhow::bail!("visual readiness requires reviews at two distinct viewport widths");
+    }
+    let mut receipts = Vec::new();
+    for (width, review) in &latest_by_width {
+        for check in required_checks {
+            if review
+                .pointer(&format!("/checks/{check}"))
+                .and_then(Value::as_bool)
+                != Some(true)
+            {
+                anyhow::bail!(
+                    "the latest review at width {width} is not passing required check {check}; \
+                     capture and review this width again once it renders correctly"
+                );
+            }
+        }
+        let mut receipt = json!({
+            "revision": revision,
+            "viewportWidth": width,
+            "viewportHeight": review.pointer("/viewport/height").cloned().unwrap_or(Value::Null),
+            "screenshotPath": review.get("screenshotPath").cloned().unwrap_or(Value::Null),
+            "captureTime": review.get("captureTime").cloned().unwrap_or(Value::Null),
+            "reviewedAt": review.get("reviewedAt").cloned().unwrap_or(Value::Null),
+        });
+        if let Some(contract) = contract {
+            let digest =
+                bindings_digest.context("current visual revision is missing bindings digest")?;
+            let observation: RenderedVisualObservation = serde_json::from_value(
+                review
+                    .get("observations")
+                    .cloned()
+                    .filter(|value| !value.is_null())
+                    .with_context(|| {
+                        format!(
+                            "the latest review at width {width} carries no rendered observation; \
+                             capture this width again with the pane open"
+                        )
+                    })?,
+            )
+            .context("visual review rendered observations are invalid")?;
+            validate_readiness_observation(contract, visual_id, revision, digest, &observation)?;
+            receipt["bindingsDigest"] = json!(digest);
+            receipt["transportState"] = json!(observation.transport_state);
+            receipt["terminal"] = json!(observation.terminal);
+            receipt["renderedFrameCount"] = json!(observation.rendered_frame_count);
+            receipt["semanticEventCount"] = json!(observation.semantic_event_count);
+            receipt["observedAt"] = json!(observation.observed_at);
+        }
+        receipts.push(receipt);
+    }
+    Ok(receipts)
+}
+
 use anyhow::{Context, Result};
 use hyper::StatusCode;
 use serde::{Deserialize, Serialize};
@@ -445,6 +527,18 @@ async fn route_request_inner(
                 extra_headers: Vec::new(),
             }
         }
+        Err(error) if crate::error::error_is::<crate::error::StructuredFailure>(&error) => {
+            let body = error
+                .chain()
+                .find_map(|cause| cause.downcast_ref::<crate::error::StructuredFailure>())
+                .map(crate::error::StructuredFailure::to_json)
+                .unwrap_or_else(|| json!({"code": "internal", "error": error.to_string()}));
+            JsonHttpResponse {
+                status: StatusCode::BAD_REQUEST,
+                body,
+                extra_headers: Vec::new(),
+            }
+        }
         Err(error) if crate::error::error_is::<crate::plugins::PluginNotReady>(&error) => {
             let body = error
                 .downcast_ref::<crate::plugins::PluginNotReady>()
@@ -488,7 +582,21 @@ async fn dispatch_request(
         if visual_id.is_empty() || visual_id.contains('/') {
             anyhow::bail!("invalid review observation visual id");
         }
-        return Ok(json!({"observation": rendered_observation(visual_id)?}));
+        // An absent observation is an answer, not a failure. Whether it is a
+        // *fatal* answer depends on the template's contract, and only this side
+        // knows the template — so report both and let capture decide once.
+        let registry = core.visuals();
+        let required = match registry.get(visual_id.to_string()).await {
+            Ok(visual) => registry
+                .get_template(&visual.template_id)
+                .map(|template| template.observation_contract.is_some())
+                .unwrap_or(false),
+            Err(_) => false,
+        };
+        return Ok(json!({
+            "observation": rendered_observation(visual_id).ok(),
+            "required": required,
+        }));
     }
     if method == "POST" && path == "/v1/review-window/resize" {
         return resize_review_window(app, &json_body);
@@ -1930,45 +2038,29 @@ pub async fn dispatch(method: &str, path: &str, body: Value, core: &CoreRuntime)
             }
             let template = registry.get_template(&current.template_id)?;
             let required = required_authoring_checks(&template);
-            for review in &current_reviews {
-                for check in &required {
-                    if review
-                        .pointer(&format!("/checks/{check}"))
-                        .and_then(Value::as_bool)
-                        != Some(true)
-                    {
-                        anyhow::bail!("visual review is not passing required check {check}");
-                    }
-                }
-            }
-            if let Some(contract) = template.observation_contract.as_ref() {
+            let bindings_digest = if template.observation_contract.is_some() {
                 let durable = registry
                     .revisions(id.to_string())
                     .await?
                     .into_iter()
                     .find(|candidate| candidate.revision == revision)
                     .context("current visual revision record is missing")?;
-                let bindings_digest = durable
-                    .bindings_digest
-                    .as_deref()
-                    .context("current visual revision is missing bindings digest")?;
-                for review in &current_reviews {
-                    let observation: RenderedVisualObservation = serde_json::from_value(
-                        review
-                            .get("observations")
-                            .cloned()
-                            .context("visual review is missing rendered observations")?,
-                    )
-                    .context("visual review rendered observations are invalid")?;
-                    validate_readiness_observation(
-                        contract,
-                        id,
-                        revision,
-                        bindings_digest,
-                        &observation,
-                    )?;
-                }
-            }
+                Some(
+                    durable
+                        .bindings_digest
+                        .context("current visual revision is missing bindings digest")?,
+                )
+            } else {
+                None
+            };
+            let receipts = certification_receipts(
+                id,
+                revision,
+                &current_reviews,
+                &required,
+                template.observation_contract.as_ref(),
+                bindings_digest.as_deref(),
+            )?;
             if let Some(kind) = crate::visuals::systems::template_kind(&current.template_id) {
                 let asset = registry.visual_source(id.to_string()).await?;
                 let bytes = base64::engine::general_purpose::STANDARD
@@ -1984,14 +2076,17 @@ pub async fn dispatch(method: &str, path: &str, body: Value, core: &CoreRuntime)
                     );
                 }
             }
-            let widths: std::collections::BTreeSet<u64> = current_reviews
-                .iter()
-                .filter_map(|review| review.pointer("/viewport/width").and_then(Value::as_u64))
-                .collect();
-            if widths.len() < 2 {
-                anyhow::bail!("visual readiness requires reviews at two distinct viewport widths");
-            }
-            metadata.insert("qualityGate".into(), json!({"ready": true, "revision": revision, "reviewCount": current_reviews.len(), "readyAt": chrono::Utc::now().to_rfc3339()}));
+            metadata.insert(
+                "qualityGate".into(),
+                json!({
+                    "ready": true,
+                    "revision": revision,
+                    "reviewCount": current_reviews.len(),
+                    "certifiedBy": receipts,
+                    "supersededReviewCount": current_reviews.len() - receipts.len(),
+                    "readyAt": chrono::Utc::now().to_rfc3339(),
+                }),
+            );
             let (visual, event) = registry
                 .update(
                     id.to_string(),
@@ -2790,6 +2885,138 @@ mod tests {
             error: None,
             observed_at: chrono::Utc::now().to_rfc3339(),
         }
+    }
+
+    fn review(width: u64, passing: bool, observation: Option<&RenderedVisualObservation>) -> Value {
+        let checks: serde_json::Map<String, Value> = BASE_AUTHORING_CHECKS
+            .iter()
+            .chain(["screenshotInspected", "imageReplay"].iter())
+            .map(|check| ((*check).to_string(), json!(passing)))
+            .collect();
+        json!({
+            "revision": 14,
+            "viewport": {"width": width, "height": 900},
+            "checks": Value::Object(checks),
+            "findings": [],
+            "screenshotPath": format!("/tmp/vis_1-r14-{width}x900.png"),
+            "captureTime": "2026-08-17T01:00:00Z",
+            "observations": observation.map(|value| serde_json::to_value(value).unwrap()),
+            "reviewedAt": "2026-08-17T01:00:01Z",
+        })
+    }
+
+    /// Seeds 202/204: honest pre-start reviews (no frames yet) kept vetoing
+    /// readiness after terminal evidence arrived on the same revision, and the
+    /// only workaround was a cosmetic revision bump.
+    #[test]
+    fn certification_uses_the_latest_review_at_each_width_not_all_history() {
+        let contract = live_contract();
+        let mut pre_start = rendered_observation();
+        pre_start.transport_state = "connecting".into();
+        pre_start.rendered_frame_count = 0;
+        pre_start.terminal = false;
+        let terminal = rendered_observation();
+        let required = required_authoring_checks(
+            &crate::visuals::resolve_template("live.craftax.v1").unwrap(),
+        );
+
+        let failed_wide = review(1280, false, Some(&pre_start));
+        let failed_compact = review(640, false, Some(&pre_start));
+        let passed_wide = review(1280, true, Some(&terminal));
+        let passed_compact = review(640, true, Some(&terminal));
+        let history = vec![
+            &failed_wide,
+            &failed_compact,
+            &passed_wide,
+            &passed_compact,
+        ];
+
+        let receipts = certification_receipts(
+            "vis_1",
+            14,
+            &history,
+            &required,
+            Some(&contract),
+            Some("bindings-14"),
+        )
+        .expect("terminal evidence must certify over a superseded pre-start failure");
+        assert_eq!(receipts.len(), 2);
+        assert_eq!(receipts[0]["viewportWidth"], 640);
+        assert_eq!(receipts[1]["viewportWidth"], 1280);
+        // The receipt binds the pass to the evidence it was taken from.
+        assert_eq!(receipts[0]["bindingsDigest"], "bindings-14");
+        assert_eq!(receipts[0]["transportState"], "terminal");
+        assert_eq!(receipts[0]["renderedFrameCount"], 21);
+    }
+
+    /// The inverse: a later failure at one width is not certified around by an
+    /// earlier pass at that same width.
+    #[test]
+    fn certification_rejects_a_width_whose_latest_review_regressed() {
+        let contract = live_contract();
+        let terminal = rendered_observation();
+        let required = required_authoring_checks(
+            &crate::visuals::resolve_template("live.craftax.v1").unwrap(),
+        );
+        let passed_wide = review(1280, true, Some(&terminal));
+        let passed_compact = review(640, true, Some(&terminal));
+        let failed_compact = review(640, false, Some(&terminal));
+        let history = vec![&passed_wide, &passed_compact, &failed_compact];
+        let error = certification_receipts(
+            "vis_1",
+            14,
+            &history,
+            &required,
+            Some(&contract),
+            Some("bindings-14"),
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("width 640"), "{error}");
+    }
+
+    /// The Trace inspector renders no image frames. Its contract must still be
+    /// certifiable from a terminal projection, which is what makes the template
+    /// reviewable at all.
+    #[test]
+    fn certification_admits_a_frameless_terminal_projection() {
+        let template = crate::visuals::resolve_template("trace.rollout_inspector.v1").unwrap();
+        let contract = template
+            .observation_contract
+            .clone()
+            .expect("the trace inspector must declare an observation contract");
+        assert!(!required_authoring_checks(&template).contains(&"imageReplay"));
+        let mut observation = rendered_observation();
+        observation.rendered_frame_count = 0;
+        observation.rollout_count = 1;
+        let required = required_authoring_checks(&template);
+        let wide = review(1280, true, Some(&observation));
+        let compact = review(640, true, Some(&observation));
+        let receipts = certification_receipts(
+            "vis_1",
+            14,
+            &[&wide, &compact],
+            &required,
+            Some(&contract),
+            Some("bindings-14"),
+        )
+        .expect("a sealed trace projection is terminal evidence");
+        assert_eq!(receipts.len(), 2);
+    }
+
+    #[test]
+    fn certification_requires_two_distinct_widths() {
+        let required = required_authoring_checks(
+            &crate::visuals::resolve_template("live.craftax.v1").unwrap(),
+        );
+        let first = review(1280, true, None);
+        let second = review(1280, true, None);
+        assert!(
+            certification_receipts("vis_1", 14, &[&first, &second], &required, None, None)
+                .unwrap_err()
+                .to_string()
+                .contains("two distinct viewport widths")
+        );
     }
 
     #[test]

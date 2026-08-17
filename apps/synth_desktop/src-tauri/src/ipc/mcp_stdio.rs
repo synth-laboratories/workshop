@@ -12,33 +12,89 @@ pub struct McpServerInfo {
 
 const BREAKER_FAILURE_LIMIT: usize = 2;
 
+/// Identity of the thing a call is failing against, not just the tool it went
+/// through. A tool like `visual_manage` carries a whole operation family and
+/// every visual in the instance: keying the breaker on the tool name alone let
+/// two deterministic capture failures on one visual disable `bind`, `show`, and
+/// `render` for every other visual, including the recovery paths.
+///
+/// The key is tool + operation + target id, and the failure signature prefers a
+/// structured error `code`, so a different root cause on the same target also
+/// gets a fresh recovery budget.
+const BREAKER_TARGET_FIELDS: [&str; 7] = [
+    "visual_id",
+    "visualId",
+    "trace_id",
+    "traceId",
+    "container_id",
+    "report_id",
+    "id",
+];
+
+fn breaker_key(tool: &str, args: &Value) -> String {
+    let mut key = tool.to_string();
+    if let Some(operation) = args.get("operation").and_then(Value::as_str) {
+        key.push('/');
+        key.push_str(operation);
+    }
+    for field in BREAKER_TARGET_FIELDS {
+        let target = args
+            .get(field)
+            .and_then(Value::as_str)
+            .or_else(|| args.pointer(&format!("/arguments/{field}")).and_then(Value::as_str));
+        if let Some(target) = target.map(str::trim).filter(|value| !value.is_empty()) {
+            key.push('#');
+            key.push_str(target);
+            break;
+        }
+    }
+    key
+}
+
+/// A structured `{"code": …}` failure is the same failure however its message
+/// is worded, and a different code is a different failure however similar the
+/// prose. Fall back to digit-normalized text only for unstructured errors.
+fn failure_signature(error: &str) -> String {
+    serde_json::from_str::<Value>(error)
+        .ok()
+        .and_then(|value| {
+            value
+                .get("code")
+                .and_then(Value::as_str)
+                .map(|code| format!("code:{code}"))
+        })
+        .unwrap_or_else(|| normalize_error(error))
+}
+
 #[derive(Default)]
 struct ToolLoopBreaker {
     failures: HashMap<String, (String, usize)>,
 }
 
 impl ToolLoopBreaker {
-    fn terminal_error(&self, tool: &str) -> Option<String> {
-        let (error, count) = self.failures.get(tool)?;
+    fn terminal_error(&self, tool: &str, args: &Value) -> Option<String> {
+        let key = breaker_key(tool, args);
+        let (error, count) = self.failures.get(&key)?;
         (*count >= BREAKER_FAILURE_LIMIT).then(|| {
             format!(
-                "ToolLoopBreaker: {tool} stopped before invocation after {count} repeated failures: {error}. Change approach or fix the reported cause before retrying."
+                "ToolLoopBreaker: {key} stopped before invocation after {count} repeated failures: {error}. Change approach or fix the reported cause before retrying. Other operations and other targets are unaffected."
             )
         })
     }
 
-    fn record_failure(&mut self, tool: &str, error: &str) {
-        let normalized = normalize_error(error);
-        match self.failures.get_mut(tool) {
-            Some((previous, count)) if previous == &normalized => *count += 1,
+    fn record_failure(&mut self, tool: &str, args: &Value, error: &str) {
+        let key = breaker_key(tool, args);
+        let signature = failure_signature(error);
+        match self.failures.get_mut(&key) {
+            Some((previous, count)) if previous == &signature => *count += 1,
             _ => {
-                self.failures.insert(tool.to_string(), (normalized, 1));
+                self.failures.insert(key, (signature, 1));
             }
         }
     }
 
-    fn record_success(&mut self, tool: &str) {
-        self.failures.remove(tool);
+    fn record_success(&mut self, tool: &str, args: &Value) {
+        self.failures.remove(&breaker_key(tool, args));
     }
 }
 
@@ -146,12 +202,12 @@ pub fn run_stdio_server(
                 let params = req.get("params").cloned().unwrap_or(json!({}));
                 let name = params.get("name").and_then(Value::as_str).unwrap_or("");
                 let args = params.get("arguments").cloned().unwrap_or(json!({}));
-                if let Some(error) = breaker.terminal_error(name) {
+                if let Some(error) = breaker.terminal_error(name, &args) {
                     json!({"jsonrpc":"2.0","id":id,"result":tool_error_result(error, true)})
                 } else {
                     match call_tool(name, &args) {
                         Ok(mut result) => {
-                            breaker.record_success(name);
+                            breaker.record_success(name, &args);
                             let image = result
                                 .as_object_mut()
                                 .and_then(|object| object.remove("_mcpImage"));
@@ -181,7 +237,7 @@ pub fn run_stdio_server(
                             })
                         }
                         Err(error) => {
-                            breaker.record_failure(name, &error);
+                            breaker.record_failure(name, &args, &error);
                             json!({"jsonrpc":"2.0","id":id,"result":tool_error_result(error, false)})
                         }
                     }
@@ -206,14 +262,62 @@ mod tests {
 
     #[test]
     fn breaker_ignores_changing_numeric_arguments_and_resets_on_success() {
+        let args = json!({"visual_id": "vis_1"});
         let mut breaker = ToolLoopBreaker::default();
-        breaker.record_failure("visual_capture_review", "viewport 640 failed: denied");
-        assert!(breaker.terminal_error("visual_capture_review").is_none());
-        breaker.record_failure("visual_capture_review", "viewport 800 failed: denied");
-        let terminal = breaker.terminal_error("visual_capture_review").unwrap();
+        breaker.record_failure("visual_capture_review", &args, "viewport 640 failed: denied");
+        assert!(breaker
+            .terminal_error("visual_capture_review", &args)
+            .is_none());
+        breaker.record_failure("visual_capture_review", &args, "viewport 800 failed: denied");
+        let terminal = breaker
+            .terminal_error("visual_capture_review", &args)
+            .unwrap();
         assert!(terminal.contains("stopped before invocation"));
-        breaker.record_success("visual_capture_review");
-        assert!(breaker.terminal_error("visual_capture_review").is_none());
+        breaker.record_success("visual_capture_review", &args);
+        assert!(breaker
+            .terminal_error("visual_capture_review", &args)
+            .is_none());
+    }
+
+    /// Seed 205: two deterministic capture failures on one visual disabled
+    /// `bind`, `show`, and `render` for every visual, including the recovery
+    /// path the agent needed.
+    #[test]
+    fn breaker_stops_one_operation_and_target_not_a_whole_tool() {
+        let capture = json!({"operation": "capture_review", "arguments": {"visual_id": "vis_a"}});
+        let mut breaker = ToolLoopBreaker::default();
+        breaker.record_failure("visual_manage", &capture, "no rendered observation");
+        breaker.record_failure("visual_manage", &capture, "no rendered observation");
+        assert!(breaker.terminal_error("visual_manage", &capture).is_some());
+
+        let other_operation =
+            json!({"operation": "show", "arguments": {"visual_id": "vis_a"}});
+        let other_visual =
+            json!({"operation": "capture_review", "arguments": {"visual_id": "vis_b"}});
+        assert!(breaker
+            .terminal_error("visual_manage", &other_operation)
+            .is_none());
+        assert!(breaker
+            .terminal_error("visual_manage", &other_visual)
+            .is_none());
+    }
+
+    #[test]
+    fn breaker_gives_a_new_root_cause_a_fresh_budget() {
+        let args = json!({"visual_id": "vis_1"});
+        let mut breaker = ToolLoopBreaker::default();
+        let missing = json!({"code": "visual_observation_unavailable"}).to_string();
+        let stale = json!({"code": "visual_revision_stale"}).to_string();
+        breaker.record_failure("visual_capture_review", &args, &missing);
+        breaker.record_failure("visual_capture_review", &args, &missing);
+        assert!(breaker
+            .terminal_error("visual_capture_review", &args)
+            .is_some());
+        // A different code means the agent is no longer repeating itself.
+        breaker.record_failure("visual_capture_review", &args, &stale);
+        assert!(breaker
+            .terminal_error("visual_capture_review", &args)
+            .is_none());
     }
 
     #[test]

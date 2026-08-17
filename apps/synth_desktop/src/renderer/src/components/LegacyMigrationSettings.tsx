@@ -1,5 +1,6 @@
 import { COMMANDS, invokeCommand } from "../bridge";
 import { useEffect, useMemo, useState } from "react";
+import { publicError } from "../runtime/publicError";
 
 type Detection = {
 	sourcePath: string;
@@ -56,7 +57,7 @@ export function LegacyMigrationSettings() {
 			const eligible = found.find((item) => item.detection.isLegacyRuntime && !item.alreadyMigrated);
 			if (eligible) setSourcePath(eligible.detection.sourcePath);
 		} catch (reason) {
-			setError(reason instanceof Error ? reason.message : String(reason));
+			setError(publicError(reason));
 		} finally {
 			setBusy(false);
 		}
@@ -79,7 +80,7 @@ export function LegacyMigrationSettings() {
 			setPlan(await invokeCommand<MigrationPlan>(COMMANDS.MIGRATION_PREPARE, { sourcePath }));
 			setConfirmation("");
 		} catch (reason) {
-			setError(reason instanceof Error ? reason.message : String(reason));
+			setError(publicError(reason));
 		} finally {
 			setBusy(false);
 		}
@@ -109,7 +110,7 @@ export function LegacyMigrationSettings() {
 			setConfirmation("");
 			await scan();
 		} catch (reason) {
-			setError(reason instanceof Error ? reason.message : String(reason));
+			setError(publicError(reason));
 		} finally {
 			setBusy(false);
 		}

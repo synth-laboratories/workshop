@@ -125,6 +125,13 @@ fn parse_http_response(response: &str) -> Result<Value, String> {
         .ok_or_else(|| "empty visuals IPC response".to_string())?;
     let parsed: Value = serde_json::from_str(body).map_err(|error| error.to_string())?;
     if !(200..300).contains(&status) {
+        // A structured failure keeps its shape across this boundary. Prefixing
+        // it with the HTTP status turned `{"code": …, "remediation": …}` into an
+        // opaque string, so the transcript lost the code and the tool-loop
+        // breaker could no longer tell one root cause from another.
+        if parsed.get("code").and_then(Value::as_str).is_some() {
+            return Err(parsed.to_string());
+        }
         let detail = parsed
             .get("error")
             .or_else(|| parsed.get("detail"))
@@ -977,18 +984,47 @@ fn capture_review(args: &Value) -> Result<Value, String> {
         window_receipt = capture_desktop_review(id, width, height, &png_path)?;
         "desktop-window"
     };
+    // A rendered observation is evidence about the pane, and only templates
+    // that declare an observation contract are certified against it. Requiring
+    // one from every Desktop-rendered visual made capture deterministically
+    // impossible for contract-free templates such as the Trace inspector, with
+    // no path that could ever succeed.
     let observation = if capture_mode == "desktop-window" {
-        let value = request("GET", &format!("/v1/review-observations/{id}"), None)?
+        let response = request("GET", &format!("/v1/review-observations/{id}"), None)?;
+        let observed = response
             .get("observation")
             .cloned()
-            .ok_or("review observation response is missing observation")?;
-        if value.get("renderedRevision").and_then(Value::as_i64) != Some(revision) {
-            return Err(format!(
-                "captured pane rendered revision {:?}, but durable revision is {revision}",
-                value.get("renderedRevision").and_then(Value::as_i64)
-            ));
+            .filter(|value| !value.is_null());
+        let required = response
+            .get("required")
+            .and_then(Value::as_bool)
+            .unwrap_or(true);
+        match observed {
+            Some(value) => {
+                let rendered = value.get("renderedRevision").and_then(Value::as_i64);
+                if rendered != Some(revision) {
+                    return Err(json!({
+                        "code": "visual_observation_stale",
+                        "visual_id": id,
+                        "rendered_revision": rendered,
+                        "durable_revision": revision,
+                        "retryable": true,
+                        "remediation": "The open pane is rendering an older revision. Re-show the visual, wait for the pane to settle on the current revision, then capture again."
+                    }).to_string());
+                }
+                Some(value)
+            }
+            None if required => {
+                return Err(json!({
+                    "code": "visual_observation_unavailable",
+                    "visual_id": id,
+                    "revision": revision,
+                    "retryable": true,
+                    "remediation": "This template declares an observation contract, so the pane must publish a rendered observation. Show the visual in Desktop and let it finish rendering before capturing."
+                }).to_string())
+            }
+            None => None,
         }
-        Some(value)
     } else {
         None
     };

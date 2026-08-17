@@ -6750,6 +6750,17 @@ html.sidebar-hidden .titlebar {
 	color: var(--color-text-muted);
 }
 
+.visual-invalid-identity {
+	display: flex;
+	flex-wrap: wrap;
+	gap: var(--sp-3);
+}
+
+.visual-invalid-identity code {
+	font-family: var(--code-font-family);
+	overflow-wrap: anywhere;
+}
+
 @media (max-width: 860px) {
 	.settings-page {
 		flex-direction: column;

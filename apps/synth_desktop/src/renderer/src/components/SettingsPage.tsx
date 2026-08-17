@@ -9,6 +9,7 @@ import type {
 	TariffCard,
 	UpdateStatus
 } from "../bridge";
+import { publicError } from "../runtime/publicError";
 import type { AccountViewModel } from "../runtime/accountView";
 import type { DeviceUsageSummary } from "./UsageSheet";
 import { OnDeviceModelsSettings } from "./OnDeviceModelsSettings";
@@ -352,7 +353,7 @@ export function MultiAgentModelSettings() {
 	useEffect(() => {
 		void bridges.config?.listModelMultiAgent()
 			.then(setModels)
-			.catch((reason) => setError(String(reason)));
+			.catch((reason) => setError(publicError(reason)));
 	}, []);
 
 	const update = async (modelId: string, version: MultiAgentVersion | null) => {
@@ -362,7 +363,7 @@ export function MultiAgentModelSettings() {
 			const next = await bridges.config?.updateModelMultiAgent({ modelId, version });
 			if (next) setModels(next);
 		} catch (reason) {
-			setError(reason instanceof Error ? reason.message : String(reason));
+			setError(publicError(reason));
 		} finally {
 			setBusyModel(null);
 		}

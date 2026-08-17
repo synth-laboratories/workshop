@@ -5,6 +5,7 @@ import { bridges } from "../runtime/desktopBridge";
 import { getPreferences, updatePreferences } from "../preferences";
 import { PaneResizeHandle } from "./PaneResizeHandle";
 import type { VisualSeal, VisualSealBundle } from "../bridge";
+import { publicError } from "../runtime/publicError";
 
 type Tab = "all" | "recent" | "live" | "sealed" | "templates";
 
@@ -60,7 +61,7 @@ export function VisualsPage({ onOpenVisual, onGoToChat, onBack, onCreate }: Prop
 					setError(null);
 				}
 			} catch (reason) {
-				if (!cancelled) setError(String(reason));
+				if (!cancelled) setError(publicError(reason));
 			} finally {
 				if (!cancelled) setLoading(false);
 			}
@@ -102,7 +103,7 @@ export function VisualsPage({ onOpenVisual, onGoToChat, onBack, onCreate }: Prop
 			setCompareBundle(null);
 			setError(null);
 		} catch (reason) {
-			setError(String(reason));
+			setError(publicError(reason));
 		}
 	}
 
@@ -113,7 +114,7 @@ export function VisualsPage({ onOpenVisual, onGoToChat, onBack, onCreate }: Prop
 			else setCompareBundle(bundle);
 			setError(null);
 		} catch (reason) {
-			setError(String(reason));
+			setError(publicError(reason));
 		}
 	}
 
