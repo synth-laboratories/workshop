@@ -1,0 +1,31 @@
+[package]
+name = "synth-computer-use"
+version = "1.0.0"
+description = "Synth Workshop Computer Use helper"
+edition = "2021"
+publish = false
+
+# The bundle executable. Named to match Contents/MacOS/synth-computer-use, which
+# `computer_use::helper::helper_executable` in Desktop resolves.
+[[bin]]
+name = "synth-computer-use"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1"
+libc = "0.2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+core-foundation = "0.10"
+core-foundation-sys = "0.8"
+core-graphics = "0.25"
+
+[profile.release]
+# The helper holds TCC grants; a smaller, symbol-stripped binary is both faster
+# to notarize and gives less away about internals.
+strip = true
+lto = true
+codegen-units = 1
+opt-level = "z"
