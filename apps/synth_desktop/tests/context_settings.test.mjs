@@ -42,3 +42,10 @@ test("new Codex homes apply skill, cookbook, and MCP context gates", () => {
   assert.match(home, /BROWSER_MCP_GROUP/);
   assert.match(home, /home\.join\("AGENTS\.md"\)/);
 });
+
+test("managed browser context advertises its complete operator-visible tool surface", () => {
+  const context = read("src-tauri/src/context.rs");
+  for (const operation of ["browser_status", "browser_claim_chrome", "browser_list_dialogs", "browser_handle_dialog", "browser_audit"]) {
+    assert.match(context, new RegExp(`"${operation}"`), operation);
+  }
+});

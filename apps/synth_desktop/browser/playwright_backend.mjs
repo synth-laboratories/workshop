@@ -104,7 +104,7 @@ async function audit(session, event, details = {}) {
 
 function stateForPage(session, page) {
   for (const state of session.tabs.values()) if (state.page === page) return state;
-  const state = { id: id("tab"), page, nav: 0, refs: new Map(), refRevision: "", lastKnownRevision: "", dialogs: new Map(), closed: false, owned: true };
+  const state = { id: id("tab"), page, nav: 0, actionRevision: 0, refs: new Map(), refRevision: "", lastKnownRevision: "", dialogs: new Map(), closed: false, owned: true };
   session.tabs.set(state.id, state);
   page.on("framenavigated", (frame) => {
     if (frame === page.mainFrame()) {
@@ -155,7 +155,7 @@ async function installNavigationGuard(scope) {
 async function revision(state) {
   const mutation = await state.page.evaluate(() => Number(globalThis.__workshopMutationRevision ?? 0)).catch(() => 0);
   const digest = crypto.createHash("sha256").update(state.page.url()).digest("hex").slice(0, 10);
-  state.lastKnownRevision = `${state.nav}.${mutation}.${digest}`;
+  state.lastKnownRevision = `${state.nav}.${mutation}.${state.actionRevision}.${digest}`;
   return state.lastKnownRevision;
 }
 
@@ -350,6 +350,10 @@ async function act(operation, args, prepared = false) {
     }
     await locator.setInputFiles(files);
   }
+  // MutationObserver delivery can lag behind Playwright resolving an input
+  // action. Fail closed synchronously: every successful input invalidates all
+  // previously issued element refs even when the page appears unchanged.
+  state.actionRevision += 1;
   await audit(session, operation, { tabId: state.id, origin: originOf(state.page.url()), role: descriptor.role, name: descriptor.name });
   return response({ ok: true }, await meta(session, state, suspendedRevision ? { documentRevision: suspendedRevision } : {}));
 }
@@ -422,6 +426,7 @@ async function commitAction(args) {
     if (entry.documentRevision !== pending.documentRevision) throw new Error("stale_action_token: document changed after dialog action preparation");
     if (pending.arguments.accept) await entry.dialog.accept(String(pending.arguments.prompt_text ?? pending.arguments.promptText ?? ""));
     else await entry.dialog.dismiss();
+    state.actionRevision += 1;
     await audit(session, pending.operation, { tabId: state.id, dialogId, accepted: Boolean(pending.arguments.accept), approved: true });
     return response({ handled: true, accepted: Boolean(pending.arguments.accept) }, await meta(session, state));
   }
@@ -433,6 +438,7 @@ async function commitAction(args) {
     await fs.promises.mkdir(dir, { recursive: true, mode: 0o700 });
     const output = path.join(dir, safeName(download.suggestedFilename()));
     await download.saveAs(output);
+    state.actionRevision += 1;
     await audit(session, pending.operation, { tabId: state.id, origin: originOf(state.page.url()), role: descriptor.role, name: descriptor.name, output, approved: true });
     return response({ path: output, suggestedFilename: download.suggestedFilename() }, await meta(session, state));
   }
@@ -441,6 +447,7 @@ async function commitAction(args) {
     const dy = Number(pending.arguments.delta_y ?? pending.arguments.deltaY ?? 700);
     if (pending.arguments.target) await (await resolveTarget(session, state, pending.arguments.target)).locator.evaluate((el, [x, y]) => el.scrollBy(x, y), [dx, dy]);
     else await state.page.mouse.wheel(dx, dy);
+    state.actionRevision += 1;
     await audit(session, pending.operation, { tabId: state.id, origin: originOf(state.page.url()), dx, dy, approved: true });
     return response({ ok: true }, await meta(session, state));
   }
@@ -595,6 +602,7 @@ async function handle(operation, args = {}) {
     const dy = Number(args.delta_y ?? args.deltaY ?? 700);
     if (args.target) await (await resolveTarget(session, state, args.target)).locator.evaluate((el, [x, y]) => el.scrollBy(x, y), [dx, dy]);
     else await state.page.mouse.wheel(dx, dy);
+    state.actionRevision += 1;
     await audit(session, operation, { tabId: state.id, origin: originOf(state.page.url()), dx, dy });
     return response({ ok: true }, await meta(session, state));
   }
@@ -633,9 +641,13 @@ input.on("line", async (line) => {
   }
 });
 
+let shuttingDown = false;
 async function shutdown() {
+  if (shuttingDown) return;
+  shuttingDown = true;
   await Promise.all([...sessions.values()].filter((session) => !session.claimed).map((session) => session.context.close().catch(() => {})));
   process.exit(0);
 }
+input.on("close", shutdown);
 process.on("SIGTERM", shutdown);
 process.on("SIGINT", shutdown);

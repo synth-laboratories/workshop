@@ -253,7 +253,9 @@ fn mcp_groups(current: &ContextSettings) -> Vec<McpContextGroup> {
             &[(
                 "synth_browser",
                 &[
+                    "browser_status",
                     "browser_create_session",
+                    "browser_claim_chrome",
                     "browser_close_session",
                     "browser_list_tabs",
                     "browser_new_tab",
@@ -270,6 +272,9 @@ fn mcp_groups(current: &ContextSettings) -> Vec<McpContextGroup> {
                     "browser_screenshot",
                     "browser_upload",
                     "browser_download",
+                    "browser_list_dialogs",
+                    "browser_handle_dialog",
+                    "browser_audit",
                 ],
             )],
         ),

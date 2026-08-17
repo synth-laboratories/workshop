@@ -9,11 +9,14 @@ import path from "node:path";
 import { performance } from "node:perf_hooks";
 
 const profileRoot = fs.mkdtempSync(path.join(os.tmpdir(), "workshop-browser-acceptance-"));
+const runtimeRoot = new URL("./runtime", import.meta.url).pathname;
 const child = spawn(process.execPath, [new URL("./playwright_backend.mjs", import.meta.url).pathname], {
   env: {
     ...process.env,
+    SYNTH_BROWSER_RUNTIME_ROOT: runtimeRoot,
+    PLAYWRIGHT_BROWSERS_PATH: path.join(runtimeRoot, "browsers"),
     SYNTH_BROWSER_HEADLESS: process.env.SYNTH_BROWSER_HEADLESS ?? "1",
-    SYNTH_BROWSER_ALLOWED_ORIGINS: "https://example.com,https://www.iana.org,https://www.usesynth.ai",
+    SYNTH_BROWSER_ALLOWED_ORIGINS: "https://example.com,https://www.iana.org,https://iana.org,https://www.usesynth.ai",
     SYNTH_BROWSER_PROFILE_ROOT: profileRoot,
   },
   stdio: ["pipe", "pipe", "inherit"],
@@ -27,6 +30,10 @@ reader.on("line", (line) => {
   if (!waiter) return;
   pending.delete(message.id);
   message.ok ? waiter.resolve(message.response) : waiter.reject(new Error(message.error));
+});
+child.on("exit", (code, signal) => {
+  for (const waiter of pending.values()) waiter.reject(new Error(`browser backend exited (${signal ?? code})`));
+  pending.clear();
 });
 function call(operation, callArgs = {}) {
   const id = ++nextId;

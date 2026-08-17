@@ -263,3 +263,29 @@ test("an enabled Chrome claim preserves the exact user tab", async (context) => 
   const targets = await (await fetch(`${endpoint}/json/list`)).json();
   assert(targets.some((target) => target.url.startsWith(origin)), "claimed user tab was closed");
 });
+
+test("stdin shutdown releases a persistent profile for immediate restart", async (context) => {
+  const server = await serve();
+  const origin = `http://127.0.0.1:${server.address().port}`;
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "workshop-browser-shutdown-test-"));
+  context.after(async () => {
+    server.closeAllConnections();
+    await new Promise((resolve) => server.close(resolve));
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  const first = backend(origin, root);
+  const created = await first.call("browser_create_session", { profile: "restartable" });
+  await first.call("browser_navigate", { session_id: created.result.sessionId, tab_id: created.result.tabId, url: origin });
+  first.child.stdin.end();
+  await new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => reject(new Error("backend did not exit after stdin EOF")), 5_000);
+    first.child.once("exit", () => { clearTimeout(timeout); resolve(); });
+  });
+
+  const second = backend(origin, root);
+  const reopened = await second.call("browser_create_session", { profile: "restartable" });
+  await second.call("browser_close_session", { session_id: reopened.result.sessionId });
+  second.child.stdin.end();
+  await new Promise((resolve) => second.child.once("exit", resolve));
+});

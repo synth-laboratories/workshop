@@ -101,6 +101,14 @@ impl BrowserClient {
 
     pub async fn stop(mut self) {
         let _ = self.stdin.shutdown().await;
-        let _ = self.child.kill().await;
+        // Closing stdin asks the backend to close every managed Chromium
+        // context before exiting. An immediate kill leaves ProcessSingleton
+        // locks and orphaned browser processes behind, corrupting restart.
+        if tokio::time::timeout(Duration::from_secs(5), self.child.wait())
+            .await
+            .is_err()
+        {
+            let _ = self.child.kill().await;
+        }
     }
 }

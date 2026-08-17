@@ -27,16 +27,18 @@ The reference backend is end-to-end viable in the development tree. Context Sett
 
 Claimed Chrome is implemented but deliberately off by default (`SYNTH_BROWSER_ENABLE_CHROME_CLAIM=1`). Chrome must itself be launched with a loopback debugging endpoint. Claiming requires exact host approval and exactly one title/URL match; closing the Workshop session preserves the claimed tab and closes only tabs Workshop created. This is a privileged compatibility path, not the default browser route.
 
-## Acceptance evidence (2026-08-16, Apple Silicon macOS)
+## Acceptance evidence (2026-08-17, Apple Silicon macOS)
 
-- Deterministic SPA test: bounded snapshot, password redaction, modal mutation, stale-ref refusal, ambiguous-locator refusal, fill, tab create/close/non-reuse, profile persistence, screenshot, cleanup, live origin approval reload, and post-revocation refusal passed.
+- Deterministic SPA test: bounded snapshot, password redaction, modal mutation, stale-ref refusal, ambiguous-locator refusal, fill, tab create/close/non-reuse, profile persistence, screenshot, cleanup, live origin approval reload, and post-revocation refusal passed. Immediate ref reuse after an input action is invalidated synchronously rather than depending on MutationObserver scheduling.
+- `scripts/browser-workshop-e2e.mjs` passed through the public MCP adapter, authenticated loopback IPC, Rust service/approval boundary, and Playwright backend. It additionally covered destructive-action refusal without an owning agent session, cross-origin refusal, controlled download, audit redaction, backend SIGKILL detection, and restart recovery.
 - `example.com`: navigation, heading query, link click, and protocol `browser_back` passed.
 - `usesynth.ai/evals/craftax`: focused Craftax and Trajectories reads were 1,879 and 134 characters under a 4,000-character ceiling, without truncation.
-- Measured cold Chromium session startup: 277 ms. Warm navigation to the Craftax SPA: 2,375 ms.
-- Measured backend RSS: 157.8 MiB; backend plus Chromium descendant RSS: 722.2 MiB. RSS is a practical one-run observation, not a steady-state guarantee.
-- The JS backend source is small; the real bundle cost is the pinned Chromium/Node runtime and is not yet measured because it is not packaged.
+- Latest measured cold Chromium session startup was 490 ms through the complete Workshop path and 712 ms in the direct public-site harness. Warm navigation to the Craftax SPA was 2,526 ms.
+- Latest measured backend RSS was 172.5 MiB; backend plus Chromium descendant RSS was 1,168.2 MiB. RSS is a practical one-run observation, not a steady-state guarantee and varies substantially with Chromium process state.
+- Closing the Rust client now gives the backend up to five seconds to close persistent contexts before force termination. The regression test immediately reopens the same persistent profile after stdin EOF, guarding against orphaned Chromium processes and `ProcessSingleton` locks.
+- The complete desktop Rust suite passed serially (775 passed, 3 ignored), the native helper suite passed (34), renderer source tests passed (254), and frontend typecheck/build passed. The desktop suite's default parallel run exposed two pre-existing shared-state Codex session-test races; both passed individually and in the full serial run.
 
-Run deterministic verification with `node --test apps/synth_desktop/browser/playwright_backend.test.mjs`. Run the network-dependent smoke check with `node apps/synth_desktop/browser/acceptance.mjs`.
+Run deterministic verification with `node --test apps/synth_desktop/browser/playwright_backend.test.mjs`. Run the network-dependent smoke check with `node apps/synth_desktop/browser/acceptance.mjs`. The full-path harness requires a deliberately isolated named Workshop instance and accepts its app-data root, MCP adapter path, and app PID as arguments; it must never be pointed at another user's running instance.
 
 ## Embedded-engine bakeoff and CEF gate
 
@@ -68,7 +70,7 @@ The executable preflight is `scripts/cef-workshop-poc.sh preflight`. It records 
 ## Production acceptance evidence (August 17)
 
 - The pinned runtime passes checksum verification plus executable Node, Chromium, and one-page Playwright browser/renderer probes.
-- A locally staged 0.5.0 application contains the runtime, backend and `synth-browser-mcp`; its development-installed receipt passed. This is an ad-hoc, non-notarized packaging smoke only. The staged app was 774 MiB on disk and the runtime reported 749,674,496 installed bytes.
+- A freshly rebuilt 0.5.0 application contains the exact tested backend, runtime and `synth-browser-mcp`; its final ad-hoc resource seal and development-installed receipt passed. This is a non-notarized packaging smoke only. The staged app was 774 MiB on disk and the runtime reported 749,674,496 installed bytes.
 - Claimed Chrome passed a live loopback-CDP test: claims are disabled by default, require one exact title/URL match, reject non-loopback discovery, and preserve the user's tab during session cleanup.
 - The staged native helper reports Accessibility and Screen Recording granted on this host. It is ad-hoc signed, so `helper-live` correctly refuses to issue the signed/notarized production receipt.
 - Developer ID/notarization, a real installed updater before/after pair, and the CEF Workshop embedding receipt remain external evidence gates. No production-readiness claim is made for them.
