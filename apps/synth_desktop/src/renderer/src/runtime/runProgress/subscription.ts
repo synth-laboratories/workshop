@@ -33,6 +33,7 @@ export type RunProgressConnectionState =
 	| "reconnecting"
 	| "stale"
 	| "terminal"
+	| "interrupted"
 	| "failed"
 	| "unavailable";
 
@@ -80,6 +81,8 @@ export type RunProgressTransport = {
 
 const PAGE_SIZE = 500;
 const POLL_INTERVAL_MS = 750;
+/** How long a hung get/eventsAfter may sit before the UI leaves Running. */
+const STALL_TIMEOUT_MS = 15_000;
 /** Parked entries retained so a reopened dialog resumes instead of replaying. */
 const MAX_PARKED_ENTRIES = 32;
 
@@ -101,6 +104,7 @@ type Entry = {
 	needsSnapshot: boolean;
 	lastTouchedAt: number;
 	disposed: boolean;
+	stallTimer: ReturnType<typeof globalThis.setTimeout> | null;
 };
 
 /**
@@ -112,7 +116,7 @@ export type RunProgressDiagnostic = {
 	runId: string;
 	severity: "warn" | "error";
 	event: string;
-	code: "stream_replay_gap" | "stream_interrupted";
+	code: "stream_replay_gap" | "stream_interrupted" | "stream_stalled";
 	message: string;
 	details?: Record<string, unknown>;
 };
@@ -120,6 +124,7 @@ export type RunProgressDiagnostic = {
 const entries = new Map<string, Entry>();
 let injectedTransport: RunProgressTransport | null = null;
 let pollIntervalMs = POLL_INTERVAL_MS;
+let stallTimeoutMs = STALL_TIMEOUT_MS;
 let diagnosticSink: ((report: RunProgressDiagnostic) => void) | null = null;
 
 /** Install the renderer's diagnostic reporter. Called once, from the entry point. */
@@ -145,6 +150,11 @@ export function setRunProgressTransport(transport: RunProgressTransport | null):
 /** Tests shorten the wakeup interval. */
 export function setRunProgressPollInterval(ms: number): void {
 	pollIntervalMs = ms;
+}
+
+/** Tests shorten the hung-read watchdog. */
+export function setRunProgressStallTimeout(ms: number): void {
+	stallTimeoutMs = ms;
 }
 
 /** Tests only: drop every entry and every timer. */
@@ -234,16 +244,44 @@ async function readPersisted(
 	}
 }
 
+function disarmStall(entry: Entry): void {
+	if (entry.stallTimer != null) globalThis.clearTimeout(entry.stallTimer);
+	entry.stallTimer = null;
+}
+
+function armStall(entry: Entry): void {
+	disarmStall(entry);
+	if (entry.stopPolling || isTerminalRunStatus(entry.snapshot.run?.status)) return;
+	entry.stallTimer = globalThis.setTimeout(() => {
+		entry.stallTimer = null;
+		if (entry.disposed || entry.stopPolling) return;
+		if (isTerminalRunStatus(entry.snapshot.run?.status)) return;
+		if (entry.snapshot.state === "terminal") return;
+		report({
+			runId: entry.runId,
+			severity: "error",
+			event: "run_progress.stream.stalled",
+			code: "stream_stalled",
+			message: "Optimizer subscription stalled; the run is interrupted, not still working"
+		});
+		publish(entry, {
+			state: "interrupted",
+			error: "subscription stalled — the producer stopped answering; reconnecting resumes from the retained cursor"
+		});
+	}, stallTimeoutMs);
+}
+
 async function load(entry: Entry, api: RunProgressTransport, requestSnapshot: boolean): Promise<void> {
 	if (entry.disposed) return;
 	// A previously seen hole is only healed by a full reload, so it upgrades an
 	// incremental wakeup into a snapshot read.
 	const snapshot = requestSnapshot || entry.needsSnapshot;
+	armStall(entry);
 	try {
 		publish(entry, {
 			state: snapshot
 				? "replaying"
-				: entry.snapshot.state === "subscribed"
+				: entry.snapshot.state === "subscribed" || entry.snapshot.state === "interrupted"
 					? "reconnecting"
 					: entry.snapshot.state
 		});
@@ -256,6 +294,7 @@ async function load(entry: Entry, api: RunProgressTransport, requestSnapshot: bo
 			next = await readPersisted(entry, api, 0);
 		}
 		if (entry.disposed) return;
+		disarmStall(entry);
 		entry.cursorState = next;
 		const terminal = isTerminalRunStatus(run.status);
 		if (terminal) entry.stopPolling = true;
@@ -290,6 +329,7 @@ async function load(entry: Entry, api: RunProgressTransport, requestSnapshot: bo
 			error: undefined
 		});
 	} catch (reason) {
+		disarmStall(entry);
 		if (entry.disposed) return;
 		const message = publicError(reason);
 		report({
@@ -300,8 +340,9 @@ async function load(entry: Entry, api: RunProgressTransport, requestSnapshot: bo
 			message
 		});
 		// A failed read never discards what was already replayed: a card that
-		// showed 68 rollouts must not blank because one page timed out.
-		publish(entry, { state: "failed", error: message });
+		// showed 68 rollouts must not blank because one page timed out. The
+		// state is interrupted, not failed-running: reconnecting recovers.
+		publish(entry, { state: "interrupted", error: message });
 	}
 }
 
@@ -325,6 +366,7 @@ function activate(entry: Entry, api: RunProgressTransport): void {
 
 function park(entry: Entry): void {
 	entry.disposed = true;
+	disarmStall(entry);
 	if (entry.poll != null) globalThis.clearInterval(entry.poll);
 	entry.poll = null;
 	entry.unlisten?.();
@@ -393,7 +435,8 @@ export function subscribeToRun(
 			stopPolling: false,
 			needsSnapshot: false,
 			lastTouchedAt: Date.now(),
-			disposed: true
+			disposed: true,
+			stallTimer: null
 		};
 		entries.set(runId, entry);
 	}
