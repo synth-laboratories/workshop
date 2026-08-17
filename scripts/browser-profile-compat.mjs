@@ -16,11 +16,13 @@ function argument(name) {
 
 const beforeArgument = argument("--before");
 const afterArgument = argument("--after");
+const rollbackArgument = argument("--rollback");
 const requireVersionChange = process.argv.includes("--require-version-change");
 const receiptPath = argument("--receipt") ?? process.env.SYNTH_ACCEPTANCE_RECEIPT;
-if (!beforeArgument || !afterArgument) throw new Error("usage: browser-profile-compat.mjs --before BEFORE.app --after AFTER.app [--require-version-change] [--receipt FILE]");
+if (!beforeArgument || !afterArgument) throw new Error("usage: browser-profile-compat.mjs --before BEFORE.app --after AFTER.app [--rollback ROLLBACK.app] [--require-version-change] [--receipt FILE]");
 const beforeApp = path.resolve(beforeArgument);
 const afterApp = path.resolve(afterArgument);
+const rollbackApp = rollbackArgument ? path.resolve(rollbackArgument) : undefined;
 
 function packaged(app) {
   const resources = path.join(app, "Contents", "Resources");
@@ -35,7 +37,9 @@ function packaged(app) {
 
 const before = packaged(beforeApp);
 const after = packaged(afterApp);
+const rollback = rollbackApp ? packaged(rollbackApp) : undefined;
 if (requireVersionChange) assert.notEqual(before.version, after.version, "updater acceptance requires distinct app versions");
+if (rollback) assert.equal(rollback.version, before.version, "rollback bundle must restore the original version");
 
 const html = `<!doctype html><html><body>
 <h1 id="persisted">No persisted updater value</h1>
@@ -123,14 +127,19 @@ try {
   await writer.call("browser_close_session", { session_id: target.session_id });
   await writer.stop();
 
-  const reader = backend(after);
-  const reopened = await reader.call("browser_create_session", { profile: profileName });
-  const reopenedTarget = { session_id: reopened.result.sessionId, tab_id: reopened.result.tabId };
-  await reader.call("browser_navigate", { ...reopenedTarget, url: origin });
-  const persisted = await reader.call("browser_query", { ...reopenedTarget, role: "heading", name: persistedValue, max_chars: 2_000 });
-  assert(persisted.result.text.includes(persistedValue), "the post-update build did not reopen persisted browser state");
-  await reader.call("browser_close_session", { session_id: reopenedTarget.session_id });
-  await reader.stop();
+  async function verifyPersisted(build, phase) {
+    const reader = backend(build);
+    const reopened = await reader.call("browser_create_session", { profile: profileName });
+    const reopenedTarget = { session_id: reopened.result.sessionId, tab_id: reopened.result.tabId };
+    await reader.call("browser_navigate", { ...reopenedTarget, url: origin });
+    const persisted = await reader.call("browser_query", { ...reopenedTarget, role: "heading", name: persistedValue, max_chars: 2_000 });
+    assert(persisted.result.text.includes(persistedValue), `${phase} build did not reopen persisted browser state`);
+    await reader.call("browser_close_session", { session_id: reopenedTarget.session_id });
+    await reader.stop();
+  }
+
+  await verifyPersisted(after, "post-update");
+  if (rollback) await verifyPersisted(rollback, "post-rollback");
 
   const receipt = {
     schema: "workshop.browser-profile-compatibility.v1",
@@ -142,6 +151,9 @@ try {
     afterVersion: after.version,
     versionChanged: before.version !== after.version,
     profilePersisted: true,
+    rollbackApp: rollback?.app ?? null,
+    rollbackVersion: rollback?.version ?? null,
+    rollbackProfilePersisted: Boolean(rollback),
     checkedAt: new Date().toISOString(),
   };
   if (receiptPath) {

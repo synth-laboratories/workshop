@@ -117,6 +117,13 @@ verify_profile_compat() {
     --before "$before" --after "$after"
 }
 
+verify_soak() {
+  local app="$2" duration="${3:-1800}"
+  [[ -d "$app" ]] || die "Chromium soak needs a packaged .app bundle"
+  "$app/Contents/Resources/browser/runtime/node/bin/node" "$ROOT/scripts/browser-soak.mjs" \
+    --app "$app" --duration-seconds "$duration" --receipt "$RECEIPT"
+}
+
 verify_helper_live() {
   local helper="${2:-${SYNTH_HELPER_APP:-$APP/Contents/Resources/Synth Computer Use.app}}" binary grants
   [[ -x "$helper/Contents/MacOS/synth-computer-use" ]] || die "installed helper is missing: $helper"
@@ -151,11 +158,12 @@ case "$COMMAND" in
   installed) verify_installed "$APP" ;;
   development-installed) verify_development_installed "$APP" ;;
   profile-compat) [[ $# -eq 3 ]] || die "usage: $0 profile-compat BEFORE.app AFTER.app"; verify_profile_compat "$@" ;;
+  soak) [[ $# -ge 2 && $# -le 3 ]] || die "usage: $0 soak APP [DURATION_SECONDS]"; verify_soak "$@" ;;
   updater) [[ $# -eq 4 ]] || die "usage: $0 updater BEFORE.app AFTER.app PROFILE_SENTINEL"; verify_updater "$@" ;;
   helper-live) verify_helper_live "$@" ;;
   development-helper-live) verify_helper_development "$@" ;;
   help|-h|--help)
-    echo "Usage: $0 installed [APP] | development-installed [APP] | profile-compat BEFORE.app AFTER.app | updater BEFORE.app AFTER.app PROFILE_SENTINEL | helper-live [HELPER.app] | development-helper-live [HELPER.app]"
+    echo "Usage: $0 installed [APP] | development-installed [APP] | profile-compat BEFORE.app AFTER.app | soak APP [DURATION_SECONDS] | updater BEFORE.app AFTER.app PROFILE_SENTINEL | helper-live [HELPER.app] | development-helper-live [HELPER.app]"
     ;;
   *) die "unknown command: $COMMAND" ;;
 esac
