@@ -3,6 +3,7 @@
 mod content_store;
 mod database;
 mod event_journal;
+pub mod generation_speed;
 #[path = "../migration/mod.rs"]
 pub mod legacy_migration;
 mod live_spool;
@@ -19,6 +20,7 @@ pub use content_store::ContentStore;
 pub use database::{app_data_root, Database, Storage};
 pub(crate) use event_journal::append_event;
 pub use event_journal::{EventAppend, EventJournal};
+pub use generation_speed::{GenerationSpeedRepository, GenerationSpeedRow};
 pub use live_spool::{
     envelopes_from_event_log, load_live_spool, persist_live_envelopes, replay_frame_from_envelope,
     LiveSpool, LIVE_SPOOL_SCHEMA,

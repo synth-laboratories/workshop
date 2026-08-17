@@ -3,7 +3,33 @@ import type { RuntimeEvent } from "@synth/runtime-protocol";
 import type { LocalChat } from "../types/landing";
 
 const GENERATION_TPS_UNAVAILABLE = "Generation speed unavailable";
-const MAX_GENERATION_DELTA_GAP_MS = 2_000;
+const GENERATION_SPEED_EVENT = "turn/generationSpeed";
+const MEASUREMENT_SCHEMA = "synth.generation-speed.v1";
+
+/**
+ * One backend measurement of one output-text segment, as it arrives on the
+ * journal. The renderer does not compute rates: it renders what the transport
+ * measured at the stream frame, which is the only place the timing is honest.
+ */
+type GenerationSpeedMeasurement = {
+	schemaVersion: string;
+	measurementKind: string;
+	itemId: string;
+	responseId: string | null;
+	outputIndex: number;
+	contentIndex: number;
+	phase: "commentary" | "final_answer" | "other";
+	status: "completed" | "partial" | "unavailable";
+	tps: number | null;
+	exactTokensAfterFirstSample: number;
+	durationMs: number;
+	sampleCount: number;
+	tokenCountSource: string;
+	tokenizerId?: string | null;
+	clockSource: string;
+	unavailableReason: string | null;
+	qualityFlags: string[];
+};
 
 function formatTps(value: number): string {
 	return value >= 10 ? value.toFixed(1) : value.toFixed(2);
@@ -14,41 +40,6 @@ function timestamp(value: string): number | null {
 	return Number.isFinite(parsed) ? parsed : null;
 }
 
-function record(value: unknown): Record<string, unknown> | null {
-	return value && typeof value === "object" ? value as Record<string, unknown> : null;
-}
-
-function outputTokens(payload: Record<string, unknown>): number | null {
-	const usage = record(payload.tokenUsage) ?? record(payload.usage) ?? payload;
-	const turn = record(payload.turn);
-	const turnUsage = record(turn?.tokenUsage) ?? record(turn?.usage);
-	for (const candidate of [
-		record(usage.last), record(usage.lastUsage), record(usage.lastTokenUsage),
-		record(turnUsage?.last), record(turnUsage?.lastUsage), record(turnUsage?.lastTokenUsage),
-		turnUsage, usage
-	]) {
-		if (!candidate) continue;
-		const value = candidate.outputTokens ?? candidate.output_tokens ?? candidate.completionTokens ?? candidate.completion_tokens;
-		if (typeof value === "number" && Number.isFinite(value) && value > 0) return value;
-	}
-	return null;
-}
-
-function isOutputDelta(event: RuntimeEvent): boolean {
-	return event.eventKind === "message.delta"
-		&& typeof event.payload.delta === "string"
-		&& event.payload.delta.length > 0;
-}
-
-function isUsage(event: RuntimeEvent): boolean {
-	const kind = event.eventKind.toLowerCase();
-	return kind.includes("usage") || kind.startsWith("run.") || kind.startsWith("turn/");
-}
-
-function isTerminal(event: RuntimeEvent): boolean {
-	return ["run.completed", "run.failed", "run.cancelled", "turn/completed", "turn/failed", "turn/interrupted"].includes(event.eventKind);
-}
-
 function compactDuration(milliseconds: number): string {
 	const seconds = Math.max(0, Math.round(milliseconds / 1_000));
 	if (seconds < 60) return `${seconds}s`;
@@ -57,24 +48,97 @@ function compactDuration(milliseconds: number): string {
 	return remainder ? `${minutes}m ${remainder}s` : `${minutes}m`;
 }
 
-export type TurnPerformanceLabel = { generation: string; worked: string | null };
+function isTerminal(event: RuntimeEvent): boolean {
+	return ["run.completed", "run.failed", "run.cancelled", "turn/completed", "turn/failed", "turn/interrupted"].includes(event.eventKind);
+}
+
+/**
+ * Read a measurement off an event, or `null` when the payload is not one.
+ *
+ * The schema version is checked, not assumed: nothing recorded before segment
+ * measurement existed may be rendered as if it were a measurement.
+ */
+function measurement(event: RuntimeEvent): GenerationSpeedMeasurement | null {
+	if (event.eventKind !== GENERATION_SPEED_EVENT) return null;
+	const payload = event.payload as Partial<GenerationSpeedMeasurement> | undefined;
+	if (!payload || payload.schemaVersion !== MEASUREMENT_SCHEMA) return null;
+	if (typeof payload.itemId !== "string" || payload.itemId.length === 0) return null;
+	return payload as GenerationSpeedMeasurement;
+}
+
+/** Whether a rate may be shown as this segment's speed. */
+function isPublishable(value: GenerationSpeedMeasurement): boolean {
+	return typeof value.tps === "number" && Number.isFinite(value.tps) && value.tps > 0
+		&& (value.status === "completed" || value.status === "partial");
+}
+
+/**
+ * The audit trail behind one displayed value, for the Advanced view's tooltip.
+ * Data only — every field is something the measurement recorded about itself.
+ */
+function detail(value: GenerationSpeedMeasurement): string {
+	const segment = [value.responseId, value.itemId, value.outputIndex, value.contentIndex]
+		.filter((part) => part !== null && part !== undefined)
+		.join(":");
+	const fields = [
+		`kind ${value.measurementKind}`,
+		`tokens ${value.exactTokensAfterFirstSample}`,
+		`duration ${(value.durationMs / 1_000).toFixed(2)}s`,
+		`samples ${value.sampleCount}`,
+		`token source ${value.tokenCountSource}`,
+		value.tokenizerId ? `tokenizer ${value.tokenizerId}` : null,
+		`clock ${value.clockSource}`,
+		`segment ${segment}`,
+		value.status === "partial" ? "partial" : null,
+		value.unavailableReason ? `reason ${value.unavailableReason}` : null,
+		value.qualityFlags.length ? `flags ${value.qualityFlags.join(", ")}` : null
+	].filter((field): field is string => field !== null);
+	return `Client-observed text delivery; excludes tools and reasoning. ${fields.join(" · ")}`;
+}
+
+function generationLabel(value: GenerationSpeedMeasurement | undefined): string {
+	if (!value || !isPublishable(value)) return GENERATION_TPS_UNAVAILABLE;
+	const rate = `Observed generation: ${formatTps(value.tps!)} tok/s`;
+	return value.status === "partial" ? `${rate} (partial)` : rate;
+}
+
+export type TurnPerformanceLabel = {
+	generation: string;
+	worked: string | null;
+	detail: string | null;
+};
 
 /**
  * Build immutable temporal snapshots from the durable event journal.
  *
- * Generation speed is cumulative generation-only output tokens divided by the
- * sum of positive, adjacent output-delta intervals no longer than two seconds.
- * Longer intervals are tool/orchestration/idle time and are excluded. Each
- * assistant segment is cut off when the next segment begins, or at the turn's
- * terminal event. Telemetry observed after that cutoff can never enter the
- * historical snapshot. "Worked" is terminal time minus the latest persisted
- * turn/accepted boundary, never render time.
+ * Generation speed is not computed here. Each label renders one backend
+ * measurement of one output-text segment, matched to the assistant message that
+ * segment produced — the transport's `itemId` is that message's id. A turn that
+ * calls tools produces several assistant messages and therefore several
+ * measurements, each with its own tokens and its own elapsed time; they are
+ * shown separately rather than blended into one turn-wide figure, and tool
+ * execution appears in none of them.
+ *
+ * A message with no measurement, or whose measurement did not clear its
+ * eligibility thresholds, reads `Generation speed unavailable`. Nothing is
+ * carried forward from an earlier segment to fill the gap.
+ *
+ * "Worked" is terminal time minus the latest persisted turn/accepted boundary,
+ * never render time. It is elapsed wall time for the whole turn — deliberately
+ * a different quantity from generation speed, and never divided into one.
  */
 export function turnPerformanceLabels(chat: LocalChat, events: RuntimeEvent[], running = false) {
 	const byMessageId: Record<string, TurnPerformanceLabel> = {};
-	let live: string | null = null;
 	const ordered = [...events].sort((a, b) => a.sequence - b.sequence);
 	const messages = chat.messages;
+
+	// Last measurement wins per segment: a replayed journal may deliver the same
+	// event twice, and a segment is measured once when it ends.
+	const measurements = new Map<string, GenerationSpeedMeasurement>();
+	for (const event of ordered) {
+		const value = measurement(event);
+		if (value) measurements.set(value.itemId, value);
+	}
 
 	for (let index = 0; index < messages.length; index += 1) {
 		const message = messages[index]!;
@@ -112,36 +176,25 @@ export function turnPerformanceLabels(chat: LocalChat, events: RuntimeEvent[], r
 		const isFinal = nextAssistantAt == null;
 		const cutoff = nextAssistantAt ?? terminalAt ?? (running ? Number.POSITIVE_INFINITY : messageAt);
 		let acceptedAt: number | null = null;
-		let lastOutputAt: number | null = null;
-		let generationActiveMs = 0;
-		let tokens: number | null = null;
 		for (const event of ordered) {
 			const at = timestamp(event.createdAt);
 			if (at == null || at < turnStartAt || (cutoff != null && at >= cutoff && event !== terminal)) continue;
 			if (event.eventKind === "turn/accepted") acceptedAt = at;
-			if (isOutputDelta(event)) {
-				if (lastOutputAt != null) {
-					const gap = at - lastOutputAt;
-					if (gap > 0 && gap <= MAX_GENERATION_DELTA_GAP_MS) generationActiveMs += gap;
-				}
-				lastOutputAt = at;
-			}
-			if (isUsage(event)) {
-				const observed = outputTokens(event.payload);
-				if (observed != null) tokens = Math.max(tokens ?? 0, observed);
-			}
 		}
-		const rate = tokens != null && generationActiveMs > 0 ? tokens / (generationActiveMs / 1_000) : null;
-		const generation = rate != null && Number.isFinite(rate) && rate > 0
-			? `${formatTps(rate)} tok/s generation speed`
-			: GENERATION_TPS_UNAVAILABLE;
+		const value = measurements.get(message.id);
 		const worked = isFinal && terminalAt != null && acceptedAt != null && terminalAt >= acceptedAt
 			? `Worked ${compactDuration(terminalAt - acceptedAt)}`
 			: null;
-		byMessageId[message.id] = { generation, worked };
-		if (isFinal && terminalAt == null) live = generation;
+		byMessageId[message.id] = {
+			generation: generationLabel(value),
+			worked,
+			detail: value ? detail(value) : null
+		};
 	}
-	return { byMessageId, live };
+	// No live figure while a segment is still streaming. A measurement exists
+	// only once its segment has ended, and showing the previous segment's rate
+	// here would be a number about text the model is not generating.
+	return { byMessageId, live: null as string | null };
 }
 
 export function useTurnPerformanceLabels(chat: LocalChat, events: RuntimeEvent[], running: boolean) {

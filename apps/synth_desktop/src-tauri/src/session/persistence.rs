@@ -407,6 +407,20 @@ impl SessionPersistence {
         let repository = UsageRecordsRepository::new(core.storage().database().clone());
         repository.record(record).await
     }
+
+    /// Persist one observed generation-speed measurement together with the raw
+    /// samples it was derived from, so a displayed value stays recomputable.
+    pub async fn record_generation_speed(
+        &self,
+        row: crate::storage::GenerationSpeedRow,
+    ) -> Result<()> {
+        let Self::Core(core) = self else {
+            return Ok(());
+        };
+        let repository =
+            crate::storage::GenerationSpeedRepository::new(core.storage().database().clone());
+        repository.record(row).await
+    }
 }
 
 fn ephemeral_codex_app_event(session_id: &str, method: &str, params: Value) -> AppEvent {

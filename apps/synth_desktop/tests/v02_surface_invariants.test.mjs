@@ -30,13 +30,20 @@ test("v0.4 transcript shows immutable generation speed and final elapsed work", 
 	const source = read("components/ChatTranscript.tsx");
 	const turnLabels = read("hooks/useTurnPerformanceLabels.ts");
 	const labels = read("runtime/modelPerformanceLabels.ts");
-	assert.match(source, /data-testid="model-working-median-tps"/);
-	assert.match(source, /data-testid={`assistant-median-tps-\${m\.id}`}/);
+	assert.match(source, /data-testid="model-working-generation-tps"/);
+	assert.match(source, /data-testid={`assistant-generation-tps-\${m\.id}`}/);
 	assert.match(source, /useTurnPerformanceLabels\(chat, events, running\)/);
 	assert.doesNotMatch(source, /medianTpsLabel\?\.replace/);
 	assert.match(turnLabels, /Generation speed unavailable/);
 	assert.match(turnLabels, /event\.eventKind === "turn\/accepted"/);
-	assert.match(turnLabels, /MAX_GENERATION_DELTA_GAP_MS/);
+	// The turn-wide estimate is gone. The renderer computes no rate: it shows
+	// backend per-segment measurements, so there is no gap threshold, no
+	// tokens-over-duration arithmetic, and nothing called a median.
+	assert.doesNotMatch(turnLabels, /MAX_GENERATION_DELTA_GAP_MS/);
+	assert.doesNotMatch(turnLabels, /generationActiveMs/);
+	assert.doesNotMatch(turnLabels, /median/i);
+	assert.doesNotMatch(source, /median/i);
+	assert.match(turnLabels, /turn\/generationSpeed/);
 	assert.match(source, /Elapsed work time/);
 	assert.match(labels, /summary\.provider === "openai-codex-oauth"/);
 	assert.match(labels, /CHATGPT_LUNA_MODEL\) return "chatgpt-luna"/);
