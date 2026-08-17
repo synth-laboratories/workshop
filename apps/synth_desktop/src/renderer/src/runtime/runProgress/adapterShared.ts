@@ -17,6 +17,7 @@ import type {
 	OptimizerEvent,
 	ProjectedState
 } from "@synth/visual-templates/optimizers/_shared/optimizer.run.v1/components/projectEvents.ts";
+import type { HistoricalShape } from "./history";
 import type { RunRecord } from "./subscription";
 import {
 	RUN_PROGRESS_SCHEMA_VERSION,
@@ -38,6 +39,12 @@ export type AdapterInput = {
 	cursorSeq: number;
 	/** Epoch ms used for elapsed time on a live run. Injected so tests are stable. */
 	now: number;
+	/**
+	 * Comparable finished runs of the same recipe, pooled into one shape. Present
+	 * only when enough of them exist; when it is, it *is* the ETA — see
+	 * `history.ts` for why throughput lost to it by a wide margin.
+	 */
+	history?: HistoricalShape;
 };
 
 function parseTime(value: string | null | undefined): number | undefined {
@@ -69,14 +76,36 @@ export function capabilitiesOf(run: RunRecord): RunProgressCapabilities {
 	};
 }
 
-/** Completion timestamps, in event order, for the named producer event types. */
-export function rolloutCompletionTimes(events: OptimizerEvent[], types: string[]): number[] {
+/**
+ * First-completion timestamps for the named producer event types, one per unit of
+ * work.
+ *
+ * The de-duplication is not defensive tidying — it is required. A real GEPA run
+ * emits `optimizer.evaluation_result.received` **twice** per rollout (480 events
+ * for 240 rollouts), and `projectEvents` counts only the first, so a naive
+ * timestamp list doubles the apparent throughput and halves every estimate.
+ * `idKeys` names the delta fields that identify the unit; when a producer omits
+ * them the event is kept, since a missing id is not evidence of a duplicate.
+ */
+export function rolloutCompletionTimes(
+	events: OptimizerEvent[],
+	types: string[],
+	idKeys: string[] = ["rollout_id", "rolloutId", "trial_id", "trialId"]
+): number[] {
 	const wanted = new Set(types);
+	const seen = new Set<string>();
 	const times: number[] = [];
 	for (const event of events) {
 		if (!wanted.has(event.type)) continue;
 		const at = parseTime(event.occurredAt);
-		if (at != null) times.push(at);
+		if (at == null) continue;
+		const delta = event.delta ?? {};
+		const id = idKeys.map((key) => delta[key]).find((value) => typeof value === "string" && value.length > 0);
+		if (typeof id === "string") {
+			if (seen.has(id)) continue;
+			seen.add(id);
+		}
+		times.push(at);
 	}
 	return times;
 }

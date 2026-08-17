@@ -12,6 +12,7 @@ import {
 	type OptimizerEvent,
 	type OptimizerRun
 } from "@synth/visual-templates/optimizers/_shared/optimizer.run.v1/components/projectEvents.ts";
+import type { HistoricalShape } from "./history";
 import { projectEval } from "./adapterEval";
 import { projectGepa } from "./adapterGepa";
 import { projectSft } from "./adapterSft";
@@ -79,7 +80,8 @@ function usableEvents(events: unknown[]): OptimizerEvent[] {
  */
 export function projectRunProgress(
 	snapshot: RunProgressSnapshot,
-	now: number
+	now: number,
+	history?: HistoricalShape
 ): RunProgressProjection | null {
 	const run = snapshot.run;
 	if (!run) return null;
@@ -91,7 +93,8 @@ export function projectRunProgress(
 		events,
 		stale: snapshot.gap || snapshot.state === "stale",
 		cursorSeq: snapshot.cursor,
-		now
+		now,
+		...(history ? { history } : {})
 	};
 	const projected = projectAtCursor(asOptimizerRun(run), events);
 	return ADAPTERS[kind](input, projected);

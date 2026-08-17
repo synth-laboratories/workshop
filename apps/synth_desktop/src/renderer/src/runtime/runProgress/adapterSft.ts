@@ -336,6 +336,10 @@ export function projectSft(input: AdapterInput, projected: ProjectedState): RunP
 				completions: rolloutCompletionTimes(input.events, CHECKPOINT_ROLLOUT_COMPLETION_TYPES),
 				remainingUnits: determinate ? Math.max(0, work.total! - work.completed!) : undefined,
 				unit: "rollout",
+				nowMs: input.now,
+				history: input.history,
+				progressFraction: fraction,
+				elapsedMs: base.timing.elapsedMs,
 				disruptedAtMs: lastDisruptionMs(input.events, SFT_DISRUPTION_TYPES),
 				paused: base.status === "paused",
 				unavailableReason: determinate ? undefined : "no checkpoint-evaluation rollouts were allocated"
@@ -364,6 +368,10 @@ export function projectSft(input: AdapterInput, projected: ProjectedState): RunP
 				completions,
 				remainingUnits: remainingRecords,
 				unit: "metric record",
+				nowMs: input.now,
+				history: input.history,
+				progressFraction: fraction,
+				elapsedMs: base.timing.elapsedMs,
 				paused: base.status === "paused",
 				unavailableReason: declared.steps == null
 					? "provider did not declare total steps"
@@ -377,6 +385,10 @@ export function projectSft(input: AdapterInput, projected: ProjectedState): RunP
 				phaseId: "queue",
 				completions: [],
 				unit: "step",
+				nowMs: input.now,
+				history: input.history,
+				progressFraction: fraction,
+				elapsedMs: base.timing.elapsedMs,
 				paused: base.status === "paused",
 				unavailableReason: "queue position and accelerator availability are not reported"
 			};
@@ -385,6 +397,10 @@ export function projectSft(input: AdapterInput, projected: ProjectedState): RunP
 			phaseId,
 			completions: [],
 			unit: "unit",
+			nowMs: input.now,
+				history: input.history,
+				progressFraction: fraction,
+				elapsedMs: base.timing.elapsedMs,
 			paused: base.status === "paused",
 			unavailableReason: `${phaseId} does not report a bounded unit count`
 		};

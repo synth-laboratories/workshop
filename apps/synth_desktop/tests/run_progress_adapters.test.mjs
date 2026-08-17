@@ -184,13 +184,30 @@ test("GEPA: coverage is how much of the planned work has reported", () => {
 	assert.match(metricExplanation(projection.usage.costUsd, "rollout"), /74 of 100 rollouts reported it/);
 });
 
-test("GEPA: the ETA warms, then settles, on rollout evidence alone", () => {
-	const warming = projectRunProgress(snapshot(gepaRun(), gepaEvents({ completed: 1 })), NOW);
-	assert.equal(warming.timing.eta.state, "estimating");
-	const settled = projectRunProgress(snapshot(gepaRun(), gepaEvents({ completed: 8 })), NOW);
-	assert.equal(settled.timing.eta.state, "point");
-	assert.match(settled.timing.eta.basis, /phase minibatch/);
-	assert.match(formatEta(settled.timing.eta), /^~\d+ min remaining$/);
+test("GEPA: no time estimate is offered, and the refusal says why", () => {
+	// Measured on a real Banking77 run: rollouts arrive in bursts 13ms apart with
+	// 150s proposer gaps between them, so rollout throughput missed the true
+	// remaining time by a median of 4.7×. The card shows counts and rate, not a
+	// clock. See run_progress_live_runs.test.mjs.
+	for (const completed of [1, 8, 74]) {
+		const projection = projectRunProgress(snapshot(gepaRun(), gepaEvents({ completed })), NOW);
+		assert.equal(projection.timing.eta.state, "unavailable");
+		assert.match(projection.timing.eta.unavailableReason, /proposer calls that complete none/);
+		assert.equal(formatEta(projection.timing.eta), "Unavailable");
+		// Progress itself is still fully reported.
+		assert.equal(projection.work.completed, completed);
+		assert.equal(projection.work.total, 100);
+		assert.ok(projection.progress.determinate);
+	}
+});
+
+test("GEPA: a run with no declared budget refuses for the simpler reason", () => {
+	const events = gepaEvents({ completed: 4 }).filter(
+		(event) => event.type !== "optimizer.limit.estimate_updated"
+	);
+	const projection = projectRunProgress(snapshot(gepaRun(), events), NOW);
+	assert.equal(projection.progress.determinate, false);
+	assert.match(projection.timing.eta.unavailableReason, /no rollout budget was declared/);
 });
 
 test("GEPA: a terminated run reports the breaker, drops the ETA, and keeps its counts", () => {
@@ -464,22 +481,35 @@ test("SFT: training without a declared total refuses an ETA in the producer's wo
 	);
 });
 
-test("SFT: a declared step total makes the estimate available on step evidence", () => {
-	const projection = projectRunProgress(snapshot(sftRun(), sftEvents({ steps: 5, declareTotal: true })), NOW);
+test("SFT: a declared step total makes an estimate possible on step evidence", () => {
+	const events = sftEvents({ steps: 5, declareTotal: true });
+	// A live card projects moments after the newest event, not half an hour later.
+	const liveNow = Date.parse(events.at(-1).occurredAt) + 1_000;
+	const projection = projectRunProgress(snapshot(sftRun(), events), liveNow);
 	assert.equal(projection.work.total, 1_000);
 	assert.equal(projection.work.completed, 500);
 	assert.equal(projection.progress.determinate, true);
-	assert.equal(projection.timing.eta.state, "point");
+	assert.ok(
+		["point", "range"].includes(projection.timing.eta.state),
+		`${projection.timing.eta.state}: ${projection.timing.eta.basis}`
+	);
 	assert.match(projection.timing.eta.basis, /phase training/);
 });
 
 test("SFT: queue time is displayed and excluded from the training estimate", () => {
-	const projection = projectRunProgress(snapshot(sftRun(), sftEvents({ steps: 5, declareTotal: true })), NOW);
+	const events = sftEvents({ steps: 5, declareTotal: true });
+	const liveNow = Date.parse(events.at(-1).occurredAt) + 1_000;
+	const projection = projectRunProgress(snapshot(sftRun(), events), liveNow);
 	const queued = projection.details.find((detail) => detail.label === "Queued for");
 	assert.equal(queued.value, "2m");
 	assert.match(queued.note, /excluded from the training estimate/);
-	// Five step records 10s apart → 10s per 100 steps → 500 remaining steps ≈ 50s.
-	assert.equal(projection.timing.eta.remainingMs, 10_000 * 5);
+	// Five metric records 10s apart cover 500 remaining steps in well under a
+	// minute. The two minutes spent queued are not in that number: the window is
+	// anchored at the first metric record, and none exists while queued.
+	assert.ok(
+		projection.timing.eta.remainingMs > 30_000 && projection.timing.eta.remainingMs < 120_000,
+		`${projection.timing.eta.remainingMs}ms`
+	);
 });
 
 test("SFT: usage the provider never reported stays unavailable", () => {

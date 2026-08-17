@@ -258,8 +258,11 @@ test("the dialog opens over the card, traps focus, and returns focus on Escape",
 	await expect(dialog).toBeVisible();
 	await expect(dialog).toHaveAttribute("aria-modal", "true");
 	await expect(dialog.getByRole("heading", { level: 2 })).toHaveText("GEPA · Banking77");
-	// The dialog explains the estimate rather than only asserting it.
-	await expect(page.getByTestId(`run-progress-dialog-eta-${RUN_ID}`)).toContainText("phase minibatch");
+	// The dialog explains the estimate — or, as here, explains the refusal. A GEPA
+	// run declines to guess a finish time and says why rather than going blank.
+	const eta = page.getByTestId(`run-progress-dialog-eta-${RUN_ID}`);
+	await expect(eta).toContainText("Unavailable");
+	await expect(eta).toContainText("proposer calls that complete none");
 	await expect(page.getByTestId(`run-progress-usage-detail-${RUN_ID}`)).toContainText("of 100 rollouts reported it");
 	await expect(page.getByTestId(`run-progress-phases-${RUN_ID}`)).toContainText("Minibatch gate");
 	await expect(page.getByTestId(`run-progress-dialog-close-${RUN_ID}`)).toBeFocused();

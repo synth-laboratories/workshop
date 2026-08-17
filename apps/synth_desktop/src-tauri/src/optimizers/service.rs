@@ -554,12 +554,14 @@ impl OptimizerService {
                     run.cursor_seq = event.sequence_number;
                     upsert_cursor(conn, &run.id, run.cursor_seq, &event.occurred_at)?;
                 }
+                let history = load_events_upto(conn, &run.id, run.cursor_seq)?;
+                // A completed run seals the shape it traced through its own work, so
+                // the next run of the same recipe can be estimated from it. This is
+                // the only estimator that survived measurement — see
+                // `optimizers/progress_history.rs` for the numbers.
+                super::progress_history::seal(&mut run, &history);
                 upsert_run(conn, &run)?;
-                let projected = project_from_events(
-                    &run,
-                    &load_events_upto(conn, &run.id, run.cursor_seq)?,
-                    None,
-                )?;
+                let projected = project_from_events(&run, &history, None)?;
                 for slice in projected {
                     cache_slice(conn, &slice)?;
                 }
