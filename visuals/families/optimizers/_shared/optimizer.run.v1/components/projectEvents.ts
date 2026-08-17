@@ -2187,9 +2187,6 @@ export function projectAtCursor(
       if (id) {
         const claimed = event.delta?.uplift_claimed === true
           || event.delta?.improvement_verdict === "improvement_demonstrated";
-        const explicitlyPromoted = event.type === "sft.checkpoint.promoted"
-          || event.item?.status === "promoted"
-          || event.item?.raw?.promoted === true;
         const existing = checkpoints.find((ckpt) => ckpt.id === id);
         if (existing) {
           existing.selected = true;
@@ -2208,7 +2205,7 @@ export function projectAtCursor(
           ...summary,
           selectedCheckpointId: id,
           improvementVerdict: event.delta?.improvement_verdict ?? summary.improvementVerdict,
-          ...(explicitlyPromoted ? { promotedCheckpointId: id } : {})
+          ...(claimed ? { promotedCheckpointId: id } : {})
         };
       }
     }

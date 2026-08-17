@@ -320,7 +320,7 @@ export function projectSft(input: AdapterInput, projected: ProjectedState): RunP
 	const runSummary = (projected.summary.summary ?? {}) as Record<string, unknown>;
 	const promoted = typeof runSummary.promotedCheckpointId === "string"
 		? runSummary.promotedCheckpointId
-		: undefined;
+		: input.events.findLast((event) => event.type === "sft.checkpoint.promoted")?.item?.id;
 	const phases = sftPhases(sft, base.terminal, base.status === "failed", promoted);
 	const active = phases.find((phase) => phase.status === "active");
 	const phaseId = active?.id ?? (base.terminal ? "heldout" : "queue");
