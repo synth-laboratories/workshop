@@ -35,3 +35,12 @@ test("an 820px stacked workbench still keeps a 320px visual floor so the compose
   const transcriptPlusGutterPlusPane = 320 + 7 + 320;
   assert.ok(transcriptPlusGutterPlusPane <= 820, "320+7+320 must fit the 820px compact width");
 });
+
+test("bombadil grouped Craftax uses a bundled fixture stream", () => {
+  const harness = readFileSync(
+    join(dirname(fileURLToPath(import.meta.url)), "bombadil/run.mjs"),
+    "utf8"
+  );
+  assert.match(harness, /kind: "fixture", source: "examples\/events\.json"/);
+  assert.equal(harness.includes("data: { events: [] }"), false);
+});
