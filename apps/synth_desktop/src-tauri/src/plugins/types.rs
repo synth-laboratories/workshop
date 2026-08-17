@@ -243,8 +243,7 @@ mod tests {
     /// the product rather than a missing case.
     #[test]
     fn every_phase_has_a_renderer_label() {
-        let presentation =
-            include_str!("../../../src/renderer/src/runtime/pluginPresentation.ts");
+        let presentation = include_str!("../../../src/renderer/src/runtime/pluginPresentation.ts");
         for phase in PLUGIN_PHASES {
             assert!(
                 presentation.contains(&format!("{phase}:")),

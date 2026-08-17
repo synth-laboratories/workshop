@@ -76,7 +76,7 @@ Measured on the installed bundle, not from documentation.
 | Per-app allowlist with persisted approval scopes (G5) | `AppApprovalStore`, `_approvalPersistence`, `_approvalResult` — in module `ComputerUseClient` |
 | Background driving, cursor untouched (G3) | `SystemFocusStealPreventer`, `SyntheticAppFocusEnforcer`, `VirtualCursor`, `EventTap`, `WindowServerSPI` |
 | Content-level approval for hazard actions (G6) | `MessagesSendApprovalStore`, `MessagesPermissionGate` — approval is bound to recipient and text, not to "may use Messages" |
-| Per-action AX + screenshot as raw material (G8) | `get_app_state` returns `{ screenshot, text }` per call, AX tree diffed by default |
+| Per-action AX + screenshot as raw material (G8) | Agent `get_app_state` returns bounded `text`, diffed by default; canonical AX text and recorder screenshots use a separate unadvertised Desktop-only helper path |
 | Session-scoped app allowlist (G5) | `~/.codex/computer-use/sessions/<uuid>.toml` → `[apps] allowed = [...]` |
 
 Two details worth carrying:
@@ -192,7 +192,10 @@ need neither. The agent-facing surface mirrors the reference window API:
 ```ts
 list_apps(): Array<{ id, displayName?, isRunning?, lastUsedDate?, useCount? }>
 
-get_app_state({ app, disableDiff? }): { app, screenshot: { url } | null, text }
+get_app_outline({ app, max_chars?, cursor? }): { app, text, continuationCursor?, truncated }
+find_elements({ app, role?, name?, action?, max_chars?, cursor? }): { app, text, continuationCursor?, truncated }
+get_subtree({ app, element_index, depth?, max_chars?, cursor? }): { app, text, continuationCursor?, truncated }
+get_app_state({ app, disable_diff?, scope?, max_chars?, cursor? }): { app, text, continuationCursor?, truncated }
   // `text` is the AX tree with element indexes.
   // Diffed against the previous read by default; `disableDiff` forces a full tree.
   // Launches the app in the background if it is not running.

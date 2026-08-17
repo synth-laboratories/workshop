@@ -144,15 +144,17 @@ pub fn skill_override(id: &str) -> Option<String> {
 /// inside Workshop. Computer Use drives the operator's other applications, so
 /// arriving switched on by virtue of existing is the wrong default: it should
 /// be a thing someone turned on, not a thing they failed to turn off.
-pub const OPT_IN_MCP_GROUPS: [&str; 1] = [COMPUTER_USE_MCP_GROUP];
+pub const OPT_IN_MCP_GROUPS: [&str; 2] = [COMPUTER_USE_MCP_GROUP, BROWSER_MCP_GROUP];
 
 pub const COMPUTER_USE_MCP_GROUP: &str = "computer-use";
+pub const BROWSER_MCP_GROUP: &str = "browser";
 
-pub const MCP_GROUPS: [&str; 4] = [
+pub const MCP_GROUPS: [&str; 5] = [
     "bundled",
     "productivity",
     "development",
     COMPUTER_USE_MCP_GROUP,
+    BROWSER_MCP_GROUP,
 ];
 
 fn mcp_group_default(id: &str) -> bool {
@@ -239,7 +241,37 @@ fn mcp_groups(current: &ContextSettings) -> Vec<McpContextGroup> {
             COMPUTER_USE_MCP_GROUP,
             "Computer Use",
             &["synth_computer_use"],
-            &[("synth_computer_use", &["computer_use", "computer_use_status"])],
+            &[(
+                "synth_computer_use",
+                &["computer_use", "computer_use_status"],
+            )],
+        ),
+        group(
+            BROWSER_MCP_GROUP,
+            "Managed Browser",
+            &["synth_browser"],
+            &[(
+                "synth_browser",
+                &[
+                    "browser_create_session",
+                    "browser_close_session",
+                    "browser_list_tabs",
+                    "browser_new_tab",
+                    "browser_close_tab",
+                    "browser_navigate",
+                    "browser_back",
+                    "browser_snapshot",
+                    "browser_query",
+                    "browser_subtree",
+                    "browser_click",
+                    "browser_fill",
+                    "browser_press",
+                    "browser_scroll",
+                    "browser_screenshot",
+                    "browser_upload",
+                    "browser_download",
+                ],
+            )],
         ),
     ]
 }

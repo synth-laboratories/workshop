@@ -132,7 +132,9 @@ mod tests {
     fn hazard_computer_use_outranks_the_permissive_policy() {
         for policy in ["never", "on-request", "untrusted"] {
             assert!(
-                auto_decision(policy, &computer_use(true)).unwrap().is_none(),
+                auto_decision(policy, &computer_use(true))
+                    .unwrap()
+                    .is_none(),
                 "`{policy}` auto-settled a hazard action"
             );
         }

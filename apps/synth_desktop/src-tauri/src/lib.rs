@@ -1,5 +1,6 @@
 mod account;
 mod account_cloud;
+pub mod browser;
 pub mod cloud;
 
 /// Narrow public seam for the standalone Intern wire-contract integration
@@ -1333,14 +1334,41 @@ async fn computer_use_revoke_app(
 /// Open the exact Privacy & Security pane for one grant.
 #[tauri::command]
 #[specta::specta]
-fn computer_use_open_settings(permission_id: String) -> Result<(), AppError> {
-    let url = crate::computer_use::permissions::settings_url(&permission_id).ok_or_else(|| {
-        AppError::from(anyhow::anyhow!("unknown permission `{permission_id}`"))
-    })?;
+async fn computer_use_open_settings(
+    _state: State<'_, Arc<CoreRuntime>>,
+    permission_id: String,
+) -> Result<(), AppError> {
+    let url = crate::computer_use::permissions::settings_url(&permission_id)
+        .ok_or_else(|| AppError::from(anyhow::anyhow!("unknown permission `{permission_id}`")))?;
+    // A probe can report a missing grant, but macOS does not add the helper to
+    // Privacy & Security until the helper app itself requests access through a
+    // LaunchServices identity. The long-lived MCP child is spawned as a raw
+    // executable for stdio and is not sufficient for TCC registration.
+    //
+    // This route is human-only. Launch an app instance in `request` mode, then
+    // open the exact pane where its newly registered row appears.
+    let helper = crate::computer_use::helper::helper_bundle_path();
+    let requested = std::process::Command::new("/usr/bin/open")
+        .arg("-n")
+        .arg(&helper)
+        .args(["--args", "request"])
+        .status()
+        .map_err(|error| {
+            AppError::from(anyhow::anyhow!(
+                "could not request Computer Use permissions: {error}"
+            ))
+        })?;
+    if !requested.success() {
+        return Err(AppError::from(anyhow::anyhow!(
+            "Computer Use permission request exited with {requested}"
+        )));
+    }
     std::process::Command::new("/usr/bin/open")
         .arg(url)
         .status()
-        .map_err(|error| AppError::from(anyhow::anyhow!("could not open System Settings: {error}")))?;
+        .map_err(|error| {
+            AppError::from(anyhow::anyhow!("could not open System Settings: {error}"))
+        })?;
     Ok(())
 }
 

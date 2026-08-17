@@ -13,13 +13,12 @@ use super::lock::LockGuard;
 use super::permissions::{self, GrantState};
 use super::session::{ComputerUseSession, Plan, Refusal};
 use super::trajectory::{
-    Observation, RunVersion, StateRef, TrajectoryRecorder, TrajectoryStep, RESULT_ERROR,
-    RESULT_OK, RESULT_REFUSED,
+    Observation, RunVersion, StateRef, TrajectoryRecorder, TrajectoryStep, RESULT_ERROR, RESULT_OK,
+    RESULT_REFUSED,
 };
 use super::vocabulary::Action;
 use crate::plugins::types::{
-    PluginNotReady, PluginServiceStatus, PluginStatus, COMPUTER_USE_PLUGIN_ID,
-    PLUGIN_STATUS_SCHEMA,
+    PluginNotReady, PluginServiceStatus, PluginStatus, COMPUTER_USE_PLUGIN_ID, PLUGIN_STATUS_SCHEMA,
 };
 use crate::session::approval::{
     ApprovalBroker, ApprovalDecision, ApprovalKind, ApprovalOrigin, ApprovalScope,
@@ -132,10 +131,7 @@ impl ComputerUseService {
             .as_mut()
             .ok_or_else(|| anyhow!("helper is not running"))?;
         let reported = client
-            .call_tool(
-                "computer_use_permissions",
-                json!({ "operation": "probe" }),
-            )
+            .call_tool("computer_use_permissions", json!({ "operation": "probe" }))
             .await?;
         inner.grants = read_grants(&reported);
         Ok(())
@@ -185,6 +181,12 @@ impl ComputerUseService {
             )
             .missing(permissions::missing(&inner.grants))
             .into());
+        }
+        // The IPC route calls begin lazily before every action. Reuse the
+        // existing run or a read followed by a click would create a fresh
+        // session here and erase the element snapshot the click depends on.
+        if let Some(existing) = inner.sessions.get(session_id) {
+            return Ok(existing.run_id().to_owned());
         }
         let run_id = format!("cu_run_{}", uuid::Uuid::new_v4().simple());
         let identity = inner
@@ -261,8 +263,13 @@ impl ComputerUseService {
             }
         };
 
-        // Approval, if the plan asked for one. Released before the helper call
-        // so a five-minute card does not hold the service lock.
+        // Approval can remain open for minutes. Never hold the service mutex
+        // while waiting for the operator: doing so lets one abandoned card
+        // freeze every Computer Use session, including read-only calls in a
+        // newly-created chat. Reacquire it only when we need to record or act.
+        drop(inner);
+
+        // Approval, if the plan asked for one.
         let approval = match &plan.approval {
             Some(request) => {
                 let outcome = self
@@ -270,6 +277,7 @@ impl ComputerUseService {
                     .await?;
                 match outcome {
                     Authorization::Rejected => {
+                        let mut inner = self.inner.lock().await;
                         let step = record(
                             &mut inner,
                             session_id,
@@ -311,9 +319,10 @@ impl ComputerUseService {
         };
 
         // Capture before, act, capture after.
-        let before = observe(&mut inner, session_id, action.app()).await;
+        let mut inner = self.inner.lock().await;
+        let before = observe(&mut inner, session_id, action.app()).await.0;
         let outcome = self.dispatch(&mut inner, &action).await;
-        let after = observe(&mut inner, session_id, action.app()).await;
+        let (after, canonical_snapshot) = observe(&mut inner, session_id, action.app()).await;
 
         let (result, error, payload) = match outcome {
             Ok(value) => {
@@ -323,7 +332,7 @@ impl ComputerUseService {
                         if action.is_read_only() {
                             session.observe_read(
                                 app_id,
-                                snapshot(&value),
+                                canonical_snapshot.unwrap_or_else(|| snapshot(&value)),
                                 plan.is_full_read,
                             );
                         }
@@ -383,9 +392,7 @@ impl ComputerUseService {
             session_id: session_id.to_owned(),
             instance_id: format!("computer-use-{}", std::process::id()),
         };
-        let approval_id = broker
-            .request(app, origin.clone(), kind, resolver)
-            .await?;
+        let approval_id = broker.request(app, origin.clone(), kind, resolver).await?;
         let decision = match tokio::time::timeout(APPROVAL_TIMEOUT, receiver).await {
             Ok(result) => result,
             Err(_) => {
@@ -497,6 +504,7 @@ fn snapshot(value: &Value) -> super::session::AppSnapshot {
     // rather than two representations that can disagree.
     for line in value
         .get("fullText")
+        .or_else(|| value.get("text"))
         .and_then(Value::as_str)
         .unwrap_or_default()
         .lines()
@@ -525,22 +533,30 @@ fn snapshot(value: &Value) -> super::session::AppSnapshot {
     }
 }
 
-async fn observe(inner: &mut Inner, session_id: &str, app: Option<&str>) -> StateRef {
+async fn observe(
+    inner: &mut Inner,
+    session_id: &str,
+    app: Option<&str>,
+) -> (StateRef, Option<super::session::AppSnapshot>) {
     let Some(app) = app else {
-        return StateRef::default();
+        return (StateRef::default(), None);
     };
     let Some(client) = inner.client.as_mut() else {
-        return StateRef::default();
+        return (StateRef::default(), None);
     };
     let Ok(state) = client
         .call_tool(
-            "computer_use",
-            json!({ "verb": "get_app_state", "app": app, "disable_diff": true }),
+            "computer_use_record_state",
+            json!({
+                "app": app,
+                "include_screenshot": true
+            }),
         )
         .await
     else {
-        return StateRef::default();
+        return (StateRef::default(), None);
     };
+    let canonical_snapshot = snapshot(&state);
     let observation = Observation {
         ax_text: state
             .get("fullText")
@@ -552,11 +568,12 @@ async fn observe(inner: &mut Inner, session_id: &str, app: Option<&str>) -> Stat
             .and_then(decode_base64),
         element_count: state.get("elementCount").and_then(Value::as_u64),
     };
-    inner
+    let state_ref = inner
         .recorders
         .get(session_id)
         .and_then(|recorder| recorder.capture(&observation).ok())
-        .unwrap_or_default()
+        .unwrap_or_default();
+    (state_ref, Some(canonical_snapshot))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -589,7 +606,9 @@ fn record(
 
 fn decode_base64(encoded: &str) -> Option<Vec<u8>> {
     use base64::Engine;
-    base64::engine::general_purpose::STANDARD.decode(encoded).ok()
+    base64::engine::general_purpose::STANDARD
+        .decode(encoded)
+        .ok()
 }
 
 #[cfg(test)]
@@ -616,7 +635,10 @@ mod tests {
             "screenRecording": "denied",
             "appleEvents": "not_applicable"
         }));
-        assert_eq!(grants[0], (permissions::ACCESSIBILITY.into(), GrantState::Granted));
+        assert_eq!(
+            grants[0],
+            (permissions::ACCESSIBILITY.into(), GrantState::Granted)
+        );
         assert_eq!(
             grants[1],
             (permissions::SCREEN_RECORDING.into(), GrantState::Denied)
@@ -634,7 +656,7 @@ mod tests {
     fn element_labels_are_recovered_from_the_rendered_tree() {
         let snapshot = snapshot(&json!({
             "elementCount": 3,
-            "fullText": "[0] AXButton \"Send\" actions=[AXPress]\n\
+            "text": "[0] AXButton \"Send\" actions=[AXPress]\n\
                          [1] AXTextField \"To\" value=\"board@example.com\"\n\
                          [2] AXGroup\n"
         }));
@@ -648,7 +670,7 @@ mod tests {
     #[test]
     fn a_malformed_tree_line_is_skipped_rather_than_shifting_every_index() {
         let snapshot = snapshot(&json!({
-            "fullText": "garbage\n[not-a-number] AXButton \"X\"\n[7] AXButton \"Send\"\n"
+            "text": "garbage\n[not-a-number] AXButton \"X\"\n[7] AXButton \"Send\"\n"
         }));
         assert_eq!(snapshot.labels.len(), 1);
         assert_eq!(snapshot.labels.get(&7).map(String::as_str), Some("Send"));

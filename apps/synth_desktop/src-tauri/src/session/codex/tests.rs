@@ -1622,6 +1622,21 @@ fn materializes_diagram_skill_with_direct_tool_first_contract() {
     assert!(session_skill.contains("tools.mcp__synth_session__session_present"));
     assert!(session_skill.contains("seven"));
     assert!(session_skill.contains("Manual"));
+
+    let computer_use_skill =
+        fs::read_to_string(home.join("skills/use-computer-use/SKILL.md")).unwrap();
+    assert!(!home.join("skills/.system/use-computer-use").exists());
+    assert!(computer_use_skill.contains("com.apple.Safari"));
+    assert!(computer_use_skill.contains("Never research the tool contract"));
+    assert!(computer_use_skill.contains("Do not invent verbs"));
+    assert!(computer_use_skill.contains("press_key"));
+    assert!(computer_use_skill.contains("key: \"cmd+n\""));
+    assert!(computer_use_skill.contains("Only now call `get_app_state`"));
+    let browser_skill =
+        fs::read_to_string(home.join("skills/use-workshop-browser/SKILL.md")).unwrap();
+    assert!(browser_skill.contains("browser_snapshot"));
+    assert!(browser_skill.contains("20,000"));
+    assert!(browser_skill.contains("explicitly requested Safari"));
 }
 #[test]
 fn generated_mcp_configs_use_each_adapter_owned_ipc_variable() {

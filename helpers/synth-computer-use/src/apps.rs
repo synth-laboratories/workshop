@@ -94,6 +94,28 @@ pub fn bundle_identifier(bundle: &Path) -> Option<String> {
     resolved
 }
 
+/// Whether this process is the bundle's declared application executable.
+///
+/// Adapter binaries stored inside an app bundle inherit the outer `.app` when
+/// we walk their path upward, but they are not the AX application. Filtering
+/// by CFBundleExecutable prevents an orphaned MCP child from being selected as
+/// the target merely because process enumeration happened to return it first.
+pub fn is_main_bundle_process(bundle: &Path, executable: &Path) -> bool {
+    let plist = bundle.join("Contents/Info.plist");
+    let Some(name) = Command::new("/usr/bin/plutil")
+        .args(["-extract", "CFBundleExecutable", "raw", "-o", "-"])
+        .arg(&plist)
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_owned())
+        .filter(|value| !value.is_empty())
+    else {
+        return false;
+    };
+    executable == bundle.join("Contents/MacOS").join(name)
+}
+
 fn display_name(bundle: &Path) -> String {
     bundle
         .file_stem()
@@ -111,16 +133,20 @@ pub fn running_apps() -> Result<Vec<RunningApp>> {
     }
     // Headroom: processes start between the sizing call and the read.
     let mut pids = vec![0i32; count as usize * 2];
-    let bytes = unsafe {
+    let pid_count = unsafe {
         proc_listallpids(
             pids.as_mut_ptr() as *mut libc::c_void,
             (pids.len() * std::mem::size_of::<i32>()) as libc::c_int,
         )
     };
-    if bytes <= 0 {
+    if pid_count <= 0 {
         bail!("could not enumerate processes");
     }
-    pids.truncate(bytes as usize / std::mem::size_of::<i32>());
+    // Unlike proc_pidlist, proc_listallpids returns a number of PIDs, not a
+    // byte count. Dividing it by sizeof(pid_t) silently discarded three
+    // quarters of the process list and could leave only a bundled helper for
+    // an app, causing us to attach AX to that helper instead of the app.
+    pids.truncate(pid_count as usize);
 
     let mut seen: HashMap<String, RunningApp> = HashMap::new();
     for pid in pids {
@@ -133,11 +159,12 @@ pub fn running_apps() -> Result<Vec<RunningApp>> {
         let Some(bundle) = bundle_root(&executable) else {
             continue;
         };
+        if !is_main_bundle_process(&bundle, &executable) {
+            continue;
+        }
         let Some(id) = bundle_identifier(&bundle) else {
             continue;
         };
-        // Helpers and XPC services share their host's identifier; the first pid
-        // seen is close enough, and driving targets the app's main process.
         seen.entry(id.clone()).or_insert(RunningApp {
             id,
             display_name: display_name(&bundle),

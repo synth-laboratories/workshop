@@ -2567,9 +2567,8 @@ async fn dispatch_computer_use(
             // Opening the run lazily keeps the agent from having to call a
             // separate `begin`, which is a step it would forget and a state it
             // would then have to recover from.
-            let store = crate::storage::content_store::ContentStore::new(
-                core.storage().content_root(),
-            );
+            let store =
+                crate::storage::content_store::ContentStore::new(core.storage().content_root());
             let _ = core.computer_use().begin(&session_id, store).await;
             core.computer_use()
                 .perform(app, broker.inner(), &session_id, action)

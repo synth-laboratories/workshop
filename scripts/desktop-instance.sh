@@ -5,14 +5,14 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 COMMAND="${1:-dev}"
 NAME="${2:-${SYNTH_DESKTOP_INSTANCE:-codex}}"
-RELEASE_LINE="${SYNTH_DESKTOP_RELEASE_LINE:-v0.4}"
-APP_VERSION="${SYNTH_DESKTOP_APP_VERSION:-0.4.0}"
+RELEASE_LINE="${SYNTH_DESKTOP_RELEASE_LINE:-v0.5}"
+APP_VERSION="${SYNTH_DESKTOP_APP_VERSION:-0.5.0}"
 
-if [[ "$RELEASE_LINE" != "v0.4" ]]; then
-  echo "[desktop:$NAME] invalid release line; this branch only builds v0.4 instances" >&2
+if [[ "$RELEASE_LINE" != "v0.5" ]]; then
+  echo "[desktop:$NAME] invalid release line; this branch only builds v0.5 instances" >&2
   exit 2
 fi
-RELEASE_SLUG="v04"
+RELEASE_SLUG="v05"
 
 usage() {
   cat <<'EOF'
@@ -549,6 +549,12 @@ PY
   fi
   echo "[desktop:$NAME] profile=${SYNTH_INTERN_PROFILE:-} backend=${SYNTH_BACKEND_URL:-} gateway=source-owned"
 
+  # Named local CUA bundles are ad-hoc or development signed and therefore
+  # cannot satisfy the production helper's Apple-team requirement. Keep the
+  # weaker requirement explicit and confined to this development launcher;
+  # release builds do not receive this environment override.
+  export SYNTH_COMPUTER_USE_PARENT_REQUIREMENT="identifier \"$BUNDLE_ID\" or identifier \"com.synth.desktop.v05.dev.shared\""
+
   if [[ "$COMMAND" == "cua-run" ]]; then
     if [[ ! -x "$CUA_EXE" ]]; then
       echo "[desktop:$NAME] signed CUA app is missing; run cua-build first" >&2
@@ -569,7 +575,7 @@ PY
   TAURI_CONFIG="$(<"$CONFIG")"
 
   local adapters_ready=1 adapter
-  for adapter in synth-containers-mcp synth-visuals-mcp synth-optimizers-mcp; do
+  for adapter in synth-containers-mcp synth-visuals-mcp synth-optimizers-mcp synth-computer-use-mcp synth-browser-mcp; do
     [[ -x "$TARGET_ROOT/debug/$adapter" ]] || adapters_ready=0
   done
   if [[ "$adapters_ready" == "0" || "${SYNTH_DESKTOP_REBUILD_ADAPTERS:-0}" == "1" ]]; then
@@ -578,7 +584,9 @@ PY
       --manifest-path "$ROOT/apps/synth_desktop/src-tauri/Cargo.toml" \
       --bin synth-containers-mcp \
       --bin synth-visuals-mcp \
-      --bin synth-optimizers-mcp
+      --bin synth-optimizers-mcp \
+      --bin synth-computer-use-mcp \
+      --bin synth-browser-mcp
   else
     echo "[desktop:$NAME] reusing embedded-agent MCP adapters (set SYNTH_DESKTOP_REBUILD_ADAPTERS=1 to refresh)"
   fi
@@ -619,7 +627,7 @@ PY
         "$dev_signing_keychain"
       codesign --force --deep --sign "$dev_signing_identity" \
         --keychain "$dev_signing_keychain" \
-        --identifier "com.synth.desktop.v04.dev.shared" "$app_bundle"
+        --identifier "com.synth.desktop.v05.dev.shared" "$app_bundle"
     else
       codesign --force --deep --sign - --identifier "$BUNDLE_ID" "$app_bundle"
     fi

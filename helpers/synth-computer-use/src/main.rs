@@ -44,7 +44,15 @@ fn run() -> Result<()> {
             Ok(())
         }
         "request" => {
-            let grants = permissions::request();
+            // LaunchServices must keep this app identity alive while the user
+            // responds in System Settings. Exiting immediately after the TCC
+            // calls can leave no application row for the user to enable.
+            let mut grants = permissions::request();
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5 * 60);
+            while !grants.missing().is_empty() && std::time::Instant::now() < deadline {
+                std::thread::sleep(std::time::Duration::from_millis(500));
+                grants = permissions::probe();
+            }
             println!("{}", serde_json::to_string_pretty(&grants)?);
             Ok(())
         }

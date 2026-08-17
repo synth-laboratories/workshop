@@ -71,14 +71,16 @@ const CATALOG: &[GrantSpec] = &[
     GrantSpec {
         id: ACCESSIBILITY,
         label: "Accessibility",
-        settings_url: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility",
+        settings_url:
+            "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility",
         detail: "Read window contents and send clicks and keystrokes to apps you allow.",
         required_up_front: true,
     },
     GrantSpec {
         id: SCREEN_RECORDING,
         label: "Screen Recording",
-        settings_url: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture",
+        settings_url:
+            "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture",
         detail: "Capture the before and after image of each action.",
         required_up_front: true,
     },
@@ -229,7 +231,13 @@ mod tests {
     /// overwriting them would hide the actual problem behind a wrong fix.
     #[test]
     fn a_more_specific_phase_is_never_overwritten() {
-        for phase in ["not_installed", "downloading", "verifying", "error", "disabled"] {
+        for phase in [
+            "not_installed",
+            "downloading",
+            "verifying",
+            "error",
+            "disabled",
+        ] {
             assert_eq!(refine_phase(phase, &[]), phase);
         }
     }

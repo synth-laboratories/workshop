@@ -157,8 +157,7 @@ impl HelperClient {
         line.push('\n');
         // A dead child surfaces as EPIPE on write or as EOF on read, depending
         // on timing. Both mean the same thing to the caller, so both say so.
-        if self.stdin.write_all(line.as_bytes()).await.is_err()
-            || self.stdin.flush().await.is_err()
+        if self.stdin.write_all(line.as_bytes()).await.is_err() || self.stdin.flush().await.is_err()
         {
             bail!("computer-use helper stopped before `{method}` could be sent");
         }

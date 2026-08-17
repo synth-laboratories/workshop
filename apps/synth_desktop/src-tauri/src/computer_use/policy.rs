@@ -290,7 +290,9 @@ mod tests {
     fn ordinary_apps_are_not_denied_and_unknown_apps_are_ordinary() {
         assert!(classify_app("com.apple.mail").denial().is_none());
         assert!(classify_app("com.figma.desktop").denial().is_none());
-        assert!(classify_app("com.nobody.never-heard-of-it").denial().is_none());
+        assert!(classify_app("com.nobody.never-heard-of-it")
+            .denial()
+            .is_none());
     }
 
     #[test]
@@ -335,7 +337,8 @@ mod tests {
             hazard("com.apple.mail", &key, None),
             Some(HazardReason::SendsToOthers)
         );
-        let elsewhere = action(json!({"verb":"press_key","app":"com.figma.desktop","key":"Return"}));
+        let elsewhere =
+            action(json!({"verb":"press_key","app":"com.figma.desktop","key":"Return"}));
         assert!(hazard("com.figma.desktop", &elsewhere, None).is_none());
     }
 

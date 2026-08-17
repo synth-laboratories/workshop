@@ -41,6 +41,7 @@ export function ComputerUsePage({
 	const missing = useMemo(() => missingPermissions(status), [status]);
 	const step = nextStep(status);
 	const ready = isReady(status);
+	const needsPermissions = status?.phase === "needs_permissions" && missing.length > 0;
 
 	return (
 		<div className="inventory-page cu-page" data-testid="computer-use-page" data-phase={status?.phase ?? "unknown"}>
@@ -75,13 +76,41 @@ export function ComputerUsePage({
 			) : null}
 
 			{status?.permissions?.length ? (
-				<section className="cu-step">
-					<h2 className="cu-heading">Permissions</h2>
+				<section className={`cu-step cu-setup-card ${ready ? "cu-setup-complete" : ""}`} data-testid="computer-use-setup-card">
+					<div className="cu-setup-copy">
+						<span className="cu-setup-kicker">{ready ? "Setup complete" : "Finish setup"}</span>
+						<h2>{ready ? "Computer Use is ready" : "Allow Workshop to see and control approved apps"}</h2>
+						<p>
+							{ready
+								? "Accessibility and Screen Recording are granted. New agent sessions can use Computer Use when its MCP group is enabled."
+								: "macOS requires two one-time permissions. Workshop cannot switch them on for you."}
+						</p>
+					</div>
+					{needsPermissions ? (
+						<ol className="cu-setup-steps">
+							<li>Open each System Settings pane below.</li>
+							<li>Turn on <strong>Synth Computer Use</strong>.</li>
+							<li>Return here, then check the permissions.</li>
+						</ol>
+					) : null}
 					<ComputerUsePermissions
 						permissions={status.permissions}
 						onOpenSettings={onOpenSettings}
 						busy={busy}
 					/>
+					{needsPermissions ? (
+						<div className="cu-setup-actions">
+							<button type="button" className="primary-button" disabled={busy} onClick={onRefresh} data-testid="check-computer-use-permissions">
+								{busy ? "Checking…" : "Check permissions"}
+							</button>
+							<span role="status">{`Waiting on ${missing.map((permission) => permission.label).join(" and ")}`}</span>
+						</div>
+					) : null}
+					{ready ? (
+						<p className="cu-setup-success" role="status" data-testid="computer-use-ready-confirmation">
+							<span aria-hidden>✓</span> Permission check passed
+						</p>
+					) : null}
 				</section>
 			) : null}
 
@@ -124,11 +153,6 @@ export function ComputerUsePage({
 				</section>
 			) : null}
 
-			{missing.length > 0 && status?.phase === "needs_permissions" ? (
-				<p className="cu-hint" role="status" data-testid="computer-use-blocked">
-					{`Waiting on ${missing.map((permission) => permission.label).join(" and ")}`}
-				</p>
-			) : null}
 		</div>
 	);
 }

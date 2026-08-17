@@ -243,24 +243,15 @@ pub const REDACTED: &str = "[redacted]";
 /// accessibility tree costs some replay fidelity, under-redacting one writes a
 /// password into durable storage.
 pub fn redact(text: &str) -> String {
-    text.lines()
-        .map(redact_line)
-        .collect::<Vec<_>>()
-        .join("\n")
+    text.lines().map(redact_line).collect::<Vec<_>>().join("\n")
 }
 
 fn redact_line(line: &str) -> String {
     let lowered = line.to_ascii_lowercase();
-    if SECURE_ROLES
-        .iter()
-        .any(|role| line.contains(role))
-    {
+    if SECURE_ROLES.iter().any(|role| line.contains(role)) {
         return redact_after(line, "value");
     }
-    if let Some(prefix) = SECRET_PREFIXES
-        .iter()
-        .find(|prefix| line.contains(*prefix))
-    {
+    if let Some(prefix) = SECRET_PREFIXES.iter().find(|prefix| line.contains(*prefix)) {
         let index = line.find(*prefix).unwrap_or(0);
         return format!("{}{REDACTED}", &line[..index]);
     }
@@ -300,7 +291,11 @@ fn find_high_entropy_run(line: &str) -> Option<usize> {
     let mut digits = 0usize;
     let mut letters = 0usize;
     for (index, byte) in bytes.iter().enumerate() {
-        let is_token = byte.is_ascii_alphanumeric() || *byte == b'+' || *byte == b'/' || *byte == b'_' || *byte == b'-';
+        let is_token = byte.is_ascii_alphanumeric()
+            || *byte == b'+'
+            || *byte == b'/'
+            || *byte == b'_'
+            || *byte == b'-';
         if is_token {
             if start.is_none() {
                 start = Some(index);
@@ -494,7 +489,11 @@ mod tests {
             "a".into(),
             "b".into(),
         );
-        assert!(!step.params.to_string().contains("hunter2"), "{}", step.params);
+        assert!(
+            !step.params.to_string().contains("hunter2"),
+            "{}",
+            step.params
+        );
     }
 
     #[test]

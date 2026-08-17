@@ -465,6 +465,21 @@ pub(crate) fn ensure_home(home: &Path, request: &CodexSessionStartRequest) -> Re
         plugins_skill.join("SKILL.md"),
         include_str!("../../../../skills/use-synth-plugins/SKILL.md"),
     )?;
+    // Session-owned skills must live directly beneath `skills/`. Codex owns
+    // `.system` and replaces its contents during startup, so placing this
+    // skill there advertises a path that disappears before the first turn.
+    let computer_use_skill = home.join("skills/use-computer-use");
+    fs::create_dir_all(&computer_use_skill)?;
+    fs::write(
+        computer_use_skill.join("SKILL.md"),
+        include_str!("../../../../skills/use-computer-use/SKILL.md"),
+    )?;
+    let browser_skill = home.join("skills/use-workshop-browser");
+    fs::create_dir_all(&browser_skill)?;
+    fs::write(
+        browser_skill.join("SKILL.md"),
+        include_str!("../../../../skills/use-workshop-browser/SKILL.md"),
+    )?;
     let session_skill = home.join("skills/use-synth-session");
     fs::create_dir_all(&session_skill)?;
     fs::write(
@@ -479,6 +494,8 @@ pub(crate) fn ensure_home(home: &Path, request: &CodexSessionStartRequest) -> Re
         "use-synth-visuals",
         "author-synth-diagrams",
         "use-synth-optimizers",
+        "use-computer-use",
+        "use-workshop-browser",
         "run-live-container-evals",
     ] {
         let directory = home.join("skills").join(id);
@@ -626,6 +643,11 @@ pub(crate) fn ensure_home(home: &Path, request: &CodexSessionStartRequest) -> Re
                 "synth_computer_use",
                 "synth-computer-use-mcp",
                 crate::context::COMPUTER_USE_MCP_GROUP,
+            ),
+            (
+                "synth_browser",
+                "synth-browser-mcp",
+                crate::context::BROWSER_MCP_GROUP,
             ),
         ] {
             if !crate::context::mcp_group_enabled(group) {
@@ -960,6 +982,7 @@ pub(crate) fn mcp_enabled_tools(server: &str) -> &'static str {
         "synth_computer_use" => {
             "enabled_tools = [\"computer_use\", \"computer_use_status\"]\n"
         }
+        "synth_browser" => "enabled_tools = [\"browser_create_session\", \"browser_close_session\", \"browser_list_tabs\", \"browser_new_tab\", \"browser_close_tab\", \"browser_navigate\", \"browser_back\", \"browser_snapshot\", \"browser_query\", \"browser_subtree\", \"browser_click\", \"browser_fill\", \"browser_press\", \"browser_scroll\", \"browser_screenshot\", \"browser_upload\", \"browser_download\"]\n",
         _ => "",
     }
 }

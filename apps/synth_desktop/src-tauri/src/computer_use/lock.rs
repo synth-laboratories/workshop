@@ -25,9 +25,13 @@ pub const REASON_LOCKED_TOO_LONG: &str = "locked_too_long";
 #[serde(tag = "state", rename_all = "snake_case")]
 pub enum LockState {
     Unlocked,
-    Paused { since: DateTime<Utc> },
+    Paused {
+        since: DateTime<Utc>,
+    },
     /// The session is over. Terminal states do not resume on unlock.
-    Terminal { reason: String },
+    Terminal {
+        reason: String,
+    },
 }
 
 /// What the rest of the system must do about a transition. Returned rather than
@@ -36,7 +40,9 @@ pub enum LockState {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum LockEffect {
     /// Stop delivering events now, mid-sequence if necessary, and record it.
-    Paused { at: DateTime<Utc> },
+    Paused {
+        at: DateTime<Utc>,
+    },
     /// Hold pending approvals open. A coffee break must not silently become a
     /// failed run by expiring the card against `PLUGIN_APPROVAL_TIMEOUT`.
     SuspendApprovalExpiry,
@@ -49,7 +55,9 @@ pub enum LockEffect {
     },
     ResumeApprovalExpiry,
     /// End the session and expire its approvals with this reason.
-    Terminalized { reason: String },
+    Terminalized {
+        reason: String,
+    },
 }
 
 /// Whether an action may proceed right now.
@@ -58,7 +66,9 @@ pub enum Admission {
     Allow,
     /// Allowed only after a full, non-diffed read re-derives the tree.
     RequireFullRead,
-    Refuse { reason: String },
+    Refuse {
+        reason: String,
+    },
 }
 
 pub struct LockGuard {
@@ -223,10 +233,7 @@ mod tests {
         let mut guard = LockGuard::with_default_ceiling();
         guard.on_lock(at(0));
         for full_read in [true, false] {
-            assert!(matches!(
-                guard.admit(full_read),
-                Admission::Refuse { .. }
-            ));
+            assert!(matches!(guard.admit(full_read), Admission::Refuse { .. }));
         }
         assert!(guard.observed_full_read().is_err());
     }

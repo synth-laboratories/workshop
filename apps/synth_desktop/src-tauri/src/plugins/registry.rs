@@ -243,8 +243,10 @@ mod tests {
             OPTIMIZERS_PLUGIN_ID,
             dir.path().join("plugins/optimizers.json"),
         );
-        let second =
-            PluginRegistry::for_plugin_at("computer-use", dir.path().join("plugins/computer-use.json"));
+        let second = PluginRegistry::for_plugin_at(
+            "computer-use",
+            dir.path().join("plugins/computer-use.json"),
+        );
         optimizers.set_enabled(false).unwrap();
         assert!(!optimizers.is_enabled());
         assert!(second.is_enabled());

@@ -22,9 +22,15 @@ const SETTLE_MIN: Duration = Duration::from_millis(1_000);
 /// Keep waiting while the tree is still changing, up to here.
 const SETTLE_MAX: Duration = Duration::from_millis(5_000);
 const SETTLE_POLL: Duration = Duration::from_millis(150);
+const DEFAULT_MAX_CHARS: usize = 16_000;
+const HARD_MAX_CHARS: usize = 20_000;
 
 pub const TOOL_NAME: &str = "computer_use";
 pub const PERMISSIONS_TOOL: &str = "computer_use_permissions";
+/// Deliberately absent from `tools/list`. Desktop's authenticated child pipe
+/// uses this recorder-only path to capture canonical state without ever
+/// placing that state in an agent tool result.
+pub const RECORDER_TOOL: &str = "computer_use_record_state";
 
 pub struct Server {
     /// Last rendered tree per app, for diffing and for resolving element
@@ -54,11 +60,18 @@ impl Server {
                     "type": "object",
                     "properties": {
                         "verb": {"type": "string", "enum": [
-                            "list_apps", "get_app_state", "click", "set_value", "type_text",
+                            "list_apps", "get_app_state", "get_app_outline", "find_elements",
+                            "get_subtree", "click", "set_value", "type_text",
                             "press_key", "scroll", "select_text", "drag", "perform_secondary_action"
                         ]},
                         "app": {"type": "string"},
                         "disable_diff": {"type": "boolean"},
+                        "scope": {"type": "string", "enum": ["all", "visible"]},
+                        "max_chars": {"type": "integer", "minimum": 256, "maximum": 20000},
+                        "cursor": {"type": "integer", "minimum": 0},
+                        "role": {"type": "string"},
+                        "name": {"type": "string"},
+                        "depth": {"type": "integer", "minimum": 0, "maximum": 24},
                         "element_index": {"type": "integer", "minimum": 0},
                         "x": {"type": "number"},
                         "y": {"type": "number"},
@@ -104,6 +117,7 @@ impl Server {
                 Ok(serde_json::to_value(grants)?)
             }
             TOOL_NAME => self.dispatch(arguments),
+            RECORDER_TOOL => self.read_record_state(arguments),
             other => bail!("unknown tool `{other}`"),
         }
     }
@@ -128,12 +142,15 @@ impl Server {
         // agent that must ask a human to open Mail first is not much use.
         let pid = apps::resolve_or_launch(&app)?;
 
-        if verb == "get_app_state" {
+        if matches!(
+            verb,
+            "get_app_state" | "get_app_outline" | "find_elements" | "get_subtree"
+        ) {
             let disable_diff = arguments
                 .get("disable_diff")
                 .and_then(Value::as_bool)
                 .unwrap_or(false);
-            return self.read_state(&app, pid, disable_diff, arguments);
+            return self.read_observation(&app, pid, verb, disable_diff, arguments);
         }
 
         // Everything below mutates. Resolve the element first so a bad index
@@ -145,28 +162,26 @@ impl Server {
         };
 
         match verb {
-            "click" => {
-                match (handle, element_index) {
-                    (Some(element), _) => self.press_or_click(pid, element)?,
-                    (None, _) => {
-                        let x = number(arguments, "x")?;
-                        let y = number(arguments, "y")?;
-                        events::click(
-                            pid,
-                            x,
-                            y,
-                            arguments
-                                .get("mouse_button")
-                                .and_then(Value::as_str)
-                                .unwrap_or("left"),
-                            arguments
-                                .get("click_count")
-                                .and_then(Value::as_u64)
-                                .unwrap_or(1) as u32,
-                        )?;
-                    }
+            "click" => match (handle, element_index) {
+                (Some(element), _) => self.press_or_click(pid, element)?,
+                (None, _) => {
+                    let x = number(arguments, "x")?;
+                    let y = number(arguments, "y")?;
+                    events::click(
+                        pid,
+                        x,
+                        y,
+                        arguments
+                            .get("mouse_button")
+                            .and_then(Value::as_str)
+                            .unwrap_or("left"),
+                        arguments
+                            .get("click_count")
+                            .and_then(Value::as_u64)
+                            .unwrap_or(1) as u32,
+                    )?;
                 }
-            }
+            },
             "set_value" => {
                 let value = arguments
                     .get("value")
@@ -196,7 +211,10 @@ impl Server {
                 events::scroll(
                     pid,
                     direction,
-                    arguments.get("pages").and_then(Value::as_f64).unwrap_or(1.0),
+                    arguments
+                        .get("pages")
+                        .and_then(Value::as_f64)
+                        .unwrap_or(1.0),
                 )?;
             }
             "select_text" => {
@@ -237,7 +255,7 @@ impl Server {
         // Settle, then read back. The answer to a mutating action is the state
         // it produced, so the agent never has to ask a second time.
         self.settle(&app, pid);
-        self.read_state(&app, pid, false, arguments)
+        self.read_observation(&app, pid, "get_app_state", false, arguments)
     }
 
     /// Prefer the accessibility action over a synthetic click. A click at a
@@ -283,9 +301,9 @@ impl Server {
 
     #[cfg(target_os = "macos")]
     fn select_text(&self, element: crate::sys::AXUIElementRef, needle: &str) -> Result<()> {
+        use crate::sys::*;
         use core_foundation::base::TCFType;
         use core_foundation::string::CFString;
-        use crate::sys::*;
 
         let value = unsafe { ax::copy_attribute(element, "AXValue") }
             .context("this element has no text to select in")?;
@@ -313,8 +331,7 @@ impl Server {
                 bail!("could not build a selection range");
             }
             let key = CFString::new("AXSelectedTextRange");
-            let status =
-                AXUIElementSetAttributeValue(element, key.as_concrete_TypeRef(), boxed);
+            let status = AXUIElementSetAttributeValue(element, key.as_concrete_TypeRef(), boxed);
             core_foundation_sys::base::CFRelease(boxed);
             if status != kAXErrorSuccess {
                 bail!("{}", ax_error_message(status));
@@ -334,10 +351,14 @@ impl Server {
     fn settle(&self, app: &str, pid: i32) {
         let started = Instant::now();
         std::thread::sleep(SETTLE_MIN);
-        let mut previous = ax::read_tree(pid).map(|tree| tree.render()).unwrap_or_default();
+        let mut previous = ax::read_tree(pid)
+            .map(|tree| tree.render())
+            .unwrap_or_default();
         while started.elapsed() < SETTLE_MAX {
             std::thread::sleep(SETTLE_POLL);
-            let current = ax::read_tree(pid).map(|tree| tree.render()).unwrap_or_default();
+            let current = ax::read_tree(pid)
+                .map(|tree| tree.render())
+                .unwrap_or_default();
             if current == previous {
                 return;
             }
@@ -346,29 +367,101 @@ impl Server {
         let _ = app;
     }
 
-    fn read_state(
+    fn read_observation(
         &mut self,
         app: &str,
         pid: i32,
+        verb: &str,
         disable_diff: bool,
         arguments: &Value,
     ) -> Result<Value> {
         let tree = ax::read_tree(pid)?;
         let rendered = tree.render();
-        let text = if disable_diff {
-            rendered.clone()
-        } else {
-            match self.last_render.get(app) {
-                Some(previous) => tree.diff_from(previous),
-                None => rendered.clone(),
+        let unbounded = match verb {
+            "get_app_state" => {
+                let visible_only =
+                    arguments.get("scope").and_then(Value::as_str) == Some("visible");
+                if visible_only {
+                    render_elements(tree.elements.iter().filter(|element| {
+                        element
+                            .frame
+                            .is_some_and(|frame| frame[2] > 0.0 && frame[3] > 0.0)
+                    }))
+                } else if disable_diff {
+                    rendered.clone()
+                } else {
+                    match self.last_render.get(app) {
+                        Some(previous) => tree.diff_from(previous),
+                        None => rendered.clone(),
+                    }
+                }
             }
+            "find_elements" => {
+                let role = arguments.get("role").and_then(Value::as_str);
+                let name = arguments
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .map(str::to_lowercase);
+                let action = arguments.get("action").and_then(Value::as_str);
+                render_elements(tree.elements.iter().filter(|element| {
+                    role.is_none_or(|wanted| element.role.eq_ignore_ascii_case(wanted))
+                        && name
+                            .as_ref()
+                            .is_none_or(|wanted| element.label.to_lowercase().contains(wanted))
+                        && action.is_none_or(|wanted| {
+                            element.actions.iter().any(|offered| offered == wanted)
+                        })
+                }))
+            }
+            "get_subtree" => {
+                let root = arguments
+                    .get("element_index")
+                    .and_then(Value::as_u64)
+                    .context("element_index is required")?;
+                let max_depth =
+                    arguments.get("depth").and_then(Value::as_u64).unwrap_or(3) as usize;
+                tree.get(root)
+                    .with_context(|| format!("element {root} is not in this tree"))?;
+                render_elements(tree.elements.iter().filter(|element| {
+                    element.index == root || is_descendant(&tree, element, root, max_depth)
+                }))
+            }
+            "get_app_outline" => render_outline(&tree),
+            other => bail!("unknown observation verb `{other}`"),
         };
         let element_count = tree.elements.len() as u64;
-        self.last_render.insert(app.to_owned(), rendered.clone());
+        let truncated = tree.truncated;
+        self.last_render.insert(app.to_owned(), rendered);
         self.last_tree.insert(app.to_owned(), tree);
 
-        // Screenshots are large. Desktop asks for one when it is recording a
-        // trajectory step and skips it otherwise.
+        let max_chars = arguments
+            .get("max_chars")
+            .and_then(Value::as_u64)
+            .unwrap_or(DEFAULT_MAX_CHARS as u64)
+            .clamp(256, HARD_MAX_CHARS as u64) as usize;
+        let cursor = arguments.get("cursor").and_then(Value::as_u64).unwrap_or(0) as usize;
+        let (text, continuation_cursor, response_truncated) =
+            bounded_text(&unbounded, cursor, max_chars);
+
+        Ok(agent_state_payload(
+            app,
+            pid,
+            text,
+            element_count,
+            truncated || response_truncated,
+            continuation_cursor,
+            max_chars,
+        ))
+    }
+
+    fn read_record_state(&mut self, arguments: &Value) -> Result<Value> {
+        let app = arguments
+            .get("app")
+            .and_then(Value::as_str)
+            .context("app is required")?;
+        let pid = apps::resolve_or_launch(app)?;
+        let tree = ax::read_tree(pid)?;
+        let rendered = tree.render();
         let screenshot = if arguments
             .get("include_screenshot")
             .and_then(Value::as_bool)
@@ -378,19 +471,111 @@ impl Server {
         } else {
             None
         };
-
         Ok(json!({
             "app": app,
             "pid": pid,
-            "text": text,
-            // Always the full tree, regardless of diffing: Desktop stores this
-            // for the trajectory, and a diff is not a state.
             "fullText": rendered,
-            "elementCount": element_count,
-            "truncated": self.last_tree.get(app).map(|tree| tree.truncated).unwrap_or(false),
+            "elementCount": tree.elements.len() as u64,
+            "truncated": tree.truncated,
             "screenshotPng": screenshot.map(|bytes| base64(&bytes)),
         }))
     }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn agent_state_payload(
+    app: &str,
+    pid: i32,
+    text: String,
+    element_count: u64,
+    truncated: bool,
+    continuation_cursor: Option<usize>,
+    max_chars: usize,
+) -> Value {
+    json!({
+        "app": app,
+        "pid": pid,
+        "text": text,
+        "elementCount": element_count,
+        "truncated": truncated,
+        "continuationCursor": continuation_cursor,
+        "maxChars": max_chars,
+    })
+}
+
+fn render_elements<'a>(elements: impl Iterator<Item = &'a ax::Element>) -> String {
+    let mut out = String::new();
+    for element in elements {
+        out.push_str(&format!("[{}] {}", element.index, element.role));
+        if !element.label.is_empty() {
+            out.push_str(&format!(" \"{}\"", element.label));
+        }
+        if !element.actions.is_empty() {
+            out.push_str(&format!(" actions=[{}]", element.actions.join(",")));
+        }
+        out.push('\n');
+    }
+    out
+}
+
+fn is_descendant(tree: &ax::AppTree, element: &ax::Element, root: u64, max_depth: usize) -> bool {
+    let mut parent = element.parent_index;
+    let mut distance = 0usize;
+    while let Some(index) = parent {
+        distance += 1;
+        if index == root {
+            return distance <= max_depth;
+        }
+        if distance >= max_depth {
+            return false;
+        }
+        parent = tree.get(index).and_then(|candidate| candidate.parent_index);
+    }
+    false
+}
+
+fn render_outline(tree: &ax::AppTree) -> String {
+    let mut roles = std::collections::BTreeMap::<&str, usize>::new();
+    for element in &tree.elements {
+        *roles.entry(&element.role).or_default() += 1;
+    }
+    let mut out = format!("{} elements", tree.elements.len());
+    if tree.truncated {
+        out.push_str(" (canonical snapshot truncated)");
+    }
+    out.push('\n');
+    for (role, count) in roles {
+        out.push_str(&format!("{role}: {count}\n"));
+    }
+    out.push_str("Top-level controls:\n");
+    out.push_str(&render_elements(
+        tree.elements
+            .iter()
+            .filter(|element| element.parent_index.is_none() || element.depth <= 2)
+            .take(100),
+    ));
+    out
+}
+
+fn bounded_text(
+    text: &str,
+    requested_cursor: usize,
+    max_chars: usize,
+) -> (String, Option<usize>, bool) {
+    let mut start = requested_cursor.min(text.len());
+    while start < text.len() && !text.is_char_boundary(start) {
+        start += 1;
+    }
+    let mut end = (start + max_chars).min(text.len());
+    while end > start && !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    let truncated = end < text.len();
+    (
+        text[start..end].to_owned(),
+        truncated.then_some(end),
+        truncated,
+    )
 }
 
 impl Default for Server {
@@ -409,8 +594,7 @@ fn number(arguments: &Value, key: &str) -> Result<f64> {
 /// Minimal base64. The helper has three dependencies on purpose; adding a
 /// crate to encode one field would not be a good trade.
 pub fn base64(bytes: &[u8]) -> String {
-    const ALPHABET: &[u8; 64] =
-        b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut out = String::with_capacity((bytes.len() + 2) / 3 * 4);
     for chunk in bytes.chunks(3) {
         let b = [
@@ -479,8 +663,14 @@ pub fn serve(server: &mut Server, authorize: &dyn Fn() -> Result<()>) -> Result<
                     continue;
                 }
                 let params = message.get("params").cloned().unwrap_or_else(|| json!({}));
-                let name = params.get("name").and_then(Value::as_str).unwrap_or_default();
-                let arguments = params.get("arguments").cloned().unwrap_or_else(|| json!({}));
+                let name = params
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                let arguments = params
+                    .get("arguments")
+                    .cloned()
+                    .unwrap_or_else(|| json!({}));
                 match server.call(name, &arguments) {
                     Ok(result) => json!({
                         "content": [{"type": "text", "text": result.to_string()}],
@@ -494,7 +684,12 @@ pub fn serve(server: &mut Server, authorize: &dyn Fn() -> Result<()>) -> Result<
                 }
             }
             other => {
-                write_error(&mut stdout, &id, -32601, &format!("unknown method `{other}`"))?;
+                write_error(
+                    &mut stdout,
+                    &id,
+                    -32601,
+                    &format!("unknown method `{other}`"),
+                )?;
                 continue;
             }
         };
@@ -539,6 +734,9 @@ mod tests {
             vec![
                 "list_apps",
                 "get_app_state",
+                "get_app_outline",
+                "find_elements",
+                "get_subtree",
                 "click",
                 "set_value",
                 "type_text",
@@ -554,6 +752,52 @@ mod tests {
             tools["tools"][0]["inputSchema"]["additionalProperties"],
             json!(false)
         );
+        assert!(!tools.to_string().contains(RECORDER_TOOL));
+    }
+
+    #[test]
+    fn agent_state_payload_has_no_canonical_tree_escape_hatch() {
+        let payload = agent_state_payload(
+            "com.example.App",
+            7,
+            "[9] AXButton \"Changed\"\n".into(),
+            2000,
+            true,
+            Some(24),
+            16_000,
+        );
+        assert!(payload.get("fullText").is_none());
+        assert!(payload.get("screenshotPng").is_none());
+        assert!(!payload.to_string().contains("Unchanged secret tree row"));
+    }
+
+    #[test]
+    fn default_diff_is_smaller_than_the_canonical_tree() {
+        let canonical = "[0] AXWindow \"Inbox\"\n[1] AXButton \"Send\"\n";
+        let tree = ax::AppTree::test_tree(&[(0, "AXWindow", "Inbox"), (1, "AXButton", "Cancel")]);
+        let diff = tree.diff_from(canonical);
+        assert!(diff.len() < tree.render().len());
+        assert!(diff.contains("Cancel"));
+        assert!(!diff.contains("Inbox"));
+    }
+
+    #[test]
+    fn bounded_observations_are_utf8_safe_and_continuable() {
+        let text = "alpha 🦀 beta gamma";
+        let (first, cursor, truncated) = bounded_text(text, 0, 9);
+        assert!(truncated);
+        let (second, next, _) = bounded_text(text, cursor.unwrap(), 20);
+        assert_eq!(format!("{first}{second}"), text);
+        assert_eq!(next, None);
+    }
+
+    #[test]
+    fn filtered_rendering_preserves_canonical_indexes() {
+        let tree =
+            ax::AppTree::test_tree(&[(4, "AXButton", "Cancel"), (91, "AXButton", "Publish")]);
+        let rendered = render_elements(tree.elements.iter().filter(|element| element.index == 91));
+        assert!(rendered.starts_with("[91]"), "{rendered}");
+        assert!(!rendered.contains("[0]"));
     }
 
     #[test]

@@ -34,6 +34,9 @@ const SECURE_ROLES: &[&str] = &["AXSecureTextField", "AXSecureTextArea"];
 #[serde(rename_all = "camelCase")]
 pub struct Element {
     pub index: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parent_index: Option<u64>,
+    pub depth: usize,
     pub role: String,
     /// Best available human label: title, then description, then value.
     pub label: String,
@@ -96,6 +99,29 @@ pub struct AppTree {
 }
 
 impl AppTree {
+    #[cfg(test)]
+    pub fn test_tree(rows: &[(u64, &str, &str)]) -> Self {
+        Self {
+            pid: 1,
+            elements: rows
+                .iter()
+                .map(|(index, role, label)| Element {
+                    index: *index,
+                    parent_index: None,
+                    depth: 0,
+                    role: (*role).to_owned(),
+                    label: (*label).to_owned(),
+                    value: None,
+                    actions: Vec::new(),
+                    enabled: true,
+                    frame: None,
+                    handle: ElementHandle(std::ptr::null_mut()),
+                })
+                .collect(),
+            truncated: false,
+        }
+    }
+
     pub fn get(&self, index: u64) -> Option<&Element> {
         self.elements.iter().find(|element| element.index == index)
     }
@@ -165,7 +191,14 @@ pub fn read_tree(pid: i32) -> Result<AppTree> {
         let mut elements = Vec::new();
         let mut next_index = 0u64;
         let mut truncated = false;
-        walk(app.0, 0, &mut next_index, &mut elements, &mut truncated);
+        walk(
+            app.0,
+            0,
+            None,
+            &mut next_index,
+            &mut elements,
+            &mut truncated,
+        );
         Ok(AppTree {
             pid,
             elements,
@@ -183,6 +216,7 @@ pub fn read_tree(_pid: i32) -> Result<AppTree> {
 unsafe fn walk(
     element: AXUIElementRef,
     depth: usize,
+    parent_index: Option<u64>,
     next_index: &mut u64,
     out: &mut Vec<Element>,
     truncated: &mut bool,
@@ -217,11 +251,15 @@ unsafe fn walk(
     // Skip pure structural containers with nothing to say, so the rendered tree
     // stays readable. They are still walked for their children.
     let interesting = !role.is_empty() && (!label.is_empty() || !actions(element).is_empty());
+    let mut descendant_parent = parent_index;
     if interesting {
         let index = *next_index;
         *next_index += 1;
+        descendant_parent = Some(index);
         out.push(Element {
             index,
+            parent_index,
+            depth,
             role: role.clone(),
             label: truncate(&label, 200),
             value: raw_value.map(|value| truncate(&value, 500)),
@@ -244,6 +282,7 @@ unsafe fn walk(
             walk(
                 child.as_CFTypeRef(),
                 depth + 1,
+                descendant_parent,
                 next_index,
                 out,
                 truncated,
@@ -306,9 +345,7 @@ pub unsafe fn actions(element: AXUIElementRef) -> Vec<String> {
         .iter()
         .filter_map(|item| {
             if CFGetTypeID(item.as_CFTypeRef()) == CFStringGetTypeID() {
-                Some(
-                    CFString::wrap_under_get_rule(item.as_CFTypeRef() as CFStringRef).to_string(),
-                )
+                Some(CFString::wrap_under_get_rule(item.as_CFTypeRef() as CFStringRef).to_string())
             } else {
                 None
             }
@@ -382,6 +419,8 @@ mod tests {
     fn element(index: u64, role: &str, label: &str) -> Element {
         Element {
             index,
+            parent_index: None,
+            depth: 0,
             role: role.into(),
             label: label.into(),
             value: None,
@@ -418,7 +457,10 @@ mod tests {
     fn a_diff_reports_only_new_lines_and_says_so_when_nothing_changed() {
         let before = tree(vec![element(0, "AXButton", "Send")], false);
         let after = tree(
-            vec![element(0, "AXButton", "Send"), element(1, "AXButton", "Cancel")],
+            vec![
+                element(0, "AXButton", "Send"),
+                element(1, "AXButton", "Cancel"),
+            ],
             false,
         );
         let diff = after.diff_from(&before.render());
@@ -451,7 +493,10 @@ mod tests {
     #[test]
     fn elements_are_addressable_by_the_index_the_render_shows() {
         let subject = tree(
-            vec![element(0, "AXButton", "Send"), element(1, "AXButton", "Cancel")],
+            vec![
+                element(0, "AXButton", "Send"),
+                element(1, "AXButton", "Cancel"),
+            ],
             false,
         );
         assert_eq!(subject.get(1).unwrap().label, "Cancel");

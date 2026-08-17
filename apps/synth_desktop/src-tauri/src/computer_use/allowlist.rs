@@ -404,7 +404,10 @@ mod tests {
         .unwrap();
         assert_eq!(
             list.apps_for("session-1"),
-            vec!["com.apple.mail".to_string(), "com.figma.desktop".to_string()]
+            vec![
+                "com.apple.mail".to_string(),
+                "com.figma.desktop".to_string()
+            ]
         );
     }
 }

@@ -110,7 +110,10 @@ fn request(method: &str, path: &str, body: Option<Value>) -> Result<Value, Strin
         });
     }
     serde_json::from_str(body).map_err(|error| {
-        format!("computer-use IPC returned invalid JSON ({status}): {error}; body: {}", body.trim())
+        format!(
+            "computer-use IPC returned invalid JSON ({status}): {error}; body: {}",
+            body.trim()
+        )
     })
 }
 
@@ -120,16 +123,27 @@ fn tools() -> Value {
     json!({"tools":[
         {
             "name": "computer_use",
-            "description": "Observe and drive native macOS apps you have been allowed to use. Load the use-computer-use skill first. Rules: target elements by element_index, not coordinates; re-read state after every action because indexes are invalidated by any UI change; never sleep, the runtime settles for you.",
+            "description": "Observe and drive native macOS apps you have been allowed to use. EVERY call requires `verb`. Read with list_apps, bounded get_app_outline, find_elements, get_subtree, or get_app_state. Never use `observe`, `open`, `navigate`, `action`, `app_id`, or a display name such as `Safari`. Use `app` with the exact bundle id returned by list_apps; Safari is `com.apple.Safari`. Prefer find_elements or get_app_outline before a broad state read. After screen unlock use get_app_state with disable_diff=true. Target elements by their unchanged canonical element_index; filtered results never renumber. Re-read after element actions because indexes are invalidated by UI changes. Never sleep; the runtime settles for you. The bundled use-computer-use skill contains the full contract and routing guidance.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
                     "verb": {"type": "string", "enum": [
-                        "list_apps", "get_app_state", "click", "set_value", "type_text",
+                        "list_apps", "get_app_state", "get_app_outline", "find_elements",
+                        "get_subtree", "click", "set_value", "type_text",
                         "press_key", "scroll", "select_text", "drag", "perform_secondary_action"
                     ]},
-                    "app": {"type": "string", "description": "Bundle identifier, e.g. com.apple.mail"},
+                    "app": {
+                        "type": "string",
+                        "description": "Exact macOS bundle identifier. Use the id from list_apps, never displayName. Safari is com.apple.Safari.",
+                        "examples": ["com.apple.Safari", "com.apple.mail"]
+                    },
                     "disable_diff": {"type": "boolean", "description": "Return the full tree instead of a diff. Required after a screen lock."},
+                    "scope": {"type": "string", "enum": ["all", "visible"]},
+                    "max_chars": {"type": "integer", "minimum": 256, "maximum": 20000, "description": "Bound returned observation text; defaults to 16000."},
+                    "cursor": {"type": "integer", "minimum": 0, "description": "Continuation cursor returned by a bounded observation."},
+                    "role": {"type": "string"},
+                    "name": {"type": "string", "description": "Case-insensitive label fragment for find_elements."},
+                    "depth": {"type": "integer", "minimum": 0, "maximum": 24},
                     "element_index": {"type": "integer", "minimum": 0},
                     "x": {"type": "number"}, "y": {"type": "number"},
                     "mouse_button": {"type": "string", "enum": ["left", "right", "middle"]},
@@ -146,6 +160,13 @@ fn tools() -> Value {
                     "action": {"type": "string", "description": "An action the element reported. Do not guess."}
                 },
                 "required": ["verb"],
+                "allOf": [{
+                    "if": {
+                        "properties": {"verb": {"not": {"const": "list_apps"}}},
+                        "required": ["verb"]
+                    },
+                    "then": {"required": ["app"]}
+                }],
                 "additionalProperties": false
             }
         },
@@ -171,16 +192,47 @@ fn call_tool(name: &str, args: &Value) -> Result<Value, String> {
                     }
                 }
             }
-            request("POST", "/v1/computer-use/perform", Some(args.clone()))
+            let response = request("POST", "/v1/computer-use/perform", Some(args.clone()))?;
+            // Desktop records the trajectory step server-side. The agent-facing
+            // tool contract returns the action result itself (AX tree, app
+            // list, and so on), not the host's `{result, step}` bookkeeping
+            // envelope. Refusals intentionally remain intact and typed.
+            Ok(response.get("result").cloned().unwrap_or(response))
         }
         other => Err(format!("unknown tool {other}")),
     }
 }
 
 const ALLOWED_KEYS: &[&str] = &[
-    "verb", "app", "disable_diff", "element_index", "x", "y", "mouse_button", "click_count",
-    "value", "text", "key", "direction", "pages", "prefix", "suffix", "selection_type",
-    "from_x", "from_y", "to_x", "to_y", "action", "sessionRef", "session_id",
+    "verb",
+    "app",
+    "disable_diff",
+    "scope",
+    "max_chars",
+    "cursor",
+    "role",
+    "name",
+    "depth",
+    "element_index",
+    "x",
+    "y",
+    "mouse_button",
+    "click_count",
+    "value",
+    "text",
+    "key",
+    "direction",
+    "pages",
+    "prefix",
+    "suffix",
+    "selection_type",
+    "from_x",
+    "from_y",
+    "to_x",
+    "to_y",
+    "action",
+    "sessionRef",
+    "session_id",
 ];
 
 fn main() {
@@ -203,7 +255,9 @@ mod tests {
     #[test]
     fn the_agent_surface_offers_no_lifecycle_control() {
         let catalog = tools().to_string();
-        for forbidden in ["install", "enable", "disable", "start", "stop", "update", "remove"] {
+        for forbidden in [
+            "install", "enable", "disable", "start", "stop", "update", "remove",
+        ] {
             assert!(
                 !catalog.contains(&format!("\"{forbidden}\"")),
                 "`{forbidden}` must not be reachable from the agent"
@@ -216,14 +270,20 @@ mod tests {
         let schema = tools()["tools"][0]["inputSchema"].to_string();
         assert!(!schema.contains("additionalProperties\":true"));
         for forbidden in ["\"url\"", "\"path\"", "\"command\"", "\"env\"", "\"token\""] {
-            assert!(!schema.contains(forbidden), "{forbidden} must not be accepted");
+            assert!(
+                !schema.contains(forbidden),
+                "{forbidden} must not be accepted"
+            );
         }
     }
 
     #[test]
     fn unknown_arguments_are_refused_rather_than_forwarded() {
-        let error = call_tool("computer_use", &json!({"verb": "list_apps", "url": "https://evil"}))
-            .unwrap_err();
+        let error = call_tool(
+            "computer_use",
+            &json!({"verb": "list_apps", "url": "https://evil"}),
+        )
+        .unwrap_err();
         assert!(error.contains("rejects"), "{error}");
     }
 
@@ -245,5 +305,30 @@ mod tests {
                 "`{key}` is advertised but would be rejected"
             );
         }
+    }
+
+    #[test]
+    fn every_app_scoped_verb_requires_an_app_in_the_schema() {
+        let conditional = &tools()["tools"][0]["inputSchema"]["allOf"][0];
+        assert_eq!(
+            conditional["if"]["properties"]["verb"]["not"]["const"],
+            "list_apps"
+        );
+        assert_eq!(conditional["then"]["required"], json!(["app"]));
+    }
+
+    #[test]
+    fn successful_action_envelopes_are_not_part_of_the_agent_contract() {
+        let response = json!({
+            "result": {"app": "com.example.App", "text": "[1] AXButton"},
+            "step": {"id": "step-1"}
+        });
+        assert_eq!(
+            response.get("result").cloned().unwrap_or(response),
+            json!({
+                "app": "com.example.App",
+                "text": "[1] AXButton"
+            })
+        );
     }
 }

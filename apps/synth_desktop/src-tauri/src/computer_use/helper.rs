@@ -150,8 +150,7 @@ pub fn verify(
             .unwrap_or_default(),
         version: field(&report, "CFBundleShortVersionString=").unwrap_or_else(|| "0".into()),
         cdhash: field(&report, "CDHash=").unwrap_or_default(),
-        hardened_runtime: report.contains("flags=0x10000(runtime)")
-            || report.contains("(runtime)"),
+        hardened_runtime: report.contains("flags=0x10000(runtime)") || report.contains("(runtime)"),
         notarized: false,
         stapled: false,
     };
@@ -216,7 +215,9 @@ pub fn verify(
         // The reference suite ships unstapled and relies on Gatekeeper's online
         // check. We staple, so a first launch offline does not fail.
         if !identity.stapled {
-            bail!("helper has no stapled notarization ticket, so a first launch offline would fail");
+            bail!(
+                "helper has no stapled notarization ticket, so a first launch offline would fail"
+            );
         }
     }
 
@@ -244,10 +245,7 @@ pub fn install(
     }
     let copy = runner.run(
         "ditto",
-        &[
-            &source.to_string_lossy(),
-            &destination.to_string_lossy(),
-        ],
+        &[&source.to_string_lossy(), &destination.to_string_lossy()],
     )?;
     if !copy.ok() {
         bail!("failed to install helper: {}", copy.stderr.trim());
@@ -420,9 +418,14 @@ CFBundleShortVersionString=1.0.0\n";
     #[test]
     fn a_helper_signed_by_another_team_is_refused() {
         let dir = tempdir().unwrap();
-        let error = verify(&signed_runner(), &bundle(dir.path()), Some("OTHER99999"), true)
-            .unwrap_err()
-            .to_string();
+        let error = verify(
+            &signed_runner(),
+            &bundle(dir.path()),
+            Some("OTHER99999"),
+            true,
+        )
+        .unwrap_err()
+        .to_string();
         assert!(error.contains("signed by team"), "{error}");
     }
 
@@ -435,11 +438,19 @@ CFBundleShortVersionString=1.0.0\n";
         // First --verify (strict/deep) succeeds; the pinned one is a separate
         // invocation and this fake keys on the flag, so override both and
         // assert on the requirement path via a failing --verify.
-        runner = runner.with("codesign --verify", 1, "", "does not satisfy its designated Requirement");
+        runner = runner.with(
+            "codesign --verify",
+            1,
+            "",
+            "does not satisfy its designated Requirement",
+        );
         let error = verify(&runner, &bundle(dir.path()), Some("ABCDE12345"), true)
             .unwrap_err()
             .to_string();
-        assert!(error.contains("does not verify") || error.contains("pinned"), "{error}");
+        assert!(
+            error.contains("does not verify") || error.contains("pinned"),
+            "{error}"
+        );
     }
 
     /// We staple; the reference implementation does not. A first launch offline

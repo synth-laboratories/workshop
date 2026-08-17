@@ -348,7 +348,9 @@ mod tests {
         let fixture = fixture();
         let plan = fixture
             .session
-            .plan(action(json!({"verb":"get_app_state","app":"com.apple.mail"})))
+            .plan(action(
+                json!({"verb":"get_app_state","app":"com.apple.mail"}),
+            ))
             .unwrap();
         let approval = plan.approval.unwrap();
         assert_eq!(approval.app, "com.apple.mail");
@@ -364,7 +366,9 @@ mod tests {
         read(&mut fixture, "com.figma.desktop", &[(1, "Zoom In")]);
         let plan = fixture
             .session
-            .plan(action(json!({"verb":"click","app":"com.figma.desktop","element_index":1})))
+            .plan(action(
+                json!({"verb":"click","app":"com.figma.desktop","element_index":1}),
+            ))
             .unwrap();
         assert!(plan.approval.is_none());
         assert!(plan.hazard.is_none());
@@ -378,7 +382,9 @@ mod tests {
         read(&mut fixture, "com.apple.mail", &[(9, "Send")]);
         let plan = fixture
             .session
-            .plan(action(json!({"verb":"click","app":"com.apple.mail","element_index":9})))
+            .plan(action(
+                json!({"verb":"click","app":"com.apple.mail","element_index":9}),
+            ))
             .unwrap();
         let approval = plan.approval.expect("hazard actions always ask");
         assert!(approval.hazard);
@@ -400,7 +406,9 @@ mod tests {
         allow(&fixture, "com.apple.mail");
         let refusal = fixture
             .session
-            .plan(action(json!({"verb":"click","app":"com.apple.mail","element_index":9})))
+            .plan(action(
+                json!({"verb":"click","app":"com.apple.mail","element_index":9}),
+            ))
             .unwrap_err();
         assert_eq!(refusal.code, CODE_STALE_ELEMENT_INDEX);
     }
@@ -419,7 +427,9 @@ mod tests {
         read(&mut fixture, "com.apple.Terminal", &[(1, "Shell")]);
         let refusal = fixture
             .session
-            .plan(action(json!({"verb":"type_text","app":"com.apple.Terminal","text":"rm -rf /"})))
+            .plan(action(
+                json!({"verb":"type_text","app":"com.apple.Terminal","text":"rm -rf /"}),
+            ))
             .unwrap_err();
         assert_eq!(refusal.code, CODE_APP_DENIED);
         assert!(refusal.remediation.contains("shell tool"), "{refusal:?}");
@@ -451,7 +461,9 @@ mod tests {
         fixture.session.observe_performed(&typed);
         fixture
             .session
-            .plan(action(json!({"verb":"click","app":"com.apple.notes","element_index":1})))
+            .plan(action(
+                json!({"verb":"click","app":"com.apple.notes","element_index":1}),
+            ))
             .unwrap();
     }
 
@@ -466,7 +478,9 @@ mod tests {
         // Figma's indexes are untouched.
         fixture
             .session
-            .plan(action(json!({"verb":"click","app":"com.figma.desktop","element_index":1})))
+            .plan(action(
+                json!({"verb":"click","app":"com.figma.desktop","element_index":1}),
+            ))
             .unwrap();
     }
 
@@ -480,7 +494,9 @@ mod tests {
 
         let refusal = fixture
             .session
-            .plan(action(json!({"verb":"get_app_state","app":"com.figma.desktop"})))
+            .plan(action(
+                json!({"verb":"get_app_state","app":"com.figma.desktop"}),
+            ))
             .unwrap_err();
         assert_eq!(refusal.code, CODE_SESSION_PAUSED);
 
@@ -491,14 +507,15 @@ mod tests {
 
         let refusal = fixture
             .session
-            .plan(action(json!({"verb":"click","app":"com.figma.desktop","element_index":1})))
+            .plan(action(
+                json!({"verb":"click","app":"com.figma.desktop","element_index":1}),
+            ))
             .unwrap_err();
         assert_eq!(refusal.code, CODE_NEEDS_FULL_READ);
 
         // Only a non-diffed read is admitted, and it clears the hold.
-        let full = action(
-            json!({"verb":"get_app_state","app":"com.figma.desktop","disable_diff":true}),
-        );
+        let full =
+            action(json!({"verb":"get_app_state","app":"com.figma.desktop","disable_diff":true}));
         let plan = fixture.session.plan(full).unwrap();
         assert!(plan.is_full_read);
         fixture.session.observe_read(
@@ -511,7 +528,9 @@ mod tests {
         );
         fixture
             .session
-            .plan(action(json!({"verb":"click","app":"com.figma.desktop","element_index":1})))
+            .plan(action(
+                json!({"verb":"click","app":"com.figma.desktop","element_index":1}),
+            ))
             .unwrap();
     }
 

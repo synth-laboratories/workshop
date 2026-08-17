@@ -50,6 +50,42 @@ pub enum Action {
         /// Force a full tree instead of a diff against the previous read.
         #[serde(default)]
         disable_diff: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        scope: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        max_chars: Option<u64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cursor: Option<u64>,
+    },
+    GetAppOutline {
+        app: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        max_chars: Option<u64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cursor: Option<u64>,
+    },
+    FindElements {
+        app: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        role: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        name: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        action: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        max_chars: Option<u64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cursor: Option<u64>,
+    },
+    GetSubtree {
+        app: String,
+        element_index: u64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        depth: Option<u64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        max_chars: Option<u64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cursor: Option<u64>,
     },
     Click {
         app: String,
@@ -126,6 +162,9 @@ impl Action {
         match self {
             Self::ListApps => "list_apps",
             Self::GetAppState { .. } => "get_app_state",
+            Self::GetAppOutline { .. } => "get_app_outline",
+            Self::FindElements { .. } => "find_elements",
+            Self::GetSubtree { .. } => "get_subtree",
             Self::Click { .. } => "click",
             Self::SetValue { .. } => "set_value",
             Self::TypeText { .. } => "type_text",
@@ -142,6 +181,9 @@ impl Action {
         match self {
             Self::ListApps => None,
             Self::GetAppState { app, .. }
+            | Self::GetAppOutline { app, .. }
+            | Self::FindElements { app, .. }
+            | Self::GetSubtree { app, .. }
             | Self::Click { app, .. }
             | Self::SetValue { app, .. }
             | Self::TypeText { app, .. }
@@ -157,7 +199,14 @@ impl Action {
     /// app to be allowlisted — reading a window is not nothing — but they never
     /// invalidate element indexes.
     pub fn is_read_only(&self) -> bool {
-        matches!(self, Self::ListApps | Self::GetAppState { .. })
+        matches!(
+            self,
+            Self::ListApps
+                | Self::GetAppState { .. }
+                | Self::GetAppOutline { .. }
+                | Self::FindElements { .. }
+                | Self::GetSubtree { .. }
+        )
     }
 
     /// The element this action targets, when it targets one.
@@ -273,7 +322,10 @@ impl Action {
     pub fn approval_payload(&self) -> Value {
         match self {
             Self::ListApps => json!({}),
-            Self::GetAppState { app, .. } => json!({ "app": app }),
+            Self::GetAppState { app, .. }
+            | Self::GetAppOutline { app, .. }
+            | Self::FindElements { app, .. }
+            | Self::GetSubtree { app, .. } => json!({ "app": app }),
             Self::Click {
                 element_index,
                 x,
@@ -330,9 +382,12 @@ impl Action {
 /// Every verb, in the order §5 lists them. The MCP schema and the skill are
 /// both generated from this, so a verb cannot be advertised in one and missing
 /// from the other.
-pub const ACTION_VERBS: [&str; 10] = [
+pub const ACTION_VERBS: [&str; 13] = [
     "list_apps",
     "get_app_state",
+    "get_app_outline",
+    "find_elements",
+    "get_subtree",
     "click",
     "set_value",
     "type_text",
@@ -356,6 +411,9 @@ mod tests {
         let actions = [
             json!({"verb":"list_apps"}),
             json!({"verb":"get_app_state","app":"com.apple.mail"}),
+            json!({"verb":"get_app_outline","app":"com.apple.mail"}),
+            json!({"verb":"find_elements","app":"com.apple.mail","role":"AXButton"}),
+            json!({"verb":"get_subtree","app":"com.apple.mail","element_index":4}),
             json!({"verb":"click","app":"a","element_index":1}),
             json!({"verb":"set_value","app":"a","element_index":1,"value":"x"}),
             json!({"verb":"type_text","app":"a","text":"x"}),
