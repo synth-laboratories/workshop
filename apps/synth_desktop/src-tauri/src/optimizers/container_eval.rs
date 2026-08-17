@@ -62,11 +62,11 @@ impl EvalSpec {
                 recipe_id: BANKING77_EVAL_BASELINE_RECIPE,
                 family: "banking77",
                 title: "Banking77 baseline eval",
-                question: "What is the scored accuracy of the current classify policy on 10 labeled train examples?",
+                question: "What is the scored accuracy of the advertised Banking77 policy on 10 labeled train examples?",
                 world_ref: "world:banking77@train",
                 evaluation_plan_ref: "banking77_eval.v1",
-                harness: "classify",
-                policy_config: "classify",
+                harness: "desktop_eval",
+                policy_config: "banking77_gpt_4_1_nano",
                 concurrency: 10,
                 train: &BANKING77_TRAIN,
                 heldout: &[],
@@ -1140,6 +1140,13 @@ mod tests {
                             "runtime_family": family,
                             "scale_leases": 10,
                             "world_ref": if family == "banking77" { "world:banking77@train" } else { "world:healthbench@eval" },
+                            "capabilities": if family == "banking77" { json!({
+                                "policy_refs": [{
+                                    "harness": "desktop_eval",
+                                    "config": "banking77_gpt_4_1_nano",
+                                    "model": "openai/gpt-4.1-nano"
+                                }]
+                            }) } else { json!({}) },
                         })),
                         ("POST", path) if path == "/policy-configs" || path.starts_with("/policy-configs/") => {
                             if opts.policy_status == 200 {
@@ -1171,6 +1178,22 @@ mod tests {
                             "events": [{ "kind": "stream.subscribed", "ready": true }]
                         })),
                         ("POST", "/rollouts") => {
+                            if family == "banking77"
+                                && request.body.pointer("/policy_ref/harness") != Some(&json!("desktop_eval"))
+                            {
+                                return JsonHttpResponse::error(
+                                    StatusCode::UNPROCESSABLE_ENTITY,
+                                    "prepared Desktop evals must use the advertised policy_ref",
+                                );
+                            }
+                            if family == "banking77"
+                                && request.body.pointer("/policy_ref/config") != Some(&json!("banking77_gpt_4_1_nano"))
+                            {
+                                return JsonHttpResponse::error(
+                                    StatusCode::UNPROCESSABLE_ENTITY,
+                                    "prepared Desktop evals must use the advertised policy_ref",
+                                );
+                            }
                             starts.fetch_add(1, Ordering::SeqCst);
                             let rollout_id = request
                                 .body
@@ -1508,7 +1531,7 @@ mod tests {
             family: "banking77",
             rewards,
             policy_status: 200,
-            policy_config_id: "classify".into(),
+            policy_config_id: "banking77_gpt_4_1_nano".into(),
             fail_seeds: (1..10).collect(),
             extra_cost_usd: None,
         })
