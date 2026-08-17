@@ -31,6 +31,7 @@ verify_notary() {
 verify_installed() {
   local app="$1" resources runtime node chrome helper
   [[ -d "$app" ]] || die "installed app is missing: $app"
+  app="$(cd "$(dirname "$app")" && pwd)/$(basename "$app")"
   resources="$app/Contents/Resources"
   runtime="$resources/browser/runtime"
   node="$runtime/node/bin/node"
@@ -66,6 +67,7 @@ verify_installed() {
 verify_development_installed() {
   local app="$1" resources runtime node chrome version runtime_bytes
   [[ -d "$app" ]] || die "installed app is missing: $app"
+  app="$(cd "$(dirname "$app")" && pwd)/$(basename "$app")"
   resources="$app/Contents/Resources"
   runtime="$resources/browser/runtime"
   node="$runtime/node/bin/node"
