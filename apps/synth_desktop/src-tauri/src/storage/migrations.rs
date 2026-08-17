@@ -22,6 +22,7 @@ const MIGRATIONS: &[&str] = &[
     MIGRATION_17,
     MIGRATION_18,
     MIGRATION_19,
+    MIGRATION_20,
 ];
 
 /// Apply every migration the database has not reached yet.
@@ -1151,6 +1152,139 @@ ON events(json_extract(payload_json, '$.trace_id'), sequence DESC)
 WHERE kind = 'diagnostic.event';
 "#;
 
+/// Observed generation TPS, measured per output-text segment.
+///
+/// Two things happen here, and they belong in one transaction.
+///
+/// First, the new ledger. A measurement keeps its own raw evidence —
+/// `samples_json` holds the `(monotonic microseconds, cumulative exact tokens,
+/// sequence number)` triples the rate was regressed from — so any displayed
+/// value can be recomputed offline from the row that produced it. Storing only
+/// the derived scalar would make the number unauditable, which is how the
+/// previous estimate survived as long as it did. The `CHECK` makes the honest
+/// state representable and the dishonest one impossible: a row carries either a
+/// rate or a machine-readable reason it has none, never both and never neither.
+///
+/// Second, the legacy quarantine. Every `observed_stream` figure already in
+/// `usage_records` came from the turn-wide, 2-second-gap estimate: turn-level
+/// output tokens over a denominator that excluded tool time and any gap longer
+/// than two seconds. Those numbers are not segment measurements and must not be
+/// reinterpreted as if they were, so their `measurement_kind` is relabelled and
+/// their throughput column is cleared — which is what removes them from the
+/// dashboard's percentiles. Nothing is destroyed: the original value moves to
+/// `legacy_observed_output_tps`, where it stays readable as what it always was,
+/// an estimate.
+const MIGRATION_20: &str = r#"
+CREATE TABLE IF NOT EXISTS generation_speed_measurements (
+    measurement_id TEXT PRIMARY KEY,
+    schema_version TEXT NOT NULL,
+    measurement_kind TEXT NOT NULL,
+    session_id TEXT NOT NULL,
+    turn_id TEXT NOT NULL,
+    response_id TEXT,
+    item_id TEXT NOT NULL,
+    output_index INTEGER NOT NULL,
+    content_index INTEGER NOT NULL,
+    phase TEXT NOT NULL CHECK(phase IN ('commentary','final_answer','other')),
+    status TEXT NOT NULL CHECK(status IN ('completed','partial','unavailable')),
+    tps REAL,
+    exact_tokens_after_first_sample INTEGER NOT NULL,
+    duration_ms REAL NOT NULL,
+    sample_count INTEGER NOT NULL,
+    token_count_source TEXT NOT NULL
+        CHECK(token_count_source IN ('provider_item_usage','exact_tokenizer','unavailable')),
+    tokenizer_id TEXT,
+    clock_source TEXT NOT NULL
+        CHECK(clock_source IN ('provider_event_timestamp','workshop_monotonic_receive')),
+    unavailable_reason TEXT,
+    quality_flags TEXT NOT NULL DEFAULT '[]',
+    samples_json TEXT NOT NULL DEFAULT '[]',
+    provider TEXT,
+    model_id TEXT,
+    created_at TEXT NOT NULL,
+    CHECK ((tps IS NULL) = (unavailable_reason IS NOT NULL))
+);
+
+CREATE INDEX IF NOT EXISTS generation_speed_measurements_turn
+ON generation_speed_measurements(session_id, turn_id, created_at);
+
+-- The ledger's `measurement_kind` vocabulary is a CHECK constraint, and SQLite
+-- cannot alter one in place, so the table is rebuilt. The rebuild is also what
+-- performs the relabelling, in the same transaction, so no build ever observes
+-- a ledger where the two disagree.
+CREATE TABLE usage_records_v20 (
+    id TEXT PRIMARY KEY,
+    provider TEXT NOT NULL,
+    model_id TEXT NOT NULL,
+    model_revision TEXT,
+    session_id TEXT REFERENCES sessions(id) ON DELETE SET NULL,
+    run_id TEXT REFERENCES runs(id) ON DELETE SET NULL,
+    request_id TEXT NOT NULL,
+    measurement_kind TEXT NOT NULL CHECK(measurement_kind IN (
+        'decode', 'observed_stream_segment', 'legacy_observed_stream_estimate',
+        'end_to_end', 'provider_reported'
+    )),
+    status TEXT NOT NULL CHECK(status IN ('completed', 'failed', 'interrupted')),
+    started_at_ms INTEGER NOT NULL,
+    first_output_at_ms INTEGER,
+    last_output_at_ms INTEGER,
+    completed_at_ms INTEGER NOT NULL,
+    input_tokens INTEGER,
+    cached_input_tokens INTEGER,
+    cache_write_tokens INTEGER,
+    reasoning_tokens INTEGER,
+    output_tokens INTEGER,
+    total_tokens INTEGER GENERATED ALWAYS AS (
+        CASE WHEN input_tokens IS NULL AND output_tokens IS NULL THEN NULL
+             ELSE COALESCE(input_tokens, 0) + COALESCE(output_tokens, 0) END
+    ) STORED,
+    ttft_ms REAL,
+    observed_output_tps REAL,
+    legacy_observed_output_tps REAL,
+    end_to_end_output_tps REAL,
+    billed_cost_usd REAL,
+    estimated_cost_usd REAL,
+    cost_source TEXT NOT NULL DEFAULT 'none' CHECK(cost_source IN ('provider_reported', 'synth_cloud', 'tariff_estimate', 'none')),
+    source TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    UNIQUE(provider, request_id)
+);
+
+INSERT INTO usage_records_v20 (
+    id, provider, model_id, model_revision, session_id, run_id, request_id,
+    measurement_kind, status, started_at_ms, first_output_at_ms, last_output_at_ms,
+    completed_at_ms, input_tokens, cached_input_tokens, cache_write_tokens,
+    reasoning_tokens, output_tokens, ttft_ms, observed_output_tps,
+    legacy_observed_output_tps, end_to_end_output_tps, billed_cost_usd,
+    estimated_cost_usd, cost_source, source, created_at
+)
+SELECT
+    id, provider, model_id, model_revision, session_id, run_id, request_id,
+    CASE WHEN measurement_kind = 'observed_stream'
+         THEN 'legacy_observed_stream_estimate' ELSE measurement_kind END,
+    status, started_at_ms, first_output_at_ms, last_output_at_ms,
+    completed_at_ms, input_tokens, cached_input_tokens, cache_write_tokens,
+    reasoning_tokens, output_tokens, ttft_ms,
+    CASE WHEN measurement_kind = 'observed_stream' THEN NULL ELSE observed_output_tps END,
+    CASE WHEN measurement_kind = 'observed_stream' THEN observed_output_tps ELSE NULL END,
+    end_to_end_output_tps, billed_cost_usd, estimated_cost_usd, cost_source,
+    source, created_at
+FROM usage_records;
+
+DROP TABLE usage_records;
+
+ALTER TABLE usage_records_v20 RENAME TO usage_records;
+
+CREATE INDEX IF NOT EXISTS usage_records_model_created
+ON usage_records(provider, model_id, measurement_kind, created_at DESC);
+
+CREATE INDEX IF NOT EXISTS usage_records_completed
+ON usage_records(status, completed_at_ms DESC);
+
+CREATE INDEX IF NOT EXISTS usage_records_window
+ON usage_records(completed_at_ms DESC);
+"#;
+
 #[cfg(test)]
 mod tests {
     /// Derived, not pinned: adding a migration should not mean editing
@@ -1637,5 +1771,74 @@ mod tests {
             ["a".repeat(64)],
         )
         .unwrap();
+    }
+
+    #[test]
+    fn migration_20_quarantines_the_old_estimate_and_guards_the_new_measurement() {
+        let conn = seed_at_version(19);
+        conn.execute(
+            "INSERT INTO usage_records(id,provider,model_id,request_id,measurement_kind,status,
+                started_at_ms,completed_at_ms,input_tokens,output_tokens,observed_output_tps,
+                end_to_end_output_tps,cost_source,source,created_at)
+             VALUES ('u-1','synth-cloud','laguna-s-2.1','req-1','observed_stream','completed',
+                1000,2000,100,200,643.0,12.5,'none','codex_app_server','now')",
+            [],
+        )
+        .unwrap();
+        assert_eq!(apply_migrations(&conn).unwrap(), LATEST_VERSION);
+
+        // The 643 tok/s figure is still readable, but it is no longer a
+        // measurement and no longer feeds a percentile.
+        let (kind, observed, legacy, e2e): (String, Option<f64>, Option<f64>, Option<f64>) = conn
+            .query_row(
+                "SELECT measurement_kind, observed_output_tps, legacy_observed_output_tps,
+                        end_to_end_output_tps FROM usage_records WHERE id='u-1'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .unwrap();
+        assert_eq!(kind, "legacy_observed_stream_estimate");
+        assert_eq!(observed, None);
+        assert_eq!(legacy, Some(643.0));
+        assert_eq!(e2e, Some(12.5), "unrelated columns survive the rebuild");
+
+        // The old vocabulary is gone; the new one is accepted.
+        assert!(conn
+            .execute(
+                "UPDATE usage_records SET measurement_kind='observed_stream' WHERE id='u-1'",
+                []
+            )
+            .is_err());
+        conn.execute(
+            "UPDATE usage_records SET measurement_kind='observed_stream_segment' WHERE id='u-1'",
+            [],
+        )
+        .unwrap();
+
+        // A measurement row carries either a rate or a reason it has none.
+        let insert = |id: &str, tps: &str, reason: &str| {
+            conn.execute(
+                &format!(
+                    "INSERT INTO generation_speed_measurements(measurement_id,schema_version,
+                        measurement_kind,session_id,turn_id,item_id,output_index,content_index,
+                        phase,status,tps,exact_tokens_after_first_sample,duration_ms,sample_count,
+                        token_count_source,clock_source,unavailable_reason,created_at)
+                     VALUES ('{id}','synth.generation-speed.v1','observed_stream_segment',
+                        's','t','msg_1',0,0,'final_answer','completed',{tps},60,1200.0,4,
+                        'provider_item_usage','workshop_monotonic_receive',{reason},'now')"
+                ),
+                [],
+            )
+        };
+        assert!(insert("m-rate", "50.0", "NULL").is_ok());
+        assert!(insert("m-reason", "NULL", "'insufficient_samples'").is_ok());
+        assert!(
+            insert("m-both", "50.0", "'insufficient_samples'").is_err(),
+            "a row must not carry both a rate and a reason it has none"
+        );
+        assert!(
+            insert("m-neither", "NULL", "NULL").is_err(),
+            "a row without a rate must say why"
+        );
     }
 }

@@ -1,0 +1,1916 @@
+[
+ {
+  "method": "turn/started",
+  "params": {
+   "turn": {
+    "completedAt": null,
+    "durationMs": null,
+    "error": null,
+    "id": "01a00d56-6d99-78b0-86db-39cb7ba3492a",
+    "items": [],
+    "itemsView": "notLoaded",
+    "startedAt": 1786930163,
+    "status": "inProgress"
+   }
+  },
+  "receivedAtUs": 0
+ },
+ {
+  "method": "turn/accepted",
+  "params": {
+   "turnId": "01a00d56-6d99-78b0-86db-39cb7ba3492a",
+   "userMessageId": "user-1"
+  },
+  "receivedAtUs": 1562
+ },
+ {
+  "method": "item/started",
+  "params": {
+   "item": {
+    "id": "01a00d56-75a7-7200-8496-59014e47c1ce",
+    "type": "userMessage"
+   },
+   "startedAtMs": 1786930165159,
+   "turnId": "01a00d56-6d99-78b0-86db-39cb7ba3492a"
+  },
+  "receivedAtUs": 2028633
+ },
+ {
+  "method": "item/completed",
+  "params": {
+   "completedAtMs": 1786930165159,
+   "item": {
+    "id": "01a00d56-75a7-7200-8496-59014e47c1ce",
+    "type": "userMessage"
+   },
+   "turnId": "01a00d56-6d99-78b0-86db-39cb7ba3492a"
+  },
+  "receivedAtUs": 2030682
+ },
+ {
+  "method": "item/started",
+  "params": {
+   "item": {
+    "id": "rs_0c9d2e8c05edcf3f016a8263f8b04c8194bf84004b5b172e27",
+    "type": "reasoning"
+   },
+   "startedAtMs": 1786930168798,
+   "turnId": "01a00d56-6d99-78b0-86db-39cb7ba3492a"
+  },
+  "receivedAtUs": 5667525
+ },
+ {
+  "method": "item/completed",
+  "params": {
+   "completedAtMs": 1786930171543,
+   "item": {
+    "id": "rs_0c9d2e8c05edcf3f016a8263f8b04c8194bf84004b5b172e27",
+    "type": "reasoning"
+   },
+   "turnId": "01a00d56-6d99-78b0-86db-39cb7ba3492a"
+  },
+  "receivedAtUs": 8630038
+ },
+ {
+  "method": "item/started",
+  "params": {
+   "item": {
+    "id": "msg_0c9d2e8c05edcf3f016a8263fb95388194a7abba99be48597c",
+    "phase": "commentary",
+    "type": "agentMessage"
+   },
+   "startedAtMs": 1786930171544,
+   "turnId": "01a00d56-6d99-78b0-86db-39cb7ba3492a"
+  },
+  "receivedAtUs": 8632094
+ },
+ {
+  "method": "item/agentMessage/delta",
+  "params": {
+   "delta": "x",
+   "itemId": "msg_0c9d2e8c05edcf3f016a8263fb95388194a7abba99be48597c",
+   "turnId": "01a00d56-6d99-78b0-86db-39cb7ba3492a"
+  },
+  "receivedAtUs": 8634084
+ },
+ {
+  "method": "item/agentMessage/delta",
+  "params": {
+   "delta": "xx",
+   "itemId": "msg_0c9d2e8c05edcf3f016a8263fb95388194a7abba99be48597c",
+   "turnId": "01a00d56-6d99-78b0-86db-39cb7ba3492a"
+  },
+  "receivedAtUs": 8636169
+ },
+ {
+  "method": "item/agentMessage/delta",
+  "params": {
+   "delta": "xxxxxx",
+   "itemId": "msg_0c9d2e8c05edcf3f016a8263fb95388194a7abba99be48597c",
+   "turnId": "01a00d56-6d99-78b0-86db-39cb7ba3492a"
+  },
+  "receivedAtUs": 8638196
+ },
+ {
+  "method": "item/agentMessage/delta",
+  "params": {
+   "delta": "xxxx",
+   "itemId": "msg_0c9d2e8c05edcf3f016a8263fb95388194a7abba99be48597c",
+   "turnId": "01a00d56-6d99-78b0-86db-39cb7ba3492a"
+  },
+  "receivedAtUs": 8640230
+ },
+ {
+  "method": "item/agentMessage/delta",
+  "params": {
+   "delta": "xxxxxx",
+   "itemId": "msg_0c9d2e8c05edcf3f016a8263fb95388194a7abba99be48597c",
+   "turnId": "01a00d56-6d99-78b0-86db-39cb7ba3492a"
+  },
+  "receivedAtUs": 8642340
+ },
+ {
+  "method": "item/agentMessage/delta",
+  "params": {
+   "delta": "xx",
+   "itemId": "msg_0c9d2e8c05edcf3f016a8263fb95388194a7abba99be48597c",
+   "turnId": "01a00d56-6d99-78b0-86db-39cb7ba3492a"
+  },
+  "receivedAtUs": 8643993
+ },
+ {
+  "method": "item/agentMessage/delta",
+  "params": {
+   "delta": "xxxxxxxxxx",
+   "itemId": "msg_0c9d2e8c05edcf3f016a8263fb95388194a7abba99be48597c",
+   "turnId": "01a00d56-6d99-78b0-86db-39cb7ba3492a"
+  },
+  "receivedAtUs": 8646000
+ },
+ {
+  "method": "item/agentMessage/delta",
+  "params": {
+   "delta": "xx",
+   "itemId": "msg_0c9d2e8c05edcf3f016a8263fb95388194a7abba99be48597c",
+   "turnId": "01a00d56-6d99-78b0-86db-39cb7ba3492a"
+  },
+  "receivedAtUs": 8647934
+ },
+ {
+  "method": "item/agentMessage/delta",
+  "params": {
+   "delta": "xxxxxxxxx",
+   "itemId": "msg_0c9d2e8c05edcf3f016a8263fb95388194a7abba99be48597c",
+   "turnId": "01a00d56-6d99-78b0-86db-39cb7ba3492a"
+  },
+  "receivedAtUs": 8649611
+ },
+ {
+  "method": "item/agentMessage/delta",
+  "params": {
+   "delta": "xxxxxxxxx",
+   "itemId": "msg_0c9d2e8c05edcf3f016a8263fb95388194a7abba99be48597c",
+   "turnId": "01a00d56-6d99-78b0-86db-39cb7ba3492a"
+  },
+  "receivedAtUs": 8650989
+ },
+ {
+  "method": "item/agentMessage/delta",
+  "params": {
+   "delta": "xxxx",
+   "itemId": "msg_0c9d2e8c05edcf3f016a8263fb95388194a7abba99be48597c",
+   "turnId": "01a00d56-6d99-78b0-86db-39cb7ba3492a"
+  },
+  "receivedAtUs": 8652452
+ },
+ {
+  "method": "item/agentMessage/delta",
+  "params": {
+   "delta": "xxxxxx",
+   "itemId": "msg_0c9d2e8c05edcf3f016a8263fb95388194a7abba99be48597c",
+   "turnId": "01a00d56-6d99-78b0-86db-39cb7ba3492a"
+  },
+  "receivedAtUs": 8654167
+ },
+ {
+  "method": "item/agentMessage/delta",
+  "params": {
+   "delta": "xxxxxxx",
+   "itemId": "msg_0c9d2e8c05edcf3f016a8263fb95388194a7abba99be48597c",
+   "turnId": "01a00d56-6d99-78b0-86db-39cb7ba3492a"
+  },
+  "receivedAtUs": 8655744
+ },
+ {
+  "method": "item/agentMessage/delta",
+  "params": {
+   "delta": "xxxxxxxxx",
+   "itemId": "msg_0c9d2e8c05edcf3f016a8263fb95388194a7abba99be48597c",
+   "turnId": "01a00d56-6d99-78b0-86db-39cb7ba3492a"
+  },
+  "receivedAtUs": 8657473
+ },
+ {
+  "method": "item/agentMessage/delta",
+  "params": {
+   "delta": "xxxx",
+   "itemId": "msg_0c9d2e8c05edcf3f016a8263fb95388194a7abba99be48597c",
+   "turnId": "01a00d56-6d99-78b0-86db-39cb7ba3492a"
+  },
+  "receivedAtUs": 8660393
+ },
+ {
+  "method": "item/agentMessage/delta",
+  "params": {
+   "delta": "xxxxx",
+   "itemId": "msg_0c9d2e8c05edcf3f016a8263fb95388194a7abba99be48597c",
+   "turnId": "01a00d56-6d99-78b0-86db-39cb7ba3492a"
+  },
+  "receivedAtUs": 8680899
+ },
+ {
+  "method": "item/agentMessage/delta",
+  "params": {
+   "delta": "xxxx",
+   "itemId": "msg_0c9d2e8c05edcf3f016a8263fb95388194a7abba99be48597c",
+   "turnId": "01a00d56-6d99-78b0-86db-39cb7ba3492a"
+  },
+  "receivedAtUs": 8695668
+ },
+ {
+  "method": "item/agentMessage/delta",
+  "params": {
+   "delta": "x",
+   "itemId": "msg_0c9d2e8c05edcf3f016a8263fb95388194a7abba99be48597c",
+   "turnId": "01a00d56-6d99-78b0-86db-39cb7ba3492a"
+  },
+  "receivedAtUs": 8716708
+ },
+ {
+  "method": "item/agentMessage/delta",
+  "params": {
+   "delta": "xx",
+   "itemId": "msg_0c9d2e8c05edcf3f016a8263fb95388194a7abba99be48597c",
+   "turnId": "01a00d56-6d99-78b0-86db-39cb7ba3492a"
+  },
+  "receivedAtUs": 8735821
+ },
+ {
+  "method": "item/agentMessage/delta",
+  "params": {
+   "delta": "xxx",
+   "itemId": "msg_0c9d2e8c05edcf3f016a8263fb95388194a7abba99be48597c",
+   "turnId": "01a00d56-6d99-78b0-86db-39cb7ba3492a"
+  },
+  "receivedAtUs": 8767154
+ },
+ {
+  "method": "item/agentMessage/delta",
+  "params": {
+   "delta": "xxxxx",
+   "itemId": "msg_0c9d2e8c05edcf3f016a8263fb95388194a7abba99be48597c",
+   "turnId": "01a00d56-6d99-78b0-86db-39cb7ba3492a"
+  },
+  "receivedAtUs": 8775850
+ },
+ {
+  "method": "item/agentMessage/delta",
+  "params": {
+   "delta": "xxxx",
+   "itemId": "msg_0c9d2e8c05edcf3f016a8263fb95388194a7abba99be48597c",
+   "turnId": "01a00d56-6d99-78b0-86db-39cb7ba3492a"
+  },
+  "receivedAtUs": 8807154
+ },
+ {
+  "method": "item/agentMessage/delta",
+  "params": {
+   "delta": "xxxxxxxx",
+   "itemId": "msg_0c9d2e8c05edcf3f016a8263fb95388194a7abba99be48597c",
+   "turnId": "01a00d56-6d99-78b0-86db-39cb7ba3492a"
+  },
+  "receivedAtUs": 8816801
+ },
+ {
+  "method": "item/agentMessage/delta",
+  "params": {
+   "delta": "xxxxxxx",
+   "itemId": "msg_0c9d2e8c05edcf3f016a8263fb95388194a7abba99be48597c",
+   "turnId": "01a00d56-6d99-78b0-86db-39cb7ba3492a"
+  },
+  "receivedAtUs": 8845737
+ },
+ {
+  "method": "item/agentMessage/delta",
+  "params": {
+   "delta": "xxxxxx",
+   "itemId": "msg_0c9d2e8c05edcf3f016a8263fb95388194a7abba99be48597c",
+   "turnId": "01a00d56-6d99-78b0-86db-39cb7ba3492a"
+  },
+  "receivedAtUs": 8847451
+ },
+ {
+  "method": "item/agentMessage/delta",
+  "params": {
+   "delta": "x",
+   "itemId": "msg_0c9d2e8c05edcf3f016a8263fb95388194a7abba99be48597c",
+   "turnId": "01a00d56-6d99-78b0-86db-39cb7ba3492a"
+  },
+  "receivedAtUs": 8855809
+ },
+ {
+  "method": "item/agentMessage/delta",
+  "params": {
+   "delta": "xxxxxxx",
+   "itemId": "msg_0c9d2e8c05edcf3f016a8263fb95388194a7abba99be48597c",
+   "turnId": "01a00d56-6d99-78b0-86db-39cb7ba3492a"
+  },
+  "receivedAtUs": 8876862
+ },
+ {
+  "method": "item/agentMessage/delta",
+  "params": {
+   "delta": "xxxx",
+   "itemId": "msg_0c9d2e8c05edcf3f016a8263fb95388194a7abba99be48597c",
+   "turnId": "01a00d56-6d99-78b0-86db-39cb7ba3492a"
+  },
+  "receivedAtUs": 8895734
+ },
+ {
+  "method": "item/agentMessage/delta",
+  "params": {
+   "delta": "xxxxxx",
+   "itemId": "msg_0c9d2e8c05edcf3f016a8263fb95388194a7abba99be48597c",
+   "turnId": "01a00d56-6d99-78b0-86db-39cb7ba3492a"
+  },
+  "receivedAtUs": 8910809
+ },
+ {
+  "method": "item/agentMessage/delta",
+  "params": {
+   "delta": "xxxxxxxxxx",
+   "itemId": "msg_0c9d2e8c05edcf3f016a8263fb95388194a7abba99be48597c",
+   "turnId": "01a00d56-6d99-78b0-86db-39cb7ba3492a"
+  },
+  "receivedAtUs": 8959206
+ },
+ {
+  "method": "item/agentMessage/delta",
+  "params": {
+   "delta": "xxxxxxxxxxxxxx",
+   "itemId": "msg_0c9d2e8c05edcf3f016a8263fb95388194a7abba99be48597c",
+   "turnId": "01a00d56-6d99-78b0-86db-39cb7ba3492a"
+  },
+  "receivedAtUs": 8960943
+ },
+ {
+  "method": "item/agentMessage/delta",
+  "params": {
+   "delta": "x",
+   "itemId": "msg_0c9d2e8c05edcf3f016a8263fb95388194a7abba99be48597c",
+   "turnId": "01a00d56-6d99-78b0-86db-39cb7ba3492a"
+  },
+  "receivedAtUs": 8975869
+ },
+ {
+  "method": "item/agentMessage/delta",
+  "params": {
+   "delta": "xxxxxxx",
+   "itemId": "msg_0c9d2e8c05edcf3f016a8263fb95388194a7abba99be48597c",
+   "turnId": "01a00d56-6d99-78b0-86db-39cb7ba3492a"
+  },
+  "receivedAtUs": 8985808
+ },
+ {
+  "method": "item/agentMessage/delta",
+  "params": {
+   "delta": "xxxxxxxxxxx",
+   "itemId": "msg_0c9d2e8c05edcf3f016a8263fb95388194a7abba99be48597c",
+   "turnId": "01a00d56-6d99-78b0-86db-39cb7ba3492a"
+  },
+  "receivedAtUs": 9010741
+ },
+ {
+  "method": "item/agentMessage/delta",
+  "params": {
+   "delta": "x",
+   "itemId": "msg_0c9d2e8c05edcf3f016a8263fb95388194a7abba99be48597c",
+   "turnId": "01a00d56-6d99-78b0-86db-39cb7ba3492a"
+  },
+  "receivedAtUs": 9027003
+ },
+ {
+  "method": "item/agentMessage/delta",
+  "params": {
+   "delta": "xxxxx",
+   "itemId": "msg_0c9d2e8c05edcf3f016a8263fb95388194a7abba99be48597c",
+   "turnId": "01a00d56-6d99-78b0-86db-39cb7ba3492a"
+  },
+  "receivedAtUs": 9052343
+ },
+ {
+  "method": "item/agentMessage/delta",
+  "params": {
+   "delta": "xxxxxxx",
+   "itemId": "msg_0c9d2e8c05edcf3f016a8263fb95388194a7abba99be48597c",
+   "turnId": "01a00d56-6d99-78b0-86db-39cb7ba3492a"
+  },
+  "receivedAtUs": 9072378
+ },
+ {
+  "method": "item/agentMessage/delta",
+  "params": {
+   "delta": "xxxx",
+   "itemId": "msg_0c9d2e8c05edcf3f016a8263fb95388194a7abba99be48597c",
+   "turnId": "01a00d56-6d99-78b0-86db-39cb7ba3492a"
+  },
+  "receivedAtUs": 9073902
+ },
+ {
+  "method": "item/agentMessage/delta",
+  "params": {
+   "delta": "xxxxxxxx",
+   "itemId": "msg_0c9d2e8c05edcf3f016a8263fb95388194a7abba99be48597c",
+   "turnId": "01a00d56-6d99-78b0-86db-39cb7ba3492a"
+  },
+  "receivedAtUs": 9097038
+ },
+ {
+  "method": "item/agentMessage/delta",
+  "params": {
+   "delta": "xxxxxxxx",
+   "itemId": "msg_0c9d2e8c05edcf3f016a8263fb95388194a7abba99be48597c",
+   "turnId": "01a00d56-6d99-78b0-86db-39cb7ba3492a"
+  },
+  "receivedAtUs": 9119294
+ },
+ {
+  "method": "item/agentMessage/delta",
+  "params": {
+   "delta": "xxxxxxxxx",
+   "itemId": "msg_0c9d2e8c05edcf3f016a8263fb95388194a7abba99be48597c",
+   "turnId": "01a00d56-6d99-78b0-86db-39cb7ba3492a"
+  },
+  "receivedAtUs": 9127521
+ },
+ {
+  "method": "item/agentMessage/delta",
+  "params": {
+   "delta": "xxxxx",
+   "itemId": "msg_0c9d2e8c05edcf3f016a8263fb95388194a7abba99be48597c",
+   "turnId": "01a00d56-6d99-78b0-86db-39cb7ba3492a"
+  },
+  "receivedAtUs": 9146149
+ },
+ {
+  "method": "item/agentMessage/delta",
+  "params": {
+   "delta": "xxx",
+   "itemId": "msg_0c9d2e8c05edcf3f016a8263fb95388194a7abba99be48597c",
+   "turnId": "01a00d56-6d99-78b0-86db-39cb7ba3492a"
+  },
+  "receivedAtUs": 9166623
+ },
+ {
+  "method": "item/agentMessage/delta",
+  "params": {
+   "delta": "xxxxxxxxx",
+   "itemId": "msg_0c9d2e8c05edcf3f016a8263fb95388194a7abba99be48597c",
+   "turnId": "01a00d56-6d99-78b0-86db-39cb7ba3492a"
+  },
+  "receivedAtUs": 9193948
+ },
+ {
+  "method": "item/agentMessage/delta",
+  "params": {
+   "delta": "xxxxxx",
+   "itemId": "msg_0c9d2e8c05edcf3f016a8263fb95388194a7abba99be48597c",
+   "turnId": "01a00d56-6d99-78b0-86db-39cb7ba3492a"
+  },
+  "receivedAtUs": 9211371
+ },
+ {
+  "method": "item/agentMessage/delta",
+  "params": {
+   "delta": "xxx",
+   "itemId": "msg_0c9d2e8c05edcf3f016a8263fb95388194a7abba99be48597c",
+   "turnId": "01a00d56-6d99-78b0-86db-39cb7ba3492a"
+  },
+  "receivedAtUs": 9227207
+ },
+ {
+  "method": "item/agentMessage/delta",
+  "params": {
+   "delta": "xxxxxxxxxxxxx",
+   "itemId": "msg_0c9d2e8c05edcf3f016a8263fb95388194a7abba99be48597c",
+   "turnId": "01a00d56-6d99-78b0-86db-39cb7ba3492a"
+  },
+  "receivedAtUs": 9244863
+ },
+ {
+  "method": "item/agentMessage/delta",
+  "params": {
+   "delta": "xxxxxxxxx",
+   "itemId": "msg_0c9d2e8c05edcf3f016a8263fb95388194a7abba99be48597c",
+   "turnId": "01a00d56-6d99-78b0-86db-39cb7ba3492a"
+  },
+  "receivedAtUs": 9261040
+ },
+ {
+  "method": "item/agentMessage/delta",
+  "params": {
+   "delta": "xxxxxx",
+   "itemId": "msg_0c9d2e8c05edcf3f016a8263fb95388194a7abba99be48597c",
+   "turnId": "01a00d56-6d99-78b0-86db-39cb7ba3492a"
+  },
+  "receivedAtUs": 9287428
+ },
+ {
+  "method": "item/agentMessage/delta",
+  "params": {
+   "delta": "x",
+   "itemId": "msg_0c9d2e8c05edcf3f016a8263fb95388194a7abba99be48597c",
+   "turnId": "01a00d56-6d99-78b0-86db-39cb7ba3492a"
+  },
+  "receivedAtUs": 9306203
+ },
+ {
+  "method": "item/agentMessage/delta",
+  "params": {
+   "delta": "xxxxxx",
+   "itemId": "msg_0c9d2e8c05edcf3f016a8263fb95388194a7abba99be48597c",
+   "turnId": "01a00d56-6d99-78b0-86db-39cb7ba3492a"
+  },
+  "receivedAtUs": 9321650
+ },
+ {
+  "method": "item/agentMessage/delta",
+  "params": {
+   "delta": "xxxxxxxxxx",
+   "itemId": "msg_0c9d2e8c05edcf3f016a8263fb95388194a7abba99be48597c",
+   "turnId": "01a00d56-6d99-78b0-86db-39cb7ba3492a"
+  },
+  "receivedAtUs": 9323617
+ },
+ {
+  "method": "item/agentMessage/delta",
+  "params": {
+   "delta": "xxxx",
+   "itemId": "msg_0c9d2e8c05edcf3f016a8263fb95388194a7abba99be48597c",
+   "turnId": "01a00d56-6d99-78b0-86db-39cb7ba3492a"
+  },
+  "receivedAtUs": 9351713
+ },
+ {
+  "method": "item/agentMessage/delta",
+  "params": {
+   "delta": "xxxxx",
+   "itemId": "msg_0c9d2e8c05edcf3f016a8263fb95388194a7abba99be48597c",
+   "turnId": "01a00d56-6d99-78b0-86db-39cb7ba3492a"
+  },
+  "receivedAtUs": 9367578
+ },
+ {
+  "method": "item/agentMessage/delta",
+  "params": {
+   "delta": "xxxxxx",
+   "itemId": "msg_0c9d2e8c05edcf3f016a8263fb95388194a7abba99be48597c",
+   "turnId": "01a00d56-6d99-78b0-86db-39cb7ba3492a"
+  },
+  "receivedAtUs": 9387374
+ },
+ {
+  "method": "item/agentMessage/delta",
+  "params": {
+   "delta": "xx",
+   "itemId": "msg_0c9d2e8c05edcf3f016a8263fb95388194a7abba99be48597c",
+   "turnId": "01a00d56-6d99-78b0-86db-39cb7ba3492a"
+  },
+  "receivedAtUs": 9411038
+ },
+ {
+  "method": "item/agentMessage/delta",
+  "params": {
+   "delta": "x",
+   "itemId": "msg_0c9d2e8c05edcf3f016a8263fb95388194a7abba99be48597c",
+   "turnId": "01a00d56-6d99-78b0-86db-39cb7ba3492a"
+  },
+  "receivedAtUs": 9426071
+ },
+ {
+  "method": "item/agentMessage/delta",
+  "params": {
+   "delta": "xxxxxxxxx",
+   "itemId": "msg_0c9d2e8c05edcf3f016a8263fb95388194a7abba99be48597c",
+   "turnId": "01a00d56-6d99-78b0-86db-39cb7ba3492a"
+  },
+  "receivedAtUs": 9447602
+ },
+ {
+  "method": "item/agentMessage/delta",
+  "params": {
+   "delta": "x",
+   "itemId": "msg_0c9d2e8c05edcf3f016a8263fb95388194a7abba99be48597c",
+   "turnId": "01a00d56-6d99-78b0-86db-39cb7ba3492a"
+  },
+  "receivedAtUs": 9449136
+ },
+ {
+  "method": "item/completed",
+  "params": {
+   "completedAtMs": 1786930173732,
+   "item": {
+    "id": "msg_0c9d2e8c05edcf3f016a8263fb95388194a7abba99be48597c",
+    "phase": "commentary",
+    "type": "agentMessage"
+   },
+   "turnId": "01a00d56-6d99-78b0-86db-39cb7ba3492a"
+  },
+  "receivedAtUs": 10601604
+ },
+ {
+  "method": "item/started",
+  "params": {
+   "item": {
+    "id": "exec-8728b40b-d7d1-4764-a090-4aee376b32ad",
+    "status": "inProgress",
+    "type": "commandExecution"
+   },
+   "startedAtMs": 1786930178868,
+   "turnId": "01a00d56-6d99-78b0-86db-39cb7ba3492a"
+  },
+  "receivedAtUs": 15738636
+ },
+ {
+  "method": "item/completed",
+  "params": {
+   "completedAtMs": 1786930178869,
+   "item": {
+    "id": "exec-8728b40b-d7d1-4764-a090-4aee376b32ad",
+    "status": "completed",
+    "type": "commandExecution"
+   },
+   "turnId": "01a00d56-6d99-78b0-86db-39cb7ba3492a"
+  },
+  "receivedAtUs": 15740838
+ },
+ {
+  "method": "item/started",
+  "params": {
+   "item": {
+    "id": "exec-118ef83e-3dec-49ef-857e-b449f8be53e7",
+    "status": "inProgress",
+    "type": "commandExecution"
+   },
+   "startedAtMs": 1786930178892,
+   "turnId": "01a00d56-6d99-78b0-86db-39cb7ba3492a"
+  },
+  "receivedAtUs": 15761983
+ },
+ {
+  "method": "item/completed",
+  "params": {
+   "completedAtMs": 1786930178892,
+   "item": {
+    "id": "exec-118ef83e-3dec-49ef-857e-b449f8be53e7",
+    "status": "completed",
+    "type": "commandExecution"
+   },
+   "turnId": "01a00d56-6d99-78b0-86db-39cb7ba3492a"
+  },
+  "receivedAtUs": 15763700
+ },
+ {
+  "method": "thread/tokenUsage/updated",
+  "params": {
+   "tokenUsage": {
+    "last": {
+     "cacheWriteInputTokens": 0,
+     "cachedInputTokens": 0,
+     "inputTokens": 11051,
+     "outputTokens": 438,
+     "reasoningOutputTokens": 160,
+     "totalTokens": 11489
+    },
+    "modelContextWindow": 258400,
+    "total": {
+     "cacheWriteInputTokens": 0,
+     "cachedInputTokens": 0,
+     "inputTokens": 11051,
+     "outputTokens": 438,
+     "reasoningOutputTokens": 160,
+     "totalTokens": 11489
+    }
+   },
+   "turnId": "01a00d56-6d99-78b0-86db-39cb7ba3492a"
+  },
+  "receivedAtUs": 15766260
+ },
+ {
+  "method": "item/started",
+  "params": {
+   "item": {
+    "id": "rs_029bb52926da9035016a826405b5bc81959e381349f11681d6",
+    "type": "reasoning"
+   },
+   "startedAtMs": 1786930181647,
+   "turnId": "01a00d56-6d99-78b0-86db-39cb7ba3492a"
+  },
+  "receivedAtUs": 18517029
+ },
+ {
+  "method": "item/completed",
+  "params": {
+   "completedAtMs": 1786930182229,
+   "item": {
+    "id": "rs_029bb52926da9035016a826405b5bc81959e381349f11681d6",
+    "type": "reasoning"
+   },
+   "turnId": "01a00d56-6d99-78b0-86db-39cb7ba3492a"
+  },
+  "receivedAtUs": 19098282
+ },
+ {
+  "method": "thread/tokenUsage/updated",
+  "params": {
+   "tokenUsage": {
+    "last": {
+     "cacheWriteInputTokens": 0,
+     "cachedInputTokens": 9984,
+     "inputTokens": 17077,
+     "outputTokens": 76,
+     "reasoningOutputTokens": 24,
+     "totalTokens": 17153
+    },
+    "modelContextWindow": 258400,
+    "total": {
+     "cacheWriteInputTokens": 0,
+     "cachedInputTokens": 9984,
+     "inputTokens": 28128,
+     "outputTokens": 514,
+     "reasoningOutputTokens": 184,
+     "totalTokens": 28642
+    }
+   },
+   "turnId": "01a00d56-6d99-78b0-86db-39cb7ba3492a"
+  },
+  "receivedAtUs": 20009007
+ },
+ {
+  "method": "item/started",
+  "params": {
+   "item": {
+    "id": "rs_0bbe0753d68521f8016a826408ecdc81979766b974a49bb5ac",
+    "type": "reasoning"
+   },
+   "startedAtMs": 1786930184913,
+   "turnId": "01a00d56-6d99-78b0-86db-39cb7ba3492a"
+  },
+  "receivedAtUs": 21782373
+ },
+ {
+  "method": "item/completed",
+  "params": {
+   "completedAtMs": 1786930185548,
+   "item": {
+    "id": "rs_0bbe0753d68521f8016a826408ecdc81979766b974a49bb5ac",
+    "type": "reasoning"
+   },
+   "turnId": "01a00d56-6d99-78b0-86db-39cb7ba3492a"
+  },
+  "receivedAtUs": 22417387
+ },
+ {
+  "method": "thread/tokenUsage/updated",
+  "params": {
+   "tokenUsage": {
+    "last": {
+     "cacheWriteInputTokens": 0,
+     "cachedInputTokens": 16128,
+     "inputTokens": 21047,
+     "outputTokens": 61,
+     "reasoningOutputTokens": 28,
+     "totalTokens": 21108
+    },
+    "modelContextWindow": 258400,
+    "total": {
+     "cacheWriteInputTokens": 0,
+     "cachedInputTokens": 26112,
+     "inputTokens": 49175,
+     "outputTokens": 575,
+     "reasoningOutputTokens": 212,
+     "totalTokens": 49750
+    }
+   },
+   "turnId": "01a00d56-6d99-78b0-86db-39cb7ba3492a"
+  },
+  "receivedAtUs": 23002240
+ },
+ {
+  "method": "item/started",
+  "params": {
+   "item": {
+    "id": "rs_06ed5c99ba5415a4016a82640b9b608194a25036240d92e865",
+    "type": "reasoning"
+   },
+   "startedAtMs": 1786930187786,
+   "turnId": "01a00d56-6d99-78b0-86db-39cb7ba3492a"
+  },
+  "receivedAtUs": 24656033
+ },
+ {
+  "method": "item/completed",
+  "params": {
+   "completedAtMs": 1786930189052,
+   "item": {
+    "id": "rs_06ed5c99ba5415a4016a82640b9b608194a25036240d92e865",
+    "type": "reasoning"
+   },
+   "turnId": "01a00d56-6d99-78b0-86db-39cb7ba3492a"
+  },
+  "receivedAtUs": 25922073
+ },
+ {
+  "method": "item/started",
+  "params": {
+   "item": {
+    "id": "exec-2940c722-af16-4c2d-aaea-5c9e3f7d9488",
+    "status": "inProgress",
+    "type": "mcpToolCall"
+   },
+   "startedAtMs": 1786930190620,
+   "turnId": "01a00d56-6d99-78b0-86db-39cb7ba3492a"
+  },
+  "receivedAtUs": 27490122
+ },
+ {
+  "method": "item/completed",
+  "params": {
+   "completedAtMs": 1786930190632,
+   "item": {
+    "id": "exec-2940c722-af16-4c2d-aaea-5c9e3f7d9488",
+    "status": "completed",
+    "type": "mcpToolCall"
+   },
+   "turnId": "01a00d56-6d99-78b0-86db-39cb7ba3492a"
+  },
+  "receivedAtUs": 27503464
+ },
+ {
+  "method": "item/started",
+  "params": {
+   "item": {
+    "id": "exec-1ee17eef-3f7b-4625-a935-fe6b15284e8f",
+    "status": "inProgress",
+    "type": "mcpToolCall"
+   },
+   "startedAtMs": 1786930190635,
+   "turnId": "01a00d56-6d99-78b0-86db-39cb7ba3492a"
+  },
+  "receivedAtUs": 27509451
+ },
+ {
+  "method": "item/completed",
+  "params": {
+   "completedAtMs": 1786930190660,
+   "item": {
+    "id": "exec-1ee17eef-3f7b-4625-a935-fe6b15284e8f",
+    "status": "completed",
+    "type": "mcpToolCall"
+   },
+   "turnId": "01a00d56-6d99-78b0-86db-39cb7ba3492a"
+  },
+  "receivedAtUs": 27539155
+ },
+ {
+  "method": "thread/tokenUsage/updated",
+  "params": {
+   "tokenUsage": {
+    "last": {
+     "cacheWriteInputTokens": 0,
+     "cachedInputTokens": 20224,
+     "inputTokens": 22287,
+     "outputTokens": 147,
+     "reasoningOutputTokens": 76,
+     "totalTokens": 22434
+    },
+    "modelContextWindow": 258400,
+    "total": {
+     "cacheWriteInputTokens": 0,
+     "cachedInputTokens": 46336,
+     "inputTokens": 71462,
+     "outputTokens": 722,
+     "reasoningOutputTokens": 288,
+     "totalTokens": 72184
+    }
+   },
+   "turnId": "01a00d56-6d99-78b0-86db-39cb7ba3492a"
+  },
+  "receivedAtUs": 27551857
+ },
+ {
+  "method": "item/started",
+  "params": {
+   "item": {
+    "id": "rs_07d8d9f2955e61f3016a82641020d48195abb008ce7d6fb444",
+    "type": "reasoning"
+   },
+   "startedAtMs": 1786930192068,
+   "turnId": "01a00d56-6d99-78b0-86db-39cb7ba3492a"
+  },
+  "receivedAtUs": 28938032
+ },
+ {
+  "method": "item/completed",
+  "params": {
+   "completedAtMs": 1786930193399,
+   "item": {
+    "id": "rs_07d8d9f2955e61f3016a82641020d48195abb008ce7d6fb444",
+    "type": "reasoning"
+   },
+   "turnId": "01a00d56-6d99-78b0-86db-39cb7ba3492a"
+  },
+  "receivedAtUs": 30268862
+ },
+ {
+  "method": "item/started",
+  "params": {
+   "item": {
+    "id": "exec-b7b3fe97-eb7b-4882-9b44-eecb3e933d1a",
+    "status": "inProgress",
+    "type": "mcpToolCall"
+   },
+   "startedAtMs": 1786930196759,
+   "turnId": "01a00d56-6d99-78b0-86db-39cb7ba3492a"
+  },
+  "receivedAtUs": 33628786
+ },
+ {
+  "method": "item/completed",
+  "params": {
+   "completedAtMs": 1786930196786,
+   "item": {
+    "id": "exec-b7b3fe97-eb7b-4882-9b44-eecb3e933d1a",
+    "status": "completed",
+    "type": "mcpToolCall"
+   },
+   "turnId": "01a00d56-6d99-78b0-86db-39cb7ba3492a"
+  },
+  "receivedAtUs": 33665715
+ },
+ {
+  "method": "thread/tokenUsage/updated",
+  "params": {
+   "tokenUsage": {
+    "last": {
+     "cacheWriteInputTokens": 0,
+     "cachedInputTokens": 21248,
+     "inputTokens": 32261,
+     "outputTokens": 247,
+     "reasoningOutputTokens": 65,
+     "totalTokens": 32508
+    },
+    "modelContextWindow": 258400,
+    "total": {
+     "cacheWriteInputTokens": 0,
+     "cachedInputTokens": 67584,
+     "inputTokens": 103723,
+     "outputTokens": 969,
+     "reasoningOutputTokens": 353,
+     "totalTokens": 104692
+    }
+   },
+   "turnId": "01a00d56-6d99-78b0-86db-39cb7ba3492a"
+  },
+  "receivedAtUs": 33677761
+ },
+ {
+  "method": "item/started",
+  "params": {
+   "item": {
+    "id": "rs_089aa151fc55086f016a8264163a4c8195b6cc09d0fa6689a9",
+    "type": "reasoning"
+   },
+   "startedAtMs": 1786930198184,
+   "turnId": "01a00d56-6d99-78b0-86db-39cb7ba3492a"
+  },
+  "receivedAtUs": 35053981
+ },
+ {
+  "method": "item/completed",
+  "params": {
+   "completedAtMs": 1786930199134,
+   "item": {
+    "id": "rs_089aa151fc55086f016a8264163a4c8195b6cc09d0fa6689a9",
+    "type": "reasoning"
+   },
+   "turnId": "01a00d56-6d99-78b0-86db-39cb7ba3492a"
+  },
+  "receivedAtUs": 36003952
+ },
+ {
+  "method": "item/started",
+  "params": {
+   "item": {
+    "id": "exec-1583d268-5ac7-4e06-94a8-c09ab7c4015a",
+    "status": "inProgress",
+    "type": "mcpToolCall"
+   },
+   "startedAtMs": 1786930201456,
+   "turnId": "01a00d56-6d99-78b0-86db-39cb7ba3492a"
+  },
+  "receivedAtUs": 38325522
+ },
+ {
+  "method": "item/completed",
+  "params": {
+   "completedAtMs": 1786930201465,
+   "item": {
+    "id": "exec-1583d268-5ac7-4e06-94a8-c09ab7c4015a",
+    "status": "completed",
+    "type": "mcpToolCall"
+   },
+   "turnId": "01a00d56-6d99-78b0-86db-39cb7ba3492a"
+  },
+  "receivedAtUs": 38336920
+ },
+ {
+  "method": "thread/tokenUsage/updated",
+  "params": {
+   "tokenUsage": {
+    "last": {
+     "cacheWriteInputTokens": 0,
+     "cachedInputTokens": 31488,
+     "inputTokens": 32866,
+     "outputTokens": 176,
+     "reasoningOutputTokens": 45,
+     "totalTokens": 33042
+    },
+    "modelContextWindow": 258400,
+    "total": {
+     "cacheWriteInputTokens": 0,
+     "cachedInputTokens": 99072,
+     "inputTokens": 136589,
+     "outputTokens": 1145,
+     "reasoningOutputTokens": 398,
+     "totalTokens": 137734
+    }
+   },
+   "turnId": "01a00d56-6d99-78b0-86db-39cb7ba3492a"
+  },
+  "receivedAtUs": 38341104
+ },
+ {
+  "method": "item/started",
+  "params": {
+   "item": {
+    "id": "rs_05bd51ae0ec614d8016a82641afa688196ae9c8a32b0befd74",
+    "type": "reasoning"
+   },
+   "startedAtMs": 1786930202947,
+   "turnId": "01a00d56-6d99-78b0-86db-39cb7ba3492a"
+  },
+  "receivedAtUs": 39816802
+ },
+ {
+  "method": "item/completed",
+  "params": {
+   "completedAtMs": 1786930203851,
+   "item": {
+    "id": "rs_05bd51ae0ec614d8016a82641afa688196ae9c8a32b0befd74",
+    "type": "reasoning"
+   },
+   "turnId": "01a00d56-6d99-78b0-86db-39cb7ba3492a"
+  },
+  "receivedAtUs": 40720641
+ },
+ {
+  "method": "item/started",
+  "params": {
+   "item": {
+    "id": "exec-0933e3e1-39c0-480a-a679-3cf6fc8d3c79",
+    "status": "inProgress",
+    "type": "mcpToolCall"
+   },
+   "startedAtMs": 1786930206135,
+   "turnId": "01a00d56-6d99-78b0-86db-39cb7ba3492a"
+  },
+  "receivedAtUs": 43004327
+ },
+ {
+  "method": "item/completed",
+  "params": {
+   "completedAtMs": 1786930206161,
+   "item": {
+    "id": "exec-0933e3e1-39c0-480a-a679-3cf6fc8d3c79",
+    "status": "completed",
+    "type": "mcpToolCall"
+   },
+   "turnId": "01a00d56-6d99-78b0-86db-39cb7ba3492a"
+  },
+  "receivedAtUs": 43040468
+ },
+ {
+  "method": "thread/tokenUsage/updated",
+  "params": {
+   "tokenUsage": {
+    "last": {
+     "cacheWriteInputTokens": 0,
+     "cachedInputTokens": 32512,
+     "inputTokens": 39413,
+     "outputTokens": 175,
+     "reasoningOutputTokens": 37,
+     "totalTokens": 39588
+    },
+    "modelContextWindow": 258400,
+    "total": {
+     "cacheWriteInputTokens": 0,
+     "cachedInputTokens": 131584,
+     "inputTokens": 176002,
+     "outputTokens": 1320,
+     "reasoningOutputTokens": 435,
+     "totalTokens": 177322
+    }
+   },
+   "turnId": "01a00d56-6d99-78b0-86db-39cb7ba3492a"
+  },
+  "receivedAtUs": 43053500
+ },
+ {
+  "method": "item/started",
+  "params": {
+   "item": {
+    "id": "rs_0dbc188c2fe713bd016a82641fbb2887d1b0d0f48d2b188316",
+    "type": "reasoning"
+   },
+   "startedAtMs": 1786930207682,
+   "turnId": "01a00d56-6d99-78b0-86db-39cb7ba3492a"
+  },
+  "receivedAtUs": 44551962
+ },
+ {
+  "method": "item/completed",
+  "params": {
+   "completedAtMs": 1786930209458,
+   "item": {
+    "id": "rs_0dbc188c2fe713bd016a82641fbb2887d1b0d0f48d2b188316",
+    "type": "reasoning"
+   },
+   "turnId": "01a00d56-6d99-78b0-86db-39cb7ba3492a"
+  },
+  "receivedAtUs": 46328133
+ },
+ {
+  "method": "item/started",
+  "params": {
+   "item": {
+    "id": "exec-decfab63-d51f-4faa-9b89-41a9417da0b9",
+    "status": "inProgress",
+    "type": "mcpToolCall"
+   },
+   "startedAtMs": 1786930210491,
+   "turnId": "01a00d56-6d99-78b0-86db-39cb7ba3492a"
+  },
+  "receivedAtUs": 47361208
+ },
+ {
+  "method": "item/completed",
+  "params": {
+   "completedAtMs": 1786930210495,
+   "item": {
+    "id": "exec-decfab63-d51f-4faa-9b89-41a9417da0b9",
+    "status": "failed",
+    "type": "mcpToolCall"
+   },
+   "turnId": "01a00d56-6d99-78b0-86db-39cb7ba3492a"
+  },
+  "receivedAtUs": 47365544
+ },
+ {
+  "method": "thread/tokenUsage/updated",
+  "params": {
+   "tokenUsage": {
+    "last": {
+     "cacheWriteInputTokens": 0,
+     "cachedInputTokens": 38656,
+     "inputTokens": 40237,
+     "outputTokens": 149,
+     "reasoningOutputTokens": 90,
+     "totalTokens": 40386
+    },
+    "modelContextWindow": 258400,
+    "total": {
+     "cacheWriteInputTokens": 0,
+     "cachedInputTokens": 170240,
+     "inputTokens": 216239,
+     "outputTokens": 1469,
+     "reasoningOutputTokens": 525,
+     "totalTokens": 217708
+    }
+   },
+   "turnId": "01a00d56-6d99-78b0-86db-39cb7ba3492a"
+  },
+  "receivedAtUs": 47385169
+ },
+ {
+  "method": "item/started",
+  "params": {
+   "item": {
+    "id": "rs_0e9e38988e1faa16016a826424ab1481979c76e477efe4c857",
+    "type": "reasoning"
+   },
+   "startedAtMs": 1786930212668,
+   "turnId": "01a00d56-6d99-78b0-86db-39cb7ba3492a"
+  },
+  "receivedAtUs": 49537379
+ },
+ {
+  "method": "item/completed",
+  "params": {
+   "completedAtMs": 1786930214418,
+   "item": {
+    "id": "rs_0e9e38988e1faa16016a826424ab1481979c76e477efe4c857",
+    "type": "reasoning"
+   },
+   "turnId": "01a00d56-6d99-78b0-86db-39cb7ba3492a"
+  },
+  "receivedAtUs": 51287699
+ },
+ {
+  "method": "thread/tokenUsage/updated",
+  "params": {
+   "tokenUsage": {
+    "last": {
+     "cacheWriteInputTokens": 0,
+     "cachedInputTokens": 39680,
+     "inputTokens": 40446,
+     "outputTokens": 143,
+     "reasoningOutputTokens": 92,
+     "totalTokens": 40589
+    },
+    "modelContextWindow": 258400,
+    "total": {
+     "cacheWriteInputTokens": 0,
+     "cachedInputTokens": 209920,
+     "inputTokens": 256685,
+     "outputTokens": 1612,
+     "reasoningOutputTokens": 617,
+     "totalTokens": 258297
+    }
+   },
+   "turnId": "01a00d56-6d99-78b0-86db-39cb7ba3492a"
+  },
+  "receivedAtUs": 52182518
+ },
+ {
+  "method": "item/started",
+  "params": {
+   "item": {
+    "id": "rs_02c3aa655b83b203016a826428faf08190927cc7554d7ac0d4",
+    "type": "reasoning"
+   },
+   "startedAtMs": 1786930217011,
+   "turnId": "01a00d56-6d99-78b0-86db-39cb7ba3492a"
+  },
+  "receivedAtUs": 53880731
+ },
+ {
+  "method": "item/completed",
+  "params": {
+   "completedAtMs": 1786930219333,
+   "item": {
+    "id": "rs_02c3aa655b83b203016a826428faf08190927cc7554d7ac0d4",
+    "type": "reasoning"
+   },
+   "turnId": "01a00d56-6d99-78b0-86db-39cb7ba3492a"
+  },
+  "receivedAtUs": 56204044
+ },
+ {
+  "method": "item/started",
+  "params": {
+   "item": {
+    "id": "msg_02c3aa655b83b203016a82642b63e881908adae01c74537412",
+    "phase": "commentary",
+    "type": "agentMessage"
+   },
+   "startedAtMs": 1786930219333,
+   "turnId": "01a00d56-6d99-78b0-86db-39cb7ba3492a"
+  },
+  "receivedAtUs": 56205614
+ },
+ {
+  "method": "item/agentMessage/delta",
+  "params": {
+   "delta": "xxx",
+   "itemId": "msg_02c3aa655b83b203016a82642b63e881908adae01c74537412",
+   "turnId": "01a00d56-6d99-78b0-86db-39cb7ba3492a"
+  },
+  "receivedAtUs": 56216307
+ },
+ {
+  "method": "item/agentMessage/delta",
+  "params": {
+   "delta": "xxxxxx",
+   "itemId": "msg_02c3aa655b83b203016a82642b63e881908adae01c74537412",
+   "turnId": "01a00d56-6d99-78b0-86db-39cb7ba3492a"
+  },
+  "receivedAtUs": 56217806
+ },
+ {
+  "method": "item/agentMessage/delta",
+  "params": {
+   "delta": "xxxxxxxxx",
+   "itemId": "msg_02c3aa655b83b203016a82642b63e881908adae01c74537412",
+   "turnId": "01a00d56-6d99-78b0-86db-39cb7ba3492a"
+  },
+  "receivedAtUs": 56239094
+ },
+ {
+  "method": "item/agentMessage/delta",
+  "params": {
+   "delta": "xxxxx",
+   "itemId": "msg_02c3aa655b83b203016a82642b63e881908adae01c74537412",
+   "turnId": "01a00d56-6d99-78b0-86db-39cb7ba3492a"
+  },
+  "receivedAtUs": 56246332
+ },
+ {
+  "method": "item/agentMessage/delta",
+  "params": {
+   "delta": "xxxxxx",
+   "itemId": "msg_02c3aa655b83b203016a82642b63e881908adae01c74537412",
+   "turnId": "01a00d56-6d99-78b0-86db-39cb7ba3492a"
+  },
+  "receivedAtUs": 56266747
+ },
+ {
+  "method": "item/agentMessage/delta",
+  "params": {
+   "delta": "xx",
+   "itemId": "msg_02c3aa655b83b203016a82642b63e881908adae01c74537412",
+   "turnId": "01a00d56-6d99-78b0-86db-39cb7ba3492a"
+  },
+  "receivedAtUs": 56285182
+ },
+ {
+  "method": "item/agentMessage/delta",
+  "params": {
+   "delta": "xxxxxx",
+   "itemId": "msg_02c3aa655b83b203016a82642b63e881908adae01c74537412",
+   "turnId": "01a00d56-6d99-78b0-86db-39cb7ba3492a"
+  },
+  "receivedAtUs": 56306468
+ },
+ {
+  "method": "item/agentMessage/delta",
+  "params": {
+   "delta": "xx",
+   "itemId": "msg_02c3aa655b83b203016a82642b63e881908adae01c74537412",
+   "turnId": "01a00d56-6d99-78b0-86db-39cb7ba3492a"
+  },
+  "receivedAtUs": 56325986
+ },
+ {
+  "method": "item/agentMessage/delta",
+  "params": {
+   "delta": "xxxxx",
+   "itemId": "msg_02c3aa655b83b203016a82642b63e881908adae01c74537412",
+   "turnId": "01a00d56-6d99-78b0-86db-39cb7ba3492a"
+  },
+  "receivedAtUs": 56346912
+ },
+ {
+  "method": "item/agentMessage/delta",
+  "params": {
+   "delta": "xxxxx",
+   "itemId": "msg_02c3aa655b83b203016a82642b63e881908adae01c74537412",
+   "turnId": "01a00d56-6d99-78b0-86db-39cb7ba3492a"
+  },
+  "receivedAtUs": 56376106
+ },
+ {
+  "method": "item/agentMessage/delta",
+  "params": {
+   "delta": "xxxxxxx",
+   "itemId": "msg_02c3aa655b83b203016a82642b63e881908adae01c74537412",
+   "turnId": "01a00d56-6d99-78b0-86db-39cb7ba3492a"
+  },
+  "receivedAtUs": 56388488
+ },
+ {
+  "method": "item/agentMessage/delta",
+  "params": {
+   "delta": "xxxxxx",
+   "itemId": "msg_02c3aa655b83b203016a82642b63e881908adae01c74537412",
+   "turnId": "01a00d56-6d99-78b0-86db-39cb7ba3492a"
+  },
+  "receivedAtUs": 56406675
+ },
+ {
+  "method": "item/agentMessage/delta",
+  "params": {
+   "delta": "x",
+   "itemId": "msg_02c3aa655b83b203016a82642b63e881908adae01c74537412",
+   "turnId": "01a00d56-6d99-78b0-86db-39cb7ba3492a"
+  },
+  "receivedAtUs": 56448469
+ },
+ {
+  "method": "item/agentMessage/delta",
+  "params": {
+   "delta": "xxxx",
+   "itemId": "msg_02c3aa655b83b203016a82642b63e881908adae01c74537412",
+   "turnId": "01a00d56-6d99-78b0-86db-39cb7ba3492a"
+  },
+  "receivedAtUs": 56461368
+ },
+ {
+  "method": "item/agentMessage/delta",
+  "params": {
+   "delta": "xxx",
+   "itemId": "msg_02c3aa655b83b203016a82642b63e881908adae01c74537412",
+   "turnId": "01a00d56-6d99-78b0-86db-39cb7ba3492a"
+  },
+  "receivedAtUs": 56466838
+ },
+ {
+  "method": "item/agentMessage/delta",
+  "params": {
+   "delta": "xxxx",
+   "itemId": "msg_02c3aa655b83b203016a82642b63e881908adae01c74537412",
+   "turnId": "01a00d56-6d99-78b0-86db-39cb7ba3492a"
+  },
+  "receivedAtUs": 56496316
+ },
+ {
+  "method": "item/agentMessage/delta",
+  "params": {
+   "delta": "xxx",
+   "itemId": "msg_02c3aa655b83b203016a82642b63e881908adae01c74537412",
+   "turnId": "01a00d56-6d99-78b0-86db-39cb7ba3492a"
+  },
+  "receivedAtUs": 56528622
+ },
+ {
+  "method": "item/agentMessage/delta",
+  "params": {
+   "delta": "xxxxxxxxx",
+   "itemId": "msg_02c3aa655b83b203016a82642b63e881908adae01c74537412",
+   "turnId": "01a00d56-6d99-78b0-86db-39cb7ba3492a"
+  },
+  "receivedAtUs": 56530030
+ },
+ {
+  "method": "item/agentMessage/delta",
+  "params": {
+   "delta": "xxx",
+   "itemId": "msg_02c3aa655b83b203016a82642b63e881908adae01c74537412",
+   "turnId": "01a00d56-6d99-78b0-86db-39cb7ba3492a"
+  },
+  "receivedAtUs": 56538211
+ },
+ {
+  "method": "item/agentMessage/delta",
+  "params": {
+   "delta": "xxxxxxxxxxx",
+   "itemId": "msg_02c3aa655b83b203016a82642b63e881908adae01c74537412",
+   "turnId": "01a00d56-6d99-78b0-86db-39cb7ba3492a"
+  },
+  "receivedAtUs": 56540468
+ },
+ {
+  "method": "item/agentMessage/delta",
+  "params": {
+   "delta": "xxxxxxxxxxxxx",
+   "itemId": "msg_02c3aa655b83b203016a82642b63e881908adae01c74537412",
+   "turnId": "01a00d56-6d99-78b0-86db-39cb7ba3492a"
+  },
+  "receivedAtUs": 56568026
+ },
+ {
+  "method": "item/agentMessage/delta",
+  "params": {
+   "delta": "x",
+   "itemId": "msg_02c3aa655b83b203016a82642b63e881908adae01c74537412",
+   "turnId": "01a00d56-6d99-78b0-86db-39cb7ba3492a"
+  },
+  "receivedAtUs": 56585199
+ },
+ {
+  "method": "item/agentMessage/delta",
+  "params": {
+   "delta": "xxxx",
+   "itemId": "msg_02c3aa655b83b203016a82642b63e881908adae01c74537412",
+   "turnId": "01a00d56-6d99-78b0-86db-39cb7ba3492a"
+  },
+  "receivedAtUs": 56606723
+ },
+ {
+  "method": "item/agentMessage/delta",
+  "params": {
+   "delta": "xxxxxxxxx",
+   "itemId": "msg_02c3aa655b83b203016a82642b63e881908adae01c74537412",
+   "turnId": "01a00d56-6d99-78b0-86db-39cb7ba3492a"
+  },
+  "receivedAtUs": 56629748
+ },
+ {
+  "method": "item/agentMessage/delta",
+  "params": {
+   "delta": "xxxxxx",
+   "itemId": "msg_02c3aa655b83b203016a82642b63e881908adae01c74537412",
+   "turnId": "01a00d56-6d99-78b0-86db-39cb7ba3492a"
+  },
+  "receivedAtUs": 56756550
+ },
+ {
+  "method": "item/agentMessage/delta",
+  "params": {
+   "delta": "xxxxxx",
+   "itemId": "msg_02c3aa655b83b203016a82642b63e881908adae01c74537412",
+   "turnId": "01a00d56-6d99-78b0-86db-39cb7ba3492a"
+  },
+  "receivedAtUs": 56767283
+ },
+ {
+  "method": "item/agentMessage/delta",
+  "params": {
+   "delta": "xx",
+   "itemId": "msg_02c3aa655b83b203016a82642b63e881908adae01c74537412",
+   "turnId": "01a00d56-6d99-78b0-86db-39cb7ba3492a"
+  },
+  "receivedAtUs": 56790206
+ },
+ {
+  "method": "item/agentMessage/delta",
+  "params": {
+   "delta": "xxxxxxx",
+   "itemId": "msg_02c3aa655b83b203016a82642b63e881908adae01c74537412",
+   "turnId": "01a00d56-6d99-78b0-86db-39cb7ba3492a"
+  },
+  "receivedAtUs": 56841677
+ },
+ {
+  "method": "item/agentMessage/delta",
+  "params": {
+   "delta": "xxx",
+   "itemId": "msg_02c3aa655b83b203016a82642b63e881908adae01c74537412",
+   "turnId": "01a00d56-6d99-78b0-86db-39cb7ba3492a"
+  },
+  "receivedAtUs": 56846000
+ },
+ {
+  "method": "item/agentMessage/delta",
+  "params": {
+   "delta": "xxxxxxxxxx",
+   "itemId": "msg_02c3aa655b83b203016a82642b63e881908adae01c74537412",
+   "turnId": "01a00d56-6d99-78b0-86db-39cb7ba3492a"
+  },
+  "receivedAtUs": 56847635
+ },
+ {
+  "method": "item/agentMessage/delta",
+  "params": {
+   "delta": "xxxx",
+   "itemId": "msg_02c3aa655b83b203016a82642b63e881908adae01c74537412",
+   "turnId": "01a00d56-6d99-78b0-86db-39cb7ba3492a"
+  },
+  "receivedAtUs": 56876324
+ },
+ {
+  "method": "item/agentMessage/delta",
+  "params": {
+   "delta": "xxxxxxx",
+   "itemId": "msg_02c3aa655b83b203016a82642b63e881908adae01c74537412",
+   "turnId": "01a00d56-6d99-78b0-86db-39cb7ba3492a"
+  },
+  "receivedAtUs": 56878668
+ },
+ {
+  "method": "item/agentMessage/delta",
+  "params": {
+   "delta": "xxxx",
+   "itemId": "msg_02c3aa655b83b203016a82642b63e881908adae01c74537412",
+   "turnId": "01a00d56-6d99-78b0-86db-39cb7ba3492a"
+  },
+  "receivedAtUs": 56880790
+ },
+ {
+  "method": "item/agentMessage/delta",
+  "params": {
+   "delta": "xxxxx",
+   "itemId": "msg_02c3aa655b83b203016a82642b63e881908adae01c74537412",
+   "turnId": "01a00d56-6d99-78b0-86db-39cb7ba3492a"
+  },
+  "receivedAtUs": 56882351
+ },
+ {
+  "method": "item/agentMessage/delta",
+  "params": {
+   "delta": "xxxxxxx",
+   "itemId": "msg_02c3aa655b83b203016a82642b63e881908adae01c74537412",
+   "turnId": "01a00d56-6d99-78b0-86db-39cb7ba3492a"
+  },
+  "receivedAtUs": 56884037
+ },
+ {
+  "method": "item/agentMessage/delta",
+  "params": {
+   "delta": "xxxxx",
+   "itemId": "msg_02c3aa655b83b203016a82642b63e881908adae01c74537412",
+   "turnId": "01a00d56-6d99-78b0-86db-39cb7ba3492a"
+  },
+  "receivedAtUs": 56885623
+ },
+ {
+  "method": "item/agentMessage/delta",
+  "params": {
+   "delta": "xxxxxxxxx",
+   "itemId": "msg_02c3aa655b83b203016a82642b63e881908adae01c74537412",
+   "turnId": "01a00d56-6d99-78b0-86db-39cb7ba3492a"
+  },
+  "receivedAtUs": 56887077
+ },
+ {
+  "method": "item/agentMessage/delta",
+  "params": {
+   "delta": "x",
+   "itemId": "msg_02c3aa655b83b203016a82642b63e881908adae01c74537412",
+   "turnId": "01a00d56-6d99-78b0-86db-39cb7ba3492a"
+  },
+  "receivedAtUs": 56888488
+ },
+ {
+  "method": "item/agentMessage/delta",
+  "params": {
+   "delta": "xx",
+   "itemId": "msg_02c3aa655b83b203016a82642b63e881908adae01c74537412",
+   "turnId": "01a00d56-6d99-78b0-86db-39cb7ba3492a"
+  },
+  "receivedAtUs": 57046507
+ },
+ {
+  "method": "item/agentMessage/delta",
+  "params": {
+   "delta": "xx",
+   "itemId": "msg_02c3aa655b83b203016a82642b63e881908adae01c74537412",
+   "turnId": "01a00d56-6d99-78b0-86db-39cb7ba3492a"
+  },
+  "receivedAtUs": 57048512
+ },
+ {
+  "method": "item/agentMessage/delta",
+  "params": {
+   "delta": "xxxxxxxxx",
+   "itemId": "msg_02c3aa655b83b203016a82642b63e881908adae01c74537412",
+   "turnId": "01a00d56-6d99-78b0-86db-39cb7ba3492a"
+  },
+  "receivedAtUs": 57050439
+ },
+ {
+  "method": "item/agentMessage/delta",
+  "params": {
+   "delta": "xxxx",
+   "itemId": "msg_02c3aa655b83b203016a82642b63e881908adae01c74537412",
+   "turnId": "01a00d56-6d99-78b0-86db-39cb7ba3492a"
+  },
+  "receivedAtUs": 57056680
+ },
+ {
+  "method": "item/agentMessage/delta",
+  "params": {
+   "delta": "xxxxxxxxxx",
+   "itemId": "msg_02c3aa655b83b203016a82642b63e881908adae01c74537412",
+   "turnId": "01a00d56-6d99-78b0-86db-39cb7ba3492a"
+  },
+  "receivedAtUs": 57065916
+ },
+ {
+  "method": "item/agentMessage/delta",
+  "params": {
+   "delta": "xxxxxxxxx",
+   "itemId": "msg_02c3aa655b83b203016a82642b63e881908adae01c74537412",
+   "turnId": "01a00d56-6d99-78b0-86db-39cb7ba3492a"
+  },
+  "receivedAtUs": 57067478
+ },
+ {
+  "method": "item/agentMessage/delta",
+  "params": {
+   "delta": "xxxxx",
+   "itemId": "msg_02c3aa655b83b203016a82642b63e881908adae01c74537412",
+   "turnId": "01a00d56-6d99-78b0-86db-39cb7ba3492a"
+  },
+  "receivedAtUs": 57088594
+ },
+ {
+  "method": "item/agentMessage/delta",
+  "params": {
+   "delta": "xxxxxxxx",
+   "itemId": "msg_02c3aa655b83b203016a82642b63e881908adae01c74537412",
+   "turnId": "01a00d56-6d99-78b0-86db-39cb7ba3492a"
+  },
+  "receivedAtUs": 57090092
+ },
+ {
+  "method": "item/agentMessage/delta",
+  "params": {
+   "delta": "xxxxxxxx",
+   "itemId": "msg_02c3aa655b83b203016a82642b63e881908adae01c74537412",
+   "turnId": "01a00d56-6d99-78b0-86db-39cb7ba3492a"
+  },
+  "receivedAtUs": 57091635
+ },
+ {
+  "method": "item/agentMessage/delta",
+  "params": {
+   "delta": "xxxx",
+   "itemId": "msg_02c3aa655b83b203016a82642b63e881908adae01c74537412",
+   "turnId": "01a00d56-6d99-78b0-86db-39cb7ba3492a"
+  },
+  "receivedAtUs": 57093309
+ },
+ {
+  "method": "item/agentMessage/delta",
+  "params": {
+   "delta": "xxx",
+   "itemId": "msg_02c3aa655b83b203016a82642b63e881908adae01c74537412",
+   "turnId": "01a00d56-6d99-78b0-86db-39cb7ba3492a"
+  },
+  "receivedAtUs": 57095061
+ },
+ {
+  "method": "item/agentMessage/delta",
+  "params": {
+   "delta": "xx",
+   "itemId": "msg_02c3aa655b83b203016a82642b63e881908adae01c74537412",
+   "turnId": "01a00d56-6d99-78b0-86db-39cb7ba3492a"
+  },
+  "receivedAtUs": 57096507
+ },
+ {
+  "method": "item/agentMessage/delta",
+  "params": {
+   "delta": "xxxx",
+   "itemId": "msg_02c3aa655b83b203016a82642b63e881908adae01c74537412",
+   "turnId": "01a00d56-6d99-78b0-86db-39cb7ba3492a"
+  },
+  "receivedAtUs": 57122578
+ },
+ {
+  "method": "item/agentMessage/delta",
+  "params": {
+   "delta": "xx",
+   "itemId": "msg_02c3aa655b83b203016a82642b63e881908adae01c74537412",
+   "turnId": "01a00d56-6d99-78b0-86db-39cb7ba3492a"
+  },
+  "receivedAtUs": 57150516
+ },
+ {
+  "method": "item/agentMessage/delta",
+  "params": {
+   "delta": "xxxxxx",
+   "itemId": "msg_02c3aa655b83b203016a82642b63e881908adae01c74537412",
+   "turnId": "01a00d56-6d99-78b0-86db-39cb7ba3492a"
+  },
+  "receivedAtUs": 57156574
+ },
+ {
+  "method": "item/agentMessage/delta",
+  "params": {
+   "delta": "xx",
+   "itemId": "msg_02c3aa655b83b203016a82642b63e881908adae01c74537412",
+   "turnId": "01a00d56-6d99-78b0-86db-39cb7ba3492a"
+  },
+  "receivedAtUs": 57177792
+ },
+ {
+  "method": "item/agentMessage/delta",
+  "params": {
+   "delta": "xxxxxx",
+   "itemId": "msg_02c3aa655b83b203016a82642b63e881908adae01c74537412",
+   "turnId": "01a00d56-6d99-78b0-86db-39cb7ba3492a"
+  },
+  "receivedAtUs": 57184417
+ },
+ {
+  "method": "item/agentMessage/delta",
+  "params": {
+   "delta": "xxx",
+   "itemId": "msg_02c3aa655b83b203016a82642b63e881908adae01c74537412",
+   "turnId": "01a00d56-6d99-78b0-86db-39cb7ba3492a"
+  },
+  "receivedAtUs": 57204225
+ },
+ {
+  "method": "item/agentMessage/delta",
+  "params": {
+   "delta": "xxxxxxxxxxx",
+   "itemId": "msg_02c3aa655b83b203016a82642b63e881908adae01c74537412",
+   "turnId": "01a00d56-6d99-78b0-86db-39cb7ba3492a"
+  },
+  "receivedAtUs": 57218507
+ },
+ {
+  "method": "item/agentMessage/delta",
+  "params": {
+   "delta": "xx",
+   "itemId": "msg_02c3aa655b83b203016a82642b63e881908adae01c74537412",
+   "turnId": "01a00d56-6d99-78b0-86db-39cb7ba3492a"
+  },
+  "receivedAtUs": 57282061
+ },
+ {
+  "method": "item/agentMessage/delta",
+  "params": {
+   "delta": "xxxxxxxxxx",
+   "itemId": "msg_02c3aa655b83b203016a82642b63e881908adae01c74537412",
+   "turnId": "01a00d56-6d99-78b0-86db-39cb7ba3492a"
+  },
+  "receivedAtUs": 57283876
+ },
+ {
+  "method": "item/agentMessage/delta",
+  "params": {
+   "delta": "xxxxxxxx",
+   "itemId": "msg_02c3aa655b83b203016a82642b63e881908adae01c74537412",
+   "turnId": "01a00d56-6d99-78b0-86db-39cb7ba3492a"
+  },
+  "receivedAtUs": 57289728
+ },
+ {
+  "method": "item/agentMessage/delta",
+  "params": {
+   "delta": "x",
+   "itemId": "msg_02c3aa655b83b203016a82642b63e881908adae01c74537412",
+   "turnId": "01a00d56-6d99-78b0-86db-39cb7ba3492a"
+  },
+  "receivedAtUs": 57291528
+ },
+ {
+  "method": "item/completed",
+  "params": {
+   "completedAtMs": 1786930220650,
+   "item": {
+    "id": "msg_02c3aa655b83b203016a82642b63e881908adae01c74537412",
+    "phase": "commentary",
+    "type": "agentMessage"
+   },
+   "turnId": "01a00d56-6d99-78b0-86db-39cb7ba3492a"
+  },
+  "receivedAtUs": 58582823
+ },
+ {
+  "method": "item/started",
+  "params": {
+   "item": {
+    "id": "exec-ccb461bb-66e3-4bc4-bb60-1a6f69c7f906",
+    "status": "inProgress",
+    "type": "commandExecution"
+   },
+   "startedAtMs": 1786930222985,
+   "turnId": "01a00d56-6d99-78b0-86db-39cb7ba3492a"
+  },
+  "receivedAtUs": 59854925
+ },
+ {
+  "method": "item/completed",
+  "params": {
+   "completedAtMs": 1786930222985,
+   "item": {
+    "id": "exec-ccb461bb-66e3-4bc4-bb60-1a6f69c7f906",
+    "status": "completed",
+    "type": "commandExecution"
+   },
+   "turnId": "01a00d56-6d99-78b0-86db-39cb7ba3492a"
+  },
+  "receivedAtUs": 59856765
+ },
+ {
+  "method": "thread/tokenUsage/updated",
+  "params": {
+   "tokenUsage": {
+    "last": {
+     "cacheWriteInputTokens": 0,
+     "cachedInputTokens": 39680,
+     "inputTokens": 44445,
+     "outputTokens": 322,
+     "reasoningOutputTokens": 133,
+     "totalTokens": 44767
+    },
+    "modelContextWindow": 258400,
+    "total": {
+     "cacheWriteInputTokens": 0,
+     "cachedInputTokens": 249600,
+     "inputTokens": 301130,
+     "outputTokens": 1934,
+     "reasoningOutputTokens": 750,
+     "totalTokens": 303064
+    }
+   },
+   "turnId": "01a00d56-6d99-78b0-86db-39cb7ba3492a"
+  },
+  "receivedAtUs": 59868314
+ }
+]

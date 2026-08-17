@@ -1120,7 +1120,15 @@ export type McpContextGroup = {
 	enabledTools: { [key in string]: string[] },
 };
 
-export type MeasurementKind = "decode" | "observed_stream" | "end_to_end" | "provider_reported";
+export type MeasurementKind = "decode" |
+/**  A rate regressed from one output-text segment's own samples. */
+"observed_stream_segment" |
+/**
+ *  Turn-wide tokens over a gap-filtered denominator, recorded before
+ *  segment measurement existed. Kept readable, never treated as a
+ *  measurement: see migration 20.
+ */
+"legacy_observed_stream_estimate" | "end_to_end" | "provider_reported";
 
 export type MigrationApplyRequest = {
 	confirmationToken: string,

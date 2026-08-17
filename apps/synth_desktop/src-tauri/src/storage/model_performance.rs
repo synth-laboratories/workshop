@@ -18,7 +18,12 @@ use std::{collections::BTreeMap, sync::Arc};
 #[serde(rename_all = "snake_case")]
 pub enum MeasurementKind {
     Decode,
-    ObservedStream,
+    /// A rate regressed from one output-text segment's own samples.
+    ObservedStreamSegment,
+    /// Turn-wide tokens over a gap-filtered denominator, recorded before
+    /// segment measurement existed. Kept readable, never treated as a
+    /// measurement: see migration 20.
+    LegacyObservedStreamEstimate,
     EndToEnd,
     ProviderReported,
 }
@@ -27,7 +32,8 @@ impl MeasurementKind {
     pub(crate) fn as_str(self) -> &'static str {
         match self {
             Self::Decode => "decode",
-            Self::ObservedStream => "observed_stream",
+            Self::ObservedStreamSegment => "observed_stream_segment",
+            Self::LegacyObservedStreamEstimate => "legacy_observed_stream_estimate",
             Self::EndToEnd => "end_to_end",
             Self::ProviderReported => "provider_reported",
         }
@@ -35,9 +41,14 @@ impl MeasurementKind {
     fn parse(value: &str) -> Self {
         match value {
             "decode" => Self::Decode,
-            "end_to_end" => Self::EndToEnd,
+            "observed_stream_segment" => Self::ObservedStreamSegment,
             "provider_reported" => Self::ProviderReported,
-            _ => Self::ObservedStream,
+            // `observed_stream` is the pre-migration-20 name for the turn-wide
+            // estimate. A row still carrying it has not been reinterpreted.
+            "observed_stream" | "legacy_observed_stream_estimate" => {
+                Self::LegacyObservedStreamEstimate
+            }
+            _ => Self::EndToEnd,
         }
     }
 }
@@ -206,7 +217,7 @@ mod tests {
             session_id: None,
             run_id: None,
             request_id: request.into(),
-            measurement_kind: MeasurementKind::ObservedStream,
+            measurement_kind: MeasurementKind::ObservedStreamSegment,
             status: "completed".into(),
             started_at_ms: 1000,
             first_output_at_ms: Some(1100),

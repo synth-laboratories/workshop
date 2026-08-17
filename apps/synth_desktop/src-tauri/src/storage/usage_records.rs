@@ -559,7 +559,7 @@ mod tests {
             session_id: None,
             run_id: None,
             request_id: request.into(),
-            measurement_kind: MeasurementKind::ObservedStream,
+            measurement_kind: MeasurementKind::ObservedStreamSegment,
             status: "completed".into(),
             started_at_ms: 1_000,
             first_output_at_ms: Some(1_200),
@@ -828,7 +828,11 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(
-            eastern.days.iter().map(|d| d.day.as_str()).collect::<Vec<_>>(),
+            eastern
+                .days
+                .iter()
+                .map(|d| d.day.as_str())
+                .collect::<Vec<_>>(),
             vec!["2026-08-09"]
         );
 
@@ -837,7 +841,11 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(
-            berlin.days.iter().map(|d| d.day.as_str()).collect::<Vec<_>>(),
+            berlin
+                .days
+                .iter()
+                .map(|d| d.day.as_str())
+                .collect::<Vec<_>>(),
             vec!["2026-08-10"]
         );
     }
@@ -871,7 +879,11 @@ mod tests {
             summary
                 .days
                 .iter()
-                .map(|d| (d.day.as_str(), d.totals.provider.as_str(), d.totals.requests))
+                .map(|d| (
+                    d.day.as_str(),
+                    d.totals.provider.as_str(),
+                    d.totals.requests
+                ))
                 .collect::<Vec<_>>(),
             vec![
                 ("2026-08-10", "openrouter", 2),

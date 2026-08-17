@@ -19,6 +19,7 @@ use crate::session::approval::{ApprovalKind, ApprovalOrigin};
 use crate::session::SessionPersistence;
 use crate::storage::EventSource;
 
+use super::generation_speed::{monotonic_us, MEASUREMENT_EVENT};
 use super::home::persist_records;
 use super::proto::{
     default_approval_policy, select_approval_decision, AppServer, CodexResolver,
@@ -173,6 +174,11 @@ async fn read_stdout<R: tauri::Runtime>(
 ) {
     let mut lines = BufReader::new(stdout).lines();
     while let Ok(Some(line)) = lines.next_line().await {
+        // Stamped here, on the decoded frame, before parsing, redaction,
+        // persistence, IPC, or any renderer work. Generation speed is a claim
+        // about delivery, and every millisecond spent below this line would
+        // otherwise be charged to the model.
+        let received_at_us = monotonic_us();
         let Ok(message) = serde_json::from_str::<Value>(&line) else {
             continue;
         };
@@ -296,15 +302,28 @@ async fn read_stdout<R: tauri::Runtime>(
             .persistence
             .notify_codex_event(&app, session_id.clone(), method.clone(), params.clone())
             .await;
-        track_performance_event(
+        let measurements = track_performance_event(
             &persistence.persistence,
             &persistence.performance_trackers,
             &persistence.receipts,
             &session_id,
             &method,
             &params,
+            received_at_us,
         )
         .await;
+        // A finished segment goes onto the journal as its own event, so the
+        // transcript renders an authoritative backend measurement instead of
+        // recomputing a rate from deltas it saw after IPC and batching.
+        for measurement in &measurements {
+            let Ok(payload) = serde_json::to_value(measurement) else {
+                continue;
+            };
+            persistence
+                .persistence
+                .notify_codex_event(&app, session_id.clone(), MEASUREMENT_EVENT, payload)
+                .await;
+        }
         let terminal_method = if final_answer {
             "turn/completed"
         } else {
@@ -463,7 +482,10 @@ async fn read_stdout<R: tauri::Runtime>(
                     }),
                 )
                 .await;
-            finalize_performance_tracker(
+            // A segment cut off by the child's death is still evidence; publish
+            // it so the transcript can label it partial rather than silently
+            // showing nothing for an answer that was measurably arriving.
+            let measurements = finalize_performance_tracker(
                 &persistence.persistence,
                 &persistence.performance_trackers,
                 &persistence.receipts,
@@ -472,6 +494,15 @@ async fn read_stdout<R: tauri::Runtime>(
                 None,
             )
             .await;
+            for measurement in &measurements {
+                let Ok(payload) = serde_json::to_value(measurement) else {
+                    continue;
+                };
+                persistence
+                    .persistence
+                    .notify_codex_event(&app, session_id.clone(), MEASUREMENT_EVENT, payload)
+                    .await;
+            }
             if let Ok(Some(event)) = persistence
                 .persistence
                 .interrupt_active_run(&session_id, "app_server_exited")

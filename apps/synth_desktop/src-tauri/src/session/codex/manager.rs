@@ -564,6 +564,12 @@ impl CodexManager {
         self.performance_trackers.lock().await.insert(
             request.session_id.clone(),
             TurnPerformanceTracker {
+                segments: super::generation_speed::TurnSegmentTracker::new(
+                    request.session_id.clone(),
+                    pending_turn_id.clone(),
+                    Some(provider.clone()),
+                    Some(session.model.clone()),
+                ),
                 provider,
                 model_id: session.model.clone(),
                 turn_id: pending_turn_id.clone(),
@@ -571,7 +577,6 @@ impl CodexManager {
                 started_at_ms,
                 first_output_at_ms: None,
                 last_output_at_ms: None,
-                generation_active_ms: 0,
                 usage: TurnTokenUsage::default(),
             },
         );

@@ -257,7 +257,7 @@ window.synthModelPerformance = {
   summaries: async () => [{
     provider: "synth-cloud",
     modelId: "openrouter/poolside/laguna-s-2.1",
-    measurementKind: "observed_stream",
+    measurementKind: "observed_stream_segment",
     sampleCount: 1,
     tpsP50: 99999,
     tpsP95: 99999,
@@ -588,7 +588,7 @@ window.synthModelPerformance = {
   summaries: async () => [{
     provider: "openrouter",
     modelId: "poolside/laguna-s-2.1",
-    measurementKind: "observed_stream",
+    measurementKind: "observed_stream_segment",
     sampleCount: 1,
     tpsP50: 99999,
     tpsP95: 99999,
