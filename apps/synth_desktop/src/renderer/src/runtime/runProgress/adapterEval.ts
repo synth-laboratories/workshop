@@ -28,6 +28,8 @@ import type {
 import type { AdapterInput } from "./adapterShared";
 import {
 	baseProjection,
+	evidenceOf,
+	frozenWork,
 	lastDisruptionMs,
 	milestoneFromEvents,
 	rolloutCompletionTimes,
@@ -238,29 +240,42 @@ export function projectEval(input: AdapterInput, projected: ProjectedState): Run
 	const failed = base.status === "failed";
 	const tally = counts(state);
 	const { retried, lastRequeueMs } = retryEvidence(input.events);
-	const planned = state.plannedTrials > 0 ? state.plannedTrials : undefined;
-	const work: RunProgressWork = {
-		completed: tally.terminal,
-		active: tally.running,
-		queued: tally.queued,
-		...(tally.failed > 0 ? { failed: tally.failed } : {}),
-		...(retried > 0 ? { retried } : {}),
-		...(planned != null ? { total: planned } : {}),
-		unit: "trials"
-	};
+	const frozen = terminal ? frozenWork(input.run) : undefined;
+	// Terminal counts come from the sealed manifest when there is one, so a late
+	// poll cannot restate how the campaign ended.
+	const planned = frozen?.planned ?? (state.plannedTrials > 0 ? state.plannedTrials : undefined);
+	const settled = frozen != null
+		? (frozen.succeeded ?? 0) + (frozen.failed ?? 0)
+		: tally.terminal;
+	const failures = frozen?.failed ?? tally.failed;
+	const workEvidence = evidenceOf(input, state.trials.length + state.plannedTrials, "trial");
+	// The count is omitted, not zeroed, when nothing proves it. `0 / 10 trials`
+	// on a campaign that ran all ten is a worse answer than saying so.
+	const measured = workEvidence.state === "present";
+	const work: RunProgressWork = measured
+		? {
+				completed: settled,
+				active: tally.running,
+				queued: tally.queued,
+				...(failures > 0 ? { failed: failures } : {}),
+				...(retried > 0 ? { retried } : {}),
+				...(planned != null ? { total: planned } : {}),
+				unit: "trials"
+			}
+		: { unit: "trials" };
 
 	const phases = evalPhases(state, terminal, failed);
 	const active = phases.find((phase) => phase.status === "active");
-	const determinate = planned != null;
-	const fraction = determinate ? Math.min(1, tally.terminal / planned!) : undefined;
+	const determinate = measured && planned != null;
+	const fraction = determinate ? Math.min(1, settled / planned!) : undefined;
 
 	// A paused campaign holds the matrix; in-flight trials still seal, so the
 	// status is paused while `active` may stay non-zero. That is not a conflict.
 	const paused = state.paused || base.status === "paused";
-	const evidence: EtaEvidence = {
+	const etaEvidence: EtaEvidence = {
 		phaseId: active?.id ?? (terminal ? "select" : "screen"),
 		completions: rolloutCompletionTimes(input.events, EVAL_COMPLETION_TYPES),
-		remainingUnits: determinate ? Math.max(0, planned! - tally.terminal) : undefined,
+		remainingUnits: determinate ? Math.max(0, planned! - settled) : undefined,
 		unit: "trial",
 		disruptedAtMs: (() => {
 			const breaker = lastDisruptionMs(input.events, ["rollout.circuit_breaker.tripped"]);
@@ -273,8 +288,15 @@ export function projectEval(input: AdapterInput, projected: ProjectedState): Run
 	};
 
 	const warnings = [...base.warnings, ...failureWarnings(state)];
+	if (workEvidence.state !== "present" && workEvidence.reason) {
+		warnings.unshift(
+			workEvidence.diagnostic
+				? `${workEvidence.reason} · ${workEvidence.diagnostic}`
+				: workEvidence.reason
+		);
+	}
 	const rate = (() => {
-		const times = evidence.completions;
+		const times = etaEvidence.completions;
 		if (times.length < 2) return undefined;
 		const window = times.filter((time) => time >= times.at(-1)! - 60_000);
 		if (window.length < 2) return undefined;
@@ -310,6 +332,7 @@ export function projectEval(input: AdapterInput, projected: ProjectedState): Run
 		},
 		phases,
 		work,
+		evidence: workEvidence,
 		progress: {
 			...(fraction != null ? { fraction } : {}),
 			semantics: "campaign completion",
@@ -317,7 +340,7 @@ export function projectEval(input: AdapterInput, projected: ProjectedState): Run
 		},
 		timing: {
 			...base.timing,
-			...(terminal ? {} : { eta: estimatePhaseEta(evidence) })
+			...(terminal ? {} : { eta: estimatePhaseEta(etaEvidence) })
 		},
 		usage: usageProjection(projected, input.events, planned, "container"),
 		...(rate != null

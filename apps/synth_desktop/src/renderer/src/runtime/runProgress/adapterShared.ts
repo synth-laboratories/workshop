@@ -24,6 +24,7 @@ import {
 	normalizeRunStatus,
 	type RunKind,
 	type RunProgressCapabilities,
+	type RunProgressEvidence,
 	type RunProgressMilestone,
 	type RunProgressProjection,
 	type RunUsageProjection
@@ -195,6 +196,102 @@ function titleOf(run: RunRecord, kind: RunKind): string {
 	return `${workflow} · ${subject}`;
 }
 
+
+/**
+ * The sealed terminal manifest the run carries once it settles, if any.
+ *
+ * Terminal numbers come from here, frozen at the cursor the terminal event
+ * advanced to. A later poll may see more events — post-terminal enrichment,
+ * a reconcile — but it may not restate how the run ended.
+ */
+export function terminalManifest(run: RunRecord): Record<string, unknown> | undefined {
+	const manifest = (run.summary as Record<string, unknown> | undefined)?.terminalManifest;
+	if (!manifest || typeof manifest !== "object" || Array.isArray(manifest)) return undefined;
+	return manifest as Record<string, unknown>;
+}
+
+function manifestCount(
+	manifest: Record<string, unknown> | undefined,
+	key: string
+): number | undefined {
+	const work = manifest?.work;
+	if (!work || typeof work !== "object" || Array.isArray(work)) return undefined;
+	const value = (work as Record<string, unknown>)[key];
+	return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+/**
+ * Read the frozen work counts off a sealed manifest.
+ *
+ * Returns `undefined` for anything the manifest recorded as null: a run that
+ * never declared a plan has not declared a plan of zero.
+ */
+export function frozenWork(run: RunRecord): {
+	planned?: number;
+	succeeded?: number;
+	failed?: number;
+	skipped?: number;
+} | undefined {
+	const manifest = terminalManifest(run);
+	if (!manifest) return undefined;
+	const planned = manifestCount(manifest, "planned");
+	const succeeded = manifestCount(manifest, "succeeded");
+	const failed = manifestCount(manifest, "failed");
+	const skipped = manifestCount(manifest, "skipped");
+	if (planned == null && succeeded == null && failed == null && skipped == null) return undefined;
+	return {
+		...(planned != null ? { planned } : {}),
+		...(succeeded != null ? { succeeded } : {}),
+		...(failed != null ? { failed } : {}),
+		...(skipped != null ? { skipped } : {})
+	};
+}
+
+/**
+ * Classify what the projection is standing on.
+ *
+ * `observedUnits` is how many work items the durable events actually proved.
+ * When a run is terminal, has no manifest, and proved nothing, the honest
+ * answer is that its evidence is missing — not that it did no work.
+ */
+export function evidenceOf(
+	input: AdapterInput,
+	observedUnits: number,
+	unit: string
+): RunProgressEvidence {
+	const run = input.run;
+	const terminal = isTerminalRunStatus(run.status);
+	if (normalizeRunStatus(run.status) === "degraded") {
+		const degradation = (run.summary as Record<string, unknown> | undefined)
+			?.evidenceDegradation as Record<string, unknown> | undefined;
+		return {
+			state: "degraded",
+			reason: "the run finished but its evidence did not persist",
+			diagnostic: typeof degradation?.reason === "string"
+				? `${String(degradation.stage ?? "evidence")}: ${degradation.reason}`
+				: `no durable evidence at cursor ${input.cursorSeq}`
+		};
+	}
+	if (observedUnits > 0 || frozenWork(run) != null) return { state: "present" };
+	if (input.stale) {
+		return {
+			state: "unavailable",
+			reason: "event history is incomplete",
+			diagnostic: `read to cursor ${input.cursorSeq} of ${run.cursorSeq ?? "unknown"}`
+		};
+	}
+	if (terminal) {
+		return {
+			state: "unavailable",
+			reason: "this run published no progress evidence",
+			diagnostic: `no ${unit} events and no terminal manifest at cursor ${input.cursorSeq}`
+		};
+	}
+	// A live run that has not reported yet is not missing evidence; it has not
+	// produced any. Both render without counts, but only one is a fault.
+	return { state: "present" };
+}
+
 /**
  * The algorithm-neutral skeleton. An adapter overlays its own phase, work,
  * progress, and details on top; a run whose slice has not arrived yet renders
@@ -220,6 +317,7 @@ export function baseProjection(input: AdapterInput, kind: RunKind): RunProgressP
 		},
 		phases: [],
 		work: {},
+		evidence: evidenceOf(input, 0, "progress"),
 		timing: {
 			startedAt: input.run.startedAt ?? input.run.createdAt ?? undefined,
 			elapsedMs: elapsedMs(input.run, input.events, input.now),
