@@ -970,7 +970,7 @@ export function ChatTranscript({
 											{showAdvancedAtMessage ? <button type="button" className="message-advanced" onClick={onAdvanced} aria-label="Open advanced trace">Advanced</button> : null}
 										</div>
 										<div className="assistant-message-footer">
-											{turnTpsLabels.byMessageId[m.id] ? <small className="message-throughput" data-testid={`assistant-generation-tps-${m.id}`} title={turnTpsLabels.byMessageId[m.id]!.detail ?? undefined} aria-label={`${turnTpsLabels.byMessageId[m.id]!.generation}${turnTpsLabels.byMessageId[m.id]!.worked ? `. Elapsed work time ${turnTpsLabels.byMessageId[m.id]!.worked!.replace(/^Elapsed /, "")}` : ""}`}>{turnTpsLabels.byMessageId[m.id]!.generation}{turnTpsLabels.byMessageId[m.id]!.worked ? ` · ${turnTpsLabels.byMessageId[m.id]!.worked}` : ""}</small> : null}
+											{turnTpsLabels.byMessageId[m.id] ? <small className="message-throughput" data-testid={`assistant-generation-tps-${m.id}`} title={turnTpsLabels.byMessageId[m.id]!.detail ?? undefined} aria-label={`${turnTpsLabels.byMessageId[m.id]!.generation}${turnTpsLabels.byMessageId[m.id]!.worked ? `. Elapsed work time ${turnTpsLabels.byMessageId[m.id]!.worked!.replace(/^Worked /, "")}` : ""}`}>{turnTpsLabels.byMessageId[m.id]!.generation}{turnTpsLabels.byMessageId[m.id]!.worked ? ` · ${turnTpsLabels.byMessageId[m.id]!.worked}` : ""}</small> : null}
 											<div className="message-actions"><CopyMessageButton body={m.body} /></div>
 										</div>
 									</div>
