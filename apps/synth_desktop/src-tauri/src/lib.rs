@@ -16,6 +16,7 @@ pub mod intern_protocol_test_support {
 }
 mod codex;
 mod codex_oauth;
+mod computer_use;
 pub mod container_capabilities;
 pub mod container_stream;
 mod context;
