@@ -352,6 +352,41 @@ mod tests {
         assert!(breaker
             .terminal_error("visual_manage", &other_visual)
             .is_none());
+        for operation in ["get", "show", "bind"] {
+            let recovery = json!({
+                "operation": operation,
+                "arguments": {"visual_id": "vis_a"}
+            });
+            assert!(
+                breaker.terminal_error("visual_manage", &recovery).is_none(),
+                "{operation} on A must survive two capture failures on A"
+            );
+            let other = json!({
+                "operation": operation,
+                "arguments": {"visual_id": "vis_b"}
+            });
+            assert!(
+                breaker.terminal_error("visual_manage", &other).is_none(),
+                "{operation} on B must survive two capture failures on A"
+            );
+        }
+    }
+
+    #[test]
+    fn breaker_keys_revision_separately_from_identity() {
+        let capture_r1 = json!({
+            "operation": "capture_review",
+            "arguments": {"visual_id": "vis_a", "revision": 1}
+        });
+        let capture_r2 = json!({
+            "operation": "capture_review",
+            "arguments": {"visual_id": "vis_a", "revision": 2}
+        });
+        let mut breaker = ToolLoopBreaker::default();
+        breaker.record_failure("visual_manage", &capture_r1, "no rendered observation");
+        breaker.record_failure("visual_manage", &capture_r1, "no rendered observation");
+        assert!(breaker.terminal_error("visual_manage", &capture_r1).is_some());
+        assert!(breaker.terminal_error("visual_manage", &capture_r2).is_none());
     }
 
     #[test]
