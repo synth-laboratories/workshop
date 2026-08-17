@@ -190,18 +190,72 @@ fn sft_counts(events: &[OptimizerEventEnvelope]) -> WorkCounts {
 }
 
 /// Usage as the manifest records it: lanes preserved, unknowns preserved.
-fn usage_value(run: &OptimizerRunRecord) -> Value {
+fn usage_value(run: &OptimizerRunRecord, events: &[OptimizerEventEnvelope]) -> Value {
+    // The terminal manifest is answerable to the durable event log, just like
+    // work counts. Re-fold deltas at the frozen cursor instead of trusting the
+    // mutable run projection: concurrent terminal events can otherwise leave
+    // the cached total one rollout behind even though every event is present.
+    let deltas = events
+        .iter()
+        .filter_map(|event| event.usage_delta.as_ref())
+        .collect::<Vec<_>>();
+    let prompt_tokens = if deltas.is_empty() {
+        run.usage.prompt_tokens
+    } else {
+        deltas
+            .iter()
+            .filter_map(|usage| usage.get("prompt_tokens").and_then(Value::as_u64))
+            .sum()
+    };
+    let completion_tokens = if deltas.is_empty() {
+        run.usage.completion_tokens
+    } else {
+        deltas
+            .iter()
+            .filter_map(|usage| usage.get("completion_tokens").and_then(Value::as_u64))
+            .sum()
+    };
+    let rollouts = if deltas.is_empty() {
+        run.usage.rollouts
+    } else {
+        deltas
+            .iter()
+            .filter_map(|usage| usage.get("rollouts").and_then(Value::as_u64))
+            .sum()
+    };
+    let wall_time_ms = if deltas.is_empty() {
+        run.usage.wall_time_ms
+    } else {
+        deltas
+            .iter()
+            .filter_map(|usage| usage.get("wall_time_ms").and_then(Value::as_u64))
+            .sum()
+    };
+    let reported_costs = deltas
+        .iter()
+        .filter_map(|usage| {
+            usage
+                .get("cost_usd")
+                .or_else(|| usage.get("costUsd"))
+                .and_then(Value::as_f64)
+        })
+        .collect::<Vec<_>>();
+    let cost_usd = if reported_costs.is_empty() {
+        run.usage.cost_usd
+    } else {
+        Some(reported_costs.iter().sum::<f64>())
+    };
     let lanes = run
         .summary
         .get("usageLanes")
         .cloned()
         .unwrap_or(Value::Null);
     json!({
-        "costUsd": run.usage.cost_usd,
-        "promptTokens": run.usage.prompt_tokens,
-        "completionTokens": run.usage.completion_tokens,
-        "rollouts": run.usage.rollouts,
-        "wallTimeMs": run.usage.wall_time_ms,
+        "costUsd": cost_usd,
+        "promptTokens": prompt_tokens,
+        "completionTokens": completion_tokens,
+        "rollouts": rollouts,
+        "wallTimeMs": wall_time_ms,
         // Policy and grader/scorer telemetry are different money and different
         // tokens. Collapsing them into one total is how a grader-heavy recipe
         // starts reading as a cheap policy.
@@ -266,7 +320,7 @@ pub(super) fn derive(
         "terminalStatus": terminal_status,
         "terminalCursor": run.cursor_seq,
         "work": counts.to_value(),
-        "usage": usage_value(run),
+        "usage": usage_value(run, events),
         "selection": selection_value(run, events),
         "resultRefs": run
             .output_refs
@@ -450,6 +504,29 @@ mod tests {
         assert_eq!(counts.succeeded, Some(10));
         assert_eq!(counts.failed, Some(0));
         assert_eq!(counts.skipped, Some(0));
+    }
+
+    #[test]
+    fn terminal_usage_comes_from_the_frozen_event_log() {
+        let mut stale = run("eval");
+        stale.usage.rollouts = 3;
+        let events = (1..=4)
+            .map(|seq| {
+                let mut entry = event(seq, "eval.trial.terminal", Some(json!({ "valid": true })), None);
+                entry.usage_delta = json!({
+                    "rollouts": 1,
+                    "wall_time_ms": 25,
+                    "cost_usd": 0.0
+                })
+                .as_object()
+                .cloned();
+                entry
+            })
+            .collect::<Vec<_>>();
+        let manifest = derive(&stale, &events, "completed", None);
+        assert_eq!(manifest.pointer("/usage/rollouts"), Some(&json!(4)));
+        assert_eq!(manifest.pointer("/usage/wallTimeMs"), Some(&json!(100)));
+        assert_eq!(manifest.pointer("/usage/costUsd"), Some(&json!(0.0)));
     }
 
     /// The failure this whole file is a response to: no evidence must read as
