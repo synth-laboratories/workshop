@@ -2570,15 +2570,14 @@ async fn codex_oauth_disconnect(
     manager: State<'_, Arc<codex_oauth::Manager>>,
     codex: State<'_, Arc<CodexManager>>,
 ) -> Result<codex_oauth::Status, AppError> {
-    for session in codex.list().await {
-        if session.provider_name == codex_oauth::PROVIDER_ID {
-            codex
-                .close(&session.session_id)
-                .await
-                .map_err(AppError::from)?;
-        }
-    }
-    manager.disconnect().await.map_err(AppError::from)
+    // Credential deletion and child fencing share one lifecycle boundary with
+    // attachment starts. Deleting first prevents a new OAuth start, while the
+    // write guard prevents an already-authorized start from appearing after
+    // the fence snapshot. Conversations remain durable and can be rebound.
+    codex
+        .fence_provider_attachments_after(codex_oauth::PROVIDER_ID, manager.disconnect())
+        .await
+        .map_err(AppError::from)
 }
 
 #[tauri::command]
@@ -2861,9 +2860,13 @@ async fn workspace_scope_choose_and_attach(
     )
     .await
     .map_err(AppError::from)?;
-    // Scope is durable before the old process is fenced. Closing preserves
-    // the thread record; the next send resumes it with the new revision.
-    codex.close(&session_id).await.map_err(AppError::from)?;
+    // Scope is durable before the old process is fenced. Fencing preserves the
+    // conversation; the next send re-attaches at the new revision. Closing it
+    // durably would make the session terminal and refuse that next run.
+    codex
+        .fence_attachment(&session_id)
+        .await
+        .map_err(AppError::from)?;
     Ok(Some(scope))
 }
 
@@ -2888,7 +2891,10 @@ async fn workspace_scope_attach_recent(
     let scope = workspace_scope::attach_recent(core.storage().database(), &session_id, &path)
         .await
         .map_err(AppError::from)?;
-    codex.close(&session_id).await.map_err(AppError::from)?;
+    codex
+        .fence_attachment(&session_id)
+        .await
+        .map_err(AppError::from)?;
     Ok(scope)
 }
 
@@ -2903,7 +2909,10 @@ async fn workspace_scope_remove_attachment(
     let scope = workspace_scope::remove_attachment(core.storage().database(), &session_id, &path)
         .await
         .map_err(AppError::from)?;
-    codex.close(&session_id).await.map_err(AppError::from)?;
+    codex
+        .fence_attachment(&session_id)
+        .await
+        .map_err(AppError::from)?;
     Ok(scope)
 }
 
@@ -2971,7 +2980,7 @@ async fn workspace_scope_approve_request(
         .await
         .map_err(AppError::from)?;
     codex
-        .close(&scope.session_id)
+        .fence_attachment(&scope.session_id)
         .await
         .map_err(AppError::from)?;
     Ok(Some(scope))

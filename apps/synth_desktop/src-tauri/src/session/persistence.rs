@@ -260,13 +260,48 @@ impl SessionPersistence {
         };
         match core
             .sessions()
-            .transition(session_id, status, source, metadata)
+            .transition(session_id.clone(), status, source, metadata)
             .await
         {
             Ok(mutation) => Ok(Some(mutation)),
-            // Missing row or illegal edge: callers already updated the cache.
-            Err(_) => Ok(None),
+            // Callers have already updated their cache, so a rejected durable
+            // edge is not fatal here — but it must never be invisible. Silently
+            // dropping it is what let a session sit at `closed` while the app
+            // believed it was running, and surfaced later as an unrelated
+            // storage error on the next run.
+            Err(error) => {
+                self.diagnose_rejected_transition(&session_id, status, &error);
+                Ok(None)
+            }
         }
+    }
+
+    fn diagnose_rejected_transition(
+        &self,
+        session_id: &str,
+        status: SessionStatus,
+        error: &anyhow::Error,
+    ) {
+        let Some(service) = self.diagnostics() else {
+            return;
+        };
+        let mut input = crate::diagnostics::DiagnosticInput::new(
+            crate::diagnostics::Severity::Error,
+            "session",
+            "session.transition.rejected",
+            crate::diagnostics::codes::SESSION_TRANSITION_REJECTED,
+            format!("the durable session could not move to {}", status.as_str()),
+        )
+        .retryable(false);
+        input.correlation.session_id = Some(session_id.to_owned());
+        input.details.insert(
+            "requestedStatus".into(),
+            Value::String(status.as_str().to_owned()),
+        );
+        input
+            .details
+            .insert("cause".into(), Value::String(error.to_string()));
+        service.emit(input);
     }
 
     pub async fn set_title(
@@ -334,6 +369,21 @@ impl SessionPersistence {
         let Some(run_id) = session.active_run_id else {
             return Ok(None);
         };
+        // Reconciling an orphan is idempotent: between reading the session and
+        // acting, the run may have reached its own terminal state and cleared
+        // itself from the session. That authoritative outcome is the one to
+        // keep — interrupting it is neither possible nor wanted, and treating
+        // the refused edge as an error would reject the caller's new turn over
+        // a pointer that is already gone.
+        if core
+            .runs()
+            .get(run_id.clone())
+            .await?
+            .and_then(|run| RunStatus::parse(&run.status).ok())
+            .is_none_or(RunStatus::terminal)
+        {
+            return Ok(None);
+        }
         let mutation = core
             .runs()
             .transition(

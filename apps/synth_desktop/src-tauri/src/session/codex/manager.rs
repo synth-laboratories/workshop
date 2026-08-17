@@ -1,7 +1,9 @@
 //! CodexManager — SessionKind::Codex transport authority over app-server attachments.
 use anyhow::{anyhow, Context, Result};
 use serde_json::{json, Value};
-use std::{collections::HashMap, env, fs, path::PathBuf, sync::Arc, time::Duration};
+use std::{
+    collections::HashMap, env, fs, future::Future, path::PathBuf, sync::Arc, time::Duration,
+};
 use tauri::AppHandle;
 use tokio::sync::{oneshot, Mutex, RwLock};
 
@@ -20,17 +22,21 @@ use super::home::{
     session_info, validate_reasoning_effort, validate_start,
 };
 use super::proto::{
-    default_approval_policy, default_sandbox, is_detached_failure, CodexApprovalDecisionRequest,
-    CodexSessionInfo, CodexSessionRecord, CodexSessionRequest, CodexSessionStartRequest,
-    CodexSteerRequest, CodexThreadItemsRequest, CodexThreadReadRequest, CodexTurnFailure,
-    CodexTurnSendRequest, CodexTurnStartRequest, CompactWaiters, ProviderTransport, Session,
-    SessionDetached, COMPACT_PROMPT, DETACHED_MESSAGE,
+    default_approval_policy, default_sandbox, is_detached_failure, is_not_recorded_failure,
+    CodexApprovalDecisionRequest, CodexSessionInfo, CodexSessionRecord, CodexSessionRequest,
+    CodexSessionStartRequest, CodexSteerRequest, CodexThreadItemsRequest, CodexThreadReadRequest,
+    CodexTurnFailure, CodexTurnSendRequest, CodexTurnStartRequest, CompactWaiters,
+    ProviderTransport, RunNotPersisted, Session, SessionDetached, COMPACT_PROMPT, DETACHED_MESSAGE,
 };
 use super::telemetry::{PerformanceTrackers, TurnPerformanceTracker, TurnTokenUsage};
 
 pub struct CodexManager {
     pub(crate) sessions: Arc<RwLock<HashMap<String, Arc<Session>>>>,
     pub(crate) records: Arc<RwLock<HashMap<String, CodexSessionRecord>>>,
+    /// Starts may run concurrently, but account disconnect takes the write side
+    /// so credential deletion and attachment fencing are one atomic lifecycle
+    /// boundary. No child can attach in between the snapshot and the fence.
+    attachment_lifecycle: RwLock<()>,
     /// Serializes attach + turn/start per session so no caller can observe the
     /// window between "the attachment exists" and "the turn is running".
     pub(crate) turn_locks: Mutex<HashMap<String, Arc<Mutex<()>>>>,
@@ -39,9 +45,10 @@ pub struct CodexManager {
     /// UI source label (`manual` or `model_switch`). Auto token-threshold
     /// compaction leaves this empty and renders as "automatically compacted".
     pub(crate) pending_compact_sources: Arc<Mutex<HashMap<String, String>>>,
-    /// Terminal protocol notifications that arrive before `turn/start` has
-    /// returned its id and the durable run can be created.
-    pub(crate) early_terminal_turns: Arc<Mutex<HashMap<String, (String, Value)>>>,
+    /// A per-session `turn/start` handoff mailbox. `None` marks a start whose
+    /// durable run is not registered yet; `Some` carries a terminal protocol
+    /// notification that won that race.
+    pub(crate) early_terminal_turns: Arc<Mutex<HashMap<String, Option<(String, Value)>>>>,
     pub(crate) performance_trackers: PerformanceTrackers,
     pub(crate) root: PathBuf,
     pub(crate) state_path: PathBuf,
@@ -95,6 +102,7 @@ impl CodexManager {
         Self {
             sessions: Arc::new(RwLock::new(HashMap::new())),
             records: Arc::new(RwLock::new(records)),
+            attachment_lifecycle: RwLock::new(()),
             turn_locks: Mutex::new(HashMap::new()),
             compact_waiters: Arc::new(Mutex::new(HashMap::new())),
             pending_compact_sources: Arc::new(Mutex::new(HashMap::new())),
@@ -128,6 +136,7 @@ impl CodexManager {
         app: AppHandle<R>,
         mut request: CodexSessionStartRequest,
     ) -> Result<CodexSessionInfo> {
+        let _attachment_lifecycle = self.attachment_lifecycle.read().await;
         validate_start(&request)?;
         let requested_approval = request
             .approval_policy
@@ -156,13 +165,14 @@ impl CodexManager {
             // while the live process still asks for shell approval). The
             // provider binding is compared the same way: a child spawned
             // against a rotated-away credential or endpoint must be replaced,
-            // not reused.
-            self.close(&request.session_id).await?;
+            // not reused. The conversation itself continues, so only the
+            // attachment is dropped — never the durable session.
+            self.fence_attachment_inner(&request.session_id).await?;
         }
         // Custody is taken here — at spawn, after the reuse decision — and
         // nowhere earlier. Leasing during request preparation invalidated the
         // token a live, reused child was still presenting (a mid-conversation
-        // 401), and on rebind the `close()` above revokes the previous lease,
+        // 401), and on rebind the fence above revokes the previous lease,
         // so this is the one point where a fresh token's lifetime matches the
         // child's.
         let upstream_endpoint = request.base_url.clone();
@@ -497,6 +507,13 @@ impl CodexManager {
         }
 
         let error = failure.unwrap_or_else(|| anyhow!("the turn could not be started"));
+        // A storage failure is not a provider failure: the upstream turn may
+        // have completed normally. Report it as its own code so the transcript
+        // never claims the agent disconnected, and keep the storage text out of
+        // the user-facing message.
+        if is_not_recorded_failure(&error) {
+            return Err(CodexTurnFailure::not_recorded(&session_id, &error));
+        }
         if !is_detached_failure(&error) {
             return Err(CodexTurnFailure::rejected(&session_id, &error));
         }
@@ -575,9 +592,20 @@ impl CodexManager {
                 usage: TurnTokenUsage::default(),
             },
         );
+        // The map entry is both an ownership marker and a terminal mailbox.
+        // The event pump updates it atomically if completion beats durable run
+        // creation; after registration, absence means the pump owns terminals.
+        self.early_terminal_turns
+            .lock()
+            .await
+            .insert(request.session_id.clone(), None);
         let result = match session.server.request("turn/start", turn_params).await {
             Ok(result) => result,
             Err(error) => {
+                self.early_terminal_turns
+                    .lock()
+                    .await
+                    .remove(&request.session_id);
                 let mut trackers = self.performance_trackers.lock().await;
                 if trackers
                     .get(&request.session_id)
@@ -589,6 +617,10 @@ impl CodexManager {
             }
         };
         let Some(turn_id) = nested_id(&result, "turnId") else {
+            self.early_terminal_turns
+                .lock()
+                .await
+                .remove(&request.session_id);
             self.performance_trackers
                 .lock()
                 .await
@@ -609,26 +641,10 @@ impl CodexManager {
                 tracker.started_at_ms = chrono::Utc::now().timestamp_millis();
             }
         }
-        self.record_turn_accepted(
-            &app,
-            &request.session_id,
-            &turn_id,
-            request.client_message_id.as_deref(),
-        )
-        .await;
-        *session.turn_id.write().await = Some(turn_id.clone());
-        // Mark the session running before any queued terminal notification can
-        // be observed. A fast app-server may emit its final answer in the same
-        // stdout read cycle as the `turn/start` response.
-        self.set_status(&request.session_id, SessionStatus::Running)
-            .await?;
-        let mut early_terminal = self
-            .early_terminal_turns
-            .lock()
-            .await
-            .remove(&request.session_id);
-        self.set_automatic_title(&app, &request.session_id, &request.prompt, &session)
-            .await;
+        // The durable run anchor is created first, in one transaction that also
+        // makes the session running and owns `active_run_id`. Nothing downstream
+        // — transcript, session cache, event pump — may observe a running turn
+        // that has no committed run to reference.
         let start_run = self.persistence.start_run(RunCreate {
             id: turn_id.clone(),
             session_id: request.session_id.clone(),
@@ -641,26 +657,60 @@ impl CodexManager {
         let mutation = match start_run.await {
             Ok(mutation) => mutation,
             Err(error) => {
+                self.early_terminal_turns
+                    .lock()
+                    .await
+                    .remove(&request.session_id);
                 // The model turn already exists, but without its durable run the
                 // product cannot represent or reconcile it. Interrupt best-effort
                 // and surface the storage failure instead of claiming Running.
-                let _ = session
+                let interrupt_error = session
                     .server
                     .request(
                         "turn/interrupt",
                         json!({"threadId": session.thread_id, "turnId": turn_id}),
                     )
-                    .await;
-                return Err(error.context("persist Codex run before exposing running state"));
+                    .await
+                    .err()
+                    .map(|interrupt_error| interrupt_error.to_string());
+                self.performance_trackers
+                    .lock()
+                    .await
+                    .remove(&request.session_id);
+                self.diagnose_turn_not_recorded(
+                    &request.session_id,
+                    &turn_id,
+                    &error,
+                    interrupt_error.as_deref(),
+                );
+                return Err(error.context(RunNotPersisted));
             }
         };
-        if early_terminal.is_none() {
-            early_terminal = self
-                .early_terminal_turns
-                .lock()
-                .await
-                .remove(&request.session_id);
-        }
+        self.record_turn_accepted(
+            &app,
+            &request.session_id,
+            &turn_id,
+            request.client_message_id.as_deref(),
+        )
+        .await;
+        *session.turn_id.write().await = Some(turn_id.clone());
+        // Mirror the committed run into the record cache. A fast app-server may
+        // emit its final answer in the same stdout read cycle as the
+        // `turn/start` response, so this must precede the early-terminal check.
+        self.set_status(&request.session_id, SessionStatus::Running)
+            .await?;
+        self.set_automatic_title(&app, &request.session_id, &request.prompt, &session)
+            .await;
+        let early_terminal = {
+            let mut terminals = self.early_terminal_turns.lock().await;
+            match terminals.get(&request.session_id).cloned().flatten() {
+                Some(terminal) => Some(terminal),
+                None => {
+                    terminals.remove(&request.session_id);
+                    None
+                }
+            }
+        };
         if early_terminal.is_none() {
             if let Some(mutation) = mutation {
                 if let Some(event) = mutation.event {
@@ -690,6 +740,10 @@ impl CodexManager {
                 }
             }
             self.set_status(&request.session_id, session_status).await?;
+            self.early_terminal_turns
+                .lock()
+                .await
+                .remove(&request.session_id);
             return Ok(session_info(&request.session_id, &session).await);
         }
         // If the terminal arrived outside the narrow typed-final window, its
@@ -953,13 +1007,55 @@ impl CodexManager {
         Ok(())
     }
 
-    pub async fn close(&self, session_id: &str) -> Result<()> {
+    /// Tears down the live attachment without touching durable session state.
+    ///
+    /// Attachment lifetime and conversation lifetime are different things. A
+    /// rebind (model, provider, approval, sandbox or workspace change) must
+    /// replace the child process while the conversation keeps running, so this
+    /// path deliberately writes no status: `closed` is terminal in the session
+    /// state machine, and recording it here left the next turn unable to create
+    /// its durable run.
+    pub async fn fence_attachment(&self, session_id: &str) -> Result<()> {
+        let _attachment_lifecycle = self.attachment_lifecycle.write().await;
+        self.fence_attachment_inner(session_id).await
+    }
+
+    async fn fence_attachment_inner(&self, session_id: &str) -> Result<()> {
         let session = self.sessions.write().await.remove(session_id);
         if let Some(session) = session {
             session.server.stop().await?;
         }
         // The child is gone; its loopback lease must not outlive it.
         self.broker.revoke(session_id);
+        Ok(())
+    }
+
+    /// Runs a credential-authority mutation and fences its children without
+    /// allowing an attachment start between those two operations.
+    pub(crate) async fn fence_provider_attachments_after<T>(
+        &self,
+        provider_name: &str,
+        authority_mutation: impl Future<Output = Result<T>>,
+    ) -> Result<T> {
+        let _attachment_lifecycle = self.attachment_lifecycle.write().await;
+        let result = authority_mutation.await?;
+        let session_ids: Vec<_> = self
+            .sessions
+            .read()
+            .await
+            .iter()
+            .filter(|(_, session)| session.provider_name == provider_name)
+            .map(|(session_id, _)| session_id.clone())
+            .collect();
+        for session_id in session_ids {
+            self.fence_attachment_inner(&session_id).await?;
+        }
+        Ok(result)
+    }
+
+    /// Ends the conversation: drops the attachment *and* closes it durably.
+    pub async fn close(&self, session_id: &str) -> Result<()> {
+        self.fence_attachment(session_id).await?;
         self.set_status(session_id, SessionStatus::Closed).await?;
         Ok(())
     }
@@ -1114,6 +1210,42 @@ impl CodexManager {
 
     /// Removes a dead attachment, but only when it is still the current one.
     /// `expected` is `None` when no attachment was resolved at all.
+    /// Records the exact failure the agent needs when an upstream turn cannot be
+    /// anchored durably. Without this the only trace of the failure was a
+    /// rejected composer message.
+    fn diagnose_turn_not_recorded(
+        &self,
+        session_id: &str,
+        turn_id: &str,
+        error: &anyhow::Error,
+        interrupt_error: Option<&str>,
+    ) {
+        let Some(service) = self.persistence.diagnostics() else {
+            return;
+        };
+        let mut input = crate::diagnostics::DiagnosticInput::new(
+            crate::diagnostics::Severity::Error,
+            "session",
+            "session.turn.not_recorded",
+            crate::diagnostics::codes::TURN_NOT_RECORDED,
+            "the provider turn started but could not be recorded as a run",
+        )
+        .retryable(true);
+        input.correlation.session_id = Some(session_id.to_owned());
+        input.correlation.turn_id = Some(turn_id.to_owned());
+        input
+            .details
+            .insert("cause".into(), Value::String(error.to_string()));
+        input.details.insert(
+            "provider_interrupt".into(),
+            Value::String(match interrupt_error {
+                Some(error) => format!("request_failed: {error}"),
+                None => "requested".into(),
+            }),
+        );
+        service.emit(input);
+    }
+
     async fn discard_attachment(&self, session_id: &str, expected: Option<uuid::Uuid>) {
         let mut sessions = self.sessions.write().await;
         let matches = sessions.get(session_id).is_some_and(|session| {

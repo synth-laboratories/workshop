@@ -789,6 +789,125 @@ async fn turn_send_journals_the_renderer_message_id_once() {
     manager.close(&request.session_id).await.unwrap();
 }
 
+/// Switching model mid-conversation replaces the app-server attachment. That is
+/// a transport rebind, not the end of the conversation: recording it as a
+/// durable `closed` left the next turn unable to create its run, so the turn ran
+/// and completed upstream with no run row, no `active_run_id`, and an internal
+/// storage string in the composer.
+#[tokio::test]
+async fn switching_model_mid_conversation_keeps_creating_durable_runs() {
+    let temp = tempdir().unwrap();
+    let codex_root = temp.path().join("codex");
+    let core = Arc::new(CoreRuntime::open(temp.path().join("core")).unwrap());
+    let manager = CodexManager::with_paths(
+        SessionPersistence::from_core(Some(core.clone())),
+        codex_root,
+        fixture_binary(),
+        CodexManager::test_broker(),
+    );
+    let app = tauri::test::mock_app();
+    let request = test_request(temp.path(), "model-switch-run");
+    let sessions = SessionService::new(core.storage().database().clone());
+    let runs = RunService::new(core.storage().database().clone());
+
+    let first = manager
+        .send_turn(
+            app.handle().clone(),
+            send_request(request.clone(), "first message on the source model"),
+        )
+        .await
+        .expect("the first turn starts");
+    let first_turn = first.turn_id.clone().expect("first turn id");
+
+    // Rebind the same conversation to a different model, exactly as the
+    // composer does when the operator switches model mid-thread. Any changed
+    // attachment property takes this path; the model is the one the QA
+    // reproduction used.
+    let mut switched = request.clone();
+    switched.model = "poolside/Laguna-M-3.0-mlx".into();
+    switched.local_model_catalog = Some(serde_json::json!({
+        "models": [model_catalog_entry("poolside/Laguna-M-3.0-mlx", "Destination model instructions.")]
+    }));
+    let second = manager
+        .send_turn(
+            app.handle().clone(),
+            send_request(switched.clone(), "first message on the destination model"),
+        )
+        .await
+        .expect("the turn after a model switch must not be refused by storage");
+    let second_turn = second.turn_id.clone().expect("second turn id");
+    assert_ne!(second_turn, first_turn);
+
+    // The destination turn owns a durable run, and the session agrees with it.
+    let run = runs
+        .get(second_turn.clone())
+        .await
+        .unwrap()
+        .expect("the destination turn has a durable run");
+    assert_eq!(run.session_id, request.session_id);
+    assert_eq!(run.model.as_deref(), Some("poolside/Laguna-M-3.0-mlx"));
+    let session = sessions
+        .get(request.session_id.clone())
+        .await
+        .unwrap()
+        .expect("session row");
+    assert_eq!(session.status, SessionStatus::Running.as_str());
+    assert_eq!(session.active_run_id.as_deref(), Some(second_turn.as_str()));
+
+    // Exactly one run per send, and the rebind never closed the conversation.
+    let all = runs
+        .list_for_session(request.session_id.clone(), 100)
+        .await
+        .unwrap();
+    assert_eq!(all.len(), 2, "one run per send, no duplicates: {all:?}");
+    assert!(!core
+        .journal()
+        .session_events_after(request.session_id.clone(), 0, 500)
+        .await
+        .unwrap()
+        .iter()
+        .any(|event| event.kind == "session.status_changed"
+            && event.payload["to"] == SessionStatus::Closed.as_str()));
+
+    manager.close(&request.session_id).await.unwrap();
+}
+
+/// Closing a conversation is still durable and terminal — the rebind split must
+/// not weaken the real close.
+#[tokio::test]
+async fn closing_a_session_still_closes_it_durably() {
+    let temp = tempdir().unwrap();
+    let codex_root = temp.path().join("codex");
+    let core = Arc::new(CoreRuntime::open(temp.path().join("core")).unwrap());
+    let manager = CodexManager::with_paths(
+        SessionPersistence::from_core(Some(core.clone())),
+        codex_root,
+        fixture_binary(),
+        CodexManager::test_broker(),
+    );
+    let app = tauri::test::mock_app();
+    let request = test_request(temp.path(), "explicit-close");
+
+    manager
+        .send_turn(
+            app.handle().clone(),
+            send_request(request.clone(), "one turn then close"),
+        )
+        .await
+        .expect("turn starts");
+    manager.close(&request.session_id).await.unwrap();
+
+    assert_eq!(
+        SessionService::new(core.storage().database().clone())
+            .get(request.session_id.clone())
+            .await
+            .unwrap()
+            .unwrap()
+            .status,
+        SessionStatus::Closed.as_str()
+    );
+}
+
 #[tokio::test]
 async fn terminal_before_run_creation_reconciles_the_exact_turn() {
     let temp = tempdir().unwrap();

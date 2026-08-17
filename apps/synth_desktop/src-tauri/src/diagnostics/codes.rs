@@ -57,6 +57,8 @@ pub const OPTIMIZER_WORKER_FAILED: &str = "optimizer_worker_failed";
 // Providers and sessions.
 pub const PROVIDER_DISCONNECTED: &str = "provider_disconnected";
 pub const PROVIDER_STALLED: &str = "provider_stalled";
+pub const SESSION_TRANSITION_REJECTED: &str = "session_transition_rejected";
+pub const TURN_NOT_RECORDED: &str = "turn_not_recorded";
 
 // Diagnostics itself.
 pub const DIAGNOSTICS_QUEUE_SATURATED: &str = "diagnostics_queue_saturated";
@@ -85,6 +87,10 @@ const RANKS: &[(&str, u8)] = &[
     (CAPTURE_RESTORE_FAILED, RANK_SYMPTOM),
     (STREAM_REPLAY_GAP, RANK_CONTRACT),
     (PROVIDER_STALLED, RANK_CONTRACT),
+    // A rejected durable session edge is upstream of the run that cannot then
+    // be created, so it must outrank the turn it goes on to break.
+    (SESSION_TRANSITION_REJECTED, RANK_INFRASTRUCTURE),
+    (TURN_NOT_RECORDED, RANK_CONTRACT),
     (VISUAL_SHELL_LOAD_FAILED, RANK_SYMPTOM),
     (VISUAL_RENDER_FAILED, RANK_SYMPTOM),
     (DIAGNOSTICS_QUEUE_SATURATED, RANK_SYMPTOM),
@@ -182,6 +188,14 @@ const REMEDIATIONS: &[(&str, &str)] = &[
     (
         PROVIDER_STALLED,
         "Provider activity stopped without a terminal event. Check the provider heartbeat in the details before interrupting the turn.",
+    ),
+    (
+        SESSION_TRANSITION_REJECTED,
+        "The durable session refused a lifecycle edge, so storage and the running app now disagree. The requested status and the refusing cause are in the details; reconcile the session before starting another turn.",
+    ),
+    (
+        TURN_NOT_RECORDED,
+        "The provider turn started but could not be given a durable run. The upstream turn was interrupted and no partial run was left behind; the correlated session diagnostic names the underlying storage cause.",
     ),
     (
         DIAGNOSTICS_QUEUE_SATURATED,
