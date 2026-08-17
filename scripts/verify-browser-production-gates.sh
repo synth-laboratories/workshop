@@ -132,14 +132,30 @@ verify_helper_live() {
   note "signed live-helper gate passed; receipt: $RECEIPT"
 }
 
+verify_helper_development() {
+  local helper="${2:-${SYNTH_HELPER_APP:-$APP/Contents/Resources/Synth Computer Use.app}}" binary grants signature
+  [[ -x "$helper/Contents/MacOS/synth-computer-use" ]] || die "installed helper is missing: $helper"
+  verify_code "$helper"
+  binary="$helper/Contents/MacOS/synth-computer-use"
+  grants="$("$binary" probe)"
+  jq -e '.accessibility == "granted" and .screenRecording == "granted"' <<<"$grants" >/dev/null \
+    || die "development helper probe reports missing Accessibility or Screen Recording"
+  signature="$(/usr/bin/codesign -dvv "$helper" 2>&1 | awk -F= '/^Signature=/{print $2; exit}')"
+  jq -n --arg gate native-helper-development --arg helper "$helper" --arg signature "$signature" \
+    --argjson grants "$grants" --arg checkedAt "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" \
+    '{schema:"workshop.browser-production-gate.v1",gate:$gate,passed:true,productionEligible:false,notarized:false,helper:$helper,signature:$signature,grants:$grants,checkedAt:$checkedAt}' > "$RECEIPT"
+  note "development live-helper gate passed (not a production/notarization gate); receipt: $RECEIPT"
+}
+
 case "$COMMAND" in
   installed) verify_installed "$APP" ;;
   development-installed) verify_development_installed "$APP" ;;
   profile-compat) [[ $# -eq 3 ]] || die "usage: $0 profile-compat BEFORE.app AFTER.app"; verify_profile_compat "$@" ;;
   updater) [[ $# -eq 4 ]] || die "usage: $0 updater BEFORE.app AFTER.app PROFILE_SENTINEL"; verify_updater "$@" ;;
   helper-live) verify_helper_live "$@" ;;
+  development-helper-live) verify_helper_development "$@" ;;
   help|-h|--help)
-    echo "Usage: $0 installed [APP] | development-installed [APP] | profile-compat BEFORE.app AFTER.app | updater BEFORE.app AFTER.app PROFILE_SENTINEL | helper-live [HELPER.app]"
+    echo "Usage: $0 installed [APP] | development-installed [APP] | profile-compat BEFORE.app AFTER.app | updater BEFORE.app AFTER.app PROFILE_SENTINEL | helper-live [HELPER.app] | development-helper-live [HELPER.app]"
     ;;
   *) die "unknown command: $COMMAND" ;;
 esac
