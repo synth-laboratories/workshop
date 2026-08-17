@@ -16,8 +16,16 @@ BUNDLE="$ROOT/apps/synth_desktop/src-tauri/target/release/bundle/macos/Synth Des
 BEFORE="$ARTIFACTS/Synth Desktop-$VERSION_BEFORE.app"
 AFTER="$ARTIFACTS/Synth Desktop-$VERSION_AFTER.app"
 BACKUP="$ARTIFACTS/Synth Desktop-rollback.app"
+APP_DATA="$WORK/app-data"
+APP_PID=""
 
-cleanup() { /bin/rm -rf "$WORK"; }
+cleanup() {
+  if [[ "$APP_PID" =~ ^[1-9][0-9]*$ ]] && kill -0 "$APP_PID" 2>/dev/null; then
+    kill -TERM "$APP_PID" 2>/dev/null || true
+    wait "$APP_PID" 2>/dev/null || true
+  fi
+  /bin/rm -rf "$WORK"
+}
 trap cleanup EXIT
 mkdir -p "$GENERATED" "$ARTIFACTS" "$INSTALL_ROOT"
 
@@ -42,6 +50,32 @@ install_stage() {
   /usr/bin/codesign --verify --strict --deep "$INSTALLED"
 }
 
+launch_and_probe() {
+  local phase="$1" descriptor="$APP_DATA/visuals-ipc.json" log="$GENERATED/$phase-app.log"
+  /bin/rm -f "$descriptor"
+  mkdir -p "$APP_DATA" "$WORK/workspace" "$APP_DATA/codex"
+  SYNTH_DESKTOP_INSTANCE="update-roundtrip" \
+  SYNTH_DESKTOP_DATA_ROOT="$APP_DATA" \
+  SYNTH_CODEX_HOME="$APP_DATA/codex" \
+  SYNTH_DESKTOP_WORKSPACE="$WORK/workspace" \
+    "$INSTALLED/Contents/MacOS/synth-desktop" >"$log" 2>&1 &
+  APP_PID=$!
+  for _ in {1..120}; do
+    kill -0 "$APP_PID" 2>/dev/null || { cat "$log" >&2; echo "$phase app exited before readiness" >&2; return 1; }
+    [[ -s "$descriptor" ]] && break
+    sleep 0.1
+  done
+  [[ -s "$descriptor" ]] || { cat "$log" >&2; echo "$phase app did not publish IPC readiness" >&2; return 1; }
+  "$INSTALLED/Contents/Resources/browser/runtime/node/bin/node" "$ROOT/scripts/browser-workshop-e2e.mjs" \
+    --data-root "$APP_DATA" \
+    --adapter "$INSTALLED/Contents/MacOS/synth-browser-mcp" \
+    --app-pid "$APP_PID" > "$GENERATED/$phase-full-path.json"
+  kill -TERM "$APP_PID"
+  wait "$APP_PID" 2>/dev/null || true
+  APP_PID=""
+  /usr/bin/codesign --verify --strict --deep "$INSTALLED"
+}
+
 build_version "$VERSION_BEFORE" "$BEFORE"
 build_version "$VERSION_AFTER" "$AFTER"
 [[ "$(/usr/bin/shasum -a 256 "$BEFORE/Contents/MacOS/synth-desktop" | awk '{print $1}')" != \
@@ -50,14 +84,17 @@ build_version "$VERSION_AFTER" "$AFTER"
 
 install_stage "$BEFORE"
 [[ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$INSTALLED/Contents/Info.plist")" == "$VERSION_BEFORE" ]]
+launch_and_probe before
 install_stage "$AFTER"
 [[ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$INSTALLED/Contents/Info.plist")" == "$VERSION_AFTER" ]]
+launch_and_probe after
 
 # Roll back with the exact backup made by the staged forward installation.
 /bin/rm -rf "$INSTALLED"
 mv "$BACKUP" "$INSTALLED"
 /usr/bin/codesign --verify --strict --deep "$INSTALLED"
 [[ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$INSTALLED/Contents/Info.plist")" == "$VERSION_BEFORE" ]]
+launch_and_probe rollback
 
 PROFILE_RECEIPT="$GENERATED/profile.json"
 "$BEFORE/Contents/Resources/browser/runtime/node/bin/node" "$ROOT/scripts/browser-profile-compat.mjs" \
@@ -68,7 +105,10 @@ jq -n \
   --arg beforeExecutableSha256 "$(/usr/bin/shasum -a 256 "$BEFORE/Contents/MacOS/synth-desktop" | awk '{print $1}')" \
   --arg afterExecutableSha256 "$(/usr/bin/shasum -a 256 "$AFTER/Contents/MacOS/synth-desktop" | awk '{print $1}')" \
   --arg rollbackExecutableSha256 "$(/usr/bin/shasum -a 256 "$INSTALLED/Contents/MacOS/synth-desktop" | awk '{print $1}')" \
+  --argjson beforeLaunch "$(cat "$GENERATED/before-full-path.json")" \
+  --argjson afterLaunch "$(cat "$GENERATED/after-full-path.json")" \
+  --argjson rollbackLaunch "$(cat "$GENERATED/rollback-full-path.json")" \
   --argjson profile "$(cat "$PROFILE_RECEIPT")" --arg checkedAt "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" \
-  '{schema:"workshop.browser-update-roundtrip.v1",passed:true,productionEligible:false,notarized:false,mechanism:"isolated-staged-bundle-replacement",beforeVersion:$beforeVersion,afterVersion:$afterVersion,beforeExecutableSha256:$beforeExecutableSha256,afterExecutableSha256:$afterExecutableSha256,rollbackExecutableSha256:$rollbackExecutableSha256,rollbackRestoredOriginal:($beforeExecutableSha256 == $rollbackExecutableSha256),profile:$profile,checkedAt:$checkedAt}' > "$RECEIPT"
+  '{schema:"workshop.browser-update-roundtrip.v1",passed:true,productionEligible:false,notarized:false,mechanism:"isolated-staged-bundle-replacement",beforeVersion:$beforeVersion,afterVersion:$afterVersion,beforeExecutableSha256:$beforeExecutableSha256,afterExecutableSha256:$afterExecutableSha256,rollbackExecutableSha256:$rollbackExecutableSha256,rollbackRestoredOriginal:($beforeExecutableSha256 == $rollbackExecutableSha256),installedAppLaunches:{before:$beforeLaunch,after:$afterLaunch,rollback:$rollbackLaunch},profile:$profile,checkedAt:$checkedAt}' > "$RECEIPT"
 echo "[browser-update] two-build update/rollback passed; receipt: $RECEIPT"
 cat "$RECEIPT"
