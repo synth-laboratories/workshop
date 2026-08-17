@@ -586,6 +586,11 @@ async fn run_worker(
         .arg("worker")
         .arg("--manifest")
         .arg(&manifest_path)
+        // Admission and execution must resolve the same runtime. Finder does
+        // not inherit the operator's shell PATH, so without this the catalog
+        // can truthfully report Docker ready and the worker can still fail
+        // immediately with `docker is not on PATH`.
+        .env("PATH", eval_cli_path(std::env::var_os("PATH").as_deref())?)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::from(stderr))
