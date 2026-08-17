@@ -715,7 +715,7 @@ function visualIdForTool(
 }
 
 /** Workflows chat has a run-progress card for. Others stream but get no card. */
-const CARDED_RUN_KINDS = new Set(["eval", "gepa", "sft"]);
+const CARDED_RUN_KINDS = new Set(["eval", "gepa", "sft", "environment"]);
 
 /**
  * The durable run a `synth_optimizers` call started or acted on.
