@@ -2361,6 +2361,24 @@ async fn dispatch_optimizer(
                 .map_err(|error| anyhow::anyhow!(error.to_string()))?;
             Ok(json!({ "run": run }))
         }
+        ("POST", "/v1/optimizers/workflows/start") => {
+            let request: crate::optimizers::OptimizerRecipeRunRequest =
+                serde_json::from_value(body)?;
+            crate::refresh_optimizer_workflow_containers(core, &request.recipe_id).await?;
+            let codex = app.state::<Arc<crate::codex::CodexManager>>();
+            let run = crate::authorize_optimizer_recipe_start(app, core, &codex, request)
+                .await
+                .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+            Ok(json!({
+                "run": run,
+                "workflow": {
+                    "status": run.status,
+                    "optimizerRunId": run.id,
+                    "visualRefs": run.visual_refs,
+                    "eventCursor": run.cursor_seq
+                }
+            }))
+        }
         ("POST", "/v1/optimizers/runs/start") => {
             let id = body
                 .get("optimizerRunId")

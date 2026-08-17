@@ -11,7 +11,7 @@ Requires the public service plus `SYNTH_OPTIMIZERS_SFT_SERVICE_URL` (defaults to
 After explicit user instruction (no paid-compute approval is needed for this no-cost fixture):
 
 ```json
-{"operation":"start_recipe","arguments":{"recipe_id":"sft.hosted.fixture.v1","open_visual":true}}
+{"operation":"start_workflow","arguments":{"recipe_id":"sft.hosted.fixture.v1","open_visual":true}}
 ```
 
 Follow `watch_run` from sequence 0. Expect `optimizer.visual.ready`, then `sft.training.metrics` (not `sft.step.metrics`). Null `validation_loss` stays missing (`—`). `sft.checkpoint.ready` is not promotion. Checkpoint-eval children start without reward/cost; `sft.checkpoint_rollout.completed` patches those fields. Missing stays `—`.
@@ -23,7 +23,7 @@ Recipe: `sft.craftax.nemotron-nano.tinker.v1`. Available when `SYNTH_OPTIMIZERS_
 After explicit approval:
 
 ```json
-{"operation":"start_recipe","arguments":{"recipe_id":"sft.craftax.nemotron-nano.tinker.v1","open_visual":true}}
+{"operation":"start_workflow","arguments":{"recipe_id":"sft.craftax.nemotron-nano.tinker.v1","open_visual":true}}
 ```
 
 ## Start the pinned Craftax GPT-OSS smoke
@@ -42,7 +42,7 @@ It requires the trusted Craftax binary and bridge runtime plus `GROQ_API_KEY` an
 After explicit approval:
 
 ```json
-{"operation":"start_recipe","arguments":{"recipe_id":"sft.craftax.gpt-oss.smoke.v1","open_visual":true}}
+{"operation":"start_workflow","arguments":{"recipe_id":"sft.craftax.gpt-oss.smoke.v1","open_visual":true}}
 ```
 
 Follow these slices:

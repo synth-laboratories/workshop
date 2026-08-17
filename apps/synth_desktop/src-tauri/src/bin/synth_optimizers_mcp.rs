@@ -96,10 +96,11 @@ fn request_inner(
 
 fn tools() -> Value {
     json!({"tools":[
-        {"name":"optimizer_manage","description":"Operate Synth optimizer runs. Load the use-synth-optimizers skill. Paid/plugin recipes enforce prepare, open_visual, await_ready, start. Local eval recipes enforce stage_eval_candidates, start_recipe. Never install the plugin from this tool.","inputSchema":{"type":"object","properties":{"operation":{"type":"string","enum":["list_algorithms","list_recipes","prepare","open_visual","await_ready","start","start_recipe","stage_eval_candidates","list_runs","get_run","watch_run","get_state","get_result","reconcile_cloud","cancel_run","cancel","pause_run","resume_run","finalize"]},"arguments":{"type":"object","additionalProperties":true}},"required":["operation","arguments"],"additionalProperties":false}},
+        {"name":"optimizer_manage","description":"Operate Synth optimizer runs. Prefer start_workflow for a bounded product recipe: it performs fresh admission, approval, run creation, and visual opening in one call. Advanced callers may still use prepare, open_visual, await_ready, start. Never install the plugin from this tool.","inputSchema":{"type":"object","properties":{"operation":{"type":"string","enum":["list_algorithms","list_recipes","start_workflow","prepare","open_visual","await_ready","start","start_recipe","stage_eval_candidates","list_runs","get_run","watch_run","get_state","get_result","reconcile_cloud","cancel_run","cancel","pause_run","resume_run","finalize"]},"arguments":{"type":"object","additionalProperties":true}},"required":["operation","arguments"],"additionalProperties":false}},
         {"name":"optimizer_list_algorithms","description":"List optimizer algorithms and availability","inputSchema":{"type":"object","properties":{},"additionalProperties":false}},
         {"name":"optimizer_list_recipes","description":"List product-owned bounded optimizer recipes and their hard limits","inputSchema":{"type":"object","properties":{},"additionalProperties":false}},
         {"name":"optimizer_start_recipe","description":"Prepare an allowlisted paid/plugin recipe. For local eval.* recipes, start the fixed pinned recipe with a candidate_set_id staged by optimizer_stage_eval_candidates. Container baseline evals (Banking77, HealthBench) start from a registered container and do not take a candidate set.","inputSchema":{"type":"object","properties":{"recipe_id":{"type":"string","enum":["gepa.banking77.smoke.v1","gepa.banking77.luna.v1","gepa.banking77.sol.v1","gepa.craftax.smoke.v1","gelo.craftax.hosted.v1","sft.craftax.gpt-oss.smoke.v1","sft.hosted.fixture.v1","sft.craftax.nemotron-nano.tinker.v1","sft.banking77.nemotron-lightning.tinker.v1","eval.fixture.policy-smoke.v1","eval.craftax.code-policy.smoke.v1","eval.gamebench.craftax-code-policy.confirm.v1","eval.craftax.llm-policy.smoke.v1","eval.gamebench.llm-policy.confirm.v1","eval.banking77.baseline.v1","eval.healthbench.smoke.v1"]},"session_ref":{"type":"string"},"open_visual":{"type":"boolean"},"base_model":{"type":"string"},"dataset_shard":{"type":"string","enum":["train_a","train_b"]},"candidate_set_id":{"type":"string","description":"Required by pinned local eval.* recipes. An id returned by optimizer_stage_eval_candidates, never a path. Not used by Banking77/HealthBench container baseline evals."}},"required":["recipe_id"],"additionalProperties":false}},
+        {"name":"optimizer_start_workflow","description":"Start one bounded product workflow in one call. Freshens relevant registered-container capabilities, performs host approval and sidecar admission, creates the run, and opens its chat-owned visual. Craftax policy evals still require a staged candidate_set_id.","inputSchema":{"type":"object","properties":{"recipe_id":{"type":"string","enum":["gepa.banking77.smoke.v1","gepa.banking77.luna.v1","gepa.banking77.sol.v1","gepa.craftax.smoke.v1","gelo.craftax.hosted.v1","sft.craftax.gpt-oss.smoke.v1","sft.hosted.fixture.v1","sft.craftax.nemotron-nano.tinker.v1","sft.banking77.nemotron-lightning.tinker.v1","eval.fixture.policy-smoke.v1","eval.craftax.code-policy.smoke.v1","eval.gamebench.craftax-code-policy.confirm.v1","eval.craftax.llm-policy.smoke.v1","eval.gamebench.llm-policy.confirm.v1","eval.banking77.baseline.v1","eval.healthbench.smoke.v1"]},"session_ref":{"type":"string"},"open_visual":{"type":"boolean"},"base_model":{"type":"string"},"dataset_shard":{"type":"string","enum":["train_a","train_b"]},"candidate_set_id":{"type":"string"}},"required":["recipe_id"],"additionalProperties":false}},
         {"name":"optimizer_stage_eval_candidates","description":"Freeze policy files from the session workspace into one immutable content-addressed candidate set and return its id. Paths are workspace-relative; absolute paths and traversal are refused.","inputSchema":{"type":"object","properties":{"session_ref":{"type":"string","description":"Optional. Defaults to the calling session; an agent has no way to know its own id, so do not guess one."},"candidates":{"type":"array","minItems":1,"maxItems":16,"items":{"type":"object","properties":{"label":{"type":"string"},"path":{"type":"string"},"entrypoint":{"type":"string"},"kind":{"type":"string"},"baseline":{"type":"boolean"}},"required":["label","path"],"additionalProperties":false}}},"required":["candidates"],"additionalProperties":false}},
         {"name":"optimizer_list_runs","description":"List local optimizer run mirrors","inputSchema":{"type":"object","properties":{"status":{"type":"string"},"algorithm_id":{"type":"string"},"source":{"type":"string"},"search":{"type":"string"}},"additionalProperties":false}},
         {"name":"optimizer_get_run","description":"Get one optimizer run mirror","inputSchema":{"type":"object","properties":{"optimizer_run_id":{"type":"string"}},"required":["optimizer_run_id"],"additionalProperties":false}},
@@ -146,6 +147,7 @@ fn call_tool(name: &str, args: &Value) -> Result<Value, String> {
         let tool = match operation {
             "list_algorithms" => "optimizer_list_algorithms",
             "list_recipes" => "optimizer_list_recipes",
+            "start_workflow" => "optimizer_start_workflow",
             "prepare" => "optimizer_prepare",
             "start_recipe" => "optimizer_start_recipe",
             "stage_eval_candidates" => "optimizer_stage_eval_candidates",
@@ -196,6 +198,18 @@ fn call_tool(name: &str, args: &Value) -> Result<Value, String> {
             } else {
                 "/v1/optimizers/recipes/prepare"
             },
+            Some(json!({
+                "recipeId": args.get("recipe_id"),
+                "sessionRef": session_ref(),
+                "openVisual": args.get("open_visual").cloned().unwrap_or(json!(true)),
+                "baseModel": args.get("base_model"),
+                "datasetShard": args.get("dataset_shard"),
+                "candidateSetId": args.get("candidate_set_id")
+            })),
+        ),
+        "optimizer_start_workflow" => request(
+            "POST",
+            "/v1/optimizers/workflows/start",
             Some(json!({
                 "recipeId": args.get("recipe_id"),
                 "sessionRef": session_ref(),
@@ -369,6 +383,8 @@ mod tests {
         assert!(encoded.contains("dataset_shard"));
         assert!(encoded.contains("optimizer_pause_run"));
         assert!(encoded.contains("optimizer_resume_run"));
+        assert!(encoded.contains("optimizer_start_workflow"));
+        assert!(encoded.contains("start_workflow"));
         assert!(!encoded.contains("api_key"));
     }
 

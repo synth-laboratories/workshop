@@ -935,6 +935,63 @@ pub(crate) async fn authorize_optimizer_recipe_start(
         .map_err(AppError::from)
 }
 
+/// Re-observe the target contract at workflow admission. A cached healthy bit
+/// is liveness evidence, not permission to reuse an older capability revision.
+/// Only container-backed product recipes need this lane; optimizer campaigns
+/// keep their own service/cookbook admission in Optimizers.
+pub(crate) async fn refresh_optimizer_workflow_containers(
+    state: &CoreRuntime,
+    recipe_id: &str,
+) -> Result<(), AppError> {
+    let family = match recipe_id {
+        optimizers::BANKING77_EVAL_BASELINE_RECIPE => Some("banking77"),
+        optimizers::HEALTHBENCH_EVAL_SMOKE_RECIPE => Some("healthbench"),
+        _ => None,
+    };
+    let Some(family) = family else {
+        return Ok(());
+    };
+    let rows = state
+        .data()
+        .list_containers()
+        .await
+        .map_err(AppError::from)?;
+    for row in rows {
+        let hinted = row.task_family.as_deref().is_some_and(|value| {
+            let value = value.to_ascii_lowercase();
+            value == family || value.contains(family)
+        }) || row
+            .metadata
+            .to_string()
+            .to_ascii_lowercase()
+            .contains(family);
+        if !hinted {
+            continue;
+        }
+        let Some(base_url) = row
+            .base_url
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+        else {
+            continue;
+        };
+        let (status, health, metadata, hydrated_family) =
+            hydrate_container(base_url, row.metadata.clone(), true).await;
+        state
+            .data()
+            .update_container_hydration(
+                row.id,
+                status,
+                health,
+                metadata,
+                hydrated_family.or(row.task_family),
+            )
+            .await
+            .map_err(AppError::from)?;
+    }
+    Ok(())
+}
+
 fn optimizer_recipe_credentials(recipe_id: &str) -> &'static [&'static str] {
     if recipe_id.starts_with("gepa.banking77.") {
         &["OPENAI_API_KEY"]

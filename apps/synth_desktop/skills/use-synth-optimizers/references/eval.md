@@ -18,7 +18,7 @@ no winner, and saying "completed" alone misrepresents it.
 
 ## Stage before you start
 
-`start_recipe` takes a `candidate_set_id`, never a path or inline code. Create or
+`start_workflow` takes a `candidate_set_id`, never a path or inline code. Create or
 identify the policy files in the session workspace first, then freeze them:
 
 ```json
@@ -38,7 +38,7 @@ a paired lift without one, and will return `inconclusive`.
 Then start with the returned id:
 
 ```json
-{"operation":"start_recipe","arguments":{
+{"operation":"start_workflow","arguments":{
   "recipe_id":"eval.craftax.code-policy.smoke.v1",
   "candidate_set_id":"policy_set_...",
   "open_visual":true}}
