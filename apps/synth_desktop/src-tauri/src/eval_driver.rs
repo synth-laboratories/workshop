@@ -1005,6 +1005,8 @@ async fn open_visual(core: &CoreRuntime, body: Value) -> Result<Value> {
     let template_id = resolve_live_eval_template(requested, family)?;
     let session_id = body
         .get("sessionId")
+        .or_else(|| body.get("session_id"))
+        .or_else(|| body.get("sessionRef"))
         .and_then(Value::as_str)
         .map(str::to_string);
     let title = body
@@ -1357,6 +1359,11 @@ async fn run_policy_rollout(
                 json!({
                     "containerId": container_id,
                     "title": format!("Live eval {task_instance_id}"),
+                    "sessionId": body
+                        .get("sessionId")
+                        .or_else(|| body.get("session_id"))
+                        .or_else(|| body.get("sessionRef"))
+                        .cloned(),
                 }),
             )
             .await?;
@@ -1486,16 +1493,46 @@ async fn run_policy_rollout(
     // A policy-owned container may acknowledge the immutable rollout and run it
     // asynchronously. Persist provenance as soon as start is accepted so a
     // timeout or Desktop restart never makes the launched rollout undiscoverable.
+    let wait = body
+        .get("wait")
+        .and_then(Value::as_bool)
+        .unwrap_or(true);
     core.update_container_last_rollout(container_id.to_string(), rollout_id.clone())
         .await?;
-    let state = wait_for_policy_rollout_terminal(
+    let accepted_receipt = || {
+        accepted_rollout_receipt(
+            &rollout_id,
+            initial_state
+                .get("status")
+                .cloned()
+                .unwrap_or(json!("accepted")),
+            &poll_url,
+            &sse_url,
+            json!(visual_id),
+            recovered,
+        )
+    };
+    if !wait {
+        return Ok(accepted_receipt());
+    }
+    let state = match wait_for_policy_rollout_terminal(
         &recovery_client,
         &base,
         &rollout_id,
-        initial_state,
+        initial_state.clone(),
         Duration::from_secs(timeout_s),
     )
-    .await?;
+    .await?
+    {
+        PolicyWaitResult::Terminal(state) => state,
+        PolicyWaitResult::Accepted(state) => {
+            let mut receipt = accepted_receipt();
+            if let Some(status) = state.get("status") {
+                receipt["status"] = status.clone();
+            }
+            return Ok(receipt);
+        }
+    };
     let stream = declared_stream_descriptor(&state)?.or(Some(prepared_stream));
 
     let event_log = client
@@ -1626,26 +1663,44 @@ async fn run_policy_rollout(
     }))
 }
 
+enum PolicyWaitResult {
+    Terminal(Value),
+    Accepted(Value),
+}
+
+fn accepted_rollout_receipt(
+    rollout_id: &str,
+    status: Value,
+    poll_url: &str,
+    stream_url: &str,
+    visual_id: Value,
+    recovered: bool,
+) -> Value {
+    json!({
+        "accepted": true,
+        "rolloutId": rollout_id,
+        "status": status,
+        "pollUrl": poll_url,
+        "streamUrl": stream_url,
+        "visualId": visual_id,
+        "recovered": recovered,
+    })
+}
+
 async fn wait_for_policy_rollout_terminal(
     client: &reqwest::Client,
     base: &str,
     rollout_id: &str,
     mut state: Value,
     timeout: Duration,
-) -> Result<Value> {
+) -> Result<PolicyWaitResult> {
     let deadline = tokio::time::Instant::now() + timeout;
     loop {
         if container_owned_policy_completed(&state) {
-            return Ok(state);
+            return Ok(PolicyWaitResult::Terminal(state));
         }
         if tokio::time::Instant::now() >= deadline {
-            let status = state
-                .get("status")
-                .and_then(Value::as_str)
-                .unwrap_or("unknown");
-            bail!(
-                "policy-owned rollout `{rollout_id}` remained `{status}` past the {timeout:?} deadline; the accepted rollout remains discoverable and may still complete"
-            );
+            return Ok(PolicyWaitResult::Accepted(state));
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
         if let Some(current) = visuals_ipc::get_rollout_status(client, base, rollout_id).await? {
@@ -2696,5 +2751,29 @@ mod tests {
             codex::provider_class(Some("openrouter")),
             codex::ProviderClass::OpenRouter
         ));
+    }
+
+    #[test]
+    fn deadline_returns_structured_accepted_receipt_instead_of_bail() {
+        let receipt = accepted_rollout_receipt(
+            "roll_async_1",
+            json!("accepted"),
+            "http://127.0.0.1:8098/rollouts/roll_async_1/events",
+            "http://127.0.0.1:8098/rollouts/roll_async_1/stream",
+            json!("vis_1"),
+            false,
+        );
+        assert_eq!(receipt["accepted"], true);
+        assert_eq!(receipt["rolloutId"], "roll_async_1");
+        assert_eq!(receipt["status"], "accepted");
+        assert_eq!(
+            receipt["pollUrl"],
+            "http://127.0.0.1:8098/rollouts/roll_async_1/events"
+        );
+        assert_eq!(
+            receipt["streamUrl"],
+            "http://127.0.0.1:8098/rollouts/roll_async_1/stream"
+        );
+        assert!(receipt.get("error").is_none());
     }
 }
