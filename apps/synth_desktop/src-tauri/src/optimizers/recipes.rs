@@ -17,8 +17,8 @@ use super::events::OptimizerEventDraft;
 use super::{
     manager::DEFAULT_ALGORITHM_VERSION,
     models::{
-        OptimizerCreateRequest, OptimizerEventEnvelope, OptimizerExecutionBinding,
-        OptimizerRecipeRunRequest, OptimizerResourceRef, OPTIMIZER_EVENT_SCHEMA_VERSION,
+        OptimizerCreateRequest, OptimizerExecutionBinding, OptimizerRecipeRunRequest,
+        OptimizerResourceRef,
     },
     normalize, OptimizerService,
 };
@@ -1218,7 +1218,6 @@ async fn append_recipe_candidates(
     let Some(candidates) = registry.as_array() else {
         return Ok(());
     };
-    let run = service.get(run_id.to_string()).await?;
     let mut events = Vec::new();
     for (index, candidate) in candidates.iter().enumerate() {
         let Some(candidate_id) = candidate
@@ -1427,7 +1426,6 @@ async fn append_proposer_transcripts(
         })
         .collect();
     generation_dirs.sort();
-    let run = service.get(run_id.to_string()).await?;
     let mut events = Vec::new();
     for dir in generation_dirs {
         let generation: u64 = dir
@@ -1484,18 +1482,11 @@ async fn append_proposer_transcripts(
             .has_event_id(run_id.to_string(), transcript_event_id.clone())
             .await?
         {
-            let sequence_number = run.cursor_seq + events.len() as u64 + 1;
-            events.push(OptimizerEventEnvelope {
-                schema_version: OPTIMIZER_EVENT_SCHEMA_VERSION.into(),
-                event_id: Some(transcript_event_id),
-                event_type: "proposer.transcript.loaded".into(),
-                sequence_number,
-                occurred_at: chrono::Utc::now().to_rfc3339(),
-                optimizer_run_id: run_id.into(),
-                algorithm_id: "gepa".into(),
-                level: Some("info".into()),
-                item: None,
-                delta: serde_json::from_value(json!({
+            events.push(
+                OptimizerEventDraft::new("proposer.transcript.loaded", "gepa")
+                    .idempotency_key(format!("proposer-transcript:{generation}"))
+                    .level("info")
+                    .delta(serde_json::from_value(json!({
                     "generation": generation,
                     "message": "Proposer transcript reconciled from workspace artifacts",
                     "critique": truncated_text(
@@ -1514,18 +1505,15 @@ async fn append_proposer_transcripts(
                     ),
                     "proposals": proposals,
                     "usage": response.get("usage"),
-                }))?,
-                snapshot: None,
-                usage_delta: None,
-                artifact_refs: vec![json!({
-                    "kind": "proposer_transcript",
-                    "id": response_path,
-                    "path": response_path,
-                    "title": format!("Proposer transcript · generation {generation}")
-                })],
-                error: None,
-                raw: json!({ "source": "opencode_response.json", "generation": generation }),
-            });
+                    }))?)
+                    .raw(json!({ "source": "opencode_response.json", "generation": generation }))
+                    .artifact_refs(vec![json!({
+                        "kind": "proposer_transcript",
+                        "id": response_path,
+                        "path": response_path,
+                        "title": format!("Proposer transcript · generation {generation}")
+                    })]),
+            );
         }
         let trace_path = dir
             .join(".agent_artifacts")
@@ -1541,39 +1529,31 @@ async fn append_proposer_transcripts(
                 .map(|source| project_trace_v5_items(&source))
                 .unwrap_or_default();
             if !items.is_empty() {
-                let sequence_number = run.cursor_seq + events.len() as u64 + 1;
-                events.push(OptimizerEventEnvelope {
-                    schema_version: OPTIMIZER_EVENT_SCHEMA_VERSION.into(),
-                    event_id: Some(trace_event_id),
-                    event_type: "proposer.trace_v5.loaded".into(),
-                    sequence_number,
-                    occurred_at: chrono::Utc::now().to_rfc3339(),
-                    optimizer_run_id: run_id.into(),
-                    algorithm_id: "gepa".into(),
-                    level: Some("info".into()),
-                    item: None,
-                    delta: serde_json::from_value(json!({
-                        "generation": generation,
-                        "schema_version": "synth.trace-projection.rollout-inspector.v1",
-                        "message": "Sealed proposer Trace V5 reconciled from app-server artifacts",
-                        "items": items,
-                    }))?,
-                    snapshot: None,
-                    usage_delta: None,
-                    artifact_refs: vec![json!({
-                        "kind": "trace_v5",
-                        "id": trace_path,
-                        "path": trace_path,
-                        "title": format!("Proposer Trace V5 · generation {generation}")
-                    })],
-                    error: None,
-                    raw: json!({ "source": "opencode_sse_events.jsonl", "generation": generation }),
-                });
+                events.push(
+                    OptimizerEventDraft::new("proposer.trace_v5.loaded", "gepa")
+                        .idempotency_key(format!("proposer-trace-v5:{generation}"))
+                        .level("info")
+                        .delta(serde_json::from_value(json!({
+                            "generation": generation,
+                            "schema_version": "synth.trace-projection.rollout-inspector.v1",
+                            "message": "Sealed proposer Trace V5 reconciled from app-server artifacts",
+                            "items": items,
+                        }))?)
+                        .raw(json!({ "source": "opencode_sse_events.jsonl", "generation": generation }))
+                        .artifact_refs(vec![json!({
+                            "kind": "trace_v5",
+                            "id": trace_path,
+                            "path": trace_path,
+                            "title": format!("Proposer Trace V5 · generation {generation}")
+                        })]),
+                );
             }
         }
     }
     if !events.is_empty() {
-        service.append_events(run_id.to_string(), events).await?;
+        service
+            .append_event_payloads(run_id.to_string(), events)
+            .await?;
     }
     Ok(())
 }
