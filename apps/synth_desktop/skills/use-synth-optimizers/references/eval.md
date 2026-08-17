@@ -59,6 +59,13 @@ fails rather than silently substituting a tag.
 | `eval.craftax.llm-policy.smoke.v1` | `llm-policy.v1` | report-only |
 | `eval.gamebench.llm-policy.confirm.v1` | `llm-policy.v1` | promotes |
 
+Two packaged container baselines are fixed measurement recipes, not candidate
+comparisons. Start `eval.banking77.baseline.v1` (10 examples, concurrency 10)
+or `eval.healthbench.smoke.v1` (2 train + 2 heldout, concurrency 2, $0.50
+ceiling) directly with `open_visual: true`; do not invent or stage a candidate
+set for either. They must complete every owed rollout and report retained
+terminal evidence. HealthBench keeps policy and canonical-grader usage separate.
+
 ### LLM candidates
 
 For an `llm-policy.v1` recipe the candidate is **data, not code**: a directory

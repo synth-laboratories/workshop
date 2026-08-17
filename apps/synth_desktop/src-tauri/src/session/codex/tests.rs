@@ -1758,9 +1758,13 @@ fn materializes_diagram_skill_with_direct_tool_first_contract() {
     assert!(!visual_skill.contains("{\"method\":\"visual_manage\""));
 
     let session_skill = fs::read_to_string(home.join("skills/use-synth-session/SKILL.md")).unwrap();
+    let optimizers_skill =
+        fs::read_to_string(home.join("skills/use-synth-optimizers/SKILL.md")).unwrap();
     assert!(session_skill.contains("tools.mcp__synth_session__session_present"));
     assert!(session_skill.contains("seven"));
     assert!(session_skill.contains("Manual"));
+    assert!(optimizers_skill.contains("mcp__synth_session__session_present"));
+    assert!(optimizers_skill.contains("run ID's final 6 characters"));
 }
 #[test]
 fn generated_mcp_configs_use_each_adapter_owned_ipc_variable() {
