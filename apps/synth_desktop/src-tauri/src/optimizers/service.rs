@@ -1,9 +1,11 @@
+use super::events::{plan_batch, EventVerdict, OptimizerEventDraft, SequenceContract};
 use super::models::{
     OptimizerCapabilities, OptimizerCreateRequest, OptimizerEventEnvelope, OptimizerQuery,
     OptimizerRelationship, OptimizerResourceRef, OptimizerRunRecord, OptimizerStateSlice,
     OptimizerUsageSummary, OPTIMIZER_EVENT_SCHEMA_VERSION, OPTIMIZER_RUN_SCHEMA_VERSION,
     OPTIMIZER_STATE_SLICE_SCHEMA_VERSION,
 };
+use super::terminal;
 use crate::storage::{append_event, AppEvent, Database, EventAppend, EventJournal, EventSource};
 use crate::visuals::{VisualCreateRequest, VisualRegistry, VISUAL_BINDINGS_SCHEMA_VERSION};
 use anyhow::{anyhow, bail, Context, Result};
@@ -470,12 +472,42 @@ impl OptimizerService {
         self.local_recipes.lock().await.remove(run_id);
     }
 
+    /// Persist a caller-mutated run record without letting it rewind lifecycle.
+    ///
+    /// Callers read a record, change one field, and write it back — a pattern
+    /// that is only safe while nothing else is writing. Workers, admission, and
+    /// event appends all write concurrently, and a snapshot taken before the
+    /// first event would otherwise restore its `cursor_seq`, un-finish the run,
+    /// and drop the visual it had since published. The event stream owns
+    /// lifecycle; this merges the caller's fields over the durable one.
     pub(super) async fn persist_run(&self, run: OptimizerRunRecord) -> Result<OptimizerRunRecord> {
         let db = self.db.clone();
-        let stored = run.clone();
         db.run_transaction(move |conn| {
+            let mut stored = run;
+            preserve_durable_authority(conn, &mut stored)?;
             upsert_run(conn, &stored)?;
             Ok(stored)
+        })
+        .await
+    }
+
+    /// Mutate a run under the durable record, inside one transaction. Preferred
+    /// over `persist_run` for new code: the closure never sees a stale snapshot.
+    pub(super) async fn patch_run<F>(
+        &self,
+        optimizer_run_id: String,
+        patch: F,
+    ) -> Result<OptimizerRunRecord>
+    where
+        F: FnOnce(&mut OptimizerRunRecord) -> Result<()> + Send + 'static,
+    {
+        let db = self.db.clone();
+        db.run_transaction(move |conn| {
+            let mut run = load_run(conn, &optimizer_run_id)?;
+            patch(&mut run)?;
+            preserve_durable_authority(conn, &mut run)?;
+            upsert_run(conn, &run)?;
+            Ok(run)
         })
         .await
     }
@@ -705,37 +737,149 @@ impl OptimizerService {
         .await
     }
 
+    /// Append events whose sequence numbers mirror an external log (a hosted
+    /// campaign, an imported sidecar feed, a cloud reconcile).
+    ///
+    /// The batch is validated as a whole before a single row is written, and no
+    /// event is ever silently dropped: an event that collides with a different
+    /// event already durable at its sequence is an error the producer must see.
     pub async fn append_events(
         &self,
         optimizer_run_id: String,
         events: Vec<OptimizerEventEnvelope>,
     ) -> Result<(OptimizerRunRecord, Option<AppEvent>)> {
+        self.commit_events(optimizer_run_id, events, SequenceContract::Mirrored)
+            .await
+    }
+
+    /// Append event *content*. The service owns identity and order.
+    ///
+    /// This is the only append a local worker should use. Sequence numbers are
+    /// allocated inside the transaction that inserts them, so two workers — or
+    /// one worker racing a `persist_run` — cannot compute the same number from
+    /// two stale snapshots and lose an event to a unique-index collision.
+    pub(super) async fn append_event_payloads(
+        &self,
+        optimizer_run_id: String,
+        drafts: Vec<OptimizerEventDraft>,
+    ) -> Result<(OptimizerRunRecord, Option<AppEvent>)> {
+        if drafts.is_empty() {
+            let run = self.get(optimizer_run_id).await?;
+            return Ok((run, None));
+        }
+        let db = self.db.clone();
+        let events_tx = self.events_tx.clone();
+        let result = db
+            .run_transaction(move |conn| {
+                let run = load_run(conn, &optimizer_run_id)?;
+                let sealed_at = Utc::now().to_rfc3339();
+                // Allocate above both the cursor and the highest durable event.
+                // They can disagree when an older build rewound one of them; the
+                // higher of the two is the only safe floor.
+                let mut next = run.cursor_seq.max(max_event_sequence(conn, &run.id)?);
+                let mut envelopes = Vec::with_capacity(drafts.len());
+                for draft in drafts {
+                    // An idempotent draft that is already durable seals to
+                    // nothing: re-offering a settlement must not mint a second
+                    // sequence for the same fact.
+                    if let Some(key) = draft.idempotency_key.as_deref() {
+                        if event_id_exists(conn, &run.id, &format!("{}:{key}", run.id))? {
+                            continue;
+                        }
+                    }
+                    next += 1;
+                    envelopes.push(draft.seal(&run.id, next, &sealed_at));
+                }
+                if envelopes.is_empty() {
+                    return Ok((run, None));
+                }
+                commit_validated_events(conn, run, envelopes, SequenceContract::ServiceAllocated)
+            })
+            .await?;
+        if let Some(event) = &result.1 {
+            let _ = events_tx.send(event.clone());
+        }
+        Ok(result)
+    }
+
+    async fn commit_events(
+        &self,
+        optimizer_run_id: String,
+        events: Vec<OptimizerEventEnvelope>,
+        contract: SequenceContract,
+    ) -> Result<(OptimizerRunRecord, Option<AppEvent>)> {
+        if events.is_empty() {
+            let run = self.get(optimizer_run_id).await?;
+            return Ok((run, None));
+        }
         let db = self.db.clone();
         let result = db
             .run_transaction(move |conn| {
+                let run = load_run(conn, &optimizer_run_id)?;
+                commit_validated_events(conn, run, events, contract)
+            })
+            .await?;
+        if let Some(event) = &result.1 {
+            let _ = self.events_tx.send(event.clone());
+        }
+        Ok(result)
+    }
+
+    /// The sealed terminal manifest for a run, or `None` while it is live.
+    pub async fn terminal_manifest(&self, optimizer_run_id: String) -> Result<Option<Value>> {
+        let db = self.db.clone();
+        db.run(move |conn| terminal::load(conn, &optimizer_run_id))
+            .await
+    }
+
+    /// Settle a run whose compute succeeded but whose evidence did not.
+    ///
+    /// The successful compute records are preserved and the failure is durable
+    /// and named, because the alternative — reporting a clean `completed` for a
+    /// run with no evidence — is the exact defect this lane exists to remove.
+    /// The run becomes terminal in the `degraded` state, which is retryable
+    /// without re-running paid compute.
+    pub(super) async fn settle_evidence_degraded(
+        &self,
+        optimizer_run_id: String,
+        stage: &str,
+        reason: String,
+    ) -> Result<OptimizerRunRecord> {
+        let stage = stage.to_string();
+        let db = self.db.clone();
+        let events_tx = self.events_tx.clone();
+        let (run, app_event) = db
+            .run_transaction(move |conn| {
                 let mut run = load_run(conn, &optimizer_run_id)?;
-                for event in events {
-                    if event.optimizer_run_id != run.id {
-                        bail!("event optimizer_run_id mismatch");
-                    }
-                    if event.sequence_number <= run.cursor_seq {
-                        continue;
-                    }
-                    insert_event(conn, &event)?;
-                    apply_event_to_run(&mut run, &event);
-                    run.cursor_seq = event.sequence_number;
-                    upsert_cursor(conn, &run.id, run.cursor_seq, &event.occurred_at)?;
+                let degradation = json!({
+                    "stage": stage,
+                    "reason": reason,
+                    "observedAt": Utc::now().to_rfc3339(),
+                    "retryable": true,
+                    "paidComputePreserved": true,
+                });
+                if terminal::load(conn, &run.id)?.is_some() {
+                    // Already settled: a degradation discovered afterwards is new
+                    // information about a sealed run, not a new ending.
+                    terminal::amend_degradation(conn, &run.id, degradation)?;
+                    return Ok((run, None));
                 }
+                run.status = "degraded".into();
+                run.finished_at = Some(Utc::now().to_rfc3339());
+                if let Some(object) = run.summary.as_object_mut() {
+                    object.insert("evidenceDegradation".into(), degradation.clone());
+                }
+                run.error = Some(degradation.clone());
                 upsert_run(conn, &run)?;
-                let projected = project_from_events(
+                let events = load_events_upto(conn, &run.id, run.cursor_seq)?;
+                let manifest = terminal::derive(
                     &run,
-                    &load_events_upto(conn, &run.id, run.cursor_seq)?,
-                    None,
-                )?;
-                for slice in projected {
-                    cache_slice(conn, &slice)?;
-                }
-                let event = append_event(
+                    &events,
+                    terminal::STATUS_FAILED_EVIDENCE,
+                    Some(degradation),
+                );
+                terminal::seal(conn, &run.id, &manifest)?;
+                let app_event = append_event(
                     conn,
                     EventAppend {
                         event_id: None,
@@ -746,20 +890,20 @@ impl OptimizerService {
                         payload: json!({
                             "optimizerRunId": run.id,
                             "status": run.status,
-                            "cursorSeq": run.cursor_seq
+                            "cursorSeq": run.cursor_seq,
                         }),
                         remote_sequence: None,
                         command_id: None,
                         created_at: None,
                     },
                 )?;
-                Ok((run, Some(event)))
+                Ok((run, Some(app_event)))
             })
             .await?;
-        if let Some(event) = &result.1 {
-            let _ = self.events_tx.send(event.clone());
+        if let Some(event) = app_event {
+            let _ = events_tx.send(event);
         }
-        Ok(result)
+        Ok(run)
     }
 
     pub async fn get_state(
@@ -1718,6 +1862,171 @@ fn upsert_run(conn: &Connection, run: &OptimizerRunRecord) -> Result<()> {
     Ok(())
 }
 
+/// Validate a whole batch, then execute it atomically: insert the events,
+/// advance the run and its cursor, refresh the cached projections, and — when
+/// the batch ends the run — seal the terminal manifest. Every one of those is
+/// part of the same transaction, so a projection that cannot be computed rolls
+/// back the events that would have implied it rather than leaving a run whose
+/// history and whose state slices describe different runs.
+fn commit_validated_events(
+    conn: &Connection,
+    mut run: OptimizerRunRecord,
+    events: Vec<OptimizerEventEnvelope>,
+    contract: SequenceContract,
+) -> Result<(OptimizerRunRecord, Option<AppEvent>)> {
+    let durable = durable_event_ids(conn, &run.id, &events)?;
+    let plan = plan_batch(&run.id, run.cursor_seq, &durable, &events, contract)
+        .with_context(|| format!("validate optimizer event batch for {}", run.id))?;
+    let mut appended = 0usize;
+    for (event, verdict) in events.iter().zip(plan) {
+        if verdict == EventVerdict::ConfirmedReplay {
+            continue;
+        }
+        insert_event(conn, event)?;
+        apply_event_to_run(&mut run, event);
+        run.cursor_seq = event.sequence_number;
+        upsert_cursor(conn, &run.id, run.cursor_seq, &event.occurred_at)?;
+        appended += 1;
+    }
+    if appended == 0 {
+        // Every event was a confirmed replay. Nothing durable changed, so the
+        // bus stays quiet rather than waking every subscriber for no news.
+        return Ok((run, None));
+    }
+    upsert_run(conn, &run)?;
+    let history = load_events_upto(conn, &run.id, run.cursor_seq)?;
+    let projected = project_from_events(&run, &history, None)
+        .with_context(|| format!("project optimizer run {} at {}", run.id, run.cursor_seq))?;
+    for slice in projected {
+        cache_slice(conn, &slice)?;
+    }
+    if is_terminal_status(&run.status) {
+        // Sealed at the cursor the terminal event advanced to, in the same
+        // transaction that appended it. A later poll cannot replace it.
+        let manifest = terminal::derive(&run, &history, &run.status, None);
+        terminal::seal(conn, &run.id, &manifest)?;
+    }
+    let app_event = append_event(
+        conn,
+        EventAppend {
+            event_id: None,
+            session_id: run.session_ref.clone(),
+            run_id: None,
+            source: EventSource::System,
+            kind: "optimizer.run.updated".into(),
+            payload: json!({
+                "optimizerRunId": run.id,
+                "status": run.status,
+                "cursorSeq": run.cursor_seq
+            }),
+            remote_sequence: None,
+            command_id: None,
+            created_at: None,
+        },
+    )?;
+    Ok((run, Some(app_event)))
+}
+
+/// Restore the fields the durable record is authoritative for onto a
+/// caller-supplied snapshot.
+///
+/// `cursor_seq` never moves backwards, a terminal run never becomes live again,
+/// timestamps are never unset, and published artifact references are never
+/// dropped — a chat-owned visual that a stale writer forgets about is a visual
+/// the user loses from Outputs.
+fn preserve_durable_authority(conn: &Connection, run: &mut OptimizerRunRecord) -> Result<()> {
+    let payload: Option<String> = conn
+        .query_row(
+            "SELECT payload_json FROM optimizer_runs WHERE id = ?1",
+            params![run.id],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let Some(payload) = payload else {
+        return Ok(());
+    };
+    let durable: OptimizerRunRecord = serde_json::from_str(&payload)?;
+    if durable.cursor_seq > run.cursor_seq {
+        run.cursor_seq = durable.cursor_seq;
+        run.status = durable.status.clone();
+    } else if is_terminal_status(&durable.status) && !is_terminal_status(&run.status) {
+        run.status = durable.status.clone();
+    }
+    if run.started_at.is_none() {
+        run.started_at = durable.started_at.clone();
+    }
+    if run.finished_at.is_none() {
+        run.finished_at = durable.finished_at.clone();
+    }
+    merge_refs(&mut run.visual_refs, &durable.visual_refs);
+    merge_refs(&mut run.output_refs, &durable.output_refs);
+    Ok(())
+}
+
+/// Union by `(kind, id)`, keeping the caller's version of a reference it also
+/// carries. Order is stable: the durable ones the caller dropped are appended.
+fn merge_refs(into: &mut Vec<OptimizerResourceRef>, durable: &[OptimizerResourceRef]) {
+    for reference in durable {
+        let present = into
+            .iter()
+            .any(|existing| existing.kind == reference.kind && existing.id == reference.id);
+        if !present {
+            into.push(reference.clone());
+        }
+    }
+}
+
+pub(super) fn is_terminal_status(status: &str) -> bool {
+    matches!(
+        status,
+        "completed" | "succeeded" | "failed" | "cancelled" | "degraded"
+    )
+}
+
+/// The `sequence -> event_id` map for exactly the sequences a batch touches.
+/// Scoped to the batch so validating one settlement does not read a campaign's
+/// whole history.
+fn durable_event_ids(
+    conn: &Connection,
+    run_id: &str,
+    events: &[OptimizerEventEnvelope],
+) -> Result<HashMap<u64, String>> {
+    let mut out = HashMap::new();
+    let mut stmt = conn.prepare(
+        "SELECT sequence_number, event_id FROM optimizer_events
+         WHERE optimizer_run_id = ?1 AND sequence_number = ?2",
+    )?;
+    for event in events {
+        let row = stmt
+            .query_row(params![run_id, event.sequence_number as i64], |row| {
+                Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+            })
+            .optional()?;
+        if let Some((sequence, event_id)) = row {
+            out.insert(sequence as u64, event_id);
+        }
+    }
+    Ok(out)
+}
+
+fn max_event_sequence(conn: &Connection, run_id: &str) -> Result<u64> {
+    let value: i64 = conn.query_row(
+        "SELECT COALESCE(MAX(sequence_number), 0) FROM optimizer_events WHERE optimizer_run_id = ?1",
+        params![run_id],
+        |row| row.get(0),
+    )?;
+    Ok(value.max(0) as u64)
+}
+
+fn event_id_exists(conn: &Connection, run_id: &str, event_id: &str) -> Result<bool> {
+    conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM optimizer_events WHERE optimizer_run_id = ?1 AND event_id = ?2)",
+        params![run_id, event_id],
+        |row| row.get::<_, bool>(0),
+    )
+    .map_err(Into::into)
+}
+
 fn upsert_cursor(conn: &Connection, run_id: &str, cursor_seq: u64, updated_at: &str) -> Result<()> {
     conn.execute(
         "INSERT INTO optimizer_event_cursors(optimizer_run_id, cursor_seq, updated_at)
@@ -1730,18 +2039,26 @@ fn upsert_cursor(conn: &Connection, run_id: &str, cursor_seq: u64, updated_at: &
     Ok(())
 }
 
+/// Insert one validated event.
+///
+/// Deliberately a plain `INSERT`: `plan_batch` has already decided this event is
+/// new, so a conflict here means the plan was computed against a different
+/// database state and the batch must fail rather than lose a row. `INSERT OR
+/// IGNORE` is what let a colliding terminal event disappear while its run went
+/// on to report success.
 fn insert_event(conn: &Connection, event: &OptimizerEventEnvelope) -> Result<()> {
     let payload = serde_json::to_string(event)?;
+    let event_id = event
+        .event_id
+        .clone()
+        .unwrap_or_else(|| format!("{}:{}", event.optimizer_run_id, event.sequence_number));
     conn.execute(
-        "INSERT OR IGNORE INTO optimizer_events(
+        "INSERT INTO optimizer_events(
             event_id, optimizer_run_id, sequence_number, event_type,
             algorithm_id, occurred_at, payload_json
          ) VALUES (?1,?2,?3,?4,?5,?6,?7)",
         params![
-            event
-                .event_id
-                .clone()
-                .unwrap_or_else(|| format!("{}:{}", event.optimizer_run_id, event.sequence_number)),
+            event_id,
             event.optimizer_run_id,
             event.sequence_number as i64,
             event.event_type,
@@ -1749,7 +2066,13 @@ fn insert_event(conn: &Connection, event: &OptimizerEventEnvelope) -> Result<()>
             event.occurred_at,
             payload
         ],
-    )?;
+    )
+    .with_context(|| {
+        format!(
+            "insert optimizer event {} ({}) at sequence {}",
+            event_id, event.event_type, event.sequence_number
+        )
+    })?;
     Ok(())
 }
 

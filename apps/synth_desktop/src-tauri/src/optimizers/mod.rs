@@ -4,6 +4,7 @@ mod cloud;
 mod container_eval;
 mod eval_candidates;
 mod eval_recipes;
+mod events;
 mod hosted_client;
 mod hosted_gelo;
 mod hosted_sft;
@@ -16,6 +17,7 @@ mod recipes;
 mod service;
 mod sft_client;
 mod sft_recipes;
+mod terminal;
 mod tinker_catalog;
 
 pub use eval_candidates::EvalStageCandidatesRequest;

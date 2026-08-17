@@ -25,6 +25,7 @@ const MIGRATIONS: &[&str] = &[
     MIGRATION_20,
     MIGRATION_21,
     MIGRATION_22,
+    MIGRATION_23,
 ];
 
 /// Apply every migration the database has not reached yet.
@@ -1391,6 +1392,25 @@ ON eval_campaign_rollouts(rollout_id);
 
 CREATE UNIQUE INDEX IF NOT EXISTS eval_campaign_seed_identity
 ON eval_campaign_rollouts(campaign_id, seed);
+"#;
+
+/// The write-once terminal manifest. One row per run, sealed in the same
+/// transaction as the terminal event, and never rewritten by a later poll —
+/// which is why `terminal_cursor` lives in its own column rather than only in
+/// the payload: a settled run's cursor must be queryable without parsing JSON.
+const MIGRATION_23: &str = r#"
+CREATE TABLE IF NOT EXISTS optimizer_terminal_manifests (
+    optimizer_run_id TEXT PRIMARY KEY REFERENCES optimizer_runs(id) ON DELETE CASCADE,
+    schema_version TEXT NOT NULL,
+    algorithm_id TEXT NOT NULL,
+    terminal_status TEXT NOT NULL,
+    terminal_cursor INTEGER NOT NULL,
+    sealed_at TEXT NOT NULL,
+    payload_json TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS optimizer_terminal_manifests_status
+ON optimizer_terminal_manifests(terminal_status, sealed_at DESC);
 "#;
 
 #[cfg(test)]
