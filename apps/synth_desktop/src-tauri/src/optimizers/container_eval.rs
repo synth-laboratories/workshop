@@ -1710,6 +1710,85 @@ mod tests {
         task.abort();
     }
 
+    /// Two product workflows in flight at once. Each keeps its own contiguous
+    /// event log, its own sealed manifest, and its own chat-owned visual — the
+    /// service allocates sequences per run, so concurrency cannot cross them.
+    #[tokio::test]
+    async fn two_container_evals_run_concurrently_without_crossing_evidence() {
+        let (svc, _dir, _) = service().await;
+
+        let banking_rewards = (0..10).map(|seed| (("train".into(), seed), 1.0)).collect();
+        let (banking_base, banking_task, _) = spawn_eval_mock("banking77", banking_rewards).await;
+        insert_container(&svc, "banking77", &banking_base, "ready").await;
+
+        let mut health_rewards = BTreeMap::new();
+        for seed in [0, 1, 100, 101] {
+            health_rewards.insert(
+                (if seed < 100 { "train".into() } else { "heldout".into() }, seed),
+                0.9,
+            );
+        }
+        let (health_base, health_task, _) = spawn_eval_mock("healthbench", health_rewards).await;
+        insert_container(&svc, "healthbench", &health_base, "ready").await;
+
+        let start = |recipe: &'static str, session: &'static str| {
+            let svc = svc.clone();
+            async move {
+                svc.start_recipe(OptimizerRecipeRunRequest {
+                    recipe_id: recipe.into(),
+                    session_ref: Some(session.into()),
+                    open_visual: Some(true),
+                    base_model: None,
+                    dataset_shard: None,
+                    candidate_set_id: None,
+                })
+                .await
+                .unwrap()
+                .0
+            }
+        };
+        let (banking, health) = tokio::join!(
+            start(BANKING77_EVAL_BASELINE_RECIPE, "sess_concurrent_banking"),
+            start(HEALTHBENCH_EVAL_SMOKE_RECIPE, "sess_concurrent_health"),
+        );
+
+        for (run_id, planned, session) in [
+            (banking.id.clone(), 10u64, "sess_concurrent_banking"),
+            (health.id.clone(), 4u64, "sess_concurrent_health"),
+        ] {
+            wait_terminal(&svc, &run_id).await;
+            let manifest = wait_manifest(&svc, &run_id).await;
+            assert_eq!(manifest["work"]["planned"], json!(planned), "{run_id}");
+            assert_eq!(manifest["work"]["succeeded"], json!(planned), "{run_id}");
+
+            let events = svc.events_after(run_id.clone(), 0, Some(500)).await.unwrap();
+            let sequences: Vec<u64> = events.iter().map(|event| event.sequence_number).collect();
+            assert_eq!(
+                sequences,
+                (1..=sequences.len() as u64).collect::<Vec<_>>(),
+                "{run_id} log must be contiguous under concurrency"
+            );
+            assert!(
+                events
+                    .iter()
+                    .all(|event| event.optimizer_run_id == run_id),
+                "one campaign's events must never land in the other's log"
+            );
+            let selected = svc
+                .visuals()
+                .selected_for_session(session.into())
+                .await
+                .unwrap();
+            assert_eq!(
+                selected.as_deref(),
+                svc.get(run_id.clone()).await.unwrap().summary["visualId"].as_str(),
+                "each campaign owns its own chat's pane"
+            );
+        }
+        banking_task.abort();
+        health_task.abort();
+    }
+
     /// A visual projection that fails at settlement makes the run degraded, not
     /// completed — and the rollouts it already paid for stay on the record.
     #[tokio::test]

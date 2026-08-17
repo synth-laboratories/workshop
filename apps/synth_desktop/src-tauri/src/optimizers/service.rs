@@ -4096,6 +4096,48 @@ pub(in crate::optimizers) mod tests {
         assert!(result.get("selectedCandidate").is_none());
     }
 
+    /// GEPA, eval, and SFT settle into their own typed results. A shared
+    /// GEPA-shaped reader is what made a baseline eval demand a prompt it was
+    /// never designed to have.
+    #[tokio::test]
+    async fn terminal_results_stay_algorithm_specific() {
+        let (svc, _dir, _) = service().await;
+        let (gepa, _) = svc.seed_fixture("gepa", Some("chat_kinds".into())).await.unwrap();
+        let (sft, _) = svc.seed_fixture("sft", Some("chat_kinds".into())).await.unwrap();
+        let eval = eval_run(&svc, "opt_eval_kinds", "chat_kinds").await;
+        svc.append_event_payloads(
+            eval.id.clone(),
+            vec![
+                draft("optimizer.run.started"),
+                draft("eval.run.planned")
+                    .snapshot(Map::from_iter([("planned_trials".into(), json!(2))])),
+                draft("optimizer.run.completed"),
+            ],
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            svc.get_result(eval.id).await.unwrap()["resultKind"],
+            json!("eval_run_result.v1")
+        );
+        assert_eq!(
+            svc.get_result(sft.id).await.unwrap()["resultKind"],
+            json!("sft_run_result.v1")
+        );
+        // GEPA still materializes a candidate, and still fails closed when a
+        // completed optimization has none — that safeguard was correct for GEPA
+        // and only wrong when applied to everything else.
+        let gepa_result = svc.get_result(gepa.id).await;
+        match gepa_result {
+            Ok(value) => assert_eq!(value["resultKind"], json!("gepa_run_result.v1")),
+            Err(error) => assert!(
+                format!("{error:#}").contains("materialized prompt"),
+                "{error:#}"
+            ),
+        }
+    }
+
     #[test]
     fn recipe_readiness_names_missing_contract_and_owner() {
         let projected = project_recipe_readiness(json!({

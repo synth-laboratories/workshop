@@ -115,6 +115,67 @@ test.after(() => {
 	setRunProgressStallTimeout(15_000);
 });
 
+/**
+ * The fast-finish race. Banking77 settles in ~1.5s — often before any surface
+ * has subscribed. The first read is a full durable snapshot precisely so a
+ * subscription that arrives after the end still sees the whole run, rather than
+ * asking for "events after now" and receiving nothing.
+ */
+test("a run that finished before anyone subscribed still replays its whole history", async () => {
+	const finished = runRecord({ status: "completed", cursorSeq: 23 });
+	const history = Array.from({ length: 23 }, (_, index) => event(index + 1));
+	const asked = [];
+	const transport = fakeTransport({
+		runs: { "run-a": finished },
+		pages: { "run-a": history },
+		onEventsAfter: (_runId, afterSeq) => asked.push(afterSeq)
+	});
+	setRunProgressTransport(transport);
+	const seen = [];
+	subscribeToRun("run-a", (snapshot) => seen.push(snapshot));
+	await settle();
+	const last = seen.at(-1);
+	assert.equal(last.state, "terminal");
+	assert.equal(last.cursor, 23);
+	assert.equal(last.events.length, 23, "a late subscriber gets the whole run, not the tail");
+	assert.equal(last.gap, false);
+	assert.equal(asked[0], 0, "the first read is a snapshot from zero, never from the current cursor");
+});
+
+/**
+ * Two workflows in flight at once must not read each other's history. The
+ * store is keyed by run id and every wakeup re-reads that run's own pages.
+ */
+test("concurrent runs keep separate histories and separate cursors", async () => {
+	const transport = fakeTransport({
+		runs: {
+			"run-a": runRecord({ id: "run-a", status: "completed", cursorSeq: 3 }),
+			"run-b": runRecord({ id: "run-b", status: "running", cursorSeq: 2 })
+		},
+		pages: {
+			"run-a": [event(1), event(2), event(3)],
+			"run-b": [
+				{ ...event(1), optimizerRunId: "run-b" },
+				{ ...event(2), optimizerRunId: "run-b" }
+			]
+		}
+	});
+	setRunProgressTransport(transport);
+	const a = [];
+	const b = [];
+	subscribeToRun("run-a", (snapshot) => a.push(snapshot));
+	subscribeToRun("run-b", (snapshot) => b.push(snapshot));
+	await settle();
+	assert.equal(a.at(-1).cursor, 3);
+	assert.equal(a.at(-1).events.length, 3);
+	assert.equal(b.at(-1).cursor, 2);
+	assert.equal(b.at(-1).events.length, 2);
+	assert.ok(
+		b.at(-1).events.every((entry) => entry.optimizerRunId === "run-b"),
+		"one run's page must never land in another run's snapshot"
+	);
+});
+
 test("a run history replays once and reaches subscribed with the run's cursor", async () => {
 	const transport = fakeTransport({
 		runs: { "run-a": runRecord() },
