@@ -2,7 +2,7 @@
 use anyhow::{anyhow, Context, Result};
 use serde_json::{json, Value};
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     path::{Path, PathBuf},
     process::Stdio,
     sync::{atomic::AtomicU64, Arc},
@@ -173,6 +173,7 @@ async fn read_stdout<R: tauri::Runtime>(
     persistence: EventPumpState,
 ) {
     let mut lines = BufReader::new(stdout).lines();
+    let mut settlement = TurnSettlement::default();
     while let Ok(Some(line)) = lines.next_line().await {
         // Stamped here, on the decoded frame, before parsing, redaction,
         // persistence, IPC, or any renderer work. Generation speed is a claim
@@ -210,7 +211,14 @@ async fn read_stdout<R: tauri::Runtime>(
         // `phase: final_answer` is a protocol lifecycle signal, not an
         // inference from response text, so EOF must not overwrite it as an
         // unhealthy local agent.
-        let final_answer = is_final_agent_message(&method, &params);
+        //
+        // A second hang was observed after visual-bind/prepare failures:
+        // tools had settled, the agent emitted a diagnostic assistant item,
+        // and the process stayed Working until it was stopped. Treat a
+        // completed assistant item with zero in-flight tools as terminal
+        // once this turn has already used tools.
+        let settled_after_tools = settlement.observe(&method, &params);
+        let final_answer = is_final_agent_message(&method, &params) || settled_after_tools;
         if final_answer {
             crate::recovery::crash_checkpoint(crate::recovery::checkpoints::BEFORE_FINAL_MESSAGE);
         }
@@ -583,6 +591,92 @@ fn is_final_agent_message(method: &str, params: &Value) -> bool {
         && matches!(phase.as_deref(), Some("final_answer"))
 }
 
+fn is_tool_item(item_type: Option<&str>) -> bool {
+    matches!(
+        item_type.unwrap_or_default(),
+        "functioncall"
+            | "function_call"
+            | "customtool"
+            | "custom_tool"
+            | "customtoolcall"
+            | "mcptoolcall"
+            | "mcp_tool_call"
+            | "commandexecution"
+            | "command_execution"
+            | "tool"
+            | "toolcall"
+            | "tool_call"
+    )
+}
+
+fn item_type_and_id(params: &Value) -> (Option<String>, String) {
+    let item = params.get("item").and_then(Value::as_object);
+    let item_type = item
+        .and_then(|item| item.get("type"))
+        .and_then(Value::as_str)
+        .map(str::to_ascii_lowercase);
+    let item_id = item
+        .and_then(|item| item.get("id"))
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("item")
+        .to_string();
+    (item_type, item_id)
+}
+
+fn is_completed_agent_message(method: &str, params: &Value) -> bool {
+    if !matches!(method, "item/completed" | "item/agentMessage") {
+        return false;
+    }
+    let (item_type, _) = item_type_and_id(params);
+    matches!(item_type.as_deref(), Some("agentmessage"))
+}
+
+/// Completes a turn that already used tools once the last in-flight tool is
+/// gone and an assistant item has completed. Covers the stuck-Working hang
+/// where a diagnostic message followed failed visual bind/prepare and no
+/// `final_answer` / `turn/completed` ever arrived.
+#[derive(Default)]
+struct TurnSettlement {
+    in_flight: HashSet<String>,
+    tools_seen: bool,
+    settled: bool,
+}
+
+impl TurnSettlement {
+    fn observe(&mut self, method: &str, params: &Value) -> bool {
+        if matches!(method, "turn/started" | "turn/start") {
+            *self = Self::default();
+            return false;
+        }
+        if matches!(
+            method,
+            "turn/completed" | "turn/failed" | "turn/interrupted"
+        ) {
+            self.settled = true;
+            return false;
+        }
+        let (item_type, item_id) = item_type_and_id(params);
+        if is_tool_item(item_type.as_deref()) {
+            self.tools_seen = true;
+            if method == "item/started" {
+                self.in_flight.insert(item_id);
+            } else if matches!(method, "item/completed" | "item/failed") {
+                self.in_flight.remove(&item_id);
+            }
+            return false;
+        }
+        if self.settled || !self.tools_seen || !self.in_flight.is_empty() {
+            return false;
+        }
+        if is_completed_agent_message(method, params) {
+            self.settled = true;
+            return true;
+        }
+        false
+    }
+}
+
 async fn fail_malformed_approval<R: tauri::Runtime>(
     app: &AppHandle<R>,
     session_id: &str,
@@ -714,6 +808,74 @@ mod terminal_message_tests {
             }
         });
         assert!(!is_final_agent_message("item/completed", &commentary));
+    }
+
+    #[test]
+    fn a_final_answer_after_settled_tools_is_terminal() {
+        let after_tools = json!({
+            "item": {
+                "id": "msg_final",
+                "type": "agentMessage",
+                "phase": "final_answer",
+                "text": "Banking77 is blocked on stale capabilities; HealthBench needs GEPA v2."
+            }
+        });
+        assert!(is_final_agent_message("item/completed", &after_tools));
+        assert!(is_final_agent_message("item/agentMessage", &after_tools));
+    }
+
+    #[test]
+    fn settled_tools_plus_assistant_item_completes_the_turn() {
+        let mut settlement = TurnSettlement::default();
+        let tool_start = json!({
+            "item": { "id": "call_bind", "type": "mcpToolCall", "name": "visual_create" }
+        });
+        let tool_done = json!({
+            "item": { "id": "call_bind", "type": "mcpToolCall", "status": "failed" }
+        });
+        let diagnostic = json!({
+            "item": {
+                "id": "msg_diag",
+                "type": "agentMessage",
+                "phase": "commentary",
+                "text": "HealthBench prepare failed; the visual bind is invalid."
+            }
+        });
+        assert!(!settlement.observe("item/started", &tool_start));
+        assert!(!settlement.observe("item/completed", &tool_done));
+        assert!(settlement.observe("item/completed", &diagnostic));
+        assert!(!settlement.observe("item/completed", &diagnostic));
+    }
+
+    #[test]
+    fn commentary_without_tools_does_not_finish_the_turn() {
+        let mut settlement = TurnSettlement::default();
+        let commentary = json!({
+            "item": {
+                "id": "msg_note",
+                "type": "agentMessage",
+                "phase": "commentary",
+                "text": "looking at the visual"
+            }
+        });
+        assert!(!settlement.observe("item/completed", &commentary));
+        assert!(!is_final_agent_message("item/completed", &commentary));
+    }
+
+    #[test]
+    fn in_flight_tools_block_settlement_until_they_complete() {
+        let mut settlement = TurnSettlement::default();
+        let first = json!({"item": {"id": "t1", "type": "functionCall"}});
+        let second = json!({"item": {"id": "t2", "type": "mcpToolCall"}});
+        let assistant = json!({
+            "item": {"id": "msg", "type": "agentMessage", "phase": "commentary", "text": "still working"}
+        });
+        assert!(!settlement.observe("item/started", &first));
+        assert!(!settlement.observe("item/completed", &first));
+        assert!(!settlement.observe("item/started", &second));
+        assert!(!settlement.observe("item/completed", &assistant));
+        assert!(!settlement.observe("item/completed", &second));
+        assert!(settlement.observe("item/completed", &assistant));
     }
 }
 

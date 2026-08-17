@@ -31,6 +31,25 @@ const BREAKER_TARGET_FIELDS: [&str; 7] = [
     "id",
 ];
 
+const BREAKER_SLOT_FIELDS: [&str; 3] = ["slot", "binding_slot", "bindingSlot"];
+const BREAKER_CAPABILITY_REVISION_FIELDS: [&str; 4] = [
+    "capability_revision",
+    "capabilityRevision",
+    "capability_digest",
+    "capabilityDigest",
+];
+
+fn arg_str<'a>(args: &'a Value, field: &str) -> Option<&'a str> {
+    args.get(field)
+        .and_then(Value::as_str)
+        .or_else(|| {
+            args.pointer(&format!("/arguments/{field}"))
+                .and_then(Value::as_str)
+        })
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+}
+
 fn breaker_key(tool: &str, args: &Value) -> String {
     let mut key = tool.to_string();
     if let Some(operation) = args.get("operation").and_then(Value::as_str) {
@@ -38,15 +57,15 @@ fn breaker_key(tool: &str, args: &Value) -> String {
         key.push_str(operation);
     }
     for field in BREAKER_TARGET_FIELDS {
-        let target = args.get(field).and_then(Value::as_str).or_else(|| {
-            args.pointer(&format!("/arguments/{field}"))
-                .and_then(Value::as_str)
-        });
-        if let Some(target) = target.map(str::trim).filter(|value| !value.is_empty()) {
+        if let Some(target) = arg_str(args, field) {
             key.push('#');
             key.push_str(target);
             break;
         }
+    }
+    if let Some(slot) = BREAKER_SLOT_FIELDS.iter().find_map(|field| arg_str(args, field)) {
+        key.push('/');
+        key.push_str(slot);
     }
     if let Some(revision) = args
         .get("revision")
@@ -56,7 +75,73 @@ fn breaker_key(tool: &str, args: &Value) -> String {
         key.push('@');
         key.push_str(&revision.to_string());
     }
+    // Capability revision is an observation identity, not a visual revision.
+    // Stripping it collapsed probe recovery into the same prepare breaker.
+    if let Some(revision) = BREAKER_CAPABILITY_REVISION_FIELDS
+        .iter()
+        .find_map(|field| arg_str(args, field))
+    {
+        key.push_str("~cap:");
+        key.push_str(revision);
+    }
+    if let Some(token) = breaker_payload_token(tool, args) {
+        key.push_str("~req:");
+        key.push_str(&token);
+    }
     key
+}
+
+/// Bind and prepare keys include the request that failed, so a corrected
+/// payload is a new recovery attempt. Identical retries still share a key.
+fn breaker_payload_token(tool: &str, args: &Value) -> Option<String> {
+    let operation = args.get("operation").and_then(Value::as_str).unwrap_or("");
+    let bind_like = tool.contains("bind")
+        || matches!(operation, "bind" | "create" | "create_with_bind" | "update");
+    let prepare_like = tool.contains("prepare_rollout");
+    if !bind_like && !prepare_like {
+        return None;
+    }
+    let mut material = String::new();
+    for field in [
+        "kind",
+        "source",
+        "schema",
+        "path",
+        "template_id",
+        "templateId",
+        "policy_ref",
+        "policyRef",
+    ] {
+        if let Some(value) = args.get(field).or_else(|| args.pointer(&format!("/arguments/{field}"))) {
+            if !value.is_null() {
+                material.push_str(field);
+                material.push(':');
+                material.push_str(&value.to_string());
+            }
+        }
+    }
+    let has_data = args.get("data").is_some()
+        || args.pointer("/arguments/data").is_some()
+        || args
+            .pointer("/bindings")
+            .and_then(Value::as_object)
+            .is_some_and(|object| object.contains_key("data"));
+    if has_data {
+        material.push_str("data:1");
+    }
+    if material.is_empty() {
+        return None;
+    }
+    Some(format!("{:x}", simple_token(&material)))
+}
+
+fn simple_token(material: &str) -> u64 {
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for byte in material.as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x1000_0000_01b3);
+    }
+    hash
 }
 
 fn breaker_target(args: &Value) -> Option<&str> {
@@ -78,21 +163,41 @@ fn visual_recovery_operation(tool: &str, args: &Value) -> bool {
     }
     matches!(
         args.get("operation").and_then(Value::as_str),
-        Some("capture_review" | "review" | "update")
+        Some("capture_review" | "review" | "update" | "bind" | "create_with_bind")
+    )
+}
+
+fn container_recovery_operation(tool: &str) -> bool {
+    matches!(
+        tool,
+        "container_probe" | "container_get" | "container_list"
     )
 }
 
 /// A structured `{"code": …}` failure is the same failure however its message
 /// is worded, and a different code is a different failure however similar the
-/// prose. Fall back to digit-normalized text only for unstructured errors.
+/// prose. Capability revision/digest stays in the signature so a successful
+/// probe that advances the observation is not the same stale failure.
+/// Fall back to digit-normalized text only for unstructured errors.
 fn failure_signature(error: &str) -> String {
     serde_json::from_str::<Value>(error)
         .ok()
         .and_then(|value| {
-            value
-                .get("code")
+            let code = value.get("code").and_then(Value::as_str)?;
+            let mut signature = format!("code:{code}");
+            if let Some(revision) = value
+                .get("capability_revision")
+                .or_else(|| value.get("capabilityRevision"))
+                .or_else(|| value.get("observed_at"))
+                .or_else(|| value.get("observedAt"))
                 .and_then(Value::as_str)
-                .map(|code| format!("code:{code}"))
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+            {
+                signature.push('@');
+                signature.push_str(revision);
+            }
+            Some(signature)
         })
         .unwrap_or_else(|| normalize_error(error))
 }
@@ -132,8 +237,27 @@ impl ToolLoopBreaker {
         // readiness service could inspect the corrected reviews.
         if visual_recovery_operation(tool, args) {
             if let Some(target) = breaker_target(args) {
-                let prefix = format!("visual_manage/mark_ready#{target}");
-                self.failures.retain(|key, _| !key.starts_with(&prefix));
+                let ready = format!("visual_manage/mark_ready#{target}");
+                let bind = format!("visual_manage/bind#{target}");
+                self.failures
+                    .retain(|key, _| !key.starts_with(&ready) && !key.starts_with(&bind));
+            }
+        }
+        // Probe/get/list refresh the capability observation used by prepare.
+        // A successful probe must clear stale prepare breakers for that
+        // container without a process restart.
+        if container_recovery_operation(tool) {
+            if let Some(target) = breaker_target(args) {
+                let prepare = format!("container_prepare_rollout#{target}");
+                self.failures.retain(|key, (signature, _)| {
+                    !(key.starts_with(&prepare)
+                        && signature.starts_with("code:container_capabilities_stale"))
+                });
+            } else if tool == "container_list" {
+                self.failures.retain(|key, (signature, _)| {
+                    !(key.starts_with("container_prepare_rollout#")
+                        && signature.starts_with("code:container_capabilities_stale"))
+                });
             }
         }
     }
@@ -415,6 +539,92 @@ mod tests {
         assert_eq!(result["structuredContent"]["terminal"], true);
         assert_eq!(result["structuredContent"]["error"], "denied");
         assert!(result["structuredContent"].get("structuredError").is_none());
+    }
+
+    #[test]
+    fn successful_probe_clears_stale_prepare_breaker_without_restart() {
+        let container = json!({"container_id": "ctr_banking77"});
+        let mut breaker = ToolLoopBreaker::default();
+        let stale = json!({
+            "code": "container_capabilities_stale",
+            "observed_at": "2026-08-17T12:00:00Z"
+        })
+        .to_string();
+        breaker.record_failure("container_prepare_rollout", &container, &stale);
+        breaker.record_failure("container_prepare_rollout", &container, &stale);
+        assert!(breaker
+            .terminal_error("container_prepare_rollout", &container)
+            .is_some());
+        assert!(breaker
+            .terminal_error("container_probe", &container)
+            .is_none());
+        assert!(breaker
+            .terminal_error("container_get", &container)
+            .is_none());
+
+        breaker.record_success("container_probe", &container);
+        assert!(
+            breaker
+                .terminal_error("container_prepare_rollout", &container)
+                .is_none(),
+            "probe must supersede stale prepare breaker state"
+        );
+    }
+
+    #[test]
+    fn breaker_key_keeps_capability_revision_and_bind_slot() {
+        let first = json!({
+            "container_id": "ctr_1",
+            "capability_revision": "rev-a"
+        });
+        let second = json!({
+            "container_id": "ctr_1",
+            "capability_revision": "rev-b"
+        });
+        assert_ne!(breaker_key("container_prepare_rollout", &first), breaker_key("container_prepare_rollout", &second));
+
+        let bind = json!({
+            "operation": "bind",
+            "arguments": {"visual_id": "vis_1", "slot": "experiment", "kind": "inline"}
+        });
+        let show = json!({
+            "operation": "show",
+            "arguments": {"visual_id": "vis_1"}
+        });
+        assert!(breaker_key("visual_manage", &bind).contains("/experiment"));
+        assert_ne!(
+            breaker_key("visual_manage", &bind),
+            breaker_key("visual_manage", &show)
+        );
+    }
+
+    #[test]
+    fn corrected_bind_payload_is_a_new_recovery_attempt() {
+        let missing = json!({
+            "operation": "bind",
+            "arguments": {"visual_id": "vis_1", "slot": "experiment", "kind": "inline"}
+        });
+        let corrected = json!({
+            "operation": "bind",
+            "arguments": {
+                "visual_id": "vis_1",
+                "slot": "experiment",
+                "kind": "inline",
+                "data": {"experimentId": "exp_1"}
+            }
+        });
+        let mut breaker = ToolLoopBreaker::default();
+        let error = json!({"code": "visual_binding_invalid"}).to_string();
+        breaker.record_failure("visual_manage", &missing, &error);
+        breaker.record_failure("visual_manage", &missing, &error);
+        assert!(breaker.terminal_error("visual_manage", &missing).is_some());
+        assert!(breaker.terminal_error("visual_manage", &corrected).is_none());
+        assert!(breaker
+            .terminal_error(
+                "visual_manage",
+                &json!({"operation": "show", "arguments": {"visual_id": "vis_1"}})
+            )
+            .is_none());
     }
 
     #[test]

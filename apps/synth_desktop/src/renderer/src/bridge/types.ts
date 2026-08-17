@@ -439,6 +439,8 @@ export type VisualTemplateMeta = {
 	path?: string | null;
 	shellPath?: string | null;
 	exampleBinding?: Record<string, unknown> | null;
+	slots?: unknown[] | null;
+	bindingSchema?: unknown[] | null;
 };
 
 export type VisualAnnotation = {

@@ -2159,6 +2159,7 @@ export type TemplateMeta = {
 	shellPath?: string | null,
 	exampleBinding?: unknown,
 	slots?: unknown,
+	bindingSchema?: unknown,
 	observationContract?: TemplateObservationContract | null,
 };
 

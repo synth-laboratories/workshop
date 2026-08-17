@@ -36,8 +36,9 @@ or filesystem search to discover this tool.
 | `list` | `{ "search"?: string, "status"?: string, "session_id"?: string }` |
 | `get` | `{ "visual_id": string }` |
 | `create` | `{ "template_id": string, "title"?: string, "content"?: string, "props"?: object, "session_id"?: string, "instance_id"?: string }` |
+| `create_with_bind` | `{ "template_id": string, "title"?: string, "slot": string, "kind": string, "data"?: object, "source"?: string, "schema"?: string }` — atomic create plus the first required slot. Prefer this for `experiment.overview.v1` and `analysis.visual.v1`. |
 | `update` | `{ "visual_id": string, "title"?: string, "content"?: string, "bindings"?: object, "status"?: string }` — `bindings` must be the canonical envelope; prefer `bind` |
-| `bind` | `{ "instance_id": string, "slot": string, "kind": string, "source": string, "poll_url"?: string, "path"?: string, "schema"?: string, "mode"?: "replace" \| "append", "bindings"?: [{ "kind": string, "source": string, "poll_url"?: string }] }` — the only supported way to write bindings |
+| `bind` | `{ "instance_id": string, "slot": string, "kind": string, "source"?: string, "data"?: object, "poll_url"?: string, "path"?: string, "schema"?: string, "mode"?: "replace" \| "append", "bindings"?: [{ "kind": string, "source"?: string, "data"?: object, "poll_url"?: string }] }` — inline slots require `data`; other kinds require `source`. Two malformed binds must not block a corrected bind. |
 | `show` | `{ "visual_id": string, "session_id"?: string }` |
 | `fork` | `{ "visual_id": string, "title"?: string }` |
 | `archive` | `{ "visual_id": string }` |
@@ -88,7 +89,9 @@ other clients but are intentionally not advertised to Codex.
 
 ## `analysis.visual.v1`
 
-Author a `spec` with a short narrative and ordered blocks. Available blocks:
+Required slot: **`spec`**. Author it as `kind: "inline"` with `data` containing a short narrative and ordered `blocks`. Do not bind this template on slot `experiment`. `list_templates` returns `slots` and `bindingSchema`; `example_binding` is the canonical create+bind payload.
+
+Available blocks:
 
 - `note`: context, caveat, or conclusion.
 - `metrics`: exact headline values with optional details.
@@ -97,7 +100,28 @@ Author a `spec` with a short narrative and ordered blocks. Available blocks:
 - `table`: exact multi-field comparison or provenance.
 - `scatter`: independent observations on two quantitative axes. Never add connecting lines.
 
+Create with bind:
+
+```js
+await tools.mcp__synth_visuals__visual_manage({
+  operation: "create_with_bind",
+  arguments: {
+    template_id: "analysis.visual.v1",
+    title: "HealthBench smoke · policy vs scorer",
+    slot: "spec",
+    kind: "inline",
+    data: {
+      schemaVersion: "synth.visual.analysis_spec.v1",
+      title: "HealthBench smoke · policy vs scorer",
+      blocks: [{ type: "metrics", items: [{ label: "Train mean", value: null }] }]
+    }
+  }
+});
+```
+
 ## `experiment.overview.v1`
+
+Required slot: **`experiment`**, not `spec`. Accepts `inline`, `fixture`, or `local_cas`. Inline binds **must include `data`**. A bind without `data` returns `visual_binding_invalid` / `inline visual binding requires data`; correct the same visual — do not abandon it after two malformed binds.
 
 Use the experiment overview when several runs or optimizer candidates answer one
 research question. It is the canonical right-pane summary for the experiment;
@@ -121,6 +145,27 @@ mark an arm selected merely because it is latest, and do not describe an
 experiment as improved without baseline and comparison evidence. Keep every
 seed/rollout in the underlying eval visual; the experiment overview summarizes
 the distribution and links to that evidence rather than flattening it.
+
+```js
+await tools.mcp__synth_visuals__visual_manage({
+  operation: "create_with_bind",
+  arguments: {
+    template_id: "experiment.overview.v1",
+    title: "Banking77 baseline eval",
+    slot: "experiment",
+    kind: "inline",
+    data: {
+      schemaVersion: "synth.experiment.overview.v1",
+      experimentId: "exp.banking77.baseline.v1",
+      title: "Banking77 baseline eval",
+      question: "What is scored accuracy on 10 labeled examples?",
+      status: "running",
+      progress: { phase: "scoring", completed: 0, total: 10 },
+      limitations: ["Baseline-only. No candidate generation and no uplift claim."]
+    }
+  }
+});
+```
 
 Use specialized rollout or trace templates only when their interaction is genuinely useful. Use `craftax.rollout_scrub.v1` for step-by-step environment inspection and `trace.rollout_inspector.v1` for event/tool/message filtering.
 

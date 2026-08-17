@@ -101,6 +101,14 @@ impl OptimizerService {
         &self.manager
     }
 
+    pub(super) fn database(&self) -> &Arc<Database> {
+        &self.db
+    }
+
+    pub(super) fn visuals(&self) -> &VisualRegistry {
+        &self.visuals
+    }
+
     /// Wire diagnostics in after both services exist. Idempotent; a service
     /// that is never attached simply emits nothing.
     pub fn attach_diagnostics(&self, service: Arc<crate::diagnostics::DiagnosticsService>) {
@@ -141,6 +149,10 @@ impl OptimizerService {
             | super::recipes::BANKING77_GEPA_SOL_RECIPE
             | super::recipes::CRAFTAX_GEPA_SMOKE_RECIPE => {
                 super::recipes::start(self, request).await
+            }
+            super::recipes::BANKING77_EVAL_BASELINE_RECIPE
+            | super::recipes::HEALTHBENCH_EVAL_SMOKE_RECIPE => {
+                super::recipes::start_container_eval(self, request).await
             }
             super::sft_recipes::CRAFTAX_SFT_SMOKE_RECIPE => {
                 super::sft_recipes::start(self, request).await

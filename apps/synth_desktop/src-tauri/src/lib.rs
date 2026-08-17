@@ -339,22 +339,25 @@ async fn data_containers_get(
 async fn hydrate_container(
     base_url: &str,
     existing_metadata: serde_json::Value,
+    force_info_refresh: bool,
 ) -> (String, serde_json::Value, serde_json::Value, Option<String>) {
     let client = http::http_client_with_timeout(limits::CONTAINER_PROBE_TIMEOUT);
     let root = base_url.trim_end_matches('/');
     // Health is intentionally cheap and may run frequently. Contract/catalog
     // hydration is cached because task catalogs can contain thousands of rows.
-    let refresh_metadata = existing_metadata
-        .get("hydratedAt")
-        .and_then(|value| value.as_str())
-        .and_then(|value| chrono::DateTime::parse_from_rfc3339(value).ok())
-        .map(|hydrated| {
-            chrono::Utc::now()
-                .signed_duration_since(hydrated.with_timezone(&chrono::Utc))
-                .num_seconds()
-                >= limits::CONTAINER_METADATA_REFRESH.as_secs() as i64
-        })
-        .unwrap_or(true);
+    // `container_probe` always refreshes `/info` so prepare sees revision N+1.
+    let refresh_metadata = force_info_refresh
+        || existing_metadata
+            .get("hydratedAt")
+            .and_then(|value| value.as_str())
+            .and_then(|value| chrono::DateTime::parse_from_rfc3339(value).ok())
+            .map(|hydrated| {
+                chrono::Utc::now()
+                    .signed_duration_since(hydrated.with_timezone(&chrono::Utc))
+                    .num_seconds()
+                    >= limits::CONTAINER_METADATA_REFRESH.as_secs() as i64
+            })
+            .unwrap_or(true);
     let health_result = client.get(format!("{root}/health")).send().await;
     let (status, health) = match health_result {
         Ok(response) => {
@@ -502,6 +505,7 @@ async fn data_containers_register(
             .metadata
             .clone()
             .unwrap_or_else(|| serde_json::json!({})),
+        true,
     )
     .await;
     let task_family = hydrated_family.or_else(|| request.task_family.clone());
@@ -533,7 +537,7 @@ async fn data_containers_probe(
         return Ok(container);
     };
     let (status, health, metadata, task_family) =
-        hydrate_container(base_url, container.metadata).await;
+        hydrate_container(base_url, container.metadata, true).await;
     state
         .update_container_hydration(container_id, status, health, metadata, task_family)
         .await

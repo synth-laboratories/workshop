@@ -184,7 +184,15 @@ pub const EVAL: RuntimeContract = RuntimeContract {
     workshop_compat: "0.4.0",
     algorithms: &["eval"],
     templates: &["optimizer.eval.live.v1", "optimizer.run.v1"],
-    bounded_recipes: &[],
+    bounded_recipes: &[
+        "eval.fixture.policy-smoke.v1",
+        "eval.craftax.code-policy.smoke.v1",
+        "eval.gamebench.craftax-code-policy.confirm.v1",
+        "eval.craftax.llm-policy.smoke.v1",
+        "eval.gamebench.llm-policy.confirm.v1",
+        "eval.banking77.baseline.v1",
+        "eval.healthbench.smoke.v1",
+    ],
     recipe_schema: "eval.worker-manifest.v1",
     provisioned_by_desktop: false,
 };

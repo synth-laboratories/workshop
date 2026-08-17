@@ -553,11 +553,22 @@ impl VisualRegistry {
         session_id: Option<String>,
     ) -> Result<(VisualRecord, Value)> {
         let record = self.get(id).await?;
+        let owner = session_id
+            .clone()
+            .or_else(|| record.session_id.clone())
+            .filter(|value| !value.trim().is_empty());
+        if let Some(session) = owner.clone() {
+            let visual_id = record.id.clone();
+            self.db
+                .clone()
+                .run_transaction(move |conn| persist_selected_visual(conn, &session, &visual_id))
+                .await?;
+        }
         let event = self
             .journal
             .append(EventAppend {
                 event_id: None,
-                session_id: session_id.or_else(|| record.session_id.clone()),
+                session_id: owner.clone().or_else(|| record.session_id.clone()),
                 run_id: record.run_id.clone(),
                 source: EventSource::Visual,
                 kind: "visual.show".into(),
@@ -571,13 +582,23 @@ impl VisualRegistry {
                     // displayed another chat's visual could not be told apart
                     // from the chat that authored it.
                     "ownerSessionId": record.session_id,
+                    "openVisualId": record.id,
                 }),
                 remote_sequence: None,
                 command_id: None,
                 created_at: None,
             })
             .await?;
-        Ok((record, serde_json::to_value(event)?))
+        Ok((
+            self.get(record.id.clone()).await.unwrap_or(record),
+            serde_json::to_value(event)?,
+        ))
+    }
+
+    pub async fn selected_for_session(&self, session_id: String) -> Result<Option<String>> {
+        let db = self.db.clone();
+        db.run(move |conn| load_selected_visual(conn, &session_id))
+            .await
     }
 
     pub fn list_templates(&self, genre: Option<&str>) -> Result<Vec<TemplateMeta>> {
@@ -1164,6 +1185,78 @@ fn ensure_session(conn: &Connection, session_id: &str) -> Result<()> {
     Ok(())
 }
 
+fn persist_selected_visual(conn: &Connection, session_id: &str, visual_id: &str) -> Result<()> {
+    ensure_session(conn, session_id)?;
+    let now = Utc::now().to_rfc3339();
+    let metadata_json: String = conn
+        .query_row(
+            "SELECT metadata_json FROM sessions WHERE id = ?1",
+            params![session_id],
+            |row| row.get(0),
+        )
+        .optional()?
+        .unwrap_or_else(|| "{}".into());
+    let mut metadata: Value = serde_json::from_str(&metadata_json).unwrap_or_else(|_| json!({}));
+    if let Some(object) = metadata.as_object_mut() {
+        object.insert("openVisualId".into(), json!(visual_id));
+    } else {
+        metadata = json!({ "openVisualId": visual_id });
+    }
+    conn.execute(
+        "UPDATE sessions SET metadata_json = ?2, updated_at = ?3 WHERE id = ?1",
+        params![session_id, metadata.to_string(), now],
+    )?;
+    if let Ok(mut visual) = load_visual(conn, visual_id) {
+        let mut visual_metadata = visual.metadata.clone();
+        if let Some(object) = visual_metadata.as_object_mut() {
+            object.insert("selectedForSession".into(), json!(session_id));
+            object.insert("openVisualId".into(), json!(visual_id));
+        } else {
+            visual_metadata = json!({
+                "selectedForSession": session_id,
+                "openVisualId": visual_id,
+            });
+        }
+        visual.metadata = visual_metadata;
+        visual.updated_at = now;
+        persist_visual(conn, &visual)?;
+    }
+    Ok(())
+}
+
+fn load_selected_visual(conn: &Connection, session_id: &str) -> Result<Option<String>> {
+    let metadata_json: Option<String> = conn
+        .query_row(
+            "SELECT metadata_json FROM sessions WHERE id = ?1",
+            params![session_id],
+            |row| row.get(0),
+        )
+        .optional()?;
+    if let Some(metadata_json) = metadata_json {
+        let metadata: Value = serde_json::from_str(&metadata_json).unwrap_or_else(|_| json!({}));
+        if let Some(visual_id) = metadata
+            .get("openVisualId")
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty())
+        {
+            if load_visual(conn, visual_id).is_ok() {
+                return Ok(Some(visual_id.to_string()));
+            }
+        }
+    }
+    let listed = list_visuals(
+        conn,
+        &VisualQuery {
+            session_id: Some(session_id.to_string()),
+            ..VisualQuery::default()
+        },
+    )?;
+    Ok(listed
+        .into_iter()
+        .find(|visual| visual.template_id != "synth.subagents.v1")
+        .map(|visual| visual.id))
+}
+
 fn insert_visual(conn: &Connection, visual: &VisualRecord) -> Result<()> {
     conn.execute(
         "INSERT INTO visuals(
@@ -1565,6 +1658,66 @@ mod tests {
             .unwrap();
         assert_eq!(filtered.len(), 1);
         assert_eq!(filtered[0].id, created.id);
+    }
+
+    #[tokio::test]
+    async fn show_persists_chat_ownership_that_survives_registry_restart() {
+        let dir = tempdir().unwrap();
+        let storage = Storage::open(dir.path()).unwrap();
+        let db = storage.database().clone();
+        let content_root = storage.content_root();
+        let registry = VisualRegistry::new(
+            db.clone(),
+            EventJournal::new(db.clone()),
+            ContentStore::new(content_root),
+        );
+        let Some(template_id) = non_mermaid_template(&registry) else {
+            return;
+        };
+        let (created, _) = registry
+            .create(VisualCreateRequest {
+                template_id,
+                title: Some("Terminal evidence".into()),
+                bindings: Some(json!({"records":[1]})),
+                id: Some("vis_owned_restart".into()),
+                status: Some(VisualStatus::Live),
+                renderer_kind: None,
+                session_id: Some("sess_owned".into()),
+                message_id: None,
+                run_id: None,
+                trace_id: None,
+                parent_visual_id: None,
+                source_agent_id: None,
+                source_model: None,
+                content: None,
+                metadata: None,
+            })
+            .await
+            .unwrap();
+        let (_, event) = registry
+            .show(created.id.clone(), Some("sess_owned".into()))
+            .await
+            .unwrap();
+        assert_eq!(event["payload"]["openVisualId"], json!(created.id));
+        assert_eq!(event["payload"]["ownerSessionId"], json!("sess_owned"));
+
+        let restored = VisualRegistry::new(
+            db.clone(),
+            EventJournal::new(db),
+            ContentStore::new(content_root),
+        );
+        assert_eq!(
+            restored
+                .selected_for_session("sess_owned".into())
+                .await
+                .unwrap()
+                .as_deref(),
+            Some(created.id.as_str())
+        );
+        let visual = restored.get(created.id.clone()).await.unwrap();
+        assert_eq!(visual.session_id.as_deref(), Some("sess_owned"));
+        assert_eq!(visual.metadata["selectedForSession"], json!("sess_owned"));
+        assert_eq!(visual.id, created.id);
     }
 
     #[tokio::test]

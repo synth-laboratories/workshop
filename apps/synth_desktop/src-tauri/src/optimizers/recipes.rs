@@ -3,7 +3,7 @@
 //! paths, environment variables, or credentials.
 
 use anyhow::{anyhow, bail, Context, Result};
-use serde_json::json;
+use serde_json::{json, Value};
 use std::{
     fs,
     net::TcpListener,
@@ -26,6 +26,8 @@ pub const BANKING77_GEPA_SMOKE_RECIPE: &str = "gepa.banking77.smoke.v1";
 pub const BANKING77_GEPA_LUNA_RECIPE: &str = "gepa.banking77.luna.v1";
 pub const BANKING77_GEPA_SOL_RECIPE: &str = "gepa.banking77.sol.v1";
 pub const CRAFTAX_GEPA_SMOKE_RECIPE: &str = "gepa.craftax.smoke.v1";
+pub const BANKING77_EVAL_BASELINE_RECIPE: &str = "eval.banking77.baseline.v1";
+pub const HEALTHBENCH_EVAL_SMOKE_RECIPE: &str = "eval.healthbench.smoke.v1";
 const TRAIN_ROWS: usize = 50;
 const HELDOUT_ROWS: usize = 50;
 const MAX_GENERATIONS: i64 = 1;
@@ -713,6 +715,9 @@ pub fn recipe_catalog() -> Vec<serde_json::Value> {
             "availability": availability,
             "limits": recipe_limits(),
             "policyRef": { "harness": "gepa_proposer", "config": config },
+            "containerProtocol": "synth_optimizers.gepa.v2",
+            "semantics": "gepa_optimization",
+            "expectedVisual": "optimizer.gepa.v1",
             "credentialInputs": [],
         })
     })
@@ -728,7 +733,82 @@ pub fn recipe_catalog() -> Vec<serde_json::Value> {
         "candidatePolicyRef": { "provider": "openai", "model": "gpt-4.1-nano" },
         "credentialInputs": [],
     }));
+    recipes.push(json!({
+        "id": BANKING77_EVAL_BASELINE_RECIPE,
+        "title": "Banking77 baseline eval · 10 examples",
+        "algorithmId": "eval",
+        "task": "banking77",
+        "availability": "available",
+        "semantics": "baseline_eval",
+        "containerProtocol": "synth_optimizers.gepa.v2",
+        "policyRoles": [{
+            "role": "policy",
+            "harness": "classify",
+            "configurable": true
+        }],
+        "taskPools": {"train": 10, "heldout": 0},
+        "concurrency": 10,
+        "costCeilingUsd": 0.50,
+        "expectedVisual": "experiment.overview.v1",
+        "limits": {
+            "maxGenerations": 0,
+            "maxTrainRollouts": 10,
+            "maxHeldoutRollouts": 0,
+            "maxTotalRollouts": 10,
+            "maxCostUsd": 0.50
+        },
+        "notes": "Baseline-only. No candidate generation and no uplift claim.",
+        "credentialInputs": [],
+    }));
+    recipes.push(json!({
+        "id": HEALTHBENCH_EVAL_SMOKE_RECIPE,
+        "title": "HealthBench 2 zero-generation smoke",
+        "algorithmId": "eval",
+        "task": "healthbench",
+        "availability": "available",
+        "semantics": "baseline_eval",
+        "containerProtocol": "synth_optimizers.gepa.v2",
+        "policyRoles": [{
+            "role": "policy",
+            "harness": "chat_completion",
+            "provider": "openai",
+            "model": "gpt-4.1-mini-2025-04-14",
+            "apiKeyEnv": "OPENAI_API_KEY",
+            "configurable": true
+        }],
+        "scorerRole": {
+            "role": "scorer",
+            "provider": "openai",
+            "model": "gpt-4.1-2025-04-14",
+            "apiKeyEnv": "OPENAI_API_KEY",
+            "canonical": true,
+            "evaluationPlanRef": "healthbench_eval.v1"
+        },
+        "taskPools": {"train": 2, "heldout": 2},
+        "concurrency": 2,
+        "costCeilingUsd": 0.50,
+        "expectedVisual": "experiment.overview.v1",
+        "limits": {
+            "maxGenerations": 0,
+            "maxTrainRollouts": 2,
+            "maxHeldoutRollouts": 2,
+            "maxTotalRollouts": 4,
+            "maxCostUsd": 0.50
+        },
+        "notes": "Matches eval_smoke.toml. Baseline-only; no candidate generation and no uplift claim.",
+        "credentialInputs": ["OPENAI_API_KEY"],
+    }));
     recipes
+}
+
+pub(super) async fn start_container_eval(
+    service: &OptimizerService,
+    request: OptimizerRecipeRunRequest,
+) -> Result<(
+    super::models::OptimizerRunRecord,
+    Option<crate::storage::AppEvent>,
+)> {
+    super::container_eval::start(service, request).await
 }
 
 pub(super) async fn reconcile_persisted(
@@ -1639,34 +1719,126 @@ fn bounded_log_tail(path: &Path, max_chars: usize) -> Result<String> {
     Ok(text[start..].to_string())
 }
 
-fn banking77_cookbook_root() -> Result<PathBuf> {
-    let path = std::env::var_os("SYNTH_BANKING77_GEPA_COOKBOOK_ROOT")
-        .map(PathBuf::from)
-        .ok_or_else(|| anyhow!("SYNTH_BANKING77_GEPA_COOKBOOK_ROOT is not configured"))?;
-    let path = path.canonicalize().unwrap_or(path);
-    if !path.join("gepa.toml").is_file() || !path.join("synth_service_app.py").is_file() {
-        bail!(
-            "Banking77 GEPA cookbook is unavailable; set SYNTH_BANKING77_GEPA_COOKBOOK_ROOT in the Desktop process"
-        );
+#[derive(Clone, Copy)]
+enum CookbookKind {
+    Banking77,
+    HealthBench,
+    Craftax,
+}
+
+impl CookbookKind {
+    fn env_name(self) -> &'static str {
+        match self {
+            Self::Banking77 => "SYNTH_BANKING77_GEPA_COOKBOOK_ROOT",
+            Self::HealthBench => "SYNTH_HEALTHBENCH_COOKBOOK_ROOT",
+            Self::Craftax => "SYNTH_CRAFTAX_GEPA_COOKBOOK_ROOT",
+        }
     }
-    Ok(path)
+
+    fn persisted_key(self) -> &'static str {
+        match self {
+            Self::Banking77 => "banking77",
+            Self::HealthBench => "healthbench",
+            Self::Craftax => "craftax",
+        }
+    }
+
+    fn bundle_rel(self) -> &'static str {
+        match self {
+            Self::Banking77 => "cookbooks/optimizers/gepa/banking77_container",
+            Self::HealthBench => "cookbooks/optimizers/gepa/healthbench_groq",
+            Self::Craftax => "cookbooks/optimizers/gepa/crafter_container",
+        }
+    }
+
+    fn is_valid(self, path: &Path) -> bool {
+        match self {
+            Self::Banking77 => {
+                path.join("gepa.toml").is_file() && path.join("synth_service_app.py").is_file()
+            }
+            Self::HealthBench => {
+                path.join("eval_smoke.toml").is_file() && path.join("run_container.sh").is_file()
+            }
+            Self::Craftax => {
+                path.join("gepa.toml").is_file()
+                    && path.join("synth_service_app.py").is_file()
+                    && path.join("crafter_text_env.py").is_file()
+                    && path.join("uv.lock").is_file()
+            }
+        }
+    }
+}
+
+fn cookbook_roots_path() -> PathBuf {
+    crate::instance::state_root()
+        .join("optimizers")
+        .join("cookbook-roots.json")
+}
+
+fn healthbench_cookbook_root() -> Result<PathBuf> {
+    discover_cookbook(CookbookKind::HealthBench)
+}
+
+fn banking77_cookbook_root() -> Result<PathBuf> {
+    discover_cookbook(CookbookKind::Banking77)
 }
 
 fn craftax_cookbook_root() -> Result<PathBuf> {
-    let path = std::env::var_os("SYNTH_CRAFTAX_GEPA_COOKBOOK_ROOT")
-        .map(PathBuf::from)
-        .ok_or_else(|| anyhow!("SYNTH_CRAFTAX_GEPA_COOKBOOK_ROOT is not configured"))?;
-    let path = path.canonicalize().unwrap_or(path);
-    if !path.join("gepa.toml").is_file()
-        || !path.join("synth_service_app.py").is_file()
-        || !path.join("crafter_text_env.py").is_file()
-        || !path.join("uv.lock").is_file()
-    {
-        bail!(
-            "Craftax GEPA cookbook is unavailable; set SYNTH_CRAFTAX_GEPA_COOKBOOK_ROOT in the Desktop process"
-        );
+    discover_cookbook(CookbookKind::Craftax)
+}
+
+fn discover_cookbook(kind: CookbookKind) -> Result<PathBuf> {
+    for candidate in cookbook_search_paths(kind) {
+        let path = candidate.canonicalize().unwrap_or(candidate);
+        if kind.is_valid(&path) {
+            return Ok(path);
+        }
     }
-    Ok(path)
+    bail!(
+        "{} cookbook is unavailable; set {} or persist {} in {}",
+        kind.persisted_key(),
+        kind.env_name(),
+        kind.persisted_key(),
+        cookbook_roots_path().display()
+    )
+}
+
+fn cookbook_search_paths(kind: CookbookKind) -> Vec<PathBuf> {
+    let mut paths = Vec::new();
+    if let Some(value) = std::env::var_os(kind.env_name()) {
+        paths.push(PathBuf::from(value));
+    }
+    if let Ok(text) = fs::read_to_string(cookbook_roots_path()) {
+        if let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) {
+            if let Some(path) = value.get(kind.persisted_key()).and_then(|item| {
+                item.as_str()
+                    .or_else(|| item.get("path").and_then(Value::as_str))
+            }) {
+                if !path.trim().is_empty() {
+                    paths.push(PathBuf::from(path));
+                }
+            }
+        }
+    }
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            let rel = kind.bundle_rel();
+            paths.push(dir.join("../Resources").join(rel));
+            paths.push(dir.join("Resources").join(rel));
+            paths.push(dir.join(rel));
+        }
+    }
+    let cookbooks = crate::instance::state_root().join("cookbooks");
+    if let Ok(entries) = fs::read_dir(&cookbooks) {
+        for entry in entries.flatten() {
+            let root = entry.path();
+            paths.push(root.join(kind.bundle_rel()));
+            if let Some(stripped) = kind.bundle_rel().strip_prefix("cookbooks/") {
+                paths.push(root.join(stripped));
+            }
+        }
+    }
+    paths
 }
 
 fn reserve_loopback_port() -> Result<u16> {
@@ -2307,8 +2479,8 @@ namespace = "base"
     #[test]
     fn catalog_discloses_no_credential_inputs() {
         let catalog = recipe_catalog();
-        assert_eq!(catalog.len(), 4);
-        assert!(catalog
+        assert_eq!(catalog.len(), 6);
+        assert!(catalog[..4]
             .iter()
             .all(|recipe| recipe["credentialInputs"] == json!([])));
         assert!(catalog[..3]
@@ -2322,6 +2494,62 @@ namespace = "base"
             json!("gpt-4.1-nano")
         );
         assert_ne!(catalog[1]["policyRef"], catalog[2]["policyRef"]);
+        assert_eq!(catalog[4]["id"], json!(BANKING77_EVAL_BASELINE_RECIPE));
+        assert_eq!(catalog[4]["semantics"], json!("baseline_eval"));
+        assert_eq!(catalog[4]["containerProtocol"], json!("synth_optimizers.gepa.v2"));
+        assert_eq!(catalog[4]["concurrency"], json!(10));
+        assert_eq!(catalog[5]["id"], json!(HEALTHBENCH_EVAL_SMOKE_RECIPE));
+        assert_eq!(catalog[5]["credentialInputs"], json!(["OPENAI_API_KEY"]));
+        assert_eq!(catalog[5]["scorerRole"]["canonical"], json!(true));
+        assert_eq!(catalog[5]["taskPools"]["train"], json!(2));
+        assert_eq!(catalog[5]["taskPools"]["heldout"], json!(2));
+        assert_eq!(catalog[4]["availability"], json!("available"));
+        assert_eq!(catalog[5]["availability"], json!("available"));
+    }
+
+    #[test]
+    fn eval_recipes_are_available_without_cookbook_env() {
+        let previous_banking77 = std::env::var_os("SYNTH_BANKING77_GEPA_COOKBOOK_ROOT");
+        let previous_healthbench = std::env::var_os("SYNTH_HEALTHBENCH_COOKBOOK_ROOT");
+        std::env::remove_var("SYNTH_BANKING77_GEPA_COOKBOOK_ROOT");
+        std::env::remove_var("SYNTH_HEALTHBENCH_COOKBOOK_ROOT");
+        let catalog = recipe_catalog();
+        let banking77 = catalog
+            .iter()
+            .find(|recipe| recipe["id"] == json!(BANKING77_EVAL_BASELINE_RECIPE))
+            .unwrap();
+        let healthbench = catalog
+            .iter()
+            .find(|recipe| recipe["id"] == json!(HEALTHBENCH_EVAL_SMOKE_RECIPE))
+            .unwrap();
+        assert_eq!(banking77["availability"], json!("available"));
+        assert_eq!(healthbench["availability"], json!("available"));
+        match previous_banking77 {
+            Some(value) => std::env::set_var("SYNTH_BANKING77_GEPA_COOKBOOK_ROOT", value),
+            None => std::env::remove_var("SYNTH_BANKING77_GEPA_COOKBOOK_ROOT"),
+        }
+        match previous_healthbench {
+            Some(value) => std::env::set_var("SYNTH_HEALTHBENCH_COOKBOOK_ROOT", value),
+            None => std::env::remove_var("SYNTH_HEALTHBENCH_COOKBOOK_ROOT"),
+        }
+    }
+
+    #[test]
+    fn healthbench_cookbook_root_accepts_env_override() {
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("eval_smoke.toml"), "").unwrap();
+        fs::write(dir.path().join("run_container.sh"), "").unwrap();
+        let previous = std::env::var_os("SYNTH_HEALTHBENCH_COOKBOOK_ROOT");
+        std::env::set_var("SYNTH_HEALTHBENCH_COOKBOOK_ROOT", dir.path());
+        let discovered = healthbench_cookbook_root().unwrap();
+        assert_eq!(
+            discovered,
+            dir.path().canonicalize().unwrap_or(dir.path().to_path_buf())
+        );
+        match previous {
+            Some(value) => std::env::set_var("SYNTH_HEALTHBENCH_COOKBOOK_ROOT", value),
+            None => std::env::remove_var("SYNTH_HEALTHBENCH_COOKBOOK_ROOT"),
+        }
     }
 
     #[test]

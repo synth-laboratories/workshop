@@ -217,6 +217,8 @@ export function useAppController() {
 		EMPTY_VISUAL_REVISION_STATE
 	);
 	const openArtifactIdRef = useRef<string | null>(null);
+	const openArtifactByViewRef = useRef<Record<string, string | null>>({});
+	const activeSessionIdRef = useRef<string | null>(null);
 	const visualRequestGenerationRef = useRef(0);
 	const pendingVisualRefreshRef = useRef<{ id: string; minimumRevision: number; generation: number } | null>(null);
 	const acceptedVisualRevisionRef = useRef<{ id: string | null; revision: number }>({ id: null, revision: -1 });
@@ -652,6 +654,7 @@ export function useAppController() {
 		if (view.kind === "async") return view.sessionId;
 		return null;
 	}, [view]);
+	activeSessionIdRef.current = activeSessionId;
 	const terminalWorkspaceRoot = defaultWorkspace;
 	const terminalWorkspaceId = activeSessionId ?? "default";
 	const selectActivePermissions = useCallback((nextApprovalPolicy: ApprovalPolicy, nextSandboxMode: SandboxMode) => {
@@ -1079,14 +1082,31 @@ export function useAppController() {
 					: view.kind;
 
 	useEffect(() => {
-		setOpenArtifactId(null);
-		openArtifactIdRef.current = null;
+		const hasRemembered = Object.prototype.hasOwnProperty.call(openArtifactByViewRef.current, viewKey);
+		let remembered = hasRemembered ? openArtifactByViewRef.current[viewKey] : null;
+		if (!hasRemembered) {
+			const persistedId =
+				(typeof activeChatSession?.metadata?.openVisualId === "string"
+					? activeChatSession.metadata.openVisualId
+					: null)
+				?? (view.kind === "chat"
+					? activeChat?.artifacts?.find((artifact) => artifact.templateId !== "synth.subagents.v1")?.id ?? null
+					: view.kind === "sync"
+						? activeSync?.artifacts?.find((artifact) => artifact.templateId !== "synth.subagents.v1")?.id ?? null
+						: null);
+			if (persistedId) {
+				remembered = persistedId;
+				openArtifactByViewRef.current[viewKey] = persistedId;
+			}
+		}
+		setOpenArtifactId(remembered);
+		openArtifactIdRef.current = remembered;
 		visualRequestGenerationRef.current += 1;
 		pendingVisualRefreshRef.current = null;
-		dispatchVisualRevision({ type: "close" });
+		dispatchVisualRevision(remembered ? { type: "select", id: remembered } : { type: "close" });
 		setOpenContainer(null);
 		setContainerPaneExpanded(false);
-	}, [viewKey]);
+	}, [viewKey, activeChatSession?.metadata?.openVisualId, activeChat?.id, activeSync?.id]);
 
 	useEffect(() => {
 		if (openArtifactId || openContainer) return;
@@ -1116,6 +1136,7 @@ export function useAppController() {
 
 	const toggleArtifact = useCallback((id: string | null) => {
 		if (id == null) {
+			openArtifactByViewRef.current[viewKey] = null;
 			setOpenArtifactId(null);
 			openArtifactIdRef.current = null;
 			visualRequestGenerationRef.current += 1;
@@ -1127,12 +1148,13 @@ export function useAppController() {
 		setOpenArtifactId((current) => {
 			const next = current === id ? null : id;
 			openArtifactIdRef.current = next;
+			openArtifactByViewRef.current[viewKey] = next;
 			visualRequestGenerationRef.current += 1;
 			pendingVisualRefreshRef.current = null;
 			dispatchVisualRevision(next ? { type: "select", id: next } : { type: "close" });
 			return next;
 		});
-	}, []);
+	}, [viewKey]);
 
 	const toggleContainer = useCallback(async (id: string | null) => {
 		if (!id || openContainer?.id === id) {
@@ -1174,6 +1196,7 @@ export function useAppController() {
 				? artifactFromVisualRecord(visual as VisualRecord)
 				: visualRecordToArtifact(visual as VisualInstanceRecord);
 		openArtifactIdRef.current = artifact.id;
+		openArtifactByViewRef.current[viewKey] = artifact.id;
 		acceptedVisualRevisionRef.current = { id: artifact.id, revision: artifact.revision ?? -1 };
 		visualRequestGenerationRef.current += 1;
 		pendingVisualRefreshRef.current = null;
@@ -1181,7 +1204,7 @@ export function useAppController() {
 		setOpenArtifactId(artifact.id);
 		// Opening an artifact is a side-pane action. Navigation remains explicit so
 		// traces stay beside their catalog and chat-created visuals stay beside chat.
-	}, []);
+	}, [viewKey]);
 
 	const reconcileOpenVisual = useCallback((visualId: string, minimumRevision = -1, open = false) => {
 		if (!bridges.visuals) return;
@@ -1241,7 +1264,20 @@ export function useAppController() {
 				typeof event.payload?.visualId === "string" ? event.payload.visualId : null;
 			if (!visualId) return;
 			const eventRevision = typeof event.payload?.revision === "number" ? event.payload.revision : -1;
-			if (event.kind === "visual.show") reconcileOpenVisual(visualId, eventRevision, true);
+			if (event.kind === "visual.show") {
+				const owner =
+					typeof event.payload?.ownerSessionId === "string"
+						? event.payload.ownerSessionId
+						: typeof event.sessionId === "string"
+							? event.sessionId
+							: null;
+				const ownerViewKey = owner ? `chat:${owner}` : viewKey;
+				openArtifactByViewRef.current[ownerViewKey] = visualId;
+				if (owner && owner !== activeSessionIdRef.current) {
+					return;
+				}
+				reconcileOpenVisual(visualId, eventRevision, true);
+			}
 			else if (event.kind === "visual.updated" && openArtifactIdRef.current === visualId) {
 				reconcileOpenVisual(visualId, eventRevision);
 			}
@@ -1255,7 +1291,7 @@ export function useAppController() {
 			unlisten();
 			window.removeEventListener("focus", reconcileSelected);
 		};
-	}, [reconcileOpenVisual]);
+	}, [reconcileOpenVisual, viewKey]);
 
 	const ensureOpenRouterReady = useCallback(async (targetId: string): Promise<boolean> => {
 		if (!targetId.startsWith("openrouter-")) return true;

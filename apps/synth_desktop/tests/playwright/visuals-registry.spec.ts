@@ -151,6 +151,45 @@ test("an already-open pane rejects stale gets and reconciles a dropped final upd
 	await expect(page.getByTestId("visual-pane")).toBeHidden();
 });
 
+test("an owned visual.show does not steal another chat's right pane", async ({ page }) => {
+	await page.addInitScript((rows) => {
+		const store = [...rows] as VisualRecord[];
+		const listeners = new Set<(event: Record<string, unknown>) => void>();
+		(window as typeof window & { synthVisuals?: unknown }).synthVisuals = {
+			listTemplates: async () => [],
+			list: async () => store,
+			get: async (visualId: string) => {
+				const hit = store.find((row) => row.id === visualId);
+				if (!hit) throw new Error(`missing visual ${visualId}`);
+				return hit;
+			},
+			revisions: async () => [],
+			onEvent: (next: (event: Record<string, unknown>) => void, attached?: () => void) => {
+				listeners.add(next);
+				queueMicrotask(() => attached?.());
+				return () => { listeners.delete(next); };
+			}
+		};
+		(window as typeof window & { __visualOwner?: unknown }).__visualOwner = {
+			show: (visualId: string, ownerSessionId?: string) => {
+				listeners.forEach((listener) => listener({
+					kind: "visual.show",
+					payload: { visualId, revision: 1, ...(ownerSessionId ? { ownerSessionId } : {}) }
+				}));
+			}
+		};
+	}, [sampleVisual, { ...sampleVisual, id: "vis_healthbench", title: "HealthBench smoke" }]);
+	await page.reload();
+	await page.getByTestId("titlebar").waitFor();
+	await expect.poll(() => page.evaluate(() => (window as typeof window & { __visualOwner: { show(visualId: string, ownerSessionId?: string): void } }).__visualOwner !== undefined)).toBeTruthy();
+	await page.evaluate(() => (window as typeof window & { __visualOwner: { show(visualId: string, ownerSessionId?: string): void } }).__visualOwner.show("vis_test_reward", "chat-banking77"));
+	await expect.poll(() => page.evaluate(() => window.__synthEval?.getState().openVisualId ?? null)).toBe(null);
+	await expect(page.getByTestId("visual-pane")).toBeHidden();
+	await page.evaluate(() => (window as typeof window & { __visualOwner: { show(visualId: string, ownerSessionId?: string): void } }).__visualOwner.show("vis_healthbench"));
+	await expect.poll(() => page.evaluate(() => window.__synthEval?.getState().openVisualId)).toBe("vis_healthbench");
+	await expect(page.getByTestId("visual-pane")).toContainText("HealthBench smoke");
+});
+
 test("Visuals list splitter resizes, persists, keyboard-clamps, and disappears when stacked", async ({ page }) => {
 	await page.setViewportSize({ width: 1280, height: 840 });
 	await installVisualsFixture(page);

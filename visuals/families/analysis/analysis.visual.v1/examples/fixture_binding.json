@@ -1,0 +1,28 @@
+{
+  "schemaVersion": "synth.visual-bindings.v1",
+  "slots": [
+    {
+      "slot": "spec",
+      "kind": "inline",
+      "schema": "synth.visual.analysis_spec.v1",
+      "data": {
+        "schemaVersion": "synth.visual.analysis_spec.v1",
+        "title": "HealthBench smoke · policy vs scorer",
+        "lede": "Independent usage lanes for the requested OpenAI mini policy and the canonical physician-rubric scorer.",
+        "blocks": [
+          {
+            "type": "metrics",
+            "items": [
+              {"label": "Train mean", "value": "0.73", "detail": "n=2"},
+              {"label": "Heldout mean", "value": "0.67", "detail": "n=2"}
+            ]
+          },
+          {
+            "type": "note",
+            "text": "Missing measurements stay missing. This is a baseline eval, not optimizer uplift."
+          }
+        ]
+      }
+    }
+  ]
+}

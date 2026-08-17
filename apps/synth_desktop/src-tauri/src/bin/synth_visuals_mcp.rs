@@ -145,11 +145,11 @@ fn parse_http_response(response: &str) -> Result<Value, String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        assert_review_viewport, managed_tool_name, parse_http_response, socket_addr, tools,
-        REVIEW_VIEWPORT_HEIGHT_MAX, REVIEW_VIEWPORT_HEIGHT_MIN, REVIEW_VIEWPORT_WIDTH_MAX,
-        REVIEW_VIEWPORT_WIDTH_MIN, VISUAL_OPERATIONS,
+        assert_review_viewport, create_bindings_from_args, managed_tool_name, parse_http_response,
+        socket_addr, tools, REVIEW_VIEWPORT_HEIGHT_MAX, REVIEW_VIEWPORT_HEIGHT_MIN,
+        REVIEW_VIEWPORT_WIDTH_MAX, REVIEW_VIEWPORT_WIDTH_MIN, VISUAL_OPERATIONS,
     };
-    use serde_json::Value;
+    use serde_json::{json, Value};
 
     /// The compact review that failed acceptance was 390x844 — inside the
     /// public schema, outside an undocumented resolver floor of 640. One
@@ -245,6 +245,10 @@ mod tests {
         assert_eq!(managed_tool_name("list").unwrap(), "visual_list");
         assert_eq!(managed_tool_name("get").unwrap(), "visual_get");
         assert_eq!(managed_tool_name("create").unwrap(), "visual_create");
+        assert_eq!(
+            managed_tool_name("create_with_bind").unwrap(),
+            "visual_create"
+        );
         assert_eq!(managed_tool_name("update").unwrap(), "visual_update");
         assert_eq!(
             managed_tool_name("bind").unwrap(),
@@ -343,6 +347,35 @@ mod tests {
         .unwrap_err();
         assert_eq!(error, "visuals IPC HTTP 400: template_not_renderable");
     }
+
+    #[test]
+    fn create_with_bind_copies_inline_data_onto_the_required_slot() {
+        let bindings = create_bindings_from_args(&json!({
+            "template_id": "experiment.overview.v1",
+            "slot": "experiment",
+            "kind": "inline",
+            "data": {"experimentId": "exp.1", "status": "blocked"}
+        }))
+        .unwrap();
+        assert_eq!(bindings["schemaVersion"], "synth.visual-bindings.v1");
+        assert_eq!(bindings["slots"][0]["slot"], "experiment");
+        assert_eq!(bindings["slots"][0]["data"]["experimentId"], "exp.1");
+    }
+
+    #[test]
+    fn create_with_bind_prefers_an_explicit_envelope() {
+        let envelope = json!({
+            "schemaVersion": "synth.visual-bindings.v1",
+            "slots": [{"slot": "spec", "kind": "inline", "data": {"blocks": []}}]
+        });
+        let bindings = create_bindings_from_args(&json!({
+            "template_id": "analysis.visual.v1",
+            "bindings": envelope,
+            "slot": "experiment"
+        }))
+        .unwrap();
+        assert_eq!(bindings["slots"][0]["slot"], "spec");
+    }
 }
 
 const VISUAL_OPERATIONS: &[(&str, &str)] = &[
@@ -350,6 +383,7 @@ const VISUAL_OPERATIONS: &[(&str, &str)] = &[
     ("list", "visual_list"),
     ("get", "visual_get"),
     ("create", "visual_create"),
+    ("create_with_bind", "visual_create"),
     ("update", "visual_update"),
     ("bind", "visual_bind_data_source"),
     ("save", "visual_save"),
@@ -389,10 +423,10 @@ fn tools() -> Value {
             {"name":"visual_list_templates","description":"List Synth visual templates","inputSchema":{"type":"object","properties":{"genre":{"type":"string"}},"additionalProperties":false}},
             {"name":"visual_list","description":"List visuals in the local registry","inputSchema":{"type":"object","properties":{"search":{"type":"string"},"status":{"type":"string"},"session_id":{"type":"string"}},"additionalProperties":false}},
             {"name":"visual_get","description":"Get a visual by id","inputSchema":{"type":"object","properties":{"visual_id":{"type":"string"}},"required":["visual_id"],"additionalProperties":false}},
-            {"name":"visual_create","description":"Create a visual from a trusted registered template. Interactive live viewers are configured templates; arbitrary TSX is not executed.","inputSchema":{"type":"object","properties":{"template_id":{"type":"string"},"title":{"type":"string"},"content":{"type":"string"},"props":{"type":"object"},"visual_config":{"type":"object"},"presentation":{"type":"string","enum":["canvas","pane"]},"session_id":{"type":"string"},"instance_id":{"type":"string"}},"required":["template_id"],"additionalProperties":false}},
+            {"name":"visual_create","description":"Create a visual from a trusted registered template. Prefer create_with_bind with slot+kind+data for experiment.overview.v1 and analysis.visual.v1. Interactive live viewers are configured templates; arbitrary TSX is not executed.","inputSchema":{"type":"object","properties":{"template_id":{"type":"string"},"title":{"type":"string"},"content":{"type":"string"},"props":{"type":"object"},"bindings":{"type":"object"},"slot":{"type":"string","description":"Required slot name for create_with_bind, e.g. experiment or spec"},"kind":{"type":"string","description":"Binding kind. Inline slots require data."},"data":{"description":"Required when kind is inline"},"source":{"type":"string"},"poll_url":{"type":"string"},"path":{"type":"string"},"schema":{"type":"string"},"visual_config":{"type":"object"},"presentation":{"type":"string","enum":["canvas","pane"]},"session_id":{"type":"string"},"instance_id":{"type":"string"}},"required":["template_id"],"additionalProperties":false}},
             {"name":"visual_create_from_template","description":"Alias of visual_create","inputSchema":{"type":"object","properties":{"template_id":{"type":"string"},"title":{"type":"string"},"props":{"type":"object"},"instance_id":{"type":"string"}},"required":["template_id"],"additionalProperties":false}},
             {"name":"visual_update","description":"Revise visual bindings, title, trusted-template configuration, or Mermaid content","inputSchema":{"type":"object","properties":{"visual_id":{"type":"string"},"title":{"type":"string"},"content":{"type":"string"},"bindings":{"type":"object","description":"Canonical synth.visual-bindings.v1 envelope: {\"schemaVersion\":\"synth.visual-bindings.v1\",\"slots\":[{\"slot\":...,\"kind\":...,\"source\":...}]}. A slot-keyed map such as {\"stream\":[...]} is legacy, is upgraded with a warning, and will be refused in a later release. Prefer visual_bind_data_source.","properties":{"schemaVersion":{"type":"string","const":"synth.visual-bindings.v1"},"slots":{"type":"array","items":{"type":"object","properties":{"slot":{"type":"string"},"kind":{"type":"string"},"source":{"type":"string"},"poll_url":{"type":"string"},"path":{"type":"string"},"schema":{"type":"string"},"data":{}},"required":["slot","kind"]}}},"required":["schemaVersion","slots"]},"status":{"type":"string"},"visual_config":{"type":"object"},"presentation":{"type":"string","enum":["canvas","pane"]}},"required":["visual_id"],"additionalProperties":false}},
-            {"name":"visual_bind_data_source","description":"Bind one slot on a visual. This is the only supported way to write bindings: it emits the canonical synth.visual-bindings.v1 envelope. Use mode=append with bindings[] to put several sources on one slot, which a template slot marked multiple (such as a ten-rollout live stream) requires.","inputSchema":{"type":"object","properties":{"instance_id":{"type":"string"},"slot":{"type":"string"},"mode":{"type":"string","enum":["replace","append"],"description":"replace (default) drops existing bindings on this slot; append adds to them"},"kind":{"type":"string","enum":["trace_v5","local_cas","live_sse","fixture","inline","run_ref","optimizer_run","query_snapshot"]},"source":{"type":"string"},"poll_url":{"type":"string","description":"Exact normalized poll URL declared beside a live SSE source"},"path":{"type":"string"},"schema":{"type":"string"},"bindings":{"type":"array","description":"Several descriptors for one slot. Each is {kind, source, poll_url?, path?, schema?}; the named slot is authoritative.","items":{"type":"object","properties":{"kind":{"type":"string"},"source":{"type":"string"},"poll_url":{"type":"string"},"path":{"type":"string"},"schema":{"type":"string"}},"required":["kind"],"additionalProperties":false}}},"required":["instance_id","slot"],"additionalProperties":false}},
+            {"name":"visual_bind_data_source","description":"Bind one slot on a visual. This is the only supported way to write bindings: it emits the canonical synth.visual-bindings.v1 envelope. Inline slots require data; other kinds require source. Use mode=append with bindings[] to put several sources on one slot.","inputSchema":{"type":"object","properties":{"instance_id":{"type":"string"},"slot":{"type":"string"},"mode":{"type":"string","enum":["replace","append"],"description":"replace (default) drops existing bindings on this slot; append adds to them"},"kind":{"type":"string","enum":["trace_v5","local_cas","live_sse","fixture","inline","run_ref","optimizer_run","query_snapshot"]},"source":{"type":"string"},"data":{"description":"Required when kind is inline"},"poll_url":{"type":"string","description":"Exact normalized poll URL declared beside a live SSE source"},"path":{"type":"string"},"schema":{"type":"string"},"bindings":{"type":"array","description":"Several descriptors for one slot. Each is {kind, source, data?, poll_url?, path?, schema?}; the named slot is authoritative.","items":{"type":"object","properties":{"kind":{"type":"string"},"source":{"type":"string"},"data":{},"poll_url":{"type":"string"},"path":{"type":"string"},"schema":{"type":"string"}},"required":["kind"],"additionalProperties":false}}},"required":["instance_id","slot"],"additionalProperties":false}},
             {"name":"visual_show","description":"Open a visual in the Desktop right pane","inputSchema":{"type":"object","properties":{"visual_id":{"type":"string"},"session_id":{"type":"string"}},"required":["visual_id"],"additionalProperties":false}},
             {"name":"visual_open_in_pane","description":"Alias of visual_show","inputSchema":{"type":"object","properties":{"instance_id":{"type":"string"}},"required":["instance_id"],"additionalProperties":false}},
             {"name":"visual_fork","description":"Fork a visual","inputSchema":{"type":"object","properties":{"visual_id":{"type":"string"},"title":{"type":"string"}},"required":["visual_id"],"additionalProperties":false}},
@@ -497,6 +531,43 @@ fn require_session_identity(session_env: &Option<String>, action: &str) -> Resul
         })
 }
 
+fn create_bindings_from_args(args: &Value) -> Result<Value, String> {
+    if let Some(bindings) = args.get("bindings").or_else(|| args.get("props")) {
+        if bindings.get("schemaVersion").and_then(Value::as_str)
+            == Some("synth.visual-bindings.v1")
+            || bindings.get("slots").is_some()
+        {
+            return Ok(bindings.clone());
+        }
+    }
+    if let Some(slot) = args.get("slot").and_then(Value::as_str) {
+        let kind = args.get("kind").and_then(Value::as_str).unwrap_or("inline");
+        let mut descriptor = json!({
+            "slot": slot,
+            "kind": kind,
+        });
+        if let Some(object) = descriptor.as_object_mut() {
+            for field in ["source", "poll_url", "path", "schema"] {
+                if let Some(value) = args.get(field).cloned().filter(|value| !value.is_null()) {
+                    object.insert(field.into(), value);
+                }
+            }
+            if let Some(data) = args.get("data").cloned() {
+                object.insert("data".into(), data);
+            }
+        }
+        return Ok(json!({
+            "schemaVersion": "synth.visual-bindings.v1",
+            "slots": [descriptor],
+        }));
+    }
+    Ok(args
+        .get("props")
+        .or_else(|| args.get("bindings"))
+        .cloned()
+        .unwrap_or(json!({})))
+}
+
 fn call_tool(name: &str, args: &Value) -> Result<Value, String> {
     let session_env = env::var("SYNTH_SESSION_ID").ok();
     match name {
@@ -527,10 +598,11 @@ fn call_tool(name: &str, args: &Value) -> Result<Value, String> {
             // into another chat's rail, and an unowned visual lands in an
             // instance-global registry where every chat can adopt it.
             let session_id = require_session_identity(&session_env, "create a visual")?;
+            let bindings = create_bindings_from_args(args)?;
             let body = json!({
                 "templateId": args.get("template_id"),
                 "title": args.get("title"),
-                "bindings": args.get("props").or_else(|| args.get("bindings")).cloned().unwrap_or(json!({})),
+                "bindings": bindings,
                 "id": args.get("instance_id"),
                 "sessionId": session_id,
                 "sourceAgentId": "mcp",
@@ -601,6 +673,7 @@ fn call_tool(name: &str, args: &Value) -> Result<Value, String> {
                 None => vec![json!({
                     "kind": args.get("kind"),
                     "source": args.get("source"),
+                    "data": args.get("data"),
                     "poll_url": args.get("poll_url"),
                     "path": args.get("path"),
                     "schema": args.get("schema"),

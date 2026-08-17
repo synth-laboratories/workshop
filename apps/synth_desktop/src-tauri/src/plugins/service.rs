@@ -273,6 +273,10 @@ impl PluginService {
                         manager
                             .set_status_phase("installed", Some("Optimizer distribution installed"))
                             .await;
+                        manager
+                            .set_status_phase("starting", Some("Starting optimizer sidecar…"))
+                            .await;
+                        manager.start().await?;
                         Ok(())
                     }
                     Err(error) => {

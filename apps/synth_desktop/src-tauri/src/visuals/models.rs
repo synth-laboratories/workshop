@@ -473,10 +473,30 @@ fn validate_slots(slots: &[Value]) -> anyhow::Result<()> {
             anyhow::bail!("unsupported visual binding kind: {kind}");
         }
         if kind == "inline" && !slot.contains_key("data") {
-            anyhow::bail!("inline visual binding requires data");
+            anyhow::bail!(
+                "{}",
+                json!({
+                    "code": "visual_binding_invalid",
+                    "slot": slot_name,
+                    "kind": "inline",
+                    "expected_source_kind": "inline",
+                    "missing_field": "data",
+                    "remediation": "Inline bindings require a data object for this slot."
+                })
+            );
         }
         if kind != "inline" && slot.get("source").and_then(Value::as_str).is_none() {
-            anyhow::bail!("{kind} visual binding requires source");
+            anyhow::bail!(
+                "{}",
+                json!({
+                    "code": "visual_binding_invalid",
+                    "slot": slot_name,
+                    "kind": kind,
+                    "expected_source_kind": kind,
+                    "missing_field": "source",
+                    "remediation": format!("{kind} visual binding requires source")
+                })
+            );
         }
         if kind == "live_sse" {
             if let Some(source) = slot.get("source").and_then(Value::as_str) {
