@@ -97,6 +97,31 @@ Author a `spec` with a short narrative and ordered blocks. Available blocks:
 - `table`: exact multi-field comparison or provenance.
 - `scatter`: independent observations on two quantitative axes. Never add connecting lines.
 
+## `experiment.overview.v1`
+
+Use the experiment overview when several runs or optimizer candidates answer one
+research question. It is the canonical right-pane summary for the experiment;
+do not create one overview per seed or per candidate.
+
+Create the visual when the experiment identity and question are known, then
+update the **same visual id** as progress and evidence arrive. Mint a new visual
+only for a distinct experiment identity or research question. The inline
+`experiment` projection uses schema `synth.experiment.overview.v1`:
+
+- `experimentId`, `title`, `question`, `hypothesis`, and `status` establish identity.
+- `progress` may include `phase`, `completed`, `total`, `elapsed`, `eta`, `usage`, and `cost`.
+- `metrics` contains exact decision values such as baseline, selected result, heldout, and lift.
+- `arms` contains all compared variants; mark the baseline and selected candidate explicitly.
+- `evidence` links the distributions, failures, traces, replays, curves, or other visuals that support the result.
+- `lineage` is an ordered compact projection, not a substitute for a full trace or DAG.
+- `limitations` records missing baselines, incomplete heldout evidence, failed runs, and other caveats.
+
+Missing measurements must be omitted or `null`, never written as zero. Do not
+mark an arm selected merely because it is latest, and do not describe an
+experiment as improved without baseline and comparison evidence. Keep every
+seed/rollout in the underlying eval visual; the experiment overview summarizes
+the distribution and links to that evidence rather than flattening it.
+
 Use specialized rollout or trace templates only when their interaction is genuinely useful. Use `craftax.rollout_scrub.v1` for step-by-step environment inspection and `trace.rollout_inspector.v1` for event/tool/message filtering.
 
 For a Trace V5 record, bind the canonical `synth.trace-projection.rollout-inspector.v1` projection and let the first-class inspector preserve the trace hierarchy. Start in **Focus** for agent messages, tool activity, failures, and evaluation evidence; switch to **Full** only when model-call and lifecycle provenance matter. Put verdicts and grader rationale in **Evidence**, and identity, digests, visibility, token usage, and lane coverage in **Metadata**. Search commands and outputs or jump to an exact sequence instead of flattening the run into a generic chart. Never reconstruct missing events, expose content above the projection's visibility ceiling, or imply that an incomplete lane has complete coverage.
