@@ -389,17 +389,18 @@ async fn require_plugin_ready(manager: &super::OptimizerManager) -> Result<()> {
         return Ok(());
     }
     let status = manager.status().await;
-    let suggested = if status.version.is_none() {
-        "install"
-    } else {
-        "start"
-    };
-    let phase = if status.version.is_none() {
-        "not_installed"
-    } else {
-        status.phase.as_str()
-    };
-    Err(crate::plugins::PluginNotReady::new(phase, suggested).into())
+    if status.version.is_none() {
+        return Err(crate::plugins::PluginNotReady::new("not_installed", "install").into());
+    }
+    // Installed/enabled is sufficient authority for an idempotent warm start.
+    // `OptimizerManager::start` probes first and returns only after the
+    // authenticated proxy is healthy, so a normal recipe attempt no longer
+    // leaks a stopped sidecar as `plugin_not_ready` to the agent.
+    manager
+        .start()
+        .await
+        .context("start the installed Optimizers plugin for this workflow")?;
+    Ok(())
 }
 
 fn preparation_digest(run: &super::models::OptimizerRunRecord) -> String {
@@ -683,11 +684,13 @@ async fn materialize_craftax_prepared_run(
 }
 
 pub fn recipe_catalog() -> Vec<serde_json::Value> {
-    let availability = if banking77_cookbook_root().is_ok() {
+    let banking77_cookbook = banking77_cookbook_root();
+    let availability = if banking77_cookbook.is_ok() {
         "available"
     } else {
         "unavailable"
     };
+    let banking77_blocker = banking77_cookbook.err().map(|error| error.to_string());
     let mut recipes = [
         (
             BANKING77_GEPA_SMOKE_RECIPE,
@@ -713,6 +716,7 @@ pub fn recipe_catalog() -> Vec<serde_json::Value> {
             "algorithmId": "gepa",
             "task": "banking77",
             "availability": availability,
+            "availabilityReason": banking77_blocker,
             "limits": recipe_limits(),
             "policyRef": { "harness": "gepa_proposer", "config": config },
             "containerProtocol": "synth_optimizers.gepa.v2",
@@ -722,12 +726,20 @@ pub fn recipe_catalog() -> Vec<serde_json::Value> {
         })
     })
     .collect::<Vec<_>>();
+    let craftax_cookbook = craftax_cookbook_root();
+    let craftax_availability = if craftax_cookbook.is_ok() {
+        "available"
+    } else {
+        "unavailable"
+    };
+    let craftax_blocker = craftax_cookbook.err().map(|error| error.to_string());
     recipes.push(json!({
         "id": CRAFTAX_GEPA_SMOKE_RECIPE,
         "title": "Craftax GEPA · bounded ReAct smoke",
         "algorithmId": "gepa",
         "task": "craftax",
-        "availability": if craftax_cookbook_root().is_ok() { "available" } else { "unavailable" },
+        "availability": craftax_availability,
+        "availabilityReason": craftax_blocker,
         "limits": craftax_recipe_limits(),
         "policyRef": { "harness": "gepa_proposer", "config": "luna_med" },
         "candidatePolicyRef": { "provider": "openai", "model": "gpt-4.1-nano" },
@@ -1751,6 +1763,14 @@ impl CookbookKind {
         }
     }
 
+    fn staged_runtime_dir(self) -> &'static str {
+        match self {
+            Self::Banking77 => "banking77_container",
+            Self::HealthBench => "healthbench_groq",
+            Self::Craftax => "crafter_container",
+        }
+    }
+
     fn is_valid(self, path: &Path) -> bool {
         match self {
             Self::Banking77 => {
@@ -1827,6 +1847,16 @@ fn cookbook_search_paths(kind: CookbookKind) -> Vec<PathBuf> {
             paths.push(dir.join("Resources").join(rel));
             paths.push(dir.join(rel));
         }
+    }
+    // Named packaged-CUA instances stage cookbooks beside their data root.
+    // A later Finder/Dock relaunch does not inherit the launcher's environment,
+    // so the durable instance layout must be discoverable without env vars.
+    if let Some(instance_root) = crate::instance::state_root().parent() {
+        paths.push(
+            instance_root
+                .join("runtime/gepa")
+                .join(kind.staged_runtime_dir()),
+        );
     }
     let cookbooks = crate::instance::state_root().join("cookbooks");
     if let Ok(entries) = fs::read_dir(&cookbooks) {
@@ -2496,7 +2526,10 @@ namespace = "base"
         assert_ne!(catalog[1]["policyRef"], catalog[2]["policyRef"]);
         assert_eq!(catalog[4]["id"], json!(BANKING77_EVAL_BASELINE_RECIPE));
         assert_eq!(catalog[4]["semantics"], json!("baseline_eval"));
-        assert_eq!(catalog[4]["containerProtocol"], json!("synth_optimizers.gepa.v2"));
+        assert_eq!(
+            catalog[4]["containerProtocol"],
+            json!("synth_optimizers.gepa.v2")
+        );
         assert_eq!(catalog[4]["concurrency"], json!(10));
         assert_eq!(catalog[5]["id"], json!(HEALTHBENCH_EVAL_SMOKE_RECIPE));
         assert_eq!(catalog[5]["credentialInputs"], json!(["OPENAI_API_KEY"]));
@@ -2544,7 +2577,9 @@ namespace = "base"
         let discovered = healthbench_cookbook_root().unwrap();
         assert_eq!(
             discovered,
-            dir.path().canonicalize().unwrap_or(dir.path().to_path_buf())
+            dir.path()
+                .canonicalize()
+                .unwrap_or(dir.path().to_path_buf())
         );
         match previous {
             Some(value) => std::env::set_var("SYNTH_HEALTHBENCH_COOKBOOK_ROOT", value),

@@ -46,6 +46,13 @@ pub const EVAL_GAMEBENCH_CONFIRM_RECIPE: &str = "eval.gamebench.craftax-code-pol
 pub const EVAL_CRAFTAX_LLM_RECIPE: &str = "eval.craftax.llm-policy.smoke.v1";
 pub const EVAL_GAMEBENCH_LLM_RECIPE: &str = "eval.gamebench.llm-policy.confirm.v1";
 
+/// The product contract for the report-only Craftax smoke is two seeds per
+/// staged candidate. Older local runtime catalogs omitted `limits.trials`,
+/// even though the worker recipe itself was fixed-cardinality. Keep the
+/// authority here until every supported runtime publishes the field itself;
+/// this is a compatibility projection, not an agent-selected limit.
+const CRAFTAX_CODE_SMOKE_TRIALS_PER_CANDIDATE: u64 = 2;
+
 /// The allowlist the MCP schema publishes. A recipe id outside it never
 /// reaches the worker.
 pub const EVAL_RECIPE_IDS: [&str; 5] = [
@@ -235,9 +242,35 @@ pub fn recipe_catalog() -> Vec<Value> {
                     .and_then(Value::as_str)
                     .is_some_and(is_eval_recipe)
             })
+            .map(normalize_builtin_recipe_contract)
             .collect(),
         Err(error) => offline_catalog(&error.to_string()),
     }
+}
+
+fn normalize_builtin_recipe_contract(mut recipe: Value) -> Value {
+    if recipe.get("id").and_then(Value::as_str) != Some(EVAL_CRAFTAX_SMOKE_RECIPE)
+        || recipe.pointer("/limits/trials").is_some()
+    {
+        return recipe;
+    }
+    let Some(object) = recipe.as_object_mut() else {
+        return recipe;
+    };
+    let limits = object
+        .entry("limits")
+        .or_insert_with(|| Value::Object(Map::new()));
+    if let Some(limits) = limits.as_object_mut() {
+        limits.insert(
+            "trials".into(),
+            json!(CRAFTAX_CODE_SMOKE_TRIALS_PER_CANDIDATE),
+        );
+        limits.insert(
+            "trialAuthority".into(),
+            json!("workshop.builtin.eval.craftax.code-policy.smoke.v1"),
+        );
+    }
+    recipe
 }
 
 /// Convert the eval runtime's per-trial budget into the total product approval
@@ -1497,5 +1530,31 @@ mod tests {
             max_rollouts: Some(max_trials),
         };
         assert!(cap.is_bounded(), "a trial-capped free run is bounded");
+    }
+
+    #[test]
+    fn craftax_code_smoke_backfills_its_product_owned_trial_contract() {
+        let normalized = normalize_builtin_recipe_contract(json!({
+            "id": EVAL_CRAFTAX_SMOKE_RECIPE,
+            "algorithmId": "eval",
+            "limits": {"parallelism": 2},
+        }));
+        assert_eq!(normalized["limits"]["trials"], json!(2));
+        assert_eq!(
+            normalized["limits"]["trialAuthority"],
+            json!("workshop.builtin.eval.craftax.code-policy.smoke.v1")
+        );
+        let (_, total_trials) = paid_compute_bounds_for_candidate_count(&normalized, 2).unwrap();
+        assert_eq!(total_trials, 4);
+    }
+
+    #[test]
+    fn runtime_owned_positive_trial_count_is_never_overwritten() {
+        let normalized = normalize_builtin_recipe_contract(json!({
+            "id": EVAL_CRAFTAX_SMOKE_RECIPE,
+            "limits": {"trials": 7},
+        }));
+        assert_eq!(normalized["limits"]["trials"], json!(7));
+        assert!(normalized["limits"].get("trialAuthority").is_none());
     }
 }

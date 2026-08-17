@@ -20,6 +20,138 @@ const GEPA_FIXTURE_ID: &str = "opt_gepa_fixture";
 const SFT_FIXTURE_ID: &str = "opt_sft_fixture";
 const GOEX_FIXTURE_ID: &str = "opt_goex_fixture";
 
+/// Turn the assembled catalog into one authoritative admission answer. Source
+/// catalogs still own their recipes; this projection makes their independent
+/// asset/runtime/contract failures comparable so callers never need to infer
+/// readiness by joining several MCP responses themselves.
+fn project_recipe_readiness(mut recipe: Value) -> Value {
+    let id = recipe
+        .get("id")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    let algorithm = recipe
+        .get("algorithmId")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    let mut blockers = Vec::new();
+
+    if id.is_empty() {
+        blockers.push(recipe_blocker(
+            "recipe_id_missing",
+            "recipe.id",
+            "Optimizers",
+            "The recipe has no stable id.",
+            false,
+        ));
+    }
+    if algorithm.is_empty() {
+        blockers.push(recipe_blocker(
+            "algorithm_id_missing",
+            "recipe.algorithmId",
+            "Optimizers",
+            "The recipe has no algorithm owner.",
+            false,
+        ));
+    }
+
+    if recipe.get("availability").and_then(Value::as_str) != Some("available") {
+        let detail = recipe
+            .get("availabilityReason")
+            .and_then(Value::as_str)
+            .filter(|reason| !reason.trim().is_empty())
+            .unwrap_or(
+                "A required runtime, service, credential, or packaged asset is unavailable.",
+            );
+        let (code, contract, owner) = if detail.contains("cookbook") {
+            ("cookbook_unavailable", "assets.cookbook", "Optimizers")
+        } else if detail.contains("runtime is not installed") {
+            ("runtime_unavailable", "runtime.local", "Optimizers")
+        } else {
+            (
+                "dependency_unavailable",
+                "recipe.dependencies",
+                "Optimizers",
+            )
+        };
+        blockers.push(recipe_blocker(code, contract, owner, detail, true));
+    }
+
+    if super::eval_recipes::is_eval_recipe(&id)
+        && recipe.get("availability").and_then(Value::as_str) == Some("available")
+        && recipe
+            .pointer("/limits/trials")
+            .and_then(Value::as_u64)
+            .filter(|trials| *trials > 0)
+            .is_none()
+    {
+        blockers.push(recipe_blocker(
+            "trial_limit_missing",
+            "limits.trials",
+            "Optimizers",
+            "The eval recipe must publish a positive per-candidate trial count.",
+            false,
+        ));
+    }
+
+    if id.starts_with("gepa.")
+        && recipe.get("availability").and_then(Value::as_str) == Some("available")
+        && recipe
+            .pointer("/limits/maxTotalRollouts")
+            .and_then(Value::as_u64)
+            .filter(|rollouts| *rollouts > 0)
+            .is_none()
+    {
+        blockers.push(recipe_blocker(
+            "rollout_limit_missing",
+            "limits.maxTotalRollouts",
+            "Optimizers",
+            "The GEPA recipe must publish a positive total rollout ceiling.",
+            false,
+        ));
+    }
+
+    let ready = blockers.is_empty();
+    if let Some(object) = recipe.as_object_mut() {
+        if !ready {
+            object.insert("availability".into(), json!("unavailable"));
+            if object
+                .get("availabilityReason")
+                .and_then(Value::as_str)
+                .map_or(true, |reason| reason.trim().is_empty())
+            {
+                object.insert("availabilityReason".into(), blockers[0]["message"].clone());
+            }
+        }
+        object.insert(
+            "readiness".into(),
+            json!({
+                "ready": ready,
+                "status": if ready { "ready" } else { "blocked" },
+                "blockers": blockers,
+            }),
+        );
+    }
+    recipe
+}
+
+fn recipe_blocker(
+    code: &str,
+    contract: &str,
+    owner: &str,
+    message: &str,
+    retryable: bool,
+) -> Value {
+    json!({
+        "code": code,
+        "contract": contract,
+        "owner": owner,
+        "message": message,
+        "retryable": retryable,
+    })
+}
+
 fn validate_control(run: &OptimizerRunRecord, command: &str) -> Result<()> {
     match command {
         "cancel" if !run.capabilities.cancel => bail!("cancel is not available for this run"),
@@ -136,7 +268,7 @@ impl OptimizerService {
         recipes.push(super::sft_recipes::recipe_catalog());
         recipes.extend(super::hosted_sft::recipe_catalog());
         recipes.extend(super::eval_recipes::recipe_catalog());
-        recipes
+        recipes.into_iter().map(project_recipe_readiness).collect()
     }
 
     pub async fn start_recipe(
@@ -3091,6 +3223,49 @@ pub(in crate::optimizers) mod tests {
     use super::*;
     use crate::storage::{ContentStore, Storage};
     use tempfile::tempdir;
+
+    #[test]
+    fn recipe_readiness_names_missing_contract_and_owner() {
+        let projected = project_recipe_readiness(json!({
+            "id": "eval.fixture.policy-smoke.v1",
+            "algorithmId": "eval",
+            "availability": "available",
+            "limits": {},
+        }));
+        assert_eq!(projected["availability"], json!("unavailable"));
+        assert_eq!(projected["readiness"]["ready"], json!(false));
+        assert_eq!(
+            projected["readiness"]["blockers"][0]["contract"],
+            json!("limits.trials")
+        );
+        assert_eq!(
+            projected["readiness"]["blockers"][0]["owner"],
+            json!("Optimizers")
+        );
+    }
+
+    #[test]
+    fn recipe_readiness_preserves_a_structured_cookbook_blocker() {
+        let projected = project_recipe_readiness(json!({
+            "id": "gepa.craftax.smoke.v1",
+            "algorithmId": "gepa",
+            "availability": "unavailable",
+            "availabilityReason": "craftax cookbook is unavailable",
+            "limits": {"maxTotalRollouts": 6},
+        }));
+        assert_eq!(
+            projected["readiness"]["blockers"][0]["code"],
+            json!("cookbook_unavailable")
+        );
+        assert_eq!(
+            projected["readiness"]["blockers"][0]["contract"],
+            json!("assets.cookbook")
+        );
+        assert_eq!(
+            projected["readiness"]["blockers"][0]["retryable"],
+            json!(true)
+        );
+    }
 
     #[test]
     fn runtime_and_child_completion_events_are_not_run_terminal() {
