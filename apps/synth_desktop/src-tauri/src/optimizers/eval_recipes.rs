@@ -17,12 +17,24 @@
 use anyhow::{anyhow, bail, Context, Result};
 use serde_json::{json, Map, Value};
 use std::{
+    ffi::{OsStr, OsString},
     fs,
     path::{Path, PathBuf},
     process::Stdio,
     sync::Mutex,
     time::{Duration, Instant},
 };
+
+fn eval_cli_path(inherited: Option<&OsStr>) -> Result<OsString> {
+    let mut entries = vec![
+        PathBuf::from("/usr/local/bin"),
+        PathBuf::from("/opt/homebrew/bin"),
+    ];
+    if let Some(inherited) = inherited {
+        entries.extend(std::env::split_paths(inherited));
+    }
+    std::env::join_paths(entries).context("compose eval CLI PATH")
+}
 use tokio::{
     io::{AsyncBufReadExt, BufReader},
     process::Command,
@@ -152,6 +164,10 @@ fn run_cli(python: &Path, args: &[&str]) -> Result<Value> {
         .arg("-m")
         .arg("synth_optimizers.eval")
         .args(args)
+        // Finder launches do not inherit the operator's shell PATH. Docker is
+        // commonly installed by OrbStack in /usr/local/bin or Homebrew in
+        // /opt/homebrew/bin; the eval producer must see that supported runtime.
+        .env("PATH", eval_cli_path(std::env::var_os("PATH").as_deref())?)
         .stdin(Stdio::null())
         .output()
         .context("run the local eval CLI")?;
@@ -1225,6 +1241,15 @@ mod tests {
             decode_cli_output(true, "exit status: 0", &encoded, b"").unwrap(),
             payload
         );
+    }
+
+    #[test]
+    fn eval_cli_path_exposes_packaged_macos_container_runtimes() {
+        let path = eval_cli_path(Some(OsStr::new("/usr/bin:/bin"))).unwrap();
+        let entries = std::env::split_paths(&path).collect::<Vec<_>>();
+        assert_eq!(entries[0], Path::new("/usr/local/bin"));
+        assert_eq!(entries[1], Path::new("/opt/homebrew/bin"));
+        assert_eq!(entries[2], Path::new("/usr/bin"));
     }
 
     #[test]
