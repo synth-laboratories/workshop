@@ -115,8 +115,6 @@ jq -e '
   (.bundle.icon | length) == 2 and
   .bundle.targets == ["app"] and
   (.bundle.resources | to_entries | map(.value) | sort) == [
-    "Synth Computer Use.app",
-    "browser/playwright_backend.mjs",
     "cookbooks/optimizers/gepa/banking77_container",
     "cookbooks/optimizers/gepa/crafter_container"
   ] and

@@ -266,7 +266,12 @@ test("a long prompt never hides the active turn beneath the composer", async ({ 
 			startTurn: async () => ({ sessionId, threadId: "thread-long-prompt", turnId: "turn-long-prompt" }),
 			interrupt: async () => undefined,
 			close: async () => undefined,
-			onEvent: () => () => undefined
+			onEvent: (listener: (event: { sessionId: string; method: string; params: Record<string, unknown> }) => void) => {
+				const timer = window.setTimeout(() => listener({
+					sessionId, method: "turn/started", params: { turnId: "turn-long-prompt" }
+				}), 100);
+				return () => window.clearTimeout(timer);
+			}
 		};
 		const rows = [
 			{ sequence: 1, sessionSequence: 1, kind: "message.created", payload: { messageId: "long-user-message", role: "user", content: longPrompt } },

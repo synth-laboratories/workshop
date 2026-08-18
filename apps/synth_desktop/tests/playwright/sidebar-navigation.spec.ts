@@ -191,7 +191,7 @@ test("sidebar starts compact while retaining a working conversation and a revers
 		return { width: style.width, height: style.height, contained: rect.left >= row.left && rect.right <= row.right - 8 };
 	});
 	expect(markerGeometry).toEqual({ width: "15px", height: "15px", contained: true });
-	await expect(page.locator('[data-testid^="local-chat-sidebar-chat-"]')).toHaveCount(10);
+	await expect(page.locator('[data-testid^="local-chat-sidebar-chat-"]:visible')).toHaveCount(10);
 	await expect(page.getByTestId("sidebar-show-all-chats")).toContainText("Show 4 more");
 	const rowLayout = await page.getByTestId("local-chat-sidebar-chat-13").evaluate((item) => {
 		const row = item.closest<HTMLElement>(".chat-row")!;
@@ -207,9 +207,9 @@ test("sidebar starts compact while retaining a working conversation and a revers
 	expect(rowLayout.actionsPosition).toBe("absolute");
 
 	await page.getByTestId("sidebar-show-all-chats").click();
-	await expect(page.locator('[data-testid^="local-chat-sidebar-chat-"]')).toHaveCount(14);
+	await expect(page.locator('[data-testid^="local-chat-sidebar-chat-"]:visible')).toHaveCount(14);
 	await page.getByTestId("sidebar-show-fewer-chats").click();
-	await expect(page.locator('[data-testid^="local-chat-sidebar-chat-"]')).toHaveCount(10);
+	await expect(page.locator('[data-testid^="local-chat-sidebar-chat-"]:visible')).toHaveCount(10);
 	await expect(page.getByTestId("local-chat-sidebar-chat-13")).toBeVisible();
 });
 

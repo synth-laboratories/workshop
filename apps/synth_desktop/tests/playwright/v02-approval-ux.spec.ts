@@ -77,7 +77,15 @@ async function installPendingApproval(page: import("@playwright/test").Page, run
 			close: async () => undefined,
 			onEvent: (next: (event: Event) => void) => {
 				listener = next;
-				return () => { listener = undefined; };
+				const timer = live ? window.setTimeout(() => next({
+					sessionId: "v02-approval-session",
+					method: "turn/started",
+					params: { turnId: "turn-approval" }
+				}), 100) : undefined;
+				return () => {
+					if (timer !== undefined) window.clearTimeout(timer);
+					listener = undefined;
+				};
 			}
 		};
 		(window as typeof window & { synthCore?: unknown }).synthCore = {

@@ -999,7 +999,15 @@ test("resident model disappears immediately when Laguna reports automatic unload
 
 test("a cold local turn says Warming up until model residency is reported", async ({ page }) => {
 	await page.addInitScript(() => {
-		const testWindow = window as typeof window & { synthLaguna?: unknown; synthCodex?: unknown };
+		const testWindow = window as typeof window & {
+			synthLaguna?: unknown;
+			synthCodex?: unknown;
+			__emitColdTurn?: () => void;
+		};
+		let turnListener: ((event: { sessionId: string; method: string; params: Record<string, unknown> }) => void) | undefined;
+		testWindow.__emitColdTurn = () => turnListener?.({
+			sessionId: "cold-session", method: "turn/started", params: { turnId: "turn-cold" }
+		});
 		testWindow.synthLaguna = {
 			getStatus: async () => ({
 				phase: "loading", baseUrl: "http://127.0.0.1:7333", backend: "mlx_lm",
@@ -1022,11 +1030,15 @@ test("a cold local turn says Warming up until model residency is reported", asyn
 			startTurn: async () => { throw new Error("unused"); },
 			interrupt: async () => undefined,
 			close: async () => undefined,
-			onEvent: () => () => undefined
+			onEvent: (listener: typeof turnListener) => {
+				turnListener = listener;
+				return () => { turnListener = undefined; };
+			}
 		};
 	});
 	await page.reload();
 	await page.getByTestId("local-chat-cold-session").click();
+	await page.evaluate(() => (window as typeof window & { __emitColdTurn: () => void }).__emitColdTurn());
 	await expect(page.getByTestId("model-working")).toContainText("Warming up…");
 	await expect(page.getByTestId("model-working")).not.toContainText("Working…");
 	await expect(page.getByRole("button", { name: "Stop generating" })).toBeVisible();

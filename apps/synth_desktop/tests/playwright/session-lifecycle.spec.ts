@@ -26,6 +26,14 @@ test("a local session process exit clears stale Working and Stop state", async (
 	});
 	await page.reload();
 	await page.getByTestId("local-chat-detached-laguna").click();
+	await page.evaluate(() => {
+		(window as typeof window & { __emitSessionHealth: (event: { sessionId: string; method: string; params: Record<string, unknown> }) => void })
+			.__emitSessionHealth({
+				sessionId: "detached-laguna",
+				method: "turn/started",
+				params: { turnId: "turn-1" }
+			});
+	});
 	await expect(page.getByTestId("model-working")).toBeVisible();
 
 	await page.evaluate(() => {
@@ -122,9 +130,9 @@ test("a failed turn hidden inside a completed envelope never renders as blank su
 	await expect(transcript).not.toContainText("Worked");
 });
 
-// The exact screenshot state: a restored record still claims `running`, so the
-// transcript shows Working with a live Stop, and the very next send is rejected
-// because the owning app-server is already gone.
+// A restored record may still claim `running`, but without a live ownership
+// receipt it must not show Working or Stop. The next send reconnects and its
+// rejection remains actionable.
 test("a rejected turn start clears Working, keeps the typed text and retries", async ({ page }) => {
 	await page.addInitScript(() => {
 		type Event = { sessionId: string; method: string; params: Record<string, unknown> };
@@ -181,13 +189,9 @@ test("a rejected turn start clears Working, keeps the typed text and retries", a
 	await page.reload();
 	await page.getByTestId("local-chat-922c25f7-0000-4000-8000-000000000001").click();
 
-	// Broken state as screenshotted.
-	await expect(page.getByTestId("model-working")).toBeVisible();
-	await expect(page.getByRole("button", { name: "Stop generating" })).toBeVisible();
-	// Active-turn input now honestly enqueues. Stop the stale restored run before
-	// exercising the rejected fresh turn path.
-	await page.getByRole("button", { name: "Stop generating" }).click();
+	// The stale persisted status cannot resurrect controls for a dead worker.
 	await expect(page.getByTestId("model-working")).toHaveCount(0);
+	await expect(page.getByRole("button", { name: "Stop generating" })).toHaveCount(0);
 
 	await page.getByTestId("composer-input").fill("summarize the lifecycle handoff");
 	await page.getByTestId("composer-send").click();

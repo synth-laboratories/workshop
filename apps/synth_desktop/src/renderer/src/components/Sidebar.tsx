@@ -326,13 +326,10 @@ export function Sidebar({
 			...orderedChats.filter((chat) => chat.id === activeChatId || workingChatIds.has(chat.id)).map((chat) => chat.id)
 		]);
 		const hidden = new Set<string>();
-		let shown = 0;
 		const floor = Math.max(10, alwaysVisible.size);
+		let shown = alwaysVisible.size;
 		for (const chat of orderedChats) {
-			if (alwaysVisible.has(chat.id)) {
-				shown += 1;
-				continue;
-			}
+			if (alwaysVisible.has(chat.id)) continue;
 			if (shown >= floor) hidden.add(chat.id);
 			else shown += 1;
 		}
