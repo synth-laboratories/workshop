@@ -2003,6 +2003,19 @@ fn materialize_config(
         PROPOSALS_PER_GENERATION.into(),
     );
     gepa.insert("minibatch_size".into(), MINIBATCH_SIZE.into());
+    // Banking77 accuracy is discrete and the 20-example screen has a wide
+    // uncertainty band. A tie is not evidence of uplift, but it is enough to
+    // retain a proposal for the authoritative 50-example full-train stage.
+    // Full-train selection remains `primary_improvement`, so a tie can never
+    // be reported as measured improvement.
+    gepa.insert(
+        "minibatch_acceptance_criterion".into(),
+        toml::Value::String("improvement_or_equal".into()),
+    );
+    gepa.insert(
+        "acceptance_criterion".into(),
+        toml::Value::String("primary_improvement".into()),
+    );
     gepa.insert("max_train_rollouts".into(), MAX_TRAIN_ROLLOUTS.into());
     gepa.insert("max_heldout_rollouts".into(), MAX_HELDOUT_ROLLOUTS.into());
     gepa.insert("max_total_rollouts".into(), MAX_TOTAL_ROLLOUTS.into());
@@ -2020,9 +2033,27 @@ fn materialize_config(
             "pareto".into(),
             string_array((0..TRAIN_ROWS).map(|seed| format!("train:{seed}"))),
         ),
+        // The minibatch *pool* is the whole train split, not the minibatch
+        // size. The producer's sampler short-circuits when the pool is no
+        // larger than the sample — `if size >= rows.len() { return rows }` — so
+        // a 20-row pool with a 20-row minibatch handed every proposal the
+        // identical rows, and handed the parent one cached reference score on
+        // those same rows. Banking77's seed happens to score 0.90 on
+        // `train:0..19` against its own 0.765 full-train average, so all ten
+        // proposals were gated on beating a lucky subset, and all ten lost.
+        // Giving the sampler a pool to draw from is what makes the gate a
+        // measurement rather than a fixed toll.
+        //
+        // The producer draws `parent_minibatch_reference` from the same
+        // `(generation, proposal_index)` as `candidate_minibatch` and asserts
+        // the two row sets match, so each proposal is a paired comparison on
+        // its own draw. It also means the parent is re-scored per proposal:
+        // train spend becomes 50 seed + 10 x (20 + 20) = 450 of the 750-rollout
+        // train bound, leaving room for six full-train promotions. That is the
+        // intended shape of the budget, not an overrun.
         (
             "minibatch".into(),
-            string_array((0..MINIBATCH_SIZE as usize).map(|seed| format!("train:{seed}"))),
+            string_array((0..TRAIN_ROWS).map(|seed| format!("train:{seed}"))),
         ),
         (
             "reflection".into(),
@@ -2334,6 +2365,25 @@ fn validate_limits(config: &toml::Value) -> Result<()> {
     if rollout_cost <= 0.0 || rollout_cost > MAX_COST_USD {
         bail!("generated Banking77 GEPA recipe has an invalid rollout cost estimate");
     }
+    // A minibatch pool no larger than the minibatch is not a sample — the
+    // producer returns the pool verbatim, every proposal is judged on identical
+    // rows, and the parent's one cached score on those rows becomes a fixed
+    // toll instead of a comparison. That is a silent defect: the run completes,
+    // spends its full budget, and reports that no proposal beat the seed.
+    // Refuse to start rather than pay for a search that cannot select.
+    let minibatch_pool = gepa
+        .get("task_pools")
+        .and_then(toml::Value::as_table)
+        .and_then(|pools| pools.get("minibatch"))
+        .and_then(toml::Value::as_array)
+        .map(Vec::len)
+        .ok_or_else(|| anyhow!("generated recipe missing gepa.task_pools.minibatch"))?;
+    let minibatch_size = integer("minibatch_size")?;
+    if (minibatch_pool as i64) <= minibatch_size {
+        bail!(
+            "generated Banking77 GEPA recipe cannot sample minibatches: pool holds {minibatch_pool} rows for a minibatch of {minibatch_size}, so every proposal would be gated on the same rows"
+        );
+    }
     Ok(())
 }
 
@@ -2459,12 +2509,18 @@ namespace = "base"
             config["taskset"]["train_ids"].as_array().unwrap().len(),
             TRAIN_ROWS
         );
-        assert_eq!(
+        // The pool the sampler draws from, not the size it draws. Asserting
+        // equality here is what let the degenerate pool ship: the producer
+        // returns the pool verbatim once it is no bigger than the minibatch, so
+        // all ten proposals were gated on `train:0..19` against one cached
+        // parent score.
+        assert!(
             config["gepa"]["task_pools"]["minibatch"]
                 .as_array()
                 .unwrap()
-                .len(),
-            MINIBATCH_SIZE as usize
+                .len()
+                > MINIBATCH_SIZE as usize,
+            "the minibatch pool must be larger than the minibatch, or every proposal shares one"
         );
         assert_eq!(
             config["taskset"]["heldout_ids"].as_array().unwrap().len(),
@@ -2472,6 +2528,8 @@ namespace = "base"
         );
         assert!(text.contains("minibatch_size = 20"));
         assert!(text.contains("proposals_per_generation = 10"));
+        assert!(text.contains("minibatch_acceptance_criterion = \"improvement_or_equal\""));
+        assert!(text.contains("acceptance_criterion = \"primary_improvement\""));
         assert!(text.contains("max_total_rollouts = 850"));
         assert!(text.contains("max_train_rollouts = 750"));
         assert!(text.contains("max_heldout_rollouts = 100"));
@@ -2492,6 +2550,60 @@ namespace = "base"
         assert!(text.contains("\"train:0\""));
         assert!(text.contains("[gepa.task_pools]"));
         assert!(text.contains("\"test:100\""));
+    }
+
+    /// The Banking77 GEPA uplift blocker, as a bound the recipe cannot cross.
+    ///
+    /// A packaged run spent 320 rollouts on ten candidates and reported +0.00
+    /// lift with every proposal rejected at the minibatch gate. The proposals
+    /// were not the problem: the generated recipe gave the sampler a pool of
+    /// exactly `minibatch_size` rows, the producer short-circuits that case and
+    /// returns the pool verbatim, and so all ten were scored on `train:0..19`
+    /// against a single cached parent reference of 0.90 — a subset where the
+    /// seed beats its own 0.765 full-train average. A search whose gate cannot
+    /// vary cannot select, and must not be allowed to start.
+    #[test]
+    fn a_minibatch_pool_that_cannot_be_sampled_is_refused() {
+        let mut config: toml::Value = toml::from_str(
+            r#"
+[gepa]
+max_generations = 1
+proposals_per_generation = 10
+minibatch_size = 20
+max_train_rollouts = 750
+max_heldout_rollouts = 100
+max_total_rollouts = 850
+max_cost_usd = 9.0
+proposer_estimated_cost_usd = 0.05
+rollout_estimated_cost_usd = 0.01
+
+[gepa.task_pools]
+minibatch = []
+"#,
+        )
+        .unwrap();
+
+        let set_pool = |config: &mut toml::Value, rows: usize| {
+            config["gepa"]["task_pools"]["minibatch"] =
+                string_array((0..rows).map(|seed| format!("train:{seed}")));
+        };
+
+        set_pool(&mut config, MINIBATCH_SIZE as usize);
+        let error = validate_limits(&config).unwrap_err().to_string();
+        assert!(
+            error.contains("cannot sample minibatches"),
+            "a pool equal to the minibatch must be refused, got: {error}"
+        );
+
+        set_pool(&mut config, MINIBATCH_SIZE as usize - 1);
+        assert!(
+            validate_limits(&config).is_err(),
+            "a pool smaller than the minibatch is the same defect"
+        );
+
+        set_pool(&mut config, TRAIN_ROWS);
+        validate_limits(&config)
+            .expect("the whole train split is a pool the sampler can actually draw from");
     }
 
     #[test]
