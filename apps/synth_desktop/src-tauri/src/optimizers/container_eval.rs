@@ -182,6 +182,7 @@ pub(super) async fn start(
 ) -> Result<(OptimizerRunRecord, Option<crate::storage::AppEvent>)> {
     let spec = EvalSpec::for_recipe(&request.recipe_id)?;
     let container = find_ready_container(service, spec.family).await?;
+    preflight_container_credentials(&container, spec).await?;
     let examples = spec.examples();
     let suffix = Uuid::new_v4().simple().to_string();
     let run_id = format!("opt_eval_{}_{}", spec.family, &suffix[..12]);
@@ -268,6 +269,56 @@ pub(super) async fn start(
         worker.unregister_local_recipe(&worker_run_id).await;
     });
     Ok((service.get(run.id).await?, event))
+}
+
+async fn preflight_container_credentials(container: &ReadyContainer, spec: EvalSpec) -> Result<()> {
+    if spec.family != "healthbench" {
+        return Ok(());
+    }
+    let client = crate::http::http_client_with_timeout(Duration::from_secs(15));
+    let info = client
+        .get(format!("{}/info", container.base_url))
+        .send()
+        .await
+        .context("HealthBench credential preflight GET /info")?;
+    if !info.status().is_success() {
+        bail!(
+            "HealthBench credential preflight returned {}",
+            info.status()
+        );
+    }
+    let info = info
+        .json::<Value>()
+        .await
+        .context("decode HealthBench credential preflight")?;
+    for (lane, owner) in [
+        ("policy", "healthbench.policy"),
+        ("scorer", "healthbench.grader"),
+    ] {
+        let role = info
+            .pointer(&format!("/metadata/model_roles/{lane}"))
+            .and_then(Value::as_object);
+        let present = role
+            .and_then(|role| role.get("credential_present"))
+            .and_then(Value::as_bool);
+        if present != Some(true) {
+            let credential = role
+                .and_then(|role| role.get("api_key_env"))
+                .and_then(Value::as_str)
+                .unwrap_or("provider credential");
+            bail!(
+                "{}",
+                json!({
+                    "code": "credential_missing",
+                    "contract": "healthbench.credentials",
+                    "owner": owner,
+                    "retryable": true,
+                    "message": format!("{owner} requires {credential}; configure it before starting the eval"),
+                })
+            );
+        }
+    }
+    Ok(())
 }
 
 /// Settle a worker that did not reach its own terminal event.
@@ -1285,6 +1336,8 @@ mod tests {
         policy_config_id: String,
         fail_seeds: BTreeSet<i64>,
         extra_cost_usd: Option<f64>,
+        policy_credential_present: bool,
+        grader_credential_present: bool,
     }
 
     async fn spawn_eval_mock(
@@ -1302,6 +1355,8 @@ mod tests {
             },
             fail_seeds: BTreeSet::new(),
             extra_cost_usd: None,
+            policy_credential_present: true,
+            grader_credential_present: true,
         })
         .await
     }
@@ -1333,6 +1388,18 @@ mod tests {
                                     "config": "banking77_gpt_4_1_nano",
                                     "model": "openai/gpt-4.1-nano"
                                 }]
+                            }) } else { json!({}) },
+                            "metadata": if family == "healthbench" { json!({
+                                "model_roles": {
+                                    "policy": {
+                                        "api_key_env": "OPENAI_API_KEY",
+                                        "credential_present": opts.policy_credential_present
+                                    },
+                                    "scorer": {
+                                        "api_key_env": "OPENAI_API_KEY",
+                                        "credential_present": opts.grader_credential_present
+                                    }
+                                }
                             }) } else { json!({}) },
                         })),
                         ("POST", path) if path == "/policy-configs" || path.starts_with("/policy-configs/") => {
@@ -1531,9 +1598,7 @@ mod tests {
         svc: &OptimizerService,
         session: &str,
     ) -> (OptimizerRunRecord, tokio::task::JoinHandle<()>) {
-        let rewards = (0..10)
-            .map(|seed| (("train".into(), seed), 1.0))
-            .collect();
+        let rewards = (0..10).map(|seed| (("train".into(), seed), 1.0)).collect();
         let (base, task, _) = spawn_eval_mock("banking77", rewards).await;
         insert_container(svc, "banking77", &base, "ready").await;
         let (run, _) = svc
@@ -1562,7 +1627,10 @@ mod tests {
         let finished = wait_terminal(&svc, &run.id).await;
         assert_eq!(finished.status, "completed");
 
-        let events = svc.events_after(run.id.clone(), 0, Some(500)).await.unwrap();
+        let events = svc
+            .events_after(run.id.clone(), 0, Some(500))
+            .await
+            .unwrap();
         let sequences: Vec<u64> = events.iter().map(|event| event.sequence_number).collect();
         assert_eq!(
             sequences,
@@ -1690,8 +1758,13 @@ mod tests {
         let visual_id = finished.summary["visualId"].as_str().unwrap().to_string();
 
         let spec = EvalSpec::for_recipe(BANKING77_EVAL_BASELINE_RECIPE).unwrap();
-        let again = mint_experiment_visual(&svc, &finished, spec, 10).await.unwrap();
-        assert_eq!(again, visual_id, "republication must not mint a second visual");
+        let again = mint_experiment_visual(&svc, &finished, spec, 10)
+            .await
+            .unwrap();
+        assert_eq!(
+            again, visual_id,
+            "republication must not mint a second visual"
+        );
         let refreshed = svc.get(run.id.clone()).await.unwrap();
         assert_eq!(refreshed.visual_refs.len(), 1);
         assert_eq!(
@@ -1739,7 +1812,14 @@ mod tests {
         let mut health_rewards = BTreeMap::new();
         for seed in [0, 1, 100, 101] {
             health_rewards.insert(
-                (if seed < 100 { "train".into() } else { "heldout".into() }, seed),
+                (
+                    if seed < 100 {
+                        "train".into()
+                    } else {
+                        "heldout".into()
+                    },
+                    seed,
+                ),
                 0.9,
             );
         }
@@ -1776,7 +1856,10 @@ mod tests {
             assert_eq!(manifest["work"]["planned"], json!(planned), "{run_id}");
             assert_eq!(manifest["work"]["succeeded"], json!(planned), "{run_id}");
 
-            let events = svc.events_after(run_id.clone(), 0, Some(500)).await.unwrap();
+            let events = svc
+                .events_after(run_id.clone(), 0, Some(500))
+                .await
+                .unwrap();
             let sequences: Vec<u64> = events.iter().map(|event| event.sequence_number).collect();
             assert_eq!(
                 sequences,
@@ -1784,9 +1867,7 @@ mod tests {
                 "{run_id} log must be contiguous under concurrency"
             );
             assert!(
-                events
-                    .iter()
-                    .all(|event| event.optimizer_run_id == run_id),
+                events.iter().all(|event| event.optimizer_run_id == run_id),
                 "one campaign's events must never land in the other's log"
             );
             let selected = svc
@@ -1833,7 +1914,8 @@ mod tests {
         append_status(&svc, &run.id, "optimizer.run.started", "running")
             .await
             .unwrap();
-        let records = vec![json!({ "seed": 0, "pool": "train", "reward": 1.0, "status": "completed" })];
+        let records =
+            vec![json!({ "seed": 0, "pool": "train", "reward": 1.0, "status": "completed" })];
 
         // The visual the campaign was supposed to keep current is gone.
         let failure = evidence(
@@ -2016,6 +2098,58 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn healthbench_admission_blocks_before_dispatch_when_policy_credential_is_missing() {
+        let (base, task, starts) = spawn_eval_mock_opts(MockEvalOptions {
+            family: "healthbench",
+            rewards: BTreeMap::new(),
+            policy_status: 200,
+            policy_config_id: "openai_gpt41_mini".into(),
+            fail_seeds: BTreeSet::new(),
+            extra_cost_usd: None,
+            policy_credential_present: false,
+            grader_credential_present: true,
+        })
+        .await;
+        let (svc, _dir, _) = service().await;
+        insert_container(&svc, "healthbench", &base, "ready").await;
+        let error = svc
+            .start_recipe(recipe(HEALTHBENCH_EVAL_SMOKE_RECIPE, "sess_missing_policy"))
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("credential_missing"), "{error}");
+        assert!(error.contains("healthbench.policy"), "{error}");
+        assert_eq!(starts.load(Ordering::SeqCst), 0);
+        task.abort();
+    }
+
+    #[tokio::test]
+    async fn healthbench_admission_blocks_before_dispatch_when_grader_credential_is_missing() {
+        let (base, task, starts) = spawn_eval_mock_opts(MockEvalOptions {
+            family: "healthbench",
+            rewards: BTreeMap::new(),
+            policy_status: 200,
+            policy_config_id: "openai_gpt41_mini".into(),
+            fail_seeds: BTreeSet::new(),
+            extra_cost_usd: None,
+            policy_credential_present: true,
+            grader_credential_present: false,
+        })
+        .await;
+        let (svc, _dir, _) = service().await;
+        insert_container(&svc, "healthbench", &base, "ready").await;
+        let error = svc
+            .start_recipe(recipe(HEALTHBENCH_EVAL_SMOKE_RECIPE, "sess_missing_grader"))
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("credential_missing"), "{error}");
+        assert!(error.contains("healthbench.grader"), "{error}");
+        assert_eq!(starts.load(Ordering::SeqCst), 0);
+        task.abort();
+    }
+
+    #[tokio::test]
     async fn container_eval_fails_fast_without_a_registered_pool() {
         let (svc, _dir, _) = service().await;
         let error = svc
@@ -2058,6 +2192,8 @@ mod tests {
             policy_config_id: "openai_gpt41_mini".into(),
             fail_seeds: BTreeSet::new(),
             extra_cost_usd: None,
+            policy_credential_present: true,
+            grader_credential_present: true,
         })
         .await;
         let (svc, _dir, _) = service().await;
@@ -2081,6 +2217,8 @@ mod tests {
             policy_config_id: "groq_llama31_8b".into(),
             fail_seeds: BTreeSet::new(),
             extra_cost_usd: None,
+            policy_credential_present: true,
+            grader_credential_present: true,
         })
         .await;
         let (svc, _dir, _) = service().await;
@@ -2108,6 +2246,8 @@ mod tests {
             policy_config_id: "banking77_gpt_4_1_nano".into(),
             fail_seeds: (1..10).collect(),
             extra_cost_usd: None,
+            policy_credential_present: true,
+            grader_credential_present: true,
         })
         .await;
         let (svc, _dir, _) = service().await;
@@ -2138,6 +2278,8 @@ mod tests {
             policy_config_id: "openai_gpt41_mini".into(),
             fail_seeds: BTreeSet::new(),
             extra_cost_usd: Some(0.50),
+            policy_credential_present: true,
+            grader_credential_present: true,
         })
         .await;
         let (svc, _dir, _) = service().await;
