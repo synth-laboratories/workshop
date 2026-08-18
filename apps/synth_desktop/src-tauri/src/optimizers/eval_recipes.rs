@@ -434,6 +434,23 @@ fn require_digest_pinned_target(recipe: &Value, recipe_id: &str) -> Result<()> {
         ));
     }
 
+    // A bare name with no registry host is not a published image; it resolves
+    // only against whatever the local daemon happens to hold. This is the form
+    // actually in play: the catalog names `craftax-eval-target`, and an
+    // operator pin supplied the digest of a local `craftax-eval-target:refresh`
+    // build that was never pushed. The recipe then reported `available` and
+    // would have produced a benchmark number no other machine could reproduce.
+    // A registry host is what makes a digest resolvable by someone else.
+    let repository = image.split('@').next().unwrap_or(image);
+    let host = repository.split('/').next().unwrap_or("");
+    let has_registry_host = repository.contains('/')
+        && (host.contains('.') || host.contains(':') || host == "localhost");
+    if !has_registry_host {
+        return Err(refuse(
+            "the eval target names no registry; publish the image under its registry host and pin that digest",
+        ));
+    }
+
     let digest = recipe
         .get("imageDigest")
         .or_else(|| recipe.get("targetManifestDigest"))
@@ -1966,6 +1983,41 @@ mod immutable_target_tests {
 
     /// The fixture smoke is deterministic and scores no container. Requiring a
     /// digest it has no image for would block a lane this rule is not about.
+    /// The Craftax eval blocker as it actually stands.
+    ///
+    /// The runtime catalog names `craftax-eval-target` — no registry host — and
+    /// an operator pin supplied `sha256:d1b3eacc...`, the digest of a local
+    /// `craftax-eval-target:refresh` build that was never pushed. The recipe
+    /// reported `available` and ran, producing a benchmark number that exists
+    /// on exactly one machine. A well-formed digest is not a published image.
+    #[test]
+    fn a_registry_less_name_with_a_local_digest_is_not_a_published_target() {
+        let error = refusal(&recipe(
+            Some("craftax-eval-target"),
+            Some("sha256:d1b3eaccfd833f0f67eaf682be0ea162e93ddacb71db944be9b3e03c82cd09bd"),
+        ));
+        assert!(error.contains("names no registry"), "{error}");
+        assert!(error.contains("target_not_digest_pinned"), "{error}");
+    }
+
+    #[test]
+    fn a_published_registry_reference_is_admitted() {
+        require_digest_pinned_target(
+            &recipe(
+                Some("ghcr.io/synth-laboratories/craftax-eval-target"),
+                Some(PINNED),
+            ),
+            EVAL_CRAFTAX_LLM_RECIPE,
+        )
+        .expect("a registry-qualified reference with a pinned digest is publishable evidence");
+        // A private registry on an explicit host and port is still a registry.
+        require_digest_pinned_target(
+            &recipe(Some("localhost:5000/craftax-eval-target"), Some(PINNED)),
+            EVAL_CRAFTAX_LLM_RECIPE,
+        )
+        .expect("an explicit host is resolvable by someone other than this process");
+    }
+
     #[test]
     fn a_recipe_with_no_image_has_nothing_to_pin() {
         require_digest_pinned_target(&recipe(None, None), EVAL_FIXTURE_SMOKE_RECIPE)
