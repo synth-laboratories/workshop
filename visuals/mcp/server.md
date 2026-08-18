@@ -25,6 +25,7 @@ import {
 | `visual_bind_data_source` | append/replace `VisualBinding`; validate slot via template meta; optionally `bindTemplateSlots` |
 | `visual_open_in_pane` | IPC to renderer VisualPane or full canvas: load a trusted registered shell |
 | `visual_stream_live_eval` | ensure live.* instance, bind `live_sse` or fixture, open pane, start SSE subscribe |
+| `visual_chart` | write a `synth.visual.chart-spec.v1` spec to an `analysis.chart.v1` visual, render it in the host, and return the PNG — the whole authoring loop in one call |
 | `visual_authoring_context` | return revision, template/example evidence, presentation, review count, and required checks |
 | `visual_review` | persist a rendered viewport critique against the exact current revision |
 | `visual_mark_ready` | require two passing distinct-width reviews and write the `qualityGate` receipt |
@@ -52,6 +53,35 @@ Live evals:
 1. Prepare the container without starting it and bind the returned declared SSE URL.
 2. Open the live visual in canvas mode, iterate twice, and mark its current revision ready.
 3. Start only with that visual id and exact prepared descriptor. Slot is `stream`, never a guessed `/events` path.
+
+## Ad-hoc data charts
+
+`analysis.chart.v1` is the ad-hoc chart family: the agent authors a bounded
+JSON spec, the host renders it to SVG in-process, and the pane displays that
+same rendition. Because the image exists without a pane, `capture_review`
+takes the deterministic path — no window, no show, no observation handshake —
+so the loop is `visual_chart` → look at the PNG → `visual_chart` again with
+the same `visual_id`. Contract: [`docs/contracts/visual_chart_spec.md`](../../docs/contracts/visual_chart_spec.md).
+
+Nulls are absence, not zero: a null `y` breaks the line, a null bar value is a
+hatched stub, a null heatmap cell is hatched, a null table cell is an em dash.
+
+Panels do not have to carry their numbers. A `from` block names a bound slot, a
+path into it, a transform pipeline, and which columns become which channel, so
+"chart this trace" is a binding plus a mapping rather than a paste:
+
+```json
+{"kind":"series","title":"Cumulative reward","from":{
+  "source":{"slot":"rollout","path":"steps","transform":[
+    {"op":"sort","by":"turn"},
+    {"op":"derive","field":"total","from":{"cumulative":"reward"}}]},
+  "series":[{"name":"cumulative","x":"turn","y":"total"}]}}
+```
+
+`visual_chart` takes `slot`/`kind`/`source` alongside `spec`, so the binding and
+the chart land in one call. Readable kinds are `inline`, `fixture`, `local_cas`,
+`trace_v5`, and `query_snapshot`; `live_sse` is refused, because a still image
+has no single value to draw from a stream.
 
 ## Security notes
 

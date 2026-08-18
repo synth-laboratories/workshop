@@ -378,6 +378,8 @@ mod tests {
     }
 }
 
+const CHART_TEMPLATE_ID: &str = "analysis.chart.v1";
+
 const VISUAL_OPERATIONS: &[(&str, &str)] = &[
     ("list_templates", "visual_list_templates"),
     ("list", "visual_list"),
@@ -390,6 +392,7 @@ const VISUAL_OPERATIONS: &[(&str, &str)] = &[
     ("show", "visual_show"),
     ("render", "visual_render"),
     ("capture_review", "visual_capture_review"),
+    ("chart", "visual_chart"),
     ("authoring_context", "visual_authoring_context"),
     ("list_annotations", "visual_list_annotations"),
     ("annotate", "visual_annotate"),
@@ -419,17 +422,23 @@ fn managed_tool_name(operation: &str) -> Result<&'static str, String> {
 fn tools() -> Value {
     let mut result = json!({
         "tools": [
-            {"name":"visual_manage","description":"Synth visuals. Use author-synth-diagrams; do not call MCP resources. Create/show, review PNGs wide and compact, revise defects, then mark_ready. Mermaid source goes in arguments.content.","inputSchema":{"type":"object","properties":{"operation":{"type":"string","description":"Visual operation."},"arguments":{"type":"object","description":"Operation arguments. capture_review returns a PNG and screenshot_path; review and mark_ready use the current revision.","additionalProperties":true}},"required":["operation","arguments"],"additionalProperties":false}},
+            {"name":"visual_manage","description":"Synth visuals. Use author-synth-diagrams; do not call MCP resources. Create/show, review PNGs wide and compact, revise defects, then mark_ready. Mermaid source goes in arguments.content. Data charts: use visual_chart.","inputSchema":{"type":"object","properties":{"operation":{"type":"string","description":"Visual operation."},"arguments":{"type":"object","description":"Operation arguments. capture_review returns a PNG and screenshot_path; review and mark_ready use the current revision.","additionalProperties":true}},"required":["operation","arguments"],"additionalProperties":false}},
             {"name":"visual_list_templates","description":"List Synth visual templates","inputSchema":{"type":"object","properties":{"genre":{"type":"string"}},"additionalProperties":false}},
             {"name":"visual_list","description":"List visuals in the local registry","inputSchema":{"type":"object","properties":{"search":{"type":"string"},"status":{"type":"string"},"session_id":{"type":"string"}},"additionalProperties":false}},
             {"name":"visual_get","description":"Get a visual by id","inputSchema":{"type":"object","properties":{"visual_id":{"type":"string"}},"required":["visual_id"],"additionalProperties":false}},
-            {"name":"visual_create","description":"Create a visual from a trusted registered template. Prefer create_with_bind with slot+kind+data for experiment.overview.v1 and analysis.visual.v1. Interactive live viewers are configured templates; arbitrary TSX is not executed.","inputSchema":{"type":"object","properties":{"template_id":{"type":"string"},"title":{"type":"string"},"content":{"type":"string"},"props":{"type":"object"},"bindings":{"type":"object"},"slot":{"type":"string","description":"Required slot name for create_with_bind, e.g. experiment or spec"},"kind":{"type":"string","description":"Binding kind. Inline slots require data."},"data":{"description":"Required when kind is inline"},"source":{"type":"string"},"poll_url":{"type":"string"},"path":{"type":"string"},"schema":{"type":"string"},"visual_config":{"type":"object"},"presentation":{"type":"string","enum":["canvas","pane"]},"session_id":{"type":"string"},"instance_id":{"type":"string"}},"required":["template_id"],"additionalProperties":false}},
+            {"name":"visual_create","description":"Create a visual from a trusted registered template. For ad-hoc data charts prefer the visual_chart tool over this one. Prefer create_with_bind with slot+kind+data for experiment.overview.v1 and analysis.visual.v1. Interactive live viewers are configured templates; arbitrary TSX is not executed.","inputSchema":{"type":"object","properties":{"template_id":{"type":"string"},"title":{"type":"string"},"content":{"type":"string"},"props":{"type":"object"},"bindings":{"type":"object"},"slot":{"type":"string","description":"Required slot name for create_with_bind, e.g. experiment or spec"},"kind":{"type":"string","description":"Binding kind. Inline slots require data."},"data":{"description":"Required when kind is inline"},"source":{"type":"string"},"poll_url":{"type":"string"},"path":{"type":"string"},"schema":{"type":"string"},"visual_config":{"type":"object"},"presentation":{"type":"string","enum":["canvas","pane"]},"session_id":{"type":"string"},"instance_id":{"type":"string"}},"required":["template_id"],"additionalProperties":false}},
             {"name":"visual_create_from_template","description":"Alias of visual_create","inputSchema":{"type":"object","properties":{"template_id":{"type":"string"},"title":{"type":"string"},"props":{"type":"object"},"instance_id":{"type":"string"}},"required":["template_id"],"additionalProperties":false}},
-            {"name":"visual_update","description":"Revise visual bindings, title, trusted-template configuration, or Mermaid content","inputSchema":{"type":"object","properties":{"visual_id":{"type":"string"},"title":{"type":"string"},"content":{"type":"string"},"bindings":{"type":"object","description":"Canonical synth.visual-bindings.v1 envelope: {\"schemaVersion\":\"synth.visual-bindings.v1\",\"slots\":[{\"slot\":...,\"kind\":...,\"source\":...}]}. A slot-keyed map such as {\"stream\":[...]} is legacy, is upgraded with a warning, and will be refused in a later release. Prefer visual_bind_data_source.","properties":{"schemaVersion":{"type":"string","const":"synth.visual-bindings.v1"},"slots":{"type":"array","items":{"type":"object","properties":{"slot":{"type":"string"},"kind":{"type":"string"},"source":{"type":"string"},"poll_url":{"type":"string"},"path":{"type":"string"},"schema":{"type":"string"},"data":{}},"required":["slot","kind"]}}},"required":["schemaVersion","slots"]},"status":{"type":"string"},"visual_config":{"type":"object"},"presentation":{"type":"string","enum":["canvas","pane"]}},"required":["visual_id"],"additionalProperties":false}},
+            {"name":"visual_update","description":"Revise visual bindings, title, trusted-template configuration, or Mermaid/systems/chart content","inputSchema":{"type":"object","properties":{"visual_id":{"type":"string"},"title":{"type":"string"},"content":{"type":"string"},"bindings":{"type":"object","description":"Canonical synth.visual-bindings.v1 envelope: {\"schemaVersion\":\"synth.visual-bindings.v1\",\"slots\":[{\"slot\":...,\"kind\":...,\"source\":...}]}. A slot-keyed map such as {\"stream\":[...]} is legacy, is upgraded with a warning, and will be refused in a later release. Prefer visual_bind_data_source.","properties":{"schemaVersion":{"type":"string","const":"synth.visual-bindings.v1"},"slots":{"type":"array","items":{"type":"object","properties":{"slot":{"type":"string"},"kind":{"type":"string"},"source":{"type":"string"},"poll_url":{"type":"string"},"path":{"type":"string"},"schema":{"type":"string"},"data":{}},"required":["slot","kind"]}}},"required":["schemaVersion","slots"]},"status":{"type":"string"},"visual_config":{"type":"object"},"presentation":{"type":"string","enum":["canvas","pane"]}},"required":["visual_id"],"additionalProperties":false}},
             {"name":"visual_bind_data_source","description":"Bind one slot on a visual. This is the only supported way to write bindings: it emits the canonical synth.visual-bindings.v1 envelope. Inline slots require data; other kinds require source. Use mode=append with bindings[] to put several sources on one slot.","inputSchema":{"type":"object","properties":{"instance_id":{"type":"string"},"slot":{"type":"string"},"mode":{"type":"string","enum":["replace","append"],"description":"replace (default) drops existing bindings on this slot; append adds to them"},"kind":{"type":"string","enum":["trace_v5","local_cas","live_sse","fixture","inline","run_ref","optimizer_run","query_snapshot"]},"source":{"type":"string"},"data":{"description":"Required when kind is inline"},"poll_url":{"type":"string","description":"Exact normalized poll URL declared beside a live SSE source"},"path":{"type":"string"},"schema":{"type":"string"},"bindings":{"type":"array","description":"Several descriptors for one slot. Each is {kind, source, data?, poll_url?, path?, schema?}; the named slot is authoritative.","items":{"type":"object","properties":{"kind":{"type":"string"},"source":{"type":"string"},"data":{},"poll_url":{"type":"string"},"path":{"type":"string"},"schema":{"type":"string"}},"required":["kind"],"additionalProperties":false}}},"required":["instance_id","slot"],"additionalProperties":false}},
             {"name":"visual_show","description":"Open a visual in the Desktop right pane","inputSchema":{"type":"object","properties":{"visual_id":{"type":"string"},"session_id":{"type":"string"}},"required":["visual_id"],"additionalProperties":false}},
             {"name":"visual_open_in_pane","description":"Alias of visual_show","inputSchema":{"type":"object","properties":{"instance_id":{"type":"string"}},"required":["instance_id"],"additionalProperties":false}},
             {"name":"visual_fork","description":"Fork a visual","inputSchema":{"type":"object","properties":{"visual_id":{"type":"string"},"title":{"type":"string"}},"required":["visual_id"],"additionalProperties":false}},
+            {"name":"visual_chart","description":"Author or revise an ad-hoc data chart and get the rendered PNG back in one call. Pass a synth.visual.chart-spec.v1 object as spec; omit visual_id to create, pass it to revise. Panels: metrics, series (line/stepped/area with optional band), bars (grouped/stacked, vertical/horizontal), scatter (optional Pareto frontier), histogram, heatmap, table, note. Panels either carry literal values or derive them from bound evidence with a from block — bind a trace digest, fixture, CAS blob, or query snapshot with slot/kind/source and the host reads it, so charting a trace does not mean pasting its numbers. Every value channel accepts null for an unmeasured point, which renders as a gap or a hatched cell — never as zero. Renders deterministically without opening the Desktop window.","inputSchema":{"type":"object","properties":{"visual_id":{"type":"string","description":"Revise this chart instead of creating one"},"title":{"type":"string"},"spec":{"type":"object","description":"synth.visual.chart-spec.v1: {version:1, title?, subtitle?, theme?:light|dark, width?:480-2000, panels:[...]}. A panel carries literal values OR a from block: {from:{source:{slot,path?,projection?,transform:[...]}, ...channel mapping}}. Transforms: filter, sort, limit, select, unwind, unpivot, derive, groupAggregate, bin."},
+              "slot":{"type":"string","description":"Bind evidence in the same call: the slot name a from block reads"},
+              "kind":{"type":"string","enum":["inline","fixture","local_cas","trace_v5","query_snapshot"],"description":"Binding kind for slot"},
+              "source":{"type":"string","description":"Trace digest, fixture path under visuals/, CAS digest, or snapshot id"},
+              "data":{"description":"Required when kind is inline"},
+              "bindings":{"type":"object","description":"A full synth.visual-bindings.v1 envelope, instead of slot/kind/source"},"viewport":{"type":"object","properties":{"width":{"type":"integer","minimum":320,"maximum":2400}},"additionalProperties":false,"description":"Capture width; the height follows the chart so nothing is scaled down"},"capture":{"type":"boolean","description":"Default true; false returns the revision and findings without a PNG"},"presentation":{"type":"string","enum":["canvas","pane"]}},"required":["spec"],"additionalProperties":false}},
             {"name":"visual_authoring_context","description":"Get the template contract, example evidence, revision, presentation, and outstanding quality gate for one visual","inputSchema":{"type":"object","properties":{"visual_id":{"type":"string"}},"required":["visual_id"],"additionalProperties":false}},
             {"name":"visual_list_annotations","description":"List durable labels for a visual and its current overlay digest","inputSchema":{"type":"object","properties":{"visual_id":{"type":"string"}},"required":["visual_id"],"additionalProperties":false}},
             {"name":"visual_annotate","description":"Write a durable label anchored to one exact visual revision","inputSchema":{"type":"object","properties":{"visual_id":{"type":"string"},"revision":{"type":"integer"},"selector":{"type":"object"},"kind":{"type":"string","enum":["note","bug","highlight","reward","acceptance"]},"body":{"type":"string"},"source_digest":{"type":"string"},"supersedes_id":{"type":"string"}},"required":["visual_id","revision","selector","kind"],"additionalProperties":false}},
@@ -739,6 +748,125 @@ fn call_tool(name: &str, args: &Value) -> Result<Value, String> {
             request("POST", &format!("/v1/visuals/{id}/render"), None)
         }
         "visual_capture_review" => capture_review(args),
+        // One call per iteration: write the spec, render it, photograph it, and
+        // hand back the image with the authoring findings. The agent's loop is
+        // look → revise → look, and every extra hop in it is a hop where the
+        // agent stops looking.
+        "visual_chart" => {
+            let spec = args.get("spec").ok_or("spec required")?;
+            if !spec.is_object() {
+                return Err("spec must be a synth.visual.chart-spec.v1 object".into());
+            }
+            let content =
+                serde_json::to_string(spec).map_err(|error| format!("serialize spec: {error}"))?;
+            let existing = args
+                .get("visual_id")
+                .and_then(Value::as_str)
+                .map(str::to_owned);
+            // A chart's evidence travels with its spec: binding the slot in the
+            // same call is what makes "chart this trace" one round trip.
+            let binds = args.get("bindings").is_some() || args.get("slot").is_some();
+            let bindings = if binds {
+                Some(create_bindings_from_args(args)?)
+            } else {
+                None
+            };
+            let visual = match existing {
+                Some(id) => {
+                    let mut body = json!({ "content": content });
+                    if let Some(title) = args.get("title").cloned() {
+                        body["title"] = title;
+                    }
+                    if let Some(bindings) = bindings.clone() {
+                        body["bindings"] = bindings;
+                    }
+                    request("POST", &format!("/v1/visuals/{id}"), Some(body))?
+                }
+                None => {
+                    let session_id = require_session_identity(&session_env, "create a chart")?;
+                    request(
+                        "POST",
+                        "/v1/visuals",
+                        Some(json!({
+                            "templateId": CHART_TEMPLATE_ID,
+                            "title": args.get("title").cloned().unwrap_or(json!("Chart")),
+                            "sessionId": session_id,
+                            "sourceAgentId": "mcp",
+                            "content": content,
+                            "bindings": bindings.clone().unwrap_or(json!({})),
+                            "metadata": {
+                                "presentation": args
+                                    .get("presentation")
+                                    .cloned()
+                                    .unwrap_or(json!("pane")),
+                                "authoringReviews": []
+                            },
+                        })),
+                    )?
+                }
+            };
+            let id = visual
+                .pointer("/visual/id")
+                .and_then(Value::as_str)
+                .ok_or("visual response missing id")?
+                .to_string();
+            let render_status = visual
+                .pointer("/visual/metadata/renderStatus")
+                .and_then(Value::as_str)
+                .unwrap_or("unknown");
+            if render_status == "failed" {
+                let reason = visual
+                    .pointer("/visual/metadata/renderError")
+                    .and_then(Value::as_str)
+                    .unwrap_or("chart render failed");
+                return Err(json!({
+                    "code": "visual_chart_render_failed",
+                    "visual_id": id,
+                    "error": reason,
+                    "retryable": true,
+                    "remediation": "Fix the named field in the spec and call visual_chart again with this visual_id."
+                })
+                .to_string());
+            }
+            let findings = visual
+                .pointer("/visual/metadata/authoringFindings")
+                .cloned()
+                .unwrap_or(json!([]));
+            let provenance = visual
+                .pointer("/visual/metadata/dataProvenance")
+                .cloned()
+                .unwrap_or(Value::Null);
+            let width = args
+                .pointer("/viewport/width")
+                .and_then(Value::as_u64)
+                .unwrap_or(1280);
+            if args
+                .get("capture")
+                .and_then(Value::as_bool)
+                .unwrap_or(true)
+            {
+                let mut capture = call_tool(
+                    "visual_capture_review",
+                    &json!({"visual_id": id, "viewport": {"width": width, "height": 900}}),
+                )?;
+                if let Some(object) = capture.as_object_mut() {
+                    object.insert("findings".into(), findings);
+                    object.insert("data_provenance".into(), provenance);
+                    object.insert(
+                        "instruction".into(),
+                        json!("Inspect the attached PNG before continuing. Revise the spec and call visual_chart again with this visual_id until the chart reads correctly; findings list defects the renderer already detected."),
+                    );
+                }
+                return Ok(capture);
+            }
+            Ok(json!({
+                "visual_id": id,
+                "revision": visual.pointer("/visual/currentRevision").cloned(),
+                "render_status": render_status,
+                "findings": findings,
+                "data_provenance": provenance,
+            }))
+        }
         "visual_authoring_context" => {
             let id = args
                 .get("visual_id")
@@ -1079,9 +1207,13 @@ fn capture_review(args: &Value) -> Result<Value, String> {
     let stem = format!("{id}-r{revision}-{width}x{height}");
     let png_path = root.join(format!("{stem}.png"));
     let mut window_receipt = Value::Null;
-    let capture_mode = if matches!(renderer_kind, "mermaid" | "systems" | "systems-dynamic") {
+    let mut captured = (width, height);
+    let capture_mode = if matches!(
+        renderer_kind,
+        "mermaid" | "systems" | "systems-dynamic" | "chart"
+    ) {
         request("POST", &format!("/v1/visuals/{id}/render"), None)?;
-        capture_svg_review(id, renderer_kind, width, height, &root, &stem, &png_path)?;
+        captured = capture_svg_review(id, renderer_kind, width, height, &root, &stem, &png_path)?;
         "deterministic-svg"
     } else {
         window_receipt = capture_desktop_review(id, width, height, &png_path)?;
@@ -1153,7 +1285,8 @@ fn capture_review(args: &Value) -> Result<Value, String> {
         "revision": revision,
         "renderer_kind": renderer_kind,
         "capture_mode": capture_mode,
-        "viewport": {"width":width,"height":height},
+        "viewport": {"width":captured.0,"height":captured.1},
+        "requested_viewport": {"width":width,"height":height},
         "screenshot_path": png_path.to_string_lossy(),
         "capture_time": captured_at,
         "observations": observation,
@@ -1170,15 +1303,23 @@ fn capture_svg_review(
     root: &std::path::Path,
     stem: &str,
     png_path: &std::path::Path,
-) -> Result<(), String> {
+) -> Result<(u64, u64), String> {
     CapturePlatform::current().require_macos("SVG review capture")?;
+    let is_chart = renderer_kind == "chart";
+    // A chart declares its own theme in the spec; asking for one here would let
+    // the capture disagree with the pane. Diagrams keep their fixed pairing.
+    let theme_request = if is_chart {
+        json!({"size":"pane"})
+    } else {
+        json!({
+            "theme": if renderer_kind == "mermaid" { "light" } else { "dark" },
+            "size":"pane"
+        })
+    };
     let rendition = request(
         "GET",
         &format!("/v1/visuals/{id}/renditions/svg"),
-        Some(json!({
-            "theme": if renderer_kind == "mermaid" { "light" } else { "dark" },
-            "size":"pane"
-        })),
+        Some(theme_request),
     )?;
     let svg_b64 = rendition
         .pointer("/rendition/base64")
@@ -1189,8 +1330,34 @@ fn capture_svg_review(
         .map_err(|error| error.to_string())?;
     let svg_path = root.join(format!("{stem}.svg"));
     fs::write(&svg_path, &svg).map_err(|error| error.to_string())?;
-    render_svg_with_webkit(&svg_path, width, height, png_path)?;
-    assert_non_blank_png(png_path)
+    // A chart is a document, not a poster: scaling a tall stack of panels into
+    // a fixed box shrinks its labels below reading size, which is exactly the
+    // defect review is meant to catch. Keep the requested width, take the whole
+    // height at that width, and report what was actually photographed.
+    let (capture_width, capture_height, background) = if is_chart {
+        let natural_w = rendition
+            .pointer("/rendition/widthPx")
+            .and_then(Value::as_u64)
+            .unwrap_or(width)
+            .max(1);
+        let natural_h = rendition
+            .pointer("/rendition/heightPx")
+            .and_then(Value::as_u64)
+            .unwrap_or(height)
+            .max(1);
+        let scaled = (width as f64 * natural_h as f64 / natural_w as f64).round() as u64;
+        let theme = rendition
+            .pointer("/rendition/theme")
+            .and_then(Value::as_str)
+            .unwrap_or("light");
+        let background = if theme == "dark" { "#0D0F13" } else { "#FFFFFF" };
+        (width, scaled.clamp(120, 12_000), background)
+    } else {
+        (width, height, "#090A0C")
+    };
+    render_svg_with_webkit(&svg_path, capture_width, capture_height, png_path, background)?;
+    assert_non_blank_png(png_path)?;
+    Ok((capture_width, capture_height))
 }
 
 #[cfg(target_os = "macos")]
@@ -1199,6 +1366,7 @@ fn render_svg_with_webkit(
     width: u64,
     height: u64,
     png_path: &std::path::Path,
+    background: &str,
 ) -> Result<(), String> {
     // WebKit is the canonical macOS SVG renderer for review captures. Unlike
     // `sips`, it preserves the browser features Synth allows, including
@@ -1219,6 +1387,7 @@ let input = URL(fileURLWithPath: CommandLine.arguments[1])
 let output = URL(fileURLWithPath: CommandLine.arguments[2])
 let width = Double(CommandLine.arguments[3])!
 let height = Double(CommandLine.arguments[4])!
+let background = CommandLine.arguments[5]
 _ = NSApplication.shared
 let webView = WKWebView(frame: NSRect(x: 0, y: 0, width: width, height: height))
 let navigation = Navigation()
@@ -1227,7 +1396,7 @@ let source = try String(contentsOf: input, encoding: .utf8)
 let encoded = Data(source.utf8).base64EncodedString()
 let html = """
 <!doctype html><meta charset="utf-8"><style>
-html,body{margin:0;width:100%;height:100%;overflow:hidden;background:#090A0C}
+html,body{margin:0;width:100%;height:100%;overflow:hidden;background:\(background)}
 img{display:block;width:100%;height:100%;object-fit:contain}
 </style><img src="data:image/svg+xml;base64,\(encoded)">
 """
@@ -1274,6 +1443,7 @@ try png.write(to: output, options: .atomic)
         .arg(png_path)
         .arg(width.to_string())
         .arg(height.to_string())
+        .arg(background)
         .output()
         .map_err(|error| format!("launch WebKit SVG renderer: {error}"))?;
     if !output.status.success() || !png_path.is_file() {
@@ -1291,6 +1461,7 @@ fn render_svg_with_webkit(
     _width: u64,
     _height: u64,
     _png_path: &std::path::Path,
+    _background: &str,
 ) -> Result<(), String> {
     CapturePlatform::current().require_macos("SVG review capture")
 }
@@ -1455,7 +1626,7 @@ mod webkit_tests {
         )
         .expect("write SVG fixture");
 
-        render_svg_with_webkit(&svg_path, 320, 180, &png_path).expect("render SVG through WebKit");
+        render_svg_with_webkit(&svg_path, 320, 180, &png_path, "#090A0C").expect("render SVG through WebKit");
         assert_non_blank_png(&png_path).expect("capture should contain visible geometry");
 
         let file = fs::File::open(&png_path).expect("open rendered PNG");

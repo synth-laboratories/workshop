@@ -1897,7 +1897,7 @@ export type RenderedVisualObservation = {
 	observedAt: string,
 };
 
-export type RendererKind = "template" | "tsx" | "html" | "mermaid" | "systems" | "systems-dynamic";
+export type RendererKind = "template" | "tsx" | "html" | "mermaid" | "systems" | "systems-dynamic" | "chart";
 
 export type ReportBlock = ReportBlock_Serialize | ReportBlock_Deserialize;
 

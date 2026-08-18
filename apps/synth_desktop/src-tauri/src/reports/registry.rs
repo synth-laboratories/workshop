@@ -1760,7 +1760,7 @@ mod tests {
             .list_templates(None)
             .unwrap()
             .into_iter()
-            .find(|row| !row.id.starts_with("diagram."))
+            .find(|row| !crate::visuals::requires_canonical_source(&row.id))
             .unwrap();
         let (visual, _) = visuals
             .create(VisualCreateRequest {
