@@ -1850,7 +1850,10 @@ fn materializes_diagram_skill_with_direct_tool_first_contract() {
 
     let computer_use_skill =
         fs::read_to_string(home.join("skills/use-computer-use/SKILL.md")).unwrap();
-    assert!(!home.join("skills/.system/use-computer-use").exists());
+    assert_eq!(
+        computer_use_skill,
+        fs::read_to_string(home.join("skills/.system/use-computer-use/SKILL.md")).unwrap()
+    );
     assert!(computer_use_skill.contains("com.apple.Safari"));
     assert!(computer_use_skill.contains("Never research the tool contract"));
     assert!(computer_use_skill.contains("Do not invent verbs"));
