@@ -271,52 +271,80 @@ pub(super) async fn start(
     Ok((service.get(run.id).await?, event))
 }
 
+/// Refuse admission when a lane the container declares has no credential.
+///
+/// A packaged HealthBench eval reached 4/4 terminal traces with every single
+/// rollout failing `openai_api_key_missing`. Orchestration was flawless and the
+/// answer was worthless: the run spent its wall-clock, produced four failure
+/// records, and only then reported that the policy could not authenticate. A
+/// missing credential is knowable before the first rollout, so it is refused
+/// before the first rollout.
+///
+/// The check follows whatever the container advertises rather than a family
+/// allowlist — HealthBench declares `policy` and `scorer`, and any family that
+/// adopts the same `credential_present` contract is covered the day it does.
+/// A container that declares no roles is not failed here; there is nothing to
+/// fail it on, and inventing a refusal from absent metadata would block every
+/// family that has not implemented the contract yet.
 async fn preflight_container_credentials(container: &ReadyContainer, spec: EvalSpec) -> Result<()> {
-    if spec.family != "healthbench" {
-        return Ok(());
-    }
     let client = crate::http::http_client_with_timeout(Duration::from_secs(15));
     let info = client
         .get(format!("{}/info", container.base_url))
         .send()
         .await
-        .context("HealthBench credential preflight GET /info")?;
+        .with_context(|| format!("{} credential preflight GET /info", spec.family))?;
     if !info.status().is_success() {
         bail!(
-            "HealthBench credential preflight returned {}",
+            "{} credential preflight returned {}",
+            spec.family,
             info.status()
         );
     }
     let info = info
         .json::<Value>()
         .await
-        .context("decode HealthBench credential preflight")?;
-    for (lane, owner) in [
-        ("policy", "healthbench.policy"),
-        ("scorer", "healthbench.grader"),
-    ] {
-        let role = info
-            .pointer(&format!("/metadata/model_roles/{lane}"))
-            .and_then(Value::as_object);
-        let present = role
-            .and_then(|role| role.get("credential_present"))
-            .and_then(Value::as_bool);
-        if present != Some(true) {
-            let credential = role
-                .and_then(|role| role.get("api_key_env"))
-                .and_then(Value::as_str)
-                .unwrap_or("provider credential");
-            bail!(
-                "{}",
-                json!({
-                    "code": "credential_missing",
-                    "contract": "healthbench.credentials",
-                    "owner": owner,
-                    "retryable": true,
-                    "message": format!("{owner} requires {credential}; configure it before starting the eval"),
-                })
-            );
+        .with_context(|| format!("decode {} credential preflight", spec.family))?;
+    let Some(roles) = info
+        .pointer("/metadata/model_roles")
+        .and_then(Value::as_object)
+    else {
+        return Ok(());
+    };
+    // Sorted so the refusal names the same lane every time for a container
+    // missing more than one credential.
+    for (lane, role) in roles.iter().collect::<std::collections::BTreeMap<_, _>>() {
+        let Some(role) = role.as_object() else {
+            continue;
+        };
+        // Only a lane that declares the field is making a claim about it.
+        let Some(present) = role.get("credential_present").and_then(Value::as_bool) else {
+            continue;
+        };
+        if present {
+            continue;
         }
+        let credential = role
+            .get("api_key_env")
+            .and_then(Value::as_str)
+            .unwrap_or("provider credential");
+        // `scorer` is the container's word for the lane the product calls the
+        // grader; the owner is named in the product's vocabulary so the message
+        // points at something the reader can go configure.
+        let owner = format!(
+            "{}.{}",
+            spec.family,
+            if lane == "scorer" { "grader" } else { lane }
+        );
+        bail!(
+            "{}",
+            json!({
+                "code": "credential_missing",
+                "contract": format!("{}.credentials", spec.family),
+                "owner": owner,
+                "retryable": true,
+                "message": format!("{owner} requires {credential}; configure it before starting the eval"),
+            })
+        );
     }
     Ok(())
 }
