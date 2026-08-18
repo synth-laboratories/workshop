@@ -28,8 +28,8 @@ default_instance="$($ROOT/scripts/desktop-instance.sh print)"
 printf '%s' "$default_instance" | jq -e '
   .mode == "development" and
   .product == "workshop" and
-  .releaseLine == "v0.4" and
-  .appVersion == "0.4.0" and
+  .releaseLine == "v0.5" and
+  .appVersion == "0.5.0" and
   (.sourceRoot | length > 0) and
   (.sourceRevision | length > 0) and
   .hotReload.renderer == true and
@@ -44,7 +44,25 @@ printf '%s' "$default_instance" | jq -e '
 [[ "$(printf '%s' "$alpha" | jq -r .iconLabel)" == "1" ]]
 [[ "$(printf '%s' "$beta" | jq -r .iconLabel)" == "2" ]]
 [[ -f "$(printf '%s' "$alpha" | jq -r .icon)" ]]
-alpha_env="$TEST_ROOT/instances/v04/alpha/data/.env"
+printf '%s' "$alpha" | jq -e '
+  (.appBundle | endswith("/Synth Workshop v0.5 · alpha.app")) and
+  (.executable | endswith("/debug/synth-desktop"))
+' >/dev/null
+
+# Refreshing an instance contract after a build or identity assertion must not
+# erase the binary provenance those earlier phases recorded.
+alpha_manifest="$TEST_ROOT/instances/v05/alpha/instance.json"
+jq '.provenance={phase:"bundle-signed", executableDigest:"sha256:fixture"} | .executable="/tmp/Synth Workshop.app/Contents/MacOS/synth-desktop" | .executableDigest="sha256:fixture"' \
+  "$alpha_manifest" >"$alpha_manifest.tmp"
+mv "$alpha_manifest.tmp" "$alpha_manifest"
+alpha_refreshed="$($ROOT/scripts/desktop-instance.sh print alpha)"
+printf '%s' "$alpha_refreshed" | jq -e '
+  .provenance.phase == "bundle-signed" and
+  .provenance.executableDigest == "sha256:fixture" and
+  .executable == "/tmp/Synth Workshop.app/Contents/MacOS/synth-desktop" and
+  .executableDigest == "sha256:fixture"
+' >/dev/null
+alpha_env="$TEST_ROOT/instances/v05/alpha/data/.env"
 [[ "$(stat -f '%Lp' "$alpha_env")" == "600" ]]
 rg -q '^SYNTH_API_KEY=' "$alpha_env"
 rg -q '^OPENROUTER_API_KEY=' "$alpha_env"
@@ -86,29 +104,43 @@ if "$ROOT/scripts/desktop-instance.sh" print '../unsafe' >/dev/null 2>&1; then
   exit 1
 fi
 if SYNTH_DESKTOP_RELEASE_LINE=v0.1 "$ROOT/scripts/desktop-instance.sh" print alpha >/dev/null 2>&1; then
-  echo "non-v0.4 release line was accepted by the v0.4 launcher" >&2
+  echo "non-v0.5 release line was accepted by the v0.5 launcher" >&2
   exit 1
 fi
 
 jq -e '
-  .identifier == "com.synth.desktop.v04.dev.alpha" and
-  .productName == "Synth Workshop v0.4 · alpha" and
-  .version == "0.4.0" and
+  .identifier == "com.synth.desktop.v05.dev.alpha" and
+  .productName == "Synth Workshop v0.5 · alpha" and
+  .version == "0.5.0" and
   (.bundle.icon | length) == 2 and
   .bundle.targets == ["app"] and
+  (.bundle.resources | to_entries | map(.value) | sort) == [
+    "cookbooks/optimizers/gepa/banking77_container",
+    "cookbooks/optimizers/gepa/crafter_container"
+  ] and
   .bundle.macOS.minimumSystemVersion == "14.0"
 ' \
-  "$TEST_ROOT/instances/v04/alpha/generated/tauri.instance.json" >/dev/null
+  "$TEST_ROOT/instances/v05/alpha/generated/tauri.instance.json" >/dev/null
 jq -e '.bundle.macOS.minimumSystemVersion == "14.0"' \
   "$ROOT/apps/synth_desktop/src-tauri/tauri.conf.json" >/dev/null
+jq -e '.bundle.resources["generated-resources/cookbooks"] == "cookbooks"' \
+  "$ROOT/apps/synth_desktop/src-tauri/tauri.conf.json" >/dev/null
 
-# Local CUA builds must be passwordless by default. Certificate-backed
-# signing is allowed only behind an explicit opt-in.
-rg -q 'SYNTH_DESKTOP_USE_DEV_SIGNER:-0' "$ROOT/scripts/desktop-instance.sh"
-rg -q 'codesign --force --deep --sign -' "$ROOT/scripts/desktop-instance.sh"
+# Local CUA builds sign with the stable local certificate by default so TCC
+# and Keychain grants survive rebuilds; ad-hoc is an explicit opt-out. The
+# deprecated `--deep` signing flag stamps the outer identifier onto nested
+# code and must never return; the bundle signs under its own $BUNDLE_ID and
+# every build asserts its designated requirement is not cdhash-anchored.
+rg -q 'SYNTH_DESKTOP_USE_DEV_SIGNER:-1' "$ROOT/scripts/desktop-instance.sh"
+! rg -q -- 'codesign --force --deep' "$ROOT/scripts/desktop-instance.sh"
+rg -q -- '--identifier "\$BUNDLE_ID" "\$app_bundle"' "$ROOT/scripts/desktop-instance.sh"
+rg -q 'assert_bundle_identity' "$ROOT/scripts/desktop-instance.sh"
 rg -q 'SYNTH_DESKTOP_REBUILD_ADAPTERS:-0' "$ROOT/scripts/desktop-instance.sh"
 rg -q 'SYNTH_OPTIMIZER_USE_LOCAL_SOURCE:-0' "$ROOT/scripts/desktop-instance.sh"
 rg -q 'optimizer runtime=immutable installed plugin' "$ROOT/scripts/desktop-instance.sh"
+rg -q 'verify_packaged_provenance' "$ROOT/scripts/desktop-instance.sh"
+rg -q 'runtime_executable=.*lsof' "$ROOT/scripts/desktop-instance.sh"
+! rg -q 'bundle_cdhash.*exit|/\^CDHash=/\{print \$2; exit\}' "$ROOT/scripts/desktop-instance.sh"
 
 # Canonical lifecycle commands must never stop an arbitrary copied app or a
 # named development instance. Exact executable paths are the process authority.

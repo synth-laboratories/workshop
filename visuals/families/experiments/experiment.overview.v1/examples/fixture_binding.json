@@ -1,0 +1,32 @@
+{
+  "schemaVersion": "synth.visual-bindings.v1",
+  "slots": [
+    {
+      "slot": "experiment",
+      "kind": "inline",
+      "schema": "synth.experiment.overview.v1",
+      "data": {
+        "schemaVersion": "synth.experiment.overview.v1",
+        "experimentId": "exp.banking77.baseline.v1",
+        "title": "Banking77 baseline eval",
+        "question": "What is the scored accuracy of the current classify policy on 10 labeled examples?",
+        "status": "running",
+        "progress": {
+          "phase": "scoring",
+          "completed": 4,
+          "total": 10,
+          "elapsed": "00:00:12"
+        },
+        "metrics": [
+          {"label": "Train mean", "value": null, "detail": "omitted until the split is complete"}
+        ],
+        "arms": [
+          {"id": "baseline", "label": "classify", "baseline": true, "status": "running", "score": null}
+        ],
+        "limitations": [
+          "Baseline-only. No candidate generation and no uplift claim."
+        ]
+      }
+    }
+  ]
+}

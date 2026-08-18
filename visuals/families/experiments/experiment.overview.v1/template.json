@@ -1,0 +1,18 @@
+{
+  "schemaVersion": "synth.visual-template.v1",
+  "id": "experiment.overview.v1",
+  "title": "Experiment overview",
+  "genre": "experiment",
+  "version": "1.0.0",
+  "description": "A decision-first overview of an experiment's question, live progress, variants, evidence, and lineage.",
+  "accent": "#F05F22",
+  "shell": "shell.tsx",
+  "tags": ["experiment", "comparison", "progress", "evidence", "lineage"],
+  "slots": [{
+    "name": "experiment",
+    "description": "The authoritative experiment overview projection. Missing measurements remain missing rather than being inferred or rendered as zero.",
+    "accepts": ["inline", "fixture", "local_cas"],
+    "required": true,
+    "schema": "synth.experiment.overview.v1"
+  }]
+}

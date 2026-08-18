@@ -121,8 +121,28 @@ fn tools() -> Value {
         ,{"name":"container_start_prepared_rollout","description":"Idempotently start the exact prepared rollout after stream.subscribed and a current visual.ready receipt. A reconnect replays the same immutable rollout identity; changed task or policy conflicts. The host does not pick luna_med.","inputSchema":{"type":"object","properties":{"container_id":{"type":"string"},"rollout_id":{"type":"string"},"stream":{"type":"object"},"visual_id":{"type":"string"},"seed":{"type":"integer"},"task_instance_id":{"type":"string"},"policy_ref":{"type":"object","properties":{"harness":{"type":"string"},"config":{"type":"string"},"code":{}},"required":["harness"],"additionalProperties":true},"telemetry":{"type":"object"}},"required":["container_id","rollout_id","stream","visual_id","policy_ref"],"additionalProperties":false},"annotations":{"readOnlyHint":false,"destructiveHint":false,"idempotentHint":true,"openWorldHint":true}}
         ,{"name":"container_get_rollout","description":"Restore authoritative rollout lifecycle state after a timeout or reconnect without starting work.","inputSchema":{"type":"object","properties":{"container_id":{"type":"string"},"rollout_id":{"type":"string"}},"required":["container_id","rollout_id"],"additionalProperties":false},"annotations":{"readOnlyHint":true,"destructiveHint":false,"idempotentHint":true,"openWorldHint":false}}
         ,{"name":"container_poll_rollout","description":"Resume the exact declared poll stream after a sequence cursor. Returns events plus authoritative high_water and closed cursor state; it never re-executes the rollout.","inputSchema":{"type":"object","properties":{"container_id":{"type":"string"},"rollout_id":{"type":"string"},"stream":{"type":"object"},"after":{"type":"integer","minimum":0}},"required":["container_id","rollout_id","stream"],"additionalProperties":false},"annotations":{"readOnlyHint":true,"destructiveHint":false,"idempotentHint":true,"openWorldHint":false}}
+        ,{"name":"campaign_create","description":"Plan one evaluation campaign: a fixed number of rollouts with stable ids, non-overlapping seeds, and one policy. An evaluation is this, not a rollout. The plan is fixed before anything runs; every returned rollout must be started with its own rollout_id, seed, and task_instance_id.","inputSchema":{"type":"object","properties":{"container_id":{"type":"string"},"title":{"type":"string"},"expected_rollouts":{"type":"integer","minimum":1,"maximum":100,"description":"How many terminal rollouts this campaign owes. It cannot settle complete with fewer."},"seeds":{"type":"array","items":{"type":"integer"},"description":"Explicit seeds, one per rollout, all distinct. Omit to allocate a contiguous block from seed_start."},"seed_start":{"type":"integer","description":"First seed of a contiguous block. Seeds may not overlap another open campaign."},"task_instance_template":{"type":"string","description":"Task instance id per rollout; {seed} is substituted. Defaults to seed:{seed}."},"max_concurrency":{"type":"integer","minimum":1},"policy_ref":{"type":"object","properties":{"harness":{"type":"string"},"config":{"type":"string"},"code":{}},"required":["harness"],"additionalProperties":true}},"required":["container_id","expected_rollouts","policy_ref"],"additionalProperties":false},"annotations":{"readOnlyHint":false,"destructiveHint":false,"idempotentHint":false,"openWorldHint":false}}
+        ,{"name":"campaign_status","description":"The campaign plan with each rollout's current state, reconciled against the container's authoritative records rather than any report of them.","inputSchema":{"type":"object","properties":{"campaign_id":{"type":"string"}},"required":["campaign_id"],"additionalProperties":false},"annotations":{"readOnlyHint":true,"destructiveHint":false,"idempotentHint":true,"openWorldHint":false}}
+        ,{"name":"campaign_result","description":"Reconcile, then settle: the campaign's own aggregate over its terminal rollouts — reward distribution, achievement rates, termination reasons, latency, calls, and usage coverage. Returns status complete only when every planned rollout has a terminal record; otherwise partial, naming the missing ones. Do not recompute this yourself.","inputSchema":{"type":"object","properties":{"campaign_id":{"type":"string"}},"required":["campaign_id"],"additionalProperties":false},"annotations":{"readOnlyHint":false,"destructiveHint":false,"idempotentHint":true,"openWorldHint":false}}
         ,{"name":"container_run_rollouts","description":"Scripted engine-acceptance only: 1-10 bounded rollouts with an explicit action list. Not a ReAct or model evaluation. Live policy evals use container_prepare_rollout then container_start_prepared_rollout with policy_ref.","inputSchema":{"type":"object","properties":{"container_id":{"type":"string"},"count":{"type":"integer","minimum":1,"maximum":10},"seeds":{"type":"array","items":{"type":"integer"},"maxItems":10},"actions":{"type":"array","items":{"type":"string"},"minItems":1,"maxItems":64}},"required":["container_id","count","actions"],"additionalProperties":false},"annotations":{"readOnlyHint":false,"destructiveHint":false,"idempotentHint":false,"openWorldHint":true}}
     ]})
+}
+
+/// A campaign id is a path segment, so it may not smuggle one.
+fn campaign_id(args: &Value) -> Result<String, String> {
+    let id = args
+        .get("campaign_id")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| "campaign_id required".to_string())?;
+    if !id
+        .chars()
+        .all(|character| character.is_ascii_alphanumeric() || character == '_' || character == '-')
+    {
+        return Err("campaign_id must be an identifier".to_string());
+    }
+    Ok(id.to_owned())
 }
 
 fn call_tool(name: &str, args: &Value) -> Result<Value, String> {
@@ -161,11 +181,24 @@ fn call_tool(name: &str, args: &Value) -> Result<Value, String> {
             &format!("/v1/containers/{}/rollouts/prepare", id()?),
             Some(args.clone()),
         ),
-        "container_start_prepared_rollout" => request(
-            "POST",
-            &format!("/v1/containers/{}/rollouts/start", id()?),
-            Some(args.clone()),
-        ),
+        "container_start_prepared_rollout" => {
+            // The host opens a durable receipt for this launch so a crash
+            // cannot lead to a second paid rollout. That receipt has to be
+            // attributable, and only this process knows which chat it serves.
+            let mut args = args.clone();
+            if let (Some(object), Ok(session_id)) =
+                (args.as_object_mut(), env::var("SYNTH_SESSION_ID"))
+            {
+                if !session_id.trim().is_empty() {
+                    object.insert("sessionRef".into(), json!(session_id));
+                }
+            }
+            request(
+                "POST",
+                &format!("/v1/containers/{}/rollouts/start", id()?),
+                Some(args),
+            )
+        }
         "container_get_rollout" => {
             let rollout_id = args
                 .get("rollout_id")
@@ -186,6 +219,17 @@ fn call_tool(name: &str, args: &Value) -> Result<Value, String> {
             "POST",
             &format!("/v1/containers/{}/rollouts", id()?),
             Some(args.clone()),
+        ),
+        "campaign_create" => request("POST", "/v1/campaigns", Some(args.clone())),
+        "campaign_status" => request(
+            "POST",
+            &format!("/v1/campaigns/{}/reconcile", campaign_id(args)?),
+            Some(json!({})),
+        ),
+        "campaign_result" => request(
+            "POST",
+            &format!("/v1/campaigns/{}/result", campaign_id(args)?),
+            Some(json!({})),
         ),
         _ => Err(format!("unknown tool {name}")),
     }
@@ -277,6 +321,33 @@ mod tests {
                 "{name} must surface the typed capability projection"
             );
         }
+        // A campaign is the noun that makes "an evaluation" a count. Five chats
+        // each read "one evaluation" as one rollout, and none of them was wrong.
+        let campaign = catalog["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|tool| tool["name"] == "campaign_create")
+            .expect("the eval surface must offer a campaign primitive");
+        assert_eq!(
+            campaign["inputSchema"]["properties"]["expected_rollouts"]["type"],
+            "integer"
+        );
+        assert!(campaign["inputSchema"]["required"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|value| value == "expected_rollouts"));
+        let result = catalog["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|tool| tool["name"] == "campaign_result")
+            .unwrap();
+        let description = result["description"].as_str().unwrap();
+        assert!(description.contains("partial"), "{description}");
+        assert!(description.contains("Do not recompute"), "{description}");
+
         for name in ["container_get_rollout", "container_poll_rollout"] {
             let tool = catalog["tools"]
                 .as_array()

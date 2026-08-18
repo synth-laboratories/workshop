@@ -150,7 +150,7 @@ fn is_harbor_lite_seal(payload: &serde_json::Value) -> bool {
         return false;
     }
     let stream = payload.get("stream").and_then(serde_json::Value::as_object);
-    let has_stream = stream.is_some_and(|stream| {
+    let has_nested_stream = stream.is_some_and(|stream| {
         stream
             .get("id")
             .and_then(serde_json::Value::as_str)
@@ -160,6 +160,20 @@ fn is_harbor_lite_seal(payload: &serde_json::Value) -> bool {
                 .and_then(serde_json::Value::as_bool)
                 .is_some()
     });
+    // The Containers platform writes the same lite seal with flat keys —
+    // `stream.id` is a literal key, not a path, and `closed` sits beside it.
+    // Only recognizing the nested spelling sent this shape to the format CLI,
+    // which correctly rejected it as `trace_invalid`, so a sealed rollout could
+    // not be imported by any route at all.
+    let has_flat_stream = payload
+        .get("stream.id")
+        .and_then(serde_json::Value::as_str)
+        .is_some()
+        && payload
+            .get("closed")
+            .and_then(serde_json::Value::as_bool)
+            .is_some();
+    let has_stream = has_nested_stream || has_flat_stream;
     let events = payload.get("events").and_then(serde_json::Value::as_array);
     let missing_identity = events.is_some_and(|events| {
         events.iter().any(|event| {
@@ -401,5 +415,39 @@ mod tests {
                 .join("current/.venv/bin/synth-trace")
         );
         assert_eq!(synth_containers_version(), "0.4.0.20260730");
+    }
+
+    /// The Containers platform seal spells its stream identity as the flat key
+    /// `stream.id`. Recognizing only the nested spelling sent it to the format
+    /// CLI, which rejects it as `trace_invalid`, leaving a sealed rollout with
+    /// no import route at all.
+    #[test]
+    fn a_flat_key_platform_seal_is_recognized_as_a_lite_seal() {
+        let seal = json!({
+            "schema_version": "synth.trace.v5",
+            "trace_id": "rollout_1",
+            "rollout_id": "rollout_1",
+            "stream.id": "stream_1",
+            "high_water": 2,
+            "closed": true,
+            "capture.closed": true,
+            "events": [
+                {"event_id": "1", "event_type": "rollout.started", "payload": {}},
+                {"event_id": "2", "event_type": "rollout.completed", "payload": {}}
+            ],
+        });
+        assert!(is_harbor_lite_seal(&seal));
+    }
+
+    #[test]
+    fn a_native_trace_with_identity_is_not_a_lite_seal() {
+        let native = json!({
+            "schema_version": "synth.trace.v5",
+            "stream": {"id": "stream_1", "closed": true},
+            "events": [
+                {"event_id": "1", "actor_id": "actor_1", "session_id": "session_1"}
+            ],
+        });
+        assert!(!is_harbor_lite_seal(&native));
     }
 }

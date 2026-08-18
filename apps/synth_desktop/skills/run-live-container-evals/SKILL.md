@@ -8,6 +8,29 @@ description: Run and verify live Synth container evaluations with declared strea
 Use `synth_containers` for container discovery and rollout requests and
 `synth_visuals` for the live view. Do not scan ports or substitute fixtures.
 
+## An evaluation is a campaign, not a rollout
+
+"Run an evaluation" is a request for a *distribution*. One rollout is one
+sample, and a single sample is not an evaluation however complete its evidence
+is. When the request names or implies a count — "ten rollouts", "an evaluation",
+"a study" — plan it as a campaign before starting anything:
+
+1. `campaign_create` with `container_id`, `expected_rollouts`, `policy_ref`, and
+   either explicit `seeds` or a `seed_start` block. Seeds may not overlap another
+   open campaign, so parallel chats cannot resample the same episodes and call it
+   variance.
+2. Start each planned rollout through the normal prepared-rollout contract, using
+   the `rollout_id`, `seed`, and `task_instance_id` the plan allocated. Starting a
+   planned rollout with a different seed is refused.
+3. `campaign_status` reconciles against the container's authoritative records.
+4. `campaign_result` settles and returns the aggregate — reward distribution,
+   achievement rates, termination reasons, latency, calls, usage coverage.
+
+The result is `complete` only when every planned rollout has a terminal record;
+otherwise it is `partial` and names the missing ones. Report what it returns.
+Do not recompute the aggregate yourself, do not describe a partial campaign as a
+finished evaluation, and do not present one rollout as an evaluation result.
+
 ## Operator clock (W1–W3)
 
 This is one bind for Craftax, Harbor, and dig.bench. Skipping a step is a
@@ -157,6 +180,23 @@ the exact same start may be replayed; if it is running or terminal, do not start
 again. Resume evidence with `container_poll_rollout(after=<last sequence>)`,
 advance to `next_cursor`, de-duplicate `(stream_id, sequence)`, and stop retrying
 when `cursor.closed` is true. SSE may then reattach with `Last-Event-ID`.
+
+## Sealed traces
+
+Sealing happens in the container; indexing happens in Workshop. They are two
+authorities, and a trace that exists in one is not automatically in the other.
+
+- A terminal rollout record carries a `trace` reference: id, content digest,
+  event count, and where to fetch it.
+- `container_get_rollout` on a terminal rollout imports that seal into the
+  Workshop trace index and reports what happened under `trace_import`.
+- If a sealed trace id is one `trace_manage get` cannot find, import it by
+  identity: `trace_manage({operation: "import", arguments: {container_id,
+  rollout_id}})`. Never pass a path or a URL; Workshop resolves the container's
+  address from its own registry.
+- `inspectable: false` on an import is a real answer, not a retry signal: the
+  container returned a lite seal rather than a self-contained Trace V5 bundle,
+  so it is kept as provenance but cannot be projected into the inspector.
 
 ## Replay checks
 

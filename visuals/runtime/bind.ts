@@ -14,6 +14,7 @@ import type {
 } from "./types.ts";
 import { VISUAL_BINDINGS_SCHEMA_VERSION } from "./types.ts";
 import { assertDeclaredStreamSource, assertLiveEvalSlot } from "./liveStream.ts";
+import { presentRuntimeErrorMessage } from "./presentError.ts";
 
 export type BoundSlotPayload = {
   slot: string;
@@ -31,6 +32,7 @@ export type BindResult = {
 export type FixtureLoader = (relativePath: string) => Promise<unknown> | unknown;
 export type TraceV5Loader = (digestOrId: string) => Promise<unknown> | unknown;
 export type LocalCasLoader = (digestOrPath: string) => Promise<unknown> | unknown;
+export type QuerySnapshotLoader = (snapshotId: string) => Promise<unknown> | unknown;
 
 /**
  * Optional live SSE subscriber. Desktop injects EventSource / fetch-stream.
@@ -46,6 +48,7 @@ export type BindContext = {
   loadFixture?: FixtureLoader;
   loadTraceV5?: TraceV5Loader;
   loadLocalCas?: LocalCasLoader;
+  loadQuerySnapshot?: QuerySnapshotLoader;
   loadRun?: (runId: string) => Promise<unknown> | unknown;
   loadOptimizerRun?: (optimizerRunId: string) => Promise<unknown> | unknown;
   /** Declared create-rollout stream descriptor; required to bind guessed-looking URLs. */
@@ -88,12 +91,27 @@ async function resolveBinding(
       return dig(await ctx.loadTraceV5(binding.source), binding.path);
     }
     case "local_cas": {
+      if (binding.data !== undefined) return dig(binding.data, binding.path);
+      if (!binding.source) {
+        throw new Error(`local_cas binding for slot "${binding.slot}" requires a content digest`);
+      }
       if (!ctx.loadLocalCas) {
         throw new Error(`No local CAS loader for slot "${binding.slot}"`);
       }
-      return dig(await ctx.loadLocalCas(binding.source!), binding.path);
+      return dig(await ctx.loadLocalCas(binding.source), binding.path);
+    }
+    case "query_snapshot": {
+      if (binding.data !== undefined) return dig(binding.data, binding.path);
+      if (!binding.source) {
+        throw new Error(`query_snapshot binding for slot "${binding.slot}" requires a snapshot id`);
+      }
+      if (!ctx.loadQuerySnapshot) {
+        throw new Error(`No query snapshot loader for slot "${binding.slot}"`);
+      }
+      return dig(await ctx.loadQuerySnapshot(binding.source), binding.path);
     }
     case "run_ref": {
+      if (binding.data !== undefined) return dig(binding.data, binding.path);
       if (!ctx.loadRun) throw new Error(`No run loader for slot "${binding.slot}"`);
       return dig(await ctx.loadRun(binding.source!), binding.path);
     }
@@ -119,6 +137,10 @@ async function resolveBinding(
       throw new Error(`Unknown binding kind: ${_exhaustive}`);
     }
   }
+}
+
+function describeError(err: unknown): string {
+  return presentRuntimeErrorMessage(err, "Binding resolution failed");
 }
 
 /**
@@ -178,7 +200,7 @@ export async function bindTemplateSlots(
           data: await resolveBinding(binding, ctx)
         });
       } catch (err) {
-        errors.push(err instanceof Error ? err.message : String(err));
+        errors.push(describeError(err));
       }
     }
     if (resolved.length > 0) {
@@ -339,6 +361,11 @@ export function propsFromBindings(value: unknown): { props: Record<string, unkno
       props[binding.slot] = {
         optimizer_run_id: binding.source,
         schema: binding.schema ?? "optimizer_run.v1"
+      };
+    } else if (binding.kind === "query_snapshot" && binding.source) {
+      props[binding.slot] = {
+        snapshot_id: binding.source,
+        schema: binding.schema ?? "synth.trace-query-result.v1"
       };
     } else if ("data" in binding) props[binding.slot] = binding.data;
     else errors.push(`Slot "${binding.slot}" (${binding.kind}) has not been resolved by the Rust runtime`);

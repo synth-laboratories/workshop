@@ -7,6 +7,8 @@ pub mod mermaid;
 mod models;
 mod registry;
 mod renditions;
+#[cfg(target_os = "macos")]
+pub mod snapshot;
 pub mod systems;
 mod templates;
 

@@ -1,8 +1,11 @@
 //! First-class Optimizer noun: durable local mirror, cursor, relationships, and projection.
 
 mod cloud;
+mod container_eval;
 mod eval_candidates;
 mod eval_recipes;
+mod events;
+mod gepa_evidence;
 mod hosted_client;
 mod hosted_gelo;
 mod hosted_sft;
@@ -12,9 +15,12 @@ pub(crate) mod manager;
 mod models;
 mod normalize;
 mod recipes;
+mod results;
 mod service;
 mod sft_client;
 mod sft_recipes;
+mod sft_result;
+mod terminal;
 mod tinker_catalog;
 
 pub use eval_candidates::EvalStageCandidatesRequest;
@@ -26,4 +32,5 @@ pub use models::{
     OptimizerRecipeRunRequest, OptimizerReconcileRequest, OptimizerRelationship,
     OptimizerRunRecord, OptimizerStateSlice,
 };
+pub(crate) use recipes::{BANKING77_EVAL_BASELINE_RECIPE, HEALTHBENCH_EVAL_SMOKE_RECIPE};
 pub use service::OptimizerService;

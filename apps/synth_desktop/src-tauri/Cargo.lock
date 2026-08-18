@@ -3883,10 +3883,11 @@ dependencies = [
 
 [[package]]
 name = "synth-desktop"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
+ "block2",
  "bytes",
  "chrono",
  "dirs",
@@ -3898,6 +3899,10 @@ dependencies = [
  "keyring",
  "libc",
  "mermaid-to-svg",
+ "objc2",
+ "objc2-app-kit",
+ "objc2-foundation",
+ "objc2-web-kit",
  "png 0.17.16",
  "portable-pty",
  "rand 0.9.5",

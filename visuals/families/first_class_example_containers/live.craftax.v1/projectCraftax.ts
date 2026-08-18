@@ -399,7 +399,15 @@ export function groupTraceByStep(items: CraftaxSemanticTraceItem[]): CraftaxTrac
  * checkpoints — a replay tick is an environment step, a policy-call boundary,
  * a reward, an achievement, or lifecycle evidence.
  */
-export function semanticCheckpointIndexes(ordered: LiveEvalEvent[]): number[] {
+/** Indexes of the events replay can stop on.
+ *
+ * These are *replay moments* — environment steps, policy-call boundaries,
+ * rewards, achievements, and lifecycle evidence — not environment steps. The UI
+ * called their count "checkpoints", so a 20-step rollout advertised "57 / 57
+ * checkpoints" and read as a step count that was nearly three times the truth.
+ * Environment steps are reported separately by `environmentStepCount`.
+ */
+export function replayMomentIndexes(ordered: LiveEvalEvent[]): number[] {
   const indexes: number[] = [];
   for (let index = 0; index < ordered.length; index += 1) {
     const kind = ordered[index].kind;
@@ -550,4 +558,17 @@ export function policyPartialDetail(event: LiveEvalEvent): string {
     return finite(payload.length) == null ? "closed" : `${payload.length} planned actions`;
   }
   return "—";
+}
+
+/** How many environment steps this rollout actually took.
+ *
+ * The count a reader means by "steps". Derived from the highest step the
+ * environment reported, so it stays honest when events are still arriving. */
+export function environmentStepCount(ordered: LiveEvalEvent[]): number {
+  let highest = -1;
+  for (const event of ordered) {
+    const step = eventStep(event);
+    if (step != null && step > highest) highest = step;
+  }
+  return highest + 1;
 }

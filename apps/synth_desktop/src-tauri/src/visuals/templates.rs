@@ -55,6 +55,9 @@ pub struct TemplateMeta {
     #[specta(type = specta_typescript::Unknown)]
     pub slots: Vec<Value>,
     #[serde(default)]
+    #[specta(type = specta_typescript::Unknown)]
+    pub binding_schema: Vec<Value>,
+    #[serde(default)]
     pub observation_contract: Option<TemplateObservationContract>,
 }
 
@@ -263,6 +266,7 @@ fn load_template_meta(path: &Path) -> anyhow::Result<TemplateMeta> {
         path: None,
         shell_path: None,
         example_binding: None,
+        binding_schema: slots.clone(),
         slots,
         observation_contract: value
             .get("observationContract")
@@ -290,6 +294,21 @@ mod tests {
         let templates = list_templates(None).unwrap();
         if visuals_root().join("families").exists() {
             assert!(!templates.is_empty());
+            let experiment = templates
+                .iter()
+                .find(|template| template.id == "experiment.overview.v1")
+                .expect("experiment.overview.v1");
+            assert_eq!(experiment.slots, experiment.binding_schema);
+            assert!(experiment.example_binding.is_some());
+            let analysis = templates
+                .iter()
+                .find(|template| template.id == "analysis.visual.v1")
+                .expect("analysis.visual.v1");
+            assert!(analysis.example_binding.is_some());
+            let accepts = analysis.slots[0]["accepts"]
+                .as_array()
+                .expect("analysis accepts");
+            assert!(accepts.iter().any(|value| value == "inline"));
         }
     }
 

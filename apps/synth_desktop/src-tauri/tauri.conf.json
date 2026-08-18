@@ -1,12 +1,12 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Synth Desktop",
-  "version": "0.4.0",
+  "productName": "Synth Workshop",
+  "version": "0.5.0",
   "identifier": "com.synth.desktop",
   "build": {
     "beforeDevCommand": "npm run frontend:dev",
     "devUrl": "http://127.0.0.1:1420",
-    "beforeBuildCommand": "npm run frontend:build",
+    "beforeBuildCommand": "npm run package:prepare",
     "frontendDist": "../dist"
   },
   "app": {
@@ -16,7 +16,7 @@
     "windows": [
       {
         "label": "main",
-        "title": "Synth Desktop",
+        "title": "Synth Workshop",
         "width": 1280,
         "height": 840,
 		"maximized": true,
@@ -46,7 +46,8 @@
       "../../../visuals/runtime": "visuals/runtime",
       "../../../visuals/ambient.d.ts": "visuals/ambient.d.ts",
       "../../../visuals/package.json": "visuals/package.json",
-      "../../../visuals/tsconfig.json": "visuals/tsconfig.json"
+      "../../../visuals/tsconfig.json": "visuals/tsconfig.json",
+      "generated-resources/cookbooks": "cookbooks"
     }
   }
 }

@@ -14,6 +14,7 @@ pub mod intern_protocol_test_support {
         SyncCreateRequest,
     };
 }
+pub mod campaigns;
 mod codex;
 mod codex_oauth;
 pub mod container_capabilities;
@@ -27,7 +28,9 @@ mod device_auth;
 pub mod diagnostics;
 mod domain;
 pub mod error;
+#[cfg(feature = "eval-driver")]
 mod eval_driver;
+pub mod experiments;
 mod http;
 mod instance;
 mod intern_api;
@@ -37,6 +40,7 @@ mod limits;
 mod optimizers;
 mod plugins;
 pub mod presentation;
+pub mod recovery;
 mod reports;
 mod runtime;
 mod services;
@@ -337,22 +341,25 @@ async fn data_containers_get(
 async fn hydrate_container(
     base_url: &str,
     existing_metadata: serde_json::Value,
+    force_info_refresh: bool,
 ) -> (String, serde_json::Value, serde_json::Value, Option<String>) {
     let client = http::http_client_with_timeout(limits::CONTAINER_PROBE_TIMEOUT);
     let root = base_url.trim_end_matches('/');
     // Health is intentionally cheap and may run frequently. Contract/catalog
     // hydration is cached because task catalogs can contain thousands of rows.
-    let refresh_metadata = existing_metadata
-        .get("hydratedAt")
-        .and_then(|value| value.as_str())
-        .and_then(|value| chrono::DateTime::parse_from_rfc3339(value).ok())
-        .map(|hydrated| {
-            chrono::Utc::now()
-                .signed_duration_since(hydrated.with_timezone(&chrono::Utc))
-                .num_seconds()
-                >= limits::CONTAINER_METADATA_REFRESH.as_secs() as i64
-        })
-        .unwrap_or(true);
+    // `container_probe` always refreshes `/info` so prepare sees revision N+1.
+    let refresh_metadata = force_info_refresh
+        || existing_metadata
+            .get("hydratedAt")
+            .and_then(|value| value.as_str())
+            .and_then(|value| chrono::DateTime::parse_from_rfc3339(value).ok())
+            .map(|hydrated| {
+                chrono::Utc::now()
+                    .signed_duration_since(hydrated.with_timezone(&chrono::Utc))
+                    .num_seconds()
+                    >= limits::CONTAINER_METADATA_REFRESH.as_secs() as i64
+            })
+            .unwrap_or(true);
     let health_result = client.get(format!("{root}/health")).send().await;
     let (status, health) = match health_result {
         Ok(response) => {
@@ -500,6 +507,7 @@ async fn data_containers_register(
             .metadata
             .clone()
             .unwrap_or_else(|| serde_json::json!({})),
+        true,
     )
     .await;
     let task_family = hydrated_family.or_else(|| request.task_family.clone());
@@ -531,7 +539,7 @@ async fn data_containers_probe(
         return Ok(container);
     };
     let (status, health, metadata, task_family) =
-        hydrate_container(base_url, container.metadata).await;
+        hydrate_container(base_url, container.metadata, true).await;
     state
         .update_container_hydration(container_id, status, health, metadata, task_family)
         .await
@@ -747,6 +755,8 @@ pub(crate) async fn authorize_optimizer_recipe_start(
     codex: &CodexManager,
     request: OptimizerRecipeRunRequest,
 ) -> Result<OptimizerRunRecord, AppError> {
+    let should_open_visual = request.open_visual.unwrap_or(false);
+    let visual_session_ref = request.session_ref.clone();
     let recipe = state
         .optimizers()
         .list_recipes()
@@ -783,11 +793,27 @@ pub(crate) async fn authorize_optimizer_recipe_start(
         .map(|value| format!("Agent session {value}"))
         .unwrap_or_else(|| "Workshop operator".into());
     let is_local_eval = recipe.get("algorithmId").and_then(Value::as_str) == Some("eval");
+    let is_container_baseline_eval = matches!(
+        request.recipe_id.as_str(),
+        optimizers::BANKING77_EVAL_BASELINE_RECIPE | optimizers::HEALTHBENCH_EVAL_SMOKE_RECIPE
+    );
     let limits = recipe
         .get("limits")
         .cloned()
         .unwrap_or_else(|| serde_json::json!({}));
-    let (max_cost_usd, max_rollouts) = if is_local_eval {
+    let (max_cost_usd, max_rollouts) = if is_container_baseline_eval {
+        // These recipes evaluate the policy already pinned by a registered
+        // container. They have no candidate set: requiring one here prevents
+        // the public MCP route from ever reaching `container_eval::start`.
+        (
+            limits
+                .get("maxCostUsd")
+                .or_else(|| limits.get("costCeilingUsd"))
+                .and_then(Value::as_f64)
+                .filter(|value| value.is_finite() && *value > 0.0),
+            limits.get("maxTotalRollouts").and_then(Value::as_u64),
+        )
+    } else if is_local_eval {
         let (cost, trials) =
             optimizers::paid_compute_bounds(&recipe, request.candidate_set_id.as_deref())
                 .map_err(AppError::from)?;
@@ -900,16 +926,125 @@ pub(crate) async fn authorize_optimizer_recipe_start(
         .await
         .map_err(AppError::from)?;
     publish_optimizer_event(app, state, event).await?;
-    state
+    let run = state
         .optimizers()
         .attach_paid_compute_approval(
-            run,
+            run.id,
             &paid_approval_id,
             paid_cap.max_cost_usd_micros,
             paid_cap.max_rollouts,
         )
         .await
-        .map_err(AppError::from)
+        .map_err(AppError::from)?;
+    if should_open_visual {
+        let published = run
+            .visual_refs
+            .iter()
+            .find(|reference| reference.kind == "visual")
+            .map(|reference| reference.id.clone());
+        let visual_id = match published {
+            Some(visual_id) => Some(visual_id),
+            None => {
+                // Admission promised to open an output. A recipe whose service
+                // minted no visual must still get one bound to this run and this
+                // chat, or the run finishes with nothing in Outputs and nothing
+                // saying why.
+                let (opened, event) = state
+                    .optimizers()
+                    .open_visual_in_session(run.id.clone(), visual_session_ref.clone())
+                    .await
+                    .map_err(AppError::from)?;
+                publish_optimizer_event(app, state, event).await?;
+                opened
+                    .visual_refs
+                    .iter()
+                    .find(|reference| reference.kind == "visual")
+                    .map(|reference| reference.id.clone())
+            }
+        };
+        if let Some(visual_id) = visual_id {
+            // Optimizer services create and show visuals internally, but their
+            // returned event slot carries the optimizer lifecycle event. Emit
+            // a fresh durable visual.show so the renderer receives ownership,
+            // adds the visual to this chat's Outputs shelf, and opens the pane
+            // without requiring a second agent tool call.
+            //
+            // The session here is the run's own conversation, never whichever
+            // chat happens to be focused: showing is publication into an owner,
+            // not a global pane change.
+            let (_, event) = state
+                .visuals()
+                .show(visual_id.clone(), visual_session_ref)
+                .await
+                .map_err(AppError::from)?;
+            publish_visual_event(app, state, event).await?;
+            let _ = app.emit(
+                crate::core_runtime::VISUAL_SHOW_CHANNEL,
+                serde_json::json!({
+                    "kind": "visual.show",
+                    "payload": { "visualId": visual_id }
+                }),
+            );
+        }
+    }
+    Ok(run)
+}
+
+/// Re-observe the target contract at workflow admission. A cached healthy bit
+/// is liveness evidence, not permission to reuse an older capability revision.
+/// Only container-backed product recipes need this lane; optimizer campaigns
+/// keep their own service/cookbook admission in Optimizers.
+pub(crate) async fn refresh_optimizer_workflow_containers(
+    state: &CoreRuntime,
+    recipe_id: &str,
+) -> Result<(), AppError> {
+    let family = match recipe_id {
+        optimizers::BANKING77_EVAL_BASELINE_RECIPE => Some("banking77"),
+        optimizers::HEALTHBENCH_EVAL_SMOKE_RECIPE => Some("healthbench"),
+        _ => None,
+    };
+    let Some(family) = family else {
+        return Ok(());
+    };
+    let rows = state
+        .data()
+        .list_containers()
+        .await
+        .map_err(AppError::from)?;
+    for row in rows {
+        let hinted = row.task_family.as_deref().is_some_and(|value| {
+            let value = value.to_ascii_lowercase();
+            value == family || value.contains(family)
+        }) || row
+            .metadata
+            .to_string()
+            .to_ascii_lowercase()
+            .contains(family);
+        if !hinted {
+            continue;
+        }
+        let Some(base_url) = row
+            .base_url
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+        else {
+            continue;
+        };
+        let (status, health, metadata, hydrated_family) =
+            hydrate_container(base_url, row.metadata.clone(), true).await;
+        state
+            .data()
+            .update_container_hydration(
+                row.id,
+                status,
+                health,
+                metadata,
+                hydrated_family.or(row.task_family),
+            )
+            .await
+            .map_err(AppError::from)?;
+    }
+    Ok(())
 }
 
 fn optimizer_recipe_credentials(recipe_id: &str) -> &'static [&'static str] {
@@ -2550,10 +2685,14 @@ async fn codex_oauth_complete_manual(
 
 #[tauri::command]
 #[specta::specta]
-fn codex_oauth_status(
+async fn codex_oauth_status(
     manager: State<'_, Arc<codex_oauth::Manager>>,
 ) -> Result<codex_oauth::Status, AppError> {
-    manager.status().map_err(AppError::from)
+    let manager = manager.inner().clone();
+    tokio::task::spawn_blocking(move || manager.status())
+        .await
+        .map_err(|error| AppError::from(anyhow::anyhow!("ChatGPT credential check failed: {error}")))?
+        .map_err(AppError::from)
 }
 
 #[tauri::command]
@@ -2570,15 +2709,14 @@ async fn codex_oauth_disconnect(
     manager: State<'_, Arc<codex_oauth::Manager>>,
     codex: State<'_, Arc<CodexManager>>,
 ) -> Result<codex_oauth::Status, AppError> {
-    for session in codex.list().await {
-        if session.provider_name == codex_oauth::PROVIDER_ID {
-            codex
-                .close(&session.session_id)
-                .await
-                .map_err(AppError::from)?;
-        }
-    }
-    manager.disconnect().await.map_err(AppError::from)
+    // Credential deletion and child fencing share one lifecycle boundary with
+    // attachment starts. Deleting first prevents a new OAuth start, while the
+    // write guard prevents an already-authorized start from appearing after
+    // the fence snapshot. Conversations remain durable and can be rebound.
+    codex
+        .fence_provider_attachments_after(codex_oauth::PROVIDER_ID, manager.disconnect())
+        .await
+        .map_err(AppError::from)
 }
 
 #[tauri::command]
@@ -2861,9 +2999,13 @@ async fn workspace_scope_choose_and_attach(
     )
     .await
     .map_err(AppError::from)?;
-    // Scope is durable before the old process is fenced. Closing preserves
-    // the thread record; the next send resumes it with the new revision.
-    codex.close(&session_id).await.map_err(AppError::from)?;
+    // Scope is durable before the old process is fenced. Fencing preserves the
+    // conversation; the next send re-attaches at the new revision. Closing it
+    // durably would make the session terminal and refuse that next run.
+    codex
+        .fence_attachment(&session_id)
+        .await
+        .map_err(AppError::from)?;
     Ok(Some(scope))
 }
 
@@ -2888,7 +3030,10 @@ async fn workspace_scope_attach_recent(
     let scope = workspace_scope::attach_recent(core.storage().database(), &session_id, &path)
         .await
         .map_err(AppError::from)?;
-    codex.close(&session_id).await.map_err(AppError::from)?;
+    codex
+        .fence_attachment(&session_id)
+        .await
+        .map_err(AppError::from)?;
     Ok(scope)
 }
 
@@ -2903,7 +3048,10 @@ async fn workspace_scope_remove_attachment(
     let scope = workspace_scope::remove_attachment(core.storage().database(), &session_id, &path)
         .await
         .map_err(AppError::from)?;
-    codex.close(&session_id).await.map_err(AppError::from)?;
+    codex
+        .fence_attachment(&session_id)
+        .await
+        .map_err(AppError::from)?;
     Ok(scope)
 }
 
@@ -2971,7 +3119,7 @@ async fn workspace_scope_approve_request(
         .await
         .map_err(AppError::from)?;
     codex
-        .close(&scope.session_id)
+        .fence_attachment(&scope.session_id)
         .await
         .map_err(AppError::from)?;
     Ok(Some(scope))
@@ -3509,6 +3657,11 @@ pub fn run() {
             // forwarder. Producers only journal and broadcast.
             core.spawn_forwarder(app.handle().clone());
 
+            // Backend-owned liveness. The renderer's turn watchdogs are cleared
+            // when its window unloads, so they cannot fence a turn whose owner
+            // died — this sweep can, with or without a window open.
+            core.spawn_lease_watchdog();
+
             let mut status_updates = laguna.subscribe();
             let status_handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
@@ -3562,6 +3715,7 @@ pub fn run() {
                 }
             });
 
+            #[cfg(feature = "eval-driver")]
             if eval_driver::should_spawn() {
                 let eval_core = core.clone();
                 let eval_codex = codex.clone();

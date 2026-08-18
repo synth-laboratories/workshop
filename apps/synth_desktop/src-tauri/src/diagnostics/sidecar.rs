@@ -548,15 +548,31 @@ pub(crate) fn command_owns_data_dir(command: &str, data_dir: &Path) -> bool {
 
 #[cfg(unix)]
 async fn terminate_process_group(pid: u32) {
+    let Ok(pid) = libc::pid_t::try_from(pid) else {
+        eprintln!("refusing to terminate diagnostics sidecar with invalid pid {pid}");
+        return;
+    };
+    if pid <= 1 {
+        eprintln!("refusing to terminate diagnostics sidecar with unsafe pid {pid}");
+        return;
+    }
+    let isolated_group = unsafe {
+        let pgid = libc::getpgid(pid);
+        (pgid == pid && pgid != libc::getpgrp()).then_some(pgid)
+    };
     unsafe {
-        libc::kill(-(pid as i32), libc::SIGTERM);
-        libc::kill(pid as i32, libc::SIGTERM);
+        if let Some(pgid) = isolated_group {
+            libc::kill(-pgid, libc::SIGTERM);
+        }
+        libc::kill(pid, libc::SIGTERM);
     }
     tokio::time::sleep(STOP_GRACE).await;
     unsafe {
-        if libc::kill(pid as i32, 0) == 0 {
-            libc::kill(-(pid as i32), libc::SIGKILL);
-            libc::kill(pid as i32, libc::SIGKILL);
+        if libc::kill(pid, 0) == 0 {
+            if let Some(pgid) = isolated_group {
+                libc::kill(-pgid, libc::SIGKILL);
+            }
+            libc::kill(pid, libc::SIGKILL);
         }
     }
 }

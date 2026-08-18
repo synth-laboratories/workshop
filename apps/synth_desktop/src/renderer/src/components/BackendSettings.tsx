@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { SynthBackendSettings } from "../bridge";
 import { bridges } from "../runtime/desktopBridge";
+import { publicError } from "../runtime/publicError";
 
 type PairState =
 	| { kind: "idle" }
@@ -65,11 +66,11 @@ export function AccountSignIn() {
 					}
 				}).catch((error) => {
 					stopPolling();
-					setPair({ kind: "error", message: error instanceof Error ? error.message : String(error) });
+					setPair({ kind: "error", message: publicError(error) });
 				});
 			}, 4000);
 		} catch (error) {
-			setPair({ kind: "error", message: error instanceof Error ? error.message : String(error) });
+			setPair({ kind: "error", message: publicError(error) });
 		}
 	};
 	const cancelSignIn = () => {
@@ -86,7 +87,7 @@ export function AccountSignIn() {
 			announceAccountChange(next);
 			setStatus("Signed out · cloud credentials removed");
 		} catch (error) {
-			setStatus(error instanceof Error ? error.message : String(error));
+			setStatus(publicError(error));
 		} finally {
 			setSaving(false);
 		}
@@ -166,7 +167,7 @@ export function BackendSettings() {
 	};
 	useEffect(() => {
 		const load = () => {
-			void bridges.config?.get().then(apply).catch((error) => setStatus(String(error)));
+			void bridges.config?.get().then(apply).catch((error) => setStatus(publicError(error)));
 		};
 		load();
 		// Sign-in and sign-out now happen in Devices & security; this panel must
@@ -188,7 +189,7 @@ export function BackendSettings() {
 			announceAccountChange(next);
 			setStatus("Saved · runtime restarted with this backend");
 		} catch (error) {
-			setStatus(error instanceof Error ? error.message : String(error));
+			setStatus(publicError(error));
 		} finally {
 			setSaving(false);
 		}

@@ -13,6 +13,7 @@ import type {
 	InternSessionCreateRequest,
 	InternSessionSendRequest,
 	InternSessionSendResult,
+	RecoveryNotice,
 	ResolvedTraceProjection,
 	RuntimeEvent,
 	Session,
@@ -286,6 +287,8 @@ export type PersistedCodexSession = {
 	sandbox: string;
 	presentationEmotion?: string | null;
 	presentationSummary?: string | null;
+	/** Set when a previous process died holding this chat's turn. */
+	recovery?: RecoveryNotice | null;
 };
 export type CodexEvent = { sessionId: string; method: string; params: Record<string, unknown> };
 /** Typed rejection payload of `codex_turn_send`. */
@@ -436,6 +439,8 @@ export type VisualTemplateMeta = {
 	path?: string | null;
 	shellPath?: string | null;
 	exampleBinding?: Record<string, unknown> | null;
+	slots?: unknown[] | null;
+	bindingSchema?: unknown[] | null;
 };
 
 export type VisualAnnotation = {

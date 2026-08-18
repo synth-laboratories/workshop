@@ -11,21 +11,16 @@ Recipes:
 
 Before starting, report the selected recipe's catalog values exactly. Both recipes require their packaged cookbook and the trusted Desktop OpenAI credential. Banking77 evaluates prompt candidates directly; Craftax runs deterministic environment episodes and scores the candidate policy's ReAct behavior.
 
-If `plugin_not_ready` is returned, install/start Optimizers with `mcp__synth_plugins__plugin_manage`. Do not pass URLs, paths, commands, or credentials.
-
-Enforced sequence after the plugin is ready:
+Use the one-shot workflow admission path. Do not pass URLs, paths, commands, or credentials:
 
 ```json
-{"operation":"prepare","arguments":{"recipe_id":"gepa.banking77.smoke.v1","open_visual":true}}
-{"operation":"open_visual","arguments":{"optimizer_run_id":"<id>"}}
-{"operation":"await_ready","arguments":{"optimizer_run_id":"<id>"}}
-{"operation":"start","arguments":{"optimizer_run_id":"<id>","preparation_digest":"<digest>"}}
+{"operation":"start_workflow","arguments":{"recipe_id":"gepa.banking77.smoke.v1","open_visual":true}}
 {"operation":"get_result","arguments":{"optimizer_run_id":"<id>"}}
 ```
 
 Replace the recipe ID with `gepa.craftax.smoke.v1` for Craftax. Do not add any other arguments to `prepare`.
 
-`start_recipe` only prepares the run. It does not start paid compute and does not install the plugin. Retrieve the winner with `get_result` — never read `best_candidate.json` by filesystem path.
+`start_recipe` is the advanced prepare-only path. Prefer `start_workflow`, which performs bounded host approval and sidecar admission before starting compute. Retrieve the winner with `get_result` — never read `best_candidate.json` by filesystem path.
 
 Follow `gepa.candidates`, `gepa.frontier`, and `gepa.reflections`. At terminal state, explicitly retrieve `gepa.candidates` and `gepa.frontier` before `get_result`. Report the selected candidate, its materialized prompt (`system_prompt` for Banking77 or `react_system_prompt` for Craftax), how it differs from the seed and other proposals, train/minibatch and measurement-only held-out scores, frontier membership, rejection reason when present, rollout usage, cost, and candidate/result artifacts. Prefer the visual for comparing candidates; candidates and artifacts support copy/download.
 

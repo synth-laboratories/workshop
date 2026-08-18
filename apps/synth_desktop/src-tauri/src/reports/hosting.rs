@@ -936,7 +936,7 @@ mod tests {
         let served = state.clone();
         let served_origin = origin.clone();
         let task = tokio::spawn(async move {
-            let _ = serve_connections(listener, move |request| {
+            let _ = serve_connections(listener, move |request, _peer| {
                 let state = served.clone();
                 let origin = served_origin.clone();
                 async move { Ok::<_, Infallible>(handle_slot(request, origin, state).await) }

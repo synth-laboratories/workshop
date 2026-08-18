@@ -4,6 +4,7 @@ import { Terminal } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
 import type { TerminalEvent, TerminalInfo } from "../bridge";
 import { bridges } from "../runtime/desktopBridge";
+import { publicError } from "../runtime/publicError";
 
 type Props = {
 	open: boolean;
@@ -45,7 +46,7 @@ export function TerminalPanel({
 		try {
 			const info = await bridges.terminal.create({ workspaceId, workspaceRoot });
 			setTerminals((current) => [...current, info]); setActiveId(info.id); setError(null);
-		} catch (reason) { setError(reason instanceof Error ? reason.message : String(reason)); }
+		} catch (reason) { setError(publicError(reason)); }
 	}, [workspaceId, workspaceRoot]);
 
 	useEffect(() => {
@@ -61,7 +62,7 @@ export function TerminalPanel({
 			if (disposed) return; setTerminals(items);
 			if (items.length) setActiveId((current) => items.some((item) => item.id === current) ? current : items[0].id);
 			else void createTerminal();
-		}).catch((reason) => !disposed && setError(String(reason)));
+		}).catch((reason) => !disposed && setError(publicError(reason)));
 		return () => { disposed = true; };
 	}, [createTerminal, open, workspaceId]);
 
@@ -126,7 +127,7 @@ export function TerminalPanel({
 
 	const closeActive = async () => {
 		if (!activeId) return;
-		await bridges.terminal.close(activeId).catch((reason) => setError(String(reason)));
+		await bridges.terminal.close(activeId).catch((reason) => setError(publicError(reason)));
 		setTerminals((current) => { const next = current.filter((item) => item.id !== activeId); setActiveId(next[0]?.id ?? null); return next; });
 	};
 

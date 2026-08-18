@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { MetricStrip, VisualChrome } from "../../../chrome/VisualChrome.tsx";
+import { MetricStrip, surfaceObservationAttributes, VisualChrome } from "../../../chrome/VisualChrome.tsx";
 
 type InspectorItem = {
   item_id: string; kind: string; title?: string; status?: string; sequence?: number;
@@ -245,7 +245,18 @@ export function Shell({ title, lede, projection, data }: ShellProps) {
     }, 800);
     return () => window.clearTimeout(timer);
   }, [filtered, playbackIndex, playing]);
-  if (!payload || payload.schema_version !== "synth.trace-projection.rollout-inspector.v1") return <div role="alert">This visual requires a rollout-inspector Trace V5 projection.</div>;
+  // Both branches publish a surface observation. A projection this shell cannot
+  // read is still a rendered fact about the pane, and review has to be able to
+  // capture it — a template that only publishes on success is a template whose
+  // failures can never be reviewed.
+  if (!payload || payload.schema_version !== "synth.trace-projection.rollout-inspector.v1") {
+    const detail = payload
+      ? `unsupported projection schema ${payload.schema_version}`
+      : "no projection payload resolved";
+    return <div role="alert" {...surfaceObservationAttributes({ transportState: "error", error: detail })}>
+      This visual requires a rollout-inspector Trace V5 projection ({detail}).
+    </div>;
+  }
   const jumpTo = () => {
     const target = items.find((item) => item.sequence === Number(jump));
     if (!target) return;
@@ -255,7 +266,18 @@ export function Shell({ title, lede, projection, data }: ShellProps) {
 
   return <VisualChrome kicker="Trace V5 · sealed" title={title ?? payload.trace_id}
     lede={lede ?? `${visual?.task_id ?? visual?.run_id ?? "Agent trajectory"} · ${payload.trace_digest.slice(0, 23)}…`}
-    testId="visual-trace-rollout-inspector" footer="trace.rollout_inspector.v1 · projection is read-only">
+    testId="visual-trace-rollout-inspector" footer="trace.rollout_inspector.v1 · projection is read-only"
+    observation={{
+      // A sealed trace is terminal on arrival: this pane is not waiting for a
+      // stream, so `terminal` is the honest transport state, and the projected
+      // items are its semantic events. It renders no image frames at all.
+      transportState: "terminal",
+      terminal: true,
+      rolloutCount: Math.max(lanes.length, 1),
+      renderedFrameCount: 0,
+      semanticEventCount: items.length,
+      error: null
+    }}>
     <MetricStrip metrics={[
       { label: "Events", value: String(summary.visual_item_count ?? items.length) },
       { label: "Duration", value: duration(items) },

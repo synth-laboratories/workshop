@@ -5,12 +5,14 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+# shellcheck source=scripts/mcp-adapters.sh
+source "$ROOT/scripts/mcp-adapters.sh"
 COMMAND="${1:-help}"
-OUTPUT="${2:-${SYNTH_RELEASE_ROOT:-${TMPDIR:-/tmp}/synth-desktop-v0.4-release}}"
-APP_NAME="Synth Desktop.app"
+OUTPUT="${2:-${SYNTH_RELEASE_ROOT:-${TMPDIR:-/tmp}/synth-desktop-v0.5-release}}"
+APP_NAME="Synth Workshop.app"
 STAGE_ROOT="$OUTPUT/stage"
 STAGED_APP="$STAGE_ROOT/$APP_NAME"
-ZIP_PATH="$OUTPUT/Synth-Desktop-v0.4.0-macOS-arm64-UNNOTARIZED.zip"
+ZIP_PATH="$OUTPUT/Synth-Workshop-v0.5.0-macOS-arm64-UNNOTARIZED.zip"
 PROVENANCE="$OUTPUT/PROVENANCE.json"
 BUILT_APP="$ROOT/apps/synth_desktop/src-tauri/target/release/bundle/macos/$APP_NAME"
 INSTALLED_APP="${SYNTH_RELEASE_INSTALL_APP:-/Applications/$APP_NAME}"
@@ -76,7 +78,7 @@ stage_artifact() {
   [[ -d "$BUILT_APP" ]] || die "Tauri did not produce $BUILT_APP"
   mkdir -p "$STAGE_ROOT"
   /usr/bin/ditto "$BUILT_APP" "$STAGED_APP"
-  for adapter in synth-containers-mcp synth-visuals-mcp synth-optimizers-mcp; do
+  for adapter in "${SYNTH_MCP_ADAPTERS[@]}"; do
     local source="$ROOT/apps/synth_desktop/src-tauri/target/release/$adapter"
     [[ -x "$source" ]] || die "release adapter is missing: $source"
     /usr/bin/ditto "$source" "$STAGED_APP/Contents/MacOS/$adapter"

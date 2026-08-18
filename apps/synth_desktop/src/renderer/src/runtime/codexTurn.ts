@@ -6,6 +6,7 @@ import {
 	codexStartRequest,
 	type ApprovalMode
 } from "./nativeCodex";
+import { publicError } from "../runtime/publicError";
 
 /**
  * User-facing copy for a lost app-server. The typed code and the session id
@@ -50,7 +51,7 @@ export function codexTurnFailure(sessionId: string, reason: unknown): CodexTurnF
 			detail
 		};
 	}
-	const message = reason instanceof Error ? reason.message : String(reason);
+	const message = publicError(reason);
 	return {
 		code: DETACHED_ERROR_TEXT.test(message) ? "codex_session_detached" : "codex_turn_start_failed",
 		message,
@@ -155,7 +156,7 @@ export function desktopBootError(reason: unknown): string {
 					if (typeof detail.detail === "string") return detail.detail;
 					try { return JSON.stringify(reason); } catch { return "Unknown desktop runtime error"; }
 				})()
-				: String(reason);
+				: publicError(reason);
 	if (/command\s+.+not found|unknown command/i.test(message)) {
 		return "Desktop backend was updated; fully quit and reopen Synth Desktop.";
 	}

@@ -27,6 +27,20 @@ use std::time::Duration;
 /// Normalized live-eval protocol identifier services advertise.
 pub const LIVE_EVAL_PROTOCOL: &str = "synth.container.live-eval.v1";
 
+/// Normalized GEPA v2 optimizer contract. Workshop projects this onto live-eval
+/// operation names; task containers keep owning execution, not campaigns.
+pub const GEPA_V2_CONTRACT: &str = "synth_optimizers.gepa.v2";
+
+/// Extra evidence operations the live-eval adapter may project. These are not
+/// part of the prepare workflow and must never fabricate frames or forks.
+pub const USAGE_GET: &str = "usage.get";
+pub const RECORDS_GET: &str = "records.get";
+pub const RETENTION_DURABLE: &str = "retention.durable";
+pub const EVENTS_SEMANTIC: &str = "events.semantic";
+pub const FRAMES_REPLAY: &str = "frames.replay";
+pub const CHECKPOINT_RESTORE: &str = "checkpoint.restore";
+pub const ROLLOUTS_FORK: &str = "rollouts.fork";
+
 /// Registry metadata key holding the computed projection. Host-owned: the
 /// hydration writer always overwrites it, so a caller-supplied value can never
 /// survive into the record.
@@ -170,6 +184,8 @@ pub struct PolicyRef {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub auth: Option<String>,
 }
 
@@ -191,6 +207,7 @@ impl PolicyRef {
             harness: harness.to_string(),
             config: field("config"),
             model: field("model"),
+            provider: field("provider"),
             auth: field("auth"),
         })
     }
@@ -206,6 +223,7 @@ impl PolicyRef {
         self.harness == requested.harness
             && matches(&self.config, &requested.config)
             && matches(&self.model, &requested.model)
+            && matches(&self.provider, &requested.provider)
             && matches(&self.auth, &requested.auth)
     }
 }
@@ -220,6 +238,18 @@ pub struct ContainerCapabilities {
     pub observed_at: Option<String>,
     pub source: CapabilitySource,
     pub complete: bool,
+    /// Content digest of the projected operations and policy refs. Probe must
+    /// replace this atomically; breaker keys must not strip it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub revision: Option<String>,
+    /// HealthBench-style policy role: the request may name a provider/model
+    /// that is not the default Groq seed.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub policy_role_configurable: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scorer_role: Option<Value>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub credential_requirements: Vec<Value>,
 }
 
 impl ContainerCapabilities {
@@ -234,6 +264,10 @@ impl ContainerCapabilities {
             observed_at: None,
             source,
             complete: false,
+            revision: None,
+            policy_role_configurable: false,
+            scorer_role: None,
+            credential_requirements: Vec::new(),
         }
     }
 
@@ -299,7 +333,9 @@ pub fn project_capabilities(
     {
         capabilities.observed_at = Some(observed_at.to_rfc3339());
         merge_policy_refs(&mut capabilities, info);
+        apply_model_roles(&mut capabilities, info);
         capabilities.recompute_complete();
+        assign_revision(&mut capabilities);
         return capabilities;
     }
     // Operator-declared, from `config.toml` only — never from a caller.
@@ -309,7 +345,9 @@ pub fn project_capabilities(
     {
         capabilities.observed_at = Some(observed_at.to_rfc3339());
         merge_policy_refs(&mut capabilities, info);
+        apply_model_roles(&mut capabilities, info);
         capabilities.recompute_complete();
+        assign_revision(&mut capabilities);
         return capabilities;
     }
     let mut capabilities = ContainerCapabilities::empty(CapabilitySource::None);
@@ -321,13 +359,22 @@ pub fn project_capabilities(
                 capabilities.set(operation, state);
             }
         }
+        if let Some(adapted) = gepa_v2_projection(info) {
+            if capabilities.source == CapabilitySource::None {
+                capabilities = adapted;
+            } else {
+                merge_gepa_evidence(&mut capabilities, &adapted);
+            }
+        }
     }
     // A discovery that found nothing is still an observation: the record was
     // probed and the service advertised no normalized capabilities. Only a
     // record that was never projected has no `observed_at`.
     capabilities.observed_at = Some(observed_at.to_rfc3339());
     merge_policy_refs(&mut capabilities, info);
+    apply_model_roles(&mut capabilities, info);
     capabilities.recompute_complete();
+    assign_revision(&mut capabilities);
     capabilities
 }
 
@@ -434,7 +481,7 @@ fn merge_policy_refs(capabilities: &mut ContainerCapabilities, info: Option<&Val
         return;
     }
     let Some(info) = info else { return };
-    for pointer in ["/liveEval", "/live_eval", "/capabilities", ""] {
+    for pointer in ["/liveEval", "/live_eval", "/capabilities", "/metadata", ""] {
         let scope = if pointer.is_empty() {
             Some(info)
         } else {
@@ -448,6 +495,174 @@ fn merge_policy_refs(capabilities: &mut ContainerCapabilities, info: Option<&Val
             }
         }
     }
+}
+
+fn gepa_v2_contract(info: &Value) -> Option<&Value> {
+    for pointer in [
+        "/metadata/optimizer_contracts/gepa",
+        "/optimizer_contracts/gepa",
+        "/capabilities/optimizer_contracts/gepa",
+    ] {
+        let Some(block) = info.pointer(pointer) else {
+            continue;
+        };
+        let version = block.get("version").and_then(Value::as_str).unwrap_or("");
+        if version == GEPA_V2_CONTRACT {
+            return Some(block);
+        }
+    }
+    None
+}
+
+fn gepa_v2_projection(info: &Value) -> Option<ContainerCapabilities> {
+    let contract = gepa_v2_contract(info)?;
+    let has_rollout = contract
+        .get("rollout_route")
+        .and_then(Value::as_str)
+        .is_some_and(|route| !route.trim().is_empty())
+        || contract.get("prepare_route").is_some();
+    if !has_rollout {
+        return None;
+    }
+    let mut capabilities = ContainerCapabilities::empty(CapabilitySource::Compatibility);
+    capabilities.protocol = Some(GEPA_V2_CONTRACT.into());
+    for operation in PREPARE_WORKFLOW {
+        capabilities.set(operation, CapabilityState::Supported);
+    }
+    // Semantic events and terminal records exist; replay frames, restore, and
+    // fork do not. Advertise that honestly.
+    capabilities.set(
+        ContainerOperation::TraceV5Capture,
+        CapabilityState::Unsupported,
+    );
+    for (name, state) in [
+        (USAGE_GET, CapabilityState::Supported),
+        (RECORDS_GET, CapabilityState::Supported),
+        (RETENTION_DURABLE, CapabilityState::Supported),
+        (EVENTS_SEMANTIC, CapabilityState::Supported),
+        (FRAMES_REPLAY, CapabilityState::Unsupported),
+        (CHECKPOINT_RESTORE, CapabilityState::Unsupported),
+        (ROLLOUTS_FORK, CapabilityState::Unsupported),
+    ] {
+        capabilities.operations.insert(name.into(), state);
+    }
+    merge_policy_refs(&mut capabilities, Some(info));
+    apply_model_roles(&mut capabilities, Some(info));
+    Some(capabilities)
+}
+
+fn merge_gepa_evidence(target: &mut ContainerCapabilities, adapted: &ContainerCapabilities) {
+    for (name, state) in &adapted.operations {
+        target
+            .operations
+            .entry(name.clone())
+            .or_insert(*state);
+    }
+    if target.policy_refs.is_empty() {
+        target.policy_refs = adapted.policy_refs.clone();
+    }
+    target.policy_role_configurable |= adapted.policy_role_configurable;
+    if target.scorer_role.is_none() {
+        target.scorer_role = adapted.scorer_role.clone();
+    }
+    if target.credential_requirements.is_empty() {
+        target.credential_requirements = adapted.credential_requirements.clone();
+    }
+    if target.protocol.is_none() {
+        target.protocol = adapted.protocol.clone();
+    }
+}
+
+fn apply_model_roles(capabilities: &mut ContainerCapabilities, info: Option<&Value>) {
+    let Some(info) = info else { return };
+    let roles = info
+        .pointer("/metadata/model_roles")
+        .or_else(|| info.pointer("/model_roles"));
+    let Some(roles) = roles else { return };
+    if let Some(policy) = roles.get("policy") {
+        let configurable = policy
+            .get("configuration_authority")
+            .and_then(Value::as_str)
+            == Some("policy_ref");
+        capabilities.policy_role_configurable |= configurable;
+        push_credential_requirement(capabilities, policy, "policy");
+        if let Some(harness) = policy
+            .get("harness")
+            .and_then(Value::as_str)
+            .or(Some("chat_completion"))
+        {
+            if let (Some(provider), Some(model)) = (
+                policy.get("provider").and_then(Value::as_str),
+                policy.get("model").and_then(Value::as_str),
+            ) {
+                let next = PolicyRef {
+                    harness: harness.to_string(),
+                    config: None,
+                    model: Some(model.to_string()),
+                    provider: Some(provider.to_string()),
+                    auth: policy
+                        .get("api_key_env")
+                        .and_then(Value::as_str)
+                        .map(str::to_string),
+                };
+                if !capabilities.policy_refs.iter().any(|existing| existing.satisfies(&next)) {
+                    capabilities.policy_refs.push(next);
+                }
+            }
+        }
+    }
+    if let Some(scorer) = roles.get("scorer") {
+        let mut scorer = scorer.clone();
+        if let Some(object) = scorer.as_object_mut() {
+            object.remove("api_key");
+            object.remove("token");
+            object.remove("secret");
+        }
+        capabilities.scorer_role = Some(scorer.clone());
+        push_credential_requirement(capabilities, &scorer, "scorer");
+    }
+}
+
+fn push_credential_requirement(
+    capabilities: &mut ContainerCapabilities,
+    role: &Value,
+    lane: &str,
+) {
+    let Some(env) = role.get("api_key_env").and_then(Value::as_str) else {
+        return;
+    };
+    let requirement = json!({
+        "lane": lane,
+        "variable": env,
+        "provider": role.get("provider"),
+        "model": role.get("model"),
+    });
+    if !capabilities.credential_requirements.contains(&requirement) {
+        capabilities.credential_requirements.push(requirement);
+    }
+}
+
+fn assign_revision(capabilities: &mut ContainerCapabilities) {
+    let payload = json!({
+        "protocol": capabilities.protocol,
+        "operations": capabilities.operations,
+        "policy_refs": capabilities.policy_refs,
+        "source": capabilities.source.as_str(),
+        "policy_role_configurable": capabilities.policy_role_configurable,
+    });
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for byte in payload.to_string().as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x1000_0000_01b3);
+    }
+    capabilities.revision = Some(format!("{hash:016x}"));
+}
+
+fn attach_projection(error: &mut ContainerPreflightError, capabilities: &ContainerCapabilities) {
+    error.observed_at = capabilities.observed_at.clone();
+    error.capability_source = Some(capabilities.source.as_str().into());
+    error.capability_revision = capabilities.revision.clone();
+    error.protocol = capabilities.protocol.clone();
 }
 
 /// Write the projection (and the health observation time) into a registry
@@ -541,6 +756,10 @@ pub struct ContainerPreflightError {
     pub observed_at: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub capability_source: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub capability_revision: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub protocol: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub required: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -575,6 +794,8 @@ impl ContainerPreflightError {
             last_probe_error: last_probe_error(container),
             observed_at: None,
             capability_source: None,
+            capability_revision: None,
+            protocol: None,
             required: Vec::new(),
             missing: Vec::new(),
             unknown: Vec::new(),
@@ -731,6 +952,7 @@ pub fn preflight_prepare(
         );
         error.observed_at = capabilities.observed_at.clone();
         error.capability_source = Some(capabilities.source.as_str().into());
+        attach_projection(&mut error, &capabilities);
         return Err(error);
     }
 
@@ -770,6 +992,7 @@ pub fn preflight_prepare(
         error.unknown = unknown;
         error.observed_at = capabilities.observed_at.clone();
         error.capability_source = Some(capabilities.source.as_str().into());
+        attach_projection(&mut error, &capabilities);
         error.requested_policy_ref = request
             .requested_policy_ref
             .as_ref()
@@ -778,17 +1001,21 @@ pub fn preflight_prepare(
         return Err(error);
     }
 
-    // 7. The requested policy ref exactly matches an advertised one.
+    // 7. The requested policy ref matches an advertised one, or the container
+    //    declares a configurable policy role (HealthBench) that can register
+    //    the requested provider/model before the campaign starts.
     if let Some(requested) = &request.requested_policy_ref {
-        if !capabilities
+        let advertised_match = capabilities
             .policy_refs
             .iter()
-            .any(|advertised| advertised.satisfies(requested))
-        {
+            .any(|advertised| advertised.satisfies(requested));
+        let configurable_match = capabilities.policy_role_configurable
+            && (requested.harness == "chat_completion" || requested.harness == "classify");
+        if !advertised_match && !configurable_match {
             let mut error = ContainerPreflightError::new(
                 CODE_CAPABILITY_MISMATCH,
                 container,
-                "This pool does not advertise the requested policy_ref. Request one of the advertised refs or select another registered pool; the host does not substitute a policy.",
+                "This pool does not advertise the requested policy_ref. Request one of the advertised refs, register a configurable policy role, or select another registered pool; the host does not substitute a policy.",
                 false,
             );
             error.required = request
@@ -796,8 +1023,7 @@ pub fn preflight_prepare(
                 .iter()
                 .map(|operation| operation.as_str().to_string())
                 .collect();
-            error.observed_at = capabilities.observed_at.clone();
-            error.capability_source = Some(capabilities.source.as_str().into());
+            attach_projection(&mut error, &capabilities);
             error.requested_policy_ref = serde_json::to_value(requested).ok();
             error.available_policy_refs = capabilities.policy_refs.clone();
             return Err(error);
@@ -1130,8 +1356,7 @@ mod tests {
             Some(PolicyRef {
                 harness: "react".into(),
                 config: Some("luna_low".into()),
-                model: None,
-                auth: None,
+                ..Default::default()
             }),
             false,
             Duration::from_secs(900),
@@ -1205,8 +1430,7 @@ mod tests {
             Some(PolicyRef {
                 harness: "react".into(),
                 config: Some("luna_med".into()),
-                model: None,
-                auth: None,
+                ..Default::default()
             }),
             false,
             Duration::from_secs(900),
@@ -1278,5 +1502,180 @@ mod tests {
         assert_eq!(body["retryable"], true);
         assert!(body["remediation"].as_str().is_some());
         assert!(error.summary().contains(CODE_UNHEALTHY));
+    }
+
+    fn healthbench_info() -> Value {
+        json!({
+            "runtime_family": "healthbench",
+            "evaluation_plan_ref": "healthbench_eval.v1",
+            "policy_refs": [{
+                "harness": "chat_completion",
+                "config": "groq_llama31_8b",
+                "provider": "groq",
+                "model": "llama-3.1-8b-instant"
+            }],
+            "capabilities": {
+                "contract_version": "container_contract.v1",
+                "rollout_modes": ["blocking"],
+                "metadata": {"policy_ready": true}
+            },
+            "metadata": {
+                "model_roles": {
+                    "policy": {
+                        "purpose": "generate_candidate_response",
+                        "configuration_authority": "policy_ref",
+                        "usage_lane": "policy",
+                        "required": true
+                    },
+                    "scorer": {
+                        "purpose": "score_response_against_physician_rubrics",
+                        "provider": "openai",
+                        "model": "gpt-4.1-2025-04-14",
+                        "api_key_env": "OPENAI_API_KEY",
+                        "usage_lane": "grader",
+                        "canonical": true,
+                        "required": true
+                    }
+                },
+                "optimizer_contracts": {
+                    "gepa": {
+                        "version": GEPA_V2_CONTRACT,
+                        "program_route": "/program",
+                        "taskset_route": "/taskset",
+                        "rollout_route": "/rollout",
+                        "trace_route": "/rollouts/{rollout_id}/events"
+                    }
+                }
+            }
+        })
+    }
+
+    fn banking77_info() -> Value {
+        json!({
+            "runtime_family": "banking77",
+            "evaluation_plan_ref": "banking77_eval.v1",
+            "policy_refs": [
+                {"harness": "dataset_gold", "config": "dataset_gold"},
+                {"harness": "classify", "config": "classify"}
+            ],
+            "optimizer_contracts": {
+                "gepa": {
+                    "version": GEPA_V2_CONTRACT,
+                    "program_route": "/program",
+                    "taskset_route": "/taskset",
+                    "rollout_route": "/rollouts",
+                    "prepare_route": "/rollouts/prepare",
+                    "trace_route": "/rollouts/{rollout_id}/events"
+                }
+            }
+        })
+    }
+
+    #[test]
+    fn gepa_v2_healthbench_projects_live_eval_operations_without_fabricating_frames() {
+        let capabilities = project_capabilities(Some(&healthbench_info()), None, now());
+        assert_eq!(capabilities.source, CapabilitySource::Compatibility);
+        assert_eq!(capabilities.protocol.as_deref(), Some(GEPA_V2_CONTRACT));
+        assert_eq!(
+            capabilities.state(ContainerOperation::RolloutsPrepare),
+            CapabilityState::Supported
+        );
+        assert_eq!(
+            capabilities.state(ContainerOperation::RewardGet),
+            CapabilityState::Supported
+        );
+        assert_eq!(
+            capabilities.state(ContainerOperation::TraceV5Capture),
+            CapabilityState::Unsupported
+        );
+        assert_eq!(
+            capabilities.operations.get(FRAMES_REPLAY).copied(),
+            Some(CapabilityState::Unsupported)
+        );
+        assert_eq!(
+            capabilities.operations.get(USAGE_GET).copied(),
+            Some(CapabilityState::Supported)
+        );
+        assert!(capabilities.policy_role_configurable);
+        assert_eq!(
+            capabilities.scorer_role.as_ref().unwrap()["model"],
+            "gpt-4.1-2025-04-14"
+        );
+        assert!(capabilities
+            .credential_requirements
+            .iter()
+            .any(|requirement| requirement["variable"] == "OPENAI_API_KEY"));
+        assert!(capabilities.revision.is_some());
+        let record = container(READY_STATUS, hydrated(Some(&healthbench_info()), now()));
+        let request = PreflightRequest::for_prepare(
+            Some(PolicyRef {
+                harness: "chat_completion".into(),
+                provider: Some("openai".into()),
+                model: Some("gpt-4.1-mini-2025-04-14".into()),
+                ..Default::default()
+            }),
+            false,
+            Duration::from_secs(900),
+        );
+        preflight_prepare(&record, &request, now()).expect("configurable OpenAI policy is accepted");
+        assert_eq!(
+            capabilities.scorer_role.as_ref().unwrap()["usage_lane"],
+            "grader"
+        );
+        assert_eq!(
+            healthbench_info()["metadata"]["model_roles"]["policy"]["usage_lane"],
+            "policy"
+        );
+        assert_ne!(
+            capabilities.scorer_role.as_ref().unwrap()["usage_lane"],
+            healthbench_info()["metadata"]["model_roles"]["policy"]["usage_lane"]
+        );
+    }
+
+    #[test]
+    fn gepa_v2_banking77_projects_prepare_workflow() {
+        let capabilities = project_capabilities(Some(&banking77_info()), None, now());
+        assert_eq!(
+            capabilities.state(ContainerOperation::RolloutsPrepare),
+            CapabilityState::Supported
+        );
+        assert_eq!(
+            capabilities.state(ContainerOperation::RolloutsPoll),
+            CapabilityState::Supported
+        );
+        let record = container(READY_STATUS, hydrated(Some(&banking77_info()), now()));
+        preflight_prepare(&record, &prepare_request(), now()).expect("banking77 prepare passes");
+        assert_ne!(
+            capabilities.revision,
+            project_capabilities(Some(&healthbench_info()), None, now()).revision
+        );
+    }
+
+    #[test]
+    fn probe_replaces_capability_revision_used_by_prepare() {
+        let stale = now() - ChronoDuration::seconds(1_800);
+        let mut metadata = Map::new();
+        write_capability_metadata(&mut metadata, Some(&banking77_info()), None, true, stale);
+        let stale_revision = ContainerCapabilities::from_metadata(&Value::Object(metadata.clone()))
+            .revision
+            .clone();
+        let error = preflight_prepare(
+            &container(READY_STATUS, Value::Object(metadata.clone())),
+            &prepare_request(),
+            now(),
+        )
+        .unwrap_err();
+        assert_eq!(error.code, CODE_CAPABILITIES_STALE);
+        assert_eq!(error.capability_revision, stale_revision);
+
+        write_capability_metadata(&mut metadata, Some(&banking77_info()), None, true, now());
+        let fresh = ContainerCapabilities::from_metadata(&Value::Object(metadata.clone()));
+        assert_ne!(fresh.observed_at, Some(stale.to_rfc3339()));
+        preflight_prepare(
+            &container(READY_STATUS, Value::Object(metadata)),
+            &prepare_request(),
+            now(),
+        )
+        .expect("fresh probe observation is usable without restart");
     }
 }

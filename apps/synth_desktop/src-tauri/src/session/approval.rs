@@ -353,6 +353,10 @@ struct PendingApproval {
 pub(crate) struct ApprovalBroker {
     pending: Mutex<HashMap<String, Arc<PendingApproval>>>,
     session_grants: Mutex<HashSet<(String, String)>>,
+    /// Effective policy sealed at session start. A restarted session
+    /// overwrites its entry; host authorization reads this instead of
+    /// re-reading machine config so the layers cannot diverge mid-session.
+    effective_policies: Mutex<HashMap<String, super::approval_policy::EffectiveApprovalProfile>>,
     persistence: SessionPersistence,
     restore_started: AtomicBool,
 }
@@ -362,9 +366,42 @@ impl ApprovalBroker {
         Self {
             pending: Mutex::new(HashMap::new()),
             session_grants: Mutex::new(HashSet::new()),
+            effective_policies: Mutex::new(HashMap::new()),
             persistence,
             restore_started: AtomicBool::new(false),
         }
+    }
+
+    /// Seal the profile a session start resolved and persist the atomic
+    /// `approval.policy.effective` receipt for it.
+    pub(crate) async fn record_policy_effective<R: tauri::Runtime>(
+        &self,
+        app: &AppHandle<R>,
+        session_id: &str,
+        profile: super::approval_policy::EffectiveApprovalProfile,
+    ) -> Result<()> {
+        self.persistence
+            .append_boundary_event(
+                app,
+                session_id.to_owned(),
+                EventSource::Codex,
+                "approval.policy.effective",
+                profile.receipt_payload(session_id),
+            )
+            .await?;
+        self.effective_policies
+            .lock()
+            .await
+            .insert(session_id.to_owned(), profile);
+        Ok(())
+    }
+
+    pub(crate) async fn effective_policy(&self, session_id: &str) -> Option<String> {
+        self.effective_policies
+            .lock()
+            .await
+            .get(session_id)
+            .map(|profile| profile.approval_policy.clone())
     }
 
     pub(crate) async fn request<R: tauri::Runtime>(
@@ -685,7 +722,18 @@ impl ApprovalBroker {
         session_id: Option<&str>,
         kind: ApprovalKind,
     ) -> Result<String> {
-        let policy = crate::synth_config::desktop_permission_settings()?.approval_policy;
+        // The session's sealed profile is the authority. Machine config is
+        // consulted only for host approvals arriving with no session context
+        // (operator-driven mutations) or for sessions started before the
+        // profile existed; those cannot present a sealed value to honor.
+        let sealed = match session_id {
+            Some(session_id) => self.effective_policy(session_id).await,
+            None => None,
+        };
+        let policy = match sealed {
+            Some(policy) => policy,
+            None => crate::synth_config::desktop_permission_settings()?.approval_policy,
+        };
         if let Some(session_id) = session_id {
             if let Some(decision) = self.session_decision(session_id, &kind).await {
                 return self

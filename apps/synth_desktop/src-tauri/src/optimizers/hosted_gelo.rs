@@ -1,6 +1,7 @@
 //! Hosted Craftax GELO recipe. optimizers-beta owns algorithm execution and
 //! canonical optimizer events; Containers owns child rollout streams.
 
+use super::events::OptimizerEventDraft;
 use super::{
     hosted_client::HostedOptimizerClient,
     ingest,
@@ -326,7 +327,6 @@ pub(super) async fn append_state_batch(
     remote_status: &str,
     batch: Value,
 ) -> Result<()> {
-    let seq = service.get(run_id.to_string()).await?.cursor_seq + 1;
     let mut snapshot = Map::new();
     snapshot.insert(
         "slices".into(),
@@ -334,25 +334,12 @@ pub(super) async fn append_state_batch(
     );
     snapshot.insert("status".into(), json!(remote_status));
     service
-        .append_events(
+        .append_event_payloads(
             run_id.to_string(),
-            vec![OptimizerEventEnvelope {
-                schema_version: OPTIMIZER_EVENT_SCHEMA_VERSION.into(),
-                event_id: Some(format!("{run_id}:state:{seq}")),
-                event_type: "goex.state.batch.updated".into(),
-                sequence_number: seq,
-                occurred_at: chrono::Utc::now().to_rfc3339(),
-                optimizer_run_id: run_id.into(),
-                algorithm_id: "go-ex".into(),
-                level: Some("info".into()),
-                item: None,
-                delta: Map::new(),
-                snapshot: Some(snapshot),
-                usage_delta: None,
-                artifact_refs: vec![],
-                error: None,
-                raw: json!({"source": "optimizers-beta-state-batch"}),
-            }],
+            vec![OptimizerEventDraft::new("goex.state.batch.updated", "go-ex")
+                .level("info")
+                .snapshot(snapshot)
+                .raw(json!({"source": "optimizers-beta-state-batch"}))],
         )
         .await?;
     Ok(())
@@ -364,33 +351,23 @@ async fn append_terminal(
     status: &str,
     error: Option<String>,
 ) -> Result<()> {
-    let seq = service.get(run_id.to_string()).await?.cursor_seq + 1;
+    let mut draft = OptimizerEventDraft::new(
+        match status {
+            "completed" => "optimizer.run.completed",
+            "cancelled" => "optimizer.run.cancelled",
+            _ => "optimizer.run.failed",
+        },
+        "go-ex",
+    )
+    .idempotency_key(format!("terminal:{status}"))
+    .level(if status == "failed" { "error" } else { "info" })
+    .delta(Map::from_iter([("status".into(), json!(status))]))
+    .raw(json!({"source": "optimizers-beta"}));
+    if let Some(message) = error {
+        draft = draft.error(json!({ "message": message }));
+    }
     service
-        .append_events(
-            run_id.to_string(),
-            vec![OptimizerEventEnvelope {
-                schema_version: OPTIMIZER_EVENT_SCHEMA_VERSION.into(),
-                event_id: Some(format!("{run_id}:terminal:{status}")),
-                event_type: match status {
-                    "completed" => "optimizer.run.completed",
-                    "cancelled" => "optimizer.run.cancelled",
-                    _ => "optimizer.run.failed",
-                }
-                .into(),
-                sequence_number: seq,
-                occurred_at: chrono::Utc::now().to_rfc3339(),
-                optimizer_run_id: run_id.into(),
-                algorithm_id: "go-ex".into(),
-                level: Some(if status == "failed" { "error" } else { "info" }.into()),
-                item: None,
-                delta: Map::from_iter([("status".into(), json!(status))]),
-                snapshot: None,
-                usage_delta: None,
-                artifact_refs: vec![],
-                error: error.map(|message| json!({"message": message})),
-                raw: json!({"source": "optimizers-beta"}),
-            }],
-        )
+        .append_event_payloads(run_id.to_string(), vec![draft])
         .await?;
     Ok(())
 }

@@ -14,7 +14,8 @@ import {
   groupTraceByStep,
   projectCraftaxViewer,
   scopeCraftaxEvents,
-  semanticCheckpointIndexes,
+  environmentStepCount,
+  replayMomentIndexes,
   type CraftaxSemanticTraceItem
 } from "./projectCraftax.ts";
 import "./viewer.css";
@@ -267,12 +268,13 @@ export function Shell(props: ShellProps) {
   const [framePlaying, setFramePlaying] = useState(false);
   const [frameFps, setFrameFps] = useState(4);
   const [failedFrameUrl, setFailedFrameUrl] = useState<string | null>(null);
-  const checkpoints = useMemo(() => semanticCheckpointIndexes(fullProjection.ordered), [fullProjection.ordered]);
+  const moments = useMemo(() => replayMomentIndexes(fullProjection.ordered), [fullProjection.ordered]);
+  const environmentSteps = useMemo(() => environmentStepCount(fullProjection.ordered), [fullProjection.ordered]);
   const evaluationIndex = fullProjection.ordered.length
     ? evaluationCutoff == null ? fullProjection.ordered.length - 1 : Math.min(evaluationCutoff, fullProjection.ordered.length - 1)
     : -1;
-  const checkpointPosition = checkpoints.length
-    ? Math.max(0, checkpoints.findLastIndex((index) => index <= evaluationIndex))
+  const momentPosition = moments.length
+    ? Math.max(0, moments.findLastIndex((index) => index <= evaluationIndex))
     : -1;
   const evaluationEvents = evaluationIndex < 0 ? [] : fullProjection.ordered.slice(0, evaluationIndex + 1);
   const viewer = useMemo(() => projectCraftaxViewer(evaluationEvents, chosenLane, laneCutoff), [evaluationEvents, chosenLane, laneCutoff]);
@@ -348,14 +350,14 @@ export function Shell(props: ShellProps) {
                 : "streaming · waiting for evidence";
 
   useEffect(() => {
-    // Replay advances one semantic checkpoint (environment step / policy-call
+    // Replay advances one replay moment (environment step / policy-call
     // boundary / reward) per tick — never one transport delta per tick.
-    if (!playing || !checkpoints.length) return;
+    if (!playing || !moments.length) return;
     const timer = window.setInterval(() => {
       setEvaluationCutoff((current) => {
         const currentIndex = current ?? -1;
-        const next = checkpoints.find((index) => index > currentIndex);
-        if (next == null || next >= (checkpoints.at(-1) ?? 0)) {
+        const next = moments.find((index) => index > currentIndex);
+        if (next == null || next >= (moments.at(-1) ?? 0)) {
           setPlaying(false);
           return null;
         }
@@ -363,7 +365,7 @@ export function Shell(props: ShellProps) {
       });
     }, 700 / speed);
     return () => window.clearInterval(timer);
-  }, [playing, speed, checkpoints]);
+  }, [playing, speed, moments]);
 
   useEffect(() => {
     setSelectedTraceId(null);
@@ -458,14 +460,14 @@ export function Shell(props: ShellProps) {
       </section>
 
       <section className="cv-panel cv-timeline cv-shared-cursor" data-visual-landmark="temporal-controls">
-        <div className="cv-heading"><div><p className="cv-eyebrow">Evaluation time</p><h3>{Math.max(0, checkpointPosition) + 1} / {checkpoints.length || 0} checkpoints · {timeLabel(fullProjection.ordered[evaluationIndex], true)}</h3></div><div className="cv-replay"><button onClick={() => setPlaying(!playing)} disabled={!checkpoints.length}>{playing ? "Pause" : "Play"}</button><select aria-label="Replay speed" value={speed} onChange={(event) => setSpeed(Number(event.currentTarget.value))}><option value={0.5}>0.5×</option><option value={1}>1×</option><option value={2}>2×</option><option value={4}>4×</option></select><button onClick={() => { setEvaluationCutoff(null); setLaneCutoff(null); setPlaying(false); }}>{visualLive ? "Follow live" : "Jump to end"}</button></div></div>
+        <div className="cv-heading"><div><p className="cv-eyebrow">Evaluation time</p><h3>{Math.max(0, momentPosition) + 1} / {moments.length || 0} moments · {timeLabel(fullProjection.ordered[evaluationIndex], true)}</h3></div><div className="cv-replay"><button onClick={() => setPlaying(!playing)} disabled={!moments.length}>{playing ? "Pause" : "Play"}</button><select aria-label="Replay speed" value={speed} onChange={(event) => setSpeed(Number(event.currentTarget.value))}><option value={0.5}>0.5×</option><option value={1}>1×</option><option value={2}>2×</option><option value={4}>4×</option></select><button onClick={() => { setEvaluationCutoff(null); setLaneCutoff(null); setPlaying(false); }}>{visualLive ? "Follow live" : "Jump to end"}</button></div></div>
         <input
-          aria-label="Replay evaluation through semantic checkpoints"
+          aria-label="Replay evaluation through replay moments"
           type="range"
           min={0}
-          max={Math.max(0, checkpoints.length - 1)}
-          value={Math.max(0, checkpointPosition)}
-          onChange={(event) => { setEvaluationCutoff(checkpoints[Number(event.currentTarget.value)] ?? null); setPlaying(false); }}
+          max={Math.max(0, moments.length - 1)}
+          value={Math.max(0, momentPosition)}
+          onChange={(event) => { setEvaluationCutoff(moments[Number(event.currentTarget.value)] ?? null); setPlaying(false); }}
         />
         <div className="cv-lane-timeline"><span>Rollout time (raw events)</span><input aria-label="Replay selected rollout by raw event" type="range" min={0} max={Math.max(0, laneEvents.length - 1)} value={Math.max(0, visibleIndex)} onChange={(event) => setLaneCutoff(Number(event.currentTarget.value))} /></div>
       </section>

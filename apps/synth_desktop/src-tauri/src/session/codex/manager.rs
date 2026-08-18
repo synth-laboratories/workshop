@@ -1,7 +1,9 @@
 //! CodexManager — SessionKind::Codex transport authority over app-server attachments.
 use anyhow::{anyhow, Context, Result};
 use serde_json::{json, Value};
-use std::{collections::HashMap, env, fs, path::PathBuf, sync::Arc, time::Duration};
+use std::{
+    collections::HashMap, env, fs, future::Future, path::PathBuf, sync::Arc, time::Duration,
+};
 use tauri::AppHandle;
 use tokio::sync::{oneshot, Mutex, RwLock};
 
@@ -17,20 +19,24 @@ use super::event_pump::{spawn_server, EventPumpState, SpawnServerRequest};
 use super::home::{
     apply_brokered_credential, auto_compact_token_limit, automatic_thread_title, codex_root,
     ensure_home, install_local_laguna_catalog, nested_id, responses_base_url, safe_component,
-    session_info, validate_reasoning_effort, validate_start,
+    session_info, uniquify_title, validate_reasoning_effort, validate_start,
 };
 use super::proto::{
-    default_approval_policy, default_sandbox, is_detached_failure, CodexApprovalDecisionRequest,
-    CodexSessionInfo, CodexSessionRecord, CodexSessionRequest, CodexSessionStartRequest,
-    CodexSteerRequest, CodexThreadItemsRequest, CodexThreadReadRequest, CodexTurnFailure,
-    CodexTurnSendRequest, CodexTurnStartRequest, CompactWaiters, ProviderTransport, Session,
-    SessionDetached, COMPACT_PROMPT, DETACHED_MESSAGE,
+    default_approval_policy, default_sandbox, is_detached_failure, is_not_recorded_failure,
+    CodexApprovalDecisionRequest, CodexSessionInfo, CodexSessionRecord, CodexSessionRequest,
+    CodexSessionStartRequest, CodexSteerRequest, CodexThreadItemsRequest, CodexThreadReadRequest,
+    CodexTurnFailure, CodexTurnSendRequest, CodexTurnStartRequest, CompactWaiters,
+    ProviderTransport, RunNotPersisted, Session, SessionDetached, COMPACT_PROMPT, DETACHED_MESSAGE,
 };
 use super::telemetry::{PerformanceTrackers, TurnPerformanceTracker, TurnTokenUsage};
 
 pub struct CodexManager {
     pub(crate) sessions: Arc<RwLock<HashMap<String, Arc<Session>>>>,
     pub(crate) records: Arc<RwLock<HashMap<String, CodexSessionRecord>>>,
+    /// Starts may run concurrently, but account disconnect takes the write side
+    /// so credential deletion and attachment fencing are one atomic lifecycle
+    /// boundary. No child can attach in between the snapshot and the fence.
+    attachment_lifecycle: RwLock<()>,
     /// Serializes attach + turn/start per session so no caller can observe the
     /// window between "the attachment exists" and "the turn is running".
     pub(crate) turn_locks: Mutex<HashMap<String, Arc<Mutex<()>>>>,
@@ -39,9 +45,10 @@ pub struct CodexManager {
     /// UI source label (`manual` or `model_switch`). Auto token-threshold
     /// compaction leaves this empty and renders as "automatically compacted".
     pub(crate) pending_compact_sources: Arc<Mutex<HashMap<String, String>>>,
-    /// Terminal protocol notifications that arrive before `turn/start` has
-    /// returned its id and the durable run can be created.
-    pub(crate) early_terminal_turns: Arc<Mutex<HashMap<String, (String, Value)>>>,
+    /// A per-session `turn/start` handoff mailbox. `None` marks a start whose
+    /// durable run is not registered yet; `Some` carries a terminal protocol
+    /// notification that won that race.
+    pub(crate) early_terminal_turns: Arc<Mutex<HashMap<String, Option<(String, Value)>>>>,
     pub(crate) performance_trackers: PerformanceTrackers,
     pub(crate) root: PathBuf,
     pub(crate) state_path: PathBuf,
@@ -88,13 +95,51 @@ impl CodexManager {
         approvals: Arc<ApprovalBroker>,
     ) -> Self {
         let state_path = root.join("threads.json");
-        let records = fs::read_to_string(&state_path)
+        let mut records: HashMap<String, CodexSessionRecord> = fs::read_to_string(&state_path)
             .ok()
             .and_then(|raw| serde_json::from_str(&raw).ok())
             .unwrap_or_default();
+        // This cache — not SQLite — is what the renderer lists Codex chats
+        // from at boot, so reconciling only the database left the sidebar
+        // still showing Working. Correct it here, before `list()` can be
+        // called, and carry the durable notice across so the UI can say what
+        // happened rather than just "not running".
+        let notices = persistence
+            .database()
+            .and_then(|database| {
+                database
+                    .with_conn(crate::recovery::pending_recovery_notices)
+                    .ok()
+            })
+            .unwrap_or_default();
+        let mut reconciled = 0_usize;
+        for record in records.values_mut() {
+            let notice = notices.get(&record.session_id);
+            if !SessionStatus::Running.equals_str(&record.status) && notice.is_none() {
+                continue;
+            }
+            if SessionStatus::Running.equals_str(&record.status) {
+                record.status = SessionStatus::Interrupted.as_str().into();
+                reconciled += 1;
+            }
+            record.recovery = notice.cloned();
+        }
+        if reconciled > 0 {
+            eprintln!(
+                "synth-desktop: {reconciled} Codex chat(s) were left running by a previous \
+                 process and are now interrupted"
+            );
+            if let Ok(body) = serde_json::to_vec_pretty(&records) {
+                let temporary = state_path.with_extension("json.tmp");
+                if fs::write(&temporary, body).is_ok() {
+                    let _ = fs::rename(temporary, &state_path);
+                }
+            }
+        }
         Self {
             sessions: Arc::new(RwLock::new(HashMap::new())),
             records: Arc::new(RwLock::new(records)),
+            attachment_lifecycle: RwLock::new(()),
             turn_locks: Mutex::new(HashMap::new()),
             compact_waiters: Arc::new(Mutex::new(HashMap::new())),
             pending_compact_sources: Arc::new(Mutex::new(HashMap::new())),
@@ -128,7 +173,20 @@ impl CodexManager {
         app: AppHandle<R>,
         mut request: CodexSessionStartRequest,
     ) -> Result<CodexSessionInfo> {
+        let _attachment_lifecycle = self.attachment_lifecycle.read().await;
         validate_start(&request)?;
+        // Seal the approval surface before anything downstream reads it. An
+        // absent request inherits machine config; an explicit request that
+        // disagrees with machine config fails here, before a child exists
+        // that could ask questions nobody can answer. Writing the resolved
+        // values back into the request means every consumer — child config,
+        // thread params, session record, metadata — sees one set of values.
+        let effective_profile = super::super::approval_policy::resolve_effective(
+            request.approval_policy.as_deref(),
+            request.sandbox.as_deref(),
+        )?;
+        request.approval_policy = Some(effective_profile.approval_policy.clone());
+        request.sandbox = Some(effective_profile.sandbox_mode.clone());
         let requested_approval = request
             .approval_policy
             .clone()
@@ -156,13 +214,14 @@ impl CodexManager {
             // while the live process still asks for shell approval). The
             // provider binding is compared the same way: a child spawned
             // against a rotated-away credential or endpoint must be replaced,
-            // not reused.
-            self.close(&request.session_id).await?;
+            // not reused. The conversation itself continues, so only the
+            // attachment is dropped — never the durable session.
+            self.fence_attachment_inner(&request.session_id).await?;
         }
         // Custody is taken here — at spawn, after the reuse decision — and
         // nowhere earlier. Leasing during request preparation invalidated the
         // token a live, reused child was still presenting (a mid-conversation
-        // 401), and on rebind the `close()` above revokes the previous lease,
+        // 401), and on rebind the fence above revokes the previous lease,
         // so this is the one point where a fresh token's lifetime matches the
         // child's.
         let upstream_endpoint = request.base_url.clone();
@@ -310,10 +369,19 @@ impl CodexManager {
         } else {
             request.model.clone()
         };
-        let title = remembered
-            .as_ref()
-            .and_then(|record| record.title.clone())
-            .unwrap_or(default_title);
+        let title = if let Some(title) = remembered.as_ref().and_then(|record| record.title.clone())
+        {
+            title
+        } else {
+            let taken = self
+                .records
+                .read()
+                .await
+                .values()
+                .filter_map(|record| record.title.clone())
+                .collect::<Vec<_>>();
+            uniquify_title(&default_title, taken.iter().map(String::as_str))
+        };
         let title_origin = remembered
             .as_ref()
             .and_then(|record| record.title_origin.clone())
@@ -344,6 +412,12 @@ impl CodexManager {
                     .clone()
                     .unwrap_or_else(default_approval_policy),
                 sandbox: request.sandbox.clone().unwrap_or_else(default_sandbox),
+                // Reattaching does not resolve the previous attempt. The notice
+                // survives until a new turn actually claims ownership, so a
+                // chat that is merely reopened still explains itself.
+                recovery: remembered
+                    .as_ref()
+                    .and_then(|record| record.recovery.clone()),
             },
         );
         self.persist_records().await?;
@@ -376,6 +450,12 @@ impl CodexManager {
                 let _ = self.persistence.publish_event(&app, event).await;
             }
         }
+        // One atomic receipt per session start. Emitted after the session row
+        // exists so the boundary event has a durable home; the sealed profile
+        // is also what authorize_host consults for this session from now on.
+        self.approvals
+            .record_policy_effective(&app, &request.session_id, effective_profile)
+            .await?;
         if let Some(database) = self.persistence.database() {
             if crate::workspace_scope::get(&database, &request.session_id)
                 .await?
@@ -497,6 +577,13 @@ impl CodexManager {
         }
 
         let error = failure.unwrap_or_else(|| anyhow!("the turn could not be started"));
+        // A storage failure is not a provider failure: the upstream turn may
+        // have completed normally. Report it as its own code so the transcript
+        // never claims the agent disconnected, and keep the storage text out of
+        // the user-facing message.
+        if is_not_recorded_failure(&error) {
+            return Err(CodexTurnFailure::not_recorded(&session_id, &error));
+        }
         if !is_detached_failure(&error) {
             return Err(CodexTurnFailure::rejected(&session_id, &error));
         }
@@ -564,6 +651,12 @@ impl CodexManager {
         self.performance_trackers.lock().await.insert(
             request.session_id.clone(),
             TurnPerformanceTracker {
+                segments: super::generation_speed::TurnSegmentTracker::new(
+                    request.session_id.clone(),
+                    pending_turn_id.clone(),
+                    Some(provider.clone()),
+                    Some(session.model.clone()),
+                ),
                 provider,
                 model_id: session.model.clone(),
                 turn_id: pending_turn_id.clone(),
@@ -571,13 +664,23 @@ impl CodexManager {
                 started_at_ms,
                 first_output_at_ms: None,
                 last_output_at_ms: None,
-                generation_active_ms: 0,
                 usage: TurnTokenUsage::default(),
             },
         );
+        // The map entry is both an ownership marker and a terminal mailbox.
+        // The event pump updates it atomically if completion beats durable run
+        // creation; after registration, absence means the pump owns terminals.
+        self.early_terminal_turns
+            .lock()
+            .await
+            .insert(request.session_id.clone(), None);
         let result = match session.server.request("turn/start", turn_params).await {
             Ok(result) => result,
             Err(error) => {
+                self.early_terminal_turns
+                    .lock()
+                    .await
+                    .remove(&request.session_id);
                 let mut trackers = self.performance_trackers.lock().await;
                 if trackers
                     .get(&request.session_id)
@@ -589,6 +692,10 @@ impl CodexManager {
             }
         };
         let Some(turn_id) = nested_id(&result, "turnId") else {
+            self.early_terminal_turns
+                .lock()
+                .await
+                .remove(&request.session_id);
             self.performance_trackers
                 .lock()
                 .await
@@ -622,45 +729,108 @@ impl CodexManager {
         // stdout read cycle as the `turn/start` response.
         self.set_status(&request.session_id, SessionStatus::Running)
             .await?;
-        let mut early_terminal = self
-            .early_terminal_turns
-            .lock()
-            .await
-            .remove(&request.session_id);
         self.set_automatic_title(&app, &request.session_id, &request.prompt, &session)
             .await;
+        // A turn that replaces a crashed one stays visibly a *new* attempt: the
+        // interrupted run keeps its history and this one records what it
+        // continues. Flipping the old run back to running would erase the fact
+        // that Workshop died mid-task.
+        let recovery = self.persistence.pending_recovery(&request.session_id).await;
+        let mut run_metadata = json!({"threadId": session.thread_id, "effort": effort});
+        if let (Some(recovery), Some(object)) = (&recovery, run_metadata.as_object_mut()) {
+            object.insert("recoveryAttempt".into(), json!(recovery.recovery_attempt));
+            object.insert("recoveredAfterCrash".into(), json!(true));
+            if let Some(previous) = &recovery.run_id {
+                object.insert("recoveredFromRunId".into(), json!(previous));
+            }
+        }
         let start_run = self.persistence.start_run(RunCreate {
             id: turn_id.clone(),
             session_id: request.session_id.clone(),
             mode: "codex_turn".into(),
             model: Some(session.model.clone()),
             adapter: None,
-            metadata: json!({"threadId": session.thread_id, "effort": effort}),
+            metadata: run_metadata,
             source: EventSource::Codex,
         });
         let mutation = match start_run.await {
             Ok(mutation) => mutation,
             Err(error) => {
+                self.early_terminal_turns
+                    .lock()
+                    .await
+                    .remove(&request.session_id);
                 // The model turn already exists, but without its durable run the
                 // product cannot represent or reconcile it. Interrupt best-effort
                 // and surface the storage failure instead of claiming Running.
-                let _ = session
+                let interrupt_error = session
                     .server
                     .request(
                         "turn/interrupt",
                         json!({"threadId": session.thread_id, "turnId": turn_id}),
                     )
-                    .await;
-                return Err(error.context("persist Codex run before exposing running state"));
+                    .await
+                    .err()
+                    .map(|interrupt_error| interrupt_error.to_string());
+                self.performance_trackers
+                    .lock()
+                    .await
+                    .remove(&request.session_id);
+                self.diagnose_turn_not_recorded(
+                    &request.session_id,
+                    &turn_id,
+                    &error,
+                    interrupt_error.as_deref(),
+                );
+                return Err(error.context(RunNotPersisted));
             }
         };
-        if early_terminal.is_none() {
-            early_terminal = self
-                .early_terminal_turns
-                .lock()
-                .await
-                .remove(&request.session_id);
+        self.record_turn_accepted(
+            &app,
+            &request.session_id,
+            &turn_id,
+            request.client_message_id.as_deref(),
+        )
+        .await;
+        *session.turn_id.write().await = Some(turn_id.clone());
+        // Mirror the committed run into the record cache. A fast app-server may
+        // emit its final answer in the same stdout read cycle as the
+        // `turn/start` response, so this must precede the early-terminal check.
+        self.set_status(&request.session_id, SessionStatus::Running)
+            .await?;
+        self.set_automatic_title(&app, &request.session_id, &request.prompt, &session)
+            .await;
+        let early_terminal = {
+            let mut terminals = self.early_terminal_turns.lock().await;
+            match terminals.get(&request.session_id).cloned().flatten() {
+                Some(terminal) => Some(terminal),
+                None => {
+                    terminals.remove(&request.session_id);
+                    None
+                }
+            }
+        };
+        // The durable run now exists; claim it for this boot epoch. Until this
+        // line lands, nothing may present the session as Working — that is the
+        // whole point of the claim.
+        if let Err(error) = self
+            .persistence
+            .claim_turn(
+                &request.session_id,
+                &turn_id,
+                Some(session.attachment_id.to_string()),
+            )
+            .await
+        {
+            eprintln!("could not claim turn ownership for {turn_id}: {error}");
         }
+        if recovery.is_some() {
+            if let Some(record) = self.records.write().await.get_mut(&request.session_id) {
+                record.recovery = None;
+            }
+            self.persist_records().await?;
+        }
+        crate::recovery::crash_checkpoint(crate::recovery::checkpoints::AFTER_TURN_START);
         if early_terminal.is_none() {
             if let Some(mutation) = mutation {
                 if let Some(event) = mutation.event {
@@ -690,6 +860,10 @@ impl CodexManager {
                 }
             }
             self.set_status(&request.session_id, session_status).await?;
+            self.early_terminal_turns
+                .lock()
+                .await
+                .remove(&request.session_id);
             return Ok(session_info(&request.session_id, &session).await);
         }
         // If the terminal arrived outside the narrow typed-final window, its
@@ -953,13 +1127,55 @@ impl CodexManager {
         Ok(())
     }
 
-    pub async fn close(&self, session_id: &str) -> Result<()> {
+    /// Tears down the live attachment without touching durable session state.
+    ///
+    /// Attachment lifetime and conversation lifetime are different things. A
+    /// rebind (model, provider, approval, sandbox or workspace change) must
+    /// replace the child process while the conversation keeps running, so this
+    /// path deliberately writes no status: `closed` is terminal in the session
+    /// state machine, and recording it here left the next turn unable to create
+    /// its durable run.
+    pub async fn fence_attachment(&self, session_id: &str) -> Result<()> {
+        let _attachment_lifecycle = self.attachment_lifecycle.write().await;
+        self.fence_attachment_inner(session_id).await
+    }
+
+    async fn fence_attachment_inner(&self, session_id: &str) -> Result<()> {
         let session = self.sessions.write().await.remove(session_id);
         if let Some(session) = session {
             session.server.stop().await?;
         }
         // The child is gone; its loopback lease must not outlive it.
         self.broker.revoke(session_id);
+        Ok(())
+    }
+
+    /// Runs a credential-authority mutation and fences its children without
+    /// allowing an attachment start between those two operations.
+    pub(crate) async fn fence_provider_attachments_after<T>(
+        &self,
+        provider_name: &str,
+        authority_mutation: impl Future<Output = Result<T>>,
+    ) -> Result<T> {
+        let _attachment_lifecycle = self.attachment_lifecycle.write().await;
+        let result = authority_mutation.await?;
+        let session_ids: Vec<_> = self
+            .sessions
+            .read()
+            .await
+            .iter()
+            .filter(|(_, session)| session.provider_name == provider_name)
+            .map(|(session_id, _)| session_id.clone())
+            .collect();
+        for session_id in session_ids {
+            self.fence_attachment_inner(&session_id).await?;
+        }
+        Ok(result)
+    }
+
+    /// Ends the conversation: drops the attachment *and* closes it durably.
+    pub async fn close(&self, session_id: &str) -> Result<()> {
+        self.fence_attachment(session_id).await?;
         self.set_status(session_id, SessionStatus::Closed).await?;
         Ok(())
     }
@@ -1114,6 +1330,42 @@ impl CodexManager {
 
     /// Removes a dead attachment, but only when it is still the current one.
     /// `expected` is `None` when no attachment was resolved at all.
+    /// Records the exact failure the agent needs when an upstream turn cannot be
+    /// anchored durably. Without this the only trace of the failure was a
+    /// rejected composer message.
+    fn diagnose_turn_not_recorded(
+        &self,
+        session_id: &str,
+        turn_id: &str,
+        error: &anyhow::Error,
+        interrupt_error: Option<&str>,
+    ) {
+        let Some(service) = self.persistence.diagnostics() else {
+            return;
+        };
+        let mut input = crate::diagnostics::DiagnosticInput::new(
+            crate::diagnostics::Severity::Error,
+            "session",
+            "session.turn.not_recorded",
+            crate::diagnostics::codes::TURN_NOT_RECORDED,
+            "the provider turn started but could not be recorded as a run",
+        )
+        .retryable(true);
+        input.correlation.session_id = Some(session_id.to_owned());
+        input.correlation.turn_id = Some(turn_id.to_owned());
+        input
+            .details
+            .insert("cause".into(), Value::String(error.to_string()));
+        input.details.insert(
+            "provider_interrupt".into(),
+            Value::String(match interrupt_error {
+                Some(error) => format!("request_failed: {error}"),
+                None => "requested".into(),
+            }),
+        );
+        service.emit(input);
+    }
+
     async fn discard_attachment(&self, session_id: &str, expected: Option<uuid::Uuid>) {
         let mut sessions = self.sessions.write().await;
         let matches = sessions.get(session_id).is_some_and(|session| {
@@ -1133,6 +1385,12 @@ impl CodexManager {
             record.status = status.as_str().into();
         }
         self.persist_records().await?;
+        // Leaving a claim behind after the turn ended would keep the lease
+        // watchdog reporting work nobody is doing. Every status that is not
+        // Running is a terminal for the claim, whatever produced it.
+        if status != SessionStatus::Running {
+            self.persistence.release_turn(session_id).await;
+        }
         if let Ok(Some(mutation)) = self
             .persistence
             .transition_session(
@@ -1165,9 +1423,18 @@ impl CodexManager {
         if !should_set {
             return;
         }
-        let Some(title) = automatic_thread_title(prompt) else {
+        let Some(base) = automatic_thread_title(prompt) else {
             return;
         };
+        let taken = {
+            let records = self.records.read().await;
+            records
+                .iter()
+                .filter(|(id, _)| id.as_str() != session_id)
+                .filter_map(|(_, record)| record.title.clone())
+                .collect::<Vec<_>>()
+        };
+        let title = uniquify_title(&base, taken.iter().map(String::as_str));
         let previous_title = {
             let mut records = self.records.write().await;
             let Some(record) = records.get_mut(session_id) else {

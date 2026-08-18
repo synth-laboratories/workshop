@@ -10,6 +10,17 @@ import { ProviderMark } from "./ProviderMark";
 import { PLUGIN_NAV, type PluginNavEntry } from "../runtime/pluginNav";
 import { findPluginStatus, pluginPresentation } from "../runtime/pluginPresentation";
 import type { PluginStatus } from "../bridge/types";
+import type { ChatPresence } from "@synth/runtime-protocol";
+
+/** One word per state. The chat row has no room for, and no need of, more. */
+const PRESENCE_LABELS: Record<ChatPresence, string> = {
+	idle: "Idle",
+	starting: "Starting",
+	working: "Working",
+	recovering: "Recovering",
+	interrupted: "Interrupted",
+	needsAttention: "Needs attention"
+};
 
 type CodexUsageSnapshot = {
 	usedPercent: number;
@@ -27,6 +38,12 @@ type Props = {
 	reportsActive?: boolean;
 	optimizersActive?: boolean;
 	workingChatIds?: ReadonlySet<string>;
+	/**
+	 * What each chat is doing, as opposed to what its stored status says. Only
+	 * `working` may render the live indicator; a chat whose owner died lands on
+	 * `recovering` / `needsAttention` and stays archivable.
+	 */
+	chatPresence?: Record<string, ChatPresence>;
 	activeLocalDecodeTps?: string | null;
 	unreadChatIds?: ReadonlySet<string>;
 	pinnedChatIds?: ReadonlySet<string>;
@@ -192,6 +209,7 @@ export function Sidebar({
 	reportsActive = false,
 	optimizersActive = false,
 	workingChatIds = new Set<string>(),
+	chatPresence = {},
 	activeLocalDecodeTps = null,
 	unreadChatIds = new Set<string>(),
 	pinnedChatIds = new Set<string>(),
@@ -285,18 +303,27 @@ export function Sidebar({
 		if (aPinned !== bPinned) return aPinned ? -1 : 1;
 		return 0;
 	}), [pinnedChatIds, state.chats]);
-	const visibleChats = useMemo(() => {
-		if (showAllChats) return orderedChats;
+	const hiddenChatIds = useMemo(() => {
+		if (showAllChats) return new Set<string>();
 		const alwaysVisible = new Set([
 			...orderedChats.filter((chat) => pinnedChatIds.has(chat.id)).map((chat) => chat.id),
 			...orderedChats.filter((chat) => chat.id === activeChatId || workingChatIds.has(chat.id)).map((chat) => chat.id)
 		]);
-		const priority = orderedChats.filter((chat) => alwaysVisible.has(chat.id));
-		const remainder = orderedChats.filter((chat) => !alwaysVisible.has(chat.id));
-		return [...priority, ...remainder].slice(0, Math.max(10, priority.length));
+		const hidden = new Set<string>();
+		let shown = 0;
+		const floor = Math.max(10, alwaysVisible.size);
+		for (const chat of orderedChats) {
+			if (alwaysVisible.has(chat.id)) {
+				shown += 1;
+				continue;
+			}
+			if (shown >= floor) hidden.add(chat.id);
+			else shown += 1;
+		}
+		return hidden;
 	}, [activeChatId, orderedChats, pinnedChatIds, showAllChats, workingChatIds]);
-	const firstPinnedIndex = visibleChats.findIndex((chat) => pinnedChatIds.has(chat.id));
-	const firstRecentIndex = visibleChats.findIndex((chat) => !pinnedChatIds.has(chat.id));
+	const firstPinnedIndex = orderedChats.findIndex((chat) => pinnedChatIds.has(chat.id));
+	const firstRecentIndex = orderedChats.findIndex((chat) => !pinnedChatIds.has(chat.id));
 	const pluginRowActive: Record<PluginNavEntry["id"], boolean> = {
 		visuals: visualsActive,
 		reports: reportsActive,
@@ -360,16 +387,19 @@ export function Sidebar({
 							{orderedChats.length === 0 ? (
 								<p className="empty-hint">No local chats yet</p>
 							) : (
-								visibleChats.map((chat, chatIndex) => {
+								orderedChats.map((chat, chatIndex) => {
 									const title = conversationTitles[chat.id] ?? chat.title;
 									const pinned = pinnedChatIds.has(chat.id);
 									const working = workingChatIds.has(chat.id);
+								const presence = chatPresence[chat.id] ?? "idle";
+								const stalled =
+									presence === "recovering" || presence === "needsAttention" || presence === "interrupted";
 									const sectionLabel = chatIndex === firstPinnedIndex
 										? "Pinned"
 										: chatIndex === firstRecentIndex ? "Recents" : null;
 									if (renamingId === chat.id) {
 										return (
-											<div key={chat.id} className="chat-section-entry">
+											<div key={chat.id} className="chat-section-entry" hidden={hiddenChatIds.has(chat.id)} data-hidden={hiddenChatIds.has(chat.id) ? "true" : undefined}>
 												{sectionLabel ? <h3 className="chat-section-label">{sectionLabel}</h3> : null}
 											<form
 												className="chat-rename-form"
@@ -403,7 +433,7 @@ export function Sidebar({
 										);
 									}
 					return (
-						<div key={chat.id} className="chat-section-entry">
+						<div key={chat.id} className="chat-section-entry" hidden={hiddenChatIds.has(chat.id)} data-hidden={hiddenChatIds.has(chat.id) ? "true" : undefined}>
 							{sectionLabel ? <h3 className="chat-section-label">{sectionLabel}</h3> : null}
 						<div className="chat-row">
 						<button
@@ -438,6 +468,14 @@ export function Sidebar({
 														<span className="chat-working-rate" data-testid={`chat-working-rate-${chat.id}`}>{activeLocalDecodeTps}</span>
 													) : null}
 												</>
+											) : stalled ? (
+												<span
+													className={`chat-stalled-indicator${presence === "needsAttention" ? " attention" : ""}`}
+													aria-label={PRESENCE_LABELS[presence]}
+													title={PRESENCE_LABELS[presence]}
+													data-presence={presence}
+													data-testid={`chat-stalled-${chat.id}`}
+												/>
 											) : unreadChatIds.has(chat.id) ? (
 												<span className="chat-unread-indicator" aria-label="Finished, unviewed" title="Finished, unviewed" data-testid={`chat-unread-${chat.id}`} />
 											) : null}
@@ -470,7 +508,7 @@ export function Sidebar({
 									);
 								})
 							)}
-							{orderedChats.length > visibleChats.length ? (
+							{hiddenChatIds.size > 0 ? (
 								<button
 									type="button"
 									className="sidebar-show-more"
@@ -479,7 +517,7 @@ export function Sidebar({
 									aria-controls="sidebar-chats"
 									onClick={() => setShowAllChats(true)}
 								>
-									Show {orderedChats.length - visibleChats.length} more
+									Show {hiddenChatIds.size} more
 								</button>
 							) : showAllChats && orderedChats.length > 10 ? (
 								<button

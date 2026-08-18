@@ -1,64 +1,56 @@
 # Contract: Desktop review capture
 
-Governs `capture_review` and the macOS window resolver in
-`synth_visuals_mcp.rs`, and `resize_review_window` in `visuals_ipc.rs`.
+Governs `capture_review` in `synth_visuals_mcp.rs` and
+`resize_review_window` / `capture_review_window` plus
+`visuals::snapshot` in the host (`visuals_ipc.rs`, `visuals/snapshot.rs`).
 
 ## The rule
 
-**Identity, then geometry — in that order, never mixed.**
+**The app photographs its own surface. Nothing else is ever in frame.**
 
-A window is the right window or it is not. How large it happens to be is a
-separate question with a separate answer.
+Desktop review capture is a host-owned `WKWebView takeSnapshot` of the main
+window's webview, executed inside the signed app process and returned through
+the authenticated visuals IPC. There is no OS-level screen capture, so:
 
-The resolver used to filter candidates on `width >= 640, height >= 400`
-*before* evaluating bundle identity. A compact review at 390×844 — a viewport
-the public schema advertises — therefore reported `DesktopWindowNotFound` for
-an app that was on screen, running, and correctly identified. Widening the
-number would have hidden the defect; the number was in the wrong place.
+- **No Screen Recording TCC grant is required.** A fresh build with no grant
+  captures successfully, and System Settings never opens.
+- **No window-identity resolution exists.** The host snapshots the webview it
+  owns; photographing the wrong window is not expressible. The previous
+  pipeline (`CGWindowListCopyWindowInfo` resolver → `/usr/sbin/screencapture
+  -l` → `sips`) and its whole error vocabulary — `DesktopWindowNotFound`,
+  `DesktopWindowAmbiguous`, `ScreenRecordingDeniedOrUnavailable`,
+  `BOUNDS_DRIFT` — are gone with it.
+- **Occlusion does not matter.** The snapshot renders the webview's own
+  content, so capture works while the app is backgrounded, covered, or on
+  another Space. `screencapture -x` could never guarantee that.
 
-## Identity
+## One call, host-side transaction
 
-Strongest available signal wins:
+The helper's `capture_review` issues `POST /v1/visuals/{id}/show` and then a
+single `POST /v1/review-window/capture` with
+`{width, height, outputPath}`. The host performs resize → settle →
+snapshot → restore as one operation and returns
+`{path, width, height, previous, current, scaleFactor, windowLabel,
+processId, captureMode, restored}`.
 
-1. **Process id**, when `resize_review_window` reported one. Exact, free, and
-   unambiguous even with several named instances running.
-2. **Bundle id**, exactly matched. Authoritative for named instances.
-3. **Owner name**, only when no bundle id is available.
-
-macOS truncates owner names (`Synth Workshop v0.4 · sync-rep`). A truncated name
-is reported for humans and never used to reject a window that identity already
-matched.
+Because resize and restore never leave the host, a helper that dies
+mid-capture can no longer strand the user's window at the review size (the
+open defect recorded against the previous split pipeline). The snapshot has a
+hard timeout; on timeout the restore still runs.
 
 ## Geometry
 
-One declared bound, shared by the tool schema, the resize endpoint, and the
-capture policy:
+One declared bound, shared by the tool schema, the resize/capture endpoints,
+and the capture policy:
 
 ```
 320×400 … 2400×1800     // REVIEW_VIEWPORT_{WIDTH,HEIGHT}_{MIN,MAX}
 ```
 
 A unit test asserts the tool schema and the runtime check agree, because their
-disagreeing is the exact defect this replaced.
-
-After a window is selected, its observed bounds are compared against what the
-resize actually produced, within `REVIEW_BOUNDS_TOLERANCE_POINTS` (window
-managers round and add chrome). Drift is **reported**, not fatal: the capture is
-still of the identified window, and the receipt records what was photographed.
-
-## One identity, established once
-
-`resize_review_window` holds the window it resizes and returns
-`{previous, current, scaleFactor, windowLabel, processId}`. Capture carries that
-receipt in and *verifies* rather than rediscovering. This removes the second
-lookup, and with it the race between resizing one window and photographing
-another.
-
-When identity yields several windows and none is distinguishable by size, the
-capture fails with `DesktopWindowAmbiguous` listing bundle, pid, window number,
-and bounds for each. It never falls back to the largest — three Desktop
-instances with different bundle ids were on screen during the v0.4 acceptance
-run, and picking the biggest would have silently captured the wrong product.
+disagreeing is the exact defect this replaced. Sizes on these endpoints are
+logical (CSS) pixels; the receipt records the display scale factor and the
+PNG's actual pixel dimensions.
 
 ## Restore is transactional and reported
 
@@ -67,13 +59,34 @@ restore reaches the caller **even when the capture itself failed** — it is the
 one side effect this operation cannot undo, and it used to be dropped on that
 path.
 
+## Output-path confinement
+
+The helper names the output file; the host refuses to write outside the
+visuals data root it was spawned with (canonicalized prefix check). The
+capture is only as trustworthy as the process that wrote it, and that process
+is the signed host.
+
+## Evidence checks, unchanged
+
+- `assert_non_blank_png` still gates every capture: a uniform/transparent
+  snapshot fails. With OS capture this doubled as the TCC-denial detector; it
+  remains the guard against a blank or unpainted webview.
+- Rendered-observation freshness (`visual_observation_stale` /
+  `visual_observation_unavailable`) still gates templates that declare an
+  observation contract.
+- The `…​.observations.json` sidecar (`synth.visual-capture-observation.v1`)
+  is still written beside every PNG and still required by review submission.
+
 ## Receipt
 
-Written beside every review PNG, in `…​.observations.json` under `window`:
+Written beside every review PNG, in `….observations.json` under `window`
+(`schemaVersion: synth.visual-capture-window.v1`,
+`captureMode: host-webview-snapshot`):
 
-- requested viewport, resized viewport, previous viewport, scale factor
-- process id, bundle id, resolved window number, observed bounds
-- restore outcome and any restore error
+- requested viewport, resized viewport, previous viewport, image size,
+  scale factor
+- process id and window label of the window that was actually snapshotted
+- restore outcome
 
-Reconstructing which window a review captured, at what bounds, and whether the
-user's window was put back should not require reading an agent transcript.
+Reconstructing what a review captured, at what bounds, and whether the user's
+window was put back should not require reading an agent transcript.

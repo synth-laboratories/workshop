@@ -18,7 +18,7 @@ no winner, and saying "completed" alone misrepresents it.
 
 ## Stage before you start
 
-`start_recipe` takes a `candidate_set_id`, never a path or inline code. Create or
+`start_workflow` takes a `candidate_set_id`, never a path or inline code. Create or
 identify the policy files in the session workspace first, then freeze them:
 
 ```json
@@ -38,7 +38,7 @@ a paired lift without one, and will return `inconclusive`.
 Then start with the returned id:
 
 ```json
-{"operation":"start_recipe","arguments":{
+{"operation":"start_workflow","arguments":{
   "recipe_id":"eval.craftax.code-policy.smoke.v1",
   "candidate_set_id":"policy_set_...",
   "open_visual":true}}
@@ -51,6 +51,10 @@ selection rule are all published there. Availability is honest: a recipe whose
 target image is not pinned reports `unavailable` with a reason, and starting it
 fails rather than silently substituting a tag.
 
+Recipe families are never interchangeable. If an exact `eval.*` recipe is
+unavailable, return its blocker and stop. Do not run GEPA, a bespoke rollout
+loop, a fixture, or a similarly named recipe as a replacement.
+
 | Recipe | Candidate kind | Decision |
 |---|---|---|
 | `eval.fixture.policy-smoke.v1` | `python-code.v1` (`policy:Policy`) | promotes; deterministic, no benchmark |
@@ -58,6 +62,13 @@ fails rather than silently substituting a tag.
 | `eval.gamebench.craftax-code-policy.confirm.v1` | `python-code.craftax-choose-actions.v1` | promotes |
 | `eval.craftax.llm-policy.smoke.v1` | `llm-policy.v1` | report-only |
 | `eval.gamebench.llm-policy.confirm.v1` | `llm-policy.v1` | promotes |
+
+Two packaged container baselines are fixed measurement recipes, not candidate
+comparisons. Start `eval.banking77.baseline.v1` (10 examples, concurrency 10)
+or `eval.healthbench.smoke.v1` (2 train + 2 heldout, concurrency 2, $0.50
+ceiling) directly with `open_visual: true`; do not invent or stage a candidate
+set for either. They must complete every owed rollout and report retained
+terminal evidence. HealthBench keeps policy and canonical-grader usage separate.
 
 ### LLM candidates
 

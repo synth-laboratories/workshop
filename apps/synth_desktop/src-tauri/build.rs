@@ -1,12 +1,18 @@
 fn main() {
-    let revision = std::process::Command::new("git")
-        .args(["rev-parse", "--short=12", "HEAD"])
-        .output()
+    println!("cargo:rerun-if-env-changed=SYNTH_DESKTOP_SOURCE_REVISION");
+    let revision = std::env::var("SYNTH_DESKTOP_SOURCE_REVISION")
         .ok()
-        .filter(|output| output.status.success())
-        .and_then(|output| String::from_utf8(output.stdout).ok())
-        .map(|value| value.trim().to_owned())
-        .filter(|value| !value.is_empty())
+        .filter(|value| !value.trim().is_empty())
+        .or_else(|| {
+            std::process::Command::new("git")
+                .args(["rev-parse", "--short=12", "HEAD"])
+                .output()
+                .ok()
+                .filter(|output| output.status.success())
+                .and_then(|output| String::from_utf8(output.stdout).ok())
+                .map(|value| value.trim().to_owned())
+                .filter(|value| !value.is_empty())
+        })
         .unwrap_or_else(|| "unknown".into());
     let built_at = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

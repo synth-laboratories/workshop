@@ -11,6 +11,7 @@ use std::{
 };
 use tokio::{process::Command, sync::watch, time::sleep};
 
+use super::events::OptimizerEventDraft;
 use super::{
     ingest,
     models::{
@@ -481,38 +482,41 @@ async fn append_artifacts(service: &OptimizerService, run_id: &str, dir: &Path) 
             artifacts.push(json!({"kind":kind,"id":path,"path":path,"title":title}));
         }
     }
-    let run = service.get(run_id.to_string()).await?;
-    let mut events = vec![OptimizerEventEnvelope {
-        schema_version: OPTIMIZER_EVENT_SCHEMA_VERSION.into(),
-        event_id: Some(format!("{run_id}:artifacts")),
-        event_type: "optimizer.recipe.artifacts".into(),
-        sequence_number: run.cursor_seq + 1,
-        occurred_at: chrono::Utc::now().to_rfc3339(),
-        optimizer_run_id: run_id.into(),
-        algorithm_id: "sft".into(),
-        level: Some("info".into()),
-        item: None,
-        delta: map_of(
+    let mut events = vec![OptimizerEventDraft::new("optimizer.recipe.artifacts", "sft")
+        .idempotency_key("artifacts")
+        .level("info")
+        .delta(map_of(
             "message",
             json!(format!("Persisted {} SFT artifacts", artifacts.len())),
-        ),
-        snapshot: None,
-        usage_delta: None,
-        artifact_refs: artifacts,
-        error: None,
-        raw: json!({"source":"craftax_sft_recipe"}),
-    }];
+        ))
+        .artifact_refs(artifacts)
+        .raw(json!({"source":"craftax_sft_recipe"}))];
     let receipt = dir.join("train_result.json");
     if let Ok(value) = fs::read_to_string(&receipt)
         .and_then(|s| serde_json::from_str::<Value>(&s).map_err(std::io::Error::other))
     {
-        let seq = run.cursor_seq + 2;
-        events.push(OptimizerEventEnvelope { schema_version:OPTIMIZER_EVENT_SCHEMA_VERSION.into(), event_id:Some(format!("{run_id}:checkpoint")),
-            event_type:"sft.checkpoint.created".into(), sequence_number:seq, occurred_at:chrono::Utc::now().to_rfc3339(), optimizer_run_id:run_id.into(), algorithm_id:"sft".into(), level:Some("info".into()),
-            item:Some(json!({"kind":"checkpoint","id":value.get("sampler_path").cloned().unwrap_or(json!("adapter")),"step":TRAIN_STEPS,"status":"selected","raw":value})),
-            delta:Map::new(), snapshot:None, usage_delta:None, artifact_refs:vec![json!({"kind":"checkpoint","id":receipt,"path":receipt,"title":"Tinker training receipt"})], error:None, raw:json!({}) });
+        events.push(
+            OptimizerEventDraft::new("sft.checkpoint.created", "sft")
+                .idempotency_key("checkpoint")
+                .level("info")
+                .item(json!({
+                    "kind": "checkpoint",
+                    "id": value.get("sampler_path").cloned().unwrap_or(json!("adapter")),
+                    "step": TRAIN_STEPS,
+                    "status": "selected",
+                    "raw": value
+                }))
+                .artifact_refs(vec![json!({
+                    "kind": "checkpoint",
+                    "id": receipt,
+                    "path": receipt,
+                    "title": "Tinker training receipt"
+                })]),
+        );
     }
-    service.append_events(run_id.to_string(), events).await?;
+    service
+        .append_event_payloads(run_id.to_string(), events)
+        .await?;
     Ok(())
 }
 
@@ -526,27 +530,13 @@ async fn append_status(
     event_type: &str,
     status: &str,
 ) -> Result<()> {
-    let run = service.get(run_id.to_string()).await?;
     service
-        .append_events(
+        .append_event_payloads(
             run_id.to_string(),
-            vec![OptimizerEventEnvelope {
-                schema_version: OPTIMIZER_EVENT_SCHEMA_VERSION.into(),
-                event_id: Some(format!("{run_id}:host:{}", run.cursor_seq + 1)),
-                event_type: event_type.into(),
-                sequence_number: run.cursor_seq + 1,
-                occurred_at: chrono::Utc::now().to_rfc3339(),
-                optimizer_run_id: run_id.into(),
-                algorithm_id: "sft".into(),
-                level: None,
-                item: None,
-                delta: map_of("status", json!(status)),
-                snapshot: None,
-                usage_delta: None,
-                artifact_refs: vec![],
-                error: None,
-                raw: json!({"source":"craftax_sft_recipe"}),
-            }],
+            vec![OptimizerEventDraft::new(event_type, "sft")
+                .idempotency_key(format!("host:lifecycle:{event_type}"))
+                .delta(map_of("status", json!(status)))
+                .raw(json!({"source":"craftax_sft_recipe"}))],
         )
         .await?;
     Ok(())
@@ -594,27 +584,16 @@ async fn append_terminal(
                     .collect::<String>()
             });
         let error = json!({"message":tail.as_deref().unwrap_or(&detail),"stderrTail":tail,"logPath":stderr});
-        let run = service.get(run_id.to_string()).await?;
         service
-            .append_events(
+            .append_event_payloads(
                 run_id.to_string(),
-                vec![OptimizerEventEnvelope {
-                    schema_version: OPTIMIZER_EVENT_SCHEMA_VERSION.into(),
-                    event_id: Some(format!("{run_id}:diagnostic")),
-                    event_type: "optimizer.recipe.diagnostic".into(),
-                    sequence_number: run.cursor_seq + 1,
-                    occurred_at: chrono::Utc::now().to_rfc3339(),
-                    optimizer_run_id: run_id.into(),
-                    algorithm_id: "sft".into(),
-                    level: Some("error".into()),
-                    item: None,
-                    delta: map_of("status", json!("failed")),
-                    snapshot: None,
-                    usage_delta: None,
-                    artifact_refs: vec![],
-                    error: Some(error),
-                    raw: json!({}),
-                }],
+                vec![
+                    OptimizerEventDraft::new("optimizer.recipe.diagnostic", "sft")
+                        .idempotency_key("diagnostic")
+                        .level("error")
+                        .delta(map_of("status", json!("failed")))
+                        .error(error),
+                ],
             )
             .await?;
     }

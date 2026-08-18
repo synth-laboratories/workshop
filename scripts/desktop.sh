@@ -6,6 +6,8 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+# shellcheck source=scripts/mcp-adapters.sh
+source "$ROOT/scripts/mcp-adapters.sh"
 APP_NAME="Synth Desktop.app"
 INSTALLED_APP="${SYNTH_DESKTOP_APP_PATH:-/Applications/$APP_NAME}"
 BUNDLE_APP="$ROOT/apps/synth_desktop/src-tauri/target/release/bundle/macos/$APP_NAME"
@@ -226,12 +228,10 @@ install_desktop() {
 	if [[ "$verification" == "release" ]]; then
 		verify_desktop
 	fi
-	# The synth_* MCP noun adapters are NOT bundled into the .app; the installed
-	# app resolves them beside its executable and then falls back to the build
-	# tree's target/debug copies (see codex.rs). Building release copies here
-	# added ~20s of link time per install without changing what the installed
-	# app loads, so it was removed; bundling them as Tauri sidecars is the real
-	# fix and is tracked in the launch program.
+	# The synth_* MCP noun adapters ship beside the installed executable from
+	# the same release build; scripts/mcp-adapters.sh is the single list. The
+	# app resolves them beside its executable first and falls back to the build
+	# tree's target/debug copies only for unbundled dev runs (see codex.rs).
 	build_desktop
   [[ -d "$BUNDLE_APP" && -x "$BUNDLE_EXE" ]] || {
     echo "[desktop] build did not produce $BUNDLE_APP" >&2
@@ -249,7 +249,7 @@ install_desktop() {
     return 1
   fi
   /usr/bin/ditto "$BUNDLE_APP" "$stage"
-  for adapter in synth-containers-mcp synth-visuals-mcp synth-optimizers-mcp; do
+  for adapter in "${SYNTH_MCP_ADAPTERS[@]}"; do
     /usr/bin/ditto \
       "$ROOT/apps/synth_desktop/src-tauri/target/release/$adapter" \
       "$stage/Contents/MacOS/$adapter"

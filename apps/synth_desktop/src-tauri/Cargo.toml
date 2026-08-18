@@ -1,7 +1,7 @@
 [package]
 name = "synth-desktop"
-version = "0.4.0"
-description = "Synth Desktop Tauri host"
+version = "0.5.0"
+description = "Synth Workshop Tauri host"
 edition = "2021"
 default-run = "synth-desktop"
 
@@ -52,6 +52,48 @@ tauri-specta = { version = "=2.0.0-rc.25", features = ["derive", "typescript"] }
 tokio = { version = "1", features = ["fs", "io-util", "macros", "net", "process", "rt-multi-thread", "sync", "time"] }
 uuid = { version = "1", features = ["v4"] }
 zip = { version = "2", default-features = false, features = ["deflate"] }
+
+# Host-owned review capture: the WKWebView snapshot runs inside the signed app
+# process, so visual review needs no Screen Recording TCC grant and no
+# `screencapture` shell-out. Feature lists mirror wry's (plus the snapshot and
+# bitmap classes) so cargo's feature union stays one rebuild, not a cascade.
+[target.'cfg(target_os = "macos")'.dependencies]
+block2 = "0.6"
+objc2 = "0.6"
+objc2-foundation = { version = "0.3", default-features = false, features = [
+    "std",
+    "NSArray",
+    "NSData",
+    "NSDictionary",
+    "NSEnumerator",
+    "NSError",
+    "NSString",
+    "NSValue",
+] }
+objc2-app-kit = { version = "0.3", default-features = false, features = [
+    "std",
+    "objc2-core-foundation",
+    "NSBitmapImageRep",
+    "NSGraphics",
+    "NSImage",
+    "NSImageRep",
+    "NSResponder",
+    "NSView",
+] }
+objc2-web-kit = { version = "0.3", default-features = false, features = [
+    "std",
+    "objc2-core-foundation",
+    "objc2-app-kit",
+    "block2",
+    "WKWebView",
+    "WKWebViewConfiguration",
+    "WKSnapshotConfiguration",
+] }
+
+[features]
+# QA control plane. Never a default: release artifacts must not contain the
+# eval-driver route table at all. Instance builds opt in (desktop-instance.sh).
+eval-driver = []
 
 [[bin]]
 name = "synth-visuals-mcp"

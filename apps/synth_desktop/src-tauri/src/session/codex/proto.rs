@@ -137,6 +137,9 @@ pub struct CodexTurnFailure {
 pub const CODEX_SESSION_DETACHED: &str = "codex_session_detached";
 pub const CODEX_SESSION_UNHEALTHY: &str = "codex_session_unhealthy";
 pub const CODEX_TURN_START_FAILED: &str = "codex_turn_start_failed";
+pub const CODEX_TURN_NOT_RECORDED: &str = "codex_turn_not_recorded";
+pub(crate) const NOT_RECORDED_MESSAGE: &str =
+    "The turn started, but Workshop could not record it locally. Workshop asked the provider to stop; check the conversation before retrying.";
 pub(crate) const DETACHED_MESSAGE: &str =
     "The local agent process disconnected before the turn started. Retry to reconnect.";
 pub(crate) const STDOUT_CLOSED: &str = "codex app-server stdout closed";
@@ -148,6 +151,18 @@ impl CodexTurnFailure {
             message: DETACHED_MESSAGE.into(),
             session_id: session_id.to_owned(),
             detail,
+        }
+    }
+
+    /// Local persistence refused the turn. The provider is healthy, so this must
+    /// not be reported as a disconnect, and the internal storage text stays in
+    /// `detail` rather than reaching the composer.
+    pub(crate) fn not_recorded(session_id: &str, error: &anyhow::Error) -> Self {
+        Self {
+            code: CODEX_TURN_NOT_RECORDED.into(),
+            message: NOT_RECORDED_MESSAGE.into(),
+            session_id: session_id.to_owned(),
+            detail: format!("{error:?}"),
         }
     }
 
@@ -176,6 +191,25 @@ impl std::error::Error for SessionDetached {}
 
 pub(crate) fn is_detached_failure(error: &anyhow::Error) -> bool {
     error.chain().any(|cause| cause.is::<SessionDetached>())
+}
+
+/// Marker cause for "the turn could not be given a durable run anchor". Like
+/// `SessionDetached` it travels inside the anyhow chain so the send path never
+/// string-matches storage text, and never mistakes a storage failure for a
+/// provider disconnect.
+#[derive(Debug)]
+pub(crate) struct RunNotPersisted;
+
+impl std::fmt::Display for RunNotPersisted {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("the turn has no durable run anchor")
+    }
+}
+
+impl std::error::Error for RunNotPersisted {}
+
+pub(crate) fn is_not_recorded_failure(error: &anyhow::Error) -> bool {
+    error.chain().any(|cause| cause.is::<RunNotPersisted>())
 }
 
 #[derive(Clone, Debug, Deserialize, specta::Type)]
@@ -254,6 +288,11 @@ pub struct CodexSessionRecord {
     pub approval_policy: String,
     #[serde(default = "default_sandbox")]
     pub sandbox: String,
+    /// Set when the previous process died holding this chat's turn. It is what
+    /// lets the sidebar say "Workshop exited while this task was running"
+    /// instead of silently showing an idle chat — or, worse, a live one.
+    #[serde(default)]
+    pub recovery: Option<crate::recovery::RecoveryNotice>,
 }
 
 pub(crate) type Pending = Arc<Mutex<HashMap<u64, oneshot::Sender<Result<Value, String>>>>>;

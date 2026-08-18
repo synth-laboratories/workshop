@@ -201,6 +201,73 @@ impl fmt::Display for DatabaseLocked {
 
 impl std::error::Error for DatabaseLocked {}
 
+/// A failure that carries a stable machine code and a remediation across a
+/// loopback IPC boundary.
+///
+/// Prose that crosses a process boundary arrives as prose: the agent on the
+/// other side can only string-match it, the tool-loop breaker cannot tell one
+/// root cause from another, and the renderer has nothing to show but the
+/// sentence. Bail with one of these wherever the caller has a decision to make.
+#[derive(Debug, Clone)]
+pub struct StructuredFailure {
+    pub code: &'static str,
+    pub message: String,
+    pub remediation: String,
+    pub retryable: bool,
+    pub details: serde_json::Value,
+}
+
+impl StructuredFailure {
+    pub fn new(
+        code: &'static str,
+        message: impl Into<String>,
+        remediation: impl Into<String>,
+    ) -> Self {
+        Self {
+            code,
+            message: message.into(),
+            remediation: remediation.into(),
+            retryable: false,
+            details: serde_json::Value::Null,
+        }
+    }
+
+    pub fn retryable(mut self, retryable: bool) -> Self {
+        self.retryable = retryable;
+        self
+    }
+
+    pub fn with_details(mut self, details: serde_json::Value) -> Self {
+        self.details = details;
+        self
+    }
+
+    pub fn to_json(&self) -> serde_json::Value {
+        let mut body = serde_json::json!({
+            "code": self.code,
+            "error": self.message,
+            "remediation": self.remediation,
+            "retryable": self.retryable,
+        });
+        if !self.details.is_null() {
+            body["details"] = self.details.clone();
+        }
+        body
+    }
+}
+
+impl fmt::Display for StructuredFailure {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            formatter,
+            "{}: {} — {}",
+            self.code, self.message, self.remediation
+        )
+    }
+}
+
+impl std::error::Error for StructuredFailure {}
+
 pub fn error_is<E: std::error::Error + 'static>(error: &anyhow::Error) -> bool {
     error.chain().any(|cause| cause.is::<E>())
 }

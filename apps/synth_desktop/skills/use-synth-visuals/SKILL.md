@@ -7,7 +7,7 @@ description: Use when creating, updating, inspecting, or opening a Synth Desktop
 
 Choose the visual grammar from the evidence. Treat registered templates as optional shortcuts, not mandates. For ad-hoc analysis, prefer `analysis.visual.v1` and author its ordered `spec.blocks` at creation time. Use `blank.canvas.v1` when the composition cannot be expressed cleanly with those blocks. If the artifact is a system, UML, flow picture, or time-aware technical explainer, load `author-synth-diagrams`. It chooses among `diagram.mermaid.v1`, `diagram.systems.v1`, `diagram.systems.dynamic.v1`, or a focused combination; do not dump SVG/HTML/JavaScript into a canvas.
 
-Optimizer visuals are a strict exception to the authoring workflow below. They are product-owned and already configured by `use-synth-optimizers`: only call `show` when that workflow asks you to recover a missing subscription receipt. Never call `authoring_context`, `capture_review`, `review`, `update`, or `mark_ready` for an optimizer-owned visual.
+Optimizer visuals are a strict exception to the authoring workflow below. The `optimizer.*` family is product-owned and already configured by `use-synth-optimizers`. Report `visualEvidence.state` (`ready` | `reviewed` | `partial` | `failed`); never loop capture/repair. `partial` and `failed` never block task completion. Only call `show` when that workflow asks you to recover a missing subscription receipt. Never call `authoring_context`, `capture_review`, `review`, `update`, or `mark_ready` for an optimizer-owned visual.
 
 ## Intended approach
 
@@ -33,11 +33,12 @@ or filesystem search to discover this tool.
 | Operation | Arguments |
 | --- | --- |
 | `list_templates` | `{ "genre"?: string }` |
-| `list` | `{ "search"?: string, "status"?: string, "session_id"?: string }` |
+| `list` | `{ "search"?: string, "status"?: string, "session_id"?: string, "scope"?: "session" \| "instance" }` — defaults to this task; `scope: "instance"` is labeled cross-task discovery |
 | `get` | `{ "visual_id": string }` |
 | `create` | `{ "template_id": string, "title"?: string, "content"?: string, "props"?: object, "session_id"?: string, "instance_id"?: string }` |
+| `create_with_bind` | `{ "template_id": string, "title"?: string, "slot": string, "kind": string, "data"?: object, "source"?: string, "schema"?: string }` — atomic create plus the first required slot. Prefer this for `experiment.overview.v1` and `analysis.visual.v1`. |
 | `update` | `{ "visual_id": string, "title"?: string, "content"?: string, "bindings"?: object, "status"?: string }` — `bindings` must be the canonical envelope; prefer `bind` |
-| `bind` | `{ "instance_id": string, "slot": string, "kind": string, "source": string, "poll_url"?: string, "path"?: string, "schema"?: string, "mode"?: "replace" \| "append", "bindings"?: [{ "kind": string, "source": string, "poll_url"?: string }] }` — the only supported way to write bindings |
+| `bind` | `{ "instance_id": string, "slot": string, "kind": string, "source"?: string, "data"?: object, "poll_url"?: string, "path"?: string, "schema"?: string, "mode"?: "replace" \| "append", "bindings"?: [{ "kind": string, "source"?: string, "data"?: object, "poll_url"?: string }] }` — inline slots require `data`; other kinds require `source`. Two malformed binds must not block a corrected bind. |
 | `show` | `{ "visual_id": string, "session_id"?: string }` |
 | `fork` | `{ "visual_id": string, "title"?: string }` |
 | `archive` | `{ "visual_id": string }` |
@@ -61,7 +62,7 @@ other clients but are intentionally not advertised to Codex.
 5. Show exact units and provenance. Preserve small costs rather than rounding them to `$0.00`.
 6. Call the `show` operation after creation or update so the result opens in the Desktop pane.
 7. Inspect the rendered visual in Desktop canvas mode. Fix clipped labels, empty sections, misleading encodings, weak hierarchy, and excessive whitespace.
-8. Perform at least two explicit render-and-critique iterations at distinct viewport widths. Call `capture_review` for every visual family—evals (`analysis.*`, `live.*`, `craftax.*`), optimizers (`optimizer.*`), UML/Mermaid, static 2D systems maps, and Benjamin Dicken Style dynamic systems visuals. For each viewport inspect the PNG attached to the tool result. Pass its returned `screenshot_path` to `review`; never shell-search for captures, invent a path, or submit checks without looking at the image. Do not reuse a review after the visual revision changes. For systems visuals, resolve every deterministic finding returned by `authoring_context` before readiness.
+8. Perform at least two explicit render-and-critique iterations at distinct viewport widths. Call `capture_review` for authored visual families—evals (`analysis.*`, `live.*`, `craftax.*`), UML/Mermaid, static 2D systems maps, and Benjamin Dicken Style dynamic systems visuals. Do **not** capture, review, or `mark_ready` `optimizer.*` product visuals; report `visualEvidence.state` instead and never loop capture/repair. For each viewport inspect the PNG attached to the tool result. Pass its returned `screenshot_path` to `review`; never shell-search for captures, invent a path, or submit checks without looking at the image. Do not reuse a review after the visual revision changes. For systems visuals, resolve every deterministic finding returned by `authoring_context` before readiness.
 9. Call `mark_ready` only when all required landmarks pass. A trusted live template is configured through `visual_config`; saved arbitrary TSX is retained as source evidence but is never executed by Desktop.
 
 ## Composition rules
@@ -88,7 +89,9 @@ other clients but are intentionally not advertised to Codex.
 
 ## `analysis.visual.v1`
 
-Author a `spec` with a short narrative and ordered blocks. Available blocks:
+Required slot: **`spec`**. Author it as `kind: "inline"` with `data` containing a short narrative and ordered `blocks`. Do not bind this template on slot `experiment`. `list_templates` returns `slots` and `bindingSchema`; `example_binding` is the canonical create+bind payload.
+
+Available blocks:
 
 - `note`: context, caveat, or conclusion.
 - `metrics`: exact headline values with optional details.
@@ -96,6 +99,73 @@ Author a `spec` with a short narrative and ordered blocks. Available blocks:
 - `frequency-diff`: two-arm per-achievement frequencies and percentage-point deltas.
 - `table`: exact multi-field comparison or provenance.
 - `scatter`: independent observations on two quantitative axes. Never add connecting lines.
+
+Create with bind:
+
+```js
+await tools.mcp__synth_visuals__visual_manage({
+  operation: "create_with_bind",
+  arguments: {
+    template_id: "analysis.visual.v1",
+    title: "HealthBench smoke · policy vs scorer",
+    slot: "spec",
+    kind: "inline",
+    data: {
+      schemaVersion: "synth.visual.analysis_spec.v1",
+      title: "HealthBench smoke · policy vs scorer",
+      blocks: [{ type: "metrics", items: [{ label: "Train mean", value: null }] }]
+    }
+  }
+});
+```
+
+## `experiment.overview.v1`
+
+Required slot: **`experiment`**, not `spec`. Accepts `inline`, `fixture`, or `local_cas`. Inline binds **must include `data`**. A bind without `data` returns `visual_binding_invalid` / `inline visual binding requires data`; correct the same visual — do not abandon it after two malformed binds.
+
+Use the experiment overview when several runs or optimizer candidates answer one
+research question. It is the canonical right-pane summary for the experiment;
+do not create one overview per seed or per candidate.
+
+Create the visual when the experiment identity and question are known, then
+update the **same visual id** as progress and evidence arrive. Mint a new visual
+only for a distinct experiment identity or research question. The inline
+`experiment` projection uses schema `synth.experiment.overview.v1`:
+
+- `experimentId`, `title`, `question`, `hypothesis`, and `status` establish identity.
+- `progress` may include `phase`, `completed`, `total`, `elapsed`, `eta`, `usage`, and `cost`.
+- `metrics` contains exact decision values such as baseline, selected result, heldout, and lift.
+- `arms` contains all compared variants; mark the baseline and selected candidate explicitly.
+- `evidence` links the distributions, failures, traces, replays, curves, or other visuals that support the result.
+- `lineage` is an ordered compact projection, not a substitute for a full trace or DAG.
+- `limitations` records missing baselines, incomplete heldout evidence, failed runs, and other caveats.
+
+Missing measurements must be omitted or `null`, never written as zero. Do not
+mark an arm selected merely because it is latest, and do not describe an
+experiment as improved without baseline and comparison evidence. Keep every
+seed/rollout in the underlying eval visual; the experiment overview summarizes
+the distribution and links to that evidence rather than flattening it.
+
+```js
+await tools.mcp__synth_visuals__visual_manage({
+  operation: "create_with_bind",
+  arguments: {
+    template_id: "experiment.overview.v1",
+    title: "Banking77 baseline eval",
+    slot: "experiment",
+    kind: "inline",
+    data: {
+      schemaVersion: "synth.experiment.overview.v1",
+      experimentId: "exp.banking77.baseline.v1",
+      title: "Banking77 baseline eval",
+      question: "What is scored accuracy on 10 labeled examples?",
+      status: "running",
+      progress: { phase: "scoring", completed: 0, total: 10 },
+      limitations: ["Baseline-only. No candidate generation and no uplift claim."]
+    }
+  }
+});
+```
 
 Use specialized rollout or trace templates only when their interaction is genuinely useful. Use `craftax.rollout_scrub.v1` for step-by-step environment inspection and `trace.rollout_inspector.v1` for event/tool/message filtering.
 
