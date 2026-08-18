@@ -1,0 +1,186 @@
+#!/usr/bin/env bash
+# Zero-interaction QA entry point: one explicit prepare, a strict read-only
+# preflight, an unattended run over the first-party eval driver, and an
+# incident collector for any unexpected system dialog.
+#
+# CUA is not part of this control plane. Anything that would become
+# interactive must fail preflight before a chat exists or compute is spent.
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+COMMAND="${1:-help}"
+NAME="${2:-qa}"
+INSTANCE_ROOT="${SYNTH_DESKTOP_INSTANCES_ROOT:-$HOME/.synth-desktop/instances}/v04/$NAME"
+DATA_ROOT="$INSTANCE_ROOT/data"
+RECEIPT_ROOT="$INSTANCE_ROOT/qa-receipts"
+DRIVER_DESCRIPTOR="$DATA_ROOT/eval-driver.json"
+
+usage() {
+  cat <<'EOF'
+Usage: ./scripts/workshop-qa <command> [name]
+
+  prepare [name]    One explicit setup: signing identity, packaged build with
+                    the eval driver, staged runtime inputs, readiness receipt.
+  preflight [name]  Read-only strict contract. Exit 0 only when an unattended
+                    run cannot become interactive. Prints one JSON report.
+  run [name] [--workflow <w>|--prompt <text>]
+                    Launch the packaged instance and drive the workflow over
+                    the eval driver. No CUA, no OS automation.
+  incident [name]   Collect attribution evidence for a system prompt that
+                    just appeared: tccd/replayd log, frontmost app, listeners.
+  stop [name]       Stop the named instance.
+
+The default instance name is "qa".
+EOF
+}
+
+say() { echo "[workshop-qa:$NAME] $*"; }
+fail() { echo "[workshop-qa:$NAME] FAIL: $*" >&2; exit 1; }
+
+driver_field() {
+  python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))[sys.argv[2]])' "$DRIVER_DESCRIPTOR" "$1"
+}
+
+driver_get() {
+  local path="$1"
+  curl -sf --max-time 15 \
+    -H "Authorization: Bearer $(driver_field token)" \
+    "$(driver_field url)$path"
+}
+
+case "$COMMAND" in
+  prepare)
+    say "signing identity"
+    "$ROOT/scripts/setup-desktop-dev-signing.sh" >/dev/null
+    say "packaged build (eval driver compiled in, stable signature)"
+    "$ROOT/scripts/desktop-instance.sh" cua-build "$NAME"
+    say "staging runtime inputs"
+    "$ROOT/scripts/desktop-instance.sh" stage "$NAME"
+    mkdir -p "$RECEIPT_ROOT"
+    "$ROOT/scripts/desktop-instance.sh" assert-identity "$NAME" \
+      > "$RECEIPT_ROOT/identity.txt"
+    python3 - "$RECEIPT_ROOT/readiness.json" <<EOF
+import json, pathlib, shutil, subprocess, sys
+receipt = {
+    "instance": "$NAME",
+    "preparedAt": subprocess.run(["date", "-u", "+%Y-%m-%dT%H:%M:%SZ"], capture_output=True, text=True).stdout.strip(),
+    "bundle": "$INSTANCE_ROOT/build/bundle",
+    "identityReceipt": "$RECEIPT_ROOT/identity.txt",
+    # Presence only. Secret values never enter a receipt.
+    "credentials": {
+        "codexAuth": pathlib.Path("$HOME/.codex/auth.json").is_file(),
+        "synthEnv": pathlib.Path("$HOME/.synth-desktop/.env").is_file(),
+    },
+    "runtimes": {
+        "docker": shutil.which("docker") is not None,
+    },
+}
+pathlib.Path(sys.argv[1]).write_text(json.dumps(receipt, indent=2) + "\n")
+print(json.dumps(receipt, indent=2))
+EOF
+    say "prepared; receipt at $RECEIPT_ROOT/readiness.json"
+    ;;
+
+  preflight)
+    status=0
+    checks=()
+    check() { # name ok detail
+      checks+=("{\"name\":\"$1\",\"ok\":$2,\"detail\":\"$3\"}")
+      [[ "$2" == "true" ]] || status=1
+    }
+
+    if security find-identity -v -p codesigning 2>/dev/null | grep -q "Synth Workshop Development"; then
+      check signingIdentity true "Synth Workshop Development present"
+    else
+      check signingIdentity false "stable signing identity missing; run prepare"
+    fi
+
+    if "$ROOT/scripts/desktop-instance.sh" assert-identity "$NAME" >/dev/null 2>&1; then
+      check bundleIdentity true "designated requirement stable, helpers match host"
+    else
+      check bundleIdentity false "assert-identity failed; rebuild via prepare"
+    fi
+
+    if [[ -f "$HOME/.codex/auth.json" ]]; then
+      check codexCredential true "~/.codex/auth.json present"
+    else
+      check codexCredential false "no Codex credential; a run would open OAuth in a browser"
+    fi
+
+    if docker info >/dev/null 2>&1; then
+      check containerRuntime true "docker responds"
+    else
+      check containerRuntime false "container runtime absent; a run could trigger an installer or error mid-spend"
+    fi
+
+    if [[ -f "$DRIVER_DESCRIPTOR" ]]; then
+      if report="$(driver_get /v1/preflight)"; then
+        echo "$report" > "$RECEIPT_ROOT/driver-preflight.json" 2>/dev/null || true
+        would_start="$(echo "$report" | python3 -c 'import json,sys; print(str(json.load(sys.stdin)["qaUnattended"]["wouldStart"]).lower())')"
+        if [[ "$would_start" == "true" ]]; then
+          check effectivePolicy true "qa-unattended session start would succeed"
+        else
+          reason="$(echo "$report" | python3 -c 'import json,sys; print(json.load(sys.stdin)["qaUnattended"].get("reason",""))')"
+          check effectivePolicy false "driver refuses unattended start: $reason"
+        fi
+      else
+        check driverReachable false "descriptor exists but driver did not answer; stale instance?"
+      fi
+    else
+      check driverReachable true "instance not running; policy check deferred to launch (descriptor absent)"
+    fi
+
+    printf '{"instance":"%s","ok":%s,"checks":[%s]}\n' \
+      "$NAME" "$([[ $status -eq 0 ]] && echo true || echo false)" \
+      "$(IFS=,; echo "${checks[*]}")" | python3 -m json.tool
+    exit $status
+    ;;
+
+  run)
+    shift 2 || shift $#
+    "$0" preflight "$NAME" >/dev/null || fail "preflight refused; fix the report before spending"
+    say "launching packaged instance"
+    "$ROOT/scripts/desktop-instance.sh" cua-run "$NAME" &
+    launcher=$!
+    for _ in $(seq 1 60); do
+      [[ -f "$DRIVER_DESCRIPTOR" ]] && driver_get /health >/dev/null 2>&1 && break
+      sleep 2
+    done
+    driver_get /health >/dev/null 2>&1 || { kill "$launcher" 2>/dev/null || true; fail "eval driver never came up"; }
+    say "driver live; policy preflight against the running app"
+    driver_get /v1/preflight | python3 -c 'import json,sys
+r = json.load(sys.stdin)
+ok = r["qaUnattended"]["wouldStart"]
+print(json.dumps(r["qaUnattended"], indent=2))
+sys.exit(0 if ok else 1)' || fail "running app refuses unattended start"
+    mkdir -p "$RECEIPT_ROOT"
+    SYNTH_DESKTOP_DATA_ROOT="$DATA_ROOT" node "$ROOT/scripts/workshop-qa-driver.mjs" "$@" \
+      | tee "$RECEIPT_ROOT/last-run.json"
+    say "run receipt at $RECEIPT_ROOT/last-run.json"
+    ;;
+
+  incident)
+    out="${SYNTH_QA_INCIDENT_ROOT:-$RECEIPT_ROOT}/incident-$(date -u +%Y%m%dT%H%M%SZ)"
+    mkdir -p "$out"
+    say "collecting into $out"
+    # lsappinfo needs no TCC grant; osascript/screencapture would.
+    lsappinfo front > "$out/frontmost.txt" 2>&1 || true
+    lsappinfo info "$(lsappinfo front 2>/dev/null)" >> "$out/frontmost.txt" 2>&1 || true
+    ps -axo pid,ppid,user,comm > "$out/process-tree.txt"
+    lsof -nP -iTCP -sTCP:LISTEN > "$out/listeners.txt" 2>&1 || true
+    log show --last 10m \
+      --predicate 'process == "tccd" OR process == "replayd" OR subsystem CONTAINS "TCC"' \
+      > "$out/tcc-log.txt" 2>&1 || true
+    say "attribution rule: no causality without this receipt. Attach the dialog"
+    say "screenshot manually; automated capture is itself a TCC surface."
+    ls -la "$out"
+    ;;
+
+  stop)
+    "$ROOT/scripts/desktop-instance.sh" stop "$NAME"
+    ;;
+
+  help|*)
+    usage
+    ;;
+esac
