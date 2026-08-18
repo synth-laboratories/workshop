@@ -79,6 +79,19 @@ function validateWorkflow(workflow, terminal) {
     }
   }
   if (workflow === "healthbench-smoke") {
+    // Missing credentials are an expected *admission* outcome in the
+    // credential-readiness lane. Treat it as green only when the response is
+    // structured and identifies the owning HealthBench lane; generic prose or
+    // a partially-created run remains red.
+    if (/credential_missing/i.test(text)) {
+      if (!/healthbench\.(?:policy|grader)/i.test(text)) {
+        throw new Error("healthbench credential blocker is missing its lane owner");
+      }
+      if (/run id\s*[:=]\s*[`\w-]+/i.test(text)) {
+        throw new Error("healthbench created a run despite credential preflight failure");
+      }
+      return;
+    }
     if (/could not run|blocked before|unhealthy|failed(?: to start| during)|status:\s*`?failed/i.test(text)) {
       throw new Error(`healthbench-smoke failed: ${text.replace(/\s+/g, " ").trim()}`);
     }
