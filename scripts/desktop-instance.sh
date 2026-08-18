@@ -302,7 +302,7 @@ executable_digest() {
 }
 
 bundle_cdhash() {
-  /usr/bin/codesign -dvvv "$1" 2>&1 | awk -F= '/^CDHash=/{print $2; exit}'
+  /usr/bin/codesign -dvvv "$1" 2>&1 | awk -F= '/^CDHash=/ && !found {print $2; found=1}'
 }
 
 # Capture rev+dirty before a build, revalidate after, and record the executable
