@@ -351,6 +351,7 @@ stop_instance() {
   local rows pids
   rows="$(instance_processes)"
   if [[ -z "$rows" ]]; then
+    rm -f "$DATA_ROOT/eval-driver.json"
     mark_runtime "stopped"
     echo "[desktop:$NAME] stopped"
     return
@@ -361,6 +362,7 @@ stop_instance() {
   kill $pids 2>/dev/null || true
   for _ in 1 2 3 4 5 6 7 8 9 10; do
     if [[ -z "$(instance_processes)" ]]; then
+      rm -f "$DATA_ROOT/eval-driver.json"
       mark_runtime "stopped"
       return
     fi
@@ -533,11 +535,15 @@ sign_cua_bundle() {
 }
 
 signing_requirement() {
-  codesign -d -r- "$1" 2>/dev/null | sed -n 's/^# designated => //p'
+  # codesign output differs across macOS versions: some prefix this line with
+  # "# ", while current versions print it without the marker.
+  codesign -d -r- "$1" 2>/dev/null | sed -n 's/^#* *designated => //p'
 }
 
 signing_authority() {
-  codesign -dvv "$1" 2>&1 | awk -F= '/^Authority=/{print $2; exit}'
+  # Do not exit the consumer early: with pipefail, codesign observes SIGPIPE
+  # and turns a successful identity check into status 141.
+  codesign -dvv "$1" 2>&1 | awk -F= '/^Authority=/{if (!found) print $2; found=1}'
 }
 
 signing_identifier() {

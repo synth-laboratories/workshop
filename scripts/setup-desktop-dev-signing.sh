@@ -13,7 +13,7 @@ set -euo pipefail
 # stdout and the caller signs against the default search list.
 if [[ -n "${SYNTH_DESKTOP_SIGNING_IDENTITY:-}" ]]; then
   if security find-identity -v -p codesigning 2>/dev/null \
-    | grep -Fq "\"$SYNTH_DESKTOP_SIGNING_IDENTITY\""; then
+    | grep -F "\"$SYNTH_DESKTOP_SIGNING_IDENTITY\"" >/dev/null; then
     echo "[desktop-signing] using existing identity: $SYNTH_DESKTOP_SIGNING_IDENTITY" >&2
     exit 0
   fi
@@ -80,7 +80,7 @@ if [[ ! -f "$CERTIFICATE_FILE" ]]; then
   chmod 600 "$CERTIFICATE_FILE"
 fi
 
-if ! security find-identity -v -p codesigning "$KEYCHAIN" 2>/dev/null | grep -Fq "\"$IDENTITY\""; then
+if ! security find-identity -v -p codesigning "$KEYCHAIN" 2>/dev/null | grep -F "\"$IDENTITY\"" >/dev/null; then
   # This is the only one-time macOS authorization in the workflow. It trusts
   # one certificate whose private key remains in the dedicated keychain; it
   # does not grant Workshop access to unrelated login-keychain items.
@@ -103,7 +103,7 @@ fi
 # keychain part of trust evaluation on every macOS release. Add this one
 # dedicated keychain to the user search list while preserving every existing
 # entry and the existing default keychain.
-if ! security list-keychains -d user | grep -Fq "\"$KEYCHAIN\""; then
+if ! security list-keychains -d user | grep -F "\"$KEYCHAIN\"" >/dev/null; then
   EXISTING_KEYCHAINS=()
   while IFS= read -r line; do
     line="${line#*\"}"

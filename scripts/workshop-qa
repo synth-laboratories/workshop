@@ -138,7 +138,7 @@ EOF
       [[ "$2" == "true" ]] || status=1
     }
 
-    if security find-identity -v -p codesigning 2>/dev/null | grep -q "Synth Workshop Development"; then
+    if security find-identity -v -p codesigning 2>/dev/null | grep -F "Synth Workshop Development" >/dev/null; then
       check signingIdentity true "Synth Workshop Development present"
     else
       check signingIdentity false "stable signing identity missing; run prepare"
@@ -197,6 +197,11 @@ EOF
     say "launching packaged instance"
     "$ROOT/scripts/desktop-instance.sh" cua-run "$NAME" &
     launcher=$!
+    cleanup_run() {
+      "$ROOT/scripts/desktop-instance.sh" stop "$NAME" >/dev/null 2>&1 || true
+      wait "$launcher" 2>/dev/null || true
+    }
+    trap cleanup_run EXIT
     for _ in $(seq 1 60); do
       [[ -f "$DRIVER_DESCRIPTOR" ]] && driver_get /health >/dev/null 2>&1 && break
       sleep 2
@@ -212,6 +217,8 @@ sys.exit(0 if ok else 1)' || fail "running app refuses unattended start"
     SYNTH_DESKTOP_DATA_ROOT="$DATA_ROOT" node "$ROOT/scripts/workshop-qa-driver.mjs" "$@" \
       | tee "$RECEIPT_ROOT/last-run.json"
     say "run receipt at $RECEIPT_ROOT/last-run.json"
+    trap - EXIT
+    cleanup_run
     ;;
 
   incident)

@@ -25,6 +25,20 @@ const WORKFLOWS = {
   ].join(" "),
 };
 
+function validateWorkflow(workflow, terminal) {
+  if (!workflow) return;
+  const item = terminal?.event?.payload?.outcome?.item;
+  const text = typeof item?.text === "string" ? item.text : "";
+  if (workflow === "banking77-smoke") {
+    if (/could not run|blocked before|no (?:final )?score|unhealthy/i.test(text)) {
+      throw new Error(`banking77-smoke failed: ${text.replace(/\s+/g, " ").trim()}`);
+    }
+    if (!/(?:final\s+score|score\s*[:=])[^\n]*\d/i.test(text)) {
+      throw new Error("banking77-smoke reached terminal without a numeric final score");
+    }
+  }
+}
+
 function parseArgs(argv) {
   const args = { timeoutMs: 900_000 };
   for (let i = 0; i < argv.length; i += 1) {
@@ -117,6 +131,7 @@ async function main() {
     { timeoutMs: args.timeoutMs },
   );
   receipt.terminal = terminal;
+  validateWorkflow(args.workflow, terminal);
 
   const exported = await call(
     descriptor,
