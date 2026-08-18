@@ -138,10 +138,10 @@ impl EvalSpec {
     fn policy_config_body(self) -> Option<Value> {
         let config = if self.family == "banking77" {
             json!({
-                "provider": "openai",
-                "model": "gpt-4.1-nano",
-                "api_key_env": "OPENAI_API_KEY",
-                "base_url": "https://api.openai.com/v1",
+                "provider": "openrouter",
+                "model": "openai/gpt-4.1-nano",
+                "api_key_env": "OPENROUTER_API_KEY",
+                "base_url": "https://openrouter.ai/api/v1",
                 "temperature": 0,
                 "max_tokens": 32,
             })
