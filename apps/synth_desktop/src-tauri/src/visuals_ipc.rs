@@ -279,6 +279,10 @@ pub struct RenderedVisualObservation {
 static RENDERED_OBSERVATIONS: OnceLock<Mutex<BTreeMap<String, RenderedVisualObservation>>> =
     OnceLock::new();
 
+/// The data root this server was spawned with. Review capture writes PNGs to
+/// caller-named paths, and this is the boundary those paths must stay inside.
+static VISUALS_DATA_ROOT: OnceLock<PathBuf> = OnceLock::new();
+
 pub fn record_rendered_observation(observation: RenderedVisualObservation) -> Result<()> {
     if observation.schema_version != "synth.rendered-visual-observation.v1" {
         anyhow::bail!("unsupported rendered visual observation schema");
@@ -329,6 +333,7 @@ pub async fn spawn(
         path: connection_path(&root).display().to_string(),
     };
     fs::create_dir_all(&root)?;
+    let _ = VISUALS_DATA_ROOT.set(root.clone());
     let connection_file = connection_path(&root);
     fs::write(&connection_file, serde_json::to_string_pretty(&connection)?)?;
     #[cfg(unix)]
@@ -606,6 +611,9 @@ async fn dispatch_request(
     if method == "POST" && path == "/v1/review-window/resize" {
         return resize_review_window(app, &json_body);
     }
+    if method == "POST" && path == "/v1/review-window/capture" {
+        return capture_review_window(app, &json_body).await;
+    }
     if path.starts_with("/v1/plugins") {
         return dispatch_plugins(method, path, json_body, core, app).await;
     }
@@ -674,6 +682,116 @@ fn resize_review_window(app: &AppHandle, body: &Value) -> Result<Value> {
         "windowLabel": window.label(),
         "processId": std::process::id(),
     }))
+}
+
+/// How long the renderer gets to relayout at the review viewport before the
+/// snapshot. Carried over from the previous capture pipeline, where the helper
+/// slept between resize and `screencapture` for the same reason.
+const REVIEW_CAPTURE_SETTLE: std::time::Duration = std::time::Duration::from_millis(500);
+
+/// The whole snapshot round trip, resize excluded. Bounds the window a wedged
+/// WebKit could hold the resized viewport, and the IPC route with it.
+const REVIEW_CAPTURE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// Resize the main window, snapshot its own webview, restore — one call.
+///
+/// The snapshot is the app photographing its own WKWebView surface, so this
+/// needs no Screen Recording TCC grant, no window-identity resolution, and no
+/// visibility: it captures correctly while occluded or backgrounded. Holding
+/// resize and restore on this side also means a helper that dies mid-capture
+/// can no longer strand the user's window at the review size.
+#[cfg(target_os = "macos")]
+async fn capture_review_window(app: &AppHandle, body: &Value) -> Result<Value> {
+    let output = body
+        .get("outputPath")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .context("review capture requires outputPath")?;
+    let output = PathBuf::from(output);
+    if !output.is_absolute() {
+        anyhow::bail!("review capture outputPath must be absolute");
+    }
+    let root = VISUALS_DATA_ROOT
+        .get()
+        .context("visuals IPC data root is not initialized")?;
+    // The caller names the file; this side refuses to write outside its own
+    // data root. Canonicalize both ends so `..` segments cannot slip past a
+    // prefix check.
+    let parent = output
+        .parent()
+        .context("review capture outputPath requires a parent directory")?;
+    fs::create_dir_all(parent)?;
+    let canonical_root = fs::canonicalize(root).context("resolve visuals data root")?;
+    let canonical_parent =
+        fs::canonicalize(parent).context("resolve review capture output directory")?;
+    if !canonical_parent.starts_with(&canonical_root) {
+        anyhow::bail!(
+            "review capture outputPath must stay under the visuals data root {}",
+            canonical_root.display()
+        );
+    }
+    let resize = resize_review_window(app, body)?;
+    // Do not `?` between here and the restore: the window is resized, and any
+    // early return from this span leaves it that way.
+    tokio::time::sleep(REVIEW_CAPTURE_SETTLE).await;
+    let snapshot = match app.get_webview_window("main") {
+        Some(window) => {
+            crate::visuals::snapshot::capture_webview_png(&window, REVIEW_CAPTURE_TIMEOUT).await
+        }
+        None => Err(anyhow::anyhow!(
+            "review capture requires the main Desktop window"
+        )),
+    };
+    let restore = resize
+        .get("previous")
+        .cloned()
+        .context("review window resize omitted its previous size")
+        .and_then(|previous| resize_review_window(app, &previous));
+    let written = match &snapshot {
+        Ok(bytes) => fs::write(&output, bytes).context("write review capture PNG"),
+        Err(_) => Ok(()),
+    };
+    // A failed restore leaves the user's window at the review viewport; it has
+    // to reach the caller even when the capture itself failed.
+    match (snapshot, restore, written) {
+        (Err(capture), Err(restore), _) => Err(anyhow::anyhow!(
+            "{capture:#}; additionally the Desktop window was not restored: {restore:#}"
+        )),
+        (Err(capture), Ok(_), _) => Err(capture),
+        (Ok(_), Err(restore), _) => Err(anyhow::anyhow!(
+            "captured review but failed to restore Desktop window: {restore:#}"
+        )),
+        (Ok(_), Ok(_), Err(write)) => Err(write),
+        (Ok(bytes), Ok(_), Ok(())) => {
+            let (width, height) = png_dimensions(&bytes).unwrap_or((0, 0));
+            Ok(json!({
+                "path": output.to_string_lossy(),
+                "width": width,
+                "height": height,
+                "previous": resize.get("previous"),
+                "current": resize.get("current"),
+                "scaleFactor": resize.get("scaleFactor"),
+                "windowLabel": resize.get("windowLabel"),
+                "processId": resize.get("processId"),
+                "captureMode": "host-webview-snapshot",
+                "restored": true,
+            }))
+        }
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+async fn capture_review_window(_app: &AppHandle, _body: &Value) -> Result<Value> {
+    anyhow::bail!("UnsupportedCapturePlatform: host webview snapshot requires macOS")
+}
+
+#[cfg(target_os = "macos")]
+fn png_dimensions(bytes: &[u8]) -> Option<(u32, u32)> {
+    let decoder = png::Decoder::new(std::io::Cursor::new(bytes));
+    let reader = decoder.read_info().ok()?;
+    let info = reader.info();
+    Some((info.width, info.height))
 }
 
 fn json_field<'a>(body: &'a Value, camel: &str, snake: &str) -> Option<&'a Value> {

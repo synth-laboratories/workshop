@@ -1086,14 +1086,14 @@ fn capture_review(args: &Value) -> Result<Value, String> {
         "deterministic-svg"
     } else {
         window_receipt = capture_desktop_review(id, width, height, &png_path)?;
-        "desktop-window"
+        "host-webview-snapshot"
     };
     // A rendered observation is evidence about the pane, and only templates
     // that declare an observation contract are certified against it. Requiring
     // one from every Desktop-rendered visual made capture deterministically
     // impossible for contract-free templates such as the Trace inspector, with
     // no path that could ever succeed.
-    let observation = if capture_mode == "desktop-window" {
+    let observation = if capture_mode == "host-webview-snapshot" {
         let response = request("GET", &format!("/v1/review-observations/{id}"), None)?;
         let observed = response
             .get("observation")
@@ -1319,35 +1319,6 @@ fn capture_desktop_review(
     }
 }
 
-/// What the resize endpoint reported about the window it actually resized.
-///
-/// Carrying this into capture turns window discovery into verification: the
-/// capture no longer re-derives which window to photograph from a name and a
-/// size, so a viewport the public API permits cannot make the window
-/// unfindable. See: docs/contracts/desktop_review_capture.md.
-#[cfg(target_os = "macos")]
-#[derive(Clone, Debug, Default)]
-struct ReviewWindowReceipt {
-    previous: Option<Value>,
-    process_id: Option<i64>,
-    observed_width: Option<f64>,
-    observed_height: Option<f64>,
-    scale_factor: Option<f64>,
-}
-
-#[cfg(target_os = "macos")]
-impl ReviewWindowReceipt {
-    fn from_resize(resize: &Value) -> Self {
-        Self {
-            previous: resize.get("previous").cloned(),
-            process_id: resize.get("processId").and_then(Value::as_i64),
-            observed_width: resize.pointer("/current/width").and_then(Value::as_f64),
-            observed_height: resize.pointer("/current/height").and_then(Value::as_f64),
-            scale_factor: resize.get("scaleFactor").and_then(Value::as_f64),
-        }
-    }
-}
-
 #[cfg(target_os = "macos")]
 fn capture_macos_desktop_review(
     id: &str,
@@ -1356,62 +1327,44 @@ fn capture_macos_desktop_review(
     png_path: &std::path::Path,
 ) -> Result<Value, String> {
     // Template visuals are React surfaces, not SVG renditions. Show the exact
-    // visual, resize the actual Webview so responsive layout runs at the
-    // requested viewport, then capture that named instance's on-screen window.
-    // Resizing a bitmap after capture is not a responsive-layout review.
+    // visual, then ask the host to resize its own window, snapshot its own
+    // WKWebView, and restore — one call, one process. The host photographs its
+    // own surface, so the capture needs no Screen Recording TCC grant, no
+    // window-identity resolution, and works while the app is occluded. A
+    // helper that dies mid-capture can no longer strand the user's window at
+    // the review size, because resize and restore never leave the host.
     request(
         "POST",
         &format!("/v1/visuals/{id}/show"),
         Some(json!({"presentation":"pane"})),
     )?;
-    let resize = request(
+    let receipt = request(
         "POST",
-        "/v1/review-window/resize",
-        Some(json!({"width":width,"height":height})),
-    )?;
-    // Do not `?` between here and the restore. The window is already resized;
-    // any early return from this span leaves the user's Desktop at the review
-    // size with nothing left to put it back.
-    let receipt = ReviewWindowReceipt::from_resize(&resize);
-    std::thread::sleep(std::time::Duration::from_millis(500));
-    let result = capture_current_macos_window(width, height, png_path, &receipt);
-    let restore = match receipt.previous.clone() {
-        Some(previous) => request("POST", "/v1/review-window/resize", Some(previous)),
-        None => Err(
-            "review window resize omitted its previous size, so the Desktop window was left at the review size"
-                .to_string(),
-        ),
-    };
-    let restored = restore.is_ok();
-    let window = json!({
-        "schemaVersion": "synth.visual-capture-window.v1",
-        "requestedViewport": {"width": width, "height": height},
-        "resizedViewport": resize.get("current").cloned(),
-        "previousViewport": receipt.previous.clone(),
-        "scaleFactor": receipt.scale_factor,
-        "processId": receipt.process_id,
-        "bundleId": env::var("SYNTH_DESKTOP_BUNDLE_ID").ok(),
-        "windowNumber": result.as_ref().ok().map(|selected| selected.window_number),
-        "observedBounds": result.as_ref().ok().map(|selected| json!({
-            "width": selected.width,
-            "height": selected.height,
+        "/v1/review-window/capture",
+        Some(json!({
+            "width": width,
+            "height": height,
+            "outputPath": png_path.to_string_lossy(),
         })),
-        "restored": restored,
-        "restoreError": restore.as_ref().err().cloned(),
-    });
-    // A failed restore leaves the user's window at the review viewport. That
-    // has to reach the caller even when the capture itself failed, or the one
-    // side effect this operation cannot undo is also the one it never reports.
-    match (result, restore) {
-        (Err(capture), Err(restore)) => Err(format!(
-            "{capture}; additionally the Desktop window was left at {width}x{height}: {restore}"
-        )),
-        (Err(capture), Ok(_)) => Err(capture),
-        (Ok(_), Err(restore)) => Err(format!(
-            "captured review but failed to restore Desktop window: {restore}"
-        )),
-        (Ok(_), Ok(_)) => Ok(window),
+    )?;
+    if !png_path.is_file() {
+        return Err(
+            "WebViewSnapshotFailed: host capture reported success but wrote no image".into(),
+        );
     }
+    assert_non_blank_png(png_path)?;
+    Ok(json!({
+        "schemaVersion": "synth.visual-capture-window.v1",
+        "captureMode": "host-webview-snapshot",
+        "requestedViewport": {"width": width, "height": height},
+        "resizedViewport": receipt.get("current").cloned(),
+        "previousViewport": receipt.get("previous").cloned(),
+        "imageSize": {"width": receipt.get("width").cloned(), "height": receipt.get("height").cloned()},
+        "scaleFactor": receipt.get("scaleFactor").cloned(),
+        "processId": receipt.get("processId").cloned(),
+        "windowLabel": receipt.get("windowLabel").cloned(),
+        "restored": receipt.get("restored").cloned(),
+    }))
 }
 
 /// The smallest review viewport the public capture schema accepts.
@@ -1426,12 +1379,6 @@ const REVIEW_VIEWPORT_HEIGHT_MIN: u64 = 400;
 const REVIEW_VIEWPORT_WIDTH_MAX: u64 = 2400;
 const REVIEW_VIEWPORT_HEIGHT_MAX: u64 = 1800;
 
-/// How far the captured window may sit from the size the resize reported
-/// before the capture is treated as photographing the wrong surface. Window
-/// managers round and add chrome, so this is a tolerance, not an equality.
-#[cfg(target_os = "macos")]
-const REVIEW_BOUNDS_TOLERANCE_POINTS: f64 = 120.0;
-
 fn assert_review_viewport(width: u64, height: u64) -> Result<(), String> {
     if !(REVIEW_VIEWPORT_WIDTH_MIN..=REVIEW_VIEWPORT_WIDTH_MAX).contains(&width)
         || !(REVIEW_VIEWPORT_HEIGHT_MIN..=REVIEW_VIEWPORT_HEIGHT_MAX).contains(&height)
@@ -1443,222 +1390,6 @@ fn assert_review_viewport(width: u64, height: u64) -> Result<(), String> {
         ));
     }
     Ok(())
-}
-
-/// The window a capture actually photographed.
-#[cfg(target_os = "macos")]
-#[derive(Clone, Copy, Debug)]
-struct SelectedWindow {
-    window_number: i64,
-    width: i64,
-    height: i64,
-}
-
-#[cfg(target_os = "macos")]
-fn capture_current_macos_window(
-    width: u64,
-    height: u64,
-    png_path: &std::path::Path,
-    receipt: &ReviewWindowReceipt,
-) -> Result<SelectedWindow, String> {
-    let app_name = env::var("SYNTH_DESKTOP_APP_NAME")
-        .map_err(|_| "template review capture requires SYNTH_DESKTOP_APP_NAME".to_string())?;
-    let bundle_id = env::var("SYNTH_DESKTOP_BUNDLE_ID").unwrap_or_default();
-    // Identity, then geometry — in that order, and never mixed.
-    //
-    // Identity is a process id when the resize told us one, then an exact
-    // bundle id, then an owner name. macOS truncates owner names, so a name is
-    // reported for humans and never used to reject a bundle match. Size is not
-    // an identity: it is checked after selection, against the size the resize
-    // actually produced, and a mismatch names both numbers.
-    let swift = r#"import CoreGraphics
-import AppKit
-import Foundation
-let wantedName = CommandLine.arguments[1]
-let wantedBundle = CommandLine.arguments[2]
-let wantedPid = Int(CommandLine.arguments[3]) ?? 0
-let toleranceValue = Double(CommandLine.arguments[4]) ?? -1
-let expectedWidth = Double(CommandLine.arguments[5]) ?? -1
-let expectedHeight = Double(CommandLine.arguments[6]) ?? -1
-
-struct Candidate {
-  let number: Int
-  let width: Double
-  let height: Double
-  let owner: String
-  let bundle: String
-  let pid: Int
-  var area: Double { width * height }
-}
-
-let windows = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID)! as! [[String: Any]]
-let described = windows.compactMap { item -> Candidate? in
-  guard let owner = item[kCGWindowOwnerName as String] as? String,
-        let pid = item[kCGWindowOwnerPID as String] as? Int,
-        let number = item[kCGWindowNumber as String] as? Int,
-        let bounds = item[kCGWindowBounds as String] as? [String: Any],
-        let width = bounds["Width"] as? Double,
-        let height = bounds["Height"] as? Double else { return nil }
-  let bundle = NSRunningApplication(processIdentifier: pid_t(pid))?.bundleIdentifier ?? ""
-  return Candidate(number: number, width: width, height: height, owner: owner, bundle: bundle, pid: pid)
-}
-
-// Identity only. No size predicate takes part in deciding what this app is.
-var identified: [Candidate] = []
-if wantedPid > 0 {
-  identified = described.filter { $0.pid == wantedPid }
-}
-if identified.isEmpty && !wantedBundle.isEmpty {
-  identified = described.filter { $0.bundle == wantedBundle }
-}
-if identified.isEmpty {
-  identified = described.filter { $0.owner == wantedName }
-}
-
-func describe(_ items: [Candidate]) -> String {
-  items.map { "\($0.owner) [\($0.bundle)] pid \($0.pid) window \($0.number) \(Int($0.width))x\(Int($0.height))" }
-    .joined(separator: ", ")
-}
-
-if identified.isEmpty {
-  let observed = described.filter { $0.owner.lowercased().contains("synth") }
-  fputs("NOT_FOUND\tobserved synth windows: \(observed.isEmpty ? "none" : describe(observed))", stderr)
-  exit(0)
-}
-
-// A review captures the app's main surface: the largest window belonging to
-// the identified process. When the resize told us what size it produced, the
-// window nearest that size wins, so a panel or popover cannot stand in for it.
-var ordered = identified.sorted { $0.area > $1.area }
-if expectedWidth > 0 && expectedHeight > 0 {
-  ordered = identified.sorted {
-    let left = abs($0.width - expectedWidth) + abs($0.height - expectedHeight)
-    let right = abs($1.width - expectedWidth) + abs($1.height - expectedHeight)
-    return left < right
-  }
-}
-guard let best = ordered.first else {
-  fputs("NOT_FOUND\tidentity matched but no window survived ordering", stderr)
-  exit(0)
-}
-
-// Geometry is checked after selection, and only reported — never used to
-// reject the window that identity already proved is the right one.
-if toleranceValue >= 0 && expectedWidth > 0 && expectedHeight > 0 {
-  let drift = abs(best.width - expectedWidth) + abs(best.height - expectedHeight)
-  if drift > toleranceValue {
-    fputs("BOUNDS_DRIFT\texpected \(Int(expectedWidth))x\(Int(expectedHeight)), observed \(Int(best.width))x\(Int(best.height)) on window \(best.number)", stderr)
-  }
-}
-if wantedPid <= 0 && identified.count > 1 {
-  let sameSize = identified.filter { abs($0.area - best.area) < 1 }
-  if sameSize.count > 1 {
-    fputs("AMBIGUOUS\t\(describe(identified))", stderr)
-    exit(0)
-  }
-}
-print("\(best.number)\t\(Int(best.width))\t\(Int(best.height))")
-"#;
-    let output = Command::new("swift")
-        .args([
-            "-e",
-            swift,
-            &app_name,
-            &bundle_id,
-            &receipt.process_id.unwrap_or_default().to_string(),
-            &REVIEW_BOUNDS_TOLERANCE_POINTS.to_string(),
-            &receipt.observed_width.unwrap_or(-1.0).to_string(),
-            &receipt.observed_height.unwrap_or(-1.0).to_string(),
-        ])
-        .output()
-        .map_err(|error| format!("launch Desktop window resolver: {error}"))?;
-    if !output.status.success() {
-        return Err(format!(
-            "Desktop window resolver failed: {}",
-            String::from_utf8_lossy(&output.stderr).trim()
-        ));
-    }
-    let selected = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    let notes = String::from_utf8_lossy(&output.stderr).trim().to_string();
-    let (note_kind, note_detail) = match notes.split_once('\t') {
-        Some((kind, detail)) => (kind, detail),
-        None => ("", notes.as_str()),
-    };
-    if selected.is_empty() {
-        let identity = format!(
-            "expected app `{app_name}` bundle `{}` pid `{}`",
-            if bundle_id.is_empty() {
-                "unavailable"
-            } else {
-                &bundle_id
-            },
-            receipt
-                .process_id
-                .map(|pid| pid.to_string())
-                .unwrap_or_else(|| "unavailable".into())
-        );
-        if note_kind == "AMBIGUOUS" {
-            return Err(format!(
-                "DesktopWindowAmbiguous: {identity}; more than one window matched and none was \
-                 distinguishable by size: {note_detail}"
-            ));
-        }
-        return Err(format!(
-            "DesktopWindowNotFound: {identity}; {}",
-            if note_detail.is_empty() {
-                "no Synth windows were visible"
-            } else {
-                note_detail
-            }
-        ));
-    }
-    let mut fields = selected.split('\t');
-    let window_id = fields.next().unwrap_or_default().to_string();
-    let chosen = SelectedWindow {
-        window_number: window_id.parse().unwrap_or_default(),
-        width: fields
-            .next()
-            .and_then(|value| value.parse().ok())
-            .unwrap_or_default(),
-        height: fields
-            .next()
-            .and_then(|value| value.parse().ok())
-            .unwrap_or_default(),
-    };
-    if note_kind == "BOUNDS_DRIFT" {
-        // Not fatal: the capture is still of the identified window, and the
-        // receipt records what was actually photographed.
-        eprintln!("synth-visuals-mcp: review window bounds drifted; {note_detail}");
-    }
-    let raw_path = png_path.with_extension("window.png");
-    let capture = Command::new("/usr/sbin/screencapture")
-        .args(["-x", "-l", &window_id])
-        .arg(&raw_path)
-        .status()
-        .map_err(|error| format!("launch Desktop window capture: {error}"))?;
-    if !capture.success() || !raw_path.is_file() {
-        return Err("ScreenRecordingDeniedOrUnavailable: Desktop window capture produced no image; enable Screen Recording for Synth Workshop and retry".into());
-    }
-    let resize = Command::new("sips")
-        .args([
-            "-s",
-            "format",
-            "png",
-            "-z",
-            &height.to_string(),
-            &width.to_string(),
-        ])
-        .arg(&raw_path)
-        .args(["--out"])
-        .arg(png_path)
-        .status()
-        .map_err(|error| format!("launch Desktop review resize: {error}"))?;
-    if !resize.success() || !png_path.is_file() {
-        return Err("Desktop review resize failed".into());
-    }
-    let _ = fs::remove_file(raw_path);
-    assert_non_blank_png(png_path)?;
-    Ok(chosen)
 }
 
 fn assert_non_blank_png(path: &std::path::Path) -> Result<(), String> {
