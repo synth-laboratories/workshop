@@ -48,6 +48,19 @@ driver_get() {
     "$(driver_field url)$path"
 }
 
+stop_instance_optimizer_processes() {
+  local staged_root="$INSTANCE_ROOT/runtime/gepa/optimizer-project"
+  local pid command
+  while IFS=$'\t' read -r pid command; do
+    [[ "$pid" =~ ^[0-9]+$ ]] || continue
+    [[ "$command" == *"$staged_root"* ]] || continue
+    # Scope cleanup to this named instance's staged optimizer checkout. This
+    # catches uv's re-parented service/run leaders without touching another
+    # Workshop instance or an unrelated Python/uv process.
+    kill -TERM "$pid" 2>/dev/null || true
+  done < <(ps -axo pid=,command= | awk '{$1=$1; pid=$1; sub(/^[^ ]+[ ]+/, ""); print pid "\t" $0}')
+}
+
 seal_unattended_config() {
   local config="$DATA_ROOT/config.toml"
   python3 - "$config" <<'PY'
@@ -206,6 +219,7 @@ EOF
     "$ROOT/scripts/desktop-instance.sh" cua-run "$NAME" &
     launcher=$!
     cleanup_run() {
+      stop_instance_optimizer_processes
       "$ROOT/scripts/desktop-instance.sh" stop "$NAME" >/dev/null 2>&1 || true
       wait "$launcher" 2>/dev/null || true
     }
