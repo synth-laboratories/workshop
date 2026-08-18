@@ -1761,6 +1761,37 @@ fn craftax_cookbook_root() -> Result<PathBuf> {
     discover_cookbook(CookbookKind::Craftax)
 }
 
+fn gepa_recipe_source(cookbook: &Path, kind: CookbookKind) -> Result<String> {
+    let is_app_resource = cookbook.ancestors().any(|path| {
+        path.extension()
+            .is_some_and(|extension| extension.eq_ignore_ascii_case("app"))
+    });
+    if is_app_resource {
+        // Compile the tiny recipe contract into the host as well as shipping it
+        // beside the executable. On macOS, an ad-hoc packaged app can be held
+        // indefinitely by provenance evaluation while opening a copied TOML
+        // resource (observed in `open(2)` before a run record existed). The
+        // executable has already been admitted, so the embedded copy gives
+        // workflow admission a deterministic, non-blocking authority. Python
+        // sources and lockfiles remain ordinary packaged resources for the
+        // worker process.
+        return Ok(match kind {
+            CookbookKind::Banking77 => include_str!(
+                "../../generated-resources/cookbooks/optimizers/gepa/banking77_container/gepa.toml"
+            ),
+            CookbookKind::Craftax => include_str!(
+                "../../generated-resources/cookbooks/optimizers/gepa/crafter_container/gepa.toml"
+            ),
+            CookbookKind::HealthBench => {
+                bail!("HealthBench does not define a GEPA recipe source")
+            }
+        }
+        .to_owned());
+    }
+    fs::read_to_string(cookbook.join("gepa.toml"))
+        .with_context(|| format!("read GEPA recipe from {}", cookbook.display()))
+}
+
 fn discover_cookbook(kind: CookbookKind) -> Result<PathBuf> {
     for candidate in cookbook_search_paths(kind) {
         let path = candidate.canonicalize().unwrap_or(candidate);
@@ -1878,7 +1909,7 @@ fn materialize_config(
     proposer_profile: ProposerProfile,
     codex_home: &Path,
 ) -> Result<()> {
-    let source = fs::read_to_string(cookbook.join("gepa.toml"))?;
+    let source = gepa_recipe_source(cookbook, CookbookKind::Banking77)?;
     let mut config: toml::Value = toml::from_str(&source)?;
     let run = table_mut(&mut config, "run")?;
     run.insert("run_id".into(), toml::Value::String(run_id.into()));
@@ -2049,7 +2080,7 @@ fn materialize_craftax_config(
     proposer_profile: ProposerProfile,
     codex_home: &Path,
 ) -> Result<()> {
-    let source = fs::read_to_string(cookbook.join("gepa.toml"))?;
+    let source = gepa_recipe_source(cookbook, CookbookKind::Craftax)?;
     let mut config: toml::Value = toml::from_str(&source)?;
     let run = table_mut(&mut config, "run")?;
     run.insert("run_id".into(), toml::Value::String(run_id.into()));
@@ -3216,5 +3247,14 @@ mod runs_root_tests {
             "{} must not sit inside an application bundle",
             root.display()
         );
+    }
+
+    #[test]
+    fn packaged_gepa_contract_does_not_open_the_app_resource() {
+        let inaccessible = Path::new("/does/not/exist/Synth Desktop.app/Contents/Resources")
+            .join("cookbooks/optimizers/gepa/banking77_container");
+        let source = gepa_recipe_source(&inaccessible, CookbookKind::Banking77).unwrap();
+        assert!(source.contains("[gepa]"));
+        assert!(source.contains("[proposer]"));
     }
 }
