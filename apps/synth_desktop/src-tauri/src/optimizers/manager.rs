@@ -1208,7 +1208,7 @@ fn resolve_uv() -> Result<PathBuf> {
     )
 }
 
-fn optimizer_project_root() -> Result<Option<PathBuf>> {
+pub(super) fn optimizer_project_root() -> Result<Option<PathBuf>> {
     let Some(path) = env::var_os("SYNTH_OPTIMIZER_PROJECT_ROOT").map(PathBuf::from) else {
         return Ok(None);
     };

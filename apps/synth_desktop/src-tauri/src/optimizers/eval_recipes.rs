@@ -102,6 +102,14 @@ fn config_path() -> PathBuf {
 /// `SYNTH_PYTHON` fallback: an interpreter that happens to be on the operator's
 /// PATH is not the one this feature was packaged against.
 fn resolve_python() -> Result<PathBuf> {
+    // Developer/QA builds stage one reviewed Optimizers checkout. Eval and
+    // GEPA must execute that same runtime authority; falling through to the
+    // previously selected installed version makes the catalog and worker
+    // silently disagree (for example, 2 stale Craftax trials instead of the
+    // staged digest-pinned 10-trial contract).
+    if let Some(project) = super::manager::optimizer_project_root()? {
+        return resolve_developer_python(&project);
+    }
     if let Ok(text) = fs::read_to_string(config_path()) {
         if let Some(configured) = text
             .lines()
@@ -156,6 +164,21 @@ fn resolve_python() -> Result<PathBuf> {
          or set python = \"…\" in {}",
         owned.display(),
         config_path().display()
+    )
+}
+
+fn resolve_developer_python(project: &Path) -> Result<PathBuf> {
+    for candidate in [
+        project.join(".venv/bin/python"),
+        project.join(".venv/Scripts/python.exe"),
+    ] {
+        if candidate.is_file() {
+            return Ok(candidate);
+        }
+    }
+    bail!(
+        "developer optimizer project {} has no prepared .venv Python; run uv sync before launching Workshop",
+        project.display()
     )
 }
 
@@ -1251,25 +1274,24 @@ async fn settled_status(
     run_id: &str,
 ) -> Result<(&'static str, String)> {
     let run = service.get(run_id.to_string()).await?;
-    let events = service.events_after(run_id.to_string(), 0, Some(2_000)).await?;
-    let verdict = events
-        .iter()
-        .rev()
-        .find_map(|event| {
-            let selection = event.snapshot.as_ref()?.get("selection")?;
-            let status = selection
-                .get("status")
-                .or_else(|| selection.get("selection_status"))
-                .and_then(Value::as_str)?;
-            Some((
-                status.to_string(),
-                selection
-                    .get("reason")
-                    .and_then(Value::as_str)
-                    .unwrap_or_default()
-                    .to_string(),
-            ))
-        });
+    let events = service
+        .events_after(run_id.to_string(), 0, Some(2_000))
+        .await?;
+    let verdict = events.iter().rev().find_map(|event| {
+        let selection = event.snapshot.as_ref()?.get("selection")?;
+        let status = selection
+            .get("status")
+            .or_else(|| selection.get("selection_status"))
+            .and_then(Value::as_str)?;
+        Some((
+            status.to_string(),
+            selection
+                .get("reason")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
+        ))
+    });
     if let Some((status, reason)) = &verdict {
         if matches!(status.as_str(), "invalid_evidence" | "failed" | "aborted") {
             let reason = if reason.is_empty() {
@@ -1302,7 +1324,11 @@ async fn append_terminal(
     // Settled is settled when a manifest exists, not merely when the status
     // string looks terminal: a status rewritten without an event must not let
     // the run skip its own terminal event.
-    if service.terminal_manifest(run_id.to_string()).await?.is_some() {
+    if service
+        .terminal_manifest(run_id.to_string())
+        .await?
+        .is_some()
+    {
         return Ok(());
     }
     let event_type = match status {
@@ -1322,18 +1348,17 @@ async fn append_terminal(
         service
             .append_event_payloads(
                 run_id.to_string(),
-                vec![OptimizerEventDraft::new(
-                    "optimizer.recipe.diagnostic",
-                    EVAL_ALGORITHM_ID,
-                )
-                .idempotency_key("diagnostic")
-                .level("error")
-                .delta(map_of("status", json!("failed")))
-                .error(json!({
-                    "message": tail.as_deref().unwrap_or(&detail),
-                    "stderrTail": tail,
-                    "logPath": stderr
-                }))],
+                vec![
+                    OptimizerEventDraft::new("optimizer.recipe.diagnostic", EVAL_ALGORITHM_ID)
+                        .idempotency_key("diagnostic")
+                        .level("error")
+                        .delta(map_of("status", json!("failed")))
+                        .error(json!({
+                            "message": tail.as_deref().unwrap_or(&detail),
+                            "stderrTail": tail,
+                            "logPath": stderr
+                        })),
+                ],
             )
             .await?;
     }
@@ -1362,6 +1387,23 @@ mod tests {
     use crate::optimizers::events::OptimizerEventDraft;
     use crate::optimizers::models::OptimizerCapabilities;
     use crate::optimizers::service::tests::service;
+
+    #[test]
+    fn developer_eval_uses_prepared_project_python() {
+        let dir = tempfile::tempdir().unwrap();
+        let bin = dir.path().join(".venv/bin");
+        fs::create_dir_all(&bin).unwrap();
+        let python = bin.join("python");
+        fs::write(&python, b"prepared optimizer runtime").unwrap();
+        assert_eq!(resolve_developer_python(dir.path()).unwrap(), python);
+    }
+
+    #[test]
+    fn developer_eval_without_prepared_python_fails_closed() {
+        let dir = tempfile::tempdir().unwrap();
+        let error = resolve_developer_python(dir.path()).unwrap_err();
+        assert!(error.to_string().contains("uv sync"));
+    }
 
     async fn probe_run(svc: &OptimizerService, id: &str) {
         svc.create(OptimizerCreateRequest {
@@ -1415,7 +1457,10 @@ mod tests {
         .unwrap();
         let (status, detail) = settled_status(&svc, "opt_eval_invalid").await.unwrap();
         assert_eq!(status, "failed");
-        assert!(detail.contains("did not produce valid evidence"), "{detail}");
+        assert!(
+            detail.contains("did not produce valid evidence"),
+            "{detail}"
+        );
     }
 
     /// Trials failing inside a screening matrix is ordinary. Only a campaign
@@ -1954,10 +1999,7 @@ mod immutable_target_tests {
         )
         .expect("a recorded manifest digest pins the target");
         require_digest_pinned_target(
-            &recipe(
-                Some(&format!("ghcr.io/synth/craftax-eval@{PINNED}")),
-                None,
-            ),
+            &recipe(Some(&format!("ghcr.io/synth/craftax-eval@{PINNED}")), None),
             EVAL_CRAFTAX_LLM_RECIPE,
         )
         .expect("a digest carried by the reference pins the target");
@@ -1977,7 +2019,10 @@ mod immutable_target_tests {
 
     #[test]
     fn a_malformed_digest_is_not_a_pin() {
-        let error = refusal(&recipe(Some("ghcr.io/synth/craftax-eval"), Some("sha256:beef")));
+        let error = refusal(&recipe(
+            Some("ghcr.io/synth/craftax-eval"),
+            Some("sha256:beef"),
+        ));
         assert!(error.contains("not a sha256 manifest digest"), "{error}");
     }
 
