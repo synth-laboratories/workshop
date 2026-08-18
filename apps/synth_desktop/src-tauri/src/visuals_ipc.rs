@@ -574,7 +574,7 @@ async fn dispatch_request(
         .authorization
         .as_deref()
         .and_then(|value| value.strip_prefix("Bearer ").map(str::trim));
-    if auth != Some(token) {
+    if !auth.is_some_and(|value| crate::ipc::constant_time_eq(value.as_bytes(), token.as_bytes())) {
         return Err(anyhow::Error::new(crate::error::Unauthorized));
     }
     let (path, query_string) = request
@@ -2443,7 +2443,7 @@ pub async fn dispatch(method: &str, path: &str, body: Value, core: &CoreRuntime)
     }
 }
 
-async fn dispatch_optimizer(
+pub(crate) async fn dispatch_optimizer(
     method: &str,
     path: &str,
     body: Value,

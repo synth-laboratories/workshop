@@ -28,6 +28,7 @@ mod device_auth;
 pub mod diagnostics;
 mod domain;
 pub mod error;
+#[cfg(feature = "eval-driver")]
 mod eval_driver;
 mod http;
 mod instance;
@@ -3713,6 +3714,7 @@ pub fn run() {
                 }
             });
 
+            #[cfg(feature = "eval-driver")]
             if eval_driver::should_spawn() {
                 let eval_core = core.clone();
                 let eval_codex = codex.clone();

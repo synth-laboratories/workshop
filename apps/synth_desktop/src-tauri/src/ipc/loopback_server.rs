@@ -22,18 +22,24 @@ pub async fn serve_connections<F, Fut>(
     on_request: F,
 ) -> Result<()>
 where
-    F: Fn(Request<Incoming>) -> Fut + Clone + Send + Sync + 'static,
+    F: Fn(Request<Incoming>, std::net::SocketAddr) -> Fut + Clone + Send + Sync + 'static,
     Fut: Future<Output = Result<Response<LoopbackBody>, Infallible>> + Send + 'static,
 {
     loop {
-        let (stream, _peer) = listener
+        let (stream, peer) = listener
             .accept()
             .await
             .context("accept a connection on a Synth Desktop loopback server")?;
+        // Every Synth Desktop IPC server binds 127.0.0.1; a non-loopback peer
+        // here means the bind assumption broke. Fail closed, per connection.
+        if !peer.ip().is_loopback() {
+            eprintln!("synth-desktop: rejected non-loopback IPC peer {peer}");
+            continue;
+        }
         let on_request = on_request.clone();
         tauri::async_runtime::spawn(async move {
             let io = TokioIo::new(stream);
-            let service = service_fn(move |request| on_request(request));
+            let service = service_fn(move |request| on_request(request, peer));
             if let Err(error) = http1::Builder::new()
                 .max_buf_size(crate::limits::LOOPBACK_MAX_HEADER_BYTES)
                 .serve_connection(io, service)
@@ -53,6 +59,20 @@ pub struct JsonHttpRequest {
     pub authorization: Option<String>,
     pub body: Value,
     pub raw_headers: hyper::HeaderMap,
+    /// Accepted socket peer; `None` only for requests built directly in tests.
+    pub peer: Option<std::net::SocketAddr>,
+}
+
+/// Length-safe token equality: rejects on length without inspecting bytes,
+/// then OR-folds every byte so match position never shapes timing.
+pub fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
+    if left.len() != right.len() {
+        return false;
+    }
+    left.iter()
+        .zip(right.iter())
+        .fold(0u8, |acc, (a, b)| acc | (a ^ b))
+        == 0
 }
 
 /// JSON response with optional extra headers (e.g. protocol version).
@@ -113,10 +133,10 @@ where
     F: Fn(JsonHttpRequest) -> Fut + Clone + Send + Sync + 'static,
     Fut: Future<Output = JsonHttpResponse> + Send + 'static,
 {
-    serve_connections(listener, move |request| {
+    serve_connections(listener, move |request, peer| {
         let handler = handler.clone();
         async move {
-            let parsed = match parse_json_request(request, max_body_bytes).await {
+            let parsed = match parse_json_request(request, peer, max_body_bytes).await {
                 Ok(parsed) => parsed,
                 Err(response) => return Ok(response),
             };
@@ -139,6 +159,7 @@ where
 
 async fn parse_json_request(
     request: Request<Incoming>,
+    peer: std::net::SocketAddr,
     max_body_bytes: usize,
 ) -> Result<JsonHttpRequest, Response<LoopbackBody>> {
     let method = request.method().clone();
@@ -181,5 +202,20 @@ async fn parse_json_request(
         authorization,
         body,
         raw_headers,
+        peer: Some(peer),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::constant_time_eq;
+
+    #[test]
+    fn constant_time_eq_matches_semantics_of_eq() {
+        assert!(constant_time_eq(b"synth_eval_abc", b"synth_eval_abc"));
+        assert!(!constant_time_eq(b"synth_eval_abc", b"synth_eval_abd"));
+        assert!(!constant_time_eq(b"synth_eval_abc", b"synth_eval_ab"));
+        assert!(constant_time_eq(b"", b""));
+        assert!(!constant_time_eq(b"", b"x"));
+    }
 }

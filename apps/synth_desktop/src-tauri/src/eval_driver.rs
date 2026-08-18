@@ -3,9 +3,10 @@
 //! Wire protocol: `synth.eval-driver.v1` (see `EVAL_DRIVER.md` beside this crate).
 //!
 //! This is product code in the same category as [`crate::visuals_ipc`]: loopback-only
-//! bind, bearer token, descriptor JSON in the instance data root. It is compiled into
-//! debug/dev builds and only spawned for named development instances. Production /
-//! release builds never listen.
+//! bind, bearer token, descriptor JSON in the instance data root. The whole module
+//! exists only behind the `eval-driver` cargo feature — production artifacts are
+//! built without it — and feature-enabled builds still require the runtime opt-in
+//! in [`should_spawn`].
 
 use crate::codex::{self, CodexManager, CodexSessionStartRequest, CodexTurnSendRequest};
 use crate::container_stream::{
@@ -57,11 +58,10 @@ pub fn connection_path(root: &std::path::Path) -> PathBuf {
     root.join("eval-driver.json")
 }
 
-/// Named development instances only. Release/production builds never spawn.
+/// Runtime opt-in on top of the `eval-driver` compile-time feature: production
+/// artifacts are built without the feature and contain no driver at all, so
+/// this gate only chooses which feature-enabled builds actually listen.
 pub fn should_spawn() -> bool {
-    if !cfg!(debug_assertions) {
-        return false;
-    }
     crate::instance::name().is_some() || std::env::var_os("SYNTH_DESKTOP_EVAL_DRIVER").is_some()
 }
 
@@ -186,7 +186,7 @@ async fn dispatch_request(
         .authorization
         .as_deref()
         .and_then(|value| value.strip_prefix("Bearer ").map(str::trim));
-    if auth != Some(token) {
+    if !auth.is_some_and(|value| crate::ipc::constant_time_eq(value.as_bytes(), token.as_bytes())) {
         return Err(anyhow!(crate::error::Unauthorized).context("unauthorized eval driver request"));
     }
     if let Some(version) = request
@@ -296,6 +296,71 @@ async fn dispatch(method: &str, path: &str, body: Value, deps: &EvalDriverDeps) 
                 .context("wait_for_terminal requires sessionId")?;
             wait_for_terminal(core, &session_id, body).await
         }
+        ("POST", path) if path.starts_with("/v1/sessions/") && path.ends_with("/interrupt") => {
+            let session_id = path
+                .trim_start_matches("/v1/sessions/")
+                .trim_end_matches("/interrupt")
+                .trim_end_matches('/')
+                .to_string();
+            deps.codex.interrupt(deps.app.clone(), &session_id).await?;
+            Ok(json!({"ok": true, "sessionId": session_id}))
+        }
+        ("POST", path) if path.starts_with("/v1/sessions/") && path.ends_with("/steer") => {
+            let session_id = path
+                .trim_start_matches("/v1/sessions/")
+                .trim_end_matches("/steer")
+                .trim_end_matches('/')
+                .to_string();
+            let text = body
+                .get("text")
+                .or_else(|| body.get("body"))
+                .and_then(Value::as_str)
+                .context("steer requires text")?
+                .to_string();
+            deps.codex
+                .steer_turn(
+                    deps.app.clone(),
+                    codex::CodexSteerRequest {
+                        session_id: session_id.clone(),
+                        text,
+                    },
+                )
+                .await?;
+            Ok(json!({"ok": true, "sessionId": session_id}))
+        }
+        ("POST", path) if session_approval_route(path).is_some() => {
+            let (session_id, approval_id) =
+                session_approval_route(path).expect("guard checked the route");
+            let decision = body
+                .get("decision")
+                .and_then(Value::as_str)
+                .context("approval resolution requires decision")?
+                .to_string();
+            deps.codex
+                .resolve_approval(
+                    deps.app.clone(),
+                    codex::CodexApprovalDecisionRequest {
+                        session_id: session_id.clone(),
+                        approval_id: approval_id.clone(),
+                        decision,
+                    },
+                )
+                .await?;
+            Ok(json!({"ok": true, "sessionId": session_id, "approvalId": approval_id}))
+        }
+        ("POST", path) if path.starts_with("/v1/sessions/") && path.ends_with("/close") => {
+            let session_id = path
+                .trim_start_matches("/v1/sessions/")
+                .trim_end_matches("/close")
+                .trim_end_matches('/')
+                .to_string();
+            deps.codex.close(&session_id).await?;
+            Ok(json!({"ok": true, "sessionId": session_id, "status": "closed"}))
+        }
+        ("GET", "/v1/preflight") => preflight_report(),
+        ("GET", path) if path.starts_with("/v1/optimizers/runs/") && path.ends_with("/ready") => {
+            visuals_ipc::dispatch_optimizer(method, path, body, core, &deps.app).await
+        }
         ("GET", path) if path.starts_with("/v1/sessions/") && path.ends_with("/export") => {
             let session_id = path
                 .trim_start_matches("/v1/sessions/")
@@ -378,6 +443,41 @@ async fn dispatch(method: &str, path: &str, body: Value, deps: &EvalDriverDeps) 
         ("POST", "/v1/policy_preflight") => policy_preflight(deps, body).await,
         _ => bail!("unsupported eval driver route {method} {path}"),
     }
+}
+
+fn session_approval_route(path: &str) -> Option<(String, String)> {
+    let rest = path.strip_prefix("/v1/sessions/")?;
+    let (session_id, tail) = rest.split_once("/approvals/")?;
+    let approval_id = tail.trim_end_matches('/');
+    if session_id.is_empty() || session_id.contains('/') || approval_id.is_empty()
+        || approval_id.contains('/')
+    {
+        return None;
+    }
+    Some((session_id.to_string(), approval_id.to_string()))
+}
+
+/// Read-only launch-state report. The qa-unattended effective-policy contract
+/// (session profile vs machine config) extends this route rather than adding a
+/// second preflight surface.
+fn preflight_report() -> Result<Value> {
+    let permissions = synth_config::desktop_permission_settings()?;
+    let visuals_descriptor = visuals_ipc::connection_path(&crate::storage::app_data_root());
+    Ok(json!({
+        "ok": true,
+        "schemaVersion": PROTOCOL_VERSION,
+        "instance": crate::instance::diagnostics(),
+        "permissions": {
+            "approvalPolicy": permissions.approval_policy,
+            "sandboxMode": permissions.sandbox_mode,
+            "configPath": permissions.config_path,
+        },
+        "visualsIpcDescriptorPresent": visuals_descriptor.exists(),
+        "optIn": {
+            "instanceName": crate::instance::name(),
+            "envVar": std::env::var_os("SYNTH_DESKTOP_EVAL_DRIVER").is_some(),
+        },
+    }))
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -2557,16 +2657,47 @@ mod tests {
     }
 
     #[test]
-    fn production_gate_requires_debug_or_named_instance_env() {
-        // In unit tests we are always under debug_assertions.
-        assert!(cfg!(debug_assertions));
-        // Without a named instance or opt-in env, should_spawn is false.
+    fn runtime_gate_requires_named_instance_or_env_opt_in() {
+        // The production gate is the `eval-driver` cargo feature (this module
+        // does not exist without it); should_spawn only selects which
+        // feature-enabled builds listen.
         std::env::remove_var("SYNTH_DESKTOP_INSTANCE");
         std::env::remove_var("SYNTH_DESKTOP_EVAL_DRIVER");
         assert!(!should_spawn());
         std::env::set_var("SYNTH_DESKTOP_EVAL_DRIVER", "1");
         assert!(should_spawn());
         std::env::remove_var("SYNTH_DESKTOP_EVAL_DRIVER");
+    }
+
+    #[test]
+    fn session_approval_route_parses_ids_and_rejects_malformed_paths() {
+        assert_eq!(
+            session_approval_route("/v1/sessions/s-1/approvals/call-9"),
+            Some(("s-1".into(), "call-9".into()))
+        );
+        assert_eq!(
+            session_approval_route("/v1/sessions/s-1/approvals/call-9/"),
+            Some(("s-1".into(), "call-9".into()))
+        );
+        assert_eq!(session_approval_route("/v1/sessions//approvals/call-9"), None);
+        assert_eq!(session_approval_route("/v1/sessions/s-1/approvals/"), None);
+        assert_eq!(
+            session_approval_route("/v1/sessions/s-1/approvals/a/b"),
+            None
+        );
+        assert_eq!(session_approval_route("/v1/sessions/s-1/messages"), None);
+    }
+
+    #[test]
+    fn preflight_report_is_read_only_and_names_the_policy_layers() {
+        let report = preflight_report().expect("preflight");
+        assert_eq!(report["ok"], true);
+        assert_eq!(report["schemaVersion"], PROTOCOL_VERSION);
+        let permissions = &report["permissions"];
+        for key in ["approvalPolicy", "sandboxMode", "configPath"] {
+            assert!(permissions[key].is_string(), "missing permissions.{key}");
+        }
+        assert!(report["visualsIpcDescriptorPresent"].is_boolean());
     }
 
     #[test]

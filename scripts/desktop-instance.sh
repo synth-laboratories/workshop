@@ -729,6 +729,7 @@ PY
     echo "[desktop:$NAME] building embedded-agent MCP adapters"
     cargo build \
       --manifest-path "$ROOT/apps/synth_desktop/src-tauri/Cargo.toml" \
+      --features eval-driver \
       "${adapter_bin_args[@]}"
   else
     echo "[desktop:$NAME] reusing embedded-agent MCP adapters (set SYNTH_DESKTOP_REBUILD_ADAPTERS=1 to refresh)"
@@ -751,7 +752,9 @@ PY
     # bundle preserves the isolated environment and registers the unique ID.
     # Build only the runnable .app. A DMG adds time and has no use in the
     # local CUA loop.
-    npx tauri build --debug --bundles app --config "$CONFIG"
+    # Instance builds carry the QA control plane; release artifacts never
+    # enable this feature.
+    npx tauri build --debug --features eval-driver --bundles app --config "$CONFIG"
     local app_bundle="$CARGO_TARGET_DIR/debug/bundle/macos/$APP_TITLE.app"
     local app_executable="$CUA_EXE"
     if [[ ! -x "$app_executable" ]]; then
@@ -773,7 +776,7 @@ PY
     cd "$INSTANCE_ROOT"
     exec "$app_executable"
   fi
-  exec npx tauri dev --config "$CONFIG"
+  exec npx tauri dev --features eval-driver --config "$CONFIG"
 }
 
 clean_instance() {

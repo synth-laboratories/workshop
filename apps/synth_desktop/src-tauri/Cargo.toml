@@ -90,6 +90,11 @@ objc2-web-kit = { version = "0.3", default-features = false, features = [
     "WKSnapshotConfiguration",
 ] }
 
+[features]
+# QA control plane. Never a default: release artifacts must not contain the
+# eval-driver route table at all. Instance builds opt in (desktop-instance.sh).
+eval-driver = []
+
 [[bin]]
 name = "synth-visuals-mcp"
 path = "src/bin/synth_visuals_mcp.rs"
