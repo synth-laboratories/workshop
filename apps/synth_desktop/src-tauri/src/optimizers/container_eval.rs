@@ -1711,6 +1711,7 @@ mod tests {
                 base_model: None,
                 dataset_shard: None,
                 candidate_set_id: None,
+                search: None,
             })
             .await
             .unwrap();
@@ -1938,6 +1939,7 @@ mod tests {
                     base_model: None,
                     dataset_shard: None,
                     candidate_set_id: None,
+                    search: None,
                 })
                 .await
                 .unwrap()
@@ -2056,6 +2058,7 @@ mod tests {
                 base_model: None,
                 dataset_shard: None,
                 candidate_set_id: None,
+                search: None,
             })
             .await
             .unwrap();
@@ -2151,6 +2154,7 @@ mod tests {
                 base_model: None,
                 dataset_shard: None,
                 candidate_set_id: None,
+                search: None,
             })
             .await
             .unwrap();
@@ -2337,6 +2341,7 @@ mod tests {
                 base_model: None,
                 dataset_shard: None,
                 candidate_set_id: None,
+                search: None,
             })
             .await
             .err()
@@ -2357,6 +2362,7 @@ mod tests {
             base_model: None,
             dataset_shard: None,
             candidate_set_id: None,
+            search: None,
         }
     }
 

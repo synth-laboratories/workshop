@@ -1776,6 +1776,24 @@ export function eventsToArtifacts(events: RuntimeEvent[]): ArtifactRef[] {
 	return result;
 }
 
+/** Keep an open pane only if that artifact still belongs to this chat. */
+export function openArtifactIdForChat(
+	openId: string | null,
+	artifacts: ArtifactRef[] | undefined
+): string | null {
+	if (!openId) return null;
+	return artifacts?.some((artifact) => artifact.id === openId) ? openId : null;
+}
+
+/** Outputs lists this chat's owned visuals. Foreign discovery is labeled, never adopted. */
+export function ownedChatArtifacts(chatId: string, artifacts: ArtifactRef[] | undefined): ArtifactRef[] {
+	return (artifacts ?? []).filter((artifact) => {
+		if (artifact.templateId === "synth.subagents.v1") return true;
+		if (!artifact.ownerSessionId) return true;
+		return artifact.ownerSessionId === chatId;
+	});
+}
+
 export function visualRecordToArtifact(visual: VisualInstanceRecord): ArtifactRef {
 	return {
 		id: visual.id,

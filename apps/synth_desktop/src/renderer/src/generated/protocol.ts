@@ -1414,6 +1414,11 @@ export type OptimizerRecipeRunRequest = {
 	 *  source is content-addressed at staging time, not at launch.
 	 */
 	candidateSetId?: string | null,
+	/**
+	 *  Optional GEPA search overrides. Omitted fields keep the recipe defaults.
+	 *  `proposalsPerGeneration` is capped at 10; `policyConcurrency` at 120.
+	 */
+	search?: OptimizerSearchOverrides | null,
 };
 
 export type OptimizerReconcileRequest = {
@@ -1499,6 +1504,13 @@ export type OptimizerRunRecord_Serialize = {
 	summary: unknown,
 	usage: OptimizerUsageSummary,
 	error?: unknown,
+};
+
+export type OptimizerSearchOverrides = {
+	proposalsPerGeneration?: unknown,
+	maxInFlightCandidates?: unknown,
+	policyConcurrency?: unknown,
+	rolloutConcurrency?: unknown,
 };
 
 export type OptimizerSidecarStatus = {

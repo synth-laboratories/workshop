@@ -540,6 +540,64 @@ impl OptimizerService {
         self.local_recipes.lock().await.remove(run_id);
     }
 
+    pub(super) async fn registered_local_recipes(&self) -> std::collections::HashSet<String> {
+        self.local_recipes.lock().await.keys().cloned().collect()
+    }
+
+    pub async fn restore_hosted_sft_mirrors(&self) {
+        super::hosted_sft::restore_hosted_mirrors(self).await;
+    }
+
+    pub async fn wait_milestone(
+        &self,
+        optimizer_run_id: String,
+        after_seq: u64,
+        kinds: Vec<String>,
+        timeout_ms: u64,
+    ) -> Result<Value> {
+        let deadline =
+            tokio::time::Instant::now() + std::time::Duration::from_millis(timeout_ms.max(50));
+        let mut cursor = after_seq;
+        loop {
+            let events = self
+                .events_after(optimizer_run_id.clone(), cursor, Some(500))
+                .await?;
+            for event in events {
+                cursor = cursor.max(event.sequence_number);
+                if let Some(kind) =
+                    super::sft_result::sft_milestone_kind(&event.event_type, event.level.as_deref())
+                {
+                    if kinds.is_empty() || kinds.iter().any(|wanted| wanted == kind) {
+                        return Ok(json!({
+                            "milestone": kind,
+                            "event": event,
+                            "cursor": cursor,
+                            "timedOut": false
+                        }));
+                    }
+                }
+            }
+            let run = self.get(optimizer_run_id.clone()).await?;
+            if matches!(
+                run.status.as_str(),
+                "completed" | "failed" | "cancelled" | "canceled"
+            ) {
+                return Ok(json!({
+                    "milestone": "terminal",
+                    "status": run.status,
+                    "cursor": run.cursor_seq,
+                    "timedOut": false
+                }));
+            }
+            if tokio::time::Instant::now() >= deadline {
+                bail!(
+                    "no matching milestone for `{optimizer_run_id}` after sequence {after_seq}"
+                );
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+    }
+
     /// Persist a caller-mutated run record without letting it rewind lifecycle.
     ///
     /// Callers read a record, change one field, and write it back — a pattern
@@ -4966,6 +5024,7 @@ pub(in crate::optimizers) mod tests {
                 base_model: Some("nvidia/nemotron-3-nano-30b-a3b".into()),
                 dataset_shard: None,
                 candidate_set_id: None,
+                search: None,
             })
             .await
             .unwrap_err()

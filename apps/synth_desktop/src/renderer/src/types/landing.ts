@@ -134,14 +134,6 @@ export type LocalActivityLine = {
 	/** The run's workflow, when the tool result declared one chat has a card for. */
 	runKind?: "eval" | "gepa" | "sft" | "environment";
 	/**
-	 * Durable optimizer run this activity started or acted on, read from the tool
-	 * result rather than inferred from nearby prose. Its presence is what
-	 * attaches a live run-progress card at this point in the transcript.
-	 */
-	optimizerRunId?: string;
-	/** The run's workflow, when the tool result declared one chat has a card for. */
-	runKind?: "eval" | "gepa" | "sft" | "environment";
-	/**
 	 * Optional file path for read/write lines — drives Poolside-style file-type icons
 	 * (.md, .rs, .ts, .toml, …).
 	 */

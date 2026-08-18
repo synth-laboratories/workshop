@@ -26,6 +26,7 @@ const MIGRATIONS: &[&str] = &[
     MIGRATION_21,
     MIGRATION_22,
     MIGRATION_23,
+    MIGRATION_24,
 ];
 
 /// Apply every migration the database has not reached yet.
@@ -1437,6 +1438,32 @@ CREATE TABLE IF NOT EXISTS optimizer_terminal_manifests (
 
 CREATE INDEX IF NOT EXISTS optimizer_terminal_manifests_status
 ON optimizer_terminal_manifests(terminal_status, sealed_at DESC);
+"#;
+
+/// Session-scoped experiment grouping for v0.5 campaign/eval DAGs.
+/// One group per chat; members are evaluation campaigns and optimizer runs.
+const MIGRATION_24: &str = r#"
+CREATE TABLE IF NOT EXISTS experiment_groups (
+    id TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL,
+    title TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS experiment_groups_session
+ON experiment_groups(session_id);
+
+CREATE TABLE IF NOT EXISTS experiment_group_members (
+    group_id TEXT NOT NULL REFERENCES experiment_groups(id) ON DELETE CASCADE,
+    member_kind TEXT NOT NULL CHECK (member_kind IN ('eval_campaign','optimizer_run')),
+    member_id TEXT NOT NULL,
+    title TEXT NOT NULL,
+    attached_at TEXT NOT NULL,
+    PRIMARY KEY (group_id, member_kind, member_id)
+);
+
+CREATE INDEX IF NOT EXISTS experiment_group_members_kind
+ON experiment_group_members(member_kind, member_id);
 "#;
 
 #[cfg(test)]

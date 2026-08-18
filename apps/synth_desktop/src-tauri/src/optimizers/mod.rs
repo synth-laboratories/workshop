@@ -19,6 +19,7 @@ mod results;
 mod service;
 mod sft_client;
 mod sft_recipes;
+mod sft_result;
 mod terminal;
 mod tinker_catalog;
 

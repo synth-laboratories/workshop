@@ -319,9 +319,13 @@ export function projectSft(input: AdapterInput, projected: ProjectedState): RunP
 	// `projected.summary.summary` is the producer-authored summary the reducer
 	// accumulated; `projected.summary` itself is the reducer's own envelope.
 	const runSummary = (projected.summary.summary ?? {}) as Record<string, unknown>;
+	const explicitPromotion = [...input.events]
+		.reverse()
+		.find((event) => event.type === "sft.checkpoint.promoted");
+	const explicitPromotionId = explicitPromotion?.item?.id;
 	const promoted = typeof runSummary.promotedCheckpointId === "string"
 		? runSummary.promotedCheckpointId
-		: undefined;
+		: typeof explicitPromotionId === "string" ? explicitPromotionId : undefined;
 	const phases = sftPhases(sft, base.terminal, base.status === "failed", promoted);
 	const active = phases.find((phase) => phase.status === "active");
 	const phaseId = active?.id ?? (base.terminal ? "heldout" : "queue");

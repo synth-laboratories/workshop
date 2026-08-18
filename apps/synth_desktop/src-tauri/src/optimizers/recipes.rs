@@ -3075,6 +3075,7 @@ namespace = "base"
                 base_model: None,
                 dataset_shard: None,
                 candidate_set_id: None,
+                search: None,
             })
             .await
             .unwrap()
@@ -3149,6 +3150,7 @@ namespace = "base"
                 base_model: None,
                 dataset_shard: None,
                 candidate_set_id: None,
+                search: None,
             }),
             service.start_recipe(OptimizerRecipeRunRequest {
                 recipe_id: BANKING77_GEPA_SOL_RECIPE.into(),
@@ -3157,6 +3159,7 @@ namespace = "base"
                 base_model: None,
                 dataset_shard: None,
                 candidate_set_id: None,
+                search: None,
             })
         );
         let luna = luna.unwrap().0;

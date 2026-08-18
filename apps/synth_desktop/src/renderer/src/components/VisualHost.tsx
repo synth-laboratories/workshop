@@ -3,12 +3,15 @@ import type { ArtifactRef } from "../types/landing";
 import type { VisualRecord } from "@synth/runtime-protocol";
 import {
 	bindTemplateSlots,
+	consumeInjectedRendererCrash,
 	createReplayClient,
 	isVisualBindings,
+	rememberLastKnownGood,
 	propsFromBindings,
 	replayStreamsFromBindings,
 	resolveTemplate,
-	resolveVisualBindings
+	resolveVisualBindings,
+	selectRenderedProjection
 } from "@synth/visuals";
 import { publicError, toPublicError, type PublicError } from "../runtime/publicError";
 import type { VisualAnnotation, VisualSeal, VisualSealBundle, VisualUpload } from "../bridge";
@@ -269,9 +272,23 @@ function TemplateVisualHost({ artifact }: { artifact: ArtifactRef }) {
 	// Returning an empty slot list for a shape it did not understand is how a
 	// visual with ten declared streams rendered an empty pane with no error.
 	const resolvedBindings = useMemo(() => resolveVisualBindings(artifact.bindings), [artifact.bindings]);
-	const traceBindings = useMemo(
-		() => resolvedBindings.slots.filter((binding) => binding.kind === "trace_v5"),
+	const asyncBindings = useMemo(
+		() =>
+			resolvedBindings.slots.filter((binding) => {
+				if (binding.kind === "trace_v5") return true;
+				if (
+					binding.kind === "live_sse"
+					|| binding.kind === "optimizer_run"
+					|| binding.kind === "inline"
+					|| binding.kind === "fixture"
+				) return false;
+				return binding.data === undefined;
+			}),
 		[resolvedBindings]
+	);
+	const traceBindings = useMemo(
+		() => asyncBindings.filter((binding) => binding.kind === "trace_v5"),
+		[asyncBindings]
 	);
 	const replay = useMemo(
 		() => replayStreamsFromBindings(resolvedBindings.slots),
@@ -290,14 +307,17 @@ function TemplateVisualHost({ artifact }: { artifact: ArtifactRef }) {
 		[artifact.id, replay.streams]
 	);
 	const synchronouslyResolved = useMemo(() => {
-		if (!isVisualBindings(artifact.bindings) || traceBindings.length === 0) {
+		if (!isVisualBindings(artifact.bindings) || asyncBindings.length === 0) {
 			return propsFromBindings(artifact.bindings);
 		}
+		const skip = new Set(asyncBindings.map((binding) => `${binding.slot}:${binding.kind}:${binding.source ?? ""}`));
 		return propsFromBindings({
 			schemaVersion: "synth.visual-bindings.v1",
-			slots: artifact.bindings.slots.filter((binding) => binding.kind !== "trace_v5")
+			slots: artifact.bindings.slots.filter((binding) =>
+				!skip.has(`${binding.slot}:${binding.kind}:${binding.source ?? ""}`)
+			)
 		});
-	}, [artifact.bindings, traceBindings.length]);
+	}, [artifact.bindings, asyncBindings]);
 	const [traceResolution, setTraceResolution] = useState<{
 		status: "idle" | "loading" | "ready" | "error";
 		props: Record<string, unknown>;
@@ -306,6 +326,7 @@ function TemplateVisualHost({ artifact }: { artifact: ArtifactRef }) {
 		 * code and its remediation instead of only a sentence. */
 		failure?: PublicError;
 	}>({ status: "idle", props: {} });
+	const [lastKnownGoodProps, setLastKnownGoodProps] = useState<Record<string, unknown> | null>(null);
 	const [connectionState, setConnectionState] = useState<
 		"loading" | "replaying" | "subscribed" | "stale" | "reconnecting" | "terminal" | "failed" | "interrupted"
 	>("loading");
@@ -404,7 +425,7 @@ function TemplateVisualHost({ artifact }: { artifact: ArtifactRef }) {
 
 	useEffect(() => {
 		let cancelled = false;
-		if (traceBindings.length === 0 || !isVisualBindings(artifact.bindings)) {
+		if (asyncBindings.length === 0 || !isVisualBindings(artifact.bindings)) {
 			setTraceResolution({ status: "idle", props: {} });
 			return () => { cancelled = true; };
 		}
@@ -423,7 +444,7 @@ function TemplateVisualHost({ artifact }: { artifact: ArtifactRef }) {
 			});
 			return () => { cancelled = true; };
 		}
-		if (!bridges.inventory) {
+		if (traceBindings.length > 0 && !bridges.inventory) {
 			setTraceResolution({ status: "error", props: {}, error: "Trace projection resolver is unavailable" });
 			return () => { cancelled = true; };
 		}
@@ -475,7 +496,19 @@ function TemplateVisualHost({ artifact }: { artifact: ArtifactRef }) {
 			}
 			return pending;
 		};
-		void bindTemplateSlots(template, bindings, { loadTraceV5, skipOptional: true })
+		const loadLocalCas = (source: string) => {
+			if (!bridges.runtime) throw new Error(`No local CAS loader for ${source}`);
+			return bridges.runtime.request(`/v1/cas/${encodeURIComponent(source)}`);
+		};
+		const loadQuerySnapshot = (source: string) => {
+			if (!bridges.runtime) throw new Error(`No query snapshot loader for ${source}`);
+			return bridges.runtime.request("/v1/traces/snapshot", { method: "POST", body: { snapshot_id: source } });
+		};
+		const loadRun = (source: string) => {
+			if (!bridges.optimizers) throw new Error(`No run loader for ${source}`);
+			return bridges.optimizers.get(source);
+		};
+		void bindTemplateSlots(template, bindings, { loadTraceV5, loadLocalCas, loadQuerySnapshot, loadRun, skipOptional: true })
 			.then((result) => {
 				if (cancelled) return;
 				if (result.errors.length > 0) {
@@ -493,10 +526,11 @@ function TemplateVisualHost({ artifact }: { artifact: ArtifactRef }) {
 				}
 				const props = Object.fromEntries(
 					Object.values(result.slots)
-						.filter((slot) => slot.kind === "trace_v5")
+						.filter((slot) => slot.kind !== "inline" && slot.kind !== "live_sse" && slot.kind !== "optimizer_run")
 						.map((slot) => [slot.slot, slot.data])
 				);
 				setTraceResolution({ status: "ready", props });
+				setLastKnownGoodProps((current) => rememberLastKnownGood(current, props, false));
 			})
 			.catch((reason) => {
 				if (cancelled) return;
@@ -519,7 +553,7 @@ function TemplateVisualHost({ artifact }: { artifact: ArtifactRef }) {
 				});
 			});
 		return () => { cancelled = true; };
-	}, [artifact.id, artifact.revision, artifact.templateId, artifact.bindings, traceBindings.length]);
+	}, [artifact.id, artifact.revision, artifact.templateId, artifact.bindings, asyncBindings.length, traceBindings.length, visualIdentity]);
 
 	/*
 	 * The optimizer stream is read through the shared `RunProgressSubscription`
@@ -666,8 +700,14 @@ function TemplateVisualHost({ artifact }: { artifact: ArtifactRef }) {
 		return <VisualInvalidState title="Visual bindings unreadable" detail={resolvedBindings.error ?? "This visual's bindings could not be read."} />;
 	}
 	if (synchronouslyResolved.errors.length > 0) return <VisualInvalidState title="Visual data unavailable" detail={synchronouslyResolved.errors.join(" · ")} />;
-	if (traceResolution.status === "loading") return <p className="visual-loading" role="status">Loading sealed trace…</p>;
-	if (traceResolution.status === "error") {
+	if (traceResolution.status === "loading" && !lastKnownGoodProps) return <p className="visual-loading" role="status">Loading sealed trace…</p>;
+	const liveFailed = traceResolution.status === "error";
+	const selected = selectRenderedProjection({
+		live: liveFailed ? null : { ...synchronouslyResolved.props, ...traceResolution.props },
+		lastKnownGood: lastKnownGoodProps,
+		liveFailed
+	});
+	if (liveFailed && !selected.projection) {
 		const detail = traceResolution.error ?? "Trace projection resolution failed";
 		const lower = detail.toLowerCase();
 		const title = lower.includes("quarant") ? "Trace is quarantined"
@@ -684,12 +724,40 @@ function TemplateVisualHost({ artifact }: { artifact: ArtifactRef }) {
 		/>;
 	}
 	if (!Shell) return <p className="visual-loading">Loading visual shell…</p>;
-	const resolvedProps = { ...synchronouslyResolved.props, ...traceResolution.props };
+	if (
+		consumeInjectedRendererCrash(
+			artifact.visualId ?? artifact.id,
+			typeof artifact.revision === "number" ? artifact.revision : null,
+			artifact.metadata?.__crashRenderer === true
+		)
+	) {
+		throw new Error("injected renderer crash");
+	}
+	const resolvedProps = selected.projection ?? { ...synchronouslyResolved.props, ...traceResolution.props };
 	const showConnection = Boolean(optimizerPayload || optimizerLoadError || connectionState !== "loading");
+	const boundEvents = Array.isArray(optimizerPayload?.events) ? optimizerPayload.events as unknown[] : [];
+	const boundStatus = typeof (optimizerPayload?.run as { status?: string } | undefined)?.status === "string"
+		? (optimizerPayload?.run as { status?: string }).status ?? ""
+		: "";
+	const transportTerminal = connectionState === "terminal" || ["completed", "failed", "cancelled", "succeeded"].includes(boundStatus);
 	return (
 		<div
 			data-testid="visual-template-shell"
 			data-connection-state={showConnection ? connectionState : undefined}
+			data-visual-transport-state={connectionState === "loading" ? "idle" : connectionState}
+			data-visual-terminal={transportTerminal ? "true" : "false"}
+			data-visual-semantic-event-count={String(boundEvents.length)}
+			data-visual-rollout-count={String(boundEvents.length)}
+			data-visual-error={optimizerLoadError ?? (liveFailed ? traceResolution.error : undefined)}
+			data-visual-projection-source={selected.source ?? "live"}
+			data-visual-projection-stale={selected.stale ? "true" : undefined}
+			data-visual-subscription={connectionState}
+			data-visual-compute={transportTerminal ? "terminal" : "running"}
+			data-visual-review={artifact.status === "review" || artifact.status === "ready" ? artifact.status : "none"}
+			data-visual-readiness={artifact.status === "ready" ? "ready" : "waiting"}
+			data-visual-pinning={artifact.metadata?.pinned === true ? "pinned" : "unpinned"}
+			data-visual-sealing={artifact.metadata?.sealed === true || artifact.metadata?.seal ? "sealed" : "unsealed"}
+			data-visual-sharing={typeof artifact.metadata?.visibility === "string" ? String(artifact.metadata.visibility) : "private"}
 			data-progress-phase={progressView?.phaseId}
 			data-progress-phase-label={progressView?.phaseLabel}
 			data-progress-status={progressView?.status}
@@ -700,6 +768,11 @@ function TemplateVisualHost({ artifact }: { artifact: ArtifactRef }) {
 			data-progress-terminal={progressView ? String(progressView.terminal) : undefined}
 			data-progress-result={progressView?.resultHeadline ?? progressView?.resultAbsentReason}
 		>
+			{selected.stale ? (
+				<p className="visual-stale-projection" role="status" data-testid="visual-last-known-good">
+					Showing last known good projection while live rendering recovers.
+				</p>
+			) : null}
 			{showConnection ? <p className="visual-connection-state" data-testid="visual-connection-state">{connectionState}</p> : null}
 			<Shell
 				{...(resolvedProps as ShellProps)}
@@ -786,18 +859,20 @@ function VisualObservationBoundary({ artifact, children }: { artifact: ArtifactR
 /** A failed pane still has to be diagnosable. The sentence goes on top; the
  * stable code, the trace identity, and the remediation go underneath, because
  * "Trace data unavailable" alone sent agents into blind capture retries. */
-function VisualInvalidState({ title, detail, code, remediation, traceId }: {
+function VisualInvalidState({ title, detail, code, remediation, traceId, onRetry }: {
 	title: string;
 	detail: string;
 	code?: string;
 	remediation?: string;
 	traceId?: string;
+	onRetry?: () => void;
 }) {
 	return (
 		<div className="visual-invalid" role="alert" data-testid="visual-invalid" data-error-code={code}>
 			<strong>{title}</strong>
 			<p>{detail}</p>
 			{remediation ? <p className="visual-invalid-remediation">{remediation}</p> : null}
+			{onRetry ? <button type="button" className="visual-invalid-retry" onClick={onRetry}>Retry</button> : null}
 			{code || traceId ? (
 				<p className="visual-invalid-identity">
 					{code ? <code data-testid="visual-invalid-code">{code}</code> : null}
@@ -810,10 +885,15 @@ function VisualInvalidState({ title, detail, code, remediation, traceId }: {
 
 class VisualErrorBoundary extends Component<
 	{ children: ReactNode; visualId?: string; visualRevision?: number | null; templateId?: string | null },
-	{ error: Error | null }
+	{ error: Error | null; retry: number }
 > {
-	state: { error: Error | null } = { error: null };
+	state: { error: Error | null; retry: number } = { error: null, retry: 0 };
 	static getDerivedStateFromError(error: Error) { return { error }; }
+	componentDidUpdate(prevProps: VisualErrorBoundary["props"]) {
+		if (prevProps.visualRevision !== this.props.visualRevision && this.state.error) {
+			this.setState({ error: null });
+		}
+	}
 	componentDidCatch(error: Error, info: ErrorInfo) {
 		// `console.error` reaches a devtools console nobody has open. The
 		// structured record is what the agent can actually query, so the
@@ -834,8 +914,17 @@ class VisualErrorBoundary extends Component<
 		});
 	}
 	render() {
-		if (this.state.error) return <VisualInvalidState title="Visual failed to render" detail={this.state.error.message} />;
-		return <div className="visual-host-boundary">{this.props.children}</div>;
+		if (this.state.error) {
+			const presented = toPublicError(this.state.error, "Visual failed to render");
+			return <VisualInvalidState
+				title="Visual failed to render"
+				detail={presented.message}
+				code={presented.code}
+				remediation={presented.remediation}
+				onRetry={() => this.setState((current) => ({ error: null, retry: current.retry + 1 }))}
+			/>;
+		}
+		return <div className="visual-host-boundary" key={this.state.retry}>{this.props.children}</div>;
 	}
 }
 
