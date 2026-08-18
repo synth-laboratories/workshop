@@ -968,15 +968,22 @@ impl VisualRegistry {
             let source = descriptor.get("source").and_then(Value::as_str);
             let mut receipt = json!({ "kind": kind });
             let document = match kind {
-                "inline" => descriptor
-                    .get("data")
-                    .cloned()
-                    .ok_or_else(|| anyhow!("inline slot {slot} carries no data"))?,
+                "inline" => {
+                    let document = descriptor
+                        .get("data")
+                        .cloned()
+                        .ok_or_else(|| anyhow!("inline slot {slot} carries no data"))?;
+                    receipt["digest"] = json!(digest_json(&document));
+                    document
+                }
                 "fixture" => {
                     let path = source
                         .ok_or_else(|| anyhow!("fixture slot {slot} needs a source path"))?;
-                    let document = read_visual_fixture(path)?;
+                    let (document, digest) = read_visual_fixture(path)?;
                     receipt["source"] = json!(path);
+                    // A fixture is a file on disk, so its path is not identity.
+                    // The digest is what makes a render re-derivable.
+                    receipt["digest"] = json!(digest);
                     document
                 }
                 "local_cas" => {
@@ -1452,7 +1459,7 @@ const CHART_DEFAULT_PROJECTION: &str = "rollout-inspector";
 /// Fixtures live under the repository's `visuals/` root and nowhere else. The
 /// path is joined and then checked against that root, so `..` cannot walk out
 /// of it and an absolute path cannot ignore it.
-fn read_visual_fixture(relative: &str) -> Result<Value> {
+fn read_visual_fixture(relative: &str) -> Result<(Value, String)> {
     let root = super::templates::visuals_root();
     let candidate = root.join(relative);
     let canonical_root = std::fs::canonicalize(&root)
@@ -1464,7 +1471,12 @@ fn read_visual_fixture(relative: &str) -> Result<Value> {
     }
     let bytes = std::fs::read(&canonical)
         .with_context(|| format!("read fixture {}", canonical.display()))?;
-    serde_json::from_slice(&bytes).with_context(|| format!("fixture {relative} is not JSON"))
+    let mut hasher = Sha256::new();
+    hasher.update(&bytes);
+    let digest = format!("sha256:{:x}", hasher.finalize());
+    let document = serde_json::from_slice(&bytes)
+        .with_context(|| format!("fixture {relative} is not JSON"))?;
+    Ok((document, digest))
 }
 
 /// A chart declares its own theme; the rendition key follows the spec rather
@@ -2367,6 +2379,11 @@ mod tests {
             created.metadata["dataProvenance"]["rollout"]["source"],
             "fixtures/rollout_steps.json"
         );
+        // Provenance has to identify the bytes, not just the path a file had.
+        assert!(created.metadata["dataProvenance"]["rollout"]["digest"]
+            .as_str()
+            .unwrap_or_default()
+            .starts_with("sha256:"));
         let svg = String::from_utf8(
             base64::engine::general_purpose::STANDARD
                 .decode(
