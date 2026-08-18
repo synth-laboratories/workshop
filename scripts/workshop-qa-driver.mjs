@@ -26,6 +26,33 @@ const WORKFLOWS = {
     "numeric final score. Do not substitute a hand-built evaluation or stop after admission.",
     "Do not ask for confirmation; this session runs under the unattended QA profile.",
   ].join(" "),
+  "banking77-gepa": [
+    "Run the exact gepa.banking77.luna.v1 workflow using your available tools.",
+    "The QA-owned Banking77 service is explicitly at http://127.0.0.1:8099; register",
+    "that URL as task family banking77 if needed, then probe it. Verify the recipe",
+    "advertises 10 proposals per generation before starting it. Open its live chat visual,",
+    "poll the optimizer run all the way to terminal, call get_result, and report the run id,",
+    "number of candidates attempted, seed score, winning train score, heldout score, numeric",
+    "lift, rollout usage, and visual id. Do not claim uplift unless the heldout evidence proves it.",
+    "Do not ask for confirmation; this session runs under the unattended QA profile.",
+  ].join(" "),
+  "healthbench-smoke": [
+    "Run the exact eval.healthbench.smoke.v1 workflow using your available tools.",
+    "The QA-owned HealthBench service is explicitly at http://127.0.0.1:8114; register",
+    "that URL as task family healthbench if needed, then probe it. Start the product-owned",
+    "optimizer workflow with its live chat visual, poll the run all the way to terminal,",
+    "and report the run id, required and completed rollout counts, final score, separate",
+    "policy and grader usage lanes, cost, and visual id. Do not substitute a hand-built eval.",
+    "Do not ask for confirmation; this session runs under the unattended QA profile.",
+  ].join(" "),
+  "craftax-eval": [
+    "Run a bounded Craftax evaluation using your available product tools and the QA-owned",
+    "Craftax service at http://127.0.0.1:8097. Register and probe that URL as task family",
+    "craftax. Use the supported evaluation workflow, run its rollouts concurrently, open its",
+    "chat-owned live visual, and poll all work to terminal. Report the candidate count, exact",
+    "rollout count, reward distribution, trace count, concurrency evidence, elapsed time, and",
+    "visual id. Do not substitute fixtures or a hand-written summary. Do not ask for confirmation.",
+  ].join(" "),
 };
 
 function validateWorkflow(workflow, terminal) {
@@ -38,6 +65,32 @@ function validateWorkflow(workflow, terminal) {
     }
     if (!/(?:final(?:\s+\w+){0,2}\s+score|score\s*[:=])[^\n]*\d/i.test(text)) {
       throw new Error("banking77-smoke reached terminal without a numeric final score");
+    }
+  }
+  if (workflow === "banking77-gepa") {
+    if (/could not run|blocked before|unhealthy|failed(?: to start| during)|status:\s*`?failed/i.test(text)) {
+      throw new Error(`banking77-gepa failed: ${text.replace(/\s+/g, " ").trim()}`);
+    }
+    for (const required of [/candidate/i, /heldout/i, /lift[^\n]*[-+]?\d/i, /visual/i]) {
+      if (!required.test(text)) {
+        throw new Error(`banking77-gepa terminal summary is missing ${required}`);
+      }
+    }
+  }
+  if (workflow === "healthbench-smoke") {
+    if (/could not run|blocked before|unhealthy|failed(?: to start| during)|status:\s*`?failed/i.test(text)) {
+      throw new Error(`healthbench-smoke failed: ${text.replace(/\s+/g, " ").trim()}`);
+    }
+    for (const required of [/score[^\n]*\d/i, /policy/i, /grader/i, /visual/i]) {
+      if (!required.test(text)) throw new Error(`healthbench-smoke terminal summary is missing ${required}`);
+    }
+  }
+  if (workflow === "craftax-eval") {
+    if (/could not run|blocked before|unhealthy|failed(?: to start| during)|status:\s*`?failed/i.test(text)) {
+      throw new Error(`craftax-eval failed: ${text.replace(/\s+/g, " ").trim()}`);
+    }
+    for (const required of [/rollout/i, /distribution/i, /trace/i, /visual/i]) {
+      if (!required.test(text)) throw new Error(`craftax-eval terminal summary is missing ${required}`);
     }
   }
 }
