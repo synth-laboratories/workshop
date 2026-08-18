@@ -724,6 +724,11 @@ PY
   # plugin.
   export TAURI_CONFIG
   TAURI_CONFIG="$(<"$CONFIG")"
+  # Build metadata is compiled into the shared desktop library. Export the
+  # candidate revision before the adapter prebuild; exporting it afterward can
+  # reuse a library carrying an older revision while the instance manifest
+  # claims the current source.
+  export SYNTH_DESKTOP_SOURCE_REVISION="$SOURCE_REVISION"
 
   local adapters_ready=1 adapter
   local adapter_bin_args=()
@@ -742,8 +747,6 @@ PY
   fi
 
   revalidate_provenance "post-build" "$pre_build_revision"
-  export SYNTH_DESKTOP_SOURCE_REVISION="$SOURCE_REVISION"
-
   if [[ "$COMMAND" == "cua-build" ]]; then
     echo "[desktop:$NAME] building $APP_TITLE without launch"
   else
