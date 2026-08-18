@@ -52,13 +52,14 @@ printf '%s' "$alpha" | jq -e '
 # Refreshing an instance contract after a build or identity assertion must not
 # erase the binary provenance those earlier phases recorded.
 alpha_manifest="$TEST_ROOT/instances/v05/alpha/instance.json"
-jq '.provenance={phase:"bundle-built", executableDigest:"sha256:fixture"} | .executableDigest="sha256:fixture"' \
+jq '.provenance={phase:"bundle-signed", executableDigest:"sha256:fixture"} | .executable="/tmp/Synth Workshop.app/Contents/MacOS/synth-desktop" | .executableDigest="sha256:fixture"' \
   "$alpha_manifest" >"$alpha_manifest.tmp"
 mv "$alpha_manifest.tmp" "$alpha_manifest"
 alpha_refreshed="$($ROOT/scripts/desktop-instance.sh print alpha)"
 printf '%s' "$alpha_refreshed" | jq -e '
-  .provenance.phase == "bundle-built" and
+  .provenance.phase == "bundle-signed" and
   .provenance.executableDigest == "sha256:fixture" and
+  .executable == "/tmp/Synth Workshop.app/Contents/MacOS/synth-desktop" and
   .executableDigest == "sha256:fixture"
 ' >/dev/null
 alpha_env="$TEST_ROOT/instances/v05/alpha/data/.env"

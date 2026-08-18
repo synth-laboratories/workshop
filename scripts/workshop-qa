@@ -144,7 +144,7 @@ def version(path):
     return (data.get("project") or data.get("package") or {}).get("version")
 
 instance = json.loads(instance_path.read_text())
-executable = pathlib.Path(instance["executable"])
+executable = pathlib.Path(instance["appBundle"]) / "Contents/MacOS/synth-desktop"
 app_bundle = pathlib.Path(instance["appBundle"])
 executable_digest = "sha256:" + hashlib.sha256(executable.read_bytes()).hexdigest() if executable.is_file() else None
 catalog = optimizer_path / "src/synth_optimizers/eval/catalog/eval.craftax.code-policy.smoke.v1.toml"

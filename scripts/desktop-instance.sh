@@ -150,7 +150,7 @@ PY
 }
 
 write_contract() {
-	local old_runtime="" old_signing="" old_provenance="" old_executable_digest="" manifest_tmp="$MANIFEST.tmp"
+	local old_runtime="" old_signing="" old_provenance="" old_executable="" old_executable_digest="" manifest_tmp="$MANIFEST.tmp"
   mkdir -p "$DATA_ROOT" "$WORKSPACE" "$GENERATED_ROOT" "$TARGET_ROOT"
   chmod 700 "$INSTANCE_ROOT" "$DATA_ROOT" "$WORKSPACE"
 
@@ -238,6 +238,7 @@ EOF
     old_runtime="$(jq -c '.runtime // empty' "$MANIFEST" 2>/dev/null || true)"
     old_signing="$(jq -c '.signing // empty' "$MANIFEST" 2>/dev/null || true)"
     old_provenance="$(jq -c '.provenance // empty' "$MANIFEST" 2>/dev/null || true)"
+    old_executable="$(jq -r '.executable // empty' "$MANIFEST" 2>/dev/null || true)"
     old_executable_digest="$(jq -r '.executableDigest // empty' "$MANIFEST" 2>/dev/null || true)"
   fi
   cat >"$manifest_tmp" <<EOF
@@ -284,6 +285,10 @@ EOF
     jq --arg executableDigest "$old_executable_digest" '.executableDigest = $executableDigest' "$manifest_tmp" >"$manifest_tmp.merged"
     mv "$manifest_tmp.merged" "$manifest_tmp"
   fi
+  if [[ -n "$old_executable" ]]; then
+    jq --arg executable "$old_executable" '.executable = $executable' "$manifest_tmp" >"$manifest_tmp.merged"
+    mv "$manifest_tmp.merged" "$manifest_tmp"
+  fi
   mv "$manifest_tmp" "$MANIFEST"
 }
 
@@ -327,6 +332,32 @@ revalidate_provenance() {
     | .sourceRevision = $sourceRevision
     | .executableDigest = (if $executableDigest == "" then null else $executableDigest end)' \
     "$MANIFEST" >"$manifest_tmp"
+  mv "$manifest_tmp" "$MANIFEST"
+}
+
+record_packaged_provenance() {
+  local app_bundle="$1" digest manifest_tmp="$MANIFEST.packaged-provenance.tmp"
+  [[ -x "$CUA_EXE" ]] || {
+    echo "[desktop:$NAME] ERROR packaged executable is missing: $CUA_EXE" >&2
+    return 1
+  }
+  digest="sha256:$(shasum -a 256 "$CUA_EXE" | awk '{print $1}')"
+  jq \
+    --arg executable "$CUA_EXE" \
+    --arg executableDigest "$digest" \
+    --arg bundle "$app_bundle" \
+    --arg cdHash "$(cdhash "$app_bundle")" \
+    --arg validatedAt "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" \
+    '.executable = $executable
+    | .executableDigest = $executableDigest
+    | .provenance = ((.provenance // {}) + {
+        phase: "bundle-signed",
+        executable: $executable,
+        executableDigest: $executableDigest,
+        appBundle: $bundle,
+        cdHash: $cdHash,
+        validatedAt: $validatedAt
+      })' "$MANIFEST" >"$manifest_tmp"
   mv "$manifest_tmp" "$MANIFEST"
 }
 
@@ -784,6 +815,7 @@ PY
     revalidate_provenance "bundle-built" "$pre_build_revision"
     sign_cua_bundle "$app_bundle"
     codesign --verify --deep --strict "$app_bundle"
+    record_packaged_provenance "$app_bundle"
     echo "[desktop:$NAME] CUA bundle $app_bundle"
     echo "[desktop:$NAME] CUA target $BUNDLE_ID"
     if [[ "$COMMAND" == "cua-build" ]]; then
