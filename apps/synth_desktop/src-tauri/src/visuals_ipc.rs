@@ -2482,15 +2482,29 @@ pub(crate) async fn dispatch_optimizer(
         ("POST", "/v1/optimizers/workflows/start") => {
             let request: crate::optimizers::OptimizerRecipeRunRequest =
                 serde_json::from_value(body)?;
+            let requested_recipe_id = request.recipe_id.clone();
             crate::refresh_optimizer_workflow_containers(core, &request.recipe_id).await?;
             let codex = app.state::<Arc<crate::codex::CodexManager>>();
             let run = crate::authorize_optimizer_recipe_start(app, core, &codex, request)
                 .await
                 .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+            let actual_recipe_id = run
+                .summary
+                .get("recipeId")
+                .and_then(Value::as_str)
+                .ok_or_else(|| anyhow::anyhow!("admitted workflow did not record its recipe id"))?;
+            if actual_recipe_id != requested_recipe_id {
+                anyhow::bail!(
+                    "workflow recipe identity mismatch: requested {requested_recipe_id}, admitted {actual_recipe_id}"
+                );
+            }
             Ok(json!({
                 "run": run,
                 "workflow": {
                     "status": run.status,
+                    "requestedRecipeId": requested_recipe_id,
+                    "recipeId": actual_recipe_id,
+                    "exactRecipe": true,
                     "optimizerRunId": run.id,
                     "visualRefs": run.visual_refs,
                     "eventCursor": run.cursor_seq

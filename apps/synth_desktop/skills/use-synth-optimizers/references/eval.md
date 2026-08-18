@@ -51,6 +51,10 @@ selection rule are all published there. Availability is honest: a recipe whose
 target image is not pinned reports `unavailable` with a reason, and starting it
 fails rather than silently substituting a tag.
 
+Recipe families are never interchangeable. If an exact `eval.*` recipe is
+unavailable, return its blocker and stop. Do not run GEPA, a bespoke rollout
+loop, a fixture, or a similarly named recipe as a replacement.
+
 | Recipe | Candidate kind | Decision |
 |---|---|---|
 | `eval.fixture.policy-smoke.v1` | `python-code.v1` (`policy:Policy`) | promotes; deterministic, no benchmark |

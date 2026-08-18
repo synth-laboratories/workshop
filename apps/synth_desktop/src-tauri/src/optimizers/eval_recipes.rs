@@ -64,7 +64,7 @@ pub const EVAL_GAMEBENCH_LLM_RECIPE: &str = "eval.gamebench.llm-policy.confirm.v
 /// even though the worker recipe itself was fixed-cardinality. Keep the
 /// authority here until every supported runtime publishes the field itself;
 /// this is a compatibility projection, not an agent-selected limit.
-const CRAFTAX_CODE_SMOKE_TRIALS_PER_CANDIDATE: u64 = 2;
+const CRAFTAX_CODE_SMOKE_TRIALS_PER_CANDIDATE: u64 = 10;
 
 /// The allowlist the MCP schema publishes. A recipe id outside it never
 /// reaches the worker.
@@ -329,7 +329,7 @@ pub(crate) fn paid_compute_bounds(
 ) -> Result<(f64, u64)> {
     // Admission may receive the projected host catalog rather than the raw
     // runtime catalog. Apply the same built-in compatibility contract here so
-    // the Craftax smoke cannot advertise two trials and then fail moments later
+    // the Craftax smoke cannot advertise ten trials and then fail moments later
     // as if that bound were absent.
     let normalized_recipe = normalize_builtin_recipe_contract(recipe.clone());
     let candidate_set_id = candidate_set_id
@@ -425,12 +425,21 @@ pub async fn start(
         .find(|entry| entry.get("id").and_then(Value::as_str) == Some(recipe_id.as_str()))
         .ok_or_else(|| anyhow!("eval recipe {recipe_id} is not in the local catalog"))?;
     if recipe.get("availability").and_then(Value::as_str) != Some("available") {
+        let reason = recipe
+            .get("availabilityReason")
+            .and_then(Value::as_str)
+            .unwrap_or("target image is not pinned");
         bail!(
-            "eval recipe {recipe_id} is unavailable: {}",
-            recipe
-                .get("availabilityReason")
-                .and_then(Value::as_str)
-                .unwrap_or("target image is not pinned")
+            "{}",
+            json!({
+                "code": "recipe_unavailable",
+                "contract": "workflow.exact_recipe",
+                "owner": recipe_id,
+                "retryable": true,
+                "requestedRecipeId": recipe_id,
+                "substitutionAllowed": false,
+                "message": reason,
+            })
         );
     }
     if report
@@ -1766,13 +1775,13 @@ mod tests {
             "algorithmId": "eval",
             "limits": {"parallelism": 2},
         }));
-        assert_eq!(normalized["limits"]["trials"], json!(2));
+        assert_eq!(normalized["limits"]["trials"], json!(10));
         assert_eq!(
             normalized["limits"]["trialAuthority"],
             json!("workshop.builtin.eval.craftax.code-policy.smoke.v1")
         );
         let (_, total_trials) = paid_compute_bounds_for_candidate_count(&normalized, 2).unwrap();
-        assert_eq!(total_trials, 4);
+        assert_eq!(total_trials, 20);
     }
 
     #[test]

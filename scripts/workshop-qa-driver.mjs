@@ -46,11 +46,12 @@ const WORKFLOWS = {
     "Do not ask for confirmation; this session runs under the unattended QA profile.",
   ].join(" "),
   "craftax-eval": [
-    "Run a bounded Craftax evaluation using your available product tools and the QA-owned",
+    "Run only the exact eval.craftax.code-policy.smoke.v1 workflow using your available product tools and the QA-owned",
     "Craftax service at http://127.0.0.1:8097. Register and probe that URL as task family",
-    "craftax. Use the supported evaluation workflow, run its rollouts concurrently, open its",
+    "craftax. Stage exactly one baseline code-policy candidate. If that exact recipe is unavailable, stop with its readiness blocker. Never substitute",
+    "gepa.craftax.*, another recipe family, a fixture, or a hand-built rollout loop. Run its rollouts concurrently, open its",
     "chat-owned live visual, and poll all work to terminal. Report the candidate count, exact",
-    "rollout count, reward distribution, trace count, concurrency evidence, elapsed time, and",
+    "rollout count (exactly 10), reward distribution, trace count (exactly 10 retained traces), concurrency evidence, elapsed time, and",
     "visual id. Do not substitute fixtures or a hand-written summary. Do not ask for confirmation.",
   ].join(" "),
 };
@@ -91,6 +92,18 @@ function validateWorkflow(workflow, terminal) {
     }
     for (const required of [/rollout/i, /distribution/i, /trace/i, /visual/i]) {
       if (!required.test(text)) throw new Error(`craftax-eval terminal summary is missing ${required}`);
+    }
+    if (!/eval\.craftax\.code-policy\.smoke\.v1/.test(text)) {
+      throw new Error("craftax-eval terminal summary does not attest the exact requested recipe id");
+    }
+    if (!/\b10\b[\s\S]{0,40}rollout|rollout[\s\S]{0,40}\b10\b/i.test(text)) {
+      throw new Error("craftax-eval terminal summary does not attest exactly ten rollouts");
+    }
+    if (!/\b10\b[\s\S]{0,40}trace|trace[\s\S]{0,40}\b10\b/i.test(text)) {
+      throw new Error("craftax-eval terminal summary does not attest ten retained traces");
+    }
+    if (/\bgepa\.craftax\./.test(text)) {
+      throw new Error("craftax-eval substituted a GEPA recipe");
     }
   }
 }
