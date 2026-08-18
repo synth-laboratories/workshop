@@ -108,10 +108,15 @@ jq -e '.bundle.macOS.minimumSystemVersion == "14.0"' \
 jq -e '.bundle.resources["generated-resources/cookbooks"] == "cookbooks"' \
   "$ROOT/apps/synth_desktop/src-tauri/tauri.conf.json" >/dev/null
 
-# Local CUA builds must be passwordless by default. Certificate-backed
-# signing is allowed only behind an explicit opt-in.
-rg -q 'SYNTH_DESKTOP_USE_DEV_SIGNER:-0' "$ROOT/scripts/desktop-instance.sh"
-rg -q 'codesign --force --deep --sign -' "$ROOT/scripts/desktop-instance.sh"
+# Local CUA builds sign with the stable local certificate by default so TCC
+# and Keychain grants survive rebuilds; ad-hoc is an explicit opt-out. The
+# deprecated `--deep` signing flag stamps the outer identifier onto nested
+# code and must never return; the bundle signs under its own $BUNDLE_ID and
+# every build asserts its designated requirement is not cdhash-anchored.
+rg -q 'SYNTH_DESKTOP_USE_DEV_SIGNER:-1' "$ROOT/scripts/desktop-instance.sh"
+! rg -q -- 'codesign --force --deep' "$ROOT/scripts/desktop-instance.sh"
+rg -q -- '--identifier "\$BUNDLE_ID" "\$app_bundle"' "$ROOT/scripts/desktop-instance.sh"
+rg -q 'assert_bundle_identity' "$ROOT/scripts/desktop-instance.sh"
 rg -q 'SYNTH_DESKTOP_REBUILD_ADAPTERS:-0' "$ROOT/scripts/desktop-instance.sh"
 rg -q 'SYNTH_OPTIMIZER_USE_LOCAL_SOURCE:-0' "$ROOT/scripts/desktop-instance.sh"
 rg -q 'optimizer runtime=immutable installed plugin' "$ROOT/scripts/desktop-instance.sh"

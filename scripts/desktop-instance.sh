@@ -3,6 +3,8 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+# shellcheck source=scripts/mcp-adapters.sh
+source "$ROOT/scripts/mcp-adapters.sh"
 REPO_SIBLING_ROOT="$(dirname "$ROOT")"
 GIT_COMMON_DIR="$(git -C "$ROOT" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)"
 if [[ -n "$GIT_COMMON_DIR" ]]; then
@@ -30,6 +32,7 @@ Usage: ./scripts/desktop-instance.sh <command> [name]
   cua [name]       Build and run a named debug .app for Computer Use
   cua-build [name] Build and sign the named debug .app without launching it
   cua-run [name]   Run the existing signed CUA app without rebuilding
+  assert-identity [name]  Verify the built app's signing identity and record it
   status [name]    Show the exact process and instance paths
   stage [name]     Stage protected-folder-free runtime inputs without launching
   stop [name]      Stop only the named instance
@@ -147,7 +150,7 @@ PY
 }
 
 write_contract() {
-	local old_runtime="" manifest_tmp="$MANIFEST.tmp"
+	local old_runtime="" old_signing="" manifest_tmp="$MANIFEST.tmp"
   mkdir -p "$DATA_ROOT" "$WORKSPACE" "$GENERATED_ROOT" "$TARGET_ROOT"
   chmod 700 "$INSTANCE_ROOT" "$DATA_ROOT" "$WORKSPACE"
 
@@ -233,6 +236,7 @@ EOF
 
   if [[ -f "$MANIFEST" ]]; then
     old_runtime="$(jq -c '.runtime // empty' "$MANIFEST" 2>/dev/null || true)"
+    old_signing="$(jq -c '.signing // empty' "$MANIFEST" 2>/dev/null || true)"
   fi
   cat >"$manifest_tmp" <<EOF
 {
@@ -263,6 +267,10 @@ EOF
 EOF
   if [[ -n "$old_runtime" ]]; then
     jq --argjson runtime "$old_runtime" '.runtime = $runtime' "$manifest_tmp" >"$manifest_tmp.merged"
+    mv "$manifest_tmp.merged" "$manifest_tmp"
+  fi
+  if [[ -n "$old_signing" ]]; then
+    jq --argjson signing "$old_signing" '.signing = $signing' "$manifest_tmp" >"$manifest_tmp.merged"
     mv "$manifest_tmp.merged" "$manifest_tmp"
   fi
   mv "$manifest_tmp" "$MANIFEST"
@@ -468,6 +476,137 @@ stage_instance() {
   echo "[desktop:$NAME] app runtime requires no Documents-folder paths"
 }
 
+# Stable certificate signing is the default: an ad-hoc signature's designated
+# requirement is the executable CDHash, so every rebuild becomes a new TCC and
+# Keychain principal and previously granted permissions silently vanish.
+# SYNTH_DESKTOP_USE_DEV_SIGNER=0 opts back into ad-hoc for machines that must
+# never run the one-time trust authorization in setup-desktop-dev-signing.sh.
+resolve_signing_identity() {
+  if [[ "${SYNTH_DESKTOP_USE_DEV_SIGNER:-1}" == "1" ]]; then
+    printf '%s' "${SYNTH_DESKTOP_SIGNING_IDENTITY:-${SYNTH_DESKTOP_DEV_SIGNING_IDENTITY:-Synth Workshop Development}}"
+  else
+    printf '%s' "-"
+  fi
+}
+
+sign_cua_bundle() {
+  local app_bundle="$1"
+  local identity keychain_args=() dev_signing_keychain nested adapter
+  identity="$(resolve_signing_identity)"
+  if [[ "$identity" != "-" ]]; then
+    dev_signing_keychain="$("$ROOT/scripts/setup-desktop-dev-signing.sh")"
+    if [[ -n "$dev_signing_keychain" ]]; then
+      security unlock-keychain \
+        -p "$(<"${SYNTH_DESKTOP_DEV_SIGNING_ROOT:-$HOME/.synth-desktop/dev-signing}/keychain-password")" \
+        "$dev_signing_keychain"
+      keychain_args=(--keychain "$dev_signing_keychain")
+    fi
+  fi
+  # Adapters ship inside the bundle so the packaged app never executes (and
+  # macOS never attributes permissions to) freshly relinked target/debug
+  # binaries carrying their own throwaway ad-hoc identities.
+  for adapter in "${SYNTH_MCP_ADAPTERS[@]}"; do
+    if [[ ! -x "$TARGET_ROOT/debug/$adapter" ]]; then
+      echo "[desktop:$NAME] adapter binary is missing: $TARGET_ROOT/debug/$adapter" >&2
+      exit 1
+    fi
+    /usr/bin/ditto "$TARGET_ROOT/debug/$adapter" "$app_bundle/Contents/MacOS/$adapter"
+  done
+  # Sign inside-out: every nested Mach-O first under its own stable
+  # identifier, then the bundle. `--deep` is deprecated and stamps the outer
+  # identifier onto nested code, which is exactly the identity collision the
+  # instance contract forbids.
+  while IFS= read -r nested; do
+    [[ "$(basename "$nested")" == "synth-desktop" ]] && continue
+    codesign --force --sign "$identity" \
+      ${keychain_args[@]+"${keychain_args[@]}"} \
+      --identifier "$BUNDLE_ID.$(basename "$nested")" "$nested"
+  done < <(find "$app_bundle/Contents/MacOS" -maxdepth 1 -type f -perm -111 | LC_ALL=C sort)
+  codesign --force --sign "$identity" \
+    ${keychain_args[@]+"${keychain_args[@]}"} \
+    --identifier "$BUNDLE_ID" "$app_bundle"
+  if [[ "$identity" == "-" ]]; then
+    echo "[desktop:$NAME] WARNING ad-hoc signature: TCC/Keychain grants will not survive a rebuild" >&2
+  else
+    assert_bundle_identity "$app_bundle" "$identity"
+  fi
+}
+
+signing_requirement() {
+  codesign -d -r- "$1" 2>/dev/null | sed -n 's/^# designated => //p'
+}
+
+signing_authority() {
+  codesign -dvv "$1" 2>&1 | awk -F= '/^Authority=/{print $2; exit}'
+}
+
+signing_identifier() {
+  codesign -dv "$1" 2>&1 | sed -n 's/^Identifier=//p'
+}
+
+# TCC and Keychain key permissions off the designated requirement. A stable
+# identity means expected explicit identifiers, one shared Authority, and a
+# requirement anchored to the certificate rather than a per-build cdhash.
+assert_bundle_identity() {
+  local app_bundle="$1" expected_authority="${2:-}"
+  local host_requirement host_authority nested name expected failures=0
+  local manifest_tmp="$MANIFEST.signing.tmp"
+  host_requirement="$(signing_requirement "$app_bundle")"
+  host_authority="$(signing_authority "$app_bundle")"
+  if [[ -z "$host_requirement" || "$host_requirement" == *cdhash* ]]; then
+    echo "[desktop:$NAME] ERROR bundle designated requirement is cdhash-anchored (ad-hoc); rebuilds will not keep permissions" >&2
+    failures=1
+  fi
+  if [[ "$(signing_identifier "$app_bundle")" != "$BUNDLE_ID" ]]; then
+    echo "[desktop:$NAME] ERROR bundle identifier mismatch: expected $BUNDLE_ID got $(signing_identifier "$app_bundle")" >&2
+    failures=1
+  fi
+  if [[ -n "$expected_authority" && "$host_authority" != "$expected_authority" ]]; then
+    echo "[desktop:$NAME] ERROR bundle authority mismatch: expected $expected_authority got ${host_authority:-none}" >&2
+    failures=1
+  fi
+  while IFS= read -r nested; do
+    name="$(basename "$nested")"
+    expected="$BUNDLE_ID.$name"
+    [[ "$name" == "synth-desktop" ]] && expected="$BUNDLE_ID"
+    if [[ "$(signing_identifier "$nested")" != "$expected" ]]; then
+      echo "[desktop:$NAME] ERROR $name identifier mismatch: expected $expected got $(signing_identifier "$nested")" >&2
+      failures=1
+    fi
+    if [[ "$(signing_requirement "$nested")" == *cdhash* ]]; then
+      echo "[desktop:$NAME] ERROR $name designated requirement is cdhash-anchored" >&2
+      failures=1
+    fi
+    if [[ "$name" != "synth-desktop" && "$(signing_authority "$nested")" != "$host_authority" ]]; then
+      echo "[desktop:$NAME] ERROR $name authority differs from host: $(signing_authority "$nested")" >&2
+      failures=1
+    fi
+  done < <(find "$app_bundle/Contents/MacOS" -maxdepth 1 -type f -perm -111 | LC_ALL=C sort)
+  [[ "$failures" -eq 0 ]] || exit 1
+  [[ -f "$MANIFEST" ]] || write_contract
+  jq \
+    --arg identity "${host_authority:-adhoc}" \
+    --arg requirement "$host_requirement" \
+    --arg verifiedAt "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" \
+    '.signing = {identity: $identity, designatedRequirement: $requirement, verifiedAt: $verifiedAt}' \
+    "$MANIFEST" >"$manifest_tmp"
+  mv "$manifest_tmp" "$MANIFEST"
+  echo "[desktop:$NAME] signing identity=${host_authority:-adhoc}"
+  echo "[desktop:$NAME] signing requirement=$host_requirement"
+}
+
+assert_identity_command() {
+  local app_bundle
+  app_bundle="$(dirname "$(dirname "$(dirname "$CUA_EXE")")")"
+  if [[ ! -d "$app_bundle" ]]; then
+    echo "[desktop:$NAME] signed CUA app is missing; run cua-build first" >&2
+    exit 1
+  fi
+  write_contract
+  assert_bundle_identity "$app_bundle"
+  jq '.signing' "$MANIFEST"
+}
+
 dev_instance() {
   write_contract
   if [[ -n "$(instance_processes)" ]]; then
@@ -581,16 +720,16 @@ PY
   TAURI_CONFIG="$(<"$CONFIG")"
 
   local adapters_ready=1 adapter
-  for adapter in synth-containers-mcp synth-visuals-mcp synth-optimizers-mcp; do
+  local adapter_bin_args=()
+  for adapter in "${SYNTH_MCP_ADAPTERS[@]}"; do
     [[ -x "$TARGET_ROOT/debug/$adapter" ]] || adapters_ready=0
+    adapter_bin_args+=(--bin "$adapter")
   done
   if [[ "$adapters_ready" == "0" || "${SYNTH_DESKTOP_REBUILD_ADAPTERS:-0}" == "1" ]]; then
     echo "[desktop:$NAME] building embedded-agent MCP adapters"
     cargo build \
       --manifest-path "$ROOT/apps/synth_desktop/src-tauri/Cargo.toml" \
-      --bin synth-containers-mcp \
-      --bin synth-visuals-mcp \
-      --bin synth-optimizers-mcp
+      "${adapter_bin_args[@]}"
   else
     echo "[desktop:$NAME] reusing embedded-agent MCP adapters (set SYNTH_DESKTOP_REBUILD_ADAPTERS=1 to refresh)"
   fi
@@ -619,22 +758,7 @@ PY
       echo "[desktop:$NAME] expected CUA bundle executable missing: $app_executable" >&2
       exit 1
     fi
-    # Local test builds must never open a Keychain/password dialog. Ad-hoc
-    # signing requires no secret. Stable certificate signing remains an
-    # explicit opt-in for workflows that need a persistent CUA identity.
-    if [[ "${SYNTH_DESKTOP_USE_DEV_SIGNER:-0}" == "1" ]]; then
-      local dev_signing_identity="${SYNTH_DESKTOP_DEV_SIGNING_IDENTITY:-Synth Workshop Development}"
-      local dev_signing_keychain
-      dev_signing_keychain="$("$ROOT/scripts/setup-desktop-dev-signing.sh")"
-      security unlock-keychain \
-        -p "$(<"${SYNTH_DESKTOP_DEV_SIGNING_ROOT:-$HOME/.synth-desktop/dev-signing}/keychain-password")" \
-        "$dev_signing_keychain"
-      codesign --force --deep --sign "$dev_signing_identity" \
-        --keychain "$dev_signing_keychain" \
-        --identifier "com.synth.desktop.v04.dev.shared" "$app_bundle"
-    else
-      codesign --force --deep --sign - --identifier "$BUNDLE_ID" "$app_bundle"
-    fi
+    sign_cua_bundle "$app_bundle"
     codesign --verify --deep --strict "$app_bundle"
     echo "[desktop:$NAME] CUA bundle $app_bundle"
     echo "[desktop:$NAME] CUA target $BUNDLE_ID"
@@ -669,6 +793,7 @@ clean_instance() {
 
 case "$COMMAND" in
   dev|cua|cua-build|cua-run) dev_instance ;;
+  assert-identity) assert_identity_command ;;
   status) status_instance ;;
   stage) stage_instance ;;
   stop) stop_instance ;;
