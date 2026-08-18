@@ -157,11 +157,29 @@ export type RunProgressEvidence = {
 	diagnostic?: string;
 };
 
+/**
+ * What a search is allowed to conclude, sealed by the run's terminal manifest.
+ *
+ * A GEPA run reporting `Heldout 0.600` says nothing about whether the search
+ * worked — that number is frequently the *seed's*, retained because no proposal
+ * beat it. The verdict is the missing half, and it is computed once in the
+ * service from the durable log rather than re-guessed per surface.
+ */
+export type RunProgressVerdict =
+	| "measured_improvement"
+	| "no_measured_improvement"
+	| "inconclusive"
+	| "failed";
+
 export type RunProgressResult = {
 	headline?: string;
 	detail?: string;
 	absentReason?: string;
 	partial: boolean;
+	/** Absent on algorithms that do not select, and on runs with no sealed manifest. */
+	verdict?: RunProgressVerdict;
+	/** One line of the evidence the verdict rests on, e.g. the uplift and its sample count. */
+	verdictDetail?: string;
 };
 
 export type RunProgressProjection = {

@@ -1969,21 +1969,64 @@ async fn materialize_optimizer_result(
             })
         })
         .unwrap_or(Value::Null);
-    Ok(json!({
+    // The sealed terminal manifest, not the producer's `result_manifest.json`.
+    // The candidate file says what was selected; only the manifest says whether
+    // selecting it improved anything, and a search that improved nothing is the
+    // common case rather than the exception.
+    let sealed = service.terminal_manifest(run.id.clone()).await?;
+    let evidence = sealed
+        .as_ref()
+        .and_then(|sealed| sealed.get("gepaEvidence").cloned())
+        .filter(|value| !value.is_null());
+    let verdict = evidence
+        .as_ref()
+        .and_then(|evidence| evidence.get("verdict").cloned())
+        .unwrap_or(Value::Null);
+    // `frontierMember` is a fact about the search; it is not a recommendation.
+    // Keeping the two apart is what stops a retained seed from reading as a
+    // promotion.
+    let deployment = evidence
+        .as_ref()
+        .and_then(|evidence| evidence.get("deployment").cloned())
+        .unwrap_or_else(|| {
+            json!({
+                "candidateId": Value::Null,
+                "recommended": false,
+                "basis": "this run sealed no verdict; nothing is recommended for deployment",
+            })
+        });
+    let mut result = json!({
         "schemaVersion": "optimizer_result.v1",
+        "resultKind": "gepa_run_result.v1",
         "optimizerRunId": run.id,
         "algorithmId": run.algorithm_id,
         "status": run.status,
-        "finalCursor": run.cursor_seq,
+        "finalCursor": sealed
+            .as_ref()
+            .and_then(|sealed| sealed.get("terminalCursor").cloned())
+            .unwrap_or(json!(run.cursor_seq)),
         "selectedCandidate": selected_candidate,
+        "verdict": verdict,
+        "deployment": deployment,
+        "evidence": evidence.clone().unwrap_or(Value::Null),
         "metrics": {
-            "selection": selection,
+            "selection": sealed
+                .as_ref()
+                .and_then(|sealed| sealed.get("selection").cloned())
+                .filter(|value| !value.is_null())
+                .unwrap_or(selection),
             "heldoutMeasurement": heldout
         },
         "usage": serde_json::to_value(&run.usage).unwrap_or(Value::Null),
         "artifactRefs": artifact_refs,
         "completionReceiptId": format!("optimizer_completion_{}", run.id)
-    }))
+    });
+    if let Some(sealed) = sealed.as_ref() {
+        if let Some(object) = result.as_object().cloned() {
+            result = Value::Object(super::terminal::reconcile(object, sealed));
+        }
+    }
+    Ok(result)
 }
 
 fn list_runs(conn: &Connection, query: &OptimizerQuery) -> Result<Vec<OptimizerRunRecord>> {
@@ -3865,6 +3908,189 @@ pub(in crate::optimizers) mod tests {
 
     fn draft(event_type: &str) -> OptimizerEventDraft {
         OptimizerEventDraft::new(event_type, "eval").raw(json!({ "source": "test" }))
+    }
+
+    fn gepa_draft(event_type: &str, delta: Value) -> OptimizerEventDraft {
+        OptimizerEventDraft::new(event_type, "gepa")
+            .delta(delta.as_object().cloned().unwrap_or_default())
+            .raw(json!({ "source": "test" }))
+    }
+
+    /// A GEPA search that spends its whole budget and keeps its seed is the
+    /// common outcome, and `get_result` used to describe it exactly like a win:
+    /// a `selectedCandidate` with a materialized prompt and `frontierMember:
+    /// true`, no verdict, and nothing saying the winner was the incumbent.
+    ///
+    /// The result now leads with the verdict and keeps deployment separate from
+    /// selection, so "the optimizer picked this" can never be read as "ship it".
+    #[tokio::test]
+    async fn a_gepa_run_that_kept_its_seed_never_reads_as_a_promotion() {
+        let (svc, dir, _) = service().await;
+        let run_dir = dir.path().join("gepa_seed_retained");
+        std::fs::create_dir_all(&run_dir).unwrap();
+        std::fs::write(
+            run_dir.join("best_candidate.json"),
+            json!({
+                "candidate_id": "gepa_seed",
+                "payload": { "stage2_system": "Classify the Banking77 intent." }
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let (run, _) = svc
+            .create(OptimizerCreateRequest {
+                algorithm_id: "gepa".into(),
+                algorithm_version: Some("synth-optimizers-0.2.14".into()),
+                objective: Some("Banking77 intent prompt".into()),
+                source: Some("local".into()),
+                project_ref: None,
+                session_ref: Some("chat_gepa".into()),
+                id: Some("banking77_gepa_seed_retained".into()),
+                execution_bindings: None,
+                input_refs: None,
+                capabilities: Some(OptimizerCapabilities::for_algorithm("gepa")),
+                summary: Some(json!({
+                    "recipeId": "gepa.banking77.luna.v1",
+                    "runDirectory": run_dir.display().to_string(),
+                    "limits": { "proposalsPerGeneration": 10 },
+                })),
+                open_visual: Some(false),
+                cloud_config: None,
+                local_path: None,
+                seed_fixture: None,
+            })
+            .await
+            .unwrap();
+
+        let mut events = vec![
+            gepa_draft("optimizer.run.started", json!({})),
+            gepa_draft(
+                "candidate.registered",
+                json!({ "candidate_id": "gepa_seed", "source": "seed" }),
+            ),
+        ];
+        // The seed scores 1.0 on the minibatch rows and 0.5 on heldout; the one
+        // proposal that was made scores 0.0 on the same minibatch and never
+        // reaches heldout. That is the shape of every rejected proposal.
+        for (candidate, stage, rewards) in [
+            ("gepa_seed", "seed_full_train", vec![1.0, 0.0]),
+            ("gepa_seed", "parent_minibatch_reference", vec![1.0, 1.0]),
+            ("gepa_child", "candidate_minibatch", vec![0.0, 0.0]),
+            ("gepa_seed", "heldout", vec![1.0, 0.0]),
+        ] {
+            for (index, reward) in rewards.into_iter().enumerate() {
+                events.push(gepa_draft(
+                    "optimizer.candidate_evaluation.allocated",
+                    json!({ "candidate_id": candidate, "stage": stage }),
+                ));
+                events.push(gepa_draft(
+                    "optimizer.evaluation_result.received",
+                    json!({
+                        "candidate_id": candidate,
+                        "stage": stage,
+                        "evaluation_id": format!("{candidate}:{stage}:{index}"),
+                        "reward": reward,
+                        "active_workers": 8
+                    }),
+                ));
+            }
+        }
+        events.push(gepa_draft(
+            "candidate.registered",
+            json!({
+                "candidate_id": "gepa_child",
+                "parent_id": "gepa_seed",
+                "generation": 0,
+                "proposal_index": 0,
+                "source": "reflector:parent_variation"
+            }),
+        ));
+        events.push(gepa_draft(
+            "proposer.completed",
+            json!({ "proposal_count": 1 }),
+        ));
+        events.push(gepa_draft(
+            "heldout.completed",
+            json!({ "candidate_id": "gepa_seed", "heldout_reward": 0.5 }),
+        ));
+        events.push(gepa_draft(
+            "frontier.snapshot",
+            json!({ "best_candidate_id": "gepa_seed" }),
+        ));
+        events.push(gepa_draft(
+            "gepa.run.finished",
+            json!({
+                "state": "completed",
+                "runtime_summary": {
+                    "policy": { "model": "gpt-4.1-nano", "calls": 8, "cost_usd": 0.01 },
+                    "proposer": { "model": "gpt-5.6-luna", "calls": 1, "cost_usd": 0.0 }
+                }
+            }),
+        ));
+        events.push(gepa_draft("optimizer.run.completed", json!({})));
+        svc.append_event_payloads(run.id.clone(), events)
+            .await
+            .unwrap();
+
+        let sealed = svc
+            .terminal_manifest(run.id.clone())
+            .await
+            .unwrap()
+            .expect("a terminal GEPA event seals a manifest");
+        // Before this lane the manifest sealed with every one of these null.
+        assert_eq!(sealed["work"]["succeeded"], json!(8), "8 scored rollouts");
+        assert_eq!(sealed["work"]["unit"], json!("rollouts"));
+        assert_eq!(sealed["selection"]["verdict"], json!("no_measured_improvement"));
+        assert_eq!(sealed["selection"]["accepted"], json!(false));
+        assert_eq!(sealed["usage"]["lanes"]["proposer"]["model"], json!("gpt-5.6-luna"));
+        assert_eq!(sealed["usage"]["lanes"]["policy"]["model"], json!("gpt-4.1-nano"));
+        assert_eq!(sealed["gepaEvidence"]["proposals"]["requested"], json!(10));
+        assert_eq!(sealed["gepaEvidence"]["proposals"]["registered"], json!(1));
+        assert_eq!(sealed["gepaEvidence"]["proposals"]["shortfall"], json!(9));
+        assert_eq!(sealed["gepaEvidence"]["rollouts"]["maxActiveWorkers"], json!(8));
+
+        let result = svc.get_result(run.id.clone()).await.unwrap();
+        assert_eq!(result["verdict"], json!("no_measured_improvement"));
+        assert_eq!(result["deployment"]["recommended"], json!(false));
+        assert_eq!(result["deployment"]["candidateId"], Value::Null);
+        // The prompt is still materialized — callers need to read what ran — but
+        // it is no longer the whole answer.
+        assert_eq!(
+            result["selectedCandidate"]["materializedValues"]["prompt"],
+            json!("Classify the Banking77 intent.")
+        );
+        assert_eq!(
+            result["evidence"]["candidates"]
+                .as_array()
+                .map(Vec::len),
+            Some(2),
+            "both the seed and the rejected proposal stay on the record"
+        );
+
+        // A late reconcile arrives carrying a frontier snapshot naming a
+        // different winner. The run is already sealed: the manifest is
+        // write-once, so the settled verdict, counts, and lineage stand and the
+        // late event only extends the log.
+        svc.append_event_payloads(
+            run.id.clone(),
+            vec![gepa_draft(
+                "frontier.snapshot",
+                json!({ "best_candidate_id": "gepa_child" }),
+            )],
+        )
+        .await
+        .unwrap();
+        let after = svc.terminal_manifest(run.id.clone()).await.unwrap().unwrap();
+        assert_eq!(after["selection"]["verdict"], json!("no_measured_improvement"));
+        assert_eq!(after["selection"]["selectedCandidateId"], json!("gepa_seed"));
+        assert_eq!(after["work"]["succeeded"], json!(8));
+        assert_eq!(after["terminalCursor"], sealed["terminalCursor"]);
+        let reread = svc.get_result(run.id.clone()).await.unwrap();
+        assert_eq!(
+            reread["verdict"],
+            json!("no_measured_improvement"),
+            "get_result reconciles against the sealed manifest, not the live tail"
+        );
     }
 
     /// The Banking77 loss, end to end at the service boundary.

@@ -21,6 +21,7 @@ use anyhow::{Context, Result};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::{json, Map, Value};
 
+use super::gepa_evidence;
 use super::models::{OptimizerEventEnvelope, OptimizerRunRecord};
 
 pub(super) const TERMINAL_MANIFEST_SCHEMA: &str = "optimizer_terminal_manifest.v1";
@@ -59,10 +60,13 @@ impl WorkCounts {
 /// worker wrote, and the whole point of the manifest is to be answerable to the
 /// durable log. When the log proves nothing, the counts stay `None` and the
 /// renderer says so.
-pub(super) fn work_counts(run: &OptimizerRunRecord, events: &[OptimizerEventEnvelope]) -> WorkCounts {
+pub(super) fn work_counts(
+    run: &OptimizerRunRecord,
+    events: &[OptimizerEventEnvelope],
+) -> WorkCounts {
     match run.algorithm_id.as_str() {
         "eval" => eval_counts(events),
-        "gepa" | "go-ex" => rollout_counts(events),
+        "gepa" | "go-ex" => rollout_counts(run, events),
         "sft" => sft_counts(events),
         _ => WorkCounts::default(),
     }
@@ -117,32 +121,24 @@ fn eval_counts(events: &[OptimizerEventEnvelope]) -> WorkCounts {
     }
 }
 
-fn rollout_counts(events: &[OptimizerEventEnvelope]) -> WorkCounts {
-    let mut succeeded = 0u64;
-    let mut failed = 0u64;
-    let mut saw = false;
-    for event in events {
-        let is_rollout_terminal = matches!(
-            event.event_type.as_str(),
-            "rollout.completed" | "rollout.terminal" | "gepa.rollout.completed"
-        );
-        if !is_rollout_terminal {
-            continue;
-        }
-        saw = true;
-        let ok = event
-            .item
-            .as_ref()
-            .and_then(|item| item.get("valid").or_else(|| item.get("ok")))
-            .and_then(Value::as_bool)
-            .unwrap_or(true);
-        if ok {
-            succeeded += 1;
-        } else {
-            failed += 1;
-        }
-    }
-    if !saw {
+/// GEPA and GO-Ex rollout counts.
+///
+/// These used to look for `rollout.completed`, `rollout.terminal`, and
+/// `gepa.rollout.completed` — three spellings the GEPA producer has never
+/// emitted. Every GEPA manifest therefore sealed with `succeeded: null`, and a
+/// 140-rollout search settled looking exactly like a search that measured
+/// nothing. The counts now come from the events that do exist, via the same
+/// reduction the typed result and the verdict are built from.
+///
+/// `planned` stays `None` on purpose. GEPA declares a rollout *ceiling*, not a
+/// plan: a run that spends 320 of an 850 budget has not skipped 530 rollouts,
+/// it has finished under budget.
+fn rollout_counts(run: &OptimizerRunRecord, events: &[OptimizerEventEnvelope]) -> WorkCounts {
+    let evidence = gepa_evidence::reduce(run, events);
+    if evidence.rollouts_allocated == 0
+        && evidence.rollouts_scored == 0
+        && evidence.rollouts_failed == 0
+    {
         return WorkCounts {
             unit: Some("rollouts"),
             ..WorkCounts::default()
@@ -150,8 +146,8 @@ fn rollout_counts(events: &[OptimizerEventEnvelope]) -> WorkCounts {
     }
     WorkCounts {
         planned: None,
-        succeeded: Some(succeeded),
-        failed: Some(failed),
+        succeeded: Some(evidence.rollouts_scored),
+        failed: Some(evidence.rollouts_failed),
         skipped: None,
         unit: Some("rollouts"),
     }
@@ -283,6 +279,30 @@ fn selection_value(run: &OptimizerRunRecord, events: &[OptimizerEventEnvelope]) 
         .unwrap_or(Value::Null)
 }
 
+/// GEPA's selection, stated as a decision rather than as a winner.
+///
+/// The producer never writes a `selection` snapshot, so every GEPA manifest
+/// sealed with `selection: null`. Filling that with the frontier's best
+/// candidate alone would be worse than null: the frontier's best is frequently
+/// the seed, and presenting the seed as the selected candidate is how a search
+/// that improved nothing came to read as a promotion. The three identities stay
+/// separate here — what was proposed, what the optimizer selected, and what may
+/// be deployed — and the verdict carries the evidence for the third.
+fn gepa_selection(evidence: &gepa_evidence::GepaEvidence, run_status: &str) -> Value {
+    let (verdict, detail) = evidence.verdict(run_status);
+    json!({
+        "seedCandidateId": evidence.seed_candidate_id,
+        "selectedCandidateId": evidence.selected_candidate_id,
+        "accepted": evidence
+            .selected_candidate_id
+            .as_deref()
+            .zip(evidence.seed_candidate_id.as_deref())
+            .map(|(selected, seed)| selected != seed),
+        "verdict": verdict.as_str(),
+        "verdictDetail": detail,
+    })
+}
+
 /// Build the manifest for a run that has just reached `terminal_status` at
 /// `terminal_cursor`. Pure: the caller seals it.
 pub(super) fn derive(
@@ -292,6 +312,25 @@ pub(super) fn derive(
     degradation: Option<Value>,
 ) -> Value {
     let counts = work_counts(run, events);
+    // GEPA is the one algorithm whose settlement is a *judgement*, not a count,
+    // so its manifest carries the whole reduction: candidate lineage, per-stage
+    // scores with sample counts, proposal accounting, and the verdict those
+    // rest on. Every other surface reads it from here instead of re-deriving a
+    // second opinion.
+    let gepa = matches!(run.algorithm_id.as_str(), "gepa" | "go-ex")
+        .then(|| gepa_evidence::reduce(run, events));
+    let mut usage = usage_value(run, events);
+    // The producer's own per-lane roll-up is the only place proposer spend is
+    // separated from policy spend. Without it a search that burned a frontier
+    // model on ten proposals reads as a cheap nano-model run.
+    if let (Some(lanes), Some(object)) = (
+        gepa.as_ref().and_then(|gepa| gepa.usage_lanes.clone()),
+        usage.as_object_mut(),
+    ) {
+        if object.get("lanes").map(Value::is_null).unwrap_or(true) {
+            object.insert("lanes".into(), lanes);
+        }
+    }
     let artifact_refs: Vec<Value> = run
         .output_refs
         .iter()
@@ -320,8 +359,15 @@ pub(super) fn derive(
         "terminalStatus": terminal_status,
         "terminalCursor": run.cursor_seq,
         "work": counts.to_value(),
-        "usage": usage_value(run, events),
-        "selection": selection_value(run, events),
+        "usage": usage,
+        "selection": match gepa.as_ref() {
+            Some(gepa) => gepa_selection(gepa, terminal_status),
+            None => selection_value(run, events),
+        },
+        "gepaEvidence": gepa
+            .as_ref()
+            .map(|gepa| gepa.to_value(terminal_status))
+            .unwrap_or(Value::Null),
         "resultRefs": run
             .output_refs
             .iter()
@@ -419,13 +465,17 @@ pub(super) fn amend_degradation(conn: &Connection, run_id: &str, degradation: Va
 ///
 /// Terminal numbers come from the manifest; nothing a later poll computes may
 /// move them. Used by every terminal read path.
-pub(super) fn reconcile(mut projection: Map<String, Value>, manifest: &Value) -> Map<String, Value> {
+pub(super) fn reconcile(
+    mut projection: Map<String, Value>,
+    manifest: &Value,
+) -> Map<String, Value> {
     for key in [
         "terminalStatus",
         "terminalCursor",
         "work",
         "usage",
         "selection",
+        "gepaEvidence",
         "degradation",
         "startedAt",
         "finishedAt",
@@ -468,7 +518,12 @@ mod tests {
         }
     }
 
-    fn event(seq: u64, event_type: &str, item: Option<Value>, snapshot: Option<Value>) -> OptimizerEventEnvelope {
+    fn event(
+        seq: u64,
+        event_type: &str,
+        item: Option<Value>,
+        snapshot: Option<Value>,
+    ) -> OptimizerEventEnvelope {
         OptimizerEventEnvelope {
             schema_version: OPTIMIZER_EVENT_SCHEMA_VERSION.into(),
             event_id: Some(format!("run_1:{seq}")),
@@ -497,7 +552,12 @@ mod tests {
             Some(json!({ "planned_trials": 10 })),
         )];
         for seq in 3..13 {
-            events.push(event(seq, "eval.trial.terminal", Some(json!({ "valid": true })), None));
+            events.push(event(
+                seq,
+                "eval.trial.terminal",
+                Some(json!({ "valid": true })),
+                None,
+            ));
         }
         let counts = work_counts(&run("eval"), &events);
         assert_eq!(counts.planned, Some(10));
@@ -512,7 +572,12 @@ mod tests {
         stale.usage.rollouts = 3;
         let events = (1..=4)
             .map(|seq| {
-                let mut entry = event(seq, "eval.trial.terminal", Some(json!({ "valid": true })), None);
+                let mut entry = event(
+                    seq,
+                    "eval.trial.terminal",
+                    Some(json!({ "valid": true })),
+                    None,
+                );
                 entry.usage_delta = json!({
                     "rollouts": 1,
                     "wall_time_ms": 25,
@@ -543,9 +608,24 @@ mod tests {
     #[test]
     fn a_partial_plan_reports_the_unfinished_trials_as_skipped() {
         let events = vec![
-            event(2, "eval.run.planned", None, Some(json!({ "planned_trials": 10 }))),
-            event(3, "eval.trial.terminal", Some(json!({ "valid": true })), None),
-            event(4, "eval.trial.terminal", Some(json!({ "valid": false })), None),
+            event(
+                2,
+                "eval.run.planned",
+                None,
+                Some(json!({ "planned_trials": 10 })),
+            ),
+            event(
+                3,
+                "eval.trial.terminal",
+                Some(json!({ "valid": true })),
+                None,
+            ),
+            event(
+                4,
+                "eval.trial.terminal",
+                Some(json!({ "valid": false })),
+                None,
+            ),
         ];
         let counts = work_counts(&run("eval"), &events);
         assert_eq!(counts.succeeded, Some(1));

@@ -170,6 +170,16 @@ export function RunProgressCard({ runId, sessionRef, onOpenFullRun }: Props) {
 				<p className="run-progress-result" data-testid={`run-progress-result-${runId}`}>
 					{projection.result.headline ?? projection.result.absentReason}
 					{projection.result.detail ? <span className="run-progress-faint"> · {projection.result.detail}</span> : null}
+					{projection.result.verdictDetail ? (
+						<span
+							className="run-progress-faint"
+							data-testid={`run-progress-verdict-${runId}`}
+							title={projection.result.verdict}
+						>
+							{" · "}
+							{projection.result.verdictDetail}
+						</span>
+					) : null}
 					{projection.result.partial ? (
 						<span className="ws-badge ws-badge-warn run-progress-partial">Partial</span>
 					) : null}

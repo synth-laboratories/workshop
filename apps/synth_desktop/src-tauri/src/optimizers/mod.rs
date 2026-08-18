@@ -5,6 +5,7 @@ mod container_eval;
 mod eval_candidates;
 mod eval_recipes;
 mod events;
+mod gepa_evidence;
 mod hosted_client;
 mod hosted_gelo;
 mod hosted_sft;
@@ -23,9 +24,6 @@ mod tinker_catalog;
 
 pub use eval_candidates::EvalStageCandidatesRequest;
 pub(crate) use eval_recipes::paid_compute_bounds;
-pub(crate) use recipes::{
-    BANKING77_EVAL_BASELINE_RECIPE, HEALTHBENCH_EVAL_SMOKE_RECIPE,
-};
 #[allow(unused_imports)] // public sidecar status/version types for Desktop callers
 pub use manager::{OptimizerManager, OptimizerSidecarStatus, OptimizerSidecarVersion};
 pub use models::{
@@ -33,4 +31,5 @@ pub use models::{
     OptimizerRecipeRunRequest, OptimizerReconcileRequest, OptimizerRelationship,
     OptimizerRunRecord, OptimizerStateSlice,
 };
+pub(crate) use recipes::{BANKING77_EVAL_BASELINE_RECIPE, HEALTHBENCH_EVAL_SMOKE_RECIPE};
 pub use service::OptimizerService;

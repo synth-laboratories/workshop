@@ -30,6 +30,7 @@ import {
 	lastDisruptionMs,
 	milestoneFromEvents,
 	rolloutCompletionTimes,
+	terminalManifest,
 	usageProjection
 } from "./adapterShared";
 
@@ -145,21 +146,55 @@ function gepaMilestone(gepa: GepaState): RunProgressMilestone | undefined {
 	};
 }
 
-function gepaResult(gepa: GepaState, failed: boolean): RunProgressResult {
+/** The sealed verdict, and one line of the evidence under it. */
+function sealedVerdict(input: AdapterInput): Pick<RunProgressResult, "verdict" | "verdictDetail"> {
+	const selection = terminalManifest(input.run)?.selection;
+	if (!selection || typeof selection !== "object" || Array.isArray(selection)) return {};
+	const record = selection as Record<string, unknown>;
+	const verdict = record.verdict;
+	if (typeof verdict !== "string") return {};
+	const detail = record.verdictDetail as Record<string, unknown> | undefined;
+	const uplift = typeof detail?.upliftAbsolute === "number" ? detail.upliftAbsolute : undefined;
+	const samples = typeof detail?.selectedHeldoutSamples === "number"
+		? detail.selectedHeldoutSamples
+		: undefined;
+	// An uplift with no sample count behind it is a number, not a measurement.
+	const verdictDetail = uplift != null && samples != null
+		? `${uplift >= 0 ? "+" : ""}${uplift.toFixed(3)} over baseline on ${samples} heldout ${samples === 1 ? "sample" : "samples"}`
+		: typeof detail?.reason === "string"
+			? detail.reason
+			: undefined;
+	return {
+		verdict: verdict as RunProgressResult["verdict"],
+		...(verdictDetail ? { verdictDetail } : {})
+	};
+}
+
+function gepaResult(gepa: GepaState, failed: boolean, input: AdapterInput): RunProgressResult {
 	const heldout = gepa.heldout;
 	const partial = gepa.failedAttempts.length > 0 || failed;
+	const verdict = sealedVerdict(input);
 	if (failed) {
 		return {
 			headline: "Search failed",
 			detail: gepa.activity.detail,
-			partial: true
+			partial: true,
+			...verdict
 		};
 	}
 	if (heldout?.reward != null) {
+		// The headline used to stop at the number, which reads as a result the
+		// search produced. It is usually the incumbent's score, unchanged.
+		const headline = verdict.verdict === "measured_improvement"
+			? `Improved · heldout ${heldout.reward.toFixed(3)}`
+			: verdict.verdict === "no_measured_improvement"
+				? `No improvement · heldout ${heldout.reward.toFixed(3)}`
+				: `Heldout ${heldout.reward.toFixed(3)}`;
 		return {
-			headline: `Heldout ${heldout.reward.toFixed(3)}`,
+			headline,
 			detail: heldout.candidateId ? `candidate ${heldout.candidateId}` : undefined,
-			partial
+			partial,
+			...verdict
 		};
 	}
 	if (heldout?.skipped || heldout?.blocked) {
@@ -168,17 +203,19 @@ function gepaResult(gepa: GepaState, failed: boolean): RunProgressResult {
 			detail: gepa.best?.trainReward != null
 				? `best train reward ${gepa.best.trainReward.toFixed(3)} — train evidence only`
 				: undefined,
-			partial
+			partial,
+			...verdict
 		};
 	}
 	if (gepa.best?.trainReward != null) {
 		return {
 			headline: `Best train reward ${gepa.best.trainReward.toFixed(3)}`,
 			detail: "no heldout evaluation was emitted",
-			partial
+			partial,
+			...verdict
 		};
 	}
-	return { absentReason: "no candidate was scored", partial };
+	return { absentReason: "no candidate was scored", partial, ...verdict };
 }
 
 export function projectGepa(input: AdapterInput, projected: ProjectedState): RunProgressProjection {
@@ -253,6 +290,6 @@ export function projectGepa(input: AdapterInput, projected: ProjectedState): Run
 		warning: warnings[0],
 		warnings,
 		details: gepaDetails(gepa),
-		...(terminal ? { result: gepaResult(gepa, base.status === "failed") } : {})
+		...(terminal ? { result: gepaResult(gepa, base.status === "failed", input) } : {})
 	};
 }
