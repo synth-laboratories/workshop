@@ -48,7 +48,7 @@ pub fn auto_decision(
     }
 }
 
-fn approve_kind(kind: &ApprovalKind) -> ApprovalDecision {
+pub(crate) fn approve_kind(kind: &ApprovalKind) -> ApprovalDecision {
     match kind {
         ApprovalKind::PaidCompute { requested_cap, .. } => ApprovalDecision::ApproveWithCap {
             cap: requested_cap.clone(),

@@ -29,7 +29,7 @@ use tokio::{
 };
 
 use crate::domain::{RunStatus, SessionStatus, SessionTitleOrigin};
-use crate::session::approval::{ApprovalKind, ApprovalOrigin};
+use crate::session::approval::{ApprovalDecision, ApprovalKind, ApprovalOrigin, ApprovalScope};
 use crate::session::SessionPersistence;
 use crate::storage::EventSource;
 
@@ -292,7 +292,18 @@ async fn read_stdout<R: tauri::Runtime>(
             if approval_policy == "never" {
                 // “Allow all” is an explicit session policy. A provider
                 // may still ask despite it, so resolve the request rather
-                // than surfacing a contradictory approval card.
+                // than surfacing a contradictory approval card. The decision
+                // still gets a durable `approval.granted` receipt — permissive
+                // policy must never mean unaudited work — but the provider is
+                // answered even if persisting the receipt fails, because an
+                // unanswered approval wedges the turn.
+                if let Some(decision) = automatic_approval_decision(&available_decisions) {
+                    let kind = shell_approval_kind(&method, &params, &available_decisions);
+                    let _ = persistence
+                        .approvals
+                        .record_auto(&app, &session_id, &kind, &decision, &approval_policy)
+                        .await;
+                }
                 let response = automatic_approval_response(&available_decisions, rpc_id);
                 let _ = write_message(&stdin, &response).await;
                 continue;
@@ -1019,6 +1030,23 @@ pub(crate) fn rejection_response(available: &[String], id: Value) -> Value {
     }
 }
 
+/// The typed decision `automatic_approval_response` will deliver, or `None`
+/// when no automatic answer exists (the response is then a JSON-RPC error and
+/// there is nothing to receipt).
+pub(crate) fn automatic_approval_decision(available: &[String]) -> Option<ApprovalDecision> {
+    if select_approval_decision(available, "always").is_ok() {
+        Some(ApprovalDecision::Approve {
+            scope: ApprovalScope::Session,
+        })
+    } else if select_approval_decision(available, "once").is_ok() {
+        Some(ApprovalDecision::Approve {
+            scope: ApprovalScope::Once,
+        })
+    } else {
+        None
+    }
+}
+
 pub(crate) fn automatic_approval_response(available: &[String], id: Value) -> Value {
     // Prefer the durable session decision, then fall back to one permitted
     // action for providers that do not expose a session-scoped variant.
@@ -1054,7 +1082,9 @@ fn shell_approval_kind(method: &str, params: &Value, available: &[String]) -> Ap
         .get("path")
         .and_then(Value::as_str)
         .or_else(|| params.pointer("/item/path").and_then(Value::as_str));
-    let kind = if method.to_ascii_lowercase().contains("file") {
+    let kind = if method.to_ascii_lowercase().contains("file")
+        || method.to_ascii_lowercase().contains("patch")
+    {
         "file_change"
     } else if method.to_ascii_lowercase().contains("command") || command.is_some() {
         "shell_command"
@@ -1080,8 +1110,10 @@ fn shell_approval_kind(method: &str, params: &Value, available: &[String]) -> Ap
 }
 
 pub(crate) fn is_approval_method(method: &str) -> bool {
-    matches!(method, "permissions/request" | "execCommandApproval")
-        || method.ends_with("/requestApproval")
+    matches!(
+        method,
+        "permissions/request" | "execCommandApproval" | "applyPatchApproval"
+    ) || method.ends_with("/requestApproval")
         || method.ends_with("/request_approval")
 }
 

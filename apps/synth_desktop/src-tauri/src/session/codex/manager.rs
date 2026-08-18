@@ -175,6 +175,18 @@ impl CodexManager {
     ) -> Result<CodexSessionInfo> {
         let _attachment_lifecycle = self.attachment_lifecycle.read().await;
         validate_start(&request)?;
+        // Seal the approval surface before anything downstream reads it. An
+        // absent request inherits machine config; an explicit request that
+        // disagrees with machine config fails here, before a child exists
+        // that could ask questions nobody can answer. Writing the resolved
+        // values back into the request means every consumer — child config,
+        // thread params, session record, metadata — sees one set of values.
+        let effective_profile = super::super::approval_policy::resolve_effective(
+            request.approval_policy.as_deref(),
+            request.sandbox.as_deref(),
+        )?;
+        request.approval_policy = Some(effective_profile.approval_policy.clone());
+        request.sandbox = Some(effective_profile.sandbox_mode.clone());
         let requested_approval = request
             .approval_policy
             .clone()
@@ -429,6 +441,12 @@ impl CodexManager {
                 let _ = self.persistence.publish_event(&app, event).await;
             }
         }
+        // One atomic receipt per session start. Emitted after the session row
+        // exists so the boundary event has a durable home; the sealed profile
+        // is also what authorize_host consults for this session from now on.
+        self.approvals
+            .record_policy_effective(&app, &request.session_id, effective_profile)
+            .await?;
         if let Some(database) = self.persistence.database() {
             if crate::workspace_scope::get(&database, &request.session_id)
                 .await?

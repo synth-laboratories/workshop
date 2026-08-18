@@ -1509,10 +1509,12 @@ export function useAppController() {
 						: await nativeCodex.defaultWorkspace();
 					const startRequest = {
 						...codexStartRequest(sessionId, workspace, executionTarget, "ask", preferences.agentContext.autoCompactTokenLimits, laguna?.baseUrl ?? undefined, serviceTierForExecutionTarget(executionTarget, modelKnobValues) ?? "default"),
-						// Restored pre-policy sessions can carry only the human mode. Never
-						// turn that into an undefined request which Rust then treats as Ask.
-						approvalPolicy,
-						sandbox: sandboxMode,
+						// The session's sealed policy metadata is the authority; the
+						// preference-seeded values cover only restored pre-policy sessions
+						// that carry no metadata. Never send undefined, which Rust would
+						// resolve against machine config as if nothing had been chosen.
+						approvalPolicy: typeof session.metadata.approvalPolicy === "string" ? session.metadata.approvalPolicy : approvalPolicy,
+						sandbox: typeof session.metadata.sandbox === "string" ? session.metadata.sandbox : sandboxMode,
 						threadId: typeof session.metadata.threadId === "string" ? session.metadata.threadId : undefined
 					};
 					const sequence = allocateNativeSequence(sessionId);

@@ -657,8 +657,8 @@ pub(crate) fn ensure_home(home: &Path, request: &CodexSessionStartRequest) -> Re
                 continue;
             }
             existing.push_str(&format!(
-                "\n{heading}\ncommand = \"{}\"\nargs = []\n{}default_tools_approval_mode = \"approve\"\n{}",
-                toml_string(&bin.display().to_string()), mcp_enabled_tools(server), mcp_env_config(server, &ipc, &request.session_id, &app_name, &bundle_id),
+                "\n{heading}\ncommand = \"{}\"\nargs = []\n{}default_tools_approval_mode = \"{}\"\n{}",
+                toml_string(&bin.display().to_string()), mcp_enabled_tools(server), crate::session::approval_policy::MCP_TOOLS_APPROVAL_MODE, mcp_env_config(server, &ipc, &request.session_id, &app_name, &bundle_id),
             ));
         }
         fs::write(home.join("config.toml"), existing)?;

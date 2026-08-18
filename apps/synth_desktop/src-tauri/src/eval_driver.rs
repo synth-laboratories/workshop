@@ -463,6 +463,28 @@ fn session_approval_route(path: &str) -> Option<(String, String)> {
 fn preflight_report() -> Result<Value> {
     let permissions = synth_config::desktop_permission_settings()?;
     let visuals_descriptor = visuals_ipc::connection_path(&crate::storage::app_data_root());
+    // Dry-run of the exact resolution a session start performs. An inherit
+    // start (no explicit values) succeeds whenever machine config parses; the
+    // unattended contract additionally requires the resolved policy to be
+    // `never`, so no provider or host approval can become interactive.
+    let effective = crate::session::approval_policy::resolve_effective(None, None);
+    let qa_unattended = match &effective {
+        Ok(profile) if profile.approval_policy == "never" => json!({
+            "wouldStart": true,
+            "reason": Value::Null,
+        }),
+        Ok(profile) => json!({
+            "wouldStart": false,
+            "reason": format!(
+                "machine approval policy is `{}`; unattended runs require `never`",
+                profile.approval_policy
+            ),
+        }),
+        Err(error) => json!({
+            "wouldStart": false,
+            "reason": format!("effective policy did not resolve: {error}"),
+        }),
+    };
     Ok(json!({
         "ok": true,
         "schemaVersion": PROTOCOL_VERSION,
@@ -472,6 +494,16 @@ fn preflight_report() -> Result<Value> {
             "sandboxMode": permissions.sandbox_mode,
             "configPath": permissions.config_path,
         },
+        "effectiveProfile": effective.as_ref().ok().map(|profile| json!({
+            "approvalPolicy": profile.approval_policy,
+            "sandbox": profile.sandbox_mode,
+            "mcpToolsApprovalMode": profile.mcp_tools_approval_mode,
+            "machineConfigPath": profile.machine_config_path,
+        })),
+        "qaUnattended": qa_unattended,
+        // Auto-approval under `never` still refuses unbounded paid compute;
+        // preflight states the cap contract so a driver can assert it.
+        "paidCompute": { "requiresBoundedCap": true },
         "visualsIpcDescriptorPresent": visuals_descriptor.exists(),
         "optIn": {
             "instanceName": crate::instance::name(),
@@ -743,18 +775,13 @@ async fn create_session(deps: &EvalDriverDeps, body: Value) -> Result<Value> {
             .and_then(Value::as_str)
             .map(str::to_string),
         provider_env_key: None,
-        approval_policy: Some(
-            body.get("approvalPolicy")
-                .and_then(Value::as_str)
-                .unwrap_or("never")
-                .into(),
-        ),
-        sandbox: Some(
-            body.get("sandbox")
-                .and_then(Value::as_str)
-                .unwrap_or("workspace-write")
-                .into(),
-        ),
+        // Absent values inherit the machine policy through the sealed
+        // effective profile; a literal here would be a fifth policy layer.
+        approval_policy: body
+            .get("approvalPolicy")
+            .and_then(Value::as_str)
+            .map(Into::into),
+        sandbox: body.get("sandbox").and_then(Value::as_str).map(Into::into),
         service_tier: body
             .get("serviceTier")
             .and_then(Value::as_str)
@@ -881,8 +908,9 @@ async fn send_message(deps: &EvalDriverDeps, session_id: &str, body: Value) -> R
         provider_name: Some(provider_name),
         provider_title: None,
         provider_env_key: None,
-        approval_policy: Some("never".into()),
-        sandbox: Some("workspace-write".into()),
+        // Inherit the machine policy through the sealed effective profile.
+        approval_policy: None,
+        sandbox: None,
         service_tier: body
             .get("serviceTier")
             .and_then(Value::as_str)
@@ -2698,6 +2726,16 @@ mod tests {
             assert!(permissions[key].is_string(), "missing permissions.{key}");
         }
         assert!(report["visualsIpcDescriptorPresent"].is_boolean());
+        // The unattended contract is a dry-run of the session-start resolution:
+        // wouldStart must be an honest boolean, and it may be true only when
+        // the resolved profile says `never` — never on a divergent machine.
+        assert!(report["qaUnattended"]["wouldStart"].is_boolean());
+        if report["qaUnattended"]["wouldStart"] == true {
+            assert_eq!(report["effectiveProfile"]["approvalPolicy"], "never");
+        } else {
+            assert!(report["qaUnattended"]["reason"].is_string());
+        }
+        assert_eq!(report["paidCompute"]["requiresBoundedCap"], true);
     }
 
     #[test]
