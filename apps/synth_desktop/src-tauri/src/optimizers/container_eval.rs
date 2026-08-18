@@ -98,7 +98,7 @@ impl EvalSpec {
                 question: "What is the scored accuracy of the advertised Banking77 policy on 10 labeled train examples?",
                 world_ref: "world:banking77@train",
                 evaluation_plan_ref: "banking77_eval.v1",
-                harness: "desktop_eval",
+                harness: "classify",
                 policy_config: "banking77_gpt_4_1_nano",
                 concurrency: 10,
                 train: &BANKING77_TRAIN,
@@ -136,19 +136,30 @@ impl EvalSpec {
     }
 
     fn policy_config_body(self) -> Option<Value> {
-        if self.family != "healthbench" {
-            return None;
-        }
-        Some(json!({
-            "config_id": self.policy_config,
-            "harness": self.harness,
-            "config": {
+        let config = if self.family == "banking77" {
+            json!({
+                "provider": "openai",
+                "model": "gpt-4.1-nano",
+                "api_key_env": "OPENAI_API_KEY",
+                "base_url": "https://api.openai.com/v1",
+                "temperature": 0,
+                "max_tokens": 32,
+            })
+        } else if self.family == "healthbench" {
+            json!({
                 "provider": "openai",
                 "model": "gpt-4.1-mini-2025-04-14",
                 "api_key_env": "OPENAI_API_KEY",
                 "base_url": "https://api.openai.com/v1",
                 "max_tokens": 1536,
-            }
+            })
+        } else {
+            return None;
+        };
+        Some(json!({
+            "config_id": self.policy_config,
+            "harness": self.harness,
+            "config": config,
         }))
     }
 }
@@ -1284,7 +1295,11 @@ mod tests {
             family,
             rewards,
             policy_status: 200,
-            policy_config_id: "openai_gpt41_mini".into(),
+            policy_config_id: if family == "banking77" {
+                "banking77_gpt_4_1_nano".into()
+            } else {
+                "openai_gpt41_mini".into()
+            },
             fail_seeds: BTreeSet::new(),
             extra_cost_usd: None,
         })
@@ -1314,7 +1329,7 @@ mod tests {
                             "world_ref": if family == "banking77" { "world:banking77@train" } else { "world:healthbench@eval" },
                             "capabilities": if family == "banking77" { json!({
                                 "policy_refs": [{
-                                    "harness": "desktop_eval",
+                                    "harness": "classify",
                                     "config": "banking77_gpt_4_1_nano",
                                     "model": "openai/gpt-4.1-nano"
                                 }]
@@ -1351,7 +1366,7 @@ mod tests {
                         })),
                         ("POST", "/rollouts") => {
                             if family == "banking77"
-                                && request.body.pointer("/policy_ref/harness") != Some(&json!("desktop_eval"))
+                                && request.body.pointer("/policy_ref/harness") != Some(&json!("classify"))
                             {
                                 return JsonHttpResponse::error(
                                     StatusCode::UNPROCESSABLE_ENTITY,
