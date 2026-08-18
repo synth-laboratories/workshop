@@ -7,10 +7,14 @@ use std::{
     path::{Path, PathBuf},
     process::Stdio,
     sync::{atomic::AtomicU64, Arc},
+    time::Duration,
 };
 
 fn codex_child_path(binary: &Path, inherited: Option<&OsStr>) -> Result<Option<OsString>> {
-    let Some(parent) = binary.parent().filter(|parent| !parent.as_os_str().is_empty()) else {
+    let Some(parent) = binary
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+    else {
         return Ok(inherited.map(OsStr::to_os_string));
     };
     let mut entries = vec![parent.to_path_buf()];
@@ -195,8 +199,26 @@ async fn read_stdout<R: tauri::Runtime>(
     persistence: EventPumpState,
 ) {
     let mut lines = BufReader::new(stdout).lines();
+    let mut heartbeat = tokio::time::interval(Duration::from_secs(5));
+    heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     let mut settlement = TurnSettlement::default();
-    while let Ok(Some(line)) = lines.next_line().await {
+    loop {
+        // An open provider stdout channel is positive liveness evidence even
+        // while an XHigh turn or proposer is legitimately silent. Previously
+        // ownership was refreshed only after a decoded frame, so any >20s
+        // think was reconciled as a crash and interrupted while its optimizer
+        // continued running. EOF still exits this loop and follows the normal
+        // terminal/unhealthy settlement path.
+        let next_line = tokio::select! {
+            _ = heartbeat.tick() => {
+                persistence.persistence.heartbeat_turn(&session_id).await;
+                continue;
+            }
+            next_line = lines.next_line() => next_line,
+        };
+        let Ok(Some(line)) = next_line else {
+            break;
+        };
         // Stamped here, on the decoded frame, before parsing, redaction,
         // persistence, IPC, or any renderer work. Generation speed is a claim
         // about delivery, and every millisecond spent below this line would
@@ -454,21 +476,9 @@ async fn read_stdout<R: tauri::Runtime>(
         });
         persistence
             .persistence
-            .notify_codex_event(
-                &app,
-                session_id.clone(),
-                "turn/completed",
-                params.clone(),
-            )
+            .notify_codex_event(&app, session_id.clone(), "turn/completed", params.clone())
             .await;
-        apply_codex_terminal(
-            &app,
-            &session_id,
-            &persistence,
-            "turn/completed",
-            params,
-        )
-        .await;
+        apply_codex_terminal(&app, &session_id, &persistence, "turn/completed", params).await;
     }
     let owned_attachment = {
         let mut sessions = persistence.sessions.write().await;
@@ -714,7 +724,11 @@ async fn apply_codex_terminal<R: tauri::Runtime>(
     if manager_owns_terminal {
         return;
     }
-    if let Ok(Some(session)) = persistence.persistence.get_session(session_id.to_owned()).await {
+    if let Ok(Some(session)) = persistence
+        .persistence
+        .get_session(session_id.to_owned())
+        .await
+    {
         if let Some(run_id) = session.active_run_id {
             let run_status = match terminal_method {
                 "turn/completed" => RunStatus::Completed,
@@ -723,12 +737,7 @@ async fn apply_codex_terminal<R: tauri::Runtime>(
             };
             if let Some(runs) = persistence.persistence.runs() {
                 if let Ok(mutation) = runs
-                    .transition(
-                        run_id,
-                        run_status,
-                        Some(params),
-                        EventSource::Codex,
-                    )
+                    .transition(run_id, run_status, Some(params), EventSource::Codex)
                     .await
                 {
                     if let Some(event) = mutation.event {
@@ -738,12 +747,7 @@ async fn apply_codex_terminal<R: tauri::Runtime>(
             }
         } else if let Ok(Some(mutation)) = persistence
             .persistence
-            .transition_session(
-                session_id.to_owned(),
-                status,
-                EventSource::Codex,
-                params,
-            )
+            .transition_session(session_id.to_owned(), status, EventSource::Codex, params)
             .await
         {
             if let Some(event) = mutation.event {
