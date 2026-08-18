@@ -2,9 +2,14 @@ import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import {
 	EXECUTION_TARGETS,
 	LAUNCH_PICKER_TARGETS,
+	MODEL_ACCESS_LABEL,
+	MODEL_ACCESS_ORDER,
+	apiProviderForTarget,
+	modelAccessForTarget,
 	TARGET_GROUP_LABEL,
 	type ExecutionTargetOption,
-	type LandingState
+	type LandingState,
+	type ModelAccessKind
 } from "../types/landing";
 import { publicError } from "../runtime/publicError";
 import { ProviderMark, providerMarkForTarget } from "./ProviderMark";
@@ -425,7 +430,7 @@ function composerEnabled(state: LandingState): boolean {
 	return state.composerEnabled;
 }
 
-const GROUP_ORDER: ExecutionTargetOption["group"][] = ["local", "remote", "subscription", "cloud"];
+const GROUP_ORDER: ExecutionTargetOption["group"][] = ["local", "cloud", "remote", "subscription"];
 
 function formatSkillMention(skill: Skill): string {
 	const slug = skill.name.trim().toLowerCase().replace(/\s+/g, "-").replace(/[^a-z0-9-]/g, "");
@@ -454,6 +459,7 @@ function ModelMenu({
 	onOpenChange: (open: boolean) => void;
 }) {
 	const ref = useRef<HTMLDivElement>(null);
+	const [activeAccess, setActiveAccess] = useState<ModelAccessKind | null>(null);
 	const modelLabel = modelChipLabel(state);
 	const modelReady = !(
 		state.selectedTargetId === "local-laguna" && state.model.status === "not_installed"
@@ -489,7 +495,10 @@ function ModelMenu({
 			<button
 				type="button"
 				className={`model-chip${modelReady ? "" : " is-empty"}${open ? " open" : ""}`}
-				onClick={() => onOpenChange(!open)}
+				onClick={() => {
+					if (!open) setActiveAccess(null);
+					onOpenChange(!open);
+				}}
 				aria-label={`Model: ${modelLabel}`}
 				aria-expanded={open}
 				aria-controls="composer-model-menu"
@@ -505,12 +514,27 @@ function ModelMenu({
 			</button>
 			{open ? (
 				<div id="composer-model-menu" className="composer-model-menu" role="listbox" data-testid="composer-model-menu">
-					{GROUP_ORDER.map((group) => {
+					{activeAccess === null ? MODEL_ACCESS_ORDER.map((access) => (
+						<button key={access} type="button" role="option" aria-selected={selected ? modelAccessForTarget(selected) === access : false} className={`composer-model-option composer-model-access${selected && modelAccessForTarget(selected) === access ? " selected" : ""}`} data-testid={`composer-model-access-${access}`} onClick={() => setActiveAccess(access)}>
+							<span className="composer-model-option-main">
+								<span className="composer-model-option-label">{MODEL_ACCESS_LABEL[access]}</span>
+								<span className="composer-model-option-desc">{access === "local" ? "Models on this Mac" : access === "api" ? "Synth and third-party providers" : "Your ChatGPT subscription"}</span>
+							</span>
+							<span aria-hidden>›</span>
+						</button>
+					)) : <>
+						<button type="button" className="composer-model-option composer-model-access-back" data-testid="composer-model-access-back" onClick={() => setActiveAccess(null)}>
+							<span className="composer-model-option-main"><span className="composer-model-option-label">‹ {MODEL_ACCESS_LABEL[activeAccess]}</span><span className="composer-model-option-desc">All access methods</span></span>
+						</button>
+					{GROUP_ORDER.filter((group) => {
+						const sample = LAUNCH_PICKER_TARGETS.find((target) => target.group === group);
+						return sample ? modelAccessForTarget(sample) === activeAccess : false;
+					}).map((group) => {
 						const items = LAUNCH_PICKER_TARGETS.filter((t) => t.group === group);
 						if (!items.length) return null;
 						return (
 							<div key={group} className="composer-model-group">
-								<div className="composer-model-group-label">{TARGET_GROUP_LABEL[group]}</div>
+								<div className="composer-model-group-label">{activeAccess === "api" ? apiProviderForTarget(items[0]) : TARGET_GROUP_LABEL[group]}</div>
 								{items.map((target) => {
 									const localBlocked =
 										target.id === "local-laguna" &&
@@ -623,8 +647,8 @@ function ModelMenu({
 								})}
 							</div>
 						);
-					})}
-					{selected ? (
+					})}</>}
+					{selected && activeAccess !== null ? (
 						<details className="composer-model-advanced" data-testid="composer-model-advanced">
 							<summary>Advanced</summary>
 							<div className="composer-model-details">

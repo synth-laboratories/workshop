@@ -26,12 +26,13 @@ test("Synth Cloud hosted models appear under SYNTH CLOUD when api key is configu
 	await page.getByTestId("titlebar").waitFor();
 
 	await page.getByTestId("composer-model").click();
+	await page.getByTestId("composer-model-access-api").click();
 	const menu = page.getByTestId("composer-model-menu");
 	await expect(menu).toBeVisible();
 	await expect(menu).not.toContainText(/Muse Glimmer|GGUF|DFlash/i);
 
 	const cloudGroup = menu.locator(".composer-model-group").filter({
-		has: page.locator(".composer-model-group-label", { hasText: "Synth Cloud" })
+		has: page.locator(".composer-model-group-label", { hasText: "Synth" })
 	});
 	await expect(cloudGroup.getByTestId("composer-model-option-synth-cloud-laguna-s")).toBeVisible();
 	await expect(cloudGroup.getByTestId("composer-model-option-synth-cloud-laguna-s"))
@@ -45,9 +46,9 @@ test("Synth Cloud hosted models appear under SYNTH CLOUD when api key is configu
 	await expect(cloudGroup.getByTestId("composer-model-option-synth-cloud-muse-spark"))
 		.not.toHaveAttribute("aria-disabled", "true");
 
-	// OpenRouter Laguna stays under Remote · OpenRouter, not Synth Cloud.
+	// OpenRouter Laguna stays under its third-party provider, not Synth.
 	const remoteGroup = menu.locator(".composer-model-group").filter({
-		has: page.locator(".composer-model-group-label", { hasText: "Remote · OpenRouter" })
+		has: page.locator(".composer-model-group-label", { hasText: "OpenRouter" })
 	});
 	await expect(remoteGroup.getByTestId("composer-model-option-openrouter-laguna-s")).toBeVisible();
 	await expect(remoteGroup.getByTestId("composer-model-option-openrouter-muse-spark")).toHaveText(/Muse Spark 1\.2/);
@@ -57,6 +58,7 @@ test("Synth Cloud hosted models appear under SYNTH CLOUD when api key is configu
 	await page.getByTestId("composer-model-option-synth-cloud-muse-spark").click();
 	await expect(page.getByTestId("composer-model")).toHaveAccessibleName(/Muse Spark 1\.2/);
 	await page.getByTestId("composer-model").click();
+	await page.getByTestId("composer-model-access-api").click();
 	const advanced = page.getByTestId("composer-model-advanced");
 	await advanced.locator("summary").click();
 	await expect(advanced).toContainText("Synth Cloud · usage tracked");
@@ -65,6 +67,7 @@ test("Synth Cloud hosted models appear under SYNTH CLOUD when api key is configu
 test("Synth Cloud Laguna S is gated when api key is missing", async ({ page }) => {
 	// Default browser stub has apiKeyConfigured: false — do not override it.
 	await page.getByTestId("composer-model").click();
+	await page.getByTestId("composer-model-access-api").click();
 	const option = page.getByTestId("composer-model-option-synth-cloud-laguna-s");
 	await expect(option).toBeVisible();
 	await expect(option.getByRole("option")).toHaveAttribute("aria-disabled", "true");
@@ -77,6 +80,7 @@ test("Synth Cloud Laguna S is gated when api key is missing", async ({ page }) =
 
 test("OpenRouter models are gated and link directly to Account settings", async ({ page }) => {
 	await page.getByTestId("composer-model").click();
+	await page.getByTestId("composer-model-access-api").click();
 	const option = page.getByTestId("composer-model-option-openrouter-luna");
 	await expect(option.getByRole("option")).toHaveAttribute("aria-disabled", "true");
 	await expect(option).toContainText("OpenRouter API key required");
@@ -106,6 +110,7 @@ test("a removed OpenRouter key rejects the message before creating a session", a
 	});
 	await page.reload();
 	await page.getByTestId("composer-model").click();
+	await page.getByTestId("composer-model-access-api").click();
 	await page.getByTestId("composer-model-option-openrouter-luna").click();
 	await expect(page.getByTestId("composer-input")).toBeEnabled();
 
@@ -176,6 +181,7 @@ test("configured Luna replaces a stale remembered chat and sends the first messa
 	await page.reload();
 	await expect(page.getByRole("tab", { name: /Chat/ })).toBeVisible();
 	await page.getByTestId("composer-model").click();
+	await page.getByTestId("composer-model-access-api").click();
 	await page.getByTestId("composer-model-option-openrouter-luna").click();
 	await page.getByTestId("composer-input").fill("first Luna message");
 	await page.getByTestId("composer-send").click();

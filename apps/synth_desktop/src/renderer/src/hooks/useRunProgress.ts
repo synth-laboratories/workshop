@@ -49,6 +49,7 @@ export function useRunProgress(runId: string, sessionRef?: string): RunProgressS
 	const [unavailableReason, setUnavailableReason] = useState<string | undefined>();
 	const [intent, setIntent] = useState<RunControlIntent | null>(null);
 	const [clock, setClock] = useState(() => Date.now());
+	const [providerAccess, setProviderAccess] = useState<RunProgressProjection["providerAccess"]>();
 	const intentRef = useRef<RunControlIntent | null>(null);
 	intentRef.current = intent;
 
@@ -85,12 +86,97 @@ export function useRunProgress(runId: string, sessionRef?: string): RunProgressS
 		return () => window.clearInterval(timer);
 	}, [live]);
 
+	useEffect(() => {
+		const secrets = bridges.secrets;
+		if (!secrets) return;
+		let cancelled = false;
+		const algorithmId = snapshot?.run?.algorithmId;
+		const load = async () => {
+			try {
+				const [caps, inbox] = await Promise.all([secrets.capabilities(), secrets.pending()]);
+				if (cancelled) return;
+				const match = caps.find((cap) => cap.runId === runId);
+				if (match) {
+					const status = match.status === "exhausted"
+						? "exhausted"
+						: match.status === "expired"
+							? "expired"
+							: inbox.proxy.running
+								? "healthy"
+								: "proxy_down";
+					setProviderAccess({
+						provider: match.provider,
+						status,
+						suffix: match.displaySuffix ?? undefined,
+						usedCalls: match.usedCalls,
+						maxCalls: match.maxCalls,
+						usedCostUsd: match.usedCostUsd,
+						maxCostUsd: match.maxCostUsd,
+						note: status === "proxy_down"
+							? "Provider proxy is not running."
+							: status === "exhausted"
+								? "Call or spend ceiling reached."
+								: "Via Workshop proxy"
+					});
+					return;
+				}
+				const grant = inbox.grants.find((item) => item.runId === runId);
+				if (grant) {
+					setProviderAccess({
+						provider: grant.provider ?? "openai",
+						status: "approval_required",
+						usedCalls: 0,
+						maxCalls: grant.maxCalls,
+						usedCostUsd: 0,
+						maxCostUsd: grant.maxCostUsd,
+						note: "Allow this in Settings → Secrets"
+					});
+					return;
+				}
+				if (!inbox.proxy.running) {
+					setProviderAccess({
+						provider: "openai",
+						status: "proxy_down",
+						usedCalls: 0,
+						maxCalls: 0,
+						usedCostUsd: 0,
+						maxCostUsd: 0,
+						note: "Provider proxy is not running."
+					});
+					return;
+				}
+				if (algorithmId !== "gepa" && algorithmId !== "eval") {
+					setProviderAccess(undefined);
+					return;
+				}
+				setProviderAccess({
+					provider: "openai",
+					status: "missing",
+					usedCalls: 0,
+					maxCalls: 0,
+					usedCostUsd: 0,
+					maxCostUsd: 0,
+					note: "Add an OpenAI connection in Settings → Secrets"
+				});
+			} catch {
+				/* Secrets are optional on this surface. */
+			}
+		};
+		void load();
+		const timer = window.setInterval(() => void load(), 2500);
+		return () => {
+			cancelled = true;
+			window.clearInterval(timer);
+		};
+	}, [runId, live, snapshot?.run?.algorithmId]);
+
 	// A terminal run's elapsed time comes from its own timestamps, so freezing
 	// the clock cannot change what it shows.
-	const projection = useMemo(
-		() => (snapshot ? projectRunProgress(snapshot, clock) : null),
-		[snapshot, clock]
-	);
+	const projection = useMemo(() => {
+		const next = snapshot ? projectRunProgress(snapshot, clock) : null;
+		if (!next || !providerAccess) return next;
+		return { ...next, providerAccess };
+	}, [snapshot, clock, providerAccess]);
 
 	// One measurement per published snapshot, not per clock tick: a 1s elapsed
 	// re-render is not new evidence about latency or estimate coverage.

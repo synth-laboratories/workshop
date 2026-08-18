@@ -54,6 +54,27 @@
 	align-items: baseline;
 }
 
+.run-progress-active-label {
+	display: inline-flex;
+	gap: var(--sp-2);
+	align-items: center;
+	font-weight: var(--fw-medium);
+}
+
+.run-progress-live-dot {
+	width: var(--sp-2);
+	height: var(--sp-2);
+	border-radius: var(--radius-pill);
+	background: var(--color-accent);
+	box-shadow: 0 0 0 0 color-mix(in srgb, var(--color-accent) 35%, transparent);
+	animation: run-progress-live-pulse 1800ms ease-out infinite;
+}
+
+@keyframes run-progress-live-pulse {
+	0% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--color-accent) 35%, transparent); }
+	70%, 100% { box-shadow: 0 0 0 7px transparent; }
+}
+
 .run-progress-faint { color: var(--color-text-muted); }
 
 /* The explanation under a value: coverage, ETA basis, or a source note. */
@@ -69,6 +90,14 @@
 	flex-wrap: wrap;
 	gap: var(--sp-2) var(--sp-4);
 	align-items: baseline;
+}
+
+.run-progress-provider {
+	display: flex;
+	flex-direction: column;
+	gap: 2px;
+	padding: var(--sp-2) 0 0;
+	border-top: 1px solid var(--border-subtle);
 }
 
 .run-progress-milestone,
@@ -182,6 +211,7 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
+	.run-progress-live-dot { animation: none; }
 	.run-progress-bar-fill { transition: none; }
 	.run-progress-bar.is-indeterminate .run-progress-bar-fill {
 		width: 100%;

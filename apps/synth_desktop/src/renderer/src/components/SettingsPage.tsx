@@ -25,6 +25,7 @@ import { ProviderMark } from "./ProviderMark";
 import { bridges } from "../runtime/desktopBridge";
 import { ChatgptCodexSubscriptionCard } from "./ChatgptCodexSubscriptionCard";
 import { ContextSettings } from "./ContextSettings";
+import { SecretsSettings } from "./SecretsSettings";
 
 type Props = {
 	onBack: () => void;
@@ -89,6 +90,15 @@ function IconPerson() {
 	);
 }
 
+function IconKey() {
+	return (
+		<svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden>
+			<circle cx="5.5" cy="8" r="2.4" stroke="currentColor" strokeWidth="1.3" />
+			<path d="M7.6 8h5.2M11.2 8v2.2M12.8 8v1.4" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
+		</svg>
+	);
+}
+
 function IconInfo() {
 	return (
 		<svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden>
@@ -115,6 +125,7 @@ const SECTIONS = [
 	{ id: "inference", label: "Inference", icon: IconGauge },
 	{ id: "voice", label: "Voice", icon: IconMic },
 	{ id: "account", label: "Account", icon: IconPerson },
+	{ id: "secrets", label: "Secrets", icon: IconKey },
 	{ id: "about", label: "About", icon: IconInfo }
 ] as const;
 
@@ -460,6 +471,7 @@ export function SettingsPage({
 								type="button"
 								className={`settings-nav-item${section === s.id ? " active" : ""}`}
 								aria-current={section === s.id ? "page" : undefined}
+								data-testid={`settings-nav-${s.id}`}
 								onClick={() => {
 									setSection(s.id);
 									onSectionChange?.(s.id);
@@ -528,6 +540,7 @@ export function SettingsPage({
 							onOpenDeviceUsage={account.onOpenDeviceUsage}
 						/>
 					) : null}
+					{section === "secrets" ? <SecretsSettings /> : null}
 					{section === "about" ? (
 						<div className="settings-sections" data-testid="settings-about">
 							<SettingsCard title="Synth Desktop">

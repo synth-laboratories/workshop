@@ -15,14 +15,14 @@ if [[ -n "$GIT_COMMON_DIR" ]]; then
 fi
 COMMAND="${1:-dev}"
 NAME="${2:-${SYNTH_DESKTOP_INSTANCE:-codex}}"
-RELEASE_LINE="${SYNTH_DESKTOP_RELEASE_LINE:-v0.5}"
-APP_VERSION="${SYNTH_DESKTOP_APP_VERSION:-0.5.0}"
+RELEASE_LINE="${SYNTH_DESKTOP_RELEASE_LINE:-v0.6}"
+APP_VERSION="${SYNTH_DESKTOP_APP_VERSION:-0.6.0}"
 
-if [[ "$RELEASE_LINE" != "v0.5" ]]; then
-  echo "[desktop:$NAME] invalid release line; this branch only builds v0.5 instances" >&2
-  exit 2
+if [[ "$RELEASE_LINE" != "v0.6" ]]; then
+	  echo "[desktop:$NAME] invalid release line; this branch only builds v0.6 instances" >&2
+	  exit 2
 fi
-RELEASE_SLUG="v05"
+RELEASE_SLUG="v06"
 
 usage() {
   cat <<'EOF'
@@ -751,6 +751,10 @@ dev_instance() {
   export SYNTH_DESKTOP_INSTANCE_MANIFEST="$MANIFEST"
   export SYNTH_DESKTOP_SOURCE_REVISION="$SOURCE_REVISION"
   export SYNTH_DESKTOP_VITE_URL="http://127.0.0.1:$VITE_PORT"
+  # Named development instances may execute an operator-pinned image already
+  # present in the local OCI daemon. The Rust admission check still requires a
+  # full sha256 identity; release builds ignore this development-only lane.
+  export SYNTH_EVAL_ALLOW_LOCAL_PINNED_TARGETS=1
   # Debug instances use the existing Codex file as a seed and never touch
   # Keychain. Refreshed credentials live in one private machine-local cache so
   # rebuilds and differently named instances reuse a still-valid session.

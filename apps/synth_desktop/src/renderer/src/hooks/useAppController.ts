@@ -39,7 +39,8 @@ import {
 } from "../stores/sessionStore";
 import {
 	EXECUTION_TARGETS,
-	isInternTargetId
+	isInternTargetId,
+	resolveDefaultTargetId
 } from "../types/landing";
 import { useInferenceMonitor } from "../components/InferencePanel";
 import { artifactFromVisualRecord } from "../components/VisualHost";
@@ -170,7 +171,8 @@ export function useAppController() {
 	const transcriptLruRef = useRef(new Map<string, true>());
 	const activeChatIdRef = useRef<string | null>(null);
 	const [transcriptHistoryBySession, setTranscriptHistoryBySession] = useState<Record<string, TranscriptHistoryState>>({});
-	const [selectedTargetId, setSelectedTargetId] = useState("local-laguna");
+	const [selectedTargetId, setSelectedTargetId] = useState("chatgpt-luna");
+	const defaultModelResolvedRef = useRef(false);
 	useEffect(() => {
 		// v0.1 pickers hide Intern; never leave a hidden target selected.
 		if (isInternTargetId(selectedTargetId)) setSelectedTargetId("local-laguna");
@@ -370,6 +372,29 @@ export function useAppController() {
 		accountView,
 		openBilling
 	} = useAccountShell(showToast);
+
+	useEffect(() => {
+		if (defaultModelResolvedRef.current || view.kind !== "landing" || !backendSettings || !codexOauthStatus) return;
+		const targetId = resolveDefaultTargetId(backendSettings.defaultModel ?? { model: "gpt-5.6-luna", effort: "xhigh", providers: ["chatgpt", "openrouter"] }, {
+			chatgpt: codexOauthStatus.canUseModels,
+			openrouter: backendSettings.openrouterApiKeyConfigured,
+			synth: backendSettings.apiKeyConfigured
+		}, sessions.filter((session) => session.latestCursor > 0).map((session) => ({
+			targetId: executionTargetToUiId(session.target),
+			updatedAt: session.updatedAt
+		})));
+		setSelectedTargetId(targetId);
+		const defaultPreference = backendSettings.defaultModel ?? { model: "gpt-5.6-luna", effort: "xhigh", providers: ["chatgpt", "openrouter"] };
+		if ((targetId === "chatgpt-luna" || targetId === "openrouter-luna") && defaultPreference.model.toLowerCase().includes("gpt-5.6-luna")) {
+			const knob = modelKnobForTarget(targetId, "reasoning");
+			const effort = defaultPreference.effort as ModelKnobTransportValue;
+			if (knob?.options.some((option) => option.transportValue === effort)) {
+				setModelKnobValues((current) => ({ ...current, [modelKnobKey(targetId, "reasoning")]: effort }));
+				window.localStorage.setItem(knob.storageKey, effort);
+			}
+		}
+		defaultModelResolvedRef.current = true;
+	}, [backendSettings, codexOauthStatus, sessions, view.kind]);
 
 	// One owner for plugin registry status; Sidebar and OptimizersPage read it.
 	const { pluginStatuses, refreshPluginStatuses } = usePluginStatuses();

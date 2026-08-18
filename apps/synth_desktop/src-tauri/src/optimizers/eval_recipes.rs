@@ -407,6 +407,77 @@ fn paid_compute_bounds_for_candidate_count(
     Ok((total_usd, total_trials))
 }
 
+fn secrets_proxy_error(code: &str, message: &str) -> anyhow::Error {
+    anyhow!(
+        "{}",
+        json!({
+            "code": code,
+            "contract": "workshop.secrets_proxy",
+            "retryable": code == "secrets_proxy_unavailable",
+            "message": message,
+        })
+    )
+}
+
+/// Recipe-owned capability ceilings. The candidate never chooses the route,
+/// model allowlist, or spend bound.
+fn policy_from_eval_recipe(
+    recipe: &Value,
+    candidate_count: u64,
+) -> Result<crate::secrets::SecretsUsePolicy> {
+    let models = recipe
+        .get("models")
+        .and_then(Value::as_array)
+        .map(|models| {
+            models
+                .iter()
+                .filter_map(|model| {
+                    model
+                        .get("id")
+                        .and_then(Value::as_str)
+                        .or_else(|| model.as_str())
+                        .map(str::to_owned)
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    if models.is_empty() {
+        return Err(secrets_proxy_error(
+            "secrets_proxy_denied",
+            "paid eval recipe is missing a model allowlist",
+        ));
+    }
+    let (max_usd, max_trials) =
+        paid_compute_bounds_for_candidate_count(recipe, candidate_count.max(1))?;
+    let mut policy = crate::secrets::SecretsUsePolicy::default();
+    policy.operations = vec!["chat.completions.create".into()];
+    policy.models = models;
+    policy.max_cost_usd = max_usd.max(0.01);
+    policy.max_calls = max_trials.saturating_mul(16).clamp(40, u32::MAX as u64) as u32;
+    Ok(policy)
+}
+
+/// Trusted route binding. `synth-optimizers` must copy `provider_routes.openai`
+/// into the trial container as `EVAL_LLM_ROUTE` / `WORKSHOP_OPENAI_ROUTE` and
+/// must not let the recipe or candidate replace it with `api.openai.com`.
+pub(crate) fn bind_provider_routes_into_manifest(path: &Path, routes: Value) -> Result<()> {
+    let mut manifest: Value = serde_json::from_slice(
+        &fs::read(path).with_context(|| format!("read eval worker manifest {}", path.display()))?,
+    )
+    .context("parse eval worker manifest")?;
+    let Some(object) = manifest.as_object_mut() else {
+        return Err(secrets_proxy_error(
+            "secrets_proxy_route_unbound",
+            "eval worker manifest is not an object",
+        ));
+    };
+    object.insert("credential_mode".into(), json!("workshop_proxy"));
+    object.insert("provider_routes".into(), routes);
+    fs::write(path, serde_json::to_vec_pretty(&manifest)?)
+        .context("write eval worker provider_routes")?;
+    Ok(())
+}
+
 /// The catalog is still worth showing when the runtime is missing: an empty
 /// list reads as "this product does not exist", which is the wrong answer.
 /// Refuse a target that is not pinned to an immutable digest.
@@ -420,6 +491,16 @@ fn paid_compute_bounds_for_candidate_count(
 /// A recipe that declares no image has nothing to pin (the fixture smoke is
 /// deterministic and benchmark-free); a recipe that declares one must pin it.
 fn require_digest_pinned_target(recipe: &Value, recipe_id: &str) -> Result<()> {
+    let allow_local_pinned_target = cfg!(debug_assertions)
+        && std::env::var("SYNTH_EVAL_ALLOW_LOCAL_PINNED_TARGETS").as_deref() == Ok("1");
+    require_digest_pinned_target_with_policy(recipe, recipe_id, allow_local_pinned_target)
+}
+
+fn require_digest_pinned_target_with_policy(
+    recipe: &Value,
+    recipe_id: &str,
+    allow_local_pinned_target: bool,
+) -> Result<()> {
     let image = recipe
         .get("image")
         .and_then(Value::as_str)
@@ -468,7 +549,7 @@ fn require_digest_pinned_target(recipe: &Value, recipe_id: &str) -> Result<()> {
     let host = repository.split('/').next().unwrap_or("");
     let has_registry_host = repository.contains('/')
         && (host.contains('.') || host.contains(':') || host == "localhost");
-    if !has_registry_host {
+    if !has_registry_host && !allow_local_pinned_target {
         return Err(refuse(
             "the eval target names no registry; publish the image under its registry host and pin that digest",
         ));
@@ -597,6 +678,10 @@ pub async fn start(
     .context("write eval worker manifest")?;
 
     let run_dir = home.join("runs").join(&run_id);
+    let requires_openai = recipe
+        .get("models")
+        .and_then(Value::as_array)
+        .is_some_and(|models| !models.is_empty());
     let limits = recipe.get("limits").cloned().unwrap_or_else(|| json!({}));
     let candidates = candidate_set
         .get("candidates")
@@ -679,6 +764,9 @@ pub async fn start(
         .register_local_recipe(run_id.clone(), cancel_tx)
         .await;
     let worker = service.clone();
+    let worker_recipe_id = recipe_id.clone();
+    let worker_recipe = recipe.clone();
+    let worker_candidate_count = candidates.len() as u64;
     tokio::spawn(async move {
         if let Err(error) = run_worker(
             worker.clone(),
@@ -686,6 +774,10 @@ pub async fn start(
             python,
             manifest_path,
             run_dir,
+            requires_openai,
+            worker_recipe_id,
+            worker_recipe,
+            worker_candidate_count,
             cancel_rx,
         )
         .await
@@ -703,14 +795,20 @@ async fn run_worker(
     python: PathBuf,
     manifest_path: PathBuf,
     run_dir: PathBuf,
+    requires_openai: bool,
+    recipe_id: String,
+    recipe: Value,
+    candidate_count: u64,
     mut cancel: watch::Receiver<bool>,
 ) -> Result<()> {
+    let _revoke = crate::secrets::RevokeRunOnDrop(run_id.clone());
     append_status(&service, &run_id, "optimizer.run.started", "running").await?;
     fs::create_dir_all(&run_dir).context("create eval run directory")?;
     let stdout_path = run_dir.join("worker.stdout.log");
     let stderr_path = run_dir.join("worker.stderr.log");
     let stderr = fs::File::create(&stderr_path)?;
-    let mut child = Command::new(&python)
+    let mut command = Command::new(&python);
+    command
         .arg("-m")
         .arg("synth_optimizers.eval")
         .arg("worker")
@@ -720,7 +818,27 @@ async fn run_worker(
         // not inherit the operator's shell PATH, so without this the catalog
         // can truthfully report Docker ready and the worker can still fail
         // immediately with `docker is not on PATH`.
-        .env("PATH", eval_cli_path(std::env::var_os("PATH").as_deref())?)
+        .env("PATH", eval_cli_path(std::env::var_os("PATH").as_deref())?);
+    if requires_openai {
+        let secrets = crate::secrets::live().ok_or_else(|| {
+            secrets_proxy_error(
+                "secrets_proxy_unavailable",
+                "paid eval workers require the Workshop secrets proxy",
+            )
+        })?;
+        let policy = policy_from_eval_recipe(&recipe, candidate_count)?;
+        let env = secrets
+            .workload_env("openai", &run_id, &recipe_id, policy, "eval")
+            .map_err(|error| secrets_proxy_error("secrets_proxy_denied", &error.to_string()))?;
+        let routes = env.provider_routes().map_err(|error| {
+            secrets_proxy_error("secrets_proxy_route_unbound", &error.to_string())
+        })?;
+        bind_provider_routes_into_manifest(&manifest_path, routes)?;
+        for (key, value) in env.as_pairs() {
+            command.env(key, value);
+        }
+    }
+    let mut child = command
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::from(stderr))
@@ -849,7 +967,8 @@ impl LiveIngest {
     }
 
     async fn push(&mut self, line: &str) -> Result<()> {
-        let Ok(raw) = serde_json::from_str::<Value>(line) else {
+        let line = crate::secrets::redact_live(line);
+        let Ok(raw) = serde_json::from_str::<Value>(&line) else {
             return Ok(());
         };
         if raw.get("schema_version").and_then(Value::as_str) != Some("eval.worker-event.v1") {
@@ -2046,6 +2165,19 @@ mod immutable_target_tests {
     }
 
     #[test]
+    fn an_explicit_local_development_lane_accepts_a_registry_less_immutable_id() {
+        require_digest_pinned_target_with_policy(
+            &recipe(
+                Some("craftax-eval-target"),
+                Some("sha256:d1b3eaccfd833f0f67eaf682be0ea162e93ddacb71db944be9b3e03c82cd09bd"),
+            ),
+            EVAL_CRAFTAX_LLM_RECIPE,
+            true,
+        )
+        .expect("an explicitly enabled local lane may use an operator-pinned OCI image ID");
+    }
+
+    #[test]
     fn a_published_registry_reference_is_admitted() {
         require_digest_pinned_target(
             &recipe(
@@ -2067,5 +2199,57 @@ mod immutable_target_tests {
     fn a_recipe_with_no_image_has_nothing_to_pin() {
         require_digest_pinned_target(&recipe(None, None), EVAL_FIXTURE_SMOKE_RECIPE)
             .expect("a benchmark-free fixture declares no target");
+    }
+
+    #[test]
+    fn paid_eval_policy_takes_models_and_budget_from_the_recipe() {
+        let policy = policy_from_eval_recipe(
+            &json!({
+                "models": [{"id": "gpt-5.6-luna"}],
+                "budget": {"max_usd": 0.30},
+                "limits": {"trials": 2}
+            }),
+            2,
+        )
+        .unwrap();
+        assert_eq!(policy.models, vec!["gpt-5.6-luna"]);
+        assert_eq!(policy.operations, vec!["chat.completions.create"]);
+        assert!((policy.max_cost_usd - 1.20).abs() < f64::EPSILON);
+        assert!(policy.max_calls >= 40);
+    }
+
+    #[test]
+    fn worker_manifest_binds_container_proxy_route_not_openai() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("opt_eval_test.json");
+        fs::write(
+            &path,
+            serde_json::to_vec_pretty(&json!({
+                "schema_version": "eval.worker-manifest.v1",
+                "run_id": "opt_eval_test",
+                "recipe_id": EVAL_CRAFTAX_LLM_RECIPE,
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        bind_provider_routes_into_manifest(
+            &path,
+            json!({
+                "openai": "http://host.docker.internal:18451/cap/wcap_abc/v1/providers/openai/chat/completions",
+                "openai_base": "http://host.docker.internal:18451/cap/wcap_abc/v1/providers/openai",
+                "auth": "capability_path",
+                "api_key_sentinel": "workshop-proxy",
+            }),
+        )
+        .unwrap();
+        let manifest: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        assert_eq!(manifest["credential_mode"], "workshop_proxy");
+        let route = manifest["provider_routes"]["openai"].as_str().unwrap();
+        assert!(route.contains("host.docker.internal"));
+        assert!(route.ends_with("/v1/providers/openai/chat/completions"));
+        assert!(!route.contains("api.openai.com"));
+        assert!(!route.contains("127.0.0.1"));
+        let encoded = manifest.to_string();
+        assert!(!encoded.contains("sk-"));
     }
 }

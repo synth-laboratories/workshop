@@ -77,7 +77,7 @@ export const MODEL_CAPABILITY_REGISTRY: ModelCapabilitySpec[] = [
 		targetId: "chatgpt-luna",
 		target: { kind: "remote", models: ["gpt-5.6-luna"] },
 		knobs: [
-			{ id: "reasoning", label: "Thinking", testId: "reasoning-effort", storageKey: "synth.models.chatgpt-luna.reasoning", defaultValue: "medium", options: LUNA_EFFORT_OPTIONS, turnStartField: "effort" },
+			{ id: "reasoning", label: "Thinking", testId: "reasoning-effort", storageKey: "synth.models.chatgpt-luna.reasoning", defaultValue: "xhigh", options: LUNA_EFFORT_OPTIONS, turnStartField: "effort" },
 			{ id: "service-tier", label: "Speed", testId: "service-tier", storageKey: "synth.models.chatgpt-luna.service-tier", defaultValue: "default", options: SERVICE_TIER_OPTIONS, turnStartField: "serviceTier" }
 		],
 		reasoningDisplay: "summary", inputModalities: ["text", "image"], maxContextTokens: 272_000
@@ -127,7 +127,7 @@ export const MODEL_CAPABILITY_REGISTRY: ModelCapabilitySpec[] = [
 			label: "Reasoning effort",
 			testId: "reasoning-effort",
 			storageKey: "synth.reasoningEffort",
-			defaultValue: "medium",
+			defaultValue: "xhigh",
 			options: LUNA_EFFORT_OPTIONS,
 			turnStartField: "effort"
 		}],

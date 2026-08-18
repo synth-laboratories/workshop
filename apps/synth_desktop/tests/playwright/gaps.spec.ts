@@ -159,6 +159,7 @@ test.describe("coverage gaps", () => {
 	test("Intern is absent from every v0.1 navigation and setup surface", async ({ page }) => {
 		await page.getByTestId("model-picker").click();
 		const menu = page.getByTestId("model-dropdown");
+		await menu.getByTestId("model-access-local").click();
 		await expect(menu).toBeVisible();
 		await expect(menu.getByText("Intern · Live", { exact: true })).toHaveCount(0);
 		await expect(menu.getByText("Intern · Background", { exact: true })).toHaveCount(0);

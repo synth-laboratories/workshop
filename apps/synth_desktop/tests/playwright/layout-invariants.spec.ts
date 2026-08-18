@@ -352,11 +352,13 @@ test("model picker stays contained at normal and short window sizes", async ({ p
 		expect(layout.rect.right, `right inset at ${width}x${height}`).toBeLessThanOrEqual(width - 8);
 		expect(layout.rect.bottom, `bottom inset at ${width}x${height}`).toBeLessThanOrEqual(height - 8);
 		expect(layout.overlapsComposer, `composer overlap at ${width}x${height}`).toBe(false);
-		expect(layout.scrollsInternally, `internal scroll at ${width}x${height}`).toBe(true);
 		expect(layout.selectedVisible, `selected visible at ${width}x${height}`).toBe(true);
 		expect(layout.bodyOverflowX, `horizontal overflow at ${width}x${height}`).toBe(false);
-		// All three provider groups stay reachable inside the scrollable dropdown.
-		await expect(page.getByTestId("model-dropdown")).toContainText("Local");
+		// The first level is intentionally limited to the three access methods.
+		await expect(page.getByTestId("model-access-local")).toBeVisible();
+		await expect(page.getByTestId("model-access-api")).toBeVisible();
+		await expect(page.getByTestId("model-access-chatgpt")).toBeVisible();
+		await page.getByTestId("model-access-local").click();
 		await expect(page.getByTestId("model-option-local-laguna")).toBeVisible();
 		await page.keyboard.press("Escape");
 		await expect(page.getByTestId("model-dropdown")).not.toBeVisible();

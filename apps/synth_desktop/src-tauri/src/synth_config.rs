@@ -11,6 +11,9 @@ const DEFAULT_PROFILE: &str = "prod";
 const DEFAULT_API_KEY_ENV: &str = "SYNTH_API_KEY";
 const DEFAULT_WORKER_KEY_ENV: &str = "SMR_WORKER_API_KEY";
 const OPENROUTER_API_KEY_ENV: &str = "OPENROUTER_API_KEY";
+const DEFAULT_MODEL: &str = "gpt-5.6-luna";
+const DEFAULT_MODEL_EFFORT: &str = "xhigh";
+const DEFAULT_MODEL_PROVIDERS: &[&str] = &["chatgpt", "openrouter"];
 
 /// Checked-in backend endpoint defaults for the explicit workshop lane
 /// profile names, layered on top of the legacy `prod`/`staging`/`local`
@@ -152,6 +155,14 @@ const MODEL_MULTI_AGENT_PRESETS: &[(&str, &str, MultiAgentVersion)] = &[
 
 #[derive(Clone, Debug, Serialize, specta::Type)]
 #[serde(rename_all = "camelCase")]
+pub struct DefaultModelSettings {
+    pub model: String,
+    pub effort: String,
+    pub providers: Vec<String>,
+}
+
+#[derive(Clone, Debug, Serialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
 pub struct BackendSettings {
     pub config_path: String,
     pub env_file: String,
@@ -165,6 +176,9 @@ pub struct BackendSettings {
     pub openrouter_api_key_configured: bool,
     pub openrouter_api_key_fingerprint: Option<String>,
     pub openrouter_api_key_source: Option<String>,
+    /// `[models.default]` from Workshop's config.toml. Provider order is a
+    /// fallback chain, not a request to silently change providers mid-turn.
+    pub default_model: DefaultModelSettings,
 }
 
 #[derive(Clone, Deserialize, specta::Type)]
@@ -206,7 +220,10 @@ pub struct ResolvedBackend {
 
 pub fn get() -> Result<BackendSettings> {
     let resolved = resolve()?;
-    let document = read_toml(&resolved.config_path)?;
+    let mut document = read_toml(&resolved.config_path)?;
+    if ensure_default_model_config(&mut document) {
+        write_toml(&resolved.config_path, &document)?;
+    }
     let intern = document.get("intern").and_then(toml::Value::as_table);
     let profile = intern
         .and_then(|value| value.get("profile"))
@@ -220,6 +237,40 @@ pub fn get() -> Result<BackendSettings> {
         .to_owned();
     let (api_key, api_key_source) = resolve_secret(&api_key_env, &resolved.env_file);
     let (openrouter_api_key, openrouter_api_key_source) = resolve_openrouter_secret(&resolved);
+    let default = document
+        .get("models")
+        .and_then(toml::Value::as_table)
+        .and_then(|models| models.get("default"))
+        .and_then(toml::Value::as_table);
+    let default_model = DefaultModelSettings {
+        model: default
+            .and_then(|value| value.get("model"))
+            .and_then(toml::Value::as_str)
+            .unwrap_or(DEFAULT_MODEL)
+            .to_owned(),
+        effort: default
+            .and_then(|value| value.get("effort"))
+            .and_then(toml::Value::as_str)
+            .unwrap_or(DEFAULT_MODEL_EFFORT)
+            .to_owned(),
+        providers: default
+            .and_then(|value| value.get("providers"))
+            .and_then(toml::Value::as_array)
+            .map(|values| {
+                values
+                    .iter()
+                    .filter_map(toml::Value::as_str)
+                    .map(str::to_owned)
+                    .collect()
+            })
+            .filter(|values: &Vec<String>| !values.is_empty())
+            .unwrap_or_else(|| {
+                DEFAULT_MODEL_PROVIDERS
+                    .iter()
+                    .map(|value| (*value).to_owned())
+                    .collect()
+            }),
+    };
     Ok(BackendSettings {
         config_path: resolved.config_path.display().to_string(),
         env_file: resolved.env_file.display().to_string(),
@@ -233,7 +284,42 @@ pub fn get() -> Result<BackendSettings> {
         openrouter_api_key_configured: openrouter_api_key.is_some(),
         openrouter_api_key_fingerprint: openrouter_api_key.as_deref().map(secret_fingerprint),
         openrouter_api_key_source,
+        default_model,
     })
+}
+
+/// Materialize the source default so the effective choice is inspectable and
+/// operator-editable in config.toml, while preserving every existing value.
+fn ensure_default_model_config(document: &mut toml::Value) -> bool {
+    let Some(root) = document.as_table_mut() else {
+        return false;
+    };
+    let models = root
+        .entry("models")
+        .or_insert_with(|| toml::Value::Table(Default::default()));
+    let Some(models) = models.as_table_mut() else {
+        return false;
+    };
+    if models.contains_key("default") {
+        return false;
+    }
+    let mut default = toml::Table::new();
+    default.insert("model".into(), toml::Value::String(DEFAULT_MODEL.into()));
+    default.insert(
+        "effort".into(),
+        toml::Value::String(DEFAULT_MODEL_EFFORT.into()),
+    );
+    default.insert(
+        "providers".into(),
+        toml::Value::Array(
+            DEFAULT_MODEL_PROVIDERS
+                .iter()
+                .map(|value| toml::Value::String((*value).into()))
+                .collect(),
+        ),
+    );
+    models.insert("default".into(), toml::Value::Table(default));
+    true
 }
 
 pub fn update(request: BackendSettingsUpdate) -> Result<BackendSettings> {
@@ -1083,6 +1169,31 @@ fn secret_fingerprint(secret: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn materializes_luna_xhigh_default_without_overwriting_operator_choice() {
+        let mut document = toml::Value::Table(Default::default());
+        assert!(ensure_default_model_config(&mut document));
+        assert_eq!(
+            document["models"]["default"]["model"].as_str(),
+            Some("gpt-5.6-luna")
+        );
+        assert_eq!(
+            document["models"]["default"]["effort"].as_str(),
+            Some("xhigh")
+        );
+        assert_eq!(
+            document["models"]["default"]["providers"][0].as_str(),
+            Some("chatgpt")
+        );
+
+        document["models"]["default"]["effort"] = toml::Value::String("high".into());
+        assert!(!ensure_default_model_config(&mut document));
+        assert_eq!(
+            document["models"]["default"]["effort"].as_str(),
+            Some("high")
+        );
+    }
 
     #[test]
     fn backend_settings_update_redacts_write_only_renderer_key_field() {

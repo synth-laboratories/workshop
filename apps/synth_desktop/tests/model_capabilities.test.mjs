@@ -39,3 +39,10 @@ test("remote Muse Spark exposes OpenRouter reasoning and multimodal capabilities
 	assert.equal(reasoning?.defaultValue, "medium");
 	assert.deepEqual(reasoning?.options.map((option) => option.transportValue), ["low", "medium", "high", "xhigh"]);
 });
+
+test("Luna defaults to XHigh for ChatGPT and OpenRouter", () => {
+	for (const target of ["chatgpt-luna", "openrouter-luna"]) {
+		const reasoning = modelCapabilitiesForTarget(target)?.knobs.find((knob) => knob.id === "reasoning");
+		assert.equal(reasoning?.defaultValue, "xhigh");
+	}
+});

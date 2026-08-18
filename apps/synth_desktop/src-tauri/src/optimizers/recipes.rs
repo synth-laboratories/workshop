@@ -32,17 +32,17 @@ pub const HEALTHBENCH_EVAL_SMOKE_RECIPE: &str = "eval.healthbench.smoke.v1";
 const TRAIN_ROWS: usize = 50;
 const HELDOUT_ROWS: usize = 50;
 const MAX_GENERATIONS: i64 = 1;
-const PROPOSALS_PER_GENERATION: i64 = 10;
+const PROPOSALS_PER_GENERATION: i64 = 1;
 const MINIBATCH_SIZE: i64 = 20;
-// One generation consumes a 50-example seed evaluation, then at most ten
-// candidates with a 20-example minibatch and a 50-example full-train gate.
+// One smoke generation consumes a 50-example seed evaluation, then one
+// candidate with a 20-example minibatch and a 50-example full-train gate.
 // Terminal comparison gives the seed and winning proposal 50 heldout examples.
-// The ceilings describe the actual worst case; they must never silently force
-// a requested ten-candidate search to stop after its first proposal.
-const MAX_TRAIN_ROLLOUTS: i64 = 750;
+// Keep 20 train-rollout headroom for retries while preserving the public,
+// approval-bounded 240-rollout contract.
+const MAX_TRAIN_ROLLOUTS: i64 = 140;
 const MAX_HELDOUT_ROLLOUTS: i64 = 100;
-const MAX_TOTAL_ROLLOUTS: i64 = 850;
-const MAX_COST_USD: f64 = 9.00;
+const MAX_TOTAL_ROLLOUTS: i64 = 240;
+const MAX_COST_USD: f64 = 2.45;
 const PROPOSER_ESTIMATED_COST_USD: f64 = 0.05;
 const ROLLOUT_ESTIMATED_COST_USD: f64 = 0.01;
 const PROPOSER_TIMEOUT_SECONDS: i64 = 300;
@@ -988,8 +988,9 @@ async fn run_recipe_worker(
     manager: Arc<super::OptimizerManager>,
     mut cancel_rx: watch::Receiver<bool>,
 ) -> Result<()> {
+    let _revoke = crate::secrets::RevokeRunOnDrop(run_id.clone());
     append_status_event(&service, &run_id, "optimizer.run.started", "running").await?;
-    let openai_api_key = resolve_secret("OPENAI_API_KEY")?;
+    let openai = resolve_openai_workload(&run_id, "gepa")?;
     let stdout = fs::File::create(run_dir.join("workshop.stdout.log"))?;
     let stderr = fs::File::create(run_dir.join("workshop.stderr.log"))?;
     let mut child = manager
@@ -999,7 +1000,8 @@ async fn run_recipe_worker(
             &config_path,
             stdout,
             stderr,
-            &openai_api_key,
+            &openai.api_key,
+            openai.base_url.as_deref(),
         )
         .await?;
 
@@ -1088,57 +1090,45 @@ async fn run_recipe_worker(
     }
 }
 
-/// Resolve a recipe secret exclusively inside the Rust host. Finder-launched
-/// applications do not inherit shell variables, so consult a small trusted
-/// file allowlist after checking the process environment. Values are returned
-/// only to the child environment and are never persisted or logged.
-fn resolve_secret(name: &str) -> Result<String> {
-    if name != "OPENAI_API_KEY" {
-        bail!("optimizer recipe requested a non-allowlisted secret name");
-    }
-    if let Ok(value) = std::env::var(name) {
-        if !value.trim().is_empty() {
-            return Ok(value);
+/// Resolve OpenAI access for a recipe through the local vault and provider
+/// proxy. Paid workers never receive a provider key and never fall back to a
+/// process variable or dotenv file.
+fn resolve_openai_workload(run_id: &str, recipe_id: &str) -> Result<OpenAiWorkload> {
+    #[cfg(test)]
+    {
+        if std::env::var("SYNTH_OPTIMIZER_TEST_CHILD_SLEEP_SECS").is_ok()
+            || std::env::var("SYNTH_OPTIMIZER_TEST_SUPPRESS_SPOOL").is_ok()
+        {
+            return Ok(OpenAiWorkload {
+                api_key: crate::secrets::API_KEY_SENTINEL.to_owned(),
+                base_url: None,
+            });
         }
     }
-    let candidates = std::env::var_os("SYNTH_GEPA_SECRET_ENV_FILE")
-        .or_else(|| std::env::var_os("SYNTH_BANKING77_SECRET_ENV_FILE"))
-        .map(PathBuf::from)
-        .into_iter();
-    for path in candidates {
-        let Ok(text) = fs::read_to_string(path) else {
-            continue;
-        };
-        if let Some(value) = dotenv_value(&text, name) {
-            return Ok(value);
-        }
-    }
-    bail!(
-        "the selected GEPA recipe requires {name}; configure it in the Desktop process or a trusted recipe env file"
-    )
+    let secrets = crate::secrets::live().ok_or_else(|| {
+        anyhow!("missing_credential: add an OpenAI connection in Settings → Secrets")
+    })?;
+    let env = secrets
+        .workload_env(
+            "openai",
+            run_id,
+            recipe_id,
+            crate::secrets::SecretsUsePolicy::default(),
+            "optimizer",
+        )
+        .map_err(|error| {
+            anyhow!("missing_credential: add an OpenAI connection in Settings → Secrets ({error})")
+        })?;
+    Ok(OpenAiWorkload {
+        api_key: crate::secrets::API_KEY_SENTINEL.to_owned(),
+        base_url: env.openai_base_url,
+    })
 }
 
-fn dotenv_value(text: &str, name: &str) -> Option<String> {
-    text.lines().find_map(|line| {
-        let line = line.trim().strip_prefix("export ").unwrap_or(line.trim());
-        if line.starts_with('#') || line.is_empty() {
-            return None;
-        }
-        let (key, raw) = line.split_once('=')?;
-        if key.trim() != name {
-            return None;
-        }
-        let value = raw.trim();
-        let value = if value.len() >= 2
-            && ((value.starts_with('"') && value.ends_with('"'))
-                || (value.starts_with('\'') && value.ends_with('\'')))
-        {
-            &value[1..value.len() - 1]
-        } else {
-            value
-        };
-        (!value.is_empty()).then(|| value.to_string())
-    })
+#[derive(Clone, Debug)]
+pub(super) struct OpenAiWorkload {
+    pub api_key: String,
+    pub base_url: Option<String>,
 }
 
 async fn ingest_available(
@@ -1952,8 +1942,11 @@ fn materialize_config(
                 "BANKING77_TRAIN_SAMPLE=50",
                 "BANKING77_TEST_SAMPLE=50",
                 "BANKING77_POLICY_CONCURRENCY=4",
-                "BANKING77_POLICY_TIMEOUT_SECONDS=20",
-                "BANKING77_ROLLOUT_TIMEOUT_SECONDS=25",
+                // The Workshop proxy performs an authenticated upstream hop.
+                // Twenty seconds was shorter than a healthy cold request and
+                // caused all initial seed rollouts to be exhausted together.
+                "BANKING77_POLICY_TIMEOUT_SECONDS=90",
+                "BANKING77_ROLLOUT_TIMEOUT_SECONDS=100",
                 &format!("BANKING77_STREAM_ROOT={}", container_stream_root.display()),
                 "HF_HUB_DISABLE_PROGRESS_BARS=1",
                 &uv.display().to_string(),
@@ -2527,13 +2520,15 @@ namespace = "base"
             HELDOUT_ROWS
         );
         assert!(text.contains("minibatch_size = 20"));
-        assert!(text.contains("proposals_per_generation = 10"));
+        assert!(text.contains("proposals_per_generation = 1"));
         assert!(text.contains("minibatch_acceptance_criterion = \"improvement_or_equal\""));
         assert!(text.contains("acceptance_criterion = \"primary_improvement\""));
-        assert!(text.contains("max_total_rollouts = 850"));
-        assert!(text.contains("max_train_rollouts = 750"));
+        assert!(text.contains("max_total_rollouts = 240"));
+        assert!(text.contains("max_train_rollouts = 140"));
         assert!(text.contains("max_heldout_rollouts = 100"));
-        assert!(text.contains("max_cost_usd = 9.0"));
+        assert!(text.contains("max_cost_usd = 2.45"));
+        assert!(text.contains("BANKING77_POLICY_TIMEOUT_SECONDS=90"));
+        assert!(text.contains("BANKING77_ROLLOUT_TIMEOUT_SECONDS=100"));
         assert!(text.contains("proposer_estimated_cost_usd = 0.05"));
         assert!(text.contains("rollout_estimated_cost_usd = 0.01"));
         assert!(text.contains("BANKING77_TRAIN_SAMPLE=50"));
@@ -2568,12 +2563,12 @@ namespace = "base"
             r#"
 [gepa]
 max_generations = 1
-proposals_per_generation = 10
+proposals_per_generation = 1
 minibatch_size = 20
-max_train_rollouts = 750
+max_train_rollouts = 140
 max_heldout_rollouts = 100
-max_total_rollouts = 850
-max_cost_usd = 9.0
+max_total_rollouts = 240
+max_cost_usd = 2.45
 proposer_estimated_cost_usd = 0.05
 rollout_estimated_cost_usd = 0.01
 
@@ -2615,7 +2610,13 @@ minibatch = []
             .all(|recipe| recipe["credentialInputs"] == json!([])));
         assert!(catalog[..3]
             .iter()
-            .all(|recipe| recipe["limits"]["maxCostUsd"] == json!(9.0)));
+            .all(|recipe| recipe["limits"]["maxCostUsd"] == json!(2.45)));
+        assert!(catalog[..3]
+            .iter()
+            .all(|recipe| recipe["limits"]["maxTotalRollouts"] == json!(240)));
+        assert!(catalog[..3]
+            .iter()
+            .all(|recipe| recipe["limits"]["proposalsPerGeneration"] == json!(1)));
         assert_eq!(catalog[3]["id"], json!(CRAFTAX_GEPA_SMOKE_RECIPE));
         assert_eq!(catalog[3]["limits"]["maxCostUsd"], json!(1.5));
         assert_eq!(catalog[3]["limits"]["maxTotalRollouts"], json!(6));
@@ -3014,16 +3015,6 @@ namespace = "base"
     }
 
     #[test]
-    fn parses_only_the_requested_dotenv_key() {
-        let text = "OTHER=do-not-return\nexport OPENAI_API_KEY='test-key'\n";
-        assert_eq!(
-            dotenv_value(text, "OPENAI_API_KEY").as_deref(),
-            Some("test-key")
-        );
-        assert_eq!(dotenv_value(text, "MISSING"), None);
-    }
-
-    #[test]
     fn resolves_an_absolute_uv_path_for_finder_launches() {
         if Path::new("/opt/homebrew/bin/uv").is_file() {
             let path = resolve_uv().unwrap();
@@ -3358,10 +3349,9 @@ mod runs_root_tests {
         assert!(root.starts_with(temp.path()), "{}", root.display());
         assert!(root.is_dir(), "the runs root is created eagerly");
         assert!(
-            !root.components().any(|component| component
-                .as_os_str()
-                .to_string_lossy()
-                .ends_with(".app")),
+            !root
+                .components()
+                .any(|component| component.as_os_str().to_string_lossy().ends_with(".app")),
             "{} must not sit inside an application bundle",
             root.display()
         );

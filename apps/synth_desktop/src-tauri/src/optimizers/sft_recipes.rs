@@ -482,15 +482,17 @@ async fn append_artifacts(service: &OptimizerService, run_id: &str, dir: &Path) 
             artifacts.push(json!({"kind":kind,"id":path,"path":path,"title":title}));
         }
     }
-    let mut events = vec![OptimizerEventDraft::new("optimizer.recipe.artifacts", "sft")
-        .idempotency_key("artifacts")
-        .level("info")
-        .delta(map_of(
-            "message",
-            json!(format!("Persisted {} SFT artifacts", artifacts.len())),
-        ))
-        .artifact_refs(artifacts)
-        .raw(json!({"source":"craftax_sft_recipe"}))];
+    let mut events = vec![
+        OptimizerEventDraft::new("optimizer.recipe.artifacts", "sft")
+            .idempotency_key("artifacts")
+            .level("info")
+            .delta(map_of(
+                "message",
+                json!(format!("Persisted {} SFT artifacts", artifacts.len())),
+            ))
+            .artifact_refs(artifacts)
+            .raw(json!({"source":"craftax_sft_recipe"})),
+    ];
     let receipt = dir.join("train_result.json");
     if let Ok(value) = fs::read_to_string(&receipt)
         .and_then(|s| serde_json::from_str::<Value>(&s).map_err(std::io::Error::other))

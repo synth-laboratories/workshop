@@ -38,9 +38,16 @@ test("experiment overview renders question, progress, variants, evidence, and li
 			progress: { phase: "Candidate evaluation", completed: 38, total: 50, elapsed: "7m 42s", eta: "2m 20s", usage: "140 rollouts", cost: "$1.84" },
 			metrics: [{ label: "Baseline", value: "0.72" }, { label: "Best train", value: "0.81" }, { label: "Heldout", value: null }, { label: "Lift", value: null }],
 			arms: [
-				{ id: "seed", label: "Seed prompt", baseline: true, score: 0.72, status: "completed" },
-				{ id: "candidate-3", label: "Candidate 3", selected: true, score: 0.81, status: "evaluating" }
+				{ id: "seed", label: "Seed prompt", baseline: true, score: 0.72, status: "completed", metrics: { accuracy: 0.72, cost: 0.61 } },
+				{ id: "candidate-3", label: "Candidate 3", selected: true, score: 0.81, status: "evaluating", metrics: { accuracy: 0.81, cost: null } }
 			],
+			comparison: {
+				primaryMetric: "accuracy",
+				columns: [
+					{ id: "accuracy", label: "Accuracy", format: "percent", direction: "higher" },
+					{ id: "cost", label: "Cost", format: "currency", direction: "lower" }
+				]
+			},
 			evidence: [{ id: "eval-distribution", title: "Train score distribution", kind: "distribution", status: "ready", visualId: "visual_eval_1" }],
 			lineage: [{ id: "dataset", label: "Dataset", kind: "source" }, { id: "search", label: "GEPA search", kind: "optimizer" }, { id: "selection", label: "Selection", kind: "result" }],
 			limitations: ["Heldout evaluation has not completed."]
@@ -52,6 +59,10 @@ test("experiment overview renders question, progress, variants, evidence, and li
 	assert.match(html, /38\/50/);
 	assert.match(html, /Seed prompt · baseline/);
 	assert.match(html, /Candidate 3 · selected/);
+	assert.match(html, /Run comparison/);
+	assert.match(html, /81.0%/);
+	assert.match(html, /\$0.61/);
+	assert.match(html, /Missing measurements are shown as/);
 	assert.match(html, /Train score distribution/);
 	assert.match(html, /Dataset/);
 	assert.match(html, /Heldout evaluation has not completed/);
@@ -72,4 +83,58 @@ test("experiment overview keeps missing measurements distinct from zero", () => 
 	assert.match(html, /Missing<\/span><strong[^>]*>—<\/strong>/);
 	assert.match(html, /Observed zero<\/span><strong[^>]*>0<\/strong>/);
 	assert.doesNotMatch(html, /No variants have been recorded[\s\S]*0 variants/);
+});
+
+test("experiment overview leads with hypothesis verdicts and collapses supporting detail", () => {
+	const html = renderToStaticMarkup(createElement(Shell, {
+		experiment: {
+			title: "Craftax harness study",
+			question: "Which guidance improves reward efficiency?",
+			status: "complete",
+			hypotheses: [
+				{ id: "survival-steps", claim: "Survival saves steps", verdict: "true", confidence: "low", why: "73.5 vs 102 mean steps; n=2" },
+				{ id: "generalizes", claim: "The result generalizes", verdict: "needs_more_analysis", confidence: "low", why: "Only two seeds per arm" }
+			],
+			assessment: { summary: "Survival is more efficient; manual has higher raw reward.", confidence: "low", nextStep: "Run ten seeds." },
+			evidence: [{ id: "baseline", title: "Baseline receipt", status: "verified" }],
+			progress: { phase: "all variants complete", completed: 6, total: 6 }
+		}
+	}));
+
+	assert.match(html, /Hypotheses/);
+	assert.match(html, /Survival saves steps/);
+	assert.match(html, /True/);
+	assert.match(html, /Needs more analysis/);
+	assert.match(html, /low/);
+	assert.match(html, /73.5 vs 102 mean steps/);
+	assert.doesNotMatch(html, /Question:/);
+	assert.match(html, /<details[^>]*class="sv-section"/);
+	assert.doesNotMatch(html, /<details[^>]*open/);
+	assert.match(html, /Results &amp; assessment/);
+	assert.match(html, /Survival is more efficient/);
+});
+
+test("experiment overview renders optional evidence modules only when supplied", () => {
+	const html = renderToStaticMarkup(createElement(Shell, {
+		experiment: {
+			title: "Full evidence experiment",
+			hypotheses: [{ id: "h1", claim: "Guidance improves reward", verdict: "false", confidence: "medium", why: "1.3 vs 3.2" }],
+			results: { rollouts: [{ id: "r1", label: "Seed 46", reward: 1.3, steps: 32, achievements: 2, stopReason: "llm_turn_cap", traceId: "trace_46" }] },
+			traces: { prominence: "summary", items: [{ id: "t1", label: "Seed 46 trace", traceId: "trace_46", reward: 1.3, steps: 32, summary: "One code error." }] },
+			task: { name: "craftax-singleplayer", split: "eval" },
+			runtime: { model: "openai/gpt-5.6-luna", containerId: "ctr_123" },
+			artifacts: [{ id: "results", label: "Results", path: "/tmp/results.json" }],
+			provenance: { repository: "gamebench-craftax", commit: "abc123", dirty: false }
+		}
+	}));
+	assert.match(html, /Rollout results/);
+	assert.match(html, /trace_46/);
+	assert.match(html, /<details[^>]*open=""[^>]*>[\s\S]*Traces/);
+	assert.match(html, /Run context/);
+	assert.match(html, /openai\/gpt-5.6-luna/);
+	assert.match(html, /results.json/);
+	assert.match(html, /gamebench-craftax/);
+
+	const minimal = renderToStaticMarkup(createElement(Shell, { experiment: { title: "Minimal", hypotheses: [{ id: "h", claim: "A", verdict: "unresolved" }] } }));
+	assert.doesNotMatch(minimal, /Results &amp; assessment|Traces|Run context|Artifacts|Method &amp; caveats/);
 });

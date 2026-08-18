@@ -14,6 +14,7 @@ import { contextCompactionTokenSummary } from "../runtime/sessionView";
 import { runProgressItemsByMessage } from "../runtime/runProgress/transcript";
 import { useTurnPerformanceLabels } from "../hooks/useTurnPerformanceLabels";
 import { RunProgressCard } from "./runProgress/RunProgressCard";
+import { openPath, revealItemInDir } from "@tauri-apps/plugin-opener";
 import "./PaidComputeApprovalModal.css";
 
 type Props = {
@@ -579,6 +580,31 @@ function CopyMessageButton({ body }: { body: string }) {
 	);
 }
 
+function AssistantMessageBody({ body, onOpenVisual }: { body: string; onOpenVisual: (id: string) => void }) {
+	const linkPattern = /\[([^\]]+)]\(([^)\n]+)\)/g;
+	const parts: ReactNode[] = [];
+	let cursor = 0;
+	for (const match of body.matchAll(linkPattern)) {
+		const index = match.index ?? 0;
+		if (index > cursor) parts.push(body.slice(cursor, index));
+		const label = match[1] ?? "Open";
+		const rawTarget = (match[2] ?? "").trim();
+		const visualId = rawTarget.match(/^synth visual\s+`?([^`\s]+)`?$/i)?.[1];
+		if (visualId) {
+			parts.push(<button key={`${index}-visual`} type="button" className="assistant-resource-chip assistant-visual-chip" onClick={() => onOpenVisual(visualId)} title={`Open visual ${label}`}><span aria-hidden>◈</span><strong>{label}</strong></button>);
+		} else if (rawTarget.startsWith("/")) {
+			parts.push(<span key={`${index}-file`} className="assistant-file-link"><button type="button" className="assistant-resource-chip" onClick={() => void openPath(rawTarget)} title={rawTarget}><FileTypeIcon path={rawTarget} /><strong>{label}</strong></button><button type="button" className="assistant-file-reveal" onClick={() => void revealItemInDir(rawTarget)} aria-label={`Reveal ${label} in Finder`} title="Reveal in Finder">⌗</button></span>);
+		} else if (/^https?:\/\//i.test(rawTarget)) {
+			parts.push(<a key={`${index}-url`} href={rawTarget} target="_blank" rel="noreferrer">{label}</a>);
+		} else {
+			parts.push(match[0]);
+		}
+		cursor = index + match[0].length;
+	}
+	if (cursor < body.length) parts.push(body.slice(cursor));
+	return <p className="assistant-rich-body">{parts}</p>;
+}
+
 /**
  * A pasted brief can be important, but it must not turn the current turn into
  * a screen-height blue wall. Keep the full value in the DOM and make expansion
@@ -910,7 +936,7 @@ export function ChatTranscript({
 								) : (
 									<div className={`local-assistant${showAdvancedAtMessage ? " local-assistant-with-advanced" : ""}`}>
 										<div className="local-assistant-content">
-											<p>{m.body}</p>
+											<AssistantMessageBody body={m.body} onOpenVisual={onOpenArtifact} />
 											{showAdvancedAtMessage ? <button type="button" className="message-advanced" onClick={onAdvanced} aria-label="Open advanced trace">Advanced</button> : null}
 										</div>
 										<div className="assistant-message-footer">

@@ -336,10 +336,12 @@ pub(super) async fn append_state_batch(
     service
         .append_event_payloads(
             run_id.to_string(),
-            vec![OptimizerEventDraft::new("goex.state.batch.updated", "go-ex")
-                .level("info")
-                .snapshot(snapshot)
-                .raw(json!({"source": "optimizers-beta-state-batch"}))],
+            vec![
+                OptimizerEventDraft::new("goex.state.batch.updated", "go-ex")
+                    .level("info")
+                    .snapshot(snapshot)
+                    .raw(json!({"source": "optimizers-beta-state-batch"})),
+            ],
         )
         .await?;
     Ok(())

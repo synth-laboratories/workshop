@@ -161,6 +161,28 @@ test("GEPA: an incumbent score is a detail, never progress", () => {
 	);
 });
 
+test("GEPA: an active proposer is explicit even while rollout counts are unchanged", () => {
+	const events = [
+		...gepaEvents(),
+		{
+			optimizerRunId: "banking77_gepa_sol_med_45856f25",
+			algorithmId: "gepa",
+			sequenceNumber: 200,
+			type: "proposer.started",
+			occurredAt: at(29),
+			delta: { generation: 0, model: "gpt-5.6-luna", proposal_count: 10 }
+		}
+	];
+	const projection = projectRunProgress(snapshot(gepaRun(), events), NOW);
+	assert.equal(projection.phase.id, "proposal");
+	assert.equal(projection.phase.label, "Proposer is working");
+	assert.match(projection.phase.detail, /Generation 0/);
+	assert.match(projection.phase.detail, /gpt-5\.6-luna/);
+	assert.match(projection.phase.detail, /1m 0s active/);
+	assert.match(projection.phase.detail, /waiting for candidate proposals/);
+	assert.equal(projection.work.completed, 8, "proposal visibility must not invent rollout progress");
+});
+
 test("GEPA: concurrency and queue depth reach the card's one throughput line", () => {
 	const projection = projectRunProgress(snapshot(gepaRun(), gepaEvents()), NOW);
 	assert.equal(projection.work.active, 4);

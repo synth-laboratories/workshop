@@ -203,6 +203,11 @@ export type SynthBackendSettings = {
 	openrouterApiKeyConfigured: boolean;
 	openrouterApiKeyFingerprint?: string | null;
 	openrouterApiKeySource?: string | null;
+	defaultModel?: {
+		model: string;
+		effort: string;
+		providers: string[];
+	};
 };
 
 export type MultiAgentVersion = "none" | "v1" | "v2";
@@ -1225,4 +1230,104 @@ export type CodexOauthBridge = {
 	ensureReady(): Promise<CodexOauthStatus>;
 	disconnect(): Promise<CodexOauthStatus>;
 	cancel(): Promise<void>;
+};
+
+export type SecretSummary = {
+	id: string;
+	alias: string;
+	provider: string;
+	scope: string;
+	status: string;
+	backend: string;
+	displaySuffix?: string | null;
+	createdAt: string;
+	lastValidatedAt?: string | null;
+	allowedRecipes: string[];
+};
+
+export type SecretCapabilitySummary = {
+	id: string;
+	secretId: string;
+	runId: string;
+	recipeId: string;
+	provider: string;
+	status: string;
+	maxCalls: number;
+	usedCalls: number;
+	maxCostUsd: number;
+	usedCostUsd: number;
+	usedInputTokens: number;
+	usedOutputTokens: number;
+	expiresAt: string;
+	displaySuffix?: string | null;
+};
+
+export type SecretAuditEvent = {
+	schema: string;
+	eventId: string;
+	at: string;
+	actorKind: string;
+	actorId: string;
+	action: string;
+	secretId?: string | null;
+	provider?: string | null;
+	operation?: string | null;
+	model?: string | null;
+	decision: string;
+	capabilityId?: string | null;
+	usage?: unknown;
+	detail?: string | null;
+};
+
+export type MaskedImportCandidate = {
+	variable: string;
+	provider?: string | null;
+	masked: string;
+	classification: string;
+	selected: boolean;
+};
+
+export type SecretImportPreview = {
+	requestId: string;
+	status: string;
+	sourcePath: string;
+	candidates: MaskedImportCandidate[];
+	sourceRemainsReadable: boolean;
+	warning?: string | null;
+	cleanupDiff?: string | null;
+};
+
+export type PendingGrantSummary = {
+	requestId: string;
+	secretId: string;
+	alias?: string | null;
+	provider?: string | null;
+	runId: string;
+	recipeId: string;
+	models: string[];
+	maxCalls: number;
+	maxCostUsd: number;
+};
+
+export type SecretsInbox = {
+	imports: SecretImportPreview[];
+	grants: PendingGrantSummary[];
+	proxy: { origin?: string | null; running: boolean };
+};
+
+export type SecretsBridge = {
+	list(provider?: string, scope?: string): Promise<SecretSummary[]>;
+	create(request: { alias: string; provider: string; scope?: string; value: string }): Promise<SecretSummary>;
+	replace(secretId: string, value: string): Promise<SecretSummary>;
+	delete(secretId: string): Promise<void>;
+	test(secretId: string): Promise<SecretSummary>;
+	requestEnvImport(sourcePath: string, variableNames?: string[]): Promise<SecretImportPreview>;
+	commitEnvImport(requestId: string, selected: string[], after: "keep" | "replace_aliases" | "remove_entries", confirm?: boolean): Promise<SecretSummary[]>;
+	denyEnvImport(requestId: string): Promise<void>;
+	pending(): Promise<SecretsInbox>;
+	capabilities(): Promise<SecretCapabilitySummary[]>;
+	revokeCapability(capabilityId: string): Promise<void>;
+	audit(limit?: number): Promise<SecretAuditEvent[]>;
+	grantUse(secretId: string, runId: string, recipeId: string, rememberRecipe: boolean, requestId?: string): Promise<unknown>;
+	denyUse(secretId: string): Promise<unknown>;
 };

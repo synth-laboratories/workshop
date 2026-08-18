@@ -149,7 +149,7 @@ impl EvalSpec {
             .collect()
     }
 
-    fn policy_config_body(self) -> Option<Value> {
+    fn policy_config_body(self, openai_base_url: Option<&str>) -> Option<Value> {
         let config = if self.family == "banking77" {
             json!({
                 "provider": "openrouter",
@@ -160,11 +160,12 @@ impl EvalSpec {
                 "max_tokens": 32,
             })
         } else if self.family == "healthbench" {
+            let base_url = openai_base_url?;
             json!({
                 "provider": "openai",
                 "model": "gpt-4.1-mini-2025-04-14",
                 "api_key_env": "OPENAI_API_KEY",
-                "base_url": "https://api.openai.com/v1",
+                "base_url": base_url,
                 "max_tokens": 1536,
             })
         } else {
@@ -509,6 +510,7 @@ async fn run_eval_worker(
     visual_id: String,
     cancel: watch::Receiver<bool>,
 ) -> Result<()> {
+    let _revoke = crate::secrets::RevokeRunOnDrop(run_id.clone());
     evidence(
         "run_started",
         append_status(&service, &run_id, "optimizer.run.started", "running"),
@@ -536,7 +538,8 @@ async fn run_eval_worker(
         }
         _ => json!({}),
     };
-    let policy_pin = register_policy_pin(&client, &container.base_url, spec, &info).await?;
+    let policy_pin =
+        register_policy_pin(&client, &container.base_url, spec, &info, &run_id).await?;
     persist_policy_pin(&service, &run_id, &policy_pin).await?;
     let scale_leases = info
         .get("scale_leases")
@@ -764,11 +767,69 @@ async fn append_eval_selection(
     Ok(())
 }
 
+fn secrets_proxy_error(code: &str, message: &str) -> anyhow::Error {
+    anyhow::anyhow!(
+        "{}",
+        json!({
+            "code": code,
+            "contract": "workshop.secrets_proxy",
+            "retryable": code == "secrets_proxy_unavailable",
+            "message": message,
+        })
+    )
+}
+
+fn healthbench_provider_policy(spec: EvalSpec) -> crate::secrets::SecretsUsePolicy {
+    let mut policy = crate::secrets::SecretsUsePolicy::default();
+    policy.operations = vec!["chat.completions.create".into()];
+    policy.models = vec!["gpt-4.1-mini-2025-04-14".into()];
+    policy.max_cost_usd = COST_CEILING_USD;
+    let trials = spec.examples().len() as u64;
+    policy.max_calls = trials.saturating_mul(64).clamp(128, u32::MAX as u64) as u32;
+    policy
+}
+
+fn healthbench_container_openai_base(run_id: &str, spec: EvalSpec) -> Result<String> {
+    let secrets = crate::secrets::live().ok_or_else(|| {
+        secrets_proxy_error(
+            "secrets_proxy_unavailable",
+            "HealthBench requires the Workshop secrets proxy",
+        )
+    })?;
+    let env = secrets
+        .workload_env(
+            "openai",
+            run_id,
+            spec.recipe_id,
+            healthbench_provider_policy(spec),
+            "eval",
+        )
+        .map_err(|error| secrets_proxy_error("secrets_proxy_denied", &error.to_string()))?;
+    let base = env.container_openai_base_url.clone().ok_or_else(|| {
+        secrets_proxy_error(
+            "secrets_proxy_route_unbound",
+            "Workshop did not bind an OpenAI proxy base URL for HealthBench",
+        )
+    })?;
+    if base.contains("api.openai.com")
+        || base.contains("127.0.0.1")
+        || base.contains("localhost")
+        || !base.contains("/cap/wcap_")
+    {
+        return Err(secrets_proxy_error(
+            "secrets_proxy_unreachable",
+            "HealthBench policy base_url must be the container-reachable Workshop proxy",
+        ));
+    }
+    Ok(base)
+}
+
 async fn register_policy_pin(
     client: &reqwest::Client,
     base: &str,
     spec: EvalSpec,
     container_info: &Value,
+    run_id: &str,
 ) -> Result<Value> {
     let pin = json!({ "harness": spec.harness, "config": spec.policy_config });
     // Banking77 owns an immutable, already-registered policy. Its public
@@ -802,7 +863,18 @@ async fn register_policy_pin(
             "authority": "container_advertisement",
         }));
     }
-    let Some(body) = spec.policy_config_body() else {
+    let openai_base = if spec.family == "healthbench" {
+        Some(healthbench_container_openai_base(run_id, spec)?)
+    } else {
+        None
+    };
+    let Some(body) = spec.policy_config_body(openai_base.as_deref()) else {
+        if spec.family == "healthbench" {
+            return Err(secrets_proxy_error(
+                "secrets_proxy_route_unbound",
+                "HealthBench requires a Workshop proxy base_url; refusing api.openai.com",
+            ));
+        }
         return Ok(pin);
     };
     let response = client
@@ -1466,6 +1538,9 @@ mod tests {
     async fn spawn_eval_mock_opts(
         opts: MockEvalOptions,
     ) -> (String, tokio::task::JoinHandle<()>, Arc<AtomicUsize>) {
+        if opts.family == "healthbench" {
+            crate::secrets::install_test_live_openai();
+        }
         let starts = Arc::new(AtomicUsize::new(0));
         let starts_h = starts.clone();
         let prepared = Arc::new(Mutex::new(BTreeMap::<String, bool>::new()));
@@ -1505,6 +1580,24 @@ mod tests {
                             }) } else { json!({}) },
                         })),
                         ("POST", path) if path == "/policy-configs" || path.starts_with("/policy-configs/") => {
+                            if family == "healthbench" {
+                                let url = request
+                                    .body
+                                    .pointer("/config/base_url")
+                                    .and_then(Value::as_str)
+                                    .unwrap_or("");
+                                if url.contains("api.openai.com")
+                                    || url.contains("127.0.0.1")
+                                    || url.contains("localhost")
+                                    || !url.contains("/cap/wcap_")
+                                    || request.body.pointer("/config/api_key").is_some()
+                                {
+                                    return JsonHttpResponse::error(
+                                        StatusCode::BAD_REQUEST,
+                                        "healthbench must use the workshop proxy, not api.openai.com",
+                                    );
+                                }
+                            }
                             if opts.policy_status == 200 {
                                 JsonHttpResponse::ok(json!({"config_id": opts.policy_config_id}))
                             } else {
@@ -2259,7 +2352,10 @@ mod tests {
             .await
             .unwrap_err()
             .to_string();
-        assert!(error.contains("credential_readiness_unavailable"), "{error}");
+        assert!(
+            error.contains("credential_readiness_unavailable"),
+            "{error}"
+        );
         assert!(error.contains("model_roles"), "{error}");
         assert_eq!(
             starts.load(Ordering::SeqCst),
@@ -2487,5 +2583,33 @@ mod tests {
             Some(4)
         );
         task.abort();
+    }
+
+    #[test]
+    fn healthbench_policy_config_requires_workshop_proxy_base() {
+        let spec = EvalSpec::for_recipe(HEALTHBENCH_EVAL_SMOKE_RECIPE).unwrap();
+        assert!(spec.policy_config_body(None).is_none());
+        let body = spec
+            .policy_config_body(Some(
+                "http://host.docker.internal:9/cap/wcap_abc12345/v1/providers/openai",
+            ))
+            .unwrap();
+        let dump = body.to_string();
+        assert_eq!(
+            body["config"]["base_url"],
+            "http://host.docker.internal:9/cap/wcap_abc12345/v1/providers/openai"
+        );
+        assert!(dump.contains("/cap/wcap_abc12345/"));
+        assert!(!dump.contains("api.openai.com"));
+        assert!(!dump.contains("127.0.0.1"));
+        assert!(body.pointer("/config/api_key").is_none());
+    }
+
+    #[test]
+    fn banking77_policy_config_stays_on_openrouter() {
+        let spec = EvalSpec::for_recipe(BANKING77_EVAL_BASELINE_RECIPE).unwrap();
+        let body = spec.policy_config_body(None).unwrap();
+        assert_eq!(body["config"]["base_url"], "https://openrouter.ai/api/v1");
+        assert_eq!(body["config"]["api_key_env"], "OPENROUTER_API_KEY");
     }
 }

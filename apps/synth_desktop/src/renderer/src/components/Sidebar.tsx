@@ -271,6 +271,7 @@ export function Sidebar({
 	const codexReset = codexUsage
 		? new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }).format(new Date(codexUsage.resetsAt * 1_000))
 		: null;
+	const codexAccountEmail = state.codexOauthStatus?.accountHint?.trim() || null;
 	// The footer is the Workshop/Synth account surface. A connected Codex OAuth
 	// provider enables models, but it is not the user's Synth identity and must
 	// never replace signed-in or signed-out Synth account copy here.
@@ -691,6 +692,12 @@ export function Sidebar({
 									</button>
 									{codexUsageOpen ? (
 										<div id="account-codex-usage-panel" className="account-menu-panel account-codex-usage-panel" data-testid="account-codex-usage-panel">
+											{codexAccountEmail ? (
+												<p className="account-menu-fact" data-testid="account-codex-account-email">
+													<span>ChatGPT account</span>
+													<strong title={codexAccountEmail}>{codexAccountEmail}</strong>
+												</p>
+											) : null}
 											{codexUsage ? <>
 												<p className="account-menu-fact"><span>Remaining</span><strong>{codexRemaining}%</strong></p>
 												<p className="account-menu-fact"><span>Resets</span><strong>{codexReset}</strong></p>

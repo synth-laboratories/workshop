@@ -45,6 +45,7 @@ pub mod presentation;
 pub mod recovery;
 mod reports;
 mod runtime;
+mod secrets;
 mod services;
 mod session;
 mod skills;
@@ -2874,7 +2875,9 @@ async fn codex_oauth_status(
     let manager = manager.inner().clone();
     tokio::task::spawn_blocking(move || manager.status())
         .await
-        .map_err(|error| AppError::from(anyhow::anyhow!("ChatGPT credential check failed: {error}")))?
+        .map_err(|error| {
+            AppError::from(anyhow::anyhow!("ChatGPT credential check failed: {error}"))
+        })?
         .map_err(AppError::from)
 }
 
@@ -3807,6 +3810,10 @@ pub fn run() {
                     std::io::Error::other(format!("start credential broker: {error}"))
                 })?,
             );
+            if let Err(error) = core.secrets().start_proxy() {
+                eprintln!("synth-desktop: provider proxy failed to start: {error:#}");
+            }
+            crate::secrets::install_live(core.secrets().clone());
             let approvals = Arc::new(crate::session::approval::ApprovalBroker::new(
                 crate::session::SessionPersistence::from_core(Some(core.clone())),
             ));
@@ -3822,6 +3829,7 @@ pub fn run() {
             supervisor.register(whisper.clone());
             supervisor.register(core.diagnostics_service().sidecar().clone());
             app.manage(core.clone());
+            app.manage(core.secrets().clone());
             app.manage(migration);
             app.manage(codex.clone());
             app.manage(broker);

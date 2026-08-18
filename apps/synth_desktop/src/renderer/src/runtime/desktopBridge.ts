@@ -4,7 +4,7 @@ import { commands as spectaCommands } from "../generated/protocol";
 import { open } from "@tauri-apps/plugin-dialog";
 import desktopPackage from "../../../../package.json";
 import type { AppEvent, InternSessionControlRequest, InternSessionCreateRequest, InternSessionSendRequest, RuntimeEvent, Session } from "@synth/runtime-protocol";
-import type { CodexEvent, CodexOauthBegin, CodexOauthStatus, CodexSessionInfo, ComposerImageAttachment, ContextSnapshot, DesktopInstanceDiagnostics, DesktopPermissionSettings, InventoryCounts, LagunaDownloadProgress, LagunaModelHit, LagunaStatus, ModelMultiAgentSetting, ModelPerformanceSummary, ModelPerformanceTurnSample, PersistedCodexSession, RequestOptions, RuntimeBridge, SkillHit, SynthAccountSummary, SynthBackendSettings, SynthSignInBegin, SynthSignInPoll, TariffCard, TerminalEvent, TerminalInfo, UpdateStatus, VisualAnnotation, VisualSeal, VisualSealBundle, VisualTemplateMeta, VisualUpload, WhisperDownloadProgress, WhisperModelHit, WhisperRuntimeStatus, WorkspaceAccessSettings } from "../bridge";
+import type { CodexEvent, CodexOauthBegin, CodexOauthStatus, CodexSessionInfo, ComposerImageAttachment, ContextSnapshot, DesktopInstanceDiagnostics, DesktopPermissionSettings, InventoryCounts, LagunaDownloadProgress, LagunaModelHit, LagunaStatus, ModelMultiAgentSetting, ModelPerformanceSummary, ModelPerformanceTurnSample, PersistedCodexSession, RequestOptions, RuntimeBridge, SecretAuditEvent, SecretCapabilitySummary, SecretImportPreview, SecretSummary, SecretsBridge, SecretsInbox, SkillHit, SynthAccountSummary, SynthBackendSettings, SynthSignInBegin, SynthSignInPoll, TariffCard, TerminalEvent, TerminalInfo, UpdateStatus, VisualAnnotation, VisualSeal, VisualSealBundle, VisualTemplateMeta, VisualUpload, WhisperDownloadProgress, WhisperModelHit, WhisperRuntimeStatus, WorkspaceAccessSettings } from "../bridge";
 import type { CoreDiagnostics, VisualRecord, VisualRevision } from "@synth/runtime-protocol";
 import type { ContainerDeployment, ResolvedTraceProjection, TraceBundleIngestResult, TraceV5Record, UsageLedgerEntry, UsageSummary, UsageWindow } from "@synth/runtime-protocol";
 import { publicError } from "../runtime/publicError";
@@ -365,6 +365,39 @@ window.synthCodexOauth ??= isTauri
 		ensureReady: async () => ({ state: "disconnected", action: "connect", canUseModels: false, guidance: "ChatGPT sign-in requires Synth Desktop.", configured: false }),
 		disconnect: async () => ({ state: "disconnected", action: "connect", canUseModels: false, guidance: "ChatGPT sign-in requires Synth Desktop.", configured: false }),
 		cancel: async () => undefined
+	};
+window.synthSecrets ??= isTauri
+	? {
+		list: (provider, scope) => invokeCommand<SecretSummary[]>(COMMANDS.SECRETS_LIST, { provider, scope }),
+		create: (request) => invokeCommand<SecretSummary>(COMMANDS.SECRETS_CREATE, { request }),
+		replace: (secretId, value) => invokeCommand<SecretSummary>(COMMANDS.SECRETS_REPLACE, { secretId, value }),
+		delete: (secretId) => invokeCommand<void>(COMMANDS.SECRETS_DELETE, { secretId }),
+		test: (secretId) => invokeCommand<SecretSummary>(COMMANDS.SECRETS_TEST, { secretId }),
+		requestEnvImport: (sourcePath, variableNames) => invokeCommand<SecretImportPreview>(COMMANDS.SECRETS_REQUEST_ENV_IMPORT, { request: { sourcePath, variableNames } }),
+		commitEnvImport: (requestId, selected, after, confirm) => invokeCommand<SecretSummary[]>(COMMANDS.SECRETS_COMMIT_ENV_IMPORT, { requestId, selected, after, confirm: confirm ?? false }),
+		denyEnvImport: (requestId) => invokeCommand<void>(COMMANDS.SECRETS_DENY_ENV_IMPORT, { requestId }),
+		pending: () => invokeCommand<SecretsInbox>(COMMANDS.SECRETS_PENDING),
+		capabilities: () => invokeCommand<SecretCapabilitySummary[]>(COMMANDS.SECRETS_CAPABILITIES_LIST),
+		revokeCapability: (capabilityId) => invokeCommand<void>(COMMANDS.SECRETS_REVOKE_CAPABILITY, { capabilityId }),
+		audit: (limit) => invokeCommand<SecretAuditEvent[]>(COMMANDS.SECRETS_AUDIT_LIST, { limit }),
+		grantUse: (secretId, runId, recipeId, rememberRecipe, requestId) => invokeCommand(COMMANDS.SECRETS_GRANT_USE, { secretId, runId, recipeId, rememberRecipe, requestId: requestId ?? null }),
+		denyUse: (secretId) => invokeCommand(COMMANDS.SECRETS_DENY_USE, { secretId })
+	} satisfies SecretsBridge
+	: {
+		list: async () => [],
+		create: async () => { throw new Error("Secrets require Synth Desktop"); },
+		replace: async () => { throw new Error("Secrets require Synth Desktop"); },
+		delete: async () => undefined,
+		test: async () => { throw new Error("Secrets require Synth Desktop"); },
+		requestEnvImport: async () => { throw new Error("Secrets require Synth Desktop"); },
+		commitEnvImport: async () => [],
+		denyEnvImport: async () => undefined,
+		pending: async () => ({ imports: [], grants: [], proxy: { running: false } }),
+		capabilities: async () => [],
+		revokeCapability: async () => undefined,
+		audit: async () => [],
+		grantUse: async () => ({ status: "denied" }),
+		denyUse: async () => ({ status: "denied" })
 	};
 window.synthConfig ??= isTauri
 		? {
@@ -855,6 +888,9 @@ export const bridges = {
 	},
 	get optimizers() {
 		return window.synthOptimizers;
+	},
+	get secrets() {
+		return window.synthSecrets;
 	},
 	get terminal() {
 		return window.synthTerminal;

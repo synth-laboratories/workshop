@@ -590,9 +590,7 @@ impl OptimizerService {
                 }));
             }
             if tokio::time::Instant::now() >= deadline {
-                bail!(
-                    "no matching milestone for `{optimizer_run_id}` after sequence {after_seq}"
-                );
+                bail!("no matching milestone for `{optimizer_run_id}` after sequence {after_seq}");
             }
             tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         }
@@ -4098,14 +4096,26 @@ pub(in crate::optimizers) mod tests {
         // Before this lane the manifest sealed with every one of these null.
         assert_eq!(sealed["work"]["succeeded"], json!(8), "8 scored rollouts");
         assert_eq!(sealed["work"]["unit"], json!("rollouts"));
-        assert_eq!(sealed["selection"]["verdict"], json!("no_measured_improvement"));
+        assert_eq!(
+            sealed["selection"]["verdict"],
+            json!("no_measured_improvement")
+        );
         assert_eq!(sealed["selection"]["accepted"], json!(false));
-        assert_eq!(sealed["usage"]["lanes"]["proposer"]["model"], json!("gpt-5.6-luna"));
-        assert_eq!(sealed["usage"]["lanes"]["policy"]["model"], json!("gpt-4.1-nano"));
+        assert_eq!(
+            sealed["usage"]["lanes"]["proposer"]["model"],
+            json!("gpt-5.6-luna")
+        );
+        assert_eq!(
+            sealed["usage"]["lanes"]["policy"]["model"],
+            json!("gpt-4.1-nano")
+        );
         assert_eq!(sealed["gepaEvidence"]["proposals"]["requested"], json!(10));
         assert_eq!(sealed["gepaEvidence"]["proposals"]["registered"], json!(1));
         assert_eq!(sealed["gepaEvidence"]["proposals"]["shortfall"], json!(9));
-        assert_eq!(sealed["gepaEvidence"]["rollouts"]["maxActiveWorkers"], json!(8));
+        assert_eq!(
+            sealed["gepaEvidence"]["rollouts"]["maxActiveWorkers"],
+            json!(8)
+        );
 
         let result = svc.get_result(run.id.clone()).await.unwrap();
         assert_eq!(result["verdict"], json!("no_measured_improvement"));
@@ -4118,9 +4128,7 @@ pub(in crate::optimizers) mod tests {
             json!("Classify the Banking77 intent.")
         );
         assert_eq!(
-            result["evidence"]["candidates"]
-                .as_array()
-                .map(Vec::len),
+            result["evidence"]["candidates"].as_array().map(Vec::len),
             Some(2),
             "both the seed and the rejected proposal stay on the record"
         );
@@ -4138,9 +4146,19 @@ pub(in crate::optimizers) mod tests {
         )
         .await
         .unwrap();
-        let after = svc.terminal_manifest(run.id.clone()).await.unwrap().unwrap();
-        assert_eq!(after["selection"]["verdict"], json!("no_measured_improvement"));
-        assert_eq!(after["selection"]["selectedCandidateId"], json!("gepa_seed"));
+        let after = svc
+            .terminal_manifest(run.id.clone())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            after["selection"]["verdict"],
+            json!("no_measured_improvement")
+        );
+        assert_eq!(
+            after["selection"]["selectedCandidateId"],
+            json!("gepa_seed")
+        );
         assert_eq!(after["work"]["succeeded"], json!(8));
         assert_eq!(after["terminalCursor"], sealed["terminalCursor"]);
         let reread = svc.get_result(run.id.clone()).await.unwrap();
@@ -4167,16 +4185,12 @@ pub(in crate::optimizers) mod tests {
         svc.append_event_payloads(
             stale.id.clone(),
             vec![
-                draft("optimizer.run.started").delta(Map::from_iter([(
-                    "status".into(),
-                    json!("running"),
-                )])),
+                draft("optimizer.run.started")
+                    .delta(Map::from_iter([("status".into(), json!("running"))])),
                 draft("eval.run.planned")
                     .snapshot(Map::from_iter([("planned_trials".into(), json!(2))])),
-                draft("optimizer.run.completed").delta(Map::from_iter([(
-                    "status".into(),
-                    json!("completed"),
-                )])),
+                draft("optimizer.run.completed")
+                    .delta(Map::from_iter([("status".into(), json!("completed"))])),
             ],
         )
         .await
@@ -4224,7 +4238,10 @@ pub(in crate::optimizers) mod tests {
         for handle in handles {
             handle.await.unwrap().unwrap();
         }
-        let events = svc.events_after(run.id.clone(), 0, Some(200)).await.unwrap();
+        let events = svc
+            .events_after(run.id.clone(), 0, Some(200))
+            .await
+            .unwrap();
         assert_eq!(events.len(), 12);
         let sequences: Vec<u64> = events.iter().map(|event| event.sequence_number).collect();
         assert_eq!(sequences, (1..=12).collect::<Vec<_>>());
@@ -4349,7 +4366,11 @@ pub(in crate::optimizers) mod tests {
         svc.settle_evidence_degraded(run.id.clone(), "late_probe", "arrived after sealing".into())
             .await
             .unwrap();
-        let again = svc.terminal_manifest(run.id.clone()).await.unwrap().unwrap();
+        let again = svc
+            .terminal_manifest(run.id.clone())
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(again["terminalStatus"], json!("completed"));
         assert_eq!(again["terminalCursor"], json!(4));
         assert_eq!(again["degradation"][0]["stage"], json!("late_probe"));
@@ -4386,8 +4407,14 @@ pub(in crate::optimizers) mod tests {
     #[tokio::test]
     async fn terminal_results_stay_algorithm_specific() {
         let (svc, _dir, _) = service().await;
-        let (gepa, _) = svc.seed_fixture("gepa", Some("chat_kinds".into())).await.unwrap();
-        let (sft, _) = svc.seed_fixture("sft", Some("chat_kinds".into())).await.unwrap();
+        let (gepa, _) = svc
+            .seed_fixture("gepa", Some("chat_kinds".into()))
+            .await
+            .unwrap();
+        let (sft, _) = svc
+            .seed_fixture("sft", Some("chat_kinds".into()))
+            .await
+            .unwrap();
         let eval = eval_run(&svc, "opt_eval_kinds", "chat_kinds").await;
         svc.append_event_payloads(
             eval.id.clone(),

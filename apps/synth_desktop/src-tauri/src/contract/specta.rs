@@ -282,6 +282,22 @@ pub fn builder() -> Builder<tauri::Wry> {
         crate::terminal_write,
         crate::terminal_resize,
         crate::terminal_close,
+        crate::secrets::secrets_list,
+        crate::secrets::secrets_create,
+        crate::secrets::secrets_replace,
+        crate::secrets::secrets_delete,
+        crate::secrets::secrets_test,
+        crate::secrets::secrets_request_use,
+        crate::secrets::secrets_grant_use,
+        crate::secrets::secrets_deny_use,
+        crate::secrets::secrets_capabilities_list,
+        crate::secrets::secrets_revoke_capability,
+        crate::secrets::secrets_request_env_import,
+        crate::secrets::secrets_commit_env_import,
+        crate::secrets::secrets_audit_list,
+        crate::secrets::secrets_proxy_status,
+        crate::secrets::secrets_pending,
+        crate::secrets::secrets_deny_env_import,
     ])
 }
 
@@ -365,8 +381,12 @@ mod tests {
         // status, install, remove, revoke an app, open the System Settings
         // pane — and none is reachable from the agent's MCP surface.
         // 203 → 206: managed browser status plus human-only origin allow/revoke.
+        // 206 → 220: local secrets vault + provider proxy (list/create/replace/
+        // delete/test, request/grant/deny use, capabilities, env import, audit,
+        // proxy status). No get/reveal/export/readValue command is included.
+        // 220 → 222: pending agent import/use inbox and deny-import (human-only).
         assert_eq!(
-            exported, 206,
+            exported, 222,
             "generated bindings must contain the complete desktop command set"
         );
         assert_eq!(

@@ -67,6 +67,37 @@ function gepaPhases(gepa: GepaState): RunProgressPhase[] {
 	}));
 }
 
+function activeProposerPhase(gepa: GepaState, now: number): RunProgressPhase | undefined {
+	const trace = [...gepa.proposerTraces]
+		.reverse()
+		.find((candidate) => candidate.status === "running");
+	if (!gepa.activity.proposalActive && !trace) return undefined;
+	const generation = trace?.generation ?? gepa.activity.generation ?? 0;
+	const model = trace?.model ?? gepa.models.proposer;
+	const startedAt = trace?.startedAt;
+	const startedMs = startedAt ? Date.parse(startedAt) : Number.NaN;
+	const activeSeconds = Number.isFinite(startedMs)
+		? Math.max(0, Math.floor((now - startedMs) / 1_000))
+		: undefined;
+	const elapsed = activeSeconds == null
+		? undefined
+		: activeSeconds < 60
+			? `${activeSeconds}s active`
+			: `${Math.floor(activeSeconds / 60)}m ${activeSeconds % 60}s active`;
+	return {
+		id: "proposal",
+		label: "Proposer is working",
+		status: "active",
+		detail: [
+			`Generation ${generation}`,
+			model,
+			elapsed,
+			"waiting for candidate proposals"
+		].filter(Boolean).join(" · "),
+		startedAt
+	};
+}
+
 function gepaWork(gepa: GepaState): RunProgressWork {
 	const rolloutLimit = gepa.limits.find((limit) => limit.kind === "total_rollouts");
 	const failed = gepa.failedAttempts.length;
@@ -224,7 +255,8 @@ export function projectGepa(input: AdapterInput, projected: ProjectedState): Run
 	if (!gepa) return base;
 
 	const phases = gepaPhases(gepa);
-	const active = phases.find((phase) => phase.status === "active");
+	const activeProposer = activeProposerPhase(gepa, input.now);
+	const active = activeProposer ?? phases.find((phase) => phase.status === "active");
 	const rawWork = gepaWork(gepa);
 	const workEvidence = evidenceOf(input, gepa.rolloutsCompleted + gepa.limits.length, "rollout");
 	// A campaign that proved nothing reports nothing. `0 rollouts` is a claim.
