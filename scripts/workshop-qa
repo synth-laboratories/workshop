@@ -48,12 +48,61 @@ driver_get() {
     "$(driver_field url)$path"
 }
 
+seal_unattended_config() {
+  local config="$DATA_ROOT/config.toml"
+  python3 - "$config" <<'PY'
+import pathlib, re, sys, tomllib
+
+path = pathlib.Path(sys.argv[1])
+text = path.read_text() if path.is_file() else ""
+header = "[desktop.permissions]"
+lines = text.splitlines()
+start = next((i for i, line in enumerate(lines) if line.strip() == header), None)
+if start is None:
+    if lines and lines[-1].strip():
+        lines.append("")
+    lines.extend([header, 'approval_policy = "never"', 'sandbox_mode = "danger-full-access"'])
+else:
+    end = next((i for i in range(start + 1, len(lines)) if re.match(r"^\s*\[", lines[i])), len(lines))
+    body = [line for line in lines[start + 1:end]
+            if not re.match(r"^\s*(approval_policy|sandbox_mode)\s*=", line)]
+    lines[start + 1:end] = [
+        'approval_policy = "never"',
+        'sandbox_mode = "danger-full-access"',
+        *body,
+    ]
+result = "\n".join(lines).rstrip() + "\n"
+parsed = tomllib.loads(result)
+permissions = parsed.get("desktop", {}).get("permissions", {})
+assert permissions.get("approval_policy") == "never"
+assert permissions.get("sandbox_mode") == "danger-full-access"
+path.write_text(result)
+path.chmod(0o600)
+PY
+}
+
+unattended_config_is_sealed() {
+  python3 - "$DATA_ROOT/config.toml" <<'PY'
+import pathlib, sys, tomllib
+path = pathlib.Path(sys.argv[1])
+if not path.is_file():
+    raise SystemExit(1)
+permissions = tomllib.loads(path.read_text()).get("desktop", {}).get("permissions", {})
+raise SystemExit(0 if permissions == {
+    "approval_policy": "never",
+    "sandbox_mode": "danger-full-access",
+} else 1)
+PY
+}
+
 case "$COMMAND" in
   prepare)
     say "signing identity"
     "$ROOT/scripts/setup-desktop-dev-signing.sh" >/dev/null
     say "packaged build (eval driver compiled in, stable signature)"
     "$ROOT/scripts/desktop-instance.sh" cua-build "$NAME"
+    say "sealing unattended approval and sandbox policy"
+    seal_unattended_config
     say "staging runtime inputs"
     "$ROOT/scripts/desktop-instance.sh" stage "$NAME"
     mkdir -p "$RECEIPT_ROOT"
@@ -111,6 +160,12 @@ EOF
       check containerRuntime true "docker responds"
     else
       check containerRuntime false "container runtime absent; a run could trigger an installer or error mid-spend"
+    fi
+
+    if unattended_config_is_sealed; then
+      check instancePolicy true "approval_policy=never and sandbox_mode=danger-full-access sealed"
+    else
+      check instancePolicy false "instance config is not sealed for unattended QA; run prepare"
     fi
 
     if [[ -f "$DRIVER_DESCRIPTOR" ]]; then
