@@ -19,7 +19,7 @@ use super::event_pump::{spawn_server, EventPumpState, SpawnServerRequest};
 use super::home::{
     apply_brokered_credential, auto_compact_token_limit, automatic_thread_title, codex_root,
     ensure_home, install_local_laguna_catalog, nested_id, responses_base_url, safe_component,
-    session_info, validate_reasoning_effort, validate_start,
+    session_info, uniquify_title, validate_reasoning_effort, validate_start,
 };
 use super::proto::{
     default_approval_policy, default_sandbox, is_detached_failure, is_not_recorded_failure,
@@ -369,10 +369,19 @@ impl CodexManager {
         } else {
             request.model.clone()
         };
-        let title = remembered
-            .as_ref()
-            .and_then(|record| record.title.clone())
-            .unwrap_or(default_title);
+        let title = if let Some(title) = remembered.as_ref().and_then(|record| record.title.clone())
+        {
+            title
+        } else {
+            let taken = self
+                .records
+                .read()
+                .await
+                .values()
+                .filter_map(|record| record.title.clone())
+                .collect::<Vec<_>>();
+            uniquify_title(&default_title, taken.iter().map(String::as_str))
+        };
         let title_origin = remembered
             .as_ref()
             .and_then(|record| record.title_origin.clone())
@@ -1414,9 +1423,18 @@ impl CodexManager {
         if !should_set {
             return;
         }
-        let Some(title) = automatic_thread_title(prompt) else {
+        let Some(base) = automatic_thread_title(prompt) else {
             return;
         };
+        let taken = {
+            let records = self.records.read().await;
+            records
+                .iter()
+                .filter(|(id, _)| id.as_str() != session_id)
+                .filter_map(|(_, record)| record.title.clone())
+                .collect::<Vec<_>>()
+        };
+        let title = uniquify_title(&base, taken.iter().map(String::as_str));
         let previous_title = {
             let mut records = self.records.write().await;
             let Some(record) = records.get_mut(session_id) else {

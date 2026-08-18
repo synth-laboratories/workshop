@@ -303,18 +303,27 @@ export function Sidebar({
 		if (aPinned !== bPinned) return aPinned ? -1 : 1;
 		return 0;
 	}), [pinnedChatIds, state.chats]);
-	const visibleChats = useMemo(() => {
-		if (showAllChats) return orderedChats;
+	const hiddenChatIds = useMemo(() => {
+		if (showAllChats) return new Set<string>();
 		const alwaysVisible = new Set([
 			...orderedChats.filter((chat) => pinnedChatIds.has(chat.id)).map((chat) => chat.id),
 			...orderedChats.filter((chat) => chat.id === activeChatId || workingChatIds.has(chat.id)).map((chat) => chat.id)
 		]);
-		const priority = orderedChats.filter((chat) => alwaysVisible.has(chat.id));
-		const remainder = orderedChats.filter((chat) => !alwaysVisible.has(chat.id));
-		return [...priority, ...remainder].slice(0, Math.max(10, priority.length));
+		const hidden = new Set<string>();
+		let shown = 0;
+		const floor = Math.max(10, alwaysVisible.size);
+		for (const chat of orderedChats) {
+			if (alwaysVisible.has(chat.id)) {
+				shown += 1;
+				continue;
+			}
+			if (shown >= floor) hidden.add(chat.id);
+			else shown += 1;
+		}
+		return hidden;
 	}, [activeChatId, orderedChats, pinnedChatIds, showAllChats, workingChatIds]);
-	const firstPinnedIndex = visibleChats.findIndex((chat) => pinnedChatIds.has(chat.id));
-	const firstRecentIndex = visibleChats.findIndex((chat) => !pinnedChatIds.has(chat.id));
+	const firstPinnedIndex = orderedChats.findIndex((chat) => pinnedChatIds.has(chat.id));
+	const firstRecentIndex = orderedChats.findIndex((chat) => !pinnedChatIds.has(chat.id));
 	const pluginRowActive: Record<PluginNavEntry["id"], boolean> = {
 		visuals: visualsActive,
 		reports: reportsActive,
@@ -378,7 +387,7 @@ export function Sidebar({
 							{orderedChats.length === 0 ? (
 								<p className="empty-hint">No local chats yet</p>
 							) : (
-								visibleChats.map((chat, chatIndex) => {
+								orderedChats.map((chat, chatIndex) => {
 									const title = conversationTitles[chat.id] ?? chat.title;
 									const pinned = pinnedChatIds.has(chat.id);
 									const working = workingChatIds.has(chat.id);
@@ -390,7 +399,7 @@ export function Sidebar({
 										: chatIndex === firstRecentIndex ? "Recents" : null;
 									if (renamingId === chat.id) {
 										return (
-											<div key={chat.id} className="chat-section-entry">
+											<div key={chat.id} className="chat-section-entry" hidden={hiddenChatIds.has(chat.id)} data-hidden={hiddenChatIds.has(chat.id) ? "true" : undefined}>
 												{sectionLabel ? <h3 className="chat-section-label">{sectionLabel}</h3> : null}
 											<form
 												className="chat-rename-form"
@@ -424,7 +433,7 @@ export function Sidebar({
 										);
 									}
 					return (
-						<div key={chat.id} className="chat-section-entry">
+						<div key={chat.id} className="chat-section-entry" hidden={hiddenChatIds.has(chat.id)} data-hidden={hiddenChatIds.has(chat.id) ? "true" : undefined}>
 							{sectionLabel ? <h3 className="chat-section-label">{sectionLabel}</h3> : null}
 						<div className="chat-row">
 						<button
@@ -499,7 +508,7 @@ export function Sidebar({
 									);
 								})
 							)}
-							{orderedChats.length > visibleChats.length ? (
+							{hiddenChatIds.size > 0 ? (
 								<button
 									type="button"
 									className="sidebar-show-more"
@@ -508,7 +517,7 @@ export function Sidebar({
 									aria-controls="sidebar-chats"
 									onClick={() => setShowAllChats(true)}
 								>
-									Show {orderedChats.length - visibleChats.length} more
+									Show {hiddenChatIds.size} more
 								</button>
 							) : showAllChats && orderedChats.length > 10 ? (
 								<button

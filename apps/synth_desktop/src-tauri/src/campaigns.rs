@@ -192,7 +192,18 @@ pub fn create(conn: &Connection, request: CampaignCreate) -> Result<Campaign> {
             ],
         )?;
     }
-    load(conn, &request.id)
+    let campaign = load(conn, &request.id)?;
+    if let Some(session_id) = campaign.session_id.as_deref() {
+        crate::experiments::attach(
+            conn,
+            session_id,
+            crate::experiments::MEMBER_CAMPAIGN,
+            &campaign.id,
+            &campaign.created_at,
+            &campaign.title,
+        )?;
+    }
+    Ok(campaign)
 }
 
 pub fn load(conn: &Connection, id: &str) -> Result<Campaign> {
@@ -380,8 +391,10 @@ fn aggregate(terminal: &[&CampaignRolloutPlan]) -> Value {
         if let Some(latency) = number(record, &["/duration_ms", "/summary/duration_ms"]) {
             latencies.push(latency);
         }
-        if let Some(calls) = number(record, &["/model_calls", "/summary/model_calls", "/usage/requests"])
-        {
+        if let Some(calls) = number(
+            record,
+            &["/model_calls", "/summary/model_calls", "/usage/requests"],
+        ) {
             calls_total += calls;
             calls_reported += 1;
         }
@@ -408,11 +421,7 @@ fn aggregate(terminal: &[&CampaignRolloutPlan]) -> Value {
             let label = name
                 .as_str()
                 .map(str::to_owned)
-                .or_else(|| {
-                    name.get("name")
-                        .and_then(Value::as_str)
-                        .map(str::to_owned)
-                })
+                .or_else(|| name.get("name").and_then(Value::as_str).map(str::to_owned))
                 .unwrap_or_else(|| "unnamed".into());
             *achievements.entry(label).or_insert(0) += 1;
         }
@@ -561,7 +570,10 @@ mod tests {
         assert_eq!(result["aggregate"]["reward"]["n"], 10);
         assert_eq!(result["aggregate"]["reward"]["min"], 0.1);
         assert_eq!(result["aggregate"]["reward"]["max"], 1.0);
-        assert_eq!(result["aggregate"]["achievementRates"]["collect_wood"]["count"], 10);
+        assert_eq!(
+            result["aggregate"]["achievementRates"]["collect_wood"]["count"],
+            10
+        );
         assert_eq!(result["aggregate"]["terminationReasons"]["max_steps"], 10);
         assert_eq!(result["aggregate"]["coverage"]["usageReportedBy"], 10);
     }
@@ -612,6 +624,56 @@ mod tests {
     }
 
     #[test]
+    fn crash_restart_preserves_campaign_terminal_count() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("campaigns.db");
+        {
+            let conn = Connection::open(&path).unwrap();
+            crate::storage::migrations::apply_migrations(&conn).unwrap();
+            create(&conn, request("camp_1", (201..=210).collect())).unwrap();
+            record_started(&conn, "camp_1_r01", "2026-08-17T00:01:00Z").unwrap();
+            record_terminal(
+                &conn,
+                "camp_1_r01",
+                &terminal_record(0.6, &["collect_wood"], "max_steps"),
+                "2026-08-17T00:02:00Z",
+            )
+            .unwrap();
+        }
+        let conn = Connection::open(&path).unwrap();
+        crate::storage::migrations::apply_migrations(&conn).unwrap();
+        let campaign = load(&conn, "camp_1").unwrap();
+        assert_eq!(campaign.expected_rollouts, 10);
+        assert_eq!(
+            campaign
+                .rollouts
+                .iter()
+                .filter(|rollout| rollout.status == "terminal")
+                .count(),
+            1
+        );
+        let result = settle(&conn, "camp_1", "2026-08-17T00:03:00Z").unwrap();
+        assert_eq!(result["status"], "partial");
+        assert_eq!(result["terminalRollouts"], 1);
+        assert_eq!(result["missing"].as_array().unwrap().len(), 9);
+    }
+
+    #[test]
+    fn campaign_create_attaches_the_session_experiment_group() {
+        let conn = database();
+        create(&conn, request("camp_1", vec![201, 202])).unwrap();
+        let group = crate::experiments::load_for_session(&conn, "session_1")
+            .unwrap()
+            .expect("campaign create owns an experiment group");
+        assert_eq!(group.members.len(), 1);
+        assert_eq!(group.members[0].member_id, "camp_1");
+        assert_eq!(
+            group.members[0].member_kind,
+            crate::experiments::MEMBER_CAMPAIGN
+        );
+    }
+
+    #[test]
     fn seeds_must_be_distinct_and_match_the_expected_count() {
         assert!(resolve_seeds(Some(&vec![json!(1), json!(1)]), None, 2)
             .unwrap_err()
@@ -621,7 +683,10 @@ mod tests {
             .unwrap_err()
             .to_string()
             .contains("2 rollouts"));
-        assert_eq!(resolve_seeds(None, Some(201), 3).unwrap(), vec![201, 202, 203]);
+        assert_eq!(
+            resolve_seeds(None, Some(201), 3).unwrap(),
+            vec![201, 202, 203]
+        );
     }
 
     #[test]

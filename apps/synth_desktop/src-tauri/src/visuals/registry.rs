@@ -1893,4 +1893,59 @@ mod tests {
         let source = registry.visual_source(dynamic.id).await.unwrap();
         assert_eq!(source.media_type, systems::MEDIA_TYPE_SOURCE);
     }
+
+    #[tokio::test]
+    async fn five_concurrent_session_visuals_stay_isolated() {
+        let dir = tempdir().unwrap();
+        let storage = Storage::open(dir.path()).unwrap();
+        let db = storage.database().clone();
+        let registry = VisualRegistry::new(
+            db.clone(),
+            EventJournal::new(db.clone()),
+            ContentStore::new(storage.content_root()),
+        );
+        let Some(template_id) = non_mermaid_template(&registry) else {
+            return;
+        };
+        for index in 1..=5 {
+            let session = format!("session_{index}");
+            registry
+                .create(VisualCreateRequest {
+                    template_id: template_id.clone(),
+                    title: Some(format!("Task {index} visual")),
+                    bindings: Some(json!({})),
+                    id: Some(format!("vis_{index}")),
+                    status: None,
+                    renderer_kind: None,
+                    session_id: Some(session.clone()),
+                    message_id: None,
+                    run_id: None,
+                    trace_id: None,
+                    parent_visual_id: None,
+                    source_agent_id: None,
+                    source_model: None,
+                    content: None,
+                    metadata: None,
+                })
+                .await
+                .unwrap();
+        }
+        for index in 1..=5 {
+            let session = format!("session_{index}");
+            let listed = registry
+                .list(VisualQuery {
+                    session_id: Some(session.clone()),
+                    ..VisualQuery::default()
+                })
+                .await
+                .unwrap();
+            assert_eq!(
+                listed.len(),
+                1,
+                "{session} must not see another task's visuals"
+            );
+            assert_eq!(listed[0].id, format!("vis_{index}"));
+            assert_eq!(listed[0].session_id.as_deref(), Some(session.as_str()));
+        }
+    }
 }

@@ -7,14 +7,15 @@ use super::events::OptimizerEventDraft;
 use super::{
     ingest,
     models::{
-        OptimizerCapabilities, OptimizerCreateRequest, OptimizerExecutionBinding,
-        OptimizerRecipeRunRequest, OptimizerResourceRef,
+        OptimizerCapabilities, OptimizerCreateRequest, OptimizerExecutionBinding, OptimizerQuery,
+        OptimizerRecipeRunRequest, OptimizerResourceRef, OptimizerRunRecord,
     },
     sft_client::SftOptimizerClient,
     OptimizerService,
 };
 use anyhow::{bail, Context, Result};
 use serde_json::{json, Value};
+use std::collections::HashSet;
 use std::time::Duration;
 use tokio::{sync::watch, time::sleep};
 
@@ -48,11 +49,18 @@ const MAX_DROPPED_FRACTION: &str = "0.05";
 /// Seconds one checkpoint rollout may take. A Craftax episode runs minutes; the
 /// evaluator's HTTP client would otherwise fall back to a 30s default.
 const CHECKPOINT_EVALUATION_TIMEOUT_S: u32 = 3600;
+/// The Workshop approval broker needs a hard per-run authorization ceiling.
+/// Hosted SFT recipes are fixed-shape (model, steps, checkpoints, and rollout
+/// counts are product-owned), so cap each paid launch at one fifth of the
+/// five-run acceptance budget. The public service remains the execution
+/// authority and Workshop reconciles actual usage from its event stream.
+const HOSTED_SFT_COST_CEILING_USD: f64 = 10.0;
 /// Allowlisted dataset shards. A caller selects one; it cannot supply a path.
 const BANKING77_SHARDS: [&str; 2] = ["train_a", "train_b"];
 /// Torn-tail reads while the producer appends are transient. Give up only
 /// after the upstream stays unreadable across this many consecutive polls.
 const MAX_CONSECUTIVE_PAGE_ERRORS: u32 = 20;
+const HOSTED_SFT_LORA_RANK: u64 = 8;
 
 pub fn recipe_catalog() -> Vec<Value> {
     vec![
@@ -77,7 +85,7 @@ fn fixture_recipe() -> Value {
             "backend": "fixture",
             "checkpointSteps": [10, 20],
             "campaignRolloutsPerCheckpoint": 2,
-            "costCeilingUsd": null,
+            "costCeilingUsd": 0.0,
             "costNotice": "Fixture backend; no provider charges. Requires the public Optimizers SFT service."
         },
         "credentialInputs": [],
@@ -104,7 +112,7 @@ fn craftax_nemotron_recipe() -> Value {
             "trainingSteps": CRAFTAX_TRAINING_STEPS,
             "campaignRolloutsPerCheckpoint": 2,
             "evalSeeds": [501, 502],
-            "costCeilingUsd": null,
+            "costCeilingUsd": HOSTED_SFT_COST_CEILING_USD,
             "costNotice": "Hosted Tinker + local Craftax slot. Student id from docs/sft_tinker_base_models.toml (default 3.5 Lightning)."
         },
         "credentialInputs": [],
@@ -138,7 +146,7 @@ fn banking77_recipe() -> Value {
             "datasetShards": BANKING77_SHARDS,
             "evalSeeds": [1, 2],
             "evaluationPlanRef": BANKING77_PLAN_REF,
-            "costCeilingUsd": null,
+            "costCeilingUsd": HOSTED_SFT_COST_CEILING_USD,
             "costNotice": "Hosted Tinker training plus banking77_classify campaign rollouts. Provider charges apply."
         },
         "credentialInputs": [],
@@ -167,7 +175,16 @@ pub async fn start(
     }
 }
 
-/// Pinned Banking77 SFT corpus. The recipe owns the path; a caller picks only
+fn content_sha256(bytes: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    format!("sha256:{:x}", Sha256::digest(bytes))
+}
+
+fn dataset_digest_for_path(path: &std::path::Path) -> Result<String> {
+    let bytes =
+        std::fs::read(path).with_context(|| format!("read dataset bytes {}", path.display()))?;
+    Ok(content_sha256(&bytes))
+}
 /// which allowlisted shard to train on.
 fn banking77_source() -> Result<std::path::PathBuf> {
     let raw = std::env::var("SYNTH_SFT_BANKING77_TRAIN_JSONL")
@@ -243,6 +260,8 @@ async fn start_banking77(
         .unwrap_or(BANKING77_SHARDS[0])
         .to_string();
     let shard_path = materialize_banking77_shard(&shard)?;
+    let dataset_digest = dataset_digest_for_path(&shard_path)?;
+    super::sft_result::validate_dataset_digest(&shard_path, &dataset_digest)?;
     let container_url = banking77_slot_url();
     let suffix = uuid::Uuid::new_v4().simple().to_string();
     let run_id = format!("sft_banking77_{}_{}", shard, &suffix[..8]);
@@ -253,6 +272,7 @@ async fn start_banking77(
         &model_id,
         &container_url,
         &shard_path.to_string_lossy(),
+        &dataset_digest,
     );
     let create = OptimizerCreateRequest {
         algorithm_id: "sft".into(),
@@ -302,10 +322,10 @@ async fn start_banking77(
             OptimizerResourceRef {
                 kind: "dataset".into(),
                 id: training_file.clone(),
-                digest: None,
+                digest: Some(dataset_digest.clone()),
                 role: Some("train".into()),
                 title: Some(format!("Banking77 SFT corpus · shard {shard}")),
-                metadata: json!({"shard": shard, "shards": BANKING77_SHARDS}),
+                metadata: json!({"shard": shard, "shards": BANKING77_SHARDS, "datasetDigest": dataset_digest}),
             },
         ]),
         capabilities: Some(OptimizerCapabilities::for_algorithm("sft")),
@@ -315,6 +335,9 @@ async fn start_banking77(
             "producer": "synth-optimizers",
             "baseModel": model_id,
             "datasetShard": shard,
+            "datasetDigest": dataset_digest,
+            "adapter": lora_adapter_label(HOSTED_SFT_LORA_RANK),
+            "rank": HOSTED_SFT_LORA_RANK,
             "localSlot": container_url,
             "checkpointSteps": BANKING77_CHECKPOINT_STEPS,
         })),
@@ -324,7 +347,7 @@ async fn start_banking77(
         local_path: None,
     };
     let (run, event) = service.create(create).await?;
-    spawn_hosted_worker(service, client, run_id, config_toml).await;
+    spawn_hosted_worker(service, client, run_id, Some(config_toml), 0).await;
     Ok((run, event))
 }
 
@@ -334,19 +357,22 @@ fn banking77_config_toml(
     model_id: &str,
     container_url: &str,
     training_jsonl: &str,
+    dataset_digest: &str,
 ) -> String {
     let steps = BANKING77_CHECKPOINT_STEPS
         .iter()
         .map(u32::to_string)
         .collect::<Vec<_>>()
         .join(", ");
+    let adapter = lora_adapter_label(HOSTED_SFT_LORA_RANK);
     format!(
         r#"run_id = "{run_id}"
 backend = "tinker"
 base_model = "{model_id}"
-adapter = "lora_r16"
+adapter = "{adapter}"
 training_file_id = "{training_file}"
 training_jsonl = "{training_jsonl}"
+dataset_digest = "{dataset_digest}"
 selection_file_id = "file_selection"
 heldout_file_id = "file_heldout"
 accelerator_slots = 1
@@ -389,7 +415,8 @@ async fn start_fixture(
     let suffix = uuid::Uuid::new_v4().simple().to_string();
     let run_id = format!("sft_hosted_{}", &suffix[..8]);
     let training_file = format!("file_train_{}", &suffix[..8]);
-    let config_toml = fixture_config_toml(&run_id, &training_file);
+    let dataset_digest = content_sha256(b"hosted-sft-fixture-dataset.v1\n");
+    let config_toml = fixture_config_toml(&run_id, &training_file, &dataset_digest);
     let create = OptimizerCreateRequest {
         algorithm_id: "sft".into(),
         algorithm_version: Some("hosted-fixture-v1".into()),
@@ -422,6 +449,8 @@ async fn start_fixture(
             "recipeId": HOSTED_SFT_FIXTURE_RECIPE,
             "backend": "fixture",
             "producer": "synth-optimizers",
+            "adapter": lora_adapter_label(HOSTED_SFT_LORA_RANK),
+            "rank": HOSTED_SFT_LORA_RANK,
         })),
         open_visual: request.open_visual.or(Some(true)),
         seed_fixture: None,
@@ -429,7 +458,7 @@ async fn start_fixture(
         local_path: None,
     };
     let (run, event) = service.create(create).await?;
-    spawn_hosted_worker(service, client, run_id, config_toml).await;
+    spawn_hosted_worker(service, client, run_id, Some(config_toml), 0).await;
     Ok((run, event))
 }
 
@@ -451,12 +480,20 @@ async fn start_craftax_nemotron(
         .ok()
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty());
+    let dataset_digest = match training_jsonl.as_deref() {
+        Some(path) => dataset_digest_for_path(std::path::Path::new(path))?,
+        None => content_sha256(b"craftax-sft-unspecified-dataset.v1\n"),
+    };
+    if let Some(path) = training_jsonl.as_deref() {
+        super::sft_result::validate_dataset_digest(std::path::Path::new(path), &dataset_digest)?;
+    }
     let config_toml = craftax_nemotron_config_toml(
         &run_id,
         &training_file,
         &model_id,
         &container_url,
         training_jsonl.as_deref(),
+        &dataset_digest,
     );
     let create = OptimizerCreateRequest {
         algorithm_id: "sft".into(),
@@ -506,9 +543,13 @@ async fn start_craftax_nemotron(
             "backend": "tinker",
             "producer": "synth-optimizers",
             "baseModel": model_id,
+            "adapter": lora_adapter_label(HOSTED_SFT_LORA_RANK),
+            "rank": HOSTED_SFT_LORA_RANK,
+            "datasetDigest": dataset_digest,
             "localSlot": container_url,
             "checkpointSteps": CRAFTAX_CHECKPOINT_STEPS,
             "trainingSteps": CRAFTAX_TRAINING_STEPS,
+            "datasetDigest": dataset_digest,
         })),
         open_visual: request.open_visual.or(Some(true)),
         seed_fixture: None,
@@ -516,7 +557,7 @@ async fn start_craftax_nemotron(
         local_path: None,
     };
     let (run, event) = service.create(create).await?;
-    spawn_hosted_worker(service, client, run_id, config_toml).await;
+    spawn_hosted_worker(service, client, run_id, Some(config_toml), 0).await;
     Ok((run, event))
 }
 
@@ -548,12 +589,14 @@ async fn spawn_hosted_worker(
     service: &OptimizerService,
     client: SftOptimizerClient,
     run_id: String,
-    config_toml: String,
+    config_toml: Option<String>,
+    start_cursor: u64,
 ) {
     let (cancel_tx, cancel_rx) = watch::channel(false);
     service
         .register_local_recipe(run_id.clone(), cancel_tx)
         .await;
+    let _ = persist_hosted_cursor(service, &run_id, start_cursor, true).await;
     let worker = service.clone();
     tokio::spawn(async move {
         if let Err(error) = run_hosted_worker(
@@ -561,6 +604,7 @@ async fn spawn_hosted_worker(
             client,
             run_id.clone(),
             config_toml,
+            start_cursor,
             cancel_rx,
         )
         .await
@@ -574,15 +618,93 @@ async fn spawn_hosted_worker(
     });
 }
 
+pub async fn restore_hosted_mirrors(service: &OptimizerService) {
+    let Ok(runs) = service
+        .list(OptimizerQuery {
+            algorithm_id: Some("sft".into()),
+            source: Some("hosted".into()),
+            ..OptimizerQuery::default()
+        })
+        .await
+    else {
+        return;
+    };
+    let registered = service.registered_local_recipes().await;
+    let Ok(client) = SftOptimizerClient::from_env() else {
+        return;
+    };
+    for (run_id, cursor) in hosted_runs_needing_restore(&runs, &registered) {
+        spawn_hosted_worker(service, client.clone(), run_id, None, cursor).await;
+    }
+}
+
+pub(crate) fn hosted_runs_needing_restore(
+    runs: &[OptimizerRunRecord],
+    registered: &HashSet<String>,
+) -> Vec<(String, u64)> {
+    runs.iter()
+        .filter(|run| {
+            run.source == "hosted"
+                && run.algorithm_id == "sft"
+                && !matches!(
+                    run.status.as_str(),
+                    "completed" | "failed" | "cancelled" | "canceled"
+                )
+                && !registered.contains(&run.id)
+        })
+        .map(|run| (run.id.clone(), resume_cursor(run)))
+        .collect()
+}
+
+fn resume_cursor(run: &OptimizerRunRecord) -> u64 {
+    run.summary
+        .get("hostedMirror")
+        .and_then(|value| value.get("cursor"))
+        .and_then(Value::as_u64)
+        .unwrap_or(run.cursor_seq)
+}
+
+fn lora_adapter_label(rank: u64) -> String {
+    format!("lora_r{rank}")
+}
+
+fn content_digest_for_path(path: &std::path::Path) -> Result<String> {
+    let bytes = std::fs::read(path)?;
+    Ok(super::sft_result::sha256_bytes(&bytes))
+}
+
+async fn persist_hosted_cursor(
+    service: &OptimizerService,
+    run_id: &str,
+    cursor: u64,
+    attached: bool,
+) -> Result<()> {
+    let mut run = service.get(run_id.to_string()).await?;
+    let mut summary = run.summary.as_object().cloned().unwrap_or_default();
+    summary.insert(
+        "hostedMirror".into(),
+        json!({
+            "cursor": cursor,
+            "attached": attached,
+        }),
+    );
+    run.summary = Value::Object(summary);
+    service.persist_run(run).await?;
+    Ok(())
+}
+
 async fn run_hosted_worker(
     service: OptimizerService,
     client: SftOptimizerClient,
     run_id: String,
-    config_toml: String,
+    config_toml: Option<String>,
+    start_cursor: u64,
     mut cancel: watch::Receiver<bool>,
 ) -> Result<()> {
-    client.submit_toml(&run_id, &config_toml).await?;
-    let mut upstream_cursor = 0u64;
+    if let Some(toml) = config_toml.as_deref() {
+        client.submit_toml(&run_id, toml).await?;
+    }
+    let mut upstream_cursor = start_cursor;
     // The producer appends to its log while we page it. A read that lands on a
     // half-written record is a retry, not a dead run — the cursor has not moved
     // and the next page re-reads the same bytes. Only a persistent failure ends
@@ -597,6 +719,7 @@ async fn run_hosted_worker(
                 consecutive_page_errors = 0;
                 ingest::ingest_event_page(&service, &run_id, "sft", &page, &mut upstream_cursor)
                     .await?;
+                let _ = persist_hosted_cursor(&service, &run_id, upstream_cursor, true).await;
             }
             Err(error) => {
                 consecutive_page_errors += 1;
@@ -648,19 +771,24 @@ async fn run_hosted_worker(
     }
 }
 
-fn fixture_config_toml(run_id: &str, training_file: &str) -> String {
+fn fixture_config_toml(run_id: &str, training_file: &str, dataset_digest: &str) -> String {
+    let adapter = lora_adapter_label(HOSTED_SFT_LORA_RANK);
     format!(
         r#"run_id = "{run_id}"
 backend = "fixture"
 base_model = "openai/gpt-oss-20b"
-adapter = "lora_r16"
+adapter = "{adapter}"
 training_file_id = "{training_file}"
+dataset_digest = "{dataset_digest}"
 selection_file_id = "file_selection"
 heldout_file_id = "file_heldout"
 accelerator_slots = 1
 checkpoint_steps = [10, 20]
 campaign_rollouts_per_checkpoint = 2
 evaluator_version = "hosted_fixture.v1"
+
+[hyperparameters]
+rank = {HOSTED_SFT_LORA_RANK}
 "#
     )
 }
@@ -671,12 +799,14 @@ fn craftax_nemotron_config_toml(
     model_id: &str,
     container_url: &str,
     training_jsonl: Option<&str>,
+    dataset_digest: &str,
 ) -> String {
     let checkpoint_steps = CRAFTAX_CHECKPOINT_STEPS
         .iter()
         .map(u32::to_string)
         .collect::<Vec<_>>()
         .join(", ");
+    let adapter = lora_adapter_label(HOSTED_SFT_LORA_RANK);
     let training_jsonl_line = training_jsonl
         .map(|path| format!("training_jsonl = \"{path}\"\n"))
         .unwrap_or_default();
@@ -684,10 +814,11 @@ fn craftax_nemotron_config_toml(
         r#"run_id = "{run_id}"
 backend = "tinker"
 base_model = "{model_id}"
-adapter = "lora_r16"
+adapter = "{adapter}"
 training_file_id = "{training_file}"
 selection_file_id = "file_selection"
 heldout_file_id = "file_heldout"
+dataset_digest = "{dataset_digest}"
 {training_jsonl_line}accelerator_slots = 1
 checkpoint_steps = [{checkpoint_steps}]
 training_steps = {CRAFTAX_TRAINING_STEPS}
@@ -813,6 +944,7 @@ mod tests {
                     "nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16",
                     "http://127.0.0.1:8110",
                     "/tmp/train_a.jsonl",
+                    "sha256:deadbeef",
                 ),
             ),
             (
@@ -823,6 +955,7 @@ mod tests {
                     "nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16",
                     "http://127.0.0.1:8098",
                     Some("/tmp/craftax.jsonl"),
+                    "sha256:deadbeef",
                 ),
             ),
         ] {
@@ -841,7 +974,11 @@ mod tests {
 
     #[test]
     fn fixture_toml_is_algorithm_sft_not_goex_plugin() {
-        let toml = fixture_config_toml("sft_hosted_ab12cd34", "file_train_ab12cd34");
+        let toml = fixture_config_toml(
+            "sft_hosted_ab12cd34",
+            "file_train_ab12cd34",
+            "sha256:fixture",
+        );
         assert!(toml.contains("backend = \"fixture\""));
         assert!(toml.contains("run_id = \"sft_hosted_ab12cd34\""));
         assert!(!toml.contains("goex.sft"));
@@ -856,6 +993,7 @@ mod tests {
             "nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16",
             "http://127.0.0.1:8110",
             "/tmp/train_a.jsonl",
+            "sha256:content",
         );
         assert!(toml.contains("backend = \"tinker\""));
         assert!(toml.contains("checkpoint_steps = [10, 20, 30]"));
@@ -873,6 +1011,23 @@ mod tests {
             .to_string();
         assert!(error.contains("unknown Banking77 dataset shard"), "{error}");
         assert_eq!(BANKING77_SHARDS.len(), 2);
+    }
+
+    #[test]
+    fn hosted_sft_recipes_declare_an_explicit_cost_ceiling() {
+        let fixture = fixture_recipe();
+        assert_eq!(fixture["limits"]["costCeilingUsd"], 0.0);
+        let craftax = craftax_nemotron_recipe();
+        assert_eq!(
+            craftax["limits"]["costCeilingUsd"],
+            HOSTED_SFT_COST_CEILING_USD
+        );
+        let banking77 = banking77_recipe();
+        assert_eq!(
+            banking77["limits"]["costCeilingUsd"],
+            HOSTED_SFT_COST_CEILING_USD
+        );
+        assert_eq!(HOSTED_SFT_COST_CEILING_USD, 10.0);
     }
 
     #[test]
@@ -899,6 +1054,7 @@ mod tests {
             "nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16",
             "http://127.0.0.1:8098",
             None,
+            "sha256:content",
         );
         assert!(toml.contains("backend = \"tinker\""));
         assert!(toml.contains("base_model = \"nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16\""));
@@ -910,5 +1066,97 @@ mod tests {
         assert!(!toml.contains("goex.sft"));
         assert!(!toml.contains("UNPINNED"));
         assert!(!toml.contains("nvidia/nemotron-3-nano-30b-a3b"));
+    }
+
+    #[test]
+    fn identical_dataset_bytes_produce_the_same_content_digest() {
+        let dir = tempfile::tempdir().unwrap();
+        let first = dir.path().join("a.jsonl");
+        let second = dir.path().join("run-specific-file-id.jsonl");
+        let bytes = b"{\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}]}\n";
+        std::fs::write(&first, bytes).unwrap();
+        std::fs::write(&second, bytes).unwrap();
+        let left = dataset_digest_for_path(&first).unwrap();
+        let right = dataset_digest_for_path(&second).unwrap();
+        assert_eq!(left, right);
+        assert!(left.starts_with("sha256:"));
+        assert_ne!(left, content_sha256(b"file_train_run_a"));
+        let toml = banking77_config_toml(
+            "sft_run_a",
+            "file_train_run_a",
+            "nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16",
+            "http://127.0.0.1:8110",
+            &first.to_string_lossy(),
+            &left,
+        );
+        assert!(toml.contains(&format!("dataset_digest = \"{left}\"")));
+        assert!(!toml.contains("file_train_run_a") || toml.contains("training_file_id"));
+    }
+
+    #[test]
+    fn hosted_toml_adapter_rank_agrees_with_s7_authority() {
+        let banking = banking77_config_toml(
+            "sft_b",
+            "file_b",
+            "nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16",
+            "http://127.0.0.1:8110",
+            "/tmp/train_a.jsonl",
+            "sha256:abc",
+        );
+        let craftax = craftax_nemotron_config_toml(
+            "sft_c",
+            "file_c",
+            "nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16",
+            "http://127.0.0.1:8098",
+            None,
+            "sha256:abc",
+        );
+        let fixture =
+            fixture_config_toml("sft_hosted_ab12cd34", "file_train_ab12cd34", "sha256:abc");
+        for toml in [banking, craftax, fixture] {
+            assert!(toml.contains("adapter = \"lora_r8\""), "{toml}");
+            assert!(
+                toml.contains("rank = 8") || toml.contains("[hyperparameters]\nrank = 8"),
+                "{toml}"
+            );
+            assert!(!toml.contains("lora_r16"), "{toml}");
+        }
+    }
+
+    #[test]
+    fn dataset_digest_is_stable_for_identical_bytes() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("train.jsonl");
+        std::fs::write(&path, b"{\"messages\":[]}\n").unwrap();
+        let first = dataset_digest_for_path(&path).unwrap();
+        let second = dataset_digest_for_path(&path).unwrap();
+        assert_eq!(first, second);
+        assert!(first.starts_with("sha256:"));
+        crate::optimizers::sft_result::validate_dataset_digest(&path, &first).unwrap();
+    }
+
+    fn hosted_run(id: &str, status: &str, cursor: u64) -> OptimizerRunRecord {
+        serde_json::from_value(json!({
+            "schemaVersion": "optimizer_run.v1",
+            "id": id,
+            "algorithmId": "sft",
+            "status": status,
+            "source": "hosted",
+            "createdAt": "2026-08-17T00:00:00Z",
+            "cursorSeq": cursor,
+            "summary": { "hostedMirror": { "cursor": cursor } }
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn restore_selects_nonterminal_hosted_sft_and_skips_terminal_or_attached() {
+        let running = hosted_run("sft_live", "running", 12);
+        let queued = hosted_run("sft_queued", "queued", 0);
+        let done = hosted_run("sft_done", "completed", 40);
+        let mut registered = HashSet::new();
+        registered.insert("sft_queued".into());
+        let restore = hosted_runs_needing_restore(&[running, queued, done], &registered);
+        assert_eq!(restore, vec![("sft_live".into(), 12)]);
     }
 }

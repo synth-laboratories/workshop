@@ -26,8 +26,9 @@ export function sftStages(sft: SftState, status: string, promotedCheckpointId?: 
   const campaignsSettled = campaignCount > 0 && sft.campaigns.every((campaign) =>
     ["completed", "failed"].includes(String(campaign.status ?? ""))
   );
-  const promoted = promotedCheckpointId != null ||
-    sft.checkpoints.some((ckpt) => ckpt.promoted === true);
+  const selected = promotedCheckpointId != null ||
+    sft.checkpoints.some((ckpt) => ckpt.selected === true || ckpt.promoted === true);
+  const upliftClaimed = sft.checkpoints.some((ckpt) => ckpt.promoted === true);
   const comparison = sftComparison(sft);
   const settle = (started: boolean, done: boolean): WorkspaceStage["status"] => {
     if (done) return "completed";
@@ -76,9 +77,11 @@ export function sftStages(sft: SftState, status: string, promotedCheckpointId?: 
     },
     {
       id: "promotion",
-      label: "Promotion",
-      status: promoted ? "completed" : terminal ? "skipped" : "pending",
-      detail: promoted ? undefined : "requires an explicit promote event — checkpoint 'ready' is not promotion"
+      label: "Selection",
+      status: selected ? "completed" : terminal ? "skipped" : "pending",
+      detail: selected
+        ? (upliftClaimed ? "uplift claimed" : "selected · no measured improvement")
+        : "requires an explicit select/promote event — checkpoint 'ready' is not promotion"
     },
     {
       id: "heldout",

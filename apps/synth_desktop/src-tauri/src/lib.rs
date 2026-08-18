@@ -30,6 +30,7 @@ mod domain;
 pub mod error;
 #[cfg(feature = "eval-driver")]
 mod eval_driver;
+pub mod experiments;
 mod http;
 mod instance;
 mod intern_api;

@@ -626,6 +626,9 @@ async fn dispatch_request(
     if path.starts_with("/v1/campaigns") {
         return dispatch_campaigns(method, path, json_body, core).await;
     }
+    if path.starts_with("/v1/experiments") {
+        return dispatch_experiments(method, path, json_body, core).await;
+    }
     if path.starts_with("/v1/traces") {
         return dispatch_traces(method, path, json_body, core).await;
     }
@@ -2023,6 +2026,23 @@ pub async fn dispatch(method: &str, path: &str, body: Value, core: &CoreRuntime)
             let query: VisualQuery = serde_json::from_value(body.clone()).unwrap_or_default();
             Ok(json!({"visuals": registry.list(query).await?}))
         }
+        ("GET", path) if path.starts_with("/v1/cas/") => {
+            let digest = path
+                .trim_start_matches("/v1/cas/")
+                .trim_start_matches("sha256:");
+            if digest.is_empty() || digest.contains('/') {
+                anyhow::bail!("invalid content digest");
+            }
+            let bytes = registry.content().get_bytes("blobs", digest)?;
+            match serde_json::from_slice::<Value>(&bytes) {
+                Ok(value) => Ok(value),
+                Err(_) => Ok(json!({
+                    "digest": digest,
+                    "mediaType": "application/octet-stream",
+                    "base64": base64::engine::general_purpose::STANDARD.encode(bytes),
+                })),
+            }
+        }
         ("GET", "/v1/seals") => {
             let visual_id = body
                 .get("visual_id")
@@ -2614,6 +2634,34 @@ pub(crate) async fn dispatch_optimizer(
             Ok(json!({ "events": events }))
         }
         ("GET", path)
+            if path.starts_with("/v1/optimizers/runs/") && path.ends_with("/milestone") =>
+        {
+            let id = path
+                .trim_start_matches("/v1/optimizers/runs/")
+                .trim_end_matches("/milestone");
+            let after_seq = body
+                .get("after_seq")
+                .or_else(|| body.get("afterSeq"))
+                .and_then(Value::as_u64)
+                .unwrap_or(0);
+            let timeout_ms = body
+                .get("timeout_ms")
+                .or_else(|| body.get("timeoutMs"))
+                .and_then(Value::as_u64)
+                .unwrap_or(30_000);
+            let mut kinds = Vec::new();
+            if let Some(kind) = body.get("kind").and_then(Value::as_str) {
+                kinds.push(kind.to_string());
+            }
+            if let Some(array) = body.get("kinds").and_then(Value::as_array) {
+                kinds.extend(array.iter().filter_map(Value::as_str).map(str::to_string));
+            }
+            let page = optimizers
+                .wait_milestone(id.to_string(), after_seq, kinds, timeout_ms)
+                .await?;
+            Ok(page)
+        }
+        ("GET", path)
             if path.starts_with("/v1/optimizers/runs/") && path.ends_with("/state/batch") =>
         {
             let id = path
@@ -2879,24 +2927,29 @@ async fn import_container_trace(
     fs::create_dir_all(&staging)?;
 
     // A bundle archive first: only a self-contained Trace V5 archive can be
-    // trusted, indexed, and projected into the inspector.
-    let bundle_url = reference
-        .and_then(|value| value.get("bundle_url"))
-        .and_then(Value::as_str)
-        .map(str::to_owned)
-        .unwrap_or_else(|| format!("/rollouts/{rollout_id}/trace/bundle"));
-    let bundle = fetch_trace_artifact(&client, &base, &bundle_url).await?;
+    // trusted, indexed, and projected into the inspector. Lane E serves the
+    // capture-supervisor zip at `/rollouts/{id}/trace/bundle` (and may also
+    // announce `bundle_url` on the terminal record).
+    let mut bundle = None;
+    for route in sealed_trace_bundle_routes(rollout_id, reference) {
+        if let Some(bytes) = fetch_trace_artifact(&client, &base, &route).await? {
+            bundle = Some(bytes);
+            break;
+        }
+    }
     let (source_path, source_kind) = if let Some(bytes) = bundle {
         let path = staging.join(format!("{rollout_id}.trace-bundle.zip"));
         fs::write(&path, bytes)?;
         (path, "container_bundle")
     } else {
-        let seal_url = reference
-            .and_then(|value| value.get("url"))
-            .and_then(Value::as_str)
-            .map(str::to_owned)
-            .unwrap_or_else(|| format!("/rollouts/{rollout_id}/trace"));
-        let Some(bytes) = fetch_trace_artifact(&client, &base, &seal_url).await? else {
+        let mut seal = None;
+        for route in sealed_trace_lite_routes(rollout_id, reference) {
+            if let Some(bytes) = fetch_trace_artifact(&client, &base, &route).await? {
+                seal = Some(bytes);
+                break;
+            }
+        }
+        let Some(bytes) = seal else {
             return Err(anyhow::Error::new(
                 crate::error::StructuredFailure::new(
                     "trace_not_sealed_by_container",
@@ -2937,11 +2990,11 @@ async fn import_container_trace(
         "compatibilityLevel": result.compatibility_level,
         "trusted": result.trusted,
         "duplicate": result.duplicate,
-        // Inspectable only when the import produced indexed trace records. A
-        // lite seal is retained with its provenance but cannot be projected,
-        // and saying otherwise is how an agent ends up retrying an inspector
+        // Inspectable only when a capture-supervisor Trace V5 bundle indexed
+        // real traces. A lite seal is retained with its provenance but cannot
+        // be projected; saying otherwise is how an agent retries an inspector
         // that can never render.
-        "inspectable": !indexed.is_empty(),
+        "inspectable": source_kind == "container_bundle" && !indexed.is_empty(),
         "traces": indexed,
         "note": if indexed.is_empty() {
             "Imported as a provenance record only: this container returned a lite seal, not a self-contained Trace V5 bundle, so it cannot be projected into the inspector."
@@ -2949,6 +3002,45 @@ async fn import_container_trace(
             "Sealed Trace V5 is now indexed in Workshop."
         },
     }))
+}
+
+/// Capture-supervisor bundle first (Lane E `/rollouts/{id}/trace/bundle`),
+/// then any announced `bundle_url`. Duplicate URLs are collapsed.
+pub(crate) fn sealed_trace_bundle_routes(
+    rollout_id: &str,
+    reference: Option<&Value>,
+) -> Vec<String> {
+    let mut routes = Vec::new();
+    let mut push = |route: String| {
+        if !route.is_empty() && !routes.iter().any(|existing| existing == &route) {
+            routes.push(route);
+        }
+    };
+    if let Some(url) = reference
+        .and_then(|value| value.get("bundle_url"))
+        .and_then(Value::as_str)
+    {
+        push(url.to_owned());
+    }
+    push(format!("/rollouts/{rollout_id}/trace/bundle"));
+    routes
+}
+
+fn sealed_trace_lite_routes(rollout_id: &str, reference: Option<&Value>) -> Vec<String> {
+    let mut routes = Vec::new();
+    let mut push = |route: String| {
+        if !route.is_empty() && !routes.iter().any(|existing| existing == &route) {
+            routes.push(route);
+        }
+    };
+    if let Some(url) = reference
+        .and_then(|value| value.get("url"))
+        .and_then(Value::as_str)
+    {
+        push(url.to_owned());
+    }
+    push(format!("/rollouts/{rollout_id}/trace"));
+    routes
 }
 
 /// Fetch one trace artifact, treating 404 as "this container does not offer it"
@@ -3064,7 +3156,9 @@ async fn dispatch_campaigns(
                 .await
         }
         ("GET", path) if path.starts_with("/v1/campaigns/") => {
-            let id = path.trim_start_matches("/v1/campaigns/").trim_end_matches('/');
+            let id = path
+                .trim_start_matches("/v1/campaigns/")
+                .trim_end_matches('/');
             Ok(json!({"campaign": core.data().campaign_get(id.to_string()).await?}))
         }
         _ => anyhow::bail!("unsupported campaign IPC route {method} {path}"),
@@ -3140,6 +3234,32 @@ async fn require_campaign_plan_match(
     Ok(())
 }
 
+async fn dispatch_experiments(
+    method: &str,
+    path: &str,
+    body: Value,
+    core: &CoreRuntime,
+) -> Result<Value> {
+    match (method, path) {
+        ("GET", "/v1/experiments") | ("GET", "/v1/experiments/") => {
+            let session_id = json_field(&body, "sessionId", "session_id")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .context("experiments list requires sessionId")?;
+            let group = core
+                .data()
+                .experiment_for_session(session_id.to_owned())
+                .await?;
+            Ok(json!({
+                "sessionId": session_id,
+                "experiment": group,
+            }))
+        }
+        _ => anyhow::bail!("unknown experiments route {method} {path}"),
+    }
+}
+
 /// Ask the container about every planned rollout and record what it says.
 async fn reconcile_campaign(core: &CoreRuntime, id: &str) -> Result<crate::campaigns::Campaign> {
     let campaign = core.data().campaign_get(id.to_string()).await?;
@@ -3158,23 +3278,35 @@ async fn reconcile_campaign(core: &CoreRuntime, id: &str) -> Result<crate::campa
         .timeout(limits::VISUALS_IPC_ROLL_TIMEOUT)
         .build()?;
     for rollout in &campaign.rollouts {
-        // A rollout already settled from its own authoritative record is not
-        // re-read; reconciliation is for the ones still in flight.
-        if matches!(rollout.status.as_str(), "terminal" | "failed") {
-            continue;
-        }
         let Some(state) = get_rollout_status(&client, &base, &rollout.rollout_id).await? else {
             continue;
         };
         let now = chrono::Utc::now().to_rfc3339();
-        if state.get("terminated").and_then(Value::as_bool) == Some(true) {
-            core.data()
-                .campaign_record_terminal(rollout.rollout_id.clone(), state, now)
-                .await?;
-        } else if state.get("started").and_then(Value::as_bool) == Some(true) {
-            core.data()
-                .campaign_record_started(rollout.rollout_id.clone(), now)
-                .await?;
+        let already_settled = matches!(rollout.status.as_str(), "terminal" | "failed");
+        if !already_settled {
+            if state.get("terminated").and_then(Value::as_bool) == Some(true) {
+                core.data()
+                    .campaign_record_terminal(rollout.rollout_id.clone(), state.clone(), now)
+                    .await?;
+            } else if state.get("started").and_then(Value::as_bool) == Some(true) {
+                core.data()
+                    .campaign_record_started(rollout.rollout_id.clone(), now)
+                    .await?;
+            }
+        }
+        // Consume the sealed-trace announcement even after local terminal
+        // settlement: a capture-supervisor bundle can appear after the
+        // rollout record itself went terminal.
+        if state
+            .get("trace")
+            .filter(|value| value.is_object())
+            .is_some()
+            || state.get("terminated").and_then(Value::as_bool) == Some(true)
+            || already_settled
+        {
+            let _ =
+                import_terminal_trace(core, &campaign.container_id, &rollout.rollout_id, &state)
+                    .await;
         }
     }
     core.data().campaign_get(id.to_string()).await
@@ -3550,6 +3682,40 @@ mod tests {
         );
     }
 
+    #[test]
+    fn capture_supervisor_bundle_route_is_tried_before_lite_seal() {
+        let announced = json!({
+            "bundle_url": "/rollouts/roll_e_bundle/trace/bundle",
+            "url": "/rollouts/roll_e_bundle/trace",
+            "kind": "trace_v5_bundle",
+            "inspectable": true
+        });
+        assert_eq!(
+            sealed_trace_bundle_routes("roll_e_bundle", Some(&announced)),
+            vec!["/rollouts/roll_e_bundle/trace/bundle".to_string()]
+        );
+        assert_eq!(
+            sealed_trace_bundle_routes("roll_missing", None),
+            vec!["/rollouts/roll_missing/trace/bundle".to_string()]
+        );
+        assert_eq!(
+            sealed_trace_lite_routes("roll_e_bundle", Some(&announced)),
+            vec!["/rollouts/roll_e_bundle/trace".to_string()]
+        );
+    }
+
+    #[test]
+    fn lite_seal_import_receipt_is_not_inspectable() {
+        let receipt = json!({
+            "sourceKind": "container_seal",
+            "inspectable": false,
+            "traces": [],
+            "note": "Imported as a provenance record only: this container returned a lite seal, not a self-contained Trace V5 bundle, so it cannot be projected into the inspector."
+        });
+        assert_eq!(receipt["inspectable"], false);
+        assert!(receipt["traces"].as_array().unwrap().is_empty());
+    }
+
     fn live_contract() -> TemplateObservationContract {
         TemplateObservationContract {
             schema_version: "synth.visual-observation-contract.v1".into(),
@@ -3620,12 +3786,7 @@ mod tests {
         let failed_compact = review(640, false, Some(&pre_start));
         let passed_wide = review(1280, true, Some(&terminal));
         let passed_compact = review(640, true, Some(&terminal));
-        let history = vec![
-            &failed_wide,
-            &failed_compact,
-            &passed_wide,
-            &passed_compact,
-        ];
+        let history = vec![&failed_wide, &failed_compact, &passed_wide, &passed_compact];
 
         let receipts = certification_receipts(
             "vis_1",

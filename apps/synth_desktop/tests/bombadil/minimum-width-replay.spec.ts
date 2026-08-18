@@ -87,6 +87,10 @@ export const open_a_replay_at_the_narrowest_supported_widths = actions(() => {
 
 /** Without this the rest is vacuous: a spec that never reaches the compact
  * layout passes every property in it by never testing anything. */
+export const the_outputs_pane_actually_opened = eventually(() =>
+	layout.current.paneVisible
+).within(20, "seconds");
+
 export const the_compact_layout_is_actually_reached = eventually(() =>
 	layout.current.reviewedCompact
 ).within(20, "seconds");

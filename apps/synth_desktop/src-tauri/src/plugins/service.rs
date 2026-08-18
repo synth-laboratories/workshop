@@ -173,12 +173,12 @@ impl PluginService {
         let catalog = self.registry.selected_catalog_entry(version)?;
         let before = self.status(core).await;
         let active_runs = before.service.active_runs;
-        if action == "stop" && active_runs > 0 {
-            bail!("refusing to stop Optimizers while {active_runs} run(s) are active");
-        }
-        if action == "remove" && active_runs > 0 {
-            bail!("refusing to remove Optimizers while {active_runs} run(s) are active");
-        }
+        refuse_plugin_mutation(
+            action,
+            active_runs,
+            before.installed_version.as_deref(),
+            &catalog.version,
+        )?;
         let retention = match action {
             "enable" | "disable" => ENABLE_RETENTION,
             "stop" => RETAIN_AFTER_STOP,
@@ -395,6 +395,29 @@ fn map_phase(enabled: bool, sidecar_phase: &str, installed: bool) -> String {
     }
 }
 
+fn refuse_plugin_mutation(
+    action: &str,
+    active_runs: u32,
+    installed_version: Option<&str>,
+    target_version: &str,
+) -> Result<()> {
+    if active_runs == 0 {
+        return Ok(());
+    }
+    match action {
+        "stop" | "remove" | "install" | "update" => {
+            bail!("refusing to {action} Optimizers while {active_runs} run(s) are active");
+        }
+        "start" if installed_version.is_some_and(|installed| installed != target_version) => {
+            let installed = installed_version.unwrap_or("unknown");
+            bail!(
+                "refusing to start Optimizers `{target_version}` while {active_runs} run(s) are active on `{installed}`"
+            );
+        }
+        _ => Ok(()),
+    }
+}
+
 fn validate_plugin_arguments(operation: &str, arguments: &Value) -> Result<()> {
     let Some(object) = arguments.as_object() else {
         bail!("plugin arguments must be an object");
@@ -459,5 +482,19 @@ mod tests {
                 "`{operation}` is reachable natively but absent from the MCP schema"
             );
         }
+    }
+
+    #[test]
+    fn refuses_runtime_mutation_while_runs_are_active() {
+        refuse_plugin_mutation("stop", 2, Some("0.2.12"), "0.2.12").unwrap_err();
+        refuse_plugin_mutation("remove", 1, Some("0.2.12"), "0.2.12").unwrap_err();
+        refuse_plugin_mutation("install", 1, Some("0.2.12"), "0.2.14").unwrap_err();
+        refuse_plugin_mutation("update", 3, Some("0.2.12"), "0.2.14").unwrap_err();
+        let start = refuse_plugin_mutation("start", 1, Some("0.2.12"), "0.2.14").unwrap_err();
+        assert!(start.to_string().contains("0.2.14"));
+        assert!(start.to_string().contains("0.2.12"));
+        refuse_plugin_mutation("start", 2, Some("0.2.14"), "0.2.14").unwrap();
+        refuse_plugin_mutation("install", 0, Some("0.2.12"), "0.2.14").unwrap();
+        refuse_plugin_mutation("enable", 4, Some("0.2.12"), "0.2.12").unwrap();
     }
 }

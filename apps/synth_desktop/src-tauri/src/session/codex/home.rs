@@ -1081,3 +1081,20 @@ pub(crate) fn automatic_thread_title(prompt: &str) -> Option<String> {
     let first = chars.next()?;
     Some(first.to_uppercase().collect::<String>() + chars.as_str())
 }
+
+pub(crate) fn uniquify_title<'a>(
+    desired: &str,
+    taken: impl IntoIterator<Item = &'a str>,
+) -> String {
+    let occupied: std::collections::HashSet<&str> = taken.into_iter().collect();
+    if !occupied.contains(desired) {
+        return desired.to_string();
+    }
+    for n in 2..1000 {
+        let candidate = format!("{desired} · {n}");
+        if !occupied.contains(candidate.as_str()) {
+            return candidate;
+        }
+    }
+    format!("{desired} · 999")
+}

@@ -22,7 +22,7 @@
     {
       "name": "projection",
       "description": "Canonical synth.trace-projection.rollout-inspector.v1 payload",
-      "accepts": ["inline", "trace_v5", "local_cas"],
+      "accepts": ["inline", "trace_v5"],
       "required": true,
       "schema": "synth.trace-projection.rollout-inspector.v1"
     }

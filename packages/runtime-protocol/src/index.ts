@@ -269,7 +269,15 @@ export type AppEventPage = {
 
 export type VisualStatus = "draft" | "live" | "saved" | "failed" | "archived";
 export type RendererKind = "template" | "tsx" | "html" | "mermaid" | "systems" | "systems-dynamic";
-export type VisualBindingKind = "inline" | "trace_v5" | "local_cas" | "run_ref" | "live_sse" | "fixture" | "optimizer_run";
+export type VisualBindingKind =
+  | "inline"
+  | "trace_v5"
+  | "local_cas"
+  | "run_ref"
+  | "live_sse"
+  | "fixture"
+  | "optimizer_run"
+  | "query_snapshot";
 export type VisualBinding = {
   slot: string;
   kind: VisualBindingKind;

@@ -304,6 +304,16 @@ impl DataStore {
             .await
     }
 
+    pub async fn experiment_for_session(
+        &self,
+        session_id: String,
+    ) -> Result<Option<crate::experiments::ExperimentGroup>> {
+        self.db
+            .clone()
+            .run(move |conn| crate::experiments::load_for_session(conn, &session_id))
+            .await
+    }
+
     pub async fn list_containers(&self) -> Result<Vec<ContainerDeployment>> {
         self.db.clone().run(|conn| list_containers(conn)).await
     }

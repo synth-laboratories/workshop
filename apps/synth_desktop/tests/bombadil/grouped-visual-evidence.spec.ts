@@ -94,6 +94,10 @@ export const created_visual_has_a_transcript_chip = eventually(() =>
 	evidence.current.visualChipVisible
 ).within(8, "seconds");
 
+export const the_visual_pane_eventually_opens = eventually(() =>
+	evidence.current.visualPaneVisible
+).within(8, "seconds");
+
 export const craftax_canvas_is_flush_with_the_visual_pane = eventually(() =>
 	evidence.current.craftaxCanvasVisible && evidence.current.craftaxCanvasFlush
 ).within(8, "seconds");

@@ -8,6 +8,16 @@
   "accent": "#F05F22",
   "shell": "shell.tsx",
   "tags": ["optimizer", "sft", "checkpoints"],
+  "observationContract": {
+    "schemaVersion": "synth.visual-observation-contract.v1",
+    "readiness": {
+      "rejectTransportStates": ["idle", "declared", "replaying", "error", "connecting", "reconnecting"],
+      "minimumRolloutCount": 0,
+      "minimumRenderedFrameCount": 0,
+      "minimumSemanticEventCount": 1,
+      "requireTerminal": true
+    }
+  },
   "slots": [
     {
       "name": "optimizer_run",
