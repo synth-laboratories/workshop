@@ -193,12 +193,23 @@ async function main() {
   if (args.model) message.model = args.model;
   await call(descriptor, "POST", `/v1/sessions/${sessionId}/messages`, message);
 
-  const terminal = await call(
-    descriptor,
-    "POST",
-    `/v1/sessions/${sessionId}/wait_terminal`,
-    { timeoutMs: args.timeoutMs },
-  );
+  // Keep each HTTP exchange shorter than client/proxy header timeouts. GEPA
+  // and SFT commonly run for many minutes; one request spanning the whole run
+  // makes a healthy app look dead when Node's fetch transport closes it.
+  const deadline = Date.now() + args.timeoutMs;
+  let terminal;
+  do {
+    const remainingMs = deadline - Date.now();
+    if (remainingMs <= 0) {
+      throw new Error(`session ${sessionId} did not reach terminal within ${args.timeoutMs}ms`);
+    }
+    terminal = await call(
+      descriptor,
+      "POST",
+      `/v1/sessions/${sessionId}/wait_terminal`,
+      { timeoutMs: Math.min(20_000, remainingMs) },
+    );
+  } while (terminal?.terminal !== true);
   receipt.terminal = terminal;
 
   const exported = await call(

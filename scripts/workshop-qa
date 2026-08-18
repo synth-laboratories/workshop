@@ -194,6 +194,14 @@ EOF
   run)
     shift 2 || shift $#
     "$0" preflight "$NAME" >/dev/null || fail "preflight refused; fix the report before spending"
+    staged_optimizer="$INSTANCE_ROOT/runtime/gepa/optimizer-project"
+    if [[ -f "$staged_optimizer/pyproject.toml" ]]; then
+      # `prepare` copies the exact integration checkout into the instance. The
+      # launched .app must receive that immutable staged path too; otherwise it
+      # silently installs the public release and the QA run tests different
+      # optimizer code than the build receipt claims.
+      export SYNTH_OPTIMIZER_PROJECT_ROOT="$staged_optimizer"
+    fi
     say "launching packaged instance"
     "$ROOT/scripts/desktop-instance.sh" cua-run "$NAME" &
     launcher=$!
