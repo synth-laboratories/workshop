@@ -101,6 +101,30 @@ test("transitional phases report progress and refuse work", () => {
 	}
 });
 
+test("needs_permissions names the missing grant instead of just saying no", () => {
+	const view = pluginPresentation(status({
+		phase: "needs_permissions",
+		permissions: [
+			{ id: "accessibility", label: "Accessibility", state: "denied" },
+			{ id: "screen_recording", label: "Screen Recording", state: "granted" },
+			{ id: "apple_events", label: "Apple Events", state: "not_applicable" }
+		]
+	}));
+	assert.equal(view.label, "Needs permission");
+	// Warning, not danger: nothing is broken and the fix is in System Settings.
+	assert.equal(view.tone, "warning");
+	assert.equal(view.isUsable, false);
+	assert.equal(view.isTransitional, false);
+	assert.equal(view.a11yLabel, "Needs permission: Accessibility");
+});
+
+test("needs_permissions is still legible when the grant list has not loaded", () => {
+	const view = pluginPresentation(status({ phase: "needs_permissions" }));
+	assert.equal(view.label, "Needs permission");
+	assert.equal(view.a11yLabel, "Needs permission");
+	assert.equal(view.isUsable, false);
+});
+
 test("an unrecognised future phase degrades to its own name, not to Ready", () => {
 	const view = pluginPresentation(status({ phase: "quiescing" }));
 	assert.equal(view.label, "quiescing");

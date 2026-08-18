@@ -1520,6 +1520,8 @@ export function eventsToLocalActivity(
 			: event.eventKind === "approval.requested" && approvalKind === "credential_access" ? "Credential access"
 				: event.eventKind === "approval.requested" && approvalKind === "sidecar_lifecycle" ? "Sidecar lifecycle"
 			: event.eventKind === "approval.requested" && approvalKind === "plugin_lifecycle" ? "Plugin lifecycle"
+			: event.eventKind === "approval.requested" && approvalKind === "computer_use"
+				? (payload.hazard === true ? "Confirm this action" : "Allow app control")
 			: event.eventKind === "approval.requested" ? "Approval requested"
 			: event.eventKind === "approval.granted" ? "Approval granted"
 				: event.eventKind === "approval.rejected" ? "Approval rejected"
@@ -1530,6 +1532,20 @@ export function eventsToLocalActivity(
 			: approvalKind === "sidecar_lifecycle"
 				? [payload.sidecar, payload.action].filter((value): value is string => typeof value === "string").join(" · ")
 				: undefined;
+		// G6: a hazard card must show what the action will actually do —
+		// recipient, text, destination — not just which app it touches.
+		// "May use Mail" is not consent to send this mail.
+		const computerUseDetail = payload.kind === "computer_use"
+			? [
+				payload.app,
+				payload.action,
+				...(payload.payload && typeof payload.payload === "object" && !Array.isArray(payload.payload)
+					? Object.entries(payload.payload as Record<string, unknown>)
+						.filter(([, value]) => value !== null && value !== undefined && value !== "")
+						.map(([key, value]) => `${key}: ${String(value)}`)
+					: [])
+			].filter((value): value is string => typeof value === "string" && value !== "").join(" · ")
+			: undefined;
 		const pluginDetail = payload.kind === "plugin_lifecycle"
 			? [
 				payload.action,
@@ -1557,6 +1573,7 @@ export function eventsToLocalActivity(
 		const safeKind = payload.kind === "shell_command" || payload.kind === "file_change" || payload.kind === "permission"
 			|| payload.kind === "plugin_lifecycle" || payload.kind === "paid_compute";
 		const detail = typedDetail
+			?? computerUseDetail
 			?? pluginDetail
 			?? (safeKind && typeof payload.detail === "string"
 				? payload.detail.slice(0, 500)
@@ -1569,7 +1586,7 @@ export function eventsToLocalActivity(
 			approvalId: event.eventKind === "approval.requested"
 				? approvalKey(event) ?? `approval-${event.sequence}`
 				: undefined,
-			approvalKind: approvalKind === "shell_command" || approvalKind === "paid_compute" || approvalKind === "sidecar_lifecycle" || approvalKind === "credential_access" || approvalKind === "plugin_lifecycle"
+			approvalKind: approvalKind === "shell_command" || approvalKind === "paid_compute" || approvalKind === "sidecar_lifecycle" || approvalKind === "credential_access" || approvalKind === "plugin_lifecycle" || approvalKind === "computer_use"
 				? approvalKind : "permission",
 			approvalPayload: event.eventKind === "approval.requested" && approvalKind === "paid_compute" ? {
 				operation: typeof payload.operation === "string" ? payload.operation : undefined,

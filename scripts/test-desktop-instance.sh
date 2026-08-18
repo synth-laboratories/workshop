@@ -115,6 +115,8 @@ jq -e '
   (.bundle.icon | length) == 2 and
   .bundle.targets == ["app"] and
   (.bundle.resources | to_entries | map(.value) | sort) == [
+    "Synth Computer Use.app",
+    "browser/playwright_backend.mjs",
     "cookbooks/optimizers/gepa/banking77_container",
     "cookbooks/optimizers/gepa/crafter_container"
   ] and
@@ -137,6 +139,7 @@ rg -q -- '--identifier "\$BUNDLE_ID" "\$app_bundle"' "$ROOT/scripts/desktop-inst
 rg -q 'assert_bundle_identity' "$ROOT/scripts/desktop-instance.sh"
 rg -q 'SYNTH_DESKTOP_REBUILD_ADAPTERS:-0' "$ROOT/scripts/desktop-instance.sh"
 rg -q 'SYNTH_OPTIMIZER_USE_LOCAL_SOURCE:-0' "$ROOT/scripts/desktop-instance.sh"
+rg -q 'SYNTH_COMPUTER_USE_PARENT_REQUIREMENT=' "$ROOT/scripts/desktop-instance.sh"
 rg -q 'optimizer runtime=immutable installed plugin' "$ROOT/scripts/desktop-instance.sh"
 rg -q 'verify_packaged_provenance' "$ROOT/scripts/desktop-instance.sh"
 rg -q 'runtime_executable=.*lsof' "$ROOT/scripts/desktop-instance.sh"

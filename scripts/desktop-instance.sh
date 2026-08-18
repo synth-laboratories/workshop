@@ -795,6 +795,12 @@ PY
   fi
   echo "[desktop:$NAME] profile=${SYNTH_INTERN_PROFILE:-} backend=${SYNTH_BACKEND_URL:-} gateway=source-owned"
 
+  # Named local CUA bundles are ad-hoc or development signed and therefore
+  # cannot satisfy the production helper's Apple-team requirement. Keep the
+  # weaker requirement explicit and confined to this development launcher;
+  # release builds do not receive this environment override.
+  export SYNTH_COMPUTER_USE_PARENT_REQUIREMENT="identifier \"$BUNDLE_ID\" or identifier \"com.synth.desktop.v05.dev.shared\""
+
   if [[ "$COMMAND" == "cua-run" ]]; then
     if [[ ! -x "$CUA_EXE" ]]; then
       echo "[desktop:$NAME] signed CUA app is missing; run cua-build first" >&2

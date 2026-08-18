@@ -38,6 +38,7 @@ test("new Codex homes apply skill, cookbook, and MCP context gates", () => {
   const home = read("src-tauri/src/session/codex/home.rs");
   assert.match(home, /context::skill_enabled/);
   assert.match(home, /context::cookbook_skill/);
-  assert.match(home, /context::mcp_group_enabled\("bundled"\)/);
+  assert.match(home, /context::mcp_group_enabled\(group\)/);
+  assert.match(home, /BROWSER_MCP_GROUP/);
   assert.match(home, /home\.join\("AGENTS\.md"\)/);
 });

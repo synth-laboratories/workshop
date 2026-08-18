@@ -226,4 +226,32 @@ mod tests {
         let error = resolve_effective(None, Some("read-only")).unwrap_err();
         assert!(error.to_string().contains("disagrees with machine sandbox"));
     }
+
+    fn computer_use(hazard: bool) -> ApprovalKind {
+        ApprovalKind::ComputerUse {
+            app: "com.apple.mail".into(),
+            action: "click".into(),
+            payload: json!({ "recipient": "board@example.com" }),
+            hazard,
+            element_index: None,
+        }
+    }
+
+    /// The host engine and the plugin engine both honor `never`, so both need
+    /// the hazard carve-out. Covering only one leaves the other as the hole.
+    #[test]
+    fn hazard_computer_use_outranks_the_permissive_policy() {
+        for policy in ["never", "on-request", "untrusted"] {
+            assert!(
+                auto_decision(policy, &computer_use(true))
+                    .unwrap()
+                    .is_none(),
+                "`{policy}` auto-settled a hazard action"
+            );
+        }
+        assert!(auto_decision("always-ask", &computer_use(true)).is_err());
+        assert!(auto_decision("never", &computer_use(false))
+            .unwrap()
+            .is_some());
+    }
 }

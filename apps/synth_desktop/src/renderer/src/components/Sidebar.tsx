@@ -37,6 +37,7 @@ type Props = {
 	visualsActive?: boolean;
 	reportsActive?: boolean;
 	optimizersActive?: boolean;
+	computerUseActive?: boolean;
 	workingChatIds?: ReadonlySet<string>;
 	/**
 	 * What each chat is doing, as opposed to what its stored status says. Only
@@ -54,6 +55,7 @@ type Props = {
 	onOpenVisuals: () => void;
 	onOpenReports: () => void;
 	onOpenOptimizers: () => void;
+	onOpenComputerUse: () => void;
 	onSearch: () => void;
 	onSettings: () => void;
 	/** Canonical registry listing, owned by the app controller. */
@@ -193,11 +195,23 @@ function IconOptimizers() {
 	);
 }
 
+/** A pointer over a window: the plugin drives another app's interface. */
+function IconComputerUse(): ReactElement {
+	return (
+		<svg className="item-icon" viewBox="0 0 16 16" fill="none" aria-hidden>
+			<rect x="1.8" y="2.6" width="12.4" height="8.4" rx="1.4" stroke="currentColor" strokeWidth="1.2" />
+			<path d="M6.4 6.1l4.3 2.6-1.9.5-.7 1.9-1.7-5z" fill="currentColor" />
+			<path d="M5.6 13.4h4.8" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" />
+		</svg>
+	);
+}
+
 const PLUGIN_NAV_ICONS: Record<PluginNavEntry["id"], () => ReactElement> = {
 	visuals: IconVisuals,
 	reports: IconReports,
 	optimizers: IconOptimizers,
-	inventory: IconInventory
+	inventory: IconInventory,
+	"computer-use": IconComputerUse
 };
 
 export function Sidebar({
@@ -208,6 +222,7 @@ export function Sidebar({
 	visualsActive = false,
 	reportsActive = false,
 	optimizersActive = false,
+	computerUseActive = false,
 	workingChatIds = new Set<string>(),
 	chatPresence = {},
 	activeLocalDecodeTps = null,
@@ -220,6 +235,7 @@ export function Sidebar({
 	onOpenVisuals,
 	onOpenReports,
 	onOpenOptimizers,
+	onOpenComputerUse,
 	onSearch,
 	onSettings,
 	pluginStatuses = null,
@@ -328,13 +344,15 @@ export function Sidebar({
 		visuals: visualsActive,
 		reports: reportsActive,
 		optimizers: optimizersActive,
-		inventory: inventoryActive
+		inventory: inventoryActive,
+		"computer-use": computerUseActive
 	};
 	const pluginRowOpen: Record<PluginNavEntry["id"], () => void> = {
 		visuals: onOpenVisuals,
 		reports: onOpenReports,
 		optimizers: onOpenOptimizers,
-		inventory: onOpenInventory
+		inventory: onOpenInventory,
+		"computer-use": onOpenComputerUse
 	};
 
 	if (!sidebarVisible) return null;

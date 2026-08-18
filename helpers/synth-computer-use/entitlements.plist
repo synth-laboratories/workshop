@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- Required to send Apple Events, which is how an app is launched in the
+	     background and how some controls are driven. -->
+	<key>com.apple.security.automation.apple-events</key>
+	<true/>
+
+	<!-- Deliberately absent, and each absence is a decision:
+
+	     com.apple.security.app-sandbox
+	       A sandboxed process cannot hold Accessibility or drive other apps.
+	       Sandboxing this helper would make it unable to do the only thing it
+	       exists to do.
+
+	     com.apple.security.cs.allow-unsigned-executable-memory
+	     com.apple.security.cs.disable-library-validation
+	     com.apple.security.cs.allow-dyld-environment-variables
+	       Each of these is a way for another process to get its own code
+	       running inside a binary that holds Accessibility and Screen
+	       Recording. That is precisely the thing worth preventing here, so the
+	       hardened runtime keeps its defaults.
+
+	     com.apple.security.network.client
+	       The helper never talks to the network. It reads windows, sends
+	       events, and answers on stdio. Nothing it holds should be able to
+	       leave the machine on its own initiative. -->
+</dict>
+</plist>

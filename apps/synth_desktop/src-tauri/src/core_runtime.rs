@@ -34,6 +34,7 @@ pub struct CoreRuntime {
     data: DataStore,
     optimizers: OptimizerService,
     plugins: PluginService,
+    computer_use: Arc<crate::computer_use::service::ComputerUseService>,
     diagnostics: Arc<crate::diagnostics::DiagnosticsService>,
     intern: Arc<InternRuntime>,
     intern_provider: Arc<InternProviderManager>,
@@ -130,6 +131,17 @@ impl CoreRuntime {
             .unwrap_or_else(|| storage.content_root())
             .join("plugins/optimizers.json");
         let plugins = PluginService::new(crate::plugins::PluginRegistry::with_path(plugin_path));
+        // The allowlist lives beside the plugin registry, per instance, so a
+        // second Desktop instance does not inherit the first one's grants.
+        let computer_use = Arc::new(crate::computer_use::service::ComputerUseService::new(
+            crate::computer_use::allowlist::AppAllowlist::open(
+                storage
+                    .content_root()
+                    .parent()
+                    .unwrap_or_else(|| storage.content_root())
+                    .join("computer-use/allowlist.json"),
+            ),
+        ));
         // Diagnostics share the journal's database and live beside the content
         // store, one directory per instance. The service is constructed here
         // but starts nothing: its writer and its index sidecar are started
@@ -156,6 +168,7 @@ impl CoreRuntime {
             data,
             optimizers,
             plugins,
+            computer_use,
             diagnostics,
             intern,
             intern_provider,
@@ -203,6 +216,10 @@ impl CoreRuntime {
 
     pub fn optimizers(&self) -> &OptimizerService {
         &self.optimizers
+    }
+
+    pub fn computer_use(&self) -> &crate::computer_use::service::ComputerUseService {
+        &self.computer_use
     }
 
     pub fn plugins(&self) -> &PluginService {
