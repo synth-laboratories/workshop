@@ -8,20 +8,23 @@ stable-catalog or notarized production release.
 
 | Component | Branch | Commit / version | Verification |
 |---|---|---|---|
-| Workshop | `v0.5/implementation` | `bc7527fda074e1364681bc460d341e7fc693ddf9` | pushed; clean `desktop:verify` green |
+| Workshop executable code | `v0.5/implementation` | `508a8569844caaf1ffc81268a5baa193f2acecab` | pushed; clean verifier plus final contract checks green |
 | Containers | `v0.5/integration` | `e1b9cb13cd86bce43ff6c41b3f0b0ecbed3ab3e2` / `0.4.1.dev20260817` | pushed; 364 passed, 8 skipped |
 | Optimizers | `v0.5/integration` | `2ed30aa725ae8bc4c7da959c253dc6c1edd7374a` / `0.2.14` | pushed; 51 passed |
 | Public cookbooks | `v0.5/implementation` | `318b0ed9944c3388f8830fd912013d442d8ae33d` | pushed; producer integrity 3 passed |
 | Frontend | `v0.5/implementation` | `518addde8707cb25522f8e8fdf8b984ffe522ec6` | pushed; typecheck and 41 focused release tests passed |
 | Docs | `v0.5/integration` | `0654c93aa8a0089f8b961e83c66b3c3e1e3c480c` | pushed |
 
-The Workshop SHA above is the verified code head. The documentation commit that
-records this manifest will be the final `v0.5/implementation` head before the
-single merge to `main`; it must not change executable source.
+The Workshop SHA above is the verified executable head. The documentation
+commit that records this manifest is the final `v0.5/implementation` head
+before the single merge to `main`; it does not change executable source.
 
 ## Frozen Workshop gate
 
-`npm run desktop:verify` passed from the clean Workshop code head:
+`npm run desktop:verify` passed from clean Workshop code head `bc7527fd`. The
+only subsequent executable change, `508a8569`, adds the eight already-exposed
+browser and Computer Use Tauri command names to the Rust boundary constant map;
+`desktop.sh conform`, the CSS gate, and targeted Rust contract tests then passed.
 
 - TypeScript typecheck: passed.
 - Rust unit and integration tests: passed; the real external Trace bundle test
