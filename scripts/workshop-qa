@@ -14,6 +14,7 @@ INSTANCE_ROOT="${SYNTH_DESKTOP_INSTANCES_ROOT:-$HOME/.synth-desktop/instances}/v
 DATA_ROOT="$INSTANCE_ROOT/data"
 RECEIPT_ROOT="$INSTANCE_ROOT/qa-receipts"
 DRIVER_DESCRIPTOR="$DATA_ROOT/eval-driver.json"
+RELEASE_MANIFEST="$RECEIPT_ROOT/release-manifest.json"
 
 usage() {
   cat <<'EOF'
@@ -108,6 +109,107 @@ raise SystemExit(0 if permissions == {
 PY
 }
 
+write_release_manifest() {
+  local instance_manifest="$INSTANCE_ROOT/instance.json"
+  local banking_source="${SYNTH_BANKING77_GEPA_COOKBOOK_SOURCE:-}"
+  local optimizer_source="${SYNTH_OPTIMIZER_PROJECT_SOURCE:-}"
+  local containers_source="${SYNTH_CONTAINERS_SOURCE_ROOT:-${SYNTH_CONTAINERS_ROOT:-}}"
+  [[ -f "$instance_manifest" ]] || fail "instance manifest missing after build"
+  [[ -n "$banking_source" ]] || fail "SYNTH_BANKING77_GEPA_COOKBOOK_SOURCE is required for a pinned QA build"
+  [[ -n "$optimizer_source" ]] || fail "SYNTH_OPTIMIZER_PROJECT_SOURCE is required for a pinned QA build"
+  [[ -n "$containers_source" ]] || fail "SYNTH_CONTAINERS_SOURCE_ROOT is required for a pinned QA build"
+  python3 - "$ROOT" "$instance_manifest" "$banking_source" "$optimizer_source" "$containers_source" "$RELEASE_MANIFEST" <<'PY'
+import hashlib, json, pathlib, subprocess, sys, tomllib
+
+workshop, instance_path, cookbook_path, optimizer_path, containers_path, output = map(pathlib.Path, sys.argv[1:])
+
+def run(*args, ok=True):
+    result = subprocess.run(args, capture_output=True, text=True)
+    if ok and result.returncode:
+        raise SystemExit(result.stderr.strip() or f"command failed: {' '.join(args)}")
+    return result
+
+def repo(path):
+    root = pathlib.Path(run("git", "-C", str(path), "rev-parse", "--show-toplevel").stdout.strip())
+    return {
+        "path": str(root),
+        "commit": run("git", "-C", str(root), "rev-parse", "HEAD").stdout.strip(),
+        "tree": run("git", "-C", str(root), "rev-parse", "HEAD^{tree}").stdout.strip(),
+        "dirty": bool(run("git", "-C", str(root), "status", "--porcelain=v1", "--untracked-files=all").stdout.strip()),
+    }
+
+def version(path):
+    with path.open("rb") as handle:
+        data = tomllib.load(handle)
+    return (data.get("project") or data.get("package") or {}).get("version")
+
+instance = json.loads(instance_path.read_text())
+executable = pathlib.Path(instance["executable"])
+app_bundle = pathlib.Path(instance["appBundle"])
+executable_digest = "sha256:" + hashlib.sha256(executable.read_bytes()).hexdigest() if executable.is_file() else None
+catalog = optimizer_path / "src/synth_optimizers/eval/catalog/eval.craftax.code-policy.smoke.v1.toml"
+with catalog.open("rb") as handle:
+    craftax = tomllib.load(handle)["recipe"]
+image, digest = craftax["image"], craftax["image_digest"]
+reference = f"{image}@{digest}"
+remote = run("docker", "manifest", "inspect", reference, ok=False)
+
+manifest = {
+    "schemaVersion": "synth.workshop-qa-release-manifest.v1",
+    "workshop": repo(workshop),
+    "cookbooks": repo(cookbook_path),
+    "optimizers": {**repo(optimizer_path), "version": version(optimizer_path / "pyproject.toml")},
+    "containers": {**repo(containers_path), "version": version(containers_path / "pyproject.toml")},
+    "craftaxImage": {
+        "image": image,
+        "digest": digest,
+        "reference": reference,
+        "remotelyResolvable": remote.returncode == 0,
+        "probeError": None if remote.returncode == 0 else (remote.stderr.strip() or remote.stdout.strip())[:500],
+    },
+    "app": {
+        "version": instance.get("appVersion"),
+        "bundleId": instance.get("bundleId"),
+        "bundlePath": str(app_bundle),
+        "bundlePresent": app_bundle.is_dir(),
+        "executable": str(executable),
+        "executableDigest": executable_digest,
+        "recordedExecutableDigest": instance.get("executableDigest"),
+        "sourceRevision": instance.get("sourceRevision"),
+        "signing": instance.get("signing"),
+    },
+}
+pathlib.Path(output).write_text(json.dumps(manifest, indent=2) + "\n")
+print(json.dumps(manifest, indent=2))
+PY
+}
+
+release_manifest_is_complete() {
+  python3 - "$RELEASE_MANIFEST" <<'PY'
+import json, pathlib, sys
+path = pathlib.Path(sys.argv[1])
+if not path.is_file():
+    raise SystemExit(1)
+m = json.loads(path.read_text())
+repos = [m.get(name, {}) for name in ("workshop", "cookbooks", "optimizers", "containers")]
+app = m.get("app", {})
+image = m.get("craftaxImage", {})
+ok = (
+    m.get("schemaVersion") == "synth.workshop-qa-release-manifest.v1"
+    and all(r.get("commit") and r.get("tree") and r.get("dirty") is False for r in repos)
+    and m.get("optimizers", {}).get("version")
+    and m.get("containers", {}).get("version")
+    and image.get("image") and image.get("digest", "").startswith("sha256:")
+    and image.get("remotelyResolvable") is True
+    and app.get("version") == "0.5.0" and app.get("bundlePresent") is True
+    and app.get("executableDigest") and app.get("executableDigest") == app.get("recordedExecutableDigest")
+    and app.get("sourceRevision") == m.get("workshop", {}).get("commit", "")[:12]
+    and app.get("signing", {}).get("identity")
+)
+raise SystemExit(0 if ok else 1)
+PY
+}
+
 case "$COMMAND" in
   prepare)
     say "signing identity"
@@ -121,12 +223,16 @@ case "$COMMAND" in
     mkdir -p "$RECEIPT_ROOT"
     "$ROOT/scripts/desktop-instance.sh" assert-identity "$NAME" \
       > "$RECEIPT_ROOT/identity.txt"
+    say "recording pinned release manifest"
+    write_release_manifest >/dev/null
     python3 - "$RECEIPT_ROOT/readiness.json" <<EOF
 import json, pathlib, shutil, subprocess, sys
+instance = json.loads(pathlib.Path("$INSTANCE_ROOT/instance.json").read_text())
 receipt = {
     "instance": "$NAME",
     "preparedAt": subprocess.run(["date", "-u", "+%Y-%m-%dT%H:%M:%SZ"], capture_output=True, text=True).stdout.strip(),
-    "bundle": "$INSTANCE_ROOT/build/bundle",
+    "bundle": instance["appBundle"],
+    "releaseManifest": "$RELEASE_MANIFEST",
     "identityReceipt": "$RECEIPT_ROOT/identity.txt",
     # Presence only. Secret values never enter a receipt.
     "credentials": {
@@ -179,6 +285,12 @@ EOF
       check instancePolicy true "approval_policy=never and sandbox_mode=danger-full-access sealed"
     else
       check instancePolicy false "instance config is not sealed for unattended QA; run prepare"
+    fi
+
+    if release_manifest_is_complete; then
+      check releaseManifest true "all source, image, and packaged-app identities are complete and immutable"
+    else
+      check releaseManifest false "candidate is not fully pinned or the exact Craftax image is not remotely resolvable; run prepare and inspect $RELEASE_MANIFEST"
     fi
 
     if [[ -f "$DRIVER_DESCRIPTOR" ]]; then

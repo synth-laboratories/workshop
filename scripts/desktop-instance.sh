@@ -150,7 +150,7 @@ PY
 }
 
 write_contract() {
-	local old_runtime="" old_signing="" manifest_tmp="$MANIFEST.tmp"
+	local old_runtime="" old_signing="" old_provenance="" old_executable_digest="" manifest_tmp="$MANIFEST.tmp"
   mkdir -p "$DATA_ROOT" "$WORKSPACE" "$GENERATED_ROOT" "$TARGET_ROOT"
   chmod 700 "$INSTANCE_ROOT" "$DATA_ROOT" "$WORKSPACE"
 
@@ -237,6 +237,8 @@ EOF
   if [[ -f "$MANIFEST" ]]; then
     old_runtime="$(jq -c '.runtime // empty' "$MANIFEST" 2>/dev/null || true)"
     old_signing="$(jq -c '.signing // empty' "$MANIFEST" 2>/dev/null || true)"
+    old_provenance="$(jq -c '.provenance // empty' "$MANIFEST" 2>/dev/null || true)"
+    old_executable_digest="$(jq -r '.executableDigest // empty' "$MANIFEST" 2>/dev/null || true)"
   fi
   cat >"$manifest_tmp" <<EOF
 {
@@ -254,6 +256,7 @@ EOF
   "workspace": "$WORKSPACE",
   "cargoTargetDir": "$TARGET_ROOT",
   "executable": "$EXE",
+  "appBundle": "$(dirname "$(dirname "$(dirname "$CUA_EXE")")")",
   "sourceRoot": "$ROOT",
   "sourceRevision": "$SOURCE_REVISION",
   "viteUrl": "http://127.0.0.1:$VITE_PORT",
@@ -271,6 +274,14 @@ EOF
   fi
   if [[ -n "$old_signing" ]]; then
     jq --argjson signing "$old_signing" '.signing = $signing' "$manifest_tmp" >"$manifest_tmp.merged"
+    mv "$manifest_tmp.merged" "$manifest_tmp"
+  fi
+  if [[ -n "$old_provenance" ]]; then
+    jq --argjson provenance "$old_provenance" '.provenance = $provenance' "$manifest_tmp" >"$manifest_tmp.merged"
+    mv "$manifest_tmp.merged" "$manifest_tmp"
+  fi
+  if [[ -n "$old_executable_digest" ]]; then
+    jq --arg executableDigest "$old_executable_digest" '.executableDigest = $executableDigest' "$manifest_tmp" >"$manifest_tmp.merged"
     mv "$manifest_tmp.merged" "$manifest_tmp"
   fi
   mv "$manifest_tmp" "$MANIFEST"
@@ -770,6 +781,7 @@ PY
       echo "[desktop:$NAME] expected CUA bundle executable missing: $app_executable" >&2
       exit 1
     fi
+    revalidate_provenance "bundle-built" "$pre_build_revision"
     sign_cua_bundle "$app_bundle"
     codesign --verify --deep --strict "$app_bundle"
     echo "[desktop:$NAME] CUA bundle $app_bundle"
