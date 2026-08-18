@@ -300,6 +300,10 @@ executable_digest() {
   fi
 }
 
+bundle_cdhash() {
+  /usr/bin/codesign -dvvv "$1" 2>&1 | awk -F= '/^CDHash=/{print $2; exit}'
+}
+
 # Capture rev+dirty before a build, revalidate after, and record the executable
 # digest so eval manifests can bind app provenance without stale pointers.
 revalidate_provenance() {
@@ -346,7 +350,7 @@ record_packaged_provenance() {
     --arg executable "$CUA_EXE" \
     --arg executableDigest "$digest" \
     --arg bundle "$app_bundle" \
-    --arg cdHash "$(cdhash "$app_bundle")" \
+    --arg cdHash "$(bundle_cdhash "$app_bundle")" \
     --arg validatedAt "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" \
     '.executable = $executable
     | .executableDigest = $executableDigest

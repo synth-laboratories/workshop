@@ -175,6 +175,7 @@ manifest = {
         "executable": str(executable),
         "executableDigest": executable_digest,
         "recordedExecutableDigest": instance.get("executableDigest"),
+        "cdHash": (instance.get("provenance") or {}).get("cdHash"),
         "sourceRevision": instance.get("sourceRevision"),
         "signing": instance.get("signing"),
     },
@@ -203,6 +204,7 @@ ok = (
     and image.get("remotelyResolvable") is True
     and app.get("version") == "0.5.0" and app.get("bundlePresent") is True
     and app.get("executableDigest") and app.get("executableDigest") == app.get("recordedExecutableDigest")
+    and app.get("cdHash")
     and app.get("sourceRevision") == m.get("workshop", {}).get("commit", "")[:12]
     and app.get("signing", {}).get("identity")
 )
