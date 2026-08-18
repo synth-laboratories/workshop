@@ -32,16 +32,17 @@ pub const HEALTHBENCH_EVAL_SMOKE_RECIPE: &str = "eval.healthbench.smoke.v1";
 const TRAIN_ROWS: usize = 50;
 const HELDOUT_ROWS: usize = 50;
 const MAX_GENERATIONS: i64 = 1;
-const PROPOSALS_PER_GENERATION: i64 = 1;
+const PROPOSALS_PER_GENERATION: i64 = 10;
 const MINIBATCH_SIZE: i64 = 20;
-// One generation consumes a 50-example seed evaluation, a 20-example parent
-// reference, a 20-example candidate minibatch, and a 50-example candidate
-// evaluation. Terminal comparison gives both the seed and a distinct winning
-// proposal 50 heldout examples, so heldout needs room for two candidates.
-const MAX_TRAIN_ROLLOUTS: i64 = 140;
+// One generation consumes a 50-example seed evaluation, then at most ten
+// candidates with a 20-example minibatch and a 50-example full-train gate.
+// Terminal comparison gives the seed and winning proposal 50 heldout examples.
+// The ceilings describe the actual worst case; they must never silently force
+// a requested ten-candidate search to stop after its first proposal.
+const MAX_TRAIN_ROLLOUTS: i64 = 750;
 const MAX_HELDOUT_ROLLOUTS: i64 = 100;
-const MAX_TOTAL_ROLLOUTS: i64 = 240;
-const MAX_COST_USD: f64 = 2.45;
+const MAX_TOTAL_ROLLOUTS: i64 = 850;
+const MAX_COST_USD: f64 = 9.00;
 const PROPOSER_ESTIMATED_COST_USD: f64 = 0.05;
 const ROLLOUT_ESTIMATED_COST_USD: f64 = 0.01;
 const PROPOSER_TIMEOUT_SECONDS: i64 = 300;
@@ -53,6 +54,7 @@ const PROPOSER_MESSAGE_STALL_TIMEOUT_SECONDS: i64 = PROPOSER_TIMEOUT_SECONDS;
 const CRAFTAX_TRAIN_ROWS: usize = 1;
 const CRAFTAX_HELDOUT_ROWS: usize = 1;
 const CRAFTAX_MINIBATCH_SIZE: i64 = 1;
+const CRAFTAX_PROPOSALS_PER_GENERATION: i64 = 1;
 const CRAFTAX_MAX_TRAIN_ROLLOUTS: i64 = 4;
 const CRAFTAX_MAX_HELDOUT_ROLLOUTS: i64 = 2;
 const CRAFTAX_MAX_TOTAL_ROLLOUTS: i64 = 6;
@@ -946,7 +948,7 @@ fn recipe_limits() -> serde_json::Value {
 fn craftax_recipe_limits() -> serde_json::Value {
     json!({
         "maxGenerations": MAX_GENERATIONS,
-        "proposalsPerGeneration": PROPOSALS_PER_GENERATION,
+        "proposalsPerGeneration": CRAFTAX_PROPOSALS_PER_GENERATION,
         "minibatchSize": CRAFTAX_MINIBATCH_SIZE,
         "maxTrainRollouts": CRAFTAX_MAX_TRAIN_ROLLOUTS,
         "maxHeldoutRollouts": CRAFTAX_MAX_HELDOUT_ROLLOUTS,
@@ -2172,7 +2174,7 @@ fn materialize_craftax_config(
     gepa.insert("max_generations".into(), MAX_GENERATIONS.into());
     gepa.insert(
         "proposals_per_generation".into(),
-        PROPOSALS_PER_GENERATION.into(),
+        CRAFTAX_PROPOSALS_PER_GENERATION.into(),
     );
     gepa.insert("minibatch_size".into(), CRAFTAX_MINIBATCH_SIZE.into());
     gepa.insert(
@@ -2346,7 +2348,7 @@ fn validate_craftax_limits(config: &toml::Value) -> Result<()> {
             .ok_or_else(|| anyhow!("generated Craftax recipe missing gepa.{key}"))
     };
     if integer("max_generations")? > MAX_GENERATIONS
-        || integer("proposals_per_generation")? > PROPOSALS_PER_GENERATION
+        || integer("proposals_per_generation")? > CRAFTAX_PROPOSALS_PER_GENERATION
         || integer("max_train_rollouts")? > CRAFTAX_MAX_TRAIN_ROLLOUTS
         || integer("max_heldout_rollouts")? > CRAFTAX_MAX_HELDOUT_ROLLOUTS
         || integer("max_total_rollouts")? > CRAFTAX_MAX_TOTAL_ROLLOUTS
@@ -2469,10 +2471,11 @@ namespace = "base"
             HELDOUT_ROWS
         );
         assert!(text.contains("minibatch_size = 20"));
-        assert!(text.contains("max_total_rollouts = 240"));
-        assert!(text.contains("max_train_rollouts = 140"));
+        assert!(text.contains("proposals_per_generation = 10"));
+        assert!(text.contains("max_total_rollouts = 850"));
+        assert!(text.contains("max_train_rollouts = 750"));
         assert!(text.contains("max_heldout_rollouts = 100"));
-        assert!(text.contains("max_cost_usd = 2.45"));
+        assert!(text.contains("max_cost_usd = 9.0"));
         assert!(text.contains("proposer_estimated_cost_usd = 0.05"));
         assert!(text.contains("rollout_estimated_cost_usd = 0.01"));
         assert!(text.contains("BANKING77_TRAIN_SAMPLE=50"));
@@ -2500,7 +2503,7 @@ namespace = "base"
             .all(|recipe| recipe["credentialInputs"] == json!([])));
         assert!(catalog[..3]
             .iter()
-            .all(|recipe| recipe["limits"]["maxCostUsd"] == json!(2.45)));
+            .all(|recipe| recipe["limits"]["maxCostUsd"] == json!(9.0)));
         assert_eq!(catalog[3]["id"], json!(CRAFTAX_GEPA_SMOKE_RECIPE));
         assert_eq!(catalog[3]["limits"]["maxCostUsd"], json!(1.5));
         assert_eq!(catalog[3]["limits"]["maxTotalRollouts"], json!(6));

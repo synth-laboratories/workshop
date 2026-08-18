@@ -18,10 +18,13 @@ import process from "node:process";
 
 const WORKFLOWS = {
   "banking77-smoke": [
-    "Run the Banking77 evaluation using your available tools.",
-    "Use the registered Banking77 container, a bounded rollout budget, and",
-    "report the final score. Do not ask for confirmation; this session runs",
-    "under the unattended QA profile.",
+    "Run the exact eval.banking77.baseline.v1 workflow using your available tools.",
+    "The QA-owned Banking77 service is explicitly at http://127.0.0.1:8099; register",
+    "that URL as task family banking77 if it is not already registered, then probe it.",
+    "Start the product-owned optimizer workflow with its live chat visual, poll the",
+    "optimizer run to terminal, and report the run id, completed rollout count, and",
+    "numeric final score. Do not substitute a hand-built evaluation or stop after admission.",
+    "Do not ask for confirmation; this session runs under the unattended QA profile.",
   ].join(" "),
 };
 
@@ -33,7 +36,7 @@ function validateWorkflow(workflow, terminal) {
     if (/could not run|blocked before|no (?:final )?score|unhealthy/i.test(text)) {
       throw new Error(`banking77-smoke failed: ${text.replace(/\s+/g, " ").trim()}`);
     }
-    if (!/(?:final\s+score|score\s*[:=])[^\n]*\d/i.test(text)) {
+    if (!/(?:final(?:\s+\w+){0,2}\s+score|score\s*[:=])[^\n]*\d/i.test(text)) {
       throw new Error("banking77-smoke reached terminal without a numeric final score");
     }
   }
@@ -131,7 +134,6 @@ async function main() {
     { timeoutMs: args.timeoutMs },
   );
   receipt.terminal = terminal;
-  validateWorkflow(args.workflow, terminal);
 
   const exported = await call(
     descriptor,
@@ -146,6 +148,10 @@ async function main() {
       ? exported.events.length
       : null;
   }
+  // Always persist the durable evidence before applying the workflow-specific
+  // release assertion. A red validator is most useful when its transcript and
+  // tool receipts survive for diagnosis.
+  validateWorkflow(args.workflow, terminal);
   receipt.finishedAt = new Date().toISOString();
   process.stdout.write(`${JSON.stringify(receipt)}\n`);
 }
