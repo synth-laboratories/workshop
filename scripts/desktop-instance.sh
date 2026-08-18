@@ -293,8 +293,9 @@ EOF
 }
 
 executable_digest() {
-  if [[ -f "$EXE" ]]; then
-    shasum -a 256 "$EXE" | awk '{print "sha256:" $1}'
+  local executable="${1:-$EXE}"
+  if [[ -f "$executable" ]]; then
+    shasum -a 256 "$executable" | awk '{print "sha256:" $1}'
   else
     printf ''
   fi
@@ -365,15 +366,51 @@ record_packaged_provenance() {
   mv "$manifest_tmp" "$MANIFEST"
 }
 
+verify_packaged_provenance() {
+  local app_bundle actual_digest recorded_digest actual_cdhash recorded_cdhash recorded_revision phase
+  app_bundle="$(dirname "$(dirname "$(dirname "$CUA_EXE")")")"
+  [[ -x "$CUA_EXE" ]] || {
+    echo "[desktop:$NAME] ERROR packaged executable is missing: $CUA_EXE" >&2
+    return 1
+  }
+  codesign --verify --deep --strict "$app_bundle"
+  actual_digest="$(executable_digest "$CUA_EXE")"
+  recorded_digest="$(jq -r '.provenance.executableDigest // .executableDigest // empty' "$MANIFEST")"
+  actual_cdhash="$(bundle_cdhash "$app_bundle")"
+  recorded_cdhash="$(jq -r '.provenance.cdHash // empty' "$MANIFEST")"
+  recorded_revision="$(jq -r '.provenance.sourceRevision // empty' "$MANIFEST")"
+  phase="$(jq -r '.provenance.phase // empty' "$MANIFEST")"
+  [[ "$phase" == "bundle-signed" ]] || {
+    echo "[desktop:$NAME] ERROR packaged provenance is not sealed; run cua-build" >&2
+    return 1
+  }
+  [[ "$recorded_revision" == "$SOURCE_REVISION" ]] || {
+    echo "[desktop:$NAME] ERROR packaged source revision drift: $recorded_revision != $SOURCE_REVISION" >&2
+    return 1
+  }
+  [[ "$recorded_digest" == "$actual_digest" ]] || {
+    echo "[desktop:$NAME] ERROR packaged executable digest drift: $recorded_digest != $actual_digest" >&2
+    return 1
+  }
+  [[ -n "$recorded_cdhash" && "$recorded_cdhash" == "$actual_cdhash" ]] || {
+    echo "[desktop:$NAME] ERROR packaged CDHash drift: $recorded_cdhash != $actual_cdhash" >&2
+    return 1
+  }
+}
+
 mark_runtime() {
   local status="$1" pid="${2:-}" manifest_tmp="$MANIFEST.runtime.tmp"
-  local digest
+  local digest runtime_executable="$EXE"
   [[ -f "$MANIFEST" ]] || write_contract
-  digest="$(executable_digest)"
+  if [[ -n "$pid" ]]; then
+    runtime_executable="$(lsof -a -p "$pid" -d txt -Fn 2>/dev/null | sed -n 's/^n//p' | head -1)"
+    [[ -f "$runtime_executable" ]] || runtime_executable="$EXE"
+  fi
+  digest="$(executable_digest "$runtime_executable")"
   jq \
     --arg status "$status" \
     --arg pid "$pid" \
-    --arg executable "$EXE" \
+    --arg executable "$runtime_executable" \
     --arg executableDigest "$digest" \
     --arg sourceRevision "$SOURCE_REVISION" \
     --arg checkedAt "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" \
@@ -667,8 +704,14 @@ dev_instance() {
   fi
 
   # Capture provenance before any compile so a mid-build dirty tree fails closed.
+  # A run-only launch must validate the already-signed bundle instead of
+  # replacing its receipt with the unsigned raw target's identity.
   local pre_build_revision="$SOURCE_REVISION"
-  revalidate_provenance "pre-build" "$pre_build_revision"
+  if [[ "$COMMAND" == "cua-run" ]]; then
+    verify_packaged_provenance
+  else
+    revalidate_provenance "pre-build" "$pre_build_revision"
+  fi
 
   # The daemon's data directory holds its api key, pid files, response store,
   # logs, and selected model. Sharing it across instances shares all of those.

@@ -128,7 +128,18 @@ pub fn diagnostics() -> InstanceDiagnostics {
 }
 
 fn executable_digest() -> Option<String> {
-    manifest_executable_digest().or_else(current_executable_digest)
+    static CURRENT_EXECUTABLE_DIGEST: OnceLock<Option<String>> = OnceLock::new();
+    let current = CURRENT_EXECUTABLE_DIGEST
+        .get_or_init(current_executable_digest)
+        .clone();
+    preferred_executable_digest(current, manifest_executable_digest())
+}
+
+fn preferred_executable_digest(
+    current: Option<String>,
+    manifest: Option<String>,
+) -> Option<String> {
+    current.or(manifest)
 }
 
 fn manifest_executable_digest() -> Option<String> {
@@ -198,7 +209,22 @@ pub fn mark_manifest_running() {
 
 #[cfg(test)]
 mod tests {
-    use super::{sha256_digest, valid_sha256_digest, validate_name};
+    use super::{preferred_executable_digest, sha256_digest, valid_sha256_digest, validate_name};
+
+    #[test]
+    fn running_executable_digest_wins_over_mutable_manifest_receipt() {
+        assert_eq!(
+            preferred_executable_digest(
+                Some("sha256:current".into()),
+                Some("sha256:stale-manifest".into())
+            ),
+            Some("sha256:current".into())
+        );
+        assert_eq!(
+            preferred_executable_digest(None, Some("sha256:manifest-fallback".into())),
+            Some("sha256:manifest-fallback".into())
+        );
+    }
 
     #[test]
     fn accepts_safe_instance_names() {
