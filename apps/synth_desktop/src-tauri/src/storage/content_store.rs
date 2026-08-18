@@ -79,7 +79,11 @@ fn hex_sha256(bytes: &[u8]) -> String {
 fn validate_kind(kind: &str) -> Result<()> {
     match kind {
         "blobs" | "previews" | "traces" | "trace_imports" | "exports" | "artifact_bundles"
-        | "report_bundles" => Ok(()),
+        | "report_bundles"
+        // Computer-use captures. Kept in their own kinds so an accessibility
+        // tree is never served as an image, and so retention can drop a
+        // session's captures without touching anything else.
+        | "computer_use_ax" | "computer_use_screenshots" => Ok(()),
         _ => bail!("unsupported content store kind: {kind}"),
     }
 }

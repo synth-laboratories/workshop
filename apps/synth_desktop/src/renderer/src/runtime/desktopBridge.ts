@@ -689,6 +689,20 @@ window.synthWorkspaceScope ??= isTauri
 				return () => { disposed = true; unlisten?.(); };
 			}
 		};
+		window.synthComputerUse ??= {
+			status: (sessionId) =>
+				invokeCommand(COMMANDS.COMPUTER_USE_STATUS, { sessionId: sessionId ?? null }),
+			install: () => invokeCommand(COMMANDS.COMPUTER_USE_INSTALL),
+			remove: () => invokeCommand(COMMANDS.COMPUTER_USE_REMOVE),
+			revokeApp: (bundleId) => invokeCommand(COMMANDS.COMPUTER_USE_REVOKE_APP, { bundleId }),
+			openSettings: (permissionId) =>
+				invokeCommand(COMMANDS.COMPUTER_USE_OPEN_SETTINGS, { permissionId })
+		};
+		window.synthBrowserAdmin ??= {
+			status: () => invokeCommand(COMMANDS.BROWSER_RUNTIME_STATUS),
+			allowOrigin: (origin) => invokeCommand(COMMANDS.BROWSER_POLICY_ALLOW_ORIGIN, { origin }),
+			revokeOrigin: (origin) => invokeCommand(COMMANDS.BROWSER_POLICY_REVOKE_ORIGIN, { origin })
+		};
 		window.synthReports ??= {
 			list: (query) => invokeCommand(COMMANDS.REPORTS_LIST, { query: query ?? null }),
 			get: (reportId) => invokeCommand(COMMANDS.REPORTS_GET, { reportId }),
@@ -826,6 +840,12 @@ export const bridges = {
 	},
 	get plugins() {
 		return window.synthPlugins;
+	},
+	get computerUse() {
+		return window.synthComputerUse;
+	},
+	get browserAdmin() {
+		return window.synthBrowserAdmin;
 	},
 	get visuals() {
 		return window.synthVisuals;

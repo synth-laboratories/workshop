@@ -1847,6 +1847,24 @@ fn materializes_diagram_skill_with_direct_tool_first_contract() {
     assert!(session_skill.contains("Manual"));
     assert!(optimizers_skill.contains("mcp__synth_session__session_present"));
     assert!(optimizers_skill.contains("run ID's final 6 characters"));
+
+    let computer_use_skill =
+        fs::read_to_string(home.join("skills/use-computer-use/SKILL.md")).unwrap();
+    assert_eq!(
+        computer_use_skill,
+        fs::read_to_string(home.join("skills/.system/use-computer-use/SKILL.md")).unwrap()
+    );
+    assert!(computer_use_skill.contains("com.apple.Safari"));
+    assert!(computer_use_skill.contains("Never research the tool contract"));
+    assert!(computer_use_skill.contains("Do not invent verbs"));
+    assert!(computer_use_skill.contains("press_key"));
+    assert!(computer_use_skill.contains("key: \"cmd+n\""));
+    assert!(computer_use_skill.contains("Only now call `get_app_state`"));
+    let browser_skill =
+        fs::read_to_string(home.join("skills/use-workshop-browser/SKILL.md")).unwrap();
+    assert!(browser_skill.contains("browser_snapshot"));
+    assert!(browser_skill.contains("20,000"));
+    assert!(browser_skill.contains("explicitly requested Safari"));
 }
 #[test]
 fn generated_mcp_configs_use_each_adapter_owned_ipc_variable() {
@@ -1874,6 +1892,20 @@ fn generated_mcp_configs_pass_desktop_identity_for_visual_capture() {
     assert!(config.contains("SYNTH_SESSION_ID = \"session-123\""));
     assert!(config.contains("SYNTH_DESKTOP_APP_NAME = \"Synth Workshop v0.4 · cua\""));
     assert!(config.contains("SYNTH_DESKTOP_BUNDLE_ID = \"com.synth.desktop.v04.dev.cua\""));
+}
+#[test]
+fn generated_browser_config_passes_human_owned_policy_and_profile_paths() {
+    let config = mcp_env_config(
+        "synth_browser",
+        Path::new("/tmp/desktop-ipc.json"),
+        "session-123",
+        "Synth Workshop v0.5 · cua",
+        "com.synth.desktop.v05.dev.cua",
+    );
+    assert!(config.contains("SYNTH_BROWSER_POLICY_FILE"));
+    assert!(config.contains("browser/policy.json"));
+    assert!(config.contains("SYNTH_BROWSER_PROFILE_ROOT"));
+    assert!(config.contains("browser-profiles"));
 }
 #[test]
 fn normalizes_responses_provider_base_url() {

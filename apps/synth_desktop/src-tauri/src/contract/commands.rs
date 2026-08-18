@@ -175,6 +175,14 @@ impl Commands {
     pub const OPTIMIZERS_LIST_CLOUD: &'static str = "optimizers_list_cloud";
     pub const PLUGINS_STATUS: &'static str = "plugins_status";
     pub const PLUGINS_LIST: &'static str = "plugins_list";
+    pub const COMPUTER_USE_STATUS: &'static str = "computer_use_status";
+    pub const COMPUTER_USE_INSTALL: &'static str = "computer_use_install";
+    pub const COMPUTER_USE_REMOVE: &'static str = "computer_use_remove";
+    pub const COMPUTER_USE_REVOKE_APP: &'static str = "computer_use_revoke_app";
+    pub const COMPUTER_USE_OPEN_SETTINGS: &'static str = "computer_use_open_settings";
+    pub const BROWSER_RUNTIME_STATUS: &'static str = "browser_runtime_status";
+    pub const BROWSER_POLICY_ALLOW_ORIGIN: &'static str = "browser_policy_allow_origin";
+    pub const BROWSER_POLICY_REVOKE_ORIGIN: &'static str = "browser_policy_revoke_origin";
     pub const PLUGINS_MANAGE: &'static str = "plugins_manage";
     pub const PLUGINS_SET_RELEASE_CHANNEL: &'static str = "plugins_set_release_channel";
     pub const VISUAL_SUBSCRIPTION_READY: &'static str = "visual_subscription_ready";

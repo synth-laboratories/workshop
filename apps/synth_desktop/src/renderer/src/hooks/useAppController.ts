@@ -45,6 +45,7 @@ import { useInferenceMonitor } from "../components/InferencePanel";
 import { artifactFromVisualRecord } from "../components/VisualHost";
 import { useAccountShell } from "./useAccountShell";
 import { usePluginStatuses } from "./usePluginStatuses";
+import { useComputerUse } from "./useComputerUse";
 import { useShellLayout } from "./useShellLayout";
 import { useCodexEventBridge, type CodexUsageSnapshot } from "./useCodexEventBridge";
 import { useForeignSessionEventBridge } from "./useForeignSessionEventBridge";
@@ -657,6 +658,9 @@ export function useAppController() {
 	}, [view]);
 	activeSessionIdRef.current = activeSessionId;
 	const terminalWorkspaceRoot = defaultWorkspace;
+	// Declared after activeSessionId: the allowlist is scoped to the session,
+	// so the hook needs a session to ask about.
+	const computerUseState = useComputerUse(activeSessionId ?? null);
 	const terminalWorkspaceId = activeSessionId ?? "default";
 	const selectActivePermissions = useCallback((nextApprovalPolicy: ApprovalPolicy, nextSandboxMode: SandboxMode) => {
 		const mode = approvalModeFromConfig(nextApprovalPolicy, nextSandboxMode);
@@ -762,19 +766,35 @@ export function useAppController() {
 		sessions
 	]);
 
+	// Packaged Desktop requires a live provider-stream ownership receipt; a
+	// stored `running` row alone may be crash debris. The browser runtime has no
+	// child process or recovery lease, so its in-memory adapter's running rows
+	// are the live ownership authority (and keep the browser demo/test harness
+	// honest without weakening the packaged rule).
+	const presentationLiveTurns = useMemo(() => {
+		if (isDesktop) return liveTurns;
+		const browserTurns = { ...liveTurns };
+		for (const session of sessions) {
+			if (session.status === "running" && !(session.id in browserTurns)) {
+				browserTurns[session.id] = `browser:${session.id}`;
+			}
+		}
+		return browserTurns;
+	}, [isDesktop, liveTurns, sessions]);
+
 	// Working requires a live turn owned by this instance, never a stored status.
 	const workingChatIds = useMemo(
-		() => selectWorkingChatIds(sessions, liveTurns),
-		[liveTurns, sessions]
+		() => selectWorkingChatIds(sessions, presentationLiveTurns),
+		[presentationLiveTurns, sessions]
 	);
 
 	const chatPresence = useMemo(() => {
 		const presence: Record<string, ChatPresence> = {};
 		for (const session of sessions) {
-			presence[session.id] = selectChatPresence(session, liveTurns);
+			presence[session.id] = selectChatPresence(session, presentationLiveTurns);
 		}
 		return presence;
-	}, [liveTurns, sessions]);
+	}, [presentationLiveTurns, sessions]);
 
 	/** Durable notices left by turns a previous Workshop process abandoned. */
 	const recoveryNotices = useMemo(() => {
@@ -1051,7 +1071,7 @@ export function useAppController() {
 	}, [activeChat?.id, activeChatTargetId]);
 	// Session status + event arbitration — single selector, not an App.tsx IIFE.
 	const activeChatRunning = activeChat
-		? selectSessionRunning(activeChatSession, eventsBySession[activeChat.id] ?? [], liveTurns)
+		? selectSessionRunning(activeChatSession, eventsBySession[activeChat.id] ?? [], presentationLiveTurns)
 		: false;
 	const activeChatWarmingUp = Boolean(
 		activeChatRunning &&
@@ -1141,6 +1161,10 @@ export function useAppController() {
 
 	useEffect(() => {
 		if (!openArtifactId) return;
+		// Ownership enforcement applies to chat-scoped panes only. Inventory,
+		// Visuals, and Optimizers intentionally open registry artifacts that are
+		// not members of an active chat transcript.
+		if (!activeChat && !activeSync) return;
 		const artifacts = activeChat?.artifacts ?? activeSync?.artifacts ?? [];
 		if (!openArtifactIdForChat(openArtifactId, artifacts)) {
 			setOpenArtifactId(null);
@@ -1998,6 +2022,7 @@ export function useAppController() {
 		openBilling,
 		pluginStatuses,
 		refreshPluginStatuses,
+		...computerUseState,
 		view,
 		setView,
 		toast,

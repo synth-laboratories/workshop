@@ -1,5 +1,6 @@
 mod account;
 mod account_cloud;
+pub mod browser;
 pub mod cloud;
 
 /// Narrow public seam for the standalone Intern wire-contract integration
@@ -17,6 +18,7 @@ pub mod intern_protocol_test_support {
 pub mod campaigns;
 mod codex;
 mod codex_oauth;
+mod computer_use;
 pub mod container_capabilities;
 pub mod container_stream;
 mod context;
@@ -792,11 +794,17 @@ pub(crate) async fn authorize_optimizer_recipe_start(
     let requesting_agent = session_id
         .map(|value| format!("Agent session {value}"))
         .unwrap_or_else(|| "Workshop operator".into());
-    let is_local_eval = recipe.get("algorithmId").and_then(Value::as_str) == Some("eval");
+    let algorithm_id = recipe.get("algorithmId").and_then(Value::as_str);
+    let is_local_eval = algorithm_id == Some("eval");
     let is_container_baseline_eval = matches!(
         request.recipe_id.as_str(),
         optimizers::BANKING77_EVAL_BASELINE_RECIPE | optimizers::HEALTHBENCH_EVAL_SMOKE_RECIPE
     );
+    // Hosted SFT is owned by the public synth-optimizers control plane and
+    // does not use the optional local Optimizers sidecar. Requiring that
+    // sidecar made an otherwise configured public SFT recipe unreachable.
+    let is_hosted_sft =
+        algorithm_id == Some("sft") && request.recipe_id != "sft.craftax.gpt-oss.smoke.v1";
     let limits = recipe
         .get("limits")
         .cloned()
@@ -900,7 +908,7 @@ pub(crate) async fn authorize_optimizer_recipe_start(
     }
 
     let sidecar_status = state.optimizers().manager().refresh().await;
-    if !is_local_eval && sidecar_status.phase != "ready" {
+    if !is_local_eval && !is_hosted_sft && sidecar_status.phase != "ready" {
         let action = if sidecar_status.phase == "not_installed" {
             "install_and_start"
         } else {
@@ -1323,6 +1331,10 @@ async fn plugins_status(
     // Validate rather than discard: returning the optimizers status for any id
     // asked about let the caller believe a plugin existed that does not.
     if let Some(plugin_id) = plugin_id.as_deref() {
+        if plugin_id == plugins::types::COMPUTER_USE_PLUGIN_ID {
+            let _ = state.computer_use().refresh_grants().await;
+            return Ok(state.computer_use().status().await);
+        }
         if plugin_id != plugins::OPTIMIZERS_PLUGIN_ID {
             return Err(AppError::from(anyhow::anyhow!(
                 "unknown plugin_id `{plugin_id}`"
@@ -1372,7 +1384,178 @@ async fn plugins_manage(
 #[tauri::command]
 #[specta::specta]
 async fn plugins_list(state: State<'_, Arc<CoreRuntime>>) -> Result<Vec<PluginStatus>, AppError> {
-    Ok(vec![state.plugins().status(&state).await])
+    // Both managed plugins. The sidebar renders one row per entry in
+    // PLUGIN_NAV and looks its status up by id, so a plugin missing here shows
+    // no phase at all rather than showing the wrong one.
+    let _ = state.computer_use().refresh_grants().await;
+    Ok(vec![
+        state.plugins().status(&state).await,
+        state.computer_use().status().await,
+    ])
+}
+
+/// What the Computer Use page renders.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct ComputerUseSnapshot {
+    pub status: PluginStatus,
+    /// Bundle identifiers this session may drive without a fresh card.
+    pub allowed_apps: Vec<String>,
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn computer_use_status(
+    state: State<'_, Arc<CoreRuntime>>,
+    session_id: Option<String>,
+) -> Result<ComputerUseSnapshot, AppError> {
+    let _ = state.computer_use().refresh_grants().await;
+    let allowed_apps = match session_id.as_deref() {
+        Some(session) => state.computer_use().allowlisted_apps(session).await,
+        None => Vec::new(),
+    };
+    Ok(ComputerUseSnapshot {
+        status: state.computer_use().status().await,
+        allowed_apps,
+    })
+}
+
+/// Install the helper that ships inside this app bundle.
+///
+/// The source is our own Resources directory rather than a download: the helper
+/// is signed with the same identity as Workshop and shipping it separately
+/// would mean a second thing to notarize, host, and keep in version step.
+#[tauri::command]
+#[specta::specta]
+async fn computer_use_install(
+    state: State<'_, Arc<CoreRuntime>>,
+) -> Result<PluginStatus, AppError> {
+    let source = bundled_helper_path().ok_or_else(|| {
+        AppError::from(anyhow::anyhow!(
+            "this build does not ship a Computer Use helper"
+        ))
+    })?;
+    let team = crate::computer_use::helper::expected_team_id();
+    let require_notarized = team.is_some();
+    crate::computer_use::helper::install(
+        &crate::computer_use::helper::SystemCommands,
+        &source,
+        &crate::computer_use::helper::helper_bundle_path(),
+        team.as_deref(),
+        require_notarized,
+    )
+    .map_err(AppError::from)?;
+    let _ = state.computer_use().refresh_grants().await;
+    Ok(state.computer_use().status().await)
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn computer_use_remove(
+    state: State<'_, Arc<CoreRuntime>>,
+) -> Result<crate::computer_use::helper::RemovalReport, AppError> {
+    state.computer_use().remove().await.map_err(AppError::from)
+}
+
+/// Revoke one app's standing permission to be driven.
+#[tauri::command]
+#[specta::specta]
+async fn computer_use_revoke_app(
+    state: State<'_, Arc<CoreRuntime>>,
+    bundle_id: String,
+) -> Result<u32, AppError> {
+    state
+        .computer_use()
+        .allowlist()
+        .revoke(&bundle_id)
+        .map(|count| count as u32)
+        .map_err(AppError::from)
+}
+
+/// Open the exact Privacy & Security pane for one grant.
+#[tauri::command]
+#[specta::specta]
+async fn computer_use_open_settings(
+    _state: State<'_, Arc<CoreRuntime>>,
+    permission_id: String,
+) -> Result<(), AppError> {
+    let url = crate::computer_use::permissions::settings_url(&permission_id)
+        .ok_or_else(|| AppError::from(anyhow::anyhow!("unknown permission `{permission_id}`")))?;
+    // A probe can report a missing grant, but macOS does not add the helper to
+    // Privacy & Security until the helper app itself requests access through a
+    // LaunchServices identity. The long-lived MCP child is spawned as a raw
+    // executable for stdio and is not sufficient for TCC registration.
+    //
+    // This route is human-only. Launch an app instance in `request` mode, then
+    // open the exact pane where its newly registered row appears.
+    let helper = crate::computer_use::helper::helper_bundle_path();
+    let requested = std::process::Command::new("/usr/bin/open")
+        .arg("-n")
+        .arg(&helper)
+        .args(["--args", "request"])
+        .status()
+        .map_err(|error| {
+            AppError::from(anyhow::anyhow!(
+                "could not request Computer Use permissions: {error}"
+            ))
+        })?;
+    if !requested.success() {
+        return Err(AppError::from(anyhow::anyhow!(
+            "Computer Use permission request exited with {requested}"
+        )));
+    }
+    std::process::Command::new("/usr/bin/open")
+        .arg(url)
+        .status()
+        .map_err(|error| {
+            AppError::from(anyhow::anyhow!("could not open System Settings: {error}"))
+        })?;
+    Ok(())
+}
+
+/// Read-only managed-browser preflight plus the human-owned origin policy.
+#[tauri::command]
+#[specta::specta]
+async fn browser_runtime_status() -> Result<browser::BrowserRuntimeStatus, AppError> {
+    Ok(browser::runtime_status())
+}
+
+/// Human-only origin approval. Browser MCP deliberately has no equivalent tool.
+#[tauri::command]
+#[specta::specta]
+async fn browser_policy_allow_origin(
+    origin: String,
+) -> Result<browser::BrowserRuntimeStatus, AppError> {
+    browser::allow_origin(&origin).map_err(AppError::from)?;
+    Ok(browser::runtime_status())
+}
+
+/// Revoke a persistent origin approval for future navigations.
+#[tauri::command]
+#[specta::specta]
+async fn browser_policy_revoke_origin(
+    origin: String,
+) -> Result<browser::BrowserRuntimeStatus, AppError> {
+    browser::revoke_origin(&origin).map_err(AppError::from)?;
+    Ok(browser::runtime_status())
+}
+
+/// The helper bundle shipped inside this application.
+fn bundled_helper_path() -> Option<std::path::PathBuf> {
+    let executable = std::env::current_exe().ok()?;
+    let contents = executable.parent()?.parent()?;
+    let candidate = contents
+        .join("Resources")
+        .join(crate::computer_use::helper::HELPER_BUNDLE_NAME);
+    if candidate.exists() {
+        return Some(candidate);
+    }
+    // Development layout: the helper is built into its own target directory and
+    // has not been staged into an app bundle yet.
+    let repo = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../../helpers/synth-computer-use/target/bundle")
+        .join(crate::computer_use::helper::HELPER_BUNDLE_NAME);
+    repo.exists().then_some(repo)
 }
 
 #[tauri::command]

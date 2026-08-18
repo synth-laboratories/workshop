@@ -13,7 +13,7 @@
     "build": "tauri build",
     "frontend:dev": "vite --host 127.0.0.1",
     "frontend:build": "vite build",
-    "package:prepare": "../../scripts/stage-packaged-cookbooks.sh && npm run frontend:build",
+    "package:prepare": "../../scripts/build-computer-use-helper.sh ensure-dev && ../../scripts/stage-packaged-cookbooks.sh && npm run frontend:build",
     "preview": "vite preview --host 127.0.0.1",
 	"typecheck": "tsc --noEmit -p tsconfig.json",
 	"lint:app-css": "node scripts/lint-app-css.mjs",

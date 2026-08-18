@@ -34,5 +34,7 @@ cargo build \
   --manifest-path apps/synth_desktop/src-tauri/Cargo.toml \
   --bin synth-containers-mcp \
   --bin synth-visuals-mcp \
-  --bin synth-optimizers-mcp
+  --bin synth-optimizers-mcp \
+  --bin synth-computer-use-mcp \
+  --bin synth-browser-mcp
 exec npm run dev --workspace @synth/synth-desktop

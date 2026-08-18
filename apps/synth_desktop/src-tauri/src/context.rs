@@ -138,12 +138,35 @@ pub fn skill_enabled(id: &str) -> bool {
 pub fn skill_override(id: &str) -> Option<String> {
     settings().skill_overrides.get(id).cloned()
 }
+/// Groups that must be switched on deliberately rather than inherited.
+///
+/// Everything else defaults on, which is right for tools that read and write
+/// inside Workshop. Computer Use drives the operator's other applications, so
+/// arriving switched on by virtue of existing is the wrong default: it should
+/// be a thing someone turned on, not a thing they failed to turn off.
+pub const OPT_IN_MCP_GROUPS: [&str; 2] = [COMPUTER_USE_MCP_GROUP, BROWSER_MCP_GROUP];
+
+pub const COMPUTER_USE_MCP_GROUP: &str = "computer-use";
+pub const BROWSER_MCP_GROUP: &str = "browser";
+
+pub const MCP_GROUPS: [&str; 5] = [
+    "bundled",
+    "productivity",
+    "development",
+    COMPUTER_USE_MCP_GROUP,
+    BROWSER_MCP_GROUP,
+];
+
+fn mcp_group_default(id: &str) -> bool {
+    !OPT_IN_MCP_GROUPS.contains(&id)
+}
+
 pub fn mcp_group_enabled(id: &str) -> bool {
     settings()
         .mcp_group_enabled
         .get(id)
         .copied()
-        .unwrap_or(true)
+        .unwrap_or_else(|| mcp_group_default(id))
 }
 pub fn cookbook() -> CookbookContext {
     settings().cookbooks
@@ -178,7 +201,11 @@ fn mcp_groups(current: &ContextSettings) -> Vec<McpContextGroup> {
         |id: &str, label: &str, servers: &[&str], tools: &[(&str, &[&str])]| McpContextGroup {
             id: id.into(),
             label: label.into(),
-            enabled: current.mcp_group_enabled.get(id).copied().unwrap_or(true),
+            enabled: current
+                .mcp_group_enabled
+                .get(id)
+                .copied()
+                .unwrap_or_else(|| mcp_group_default(id)),
             servers: servers.iter().map(|value| (*value).into()).collect(),
             enabled_tools: tools
                 .iter()
@@ -210,6 +237,42 @@ fn mcp_groups(current: &ContextSettings) -> Vec<McpContextGroup> {
         ),
         group("productivity", "Productivity", &[], &[]),
         group("development", "Development", &[], &[]),
+        group(
+            COMPUTER_USE_MCP_GROUP,
+            "Computer Use",
+            &["synth_computer_use"],
+            &[(
+                "synth_computer_use",
+                &["computer_use", "computer_use_status"],
+            )],
+        ),
+        group(
+            BROWSER_MCP_GROUP,
+            "Managed Browser",
+            &["synth_browser"],
+            &[(
+                "synth_browser",
+                &[
+                    "browser_create_session",
+                    "browser_close_session",
+                    "browser_list_tabs",
+                    "browser_new_tab",
+                    "browser_close_tab",
+                    "browser_navigate",
+                    "browser_back",
+                    "browser_snapshot",
+                    "browser_query",
+                    "browser_subtree",
+                    "browser_click",
+                    "browser_fill",
+                    "browser_press",
+                    "browser_scroll",
+                    "browser_screenshot",
+                    "browser_upload",
+                    "browser_download",
+                ],
+            )],
+        ),
     ]
 }
 
@@ -326,7 +389,7 @@ pub fn context_mcp_group_update(
     group_id: String,
     enabled: bool,
 ) -> Result<ContextSnapshot, crate::error::AppError> {
-    if !["bundled", "productivity", "development"].contains(&group_id.as_str()) {
+    if !MCP_GROUPS.contains(&group_id.as_str()) {
         return Err(crate::error::AppError::from(anyhow!("unknown MCP group")));
     }
     let mut current = settings();

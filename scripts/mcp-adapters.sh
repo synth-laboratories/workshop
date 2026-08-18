@@ -8,6 +8,8 @@ SYNTH_MCP_ADAPTERS=(
   synth-visuals-mcp
   synth-optimizers-mcp
   synth-plugins-mcp
+  synth-computer-use-mcp
+  synth-browser-mcp
   synth-session-mcp
   synth-traces-mcp
   synth-diagnostics-mcp

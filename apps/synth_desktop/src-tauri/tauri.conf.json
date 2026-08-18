@@ -19,21 +19,27 @@
         "title": "Synth Workshop",
         "width": 1280,
         "height": 840,
-		"maximized": true,
+        "maximized": true,
         "minWidth": 960,
         "minHeight": 640,
         "visible": false,
         "backgroundColor": "#f3f5f8",
         "titleBarStyle": "Overlay",
         "hiddenTitle": true,
-        "trafficLightPosition": { "x": 20, "y": 22 }
+        "trafficLightPosition": {
+          "x": 20,
+          "y": 22
+        }
       }
     ]
   },
   "bundle": {
     "active": true,
     "targets": "all",
-    "icon": ["../resources/icon.png", "../resources/icon.icns"],
+    "icon": [
+      "../resources/icon.png",
+      "../resources/icon.icns"
+    ],
     "macOS": {
       "minimumSystemVersion": "14.0"
     },
@@ -47,7 +53,9 @@
       "../../../visuals/ambient.d.ts": "visuals/ambient.d.ts",
       "../../../visuals/package.json": "visuals/package.json",
       "../../../visuals/tsconfig.json": "visuals/tsconfig.json",
-      "generated-resources/cookbooks": "cookbooks"
+      "generated-resources/cookbooks": "cookbooks",
+      "../../../helpers/synth-computer-use/target/bundle/Synth Computer Use.app": "Synth Computer Use.app",
+      "../browser/playwright_backend.mjs": "browser/playwright_backend.mjs"
     }
   }
 }

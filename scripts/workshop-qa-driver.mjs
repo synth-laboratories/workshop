@@ -43,6 +43,8 @@ const WORKFLOWS = {
     "optimizer workflow with its live chat visual, poll the run all the way to terminal,",
     "and report the run id, required and completed rollout counts, final score, separate",
     "policy and grader usage lanes, cost, and visual id. Do not substitute a hand-built eval.",
+    "If admission is blocked, copy the structured blocker code, owner, retryable value, and",
+    "explicitly state that no run ID or rollout records were created.",
     "Do not ask for confirmation; this session runs under the unattended QA profile.",
   ].join(" "),
   "craftax-eval": [
@@ -53,6 +55,7 @@ const WORKFLOWS = {
     "chat-owned live visual, and poll all work to terminal. Report the candidate count, exact",
     "rollout count (exactly 10), reward distribution, trace count (exactly 10 retained traces), concurrency evidence, elapsed time, and",
     "visual id. Do not substitute fixtures or a hand-written summary. Do not ask for confirmation.",
+    "If admission is blocked, copy the structured blocker code, owner, retryable value, and explicitly state that no run ID or rollout records were created.",
   ].join(" "),
 };
 
@@ -79,6 +82,19 @@ function validateWorkflow(workflow, terminal) {
     }
   }
   if (workflow === "healthbench-smoke") {
+    // Missing credentials are an expected *admission* outcome in the
+    // credential-readiness lane. Treat it as green only when the response is
+    // structured and identifies the owning HealthBench lane; generic prose or
+    // a partially-created run remains red.
+    if (/credential_missing/i.test(text)) {
+      if (!/healthbench\.(?:policy|grader)/i.test(text)) {
+        throw new Error("healthbench credential blocker is missing its lane owner");
+      }
+      if (/run id\s*[:=]\s*(?!`?(?:none|no|null)\b)[`\w-]+/i.test(text)) {
+        throw new Error("healthbench created a run despite credential preflight failure");
+      }
+      return;
+    }
     if (/could not run|blocked before|unhealthy|failed(?: to start| during)|status:\s*`?failed/i.test(text)) {
       throw new Error(`healthbench-smoke failed: ${text.replace(/\s+/g, " ").trim()}`);
     }
@@ -87,6 +103,18 @@ function validateWorkflow(workflow, terminal) {
     }
   }
   if (workflow === "craftax-eval") {
+    if (/dependency_unavailable|target image[^\n]*(?:not present locally|unresolvable|manifest unknown)/i.test(text)) {
+      if (!/eval\.craftax\.code-policy\.smoke\.v1/.test(text)) {
+        throw new Error("craftax image blocker is missing the exact requested recipe id");
+      }
+      if (/\bgepa\.craftax\./.test(text)) {
+        throw new Error("craftax-eval substituted a GEPA recipe");
+      }
+      if (/run id\s*[:=]\s*(?!`?(?:none|no|null)\b)[`\w-]+/i.test(text)) {
+        throw new Error("craftax created a run despite target-image preflight failure");
+      }
+      return;
+    }
     if (/could not run|blocked before|unhealthy|failed(?: to start| during)|status:\s*`?failed/i.test(text)) {
       throw new Error(`craftax-eval failed: ${text.replace(/\s+/g, " ").trim()}`);
     }

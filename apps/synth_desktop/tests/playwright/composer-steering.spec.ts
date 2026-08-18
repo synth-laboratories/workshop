@@ -73,7 +73,17 @@ async function bootSteeringApp(page: Page, behavior: SteerBehavior) {
 				},
 				interrupt: async () => undefined,
 				close: async () => undefined,
-				onEvent: () => () => undefined
+				onEvent: (listener: (event: { sessionId: string; method: string; params: Record<string, unknown> }) => void) => {
+					// A persisted `running` row is intentionally not enough to own a
+					// live turn after crash recovery. Steering is available only after
+					// the attached provider stream proves this process owns the turn.
+					const timer = window.setTimeout(() => listener({
+						sessionId,
+						method: "turn/started",
+						params: { turnId: "turn-steering" }
+					}), 100);
+					return () => window.clearTimeout(timer);
+				}
 			};
 			window.localStorage.setItem(
 				"synth.preferences.v1",
@@ -86,6 +96,7 @@ async function bootSteeringApp(page: Page, behavior: SteerBehavior) {
 	await page.getByTestId(`local-chat-${SESSION_ID}`).click();
 	const composer = page.getByTestId("composer-input");
 	await expect(composer).toBeEnabled();
+	await expect(page.getByRole("button", { name: "Stop generating" })).toBeVisible();
 	return composer;
 }
 

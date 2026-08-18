@@ -14,6 +14,7 @@ const PHASE_LABELS: Record<string, string> = {
 	downloading: "Downloading",
 	verifying: "Verifying",
 	installed: "Installed",
+	needs_permissions: "Needs permission",
 	starting: "Starting",
 	ready: "Ready",
 	stopping: "Stopping",
@@ -107,6 +108,26 @@ export function pluginPresentation(status?: PluginStatus | null): PluginPresenta
 		return {
 			label: "Not installed", tone: "neutral", isUsable: false, isTransitional: false, activeRuns,
 			a11yLabel: "Not installed", detail: status.detail ?? null
+		};
+	}
+
+	// Installed, but the OS has not said yes yet. Warning rather than danger:
+	// nothing is broken, and the fix is one pane away in System Settings.
+	if (phase === "needs_permissions") {
+		const missing = (status.permissions ?? [])
+			.filter((permission) => permission.state !== "granted" && permission.state !== "not_applicable")
+			.map((permission) => permission.label);
+		return {
+			label: "Needs permission",
+			tone: "warning",
+			isUsable: false,
+			isTransitional: false,
+			activeRuns,
+			// Naming the grant is what makes this actionable. "Needs permission"
+			// on its own sends the operator hunting through Privacy & Security.
+			a11yLabel:
+				missing.length > 0 ? `Needs permission: ${missing.join(", ")}` : "Needs permission",
+			detail: status.detail ?? null
 		};
 	}
 
