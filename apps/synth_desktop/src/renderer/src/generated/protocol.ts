@@ -581,13 +581,11 @@ export type BackendSettings = {
 	openrouterApiKeyConfigured: boolean,
 	openrouterApiKeyFingerprint: string | null,
 	openrouterApiKeySource: string | null,
-	defaultModel?: DefaultModelSettings,
-};
-
-export type DefaultModelSettings = {
-	model: string,
-	effort: string,
-	providers: string[],
+	/**
+	 *  `[models.default]` from Workshop's config.toml. Provider order is a
+	 *  fallback chain, not a request to silently change providers mid-turn.
+	 */
+	defaultModel: DefaultModelSettings,
 };
 
 export type BackendSettingsUpdate = {
@@ -887,6 +885,12 @@ export type DataCounts = {
 	containers: unknown,
 	traces: unknown,
 	usage: unknown,
+};
+
+export type DefaultModelSettings = {
+	model: string,
+	effort: string,
+	providers: string[],
 };
 
 export type DesktopPermissionSettings = {
