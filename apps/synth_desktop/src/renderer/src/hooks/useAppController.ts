@@ -406,12 +406,10 @@ export function useAppController() {
 
 	useEffect(() => {
 		const refreshOauthStatus = () => {
-			// A packaged or named CUA instance may start from an expired but
-			// refreshable canonical Codex credential. Refresh it during startup so
-			// the passwordless instance contract is true before the model picker is
-			// shown; waiting until the first send incorrectly presents Sol/Luna/Terra
-			// as unavailable and sends the operator into the full re-auth flow.
-			void bridges.codexOauth?.ensureReady().then((status) => {
+			// Startup performs a passive read of Workshop's private credential file.
+			// Network refresh is deferred until the user selects a ChatGPT model or
+			// explicitly opens account settings.
+			void bridges.codexOauth?.status().then((status) => {
 				setCodexOauthStatus(status);
 				setCodexOauthConfigured(status.canUseModels);
 			}).catch(() => undefined);

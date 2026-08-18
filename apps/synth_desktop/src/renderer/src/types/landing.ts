@@ -209,7 +209,7 @@ export type LandingState = {
 	apiKeyConfigured?: boolean;
 	/** OpenRouter API key present — gates direct OpenRouter models. Boolean only; never the secret. */
 	openrouterApiKeyConfigured?: boolean;
-	/** ChatGPT subscription OAuth present in the native keychain. */
+	/** ChatGPT subscription OAuth present in Workshop's private credential file. */
 	codexOauthConfigured?: boolean;
 	/** Rust-owned ChatGPT auth state and recovery instructions. */
 	codexOauthStatus?: import("../bridge").CodexOauthStatus;

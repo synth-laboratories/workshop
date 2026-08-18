@@ -225,7 +225,7 @@ const CHANGELOG = [
 				label: "Fixed",
 				items: [
 					"Sequence diagrams render multiline labels instead of showing literal break markup, and wide diagrams no longer open clipped offscreen.",
-					"Named development instances can use an explicit read-only Codex auth file without creating or opening a Keychain credential prompt."
+					"Installed and development instances keep ChatGPT authorization in a private Workshop-owned file and never invoke the macOS Keychain."
 				]
 			}
 		]

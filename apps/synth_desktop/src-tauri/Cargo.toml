@@ -28,7 +28,6 @@ fs2 = "0.4"
 http-body-util = "0.1"
 hyper = { version = "1", features = ["http1", "server"] }
 hyper-util = { version = "0.1", features = ["tokio"] }
-keyring = { version = "3", features = ["apple-native", "windows-native", "sync-secret-service"] }
 libc = "0.2"
 mermaid-to-svg = { path = "third_party/mermaid-to-svg" }
 portable-pty = "0.9"
