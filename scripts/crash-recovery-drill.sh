@@ -19,7 +19,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 CHECKPOINT="${1:-}"
 NAME="${2:-codex}"
-RELEASE_SLUG="v04"
+RELEASE_SLUG="v05"
 INSTANCE_ROOT="${SYNTH_DESKTOP_INSTANCES_ROOT:-$HOME/.synth-desktop/instances}/$RELEASE_SLUG/$NAME"
 DB="$INSTANCE_ROOT/data/synth.sqlite3"
 THREADS="$INSTANCE_ROOT/codex/threads.json"

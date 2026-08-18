@@ -10,7 +10,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 COMMAND="${1:-help}"
 NAME="${2:-qa}"
-INSTANCE_ROOT="${SYNTH_DESKTOP_INSTANCES_ROOT:-$HOME/.synth-desktop/instances}/v04/$NAME"
+INSTANCE_ROOT="${SYNTH_DESKTOP_INSTANCES_ROOT:-$HOME/.synth-desktop/instances}/v05/$NAME"
 DATA_ROOT="$INSTANCE_ROOT/data"
 RECEIPT_ROOT="$INSTANCE_ROOT/qa-receipts"
 DRIVER_DESCRIPTOR="$DATA_ROOT/eval-driver.json"
