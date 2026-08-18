@@ -43,6 +43,8 @@ const WORKFLOWS = {
     "optimizer workflow with its live chat visual, poll the run all the way to terminal,",
     "and report the run id, required and completed rollout counts, final score, separate",
     "policy and grader usage lanes, cost, and visual id. Do not substitute a hand-built eval.",
+    "If admission is blocked, copy the structured blocker code, owner, retryable value, and",
+    "explicitly state that no run ID or rollout records were created.",
     "Do not ask for confirmation; this session runs under the unattended QA profile.",
   ].join(" "),
   "craftax-eval": [

@@ -1231,23 +1231,43 @@ fn optimizer_project_root() -> Result<Option<PathBuf>> {
 fn optimizer_command(home: &Path, version: &str) -> Result<Command> {
     validate_version_id(version)?;
     if developer_uv_mode()? {
+        if let Some(project) = optimizer_project_root()? {
+            // `uv run` is a launcher, not the workload authority. Tracking it
+            // as the recipe leader lets the shim exit or receive SIGTERM while
+            // the real Python child survives re-parented; Workshop then seals
+            // a false failed run and leaks paid compute. Prepared QA/dev
+            // projects already have an immutable venv, so supervise its real
+            // executable directly and keep PID/process-group ownership honest.
+            return developer_project_command(&project);
+        }
         let uv = resolve_uv()?;
         let mut command = Command::new(uv);
-        if let Some(project) = optimizer_project_root()? {
-            command.args(["run", "--project"]).arg(project);
-        } else {
-            command.args([
-                "run",
-                "--no-project",
-                "--with",
-                &format!("synth-optimizers=={version}"),
-            ]);
-        }
+        command.args([
+            "run",
+            "--no-project",
+            "--with",
+            &format!("synth-optimizers=={version}"),
+        ]);
         command.arg("synth-optimizers");
         return Ok(command);
     }
     let bin = installed_runtime_bin(home, version)?;
     Ok(Command::new(bin))
+}
+
+fn developer_project_command(project: &Path) -> Result<Command> {
+    for candidate in [
+        project.join(".venv/bin/synth-optimizers"),
+        project.join(".venv/Scripts/synth-optimizers.exe"),
+    ] {
+        if candidate.is_file() {
+            return Ok(Command::new(candidate));
+        }
+    }
+    bail!(
+        "developer optimizer project {} has no prepared .venv runtime; run uv sync before launching Workshop",
+        project.display()
+    )
 }
 
 fn optimizer_gepa_home(home: &Path) -> PathBuf {
@@ -1339,7 +1359,10 @@ fn launch_gepa_recipe_process(
             if let Some(inherited) = env::var_os("PATH") {
                 paths.extend(env::split_paths(&inherited));
             }
-            command.env("PATH", env::join_paths(paths).context("build GEPA Codex PATH")?);
+            command.env(
+                "PATH",
+                env::join_paths(paths).context("build GEPA Codex PATH")?,
+            );
         }
         let resolved = codex_bin.canonicalize().unwrap_or(codex_bin);
         if let Some(package_root) = resolved.parent().and_then(Path::parent) {
@@ -2549,6 +2572,26 @@ mod tests {
     fn manager() -> (OptimizerManager, tempfile::TempDir) {
         let dir = tempfile::tempdir().unwrap();
         (OptimizerManager::with_home(dir.path().to_path_buf()), dir)
+    }
+
+    #[test]
+    fn developer_project_supervises_real_venv_executable() {
+        let dir = tempfile::tempdir().unwrap();
+        let bin = dir.path().join(".venv/bin");
+        fs::create_dir_all(&bin).unwrap();
+        let executable = bin.join("synth-optimizers");
+        fs::write(&executable, b"prepared optimizer runtime").unwrap();
+
+        let command = developer_project_command(dir.path()).unwrap();
+        assert_eq!(Path::new(command.as_std().get_program()), executable);
+        assert_ne!(command.as_std().get_program(), std::ffi::OsStr::new("uv"));
+    }
+
+    #[test]
+    fn developer_project_without_prepared_runtime_fails_closed() {
+        let dir = tempfile::tempdir().unwrap();
+        let error = developer_project_command(dir.path()).unwrap_err();
+        assert!(error.to_string().contains("uv sync"));
     }
 
     #[tokio::test]
