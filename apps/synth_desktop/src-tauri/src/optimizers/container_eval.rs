@@ -84,6 +84,20 @@ struct EvalSpec {
     heldout: &'static [i64],
 }
 
+impl EvalSpec {
+    /// Does this family's rollout need a provider credential the container
+    /// holds? If so, a container that cannot report credential readiness is not
+    /// admissible: the run would spend its wall-clock and settle with a failure
+    /// per rollout rather than a refusal before the first one.
+    ///
+    /// Banking77's policy is served by the container against a pinned,
+    /// advertised config; HealthBench calls a provider for both the policy and
+    /// the grader, and needs a key for each.
+    fn requires_credential_advertisement(&self) -> bool {
+        self.family == "healthbench"
+    }
+}
+
 const BANKING77_TRAIN: [i64; 10] = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9];
 const HEALTHBENCH_TRAIN: [i64; 2] = [0, 1];
 const HEALTHBENCH_HELDOUT: [i64; 2] = [100, 101];
@@ -304,10 +318,34 @@ async fn preflight_container_credentials(container: &ReadyContainer, spec: EvalS
         .json::<Value>()
         .await
         .with_context(|| format!("decode {} credential preflight", spec.family))?;
-    let Some(roles) = info
+    let roles = info
         .pointer("/metadata/model_roles")
-        .and_then(Value::as_object)
-    else {
+        .and_then(Value::as_object);
+    let Some(roles) = roles else {
+        // A family whose rollouts cannot run without a provider credential is
+        // not admitted by a container that cannot say whether it has one.
+        // Treating silence as readiness is what produced 4/4 terminal traces
+        // with every rollout failing `openai_api_key_missing`: the pinned
+        // Containers dev build (ac43172) emits no `model_roles` at all, so a
+        // check that passes on absence passes on exactly the build in use.
+        //
+        // Families that need no credential are unaffected — there is nothing
+        // for them to advertise.
+        if spec.requires_credential_advertisement() {
+            bail!(
+                "{}",
+                json!({
+                    "code": "credential_readiness_unavailable",
+                    "contract": format!("{}.credentials", spec.family),
+                    "owner": spec.family,
+                    "retryable": true,
+                    "message": format!(
+                        "the registered {} container does not advertise metadata.model_roles, so its credential readiness cannot be verified before dispatch; register a container that reports credential readiness by lane",
+                        spec.family
+                    ),
+                })
+            );
+        }
         return Ok(());
     };
     // Sorted so the refusal names the same lane every time for a container
@@ -1398,6 +1436,9 @@ mod tests {
         extra_cost_usd: Option<f64>,
         policy_credential_present: bool,
         grader_credential_present: bool,
+        /// False models the pinned Containers dev build (ac43172), which emits
+        /// no `metadata.model_roles` at all.
+        advertises_model_roles: bool,
     }
 
     async fn spawn_eval_mock(
@@ -1417,6 +1458,7 @@ mod tests {
             extra_cost_usd: None,
             policy_credential_present: true,
             grader_credential_present: true,
+            advertises_model_roles: true,
         })
         .await
     }
@@ -1449,7 +1491,7 @@ mod tests {
                                     "model": "openai/gpt-4.1-nano"
                                 }]
                             }) } else { json!({}) },
-                            "metadata": if family == "healthbench" { json!({
+                            "metadata": if family == "healthbench" && opts.advertises_model_roles { json!({
                                 "model_roles": {
                                     "policy": {
                                         "api_key_env": "OPENAI_API_KEY",
@@ -2168,6 +2210,7 @@ mod tests {
             extra_cost_usd: None,
             policy_credential_present: false,
             grader_credential_present: true,
+            advertises_model_roles: true,
         })
         .await;
         let (svc, _dir, _) = service().await;
@@ -2183,6 +2226,79 @@ mod tests {
         task.abort();
     }
 
+    /// The integration gap between this lane and the pinned runtime.
+    ///
+    /// Workshop's preflight reads `metadata.model_roles`, which Containers only
+    /// began advertising in `e141545` — a commit that is not on `origin/dev`,
+    /// so the pinned build (`ac43172`, 0.4.1.dev20260817) emits nothing. A
+    /// preflight that treats silence as readiness therefore passes on exactly
+    /// the build in use, and the run settles 4/4 terminal traces with every
+    /// rollout failing `openai_api_key_missing`. Silence is refused instead.
+    #[tokio::test]
+    async fn healthbench_admission_refuses_a_container_that_cannot_report_credential_readiness() {
+        let (base, task, starts) = spawn_eval_mock_opts(MockEvalOptions {
+            family: "healthbench",
+            rewards: BTreeMap::new(),
+            policy_status: 200,
+            policy_config_id: "openai_gpt41_mini".into(),
+            fail_seeds: BTreeSet::new(),
+            extra_cost_usd: None,
+            policy_credential_present: true,
+            grader_credential_present: true,
+            advertises_model_roles: false,
+        })
+        .await;
+        let (svc, _dir, _) = service().await;
+        insert_container(&svc, "healthbench", &base, "ready").await;
+        let error = svc
+            .start_recipe(recipe(HEALTHBENCH_EVAL_SMOKE_RECIPE, "sess_no_roles"))
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("credential_readiness_unavailable"), "{error}");
+        assert!(error.contains("model_roles"), "{error}");
+        assert_eq!(
+            starts.load(Ordering::SeqCst),
+            0,
+            "not one rollout may be dispatched"
+        );
+        task.abort();
+    }
+
+    /// Banking77 needs no advertised credential lane: its policy is served by
+    /// the container against a pinned, advertised config. The refusal above
+    /// must not spread to it.
+    #[tokio::test]
+    async fn banking77_admission_does_not_require_advertised_credential_lanes() {
+        let mut rewards = BTreeMap::new();
+        for seed in 0..10 {
+            rewards.insert(("train".to_string(), seed), 1.0);
+        }
+        let (base, task, _) = spawn_eval_mock_opts(MockEvalOptions {
+            family: "banking77",
+            rewards,
+            policy_status: 200,
+            policy_config_id: "banking77_gpt_4_1_nano".into(),
+            fail_seeds: BTreeSet::new(),
+            extra_cost_usd: None,
+            policy_credential_present: true,
+            grader_credential_present: true,
+            advertises_model_roles: false,
+        })
+        .await;
+        let (svc, _dir, _) = service().await;
+        insert_container(&svc, "banking77", &base, "ready").await;
+        let started = svc
+            .start_recipe(recipe(BANKING77_EVAL_BASELINE_RECIPE, "sess_b77_no_roles"))
+            .await;
+        assert!(
+            started.is_ok(),
+            "banking77 must still admit: {:?}",
+            started.err()
+        );
+        task.abort();
+    }
+
     #[tokio::test]
     async fn healthbench_admission_blocks_before_dispatch_when_grader_credential_is_missing() {
         let (base, task, starts) = spawn_eval_mock_opts(MockEvalOptions {
@@ -2194,6 +2310,7 @@ mod tests {
             extra_cost_usd: None,
             policy_credential_present: true,
             grader_credential_present: false,
+            advertises_model_roles: true,
         })
         .await;
         let (svc, _dir, _) = service().await;
@@ -2254,6 +2371,7 @@ mod tests {
             extra_cost_usd: None,
             policy_credential_present: true,
             grader_credential_present: true,
+            advertises_model_roles: true,
         })
         .await;
         let (svc, _dir, _) = service().await;
@@ -2279,6 +2397,7 @@ mod tests {
             extra_cost_usd: None,
             policy_credential_present: true,
             grader_credential_present: true,
+            advertises_model_roles: true,
         })
         .await;
         let (svc, _dir, _) = service().await;
@@ -2308,6 +2427,7 @@ mod tests {
             extra_cost_usd: None,
             policy_credential_present: true,
             grader_credential_present: true,
+            advertises_model_roles: true,
         })
         .await;
         let (svc, _dir, _) = service().await;
@@ -2340,6 +2460,7 @@ mod tests {
             extra_cost_usd: Some(0.50),
             policy_credential_present: true,
             grader_credential_present: true,
+            advertises_model_roles: true,
         })
         .await;
         let (svc, _dir, _) = service().await;
