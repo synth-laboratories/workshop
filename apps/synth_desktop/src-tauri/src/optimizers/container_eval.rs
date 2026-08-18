@@ -498,7 +498,7 @@ async fn run_eval_worker(
         }
         _ => json!({}),
     };
-    let policy_pin = register_policy_pin(&client, &container.base_url, spec).await?;
+    let policy_pin = register_policy_pin(&client, &container.base_url, spec, &info).await?;
     persist_policy_pin(&service, &run_id, &policy_pin).await?;
     let scale_leases = info
         .get("scale_leases")
@@ -730,8 +730,40 @@ async fn register_policy_pin(
     client: &reqwest::Client,
     base: &str,
     spec: EvalSpec,
+    container_info: &Value,
 ) -> Result<Value> {
     let pin = json!({ "harness": spec.harness, "config": spec.policy_config });
+    // Banking77 owns an immutable, already-registered policy. Its public
+    // service advertises that exact identity and intentionally has no mutable
+    // `/policy-configs` route. Requiring a registration POST here made a
+    // healthy packaged run fail with a guaranteed 404 before its first
+    // rollout. Verify the advertised identity instead; do not pretend a
+    // mutable route exists and do not accept a similarly named substitute.
+    if spec.family == "banking77" {
+        let advertised = container_info
+            .pointer("/capabilities/policy_refs")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .any(|entry| {
+                entry.get("harness").and_then(Value::as_str) == Some(spec.harness)
+                    && entry.get("config").and_then(Value::as_str) == Some(spec.policy_config)
+            });
+        if !advertised {
+            bail!(
+                "container does not advertise the exact immutable policy {}/{}",
+                spec.harness,
+                spec.policy_config
+            );
+        }
+        return Ok(json!({
+            "harness": spec.harness,
+            "config": spec.policy_config,
+            "configId": spec.policy_config,
+            "immutable": true,
+            "authority": "container_advertisement",
+        }));
+    }
     let Some(body) = spec.policy_config_body() else {
         return Ok(pin);
     };
