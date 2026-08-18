@@ -317,6 +317,14 @@ function TemplateVisualHost({ artifact }: { artifact: ArtifactRef }) {
 		}),
 		[artifact.id, artifact.visualId, artifact.revision]
 	);
+	const optimizerRunId = isVisualBindings(artifact.bindings)
+		? artifact.bindings.slots.find(
+			(entry) => entry.slot === "optimizer_run" && entry.kind === "optimizer_run"
+		)?.source
+		: undefined;
+	const templateDigest = typeof artifact.metadata?.templateDigest === "string"
+		? artifact.metadata.templateDigest
+		: undefined;
 
 	useEffect(() => {
 		if (resolvedBindings.status === "canonical") return;
@@ -524,9 +532,6 @@ function TemplateVisualHost({ artifact }: { artifact: ArtifactRef }) {
 	 * the run behind it remain joinable by visual id.
 	 */
 	useEffect(() => {
-		const bindings = artifact.bindings as { slots?: Array<{ slot?: string; kind?: string; source?: string }> } | undefined;
-		const slot = bindings?.slots?.find((entry) => entry.slot === "optimizer_run" && entry.kind === "optimizer_run");
-		const optimizerRunId = slot?.source;
 		if (!optimizerRunId) {
 			setOptimizerPayload(null);
 			setOptimizerLoadError(null);
@@ -609,13 +614,11 @@ function TemplateVisualHost({ artifact }: { artifact: ArtifactRef }) {
 					templateId: artifact.templateId ?? "optimizer.run.v1",
 					replayedThrough: snapshot.cursor,
 					subscribedFrom: snapshot.cursor + 1,
-					templateDigest: typeof artifact.metadata?.templateDigest === "string"
-						? artifact.metadata.templateDigest
-						: undefined
+					templateDigest
 				}).catch(() => undefined);
 			}
 		});
-	}, [artifact.bindings, artifact.id, artifact.templateId, artifact.metadata, visualIdentity]);
+	}, [artifact.id, artifact.templateId, optimizerRunId, templateDigest, visualIdentity]);
 
 	const boundRun = optimizerPayload?.run as { id?: string; algorithmId?: string } | undefined;
 	const boundRunId = boundRun?.algorithmId === "gepa" ? boundRun.id ?? null : null;

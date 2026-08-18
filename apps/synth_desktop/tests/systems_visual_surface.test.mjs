@@ -70,14 +70,16 @@ test("systems authoring requires screenshot-backed collision and density review"
 
 test("visual MCP exposes image-backed review capture", () => {
 	const mcp = readFileSync(new URL("../src-tauri/src/bin/synth_visuals_mcp.rs", import.meta.url), "utf8");
+	const ipc = readFileSync(new URL("../src-tauri/src/visuals_ipc.rs", import.meta.url), "utf8");
 	const stdio = readFileSync(new URL("../src-tauri/src/ipc/mcp_stdio.rs", import.meta.url), "utf8");
 	assert.match(mcp, /capture_review/);
 	assert.match(mcp, /visual_capture_review/);
 	assert.match(mcp, /screenshot_path/);
 	assert.match(mcp, /_mcpImage/);
 	assert.match(mcp, /deterministic-svg/);
-	assert.match(mcp, /desktop-window/);
-	assert.match(mcp, /screencapture/);
+	assert.match(mcp, /\/v1\/review-window\/capture/);
+	assert.match(ipc, /\/v1\/review-window\/capture/);
+	assert.doesNotMatch(mcp, /\/usr\/sbin\/screencapture/);
 	assert.match(stdio, /"type": "image"/);
 	assert.match(stdio, /object\.remove\("_mcpImage"\)/);
 });
