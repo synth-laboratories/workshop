@@ -8,11 +8,21 @@
   "accent": "#F05F22",
   "shell": "shell.tsx",
   "tags": ["trace-v5", "rollout", "evidence", "tools"],
+  "observationContract": {
+    "schemaVersion": "synth.visual-observation-contract.v1",
+    "readiness": {
+      "rejectTransportStates": ["idle", "declared", "replaying", "error", "connecting", "reconnecting"],
+      "minimumRolloutCount": 1,
+      "minimumRenderedFrameCount": 0,
+      "minimumSemanticEventCount": 1,
+      "requireTerminal": true
+    }
+  },
   "slots": [
     {
       "name": "projection",
       "description": "Canonical synth.trace-projection.rollout-inspector.v1 payload",
-      "accepts": ["inline", "trace_v5", "local_cas"],
+      "accepts": ["inline", "trace_v5"],
       "required": true,
       "schema": "synth.trace-projection.rollout-inspector.v1"
     }

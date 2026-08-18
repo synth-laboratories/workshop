@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { bridges } from "../runtime/desktopBridge";
+import { publicError } from "../runtime/publicError";
 
 export function WorkspaceAccessSettings() {
 	const [roots, setRoots] = useState<string[]>([]);
@@ -14,7 +15,7 @@ export function WorkspaceAccessSettings() {
 				setRoots(settings.allowedRoots);
 				setSavedRoots(settings.allowedRoots);
 			})
-			.catch((reason) => setError(reason instanceof Error ? reason.message : String(reason)))
+			.catch((reason) => setError(publicError(reason)))
 			.finally(() => setBusy(false));
 	}, []);
 
@@ -25,7 +26,7 @@ export function WorkspaceAccessSettings() {
 			const path = await bridges.desktop.chooseWorkspaceDirectory();
 			if (path) setRoots((current) => current.includes(path) ? current : [...current, path]);
 		} catch (reason) {
-			setError(reason instanceof Error ? reason.message : String(reason));
+			setError(publicError(reason));
 		}
 	}, []);
 
@@ -41,7 +42,7 @@ export function WorkspaceAccessSettings() {
 				setSaved(true);
 			}
 		} catch (reason) {
-			setError(reason instanceof Error ? reason.message : String(reason));
+			setError(publicError(reason));
 		} finally {
 			setBusy(false);
 		}

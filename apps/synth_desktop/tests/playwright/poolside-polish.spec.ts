@@ -293,7 +293,12 @@ test.describe("steer and enqueue", () => {
 				steerTurn: async (sessionId: string, text: string) => { calls.push({ sessionId, text }); },
 				interrupt: async () => undefined,
 				close: async () => undefined,
-				onEvent: () => () => undefined
+				onEvent: (listener: (event: { sessionId: string; method: string; params: Record<string, unknown> }) => void) => {
+					const timer = window.setTimeout(() => listener({
+						sessionId: "steer-session", method: "turn/started", params: { turnId: "turn-steer" }
+					}), 100);
+					return () => window.clearTimeout(timer);
+				}
 			};
 			window.localStorage.setItem("synth.preferences.v1", JSON.stringify({
 				schemaVersion: 1,
@@ -304,13 +309,15 @@ test.describe("steer and enqueue", () => {
 		await page.reload();
 		await page.getByTestId("local-chat-steer-session").click();
 		await expect(page.getByTestId("composer-input")).toBeEnabled();
+		await expect(page.getByRole("button", { name: "Stop generating" })).toBeVisible();
 		const supported = await page.evaluate(() => Boolean((window as typeof window & { synthCodex?: { steerTurn?: unknown } }).synthCodex?.steerTurn));
 		expect(supported).toBe(true);
 		await page.getByTestId("composer-input").fill("nudge the active turn");
 		await page.getByTestId("composer-input").press("Enter");
 		await expect(page.getByTestId("composer-input")).toHaveValue("");
-		const calls = await page.evaluate(() => (window as typeof window & { __steerCalls?: Array<{ sessionId: string; text: string }> }).__steerCalls ?? []);
-		expect(calls).toEqual([{ sessionId: "steer-session", text: "nudge the active turn" }]);
+		await expect.poll(() => page.evaluate(() =>
+			(window as typeof window & { __steerCalls?: Array<{ sessionId: string; text: string }> }).__steerCalls ?? []
+		)).toEqual([{ sessionId: "steer-session", text: "nudge the active turn" }]);
 		const queued = page.getByRole("textbox", { name: "Queued prompt 1" });
 		await queued.press("Enter");
 		await expect(page.getByTestId("prompt-queue")).toContainText("Return again to steer now");
@@ -339,13 +346,21 @@ test.describe("steer and enqueue", () => {
 				start: async () => ({ sessionId: "composer-steer-session", threadId: "thread-steer" }),
 				startTurn: async () => ({ sessionId: "composer-steer-session", threadId: "thread-steer", turnId: "turn-steer" }),
 				steerTurn: async (sessionId: string, text: string) => { calls.push({ sessionId, text }); },
-				interrupt: async () => undefined, close: async () => undefined, onEvent: () => () => undefined
+				interrupt: async () => undefined,
+				close: async () => undefined,
+				onEvent: (listener: (event: { sessionId: string; method: string; params: Record<string, unknown> }) => void) => {
+					const timer = window.setTimeout(() => listener({
+						sessionId: "composer-steer-session", method: "turn/started", params: { turnId: "turn-steer" }
+					}), 100);
+					return () => window.clearTimeout(timer);
+				}
 			};
 			window.localStorage.setItem("synth.preferences.v1", JSON.stringify({ schemaVersion: 1, submission: { activeEnterAction: "enqueue" } }));
 		});
 		await page.reload();
 		await page.getByTestId("local-chat-composer-steer-session").click();
 		const composer = page.getByTestId("composer-input");
+		await expect(page.getByRole("button", { name: "Stop generating" })).toBeVisible();
 		await composer.fill("steer without queue focus");
 		await composer.press("Enter");
 		await expect(page.getByTestId("prompt-queue")).toContainText("Return again to steer now");

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import type { LagunaModelHit } from "../bridge";
 import { bridges } from "../runtime/desktopBridge";
+import { publicError } from "../runtime/publicError";
 
 function formatBytes(bytes: number): string {
 	if (!Number.isFinite(bytes) || bytes <= 0) return "0 B";
@@ -19,7 +20,7 @@ export function ModelLocationsSettings() {
 		try {
 			setHits(await bridges.laguna?.listModels() ?? []);
 		} catch (reason) {
-			setError(reason instanceof Error ? reason.message : String(reason));
+			setError(publicError(reason));
 		} finally {
 			setBusy(false);
 		}
@@ -36,7 +37,7 @@ export function ModelLocationsSettings() {
 			await bridges.laguna?.setModelDirectory(path);
 			setHits(await bridges.laguna?.listModels() ?? []);
 		} catch (reason) {
-			setError(reason instanceof Error ? reason.message : String(reason));
+			setError(publicError(reason));
 		} finally {
 			setBusy(false);
 		}
@@ -49,7 +50,7 @@ export function ModelLocationsSettings() {
 			await bridges.laguna?.clearModelDirectory();
 			setHits(await bridges.laguna?.listModels() ?? []);
 		} catch (reason) {
-			setError(reason instanceof Error ? reason.message : String(reason));
+			setError(publicError(reason));
 		} finally {
 			setBusy(false);
 		}
@@ -82,7 +83,7 @@ export function ModelLocationsSettings() {
 								<button type="button" className="settings-secondary-btn" disabled={busy} onClick={async () => {
 									setBusy(true); setError(null);
 									try { await bridges.laguna?.setModelDirectory(hit.path); await refresh(); }
-									catch (reason) { setError(reason instanceof Error ? reason.message : String(reason)); setBusy(false); }
+									catch (reason) { setError(publicError(reason)); setBusy(false); }
 								}}>Use this copy</button>
 							)}
 						</div>

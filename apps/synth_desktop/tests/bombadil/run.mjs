@@ -90,6 +90,7 @@ const includeVisualContracts = specificationPath.endsWith("v0.1-visual-contracts
 const includeChatgptBranding = specificationPath.endsWith("chatgpt-branding.spec.ts");
 const includeApprovalCard = specificationPath.endsWith("approval-card.spec.ts");
 const includeGroupedVisualEvidence = specificationPath.endsWith("grouped-visual-evidence.spec.ts");
+const includeMinimumWidthReplay = specificationPath.endsWith("minimum-width-replay.spec.ts");
 // Five seconds covers every directed/eventual horizon in layout.spec.ts. Longer
 // runs intermittently wedge the current Chromiumoxide transport after the
 // properties have already been exercised, turning a clean trace into a harness
@@ -97,6 +98,8 @@ const includeGroupedVisualEvidence = specificationPath.endsWith("grouped-visual-
 const timeLimit = process.env.BOMBADIL_TIME_LIMIT
 	|| (includeComposerToolbar
 		? "45s"
+		: includeMinimumWidthReplay
+		? "20s"
 		: includeBlankWorkedTurn || includeTerminalPolish || includeVisualContracts || includeChatgptBranding || includeApprovalCard || includeGroupedVisualEvidence
 		? "10s"
 		: "5s");
@@ -154,11 +157,16 @@ async function seedVisualAlignmentFixture() {
 		headers,
 		body: JSON.stringify({
 			id: "bombadil-visual-alignment",
-			templateId: "model.compare.v1",
-			title: "Alignment comparison",
-			bindings: {},
+			templateId: includeMinimumWidthReplay ? "live.craftax.v1" : "model.compare.v1",
+			title: includeMinimumWidthReplay ? "Craftax compact replay" : "Alignment comparison",
+			bindings: includeMinimumWidthReplay
+				? {
+					schemaVersion: "synth.visual-bindings.v1",
+					slots: [{ slot: "stream", kind: "fixture", source: "examples/events.json" }]
+				}
+				: {},
 			sessionId: session.id,
-			metadata: { fixture: true, purpose: "layout-alignment" }
+			metadata: { fixture: true, purpose: includeMinimumWidthReplay ? "compact-replay" : "layout-alignment" }
 		})
 	});
 	if (!visualResponse.ok) throw new Error(`Could not seed Bombadil alignment visual (${visualResponse.status})`);
@@ -257,7 +265,7 @@ window.synthModelPerformance = {
   summaries: async () => [{
     provider: "synth-cloud",
     modelId: "openrouter/poolside/laguna-s-2.1",
-    measurementKind: "observed_stream",
+    measurementKind: "observed_stream_segment",
     sampleCount: 1,
     tpsP50: 99999,
     tpsP95: 99999,
@@ -434,7 +442,13 @@ const craftaxVisual = {
     schemaVersion: "synth.visual-bindings.v1",
     slots: [{
       slot: "stream", kind: "inline", schema: "synth.trace-stream-event.v1",
-      data: { events: [] }
+      data: {
+        events: [
+          { ts: "2026-08-13T13:58:00Z", kind: "stream.subscribed", payload: { "stream.id": "stream_craftax_w1", next_sequence: 1 } },
+          { ts: "2026-08-13T13:58:01Z", kind: "observation", payload: { text: "You see a tree.", step: 0 } },
+          { ts: "2026-08-13T13:58:02Z", kind: "action", payload: { name: "collect_wood", step: 1 } }
+        ]
+      }
     }]
   }
 };
@@ -588,7 +602,7 @@ window.synthModelPerformance = {
   summaries: async () => [{
     provider: "openrouter",
     modelId: "poolside/laguna-s-2.1",
-    measurementKind: "observed_stream",
+    measurementKind: "observed_stream_segment",
     sampleCount: 1,
     tpsP50: 99999,
     tpsP95: 99999,
@@ -748,8 +762,8 @@ const groupedCraftaxVisual = {
   bindings: {
     schemaVersion: "synth.visual-bindings.v1",
     slots: [{
-      slot: "stream", kind: "inline", schema: "synth.trace-stream-event.v1",
-      data: { events: [] }
+      slot: "stream", kind: "fixture", source: "examples/events.json",
+      schema: "synth.trace-stream-event.v1"
     }]
   },
   sessionId: "v02-grouped-visual-session", messageId: "asst-w1", runId: "turn-w1-craftax",

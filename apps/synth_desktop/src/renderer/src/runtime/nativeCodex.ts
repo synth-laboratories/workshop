@@ -113,9 +113,14 @@ export function restoreCodexSession(value: PersistedCodexSession): Session {
 	const allowedStatuses = new Set<Session["status"]>([
 		"created", "ready", "running", "waiting_for_input", "paused", "interrupted", "completed", "failed", "cancelled", "configuration_required"
 	]);
-	const status = allowedStatuses.has(value.status as Session["status"])
+	const persisted = allowedStatuses.has(value.status as Session["status"])
 		? value.status as Session["status"]
 		: "ready";
+	// Belt and braces. The host reconciles this cache before it can be listed,
+	// so a `running` record should be impossible here — but a restored session
+	// has no live owner by construction, and this is the last place a stale
+	// status could turn into a Working spinner.
+	const status = persisted === "running" ? "interrupted" : persisted;
 	return {
 		id: value.sessionId,
 		title: value.title || (local ? "Laguna XS" : value.model),
@@ -135,7 +140,8 @@ export function restoreCodexSession(value: PersistedCodexSession): Session {
 			sandbox: value.sandbox,
 			approvalMode: approvalModeFromConfig(value.approvalPolicy, value.sandbox),
 			...(value.presentationEmotion ? { presentationEmotion: value.presentationEmotion } : {}),
-			...(value.presentationSummary ? { presentationSummary: value.presentationSummary } : {})
+			...(value.presentationSummary ? { presentationSummary: value.presentationSummary } : {}),
+			...(value.recovery ? { recovery: value.recovery } : {})
 		}
 	};
 }

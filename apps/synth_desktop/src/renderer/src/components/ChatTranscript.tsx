@@ -11,7 +11,9 @@ import {
 	type ToolActivityMode
 } from "../preferences";
 import { contextCompactionTokenSummary } from "../runtime/sessionView";
+import { runProgressItemsByMessage } from "../runtime/runProgress/transcript";
 import { useTurnPerformanceLabels } from "../hooks/useTurnPerformanceLabels";
+import { RunProgressCard } from "./runProgress/RunProgressCard";
 import "./PaidComputeApprovalModal.css";
 
 type Props = {
@@ -661,6 +663,10 @@ export function ChatTranscript({
 	const containerIds = outputContainerIds(chat);
 	const hasResources = containerIds.length > 0 || artifacts.length > 0;
 	const turnTpsLabels = useTurnPerformanceLabels(chat, events, running);
+	// One card per run, anchored to the turn that first referenced it. Recomputed
+	// from activity rather than stored, so a reopened conversation reconstructs
+	// the same placement from its durable events.
+	const runProgressByMessage = useMemo(() => runProgressItemsByMessage(chat), [chat]);
 	const finalAssistantMessageId = useMemo(() => {
 		for (let index = chat.messages.length - 1; index >= 0; index -= 1) {
 			if (chat.messages[index]?.role === "assistant") return chat.messages[index]!.id;
@@ -908,12 +914,20 @@ export function ChatTranscript({
 											{showAdvancedAtMessage ? <button type="button" className="message-advanced" onClick={onAdvanced} aria-label="Open advanced trace">Advanced</button> : null}
 										</div>
 										<div className="assistant-message-footer">
-											{turnTpsLabels.byMessageId[m.id] ? <small className="message-throughput" data-testid={`assistant-median-tps-${m.id}`} aria-label={`${turnTpsLabels.byMessageId[m.id]!.generation}${turnTpsLabels.byMessageId[m.id]!.worked ? `. Elapsed work time ${turnTpsLabels.byMessageId[m.id]!.worked!.slice(7)}` : ""}`}>{turnTpsLabels.byMessageId[m.id]!.generation}{turnTpsLabels.byMessageId[m.id]!.worked ? ` · ${turnTpsLabels.byMessageId[m.id]!.worked}` : ""}</small> : null}
+											{turnTpsLabels.byMessageId[m.id] ? <small className="message-throughput" data-testid={`assistant-generation-tps-${m.id}`} title={turnTpsLabels.byMessageId[m.id]!.detail ?? undefined} aria-label={`${turnTpsLabels.byMessageId[m.id]!.generation}${turnTpsLabels.byMessageId[m.id]!.worked ? `. Elapsed work time ${turnTpsLabels.byMessageId[m.id]!.worked!.slice(7)}` : ""}`}>{turnTpsLabels.byMessageId[m.id]!.generation}{turnTpsLabels.byMessageId[m.id]!.worked ? ` · ${turnTpsLabels.byMessageId[m.id]!.worked}` : ""}</small> : null}
 											<div className="message-actions"><CopyMessageButton body={m.body} /></div>
 										</div>
 									</div>
 								)}
 								{m.role === "assistant" ? renderPresented(presentedAfter, [], false, running) : null}
+								{(runProgressByMessage[m.id] ?? []).map((item) => (
+									<RunProgressCard
+										key={item.runId}
+										runId={item.runId}
+										sessionRef={chat.id}
+										onOpenFullRun={onOpenArtifact}
+									/>
+								))}
 								{messageArtifacts.map((a) => (
 									<VisualCard
 										key={a.id}
@@ -926,12 +940,20 @@ export function ChatTranscript({
 						);
 						})}
 						{renderPresented(presentedActive, [], false, running)}
+						{(runProgressByMessage.__active__ ?? []).map((item) => (
+							<RunProgressCard
+								key={item.runId}
+								runId={item.runId}
+								sessionRef={chat.id}
+								onOpenFullRun={onOpenArtifact}
+							/>
+						))}
 						{inlineApprovals.map((line) => renderActivityLine(line, [], false, false))}
 						{running ? (
 							<div className="model-working" role="status" aria-live="polite" data-testid="model-working">
 								<span className="model-working-dots" aria-hidden><i /><i /><i /></span>
 								<span>{warmingUp ? "Warming up…" : "Working…"}</span>
-								{turnTpsLabels.live ? <small className="model-working-throughput" data-testid="model-working-median-tps">{turnTpsLabels.live}</small> : null}
+								{turnTpsLabels.live ? <small className="model-working-throughput" data-testid="model-working-generation-tps">{turnTpsLabels.live}</small> : null}
 								{onStop ? <button type="button" onClick={onStop} aria-label="Stop generating">Stop</button> : null}
 								{onAdvanced ? <button type="button" onClick={onAdvanced} aria-label="Open advanced trace">Advanced</button> : null}
 							</div>

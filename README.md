@@ -117,6 +117,7 @@ Core loop: **observe → understand → modify → evaluate → fine-tune → de
 - [`workshop_style.md`](./workshop_style.md) — provisional categorical triage: unacceptable, fix-before-review, and expected-fail debt
 - [`HANDOFF_RUST_CORE_VISUALS_AND_INTERN.md`](./HANDOFF_RUST_CORE_VISUALS_AND_INTERN.md) — current Rust core / visuals / Intern SDK handoff
 - [`testing.md`](./testing.md) — Playwright, Bombadil, Rust, and runtime coverage map
+- [`docs/top_containers.md`](./docs/top_containers.md) — filepaths for Banking77, HealthBench, Craftax, Harbor, and dig.bench test containers
 - [`HANDOFF.md`](./HANDOFF.md) — full product + architecture
 - [`synth_desktop_research_eng.md`](./synth_desktop_research_eng.md) — Trace V5 / visuals / containers
 - [`apps/synth_desktop/README.md`](./apps/synth_desktop/README.md) — runbook

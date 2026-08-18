@@ -3,9 +3,10 @@
 //! Wire protocol: `synth.eval-driver.v1` (see `EVAL_DRIVER.md` beside this crate).
 //!
 //! This is product code in the same category as [`crate::visuals_ipc`]: loopback-only
-//! bind, bearer token, descriptor JSON in the instance data root. It is compiled into
-//! debug/dev builds and only spawned for named development instances. Production /
-//! release builds never listen.
+//! bind, bearer token, descriptor JSON in the instance data root. The whole module
+//! exists only behind the `eval-driver` cargo feature — production artifacts are
+//! built without it — and feature-enabled builds still require the runtime opt-in
+//! in [`should_spawn`].
 
 use crate::codex::{self, CodexManager, CodexSessionStartRequest, CodexTurnSendRequest};
 use crate::container_stream::{
@@ -20,7 +21,8 @@ use crate::storage::{EventAppend, EventSource};
 use crate::synth_config;
 use crate::trace_ingest::TraceBundleIngestRequest;
 use crate::visuals::{
-    assert_declared_stream_source, assert_live_eval_slot, classify_live_eval_family,
+    assert_declared_stream_source, assert_live_eval_slot, assert_no_live_secrets,
+    classify_live_eval_family,
     craftax_ten_lane_pins, live_sse_bindings, pending_stream_bindings, resolve_live_eval_template,
     VisualCreateRequest, VisualUpdateRequest, CRAFTAX_TEN_LANE_SEEDS,
 };
@@ -56,11 +58,10 @@ pub fn connection_path(root: &std::path::Path) -> PathBuf {
     root.join("eval-driver.json")
 }
 
-/// Named development instances only. Release/production builds never spawn.
+/// Runtime opt-in on top of the `eval-driver` compile-time feature: production
+/// artifacts are built without the feature and contain no driver at all, so
+/// this gate only chooses which feature-enabled builds actually listen.
 pub fn should_spawn() -> bool {
-    if !cfg!(debug_assertions) {
-        return false;
-    }
     crate::instance::name().is_some() || std::env::var_os("SYNTH_DESKTOP_EVAL_DRIVER").is_some()
 }
 
@@ -185,7 +186,7 @@ async fn dispatch_request(
         .authorization
         .as_deref()
         .and_then(|value| value.strip_prefix("Bearer ").map(str::trim));
-    if auth != Some(token) {
+    if !auth.is_some_and(|value| crate::ipc::constant_time_eq(value.as_bytes(), token.as_bytes())) {
         return Err(anyhow!(crate::error::Unauthorized).context("unauthorized eval driver request"));
     }
     if let Some(version) = request
@@ -295,6 +296,71 @@ async fn dispatch(method: &str, path: &str, body: Value, deps: &EvalDriverDeps) 
                 .context("wait_for_terminal requires sessionId")?;
             wait_for_terminal(core, &session_id, body).await
         }
+        ("POST", path) if path.starts_with("/v1/sessions/") && path.ends_with("/interrupt") => {
+            let session_id = path
+                .trim_start_matches("/v1/sessions/")
+                .trim_end_matches("/interrupt")
+                .trim_end_matches('/')
+                .to_string();
+            deps.codex.interrupt(deps.app.clone(), &session_id).await?;
+            Ok(json!({"ok": true, "sessionId": session_id}))
+        }
+        ("POST", path) if path.starts_with("/v1/sessions/") && path.ends_with("/steer") => {
+            let session_id = path
+                .trim_start_matches("/v1/sessions/")
+                .trim_end_matches("/steer")
+                .trim_end_matches('/')
+                .to_string();
+            let text = body
+                .get("text")
+                .or_else(|| body.get("body"))
+                .and_then(Value::as_str)
+                .context("steer requires text")?
+                .to_string();
+            deps.codex
+                .steer_turn(
+                    deps.app.clone(),
+                    codex::CodexSteerRequest {
+                        session_id: session_id.clone(),
+                        text,
+                    },
+                )
+                .await?;
+            Ok(json!({"ok": true, "sessionId": session_id}))
+        }
+        ("POST", path) if session_approval_route(path).is_some() => {
+            let (session_id, approval_id) =
+                session_approval_route(path).expect("guard checked the route");
+            let decision = body
+                .get("decision")
+                .and_then(Value::as_str)
+                .context("approval resolution requires decision")?
+                .to_string();
+            deps.codex
+                .resolve_approval(
+                    deps.app.clone(),
+                    codex::CodexApprovalDecisionRequest {
+                        session_id: session_id.clone(),
+                        approval_id: approval_id.clone(),
+                        decision,
+                    },
+                )
+                .await?;
+            Ok(json!({"ok": true, "sessionId": session_id, "approvalId": approval_id}))
+        }
+        ("POST", path) if path.starts_with("/v1/sessions/") && path.ends_with("/close") => {
+            let session_id = path
+                .trim_start_matches("/v1/sessions/")
+                .trim_end_matches("/close")
+                .trim_end_matches('/')
+                .to_string();
+            deps.codex.close(&session_id).await?;
+            Ok(json!({"ok": true, "sessionId": session_id, "status": "closed"}))
+        }
+        ("GET", "/v1/preflight") => preflight_report(),
+        ("GET", path) if path.starts_with("/v1/optimizers/runs/") && path.ends_with("/ready") => {
+            visuals_ipc::dispatch_optimizer(method, path, body, core, &deps.app).await
+        }
         ("GET", path) if path.starts_with("/v1/sessions/") && path.ends_with("/export") => {
             let session_id = path
                 .trim_start_matches("/v1/sessions/")
@@ -377,6 +443,73 @@ async fn dispatch(method: &str, path: &str, body: Value, deps: &EvalDriverDeps) 
         ("POST", "/v1/policy_preflight") => policy_preflight(deps, body).await,
         _ => bail!("unsupported eval driver route {method} {path}"),
     }
+}
+
+fn session_approval_route(path: &str) -> Option<(String, String)> {
+    let rest = path.strip_prefix("/v1/sessions/")?;
+    let (session_id, tail) = rest.split_once("/approvals/")?;
+    let approval_id = tail.trim_end_matches('/');
+    if session_id.is_empty() || session_id.contains('/') || approval_id.is_empty()
+        || approval_id.contains('/')
+    {
+        return None;
+    }
+    Some((session_id.to_string(), approval_id.to_string()))
+}
+
+/// Read-only launch-state report. The qa-unattended effective-policy contract
+/// (session profile vs machine config) extends this route rather than adding a
+/// second preflight surface.
+fn preflight_report() -> Result<Value> {
+    let permissions = synth_config::desktop_permission_settings()?;
+    let visuals_descriptor = visuals_ipc::connection_path(&crate::storage::app_data_root());
+    // Dry-run of the exact resolution a session start performs. An inherit
+    // start (no explicit values) succeeds whenever machine config parses; the
+    // unattended contract additionally requires the resolved policy to be
+    // `never`, so no provider or host approval can become interactive.
+    let effective = crate::session::approval_policy::resolve_effective(None, None);
+    let qa_unattended = match &effective {
+        Ok(profile) if profile.approval_policy == "never" => json!({
+            "wouldStart": true,
+            "reason": Value::Null,
+        }),
+        Ok(profile) => json!({
+            "wouldStart": false,
+            "reason": format!(
+                "machine approval policy is `{}`; unattended runs require `never`",
+                profile.approval_policy
+            ),
+        }),
+        Err(error) => json!({
+            "wouldStart": false,
+            "reason": format!("effective policy did not resolve: {error}"),
+        }),
+    };
+    Ok(json!({
+        "ok": true,
+        "schemaVersion": PROTOCOL_VERSION,
+        "instance": crate::instance::diagnostics(),
+        "permissions": {
+            "approvalPolicy": permissions.approval_policy,
+            "sandboxMode": permissions.sandbox_mode,
+            "configPath": permissions.config_path,
+        },
+        "effectiveProfile": effective.as_ref().ok().map(|profile| json!({
+            "approvalPolicy": profile.approval_policy,
+            "sandbox": profile.sandbox_mode,
+            "mcpToolsApprovalMode": profile.mcp_tools_approval_mode,
+            "machineConfigPath": profile.machine_config_path,
+        })),
+        "qaUnattended": qa_unattended,
+        // Auto-approval under `never` still refuses unbounded paid compute;
+        // preflight states the cap contract so a driver can assert it.
+        "paidCompute": { "requiresBoundedCap": true },
+        "visualsIpcDescriptorPresent": visuals_descriptor.exists(),
+        "optIn": {
+            "instanceName": crate::instance::name(),
+            "envVar": std::env::var_os("SYNTH_DESKTOP_EVAL_DRIVER").is_some(),
+        },
+    }))
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -642,18 +775,13 @@ async fn create_session(deps: &EvalDriverDeps, body: Value) -> Result<Value> {
             .and_then(Value::as_str)
             .map(str::to_string),
         provider_env_key: None,
-        approval_policy: Some(
-            body.get("approvalPolicy")
-                .and_then(Value::as_str)
-                .unwrap_or("never")
-                .into(),
-        ),
-        sandbox: Some(
-            body.get("sandbox")
-                .and_then(Value::as_str)
-                .unwrap_or("workspace-write")
-                .into(),
-        ),
+        // Absent values inherit the machine policy through the sealed
+        // effective profile; a literal here would be a fifth policy layer.
+        approval_policy: body
+            .get("approvalPolicy")
+            .and_then(Value::as_str)
+            .map(Into::into),
+        sandbox: body.get("sandbox").and_then(Value::as_str).map(Into::into),
         service_tier: body
             .get("serviceTier")
             .and_then(Value::as_str)
@@ -780,8 +908,9 @@ async fn send_message(deps: &EvalDriverDeps, session_id: &str, body: Value) -> R
         provider_name: Some(provider_name),
         provider_title: None,
         provider_env_key: None,
-        approval_policy: Some("never".into()),
-        sandbox: Some("workspace-write".into()),
+        // Inherit the machine policy through the sealed effective profile.
+        approval_policy: None,
+        sandbox: None,
         service_tier: body
             .get("serviceTier")
             .and_then(Value::as_str)
@@ -1321,6 +1450,7 @@ async fn run_policy_rollout(
     }));
     refuse_auto_transport(&telemetry)?;
     let slot = require_stream_slot(&body)?;
+    let aggregate_projection = is_aggregate_projection(&body)?;
 
     let client = crate::http::http_client_builder()
         .redirect(reqwest::redirect::Policy::none())
@@ -1335,13 +1465,16 @@ async fn run_policy_rollout(
     // A1: open the family visual before prepare so the pane exists before any
     // paid call. After prepare, rebind slot `stream` to the declared SSE URL
     // (never guess `/events`) and wait for `stream.subscribed` before start.
-    let visual_id = match body
+    let supplied_visual_id = body
         .get("visualId")
         .or_else(|| body.get("visual_id"))
         .and_then(Value::as_str)
         .filter(|id| !id.is_empty())
-        .map(str::to_string)
-        .or_else(|| {
+        .map(str::to_string);
+    if aggregate_projection && supplied_visual_id.is_none() {
+        bail!("projectionMode=aggregate requires visualId for the caller-owned experiment surface");
+    }
+    let visual_id = match supplied_visual_id.or_else(|| {
             container
                 .metadata
                 .get("liveVisualId")
@@ -1406,20 +1539,22 @@ async fn run_policy_rollout(
     let poll_url = resolve_declared_url(&base, &declared_poll_url(&prepared_stream)?)?;
     let sse_url = resolve_declared_url(&base, &declared_sse_url(&prepared_stream)?)?;
     assert_declared_stream_source(&sse_url)?;
-    update_visual(
-        core,
-        &visual_id,
-        json!({
-            "bindings": live_sse_bindings(&sse_url),
-            "metadata": {
-                "containerId": container_id,
-                "rolloutId": rollout_id,
-                "streamState": "bound_before_start",
-                "streamId": prepared_stream.get("id"),
-            }
-        }),
-    )
-    .await?;
+    if !aggregate_projection {
+        update_visual(
+            core,
+            &visual_id,
+            json!({
+                "bindings": live_sse_bindings(&sse_url),
+                "metadata": {
+                    "containerId": container_id,
+                    "rolloutId": rollout_id,
+                    "streamState": "bound_before_start",
+                    "streamId": prepared_stream.get("id"),
+                }
+            }),
+        )
+        .await?;
+    }
     // The eval driver runs headless, which is exactly when nobody is watching a
     // pane: its stream failures are the ones most worth having recorded.
     let stream_diagnostics = crate::container_stream::StreamDiagnostics::new(
@@ -1452,6 +1587,13 @@ async fn run_policy_rollout(
         "slot": slot,
         "policy_ref": require_caller_policy_ref(&body)?,
     });
+    if let Some(candidate) = body.get("candidate").cloned() {
+        if !candidate.is_object() {
+            bail!("candidate must be an object");
+        }
+        assert_no_live_secrets(&candidate)?;
+        start_body["candidate"] = candidate;
+    }
     if let Some(world_ref) = body
         .get("worldRef")
         .or_else(|| body.get("world_ref"))
@@ -1474,7 +1616,7 @@ async fn run_policy_rollout(
         start_body["task_world"] = task_world;
     }
     let started = std::time::Instant::now();
-    let (state, recovered) = visuals_ipc::start_rollout_idempotently(
+    let (initial_state, recovered) = visuals_ipc::start_rollout_idempotently(
         &client,
         &recovery_client,
         &base,
@@ -1483,8 +1625,20 @@ async fn run_policy_rollout(
     )
     .await
     .context("POST /rollouts after stream.subscribed")?;
+    // A policy-owned container may acknowledge the immutable rollout and run it
+    // asynchronously. Persist provenance as soon as start is accepted so a
+    // timeout or Desktop restart never makes the launched rollout undiscoverable.
+    core.update_container_last_rollout(container_id.to_string(), rollout_id.clone())
+        .await?;
+    let state = wait_for_policy_rollout_terminal(
+        &recovery_client,
+        &base,
+        &rollout_id,
+        initial_state,
+        Duration::from_secs(timeout_s),
+    )
+    .await?;
     let stream = declared_stream_descriptor(&state)?.or(Some(prepared_stream));
-    refuse_host_side_policy_loop(&state)?;
 
     let event_log = client
         .get(&poll_url)
@@ -1528,9 +1682,6 @@ async fn run_policy_rollout(
         },
     };
     let achievements = harvest_achievements(&events);
-
-    core.update_container_last_rollout(container_id.to_string(), rollout_id.clone())
-        .await?;
 
     let env_terminated = state
         .get("terminated")
@@ -1617,13 +1768,43 @@ async fn run_policy_rollout(
     }))
 }
 
-fn refuse_host_side_policy_loop(state: &Value) -> Result<()> {
-    if container_owned_policy_completed(state) {
-        Ok(())
-    } else {
-        bail!(
-            "policy_rollouts refuse a host-side model loop; container did not complete a policy-owned rollout"
-        )
+fn is_aggregate_projection(body: &Value) -> Result<bool> {
+    match body
+        .get("projectionMode")
+        .or_else(|| body.get("projection_mode"))
+        .and_then(Value::as_str)
+    {
+        None | Some("live") => Ok(false),
+        Some("aggregate") => Ok(true),
+        Some(other) => bail!("unsupported projectionMode `{other}`; use live or aggregate"),
+    }
+}
+
+async fn wait_for_policy_rollout_terminal(
+    client: &reqwest::Client,
+    base: &str,
+    rollout_id: &str,
+    mut state: Value,
+    timeout: Duration,
+) -> Result<Value> {
+    let deadline = tokio::time::Instant::now() + timeout;
+    loop {
+        if container_owned_policy_completed(&state) {
+            return Ok(state);
+        }
+        if tokio::time::Instant::now() >= deadline {
+            let status = state
+                .get("status")
+                .and_then(Value::as_str)
+                .unwrap_or("unknown");
+            bail!(
+                "policy-owned rollout `{rollout_id}` remained `{status}` past the {timeout:?} deadline; the accepted rollout remains discoverable and may still complete"
+            );
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        if let Some(current) = visuals_ipc::get_rollout_status(client, base, rollout_id).await? {
+            state = current;
+        }
     }
 }
 
@@ -2128,7 +2309,9 @@ fn seed_from_task_instance(task_instance_id: &str) -> Result<i64> {
         .rsplit(':')
         .next()
         .and_then(|value| value.parse::<i64>().ok())
-        .context("taskInstanceId must end with an integer seed")?;
+        .context(
+            "taskInstanceId must end with an integer seed (for example, `craftax:test:2001`)",
+        )?;
     Ok(seed)
 }
 
@@ -2285,6 +2468,7 @@ mod tests {
             presentation_summary: None,
             approval_policy: "never".into(),
             sandbox: "workspace-write".into(),
+            recovery: None,
         };
         let binding = eval_provider_binding(&record);
         assert_eq!(binding.provider, "openrouter");
@@ -2366,10 +2550,16 @@ mod tests {
     }
 
     #[test]
-    fn refuse_host_side_policy_when_container_did_not_finish() {
-        assert!(refuse_host_side_policy_loop(&json!({"status": "running"})).is_err());
-        assert!(refuse_host_side_policy_loop(&json!({"terminated": true})).is_ok());
-        assert!(refuse_host_side_policy_loop(&json!({"status": "completed"})).is_ok());
+    fn recognizes_async_and_terminal_policy_states() {
+        assert!(!container_owned_policy_completed(
+            &json!({"status": "running"})
+        ));
+        assert!(container_owned_policy_completed(
+            &json!({"terminated": true})
+        ));
+        assert!(container_owned_policy_completed(
+            &json!({"status": "completed"})
+        ));
     }
 
     #[test]
@@ -2495,16 +2685,57 @@ mod tests {
     }
 
     #[test]
-    fn production_gate_requires_debug_or_named_instance_env() {
-        // In unit tests we are always under debug_assertions.
-        assert!(cfg!(debug_assertions));
-        // Without a named instance or opt-in env, should_spawn is false.
+    fn runtime_gate_requires_named_instance_or_env_opt_in() {
+        // The production gate is the `eval-driver` cargo feature (this module
+        // does not exist without it); should_spawn only selects which
+        // feature-enabled builds listen.
         std::env::remove_var("SYNTH_DESKTOP_INSTANCE");
         std::env::remove_var("SYNTH_DESKTOP_EVAL_DRIVER");
         assert!(!should_spawn());
         std::env::set_var("SYNTH_DESKTOP_EVAL_DRIVER", "1");
         assert!(should_spawn());
         std::env::remove_var("SYNTH_DESKTOP_EVAL_DRIVER");
+    }
+
+    #[test]
+    fn session_approval_route_parses_ids_and_rejects_malformed_paths() {
+        assert_eq!(
+            session_approval_route("/v1/sessions/s-1/approvals/call-9"),
+            Some(("s-1".into(), "call-9".into()))
+        );
+        assert_eq!(
+            session_approval_route("/v1/sessions/s-1/approvals/call-9/"),
+            Some(("s-1".into(), "call-9".into()))
+        );
+        assert_eq!(session_approval_route("/v1/sessions//approvals/call-9"), None);
+        assert_eq!(session_approval_route("/v1/sessions/s-1/approvals/"), None);
+        assert_eq!(
+            session_approval_route("/v1/sessions/s-1/approvals/a/b"),
+            None
+        );
+        assert_eq!(session_approval_route("/v1/sessions/s-1/messages"), None);
+    }
+
+    #[test]
+    fn preflight_report_is_read_only_and_names_the_policy_layers() {
+        let report = preflight_report().expect("preflight");
+        assert_eq!(report["ok"], true);
+        assert_eq!(report["schemaVersion"], PROTOCOL_VERSION);
+        let permissions = &report["permissions"];
+        for key in ["approvalPolicy", "sandboxMode", "configPath"] {
+            assert!(permissions[key].is_string(), "missing permissions.{key}");
+        }
+        assert!(report["visualsIpcDescriptorPresent"].is_boolean());
+        // The unattended contract is a dry-run of the session-start resolution:
+        // wouldStart must be an honest boolean, and it may be true only when
+        // the resolved profile says `never` — never on a divergent machine.
+        assert!(report["qaUnattended"]["wouldStart"].is_boolean());
+        if report["qaUnattended"]["wouldStart"] == true {
+            assert_eq!(report["effectiveProfile"]["approvalPolicy"], "never");
+        } else {
+            assert!(report["qaUnattended"]["reason"].is_string());
+        }
+        assert_eq!(report["paidCompute"]["requiresBoundedCap"], true);
     }
 
     #[test]
@@ -2660,5 +2891,14 @@ mod tests {
             codex::provider_class(Some("openrouter")),
             codex::ProviderClass::OpenRouter
         ));
+    }
+
+    #[test]
+    fn aggregate_projection_is_explicit_and_fail_closed() {
+        assert!(!is_aggregate_projection(&json!({})).unwrap());
+        assert!(!is_aggregate_projection(&json!({"projectionMode": "live"})).unwrap());
+        assert!(is_aggregate_projection(&json!({"projectionMode": "aggregate"})).unwrap());
+        assert!(is_aggregate_projection(&json!({"projection_mode": "aggregate"})).unwrap());
+        assert!(is_aggregate_projection(&json!({"projectionMode": "made_up"})).is_err());
     }
 }

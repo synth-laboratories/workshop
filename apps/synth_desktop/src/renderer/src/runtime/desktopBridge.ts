@@ -7,6 +7,7 @@ import type { AppEvent, InternSessionControlRequest, InternSessionCreateRequest,
 import type { CodexEvent, CodexOauthBegin, CodexOauthStatus, CodexSessionInfo, ComposerImageAttachment, ContextSnapshot, DesktopInstanceDiagnostics, DesktopPermissionSettings, InventoryCounts, LagunaDownloadProgress, LagunaModelHit, LagunaStatus, ModelMultiAgentSetting, ModelPerformanceSummary, ModelPerformanceTurnSample, PersistedCodexSession, RequestOptions, RuntimeBridge, SkillHit, SynthAccountSummary, SynthBackendSettings, SynthSignInBegin, SynthSignInPoll, TariffCard, TerminalEvent, TerminalInfo, UpdateStatus, VisualAnnotation, VisualSeal, VisualSealBundle, VisualTemplateMeta, VisualUpload, WhisperDownloadProgress, WhisperModelHit, WhisperRuntimeStatus, WorkspaceAccessSettings } from "../bridge";
 import type { CoreDiagnostics, VisualRecord, VisualRevision } from "@synth/runtime-protocol";
 import type { ContainerDeployment, ResolvedTraceProjection, TraceBundleIngestResult, TraceV5Record, UsageLedgerEntry, UsageSummary, UsageWindow } from "@synth/runtime-protocol";
+import { publicError } from "../runtime/publicError";
 
 // The packaged WebKit view is always served from the `tauri:` protocol.  The
 // injected internals global can appear too late for eager ES-module evaluation,
@@ -89,7 +90,7 @@ function browserRuntimeBridge(): RuntimeBridge {
 						onEvent(event);
 					}
 				} catch (reason) {
-					onStatus?.({ state: "reconnecting", detail: String(reason) });
+					onStatus?.({ state: "reconnecting", detail: publicError(reason) });
 				}
 				if (!closed) window.setTimeout(poll, 100);
 			};
@@ -688,6 +689,20 @@ window.synthWorkspaceScope ??= isTauri
 				return () => { disposed = true; unlisten?.(); };
 			}
 		};
+		window.synthComputerUse ??= {
+			status: (sessionId) =>
+				invokeCommand(COMMANDS.COMPUTER_USE_STATUS, { sessionId: sessionId ?? null }),
+			install: () => invokeCommand(COMMANDS.COMPUTER_USE_INSTALL),
+			remove: () => invokeCommand(COMMANDS.COMPUTER_USE_REMOVE),
+			revokeApp: (bundleId) => invokeCommand(COMMANDS.COMPUTER_USE_REVOKE_APP, { bundleId }),
+			openSettings: (permissionId) =>
+				invokeCommand(COMMANDS.COMPUTER_USE_OPEN_SETTINGS, { permissionId })
+		};
+		window.synthBrowserAdmin ??= {
+			status: () => invokeCommand(COMMANDS.BROWSER_RUNTIME_STATUS),
+			allowOrigin: (origin) => invokeCommand(COMMANDS.BROWSER_POLICY_ALLOW_ORIGIN, { origin }),
+			revokeOrigin: (origin) => invokeCommand(COMMANDS.BROWSER_POLICY_REVOKE_ORIGIN, { origin })
+		};
 		window.synthReports ??= {
 			list: (query) => invokeCommand(COMMANDS.REPORTS_LIST, { query: query ?? null }),
 			get: (reportId) => invokeCommand(COMMANDS.REPORTS_GET, { reportId }),
@@ -825,6 +840,12 @@ export const bridges = {
 	},
 	get plugins() {
 		return window.synthPlugins;
+	},
+	get computerUse() {
+		return window.synthComputerUse;
+	},
+	get browserAdmin() {
+		return window.synthBrowserAdmin;
 	},
 	get visuals() {
 		return window.synthVisuals;

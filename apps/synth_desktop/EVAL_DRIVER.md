@@ -2,8 +2,9 @@
 
 Profile-gated programmatic driver surface for live Workshop development
 instances. Same category as Visuals IPC: loopback-only bind, bearer token,
-descriptor JSON in the instance data root. **Compiled into debug builds only;
-never spawned for the canonical installed/production app.**
+descriptor JSON in the instance data root. **Compiled only behind the
+`eval-driver` cargo feature; production artifacts are built without it and
+contain no driver at all.**
 
 ## Location
 
@@ -17,7 +18,8 @@ never spawned for the canonical installed/production app.**
 
 Spawned only when **all** of:
 
-1. `cfg!(debug_assertions)` (release/production builds never listen)
+1. Built with `--features eval-driver` (desktop-instance.sh passes this for
+   dev/QA instance builds; release artifacts never include the feature)
 2. Named development instance (`SYNTH_DESKTOP_INSTANCE`) **or** explicit
    `SYNTH_DESKTOP_EVAL_DRIVER=1`
 
@@ -54,6 +56,12 @@ bearer → `401`.
 | `POST` | `/v1/sessions/{id}/messages` | Send turn (`send_message`) |
 | `POST` | `/v1/sessions/{id}/wait_terminal` | Poll journal until terminal run event |
 | `GET` | `/v1/sessions/{id}/export` | Journal-backed session export |
+| `POST` | `/v1/sessions/{id}/interrupt` | Interrupt the active turn (idempotent) |
+| `POST` | `/v1/sessions/{id}/steer` | Steer the active turn (`{text}`) |
+| `POST` | `/v1/sessions/{id}/approvals/{callId}` | Resolve a pending approval (`{decision}`) |
+| `POST` | `/v1/sessions/{id}/close` | Fence the attachment and close the session |
+| `GET` | `/v1/preflight` | Read-only launch-state report (permissions, opt-in, descriptors) |
+| `GET` | `/v1/optimizers/runs/{id}/ready` | Await optimizer run terminal readiness (visuals IPC delegate) |
 | `GET/POST` | `/v1/containers…` | Register / list / probe (shared with visuals IPC) |
 | `POST` | `/v1/containers/{id}/rollouts` | Scripted transport-gate rollouts |
 | `POST` | `/v1/containers/{id}/policy_rollouts` | Class-A LLM policy rollouts (`ProviderClass` dispatch) |
@@ -79,6 +87,8 @@ semantic action names used by `window.__synthEval`.
   "provider": "openrouter",
   "model": "openai/gpt-5.6-luna",
   "reasoningEffort": "medium",
+  "projectionMode": "aggregate",
+  "visualId": "vis_experiment_overview",
   "timeoutS": 600,
   "telemetry": {
     "enabled": true,
@@ -88,6 +98,17 @@ semantic action names used by `window.__synthEval`.
   }
 }
 ```
+
+`projectionMode: "aggregate"` is for eval batches whose caller-owned experiment
+visual already exists before compute. It requires `visualId`, preserves that
+visual's typed experiment bindings, and still waits for the container's declared
+stream subscription before starting. Without it, the driver retains the
+single-rollout behavior and binds the declared SSE stream into a live-eval
+visual.
+
+An optional object-valued `candidate` is forwarded unchanged to the container
+after live-secret validation. It is the candidate being evaluated; the driver
+does not silently substitute a default candidate or fold it into `policy_ref`.
 
 `policy_ref` is required (`harness` and `config`; `config` is omitted only for
 `isolated_policy_process`). The driver does not pick a harness or default

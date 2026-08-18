@@ -17,12 +17,24 @@
 use anyhow::{anyhow, bail, Context, Result};
 use serde_json::{json, Map, Value};
 use std::{
+    ffi::{OsStr, OsString},
     fs,
     path::{Path, PathBuf},
     process::Stdio,
     sync::Mutex,
     time::{Duration, Instant},
 };
+
+fn eval_cli_path(inherited: Option<&OsStr>) -> Result<OsString> {
+    let mut entries = vec![
+        PathBuf::from("/usr/local/bin"),
+        PathBuf::from("/opt/homebrew/bin"),
+    ];
+    if let Some(inherited) = inherited {
+        entries.extend(std::env::split_paths(inherited));
+    }
+    std::env::join_paths(entries).context("compose eval CLI PATH")
+}
 use tokio::{
     io::{AsyncBufReadExt, BufReader},
     process::Command,
@@ -30,6 +42,7 @@ use tokio::{
     time::sleep,
 };
 
+use super::events::OptimizerEventDraft;
 use super::{
     models::{
         OptimizerCapabilities, OptimizerCreateRequest, OptimizerEventEnvelope,
@@ -45,6 +58,13 @@ pub const EVAL_CRAFTAX_SMOKE_RECIPE: &str = "eval.craftax.code-policy.smoke.v1";
 pub const EVAL_GAMEBENCH_CONFIRM_RECIPE: &str = "eval.gamebench.craftax-code-policy.confirm.v1";
 pub const EVAL_CRAFTAX_LLM_RECIPE: &str = "eval.craftax.llm-policy.smoke.v1";
 pub const EVAL_GAMEBENCH_LLM_RECIPE: &str = "eval.gamebench.llm-policy.confirm.v1";
+
+/// The product contract for the report-only Craftax smoke is two seeds per
+/// staged candidate. Older local runtime catalogs omitted `limits.trials`,
+/// even though the worker recipe itself was fixed-cardinality. Keep the
+/// authority here until every supported runtime publishes the field itself;
+/// this is a compatibility projection, not an agent-selected limit.
+const CRAFTAX_CODE_SMOKE_TRIALS_PER_CANDIDATE: u64 = 10;
 
 /// The allowlist the MCP schema publishes. A recipe id outside it never
 /// reaches the worker.
@@ -82,6 +102,14 @@ fn config_path() -> PathBuf {
 /// `SYNTH_PYTHON` fallback: an interpreter that happens to be on the operator's
 /// PATH is not the one this feature was packaged against.
 fn resolve_python() -> Result<PathBuf> {
+    // Developer/QA builds stage one reviewed Optimizers checkout. Eval and
+    // GEPA must execute that same runtime authority; falling through to the
+    // previously selected installed version makes the catalog and worker
+    // silently disagree (for example, 2 stale Craftax trials instead of the
+    // staged digest-pinned 10-trial contract).
+    if let Some(project) = super::manager::optimizer_project_root()? {
+        return resolve_developer_python(&project);
+    }
     if let Ok(text) = fs::read_to_string(config_path()) {
         if let Some(configured) = text
             .lines()
@@ -100,6 +128,29 @@ fn resolve_python() -> Result<PathBuf> {
             );
         }
     }
+    // The plugin installer stores immutable versioned runtimes and records
+    // the active selection. Eval must consume the same selected runtime as the
+    // sidecar instead of looking only at the obsolete unversioned layout.
+    let optimizers_root = crate::instance::data_root().join("optimizers");
+    if let Ok(selected) = fs::read_to_string(optimizers_root.join("selected_version")) {
+        let selected = selected.trim();
+        if !selected.is_empty()
+            && selected.chars().all(|character| {
+                character.is_ascii_alphanumeric() || matches!(character, '.' | '-' | '_')
+            })
+        {
+            for executable in ["python3", "python"] {
+                let path = optimizers_root
+                    .join("versions")
+                    .join(selected)
+                    .join("runtime/bin")
+                    .join(executable);
+                if path.is_file() {
+                    return Ok(path);
+                }
+            }
+        }
+    }
     let owned = crate::instance::data_root()
         .join("runtime")
         .join("optimizers")
@@ -116,11 +167,30 @@ fn resolve_python() -> Result<PathBuf> {
     )
 }
 
+fn resolve_developer_python(project: &Path) -> Result<PathBuf> {
+    for candidate in [
+        project.join(".venv/bin/python"),
+        project.join(".venv/Scripts/python.exe"),
+    ] {
+        if candidate.is_file() {
+            return Ok(candidate);
+        }
+    }
+    bail!(
+        "developer optimizer project {} has no prepared .venv Python; run uv sync before launching Workshop",
+        project.display()
+    )
+}
+
 fn run_cli(python: &Path, args: &[&str]) -> Result<Value> {
     let output = std::process::Command::new(python)
         .arg("-m")
         .arg("synth_optimizers.eval")
         .args(args)
+        // Finder launches do not inherit the operator's shell PATH. Docker is
+        // commonly installed by OrbStack in /usr/local/bin or Homebrew in
+        // /opt/homebrew/bin; the eval producer must see that supported runtime.
+        .env("PATH", eval_cli_path(std::env::var_os("PATH").as_deref())?)
         .stdin(Stdio::null())
         .output()
         .context("run the local eval CLI")?;
@@ -133,13 +203,19 @@ fn run_cli(python: &Path, args: &[&str]) -> Result<Value> {
 }
 
 fn decode_cli_output(success: bool, status: &str, stdout: &[u8], stderr: &[u8]) -> Result<Value> {
-    let stdout = bounded_cli_text(stdout);
-    let stderr = bounded_cli_text(stderr);
-    let parsed: Value = serde_json::from_str(stdout.trim()).map_err(|error| {
+    // Parse the complete producer payload. Bounding before parsing turns every
+    // valid catalog larger than the diagnostic limit into fabricated malformed
+    // JSON (the Craftax catalog is about 12 KiB).
+    let stdout_text = String::from_utf8_lossy(stdout);
+    let parsed: Value = serde_json::from_str(stdout_text.trim()).map_err(|error| {
+        let stdout = bounded_cli_text(stdout);
+        let stderr = bounded_cli_text(stderr);
         anyhow!(
             "eval_cli_unparseable_stdout: status={status}; parse={error}; stdout={stdout:?}; stderr={stderr:?}"
         )
     })?;
+    let stdout = bounded_cli_text(stdout);
+    let stderr = bounded_cli_text(stderr);
     if parsed.get("ready").and_then(Value::as_bool) == Some(false) {
         bail!(
             "eval_cli_not_ready: valid readiness report from {status}; stdout={stdout:?}; stderr={stderr:?}"
@@ -235,9 +311,35 @@ pub fn recipe_catalog() -> Vec<Value> {
                     .and_then(Value::as_str)
                     .is_some_and(is_eval_recipe)
             })
+            .map(normalize_builtin_recipe_contract)
             .collect(),
         Err(error) => offline_catalog(&error.to_string()),
     }
+}
+
+fn normalize_builtin_recipe_contract(mut recipe: Value) -> Value {
+    if recipe.get("id").and_then(Value::as_str) != Some(EVAL_CRAFTAX_SMOKE_RECIPE)
+        || recipe.pointer("/limits/trials").is_some()
+    {
+        return recipe;
+    }
+    let Some(object) = recipe.as_object_mut() else {
+        return recipe;
+    };
+    let limits = object
+        .entry("limits")
+        .or_insert_with(|| Value::Object(Map::new()));
+    if let Some(limits) = limits.as_object_mut() {
+        limits.insert(
+            "trials".into(),
+            json!(CRAFTAX_CODE_SMOKE_TRIALS_PER_CANDIDATE),
+        );
+        limits.insert(
+            "trialAuthority".into(),
+            json!("workshop.builtin.eval.craftax.code-policy.smoke.v1"),
+        );
+    }
+    recipe
 }
 
 /// Convert the eval runtime's per-trial budget into the total product approval
@@ -248,6 +350,11 @@ pub(crate) fn paid_compute_bounds(
     recipe: &Value,
     candidate_set_id: Option<&str>,
 ) -> Result<(f64, u64)> {
+    // Admission may receive the projected host catalog rather than the raw
+    // runtime catalog. Apply the same built-in compatibility contract here so
+    // the Craftax smoke cannot advertise ten trials and then fail moments later
+    // as if that bound were absent.
+    let normalized_recipe = normalize_builtin_recipe_contract(recipe.clone());
     let candidate_set_id = candidate_set_id
         .map(str::trim)
         .filter(|value| !value.is_empty())
@@ -259,7 +366,7 @@ pub(crate) fn paid_compute_bounds(
         .map(|candidates| candidates.len() as u64)
         .filter(|count| *count > 0)
         .ok_or_else(|| anyhow!("staged candidate set has no candidates"))?;
-    paid_compute_bounds_for_candidate_count(recipe, candidate_count)
+    paid_compute_bounds_for_candidate_count(&normalized_recipe, candidate_count)
 }
 
 fn paid_compute_bounds_for_candidate_count(
@@ -302,6 +409,103 @@ fn paid_compute_bounds_for_candidate_count(
 
 /// The catalog is still worth showing when the runtime is missing: an empty
 /// list reads as "this product does not exist", which is the wrong answer.
+/// Refuse a target that is not pinned to an immutable digest.
+///
+/// A recipe's honesty about *which* image it scored against is the whole basis
+/// for comparing two runs. A mutable tag can be repointed between them, and a
+/// local-checkout fallback is not reproducible on any other machine — both turn
+/// a benchmark number into an anecdote. Craftax eval is blocked on publishing a
+/// real image precisely so this can be enforced rather than worked around.
+///
+/// A recipe that declares no image has nothing to pin (the fixture smoke is
+/// deterministic and benchmark-free); a recipe that declares one must pin it.
+fn require_digest_pinned_target(recipe: &Value, recipe_id: &str) -> Result<()> {
+    let image = recipe
+        .get("image")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|image| !image.is_empty());
+    let Some(image) = image else {
+        return Ok(());
+    };
+    let refuse = |reason: &str| -> anyhow::Error {
+        anyhow!(
+            "{}",
+            json!({
+                "code": "target_not_digest_pinned",
+                "contract": "workflow.immutable_target",
+                "owner": recipe_id,
+                "retryable": false,
+                "requestedRecipeId": recipe_id,
+                "substitutionAllowed": false,
+                "image": image,
+                "message": reason,
+            })
+        )
+    };
+
+    // A path or file URL is a local checkout, not a published image.
+    if image.starts_with('/')
+        || image.starts_with("./")
+        || image.starts_with("../")
+        || image.starts_with("file://")
+        || image.starts_with("oci-archive:")
+        || image.starts_with("docker-archive:")
+    {
+        return Err(refuse(
+            "the eval target resolves to a local checkout; publish the image and pin its digest",
+        ));
+    }
+
+    // A bare name with no registry host is not a published image; it resolves
+    // only against whatever the local daemon happens to hold. This is the form
+    // actually in play: the catalog names `craftax-eval-target`, and an
+    // operator pin supplied the digest of a local `craftax-eval-target:refresh`
+    // build that was never pushed. The recipe then reported `available` and
+    // would have produced a benchmark number no other machine could reproduce.
+    // A registry host is what makes a digest resolvable by someone else.
+    let repository = image.split('@').next().unwrap_or(image);
+    let host = repository.split('/').next().unwrap_or("");
+    let has_registry_host = repository.contains('/')
+        && (host.contains('.') || host.contains(':') || host == "localhost");
+    if !has_registry_host {
+        return Err(refuse(
+            "the eval target names no registry; publish the image under its registry host and pin that digest",
+        ));
+    }
+
+    let digest = recipe
+        .get("imageDigest")
+        .or_else(|| recipe.get("targetManifestDigest"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|digest| !digest.is_empty());
+    // The reference itself may carry the digest; either source is acceptable,
+    // but one of them must exist.
+    let inline = image.split_once("@sha256:").map(|(_, hex)| hex);
+    let declared = digest.and_then(|digest| digest.strip_prefix("sha256:"));
+    let Some(hex) = inline.or(declared) else {
+        return Err(refuse(
+            "the eval target is a mutable tag; publish the image and record its sha256 digest",
+        ));
+    };
+    if hex.len() != 64 || !hex.chars().all(|c| c.is_ascii_hexdigit()) {
+        return Err(refuse(
+            "the eval target digest is not a sha256 manifest digest",
+        ));
+    }
+    // Both present and disagreeing is worse than either missing: the run would
+    // record one identity and execute another.
+    if let (Some(inline), Some(declared)) = (inline, declared) {
+        if inline != declared {
+            return Err(refuse(
+                "the eval target reference and its recorded digest disagree",
+            ));
+        }
+    }
+    Ok(())
+}
+
 fn offline_catalog(reason: &str) -> Vec<Value> {
     EVAL_RECIPE_IDS
         .iter()
@@ -341,14 +545,24 @@ pub async fn start(
         .find(|entry| entry.get("id").and_then(Value::as_str) == Some(recipe_id.as_str()))
         .ok_or_else(|| anyhow!("eval recipe {recipe_id} is not in the local catalog"))?;
     if recipe.get("availability").and_then(Value::as_str) != Some("available") {
+        let reason = recipe
+            .get("availabilityReason")
+            .and_then(Value::as_str)
+            .unwrap_or("target image is not pinned");
         bail!(
-            "eval recipe {recipe_id} is unavailable: {}",
-            recipe
-                .get("availabilityReason")
-                .and_then(Value::as_str)
-                .unwrap_or("target image is not pinned")
+            "{}",
+            json!({
+                "code": "recipe_unavailable",
+                "contract": "workflow.exact_recipe",
+                "owner": recipe_id,
+                "retryable": true,
+                "requestedRecipeId": recipe_id,
+                "substitutionAllowed": false,
+                "message": reason,
+            })
         );
     }
+    require_digest_pinned_target(&recipe, &recipe_id)?;
     if report
         .get("containerRuntimeAvailable")
         .and_then(Value::as_bool)
@@ -502,6 +716,11 @@ async fn run_worker(
         .arg("worker")
         .arg("--manifest")
         .arg(&manifest_path)
+        // Admission and execution must resolve the same runtime. Finder does
+        // not inherit the operator's shell PATH, so without this the catalog
+        // can truthfully report Docker ready and the worker can still fail
+        // immediately with `docker is not on PATH`.
+        .env("PATH", eval_cli_path(std::env::var_os("PATH").as_deref())?)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::from(stderr))
@@ -556,8 +775,11 @@ async fn run_worker(
                         stderr_path.display()
                     );
                 }
-                append_terminal(&service, &run_id, "completed", "eval worker finished".into())
-                    .await?;
+                // A clean worker exit is not a successful campaign. The status
+                // comes from what the durable log proves, not from the child's
+                // return code.
+                let (status, detail) = settled_status(&service, &run_id).await?;
+                append_terminal(&service, &run_id, status, detail).await?;
                 return Ok(());
             }
             changed = cancel.changed() => {
@@ -1025,30 +1247,71 @@ async fn append_status(
     event_type: &str,
     status: &str,
 ) -> Result<()> {
-    let run = service.get(run_id.to_string()).await?;
     service
-        .append_events(
+        .append_event_payloads(
             run_id.to_string(),
-            vec![OptimizerEventEnvelope {
-                schema_version: OPTIMIZER_EVENT_SCHEMA_VERSION.into(),
-                event_id: Some(format!("{run_id}:host:{}", run.cursor_seq + 1)),
-                event_type: event_type.into(),
-                sequence_number: run.cursor_seq + 1,
-                occurred_at: chrono::Utc::now().to_rfc3339(),
-                optimizer_run_id: run_id.into(),
-                algorithm_id: EVAL_ALGORITHM_ID.into(),
-                level: None,
-                item: None,
-                delta: map_of("status", json!(status)),
-                snapshot: None,
-                usage_delta: None,
-                artifact_refs: vec![],
-                error: None,
-                raw: json!({"source": "eval_recipe"}),
-            }],
+            vec![OptimizerEventDraft::new(event_type, EVAL_ALGORITHM_ID)
+                .idempotency_key(format!("host:lifecycle:{event_type}"))
+                .delta(map_of("status", json!(status)))
+                .raw(json!({"source": "eval_recipe"}))],
         )
         .await?;
     Ok(())
+}
+
+/// Decide how a campaign that ran to completion actually ended.
+///
+/// A worker that exits 0 has finished its job; it has not necessarily produced
+/// a result. The packaged Craftax smoke exited cleanly having recorded
+/// "4 of 4 trials did not produce valid evidence" and still settled `completed`,
+/// so the selection verdict and the run status disagreed about the same run.
+///
+/// Some trials failing is normal in a screening matrix and stays `completed`.
+/// *No* valid evidence at all, or a producer selection that names its own
+/// evidence invalid, is not a success.
+async fn settled_status(
+    service: &OptimizerService,
+    run_id: &str,
+) -> Result<(&'static str, String)> {
+    let run = service.get(run_id.to_string()).await?;
+    let events = service
+        .events_after(run_id.to_string(), 0, Some(2_000))
+        .await?;
+    let verdict = events.iter().rev().find_map(|event| {
+        let selection = event.snapshot.as_ref()?.get("selection")?;
+        let status = selection
+            .get("status")
+            .or_else(|| selection.get("selection_status"))
+            .and_then(Value::as_str)?;
+        Some((
+            status.to_string(),
+            selection
+                .get("reason")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
+        ))
+    });
+    if let Some((status, reason)) = &verdict {
+        if matches!(status.as_str(), "invalid_evidence" | "failed" | "aborted") {
+            let reason = if reason.is_empty() {
+                format!("the campaign selection settled {status}")
+            } else {
+                reason.clone()
+            };
+            return Ok(("failed", reason));
+        }
+    }
+    let counts = super::terminal::work_counts(&run, &events);
+    if let (Some(planned), Some(succeeded)) = (counts.planned, counts.succeeded) {
+        if planned > 0 && succeeded == 0 {
+            return Ok((
+                "failed",
+                format!("none of {planned} planned trials produced valid evidence"),
+            ));
+        }
+    }
+    Ok(("completed", "eval worker finished".into()))
 }
 
 async fn append_terminal(
@@ -1058,7 +1321,14 @@ async fn append_terminal(
     detail: String,
 ) -> Result<()> {
     let run = service.get(run_id.to_string()).await?;
-    if matches!(run.status.as_str(), "completed" | "failed" | "cancelled") {
+    // Settled is settled when a manifest exists, not merely when the status
+    // string looks terminal: a status rewritten without an event must not let
+    // the run skip its own terminal event.
+    if service
+        .terminal_manifest(run_id.to_string())
+        .await?
+        .is_some()
+    {
         return Ok(());
     }
     let event_type = match status {
@@ -1075,31 +1345,20 @@ async fn append_terminal(
             .map(PathBuf::from)
             .map(|dir| dir.join("worker.stderr.log"));
         let tail = stderr.as_ref().and_then(|path| tail_text(path));
-        let run = service.get(run_id.to_string()).await?;
         service
-            .append_events(
+            .append_event_payloads(
                 run_id.to_string(),
-                vec![OptimizerEventEnvelope {
-                    schema_version: OPTIMIZER_EVENT_SCHEMA_VERSION.into(),
-                    event_id: Some(format!("{run_id}:diagnostic")),
-                    event_type: "optimizer.recipe.diagnostic".into(),
-                    sequence_number: run.cursor_seq + 1,
-                    occurred_at: chrono::Utc::now().to_rfc3339(),
-                    optimizer_run_id: run_id.into(),
-                    algorithm_id: EVAL_ALGORITHM_ID.into(),
-                    level: Some("error".into()),
-                    item: None,
-                    delta: map_of("status", json!("failed")),
-                    snapshot: None,
-                    usage_delta: None,
-                    artifact_refs: vec![],
-                    error: Some(json!({
-                        "message": tail.as_deref().unwrap_or(&detail),
-                        "stderrTail": tail,
-                        "logPath": stderr
-                    })),
-                    raw: json!({}),
-                }],
+                vec![
+                    OptimizerEventDraft::new("optimizer.recipe.diagnostic", EVAL_ALGORITHM_ID)
+                        .idempotency_key("diagnostic")
+                        .level("error")
+                        .delta(map_of("status", json!("failed")))
+                        .error(json!({
+                            "message": tail.as_deref().unwrap_or(&detail),
+                            "stderrTail": tail,
+                            "logPath": stderr
+                        })),
+                ],
             )
             .await?;
     }
@@ -1125,6 +1384,133 @@ fn tail_text(path: &Path) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::optimizers::events::OptimizerEventDraft;
+    use crate::optimizers::models::OptimizerCapabilities;
+    use crate::optimizers::service::tests::service;
+
+    #[test]
+    fn developer_eval_uses_prepared_project_python() {
+        let dir = tempfile::tempdir().unwrap();
+        let bin = dir.path().join(".venv/bin");
+        fs::create_dir_all(&bin).unwrap();
+        let python = bin.join("python");
+        fs::write(&python, b"prepared optimizer runtime").unwrap();
+        assert_eq!(resolve_developer_python(dir.path()).unwrap(), python);
+    }
+
+    #[test]
+    fn developer_eval_without_prepared_python_fails_closed() {
+        let dir = tempfile::tempdir().unwrap();
+        let error = resolve_developer_python(dir.path()).unwrap_err();
+        assert!(error.to_string().contains("uv sync"));
+    }
+
+    async fn probe_run(svc: &OptimizerService, id: &str) {
+        svc.create(OptimizerCreateRequest {
+            algorithm_id: EVAL_ALGORITHM_ID.into(),
+            algorithm_version: Some("1".into()),
+            objective: Some("settlement probe".into()),
+            source: Some("local".into()),
+            project_ref: None,
+            session_ref: Some("chat_settle".into()),
+            id: Some(id.into()),
+            execution_bindings: None,
+            input_refs: None,
+            capabilities: Some(OptimizerCapabilities::for_algorithm(EVAL_ALGORITHM_ID)),
+            summary: Some(json!({ "recipeId": "eval.probe.v1" })),
+            open_visual: Some(false),
+            seed_fixture: None,
+            cloud_config: None,
+            local_path: None,
+        })
+        .await
+        .unwrap();
+    }
+
+    fn selection(status: &str, reason: &str) -> OptimizerEventDraft {
+        OptimizerEventDraft::new("eval.selection.completed", EVAL_ALGORITHM_ID).snapshot(
+            Map::from_iter([(
+                "selection".into(),
+                json!({ "status": status, "reason": reason, "winner_id": null }),
+            )]),
+        )
+    }
+
+    /// The packaged Craftax smoke exited 0 having recorded that every trial
+    /// failed, and settled `completed`. A selection that names its own evidence
+    /// invalid is not a successful campaign.
+    #[tokio::test]
+    async fn an_invalid_evidence_selection_does_not_settle_completed() {
+        let (svc, _dir, _) = service().await;
+        probe_run(&svc, "opt_eval_invalid").await;
+        svc.append_event_payloads(
+            "opt_eval_invalid".into(),
+            vec![
+                OptimizerEventDraft::new("optimizer.run.started", EVAL_ALGORITHM_ID),
+                selection(
+                    "invalid_evidence",
+                    "4 of 4 trials did not produce valid evidence",
+                ),
+            ],
+        )
+        .await
+        .unwrap();
+        let (status, detail) = settled_status(&svc, "opt_eval_invalid").await.unwrap();
+        assert_eq!(status, "failed");
+        assert!(
+            detail.contains("did not produce valid evidence"),
+            "{detail}"
+        );
+    }
+
+    /// Trials failing inside a screening matrix is ordinary. Only a campaign
+    /// that produced nothing valid is a failure.
+    #[tokio::test]
+    async fn a_partially_failed_matrix_with_a_real_verdict_still_completes() {
+        let (svc, _dir, _) = service().await;
+        probe_run(&svc, "opt_eval_partial").await;
+        svc.append_event_payloads(
+            "opt_eval_partial".into(),
+            vec![
+                OptimizerEventDraft::new("optimizer.run.started", EVAL_ALGORITHM_ID),
+                OptimizerEventDraft::new("eval.run.planned", EVAL_ALGORITHM_ID)
+                    .snapshot(Map::from_iter([("planned_trials".into(), json!(4))])),
+                OptimizerEventDraft::new("eval.trial.terminal", EVAL_ALGORITHM_ID)
+                    .item(json!({ "id": "t1", "valid": true })),
+                OptimizerEventDraft::new("eval.trial.terminal", EVAL_ALGORITHM_ID)
+                    .item(json!({ "id": "t2", "valid": false })),
+                selection("promoted", "candidate beat the baseline"),
+            ],
+        )
+        .await
+        .unwrap();
+        let (status, _) = settled_status(&svc, "opt_eval_partial").await.unwrap();
+        assert_eq!(status, "completed");
+    }
+
+    /// No selection event at all, and nothing valid: still not a success.
+    #[tokio::test]
+    async fn a_campaign_with_no_valid_trials_is_not_completed() {
+        let (svc, _dir, _) = service().await;
+        probe_run(&svc, "opt_eval_none").await;
+        svc.append_event_payloads(
+            "opt_eval_none".into(),
+            vec![
+                OptimizerEventDraft::new("optimizer.run.started", EVAL_ALGORITHM_ID),
+                OptimizerEventDraft::new("eval.run.planned", EVAL_ALGORITHM_ID)
+                    .snapshot(Map::from_iter([("planned_trials".into(), json!(2))])),
+                OptimizerEventDraft::new("eval.trial.terminal", EVAL_ALGORITHM_ID)
+                    .item(json!({ "id": "t1", "valid": false })),
+                OptimizerEventDraft::new("eval.trial.terminal", EVAL_ALGORITHM_ID)
+                    .item(json!({ "id": "t2", "valid": false })),
+            ],
+        )
+        .await
+        .unwrap();
+        let (status, detail) = settled_status(&svc, "opt_eval_none").await.unwrap();
+        assert_eq!(status, "failed");
+        assert!(detail.contains("none of 2"), "{detail}");
+    }
     use crate::optimizers::models::OptimizerCreateRequest;
 
     #[test]
@@ -1161,6 +1547,32 @@ mod tests {
             .to_string();
         assert!(malformed.contains("eval_cli_unparseable_stdout"));
         assert!(malformed.contains("\"not-json\""));
+    }
+
+    #[test]
+    fn eval_cli_parses_valid_payloads_larger_than_the_diagnostic_limit() {
+        let payload = json!({
+            "recipes": [{
+                "id": EVAL_CRAFTAX_SMOKE_RECIPE,
+                "description": "x".repeat(12_000),
+                "limits": { "trials": 2 }
+            }]
+        });
+        let encoded = serde_json::to_vec(&payload).unwrap();
+        assert!(encoded.len() > 2_000);
+        assert_eq!(
+            decode_cli_output(true, "exit status: 0", &encoded, b"").unwrap(),
+            payload
+        );
+    }
+
+    #[test]
+    fn eval_cli_path_exposes_packaged_macos_container_runtimes() {
+        let path = eval_cli_path(Some(OsStr::new("/usr/bin:/bin"))).unwrap();
+        let entries = std::env::split_paths(&path).collect::<Vec<_>>();
+        assert_eq!(entries[0], Path::new("/usr/local/bin"));
+        assert_eq!(entries[1], Path::new("/opt/homebrew/bin"));
+        assert_eq!(entries[2], Path::new("/usr/bin"));
     }
 
     #[test]
@@ -1497,5 +1909,163 @@ mod tests {
             max_rollouts: Some(max_trials),
         };
         assert!(cap.is_bounded(), "a trial-capped free run is bounded");
+    }
+
+    #[test]
+    fn craftax_code_smoke_backfills_its_product_owned_trial_contract() {
+        let normalized = normalize_builtin_recipe_contract(json!({
+            "id": EVAL_CRAFTAX_SMOKE_RECIPE,
+            "algorithmId": "eval",
+            "limits": {"parallelism": 2},
+        }));
+        assert_eq!(normalized["limits"]["trials"], json!(10));
+        assert_eq!(
+            normalized["limits"]["trialAuthority"],
+            json!("workshop.builtin.eval.craftax.code-policy.smoke.v1")
+        );
+        let (_, total_trials) = paid_compute_bounds_for_candidate_count(&normalized, 2).unwrap();
+        assert_eq!(total_trials, 20);
+    }
+
+    #[test]
+    fn runtime_owned_positive_trial_count_is_never_overwritten() {
+        let normalized = normalize_builtin_recipe_contract(json!({
+            "id": EVAL_CRAFTAX_SMOKE_RECIPE,
+            "limits": {"trials": 7},
+        }));
+        assert_eq!(normalized["limits"]["trials"], json!(7));
+        assert!(normalized["limits"].get("trialAuthority").is_none());
+    }
+}
+
+/// Immutable-target admission.
+///
+/// Craftax eval is blocked on an image that was never published or
+/// digest-pinned. The gap that made that blocking necessary is that nothing
+/// refused an unpinned target: a run could score against a mutable tag or a
+/// local checkout and record a benchmark number nobody else could reproduce.
+#[cfg(test)]
+mod immutable_target_tests {
+    use super::*;
+
+    const PINNED: &str = "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+
+    fn recipe(image: Option<&str>, digest: Option<&str>) -> Value {
+        let mut recipe = json!({ "id": EVAL_CRAFTAX_LLM_RECIPE, "availability": "available" });
+        if let Some(image) = image {
+            recipe["image"] = json!(image);
+        }
+        if let Some(digest) = digest {
+            recipe["imageDigest"] = json!(digest);
+        }
+        recipe
+    }
+
+    fn refusal(recipe: &Value) -> String {
+        require_digest_pinned_target(recipe, EVAL_CRAFTAX_LLM_RECIPE)
+            .expect_err("this target must be refused")
+            .to_string()
+    }
+
+    #[test]
+    fn a_mutable_tag_is_refused_before_the_run_is_created() {
+        let error = refusal(&recipe(Some("ghcr.io/synth/craftax-eval:latest"), None));
+        assert!(error.contains("target_not_digest_pinned"), "{error}");
+        assert!(error.contains("mutable tag"), "{error}");
+        assert!(error.contains("\"substitutionAllowed\":false"), "{error}");
+    }
+
+    #[test]
+    fn a_local_checkout_fallback_is_refused() {
+        for image in [
+            "/Users/someone/checkouts/craftax",
+            "./craftax_container",
+            "file:///tmp/craftax.tar",
+            "oci-archive:/tmp/craftax.tar",
+        ] {
+            let error = refusal(&recipe(Some(image), Some(PINNED)));
+            assert!(
+                error.contains("local checkout"),
+                "{image} must be refused as a local checkout, got {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_digest_pinned_target_is_admitted_from_either_source() {
+        require_digest_pinned_target(
+            &recipe(Some("ghcr.io/synth/craftax-eval"), Some(PINNED)),
+            EVAL_CRAFTAX_LLM_RECIPE,
+        )
+        .expect("a recorded manifest digest pins the target");
+        require_digest_pinned_target(
+            &recipe(Some(&format!("ghcr.io/synth/craftax-eval@{PINNED}")), None),
+            EVAL_CRAFTAX_LLM_RECIPE,
+        )
+        .expect("a digest carried by the reference pins the target");
+    }
+
+    /// Recording one identity and executing another is worse than recording
+    /// none: the run would look reproducible and not be.
+    #[test]
+    fn a_reference_and_a_recorded_digest_that_disagree_are_refused() {
+        let other = "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff";
+        let error = refusal(&recipe(
+            Some(&format!("ghcr.io/synth/craftax-eval@{PINNED}")),
+            Some(other),
+        ));
+        assert!(error.contains("disagree"), "{error}");
+    }
+
+    #[test]
+    fn a_malformed_digest_is_not_a_pin() {
+        let error = refusal(&recipe(
+            Some("ghcr.io/synth/craftax-eval"),
+            Some("sha256:beef"),
+        ));
+        assert!(error.contains("not a sha256 manifest digest"), "{error}");
+    }
+
+    /// The fixture smoke is deterministic and scores no container. Requiring a
+    /// digest it has no image for would block a lane this rule is not about.
+    /// The Craftax eval blocker as it actually stands.
+    ///
+    /// The runtime catalog names `craftax-eval-target` — no registry host — and
+    /// an operator pin supplied `sha256:d1b3eacc...`, the digest of a local
+    /// `craftax-eval-target:refresh` build that was never pushed. The recipe
+    /// reported `available` and ran, producing a benchmark number that exists
+    /// on exactly one machine. A well-formed digest is not a published image.
+    #[test]
+    fn a_registry_less_name_with_a_local_digest_is_not_a_published_target() {
+        let error = refusal(&recipe(
+            Some("craftax-eval-target"),
+            Some("sha256:d1b3eaccfd833f0f67eaf682be0ea162e93ddacb71db944be9b3e03c82cd09bd"),
+        ));
+        assert!(error.contains("names no registry"), "{error}");
+        assert!(error.contains("target_not_digest_pinned"), "{error}");
+    }
+
+    #[test]
+    fn a_published_registry_reference_is_admitted() {
+        require_digest_pinned_target(
+            &recipe(
+                Some("ghcr.io/synth-laboratories/craftax-eval-target"),
+                Some(PINNED),
+            ),
+            EVAL_CRAFTAX_LLM_RECIPE,
+        )
+        .expect("a registry-qualified reference with a pinned digest is publishable evidence");
+        // A private registry on an explicit host and port is still a registry.
+        require_digest_pinned_target(
+            &recipe(Some("localhost:5000/craftax-eval-target"), Some(PINNED)),
+            EVAL_CRAFTAX_LLM_RECIPE,
+        )
+        .expect("an explicit host is resolvable by someone other than this process");
+    }
+
+    #[test]
+    fn a_recipe_with_no_image_has_nothing_to_pin() {
+        require_digest_pinned_target(&recipe(None, None), EVAL_FIXTURE_SMOKE_RECIPE)
+            .expect("a benchmark-free fixture declares no target");
     }
 }

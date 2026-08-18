@@ -676,6 +676,11 @@ a,
 	display: contents;
 }
 
+.chat-section-entry[hidden],
+.chat-section-entry[data-hidden="true"] {
+	display: none !important;
+}
+
 .chat-row {
 	position: relative;
 	min-width: 0;
@@ -910,7 +915,8 @@ a,
 }
 
 .chat-working-indicator,
-.chat-unread-indicator {
+.chat-unread-indicator,
+.chat-stalled-indicator {
 	width: 10px;
 	height: 10px;
 	margin-left: auto;
@@ -934,13 +940,28 @@ a,
 	white-space: nowrap;
 }
 
-.chat-unread-indicator {
+.chat-unread-indicator,
+.chat-stalled-indicator {
 	width: 8px;
 	height: 8px;
 	flex-basis: 8px;
 	border-radius: 50%;
 	background: var(--color-accent);
 	box-shadow: 0 0 0 2px rgba(240, 95, 34, 0.1);
+}
+
+/* A chat whose owner died. Hollow, so it reads as "stopped" beside the solid
+   unread dot and the spinning Working ring rather than as a third kind of
+   activity. Shape is inherited from the dot above; only the fill differs. */
+.chat-stalled-indicator {
+	background: transparent;
+	border: 1.5px solid var(--color-text-faint);
+	box-shadow: none;
+}
+
+.chat-stalled-indicator.attention {
+	background: var(--color-danger-text);
+	border-color: var(--color-danger-text);
 }
 
 @keyframes chat-working-spin {
@@ -3698,16 +3719,14 @@ html.sidebar-hidden .titlebar {
 
 /*
  * The transcript column carries the composer, whose usable floor is 320px plus
- * 24px gutters. Side panes therefore yield (min 0) while the transcript holds a
- * 380px floor: at a 960px window with a pane open the old split left a 293px
- * composer. Never give a side pane a hard min here — its min plus the
- * transcript floor overflows the workbench and breaks horizontal containment.
+ * 24px gutters. Certification reviews the compact visual at 320px, so the pane
+ * keeps that floor instead of collapsing to a blank sliver.
  */
 .workbench.with-visual {
 	grid-template-columns:
-		minmax(380px, 1fr)
+		minmax(320px, 1fr)
 		7px
-		minmax(260px, min(var(--visual-pane-width, 480px), calc(100% - 387px)));
+		minmax(320px, min(var(--visual-pane-width, 480px), calc(100% - 327px)));
 }
 .workbench.with-container { grid-template-columns: minmax(380px, 1fr) minmax(0, 420px); }
 .workbench.with-container.container-expanded { grid-template-columns: minmax(380px, .8fr) minmax(0, 1.2fr); }
@@ -4021,7 +4040,7 @@ html.sidebar-hidden .titlebar {
 }
 
 .visual-pane {
-	min-width: 0;
+	min-width: 320px;
 	min-height: 0;
 	display: flex;
 	flex-direction: column;
@@ -4631,10 +4650,23 @@ html.sidebar-hidden .titlebar {
 		grid-template-columns: 1fr;
 	}
 
+	/*
+	 * Stacked, the artifact goes *above* the transcript, not below it.
+	 *
+	 * `.composer-dock` is absolutely positioned against the bottom of the main
+	 * pane, so a bottom-docked artifact puts its primary surface underneath the
+	 * composer. Reviewers could only get a clean capture by widening past 900px
+	 * into the side-by-side layout — that is, by not reviewing this layout at
+	 * all. The transcript already reserves `--composer-clearance` for the
+	 * composer; the artifact keeps its own surface.
+	 */
 	.workbench.with-visual .visual-pane,
 	.workbench.with-container .container-pane {
-		border-top: 1px solid var(--color-border);
-		max-height: 48%;
+		order: -1;
+		border-top: 0;
+		border-bottom: 1px solid var(--color-border);
+		max-height: 52%;
+		min-height: 220px;
 	}
 	.workbench.with-visual > .pane-resize-handle,
 	.workbench.with-container > .pane-resize-handle { display: none; }
@@ -6005,7 +6037,7 @@ html.sidebar-hidden .titlebar {
 
 .inventory-workbench.with-visual .visual-pane {
 	flex: 0 1 min(var(--visual-pane-width, 420px), calc(100% - 367px));
-	min-width: 0;
+	min-width: 320px;
 	border-left: 1px solid var(--color-border);
 }
 
@@ -6748,6 +6780,17 @@ html.sidebar-hidden .titlebar {
 .visual-invalid p {
 	margin: 6px 0 0;
 	color: var(--color-text-muted);
+}
+
+.visual-invalid-identity {
+	display: flex;
+	flex-wrap: wrap;
+	gap: var(--sp-3);
+}
+
+.visual-invalid-identity code {
+	font-family: var(--code-font-family);
+	overflow-wrap: anywhere;
 }
 
 @media (max-width: 860px) {
@@ -7906,7 +7949,7 @@ html.sidebar-hidden .sidebar {
 	grid-template-columns:
 		minmax(380px, 1fr)
 		7px
-		minmax(260px, min(var(--visual-pane-width, 360px), calc(100% - 687px)))
+		minmax(320px, min(var(--visual-pane-width, 360px), calc(100% - 687px)))
 		minmax(0, 300px);
 }
 
@@ -8383,6 +8426,26 @@ html.sidebar-hidden .sidebar {
 .context-capability-list article > div:first-child span { display: -webkit-box; overflow: hidden; max-width: 650px; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
 .context-capability-list article.disabled { opacity: .58; }
 .context-capability-actions { display: flex; align-items: center; gap: 9px; flex: 0 0 auto; }
+.browser-setup-card .settings-card-body { display: grid; gap: 12px; padding-top: 12px; padding-bottom: 13px; }
+.browser-runtime-summary { display: grid; gap: 3px; }
+.browser-runtime-summary strong { color: var(--color-text); font: 750 12px/1.3 var(--font-sans); }
+.browser-runtime-summary[data-phase="ready"] strong { color: var(--color-success); }
+.browser-runtime-summary span, .browser-origin-policy span, .browser-origin-policy p { margin: 0; color: var(--color-text-muted); font: 400 10px/1.45 var(--font-sans); }
+.browser-runtime-checks { display: flex; flex-wrap: wrap; gap: 6px; }
+.browser-runtime-checks span { padding: 4px 7px; border: 1px solid var(--color-border); color: var(--color-text-muted); font: 700 9px/1 var(--font-sans); }
+.browser-runtime-checks span.ready { border-color: color-mix(in srgb, var(--color-success) 28%, var(--color-border)); color: var(--color-success); }
+.browser-runtime-checks span.missing { color: var(--color-danger); }
+.browser-origin-policy { display: grid; gap: 8px; padding-top: 11px; border-top: 1px solid var(--color-border); }
+.browser-origin-policy > div:first-child { display: grid; gap: 2px; }
+.browser-origin-policy strong { color: var(--color-text); font: 700 11px/1.3 var(--font-sans); }
+.browser-origin-policy ul { display: grid; gap: 5px; margin: 0; padding: 0; list-style: none; }
+.browser-origin-policy li { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.browser-origin-policy code, .browser-runtime-paths code { overflow: hidden; color: var(--color-text-muted); font: 500 var(--fs-micro)/1.3 var(--code-font-family); text-overflow: ellipsis; white-space: nowrap; }
+.browser-origin-policy li button { border: 0; background: transparent; color: var(--color-danger); font: 700 9px/1.2 var(--font-sans); cursor: pointer; }
+.browser-origin-policy form { display: flex; gap: 8px; }
+.browser-origin-policy input { flex: 1; min-width: 0; padding: 7px 9px; border: 1px solid var(--color-border); background: var(--color-card); color: var(--color-text); font: 500 10px/1.3 var(--font-sans); }
+.browser-runtime-paths { color: var(--color-text-muted); font: 600 9px/1.4 var(--font-sans); }
+.browser-runtime-paths > code { display: block; margin-top: 4px; }
 .context-capabilities .context-toggle input:checked + span { background: var(--color-blue); }
 .context-not-configured { flex: 0 0 auto; color: var(--color-text-faint) !important; font-weight: 650 !important; }
 .context-cookbook-row { border: 0; }

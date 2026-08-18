@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { ArtifactRef } from "../types/landing";
 import { bridges } from "../runtime/desktopBridge";
+import { publicError } from "../runtime/publicError";
 
 type RenderStatus = "queued" | "rendering" | "ready" | "failed" | string;
 
@@ -41,7 +42,7 @@ export function MermaidVisual({ artifact }: { artifact: ArtifactRef }) {
 				setImageUrl(`data:${rendition.mediaType};base64,${rendition.base64}`);
 				setError(null);
 			} catch (reason) {
-				if (!cancelled) setError(reason instanceof Error ? reason.message : String(reason));
+				if (!cancelled) setError(publicError(reason));
 			}
 			try {
 				const asset = await bridges.visuals.content?.(visualId);

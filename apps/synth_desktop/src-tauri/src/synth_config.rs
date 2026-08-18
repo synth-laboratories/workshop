@@ -446,6 +446,10 @@ pub fn update_workspace_access(request: WorkspaceAccessUpdate) -> Result<Workspa
 }
 
 pub fn desktop_permission_settings() -> Result<DesktopPermissionSettings> {
+    #[cfg(test)]
+    if let Some(settings) = test_machine_permissions::current() {
+        return Ok(settings);
+    }
     let primary = config_path();
     let canonical = dirs::home_dir()
         .unwrap_or_default()
@@ -454,6 +458,47 @@ pub fn desktop_permission_settings() -> Result<DesktopPermissionSettings> {
         &primary,
         (primary != canonical).then_some(canonical.as_path()),
     )
+}
+
+/// Machine permission settings are process-global state (env plus the home
+/// config file), so unit tests that depend on a specific machine policy must
+/// install one here instead of reading whatever the developer's machine says.
+/// The guard serializes such tests on one lock and restores the previous
+/// override on drop.
+#[cfg(test)]
+pub(crate) mod test_machine_permissions {
+    use super::DesktopPermissionSettings;
+    use std::sync::{Mutex, MutexGuard, OnceLock, RwLock};
+
+    static OVERRIDE: RwLock<Option<DesktopPermissionSettings>> = RwLock::new(None);
+    static SERIAL: OnceLock<Mutex<()>> = OnceLock::new();
+
+    pub(crate) fn current() -> Option<DesktopPermissionSettings> {
+        OVERRIDE.read().expect("machine override lock").clone()
+    }
+
+    pub(crate) struct Guard {
+        _serial: MutexGuard<'static, ()>,
+    }
+
+    impl Drop for Guard {
+        fn drop(&mut self) {
+            *OVERRIDE.write().expect("machine override lock") = None;
+        }
+    }
+
+    pub(crate) fn install(approval_policy: &str, sandbox_mode: &str) -> Guard {
+        let serial = SERIAL
+            .get_or_init(|| Mutex::new(()))
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        *OVERRIDE.write().expect("machine override lock") = Some(DesktopPermissionSettings {
+            config_path: "test://machine-permissions".into(),
+            approval_policy: approval_policy.into(),
+            sandbox_mode: sandbox_mode.into(),
+        });
+        Guard { _serial: serial }
+    }
 }
 
 pub fn update_desktop_permissions(
@@ -847,7 +892,18 @@ fn resolve_openrouter_secret_from_paths(
 }
 
 fn read_env_value(path: &Path, key: &str) -> Option<String> {
-    fs::read_to_string(path)
+    let path = path.to_path_buf();
+    let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+    std::thread::spawn(move || {
+        let _ = sender.send(fs::read_to_string(path));
+    });
+    // Credential files can live in privacy-controlled or cloud-backed
+    // folders. macOS may suspend an open indefinitely while waiting for an
+    // unavailable provider or consent UI. Secret discovery is optional at
+    // startup, so fail closed instead of freezing the entire application.
+    receiver
+        .recv_timeout(std::time::Duration::from_secs(2))
+        .ok()?
         .ok()?
         .lines()
         .find_map(|line| {

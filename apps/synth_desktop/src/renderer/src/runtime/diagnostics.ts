@@ -13,6 +13,7 @@
  */
 
 import { COMMANDS, invokeCommand } from "../bridge";
+import { publicError } from "../runtime/publicError";
 
 export type DiagnosticSeverity = "debug" | "info" | "warn" | "error";
 
@@ -143,7 +144,7 @@ export function reportDiagnosticError(
 	report: Omit<DiagnosticReport, "severity" | "message"> & { message?: string },
 	reason: unknown,
 ): void {
-	const message = report.message ?? (reason instanceof Error ? reason.message : String(reason));
+	const message = report.message ?? (publicError(reason));
 	reportDiagnostic({ ...report, severity: "error", message });
 }
 

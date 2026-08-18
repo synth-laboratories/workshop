@@ -151,6 +151,150 @@ test("an already-open pane rejects stale gets and reconciles a dropped final upd
 	await expect(page.getByTestId("visual-pane")).toBeHidden();
 });
 
+test("an owned visual.show does not steal another chat's right pane", async ({ page }) => {
+	await page.addInitScript((rows) => {
+		const store = [...rows] as VisualRecord[];
+		const listeners = new Set<(event: Record<string, unknown>) => void>();
+		(window as typeof window & { synthVisuals?: unknown }).synthVisuals = {
+			listTemplates: async () => [],
+			list: async () => store,
+			get: async (visualId: string) => {
+				const hit = store.find((row) => row.id === visualId);
+				if (!hit) throw new Error(`missing visual ${visualId}`);
+				return hit;
+			},
+			revisions: async () => [],
+			onEvent: (next: (event: Record<string, unknown>) => void, attached?: () => void) => {
+				listeners.add(next);
+				queueMicrotask(() => attached?.());
+				return () => { listeners.delete(next); };
+			}
+		};
+		(window as typeof window & { __visualOwner?: unknown }).__visualOwner = {
+			show: (visualId: string, ownerSessionId?: string) => {
+				listeners.forEach((listener) => listener({
+					kind: "visual.show",
+					payload: { visualId, revision: 1, ...(ownerSessionId ? { ownerSessionId } : {}) }
+				}));
+			}
+		};
+	}, [sampleVisual, { ...sampleVisual, id: "vis_healthbench", title: "HealthBench smoke" }]);
+	await page.reload();
+	await page.getByTestId("titlebar").waitFor();
+	await page.getByTestId("open-visuals").click();
+	await expect.poll(() => page.evaluate(() => (window as typeof window & { __visualOwner: { show(visualId: string, ownerSessionId?: string): void } }).__visualOwner !== undefined)).toBeTruthy();
+	await page.evaluate(() => (window as typeof window & { __visualOwner: { show(visualId: string, ownerSessionId?: string): void } }).__visualOwner.show("vis_test_reward", "chat-banking77"));
+	await expect.poll(() => page.evaluate(() => window.__synthEval?.getState().openVisualId ?? null)).toBe(null);
+	await expect(page.getByTestId("visual-pane")).toBeHidden();
+	await page.evaluate(() => (window as typeof window & { __visualOwner: { show(visualId: string, ownerSessionId?: string): void } }).__visualOwner.show("vis_healthbench"));
+	await expect.poll(() => page.evaluate(() => window.__synthEval?.getState().openVisualId)).toBe("vis_healthbench");
+	await expect(page.getByTestId("visual-pane")).toContainText("HealthBench smoke");
+});
+
+test("an optimizer visual event appears immediately in its chat Outputs shelf", async ({ page }) => {
+	await page.addInitScript((base) => {
+		const sessionId = "visual-output-session";
+		const visual = { ...base, id: "vis_optimizer_output", title: "HealthBench live eval", sessionId };
+		const listeners = new Set<(event: Record<string, unknown>) => void>();
+		(window as typeof window & { synthCodex?: unknown }).synthCodex = {
+			defaultWorkspace: async () => "/workspaces/default",
+			list: async () => [{
+				sessionId, threadId: "thread-visual-output", workspace: "/workspaces/default",
+				model: "gpt-5.6-luna", providerName: "openai", providerTitle: "OpenAI",
+				baseUrl: "https://api.openai.com/v1", status: "ready"
+			}],
+			start: async () => ({ sessionId, threadId: "thread-visual-output" }),
+			startTurn: async () => ({ sessionId, threadId: "thread-visual-output", turnId: "turn-output" }),
+			interrupt: async () => undefined,
+			close: async () => undefined,
+			onEvent: () => () => undefined
+		};
+		(window as typeof window & { synthVisuals?: unknown }).synthVisuals = {
+			listTemplates: async () => [],
+			list: async () => [],
+			get: async () => visual,
+			revisions: async () => [],
+			onEvent: (next: (event: Record<string, unknown>) => void, attached?: () => void) => {
+				listeners.add(next);
+				queueMicrotask(() => attached?.());
+				return () => { listeners.delete(next); };
+			}
+		};
+		(window as typeof window & { __optimizerVisual?: unknown }).__optimizerVisual = {
+			emit: () => listeners.forEach((listener) => listener({
+				schemaVersion: "synth.desktop-app-event.v1",
+				eventId: "evt-optimizer-visual",
+				sequence: 41,
+				sessionSequence: 1,
+				sessionId,
+				source: "visual",
+				kind: "visual.show",
+				payload: {
+					visualId: visual.id,
+					title: visual.title,
+					templateId: visual.templateId,
+					revision: 1,
+					ownerSessionId: sessionId
+				},
+				createdAt: "2026-08-17T20:00:00Z"
+			}))
+		};
+	}, sampleVisual);
+	await page.reload();
+	await page.getByTestId("local-chat-visual-output-session").click();
+	await page.evaluate(() => (window as typeof window & { __optimizerVisual: { emit(): void } }).__optimizerVisual.emit());
+	const transcript = page.getByTestId("chat-transcript");
+	await expect(transcript.getByTestId("resource-shelf-trigger")).toContainText("Outputs 1");
+	await transcript.getByTestId("resource-shelf-trigger").click();
+	await expect(page.getByTestId("visuals-icon-vis_optimizer_output")).toContainText("HealthBench live eval");
+});
+
+test("a durable optimizer visual restores to its chat Outputs shelf outside the transcript tail", async ({ page }) => {
+	await page.addInitScript((base) => {
+		const sessionId = "restored-visual-output-session";
+		const visual = { ...base, id: "vis_restored_optimizer_output", title: "Restored HealthBench eval", sessionId };
+		(window as typeof window & { synthCodex?: unknown }).synthCodex = {
+			defaultWorkspace: async () => "/workspaces/default",
+			list: async () => [{
+				sessionId, threadId: "thread-restored-output", workspace: "/workspaces/default",
+				model: "gpt-5.6-luna", providerName: "openai", providerTitle: "OpenAI",
+				baseUrl: "https://api.openai.com/v1", status: "ready"
+			}],
+			start: async () => ({ sessionId, threadId: "thread-restored-output" }),
+			startTurn: async () => ({ sessionId, threadId: "thread-restored-output", turnId: "turn-restored-output" }),
+			interrupt: async () => undefined,
+			close: async () => undefined,
+			onEvent: () => () => undefined
+		};
+		(window as typeof window & { synthCore?: unknown }).synthCore = {
+			sessionEventsTail: async () => Array.from({ length: 250 }, (_, index) => ({
+				schemaVersion: "synth.desktop-app-event.v1",
+				eventId: `evt-tail-${index}`,
+				sequence: index + 500,
+				sessionSequence: index + 500,
+				sessionId,
+				source: "codex",
+				kind: "item/agentMessage/delta",
+				payload: { delta: "x" },
+				createdAt: "2026-08-17T20:00:00Z"
+			}))
+		};
+		(window as typeof window & { synthVisuals?: unknown }).synthVisuals = {
+			listTemplates: async () => [],
+			list: async (query: { sessionId?: string }) => query.sessionId === sessionId ? [visual] : [],
+			get: async () => visual,
+			revisions: async () => [],
+			onEvent: () => () => undefined
+		};
+	}, sampleVisual);
+	await page.reload();
+	await page.getByTestId("local-chat-restored-visual-output-session").click();
+	const transcript = page.getByTestId("chat-transcript");
+	await expect(transcript.getByTestId("resource-shelf-trigger")).toContainText("Outputs 1");
+	await transcript.getByTestId("resource-shelf-trigger").click();
+	await expect(page.getByTestId("visuals-icon-vis_restored_optimizer_output")).toContainText("Restored HealthBench eval");
+});
+
 test("Visuals list splitter resizes, persists, keyboard-clamps, and disappears when stacked", async ({ page }) => {
 	await page.setViewportSize({ width: 1280, height: 840 });
 	await installVisualsFixture(page);

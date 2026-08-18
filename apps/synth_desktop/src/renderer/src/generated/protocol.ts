@@ -100,6 +100,26 @@ export const commands = {
 	 */
 	pluginsManage: (operation: string, pluginId: string, version: string | null, sessionId: string | null) => typedError<unknown, AppError>(__TAURI_INVOKE("plugins_manage", { operation, pluginId, version, sessionId })),
 	pluginsSetReleaseChannel: (pluginId: string, channel: string) => typedError<PluginStatus_Serialize, AppError>(__TAURI_INVOKE("plugins_set_release_channel", { pluginId, channel })),
+	computerUseStatus: (sessionId: string | null) => typedError<ComputerUseSnapshot_Serialize, AppError>(__TAURI_INVOKE("computer_use_status", { sessionId })),
+	/**
+	 *  Install the helper that ships inside this app bundle.
+	 *
+	 *  The source is our own Resources directory rather than a download: the helper
+	 *  is signed with the same identity as Workshop and shipping it separately
+	 *  would mean a second thing to notarize, host, and keep in version step.
+	 */
+	computerUseInstall: () => typedError<PluginStatus_Serialize, AppError>(__TAURI_INVOKE("computer_use_install")),
+	computerUseRemove: () => typedError<RemovalReport, AppError>(__TAURI_INVOKE("computer_use_remove")),
+	/**  Revoke one app's standing permission to be driven. */
+	computerUseRevokeApp: (bundleId: string) => typedError<number, AppError>(__TAURI_INVOKE("computer_use_revoke_app", { bundleId })),
+	/**  Open the exact Privacy & Security pane for one grant. */
+	computerUseOpenSettings: (permissionId: string) => typedError<null, AppError>(__TAURI_INVOKE("computer_use_open_settings", { permissionId })),
+	/**  Read-only managed-browser preflight plus the human-owned origin policy. */
+	browserRuntimeStatus: () => typedError<BrowserRuntimeStatus, AppError>(__TAURI_INVOKE("browser_runtime_status")),
+	/**  Human-only origin approval. Browser MCP deliberately has no equivalent tool. */
+	browserPolicyAllowOrigin: (origin: string) => typedError<BrowserRuntimeStatus, AppError>(__TAURI_INVOKE("browser_policy_allow_origin", { origin })),
+	/**  Revoke a persistent origin approval for future navigations. */
+	browserPolicyRevokeOrigin: (origin: string) => typedError<BrowserRuntimeStatus, AppError>(__TAURI_INVOKE("browser_policy_revoke_origin", { origin })),
 	visualSubscriptionReady: (request: VisualReadyRequest) => typedError<unknown, AppError>(__TAURI_INVOKE("visual_subscription_ready", { request })),
 	/**
 	 *  Fetch a visual's persisted, declaration-validated poll authority through
@@ -555,6 +575,20 @@ export type BeginResult = {
 
 export type BillingAction = "upgrade" | "manage";
 
+export type BrowserRuntimeStatus = {
+	phase: string,
+	detail: string,
+	backendPresent: boolean,
+	nodePresent: boolean,
+	playwrightPresent: boolean,
+	chromiumPresent: boolean,
+	nodeVersion: string | null,
+	backendPath: string,
+	profileRoot: string,
+	allowedOrigins: string[],
+	defaultLocalOrigins: string[],
+};
+
 export type CodexApprovalDecisionRequest = {
 	sessionId: string,
 	approvalId: string,
@@ -582,6 +616,12 @@ export type CodexSessionRecord = {
 	presentationSummary?: string | null,
 	approvalPolicy?: string,
 	sandbox?: string,
+	/**
+	 *  Set when the previous process died holding this chat's turn. It is what
+	 *  lets the sidebar say "Workshop exited while this task was running"
+	 *  instead of silently showing an idle chat — or, worse, a live one.
+	 */
+	recovery?: RecoveryNotice | null,
 };
 
 export type CodexSessionRequest = {
@@ -684,6 +724,23 @@ export type CommandReceipt = {
 	created_at: string,
 	actuation?: unknown,
 	duplicate?: boolean,
+};
+
+/**  What the Computer Use page renders. */
+export type ComputerUseSnapshot = ComputerUseSnapshot_Serialize | ComputerUseSnapshot_Deserialize;
+
+/**  What the Computer Use page renders. */
+export type ComputerUseSnapshot_Deserialize = {
+	status: PluginStatus_Deserialize,
+	/**  Bundle identifiers this session may drive without a fresh card. */
+	allowedApps: string[],
+};
+
+/**  What the Computer Use page renders. */
+export type ComputerUseSnapshot_Serialize = {
+	status: PluginStatus_Serialize,
+	/**  Bundle identifiers this session may drive without a fresh card. */
+	allowedApps: string[],
 };
 
 export type ContainerDeployment = {
@@ -1120,7 +1177,15 @@ export type McpContextGroup = {
 	enabledTools: { [key in string]: string[] },
 };
 
-export type MeasurementKind = "decode" | "observed_stream" | "end_to_end" | "provider_reported";
+export type MeasurementKind = "decode" |
+/**  A rate regressed from one output-text segment's own samples. */
+"observed_stream_segment" |
+/**
+ *  Turn-wide tokens over a gap-filtered denominator, recorded before
+ *  segment measurement existed. Kept readable, never treated as a
+ *  measurement: see migration 21.
+ */
+"legacy_observed_stream_estimate" | "end_to_end" | "provider_reported";
 
 export type MigrationApplyRequest = {
 	confirmationToken: string,
@@ -1400,6 +1465,11 @@ export type OptimizerRecipeRunRequest = {
 	 *  source is content-addressed at staging time, not at launch.
 	 */
 	candidateSetId?: string | null,
+	/**
+	 *  Optional GEPA search overrides. Omitted fields keep the recipe defaults.
+	 *  `proposalsPerGeneration` is capped at 10; `policyConcurrency` at 120.
+	 */
+	search?: OptimizerSearchOverrides | null,
 };
 
 export type OptimizerReconcileRequest = {
@@ -1487,6 +1557,13 @@ export type OptimizerRunRecord_Serialize = {
 	error?: unknown,
 };
 
+export type OptimizerSearchOverrides = {
+	proposalsPerGeneration?: unknown,
+	maxInFlightCandidates?: unknown,
+	policyConcurrency?: unknown,
+	rolloutConcurrency?: unknown,
+};
+
 export type OptimizerSidecarStatus = {
 	phase: string,
 	baseUrl: string | null,
@@ -1531,6 +1608,52 @@ export type OptimizerUsageSummary = {
 	extra?: unknown,
 };
 
+/**
+ *  One row in the permission list: what the OS was asked for, what it said, and
+ *  where the operator goes to change it.
+ */
+export type PluginPermission = PluginPermission_Serialize | PluginPermission_Deserialize;
+
+/**
+ *  One row in the permission list: what the OS was asked for, what it said, and
+ *  where the operator goes to change it.
+ */
+export type PluginPermission_Deserialize = {
+	/**  Stable identifier, e.g. `accessibility`, `screen_recording`. */
+	id: string,
+	/**
+	 *  What macOS itself calls this in System Settings. Matching its wording is
+	 *  what makes the row findable; our own name for it would not be.
+	 */
+	label: string,
+	/**  One of [`PLUGIN_PERMISSION_STATES`]. */
+	state: string,
+	/**  Deep link to the exact Privacy & Security pane, where one exists. */
+	settingsUrl?: string | null,
+	/**  Why the plugin needs it, in one line. A reason, not a pitch. */
+	detail?: string | null,
+};
+
+/**
+ *  One row in the permission list: what the OS was asked for, what it said, and
+ *  where the operator goes to change it.
+ */
+export type PluginPermission_Serialize = {
+	/**  Stable identifier, e.g. `accessibility`, `screen_recording`. */
+	id: string,
+	/**
+	 *  What macOS itself calls this in System Settings. Matching its wording is
+	 *  what makes the row findable; our own name for it would not be.
+	 */
+	label: string,
+	/**  One of [`PLUGIN_PERMISSION_STATES`]. */
+	state: string,
+	/**  Deep link to the exact Privacy & Security pane, where one exists. */
+	settingsUrl?: string | null,
+	/**  Why the plugin needs it, in one line. A reason, not a pitch. */
+	detail?: string | null,
+};
+
 export type PluginServiceStatus = PluginServiceStatus_Serialize | PluginServiceStatus_Deserialize;
 
 export type PluginServiceStatus_Deserialize = {
@@ -1561,6 +1684,11 @@ export type PluginStatus_Deserialize = {
 	capabilitiesDigest?: string | null,
 	algorithms?: string[],
 	templates?: string[],
+	/**
+	 *  OS grants this plugin holds. Empty for plugins that need none, which is
+	 *  most of them — hence a list rather than an `Option`.
+	 */
+	permissions?: PluginPermission_Deserialize[],
 	lastActionReceiptId?: string | null,
 	detail?: string | null,
 };
@@ -1579,8 +1707,77 @@ export type PluginStatus_Serialize = {
 	capabilitiesDigest?: string | null,
 	algorithms: string[],
 	templates: string[],
+	/**
+	 *  OS grants this plugin holds. Empty for plugins that need none, which is
+	 *  most of them — hence a list rather than an `Option`.
+	 */
+	permissions?: PluginPermission_Serialize[],
 	lastActionReceiptId?: string | null,
 	detail?: string | null,
+};
+
+/**  The last thing this turn durably did before its owner disappeared. */
+export type RecoveryActivity = {
+	kind: string,
+	label?: string | null,
+	at: string,
+};
+
+/**
+ *  Everything the product needs to say what happened and what is safe next.
+ *
+ *  Persisted on the session row (`metadata.recovery`) and journalled as
+ *  [`RECOVERY_EVENT_KIND`], so a client that missed the event still sees it.
+ */
+export type RecoveryNotice = {
+	sessionId: string,
+	runId?: string | null,
+	reason: string,
+	previousOwnerInstanceId?: string | null,
+	lastHeartbeatAt?: string | null,
+	/**
+	 *  Which attempt a restart would be. `u32` rather than `i64`: this crosses
+	 *  the specta boundary, which forbids BigInt-style types, and a retry count
+	 *  has no business being one.
+	 */
+	recoveryAttempt: number,
+	/**  Whether replaying the prompt can be offered as a plain retry. */
+	restartable: boolean,
+	/**
+	 *  Whether an external action's outcome is unknown, so a retry could
+	 *  duplicate consequential work and a human must reconcile first.
+	 */
+	needsAttention: boolean,
+	externalObjectId?: string | null,
+	lastActivity?: RecoveryActivity | null,
+	lastUserMessage?: RecoveryPrompt | null,
+	recoveredAt: string,
+};
+
+/**
+ *  The operator-facing prompt that produced the abandoned turn, so Restart can
+ *  reuse it instead of asking the user to retype what they already sent.
+ */
+export type RecoveryPrompt = {
+	text: string,
+	clientMessageId?: string | null,
+};
+
+/**  What `remove` did, for the receipt. G7. */
+export type RemovalReport = {
+	bundleRemoved: boolean,
+	/**  TCC services whose grant was reset. */
+	tccReset: string[],
+	/**
+	 *  Reset attempts macOS refused. Reported rather than swallowed: a grant
+	 *  left behind is exactly the uninstall residue G7 exists to catch.
+	 */
+	tccResetFailed: string[],
+	/**
+	 *  u32 rather than usize: specta forbids BigInt-style types across the
+	 *  bridge, and nobody has more than four billion allowlist entries.
+	 */
+	allowlistEntriesRemoved: number,
 };
 
 export type RenderedVisualObservation = {
@@ -2098,6 +2295,7 @@ export type TemplateMeta = {
 	shellPath?: string | null,
 	exampleBinding?: unknown,
 	slots?: unknown,
+	bindingSchema?: unknown,
 	observationContract?: TemplateObservationContract | null,
 };
 

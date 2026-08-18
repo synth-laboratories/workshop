@@ -10,6 +10,17 @@ import { ProviderMark } from "./ProviderMark";
 import { PLUGIN_NAV, type PluginNavEntry } from "../runtime/pluginNav";
 import { findPluginStatus, pluginPresentation } from "../runtime/pluginPresentation";
 import type { PluginStatus } from "../bridge/types";
+import type { ChatPresence } from "@synth/runtime-protocol";
+
+/** One word per state. The chat row has no room for, and no need of, more. */
+const PRESENCE_LABELS: Record<ChatPresence, string> = {
+	idle: "Idle",
+	starting: "Starting",
+	working: "Working",
+	recovering: "Recovering",
+	interrupted: "Interrupted",
+	needsAttention: "Needs attention"
+};
 
 type CodexUsageSnapshot = {
 	usedPercent: number;
@@ -26,7 +37,14 @@ type Props = {
 	visualsActive?: boolean;
 	reportsActive?: boolean;
 	optimizersActive?: boolean;
+	computerUseActive?: boolean;
 	workingChatIds?: ReadonlySet<string>;
+	/**
+	 * What each chat is doing, as opposed to what its stored status says. Only
+	 * `working` may render the live indicator; a chat whose owner died lands on
+	 * `recovering` / `needsAttention` and stays archivable.
+	 */
+	chatPresence?: Record<string, ChatPresence>;
 	activeLocalDecodeTps?: string | null;
 	unreadChatIds?: ReadonlySet<string>;
 	pinnedChatIds?: ReadonlySet<string>;
@@ -37,6 +55,7 @@ type Props = {
 	onOpenVisuals: () => void;
 	onOpenReports: () => void;
 	onOpenOptimizers: () => void;
+	onOpenComputerUse: () => void;
 	onSearch: () => void;
 	onSettings: () => void;
 	/** Canonical registry listing, owned by the app controller. */
@@ -176,11 +195,23 @@ function IconOptimizers() {
 	);
 }
 
+/** A pointer over a window: the plugin drives another app's interface. */
+function IconComputerUse(): ReactElement {
+	return (
+		<svg className="item-icon" viewBox="0 0 16 16" fill="none" aria-hidden>
+			<rect x="1.8" y="2.6" width="12.4" height="8.4" rx="1.4" stroke="currentColor" strokeWidth="1.2" />
+			<path d="M6.4 6.1l4.3 2.6-1.9.5-.7 1.9-1.7-5z" fill="currentColor" />
+			<path d="M5.6 13.4h4.8" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" />
+		</svg>
+	);
+}
+
 const PLUGIN_NAV_ICONS: Record<PluginNavEntry["id"], () => ReactElement> = {
 	visuals: IconVisuals,
 	reports: IconReports,
 	optimizers: IconOptimizers,
-	inventory: IconInventory
+	inventory: IconInventory,
+	"computer-use": IconComputerUse
 };
 
 export function Sidebar({
@@ -191,7 +222,9 @@ export function Sidebar({
 	visualsActive = false,
 	reportsActive = false,
 	optimizersActive = false,
+	computerUseActive = false,
 	workingChatIds = new Set<string>(),
+	chatPresence = {},
 	activeLocalDecodeTps = null,
 	unreadChatIds = new Set<string>(),
 	pinnedChatIds = new Set<string>(),
@@ -202,6 +235,7 @@ export function Sidebar({
 	onOpenVisuals,
 	onOpenReports,
 	onOpenOptimizers,
+	onOpenComputerUse,
 	onSearch,
 	onSettings,
 	pluginStatuses = null,
@@ -285,29 +319,37 @@ export function Sidebar({
 		if (aPinned !== bPinned) return aPinned ? -1 : 1;
 		return 0;
 	}), [pinnedChatIds, state.chats]);
-	const visibleChats = useMemo(() => {
-		if (showAllChats) return orderedChats;
+	const hiddenChatIds = useMemo(() => {
+		if (showAllChats) return new Set<string>();
 		const alwaysVisible = new Set([
 			...orderedChats.filter((chat) => pinnedChatIds.has(chat.id)).map((chat) => chat.id),
 			...orderedChats.filter((chat) => chat.id === activeChatId || workingChatIds.has(chat.id)).map((chat) => chat.id)
 		]);
-		const priority = orderedChats.filter((chat) => alwaysVisible.has(chat.id));
-		const remainder = orderedChats.filter((chat) => !alwaysVisible.has(chat.id));
-		return [...priority, ...remainder].slice(0, Math.max(10, priority.length));
+		const hidden = new Set<string>();
+		const floor = Math.max(10, alwaysVisible.size);
+		let shown = alwaysVisible.size;
+		for (const chat of orderedChats) {
+			if (alwaysVisible.has(chat.id)) continue;
+			if (shown >= floor) hidden.add(chat.id);
+			else shown += 1;
+		}
+		return hidden;
 	}, [activeChatId, orderedChats, pinnedChatIds, showAllChats, workingChatIds]);
-	const firstPinnedIndex = visibleChats.findIndex((chat) => pinnedChatIds.has(chat.id));
-	const firstRecentIndex = visibleChats.findIndex((chat) => !pinnedChatIds.has(chat.id));
+	const firstPinnedIndex = orderedChats.findIndex((chat) => pinnedChatIds.has(chat.id));
+	const firstRecentIndex = orderedChats.findIndex((chat) => !pinnedChatIds.has(chat.id));
 	const pluginRowActive: Record<PluginNavEntry["id"], boolean> = {
 		visuals: visualsActive,
 		reports: reportsActive,
 		optimizers: optimizersActive,
-		inventory: inventoryActive
+		inventory: inventoryActive,
+		"computer-use": computerUseActive
 	};
 	const pluginRowOpen: Record<PluginNavEntry["id"], () => void> = {
 		visuals: onOpenVisuals,
 		reports: onOpenReports,
 		optimizers: onOpenOptimizers,
-		inventory: onOpenInventory
+		inventory: onOpenInventory,
+		"computer-use": onOpenComputerUse
 	};
 
 	if (!sidebarVisible) return null;
@@ -360,16 +402,19 @@ export function Sidebar({
 							{orderedChats.length === 0 ? (
 								<p className="empty-hint">No local chats yet</p>
 							) : (
-								visibleChats.map((chat, chatIndex) => {
+								orderedChats.map((chat, chatIndex) => {
 									const title = conversationTitles[chat.id] ?? chat.title;
 									const pinned = pinnedChatIds.has(chat.id);
 									const working = workingChatIds.has(chat.id);
+								const presence = chatPresence[chat.id] ?? "idle";
+								const stalled =
+									presence === "recovering" || presence === "needsAttention" || presence === "interrupted";
 									const sectionLabel = chatIndex === firstPinnedIndex
 										? "Pinned"
 										: chatIndex === firstRecentIndex ? "Recents" : null;
 									if (renamingId === chat.id) {
 										return (
-											<div key={chat.id} className="chat-section-entry">
+											<div key={chat.id} className="chat-section-entry" hidden={hiddenChatIds.has(chat.id)} data-hidden={hiddenChatIds.has(chat.id) ? "true" : undefined}>
 												{sectionLabel ? <h3 className="chat-section-label">{sectionLabel}</h3> : null}
 											<form
 												className="chat-rename-form"
@@ -403,7 +448,7 @@ export function Sidebar({
 										);
 									}
 					return (
-						<div key={chat.id} className="chat-section-entry">
+						<div key={chat.id} className="chat-section-entry" hidden={hiddenChatIds.has(chat.id)} data-hidden={hiddenChatIds.has(chat.id) ? "true" : undefined}>
 							{sectionLabel ? <h3 className="chat-section-label">{sectionLabel}</h3> : null}
 						<div className="chat-row">
 						<button
@@ -438,6 +483,14 @@ export function Sidebar({
 														<span className="chat-working-rate" data-testid={`chat-working-rate-${chat.id}`}>{activeLocalDecodeTps}</span>
 													) : null}
 												</>
+											) : stalled ? (
+												<span
+													className={`chat-stalled-indicator${presence === "needsAttention" ? " attention" : ""}`}
+													aria-label={PRESENCE_LABELS[presence]}
+													title={PRESENCE_LABELS[presence]}
+													data-presence={presence}
+													data-testid={`chat-stalled-${chat.id}`}
+												/>
 											) : unreadChatIds.has(chat.id) ? (
 												<span className="chat-unread-indicator" aria-label="Finished, unviewed" title="Finished, unviewed" data-testid={`chat-unread-${chat.id}`} />
 											) : null}
@@ -470,7 +523,7 @@ export function Sidebar({
 									);
 								})
 							)}
-							{orderedChats.length > visibleChats.length ? (
+							{hiddenChatIds.size > 0 ? (
 								<button
 									type="button"
 									className="sidebar-show-more"
@@ -479,7 +532,7 @@ export function Sidebar({
 									aria-controls="sidebar-chats"
 									onClick={() => setShowAllChats(true)}
 								>
-									Show {orderedChats.length - visibleChats.length} more
+									Show {hiddenChatIds.size} more
 								</button>
 							) : showAllChats && orderedChats.length > 10 ? (
 								<button

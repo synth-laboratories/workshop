@@ -567,7 +567,7 @@ function activityKind(eventKind: string): LocalActivityLine["kind"] {
 	return "working";
 }
 
-type SafeToolActivity = Pick<LocalActivityLine, "label" | "detail" | "path" | "kind" | "toolStatus" | "durationMs" | "visualStage" | "artifactId" | "containerId"> & { key: string };
+type SafeToolActivity = Pick<LocalActivityLine, "label" | "detail" | "path" | "kind" | "toolStatus" | "durationMs" | "visualStage" | "artifactId" | "containerId" | "optimizerRunId" | "runKind"> & { key: string };
 
 const VISUAL_MUTATION_TOOLS = new Set([
 	"visual_manage",
@@ -714,6 +714,36 @@ function visualIdForTool(
 	return stringField(args, "visual_id", "visualId", "instance_id", "instanceId", "id");
 }
 
+/** Workflows chat has a run-progress card for. Others stream but get no card. */
+const CARDED_RUN_KINDS = new Set(["eval", "gepa", "sft", "environment"]);
+
+/**
+ * The durable run a `synth_optimizers` call started or acted on.
+ *
+ * Read from the tool *result* — the run record the host returned — and only
+ * secondarily from the arguments, because an argument is a request and a result
+ * is a fact. Nothing is inferred from surrounding prose: a run id in an
+ * assistant sentence is text, not a subscription.
+ */
+function optimizerRunForTool(
+	item: Record<string, unknown>,
+	args: Record<string, unknown>
+): { optimizerRunId?: string; runKind?: LocalActivityLine["runKind"] } {
+	const structured = toolStructuredContent(item);
+	const run = structured ? nestedObject(structured, "run", "optimizerRun") ?? structured : undefined;
+	const id = (run && stringField(run, "id", "optimizerRunId", "optimizer_run_id"))
+		?? stringField(args, "optimizer_run_id", "optimizerRunId")
+		?? stringField(nestedObject(args, "arguments") ?? {}, "optimizer_run_id", "optimizerRunId");
+	if (!id) return {};
+	const algorithm = (run && stringField(run, "algorithmId", "algorithm_id")) ?? undefined;
+	return {
+		optimizerRunId: id,
+		...(algorithm && CARDED_RUN_KINDS.has(algorithm)
+			? { runKind: algorithm as LocalActivityLine["runKind"] }
+			: {})
+	};
+}
+
 function mcpToolActivity(
 	item: Record<string, unknown>,
 	args: Record<string, unknown>,
@@ -767,6 +797,7 @@ function mcpToolActivity(
 		.join(" · ") || undefined;
 	const artifactId = server === "synth_visuals" ? visualIdForTool(item, args, tool) : undefined;
 	const containerId = server === "synth_containers" ? containerIdForTool(item, args, tool) : undefined;
+	const optimizerRun = server === "synth_optimizers" ? optimizerRunForTool(item, args) : {};
 	const visualOperation = server === "synth_visuals"
 		? (tool === "visual_manage" ? stringField(args, "operation") : tool.replace(/^visual_/, ""))
 		: undefined;
@@ -798,6 +829,7 @@ function mcpToolActivity(
 		kind: visualStage ? "visual_lifecycle" : artifactId ? "visual" : "working",
 		artifactId,
 		containerId,
+		...optimizerRun,
 		toolStatus,
 		durationMs,
 		visualStage
@@ -1447,6 +1479,10 @@ export function eventsToLocalActivity(
 				existing.durationMs = safeTool.durationMs;
 				existing.artifactId = safeTool.artifactId;
 				existing.containerId = safeTool.containerId;
+				// A run id only ever arrives (never disappears): the call that
+				// returns the record often completes after the one that requested it.
+				if (safeTool.optimizerRunId) existing.optimizerRunId = safeTool.optimizerRunId;
+				if (safeTool.runKind) existing.runKind = safeTool.runKind;
 			} else {
 				if (safeTool.kind === "command") runActions.commands += 1;
 				if (safeTool.kind === "file_read") runActions.reads += 1;
@@ -1467,6 +1503,8 @@ export function eventsToLocalActivity(
 					visualStage: safeTool.visualStage,
 					artifactId: safeTool.artifactId,
 					containerId: safeTool.containerId,
+					optimizerRunId: safeTool.optimizerRunId,
+					runKind: safeTool.runKind,
 					toolStatus: safeTool.toolStatus,
 					durationMs: safeTool.durationMs
 				};
@@ -1482,6 +1520,8 @@ export function eventsToLocalActivity(
 			: event.eventKind === "approval.requested" && approvalKind === "credential_access" ? "Credential access"
 				: event.eventKind === "approval.requested" && approvalKind === "sidecar_lifecycle" ? "Sidecar lifecycle"
 			: event.eventKind === "approval.requested" && approvalKind === "plugin_lifecycle" ? "Plugin lifecycle"
+			: event.eventKind === "approval.requested" && approvalKind === "computer_use"
+				? (payload.hazard === true ? "Confirm this action" : "Allow app control")
 			: event.eventKind === "approval.requested" ? "Approval requested"
 			: event.eventKind === "approval.granted" ? "Approval granted"
 				: event.eventKind === "approval.rejected" ? "Approval rejected"
@@ -1492,6 +1532,20 @@ export function eventsToLocalActivity(
 			: approvalKind === "sidecar_lifecycle"
 				? [payload.sidecar, payload.action].filter((value): value is string => typeof value === "string").join(" · ")
 				: undefined;
+		// G6: a hazard card must show what the action will actually do —
+		// recipient, text, destination — not just which app it touches.
+		// "May use Mail" is not consent to send this mail.
+		const computerUseDetail = payload.kind === "computer_use"
+			? [
+				payload.app,
+				payload.action,
+				...(payload.payload && typeof payload.payload === "object" && !Array.isArray(payload.payload)
+					? Object.entries(payload.payload as Record<string, unknown>)
+						.filter(([, value]) => value !== null && value !== undefined && value !== "")
+						.map(([key, value]) => `${key}: ${String(value)}`)
+					: [])
+			].filter((value): value is string => typeof value === "string" && value !== "").join(" · ")
+			: undefined;
 		const pluginDetail = payload.kind === "plugin_lifecycle"
 			? [
 				payload.action,
@@ -1519,6 +1573,7 @@ export function eventsToLocalActivity(
 		const safeKind = payload.kind === "shell_command" || payload.kind === "file_change" || payload.kind === "permission"
 			|| payload.kind === "plugin_lifecycle" || payload.kind === "paid_compute";
 		const detail = typedDetail
+			?? computerUseDetail
 			?? pluginDetail
 			?? (safeKind && typeof payload.detail === "string"
 				? payload.detail.slice(0, 500)
@@ -1531,7 +1586,7 @@ export function eventsToLocalActivity(
 			approvalId: event.eventKind === "approval.requested"
 				? approvalKey(event) ?? `approval-${event.sequence}`
 				: undefined,
-			approvalKind: approvalKind === "shell_command" || approvalKind === "paid_compute" || approvalKind === "sidecar_lifecycle" || approvalKind === "credential_access" || approvalKind === "plugin_lifecycle"
+			approvalKind: approvalKind === "shell_command" || approvalKind === "paid_compute" || approvalKind === "sidecar_lifecycle" || approvalKind === "credential_access" || approvalKind === "plugin_lifecycle" || approvalKind === "computer_use"
 				? approvalKind : "permission",
 			approvalPayload: event.eventKind === "approval.requested" && approvalKind === "paid_compute" ? {
 				operation: typeof payload.operation === "string" ? payload.operation : undefined,
@@ -1569,13 +1624,65 @@ export function eventsToLocalActivity(
 
 export { assertLocalActivityPlacementInvariant } from "./activityPlacementInvariant";
 
+/** Operations that make a visual *this chat's* output.
+ *
+ * The durable visual registry is instance-global, so a visual returned by
+ * `list`, `get`, `show`, `capture_review`, or `review` is very often someone
+ * else's. Adopting on any call that happened to carry a visual record is how a
+ * chat claimed outputs it had merely looked at. Reading is not owning. */
+const VISUAL_OWNERSHIP_OPERATIONS = new Set([
+	"create",
+	"create_from_template",
+	"update",
+	"bind",
+	"bind_data_source",
+	"save",
+	"save_tsx",
+	"fork",
+	"archive"
+]);
+
+const VISUAL_OWNERSHIP_TOOLS = new Set([
+	"visual_create",
+	"visual_create_from_template",
+	"visual_update",
+	"visual_bind_data_source",
+	"visual_save",
+	"visual_save_tsx",
+	"visual_fork",
+	"visual_archive"
+]);
+
+function toolClaimsVisualOwnership(tool: string, args: Record<string, unknown>): boolean {
+	// `visual_manage` is one advertised tool covering every operation, so its
+	// name alone says nothing about whether this call authored anything.
+	if (tool === "visual_manage") {
+		const operation = (stringField(args, "operation") ?? "").toLowerCase();
+		return VISUAL_OWNERSHIP_OPERATIONS.has(operation);
+	}
+	return VISUAL_OWNERSHIP_TOOLS.has(tool);
+}
+
+/** A visual belongs to the session that created it, and to no other.
+ *
+ * A visual with no recorded owner stays adoptable, so chats that predate
+ * ownership keep their own rails. One that names a *different* owner is never
+ * adopted, however it arrived here. */
+function visualBelongsToSession(visual: Record<string, unknown>, sessionId: string): boolean {
+	const owner = stringField(visual, "sessionId", "session_id", "ownerSessionId", "owner_session_id");
+	return !owner || owner === sessionId;
+}
+
 function toolResultToArtifact(event: RuntimeEvent): ArtifactRef | undefined {
 	const item = eventItem(event);
 	const server = (stringField(item, "server", "pluginId", "plugin_id") ?? "").toLowerCase();
 	const tool = (stringField(item, "tool", "name", "toolName", "tool_name") ?? "").toLowerCase();
 	if (server !== "synth_visuals" || !VISUAL_MUTATION_TOOLS.has(tool)) return undefined;
+	const args = parseJsonObject(item.arguments) ?? {};
+	if (!toolClaimsVisualOwnership(tool, args)) return undefined;
 	const visual = visualFromToolResult(item);
 	if (!visual) return undefined;
+	if (!visualBelongsToSession(visual, event.sessionId)) return undefined;
 	const id = stringField(visual, "id", "visualId", "visual_id");
 	const templateId = stringField(visual, "templateId", "template_id");
 	if (!id || !templateId) return undefined;
@@ -1628,6 +1735,12 @@ export function eventsToArtifacts(events: RuntimeEvent[]): ArtifactRef[] {
 			continue;
 		}
 		const payload = event.payload ?? {};
+		// Showing a visual puts it in the pane; it does not make it this chat's
+		// output. The show event is journaled against whoever opened it, so the
+		// record's own owner is the only authority on that.
+		if (event.eventKind === "visual.show" && !visualBelongsToSession(payload, event.sessionId)) {
+			continue;
+		}
 		const id =
 			typeof payload.visualId === "string"
 				? payload.visualId
@@ -1678,6 +1791,24 @@ export function eventsToArtifacts(events: RuntimeEvent[]): ArtifactRef[] {
 	const subagents = result.findIndex((artifact) => artifact.id === "codex-subagents");
 	if (subagents > 0) result.unshift(result.splice(subagents, 1)[0]);
 	return result;
+}
+
+/** Keep an open pane only if that artifact still belongs to this chat. */
+export function openArtifactIdForChat(
+	openId: string | null,
+	artifacts: ArtifactRef[] | undefined
+): string | null {
+	if (!openId) return null;
+	return artifacts?.some((artifact) => artifact.id === openId) ? openId : null;
+}
+
+/** Outputs lists this chat's owned visuals. Foreign discovery is labeled, never adopted. */
+export function ownedChatArtifacts(chatId: string, artifacts: ArtifactRef[] | undefined): ArtifactRef[] {
+	return (artifacts ?? []).filter((artifact) => {
+		if (artifact.templateId === "synth.subagents.v1") return true;
+		if (!artifact.ownerSessionId) return true;
+		return artifact.ownerSessionId === chatId;
+	});
 }
 
 export function visualRecordToArtifact(visual: VisualInstanceRecord): ArtifactRef {

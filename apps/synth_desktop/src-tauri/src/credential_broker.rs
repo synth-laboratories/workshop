@@ -649,7 +649,7 @@ impl Drop for MeteredRelay {
 }
 
 async fn serve(state: Arc<BrokerState>, listener: tokio::net::TcpListener) -> Result<()> {
-    crate::ipc::serve_connections(listener, move |request| {
+    crate::ipc::serve_connections(listener, move |request, _peer| {
         let state = state.clone();
         async move { proxy(state, request).await }
     })

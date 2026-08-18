@@ -6,6 +6,7 @@
 //! [`super::OptimizerService`]. Stopping or uninstalling a sidecar version must
 //! not delete runs, events, visuals, or retained template packages.
 
+use super::events::OptimizerEventDraft;
 use super::models::{
     OptimizerEventEnvelope, OptimizerExecutionBinding, OptimizerRunRecord,
     OPTIMIZER_EVENT_SCHEMA_VERSION,
@@ -32,7 +33,7 @@ use std::{
 };
 use tauri::State;
 use tokio::process::{Child, Command};
-use tokio::sync::{broadcast, Mutex, RwLock};
+use tokio::sync::{broadcast, Mutex, OwnedSemaphorePermit, RwLock, Semaphore};
 
 // Channel pins, the floor, and the vocabulary lists all resolve from the one
 // contract table so a version has a single place to be read and changed.
@@ -48,6 +49,7 @@ pub const DEFAULT_RECIPE_SCHEMA_VERSION: &str = OPTIMIZERS_CONTRACT.recipe_schem
 pub const DEFAULT_ALGORITHM_VERSION: &str = "synth-optimizers-0.2.14";
 /// Optimizer-family visuals bind this slot. `live` and `jobs` are refused.
 pub const OPTIMIZER_VISUAL_SLOT: &str = "optimizer_run";
+const MAX_CONCURRENT_GEPA_RECIPES: usize = 2;
 const SELECTED_VERSION_FILE: &str = "selected_version";
 const SIGNING_KEY_FILE: &str = "signing.key";
 const API_KEY_FILE: &str = "api_key";
@@ -215,18 +217,22 @@ pub struct OptimizerManager {
     /// the `Child`, leaving `uv` descendants orphaned. Every production worker
     /// is its own process group and the supervisor drains these groups first.
     gepa_workers: Mutex<HashMap<String, GepaWorkerState>>,
+    gepa_capacity: Arc<Semaphore>,
     run_spools: Arc<Mutex<HashMap<String, RunSpoolState>>>,
     client: Client,
     /// Attached by the composition root once diagnostics exist.
     diagnostics: Arc<std::sync::OnceLock<Arc<crate::diagnostics::DiagnosticsService>>>,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Debug)]
 enum GepaWorkerState {
     /// The run id is atomically reserved while its process is being spawned.
     Starting,
     /// The isolated process group is owned by this supervisor.
-    Running { pid: u32 },
+    Running {
+        pid: u32,
+        _permit: Option<OwnedSemaphorePermit>,
+    },
 }
 
 impl OptimizerManager {
@@ -250,6 +256,7 @@ impl OptimizerManager {
             updates,
             runtime: Mutex::new(None),
             gepa_workers: Mutex::new(HashMap::new()),
+            gepa_capacity: Arc::new(Semaphore::new(MAX_CONCURRENT_GEPA_RECIPES)),
             run_spools: Arc::new(Mutex::new(HashMap::new())),
             client: crate::http::http_client(),
             diagnostics: Arc::new(std::sync::OnceLock::new()),
@@ -785,8 +792,9 @@ impl OptimizerManager {
     /// only product-resolved paths and the one allowlisted credential; package
     /// version, executable, and subcommand stay owned by this manager.
     ///
-    /// Two `optimizer_run_id`s may be live at once. This is a map of workers,
-    /// not a singleton that would serialize campaigns.
+    /// At most two `optimizer_run_id`s execute at once. Additional submitted
+    /// runs wait here in their durable `queued` state instead of launching
+    /// colliding child processes against the same optimizer workspace.
     pub async fn spawn_gepa_recipe(
         &self,
         run_id: &str,
@@ -816,6 +824,18 @@ impl OptimizerManager {
             }
         }
         self.ensure_memory_spool(run_id).await;
+        let permit = self
+            .gepa_capacity
+            .clone()
+            .acquire_owned()
+            .await
+            .map_err(|_| anyhow!("GEPA admission queue closed while `{run_id}` was waiting"))?;
+        if !matches!(
+            self.gepa_workers.lock().await.get(run_id),
+            Some(GepaWorkerState::Starting)
+        ) {
+            bail!("GEPA supervisor cancelled `{run_id}` while it was queued");
+        }
         match launch_gepa_recipe_process(
             &self.home,
             &selected.version,
@@ -833,7 +853,10 @@ impl OptimizerManager {
                     let mut workers = self.gepa_workers.lock().await;
                     match workers.get_mut(run_id) {
                         Some(state @ GepaWorkerState::Starting) => {
-                            *state = GepaWorkerState::Running { pid };
+                            *state = GepaWorkerState::Running {
+                                pid,
+                                _permit: Some(permit),
+                            };
                             true
                         }
                         Some(GepaWorkerState::Running { .. }) | None => false,
@@ -862,7 +885,7 @@ impl OptimizerManager {
 
     pub async fn terminate_gepa_recipe(&self, run_id: &str) {
         let state = self.gepa_workers.lock().await.remove(run_id);
-        if let Some(GepaWorkerState::Running { pid }) = state {
+        if let Some(GepaWorkerState::Running { pid, .. }) = state {
             terminate_process_groups(&[pid]).await;
         }
     }
@@ -1000,42 +1023,37 @@ impl OptimizerManager {
         self.ensure_memory_spool(&pin.optimizer_run_id).await;
         merge_pin_into_run(&mut run, &pin);
         service.persist_run(run.clone()).await?;
-        let event = OptimizerEventEnvelope {
-            schema_version: OPTIMIZER_EVENT_SCHEMA_VERSION.into(),
-            event_id: Some(format!("{}:sidecar-pin", run.id)),
-            event_type: "optimizer.run.pinned".into(),
-            sequence_number: run.cursor_seq + 1,
-            occurred_at: chrono::Utc::now().to_rfc3339(),
-            optimizer_run_id: run.id.clone(),
-            algorithm_id: run.algorithm_id.clone(),
-            level: Some("info".into()),
-            item: None,
-            delta: json!({
-                "sidecarVersion": pin.sidecar_version,
-                "algorithmVersion": pin.algorithm_version,
-                "recipeVersion": pin.recipe_version,
-                "sidecarDigest": pin.digest,
-                "spoolPath": pin.spool_path,
-            })
-            .as_object()
-            .cloned()
-            .unwrap_or_default(),
-            snapshot: Some(
+        let draft = OptimizerEventDraft::new("optimizer.run.pinned", run.algorithm_id.clone())
+            // One pin per run: re-pinning re-offers the same fact rather than
+            // minting a second sequence for it.
+            .idempotency_key("sidecar-pin")
+            .level("info")
+            .delta(
+                json!({
+                    "sidecarVersion": pin.sidecar_version,
+                    "algorithmVersion": pin.algorithm_version,
+                    "recipeVersion": pin.recipe_version,
+                    "sidecarDigest": pin.digest,
+                    "spoolPath": pin.spool_path,
+                })
+                .as_object()
+                .cloned()
+                .unwrap_or_default(),
+            )
+            .snapshot(
                 json!({ "summary": run.summary.clone() })
                     .as_object()
                     .cloned()
                     .unwrap_or_default(),
-            ),
-            usage_delta: None,
-            artifact_refs: vec![],
-            error: None,
-            raw: json!({
+            )
+            .raw(json!({
                 "sidecarVersion": pin.sidecar_version,
                 "algorithmVersion": pin.algorithm_version,
                 "recipeVersion": pin.recipe_version
-            }),
-        };
-        let (run, _) = service.append_events(run.id.clone(), vec![event]).await?;
+            }));
+        let (run, _) = service
+            .append_event_payloads(run.id.clone(), vec![draft])
+            .await?;
         Ok((run, pin))
     }
 
@@ -1116,7 +1134,7 @@ impl OptimizerManager {
             .drain()
             .filter_map(|(_, state)| match state {
                 GepaWorkerState::Starting => None,
-                GepaWorkerState::Running { pid } => Some(pid),
+                GepaWorkerState::Running { pid, .. } => Some(pid),
             })
             .collect::<Vec<_>>();
         terminate_process_groups(&worker_pids).await;
@@ -1190,7 +1208,7 @@ fn resolve_uv() -> Result<PathBuf> {
     )
 }
 
-fn optimizer_project_root() -> Result<Option<PathBuf>> {
+pub(super) fn optimizer_project_root() -> Result<Option<PathBuf>> {
     let Some(path) = env::var_os("SYNTH_OPTIMIZER_PROJECT_ROOT").map(PathBuf::from) else {
         return Ok(None);
     };
@@ -1213,23 +1231,43 @@ fn optimizer_project_root() -> Result<Option<PathBuf>> {
 fn optimizer_command(home: &Path, version: &str) -> Result<Command> {
     validate_version_id(version)?;
     if developer_uv_mode()? {
+        if let Some(project) = optimizer_project_root()? {
+            // `uv run` is a launcher, not the workload authority. Tracking it
+            // as the recipe leader lets the shim exit or receive SIGTERM while
+            // the real Python child survives re-parented; Workshop then seals
+            // a false failed run and leaks paid compute. Prepared QA/dev
+            // projects already have an immutable venv, so supervise its real
+            // executable directly and keep PID/process-group ownership honest.
+            return developer_project_command(&project);
+        }
         let uv = resolve_uv()?;
         let mut command = Command::new(uv);
-        if let Some(project) = optimizer_project_root()? {
-            command.args(["run", "--project"]).arg(project);
-        } else {
-            command.args([
-                "run",
-                "--no-project",
-                "--with",
-                &format!("synth-optimizers=={version}"),
-            ]);
-        }
+        command.args([
+            "run",
+            "--no-project",
+            "--with",
+            &format!("synth-optimizers=={version}"),
+        ]);
         command.arg("synth-optimizers");
         return Ok(command);
     }
     let bin = installed_runtime_bin(home, version)?;
     Ok(Command::new(bin))
+}
+
+fn developer_project_command(project: &Path) -> Result<Command> {
+    for candidate in [
+        project.join(".venv/bin/synth-optimizers"),
+        project.join(".venv/Scripts/synth-optimizers.exe"),
+    ] {
+        if candidate.is_file() {
+            return Ok(Command::new(candidate));
+        }
+    }
+    bail!(
+        "developer optimizer project {} has no prepared .venv runtime; run uv sync before launching Workshop",
+        project.display()
+    )
 }
 
 fn optimizer_gepa_home(home: &Path) -> PathBuf {
@@ -1311,6 +1349,28 @@ fn launch_gepa_recipe_process(
         .stdout(Stdio::from(stdout))
         .stderr(Stdio::from(stderr))
         .kill_on_drop(true);
+    // The proposer runs Codex one process below Workshop. A Finder-launched
+    // app cannot assume the user's shell PATH, and the JS launcher alone is
+    // insufficient because Codex's unified-exec helpers must link the native
+    // binary shipped in the npm package. Publish both authorities explicitly.
+    if let Some(codex_bin) = env::var_os("SYNTH_CODEX_BIN").map(PathBuf::from) {
+        if let Some(parent) = codex_bin.parent() {
+            let mut paths = vec![parent.to_path_buf()];
+            if let Some(inherited) = env::var_os("PATH") {
+                paths.extend(env::split_paths(&inherited));
+            }
+            command.env(
+                "PATH",
+                env::join_paths(paths).context("build GEPA Codex PATH")?,
+            );
+        }
+        let resolved = codex_bin.canonicalize().unwrap_or(codex_bin);
+        if let Some(package_root) = resolved.parent().and_then(Path::parent) {
+            if package_root.join("package.json").is_file() {
+                command.env("CODEX_MANAGED_PACKAGE_ROOT", package_root);
+            }
+        }
+    }
     command
         .spawn()
         .context("launch Desktop-managed Banking77 GEPA recipe")
@@ -1368,15 +1428,11 @@ async fn launch_sidecar_upstream(
     }
     let _ = run_spools;
     drop(listener);
-    let _ = addr;
-    drop(upstream_base_url);
 
     let gepa_home = optimizer_gepa_home(home);
     let db_path = optimizer_gepa_db(home);
     fs::create_dir_all(&gepa_home)?;
     let api_key = ensure_api_key(home)?;
-    let heartbeat_path = optimizer_service_heartbeat_path(&gepa_home, &db_path);
-    let _ = fs::remove_file(&heartbeat_path);
     let log = fs::OpenOptions::new()
         .create(true)
         .append(true)
@@ -1386,90 +1442,17 @@ async fn launch_sidecar_upstream(
     command
         .args(["gepa", "service", "--db"])
         .arg(&db_path)
-        .args(["--bind", "127.0.0.1:0"])
+        .args(["--bind", &addr.to_string()])
         .env("GEPA_HOME", &gepa_home)
         .env("SYNTH_OPTIMIZER_API_KEY", &api_key)
         .stdin(Stdio::null())
         .stdout(Stdio::from(log.try_clone()?))
         .stderr(Stdio::from(log))
         .kill_on_drop(true);
-    let mut child = command
+    let child = command
         .spawn()
         .context("spawn allowlisted synth-optimizers GEPA service")?;
-    let child_pid = child
-        .id()
-        .ok_or_else(|| anyhow!("optimizer service started without a process id"))?;
-    let deadline = tokio::time::Instant::now() + crate::limits::OPTIMIZER_SIDECAR_READY_WAIT;
-    while tokio::time::Instant::now() < deadline {
-        if let Some(status) = child
-            .try_wait()
-            .context("poll optimizer service during address discovery")?
-        {
-            bail!(
-                "optimizer service exited before publishing its address ({status}); see {}",
-                home.join("sidecar.log").display()
-            );
-        }
-        if let Some(base_url) =
-            read_optimizer_service_address(&heartbeat_path, &db_path, child_pid, &hit.version)?
-        {
-            return Ok((Some(child), base_url, None));
-        }
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
-    terminate_child(&mut child).await;
-    bail!(
-        "optimizer service did not publish its bound address within {:?}; see {}",
-        crate::limits::OPTIMIZER_SIDECAR_READY_WAIT,
-        home.join("sidecar.log").display()
-    )
-}
-
-fn optimizer_service_heartbeat_path(gepa_home: &Path, db_path: &Path) -> PathBuf {
-    gepa_home.join("services").join(format!(
-        "{}.json",
-        sha256_hex(db_path.to_string_lossy().as_bytes())
-    ))
-}
-
-fn read_optimizer_service_address(
-    heartbeat_path: &Path,
-    db_path: &Path,
-    child_pid: u32,
-    expected_version: &str,
-) -> Result<Option<String>> {
-    let body = match fs::read(heartbeat_path) {
-        Ok(body) => body,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(error) => return Err(error).context("read optimizer service discovery heartbeat"),
-    };
-    let heartbeat: Value =
-        serde_json::from_slice(&body).context("parse optimizer service discovery heartbeat")?;
-    if heartbeat.get("schema").and_then(Value::as_str) != Some("synth.gepa_service.whoami.v1")
-        || heartbeat.get("pid").and_then(Value::as_u64) != Some(u64::from(child_pid))
-        || heartbeat.get("db_path").and_then(Value::as_str)
-            != Some(db_path.to_string_lossy().as_ref())
-        || heartbeat.get("version").and_then(Value::as_str) != Some(expected_version)
-    {
-        return Ok(None);
-    }
-    let service_url = heartbeat
-        .get("service_url")
-        .and_then(Value::as_str)
-        .ok_or_else(|| anyhow!("optimizer service heartbeat omitted service_url"))?;
-    let parsed = reqwest::Url::parse(service_url)
-        .context("optimizer service heartbeat contained an invalid service_url")?;
-    let loopback = matches!(parsed.host_str(), Some("127.0.0.1") | Some("::1"));
-    if parsed.scheme() != "http"
-        || !loopback
-        || parsed.port().is_none()
-        || parsed.path() != "/"
-        || parsed.query().is_some()
-        || parsed.fragment().is_some()
-    {
-        bail!("optimizer service heartbeat advertised a non-loopback HTTP address");
-    }
-    Ok(Some(service_url.trim_end_matches('/').to_owned()))
+    Ok((Some(child), upstream_base_url, None))
 }
 
 #[cfg(unix)]
@@ -1482,20 +1465,49 @@ fn isolate_process_group(command: &mut Command) {
 fn isolate_process_group(_command: &mut Command) {}
 
 #[cfg(unix)]
+fn owned_process_group(pid: u32) -> Option<libc::pid_t> {
+    // `kill(-1, signal)` broadcasts to every process the caller may signal.
+    // Never allow sentinel/system PIDs or a lossy u32 -> pid_t conversion to
+    // reach the negative-pid process-group API.
+    let pid = libc::pid_t::try_from(pid).ok().filter(|pid| *pid > 1)?;
+    unsafe {
+        // A recipe is spawned with process_group(0), so its pid must equal its
+        // pgid. Refuse stale, reused, or non-isolated PIDs instead of guessing.
+        let pgid = libc::getpgid(pid);
+        if pgid <= 1 || pgid != pid || pgid == libc::getpgrp() {
+            return None;
+        }
+        Some(pgid)
+    }
+}
+
+#[cfg(unix)]
 async fn terminate_process_groups(pids: &[u32]) {
-    for &pid in pids {
-        // Negative pid addresses the entire process group created at spawn.
+    let groups = pids
+        .iter()
+        .filter_map(|&pid| {
+            let group = owned_process_group(pid);
+            if group.is_none() {
+                eprintln!(
+                    "refusing to terminate optimizer process group for unsafe or unowned pid {pid}"
+                );
+            }
+            group
+        })
+        .collect::<Vec<_>>();
+    for &pgid in &groups {
+        // Negative pid addresses only the verified isolated process group.
         unsafe {
-            libc::kill(-(pid as i32), libc::SIGTERM);
+            libc::kill(-pgid, libc::SIGTERM);
         }
     }
-    if !pids.is_empty() {
+    if !groups.is_empty() {
         tokio::time::sleep(Duration::from_millis(500)).await;
     }
-    for &pid in pids {
+    for &pgid in &groups {
         unsafe {
-            if libc::kill(-(pid as i32), 0) == 0 {
-                libc::kill(-(pid as i32), libc::SIGKILL);
+            if libc::kill(-pgid, 0) == 0 {
+                libc::kill(-pgid, libc::SIGKILL);
             }
         }
     }
@@ -2563,52 +2575,44 @@ mod tests {
     }
 
     #[test]
-    fn service_discovery_accepts_only_the_spawned_instance() {
+    fn developer_project_supervises_real_venv_executable() {
         let dir = tempfile::tempdir().unwrap();
-        let manager_home = dir.path().join("manager");
-        let gepa_home = optimizer_gepa_home(&manager_home);
-        let db_path = optimizer_gepa_db(&manager_home);
-        let heartbeat_path = optimizer_service_heartbeat_path(&gepa_home, &db_path);
-        fs::create_dir_all(heartbeat_path.parent().unwrap()).unwrap();
-        let heartbeat = json!({
-            "schema": "synth.gepa_service.whoami.v1",
-            "pid": 4242,
-            "db_path": db_path.to_string_lossy(),
-            "version": DEFAULT_SIDECAR_VERSION,
-            "service_url": "http://127.0.0.1:49152"
-        });
-        fs::write(&heartbeat_path, serde_json::to_vec(&heartbeat).unwrap()).unwrap();
+        let bin = dir.path().join(".venv/bin");
+        fs::create_dir_all(&bin).unwrap();
+        let executable = bin.join("synth-optimizers");
+        fs::write(&executable, b"prepared optimizer runtime").unwrap();
 
-        assert_eq!(
-            read_optimizer_service_address(
-                &heartbeat_path,
-                &db_path,
-                4242,
-                DEFAULT_SIDECAR_VERSION,
-            )
-            .unwrap()
-            .as_deref(),
-            Some("http://127.0.0.1:49152")
-        );
-        assert!(read_optimizer_service_address(
-            &heartbeat_path,
-            &db_path,
-            4243,
-            DEFAULT_SIDECAR_VERSION,
-        )
-        .unwrap()
-        .is_none());
+        let command = developer_project_command(dir.path()).unwrap();
+        assert_eq!(Path::new(command.as_std().get_program()), executable);
+        assert_ne!(command.as_std().get_program(), std::ffi::OsStr::new("uv"));
+    }
 
-        let mut remote = heartbeat;
-        remote["service_url"] = json!("http://example.com:49152");
-        fs::write(&heartbeat_path, serde_json::to_vec(&remote).unwrap()).unwrap();
-        assert!(read_optimizer_service_address(
-            &heartbeat_path,
-            &db_path,
-            4242,
-            DEFAULT_SIDECAR_VERSION,
+    #[test]
+    fn developer_project_without_prepared_runtime_fails_closed() {
+        let dir = tempfile::tempdir().unwrap();
+        let error = developer_project_command(dir.path()).unwrap_err();
+        assert!(error.to_string().contains("uv sync"));
+    }
+
+    #[tokio::test]
+    async fn gepa_admission_queue_bounds_concurrent_children() {
+        let (manager, _) = manager();
+        let first = manager.gepa_capacity.clone().acquire_owned().await.unwrap();
+        let second = manager.gepa_capacity.clone().acquire_owned().await.unwrap();
+        assert!(tokio::time::timeout(
+            Duration::from_millis(10),
+            manager.gepa_capacity.clone().acquire_owned()
         )
+        .await
         .is_err());
+        drop(first);
+        assert!(tokio::time::timeout(
+            Duration::from_millis(100),
+            manager.gepa_capacity.clone().acquire_owned()
+        )
+        .await
+        .is_ok());
+        drop(second);
     }
 
     #[cfg(unix)]
@@ -2750,6 +2754,32 @@ mod tests {
 
     #[cfg(unix)]
     #[tokio::test]
+    async fn process_group_cleanup_refuses_host_and_sentinel_pids() {
+        assert_eq!(owned_process_group(0), None);
+        assert_eq!(owned_process_group(1), None);
+        assert_eq!(owned_process_group(u32::MAX), None);
+        assert_eq!(owned_process_group(std::process::id()), None);
+
+        // This child inherits the test runner's process group. Cleanup must
+        // refuse it rather than signaling the test runner and its host apps.
+        let mut child = Command::new("/bin/sleep")
+            .arg("30")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .kill_on_drop(true)
+            .spawn()
+            .unwrap();
+        let pid = child.id().unwrap();
+        assert_eq!(owned_process_group(pid), None);
+        terminate_process_groups(&[0, 1, u32::MAX, std::process::id(), pid]).await;
+        assert!(child.try_wait().unwrap().is_none());
+        child.kill().await.unwrap();
+        child.wait().await.unwrap();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
     async fn supervisor_drain_kills_active_recipe_process_group() {
         let (mgr, _home) = manager();
         let manager = Arc::new(mgr);
@@ -2765,7 +2795,7 @@ mod tests {
         let pid = child.id().unwrap();
         manager.gepa_workers.lock().await.insert(
             "gepa_shutdown_probe".into(),
-            GepaWorkerState::Running { pid },
+            GepaWorkerState::Running { pid, _permit: None },
         );
 
         let supervisor = crate::services::ServiceSupervisor::new();
@@ -2803,7 +2833,7 @@ mod tests {
         let pid = child.id().unwrap();
         mgr.gepa_workers.lock().await.insert(
             "gepa_release_probe".into(),
-            GepaWorkerState::Running { pid },
+            GepaWorkerState::Running { pid, _permit: None },
         );
 
         mgr.release_gepa_recipe("gepa_release_probe").await;
@@ -2998,6 +3028,7 @@ mod tests {
                 authorization: None,
                 body: Value::Null,
                 raw_headers: hyper::HeaderMap::new(),
+                peer: None,
             },
             "secret",
             &upstream,
@@ -3013,6 +3044,7 @@ mod tests {
                 authorization: Some("Bearer secret".into()),
                 body: Value::Null,
                 raw_headers: hyper::HeaderMap::new(),
+                peer: None,
             },
             "secret",
             &upstream,
@@ -3028,6 +3060,7 @@ mod tests {
                 authorization: Some("Bearer secret".into()),
                 body: Value::Null,
                 raw_headers: hyper::HeaderMap::new(),
+                peer: None,
             },
             "secret",
             &upstream,

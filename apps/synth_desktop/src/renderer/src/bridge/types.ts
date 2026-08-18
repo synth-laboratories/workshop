@@ -13,6 +13,7 @@ import type {
 	InternSessionCreateRequest,
 	InternSessionSendRequest,
 	InternSessionSendResult,
+	RecoveryNotice,
 	ResolvedTraceProjection,
 	RuntimeEvent,
 	Session,
@@ -286,6 +287,8 @@ export type PersistedCodexSession = {
 	sandbox: string;
 	presentationEmotion?: string | null;
 	presentationSummary?: string | null;
+	/** Set when a previous process died holding this chat's turn. */
+	recovery?: RecoveryNotice | null;
 };
 export type CodexEvent = { sessionId: string; method: string; params: Record<string, unknown> };
 /** Typed rejection payload of `codex_turn_send`. */
@@ -436,6 +439,8 @@ export type VisualTemplateMeta = {
 	path?: string | null;
 	shellPath?: string | null;
 	exampleBinding?: Record<string, unknown> | null;
+	slots?: unknown[] | null;
+	bindingSchema?: unknown[] | null;
 };
 
 export type VisualAnnotation = {
@@ -575,6 +580,18 @@ export type VisualsBridge = {
 	onShow(listener: (event: AppEvent) => void): () => void;
 };
 
+/** `PluginPermission` from src-tauri/src/plugins/types.rs. */
+export type PluginPermissionState = "granted" | "denied" | "not_determined" | "not_applicable";
+
+export type PluginPermission = {
+	id: string;
+	/** What macOS calls this in System Settings. */
+	label: string;
+	state: PluginPermissionState;
+	settingsUrl?: string | null;
+	detail?: string | null;
+};
+
 export type PluginStatus = {
 	schemaVersion: string;
 	pluginId: string;
@@ -589,6 +606,8 @@ export type PluginStatus = {
 	capabilitiesDigest?: string | null;
 	algorithms: string[];
 	templates: string[];
+	/** Omitted entirely for plugins that need no OS grants. */
+	permissions?: PluginPermission[];
 	lastActionReceiptId?: string | null;
 	detail?: string | null;
 };
@@ -618,6 +637,53 @@ export type PluginActionReceipt = {
 	retainedData?: string;
 	status?: PluginStatus | null;
 	error?: string | null;
+};
+
+/** What `remove` actually did, so the page can report residue honestly. */
+export type ComputerUseRemovalReport = {
+	bundleRemoved: boolean;
+	tccReset: string[];
+	/** Grants macOS refused to reset. Surfaced, never swallowed. */
+	tccResetFailed: string[];
+	allowlistEntriesRemoved: number;
+};
+
+export type ComputerUseSnapshot = {
+	status: PluginStatus;
+	allowedApps: string[];
+};
+
+/**
+ * Computer Use is human-only: there is no agent path to any of these. The
+ * agent's MCP surface offers status and nothing else.
+ */
+export type ComputerUseBridge = {
+	status(sessionId?: string | null): Promise<ComputerUseSnapshot>;
+	install(): Promise<PluginStatus>;
+	remove(): Promise<ComputerUseRemovalReport>;
+	revokeApp(bundleId: string): Promise<number>;
+	openSettings(permissionId: string): Promise<void>;
+};
+
+export type BrowserRuntimeStatus = {
+	phase: "ready" | "not_ready";
+	detail: string;
+	backendPresent: boolean;
+	nodePresent: boolean;
+	playwrightPresent: boolean;
+	chromiumPresent: boolean;
+	nodeVersion?: string | null;
+	backendPath: string;
+	profileRoot: string;
+	allowedOrigins: string[];
+	defaultLocalOrigins: string[];
+};
+
+/** Human-only browser setup. Agent tools can consume policy but cannot mutate it. */
+export type BrowserAdminBridge = {
+	status(): Promise<BrowserRuntimeStatus>;
+	allowOrigin(origin: string): Promise<BrowserRuntimeStatus>;
+	revokeOrigin(origin: string): Promise<BrowserRuntimeStatus>;
 };
 
 export type PluginsBridge = {

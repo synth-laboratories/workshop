@@ -22,6 +22,11 @@ const MIGRATIONS: &[&str] = &[
     MIGRATION_17,
     MIGRATION_18,
     MIGRATION_19,
+    MIGRATION_20,
+    MIGRATION_21,
+    MIGRATION_22,
+    MIGRATION_23,
+    MIGRATION_24,
 ];
 
 /// Apply every migration the database has not reached yet.
@@ -55,7 +60,33 @@ pub fn apply_migrations(conn: &Connection) -> Result<i64> {
     if version >= 12 {
         fold_rollback_usage_rows(conn)?;
     }
+    heal_missing_tables(conn)?;
     Ok(version)
+}
+
+/// Tables this build cannot run without, keyed to the DDL that creates them.
+///
+/// A version number is a promise about *this* lineage. Several v0.5 lanes were
+/// developed in parallel and each numbered its own migration 23, so an install
+/// that reached version 23 on another lane's DDL would skip this lane's table
+/// forever — `apply_migrations` only runs versions above the recorded maximum.
+/// The DDL is `CREATE TABLE IF NOT EXISTS`, so re-running it costs nothing and
+/// closes that hole regardless of which lane merged first.
+const REQUIRED_TABLES: &[(&str, &str)] = &[("optimizer_terminal_manifests", MIGRATION_23)];
+
+fn heal_missing_tables(conn: &Connection) -> Result<()> {
+    for (table, ddl) in REQUIRED_TABLES {
+        let present: bool = conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1)",
+            [table],
+            |row| row.get(0),
+        )?;
+        if !present {
+            conn.execute_batch(ddl)
+                .with_context(|| format!("heal missing table {table}"))?;
+        }
+    }
+    Ok(())
 }
 
 /// Migration 11 keeps an empty legacy table as a rollback write buffer. A v10
@@ -1151,6 +1182,290 @@ ON events(json_extract(payload_json, '$.trace_id'), sequence DESC)
 WHERE kind = 'diagnostic.event';
 "#;
 
+/// Crash-recovery ownership.
+///
+/// `runs` stays an immutable historical record, so live ownership of the one
+/// active turn gets its own row instead of more mutable columns there. A
+/// `running` run is only live while a row here names the current boot epoch
+/// and its lease has not expired; everything else is history that must be
+/// reconciled before any client can read it as present tense.
+///
+/// `action_receipts` is what makes automatic restart decidable. Replaying a
+/// turn is safe only while nothing consequential left the process; a receipt
+/// records that it did, which external object it produced, and whether the
+/// outcome ever settled.
+const MIGRATION_20: &str = r#"
+CREATE TABLE IF NOT EXISTS turn_ownership (
+    session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE,
+    run_id TEXT NOT NULL,
+    owner_instance_id TEXT NOT NULL,
+    owner_attachment_id TEXT,
+    claimed_at TEXT NOT NULL,
+    heartbeat_at TEXT NOT NULL,
+    lease_expires_at TEXT NOT NULL,
+    recovery_attempt INTEGER NOT NULL DEFAULT 0,
+    last_checkpoint_json TEXT
+);
+
+CREATE INDEX IF NOT EXISTS turn_ownership_owner
+ON turn_ownership(owner_instance_id);
+
+CREATE INDEX IF NOT EXISTS turn_ownership_lease
+ON turn_ownership(lease_expires_at);
+
+CREATE TABLE IF NOT EXISTS action_receipts (
+    tool_call_id TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL,
+    run_id TEXT,
+    idempotency_key TEXT NOT NULL,
+    operation TEXT NOT NULL,
+    external_object_id TEXT,
+    request_digest TEXT NOT NULL,
+    status TEXT NOT NULL,
+    started_at TEXT NOT NULL,
+    settled_at TEXT
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS action_receipts_idempotency
+ON action_receipts(idempotency_key);
+
+CREATE INDEX IF NOT EXISTS action_receipts_session
+ON action_receipts(session_id, started_at DESC);
+
+CREATE INDEX IF NOT EXISTS action_receipts_run
+ON action_receipts(run_id);
+"#;
+
+/// Observed generation TPS, measured per output-text segment.
+///
+/// Two things happen here, and they belong in one transaction.
+///
+/// First, the new ledger. A measurement keeps its own raw evidence —
+/// `samples_json` holds the `(monotonic microseconds, cumulative exact tokens,
+/// sequence number)` triples the rate was regressed from — so any displayed
+/// value can be recomputed offline from the row that produced it. Storing only
+/// the derived scalar would make the number unauditable, which is how the
+/// previous estimate survived as long as it did. The `CHECK` makes the honest
+/// state representable and the dishonest one impossible: a row carries either a
+/// rate or a machine-readable reason it has none, never both and never neither.
+///
+/// Second, the legacy quarantine. Every `observed_stream` figure already in
+/// `usage_records` came from the turn-wide, 2-second-gap estimate: turn-level
+/// output tokens over a denominator that excluded tool time and any gap longer
+/// than two seconds. Those numbers are not segment measurements and must not be
+/// reinterpreted as if they were, so their `measurement_kind` is relabelled and
+/// their throughput column is cleared — which is what removes them from the
+/// dashboard's percentiles. Nothing is destroyed: the original value moves to
+/// `legacy_observed_output_tps`, where it stays readable as what it always was,
+/// an estimate.
+const MIGRATION_21: &str = r#"
+CREATE TABLE IF NOT EXISTS generation_speed_measurements (
+    measurement_id TEXT PRIMARY KEY,
+    schema_version TEXT NOT NULL,
+    measurement_kind TEXT NOT NULL,
+    session_id TEXT NOT NULL,
+    turn_id TEXT NOT NULL,
+    response_id TEXT,
+    item_id TEXT NOT NULL,
+    output_index INTEGER NOT NULL,
+    content_index INTEGER NOT NULL,
+    phase TEXT NOT NULL CHECK(phase IN ('commentary','final_answer','other')),
+    status TEXT NOT NULL CHECK(status IN ('completed','partial','unavailable')),
+    tps REAL,
+    exact_tokens_after_first_sample INTEGER NOT NULL,
+    duration_ms REAL NOT NULL,
+    sample_count INTEGER NOT NULL,
+    token_count_source TEXT NOT NULL
+        CHECK(token_count_source IN ('provider_item_usage','exact_tokenizer','unavailable')),
+    tokenizer_id TEXT,
+    clock_source TEXT NOT NULL
+        CHECK(clock_source IN ('provider_event_timestamp','workshop_monotonic_receive')),
+    unavailable_reason TEXT,
+    quality_flags TEXT NOT NULL DEFAULT '[]',
+    samples_json TEXT NOT NULL DEFAULT '[]',
+    provider TEXT,
+    model_id TEXT,
+    created_at TEXT NOT NULL,
+    CHECK ((tps IS NULL) = (unavailable_reason IS NOT NULL))
+);
+
+CREATE INDEX IF NOT EXISTS generation_speed_measurements_turn
+ON generation_speed_measurements(session_id, turn_id, created_at);
+
+-- The ledger's `measurement_kind` vocabulary is a CHECK constraint, and SQLite
+-- cannot alter one in place, so the table is rebuilt. The rebuild is also what
+-- performs the relabelling, in the same transaction, so no build ever observes
+-- a ledger where the two disagree.
+CREATE TABLE usage_records_v21 (
+    id TEXT PRIMARY KEY,
+    provider TEXT NOT NULL,
+    model_id TEXT NOT NULL,
+    model_revision TEXT,
+    session_id TEXT REFERENCES sessions(id) ON DELETE SET NULL,
+    run_id TEXT REFERENCES runs(id) ON DELETE SET NULL,
+    request_id TEXT NOT NULL,
+    measurement_kind TEXT NOT NULL CHECK(measurement_kind IN (
+        'decode', 'observed_stream_segment', 'legacy_observed_stream_estimate',
+        'end_to_end', 'provider_reported'
+    )),
+    status TEXT NOT NULL CHECK(status IN ('completed', 'failed', 'interrupted')),
+    started_at_ms INTEGER NOT NULL,
+    first_output_at_ms INTEGER,
+    last_output_at_ms INTEGER,
+    completed_at_ms INTEGER NOT NULL,
+    input_tokens INTEGER,
+    cached_input_tokens INTEGER,
+    cache_write_tokens INTEGER,
+    reasoning_tokens INTEGER,
+    output_tokens INTEGER,
+    total_tokens INTEGER GENERATED ALWAYS AS (
+        CASE WHEN input_tokens IS NULL AND output_tokens IS NULL THEN NULL
+             ELSE COALESCE(input_tokens, 0) + COALESCE(output_tokens, 0) END
+    ) STORED,
+    ttft_ms REAL,
+    observed_output_tps REAL,
+    legacy_observed_output_tps REAL,
+    end_to_end_output_tps REAL,
+    billed_cost_usd REAL,
+    estimated_cost_usd REAL,
+    cost_source TEXT NOT NULL DEFAULT 'none' CHECK(cost_source IN ('provider_reported', 'synth_cloud', 'tariff_estimate', 'none')),
+    source TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    UNIQUE(provider, request_id)
+);
+
+INSERT INTO usage_records_v21 (
+    id, provider, model_id, model_revision, session_id, run_id, request_id,
+    measurement_kind, status, started_at_ms, first_output_at_ms, last_output_at_ms,
+    completed_at_ms, input_tokens, cached_input_tokens, cache_write_tokens,
+    reasoning_tokens, output_tokens, ttft_ms, observed_output_tps,
+    legacy_observed_output_tps, end_to_end_output_tps, billed_cost_usd,
+    estimated_cost_usd, cost_source, source, created_at
+)
+SELECT
+    id, provider, model_id, model_revision, session_id, run_id, request_id,
+    CASE WHEN measurement_kind = 'observed_stream'
+         THEN 'legacy_observed_stream_estimate' ELSE measurement_kind END,
+    status, started_at_ms, first_output_at_ms, last_output_at_ms,
+    completed_at_ms, input_tokens, cached_input_tokens, cache_write_tokens,
+    reasoning_tokens, output_tokens, ttft_ms,
+    CASE WHEN measurement_kind = 'observed_stream' THEN NULL ELSE observed_output_tps END,
+    CASE WHEN measurement_kind = 'observed_stream' THEN observed_output_tps ELSE NULL END,
+    end_to_end_output_tps, billed_cost_usd, estimated_cost_usd, cost_source,
+    source, created_at
+FROM usage_records;
+
+DROP TABLE usage_records;
+
+ALTER TABLE usage_records_v21 RENAME TO usage_records;
+
+CREATE INDEX IF NOT EXISTS usage_records_model_created
+ON usage_records(provider, model_id, measurement_kind, created_at DESC);
+
+CREATE INDEX IF NOT EXISTS usage_records_completed
+ON usage_records(status, completed_at_ms DESC);
+
+CREATE INDEX IF NOT EXISTS usage_records_window
+ON usage_records(completed_at_ms DESC);
+"#;
+
+/// Evaluation campaigns: the plan a set of rollouts belongs to.
+///
+/// Five chats were asked for one ten-rollout evaluation each and each produced a
+/// single rollout, because "evaluation" was a word in a prompt rather than a
+/// contract with a count. A campaign records how many terminal rollouts it owes
+/// and which seeds are its own, before any of them run.
+///
+/// A seed is unique *within* a campaign here; overlap between campaigns that are
+/// still open is rejected when the plan is created, since a seed reused by a
+/// later, unrelated experiment is legitimate and a permanent uniqueness
+/// constraint would forbid it.
+const MIGRATION_22: &str = r#"
+CREATE TABLE IF NOT EXISTS eval_campaigns (
+    id TEXT PRIMARY KEY,
+    session_id TEXT,
+    container_id TEXT NOT NULL,
+    title TEXT NOT NULL,
+    expected_rollouts INTEGER NOT NULL CHECK (expected_rollouts > 0),
+    max_concurrency INTEGER NOT NULL CHECK (max_concurrency > 0),
+    policy_ref_json TEXT NOT NULL,
+    plan_json TEXT NOT NULL,
+    status TEXT NOT NULL CHECK (status IN ('planned','running','complete','partial','failed')),
+    created_at TEXT NOT NULL,
+    started_at TEXT,
+    settled_at TEXT
+);
+
+CREATE INDEX IF NOT EXISTS eval_campaigns_session ON eval_campaigns(session_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS eval_campaign_rollouts (
+    campaign_id TEXT NOT NULL REFERENCES eval_campaigns(id) ON DELETE CASCADE,
+    rollout_id TEXT NOT NULL,
+    ordinal INTEGER NOT NULL,
+    seed INTEGER NOT NULL,
+    task_instance_id TEXT NOT NULL,
+    status TEXT NOT NULL CHECK (status IN ('planned','started','terminal','failed','missing')),
+    terminal_json TEXT,
+    started_at TEXT,
+    settled_at TEXT,
+    PRIMARY KEY (campaign_id, rollout_id)
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS eval_campaign_rollouts_ordinal
+ON eval_campaign_rollouts(campaign_id, ordinal);
+
+CREATE UNIQUE INDEX IF NOT EXISTS eval_campaign_rollout_identity
+ON eval_campaign_rollouts(rollout_id);
+
+CREATE UNIQUE INDEX IF NOT EXISTS eval_campaign_seed_identity
+ON eval_campaign_rollouts(campaign_id, seed);
+"#;
+
+/// The write-once terminal manifest. One row per run, sealed in the same
+/// transaction as the terminal event, and never rewritten by a later poll —
+/// which is why `terminal_cursor` lives in its own column rather than only in
+/// the payload: a settled run's cursor must be queryable without parsing JSON.
+const MIGRATION_23: &str = r#"
+CREATE TABLE IF NOT EXISTS optimizer_terminal_manifests (
+    optimizer_run_id TEXT PRIMARY KEY REFERENCES optimizer_runs(id) ON DELETE CASCADE,
+    schema_version TEXT NOT NULL,
+    algorithm_id TEXT NOT NULL,
+    terminal_status TEXT NOT NULL,
+    terminal_cursor INTEGER NOT NULL,
+    sealed_at TEXT NOT NULL,
+    payload_json TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS optimizer_terminal_manifests_status
+ON optimizer_terminal_manifests(terminal_status, sealed_at DESC);
+"#;
+
+/// Session-scoped experiment grouping for v0.5 campaign/eval DAGs.
+/// One group per chat; members are evaluation campaigns and optimizer runs.
+const MIGRATION_24: &str = r#"
+CREATE TABLE IF NOT EXISTS experiment_groups (
+    id TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL,
+    title TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS experiment_groups_session
+ON experiment_groups(session_id);
+
+CREATE TABLE IF NOT EXISTS experiment_group_members (
+    group_id TEXT NOT NULL REFERENCES experiment_groups(id) ON DELETE CASCADE,
+    member_kind TEXT NOT NULL CHECK (member_kind IN ('eval_campaign','optimizer_run')),
+    member_id TEXT NOT NULL,
+    title TEXT NOT NULL,
+    attached_at TEXT NOT NULL,
+    PRIMARY KEY (group_id, member_kind, member_id)
+);
+
+CREATE INDEX IF NOT EXISTS experiment_group_members_kind
+ON experiment_group_members(member_kind, member_id);
+"#;
+
 #[cfg(test)]
 mod tests {
     /// Derived, not pinned: adding a migration should not mean editing
@@ -1158,6 +1473,74 @@ mod tests {
     const LATEST_VERSION: i64 = super::MIGRATIONS.len() as i64;
 
     use super::*;
+
+    /// Every `MIGRATION_N` constant is registered exactly once, and the registry
+    /// is contiguous from 1.
+    ///
+    /// This reads its own source because the hazard is textual: two branches
+    /// that each add a migration produce two identical `MIGRATION_N,` registry
+    /// lines, and a merge collapses them into one — dropping a migration whose
+    /// constant is still defined and still compiles. `MIGRATIONS.len()` cannot
+    /// notice, because it shrinks with the registry.
+    #[test]
+    fn every_defined_migration_is_registered_exactly_once() {
+        let source = include_str!("migrations.rs");
+        let mut defined: Vec<usize> = source
+            .lines()
+            .filter_map(|line| line.strip_prefix("const MIGRATION_"))
+            .filter_map(|rest| rest.split(':').next())
+            .filter_map(|digits| digits.parse().ok())
+            .collect();
+        let mut registered: Vec<usize> = source
+            .lines()
+            .map(str::trim)
+            .filter_map(|line| line.strip_prefix("MIGRATION_"))
+            .filter_map(|rest| rest.strip_suffix(','))
+            .filter_map(|digits| digits.parse().ok())
+            .collect();
+        defined.sort_unstable();
+        registered.sort_unstable();
+        assert!(!defined.is_empty(), "no migrations were parsed from source");
+        assert_eq!(
+            defined, registered,
+            "every defined migration must appear in the registry exactly once"
+        );
+        assert_eq!(
+            registered,
+            (1..=registered.len()).collect::<Vec<_>>(),
+            "the registry must be contiguous from 1 with no gaps or duplicates"
+        );
+        assert_eq!(MIGRATIONS.len(), registered.len());
+    }
+
+    /// A database that already recorded this version number under a different
+    /// lane's DDL still ends up with the tables this build requires.
+    #[test]
+    fn a_version_collision_from_another_lane_still_heals_required_tables() {
+        let conn = seed_at_version(MIGRATIONS.len() - 1);
+        // Another lane's migration 23 landed here: the version is consumed, but
+        // this lane's table was never created.
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS experiment_groups (id TEXT PRIMARY KEY);",
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO schema_migrations(version, applied_at) VALUES (?1, datetime('now'))",
+            [MIGRATIONS.len() as i64],
+        )
+        .unwrap();
+        assert_eq!(apply_migrations(&conn).unwrap(), MIGRATIONS.len() as i64);
+        for (table, _) in REQUIRED_TABLES {
+            let present: bool = conn
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1)",
+                    [table],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert!(present, "{table} must exist even when its version was consumed elsewhere");
+        }
+    }
 
     /// A database stamped `version` with migrations 1..=version applied, as a
     /// real installation of that era would have shipped it.
@@ -1637,5 +2020,74 @@ mod tests {
             ["a".repeat(64)],
         )
         .unwrap();
+    }
+
+    #[test]
+    fn migration_21_quarantines_the_old_estimate_and_guards_the_new_measurement() {
+        let conn = seed_at_version(20);
+        conn.execute(
+            "INSERT INTO usage_records(id,provider,model_id,request_id,measurement_kind,status,
+                started_at_ms,completed_at_ms,input_tokens,output_tokens,observed_output_tps,
+                end_to_end_output_tps,cost_source,source,created_at)
+             VALUES ('u-1','synth-cloud','laguna-s-2.1','req-1','observed_stream','completed',
+                1000,2000,100,200,643.0,12.5,'none','codex_app_server','now')",
+            [],
+        )
+        .unwrap();
+        assert_eq!(apply_migrations(&conn).unwrap(), LATEST_VERSION);
+
+        // The 643 tok/s figure is still readable, but it is no longer a
+        // measurement and no longer feeds a percentile.
+        let (kind, observed, legacy, e2e): (String, Option<f64>, Option<f64>, Option<f64>) = conn
+            .query_row(
+                "SELECT measurement_kind, observed_output_tps, legacy_observed_output_tps,
+                        end_to_end_output_tps FROM usage_records WHERE id='u-1'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .unwrap();
+        assert_eq!(kind, "legacy_observed_stream_estimate");
+        assert_eq!(observed, None);
+        assert_eq!(legacy, Some(643.0));
+        assert_eq!(e2e, Some(12.5), "unrelated columns survive the rebuild");
+
+        // The old vocabulary is gone; the new one is accepted.
+        assert!(conn
+            .execute(
+                "UPDATE usage_records SET measurement_kind='observed_stream' WHERE id='u-1'",
+                []
+            )
+            .is_err());
+        conn.execute(
+            "UPDATE usage_records SET measurement_kind='observed_stream_segment' WHERE id='u-1'",
+            [],
+        )
+        .unwrap();
+
+        // A measurement row carries either a rate or a reason it has none.
+        let insert = |id: &str, tps: &str, reason: &str| {
+            conn.execute(
+                &format!(
+                    "INSERT INTO generation_speed_measurements(measurement_id,schema_version,
+                        measurement_kind,session_id,turn_id,item_id,output_index,content_index,
+                        phase,status,tps,exact_tokens_after_first_sample,duration_ms,sample_count,
+                        token_count_source,clock_source,unavailable_reason,created_at)
+                     VALUES ('{id}','synth.generation-speed.v1','observed_stream_segment',
+                        's','t','msg_1',0,0,'final_answer','completed',{tps},60,1200.0,4,
+                        'provider_item_usage','workshop_monotonic_receive',{reason},'now')"
+                ),
+                [],
+            )
+        };
+        assert!(insert("m-rate", "50.0", "NULL").is_ok());
+        assert!(insert("m-reason", "NULL", "'insufficient_samples'").is_ok());
+        assert!(
+            insert("m-both", "50.0", "'insufficient_samples'").is_err(),
+            "a row must not carry both a rate and a reason it has none"
+        );
+        assert!(
+            insert("m-neither", "NULL", "NULL").is_err(),
+            "a row without a rate must say why"
+        );
     }
 }

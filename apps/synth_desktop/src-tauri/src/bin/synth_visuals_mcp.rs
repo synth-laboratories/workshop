@@ -125,6 +125,13 @@ fn parse_http_response(response: &str) -> Result<Value, String> {
         .ok_or_else(|| "empty visuals IPC response".to_string())?;
     let parsed: Value = serde_json::from_str(body).map_err(|error| error.to_string())?;
     if !(200..300).contains(&status) {
+        // A structured failure keeps its shape across this boundary. Prefixing
+        // it with the HTTP status turned `{"code": …, "remediation": …}` into an
+        // opaque string, so the transcript lost the code and the tool-loop
+        // breaker could no longer tell one root cause from another.
+        if parsed.get("code").and_then(Value::as_str).is_some() {
+            return Err(parsed.to_string());
+        }
         let detail = parsed
             .get("error")
             .or_else(|| parsed.get("detail"))
@@ -138,11 +145,11 @@ fn parse_http_response(response: &str) -> Result<Value, String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        assert_review_viewport, managed_tool_name, parse_http_response, socket_addr, tools,
-        REVIEW_VIEWPORT_HEIGHT_MAX, REVIEW_VIEWPORT_HEIGHT_MIN, REVIEW_VIEWPORT_WIDTH_MAX,
-        REVIEW_VIEWPORT_WIDTH_MIN, VISUAL_OPERATIONS,
+        assert_review_viewport, create_bindings_from_args, managed_tool_name, parse_http_response,
+        socket_addr, tools, REVIEW_VIEWPORT_HEIGHT_MAX, REVIEW_VIEWPORT_HEIGHT_MIN,
+        REVIEW_VIEWPORT_WIDTH_MAX, REVIEW_VIEWPORT_WIDTH_MIN, VISUAL_OPERATIONS,
     };
-    use serde_json::Value;
+    use serde_json::{json, Value};
 
     /// The compact review that failed acceptance was 390x844 — inside the
     /// public schema, outside an undocumented resolver floor of 640. One
@@ -238,6 +245,10 @@ mod tests {
         assert_eq!(managed_tool_name("list").unwrap(), "visual_list");
         assert_eq!(managed_tool_name("get").unwrap(), "visual_get");
         assert_eq!(managed_tool_name("create").unwrap(), "visual_create");
+        assert_eq!(
+            managed_tool_name("create_with_bind").unwrap(),
+            "visual_create"
+        );
         assert_eq!(managed_tool_name("update").unwrap(), "visual_update");
         assert_eq!(
             managed_tool_name("bind").unwrap(),
@@ -336,6 +347,35 @@ mod tests {
         .unwrap_err();
         assert_eq!(error, "visuals IPC HTTP 400: template_not_renderable");
     }
+
+    #[test]
+    fn create_with_bind_copies_inline_data_onto_the_required_slot() {
+        let bindings = create_bindings_from_args(&json!({
+            "template_id": "experiment.overview.v1",
+            "slot": "experiment",
+            "kind": "inline",
+            "data": {"experimentId": "exp.1", "status": "blocked"}
+        }))
+        .unwrap();
+        assert_eq!(bindings["schemaVersion"], "synth.visual-bindings.v1");
+        assert_eq!(bindings["slots"][0]["slot"], "experiment");
+        assert_eq!(bindings["slots"][0]["data"]["experimentId"], "exp.1");
+    }
+
+    #[test]
+    fn create_with_bind_prefers_an_explicit_envelope() {
+        let envelope = json!({
+            "schemaVersion": "synth.visual-bindings.v1",
+            "slots": [{"slot": "spec", "kind": "inline", "data": {"blocks": []}}]
+        });
+        let bindings = create_bindings_from_args(&json!({
+            "template_id": "analysis.visual.v1",
+            "bindings": envelope,
+            "slot": "experiment"
+        }))
+        .unwrap();
+        assert_eq!(bindings["slots"][0]["slot"], "spec");
+    }
 }
 
 const VISUAL_OPERATIONS: &[(&str, &str)] = &[
@@ -343,6 +383,7 @@ const VISUAL_OPERATIONS: &[(&str, &str)] = &[
     ("list", "visual_list"),
     ("get", "visual_get"),
     ("create", "visual_create"),
+    ("create_with_bind", "visual_create"),
     ("update", "visual_update"),
     ("bind", "visual_bind_data_source"),
     ("save", "visual_save"),
@@ -382,10 +423,10 @@ fn tools() -> Value {
             {"name":"visual_list_templates","description":"List Synth visual templates","inputSchema":{"type":"object","properties":{"genre":{"type":"string"}},"additionalProperties":false}},
             {"name":"visual_list","description":"List visuals in the local registry","inputSchema":{"type":"object","properties":{"search":{"type":"string"},"status":{"type":"string"},"session_id":{"type":"string"}},"additionalProperties":false}},
             {"name":"visual_get","description":"Get a visual by id","inputSchema":{"type":"object","properties":{"visual_id":{"type":"string"}},"required":["visual_id"],"additionalProperties":false}},
-            {"name":"visual_create","description":"Create a visual from a trusted registered template. Interactive live viewers are configured templates; arbitrary TSX is not executed.","inputSchema":{"type":"object","properties":{"template_id":{"type":"string"},"title":{"type":"string"},"content":{"type":"string"},"props":{"type":"object"},"visual_config":{"type":"object"},"presentation":{"type":"string","enum":["canvas","pane"]},"session_id":{"type":"string"},"instance_id":{"type":"string"}},"required":["template_id"],"additionalProperties":false}},
+            {"name":"visual_create","description":"Create a visual from a trusted registered template. Prefer create_with_bind with slot+kind+data for experiment.overview.v1 and analysis.visual.v1. Interactive live viewers are configured templates; arbitrary TSX is not executed.","inputSchema":{"type":"object","properties":{"template_id":{"type":"string"},"title":{"type":"string"},"content":{"type":"string"},"props":{"type":"object"},"bindings":{"type":"object"},"slot":{"type":"string","description":"Required slot name for create_with_bind, e.g. experiment or spec"},"kind":{"type":"string","description":"Binding kind. Inline slots require data."},"data":{"description":"Required when kind is inline"},"source":{"type":"string"},"poll_url":{"type":"string"},"path":{"type":"string"},"schema":{"type":"string"},"visual_config":{"type":"object"},"presentation":{"type":"string","enum":["canvas","pane"]},"session_id":{"type":"string"},"instance_id":{"type":"string"}},"required":["template_id"],"additionalProperties":false}},
             {"name":"visual_create_from_template","description":"Alias of visual_create","inputSchema":{"type":"object","properties":{"template_id":{"type":"string"},"title":{"type":"string"},"props":{"type":"object"},"instance_id":{"type":"string"}},"required":["template_id"],"additionalProperties":false}},
             {"name":"visual_update","description":"Revise visual bindings, title, trusted-template configuration, or Mermaid content","inputSchema":{"type":"object","properties":{"visual_id":{"type":"string"},"title":{"type":"string"},"content":{"type":"string"},"bindings":{"type":"object","description":"Canonical synth.visual-bindings.v1 envelope: {\"schemaVersion\":\"synth.visual-bindings.v1\",\"slots\":[{\"slot\":...,\"kind\":...,\"source\":...}]}. A slot-keyed map such as {\"stream\":[...]} is legacy, is upgraded with a warning, and will be refused in a later release. Prefer visual_bind_data_source.","properties":{"schemaVersion":{"type":"string","const":"synth.visual-bindings.v1"},"slots":{"type":"array","items":{"type":"object","properties":{"slot":{"type":"string"},"kind":{"type":"string"},"source":{"type":"string"},"poll_url":{"type":"string"},"path":{"type":"string"},"schema":{"type":"string"},"data":{}},"required":["slot","kind"]}}},"required":["schemaVersion","slots"]},"status":{"type":"string"},"visual_config":{"type":"object"},"presentation":{"type":"string","enum":["canvas","pane"]}},"required":["visual_id"],"additionalProperties":false}},
-            {"name":"visual_bind_data_source","description":"Bind one slot on a visual. This is the only supported way to write bindings: it emits the canonical synth.visual-bindings.v1 envelope. Use mode=append with bindings[] to put several sources on one slot, which a template slot marked multiple (such as a ten-rollout live stream) requires.","inputSchema":{"type":"object","properties":{"instance_id":{"type":"string"},"slot":{"type":"string"},"mode":{"type":"string","enum":["replace","append"],"description":"replace (default) drops existing bindings on this slot; append adds to them"},"kind":{"type":"string","enum":["trace_v5","local_cas","live_sse","fixture","inline","run_ref","optimizer_run","query_snapshot"]},"source":{"type":"string"},"poll_url":{"type":"string","description":"Exact normalized poll URL declared beside a live SSE source"},"path":{"type":"string"},"schema":{"type":"string"},"bindings":{"type":"array","description":"Several descriptors for one slot. Each is {kind, source, poll_url?, path?, schema?}; the named slot is authoritative.","items":{"type":"object","properties":{"kind":{"type":"string"},"source":{"type":"string"},"poll_url":{"type":"string"},"path":{"type":"string"},"schema":{"type":"string"}},"required":["kind"],"additionalProperties":false}}},"required":["instance_id","slot"],"additionalProperties":false}},
+            {"name":"visual_bind_data_source","description":"Bind one slot on a visual. This is the only supported way to write bindings: it emits the canonical synth.visual-bindings.v1 envelope. Inline slots require data; other kinds require source. Use mode=append with bindings[] to put several sources on one slot.","inputSchema":{"type":"object","properties":{"instance_id":{"type":"string"},"slot":{"type":"string"},"mode":{"type":"string","enum":["replace","append"],"description":"replace (default) drops existing bindings on this slot; append adds to them"},"kind":{"type":"string","enum":["trace_v5","local_cas","live_sse","fixture","inline","run_ref","optimizer_run","query_snapshot"]},"source":{"type":"string"},"data":{"description":"Required when kind is inline"},"poll_url":{"type":"string","description":"Exact normalized poll URL declared beside a live SSE source"},"path":{"type":"string"},"schema":{"type":"string"},"bindings":{"type":"array","description":"Several descriptors for one slot. Each is {kind, source, data?, poll_url?, path?, schema?}; the named slot is authoritative.","items":{"type":"object","properties":{"kind":{"type":"string"},"source":{"type":"string"},"data":{},"poll_url":{"type":"string"},"path":{"type":"string"},"schema":{"type":"string"}},"required":["kind"],"additionalProperties":false}}},"required":["instance_id","slot"],"additionalProperties":false}},
             {"name":"visual_show","description":"Open a visual in the Desktop right pane","inputSchema":{"type":"object","properties":{"visual_id":{"type":"string"},"session_id":{"type":"string"}},"required":["visual_id"],"additionalProperties":false}},
             {"name":"visual_open_in_pane","description":"Alias of visual_show","inputSchema":{"type":"object","properties":{"instance_id":{"type":"string"}},"required":["instance_id"],"additionalProperties":false}},
             {"name":"visual_fork","description":"Fork a visual","inputSchema":{"type":"object","properties":{"visual_id":{"type":"string"},"title":{"type":"string"}},"required":["visual_id"],"additionalProperties":false}},
@@ -469,6 +510,64 @@ fn tools() -> Value {
     result
 }
 
+/// The session this MCP server was spawned for, which is the only session it
+/// may author into. Desktop writes `SYNTH_SESSION_ID` into each per-conversation
+/// server config; without it a created visual would have no owner, and an
+/// ownerless visual in an instance-global registry is adoptable by any chat.
+fn require_session_identity(session_env: &Option<String>, action: &str) -> Result<String, String> {
+    session_env
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned)
+        .ok_or_else(|| {
+            json!({
+                "code": "visual_session_identity_missing",
+                "error": format!("this visuals server has no bound session, so it cannot {action}"),
+                "retryable": false,
+                "remediation": "Chat-created visuals are owned by their conversation. Start this MCP server from a Desktop session so SYNTH_SESSION_ID is bound."
+            })
+            .to_string()
+        })
+}
+
+fn create_bindings_from_args(args: &Value) -> Result<Value, String> {
+    if let Some(bindings) = args.get("bindings").or_else(|| args.get("props")) {
+        if bindings.get("schemaVersion").and_then(Value::as_str)
+            == Some("synth.visual-bindings.v1")
+            || bindings.get("slots").is_some()
+        {
+            return Ok(bindings.clone());
+        }
+    }
+    if let Some(slot) = args.get("slot").and_then(Value::as_str) {
+        let kind = args.get("kind").and_then(Value::as_str).unwrap_or("inline");
+        let mut descriptor = json!({
+            "slot": slot,
+            "kind": kind,
+        });
+        if let Some(object) = descriptor.as_object_mut() {
+            for field in ["source", "poll_url", "path", "schema"] {
+                if let Some(value) = args.get(field).cloned().filter(|value| !value.is_null()) {
+                    object.insert(field.into(), value);
+                }
+            }
+            if let Some(data) = args.get("data").cloned() {
+                object.insert("data".into(), data);
+            }
+        }
+        return Ok(json!({
+            "schemaVersion": "synth.visual-bindings.v1",
+            "slots": [descriptor],
+        }));
+    }
+    Ok(args
+        .get("props")
+        .or_else(|| args.get("bindings"))
+        .cloned()
+        .unwrap_or(json!({})))
+}
+
 fn call_tool(name: &str, args: &Value) -> Result<Value, String> {
     let session_env = env::var("SYNTH_SESSION_ID").ok();
     match name {
@@ -494,12 +593,18 @@ fn call_tool(name: &str, args: &Value) -> Result<Value, String> {
             request("GET", &format!("/v1/visuals/{id}"), None)
         }
         "visual_create" | "visual_create_from_template" => {
+            // Ownership is bound by the host, not claimed by the caller. An
+            // agent-supplied `session_id` would let one chat author outputs
+            // into another chat's rail, and an unowned visual lands in an
+            // instance-global registry where every chat can adopt it.
+            let session_id = require_session_identity(&session_env, "create a visual")?;
+            let bindings = create_bindings_from_args(args)?;
             let body = json!({
                 "templateId": args.get("template_id"),
                 "title": args.get("title"),
-                "bindings": args.get("props").or_else(|| args.get("bindings")).cloned().unwrap_or(json!({})),
+                "bindings": bindings,
                 "id": args.get("instance_id"),
-                "sessionId": args.get("session_id").cloned().or_else(|| session_env.clone().map(Value::String)),
+                "sessionId": session_id,
                 "sourceAgentId": "mcp",
                 "content": args.get("content"),
                 "metadata": {
@@ -568,6 +673,7 @@ fn call_tool(name: &str, args: &Value) -> Result<Value, String> {
                 None => vec![json!({
                     "kind": args.get("kind"),
                     "source": args.get("source"),
+                    "data": args.get("data"),
                     "poll_url": args.get("poll_url"),
                     "path": args.get("path"),
                     "schema": args.get("schema"),
@@ -719,10 +825,15 @@ fn call_tool(name: &str, args: &Value) -> Result<Value, String> {
                 .get("visual_id")
                 .and_then(Value::as_str)
                 .ok_or("visual_id required")?;
+            // A fork is the explicit way to take another chat's visual as your
+            // own work, so the copy is owned by *this* session and keeps a
+            // record of what it came from. Adopting the original silently is
+            // what this replaces.
+            let session_id = require_session_identity(&session_env, "fork a visual")?;
             request(
                 "POST",
                 &format!("/v1/visuals/{id}/fork"),
-                Some(json!({"title": args.get("title")})),
+                Some(json!({"title": args.get("title"), "sessionId": session_id})),
             )
         }
         "visual_archive" => {
@@ -975,20 +1086,49 @@ fn capture_review(args: &Value) -> Result<Value, String> {
         "deterministic-svg"
     } else {
         window_receipt = capture_desktop_review(id, width, height, &png_path)?;
-        "desktop-window"
+        "host-webview-snapshot"
     };
-    let observation = if capture_mode == "desktop-window" {
-        let value = request("GET", &format!("/v1/review-observations/{id}"), None)?
+    // A rendered observation is evidence about the pane, and only templates
+    // that declare an observation contract are certified against it. Requiring
+    // one from every Desktop-rendered visual made capture deterministically
+    // impossible for contract-free templates such as the Trace inspector, with
+    // no path that could ever succeed.
+    let observation = if capture_mode == "host-webview-snapshot" {
+        let response = request("GET", &format!("/v1/review-observations/{id}"), None)?;
+        let observed = response
             .get("observation")
             .cloned()
-            .ok_or("review observation response is missing observation")?;
-        if value.get("renderedRevision").and_then(Value::as_i64) != Some(revision) {
-            return Err(format!(
-                "captured pane rendered revision {:?}, but durable revision is {revision}",
-                value.get("renderedRevision").and_then(Value::as_i64)
-            ));
+            .filter(|value| !value.is_null());
+        let required = response
+            .get("required")
+            .and_then(Value::as_bool)
+            .unwrap_or(true);
+        match observed {
+            Some(value) => {
+                let rendered = value.get("renderedRevision").and_then(Value::as_i64);
+                if rendered != Some(revision) {
+                    return Err(json!({
+                        "code": "visual_observation_stale",
+                        "visual_id": id,
+                        "rendered_revision": rendered,
+                        "durable_revision": revision,
+                        "retryable": true,
+                        "remediation": "The open pane is rendering an older revision. Re-show the visual, wait for the pane to settle on the current revision, then capture again."
+                    }).to_string());
+                }
+                Some(value)
+            }
+            None if required => {
+                return Err(json!({
+                    "code": "visual_observation_unavailable",
+                    "visual_id": id,
+                    "revision": revision,
+                    "retryable": true,
+                    "remediation": "This template declares an observation contract, so the pane must publish a rendered observation. Show the visual in Desktop and let it finish rendering before capturing."
+                }).to_string())
+            }
+            None => None,
         }
-        Some(value)
     } else {
         None
     };
@@ -1179,35 +1319,6 @@ fn capture_desktop_review(
     }
 }
 
-/// What the resize endpoint reported about the window it actually resized.
-///
-/// Carrying this into capture turns window discovery into verification: the
-/// capture no longer re-derives which window to photograph from a name and a
-/// size, so a viewport the public API permits cannot make the window
-/// unfindable. See: docs/contracts/desktop_review_capture.md.
-#[cfg(target_os = "macos")]
-#[derive(Clone, Debug, Default)]
-struct ReviewWindowReceipt {
-    previous: Option<Value>,
-    process_id: Option<i64>,
-    observed_width: Option<f64>,
-    observed_height: Option<f64>,
-    scale_factor: Option<f64>,
-}
-
-#[cfg(target_os = "macos")]
-impl ReviewWindowReceipt {
-    fn from_resize(resize: &Value) -> Self {
-        Self {
-            previous: resize.get("previous").cloned(),
-            process_id: resize.get("processId").and_then(Value::as_i64),
-            observed_width: resize.pointer("/current/width").and_then(Value::as_f64),
-            observed_height: resize.pointer("/current/height").and_then(Value::as_f64),
-            scale_factor: resize.get("scaleFactor").and_then(Value::as_f64),
-        }
-    }
-}
-
 #[cfg(target_os = "macos")]
 fn capture_macos_desktop_review(
     id: &str,
@@ -1216,62 +1327,44 @@ fn capture_macos_desktop_review(
     png_path: &std::path::Path,
 ) -> Result<Value, String> {
     // Template visuals are React surfaces, not SVG renditions. Show the exact
-    // visual, resize the actual Webview so responsive layout runs at the
-    // requested viewport, then capture that named instance's on-screen window.
-    // Resizing a bitmap after capture is not a responsive-layout review.
+    // visual, then ask the host to resize its own window, snapshot its own
+    // WKWebView, and restore — one call, one process. The host photographs its
+    // own surface, so the capture needs no Screen Recording TCC grant, no
+    // window-identity resolution, and works while the app is occluded. A
+    // helper that dies mid-capture can no longer strand the user's window at
+    // the review size, because resize and restore never leave the host.
     request(
         "POST",
         &format!("/v1/visuals/{id}/show"),
         Some(json!({"presentation":"pane"})),
     )?;
-    let resize = request(
+    let receipt = request(
         "POST",
-        "/v1/review-window/resize",
-        Some(json!({"width":width,"height":height})),
-    )?;
-    // Do not `?` between here and the restore. The window is already resized;
-    // any early return from this span leaves the user's Desktop at the review
-    // size with nothing left to put it back.
-    let receipt = ReviewWindowReceipt::from_resize(&resize);
-    std::thread::sleep(std::time::Duration::from_millis(500));
-    let result = capture_current_macos_window(width, height, png_path, &receipt);
-    let restore = match receipt.previous.clone() {
-        Some(previous) => request("POST", "/v1/review-window/resize", Some(previous)),
-        None => Err(
-            "review window resize omitted its previous size, so the Desktop window was left at the review size"
-                .to_string(),
-        ),
-    };
-    let restored = restore.is_ok();
-    let window = json!({
-        "schemaVersion": "synth.visual-capture-window.v1",
-        "requestedViewport": {"width": width, "height": height},
-        "resizedViewport": resize.get("current").cloned(),
-        "previousViewport": receipt.previous.clone(),
-        "scaleFactor": receipt.scale_factor,
-        "processId": receipt.process_id,
-        "bundleId": env::var("SYNTH_DESKTOP_BUNDLE_ID").ok(),
-        "windowNumber": result.as_ref().ok().map(|selected| selected.window_number),
-        "observedBounds": result.as_ref().ok().map(|selected| json!({
-            "width": selected.width,
-            "height": selected.height,
+        "/v1/review-window/capture",
+        Some(json!({
+            "width": width,
+            "height": height,
+            "outputPath": png_path.to_string_lossy(),
         })),
-        "restored": restored,
-        "restoreError": restore.as_ref().err().cloned(),
-    });
-    // A failed restore leaves the user's window at the review viewport. That
-    // has to reach the caller even when the capture itself failed, or the one
-    // side effect this operation cannot undo is also the one it never reports.
-    match (result, restore) {
-        (Err(capture), Err(restore)) => Err(format!(
-            "{capture}; additionally the Desktop window was left at {width}x{height}: {restore}"
-        )),
-        (Err(capture), Ok(_)) => Err(capture),
-        (Ok(_), Err(restore)) => Err(format!(
-            "captured review but failed to restore Desktop window: {restore}"
-        )),
-        (Ok(_), Ok(_)) => Ok(window),
+    )?;
+    if !png_path.is_file() {
+        return Err(
+            "WebViewSnapshotFailed: host capture reported success but wrote no image".into(),
+        );
     }
+    assert_non_blank_png(png_path)?;
+    Ok(json!({
+        "schemaVersion": "synth.visual-capture-window.v1",
+        "captureMode": "host-webview-snapshot",
+        "requestedViewport": {"width": width, "height": height},
+        "resizedViewport": receipt.get("current").cloned(),
+        "previousViewport": receipt.get("previous").cloned(),
+        "imageSize": {"width": receipt.get("width").cloned(), "height": receipt.get("height").cloned()},
+        "scaleFactor": receipt.get("scaleFactor").cloned(),
+        "processId": receipt.get("processId").cloned(),
+        "windowLabel": receipt.get("windowLabel").cloned(),
+        "restored": receipt.get("restored").cloned(),
+    }))
 }
 
 /// The smallest review viewport the public capture schema accepts.
@@ -1286,12 +1379,6 @@ const REVIEW_VIEWPORT_HEIGHT_MIN: u64 = 400;
 const REVIEW_VIEWPORT_WIDTH_MAX: u64 = 2400;
 const REVIEW_VIEWPORT_HEIGHT_MAX: u64 = 1800;
 
-/// How far the captured window may sit from the size the resize reported
-/// before the capture is treated as photographing the wrong surface. Window
-/// managers round and add chrome, so this is a tolerance, not an equality.
-#[cfg(target_os = "macos")]
-const REVIEW_BOUNDS_TOLERANCE_POINTS: f64 = 120.0;
-
 fn assert_review_viewport(width: u64, height: u64) -> Result<(), String> {
     if !(REVIEW_VIEWPORT_WIDTH_MIN..=REVIEW_VIEWPORT_WIDTH_MAX).contains(&width)
         || !(REVIEW_VIEWPORT_HEIGHT_MIN..=REVIEW_VIEWPORT_HEIGHT_MAX).contains(&height)
@@ -1303,222 +1390,6 @@ fn assert_review_viewport(width: u64, height: u64) -> Result<(), String> {
         ));
     }
     Ok(())
-}
-
-/// The window a capture actually photographed.
-#[cfg(target_os = "macos")]
-#[derive(Clone, Copy, Debug)]
-struct SelectedWindow {
-    window_number: i64,
-    width: i64,
-    height: i64,
-}
-
-#[cfg(target_os = "macos")]
-fn capture_current_macos_window(
-    width: u64,
-    height: u64,
-    png_path: &std::path::Path,
-    receipt: &ReviewWindowReceipt,
-) -> Result<SelectedWindow, String> {
-    let app_name = env::var("SYNTH_DESKTOP_APP_NAME")
-        .map_err(|_| "template review capture requires SYNTH_DESKTOP_APP_NAME".to_string())?;
-    let bundle_id = env::var("SYNTH_DESKTOP_BUNDLE_ID").unwrap_or_default();
-    // Identity, then geometry — in that order, and never mixed.
-    //
-    // Identity is a process id when the resize told us one, then an exact
-    // bundle id, then an owner name. macOS truncates owner names, so a name is
-    // reported for humans and never used to reject a bundle match. Size is not
-    // an identity: it is checked after selection, against the size the resize
-    // actually produced, and a mismatch names both numbers.
-    let swift = r#"import CoreGraphics
-import AppKit
-import Foundation
-let wantedName = CommandLine.arguments[1]
-let wantedBundle = CommandLine.arguments[2]
-let wantedPid = Int(CommandLine.arguments[3]) ?? 0
-let toleranceValue = Double(CommandLine.arguments[4]) ?? -1
-let expectedWidth = Double(CommandLine.arguments[5]) ?? -1
-let expectedHeight = Double(CommandLine.arguments[6]) ?? -1
-
-struct Candidate {
-  let number: Int
-  let width: Double
-  let height: Double
-  let owner: String
-  let bundle: String
-  let pid: Int
-  var area: Double { width * height }
-}
-
-let windows = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID)! as! [[String: Any]]
-let described = windows.compactMap { item -> Candidate? in
-  guard let owner = item[kCGWindowOwnerName as String] as? String,
-        let pid = item[kCGWindowOwnerPID as String] as? Int,
-        let number = item[kCGWindowNumber as String] as? Int,
-        let bounds = item[kCGWindowBounds as String] as? [String: Any],
-        let width = bounds["Width"] as? Double,
-        let height = bounds["Height"] as? Double else { return nil }
-  let bundle = NSRunningApplication(processIdentifier: pid_t(pid))?.bundleIdentifier ?? ""
-  return Candidate(number: number, width: width, height: height, owner: owner, bundle: bundle, pid: pid)
-}
-
-// Identity only. No size predicate takes part in deciding what this app is.
-var identified: [Candidate] = []
-if wantedPid > 0 {
-  identified = described.filter { $0.pid == wantedPid }
-}
-if identified.isEmpty && !wantedBundle.isEmpty {
-  identified = described.filter { $0.bundle == wantedBundle }
-}
-if identified.isEmpty {
-  identified = described.filter { $0.owner == wantedName }
-}
-
-func describe(_ items: [Candidate]) -> String {
-  items.map { "\($0.owner) [\($0.bundle)] pid \($0.pid) window \($0.number) \(Int($0.width))x\(Int($0.height))" }
-    .joined(separator: ", ")
-}
-
-if identified.isEmpty {
-  let observed = described.filter { $0.owner.lowercased().contains("synth") }
-  fputs("NOT_FOUND\tobserved synth windows: \(observed.isEmpty ? "none" : describe(observed))", stderr)
-  exit(0)
-}
-
-// A review captures the app's main surface: the largest window belonging to
-// the identified process. When the resize told us what size it produced, the
-// window nearest that size wins, so a panel or popover cannot stand in for it.
-var ordered = identified.sorted { $0.area > $1.area }
-if expectedWidth > 0 && expectedHeight > 0 {
-  ordered = identified.sorted {
-    let left = abs($0.width - expectedWidth) + abs($0.height - expectedHeight)
-    let right = abs($1.width - expectedWidth) + abs($1.height - expectedHeight)
-    return left < right
-  }
-}
-guard let best = ordered.first else {
-  fputs("NOT_FOUND\tidentity matched but no window survived ordering", stderr)
-  exit(0)
-}
-
-// Geometry is checked after selection, and only reported — never used to
-// reject the window that identity already proved is the right one.
-if toleranceValue >= 0 && expectedWidth > 0 && expectedHeight > 0 {
-  let drift = abs(best.width - expectedWidth) + abs(best.height - expectedHeight)
-  if drift > toleranceValue {
-    fputs("BOUNDS_DRIFT\texpected \(Int(expectedWidth))x\(Int(expectedHeight)), observed \(Int(best.width))x\(Int(best.height)) on window \(best.number)", stderr)
-  }
-}
-if wantedPid <= 0 && identified.count > 1 {
-  let sameSize = identified.filter { abs($0.area - best.area) < 1 }
-  if sameSize.count > 1 {
-    fputs("AMBIGUOUS\t\(describe(identified))", stderr)
-    exit(0)
-  }
-}
-print("\(best.number)\t\(Int(best.width))\t\(Int(best.height))")
-"#;
-    let output = Command::new("swift")
-        .args([
-            "-e",
-            swift,
-            &app_name,
-            &bundle_id,
-            &receipt.process_id.unwrap_or_default().to_string(),
-            &REVIEW_BOUNDS_TOLERANCE_POINTS.to_string(),
-            &receipt.observed_width.unwrap_or(-1.0).to_string(),
-            &receipt.observed_height.unwrap_or(-1.0).to_string(),
-        ])
-        .output()
-        .map_err(|error| format!("launch Desktop window resolver: {error}"))?;
-    if !output.status.success() {
-        return Err(format!(
-            "Desktop window resolver failed: {}",
-            String::from_utf8_lossy(&output.stderr).trim()
-        ));
-    }
-    let selected = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    let notes = String::from_utf8_lossy(&output.stderr).trim().to_string();
-    let (note_kind, note_detail) = match notes.split_once('\t') {
-        Some((kind, detail)) => (kind, detail),
-        None => ("", notes.as_str()),
-    };
-    if selected.is_empty() {
-        let identity = format!(
-            "expected app `{app_name}` bundle `{}` pid `{}`",
-            if bundle_id.is_empty() {
-                "unavailable"
-            } else {
-                &bundle_id
-            },
-            receipt
-                .process_id
-                .map(|pid| pid.to_string())
-                .unwrap_or_else(|| "unavailable".into())
-        );
-        if note_kind == "AMBIGUOUS" {
-            return Err(format!(
-                "DesktopWindowAmbiguous: {identity}; more than one window matched and none was \
-                 distinguishable by size: {note_detail}"
-            ));
-        }
-        return Err(format!(
-            "DesktopWindowNotFound: {identity}; {}",
-            if note_detail.is_empty() {
-                "no Synth windows were visible"
-            } else {
-                note_detail
-            }
-        ));
-    }
-    let mut fields = selected.split('\t');
-    let window_id = fields.next().unwrap_or_default().to_string();
-    let chosen = SelectedWindow {
-        window_number: window_id.parse().unwrap_or_default(),
-        width: fields
-            .next()
-            .and_then(|value| value.parse().ok())
-            .unwrap_or_default(),
-        height: fields
-            .next()
-            .and_then(|value| value.parse().ok())
-            .unwrap_or_default(),
-    };
-    if note_kind == "BOUNDS_DRIFT" {
-        // Not fatal: the capture is still of the identified window, and the
-        // receipt records what was actually photographed.
-        eprintln!("synth-visuals-mcp: review window bounds drifted; {note_detail}");
-    }
-    let raw_path = png_path.with_extension("window.png");
-    let capture = Command::new("/usr/sbin/screencapture")
-        .args(["-x", "-l", &window_id])
-        .arg(&raw_path)
-        .status()
-        .map_err(|error| format!("launch Desktop window capture: {error}"))?;
-    if !capture.success() || !raw_path.is_file() {
-        return Err("ScreenRecordingDeniedOrUnavailable: Desktop window capture produced no image; enable Screen Recording for Synth Workshop and retry".into());
-    }
-    let resize = Command::new("sips")
-        .args([
-            "-s",
-            "format",
-            "png",
-            "-z",
-            &height.to_string(),
-            &width.to_string(),
-        ])
-        .arg(&raw_path)
-        .args(["--out"])
-        .arg(png_path)
-        .status()
-        .map_err(|error| format!("launch Desktop review resize: {error}"))?;
-    if !resize.success() || !png_path.is_file() {
-        return Err("Desktop review resize failed".into());
-    }
-    let _ = fs::remove_file(raw_path);
-    assert_non_blank_png(png_path)?;
-    Ok(chosen)
 }
 
 fn assert_non_blank_png(path: &std::path::Path) -> Result<(), String> {

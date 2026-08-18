@@ -101,3 +101,7 @@ pub const EVAL_DRIVER_MAX_BODY_BYTES: usize = 2 * 1024 * 1024;
 
 /// Desktop image preview size cap.
 pub const IMAGE_PREVIEW_MAX_BYTES: u64 = 20 * 1024 * 1024;
+
+/// Sealed trace artifact cap for a container import. Above this a trace belongs
+/// in a bundle the user moves deliberately, not in a loopback fetch.
+pub const MAX_IMPORTED_TRACE_BYTES: u64 = 256 * 1024 * 1024;

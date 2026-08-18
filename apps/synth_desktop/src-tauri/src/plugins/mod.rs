@@ -1,9 +1,9 @@
 //! Built-in Workshop product plugins. Optimizers is the first registered module.
 
-mod policy;
+pub(crate) mod policy;
 mod registry;
 mod service;
-mod types;
+pub mod types;
 
 pub use registry::{optimizers_plugin_enabled, PluginRegistry};
 pub(crate) use service::PluginService;

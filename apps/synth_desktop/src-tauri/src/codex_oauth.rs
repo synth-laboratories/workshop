@@ -36,6 +36,7 @@ const KEYCHAIN_ACCOUNT: &str = PROVIDER_ID;
 const KEYCHAIN_SERVICE_ENV: &str = "SYNTH_DESKTOP_OAUTH_KEYCHAIN_SERVICE";
 const DEV_CREDENTIAL_FILE_ENV: &str = "SYNTH_DESKTOP_DEV_OAUTH_FILE";
 const DEV_CREDENTIAL_STATE_FILE_ENV: &str = "SYNTH_DESKTOP_DEV_OAUTH_STATE_FILE";
+const PACKAGED_QA_CREDENTIAL_ENV: &str = "SYNTH_DESKTOP_PACKAGED_QA_OAUTH";
 
 fn keychain_service() -> String {
     std::env::var(KEYCHAIN_SERVICE_ENV)
@@ -95,11 +96,12 @@ pub struct SystemKeychain {
 /// code-signing requirement and would otherwise prompt after local rebuilds.
 struct LocalInstanceCredentialStore;
 
-/// Named debug instances read the canonical Codex file only as their initial
-/// seed. Successful refresh/re-auth and disconnect are persisted in one
-/// machine-local private overlay shared by named instances. This keeps the
-/// source read-only, survives rebuilds and new instance names, and never
-/// invokes Keychain.
+/// Named debug instances, and explicitly opted-in packaged QA instances, read
+/// the canonical Codex file only as their initial seed. Successful refresh,
+/// re-auth, and disconnect are persisted in one machine-local private overlay.
+/// This keeps the source read-only, survives rebuilds, and never invokes
+/// Keychain. Release apps cannot enter this lane without all three explicit
+/// environment variables.
 struct DevFileCredentialStore {
     seed: PathBuf,
     state: PathBuf,
@@ -395,9 +397,10 @@ impl Manager {
         let named_instance = std::env::var_os("SYNTH_DESKTOP_INSTANCE").is_some();
         let dev_file = std::env::var_os(DEV_CREDENTIAL_FILE_ENV).map(PathBuf::from);
         let dev_state_file = std::env::var_os(DEV_CREDENTIAL_STATE_FILE_ENV).map(PathBuf::from);
+        let explicit_qa_file = std::env::var(PACKAGED_QA_CREDENTIAL_ENV).as_deref() == Ok("1");
         let store: Arc<dyn CredentialStore> = match credential_store_mode(
             named_instance,
-            cfg!(debug_assertions),
+            cfg!(debug_assertions) || explicit_qa_file,
             dev_file.is_some() && dev_state_file.is_some(),
         ) {
             CredentialStoreMode::Canonical => Arc::new(SystemKeychain::new(keychain_service())),
@@ -969,7 +972,7 @@ mod tests {
     }
 
     #[test]
-    fn debug_oauth_file_is_explicit_named_debug_only() {
+fn oauth_file_requires_an_explicit_named_qa_or_debug_instance() {
         assert_eq!(
             credential_store_mode(false, true, true),
             CredentialStoreMode::Canonical

@@ -9,7 +9,7 @@ import {
   projectCraftaxSemanticTrace,
   projectCraftaxViewer,
   scopeCraftaxEvents,
-  semanticCheckpointIndexes,
+  replayMomentIndexes,
 } from "../families/first_class_example_containers/live.craftax.v1/projectCraftax.ts";
 
 function event(lane, kind, sequence, payload = {}, second = sequence) {
@@ -256,7 +256,7 @@ test("A13 visual scope refuses unrelated rollouts sharing one producer root", ()
   assert.ok(!JSON.stringify(scoped).includes("999"));
 });
 
-test("V2 replay checkpoints skip token deltas and observations", () => {
+test("V2 replay moments skip token deltas and observations", () => {
   const rows = [
     event("seed:0", "trace.opened", 1),
     event("seed:0", "observation", 2, {}),
@@ -265,9 +265,9 @@ test("V2 replay checkpoints skip token deltas and observations", () => {
     event("seed:0", "span.policy.closed", 1004, {}),
     event("seed:0", "span.step.closed", 1005, { step: 1 }),
   ];
-  const checkpoints = semanticCheckpointIndexes(rows);
-  assert.deepEqual(checkpoints, [0, 2, 1003, 1004]);
-  assert.ok(checkpoints.length < rows.length / 100);
+  const moments = replayMomentIndexes(rows);
+  assert.deepEqual(moments, [0, 2, 1003, 1004]);
+  assert.ok(moments.length < rows.length / 100);
 });
 
 test("missing PNG stays unavailable and does not fall back to ASCII", () => {

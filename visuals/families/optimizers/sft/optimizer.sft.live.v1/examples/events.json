@@ -21,7 +21,7 @@
     },
     "summary": {
       "baseModel": "openai/gpt-oss-20b",
-      "adapter": "lora_r16",
+      "adapter": "lora_r8",
       "backend": "tinker",
       "step": 100,
       "epoch": 2
@@ -43,7 +43,7 @@
       "snapshot": {
         "summary": {
           "baseModel": "openai/gpt-oss-20b",
-          "adapter": "lora_r16",
+          "adapter": "lora_r8",
           "backend": "tinker"
         }
       }
@@ -319,7 +319,7 @@
         "status": "ready",
         "raw": {
           "baseModel": "openai/gpt-oss-20b",
-          "adapter": "lora_r16",
+          "adapter": "lora_r8",
           "checkpointId": "ckpt_100",
           "deployable": "sft://opt_sft_campaign/ckpt_100",
           "digest": "sha256:model100"

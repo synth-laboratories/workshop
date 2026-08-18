@@ -34,6 +34,7 @@ const EXPECTED_IDS = [
   "diagram.mermaid.v1",
   "diagram.systems.dynamic.v1",
   "diagram.systems.v1",
+  "experiment.overview.v1",
   "live.container_rollouts.v1",
   "live.craftax.v1",
   "live.digbench.v1",

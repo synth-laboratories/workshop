@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { COMMANDS, invokeCommand } from "../bridge";
 import "./DiagnosticsPanel.css";
+import { publicError } from "../runtime/publicError";
 
 /**
  * The Diagnostics surface.
@@ -156,7 +157,7 @@ export function DiagnosticsPanel({
 			setResult(nextResult);
 		} catch (reason) {
 			if (ticket !== generation.current) return;
-			setFailure(reason instanceof Error ? reason.message : String(reason));
+			setFailure(publicError(reason));
 		} finally {
 			if (ticket === generation.current) setLoading(false);
 		}
@@ -175,7 +176,7 @@ export function DiagnosticsPanel({
 			setBundlePath(receipt.path);
 			await navigator.clipboard?.writeText(receipt.path).catch(() => undefined);
 		} catch (reason) {
-			setFailure(reason instanceof Error ? reason.message : String(reason));
+			setFailure(publicError(reason));
 		}
 	}, [query]);
 
@@ -199,7 +200,7 @@ export function DiagnosticsPanel({
 				})
 			);
 		} catch (reason) {
-			setFailure(reason instanceof Error ? reason.message : String(reason));
+			setFailure(publicError(reason));
 		} finally {
 			setExplaining(null);
 		}
@@ -210,7 +211,7 @@ export function DiagnosticsPanel({
 			await invokeCommand(COMMANDS.DIAGNOSTICS_CLEAR_INDEX);
 			await refresh();
 		} catch (reason) {
-			setFailure(reason instanceof Error ? reason.message : String(reason));
+			setFailure(publicError(reason));
 		}
 	}, [refresh]);
 

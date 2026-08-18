@@ -9,9 +9,15 @@ pub enum PluginRisk {
     Read,
     Low,
     High,
+    /// Requires a person at the keyboard. Unreachable from `auto_decision` under
+    /// every policy, `never` included. See `ApprovalKind::requires_human`.
+    HandOff,
 }
 
 pub fn classify(kind: &ApprovalKind, active_runs: u64) -> PluginRisk {
+    if kind.requires_human() {
+        return PluginRisk::HandOff;
+    }
     match kind {
         ApprovalKind::PluginLifecycle { action, .. } => match action.as_str() {
             "enable" | "disable" => PluginRisk::Low,
@@ -26,6 +32,10 @@ pub fn classify(kind: &ApprovalKind, active_runs: u64) -> PluginRisk {
         ApprovalKind::PaidCompute { .. } => PluginRisk::High,
         ApprovalKind::CredentialAccess { .. } => PluginRisk::High,
         ApprovalKind::ShellCommand { .. } => PluginRisk::High,
+        // Non-hazard computer use: driving an app the operator has not yet
+        // allowed. Hazard actions never reach here — `requires_human` above
+        // classified them `HandOff`.
+        ApprovalKind::ComputerUse { .. } => PluginRisk::High,
     }
 }
 
@@ -39,6 +49,9 @@ pub fn auto_decision(
 ) -> Result<Option<ApprovalDecision>> {
     let risk = classify(kind, active_runs);
     match (approval_policy, risk) {
+        // Listed policy-by-policy rather than as `(_, HandOff)` so that an
+        // unrecognized policy still falls through to the error arm.
+        ("never" | "on-request" | "untrusted", PluginRisk::HandOff) => Ok(None),
         (_, PluginRisk::Read) => Ok(Some(approve_kind(kind))),
         ("never", _) => Ok(Some(approve_kind(kind))),
         ("on-request", PluginRisk::Low) => Ok(Some(approve_kind(kind))),
@@ -48,7 +61,7 @@ pub fn auto_decision(
     }
 }
 
-fn approve_kind(kind: &ApprovalKind) -> ApprovalDecision {
+pub(crate) fn approve_kind(kind: &ApprovalKind) -> ApprovalDecision {
     match kind {
         ApprovalKind::PaidCompute { requested_cap, .. } => ApprovalDecision::ApproveWithCap {
             cap: requested_cap.clone(),
@@ -228,6 +241,54 @@ mod tests {
         assert!(auto_decision("on-request", &start_kind(), 0)
             .unwrap()
             .is_some());
+    }
+
+    fn computer_use(hazard: bool) -> ApprovalKind {
+        ApprovalKind::ComputerUse {
+            app: "com.apple.mail".into(),
+            action: "click".into(),
+            payload: json!({ "recipient": "board@example.com", "subject": "Q3" }),
+            hazard,
+            element_index: Some(42),
+        }
+    }
+
+    /// G6. The permissive policy is honored for every other risk class in this
+    /// file; a hazard action is the one thing it must not reach.
+    #[test]
+    fn hazard_actions_refuse_under_every_policy_including_never() {
+        for policy in ["never", "on-request", "untrusted"] {
+            assert!(
+                auto_decision(policy, &computer_use(true), 0)
+                    .unwrap()
+                    .is_none(),
+                "`{policy}` auto-settled a hazard action"
+            );
+        }
+        assert_eq!(classify(&computer_use(true), 0), PluginRisk::HandOff);
+    }
+
+    /// A misspelled policy must not be laundered into "ask the human" — that
+    /// reads as working and hides the misconfiguration.
+    #[test]
+    fn unknown_policy_still_errors_for_hazard_actions() {
+        assert!(auto_decision("always-ask", &computer_use(true), 0).is_err());
+    }
+
+    /// Driving an app is not a hazard by itself: it takes the ordinary High
+    /// path, so `never` settles it like any other plugin mutation.
+    #[test]
+    fn routine_computer_use_follows_the_ordinary_high_risk_path() {
+        assert_eq!(classify(&computer_use(false), 0), PluginRisk::High);
+        assert!(auto_decision("never", &computer_use(false), 0)
+            .unwrap()
+            .is_some());
+        assert!(auto_decision("on-request", &computer_use(false), 0)
+            .unwrap()
+            .is_none());
+        assert!(auto_decision("untrusted", &computer_use(false), 0)
+            .unwrap()
+            .is_none());
     }
 
     #[test]

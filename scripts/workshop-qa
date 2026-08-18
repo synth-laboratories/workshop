@@ -1,0 +1,384 @@
+#!/usr/bin/env bash
+# Zero-interaction QA entry point: one explicit prepare, a strict read-only
+# preflight, an unattended run over the first-party eval driver, and an
+# incident collector for any unexpected system dialog.
+#
+# CUA is not part of this control plane. Anything that would become
+# interactive must fail preflight before a chat exists or compute is spent.
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+COMMAND="${1:-help}"
+NAME="${2:-qa}"
+INSTANCE_ROOT="${SYNTH_DESKTOP_INSTANCES_ROOT:-$HOME/.synth-desktop/instances}/v05/$NAME"
+DATA_ROOT="$INSTANCE_ROOT/data"
+RECEIPT_ROOT="$INSTANCE_ROOT/qa-receipts"
+DRIVER_DESCRIPTOR="$DATA_ROOT/eval-driver.json"
+RELEASE_MANIFEST="$RECEIPT_ROOT/release-manifest.json"
+
+usage() {
+  cat <<'EOF'
+Usage: ./scripts/workshop-qa <command> [name]
+
+  prepare [name]    One explicit setup: signing identity, packaged build with
+                    the eval driver, staged runtime inputs, readiness receipt.
+  preflight [name]  Read-only strict contract. Exit 0 only when an unattended
+                    run cannot become interactive. Prints one JSON report.
+  run [name] [--workflow <w>|--prompt <text>]
+                    Launch the packaged instance and drive the workflow over
+                    the eval driver. No CUA, no OS automation.
+  incident [name]   Collect attribution evidence for a system prompt that
+                    just appeared: tccd/replayd log, frontmost app, listeners.
+  stop [name]       Stop the named instance.
+
+The default instance name is "qa".
+EOF
+}
+
+say() { echo "[workshop-qa:$NAME] $*"; }
+fail() { echo "[workshop-qa:$NAME] FAIL: $*" >&2; exit 1; }
+
+driver_field() {
+  python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))[sys.argv[2]])' "$DRIVER_DESCRIPTOR" "$1"
+}
+
+driver_get() {
+  local path="$1"
+  curl -sf --max-time 15 \
+    -H "Authorization: Bearer $(driver_field token)" \
+    "$(driver_field url)$path"
+}
+
+stop_instance_optimizer_processes() {
+  local staged_root="$INSTANCE_ROOT/runtime/gepa/optimizer-project"
+  local pid command
+  while IFS=$'\t' read -r pid command; do
+    [[ "$pid" =~ ^[0-9]+$ ]] || continue
+    [[ "$command" == *"$staged_root"* ]] || continue
+    # Scope cleanup to this named instance's staged optimizer checkout. This
+    # catches uv's re-parented service/run leaders without touching another
+    # Workshop instance or an unrelated Python/uv process.
+    kill -TERM "$pid" 2>/dev/null || true
+  done < <(ps -axo pid=,command= | awk '{$1=$1; pid=$1; sub(/^[^ ]+[ ]+/, ""); print pid "\t" $0}')
+}
+
+seal_unattended_config() {
+  local config="$DATA_ROOT/config.toml"
+  python3 - "$config" <<'PY'
+import pathlib, re, sys, tomllib
+
+path = pathlib.Path(sys.argv[1])
+text = path.read_text() if path.is_file() else ""
+header = "[desktop.permissions]"
+lines = text.splitlines()
+start = next((i for i, line in enumerate(lines) if line.strip() == header), None)
+if start is None:
+    if lines and lines[-1].strip():
+        lines.append("")
+    lines.extend([header, 'approval_policy = "never"', 'sandbox_mode = "danger-full-access"'])
+else:
+    end = next((i for i in range(start + 1, len(lines)) if re.match(r"^\s*\[", lines[i])), len(lines))
+    body = [line for line in lines[start + 1:end]
+            if not re.match(r"^\s*(approval_policy|sandbox_mode)\s*=", line)]
+    lines[start + 1:end] = [
+        'approval_policy = "never"',
+        'sandbox_mode = "danger-full-access"',
+        *body,
+    ]
+result = "\n".join(lines).rstrip() + "\n"
+parsed = tomllib.loads(result)
+permissions = parsed.get("desktop", {}).get("permissions", {})
+assert permissions.get("approval_policy") == "never"
+assert permissions.get("sandbox_mode") == "danger-full-access"
+path.write_text(result)
+path.chmod(0o600)
+PY
+}
+
+unattended_config_is_sealed() {
+  python3 - "$DATA_ROOT/config.toml" <<'PY'
+import pathlib, sys, tomllib
+path = pathlib.Path(sys.argv[1])
+if not path.is_file():
+    raise SystemExit(1)
+permissions = tomllib.loads(path.read_text()).get("desktop", {}).get("permissions", {})
+raise SystemExit(0 if permissions == {
+    "approval_policy": "never",
+    "sandbox_mode": "danger-full-access",
+} else 1)
+PY
+}
+
+write_release_manifest() {
+  local instance_manifest="$INSTANCE_ROOT/instance.json"
+  local banking_source="${SYNTH_BANKING77_GEPA_COOKBOOK_SOURCE:-}"
+  local optimizer_source="${SYNTH_OPTIMIZER_PROJECT_SOURCE:-}"
+  local containers_source="${SYNTH_CONTAINERS_SOURCE_ROOT:-${SYNTH_CONTAINERS_ROOT:-}}"
+  [[ -f "$instance_manifest" ]] || fail "instance manifest missing after build"
+  [[ -n "$banking_source" ]] || fail "SYNTH_BANKING77_GEPA_COOKBOOK_SOURCE is required for a pinned QA build"
+  [[ -n "$optimizer_source" ]] || fail "SYNTH_OPTIMIZER_PROJECT_SOURCE is required for a pinned QA build"
+  [[ -n "$containers_source" ]] || fail "SYNTH_CONTAINERS_SOURCE_ROOT is required for a pinned QA build"
+  python3 - "$ROOT" "$instance_manifest" "$banking_source" "$optimizer_source" "$containers_source" "$RELEASE_MANIFEST" <<'PY'
+import hashlib, json, pathlib, subprocess, sys, tomllib
+
+workshop, instance_path, cookbook_path, optimizer_path, containers_path, output = map(pathlib.Path, sys.argv[1:])
+
+def run(*args, ok=True):
+    result = subprocess.run(args, capture_output=True, text=True)
+    if ok and result.returncode:
+        raise SystemExit(result.stderr.strip() or f"command failed: {' '.join(args)}")
+    return result
+
+def repo(path):
+    root = pathlib.Path(run("git", "-C", str(path), "rev-parse", "--show-toplevel").stdout.strip())
+    return {
+        "path": str(root),
+        "commit": run("git", "-C", str(root), "rev-parse", "HEAD").stdout.strip(),
+        "tree": run("git", "-C", str(root), "rev-parse", "HEAD^{tree}").stdout.strip(),
+        "dirty": bool(run("git", "-C", str(root), "status", "--porcelain=v1", "--untracked-files=all").stdout.strip()),
+    }
+
+def version(path):
+    with path.open("rb") as handle:
+        data = tomllib.load(handle)
+    return (data.get("project") or data.get("package") or {}).get("version")
+
+instance = json.loads(instance_path.read_text())
+executable = pathlib.Path(instance["appBundle"]) / "Contents/MacOS/synth-desktop"
+app_bundle = pathlib.Path(instance["appBundle"])
+executable_digest = "sha256:" + hashlib.sha256(executable.read_bytes()).hexdigest() if executable.is_file() else None
+catalog = optimizer_path / "src/synth_optimizers/eval/catalog/eval.craftax.code-policy.smoke.v1.toml"
+with catalog.open("rb") as handle:
+    craftax = tomllib.load(handle)["recipe"]
+image, digest = craftax["image"], craftax["image_digest"]
+reference = f"{image}@{digest}"
+remote = run("docker", "manifest", "inspect", reference, ok=False)
+
+manifest = {
+    "schemaVersion": "synth.workshop-qa-release-manifest.v1",
+    "workshop": repo(workshop),
+    "cookbooks": repo(cookbook_path),
+    "optimizers": {**repo(optimizer_path), "version": version(optimizer_path / "pyproject.toml")},
+    "containers": {**repo(containers_path), "version": version(containers_path / "pyproject.toml")},
+    "craftaxImage": {
+        "image": image,
+        "digest": digest,
+        "reference": reference,
+        "remotelyResolvable": remote.returncode == 0,
+        "probeError": None if remote.returncode == 0 else (remote.stderr.strip() or remote.stdout.strip())[:500],
+    },
+    "app": {
+        "version": instance.get("appVersion"),
+        "bundleId": instance.get("bundleId"),
+        "bundlePath": str(app_bundle),
+        "bundlePresent": app_bundle.is_dir(),
+        "executable": str(executable),
+        "executableDigest": executable_digest,
+        "recordedExecutableDigest": instance.get("executableDigest"),
+        "cdHash": (instance.get("provenance") or {}).get("cdHash"),
+        "sourceRevision": instance.get("sourceRevision"),
+        "signing": instance.get("signing"),
+    },
+}
+pathlib.Path(output).write_text(json.dumps(manifest, indent=2) + "\n")
+print(json.dumps(manifest, indent=2))
+PY
+}
+
+release_manifest_is_complete() {
+  python3 - "$RELEASE_MANIFEST" <<'PY'
+import json, pathlib, sys
+path = pathlib.Path(sys.argv[1])
+if not path.is_file():
+    raise SystemExit(1)
+m = json.loads(path.read_text())
+repos = [m.get(name, {}) for name in ("workshop", "cookbooks", "optimizers", "containers")]
+app = m.get("app", {})
+image = m.get("craftaxImage", {})
+ok = (
+    m.get("schemaVersion") == "synth.workshop-qa-release-manifest.v1"
+    and all(r.get("commit") and r.get("tree") and r.get("dirty") is False for r in repos)
+    and m.get("optimizers", {}).get("version")
+    and m.get("containers", {}).get("version")
+    and image.get("image") and image.get("digest", "").startswith("sha256:")
+    and image.get("remotelyResolvable") is True
+    and app.get("version") == "0.5.0" and app.get("bundlePresent") is True
+    and app.get("executableDigest") and app.get("executableDigest") == app.get("recordedExecutableDigest")
+    and app.get("cdHash")
+    and app.get("sourceRevision") == m.get("workshop", {}).get("commit", "")[:12]
+    and app.get("signing", {}).get("identity")
+)
+raise SystemExit(0 if ok else 1)
+PY
+}
+
+case "$COMMAND" in
+  prepare)
+    say "signing identity"
+    "$ROOT/scripts/setup-desktop-dev-signing.sh" >/dev/null
+    say "packaged build (eval driver compiled in, stable signature)"
+    "$ROOT/scripts/desktop-instance.sh" cua-build "$NAME"
+    say "sealing unattended approval and sandbox policy"
+    seal_unattended_config
+    say "staging runtime inputs"
+    "$ROOT/scripts/desktop-instance.sh" stage "$NAME"
+    mkdir -p "$RECEIPT_ROOT"
+    "$ROOT/scripts/desktop-instance.sh" assert-identity "$NAME" \
+      > "$RECEIPT_ROOT/identity.txt"
+    say "recording pinned release manifest"
+    write_release_manifest >/dev/null
+    python3 - "$RECEIPT_ROOT/readiness.json" <<EOF
+import json, pathlib, shutil, subprocess, sys
+instance = json.loads(pathlib.Path("$INSTANCE_ROOT/instance.json").read_text())
+receipt = {
+    "instance": "$NAME",
+    "preparedAt": subprocess.run(["date", "-u", "+%Y-%m-%dT%H:%M:%SZ"], capture_output=True, text=True).stdout.strip(),
+    "bundle": instance["appBundle"],
+    "releaseManifest": "$RELEASE_MANIFEST",
+    "identityReceipt": "$RECEIPT_ROOT/identity.txt",
+    # Presence only. Secret values never enter a receipt.
+    "credentials": {
+        "codexAuth": pathlib.Path("$HOME/.codex/auth.json").is_file(),
+        "synthEnv": pathlib.Path("$HOME/.synth-desktop/.env").is_file(),
+    },
+    "runtimes": {
+        "docker": shutil.which("docker") is not None,
+    },
+}
+pathlib.Path(sys.argv[1]).write_text(json.dumps(receipt, indent=2) + "\n")
+print(json.dumps(receipt, indent=2))
+EOF
+    say "prepared; receipt at $RECEIPT_ROOT/readiness.json"
+    ;;
+
+  preflight)
+    status=0
+    checks=()
+    check() { # name ok detail
+      checks+=("{\"name\":\"$1\",\"ok\":$2,\"detail\":\"$3\"}")
+      [[ "$2" == "true" ]] || status=1
+    }
+
+    if security find-identity -v -p codesigning 2>/dev/null | grep -F "Synth Workshop Development" >/dev/null; then
+      check signingIdentity true "Synth Workshop Development present"
+    else
+      check signingIdentity false "stable signing identity missing; run prepare"
+    fi
+
+    if "$ROOT/scripts/desktop-instance.sh" assert-identity "$NAME" >/dev/null 2>&1; then
+      check bundleIdentity true "designated requirement stable, helpers match host"
+    else
+      check bundleIdentity false "assert-identity failed; rebuild via prepare"
+    fi
+
+    if [[ -f "$HOME/.codex/auth.json" ]]; then
+      check codexCredential true "~/.codex/auth.json present"
+    else
+      check codexCredential false "no Codex credential; a run would open OAuth in a browser"
+    fi
+
+    if docker info >/dev/null 2>&1; then
+      check containerRuntime true "docker responds"
+    else
+      check containerRuntime false "container runtime absent; a run could trigger an installer or error mid-spend"
+    fi
+
+    if unattended_config_is_sealed; then
+      check instancePolicy true "approval_policy=never and sandbox_mode=danger-full-access sealed"
+    else
+      check instancePolicy false "instance config is not sealed for unattended QA; run prepare"
+    fi
+
+    if release_manifest_is_complete; then
+      check releaseManifest true "all source, image, and packaged-app identities are complete and immutable"
+    else
+      check releaseManifest false "candidate is not fully pinned or the exact Craftax image is not remotely resolvable; run prepare and inspect $RELEASE_MANIFEST"
+    fi
+
+    if [[ -f "$DRIVER_DESCRIPTOR" ]]; then
+      if report="$(driver_get /v1/preflight)"; then
+        echo "$report" > "$RECEIPT_ROOT/driver-preflight.json" 2>/dev/null || true
+        would_start="$(echo "$report" | python3 -c 'import json,sys; print(str(json.load(sys.stdin)["qaUnattended"]["wouldStart"]).lower())')"
+        if [[ "$would_start" == "true" ]]; then
+          check effectivePolicy true "qa-unattended session start would succeed"
+        else
+          reason="$(echo "$report" | python3 -c 'import json,sys; print(json.load(sys.stdin)["qaUnattended"].get("reason",""))')"
+          check effectivePolicy false "driver refuses unattended start: $reason"
+        fi
+      else
+        check driverReachable false "descriptor exists but driver did not answer; stale instance?"
+      fi
+    else
+      check driverReachable true "instance not running; policy check deferred to launch (descriptor absent)"
+    fi
+
+    printf '{"instance":"%s","ok":%s,"checks":[%s]}\n' \
+      "$NAME" "$([[ $status -eq 0 ]] && echo true || echo false)" \
+      "$(IFS=,; echo "${checks[*]}")" | python3 -m json.tool
+    exit $status
+    ;;
+
+  run)
+    shift 2 || shift $#
+    "$0" preflight "$NAME" >/dev/null || fail "preflight refused; fix the report before spending"
+    staged_optimizer="$INSTANCE_ROOT/runtime/gepa/optimizer-project"
+    if [[ -f "$staged_optimizer/pyproject.toml" ]]; then
+      # `prepare` copies the exact integration checkout into the instance. The
+      # launched .app must receive that immutable staged path too; otherwise it
+      # silently installs the public release and the QA run tests different
+      # optimizer code than the build receipt claims.
+      export SYNTH_OPTIMIZER_PROJECT_ROOT="$staged_optimizer"
+    fi
+    say "launching packaged instance"
+    "$ROOT/scripts/desktop-instance.sh" cua-run "$NAME" &
+    launcher=$!
+    cleanup_run() {
+      stop_instance_optimizer_processes
+      "$ROOT/scripts/desktop-instance.sh" stop "$NAME" >/dev/null 2>&1 || true
+      wait "$launcher" 2>/dev/null || true
+    }
+    trap cleanup_run EXIT
+    for _ in $(seq 1 60); do
+      [[ -f "$DRIVER_DESCRIPTOR" ]] && driver_get /health >/dev/null 2>&1 && break
+      sleep 2
+    done
+    driver_get /health >/dev/null 2>&1 || { kill "$launcher" 2>/dev/null || true; fail "eval driver never came up"; }
+    say "driver live; policy preflight against the running app"
+    driver_get /v1/preflight | python3 -c 'import json,sys
+r = json.load(sys.stdin)
+ok = r["qaUnattended"]["wouldStart"]
+print(json.dumps(r["qaUnattended"], indent=2))
+sys.exit(0 if ok else 1)' || fail "running app refuses unattended start"
+    mkdir -p "$RECEIPT_ROOT"
+    SYNTH_DESKTOP_DATA_ROOT="$DATA_ROOT" node "$ROOT/scripts/workshop-qa-driver.mjs" "$@" \
+      | tee "$RECEIPT_ROOT/last-run.json"
+    say "run receipt at $RECEIPT_ROOT/last-run.json"
+    trap - EXIT
+    cleanup_run
+    ;;
+
+  incident)
+    out="${SYNTH_QA_INCIDENT_ROOT:-$RECEIPT_ROOT}/incident-$(date -u +%Y%m%dT%H%M%SZ)"
+    mkdir -p "$out"
+    say "collecting into $out"
+    # lsappinfo needs no TCC grant; osascript/screencapture would.
+    lsappinfo front > "$out/frontmost.txt" 2>&1 || true
+    lsappinfo info "$(lsappinfo front 2>/dev/null)" >> "$out/frontmost.txt" 2>&1 || true
+    ps -axo pid,ppid,user,comm > "$out/process-tree.txt"
+    lsof -nP -iTCP -sTCP:LISTEN > "$out/listeners.txt" 2>&1 || true
+    log show --last 10m \
+      --predicate 'process == "tccd" OR process == "replayd" OR subsystem CONTAINS "TCC"' \
+      > "$out/tcc-log.txt" 2>&1 || true
+    say "attribution rule: no causality without this receipt. Attach the dialog"
+    say "screenshot manually; automated capture is itself a TCC surface."
+    ls -la "$out"
+    ;;
+
+  stop)
+    "$ROOT/scripts/desktop-instance.sh" stop "$NAME"
+    ;;
+
+  help|*)
+    usage
+    ;;
+esac

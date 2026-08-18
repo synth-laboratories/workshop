@@ -3,6 +3,7 @@ import { COMMANDS, invokeCommand } from "../bridge";
 import { formatCount, formatMs, formatTps, useInferenceMonitor } from "./InferencePanel";
 
 import { MODEL_OBSERVABILITY_REFRESH_MS } from "../limits";
+import { publicError } from "../runtime/publicError";
 
 export type CloudModelPerformance = {
 	modelId: string;
@@ -71,7 +72,7 @@ export function ModelObservabilitySettings() {
 			setCloud(await invokeCommand<CloudModelPerformanceSnapshot>(COMMANDS.MODEL_PERFORMANCE_GET, { windowMinutes: WINDOW_MINUTES }));
 			setCloudError(null);
 		} catch (reason) {
-			const raw = reason instanceof Error ? reason.message : String(reason);
+			const raw = publicError(reason);
 			setCloud(null);
 			setCloudError(summarizeCloudTelemetryError(raw));
 		} finally {

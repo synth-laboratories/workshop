@@ -11,11 +11,14 @@ import type {
 	ContainerDeployment,
 	RuntimeControlKind,
 	RuntimeEvent,
+	ChatPresence,
+	RecoveryNotice,
 	RuntimeHealth,
 	Session,
 	VisualInstanceRecord,
 	VisualRecord
 } from "@synth/runtime-protocol";
+import { publicError } from "../runtime/publicError";
 import {
 	dispatchLocalSessionStatus,
 	dispatchRuntimeEvent,
@@ -25,10 +28,13 @@ import {
 	mergeSessionReplay,
 	patchSessionMetadata,
 	replaceSessions,
+	selectChatPresence,
 	selectSessionRunning,
 	selectWorkingChatIds,
+	sessionRecoveryNotice,
 	upsertSession,
 	useEventsBySession,
+	useLiveTurns,
 	useSessions
 } from "../stores/sessionStore";
 import {
@@ -39,6 +45,7 @@ import { useInferenceMonitor } from "../components/InferencePanel";
 import { artifactFromVisualRecord } from "../components/VisualHost";
 import { useAccountShell } from "./useAccountShell";
 import { usePluginStatuses } from "./usePluginStatuses";
+import { useComputerUse } from "./useComputerUse";
 import { useShellLayout } from "./useShellLayout";
 import { useCodexEventBridge, type CodexUsageSnapshot } from "./useCodexEventBridge";
 import { useForeignSessionEventBridge } from "./useForeignSessionEventBridge";
@@ -50,7 +57,8 @@ import {
 	sessionIsLocalChat,
 	sessionIsSync,
 	targetIdToExecutionTarget,
-	visualRecordToArtifact
+	visualRecordToArtifact,
+	openArtifactIdForChat
 } from "../runtime/sessionView";
 import { approvalModeFromConfig, codexStartRequest, coreEventToRuntime, createCodexSession, restoreCodexSession, type ApprovalMode, type ApprovalPolicy, type SandboxMode } from "../runtime/nativeCodex";
 import {
@@ -153,6 +161,7 @@ export function useAppController() {
 	const [health, setHealth] = useState<RuntimeHealth | null>(null);
 	const [laguna, setLaguna] = useState<LagunaStatus | null>(null);
 	const sessions = useSessions();
+	const liveTurns = useLiveTurns();
 	const sessionsRef = useRef<Session[]>(sessions);
 	const eventsBySession = useEventsBySession();
 	const [codexActivityBySession, setCodexActivityBySession] = useState<Record<string, CodexActivityEvent[]>>({});
@@ -210,6 +219,8 @@ export function useAppController() {
 		EMPTY_VISUAL_REVISION_STATE
 	);
 	const openArtifactIdRef = useRef<string | null>(null);
+	const openArtifactByViewRef = useRef<Record<string, string | null>>({});
+	const activeSessionIdRef = useRef<string | null>(null);
 	const visualRequestGenerationRef = useRef(0);
 	const pendingVisualRefreshRef = useRef<{ id: string; minimumRevision: number; generation: number } | null>(null);
 	const acceptedVisualRevisionRef = useRef<{ id: string | null; revision: number }>({ id: null, revision: -1 });
@@ -384,7 +395,7 @@ export function useAppController() {
 	useEffect(() => {
 		let disposed = false;
 		void loadMachinePermissions().catch((reason) => {
-			if (!disposed) showToast(`Could not load machine permissions: ${reason instanceof Error ? reason.message : String(reason)}`);
+			if (!disposed) showToast(`Could not load machine permissions: ${publicError(reason)}`);
 		});
 		return () => { disposed = true; };
 	}, [loadMachinePermissions, showToast]);
@@ -645,13 +656,17 @@ export function useAppController() {
 		if (view.kind === "async") return view.sessionId;
 		return null;
 	}, [view]);
+	activeSessionIdRef.current = activeSessionId;
 	const terminalWorkspaceRoot = defaultWorkspace;
+	// Declared after activeSessionId: the allowlist is scoped to the session,
+	// so the hook needs a session to ask about.
+	const computerUseState = useComputerUse(activeSessionId ?? null);
 	const terminalWorkspaceId = activeSessionId ?? "default";
 	const selectActivePermissions = useCallback((nextApprovalPolicy: ApprovalPolicy, nextSandboxMode: SandboxMode) => {
 		const mode = approvalModeFromConfig(nextApprovalPolicy, nextSandboxMode);
 		if (isDesktop) {
 			void bridges.config?.updateDesktopPermissions({ approvalPolicy: nextApprovalPolicy, sandboxMode: nextSandboxMode })
-				.catch((reason) => showToast(`Could not save machine permissions: ${reason instanceof Error ? reason.message : String(reason)}`));
+				.catch((reason) => showToast(`Could not save machine permissions: ${publicError(reason)}`));
 		}
 		if (!activeSessionId) {
 			setApprovalMode(mode); setApprovalPolicy(nextApprovalPolicy); setSandboxMode(nextSandboxMode);
@@ -672,7 +687,7 @@ export function useAppController() {
 		setPreferences(setPermissionPreferences(nextApprovalPolicy, nextSandboxMode));
 		const config = { approvalPolicy: nextApprovalPolicy, sandbox: nextSandboxMode };
 		patchSessionMetadata(activeSessionId, { approvalMode: mode, ...config });
-		void nativeCodex?.close(activeSessionId).catch((reason) => showToast(reason instanceof Error ? reason.message : String(reason)));
+		void nativeCodex?.close(activeSessionId).catch((reason) => showToast(publicError(reason)));
 	}, [activeSessionId, isDesktop, nativeCodex, showToast]);
 
 	useEffect(() => {
@@ -683,7 +698,7 @@ export function useAppController() {
 		if (session.metadata.approvalPolicy === approvalPolicy && session.metadata.sandbox === sandboxMode) return;
 		const mode = approvalModeFromConfig(approvalPolicy, sandboxMode);
 		patchSessionMetadata(activeSessionId, { approvalMode: mode, approvalPolicy, sandbox: sandboxMode });
-		void nativeCodex?.close(activeSessionId).catch((reason) => showToast(reason instanceof Error ? reason.message : String(reason)));
+		void nativeCodex?.close(activeSessionId).catch((reason) => showToast(publicError(reason)));
 	}, [activeSessionId, approvalPolicy, nativeCodex, sandboxMode, sessions, showToast]);
 
 	useEffect(() => {
@@ -751,7 +766,45 @@ export function useAppController() {
 		sessions
 	]);
 
-	const workingChatIds = useMemo(() => selectWorkingChatIds(sessions), [sessions]);
+	// Packaged Desktop requires a live provider-stream ownership receipt; a
+	// stored `running` row alone may be crash debris. The browser runtime has no
+	// child process or recovery lease, so its in-memory adapter's running rows
+	// are the live ownership authority (and keep the browser demo/test harness
+	// honest without weakening the packaged rule).
+	const presentationLiveTurns = useMemo(() => {
+		if (isDesktop) return liveTurns;
+		const browserTurns = { ...liveTurns };
+		for (const session of sessions) {
+			if (session.status === "running" && !(session.id in browserTurns)) {
+				browserTurns[session.id] = `browser:${session.id}`;
+			}
+		}
+		return browserTurns;
+	}, [isDesktop, liveTurns, sessions]);
+
+	// Working requires a live turn owned by this instance, never a stored status.
+	const workingChatIds = useMemo(
+		() => selectWorkingChatIds(sessions, presentationLiveTurns),
+		[presentationLiveTurns, sessions]
+	);
+
+	const chatPresence = useMemo(() => {
+		const presence: Record<string, ChatPresence> = {};
+		for (const session of sessions) {
+			presence[session.id] = selectChatPresence(session, presentationLiveTurns);
+		}
+		return presence;
+	}, [presentationLiveTurns, sessions]);
+
+	/** Durable notices left by turns a previous Workshop process abandoned. */
+	const recoveryNotices = useMemo(() => {
+		const notices: Record<string, RecoveryNotice> = {};
+		for (const session of sessions) {
+			const notice = sessionRecoveryNotice(session);
+			if (notice) notices[session.id] = notice;
+		}
+		return notices;
+	}, [sessions]);
 
 	const pinnedChatIds = useMemo(() => new Set(
 		Object.entries(preferences.conversations)
@@ -861,7 +914,10 @@ export function useAppController() {
 			[sessionId]: { state: "loading", hasMore: false }
 		}));
 		responseTraceStore.setLoading(sessionId);
-		void core.sessionEventsTail(sessionId, TRANSCRIPT_INITIAL_PAGE_SIZE + 1).then((fetched) => {
+		void Promise.all([
+			core.sessionEventsTail(sessionId, TRANSCRIPT_INITIAL_PAGE_SIZE + 1),
+			bridges.visuals?.list({ sessionId, limit: 500 }) ?? Promise.resolve([])
+		]).then(([fetched, ownedVisuals]) => {
 			// Hydration belongs to the session cache, not to the currently mounted
 			// chat view. Navigation, target attachment and StrictMode effect replay
 			// must not throw away a completed journal read. A generation changes only
@@ -872,7 +928,34 @@ export function useAppController() {
 			const hydrated = rows
 				.map(targetKind === "intern" ? appEventToRuntimeEvent : coreEventToRuntime)
 				.filter((event): event is RuntimeEvent => event !== null);
-			mergeSessionReplay([[sessionId, hydrated]]);
+			// Transcript hydration is intentionally bounded, but an optimizer can
+			// create its visual early and then emit hundreds of token deltas. Restore
+			// durable chat outputs from the visual registry as a separate authority so
+			// an old visual cannot fall out of the Outputs shelf merely because it is
+			// outside the transcript tail.
+			const visualOutputs: RuntimeEvent[] = ownedVisuals
+				.filter((visual) => visual.sessionId === sessionId)
+				.map((visual, index) => ({
+				schemaVersion: "synth.desktop-runtime-event.v1",
+				sessionId,
+				runId: visual.runId ?? null,
+				sequence: -(index + 1),
+				eventKind: "visual.created",
+				payload: {
+					visualId: visual.id,
+					ownerSessionId: visual.sessionId ?? sessionId,
+					title: visual.title,
+					templateId: visual.templateId,
+					bindings: visual.bindings,
+					metadata: visual.metadata,
+					status: visual.status,
+					revision: visual.currentRevision,
+					messageId: visual.messageId ?? undefined
+				},
+				createdAt: visual.createdAt,
+				source: "local"
+			}));
+			mergeSessionReplay([[sessionId, [...visualOutputs, ...hydrated]]]);
 			const hydratedHead = hydrated.at(-1)?.sequence ?? 0;
 			nativeSequencesRef.current.set(sessionId, Math.max(
 				nativeSequencesRef.current.get(sessionId) ?? 0,
@@ -988,7 +1071,7 @@ export function useAppController() {
 	}, [activeChat?.id, activeChatTargetId]);
 	// Session status + event arbitration — single selector, not an App.tsx IIFE.
 	const activeChatRunning = activeChat
-		? selectSessionRunning(activeChatSession, eventsBySession[activeChat.id] ?? [])
+		? selectSessionRunning(activeChatSession, eventsBySession[activeChat.id] ?? [], presentationLiveTurns)
 		: false;
 	const activeChatWarmingUp = Boolean(
 		activeChatRunning &&
@@ -1050,14 +1133,47 @@ export function useAppController() {
 					: view.kind;
 
 	useEffect(() => {
-		setOpenArtifactId(null);
-		openArtifactIdRef.current = null;
+		const hasRemembered = Object.prototype.hasOwnProperty.call(openArtifactByViewRef.current, viewKey);
+		let remembered = hasRemembered ? openArtifactByViewRef.current[viewKey] : null;
+		if (!hasRemembered) {
+			const persistedId =
+				(typeof activeChatSession?.metadata?.openVisualId === "string"
+					? activeChatSession.metadata.openVisualId
+					: null)
+				?? (view.kind === "chat"
+					? activeChat?.artifacts?.find((artifact) => artifact.templateId !== "synth.subagents.v1")?.id ?? null
+					: view.kind === "sync"
+						? activeSync?.artifacts?.find((artifact) => artifact.templateId !== "synth.subagents.v1")?.id ?? null
+						: null);
+			if (persistedId) {
+				remembered = persistedId;
+				openArtifactByViewRef.current[viewKey] = persistedId;
+			}
+		}
+		setOpenArtifactId(remembered);
+		openArtifactIdRef.current = remembered;
 		visualRequestGenerationRef.current += 1;
 		pendingVisualRefreshRef.current = null;
-		dispatchVisualRevision({ type: "close" });
+		dispatchVisualRevision(remembered ? { type: "select", id: remembered } : { type: "close" });
 		setOpenContainer(null);
 		setContainerPaneExpanded(false);
-	}, [viewKey]);
+	}, [viewKey, activeChatSession?.metadata?.openVisualId, activeChat?.id, activeSync?.id]);
+
+	useEffect(() => {
+		if (!openArtifactId) return;
+		// Ownership enforcement applies to chat-scoped panes only. Inventory,
+		// Visuals, and Optimizers intentionally open registry artifacts that are
+		// not members of an active chat transcript.
+		if (!activeChat && !activeSync) return;
+		const artifacts = activeChat?.artifacts ?? activeSync?.artifacts ?? [];
+		if (!openArtifactIdForChat(openArtifactId, artifacts)) {
+			setOpenArtifactId(null);
+			openArtifactIdRef.current = null;
+			visualRequestGenerationRef.current += 1;
+			pendingVisualRefreshRef.current = null;
+			dispatchVisualRevision({ type: "close" });
+		}
+	}, [openArtifactId, activeChat, activeSync]);
 
 	useEffect(() => {
 		if (openArtifactId || openContainer) return;
@@ -1087,6 +1203,7 @@ export function useAppController() {
 
 	const toggleArtifact = useCallback((id: string | null) => {
 		if (id == null) {
+			openArtifactByViewRef.current[viewKey] = null;
 			setOpenArtifactId(null);
 			openArtifactIdRef.current = null;
 			visualRequestGenerationRef.current += 1;
@@ -1098,12 +1215,13 @@ export function useAppController() {
 		setOpenArtifactId((current) => {
 			const next = current === id ? null : id;
 			openArtifactIdRef.current = next;
+			openArtifactByViewRef.current[viewKey] = next;
 			visualRequestGenerationRef.current += 1;
 			pendingVisualRefreshRef.current = null;
 			dispatchVisualRevision(next ? { type: "select", id: next } : { type: "close" });
 			return next;
 		});
-	}, []);
+	}, [viewKey]);
 
 	const toggleContainer = useCallback(async (id: string | null) => {
 		if (!id || openContainer?.id === id) {
@@ -1124,7 +1242,7 @@ export function useAppController() {
 			dispatchVisualRevision({ type: "close" });
 			setOpenContainer(container);
 		} catch (reason) {
-			showToast(reason instanceof Error ? reason.message : String(reason));
+			showToast(publicError(reason));
 		}
 	}, [openContainer?.id, showToast]);
 
@@ -1135,7 +1253,7 @@ export function useAppController() {
 			setOpenContainer(container);
 			showToast(`${container.name} · ${container.status}`);
 		} catch (reason) {
-			showToast(reason instanceof Error ? reason.message : String(reason));
+			showToast(publicError(reason));
 		}
 	}, [openContainer, showToast]);
 
@@ -1145,6 +1263,7 @@ export function useAppController() {
 				? artifactFromVisualRecord(visual as VisualRecord)
 				: visualRecordToArtifact(visual as VisualInstanceRecord);
 		openArtifactIdRef.current = artifact.id;
+		openArtifactByViewRef.current[viewKey] = artifact.id;
 		acceptedVisualRevisionRef.current = { id: artifact.id, revision: artifact.revision ?? -1 };
 		visualRequestGenerationRef.current += 1;
 		pendingVisualRefreshRef.current = null;
@@ -1152,7 +1271,7 @@ export function useAppController() {
 		setOpenArtifactId(artifact.id);
 		// Opening an artifact is a side-pane action. Navigation remains explicit so
 		// traces stay beside their catalog and chat-created visuals stay beside chat.
-	}, []);
+	}, [viewKey]);
 
 	const reconcileOpenVisual = useCallback((visualId: string, minimumRevision = -1, open = false) => {
 		if (!bridges.visuals) return;
@@ -1189,7 +1308,7 @@ export function useAppController() {
 			},
 			(reason) => {
 				if (openArtifactIdRef.current !== visualId || visualRequestGenerationRef.current !== generation) return;
-				dispatchVisualRevision({ type: "fail", id: visualId, generation, error: String(reason) });
+				dispatchVisualRevision({ type: "fail", id: visualId, generation, error: publicError(reason) });
 				if (pendingVisualRefreshRef.current?.generation === generation) pendingVisualRefreshRef.current = null;
 			}
 		);
@@ -1208,11 +1327,34 @@ export function useAppController() {
 			if (visualId) reconcileOpenVisual(visualId);
 		};
 		const unlisten = bridges.visuals.onEvent((event) => {
+			// Visual events are durable CoreRuntime session events, but Codex's
+			// provider bridge intentionally projects only provider traffic. Fold the
+			// visual lane into the active session store as it arrives so a visual
+			// created by an optimizer appears in Outputs immediately; otherwise the
+			// pane could open while the same chat incorrectly said "No outputs yet"
+			// until a full transcript rehydrate after restart.
+			if (event.sessionId) {
+				const runtimeEvent = appEventToRuntimeEvent(event);
+				if (runtimeEvent) dispatchRuntimeEvent(runtimeEvent, { updateStatus: false });
+			}
 			const visualId =
 				typeof event.payload?.visualId === "string" ? event.payload.visualId : null;
 			if (!visualId) return;
 			const eventRevision = typeof event.payload?.revision === "number" ? event.payload.revision : -1;
-			if (event.kind === "visual.show") reconcileOpenVisual(visualId, eventRevision, true);
+			if (event.kind === "visual.show") {
+				const owner =
+					typeof event.payload?.ownerSessionId === "string"
+						? event.payload.ownerSessionId
+						: typeof event.sessionId === "string"
+							? event.sessionId
+							: null;
+				const ownerViewKey = owner ? `chat:${owner}` : viewKey;
+				openArtifactByViewRef.current[ownerViewKey] = visualId;
+				if (owner && owner !== activeSessionIdRef.current) {
+					return;
+				}
+				reconcileOpenVisual(visualId, eventRevision, true);
+			}
 			else if (event.kind === "visual.updated" && openArtifactIdRef.current === visualId) {
 				reconcileOpenVisual(visualId, eventRevision);
 			}
@@ -1226,7 +1368,7 @@ export function useAppController() {
 			unlisten();
 			window.removeEventListener("focus", reconcileSelected);
 		};
-	}, [reconcileOpenVisual]);
+	}, [reconcileOpenVisual, viewKey]);
 
 	const ensureOpenRouterReady = useCallback(async (targetId: string): Promise<boolean> => {
 		if (!targetId.startsWith("openrouter-")) return true;
@@ -1404,10 +1546,12 @@ export function useAppController() {
 						: await nativeCodex.defaultWorkspace();
 					const startRequest = {
 						...codexStartRequest(sessionId, workspace, executionTarget, "ask", preferences.agentContext.autoCompactTokenLimits, laguna?.baseUrl ?? undefined, serviceTierForExecutionTarget(executionTarget, modelKnobValues) ?? "default"),
-						// Restored pre-policy sessions can carry only the human mode. Never
-						// turn that into an undefined request which Rust then treats as Ask.
-						approvalPolicy,
-						sandbox: sandboxMode,
+						// The session's sealed policy metadata is the authority; the
+						// preference-seeded values cover only restored pre-policy sessions
+						// that carry no metadata. Never send undefined, which Rust would
+						// resolve against machine config as if nothing had been chosen.
+						approvalPolicy: typeof session.metadata.approvalPolicy === "string" ? session.metadata.approvalPolicy : approvalPolicy,
+						sandbox: typeof session.metadata.sandbox === "string" ? session.metadata.sandbox : sandboxMode,
 						threadId: typeof session.metadata.threadId === "string" ? session.metadata.threadId : undefined
 					};
 					const sequence = allocateNativeSequence(sessionId);
@@ -1501,6 +1645,32 @@ export function useAppController() {
 		setFailedSend(null);
 		void sendToSession(pending.sessionId, pending.text, { messageId: pending.messageId });
 	}, [failedSend, sendToSession]);
+
+	/**
+	 * Send the abandoned turn's original prompt again as a new attempt.
+	 *
+	 * A fresh message id, deliberately: reusing the crashed turn's id would
+	 * merge the retry into the bubble that failed, and the whole point is that
+	 * the interrupted attempt stays visible in history. The host records the
+	 * link (`recoveredFromRunId`) on the new run.
+	 */
+	const restartRecoveredChat = useCallback((sessionId: string) => {
+		const notice = recoveryNotices[sessionId];
+		const prompt = notice?.lastUserMessage?.text;
+		if (!notice || !prompt) {
+			showToast("This chat has no recorded message to restart from.");
+			return;
+		}
+		if (!notice.restartable) {
+			showToast(
+				notice.needsAttention
+					? "Check whether the previous work completed before retrying."
+					: "This task already started work that would be duplicated by a retry."
+			);
+			return;
+		}
+		void sendToSession(sessionId, prompt);
+	}, [recoveryNotices, sendToSession, showToast]);
 
 	const onComposerSend = useCallback(
 		async (text: string, images: ComposerImageAttachment[] = []) => {
@@ -1596,7 +1766,7 @@ export function useAppController() {
 
 	const onNewConversation = useCallback(() => {
 		void loadMachinePermissions()
-			.catch((reason) => showToast(`Could not load machine permissions: ${reason instanceof Error ? reason.message : String(reason)}`))
+			.catch((reason) => showToast(`Could not load machine permissions: ${publicError(reason)}`))
 				.finally(() => {
 					setView({ kind: "landing" });
 					setOpenArtifactId(null);
@@ -1668,7 +1838,7 @@ export function useAppController() {
 			showToast("Compacting context…");
 		} catch (reason) {
 			manualCompactionPendingRef.current.delete(activeSessionId);
-			showToast(reason instanceof Error ? reason.message : String(reason));
+			showToast(publicError(reason));
 		} finally {
 			setBusy(false);
 		}
@@ -1852,6 +2022,7 @@ export function useAppController() {
 		openBilling,
 		pluginStatuses,
 		refreshPluginStatuses,
+		...computerUseState,
 		view,
 		setView,
 		toast,
@@ -1865,6 +2036,9 @@ export function useAppController() {
 		pinnedChatIds,
 		conversationTitles,
 		workingChatIds,
+		chatPresence,
+		recoveryNotices,
+		restartRecoveredChat,
 		selectedTargetId,
 		onSelectTarget,
 		onNewConversation,

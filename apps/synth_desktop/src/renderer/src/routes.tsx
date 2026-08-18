@@ -6,12 +6,14 @@ import type {
 	VisualInstanceRecord,
 	VisualRecord
 } from "@synth/runtime-protocol";
+import { publicError } from "./runtime/publicError";
 import type { ArtifactRef, LandingState, LocalChat } from "./types/landing";
 import type { AccountViewModel } from "./runtime/accountView";
 import type { DeviceUsageSummary } from "./components/UsageSheet";
 import type { DesktopPreferences, ToolActivityMode } from "./preferences";
 import { applyPreferencesToDocument } from "./preferences";
-import type { LagunaStatus, ModelPerformanceSummary, PluginStatus, SynthAccountSummary, SynthBackendSettings } from "./bridge";
+import type { LagunaStatus, ModelPerformanceSummary, PluginPermission, PluginStatus, SynthAccountSummary, SynthBackendSettings } from "./bridge";
+import type { ComputerUseView } from "./runtime/computerUse";
 import type { InferenceMonitor } from "./components/InferencePanel";
 import type { ApprovalMode, ApprovalPolicy, SandboxMode } from "./runtime/nativeCodex";
 import { ChatTranscript, OutputsPanel, outputContainerIds, type TranscriptHistoryState } from "./components/ChatTranscript";
@@ -20,6 +22,7 @@ import { ConnectorsPage } from "./components/ConnectorsPage";
 import { InferencePanel } from "./components/InferencePanel";
 import { DataPage } from "./components/DataPage";
 import { LandingPage } from "./components/LandingPage";
+import { ComputerUsePage } from "./components/ComputerUsePage";
 import { OptimizersPage } from "./components/OptimizersPage";
 import { PaneResizeHandle } from "./components/PaneResizeHandle";
 import { SettingsPage } from "./components/SettingsPage";
@@ -42,10 +45,18 @@ export type MainView =
 	| { kind: "inventory" }
 	| { kind: "visuals" }
 	| { kind: "reports" }
-	| { kind: "optimizers" };
+	| { kind: "optimizers" }
+	| { kind: "computer-use" };
 
 export type MainRoutesProps = {
 	view: MainView;
+	computerUse: ComputerUseView;
+	computerUseBusy: boolean;
+	onInstallComputerUse: () => void;
+	onRemoveComputerUse: () => void;
+	onRefreshComputerUse: () => void;
+	onOpenComputerUseSettings: (permission: PluginPermission) => void;
+	onRevokeComputerUseApp: (bundleId: string) => void;
 	setView: (view: MainView) => void;
 	state: LandingState;
 	sessions: Session[];
@@ -113,6 +124,13 @@ export function MainRoutes(props: MainRoutesProps): ReactNode {
 	const {
 		view,
 		setView,
+		computerUse,
+		computerUseBusy,
+		onInstallComputerUse,
+		onRemoveComputerUse,
+		onRefreshComputerUse,
+		onOpenComputerUseSettings,
+		onRevokeComputerUseApp,
 		state,
 		sessions,
 		selectedTargetId,
@@ -248,7 +266,7 @@ export function MainRoutes(props: MainRoutesProps): ReactNode {
 									openVisualRecord(visual);
 									showToast(`Created visual · ${visual.title}`);
 								} catch (reason) {
-									showToast(String(reason));
+									showToast(publicError(reason));
 								}
 							})();
 						}}
@@ -281,7 +299,7 @@ export function MainRoutes(props: MainRoutesProps): ReactNode {
 									const visual = await bridges.visuals.get(visualId);
 									openVisualRecord(visual);
 								} catch (reason) {
-									showToast(String(reason));
+									showToast(publicError(reason));
 								}
 							})();
 						}}
@@ -290,6 +308,22 @@ export function MainRoutes(props: MainRoutesProps): ReactNode {
 					{openArtifact ? (
 						<><PaneResizeHandle value={inventoryContainerWidth} onChange={(width) => { setInventoryContainerWidth(width); persistLayoutSnapshot({ outputPaneWidth: width }); }} ariaLabel="Resize visual pane" /><VisualPane artifact={openArtifact} onClose={() => toggleArtifact(null)} /></>
 					) : null}
+				</div>
+			) : null}
+
+			{view.kind === "computer-use" ? (
+				<div className="inventory-workbench">
+					<ComputerUsePage
+						status={computerUse.status}
+						allowedApps={computerUse.allowedApps}
+						busy={computerUseBusy}
+						onBack={() => setView({ kind: "landing" })}
+						onInstall={onInstallComputerUse}
+						onRemove={onRemoveComputerUse}
+						onRefresh={onRefreshComputerUse}
+						onOpenSettings={onOpenComputerUseSettings}
+						onRevokeApp={onRevokeComputerUseApp}
+					/>
 				</div>
 			) : null}
 

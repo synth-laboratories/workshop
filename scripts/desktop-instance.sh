@@ -3,16 +3,26 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+# shellcheck source=scripts/mcp-adapters.sh
+source "$ROOT/scripts/mcp-adapters.sh"
+REPO_SIBLING_ROOT="$(dirname "$ROOT")"
+GIT_COMMON_DIR="$(git -C "$ROOT" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)"
+if [[ -n "$GIT_COMMON_DIR" ]]; then
+  PRIMARY_REPO_SIBLING_ROOT="$(dirname "$(dirname "$GIT_COMMON_DIR")")"
+  if [[ -d "$PRIMARY_REPO_SIBLING_ROOT/synth-cookbooks-public" ]]; then
+    REPO_SIBLING_ROOT="$PRIMARY_REPO_SIBLING_ROOT"
+  fi
+fi
 COMMAND="${1:-dev}"
 NAME="${2:-${SYNTH_DESKTOP_INSTANCE:-codex}}"
-RELEASE_LINE="${SYNTH_DESKTOP_RELEASE_LINE:-v0.4}"
-APP_VERSION="${SYNTH_DESKTOP_APP_VERSION:-0.4.0}"
+RELEASE_LINE="${SYNTH_DESKTOP_RELEASE_LINE:-v0.5}"
+APP_VERSION="${SYNTH_DESKTOP_APP_VERSION:-0.5.0}"
 
-if [[ "$RELEASE_LINE" != "v0.4" ]]; then
-  echo "[desktop:$NAME] invalid release line; this branch only builds v0.4 instances" >&2
+if [[ "$RELEASE_LINE" != "v0.5" ]]; then
+  echo "[desktop:$NAME] invalid release line; this branch only builds v0.5 instances" >&2
   exit 2
 fi
-RELEASE_SLUG="v04"
+RELEASE_SLUG="v05"
 
 usage() {
   cat <<'EOF'
@@ -22,6 +32,7 @@ Usage: ./scripts/desktop-instance.sh <command> [name]
   cua [name]       Build and run a named debug .app for Computer Use
   cua-build [name] Build and sign the named debug .app without launching it
   cua-run [name]   Run the existing signed CUA app without rebuilding
+  assert-identity [name]  Verify the built app's signing identity and record it
   status [name]    Show the exact process and instance paths
   stage [name]     Stage protected-folder-free runtime inputs without launching
   stop [name]      Stop only the named instance
@@ -139,7 +150,7 @@ PY
 }
 
 write_contract() {
-	local old_runtime="" manifest_tmp="$MANIFEST.tmp"
+	local old_runtime="" old_signing="" old_provenance="" old_executable="" old_executable_digest="" manifest_tmp="$MANIFEST.tmp"
   mkdir -p "$DATA_ROOT" "$WORKSPACE" "$GENERATED_ROOT" "$TARGET_ROOT"
   chmod 700 "$INSTANCE_ROOT" "$DATA_ROOT" "$WORKSPACE"
 
@@ -207,6 +218,10 @@ EOF
   "bundle": {
     "targets": ["app"],
     "icon": ["$ICON_PNG", "$ICON_ICNS"],
+    "resources": {
+      "$INSTANCE_ROOT/runtime/gepa/banking77_container": "cookbooks/optimizers/gepa/banking77_container",
+      "$INSTANCE_ROOT/runtime/gepa/crafter_container": "cookbooks/optimizers/gepa/crafter_container"
+    },
     "macOS": {
       "minimumSystemVersion": "14.0"
     }
@@ -221,6 +236,10 @@ EOF
 
   if [[ -f "$MANIFEST" ]]; then
     old_runtime="$(jq -c '.runtime // empty' "$MANIFEST" 2>/dev/null || true)"
+    old_signing="$(jq -c '.signing // empty' "$MANIFEST" 2>/dev/null || true)"
+    old_provenance="$(jq -c '.provenance // empty' "$MANIFEST" 2>/dev/null || true)"
+    old_executable="$(jq -r '.executable // empty' "$MANIFEST" 2>/dev/null || true)"
+    old_executable_digest="$(jq -r '.executableDigest // empty' "$MANIFEST" 2>/dev/null || true)"
   fi
   cat >"$manifest_tmp" <<EOF
 {
@@ -238,6 +257,7 @@ EOF
   "workspace": "$WORKSPACE",
   "cargoTargetDir": "$TARGET_ROOT",
   "executable": "$EXE",
+  "appBundle": "$(dirname "$(dirname "$(dirname "$CUA_EXE")")")",
   "sourceRoot": "$ROOT",
   "sourceRevision": "$SOURCE_REVISION",
   "viteUrl": "http://127.0.0.1:$VITE_PORT",
@@ -253,15 +273,36 @@ EOF
     jq --argjson runtime "$old_runtime" '.runtime = $runtime' "$manifest_tmp" >"$manifest_tmp.merged"
     mv "$manifest_tmp.merged" "$manifest_tmp"
   fi
+  if [[ -n "$old_signing" ]]; then
+    jq --argjson signing "$old_signing" '.signing = $signing' "$manifest_tmp" >"$manifest_tmp.merged"
+    mv "$manifest_tmp.merged" "$manifest_tmp"
+  fi
+  if [[ -n "$old_provenance" ]]; then
+    jq --argjson provenance "$old_provenance" '.provenance = $provenance' "$manifest_tmp" >"$manifest_tmp.merged"
+    mv "$manifest_tmp.merged" "$manifest_tmp"
+  fi
+  if [[ -n "$old_executable_digest" ]]; then
+    jq --arg executableDigest "$old_executable_digest" '.executableDigest = $executableDigest' "$manifest_tmp" >"$manifest_tmp.merged"
+    mv "$manifest_tmp.merged" "$manifest_tmp"
+  fi
+  if [[ -n "$old_executable" ]]; then
+    jq --arg executable "$old_executable" '.executable = $executable' "$manifest_tmp" >"$manifest_tmp.merged"
+    mv "$manifest_tmp.merged" "$manifest_tmp"
+  fi
   mv "$manifest_tmp" "$MANIFEST"
 }
 
 executable_digest() {
-  if [[ -f "$EXE" ]]; then
-    shasum -a 256 "$EXE" | awk '{print "sha256:" $1}'
+  local executable="${1:-$EXE}"
+  if [[ -f "$executable" ]]; then
+    shasum -a 256 "$executable" | awk '{print "sha256:" $1}'
   else
     printf ''
   fi
+}
+
+bundle_cdhash() {
+  /usr/bin/codesign -dvvv "$1" 2>&1 | awk -F= '/^CDHash=/ && !found {print $2; found=1}'
 }
 
 # Capture rev+dirty before a build, revalidate after, and record the executable
@@ -299,15 +340,77 @@ revalidate_provenance() {
   mv "$manifest_tmp" "$MANIFEST"
 }
 
+record_packaged_provenance() {
+  local app_bundle="$1" digest manifest_tmp="$MANIFEST.packaged-provenance.tmp"
+  [[ -x "$CUA_EXE" ]] || {
+    echo "[desktop:$NAME] ERROR packaged executable is missing: $CUA_EXE" >&2
+    return 1
+  }
+  digest="sha256:$(shasum -a 256 "$CUA_EXE" | awk '{print $1}')"
+  jq \
+    --arg executable "$CUA_EXE" \
+    --arg executableDigest "$digest" \
+    --arg bundle "$app_bundle" \
+    --arg cdHash "$(bundle_cdhash "$app_bundle")" \
+    --arg validatedAt "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" \
+    '.executable = $executable
+    | .executableDigest = $executableDigest
+    | .provenance = ((.provenance // {}) + {
+        phase: "bundle-signed",
+        executable: $executable,
+        executableDigest: $executableDigest,
+        appBundle: $bundle,
+        cdHash: $cdHash,
+        validatedAt: $validatedAt
+      })' "$MANIFEST" >"$manifest_tmp"
+  mv "$manifest_tmp" "$MANIFEST"
+}
+
+verify_packaged_provenance() {
+  local app_bundle actual_digest recorded_digest actual_cdhash recorded_cdhash recorded_revision phase
+  app_bundle="$(dirname "$(dirname "$(dirname "$CUA_EXE")")")"
+  [[ -x "$CUA_EXE" ]] || {
+    echo "[desktop:$NAME] ERROR packaged executable is missing: $CUA_EXE" >&2
+    return 1
+  }
+  codesign --verify --deep --strict "$app_bundle"
+  actual_digest="$(executable_digest "$CUA_EXE")"
+  recorded_digest="$(jq -r '.provenance.executableDigest // .executableDigest // empty' "$MANIFEST")"
+  actual_cdhash="$(bundle_cdhash "$app_bundle")"
+  recorded_cdhash="$(jq -r '.provenance.cdHash // empty' "$MANIFEST")"
+  recorded_revision="$(jq -r '.provenance.sourceRevision // empty' "$MANIFEST")"
+  phase="$(jq -r '.provenance.phase // empty' "$MANIFEST")"
+  [[ "$phase" == "bundle-signed" ]] || {
+    echo "[desktop:$NAME] ERROR packaged provenance is not sealed; run cua-build" >&2
+    return 1
+  }
+  [[ "$recorded_revision" == "$SOURCE_REVISION" ]] || {
+    echo "[desktop:$NAME] ERROR packaged source revision drift: $recorded_revision != $SOURCE_REVISION" >&2
+    return 1
+  }
+  [[ "$recorded_digest" == "$actual_digest" ]] || {
+    echo "[desktop:$NAME] ERROR packaged executable digest drift: $recorded_digest != $actual_digest" >&2
+    return 1
+  }
+  [[ -n "$recorded_cdhash" && "$recorded_cdhash" == "$actual_cdhash" ]] || {
+    echo "[desktop:$NAME] ERROR packaged CDHash drift: $recorded_cdhash != $actual_cdhash" >&2
+    return 1
+  }
+}
+
 mark_runtime() {
   local status="$1" pid="${2:-}" manifest_tmp="$MANIFEST.runtime.tmp"
-  local digest
+  local digest runtime_executable="$EXE"
   [[ -f "$MANIFEST" ]] || write_contract
-  digest="$(executable_digest)"
+  if [[ -n "$pid" ]]; then
+    runtime_executable="$(lsof -a -p "$pid" -d txt -Fn 2>/dev/null | sed -n 's/^n//p' | head -1)"
+    [[ -f "$runtime_executable" ]] || runtime_executable="$EXE"
+  fi
+  digest="$(executable_digest "$runtime_executable")"
   jq \
     --arg status "$status" \
     --arg pid "$pid" \
-    --arg executable "$EXE" \
+    --arg executable "$runtime_executable" \
     --arg executableDigest "$digest" \
     --arg sourceRevision "$SOURCE_REVISION" \
     --arg checkedAt "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" \
@@ -331,6 +434,7 @@ stop_instance() {
   local rows pids
   rows="$(instance_processes)"
   if [[ -z "$rows" ]]; then
+    rm -f "$DATA_ROOT/eval-driver.json"
     mark_runtime "stopped"
     echo "[desktop:$NAME] stopped"
     return
@@ -341,6 +445,7 @@ stop_instance() {
   kill $pids 2>/dev/null || true
   for _ in 1 2 3 4 5 6 7 8 9 10; do
     if [[ -z "$(instance_processes)" ]]; then
+      rm -f "$DATA_ROOT/eval-driver.json"
       mark_runtime "stopped"
       return
     fi
@@ -379,14 +484,14 @@ status_instance() {
 stage_gepa_runtime() {
   local runtime_root="$INSTANCE_ROOT/runtime/gepa"
   local banking_target="$runtime_root/banking77_container"
-  local banking_source="${SYNTH_BANKING77_GEPA_COOKBOOK_SOURCE:-$(dirname "$ROOT")/synth-cookbooks-public/cookbooks/optimizers/gepa/banking77_container}"
+  local banking_source="${SYNTH_BANKING77_GEPA_COOKBOOK_SOURCE:-$REPO_SIBLING_ROOT/synth-cookbooks-public/cookbooks/optimizers/gepa/banking77_container}"
   local craftax_target="$runtime_root/crafter_container"
-  local craftax_source="${SYNTH_CRAFTAX_GEPA_COOKBOOK_SOURCE:-$(dirname "$ROOT")/synth-cookbooks-public/cookbooks/optimizers/gepa/crafter_container}"
+  local craftax_source="${SYNTH_CRAFTAX_GEPA_COOKBOOK_SOURCE:-$REPO_SIBLING_ROOT/synth-cookbooks-public/cookbooks/optimizers/gepa/crafter_container}"
   local optimizer_target="$runtime_root/optimizer-project"
-  local optimizer_source="${SYNTH_OPTIMIZER_PROJECT_SOURCE:-$(dirname "$ROOT")/optimizers-g1}"
+  local optimizer_source="${SYNTH_OPTIMIZER_PROJECT_SOURCE:-$REPO_SIBLING_ROOT/optimizers-g1}"
   local use_local_optimizer="${SYNTH_OPTIMIZER_USE_LOCAL_SOURCE:-0}"
   local secret_target="$DATA_ROOT/gepa-secret.env"
-  local secret_source="${SYNTH_GEPA_SECRET_ENV_SOURCE:-${SYNTH_BANKING77_SECRET_ENV_SOURCE:-$(dirname "$ROOT")/synth-ai/.env}}"
+  local secret_source="${SYNTH_GEPA_SECRET_ENV_SOURCE:-${SYNTH_BANKING77_SECRET_ENV_SOURCE:-$REPO_SIBLING_ROOT/synth-ai/.env}}"
 
   if [[ ! -f "$banking_source/gepa.toml" || ! -f "$banking_source/synth_service_app.py" ]]; then
     echo "[desktop:$NAME] ERROR Banking77 GEPA cookbook source is unavailable: $banking_source" >&2
@@ -456,6 +561,141 @@ stage_instance() {
   echo "[desktop:$NAME] app runtime requires no Documents-folder paths"
 }
 
+# Stable certificate signing is the default: an ad-hoc signature's designated
+# requirement is the executable CDHash, so every rebuild becomes a new TCC and
+# Keychain principal and previously granted permissions silently vanish.
+# SYNTH_DESKTOP_USE_DEV_SIGNER=0 opts back into ad-hoc for machines that must
+# never run the one-time trust authorization in setup-desktop-dev-signing.sh.
+resolve_signing_identity() {
+  if [[ "${SYNTH_DESKTOP_USE_DEV_SIGNER:-1}" == "1" ]]; then
+    printf '%s' "${SYNTH_DESKTOP_SIGNING_IDENTITY:-${SYNTH_DESKTOP_DEV_SIGNING_IDENTITY:-Synth Workshop Development}}"
+  else
+    printf '%s' "-"
+  fi
+}
+
+sign_cua_bundle() {
+  local app_bundle="$1"
+  local identity keychain_args=() dev_signing_keychain nested adapter
+  identity="$(resolve_signing_identity)"
+  if [[ "$identity" != "-" ]]; then
+    dev_signing_keychain="$("$ROOT/scripts/setup-desktop-dev-signing.sh")"
+    if [[ -n "$dev_signing_keychain" ]]; then
+      security unlock-keychain \
+        -p "$(<"${SYNTH_DESKTOP_DEV_SIGNING_ROOT:-$HOME/.synth-desktop/dev-signing}/keychain-password")" \
+        "$dev_signing_keychain"
+      keychain_args=(--keychain "$dev_signing_keychain")
+    fi
+  fi
+  # Adapters ship inside the bundle so the packaged app never executes (and
+  # macOS never attributes permissions to) freshly relinked target/debug
+  # binaries carrying their own throwaway ad-hoc identities.
+  for adapter in "${SYNTH_MCP_ADAPTERS[@]}"; do
+    if [[ ! -x "$TARGET_ROOT/debug/$adapter" ]]; then
+      echo "[desktop:$NAME] adapter binary is missing: $TARGET_ROOT/debug/$adapter" >&2
+      exit 1
+    fi
+    /usr/bin/ditto "$TARGET_ROOT/debug/$adapter" "$app_bundle/Contents/MacOS/$adapter"
+  done
+  # Sign inside-out: every nested Mach-O first under its own stable
+  # identifier, then the bundle. `--deep` is deprecated and stamps the outer
+  # identifier onto nested code, which is exactly the identity collision the
+  # instance contract forbids.
+  while IFS= read -r nested; do
+    [[ "$(basename "$nested")" == "synth-desktop" ]] && continue
+    codesign --force --sign "$identity" \
+      ${keychain_args[@]+"${keychain_args[@]}"} \
+      --identifier "$BUNDLE_ID.$(basename "$nested")" "$nested"
+  done < <(find "$app_bundle/Contents/MacOS" -maxdepth 1 -type f -perm -111 | LC_ALL=C sort)
+  codesign --force --sign "$identity" \
+    ${keychain_args[@]+"${keychain_args[@]}"} \
+    --identifier "$BUNDLE_ID" "$app_bundle"
+  if [[ "$identity" == "-" ]]; then
+    echo "[desktop:$NAME] WARNING ad-hoc signature: TCC/Keychain grants will not survive a rebuild" >&2
+  else
+    assert_bundle_identity "$app_bundle" "$identity"
+  fi
+}
+
+signing_requirement() {
+  # codesign output differs across macOS versions: some prefix this line with
+  # "# ", while current versions print it without the marker.
+  codesign -d -r- "$1" 2>/dev/null | sed -n 's/^#* *designated => //p'
+}
+
+signing_authority() {
+  # Do not exit the consumer early: with pipefail, codesign observes SIGPIPE
+  # and turns a successful identity check into status 141.
+  codesign -dvv "$1" 2>&1 | awk -F= '/^Authority=/{if (!found) print $2; found=1}'
+}
+
+signing_identifier() {
+  codesign -dv "$1" 2>&1 | sed -n 's/^Identifier=//p'
+}
+
+# TCC and Keychain key permissions off the designated requirement. A stable
+# identity means expected explicit identifiers, one shared Authority, and a
+# requirement anchored to the certificate rather than a per-build cdhash.
+assert_bundle_identity() {
+  local app_bundle="$1" expected_authority="${2:-}"
+  local host_requirement host_authority nested name expected failures=0
+  local manifest_tmp="$MANIFEST.signing.tmp"
+  host_requirement="$(signing_requirement "$app_bundle")"
+  host_authority="$(signing_authority "$app_bundle")"
+  if [[ -z "$host_requirement" || "$host_requirement" == *cdhash* ]]; then
+    echo "[desktop:$NAME] ERROR bundle designated requirement is cdhash-anchored (ad-hoc); rebuilds will not keep permissions" >&2
+    failures=1
+  fi
+  if [[ "$(signing_identifier "$app_bundle")" != "$BUNDLE_ID" ]]; then
+    echo "[desktop:$NAME] ERROR bundle identifier mismatch: expected $BUNDLE_ID got $(signing_identifier "$app_bundle")" >&2
+    failures=1
+  fi
+  if [[ -n "$expected_authority" && "$host_authority" != "$expected_authority" ]]; then
+    echo "[desktop:$NAME] ERROR bundle authority mismatch: expected $expected_authority got ${host_authority:-none}" >&2
+    failures=1
+  fi
+  while IFS= read -r nested; do
+    name="$(basename "$nested")"
+    expected="$BUNDLE_ID.$name"
+    [[ "$name" == "synth-desktop" ]] && expected="$BUNDLE_ID"
+    if [[ "$(signing_identifier "$nested")" != "$expected" ]]; then
+      echo "[desktop:$NAME] ERROR $name identifier mismatch: expected $expected got $(signing_identifier "$nested")" >&2
+      failures=1
+    fi
+    if [[ "$(signing_requirement "$nested")" == *cdhash* ]]; then
+      echo "[desktop:$NAME] ERROR $name designated requirement is cdhash-anchored" >&2
+      failures=1
+    fi
+    if [[ "$name" != "synth-desktop" && "$(signing_authority "$nested")" != "$host_authority" ]]; then
+      echo "[desktop:$NAME] ERROR $name authority differs from host: $(signing_authority "$nested")" >&2
+      failures=1
+    fi
+  done < <(find "$app_bundle/Contents/MacOS" -maxdepth 1 -type f -perm -111 | LC_ALL=C sort)
+  [[ "$failures" -eq 0 ]] || exit 1
+  [[ -f "$MANIFEST" ]] || write_contract
+  jq \
+    --arg identity "${host_authority:-adhoc}" \
+    --arg requirement "$host_requirement" \
+    --arg verifiedAt "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" \
+    '.signing = {identity: $identity, designatedRequirement: $requirement, verifiedAt: $verifiedAt}' \
+    "$MANIFEST" >"$manifest_tmp"
+  mv "$manifest_tmp" "$MANIFEST"
+  echo "[desktop:$NAME] signing identity=${host_authority:-adhoc}"
+  echo "[desktop:$NAME] signing requirement=$host_requirement"
+}
+
+assert_identity_command() {
+  local app_bundle
+  app_bundle="$(dirname "$(dirname "$(dirname "$CUA_EXE")")")"
+  if [[ ! -d "$app_bundle" ]]; then
+    echo "[desktop:$NAME] signed CUA app is missing; run cua-build first" >&2
+    exit 1
+  fi
+  write_contract
+  assert_bundle_identity "$app_bundle"
+  jq '.signing' "$MANIFEST"
+}
+
 dev_instance() {
   write_contract
   if [[ -n "$(instance_processes)" ]]; then
@@ -464,8 +704,14 @@ dev_instance() {
   fi
 
   # Capture provenance before any compile so a mid-build dirty tree fails closed.
+  # A run-only launch must validate the already-signed bundle instead of
+  # replacing its receipt with the unsigned raw target's identity.
   local pre_build_revision="$SOURCE_REVISION"
-  revalidate_provenance "pre-build" "$pre_build_revision"
+  if [[ "$COMMAND" == "cua-run" ]]; then
+    verify_packaged_provenance
+  else
+    revalidate_provenance "pre-build" "$pre_build_revision"
+  fi
 
   # The daemon's data directory holds its api key, pid files, response store,
   # logs, and selected model. Sharing it across instances shares all of those.
@@ -549,6 +795,12 @@ PY
   fi
   echo "[desktop:$NAME] profile=${SYNTH_INTERN_PROFILE:-} backend=${SYNTH_BACKEND_URL:-} gateway=source-owned"
 
+  # Named local CUA bundles are ad-hoc or development signed and therefore
+  # cannot satisfy the production helper's Apple-team requirement. Keep the
+  # weaker requirement explicit and confined to this development launcher;
+  # release builds do not receive this environment override.
+  export SYNTH_COMPUTER_USE_PARENT_REQUIREMENT="identifier \"$BUNDLE_ID\" or identifier \"com.synth.desktop.v05.dev.shared\""
+
   if [[ "$COMMAND" == "cua-run" ]]; then
     if [[ ! -x "$CUA_EXE" ]]; then
       echo "[desktop:$NAME] signed CUA app is missing; run cua-build first" >&2
@@ -567,25 +819,29 @@ PY
   # plugin.
   export TAURI_CONFIG
   TAURI_CONFIG="$(<"$CONFIG")"
+  # Build metadata is compiled into the shared desktop library. Export the
+  # candidate revision before the adapter prebuild; exporting it afterward can
+  # reuse a library carrying an older revision while the instance manifest
+  # claims the current source.
+  export SYNTH_DESKTOP_SOURCE_REVISION="$SOURCE_REVISION"
 
   local adapters_ready=1 adapter
-  for adapter in synth-containers-mcp synth-visuals-mcp synth-optimizers-mcp; do
+  local adapter_bin_args=()
+  for adapter in "${SYNTH_MCP_ADAPTERS[@]}"; do
     [[ -x "$TARGET_ROOT/debug/$adapter" ]] || adapters_ready=0
+    adapter_bin_args+=(--bin "$adapter")
   done
   if [[ "$adapters_ready" == "0" || "${SYNTH_DESKTOP_REBUILD_ADAPTERS:-0}" == "1" ]]; then
     echo "[desktop:$NAME] building embedded-agent MCP adapters"
     cargo build \
       --manifest-path "$ROOT/apps/synth_desktop/src-tauri/Cargo.toml" \
-      --bin synth-containers-mcp \
-      --bin synth-visuals-mcp \
-      --bin synth-optimizers-mcp
+      --features eval-driver \
+      "${adapter_bin_args[@]}"
   else
     echo "[desktop:$NAME] reusing embedded-agent MCP adapters (set SYNTH_DESKTOP_REBUILD_ADAPTERS=1 to refresh)"
   fi
 
   revalidate_provenance "post-build" "$pre_build_revision"
-  export SYNTH_DESKTOP_SOURCE_REVISION="$SOURCE_REVISION"
-
   if [[ "$COMMAND" == "cua-build" ]]; then
     echo "[desktop:$NAME] building $APP_TITLE without launch"
   else
@@ -600,30 +856,19 @@ PY
     # bundle preserves the isolated environment and registers the unique ID.
     # Build only the runnable .app. A DMG adds time and has no use in the
     # local CUA loop.
-    npx tauri build --debug --bundles app --config "$CONFIG"
+    # Instance builds carry the QA control plane; release artifacts never
+    # enable this feature.
+    npx tauri build --debug --features eval-driver --bundles app --config "$CONFIG"
     local app_bundle="$CARGO_TARGET_DIR/debug/bundle/macos/$APP_TITLE.app"
     local app_executable="$CUA_EXE"
     if [[ ! -x "$app_executable" ]]; then
       echo "[desktop:$NAME] expected CUA bundle executable missing: $app_executable" >&2
       exit 1
     fi
-    # Local test builds must never open a Keychain/password dialog. Ad-hoc
-    # signing requires no secret. Stable certificate signing remains an
-    # explicit opt-in for workflows that need a persistent CUA identity.
-    if [[ "${SYNTH_DESKTOP_USE_DEV_SIGNER:-0}" == "1" ]]; then
-      local dev_signing_identity="${SYNTH_DESKTOP_DEV_SIGNING_IDENTITY:-Synth Workshop Development}"
-      local dev_signing_keychain
-      dev_signing_keychain="$("$ROOT/scripts/setup-desktop-dev-signing.sh")"
-      security unlock-keychain \
-        -p "$(<"${SYNTH_DESKTOP_DEV_SIGNING_ROOT:-$HOME/.synth-desktop/dev-signing}/keychain-password")" \
-        "$dev_signing_keychain"
-      codesign --force --deep --sign "$dev_signing_identity" \
-        --keychain "$dev_signing_keychain" \
-        --identifier "com.synth.desktop.v04.dev.shared" "$app_bundle"
-    else
-      codesign --force --deep --sign - --identifier "$BUNDLE_ID" "$app_bundle"
-    fi
+    revalidate_provenance "bundle-built" "$pre_build_revision"
+    sign_cua_bundle "$app_bundle"
     codesign --verify --deep --strict "$app_bundle"
+    record_packaged_provenance "$app_bundle"
     echo "[desktop:$NAME] CUA bundle $app_bundle"
     echo "[desktop:$NAME] CUA target $BUNDLE_ID"
     if [[ "$COMMAND" == "cua-build" ]]; then
@@ -637,7 +882,7 @@ PY
     cd "$INSTANCE_ROOT"
     exec "$app_executable"
   fi
-  exec npx tauri dev --config "$CONFIG"
+  exec npx tauri dev --features eval-driver --config "$CONFIG"
 }
 
 clean_instance() {
@@ -657,6 +902,7 @@ clean_instance() {
 
 case "$COMMAND" in
   dev|cua|cua-build|cua-run) dev_instance ;;
+  assert-identity) assert_identity_command ;;
   status) status_instance ;;
   stage) stage_instance ;;
   stop) stop_instance ;;

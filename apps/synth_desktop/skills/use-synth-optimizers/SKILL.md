@@ -5,7 +5,7 @@ description: Start, inspect, follow, reconcile, cancel, and visualize first-clas
 
 # Use Synth Optimizers
 
-Use `mcp__synth_optimizers__optimizer_manage`. Treat returned run IDs and cursors as authoritative. Never launch an optimizer with a shell command supplied by chat, accept arbitrary config for a local recipe, request credentials in chat, or reproduce secrets and signed URLs. If the Optimizers plugin is not ready, the tool returns `plugin_not_ready` — call `mcp__synth_plugins__plugin_manage` to install/start it. Do not expect optimizer tools to download the sidecar.
+Use `mcp__synth_optimizers__optimizer_manage`. Treat returned run IDs and cursors as authoritative. Never launch an optimizer with a shell command supplied by chat, accept arbitrary config for a local recipe, request credentials in chat, or reproduce secrets and signed URLs. For a product recipe, prefer `start_workflow`: the host refreshes relevant container capabilities, performs bounded approval and sidecar admission, creates the run, and opens its chat-owned visual in one call. Do not inspect the filesystem or start plugins manually before trying it.
 
 ## Choose a workflow
 
@@ -13,21 +13,24 @@ Use `mcp__synth_optimizers__optimizer_manage`. Treat returned run IDs and cursor
 2. Choose the algorithm from the user's objective:
    - GEPA: improve prompts or other candidate values. The pinned smokes are `gepa.banking77.smoke.v1` and `gepa.craftax.smoke.v1`; read [references/gepa.md](references/gepa.md).
    - GELO / Go-Ex: explore a hosted search space or reconcile an existing hosted run. Read [references/gelo.md](references/gelo.md).
-   - Eval: score several policy variants against a pinned evaluation container and pick a winner. Stage candidates first; `start_recipe` takes a `candidate_set_id`, never a path. Read [references/eval.md](references/eval.md).
+   - Eval: score several policy variants against a pinned evaluation container and pick a winner. Stage candidates first; `start_workflow` takes a `candidate_set_id`, never a path. The fixed-cardinality container baselines `eval.banking77.baseline.v1` and `eval.healthbench.smoke.v1` are measurement-only exceptions: start them directly without staging candidates. Read [references/eval.md](references/eval.md).
    - SFT: train and compare model weights/checkpoints. All hosted SFT recipes, including `sft.hosted.fixture.v1` and `sft.craftax.nemotron-nano.tinker.v1`, use the public `synth-optimizers` SFT service; Workshop never contacts the private training executor. The separate local Tinker smoke is `sft.craftax.gpt-oss.smoke.v1`. Student ids: `docs/sft_tinker_base_models.toml`. Read [references/sft.md](references/sft.md).
 3. For a local recipe, report its availability, exact fixed inputs, hard limits, prerequisite services, credential names, and whether its cost is dollar-capped or only compute-bounded.
-4. Enforced connect-before-start: `prepare` → `open_visual` → `await_ready` → `start`. `start` requires a visual readiness receipt and a separate compute approval bound to the prepared run. Listing, importing, reconciling, inspecting, and visualizing do not require compute approval.
+4. Start a bounded product recipe with `start_workflow`. It returns the authoritative run, visual references, event cursor, and admission status. The host owns approval, fresh capability observation, sidecar readiness, and visual opening.
+   - Recipe identity is exact. If the requested recipe is unavailable, stop and present its structured readiness blocker. Never substitute another algorithm family, another recipe, a hand-built rollout loop, or a shell workflow. In particular, an unavailable `eval.craftax.*` recipe must never become `gepa.craftax.*`.
+   - The advanced/recovery sequence remains `prepare` → `open_visual` → `await_ready` → `start`. Use it only when resuming an already-prepared run or diagnosing a structured admission blocker. `start` requires a visual readiness receipt and a separate compute approval bound to the prepared run.
    - Local `eval.*` recipes are the explicit exception: stage candidates, then call `start_recipe` with the returned `candidate_set_id`. They do not install or depend on the Optimizers plugin, and the pinned target plus fixed recipe owns the compute bounds.
    - `open_visual` owns and configures the product visual. Do not call `authoring_context`, `capture_review`, `review`, `update`, or `mark_ready` for it.
    - If the first `await_ready` reports that no receipt was posted, call `mcp__synth_visuals__visual_manage` once with `operation: "show"` and the run's primary visual ID, then retry `await_ready`. Do not inspect processes, environment variables, source files, databases, or IPC files to manufacture readiness.
    - Preserve the exact `preparationDigest` returned by `prepare` and pass it as `preparation_digest` with `optimizer_run_id` on the first `start` call. Never request approval with a missing or reconstructed digest.
-5. Pass only `recipe_id` to `prepare`; for `eval.*`, pass only `recipe_id` plus the `candidate_set_id` returned by `stage_eval_candidates`. The Rust host owns commands, paths, hyperparameters, and credential resolution. Retrieve the winner with `get_result` — never read result files by filesystem path.
+5. Pass only `recipe_id` to `start_workflow`; for candidate-comparison `eval.*`, also pass the `candidate_set_id` returned by `stage_eval_candidates`. The Rust host owns commands, paths, hyperparameters, capability refresh, and credential resolution. Retrieve the winner with `get_result` — never read result files by filesystem path.
 
 ## Follow every run
 
 1. For a run started from chat, pass `open_visual: true`. The host creates and binds the algorithm-family visual before starting compute, reuses one durable visual ID, and shows it in the current conversation's right pane. Do not create a second generic visual for the same run.
 2. For an existing or historical run, call `open_visual` with its `optimizer_run_id`. This reuses its primary visual and presents it in the current conversation without changing the run's original ownership.
 3. Record `run.id`, the primary visual ID in `run.visualRefs`, and `run.cursorSeq`. Keep the pane open while following the run; the visual reads the same durable event cursor and continues updating independently of tool polling.
+   After the run ID is known, call `mcp__synth_session__session_present` once with a concise title containing the task family and the run ID's final 6 characters, for example `Banking77 eval · a1b2c3`. This is the current conversation's scoped title MCP; it prevents concurrent or restored runs from becoming indistinguishable. Do not pass a session ID and do not rename another conversation.
 4. Call `watch_run` with `optimizer_run_id` and `after_seq` equal to the last processed sequence. Advance to the greatest returned sequence. Empty batches are normal.
    - Wait for progress only by calling `watch_run` again (or `get_run` when a status snapshot is useful). Never run a shell or terminal command, including `sleep`, just to delay or poll an optimizer run; repeated optimizer MCP calls are the supported waiting mechanism.
 5. Use `get_run` for status and summary, and `get_state` for the algorithm-specific slices in its reference.

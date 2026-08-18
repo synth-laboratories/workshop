@@ -465,6 +465,21 @@ pub(crate) fn ensure_home(home: &Path, request: &CodexSessionStartRequest) -> Re
         plugins_skill.join("SKILL.md"),
         include_str!("../../../../skills/use-synth-plugins/SKILL.md"),
     )?;
+    // Session-owned skills must live directly beneath `skills/`. Codex owns
+    // `.system` and replaces its contents during startup, so placing this
+    // skill there advertises a path that disappears before the first turn.
+    let computer_use_skill = home.join("skills/use-computer-use");
+    fs::create_dir_all(&computer_use_skill)?;
+    fs::write(
+        computer_use_skill.join("SKILL.md"),
+        include_str!("../../../../skills/use-computer-use/SKILL.md"),
+    )?;
+    let browser_skill = home.join("skills/use-workshop-browser");
+    fs::create_dir_all(&browser_skill)?;
+    fs::write(
+        browser_skill.join("SKILL.md"),
+        include_str!("../../../../skills/use-workshop-browser/SKILL.md"),
+    )?;
     let session_skill = home.join("skills/use-synth-session");
     fs::create_dir_all(&session_skill)?;
     fs::write(
@@ -479,6 +494,8 @@ pub(crate) fn ensure_home(home: &Path, request: &CodexSessionStartRequest) -> Re
         "use-synth-visuals",
         "author-synth-diagrams",
         "use-synth-optimizers",
+        "use-computer-use",
+        "use-workshop-browser",
         "run-live-container-evals",
     ] {
         let directory = home.join("skills").join(id);
@@ -495,6 +512,19 @@ pub(crate) fn ensure_home(home: &Path, request: &CodexSessionStartRequest) -> Re
         let cookbook_skill = home.join("skills/use-synth-cookbooks");
         fs::create_dir_all(&cookbook_skill)?;
         fs::write(cookbook_skill.join("SKILL.md"), body)?;
+    }
+    // Codex advertises Workshop-owned skills as system skills. Keep the
+    // historical flat installation for compatibility, and mirror the final
+    // (including Context overrides) materialization into the authoritative
+    // `.system` namespace the agent is instructed to read.
+    let system_skills = home.join("skills/.system");
+    fs::create_dir_all(&system_skills)?;
+    for entry in fs::read_dir(home.join("skills"))? {
+        let entry = entry?;
+        if !entry.file_type()?.is_dir() || entry.file_name() == ".system" {
+            continue;
+        }
+        mirror_skill_directory(&entry.path(), &system_skills.join(entry.file_name()))?;
     }
     let provider = request.provider_name.as_deref().unwrap_or("custom");
     let title = request
@@ -611,16 +641,29 @@ pub(crate) fn ensure_home(home: &Path, request: &CodexSessionStartRequest) -> Re
         let app_name = crate::instance::display_name();
         let bundle_id = crate::instance::bundle_id().unwrap_or_default();
         let mut existing = fs::read_to_string(home.join("config.toml")).unwrap_or_default();
-        for (server, binary) in [
-            ("synth_plugins", "synth-plugins-mcp"),
-            ("synth_containers", "synth-containers-mcp"),
-            ("synth_visuals", "synth-visuals-mcp"),
-            ("synth_optimizers", "synth-optimizers-mcp"),
-            ("synth_session", "synth-session-mcp"),
-            ("synth_traces", "synth-traces-mcp"),
-            ("synth_diagnostics", "synth-diagnostics-mcp"),
+        // The group is per server, not global. Computer Use has its own so it
+        // never inherits `bundled`'s always-on default — see
+        // `docs/COMPUTER_USE.md` §4.
+        for (server, binary, group) in [
+            ("synth_plugins", "synth-plugins-mcp", "bundled"),
+            ("synth_containers", "synth-containers-mcp", "bundled"),
+            ("synth_visuals", "synth-visuals-mcp", "bundled"),
+            ("synth_optimizers", "synth-optimizers-mcp", "bundled"),
+            ("synth_session", "synth-session-mcp", "bundled"),
+            ("synth_traces", "synth-traces-mcp", "bundled"),
+            ("synth_diagnostics", "synth-diagnostics-mcp", "bundled"),
+            (
+                "synth_computer_use",
+                "synth-computer-use-mcp",
+                crate::context::COMPUTER_USE_MCP_GROUP,
+            ),
+            (
+                "synth_browser",
+                "synth-browser-mcp",
+                crate::context::BROWSER_MCP_GROUP,
+            ),
         ] {
-            if !crate::context::mcp_group_enabled("bundled") {
+            if !crate::context::mcp_group_enabled(group) {
                 continue;
             }
             // A disabled plugin keeps its MCP server registered. Dropping it
@@ -644,11 +687,28 @@ pub(crate) fn ensure_home(home: &Path, request: &CodexSessionStartRequest) -> Re
                 continue;
             }
             existing.push_str(&format!(
-                "\n{heading}\ncommand = \"{}\"\nargs = []\n{}default_tools_approval_mode = \"approve\"\n{}",
-                toml_string(&bin.display().to_string()), mcp_enabled_tools(server), mcp_env_config(server, &ipc, &request.session_id, &app_name, &bundle_id),
+                "\n{heading}\ncommand = \"{}\"\nargs = []\n{}default_tools_approval_mode = \"{}\"\n{}",
+                toml_string(&bin.display().to_string()), mcp_enabled_tools(server), crate::session::approval_policy::MCP_TOOLS_APPROVAL_MODE, mcp_env_config(server, &ipc, &request.session_id, &app_name, &bundle_id),
             ));
         }
         fs::write(home.join("config.toml"), existing)?;
+    }
+    Ok(())
+}
+
+fn mirror_skill_directory(source: &Path, destination: &Path) -> Result<()> {
+    if destination.exists() {
+        fs::remove_dir_all(destination)?;
+    }
+    fs::create_dir_all(destination)?;
+    for entry in fs::read_dir(source)? {
+        let entry = entry?;
+        let target = destination.join(entry.file_name());
+        if entry.file_type()?.is_dir() {
+            mirror_skill_directory(&entry.path(), &target)?;
+        } else {
+            fs::copy(entry.path(), target)?;
+        }
     }
     Ok(())
 }
@@ -946,6 +1006,13 @@ pub(crate) fn mcp_enabled_tools(server: &str) -> &'static str {
         "synth_plugins" => "enabled_tools = [\"plugin_manage\"]\n",
         "synth_session" => "enabled_tools = [\"session_present\"]\n",
         "synth_diagnostics" => "enabled_tools = [\"diagnostics_manage\"]\n",
+        // `computer_use_status` stays advertised even when the plugin is not
+        // ready, so the agent can say what is missing instead of silently
+        // lacking the capability and improvising a worse path. G4.
+        "synth_computer_use" => {
+            "enabled_tools = [\"computer_use\", \"computer_use_status\"]\n"
+        }
+        "synth_browser" => "enabled_tools = [\"browser_status\", \"browser_create_session\", \"browser_close_session\", \"browser_list_tabs\", \"browser_new_tab\", \"browser_close_tab\", \"browser_navigate\", \"browser_back\", \"browser_snapshot\", \"browser_query\", \"browser_subtree\", \"browser_click\", \"browser_fill\", \"browser_press\", \"browser_scroll\", \"browser_screenshot\", \"browser_upload\", \"browser_download\"]\n",
         _ => "",
     }
 }
@@ -964,13 +1031,23 @@ pub(crate) fn mcp_env_config(
     app_name: &str,
     bundle_id: &str,
 ) -> String {
+    let browser_policy = (server == "synth_browser")
+        .then(|| {
+            format!(
+                ", SYNTH_BROWSER_POLICY_FILE = \"{}\", SYNTH_BROWSER_PROFILE_ROOT = \"{}\"",
+                toml_string(&crate::browser::policy_path().display().to_string()),
+                toml_string(&crate::browser::profile_root().display().to_string()),
+            )
+        })
+        .unwrap_or_default();
     format!(
-        "env = {{ {} = \"{}\", SYNTH_SESSION_ID = \"{}\", SYNTH_DESKTOP_APP_NAME = \"{}\", SYNTH_DESKTOP_BUNDLE_ID = \"{}\" }}\n",
+        "env = {{ {} = \"{}\", SYNTH_SESSION_ID = \"{}\", SYNTH_DESKTOP_APP_NAME = \"{}\", SYNTH_DESKTOP_BUNDLE_ID = \"{}\"{} }}\n",
         mcp_ipc_env_key(server),
         toml_string(&ipc.display().to_string()),
         toml_string(session_id),
         toml_string(app_name),
         toml_string(bundle_id),
+        browser_policy,
     )
 }
 
@@ -1050,4 +1127,21 @@ pub(crate) fn automatic_thread_title(prompt: &str) -> Option<String> {
     let mut chars = value.chars();
     let first = chars.next()?;
     Some(first.to_uppercase().collect::<String>() + chars.as_str())
+}
+
+pub(crate) fn uniquify_title<'a>(
+    desired: &str,
+    taken: impl IntoIterator<Item = &'a str>,
+) -> String {
+    let occupied: std::collections::HashSet<&str> = taken.into_iter().collect();
+    if !occupied.contains(desired) {
+        return desired.to_string();
+    }
+    for n in 2..1000 {
+        let candidate = format!("{desired} · {n}");
+        if !occupied.contains(candidate.as_str()) {
+            return candidate;
+        }
+    }
+    format!("{desired} · 999")
 }

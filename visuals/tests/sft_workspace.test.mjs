@@ -56,7 +56,7 @@ test("SFT stages: ready checkpoint is never presented as promoted", () => {
 test("SFT stages: explicit promotion event completes the promotion stage", () => {
   const events = [
     ...hostedSftEvents(),
-    { ...base, sequenceNumber: 100, type: "sft.checkpoint.promoted", item: { kind: "checkpoint", id: "ckpt_10k", status: "promoted", raw: {} } },
+    { ...base, sequenceNumber: 100, type: "sft.checkpoint.promoted", item: { kind: "checkpoint", id: "ckpt_10k", status: "promoted", raw: {} }, delta: { checkpoint_id: "ckpt_10k", uplift_claimed: true, improvement_verdict: "improvement_demonstrated" } },
     { ...base, sequenceNumber: 101, type: "optimizer.state.transitioned", delta: { to: "completed" } }
   ];
   const projected = projectAtCursor(RUN, events);
@@ -69,6 +69,33 @@ test("SFT stages: explicit promotion event completes the promotion stage", () =>
   );
   const byId = Object.fromEntries(stages.map((stage) => [stage.id, stage]));
   assert.equal(byId.promotion.status, "completed");
+});
+
+test("SFT stages: zero-evidence promote event selects but does not claim uplift", () => {
+  const events = [
+    ...hostedSftEvents(),
+    {
+      ...base,
+      sequenceNumber: 100,
+      type: "sft.checkpoint.promoted",
+      item: { kind: "checkpoint", id: "ckpt_10k", status: "selected", raw: {} },
+      delta: {
+        checkpoint_id: "ckpt_10k",
+        uplift_claimed: false,
+        improvement_verdict: "no_measured_improvement",
+        rule: "retain_latest_checkpoint"
+      }
+    }
+  ];
+  const projected = projectAtCursor(RUN, events);
+  const checkpoint = projected.sft.checkpoints.find((row) => row.id === "ckpt_10k");
+  assert.equal(checkpoint.selected, true);
+  assert.equal(checkpoint.promoted, false);
+  assert.equal(projected.summary.summary?.promotedCheckpointId, undefined);
+  const stages = sftStages(projected.sft, "completed", undefined);
+  const byId = Object.fromEntries(stages.map((stage) => [stage.id, stage]));
+  assert.equal(byId.promotion.status, "completed");
+  assert.match(byId.promotion.detail, /no measured improvement/);
 });
 
 test("queued SFT run stays honestly queued with no fabricated progress", () => {

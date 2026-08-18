@@ -260,13 +260,48 @@ impl SessionPersistence {
         };
         match core
             .sessions()
-            .transition(session_id, status, source, metadata)
+            .transition(session_id.clone(), status, source, metadata)
             .await
         {
             Ok(mutation) => Ok(Some(mutation)),
-            // Missing row or illegal edge: callers already updated the cache.
-            Err(_) => Ok(None),
+            // Callers have already updated their cache, so a rejected durable
+            // edge is not fatal here — but it must never be invisible. Silently
+            // dropping it is what let a session sit at `closed` while the app
+            // believed it was running, and surfaced later as an unrelated
+            // storage error on the next run.
+            Err(error) => {
+                self.diagnose_rejected_transition(&session_id, status, &error);
+                Ok(None)
+            }
         }
+    }
+
+    fn diagnose_rejected_transition(
+        &self,
+        session_id: &str,
+        status: SessionStatus,
+        error: &anyhow::Error,
+    ) {
+        let Some(service) = self.diagnostics() else {
+            return;
+        };
+        let mut input = crate::diagnostics::DiagnosticInput::new(
+            crate::diagnostics::Severity::Error,
+            "session",
+            "session.transition.rejected",
+            crate::diagnostics::codes::SESSION_TRANSITION_REJECTED,
+            format!("the durable session could not move to {}", status.as_str()),
+        )
+        .retryable(false);
+        input.correlation.session_id = Some(session_id.to_owned());
+        input.details.insert(
+            "requestedStatus".into(),
+            Value::String(status.as_str().to_owned()),
+        );
+        input
+            .details
+            .insert("cause".into(), Value::String(error.to_string()));
+        service.emit(input);
     }
 
     pub async fn set_title(
@@ -334,16 +369,112 @@ impl SessionPersistence {
         let Some(run_id) = session.active_run_id else {
             return Ok(None);
         };
-        let mutation = core
+        // Reconciling an orphan is idempotent: between reading the session and
+        // acting, the run may have reached its own terminal state and cleared
+        // itself from the session. That authoritative outcome is the one to
+        // keep — interrupting it is neither possible nor wanted, and treating
+        // the refused edge as an error would reject the caller's new turn over
+        // a pointer that is already gone.
+        //
+        // Pre-checking is not enough on its own. A fast app-server can settle
+        // the previous run in the window between the check and the transition,
+        // and the refusal then surfaced as `codex_turn_start_failed: invalid run
+        // transition: completed -> interrupted` — a new turn rejected because
+        // the old one succeeded. So the settled case is absorbed on both sides:
+        // once before doing the work, and once when the transition itself says
+        // the run has already ended.
+        if core
+            .runs()
+            .get(run_id.clone())
+            .await?
+            .and_then(|run| RunStatus::parse(&run.status).ok())
+            .is_none_or(RunStatus::terminal)
+        {
+            return Ok(None);
+        }
+        let mutation = match core
             .runs()
             .transition(
-                run_id,
+                run_id.clone(),
                 RunStatus::Interrupted,
                 Some(serde_json::json!({ "reason": reason })),
                 EventSource::Codex,
             )
-            .await?;
+            .await
+        {
+            Ok(mutation) => mutation,
+            Err(error) => {
+                let settled = core
+                    .runs()
+                    .get(run_id)
+                    .await
+                    .ok()
+                    .flatten()
+                    .and_then(|run| RunStatus::parse(&run.status).ok())
+                    .is_some_and(RunStatus::terminal);
+                if settled {
+                    // The run finished on its own. Nothing to interrupt, and the
+                    // caller's turn is not at fault.
+                    return Ok(None);
+                }
+                return Err(error);
+            }
+        };
         Ok(mutation.event)
+    }
+
+    /// The unresolved recovery notice for a session, if a previous turn was
+    /// abandoned. Read before a new run is created so the replacement attempt
+    /// can record what it is replacing.
+    pub async fn pending_recovery(
+        &self,
+        session_id: &str,
+    ) -> Option<crate::recovery::RecoveryNotice> {
+        let Self::Core(core) = self else {
+            return None;
+        };
+        let session_id = session_id.to_owned();
+        core.storage()
+            .database()
+            .run(move |conn| {
+                Ok(crate::recovery::pending_recovery_notices(conn)?.remove(&session_id))
+            })
+            .await
+            .ok()
+            .flatten()
+    }
+
+    /// Take the live ownership claim for a turn this process is running.
+    /// Returns the recovery attempt this turn continues (0 for a first try).
+    pub async fn claim_turn(
+        &self,
+        session_id: &str,
+        run_id: &str,
+        attachment_id: Option<String>,
+    ) -> Result<i64> {
+        let Self::Core(core) = self else {
+            return Ok(0);
+        };
+        core.claim_turn(session_id.to_owned(), run_id.to_owned(), attachment_id)
+            .await
+    }
+
+    /// Refresh the claim from live provider activity. Cheap to call on every
+    /// event: the write is rate-limited against the stored heartbeat.
+    pub async fn heartbeat_turn(&self, session_id: &str) {
+        let Self::Core(core) = self else {
+            return;
+        };
+        let _ = core.heartbeat_turn(session_id.to_owned()).await;
+    }
+
+    /// Give up the claim. A turn with no owner is not Working, so this must run
+    /// on every terminal path — including the failure ones.
+    pub async fn release_turn(&self, session_id: &str) {
+        let Self::Core(core) = self else {
+            return;
+        };
+        let _ = core.release_turn(session_id.to_owned()).await;
     }
 
     pub async fn record_usage(&self, record: UsageRecord) -> Result<()> {
@@ -352,6 +483,20 @@ impl SessionPersistence {
         };
         let repository = UsageRecordsRepository::new(core.storage().database().clone());
         repository.record(record).await
+    }
+
+    /// Persist one observed generation-speed measurement together with the raw
+    /// samples it was derived from, so a displayed value stays recomputable.
+    pub async fn record_generation_speed(
+        &self,
+        row: crate::storage::GenerationSpeedRow,
+    ) -> Result<()> {
+        let Self::Core(core) = self else {
+            return Ok(());
+        };
+        let repository =
+            crate::storage::GenerationSpeedRepository::new(core.storage().database().clone());
+        repository.record(row).await
     }
 }
 
@@ -378,5 +523,82 @@ fn ephemeral_app_event(
         remote_sequence: None,
         command_id: None,
         created_at: Utc::now().to_rfc3339(),
+    }
+}
+
+#[cfg(test)]
+mod interrupt_tests {
+    use super::*;
+    use crate::domain::{RunCreate, RunStatus, RuntimeTarget, SessionCreate, SessionKind, SessionStatus};
+    use serde_json::json;
+    use tempfile::tempdir;
+
+    /// A new turn must not be refused because the previous one already finished.
+    ///
+    /// `send_turn` reconciles the session's active run before starting, and the
+    /// run/session pointers settle independently. When the previous run reached
+    /// `completed` first, the interrupt is not just impossible — it is not
+    /// wanted, and surfacing its refusal aborted the caller's turn with
+    /// `codex_turn_start_failed: invalid run transition: completed -> interrupted`.
+    /// That was a live race, and the reason the codex suite failed roughly two
+    /// runs in three under full-suite load.
+    #[tokio::test]
+    async fn interrupting_an_already_settled_run_is_a_no_op_not_a_failure() {
+        let dir = tempdir().unwrap();
+        let core = Arc::new(CoreRuntime::open(dir.path().join("core")).unwrap());
+        let persistence = SessionPersistence::from_core(Some(core.clone()));
+
+        core.sessions()
+            .create_or_update(SessionCreate {
+                id: "sess_settled".into(),
+                title: "settled".into(),
+                kind: SessionKind::Codex,
+                target: RuntimeTarget::from_codex_provider("openrouter", "gpt-5.6-luna"),
+                project_id: None,
+                remote_id: None,
+                codex_thread_id: Some("thread_settled".into()),
+                status: SessionStatus::Ready,
+                state_generation: None,
+                metadata: json!({}),
+                source: EventSource::Codex,
+            })
+            .await
+            .unwrap();
+        core.runs()
+            .start(RunCreate {
+                id: "run_settled".into(),
+                session_id: "sess_settled".into(),
+                mode: "codex_turn".into(),
+                model: Some("gpt-5.6-luna".into()),
+                adapter: None,
+                metadata: json!({}),
+                source: EventSource::Codex,
+            })
+            .await
+            .unwrap();
+        core.runs()
+            .transition(
+                "run_settled".into(),
+                RunStatus::Completed,
+                None,
+                EventSource::Codex,
+            )
+            .await
+            .unwrap();
+
+        let event = persistence
+            .interrupt_active_run("sess_settled", "desktop_reattached")
+            .await
+            .expect("a settled run must not fail the caller's next turn");
+        assert!(event.is_none(), "nothing was interrupted, so nothing is announced");
+        assert_eq!(
+            core.runs()
+                .get("run_settled".into())
+                .await
+                .unwrap()
+                .map(|run| run.status),
+            Some("completed".into()),
+            "the run's own authoritative outcome is preserved"
+        );
     }
 }

@@ -1,0 +1,959 @@
+{
+ "_comment": [
+  "Verbatim GEPA producer payloads, captured from real packaged runs so that a",
+  "rename in the producer's event vocabulary or payload keys breaks CI here",
+  "rather than silently sealing an empty terminal manifest again.",
+  "Do not hand-edit. Regenerate from a real run's optimizer_events rows."
+ ],
+ "source": {
+  "banking77": {
+   "runId": "banking77_gepa_luna_med_959b2d7c",
+   "events": 1036
+  },
+  "craftax": {
+   "runId": "craftax_gepa_luna_med_6b137ee5",
+   "events": 34
+  }
+ },
+ "census": {
+  "banking77": {
+   "candidate.artifact.loaded": 2,
+   "candidate.evaluated": 1,
+   "candidate.minibatch_evaluated": 1,
+   "candidate.registered": 2,
+   "candidate.rejected": 1,
+   "container.contract.verified": 1,
+   "container.program.loaded": 1,
+   "container.task_info.loaded": 1,
+   "frontier.snapshot": 1,
+   "frontier.updated": 1,
+   "gepa.run.finished": 1,
+   "gepa.run.started": 1,
+   "heldout.completed": 1,
+   "objective_set.declared": 1,
+   "optimizer.candidate_evaluation.allocated": 140,
+   "optimizer.child_rollout.attached": 140,
+   "optimizer.evaluation.coverage.updated": 4,
+   "optimizer.evaluation_result.received": 280,
+   "optimizer.limit.estimate_updated": 6,
+   "optimizer.recipe.artifacts": 1,
+   "optimizer.rollout_queue.updated": 20,
+   "optimizer.run.pinned": 1,
+   "optimizer.run.queued": 1,
+   "optimizer.run.started": 1,
+   "optimizer.state.transitioned": 19,
+   "parent_minibatch_reference.completed": 1,
+   "proposer.completed": 1,
+   "proposer.delta": 238,
+   "proposer.trace_v5.loaded": 1,
+   "proposer.transcript.loaded": 1,
+   "rollout.failure_rate.updated": 140,
+   "runtime.job.completed": 21,
+   "score_chart.written": 1,
+   "storage.snapshot.recorded": 1,
+   "taskset.tasks.loaded": 1,
+   "workspace.persisted": 1
+  },
+  "craftax": {
+   "candidate.evaluated": 1,
+   "candidate.registered": 1,
+   "container.contract.verified": 1,
+   "container.program.loaded": 1,
+   "container.task_info.loaded": 1,
+   "frontier.updated": 1,
+   "gepa.run.failed": 1,
+   "gepa.run.started": 1,
+   "objective_set.declared": 1,
+   "optimizer.candidate_evaluation.allocated": 1,
+   "optimizer.child_rollout.attached": 1,
+   "optimizer.evaluation.coverage.updated": 1,
+   "optimizer.evaluation_result.received": 2,
+   "optimizer.limit.estimate_updated": 2,
+   "optimizer.rollout_queue.updated": 1,
+   "optimizer.run.pinned": 1,
+   "optimizer.run.queued": 1,
+   "optimizer.run.started": 1,
+   "optimizer.state.transitioned": 8,
+   "rollout.chunk.finished": 1,
+   "rollout.chunk.started": 1,
+   "rollout.failure_rate.updated": 1,
+   "runtime.job.completed": 1,
+   "storage.snapshot.recorded": 1,
+   "taskset.tasks.loaded": 1
+  }
+ },
+ "samples": {
+  "candidate.registered": {
+   "keys": [
+    "candidate_id",
+    "message",
+    "source",
+    "status",
+    "values"
+   ],
+   "payload": {
+    "candidate_id": "gepa_1c284a9e221e",
+    "message": "Seed candidate registered",
+    "source": "seed",
+    "status": "registered",
+    "values": {
+     "stage2_system": "Classify the customer banking query into exactly one Banking77 intent. Return exactly one label from the allowed label list, preserving the label's spelling, underscores, capitalization, and punctuation. Use the full query, not one keyword. Prefer the label for the user's concrete banking action, status, or problem: separate physical-card ordering from delivery timing, virtual-card creation from v...(truncated)"
+    }
+   }
+  },
+  "optimizer.candidate_evaluation.allocated": {
+   "keys": [
+    "candidate_id",
+    "child_resource_ref",
+    "example_id",
+    "message",
+    "stage"
+   ],
+   "payload": {
+    "candidate_id": "gepa_1c284a9e221e",
+    "child_resource_ref": {
+     "attributes": {
+      "reward_url": "/reward?rollout_id=gepa_092b1e9464f66f7fef2efd2e",
+      "stream_id": "stream:gepa_092b1e9464f66f7fef2efd2e"
+     },
+     "id": "gepa_092b1e9464f66f7fef2efd2e",
+     "kind": "container_rollout",
+     "role": "candidate_evaluation",
+     "schema": "synth.resource-ref.v1"
+    },
+    "example_id": "train:0",
+    "message": "Candidate evaluation allocated to a child rollout",
+    "stage": "seed_full_train"
+   }
+  },
+  "optimizer.evaluation_result.received": {
+   "keys": [
+    "active_workers",
+    "candidate_id",
+    "child_resource_ref",
+    "cost_usd",
+    "evaluation_id",
+    "example_id",
+    "message",
+    "partial",
+    "queued_rollouts",
+    "reward",
+    "rollout_id",
+    "semaphore_size",
+    "stage",
+    "usage"
+   ],
+   "payload": {
+    "active_workers": 7,
+    "candidate_id": "gepa_1c284a9e221e",
+    "child_resource_ref": {
+     "attributes": {
+      "reward_url": "/reward?rollout_id=gepa_ed3b9e5802e3a17e320a0921",
+      "stream_id": "stream:gepa_ed3b9e5802e3a17e320a0921"
+     },
+     "id": "gepa_ed3b9e5802e3a17e320a0921",
+     "kind": "container_rollout",
+     "role": "candidate_evaluation",
+     "schema": "synth.resource-ref.v1"
+    },
+    "cost_usd": 6.400000000000001e-05,
+    "evaluation_id": "gepa_1c284a9e221e:seed_full_train:train:2",
+    "example_id": "train:2",
+    "message": "Candidate evaluation result received",
+    "partial": true,
+    "queued_rollouts": 0,
+    "reward": 1.0,
+    "rollout_id": "gepa_ed3b9e5802e3a17e320a0921",
+    "semaphore_size": 8,
+    "stage": "seed_full_train",
+    "usage": {
+     "completion_tokens": 3,
+     "prompt_tokens": 628,
+     "proposer_calls": 0,
+     "rollout_calls": 1,
+     "total_tokens": 631
+    }
+   }
+  },
+  "candidate.evaluated": {
+   "keys": [
+    "candidate_id",
+    "message",
+    "train_reward"
+   ],
+   "payload": {
+    "candidate_id": "gepa_1c284a9e221e",
+    "message": "Seed candidate evaluated",
+    "train_reward": 0.76
+   }
+  },
+  "heldout.completed": {
+   "keys": [
+    "candidate_id",
+    "heldout_reward",
+    "message",
+    "train_reward"
+   ],
+   "payload": {
+    "candidate_id": "gepa_1c284a9e221e",
+    "heldout_reward": 0.58,
+    "message": "Heldout evaluation completed",
+    "train_reward": 0.76
+   }
+  },
+  "frontier.snapshot": {
+   "keys": [
+    "best_candidate_example_count",
+    "best_candidate_example_coverage_percent",
+    "best_candidate_id",
+    "best_candidate_task_id_coverage_percent",
+    "best_train_reward",
+    "candidate_count",
+    "changed_candidate_id",
+    "coverage",
+    "coverage_semantics",
+    "covered_train_example_count",
+    "covered_train_example_percent",
+    "covered_train_task_id_count",
+    "covered_train_task_id_percent",
+    "covered_train_task_ids",
+    "frontier",
+    "frontier_added_candidate_ids",
+    "frontier_added_count",
+    "frontier_removed_candidate_ids",
+    "frontier_removed_count",
+    "frontier_size",
+    "frontier_size_delta",
+    "generation",
+    "members",
+    "message",
+    "previous_frontier_size",
+    "reason",
+    "train_row_count",
+    "train_task_id_count",
+    "train_task_ids"
+   ],
+   "payload": {
+    "best_candidate_example_count": 38,
+    "best_candidate_example_coverage_percent": 76.0,
+    "best_candidate_id": "gepa_1c284a9e221e",
+    "best_candidate_task_id_coverage_percent": 76.0,
+    "best_train_reward": 0.76,
+    "candidate_count": 2,
+    "changed_candidate_id": null,
+    "coverage": {
+     "best_candidate_example_count": 38,
+     "best_candidate_example_coverage_percent": 76.0,
+     "best_candidate_task_id_count": 38,
+     "best_candidate_task_id_coverage_percent": 76.0,
+     "coverage_semantics": "solved_reward_positive",
+     "covered_train_example_count": 38,
+     "covered_train_example_percent": 76.0,
+     "covered_train_task_id_count": 38,
+     "covered_train_task_id_percent": 76.0,
+     "train_example_count": 50,
+     "train_row_count": 50,
+     "train_task_id_count": 50
+    },
+    "coverage_semantics": "solved_reward_positive",
+    "covered_train_example_count": 38,
+    "covered_train_example_percent": 76.0,
+    "covered_train_task_id_count": 38,
+    "covered_train_task_id_percent": 76.0,
+    "covered_train_task_ids": [
+     "train:0",
+     "train:1",
+     "train:10",
+     "train:11",
+     "train:12",
+     "train:13",
+     "...(32 more)"
+    ],
+    "frontier": [
+     {
+      "candidate_id": "gepa_1c284a9e221e",
+      "heldout_reward": null,
+      "parent_id": null,
+      "source": "seed",
+      "train_reward": 0.76
+     }
+    ],
+    "frontier_added_candidate_ids": [],
+    "frontier_added_count": 0,
+    "frontier_removed_candidate_ids": [],
+    "frontier_removed_count": 0,
+    "frontier_size": 1,
+    "frontier_size_delta": null,
+    "generation": 0,
+    "members": [
+     {
+      "candidate_id": "gepa_1c284a9e221e",
+      "coverage_semantics": "solved_reward_positive",
+      "covered_example_count": 38,
+      "covered_examples": [
+       "train:0",
+       "train:1",
+       "train:10",
+       "train:11",
+       "train:12",
+       "train:13",
+       "train:14",
+       "train:15",
+       "train:16",
+       "train:17",
+       "train:18",
+       "train:19",
+       "train:2",
+       "train:21",
+       "train:22",
+       "train:23",
+       "train:24",
+       "train:25",
+       "train:26",
+       "train:27",
+       "train:29",
+       "train:3",
+       "train:31",
+       "train:37",
+       "train:38",
+       "train:39",
+       "train:4",
+       "train:41",
+       "train:43",
+       "train:44",
+       "train:45",
+       "train:46",
+       "train:47",
+       "train:49",
+       "train:5",
+       "train:6",
+       "train:7",
+       "train:8"
+      ],
+      "covered_task_id_count": 38,
+      "covered_task_ids": [
+       "train:0",
+       "train:1",
+       "train:10",
+       "train:11",
+       "train:12",
+       "train:13",
+       "train:14",
+       "train:15",
+       "train:16",
+       "train:17",
+       "train:18",
+       "train:19",
+       "train:2",
+       "train:21",
+       "train:22",
+       "train:23",
+       "train:24",
+       "train:25",
+       "train:26",
+       "train:27",
+       "train:29",
+       "train:3",
+       "train:31",
+       "train:37",
+       "train:38",
+       "train:39",
+       "train:4",
+       "train:41",
+       "train:43",
+       "train:44",
+       "train:45",
+       "train:46",
+       "train:47",
+       "train:49",
+       "train:5",
+       "train:6",
+       "train:7",
+       "train:8"
+      ],
+      "evaluated_example_count": 50,
+      "evaluated_task_id_count": 50,
+      "heldout_reward": null,
+      "is_best": true,
+      "is_changed": false,
+      "losses_vs_best": 0,
+      "missing_example_count": 12,
+      "missing_examples": [
+       "train:20",
+       "train:28",
+       "train:30",
+       "train:32",
+       "train:33",
+       "train:34",
+       "train:35",
+       "train:36",
+       "train:40",
+       "train:42",
+       "train:48",
+       "train:9"
+      ],
+      "missing_task_id_count": 12,
+      "missing_task_ids": [
+       "train:20",
+       "train:28",
+       "train:30",
+       "train:32",
+       "train:33",
+       "train:34",
+       "train:35",
+       "train:36",
+       "train:40",
+       "train:42",
+       "train:48",
+       "train:9"
+      ],
+      "parent_id": null,
+      "source": "seed",
+      "status": "full_train_evaluated",
+      "ties_vs_best": 50,
+      "train_reward": 0.76,
+      "wins_vs_best": 0
+     }
+    ],
+    "message": "Frontier generation snapshot",
+    "previous_frontier_size": null,
+    "reason": "generation_complete",
+    "train_row_count": 50,
+    "train_task_id_count": 50,
+    "train_task_ids": [
+     "train:0",
+     "train:1",
+     "train:10",
+     "train:11",
+     "train:12",
+     "train:13",
+     "...(44 more)"
+    ]
+   }
+  },
+  "frontier.updated": {
+   "keys": [
+    "best_candidate_example_count",
+    "best_candidate_example_coverage_percent",
+    "best_candidate_id",
+    "best_candidate_task_id_coverage_percent",
+    "best_train_reward",
+    "candidate_count",
+    "changed_candidate_id",
+    "coverage",
+    "coverage_semantics",
+    "covered_train_example_count",
+    "covered_train_example_percent",
+    "covered_train_task_id_count",
+    "covered_train_task_id_percent",
+    "covered_train_task_ids",
+    "frontier",
+    "frontier_added_candidate_ids",
+    "frontier_added_count",
+    "frontier_removed_candidate_ids",
+    "frontier_removed_count",
+    "frontier_size",
+    "frontier_size_delta",
+    "generation",
+    "members",
+    "message",
+    "previous_frontier_size",
+    "reason",
+    "train_row_count",
+    "train_task_id_count",
+    "train_task_ids"
+   ],
+   "payload": {
+    "best_candidate_example_count": 38,
+    "best_candidate_example_coverage_percent": 76.0,
+    "best_candidate_id": "gepa_1c284a9e221e",
+    "best_candidate_task_id_coverage_percent": 76.0,
+    "best_train_reward": 0.76,
+    "candidate_count": 1,
+    "changed_candidate_id": "gepa_1c284a9e221e",
+    "coverage": {
+     "best_candidate_example_count": 38,
+     "best_candidate_example_coverage_percent": 76.0,
+     "best_candidate_task_id_count": 38,
+     "best_candidate_task_id_coverage_percent": 76.0,
+     "coverage_semantics": "solved_reward_positive",
+     "covered_train_example_count": 38,
+     "covered_train_example_percent": 76.0,
+     "covered_train_task_id_count": 38,
+     "covered_train_task_id_percent": 76.0,
+     "train_example_count": 50,
+     "train_row_count": 50,
+     "train_task_id_count": 50
+    },
+    "coverage_semantics": "solved_reward_positive",
+    "covered_train_example_count": 38,
+    "covered_train_example_percent": 76.0,
+    "covered_train_task_id_count": 38,
+    "covered_train_task_id_percent": 76.0,
+    "covered_train_task_ids": [
+     "train:0",
+     "train:1",
+     "train:10",
+     "train:11",
+     "train:12",
+     "train:13",
+     "...(32 more)"
+    ],
+    "frontier": [
+     {
+      "candidate_id": "gepa_1c284a9e221e",
+      "heldout_reward": null,
+      "parent_id": null,
+      "source": "seed",
+      "train_reward": 0.76
+     }
+    ],
+    "frontier_added_candidate_ids": [
+     "gepa_1c284a9e221e"
+    ],
+    "frontier_added_count": 1,
+    "frontier_removed_candidate_ids": [],
+    "frontier_removed_count": 0,
+    "frontier_size": 1,
+    "frontier_size_delta": 1,
+    "generation": null,
+    "members": [
+     {
+      "candidate_id": "gepa_1c284a9e221e",
+      "coverage_semantics": "solved_reward_positive",
+      "covered_example_count": 38,
+      "covered_examples": [
+       "train:0",
+       "train:1",
+       "train:10",
+       "train:11",
+       "train:12",
+       "train:13",
+       "train:14",
+       "train:15",
+       "train:16",
+       "train:17",
+       "train:18",
+       "train:19",
+       "train:2",
+       "train:21",
+       "train:22",
+       "train:23",
+       "train:24",
+       "train:25",
+       "train:26",
+       "train:27",
+       "train:29",
+       "train:3",
+       "train:31",
+       "train:37",
+       "train:38",
+       "train:39",
+       "train:4",
+       "train:41",
+       "train:43",
+       "train:44",
+       "train:45",
+       "train:46",
+       "train:47",
+       "train:49",
+       "train:5",
+       "train:6",
+       "train:7",
+       "train:8"
+      ],
+      "covered_task_id_count": 38,
+      "covered_task_ids": [
+       "train:0",
+       "train:1",
+       "train:10",
+       "train:11",
+       "train:12",
+       "train:13",
+       "train:14",
+       "train:15",
+       "train:16",
+       "train:17",
+       "train:18",
+       "train:19",
+       "train:2",
+       "train:21",
+       "train:22",
+       "train:23",
+       "train:24",
+       "train:25",
+       "train:26",
+       "train:27",
+       "train:29",
+       "train:3",
+       "train:31",
+       "train:37",
+       "train:38",
+       "train:39",
+       "train:4",
+       "train:41",
+       "train:43",
+       "train:44",
+       "train:45",
+       "train:46",
+       "train:47",
+       "train:49",
+       "train:5",
+       "train:6",
+       "train:7",
+       "train:8"
+      ],
+      "evaluated_example_count": 50,
+      "evaluated_task_id_count": 50,
+      "heldout_reward": null,
+      "is_best": true,
+      "is_changed": true,
+      "losses_vs_best": 0,
+      "missing_example_count": 12,
+      "missing_examples": [
+       "train:20",
+       "train:28",
+       "train:30",
+       "train:32",
+       "train:33",
+       "train:34",
+       "train:35",
+       "train:36",
+       "train:40",
+       "train:42",
+       "train:48",
+       "train:9"
+      ],
+      "missing_task_id_count": 12,
+      "missing_task_ids": [
+       "train:20",
+       "train:28",
+       "train:30",
+       "train:32",
+       "train:33",
+       "train:34",
+       "train:35",
+       "train:36",
+       "train:40",
+       "train:42",
+       "train:48",
+       "train:9"
+      ],
+      "parent_id": null,
+      "source": "seed",
+      "status": "full_train_evaluated",
+      "ties_vs_best": 50,
+      "train_reward": 0.76,
+      "wins_vs_best": 0
+     }
+    ],
+    "message": "Frontier updated",
+    "previous_frontier_size": 0,
+    "reason": "seed_full_train",
+    "train_row_count": 50,
+    "train_task_id_count": 50,
+    "train_task_ids": [
+     "train:0",
+     "train:1",
+     "train:10",
+     "train:11",
+     "train:12",
+     "train:13",
+     "...(44 more)"
+    ]
+   }
+  },
+  "candidate.minibatch_evaluated": {
+   "keys": [
+    "accepted_minibatch",
+    "candidate_id",
+    "candidate_minibatch_task_ids",
+    "message",
+    "minibatch_delta",
+    "minibatch_reward",
+    "parent_id",
+    "parent_minibatch_reward",
+    "parent_minibatch_source_stage",
+    "parent_minibatch_task_ids",
+    "reflection_alignment"
+   ],
+   "payload": {
+    "accepted_minibatch": false,
+    "candidate_id": "gepa_f5fb431d3f4f",
+    "candidate_minibatch_task_ids": [
+     "train:0",
+     "train:1",
+     "train:10",
+     "train:11",
+     "train:12",
+     "train:13",
+     "...(14 more)"
+    ],
+    "message": "Candidate minibatch evaluated",
+    "minibatch_delta": -0.05000000000000005,
+    "minibatch_reward": 0.85,
+    "parent_id": "gepa_1c284a9e221e",
+    "parent_minibatch_reward": 0.9,
+    "parent_minibatch_source_stage": "parent_minibatch_reference",
+    "parent_minibatch_task_ids": [
+     "train:0",
+     "train:1",
+     "train:10",
+     "train:11",
+     "train:12",
+     "train:13",
+     "...(14 more)"
+    ],
+    "reflection_alignment": {
+     "minibatch_subset_of_reflection": true,
+     "minibatch_task_ids": [
+      "train:0",
+      "train:1",
+      "train:10",
+      "train:11",
+      "train:12",
+      "train:13",
+      "...(14 more)"
+     ],
+     "reflection_task_ids": [
+      "train:0",
+      "train:1",
+      "train:10",
+      "train:11",
+      "train:12",
+      "train:13",
+      "...(44 more)"
+     ]
+    }
+   }
+  },
+  "candidate.rejected": {
+   "keys": [
+    "accepted_full_train",
+    "accepted_minibatch",
+    "best_train_reward",
+    "candidate_id",
+    "candidate_minibatch_reward",
+    "candidate_train_reward",
+    "comparison_result",
+    "message",
+    "parent_id",
+    "parent_minibatch_reward",
+    "reason",
+    "score"
+   ],
+   "payload": {
+    "accepted_full_train": false,
+    "accepted_minibatch": false,
+    "best_train_reward": 0.76,
+    "candidate_id": "gepa_f5fb431d3f4f",
+    "candidate_minibatch_reward": 0.85,
+    "candidate_train_reward": null,
+    "comparison_result": "incumbent_dominates",
+    "message": "Candidate rejected at minibatch",
+    "parent_id": "gepa_1c284a9e221e",
+    "parent_minibatch_reward": 0.9,
+    "reason": "primary_not_improved",
+    "score": {
+     "acceptance_criterion": "primary_improvement",
+     "acceptance_reason": "primary_not_improved",
+     "accepted": false,
+     "candidate_objectives": {
+      "classification_accuracy": 0.85
+     },
+     "challenger_score_vector_id": "scorevector_80fbd653fbb694f2",
+     "challenger_selection_score": 0.85,
+     "comparison": {
+      "challenger_candidate_id": "gepa_f5fb431d3f4f",
+      "challenger_score_vector_id": "scorevector_80fbd653fbb694f2",
+      "dominance": {
+       "better_objectives": [],
+       "challenger_selection_score": 0.85,
+       "equal_objectives": [],
+       "incumbent_selection_score": 0.9,
+       "missing_objectives": [],
+       "worse_objectives": [
+        "classification_accuracy"
+       ]
+      },
+      "evaluation_stage": "candidate_minibatch",
+      "frontier_type": "per_example",
+      "incumbent_candidate_id": "gepa_1c284a9e221e",
+      "incumbent_score_vector_id": "scorevector_20338971cb3ae14b",
+      "metadata": {
+       "source": "gepa.decision_bridge"
+      },
+      "objective_set_hash": "618d58bdebb14413a1b5dd0d6ac68f70c73b3e98385fe7ddffaa4f7d41001434",
+      "objective_set_id": "objective_set_618d58bdebb14413",
+      "pareto_comparison_id": "pareto_290d2ae91883cf1a",
+      "rationale": "incumbent is at least as good on all comparable objectives and better on at least one",
+      "result": "incumbent_dominates",
+      "schema_version": "pareto_comparison.v1",
+      "split": "train"
+     },
+     "comparison_result": "incumbent_dominates",
+     "decision_source": "acceptance_criterion",
+     "evaluation_stage": "candidate_minibatch",
+     "frontier_type": "per_example",
+     "incumbent_score_vector_id": "scorevector_20338971cb3ae14b",
+     "incumbent_selection_score": 0.9,
+     "margin": 0.0,
+     "objective_acceptance": {
+      "min_objective_delta": 0.05,
+      "objective_regression_tolerance": 0.1,
+      "protected_objectives": []
+     },
+     "objective_deltas": {},
+     "objective_set_hash": "618d58bdebb14413a1b5dd0d6ac68f70c73b3e98385fe7ddffaa4f7d41001434",
+     "objective_set_id": "objective_set_618d58bdebb14413",
+     "parent_objectives": {
+      "classification_accuracy": 0.9
+     },
+     "primary_delta": -0.05000000000000005,
+     "schema_version": "gepa_decision_score.v1",
+     "selection_delta": -0.05000000000000005,
+     "selection_objective": "classification_accuracy",
+     "split": "train"
+    }
+   }
+  },
+  "proposer.completed": {
+   "keys": [
+    "backend",
+    "cost_usd",
+    "generation",
+    "message",
+    "model",
+    "proposal_count",
+    "provider",
+    "runtime_substrate",
+    "warning_count",
+    "warnings",
+    "workspace"
+   ],
+   "payload": {
+    "backend": "codex_app_server",
+    "cost_usd": 0.0,
+    "generation": 0,
+    "message": "Proposer returned candidates",
+    "model": "gpt-5.6-luna",
+    "proposal_count": 1,
+    "provider": "openai",
+    "runtime_substrate": "local",
+    "warning_count": 1,
+    "warnings": [
+     "proposal appears to quote training example text from train:20; GEPA candidates should generalize rather than memorize exact queries"
+    ],
+    "workspace": "/Users/joshuapurtell/Documents/Codex/2026-08-16/imp/work/cookbooks-banking77-v04-pinned/cookbooks/optimizers/gepa/runs/banking77_gepa_luna_med_959b2d7c/proposer_workspaces/generation_000"
+   }
+  },
+  "gepa.run.finished": {
+   "keys": [
+    "best_candidate_id",
+    "cost_usd",
+    "heldout_reward",
+    "heldout_skipped",
+    "message",
+    "rollout_count",
+    "runtime_summary",
+    "state",
+    "usage"
+   ],
+   "payload": {
+    "best_candidate_id": "gepa_1c284a9e221e",
+    "cost_usd": 0.0102347,
+    "heldout_reward": 0.58,
+    "heldout_skipped": false,
+    "message": "GEPA run finished",
+    "rollout_count": 140,
+    "runtime_summary": {
+     "candidates": {
+      "gepa_1c284a9e221e": {
+       "calls": 120,
+       "completion_tokens": 476,
+       "cost_usd": 0.007760400000000001,
+       "jobs": 17,
+       "model": "gpt-4.1-nano",
+       "prompt_tokens": 75700,
+       "total_tokens": 76176,
+       "wall_seconds": 370.599899627
+      },
+      "gepa_f5fb431d3f4f": {
+       "calls": 20,
+       "completion_tokens": 85,
+       "cost_usd": 0.0024743,
+       "jobs": 3,
+       "model": "gpt-4.1-nano",
+       "prompt_tokens": 24403,
+       "total_tokens": 24488,
+       "wall_seconds": 34.945940125999996
+      }
+     },
+     "policy": {
+      "calls": 140,
+      "completion_tokens": 561,
+      "cost_usd": 0.0102347,
+      "jobs": 20,
+      "model": "gpt-4.1-nano",
+      "prompt_tokens": 100103,
+      "total_tokens": 100664,
+      "wall_seconds": 85.48163
+     },
+     "proposer": {
+      "calls": 1,
+      "completion_tokens": 164,
+      "cost_usd": 0.0,
+      "jobs": 1,
+      "model": "gpt-5.6-luna",
+      "prompt_tokens": 53753,
+      "total_tokens": 53917,
+      "wall_seconds": 100.1787345
+     }
+    },
+    "state": "completed",
+    "usage": {
+     "completion_tokens": 725,
+     "prompt_tokens": 153856,
+     "proposer_calls": 1,
+     "rollout_calls": 140,
+     "total_tokens": 154581
+    }
+   }
+  },
+  "gepa.run.failed": {
+   "keys": [
+    "cost_usd",
+    "failure",
+    "message",
+    "run_id",
+    "state",
+    "usage"
+   ],
+   "payload": {
+    "cost_usd": 0.00013340000000000002,
+    "failure": {
+     "error_code": "synth_optimizer_failed",
+     "failure": {
+      "details": {},
+      "failure_type": "timeout",
+      "message": "codex app-server timed out waiting for response",
+      "mutated": false,
+      "reason_code": "timeout",
+      "retryable": true
+     },
+     "message": "GEPA runtime job effect:effect_8053bcf00987954e failed: codex app-server timed out waiting for response"
+    },
+    "message": "GEPA runtime job failed",
+    "run_id": "craftax_gepa_luna_med_6b137ee5",
+    "state": "failed",
+    "usage": {
+     "completion_tokens": 84,
+     "prompt_tokens": 998,
+     "proposer_calls": 0,
+     "rollout_calls": 1,
+     "total_tokens": 1082
+    }
+   }
+  }
+ }
+}
