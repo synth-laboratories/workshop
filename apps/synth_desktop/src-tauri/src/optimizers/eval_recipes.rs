@@ -386,6 +386,86 @@ fn paid_compute_bounds_for_candidate_count(
 
 /// The catalog is still worth showing when the runtime is missing: an empty
 /// list reads as "this product does not exist", which is the wrong answer.
+/// Refuse a target that is not pinned to an immutable digest.
+///
+/// A recipe's honesty about *which* image it scored against is the whole basis
+/// for comparing two runs. A mutable tag can be repointed between them, and a
+/// local-checkout fallback is not reproducible on any other machine — both turn
+/// a benchmark number into an anecdote. Craftax eval is blocked on publishing a
+/// real image precisely so this can be enforced rather than worked around.
+///
+/// A recipe that declares no image has nothing to pin (the fixture smoke is
+/// deterministic and benchmark-free); a recipe that declares one must pin it.
+fn require_digest_pinned_target(recipe: &Value, recipe_id: &str) -> Result<()> {
+    let image = recipe
+        .get("image")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|image| !image.is_empty());
+    let Some(image) = image else {
+        return Ok(());
+    };
+    let refuse = |reason: &str| -> anyhow::Error {
+        anyhow!(
+            "{}",
+            json!({
+                "code": "target_not_digest_pinned",
+                "contract": "workflow.immutable_target",
+                "owner": recipe_id,
+                "retryable": false,
+                "requestedRecipeId": recipe_id,
+                "substitutionAllowed": false,
+                "image": image,
+                "message": reason,
+            })
+        )
+    };
+
+    // A path or file URL is a local checkout, not a published image.
+    if image.starts_with('/')
+        || image.starts_with("./")
+        || image.starts_with("../")
+        || image.starts_with("file://")
+        || image.starts_with("oci-archive:")
+        || image.starts_with("docker-archive:")
+    {
+        return Err(refuse(
+            "the eval target resolves to a local checkout; publish the image and pin its digest",
+        ));
+    }
+
+    let digest = recipe
+        .get("imageDigest")
+        .or_else(|| recipe.get("targetManifestDigest"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|digest| !digest.is_empty());
+    // The reference itself may carry the digest; either source is acceptable,
+    // but one of them must exist.
+    let inline = image.split_once("@sha256:").map(|(_, hex)| hex);
+    let declared = digest.and_then(|digest| digest.strip_prefix("sha256:"));
+    let Some(hex) = inline.or(declared) else {
+        return Err(refuse(
+            "the eval target is a mutable tag; publish the image and record its sha256 digest",
+        ));
+    };
+    if hex.len() != 64 || !hex.chars().all(|c| c.is_ascii_hexdigit()) {
+        return Err(refuse(
+            "the eval target digest is not a sha256 manifest digest",
+        ));
+    }
+    // Both present and disagreeing is worse than either missing: the run would
+    // record one identity and execute another.
+    if let (Some(inline), Some(declared)) = (inline, declared) {
+        if inline != declared {
+            return Err(refuse(
+                "the eval target reference and its recorded digest disagree",
+            ));
+        }
+    }
+    Ok(())
+}
+
 fn offline_catalog(reason: &str) -> Vec<Value> {
     EVAL_RECIPE_IDS
         .iter()
@@ -442,6 +522,7 @@ pub async fn start(
             })
         );
     }
+    require_digest_pinned_target(&recipe, &recipe_id)?;
     if report
         .get("containerRuntimeAvailable")
         .and_then(Value::as_bool)
@@ -1792,5 +1873,102 @@ mod tests {
         }));
         assert_eq!(normalized["limits"]["trials"], json!(7));
         assert!(normalized["limits"].get("trialAuthority").is_none());
+    }
+}
+
+/// Immutable-target admission.
+///
+/// Craftax eval is blocked on an image that was never published or
+/// digest-pinned. The gap that made that blocking necessary is that nothing
+/// refused an unpinned target: a run could score against a mutable tag or a
+/// local checkout and record a benchmark number nobody else could reproduce.
+#[cfg(test)]
+mod immutable_target_tests {
+    use super::*;
+
+    const PINNED: &str = "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+
+    fn recipe(image: Option<&str>, digest: Option<&str>) -> Value {
+        let mut recipe = json!({ "id": EVAL_CRAFTAX_LLM_RECIPE, "availability": "available" });
+        if let Some(image) = image {
+            recipe["image"] = json!(image);
+        }
+        if let Some(digest) = digest {
+            recipe["imageDigest"] = json!(digest);
+        }
+        recipe
+    }
+
+    fn refusal(recipe: &Value) -> String {
+        require_digest_pinned_target(recipe, EVAL_CRAFTAX_LLM_RECIPE)
+            .expect_err("this target must be refused")
+            .to_string()
+    }
+
+    #[test]
+    fn a_mutable_tag_is_refused_before_the_run_is_created() {
+        let error = refusal(&recipe(Some("ghcr.io/synth/craftax-eval:latest"), None));
+        assert!(error.contains("target_not_digest_pinned"), "{error}");
+        assert!(error.contains("mutable tag"), "{error}");
+        assert!(error.contains("\"substitutionAllowed\":false"), "{error}");
+    }
+
+    #[test]
+    fn a_local_checkout_fallback_is_refused() {
+        for image in [
+            "/Users/someone/checkouts/craftax",
+            "./craftax_container",
+            "file:///tmp/craftax.tar",
+            "oci-archive:/tmp/craftax.tar",
+        ] {
+            let error = refusal(&recipe(Some(image), Some(PINNED)));
+            assert!(
+                error.contains("local checkout"),
+                "{image} must be refused as a local checkout, got {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_digest_pinned_target_is_admitted_from_either_source() {
+        require_digest_pinned_target(
+            &recipe(Some("ghcr.io/synth/craftax-eval"), Some(PINNED)),
+            EVAL_CRAFTAX_LLM_RECIPE,
+        )
+        .expect("a recorded manifest digest pins the target");
+        require_digest_pinned_target(
+            &recipe(
+                Some(&format!("ghcr.io/synth/craftax-eval@{PINNED}")),
+                None,
+            ),
+            EVAL_CRAFTAX_LLM_RECIPE,
+        )
+        .expect("a digest carried by the reference pins the target");
+    }
+
+    /// Recording one identity and executing another is worse than recording
+    /// none: the run would look reproducible and not be.
+    #[test]
+    fn a_reference_and_a_recorded_digest_that_disagree_are_refused() {
+        let other = "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff";
+        let error = refusal(&recipe(
+            Some(&format!("ghcr.io/synth/craftax-eval@{PINNED}")),
+            Some(other),
+        ));
+        assert!(error.contains("disagree"), "{error}");
+    }
+
+    #[test]
+    fn a_malformed_digest_is_not_a_pin() {
+        let error = refusal(&recipe(Some("ghcr.io/synth/craftax-eval"), Some("sha256:beef")));
+        assert!(error.contains("not a sha256 manifest digest"), "{error}");
+    }
+
+    /// The fixture smoke is deterministic and scores no container. Requiring a
+    /// digest it has no image for would block a lane this rule is not about.
+    #[test]
+    fn a_recipe_with_no_image_has_nothing_to_pin() {
+        require_digest_pinned_target(&recipe(None, None), EVAL_FIXTURE_SMOKE_RECIPE)
+            .expect("a benchmark-free fixture declares no target");
     }
 }
