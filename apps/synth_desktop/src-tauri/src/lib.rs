@@ -481,7 +481,16 @@ async fn hydrate_container(
         })
         .or_else(|| {
             info.as_ref()
-                .and_then(|value| value.get("env_family").or_else(|| value.get("task_family")))
+                .and_then(|value| {
+                    value
+                        .get("env_family")
+                        .or_else(|| value.get("task_family"))
+                        // HealthBench publishes its explicit service family as
+                        // `runtime_family`; preserve that observed contract so
+                        // the selector can find the registered GEPA-v2 pool.
+                        // Do not infer from a caller name, port, or URL.
+                        .or_else(|| value.get("runtime_family"))
+                })
                 .and_then(|value| value.as_str())
                 .map(str::to_string)
         })
