@@ -227,6 +227,8 @@ impl Commands {
     pub const SECRETS_PROXY_STATUS: &'static str = "secrets_proxy_status";
     pub const SECRETS_PENDING: &'static str = "secrets_pending";
     pub const SECRETS_DENY_ENV_IMPORT: &'static str = "secrets_deny_env_import";
+    pub const PRODUCT_TELEMETRY_GET_POLICY: &'static str = "product_telemetry_get_policy";
+    pub const PRODUCT_TELEMETRY_SET_OPT_OUT: &'static str = "product_telemetry_set_opt_out";
 }
 
 /// Alias matching the TS `COMMANDS` export shape.

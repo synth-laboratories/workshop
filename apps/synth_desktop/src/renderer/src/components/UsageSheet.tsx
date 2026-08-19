@@ -307,19 +307,49 @@ export function UsageSheet({
 									<div>
 										<span>Today</span>
 										<strong data-testid="usage-sheet-today">{formatUsd(cloudUsage.today.costUsd)}</strong>
-										<small>{cloudUsage.today.events} events</small>
+										<small>{cloudUsage.today.events} jobs</small>
+										{(cloudUsage.today.tokens ?? 0) > 0 ? (
+											<small data-testid="usage-sheet-today-tokens">{cloudUsage.today.tokens} tokens</small>
+										) : null}
+										{(cloudUsage.today.runtimeSeconds ?? 0) > 0 ? (
+											<small data-testid="usage-sheet-today-runtime">{cloudUsage.today.runtimeSeconds}s runtime</small>
+										) : null}
 									</div>
 									<div>
 										<span>7 days</span>
 										<strong data-testid="usage-sheet-7d">{formatUsd(cloudUsage.sevenDays.costUsd)}</strong>
-										<small>{cloudUsage.sevenDays.events} events</small>
+										<small>{cloudUsage.sevenDays.events} jobs</small>
 									</div>
 									<div>
 										<span>30 days</span>
 										<strong data-testid="usage-sheet-30d">{formatUsd(cloudUsage.thirtyDays.costUsd)}</strong>
-										<small>{cloudUsage.thirtyDays.events} events</small>
+										<small>{cloudUsage.thirtyDays.events} jobs</small>
 									</div>
 								</div>
+							) : null}
+
+							{cloudUsage && showDollarFigures && (cloudUsage.today.pendingUsd ?? 0) > 0 ? (
+								<UsageRow
+									label="Pending today"
+									value={`${formatUsd(cloudUsage.today.pendingUsd)} estimated · not in billed total`}
+									testId="usage-sheet-pending"
+								/>
+							) : null}
+
+							{summary?.quotaExhausted || view.state === "limited" ? (
+								<p className="usage-sheet-warning" data-testid="usage-sheet-quota-exhausted">
+									Hosted quota is exhausted. Local models keep working.
+								</p>
+							) : null}
+
+							{summary?.reconciliation === "failed" ? (
+								<p className="usage-sheet-warning" data-testid="usage-sheet-reconciliation-failed">
+									Hosted usage could not be reconciled. Showing no invented total.
+								</p>
+							) : summary?.reconciliation === "stale" ? (
+								<p className="usage-sheet-note" data-testid="usage-sheet-reconciliation-stale">
+									Showing the last finalized hosted usage.
+								</p>
 							) : null}
 
 							{view.cloudBlockedReason ? (

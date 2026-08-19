@@ -16,6 +16,8 @@ type StubOptions = {
 	usedUsd: number;
 	tier?: "free" | "starter" | "pro";
 	metered?: boolean;
+	pendingUsd?: number;
+	reconciliation?: "ok" | "stale" | "failed";
 };
 
 test("missing dollar amounts render UNKNOWN instead of zero", () => {
@@ -58,10 +60,19 @@ async function stubCloudAccount(page: import("@playwright/test").Page, options: 
 				source: "cloud" as const
 			},
 			cloudUsage: {
-				today: { events: 2, costUsd: 0.15 },
-				sevenDays: { events: 9, costUsd: 1.2 },
-				thirtyDays: { events: 40, costUsd: 13 }
+				today: {
+					events: 2,
+					costUsd: 0.15,
+					finalizedUsd: 0.15,
+					pendingUsd: stub.pendingUsd ?? 0,
+					tokens: 1200,
+					runtimeSeconds: 8
+				},
+				sevenDays: { events: 9, costUsd: 1.2, finalizedUsd: 1.2, pendingUsd: 0 },
+				thirtyDays: { events: 40, costUsd: 13, finalizedUsd: 13, pendingUsd: 0 }
 			},
+			quotaExhausted: stub.state === "limited",
+			reconciliation: stub.reconciliation ?? "ok",
 			billing: {
 				checkoutUrl: upgradeTier ? `https://example.test/usage?upgrade=${upgradeTier}` : null,
 				portalUrl: "https://example.test/usage",
@@ -204,6 +215,8 @@ test("the usage sheet separates Synth Cloud from this device", async ({ page }) 
 	await expect(page.getByTestId("usage-sheet-used")).toHaveText("$42.50");
 	await expect(page.getByTestId("usage-sheet-remaining")).toHaveText("$157.50");
 	await expect(page.getByTestId("usage-sheet-today")).toHaveText("$0.15");
+	await expect(page.getByTestId("usage-sheet-today-tokens")).toHaveText("1200 tokens");
+	await expect(page.getByTestId("usage-sheet-today-runtime")).toHaveText("8s runtime");
 	await expect(page.getByTestId("usage-sheet-7d")).toHaveText("$1.20");
 	await expect(page.getByTestId("usage-sheet-30d")).toHaveText("$13.00");
 	await expect(page.getByTestId("usage-sheet-last-updated")).toContainText("Last updated");
@@ -427,6 +440,7 @@ test("an exhausted allowance blocks the cloud model and offers upgrade; local st
 	await page.getByTestId("model-resolve-synth-billing").first().click();
 	await expect(page.getByTestId("usage-sheet")).toBeVisible();
 	await expect(page.getByTestId("usage-sheet-blocked")).toContainText("allowance is used up");
+	await expect(page.getByTestId("usage-sheet-quota-exhausted")).toContainText("Hosted quota is exhausted");
 	await expect(page.getByTestId("usage-sheet-primary-action")).toContainText("Upgrade");
 });
 
@@ -496,4 +510,30 @@ test("a limited account shows the block and an upgrade path on the Account page"
 	await expect(page.getByTestId("account-page-blocked")).toContainText("allowance is used up");
 	await expect(page.getByTestId("account-page-primary-action")).toContainText("Upgrade");
 	await expect(page.getByTestId("account-page-remaining")).toHaveText("$0.00");
+});
+
+test("pending estimates stay out of the billed hosted total", async ({ page }) => {
+	await stubCloudAccount(page, {
+		state: "active",
+		remainingUsd: 157.5,
+		usedUsd: 42.5,
+		pendingUsd: 0.4
+	});
+	await page.getByTestId("account-menu-trigger").click();
+	await page.getByTestId("account-open-usage").click();
+	await expect(page.getByTestId("usage-sheet-today")).toHaveText("$0.15");
+	await expect(page.getByTestId("usage-sheet-pending")).toContainText("$0.40");
+	await expect(page.getByTestId("usage-sheet-pending")).toContainText("not in billed total");
+});
+
+test("a failed hosted reconciliation does not invent a total", async ({ page }) => {
+	await stubCloudAccount(page, {
+		state: "active",
+		remainingUsd: 157.5,
+		usedUsd: 42.5,
+		reconciliation: "failed"
+	});
+	await page.getByTestId("account-menu-trigger").click();
+	await page.getByTestId("account-open-usage").click();
+	await expect(page.getByTestId("usage-sheet-reconciliation-failed")).toContainText("could not be reconciled");
 });
