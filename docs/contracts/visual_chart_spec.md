@@ -94,9 +94,17 @@ because a still image of "the trace" cannot come from two of them:
 | `local_cas` | a JSON blob by digest |
 | `trace_v5` | the trace's projection payload; `projection` picks the kind, default `rollout-inspector` |
 | `query_snapshot` | the frozen snapshot; address rows at `path: "facets.rows"` |
+| `optimizer_run` | the run's typed result from the optimizer service; the per-trial ledger is at `path: "summary.records"` |
 
-`live_sse`, `run_ref`, and `optimizer_run` are refused by name: a chart is a
-still, and a stream has no single value to draw.
+An `optimizer_run` may be read before the run seals. That reading is a snapshot,
+and it says so: the receipt carries `sealed: false`, `snapshotOfLiveRun: true`,
+the `cursor` it was taken at, and a digest of exactly what was taken, so two
+charts drawn from one moving run can be told apart instead of silently
+disagreeing. A sealed run records `sealed: true` and the manifest's terminal
+cursor.
+
+`live_sse` is refused by name — a stream has no single value to draw — and so is
+`run_ref`, which names a session run for which no projection is defined yet.
 
 **Transforms** are total functions from rows to rows, applied in order:
 `filter`, `sort`, `limit`, `select` (project and rename by dotted path),

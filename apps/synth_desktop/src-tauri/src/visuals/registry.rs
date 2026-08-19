@@ -29,6 +29,11 @@ pub struct VisualRegistry {
     /// but a domain event is scoped to the visual. The diagnostic is what puts
     /// that failure next to the rollout, stream, and container it belongs to.
     pub(super) diagnostics: Arc<std::sync::OnceLock<Arc<crate::diagnostics::DiagnosticsService>>>,
+    /// Attached once by the composition root, like diagnostics. Charts can bind
+    /// an optimizer run's typed result; the optimizer service owns that read and
+    /// the registry must not grow a second way to compute it.
+    pub(super) optimizer_runs:
+        Arc<std::sync::OnceLock<crate::optimizers::OptimizerService>>,
 }
 
 impl VisualRegistry {
@@ -38,11 +43,21 @@ impl VisualRegistry {
             journal,
             content,
             diagnostics: Arc::new(std::sync::OnceLock::new()),
+            optimizer_runs: Arc::new(std::sync::OnceLock::new()),
         }
     }
 
     pub(crate) fn content(&self) -> &ContentStore {
         &self.content
+    }
+
+    /// Wire the optimizer service in after both exist. Idempotent.
+    ///
+    /// The two hold each other — the optimizer service owns a `VisualRegistry`
+    /// clone — so this is a composition-root wiring for a pair that lives as
+    /// long as the process, not a general-purpose dependency.
+    pub fn attach_optimizer_runs(&self, service: crate::optimizers::OptimizerService) {
+        let _ = self.optimizer_runs.set(service);
     }
 
     /// Wire diagnostics in after both services exist. Idempotent.
@@ -1025,8 +1040,22 @@ impl VisualRegistry {
                     receipt["digest"] = json!(snapshot.result_digest);
                     serde_json::to_value(snapshot)?
                 }
+                "optimizer_run" => {
+                    let run_id = source
+                        .ok_or_else(|| anyhow!("optimizer_run slot {slot} needs a run id"))?;
+                    let service = self.optimizer_runs.get().ok_or_else(|| {
+                        anyhow!("this runtime has no optimizer service attached, so slot {slot} cannot be read")
+                    })?;
+                    let document = service.get_result(run_id.to_string()).await?;
+                    // A run that has not sealed is still readable, but the
+                    // reading is a snapshot: record the cursor it was taken at
+                    // and the digest of what was taken, so a chart drawn twice
+                    // from a moving run can be told apart afterwards.
+                    merge_receipt(&mut receipt, optimizer_run_receipt(run_id, &document));
+                    document
+                }
                 other => bail!(
-                    "slot {slot} is bound as {other}, which a chart cannot read; supported kinds are inline, fixture, local_cas, trace_v5, query_snapshot"
+                    "slot {slot} is bound as {other}, which a chart cannot read; supported kinds are inline, fixture, local_cas, trace_v5, query_snapshot, optimizer_run"
                 ),
             };
             provenance.insert(slot.clone(), receipt);
@@ -1477,6 +1506,37 @@ fn read_visual_fixture(relative: &str) -> Result<(Value, String)> {
     let document = serde_json::from_slice(&bytes)
         .with_context(|| format!("fixture {relative} is not JSON"))?;
     Ok((document, digest))
+}
+
+/// What a chart records about the optimizer run it read.
+///
+/// A sealed run is a fact. An unsealed one is a reading taken at a moment, so
+/// it carries the cursor it was taken at and a digest of exactly what was
+/// taken — two charts drawn from one moving run can then be told apart instead
+/// of silently disagreeing.
+fn optimizer_run_receipt(run_id: &str, document: &Value) -> Value {
+    let sealed = document
+        .get("terminalManifest")
+        .is_some_and(|value| !value.is_null());
+    let mut receipt = json!({
+        "source": run_id,
+        "sealed": sealed,
+        "cursor": document.get("finalCursor").cloned().unwrap_or(Value::Null),
+        "digest": digest_json(document),
+    });
+    if !sealed {
+        receipt["snapshotOfLiveRun"] = json!(true);
+    }
+    receipt
+}
+
+fn merge_receipt(receipt: &mut Value, extra: Value) {
+    let (Some(target), Some(source)) = (receipt.as_object_mut(), extra.as_object()) else {
+        return;
+    };
+    for (key, value) in source {
+        target.insert(key.clone(), value.clone());
+    }
 }
 
 /// A chart declares its own theme; the rendition key follows the spec rather
@@ -2301,6 +2361,34 @@ mod tests {
         )
         .unwrap();
         assert!(dark_svg.contains("url(#absent)"));
+    }
+
+    #[test]
+    fn an_unsealed_optimizer_run_is_recorded_as_a_snapshot() {
+        let sealed = optimizer_run_receipt(
+            "opt_run_1",
+            &json!({"terminalManifest": {"terminalCursor": 40}, "finalCursor": 40}),
+        );
+        assert_eq!(sealed["sealed"], json!(true));
+        assert_eq!(sealed["cursor"], json!(40));
+        assert!(sealed.get("snapshotOfLiveRun").is_none());
+        assert!(sealed["digest"].as_str().unwrap_or_default().len() == 64);
+
+        let live = optimizer_run_receipt(
+            "opt_run_1",
+            &json!({"terminalManifest": Value::Null, "finalCursor": 12}),
+        );
+        assert_eq!(live["sealed"], json!(false));
+        assert_eq!(live["cursor"], json!(12));
+        assert_eq!(
+            live["snapshotOfLiveRun"],
+            json!(true),
+            "a reading of a moving run must say so"
+        );
+        assert_ne!(
+            live["digest"], sealed["digest"],
+            "two readings of one run are distinguishable by what was read"
+        );
     }
 
     #[tokio::test]

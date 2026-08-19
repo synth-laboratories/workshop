@@ -136,13 +136,14 @@
             "description": "Required when kind is inline"
           },
           "kind": {
-            "description": "Binding kind for slot",
+            "description": "Binding kind for slot. An optimizer_run may be read before it seals; the reading is recorded as a snapshot with its cursor.",
             "enum": [
               "inline",
               "fixture",
               "local_cas",
               "trace_v5",
-              "query_snapshot"
+              "query_snapshot",
+              "optimizer_run"
             ],
             "type": "string"
           },
@@ -158,7 +159,7 @@
             "type": "string"
           },
           "source": {
-            "description": "Trace digest, fixture path under visuals/, CAS blob digest, or query snapshot id",
+            "description": "Trace digest, fixture path under visuals/, CAS blob digest, query snapshot id, or optimizer run id",
             "type": "string"
           },
           "spec": {
