@@ -558,6 +558,119 @@ async fn killed_app_server_interrupts_sqlite_and_resumes_the_same_thread() {
     manager.close(&request.session_id).await.unwrap();
 }
 
+/// Stop is a containment boundary, not a cosmetic state transition. A
+/// non-cooperative app-server may acknowledge `turn/interrupt` while its shell
+/// tool keeps running, so the Desktop must terminate the attachment's isolated
+/// process group, persist the exact terminal state, and permit a fresh turn on
+/// the durable thread.
+#[cfg(unix)]
+#[tokio::test]
+async fn interrupt_terminates_non_cooperative_tool_tree_and_allows_a_new_turn() {
+    let _machine =
+        crate::synth_config::test_machine_permissions::install("never", "workspace-write");
+    let temp = tempdir().unwrap();
+    let codex_root = temp.path().join("codex");
+    let core = Arc::new(CoreRuntime::open(temp.path().join("core")).unwrap());
+    let manager = CodexManager::with_paths(
+        SessionPersistence::from_core(Some(core.clone())),
+        codex_root.clone(),
+        fixture_binary(),
+        CodexManager::test_broker(),
+    );
+    let app = tauri::test::mock_app();
+    let app_handle = app.handle().clone();
+    let request = test_request(temp.path(), "stop-tool-tree");
+    let home = codex_root.join("homes").join("stop-tool-tree");
+    fs::create_dir_all(&home).unwrap();
+    fs::write(home.join("ignore-interrupt-and-spawn-sleeper"), "1").unwrap();
+
+    manager
+        .start(app_handle.clone(), request.clone())
+        .await
+        .unwrap();
+    let first_turn = manager
+        .start_turn(
+            app_handle.clone(),
+            CodexTurnStartRequest {
+                session_id: request.session_id.clone(),
+                prompt: "start a tool that ignores cooperative cancellation".into(),
+                effort: Some("none".into()),
+                client_message_id: None,
+            },
+        )
+        .await
+        .unwrap()
+        .turn_id
+        .unwrap();
+    let sleeper_pid = tokio::time::timeout(SETTLE_TIMEOUT, async {
+        loop {
+            if let Ok(pid) = fs::read_to_string(home.join("sleeping-child.pid")) {
+                break pid.trim().parse::<libc::pid_t>().unwrap();
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("fixture tool never started");
+
+    manager
+        .interrupt(app_handle.clone(), &request.session_id)
+        .await
+        .unwrap();
+    wait_for_record_status(
+        &manager,
+        &request.session_id,
+        SessionStatus::Interrupted.as_str(),
+    )
+    .await;
+    wait_for_run_status(&core, &first_turn, RunStatus::Interrupted.as_str()).await;
+    let first_run = RunService::new(core.storage().database().clone())
+        .get(first_turn.clone())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(first_run.outcome.unwrap()["reason"], "operator_cancelled");
+    assert!(!manager
+        .sessions
+        .read()
+        .await
+        .contains_key(&request.session_id));
+    tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            if unsafe { libc::kill(sleeper_pid, 0) } != 0 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("Stop left the descendant tool process alive");
+
+    // The process tree is gone, but the conversation is still restartable.
+    fs::remove_file(home.join("ignore-interrupt-and-spawn-sleeper")).unwrap();
+    let resumed = manager
+        .start(app_handle.clone(), request.clone())
+        .await
+        .unwrap();
+    assert_eq!(resumed.thread_id, "thread-fixture");
+    let second_turn = manager
+        .start_turn(
+            app_handle,
+            CodexTurnStartRequest {
+                session_id: request.session_id.clone(),
+                prompt: "start a new turn after Stop".into(),
+                effort: Some("none".into()),
+                client_message_id: None,
+            },
+        )
+        .await
+        .unwrap()
+        .turn_id
+        .unwrap();
+    assert_ne!(first_turn, second_turn);
+    manager.close(&request.session_id).await.unwrap();
+}
+
 #[tokio::test]
 async fn final_answer_before_app_server_exit_completes_the_run() {
     let _machine =

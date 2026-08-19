@@ -1004,6 +1004,11 @@ impl CodexManager {
         app: AppHandle<R>,
         session_id: &str,
     ) -> Result<()> {
+        // Serialize against attach/start. A renderer Stop can land while the
+        // start round trip is still in flight; taking the same lock means the
+        // terminal durable transition applies to the turn that actually won.
+        let lock = self.turn_lock(session_id).await;
+        let _guard = lock.lock().await;
         let Some(session) = self.sessions.read().await.get(session_id).cloned() else {
             // Stop is idempotent once no live transport owns the turn.
             return Ok(());
@@ -1011,16 +1016,37 @@ impl CodexManager {
         let Some(turn_id) = session.turn_id.read().await.clone() else {
             return Ok(());
         };
-        session
-            .server
-            .request(
+        // Ask the provider to cancel first so it can stop container leases and
+        // seal any partial evidence. A provider acknowledgement is not proof
+        // that its child tool actually died, though, and a stuck RPC must not
+        // keep the composer locked for the transport's 30-second timeout.
+        let _ = tokio::time::timeout(
+            Duration::from_secs(2),
+            session.server.request(
                 "turn/interrupt",
                 json!({"threadId":session.thread_id,"turnId":turn_id}),
-            )
+            ),
+        )
+        .await;
+        if let Some(event) = self
+            .persistence
+            .interrupt_active_run(session_id, "operator_cancelled")
+            .await?
+        {
+            self.persistence.publish_event(&app, event).await?;
+        }
+        // Persist and publish terminal state before tearing down the transport.
+        // This makes Stop deterministic even when the app-server ignores the
+        // interrupt request or never emits turn/interrupted.
+        self.set_status(session_id, SessionStatus::Interrupted)
             .await?;
         self.approvals
             .expire_session(&app, session_id, "origin_interrupted")
             .await?;
+        // The app-server is an attachment, not the durable conversation. Its
+        // owned process group is terminated by ProviderTransport::stop; the
+        // next send attaches a clean process to the same thread.
+        self.fence_attachment(session_id).await?;
         Ok(())
     }
 
