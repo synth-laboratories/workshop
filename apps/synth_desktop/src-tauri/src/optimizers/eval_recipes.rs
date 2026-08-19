@@ -45,7 +45,7 @@ use tokio::{
 use super::events::OptimizerEventDraft;
 use super::{
     models::{
-        OptimizerCapabilities, OptimizerCreateRequest, OptimizerEventEnvelope,
+        OptimizerCapabilities, OptimizerCreateRequest, OptimizerEventEnvelope, OptimizerRunRecord,
         OptimizerExecutionBinding, OptimizerRecipeRunRequest, OptimizerResourceRef,
         OPTIMIZER_EVENT_SCHEMA_VERSION,
     },
@@ -1055,6 +1055,31 @@ async fn ingest_stdout(service: &OptimizerService, run_id: &str, path: &Path) ->
     Ok(())
 }
 
+/// Reopen a locally-owned eval after the Desktop process disappeared.  The
+/// worker's stdout log is durable authority: a terminal line in that log must
+/// win over the stale `running` projection that happened to be persisted just
+/// before restart.  This intentionally does not launch a worker or infer a
+/// result from an exit code; it only mirrors already-durable worker evidence.
+pub(super) async fn reconcile_persisted(
+    service: &OptimizerService,
+    run_id: &str,
+) -> Result<OptimizerRunRecord> {
+    let run = service.get(run_id.to_string()).await?;
+    if run.algorithm_id != EVAL_ALGORITHM_ID || super::service::is_terminal_status(&run.status) {
+        return Ok(run);
+    }
+    let Some(run_dir) = run
+        .summary
+        .get("runDirectory")
+        .and_then(Value::as_str)
+        .map(PathBuf::from)
+    else {
+        return Ok(run);
+    };
+    ingest_stdout(service, run_id, &run_dir.join("worker.stdout.log")).await?;
+    service.get(run_id.to_string()).await
+}
+
 /// Trace and verifier files are first-class evidence, so they reach the run's
 /// artifact slice rather than living only inside the trial directory.
 fn artifact_refs(raw: &Value) -> Vec<Value> {
@@ -1881,6 +1906,43 @@ mod tests {
             traces, 4,
             "every trial's trace should reach the artifact slice"
         );
+    }
+
+    #[tokio::test]
+    async fn restart_refresh_reconciles_a_terminal_worker_log_over_a_running_projection() {
+        let (svc, dir, _) = super::super::service::tests::service().await;
+        let run_id = "opt_eval_restart_terminal".to_string();
+        svc.create(OptimizerCreateRequest {
+            algorithm_id: EVAL_ALGORITHM_ID.into(),
+            algorithm_version: Some("1".into()),
+            objective: Some("restart reconciliation".into()),
+            source: Some("local".into()),
+            project_ref: None,
+            session_ref: Some("session_restart".into()),
+            id: Some(run_id.clone()),
+            execution_bindings: None,
+            input_refs: None,
+            capabilities: Some(OptimizerCapabilities::for_algorithm(EVAL_ALGORITHM_ID)),
+            summary: Some(json!({ "runDirectory": dir.path() })),
+            open_visual: Some(false),
+            seed_fixture: None,
+            cloud_config: None,
+            local_path: None,
+        }).await.unwrap();
+        svc.append_event_payloads(
+            run_id.clone(),
+            vec![OptimizerEventDraft::new("optimizer.run.started", EVAL_ALGORITHM_ID)],
+        ).await.unwrap();
+        assert_eq!(svc.get(run_id.clone()).await.unwrap().status, "running");
+        fs::write(
+            dir.path().join("worker.stdout.log"),
+            include_str!("fixtures/eval_worker_stdout.jsonl"),
+        ).unwrap();
+
+        let recovered = svc.refresh(run_id.clone()).await.unwrap();
+        assert_eq!(recovered.status, "completed");
+        assert!(recovered.finished_at.is_some());
+        assert!(svc.terminal_manifest(run_id).await.unwrap().is_some());
     }
 
     /// An eval run is a first-class optimizer noun, so it gets a visual and a

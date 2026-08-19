@@ -799,6 +799,12 @@ impl OptimizerService {
             }
         }
         let mut run = self.get(optimizer_run_id.clone()).await?;
+        // An eval worker persists its own event stream. On restart the host may
+        // still say `running` even though that log already contains the
+        // terminal event; reconcile before deciding that a local run is live.
+        if run.source == "local" && run.algorithm_id == super::eval_recipes::EVAL_ALGORITHM_ID {
+            run = super::eval_recipes::reconcile_persisted(self, &optimizer_run_id).await?;
+        }
         if run.summary.get("recipeId").and_then(Value::as_str)
             == Some(super::hosted_gelo::HOSTED_GELO_CRAFTAX_RECIPE)
         {
