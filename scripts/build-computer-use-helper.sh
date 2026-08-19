@@ -6,10 +6,9 @@
 # ad-hoc gets a new cdhash on every build, so every grant the operator gave
 # yesterday is gone today. That is gate G1, and it is release-blocking.
 #
-# The rest of the repo still signs ad-hoc (scripts/desktop.sh, and
-# scripts/release-artifact.sh which says UNNOTARIZED in the artifact name). That
-# is fine for Workshop itself and fatal for this helper, which is why the helper
-# has its own pipeline rather than riding along with theirs.
+# Development instances may still sign ad-hoc, while the official Workshop
+# release pipeline requires Developer ID signing and notarization. The helper
+# keeps a separate pipeline because its TCC identity is verified independently.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"

@@ -143,6 +143,16 @@ rg -q 'verify_packaged_provenance' "$ROOT/scripts/desktop-instance.sh"
 rg -q 'runtime_executable=.*lsof' "$ROOT/scripts/desktop-instance.sh"
 ! rg -q 'bundle_cdhash.*exit|/\^CDHash=/\{print \$2; exit\}' "$ROOT/scripts/desktop-instance.sh"
 
+# Official releases fail closed unless Developer ID signing, Apple notarization,
+# stapling, Gatekeeper, and immutable provenance all succeed.
+rg -q 'SYNTH_RELEASE_SIGN_IDENTITY is required' "$ROOT/scripts/release-artifact.sh"
+rg -q 'SYNTH_RELEASE_NOTARY_PROFILE is required' "$ROOT/scripts/release-artifact.sh"
+rg -q 'notarytool submit.*--wait' "$ROOT/scripts/release-artifact.sh"
+rg -q 'stapler staple' "$ROOT/scripts/release-artifact.sh"
+rg -q 'source=Notarized Developer ID' "$ROOT/scripts/release-artifact.sh"
+rg -q 'notarized:true, stapled:true' "$ROOT/scripts/release-artifact.sh"
+! rg -q 'UNNOTARIZED' "$ROOT/scripts/release-artifact.sh"
+
 # Canonical lifecycle commands must never stop an arbitrary copied app or a
 # named development instance. Exact executable paths are the process authority.
 # The stand-in binary must be compiled locally: copies of Apple-signed system
