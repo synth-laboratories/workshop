@@ -415,7 +415,9 @@ export function OptimizersPage({
 
 	useEffect(() => {
 		let live = true;
-		void bridges.optimizers?.hostedTrainingModels().then((catalog) => {
+		const loadHostedTrainingModels = bridges.optimizers?.hostedTrainingModels;
+		if (typeof loadHostedTrainingModels !== "function") return () => { live = false; };
+		void loadHostedTrainingModels().then((catalog) => {
 			if (!live) return;
 			setHostedTrainingModels(catalog.models);
 			setHostedModelCatalogRevision(catalog.catalogRevision);
