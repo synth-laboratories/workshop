@@ -766,6 +766,9 @@ window.synthWorkspaceScope ??= isTauri
 			get: (reportId) => invokeCommand(COMMANDS.REPORTS_GET, { reportId }),
 			getRevision: (reportId, revision) =>
 				invokeCommand(COMMANDS.REPORTS_REVISION_GET, { reportId, revision: revision ?? null }),
+			validate: (reportId, revision) =>
+				invokeCommand(COMMANDS.REPORTS_VALIDATE, { reportId, revision: revision ?? null }),
+			pinAll: (reportId) => invokeCommand(COMMANDS.REPORTS_PIN_ALL, { reportId }),
 			create: (request) => invokeCommand(COMMANDS.REPORTS_CREATE, { request }),
 			update: (reportId, request) => invokeCommand(COMMANDS.REPORTS_UPDATE, { reportId, request }),
 			archive: (reportId) => invokeCommand(COMMANDS.REPORTS_ARCHIVE, { reportId }),
@@ -784,6 +787,10 @@ window.synthWorkspaceScope ??= isTauri
 			uploadStatus: (receiptDigest) =>
 				invokeCommand(COMMANDS.REPORTS_UPLOAD_STATUS, { receiptDigest }),
 			shareSeal: (receiptDigest) => invokeCommand(COMMANDS.REPORTS_SHARE, { receiptDigest }),
+			setAudience: (publicationId, request) =>
+				invokeCommand(COMMANDS.REPORTS_AUDIENCE_SET, { publicationId, request }),
+			revokeAudience: (publicationId, receiptDigest) =>
+				invokeCommand(COMMANDS.REPORTS_AUDIENCE_REVOKE, { publicationId, receiptDigest }),
 			promote: (publicationId, slug) => invokeCommand(COMMANDS.REPORTS_PROMOTE, { publicationId, slug }),
 			openShared: (committedUrl) => invokeCommand(COMMANDS.REPORTS_OPEN_SHARED, { committedUrl }),
 			listComments: (reportId, revision) =>

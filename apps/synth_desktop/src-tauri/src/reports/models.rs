@@ -161,6 +161,8 @@ pub struct ReportBlock {
     pub source_revision: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_digest: Option<String>,
+    #[serde(default = "default_reference_mode")]
+    pub reference_mode: String,
     pub access_state: String,
     pub integrity_state: String,
 }
@@ -175,6 +177,8 @@ pub struct ReportSource {
     pub resource_revision: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resource_digest: Option<String>,
+    #[serde(default = "default_reference_mode")]
+    pub reference_mode: String,
     pub relation: String,
     pub access_state: String,
     pub integrity_state: String,
@@ -186,7 +190,45 @@ pub struct ReportClaim {
     pub claim_id: String,
     pub statement: String,
     pub status: String,
+    #[serde(default = "default_claim_confidence")]
+    pub confidence: String,
+    #[serde(default = "default_claim_why")]
+    pub why: String,
     pub evidence_refs: Vec<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct ReportValidationFinding {
+    pub code: String,
+    pub severity: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub block_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub claim_id: Option<String>,
+    pub message: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remediation: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct ReportValidationResult {
+    pub report_id: String,
+    #[specta(type = specta_typescript::Unknown)]
+    pub revision: i64,
+    pub sealable: bool,
+    pub findings: Vec<ReportValidationFinding>,
+}
+
+fn default_reference_mode() -> String {
+    "live".into()
+}
+fn default_claim_confidence() -> String {
+    "low".into()
+}
+fn default_claim_why() -> String {
+    "Migrated legacy claim; rationale was not recorded.".into()
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, specta::Type)]
@@ -319,6 +361,39 @@ pub struct ReportPromotion {
     pub status: String,
     #[serde(alias = "public_url")]
     pub public_url: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, specta::Type)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum ReportAudience {
+    Private,
+    Workspace {
+        #[serde(rename = "workspace_id", alias = "workspaceId")]
+        workspace_id: String,
+    },
+    Members {
+        #[serde(rename = "member_ids", alias = "memberIds")]
+        member_ids: Vec<String>,
+    },
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct ReportAudienceRequest {
+    #[serde(rename = "receipt_digest", alias = "receiptDigest")]
+    pub receipt_digest: String,
+    pub audience: ReportAudience,
+    #[serde(rename = "redaction_policy_version", alias = "redactionPolicyVersion")]
+    pub redaction_policy_version: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct ReportAudienceState {
+    #[serde(alias = "publication_id")]
+    pub publication_id: String,
+    pub audience: ReportAudience,
+    pub status: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, specta::Type)]
@@ -507,6 +582,37 @@ pub fn validate_block(block: &ReportBlock) -> anyhow::Result<()> {
     if block.block_id.trim().is_empty() || block.anchor.trim().is_empty() {
         anyhow::bail!("report block requires blockId and anchor");
     }
+    if !matches!(block.reference_mode.as_str(), "live" | "pinned") {
+        anyhow::bail!("report block referenceMode must be live or pinned");
+    }
+    if !matches!(
+        block.access_state.as_str(),
+        "available" | "redacted" | "forbidden" | "missing" | "accessible"
+    ) {
+        anyhow::bail!("invalid report block accessState {}", block.access_state);
+    }
+    if !matches!(
+        block.integrity_state.as_str(),
+        "verified"
+            | "digest_mismatch"
+            | "unresolved"
+            | "unsupported"
+            | "source_changed"
+            | "unknown"
+    ) {
+        anyhow::bail!(
+            "invalid report block integrityState {}",
+            block.integrity_state
+        );
+    }
+    if block.reference_mode == "pinned"
+        && (block.source_revision.is_none() || block.source_digest.is_none())
+    {
+        anyhow::bail!(
+            "pinned evidence block {} requires both revision and digest",
+            block.kind
+        );
+    }
     if is_evidence_kind(&block.kind)
         && block.source_revision.is_none()
         && block.source_digest.is_none()
@@ -530,7 +636,8 @@ pub fn default_blocks() -> Vec<ReportBlock> {
             payload: serde_json::json!({"markdown": ""}),
             source_revision: None,
             source_digest: None,
-            access_state: "accessible".into(),
+            reference_mode: "live".into(),
+            access_state: "available".into(),
             integrity_state: "verified".into(),
         },
         ReportBlock {
@@ -541,7 +648,8 @@ pub fn default_blocks() -> Vec<ReportBlock> {
             payload: serde_json::json!({"markdown": ""}),
             source_revision: None,
             source_digest: None,
-            access_state: "accessible".into(),
+            reference_mode: "live".into(),
+            access_state: "available".into(),
             integrity_state: "verified".into(),
         },
         ReportBlock {
@@ -552,8 +660,9 @@ pub fn default_blocks() -> Vec<ReportBlock> {
             payload: serde_json::json!({"experimentIds": []}),
             source_revision: Some("working".into()),
             source_digest: None,
-            access_state: "accessible".into(),
-            integrity_state: "unknown".into(),
+            reference_mode: "live".into(),
+            access_state: "available".into(),
+            integrity_state: "unresolved".into(),
         },
         ReportBlock {
             block_id: "blk_research_log".into(),
@@ -563,8 +672,9 @@ pub fn default_blocks() -> Vec<ReportBlock> {
             payload: serde_json::json!({"entryIds": []}),
             source_revision: Some("working".into()),
             source_digest: None,
-            access_state: "accessible".into(),
-            integrity_state: "unknown".into(),
+            reference_mode: "live".into(),
+            access_state: "available".into(),
+            integrity_state: "unresolved".into(),
         },
     ]
 }
@@ -606,7 +716,8 @@ pub fn generated_outline(blocks: &[ReportBlock]) -> ReportBlock {
         payload: serde_json::json!({ "items": items }),
         source_revision: None,
         source_digest: None,
-        access_state: "accessible".into(),
+        reference_mode: "live".into(),
+        access_state: "available".into(),
         integrity_state: "verified".into(),
     }
 }

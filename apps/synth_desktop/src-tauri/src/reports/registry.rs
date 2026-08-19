@@ -2,9 +2,10 @@ use super::models::{
     default_blocks, generated_outline, is_evidence_kind, validate_block, ExperimentRecord,
     ExperimentRecordUpsert, ExperimentStatus, ReportAttachTrace, ReportBlock, ReportClaim,
     ReportCreateRequest, ReportLimitation, ReportQuery, ReportRecord, ReportRevision, ReportSeal,
-    ReportSealBundle, ReportSource, ReportStatus, ReportUpdateRequest, ReportVisibilityRequest,
-    ReportVisibilityRequestCreate, ResearchLogAppend, ResearchLogEntry, BLOCK_EXPERIMENT_RECORDS,
-    BLOCK_OUTLINE, BLOCK_RESEARCH_LOG, BLOCK_TRACE, REPORT_REVISION_SCHEMA, REPORT_SCHEMA_VERSION,
+    ReportSealBundle, ReportSource, ReportStatus, ReportUpdateRequest, ReportValidationFinding,
+    ReportValidationResult, ReportVisibilityRequest, ReportVisibilityRequestCreate,
+    ResearchLogAppend, ResearchLogEntry, BLOCK_EXPERIMENT_RECORDS, BLOCK_OUTLINE,
+    BLOCK_RESEARCH_LOG, BLOCK_TRACE, REPORT_REVISION_SCHEMA, REPORT_SCHEMA_VERSION,
 };
 use crate::storage::{ContentStore, Database, EventAppend, EventJournal, EventSource};
 use crate::visuals::VisualRegistry;
@@ -13,7 +14,7 @@ use chrono::{Duration, Utc};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
-use std::sync::Arc;
+use std::{collections::HashSet, sync::Arc};
 use uuid::Uuid;
 
 const COMPILER_NAME: &str = "workshop";
@@ -75,6 +76,63 @@ impl ReportRegistry {
             let rev = revision.unwrap_or(report.current_revision);
             load_revision(conn, &report_id, rev)
         })
+        .await
+    }
+
+    pub async fn validate(
+        &self,
+        report_id: String,
+        revision: Option<i64>,
+    ) -> Result<ReportValidationResult> {
+        let snapshot = self.get_revision(report_id, revision).await?;
+        Ok(validate_revision(&snapshot))
+    }
+
+    pub async fn pin_all(&self, report_id: String) -> Result<(ReportRecord, Value)> {
+        let revision = self.get_revision(report_id.clone(), None).await?;
+        if revision.status == ReportStatus::Sealed {
+            bail!("sealed report revisions are immutable; create a new draft before pinning");
+        }
+        let experiments = self.list_experiments(report_id.clone()).await?;
+        let log = self.list_research_log(report_id.clone()).await?;
+        let mut blocks = freeze_blocks(&revision.blocks, &experiments, &log)?;
+        let mut unresolved = Vec::new();
+        for block in &mut blocks {
+            if !is_evidence_kind(&block.kind) {
+                continue;
+            }
+            resolve_evidence_state(block, &self.visuals).await?;
+            normalize_block(block);
+            if block.access_state == "available"
+                && block.integrity_state == "verified"
+                && block.source_revision.is_some()
+                && block.source_digest.is_some()
+            {
+                block.reference_mode = "pinned".into();
+            } else if block.access_state != "missing" && block.access_state != "redacted" {
+                unresolved.push(block.anchor.clone());
+            }
+        }
+        if !unresolved.is_empty() {
+            bail!(
+                "cannot pin unresolved evidence blocks: {}",
+                unresolved.join(", ")
+            );
+        }
+        self.update(
+            report_id,
+            ReportUpdateRequest {
+                expected_revision: Some(revision.revision),
+                title: None,
+                summary: None,
+                authors: None,
+                project_ref: None,
+                blocks: Some(blocks),
+                sources: None,
+                claims: None,
+                limitations: None,
+            },
+        )
         .await
     }
 
@@ -200,12 +258,18 @@ impl ReportRegistry {
             next.authors = authors;
         }
         if let Some(blocks) = request.blocks {
-            for block in &blocks {
+            let mut blocks = blocks;
+            for block in &mut blocks {
+                normalize_block(block);
                 validate_block(block)?;
             }
             next.blocks = blocks;
         }
         if let Some(sources) = request.sources {
+            let mut sources = sources;
+            for source in &mut sources {
+                normalize_source(source);
+            }
             next.sources = sources;
         }
         if let Some(claims) = request.claims {
@@ -215,6 +279,14 @@ impl ReportRegistry {
             next.limitations = limitations;
         }
         ensure_appendix_blocks(&mut next.blocks);
+        let validation = validate_revision(&next);
+        if let Some(finding) = validation
+            .findings
+            .iter()
+            .find(|row| row.severity == "error")
+        {
+            bail!("report validation {}: {}", finding.code, finding.message);
+        }
         let db = self.db.clone();
         let project_ref = request.project_ref.clone();
         let (stored, event) = db
@@ -644,8 +716,9 @@ impl ReportRegistry {
                 }),
                 source_revision: None,
                 source_digest: None,
+                reference_mode: "live".into(),
                 access_state: "missing".into(),
-                integrity_state: "unknown".into(),
+                integrity_state: "unresolved".into(),
             });
         }
         for block in &mut blocks {
@@ -738,6 +811,17 @@ impl ReportRegistry {
         for block in &mut snapshot.blocks {
             resolve_evidence_state(block, &self.visuals).await?;
         }
+        let validation = validate_revision(&snapshot);
+        if !validation.sealable {
+            let details = validation
+                .findings
+                .iter()
+                .filter(|row| row.severity == "error")
+                .map(|row| format!("{}: {}", row.code, row.message))
+                .collect::<Vec<_>>()
+                .join("; ");
+            bail!("report validation failed: {details}");
+        }
         scan_forbidden(&serde_json::to_value(&snapshot.blocks)?)?;
         let missing_limitations = missing_limitations(&snapshot.blocks);
         for body in missing_limitations {
@@ -764,21 +848,32 @@ impl ReportRegistry {
             "compiler": {
                 "name": COMPILER_NAME,
                 "version": env!("CARGO_PKG_VERSION"),
-            }
+            },
+            "validation": validation,
         });
         scan_forbidden(&data)?;
-        let data_bytes = canonical_json(&data)?;
         let runtime_digest = hex_sha256(FROZEN_RUNTIME.as_bytes());
-        let index_html = build_index_html(&data, &runtime_digest)?;
-        refuse_network_html(&index_html)?;
+        let compile = || -> Result<(Vec<u8>, String)> {
+            let data_bytes = canonical_json(&data)?;
+            let index_html = build_index_html(&data, &runtime_digest)?;
+            refuse_network_html(&index_html)?;
+            Ok((data_bytes, index_html))
+        };
+        let (data_bytes, index_html) = compile()?;
+        let (repeat_data_bytes, repeat_index_html) = compile()?;
+        if data_bytes != repeat_data_bytes || index_html != repeat_index_html {
+            bail!("nondeterministic report compilation produced different bundle members");
+        }
         let index_bytes = index_html.as_bytes();
         let data_digest = hex_sha256(&data_bytes);
         let index_digest = hex_sha256(index_bytes);
+        let validation_digest = hex_sha256(&canonical_json(&json!(validation))?);
         let receipt = json!({
             "schema_version": BUNDLE_SCHEMA,
             "report_id": snapshot.report_id,
             "revision": snapshot.revision,
             "content_digest": digest,
+            "validation_digest": validation_digest,
             "compiler": {
                 "name": COMPILER_NAME,
                 "version": env!("CARGO_PKG_VERSION"),
@@ -1129,6 +1224,190 @@ fn missing_limitations(blocks: &[ReportBlock]) -> Vec<String> {
         .collect()
 }
 
+fn normalize_block(block: &mut ReportBlock) {
+    block.access_state = canonical_access_state(&block.access_state);
+    block.integrity_state = canonical_integrity_state(&block.integrity_state);
+    if block.reference_mode.is_empty() {
+        block.reference_mode = if block.source_revision.is_some() && block.source_digest.is_some() {
+            "pinned".into()
+        } else {
+            "live".into()
+        };
+    }
+}
+
+fn normalize_source(source: &mut ReportSource) {
+    source.access_state = canonical_access_state(&source.access_state);
+    source.integrity_state = canonical_integrity_state(&source.integrity_state);
+    if source.reference_mode.is_empty() {
+        source.reference_mode =
+            if source.resource_revision.is_some() && source.resource_digest.is_some() {
+                "pinned".into()
+            } else {
+                "live".into()
+            };
+    }
+}
+
+fn validation_finding(
+    code: &str,
+    block_id: Option<String>,
+    claim_id: Option<String>,
+    message: String,
+    remediation: &str,
+) -> ReportValidationFinding {
+    ReportValidationFinding {
+        code: code.into(),
+        severity: "error".into(),
+        block_id,
+        claim_id,
+        message,
+        remediation: Some(remediation.into()),
+    }
+}
+
+fn validate_revision(revision: &ReportRevision) -> ReportValidationResult {
+    let mut findings = Vec::new();
+    let mut block_ids = HashSet::new();
+    let mut anchors = HashSet::new();
+    let mut source_ids = HashSet::new();
+    let mut claim_ids = HashSet::new();
+
+    for block in &revision.blocks {
+        if !block_ids.insert(block.block_id.clone()) {
+            findings.push(validation_finding(
+                "duplicate_block_id",
+                Some(block.block_id.clone()),
+                None,
+                format!("block id {} is duplicated", block.block_id),
+                "Assign every block a stable unique id.",
+            ));
+        }
+        if !anchors.insert(block.anchor.clone()) {
+            findings.push(validation_finding(
+                "duplicate_block_anchor",
+                Some(block.block_id.clone()),
+                None,
+                format!("anchor {} is duplicated", block.anchor),
+                "Assign every block a stable unique anchor.",
+            ));
+        }
+        if block.reference_mode == "pinned"
+            && (block.source_revision.is_none() || block.source_digest.is_none())
+        {
+            findings.push(validation_finding(
+                "incomplete_pinned_block",
+                Some(block.block_id.clone()),
+                None,
+                "pinned evidence requires both source revision and digest".into(),
+                "Resolve and pin the exact source revision and digest.",
+            ));
+        }
+        if matches!(
+            block.integrity_state.as_str(),
+            "digest_mismatch" | "unsupported"
+        ) {
+            findings.push(validation_finding(
+                "unsafe_block_integrity",
+                Some(block.block_id.clone()),
+                None,
+                format!("block integrity is {}", block.integrity_state),
+                "Replace or re-resolve the evidence before sealing.",
+            ));
+        }
+    }
+    for source in &revision.sources {
+        if !source_ids.insert(source.source_id.clone()) {
+            findings.push(validation_finding(
+                "duplicate_source_id",
+                None,
+                None,
+                format!("source id {} is duplicated", source.source_id),
+                "Assign every source a stable unique id.",
+            ));
+        }
+        if source.reference_mode == "pinned"
+            && (source.resource_revision.is_none() || source.resource_digest.is_none())
+        {
+            findings.push(validation_finding(
+                "incomplete_pinned_source",
+                None,
+                None,
+                format!(
+                    "pinned source {} lacks a revision or digest",
+                    source.source_id
+                ),
+                "Resolve and pin the exact source revision and digest.",
+            ));
+        }
+    }
+    let evidence_ids = block_ids
+        .union(&source_ids)
+        .cloned()
+        .collect::<HashSet<_>>();
+    for claim in &revision.claims {
+        if !claim_ids.insert(claim.claim_id.clone()) {
+            findings.push(validation_finding(
+                "duplicate_claim_id",
+                None,
+                Some(claim.claim_id.clone()),
+                format!("claim id {} is duplicated", claim.claim_id),
+                "Assign every claim a stable unique id.",
+            ));
+        }
+        if !matches!(
+            claim.status.as_str(),
+            "true" | "false" | "needs_more_analysis" | "unresolved"
+        ) {
+            findings.push(validation_finding(
+                "invalid_claim_status",
+                None,
+                Some(claim.claim_id.clone()),
+                format!("claim status {} is not supported", claim.status),
+                "Use true, false, needs_more_analysis, or unresolved.",
+            ));
+        }
+        if !matches!(
+            claim.confidence.as_str(),
+            "low" | "medium" | "high" | "overwhelming"
+        ) {
+            findings.push(validation_finding(
+                "invalid_claim_confidence",
+                None,
+                Some(claim.claim_id.clone()),
+                format!("claim confidence {} is not supported", claim.confidence),
+                "Use low, medium, high, or overwhelming.",
+            ));
+        }
+        if claim.why.trim().is_empty() {
+            findings.push(validation_finding(
+                "missing_claim_why",
+                None,
+                Some(claim.claim_id.clone()),
+                "claim rationale is empty".into(),
+                "Explain why the evidence supports the verdict.",
+            ));
+        }
+        for evidence_ref in &claim.evidence_refs {
+            if !evidence_ids.contains(evidence_ref) {
+                findings.push(validation_finding(
+                    "dangling_claim_evidence",
+                    None,
+                    Some(claim.claim_id.clone()),
+                    format!("claim references missing evidence {}", evidence_ref),
+                    "Attach the evidence or remove the reference.",
+                ));
+            }
+        }
+    }
+    ReportValidationResult {
+        report_id: revision.report_id.clone(),
+        revision: revision.revision,
+        sealable: !findings.iter().any(|row| row.severity == "error"),
+        findings,
+    }
+}
+
 fn canonical_revision(revision: &ReportRevision) -> Result<Value> {
     Ok(json!({
         "schema_version": REPORT_REVISION_SCHEMA,
@@ -1323,8 +1602,8 @@ fn replace_revision_children(conn: &Connection, revision: &ReportRevision) -> Re
     )?;
     for (position, block) in revision.blocks.iter().enumerate() {
         conn.execute(
-            "INSERT INTO report_revision_blocks(report_id, revision, position, block_id, kind, anchor, title, payload_json, source_revision, source_digest, access_state, integrity_state)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)",
+            "INSERT INTO report_revision_blocks(report_id, revision, position, block_id, kind, anchor, title, payload_json, source_revision, source_digest, access_state, integrity_state, reference_mode)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13)",
             params![
                 revision.report_id,
                 revision.revision,
@@ -1338,13 +1617,14 @@ fn replace_revision_children(conn: &Connection, revision: &ReportRevision) -> Re
                 block.source_digest,
                 block.access_state,
                 block.integrity_state,
+                block.reference_mode,
             ],
         )?;
     }
     for source in &revision.sources {
         conn.execute(
-            "INSERT INTO report_sources(report_id, revision, source_id, resource_kind, resource_id, resource_revision, resource_digest, relation, access_state, integrity_state)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
+            "INSERT INTO report_sources(report_id, revision, source_id, resource_kind, resource_id, resource_revision, resource_digest, relation, access_state, integrity_state, reference_mode)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)",
             params![
                 revision.report_id,
                 revision.revision,
@@ -1356,13 +1636,14 @@ fn replace_revision_children(conn: &Connection, revision: &ReportRevision) -> Re
                 source.relation,
                 source.access_state,
                 source.integrity_state,
+                source.reference_mode,
             ],
         )?;
     }
     for claim in &revision.claims {
         conn.execute(
-            "INSERT INTO report_claims(report_id, revision, claim_id, statement, status, evidence_json)
-             VALUES (?1,?2,?3,?4,?5,?6)",
+            "INSERT INTO report_claims(report_id, revision, claim_id, statement, status, evidence_json, confidence, why)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8)",
             params![
                 revision.report_id,
                 revision.revision,
@@ -1370,6 +1651,8 @@ fn replace_revision_children(conn: &Connection, revision: &ReportRevision) -> Re
                 claim.statement,
                 claim.status,
                 serde_json::to_string(&claim.evidence_refs)?,
+                claim.confidence,
+                claim.why,
             ],
         )?;
     }
@@ -1390,7 +1673,7 @@ fn replace_revision_children(conn: &Connection, revision: &ReportRevision) -> Re
 
 fn list_blocks(conn: &Connection, report_id: &str, revision: i64) -> Result<Vec<ReportBlock>> {
     let mut statement = conn.prepare(
-        "SELECT block_id, kind, anchor, title, payload_json, source_revision, source_digest, access_state, integrity_state FROM report_revision_blocks WHERE report_id = ?1 AND revision = ?2 ORDER BY position ASC",
+        "SELECT block_id, kind, anchor, title, payload_json, source_revision, source_digest, access_state, integrity_state, reference_mode FROM report_revision_blocks WHERE report_id = ?1 AND revision = ?2 ORDER BY position ASC",
     )?;
     let rows = statement.query_map(params![report_id, revision], |row| {
         Ok(ReportBlock {
@@ -1401,17 +1684,32 @@ fn list_blocks(conn: &Connection, report_id: &str, revision: i64) -> Result<Vec<
             payload: serde_json::from_str(&row.get::<_, String>(4)?).unwrap_or(json!({})),
             source_revision: row.get(5)?,
             source_digest: row.get(6)?,
-            access_state: row.get(7)?,
-            integrity_state: row.get(8)?,
+            access_state: canonical_access_state(&row.get::<_, String>(7)?),
+            integrity_state: canonical_integrity_state(&row.get::<_, String>(8)?),
+            reference_mode: row.get(9)?,
         })
     })?;
     rows.collect::<std::result::Result<Vec<_>, _>>()
         .map_err(Into::into)
 }
 
+fn canonical_access_state(value: &str) -> String {
+    match value {
+        "accessible" => "available".into(),
+        other => other.into(),
+    }
+}
+
+fn canonical_integrity_state(value: &str) -> String {
+    match value {
+        "unknown" => "unresolved".into(),
+        other => other.into(),
+    }
+}
+
 fn list_sources(conn: &Connection, report_id: &str, revision: i64) -> Result<Vec<ReportSource>> {
     let mut statement = conn.prepare(
-        "SELECT source_id, resource_kind, resource_id, resource_revision, resource_digest, relation, access_state, integrity_state FROM report_sources WHERE report_id = ?1 AND revision = ?2",
+        "SELECT source_id, resource_kind, resource_id, resource_revision, resource_digest, relation, access_state, integrity_state, reference_mode FROM report_sources WHERE report_id = ?1 AND revision = ?2",
     )?;
     let rows = statement.query_map(params![report_id, revision], |row| {
         Ok(ReportSource {
@@ -1421,8 +1719,9 @@ fn list_sources(conn: &Connection, report_id: &str, revision: i64) -> Result<Vec
             resource_revision: row.get(3)?,
             resource_digest: row.get(4)?,
             relation: row.get(5)?,
-            access_state: row.get(6)?,
-            integrity_state: row.get(7)?,
+            access_state: canonical_access_state(&row.get::<_, String>(6)?),
+            integrity_state: canonical_integrity_state(&row.get::<_, String>(7)?),
+            reference_mode: row.get(8)?,
         })
     })?;
     rows.collect::<std::result::Result<Vec<_>, _>>()
@@ -1431,7 +1730,7 @@ fn list_sources(conn: &Connection, report_id: &str, revision: i64) -> Result<Vec
 
 fn list_claims(conn: &Connection, report_id: &str, revision: i64) -> Result<Vec<ReportClaim>> {
     let mut statement = conn.prepare(
-        "SELECT claim_id, statement, status, evidence_json FROM report_claims WHERE report_id = ?1 AND revision = ?2",
+        "SELECT claim_id, statement, status, evidence_json, confidence, why FROM report_claims WHERE report_id = ?1 AND revision = ?2",
     )?;
     let rows = statement.query_map(params![report_id, revision], |row| {
         Ok(ReportClaim {
@@ -1439,6 +1738,8 @@ fn list_claims(conn: &Connection, report_id: &str, revision: i64) -> Result<Vec<
             statement: row.get(1)?,
             status: row.get(2)?,
             evidence_refs: serde_json::from_str(&row.get::<_, String>(3)?).unwrap_or_default(),
+            confidence: row.get(4)?,
+            why: row.get(5)?,
         })
     })?;
     rows.collect::<std::result::Result<Vec<_>, _>>()
@@ -1800,6 +2101,7 @@ mod tests {
                     payload: json!({"visualId":visual.id,"visualRevision":1}),
                     source_revision: Some("1".into()),
                     source_digest: None,
+                    reference_mode: "live".into(),
                     access_state: "accessible".into(),
                     integrity_state: "unknown".into(),
                 }]),
@@ -1903,6 +2205,7 @@ mod tests {
                             payload: json!({"markdown":"Coverage is incomplete on seed 1."}),
                             source_revision: None,
                             source_digest: None,
+                            reference_mode: "live".into(),
                             access_state: "accessible".into(),
                             integrity_state: "verified".into(),
                         },
@@ -1914,6 +2217,7 @@ mod tests {
                             payload: json!({"collectionId":"missing-collection"}),
                             source_revision: None,
                             source_digest: None,
+                            reference_mode: "live".into(),
                             access_state: "missing".into(),
                             integrity_state: "unknown".into(),
                         },
@@ -1925,6 +2229,7 @@ mod tests {
                             payload: json!({"experimentIds":["exp_arm_a"]}),
                             source_revision: Some("working".into()),
                             source_digest: None,
+                            reference_mode: "live".into(),
                             access_state: "accessible".into(),
                             integrity_state: "unknown".into(),
                         },
@@ -1936,6 +2241,7 @@ mod tests {
                             payload: json!({"entryIds":[]}),
                             source_revision: Some("working".into()),
                             source_digest: None,
+                            reference_mode: "live".into(),
                             access_state: "accessible".into(),
                             integrity_state: "unknown".into(),
                         },
@@ -1944,8 +2250,12 @@ mod tests {
                     claims: Some(vec![ReportClaim {
                         claim_id: "claim_1".into(),
                         statement: "Seed 1 reward is missing, not zero.".into(),
-                        status: "qualified".into(),
-                        evidence_refs: vec!["exp_arm_a".into()],
+                        status: "needs_more_analysis".into(),
+                        confidence: "low".into(),
+                        why:
+                            "The referenced experiment record explicitly marks the result missing."
+                                .into(),
+                        evidence_refs: vec!["blk_experiment_records".into()],
                     }]),
                     limitations: None,
                 },
@@ -2236,6 +2546,7 @@ mod tests {
                         payload: json!({"source":"http://127.0.0.1:8098/events"}),
                         source_revision: Some("frozen".into()),
                         source_digest: None,
+                        reference_mode: "live".into(),
                         access_state: "accessible".into(),
                         integrity_state: "unknown".into(),
                     }]),
@@ -2341,6 +2652,112 @@ mod tests {
             .is_empty());
         let restored = reports.set_archived(created.id, false).await.unwrap();
         assert!(restored.archived_at.is_none());
+    }
+
+    #[tokio::test]
+    async fn report_validation_persists_explicit_evidence_and_claim_semantics() {
+        let dir = tempdir().unwrap();
+        let reports = registry(dir.path());
+        let (created, _) = reports
+            .create(ReportCreateRequest {
+                title: Some("Validated evidence".into()),
+                summary: None,
+                authors: None,
+                project_ref: None,
+                id: Some("rep_validated_evidence".into()),
+                created_by: Some("agent".into()),
+                blocks: None,
+            })
+            .await
+            .unwrap();
+
+        let invalid = reports
+            .update(
+                created.id.clone(),
+                ReportUpdateRequest {
+                    expected_revision: Some(1),
+                    title: None,
+                    summary: None,
+                    authors: None,
+                    project_ref: None,
+                    blocks: Some(vec![ReportBlock {
+                        block_id: "blk_result".into(),
+                        kind: "report.result.v1".into(),
+                        anchor: "result".into(),
+                        title: Some("Result".into()),
+                        payload: json!({"accuracy": 0.91}),
+                        source_revision: Some("7".into()),
+                        source_digest: None,
+                        reference_mode: "pinned".into(),
+                        access_state: "available".into(),
+                        integrity_state: "verified".into(),
+                    }]),
+                    sources: None,
+                    claims: None,
+                    limitations: None,
+                },
+            )
+            .await
+            .expect_err("an incomplete pin must fail before persistence");
+        assert!(invalid.to_string().contains("both revision and digest"));
+
+        reports
+            .update(
+                created.id.clone(),
+                ReportUpdateRequest {
+                    expected_revision: Some(1),
+                    title: None,
+                    summary: None,
+                    authors: None,
+                    project_ref: None,
+                    blocks: Some(vec![ReportBlock {
+                        block_id: "blk_result".into(),
+                        kind: "report.result.v1".into(),
+                        anchor: "result".into(),
+                        title: Some("Result".into()),
+                        payload: json!({"accuracy": 0.91}),
+                        source_revision: Some("7".into()),
+                        source_digest: Some("sha256-result".into()),
+                        reference_mode: "pinned".into(),
+                        access_state: "available".into(),
+                        integrity_state: "verified".into(),
+                    }]),
+                    sources: None,
+                    claims: Some(vec![ReportClaim {
+                        claim_id: "claim_accuracy".into(),
+                        statement: "Accuracy exceeds 90%.".into(),
+                        status: "true".into(),
+                        confidence: "high".into(),
+                        why: "The pinned result records accuracy 0.91.".into(),
+                        evidence_refs: vec!["blk_result".into()],
+                    }]),
+                    limitations: None,
+                },
+            )
+            .await
+            .unwrap();
+
+        reports.pin_all(created.id.clone()).await.unwrap();
+        let validation = reports.validate(created.id.clone(), Some(1)).await.unwrap();
+        assert!(validation.sealable, "{:?}", validation.findings);
+        let reopened = reports
+            .get_revision(created.id.clone(), Some(1))
+            .await
+            .unwrap();
+        assert_eq!(reopened.blocks[0].reference_mode, "pinned");
+        assert_eq!(reopened.claims[0].confidence, "high");
+        assert_eq!(
+            reopened.claims[0].why,
+            "The pinned result records accuracy 0.91."
+        );
+        let (seal, _) = reports.seal(created.id.clone(), 1).await.unwrap();
+        let bundle = reports.get_seal(seal.receipt_digest.clone()).await.unwrap();
+        assert_eq!(bundle.data["validation"]["sealable"], true);
+        assert!(bundle.receipt["validation_digest"]
+            .as_str()
+            .is_some_and(|digest| !digest.is_empty()));
+        let (repeat, _) = reports.seal(created.id, 1).await.unwrap();
+        assert_eq!(repeat.receipt_digest, seal.receipt_digest);
     }
 
     #[tokio::test]

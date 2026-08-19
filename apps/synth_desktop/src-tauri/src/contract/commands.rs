@@ -134,6 +134,8 @@ impl Commands {
     pub const REPORTS_LIST: &'static str = "reports_list";
     pub const REPORTS_GET: &'static str = "reports_get";
     pub const REPORTS_REVISION_GET: &'static str = "reports_revision_get";
+    pub const REPORTS_VALIDATE: &'static str = "reports_validate";
+    pub const REPORTS_PIN_ALL: &'static str = "reports_pin_all";
     pub const REPORTS_CREATE: &'static str = "reports_create";
     pub const REPORTS_UPDATE: &'static str = "reports_update";
     pub const REPORTS_ARCHIVE: &'static str = "reports_archive";
@@ -151,6 +153,8 @@ impl Commands {
     pub const REPORTS_LOG_APPEND: &'static str = "reports_log_append";
     pub const REPORTS_UPLOAD_STATUS: &'static str = "reports_upload_status";
     pub const REPORTS_SHARE: &'static str = "reports_share";
+    pub const REPORTS_AUDIENCE_SET: &'static str = "reports_audience_set";
+    pub const REPORTS_AUDIENCE_REVOKE: &'static str = "reports_audience_revoke";
     pub const REPORTS_PROMOTE: &'static str = "reports_promote";
     pub const REPORTS_OPEN_SHARED: &'static str = "reports_open_shared";
     pub const REPORTS_COMMENTS_LIST: &'static str = "reports_comments_list";
