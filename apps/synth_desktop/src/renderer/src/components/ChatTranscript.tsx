@@ -1,6 +1,8 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type { ArtifactRef, LocalActivityLine, LocalChat } from "../types/landing";
+import type { ReportRecord } from "../bridge";
 import type { RuntimeEvent, Session } from "@synth/runtime-protocol";
+import { bridges } from "../runtime/desktopBridge";
 import { FileTypeIcon, shortenPath } from "./FileTypeIcon";
 import { ContainerIcon } from "./ContainerPane";
 import { ManderPresence } from "./mander";
@@ -25,6 +27,7 @@ type Props = {
 	onOpenArtifact: (id: string | null) => void;
 	openContainerId?: string | null;
 	onOpenContainer?: (id: string | null) => void;
+	onOpenReport?: (id: string) => void;
 	onApprove?: (approvalId: string) => void;
 	onAlwaysAllow?: (approvalId: string) => void;
 	onReject?: (approvalId: string) => void;
@@ -61,12 +64,34 @@ export function outputContainerIds(chat: LocalChat): string[] {
 	return [...new Set(Object.values(chat.activityByMessageId ?? {}).flat().map((line) => line.containerId).filter((id): id is string => Boolean(id)))];
 }
 
-export function OutputsPanel({ chat, openArtifactId, onOpenArtifact, openContainerId = null, onOpenContainer }: Pick<Props, "chat" | "openArtifactId" | "onOpenArtifact" | "openContainerId" | "onOpenContainer">) {
+export function OutputsPanel({ chat, openArtifactId, onOpenArtifact, openContainerId = null, onOpenContainer, onOpenReport }: Pick<Props, "chat" | "openArtifactId" | "onOpenArtifact" | "openContainerId" | "onOpenContainer" | "onOpenReport">) {
 	const artifacts = chat.artifacts ?? [];
+	const [reports, setReports] = useState<ReportRecord[]>([]);
+	useEffect(() => {
+		const reportsBridge = bridges.reports;
+		if (!reportsBridge) return;
+		let disposed = false;
+		const reload = () => {
+			void reportsBridge.list({ includeArchived: false, limit: 500 }).then(
+				(rows) => { if (!disposed) setReports(rows); },
+				// A report registry outage must not hide chat-scoped outputs that
+				// already restored from their own durable registry.
+				() => { if (!disposed) setReports([]); }
+			);
+		};
+		reload();
+		const unlisten = reportsBridge.onEvent?.((event) => {
+			if (event.kind.startsWith("report.")) reload();
+		});
+		return () => {
+			disposed = true;
+			unlisten?.();
+		};
+	}, []);
 	const subagents = artifacts.filter((artifact) => artifact.templateId === "synth.subagents.v1");
 	const visuals = artifacts.filter((artifact) => artifact.templateId !== "synth.subagents.v1");
 	const containerIds = outputContainerIds(chat);
-	const hasResources = containerIds.length > 0 || artifacts.length > 0;
+	const hasResources = containerIds.length > 0 || artifacts.length > 0 || reports.length > 0;
 	return <div id="chat-resource-shelf" className="resource-shelf resource-shelf-docked" aria-label="Outputs" data-testid="resource-shelf">
 		{!hasResources ? <div className="resource-shelf-empty" data-testid="resource-shelf-empty">
 			<span className="resource-shelf-empty-icon" aria-hidden>
@@ -85,6 +110,11 @@ export function OutputsPanel({ chat, openArtifactId, onOpenArtifact, openContain
 				<span className="resource-shelf-icon"><IconSubagents /></span><span><strong>{artifact.title}</strong><code>{artifact.summary ?? artifact.templateId}</code></span><span aria-hidden>›</span>
 			</button>;
 		})}</section> : null}
+		{reports.length > 0 ? <section className="reports-rail" data-testid="reports-rail"><h3>Saved reports</h3>{reports.map((report) => (
+			<button key={report.id} type="button" className="resource-shelf-row" onClick={() => onOpenReport?.(report.id)} aria-label={`Open report ${report.title}`} data-testid={`report-output-${report.id}`}>
+				<span className="resource-shelf-icon"><FileTypeIcon path="report.md" /></span><span><strong>{report.title}</strong><code>{report.id} · {report.status}</code></span><span aria-hidden>›</span>
+			</button>
+		))}</section> : null}
 		{visuals.length > 0 ? <section className="visuals-rail" data-testid="visuals-rail"><h3>Visuals</h3>{visuals.map((artifact) => {
 			const active = openArtifactId === artifact.id;
 			return <button key={artifact.id} type="button" className={`resource-shelf-row${active ? " active" : ""}`} onClick={() => onOpenArtifact(artifact.id)} title={active ? `Hide ${artifact.title}` : `Show ${artifact.title}`} aria-pressed={active} aria-label={active ? `Hide visual ${artifact.title}` : `Show visual ${artifact.title}`} data-testid={`visuals-icon-${artifact.id}`}>
