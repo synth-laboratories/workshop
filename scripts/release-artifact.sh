@@ -16,8 +16,10 @@ APP_VERSION="$(node -p "require('$ROOT/apps/synth_desktop/package.json').version
 ARCH="$(uname -m)"
 OUTPUT="${2:-${SYNTH_RELEASE_ROOT:-${TMPDIR:-/tmp}/synth-desktop-v${APP_VERSION}-release}}"
 APP_NAME="Synth Workshop.app"
+CANDIDATE_APP_NAME="Synth Workshop Candidate.app"
 STAGE_ROOT="$OUTPUT/stage"
 STAGED_APP="$STAGE_ROOT/$APP_NAME"
+CANDIDATE_STAGED_APP="$STAGE_ROOT/$CANDIDATE_APP_NAME"
 ZIP_PATH="$OUTPUT/Synth-Workshop-v${APP_VERSION}-macOS-${ARCH}.zip"
 CANDIDATE_ZIP_PATH="$OUTPUT/Synth-Workshop-v${APP_VERSION}-macOS-${ARCH}-CANDIDATE.zip"
 NOTARY_ZIP="$OUTPUT/Synth-Workshop-v${APP_VERSION}-notary-submission.zip"
@@ -25,6 +27,7 @@ NOTARIZED_MARKER="$OUTPUT/.notarized-cdhash"
 CANDIDATE_MARKER="$OUTPUT/.candidate-cdhash"
 PROVENANCE="$OUTPUT/PROVENANCE.json"
 BUILT_APP="$ROOT/apps/synth_desktop/src-tauri/target/release/bundle/macos/$APP_NAME"
+CANDIDATE_BUILT_APP="$ROOT/apps/synth_desktop/src-tauri/target/release/bundle/macos/$CANDIDATE_APP_NAME"
 INSTALLED_APP="${SYNTH_RELEASE_INSTALL_APP:-/Applications/$APP_NAME}"
 CONTAINERS_ROOT="${SYNTH_CONTAINERS_ROOT:-$(dirname "$ROOT")/containers}"
 SIGN_IDENTITY="${SYNTH_RELEASE_SIGN_IDENTITY:-}"
@@ -142,20 +145,20 @@ stage_candidate_artifact() {
   mkdir -p "$OUTPUT"
   [[ ! -e "$STAGE_ROOT" ]] || die "stage already exists: $STAGE_ROOT"
   note "building candidate from clean source $(git -C "$ROOT" rev-parse HEAD)"
-  (cd "$ROOT" && npm run build --workspace @synth/synth-desktop)
-  [[ -d "$BUILT_APP" ]] || die "Tauri did not produce $BUILT_APP"
+  (cd "$ROOT" && npm run build --workspace @synth/synth-desktop -- --config src-tauri/tauri.candidate.conf.json)
+  [[ -d "$CANDIDATE_BUILT_APP" ]] || die "Tauri did not produce $CANDIDATE_BUILT_APP"
   mkdir -p "$STAGE_ROOT"
-  /usr/bin/ditto "$BUILT_APP" "$STAGED_APP"
+  /usr/bin/ditto "$CANDIDATE_BUILT_APP" "$CANDIDATE_STAGED_APP"
   for adapter in "${SYNTH_MCP_ADAPTERS[@]}"; do
     local source="$ROOT/apps/synth_desktop/src-tauri/target/release/$adapter"
     [[ -x "$source" ]] || die "release adapter is missing: $source"
-    /usr/bin/ditto "$source" "$STAGED_APP/Contents/MacOS/$adapter"
+    /usr/bin/ditto "$source" "$CANDIDATE_STAGED_APP/Contents/MacOS/$adapter"
   done
   /usr/bin/codesign --force --deep --options runtime \
-    --sign "$CANDIDATE_SIGN_IDENTITY" "$STAGED_APP"
-  verify_app "$STAGED_APP"
-  cdhash "$STAGED_APP" > "$CANDIDATE_MARKER"
-  note "candidate staged and never launched: $STAGED_APP"
+    --sign "$CANDIDATE_SIGN_IDENTITY" "$CANDIDATE_STAGED_APP"
+  verify_app "$CANDIDATE_STAGED_APP"
+  cdhash "$CANDIDATE_STAGED_APP" > "$CANDIDATE_MARKER"
+  note "candidate staged and never launched: $CANDIDATE_STAGED_APP"
 }
 
 notarize_artifact() {
@@ -220,9 +223,9 @@ record_artifact() {
 
 record_candidate_artifact() {
   require_clean_source
-  verify_app "$STAGED_APP"
+  verify_app "$CANDIDATE_STAGED_APP"
   [[ -f "$CANDIDATE_MARKER" ]] || die "candidate-stage first: marker is missing"
-  [[ "$(<"$CANDIDATE_MARKER")" == "$(cdhash "$STAGED_APP")" ]] \
+  [[ "$(<"$CANDIDATE_MARKER")" == "$(cdhash "$CANDIDATE_STAGED_APP")" ]] \
     || die "staged candidate changed after signing"
   mkdir -p "$OUTPUT"
   local source_sha source_tree container_sha container_tree executable executable_sha bundle_id version signing cd_hash frontend_hash
@@ -236,12 +239,12 @@ record_candidate_artifact() {
   else
     die "Containers repository is unavailable: $CONTAINERS_ROOT"
   fi
-  executable="$STAGED_APP/Contents/MacOS/synth-desktop"
+  executable="$CANDIDATE_STAGED_APP/Contents/MacOS/synth-desktop"
   executable_sha="$(sha256 "$executable")"
-  bundle_id="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$STAGED_APP/Contents/Info.plist")"
-  version="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$STAGED_APP/Contents/Info.plist")"
-  signing="$(/usr/bin/codesign -dvv "$STAGED_APP" 2>&1 | awk -F= '/^Authority=/{if (!found++) print $2}')"
-  cd_hash="$(cdhash "$STAGED_APP")"
+  bundle_id="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$CANDIDATE_STAGED_APP/Contents/Info.plist")"
+  version="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$CANDIDATE_STAGED_APP/Contents/Info.plist")"
+  signing="$(/usr/bin/codesign -dvv "$CANDIDATE_STAGED_APP" 2>&1 | awk -F= '/^Authority=/{if (!found++) print $2}')"
+  cd_hash="$(cdhash "$CANDIDATE_STAGED_APP")"
   frontend_hash="$(cd "$ROOT/apps/synth_desktop/dist" && find . -type f -print | LC_ALL=C sort \
     | while IFS= read -r file; do shasum -a 256 "$file"; done \
     | shasum -a 256 | awk '{print $1}')"
@@ -249,7 +252,7 @@ record_candidate_artifact() {
     --arg generatedAt "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" \
     --arg sourceSha "$source_sha" --arg sourceTree "$source_tree" \
     --arg containersSha "$container_sha" --arg containersTree "$container_tree" \
-    --arg app "$STAGED_APP" --arg bundleId "$bundle_id" --arg version "$version" \
+    --arg app "$CANDIDATE_STAGED_APP" --arg bundleId "$bundle_id" --arg version "$version" \
     --arg signing "$signing" --arg cdHash "$cd_hash" \
     --arg executableSha256 "$executable_sha" --arg frontendSha256 "$frontend_hash" \
     '{schema:"synth.desktop-release-provenance.v1", distribution:"candidate", generatedAt:$generatedAt,
@@ -296,18 +299,18 @@ zip_artifact() {
 }
 
 zip_candidate_artifact() {
-  verify_app "$STAGED_APP"
+  verify_app "$CANDIDATE_STAGED_APP"
   [[ -f "$CANDIDATE_MARKER" ]] || die "candidate-stage first: marker is missing"
   [[ -f "$PROVENANCE" ]] || die "candidate-record first: $PROVENANCE"
   [[ "$(jq -r '.distribution' "$PROVENANCE")" == "candidate" ]] || die "provenance is not for a candidate"
-  [[ "$(jq -r '.app.cdHash' "$PROVENANCE")" == "$(cdhash "$STAGED_APP")" ]] || die "candidate stage drifted after provenance"
+  [[ "$(jq -r '.app.cdHash' "$PROVENANCE")" == "$(cdhash "$CANDIDATE_STAGED_APP")" ]] || die "candidate stage drifted after provenance"
   [[ ! -e "$CANDIDATE_ZIP_PATH" ]] || die "candidate ZIP already exists: $CANDIDATE_ZIP_PATH"
-  (cd "$STAGE_ROOT" && /usr/bin/ditto -c -k --sequesterRsrc --keepParent "$APP_NAME" "$CANDIDATE_ZIP_PATH")
+  (cd "$STAGE_ROOT" && /usr/bin/ditto -c -k --sequesterRsrc --keepParent "$CANDIDATE_APP_NAME" "$CANDIDATE_ZIP_PATH")
   local roundtrip roundtrip_app before after zip_sha zip_bytes release_id
   roundtrip="$(mktemp -d "${TMPDIR:-/tmp}/synth-candidate-roundtrip.XXXXXX")"
   trap 'rm -rf "$roundtrip"' RETURN
   /usr/bin/ditto -x -k "$CANDIDATE_ZIP_PATH" "$roundtrip"
-  roundtrip_app="$roundtrip/$APP_NAME"
+  roundtrip_app="$roundtrip/$CANDIDATE_APP_NAME"
   verify_app "$roundtrip_app"
   before="$(jq -r '.app.cdHash' "$PROVENANCE")"
   after="$(cdhash "$roundtrip_app")"
@@ -362,7 +365,7 @@ install_candidate_artifact() {
   local extracted candidate expected actual backup=""
   extracted="$(mktemp -d "${TMPDIR:-/tmp}/synth-candidate-install.XXXXXX")"
   /usr/bin/ditto -x -k "$CANDIDATE_ZIP_PATH" "$extracted"
-  candidate="$extracted/$APP_NAME"
+  candidate="$extracted/$CANDIDATE_APP_NAME"
   verify_app "$candidate"
   expected="$(jq -r '.app.cdHash' "$PROVENANCE")"
   actual="$(cdhash "$candidate")"
