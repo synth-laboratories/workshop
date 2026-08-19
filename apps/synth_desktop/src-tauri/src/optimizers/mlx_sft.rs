@@ -90,6 +90,19 @@ fn dataset_path() -> Result<PathBuf> {
     Ok(path)
 }
 
+fn evaluation_dataset_path() -> Result<PathBuf> {
+    let raw = std::env::var("SYNTH_MLX_SFT_EVAL_JSONL")
+        .context("local Qwen SFT requires SYNTH_MLX_SFT_EVAL_JSONL")?;
+    let path = PathBuf::from(raw.trim());
+    if !path.is_file() {
+        bail!(
+            "local Qwen SFT evaluation dataset is not a file: {}",
+            path.display()
+        );
+    }
+    Ok(path)
+}
+
 fn service_reachable() -> bool {
     let Ok(client) = MlxClient::from_env() else {
         return false;
@@ -146,8 +159,10 @@ fn contract_error(capabilities: &Value) -> Option<String> {
 
 pub fn recipe_catalog() -> Value {
     let dataset = dataset_path();
+    let evaluation_dataset = evaluation_dataset_path();
     let available = cfg!(all(target_os = "macos", target_arch = "aarch64"))
         && dataset.is_ok()
+        && evaluation_dataset.is_ok()
         && service_reachable();
     json!({
         "id": QWEN_MLX_SFT_RECIPE,
@@ -155,7 +170,7 @@ pub fn recipe_catalog() -> Value {
         "algorithmId": "sft",
         "task": "local-qwen",
         "availability": if available { "available" } else { "unavailable" },
-        "availabilityReason": if available { Value::Null } else { json!("Requires Apple Silicon, a local synth-mlx-rl service, and SYNTH_MLX_SFT_TRAIN_JSONL.") },
+        "availabilityReason": if available { Value::Null } else { json!("Requires Apple Silicon, a local synth-mlx-rl service, and fixed train/evaluation JSONL datasets.") },
         "limits": {
             "backend": "qwen_lora", "baseModel": BASE_MODEL,
             "maxSteps": MAX_STEPS, "checkpointEvery": CHECKPOINT_EVERY,
@@ -165,16 +180,22 @@ pub fn recipe_catalog() -> Value {
             "costNotice": "Local Apple Silicon MLX compute; no hosted provider charges."
         },
         "credentialInputs": [],
-        "prerequisites": ["synth-mlx-rl on 127.0.0.1:8787", "SYNTH_MLX_SFT_TRAIN_JSONL"]
+        "prerequisites": ["synth-mlx-rl on 127.0.0.1:8787", "SYNTH_MLX_SFT_TRAIN_JSONL", "SYNTH_MLX_SFT_EVAL_JSONL"]
     })
 }
 
-fn request_payload(run_id: &str, dataset: &Path, output: &Path) -> Value {
+fn request_payload(
+    run_id: &str,
+    dataset: &Path,
+    evaluation_dataset: &Path,
+    output: &Path,
+) -> Value {
     json!({
         "job_id": run_id,
         "config": {
             "backend": "qwen_lora", "base_model": BASE_MODEL,
             "dataset": {"path": dataset, "sha256": sha256(dataset).ok()},
+            "evaluation_dataset": {"path": evaluation_dataset, "sha256": sha256(evaluation_dataset).ok()},
             "output_dir": output, "max_steps": MAX_STEPS,
             "checkpoint_every": CHECKPOINT_EVERY, "learning_rate": 0.00005,
             "lora_rank": LORA_RANK, "lora_alpha": LORA_ALPHA,
@@ -190,6 +211,7 @@ pub async fn start(
 ) -> Result<(OptimizerRunRecord, Option<crate::storage::AppEvent>)> {
     let client = MlxClient::from_env()?;
     let dataset = dataset_path()?;
+    let evaluation_dataset = evaluation_dataset_path()?;
     let capabilities = client.get("/v1/capabilities").await?;
     if let Some(reason) = contract_error(&capabilities) {
         bail!("{reason}");
@@ -199,7 +221,7 @@ pub async fn start(
     let output = crate::instance::data_root()
         .join("optimizers/mlx-sft")
         .join(&run_id);
-    let payload = request_payload(&run_id, &dataset, &output);
+    let payload = request_payload(&run_id, &dataset, &evaluation_dataset, &output);
     let preflight = client.post("/v1/jobs/preflight", Some(&payload)).await?;
     if preflight.get("accepted").and_then(Value::as_bool) != Some(true) {
         bail!(
@@ -223,14 +245,24 @@ pub async fn start(
             status: Some("preflighted".into()),
             metadata: json!({"serviceVersion": capabilities["service_version"], "contract": capabilities["qwen_lora_contract"]}),
         }]),
-        input_refs: Some(vec![OptimizerResourceRef {
-            kind: "dataset".into(),
-            id: dataset.display().to_string(),
-            digest: Some(format!("sha256:{digest}")),
-            role: Some("train".into()),
-            title: Some("Local Qwen SFT dataset".into()),
-            metadata: json!({}),
-        }]),
+        input_refs: Some(vec![
+            OptimizerResourceRef {
+                kind: "dataset".into(),
+                id: dataset.display().to_string(),
+                digest: Some(format!("sha256:{digest}")),
+                role: Some("train".into()),
+                title: Some("Local Qwen SFT dataset".into()),
+                metadata: json!({}),
+            },
+            OptimizerResourceRef {
+                kind: "dataset".into(),
+                id: evaluation_dataset.display().to_string(),
+                digest: Some(format!("sha256:{}", sha256(&evaluation_dataset)?)),
+                role: Some("heldout_evaluation".into()),
+                title: Some("Fixed held-out Qwen evaluation dataset".into()),
+                metadata: json!({}),
+            },
+        ]),
         capabilities: Some(OptimizerCapabilities {
             cancel: true,
             stream_events: true,
