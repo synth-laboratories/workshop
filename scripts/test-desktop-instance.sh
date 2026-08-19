@@ -153,6 +153,7 @@ rg -q 'source=Notarized Developer ID' "$ROOT/scripts/release-artifact.sh"
 rg -q 'notarized:true, stapled:true' "$ROOT/scripts/release-artifact.sh"
 ! rg -q 'UNNOTARIZED' "$ROOT/scripts/release-artifact.sh"
 ! rg -q 'awk.*\{print \$2; exit\}' "$ROOT/scripts/release-artifact.sh"
+! rg -q '\[\[ -d "\$CONTAINERS_ROOT/.git" \]\]' "$ROOT/scripts/release-artifact.sh"
 
 # Pre-notary acceptance uses an explicit candidate lane. It records the lack of
 # notarization, preserves the official app, and never calls Apple's notary API.

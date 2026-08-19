@@ -185,7 +185,7 @@ record_artifact() {
   local source_sha source_tree container_sha container_tree executable executable_sha bundle_id version signing cd_hash frontend_hash
   source_sha="$(git -C "$ROOT" rev-parse HEAD)"
   source_tree="$(git -C "$ROOT" rev-parse 'HEAD^{tree}')"
-  if [[ -d "$CONTAINERS_ROOT/.git" ]]; then
+  if git -C "$CONTAINERS_ROOT" rev-parse --is-inside-work-tree 2>/dev/null | grep -qx true; then
     [[ -z "$(git -C "$CONTAINERS_ROOT" status --porcelain=v1 --untracked-files=all)" ]] \
       || die "Containers pin tree is dirty: $CONTAINERS_ROOT"
     container_sha="$(git -C "$CONTAINERS_ROOT" rev-parse HEAD)"
@@ -228,7 +228,7 @@ record_candidate_artifact() {
   local source_sha source_tree container_sha container_tree executable executable_sha bundle_id version signing cd_hash frontend_hash
   source_sha="$(git -C "$ROOT" rev-parse HEAD)"
   source_tree="$(git -C "$ROOT" rev-parse 'HEAD^{tree}')"
-  if [[ -d "$CONTAINERS_ROOT/.git" ]]; then
+  if git -C "$CONTAINERS_ROOT" rev-parse --is-inside-work-tree 2>/dev/null | grep -qx true; then
     [[ -z "$(git -C "$CONTAINERS_ROOT" status --porcelain=v1 --untracked-files=all)" ]] \
       || die "Containers pin tree is dirty: $CONTAINERS_ROOT"
     container_sha="$(git -C "$CONTAINERS_ROOT" rev-parse HEAD)"
