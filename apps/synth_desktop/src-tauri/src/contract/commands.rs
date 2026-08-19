@@ -173,6 +173,13 @@ impl Commands {
     pub const OPTIMIZERS_IMPORT_LOCAL: &'static str = "optimizers_import_local";
     pub const OPTIMIZERS_RECONCILE_CLOUD: &'static str = "optimizers_reconcile_cloud";
     pub const OPTIMIZERS_LIST_CLOUD: &'static str = "optimizers_list_cloud";
+    pub const OPTIMIZERS_SAVED_LORAS_SEARCH: &'static str = "optimizers_saved_loras_search";
+    pub const OPTIMIZERS_RUN_CHECKPOINTS_LIST: &'static str = "optimizers_run_checkpoints_list";
+    pub const OPTIMIZERS_RUN_OUTPUTS: &'static str = "optimizers_run_outputs";
+    pub const OPTIMIZERS_TRAINING_MODELS: &'static str = "optimizers_training_models";
+    pub const OPTIMIZERS_SAVED_LORA_ARCHIVE: &'static str = "optimizers_saved_lora_archive";
+    pub const OPTIMIZERS_SAVED_LORA_DOWNLOAD: &'static str = "optimizers_saved_lora_download";
+    pub const OPTIMIZERS_TRAINING_RECONCILE: &'static str = "optimizers_training_reconcile";
     pub const PLUGINS_STATUS: &'static str = "plugins_status";
     pub const PLUGINS_LIST: &'static str = "plugins_list";
     pub const COMPUTER_USE_STATUS: &'static str = "computer_use_status";
@@ -211,6 +218,22 @@ impl Commands {
     pub const MIGRATION_PREPARE: &'static str = "migration_prepare";
     pub const MIGRATION_APPLY: &'static str = "migration_apply";
     pub const MIGRATION_CANCEL: &'static str = "migration_cancel";
+    pub const SECRETS_LIST: &'static str = "secrets_list";
+    pub const SECRETS_CREATE: &'static str = "secrets_create";
+    pub const SECRETS_REPLACE: &'static str = "secrets_replace";
+    pub const SECRETS_DELETE: &'static str = "secrets_delete";
+    pub const SECRETS_TEST: &'static str = "secrets_test";
+    pub const SECRETS_REQUEST_USE: &'static str = "secrets_request_use";
+    pub const SECRETS_GRANT_USE: &'static str = "secrets_grant_use";
+    pub const SECRETS_DENY_USE: &'static str = "secrets_deny_use";
+    pub const SECRETS_CAPABILITIES_LIST: &'static str = "secrets_capabilities_list";
+    pub const SECRETS_REVOKE_CAPABILITY: &'static str = "secrets_revoke_capability";
+    pub const SECRETS_REQUEST_ENV_IMPORT: &'static str = "secrets_request_env_import";
+    pub const SECRETS_COMMIT_ENV_IMPORT: &'static str = "secrets_commit_env_import";
+    pub const SECRETS_AUDIT_LIST: &'static str = "secrets_audit_list";
+    pub const SECRETS_PROXY_STATUS: &'static str = "secrets_proxy_status";
+    pub const SECRETS_PENDING: &'static str = "secrets_pending";
+    pub const SECRETS_DENY_ENV_IMPORT: &'static str = "secrets_deny_env_import";
 }
 
 /// Alias matching the TS `COMMANDS` export shape.

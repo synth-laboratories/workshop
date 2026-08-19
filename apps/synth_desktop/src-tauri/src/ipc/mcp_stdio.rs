@@ -63,7 +63,10 @@ fn breaker_key(tool: &str, args: &Value) -> String {
             break;
         }
     }
-    if let Some(slot) = BREAKER_SLOT_FIELDS.iter().find_map(|field| arg_str(args, field)) {
+    if let Some(slot) = BREAKER_SLOT_FIELDS
+        .iter()
+        .find_map(|field| arg_str(args, field))
+    {
         key.push('/');
         key.push_str(slot);
     }
@@ -112,7 +115,10 @@ fn breaker_payload_token(tool: &str, args: &Value) -> Option<String> {
         "policy_ref",
         "policyRef",
     ] {
-        if let Some(value) = args.get(field).or_else(|| args.pointer(&format!("/arguments/{field}"))) {
+        if let Some(value) = args
+            .get(field)
+            .or_else(|| args.pointer(&format!("/arguments/{field}")))
+        {
             if !value.is_null() {
                 material.push_str(field);
                 material.push(':');
@@ -168,10 +174,7 @@ fn visual_recovery_operation(tool: &str, args: &Value) -> bool {
 }
 
 fn container_recovery_operation(tool: &str) -> bool {
-    matches!(
-        tool,
-        "container_probe" | "container_get" | "container_list"
-    )
+    matches!(tool, "container_probe" | "container_get" | "container_list")
 }
 
 /// A structured `{"code": …}` failure is the same failure however its message
@@ -581,7 +584,10 @@ mod tests {
             "container_id": "ctr_1",
             "capability_revision": "rev-b"
         });
-        assert_ne!(breaker_key("container_prepare_rollout", &first), breaker_key("container_prepare_rollout", &second));
+        assert_ne!(
+            breaker_key("container_prepare_rollout", &first),
+            breaker_key("container_prepare_rollout", &second)
+        );
 
         let bind = json!({
             "operation": "bind",
@@ -618,7 +624,9 @@ mod tests {
         breaker.record_failure("visual_manage", &missing, &error);
         breaker.record_failure("visual_manage", &missing, &error);
         assert!(breaker.terminal_error("visual_manage", &missing).is_some());
-        assert!(breaker.terminal_error("visual_manage", &corrected).is_none());
+        assert!(breaker
+            .terminal_error("visual_manage", &corrected)
+            .is_none());
         assert!(breaker
             .terminal_error(
                 "visual_manage",

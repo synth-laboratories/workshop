@@ -13,27 +13,43 @@ use hyper_util::rt::TokioIo;
 use serde_json::Value;
 use std::convert::Infallible;
 use std::future::Future;
+use std::net::{IpAddr, SocketAddr};
 
 pub type LoopbackBody = http_body_util::combinators::BoxBody<Bytes, std::io::Error>;
 
 /// Accept loop used by the credential broker and JSON IPC servers.
+///
+/// IPC stays loopback-only. The provider proxy uses
+/// [`serve_connections_allowing`] for Docker-bridge peers.
 pub async fn serve_connections<F, Fut>(
     listener: tokio::net::TcpListener,
     on_request: F,
 ) -> Result<()>
 where
-    F: Fn(Request<Incoming>, std::net::SocketAddr) -> Fut + Clone + Send + Sync + 'static,
+    F: Fn(Request<Incoming>, SocketAddr) -> Fut + Clone + Send + Sync + 'static,
     Fut: Future<Output = Result<Response<LoopbackBody>, Infallible>> + Send + 'static,
+{
+    serve_connections_allowing(listener, |ip| ip.is_loopback(), on_request).await
+}
+
+/// Accept loop with a caller-supplied peer allowlist.
+pub async fn serve_connections_allowing<F, Fut, P>(
+    listener: tokio::net::TcpListener,
+    peer_ok: P,
+    on_request: F,
+) -> Result<()>
+where
+    F: Fn(Request<Incoming>, SocketAddr) -> Fut + Clone + Send + Sync + 'static,
+    Fut: Future<Output = Result<Response<LoopbackBody>, Infallible>> + Send + 'static,
+    P: Fn(IpAddr) -> bool + Clone + Send + Sync + 'static,
 {
     loop {
         let (stream, peer) = listener
             .accept()
             .await
             .context("accept a connection on a Synth Desktop loopback server")?;
-        // Every Synth Desktop IPC server binds 127.0.0.1; a non-loopback peer
-        // here means the bind assumption broke. Fail closed, per connection.
-        if !peer.ip().is_loopback() {
-            eprintln!("synth-desktop: rejected non-loopback IPC peer {peer}");
+        if !peer_ok(peer.ip()) {
+            eprintln!("synth-desktop: rejected IPC peer {peer}");
             continue;
         }
         let on_request = on_request.clone();
@@ -46,6 +62,37 @@ where
                 .await
             {
                 eprintln!("synth-desktop: loopback connection ended: {error}");
+            }
+        });
+    }
+}
+
+/// Unix-domain HTTP accept loop. There is no TCP peer to check; the socket
+/// path's mode (0600) is the trust boundary.
+#[cfg(unix)]
+pub async fn serve_unix_connections<F, Fut>(
+    listener: tokio::net::UnixListener,
+    on_request: F,
+) -> Result<()>
+where
+    F: Fn(Request<Incoming>) -> Fut + Clone + Send + Sync + 'static,
+    Fut: Future<Output = Result<Response<LoopbackBody>, Infallible>> + Send + 'static,
+{
+    loop {
+        let (stream, _peer) = listener
+            .accept()
+            .await
+            .context("accept a connection on a Synth Desktop unix server")?;
+        let on_request = on_request.clone();
+        tauri::async_runtime::spawn(async move {
+            let io = TokioIo::new(stream);
+            let service = service_fn(move |request| on_request(request));
+            if let Err(error) = http1::Builder::new()
+                .max_buf_size(crate::limits::LOOPBACK_MAX_HEADER_BYTES)
+                .serve_connection(io, service)
+                .await
+            {
+                eprintln!("synth-desktop: unix connection ended: {error}");
             }
         });
     }

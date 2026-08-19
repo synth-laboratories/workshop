@@ -486,6 +486,12 @@ pub(crate) fn ensure_home(home: &Path, request: &CodexSessionStartRequest) -> Re
         session_skill.join("SKILL.md"),
         include_str!("../../../../skills/use-synth-session/SKILL.md"),
     )?;
+    let secrets_skill = home.join("skills/use-synth-secrets");
+    fs::create_dir_all(&secrets_skill)?;
+    fs::write(
+        secrets_skill.join("SKILL.md"),
+        include_str!("../../../../skills/use-synth-secrets/SKILL.md"),
+    )?;
     // Apply the durable Context settings after bundled materialization. This
     // keeps the existing reference-file setup intact while making disabled
     // skills and edited SKILL.md copies authoritative for new sessions.
@@ -496,6 +502,8 @@ pub(crate) fn ensure_home(home: &Path, request: &CodexSessionStartRequest) -> Re
         "use-synth-optimizers",
         "use-computer-use",
         "use-workshop-browser",
+        "use-synth-session",
+        "use-synth-secrets",
         "run-live-container-evals",
     ] {
         let directory = home.join("skills").join(id);
@@ -600,8 +608,8 @@ pub(crate) fn ensure_home(home: &Path, request: &CodexSessionStartRequest) -> Re
         responses_base_url(&request.base_url)
     };
     let config = format!(
-        "model = \"{}\"\nmodel_provider = \"{}\"\napproval_policy = \"{}\"\nsandbox_mode = \"{}\"\nservice_tier = \"{}\"\n{}{}{}{}\n{}[model_providers.{}]\nname = \"{}\"\nbase_url = \"{}\"\n{}wire_api = \"responses\"\nrequires_openai_auth = {}\n# Codex selects provider-hosted compaction for OpenAI/Azure and local summarization otherwise.\n\n[agents]\nenabled = {}\n\n[features]\nmulti_agent = {}\nmulti_agent_v2 = {}\ntool_call_mcp_elicitation = false\nshell_tool = true\nunified_exec = true\n",
-        toml_string(&request.model), toml_string(provider), toml_string(request.approval_policy.as_deref().unwrap_or("untrusted")), toml_string(request.sandbox.as_deref().unwrap_or("workspace-write")), toml_string(request.service_tier.as_deref().unwrap_or("default")), auth_config, disable_response_storage_config, compaction_config, model_catalog_config, workspace_write_config, toml_key(provider), toml_string(title), toml_string(&provider_base_url), env_key_config, oauth, agents_enabled, multi_agent_v1, multi_agent_v2
+        "model = \"{}\"\nmodel_provider = \"{}\"\napproval_policy = \"{}\"\nsandbox_mode = \"{}\"\nservice_tier = \"{}\"\n{}{}{}{}\n{}{}[model_providers.{}]\nname = \"{}\"\nbase_url = \"{}\"\n{}wire_api = \"responses\"\nrequires_openai_auth = {}\n# Codex selects provider-hosted compaction for OpenAI/Azure and local summarization otherwise.\n\n[agents]\nenabled = {}\n\n[features]\nmulti_agent = {}\nmulti_agent_v2 = {}\ntool_call_mcp_elicitation = false\nshell_tool = true\nunified_exec = true\n",
+        toml_string(&request.model), toml_string(provider), toml_string(request.approval_policy.as_deref().unwrap_or("untrusted")), toml_string(request.sandbox.as_deref().unwrap_or("workspace-write")), toml_string(request.service_tier.as_deref().unwrap_or("default")), auth_config, disable_response_storage_config, compaction_config, model_catalog_config, workspace_write_config, credential_read_policy_comment(), toml_key(provider), toml_string(title), toml_string(&provider_base_url), env_key_config, oauth, agents_enabled, multi_agent_v1, multi_agent_v2
     );
     fs::write(home.join("config.toml"), config)?;
     let auth = home.join("auth.json");
@@ -650,6 +658,7 @@ pub(crate) fn ensure_home(home: &Path, request: &CodexSessionStartRequest) -> Re
             ("synth_visuals", "synth-visuals-mcp", "bundled"),
             ("synth_optimizers", "synth-optimizers-mcp", "bundled"),
             ("synth_session", "synth-session-mcp", "bundled"),
+            ("synth_secrets", "synth-secrets-mcp", "bundled"),
             ("synth_traces", "synth-traces-mcp", "bundled"),
             ("synth_diagnostics", "synth-diagnostics-mcp", "bundled"),
             (
@@ -993,6 +1002,12 @@ pub(crate) fn workspace_write_config(allowed_roots: &[String]) -> String {
     format!("[sandbox_workspace_write]\nwritable_roots = [{roots}]\n\n")
 }
 
+/// Codex `sandbox_workspace_write` has no read-denylist field. Document the
+/// policy next to the real schema so we do not invent an ignored TOML key.
+pub(crate) fn credential_read_policy_comment() -> &'static str {
+    "# Codex has no sandbox read-denylist. Do not cat .env, .env.*, or secrets.toml.\n# Import through mcp__synth_secrets__secrets_manage (request_env_import). See AGENTS.md.\n\n"
+}
+
 pub(crate) fn mcp_enabled_tools(server: &str) -> &'static str {
     match server {
         // Codex sees one compact namespace member. The adapter keeps legacy
@@ -1005,6 +1020,7 @@ pub(crate) fn mcp_enabled_tools(server: &str) -> &'static str {
         "synth_optimizers" => "enabled_tools = [\"optimizer_manage\", \"optimizer_stage_eval_candidates\", \"optimizer_start_recipe\"]\n",
         "synth_plugins" => "enabled_tools = [\"plugin_manage\"]\n",
         "synth_session" => "enabled_tools = [\"session_present\"]\n",
+        "synth_secrets" => "enabled_tools = [\"secrets_manage\"]\n",
         "synth_diagnostics" => "enabled_tools = [\"diagnostics_manage\"]\n",
         // `computer_use_status` stays advertised even when the plugin is not
         // ready, so the agent can say what is missing instead of silently

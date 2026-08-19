@@ -553,10 +553,7 @@ fn gepa_v2_projection(info: &Value) -> Option<ContainerCapabilities> {
 
 fn merge_gepa_evidence(target: &mut ContainerCapabilities, adapted: &ContainerCapabilities) {
     for (name, state) in &adapted.operations {
-        target
-            .operations
-            .entry(name.clone())
-            .or_insert(*state);
+        target.operations.entry(name.clone()).or_insert(*state);
     }
     if target.policy_refs.is_empty() {
         target.policy_refs = adapted.policy_refs.clone();
@@ -605,7 +602,11 @@ fn apply_model_roles(capabilities: &mut ContainerCapabilities, info: Option<&Val
                         .and_then(Value::as_str)
                         .map(str::to_string),
                 };
-                if !capabilities.policy_refs.iter().any(|existing| existing.satisfies(&next)) {
+                if !capabilities
+                    .policy_refs
+                    .iter()
+                    .any(|existing| existing.satisfies(&next))
+                {
                     capabilities.policy_refs.push(next);
                 }
             }
@@ -623,11 +624,7 @@ fn apply_model_roles(capabilities: &mut ContainerCapabilities, info: Option<&Val
     }
 }
 
-fn push_credential_requirement(
-    capabilities: &mut ContainerCapabilities,
-    role: &Value,
-    lane: &str,
-) {
+fn push_credential_requirement(capabilities: &mut ContainerCapabilities, role: &Value, lane: &str) {
     let Some(env) = role.get("api_key_env").and_then(Value::as_str) else {
         return;
     };
@@ -1617,7 +1614,8 @@ mod tests {
             false,
             Duration::from_secs(900),
         );
-        preflight_prepare(&record, &request, now()).expect("configurable OpenAI policy is accepted");
+        preflight_prepare(&record, &request, now())
+            .expect("configurable OpenAI policy is accepted");
         assert_eq!(
             capabilities.scorer_role.as_ref().unwrap()["usage_lane"],
             "grader"

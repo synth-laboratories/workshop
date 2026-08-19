@@ -533,8 +533,7 @@ fn require_session_identity(session_env: &Option<String>, action: &str) -> Resul
 
 fn create_bindings_from_args(args: &Value) -> Result<Value, String> {
     if let Some(bindings) = args.get("bindings").or_else(|| args.get("props")) {
-        if bindings.get("schemaVersion").and_then(Value::as_str)
-            == Some("synth.visual-bindings.v1")
+        if bindings.get("schemaVersion").and_then(Value::as_str) == Some("synth.visual-bindings.v1")
             || bindings.get("slots").is_some()
         {
             return Ok(bindings.clone());

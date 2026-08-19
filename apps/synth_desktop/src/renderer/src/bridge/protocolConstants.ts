@@ -202,6 +202,13 @@ export const COMMANDS = {
 	OPTIMIZERS_IMPORT_LOCAL: "optimizers_import_local",
 	OPTIMIZERS_RECONCILE_CLOUD: "optimizers_reconcile_cloud",
 	OPTIMIZERS_LIST_CLOUD: "optimizers_list_cloud",
+	OPTIMIZERS_SAVED_LORAS_SEARCH: "optimizers_saved_loras_search",
+	OPTIMIZERS_RUN_CHECKPOINTS_LIST: "optimizers_run_checkpoints_list",
+	OPTIMIZERS_RUN_OUTPUTS: "optimizers_run_outputs",
+	OPTIMIZERS_TRAINING_MODELS: "optimizers_training_models",
+	OPTIMIZERS_SAVED_LORA_ARCHIVE: "optimizers_saved_lora_archive",
+	OPTIMIZERS_SAVED_LORA_DOWNLOAD: "optimizers_saved_lora_download",
+	OPTIMIZERS_TRAINING_RECONCILE: "optimizers_training_reconcile",
 	PLUGINS_STATUS: "plugins_status",
 	PLUGINS_LIST: "plugins_list",
 	COMPUTER_USE_STATUS: "computer_use_status",
@@ -237,7 +244,23 @@ export const COMMANDS = {
 	MIGRATION_SCAN: "migration_scan",
 	MIGRATION_PREPARE: "migration_prepare",
 	MIGRATION_APPLY: "migration_apply",
-	MIGRATION_CANCEL: "migration_cancel"
+	MIGRATION_CANCEL: "migration_cancel",
+	SECRETS_LIST: "secrets_list",
+	SECRETS_CREATE: "secrets_create",
+	SECRETS_REPLACE: "secrets_replace",
+	SECRETS_DELETE: "secrets_delete",
+	SECRETS_TEST: "secrets_test",
+	SECRETS_REQUEST_USE: "secrets_request_use",
+	SECRETS_GRANT_USE: "secrets_grant_use",
+	SECRETS_DENY_USE: "secrets_deny_use",
+	SECRETS_CAPABILITIES_LIST: "secrets_capabilities_list",
+	SECRETS_REVOKE_CAPABILITY: "secrets_revoke_capability",
+	SECRETS_REQUEST_ENV_IMPORT: "secrets_request_env_import",
+	SECRETS_COMMIT_ENV_IMPORT: "secrets_commit_env_import",
+	SECRETS_AUDIT_LIST: "secrets_audit_list",
+	SECRETS_PROXY_STATUS: "secrets_proxy_status",
+	SECRETS_PENDING: "secrets_pending",
+	SECRETS_DENY_ENV_IMPORT: "secrets_deny_env_import"
 } as const;
 
 export type CommandName = (typeof COMMANDS)[keyof typeof COMMANDS];

@@ -73,10 +73,7 @@ pub async fn capture_webview_png(
 /// # Safety
 /// Both pointers come straight from the WebKit completion handler and are only
 /// dereferenced for the duration of that callback.
-unsafe fn encode_snapshot_png(
-    image: *mut NSImage,
-    error: *mut NSError,
-) -> Result<Vec<u8>, String> {
+unsafe fn encode_snapshot_png(image: *mut NSImage, error: *mut NSError) -> Result<Vec<u8>, String> {
     if !error.is_null() {
         return Err(format!(
             "WebViewSnapshotFailed: {}",

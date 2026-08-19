@@ -97,12 +97,7 @@ pub(super) fn eval_result(run: &OptimizerRunRecord, manifest: Option<&Value>) ->
     let mut out = envelope(run, manifest);
     let work = manifest
         .and_then(|value| value.get("work").cloned())
-        .unwrap_or_else(|| {
-            run.summary
-                .get("progress")
-                .cloned()
-                .unwrap_or(Value::Null)
-        });
+        .unwrap_or_else(|| run.summary.get("progress").cloned().unwrap_or(Value::Null));
     let selection = manifest
         .and_then(|value| value.get("selection").cloned())
         .filter(|value| !value.is_null())
@@ -168,10 +163,7 @@ pub(super) fn sft_result(run: &OptimizerRunRecord, manifest: Option<&Value>) -> 
     );
     out.insert(
         "checkpoints".into(),
-        run.summary
-            .get("checkpoints")
-            .cloned()
-            .unwrap_or(json!([])),
+        run.summary.get("checkpoints").cloned().unwrap_or(json!([])),
     );
     out.insert(
         "inferenceEndpoint".into(),
@@ -206,10 +198,7 @@ pub(super) fn environment_result(
 /// borrowing another algorithm's shape.
 pub(super) fn generic_result(run: &OptimizerRunRecord, manifest: Option<&Value>) -> Result<Value> {
     let mut out = envelope(run, manifest);
-    out.insert(
-        "summary".into(),
-        run.summary.clone(),
-    );
+    out.insert("summary".into(), run.summary.clone());
     Ok(Value::Object(out))
 }
 
@@ -288,7 +277,10 @@ mod tests {
         let result = eval_result(&eval_run(), Some(&manifest)).unwrap();
         assert_eq!(result["finalCursor"], json!(14));
         assert_eq!(result["trials"]["succeeded"], json!(10));
-        assert!(result.get("evidence").is_none(), "a sealed run is not unsealed");
+        assert!(
+            result.get("evidence").is_none(),
+            "a sealed run is not unsealed"
+        );
     }
 
     /// A run with no manifest yet must say so rather than presenting a live

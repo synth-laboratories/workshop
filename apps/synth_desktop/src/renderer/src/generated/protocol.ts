@@ -366,6 +366,31 @@ export const commands = {
 	terminalWrite: (terminalId: string, data: string) => typedError<null, AppError>(__TAURI_INVOKE("terminal_write", { terminalId, data })),
 	terminalResize: (terminalId: string, cols: number, rows: number) => typedError<null, AppError>(__TAURI_INVOKE("terminal_resize", { terminalId, cols, rows })),
 	terminalClose: (terminalId: string) => typedError<null, AppError>(__TAURI_INVOKE("terminal_close", { terminalId })),
+	secretsList: (provider: string | null, scope: string | null) => typedError<SecretSummary[], AppError>(__TAURI_INVOKE("secrets_list", { provider, scope })),
+	secretsCreate: (request: SecretCreateRequest) => typedError<SecretSummary, AppError>(__TAURI_INVOKE("secrets_create", { request })),
+	secretsReplace: (secretId: string, value: string) => typedError<SecretSummary, AppError>(__TAURI_INVOKE("secrets_replace", { secretId, value })),
+	secretsDelete: (secretId: string) => typedError<null, AppError>(__TAURI_INVOKE("secrets_delete", { secretId })),
+	secretsTest: (secretId: string) => typedError<SecretSummary, AppError>(__TAURI_INVOKE("secrets_test", { secretId })),
+	secretsRequestUse: (request: SecretUseRequest) => typedError<UseRequestResult, AppError>(__TAURI_INVOKE("secrets_request_use", { request })),
+	secretsGrantUse: (secretId: string, runId: string, recipeId: string, rememberRecipe: boolean, requestedPolicy: {
+	operations: string[],
+	models: string[],
+	reasoningEfforts: string[],
+	maxCalls: number,
+	maxInputTokens: unknown,
+	maxOutputTokens: unknown,
+	maxCostUsd: number | null,
+	lifetimeSeconds: unknown,
+} | null, requestId: string | null) => typedError<UseRequestResult, AppError>(__TAURI_INVOKE("secrets_grant_use", { secretId, runId, recipeId, rememberRecipe, requestedPolicy, requestId })),
+	secretsDenyUse: (secretId: string) => typedError<UseRequestResult, AppError>(__TAURI_INVOKE("secrets_deny_use", { secretId })),
+	secretsCapabilitiesList: () => typedError<CapabilitySummary[], AppError>(__TAURI_INVOKE("secrets_capabilities_list")),
+	secretsRevokeCapability: (capabilityId: string) => typedError<null, AppError>(__TAURI_INVOKE("secrets_revoke_capability", { capabilityId })),
+	secretsRequestEnvImport: (request: EnvImportRequest) => typedError<ImportPreview, AppError>(__TAURI_INVOKE("secrets_request_env_import", { request })),
+	secretsCommitEnvImport: (requestId: string, selected: string[], after: AfterImportAction, confirm: boolean | null) => typedError<SecretSummary[], AppError>(__TAURI_INVOKE("secrets_commit_env_import", { requestId, selected, after, confirm })),
+	secretsAuditList: (limit: number | null) => typedError<SecretAuditEvent[], AppError>(__TAURI_INVOKE("secrets_audit_list", { limit })),
+	secretsProxyStatus: () => typedError<SecretsProxyStatus, AppError>(__TAURI_INVOKE("secrets_proxy_status")),
+	secretsPending: () => typedError<SecretsInbox, AppError>(__TAURI_INVOKE("secrets_pending")),
+	secretsDenyEnvImport: (requestId: string) => typedError<null, AppError>(__TAURI_INVOKE("secrets_deny_env_import", { requestId })),
 };
 
 /* Types */
@@ -495,6 +520,8 @@ export type AccountUsageWindow = {
 	costUsd: number | null,
 };
 
+export type AfterImportAction = "keep" | "replace_aliases" | "remove_entries";
+
 /**  Informative error payload serialized across the Tauri boundary. */
 export type AppError = {
 	code: string,
@@ -554,6 +581,13 @@ export type BackendSettings = {
 	openrouterApiKeyConfigured: boolean,
 	openrouterApiKeyFingerprint: string | null,
 	openrouterApiKeySource: string | null,
+	defaultModel?: DefaultModelSettings,
+};
+
+export type DefaultModelSettings = {
+	model: string,
+	effort: string,
+	providers: string[],
 };
 
 export type BackendSettingsUpdate = {
@@ -587,6 +621,23 @@ export type BrowserRuntimeStatus = {
 	profileRoot: string,
 	allowedOrigins: string[],
 	defaultLocalOrigins: string[],
+};
+
+export type CapabilitySummary = {
+	id: string,
+	secretId: string,
+	runId: string,
+	recipeId: string,
+	provider: string,
+	status: string,
+	maxCalls: number,
+	usedCalls: number,
+	maxCostUsd: number | null,
+	usedCostUsd: number | null,
+	usedInputTokens: unknown,
+	usedOutputTokens: unknown,
+	expiresAt: string,
+	displaySuffix: string | null,
 };
 
 export type CodexApprovalDecisionRequest = {
@@ -886,6 +937,12 @@ export type EntityCount = {
 	skipped: unknown,
 };
 
+export type EnvImportRequest = {
+	sourcePath: string,
+	variableNames: string[] | null,
+	destinationScope: string | null,
+};
+
 /**
  *  One staged policy. `path` is relative to the session's workspace: absolute
  *  paths and parent traversal are refused rather than sanitized.
@@ -965,6 +1022,17 @@ export type ExperimentRecord_Serialize = {
 };
 
 export type ExperimentStatus = "planned" | "running" | "completed" | "failed" | "aborted" | "superseded" | "excluded";
+
+export type ImportPreview = {
+	requestId: string,
+	status: string,
+	sourcePath: string,
+	candidates: MaskedImportCandidate[],
+	sourceRemainsReadable: boolean,
+	warning: string | null,
+	/**  Masked line-oriented preview of replace/remove. Never contains values. */
+	cleanupDiff: string | null,
+};
 
 export type InstanceDiagnostics = {
 	mode: string,
@@ -1167,6 +1235,14 @@ export type LegacyDetection = {
 	isLegacyRuntime: boolean,
 	tables: string[],
 	warnings: string[],
+};
+
+export type MaskedImportCandidate = {
+	variable: string,
+	provider: string | null,
+	masked: string,
+	classification: string,
+	selected: boolean,
 };
 
 export type McpContextGroup = {
@@ -1608,6 +1684,18 @@ export type OptimizerUsageSummary = {
 	extra?: unknown,
 };
 
+export type PendingGrantSummary = {
+	requestId: string,
+	secretId: string,
+	alias: string | null,
+	provider: string | null,
+	runId: string,
+	recipeId: string,
+	models: string[],
+	maxCalls: number,
+	maxCostUsd: number | null,
+};
+
 /**
  *  One row in the permission list: what the OS was asked for, what it said, and
  *  where the operator goes to change it.
@@ -1714,6 +1802,17 @@ export type PluginStatus_Serialize = {
 	permissions?: PluginPermission_Serialize[],
 	lastActionReceiptId?: string | null,
 	detail?: string | null,
+};
+
+export type ProviderUsePolicy = {
+	operations: string[],
+	models: string[],
+	reasoningEfforts: string[],
+	maxCalls: number,
+	maxInputTokens: unknown,
+	maxOutputTokens: unknown,
+	maxCostUsd: number | null,
+	lifetimeSeconds: unknown,
 };
 
 /**  The last thing this turn durably did before its owner disappeared. */
@@ -2241,6 +2340,61 @@ export type RuntimeContractView = {
 
 export type RuntimeKind = "sync" | "async";
 
+export type SecretAuditEvent = {
+	schema: string,
+	eventId: string,
+	at: string,
+	actorKind: string,
+	actorId: string,
+	action: string,
+	secretId: string | null,
+	provider: string | null,
+	operation: string | null,
+	model: string | null,
+	decision: string,
+	capabilityId: string | null,
+	usage: unknown,
+	detail: string | null,
+};
+
+export type SecretCreateRequest = {
+	alias: string,
+	provider: string,
+	scope: string | null,
+	value: string,
+};
+
+export type SecretSummary = {
+	id: string,
+	alias: string,
+	provider: string,
+	scope: string,
+	status: string,
+	backend: string,
+	displaySuffix: string | null,
+	createdAt: string,
+	lastValidatedAt: string | null,
+	allowedRecipes: string[],
+};
+
+export type SecretUseRequest = {
+	secretId: string,
+	runId: string,
+	recipeId: string,
+	requestedPolicy: ProviderUsePolicy | null,
+};
+
+export type SecretsInbox = {
+	imports: ImportPreview[],
+	grants: PendingGrantSummary[],
+	proxy: SecretsProxyStatus,
+};
+
+export type SecretsProxyStatus = {
+	origin: string | null,
+	running: boolean,
+};
+
 export type SignInBegin = {
 	verificationUri: string,
 	expiresAtEpochS: unknown,
@@ -2444,6 +2598,15 @@ export type UsageSummary = {
 	 */
 	days: UsageDayPoint[],
 	generatedAt: string,
+};
+
+export type UseRequestResult = {
+	status: string,
+	requestId: string | null,
+	capabilityId: string | null,
+	proxyOrigin: string | null,
+	handle: string | null,
+	summary: CapabilitySummary | null,
 };
 
 export type VisualAnnotation = {

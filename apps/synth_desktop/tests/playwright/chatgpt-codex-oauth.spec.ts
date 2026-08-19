@@ -1,5 +1,31 @@
 import { expect, test } from "./browser.fixture";
 
+test("account menu shows the connected ChatGPT email with Codex usage", async ({ page }) => {
+	await page.addInitScript(() => {
+		const ready = {
+			state: "ready" as const,
+			action: "reauthenticate" as const,
+			canUseModels: true,
+			guidance: "Ready",
+			configured: true,
+			accountHint: "person@example.com"
+		};
+		window.synthCodexOauth = {
+			begin: async () => ({ authorizeUrl: "https://auth.example.test", mode: "manual" as const }),
+			completeManual: async () => ready,
+			ensureReady: async () => ready,
+			status: async () => ready,
+			disconnect: async () => ({ ...ready, state: "disconnected" as const, configured: false, canUseModels: false }),
+			cancel: async () => undefined
+		};
+	});
+	await page.reload();
+	await page.getByTestId("account-menu-trigger").click();
+	await page.getByTestId("account-codex-usage-remaining").click();
+	await expect(page.getByTestId("account-codex-account-email")).toContainText("ChatGPT account");
+	await expect(page.getByTestId("account-codex-account-email")).toContainText("person@example.com");
+});
+
 test("ChatGPT subscription card connects, shows allowance copy, and disconnects", async ({ page }) => {
 	await page.addInitScript(() => {
 		let configured = false;
@@ -51,7 +77,8 @@ test("subscription targets are grouped and gated without OAuth", async ({ page }
 	await page.reload();
 	await page.getByTestId("composer-model").click();
 	const menu = page.getByTestId("composer-model-menu");
-	await expect(menu).toContainText("ChatGPT · subscription");
+	await menu.getByTestId("composer-model-access-chatgpt").click();
+	await expect(menu).toContainText("ChatGPT");
 	const option = menu.getByTestId("composer-model-option-chatgpt-luna");
 	await expect(option.getByRole("option")).toHaveAttribute("aria-disabled", "true");
 	await expect(option).toContainText("Connect in Settings → Models");
@@ -69,7 +96,9 @@ test("subscription UI is available by default", async ({ page }) => {
 	});
 	await page.reload();
 	await page.getByTestId("composer-model").click();
-	await expect(page.getByTestId("composer-model-menu")).toContainText("ChatGPT · subscription");
+	const menu = page.getByTestId("composer-model-menu");
+	await menu.getByTestId("composer-model-access-chatgpt").click();
+	await expect(menu).toContainText("ChatGPT");
 });
 
 test("the first ChatGPT message verifies readiness once and reaches atomic sendTurn", async ({ page }) => {
@@ -115,6 +144,7 @@ test("the first ChatGPT message verifies readiness once and reaches atomic sendT
 	});
 	await page.reload();
 	await page.getByTestId("composer-model").click();
+	await page.getByTestId("composer-model-access-chatgpt").click();
 	await page.getByTestId("composer-model-option-chatgpt-luna").click();
 	const readinessBeforeSend = await page.evaluate(() => (
 		window as typeof window & { __oauthReadinessChecks?: number }

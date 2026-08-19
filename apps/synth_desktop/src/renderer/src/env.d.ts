@@ -32,7 +32,8 @@ import type {
 	ReportsBridge,
 	WhisperBridge,
 	WorkspaceScopeBridge,
-	ComposerImageAttachment
+	ComposerImageAttachment,
+	SecretsBridge
 } from "./bridge/types";
 
 export {};
@@ -70,6 +71,7 @@ declare global {
 		synthReports?: ReportsBridge;
 		synthOptimizers?: OptimizersBridge;
 		synthTerminal: TerminalBridge;
+		synthSecrets?: SecretsBridge;
 		/** Dev/test semantic eval API — tree-shaken from packaged production builds. */
 		__synthEval?: SemanticEvalApi;
 		__synthPreferences?: {

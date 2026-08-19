@@ -638,6 +638,9 @@ async fn dispatch_request(
     if path.starts_with("/v1/diagnostics") {
         return dispatch_diagnostics(method, path, json_body, core).await;
     }
+    if path.starts_with("/v1/secrets") {
+        return dispatch_secrets(method, path, json_body, core);
+    }
     dispatch(method, path, json_body, core).await
 }
 
@@ -2849,6 +2852,107 @@ async fn dispatch_diagnostics(
         }
         ("POST", "/v1/diagnostics/clear-index") => service.clear_index().await,
         (method, path) => anyhow::bail!("unknown diagnostics route {method} {path}"),
+    }
+}
+
+fn dispatch_secrets(method: &str, path: &str, body: Value, core: &CoreRuntime) -> Result<Value> {
+    let lower = path.to_ascii_lowercase();
+    if lower.contains("create")
+        || lower.contains("replace")
+        || lower.contains("delete")
+        || lower.contains("reveal")
+        || lower.contains("export")
+        || lower.contains("commit")
+        || lower.contains("grant")
+        || lower.contains("get")
+        || lower.contains("test")
+        || lower.contains("value")
+    {
+        anyhow::bail!(
+            "secrets MCP cannot create, reveal, export, commit, or test credentials; \
+             list registered aliases, request a host-mediated .env import, or request use. \
+             The user approves in Settings → Secrets."
+        );
+    }
+    let secrets = core.secrets();
+    let mut request = body.clone();
+    if let Some(object) = request.as_object_mut() {
+        object.remove("sessionRef");
+    }
+    let str_field = |key: &str, alt: &str| {
+        request
+            .get(key)
+            .or_else(|| request.get(alt))
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_owned)
+    };
+    match (method, path) {
+        ("GET", "/v1/secrets") | ("POST", "/v1/secrets") | ("POST", "/v1/secrets/list") => {
+            let provider = str_field("provider", "provider");
+            let scope = str_field("scope", "scope");
+            let listed = secrets.list(provider.as_deref(), scope.as_deref())?;
+            Ok(json!({
+                "secrets": listed,
+                "guidance": "Registered connections are aliases only. To add one, call request_env_import with an absolute .env path, or ask the user to add it in Settings → Secrets."
+            }))
+        }
+        ("POST", "/v1/secrets/import") => {
+            let source = str_field("sourcePath", "source_path")
+                .ok_or_else(|| anyhow::anyhow!("sourcePath is required"))?;
+            let names = request
+                .get("variableNames")
+                .or_else(|| request.get("variable_names"))
+                .and_then(Value::as_array)
+                .map(|items| {
+                    items
+                        .iter()
+                        .filter_map(Value::as_str)
+                        .map(str::to_owned)
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+            let preview = secrets.request_env_import(
+                &source,
+                &names,
+                "personal/development/providers",
+                &crate::secrets::import_roots(),
+            )?;
+            Ok(json!({
+                "status": preview.status,
+                "requestId": preview.request_id,
+                "sourcePath": preview.source_path,
+                "candidates": preview.candidates,
+                "guidance": "Approve or deny this import in Settings → Secrets. This result contains masked suffixes only."
+            }))
+        }
+        ("POST", "/v1/secrets/use") => {
+            let secret_id = str_field("secretId", "secret_id")
+                .ok_or_else(|| anyhow::anyhow!("secretId is required"))?;
+            let run_id = str_field("runId", "run_id").unwrap_or_else(|| "session".into());
+            let recipe_id = str_field("recipeId", "recipe_id").unwrap_or_else(|| "session".into());
+            let result = secrets.request_use(
+                &secret_id,
+                &run_id,
+                &recipe_id,
+                crate::secrets::SecretsUsePolicy::default(),
+                "agent",
+            )?;
+            Ok(json!({
+                "status": result.status,
+                "requestId": result.request_id,
+                "capabilityId": result.capability_id,
+                "proxyOrigin": result.proxy_origin,
+                "handle": result.handle,
+                "guidance": if result.status == "approval_required" {
+                    "Ask the user to allow this in Settings → Secrets, then call request_use again."
+                } else {
+                    "Use the handle only as a Bearer token against the local provider proxy. It is not the provider key."
+                }
+            }))
+        }
+        (method, path) => anyhow::bail!("unknown secrets route {method} {path}"),
     }
 }
 

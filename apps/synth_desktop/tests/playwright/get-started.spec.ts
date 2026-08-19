@@ -40,6 +40,10 @@ test.describe("first-five-minutes golden path", () => {
 		await page.getByTestId("model-picker").click();
 		const dropdown = page.getByTestId("model-dropdown");
 		await expect(dropdown).toBeVisible();
+		await expect(dropdown.getByTestId("model-access-local")).toBeVisible();
+		await expect(dropdown.getByTestId("model-access-api")).toBeVisible();
+		await expect(dropdown.getByTestId("model-access-chatgpt")).toBeVisible();
+		await dropdown.getByTestId("model-access-local").click();
 		await expect(dropdown.getByTestId("model-option-local-laguna")).toBeVisible();
 		await expect(dropdown.getByText("Intern · Live", { exact: true })).toHaveCount(0);
 		await page.keyboard.press("Escape");
@@ -52,6 +56,7 @@ test.describe("first-five-minutes golden path", () => {
 		await page.getByTestId("model-picker").click();
 		const dropdown = page.getByTestId("model-dropdown");
 		await expect(dropdown).toBeVisible();
+		await dropdown.getByTestId("model-access-api").click();
 		const cloudOption = dropdown.getByTestId("model-option-synth-cloud-laguna-s");
 		await expect(cloudOption).toContainText("Synth API key required");
 		await expect(cloudOption.getByTestId("model-configure-synth-api-key")).toBeVisible();

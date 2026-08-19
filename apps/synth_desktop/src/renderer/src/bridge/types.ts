@@ -203,6 +203,11 @@ export type SynthBackendSettings = {
 	openrouterApiKeyConfigured: boolean;
 	openrouterApiKeyFingerprint?: string | null;
 	openrouterApiKeySource?: string | null;
+	defaultModel?: {
+		model: string;
+		effort: string;
+		providers: string[];
+	};
 };
 
 export type MultiAgentVersion = "none" | "v1" | "v2";
@@ -993,6 +998,127 @@ export type OptimizerRecipeInfo = {
 	prerequisites?: string[];
 };
 
+export type SavedLoraCheckpoint = {
+	schemaVersion: "saved_lora_checkpoint.v1";
+	checkpointId: string;
+	orgId: string;
+	ownerUserId?: string | null;
+	visibility: "private" | "org";
+	name: string;
+	description: string;
+	provider: "tinker" | "river" | "synth" | "imported";
+	checkpointKind: "inference" | "training";
+	providerCheckpointReference?: string | null;
+	runId?: string | null;
+	attemptId?: string | null;
+	sourceCheckpointId?: string | null;
+	optimizerAlgorithm?: "sft" | "cispo" | "ppo" | null;
+	baseModel: string;
+	loraRank?: number | null;
+	step?: number | null;
+	status: "uploading" | "ready" | "failed" | "archived";
+	storage: {
+		backend: "wasabi" | "minio";
+		bucket: string;
+		key: string;
+		version?: string | null;
+		etag?: string | null;
+		sha256?: string | null;
+		sizeBytes?: number | null;
+		contentType: string;
+	};
+	lineage: {
+		optimizerAlgorithm?: "sft" | "cispo" | "ppo" | null;
+		runId?: string | null;
+		attemptId?: string | null;
+		sourceCheckpointId?: string | null;
+		providerCheckpointReference?: string | null;
+	};
+	tags: string[];
+	metadata: Record<string, unknown>;
+	createdAt?: string | null;
+	updatedAt?: string | null;
+	archivedAt?: string | null;
+};
+
+export type SavedLoraCheckpointPage = {
+	schemaVersion: "saved_lora_checkpoint.page.v1";
+	items: SavedLoraCheckpoint[];
+	total: number;
+	limit: number;
+	offset: number;
+};
+
+export type SavedLoraRunPage = {
+	schemaVersion: "saved_lora_checkpoint.run_page.v1";
+	run: {
+		runId: string;
+		attemptId?: string | null;
+		optimizerAlgorithm: string;
+		status: string;
+	};
+	items: SavedLoraCheckpoint[];
+	counts: { total: number; inference: number; training: number };
+	total: number;
+	limit: number;
+	offset: number;
+};
+
+export type OptimizerRunOutputs = {
+	schemaVersion: "optimizer.run_outputs.v1";
+	run: {
+		runId: string;
+		attemptId?: string | null;
+		optimizerAlgorithm: string;
+		status: string;
+	};
+	result?: Record<string, unknown> | null;
+	artifacts: Array<{
+		artifactId: string;
+		runId: string;
+		artifactName: string;
+		contentType?: string | null;
+		sizeBytes: number;
+		sha256?: string | null;
+		storageBackend: string;
+		uri: string;
+		downloadPath: string;
+		metadata: Record<string, unknown>;
+		createdAt?: string | null;
+		updatedAt?: string | null;
+	}>;
+	modelCheckpoints: SavedLoraCheckpoint[];
+	counts: { artifacts: number; modelCheckpoints: number };
+};
+
+export type SavedLoraDownload = {
+	checkpointId: string;
+	url: string;
+	expiresIn: number;
+	contentType: string;
+	sizeBytes?: number | null;
+	sha256?: string | null;
+};
+
+export type HostedTrainingModel = {
+	modelId: string;
+	label: string;
+	provider: string;
+	providerRevision: string;
+	architecture: string;
+	maxContextLength: number;
+	rank: { default?: number; minimum?: number; maximum?: number };
+	algorithms: Record<string, { status?: string; block_reason?: string; note?: string }>;
+};
+
+export type HostedTrainingModelCatalog = {
+	schemaVersion: "hosted_training_model_catalog.v1";
+	catalogRevision: string;
+	livePreflightRequired: boolean;
+	models: HostedTrainingModel[];
+	total: number;
+};
+
 export type OptimizersBridge = {
 	listAlgorithms(): Promise<OptimizerAlgorithmInfo[]>;
 	listRecipes(): Promise<OptimizerRecipeInfo[]>;
@@ -1049,6 +1175,31 @@ export type OptimizersBridge = {
 	importLocal(request: { path: string; sessionRef?: string; openVisual?: boolean }): Promise<OptimizerRunRecord>;
 	reconcileCloud(request: { optimizerRunId: string; afterSeq?: number; openVisual?: boolean }): Promise<OptimizerRunRecord>;
 	listCloud(query?: { algorithm?: string; status?: string; limit?: number }): Promise<unknown[]>;
+	searchSavedLoras(query?: {
+		search?: string;
+		scope?: "all" | "mine" | "org";
+		provider?: string;
+		checkpointKind?: string;
+		baseModel?: string;
+		runId?: string;
+		attemptId?: string;
+		sourceCheckpointId?: string;
+		optimizerAlgorithm?: "sft" | "cispo" | "ppo";
+		status?: string;
+		tags?: string[];
+		limit?: number;
+		offset?: number;
+	}): Promise<SavedLoraCheckpointPage>;
+	listRunCheckpoints(optimizerRunId: string): Promise<SavedLoraRunPage>;
+	runOutputs(optimizerRunId: string): Promise<OptimizerRunOutputs>;
+	hostedTrainingModels(): Promise<HostedTrainingModelCatalog>;
+	archiveSavedLora(checkpointId: string): Promise<SavedLoraCheckpoint>;
+	savedLoraDownload(checkpointId: string): Promise<SavedLoraDownload>;
+	reconcileTraining(optimizerRunId: string): Promise<{
+		schemaVersion: "workshop.training_snapshot.v1";
+		runId: string;
+		projection: TrainingProjection;
+	}>;
 	recordVisualReady?(request: {
 		visualId: string;
 		optimizerRunId: string;
@@ -1058,6 +1209,22 @@ export type OptimizersBridge = {
 		templateDigest?: string;
 	}): Promise<unknown>;
 	onEvent(listener: (event: AppEvent) => void): () => void;
+};
+
+export type TrainingProjection = {
+	lifecycle: string;
+	phase?: string | null;
+	last_sequence: number;
+	last_event_id?: string | null;
+	attempt_id?: string | null;
+	metrics: Record<string, number>;
+	checkpoints: unknown[];
+	warnings: unknown[];
+	latest_rollout?: unknown;
+	tunnel_health?: { status?: string; occurred_at?: string; detail?: unknown } | null;
+	provider_usage?: Record<string, unknown> | null;
+	terminal_summary?: unknown;
+	attempt_history: unknown[];
 };
 
 export type TerminalInfo = { id: string; workspaceId: string; cwd: string; shell: string; title: string; status: "running" | "exited" | "failed"; createdAt: number; exitCode?: number | null };
@@ -1225,4 +1392,104 @@ export type CodexOauthBridge = {
 	ensureReady(): Promise<CodexOauthStatus>;
 	disconnect(): Promise<CodexOauthStatus>;
 	cancel(): Promise<void>;
+};
+
+export type SecretSummary = {
+	id: string;
+	alias: string;
+	provider: string;
+	scope: string;
+	status: string;
+	backend: string;
+	displaySuffix?: string | null;
+	createdAt: string;
+	lastValidatedAt?: string | null;
+	allowedRecipes: string[];
+};
+
+export type SecretCapabilitySummary = {
+	id: string;
+	secretId: string;
+	runId: string;
+	recipeId: string;
+	provider: string;
+	status: string;
+	maxCalls: number;
+	usedCalls: number;
+	maxCostUsd: number;
+	usedCostUsd: number;
+	usedInputTokens: number;
+	usedOutputTokens: number;
+	expiresAt: string;
+	displaySuffix?: string | null;
+};
+
+export type SecretAuditEvent = {
+	schema: string;
+	eventId: string;
+	at: string;
+	actorKind: string;
+	actorId: string;
+	action: string;
+	secretId?: string | null;
+	provider?: string | null;
+	operation?: string | null;
+	model?: string | null;
+	decision: string;
+	capabilityId?: string | null;
+	usage?: unknown;
+	detail?: string | null;
+};
+
+export type MaskedImportCandidate = {
+	variable: string;
+	provider?: string | null;
+	masked: string;
+	classification: string;
+	selected: boolean;
+};
+
+export type SecretImportPreview = {
+	requestId: string;
+	status: string;
+	sourcePath: string;
+	candidates: MaskedImportCandidate[];
+	sourceRemainsReadable: boolean;
+	warning?: string | null;
+	cleanupDiff?: string | null;
+};
+
+export type PendingGrantSummary = {
+	requestId: string;
+	secretId: string;
+	alias?: string | null;
+	provider?: string | null;
+	runId: string;
+	recipeId: string;
+	models: string[];
+	maxCalls: number;
+	maxCostUsd: number;
+};
+
+export type SecretsInbox = {
+	imports: SecretImportPreview[];
+	grants: PendingGrantSummary[];
+	proxy: { origin?: string | null; running: boolean };
+};
+
+export type SecretsBridge = {
+	list(provider?: string, scope?: string): Promise<SecretSummary[]>;
+	create(request: { alias: string; provider: string; scope?: string; value: string }): Promise<SecretSummary>;
+	replace(secretId: string, value: string): Promise<SecretSummary>;
+	delete(secretId: string): Promise<void>;
+	test(secretId: string): Promise<SecretSummary>;
+	requestEnvImport(sourcePath: string, variableNames?: string[]): Promise<SecretImportPreview>;
+	commitEnvImport(requestId: string, selected: string[], after: "keep" | "replace_aliases" | "remove_entries", confirm?: boolean): Promise<SecretSummary[]>;
+	denyEnvImport(requestId: string): Promise<void>;
+	pending(): Promise<SecretsInbox>;
+	capabilities(): Promise<SecretCapabilitySummary[]>;
+	revokeCapability(capabilityId: string): Promise<void>;
+	audit(limit?: number): Promise<SecretAuditEvent[]>;
+	grantUse(secretId: string, runId: string, recipeId: string, rememberRecipe: boolean, requestId?: string): Promise<unknown>;
+	denyUse(secretId: string): Promise<unknown>;
 };

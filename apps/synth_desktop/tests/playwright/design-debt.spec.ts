@@ -21,6 +21,7 @@ test.describe("design locks (must pass)", () => {
 	test("composer model menu does not advertise deferred LoRA adapters", async ({ page }) => {
 		await page.getByTestId("composer-model").click();
 		const menu = page.getByTestId("composer-model-menu");
+		await menu.getByTestId("composer-model-access-local").click();
 		await expect(menu).toBeVisible();
 		await expect(menu.getByText("Laguna LoRAs")).toHaveCount(0);
 		await expect(menu.getByText("Remote LoRAs")).toHaveCount(0);

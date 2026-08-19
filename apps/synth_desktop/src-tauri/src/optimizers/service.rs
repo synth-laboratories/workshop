@@ -590,9 +590,7 @@ impl OptimizerService {
                 }));
             }
             if tokio::time::Instant::now() >= deadline {
-                bail!(
-                    "no matching milestone for `{optimizer_run_id}` after sequence {after_seq}"
-                );
+                bail!("no matching milestone for `{optimizer_run_id}` after sequence {after_seq}");
             }
             tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         }
@@ -1679,6 +1677,138 @@ impl OptimizerService {
             .await
     }
 
+    pub async fn search_saved_lora_checkpoints(
+        &self,
+        query: super::SavedLoraCheckpointQuery,
+    ) -> Result<super::SavedLoraCheckpointPage> {
+        super::cloud::CloudOptimizerClient::from_config()?
+            .search_saved_lora_checkpoints(query)
+            .await
+    }
+
+    pub async fn list_saved_lora_checkpoints_for_run(
+        &self,
+        run_id: String,
+    ) -> Result<super::SavedLoraRunPage> {
+        super::cloud::CloudOptimizerClient::from_config()?
+            .saved_lora_checkpoints_for_run(&run_id)
+            .await
+    }
+
+    pub async fn run_outputs(&self, run_id: String) -> Result<super::OptimizerRunOutputs> {
+        super::cloud::CloudOptimizerClient::from_config()?
+            .run_outputs(&run_id)
+            .await
+    }
+
+    pub async fn hosted_training_models(&self) -> Result<super::HostedTrainingModelCatalog> {
+        super::cloud::CloudOptimizerClient::from_config()?
+            .hosted_training_models()
+            .await
+    }
+
+    pub async fn archive_saved_lora_checkpoint(
+        &self,
+        checkpoint_id: String,
+    ) -> Result<super::SavedLoraCheckpoint> {
+        super::cloud::CloudOptimizerClient::from_config()?
+            .archive_saved_lora_checkpoint(&checkpoint_id)
+            .await
+    }
+
+    pub async fn saved_lora_download(
+        &self,
+        checkpoint_id: String,
+    ) -> Result<super::SavedLoraDownload> {
+        super::cloud::CloudOptimizerClient::from_config()?
+            .saved_lora_download(&checkpoint_id)
+            .await
+    }
+
+    /// Persist the canonical hosted-training projection independently of the
+    /// legacy optimizer-event cursor.  The backend training ledger is the
+    /// authority for CISPO/PPO progress, checkpoint readiness and terminal
+    /// truth; keeping its sequence in the durable run summary makes Workshop
+    /// reconnect from the same cursor after an app restart.
+    pub async fn reconcile_training(&self, optimizer_run_id: String) -> Result<Value> {
+        let run = self.get(optimizer_run_id.clone()).await?;
+        if !matches!(run.algorithm_id.as_str(), "sft" | "cispo" | "ppo") {
+            bail!(
+                "canonical training replay is unavailable for algorithm {}",
+                run.algorithm_id
+            );
+        }
+        if run.source != "cloud" {
+            bail!("canonical training replay requires a cloud run");
+        }
+        let mut projection: super::TrainingProjection = run
+            .summary
+            .get("trainingProjection")
+            .cloned()
+            .map(serde_json::from_value)
+            .transpose()
+            .context("decode persisted training projection")?
+            .unwrap_or_default();
+        let client = super::cloud::CloudOptimizerClient::from_config()?;
+        loop {
+            let events = client
+                .training_events_after(&optimizer_run_id, projection.last_sequence, Some(5000))
+                .await?;
+            if events.is_empty() {
+                break;
+            }
+            let previous = projection.last_sequence;
+            for event in events {
+                projection.apply(&event).map_err(anyhow::Error::msg)?;
+            }
+            if projection.last_sequence == previous {
+                break;
+            }
+        }
+        let persisted_projection = serde_json::to_value(&projection)?;
+        let result = json!({
+            "schemaVersion": "workshop.training_snapshot.v1",
+            "runId": optimizer_run_id,
+            "projection": persisted_projection,
+        });
+        let result_for_store = result.clone();
+        let lifecycle = projection.lifecycle;
+        let provider_usage = projection.provider_usage.clone();
+        self.patch_run(optimizer_run_id, move |run| {
+            let mut summary = run.summary.as_object().cloned().unwrap_or_default();
+            summary.insert(
+                "trainingProjection".into(),
+                result_for_store["projection"].clone(),
+            );
+            summary.insert(
+                "trainingEventSequence".into(),
+                json!(projection.last_sequence),
+            );
+            if let Some(usage) = provider_usage.as_ref() {
+                if let Some(cost) = usage
+                    .get("provider_cost_usd")
+                    .or_else(|| usage.get("estimated_cost_usd"))
+                    .and_then(Value::as_f64)
+                {
+                    run.usage.cost_usd = Some(cost);
+                }
+                run.usage.prompt_tokens = usage
+                    .get("prompt_tokens")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(run.usage.prompt_tokens);
+                run.usage.completion_tokens = usage
+                    .get("completion_tokens")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(run.usage.completion_tokens);
+            }
+            run.status = training_lifecycle_status(lifecycle).into();
+            run.capabilities = OptimizerCapabilities::for_algorithm(&run.algorithm_id);
+            Ok(())
+        })
+        .await?;
+        Ok(result)
+    }
+
     async fn create_cloud(
         &self,
         request: OptimizerCreateRequest,
@@ -1768,6 +1898,26 @@ impl OptimizerService {
             Ok(slices)
         })
         .await
+    }
+}
+
+fn training_lifecycle_status(lifecycle: super::TrainingLifecycle) -> &'static str {
+    use super::TrainingLifecycle as L;
+    match lifecycle {
+        L::Draft | L::Validating => "validating",
+        L::Queued => "queued",
+        L::Provisioning => "provisioning",
+        L::Running | L::Checkpointing | L::Evaluating => "running",
+        L::EnvUnreachable => "env_unreachable",
+        L::Cancelling => "cancelling",
+        L::Cancelled => "cancelled",
+        L::Paused => "paused",
+        L::Completed => "completed",
+        L::Degraded => "degraded",
+        L::FailedEvidence => "failed_evidence",
+        L::Failed => "failed",
+        L::InfrastructureLost => "infrastructure_lost",
+        L::CapReached => "cap_reached",
     }
 }
 
@@ -4098,14 +4248,26 @@ pub(in crate::optimizers) mod tests {
         // Before this lane the manifest sealed with every one of these null.
         assert_eq!(sealed["work"]["succeeded"], json!(8), "8 scored rollouts");
         assert_eq!(sealed["work"]["unit"], json!("rollouts"));
-        assert_eq!(sealed["selection"]["verdict"], json!("no_measured_improvement"));
+        assert_eq!(
+            sealed["selection"]["verdict"],
+            json!("no_measured_improvement")
+        );
         assert_eq!(sealed["selection"]["accepted"], json!(false));
-        assert_eq!(sealed["usage"]["lanes"]["proposer"]["model"], json!("gpt-5.6-luna"));
-        assert_eq!(sealed["usage"]["lanes"]["policy"]["model"], json!("gpt-4.1-nano"));
+        assert_eq!(
+            sealed["usage"]["lanes"]["proposer"]["model"],
+            json!("gpt-5.6-luna")
+        );
+        assert_eq!(
+            sealed["usage"]["lanes"]["policy"]["model"],
+            json!("gpt-4.1-nano")
+        );
         assert_eq!(sealed["gepaEvidence"]["proposals"]["requested"], json!(10));
         assert_eq!(sealed["gepaEvidence"]["proposals"]["registered"], json!(1));
         assert_eq!(sealed["gepaEvidence"]["proposals"]["shortfall"], json!(9));
-        assert_eq!(sealed["gepaEvidence"]["rollouts"]["maxActiveWorkers"], json!(8));
+        assert_eq!(
+            sealed["gepaEvidence"]["rollouts"]["maxActiveWorkers"],
+            json!(8)
+        );
 
         let result = svc.get_result(run.id.clone()).await.unwrap();
         assert_eq!(result["verdict"], json!("no_measured_improvement"));
@@ -4118,9 +4280,7 @@ pub(in crate::optimizers) mod tests {
             json!("Classify the Banking77 intent.")
         );
         assert_eq!(
-            result["evidence"]["candidates"]
-                .as_array()
-                .map(Vec::len),
+            result["evidence"]["candidates"].as_array().map(Vec::len),
             Some(2),
             "both the seed and the rejected proposal stay on the record"
         );
@@ -4138,9 +4298,19 @@ pub(in crate::optimizers) mod tests {
         )
         .await
         .unwrap();
-        let after = svc.terminal_manifest(run.id.clone()).await.unwrap().unwrap();
-        assert_eq!(after["selection"]["verdict"], json!("no_measured_improvement"));
-        assert_eq!(after["selection"]["selectedCandidateId"], json!("gepa_seed"));
+        let after = svc
+            .terminal_manifest(run.id.clone())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            after["selection"]["verdict"],
+            json!("no_measured_improvement")
+        );
+        assert_eq!(
+            after["selection"]["selectedCandidateId"],
+            json!("gepa_seed")
+        );
         assert_eq!(after["work"]["succeeded"], json!(8));
         assert_eq!(after["terminalCursor"], sealed["terminalCursor"]);
         let reread = svc.get_result(run.id.clone()).await.unwrap();
@@ -4167,16 +4337,12 @@ pub(in crate::optimizers) mod tests {
         svc.append_event_payloads(
             stale.id.clone(),
             vec![
-                draft("optimizer.run.started").delta(Map::from_iter([(
-                    "status".into(),
-                    json!("running"),
-                )])),
+                draft("optimizer.run.started")
+                    .delta(Map::from_iter([("status".into(), json!("running"))])),
                 draft("eval.run.planned")
                     .snapshot(Map::from_iter([("planned_trials".into(), json!(2))])),
-                draft("optimizer.run.completed").delta(Map::from_iter([(
-                    "status".into(),
-                    json!("completed"),
-                )])),
+                draft("optimizer.run.completed")
+                    .delta(Map::from_iter([("status".into(), json!("completed"))])),
             ],
         )
         .await
@@ -4224,7 +4390,10 @@ pub(in crate::optimizers) mod tests {
         for handle in handles {
             handle.await.unwrap().unwrap();
         }
-        let events = svc.events_after(run.id.clone(), 0, Some(200)).await.unwrap();
+        let events = svc
+            .events_after(run.id.clone(), 0, Some(200))
+            .await
+            .unwrap();
         assert_eq!(events.len(), 12);
         let sequences: Vec<u64> = events.iter().map(|event| event.sequence_number).collect();
         assert_eq!(sequences, (1..=12).collect::<Vec<_>>());
@@ -4349,7 +4518,11 @@ pub(in crate::optimizers) mod tests {
         svc.settle_evidence_degraded(run.id.clone(), "late_probe", "arrived after sealing".into())
             .await
             .unwrap();
-        let again = svc.terminal_manifest(run.id.clone()).await.unwrap().unwrap();
+        let again = svc
+            .terminal_manifest(run.id.clone())
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(again["terminalStatus"], json!("completed"));
         assert_eq!(again["terminalCursor"], json!(4));
         assert_eq!(again["degradation"][0]["stage"], json!("late_probe"));
@@ -4386,8 +4559,14 @@ pub(in crate::optimizers) mod tests {
     #[tokio::test]
     async fn terminal_results_stay_algorithm_specific() {
         let (svc, _dir, _) = service().await;
-        let (gepa, _) = svc.seed_fixture("gepa", Some("chat_kinds".into())).await.unwrap();
-        let (sft, _) = svc.seed_fixture("sft", Some("chat_kinds".into())).await.unwrap();
+        let (gepa, _) = svc
+            .seed_fixture("gepa", Some("chat_kinds".into()))
+            .await
+            .unwrap();
+        let (sft, _) = svc
+            .seed_fixture("sft", Some("chat_kinds".into()))
+            .await
+            .unwrap();
         let eval = eval_run(&svc, "opt_eval_kinds", "chat_kinds").await;
         svc.append_event_payloads(
             eval.id.clone(),

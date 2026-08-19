@@ -600,6 +600,9 @@ mod tests {
     fn workshop_instructions_name_overlay_and_missing_truth() {
         assert!(WORKSHOP_AGENTS.contains("missing"));
         assert!(WORKSHOP_AGENTS.contains("overlay"));
+        assert!(WORKSHOP_AGENTS.contains(".env"));
+        assert!(WORKSHOP_AGENTS.contains("request_env_import"));
+        assert!(WORKSHOP_AGENTS.contains("no read-denylist field"));
     }
     #[test]
     fn mcp_group_uses_declared_tool_names() {

@@ -1,5 +1,6 @@
 import { VisualChrome } from "../../../chrome/VisualChrome.tsx";
 import type { VisualBinding } from "../../../runtime/types.ts";
+import type { ReactNode } from "react";
 
 type Progress = {
   phase?: string;
@@ -26,6 +27,19 @@ type Arm = {
   detail?: string;
   baseline?: boolean;
   selected?: boolean;
+  metrics?: Record<string, string | number | null>;
+};
+
+type ComparisonColumn = {
+  id: string;
+  label: string;
+  format?: "number" | "percent" | "currency" | "duration";
+  direction?: "higher" | "lower";
+};
+
+type Comparison = {
+  primaryMetric?: string;
+  columns?: ComparisonColumn[];
 };
 
 type Evidence = {
@@ -35,6 +49,70 @@ type Evidence = {
   status?: string;
   summary?: string;
   visualId?: string;
+};
+
+type Rollout = {
+  id: string;
+  label?: string;
+  seed?: string | number;
+  reward?: number | null;
+  steps?: number | null;
+  achievements?: number | null;
+  stopReason?: string;
+  status?: string;
+  traceId?: string;
+};
+
+type TraceReference = {
+  id: string;
+  label?: string;
+  traceId?: string;
+  visualId?: string;
+  seed?: string | number;
+  reward?: number | null;
+  steps?: number | null;
+  stopReason?: string;
+  summary?: string;
+};
+
+type ArtifactReference = {
+  id: string;
+  label?: string;
+  kind?: string;
+  path?: string;
+  visualId?: string;
+  traceId?: string;
+  containerId?: string;
+  summary?: string;
+};
+
+type ContextRecord = Record<string, string | number | boolean | null | undefined>;
+
+type OptionalCollection<T> = {
+  prominence?: "summary" | "detail";
+  items?: T[];
+};
+
+type ExperimentResults = {
+  metrics?: Metric[];
+  rollouts?: Rollout[];
+};
+
+type HypothesisVerdict = "true" | "false" | "needs_more_analysis" | "unresolved";
+type Confidence = "low" | "medium" | "high" | "overwhelming";
+
+type HypothesisResolution = {
+  id: string;
+  claim: string;
+  verdict?: HypothesisVerdict;
+  confidence?: Confidence;
+  why?: string;
+};
+
+type Assessment = {
+  summary?: string;
+  confidence?: Confidence;
+  nextStep?: string;
 };
 
 type LineageNode = {
@@ -50,10 +128,19 @@ type ExperimentOverview = {
   title?: string;
   question?: string;
   hypothesis?: string;
+  hypotheses?: HypothesisResolution[];
+  assessment?: Assessment;
+  results?: ExperimentResults;
+  traces?: OptionalCollection<TraceReference>;
+  task?: ContextRecord;
+  runtime?: ContextRecord;
+  artifacts?: OptionalCollection<ArtifactReference>;
+  provenance?: ContextRecord;
   status?: string;
   progress?: Progress;
   metrics?: Metric[];
   arms?: Arm[];
+  comparison?: Comparison;
   evidence?: Evidence[];
   lineage?: LineageNode[];
   limitations?: string[];
@@ -101,20 +188,105 @@ function normalizeOverview(value: unknown): ExperimentOverview | null {
   const raw = record(value);
   if (!raw) return null;
   const array = <T,>(field: unknown): T[] => Array.isArray(field) ? field.filter((item) => record(item)) as T[] : [];
+  const hypotheses = array<HypothesisResolution>(raw.hypotheses).map((item) => ({
+    id: text(item.id) ?? text(item.claim) ?? "hypothesis",
+    claim: text(item.claim) ?? "Hypothesis not recorded",
+    verdict: (["true", "false", "needs_more_analysis", "unresolved"] as const).includes(item.verdict as HypothesisVerdict) ? item.verdict : "unresolved",
+    confidence: (["low", "medium", "high", "overwhelming"] as const).includes(item.confidence as Confidence) ? item.confidence : undefined,
+    why: text(item.why)
+  }));
+  const assessment = record(raw.assessment);
+  const results = record(raw.results);
+  const collection = <T,>(value: unknown): OptionalCollection<T> => {
+    if (Array.isArray(value)) return { items: value.filter((item) => record(item)) as T[] };
+    const wrapper = record(value);
+    return wrapper ? {
+      prominence: wrapper.prominence === "summary" ? "summary" : "detail",
+      items: array<T>(wrapper.items)
+    } : { items: [] };
+  };
   return {
     schemaVersion: text(raw.schemaVersion),
     experimentId: text(raw.experimentId),
     title: text(raw.title),
     question: text(raw.question),
     hypothesis: text(raw.hypothesis),
+    hypotheses,
+    assessment: assessment ? {
+      summary: text(assessment.summary),
+      confidence: (["low", "medium", "high", "overwhelming"] as const).includes(assessment.confidence as Confidence) ? assessment.confidence as Confidence : undefined,
+      nextStep: text(assessment.nextStep)
+    } : undefined,
+    results: results ? {
+      metrics: array<Metric>(results.metrics),
+      rollouts: array<Rollout>(results.rollouts)
+    } : undefined,
+    traces: collection<TraceReference>(raw.traces),
+    task: record(raw.task) as ContextRecord | undefined,
+    runtime: record(raw.runtime) as ContextRecord | undefined,
+    artifacts: collection<ArtifactReference>(raw.artifacts),
+    provenance: record(raw.provenance) as ContextRecord | undefined,
     status: text(raw.status),
     progress: normalizeProgress(raw.progress),
     metrics: array<Metric>(raw.metrics),
     arms: array<Arm>(raw.arms),
+    comparison: record(raw.comparison) as Comparison | undefined,
     evidence: array<Evidence>(raw.evidence),
     lineage: array<LineageNode>(raw.lineage),
     limitations: Array.isArray(raw.limitations) ? raw.limitations.map(text).filter((item): item is string => Boolean(item)) : []
   };
+}
+
+function metricNumber(arm: Arm, metricId: string): number | null {
+  const value = arm.metrics?.[metricId];
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function formatComparisonValue(value: string | number | null | undefined, format?: ComparisonColumn["format"]): string {
+  if (value == null) return MISSING;
+  if (typeof value !== "number") return value;
+  if (format === "percent") return `${(value * 100).toFixed(1)}%`;
+  if (format === "currency") return `$${value.toFixed(2)}`;
+  if (format === "duration") return `${value.toFixed(value < 10 ? 1 : 0)}s`;
+  return Number.isInteger(value) ? String(value) : value.toFixed(3);
+}
+
+function ComparisonTable({ arms, comparison }: { arms: Arm[]; comparison?: Comparison }) {
+  const columns = Array.isArray(comparison?.columns)
+    ? comparison.columns.filter((column) => text(column?.id) && text(column?.label))
+    : [];
+  if (!columns.length || !arms.length) return null;
+  const primary = columns.find((column) => column.id === comparison?.primaryMetric) ?? columns[0];
+  const observed = arms.map((arm) => metricNumber(arm, primary.id)).filter((value): value is number => value != null);
+  const min = observed.length ? Math.min(...observed) : 0;
+  const max = observed.length ? Math.max(...observed) : 0;
+  const span = max - min;
+  const best = observed.length ? (primary.direction === "lower" ? min : max) : null;
+
+  return <section className="sv-section" aria-label="Run comparison">
+    <div className="sv-section-head"><h3>Run comparison</h3><span>{primary.label} highlighted</span></div>
+    <div style={{ overflowX: "auto" }}>
+      <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 10 }}>
+        <thead><tr>{["Variant", ...columns.map((column) => column.label)].map((label) => <th key={label} scope="col" style={{ padding: "7px 8px", borderBottom: "1px solid var(--sv-border)", color: "var(--sv-text-faint)", textAlign: label === "Variant" ? "left" : "right", fontWeight: 600 }}>{label}</th>)}</tr></thead>
+        <tbody>{arms.map((arm) => {
+          const primaryValue = metricNumber(arm, primary.id);
+          const relative = primaryValue == null ? 0 : span === 0 ? 100 : Math.max(8, (primaryValue - min) / span * 100);
+          return <tr key={arm.id} style={{ background: arm.selected ? "#fff7f2" : undefined }}>
+            <th scope="row" style={{ minWidth: 140, padding: "9px 8px", borderBottom: "1px solid var(--sv-border)", textAlign: "left", fontWeight: 600 }}>
+              <span>{arm.label ?? arm.id}</span>{arm.baseline ? <small style={{ marginLeft: 5, color: "var(--sv-text-faint)" }}>baseline</small> : null}{arm.selected ? <small style={{ marginLeft: 5, color: "#c2410c" }}>selected</small> : null}
+              {primaryValue != null ? <span aria-hidden style={{ display: "block", width: `${relative}%`, height: 3, marginTop: 6, borderRadius: 99, background: primaryValue === best ? "#18794e" : "#cbd2dc" }} /> : null}
+            </th>
+            {columns.map((column) => {
+              const value = arm.metrics?.[column.id];
+              const isBest = typeof value === "number" && value === best && column.id === primary.id;
+              return <td key={column.id} style={{ padding: "9px 8px", borderBottom: "1px solid var(--sv-border)", textAlign: "right", fontFamily: "var(--sv-mono)", color: isBest ? "#18794e" : undefined, fontWeight: isBest ? 700 : 400 }}>{formatComparisonValue(value, column.format)}</td>;
+            })}
+          </tr>;
+        })}</tbody>
+      </table>
+    </div>
+    <p style={{ margin: "8px 0 0", color: "var(--sv-text-faint)", fontSize: 9 }}>Missing measurements are shown as {MISSING} and are never ranked.</p>
+  </section>;
 }
 
 function statusTone(status?: string): string {
@@ -123,6 +295,48 @@ function statusTone(status?: string): string {
   if (normalized === "failed" || normalized === "aborted" || normalized === "excluded") return "#b42318";
   if (normalized === "running" || normalized === "evaluating") return "#c2410c";
   return "#697386";
+}
+
+function verdictLabel(verdict?: HypothesisVerdict): string {
+  if (verdict === "true") return "True";
+  if (verdict === "false") return "False";
+  if (verdict === "needs_more_analysis") return "Needs more analysis";
+  return "Unresolved";
+}
+
+function verdictTone(verdict?: HypothesisVerdict): string {
+  if (verdict === "true") return "#18794e";
+  if (verdict === "false") return "#b42318";
+  if (verdict === "needs_more_analysis") return "#c2410c";
+  return "#697386";
+}
+
+function Hypotheses({ legacyHypothesis, hypotheses }: { legacyHypothesis?: string; hypotheses: HypothesisResolution[] }) {
+  const rows = hypotheses.length ? hypotheses : legacyHypothesis ? [{ id: "hypothesis", claim: legacyHypothesis, verdict: "unresolved" as const }] : [];
+  return <section className="sv-section" aria-label="Hypothesis resolution" style={{ padding: 0, overflow: "hidden" }}>
+    <div className="sv-section-head" style={{ padding: "6px 8px" }}><h3>Hypotheses</h3><span>Claim → verdict → why</span></div>
+    {rows.length ? <div style={{ overflowX: "auto" }}><table style={{ width: "100%", borderCollapse: "collapse", fontSize: 10 }}>
+      <thead><tr>{["Hypothesis", "Verdict", "Confidence", "Why"].map((label) => <th key={label} scope="col" style={{ padding: "4px 6px", borderBottom: "1px solid var(--sv-border)", color: "var(--sv-text-faint)", textAlign: "left", fontSize: 8, fontWeight: 600, textTransform: "uppercase", letterSpacing: ".05em" }}>{label}</th>)}</tr></thead>
+      <tbody>{rows.map((item) => <tr key={item.id}>
+        <th scope="row" style={{ minWidth: 132, padding: "5px 6px", borderBottom: "1px solid var(--sv-border)", textAlign: "left", fontWeight: 600 }}>{item.claim}</th>
+        <td style={{ width: 116, padding: "5px 6px", borderBottom: "1px solid var(--sv-border)", color: verdictTone(item.verdict), fontWeight: 700 }}>{verdictLabel(item.verdict)}</td>
+        <td style={{ width: 76, padding: "5px 6px", borderBottom: "1px solid var(--sv-border)", color: "var(--sv-text-faint)", textTransform: "capitalize" }}>{item.confidence ?? MISSING}</td>
+        <td style={{ minWidth: 140, padding: "5px 6px", borderBottom: "1px solid var(--sv-border)", color: "var(--sv-text-faint)" }}>{item.why ?? (item.verdict === "unresolved" ? "Waiting for evidence" : MISSING)}</td>
+      </tr>)}</tbody>
+    </table></div> : <p style={{ margin: 0, padding: 10, color: "var(--sv-text-faint)", fontSize: 10 }}>No hypothesis has been recorded.</p>}
+  </section>;
+}
+
+function Disclosure({ title, summary, children, defaultOpen = false }: { title: string; summary?: string; children: ReactNode; defaultOpen?: boolean }) {
+  return <details className="sv-section" style={{ padding: 0 }} open={defaultOpen || undefined}>
+    <summary style={{ display: "flex", alignItems: "center", gap: 7, padding: "6px 8px", cursor: "pointer", listStyle: "none" }}><strong style={{ fontSize: 10 }}>{title}</strong>{summary ? <span style={{ marginLeft: "auto", color: "var(--sv-text-faint)", fontSize: 8 }}>{summary}</span> : null}<span aria-hidden style={{ color: "#2563a7", fontSize: 8 }}>Show</span></summary>
+    <div style={{ display: "grid", gap: 6, padding: "0 6px 6px" }}>{children}</div>
+  </details>;
+}
+
+function AssessmentPanel({ assessment }: { assessment?: Assessment }) {
+  if (!assessment?.summary && !assessment?.confidence && !assessment?.nextStep) return null;
+  return <section className="sv-section" aria-label="Experiment assessment"><div className="sv-section-head"><h3>Assessment</h3><span>{assessment.confidence ? `${assessment.confidence} confidence` : "confidence not recorded"}</span></div><div style={{ display: "grid", gridTemplateColumns: "minmax(160px,1.4fr) minmax(130px,1fr)", gap: 8 }}><div><span style={{ color: "var(--sv-text-faint)", fontSize: 9, textTransform: "uppercase" }}>Interpretation</span><strong style={{ display: "block", marginTop: 3, fontSize: 11 }}>{assessment.summary ?? MISSING}</strong></div><div><span style={{ color: "var(--sv-text-faint)", fontSize: 9, textTransform: "uppercase" }}>Next experiment</span><strong style={{ display: "block", marginTop: 3, fontSize: 11 }}>{assessment.nextStep ?? MISSING}</strong></div></div></section>;
 }
 
 function display(value: unknown): string {
@@ -160,7 +374,39 @@ function Arms({ arms }: { arms: Arm[] }) {
 }
 
 function EvidenceList({ evidence }: { evidence: Evidence[] }) {
-  return <section className="sv-section"><div className="sv-section-head"><h3>Evidence</h3><span>{evidence.length} items</span></div>{evidence.length ? <div style={{ display: "grid", gap: 7 }}>{evidence.map((item) => <article key={item.id} data-visual-id={item.visualId} style={{ padding: "10px 11px", border: "1px solid var(--sv-border)", borderRadius: 8 }}><div style={{ display: "flex", justifyContent: "space-between", gap: 10 }}><strong style={{ fontSize: 11 }}>{item.title}</strong><span style={{ color: statusTone(item.status), fontSize: 9, textTransform: "uppercase" }}>{item.status ?? item.kind ?? "evidence"}</span></div>{item.summary ? <p style={{ margin: "5px 0 0", color: "var(--sv-text-faint)", fontSize: 10 }}>{item.summary}</p> : null}</article>)}</div> : <p style={{ color: "var(--sv-text-faint)", fontSize: 11 }}>No evidence has been attached.</p>}</section>;
+  return <section className="sv-section" style={{ padding: 0, overflow: "hidden" }}>{evidence.length ? <div>{evidence.map((item) => <article key={item.id} data-visual-id={item.visualId} style={{ display: "grid", gridTemplateColumns: "minmax(130px,.7fr) minmax(200px,1.3fr) auto", gap: 8, alignItems: "baseline", padding: "6px 8px", borderBottom: "1px solid var(--sv-border)" }}><strong style={{ fontSize: 10 }}>{item.title}</strong><span style={{ minWidth: 0, color: "var(--sv-text-faint)", fontSize: 9 }}>{item.summary ?? "No summary"}</span><span style={{ color: statusTone(item.status), fontSize: 8, textTransform: "uppercase" }}>{item.status ?? item.kind ?? "evidence"}</span></article>)}</div> : <p style={{ margin: 0, padding: 8, color: "var(--sv-text-faint)", fontSize: 10 }}>No evidence has been attached.</p>}</section>;
+}
+
+function basename(path?: string): string | undefined {
+  return path?.split(/[\\/]/).filter(Boolean).at(-1);
+}
+
+function ReferenceChip({ label, kind, value }: { label: string; kind: string; value?: string }) {
+  if (!value) return <span>{label}</span>;
+  return <span data-reference-kind={kind} data-reference-value={value} title={value} style={{ display: "inline-flex", alignItems: "center", gap: 4, maxWidth: "100%", padding: "2px 6px", border: "1px solid var(--sv-border)", borderRadius: 5, background: "#f8fafc", fontFamily: "var(--sv-mono)", fontSize: 8 }}><span aria-hidden>{kind === "path" ? "▧" : "◈"}</span><span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{label}</span></span>;
+}
+
+function RolloutTable({ rollouts }: { rollouts: Rollout[] }) {
+  if (!rollouts.length) return null;
+  return <section className="sv-section" style={{ padding: 0, overflow: "hidden" }} aria-label="Rollout results"><table style={{ width: "100%", borderCollapse: "collapse", fontSize: 9 }}><thead><tr>{["Rollout", "Reward", "Steps", "Achievements", "Stop reason", "Trace"].map((label) => <th key={label} style={{ padding: "4px 6px", borderBottom: "1px solid var(--sv-border)", color: "var(--sv-text-faint)", textAlign: label === "Rollout" || label === "Stop reason" || label === "Trace" ? "left" : "right", fontSize: 8 }}>{label}</th>)}</tr></thead><tbody>{rollouts.map((rollout, index) => <tr key={rollout.id ?? index}><th scope="row" style={{ padding: "5px 6px", borderBottom: "1px solid var(--sv-border)", textAlign: "left" }}>{rollout.label ?? (rollout.seed != null ? `Seed ${rollout.seed}` : rollout.id)}</th><td style={{ padding: "5px 6px", textAlign: "right" }}>{rollout.reward ?? MISSING}</td><td style={{ padding: "5px 6px", textAlign: "right" }}>{rollout.steps ?? MISSING}</td><td style={{ padding: "5px 6px", textAlign: "right" }}>{rollout.achievements ?? MISSING}</td><td style={{ padding: "5px 6px", color: "var(--sv-text-faint)" }}>{rollout.stopReason ?? rollout.status ?? MISSING}</td><td style={{ padding: "5px 6px" }}>{rollout.traceId ? <ReferenceChip label="Open trace" kind="trace" value={rollout.traceId} /> : MISSING}</td></tr>)}</tbody></table></section>;
+}
+
+function TraceList({ traces }: { traces: TraceReference[] }) {
+  return <section className="sv-section" style={{ padding: 0, overflow: "hidden" }}>{traces.map((trace, index) => <article key={trace.id ?? index} style={{ display: "grid", gridTemplateColumns: "minmax(120px,.8fr) minmax(170px,1.3fr) auto", gap: 8, alignItems: "center", padding: "6px 8px", borderBottom: "1px solid var(--sv-border)" }}><div><strong style={{ display: "block", fontSize: 10 }}>{trace.label ?? (trace.seed != null ? `Seed ${trace.seed}` : trace.id)}</strong><small style={{ color: "var(--sv-text-faint)" }}>{[trace.reward != null ? `reward ${trace.reward}` : null, trace.steps != null ? `${trace.steps} steps` : null, trace.stopReason].filter(Boolean).join(" · ")}</small></div><span style={{ color: "var(--sv-text-faint)", fontSize: 9 }}>{trace.summary ?? "Trace evidence"}</span>{trace.traceId ? <ReferenceChip label="Open trace" kind="trace" value={trace.traceId} /> : trace.visualId ? <ReferenceChip label="Open visual" kind="visual" value={trace.visualId} /> : null}</article>)}</section>;
+}
+
+function ArtifactList({ artifacts }: { artifacts: ArtifactReference[] }) {
+  return <section className="sv-section" style={{ padding: 0, overflow: "hidden" }}>{artifacts.map((artifact, index) => {
+    const reference = artifact.path ?? artifact.visualId ?? artifact.traceId ?? artifact.containerId;
+    const kind = artifact.path ? "path" : artifact.visualId ? "visual" : artifact.traceId ? "trace" : artifact.containerId ? "container" : "artifact";
+    return <article key={artifact.id ?? index} style={{ display: "grid", gridTemplateColumns: "minmax(120px,.7fr) minmax(150px,1.3fr) auto", gap: 8, alignItems: "center", padding: "6px 8px", borderBottom: "1px solid var(--sv-border)" }}><strong style={{ fontSize: 10 }}>{artifact.label ?? artifact.id}</strong><span style={{ color: "var(--sv-text-faint)", fontSize: 9 }}>{artifact.summary ?? artifact.kind ?? "Artifact"}</span>{reference ? <ReferenceChip label={artifact.path ? basename(artifact.path) ?? "Open file" : `Open ${kind}`} kind={kind} value={reference} /> : null}</article>;
+  })}</section>;
+}
+
+function ContextGrid({ title, records }: { title: string; records: Array<{ label: string; data?: ContextRecord }> }) {
+  const groups = records.map((group) => ({ ...group, entries: Object.entries(group.data ?? {}).filter(([, value]) => ["string", "number", "boolean"].includes(typeof value)) })).filter((group) => group.entries.length);
+  if (!groups.length) return null;
+  return <section className="sv-section" aria-label={title}>{groups.map((group) => <div key={group.label} style={{ marginBottom: 8 }}><div className="sv-section-head"><h3>{group.label}</h3><span>{group.entries.length} fields</span></div><dl style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(150px,1fr))", gap: "5px 10px", margin: 0 }}>{group.entries.map(([key, value]) => <div key={key} style={{ minWidth: 0 }}><dt style={{ color: "var(--sv-text-faint)", fontSize: 8, textTransform: "uppercase" }}>{key.replace(/([a-z])([A-Z])/g, "$1 $2")}</dt><dd style={{ margin: "2px 0 0", overflow: "hidden", fontFamily: "var(--sv-mono)", fontSize: 9, textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={String(value)}>{String(value)}</dd></div>)}</dl></div>)}</section>;
 }
 
 function Lineage({ nodes }: { nodes: LineageNode[] }) {
@@ -172,14 +418,33 @@ export function Shell(props: ShellProps) {
   const experiment = normalizeOverview(props.experiment ?? props.data);
   if (!experiment) return <VisualChrome title={props.title ?? "Experiment overview"} lede="No experiment projection was provided." testId="visual-experiment-overview"><></></VisualChrome>;
   const status = experiment.status ?? "planned";
+  const progressSummary = experiment.progress?.completed != null && experiment.progress?.total != null ? `${experiment.progress.completed}/${experiment.progress.total} · ${experiment.progress.phase ?? status}` : status;
+  const metrics = [...(experiment.metrics ?? []), ...(experiment.results?.metrics ?? [])];
+  const rollouts = experiment.results?.rollouts ?? [];
+  const traces = experiment.traces?.items ?? [];
+  const artifacts = experiment.artifacts?.items ?? [];
+  const hasResults = Boolean(experiment.progress || metrics.length || experiment.arms?.length || rollouts.length || experiment.assessment);
+  const contextRecords = [{ label: "Task", data: experiment.task }, { label: "Runtime", data: experiment.runtime }, { label: "Provenance", data: experiment.provenance }];
+  const hasContext = contextRecords.some((group) => Object.keys(group.data ?? {}).length);
+  const hasMethod = Boolean(experiment.lineage?.length || experiment.limitations?.length);
   return <VisualChrome kicker={`Experiment · ${status}`} title={props.title ?? experiment.title ?? "Experiment overview"} lede={props.lede ?? experiment.question ?? experiment.hypothesis} testId="visual-experiment-overview">
-    <section className="sv-section" style={{ padding: 12, borderRadius: 8, background: "#f6f7f9" }}><div style={{ display: "flex", justifyContent: "space-between", gap: 12 }}><div><span style={{ fontSize: 9, textTransform: "uppercase", color: "var(--sv-text-faint)" }}>Research question</span><strong style={{ display: "block", marginTop: 4, fontSize: 12 }}>{experiment.question ?? experiment.hypothesis ?? "Not recorded"}</strong></div><span style={{ color: statusTone(status), fontSize: 10, fontWeight: 700, textTransform: "uppercase" }}>{status}</span></div>{experiment.experimentId ? <code style={{ display: "block", marginTop: 8, color: "var(--sv-text-faint)", fontSize: 9 }}>{experiment.experimentId}</code> : null}</section>
-    <ProgressPanel progress={experiment.progress} status={status} />
-    <Metrics metrics={experiment.metrics ?? []} />
-    <Arms arms={experiment.arms ?? []} />
-    <EvidenceList evidence={experiment.evidence ?? []} />
-    <Lineage nodes={experiment.lineage ?? []} />
-    {experiment.limitations?.length ? <section className="sv-section" style={{ background: "#fff7ed", borderRadius: 8, padding: 12 }}><h3 style={{ marginTop: 0 }}>Limitations</h3><ul style={{ marginBottom: 0, paddingLeft: 18, fontSize: 10 }}>{experiment.limitations.map((item) => <li key={item}>{item}</li>)}</ul></section> : null}
+    <Hypotheses legacyHypothesis={experiment.hypothesis} hypotheses={experiment.hypotheses ?? []} />
+    {experiment.evidence?.length ? <Disclosure title="Evidence" summary={`${experiment.evidence.length} items`}><EvidenceList evidence={experiment.evidence} /></Disclosure> : null}
+    {hasResults ? <Disclosure title="Results & assessment" summary={progressSummary}>
+      {experiment.progress ? <ProgressPanel progress={experiment.progress} status={status} /> : null}
+      <Metrics metrics={metrics} />
+      <ComparisonTable arms={experiment.arms ?? []} comparison={experiment.comparison} />
+      {experiment.arms?.length ? <Arms arms={experiment.arms} /> : null}
+      <RolloutTable rollouts={rollouts} />
+      <AssessmentPanel assessment={experiment.assessment} />
+    </Disclosure> : null}
+    {traces.length ? <Disclosure title="Traces" summary={`${traces.length} rollouts`} defaultOpen={experiment.traces?.prominence === "summary"}><TraceList traces={traces} /></Disclosure> : null}
+    {hasContext ? <Disclosure title="Run context" summary={[experiment.task?.name, experiment.runtime?.model].filter(Boolean).join(" · ") || "task · runtime · provenance"}><ContextGrid title="Run context" records={contextRecords} /></Disclosure> : null}
+    {artifacts.length ? <Disclosure title="Artifacts" summary={`${artifacts.length} files and references`} defaultOpen={experiment.artifacts?.prominence === "summary"}><ArtifactList artifacts={artifacts} /></Disclosure> : null}
+    {hasMethod ? <Disclosure title="Method & caveats" summary={experiment.experimentId ?? "details"}>
+      <Lineage nodes={experiment.lineage ?? []} />
+      {experiment.limitations?.length ? <section className="sv-section" style={{ background: "#fff7ed", borderRadius: 8, padding: 12 }}><h3 style={{ marginTop: 0 }}>Limitations</h3><ul style={{ marginBottom: 0, paddingLeft: 18, fontSize: 10 }}>{experiment.limitations.map((item) => <li key={item}>{item}</li>)}</ul></section> : null}
+    </Disclosure> : null}
   </VisualChrome>;
 }
 

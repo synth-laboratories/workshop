@@ -529,7 +529,9 @@ fn ephemeral_app_event(
 #[cfg(test)]
 mod interrupt_tests {
     use super::*;
-    use crate::domain::{RunCreate, RunStatus, RuntimeTarget, SessionCreate, SessionKind, SessionStatus};
+    use crate::domain::{
+        RunCreate, RunStatus, RuntimeTarget, SessionCreate, SessionKind, SessionStatus,
+    };
     use serde_json::json;
     use tempfile::tempdir;
 
@@ -590,7 +592,10 @@ mod interrupt_tests {
             .interrupt_active_run("sess_settled", "desktop_reattached")
             .await
             .expect("a settled run must not fail the caller's next turn");
-        assert!(event.is_none(), "nothing was interrupted, so nothing is announced");
+        assert!(
+            event.is_none(),
+            "nothing was interrupted, so nothing is announced"
+        );
         assert_eq!(
             core.runs()
                 .get("run_settled".into())

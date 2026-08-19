@@ -180,7 +180,7 @@ pub(crate) async fn spawn_server<R: tauri::Runtime>(
     tauri::async_runtime::spawn(async move {
         let mut lines = BufReader::new(stderr).lines();
         while let Ok(Some(line)) = lines.next_line().await {
-            let line = crate::codex_oauth::redact_text(&line);
+            let line = crate::secrets::redact_live(&crate::codex_oauth::redact_text(&line));
             stderr_persistence
                 .notify_codex_event(&app, sid.clone(), "app-server/stderr", json!({"line":line}))
                 .await;
@@ -224,6 +224,7 @@ async fn read_stdout<R: tauri::Runtime>(
         // about delivery, and every millisecond spent below this line would
         // otherwise be charged to the model.
         let received_at_us = monotonic_us();
+        let line = crate::secrets::redact_live(&line);
         let Ok(message) = serde_json::from_str::<Value>(&line) else {
             continue;
         };

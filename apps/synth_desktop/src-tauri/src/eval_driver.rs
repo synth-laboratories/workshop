@@ -22,9 +22,8 @@ use crate::synth_config;
 use crate::trace_ingest::TraceBundleIngestRequest;
 use crate::visuals::{
     assert_declared_stream_source, assert_live_eval_slot, assert_no_live_secrets,
-    classify_live_eval_family,
-    craftax_ten_lane_pins, live_sse_bindings, pending_stream_bindings, resolve_live_eval_template,
-    VisualCreateRequest, VisualUpdateRequest, CRAFTAX_TEN_LANE_SEEDS,
+    classify_live_eval_family, craftax_ten_lane_pins, live_sse_bindings, pending_stream_bindings,
+    resolve_live_eval_template, VisualCreateRequest, VisualUpdateRequest, CRAFTAX_TEN_LANE_SEEDS,
 };
 use crate::visuals_ipc;
 use anyhow::{anyhow, bail, Context, Result};
@@ -449,7 +448,9 @@ fn session_approval_route(path: &str) -> Option<(String, String)> {
     let rest = path.strip_prefix("/v1/sessions/")?;
     let (session_id, tail) = rest.split_once("/approvals/")?;
     let approval_id = tail.trim_end_matches('/');
-    if session_id.is_empty() || session_id.contains('/') || approval_id.is_empty()
+    if session_id.is_empty()
+        || session_id.contains('/')
+        || approval_id.is_empty()
         || approval_id.contains('/')
     {
         return None;
@@ -1475,14 +1476,14 @@ async fn run_policy_rollout(
         bail!("projectionMode=aggregate requires visualId for the caller-owned experiment surface");
     }
     let visual_id = match supplied_visual_id.or_else(|| {
-            container
-                .metadata
-                .get("liveVisualId")
-                .or_else(|| container.metadata.get("live_visual_id"))
-                .and_then(Value::as_str)
-                .filter(|id| !id.is_empty())
-                .map(str::to_string)
-        }) {
+        container
+            .metadata
+            .get("liveVisualId")
+            .or_else(|| container.metadata.get("live_visual_id"))
+            .and_then(Value::as_str)
+            .filter(|id| !id.is_empty())
+            .map(str::to_string)
+    }) {
         Some(id) => id,
         _ => {
             let opened = open_visual(
@@ -2707,7 +2708,10 @@ mod tests {
             session_approval_route("/v1/sessions/s-1/approvals/call-9/"),
             Some(("s-1".into(), "call-9".into()))
         );
-        assert_eq!(session_approval_route("/v1/sessions//approvals/call-9"), None);
+        assert_eq!(
+            session_approval_route("/v1/sessions//approvals/call-9"),
+            None
+        );
         assert_eq!(session_approval_route("/v1/sessions/s-1/approvals/"), None);
         assert_eq!(
             session_approval_route("/v1/sessions/s-1/approvals/a/b"),

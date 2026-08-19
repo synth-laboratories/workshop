@@ -803,6 +803,7 @@ impl OptimizerManager {
         stdout: fs::File,
         stderr: fs::File,
         openai_api_key: &str,
+        openai_base_url: Option<&str>,
     ) -> Result<Child> {
         validate_optimizer_run_id(run_id)?;
         if self.runtime.lock().await.is_none() {
@@ -844,6 +845,7 @@ impl OptimizerManager {
             stdout,
             stderr,
             openai_api_key,
+            openai_base_url,
         ) {
             Ok(mut child) => {
                 let pid = child
@@ -1308,11 +1310,19 @@ fn launch_gepa_recipe_process(
     stdout: fs::File,
     stderr: fs::File,
     openai_api_key: &str,
+    openai_base_url: Option<&str>,
 ) -> Result<Child> {
     #[cfg(test)]
     {
         if env::var("SYNTH_OPTIMIZER_LIVE_SIDECAR").as_deref() != Ok("1") {
-            let _ = (home, version, cookbook, openai_api_key, config_path);
+            let _ = (
+                home,
+                version,
+                cookbook,
+                openai_api_key,
+                openai_base_url,
+                config_path,
+            );
             // The stand-in normally exits at once. Tests that need to observe
             // what the supervisor does to a *live* child — the never-indexed
             // bound, cancellation — ask for one that outlives the assertion.
@@ -1344,7 +1354,19 @@ fn launch_gepa_recipe_process(
         // Pin both processes to the same instance-owned directory instead of
         // relying on whichever user-global HOME the Desktop inherited.
         .env("GEPA_HOME", optimizer_gepa_home(home))
-        .env("OPENAI_API_KEY", openai_api_key)
+        .env("OPENAI_API_KEY", crate::secrets::API_KEY_SENTINEL);
+    if let Some(base_url) = openai_base_url {
+        command.env("OPENAI_BASE_URL", base_url);
+        if let Some(handle) = base_url
+            .split("/cap/")
+            .nth(1)
+            .and_then(|rest| rest.split('/').next())
+        {
+            command.env("WORKSHOP_CAPABILITY", handle);
+        }
+    }
+    let _ = openai_api_key;
+    command
         .stdin(Stdio::null())
         .stdout(Stdio::from(stdout))
         .stderr(Stdio::from(stderr))
@@ -3088,6 +3110,7 @@ mod tests {
                 stdout,
                 stderr,
                 "sk-test",
+                None,
             )
             .await
             .unwrap_err();
@@ -3174,6 +3197,7 @@ mod tests {
                 fs::File::create(home.path().join("luna.out")).unwrap(),
                 fs::File::create(home.path().join("luna.err")).unwrap(),
                 "sk-test",
+                None,
             )
             .await
             .unwrap();
@@ -3185,6 +3209,7 @@ mod tests {
                 fs::File::create(home.path().join("sol.out")).unwrap(),
                 fs::File::create(home.path().join("sol.err")).unwrap(),
                 "sk-test",
+                None,
             )
             .await
             .unwrap();
