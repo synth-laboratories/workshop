@@ -94,7 +94,7 @@ because a still image of "the trace" cannot come from two of them:
 | `local_cas` | a JSON blob by digest |
 | `trace_v5` | the trace's projection payload; `projection` picks the kind, default `rollout-inspector` |
 | `query_snapshot` | the frozen snapshot; address rows at `path: "facets.rows"` |
-| `optimizer_run` | the run's typed result from the optimizer service; the per-trial ledger is at `path: "summary.records"` |
+| `optimizer_run` | `{run, result}` — the run record beside its typed result. The per-trial ledger is at `path: "run.summary.records"`; the typed result's aggregates are under `result`. The result only *points* at the ledger (`evidenceRefs.records`), and a chart of ten trials needs the rows, not their count. |
 
 An `optimizer_run` may be read before the run seals. That reading is a snapshot,
 and it says so: the receipt carries `sealed: false`, `snapshotOfLiveRun: true`,

@@ -1046,12 +1046,26 @@ impl VisualRegistry {
                     let service = self.optimizer_runs.get().ok_or_else(|| {
                         anyhow!("this runtime has no optimizer service attached, so slot {slot} cannot be read")
                     })?;
-                    let document = service.get_result(run_id.to_string()).await?;
+                    // The typed result points at the per-trial ledger
+                    // (`evidenceRefs.records`) rather than carrying it, and a
+                    // chart of ten trials needs the rows, not their count. The
+                    // bound document is both: the record, whose summary holds
+                    // the ledger, and the typed result beside it.
+                    let record = service.get(run_id.to_string()).await?;
+                    let result = service.get_result(run_id.to_string()).await?;
+                    let document = json!({
+                        "schemaVersion": OPTIMIZER_RUN_DOCUMENT_SCHEMA,
+                        "run": serde_json::to_value(&record)?,
+                        "result": result,
+                    });
                     // A run that has not sealed is still readable, but the
                     // reading is a snapshot: record the cursor it was taken at
                     // and the digest of what was taken, so a chart drawn twice
                     // from a moving run can be told apart afterwards.
-                    merge_receipt(&mut receipt, optimizer_run_receipt(run_id, &document));
+                    merge_receipt(
+                        &mut receipt,
+                        optimizer_run_receipt(run_id, &document, document.pointer("/result")),
+                    );
                     document
                 }
                 other => bail!(
@@ -1485,6 +1499,10 @@ fn validate_svg_bytes(bytes: &[u8]) -> Result<()> {
 
 const CHART_DEFAULT_PROJECTION: &str = "rollout-inspector";
 
+/// What a chart sees when it binds an optimizer run: the record — whose
+/// `summary.records` is the per-trial ledger — beside the typed result.
+const OPTIMIZER_RUN_DOCUMENT_SCHEMA: &str = "synth.visual.optimizer-run-document.v1";
+
 /// Fixtures live under the repository's `visuals/` root and nowhere else. The
 /// path is joined and then checked against that root, so `..` cannot walk out
 /// of it and an absolute path cannot ignore it.
@@ -1514,14 +1532,15 @@ fn read_visual_fixture(relative: &str) -> Result<(Value, String)> {
 /// it carries the cursor it was taken at and a digest of exactly what was
 /// taken — two charts drawn from one moving run can then be told apart instead
 /// of silently disagreeing.
-fn optimizer_run_receipt(run_id: &str, document: &Value) -> Value {
-    let sealed = document
+fn optimizer_run_receipt(run_id: &str, document: &Value, result: Option<&Value>) -> Value {
+    let result = result.unwrap_or(document);
+    let sealed = result
         .get("terminalManifest")
         .is_some_and(|value| !value.is_null());
     let mut receipt = json!({
         "source": run_id,
         "sealed": sealed,
-        "cursor": document.get("finalCursor").cloned().unwrap_or(Value::Null),
+        "cursor": result.get("finalCursor").cloned().unwrap_or(Value::Null),
         "digest": digest_json(document),
     });
     if !sealed {
@@ -2368,6 +2387,7 @@ mod tests {
         let sealed = optimizer_run_receipt(
             "opt_run_1",
             &json!({"terminalManifest": {"terminalCursor": 40}, "finalCursor": 40}),
+            None,
         );
         assert_eq!(sealed["sealed"], json!(true));
         assert_eq!(sealed["cursor"], json!(40));
@@ -2377,6 +2397,7 @@ mod tests {
         let live = optimizer_run_receipt(
             "opt_run_1",
             &json!({"terminalManifest": Value::Null, "finalCursor": 12}),
+            None,
         );
         assert_eq!(live["sealed"], json!(false));
         assert_eq!(live["cursor"], json!(12));

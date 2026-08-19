@@ -81,7 +81,7 @@ path into it, a transform pipeline, and which columns become which channel, so
 `visual_chart` takes `slot`/`kind`/`source` alongside `spec`, so the binding and
 the chart land in one call. Readable kinds are `inline`, `fixture`, `local_cas`,
 `trace_v5`, `query_snapshot`, and `optimizer_run` — the last of which puts an
-eval's per-trial ledger (`path: "summary.records"`) on a table or a distribution
+eval's per-trial ledger (`path: "run.summary.records"`) on a table or a distribution
 instead of collapsing it into a mean. An optimizer run read before it seals is
 recorded as a snapshot with the cursor it was taken at. `live_sse` is refused,
 because a still image has no single value to draw from a stream.
