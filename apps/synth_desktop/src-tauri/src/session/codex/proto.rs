@@ -367,7 +367,9 @@ impl Drop for AppServer {
     fn drop(&mut self) {
         if let Ok(mut child) = self.child.try_lock() {
             #[cfg(unix)]
-            terminate_owned_process_group(child.id());
+            if let Some(pgid) = owned_process_group(child.id()) {
+                signal_process_group(pgid, libc::SIGTERM);
+            }
             let _ = child.start_kill();
         }
     }
@@ -416,13 +418,20 @@ impl AppServer {
         #[cfg(unix)]
         {
             let pid = child.id();
-            terminate_owned_process_group(pid);
+            let pgid = owned_process_group(pid);
+            if let Some(pgid) = pgid {
+                signal_process_group(pgid, libc::SIGTERM);
+            }
             // SIGTERM is deliberately brief: it gives a cooperative tool a
             // chance to close files, but Stop must never leave a process tree
             // running indefinitely. The follow-up SIGKILL is restricted to
-            // the verified isolated group, never a guessed host process.
+            // the verified isolated group captured before its leader can exit,
+            // never a guessed host process. Re-resolving the group from the
+            // leader after SIGTERM loses descendants once the leader is reaped.
             tokio::time::sleep(Duration::from_millis(500)).await;
-            kill_owned_process_group(pid);
+            if let Some(pgid) = pgid {
+                kill_process_group_if_alive(pgid);
+            }
         }
         if child.try_wait()?.is_none() {
             child.kill().await.context("stop app-server")?;
@@ -457,21 +466,17 @@ fn owned_process_group(pid: Option<u32>) -> Option<libc::pid_t> {
 }
 
 #[cfg(unix)]
-fn terminate_owned_process_group(pid: Option<u32>) {
-    if let Some(pgid) = owned_process_group(pid) {
-        unsafe {
-            libc::kill(-pgid, libc::SIGTERM);
-        }
+fn signal_process_group(pgid: libc::pid_t, signal: libc::c_int) {
+    unsafe {
+        libc::kill(-pgid, signal);
     }
 }
 
 #[cfg(unix)]
-fn kill_owned_process_group(pid: Option<u32>) {
-    if let Some(pgid) = owned_process_group(pid) {
-        unsafe {
-            if libc::kill(-pgid, 0) == 0 {
-                libc::kill(-pgid, libc::SIGKILL);
-            }
+fn kill_process_group_if_alive(pgid: libc::pid_t) {
+    unsafe {
+        if libc::kill(-pgid, 0) == 0 {
+            libc::kill(-pgid, libc::SIGKILL);
         }
     }
 }

@@ -99,7 +99,15 @@ for raw in sys.stdin:
         turn_number += 1
         turn_id = f"turn-fixture-{os.getpid()}-{turn_number}"
         if ignore_interrupt_and_spawn_sleeper.exists():
-            child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+            # Model the failure that matters in production: SIGTERM exits the
+            # app-server group leader while a shell/tool descendant ignores it.
+            # Stop must retain the already-verified PGID and escalate that same
+            # group after the leader no longer exists.
+            child = subprocess.Popen([
+                sys.executable,
+                "-c",
+                "import signal,time; signal.signal(signal.SIGTERM, signal.SIG_IGN); time.sleep(30)",
+            ])
             sleeping_child_pid.write_text(str(child.pid), encoding="utf-8")
         if complete_before_turn_start_response.exists():
             complete_before_turn_start_response.unlink()
