@@ -3,6 +3,11 @@
 //! SFT runs through the public Optimizers service; its beta executor remains internal. Workshop mirrors
 //! incremental `optimizer_event.v1` pages into the local OptimizerService.
 
+use super::models::{
+    HostedTrainingModelCatalog, OptimizerRunOutputs, SavedLoraCheckpoint, SavedLoraCheckpointPage,
+    SavedLoraCheckpointQuery, SavedLoraDownload, SavedLoraRunPage,
+};
+use super::training::TrainingEvent;
 use anyhow::{anyhow, bail, Context, Result};
 use reqwest::Client;
 use serde_json::{json, Value};
@@ -155,6 +160,35 @@ impl CloudOptimizerClient {
         Ok(events)
     }
 
+    /// Durable canonical training-event replay. Live reconnect uses the same
+    /// sequence as SSE `Last-Event-ID`, so polling and streaming cannot fork.
+    pub async fn training_events_after(
+        &self,
+        run_id: &str,
+        after_sequence: u64,
+        limit: Option<i64>,
+    ) -> Result<Vec<TrainingEvent>> {
+        let limit = limit.unwrap_or(500).clamp(1, 5_000);
+        let url = format!(
+            "{}/api/v1/optimizers/runs/{}/training-events?after_sequence={after_sequence}&limit={limit}",
+            self.base_url, run_id
+        );
+        let payload = self.get_json(&url).await?;
+        let rows = payload
+            .get("events")
+            .and_then(Value::as_array)
+            .or_else(|| payload.as_array())
+            .ok_or_else(|| anyhow!("cloud training event replay is not an event array"))?;
+        rows.iter()
+            .map(|row| {
+                let event: TrainingEvent =
+                    serde_json::from_value(row.clone()).context("decode training.event.v1")?;
+                event.validate().map_err(anyhow::Error::msg)?;
+                Ok(event)
+            })
+            .collect()
+    }
+
     pub async fn get_state_batch(&self, run_id: &str, slices: &[String]) -> Result<Value> {
         let joined = slices.join(",");
         let url = format!(
@@ -164,6 +198,97 @@ impl CloudOptimizerClient {
             urlencoding_lite(&joined)
         );
         self.get_json(&url).await
+    }
+
+    pub async fn search_saved_lora_checkpoints(
+        &self,
+        query: SavedLoraCheckpointQuery,
+    ) -> Result<SavedLoraCheckpointPage> {
+        let mut params = vec![format!(
+            "scope={}",
+            urlencoding_lite(query.scope.as_deref().unwrap_or("all"))
+        )];
+        for (name, value) in [
+            ("q", query.search.as_deref()),
+            ("provider", query.provider.as_deref()),
+            ("checkpoint_kind", query.checkpoint_kind.as_deref()),
+            ("base_model", query.base_model.as_deref()),
+            ("run_id", query.run_id.as_deref()),
+            ("attempt_id", query.attempt_id.as_deref()),
+            (
+                "source_checkpoint_id",
+                query.source_checkpoint_id.as_deref(),
+            ),
+            ("optimizer_algorithm", query.optimizer_algorithm.as_deref()),
+            ("status", query.status.as_deref()),
+        ] {
+            if let Some(value) = value.filter(|value| !value.trim().is_empty()) {
+                params.push(format!("{name}={}", urlencoding_lite(value.trim())));
+            }
+        }
+        for tag in query.tags.unwrap_or_default().into_iter().take(32) {
+            if !tag.trim().is_empty() {
+                params.push(format!("tags={}", urlencoding_lite(tag.trim())));
+            }
+        }
+        params.push(format!("limit={}", query.limit.unwrap_or(50).clamp(1, 100)));
+        params.push(format!("offset={}", query.offset.unwrap_or(0)));
+        let url = format!(
+            "{}/api/v1/optimizers/checkpoints?{}",
+            self.base_url,
+            params.join("&")
+        );
+        let payload = self.get_json(&url).await?;
+        serde_json::from_value(payload).context("decode saved LoRA checkpoint page")
+    }
+
+    pub async fn saved_lora_checkpoints_for_run(&self, run_id: &str) -> Result<SavedLoraRunPage> {
+        let url = format!(
+            "{}/api/v1/optimizers/runs/{}/saved-checkpoints?status=ready&limit=100",
+            self.base_url,
+            urlencoding_lite(run_id)
+        );
+        let payload = self.get_json(&url).await?;
+        serde_json::from_value(payload).context("decode run saved LoRA checkpoint page")
+    }
+
+    pub async fn run_outputs(&self, run_id: &str) -> Result<OptimizerRunOutputs> {
+        let url = format!(
+            "{}/api/v1/optimizers/runs/{}/outputs",
+            self.base_url,
+            urlencoding_lite(run_id)
+        );
+        let payload = self.get_json(&url).await?;
+        serde_json::from_value(payload).context("decode optimizer run outputs")
+    }
+
+    pub async fn hosted_training_models(&self) -> Result<HostedTrainingModelCatalog> {
+        let url = format!("{}/api/v1/optimizers/models/training", self.base_url);
+        let payload = self.get_json(&url).await?;
+        serde_json::from_value(payload).context("decode hosted training model catalog")
+    }
+
+    pub async fn archive_saved_lora_checkpoint(
+        &self,
+        checkpoint_id: &str,
+    ) -> Result<SavedLoraCheckpoint> {
+        let url = format!(
+            "{}/api/v1/optimizers/checkpoints/{}",
+            self.base_url,
+            urlencoding_lite(checkpoint_id)
+        );
+        let payload = self.delete_json(&url).await?;
+        serde_json::from_value(payload).context("decode archived saved LoRA checkpoint")
+    }
+
+    pub async fn saved_lora_download(&self, checkpoint_id: &str) -> Result<SavedLoraDownload> {
+        let url = format!(
+            "{}/api/v1/optimizers/checkpoints/{}/download",
+            self.base_url,
+            urlencoding_lite(checkpoint_id)
+        );
+        let payload = self.get_json(&url).await?;
+        serde_json::from_value(payload).context("decode saved LoRA download")
     }
 
     async fn get_json(&self, url: &str) -> Result<Value> {
@@ -200,6 +325,23 @@ impl CloudOptimizerClient {
         }
         if text.trim().is_empty() {
             return Ok(json!({}));
+        }
+        serde_json::from_str(&text).context("decode cloud optimizer JSON")
+    }
+
+    async fn delete_json(&self, url: &str) -> Result<Value> {
+        let response = self
+            .client
+            .delete(url)
+            .header("Authorization", format!("Bearer {}", self.api_key))
+            .header("Accept", "application/json")
+            .send()
+            .await
+            .with_context(|| format!("DELETE {url}"))?;
+        let status = response.status();
+        let text = response.text().await.context("read response body")?;
+        if !status.is_success() {
+            bail!("cloud optimizer DELETE failed ({status}): {text}");
         }
         serde_json::from_str(&text).context("decode cloud optimizer JSON")
     }

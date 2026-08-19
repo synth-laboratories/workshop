@@ -5,6 +5,220 @@ pub const OPTIMIZER_RUN_SCHEMA_VERSION: &str = "optimizer_run.v1";
 pub const OPTIMIZER_EVENT_SCHEMA_VERSION: &str = "optimizer_event.v1";
 pub const OPTIMIZER_STATE_SLICE_SCHEMA_VERSION: &str = "optimizer_state_slice.v1";
 
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, specta::Type)]
+#[serde(rename_all(deserialize = "snake_case", serialize = "camelCase"))]
+pub struct SavedLoraStorage {
+    pub backend: String,
+    pub bucket: String,
+    pub key: String,
+    pub version: Option<String>,
+    pub etag: Option<String>,
+    pub sha256: Option<String>,
+    #[specta(type = specta_typescript::Unknown)]
+    pub size_bytes: Option<u64>,
+    pub content_type: String,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, specta::Type)]
+#[serde(rename_all(deserialize = "snake_case", serialize = "camelCase"))]
+pub struct SavedLoraLineage {
+    pub optimizer_algorithm: Option<String>,
+    pub run_id: Option<String>,
+    pub attempt_id: Option<String>,
+    pub source_checkpoint_id: Option<String>,
+    pub provider_checkpoint_reference: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, specta::Type)]
+#[serde(rename_all(deserialize = "snake_case", serialize = "camelCase"))]
+pub struct SavedLoraCheckpoint {
+    pub schema_version: String,
+    pub checkpoint_id: String,
+    pub org_id: String,
+    pub owner_user_id: Option<String>,
+    pub visibility: String,
+    pub name: String,
+    pub description: String,
+    pub provider: String,
+    pub checkpoint_kind: String,
+    pub provider_checkpoint_reference: Option<String>,
+    pub run_id: Option<String>,
+    pub attempt_id: Option<String>,
+    pub source_checkpoint_id: Option<String>,
+    pub optimizer_algorithm: Option<String>,
+    pub base_model: String,
+    pub lora_rank: Option<i32>,
+    #[specta(type = specta_typescript::Unknown)]
+    pub step: Option<u64>,
+    pub status: String,
+    pub storage: SavedLoraStorage,
+    #[serde(default)]
+    pub lineage: SavedLoraLineage,
+    pub tags: Vec<String>,
+    #[specta(type = specta_typescript::Unknown)]
+    pub metadata: Value,
+    pub created_at: Option<String>,
+    pub updated_at: Option<String>,
+    pub archived_at: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, specta::Type)]
+#[serde(rename_all(deserialize = "snake_case", serialize = "camelCase"))]
+pub struct SavedLoraCheckpointPage {
+    pub schema_version: String,
+    pub items: Vec<SavedLoraCheckpoint>,
+    #[specta(type = specta_typescript::Unknown)]
+    pub total: u64,
+    #[specta(type = specta_typescript::Unknown)]
+    pub limit: u64,
+    #[specta(type = specta_typescript::Unknown)]
+    pub offset: u64,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, specta::Type)]
+#[serde(rename_all(deserialize = "snake_case", serialize = "camelCase"))]
+pub struct SavedLoraRunIdentity {
+    pub run_id: String,
+    pub attempt_id: Option<String>,
+    pub optimizer_algorithm: String,
+    pub status: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, specta::Type)]
+#[serde(rename_all(deserialize = "snake_case", serialize = "camelCase"))]
+pub struct SavedLoraRunCounts {
+    #[specta(type = specta_typescript::Unknown)]
+    pub total: u64,
+    #[specta(type = specta_typescript::Unknown)]
+    pub inference: u64,
+    #[specta(type = specta_typescript::Unknown)]
+    pub training: u64,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, specta::Type)]
+#[serde(rename_all(deserialize = "snake_case", serialize = "camelCase"))]
+pub struct SavedLoraRunPage {
+    pub schema_version: String,
+    pub run: SavedLoraRunIdentity,
+    pub items: Vec<SavedLoraCheckpoint>,
+    pub counts: SavedLoraRunCounts,
+    #[specta(type = specta_typescript::Unknown)]
+    pub total: u64,
+    #[specta(type = specta_typescript::Unknown)]
+    pub limit: u64,
+    #[specta(type = specta_typescript::Unknown)]
+    pub offset: u64,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, specta::Type)]
+#[serde(rename_all(deserialize = "snake_case", serialize = "camelCase"))]
+pub struct OptimizerRunOutputIdentity {
+    pub run_id: String,
+    pub attempt_id: Option<String>,
+    pub optimizer_algorithm: String,
+    pub status: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, specta::Type)]
+#[serde(rename_all(deserialize = "snake_case", serialize = "camelCase"))]
+pub struct OptimizerRunOutputArtifact {
+    pub artifact_id: String,
+    pub run_id: String,
+    pub artifact_name: String,
+    pub content_type: Option<String>,
+    #[specta(type = specta_typescript::Unknown)]
+    pub size_bytes: u64,
+    pub sha256: Option<String>,
+    pub storage_backend: String,
+    pub uri: String,
+    pub download_path: String,
+    #[specta(type = specta_typescript::Unknown)]
+    pub metadata: Value,
+    pub created_at: Option<String>,
+    pub updated_at: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, specta::Type)]
+#[serde(rename_all(deserialize = "snake_case", serialize = "camelCase"))]
+pub struct OptimizerRunOutputCounts {
+    #[specta(type = specta_typescript::Unknown)]
+    pub artifacts: u64,
+    #[specta(type = specta_typescript::Unknown)]
+    pub model_checkpoints: u64,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, specta::Type)]
+#[serde(rename_all(deserialize = "snake_case", serialize = "camelCase"))]
+pub struct OptimizerRunOutputs {
+    pub schema_version: String,
+    pub run: OptimizerRunOutputIdentity,
+    #[specta(type = specta_typescript::Unknown)]
+    pub result: Option<Value>,
+    pub artifacts: Vec<OptimizerRunOutputArtifact>,
+    pub model_checkpoints: Vec<SavedLoraCheckpoint>,
+    pub counts: OptimizerRunOutputCounts,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct SavedLoraCheckpointQuery {
+    pub search: Option<String>,
+    pub scope: Option<String>,
+    pub provider: Option<String>,
+    pub checkpoint_kind: Option<String>,
+    pub base_model: Option<String>,
+    pub run_id: Option<String>,
+    pub attempt_id: Option<String>,
+    pub source_checkpoint_id: Option<String>,
+    pub optimizer_algorithm: Option<String>,
+    pub status: Option<String>,
+    pub tags: Option<Vec<String>>,
+    #[specta(type = specta_typescript::Unknown)]
+    pub limit: Option<u64>,
+    #[specta(type = specta_typescript::Unknown)]
+    pub offset: Option<u64>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, specta::Type)]
+#[serde(rename_all(deserialize = "snake_case", serialize = "camelCase"))]
+pub struct SavedLoraDownload {
+    pub checkpoint_id: String,
+    pub url: String,
+    #[specta(type = specta_typescript::Unknown)]
+    pub expires_in: u64,
+    pub content_type: String,
+    #[specta(type = specta_typescript::Unknown)]
+    pub size_bytes: Option<u64>,
+    pub sha256: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, specta::Type)]
+#[serde(rename_all(deserialize = "snake_case", serialize = "camelCase"))]
+pub struct HostedTrainingModel {
+    pub model_id: String,
+    pub label: String,
+    pub provider: String,
+    pub provider_revision: String,
+    pub architecture: String,
+    #[specta(type = specta_typescript::Unknown)]
+    pub max_context_length: u64,
+    #[specta(type = specta_typescript::Unknown)]
+    pub rank: Value,
+    #[specta(type = specta_typescript::Unknown)]
+    pub algorithms: Value,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, specta::Type)]
+#[serde(rename_all(deserialize = "snake_case", serialize = "camelCase"))]
+pub struct HostedTrainingModelCatalog {
+    pub schema_version: String,
+    pub catalog_revision: String,
+    pub live_preflight_required: bool,
+    pub models: Vec<HostedTrainingModel>,
+    #[specta(type = specta_typescript::Unknown)]
+    pub total: u64,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Default, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub struct OptimizerCapabilities {
@@ -54,7 +268,7 @@ impl OptimizerCapabilities {
                 local_slot_binding: true,
                 ..Self::default()
             },
-            "sft" => Self {
+            "sft" | "cispo" | "ppo" => Self {
                 cancel: true,
                 pause: true,
                 resume: true,

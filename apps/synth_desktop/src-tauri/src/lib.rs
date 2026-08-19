@@ -79,9 +79,10 @@ use intern_api::{
 };
 use laguna::{LagunaManager, LagunaModelHit, LagunaStatus};
 use optimizers::{
-    OptimizerCreateRequest, OptimizerEventEnvelope, OptimizerImportLocalRequest, OptimizerQuery,
-    OptimizerRecipeRunRequest, OptimizerReconcileRequest, OptimizerRelationship,
-    OptimizerRunRecord, OptimizerStateSlice,
+    HostedTrainingModelCatalog, OptimizerCreateRequest, OptimizerEventEnvelope,
+    OptimizerImportLocalRequest, OptimizerQuery, OptimizerRecipeRunRequest,
+    OptimizerReconcileRequest, OptimizerRelationship, OptimizerRunRecord, OptimizerStateSlice,
+    SavedLoraCheckpoint, SavedLoraCheckpointPage, SavedLoraCheckpointQuery, SavedLoraDownload,
 };
 use plugins::PluginStatus;
 use reports::{
@@ -1320,6 +1321,97 @@ async fn optimizers_list_cloud(
                 .map(contract::specta::OpaqueJson)
                 .collect()
         })
+        .map_err(AppError::from)
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn optimizers_saved_loras_search(
+    state: State<'_, Arc<CoreRuntime>>,
+    query: Option<SavedLoraCheckpointQuery>,
+) -> Result<SavedLoraCheckpointPage, AppError> {
+    state
+        .optimizers()
+        .search_saved_lora_checkpoints(query.unwrap_or_default())
+        .await
+        .map_err(AppError::from)
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn optimizers_run_checkpoints_list(
+    state: State<'_, Arc<CoreRuntime>>,
+    optimizer_run_id: String,
+) -> Result<optimizers::SavedLoraRunPage, AppError> {
+    state
+        .optimizers()
+        .list_saved_lora_checkpoints_for_run(optimizer_run_id)
+        .await
+        .map_err(AppError::from)
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn optimizers_run_outputs(
+    state: State<'_, Arc<CoreRuntime>>,
+    optimizer_run_id: String,
+) -> Result<optimizers::OptimizerRunOutputs, AppError> {
+    state
+        .optimizers()
+        .run_outputs(optimizer_run_id)
+        .await
+        .map_err(AppError::from)
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn optimizers_training_models(
+    state: State<'_, Arc<CoreRuntime>>,
+) -> Result<HostedTrainingModelCatalog, AppError> {
+    state
+        .optimizers()
+        .hosted_training_models()
+        .await
+        .map_err(AppError::from)
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn optimizers_saved_lora_archive(
+    state: State<'_, Arc<CoreRuntime>>,
+    checkpoint_id: String,
+) -> Result<SavedLoraCheckpoint, AppError> {
+    state
+        .optimizers()
+        .archive_saved_lora_checkpoint(checkpoint_id)
+        .await
+        .map_err(AppError::from)
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn optimizers_saved_lora_download(
+    state: State<'_, Arc<CoreRuntime>>,
+    checkpoint_id: String,
+) -> Result<SavedLoraDownload, AppError> {
+    state
+        .optimizers()
+        .saved_lora_download(checkpoint_id)
+        .await
+        .map_err(AppError::from)
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn optimizers_training_reconcile(
+    state: State<'_, Arc<CoreRuntime>>,
+    optimizer_run_id: String,
+) -> Result<contract::specta::OpaqueJson, AppError> {
+    state
+        .optimizers()
+        .reconcile_training(optimizer_run_id)
+        .await
+        .map(contract::specta::OpaqueJson)
         .map_err(AppError::from)
 }
 

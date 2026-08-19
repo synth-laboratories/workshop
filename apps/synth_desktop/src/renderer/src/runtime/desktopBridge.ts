@@ -804,6 +804,19 @@ window.synthWorkspaceScope ??= isTauri
 					status: query?.status ?? null,
 					limit: query?.limit ?? null
 				}),
+			searchSavedLoras: (query) =>
+				invokeCommand(COMMANDS.OPTIMIZERS_SAVED_LORAS_SEARCH, { query: query ?? null }),
+			listRunCheckpoints: (optimizerRunId) =>
+				invokeCommand(COMMANDS.OPTIMIZERS_RUN_CHECKPOINTS_LIST, { optimizerRunId }),
+			runOutputs: (optimizerRunId) =>
+				invokeCommand(COMMANDS.OPTIMIZERS_RUN_OUTPUTS, { optimizerRunId }),
+			hostedTrainingModels: () => invokeCommand(COMMANDS.OPTIMIZERS_TRAINING_MODELS),
+			archiveSavedLora: (checkpointId) =>
+				invokeCommand(COMMANDS.OPTIMIZERS_SAVED_LORA_ARCHIVE, { checkpointId }),
+			savedLoraDownload: (checkpointId) =>
+				invokeCommand(COMMANDS.OPTIMIZERS_SAVED_LORA_DOWNLOAD, { checkpointId }),
+			reconcileTraining: (optimizerRunId) =>
+				invokeCommand(COMMANDS.OPTIMIZERS_TRAINING_RECONCILE, { optimizerRunId }),
 			recordVisualReady: (request) => invokeCommand(COMMANDS.VISUAL_SUBSCRIPTION_READY, { request }),
 			onEvent(listener) {
 				return listenRuntimeAppEvents((payload) => {

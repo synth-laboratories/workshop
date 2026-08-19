@@ -7590,6 +7590,41 @@ html.sidebar-hidden .sidebar {
 .optimizer-inspector dt { color: var(--color-text-faint); }
 .optimizer-inspector dd { text-align: right; color: var(--color-text); overflow-wrap: anywhere; }
 .optimizer-inspector-actions { display: flex; flex-wrap: wrap; gap: 7px; }
+.optimizer-training-progress { margin: 0 0 16px; padding: 11px 12px; border: 1px solid var(--color-border); background: var(--color-bg-subtle); }
+.optimizer-training-title { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 8px; }
+.optimizer-training-progress dl { margin-bottom: 10px; }
+.optimizer-training-metrics { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; margin-top: 8px; }
+.optimizer-training-metrics span { display: grid; gap: 2px; min-width: 0; padding: 7px; border: 1px solid var(--color-border); background: var(--color-card); }
+.optimizer-training-metrics small { overflow: hidden; text-overflow: ellipsis; color: var(--color-text-faint); white-space: nowrap; }
+.optimizer-training-metrics strong { font: 11px/1.3 var(--font-mono); }
+.optimizer-training-checkpoints { display: grid; gap: 6px; margin-top: 12px; }
+.optimizer-training-checkpoints article { display: grid; gap: 2px; padding: 7px; border: 1px solid var(--color-border); background: var(--color-card); }
+.optimizer-training-checkpoints code { overflow-wrap: anywhere; color: var(--color-text); font: 10px/1.35 var(--font-mono); }
+.optimizer-training-checkpoints span, .optimizer-training-checkpoints small { color: var(--color-text-muted); }
+.optimizer-training-launch { display: grid; gap: 14px; padding: 18px; border: 1px solid var(--color-border); background: var(--color-card); }
+.optimizer-training-form { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
+.optimizer-training-form label { display: grid; gap: 5px; min-width: 0; color: var(--color-text-muted); font: 700 9px/1.2 var(--font-sans); }
+.optimizer-training-form input, .optimizer-training-form select { box-sizing: border-box; min-width: 0; width: 100%; min-height: 32px; padding: 6px 8px; border: 1px solid var(--color-border); background: var(--color-bg); color: var(--color-text); font: 10px/1.3 var(--font-sans); }
+.optimizer-training-form input:focus, .optimizer-training-form select:focus { border-color: var(--color-selection-ring); outline: 2px solid var(--color-selection-subtle); }
+.optimizer-training-launch-actions { display: flex; align-items: center; gap: 12px; }
+.optimizer-training-launch-actions small { color: var(--color-text-muted); }
+.optimizer-checkpoint-library { margin: 14px 0; padding: 14px; border: 1px solid var(--color-border); background: var(--color-card); }
+.optimizer-checkpoint-filters { display: grid; grid-template-columns: minmax(240px, 1fr) auto auto auto; gap: 8px; align-items: center; margin-bottom: 12px; }
+.optimizer-checkpoint-filters select { min-height: 32px; border: 1px solid var(--color-border); background: var(--color-bg); color: var(--color-text); }
+.optimizer-checkpoint-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 10px; }
+.optimizer-checkpoint-card { display: grid; gap: 9px; padding: 12px; border: 1px solid var(--color-border); background: var(--color-card); }
+.optimizer-checkpoint-card h3, .optimizer-checkpoint-card p { margin: 0; }
+.optimizer-checkpoint-card p { color: var(--color-text-muted); }
+.optimizer-checkpoint-card dl { display: grid; grid-template-columns: auto 1fr; gap: 4px 10px; margin: 0; }
+.optimizer-checkpoint-card dt { color: var(--color-text-faint); }
+.optimizer-checkpoint-card dd { margin: 0; overflow-wrap: anywhere; }
+.optimizer-checkpoint-tags, .optimizer-checkpoint-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+.optimizer-checkpoint-tags span { padding: 3px 7px; background: var(--color-bg-subtle); }
+.optimizer-checkpoint-actions { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 5px; }
+.optimizer-checkpoint-actions button { min-height: 27px; padding: 4px 8px; }
+@media (max-width: 980px) { .optimizer-training-form { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 840px) { .optimizer-checkpoint-filters { grid-template-columns: 1fr; } }
+@media (max-width: 620px) { .optimizer-training-form { grid-template-columns: 1fr; } .optimizer-training-launch-actions { align-items: flex-start; flex-direction: column; } }
 .optimizer-diagnostic,
 .optimizer-run-files { margin: 0 0 16px; border: 1px solid var(--color-border); border-radius: 10px; padding: 11px 12px; background: #fff; }
 .optimizer-diagnostic { border-color: #ebc6c2; background: #fffafa; box-shadow: inset 3px 0 #cf6259; }

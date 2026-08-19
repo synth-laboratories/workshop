@@ -173,6 +173,13 @@ impl Commands {
     pub const OPTIMIZERS_IMPORT_LOCAL: &'static str = "optimizers_import_local";
     pub const OPTIMIZERS_RECONCILE_CLOUD: &'static str = "optimizers_reconcile_cloud";
     pub const OPTIMIZERS_LIST_CLOUD: &'static str = "optimizers_list_cloud";
+    pub const OPTIMIZERS_SAVED_LORAS_SEARCH: &'static str = "optimizers_saved_loras_search";
+    pub const OPTIMIZERS_RUN_CHECKPOINTS_LIST: &'static str = "optimizers_run_checkpoints_list";
+    pub const OPTIMIZERS_RUN_OUTPUTS: &'static str = "optimizers_run_outputs";
+    pub const OPTIMIZERS_TRAINING_MODELS: &'static str = "optimizers_training_models";
+    pub const OPTIMIZERS_SAVED_LORA_ARCHIVE: &'static str = "optimizers_saved_lora_archive";
+    pub const OPTIMIZERS_SAVED_LORA_DOWNLOAD: &'static str = "optimizers_saved_lora_download";
+    pub const OPTIMIZERS_TRAINING_RECONCILE: &'static str = "optimizers_training_reconcile";
     pub const PLUGINS_STATUS: &'static str = "plugins_status";
     pub const PLUGINS_LIST: &'static str = "plugins_list";
     pub const COMPUTER_USE_STATUS: &'static str = "computer_use_status";

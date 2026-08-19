@@ -1677,6 +1677,138 @@ impl OptimizerService {
             .await
     }
 
+    pub async fn search_saved_lora_checkpoints(
+        &self,
+        query: super::SavedLoraCheckpointQuery,
+    ) -> Result<super::SavedLoraCheckpointPage> {
+        super::cloud::CloudOptimizerClient::from_config()?
+            .search_saved_lora_checkpoints(query)
+            .await
+    }
+
+    pub async fn list_saved_lora_checkpoints_for_run(
+        &self,
+        run_id: String,
+    ) -> Result<super::SavedLoraRunPage> {
+        super::cloud::CloudOptimizerClient::from_config()?
+            .saved_lora_checkpoints_for_run(&run_id)
+            .await
+    }
+
+    pub async fn run_outputs(&self, run_id: String) -> Result<super::OptimizerRunOutputs> {
+        super::cloud::CloudOptimizerClient::from_config()?
+            .run_outputs(&run_id)
+            .await
+    }
+
+    pub async fn hosted_training_models(&self) -> Result<super::HostedTrainingModelCatalog> {
+        super::cloud::CloudOptimizerClient::from_config()?
+            .hosted_training_models()
+            .await
+    }
+
+    pub async fn archive_saved_lora_checkpoint(
+        &self,
+        checkpoint_id: String,
+    ) -> Result<super::SavedLoraCheckpoint> {
+        super::cloud::CloudOptimizerClient::from_config()?
+            .archive_saved_lora_checkpoint(&checkpoint_id)
+            .await
+    }
+
+    pub async fn saved_lora_download(
+        &self,
+        checkpoint_id: String,
+    ) -> Result<super::SavedLoraDownload> {
+        super::cloud::CloudOptimizerClient::from_config()?
+            .saved_lora_download(&checkpoint_id)
+            .await
+    }
+
+    /// Persist the canonical hosted-training projection independently of the
+    /// legacy optimizer-event cursor.  The backend training ledger is the
+    /// authority for CISPO/PPO progress, checkpoint readiness and terminal
+    /// truth; keeping its sequence in the durable run summary makes Workshop
+    /// reconnect from the same cursor after an app restart.
+    pub async fn reconcile_training(&self, optimizer_run_id: String) -> Result<Value> {
+        let run = self.get(optimizer_run_id.clone()).await?;
+        if !matches!(run.algorithm_id.as_str(), "sft" | "cispo" | "ppo") {
+            bail!(
+                "canonical training replay is unavailable for algorithm {}",
+                run.algorithm_id
+            );
+        }
+        if run.source != "cloud" {
+            bail!("canonical training replay requires a cloud run");
+        }
+        let mut projection: super::TrainingProjection = run
+            .summary
+            .get("trainingProjection")
+            .cloned()
+            .map(serde_json::from_value)
+            .transpose()
+            .context("decode persisted training projection")?
+            .unwrap_or_default();
+        let client = super::cloud::CloudOptimizerClient::from_config()?;
+        loop {
+            let events = client
+                .training_events_after(&optimizer_run_id, projection.last_sequence, Some(5000))
+                .await?;
+            if events.is_empty() {
+                break;
+            }
+            let previous = projection.last_sequence;
+            for event in events {
+                projection.apply(&event).map_err(anyhow::Error::msg)?;
+            }
+            if projection.last_sequence == previous {
+                break;
+            }
+        }
+        let persisted_projection = serde_json::to_value(&projection)?;
+        let result = json!({
+            "schemaVersion": "workshop.training_snapshot.v1",
+            "runId": optimizer_run_id,
+            "projection": persisted_projection,
+        });
+        let result_for_store = result.clone();
+        let lifecycle = projection.lifecycle;
+        let provider_usage = projection.provider_usage.clone();
+        self.patch_run(optimizer_run_id, move |run| {
+            let mut summary = run.summary.as_object().cloned().unwrap_or_default();
+            summary.insert(
+                "trainingProjection".into(),
+                result_for_store["projection"].clone(),
+            );
+            summary.insert(
+                "trainingEventSequence".into(),
+                json!(projection.last_sequence),
+            );
+            if let Some(usage) = provider_usage.as_ref() {
+                if let Some(cost) = usage
+                    .get("provider_cost_usd")
+                    .or_else(|| usage.get("estimated_cost_usd"))
+                    .and_then(Value::as_f64)
+                {
+                    run.usage.cost_usd = Some(cost);
+                }
+                run.usage.prompt_tokens = usage
+                    .get("prompt_tokens")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(run.usage.prompt_tokens);
+                run.usage.completion_tokens = usage
+                    .get("completion_tokens")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(run.usage.completion_tokens);
+            }
+            run.status = training_lifecycle_status(lifecycle).into();
+            run.capabilities = OptimizerCapabilities::for_algorithm(&run.algorithm_id);
+            Ok(())
+        })
+        .await?;
+        Ok(result)
+    }
+
     async fn create_cloud(
         &self,
         request: OptimizerCreateRequest,
@@ -1766,6 +1898,26 @@ impl OptimizerService {
             Ok(slices)
         })
         .await
+    }
+}
+
+fn training_lifecycle_status(lifecycle: super::TrainingLifecycle) -> &'static str {
+    use super::TrainingLifecycle as L;
+    match lifecycle {
+        L::Draft | L::Validating => "validating",
+        L::Queued => "queued",
+        L::Provisioning => "provisioning",
+        L::Running | L::Checkpointing | L::Evaluating => "running",
+        L::EnvUnreachable => "env_unreachable",
+        L::Cancelling => "cancelling",
+        L::Cancelled => "cancelled",
+        L::Paused => "paused",
+        L::Completed => "completed",
+        L::Degraded => "degraded",
+        L::FailedEvidence => "failed_evidence",
+        L::Failed => "failed",
+        L::InfrastructureLost => "infrastructure_lost",
+        L::CapReached => "cap_reached",
     }
 }
 
