@@ -149,6 +149,12 @@ pub(crate) async fn spawn_server<R: tauri::Runtime>(
     if let Some((name, value)) = provider_child_env(request)? {
         command.env(name, value);
     }
+    // A Stop must contain every process the app-server owns, not merely the
+    // JSON-RPC parent. Shell tools commonly spawn grandchildren, and killing
+    // only the parent leaves a command (or its container client) running after
+    // the composer has been told the turn is over. Give each attachment its
+    // own process group so the transport can terminate that exact tree.
+    isolate_process_group(&mut command);
     let mut child = command.spawn().context("spawn codex app-server")?;
     let stdin = Arc::new(Mutex::new(
         child.stdin.take().context("capture app-server stdin")?,
@@ -188,6 +194,15 @@ pub(crate) async fn spawn_server<R: tauri::Runtime>(
     });
     Ok(server)
 }
+
+#[cfg(unix)]
+fn isolate_process_group(command: &mut Command) {
+    use std::os::unix::process::CommandExt;
+    command.as_std_mut().process_group(0);
+}
+
+#[cfg(not(unix))]
+fn isolate_process_group(_command: &mut Command) {}
 
 async fn read_stdout<R: tauri::Runtime>(
     app: AppHandle<R>,
