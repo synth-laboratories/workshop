@@ -153,6 +153,15 @@ rg -q 'source=Notarized Developer ID' "$ROOT/scripts/release-artifact.sh"
 rg -q 'notarized:true, stapled:true' "$ROOT/scripts/release-artifact.sh"
 ! rg -q 'UNNOTARIZED' "$ROOT/scripts/release-artifact.sh"
 
+# Pre-notary acceptance uses an explicit candidate lane. It records the lack of
+# notarization, preserves the official app, and never calls Apple's notary API.
+rg -q 'candidate-all' "$ROOT/scripts/release-artifact.sh"
+rg -q 'distribution:"candidate"' "$ROOT/scripts/release-artifact.sh"
+rg -q 'notarized:false, stapled:false' "$ROOT/scripts/release-artifact.sh"
+rg -q 'Synth Workshop Candidate.app' "$ROOT/scripts/release-artifact.sh"
+candidate_case="$(sed -n '/candidate-stage)/,/help|-h|--help)/p' "$ROOT/scripts/release-artifact.sh")"
+! grep -q 'notarize_artifact' <<<"$candidate_case"
+
 # Canonical lifecycle commands must never stop an arbitrary copied app or a
 # named development instance. Exact executable paths are the process authority.
 # The stand-in binary must be compiled locally: copies of Apple-signed system
