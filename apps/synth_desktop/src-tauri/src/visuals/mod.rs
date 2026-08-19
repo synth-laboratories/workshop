@@ -2,6 +2,8 @@
 
 mod artifacts;
 mod backfill;
+pub mod chart_data;
+pub mod charts;
 mod live_eval;
 pub mod mermaid;
 mod models;
@@ -11,6 +13,23 @@ mod renditions;
 pub mod snapshot;
 pub mod systems;
 mod templates;
+
+/// The repository's `visuals/` root, so tests can load the same fixtures the
+/// binding resolver reads.
+#[cfg(test)]
+pub fn templates_root_for_tests() -> std::path::PathBuf {
+    templates::visuals_root()
+}
+
+/// Templates whose canonical source is the visual itself: create and update
+/// refuse them without `content`, and their pixels come from a host renderer
+/// rather than a Desktop pane. Callers that just need "some template" — tests,
+/// pickers — must skip these rather than sniff the id.
+pub fn requires_canonical_source(template_id: &str) -> bool {
+    mermaid::is_mermaid_template(template_id)
+        || systems::template_kind(template_id).is_some()
+        || charts::is_chart_template(template_id)
+}
 
 pub use backfill::{canonicalize_persisted_bindings, BindingsBackfill};
 pub use live_eval::{

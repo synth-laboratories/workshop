@@ -23,12 +23,10 @@ test("model picker reflects the Rust auth state and recovery action", () => {
 	assert.match(composer, /state\.codexOauthStatus\?\.action === "reauthenticate"/);
 });
 
-test("packaged startup refreshes an existing ChatGPT credential before showing models", () => {
+test("packaged startup reads ChatGPT auth passively and refreshes before use", () => {
 	const controller = read("src/renderer/src/hooks/useAppController.ts");
 	assert.match(controller, /const refreshOauthStatus = \(\) => \{/);
-	assert.match(controller, /bridges\.codexOauth\?\.ensureReady\(\)\.then/);
-	assert.doesNotMatch(
-		controller,
-		/const refreshOauthStatus = \(\) => \{[\s\S]*?bridges\.codexOauth\?\.status\(\)\.then/,
-	);
+	assert.match(controller, /bridges\.codexOauth\?\.status\(\)\.then/);
+	assert.match(controller, /const ensureCodexOauthReady = useCallback/);
+	assert.match(controller, /bridges\.codexOauth\?\.ensureReady\(\)\.catch/);
 });

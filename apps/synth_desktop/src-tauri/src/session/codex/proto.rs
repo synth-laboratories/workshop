@@ -366,6 +366,10 @@ impl ApprovalResolver for CodexResolver {
 impl Drop for AppServer {
     fn drop(&mut self) {
         if let Ok(mut child) = self.child.try_lock() {
+            #[cfg(unix)]
+            if let Some(pgid) = owned_process_group(child.id()) {
+                signal_process_group(pgid, libc::SIGTERM);
+            }
             let _ = child.start_kill();
         }
     }
@@ -410,12 +414,30 @@ impl AppServer {
     }
 
     pub(crate) async fn perform_stop(&self) -> Result<()> {
-        self.child
-            .lock()
-            .await
-            .kill()
-            .await
-            .context("stop app-server")
+        let mut child = self.child.lock().await;
+        #[cfg(unix)]
+        {
+            let pid = child.id();
+            let pgid = owned_process_group(pid);
+            if let Some(pgid) = pgid {
+                signal_process_group(pgid, libc::SIGTERM);
+            }
+            // SIGTERM is deliberately brief: it gives a cooperative tool a
+            // chance to close files, but Stop must never leave a process tree
+            // running indefinitely. The follow-up SIGKILL is restricted to
+            // the verified isolated group captured before its leader can exit,
+            // never a guessed host process. Re-resolving the group from the
+            // leader after SIGTERM loses descendants once the leader is reaped.
+            tokio::time::sleep(Duration::from_millis(500)).await;
+            if let Some(pgid) = pgid {
+                kill_process_group_if_alive(pgid);
+            }
+        }
+        if child.try_wait()?.is_none() {
+            child.kill().await.context("stop app-server")?;
+        }
+        let _ = child.wait().await;
+        Ok(())
     }
 
     pub(crate) async fn perform_resolve_approval(
@@ -429,6 +451,33 @@ impl AppServer {
         Err(anyhow!(
             "approval resolution moved to the Workshop approval broker"
         ))
+    }
+}
+
+#[cfg(unix)]
+fn owned_process_group(pid: Option<u32>) -> Option<libc::pid_t> {
+    // Negative pid values target a process group. Refuse system/sentinel IDs,
+    // a lossy conversion, the desktop's own group, and any non-isolated child.
+    let pid = libc::pid_t::try_from(pid?).ok().filter(|pid| *pid > 1)?;
+    unsafe {
+        let pgid = libc::getpgid(pid);
+        (pgid > 1 && pgid == pid && pgid != libc::getpgrp()).then_some(pgid)
+    }
+}
+
+#[cfg(unix)]
+fn signal_process_group(pgid: libc::pid_t, signal: libc::c_int) {
+    unsafe {
+        libc::kill(-pgid, signal);
+    }
+}
+
+#[cfg(unix)]
+fn kill_process_group_if_alive(pgid: libc::pid_t) {
+    unsafe {
+        if libc::kill(-pgid, 0) == 0 {
+            libc::kill(-pgid, libc::SIGKILL);
+        }
     }
 }
 

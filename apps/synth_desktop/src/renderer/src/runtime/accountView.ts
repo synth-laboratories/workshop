@@ -151,7 +151,7 @@ export function buildAccountView(
 			case "local_only":
 				return "Local mode";
 			case "signed_out":
-				return "Signed out";
+				return summary?.sessionHealth === "revoked" ? "Sign in again" : "Signed out";
 			case "pairing":
 				return "Approve this device in your browser";
 			case "limited":

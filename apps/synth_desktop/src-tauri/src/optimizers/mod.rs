@@ -12,6 +12,7 @@ mod hosted_sft;
 mod ingest;
 mod local;
 pub(crate) mod manager;
+mod mlx_sft;
 mod models;
 mod normalize;
 mod recipes;

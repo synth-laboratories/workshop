@@ -937,15 +937,33 @@ export function useAppController() {
 			[sessionId]: { state: "loading", hasMore: false }
 		}));
 		responseTraceStore.setLoading(sessionId);
-		void Promise.all([
+		void Promise.allSettled([
 			core.sessionEventsTail(sessionId, TRANSCRIPT_INITIAL_PAGE_SIZE + 1),
-			bridges.visuals?.list({ sessionId, limit: 500 }) ?? Promise.resolve([])
-		]).then(([fetched, ownedVisuals]) => {
+			bridges.visuals?.list({ sessionId, limit: 500 }) ?? Promise.resolve([]),
+			bridges.optimizers?.list({ sessionRef: sessionId, limit: 500 }) ?? Promise.resolve([])
+		]).then(([journal, visualRegistry, optimizerRegistry]) => {
 			// Hydration belongs to the session cache, not to the currently mounted
 			// chat view. Navigation, target attachment and StrictMode effect replay
 			// must not throw away a completed journal read. A generation changes only
 			// when the cache entry itself is evicted or explicitly superseded.
 			if (transcriptHydrationRef.current.get(sessionId)?.generation !== generation) return;
+			// The journal is a conversation-history authority, while the visual
+			// registry is the durable Outputs authority. Do not couple them: an
+			// interrupted journal read during restart used to make an owned visual
+			// disappear from Outputs even though the registry had successfully
+			// reopened the same stable visual id.
+			const fetched = journal.status === "fulfilled" ? journal.value : [];
+			const ownedVisuals = visualRegistry.status === "fulfilled" ? visualRegistry.value : [];
+			const ownedRuns = optimizerRegistry.status === "fulfilled" ? optimizerRegistry.value : [];
+			const journalError = journal.status === "rejected" ? desktopBootError(journal.reason) : null;
+			const visualRegistryError = visualRegistry.status === "rejected"
+				? desktopBootError(visualRegistry.reason)
+				: null;
+			for (const run of ownedRuns) {
+				if (run.source !== "local") continue;
+				if (["completed", "succeeded", "failed", "cancelled", "degraded"].includes(run.status)) continue;
+				void bridges.optimizers?.refresh(run.id);
+			}
 			const hasMore = fetched.length > TRANSCRIPT_INITIAL_PAGE_SIZE;
 			const rows = hasMore ? fetched.slice(1) : fetched;
 			const hydrated = rows
@@ -985,41 +1003,33 @@ export function useAppController() {
 				eventsBySessionRef.current[sessionId]?.at(-1)?.sequence ?? 0,
 				hydratedHead
 			));
+			const error = journalError ?? visualRegistryError;
 			transcriptHydrationRef.current.set(sessionId, {
 				initialized: true,
-				state: "loaded",
+				state: error ? "error" : "loaded",
 				hasMore,
 				earliestSequence: rows[0]?.sessionSequence ?? undefined,
+				error: error ?? undefined,
 				generation
 			});
 			setTranscriptHistoryBySession((current) => ({
 				...current,
-				[sessionId]: { state: "loaded", hasMore }
+				[sessionId]: error
+					? { state: "error", hasMore, error }
+					: { state: "loaded", hasMore }
 			}));
-			responseTraceStore.setJournal(sessionId, rows);
-		}).catch((reason: unknown) => {
-			if (transcriptHydrationRef.current.get(sessionId)?.generation !== generation) return;
-			const message = desktopBootError(reason);
-			transcriptHydrationRef.current.set(sessionId, {
-				initialized: false,
-				state: "error",
-				hasMore: false,
-				error: message,
-				generation
-			});
-			setTranscriptHistoryBySession((current) => ({
-				...current,
-				[sessionId]: { state: "error", hasMore: false, error: message }
-			}));
-			responseTraceStore.setError(sessionId, message);
-			mergeSessionReplay([[sessionId, [{
+			if (!journalError) responseTraceStore.setJournal(sessionId, rows);
+			else responseTraceStore.setError(sessionId, journalError);
+			if (error) mergeSessionReplay([[sessionId, [{
 				schemaVersion: "synth.desktop-runtime-event.v1",
 				sessionId,
 				sequence: 1,
 				eventKind: "session/unhealthy",
 				payload: {
-					reason: "session_replay_failed",
-					message: `This conversation could not be restored: ${message}`
+					reason: journalError ? "session_replay_failed" : "visual_registry_replay_failed",
+					message: journalError
+						? `Conversation history could not be restored; saved Outputs remain available: ${journalError}`
+						: `Saved Outputs could not be reconciled: ${visualRegistryError}`
 				},
 				createdAt: new Date().toISOString(),
 				source: "local"

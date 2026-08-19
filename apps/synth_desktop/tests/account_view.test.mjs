@@ -282,3 +282,21 @@ test("the allowance summary is cloud-only and never mixes in device usage", () =
 	assert.equal(labels.some((label) => label.includes("device")), false);
 	assert.equal(labels.some((label) => label.includes("token")), false);
 });
+
+test("a revoked session invites sign-in again and keeps the auth error", () => {
+	const view = buildAccountView({
+		signedIn: false,
+		state: "signed_out",
+		environment: "prod",
+		source: "none",
+		sessionHealth: "revoked",
+		failureKind: "auth",
+		error: "Synth Cloud rejected this device's key. Sign in again to continue.",
+		reconciliation: "failed"
+	}, false);
+	assert.equal(view.signedIn, false);
+	assert.equal(view.subtitle, "Sign in again");
+	assert.equal(view.primaryAction?.kind, "sign_in");
+	assert.equal(view.statusNote, "Synth Cloud rejected this device's key. Sign in again to continue.");
+	assert.equal(view.allowance.headline, null);
+});

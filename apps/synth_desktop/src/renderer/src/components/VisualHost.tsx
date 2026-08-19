@@ -23,6 +23,7 @@ import type { ProgressAgreement } from "../runtime/runProgress/project";
 import { DIAGNOSTIC_CODES, reportDiagnostic } from "../runtime/diagnostics";
 import { MermaidVisual } from "./MermaidVisual";
 import { SystemsMapVisual } from "./SystemsMapVisual";
+import { ChartVisual } from "./ChartVisual";
 import { SystemsDynamicVisual } from "./SystemsDynamicVisual";
 import type { SubagentState } from "../runtime/sessionView";
 import { bindingAuthorityKey } from "../runtime/visualRevisionState";
@@ -939,6 +940,10 @@ export function VisualHost({ artifact }: { artifact: ArtifactRef }) {
 	const isSystems = artifact.templateId === "diagram.systems.v1" || artifact.rendererKind === "systems";
 	if (isSystems) {
 		return <VisualErrorBoundary key={`${artifact.id}:systems`} visualId={artifact.visualId ?? artifact.id} visualRevision={typeof artifact.revision === "number" ? artifact.revision : null} templateId={artifact.templateId ?? null}><SystemsMapVisual artifact={artifact} /></VisualErrorBoundary>;
+	}
+	const isChart = artifact.templateId === "analysis.chart.v1" || artifact.rendererKind === "chart";
+	if (isChart) {
+		return <VisualErrorBoundary key={`${artifact.id}:chart`} visualId={artifact.visualId ?? artifact.id} visualRevision={typeof artifact.revision === "number" ? artifact.revision : null} templateId={artifact.templateId ?? null}><ChartVisual artifact={artifact} /></VisualErrorBoundary>;
 	}
 	const isMermaid =
 		artifact.templateId === "diagram.mermaid.v1" || artifact.rendererKind === "mermaid";

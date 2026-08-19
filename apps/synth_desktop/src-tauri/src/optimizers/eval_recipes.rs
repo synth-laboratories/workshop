@@ -45,7 +45,7 @@ use tokio::{
 use super::events::OptimizerEventDraft;
 use super::{
     models::{
-        OptimizerCapabilities, OptimizerCreateRequest, OptimizerEventEnvelope,
+        OptimizerCapabilities, OptimizerCreateRequest, OptimizerEventEnvelope, OptimizerRunRecord,
         OptimizerExecutionBinding, OptimizerRecipeRunRequest, OptimizerResourceRef,
         OPTIMIZER_EVENT_SCHEMA_VERSION,
     },
@@ -318,6 +318,7 @@ pub fn recipe_catalog() -> Vec<Value> {
 }
 
 fn normalize_builtin_recipe_contract(mut recipe: Value) -> Value {
+    mark_unreproducible_target_unavailable(&mut recipe);
     if recipe.get("id").and_then(Value::as_str) != Some(EVAL_CRAFTAX_SMOKE_RECIPE)
         || recipe.pointer("/limits/trials").is_some()
     {
@@ -340,6 +341,23 @@ fn normalize_builtin_recipe_contract(mut recipe: Value) -> Value {
         );
     }
     recipe
+}
+
+/// A valid digest is not enough when it names only a local daemon image. Mark
+/// that catalog entry unavailable before it reaches the UI so developers cannot
+/// start a run whose identity depends on a mutable local retag.
+fn mark_unreproducible_target_unavailable(recipe: &mut Value) {
+    let Some(recipe_id) = recipe.get("id").and_then(Value::as_str) else {
+        return;
+    };
+    let Err(error) = require_digest_pinned_target(recipe, recipe_id) else {
+        return;
+    };
+    let Some(object) = recipe.as_object_mut() else {
+        return;
+    };
+    object.insert("availability".into(), json!("unavailable"));
+    object.insert("availabilityReason".into(), json!(error.to_string()));
 }
 
 /// Convert the eval runtime's per-trial budget into the total product approval
@@ -1053,6 +1071,31 @@ async fn ingest_stdout(service: &OptimizerService, run_id: &str, path: &Path) ->
         service.append_events(run_id.to_string(), events).await?;
     }
     Ok(())
+}
+
+/// Reopen a locally-owned eval after the Desktop process disappeared.  The
+/// worker's stdout log is durable authority: a terminal line in that log must
+/// win over the stale `running` projection that happened to be persisted just
+/// before restart.  This intentionally does not launch a worker or infer a
+/// result from an exit code; it only mirrors already-durable worker evidence.
+pub(super) async fn reconcile_persisted(
+    service: &OptimizerService,
+    run_id: &str,
+) -> Result<OptimizerRunRecord> {
+    let run = service.get(run_id.to_string()).await?;
+    if run.algorithm_id != EVAL_ALGORITHM_ID || super::service::is_terminal_status(&run.status) {
+        return Ok(run);
+    }
+    let Some(run_dir) = run
+        .summary
+        .get("runDirectory")
+        .and_then(Value::as_str)
+        .map(PathBuf::from)
+    else {
+        return Ok(run);
+    };
+    ingest_stdout(service, run_id, &run_dir.join("worker.stdout.log")).await?;
+    service.get(run_id.to_string()).await
 }
 
 /// Trace and verifier files are first-class evidence, so they reach the run's
@@ -1883,6 +1926,80 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn restart_refresh_reconciles_a_terminal_worker_log_over_a_running_projection() {
+        let (svc, dir, _) = super::super::service::tests::service().await;
+        let run_id = "opt_eval_restart_terminal".to_string();
+        svc.create(OptimizerCreateRequest {
+            algorithm_id: EVAL_ALGORITHM_ID.into(),
+            algorithm_version: Some("1".into()),
+            objective: Some("restart reconciliation".into()),
+            source: Some("local".into()),
+            project_ref: None,
+            session_ref: Some("session_restart".into()),
+            id: Some(run_id.clone()),
+            execution_bindings: None,
+            input_refs: None,
+            capabilities: Some(OptimizerCapabilities::for_algorithm(EVAL_ALGORITHM_ID)),
+            summary: Some(json!({ "runDirectory": dir.path() })),
+            open_visual: Some(false),
+            seed_fixture: None,
+            cloud_config: None,
+            local_path: None,
+        }).await.unwrap();
+        svc.append_event_payloads(
+            run_id.clone(),
+            vec![OptimizerEventDraft::new("optimizer.run.started", EVAL_ALGORITHM_ID)],
+        ).await.unwrap();
+        assert_eq!(svc.get(run_id.clone()).await.unwrap().status, "running");
+        fs::write(
+            dir.path().join("worker.stdout.log"),
+            include_str!("fixtures/eval_worker_stdout.jsonl"),
+        ).unwrap();
+
+        let recovered = svc.refresh(run_id.clone()).await.unwrap();
+        assert_eq!(recovered.status, "completed");
+        assert!(recovered.finished_at.is_some());
+        assert!(svc.terminal_manifest(run_id).await.unwrap().is_some());
+    }
+
+    #[tokio::test]
+    async fn boot_reconciliation_clears_stale_running_local_evals() {
+        let (svc, dir, _) = super::super::service::tests::service().await;
+        let run_id = "opt_eval_boot_stale_running".to_string();
+        svc.create(OptimizerCreateRequest {
+            algorithm_id: EVAL_ALGORITHM_ID.into(),
+            algorithm_version: Some("1".into()),
+            objective: Some("boot reconciliation".into()),
+            source: Some("local".into()),
+            project_ref: None,
+            session_ref: Some("session_boot".into()),
+            id: Some(run_id.clone()),
+            execution_bindings: None,
+            input_refs: None,
+            capabilities: Some(OptimizerCapabilities::for_algorithm(EVAL_ALGORITHM_ID)),
+            summary: Some(json!({ "runDirectory": dir.path() })),
+            open_visual: Some(false),
+            seed_fixture: None,
+            cloud_config: None,
+            local_path: None,
+        }).await.unwrap();
+        svc.append_event_payloads(
+            run_id.clone(),
+            vec![OptimizerEventDraft::new("optimizer.run.started", EVAL_ALGORITHM_ID)],
+        ).await.unwrap();
+        assert_eq!(svc.get(run_id.clone()).await.unwrap().status, "running");
+        fs::write(
+            dir.path().join("worker.stdout.log"),
+            include_str!("fixtures/eval_worker_stdout.jsonl"),
+        ).unwrap();
+
+        let recovered = svc.reconcile_stale_local_runs().await.unwrap();
+        let recovered = recovered.into_iter().find(|run| run.id == run_id).unwrap();
+        assert_eq!(recovered.status, "completed");
+        assert_eq!(svc.get(run_id).await.unwrap().id, recovered.id);
+    }
+
     /// An eval run is a first-class optimizer noun, so it gets a visual and a
     /// session relationship on the same path every other algorithm uses.
     #[tokio::test]
@@ -2165,16 +2282,15 @@ mod immutable_target_tests {
     }
 
     #[test]
-    fn an_explicit_local_development_lane_accepts_a_registry_less_immutable_id() {
-        require_digest_pinned_target_with_policy(
-            &recipe(
-                Some("craftax-eval-target"),
-                Some("sha256:d1b3eaccfd833f0f67eaf682be0ea162e93ddacb71db944be9b3e03c82cd09bd"),
-            ),
-            EVAL_CRAFTAX_LLM_RECIPE,
-            true,
-        )
-        .expect("an explicitly enabled local lane may use an operator-pinned OCI image ID");
+    fn a_registry_less_catalog_target_is_visible_but_unavailable() {
+        let normalized = normalize_builtin_recipe_contract(recipe(
+            Some("craftax-eval-target"),
+            Some("sha256:d1b3eaccfd833f0f67eaf682be0ea162e93ddacb71db944be9b3e03c82cd09bd"),
+        ));
+        assert_eq!(normalized["availability"], json!("unavailable"));
+        assert!(normalized["availabilityReason"]
+            .as_str()
+            .is_some_and(|reason| reason.contains("names no registry")));
     }
 
     #[test]

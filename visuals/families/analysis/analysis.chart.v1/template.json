@@ -1,0 +1,26 @@
+{
+  "schemaVersion": "synth.visual-template.v1",
+  "id": "analysis.chart.v1",
+  "title": "Ad-hoc data chart",
+  "genre": "analysis",
+  "version": "1.0.0",
+  "rendererKind": "chart",
+  "description": "An agent-authored chart spec rendered to deterministic SVG by the desktop runtime. Panels: metrics, series, bars, scatter, histogram, heatmap, table, note. The pane displays the same rendition a capture returns.",
+  "accent": "#B94712",
+  "tags": ["ad-hoc", "agent-authored", "charts", "trace", "eval"],
+  "slots": [
+    {
+      "name": "spec",
+      "description": "Canonical synth.visual.chart-spec.v1 document, supplied as the visual's content.",
+      "accepts": ["inline"],
+      "required": true,
+      "schema": "synth.visual.chart-spec.v1"
+    },
+    {
+      "name": "data",
+      "description": "Evidence the panels were derived from: a trace digest, fixture path, or CAS blob. Recorded for provenance; the spec carries the plotted values.",
+      "accepts": ["inline", "fixture", "local_cas", "trace_v5"],
+      "required": false
+    }
+  ]
+}

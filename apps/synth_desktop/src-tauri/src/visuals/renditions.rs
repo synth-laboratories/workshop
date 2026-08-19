@@ -1,6 +1,7 @@
 //! Derived SVG/PNG renditions for Mermaid visuals. Canonical source stays in CAS blobs.
 
 use super::mermaid::{self, RenderedDiagram, Theme, MEDIA_TYPE_SVG, RENDERER_VERSION};
+use super::charts;
 use super::systems;
 use anyhow::{bail, Result};
 use chrono::Utc;
@@ -114,6 +115,29 @@ pub fn insert_systems_svg_rendition(
         size_class,
         systems::MEDIA_TYPE_SVG,
         systems::RENDERER_VERSION,
+    )
+}
+
+pub fn insert_chart_svg_rendition(
+    conn: &Connection,
+    visual_id: &str,
+    revision: i64,
+    digest: &str,
+    rendered: &charts::RenderedChart,
+    theme: &str,
+    size_class: &str,
+) -> Result<VisualRendition> {
+    insert_svg_rendition_values(
+        conn,
+        visual_id,
+        revision,
+        digest,
+        rendered.width,
+        rendered.height,
+        theme,
+        size_class,
+        charts::MEDIA_TYPE_SVG,
+        charts::RENDERER_VERSION,
     )
 }
 

@@ -713,6 +713,9 @@ export type PluginsBridge = {
 };
 
 export type ReportStatus = "draft" | "sealed";
+export type ReportReferenceMode = "live" | "pinned";
+export type ReportAccessState = "available" | "redacted" | "forbidden" | "missing";
+export type ReportIntegrityState = "verified" | "digest_mismatch" | "unresolved" | "unsupported" | "source_changed";
 export type ExperimentStatus =
 	| "planned"
 	| "running"
@@ -730,8 +733,9 @@ export type ReportBlock = {
 	payload: Record<string, unknown>;
 	sourceRevision?: string | null;
 	sourceDigest?: string | null;
-	accessState: string;
-	integrityState: string;
+	referenceMode?: ReportReferenceMode;
+	accessState: ReportAccessState;
+	integrityState: ReportIntegrityState;
 };
 
 export type ReportSource = {
@@ -740,16 +744,35 @@ export type ReportSource = {
 	resourceId: string;
 	resourceRevision?: string | null;
 	resourceDigest?: string | null;
+	referenceMode?: ReportReferenceMode;
 	relation: string;
-	accessState: string;
-	integrityState: string;
+	accessState: ReportAccessState;
+	integrityState: ReportIntegrityState;
 };
 
 export type ReportClaim = {
 	claimId: string;
 	statement: string;
-	status: string;
+	status: "true" | "false" | "needs_more_analysis" | "unresolved";
+	confidence?: "low" | "medium" | "high" | "overwhelming";
+	why?: string;
 	evidenceRefs: string[];
+};
+
+export type ReportValidationFinding = {
+	code: string;
+	severity: "error" | "warning" | "info";
+	blockId?: string | null;
+	claimId?: string | null;
+	message: string;
+	remediation?: string | null;
+};
+
+export type ReportValidationResult = {
+	reportId: string;
+	revision: number;
+	sealable: boolean;
+	findings: ReportValidationFinding[];
 };
 
 export type ReportLimitation = {
@@ -875,6 +898,17 @@ export type ReportPromotion = {
 	publicUrl: string;
 };
 
+export type ReportAudience =
+	| { kind: "private" }
+	| { kind: "workspace"; workspaceId: string }
+	| { kind: "members"; memberIds: string[] };
+
+export type ReportAudienceState = {
+	publicationId: string;
+	audience: ReportAudience;
+	status: "active" | "revoked";
+};
+
 export type ReportVisibilityRequest = {
 	requestId: string;
 	reportId: string;
@@ -908,6 +942,8 @@ export type ReportsBridge = {
 	list(query?: { status?: string; search?: string; limit?: number; includeArchived?: boolean }): Promise<ReportRecord[]>;
 	get(reportId: string): Promise<ReportRecord>;
 	getRevision(reportId: string, revision?: number | null): Promise<ReportRevision>;
+	validate(reportId: string, revision?: number | null): Promise<ReportValidationResult>;
+	pinAll(reportId: string): Promise<ReportRecord>;
 	create(request: {
 		title?: string;
 		summary?: string;
@@ -944,6 +980,12 @@ export type ReportsBridge = {
 	compareSeals(leftDigest: string, rightDigest: string): Promise<ReportRevisionCompare>;
 	uploadStatus(receiptDigest: string): Promise<ReportUpload | null>;
 	shareSeal(receiptDigest: string): Promise<ReportUpload>;
+	setAudience(publicationId: string, request: {
+		receiptDigest: string;
+		audience: ReportAudience;
+		redactionPolicyVersion: string;
+	}): Promise<ReportAudienceState>;
+	revokeAudience(publicationId: string, receiptDigest: string): Promise<ReportAudienceState>;
 	promote(publicationId: string, slug: string): Promise<ReportPromotion>;
 	openShared(committedUrl: string): Promise<ReportSealBundle>;
 	listComments(reportId: string, revision?: number | null): Promise<ReportComment[]>;
@@ -1314,6 +1356,10 @@ export type SynthAccountOrganization = {
 export type SynthAccountUsageWindow = {
 	events: number;
 	costUsd: number;
+	finalizedUsd?: number;
+	pendingUsd?: number;
+	tokens?: number;
+	runtimeSeconds?: number;
 };
 
 export type SynthAccountCloudUsage = {
@@ -1353,6 +1399,10 @@ export type SynthAccountSummary = {
 	/** True when the cloud facts shown are a cached copy after a failed refresh. */
 	stale?: boolean;
 	error?: string;
+	sessionHealth?: "local_only" | "signed_out" | "active" | "revoked" | "offline" | "malformed";
+	failureKind?: "none" | "auth" | "entitlement" | "quota" | "outage" | "malformed";
+	quotaExhausted?: boolean;
+	reconciliation?: "ok" | "stale" | "failed";
 };
 
 export type SynthBillingAction = "upgrade" | "manage";
@@ -1367,6 +1417,18 @@ export type SynthAccountBridge = {
 	refresh?(): Promise<SynthAccountSummary>;
 	/** Opens a backend-issued hosted URL in the system browser. */
 	openBilling?(action: SynthBillingAction, tier?: string): Promise<string>;
+};
+
+export type ProductTelemetryPolicy = {
+	dictionaryVersion: string;
+	collectionPolicyVersion: string;
+	optionalEnabled: boolean;
+	consentVersion: string;
+};
+
+export type ProductTelemetryBridge = {
+	getPolicy(): Promise<ProductTelemetryPolicy>;
+	setOptOut(optOut: boolean): Promise<ProductTelemetryPolicy>;
 };
 
 export type CodexOauthBegin = {

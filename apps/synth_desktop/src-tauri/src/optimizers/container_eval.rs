@@ -189,6 +189,8 @@ struct EvalExample {
 struct ReadyContainer {
     id: String,
     base_url: String,
+    protocol: String,
+    image_digest: Option<String>,
 }
 
 pub(super) async fn start(
@@ -205,9 +207,10 @@ pub(super) async fn start(
         "recipeId": spec.recipe_id,
         "task": spec.family,
         "semantics": "baseline_eval",
-        "containerProtocol": "synth_optimizers.gepa.v2",
+        "containerProtocol": container.protocol,
         "containerId": container.id,
         "containerBaseUrl": container.base_url,
+        "containerImageDigest": container.image_digest,
         "expectedVisual": EXPERIMENT_TEMPLATE,
         "policyRef": { "harness": spec.harness, "config": spec.policy_config },
         "taskPools": { "train": spec.train.len(), "heldout": spec.heldout.len() },
@@ -1385,10 +1388,21 @@ async fn find_ready_container(service: &OptimizerService, family: &str) -> Resul
         }
         if matches && ready {
             if let Some(base_url) = base_url.filter(|value| !value.trim().is_empty()) {
-                return Ok(ReadyContainer {
-                    id,
-                    base_url: base_url.trim_end_matches('/').to_string(),
-                });
+                if let Some(protocol) = advertised_gepa_v2_protocol(&metadata) {
+                    return Ok(ReadyContainer {
+                        id,
+                        base_url: base_url.trim_end_matches('/').to_string(),
+                        protocol,
+                        image_digest: container_image_digest(&metadata),
+                    });
+                }
+                seen.push(format!(
+                    "{id} ({status}, protocol={})",
+                    metadata
+                        .pointer("/capabilities/protocol")
+                        .and_then(Value::as_str)
+                        .unwrap_or("null")
+                ));
             }
         }
     }
@@ -1398,9 +1412,37 @@ async fn find_ready_container(service: &OptimizerService, family: &str) -> Resul
         );
     }
     bail!(
-        "registered {family} containers are not ready: {}. Probe and wait until status is ready/healthy.",
-        seen.join(", ")
+        "registered {family} containers are not a ready GEPA v2 pool: {}. Probe until status is ready/healthy and the container advertises {}.",
+        seen.join(", "),
+        crate::container_capabilities::GEPA_V2_CONTRACT
     )
+}
+
+fn advertised_gepa_v2_protocol(metadata: &Value) -> Option<String> {
+    for pointer in [
+        "/capabilities/protocol",
+        "/optimizer_contracts/gepa/version",
+        "/metadata/optimizer_contracts/gepa/version",
+    ] {
+        if let Some(version) = metadata.pointer(pointer).and_then(Value::as_str) {
+            if version == crate::container_capabilities::GEPA_V2_CONTRACT {
+                return Some(version.to_string());
+            }
+        }
+    }
+    None
+}
+
+fn container_image_digest(metadata: &Value) -> Option<String> {
+    for pointer in ["/imageDigest", "/image_digest", "/digest", "/image/digest"] {
+        if let Some(digest) = metadata.pointer(pointer).and_then(Value::as_str) {
+            let digest = digest.trim();
+            if digest.starts_with("sha256:") && digest.len() == 71 {
+                return Some(digest.to_string());
+            }
+        }
+    }
+    None
 }
 
 fn container_matches_family(task_family: Option<&str>, metadata: &Value, family: &str) -> bool {
@@ -1753,7 +1795,19 @@ mod tests {
                         status,
                         base_url,
                         family,
-                        json!({"runtime_family": family}).to_string()
+                        json!({
+                            "runtime_family": family,
+                            "capabilities": {
+                                "protocol": crate::container_capabilities::GEPA_V2_CONTRACT,
+                                "operations": {
+                                    "rollouts.prepare": true,
+                                    "rollouts.start": true,
+                                    "rollouts.events": true
+                                }
+                            },
+                            "imageDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                        })
+                        .to_string()
                     ],
                 )?;
                 Ok(())
@@ -1822,6 +1876,14 @@ mod tests {
         let (run, task) = start_banking77(&svc, "sess_evidence").await;
         let finished = wait_terminal(&svc, &run.id).await;
         assert_eq!(finished.status, "completed");
+        assert_eq!(
+            finished.summary["containerProtocol"],
+            json!(crate::container_capabilities::GEPA_V2_CONTRACT)
+        );
+        assert_eq!(
+            finished.summary["containerImageDigest"],
+            json!("sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+        );
 
         let events = svc
             .events_after(run.id.clone(), 0, Some(500))
@@ -2448,6 +2510,54 @@ mod tests {
             "expected a structured missing-container error, got {error}"
         );
         assert!(!error.contains("unknown optimizer recipe"));
+    }
+
+    #[tokio::test]
+    async fn container_eval_refuses_a_ready_pool_that_does_not_advertise_gepa_v2() {
+        let (svc, _dir, _) = service().await;
+        let (base, task, starts) = spawn_eval_mock("healthbench", BTreeMap::new()).await;
+        let family = "healthbench".to_string();
+        let base_url = base.clone();
+        svc.database()
+            .clone()
+            .run_transaction(move |conn| {
+                conn.execute(
+                    "INSERT INTO containers(id,name,location,status,base_url,task_family,health_json,metadata_json,created_at,updated_at)
+                     VALUES('ctr_healthbench_null_protocol','healthbench null','local','ready',?1,?2,'{\"ok\":true}',?3,'2026-08-17','2026-08-17')",
+                    params![
+                        base_url,
+                        family,
+                        json!({
+                            "runtime_family": "healthbench",
+                            "capabilities": {
+                                "protocol": Value::Null,
+                                "operations": "unknown"
+                            }
+                        })
+                        .to_string()
+                    ],
+                )?;
+                Ok(())
+            })
+            .await
+            .unwrap();
+        let error = svc
+            .start_recipe(recipe(HEALTHBENCH_EVAL_SMOKE_RECIPE, "sess_null_protocol"))
+            .await
+            .err()
+            .map(|error| error.to_string())
+            .unwrap();
+        assert!(
+            error.contains("GEPA v2")
+                && error.contains(crate::container_capabilities::GEPA_V2_CONTRACT),
+            "expected a GEPA v2 admission refusal, got {error}"
+        );
+        assert!(
+            error.contains("protocol=null"),
+            "expected the advertised protocol to be named, got {error}"
+        );
+        assert_eq!(starts.load(Ordering::SeqCst), 0);
+        task.abort();
     }
 
     fn recipe(id: &str, session: &str) -> OptimizerRecipeRunRequest {

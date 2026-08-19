@@ -184,6 +184,8 @@ pub fn builder() -> Builder<tauri::Wry> {
         crate::reports_list,
         crate::reports_get,
         crate::reports_revision_get,
+        crate::reports_validate,
+        crate::reports_pin_all,
         crate::reports_create,
         crate::reports_update,
         crate::reports_archive,
@@ -201,6 +203,8 @@ pub fn builder() -> Builder<tauri::Wry> {
         crate::reports_log_append,
         crate::reports_upload_status,
         crate::reports_share,
+        crate::reports_audience_set,
+        crate::reports_audience_revoke,
         crate::reports_promote,
         crate::reports_open_shared,
         crate::reports_comments_list,
@@ -305,6 +309,8 @@ pub fn builder() -> Builder<tauri::Wry> {
         crate::secrets::secrets_proxy_status,
         crate::secrets::secrets_pending,
         crate::secrets::secrets_deny_env_import,
+        crate::telemetry::product_telemetry_get_policy,
+        crate::telemetry::product_telemetry_set_opt_out,
     ])
 }
 
@@ -346,6 +352,18 @@ fn export_typescript_bindings_to(path: &std::path::Path) -> Result<(), String> {
 mod tests {
     use super::*;
 
+    /// specta-typescript walks the command graph recursively; the default
+    /// cargo-test stack overflows on this crate.
+    fn with_export_stack<T: Send + 'static>(work: impl FnOnce() -> T + Send + 'static) -> T {
+        std::thread::Builder::new()
+            .name("specta-export".into())
+            .stack_size(64 * 1024 * 1024)
+            .spawn(work)
+            .expect("start specta export thread")
+            .join()
+            .unwrap_or_else(|payload| std::panic::resume_unwind(payload))
+    }
+
     #[test]
     fn export_specta_protocol_bindings() {
         let committed_path =
@@ -361,7 +379,10 @@ mod tests {
             "synth-desktop-protocol-{}-{thread}.ts",
             std::process::id()
         ));
-        export_typescript_bindings_to(&path).expect("render specta TypeScript bindings");
+        let export_path = path.clone();
+        with_export_stack(move || {
+            export_typescript_bindings_to(&export_path).expect("render specta TypeScript bindings")
+        });
         let body = std::fs::read_to_string(&path).expect("read generated protocol.ts");
         let committed =
             std::fs::read_to_string(&committed_path).expect("read committed protocol.ts");
@@ -392,8 +413,13 @@ mod tests {
         // delete/test, request/grant/deny use, capabilities, env import, audit,
         // proxy status). No get/reveal/export/readValue command is included.
         // 220 → 222: pending agent import/use inbox and deny-import (human-only).
+        // 228 → 230: privacy-safe product telemetry policy and opt-out. Event
+        // construction remains host-owned; renderer feature code has no
+        // arbitrary event-name/property IPC.
+        // 230 → 235: hosted training model and saved-LoRA checkpoint search,
+        // run-output, archive, and download commands retained from main.
         assert_eq!(
-            exported, 222,
+            exported, 235,
             "generated bindings must contain the complete desktop command set"
         );
         assert_eq!(
@@ -416,6 +442,8 @@ mod tests {
     #[test]
     #[ignore = "writes generated/protocol.ts; run explicitly to regenerate"]
     fn regenerate_protocol_bindings() {
-        export_typescript_bindings().expect("regenerate committed protocol.ts");
+        with_export_stack(|| {
+            export_typescript_bindings().expect("regenerate committed protocol.ts")
+        });
     }
 }
