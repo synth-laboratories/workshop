@@ -26,6 +26,7 @@ function discoverTemplates(directory = familiesDir, found = new Map()) {
 }
 
 const EXPECTED_IDS = [
+  "analysis.chart.v1",
   "analysis.visual.v1",
   "annotation.overlay.v1",
   "blank.canvas.v1",
@@ -68,7 +69,9 @@ test("visuals package exposes the registered templates", () => {
     const { meta, path } = templates.get(id);
     assert.equal(meta.id, id);
     assert.equal(meta.schemaVersion, "synth.visual-template.v1");
-    if (!id.startsWith("diagram.")) assert.ok(existsSync(join(path, "shell.tsx")));
+    if (!id.startsWith("diagram.") && meta.rendererKind !== "chart") {
+      assert.ok(existsSync(join(path, "shell.tsx")));
+    }
     if (
       id === "live.harbor_eval.v1" ||
       id === "live.container_rollouts.v1" ||
