@@ -303,6 +303,7 @@ impl OptimizerService {
         recipes.push(super::hosted_gelo::recipe_catalog());
         recipes.push(super::sft_recipes::recipe_catalog());
         recipes.extend(super::hosted_sft::recipe_catalog());
+        recipes.push(super::mlx_sft::recipe_catalog());
         // Local eval is the authority for eval.* admission. Older sidecar
         // catalogs can carry compatibility copies of the same ids without the
         // product-owned bounds; a plain concatenation made callers select the
@@ -350,6 +351,7 @@ impl OptimizerService {
             | super::hosted_sft::HOSTED_SFT_BANKING77_RECIPE => {
                 super::hosted_sft::start(self, request).await
             }
+            super::mlx_sft::QWEN_MLX_SFT_RECIPE => super::mlx_sft::start(self, request).await,
             id if super::eval_recipes::is_eval_recipe(id) => {
                 super::eval_recipes::start(self, request).await
             }
@@ -546,6 +548,7 @@ impl OptimizerService {
 
     pub async fn restore_hosted_sft_mirrors(&self) {
         super::hosted_sft::restore_hosted_mirrors(self).await;
+        super::mlx_sft::restore_mirrors(self).await;
     }
 
     pub async fn wait_milestone(
@@ -804,6 +807,12 @@ impl OptimizerService {
         // terminal event; reconcile before deciding that a local run is live.
         if run.source == "local" && run.algorithm_id == super::eval_recipes::EVAL_ALGORITHM_ID {
             run = super::eval_recipes::reconcile_persisted(self, &optimizer_run_id).await?;
+        }
+        if run.source == "local"
+            && run.summary.get("recipeId").and_then(Value::as_str)
+                == Some(super::mlx_sft::QWEN_MLX_SFT_RECIPE)
+        {
+            run = super::mlx_sft::reconcile(self, &optimizer_run_id).await?;
         }
         if run.summary.get("recipeId").and_then(Value::as_str)
             == Some(super::hosted_gelo::HOSTED_GELO_CRAFTAX_RECIPE)
