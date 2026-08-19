@@ -1953,6 +1953,43 @@ mod tests {
         assert!(svc.terminal_manifest(run_id).await.unwrap().is_some());
     }
 
+    #[tokio::test]
+    async fn boot_reconciliation_clears_stale_running_local_evals() {
+        let (svc, dir, _) = super::super::service::tests::service().await;
+        let run_id = "opt_eval_boot_stale_running".to_string();
+        svc.create(OptimizerCreateRequest {
+            algorithm_id: EVAL_ALGORITHM_ID.into(),
+            algorithm_version: Some("1".into()),
+            objective: Some("boot reconciliation".into()),
+            source: Some("local".into()),
+            project_ref: None,
+            session_ref: Some("session_boot".into()),
+            id: Some(run_id.clone()),
+            execution_bindings: None,
+            input_refs: None,
+            capabilities: Some(OptimizerCapabilities::for_algorithm(EVAL_ALGORITHM_ID)),
+            summary: Some(json!({ "runDirectory": dir.path() })),
+            open_visual: Some(false),
+            seed_fixture: None,
+            cloud_config: None,
+            local_path: None,
+        }).await.unwrap();
+        svc.append_event_payloads(
+            run_id.clone(),
+            vec![OptimizerEventDraft::new("optimizer.run.started", EVAL_ALGORITHM_ID)],
+        ).await.unwrap();
+        assert_eq!(svc.get(run_id.clone()).await.unwrap().status, "running");
+        fs::write(
+            dir.path().join("worker.stdout.log"),
+            include_str!("fixtures/eval_worker_stdout.jsonl"),
+        ).unwrap();
+
+        let recovered = svc.reconcile_stale_local_runs().await.unwrap();
+        let recovered = recovered.into_iter().find(|run| run.id == run_id).unwrap();
+        assert_eq!(recovered.status, "completed");
+        assert_eq!(svc.get(run_id).await.unwrap().id, recovered.id);
+    }
+
     /// An eval run is a first-class optimizer noun, so it gets a visual and a
     /// session relationship on the same path every other algorithm uses.
     #[tokio::test]

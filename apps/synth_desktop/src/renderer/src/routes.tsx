@@ -1,6 +1,7 @@
 import type { CSSProperties, ReactNode } from "react";
 import type {
 	ContainerDeployment,
+	OptimizerRunRecord,
 	Session,
 	RuntimeEvent,
 	VisualInstanceRecord,
@@ -16,7 +17,8 @@ import type { LagunaStatus, ModelPerformanceSummary, PluginPermission, PluginSta
 import type { ComputerUseView } from "./runtime/computerUse";
 import type { InferenceMonitor } from "./components/InferencePanel";
 import type { ApprovalMode, ApprovalPolicy, SandboxMode } from "./runtime/nativeCodex";
-import { ChatTranscript, OutputsPanel, outputContainerIds, type TranscriptHistoryState } from "./components/ChatTranscript";
+import { ChatTranscript, OutputsPanel, type TranscriptHistoryState } from "./components/ChatTranscript";
+import { primaryVisualId, useChatOutputs } from "./hooks/useChatOutputs";
 import { ContainerPane } from "./components/ContainerPane";
 import { ConnectorsPage } from "./components/ConnectorsPage";
 import { InferencePanel } from "./components/InferencePanel";
@@ -188,6 +190,28 @@ export function MainRoutes(props: MainRoutesProps): ReactNode {
 		transcriptHistoryBySession,
 		loadOlderTranscript
 	} = props;
+	const chatOutputs = useChatOutputs(activeChat ?? { id: "", title: "", messages: [] });
+	const openOwnedRun = (run: OptimizerRunRecord) => {
+		const visualId = primaryVisualId(run);
+		if (visualId) {
+			if (showSidePanel && !sidePanelCanSharePane) {
+				setSidePanelOpen(false);
+				if (openArtifactId === visualId) return;
+			}
+			toggleArtifact(visualId);
+			return;
+		}
+		void (async () => {
+			if (!bridges.optimizers) return;
+			try {
+				const opened = await bridges.optimizers.openVisual(run.id);
+				const openedId = primaryVisualId(opened);
+				if (openedId) toggleArtifact(openedId);
+			} catch (reason) {
+				showToast(publicError(reason));
+			}
+		})();
+	};
 
 	return (
 		<>
@@ -452,8 +476,7 @@ export function MainRoutes(props: MainRoutesProps): ReactNode {
 								{
 									id: "outputs",
 									label: "Outputs",
-									badge:
-										outputContainerIds(activeChat).length + (activeChat.artifacts?.length ?? 0),
+									badge: chatOutputs.count,
 									content: (
 										<OutputsPanel
 											chat={activeChat}
@@ -468,6 +491,7 @@ export function MainRoutes(props: MainRoutesProps): ReactNode {
 											openContainerId={openContainer?.id ?? null}
 											onOpenContainer={(id) => void toggleContainer(id)}
 											onOpenReport={(reportId) => setView({ kind: "reports", reportId })}
+											onOpenRun={openOwnedRun}
 										/>
 									)
 								},

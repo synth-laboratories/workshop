@@ -360,6 +360,143 @@ test("a persisted report is discoverable from Outputs after reopening a chat", a
 	await page.getByTestId("local-chat-report-output-session").click();
 	await page.getByTestId("resource-shelf-trigger").click();
 	await expect(page.getByTestId("report-output-rep_reopen_01")).toContainText("Bounded Craftax baseline");
+	await expect(page.getByTestId("resource-shelf-trigger")).toContainText("Outputs 1");
+});
+
+test("session-owned eval, cancelled, and failed runs remain inspectable in Outputs after reopen", async ({ page }) => {
+	await page.addInitScript(() => {
+		const sessionId = "run-output-session";
+		const capabilities = {
+			cancel: true, pause: true, resume: true, streamEvents: true, stateSlices: true, candidates: false,
+			checkpoints: true, checkpointEvaluations: false, inferenceEndpoint: false, localSlotBinding: false
+		};
+		const run = (
+			id: string,
+			status: string,
+			objective: string,
+			visualId: string,
+			outputRefs: Array<{ kind: string; id: string; title?: string; role?: string }> = []
+		) => ({
+			schemaVersion: "optimizer_run.v1",
+			id,
+			algorithmId: "eval",
+			algorithmVersion: "1",
+			status,
+			source: "local",
+			objective,
+			sessionRef: sessionId,
+			createdAt: "2026-08-18T20:00:00Z",
+			startedAt: "2026-08-18T20:00:01Z",
+			finishedAt: status === "running" ? null : "2026-08-18T20:05:00Z",
+			cursorSeq: 4,
+			capabilities,
+			executionBindings: [],
+			inputRefs: [],
+			outputRefs,
+			visualRefs: [{ kind: "visual", id: visualId, role: "primary" }],
+			summary: {},
+			usage: {}
+		});
+		const cancelled = run("opt_eval_cancelled_01", "cancelled", "Cancelled Craftax eval", "vis_cancelled_eval");
+		const failed = run("opt_eval_failed_01", "failed", "Failed HealthBench eval", "vis_failed_eval");
+		const completed = run(
+			"opt_eval_complete_01",
+			"completed",
+			"Completed Qwen SFT",
+			"vis_complete_eval",
+			[{ kind: "checkpoint", id: "ckpt_qwen_step4", title: "Qwen adapter step-4", role: "checkpoint" }]
+		);
+		(window as typeof window & { synthCodex?: unknown }).synthCodex = {
+			defaultWorkspace: async () => "/workspaces/default",
+			list: async () => [{
+				sessionId, threadId: "thread-run-output", workspace: "/workspaces/default",
+				model: "gpt-5.6-luna", providerName: "openai", providerTitle: "OpenAI",
+				baseUrl: "https://api.openai.com/v1", status: "ready"
+			}],
+			start: async () => ({ sessionId, threadId: "thread-run-output" }),
+			startTurn: async () => ({ sessionId, threadId: "thread-run-output", turnId: "turn-run-output" }),
+			interrupt: async () => undefined,
+			close: async () => undefined,
+			onEvent: () => () => undefined
+		};
+		(window as typeof window & { synthCore?: unknown }).synthCore = {
+			sessionEventsTail: async () => { throw new Error("journal temporarily unavailable"); }
+		};
+		(window as typeof window & { synthOptimizers?: unknown }).synthOptimizers = {
+			list: async (query: { sessionRef?: string }) => query.sessionRef === sessionId ? [cancelled, failed, completed] : [],
+			get: async (id: string) => [cancelled, failed, completed].find((row) => row.id === id) ?? cancelled,
+			refresh: async (id: string) => [cancelled, failed, completed].find((row) => row.id === id) ?? cancelled,
+			openVisual: async (id: string) => [cancelled, failed, completed].find((row) => row.id === id) ?? cancelled,
+			onEvent: () => () => undefined
+		};
+	});
+	await page.reload();
+	await page.getByTestId("local-chat-run-output-session").click();
+	const transcript = page.getByTestId("chat-transcript");
+	await transcript.getByTestId("resource-shelf-trigger").click();
+	await expect(page.getByTestId("run-output-opt_eval_cancelled_01")).toContainText("Cancelled Craftax eval");
+	await expect(page.getByTestId("run-output-opt_eval_failed_01")).toContainText("Failed HealthBench eval");
+	await expect(page.getByTestId("run-output-opt_eval_complete_01")).toContainText("Completed Qwen SFT");
+	await expect(page.getByTestId("checkpoint-output-ckpt_qwen_step4")).toContainText("Qwen adapter step-4");
+	await expect(page.getByTestId("run-output-opt_eval_cancelled_01")).toHaveAttribute("data-testid", "run-output-opt_eval_cancelled_01");
+	await page.getByTestId("run-output-opt_eval_cancelled_01").click();
+});
+
+test("a stale running local eval is refreshed before Outputs lists it after reopen", async ({ page }) => {
+	await page.addInitScript(() => {
+		const sessionId = "stale-running-output-session";
+		const capabilities = {
+			cancel: true, pause: false, resume: false, streamEvents: true, stateSlices: true, candidates: false,
+			checkpoints: false, checkpointEvaluations: false, inferenceEndpoint: false, localSlotBinding: false
+		};
+		let status = "running";
+		const record = () => ({
+			schemaVersion: "optimizer_run.v1",
+			id: "opt_eval_stale_01",
+			algorithmId: "eval",
+			algorithmVersion: "1",
+			status,
+			source: "local",
+			objective: "Craftax baseline",
+			sessionRef: sessionId,
+			createdAt: "2026-08-18T20:00:00Z",
+			startedAt: "2026-08-18T20:00:01Z",
+			finishedAt: status === "running" ? null : "2026-08-18T20:05:00Z",
+			cursorSeq: 4,
+			capabilities,
+			executionBindings: [],
+			inputRefs: [],
+			outputRefs: [],
+			visualRefs: [],
+			summary: {},
+			usage: {}
+		});
+		(window as typeof window & { synthCodex?: unknown }).synthCodex = {
+			defaultWorkspace: async () => "/workspaces/default",
+			list: async () => [{
+				sessionId, threadId: "thread-stale-running", workspace: "/workspaces/default",
+				model: "gpt-5.6-luna", providerName: "openai", providerTitle: "OpenAI",
+				baseUrl: "https://api.openai.com/v1", status: "ready"
+			}],
+			start: async () => ({ sessionId, threadId: "thread-stale-running" }),
+			startTurn: async () => ({ sessionId, threadId: "thread-stale-running", turnId: "turn-stale-running" }),
+			interrupt: async () => undefined,
+			close: async () => undefined,
+			onEvent: () => () => undefined
+		};
+		(window as typeof window & { synthOptimizers?: unknown }).synthOptimizers = {
+			list: async (query: { sessionRef?: string }) => query.sessionRef === sessionId ? [record()] : [],
+			refresh: async () => {
+				status = "completed";
+				return record();
+			},
+			onEvent: () => () => undefined
+		};
+	});
+	await page.reload();
+	await page.getByTestId("local-chat-stale-running-output-session").click();
+	await page.getByTestId("resource-shelf-trigger").click();
+	await expect(page.getByTestId("run-output-opt_eval_stale_01")).toContainText("opt_eval_stale_01 · completed");
 });
 
 test("Visuals list splitter resizes, persists, keyboard-clamps, and disappears when stacked", async ({ page }) => {

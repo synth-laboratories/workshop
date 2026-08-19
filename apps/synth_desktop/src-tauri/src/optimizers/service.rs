@@ -827,6 +827,32 @@ impl OptimizerService {
         self.get(optimizer_run_id).await
     }
 
+    /// After a process restart, locally persisted `running`/`queued`/`paused`
+    /// projections can be a lie. Walk them and let each algorithm's durable
+    /// worker log win before the renderer hydrates Outputs.
+    pub async fn reconcile_stale_local_runs(&self) -> Result<Vec<OptimizerRunRecord>> {
+        let runs = self
+            .list(OptimizerQuery {
+                limit: Some(500),
+                ..OptimizerQuery::default()
+            })
+            .await?;
+        let mut recovered = Vec::new();
+        for run in runs {
+            if run.source != "local" || is_terminal_status(&run.status) {
+                continue;
+            }
+            match self.refresh(run.id.clone()).await {
+                Ok(next) => recovered.push(next),
+                Err(error) => eprintln!(
+                    "synth-desktop: failed to reconcile optimizer run {}: {error:#}",
+                    run.id
+                ),
+            }
+        }
+        Ok(recovered)
+    }
+
     pub async fn events_after(
         &self,
         optimizer_run_id: String,

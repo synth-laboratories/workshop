@@ -939,8 +939,9 @@ export function useAppController() {
 		responseTraceStore.setLoading(sessionId);
 		void Promise.allSettled([
 			core.sessionEventsTail(sessionId, TRANSCRIPT_INITIAL_PAGE_SIZE + 1),
-			bridges.visuals?.list({ sessionId, limit: 500 }) ?? Promise.resolve([])
-		]).then(([journal, visualRegistry]) => {
+			bridges.visuals?.list({ sessionId, limit: 500 }) ?? Promise.resolve([]),
+			bridges.optimizers?.list({ sessionRef: sessionId, limit: 500 }) ?? Promise.resolve([])
+		]).then(([journal, visualRegistry, optimizerRegistry]) => {
 			// Hydration belongs to the session cache, not to the currently mounted
 			// chat view. Navigation, target attachment and StrictMode effect replay
 			// must not throw away a completed journal read. A generation changes only
@@ -953,10 +954,16 @@ export function useAppController() {
 			// reopened the same stable visual id.
 			const fetched = journal.status === "fulfilled" ? journal.value : [];
 			const ownedVisuals = visualRegistry.status === "fulfilled" ? visualRegistry.value : [];
+			const ownedRuns = optimizerRegistry.status === "fulfilled" ? optimizerRegistry.value : [];
 			const journalError = journal.status === "rejected" ? desktopBootError(journal.reason) : null;
 			const visualRegistryError = visualRegistry.status === "rejected"
 				? desktopBootError(visualRegistry.reason)
 				: null;
+			for (const run of ownedRuns) {
+				if (run.source !== "local") continue;
+				if (["completed", "succeeded", "failed", "cancelled", "degraded"].includes(run.status)) continue;
+				void bridges.optimizers?.refresh(run.id);
+			}
 			const hasMore = fetched.length > TRANSCRIPT_INITIAL_PAGE_SIZE;
 			const rows = hasMore ? fetched.slice(1) : fetched;
 			const hydrated = rows
