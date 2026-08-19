@@ -295,6 +295,73 @@ test("a durable optimizer visual restores to its chat Outputs shelf outside the 
 	await expect(page.getByTestId("visuals-icon-vis_restored_optimizer_output")).toContainText("Restored HealthBench eval");
 });
 
+test("a durable optimizer visual remains in Outputs when conversation replay fails on reopen", async ({ page }) => {
+	await page.addInitScript((base) => {
+		const sessionId = "journal-failed-output-session";
+		const visual = { ...base, id: "vis_journal_failed_output", title: "Recovered eval checkpoint", sessionId };
+		(window as typeof window & { synthCodex?: unknown }).synthCodex = {
+			defaultWorkspace: async () => "/workspaces/default",
+			list: async () => [{
+				sessionId, threadId: "thread-journal-failed-output", workspace: "/workspaces/default",
+				model: "gpt-5.6-luna", providerName: "openai", providerTitle: "OpenAI",
+				baseUrl: "https://api.openai.com/v1", status: "ready"
+			}],
+			start: async () => ({ sessionId, threadId: "thread-journal-failed-output" }),
+			startTurn: async () => ({ sessionId, threadId: "thread-journal-failed-output", turnId: "turn-journal-failed-output" }),
+			interrupt: async () => undefined,
+			close: async () => undefined,
+			onEvent: () => () => undefined
+		};
+		(window as typeof window & { synthCore?: unknown }).synthCore = {
+			sessionEventsTail: async () => { throw new Error("journal temporarily unavailable"); }
+		};
+		(window as typeof window & { synthVisuals?: unknown }).synthVisuals = {
+			listTemplates: async () => [],
+			list: async (query: { sessionId?: string }) => query.sessionId === sessionId ? [visual] : [],
+			get: async () => visual,
+			revisions: async () => [],
+			onEvent: () => () => undefined
+		};
+	}, sampleVisual);
+	await page.reload();
+	await page.getByTestId("local-chat-journal-failed-output-session").click();
+	const transcript = page.getByTestId("chat-transcript");
+	await expect(transcript.getByTestId("resource-shelf-trigger")).toContainText("Outputs 1");
+	await transcript.getByTestId("resource-shelf-trigger").click();
+	await expect(page.getByTestId("visuals-icon-vis_journal_failed_output")).toContainText("Recovered eval checkpoint");
+});
+
+test("a persisted report is discoverable from Outputs after reopening a chat", async ({ page }) => {
+	await page.addInitScript(() => {
+		const sessionId = "report-output-session";
+		(window as typeof window & { synthCodex?: unknown }).synthCodex = {
+			defaultWorkspace: async () => "/workspaces/default",
+			list: async () => [{
+				sessionId, threadId: "thread-report-output", workspace: "/workspaces/default",
+				model: "gpt-5.6-luna", providerName: "openai", providerTitle: "OpenAI",
+				baseUrl: "https://api.openai.com/v1", status: "ready"
+			}],
+			start: async () => ({ sessionId, threadId: "thread-report-output" }),
+			startTurn: async () => ({ sessionId, threadId: "thread-report-output", turnId: "turn-report-output" }),
+			interrupt: async () => undefined,
+			close: async () => undefined,
+			onEvent: () => () => undefined
+		};
+		(window as typeof window & { synthReports?: unknown }).synthReports = {
+			list: async () => [{
+				schemaVersion: "synth.report.v1", id: "rep_reopen_01", currentRevision: 2,
+				title: "Bounded Craftax baseline", summary: null, authors: ["user"], status: "sealed",
+				createdBy: "user", createdAt: "2026-08-18T20:00:00Z", updatedAt: "2026-08-18T20:05:00Z", archivedAt: null
+			}],
+			onEvent: () => () => undefined
+		};
+	});
+	await page.reload();
+	await page.getByTestId("local-chat-report-output-session").click();
+	await page.getByTestId("resource-shelf-trigger").click();
+	await expect(page.getByTestId("report-output-rep_reopen_01")).toContainText("Bounded Craftax baseline");
+});
+
 test("Visuals list splitter resizes, persists, keyboard-clamps, and disappears when stacked", async ({ page }) => {
 	await page.setViewportSize({ width: 1280, height: 840 });
 	await installVisualsFixture(page);

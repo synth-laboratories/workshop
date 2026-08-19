@@ -23,6 +23,8 @@ type LogView = "timeline" | "decisions" | "inspector";
 
 type Props = {
 	onBack: () => void;
+	/** Stable report id supplied by Outputs after a restart or navigation. */
+	initialReportId?: string;
 };
 
 const MISSING = "—";
@@ -132,7 +134,7 @@ function traceEntries(block: ReportBlock | undefined): ReportTraceEntry[] {
 	return [];
 }
 
-export function ReportsPage({ onBack }: Props) {
+export function ReportsPage({ onBack, initialReportId }: Props) {
 	const [tab, setTab] = useState<Tab>("all");
 	const [search, setSearch] = useState("");
 	const [reports, setReports] = useState<ReportRecord[]>([]);
@@ -237,12 +239,12 @@ export function ReportsPage({ onBack }: Props) {
 	}
 
 	useEffect(() => {
-		void load();
+		void load(initialReportId);
 		const unlisten = bridges.reports?.onEvent?.((event) => {
 			if (event.kind.startsWith("report.")) void load();
 		});
 		return () => unlisten?.();
-	}, [search]);
+	}, [initialReportId, search]);
 
 	const filtered = useMemo(() => {
 		return reports.filter((report) => {

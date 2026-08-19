@@ -44,7 +44,7 @@ export type MainView =
 	| { kind: "connectors" }
 	| { kind: "inventory" }
 	| { kind: "visuals" }
-	| { kind: "reports" }
+	| { kind: "reports"; reportId?: string }
 	| { kind: "optimizers" }
 	| { kind: "computer-use" };
 
@@ -279,7 +279,7 @@ export function MainRoutes(props: MainRoutesProps): ReactNode {
 
 			{view.kind === "reports" ? (
 				<div className="inventory-workbench">
-					<ReportsPage onBack={() => setView({ kind: "landing" })} />
+					<ReportsPage initialReportId={view.reportId} onBack={() => setView({ kind: "landing" })} />
 				</div>
 			) : null}
 
@@ -467,6 +467,7 @@ export function MainRoutes(props: MainRoutesProps): ReactNode {
 											}}
 											openContainerId={openContainer?.id ?? null}
 											onOpenContainer={(id) => void toggleContainer(id)}
+											onOpenReport={(reportId) => setView({ kind: "reports", reportId })}
 										/>
 									)
 								},
