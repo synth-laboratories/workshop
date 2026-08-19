@@ -4,6 +4,7 @@
 import json
 import os
 import pathlib
+import subprocess
 import sys
 
 if sys.argv[1:] == ["debug", "models", "--bundled"]:
@@ -34,6 +35,8 @@ reject_thread_resume = home / "reject-thread-resume"
 request_approval_on_turn_start = home / "request-approval-on-turn-start"
 complete_before_turn_start_response = home / "complete-before-turn-start-response"
 final_answer_then_exit = home / "final-answer-then-exit"
+ignore_interrupt_and_spawn_sleeper = home / "ignore-interrupt-and-spawn-sleeper"
+sleeping_child_pid = home / "sleeping-child.pid"
 approval_response_path = home / "approval-response.json"
 
 
@@ -95,6 +98,9 @@ for raw in sys.stdin:
             sys.exit(0)
         turn_number += 1
         turn_id = f"turn-fixture-{os.getpid()}-{turn_number}"
+        if ignore_interrupt_and_spawn_sleeper.exists():
+            child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+            sleeping_child_pid.write_text(str(child.pid), encoding="utf-8")
         if complete_before_turn_start_response.exists():
             complete_before_turn_start_response.unlink()
             send({
@@ -168,7 +174,7 @@ for raw in sys.stdin:
                 },
             },
         })
-    if method == "turn/interrupt":
+    if method == "turn/interrupt" and not ignore_interrupt_and_spawn_sleeper.exists():
         send({
             "jsonrpc": "2.0",
             "method": "turn/interrupted",

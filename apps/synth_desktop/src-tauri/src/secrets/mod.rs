@@ -1041,6 +1041,59 @@ mod tests {
     }
 
     #[test]
+    fn repeated_proxy_reads_do_not_reenter_the_os_store() {
+        use super::backend::{CachedBackend, MemoryBackend};
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        struct Counting(MemoryBackend, AtomicUsize);
+        impl SecretBackend for Counting {
+            fn create(&self, id: &str, value: &SecretBytes) -> Result<String> {
+                self.0.create(id, value)
+            }
+            fn replace(&self, backend_ref: &str, value: &SecretBytes) -> Result<()> {
+                self.0.replace(backend_ref, value)
+            }
+            fn delete(&self, backend_ref: &str) -> Result<()> {
+                self.0.delete(backend_ref)
+            }
+            fn resolve(&self, backend_ref: &str) -> Result<SecretBytes> {
+                self.1.fetch_add(1, Ordering::SeqCst);
+                self.0.resolve(backend_ref)
+            }
+            fn status(&self, backend_ref: &str) -> Result<backend::BackendStatus> {
+                panic!("status must not probe Keychain: {backend_ref}");
+            }
+            fn backend_name(&self) -> &'static str {
+                "counting"
+            }
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let storage = Storage::open(dir.path()).unwrap();
+        let counting = Arc::new(Counting(MemoryBackend::new(), AtomicUsize::new(0)));
+        let service = SecretsService::with_backend(
+            storage.database().clone(),
+            CachedBackend::wrap(counting.clone()),
+        );
+        let created = service
+            .create(
+                "Personal OpenAI",
+                "openai",
+                "personal/development/providers",
+                "sk-repeat-cache",
+                "test",
+            )
+            .unwrap();
+        service.test(&created.id, "test").unwrap();
+        service.test(&created.id, "test").unwrap();
+        assert_eq!(
+            counting.1.load(Ordering::SeqCst),
+            0,
+            "create already cached the value; validate must not hit Keychain again"
+        );
+    }
+
+    #[test]
     fn replace_and_delete_are_audited_separately() {
         let (_dir, service) = service();
         let created = service

@@ -4,7 +4,7 @@ import { artifactFromVisualRecord, VisualHost } from "./VisualHost";
 import { bridges } from "../runtime/desktopBridge";
 import { getPreferences, updatePreferences } from "../preferences";
 import { PaneResizeHandle } from "./PaneResizeHandle";
-import type { VisualSeal, VisualSealBundle } from "../bridge";
+import type { ReportBlock, ReportRecord, VisualSeal, VisualSealBundle } from "../bridge";
 import { publicError } from "../runtime/publicError";
 
 type Tab = "all" | "recent" | "live" | "sealed" | "templates";
@@ -39,6 +39,9 @@ export function VisualsPage({ onOpenVisual, onGoToChat, onBack, onCreate }: Prop
 	const [seals, setSeals] = useState<VisualSeal[]>([]);
 	const [sealedBundle, setSealedBundle] = useState<VisualSealBundle | null>(null);
 	const [compareBundle, setCompareBundle] = useState<VisualSealBundle | null>(null);
+	const [reports, setReports] = useState<ReportRecord[]>([]);
+	const [reportTarget, setReportTarget] = useState("new");
+	const [reportNotice, setReportNotice] = useState<string | null>(null);
 
 	useEffect(() => {
 		let cancelled = false;
@@ -51,13 +54,15 @@ export function VisualsPage({ onOpenVisual, onGoToChat, onBack, onCreate }: Prop
 					setVisuals([]);
 					return;
 				}
-				const [rows, sealedRows] = await Promise.all([
+				const [rows, sealedRows, reportRows] = await Promise.all([
 					bridge.list({ search: search.trim() || undefined }),
-					bridge.listSeals()
+					bridge.listSeals(),
+					bridges.reports?.list({ status: "draft" }) ?? Promise.resolve([])
 				]);
 				if (!cancelled) {
 					setVisuals(rows);
 					setSeals(sealedRows);
+					setReports(reportRows);
 					setError(null);
 				}
 			} catch (reason) {
@@ -75,6 +80,36 @@ export function VisualsPage({ onOpenVisual, onGoToChat, onBack, onCreate }: Prop
 			unlisten?.();
 		};
 	}, [search]);
+
+	async function addSelectedToReport() {
+		if (!selected || !bridges.reports) return;
+		try {
+			const block: ReportBlock = {
+				blockId: `blk_visual_${crypto.randomUUID().replaceAll("-", "").slice(0, 10)}`,
+				kind: selected.rendererKind === "mermaid" || selected.rendererKind === "systems" ? "report.diagram.v1" : "report.visual.v1",
+				anchor: `visual-${selected.id.slice(0, 12)}`,
+				title: selected.title,
+				payload: { visualId: selected.id, visualRevision: selected.currentRevision },
+				sourceRevision: String(selected.currentRevision),
+				referenceMode: "live",
+				accessState: "available",
+				integrityState: "unresolved"
+			};
+			if (reportTarget === "new") {
+				const created = await bridges.reports.create({ title: `${selected.title} report`, blocks: [block] });
+				setReports((current) => [created, ...current]);
+				setReportTarget(created.id);
+				setReportNotice(`Added to new report “${created.title}”.`);
+			} else {
+				const revision = await bridges.reports.getRevision(reportTarget);
+				await bridges.reports.update(reportTarget, { expectedRevision: revision.revision, blocks: [...revision.blocks, block] });
+				setReportNotice(`Added to “${reports.find((report) => report.id === reportTarget)?.title ?? "report"}”.`);
+			}
+			setError(null);
+		} catch (reason) {
+			setError(publicError(reason));
+		}
+	}
 
 	const filtered = useMemo(() => {
 		const now = Date.now();
@@ -197,6 +232,10 @@ export function VisualsPage({ onOpenVisual, onGoToChat, onBack, onCreate }: Prop
 								<h2>{selected.title}</h2>
 								<p>{selected.templateId} · {statusLabel(selected.status)}</p>
 							</div>
+							<div className="reports-inline-form">
+								<select value={reportTarget} onChange={(event) => setReportTarget(event.target.value)} aria-label="Report destination"><option value="new">New report</option>{reports.map((report) => <option key={report.id} value={report.id}>{report.title}</option>)}</select>
+								<button type="button" data-testid="visual-add-to-report" onClick={() => void addSelectedToReport()}>Add to report</button>
+							</div>
 							<button
 								type="button"
 								className="ghost-button"
@@ -205,6 +244,7 @@ export function VisualsPage({ onOpenVisual, onGoToChat, onBack, onCreate }: Prop
 								{focusVisualId ? "Exit canvas" : "Open canvas"}
 							</button>
 						</header>
+						{reportNotice ? <p className="reports-provenance" role="status">{reportNotice}</p> : null}
 						{seals.some((seal) => seal.visualId === selected.id) ? (
 							<div className="visual-seal-strip" aria-label="Offline revisions">
 								<button type="button" onClick={() => { setSealedBundle(null); setCompareBundle(null); }}>Live</button>

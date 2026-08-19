@@ -163,6 +163,8 @@ export const COMMANDS = {
 	REPORTS_LIST: "reports_list",
 	REPORTS_GET: "reports_get",
 	REPORTS_REVISION_GET: "reports_revision_get",
+	REPORTS_VALIDATE: "reports_validate",
+	REPORTS_PIN_ALL: "reports_pin_all",
 	REPORTS_CREATE: "reports_create",
 	REPORTS_UPDATE: "reports_update",
 	REPORTS_ARCHIVE: "reports_archive",
@@ -180,6 +182,8 @@ export const COMMANDS = {
 	REPORTS_LOG_APPEND: "reports_log_append",
 	REPORTS_UPLOAD_STATUS: "reports_upload_status",
 	REPORTS_SHARE: "reports_share",
+	REPORTS_AUDIENCE_SET: "reports_audience_set",
+	REPORTS_AUDIENCE_REVOKE: "reports_audience_revoke",
 	REPORTS_PROMOTE: "reports_promote",
 	REPORTS_OPEN_SHARED: "reports_open_shared",
 	REPORTS_COMMENTS_LIST: "reports_comments_list",
@@ -260,7 +264,9 @@ export const COMMANDS = {
 	SECRETS_AUDIT_LIST: "secrets_audit_list",
 	SECRETS_PROXY_STATUS: "secrets_proxy_status",
 	SECRETS_PENDING: "secrets_pending",
-	SECRETS_DENY_ENV_IMPORT: "secrets_deny_env_import"
+	SECRETS_DENY_ENV_IMPORT: "secrets_deny_env_import",
+	PRODUCT_TELEMETRY_GET_POLICY: "product_telemetry_get_policy",
+	PRODUCT_TELEMETRY_SET_OPT_OUT: "product_telemetry_set_opt_out"
 } as const;
 
 export type CommandName = (typeof COMMANDS)[keyof typeof COMMANDS];

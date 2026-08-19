@@ -1,6 +1,6 @@
 use super::models::{
-    ReportComment, ReportCommentCreate, ReportPromotion, ReportSeal, ReportSealBundle,
-    ReportUpload, REPORT_BUNDLE_SCHEMA,
+    ReportAudienceRequest, ReportAudienceState, ReportComment, ReportCommentCreate,
+    ReportPromotion, ReportSeal, ReportSealBundle, ReportUpload, REPORT_BUNDLE_SCHEMA,
 };
 use super::registry::ReportRegistry;
 use crate::storage::{EventAppend, EventSource};
@@ -18,6 +18,73 @@ const REPORT_RECEIPT_MEDIA: &str = "application/vnd.synth.report-bundle-receipt+
 const REPORT_INDEX_MEDIA: &str = "text/html; charset=utf-8";
 
 impl ReportRegistry {
+    pub async fn set_audience(
+        &self,
+        publication_id: String,
+        request: ReportAudienceRequest,
+        backend_url: String,
+        api_key: String,
+    ) -> Result<ReportAudienceState> {
+        let response = reqwest::Client::new()
+            .put(format!(
+                "{}/artifacts/v1/workshop/reports/{}/audience",
+                backend_url.trim_end_matches('/'),
+                publication_id
+            ))
+            .bearer_auth(api_key)
+            .json(&request)
+            .send()
+            .await
+            .context("set Report audience")?;
+        let status = response.status();
+        if !status.is_success() {
+            bail!(
+                "set Report audience failed ({status}): {}",
+                response.text().await.unwrap_or_default()
+            );
+        }
+        let state: ReportAudienceState = response.json().await.context("decode Report audience")?;
+        if state.publication_id != publication_id || state.status != "active" {
+            bail!("Report audience response changed publication identity");
+        }
+        Ok(state)
+    }
+
+    pub async fn revoke_audience(
+        &self,
+        publication_id: String,
+        receipt_digest: String,
+        backend_url: String,
+        api_key: String,
+    ) -> Result<ReportAudienceState> {
+        let response = reqwest::Client::new()
+            .delete(format!(
+                "{}/artifacts/v1/workshop/reports/{}/audience",
+                backend_url.trim_end_matches('/'),
+                publication_id
+            ))
+            .bearer_auth(api_key)
+            .query(&[("receipt_digest", receipt_digest)])
+            .send()
+            .await
+            .context("revoke Report audience")?;
+        let status = response.status();
+        if !status.is_success() {
+            bail!(
+                "revoke Report audience failed ({status}): {}",
+                response.text().await.unwrap_or_default()
+            );
+        }
+        let state: ReportAudienceState = response
+            .json()
+            .await
+            .context("decode Report audience revocation")?;
+        if state.publication_id != publication_id || state.status != "revoked" {
+            bail!("Report audience revocation changed publication identity");
+        }
+        Ok(state)
+    }
+
     pub async fn upload_status(&self, receipt_digest: String) -> Result<Option<ReportUpload>> {
         let db = self.db.clone();
         db.run(move |conn| {
@@ -720,6 +787,7 @@ mod tests {
         report_id: Option<String>,
         report_revision: Option<i64>,
         committed: bool,
+        audience: String,
     }
 
     fn registry(dir: &std::path::Path) -> ReportRegistry {
@@ -866,6 +934,39 @@ mod tests {
                 }),
             );
         }
+        if method == Method::PUT
+            && path == format!("/artifacts/v1/workshop/reports/{PUBLICATION_ID}/audience")
+        {
+            let collected = http_body_util::Limited::new(request.into_body(), 1024 * 1024)
+                .collect()
+                .await
+                .expect("audience body");
+            let body: Value = serde_json::from_slice(&collected.to_bytes()).unwrap();
+            let audience = body["audience"].clone();
+            state.lock().unwrap().audience =
+                audience["kind"].as_str().unwrap_or_default().to_string();
+            return json_response(
+                StatusCode::OK,
+                json!({
+                    "publication_id": PUBLICATION_ID,
+                    "audience": audience,
+                    "status": "active",
+                }),
+            );
+        }
+        if method == Method::DELETE
+            && path == format!("/artifacts/v1/workshop/reports/{PUBLICATION_ID}/audience")
+        {
+            state.lock().unwrap().audience = "private".into();
+            return json_response(
+                StatusCode::OK,
+                json!({
+                    "publication_id": PUBLICATION_ID,
+                    "audience": {"kind": "private"},
+                    "status": "revoked",
+                }),
+            );
+        }
         if method == Method::POST
             && path == format!("/artifacts/v1/workshop/reports/{PUBLICATION_ID}/promote")
         {
@@ -932,6 +1033,7 @@ mod tests {
             report_id: None,
             report_revision: None,
             committed: false,
+            audience: "private".into(),
         }));
         let served = state.clone();
         let served_origin = origin.clone();
@@ -969,6 +1071,45 @@ mod tests {
             .unwrap();
         assert_eq!(opened.seal.receipt_digest, seal.receipt_digest);
         assert_eq!(opened.seal.report_id, "rep_local_slot");
+        task.abort();
+    }
+
+    #[tokio::test]
+    async fn audience_change_and_revocation_preserve_the_sealed_publication() {
+        use super::super::models::{ReportAudience, ReportAudienceRequest};
+
+        let dir = tempdir().unwrap();
+        let reports = registry(dir.path());
+        let seal = seed_sealed(&reports, "rep_audience_slot").await;
+        let (origin, task, state) = spawn_slot(false).await;
+        let (upload, _) = reports
+            .share_seal(seal.receipt_digest.clone(), origin.clone(), SLOT_KEY.into())
+            .await
+            .unwrap();
+        let publication_id = upload.publication_id.expect("publication id");
+        let shared = reports
+            .set_audience(
+                publication_id.clone(),
+                ReportAudienceRequest {
+                    receipt_digest: seal.receipt_digest.clone(),
+                    audience: ReportAudience::Members {
+                        member_ids: vec!["alice".into(), "bob".into()],
+                    },
+                    redaction_policy_version: "source-aware.v1".into(),
+                },
+                origin.clone(),
+                SLOT_KEY.into(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(shared.status, "active");
+        assert_eq!(state.lock().unwrap().audience, "members");
+        let revoked = reports
+            .revoke_audience(publication_id, seal.receipt_digest, origin, SLOT_KEY.into())
+            .await
+            .unwrap();
+        assert_eq!(revoked.status, "revoked");
+        assert_eq!(state.lock().unwrap().audience, "private");
         task.abort();
     }
 

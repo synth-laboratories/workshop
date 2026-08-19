@@ -4,7 +4,7 @@ import { commands as spectaCommands } from "../generated/protocol";
 import { open } from "@tauri-apps/plugin-dialog";
 import desktopPackage from "../../../../package.json";
 import type { AppEvent, InternSessionControlRequest, InternSessionCreateRequest, InternSessionSendRequest, RuntimeEvent, Session } from "@synth/runtime-protocol";
-import type { CodexEvent, CodexOauthBegin, CodexOauthStatus, CodexSessionInfo, ComposerImageAttachment, ContextSnapshot, DesktopInstanceDiagnostics, DesktopPermissionSettings, InventoryCounts, LagunaDownloadProgress, LagunaModelHit, LagunaStatus, ModelMultiAgentSetting, ModelPerformanceSummary, ModelPerformanceTurnSample, PersistedCodexSession, RequestOptions, RuntimeBridge, SecretAuditEvent, SecretCapabilitySummary, SecretImportPreview, SecretSummary, SecretsBridge, SecretsInbox, SkillHit, SynthAccountSummary, SynthBackendSettings, SynthSignInBegin, SynthSignInPoll, TariffCard, TerminalEvent, TerminalInfo, UpdateStatus, VisualAnnotation, VisualSeal, VisualSealBundle, VisualTemplateMeta, VisualUpload, WhisperDownloadProgress, WhisperModelHit, WhisperRuntimeStatus, WorkspaceAccessSettings } from "../bridge";
+import type { CodexEvent, CodexOauthBegin, CodexOauthStatus, CodexSessionInfo, ComposerImageAttachment, ContextSnapshot, DesktopInstanceDiagnostics, DesktopPermissionSettings, InventoryCounts, LagunaDownloadProgress, LagunaModelHit, LagunaStatus, ModelMultiAgentSetting, ModelPerformanceSummary, ModelPerformanceTurnSample, PersistedCodexSession, ProductTelemetryPolicy, RequestOptions, RuntimeBridge, SecretAuditEvent, SecretCapabilitySummary, SecretImportPreview, SecretSummary, SecretsBridge, SecretsInbox, SkillHit, SynthAccountSummary, SynthBackendSettings, SynthSignInBegin, SynthSignInPoll, TariffCard, TerminalEvent, TerminalInfo, UpdateStatus, VisualAnnotation, VisualSeal, VisualSealBundle, VisualTemplateMeta, VisualUpload, WhisperDownloadProgress, WhisperModelHit, WhisperRuntimeStatus, WorkspaceAccessSettings } from "../bridge";
 import type { CoreDiagnostics, VisualRecord, VisualRevision } from "@synth/runtime-protocol";
 import type { ContainerDeployment, ResolvedTraceProjection, TraceBundleIngestResult, TraceV5Record, UsageLedgerEntry, UsageSummary, UsageWindow } from "@synth/runtime-protocol";
 import { publicError } from "../runtime/publicError";
@@ -349,6 +349,31 @@ window.synthAccount ??= isTauri
 			refresh: async () => ({ signedIn: false, state: "local_only", environment: "local", source: "none" }),
 			openBilling: async () => { throw new Error("Billing requires Synth Desktop"); }
 		};
+window.synthTelemetry ??= isTauri
+	? {
+		getPolicy: () => invokeCommand<ProductTelemetryPolicy>(COMMANDS.PRODUCT_TELEMETRY_GET_POLICY),
+		setOptOut: (optOut) => invokeCommand<ProductTelemetryPolicy>(COMMANDS.PRODUCT_TELEMETRY_SET_OPT_OUT, { optOut })
+	}
+	: (() => {
+		let optionalEnabled = true;
+		return {
+			getPolicy: async () => ({
+				dictionaryVersion: "workshop.product-telemetry.v1",
+				collectionPolicyVersion: "workshop.product-telemetry.policy.v1",
+				optionalEnabled,
+				consentVersion: "workshop.product-telemetry.policy.v1"
+			}),
+			setOptOut: async (optOut: boolean) => {
+				optionalEnabled = !optOut;
+				return {
+					dictionaryVersion: "workshop.product-telemetry.v1",
+					collectionPolicyVersion: "workshop.product-telemetry.policy.v1",
+					optionalEnabled,
+					consentVersion: "workshop.product-telemetry.policy.v1"
+				};
+			}
+		};
+	})();
 window.synthCodexOauth ??= isTauri
 	? {
 		begin: () => invokeCommand<CodexOauthBegin>(COMMANDS.CODEX_OAUTH_BEGIN),
@@ -741,6 +766,9 @@ window.synthWorkspaceScope ??= isTauri
 			get: (reportId) => invokeCommand(COMMANDS.REPORTS_GET, { reportId }),
 			getRevision: (reportId, revision) =>
 				invokeCommand(COMMANDS.REPORTS_REVISION_GET, { reportId, revision: revision ?? null }),
+			validate: (reportId, revision) =>
+				invokeCommand(COMMANDS.REPORTS_VALIDATE, { reportId, revision: revision ?? null }),
+			pinAll: (reportId) => invokeCommand(COMMANDS.REPORTS_PIN_ALL, { reportId }),
 			create: (request) => invokeCommand(COMMANDS.REPORTS_CREATE, { request }),
 			update: (reportId, request) => invokeCommand(COMMANDS.REPORTS_UPDATE, { reportId, request }),
 			archive: (reportId) => invokeCommand(COMMANDS.REPORTS_ARCHIVE, { reportId }),
@@ -759,6 +787,10 @@ window.synthWorkspaceScope ??= isTauri
 			uploadStatus: (receiptDigest) =>
 				invokeCommand(COMMANDS.REPORTS_UPLOAD_STATUS, { receiptDigest }),
 			shareSeal: (receiptDigest) => invokeCommand(COMMANDS.REPORTS_SHARE, { receiptDigest }),
+			setAudience: (publicationId, request) =>
+				invokeCommand(COMMANDS.REPORTS_AUDIENCE_SET, { publicationId, request }),
+			revokeAudience: (publicationId, receiptDigest) =>
+				invokeCommand(COMMANDS.REPORTS_AUDIENCE_REVOKE, { publicationId, receiptDigest }),
 			promote: (publicationId, slug) => invokeCommand(COMMANDS.REPORTS_PROMOTE, { publicationId, slug }),
 			openShared: (committedUrl) => invokeCommand(COMMANDS.REPORTS_OPEN_SHARED, { committedUrl }),
 			listComments: (reportId, revision) =>
@@ -904,6 +936,9 @@ export const bridges = {
 	},
 	get secrets() {
 		return window.synthSecrets;
+	},
+	get telemetry() {
+		return window.synthTelemetry;
 	},
 	get terminal() {
 		return window.synthTerminal;

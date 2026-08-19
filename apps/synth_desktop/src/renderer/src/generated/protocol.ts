@@ -87,6 +87,27 @@ export const commands = {
 	optimizersImportLocal: (request: OptimizerImportLocalRequest) => typedError<OptimizerRunRecord_Serialize, AppError>(__TAURI_INVOKE("optimizers_import_local", { request })),
 	optimizersReconcileCloud: (request: OptimizerReconcileRequest) => typedError<OptimizerRunRecord_Serialize, AppError>(__TAURI_INVOKE("optimizers_reconcile_cloud", { request })),
 	optimizersListCloud: (algorithm: string | null, status: string | null, limit: unknown | null) => typedError<unknown[], AppError>(__TAURI_INVOKE("optimizers_list_cloud", { algorithm, status, limit })),
+	optimizersSavedLorasSearch: (query: {
+	search: string | null,
+	scope: string | null,
+	provider: string | null,
+	checkpointKind: string | null,
+	baseModel: string | null,
+	runId: string | null,
+	attemptId: string | null,
+	sourceCheckpointId: string | null,
+	optimizerAlgorithm: string | null,
+	status: string | null,
+	tags: string[] | null,
+	limit: unknown,
+	offset: unknown,
+} | null) => typedError<SavedLoraCheckpointPage_Serialize, AppError>(__TAURI_INVOKE("optimizers_saved_loras_search", { query })),
+	optimizersRunCheckpointsList: (optimizerRunId: string) => typedError<SavedLoraRunPage_Serialize, AppError>(__TAURI_INVOKE("optimizers_run_checkpoints_list", { optimizerRunId })),
+	optimizersRunOutputs: (optimizerRunId: string) => typedError<OptimizerRunOutputs_Serialize, AppError>(__TAURI_INVOKE("optimizers_run_outputs", { optimizerRunId })),
+	optimizersTrainingModels: () => typedError<HostedTrainingModelCatalog_Serialize, AppError>(__TAURI_INVOKE("optimizers_training_models")),
+	optimizersSavedLoraArchive: (checkpointId: string) => typedError<SavedLoraCheckpoint_Serialize, AppError>(__TAURI_INVOKE("optimizers_saved_lora_archive", { checkpointId })),
+	optimizersSavedLoraDownload: (checkpointId: string) => typedError<SavedLoraDownload_Serialize, AppError>(__TAURI_INVOKE("optimizers_saved_lora_download", { checkpointId })),
+	optimizersTrainingReconcile: (optimizerRunId: string) => typedError<unknown, AppError>(__TAURI_INVOKE("optimizers_training_reconcile", { optimizerRunId })),
 	pluginsStatus: (pluginId: string | null) => typedError<PluginStatus_Serialize, AppError>(__TAURI_INVOKE("plugins_status", { pluginId })),
 	pluginsList: () => typedError<PluginStatus_Serialize[], AppError>(__TAURI_INVOKE("plugins_list")),
 	/**
@@ -206,6 +227,8 @@ export const commands = {
 } | null) => typedError<ReportRecord_Serialize[], AppError>(__TAURI_INVOKE("reports_list", { query })),
 	reportsGet: (reportId: string) => typedError<ReportRecord_Serialize, AppError>(__TAURI_INVOKE("reports_get", { reportId })),
 	reportsRevisionGet: (reportId: string, revision: unknown | null) => typedError<ReportRevision_Serialize, AppError>(__TAURI_INVOKE("reports_revision_get", { reportId, revision })),
+	reportsValidate: (reportId: string, revision: unknown | null) => typedError<ReportValidationResult_Serialize, AppError>(__TAURI_INVOKE("reports_validate", { reportId, revision })),
+	reportsPinAll: (reportId: string) => typedError<ReportRecord_Serialize, AppError>(__TAURI_INVOKE("reports_pin_all", { reportId })),
 	reportsCreate: (request: ReportCreateRequest_Deserialize) => typedError<ReportRecord_Serialize, AppError>(__TAURI_INVOKE("reports_create", { request })),
 	reportsUpdate: (reportId: string, request: ReportUpdateRequest_Deserialize) => typedError<ReportRecord_Serialize, AppError>(__TAURI_INVOKE("reports_update", { reportId, request })),
 	reportsArchive: (reportId: string) => typedError<ReportRecord_Serialize, AppError>(__TAURI_INVOKE("reports_archive", { reportId })),
@@ -232,6 +255,8 @@ export const commands = {
 	updatedAt: string,
 } | null, AppError>(__TAURI_INVOKE("reports_upload_status", { receiptDigest })),
 	reportsShare: (receiptDigest: string) => typedError<ReportUpload, AppError>(__TAURI_INVOKE("reports_share", { receiptDigest })),
+	reportsAudienceSet: (publicationId: string, request: ReportAudienceRequest_Deserialize) => typedError<ReportAudienceState_Serialize, AppError>(__TAURI_INVOKE("reports_audience_set", { publicationId, request })),
+	reportsAudienceRevoke: (publicationId: string, receiptDigest: string) => typedError<ReportAudienceState_Serialize, AppError>(__TAURI_INVOKE("reports_audience_revoke", { publicationId, receiptDigest })),
 	reportsPromote: (publicationId: string, slug: string) => typedError<ReportPromotion_Serialize, AppError>(__TAURI_INVOKE("reports_promote", { publicationId, slug })),
 	reportsOpenShared: (committedUrl: string) => typedError<ReportSealBundle, AppError>(__TAURI_INVOKE("reports_open_shared", { committedUrl })),
 	reportsCommentsList: (reportId: string, revision: unknown | null) => typedError<ReportComment_Serialize[], AppError>(__TAURI_INVOKE("reports_comments_list", { reportId, revision })),
@@ -391,6 +416,8 @@ export const commands = {
 	secretsProxyStatus: () => typedError<SecretsProxyStatus, AppError>(__TAURI_INVOKE("secrets_proxy_status")),
 	secretsPending: () => typedError<SecretsInbox, AppError>(__TAURI_INVOKE("secrets_pending")),
 	secretsDenyEnvImport: (requestId: string) => typedError<null, AppError>(__TAURI_INVOKE("secrets_deny_env_import", { requestId })),
+	productTelemetryGetPolicy: () => typedError<TelemetryPolicy, AppError>(__TAURI_INVOKE("product_telemetry_get_policy")),
+	productTelemetrySetOptOut: (optOut: boolean) => typedError<TelemetryPolicy, AppError>(__TAURI_INVOKE("product_telemetry_set_opt_out", { optOut })),
 };
 
 /* Types */
@@ -493,6 +520,13 @@ export type AccountSummary_Deserialize = {
 	lastUpdated: string | null,
 	stale: boolean,
 	error: string | null,
+	/**  `local_only` | `signed_out` | `active` | `revoked` | `offline` | `malformed` */
+	sessionHealth: string,
+	/**  `none` | `auth` | `entitlement` | `quota` | `outage` | `malformed` */
+	failureKind: string,
+	quotaExhausted: boolean,
+	/**  `ok` | `stale` | `failed` — hosted usage vs the last successful snapshot. */
+	reconciliation: string,
 };
 
 export type AccountSummary_Serialize = {
@@ -513,11 +547,24 @@ export type AccountSummary_Serialize = {
 	lastUpdated?: string | null,
 	stale: boolean,
 	error?: string | null,
+	/**  `local_only` | `signed_out` | `active` | `revoked` | `offline` | `malformed` */
+	sessionHealth: string,
+	/**  `none` | `auth` | `entitlement` | `quota` | `outage` | `malformed` */
+	failureKind: string,
+	quotaExhausted: boolean,
+	/**  `ok` | `stale` | `failed` — hosted usage vs the last successful snapshot. */
+	reconciliation: string,
 };
 
 export type AccountUsageWindow = {
 	events: unknown,
+	/**  Finalized billed dollars. Never the sum of pending + billed. */
 	costUsd: number | null,
+	finalizedUsd: number | null,
+	/**  Nominal minus billed for this window. Live estimates, not ledger truth. */
+	pendingUsd: number | null,
+	tokens: unknown,
+	runtimeSeconds: unknown,
 };
 
 export type AfterImportAction = "keep" | "replace_aliases" | "remove_entries";
@@ -581,13 +628,11 @@ export type BackendSettings = {
 	openrouterApiKeyConfigured: boolean,
 	openrouterApiKeyFingerprint: string | null,
 	openrouterApiKeySource: string | null,
-	defaultModel?: DefaultModelSettings,
-};
-
-export type DefaultModelSettings = {
-	model: string,
-	effort: string,
-	providers: string[],
+	/**
+	 *  `[models.default]` from Workshop's config.toml. Provider order is a
+	 *  fallback chain, not a request to silently change providers mid-turn.
+	 */
+	defaultModel: DefaultModelSettings,
 };
 
 export type BackendSettingsUpdate = {
@@ -889,6 +934,12 @@ export type DataCounts = {
 	usage: unknown,
 };
 
+export type DefaultModelSettings = {
+	model: string,
+	effort: string,
+	providers: string[],
+};
+
 export type DesktopPermissionSettings = {
 	configPath: string,
 	approvalPolicy: string,
@@ -1022,6 +1073,48 @@ export type ExperimentRecord_Serialize = {
 };
 
 export type ExperimentStatus = "planned" | "running" | "completed" | "failed" | "aborted" | "superseded" | "excluded";
+
+export type HostedTrainingModel = HostedTrainingModel_Serialize | HostedTrainingModel_Deserialize;
+
+export type HostedTrainingModelCatalog = HostedTrainingModelCatalog_Serialize | HostedTrainingModelCatalog_Deserialize;
+
+export type HostedTrainingModelCatalog_Deserialize = {
+	schema_version: string,
+	catalog_revision: string,
+	live_preflight_required: boolean,
+	models: HostedTrainingModel_Deserialize[],
+	total: unknown,
+};
+
+export type HostedTrainingModelCatalog_Serialize = {
+	schemaVersion: string,
+	catalogRevision: string,
+	livePreflightRequired: boolean,
+	models: HostedTrainingModel_Serialize[],
+	total: unknown,
+};
+
+export type HostedTrainingModel_Deserialize = {
+	model_id: string,
+	label: string,
+	provider: string,
+	provider_revision: string,
+	architecture: string,
+	max_context_length: unknown,
+	rank: unknown,
+	algorithms: unknown,
+};
+
+export type HostedTrainingModel_Serialize = {
+	modelId: string,
+	label: string,
+	provider: string,
+	providerRevision: string,
+	architecture: string,
+	maxContextLength: unknown,
+	rank: unknown,
+	algorithms: unknown,
+};
 
 export type ImportPreview = {
 	requestId: string,
@@ -1583,6 +1676,86 @@ export type OptimizerResourceRef_Serialize = {
 	metadata: unknown,
 };
 
+export type OptimizerRunOutputArtifact = OptimizerRunOutputArtifact_Serialize | OptimizerRunOutputArtifact_Deserialize;
+
+export type OptimizerRunOutputArtifact_Deserialize = {
+	artifact_id: string,
+	run_id: string,
+	artifact_name: string,
+	content_type: string | null,
+	size_bytes: unknown,
+	sha256: string | null,
+	storage_backend: string,
+	uri: string,
+	download_path: string,
+	metadata: unknown,
+	created_at: string | null,
+	updated_at: string | null,
+};
+
+export type OptimizerRunOutputArtifact_Serialize = {
+	artifactId: string,
+	runId: string,
+	artifactName: string,
+	contentType: string | null,
+	sizeBytes: unknown,
+	sha256: string | null,
+	storageBackend: string,
+	uri: string,
+	downloadPath: string,
+	metadata: unknown,
+	createdAt: string | null,
+	updatedAt: string | null,
+};
+
+export type OptimizerRunOutputCounts = OptimizerRunOutputCounts_Serialize | OptimizerRunOutputCounts_Deserialize;
+
+export type OptimizerRunOutputCounts_Deserialize = {
+	artifacts: unknown,
+	model_checkpoints: unknown,
+};
+
+export type OptimizerRunOutputCounts_Serialize = {
+	artifacts: unknown,
+	modelCheckpoints: unknown,
+};
+
+export type OptimizerRunOutputIdentity = OptimizerRunOutputIdentity_Serialize | OptimizerRunOutputIdentity_Deserialize;
+
+export type OptimizerRunOutputIdentity_Deserialize = {
+	run_id: string,
+	attempt_id: string | null,
+	optimizer_algorithm: string,
+	status: string,
+};
+
+export type OptimizerRunOutputIdentity_Serialize = {
+	runId: string,
+	attemptId: string | null,
+	optimizerAlgorithm: string,
+	status: string,
+};
+
+export type OptimizerRunOutputs = OptimizerRunOutputs_Serialize | OptimizerRunOutputs_Deserialize;
+
+export type OptimizerRunOutputs_Deserialize = {
+	schema_version: string,
+	run: OptimizerRunOutputIdentity_Deserialize,
+	result: unknown,
+	artifacts: OptimizerRunOutputArtifact_Deserialize[],
+	model_checkpoints: SavedLoraCheckpoint_Deserialize[],
+	counts: OptimizerRunOutputCounts_Deserialize,
+};
+
+export type OptimizerRunOutputs_Serialize = {
+	schemaVersion: string,
+	run: OptimizerRunOutputIdentity_Serialize,
+	result: unknown,
+	artifacts: OptimizerRunOutputArtifact_Serialize[],
+	modelCheckpoints: SavedLoraCheckpoint_Serialize[],
+	counts: OptimizerRunOutputCounts_Serialize,
+};
+
 export type OptimizerRunRecord = OptimizerRunRecord_Serialize | OptimizerRunRecord_Deserialize;
 
 export type OptimizerRunRecord_Deserialize = {
@@ -1893,7 +2066,56 @@ export type RenderedVisualObservation = {
 	observedAt: string,
 };
 
-export type RendererKind = "template" | "tsx" | "html" | "mermaid" | "systems" | "systems-dynamic";
+export type RendererKind = "template" | "tsx" | "html" | "mermaid" | "systems" | "systems-dynamic" | "chart";
+
+export type ReportAudience = ReportAudience_Serialize | ReportAudience_Deserialize;
+
+export type ReportAudienceRequest = ReportAudienceRequest_Serialize | ReportAudienceRequest_Deserialize;
+
+export type ReportAudienceRequest_Deserialize = {
+	audience: ReportAudience_Deserialize,
+} & {
+	receipt_digest: string,
+} & {
+	redaction_policy_version: string,
+};
+
+export type ReportAudienceRequest_Serialize = {
+	receipt_digest: string,
+	audience: ReportAudience_Serialize,
+	redaction_policy_version: string,
+};
+
+export type ReportAudienceState = ReportAudienceState_Serialize | ReportAudienceState_Deserialize;
+
+export type ReportAudienceState_Deserialize = {
+	audience: ReportAudience_Deserialize,
+	status: string,
+} & {
+	publicationId: string,
+} | {
+	publication_id: string,
+};
+
+export type ReportAudienceState_Serialize = {
+	publicationId: string,
+	audience: ReportAudience_Serialize,
+	status: string,
+};
+
+export type ReportAudience_Deserialize = ({ private: {
+	kind: "private",
+} }) & { members?: never; workspace?: never } | ({ workspace: {
+	kind: "workspace",
+} & {
+	workspace_id: string,
+} }) & { members?: never; private?: never } | ({ members: {
+	kind: "members",
+} & {
+	member_ids: string[],
+} }) & { private?: never; workspace?: never };
+
+export type ReportAudience_Serialize = ({ kind: "private" }) & { member_ids?: never; workspace_id?: never } | ({ kind: "workspace"; workspace_id: string }) & { member_ids?: never } | ({ kind: "members"; member_ids: string[] }) & { workspace_id?: never };
 
 export type ReportBlock = ReportBlock_Serialize | ReportBlock_Deserialize;
 
@@ -1905,6 +2127,7 @@ export type ReportBlock_Deserialize = {
 	payload: unknown,
 	sourceRevision?: string | null,
 	sourceDigest?: string | null,
+	referenceMode?: string,
 	accessState: string,
 	integrityState: string,
 };
@@ -1917,6 +2140,7 @@ export type ReportBlock_Serialize = {
 	payload: unknown,
 	sourceRevision?: string | null,
 	sourceDigest?: string | null,
+	referenceMode: string,
 	accessState: string,
 	integrityState: string,
 };
@@ -1925,6 +2149,8 @@ export type ReportClaim = {
 	claimId: string,
 	statement: string,
 	status: string,
+	confidence?: string,
+	why?: string,
 	evidenceRefs: string[],
 };
 
@@ -2126,6 +2352,7 @@ export type ReportSource_Deserialize = {
 	resourceId: string,
 	resourceRevision?: string | null,
 	resourceDigest?: string | null,
+	referenceMode?: string,
 	relation: string,
 	accessState: string,
 	integrityState: string,
@@ -2137,6 +2364,7 @@ export type ReportSource_Serialize = {
 	resourceId: string,
 	resourceRevision?: string | null,
 	resourceDigest?: string | null,
+	referenceMode: string,
 	relation: string,
 	accessState: string,
 	integrityState: string,
@@ -2182,6 +2410,42 @@ export type ReportUpload = {
 	committedUrl: string | null,
 	error: string | null,
 	updatedAt: string,
+};
+
+export type ReportValidationFinding = ReportValidationFinding_Serialize | ReportValidationFinding_Deserialize;
+
+export type ReportValidationFinding_Deserialize = {
+	code: string,
+	severity: string,
+	blockId?: string | null,
+	claimId?: string | null,
+	message: string,
+	remediation?: string | null,
+};
+
+export type ReportValidationFinding_Serialize = {
+	code: string,
+	severity: string,
+	blockId?: string | null,
+	claimId?: string | null,
+	message: string,
+	remediation?: string | null,
+};
+
+export type ReportValidationResult = ReportValidationResult_Serialize | ReportValidationResult_Deserialize;
+
+export type ReportValidationResult_Deserialize = {
+	reportId: string,
+	revision: unknown,
+	sealable: boolean,
+	findings: ReportValidationFinding_Deserialize[],
+};
+
+export type ReportValidationResult_Serialize = {
+	reportId: string,
+	revision: unknown,
+	sealable: boolean,
+	findings: ReportValidationFinding_Serialize[],
 };
 
 export type ReportVisibilityRequest = ReportVisibilityRequest_Serialize | ReportVisibilityRequest_Deserialize;
@@ -2340,6 +2604,212 @@ export type RuntimeContractView = {
 
 export type RuntimeKind = "sync" | "async";
 
+export type SavedLoraCheckpoint = SavedLoraCheckpoint_Serialize | SavedLoraCheckpoint_Deserialize;
+
+export type SavedLoraCheckpointPage = SavedLoraCheckpointPage_Serialize | SavedLoraCheckpointPage_Deserialize;
+
+export type SavedLoraCheckpointPage_Deserialize = {
+	schema_version: string,
+	items: SavedLoraCheckpoint_Deserialize[],
+	total: unknown,
+	limit: unknown,
+	offset: unknown,
+};
+
+export type SavedLoraCheckpointPage_Serialize = {
+	schemaVersion: string,
+	items: SavedLoraCheckpoint_Serialize[],
+	total: unknown,
+	limit: unknown,
+	offset: unknown,
+};
+
+export type SavedLoraCheckpointQuery = {
+	search: string | null,
+	scope: string | null,
+	provider: string | null,
+	checkpointKind: string | null,
+	baseModel: string | null,
+	runId: string | null,
+	attemptId: string | null,
+	sourceCheckpointId: string | null,
+	optimizerAlgorithm: string | null,
+	status: string | null,
+	tags: string[] | null,
+	limit: unknown,
+	offset: unknown,
+};
+
+export type SavedLoraCheckpoint_Deserialize = {
+	schema_version: string,
+	checkpoint_id: string,
+	org_id: string,
+	owner_user_id: string | null,
+	visibility: string,
+	name: string,
+	description: string,
+	provider: string,
+	checkpoint_kind: string,
+	provider_checkpoint_reference: string | null,
+	run_id: string | null,
+	attempt_id: string | null,
+	source_checkpoint_id: string | null,
+	optimizer_algorithm: string | null,
+	base_model: string,
+	lora_rank: number | null,
+	step: unknown,
+	status: string,
+	storage: SavedLoraStorage_Deserialize,
+	lineage?: SavedLoraLineage_Deserialize,
+	tags: string[],
+	metadata: unknown,
+	created_at: string | null,
+	updated_at: string | null,
+	archived_at: string | null,
+};
+
+export type SavedLoraCheckpoint_Serialize = {
+	schemaVersion: string,
+	checkpointId: string,
+	orgId: string,
+	ownerUserId: string | null,
+	visibility: string,
+	name: string,
+	description: string,
+	provider: string,
+	checkpointKind: string,
+	providerCheckpointReference: string | null,
+	runId: string | null,
+	attemptId: string | null,
+	sourceCheckpointId: string | null,
+	optimizerAlgorithm: string | null,
+	baseModel: string,
+	loraRank: number | null,
+	step: unknown,
+	status: string,
+	storage: SavedLoraStorage_Serialize,
+	lineage: SavedLoraLineage_Serialize,
+	tags: string[],
+	metadata: unknown,
+	createdAt: string | null,
+	updatedAt: string | null,
+	archivedAt: string | null,
+};
+
+export type SavedLoraDownload = SavedLoraDownload_Serialize | SavedLoraDownload_Deserialize;
+
+export type SavedLoraDownload_Deserialize = {
+	checkpoint_id: string,
+	url: string,
+	expires_in: unknown,
+	content_type: string,
+	size_bytes: unknown,
+	sha256: string | null,
+};
+
+export type SavedLoraDownload_Serialize = {
+	checkpointId: string,
+	url: string,
+	expiresIn: unknown,
+	contentType: string,
+	sizeBytes: unknown,
+	sha256: string | null,
+};
+
+export type SavedLoraLineage = SavedLoraLineage_Serialize | SavedLoraLineage_Deserialize;
+
+export type SavedLoraLineage_Deserialize = {
+	optimizer_algorithm: string | null,
+	run_id: string | null,
+	attempt_id: string | null,
+	source_checkpoint_id: string | null,
+	provider_checkpoint_reference: string | null,
+};
+
+export type SavedLoraLineage_Serialize = {
+	optimizerAlgorithm: string | null,
+	runId: string | null,
+	attemptId: string | null,
+	sourceCheckpointId: string | null,
+	providerCheckpointReference: string | null,
+};
+
+export type SavedLoraRunCounts = SavedLoraRunCounts_Serialize | SavedLoraRunCounts_Deserialize;
+
+export type SavedLoraRunCounts_Deserialize = {
+	total: unknown,
+	inference: unknown,
+	training: unknown,
+};
+
+export type SavedLoraRunCounts_Serialize = {
+	total: unknown,
+	inference: unknown,
+	training: unknown,
+};
+
+export type SavedLoraRunIdentity = SavedLoraRunIdentity_Serialize | SavedLoraRunIdentity_Deserialize;
+
+export type SavedLoraRunIdentity_Deserialize = {
+	run_id: string,
+	attempt_id: string | null,
+	optimizer_algorithm: string,
+	status: string,
+};
+
+export type SavedLoraRunIdentity_Serialize = {
+	runId: string,
+	attemptId: string | null,
+	optimizerAlgorithm: string,
+	status: string,
+};
+
+export type SavedLoraRunPage = SavedLoraRunPage_Serialize | SavedLoraRunPage_Deserialize;
+
+export type SavedLoraRunPage_Deserialize = {
+	schema_version: string,
+	run: SavedLoraRunIdentity_Deserialize,
+	items: SavedLoraCheckpoint_Deserialize[],
+	counts: SavedLoraRunCounts_Deserialize,
+	total: unknown,
+	limit: unknown,
+	offset: unknown,
+};
+
+export type SavedLoraRunPage_Serialize = {
+	schemaVersion: string,
+	run: SavedLoraRunIdentity_Serialize,
+	items: SavedLoraCheckpoint_Serialize[],
+	counts: SavedLoraRunCounts_Serialize,
+	total: unknown,
+	limit: unknown,
+	offset: unknown,
+};
+
+export type SavedLoraStorage = SavedLoraStorage_Serialize | SavedLoraStorage_Deserialize;
+
+export type SavedLoraStorage_Deserialize = {
+	backend: string,
+	bucket: string,
+	key: string,
+	version: string | null,
+	etag: string | null,
+	sha256: string | null,
+	size_bytes: unknown,
+	content_type: string,
+};
+
+export type SavedLoraStorage_Serialize = {
+	backend: string,
+	bucket: string,
+	key: string,
+	version: string | null,
+	etag: string | null,
+	sha256: string | null,
+	sizeBytes: unknown,
+	contentType: string,
+};
+
 export type SecretAuditEvent = {
 	schema: string,
 	eventId: string,
@@ -2436,6 +2906,13 @@ export type TariffCard = {
 	outputUsdPerM: number | null,
 	cachedInputUsdPerM: number | null,
 	cacheWriteUsdPerM: number | null,
+};
+
+export type TelemetryPolicy = {
+	dictionaryVersion: string,
+	collectionPolicyVersion: string,
+	optionalEnabled: boolean,
+	consentVersion: string,
 };
 
 export type TemplateMeta = {
