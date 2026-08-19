@@ -2099,6 +2099,21 @@ pub async fn dispatch(method: &str, path: &str, body: Value, core: &CoreRuntime)
                     let source = String::from_utf8(bytes)
                         .context("systems authoring source must be UTF-8")?;
                     crate::visuals::systems::authoring_findings(&source, kind)?
+                } else if crate::visuals::charts::is_chart_template(&visual.template_id) {
+                    // Recorded by the render that produced the image. A chart's
+                    // real width is only known after its bindings resolve, so
+                    // re-deriving from the spec alone would under-report.
+                    visual
+                        .metadata
+                        .get("authoringFindings")
+                        .and_then(Value::as_array)
+                        .map(|items| {
+                            items
+                                .iter()
+                                .filter_map(|item| item.as_str().map(str::to_owned))
+                                .collect()
+                        })
+                        .unwrap_or_default()
                 } else {
                     Vec::new()
                 };
@@ -2365,6 +2380,25 @@ pub async fn dispatch(method: &str, path: &str, body: Value, core: &CoreRuntime)
                 if !findings.is_empty() {
                     anyhow::bail!(
                         "systems visual has unresolved automated findings: {}",
+                        findings.join("; ")
+                    );
+                }
+            }
+            if crate::visuals::charts::is_chart_template(&current.template_id) {
+                let findings: Vec<String> = current
+                    .metadata
+                    .get("authoringFindings")
+                    .and_then(Value::as_array)
+                    .map(|items| {
+                        items
+                            .iter()
+                            .filter_map(|item| item.as_str().map(str::to_owned))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                if !findings.is_empty() {
+                    anyhow::bail!(
+                        "chart visual has unresolved automated findings: {}",
                         findings.join("; ")
                     );
                 }

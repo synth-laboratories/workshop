@@ -1923,7 +1923,7 @@ export type RenderedVisualObservation = {
 	observedAt: string,
 };
 
-export type RendererKind = "template" | "tsx" | "html" | "mermaid" | "systems" | "systems-dynamic";
+export type RendererKind = "template" | "tsx" | "html" | "mermaid" | "systems" | "systems-dynamic" | "chart";
 
 export type ReportAudience = ReportAudience_Serialize | ReportAudience_Deserialize;
 
