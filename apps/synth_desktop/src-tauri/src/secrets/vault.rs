@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use super::audit::{self, SecretAuditEvent};
-use super::backend::{BackendStatus, SecretBackend, SecretBytes};
+use super::backend::{SecretBackend, SecretBytes};
 use super::fingerprint::{self, display_suffix, fingerprint};
 
 #[derive(Clone, Debug, Serialize, Deserialize, specta::Type)]
@@ -280,17 +280,23 @@ pub fn has_recipe_grant(conn: &Connection, secret_id: &str, recipe_id: &str) -> 
 }
 
 /// Host-only resolution. Callers must be the provider proxy or a validation path.
+///
+/// Resolve is the only Keychain read. A prior `status()` probe would prompt
+/// twice on macOS for the same item.
 pub fn resolve_for_proxy(
     conn: &Connection,
     backend: &dyn SecretBackend,
     id: &str,
 ) -> Result<SecretBytes> {
     let record = record(conn, id)?.ok_or_else(|| anyhow!("secret {id} was not found"))?;
-    match backend.status(&record.backend_ref)? {
-        BackendStatus::Locked => anyhow::bail!("the OS credential store is locked"),
-        BackendStatus::Missing => {
-            anyhow::bail!("secret {id} is missing from the OS credential store")
+    backend.resolve(&record.backend_ref).map_err(|error| {
+        let message = error.to_string();
+        if message.contains("locked") {
+            anyhow!("the OS credential store is locked")
+        } else if message.contains("not stored") || message.contains("not found") {
+            anyhow!("secret {id} is missing from the OS credential store")
+        } else {
+            error
         }
-        BackendStatus::Present => backend.resolve(&record.backend_ref),
-    }
+    })
 }

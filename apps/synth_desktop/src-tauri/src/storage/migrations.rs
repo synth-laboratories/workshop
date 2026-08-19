@@ -28,6 +28,7 @@ const MIGRATIONS: &[&str] = &[
     MIGRATION_23,
     MIGRATION_24,
     MIGRATION_25,
+    MIGRATION_26,
 ];
 
 /// Apply every migration the database has not reached yet.
@@ -76,6 +77,7 @@ pub fn apply_migrations(conn: &Connection) -> Result<i64> {
 const REQUIRED_TABLES: &[(&str, &str)] = &[
     ("optimizer_terminal_manifests", MIGRATION_23),
     ("secret_refs", MIGRATION_25),
+    ("product_telemetry_events", MIGRATION_26),
 ];
 
 fn heal_missing_tables(conn: &Connection) -> Result<()> {
@@ -1541,6 +1543,19 @@ CREATE TABLE IF NOT EXISTS secret_capabilities (
 );
 
 CREATE INDEX IF NOT EXISTS secret_capabilities_run ON secret_capabilities(run_id, status);
+"#;
+
+const MIGRATION_26: &str = r#"
+CREATE TABLE IF NOT EXISTS product_telemetry_events (
+    event_id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    at TEXT NOT NULL,
+    sensitivity TEXT NOT NULL CHECK (sensitivity IN ('optional','essential')),
+    properties_json TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS product_telemetry_events_at ON product_telemetry_events(at DESC);
+CREATE INDEX IF NOT EXISTS product_telemetry_events_name ON product_telemetry_events(name, at DESC);
 "#;
 
 #[cfg(test)]

@@ -52,6 +52,7 @@ mod skills;
 pub mod storage;
 mod synth_config;
 mod tariffs;
+mod telemetry;
 mod terminal;
 pub mod trace_ingest;
 pub mod trace_query;
@@ -276,6 +277,13 @@ async fn intern_session_create(
 ) -> Result<InternSessionWire, AppError> {
     intern_api::create(&state, request)
         .await
+        .map(|session| {
+            crate::telemetry::mark_once(
+                "first_workspace_opened",
+                serde_json::json!({"workflow_family": "intern"}),
+            );
+            session
+        })
         .map_err(AppError::from)
 }
 
@@ -287,7 +295,36 @@ async fn intern_session_send(
 ) -> Result<InternSendResult, AppError> {
     intern_api::send(&state, request)
         .await
-        .map_err(AppError::from)
+        .map(|result| {
+            crate::telemetry::mark_once(
+                "first_run_succeeded",
+                serde_json::json!({"workflow_family": "intern", "outcome": "success"}),
+            );
+            crate::telemetry::emit(
+                "hosted_job_started",
+                serde_json::json!({"workflow_family": "intern"}),
+            );
+            crate::telemetry::emit(
+                "workflow_started",
+                serde_json::json!({"workflow_family": "intern"}),
+            );
+            result
+        })
+        .map_err(|error| {
+            crate::telemetry::emit(
+                "hosted_job_failed",
+                serde_json::json!({
+                    "workflow_family": "intern",
+                    "outcome": "failure",
+                    "error_class": "request_failed"
+                }),
+            );
+            crate::telemetry::emit(
+                "recovery_attempted",
+                serde_json::json!({"error_class": "request_failed", "outcome": "failure"}),
+            );
+            AppError::from(error)
+        })
 }
 
 #[tauri::command]
@@ -296,8 +333,43 @@ async fn intern_session_control(
     state: State<'_, Arc<CoreRuntime>>,
     request: InternSessionControlRequest,
 ) -> Result<InternControlResult, AppError> {
+    let kind = request.kind.clone();
     intern_api::control(&state, request)
         .await
+        .map(|result| {
+            match kind.as_str() {
+                "close" => {
+                    crate::telemetry::emit(
+                        "hosted_job_completed",
+                        serde_json::json!({"workflow_family": "intern", "outcome": "success"}),
+                    );
+                    crate::telemetry::emit(
+                        "workflow_terminal",
+                        serde_json::json!({"workflow_family": "intern", "outcome": "success"}),
+                    );
+                }
+                "cancel" => {
+                    crate::telemetry::emit(
+                        "hosted_job_failed",
+                        serde_json::json!({
+                            "workflow_family": "intern",
+                            "outcome": "cancelled",
+                            "error_class": "cancelled"
+                        }),
+                    );
+                    crate::telemetry::emit(
+                        "workflow_terminal",
+                        serde_json::json!({
+                            "workflow_family": "intern",
+                            "outcome": "cancelled",
+                            "error_class": "cancelled"
+                        }),
+                    );
+                }
+                _ => {}
+            }
+            result
+        })
         .map_err(AppError::from)
 }
 
@@ -2147,6 +2219,14 @@ async fn visuals_create(
         .await
         .map_err(AppError::from)?;
     publish_visual_event(&app, &state, event).await?;
+    crate::telemetry::mark_once(
+        "first_experiment_visual",
+        serde_json::json!({"workflow_family": "visual"}),
+    );
+    crate::telemetry::emit(
+        "artifact_created",
+        serde_json::json!({"workflow_family": "visual"}),
+    );
     Ok(visual)
 }
 
@@ -2339,6 +2419,11 @@ async fn reports_create(
         .await
         .map_err(AppError::from)?;
     publish_visual_event(&app, &state, event).await?;
+    crate::telemetry::emit("report_created", serde_json::json!({"outcome": "success"}));
+    crate::telemetry::emit(
+        "artifact_created",
+        serde_json::json!({"workflow_family": "report"}),
+    );
     Ok(report)
 }
 
@@ -2428,6 +2513,14 @@ async fn reports_visibility_decide(
     if !approved {
         return Ok(decision);
     }
+    crate::telemetry::mark_once(
+        "first_report_shared",
+        serde_json::json!({"outcome": "success"}),
+    );
+    crate::telemetry::emit(
+        "report_published",
+        serde_json::json!({"outcome": "success"}),
+    );
     let execution: anyhow::Result<()> = async {
         let backend = synth_config::resolve()?;
         let api_key = backend.api_key.ok_or_else(|| {
@@ -2932,6 +3025,14 @@ async fn account_poll_sign_in(
         // known to have paired at least once.
         cloud.clear_cache();
         let _ = account::mark_paired(core.storage(), chrono::Utc::now());
+        crate::telemetry::mark_once(
+            "signup_completed",
+            serde_json::json!({"outcome": "success"}),
+        );
+        crate::telemetry::emit(
+            "signin_completed",
+            serde_json::json!({"outcome": "success"}),
+        );
     }
     Ok(result)
 }
@@ -3037,8 +3138,14 @@ async fn account_sign_out(
 ) -> Result<BackendSettings, AppError> {
     synth_config::remove_api_key().map_err(AppError::from)?;
     // Cloud facts belong to the signed-out session; local history and the
-    // device ledger stay untouched.
+    // device ledger stay untouched. Optional analytics drop; the install id
+    // and essential recovery events remain until retention expires.
     cloud.clear_cache();
+    if let Some(telemetry) = crate::telemetry::live() {
+        if let Err(error) = telemetry.on_sign_out() {
+            eprintln!("synth-desktop: sign-out telemetry wipe failed: {error}");
+        }
+    }
     core.reload_intern_config().await.map_err(AppError::from)?;
     synth_config::get().map_err(AppError::from)
 }
@@ -3486,11 +3593,29 @@ async fn codex_turn_send(
                 chrono::Utc::now(),
             )
             .await;
-        account_cloud::validate_turn_admission(&read).map_err(|message| CodexTurnFailure {
-            code: "synth_cloud_admission_failed".into(),
-            message,
-            session_id: session_id.clone(),
-            detail: String::new(),
+        account_cloud::validate_turn_admission(&read).map_err(|message| {
+            let error_class = if read.unauthenticated {
+                "auth"
+            } else if read.snapshot.as_ref().is_some_and(|snapshot| {
+                snapshot
+                    .allowance
+                    .remaining_cents
+                    .is_some_and(|cents| cents <= 0)
+            }) {
+                "quota"
+            } else {
+                "outage"
+            };
+            crate::telemetry::emit(
+                "recovery_attempted",
+                serde_json::json!({"error_class": error_class, "outcome": "failure"}),
+            );
+            CodexTurnFailure {
+                code: "synth_cloud_admission_failed".into(),
+                message,
+                session_id: session_id.clone(),
+                detail: String::new(),
+            }
         })?;
     }
     state.send_turn(app, request).await
@@ -3507,7 +3632,16 @@ async fn codex_session_start(
     request: CodexSessionStartRequest,
 ) -> Result<CodexSessionInfo, AppError> {
     let request = prepare_codex_start(&laguna, &oauth, &core, request).await?;
-    state.start(app, request).await.map_err(AppError::from)
+    let started = state.start(app, request).await.map_err(AppError::from)?;
+    crate::telemetry::mark_once(
+        "first_workspace_opened",
+        serde_json::json!({"workflow_family": "codex"}),
+    );
+    crate::telemetry::emit(
+        "workflow_started",
+        serde_json::json!({"workflow_family": "codex"}),
+    );
+    Ok(started)
 }
 
 #[tauri::command]
@@ -3814,6 +3948,11 @@ pub fn run() {
                 eprintln!("synth-desktop: provider proxy failed to start: {error:#}");
             }
             crate::secrets::install_live(core.secrets().clone());
+            let telemetry = Arc::new(crate::telemetry::ProductTelemetry::new(
+                core.storage().database().clone(),
+            ));
+            crate::telemetry::install_live(telemetry.clone());
+            crate::telemetry::mark_once("app_first_launch", serde_json::json!({}));
             let approvals = Arc::new(crate::session::approval::ApprovalBroker::new(
                 crate::session::SessionPersistence::from_core(Some(core.clone())),
             ));
@@ -3840,6 +3979,7 @@ pub fn run() {
             app.manage(Arc::new(device_auth::DeviceAuthManager::new()));
             app.manage(Arc::new(codex_oauth::Manager::production()));
             app.manage(Arc::new(account_cloud::AccountCloudClient::open()));
+            app.manage(telemetry);
             app.manage(laguna.clone());
             app.manage(optimizer_manager.clone());
             app.manage(supervisor);

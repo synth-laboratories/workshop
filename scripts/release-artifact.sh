@@ -8,11 +8,13 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 # shellcheck source=scripts/mcp-adapters.sh
 source "$ROOT/scripts/mcp-adapters.sh"
 COMMAND="${1:-help}"
-OUTPUT="${2:-${SYNTH_RELEASE_ROOT:-${TMPDIR:-/tmp}/synth-desktop-v0.5-release}}"
+APP_VERSION="$(node -p "require('$ROOT/apps/synth_desktop/package.json').version")"
+ARCH="$(uname -m)"
+OUTPUT="${2:-${SYNTH_RELEASE_ROOT:-${TMPDIR:-/tmp}/synth-desktop-v${APP_VERSION}-release}}"
 APP_NAME="Synth Workshop.app"
 STAGE_ROOT="$OUTPUT/stage"
 STAGED_APP="$STAGE_ROOT/$APP_NAME"
-ZIP_PATH="$OUTPUT/Synth-Workshop-v0.5.0-macOS-arm64-UNNOTARIZED.zip"
+ZIP_PATH="$OUTPUT/Synth-Workshop-v${APP_VERSION}-macOS-${ARCH}-UNNOTARIZED.zip"
 PROVENANCE="$OUTPUT/PROVENANCE.json"
 BUILT_APP="$ROOT/apps/synth_desktop/src-tauri/target/release/bundle/macos/$APP_NAME"
 INSTALLED_APP="${SYNTH_RELEASE_INSTALL_APP:-/Applications/$APP_NAME}"
@@ -145,8 +147,11 @@ zip_artifact() {
   [[ "$before" == "$after" ]] || die "CDHash changed across ZIP round-trip: $before != $after"
   zip_sha="$(sha256 "$ZIP_PATH")"
   zip_bytes="$(stat -f '%z' "$ZIP_PATH")"
-  jq --arg path "$ZIP_PATH" --arg sha "$zip_sha" --argjson bytes "$zip_bytes" --arg cdHash "$after" \
-    '.zip={path:$path,sha256:$sha,bytes:$bytes} | .roundTrip={codesignVerified:true,cdHash:$cdHash}' \
+  local release_id
+  release_id="workshop-v${APP_VERSION}-${zip_sha:0:16}"
+  jq --arg path "$ZIP_PATH" --arg sha "$zip_sha" --argjson bytes "$zip_bytes" \
+    --arg cdHash "$after" --arg releaseId "$release_id" \
+    '.releaseId=$releaseId | .zip={path:$path,sha256:$sha,bytes:$bytes} | .roundTrip={codesignVerified:true,cdHash:$cdHash}' \
     "$PROVENANCE" > "$PROVENANCE.tmp"
   mv "$PROVENANCE.tmp" "$PROVENANCE"
   rm -rf "$roundtrip"

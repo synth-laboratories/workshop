@@ -253,7 +253,9 @@ export const COMMANDS = {
 	SECRETS_AUDIT_LIST: "secrets_audit_list",
 	SECRETS_PROXY_STATUS: "secrets_proxy_status",
 	SECRETS_PENDING: "secrets_pending",
-	SECRETS_DENY_ENV_IMPORT: "secrets_deny_env_import"
+	SECRETS_DENY_ENV_IMPORT: "secrets_deny_env_import",
+	PRODUCT_TELEMETRY_GET_POLICY: "product_telemetry_get_policy",
+	PRODUCT_TELEMETRY_SET_OPT_OUT: "product_telemetry_set_opt_out",
 } as const;
 
 export type CommandName = (typeof COMMANDS)[keyof typeof COMMANDS];

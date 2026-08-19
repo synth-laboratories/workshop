@@ -124,6 +124,12 @@ pub struct CloudUsageWindow {
     #[serde(default)]
     #[specta(type = specta_typescript::Unknown)]
     pub nominal_cents: i64,
+    #[serde(default)]
+    #[specta(type = specta_typescript::Unknown)]
+    pub tokens: i64,
+    #[serde(default)]
+    #[specta(type = specta_typescript::Unknown)]
+    pub runtime_seconds: i64,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, specta::Type)]
@@ -191,6 +197,8 @@ pub struct SnapshotRead {
     pub fetched_at: Option<DateTime<Utc>>,
     /// True when the caller is not signed in (no desktop-managed key).
     pub unauthenticated: bool,
+    /// `auth` | `outage` | `malformed` when `error` is set; never a secret.
+    pub failure_kind: Option<String>,
 }
 
 /// Enforce the native spend boundary for a Synth Cloud turn.
@@ -345,6 +353,16 @@ impl AccountError {
             _ => "request_failed",
         }
     }
+
+    /// Stable classifier the shell uses to tell auth, outage, and malformed
+    /// snapshots apart. Never includes transport or parser text.
+    pub fn failure_kind(&self) -> &'static str {
+        match self {
+            Self::Unauthorized => "auth",
+            Self::Malformed { .. } | Self::UnsupportedSchema { .. } => "malformed",
+            _ => "outage",
+        }
+    }
 }
 
 impl std::fmt::Display for AccountError {
@@ -412,6 +430,7 @@ impl AccountCloudClient {
                         error: None,
                         fetched_at: Some(entry.fetched_at),
                         unauthenticated: false,
+                        failure_kind: None,
                     };
                 }
             }
@@ -429,6 +448,7 @@ impl AccountCloudClient {
                     error: None,
                     fetched_at: Some(now),
                     unauthenticated: false,
+                    failure_kind: None,
                 }
             }
             Err(error) => {
@@ -444,6 +464,7 @@ impl AccountCloudClient {
                         error: Some(error.public_message()),
                         fetched_at: None,
                         unauthenticated: true,
+                        failure_kind: Some(error.failure_kind().into()),
                     };
                 }
                 if cached.is_none() {
@@ -460,6 +481,7 @@ impl AccountCloudClient {
                     error: Some(error.public_message()),
                     fetched_at: cached.as_ref().map(|entry| entry.fetched_at),
                     unauthenticated: false,
+                    failure_kind: Some(error.failure_kind().into()),
                 }
             }
         }
@@ -806,6 +828,7 @@ mod tests {
         );
         assert!(!error.contains("sk_dead"));
         assert!(read.unauthenticated);
+        assert_eq!(read.failure_kind.as_deref(), Some("auth"));
     }
 
     #[tokio::test]

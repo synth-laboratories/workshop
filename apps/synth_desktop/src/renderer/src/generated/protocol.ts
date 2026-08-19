@@ -391,6 +391,8 @@ export const commands = {
 	secretsProxyStatus: () => typedError<SecretsProxyStatus, AppError>(__TAURI_INVOKE("secrets_proxy_status")),
 	secretsPending: () => typedError<SecretsInbox, AppError>(__TAURI_INVOKE("secrets_pending")),
 	secretsDenyEnvImport: (requestId: string) => typedError<null, AppError>(__TAURI_INVOKE("secrets_deny_env_import", { requestId })),
+	productTelemetryGetPolicy: () => typedError<TelemetryPolicy, AppError>(__TAURI_INVOKE("product_telemetry_get_policy")),
+	productTelemetrySetOptOut: (optOut: boolean) => typedError<TelemetryPolicy, AppError>(__TAURI_INVOKE("product_telemetry_set_opt_out", { optOut })),
 };
 
 /* Types */
@@ -493,6 +495,13 @@ export type AccountSummary_Deserialize = {
 	lastUpdated: string | null,
 	stale: boolean,
 	error: string | null,
+	/**  `local_only` | `signed_out` | `active` | `revoked` | `offline` | `malformed` */
+	sessionHealth: string,
+	/**  `none` | `auth` | `entitlement` | `quota` | `outage` | `malformed` */
+	failureKind: string,
+	quotaExhausted: boolean,
+	/**  `ok` | `stale` | `failed` — hosted usage vs the last successful snapshot. */
+	reconciliation: string,
 };
 
 export type AccountSummary_Serialize = {
@@ -513,11 +522,24 @@ export type AccountSummary_Serialize = {
 	lastUpdated?: string | null,
 	stale: boolean,
 	error?: string | null,
+	/**  `local_only` | `signed_out` | `active` | `revoked` | `offline` | `malformed` */
+	sessionHealth: string,
+	/**  `none` | `auth` | `entitlement` | `quota` | `outage` | `malformed` */
+	failureKind: string,
+	quotaExhausted: boolean,
+	/**  `ok` | `stale` | `failed` — hosted usage vs the last successful snapshot. */
+	reconciliation: string,
 };
 
 export type AccountUsageWindow = {
 	events: unknown,
+	/**  Finalized billed dollars. Never the sum of pending + billed. */
 	costUsd: number | null,
+	finalizedUsd: number | null,
+	/**  Nominal minus billed for this window. Live estimates, not ledger truth. */
+	pendingUsd: number | null,
+	tokens: unknown,
+	runtimeSeconds: unknown,
 };
 
 export type AfterImportAction = "keep" | "replace_aliases" | "remove_entries";
@@ -2440,6 +2462,13 @@ export type TariffCard = {
 	outputUsdPerM: number | null,
 	cachedInputUsdPerM: number | null,
 	cacheWriteUsdPerM: number | null,
+};
+
+export type TelemetryPolicy = {
+	dictionaryVersion: string,
+	collectionPolicyVersion: string,
+	optionalEnabled: boolean,
+	consentVersion: string,
 };
 
 export type TemplateMeta = {

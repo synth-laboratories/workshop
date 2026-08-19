@@ -1152,6 +1152,10 @@ export type SynthAccountOrganization = {
 export type SynthAccountUsageWindow = {
 	events: number;
 	costUsd: number;
+	finalizedUsd?: number;
+	pendingUsd?: number;
+	tokens?: number;
+	runtimeSeconds?: number;
 };
 
 export type SynthAccountCloudUsage = {
@@ -1191,6 +1195,10 @@ export type SynthAccountSummary = {
 	/** True when the cloud facts shown are a cached copy after a failed refresh. */
 	stale?: boolean;
 	error?: string;
+	sessionHealth?: "local_only" | "signed_out" | "active" | "revoked" | "offline" | "malformed";
+	failureKind?: "none" | "auth" | "entitlement" | "quota" | "outage" | "malformed";
+	quotaExhausted?: boolean;
+	reconciliation?: "ok" | "stale" | "failed";
 };
 
 export type SynthBillingAction = "upgrade" | "manage";
@@ -1205,6 +1213,18 @@ export type SynthAccountBridge = {
 	refresh?(): Promise<SynthAccountSummary>;
 	/** Opens a backend-issued hosted URL in the system browser. */
 	openBilling?(action: SynthBillingAction, tier?: string): Promise<string>;
+};
+
+export type ProductTelemetryPolicy = {
+	dictionaryVersion: string;
+	collectionPolicyVersion: string;
+	optionalEnabled: boolean;
+	consentVersion: string;
+};
+
+export type ProductTelemetryBridge = {
+	getPolicy(): Promise<ProductTelemetryPolicy>;
+	setOptOut(optOut: boolean): Promise<ProductTelemetryPolicy>;
 };
 
 export type CodexOauthBegin = {
