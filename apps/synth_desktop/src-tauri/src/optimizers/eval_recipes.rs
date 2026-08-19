@@ -318,6 +318,7 @@ pub fn recipe_catalog() -> Vec<Value> {
 }
 
 fn normalize_builtin_recipe_contract(mut recipe: Value) -> Value {
+    mark_unreproducible_target_unavailable(&mut recipe);
     if recipe.get("id").and_then(Value::as_str) != Some(EVAL_CRAFTAX_SMOKE_RECIPE)
         || recipe.pointer("/limits/trials").is_some()
     {
@@ -340,6 +341,23 @@ fn normalize_builtin_recipe_contract(mut recipe: Value) -> Value {
         );
     }
     recipe
+}
+
+/// A valid digest is not enough when it names only a local daemon image. Mark
+/// that catalog entry unavailable before it reaches the UI so developers cannot
+/// start a run whose identity depends on a mutable local retag.
+fn mark_unreproducible_target_unavailable(recipe: &mut Value) {
+    let Some(recipe_id) = recipe.get("id").and_then(Value::as_str) else {
+        return;
+    };
+    let Err(error) = require_digest_pinned_target(recipe, recipe_id) else {
+        return;
+    };
+    let Some(object) = recipe.as_object_mut() else {
+        return;
+    };
+    object.insert("availability".into(), json!("unavailable"));
+    object.insert("availabilityReason".into(), json!(error.to_string()));
 }
 
 /// Convert the eval runtime's per-trial budget into the total product approval
@@ -491,16 +509,6 @@ pub(crate) fn bind_provider_routes_into_manifest(path: &Path, routes: Value) -> 
 /// A recipe that declares no image has nothing to pin (the fixture smoke is
 /// deterministic and benchmark-free); a recipe that declares one must pin it.
 fn require_digest_pinned_target(recipe: &Value, recipe_id: &str) -> Result<()> {
-    let allow_local_pinned_target = cfg!(debug_assertions)
-        && std::env::var("SYNTH_EVAL_ALLOW_LOCAL_PINNED_TARGETS").as_deref() == Ok("1");
-    require_digest_pinned_target_with_policy(recipe, recipe_id, allow_local_pinned_target)
-}
-
-fn require_digest_pinned_target_with_policy(
-    recipe: &Value,
-    recipe_id: &str,
-    allow_local_pinned_target: bool,
-) -> Result<()> {
     let image = recipe
         .get("image")
         .and_then(Value::as_str)
@@ -549,7 +557,7 @@ fn require_digest_pinned_target_with_policy(
     let host = repository.split('/').next().unwrap_or("");
     let has_registry_host = repository.contains('/')
         && (host.contains('.') || host.contains(':') || host == "localhost");
-    if !has_registry_host && !allow_local_pinned_target {
+    if !has_registry_host {
         return Err(refuse(
             "the eval target names no registry; publish the image under its registry host and pin that digest",
         ));
@@ -2227,16 +2235,15 @@ mod immutable_target_tests {
     }
 
     #[test]
-    fn an_explicit_local_development_lane_accepts_a_registry_less_immutable_id() {
-        require_digest_pinned_target_with_policy(
-            &recipe(
-                Some("craftax-eval-target"),
-                Some("sha256:d1b3eaccfd833f0f67eaf682be0ea162e93ddacb71db944be9b3e03c82cd09bd"),
-            ),
-            EVAL_CRAFTAX_LLM_RECIPE,
-            true,
-        )
-        .expect("an explicitly enabled local lane may use an operator-pinned OCI image ID");
+    fn a_registry_less_catalog_target_is_visible_but_unavailable() {
+        let normalized = normalize_builtin_recipe_contract(recipe(
+            Some("craftax-eval-target"),
+            Some("sha256:d1b3eaccfd833f0f67eaf682be0ea162e93ddacb71db944be9b3e03c82cd09bd"),
+        ));
+        assert_eq!(normalized["availability"], json!("unavailable"));
+        assert!(normalized["availabilityReason"]
+            .as_str()
+            .is_some_and(|reason| reason.contains("names no registry")));
     }
 
     #[test]
