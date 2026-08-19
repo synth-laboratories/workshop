@@ -26,6 +26,9 @@ export type ShellProps = {
   events?: OptimizerEvent[];
   run?: OptimizerRun;
   loadError?: string;
+  visualId?: string;
+  revision?: number;
+  sourceDigest?: string;
   /** A comparable sibling run (e.g. the other half of a Luna vs Sol pair). */
   comparison?: GepaComparisonPayload | null;
 };
@@ -46,6 +49,9 @@ export function Shell(props: ShellProps) {
           comparison={props.comparison}
           selectedCandidate={selectedCandidate}
           setSelectedCandidate={setSelectedCandidate}
+          visualId={props.visualId}
+          visualRevision={props.revision}
+          sourceDigest={props.sourceDigest}
           debug={
             <>
               <GlobalTimeline

@@ -43,6 +43,7 @@ export function artifactFromVisualRecord(visual: VisualRecord): ArtifactRef {
 		templateId: visual.templateId,
 		visualId: visual.id,
 		revision: visual.currentRevision,
+		contentDigest: visual.contentDigest ?? undefined,
 		rendererKind: visual.rendererKind,
 		bindings: visual.bindings,
 		metadata: visual.metadata,
@@ -986,7 +987,7 @@ export function VisualPane({ artifact, onClose }: { artifact: ArtifactRef; onClo
 	const [shareUpload, setShareUpload] = useState<VisualUpload | null>(null);
 	const [sharedUrl, setSharedUrl] = useState("");
 	const [labeling, setLabeling] = useState(false);
-	const [labelPoint, setLabelPoint] = useState<{ x: number; y: number } | null>(null);
+	const [labelPoint, setLabelPoint] = useState<{ x: number; y: number; selector?: Record<string, unknown>; targetLabel?: string } | null>(null);
 	const [labelBody, setLabelBody] = useState("");
 	const [artifactError, setArtifactError] = useState<string | null>(null);
 	const [busy, setBusy] = useState(false);
@@ -1016,10 +1017,15 @@ export function VisualPane({ artifact, onClose }: { artifact: ArtifactRef; onClo
 		try {
 			const annotation = await bridges.visuals.createAnnotation(visualId, {
 				visualRevision: revision,
-				selector: { type: "chart_mark", markId: "visual-pane", x: labelPoint.x, y: labelPoint.y },
+				sourceDigest: artifact.contentDigest ?? null,
+				selector: labelPoint.selector ?? { type: "chart_mark", markId: "visual-pane", x: labelPoint.x, y: labelPoint.y },
 				kind: "note",
 				body: labelBody.trim() || null,
-				metadata: { coordinateSpace: "normalized", createdFrom: "visual-pane" }
+				metadata: {
+					coordinateSpace: "normalized",
+					createdFrom: "visual-pane",
+					...(labelPoint.targetLabel ? { semanticTarget: labelPoint.targetLabel } : {})
+				}
 			});
 			setAnnotations((current) => [...current, annotation]);
 			setLabeling(false);
@@ -1215,7 +1221,7 @@ export function VisualPane({ artifact, onClose }: { artifact: ArtifactRef; onClo
 			) : null}
 			{labeling ? (
 				<form className="visual-label-form" onSubmit={(event) => { event.preventDefault(); void createLabel(); }}>
-					<span>{labelPoint ? `Placed at ${Math.round(labelPoint.x * 100)}%, ${Math.round(labelPoint.y * 100)}%` : "Click the visual to place the label."}</span>
+					<span>{labelPoint ? (labelPoint.targetLabel ? `Attached to ${labelPoint.targetLabel}` : `Placed at ${Math.round(labelPoint.x * 100)}%, ${Math.round(labelPoint.y * 100)}%`) : "Click the visual to place the label."}</span>
 					<input value={labelBody} onChange={(event) => setLabelBody(event.target.value)} placeholder="Label note (optional)" aria-label="Label note" />
 					<button type="submit" disabled={!labelPoint || busy}>Save label</button>
 					<button type="button" onClick={() => { setLabeling(false); setLabelPoint(null); }}>Cancel</button>
@@ -1225,9 +1231,22 @@ export function VisualPane({ artifact, onClose }: { artifact: ArtifactRef; onClo
 				className={`visual-pane-body${labeling ? " visual-label-target" : ""}`}
 				onClick={labeling ? (event) => {
 					const bounds = event.currentTarget.getBoundingClientRect();
+					const semantic = event.target instanceof Element
+						? event.target.closest<HTMLElement>("[data-annotation-kind][data-annotation-id]")
+						: null;
+					const kind = semantic?.dataset.annotationKind;
+					const id = semantic?.dataset.annotationId;
+					const selector = id && kind === "candidate"
+						? { type: "candidate", candidateId: id }
+						: id && kind === "evaluation"
+							? { type: "trial", trialId: id }
+							: id && kind === "trace_item"
+								? { type: "span", spanId: id }
+								: undefined;
 					setLabelPoint({
 						x: Math.max(0, Math.min(1, (event.clientX - bounds.left) / bounds.width)),
-						y: Math.max(0, Math.min(1, (event.clientY - bounds.top) / bounds.height))
+						y: Math.max(0, Math.min(1, (event.clientY - bounds.top) / bounds.height)),
+						...(selector ? { selector, targetLabel: `${kind?.replaceAll("_", " ")} ${id}` } : {})
 					});
 				} : undefined}
 			>

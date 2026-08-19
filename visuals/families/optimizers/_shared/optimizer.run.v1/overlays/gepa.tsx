@@ -11,11 +11,15 @@ import { GepaWorkspace } from "./gepa/GepaWorkspace.tsx";
 export function GepaOverlay({
   state,
   selectedId,
-  onSelect
+  onSelect,
+  visualId,
+  visualRevision
 }: {
   state: ProjectedState;
   selectedId?: string | null;
   onSelect?: (id: string | null) => void;
+  visualId?: string;
+  visualRevision?: number;
 }) {
   if (!state.gepa) return null;
   const run: OptimizerRun = {
@@ -30,6 +34,8 @@ export function GepaOverlay({
       embedded
       selectedCandidate={selectedId ?? null}
       setSelectedCandidate={(id) => onSelect?.(id)}
+      visualId={visualId}
+      visualRevision={visualRevision}
     />
   );
 }

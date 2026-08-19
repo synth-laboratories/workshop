@@ -80,18 +80,27 @@ export function RolloutBrowser({
   groups,
   rows,
   emptyText,
-  testId
+  testId,
+  selectedId,
+  onInspect
 }: {
   groups: RolloutGroup[];
   rows: RolloutRow[];
   emptyText: string;
   testId?: string;
+  selectedId?: string | null;
+  onInspect?: (row: RolloutRow | null) => void;
 }) {
   const [filter, setFilter] = useState<Filter>("all");
   const [search, setSearch] = useState("");
   const [openGroup, setOpenGroup] = useState<string | null>(null);
   const [pageByGroup, setPageByGroup] = useState<Record<string, number>>({});
-  const [inspectedId, setInspectedId] = useState<string | null>(null);
+  const [localInspectedId, setLocalInspectedId] = useState<string | null>(null);
+  const inspectedId = selectedId === undefined ? localInspectedId : selectedId;
+  const inspect = (row: RolloutRow | null) => {
+    if (selectedId === undefined) setLocalInspectedId(row?.id ?? null);
+    onInspect?.(row);
+  };
 
   const byGroup = useMemo(() => {
     const map = new Map<string, RolloutRow[]>();
@@ -206,7 +215,7 @@ export function RolloutBrowser({
                                 </td>
                                 <td className="sv-mono" style={{ overflowWrap: "anywhere" }}>{row.id}</td>
                                 <td>
-                                  <button type="button" className="sv-btn" onClick={() => setInspectedId(row.id)} aria-label={`Inspect rollout ${row.id}`}>
+                                  <button type="button" className="sv-btn" onClick={() => inspect(row)} aria-label={`Inspect rollout ${row.id}`} data-annotation-kind="evaluation" data-annotation-id={row.id}>
                                     Inspect
                                   </button>
                                 </td>
@@ -234,7 +243,7 @@ export function RolloutBrowser({
           })}
         </div>
       )}
-      {inspected ? <RolloutInspector row={inspected} onClose={() => setInspectedId(null)} /> : null}
+      {inspected ? <RolloutInspector row={inspected} onClose={() => inspect(null)} /> : null}
     </section>
   );
 }
