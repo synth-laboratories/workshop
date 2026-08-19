@@ -223,9 +223,14 @@ test.describe("GEPA workspace on the real Sol run", () => {
 
 	test("expanded workspace inspects candidate, evaluations, and trace at every breakpoint", async ({ page }) => {
 		await page.getByTestId("toggle-visual-expand").click();
+		await expect(page.getByTestId("gepa-workbench-controls")).toBeVisible();
+		await page.getByTestId("gepa-candidate-sort").selectOption("score");
+		await page.getByTestId("gepa-sort-direction").selectOption("desc");
 		await page.getByTestId("optimizer-candidate-gepa_d2b4f5433ce8").click();
+		await expect(page.getByTestId("gepa-linked-selection")).toContainText("gepa_d2b4f5433ce8");
 		await expect(page.getByTestId("gepa-selected-candidate")).toContainText("Rejected at the minibatch gate");
 		await expect(page.getByTestId("gepa-candidate-content")).toBeVisible();
+		await expect.poll(() => page.evaluate((runId) => window.localStorage.getItem(`synth.optimizer.gepa.presentation.v1:${runId}`), SOL_ID)).toContain('"sort":"score"');
 		await page.getByTestId("eval-filter-failures").click();
 		await expect(page.getByTestId("gepa-child-evaluations")).toBeVisible();
 		await expect(page.getByTestId("inspect-proposer-trace-0")).toContainText("Reflection context assembled");
