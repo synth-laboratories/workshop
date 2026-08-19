@@ -86,10 +86,11 @@ use optimizers::{
 };
 use plugins::PluginStatus;
 use reports::{
-    ExperimentRecord, ExperimentRecordUpsert, ReportComment, ReportCommentCreate,
-    ReportCreateRequest, ReportQuery, ReportRecord, ReportRevision, ReportRevisionCompare,
-    ReportSeal, ReportSealBundle, ReportUpdateRequest, ReportUpload, ReportVisibilityRequest,
-    ReportVisibilityRequestCreate, ResearchLogAppend, ResearchLogEntry,
+    ExperimentRecord, ExperimentRecordUpsert, ReportAudienceRequest, ReportAudienceState,
+    ReportComment, ReportCommentCreate, ReportCreateRequest, ReportQuery, ReportRecord,
+    ReportRevision, ReportRevisionCompare, ReportSeal, ReportSealBundle, ReportUpdateRequest,
+    ReportUpload, ReportVisibilityRequest, ReportVisibilityRequestCreate, ResearchLogAppend,
+    ResearchLogEntry,
 };
 use serde_json::Value;
 use std::sync::Arc;
@@ -2408,6 +2409,36 @@ async fn reports_revision_get(
 
 #[tauri::command]
 #[specta::specta]
+async fn reports_validate(
+    state: State<'_, Arc<CoreRuntime>>,
+    report_id: String,
+    revision: Option<contract::specta::OpaqueInteger<i64>>,
+) -> Result<reports::ReportValidationResult, AppError> {
+    state
+        .reports()
+        .validate(report_id, revision.map(|value| value.0))
+        .await
+        .map_err(AppError::from)
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn reports_pin_all(
+    app: tauri::AppHandle,
+    state: State<'_, Arc<CoreRuntime>>,
+    report_id: String,
+) -> Result<ReportRecord, AppError> {
+    let (report, event) = state
+        .reports()
+        .pin_all(report_id)
+        .await
+        .map_err(AppError::from)?;
+    publish_visual_event(&app, &state, event).await?;
+    Ok(report)
+}
+
+#[tauri::command]
+#[specta::specta]
 async fn reports_create(
     app: tauri::AppHandle,
     state: State<'_, Arc<CoreRuntime>>,
@@ -2738,6 +2769,42 @@ async fn reports_share(
     Err(AppError::message(
         "Direct Report sharing is disabled; create and approve a revision-bound visibility request",
     ))
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn reports_audience_set(
+    state: State<'_, Arc<CoreRuntime>>,
+    publication_id: String,
+    request: ReportAudienceRequest,
+) -> Result<ReportAudienceState, AppError> {
+    let backend = synth_config::resolve().map_err(AppError::from)?;
+    let api_key = backend
+        .api_key
+        .ok_or_else(|| AppError::message("sharing a Report requires a signed-in Synth account"))?;
+    state
+        .reports()
+        .set_audience(publication_id, request, backend.backend_url, api_key)
+        .await
+        .map_err(AppError::from)
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn reports_audience_revoke(
+    state: State<'_, Arc<CoreRuntime>>,
+    publication_id: String,
+    receipt_digest: String,
+) -> Result<ReportAudienceState, AppError> {
+    let backend = synth_config::resolve().map_err(AppError::from)?;
+    let api_key = backend.api_key.ok_or_else(|| {
+        AppError::message("revoking Report access requires a signed-in Synth account")
+    })?;
+    state
+        .reports()
+        .revoke_audience(publication_id, receipt_digest, backend.backend_url, api_key)
+        .await
+        .map_err(AppError::from)
 }
 
 #[tauri::command]

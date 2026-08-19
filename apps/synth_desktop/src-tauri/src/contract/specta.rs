@@ -177,6 +177,8 @@ pub fn builder() -> Builder<tauri::Wry> {
         crate::reports_list,
         crate::reports_get,
         crate::reports_revision_get,
+        crate::reports_validate,
+        crate::reports_pin_all,
         crate::reports_create,
         crate::reports_update,
         crate::reports_archive,
@@ -194,6 +196,8 @@ pub fn builder() -> Builder<tauri::Wry> {
         crate::reports_log_append,
         crate::reports_upload_status,
         crate::reports_share,
+        crate::reports_audience_set,
+        crate::reports_audience_revoke,
         crate::reports_promote,
         crate::reports_open_shared,
         crate::reports_comments_list,
@@ -406,7 +410,7 @@ mod tests {
         // construction remains host-owned; renderer feature code has no
         // arbitrary event-name/property IPC.
         assert_eq!(
-            exported, 224,
+            exported, 228,
             "generated bindings must contain the complete desktop command set"
         );
         assert_eq!(

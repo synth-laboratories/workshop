@@ -206,6 +206,8 @@ export const commands = {
 } | null) => typedError<ReportRecord_Serialize[], AppError>(__TAURI_INVOKE("reports_list", { query })),
 	reportsGet: (reportId: string) => typedError<ReportRecord_Serialize, AppError>(__TAURI_INVOKE("reports_get", { reportId })),
 	reportsRevisionGet: (reportId: string, revision: unknown | null) => typedError<ReportRevision_Serialize, AppError>(__TAURI_INVOKE("reports_revision_get", { reportId, revision })),
+	reportsValidate: (reportId: string, revision: unknown | null) => typedError<ReportValidationResult_Serialize, AppError>(__TAURI_INVOKE("reports_validate", { reportId, revision })),
+	reportsPinAll: (reportId: string) => typedError<ReportRecord_Serialize, AppError>(__TAURI_INVOKE("reports_pin_all", { reportId })),
 	reportsCreate: (request: ReportCreateRequest_Deserialize) => typedError<ReportRecord_Serialize, AppError>(__TAURI_INVOKE("reports_create", { request })),
 	reportsUpdate: (reportId: string, request: ReportUpdateRequest_Deserialize) => typedError<ReportRecord_Serialize, AppError>(__TAURI_INVOKE("reports_update", { reportId, request })),
 	reportsArchive: (reportId: string) => typedError<ReportRecord_Serialize, AppError>(__TAURI_INVOKE("reports_archive", { reportId })),
@@ -232,6 +234,8 @@ export const commands = {
 	updatedAt: string,
 } | null, AppError>(__TAURI_INVOKE("reports_upload_status", { receiptDigest })),
 	reportsShare: (receiptDigest: string) => typedError<ReportUpload, AppError>(__TAURI_INVOKE("reports_share", { receiptDigest })),
+	reportsAudienceSet: (publicationId: string, request: ReportAudienceRequest_Deserialize) => typedError<ReportAudienceState_Serialize, AppError>(__TAURI_INVOKE("reports_audience_set", { publicationId, request })),
+	reportsAudienceRevoke: (publicationId: string, receiptDigest: string) => typedError<ReportAudienceState_Serialize, AppError>(__TAURI_INVOKE("reports_audience_revoke", { publicationId, receiptDigest })),
 	reportsPromote: (publicationId: string, slug: string) => typedError<ReportPromotion_Serialize, AppError>(__TAURI_INVOKE("reports_promote", { publicationId, slug })),
 	reportsOpenShared: (committedUrl: string) => typedError<ReportSealBundle, AppError>(__TAURI_INVOKE("reports_open_shared", { committedUrl })),
 	reportsCommentsList: (reportId: string, revision: unknown | null) => typedError<ReportComment_Serialize[], AppError>(__TAURI_INVOKE("reports_comments_list", { reportId, revision })),
@@ -603,13 +607,11 @@ export type BackendSettings = {
 	openrouterApiKeyConfigured: boolean,
 	openrouterApiKeyFingerprint: string | null,
 	openrouterApiKeySource: string | null,
-	defaultModel?: DefaultModelSettings,
-};
-
-export type DefaultModelSettings = {
-	model: string,
-	effort: string,
-	providers: string[],
+	/**
+	 *  `[models.default]` from Workshop's config.toml. Provider order is a
+	 *  fallback chain, not a request to silently change providers mid-turn.
+	 */
+	defaultModel: DefaultModelSettings,
 };
 
 export type BackendSettingsUpdate = {
@@ -909,6 +911,12 @@ export type DataCounts = {
 	containers: unknown,
 	traces: unknown,
 	usage: unknown,
+};
+
+export type DefaultModelSettings = {
+	model: string,
+	effort: string,
+	providers: string[],
 };
 
 export type DesktopPermissionSettings = {
@@ -1917,6 +1925,55 @@ export type RenderedVisualObservation = {
 
 export type RendererKind = "template" | "tsx" | "html" | "mermaid" | "systems" | "systems-dynamic";
 
+export type ReportAudience = ReportAudience_Serialize | ReportAudience_Deserialize;
+
+export type ReportAudienceRequest = ReportAudienceRequest_Serialize | ReportAudienceRequest_Deserialize;
+
+export type ReportAudienceRequest_Deserialize = {
+	audience: ReportAudience_Deserialize,
+} & {
+	receipt_digest: string,
+} & {
+	redaction_policy_version: string,
+};
+
+export type ReportAudienceRequest_Serialize = {
+	receipt_digest: string,
+	audience: ReportAudience_Serialize,
+	redaction_policy_version: string,
+};
+
+export type ReportAudienceState = ReportAudienceState_Serialize | ReportAudienceState_Deserialize;
+
+export type ReportAudienceState_Deserialize = {
+	audience: ReportAudience_Deserialize,
+	status: string,
+} & {
+	publicationId: string,
+} | {
+	publication_id: string,
+};
+
+export type ReportAudienceState_Serialize = {
+	publicationId: string,
+	audience: ReportAudience_Serialize,
+	status: string,
+};
+
+export type ReportAudience_Deserialize = ({ private: {
+	kind: "private",
+} }) & { members?: never; workspace?: never } | ({ workspace: {
+	kind: "workspace",
+} & {
+	workspace_id: string,
+} }) & { members?: never; private?: never } | ({ members: {
+	kind: "members",
+} & {
+	member_ids: string[],
+} }) & { private?: never; workspace?: never };
+
+export type ReportAudience_Serialize = ({ kind: "private" }) & { member_ids?: never; workspace_id?: never } | ({ kind: "workspace"; workspace_id: string }) & { member_ids?: never } | ({ kind: "members"; member_ids: string[] }) & { workspace_id?: never };
+
 export type ReportBlock = ReportBlock_Serialize | ReportBlock_Deserialize;
 
 export type ReportBlock_Deserialize = {
@@ -1927,6 +1984,7 @@ export type ReportBlock_Deserialize = {
 	payload: unknown,
 	sourceRevision?: string | null,
 	sourceDigest?: string | null,
+	referenceMode?: string,
 	accessState: string,
 	integrityState: string,
 };
@@ -1939,6 +1997,7 @@ export type ReportBlock_Serialize = {
 	payload: unknown,
 	sourceRevision?: string | null,
 	sourceDigest?: string | null,
+	referenceMode: string,
 	accessState: string,
 	integrityState: string,
 };
@@ -1947,6 +2006,8 @@ export type ReportClaim = {
 	claimId: string,
 	statement: string,
 	status: string,
+	confidence?: string,
+	why?: string,
 	evidenceRefs: string[],
 };
 
@@ -2148,6 +2209,7 @@ export type ReportSource_Deserialize = {
 	resourceId: string,
 	resourceRevision?: string | null,
 	resourceDigest?: string | null,
+	referenceMode?: string,
 	relation: string,
 	accessState: string,
 	integrityState: string,
@@ -2159,6 +2221,7 @@ export type ReportSource_Serialize = {
 	resourceId: string,
 	resourceRevision?: string | null,
 	resourceDigest?: string | null,
+	referenceMode: string,
 	relation: string,
 	accessState: string,
 	integrityState: string,
@@ -2204,6 +2267,42 @@ export type ReportUpload = {
 	committedUrl: string | null,
 	error: string | null,
 	updatedAt: string,
+};
+
+export type ReportValidationFinding = ReportValidationFinding_Serialize | ReportValidationFinding_Deserialize;
+
+export type ReportValidationFinding_Deserialize = {
+	code: string,
+	severity: string,
+	blockId?: string | null,
+	claimId?: string | null,
+	message: string,
+	remediation?: string | null,
+};
+
+export type ReportValidationFinding_Serialize = {
+	code: string,
+	severity: string,
+	blockId?: string | null,
+	claimId?: string | null,
+	message: string,
+	remediation?: string | null,
+};
+
+export type ReportValidationResult = ReportValidationResult_Serialize | ReportValidationResult_Deserialize;
+
+export type ReportValidationResult_Deserialize = {
+	reportId: string,
+	revision: unknown,
+	sealable: boolean,
+	findings: ReportValidationFinding_Deserialize[],
+};
+
+export type ReportValidationResult_Serialize = {
+	reportId: string,
+	revision: unknown,
+	sealable: boolean,
+	findings: ReportValidationFinding_Serialize[],
 };
 
 export type ReportVisibilityRequest = ReportVisibilityRequest_Serialize | ReportVisibilityRequest_Deserialize;

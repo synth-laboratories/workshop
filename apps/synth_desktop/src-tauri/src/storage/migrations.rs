@@ -29,6 +29,7 @@ const MIGRATIONS: &[&str] = &[
     MIGRATION_24,
     MIGRATION_25,
     MIGRATION_26,
+    MIGRATION_27,
 ];
 
 /// Apply every migration the database has not reached yet.
@@ -1556,6 +1557,32 @@ CREATE TABLE IF NOT EXISTS product_telemetry_events (
 
 CREATE INDEX IF NOT EXISTS product_telemetry_events_at ON product_telemetry_events(at DESC);
 CREATE INDEX IF NOT EXISTS product_telemetry_events_name ON product_telemetry_events(name, at DESC);
+"#;
+
+/// Reports v0.6 makes evidence mode and claim rationale explicit while keeping
+/// every v1 row readable. Legacy claims receive deliberately conservative
+/// metadata instead of silently acquiring high confidence.
+const MIGRATION_27: &str = r#"
+ALTER TABLE report_revision_blocks ADD COLUMN reference_mode TEXT NOT NULL DEFAULT 'live'
+    CHECK(reference_mode IN ('live','pinned'));
+ALTER TABLE report_sources ADD COLUMN reference_mode TEXT NOT NULL DEFAULT 'live'
+    CHECK(reference_mode IN ('live','pinned'));
+ALTER TABLE report_claims ADD COLUMN confidence TEXT NOT NULL DEFAULT 'low'
+    CHECK(confidence IN ('low','medium','high','overwhelming'));
+ALTER TABLE report_claims ADD COLUMN why TEXT NOT NULL DEFAULT
+    'Migrated legacy claim; rationale was not recorded.';
+
+UPDATE report_revision_blocks
+SET reference_mode = 'pinned'
+WHERE source_revision IS NOT NULL AND source_digest IS NOT NULL
+  AND source_revision NOT IN ('working','live');
+UPDATE report_sources
+SET reference_mode = 'pinned'
+WHERE resource_revision IS NOT NULL AND resource_digest IS NOT NULL;
+UPDATE report_revision_blocks SET access_state = 'available' WHERE access_state = 'accessible';
+UPDATE report_revision_blocks SET integrity_state = 'unresolved' WHERE integrity_state = 'unknown';
+UPDATE report_sources SET access_state = 'available' WHERE access_state = 'accessible';
+UPDATE report_sources SET integrity_state = 'unresolved' WHERE integrity_state = 'unknown';
 "#;
 
 #[cfg(test)]
