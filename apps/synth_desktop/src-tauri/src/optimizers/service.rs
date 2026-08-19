@@ -1486,18 +1486,29 @@ impl OptimizerService {
             finished_at: None,
             cursor_seq: 0,
             capabilities: OptimizerCapabilities::for_algorithm(&algorithm_id),
-            execution_bindings: vec![],
-            input_refs: vec![OptimizerResourceRef {
-                kind: "local_path".into(),
-                id: imported.source_path.display().to_string(),
-                digest: None,
-                role: Some("event_feed".into()),
-                title: Some("Local optimizer workspace".into()),
-                metadata: json!({}),
-            }],
-            output_refs: vec![],
+            execution_bindings: imported.execution_bindings.clone(),
+            input_refs: {
+                let mut refs = imported.input_refs.clone();
+                refs.push(OptimizerResourceRef {
+                    kind: "local_path".into(),
+                    id: imported.source_path.display().to_string(),
+                    digest: None,
+                    role: Some("event_feed".into()),
+                    title: Some("Local optimizer workspace".into()),
+                    metadata: json!({}),
+                });
+                refs
+            },
+            output_refs: imported.output_refs.clone(),
             visual_refs: vec![],
-            summary: json!({ "importedFrom": imported.source_path.display().to_string() }),
+            summary: {
+                let mut summary = imported.summary.as_object().cloned().unwrap_or_default();
+                summary.insert(
+                    "importedFrom".into(),
+                    json!(imported.source_path.display().to_string()),
+                );
+                Value::Object(summary)
+            },
             usage: OptimizerUsageSummary::default(),
             error: None,
         };
