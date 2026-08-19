@@ -63,7 +63,7 @@ EOF
 die() { echo "[release-artifact] ERROR: $*" >&2; exit 1; }
 note() { echo "[release-artifact] $*"; }
 sha256() { shasum -a 256 "$1" | awk '{print $1}'; }
-cdhash() { /usr/bin/codesign -dvvv "$1" 2>&1 | awk -F= '/^CDHash=/{print $2; exit}'; }
+cdhash() { /usr/bin/codesign -dvvv "$1" 2>&1 | awk -F= '/^CDHash=/{if (!found++) print $2}'; }
 
 require_clean_source() {
   local status
@@ -100,7 +100,7 @@ verify_official_app() {
   local app="$1" report authority
   verify_app "$app"
   report="$(/usr/bin/codesign --display --verbose=4 "$app" 2>&1)"
-  authority="$(printf '%s\n' "$report" | awk -F= '/^Authority=/{print $2; exit}')"
+  authority="$(printf '%s\n' "$report" | awk -F= '/^Authority=/{if (!found++) print $2}')"
   [[ "$authority" == Developer\ ID\ Application:* ]] \
     || die "official app is not signed by a Developer ID Application identity"
   printf '%s\n' "$report" | grep -Eq 'flags=.*\(runtime\)' \
@@ -197,7 +197,7 @@ record_artifact() {
   executable_sha="$(sha256 "$executable")"
   bundle_id="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$STAGED_APP/Contents/Info.plist")"
   version="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$STAGED_APP/Contents/Info.plist")"
-  signing="$(/usr/bin/codesign -dvv "$STAGED_APP" 2>&1 | awk -F= '/^Authority=/{print $2; exit}')"
+  signing="$(/usr/bin/codesign -dvv "$STAGED_APP" 2>&1 | awk -F= '/^Authority=/{if (!found++) print $2}')"
   cd_hash="$(cdhash "$STAGED_APP")"
   frontend_hash="$(cd "$ROOT/apps/synth_desktop/dist" && find . -type f -print | LC_ALL=C sort \
     | while IFS= read -r file; do shasum -a 256 "$file"; done \
@@ -240,7 +240,7 @@ record_candidate_artifact() {
   executable_sha="$(sha256 "$executable")"
   bundle_id="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$STAGED_APP/Contents/Info.plist")"
   version="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$STAGED_APP/Contents/Info.plist")"
-  signing="$(/usr/bin/codesign -dvv "$STAGED_APP" 2>&1 | awk -F= '/^Authority=/{print $2; exit}')"
+  signing="$(/usr/bin/codesign -dvv "$STAGED_APP" 2>&1 | awk -F= '/^Authority=/{if (!found++) print $2}')"
   cd_hash="$(cdhash "$STAGED_APP")"
   frontend_hash="$(cd "$ROOT/apps/synth_desktop/dist" && find . -type f -print | LC_ALL=C sort \
     | while IFS= read -r file; do shasum -a 256 "$file"; done \
