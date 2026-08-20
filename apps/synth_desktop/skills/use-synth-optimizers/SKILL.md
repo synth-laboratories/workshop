@@ -37,6 +37,7 @@ Use `mcp__synth_optimizers__optimizer_manage`. Treat returned run IDs and cursor
 5. Use `get_run` for status and summary, and `get_state` for the algorithm-specific slices in its reference.
 6. Stop only at `completed`, `failed`, or `cancelled`. Use `cancel_run` only when the user requests it.
 7. After a Desktop restart, recover with `list_runs`/`get_run`, call `open_visual`, and continue from the persisted cursor. Reconcile cloud runs before watching them. Local process records and events survive restart, but a process owned by the previous Desktop session is not reattached.
+8. To chat with a catalog LoRA, `list_checkpoints` then `infer_checkpoint` with `family=chat_completions|responses` and a native OpenAI body. Never wrap `{message, reply}` or name mlx-rl, Tinker, or `:8787`.
 
 ## Present the result
 

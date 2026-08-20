@@ -34,7 +34,7 @@ impl MlxLoopback {
         Ok(Self {
             base_url: base_url.trim_end_matches('/').to_string(),
             http: reqwest::Client::builder()
-                .timeout(Duration::from_secs(10))
+                .timeout(Duration::from_secs(120))
                 .build()?,
         })
     }
@@ -85,6 +85,103 @@ impl MlxLoopback {
             request = request.json(value);
         }
         decode_mlx(request.send().await?, path).await
+    }
+
+    pub async fn openai_family(&self, family: &str, body: &Value) -> Result<Value> {
+        let path = match family {
+            "chat_completions" | "chat" => "/v1/chat/completions",
+            "responses" => "/v1/responses",
+            other => bail!("unsupported inference family {other}"),
+        };
+        self.post(path, Some(body)).await
+    }
+
+    pub async fn openai_family_raw(&self, family: &str, body: &Value) -> Result<(String, Vec<u8>)> {
+        let path = match family {
+            "chat_completions" | "chat" => "/v1/chat/completions",
+            "responses" => "/v1/responses",
+            other => bail!("unsupported inference family {other}"),
+        };
+        let response = self
+            .http
+            .post(format!("{}{path}", self.base_url))
+            .json(body)
+            .send()
+            .await?;
+        let status = response.status();
+        let content_type = response
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or("application/json")
+            .to_string();
+        let bytes = response.bytes().await.context("read MLX body")?.to_vec();
+        if !status.is_success() {
+            bail!(
+                "MLX service {path} failed with {status}: {}",
+                String::from_utf8_lossy(&bytes).trim()
+            );
+        }
+        Ok((content_type, bytes))
+    }
+
+    pub async fn openai_family_stream(
+        &self,
+        family: &str,
+        body: &Value,
+        mut on_block: impl FnMut(&str) + Send,
+    ) -> Result<(String, Vec<u8>)> {
+        let path = match family {
+            "chat_completions" | "chat" => "/v1/chat/completions",
+            "responses" => "/v1/responses",
+            other => bail!("unsupported inference family {other}"),
+        };
+        let mut response = self
+            .http
+            .post(format!("{}{path}", self.base_url))
+            .json(body)
+            .send()
+            .await?;
+        let status = response.status();
+        let content_type = response
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or("application/json")
+            .to_string();
+        if !status.is_success() {
+            let bytes = response.bytes().await.context("read MLX body")?.to_vec();
+            bail!(
+                "MLX service {path} failed with {status}: {}",
+                String::from_utf8_lossy(&bytes).trim()
+            );
+        }
+        if !content_type.contains("event-stream") {
+            let bytes = response.bytes().await.context("read MLX body")?.to_vec();
+            return Ok((content_type, bytes));
+        }
+        let mut acc = Vec::new();
+        let mut buf = String::new();
+        while let Some(chunk) = response.chunk().await.context("read MLX stream")? {
+            acc.extend_from_slice(&chunk);
+            buf.push_str(&String::from_utf8_lossy(&chunk).replace('\r', ""));
+            while let Some(idx) = buf.find("\n\n") {
+                let block = buf[..idx].to_string();
+                buf.drain(..idx + 2);
+                if !block.trim().is_empty() {
+                    on_block(&block);
+                }
+            }
+        }
+        if !buf.trim().is_empty() {
+            on_block(&buf);
+        }
+        Ok((content_type, acc))
+    }
+
+    pub async fn load_adapter(&self, name: &str) -> Result<Value> {
+        self.post("/v1/checkpoints/load", Some(&json!({ "name": name })))
+            .await
     }
 
     pub async fn chat(&self, message: &str, policy_snapshot_id: &str) -> Result<String> {
@@ -265,7 +362,7 @@ async fn probe_url(raw: &str) -> Option<String> {
     }
     let base = url.as_str().trim_end_matches('/').to_string();
     let client = reqwest::Client::builder()
-        .timeout(Duration::from_millis(800))
+        .timeout(Duration::from_secs(5))
         .build()
         .ok()?;
     let response = client

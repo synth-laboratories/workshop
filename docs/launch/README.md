@@ -1,6 +1,6 @@
 # Workshop launch docs
 
-**v0.7:** [v0.7-scope.md](./v0.7-scope.md) · runtime plan [v0.7-optimizers-runtime.md](./v0.7-optimizers-runtime.md) · release folder [v0.7-release/](./v0.7-release/) (RELEASE_NOTES, KNOWN_ISSUES, ACCEPTANCE, TEST_REPORT, PROVENANCE, PACKAGE, ROLLBACK, READY, POST_RELEASE, COMMIT_MAP) · HealthBench Tinker evidence [v0.7-cispo-healthbench-canary.md](./v0.7-cispo-healthbench-canary.md). Precedent: [v0.4-release/](./v0.4-release/).
+**v0.7:** [v0.7-scope.md](./v0.7-scope.md) · runtime plan [v0.7-optimizers-runtime.md](./v0.7-optimizers-runtime.md) · LoRA catalog + dual-family inference [v0.7-lora-catalog.md](./v0.7-lora-catalog.md) · release folder [v0.7-release/](./v0.7-release/) (RELEASE_NOTES, KNOWN_ISSUES, ACCEPTANCE, TEST_REPORT, PROVENANCE, PACKAGE, ROLLBACK, READY, POST_RELEASE, COMMIT_MAP) · HealthBench Tinker evidence [v0.7-cispo-healthbench-canary.md](./v0.7-cispo-healthbench-canary.md). Precedent: [v0.4-release/](./v0.4-release/).
 
 ## Fresh-worktree build prerequisites (v0.7)
 

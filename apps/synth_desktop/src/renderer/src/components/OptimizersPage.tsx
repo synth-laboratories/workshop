@@ -1,4 +1,5 @@
 import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
+import { open } from "@tauri-apps/plugin-dialog";
 import type { OptimizerAlgorithmInfo, OptimizerRunRecord } from "@synth/runtime-protocol";
 import type { HostedTrainingModel, OptimizerRecipeInfo, OptimizerRunOutputs, PluginActionReceipt, PluginLifecycleOperation, PluginStatus, SavedLoraCheckpoint, TrainingProjection } from "../bridge/types";
 import { bridges } from "../runtime/desktopBridge";
@@ -335,7 +336,11 @@ export function OptimizersPage({
 	const [savedLoraProvider, setSavedLoraProvider] = useState("all");
 	const [savedLoraAlgorithm, setSavedLoraAlgorithm] = useState("all");
 	const [savedLoraKind, setSavedLoraKind] = useState("all");
+	const [savedLoraPlacement, setSavedLoraPlacement] = useState<"all" | "this_mac" | "hosted">("all");
 	const [savedLoraBusy, setSavedLoraBusy] = useState(false);
+	const [inferPrompt, setInferPrompt] = useState("");
+	const [inferResult, setInferResult] = useState<string | null>(null);
+	const [inferringId, setInferringId] = useState<string | null>(null);
 	const [selectedRunCheckpoints, setSelectedRunCheckpoints] = useState<SavedLoraCheckpoint[]>([]);
 	const [selectedCheckpointCounts, setSelectedCheckpointCounts] = useState({ total: 0, inference: 0, training: 0 });
 	const [selectedRunOutputs, setSelectedRunOutputs] = useState<OptimizerRunOutputs | null>(null);
@@ -438,6 +443,7 @@ export function OptimizersPage({
 				provider: savedLoraProvider === "all" ? undefined : savedLoraProvider,
 				optimizerAlgorithm: savedLoraAlgorithm === "all" ? undefined : savedLoraAlgorithm as "sft" | "cispo" | "ppo",
 				checkpointKind: savedLoraKind === "all" ? undefined : savedLoraKind,
+				placement: savedLoraPlacement === "all" ? undefined : savedLoraPlacement,
 				status: "ready",
 				limit: 50
 			});
@@ -448,7 +454,7 @@ export function OptimizersPage({
 		} finally {
 			setSavedLoraBusy(false);
 		}
-	}, [savedLoraAlgorithm, savedLoraKind, savedLoraProvider, savedLoraScope, savedLoraSearch]);
+	}, [savedLoraAlgorithm, savedLoraKind, savedLoraPlacement, savedLoraProvider, savedLoraScope, savedLoraSearch]);
 
 	useEffect(() => {
 		const timer = window.setTimeout(() => void refreshSavedLoras(), 250);
@@ -470,10 +476,85 @@ export function OptimizersPage({
 
 	const archiveSavedLora = async (checkpoint: SavedLoraCheckpoint) => {
 		if (!bridges.optimizers) return;
-		if (!window.confirm(`Archive “${checkpoint.name}”? The Wasabi object is retained.`)) return;
+		const local = checkpoint.placement === "this_mac";
+		if (!window.confirm(`Archive “${checkpoint.name}”?${local ? "" : " The Wasabi object is retained."}`)) return;
 		setSavedLoraBusy(true);
 		try {
 			await bridges.optimizers.archiveSavedLora(checkpoint.checkpointId);
+			await refreshSavedLoras();
+		} catch (reason) {
+			setError(presentError(reason).message);
+		} finally {
+			setSavedLoraBusy(false);
+		}
+	};
+
+	const importSavedLora = async () => {
+		if (!bridges.optimizers) return;
+		const selected = await open({ directory: true, title: "Import mlx-lora.v1 folder" });
+		const path = Array.isArray(selected) ? selected[0] : selected;
+		if (!path) return;
+		setSavedLoraBusy(true);
+		try {
+			await bridges.optimizers.importSavedLora(path);
+			await refreshSavedLoras();
+		} catch (reason) {
+			setError(presentError(reason).message);
+		} finally {
+			setSavedLoraBusy(false);
+		}
+	};
+
+	const inferSavedLora = async (checkpoint: SavedLoraCheckpoint, family: "chat_completions" | "responses") => {
+		if (!bridges.optimizers) return;
+		const prompt = inferPrompt.trim() || "hello";
+		setInferringId(`${checkpoint.checkpointId}:${family}`);
+		setInferResult("");
+		let painted = "";
+		const stop = bridges.optimizers.onInferDelta?.((event) => {
+			if (event.checkpointId !== checkpoint.checkpointId || event.family !== family) return;
+			if (!event.delta) return;
+			painted += event.delta;
+			setInferResult(painted);
+		});
+		try {
+			const body = family === "responses"
+				? { input: prompt, model: checkpoint.baseModel, stream: true }
+				: { messages: [{ role: "user", content: prompt }], model: checkpoint.baseModel, stream: true };
+			const response = await bridges.optimizers.inferCheckpoint({
+				checkpointId: checkpoint.checkpointId,
+				family,
+				body
+			}) as Record<string, unknown>;
+			const chatText = (response as { choices?: Array<{ message?: { content?: string } }> }).choices?.[0]?.message?.content;
+			const responsesText = (response as { output?: Array<{ content?: Array<{ text?: string }> }> }).output?.[0]?.content?.[0]?.text;
+			setInferResult(painted || chatText || responsesText || JSON.stringify(response, null, 2));
+		} catch (reason) {
+			setError(presentError(reason).message);
+		} finally {
+			stop?.();
+			setInferringId(null);
+		}
+	};
+
+	const patchSavedLora = async (checkpoint: SavedLoraCheckpoint, patch: { name?: string; description?: string; tags?: string[] }) => {
+		if (!bridges.optimizers?.patchSavedLora) return;
+		setSavedLoraBusy(true);
+		try {
+			const next = await bridges.optimizers.patchSavedLora(checkpoint.checkpointId, patch);
+			setSavedLoras((current) => current.map((item) => item.checkpointId === next.checkpointId ? next : item));
+		} catch (reason) {
+			setError(presentError(reason).message);
+		} finally {
+			setSavedLoraBusy(false);
+		}
+	};
+
+	const publishSavedLora = async (checkpoint: SavedLoraCheckpoint) => {
+		if (!bridges.optimizers?.publishSavedLora) return;
+		setSavedLoraBusy(true);
+		try {
+			await bridges.optimizers.publishSavedLora(checkpoint.checkpointId);
 			await refreshSavedLoras();
 		} catch (reason) {
 			setError(presentError(reason).message);
@@ -943,16 +1024,19 @@ export function OptimizersPage({
 
 			<section id="optimizer-checkpoint-library" className="optimizer-checkpoint-library" aria-labelledby="optimizer-checkpoint-library-title" data-testid="optimizer-checkpoint-library">
 				<div className="optimizer-recipes-head">
-					<div><span className="optimizer-eyebrow">Automatic outputs · Wasabi hosted / MinIO local</span><h2 id="optimizer-checkpoint-library-title">Checkpoint catalog</h2></div>
-					<p>{savedLoraTotal} visible across your private and organization libraries.</p>
+					<div><span className="optimizer-eyebrow">This Mac MLX · hosted Tinker SFT/CISPO</span><h2 id="optimizer-checkpoint-library-title">Checkpoint catalog</h2></div>
+					<p>{savedLoraTotal} visible. Inference LoRAs can be called with Chat Completions or Responses.</p>
 				</div>
 				<div className="optimizer-checkpoint-filters">
 					<label className="optimizer-search"><span aria-hidden>⌕</span><input aria-label="Search saved LoRA checkpoints" placeholder="Search names, models, references, or tags" value={savedLoraSearch} onChange={(event) => setSavedLoraSearch(event.target.value)} data-testid="saved-lora-search" /></label>
+					<select aria-label="Checkpoint placement" value={savedLoraPlacement} onChange={(event) => setSavedLoraPlacement(event.target.value as "all" | "this_mac" | "hosted")}>
+						<option value="all">This Mac + hosted</option><option value="this_mac">This Mac</option><option value="hosted">Hosted</option>
+					</select>
 					<select aria-label="Checkpoint ownership scope" value={savedLoraScope} onChange={(event) => setSavedLoraScope(event.target.value as "all" | "mine" | "org")}>
 						<option value="all">Mine + organization</option><option value="mine">Mine</option><option value="org">Organization</option>
 					</select>
 					<select aria-label="Checkpoint provider" value={savedLoraProvider} onChange={(event) => setSavedLoraProvider(event.target.value)}>
-						<option value="all">All providers</option><option value="tinker">Tinker</option><option value="river">River</option><option value="synth">Synth</option><option value="imported">Imported</option>
+						<option value="all">All providers</option><option value="mlx">MLX</option><option value="tinker">Tinker</option><option value="river">River</option><option value="synth">Synth</option><option value="imported">Imported</option>
 					</select>
 					<select aria-label="Checkpoint algorithm" value={savedLoraAlgorithm} onChange={(event) => setSavedLoraAlgorithm(event.target.value)}>
 						<option value="all">All algorithms</option><option value="sft">SFT</option><option value="cispo">CISPO</option><option value="ppo">PPO</option>
@@ -961,19 +1045,24 @@ export function OptimizersPage({
 						<option value="all">All checkpoint kinds</option><option value="inference">Inference LoRA</option><option value="training">Training state</option>
 					</select>
 					<button className="secondary-button" type="button" disabled={savedLoraBusy} onClick={() => void refreshSavedLoras()}>{savedLoraBusy ? "Loading…" : "Refresh"}</button>
+					<button className="secondary-button" type="button" disabled={savedLoraBusy} onClick={() => void importSavedLora()}>Import folder</button>
 				</div>
+				<label className="optimizer-search"><span>Prompt</span><input aria-label="Checkpoint inference prompt" placeholder="Prompt for Chat Completions or Responses" value={inferPrompt} onChange={(event) => setInferPrompt(event.target.value)} data-testid="checkpoint-infer-prompt" /></label>
+				{inferResult !== null ? <pre className="optimizer-eval-evidence" data-testid="checkpoint-infer-result">{inferResult}</pre> : null}
 				<div className="optimizer-checkpoint-grid">
 					{savedLoras.map((checkpoint) => (
 						<article className="optimizer-checkpoint-card" key={checkpoint.checkpointId} data-testid={`saved-lora-${checkpoint.checkpointId}`}>
 							<div className="optimizer-recipe-top"><span className="optimizer-recipe-mark">LR</span><span className={`optimizer-status ${checkpoint.status}`}>{checkpoint.visibility === "private" ? "Private" : "Organization"}</span></div>
-							<h3>{checkpoint.name}</h3>
-							<p>{checkpoint.description || checkpoint.baseModel}</p>
-							<dl><dt>Base</dt><dd>{checkpoint.baseModel}</dd><dt>Algorithm</dt><dd>{checkpoint.lineage.optimizerAlgorithm ?? checkpoint.optimizerAlgorithm ?? "Imported"}</dd><dt>Run</dt><dd>{checkpoint.lineage.runId ?? checkpoint.runId ?? "—"}</dd><dt>Attempt</dt><dd>{checkpoint.lineage.attemptId ?? checkpoint.attemptId ?? "—"}</dd><dt>Source</dt><dd>{checkpoint.lineage.sourceCheckpointId ?? checkpoint.sourceCheckpointId ?? "—"}</dd><dt>Provider</dt><dd>{checkpoint.provider} · {checkpoint.checkpointKind}</dd><dt>Rank / step</dt><dd>{checkpoint.loraRank ?? "—"} / {checkpoint.step ?? "—"}</dd><dt>Storage</dt><dd>{checkpoint.storage.backend} · {formatBytes(checkpoint.storage.sizeBytes)}</dd><dt>Saved</dt><dd>{checkpoint.updatedAt ? formatWhen(checkpoint.updatedAt) : "—"}</dd></dl>
+							<input className="optimizer-checkpoint-name" aria-label="Checkpoint name" defaultValue={checkpoint.name} data-testid={`saved-lora-name-${checkpoint.checkpointId}`} key={`${checkpoint.checkpointId}-name-${checkpoint.updatedAt ?? checkpoint.name}`} onBlur={(event) => { const name = event.target.value.trim(); if (name && name !== checkpoint.name) void patchSavedLora(checkpoint, { name }); }} />
+							<p>{checkpoint.baseModel}</p>
+							<label className="optimizer-search"><span>Notes</span><input aria-label="Checkpoint notes" defaultValue={checkpoint.description} key={`${checkpoint.checkpointId}-notes-${checkpoint.updatedAt ?? ""}`} onBlur={(event) => { const description = event.target.value; if (description !== checkpoint.description) void patchSavedLora(checkpoint, { description }); }} /></label>
+							<label className="optimizer-search"><span>Tags</span><input aria-label="Checkpoint tags" defaultValue={checkpoint.tags.join(", ")} placeholder="comma-separated tags" key={`${checkpoint.checkpointId}-tags-${checkpoint.tags.join(",")}`} onBlur={(event) => { const tags = event.target.value.split(",").map((tag) => tag.trim()).filter(Boolean); if (tags.join(",") !== checkpoint.tags.join(",")) void patchSavedLora(checkpoint, { tags }); }} /></label>
+							<dl><dt>Placement</dt><dd>{checkpoint.placement === "this_mac" ? "This Mac" : "Hosted"}</dd><dt>Base</dt><dd>{checkpoint.baseModel}</dd><dt>Algorithm</dt><dd>{checkpoint.lineage.optimizerAlgorithm ?? checkpoint.optimizerAlgorithm ?? "Imported"}</dd><dt>Run</dt><dd>{checkpoint.lineage.runId ?? checkpoint.runId ?? "—"}</dd><dt>Attempt</dt><dd>{checkpoint.lineage.attemptId ?? checkpoint.attemptId ?? "—"}</dd><dt>Source</dt><dd>{checkpoint.lineage.sourceCheckpointId ?? checkpoint.sourceCheckpointId ?? "—"}</dd><dt>Provider</dt><dd>{checkpoint.provider} · {checkpoint.checkpointKind}</dd><dt>Rank / step</dt><dd>{checkpoint.loraRank ?? "—"} / {checkpoint.step ?? "—"}</dd><dt>Storage</dt><dd>{checkpoint.storage.backend} · {formatBytes(checkpoint.storage.sizeBytes)}</dd><dt>Saved</dt><dd>{checkpoint.updatedAt ? formatWhen(checkpoint.updatedAt) : "—"}</dd></dl>
 							{checkpoint.tags.length > 0 ? <div className="optimizer-checkpoint-tags">{checkpoint.tags.map((tag) => <span key={tag}>{tag}</span>)}</div> : null}
-							<div className="optimizer-checkpoint-actions">{checkpoint.lineage.runId || checkpoint.runId ? <button className="secondary-button" type="button" onClick={() => void openCheckpointRun(checkpoint)}>Open run</button> : null}<button className="secondary-button" type="button" disabled={savedLoraBusy} onClick={() => void downloadSavedLora(checkpoint)}>Download</button><button className="secondary-button optimizer-danger-button" type="button" disabled={savedLoraBusy} onClick={() => void archiveSavedLora(checkpoint)}>Archive</button></div>
+							<div className="optimizer-checkpoint-actions">{checkpoint.lineage.runId || checkpoint.runId ? <button className="secondary-button" type="button" onClick={() => void openCheckpointRun(checkpoint)}>Open run</button> : null}{checkpoint.inferenceChatCompletions ? <button className="secondary-button" type="button" disabled={inferringId !== null} onClick={() => void inferSavedLora(checkpoint, "chat_completions")}>{inferringId === `${checkpoint.checkpointId}:chat_completions` ? "Sampling…" : "Chat Completions"}</button> : null}{checkpoint.inferenceResponses ? <button className="secondary-button" type="button" disabled={inferringId !== null} onClick={() => void inferSavedLora(checkpoint, "responses")}>{inferringId === `${checkpoint.checkpointId}:responses` ? "Sampling…" : "Responses"}</button> : null}{checkpoint.placement === "this_mac" ? <button className="secondary-button" type="button" disabled={savedLoraBusy} onClick={() => void publishSavedLora(checkpoint)}>Publish</button> : null}<button className="secondary-button" type="button" disabled={savedLoraBusy} onClick={() => void downloadSavedLora(checkpoint)}>Download</button><button className="secondary-button optimizer-danger-button" type="button" disabled={savedLoraBusy} onClick={() => void archiveSavedLora(checkpoint)}>Archive</button></div>
 						</article>
 					))}
-					{savedLoras.length === 0 && !savedLoraBusy ? <div className="optimizer-empty"><span className="optimizer-empty-icon" aria-hidden>◇</span><strong>No checkpoints match</strong><p>Inference LoRAs and resumable training state appear automatically after object-storage verification.</p></div> : null}
+					{savedLoras.length === 0 && !savedLoraBusy ? <div className="optimizer-empty"><span className="optimizer-empty-icon" aria-hidden>◇</span><strong>No checkpoints match</strong><p>Local MLX adapters appear when a This Mac recipe emits them, or when you import an mlx-lora.v1 folder. Hosted SFT/CISPO LoRAs appear after object-storage verification.</p></div> : null}
 				</div>
 			</section>
 

@@ -719,7 +719,7 @@ class SynthControl:
 
     # -- load / unload ---------------------------------------------------------
 
-    async def load(self, model: str) -> dict[str, Any]:
+    async def load(self, model: str, adapter_path: Any = ..., adapter_specified: bool = False) -> dict[str, Any]:
         canonical = self.resolve_model(model)
         async with self._load_lock:
             operation_id = new_id("op")
@@ -742,16 +742,31 @@ class SynthControl:
                     retryable=True,
                     details={"job_id": active.job_id},
                 )
-            residency = self.service.residency() or {}
-            if residency.get("loaded"):
-                # Idempotent: a second load of the resident model is a no-op.
-                return {
-                    "operation_id": operation_id,
-                    "model": canonical,
-                    "state": self._state,
-                    "resident": True,
-                    "already_resident": True,
-                }
+            setter = getattr(self.service.backend, "set_adapter", None)
+            if adapter_specified and callable(setter):
+                previous = getattr(self.service.backend, "adapter_path", None)
+                try:
+                    await setter(None if adapter_path is None else str(adapter_path))
+                except Exception as error:
+                    if callable(setter):
+                        await setter(previous)
+                    raise ControlError(
+                        "load_failed",
+                        f"Laguna adapter reload failed: {error}",
+                        500,
+                        retryable=True,
+                    ) from error
+            else:
+                residency = self.service.residency() or {}
+                if residency.get("loaded"):
+                    # Idempotent: a second load of the resident model is a no-op.
+                    return {
+                        "operation_id": operation_id,
+                        "model": canonical,
+                        "state": self._state,
+                        "resident": True,
+                        "already_resident": True,
+                    }
             model_path = self._model_path()
             if model_path is None:
                 raise ControlError(
@@ -994,9 +1009,22 @@ def register_control_routes(app: FastAPI, control: SynthControl) -> None:
             return error.response()
 
     @app.post("/v1/synth/models/{model:path}/load")
-    async def synth_load(model: str) -> Any:
+    async def synth_load(model: str, request: Request) -> Any:
+        adapter_specified = False
+        adapter_path: Any = None
+        length = request.headers.get("content-length")
+        if length not in (None, "0"):
+            try:
+                body = await request.json()
+            except (ValueError, UnicodeDecodeError):
+                body = None
+            if isinstance(body, dict) and "adapter_path" in body:
+                adapter_specified = True
+                adapter_path = body.get("adapter_path")
         try:
-            return await control.load(model)
+            return await control.load(
+                model, adapter_path=adapter_path, adapter_specified=adapter_specified
+            )
         except ControlError as error:
             return error.response()
 

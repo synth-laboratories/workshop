@@ -15,6 +15,7 @@ use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::{json, Map, Value};
 use std::collections::BTreeMap;
 use std::collections::HashMap;
+use std::path::Path;
 use std::sync::Arc;
 use tokio::sync::{broadcast, watch, Mutex};
 use uuid::Uuid;
@@ -1765,24 +1766,75 @@ impl OptimizerService {
         &self,
         query: super::SavedLoraCheckpointQuery,
     ) -> Result<super::SavedLoraCheckpointPage> {
-        super::cloud::CloudOptimizerClient::from_config()?
-            .search_saved_lora_checkpoints(query)
-            .await
+        let placement = query
+            .placement
+            .as_deref()
+            .unwrap_or("all")
+            .trim()
+            .to_ascii_lowercase();
+        let limit = query.limit.unwrap_or(50).clamp(1, 100);
+        let offset = query.offset.unwrap_or(0);
+        let include_local = matches!(placement.as_str(), "all" | "this_mac" | "local" | "mlx");
+        let include_hosted = matches!(placement.as_str(), "all" | "hosted" | "cloud");
+        let local = if include_local {
+            let query = query.clone();
+            self.db
+                .run(move |conn| super::local_lora::search_local_loras(conn, &query))
+                .await
+                .unwrap_or_default()
+        } else {
+            Vec::new()
+        };
+        let hosted = if include_hosted {
+            match super::cloud::CloudOptimizerClient::from_config() {
+                Ok(client) => client
+                    .search_saved_lora_checkpoints(query.clone())
+                    .await
+                    .map(|page| page.items)
+                    .unwrap_or_default(),
+                Err(_) => Vec::new(),
+            }
+        } else {
+            Vec::new()
+        };
+        let hosted = self.project_hosted_loras(hosted).await;
+        let mut items = local;
+        items.extend(hosted);
+        if let Some(provider) = query.provider.as_deref().filter(|value| *value != "all") {
+            items.retain(|item| item.provider == provider);
+        }
+        let total = items.len() as u64;
+        let items = items
+            .into_iter()
+            .skip(offset as usize)
+            .take(limit as usize)
+            .collect::<Vec<_>>();
+        Ok(super::SavedLoraCheckpointPage {
+            schema_version: "saved_lora_checkpoint.page.v1".into(),
+            items,
+            total,
+            limit,
+            offset,
+        })
     }
 
     pub async fn list_saved_lora_checkpoints_for_run(
         &self,
         run_id: String,
     ) -> Result<super::SavedLoraRunPage> {
-        super::cloud::CloudOptimizerClient::from_config()?
+        let mut page = super::cloud::CloudOptimizerClient::from_config()?
             .saved_lora_checkpoints_for_run(&run_id)
-            .await
+            .await?;
+        page.items = self.project_hosted_loras(page.items).await;
+        Ok(page)
     }
 
     pub async fn run_outputs(&self, run_id: String) -> Result<super::OptimizerRunOutputs> {
-        super::cloud::CloudOptimizerClient::from_config()?
+        let mut outputs = super::cloud::CloudOptimizerClient::from_config()?
             .run_outputs(&run_id)
-            .await
+            .await?;
+        outputs.model_checkpoints = self.project_hosted_loras(outputs.model_checkpoints).await;
+        Ok(outputs)
     }
 
     pub async fn hosted_training_models(&self) -> Result<super::HostedTrainingModelCatalog> {
@@ -1795,17 +1847,184 @@ impl OptimizerService {
         &self,
         checkpoint_id: String,
     ) -> Result<super::SavedLoraCheckpoint> {
+        let id = checkpoint_id.clone();
+        let local = self
+            .db
+            .run(move |conn| super::local_lora::get_local_lora(conn, &id))
+            .await?;
+        if local.is_some() {
+            let id = checkpoint_id;
+            return self
+                .db
+                .run(move |conn| super::local_lora::archive_local_lora(conn, &id))
+                .await;
+        }
         super::cloud::CloudOptimizerClient::from_config()?
             .archive_saved_lora_checkpoint(&checkpoint_id)
             .await
+            .map(annotate_hosted_lora)
     }
 
     pub async fn saved_lora_download(
         &self,
         checkpoint_id: String,
     ) -> Result<super::SavedLoraDownload> {
+        let id = checkpoint_id.clone();
+        if let Some(local) = self
+            .db
+            .run(move |conn| super::local_lora::get_local_lora(conn, &id))
+            .await?
+        {
+            return Ok(super::SavedLoraDownload {
+                checkpoint_id: local.checkpoint_id,
+                url: format!("file://{}", local.storage.key),
+                expires_in: 0,
+                content_type: local.storage.content_type,
+                size_bytes: local.storage.size_bytes,
+                sha256: local.storage.sha256,
+            });
+        }
         super::cloud::CloudOptimizerClient::from_config()?
             .saved_lora_download(&checkpoint_id)
+            .await
+    }
+
+    pub async fn import_saved_lora_dir(&self, path: String) -> Result<super::SavedLoraCheckpoint> {
+        self.db
+            .run(move |conn| super::local_lora::import_local_lora_dir(conn, Path::new(&path)))
+            .await
+    }
+
+    pub async fn infer_saved_lora(
+        &self,
+        request: super::CheckpointInferRequest,
+    ) -> Result<Value> {
+        super::sidecar_training::infer_checkpoint(self, request, |_| {}).await
+    }
+
+    pub async fn infer_saved_lora_with_delta<F>(
+        &self,
+        request: super::CheckpointInferRequest,
+        on_delta: F,
+    ) -> Result<Value>
+    where
+        F: FnMut(&str) + Send,
+    {
+        super::sidecar_training::infer_checkpoint(self, request, on_delta).await
+    }
+
+    pub async fn patch_saved_lora(
+        &self,
+        checkpoint_id: String,
+        patch: super::SavedLoraPatchRequest,
+    ) -> Result<super::SavedLoraCheckpoint> {
+        if self.get_local_lora(checkpoint_id.clone()).await?.is_some() {
+            return self
+                .db
+                .run({
+                    let checkpoint_id = checkpoint_id.clone();
+                    let patch = patch.clone();
+                    move |conn| super::local_lora::patch_local_lora(conn, &checkpoint_id, &patch)
+                })
+                .await;
+        }
+        let client = super::cloud::CloudOptimizerClient::from_config()?;
+        match client
+            .patch_saved_lora_checkpoint(&checkpoint_id, &patch)
+            .await
+        {
+            Ok(row) => {
+                let id = checkpoint_id.clone();
+                let _ = self
+                    .db
+                    .run(move |conn| super::local_lora::clear_hosted_overlay(conn, &id))
+                    .await;
+                Ok(annotate_hosted_lora(row))
+            }
+            Err(patch_err) => match client.saved_lora_checkpoint(&checkpoint_id).await {
+                Ok(base) => {
+                    let id = checkpoint_id.clone();
+                    let patch = patch.clone();
+                    self.db
+                        .run(move |conn| {
+                            super::local_lora::overlay_hosted_lora(
+                                conn,
+                                &id,
+                                &patch,
+                                annotate_hosted_lora(base),
+                            )
+                        })
+                        .await
+                }
+                Err(_) => {
+                    let id = checkpoint_id.clone();
+                    let overlay_patch = patch.clone();
+                    let _ = self
+                        .db
+                        .run(move |conn| {
+                            super::local_lora::upsert_hosted_overlay(conn, &id, &overlay_patch)
+                        })
+                        .await;
+                    Err(patch_err)
+                }
+            },
+        }
+    }
+
+    pub async fn publish_saved_lora(
+        &self,
+        checkpoint_id: String,
+    ) -> Result<super::SavedLoraCheckpoint> {
+        let local = self
+            .get_local_lora(checkpoint_id.clone())
+            .await?
+            .ok_or_else(|| anyhow!("only This Mac adapters can be published"))?;
+        let adapter = Path::new(&local.storage.key);
+        if !adapter.is_dir() {
+            bail!("adapter bytes are missing");
+        }
+        let (archive, sha256) = super::local_lora::zip_adapter_dir(adapter)?;
+        let request = json!({
+            "name": local.name,
+            "description": local.description,
+            "provider": "imported",
+            "checkpoint_kind": local.checkpoint_kind,
+            "visibility": "private",
+            "base_model": local.base_model,
+            "lora_rank": local.lora_rank,
+            "step": local.step,
+            "tags": local.tags,
+            "metadata": {
+                "source_digest": local.checkpoint_id,
+                "placement": "this_mac"
+            },
+            "content_type": "application/zip"
+        });
+        super::cloud::CloudOptimizerClient::from_config()?
+            .publish_saved_lora_archive(&archive, request, &sha256)
+            .await
+    }
+
+    pub async fn upsert_local_lora_from_event(
+        &self,
+        run_id: String,
+        payload: Value,
+    ) -> Result<()> {
+        let Some(row) = super::local_lora::LocalLoraUpsert::from_checkpoint_event(&run_id, &payload)
+        else {
+            return Ok(());
+        };
+        self.db
+            .run(move |conn| super::local_lora::upsert_local_lora(conn, &row).map(|_| ()))
+            .await
+    }
+
+    pub async fn get_local_lora(
+        &self,
+        checkpoint_id: String,
+    ) -> Result<Option<super::SavedLoraCheckpoint>> {
+        self.db
+            .run(move |conn| super::local_lora::get_local_lora(conn, &checkpoint_id))
             .await
     }
 
@@ -2360,6 +2579,43 @@ fn list_runs(conn: &Connection, query: &OptimizerQuery) -> Result<Vec<OptimizerR
         out.push(serde_json::from_str(&row?).context("decode optimizer run")?);
     }
     Ok(out)
+}
+
+fn annotate_hosted_lora(mut checkpoint: super::SavedLoraCheckpoint) -> super::SavedLoraCheckpoint {
+    checkpoint.placement = "hosted".into();
+    let inference = checkpoint.checkpoint_kind == "inference"
+        && checkpoint.status == "ready"
+        && checkpoint
+            .provider_checkpoint_reference
+            .as_deref()
+            .or(checkpoint.lineage.provider_checkpoint_reference.as_deref())
+            .is_some_and(|value| value.starts_with("tinker://"));
+    checkpoint.inference_chat_completions = inference;
+    checkpoint.inference_responses = inference;
+    checkpoint
+}
+
+impl OptimizerService {
+    async fn project_hosted_loras(
+        &self,
+        items: Vec<super::SavedLoraCheckpoint>,
+    ) -> Vec<super::SavedLoraCheckpoint> {
+        let overlays = self
+            .db
+            .run(|conn| super::local_lora::list_hosted_overlays(conn))
+            .await
+            .unwrap_or_default();
+        items
+            .into_iter()
+            .map(|item| {
+                let mut item = annotate_hosted_lora(item);
+                if let Some(overlay) = overlays.get(&item.checkpoint_id) {
+                    super::local_lora::apply_hosted_overlay(&mut item, overlay);
+                }
+                item
+            })
+            .collect()
+    }
 }
 
 fn load_run(conn: &Connection, optimizer_run_id: &str) -> Result<OptimizerRunRecord> {

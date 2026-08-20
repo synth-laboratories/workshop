@@ -59,6 +59,7 @@ class FakeBackend:
         self._recent_generations: OrderedDict[str, GenerationTiming] = OrderedDict()
         self._loaded = False
         self._last_used_at = time.time()
+        self.adapter_path = None
 
     async def capabilities(self, model: str) -> ModelCapabilities:
         return self._capabilities
@@ -67,6 +68,10 @@ class FakeBackend:
         """Explicit residency request, mirroring the native backend."""
         self._loaded = True
         self._last_used_at = time.time()
+
+    async def set_adapter(self, adapter_path: str | None) -> None:
+        self.adapter_path = adapter_path
+        self._loaded = False
 
     async def compile(
         self,

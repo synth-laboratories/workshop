@@ -62,6 +62,7 @@ import {
 	openArtifactIdForChat
 } from "../runtime/sessionView";
 import { approvalModeFromConfig, codexStartRequest, coreEventToRuntime, createCodexSession, restoreCodexSession, type ApprovalMode, type ApprovalPolicy, type SandboxMode } from "../runtime/nativeCodex";
+import { isLagunaCompatibleAdapter, type LagunaAdapterOption } from "../runtime/lagunaAdapters";
 import {
 	loadModelKnobValues,
 	modelKnobForTarget,
@@ -172,6 +173,8 @@ export function useAppController() {
 	const activeChatIdRef = useRef<string | null>(null);
 	const [transcriptHistoryBySession, setTranscriptHistoryBySession] = useState<Record<string, TranscriptHistoryState>>({});
 	const [selectedTargetId, setSelectedTargetId] = useState("chatgpt-luna");
+	const [selectedLagunaAdapterId, setSelectedLagunaAdapterId] = useState<string | null>(null);
+	const [lagunaAdapters, setLagunaAdapters] = useState<LagunaAdapterOption[]>([]);
 	const defaultModelResolvedRef = useRef(false);
 	useEffect(() => {
 		// v0.1 pickers hide Intern; never leave a hidden target selected.
@@ -681,6 +684,58 @@ export function useAppController() {
 	}, [view]);
 	activeSessionIdRef.current = activeSessionId;
 	const terminalWorkspaceRoot = defaultWorkspace;
+
+	useEffect(() => {
+		const optimizers = bridges.optimizers;
+		if (!optimizers) return;
+		let disposed = false;
+		const load = async () => {
+			try {
+				const page = await optimizers.searchSavedLoras({
+					placement: "this_mac",
+					checkpointKind: "inference",
+					status: "ready",
+					limit: 100,
+					offset: 0
+				});
+				if (disposed) return;
+				setLagunaAdapters(
+					page.items.filter(isLagunaCompatibleAdapter).map((item) => ({
+						checkpointId: item.checkpointId,
+						name: item.name
+					}))
+				);
+			} catch {
+				if (!disposed) setLagunaAdapters([]);
+			}
+		};
+		void load();
+		const unlisten = optimizers.onEvent?.(() => {
+			void load();
+		});
+		return () => {
+			disposed = true;
+			unlisten?.();
+		};
+	}, []);
+
+	const selectLagunaAdapter = useCallback(async (checkpointId: string | null) => {
+		try {
+			await bridges.laguna?.setAdapter?.(checkpointId);
+			setSelectedLagunaAdapterId(checkpointId);
+			const sessionId = activeSessionIdRef.current;
+			const session = sessionId
+				? sessionsRef.current.find((candidate) => candidate.id === sessionId)
+				: undefined;
+			if (session?.target.kind === "local") {
+				const next = { ...session, target: { ...session.target, adapter: checkpointId } };
+				sessionsRef.current = sessionsRef.current.map((item) => item.id === next.id ? next : item);
+				upsertSession(next);
+			}
+		} catch (reason) {
+			showToast(publicError(reason));
+		}
+	}, [showToast]);
 	// Declared after activeSessionId: the allowlist is scoped to the session,
 	// so the hook needs a session to ask about.
 	const computerUseState = useComputerUse(activeSessionId ?? null);
@@ -1439,7 +1494,10 @@ export function useAppController() {
 		) => {
 			setBusy(true);
 			try {
-				const target = targetIdToExecutionTarget(targetId);
+				const target = targetIdToExecutionTarget(
+					targetId,
+					targetId === "local-laguna" ? selectedLagunaAdapterId : null
+				);
 				const internObjective = objective?.trim();
 				if (target.kind === "intern" && !internObjective) {
 					throw new Error("Enter an objective to start an Intern session");
@@ -1508,7 +1566,7 @@ export function useAppController() {
 				setBusy(false);
 			}
 		},
-		[laguna?.baseUrl, loadMachinePermissions, modelKnobValues, nativeCodex, nativeIntern, preferences.agentContext.autoCompactTokenLimits, refreshSessions, selectedTargetId, showToast]
+		[laguna?.baseUrl, loadMachinePermissions, modelKnobValues, nativeCodex, nativeIntern, preferences.agentContext.autoCompactTokenLimits, refreshSessions, selectedLagunaAdapterId, selectedTargetId, showToast]
 	);
 
 	const ensureActiveSession = useCallback(async (objective: string): Promise<{ sessionId: string; objectiveConsumed: boolean } | null> => {
@@ -1572,8 +1630,13 @@ export function useAppController() {
 						return false;
 					}
 					const executionTarget = sendPlan.kind === "model_switch_then_turn"
-						? targetIdToExecutionTarget(sendPlan.destinationTargetId)
-						: session.target;
+						? targetIdToExecutionTarget(
+							sendPlan.destinationTargetId,
+							sendPlan.destinationTargetId === "local-laguna" ? selectedLagunaAdapterId : null
+						)
+						: session.target.kind === "local"
+							? { ...session.target, adapter: selectedLagunaAdapterId }
+							: session.target;
 					const workspace = typeof session.metadata.workspace === "string"
 						? session.metadata.workspace
 						: await nativeCodex.defaultWorkspace();
@@ -1668,7 +1731,7 @@ export function useAppController() {
 				setBusy(false);
 			}
 		},
-		[allocateNativeSequence, approvalPolicy, armTurnStartWatchdog, clearTurnStartWatchdog, ensureCodexOauthReady, ensureOpenRouterReady, failTurnStart, laguna?.baseUrl, modelKnobValues, nativeCodex, nativeIntern, preferences.agentContext.autoCompactTokenLimits, refreshSessions, sandboxMode, selectedTargetId, showToast]
+		[allocateNativeSequence, approvalPolicy, armTurnStartWatchdog, clearTurnStartWatchdog, ensureCodexOauthReady, ensureOpenRouterReady, failTurnStart, laguna?.baseUrl, modelKnobValues, nativeCodex, nativeIntern, preferences.agentContext.autoCompactTokenLimits, refreshSessions, sandboxMode, selectedLagunaAdapterId, selectedTargetId, showToast]
 	);
 	sendToSessionRef.current = sendToSession;
 
@@ -1817,8 +1880,15 @@ export function useAppController() {
 			// Opening a thread adopts its bound model as pendingTarget so a
 			// leftover chip from another chat cannot silently switch on send.
 			setSelectedTargetId(executionTargetToUiId(session.target));
+			if (session.target.kind === "local") {
+				const adapterId = session.target.adapter;
+				setSelectedLagunaAdapterId(adapterId);
+				void bridges.laguna?.setAdapter?.(adapterId).catch((reason) => {
+					showToast(publicError(reason));
+				});
+			}
 		}
-	}, []);
+	}, [showToast]);
 
 	useEffect(() => {
 		void bridges.skills?.list()
@@ -2074,6 +2144,9 @@ export function useAppController() {
 		restartRecoveredChat,
 		selectedTargetId,
 		onSelectTarget,
+		lagunaAdapters,
+		selectedLagunaAdapterId,
+		selectLagunaAdapter,
 		onNewConversation,
 		openChat,
 		openArtifactId,

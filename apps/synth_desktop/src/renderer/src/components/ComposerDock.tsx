@@ -26,6 +26,7 @@ import type { ModelKnobTransportValue } from "../runtime/modelCapabilities";
 import type { FailedSend } from "../runtime/codexTurn";
 import type { MainView } from "../routes";
 import { Composer } from "./Composer";
+import type { LagunaAdapterOption } from "../runtime/lagunaAdapters";
 
 export type ComposerDockProps = {
 	show: boolean;
@@ -60,6 +61,9 @@ export type ComposerDockProps = {
 	composerSkills: Array<{ id: string; name: string; description: string }>;
 	selectedTargetId: string;
 	onSelectTarget: (id: string) => void;
+	lagunaAdapters: LagunaAdapterOption[];
+	selectedLagunaAdapterId: string | null;
+	onSelectLagunaAdapter: (checkpointId: string | null) => void;
 	onComposerSend: (text: string) => void | Promise<void>;
 	sendToSession: (sessionId: string, text: string) => Promise<boolean>;
 	createConversation: (targetId?: string) => Promise<Session>;
@@ -122,6 +126,9 @@ export function ComposerDock({
 	composerSkills,
 	selectedTargetId,
 	onSelectTarget,
+	lagunaAdapters,
+	selectedLagunaAdapterId,
+	onSelectLagunaAdapter,
 	onComposerSend,
 	sendToSession,
 	createConversation,
@@ -143,6 +150,11 @@ export function ComposerDock({
 				.map((message) => message.body) ?? []}
 			onSend={(text) => void onComposerSend(text)}
 			onSelectTarget={onSelectTarget}
+			lagunaAdapter={{
+				adapters: lagunaAdapters,
+				selectedId: selectedLagunaAdapterId,
+				onSelect: onSelectLagunaAdapter
+			}}
 			permissions={{
 				approvalPolicy,
 				sandboxMode,

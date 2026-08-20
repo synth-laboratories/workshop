@@ -59,6 +59,7 @@ impl Commands {
     pub const WORKSPACE_SCOPE_DENY_REQUEST: &'static str = "workspace_scope_deny_request";
     pub const LAGUNA_GET_STATUS: &'static str = "laguna_get_status";
     pub const LAGUNA_RELOAD: &'static str = "laguna_reload";
+    pub const LAGUNA_SET_ADAPTER: &'static str = "laguna_set_adapter";
     pub const LAGUNA_MODELS_LIST: &'static str = "laguna_models_list";
     pub const LAGUNA_MODEL_DOWNLOAD: &'static str = "laguna_model_download";
     pub const LAGUNA_MODEL_UNLOAD: &'static str = "laguna_model_unload";
@@ -191,6 +192,10 @@ impl Commands {
     pub const OPTIMIZERS_TRAINING_MODELS: &'static str = "optimizers_training_models";
     pub const OPTIMIZERS_SAVED_LORA_ARCHIVE: &'static str = "optimizers_saved_lora_archive";
     pub const OPTIMIZERS_SAVED_LORA_DOWNLOAD: &'static str = "optimizers_saved_lora_download";
+    pub const OPTIMIZERS_SAVED_LORA_IMPORT: &'static str = "optimizers_saved_lora_import";
+    pub const OPTIMIZERS_CHECKPOINT_INFER: &'static str = "optimizers_checkpoint_infer";
+    pub const OPTIMIZERS_SAVED_LORA_PATCH: &'static str = "optimizers_saved_lora_patch";
+    pub const OPTIMIZERS_SAVED_LORA_PUBLISH: &'static str = "optimizers_saved_lora_publish";
     pub const OPTIMIZERS_TRAINING_RECONCILE: &'static str = "optimizers_training_reconcile";
     pub const PLUGINS_STATUS: &'static str = "plugins_status";
     pub const PLUGINS_LIST: &'static str = "plugins_list";

@@ -29,6 +29,10 @@ pub struct SavedLoraLineage {
     pub provider_checkpoint_reference: Option<String>,
 }
 
+fn default_hosted_placement() -> String {
+    "hosted".into()
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, specta::Type)]
 #[serde(rename_all(deserialize = "snake_case", serialize = "camelCase"))]
 pub struct SavedLoraCheckpoint {
@@ -54,6 +58,12 @@ pub struct SavedLoraCheckpoint {
     pub storage: SavedLoraStorage,
     #[serde(default)]
     pub lineage: SavedLoraLineage,
+    #[serde(default = "default_hosted_placement")]
+    pub placement: String,
+    #[serde(default)]
+    pub inference_chat_completions: bool,
+    #[serde(default)]
+    pub inference_responses: bool,
     pub tags: Vec<String>,
     #[specta(type = specta_typescript::Unknown)]
     pub metadata: Value,
@@ -164,6 +174,7 @@ pub struct OptimizerRunOutputs {
 pub struct SavedLoraCheckpointQuery {
     pub search: Option<String>,
     pub scope: Option<String>,
+    pub placement: Option<String>,
     pub provider: Option<String>,
     pub checkpoint_kind: Option<String>,
     pub base_model: Option<String>,
@@ -177,6 +188,23 @@ pub struct SavedLoraCheckpointQuery {
     pub limit: Option<u64>,
     #[specta(type = specta_typescript::Unknown)]
     pub offset: Option<u64>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct SavedLoraPatchRequest {
+    pub name: Option<String>,
+    pub description: Option<String>,
+    pub tags: Option<Vec<String>>,
+}
+
+#[derive(Clone, Debug, Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct CheckpointInferRequest {
+    pub checkpoint_id: String,
+    pub family: String,
+    #[specta(type = specta_typescript::Unknown)]
+    pub body: Value,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, specta::Type)]
