@@ -3141,6 +3141,7 @@ export type UseRequestResult = {
 	proxyOrigin: string | null,
 	handle: string | null,
 	summary: CapabilitySummary | null,
+	providerRoutes: unknown,
 };
 
 export type VisualAnnotation = {
