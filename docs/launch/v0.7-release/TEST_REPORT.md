@@ -1,6 +1,6 @@
-# v0.7 test report (stub — rows owned by the integrator)
+# v0.7 test report
 
-The Workshop stack integrator writes the rows at the end of the v0.7 merge train. This stub fixes the format only. Every row is a command that ran on a named SHA with counts; a compile-only pass, a skipped suite, or a count without a command is not a row.
+Rows written by the Workshop stack integrator at the end of the v0.7 merge train (2026-08-20). Every row is a command that ran on a named SHA with counts; a compile-only pass, a skipped suite, or a count without a command is not a row.
 
 ## Row format
 
@@ -9,39 +9,46 @@ The Workshop stack integrator writes the rows at the end of the v0.7 merge train
 
 ## Passed
 
-Measured 2026-08-20 on this Mac, core-dev worktrees under `~/Documents/GitHub/worktrees/v07-core-dev/`. No cloud, no Tinker spend, no GHCR pull, no model download (`HF_HUB_OFFLINE=1` on the mlx-rl run).
+Final `origin/v0.7` tip after the train: `2a77535a` (merge of #54). Commands ran from a fresh worktree of that SHA on this Mac (macOS, Apple Silicon; `npm ci --ignore-scripts`; packaged cookbooks staged; Computer Use helper bundle copied).
 
 | Repo | SHA | Command (exact) | Passed | Failed | Skipped/ignored (reason) | Notes |
 |---|---|---|---|---|---|---|
-| workshop | `7bf65865` | `cargo test -p synth-desktop --lib --offline optimizers:: -- --test-threads=8` | 252 | 0 | 4 ignored (pre-existing `#[ignore]` dispatch / live-service tests) | Run before merging UI #43 into this branch. |
-| workshop | `7bf65865` | `cargo test -p synth-desktop --lib --offline hosted_sft` | 16 | 0 | 0 | Includes `gsm8k_gpt_oss_recipe_is_catalogued_and_spend_gated`. |
-| workshop | `7bf65865` | `cargo test -p synth-desktop --lib --offline tinker_catalog` | 1 | 0 | 0 | `openai/gpt-oss-20b` resolves; default remains Nemotron Lightning. |
-| workshop | `7bf65865` | `cargo test -p synth-desktop --bin synth-optimizers-mcp --offline` | 14 | 0 | 0 | Recipe enum contains `sft.gsm8k.gpt-oss.smoke.v1`. |
-| workshop | `7bf65865` | `node --experimental-strip-types --test visuals/tests/gepa_*.test.mjs visuals/tests/optimizer_family.test.mjs` | 39 | 0 | 0 | |
-| workshop | `7bf65865` | `npx playwright test --config apps/synth_desktop/playwright.config.ts apps/synth_desktop/tests/playwright/optimizer-plugin-mcp.spec.ts apps/synth_desktop/tests/playwright/optimizer-banking77.spec.ts --workers=2` | 10 | 2 | 0 | Failures named below. Fixture-fed; no paid recipes. |
-| workshop | `7bf65865` | `./scripts/desktop-instance.sh print phase-b` | contract printed | — | — | `releaseLine=v0.7`, `appVersion=0.7.0`. No `.app` built. `sourceRevision` reported `7bf65865ed18-dirty` because `projectEvents.ts` was dirty in the worktree (not committed). |
-| optimizers | `4ae4d65` | `uv run --no-sync python -m pytest tests/test_eval_*.py tests/test_gepa_config_translation.py tests/test_g1_fail_closed.py -q` | 77 | 0 | 0 | |
-| optimizers | `4ae4d65` | `cargo test -p synth_gepa --lib` | 43 | 1 | 0 | Failure is K12: `drop_does_not_delete_heartbeat_owned_by_another_pid` under default threads. Solo `--test-threads=1` retry **passed**. |
-| backend | `df03d1dd7` then `b84565d6f` | `uv run python -m pytest -q tests/units/test_run_algorithm_kinds.py tests/units/test_training_contracts.py tests/units/test_saved_lora_library.py tests/units/test_memory_bounded_artifact_paths.py` | 61 | 0 | 0 | Slice on the pre-rebase SHA. After rebase onto L3: `test_saved_lora_library.py` **11 passed**; with `test_hosted_training_admission.py` **24 passed** on `b84565d6f`. |
-| synth-mlx-rl | `ccb7ebb` | `HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 .venv/bin/python -m pytest -q` after `uv pip install -e '.[mlx]'` | 134 | 1 | 0 | Resident Qwen3.5-0.8B in HF cache; Hub offline. Counted from progress bar (135 collected). Failure named below. |
-| evals | `cda044cbc` / `origin/dev` `ee80a748` | not re-run this session | — | — | — | #280 already merged (36/36 recorded by L5). |
+| workshop | 2a77535a | `cd apps/synth_desktop && npm run typecheck` | clean | 0 | — | `tsc --noEmit` |
+| workshop | 2a77535a | `node --test apps/synth_desktop/tests/*.test.mjs` | 426 | 0 | 0 | baseline 426 at 701b483e held through the train |
+| workshop | 2a77535a | `cd apps/synth_desktop && PLAYWRIGHT_WORKERS=4 npx playwright test tests/playwright/optimizer-*.spec.ts tests/playwright/training-*.spec.ts` | 18 | 0 | 0 | 12 optimizer specs + 6 `training-workspace.spec.ts` (added by #43) |
+| workshop | 2a77535a | `node apps/synth_desktop/scripts/lint-app-css.mjs` | clean | 0 | — | `app.css` style-literal debt did not increase |
+| workshop | 2a77535a | `cd apps/synth_desktop/src-tauri && cargo test -p synth-desktop --lib optimizers:: --no-fail-fast` | 252 | 0 | 4 ignored: `cispo::tests::local_cispo_dispatch_needs_synth_mlx_rl`, `mlx_sft::tests::local_sft_dispatch_needs_synth_mlx_rl` (need synth-mlx-rl + managed Qwen weights), `recipes::tests::paid_craftax_smoke_reaches_terminal_through_the_real_sidecar`, `recipes::tests::paid_dual_banking77_luna_sol_receipt` (paid; D4) | was 231 at #45's head |
+| workshop | 2a77535a | `cd apps/synth_desktop/src-tauri && cargo test -p synth-desktop --lib contract::specta::` | 1 | 0 | 1 ignored: `regenerate_protocol_bindings` (writes `generated/protocol.ts`; run explicitly) | binding count 241 (240 → 241 at #46) |
+| workshop | 2a77535a | `cd apps/synth_desktop/src-tauri && cargo test -p synth-desktop --lib -- training_artifacts training_adapter eval_runtime runtimes::tests mlx_sft::tests cispo::tests training_models::tests` | 31 | 0 | 2 ignored (the two `local_*_dispatch_needs_synth_mlx_rl` above) | includes the 7 `training_adapter` contract tests (identity retained, gaps fail, replays skipped, terminal mapping explicit) |
+| workshop | 2a77535a | `cd apps/synth_desktop/src-tauri && cargo test -p synth-desktop --bin synth-optimizers-mcp` | 14 | 0 | 0 | covers the nine typed capabilities' confirm gating before IPC |
+| workshop | 2a77535a | `git diff origin/v0.7...HEAD \| grep '^+' \| grep -E 'unimplemented!\|todo!\|TODO\|dbg!\|console.log\('` | 0 hits | — | — | run at every PR head |
+
+Per-PR heads verified with the same bar before each merge (counts are `optimizers::` passed / Playwright passed; node was 426/426 and typecheck, CSS lint, specta, hygiene green at every head):
+
+| PR | Head verified | Merge commit | optimizers:: | Playwright | Fix commits at the head |
+|---|---|---|---|---|---|
+| #45 `v07/managed-artifacts` | 1aaf1b04 | 510ce4e8 | 231 | 12 | none |
+| #46 `v07/artifact-inference` | 3b426709 | 9b2b7da2 | 234 | 12 | 3b426709 specta regen (240 → 241) |
+| #48 `v07/training-event-adapter` | 19f0114f | 10aa6eab | 242 | 12 | 19f0114f parenthesize `projectEvents.ts:2165` |
+| #49 `v07/eval-provisioning` | 0144c6cf | 714c6bc1 | 245 | 12 | none |
+| #51 `v07/local-mlx-surface` | 85594836 | d99a90fc | 246 | 12 | none |
+| #43 `codex/v07-ui-training-artifacts` | 11060c1f | fb4988af | 246 | 18 | 11060c1f workspace row test ids |
+| #55 `v07/typed-agent-capabilities` | 4dcb6b99 | 5af338fe | 251 | 18 | 4dcb6b99 `inspect_training_artifact` tool name |
+| #54 `v07/hosted-pure-dev` | 8b3b54d7 | 2a77535a | 252 | 18 | none |
 
 ## Observations
 
-- Playwright `optimizer-banking77.spec.ts:136` — `getByLabel('Artifacts')` strict-mode violation (2 elements). Same class of defect called out on #45.
-- Playwright `optimizer-banking77.spec.ts:192` — page must not contain `"Banking77"`, but the CISPO training card copy is `This Mac · Banking77 CISPO`.
-- `synth_gepa` heartbeat ownership flake reproduced once under parallel, then passed solo (K12).
-- `synth-mlx-rl` `tests/test_service.py::test_job_has_live_metrics_terminal_digest_and_durable_handoff` — `AssertionError: job did not become terminal` after a ~3 min suite. Did not retry; not a download failure.
-- `python -m synth_optimizers.eval doctor --home /tmp/v07-eval-home --json` on `4ae4d65`: `ready: false`. Craftax recipes: image digest pinned (`sha256:02b076f8…`) but **not present locally**; GSM8K recipe `eval.mlx.local-policy.smoke.v1`: `target image is not published and pinned yet`. Fixture/gamebench: unpublished by design.
-- `gh api /orgs/synth-laboratories/packages/container/workshop-craftax-eval-target` → **403** (`read:packages` missing). `workshop-gsm8k-eval-target` → **404**.
-- Qwen3.5-0.8B weights are already at `~/.synth-desktop/models/training/Qwen/Qwen3.5-0.8B` and in the HF hub cache. Packaged SFT→CISPO was **not** started: no `cua-build` `.app`, D4/no-spend, and `eval.mlx.local-policy.smoke.v1` is unpublished.
-- Slot compose still sets `SYNTH_DEV_SLOT_MANAGED=1`. L3 on backend `v0.7` (`#1247`) still admits `not_validated` CISPO through those deprecated flags. Register P1-16 asked to replace the env-flag gate; the merged path keeps it as a one-release compatibility hatch. Rung 1 was **not** rebuilt (would pull/build images).
-- Workshop #52 (`v07/typed-agent-capabilities`) auto-closed when GitHub deleted its base `v07/local-mlx-surface` after #51 merged (`base_ref_deleted`). A.8 commit `7f845bb0` is on `v07/hosted-pure-dev` / PR #54.
+- `training-workspace.spec.ts` ("retain CUA-1 training receipts") rewrites the PNGs under `docs/receipts/2026-08-20/v0.7-training-ui/` on every run; the committed receipts were restored before each push, so the tree carries the UI lane's originals.
+- `OptimizersPage.tsx` still carries four `"ppo"` references (saved-LoRA filter option at the `All algorithms` select, a type union, and two `includes` guards). They pre-date the train (present on d99a90fc before #43) and render one option label `PPO`; left for the owner under D7 (SDK `submit_ppo` removal deferred to v0.8).
+- `sft.gsm8k.gpt-oss.smoke.v1` (#54) is catalogued unavailable and refuses `start`; it pins the 32K context but not yet the `openai/gsm8k` dataset constants from `mlx_sft.rs` (#51).
+- Not measured here (recorded by the register, not re-run): optimizers `synth_gepa` `service_ownership::tests::drop_does_not_delete_heartbeat_owned_by_another_pid`, 4/30 parallel failures on `d3c9edd`, 0/10 solo (KNOWN_ISSUES K12); backend full suite 25 known failures / 3127 passed at #1244.
+- GitHub returned 504 on `gh pr merge` for #45 while the merge had in fact completed; every merge was confirmed by `gh pr view --json state,mergeCommit` before the next step.
 
 ## External acceptance boundaries
 
-- **D2** — no deploys. Exact commands not run: `railway up --service optimizers-beta-prod`; `git push origin main` (backend prod). Mechanism: `docs/launch/v0.7-release/BETA_DEPLOY.md`.
-- **D4** — no Tinker spend. Exact commands not run: `uv run python scripts/verify_cispo_parity.py`; start of `sft.gsm8k.gpt-oss.smoke.v1`; `POST /api/v1/optimizers/checkpoints/{id}/chat` with `execute=true`; slot3 bounded hosted SFT/CISPO launches.
-- **D8** — unnotarized; no `assert-identity` (would require a clean tree).
-- Packaged local-MLX acceptance (register Phase B.3) and training-contract replay (B.4) were not run: they need a `desktop-instance.sh cua-build` `.app` plus a real SFT/CISPO job. Weights exist; the smoke was stopped before launch.
-- GEPA on a packaged build (B.5) was not run; JS fixture tests (39) are the GEPA bar this session.
+Not performed in this train, each gated by a decision id:
+
+- Paid runs — the two ignored `recipes::tests::paid_*` acceptances, the Banking77 GEPA live run, the hosted CISPO parity call, and any launch of `sft.gsm8k.gpt-oss.smoke.v1` or the Tinker slot rung (D4).
+- Deploys — backend staging/prod promotion and the optimizers-beta beta deploy described in `BETA_DEPLOY.md` (D2).
+- Notarization — v0.7 ships unnotarized as v0.6 did unless told otherwise (D8).
+- Local MLX acceptance on a packaged `desktop-instance.sh` v0.7 build (Phase B §3) and the training-contract replay receipt (Phase B §4) are Phase B work, not part of this merge train.
