@@ -36,3 +36,13 @@ size = "medium"
 arch = "moe"
 default = false
 note = "Same size class as 3.5 Lightning. Not the default student."
+
+[[model]]
+id = "openai/gpt-oss-20b"
+label = "GPT-OSS 20B"
+context = "32K"
+size = "small"
+arch = "dense"
+default = false
+note = "Tinker SDK probe is 32K; backend hosted catalog lists max_context_length 131072. Workshop recipes use 32768 until Tinker confirms 131072."
+

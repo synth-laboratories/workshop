@@ -350,7 +350,8 @@ impl OptimizerService {
             }
             super::hosted_sft::HOSTED_SFT_FIXTURE_RECIPE
             | super::hosted_sft::HOSTED_SFT_CRAFTAX_NEMOTRON_RECIPE
-            | super::hosted_sft::HOSTED_SFT_BANKING77_RECIPE => {
+            | super::hosted_sft::HOSTED_SFT_BANKING77_RECIPE
+            | super::hosted_sft::HOSTED_SFT_GSM8K_RECIPE => {
                 super::hosted_sft::start(self, request).await
             }
             super::mlx_sft::QWEN_MLX_SFT_RECIPE => super::mlx_sft::start(self, request).await,
