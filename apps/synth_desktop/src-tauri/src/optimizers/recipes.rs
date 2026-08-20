@@ -3066,6 +3066,7 @@ namespace = "base"
                 base_model: None,
                 dataset_shard: None,
                 candidate_set_id: None,
+                training_artifact_id: None,
                 search: None,
             })
             .await
@@ -3141,6 +3142,7 @@ namespace = "base"
                 base_model: None,
                 dataset_shard: None,
                 candidate_set_id: None,
+                training_artifact_id: None,
                 search: None,
             }),
             service.start_recipe(OptimizerRecipeRunRequest {
@@ -3150,6 +3152,7 @@ namespace = "base"
                 base_model: None,
                 dataset_shard: None,
                 candidate_set_id: None,
+                training_artifact_id: None,
                 search: None,
             })
         );

@@ -262,6 +262,7 @@ pub fn builder() -> Builder<tauri::Wry> {
         crate::training_models::training_models_delete,
         crate::training_artifacts::training_artifacts_list,
         crate::training_artifacts::training_artifacts_get,
+        crate::training_artifacts_launch_inference,
         crate::whisper::whisper_models_list,
         crate::whisper::whisper_model_download,
         crate::whisper::whisper_models_set_selected,
@@ -427,8 +428,10 @@ mod tests {
         // delete on-device base models under the instance-scoped model root).
         // 238 → 240: managed training-artifact library list/get (local LoRA
         // adapters by id; `size_bytes` exports as f64 so specta can emit it).
+        // 240 → 241: `training_artifacts_launch_inference` pins local MLX chat
+        // to one retained artifact id (confirm-gated; fails visibly on load).
         assert_eq!(
-            exported, 240,
+            exported, 241,
             "generated bindings must contain the complete desktop command set"
         );
         assert_eq!(

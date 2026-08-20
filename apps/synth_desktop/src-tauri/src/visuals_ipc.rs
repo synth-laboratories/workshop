@@ -2537,6 +2537,24 @@ pub(crate) async fn dispatch_optimizer(
             let manifest = optimizers.stage_eval_candidates(request).await?;
             Ok(json!({ "candidateSet": manifest }))
         }
+        ("POST", path)
+            if path.starts_with("/v1/training/artifacts/") && path.ends_with("/chat") =>
+        {
+            let id = path
+                .trim_start_matches("/v1/training/artifacts/")
+                .trim_end_matches("/chat")
+                .trim_end_matches('/');
+            let confirm = body.get("confirm").and_then(Value::as_bool).unwrap_or(false);
+            if !confirm {
+                anyhow::bail!("launch_artifact_inference requires confirm=true");
+            }
+            let message = body
+                .get("message")
+                .and_then(Value::as_str)
+                .unwrap_or("Reply with one short sentence confirming which adapter you are.");
+            let inference = crate::optimizers::launch_artifact_inference(id, message).await?;
+            Ok(json!({ "inference": inference }))
+        }
         ("POST", "/v1/optimizers/recipes/prepare") => {
             let request: crate::optimizers::OptimizerRecipeRunRequest =
                 serde_json::from_value(body)?;

@@ -334,6 +334,7 @@ export function OptimizersPage({
 	const [hostedModelCatalogRevision, setHostedModelCatalogRevision] = useState<string | null>(null);
 	const [savedLoras, setSavedLoras] = useState<SavedLoraCheckpoint[]>([]);
 	const [localArtifacts, setLocalArtifacts] = useState<TrainingArtifact[]>([]);
+	const [localArtifactReply, setLocalArtifactReply] = useState<string | null>(null);
 	const [hostedSftWarmStarts, setHostedSftWarmStarts] = useState<SavedLoraCheckpoint[]>([]);
 	const [savedLoraTotal, setSavedLoraTotal] = useState(0);
 	const [savedLoraSearch, setSavedLoraSearch] = useState("");
@@ -675,6 +676,45 @@ export function OptimizersPage({
 			flow: action === "resume" ? ["Preflight", "Resume", "Follow"] : ["Evaluate", "Compare", "Report"],
 			prompt: `${actionPrompt}\n\nRun: ${selected.id}\nAlgorithm: ${selected.algorithmId}\nCheckpoint: ${checkpointId}\nTask: ${String(selected.summary?.taskId ?? "from the sealed run config")}\nDo not substitute another checkpoint. Verify ready/evaluation/resume eligibility from canonical backend evidence before acting.`
 		});
+	};
+
+	const runLocalArtifactInference = async (artifact: TrainingArtifact) => {
+		if (!bridges.trainingArtifacts) return;
+		setBusy(true);
+		setError(null);
+		setLocalArtifactReply(null);
+		try {
+			const result = await bridges.trainingArtifacts.launchInference({
+				id: artifact.id,
+				confirm: true
+			});
+			setLocalArtifactReply(`${result.policySnapshotId}: ${result.reply}`);
+		} catch (reason) {
+			setError(presentError(reason).message);
+		} finally {
+			setBusy(false);
+		}
+	};
+
+	const evaluateLocalArtifact = async (artifact: TrainingArtifact) => {
+		if (!bridges.optimizers) return;
+		setBusy(true);
+		setError(null);
+		try {
+			const run = await bridges.optimizers.startRecipe({
+				recipeId: "eval.mlx.local-policy.smoke.v1",
+				trainingArtifactId: artifact.id,
+				openVisual: true
+			});
+			setSelectedId(run.id);
+			await refresh();
+			const visualId = run.visualRefs.find((ref) => ref.kind === "visual")?.id;
+			if (visualId) onOpenVisual(visualId);
+		} catch (reason) {
+			setError(presentError(reason).message);
+		} finally {
+			setBusy(false);
+		}
 	};
 
 	const startBoundedRecipe = async (recipeId: string, setter: (busy: boolean) => void) => {
@@ -1019,6 +1059,7 @@ export function OptimizersPage({
 					<div><span className="optimizer-eyebrow">This Mac</span><h2 id="optimizer-local-artifact-library-title">Training artifacts</h2></div>
 					<p>{localArtifacts.length} retained adapters. Inference and Eval must name one of these ids; they never fall back to ambient latest.</p>
 				</div>
+				{localArtifactReply ? <p data-testid="local-artifact-reply">{localArtifactReply}</p> : null}
 				{localArtifacts.length === 0 ? (
 					<p data-testid="local-artifact-empty">No local adapters yet. Finish a bounded SFT or CISPO run on this Mac.</p>
 				) : (
@@ -1031,24 +1072,8 @@ export function OptimizersPage({
 									<p>digest {artifact.digest ?? "none"} · dataset {artifact.datasetDigest ?? "none"} · config {artifact.configDigest ?? "none"} · {artifact.integrity}{artifact.sizeBytes != null ? ` · ${formatBytes(artifact.sizeBytes)}` : ""}</p>
 								</div>
 								<div>
-									<button className="secondary-button" type="button" disabled={!artifact.integrity || artifact.integrity === "unavailable"} onClick={() => void startAgent({
-										id: "sft",
-										label: "SF",
-										name: "SFT",
-										kind: "training",
-										description: "",
-										flow: [],
-										prompt: `Launch inference against training artifact ${artifact.id} (base model ${artifact.baseModelId}, adapter ${artifact.adapterKind}, producing run ${artifact.producingRunId}). Do not use an ambient latest checkpoint. If the adapter fails to load, fail visibly.`
-									})} data-testid={`local-artifact-infer-${artifact.id}`}>Run inference</button>
-									<button className="secondary-button" type="button" onClick={() => void startAgent({
-										id: "eval",
-										label: "EV",
-										name: "Eval",
-										kind: "optimizer",
-										description: "",
-										flow: [],
-										prompt: `Launch an Eval recipe against training artifact ${artifact.id} (base model ${artifact.baseModelId}, producing run ${artifact.producingRunId}, config ${artifact.configDigest ?? "unknown"}). Retain that artifact id in the Eval receipt.`
-									})} data-testid={`local-artifact-eval-${artifact.id}`}>Evaluate</button>
+									<button className="secondary-button" type="button" disabled={!artifact.integrity || artifact.integrity === "unavailable"} onClick={() => void runLocalArtifactInference(artifact)} data-testid={`local-artifact-infer-${artifact.id}`}>Run inference</button>
+									<button className="secondary-button" type="button" onClick={() => void evaluateLocalArtifact(artifact)} data-testid={`local-artifact-eval-${artifact.id}`}>Evaluate</button>
 								</div>
 							</li>
 						))}

@@ -355,6 +355,7 @@ export const commands = {
 	trainingModelsDelete: (modelId: string) => typedError<null, string>(__TAURI_INVOKE("training_models_delete", { modelId })),
 	trainingArtifactsList: () => __TAURI_INVOKE<TrainingArtifact_Serialize[]>("training_artifacts_list"),
 	trainingArtifactsGet: (id: string) => typedError<TrainingArtifact_Serialize, string>(__TAURI_INVOKE("training_artifacts_get", { id })),
+	trainingArtifactsLaunchInference: (id: string, message: string | null, confirm: boolean) => typedError<unknown, AppError>(__TAURI_INVOKE("training_artifacts_launch_inference", { id, message, confirm })),
 	whisperModelsList: () => __TAURI_INVOKE<WhisperModelHit[]>("whisper_models_list"),
 	whisperModelDownload: (id: string) => typedError<WhisperModelHit, string>(__TAURI_INVOKE("whisper_model_download", { id })),
 	whisperModelsSetSelected: (id: string) => typedError<WhisperModelHit, string>(__TAURI_INVOKE("whisper_models_set_selected", { id })),
@@ -1639,6 +1640,12 @@ export type OptimizerRecipeRunRequest = {
 	 *  source is content-addressed at staging time, not at launch.
 	 */
 	candidateSetId?: string | null,
+	/**
+	 *  Managed training artifact to evaluate. When set, Workshop stages an
+	 *  `mlx-lora.v1` candidate set from that record and retains its identity
+	 *  on the Eval receipt. Mutually exclusive with `candidate_set_id`.
+	 */
+	trainingArtifactId?: string | null,
 	/**
 	 *  Optional GEPA search overrides. Omitted fields keep the recipe defaults.
 	 *  `proposalsPerGeneration` is capped at 10; `policyConcurrency` at 120.

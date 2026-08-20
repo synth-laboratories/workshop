@@ -159,6 +159,15 @@ export type TrainingArtifact = {
 export type TrainingArtifactsBridge = {
 	list(): Promise<TrainingArtifact[]>;
 	get(id: string): Promise<TrainingArtifact>;
+	launchInference(request: { id: string; message?: string; confirm: boolean }): Promise<{
+		artifactId: string;
+		policySnapshotId: string;
+		reply: string;
+		baseModelId: string;
+		producingRunId: string;
+		configDigest?: string | null;
+		digest?: string | null;
+	}>;
 };
 
 export type WhisperModelHit = {
@@ -1215,8 +1224,10 @@ export type OptimizersBridge = {
 		sessionRef?: string;
 		openVisual?: boolean;
 		baseModel?: string;
-		/** Required by `eval.*` recipes. An id from `stageEvalCandidates`, never a path. */
+		/** Required by `eval.*` recipes unless `trainingArtifactId` is set. */
 		candidateSetId?: string;
+		/** Managed training adapter. Eval stages it and retains identity in the receipt. */
+		trainingArtifactId?: string;
 	}): Promise<OptimizerRunRecord>;
 	stageEvalCandidates(request: {
 		sessionRef: string;
