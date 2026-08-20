@@ -24,7 +24,7 @@ Backend (for contrast) **does** deploy on push: `.github/workflows/deploy.yml` m
 
 ## Slot (rung 1) vs cloud
 
-Slot compose (`synth-dev/local_dev/infra/docker-compose.local-stack.yaml`) builds beta from `OPTIMIZERS_BETA_REPO_ROOT`. Rebuild slot3 from frozen SHAs, verify admission (`X-Synth-Training-Scope: validation` on backend, not `SYNTH_HOSTED_TRAINING_ALLOW_NOT_VALIDATED`), **stop before any Tinker call** (D4).
+Slot compose (`synth-dev/local_dev/infra/docker-compose.local-stack.yaml`) builds beta from `OPTIMIZERS_BETA_REPO_ROOT`. Rebuild slot3 from frozen SHAs, baked images, no `docker cp`. Admission on current backend `v0.7` (L3 #1247) is `admission=validation_only` plus header `X-Synth-Training-Validation-Grant` (token `SYNTH_HOSTED_TRAINING_VALIDATION_GRANT_TOKEN`). Deprecated env flags still admit if both are set — do not rely on them. **Stop before any Tinker call** (D4).
 
 ## Commands that must not run in this handoff
 

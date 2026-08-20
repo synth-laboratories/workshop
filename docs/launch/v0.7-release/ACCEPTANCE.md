@@ -14,11 +14,11 @@ Mark each lane **go**, **go with documented non-blocking limitation**, or **no-g
 
 | Lane | Targeted automated bar (command · counts · SHA) | Live/packaged smoke receipt (path · digest) | Restart / reconcile receipt | Downstream artifact → inference + Eval receipts | Verdict | Owner | Limitation recorded |
 |---|---|---|---|---|---|---|---|
-| Hosted SFT / CISPO | pending | pending (ladder below) | pending | pending | pending | L3 / dev agent | |
-| Local MLX SFT / CISPO | pending | pending | pending | pending | pending | dev agent | |
-| GEPA | pending | pending (Craftax deterministic smoke; Banking77 gated on D4) | pending | n/a | pending | L7 | |
-| Eval | pending | pending (one report-only/smoke recipe) | pending | n/a | pending | L6 | |
-| Shared (lineage, pins, taxonomy, no-zero-imputation) | pending | — | — | — | pending | L1 / L5 | |
+| Shared (lineage, pins, taxonomy, no-zero-imputation) | workshop `cargo test -p synth-desktop --lib --offline optimizers::` **252 passed / 4 ignored** on `7bf65865`; GEPA JS **39/0**; backend training slice **61/0** then **24/0** admission+library on `b84565d6f` | — | — | — | **go with documented non-blocking limitation** | core-dev | GHCR 403; no packaged `.app`; D2/D4 |
+| Local MLX SFT / CISPO | synth-mlx-rl `HF_HUB_OFFLINE=1 pytest` **134 passed / 1 failed** (`test_job_has_live_metrics_…` timeout) on `ccb7ebb`; typed capabilities tests in the 252 | pending — `desktop-instance.sh print phase-b` only; Qwen weights present, no `cua-build` | pending | pending | **no-go** (packaged loop not run) | core-dev | K4 unpublished GSM8K eval image; K30 mlx timeout |
+| Hosted SFT / CISPO | backend `test_saved_lora_library` + `test_hosted_training_admission` **24 passed** on `b84565d6f`; GSM8K recipe catalogued and start-refused | pending (D2/D4) | pending | pending | **go with documented non-blocking limitation** | L3 / core-dev | rung 0 done; rungs 1–3 gated |
+| GEPA | `node --experimental-strip-types --test visuals/tests/gepa_*.test.mjs visuals/tests/optimizer_family.test.mjs` **39/0**; `cargo test -p synth_gepa --lib` **43/1** flake (K12) | pending (packaged) | pending | n/a | **go with documented non-blocking limitation** | L7 / core-dev | no packaged smoke |
+| Eval | `python -m synth_optimizers.eval doctor --home /tmp/v07-eval-home --json` → `ready: false` | pending | pending | n/a | **no-go** | L6 | K3/K4 images |
 
 ### Row format for lane receipts appended below
 
@@ -81,3 +81,12 @@ For one SFT and one CISPO run: native `training.event.v1` stream, mapped `optimi
 ## Appended receipts
 
 (append below using the row format above; newest last)
+
+### core-dev Phase A/B — 2026-08-20 14:20 local — core-dev agent
+- SHAs: workshop `56b756dd` (merge of `origin/v0.7` `fb4988af` + A.8 `7f845bb0` + A.9 `7bf65865`); optimizers `4ae4d65` / wheel 0.2.15 `d3c9edd`; synth-mlx-rl `ccb7ebb`; backend `b84565d6f`; beta `aaa262e` (unchanged, not deployed); containers `9ed2597`
+- Command: see `TEST_REPORT.md` rows — workshop `optimizers::` 252/0/4; GEPA JS 39/0; Playwright 10/2; eval doctor `ready: false`; mlx-rl 134/1; backend library+admission 24/0
+- Run id(s): none · Recipe: `sft.gsm8k.gpt-oss.smoke.v1` catalogued, not started · Instance: `./scripts/desktop-instance.sh print phase-b` only
+- Receipts: this file + `TEST_REPORT.md` + `KNOWN_ISSUES.md` + `BETA_DEPLOY.md` (no sha256 of a run manifest — no run)
+- Artifact identity retained: none (no SFT job)
+- Spend: none
+- Deliberate non-passes / observations: D2/D4 not authorized; GHCR 403/404; #52 `base_ref_deleted`; L3 env-flag compatibility hatch still admits CISPO; packed MLX loop not run
