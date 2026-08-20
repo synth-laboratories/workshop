@@ -937,13 +937,13 @@ export function OptimizersPage({
 									<button className="secondary-button" type="button" disabled={startingSftFixture} onClick={() => void startSftFixture()} data-testid="start-sft-fixture">
 										{startingSftFixture ? "Starting fixture…" : "Run hosted fixture"}
 									</button>
-									<small>Sidecar admits local MLX or hosted public SFT. Never dial :8787.</small>
+									<small>Public Optimizers fixture · no provider charges</small>
 								</>
 							) : null}
 							{guide.id === "cispo" ? (
 								<>
 									<button className="secondary-button" type="button" disabled={startingLocalCispo || (plugin != null && !presentation.isUsable)} onClick={() => void startBoundedRecipe("cispo.banking77.mlx.v1", setStartingLocalCispo)} data-testid="start-cispo-mlx">
-										{startingLocalCispo ? "Starting…" : "This Mac · Banking77 CISPO"}
+										{startingLocalCispo ? "Starting…" : "This Mac · CISPO (MLX)"}
 									</button>
 									<small>Hosted CISPO stays fail-closed until the slime clip canary admits it. Use the bounded recipe below.</small>
 								</>
