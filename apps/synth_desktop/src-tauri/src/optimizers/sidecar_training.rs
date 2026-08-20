@@ -92,6 +92,15 @@ impl TrainingRuntime {
                     JsonHttpResponse::error(StatusCode::NOT_FOUND, "not found")
                 }
             }
+            ("POST", path)
+                if path.starts_with("/v1/training/artifacts/") && path.ends_with("/chat") =>
+            {
+                let id = path
+                    .trim_start_matches("/v1/training/artifacts/")
+                    .trim_end_matches("/chat")
+                    .trim_end_matches('/');
+                self.chat_artifact(id, &request.body).await
+            }
             _ => JsonHttpResponse::error(StatusCode::NOT_FOUND, "not found"),
         }
     }
@@ -371,47 +380,132 @@ impl TrainingRuntime {
     }
 
     async fn chat_checkpoint(&self, job_id: &str, body: &Value) -> JsonHttpResponse {
-        let jobs = self.jobs.lock().await;
-        let Some(job) = jobs.get(job_id) else {
-            return JsonHttpResponse::error(StatusCode::NOT_FOUND, "training job not found");
-        };
-        let snapshot = job
-            .handoff
-            .get("policy_snapshot_id")
-            .cloned()
-            .unwrap_or_else(|| json!(format!("{job_id}-snap")));
+        match pin_for_job_chat(job_id, body) {
+            Ok(pin) => self.chat_pinned(&pin, body).await,
+            Err(error) => JsonHttpResponse::error(StatusCode::BAD_REQUEST, error.to_string()),
+        }
+    }
+
+    async fn chat_artifact(&self, artifact_id: &str, body: &Value) -> JsonHttpResponse {
+        match pin_for_artifact(artifact_id) {
+            Ok(pin) => self.chat_pinned(&pin, body).await,
+            Err(error) => JsonHttpResponse::error(StatusCode::BAD_REQUEST, error.to_string()),
+        }
+    }
+
+    async fn chat_pinned(&self, pin: &InferencePin, body: &Value) -> JsonHttpResponse {
         let prompt = body
             .get("message")
             .and_then(Value::as_str)
             .unwrap_or("hello")
             .to_string();
-        let fixture = is_hosted_fixture(&job.recipe_id, &job.placement);
-        drop(jobs);
-        if !fixture {
-            match MlxLoopback::from_env() {
-                Ok(client) => match client.chat(&prompt).await {
-                    Ok(reply) => {
-                        return JsonHttpResponse::ok(json!({
-                            "job_id": job_id,
-                            "policy_snapshot_id": snapshot,
-                            "reply": reply
-                        }));
-                    }
-                    Err(error) => {
-                        return JsonHttpResponse::error(StatusCode::BAD_GATEWAY, error.to_string());
-                    }
-                },
-                Err(error) => {
-                    return JsonHttpResponse::error(StatusCode::BAD_GATEWAY, error.to_string());
-                }
-            }
+        if pin.fixture {
+            return JsonHttpResponse::ok(json!({
+                "artifact_id": pin.artifact_id,
+                "policy_snapshot_id": pin.snapshot_id,
+                "reply": format!("fixture checkpoint reply to {prompt}")
+            }));
         }
-        JsonHttpResponse::ok(json!({
-            "job_id": job_id,
-            "policy_snapshot_id": snapshot,
-            "reply": format!("fixture checkpoint reply to {prompt}")
-        }))
+        match pin_and_chat(pin, &prompt).await {
+            Ok(reply) => JsonHttpResponse::ok(json!({
+                "artifact_id": pin.artifact_id,
+                "policy_snapshot_id": pin.snapshot_id,
+                "reply": reply
+            })),
+            Err(error) => JsonHttpResponse::error(StatusCode::BAD_GATEWAY, error.to_string()),
+        }
     }
+}
+
+#[derive(Clone, Debug)]
+struct InferencePin {
+    artifact_id: Option<String>,
+    snapshot_id: String,
+    policy_dir: Option<PathBuf>,
+    digest: Option<String>,
+    fixture: bool,
+}
+
+fn optional_id(body: &Value, key: &str) -> Option<String> {
+    body.get(key)
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+}
+
+fn pin_for_artifact(artifact_id: &str) -> Result<InferencePin> {
+    let artifact = crate::training_artifacts::get(artifact_id)?;
+    if !artifact.is_inference_ready() {
+        bail!(
+            "training artifact `{artifact_id}` is not inference-ready ({})",
+            artifact.integrity
+        );
+    }
+    let policy_dir = artifact
+        .path
+        .as_deref()
+        .map(PathBuf::from)
+        .filter(|path| path.is_dir());
+    if policy_dir.is_none() {
+        bail!("training artifact `{artifact_id}` has no adapter directory to load");
+    }
+    Ok(InferencePin {
+        artifact_id: Some(artifact.id.clone()),
+        snapshot_id: crate::training_artifacts::snapshot_id_for(&artifact),
+        policy_dir,
+        digest: artifact.digest.clone(),
+        fixture: false,
+    })
+}
+
+fn pin_for_job_chat(job_id: &str, body: &Value) -> Result<InferencePin> {
+    if let Some(artifact_id) = optional_id(body, "artifact_id") {
+        return pin_for_artifact(&artifact_id);
+    }
+    if let Some(snapshot_id) = optional_id(body, "policy_snapshot_id") {
+        return Ok(InferencePin {
+            artifact_id: None,
+            snapshot_id,
+            policy_dir: None,
+            digest: None,
+            fixture: false,
+        });
+    }
+    if let Some(artifact) = crate::training_artifacts::list()?
+        .into_iter()
+        .find(|item| item.producing_run_id == job_id)
+    {
+        return pin_for_artifact(&artifact.id);
+    }
+    bail!("inference requires artifact_id or policy_snapshot_id; ambient latest is refused")
+}
+
+async fn pin_and_chat(pin: &InferencePin, prompt: &str) -> Result<String> {
+    let client = MlxLoopback::ensure().await?;
+    let snapshot_id = if let Some(dir) = &pin.policy_dir {
+        client
+            .register_policy(dir, &pin.snapshot_id, pin.digest.as_deref())
+            .await?
+    } else {
+        pin.snapshot_id.clone()
+    };
+    client.chat(prompt, &snapshot_id).await
+}
+
+pub(crate) async fn launch_artifact_inference(artifact_id: &str, message: &str) -> Result<Value> {
+    let pin = pin_for_artifact(artifact_id)?;
+    let artifact = crate::training_artifacts::get(artifact_id)?;
+    let reply = pin_and_chat(&pin, message).await?;
+    Ok(json!({
+        "artifactId": artifact.id,
+        "policySnapshotId": pin.snapshot_id,
+        "reply": reply,
+        "baseModelId": artifact.base_model_id,
+        "producingRunId": artifact.producing_run_id,
+        "configDigest": artifact.config_digest,
+        "digest": artifact.digest,
+    }))
 }
 
 pub fn admitted_placements() -> Vec<&'static str> {
@@ -1306,5 +1400,14 @@ mod tests {
                 expected
             );
         }
+    }
+
+    #[test]
+    fn inference_without_an_artifact_or_snapshot_is_refused() {
+        let error = pin_for_job_chat("job-missing", &json!({ "message": "hello" }))
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("ambient latest"), "{error}");
+        assert!(!error.contains("job-missing-snap"), "{error}");
     }
 }

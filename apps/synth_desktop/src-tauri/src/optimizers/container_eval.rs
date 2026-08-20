@@ -1923,6 +1923,7 @@ mod tests {
                 base_model: None,
                 dataset_shard: None,
                 candidate_set_id: None,
+                training_artifact_id: None,
                 search: None,
             })
             .await
@@ -2180,6 +2181,7 @@ mod tests {
                     base_model: None,
                     dataset_shard: None,
                     candidate_set_id: None,
+                    training_artifact_id: None,
                     search: None,
                 })
                 .await
@@ -2299,6 +2301,7 @@ mod tests {
                 base_model: None,
                 dataset_shard: None,
                 candidate_set_id: None,
+                training_artifact_id: None,
                 search: None,
             })
             .await
@@ -2395,6 +2398,7 @@ mod tests {
                 base_model: None,
                 dataset_shard: None,
                 candidate_set_id: None,
+                training_artifact_id: None,
                 search: None,
             })
             .await
@@ -2585,6 +2589,7 @@ mod tests {
                 base_model: None,
                 dataset_shard: None,
                 candidate_set_id: None,
+                training_artifact_id: None,
                 search: None,
             })
             .await
@@ -2654,6 +2659,7 @@ mod tests {
             base_model: None,
             dataset_shard: None,
             candidate_set_id: None,
+            training_artifact_id: None,
             search: None,
         }
     }

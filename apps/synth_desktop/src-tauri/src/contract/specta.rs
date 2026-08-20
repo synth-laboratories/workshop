@@ -262,6 +262,7 @@ pub fn builder() -> Builder<tauri::Wry> {
         crate::training_models::training_models_delete,
         crate::training_artifacts::training_artifacts_list,
         crate::training_artifacts::training_artifacts_get,
+        crate::training_artifacts_launch_inference,
         crate::whisper::whisper_models_list,
         crate::whisper::whisper_model_download,
         crate::whisper::whisper_models_set_selected,

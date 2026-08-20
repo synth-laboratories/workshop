@@ -178,6 +178,26 @@ pub fn list() -> Result<Vec<TrainingArtifact>> {
     load_index()
 }
 
+pub fn snapshot_id_for(artifact: &TrainingArtifact) -> String {
+    if let Some(digest) = artifact.digest.as_deref() {
+        let hex = digest.trim_start_matches("sha256:");
+        if !hex.is_empty()
+            && hex
+                .bytes()
+                .all(|byte| byte.is_ascii_hexdigit())
+            && hex.len() <= 64
+        {
+            return format!("snap_{hex}");
+        }
+    }
+    let slug: String = artifact
+        .id
+        .chars()
+        .map(|ch| if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' { ch } else { '_' })
+        .collect();
+    format!("snap_{slug}")
+}
+
 pub fn get(id: &str) -> Result<TrainingArtifact> {
     load_index()?
         .into_iter()
@@ -255,6 +275,10 @@ mod tests {
         assert_eq!(artifact.size_bytes, Some(128));
         assert_eq!(artifact.integrity, "unavailable");
         assert!(!artifact.is_inference_ready());
+        assert_eq!(
+            snapshot_id_for(&artifact),
+            "snap_deadbeef"
+        );
     }
 
     #[test]

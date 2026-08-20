@@ -29,7 +29,8 @@ mod tinker_catalog;
 mod training;
 
 pub use eval_candidates::EvalStageCandidatesRequest;
-pub(crate) use eval_recipes::paid_compute_bounds;
+pub(crate) use eval_recipes::{paid_compute_bounds, resolve_eval_candidate_set};
+pub(crate) use sidecar_training::launch_artifact_inference;
 #[allow(unused_imports)] // public sidecar status/version types for Desktop callers
 pub use manager::{OptimizerManager, OptimizerSidecarStatus, OptimizerSidecarVersion};
 #[allow(unused_imports)] // Nested Specta type is part of HostedTrainingModelCatalog.

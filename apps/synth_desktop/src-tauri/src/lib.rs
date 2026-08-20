@@ -398,6 +398,29 @@ async fn intern_session_events_after(
 
 #[tauri::command]
 #[specta::specta]
+async fn training_artifacts_launch_inference(
+    id: String,
+    message: Option<String>,
+    confirm: bool,
+) -> Result<contract::specta::OpaqueJson, AppError> {
+    if !confirm {
+        return Err(AppError::from(anyhow::anyhow!(
+            "launch_artifact_inference requires confirm=true"
+        )));
+    }
+    let prompt = message
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("Reply with one short sentence confirming which adapter you are.");
+    optimizers::launch_artifact_inference(&id, prompt)
+        .await
+        .map(contract::specta::OpaqueJson)
+        .map_err(AppError::from)
+}
+
+#[tauri::command]
+#[specta::specta]
 async fn data_containers_list(
     state: State<'_, Arc<CoreRuntime>>,
 ) -> Result<Vec<ContainerDeployment>, AppError> {
@@ -911,9 +934,12 @@ pub(crate) async fn authorize_optimizer_recipe_start(
             limits.get("maxTotalRollouts").and_then(Value::as_u64),
         )
     } else if is_local_eval {
-        let (cost, trials) =
-            optimizers::paid_compute_bounds(&recipe, request.candidate_set_id.as_deref())
+        let (cost, trials) = {
+            let candidate_set_id = optimizers::resolve_eval_candidate_set(&request)
                 .map_err(AppError::from)?;
+            optimizers::paid_compute_bounds(&recipe, Some(candidate_set_id.as_str()))
+                .map_err(AppError::from)?
+        };
         (Some(cost), Some(trials))
     } else {
         (
