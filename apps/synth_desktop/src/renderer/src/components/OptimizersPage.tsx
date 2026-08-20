@@ -332,8 +332,10 @@ export function OptimizersPage({
 	const [trainingWallSeconds, setTrainingWallSeconds] = useState(300);
 	const [trainingCostUsd, setTrainingCostUsd] = useState(0.1);
 	const [trainingCheckpointEvery, setTrainingCheckpointEvery] = useState(1);
+	const [trainingWarmStartCheckpointId, setTrainingWarmStartCheckpointId] = useState("");
 	const [hostedTrainingModels, setHostedTrainingModels] = useState<HostedTrainingModel[]>([]);
 	const [savedLoras, setSavedLoras] = useState<SavedLoraCheckpoint[]>([]);
+	const [hostedSftWarmStarts, setHostedSftWarmStarts] = useState<SavedLoraCheckpoint[]>([]);
 	const [savedLoraTotal, setSavedLoraTotal] = useState(0);
 	const [savedLoraSearch, setSavedLoraSearch] = useState("");
 	const [savedLoraScope, setSavedLoraScope] = useState<"all" | "mine" | "org">("all");
@@ -464,6 +466,26 @@ export function OptimizersPage({
 		const timer = window.setTimeout(() => void refreshSavedLoras(), 250);
 		return () => window.clearTimeout(timer);
 	}, [refreshSavedLoras]);
+
+	useEffect(() => {
+		let live = true;
+		if (!bridges.optimizers) return () => { live = false; };
+		void bridges.optimizers.searchSavedLoras({
+			provider: "tinker",
+			optimizerAlgorithm: "sft",
+			checkpointKind: "training",
+			status: "ready",
+			limit: 100
+		}).then((page) => {
+			if (!live) return;
+			setHostedSftWarmStarts(page.items.filter((checkpoint) =>
+				Boolean(checkpoint.lineage.providerCheckpointReference ?? checkpoint.providerCheckpointReference)
+			));
+		}).catch((reason) => {
+			if (live) setError(presentError(reason).message);
+		});
+		return () => { live = false; };
+	}, []);
 
 	const downloadSavedLora = async (checkpoint: SavedLoraCheckpoint) => {
 		if (!bridges.optimizers) return;
@@ -711,9 +733,22 @@ export function OptimizersPage({
 	const reviewTrainingLaunch = async () => {
 		const guide = OPTIMIZER_GUIDES.find((item) => item.id === trainingAlgorithm);
 		if (!guide) return;
+		const warmStartReference = selectedWarmStart?.lineage.providerCheckpointReference
+			?? selectedWarmStart?.providerCheckpointReference;
+		if (trainingAlgorithm === "cispo" && (!selectedWarmStart || !warmStartReference)) {
+			setError("Select a ready Tinker SFT training-state checkpoint before launching hosted CISPO.");
+			return;
+		}
+		if (trainingAlgorithm === "cispo" && selectedWarmStart && selectedWarmStart.baseModel !== trainingModel) {
+			setError(`The selected SFT checkpoint uses ${selectedWarmStart.baseModel}; choose the same model for CISPO.`);
+			return;
+		}
+		const warmStartLines = selectedWarmStart && warmStartReference
+			? `\n- SFT checkpoint id: ${selectedWarmStart.checkpointId}\n- SFT provider state: ${warmStartReference}\n- producing SFT run: ${selectedWarmStart.lineage.runId ?? selectedWarmStart.runId ?? "unknown"}\n- SFT base model: ${selectedWarmStart.baseModel}`
+			: "";
 		await startAgent({
 			...guide,
-			prompt: `${guide.prompt}\n\nThe user supplied this typed launch draft:\n- model: ${trainingModel}\n- task: ${trainingTask}\n- local container URL: ${trainingContainerUrl}\n- hard step cap: ${trainingSteps}\n- hard wall-clock cap: ${trainingWallSeconds} seconds\n- hard cost cap: $${trainingCostUsd}\n- checkpoint every: ${trainingCheckpointEvery} step(s)\n\nUse the synth-optimizers HostedTrainingSpec and HostedOptimizerClient.launch_training path so the client performs provider preflight, container capability validation, SynthTunnel setup, and lease ownership. Echo the effective config and both capability hashes. If preflight is supported, ask for one final paid-compute confirmation and then launch; if it is unsupported, stop before spend and report the exact missing capability.`
+			prompt: `${guide.prompt}\n\nThe user supplied this typed launch draft:\n- model: ${trainingModel}\n- task: ${trainingTask}\n- local container URL: ${trainingContainerUrl}\n- hard step cap: ${trainingSteps}\n- hard wall-clock cap: ${trainingWallSeconds} seconds\n- hard cost cap: $${trainingCostUsd}\n- checkpoint every: ${trainingCheckpointEvery} step(s)${warmStartLines}\n\nUse the synth-optimizers HostedTrainingSpec and HostedOptimizerClient.launch_training path so the client performs provider preflight, container capability validation, SynthTunnel setup, and lease ownership. For CISPO, put the exact SFT provider state in algorithm_config.initial_state_path, its checkpoint id in algorithm_config.source_checkpoint_id, and its producing run in algorithm_config.source_run_id; do not substitute latest, another checkpoint, or a sampler-only checkpoint. Echo the effective config, both capability hashes, the SFT checkpoint id, provider state, and producing run. If preflight is supported, ask for one final paid-compute confirmation and then launch; if it is unsupported, stop before spend and report the exact missing capability.`
 		});
 	};
 
@@ -846,7 +881,11 @@ export function OptimizersPage({
 	const selectedTrainingEvaluations = trainingProjection?.evaluations ?? [];
 	const selectedHostedModel = hostedTrainingModels.find((model) => model.modelId === trainingModel);
 	const selectedHostedSupport = selectedHostedModel?.algorithms[trainingAlgorithm];
-	const hostedLaunchBlocked = !selectedHostedSupport || selectedHostedSupport.status === "blocked";
+	const selectedWarmStart = hostedSftWarmStarts.find((checkpoint) => checkpoint.checkpointId === trainingWarmStartCheckpointId);
+	const warmStartMismatch = trainingAlgorithm === "cispo" && selectedWarmStart?.baseModel !== trainingModel;
+	const hostedLaunchBlocked = !selectedHostedSupport
+		|| selectedHostedSupport.status === "blocked"
+		|| (trainingAlgorithm === "cispo" && (!selectedWarmStart || warmStartMismatch));
 
 	const refreshSelected = async () => {
 		if (!selected || !bridges.optimizers) return;
@@ -1022,6 +1061,7 @@ export function OptimizersPage({
 				<div className="optimizer-training-form">
 					<label><span>Algorithm</span><select value={trainingAlgorithm} disabled><option value="cispo">CISPO · slime reference</option></select></label>
 					<label><span>Model</span><select value={trainingModel} onChange={(event) => setTrainingModel(event.target.value)}>{hostedTrainingModels.map((model) => { const support = model.algorithms[trainingAlgorithm]; return <option key={model.modelId} value={model.modelId} disabled={support?.status === "blocked"}>{model.label} · {support?.status ?? "not validated"}</option>; })}</select></label>
+					{trainingAlgorithm === "cispo" ? <label><span>SFT warm start</span><select aria-label="SFT warm-start checkpoint" value={trainingWarmStartCheckpointId} onChange={(event) => setTrainingWarmStartCheckpointId(event.target.value)} data-testid="hosted-cispo-warm-start"><option value="">Select a retained SFT training state…</option>{hostedSftWarmStarts.map((checkpoint) => <option key={checkpoint.checkpointId} value={checkpoint.checkpointId}>{checkpoint.name} · {checkpoint.baseModel} · step {checkpoint.step ?? "—"}</option>)}</select></label> : null}
 					<label><span>Task</span><input value={trainingTask} onChange={(event) => setTrainingTask(event.target.value)} /></label>
 					<label><span>Local Container URL</span><input value={trainingContainerUrl} onChange={(event) => setTrainingContainerUrl(event.target.value)} /></label>
 					<label><span>Steps</span><input type="number" min={1} value={trainingSteps} onChange={(event) => setTrainingSteps(Math.max(1, Number(event.target.value)))} /></label>
@@ -1032,6 +1072,7 @@ export function OptimizersPage({
 				<div className="optimizer-training-launch-actions">
 					<button className="primary-button" type="button" disabled={startingAgent !== null || hostedLaunchBlocked || !trainingModel.trim() || !trainingTask.trim() || !trainingContainerUrl.trim()} onClick={() => void reviewTrainingLaunch()} data-testid="review-hosted-training-launch">Review &amp; launch</button>
 					{hostedLaunchBlocked ? <span className="optimizer-status failed">Unavailable</span> : null}
+					<small>{trainingAlgorithm === "cispo" && !selectedWarmStart ? "Select a ready Tinker SFT training-state checkpoint; hosted CISPO never defaults to latest." : warmStartMismatch ? `Checkpoint/model mismatch: ${selectedWarmStart?.baseModel} ≠ ${trainingModel}.` : hostedLaunchBlocked ? selectedHostedSupport?.block_reason ?? "This model and algorithm combination is not admitted by the hosted catalog." : `Warm-start ${selectedWarmStart?.checkpointId} → CISPO → ${trainingTask}.`}{hostedModelCatalogRevision ? ` Catalog ${hostedModelCatalogRevision}; live provider preflight still required.` : ""}</small>
 				</div>
 			</section>
 
@@ -1072,7 +1113,7 @@ export function OptimizersPage({
 							<label className="optimizer-search"><span>Tags</span><input aria-label="Checkpoint tags" defaultValue={checkpoint.tags.join(", ")} placeholder="comma-separated tags" key={`${checkpoint.checkpointId}-tags-${checkpoint.tags.join(",")}`} onBlur={(event) => { const tags = event.target.value.split(",").map((tag) => tag.trim()).filter(Boolean); if (tags.join(",") !== checkpoint.tags.join(",")) void patchSavedLora(checkpoint, { tags }); }} /></label>
 							<dl><dt>Placement</dt><dd>{checkpoint.placement === "this_mac" ? "This Mac" : "Hosted"}</dd><dt>Base</dt><dd>{checkpoint.baseModel}</dd><dt>Algorithm</dt><dd>{checkpoint.lineage.optimizerAlgorithm ?? checkpoint.optimizerAlgorithm ?? "Imported"}</dd><dt>Run</dt><dd>{checkpoint.lineage.runId ?? checkpoint.runId ?? "—"}</dd><dt>Attempt</dt><dd>{checkpoint.lineage.attemptId ?? checkpoint.attemptId ?? "—"}</dd><dt>Source</dt><dd>{checkpoint.lineage.sourceCheckpointId ?? checkpoint.sourceCheckpointId ?? "—"}</dd><dt>Provider</dt><dd>{checkpoint.provider} · {checkpoint.checkpointKind}</dd><dt>Rank / step</dt><dd>{checkpoint.loraRank ?? "—"} / {checkpoint.step ?? "—"}</dd><dt>Storage</dt><dd>{checkpoint.storage.backend} · {formatBytes(checkpoint.storage.sizeBytes)}</dd><dt>Saved</dt><dd>{checkpoint.updatedAt ? formatWhen(checkpoint.updatedAt) : "—"}</dd></dl>
 							{checkpoint.tags.length > 0 ? <div className="optimizer-checkpoint-tags">{checkpoint.tags.map((tag) => <span key={tag}>{tag}</span>)}</div> : null}
-							<div className="optimizer-checkpoint-actions">{checkpoint.lineage.runId || checkpoint.runId ? <button className="secondary-button" type="button" onClick={() => void openCheckpointRun(checkpoint)}>Open run</button> : null}{checkpoint.inferenceChatCompletions ? <button className="secondary-button" type="button" disabled={inferringId !== null} onClick={() => void inferSavedLora(checkpoint, "chat_completions")}>{inferringId === `${checkpoint.checkpointId}:chat_completions` ? "Sampling…" : "Chat Completions"}</button> : null}{checkpoint.inferenceResponses ? <button className="secondary-button" type="button" disabled={inferringId !== null} onClick={() => void inferSavedLora(checkpoint, "responses")}>{inferringId === `${checkpoint.checkpointId}:responses` ? "Sampling…" : "Responses"}</button> : null}{isLagunaCompatibleAdapter(checkpoint) ? <button className="secondary-button" type="button" disabled={savedLoraBusy} onClick={() => void useInComposer(checkpoint)} data-testid={`use-in-composer-${checkpoint.checkpointId}`}>Use in Composer</button> : null}{checkpoint.placement === "this_mac" ? <button className="secondary-button" type="button" disabled={savedLoraBusy} onClick={() => void publishSavedLora(checkpoint)}>Publish</button> : null}<button className="secondary-button" type="button" disabled={savedLoraBusy} onClick={() => void downloadSavedLora(checkpoint)}>Download</button><button className="secondary-button optimizer-danger-button" type="button" disabled={savedLoraBusy} onClick={() => void archiveSavedLora(checkpoint)}>Archive</button></div>
+							<div className="optimizer-checkpoint-actions">{hostedSftWarmStarts.some((candidate) => candidate.checkpointId === checkpoint.checkpointId) ? <button className="primary-button" type="button" onClick={() => { setTrainingAlgorithm("cispo"); setTrainingTask("banking77"); setTrainingModel(checkpoint.baseModel); setTrainingWarmStartCheckpointId(checkpoint.checkpointId); document.querySelector<HTMLElement>("[data-testid='optimizer-training-launch']")?.scrollIntoView({ behavior: "smooth", block: "start" }); }} data-testid={`use-for-cispo-${checkpoint.checkpointId}`}>Use for hosted CISPO</button> : null}{checkpoint.lineage.runId || checkpoint.runId ? <button className="secondary-button" type="button" onClick={() => void openCheckpointRun(checkpoint)}>Open run</button> : null}{checkpoint.inferenceChatCompletions ? <button className="secondary-button" type="button" disabled={inferringId !== null} onClick={() => void inferSavedLora(checkpoint, "chat_completions")}>{inferringId === `${checkpoint.checkpointId}:chat_completions` ? "Sampling…" : "Chat Completions"}</button> : null}{checkpoint.inferenceResponses ? <button className="secondary-button" type="button" disabled={inferringId !== null} onClick={() => void inferSavedLora(checkpoint, "responses")}>{inferringId === `${checkpoint.checkpointId}:responses` ? "Sampling…" : "Responses"}</button> : null}{isLagunaCompatibleAdapter(checkpoint) ? <button className="secondary-button" type="button" disabled={savedLoraBusy} onClick={() => void useInComposer(checkpoint)} data-testid={`use-in-composer-${checkpoint.checkpointId}`}>Use in Composer</button> : null}{checkpoint.placement === "this_mac" ? <button className="secondary-button" type="button" disabled={savedLoraBusy} onClick={() => void publishSavedLora(checkpoint)}>Publish</button> : null}<button className="secondary-button" type="button" disabled={savedLoraBusy} onClick={() => void downloadSavedLora(checkpoint)}>Download</button><button className="secondary-button optimizer-danger-button" type="button" disabled={savedLoraBusy} onClick={() => void archiveSavedLora(checkpoint)}>Archive</button></div>
 						</article>
 					))}
 					{savedLoras.length === 0 && !savedLoraBusy ? <div className="optimizer-empty"><span className="optimizer-empty-icon" aria-hidden>◇</span><strong>No checkpoints match</strong><p>Local MLX adapters appear when a This Mac recipe emits them, or when you import an mlx-lora.v1 folder. Hosted SFT/CISPO LoRAs appear after object-storage verification.</p></div> : null}
