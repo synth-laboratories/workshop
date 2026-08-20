@@ -139,6 +139,28 @@ export type TrainingModelsBridge = {
 	onDownloadProgress(listener: (progress: TrainingModelDownloadProgress) => void): () => void;
 };
 
+export type TrainingArtifact = {
+	schemaVersion: string;
+	id: string;
+	adapterKind: string;
+	baseModelId: string;
+	producingRunId: string;
+	producingAlgorithm: string;
+	datasetDigest?: string | null;
+	configDigest?: string | null;
+	digest?: string | null;
+	path?: string | null;
+	sizeBytes?: number | null;
+	integrity: string;
+	compatibleInference: string[];
+	createdAt: string;
+};
+
+export type TrainingArtifactsBridge = {
+	list(): Promise<TrainingArtifact[]>;
+	get(id: string): Promise<TrainingArtifact>;
+};
+
 export type WhisperModelHit = {
 	id: string;
 	title: string;

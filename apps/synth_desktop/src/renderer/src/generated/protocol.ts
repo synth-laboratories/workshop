@@ -353,6 +353,8 @@ export const commands = {
 	trainingModelsList: () => __TAURI_INVOKE<TrainingModelHit[]>("training_models_list"),
 	trainingModelsDownload: (modelId: string) => typedError<TrainingModelHit, string>(__TAURI_INVOKE("training_models_download", { modelId })),
 	trainingModelsDelete: (modelId: string) => typedError<null, string>(__TAURI_INVOKE("training_models_delete", { modelId })),
+	trainingArtifactsList: () => __TAURI_INVOKE<TrainingArtifact_Serialize[]>("training_artifacts_list"),
+	trainingArtifactsGet: (id: string) => typedError<TrainingArtifact_Serialize, string>(__TAURI_INVOKE("training_artifacts_get", { id })),
 	whisperModelsList: () => __TAURI_INVOKE<WhisperModelHit[]>("whisper_models_list"),
 	whisperModelDownload: (id: string) => typedError<WhisperModelHit, string>(__TAURI_INVOKE("whisper_model_download", { id })),
 	whisperModelsSetSelected: (id: string) => typedError<WhisperModelHit, string>(__TAURI_INVOKE("whisper_models_set_selected", { id })),
@@ -3004,6 +3006,42 @@ export type TraceRecord = {
 	metrics: unknown,
 	path: string | null,
 	metadata: unknown,
+	createdAt: string,
+};
+
+export type TrainingArtifact = TrainingArtifact_Serialize | TrainingArtifact_Deserialize;
+
+export type TrainingArtifact_Deserialize = {
+	schemaVersion: string,
+	id: string,
+	adapterKind: string,
+	baseModelId: string,
+	producingRunId: string,
+	producingAlgorithm: string,
+	datasetDigest?: string | null,
+	configDigest?: string | null,
+	digest?: string | null,
+	path?: string | null,
+	sizeBytes?: number | null,
+	integrity: string,
+	compatibleInference: string[],
+	createdAt: string,
+};
+
+export type TrainingArtifact_Serialize = {
+	schemaVersion: string,
+	id: string,
+	adapterKind: string,
+	baseModelId: string,
+	producingRunId: string,
+	producingAlgorithm: string,
+	datasetDigest?: string | null,
+	configDigest?: string | null,
+	digest?: string | null,
+	path?: string | null,
+	sizeBytes?: number | null,
+	integrity: string,
+	compatibleInference: string[],
 	createdAt: string,
 };
 
