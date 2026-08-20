@@ -380,7 +380,7 @@ pub(super) async fn start_prepared(
     Ok((started, None))
 }
 
-async fn require_plugin_ready(manager: &super::OptimizerManager) -> Result<()> {
+pub(super) async fn require_plugin_ready(manager: &super::OptimizerManager) -> Result<()> {
     // A disabled plugin refuses work even when its sidecar is still up.
     // `disable` only clears the registry flag, so the process keeps running;
     // without this check the only thing enforcing "disabled" was that the MCP
@@ -3066,6 +3066,7 @@ namespace = "base"
                 base_model: None,
                 dataset_shard: None,
                 candidate_set_id: None,
+                training_artifact_id: None,
                 search: None,
             })
             .await
@@ -3141,6 +3142,7 @@ namespace = "base"
                 base_model: None,
                 dataset_shard: None,
                 candidate_set_id: None,
+                training_artifact_id: None,
                 search: None,
             }),
             service.start_recipe(OptimizerRecipeRunRequest {
@@ -3150,6 +3152,7 @@ namespace = "base"
                 base_model: None,
                 dataset_shard: None,
                 candidate_set_id: None,
+                training_artifact_id: None,
                 search: None,
             })
         );

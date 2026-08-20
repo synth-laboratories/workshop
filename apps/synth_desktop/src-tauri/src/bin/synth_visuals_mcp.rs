@@ -840,11 +840,7 @@ fn call_tool(name: &str, args: &Value) -> Result<Value, String> {
                 .pointer("/viewport/width")
                 .and_then(Value::as_u64)
                 .unwrap_or(1280);
-            if args
-                .get("capture")
-                .and_then(Value::as_bool)
-                .unwrap_or(true)
-            {
+            if args.get("capture").and_then(Value::as_bool).unwrap_or(true) {
                 let mut capture = call_tool(
                     "visual_capture_review",
                     &json!({"visual_id": id, "viewport": {"width": width, "height": 900}}),
@@ -1350,12 +1346,22 @@ fn capture_svg_review(
             .pointer("/rendition/theme")
             .and_then(Value::as_str)
             .unwrap_or("light");
-        let background = if theme == "dark" { "#0D0F13" } else { "#FFFFFF" };
+        let background = if theme == "dark" {
+            "#0D0F13"
+        } else {
+            "#FFFFFF"
+        };
         (width, scaled.clamp(120, 12_000), background)
     } else {
         (width, height, "#090A0C")
     };
-    render_svg_with_webkit(&svg_path, capture_width, capture_height, png_path, background)?;
+    render_svg_with_webkit(
+        &svg_path,
+        capture_width,
+        capture_height,
+        png_path,
+        background,
+    )?;
     assert_non_blank_png(png_path)?;
     Ok((capture_width, capture_height))
 }
@@ -1626,7 +1632,8 @@ mod webkit_tests {
         )
         .expect("write SVG fixture");
 
-        render_svg_with_webkit(&svg_path, 320, 180, &png_path, "#090A0C").expect("render SVG through WebKit");
+        render_svg_with_webkit(&svg_path, 320, 180, &png_path, "#090A0C")
+            .expect("render SVG through WebKit");
         assert_non_blank_png(&png_path).expect("capture should contain visible geometry");
 
         let file = fs::File::open(&png_path).expect("open rendered PNG");

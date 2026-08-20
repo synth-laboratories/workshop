@@ -105,6 +105,11 @@ impl OptimizerEventDraft {
         self
     }
 
+    pub fn occurred_at(mut self, occurred_at: impl Into<String>) -> Self {
+        self.occurred_at = Some(occurred_at.into());
+        self
+    }
+
     pub fn idempotency_key(mut self, key: impl Into<String>) -> Self {
         self.idempotency_key = Some(key.into());
         self

@@ -1594,6 +1594,21 @@ impl LagunaRuntimeState {
     }
 }
 
+/// The Workshop-managed Python used for verified Hugging Face downloads.
+pub(crate) fn managed_python() -> Result<PathBuf> {
+    match LagunaRuntimeState::detect() {
+        LagunaRuntimeState::Ready { python } => Ok(python),
+        LagunaRuntimeState::Missing { expected } => Err(anyhow::anyhow!(
+            "The Workshop-managed model runtime is missing at `{}`. Install it in Settings → Services before downloading training weights.",
+            expected.display()
+        )),
+        LagunaRuntimeState::Invalid { expected, detail } => Err(anyhow::anyhow!(
+            "The Workshop-managed model runtime at `{}` is invalid: {detail}. Repair it in Settings → Services before downloading training weights.",
+            expected.display()
+        )),
+    }
+}
+
 /// Environment for the Synth-managed daemon. The upstream/external variables are
 /// actively cleared: an inherited `SYNTH_LAGUNA_EXTERNAL_URL` (or the legacy
 /// `:7334` upstream port) would otherwise make the daemon proxy to a second
@@ -1789,6 +1804,13 @@ fn libc_detach() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn inference_catalog_excludes_training_model() {
+        assert!(!MODEL_CATALOG
+            .iter()
+            .any(|spec| spec.id == crate::training_models::QWEN_TRAINING_MODEL_ID));
+    }
 
     async fn serve_model_load(
         status: u16,

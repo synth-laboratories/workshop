@@ -270,6 +270,8 @@ pub(super) async fn start(
         .await;
     let worker = service.clone();
     let worker_run_id = run.id.clone();
+    let planned_trials = examples.len();
+    let worker_visual_id = visual_id.clone();
     tokio::spawn(async move {
         if let Err(error) = run_eval_worker(
             worker.clone(),
@@ -277,16 +279,79 @@ pub(super) async fn start(
             spec,
             container,
             examples,
-            visual_id,
+            worker_visual_id.clone(),
             cancel_rx,
         )
         .await
         {
+            // A worker can fail before its first progress projection (for
+            // example when Workshop refuses to mint a secrets proxy).  Its
+            // durable run is terminal in that case, so its chat-owned visual
+            // must not survive as a false live/running artifact.
+            let _ = project_worker_failure_visual(
+                &worker,
+                &worker_run_id,
+                spec,
+                &worker_visual_id,
+                planned_trials,
+            )
+            .await;
             settle_worker_failure(&worker, &worker_run_id, error).await;
         }
         worker.unregister_local_recipe(&worker_run_id).await;
     });
     Ok((service.get(run.id).await?, event))
+}
+
+async fn project_worker_failure_visual(
+    service: &OptimizerService,
+    run_id: &str,
+    spec: EvalSpec,
+    visual_id: &str,
+    planned_trials: usize,
+) -> Result<()> {
+    let run = service.get(run_id.to_string()).await?;
+    let records = run
+        .summary
+        .get("records")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let total = run
+        .summary
+        .pointer("/progress/total")
+        .and_then(Value::as_u64)
+        .map(|value| value as usize)
+        .unwrap_or(planned_trials);
+    let mean = mean_for_pool(&records, "train").or_else(|| mean_reward(&records));
+    let (updated, event) = service
+        .visuals()
+        .update(
+            visual_id.to_string(),
+            VisualUpdateRequest {
+                title: None,
+                bindings: Some(experiment_bindings(
+                    spec,
+                    "failed",
+                    records.len(),
+                    total,
+                    &records,
+                    mean,
+                )),
+                status: Some(VisualStatus::Failed),
+                renderer_kind: None,
+                message_id: None,
+                run_id: None,
+                trace_id: None,
+                content: None,
+                metadata: None,
+                bump_revision: Some(true),
+            },
+        )
+        .await?;
+    service.publish_visual_event(event)?;
+    debug_assert_eq!(updated.status, VisualStatus::Failed);
+    Ok(())
 }
 
 /// Refuse admission when a lane the container declares has no credential.
@@ -1858,6 +1923,7 @@ mod tests {
                 base_model: None,
                 dataset_shard: None,
                 candidate_set_id: None,
+                training_artifact_id: None,
                 search: None,
             })
             .await
@@ -1984,6 +2050,27 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn worker_failure_marks_the_published_experiment_visual_terminal() {
+        let (svc, _dir, _) = service().await;
+        let (run, task) = start_banking77(&svc, "sess_worker_failure_visual").await;
+        let finished = wait_terminal(&svc, &run.id).await;
+        let visual_id = finished.summary["visualId"].as_str().unwrap();
+        let spec = EvalSpec::for_recipe(BANKING77_EVAL_BASELINE_RECIPE).unwrap();
+
+        project_worker_failure_visual(&svc, &run.id, spec, visual_id, 10)
+            .await
+            .unwrap();
+
+        let visual = svc.visuals().get(visual_id.to_string()).await.unwrap();
+        assert_eq!(visual.status, VisualStatus::Failed);
+        assert_eq!(
+            visual.bindings.pointer("/slots/0/data/status"),
+            Some(&json!("failed"))
+        );
+        task.abort();
+    }
+
     /// `get_result` for an eval is typed, and is answerable without a candidate.
     #[tokio::test]
     async fn a_finished_eval_returns_a_typed_eval_result() {
@@ -2094,6 +2181,7 @@ mod tests {
                     base_model: None,
                     dataset_shard: None,
                     candidate_set_id: None,
+                    training_artifact_id: None,
                     search: None,
                 })
                 .await
@@ -2213,6 +2301,7 @@ mod tests {
                 base_model: None,
                 dataset_shard: None,
                 candidate_set_id: None,
+                training_artifact_id: None,
                 search: None,
             })
             .await
@@ -2309,6 +2398,7 @@ mod tests {
                 base_model: None,
                 dataset_shard: None,
                 candidate_set_id: None,
+                training_artifact_id: None,
                 search: None,
             })
             .await
@@ -2499,6 +2589,7 @@ mod tests {
                 base_model: None,
                 dataset_shard: None,
                 candidate_set_id: None,
+                training_artifact_id: None,
                 search: None,
             })
             .await
@@ -2568,6 +2659,7 @@ mod tests {
             base_model: None,
             dataset_shard: None,
             candidate_set_id: None,
+            training_artifact_id: None,
             search: None,
         }
     }

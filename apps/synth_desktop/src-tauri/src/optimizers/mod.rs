@@ -1,9 +1,11 @@
 //! First-class Optimizer noun: durable local mirror, cursor, relationships, and projection.
 
+mod cispo;
 mod cloud;
 mod container_eval;
 mod eval_candidates;
 mod eval_recipes;
+pub(crate) mod eval_runtime;
 mod events;
 mod gepa_evidence;
 mod hosted_client;
@@ -12,6 +14,7 @@ mod hosted_sft;
 mod ingest;
 mod local;
 pub(crate) mod manager;
+mod mlx_runtime;
 mod mlx_sft;
 mod models;
 mod normalize;
@@ -21,12 +24,15 @@ mod service;
 mod sft_client;
 mod sft_recipes;
 mod sft_result;
+mod sidecar_training;
 mod terminal;
 mod tinker_catalog;
 mod training;
+mod training_adapter;
 
 pub use eval_candidates::EvalStageCandidatesRequest;
-pub(crate) use eval_recipes::paid_compute_bounds;
+pub(crate) use eval_recipes::{paid_compute_bounds, resolve_eval_candidate_set};
+pub(crate) use sidecar_training::launch_artifact_inference;
 #[allow(unused_imports)] // public sidecar status/version types for Desktop callers
 pub use manager::{OptimizerManager, OptimizerSidecarStatus, OptimizerSidecarVersion};
 #[allow(unused_imports)] // Nested Specta type is part of HostedTrainingModelCatalog.

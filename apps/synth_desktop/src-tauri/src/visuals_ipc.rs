@@ -1248,15 +1248,7 @@ async fn register_hydrated_container(
         .as_ref()
         .and_then(|value| classify_live_eval_family(value, request.task_family.as_deref()))
         .or_else(|| classify_live_eval_family(&json!({}), request.task_family.as_deref()));
-    let family = classified
-        .map(|family| family.as_str().to_string())
-        .or_else(|| {
-            info.as_ref()
-                .and_then(|value| value.get("env_family").or_else(|| value.get("task_family")))
-                .and_then(Value::as_str)
-                .map(str::to_string)
-        })
-        .or_else(|| request.task_family.clone());
+    let family = observed_task_family(info.as_ref(), classified, request.task_family.as_deref());
     let mut metadata = request
         .metadata
         .clone()
@@ -1317,6 +1309,29 @@ async fn register_hydrated_container(
         family,
     )
     .await
+}
+
+/// Preserve an explicitly advertised service family when it is not one of the
+/// visual-template families.  This is an observed capability, never an
+/// inference from a name, port, or URL.
+fn observed_task_family(
+    info: Option<&Value>,
+    classified: Option<crate::visuals::LiveEvalFamily>,
+    requested: Option<&str>,
+) -> Option<String> {
+    classified
+        .map(|family| family.as_str().to_string())
+        .or_else(|| {
+            info.and_then(|value| {
+                value
+                    .get("env_family")
+                    .or_else(|| value.get("task_family"))
+                    .or_else(|| value.get("runtime_family"))
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+            })
+        })
+        .or_else(|| requested.map(str::to_string))
 }
 
 pub async fn dispatch(method: &str, path: &str, body: Value, core: &CoreRuntime) -> Result<Value> {
@@ -1557,11 +1572,11 @@ pub async fn dispatch(method: &str, path: &str, body: Value, core: &CoreRuntime)
                     }
                 }
             }
-            let family = info
-                .as_ref()
-                .and_then(|v| v.get("env_family"))
-                .and_then(Value::as_str)
-                .map(str::to_string);
+            let family = observed_task_family(
+                info.as_ref(),
+                classified,
+                container.task_family.as_deref(),
+            );
             let updated = core
                 .update_container_hydration(
                     id.to_string(),
@@ -2521,6 +2536,24 @@ pub(crate) async fn dispatch_optimizer(
                 serde_json::from_value(body)?;
             let manifest = optimizers.stage_eval_candidates(request).await?;
             Ok(json!({ "candidateSet": manifest }))
+        }
+        ("POST", path)
+            if path.starts_with("/v1/training/artifacts/") && path.ends_with("/chat") =>
+        {
+            let id = path
+                .trim_start_matches("/v1/training/artifacts/")
+                .trim_end_matches("/chat")
+                .trim_end_matches('/');
+            let confirm = body.get("confirm").and_then(Value::as_bool).unwrap_or(false);
+            if !confirm {
+                anyhow::bail!("launch_artifact_inference requires confirm=true");
+            }
+            let message = body
+                .get("message")
+                .and_then(Value::as_str)
+                .unwrap_or("Reply with one short sentence confirming which adapter you are.");
+            let inference = crate::optimizers::launch_artifact_inference(id, message).await?;
+            Ok(json!({ "inference": inference }))
         }
         ("POST", "/v1/optimizers/recipes/prepare") => {
             let request: crate::optimizers::OptimizerRecipeRunRequest =
@@ -3877,6 +3910,19 @@ mod diagnostics_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn preserves_explicit_runtime_family_for_gepa_v2_selection() {
+        let info = json!({
+            "runtime_family": "healthbench",
+            "metadata": {"optimizer": {"contract": "synth_optimizers.gepa.v2"}},
+            "capabilities": {"operations": {"prepare": true, "start": true}}
+        });
+        assert_eq!(
+            observed_task_family(Some(&info), None, None).as_deref(),
+            Some("healthbench")
+        );
+    }
 
     #[test]
     fn parses_query_values() {

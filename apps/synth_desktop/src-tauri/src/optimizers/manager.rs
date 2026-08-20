@@ -11,6 +11,7 @@ use super::models::{
     OptimizerEventEnvelope, OptimizerExecutionBinding, OptimizerRunRecord,
     OPTIMIZER_EVENT_SCHEMA_VERSION,
 };
+use super::sidecar_training::TrainingRuntime;
 use super::OptimizerService;
 use crate::error::AppError;
 use crate::ipc::{serve_json, JsonHttpRequest, JsonHttpResponse};
@@ -46,7 +47,7 @@ pub const DEFAULT_RECIPE_SCHEMA_VERSION: &str = OPTIMIZERS_CONTRACT.recipe_schem
 /// `{package}-{official}`. Spelled out because `format!` is not const and ten
 /// call sites want `&'static str`; `algorithm_version_matches_the_contract`
 /// fails if it drifts from the table.
-pub const DEFAULT_ALGORITHM_VERSION: &str = "synth-optimizers-0.2.14";
+pub const DEFAULT_ALGORITHM_VERSION: &str = "synth-optimizers-0.2.15";
 /// Optimizer-family visuals bind this slot. `live` and `jobs` are refused.
 pub const OPTIMIZER_VISUAL_SLOT: &str = "optimizer_run";
 const MAX_CONCURRENT_GEPA_RECIPES: usize = 2;
@@ -287,6 +288,14 @@ impl OptimizerManager {
 
     pub async fn is_running(&self) -> bool {
         self.runtime.lock().await.is_some() && self.status().await.phase == "ready"
+    }
+
+    pub async fn sidecar_http(&self) -> Result<(String, String)> {
+        let runtime = self.runtime.lock().await;
+        let runtime = runtime
+            .as_ref()
+            .ok_or_else(|| anyhow!("optimizer sidecar is not running"))?;
+        Ok((runtime.base_url.clone(), runtime.api_key.clone()))
     }
 
     /// Read one durable, run-scoped cursor page from the managed sidecar.
@@ -625,15 +634,20 @@ impl OptimizerManager {
         let health = health_body(&hit);
         let serve_key = api_key.clone();
         let proxy_client = self.client.clone();
+        let training = TrainingRuntime::new();
         let proxy_task = tokio::spawn(async move {
-            let result = serve_json(listener, move |request| {
-                let token = serve_key.clone();
-                let body = health.clone();
-                let client = proxy_client.clone();
-                let upstream = upstream_base_url.clone();
-                async move { route_sidecar(request, &token, &upstream, &client, body).await }
-            })
-            .await;
+            let result =
+                serve_json(listener, move |request| {
+                    let token = serve_key.clone();
+                    let body = health.clone();
+                    let client = proxy_client.clone();
+                    let upstream = upstream_base_url.clone();
+                    let training = training.clone();
+                    async move {
+                        route_sidecar(request, &token, &upstream, &client, body, &training).await
+                    }
+                })
+                .await;
             if let Err(error) = result {
                 eprintln!("synth-desktop: optimizer auth proxy stopped: {error:#}");
             }
@@ -2313,6 +2327,7 @@ async fn route_sidecar(
     upstream_base_url: &str,
     client: &Client,
     mut health: Value,
+    training: &TrainingRuntime,
 ) -> JsonHttpResponse {
     let auth = request
         .authorization
@@ -2394,7 +2409,9 @@ async fn route_sidecar(
                 );
             }
             match upstream.json::<Value>().await {
-                Ok(body) => JsonHttpResponse::ok(body),
+                Ok(body) => {
+                    JsonHttpResponse::ok(super::sidecar_training::merge_training_capabilities(body))
+                }
                 Err(_) => JsonHttpResponse::error(
                     StatusCode::BAD_GATEWAY,
                     "optimizer service returned invalid capabilities",
@@ -2429,6 +2446,15 @@ async fn route_sidecar(
                 (false, Some(body)) => JsonHttpResponse::error(status, body.to_string()),
                 (false, None) => JsonHttpResponse::error(status, truncate_detail(&text)),
             }
+        }
+        (_, path)
+            if path
+                .split('?')
+                .next()
+                .unwrap_or(path)
+                .starts_with("/v1/training/") =>
+        {
+            training.handle(&request).await
         }
         _ => JsonHttpResponse::error(StatusCode::NOT_FOUND, "not found"),
     }
@@ -3043,6 +3069,7 @@ mod tests {
         });
         let client = crate::http::http_client();
         let health = json!({"status":"ok"});
+        let training = TrainingRuntime::new();
         let denied = route_sidecar(
             JsonHttpRequest {
                 method: hyper::Method::GET,
@@ -3056,6 +3083,7 @@ mod tests {
             &upstream,
             &client,
             health.clone(),
+            &training,
         )
         .await;
         assert_eq!(denied.status, StatusCode::UNAUTHORIZED);
@@ -3072,6 +3100,7 @@ mod tests {
             &upstream,
             &client,
             health,
+            &training,
         )
         .await;
         assert_eq!(allowed.status, StatusCode::OK);
@@ -3088,6 +3117,7 @@ mod tests {
             &upstream,
             &client,
             json!({"status":"ok"}),
+            &training,
         )
         .await;
         assert_eq!(events.status, StatusCode::OK);
@@ -3468,6 +3498,17 @@ mod tests {
         assert_eq!(started.phase, "ready");
         let caps = mgr.advertised_capabilities();
         assert_eq!(caps["algorithms"][0], "gepa");
+        assert!(caps["algorithms"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item == "sft"));
+        assert!(caps["algorithms"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item == "cispo"));
+        assert_eq!(caps["training"], true);
         assert!(
             caps.get("compatibleTemplateIds").is_none() && caps.get("recipes").is_none(),
             "the runtime-authored handshake must not echo Desktop vocabulary"

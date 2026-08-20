@@ -14,6 +14,8 @@ import type {
 	InternBridge,
 	InventoryBridge,
 	LagunaBridge,
+	TrainingModelsBridge,
+	TrainingArtifactsBridge,
 	ModelPerformanceBridge,
 	OptimizersBridge,
 	ComputerUseBridge,
@@ -50,6 +52,8 @@ declare global {
 		/** Browser fixture/explicit compatibility bridge; not installed by Tauri. */
 		synthRuntime?: RuntimeBridge;
 		synthLaguna?: LagunaBridge;
+		synthTrainingModels?: TrainingModelsBridge;
+		synthTrainingArtifacts?: TrainingArtifactsBridge;
 		synthWhisper?: WhisperBridge;
 		synthSkills?: SkillsBridge;
 		synthContext?: ContextBridge;

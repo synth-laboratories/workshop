@@ -45,9 +45,9 @@ use tokio::{
 use super::events::OptimizerEventDraft;
 use super::{
     models::{
-        OptimizerCapabilities, OptimizerCreateRequest, OptimizerEventEnvelope, OptimizerRunRecord,
+        OptimizerCapabilities, OptimizerCreateRequest, OptimizerEventEnvelope,
         OptimizerExecutionBinding, OptimizerRecipeRunRequest, OptimizerResourceRef,
-        OPTIMIZER_EVENT_SCHEMA_VERSION,
+        OptimizerRunRecord, OPTIMIZER_EVENT_SCHEMA_VERSION,
     },
     OptimizerService,
 };
@@ -58,6 +58,7 @@ pub const EVAL_CRAFTAX_SMOKE_RECIPE: &str = "eval.craftax.code-policy.smoke.v1";
 pub const EVAL_GAMEBENCH_CONFIRM_RECIPE: &str = "eval.gamebench.craftax-code-policy.confirm.v1";
 pub const EVAL_CRAFTAX_LLM_RECIPE: &str = "eval.craftax.llm-policy.smoke.v1";
 pub const EVAL_GAMEBENCH_LLM_RECIPE: &str = "eval.gamebench.llm-policy.confirm.v1";
+pub const EVAL_MLX_LOCAL_RECIPE: &str = "eval.mlx.local-policy.smoke.v1";
 
 /// The product contract for the report-only Craftax smoke is two seeds per
 /// staged candidate. Older local runtime catalogs omitted `limits.trials`,
@@ -68,12 +69,13 @@ const CRAFTAX_CODE_SMOKE_TRIALS_PER_CANDIDATE: u64 = 10;
 
 /// The allowlist the MCP schema publishes. A recipe id outside it never
 /// reaches the worker.
-pub const EVAL_RECIPE_IDS: [&str; 5] = [
+pub const EVAL_RECIPE_IDS: [&str; 6] = [
     EVAL_FIXTURE_SMOKE_RECIPE,
     EVAL_CRAFTAX_SMOKE_RECIPE,
     EVAL_GAMEBENCH_CONFIRM_RECIPE,
     EVAL_CRAFTAX_LLM_RECIPE,
     EVAL_GAMEBENCH_LLM_RECIPE,
+    EVAL_MLX_LOCAL_RECIPE,
 ];
 
 /// How long a cancelled worker gets to stop its containers, release its
@@ -109,6 +111,10 @@ fn resolve_python() -> Result<PathBuf> {
     // staged digest-pinned 10-trial contract).
     if let Some(project) = super::manager::optimizer_project_root()? {
         return resolve_developer_python(&project);
+    }
+    let _ = super::eval_runtime::provision_from_disk();
+    if let Some(python) = super::eval_runtime::provisioned_python() {
+        return Ok(python);
     }
     if let Ok(text) = fs::read_to_string(config_path()) {
         if let Some(configured) = text
@@ -358,6 +364,36 @@ fn mark_unreproducible_target_unavailable(recipe: &mut Value) {
     };
     object.insert("availability".into(), json!("unavailable"));
     object.insert("availabilityReason".into(), json!(error.to_string()));
+}
+
+/// Resolve the candidate-set id an eval launch will actually score.
+/// A training artifact is staged first so paid-compute approval sees the same
+/// set the worker will run.
+pub(crate) fn resolve_eval_candidate_set(
+    request: &OptimizerRecipeRunRequest,
+) -> Result<String> {
+    if request.training_artifact_id.is_some() && request.candidate_set_id.is_some() {
+        bail!("eval recipes take either training_artifact_id or candidate_set_id, not both");
+    }
+    if let Some(artifact_id) = request
+        .training_artifact_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        let artifact = crate::training_artifacts::get(artifact_id)?;
+        let staged = super::eval_candidates::stage_training_artifact(&artifact)?;
+        return staged
+            .get("id")
+            .and_then(Value::as_str)
+            .map(str::to_string)
+            .ok_or_else(|| anyhow!("staged candidate set omitted id"));
+    }
+    request
+        .candidate_set_id
+        .clone()
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| anyhow!("eval recipes require a staged candidate_set_id or a training_artifact_id"))
 }
 
 /// Convert the eval runtime's per-trial budget into the total product approval
@@ -631,10 +667,26 @@ pub async fn start(
     if !is_eval_recipe(&recipe_id) {
         bail!("unknown eval recipe: {recipe_id}");
     }
-    let candidate_set_id = request
-        .candidate_set_id
-        .clone()
-        .ok_or_else(|| anyhow!("eval recipes require a staged candidate_set_id"))?;
+    if request.training_artifact_id.is_some() && request.candidate_set_id.is_some() {
+        bail!("eval recipes take either training_artifact_id or candidate_set_id, not both");
+    }
+    let mut training_artifact = None;
+    let candidate_set_id = if let Some(artifact_id) = request.training_artifact_id.clone() {
+        let artifact = crate::training_artifacts::get(&artifact_id)?;
+        let staged = super::eval_candidates::stage_training_artifact(&artifact)?;
+        let staged_id = staged
+            .get("id")
+            .and_then(Value::as_str)
+            .ok_or_else(|| anyhow!("staged candidate set omitted id"))?
+            .to_string();
+        training_artifact = Some(artifact);
+        staged_id
+    } else {
+        request
+            .candidate_set_id
+            .clone()
+            .ok_or_else(|| anyhow!("eval recipes require a staged candidate_set_id or a training_artifact_id"))?
+    };
     let candidate_set_path = super::eval_candidates::manifest_path(&candidate_set_id)?;
     let candidate_set = super::eval_candidates::load(&candidate_set_id)?;
     let python = resolve_python()?;
@@ -677,6 +729,11 @@ pub async fn start(
     }
 
     let home = eval_home();
+    let mut mlx_inference_url = None;
+    if recipe_id == EVAL_MLX_LOCAL_RECIPE {
+        let client = super::mlx_runtime::MlxLoopback::ensure().await?;
+        mlx_inference_url = Some(client.base_url.clone());
+    }
     let suffix = uuid::Uuid::new_v4().simple().to_string();
     let run_id = format!("opt_eval_{}", &suffix[..12]);
     let workers = home.join("workers");
@@ -691,6 +748,7 @@ pub async fn start(
             "home": home,
             "candidate_set_path": candidate_set_path,
             "session_ref": request.session_ref,
+            "mlx_inference_url": mlx_inference_url,
         }))?,
     )
     .context("write eval worker manifest")?;
@@ -718,6 +776,10 @@ pub async fn start(
         "targetManifestDigest": recipe.get("targetManifestDigest"),
         "runDirectory": run_dir,
         "globalMaxConcurrentTrials": report.get("maxConcurrentTrials"),
+        "trainingArtifactId": training_artifact.as_ref().map(|item| item.id.clone()),
+        "baseModelId": training_artifact.as_ref().map(|item| item.base_model_id.clone()),
+        "producingRunId": training_artifact.as_ref().map(|item| item.producing_run_id.clone()),
+        "configDigest": training_artifact.as_ref().and_then(|item| item.config_digest.clone()),
     });
 
     let create = OptimizerCreateRequest {
@@ -745,7 +807,8 @@ pub async fn start(
             status: Some("starting".into()),
             metadata: json!({"recipeId": recipe_id, "runDirectory": run_dir}),
         }]),
-        input_refs: Some(vec![
+        input_refs: Some({
+            let mut refs = vec![
             OptimizerResourceRef {
                 kind: "candidate_set".into(),
                 id: candidate_set_id.clone(),
@@ -768,7 +831,25 @@ pub async fn start(
                     .map(str::to_string),
                 metadata: recipe.clone(),
             },
-        ]),
+            ];
+            if let Some(artifact) = &training_artifact {
+                refs.push(OptimizerResourceRef {
+                    kind: "training_artifact".into(),
+                    id: artifact.id.clone(),
+                    digest: artifact.digest.clone(),
+                    role: Some("evaluated_adapter".into()),
+                    title: Some("Training artifact".into()),
+                    metadata: json!({
+                        "baseModelId": artifact.base_model_id,
+                        "producingRunId": artifact.producing_run_id,
+                        "producingAlgorithm": artifact.producing_algorithm,
+                        "configDigest": artifact.config_digest,
+                        "datasetDigest": artifact.dataset_digest,
+                    }),
+                });
+            }
+            refs
+        }),
         capabilities: Some(OptimizerCapabilities::for_algorithm(EVAL_ALGORITHM_ID)),
         summary: Some(summary),
         open_visual: request.open_visual.or(Some(true)),
@@ -1678,6 +1759,7 @@ mod tests {
     #[test]
     fn only_allowlisted_recipe_ids_are_eval() {
         assert!(is_eval_recipe(EVAL_CRAFTAX_SMOKE_RECIPE));
+        assert!(is_eval_recipe(EVAL_MLX_LOCAL_RECIPE));
         assert!(!is_eval_recipe("eval.anything.else.v1"));
         assert!(!is_eval_recipe("sft.craftax.gpt-oss.smoke.v1"));
     }
@@ -1946,16 +2028,24 @@ mod tests {
             seed_fixture: None,
             cloud_config: None,
             local_path: None,
-        }).await.unwrap();
+        })
+        .await
+        .unwrap();
         svc.append_event_payloads(
             run_id.clone(),
-            vec![OptimizerEventDraft::new("optimizer.run.started", EVAL_ALGORITHM_ID)],
-        ).await.unwrap();
+            vec![OptimizerEventDraft::new(
+                "optimizer.run.started",
+                EVAL_ALGORITHM_ID,
+            )],
+        )
+        .await
+        .unwrap();
         assert_eq!(svc.get(run_id.clone()).await.unwrap().status, "running");
         fs::write(
             dir.path().join("worker.stdout.log"),
             include_str!("fixtures/eval_worker_stdout.jsonl"),
-        ).unwrap();
+        )
+        .unwrap();
 
         let recovered = svc.refresh(run_id.clone()).await.unwrap();
         assert_eq!(recovered.status, "completed");
@@ -1983,16 +2073,24 @@ mod tests {
             seed_fixture: None,
             cloud_config: None,
             local_path: None,
-        }).await.unwrap();
+        })
+        .await
+        .unwrap();
         svc.append_event_payloads(
             run_id.clone(),
-            vec![OptimizerEventDraft::new("optimizer.run.started", EVAL_ALGORITHM_ID)],
-        ).await.unwrap();
+            vec![OptimizerEventDraft::new(
+                "optimizer.run.started",
+                EVAL_ALGORITHM_ID,
+            )],
+        )
+        .await
+        .unwrap();
         assert_eq!(svc.get(run_id.clone()).await.unwrap().status, "running");
         fs::write(
             dir.path().join("worker.stdout.log"),
             include_str!("fixtures/eval_worker_stdout.jsonl"),
-        ).unwrap();
+        )
+        .unwrap();
 
         let recovered = svc.reconcile_stale_local_runs().await.unwrap();
         let recovered = recovered.into_iter().find(|run| run.id == run_id).unwrap();
