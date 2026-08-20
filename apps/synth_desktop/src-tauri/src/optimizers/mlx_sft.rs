@@ -4,9 +4,8 @@ use super::models::{
     OptimizerQuery, OptimizerRecipeRunRequest, OptimizerResourceRef, OptimizerRunRecord,
 };
 use super::sidecar_training::{
-    advertised_placement, local_sft_config, optional_jsonl, spawn_watch_worker,
-    training_create_request, SidecarTrainingClient, LOCAL_MLX_SFT_RECIPE,
-    PLACEMENT_TRAINING_SFT_LOCAL,
+    advertised_placement, local_sft_config, spawn_watch_worker, training_create_request,
+    SidecarTrainingClient, LOCAL_MLX_SFT_RECIPE, PLACEMENT_TRAINING_SFT_LOCAL,
 };
 use super::OptimizerService;
 use anyhow::{Context, Result};
@@ -16,6 +15,10 @@ use std::path::{Path, PathBuf};
 
 pub const QWEN_MLX_SFT_RECIPE: &str = LOCAL_MLX_SFT_RECIPE;
 const BASE_MODEL: &str = "Qwen/Qwen3.5-0.8B";
+const GSM8K_DATASET: &str = "openai/gsm8k";
+const GSM8K_CONFIG: &str = "main";
+const GSM8K_TRAIN_SPLIT: &str = "train";
+const GSM8K_TEST_SPLIT: &str = "test";
 const MAX_STEPS: u64 = 4;
 const CHECKPOINT_EVERY: u64 = 2;
 const LORA_RANK: u64 = 8;
@@ -37,7 +40,7 @@ pub fn recipe_catalog() -> Value {
     }
     if dataset.is_none() || evaluation.is_none() {
         reasons.push(
-            "Train/eval JSONL is missing (cookbook, SYNTH_MLX_SFT_*_JSONL, or bundled canary).",
+            "Train/eval JSONL is missing (instance cookbook or bundled canary).",
         );
     }
     let available = apple_silicon && model_ready && dataset.is_some() && evaluation.is_some();
@@ -61,10 +64,27 @@ pub fn recipe_catalog() -> Value {
             "loraRank": LORA_RANK, "loraAlpha": LORA_ALPHA,
             "maxSeqLength": MAX_SEQ_LENGTH, "enableThinking": false,
             "costCeilingUsd": 0.0,
-            "costNotice": "Local Apple Silicon MLX compute; no hosted provider charges."
+            "costNotice": "Local Apple Silicon MLX compute; no hosted provider charges.",
+            "resolvedConfig": {
+                "baseModel": BASE_MODEL,
+                "datasetPin": {
+                    "id": GSM8K_DATASET,
+                    "config": GSM8K_CONFIG,
+                    "trainSplit": GSM8K_TRAIN_SPLIT,
+                    "testSplit": GSM8K_TEST_SPLIT,
+                    "image": "ghcr.io/synth-laboratories/workshop-gsm8k-eval-target",
+                    "imageDigest": Value::Null,
+                    "note": "Split digests land when the GSM8K eval image is published; GHCR is currently private (403)."
+                },
+                "loraRank": LORA_RANK,
+                "loraAlpha": LORA_ALPHA,
+                "loraDropout": 0.0,
+                "maxSteps": MAX_STEPS,
+                "producingRuntime": "synth-mlx-rl"
+            }
         },
         "credentialInputs": [],
-        "prerequisites": ["Optimizers sidecar", "cookbook, SYNTH_MLX_SFT_*_JSONL, or bundled 4-step canary"]
+        "prerequisites": ["Optimizers sidecar", "instance cookbook or bundled 4-step canary"]
     })
 }
 
@@ -126,14 +146,9 @@ fn dataset_ref(path: &PathBuf, role: &str, title: &str) -> OptimizerResourceRef 
     }
 }
 
-/// Env override, then cookbook JSONL, then the bundled 4-step canary.
+/// Instance cookbook JSONL, then the bundled 4-step canary.
+/// Environment variables are not a dataset pin.
 pub fn resolve_local_sft_datasets() -> (Option<PathBuf>, Option<PathBuf>, &'static str) {
-    if let (Some(train), Some(eval)) = (
-        optional_jsonl("SYNTH_MLX_SFT_TRAIN_JSONL"),
-        optional_jsonl("SYNTH_MLX_SFT_EVAL_JSONL"),
-    ) {
-        return (Some(train), Some(eval), "env");
-    }
     if let Some(dir) = cookbook_sft_dir() {
         let train = dir.join("train.jsonl");
         let eval = dir.join("eval.jsonl");
@@ -148,12 +163,6 @@ pub fn resolve_local_sft_datasets() -> (Option<PathBuf>, Option<PathBuf>, &'stat
 }
 
 fn cookbook_sft_dir() -> Option<PathBuf> {
-    if let Ok(raw) = std::env::var("SYNTH_MLX_SFT_COOKBOOK") {
-        let path = PathBuf::from(raw.trim());
-        if path.is_dir() {
-            return Some(path);
-        }
-    }
     let rel = Path::new("cookbooks/optimizers/sft/qwen35_mlx");
     let mut candidates = Vec::new();
     candidates.push(crate::instance::data_root().join(rel));
@@ -245,6 +254,8 @@ mod tests {
             .unwrap();
         assert!(!production.contains(&["127.0.0.1:", "8787"].concat()));
         assert!(!production.contains("SYNTH_MLX_RL_URL"));
+        assert!(!production.contains("SYNTH_MLX_SFT_TRAIN_JSONL"));
+        assert!(production.contains("GSM8K_DATASET"));
         assert!(production.contains("PLACEMENT_TRAINING_SFT_LOCAL"));
         assert!(production.contains("create_and_watch"));
         assert!(production.contains("resolve_local_sft_datasets"));
@@ -252,9 +263,6 @@ mod tests {
 
     #[test]
     fn bundled_canary_is_used_when_env_and_cookbook_are_absent() {
-        std::env::remove_var("SYNTH_MLX_SFT_TRAIN_JSONL");
-        std::env::remove_var("SYNTH_MLX_SFT_EVAL_JSONL");
-        std::env::remove_var("SYNTH_MLX_SFT_COOKBOOK");
         let (train, eval, source) = resolve_local_sft_datasets();
         assert_eq!(source, "canary");
         assert!(train.unwrap().is_file());
@@ -266,7 +274,11 @@ mod tests {
         let recipe = recipe_catalog();
         assert_eq!(recipe["id"], QWEN_MLX_SFT_RECIPE);
         assert!(recipe["preflight"]["dataset"].as_bool().unwrap());
-        assert_ne!(recipe["preflight"]["datasetSource"], "missing");
+        assert_eq!(recipe["limits"]["resolvedConfig"]["baseModel"], BASE_MODEL);
+        assert_eq!(
+            recipe["limits"]["resolvedConfig"]["datasetPin"]["id"],
+            GSM8K_DATASET
+        );
         assert!(recipe["prerequisites"]
             .as_array()
             .unwrap()

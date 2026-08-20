@@ -4,14 +4,52 @@ use super::models::{
     OptimizerQuery, OptimizerRecipeRunRequest, OptimizerResourceRef, OptimizerRunRecord,
 };
 use super::sidecar_training::{
-    advertised_placement, optional_jsonl, spawn_watch_worker, training_create_request,
-    SidecarTrainingClient, HOSTED_CISPO_RECIPE, LOCAL_MLX_CISPO_RECIPE,
-    PLACEMENT_TRAINING_CISPO_HOSTED, PLACEMENT_TRAINING_CISPO_LOCAL,
+    advertised_placement, spawn_watch_worker, training_create_request, SidecarTrainingClient,
+    HOSTED_CISPO_RECIPE, LOCAL_MLX_CISPO_RECIPE, PLACEMENT_TRAINING_CISPO_HOSTED,
+    PLACEMENT_TRAINING_CISPO_LOCAL,
 };
 use super::OptimizerService;
 use anyhow::Result;
 use serde_json::{json, Value};
 use std::collections::HashSet;
+use std::path::Path;
+
+struct CispoRollout {
+    url: String,
+    task_id: String,
+    token: Option<String>,
+}
+
+fn pinned_cispo_rollout() -> Option<CispoRollout> {
+    let rel = Path::new("cookbooks/optimizers/cispo/rollout.json");
+    for path in [
+        crate::instance::data_root().join(rel),
+        crate::instance::state_root().join(rel),
+    ] {
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        let Ok(value) = serde_json::from_str::<Value>(&text) else {
+            continue;
+        };
+        let Some(url) = value.get("url").and_then(Value::as_str).filter(|url| !url.is_empty()) else {
+            continue;
+        };
+        return Some(CispoRollout {
+            url: url.into(),
+            task_id: value
+                .get("task_id")
+                .and_then(Value::as_str)
+                .unwrap_or("banking77")
+                .into(),
+            token: value
+                .get("token")
+                .and_then(Value::as_str)
+                .map(str::to_string),
+        });
+    }
+    None
+}
 
 pub fn recipe_catalog() -> Vec<Value> {
     vec![local_mlx_recipe(), hosted_slime_recipe()]
@@ -20,8 +58,8 @@ pub fn recipe_catalog() -> Vec<Value> {
 fn local_mlx_recipe() -> Value {
     let apple_silicon = cfg!(all(target_os = "macos", target_arch = "aarch64"));
     let model_ready = super::mlx_runtime::require_training_model().is_ok();
-    let rollout_ready = std::env::var("SYNTH_MLX_CISPO_ROLLOUT_URL").is_ok();
-    let available = apple_silicon && model_ready && rollout_ready;
+    let rollout = pinned_cispo_rollout();
+    let available = apple_silicon && model_ready && rollout.is_some();
     json!({
         "id": LOCAL_MLX_CISPO_RECIPE,
         "title": "This Mac · Banking77 CISPO (MLX)",
@@ -29,12 +67,18 @@ fn local_mlx_recipe() -> Value {
         "task": "banking77",
         "placement": PLACEMENT_TRAINING_CISPO_LOCAL,
         "availability": if available { "available" } else { "unavailable" },
-        "availabilityReason": if available { Value::Null } else { json!("Local CISPO requires Apple Silicon, the managed on-device training model, and SYNTH_MLX_CISPO_ROLLOUT_URL.") },
+        "availabilityReason": if available { Value::Null } else { json!("Local CISPO requires Apple Silicon, the managed on-device training model, and a pinned rollout target under cookbooks/optimizers/cispo/rollout.json.") },
         "limits": {
             "backend": "cispo",
             "maxSteps": 4,
             "costCeilingUsd": 0.0,
-            "costNotice": "Local Apple Silicon MLX compute. Warm-start from an SFT adapter on this task; otherwise the visual reports cispo_no_learning_signal."
+            "costNotice": "Local Apple Silicon MLX compute. Warm-start from a selected SFT artifact id; otherwise the visual reports cispo_no_learning_signal.",
+            "resolvedConfig": {
+                "baseModel": "Qwen/Qwen3.5-0.8B",
+                "task": "banking77",
+                "loraDropout": 0.0,
+                "warmStart": "training_artifact_id"
+            }
         },
         "credentialInputs": [],
         "prerequisites": ["Optimizers sidecar", "optional SFT warm-start adapter"]
@@ -81,9 +125,8 @@ async fn start_local(
     request: OptimizerRecipeRunRequest,
 ) -> Result<(OptimizerRunRecord, Option<crate::storage::AppEvent>)> {
     super::mlx_runtime::require_training_model()?;
-    let rollout_url = std::env::var("SYNTH_MLX_CISPO_ROLLOUT_URL")
-        .map_err(|_| anyhow::anyhow!("local CISPO requires SYNTH_MLX_CISPO_ROLLOUT_URL"))?;
-    let rollout_token = std::env::var("SYNTH_MLX_CISPO_ROLLOUT_TOKEN").ok();
+    let rollout = pinned_cispo_rollout()
+        .ok_or_else(|| anyhow::anyhow!("local CISPO requires a pinned rollout target at cookbooks/optimizers/cispo/rollout.json"))?;
     let suffix = uuid::Uuid::new_v4().simple().to_string();
     let run_id = format!("cispo_mlx_{}", &suffix[..12]);
     let output_dir = crate::instance::data_root()
@@ -93,18 +136,25 @@ async fn start_local(
         .parent()
         .ok_or_else(|| anyhow::anyhow!("local CISPO output directory has no parent"))?;
     std::fs::create_dir_all(output_parent)?;
-    let warm_start = optional_jsonl("SYNTH_MLX_CISPO_WARM_START");
     let mut input_refs = Vec::new();
-    if let Some(path) = warm_start.as_ref() {
+    let warm_start = if let Some(artifact_id) = request.training_artifact_id.as_deref() {
+        let artifact = crate::training_artifacts::get(artifact_id)?;
+        let path = artifact
+            .path
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("SFT artifact `{artifact_id}` has no adapter path"))?;
         input_refs.push(OptimizerResourceRef {
             kind: "checkpoint".into(),
-            id: path.display().to_string(),
-            digest: None,
+            id: artifact.id.clone(),
+            digest: artifact.digest.clone(),
             role: Some("warm_start".into()),
             title: Some("SFT warm-start adapter".into()),
-            metadata: json!({}),
+            metadata: json!({"trainingArtifact": artifact}),
         });
-    }
+        Some(std::path::PathBuf::from(path))
+    } else {
+        None
+    };
     let create = training_create_request(
         &run_id,
         "cispo",
@@ -131,9 +181,9 @@ async fn start_local(
             "base_model": "Qwen/Qwen3.5-0.8B",
             "task": "banking77",
             "rollout": {
-                "url": rollout_url,
-                "task_id": "banking77",
-                "bearer_token": rollout_token,
+                "url": rollout.url,
+                "task_id": rollout.task_id,
+                "bearer_token": rollout.token,
                 "train_instances": 64,
                 "heldout_instances": 16
             },
@@ -142,6 +192,7 @@ async fn start_local(
             "checkpoint_every": 2,
             "lora_rank": 8,
             "lora_alpha": 16.0,
+            "lora_dropout": 0.0,
             "max_seq_length": 4096,
             "enable_thinking": false,
             "warm_start": warm_start
@@ -232,7 +283,9 @@ mod tests {
             .next()
             .unwrap();
         assert!(!production.contains(&["127.0.0.1:", "8787"].concat()));
-        assert!(!production.contains("127.0.0.1:8879"));
+        assert!(!production.contains("SYNTH_MLX_CISPO_ROLLOUT_URL"));
+        assert!(!production.contains("SYNTH_MLX_CISPO_WARM_START"));
+        assert!(production.contains("training_artifact_id"));
         assert!(production.contains("create_and_watch"));
     }
 

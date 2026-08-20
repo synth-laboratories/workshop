@@ -1099,6 +1099,7 @@ pub fn local_sft_config(run_id: &str, dataset: Option<&Path>, evaluation: Option
             "learning_rate": 0.00005,
             "lora_rank": LORA_RANK,
             "lora_alpha": LORA_ALPHA,
+            "lora_dropout": 0.0,
             "max_seq_length": MAX_SEQ_LENGTH,
             "enable_thinking": false,
             "seed": 0,
@@ -1223,9 +1224,24 @@ async fn drive_mlx_job(
 
 async fn resume_mlx_job(job_id: &str) -> Result<()> {
     let client = MlxLoopback::ensure().await?;
+    let remote = client.get(&format!("/v1/jobs/{job_id}")).await?;
+    refuse_resume_if_dropout(&remote)?;
     client
         .post(&format!("/v1/jobs/{job_id}/resume"), None)
         .await?;
+    Ok(())
+}
+
+pub(super) fn refuse_resume_if_dropout(job: &Value) -> Result<()> {
+    let dropout = job
+        .pointer("/config/lora_dropout")
+        .and_then(Value::as_f64)
+        .unwrap_or(0.0);
+    if dropout > 0.0 {
+        bail!(
+            "resume with lora_dropout={dropout} is refused; the MLX RNG stream is not persisted"
+        );
+    }
     Ok(())
 }
 
@@ -1399,6 +1415,15 @@ mod tests {
             super::super::training_adapter::mapped_event_type("cispo", "training.metric"),
             "training.metrics"
         );
+    }
+
+    #[test]
+    fn resume_with_dropout_is_refused() {
+        let error = refuse_resume_if_dropout(&json!({"config": {"lora_dropout": 0.1}}))
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("lora_dropout"), "{error}");
+        assert!(refuse_resume_if_dropout(&json!({"config": {"lora_dropout": 0.0}})).is_ok());
     }
 
     #[test]
