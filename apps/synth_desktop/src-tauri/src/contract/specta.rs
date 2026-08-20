@@ -425,8 +425,10 @@ mod tests {
         // run-output, archive, and download commands retained from main.
         // 235 → 238: the three training-sidecar model commands (list, download,
         // delete on-device base models under the instance-scoped model root).
+        // 238 → 240: managed training-artifact library list/get (local LoRA
+        // adapters by id; `size_bytes` exports as f64 so specta can emit it).
         assert_eq!(
-            exported, 238,
+            exported, 240,
             "generated bindings must contain the complete desktop command set"
         );
         assert_eq!(
