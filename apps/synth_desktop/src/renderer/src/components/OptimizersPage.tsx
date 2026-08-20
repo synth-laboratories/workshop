@@ -4,6 +4,7 @@ import type { HostedTrainingModel, OptimizerRecipeInfo, OptimizerRunOutputs, Plu
 import { bridges } from "../runtime/desktopBridge";
 import { findPluginStatus, pluginPresentation, type PluginPresentation } from "../runtime/pluginPresentation";
 import { publicError } from "../runtime/publicError";
+import { TrainingWorkspace } from "./TrainingWorkspace";
 
 type OptimizerGuide = {
 	id: "gepa" | "go-ex" | "sft" | "cispo" | "eval";
@@ -321,7 +322,7 @@ export function OptimizersPage({
 	const [evalRecipes, setEvalRecipes] = useState<OptimizerRecipeInfo[]>([]);
 	const [evalState, setEvalState] = useState<EvalState | null>(null);
 	const [trainingProjection, setTrainingProjection] = useState<TrainingProjection | null>(null);
-	const [trainingAlgorithm, setTrainingAlgorithm] = useState<"cispo">("cispo");
+	const trainingAlgorithm = "cispo" as const;
 	const [trainingModel, setTrainingModel] = useState("openai/gpt-oss-20b");
 	const [trainingTask, setTrainingTask] = useState("banking77");
 	const [trainingContainerUrl, setTrainingContainerUrl] = useState("http://127.0.0.1:8000");
@@ -331,7 +332,6 @@ export function OptimizersPage({
 	const [trainingCheckpointEvery, setTrainingCheckpointEvery] = useState(1);
 	const [trainingWarmStartCheckpointId, setTrainingWarmStartCheckpointId] = useState("");
 	const [hostedTrainingModels, setHostedTrainingModels] = useState<HostedTrainingModel[]>([]);
-	const [hostedModelCatalogRevision, setHostedModelCatalogRevision] = useState<string | null>(null);
 	const [savedLoras, setSavedLoras] = useState<SavedLoraCheckpoint[]>([]);
 	const [localArtifacts, setLocalArtifacts] = useState<TrainingArtifact[]>([]);
 	const [localArtifactReply, setLocalArtifactReply] = useState<string | null>(null);
@@ -427,7 +427,6 @@ export function OptimizersPage({
 		void loadHostedTrainingModels().then((catalog) => {
 			if (!live) return;
 			setHostedTrainingModels(catalog.models);
-			setHostedModelCatalogRevision(catalog.catalogRevision);
 			if (!catalog.models.some((model) => model.modelId === trainingModel)) {
 				const preferred = catalog.models.find((model) => model.algorithms[trainingAlgorithm]?.status !== "blocked");
 				if (preferred) setTrainingModel(preferred.modelId);
@@ -952,10 +951,11 @@ export function OptimizersPage({
 				</section>
 			) : null}
 
+			<TrainingWorkspace onStartFixture={() => void startSftFixture()} fixtureBusy={startingSftFixture} />
+
 			<section className="optimizer-recipes" aria-labelledby="optimizer-recipes-title">
 				<div className="optimizer-recipes-head">
 					<div><span className="optimizer-eyebrow">Agent-guided setup</span><h2 id="optimizer-recipes-title">What do you want to optimize?</h2></div>
-					<p>The agent will help choose the Container, evaluation, and budget.</p>
 				</div>
 				<div className="optimizer-recipe-grid">
 					{SEARCH_GUIDES.map((guide) => (
@@ -1032,13 +1032,9 @@ export function OptimizersPage({
 			<section className="optimizer-training-launch" aria-labelledby="optimizer-training-launch-title" data-testid="optimizer-training-launch">
 				<div className="optimizer-recipes-head">
 					<div><span className="optimizer-eyebrow">Hosted on-policy training</span><h2 id="optimizer-training-launch-title">Configure a bounded launch</h2></div>
-					<p>The client validates provider and Container capabilities before opening paid compute.</p>
 				</div>
 				<div className="optimizer-training-form">
-					<label><span>Algorithm</span><select value={trainingAlgorithm} onChange={(event) => {
-						setTrainingAlgorithm(event.target.value as "cispo");
-						setTrainingTask("banking77");
-					}}><option value="cispo">CISPO · slime reference</option></select></label>
+					<label><span>Algorithm</span><select value={trainingAlgorithm} disabled><option value="cispo">CISPO · slime reference</option></select></label>
 					<label><span>Model</span><select value={trainingModel} onChange={(event) => setTrainingModel(event.target.value)}>{hostedTrainingModels.map((model) => { const support = model.algorithms[trainingAlgorithm]; return <option key={model.modelId} value={model.modelId} disabled={support?.status === "blocked"}>{model.label} · {support?.status ?? "not validated"}</option>; })}</select></label>
 					<label><span>SFT warm start</span><select aria-label="SFT warm-start checkpoint" value={trainingWarmStartCheckpointId} onChange={(event) => setTrainingWarmStartCheckpointId(event.target.value)} data-testid="hosted-cispo-warm-start"><option value="">—</option>{hostedSftWarmStarts.map((checkpoint) => <option key={checkpoint.checkpointId} value={checkpoint.checkpointId}>{checkpoint.name} · {checkpoint.baseModel} · step {checkpoint.step ?? "—"}</option>)}</select></label>
 					<label><span>Task</span><input value={trainingTask} onChange={(event) => setTrainingTask(event.target.value)} /></label>
@@ -1050,7 +1046,7 @@ export function OptimizersPage({
 				</div>
 				<div className="optimizer-training-launch-actions">
 					<button className="primary-button" type="button" disabled={startingAgent !== null || hostedLaunchBlocked || !trainingModel.trim() || !trainingTask.trim() || !trainingContainerUrl.trim()} onClick={() => void reviewTrainingLaunch()} data-testid="review-hosted-training-launch">Review &amp; launch</button>
-					<small>{hostedLaunchBlocked ? selectedHostedSupport?.block_reason ?? "This model and algorithm combination is not admitted by the hosted catalog." : "Bounded recipe: cispo.slime.hosted.v1. Default golden path: CISPO → Banking77."}{hostedModelCatalogRevision ? ` Catalog ${hostedModelCatalogRevision}; live provider preflight still required.` : ""}</small>
+					{hostedLaunchBlocked ? <span className="optimizer-status failed">Unavailable</span> : null}
 				</div>
 			</section>
 

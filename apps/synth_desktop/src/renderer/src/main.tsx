@@ -8,6 +8,7 @@ import { installRunProgressTelemetry } from "./runtime/runProgress/telemetry";
 import "./styles/tokens.css";
 import "./styles/primitives.css";
 import "./styles/app.css";
+import "./styles/training.css";
 import "./styles/usage.css";
 import "./styles/runProgress.css";
 import "./styles/chartVisual.css";
