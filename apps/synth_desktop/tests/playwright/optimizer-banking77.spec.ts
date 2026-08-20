@@ -164,7 +164,7 @@ test("native GEPA candidates, frontier, usage, and artifacts render in the visua
 	await expect(page.getByTestId("gepa-pareto-frontier")).toContainText("Seed");
 	await expect(page.getByLabel("Usage")).toContainText("4");
 	await expect(page.getByLabel("Usage")).toContainText("105");
-	await expect(page.getByLabel("Artifacts")).toContainText("result_manifest.json");
+	await expect(page.getByLabel("Artifacts", { exact: true })).toContainText("result_manifest.json");
 	await expect(page.getByTestId("optimizer-artifact-0")).toContainText("Result manifest");
 	await expect(page.getByTestId("optimizer-artifact-0")).not.toContainText('{"kind"');
 	await page.getByTestId("copy-artifact-path-0").click();

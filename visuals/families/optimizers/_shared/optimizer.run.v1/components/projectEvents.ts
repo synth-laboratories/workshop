@@ -2162,7 +2162,7 @@ export function projectAtCursor(
         goexAgents = { ...goexAgents, ...(agentData as Record<string, unknown>) };
       }
     }
-    if (event.type === "sft.checkpoint.created" || event.type === "training.checkpoint.created") && event.item {
+    if ((event.type === "sft.checkpoint.created" || event.type === "training.checkpoint.created") && event.item) {
       checkpoints.push({
         id: event.item.id,
         status: event.item.status ?? "created",
