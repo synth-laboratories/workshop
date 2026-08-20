@@ -4,12 +4,11 @@ use super::models::{
     OptimizerQuery, OptimizerRecipeRunRequest, OptimizerResourceRef, OptimizerRunRecord,
 };
 use super::sidecar_training::{
-    advertised_placement, local_sft_config, optional_jsonl, spawn_watch_worker,
-    training_create_request, SidecarTrainingClient, LOCAL_MLX_SFT_RECIPE,
-    PLACEMENT_TRAINING_SFT_LOCAL,
+    local_sft_config, optional_jsonl, spawn_watch_worker, training_create_request,
+    SidecarTrainingClient, LOCAL_MLX_SFT_RECIPE, PLACEMENT_TRAINING_SFT_LOCAL,
 };
 use super::OptimizerService;
-use anyhow::{Context, Result};
+use anyhow::Result;
 use serde_json::{json, Value};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -21,8 +20,6 @@ const CHECKPOINT_EVERY: u64 = 2;
 const LORA_RANK: u64 = 8;
 const LORA_ALPHA: f64 = 16.0;
 const MAX_SEQ_LENGTH: u64 = 4096;
-const CANARY_TRAIN: &str = include_str!("fixtures/qwen_mlx_sft_train.jsonl");
-const CANARY_EVAL: &str = include_str!("fixtures/qwen_mlx_sft_eval.jsonl");
 
 pub fn recipe_catalog() -> Value {
     let (dataset, evaluation, dataset_source) = resolve_local_sft_datasets();
@@ -36,9 +33,7 @@ pub fn recipe_catalog() -> Value {
         reasons.push("Download the training model in Settings → Models → On-device training.");
     }
     if dataset.is_none() || evaluation.is_none() {
-        reasons.push(
-            "Train/eval JSONL is missing (cookbook, SYNTH_MLX_SFT_*_JSONL, or bundled canary).",
-        );
+        reasons.push("Train/eval JSONL is missing (cookbook or SYNTH_MLX_SFT_*_JSONL).");
     }
     let available = apple_silicon && model_ready && dataset.is_some() && evaluation.is_some();
     json!({
@@ -64,7 +59,7 @@ pub fn recipe_catalog() -> Value {
             "costNotice": "Local Apple Silicon MLX compute; no hosted provider charges."
         },
         "credentialInputs": [],
-        "prerequisites": ["Optimizers sidecar", "cookbook, SYNTH_MLX_SFT_*_JSONL, or bundled 4-step canary"]
+        "prerequisites": ["Optimizers sidecar", "cookbook or SYNTH_MLX_SFT_*_JSONL"]
     })
 }
 
@@ -127,7 +122,7 @@ fn dataset_ref(path: &PathBuf, role: &str, title: &str) -> OptimizerResourceRef 
     }
 }
 
-/// Env override, then cookbook JSONL, then the bundled 4-step canary.
+/// Resolve only operator-provided or installed cookbook datasets.
 pub fn resolve_local_sft_datasets() -> (Option<PathBuf>, Option<PathBuf>, &'static str) {
     if let (Some(train), Some(eval)) = (
         optional_jsonl("SYNTH_MLX_SFT_TRAIN_JSONL"),
@@ -142,10 +137,7 @@ pub fn resolve_local_sft_datasets() -> (Option<PathBuf>, Option<PathBuf>, &'stat
             return (Some(train), Some(eval), "cookbook");
         }
     }
-    match materialize_canary() {
-        Ok((train, eval)) => (Some(train), Some(eval), "canary"),
-        Err(_) => (None, None, "missing"),
-    }
+    (None, None, "missing")
 }
 
 fn cookbook_sft_dir() -> Option<PathBuf> {
@@ -169,20 +161,6 @@ fn cookbook_sft_dir() -> Option<PathBuf> {
     candidates
         .into_iter()
         .find(|path| path.join("train.jsonl").is_file() && path.join("eval.jsonl").is_file())
-}
-
-fn materialize_canary() -> Result<(PathBuf, PathBuf)> {
-    let dir = crate::instance::data_root().join("optimizers/mlx-sft/canary");
-    std::fs::create_dir_all(&dir).context("create bundled MLX SFT canary directory")?;
-    let train = dir.join("train.jsonl");
-    let eval = dir.join("eval.jsonl");
-    if !train.is_file() {
-        std::fs::write(&train, CANARY_TRAIN).context("write bundled MLX SFT train canary")?;
-    }
-    if !eval.is_file() {
-        std::fs::write(&eval, CANARY_EVAL).context("write bundled MLX SFT eval canary")?;
-    }
-    Ok((train, eval))
 }
 
 pub async fn reconcile(service: &OptimizerService, run_id: &str) -> Result<OptimizerRunRecord> {
@@ -231,6 +209,7 @@ pub async fn restore_mirrors(service: &OptimizerService) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::optimizers::sidecar_training::advertised_placement;
     use crate::storage::{ContentStore, EventJournal, Storage};
     use crate::visuals::VisualRegistry;
     use std::sync::Arc;
@@ -252,22 +231,22 @@ mod tests {
     }
 
     #[test]
-    fn bundled_canary_is_used_when_env_and_cookbook_are_absent() {
+    fn missing_real_dataset_fails_closed() {
         std::env::remove_var("SYNTH_MLX_SFT_TRAIN_JSONL");
         std::env::remove_var("SYNTH_MLX_SFT_EVAL_JSONL");
         std::env::remove_var("SYNTH_MLX_SFT_COOKBOOK");
         let (train, eval, source) = resolve_local_sft_datasets();
-        assert_eq!(source, "canary");
-        assert!(train.unwrap().is_file());
-        assert!(eval.unwrap().is_file());
+        assert_eq!(source, "missing");
+        assert!(train.is_none());
+        assert!(eval.is_none());
     }
 
     #[test]
-    fn recipe_card_reports_preflight_and_is_not_env_only() {
+    fn recipe_card_fails_closed_without_a_real_dataset() {
         let recipe = recipe_catalog();
         assert_eq!(recipe["id"], QWEN_MLX_SFT_RECIPE);
-        assert!(recipe["preflight"]["dataset"].as_bool().unwrap());
-        assert_ne!(recipe["preflight"]["datasetSource"], "missing");
+        assert!(!recipe["preflight"]["dataset"].as_bool().unwrap());
+        assert_eq!(recipe["preflight"]["datasetSource"], "missing");
         assert!(recipe["prerequisites"]
             .as_array()
             .unwrap()

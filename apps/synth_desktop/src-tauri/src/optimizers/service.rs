@@ -348,8 +348,7 @@ impl OptimizerService {
             super::hosted_gelo::HOSTED_GELO_CRAFTAX_RECIPE => {
                 super::hosted_gelo::start(self, request).await
             }
-            super::hosted_sft::HOSTED_SFT_FIXTURE_RECIPE
-            | super::hosted_sft::HOSTED_SFT_CRAFTAX_NEMOTRON_RECIPE
+            super::hosted_sft::HOSTED_SFT_CRAFTAX_NEMOTRON_RECIPE
             | super::hosted_sft::HOSTED_SFT_BANKING77_RECIPE => {
                 super::hosted_sft::start(self, request).await
             }
@@ -5247,18 +5246,6 @@ pub(in crate::optimizers) mod tests {
         assert!(recipes
             .iter()
             .any(|item| item.get("id") == Some(&json!("cispo.slime.hosted.v1"))));
-    }
-
-    #[tokio::test]
-    async fn lists_hosted_sft_fixture_recipe() {
-        let (svc, _dir, _) = service().await;
-        let recipe = svc
-            .list_recipes()
-            .into_iter()
-            .find(|item| item.get("id") == Some(&json!("sft.hosted.fixture.v1")))
-            .unwrap();
-        assert_eq!(recipe.get("algorithmId"), Some(&json!("sft")));
-        assert_ne!(recipe.get("id"), Some(&json!("goex.sft.v1")));
     }
 
     #[tokio::test]

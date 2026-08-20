@@ -167,7 +167,6 @@ pub const OPTIMIZERS: RuntimeContract = RuntimeContract {
         "gepa.banking77.sol.v1",
         "gepa.craftax.smoke.v1",
         "sft.qwen35-0.8b.mlx.v1",
-        "sft.hosted.fixture.v1",
         "cispo.banking77.mlx.v1",
         "cispo.slime.hosted.v1",
     ],

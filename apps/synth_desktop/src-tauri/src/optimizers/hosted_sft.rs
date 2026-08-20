@@ -20,7 +20,6 @@ use std::collections::HashSet;
 use std::time::Duration;
 use tokio::{sync::watch, time::sleep};
 
-pub const HOSTED_SFT_FIXTURE_RECIPE: &str = "sft.hosted.fixture.v1";
 pub const HOSTED_SFT_CRAFTAX_NEMOTRON_RECIPE: &str = "sft.craftax.nemotron-nano.tinker.v1";
 pub const HOSTED_SFT_BANKING77_RECIPE: &str = "sft.banking77.nemotron-lightning.tinker.v1";
 const LOCAL_CRAFTAX_SLOT: &str = "http://127.0.0.1:8098";
@@ -64,36 +63,7 @@ const MAX_CONSECUTIVE_PAGE_ERRORS: u32 = 20;
 const HOSTED_SFT_LORA_RANK: u64 = 8;
 
 pub fn recipe_catalog() -> Vec<Value> {
-    vec![
-        fixture_recipe(),
-        craftax_nemotron_recipe(),
-        banking77_recipe(),
-    ]
-}
-
-fn fixture_recipe() -> Value {
-    let availability =
-        if super::sidecar_training::simulate_training() || SftOptimizerClient::from_env().is_ok() {
-            "available"
-        } else {
-            "unavailable"
-        };
-    json!({
-        "id": HOSTED_SFT_FIXTURE_RECIPE,
-        "title": "Hosted SFT fixture",
-        "algorithmId": "sft",
-        "task": "hosted",
-        "availability": availability,
-        "limits": {
-            "backend": "fixture",
-            "checkpointSteps": [10, 20],
-            "campaignRolloutsPerCheckpoint": 2,
-            "costCeilingUsd": 0.0,
-            "costNotice": "Fixture backend; no provider charges. Requires the public Optimizers SFT service."
-        },
-        "credentialInputs": [],
-        "prerequisites": ["SYNTH_OPTIMIZERS_SFT_SERVICE_URL", "SYNTH_OPTIMIZERS_SFT_SERVICE_TOKEN"],
-    })
+    vec![craftax_nemotron_recipe(), banking77_recipe()]
 }
 
 fn craftax_nemotron_recipe() -> Value {
@@ -173,7 +143,6 @@ pub async fn start(
     Option<crate::storage::AppEvent>,
 )> {
     match request.recipe_id.as_str() {
-        HOSTED_SFT_FIXTURE_RECIPE => start_fixture(service, request).await,
         HOSTED_SFT_CRAFTAX_NEMOTRON_RECIPE => start_craftax_nemotron(service, request).await,
         HOSTED_SFT_BANKING77_RECIPE => start_banking77(service, request).await,
         other => bail!("unknown hosted SFT recipe: {other}"),
@@ -419,62 +388,6 @@ batch_size = 2
 lr = 0.001
 "#
     )
-}
-
-async fn start_fixture(
-    service: &OptimizerService,
-    request: OptimizerRecipeRunRequest,
-) -> Result<(
-    super::models::OptimizerRunRecord,
-    Option<crate::storage::AppEvent>,
-)> {
-    let suffix = uuid::Uuid::new_v4().simple().to_string();
-    let run_id = format!("sft_hosted_{}", &suffix[..8]);
-    let training_file = format!("file_train_{}", &suffix[..8]);
-    let dataset_digest = content_sha256(b"hosted-sft-fixture-dataset.v1\n");
-    let config_toml = fixture_config_toml(&run_id, &training_file, &dataset_digest);
-    let create = OptimizerCreateRequest {
-        algorithm_id: "sft".into(),
-        algorithm_version: Some("hosted-fixture-v1".into()),
-        objective: Some("Hosted SFT fixture · streamed from public Optimizers".into()),
-        source: Some("hosted".into()),
-        project_ref: Some("sft@hosted-fixture".into()),
-        session_ref: request.session_ref.clone(),
-        id: Some(run_id.clone()),
-        execution_bindings: Some(vec![OptimizerExecutionBinding {
-            kind: "optimizer_sidecar".into(),
-            id: HOSTED_SFT_FIXTURE_RECIPE.into(),
-            label: Some("Optimizers sidecar hosted SFT".into()),
-            status: Some("admitted".into()),
-            metadata: json!({
-                "recipeId": HOSTED_SFT_FIXTURE_RECIPE,
-                "backend": "fixture",
-                "datasetFile": training_file,
-                "placement": PLACEMENT_TRAINING_SFT_HOSTED,
-            }),
-        }]),
-        input_refs: Some(vec![OptimizerResourceRef {
-            kind: "recipe".into(),
-            id: HOSTED_SFT_FIXTURE_RECIPE.into(),
-            digest: None,
-            role: Some("configuration".into()),
-            title: Some("Hosted SFT fixture".into()),
-            metadata: json!({"backend": "fixture"}),
-        }]),
-        capabilities: Some(OptimizerCapabilities::for_algorithm("sft")),
-        summary: Some(json!({
-            "recipeId": HOSTED_SFT_FIXTURE_RECIPE,
-            "backend": "fixture",
-            "producer": "synth-optimizers",
-            "adapter": lora_adapter_label(HOSTED_SFT_LORA_RANK),
-            "rank": HOSTED_SFT_LORA_RANK,
-        })),
-        open_visual: request.open_visual.or(Some(true)),
-        seed_fixture: None,
-        cloud_config: None,
-        local_path: None,
-    };
-    admit_hosted(service, request, create, config_toml).await
 }
 
 async fn start_craftax_nemotron(
@@ -808,28 +721,6 @@ async fn run_hosted_worker(
     }
 }
 
-fn fixture_config_toml(run_id: &str, training_file: &str, dataset_digest: &str) -> String {
-    let adapter = lora_adapter_label(HOSTED_SFT_LORA_RANK);
-    format!(
-        r#"run_id = "{run_id}"
-backend = "fixture"
-base_model = "openai/gpt-oss-20b"
-adapter = "{adapter}"
-training_file_id = "{training_file}"
-dataset_digest = "{dataset_digest}"
-selection_file_id = "file_selection"
-heldout_file_id = "file_heldout"
-accelerator_slots = 1
-checkpoint_steps = [10, 20]
-campaign_rollouts_per_checkpoint = 2
-evaluator_version = "hosted_fixture.v1"
-
-[hyperparameters]
-rank = {HOSTED_SFT_LORA_RANK}
-"#
-    )
-}
-
 fn craftax_nemotron_config_toml(
     run_id: &str,
     training_file: &str,
@@ -1024,19 +915,6 @@ mod tests {
     }
 
     #[test]
-    fn fixture_toml_is_algorithm_sft_not_goex_plugin() {
-        let toml = fixture_config_toml(
-            "sft_hosted_ab12cd34",
-            "file_train_ab12cd34",
-            "sha256:fixture",
-        );
-        assert!(toml.contains("backend = \"fixture\""));
-        assert!(toml.contains("run_id = \"sft_hosted_ab12cd34\""));
-        assert!(!toml.contains("goex.sft"));
-        assert!(!toml.contains("go-ex"));
-    }
-
-    #[test]
     fn banking77_toml_pins_campaigns_through_banking77_classify() {
         let toml = banking77_config_toml(
             "sft_banking77_train_a_ab12cd34",
@@ -1072,8 +950,6 @@ mod tests {
 
     #[test]
     fn hosted_sft_recipes_declare_an_explicit_cost_ceiling() {
-        let fixture = fixture_recipe();
-        assert_eq!(fixture["limits"]["costCeilingUsd"], 0.0);
         let craftax = craftax_nemotron_recipe();
         assert_eq!(
             craftax["limits"]["costCeilingUsd"],
@@ -1169,9 +1045,7 @@ mod tests {
             None,
             "sha256:abc",
         );
-        let fixture =
-            fixture_config_toml("sft_hosted_ab12cd34", "file_train_ab12cd34", "sha256:abc");
-        for toml in [banking, craftax, fixture] {
+        for toml in [banking, craftax] {
             assert!(toml.contains("adapter = \"lora_r8\""), "{toml}");
             assert!(
                 toml.contains("rank = 8") || toml.contains("[hyperparameters]\nrank = 8"),
@@ -1227,84 +1101,5 @@ mod tests {
         assert!(!production.contains("client.base_url"));
         assert!(production.contains("admit_hosted"));
         assert!(production.contains("PLACEMENT_TRAINING_SFT_HOSTED"));
-    }
-
-    #[tokio::test]
-    async fn hosted_fixture_completes_through_sidecar_without_sft_service() {
-        let dir = tempfile::tempdir().unwrap();
-        let storage = crate::storage::Storage::open(dir.path().join("core")).unwrap();
-        let journal = crate::storage::EventJournal::new(storage.database().clone());
-        let content = crate::storage::ContentStore::new(storage.content_root());
-        let visuals = crate::visuals::VisualRegistry::new(
-            storage.database().clone(),
-            journal.clone(),
-            content,
-        );
-        let (events_tx, _) = tokio::sync::broadcast::channel(16);
-        let manager = std::sync::Arc::new(crate::optimizers::OptimizerManager::with_home(
-            dir.path().join("optimizer-home"),
-        ));
-        manager.install(None).unwrap();
-        assert_eq!(manager.start().await.unwrap().phase, "ready");
-        let service = OptimizerService::new_with_manager(
-            storage.database().clone(),
-            journal,
-            visuals,
-            events_tx,
-            manager,
-        );
-        let (run, _) = start(
-            &service,
-            OptimizerRecipeRunRequest {
-                recipe_id: HOSTED_SFT_FIXTURE_RECIPE.into(),
-                session_ref: Some("sess_hosted_sft_e2e".into()),
-                open_visual: Some(false),
-                base_model: None,
-                dataset_shard: None,
-                candidate_set_id: None,
-                search: None,
-            },
-        )
-        .await
-        .unwrap();
-        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(8);
-        let terminal = loop {
-            let current = service.get(run.id.clone()).await.unwrap();
-            if matches!(
-                current.status.as_str(),
-                "completed" | "failed" | "cancelled"
-            ) {
-                break current;
-            }
-            assert!(tokio::time::Instant::now() < deadline, "{}", current.status);
-            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-        };
-        assert_eq!(terminal.status, "completed");
-        let events = service
-            .events_after(run.id.clone(), 0, Some(500))
-            .await
-            .unwrap();
-        let evaluations = events
-            .iter()
-            .filter(|event| event.event_type == "training.evaluation.completed")
-            .collect::<Vec<_>>();
-        assert_eq!(evaluations.len(), 3);
-        for (evaluation, phase) in evaluations.iter().zip(["baseline", "checkpoint", "final"]) {
-            assert_eq!(evaluation.delta["phase"], phase);
-            assert_eq!(evaluation.delta["evaluation"]["phase"], phase);
-            assert_eq!(
-                evaluation.delta["evaluation"]["candidate"]["exact_checkpoint"],
-                true
-            );
-            assert!(evaluation.delta["evaluation"]["candidate"]["checkpoint_id"]
-                .as_str()
-                .is_some_and(|value| !value.is_empty()));
-            assert!(
-                evaluation.delta["evaluation"]["candidate"]["artifact_digest"]
-                    .as_str()
-                    .is_some_and(|value| !value.is_empty())
-            );
-        }
-        let _ = service.manager().stop().await;
     }
 }

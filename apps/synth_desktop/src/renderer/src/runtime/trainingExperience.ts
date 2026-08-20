@@ -32,14 +32,22 @@ function asArtifact(checkpoint: SavedLoraCheckpoint): TrainingArtifact | null {
 
 export async function inspectMlxReadiness(): Promise<MlxReadiness> {
 	const appleSilicon = /Mac/.test(navigator.platform) && navigator.maxTouchPoints === 0;
+	if (!bridges.trainingModels) {
+		return { platform: appleSilicon ? "apple_silicon" : "unknown", compatibility: appleSilicon ? "compatible" : "unknown", runtimeHealth: "missing", runtimeVersion: null, availableMemoryBytes: null, availableDiskBytes: null, failureClass: "runtime" };
+	}
+	try {
+		await bridges.trainingModels.listModels();
+	} catch {
+		return { platform: appleSilicon ? "apple_silicon" : "unknown", compatibility: appleSilicon ? "compatible" : "unknown", runtimeHealth: "unhealthy", runtimeVersion: null, availableMemoryBytes: null, availableDiskBytes: null, failureClass: "runtime" };
+	}
 	return {
 		platform: appleSilicon ? "apple_silicon" : "unknown",
 		compatibility: appleSilicon ? "compatible" : "unknown",
-		runtimeHealth: bridges.trainingModels ? "ready" : "missing",
+		runtimeHealth: "ready",
 		runtimeVersion: null,
 		availableMemoryBytes: null,
 		availableDiskBytes: null,
-		failureClass: bridges.trainingModels ? null : "runtime"
+		failureClass: null
 	};
 }
 
@@ -72,11 +80,11 @@ export const trainingArtifacts: TrainingArtifactsBridge = {
 	},
 	async launchInference(id) {
 		await this.inspect(id);
-		return { artifactId: id, status: "planned" };
+		throw new Error("Native artifact inference is unavailable; no run was started");
 	},
 	async launchEval(id, recipeId) {
 		await this.inspect(id);
-		return { artifactId: id, recipeId, status: "planned" };
+		throw new Error(`Native artifact Eval ${recipeId} is unavailable; no run was started`);
 	},
 	async delete(id) {
 		if (!bridges.optimizers) throw new Error("Training artifact deletion requires Synth Desktop");

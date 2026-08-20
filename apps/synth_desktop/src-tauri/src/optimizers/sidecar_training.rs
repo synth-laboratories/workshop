@@ -2,8 +2,8 @@
 //!
 //! `OptimizerService` talks only to the authenticated sidecar proxy. The proxy
 //! derives `sft` / `cispo` placements from the training routes it actually
-//! serves, then either runs the documented hosted fixture or fans out to MLX and the
-//! public SFT service. Hosted CISPO stays fail-closed until the slime clip
+//! serves, then fans out to MLX and the public SFT service. Hosted CISPO stays
+//! fail-closed until the slime clip
 //! canary admits it.
 
 use super::events::OptimizerEventDraft;
@@ -37,7 +37,6 @@ pub const LOCAL_MLX_CISPO_RECIPE: &str = "cispo.banking77.mlx.v1";
 pub const HOSTED_CISPO_RECIPE: &str = "cispo.slime.hosted.v1";
 
 const BASE_MODEL: &str = "Qwen/Qwen3.5-0.8B";
-const HOSTED_SFT_FIXTURE_RECIPE: &str = "sft.hosted.fixture.v1";
 const MAX_STEPS: u64 = 4;
 const CHECKPOINT_EVERY: u64 = 2;
 const LORA_RANK: u64 = 8;
@@ -58,6 +57,7 @@ struct TrainingJob {
     events: Vec<Value>,
     handoff: Value,
     cancelled: bool,
+    error: Option<String>,
 }
 
 impl TrainingRuntime {
@@ -149,6 +149,7 @@ impl TrainingRuntime {
                     events: Vec::new(),
                     handoff: json!({}),
                     cancelled: false,
+                    error: None,
                 },
             );
         }
@@ -165,7 +166,9 @@ impl TrainingRuntime {
                 let mut jobs = runtime.jobs.lock().await;
                 if let Some(job) = jobs.get_mut(&drive_id) {
                     job.status = "failed".into();
-                    append_job_event(job, "job.failed", json!({"error": error.to_string()}));
+                    let message = format!("{error:#}");
+                    job.error = Some(message.clone());
+                    append_job_event(job, "job.failed", json!({"error": message}));
                 }
             }
         });
@@ -181,15 +184,9 @@ impl TrainingRuntime {
         &self,
         job_id: &str,
         placement: &str,
-        recipe_id: &str,
+        _recipe_id: &str,
         config: Value,
     ) -> Result<()> {
-        if placement == PLACEMENT_TRAINING_SFT_HOSTED
-            && recipe_id == HOSTED_SFT_FIXTURE_RECIPE
-            && simulate_training()
-        {
-            return self.simulate_job(job_id, placement, recipe_id).await;
-        }
         match placement {
             PLACEMENT_TRAINING_SFT_LOCAL | PLACEMENT_TRAINING_CISPO_LOCAL => {
                 drive_mlx_job(self, job_id, placement, &config).await
@@ -198,120 +195,6 @@ impl TrainingRuntime {
             PLACEMENT_TRAINING_CISPO_HOSTED => drive_hosted_cispo_job(self, job_id, &config).await,
             _ => bail!("unsupported training placement {placement}"),
         }
-    }
-
-    async fn simulate_job(&self, job_id: &str, placement: &str, recipe_id: &str) -> Result<()> {
-        let algorithm = if placement.contains("cispo") {
-            "cispo"
-        } else {
-            "sft"
-        };
-        {
-            let mut jobs = self.jobs.lock().await;
-            let job = jobs
-                .get_mut(job_id)
-                .ok_or_else(|| anyhow!("training job disappeared"))?;
-            job.status = "running".into();
-            append_job_event(
-                job,
-                "job.started",
-                json!({"backend": algorithm, "recipe_id": recipe_id, "fixture": true}),
-            );
-            append_job_event(
-                job,
-                "baseline_eval.completed",
-                json!({
-                    "evaluation_phase": "baseline",
-                    "checkpoint_id": BASE_MODEL,
-                    "artifact_digest": "sha256:base-model",
-                    "step": 0,
-                    "evaluator": "banking77_eval.v1",
-                    "container": "tunnel://fixture/banking77",
-                    "metric": "reward",
-                    "score": 0.25,
-                    "loss": 1.2,
-                    "baseline_score": 0.25,
-                    "sample_count": 16,
-                    "status": "completed"
-                }),
-            );
-            append_job_event(
-                job,
-                "training.metric",
-                json!({
-                    "step": 2,
-                    "loss": 0.42,
-                    "learning_rate": 0.00005,
-                    "throughput_steps_per_second": 1.0
-                }),
-            );
-            append_job_event(
-                job,
-                "checkpoint.created",
-                json!({
-                    "checkpoint_id": format!("{job_id}-ckpt-2"),
-                    "step": 2,
-                    "path": format!("/tmp/{job_id}/adapter"),
-                    "sha256": "abc123",
-                    "bytes": 128
-                }),
-            );
-            append_job_event(
-                job,
-                "checkpoint_eval.completed",
-                json!({
-                    "evaluation_phase": "checkpoint",
-                    "checkpoint_id": format!("{job_id}-ckpt-2"),
-                    "artifact_digest": "sha256:abc123",
-                    "step": 2,
-                    "evaluator": "banking77_eval.v1",
-                    "container": "tunnel://fixture/banking77",
-                    "metric": "reward",
-                    "score": 0.625,
-                    "loss": 0.7,
-                    "baseline_score": 0.25,
-                    "sample_count": 16,
-                    "status": "completed"
-                }),
-            );
-            append_job_event(
-                job,
-                "final_eval.completed",
-                json!({
-                    "evaluation_phase": "final",
-                    "checkpoint_id": format!("{job_id}-terminal"),
-                    "artifact_digest": "sha256:deadbeef",
-                    "step": 4,
-                    "evaluator": "banking77_eval.v1",
-                    "container": "tunnel://fixture/banking77",
-                    "metric": "reward",
-                    "score": 0.75,
-                    "loss": 0.4,
-                    "baseline_score": 0.25,
-                    "sample_count": 16,
-                    "status": "completed"
-                }),
-            );
-            if algorithm == "cispo" {
-                append_job_event(
-                    job,
-                    "training.clip",
-                    json!({"eps_high": 4.0, "tinker_bound": 5.0, "identity": "1+eps_high"}),
-                );
-            }
-            job.handoff = json!({
-                "inference": {"kind": "mlx-lora.v1"},
-                "checkpoint": {
-                    "checkpoint_id": format!("{job_id}-terminal"),
-                    "sha256": "deadbeef",
-                    "path": format!("/tmp/{job_id}/terminal")
-                },
-                "policy_snapshot_id": format!("{job_id}-snap")
-            });
-            job.status = "succeeded".into();
-            append_job_event(job, "job.succeeded", json!({"handoff": job.handoff}));
-        }
-        Ok(())
     }
 
     async fn job_status(&self, job_id: &str) -> JsonHttpResponse {
@@ -323,6 +206,7 @@ impl TrainingRuntime {
                 "placement": job.placement,
                 "recipe_id": job.recipe_id,
                 "event_count": job.events.len(),
+                "error": job.error,
             })),
             None => JsonHttpResponse::error(StatusCode::NOT_FOUND, "training job not found"),
         }
@@ -372,9 +256,12 @@ impl TrainingRuntime {
             append_job_event(job, "job.cancelled", json!({}));
         }
         let status = job.status.clone();
-        let fixture = is_hosted_fixture(&job.recipe_id, &job.placement);
+        let local = matches!(
+            job.placement.as_str(),
+            PLACEMENT_TRAINING_SFT_LOCAL | PLACEMENT_TRAINING_CISPO_LOCAL
+        );
         drop(jobs);
-        if !fixture {
+        if local {
             if let Ok(client) = MlxLoopback::from_env() {
                 let _ = client
                     .post(&format!("/v1/jobs/{job_id}/cancel"), None)
@@ -385,15 +272,23 @@ impl TrainingRuntime {
     }
 
     async fn resume_job(&self, job_id: &str) -> JsonHttpResponse {
-        let fixture = {
+        let local = {
             let jobs = self.jobs.lock().await;
-            jobs.get(job_id)
-                .is_some_and(|job| is_hosted_fixture(&job.recipe_id, &job.placement))
+            jobs.get(job_id).is_some_and(|job| {
+                matches!(
+                    job.placement.as_str(),
+                    PLACEMENT_TRAINING_SFT_LOCAL | PLACEMENT_TRAINING_CISPO_LOCAL
+                )
+            })
         };
-        if !fixture {
-            if let Err(error) = resume_mlx_job(job_id).await {
-                return JsonHttpResponse::error(StatusCode::BAD_GATEWAY, error.to_string());
-            }
+        if !local {
+            return JsonHttpResponse::error(
+                StatusCode::CONFLICT,
+                "resume is available only for real local MLX training jobs",
+            );
+        }
+        if let Err(error) = resume_mlx_job(job_id).await {
+            return JsonHttpResponse::error(StatusCode::BAD_GATEWAY, error.to_string());
         }
         let mut jobs = self.jobs.lock().await;
         let Some(job) = jobs.get_mut(job_id) else {
@@ -419,9 +314,12 @@ impl TrainingRuntime {
             .and_then(Value::as_str)
             .unwrap_or("hello")
             .to_string();
-        let fixture = is_hosted_fixture(&job.recipe_id, &job.placement);
+        let local = matches!(
+            job.placement.as_str(),
+            PLACEMENT_TRAINING_SFT_LOCAL | PLACEMENT_TRAINING_CISPO_LOCAL
+        );
         drop(jobs);
-        if !fixture {
+        if local {
             match MlxLoopback::from_env() {
                 Ok(client) => match client.chat(&prompt).await {
                     Ok(reply) => {
@@ -440,11 +338,10 @@ impl TrainingRuntime {
                 }
             }
         }
-        JsonHttpResponse::ok(json!({
-            "job_id": job_id,
-            "policy_snapshot_id": snapshot,
-            "reply": format!("fixture checkpoint reply to {prompt}")
-        }))
+        JsonHttpResponse::error(
+            StatusCode::CONFLICT,
+            "checkpoint chat is available only for real local MLX training jobs",
+        )
     }
 }
 
@@ -512,14 +409,6 @@ pub fn require_placement(capabilities: &Value, placement: &str) -> Result<()> {
         return Ok(());
     }
     bail!("optimizer sidecar does not advertise placement `{placement}`")
-}
-
-pub fn simulate_training() -> bool {
-    cfg!(test) || std::env::var("SYNTH_OPTIMIZER_TRAINING_FIXTURE").as_deref() == Ok("1")
-}
-
-fn is_hosted_fixture(recipe_id: &str, placement: &str) -> bool {
-    placement == PLACEMENT_TRAINING_SFT_HOSTED && recipe_id == HOSTED_SFT_FIXTURE_RECIPE
 }
 
 fn hosted_cispo_admitted() -> bool {
@@ -853,16 +742,13 @@ fn mapped_event_draft(kind: &str, algorithm: &str, payload: &Value) -> Optimizer
                 "uri": payload["path"],
                 "digest": payload["sha256"]
             })]),
-        "evaluation.completed"
-        | "heldout_eval.completed"
-        | "checkpoint_evaluation.completed"
-        | "checkpoint_eval.completed"
-        | "baseline_eval.completed"
-        | "final_eval.completed" => {
-            let phase = evaluation_phase(kind, payload);
-            let checkpoint_id = payload
+        kind if kind.ends_with("evaluation.completed")
+            || kind.ends_with("eval.completed") => {
+            let detail = payload.get("delta").unwrap_or(payload);
+            let phase = evaluation_phase(kind, detail);
+            let checkpoint_id = detail
                 .get("checkpoint_id")
-                .or_else(|| payload.get("artifact_id"))
+                .or_else(|| detail.get("artifact_id"))
                 .cloned()
                 .unwrap_or(Value::Null);
             OptimizerEventDraft::new("training.evaluation.completed", algorithm)
@@ -872,10 +758,10 @@ fn mapped_event_draft(kind: &str, algorithm: &str, payload: &Value) -> Optimizer
                     ("checkpoint_id".into(), checkpoint_id),
                     (
                         "evaluation".into(),
-                        normalized_sidecar_evaluation(kind, algorithm, payload),
+                        normalized_sidecar_evaluation(kind, algorithm, detail),
                     ),
                 ]))
-                .item(normalized_sidecar_evaluation(kind, algorithm, payload))
+                .item(normalized_sidecar_evaluation(kind, algorithm, detail))
         }
         "training.clip" => OptimizerEventDraft::new("cispo.clip.identity", algorithm)
             .delta(Map::from_iter([("clip".into(), payload.clone())])),
@@ -1321,6 +1207,7 @@ async fn drive_hosted_sft_job(
         .ok_or_else(|| anyhow!("hosted SFT job omitted config_toml"))?;
     client.submit_toml(job_id, toml).await?;
     let mut cursor = 0u64;
+    let mut page_errors = 0u32;
     loop {
         {
             let jobs = runtime.jobs.lock().await;
@@ -1328,7 +1215,20 @@ async fn drive_hosted_sft_job(
                 let _ = client.cancel(job_id).await;
             }
         }
-        let page = client.optimizer_events_after(job_id, cursor, 500).await?;
+        let page = match client.optimizer_events_after(job_id, cursor, 500).await {
+            Ok(page) => {
+                page_errors = 0;
+                page
+            }
+            Err(_error) if page_errors < MAX_PAGE_ERRORS => {
+                page_errors += 1;
+                sleep(Duration::from_millis(250)).await;
+                continue;
+            }
+            Err(error) => {
+                return Err(error.context("hosted SFT event polling stayed unavailable"));
+            }
+        };
         {
             let mut jobs = runtime.jobs.lock().await;
             let job = jobs
@@ -1507,6 +1407,14 @@ mod tests {
             assert!((delta - 0.3).abs() < f64::EPSILON * 2.0);
             assert_eq!(draft.item.as_ref().unwrap()["artifact_digest"], "abc");
         }
+        let hosted = mapped_event_draft(
+            "sft.checkpoint_evaluation.completed",
+            "sft",
+            &json!({"delta": {"checkpoint_id": "ckpt-10", "step": 10, "score": 0.7}}),
+        );
+        assert_eq!(hosted.event_type, "training.evaluation.completed");
+        assert_eq!(hosted.item.as_ref().unwrap()["checkpoint_id"], "ckpt-10");
+        assert_eq!(hosted.item.as_ref().unwrap()["score"], 0.7);
     }
 
     #[test]

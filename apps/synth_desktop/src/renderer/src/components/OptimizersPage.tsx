@@ -39,7 +39,7 @@ const OPTIMIZER_GUIDES: OptimizerGuide[] = [
 		name: "SFT",
 		description: "Collect strong demonstrations, train checkpoints, and compare the adapted model against its baseline. This Mac (MLX) or hosted.",
 		flow: ["Collect", "Train", "Compare"],
-		prompt: "Help me set up an SFT optimization in Workshop. Do not start compute yet. Ask whether I want This Mac (recipe sft.qwen35-0.8b.mlx.v1) or hosted (sft.hosted.fixture.v1 / Tinker recipes). Never dial :8787 or name synth-mlx-rl. Wait for my explicit approval before starting paid compute."
+		prompt: "Help me set up an SFT optimization in Workshop. Do not start compute yet. Ask whether I want This Mac (recipe sft.qwen35-0.8b.mlx.v1) or hosted Tinker. Never dial :8787 or name synth-mlx-rl. Wait for my explicit approval before starting paid compute."
 	},
 	{
 		id: "cispo",
@@ -309,7 +309,6 @@ export function OptimizersPage({
 	const [busy, setBusy] = useState(false);
 	const [selectedId, setSelectedId] = useState<string | null>(null);
 	const [startingAgent, setStartingAgent] = useState<OptimizerGuide["id"] | null>(null);
-	const [startingSftFixture, setStartingSftFixture] = useState(false);
 	const [startingLocalSft, setStartingLocalSft] = useState(false);
 	const [startingLocalCispo, setStartingLocalCispo] = useState(false);
 	const [evalRecipes, setEvalRecipes] = useState<OptimizerRecipeInfo[]>([]);
@@ -658,10 +657,6 @@ export function OptimizersPage({
 		}
 	};
 
-	const startSftFixture = async () => {
-		await startBoundedRecipe("sft.hosted.fixture.v1", setStartingSftFixture);
-	};
-
 	const openSelectedVisual = async () => {
 		if (!selected || !bridges.optimizers) return;
 		setBusy(true);
@@ -869,7 +864,7 @@ export function OptimizersPage({
 				</section>
 			) : null}
 
-			<TrainingWorkspace onStartFixture={() => void startSftFixture()} onStartAgent={() => { const guide = OPTIMIZER_GUIDES.find((item) => item.id === "sft"); if (guide) void startAgent(guide); }} fixtureBusy={startingSftFixture} />
+			<TrainingWorkspace onStartAgent={() => { const guide = OPTIMIZER_GUIDES.find((item) => item.id === "sft"); if (guide) void startAgent(guide); }} />
 
 			<section className="optimizer-recipes" aria-labelledby="optimizer-recipes-title">
 				<div className="optimizer-recipes-head">
@@ -901,9 +896,6 @@ export function OptimizersPage({
 								<>
 									<button className="secondary-button" type="button" disabled={startingLocalSft || (plugin != null && !presentation.isUsable)} onClick={() => void startBoundedRecipe("sft.qwen35-0.8b.mlx.v1", setStartingLocalSft)} data-testid="start-sft-mlx">
 										{startingLocalSft ? "Starting…" : "This Mac · Qwen 0.8B MLX"}
-									</button>
-									<button className="secondary-button" type="button" disabled={startingSftFixture} onClick={() => void startSftFixture()} data-testid="start-sft-fixture">
-										{startingSftFixture ? "Starting fixture…" : "Run hosted fixture"}
 									</button>
 									<small>Sidecar admits local MLX or hosted public SFT. Never dial :8787.</small>
 								</>

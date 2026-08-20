@@ -855,16 +855,11 @@ pub(crate) async fn authorize_optimizer_recipe_start(
                 request.recipe_id
             ))
         })?;
-    // These product-owned fixtures are deterministic and cannot incur provider
-    // charges. The click itself is the operator's explicit instruction. The
-    // hosted SFT fixture uses the public service; the eval fixture uses only
-    // the pinned local container runtime. Neither depends on plugin lifecycle.
+    // Local MLX recipes and the pinned local eval smoke do not incur provider
+    // charges. The click itself is the operator's explicit instruction.
     if matches!(
         request.recipe_id.as_str(),
-        "sft.hosted.fixture.v1"
-            | "sft.qwen35-0.8b.mlx.v1"
-            | "cispo.banking77.mlx.v1"
-            | "eval.fixture.policy-smoke.v1"
+        "sft.qwen35-0.8b.mlx.v1" | "cispo.banking77.mlx.v1" | "eval.fixture.policy-smoke.v1"
     ) {
         let (run, event) = state
             .optimizers()
@@ -1152,9 +1147,7 @@ fn optimizer_recipe_credentials(recipe_id: &str) -> &'static [&'static str] {
         &["OPTIMIZERS_BETA_SERVICE_TOKEN"]
     } else if matches!(
         recipe_id,
-        "sft.hosted.fixture.v1"
-            | "sft.craftax.nemotron-nano.tinker.v1"
-            | "sft.banking77.nemotron-lightning.tinker.v1"
+        "sft.craftax.nemotron-nano.tinker.v1" | "sft.banking77.nemotron-lightning.tinker.v1"
     ) {
         &["SYNTH_OPTIMIZERS_SFT_SERVICE_TOKEN"]
     } else {
