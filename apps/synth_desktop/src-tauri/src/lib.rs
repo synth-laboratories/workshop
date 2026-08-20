@@ -141,23 +141,29 @@ fn runtime_contracts(
         "dev" => ReleaseChannel::Dev,
         _ => ReleaseChannel::Official,
     };
-    let installed = state
+    let sidecar = state
         .optimizers()
         .manager()
         .version()
         .ok()
         .flatten()
         .map(|hit| hit.version);
+    let eval = crate::optimizers::eval_runtime::installed_version()
+        .or_else(|| {
+            crate::optimizers::eval_runtime::provision_from_disk()
+                .ok()
+                .map(|manifest| manifest.version)
+        });
     Ok(ALL
         .iter()
         .map(|entry| {
-            // Only the managed sidecar has an install to inspect. An
-            // unprovisioned runtime reports no version rather than borrowing
-            // one it cannot substantiate.
-            let found = entry
-                .provisioned_by_desktop
-                .then(|| installed.clone())
-                .flatten();
+            let found = match entry.runtime_id {
+                "eval" => eval.clone(),
+                _ => entry
+                    .provisioned_by_desktop
+                    .then(|| sidecar.clone())
+                    .flatten(),
+            };
             entry.view(channel, found)
         })
         .collect())
