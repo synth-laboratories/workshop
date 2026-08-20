@@ -23,6 +23,8 @@ use tokio::{sync::watch, time::sleep};
 pub const HOSTED_SFT_FIXTURE_RECIPE: &str = "sft.hosted.fixture.v1";
 pub const HOSTED_SFT_CRAFTAX_NEMOTRON_RECIPE: &str = "sft.craftax.nemotron-nano.tinker.v1";
 pub const HOSTED_SFT_BANKING77_RECIPE: &str = "sft.banking77.nemotron-lightning.tinker.v1";
+pub const HOSTED_SFT_GSM8K_RECIPE: &str = "sft.gsm8k.gpt-oss.smoke.v1";
+const GSM8K_CONTEXT: u32 = 32_768;
 const LOCAL_CRAFTAX_SLOT: &str = "http://127.0.0.1:8098";
 const LOCAL_BANKING77_SLOT: &str = "http://127.0.0.1:8110";
 /// Checkpoint evaluation campaigns run against `banking77_classify`, whose
@@ -68,6 +70,7 @@ pub fn recipe_catalog() -> Vec<Value> {
         fixture_recipe(),
         craftax_nemotron_recipe(),
         banking77_recipe(),
+        gsm8k_gpt_oss_recipe(),
     ]
 }
 
@@ -163,6 +166,29 @@ fn banking77_recipe() -> Value {
     })
 }
 
+fn gsm8k_gpt_oss_recipe() -> Value {
+    json!({
+        "id": HOSTED_SFT_GSM8K_RECIPE,
+        "title": "GSM8K GPT-OSS 20B Tinker SFT",
+        "algorithmId": "sft",
+        "task": "gsm8k",
+        "availability": "unavailable",
+        "availabilityReason": "Hosted GSM8K SFT is spend-gated (D4). The recipe is catalogued so CUA-2 can pin gpt-oss-20b; it does not launch.",
+        "limits": {
+            "backend": "tinker",
+            "baseModel": "openai/gpt-oss-20b",
+            "maxSeqLength": GSM8K_CONTEXT,
+            "catalogContextLength": 131072,
+            "trainingContextLength": GSM8K_CONTEXT,
+            "contextNote": "Tinker SDK probe is 32K; backend catalog lists 131072. This recipe uses 32768.",
+            "costCeilingUsd": HOSTED_SFT_COST_CEILING_USD,
+            "costNotice": "Would spend Tinker. Launch is refused until Josh authorizes D4."
+        },
+        "credentialInputs": [],
+        "prerequisites": ["D4 spend authorization", "docs/sft_tinker_base_models.toml openai/gpt-oss-20b"]
+    })
+}
+
 pub async fn start(
     service: &OptimizerService,
     request: OptimizerRecipeRunRequest,
@@ -174,6 +200,9 @@ pub async fn start(
         HOSTED_SFT_FIXTURE_RECIPE => start_fixture(service, request).await,
         HOSTED_SFT_CRAFTAX_NEMOTRON_RECIPE => start_craftax_nemotron(service, request).await,
         HOSTED_SFT_BANKING77_RECIPE => start_banking77(service, request).await,
+        HOSTED_SFT_GSM8K_RECIPE => bail!(
+            "sft.gsm8k.gpt-oss.smoke.v1 is catalogued but spend-gated (D4); do not launch"
+        ),
         other => bail!("unknown hosted SFT recipe: {other}"),
     }
 }
@@ -1048,6 +1077,17 @@ mod tests {
             HOSTED_SFT_COST_CEILING_USD
         );
         assert_eq!(HOSTED_SFT_COST_CEILING_USD, 10.0);
+    }
+
+    #[test]
+    fn gsm8k_gpt_oss_recipe_is_catalogued_and_spend_gated() {
+        let recipe = gsm8k_gpt_oss_recipe();
+        assert_eq!(recipe["id"], HOSTED_SFT_GSM8K_RECIPE);
+        assert_eq!(recipe["limits"]["baseModel"], "openai/gpt-oss-20b");
+        assert_eq!(recipe["limits"]["trainingContextLength"], GSM8K_CONTEXT);
+        assert_eq!(recipe["availability"], "unavailable");
+        let catalog = recipe_catalog();
+        assert!(catalog.iter().any(|item| item["id"] == HOSTED_SFT_GSM8K_RECIPE));
     }
 
     #[test]

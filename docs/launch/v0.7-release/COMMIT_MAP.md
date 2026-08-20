@@ -44,3 +44,15 @@ Merged PRs and the resulting `v0.7` (or `dev`/`main`) heads. Keeper-log and `gh`
 Archived / preserved refs (never merge wholesale): optimizers `archive/v0.7-mapo-checkpoint-20260820` (`37caf2b`), `archive/codex-gepa-v07-evidence-bundle-20260820` (`0aa9ad4b`), `codex/eval-v5-annotation-policy` (`79c6a0d6`); workshop `codex/hosted-tinker-training` (`569dc7b5`, D11 not merged), `codex/v07-local-sft-cispo` (fully represented on `v0.7` via #50).
 
 Merge rule for the rest of the train (register §12): merge-commit into the core branch, delete the head branch so GitHub retargets the stacked PR, never squash a stack, re-verify the stack head after each merge, record counts in `TEST_REPORT.md`.
+
+## Core-dev Phase A/B heads 2026-08-20 18:20Z
+
+| Repo | Branch | SHA | PR | Notes |
+|---|---|---|---|---|
+| workshop | `v07/hosted-pure-dev` | `56b756dd` (A.9 `7bf65865`, A.8 `7f845bb0`) | [#54](https://github.com/synth-laboratories/workshop/pull/54) | Retarget to `v0.7`. #52 auto-closed (`base_ref_deleted`). |
+| backend | `v07/hosted-pure-dev` | `b84565d6f` | [#1245](https://github.com/synth-laboratories/backend/pull/1245) | Rebased onto L3 #1246/#1247. P1-18 + gpt-oss 32K context (`catalog` v6). |
+| synth-mlx-rl | `v07/refuse-dropout-resume` | `ccb7ebb` | [#5](https://github.com/synth-laboratories/synth-mlx-rl/pull/5) | Stacked on #4/#3; #2 merged. |
+| optimizers | `origin/v0.7` | `4ae4d65` | #43 registrar (merged as 4ae4d65 lineage) | Do not recut 0.2.15. |
+| evals | `origin/dev` | `ee80a748` | #280 merged | |
+| `origin/v0.7` workshop | `v0.7` | `fb4988af` | #43 UI + #51 | Stack merge train through #51 is on trunk; A.8/A.9 are not. |
+| `origin/v0.7` backend | `v0.7` | `b98160fca` (#1247) then our PR | #1244/#1246/#1247 | Rung 0 done. |
