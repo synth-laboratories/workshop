@@ -637,7 +637,8 @@ export function OptimizersPage({
 				? "Resume this run from the checkpoint using HostedOptimizerClient.resume_training with a fresh validated SynthTunnel lease and a new idempotent attempt."
 				: "Compare this checkpoint and its evaluation against the baseline, attach or update the experiment visual, and create or update the report with run, attempt, checkpoint lineage, config/task digests, usage reconciliation, and artifact links.";
 		await startAgent({
-			id: action === "resume" && selected.algorithmId === "ppo" ? "ppo" : action === "resume" ? "cispo" : "eval",
+			id: action === "resume" ? "cispo" : "eval",
+			kind: action === "resume" ? "training" : "optimizer",
 			label: action === "evaluate" ? "EV" : action === "resume" ? "RE" : "RP",
 			name: action === "evaluate" ? "Evaluate checkpoint" : action === "resume" ? "Resume checkpoint" : "Compare and report",
 			description: `${actionPrompt} Run ${selected.id}, checkpoint ${checkpointId}.`,
@@ -1049,6 +1050,7 @@ export function OptimizersPage({
 										data-testid={`start-eval-${recipe.id}`}
 										onClick={() => void startAgent({
 											id: "eval",
+											kind: "optimizer",
 											label: "EV",
 											name: recipe.title,
 											description: recipe.description ?? "",
