@@ -219,6 +219,24 @@ impl TrainingRuntime {
             );
             append_job_event(
                 job,
+                "baseline_eval.completed",
+                json!({
+                    "evaluation_phase": "baseline",
+                    "checkpoint_id": BASE_MODEL,
+                    "artifact_digest": "sha256:base-model",
+                    "step": 0,
+                    "evaluator": "banking77_eval.v1",
+                    "container": "tunnel://fixture/banking77",
+                    "metric": "reward",
+                    "score": 0.25,
+                    "loss": 1.2,
+                    "baseline_score": 0.25,
+                    "sample_count": 16,
+                    "status": "completed"
+                }),
+            );
+            append_job_event(
+                job,
                 "training.metric",
                 json!({
                     "step": 2,
@@ -240,22 +258,38 @@ impl TrainingRuntime {
             );
             append_job_event(
                 job,
-                "evaluation.completed",
+                "checkpoint_eval.completed",
                 json!({
-                    "schema_version": "synth_mlx_rl.paired_evaluation.v1",
-                    "baseline_loss": 1.2,
-                    "trained_loss": 0.4,
-                    "item_count": 4
+                    "evaluation_phase": "checkpoint",
+                    "checkpoint_id": format!("{job_id}-ckpt-2"),
+                    "artifact_digest": "sha256:abc123",
+                    "step": 2,
+                    "evaluator": "banking77_eval.v1",
+                    "container": "tunnel://fixture/banking77",
+                    "metric": "reward",
+                    "score": 0.625,
+                    "loss": 0.7,
+                    "baseline_score": 0.25,
+                    "sample_count": 16,
+                    "status": "completed"
                 }),
             );
             append_job_event(
                 job,
-                "heldout_eval.completed",
+                "final_eval.completed",
                 json!({
-                    "baseline_reward": 0.25,
-                    "trained_reward": 0.75,
-                    "heldout_instances": 4,
-                    "world_ref": "world:fixture@heldout"
+                    "evaluation_phase": "final",
+                    "checkpoint_id": format!("{job_id}-terminal"),
+                    "artifact_digest": "sha256:deadbeef",
+                    "step": 4,
+                    "evaluator": "banking77_eval.v1",
+                    "container": "tunnel://fixture/banking77",
+                    "metric": "reward",
+                    "score": 0.75,
+                    "loss": 0.4,
+                    "baseline_score": 0.25,
+                    "sample_count": 16,
+                    "status": "completed"
                 }),
             );
             if algorithm == "cispo" {
@@ -877,6 +911,16 @@ fn evaluation_phase<'a>(kind: &str, payload: &'a Value) -> &'a str {
 }
 
 fn normalized_sidecar_evaluation(kind: &str, algorithm: &str, payload: &Value) -> Value {
+    let checkpoint_id = payload
+        .get("checkpoint_id")
+        .or_else(|| payload.get("artifact_id"))
+        .cloned()
+        .unwrap_or(Value::Null);
+    let artifact_digest = payload
+        .get("artifact_digest")
+        .or_else(|| payload.get("sha256"))
+        .cloned()
+        .unwrap_or(Value::Null);
     let score = payload
         .get("score")
         .or_else(|| payload.get("reward"))
@@ -902,8 +946,13 @@ fn normalized_sidecar_evaluation(kind: &str, algorithm: &str, payload: &Value) -
         "phase": evaluation_phase(kind, payload),
         "algorithm": algorithm,
         "placement": payload.get("placement").cloned().unwrap_or(Value::Null),
-        "checkpoint_id": payload.get("checkpoint_id").or_else(|| payload.get("artifact_id")).cloned().unwrap_or(Value::Null),
-        "artifact_digest": payload.get("artifact_digest").or_else(|| payload.get("sha256")).cloned().unwrap_or(Value::Null),
+        "checkpoint_id": checkpoint_id,
+        "artifact_digest": artifact_digest,
+        "candidate": {
+            "exact_checkpoint": !checkpoint_id.is_null() && !artifact_digest.is_null(),
+            "checkpoint_id": checkpoint_id,
+            "artifact_digest": artifact_digest
+        },
         "step": payload.get("step").cloned().unwrap_or(Value::Null),
         "evaluator": payload.get("evaluator").or_else(|| payload.get("plan_ref")).cloned().unwrap_or(Value::Null),
         "container": payload.get("container").or_else(|| payload.get("container_url")).cloned().unwrap_or(Value::Null),
@@ -1034,6 +1083,13 @@ pub fn training_create_request(
 }
 
 pub fn local_sft_config(run_id: &str, dataset: Option<&Path>, evaluation: Option<&Path>) -> Value {
+    let evaluation_plan = tunneled_banking77_evaluation_plan(
+        std::env::var("SYNTH_MLX_SFT_EVAL_URL").ok(),
+        "SYNTH_MLX_SFT_EVAL_URL",
+        "SYNTH_MLX_SFT_EVAL_TOKEN",
+        CHECKPOINT_EVERY,
+        vec![CHECKPOINT_EVERY, MAX_STEPS],
+    );
     json!({
         "job_id": run_id,
         "config": {
@@ -1044,16 +1100,7 @@ pub fn local_sft_config(run_id: &str, dataset: Option<&Path>, evaluation: Option
             "output_dir": crate::instance::data_root().join("optimizers/mlx-sft").join(run_id),
             "max_steps": MAX_STEPS,
             "checkpoint_every": CHECKPOINT_EVERY,
-            "evaluation": {
-                "schema_version": "training.evaluation.plan.v1",
-                "phases": ["baseline", "checkpoint", "final"],
-                "checkpoint_every": CHECKPOINT_EVERY,
-                "transport": "tunnel",
-                "container_url_env": "SYNTH_MLX_SFT_EVAL_URL",
-                "bearer_token_env": "SYNTH_MLX_SFT_EVAL_TOKEN",
-                "task": "banking77",
-                "metric": "reward"
-            },
+            "evaluation": evaluation_plan,
             "learning_rate": 0.00005,
             "lora_rank": LORA_RANK,
             "lora_alpha": LORA_ALPHA,
@@ -1065,12 +1112,92 @@ pub fn local_sft_config(run_id: &str, dataset: Option<&Path>, evaluation: Option
     })
 }
 
+pub fn tunneled_banking77_evaluation_plan(
+    container_url: Option<String>,
+    container_url_env: &str,
+    bearer_token_env: &str,
+    checkpoint_every: u64,
+    checkpoint_steps: Vec<u64>,
+) -> Value {
+    json!({
+        "schema_version": "training.evaluation.plan.v1",
+        "required": true,
+        "transport": "tunnel",
+        "container": {
+            "url": container_url,
+            "url_env": container_url_env,
+            "auth_bearer_env": bearer_token_env,
+            "lease_owner": "optimizers_sidecar"
+        },
+        "schedule": {
+            "phases": ["baseline", "checkpoint", "final"],
+            "checkpoint_every": checkpoint_every,
+            "checkpoint_steps": checkpoint_steps
+        },
+        "candidate": {
+            "exact_checkpoint_required": true,
+            "baseline_target": "base_model",
+            "checkpoint_target": "immutable_artifact",
+            "final_target": "terminal_artifact"
+        },
+        "evaluator": {
+            "task": "banking77",
+            "harness": "classify",
+            "plan_ref": "banking77_eval.v1",
+            "world_ref": "world:banking77@heldout",
+            "metric": "reward",
+            "seeds": [1, 2],
+            "sample_count": 16,
+            "timeout_s": 120
+        }
+    })
+}
+
+fn validate_tunneled_evaluation_plan(config: &Value) -> Result<()> {
+    let plan = config
+        .get("evaluation")
+        .ok_or_else(|| anyhow!("training request omitted required evaluation plan"))?;
+    for pointer in [
+        "/schema_version",
+        "/transport",
+        "/container/url_env",
+        "/container/auth_bearer_env",
+        "/schedule/phases",
+        "/schedule/checkpoint_steps",
+        "/candidate/exact_checkpoint_required",
+        "/evaluator/harness",
+        "/evaluator/plan_ref",
+        "/evaluator/world_ref",
+        "/evaluator/metric",
+        "/evaluator/seeds",
+        "/evaluator/sample_count",
+        "/evaluator/timeout_s",
+    ] {
+        if plan.pointer(pointer).map_or(true, Value::is_null) {
+            bail!("training evaluation plan omitted {pointer}");
+        }
+    }
+    if plan.get("required").and_then(Value::as_bool) != Some(true)
+        || plan.get("transport").and_then(Value::as_str) != Some("tunnel")
+        || plan
+            .pointer("/candidate/exact_checkpoint_required")
+            .and_then(Value::as_bool)
+            != Some(true)
+        || plan.pointer("/schedule/phases") != Some(&json!(["baseline", "checkpoint", "final"]))
+    {
+        bail!("training evaluation plan must require tunneled baseline/checkpoint/final exact-artifact evaluation");
+    }
+    Ok(())
+}
+
 async fn drive_mlx_job(
     runtime: &TrainingRuntime,
     job_id: &str,
     placement: &str,
     config: &Value,
 ) -> Result<()> {
+    let inner_config = config.get("config").unwrap_or(config);
+    validate_tunneled_evaluation_plan(inner_config)?;
     super::mlx_runtime::require_training_model()?;
     let client = MlxLoopback::ensure().await?;
     let capabilities = client.get("/v1/capabilities").await?;
@@ -1267,6 +1394,7 @@ async fn drive_hosted_cispo_job(
     job_id: &str,
     config: &Value,
 ) -> Result<()> {
+    validate_tunneled_evaluation_plan(config)?;
     if !hosted_cispo_admitted() {
         bail!("hosted CISPO is fail-closed until the slime clip canary admits it");
     }
@@ -1386,9 +1514,43 @@ mod tests {
         let config = local_sft_config("run", None, None);
         assert_eq!(config["config"]["evaluation"]["transport"], "tunnel");
         assert_eq!(
-            config["config"]["evaluation"]["phases"],
+            config["config"]["evaluation"]["schedule"]["phases"],
             json!(["baseline", "checkpoint", "final"])
         );
-        assert_eq!(config["config"]["evaluation"]["checkpoint_every"], 2);
+        assert_eq!(
+            config["config"]["evaluation"]["schedule"]["checkpoint_every"],
+            2
+        );
+        assert_eq!(
+            config["config"]["evaluation"]["schedule"]["checkpoint_steps"],
+            json!([2, 4])
+        );
+        assert_eq!(
+            config["config"]["evaluation"]["candidate"]["exact_checkpoint_required"],
+            true
+        );
+        assert_eq!(
+            config["config"]["evaluation"]["evaluator"]["plan_ref"],
+            "banking77_eval.v1"
+        );
+        assert_eq!(
+            config["config"]["evaluation"]["evaluator"]["sample_count"],
+            16
+        );
+        validate_tunneled_evaluation_plan(&config["config"]).unwrap();
+    }
+
+    #[test]
+    fn training_evaluation_plan_fails_closed_when_checkpoint_identity_is_missing() {
+        let mut config = json!({
+            "evaluation": tunneled_banking77_evaluation_plan(
+                Some("https://tunnel.invalid".into()), "URL_ENV", "TOKEN_ENV", 2, vec![2, 4]
+            )
+        });
+        config["evaluation"]["candidate"]["exact_checkpoint_required"] = json!(false);
+        assert!(validate_tunneled_evaluation_plan(&config)
+            .unwrap_err()
+            .to_string()
+            .contains("exact-artifact"));
     }
 }

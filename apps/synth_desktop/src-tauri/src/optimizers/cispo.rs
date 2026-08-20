@@ -5,8 +5,8 @@ use super::models::{
 };
 use super::sidecar_training::{
     advertised_placement, optional_jsonl, spawn_watch_worker, training_create_request,
-    SidecarTrainingClient, HOSTED_CISPO_RECIPE, LOCAL_MLX_CISPO_RECIPE,
-    PLACEMENT_TRAINING_CISPO_HOSTED, PLACEMENT_TRAINING_CISPO_LOCAL,
+    tunneled_banking77_evaluation_plan, SidecarTrainingClient, HOSTED_CISPO_RECIPE,
+    LOCAL_MLX_CISPO_RECIPE, PLACEMENT_TRAINING_CISPO_HOSTED, PLACEMENT_TRAINING_CISPO_LOCAL,
 };
 use super::OptimizerService;
 use anyhow::Result;
@@ -84,6 +84,13 @@ async fn start_local(
     let rollout_url = std::env::var("SYNTH_MLX_CISPO_ROLLOUT_URL")
         .map_err(|_| anyhow::anyhow!("local CISPO requires SYNTH_MLX_CISPO_ROLLOUT_URL"))?;
     let rollout_token = std::env::var("SYNTH_MLX_CISPO_ROLLOUT_TOKEN").ok();
+    let evaluation_plan = tunneled_banking77_evaluation_plan(
+        Some(rollout_url.clone()),
+        "SYNTH_MLX_CISPO_ROLLOUT_URL",
+        "SYNTH_MLX_CISPO_ROLLOUT_TOKEN",
+        2,
+        vec![2, 4],
+    );
     let suffix = uuid::Uuid::new_v4().simple().to_string();
     let run_id = format!("cispo_mlx_{}", &suffix[..12]);
     let output_dir = crate::instance::data_root()
@@ -141,17 +148,7 @@ async fn start_local(
             "output_dir": output_dir,
             "max_steps": 4,
             "checkpoint_every": 2,
-            "evaluation": {
-                "schema_version": "training.evaluation.plan.v1",
-                "phases": ["baseline", "checkpoint", "final"],
-                "checkpoint_every": 2,
-                "transport": "tunnel",
-                "url": rollout_url,
-                "bearer_token": rollout_token,
-                "task": "banking77",
-                "metric": "reward",
-                "heldout_instances": 16
-            },
+            "evaluation": evaluation_plan,
             "lora_rank": 8,
             "lora_alpha": 16.0,
             "max_seq_length": 4096,
@@ -168,6 +165,13 @@ async fn start_hosted(
 ) -> Result<(OptimizerRunRecord, Option<crate::storage::AppEvent>)> {
     let suffix = uuid::Uuid::new_v4().simple().to_string();
     let run_id = format!("cispo_hosted_{}", &suffix[..12]);
+    let evaluation_plan = tunneled_banking77_evaluation_plan(
+        std::env::var("SYNTH_OPTIMIZERS_CISPO_CONTAINER_URL").ok(),
+        "SYNTH_OPTIMIZERS_CISPO_CONTAINER_URL",
+        "SYNTH_OPTIMIZERS_CISPO_CONTAINER_TOKEN",
+        1,
+        vec![1, 2],
+    );
     let create = training_create_request(
         &run_id,
         "cispo",
@@ -202,18 +206,7 @@ async fn start_hosted(
             "implementation": "cispo.slime.v1",
             "task": "banking77",
             "eps_high": 4.0,
-            "evaluation": {
-                "schema_version": "training.evaluation.plan.v1",
-                "phases": ["baseline", "checkpoint", "final"],
-                "checkpoint_every": 1,
-                "transport": "tunnel",
-                "container_url_env": "SYNTH_OPTIMIZERS_CISPO_CONTAINER_URL",
-                "bearer_token_env": "SYNTH_OPTIMIZERS_CISPO_CONTAINER_TOKEN",
-                "plan_ref": "banking77_eval.v1",
-                "world_ref": "world:banking77@heldout",
-                "metric": "reward",
-                "seeds": [1, 2]
-            }
+            "evaluation": evaluation_plan
         }),
     )
     .await
