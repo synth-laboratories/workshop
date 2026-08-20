@@ -3114,7 +3114,7 @@ fn project_from_events(
                     }
                 }
             }
-            "sft.checkpoint.created" | "sft.checkpoint.ready" => {
+            "sft.checkpoint.created" | "sft.checkpoint.ready" | "training.checkpoint.created" | "training.checkpoint.ready" => {
                 if let Some(item) = &event.item {
                     let id = item.get("id").and_then(Value::as_str).unwrap_or("");
                     let mut found = false;
@@ -3125,7 +3125,9 @@ fn project_from_events(
                                     "status".into(),
                                     item.get("status").cloned().unwrap_or(json!("ready")),
                                 );
-                                if event.event_type == "sft.checkpoint.ready" {
+                                if event.event_type == "sft.checkpoint.ready"
+                                    || event.event_type == "training.checkpoint.ready"
+                                {
                                     obj.insert("ready".into(), json!(true));
                                 }
                             }
@@ -3158,7 +3160,7 @@ fn project_from_events(
                     }
                 }
             }
-            "sft.step.metrics" | "sft.training.metrics" => {
+            "sft.step.metrics" | "sft.training.metrics" | "training.metrics" => {
                 if let Some(obj) = curves.as_object_mut() {
                     push_curve(obj, "steps", event.delta.get("step"));
                     push_curve(obj, "epochs", event.delta.get("epoch"));

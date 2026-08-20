@@ -8,6 +8,10 @@
 
 use super::events::OptimizerEventDraft;
 use super::mlx_runtime::MlxLoopback;
+use super::training_adapter::{
+    adapt_source_fact, ingest_ordered_events, promote_hosted_fact, TerminalMapping,
+    TRAINING_ARTIFACT_MATERIALIZED,
+};
 use super::models::{
     OptimizerCapabilities, OptimizerCreateRequest, OptimizerExecutionBinding,
     OptimizerRecipeRunRequest, OptimizerResourceRef, OptimizerRunRecord,
@@ -587,10 +591,19 @@ fn hosted_cispo_admitted() -> bool {
 }
 
 fn append_job_event(job: &mut TrainingJob, kind: &str, payload: Value) {
-    let sequence = job.events.len() as u64 + 1;
+    let sequence = job
+        .events
+        .iter()
+        .filter_map(|event| event.get("sequence").and_then(Value::as_u64))
+        .max()
+        .unwrap_or(0)
+        + 1;
     job.events.push(json!({
         "sequence": sequence,
         "type": kind,
+        "kind": kind,
+        "event_id": format!("{kind}:{sequence}"),
+        "attempt_id": "attempt-1",
         "payload": payload,
     }));
 }
@@ -808,22 +821,17 @@ async fn watch_job(
             }
         };
         let algorithm = service.get(run_id.clone()).await?.algorithm_id;
-        for event in page
-            .get("events")
-            .and_then(Value::as_array)
-            .cloned()
-            .unwrap_or_default()
-        {
-            let sequence = event
-                .get("sequence")
-                .and_then(Value::as_u64)
-                .ok_or_else(|| anyhow!("training event omitted sequence"))?;
-            if sequence != cursor + 1 {
-                bail!("training event sequence gap after {cursor}: {sequence}");
-            }
-            append_mapped_event(&service, &run_id, &algorithm, &event, sequence).await?;
-            cursor = sequence;
+        let (next, events) = ingest_ordered_events(
+            cursor,
+            page.get("events")
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default(),
+        )?;
+        for event in events {
+            append_mapped_event(&service, &run_id, &algorithm, &event).await?;
         }
+        cursor = next;
         persist_cursor(&service, &run_id, cursor).await?;
         let job = client.job(&run_id).await?;
         match job
@@ -832,19 +840,19 @@ async fn watch_job(
             .unwrap_or("running")
         {
             "succeeded" => {
-                persist_handoff(&service, &client, &run_id).await?;
-                append_status(&service, &run_id, "optimizer.run.completed", "completed").await?;
+                settle_successful_job(&service, &client, &run_id).await?;
                 return Ok(());
             }
             "failed" => {
-                return Err(anyhow!(
-                    "training job failed: {}",
-                    job.get("error")
-                        .and_then(Value::as_str)
-                        .unwrap_or("unknown error")
-                ));
+                let reason = job
+                    .get("error")
+                    .and_then(Value::as_str)
+                    .unwrap_or("unknown error");
+                append_terminal_mapping(&service, &run_id, TerminalMapping::failed(reason)).await?;
+                return Err(anyhow!("training job failed: {reason}"));
             }
             "cancelled" => {
+                append_terminal_mapping(&service, &run_id, TerminalMapping::cancelled()).await?;
                 append_status(&service, &run_id, "optimizer.run.cancelled", "cancelled").await?;
                 return Ok(());
             }
@@ -862,85 +870,33 @@ pub async fn append_mapped_event(
     run_id: &str,
     algorithm: &str,
     event: &Value,
-    sequence: u64,
 ) -> Result<()> {
-    let kind = event
-        .get("type")
-        .and_then(Value::as_str)
-        .unwrap_or("job.event");
-    let payload = event.get("payload").cloned().unwrap_or_else(|| json!({}));
-    let draft = mapped_event_draft(kind, algorithm, &payload);
+    let adapted = adapt_source_fact(algorithm, event)?;
     service
-        .append_event_payloads(
-            run_id.into(),
-            vec![draft
-                .idempotency_key(format!("sidecar-training:{sequence}"))
-                .raw(event.clone())],
-        )
+        .append_event_payloads(run_id.into(), vec![adapted.draft])
         .await?;
     Ok(())
-}
-
-fn mapped_event_draft(kind: &str, algorithm: &str, payload: &Value) -> OptimizerEventDraft {
-    match kind {
-        "job.started" => OptimizerEventDraft::new("optimizer.run.started", algorithm)
-            .delta(Map::from_iter([("status".into(), json!("running"))])),
-        "job.resumed" => OptimizerEventDraft::new("optimizer.run.resumed", algorithm)
-            .delta(Map::from_iter([("status".into(), json!("running"))])),
-        "training.metric" => {
-            OptimizerEventDraft::new("sft.training.metrics", algorithm).delta(Map::from_iter([
-                ("step".into(), payload["step"].clone()),
-                ("train_loss".into(), payload["loss"].clone()),
-                ("learning_rate".into(), payload["learning_rate"].clone()),
-                ("throughput".into(), payload["tokens_per_second"].clone()),
-            ]))
-        }
-        "checkpoint.created" => OptimizerEventDraft::new("sft.checkpoint.ready", algorithm)
-            .item(json!({
-                "id": payload["checkpoint_id"],
-                "step": payload["step"],
-                "status": "ready",
-                "ready": true,
-                "path": payload["path"],
-                "sha256": payload["sha256"],
-                "bytes": payload["bytes"],
-                "kind": "mlx-lora.v1",
-                "raw": payload
-            }))
-            .artifact_refs(vec![json!({
-                "kind": "checkpoint",
-                "id": payload["checkpoint_id"],
-                "uri": payload["path"],
-                "digest": payload["sha256"]
-            })]),
-        "evaluation.completed" | "heldout_eval.completed" => {
-            OptimizerEventDraft::new("sft.heldout_evaluation.completed", algorithm)
-                .delta(Map::from_iter([
-                    ("kind".into(), json!(kind)),
-                    ("evaluation".into(), payload.clone()),
-                ]))
-                .item(payload.clone())
-        }
-        "training.clip" => OptimizerEventDraft::new("cispo.clip.identity", algorithm)
-            .delta(Map::from_iter([("clip".into(), payload.clone())])),
-        "cispo.no_learning_signal" => {
-            OptimizerEventDraft::new("cispo.no_learning_signal", algorithm)
-                .level("error")
-                .error(payload.clone())
-        }
-        _ => OptimizerEventDraft::new(format!("training.{kind}"), algorithm),
-    }
 }
 
 async fn persist_handoff(
     service: &OptimizerService,
     client: &SidecarTrainingClient,
     run_id: &str,
-) -> Result<()> {
-    let Ok(handoff) = client.handoff(run_id).await else {
-        return Ok(());
+) -> Result<Option<crate::training_artifacts::TrainingArtifact>> {
+    let handoff = match client.handoff(run_id).await {
+        Ok(handoff) => handoff,
+        Err(error) => {
+            let run = service.get(run_id.into()).await?;
+            if run.source == "local" {
+                return Err(error.context(
+                    "training succeeded but the adapter handoff was unreachable; refusing optimizer.run.completed",
+                ));
+            }
+            return Ok(None);
+        }
     };
     let mut run = service.get(run_id.into()).await?;
+    let mut materialized = None;
     if handoff.pointer("/inference/kind").and_then(Value::as_str) == Some("mlx-lora.v1") {
         let dataset_digest = run
             .summary
@@ -952,53 +908,96 @@ async fn persist_handoff(
             .pointer("/configDigest")
             .and_then(Value::as_str)
             .map(str::to_string);
-        match crate::training_artifacts::TrainingArtifact::from_mlx_handoff(
+        let artifact = crate::training_artifacts::TrainingArtifact::from_mlx_handoff(
             run_id,
             &run.algorithm_id,
             crate::training_models::QWEN_TRAINING_MODEL_ID,
             &handoff,
             dataset_digest,
             config_digest,
-        ) {
-            Ok(artifact) => {
-                let stored = crate::training_artifacts::register(artifact.clone())
-                    .unwrap_or(artifact);
-                run.output_refs.push(OptimizerResourceRef {
-                    kind: "checkpoint".into(),
-                    id: stored.id.clone(),
-                    digest: stored.digest.clone(),
-                    role: Some("terminal_adapter".into()),
-                    title: Some("Training adapter".into()),
-                    metadata: json!({
-                        "handoff": handoff,
-                        "trainingArtifact": stored,
-                    }),
-                });
-            }
-            Err(error) => {
-                run.output_refs.push(OptimizerResourceRef {
-                    kind: "checkpoint".into(),
-                    id: handoff["checkpoint"]["checkpoint_id"]
-                        .as_str()
-                        .unwrap_or("terminal")
-                        .into(),
-                    digest: handoff["checkpoint"]["sha256"]
-                        .as_str()
-                        .map(|value| format!("sha256:{value}")),
-                    role: Some("terminal_adapter".into()),
-                    title: Some("Training adapter".into()),
-                    metadata: json!({
-                        "handoff": handoff,
-                        "artifactError": error.to_string(),
-                    }),
-                });
-            }
-        }
+        )
+        .context(
+            "training succeeded but the adapter could not be materialized; refusing optimizer.run.completed",
+        )?;
+        let stored = crate::training_artifacts::register(artifact.clone()).unwrap_or(artifact);
+        run.output_refs.push(OptimizerResourceRef {
+            kind: "checkpoint".into(),
+            id: stored.id.clone(),
+            digest: stored.digest.clone(),
+            role: Some("terminal_adapter".into()),
+            title: Some("Training adapter".into()),
+            metadata: json!({
+                "handoff": handoff,
+                "trainingArtifact": stored,
+            }),
+        });
+        materialized = Some(stored);
     }
     let mut summary = run.summary.as_object().cloned().unwrap_or_default();
     summary.insert("adapterHandoff".into(), handoff);
     run.summary = Value::Object(summary);
     service.persist_run(run).await?;
+    Ok(materialized)
+}
+
+async fn settle_successful_job(
+    service: &OptimizerService,
+    client: &SidecarTrainingClient,
+    run_id: &str,
+) -> Result<()> {
+    let run = service.get(run_id.into()).await?;
+    let local = run.source == "local";
+    let algorithm = run.algorithm_id.clone();
+    let artifact = persist_handoff(service, client, run_id).await?;
+    if local && artifact.is_none() {
+        bail!(
+            "training succeeded but the adapter artifact was not materialized; refusing optimizer.run.completed"
+        );
+    }
+    let mapping = if let Some(artifact) = artifact.as_ref() {
+        service
+            .append_event_payloads(
+                run_id.into(),
+                vec![OptimizerEventDraft::new(TRAINING_ARTIFACT_MATERIALIZED, algorithm.clone())
+                    .idempotency_key("training:artifact-materialized")
+                    .item(json!({
+                        "id": artifact.id,
+                        "kind": artifact.adapter_kind,
+                        "baseModel": artifact.base_model_id,
+                        "digest": artifact.digest,
+                        "producingRunId": artifact.producing_run_id,
+                        "configDigest": artifact.config_digest,
+                    }))
+                    .artifact_refs(vec![json!({
+                        "kind": "checkpoint",
+                        "id": artifact.id,
+                        "digest": artifact.digest
+                    })])],
+            )
+            .await?;
+        TerminalMapping::completed_after_artifact(&artifact.id)
+    } else {
+        TerminalMapping::completed_without_local_artifact()
+    };
+    append_terminal_mapping(service, run_id, mapping).await?;
+    append_status(service, run_id, "optimizer.run.completed", "completed").await?;
+    Ok(())
+}
+
+async fn append_terminal_mapping(
+    service: &OptimizerService,
+    run_id: &str,
+    mapping: TerminalMapping,
+) -> Result<()> {
+    let algorithm = service.get(run_id.into()).await?.algorithm_id;
+    service
+        .append_event_payloads(
+            run_id.into(),
+            vec![mapping
+                .draft(&algorithm)
+                .idempotency_key(format!("training:terminal-mapped:{}", mapping.mapped_to))],
+        )
+        .await?;
     Ok(())
 }
 
@@ -1166,18 +1165,15 @@ async fn drive_mlx_job(
                 .get_mut(job_id)
                 .ok_or_else(|| anyhow!("training job disappeared"))?;
             job.status = "running".into();
-            for event in page
-                .get("events")
-                .and_then(Value::as_array)
-                .cloned()
-                .unwrap_or_default()
-            {
-                let sequence = event.get("sequence").and_then(Value::as_u64).unwrap_or(0);
-                if sequence > cursor {
-                    job.events.push(event);
-                    cursor = sequence;
-                }
-            }
+            let (next, events) = ingest_ordered_events(
+                cursor,
+                page.get("events")
+                    .and_then(Value::as_array)
+                    .cloned()
+                    .unwrap_or_default(),
+            )?;
+            job.events.extend(events);
+            cursor = next;
         }
         let remote = client.get(&format!("/v1/jobs/{job_id}")).await?;
         match remote
@@ -1194,7 +1190,15 @@ async fn drive_mlx_job(
                 if let Some(job) = jobs.get_mut(job_id) {
                     job.handoff = handoff;
                     job.status = "succeeded".into();
-                    append_job_event(job, "job.succeeded", json!({}));
+                    if !job.events.iter().any(|event| {
+                        event
+                            .get("type")
+                            .or_else(|| event.get("kind"))
+                            .and_then(Value::as_str)
+                            == Some("job.succeeded")
+                    }) {
+                        append_job_event(job, "job.succeeded", json!({}));
+                    }
                 }
                 return Ok(());
             }
@@ -1251,26 +1255,17 @@ async fn drive_hosted_sft_job(
                 .get_mut(job_id)
                 .ok_or_else(|| anyhow!("training job disappeared"))?;
             job.status = "running".into();
-            for event in page
+            let promoted = page
                 .get("events")
                 .and_then(Value::as_array)
                 .cloned()
                 .unwrap_or_default()
-            {
-                let sequence = event
-                    .get("sequence_number")
-                    .or_else(|| event.get("sequence"))
-                    .and_then(Value::as_u64)
-                    .unwrap_or(0);
-                if sequence > cursor {
-                    job.events.push(json!({
-                        "sequence": sequence,
-                        "type": event.get("type").cloned().unwrap_or_else(|| json!("hosted.event")),
-                        "payload": event,
-                    }));
-                    cursor = sequence;
-                }
-            }
+                .into_iter()
+                .map(promote_hosted_fact)
+                .collect::<Result<Vec<_>>>()?;
+            let (next, events) = ingest_ordered_events(cursor, promoted)?;
+            job.events.extend(events);
+            cursor = next;
         }
         let remote = client.get_run(job_id).await?;
         match remote
@@ -1375,31 +1370,35 @@ mod tests {
         let golden = [
             (
                 "training.metric",
-                json!({"step":2,"epoch":1,"loss":0.42,"learning_rate":0.00005,"tokens":128.0,"step_seconds":2.0,"tokens_per_second":64.0,"memory_bytes":1048576}),
                 "sft.training.metrics",
             ),
             (
                 "checkpoint.created",
-                json!({"checkpoint_id":"job:step-2","step":2,"path":"/tmp/adapter","sha256":"abc123","bytes":128,"created_at":"2026-08-20T12:00:00Z","kind":"mlx-lora.v1"}),
                 "sft.checkpoint.ready",
             ),
             (
                 "heldout_eval.completed",
-                json!({"phase":"trained","instances":4,"mean_reward":0.75,"rewards":[1.0,1.0,0.0,1.0]}),
                 "sft.heldout_evaluation.completed",
             ),
             (
                 "training.clip",
-                json!({"eps_low":1.0,"eps_high":4.0,"identity":"cispo_minimax"}),
                 "cispo.clip.identity",
             ),
+            (
+                "job.succeeded",
+                super::super::training_adapter::TRAINING_JOB_COMPLETED,
+            ),
         ];
-        for (kind, payload, expected) in golden {
+        for (kind, expected) in golden {
             assert_eq!(
-                mapped_event_draft(kind, "sft", &payload).event_type,
+                super::super::training_adapter::mapped_event_type("sft", kind),
                 expected
             );
         }
+        assert_eq!(
+            super::super::training_adapter::mapped_event_type("cispo", "training.metric"),
+            "training.metrics"
+        );
     }
 
     #[test]
