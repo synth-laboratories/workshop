@@ -30,6 +30,8 @@ const MIGRATIONS: &[&str] = &[
     MIGRATION_25,
     MIGRATION_26,
     MIGRATION_27,
+    MIGRATION_28,
+    MIGRATION_29,
 ];
 
 /// Apply every migration the database has not reached yet.
@@ -79,6 +81,8 @@ const REQUIRED_TABLES: &[(&str, &str)] = &[
     ("optimizer_terminal_manifests", MIGRATION_23),
     ("secret_refs", MIGRATION_25),
     ("product_telemetry_events", MIGRATION_26),
+    ("local_lora_checkpoints", MIGRATION_28),
+    ("hosted_lora_overlays", MIGRATION_29),
 ];
 
 fn heal_missing_tables(conn: &Connection) -> Result<()> {
@@ -1583,6 +1587,40 @@ UPDATE report_revision_blocks SET access_state = 'available' WHERE access_state 
 UPDATE report_revision_blocks SET integrity_state = 'unresolved' WHERE integrity_state = 'unknown';
 UPDATE report_sources SET access_state = 'available' WHERE access_state = 'accessible';
 UPDATE report_sources SET integrity_state = 'unresolved' WHERE integrity_state = 'unknown';
+"#;
+
+const MIGRATION_28: &str = r#"
+CREATE TABLE IF NOT EXISTS local_lora_checkpoints (
+    checkpoint_id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    description TEXT NOT NULL DEFAULT '',
+    base_model TEXT NOT NULL,
+    optimizer_algorithm TEXT,
+    checkpoint_kind TEXT NOT NULL,
+    step INTEGER,
+    lora_rank INTEGER,
+    status TEXT NOT NULL,
+    adapter_path TEXT NOT NULL,
+    sha256 TEXT NOT NULL,
+    size_bytes INTEGER,
+    run_id TEXT,
+    source_checkpoint_id TEXT,
+    tags_json TEXT NOT NULL DEFAULT '[]',
+    metadata_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    archived_at TEXT
+);
+"#;
+
+const MIGRATION_29: &str = r#"
+CREATE TABLE IF NOT EXISTS hosted_lora_overlays (
+    checkpoint_id TEXT PRIMARY KEY,
+    name TEXT,
+    description TEXT,
+    tags_json TEXT,
+    updated_at TEXT NOT NULL
+);
 "#;
 #[cfg(test)]
 mod tests {

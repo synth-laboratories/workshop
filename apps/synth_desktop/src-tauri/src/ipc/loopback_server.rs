@@ -123,11 +123,15 @@ pub fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
 }
 
 /// JSON response with optional extra headers (e.g. protocol version).
+/// `raw_body` is used for native SSE so sidecar HTTP can pass event-stream
+/// bytes without wrapping them as JSON.
 #[derive(Debug)]
 pub struct JsonHttpResponse {
     pub status: StatusCode,
     pub body: Value,
     pub extra_headers: Vec<(&'static str, String)>,
+    pub raw_body: Option<Vec<u8>>,
+    pub content_type: Option<String>,
 }
 
 impl JsonHttpResponse {
@@ -136,6 +140,18 @@ impl JsonHttpResponse {
             status: StatusCode::OK,
             body,
             extra_headers: Vec::new(),
+            raw_body: None,
+            content_type: None,
+        }
+    }
+
+    pub fn sse(body: Vec<u8>) -> Self {
+        Self {
+            status: StatusCode::OK,
+            body: serde_json::json!({}),
+            extra_headers: Vec::new(),
+            raw_body: Some(body),
+            content_type: Some("text/event-stream".into()),
         }
     }
 
@@ -144,21 +160,41 @@ impl JsonHttpResponse {
             status,
             body: serde_json::json!({ "error": message.into() }),
             extra_headers: Vec::new(),
+            raw_body: None,
+            content_type: None,
+        }
+    }
+
+    pub fn with_status(status: StatusCode, body: Value) -> Self {
+        Self {
+            status,
+            body,
+            extra_headers: Vec::new(),
+            raw_body: None,
+            content_type: None,
         }
     }
 }
 
 pub fn json_response(status: StatusCode, body: Value) -> Response<LoopbackBody> {
     let payload = serde_json::to_vec(&body).unwrap_or_else(|_| b"{\"error\":\"encode\"}".to_vec());
+    bytes_response(status, "application/json", payload)
+}
+
+pub fn bytes_response(
+    status: StatusCode,
+    content_type: &str,
+    payload: Vec<u8>,
+) -> Response<LoopbackBody> {
     Response::builder()
         .status(status)
-        .header("content-type", "application/json")
+        .header("content-type", content_type)
         .body(
             Full::new(Bytes::from(payload))
                 .map_err(|never| match never {})
                 .boxed(),
         )
-        .expect("static JSON response")
+        .expect("static loopback response")
 }
 
 /// Hyper accept loop that parses JSON bodies and dispatches to a router.
@@ -191,8 +227,18 @@ where
                 status,
                 body,
                 extra_headers,
+                raw_body,
+                content_type,
             } = handler(parsed).await;
-            let mut response = json_response(status, body);
+            let mut response = if let Some(raw) = raw_body {
+                bytes_response(
+                    status,
+                    content_type.as_deref().unwrap_or("application/octet-stream"),
+                    raw,
+                )
+            } else {
+                json_response(status, body)
+            };
             for (name, value) in extra_headers {
                 if let Ok(header) = hyper::header::HeaderValue::from_str(&value) {
                     response.headers_mut().insert(name, header);

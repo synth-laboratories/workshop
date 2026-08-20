@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 use rand::RngCore;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{json, Value};
 use std::{
     collections::HashSet,
     env,
@@ -230,6 +230,7 @@ pub struct LagunaManager {
     inference_updates: broadcast::Sender<LagunaInference>,
     inference_task: Mutex<Option<tauri::async_runtime::JoinHandle<()>>>,
     client: Client,
+    adapter_path: Mutex<Option<PathBuf>>,
 }
 
 impl LagunaManager {
@@ -256,6 +257,7 @@ impl LagunaManager {
             inference_updates,
             inference_task: Mutex::new(None),
             client: crate::http::http_client(),
+            adapter_path: Mutex::new(None),
         }
     }
 
@@ -326,6 +328,34 @@ impl LagunaManager {
         }
         self.ensure(workshop_root).await?;
         Ok(self.status().await)
+    }
+
+    pub async fn set_adapter(&self, adapter_path: Option<&Path>) -> Result<LagunaStatus> {
+        let previous = self.adapter_path.lock().await.clone();
+        let base_url = self
+            .status()
+            .await
+            .base_url
+            .clone()
+            .ok_or_else(|| anyhow::anyhow!("Laguna is not running"))?;
+        let api_key = env::var("SYNTH_LAGUNA_API_KEY").unwrap_or_default();
+        let model = selected_model_id().unwrap_or_else(|_| DEFAULT_MODEL.to_string());
+        match self
+            .load_model_at(&base_url, &api_key, &model, adapter_path)
+            .await
+        {
+            Ok(()) => {
+                *self.adapter_path.lock().await = adapter_path.map(Path::to_path_buf);
+                self.refresh().await;
+                Ok(self.status().await)
+            }
+            Err(error) => {
+                let _ = self
+                    .load_model_at(&base_url, &api_key, &model, previous.as_deref())
+                    .await;
+                Err(error)
+            }
+        }
     }
 
     pub fn api_key(&self) -> Option<String> {
@@ -615,7 +645,11 @@ for shard in sorted(shards):
         loading.phase = "loading".into();
         loading.detail = Some("Loading Laguna weights for the next turn…".into());
         self.set_status(loading).await;
-        if let Err(error) = self.load_model_at(&base_url, &api_key, &model).await {
+        let adapter = self.adapter_path.lock().await.clone();
+        if let Err(error) = self
+            .load_model_at(&base_url, &api_key, &model, adapter.as_deref())
+            .await
+        {
             self.set_error(error.to_string()).await;
             return Err(error);
         }
@@ -631,7 +665,13 @@ for shard in sorted(shards):
         Ok(Some(base_url))
     }
 
-    async fn load_model_at(&self, base_url: &str, api_key: &str, model: &str) -> Result<()> {
+    async fn load_model_at(
+        &self,
+        base_url: &str,
+        api_key: &str,
+        model: &str,
+        adapter_path: Option<&Path>,
+    ) -> Result<()> {
         let mut url = reqwest::Url::parse(base_url).context("invalid Laguna base URL")?;
         {
             let mut segments = url
@@ -642,11 +682,15 @@ for shard in sorted(shards):
             segments.extend(model.split('/'));
             segments.push("load");
         }
+        let body = json!({
+            "adapter_path": adapter_path.map(|path| path.display().to_string())
+        });
         let response = self
             .client
             .post(url)
             .bearer_auth(api_key)
             .timeout(crate::limits::LAGUNA_READY_WAIT)
+            .json(&body)
             .send()
             .await
             .with_context(|| format!("Laguna model load is unreachable at {base_url}"))?;
@@ -1898,7 +1942,7 @@ mod tests {
         )
         .await;
         LagunaManager::new()
-            .load_model_at(&base_url, &credential, DEFAULT_MODEL)
+            .load_model_at(&base_url, &credential, DEFAULT_MODEL, None)
             .await
             .expect("the production load control response restores residency");
         server.await.unwrap();
@@ -1912,7 +1956,7 @@ mod tests {
         )
         .await;
         let error = LagunaManager::new()
-            .load_model_at(&base_url, &credential, DEFAULT_MODEL)
+            .load_model_at(&base_url, &credential, DEFAULT_MODEL, None)
             .await
             .expect_err("a rejected load must fail the turn preflight")
             .to_string();

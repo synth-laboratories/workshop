@@ -47,6 +47,11 @@ pub struct CodexSessionStartRequest {
     /// discarded by `prepare_codex_start` before launch.
     #[serde(default)]
     pub writable_roots: Vec<String>,
+    /// Catalog identity (`sha256:…`) of a This Mac Laguna-compatible LoRA.
+    /// `None` is the base Laguna XS weights. Renderer-owned; never forwarded
+    /// into the Codex app-server provider payload.
+    #[serde(default)]
+    pub adapter: Option<String>,
     /// Authenticated native Codex model envelope returned by the local Laguna
     /// daemon. Rust populates this after residency preflight; renderer input is
     /// never accepted, and local startup fails closed when it is absent.
@@ -80,6 +85,7 @@ impl fmt::Debug for CodexSessionStartRequest {
             .field("multi_agent_version", &self.multi_agent_version)
             .field("auto_compact_token_limit", &self.auto_compact_token_limit)
             .field("writable_roots", &self.writable_roots)
+            .field("adapter", &self.adapter)
             .field(
                 "local_model_catalog",
                 &self.local_model_catalog.as_ref().map(|_| "<present>"),
@@ -288,6 +294,9 @@ pub struct CodexSessionRecord {
     pub approval_policy: String,
     #[serde(default = "default_sandbox")]
     pub sandbox: String,
+    /// This Mac Laguna adapter catalog id. `None` is the base model.
+    #[serde(default)]
+    pub adapter: Option<String>,
     /// Set when the previous process died holding this chat's turn. It is what
     /// lets the sidebar say "Workshop exited while this task was running"
     /// instead of silently showing an idle chat — or, worse, a live one.

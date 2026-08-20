@@ -13,8 +13,8 @@ use super::training_adapter::{
     TRAINING_ARTIFACT_MATERIALIZED,
 };
 use super::models::{
-    OptimizerCapabilities, OptimizerCreateRequest, OptimizerExecutionBinding,
-    OptimizerRecipeRunRequest, OptimizerResourceRef, OptimizerRunRecord,
+    CheckpointInferRequest, OptimizerCapabilities, OptimizerCreateRequest, OptimizerExecutionBinding,
+    OptimizerRecipeRunRequest, OptimizerResourceRef, OptimizerRunRecord, SavedLoraCheckpoint,
 };
 use super::sft_client::SftOptimizerClient;
 use super::OptimizerService;
@@ -74,6 +74,12 @@ impl TrainingRuntime {
         let method = request.method.as_str();
         match (method, path) {
             ("POST", "/v1/training/jobs") => self.create_job(&request.body).await,
+            ("POST", "/v1/inference/chat/completions") => {
+                self.infer_family("chat_completions", &request.body).await
+            }
+            ("POST", "/v1/inference/responses") => {
+                self.infer_family("responses", &request.body).await
+            }
             ("GET", path) if path.starts_with("/v1/training/jobs/") => {
                 let rest = &path["/v1/training/jobs/".len()..];
                 if let Some(id) = rest.strip_suffix("/events") {
@@ -106,6 +112,27 @@ impl TrainingRuntime {
                 self.chat_artifact(id, &request.body).await
             }
             _ => JsonHttpResponse::error(StatusCode::NOT_FOUND, "not found"),
+        }
+    }
+
+    async fn infer_family(&self, family: &str, body: &Value) -> JsonHttpResponse {
+        match infer_from_sidecar_envelope(family, body).await {
+            Ok(outcome) => {
+                if let Some(sse) = outcome.sse {
+                    JsonHttpResponse::sse(sse)
+                } else {
+                    JsonHttpResponse::ok(outcome.json)
+                }
+            }
+            Err(error) => {
+                let message = error.to_string();
+                let status = if message.contains("does not advertise") {
+                    StatusCode::NOT_IMPLEMENTED
+                } else {
+                    StatusCode::BAD_GATEWAY
+                };
+                JsonHttpResponse::error(status, message)
+            }
         }
     }
 
@@ -302,6 +329,11 @@ impl TrainingRuntime {
                 "placement": job.placement,
                 "recipe_id": job.recipe_id,
                 "event_count": job.events.len(),
+                "error": job.events.iter().rev().find_map(|event| {
+                    (event.get("type").and_then(Value::as_str) == Some("job.failed"))
+                        .then(|| event.get("payload").cloned())
+                        .flatten()
+                }),
             })),
             None => JsonHttpResponse::error(StatusCode::NOT_FOUND, "training job not found"),
         }
@@ -830,6 +862,12 @@ async fn watch_job(
         )?;
         for event in events {
             append_mapped_event(&service, &run_id, &algorithm, &event).await?;
+            if event.get("type").and_then(Value::as_str) == Some("checkpoint.created") {
+                let payload = event.get("payload").cloned().unwrap_or_else(|| json!({}));
+                let _ = service
+                    .upsert_local_lora_from_event(run_id.clone(), payload)
+                    .await;
+            }
         }
         cursor = next;
         persist_cursor(&service, &run_id, cursor).await?;
@@ -844,12 +882,20 @@ async fn watch_job(
                 return Ok(());
             }
             "failed" => {
-                let reason = job
+                let detail = job
                     .get("error")
-                    .and_then(Value::as_str)
-                    .unwrap_or("unknown error");
-                append_terminal_mapping(&service, &run_id, TerminalMapping::failed(reason)).await?;
-                return Err(anyhow!("training job failed: {reason}"));
+                    .and_then(|value| {
+                        value
+                            .get("error")
+                            .and_then(Value::as_str)
+                            .or_else(|| value.get("error_code").and_then(Value::as_str))
+                            .or_else(|| value.as_str())
+                            .map(str::to_string)
+                            .or_else(|| Some(value.to_string()))
+                    })
+                    .unwrap_or_else(|| "unknown error".into());
+                append_terminal_mapping(&service, &run_id, TerminalMapping::failed(&detail)).await?;
+                return Err(anyhow!("training job failed: {detail}"));
             }
             "cancelled" => {
                 append_terminal_mapping(&service, &run_id, TerminalMapping::cancelled()).await?;
@@ -931,6 +977,21 @@ async fn persist_handoff(
                 "trainingArtifact": stored,
             }),
         });
+        let mut payload = handoff
+            .get("checkpoint")
+            .cloned()
+            .unwrap_or_else(|| json!({}));
+        if let Some(object) = payload.as_object_mut() {
+            if let Some(path) = handoff.pointer("/inference/path").and_then(Value::as_str) {
+                object.insert("path".into(), json!(path));
+            }
+            if let Some(sha) = handoff.pointer("/checkpoint/sha256").and_then(Value::as_str) {
+                object.insert("sha256".into(), json!(sha));
+            }
+        }
+        let _ = service
+            .upsert_local_lora_from_event(run_id.to_string(), payload)
+            .await;
         materialized = Some(stored);
     }
     let mut summary = run.summary.as_object().cloned().unwrap_or_default();
@@ -1091,6 +1152,7 @@ pub fn local_sft_config(run_id: &str, dataset: Option<&Path>, evaluation: Option
         "config": {
             "backend": "qwen_lora",
             "base_model": BASE_MODEL,
+            "task_id": std::env::var("SYNTH_MLX_SFT_TASK_ID").ok().filter(|value| !value.is_empty()),
             "dataset": dataset.map(|path| json!({"path": path})),
             "evaluation_dataset": evaluation.map(|path| json!({"path": path})),
             "output_dir": crate::instance::data_root().join("optimizers/mlx-sft").join(run_id),
@@ -1334,6 +1396,407 @@ async fn drive_hosted_cispo_job(
     Ok(())
 }
 
+pub async fn infer_checkpoint<F>(
+    service: &OptimizerService,
+    request: CheckpointInferRequest,
+    mut on_delta: F,
+) -> Result<Value>
+where
+    F: FnMut(&str) + Send,
+{
+    let family = normalize_family(&request.family)?;
+    if let Some(checkpoint) = service.get_local_lora(request.checkpoint_id.clone()).await? {
+        return Ok(
+            infer_local(&checkpoint, family, &request.body, &mut on_delta)
+                .await?
+                .json,
+        );
+    }
+    Ok(
+        infer_hosted(&request.checkpoint_id, family, &request.body, &mut on_delta)
+            .await?
+            .json,
+    )
+}
+
+struct InferOutcome {
+    json: Value,
+    sse: Option<Vec<u8>>,
+}
+
+async fn infer_from_sidecar_envelope(family: &str, envelope: &Value) -> Result<InferOutcome> {
+    let family = normalize_family(family)?;
+    let body = envelope
+        .get("body")
+        .cloned()
+        .unwrap_or_else(|| envelope.clone());
+    let placement = envelope
+        .get("placement")
+        .and_then(Value::as_str)
+        .unwrap_or("this_mac");
+    if placement == "hosted" {
+        let checkpoint_id = envelope
+            .get("checkpoint_id")
+            .and_then(Value::as_str)
+            .ok_or_else(|| anyhow!("hosted inference requires checkpoint_id"))?;
+        return infer_hosted(checkpoint_id, family, &body, &mut (|_| {})).await;
+    }
+    let pin = envelope
+        .get("policy_snapshot_id")
+        .and_then(Value::as_str)
+        .or_else(|| body.get("policy_snapshot_id").and_then(Value::as_str))
+        .ok_or_else(|| anyhow!("local inference requires policy_snapshot_id"))?;
+    let adapter_path = envelope
+        .get("adapter_path")
+        .and_then(Value::as_str)
+        .map(PathBuf::from);
+    infer_mlx(pin, adapter_path.as_deref(), family, &body, &mut (|_| {})).await
+}
+
+fn normalize_family(family: &str) -> Result<&'static str> {
+    match family.trim() {
+        "chat_completions" | "chat" => Ok("chat_completions"),
+        "responses" => Ok("responses"),
+        other => bail!("family must be chat_completions or responses, got {other}"),
+    }
+}
+
+fn wants_stream(body: &Value) -> bool {
+    body.get("stream").and_then(Value::as_bool) == Some(true)
+}
+
+async fn infer_local<F>(
+    checkpoint: &SavedLoraCheckpoint,
+    family: &str,
+    body: &Value,
+    on_delta: &mut F,
+) -> Result<InferOutcome>
+where
+    F: FnMut(&str) + Send,
+{
+    if family == "chat_completions" && !checkpoint.inference_chat_completions {
+        bail!("this checkpoint does not advertise chat completions");
+    }
+    if family == "responses" && !checkpoint.inference_responses {
+        bail!("this checkpoint does not advertise responses");
+    }
+    let pin = checkpoint
+        .storage
+        .sha256
+        .clone()
+        .unwrap_or_else(|| checkpoint.checkpoint_id.clone());
+    infer_mlx(
+        &pin,
+        Some(Path::new(&checkpoint.storage.key)),
+        family,
+        body,
+        on_delta,
+    )
+    .await
+}
+
+async fn infer_mlx<F>(
+    pin: &str,
+    adapter_path: Option<&Path>,
+    family: &str,
+    body: &Value,
+    on_delta: &mut F,
+) -> Result<InferOutcome>
+where
+    F: FnMut(&str) + Send,
+{
+    let client = MlxLoopback::ensure().await?;
+    let mut payload = body.clone();
+    if let Some(object) = payload.as_object_mut() {
+        object.insert("policy_snapshot_id".into(), json!(pin));
+    }
+    let stream = wants_stream(&payload);
+    let load_if_missing = |error: &anyhow::Error| error.to_string().contains("policy_snapshot");
+    if stream {
+        let (content_type, bytes) = match mlx_family_stream(&client, family, &payload, on_delta).await
+        {
+            Ok(value) => value,
+            Err(error) if load_if_missing(&error) => {
+                let name = adapter_path
+                    .and_then(|path| path.file_name())
+                    .and_then(|value| value.to_str())
+                    .ok_or_else(|| anyhow!("adapter path is required to load a missing snapshot"))?;
+                client.load_adapter(name).await?;
+                mlx_family_stream(&client, family, &payload, on_delta).await?
+            }
+            Err(error) => return Err(error),
+        };
+        if content_type.contains("event-stream") {
+            let text = String::from_utf8_lossy(&bytes);
+            return Ok(InferOutcome {
+                json: assemble_family_json(family, &text)?,
+                sse: Some(bytes),
+            });
+        }
+        let json: Value = serde_json::from_slice(&bytes).context("decode MLX JSON")?;
+        let text = family_text(family, &json);
+        if !text.is_empty() {
+            on_delta(&text);
+        }
+        return Ok(InferOutcome { json, sse: None });
+    }
+    match client.openai_family(family, &payload).await {
+        Ok(value) => {
+            let text = family_text(family, &value);
+            if !text.is_empty() {
+                on_delta(&text);
+            }
+            Ok(InferOutcome {
+                json: value,
+                sse: None,
+            })
+        }
+        Err(error) if load_if_missing(&error) => {
+            let name = adapter_path
+                .and_then(|path| path.file_name())
+                .and_then(|value| value.to_str())
+                .ok_or_else(|| anyhow!("adapter path is required to load a missing snapshot"))?;
+            client.load_adapter(name).await?;
+            let json = client.openai_family(family, &payload).await?;
+            let text = family_text(family, &json);
+            if !text.is_empty() {
+                on_delta(&text);
+            }
+            Ok(InferOutcome {
+                json,
+                sse: None,
+            })
+        }
+        Err(error) => Err(error),
+    }
+}
+
+async fn mlx_family_stream<F>(
+    client: &MlxLoopback,
+    family: &str,
+    payload: &Value,
+    on_delta: &mut F,
+) -> Result<(String, Vec<u8>)>
+where
+    F: FnMut(&str) + Send,
+{
+    client
+        .openai_family_stream(family, payload, |block| {
+            if let Some(text) = sse_text_delta(family, block) {
+                on_delta(&text);
+            }
+        })
+        .await
+}
+
+async fn infer_hosted<F>(
+    checkpoint_id: &str,
+    family: &str,
+    body: &Value,
+    on_delta: &mut F,
+) -> Result<InferOutcome>
+where
+    F: FnMut(&str) + Send,
+{
+    let stream = wants_stream(body);
+    let mut sample_body = body.clone();
+    if let Some(object) = sample_body.as_object_mut() {
+        object.remove("stream");
+    }
+    let checkpoint = super::cloud::CloudOptimizerClient::from_config()?
+        .saved_lora_checkpoint(checkpoint_id)
+        .await?;
+    let sampler = checkpoint
+        .provider_checkpoint_reference
+        .as_deref()
+        .or(checkpoint.lineage.provider_checkpoint_reference.as_deref())
+        .ok_or_else(|| anyhow!("hosted checkpoint has no tinker sampler path"))?;
+    if !sampler.starts_with("tinker://") {
+        bail!("hosted inference requires a tinker:// sampler path");
+    }
+    if checkpoint.checkpoint_kind != "inference" {
+        bail!("training-kind checkpoints are resume-only");
+    }
+    let json = SftOptimizerClient::from_env()?
+        .infer_checkpoint(
+            family,
+            sampler,
+            checkpoint.run_id.as_deref().unwrap_or(checkpoint_id),
+            checkpoint_id,
+            &sample_body,
+        )
+        .await?;
+    let text = family_text(family, &json);
+    if !text.is_empty() {
+        on_delta(&text);
+    }
+    let sse = stream.then(|| family_sse(family, &json).into_bytes());
+    Ok(InferOutcome { json, sse })
+}
+
+fn family_text(family: &str, payload: &Value) -> String {
+    let pointer = if family == "responses" {
+        "/output/0/content/0/text"
+    } else {
+        "/choices/0/message/content"
+    };
+    payload
+        .pointer(pointer)
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string()
+}
+
+fn sse_text_delta(family: &str, block: &str) -> Option<String> {
+    let mut event = None;
+    let mut data = None;
+    for line in block.lines() {
+        if let Some(value) = line.strip_prefix("event: ") {
+            event = Some(value.trim());
+        } else if let Some(value) = line.strip_prefix("data: ") {
+            data = Some(value.trim());
+        }
+    }
+    let raw = data?;
+    if raw == "[DONE]" {
+        return None;
+    }
+    let payload: Value = serde_json::from_str(raw).ok()?;
+    if family == "responses" {
+        let is_delta = event == Some("response.output_text.delta")
+            || payload.get("type").and_then(Value::as_str)
+                == Some("response.output_text.delta");
+        if !is_delta {
+            return None;
+        }
+        return payload
+            .get("delta")
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string);
+    }
+    payload
+        .pointer("/choices/0/delta/content")
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+}
+
+fn assemble_family_json(family: &str, sse: &str) -> Result<Value> {
+    if family == "responses" {
+        for block in sse.split("\n\n") {
+            let mut event = None;
+            let mut data = None;
+            for line in block.lines() {
+                if let Some(value) = line.strip_prefix("event: ") {
+                    event = Some(value.trim());
+                } else if let Some(value) = line.strip_prefix("data: ") {
+                    data = Some(value.trim());
+                }
+            }
+            if event == Some("response.completed") {
+                if let Some(raw) = data {
+                    let payload: Value = serde_json::from_str(raw)?;
+                    if let Some(response) = payload.get("response") {
+                        return Ok(response.clone());
+                    }
+                    return Ok(payload);
+                }
+            }
+        }
+        bail!("streamed responses completed event was missing");
+    }
+    let mut id = json!("chatcmpl-stream");
+    let mut created = json!(0);
+    let mut model = json!("");
+    let mut text = String::new();
+    for block in sse.split("\n\n") {
+        for line in block.lines() {
+            let Some(raw) = line.strip_prefix("data: ") else {
+                continue;
+            };
+            if raw.trim() == "[DONE]" {
+                continue;
+            }
+            let chunk: Value = serde_json::from_str(raw).unwrap_or(json!({}));
+            if chunk.get("id").is_some() {
+                id = chunk["id"].clone();
+            }
+            if chunk.get("created").is_some() {
+                created = chunk["created"].clone();
+            }
+            if chunk.get("model").is_some() {
+                model = chunk["model"].clone();
+            }
+            if let Some(delta) = chunk.pointer("/choices/0/delta/content").and_then(Value::as_str)
+            {
+                text.push_str(delta);
+            }
+        }
+    }
+    Ok(json!({
+        "id": id,
+        "object": "chat.completion",
+        "created": created,
+        "model": model,
+        "choices": [{
+            "index": 0,
+            "message": {"role": "assistant", "content": text},
+            "finish_reason": "stop"
+        }]
+    }))
+}
+
+fn family_sse(family: &str, payload: &Value) -> String {
+    if family == "responses" {
+        let text = payload
+            .pointer("/output/0/content/0/text")
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        let created = json!({
+            "type": "response.created",
+            "response": payload
+        });
+        let delta = json!({
+            "type": "response.output_text.delta",
+            "delta": text
+        });
+        let completed = json!({
+            "type": "response.completed",
+            "response": payload
+        });
+        format!(
+            "event: response.created\ndata: {}\n\n\
+event: response.output_text.delta\ndata: {}\n\n\
+event: response.completed\ndata: {}\n\n",
+            created, delta, completed
+        )
+    } else {
+        let text = payload
+            .pointer("/choices/0/message/content")
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        let id = payload.get("id").cloned().unwrap_or(json!("chatcmpl-hosted"));
+        let created = payload.get("created").cloned().unwrap_or(json!(0));
+        let model = payload.get("model").cloned().unwrap_or(json!("hosted"));
+        let chunk = |delta: Value, finish: Value| {
+            json!({
+                "id": id,
+                "object": "chat.completion.chunk",
+                "created": created,
+                "model": model,
+                "choices": [{"index": 0, "delta": delta, "finish_reason": finish}]
+            })
+        };
+        format!(
+            "data: {}\n\ndata: {}\n\ndata: {}\n\ndata: [DONE]\n\n",
+            chunk(json!({"role": "assistant"}), Value::Null),
+            chunk(json!({"content": text}), Value::Null),
+            chunk(json!({}), json!("stop")),
+        )
+    }
+}
+
 pub fn optional_jsonl(var: &str) -> Option<PathBuf> {
     std::env::var(var).ok().and_then(|raw| {
         let path = PathBuf::from(raw.trim());
@@ -1433,5 +1896,68 @@ mod tests {
             .to_string();
         assert!(error.contains("ambient latest"), "{error}");
         assert!(!error.contains("job-missing-snap"), "{error}");
+    }
+
+    #[test]
+    fn checkpoint_created_maps_to_digest_catalog_identity() {
+        let payload = json!({
+            "checkpoint_id": "job:step-2",
+            "step": 2,
+            "path": "/tmp/adapter",
+            "sha256": "abc123",
+            "bytes": 128
+        });
+        let row = super::super::local_lora::LocalLoraUpsert::from_checkpoint_event("run1", &payload)
+            .expect("checkpoint event");
+        assert_eq!(row.sha256, "sha256:abc123");
+        assert_eq!(row.adapter_path.as_os_str(), "/tmp/adapter");
+    }
+
+    #[test]
+    fn inference_families_are_peers_and_stream_is_native() {
+        assert_eq!(normalize_family("chat").unwrap(), "chat_completions");
+        assert_eq!(normalize_family("responses").unwrap(), "responses");
+        assert!(wants_stream(&json!({"stream": true})));
+        assert!(!wants_stream(&json!({"stream": false})));
+        let sse = family_sse(
+            "chat_completions",
+            &json!({
+                "id": "chatcmpl-1",
+                "created": 1,
+                "model": "m",
+                "choices": [{"message": {"content": "hi"}}]
+            }),
+        );
+        assert!(sse.contains("chat.completion.chunk"));
+        assert!(sse.contains("data: [DONE]"));
+        let sse = family_sse(
+            "responses",
+            &json!({
+                "id": "resp_1",
+                "output": [{"content": [{"text": "hi"}]}]
+            }),
+        );
+        assert!(sse.contains("event: response.completed"));
+        assert!(!sse.contains("chat.completion.chunk"));
+        assert_eq!(
+            sse_text_delta(
+                "chat_completions",
+                r#"data: {"choices":[{"delta":{"content":"hi"}}]}"#
+            )
+            .as_deref(),
+            Some("hi")
+        );
+        assert_eq!(
+            sse_text_delta(
+                "responses",
+                "event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"yo\"}"
+            )
+            .as_deref(),
+            Some("yo")
+        );
+        assert_eq!(
+            sse_text_delta("chat_completions", "data: [DONE]"),
+            None
+        );
     }
 }

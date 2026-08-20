@@ -5,12 +5,13 @@
 
 use super::models::{
     HostedTrainingModelCatalog, OptimizerRunOutputs, SavedLoraCheckpoint, SavedLoraCheckpointPage,
-    SavedLoraCheckpointQuery, SavedLoraDownload, SavedLoraRunPage,
+    SavedLoraCheckpointQuery, SavedLoraDownload, SavedLoraPatchRequest, SavedLoraRunPage,
 };
 use super::training::TrainingEvent;
 use anyhow::{anyhow, bail, Context, Result};
 use reqwest::Client;
 use serde_json::{json, Value};
+use std::path::Path;
 
 #[derive(Clone)]
 pub struct CloudOptimizerClient {
@@ -242,6 +243,16 @@ impl CloudOptimizerClient {
         serde_json::from_value(payload).context("decode saved LoRA checkpoint page")
     }
 
+    pub async fn saved_lora_checkpoint(&self, checkpoint_id: &str) -> Result<SavedLoraCheckpoint> {
+        let url = format!(
+            "{}/api/v1/optimizers/checkpoints/{}",
+            self.base_url,
+            urlencoding_lite(checkpoint_id)
+        );
+        let payload = self.get_json(&url).await?;
+        serde_json::from_value(payload).context("decode saved LoRA checkpoint")
+    }
+
     pub async fn saved_lora_checkpoints_for_run(&self, run_id: &str) -> Result<SavedLoraRunPage> {
         let url = format!(
             "{}/api/v1/optimizers/runs/{}/saved-checkpoints?status=ready&limit=100",
@@ -291,6 +302,87 @@ impl CloudOptimizerClient {
         serde_json::from_value(payload).context("decode saved LoRA download")
     }
 
+    pub async fn patch_saved_lora_checkpoint(
+        &self,
+        checkpoint_id: &str,
+        patch: &SavedLoraPatchRequest,
+    ) -> Result<SavedLoraCheckpoint> {
+        let url = format!(
+            "{}/api/v1/optimizers/checkpoints/{}",
+            self.base_url,
+            urlencoding_lite(checkpoint_id)
+        );
+        let mut body = serde_json::Map::new();
+        if let Some(name) = patch.name.as_deref().map(str::trim).filter(|value| !value.is_empty()) {
+            body.insert("name".into(), json!(name));
+        }
+        if let Some(description) = patch.description.as_ref() {
+            body.insert("description".into(), json!(description));
+        }
+        if let Some(tags) = patch.tags.clone() {
+            body.insert("tags".into(), json!(tags));
+        }
+        let payload = self.patch_json(&url, Value::Object(body)).await?;
+        serde_json::from_value(payload).context("decode patched saved LoRA checkpoint")
+    }
+
+    pub async fn publish_saved_lora_archive(
+        &self,
+        archive_path: &Path,
+        request: Value,
+        sha256: &str,
+    ) -> Result<SavedLoraCheckpoint> {
+        let url = format!("{}/api/v1/optimizers/checkpoints/uploads", self.base_url);
+        let intent = self.post_json(&url, request).await?;
+        let upload = intent
+            .get("upload")
+            .cloned()
+            .ok_or_else(|| anyhow!("saved LoRA upload omitted upload intent"))?;
+        let put_url = upload
+            .get("url")
+            .and_then(Value::as_str)
+            .ok_or_else(|| anyhow!("saved LoRA upload omitted URL"))?;
+        let method = upload
+            .get("method")
+            .and_then(Value::as_str)
+            .unwrap_or("PUT");
+        let content_type = upload
+            .get("content_type")
+            .and_then(Value::as_str)
+            .unwrap_or("application/zip");
+        let bytes = tokio::fs::read(archive_path)
+            .await
+            .with_context(|| format!("read {}", archive_path.display()))?;
+        let put = self
+            .client
+            .request(
+                reqwest::Method::from_bytes(method.as_bytes()).unwrap_or(reqwest::Method::PUT),
+                put_url,
+            )
+            .header("Content-Type", content_type)
+            .header("Content-Length", bytes.len().to_string())
+            .body(bytes)
+            .send()
+            .await
+            .context("PUT saved LoRA archive")?;
+        if !put.status().is_success() {
+            bail!("saved LoRA Wasabi upload failed ({})", put.status());
+        }
+        let checkpoint_id = intent
+            .get("checkpoint_id")
+            .and_then(Value::as_str)
+            .ok_or_else(|| anyhow!("saved LoRA upload omitted checkpoint_id"))?;
+        let complete_url = format!(
+            "{}/api/v1/optimizers/checkpoints/{}/complete",
+            self.base_url,
+            urlencoding_lite(checkpoint_id)
+        );
+        let payload = self
+            .post_json(&complete_url, json!({ "sha256": sha256 }))
+            .await?;
+        serde_json::from_value(payload).context("decode published saved LoRA checkpoint")
+    }
+
     async fn get_json(&self, url: &str) -> Result<Value> {
         let response = self
             .client
@@ -325,6 +417,24 @@ impl CloudOptimizerClient {
         }
         if text.trim().is_empty() {
             return Ok(json!({}));
+        }
+        serde_json::from_str(&text).context("decode cloud optimizer JSON")
+    }
+
+    async fn patch_json(&self, url: &str, body: Value) -> Result<Value> {
+        let response = self
+            .client
+            .patch(url)
+            .header("Authorization", format!("Bearer {}", self.api_key))
+            .header("Accept", "application/json")
+            .json(&body)
+            .send()
+            .await
+            .with_context(|| format!("PATCH {url}"))?;
+        let status = response.status();
+        let text = response.text().await.context("read response body")?;
+        if !status.is_success() {
+            bail!("cloud optimizer PATCH failed ({status}): {text}");
         }
         serde_json::from_str(&text).context("decode cloud optimizer JSON")
     }

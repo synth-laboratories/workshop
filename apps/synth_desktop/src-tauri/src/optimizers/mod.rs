@@ -13,6 +13,7 @@ mod hosted_gelo;
 mod hosted_sft;
 mod ingest;
 mod local;
+mod local_lora;
 pub(crate) mod manager;
 mod mlx_runtime;
 mod mlx_sft;
@@ -38,14 +39,18 @@ pub(crate) use sidecar_training::launch_artifact_inference;
 pub use manager::{OptimizerManager, OptimizerSidecarStatus, OptimizerSidecarVersion};
 #[allow(unused_imports)] // Nested Specta type is part of HostedTrainingModelCatalog.
 pub use models::{
-    HostedTrainingModel, HostedTrainingModelCatalog, OptimizerCreateRequest,
+    CheckpointInferRequest, HostedTrainingModel, HostedTrainingModelCatalog, OptimizerCreateRequest,
     OptimizerEventEnvelope, OptimizerImportLocalRequest, OptimizerQuery, OptimizerRecipeRunRequest,
     OptimizerReconcileRequest, OptimizerRelationship, OptimizerRunOutputArtifact,
     OptimizerRunOutputCounts, OptimizerRunOutputIdentity, OptimizerRunOutputs, OptimizerRunRecord,
     OptimizerStateSlice, SavedLoraCheckpoint, SavedLoraCheckpointPage, SavedLoraCheckpointQuery,
-    SavedLoraDownload, SavedLoraLineage, SavedLoraRunCounts, SavedLoraRunIdentity,
-    SavedLoraRunPage,
+    SavedLoraDownload, SavedLoraLineage, SavedLoraPatchRequest, SavedLoraRunCounts,
+    SavedLoraRunIdentity, SavedLoraRunPage,
 };
 pub(crate) use recipes::{BANKING77_EVAL_BASELINE_RECIPE, HEALTHBENCH_EVAL_SMOKE_RECIPE};
 pub use service::OptimizerService;
 pub use training::{TrainingEvent, TrainingLifecycle, TrainingProjection};
+
+pub fn local_lora_is_laguna_compatible(checkpoint: &SavedLoraCheckpoint) -> bool {
+    local_lora::is_laguna_compatible(checkpoint)
+}

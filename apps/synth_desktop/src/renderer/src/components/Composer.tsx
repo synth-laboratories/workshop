@@ -26,6 +26,8 @@ import { IconSparkle, SlashCommandMenu, type SlashCommandId, type SlashCommandMe
 import type { Skill } from "../runtime/skills";
 import type { ComposerImageAttachment, ConversationWorkspaceScope, WhisperRuntimeStatus } from "../bridge";
 import { WorkspaceScopeChip, workspaceLabel } from "./WorkspaceScopeChip";
+import { LagunaAdapterPicker } from "./LagunaAdapterPicker";
+import type { LagunaAdapterOption } from "../runtime/lagunaAdapters";
 import { bridges } from "../runtime/desktopBridge";
 import {
 	armedPromptId,
@@ -119,6 +121,11 @@ type Props = {
 	sentMessages?: string[];
 	onSend: (text: string, images?: ComposerImageAttachment[]) => void | Promise<void>;
 	onSelectTarget: (id: string) => void;
+	lagunaAdapter?: {
+		adapters: LagunaAdapterOption[];
+		selectedId: string | null;
+		onSelect: (checkpointId: string | null) => void;
+	};
 	permissions: ComposerPermissions;
 	model: ComposerModelControls;
 	queue: ComposerQueue;
@@ -692,6 +699,7 @@ export function Composer({
 	sentMessages = [],
 	onSend,
 	onSelectTarget,
+	lagunaAdapter,
 	permissions,
 	model,
 	queue,
@@ -1197,9 +1205,9 @@ export function Composer({
 
 	// A prompt that vanished from the persisted queue — removed here, or
 	// replaced by a reconnect — can no longer be promoted.
-	const queuedPromptKey = queuedPrompts.map((item) => item.id).join(" ");
+	const queuedPromptKey = queuedPrompts.map((item) => item.id).join("");
 	useEffect(() => {
-		dispatchSteer({ type: "queueReconciled", promptIds: queuedPromptKey ? queuedPromptKey.split(" ") : [] });
+		dispatchSteer({ type: "queueReconciled", promptIds: queuedPromptKey ? queuedPromptKey.split("") : [] });
 		// dispatchSteer is stable in effect; the id list is the real dependency.
 		// eslint-disable-next-line react-hooks/exhaustive-deps
 	}, [queuedPromptKey]);
@@ -1440,6 +1448,15 @@ export function Composer({
 							open={modelMenuOpen}
 							onOpenChange={setModelMenuOpen}
 						/>
+						{state.selectedTargetId === "local-laguna" && lagunaAdapter ? (
+							<LagunaAdapterPicker
+								variant="composer"
+								adapters={lagunaAdapter.adapters}
+								selectedId={lagunaAdapter.selectedId}
+								onSelect={lagunaAdapter.onSelect}
+								disabled={!enabled}
+							/>
+						) : null}
 						{modelCapabilities?.knobs.map((knob) => (
 							<ModelKnobMenu
 								key={knob.id}

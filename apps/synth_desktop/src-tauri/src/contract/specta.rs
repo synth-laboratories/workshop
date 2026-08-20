@@ -130,6 +130,10 @@ pub fn builder() -> Builder<tauri::Wry> {
         crate::optimizers_training_models,
         crate::optimizers_saved_lora_archive,
         crate::optimizers_saved_lora_download,
+        crate::optimizers_saved_lora_import,
+        crate::optimizers_checkpoint_infer,
+        crate::optimizers_saved_lora_patch,
+        crate::optimizers_saved_lora_publish,
         crate::optimizers_training_reconcile,
         crate::plugins_status,
         crate::plugins_list,
@@ -246,6 +250,7 @@ pub fn builder() -> Builder<tauri::Wry> {
         crate::storage::legacy_migration::commands::migration_cancel,
         crate::laguna_get_status,
         crate::laguna_reload,
+        crate::laguna_set_adapter,
         crate::laguna_models_list,
         crate::laguna_models_set_directory,
         crate::laguna_models_clear_directory,
@@ -430,8 +435,11 @@ mod tests {
         // adapters by id; `size_bytes` exports as f64 so specta can emit it).
         // 240 → 241: `training_artifacts_launch_inference` pins local MLX chat
         // to one retained artifact id (confirm-gated; fails visibly on load).
+        // 241 → 246: local LoRA import, dual-family checkpoint inference,
+        // catalog patch/publish, Laguna adapter load, and the exporter's invoke
+        // syntax split for the complete 243-command contract.
         assert_eq!(
-            exported, 241,
+            exported, 246,
             "generated bindings must contain the complete desktop command set"
         );
         assert_eq!(

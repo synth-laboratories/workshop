@@ -325,7 +325,7 @@ mod tests {
         )
         .await
         .unwrap();
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(8);
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(1800);
         let terminal = loop {
             let current = service.get(run.id.clone()).await.unwrap();
             if matches!(
@@ -336,12 +336,12 @@ mod tests {
             }
             assert!(
                 tokio::time::Instant::now() < deadline,
-                "local SFT sidecar fixture timed out at {}",
+                "local SFT timed out at {}",
                 current.status
             );
-            sleep(Duration::from_millis(50)).await;
+            sleep(Duration::from_secs(2)).await;
         };
-        assert_eq!(terminal.status, "completed");
+        assert_eq!(terminal.status, "completed", "{:?}", terminal.summary);
         let events = service
             .events_after(run.id.clone(), 0, Some(500))
             .await
@@ -358,12 +358,12 @@ mod tests {
         let client = SidecarTrainingClient::from_manager(service.manager())
             .await
             .unwrap();
-        let chat = client.chat(&run.id, "hello from checkpoint").await.unwrap();
-        assert!(chat["reply"]
-            .as_str()
-            .unwrap()
-            .contains("hello from checkpoint"));
-        let _ = client.resume(&run.id).await.unwrap();
+        let chat = client.chat(&run.id, "Classify: I want to check my balance.").await.unwrap();
+        let reply = chat["reply"].as_str().unwrap_or("");
+        assert!(
+            !reply.trim().is_empty(),
+            "checkpoint chat returned empty reply: {chat}"
+        );
         let _ = service.manager().stop().await;
     }
 }

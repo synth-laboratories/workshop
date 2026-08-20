@@ -154,6 +154,9 @@ export default function App() {
 						sessions={c.sessions}
 						selectedTargetId={c.selectedTargetId}
 						onSelectTarget={c.onSelectTarget}
+						lagunaAdapters={c.lagunaAdapters}
+						selectedLagunaAdapterId={c.selectedLagunaAdapterId}
+						onSelectLagunaAdapter={(checkpointId) => void c.selectLagunaAdapter(checkpointId)}
 						activeChat={c.activeChat}
 						eventsBySession={c.eventsBySession}
 						activeChatSession={c.activeChatSession}
@@ -252,6 +255,9 @@ export default function App() {
 						composerSkills={c.composerSkills}
 						selectedTargetId={c.selectedTargetId}
 						onSelectTarget={c.onSelectTarget}
+						lagunaAdapters={c.lagunaAdapters}
+						selectedLagunaAdapterId={c.selectedLagunaAdapterId}
+						onSelectLagunaAdapter={(checkpointId) => void c.selectLagunaAdapter(checkpointId)}
 						onComposerSend={c.onComposerSend}
 						sendToSession={c.sendToSession}
 						createConversation={c.createConversation}

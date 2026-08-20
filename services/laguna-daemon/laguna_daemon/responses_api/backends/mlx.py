@@ -720,6 +720,18 @@ class NativeMlxBackend:
         await self._ensure_loaded()
         self._last_used_at = time.time()
 
+    async def set_adapter(self, adapter_path: str | None) -> None:
+        """Swap the LoRA path and drop resident weights so the next load picks it up."""
+        normalized = str(Path(adapter_path).expanduser().resolve()) if adapter_path else None
+        current = (
+            str(Path(self.adapter_path).expanduser().resolve()) if self.adapter_path else None
+        )
+        if normalized == current and self._model is not None:
+            return
+        async with self._load_lock:
+            await self._release_model_memory()
+            self.adapter_path = normalized
+
     async def _ensure_loaded(self) -> None:
         if self._model is not None:
             return

@@ -412,6 +412,7 @@ impl CodexManager {
                     .clone()
                     .unwrap_or_else(default_approval_policy),
                 sandbox: request.sandbox.clone().unwrap_or_else(default_sandbox),
+                adapter: request.adapter.clone(),
                 // Reattaching does not resolve the previous attempt. The notice
                 // survives until a new turn actually claims ownership, so a
                 // chat that is merely reopened still explains itself.
@@ -425,7 +426,8 @@ impl CodexManager {
             id: request.session_id.clone(),
             title,
             kind: SessionKind::Codex,
-            target: RuntimeTarget::from_codex_provider(&session.provider_name, &session.model),
+            target: RuntimeTarget::from_codex_provider(&session.provider_name, &session.model)
+                .with_local_adapter(request.adapter.clone()),
             project_id: None,
             remote_id: None,
             codex_thread_id: Some(thread_id.clone()),
@@ -749,7 +751,12 @@ impl CodexManager {
             session_id: request.session_id.clone(),
             mode: "codex_turn".into(),
             model: Some(session.model.clone()),
-            adapter: None,
+            adapter: self
+                .records
+                .read()
+                .await
+                .get(&request.session_id)
+                .and_then(|record| record.adapter.clone()),
             metadata: run_metadata,
             source: EventSource::Codex,
         });

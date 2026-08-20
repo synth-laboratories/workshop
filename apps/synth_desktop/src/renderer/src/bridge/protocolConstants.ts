@@ -22,7 +22,8 @@ export const EVENT_CHANNELS = {
 	TRAINING_MODELS_DOWNLOAD: "training-models:download",
 	WHISPER_RUNTIME: "whisper:runtime",
 	WHISPER_DOWNLOAD: "whisper:download",
-	OPTIMIZER_STATUS: "optimizer:status"
+	OPTIMIZER_STATUS: "optimizer:status",
+	OPTIMIZER_INFER: "optimizer:infer"
 } as const;
 
 export type EventChannelName = (typeof EVENT_CHANNELS)[keyof typeof EVENT_CHANNELS];
@@ -89,6 +90,7 @@ export const COMMANDS = {
 	WORKSPACE_SCOPE_DENY_REQUEST: "workspace_scope_deny_request",
 	LAGUNA_GET_STATUS: "laguna_get_status",
 	LAGUNA_RELOAD: "laguna_reload",
+	LAGUNA_SET_ADAPTER: "laguna_set_adapter",
 	LAGUNA_MODELS_LIST: "laguna_models_list",
 	LAGUNA_MODEL_DOWNLOAD: "laguna_model_download",
 	LAGUNA_MODEL_UNLOAD: "laguna_model_unload",
@@ -218,8 +220,12 @@ export const COMMANDS = {
 	OPTIMIZERS_RUN_OUTPUTS: "optimizers_run_outputs",
 	OPTIMIZERS_TRAINING_MODELS: "optimizers_training_models",
 	OPTIMIZERS_SAVED_LORA_ARCHIVE: "optimizers_saved_lora_archive",
-	OPTIMIZERS_SAVED_LORA_DOWNLOAD: "optimizers_saved_lora_download",
-	OPTIMIZERS_TRAINING_RECONCILE: "optimizers_training_reconcile",
+		OPTIMIZERS_SAVED_LORA_DOWNLOAD: "optimizers_saved_lora_download",
+		OPTIMIZERS_SAVED_LORA_IMPORT: "optimizers_saved_lora_import",
+		OPTIMIZERS_CHECKPOINT_INFER: "optimizers_checkpoint_infer",
+		OPTIMIZERS_SAVED_LORA_PATCH: "optimizers_saved_lora_patch",
+		OPTIMIZERS_SAVED_LORA_PUBLISH: "optimizers_saved_lora_publish",
+		OPTIMIZERS_TRAINING_RECONCILE: "optimizers_training_reconcile",
 	PLUGINS_STATUS: "plugins_status",
 	PLUGINS_LIST: "plugins_list",
 	COMPUTER_USE_STATUS: "computer_use_status",

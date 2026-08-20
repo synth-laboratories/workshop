@@ -3,11 +3,16 @@ import { apiProviderForTarget, EXECUTION_TARGETS, LAUNCH_PICKER_TARGETS, MODEL_A
 import type { ExecutionTargetOption, LandingState, ModelAccessKind } from "../types/landing";
 import { SynthLogo } from "./SynthLogo";
 import { ProviderMark, providerMarkForTarget } from "./ProviderMark";
+import { LagunaAdapterPicker } from "./LagunaAdapterPicker";
+import type { LagunaAdapterOption } from "../runtime/lagunaAdapters";
 
 type Props = {
 	state: LandingState;
 	selectedTargetId: string;
 	onSelectTarget: (id: string) => void;
+	lagunaAdapters?: LagunaAdapterOption[];
+	selectedLagunaAdapterId?: string | null;
+	onSelectLagunaAdapter?: (checkpointId: string | null) => void;
 	onConfigureAccount?: () => void;
 	onConfigureModels?: () => void;
 	onResolveBilling?: () => void;
@@ -264,6 +269,9 @@ export function LandingPage({
 	state,
 	selectedTargetId,
 	onSelectTarget,
+	lagunaAdapters = [],
+	selectedLagunaAdapterId = null,
+	onSelectLagunaAdapter,
 	onConfigureAccount,
 	onConfigureModels,
 	onResolveBilling
@@ -290,6 +298,14 @@ export function LandingPage({
 						onConfigureModels={onConfigureModels}
 						onResolveBilling={onResolveBilling}
 					/>
+					{selectedTargetId === "local-laguna" ? (
+						<LagunaAdapterPicker
+							variant="landing"
+							adapters={lagunaAdapters}
+							selectedId={selectedLagunaAdapterId}
+							onSelect={(checkpointId) => onSelectLagunaAdapter?.(checkpointId)}
+						/>
+					) : null}
 				</div>
 				{!state.apiKeyConfigured && !accountChoiceMade ? (
 					<div className="quick-actions" data-testid="first-run-account-choice">

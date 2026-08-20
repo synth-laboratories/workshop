@@ -531,11 +531,10 @@ async fn route_request_inner(
                 &error,
             ) =>
         {
-            JsonHttpResponse {
-                status: StatusCode::CONFLICT,
-                body: crate::container_capabilities::preflight_error_body(&error),
-                extra_headers: Vec::new(),
-            }
+            JsonHttpResponse::with_status(
+                StatusCode::CONFLICT,
+                crate::container_capabilities::preflight_error_body(&error),
+            )
         }
         Err(error) if crate::error::error_is::<crate::error::StructuredFailure>(&error) => {
             let body = error
@@ -543,22 +542,14 @@ async fn route_request_inner(
                 .find_map(|cause| cause.downcast_ref::<crate::error::StructuredFailure>())
                 .map(crate::error::StructuredFailure::to_json)
                 .unwrap_or_else(|| json!({"code": "internal", "error": error.to_string()}));
-            JsonHttpResponse {
-                status: StatusCode::BAD_REQUEST,
-                body,
-                extra_headers: Vec::new(),
-            }
+            JsonHttpResponse::with_status(StatusCode::BAD_REQUEST, body)
         }
         Err(error) if crate::error::error_is::<crate::plugins::PluginNotReady>(&error) => {
             let body = error
                 .downcast_ref::<crate::plugins::PluginNotReady>()
                 .map(crate::plugins::PluginNotReady::to_json)
                 .unwrap_or_else(|| json!({"code":"plugin_not_ready"}));
-            JsonHttpResponse {
-                status: StatusCode::CONFLICT,
-                body,
-                extra_headers: Vec::new(),
-            }
+            JsonHttpResponse::with_status(StatusCode::CONFLICT, body)
         }
         Err(error) => JsonHttpResponse::error(StatusCode::BAD_REQUEST, error.to_string()),
     }
@@ -2933,6 +2924,73 @@ pub(crate) async fn dispatch_optimizer(
             let runs = optimizers.list_cloud(algorithm, status, limit).await?;
             Ok(json!({ "runs": runs }))
         }
+        ("GET", "/v1/optimizers/checkpoints") => {
+            let query: crate::optimizers::SavedLoraCheckpointQuery =
+                serde_json::from_value(body).unwrap_or_default();
+            let page = optimizers.search_saved_lora_checkpoints(query).await?;
+            Ok(json!({ "page": page }))
+        }
+        ("POST", "/v1/optimizers/checkpoints/archive") => {
+            let checkpoint_id = body
+                .get("checkpointId")
+                .or_else(|| body.get("checkpoint_id"))
+                .and_then(Value::as_str)
+                .ok_or_else(|| anyhow::anyhow!("checkpoint_id required"))?;
+            let checkpoint = optimizers
+                .archive_saved_lora_checkpoint(checkpoint_id.to_string())
+                .await?;
+            Ok(json!({ "checkpoint": checkpoint }))
+        }
+        ("POST", "/v1/optimizers/checkpoints/import") => {
+            let path = body
+                .get("path")
+                .and_then(Value::as_str)
+                .ok_or_else(|| anyhow::anyhow!("path required"))?;
+            let checkpoint = optimizers.import_saved_lora_dir(path.to_string()).await?;
+            Ok(json!({ "checkpoint": checkpoint }))
+        }
+        ("POST", "/v1/optimizers/checkpoints/infer") => {
+            let request: crate::optimizers::CheckpointInferRequest = serde_json::from_value(body)?;
+            Ok(optimizers.infer_saved_lora(request).await?)
+        }
+        ("POST", "/v1/optimizers/checkpoints/update") => {
+            let checkpoint_id = body
+                .get("checkpointId")
+                .or_else(|| body.get("checkpoint_id"))
+                .and_then(Value::as_str)
+                .ok_or_else(|| anyhow::anyhow!("checkpoint_id required"))?;
+            let patch = crate::optimizers::SavedLoraPatchRequest {
+                name: body
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .map(str::to_string),
+                description: body
+                    .get("description")
+                    .and_then(Value::as_str)
+                    .map(str::to_string),
+                tags: body.get("tags").and_then(Value::as_array).map(|rows| {
+                    rows.iter()
+                        .filter_map(Value::as_str)
+                        .map(str::to_string)
+                        .collect()
+                }),
+            };
+            let checkpoint = optimizers
+                .patch_saved_lora(checkpoint_id.to_string(), patch)
+                .await?;
+            Ok(json!({ "checkpoint": checkpoint }))
+        }
+        ("POST", "/v1/optimizers/checkpoints/publish") => {
+            let checkpoint_id = body
+                .get("checkpointId")
+                .or_else(|| body.get("checkpoint_id"))
+                .and_then(Value::as_str)
+                .ok_or_else(|| anyhow::anyhow!("checkpoint_id required"))?;
+            let checkpoint = optimizers
+                .publish_saved_lora(checkpoint_id.to_string())
+                .await?;
+            Ok(json!({ "checkpoint": checkpoint }))
+        }
         _ => anyhow::bail!("unsupported optimizer IPC route {method} {path}"),
     }
 }
@@ -3829,17 +3887,16 @@ mod diagnostics_tests {
     use tempfile::tempdir;
 
     fn capability_rejection() -> JsonHttpResponse {
-        JsonHttpResponse {
-            status: StatusCode::CONFLICT,
-            body: json!({
+        JsonHttpResponse::with_status(
+            StatusCode::CONFLICT,
+            json!({
                 "code": "capability_mismatch",
                 "container_id": "ctr_9",
                 "missingOperations": ["rollouts/start"],
                 "remediation": "Re-probe the container, then start only against a declared capability set.",
                 "retryable": false
             }),
-            extra_headers: Vec::new(),
-        }
+        )
     }
 
     #[tokio::test]

@@ -82,10 +82,11 @@ use intern_api::{
 };
 use laguna::{LagunaManager, LagunaModelHit, LagunaStatus};
 use optimizers::{
-    HostedTrainingModelCatalog, OptimizerCreateRequest, OptimizerEventEnvelope,
+    CheckpointInferRequest, HostedTrainingModelCatalog, OptimizerCreateRequest, OptimizerEventEnvelope,
     OptimizerImportLocalRequest, OptimizerQuery, OptimizerRecipeRunRequest,
     OptimizerReconcileRequest, OptimizerRelationship, OptimizerRunRecord, OptimizerStateSlice,
     SavedLoraCheckpoint, SavedLoraCheckpointPage, SavedLoraCheckpointQuery, SavedLoraDownload,
+    SavedLoraPatchRequest,
 };
 use plugins::PluginStatus;
 use reports::{
@@ -1516,6 +1517,73 @@ async fn optimizers_saved_lora_download(
     state
         .optimizers()
         .saved_lora_download(checkpoint_id)
+        .await
+        .map_err(AppError::from)
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn optimizers_saved_lora_import(
+    state: State<'_, Arc<CoreRuntime>>,
+    path: String,
+) -> Result<SavedLoraCheckpoint, AppError> {
+    state
+        .optimizers()
+        .import_saved_lora_dir(path)
+        .await
+        .map_err(AppError::from)
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn optimizers_checkpoint_infer(
+    app: tauri::AppHandle,
+    state: State<'_, Arc<CoreRuntime>>,
+    request: CheckpointInferRequest,
+) -> Result<contract::specta::OpaqueJson, AppError> {
+    let checkpoint_id = request.checkpoint_id.clone();
+    let family = request.family.clone();
+    state
+        .optimizers()
+        .infer_saved_lora_with_delta(request, move |delta| {
+            let _ = app.emit(
+                crate::contract::events::EventChannel::OPTIMIZER_INFER,
+                serde_json::json!({
+                    "checkpointId": checkpoint_id,
+                    "family": family,
+                    "delta": delta,
+                    "done": false
+                }),
+            );
+        })
+        .await
+        .map(contract::specta::OpaqueJson)
+        .map_err(AppError::from)
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn optimizers_saved_lora_patch(
+    state: State<'_, Arc<CoreRuntime>>,
+    checkpoint_id: String,
+    patch: SavedLoraPatchRequest,
+) -> Result<SavedLoraCheckpoint, AppError> {
+    state
+        .optimizers()
+        .patch_saved_lora(checkpoint_id, patch)
+        .await
+        .map_err(AppError::from)
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn optimizers_saved_lora_publish(
+    state: State<'_, Arc<CoreRuntime>>,
+    checkpoint_id: String,
+) -> Result<SavedLoraCheckpoint, AppError> {
+    state
+        .optimizers()
+        .publish_saved_lora(checkpoint_id)
         .await
         .map_err(AppError::from)
 }
@@ -3415,6 +3483,36 @@ async fn laguna_get_status(state: State<'_, Arc<LagunaManager>>) -> Result<Lagun
 async fn laguna_reload(state: State<'_, Arc<LagunaManager>>) -> Result<LagunaStatus, AppError> {
     let root = runtime::workshop_root().map_err(AppError::from)?;
     state.reload(&root).await.map_err(AppError::from)
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn laguna_set_adapter(
+    core: State<'_, Arc<CoreRuntime>>,
+    state: State<'_, Arc<LagunaManager>>,
+    checkpoint_id: Option<String>,
+) -> Result<LagunaStatus, AppError> {
+    let path = match checkpoint_id {
+        None => None,
+        Some(id) => {
+            let checkpoint = core
+                .optimizers()
+                .get_local_lora(id.clone())
+                .await
+                .map_err(AppError::from)?
+                .ok_or_else(|| AppError::from(anyhow::anyhow!("adapter is not in the catalog")))?;
+            if !crate::optimizers::local_lora_is_laguna_compatible(&checkpoint) {
+                return Err(AppError::from(anyhow::anyhow!(
+                    "this adapter is not Laguna-compatible; Qwen Optimizers LoRAs stay on the catalog Chat Completions / Responses buttons"
+                )));
+            }
+            Some(std::path::PathBuf::from(checkpoint.storage.key))
+        }
+    };
+    state
+        .set_adapter(path.as_deref())
+        .await
+        .map_err(AppError::from)
 }
 
 #[tauri::command]

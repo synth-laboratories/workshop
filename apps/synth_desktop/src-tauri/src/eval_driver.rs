@@ -159,11 +159,10 @@ async fn route_request(
                 &error,
             ) =>
         {
-            JsonHttpResponse {
-                status: StatusCode::CONFLICT,
-                body: crate::container_capabilities::preflight_error_body(&error),
-                extra_headers: Vec::new(),
-            }
+            JsonHttpResponse::with_status(
+                StatusCode::CONFLICT,
+                crate::container_capabilities::preflight_error_body(&error),
+            )
         }
         Err(error) if crate::error::error_is::<crate::error::ProtocolMismatch>(&error) => {
             JsonHttpResponse::error(StatusCode::UPGRADE_REQUIRED, error.to_string())
@@ -791,6 +790,7 @@ async fn create_session(deps: &EvalDriverDeps, body: Value) -> Result<Value> {
         multi_agent_version: None,
         auto_compact_token_limit: body.get("autoCompactTokenLimit").and_then(Value::as_u64),
         writable_roots: Vec::new(),
+        adapter: None,
         local_model_catalog: None,
         broker_credential: false,
     };
@@ -920,6 +920,7 @@ async fn send_message(deps: &EvalDriverDeps, session_id: &str, body: Value) -> R
         multi_agent_version: None,
         auto_compact_token_limit: body.get("autoCompactTokenLimit").and_then(Value::as_u64),
         writable_roots: Vec::new(),
+        adapter: None,
         local_model_catalog: None,
         broker_credential: false,
     };
@@ -2469,6 +2470,7 @@ mod tests {
             presentation_summary: None,
             approval_policy: "never".into(),
             sandbox: "workspace-write".into(),
+            adapter: None,
             recovery: None,
         };
         let binding = eval_provider_binding(&record);

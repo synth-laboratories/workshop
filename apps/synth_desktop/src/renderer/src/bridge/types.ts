@@ -110,6 +110,8 @@ export type LagunaBridge = {
 	chooseModelDirectory(): Promise<string | null>;
 	setModelDirectory(path: string): Promise<LagunaModelHit>;
 	clearModelDirectory(): Promise<void>;
+	/** Load a Laguna-compatible This Mac LoRA, or null for the base model. */
+	setAdapter?(checkpointId: string | null): Promise<LagunaStatus>;
 	downloadModel(modelId: string): Promise<LagunaModelHit>;
 	deleteModel(modelId: string): Promise<void>;
 	onDownloadProgress?(listener: (progress: LagunaDownloadProgress) => void): () => void;
@@ -328,6 +330,8 @@ export type CodexSessionStart = {
 	threadId?: string;
 	multiAgentVersion?: MultiAgentVersion;
 	autoCompactTokenLimit: number;
+	/** This Mac Laguna catalog id. Null loads the base Laguna XS weights. */
+	adapter?: string | null;
 };
 
 export type CodexSessionInfo = { sessionId: string; threadId: string; turnId?: string | null };
@@ -347,6 +351,8 @@ export type PersistedCodexSession = {
 	sandbox: string;
 	presentationEmotion?: string | null;
 	presentationSummary?: string | null;
+	/** This Mac Laguna catalog id. Null is the base model. */
+	adapter?: string | null;
 	/** Set when a previous process died holding this chat's turn. */
 	recovery?: RecoveryNotice | null;
 };
@@ -1115,7 +1121,7 @@ export type SavedLoraCheckpoint = {
 	step?: number | null;
 	status: "uploading" | "ready" | "failed" | "archived";
 	storage: {
-		backend: "wasabi" | "minio";
+		backend: "wasabi" | "minio" | "mlx-store";
 		bucket: string;
 		key: string;
 		version?: string | null;
@@ -1131,11 +1137,21 @@ export type SavedLoraCheckpoint = {
 		sourceCheckpointId?: string | null;
 		providerCheckpointReference?: string | null;
 	};
+	placement?: "this_mac" | "hosted";
+	inferenceChatCompletions?: boolean;
+	inferenceResponses?: boolean;
 	tags: string[];
 	metadata: Record<string, unknown>;
 	createdAt?: string | null;
 	updatedAt?: string | null;
 	archivedAt?: string | null;
+};
+
+export type OptimizerInferDelta = {
+	checkpointId: string;
+	family: string;
+	delta: string;
+	done: boolean;
 };
 
 export type SavedLoraCheckpointPage = {
@@ -1277,6 +1293,7 @@ export type OptimizersBridge = {
 	searchSavedLoras(query?: {
 		search?: string;
 		scope?: "all" | "mine" | "org";
+		placement?: "all" | "this_mac" | "hosted";
 		provider?: string;
 		checkpointKind?: string;
 		baseModel?: string;
@@ -1294,6 +1311,11 @@ export type OptimizersBridge = {
 	hostedTrainingModels(): Promise<HostedTrainingModelCatalog>;
 	archiveSavedLora(checkpointId: string): Promise<SavedLoraCheckpoint>;
 	savedLoraDownload(checkpointId: string): Promise<SavedLoraDownload>;
+	importSavedLora(path: string): Promise<SavedLoraCheckpoint>;
+	patchSavedLora?(checkpointId: string, patch: { name?: string; description?: string; tags?: string[] }): Promise<SavedLoraCheckpoint>;
+	publishSavedLora?(checkpointId: string): Promise<SavedLoraCheckpoint>;
+	inferCheckpoint(request: { checkpointId: string; family: "chat_completions" | "responses"; body: Record<string, unknown> }): Promise<unknown>;
+	onInferDelta?(listener: (event: OptimizerInferDelta) => void): () => void;
 	reconcileTraining(optimizerRunId: string): Promise<{
 		schemaVersion: "workshop.training_snapshot.v1";
 		runId: string;
