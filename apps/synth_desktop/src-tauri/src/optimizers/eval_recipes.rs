@@ -45,9 +45,9 @@ use tokio::{
 use super::events::OptimizerEventDraft;
 use super::{
     models::{
-        OptimizerCapabilities, OptimizerCreateRequest, OptimizerEventEnvelope, OptimizerRunRecord,
+        OptimizerCapabilities, OptimizerCreateRequest, OptimizerEventEnvelope,
         OptimizerExecutionBinding, OptimizerRecipeRunRequest, OptimizerResourceRef,
-        OPTIMIZER_EVENT_SCHEMA_VERSION,
+        OptimizerRunRecord, OPTIMIZER_EVENT_SCHEMA_VERSION,
     },
     OptimizerService,
 };
@@ -1946,16 +1946,24 @@ mod tests {
             seed_fixture: None,
             cloud_config: None,
             local_path: None,
-        }).await.unwrap();
+        })
+        .await
+        .unwrap();
         svc.append_event_payloads(
             run_id.clone(),
-            vec![OptimizerEventDraft::new("optimizer.run.started", EVAL_ALGORITHM_ID)],
-        ).await.unwrap();
+            vec![OptimizerEventDraft::new(
+                "optimizer.run.started",
+                EVAL_ALGORITHM_ID,
+            )],
+        )
+        .await
+        .unwrap();
         assert_eq!(svc.get(run_id.clone()).await.unwrap().status, "running");
         fs::write(
             dir.path().join("worker.stdout.log"),
             include_str!("fixtures/eval_worker_stdout.jsonl"),
-        ).unwrap();
+        )
+        .unwrap();
 
         let recovered = svc.refresh(run_id.clone()).await.unwrap();
         assert_eq!(recovered.status, "completed");
@@ -1983,16 +1991,24 @@ mod tests {
             seed_fixture: None,
             cloud_config: None,
             local_path: None,
-        }).await.unwrap();
+        })
+        .await
+        .unwrap();
         svc.append_event_payloads(
             run_id.clone(),
-            vec![OptimizerEventDraft::new("optimizer.run.started", EVAL_ALGORITHM_ID)],
-        ).await.unwrap();
+            vec![OptimizerEventDraft::new(
+                "optimizer.run.started",
+                EVAL_ALGORITHM_ID,
+            )],
+        )
+        .await
+        .unwrap();
         assert_eq!(svc.get(run_id.clone()).await.unwrap().status, "running");
         fs::write(
             dir.path().join("worker.stdout.log"),
             include_str!("fixtures/eval_worker_stdout.jsonl"),
-        ).unwrap();
+        )
+        .unwrap();
 
         let recovered = svc.reconcile_stale_local_runs().await.unwrap();
         let recovered = recovered.into_iter().find(|run| run.id == run_id).unwrap();

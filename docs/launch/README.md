@@ -1,5 +1,7 @@
 # Workshop launch docs
 
+**v0.7:** [v0.7-scope.md](./v0.7-scope.md) · runtime plan [v0.7-optimizers-runtime.md](./v0.7-optimizers-runtime.md).
+
 v0.1 friends-release contract remains in this folder. **v0.2 launch status and E2E plan:** [v0.2-launch.md](./v0.2-launch.md). **v0.3 launch notes and integration status:** [v0.3-launch.md](./v0.3-launch.md). **v0.3 themes:** [v0.3-themes.md](./v0.3-themes.md). **v0.2 second-pass review + address plan (not started):** [v0.2-second-pass-2026-08-13.md](./v0.2-second-pass-2026-08-13.md). **v0.2 finish handoff (receipts / `v02golden`; dirty snapshot stale):** [V0.2_FINISH_HANDOFF_2026-08-13.md](./V0.2_FINISH_HANDOFF_2026-08-13.md). **Harbor GameBench code-policy DEO + Codex Luna med (visual-first):** [HANDOFF_HARBOR_GAMEBENCH_DEO_LUNA.md](./HANDOFF_HARBOR_GAMEBENCH_DEO_LUNA.md).
 
 ## v0.1 (frozen)

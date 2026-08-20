@@ -11,6 +11,7 @@ use super::{
         OptimizerRecipeRunRequest, OptimizerResourceRef, OptimizerRunRecord,
     },
     sft_client::SftOptimizerClient,
+    sidecar_training::PLACEMENT_TRAINING_SFT_HOSTED,
     OptimizerService,
 };
 use anyhow::{bail, Context, Result};
@@ -71,10 +72,12 @@ pub fn recipe_catalog() -> Vec<Value> {
 }
 
 fn fixture_recipe() -> Value {
-    let availability = match SftOptimizerClient::from_env() {
-        Ok(_) => "available",
-        Err(_) => "unavailable",
-    };
+    let availability =
+        if super::sidecar_training::simulate_training() || SftOptimizerClient::from_env().is_ok() {
+            "available"
+        } else {
+            "unavailable"
+        };
     json!({
         "id": HOSTED_SFT_FIXTURE_RECIPE,
         "title": "Hosted SFT fixture",
@@ -251,7 +254,6 @@ async fn start_banking77(
 )> {
     let catalog = super::tinker_catalog::TinkerBaseModelCatalog::load()?;
     let model_id = catalog.resolve(request.base_model.as_deref())?;
-    let client = SftOptimizerClient::from_env()?;
     let shard = request
         .dataset_shard
         .as_deref()
@@ -282,20 +284,21 @@ async fn start_banking77(
         ),
         source: Some("hosted".into()),
         project_ref: Some("banking77@nemotron-lightning-tinker".into()),
-        session_ref: request.session_ref,
+        session_ref: request.session_ref.clone(),
         id: Some(run_id.clone()),
         execution_bindings: Some(vec![
             OptimizerExecutionBinding {
-                kind: "synth_optimizers_sft".into(),
-                id: client.base_url.clone(),
-                label: Some("public Optimizers hosted SFT".into()),
-                status: Some("starting".into()),
+                kind: "optimizer_sidecar".into(),
+                id: HOSTED_SFT_BANKING77_RECIPE.into(),
+                label: Some("Optimizers sidecar hosted SFT".into()),
+                status: Some("admitted".into()),
                 metadata: json!({
                     "recipeId": HOSTED_SFT_BANKING77_RECIPE,
                     "backend": "tinker",
                     "datasetFile": training_file,
                     "datasetShard": shard,
                     "baseModel": model_id,
+                    "placement": PLACEMENT_TRAINING_SFT_HOSTED,
                 }),
             },
             OptimizerExecutionBinding {
@@ -346,9 +349,7 @@ async fn start_banking77(
         cloud_config: None,
         local_path: None,
     };
-    let (run, event) = service.create(create).await?;
-    spawn_hosted_worker(service, client, run_id, Some(config_toml), 0).await;
-    Ok((run, event))
+    admit_hosted(service, request, create, config_toml).await
 }
 
 fn banking77_config_toml(
@@ -411,7 +412,6 @@ async fn start_fixture(
     super::models::OptimizerRunRecord,
     Option<crate::storage::AppEvent>,
 )> {
-    let client = SftOptimizerClient::from_env()?;
     let suffix = uuid::Uuid::new_v4().simple().to_string();
     let run_id = format!("sft_hosted_{}", &suffix[..8]);
     let training_file = format!("file_train_{}", &suffix[..8]);
@@ -423,17 +423,18 @@ async fn start_fixture(
         objective: Some("Hosted SFT fixture · streamed from public Optimizers".into()),
         source: Some("hosted".into()),
         project_ref: Some("sft@hosted-fixture".into()),
-        session_ref: request.session_ref,
+        session_ref: request.session_ref.clone(),
         id: Some(run_id.clone()),
         execution_bindings: Some(vec![OptimizerExecutionBinding {
-            kind: "synth_optimizers_sft".into(),
-            id: client.base_url.clone(),
-            label: Some("public Optimizers hosted SFT".into()),
-            status: Some("starting".into()),
+            kind: "optimizer_sidecar".into(),
+            id: HOSTED_SFT_FIXTURE_RECIPE.into(),
+            label: Some("Optimizers sidecar hosted SFT".into()),
+            status: Some("admitted".into()),
             metadata: json!({
                 "recipeId": HOSTED_SFT_FIXTURE_RECIPE,
                 "backend": "fixture",
                 "datasetFile": training_file,
+                "placement": PLACEMENT_TRAINING_SFT_HOSTED,
             }),
         }]),
         input_refs: Some(vec![OptimizerResourceRef {
@@ -457,9 +458,7 @@ async fn start_fixture(
         cloud_config: None,
         local_path: None,
     };
-    let (run, event) = service.create(create).await?;
-    spawn_hosted_worker(service, client, run_id, Some(config_toml), 0).await;
-    Ok((run, event))
+    admit_hosted(service, request, create, config_toml).await
 }
 
 async fn start_craftax_nemotron(
@@ -471,7 +470,6 @@ async fn start_craftax_nemotron(
 )> {
     let catalog = super::tinker_catalog::TinkerBaseModelCatalog::load()?;
     let model_id = catalog.resolve(request.base_model.as_deref())?;
-    let client = SftOptimizerClient::from_env()?;
     let container_url = local_craftax_slot_url()?;
     let suffix = uuid::Uuid::new_v4().simple().to_string();
     let run_id = format!("sft_craftax_nemo_{}", &suffix[..8]);
@@ -503,19 +501,20 @@ async fn start_craftax_nemotron(
         ),
         source: Some("hosted".into()),
         project_ref: Some("craftax@nemotron-nano-tinker".into()),
-        session_ref: request.session_ref,
+        session_ref: request.session_ref.clone(),
         id: Some(run_id.clone()),
         execution_bindings: Some(vec![
             OptimizerExecutionBinding {
-                kind: "synth_optimizers_sft".into(),
-                id: client.base_url.clone(),
-                label: Some("public Optimizers hosted SFT".into()),
-                status: Some("starting".into()),
+                kind: "optimizer_sidecar".into(),
+                id: HOSTED_SFT_CRAFTAX_NEMOTRON_RECIPE.into(),
+                label: Some("Optimizers sidecar hosted SFT".into()),
+                status: Some("admitted".into()),
                 metadata: json!({
                     "recipeId": HOSTED_SFT_CRAFTAX_NEMOTRON_RECIPE,
                     "backend": "tinker",
                     "datasetFile": training_file,
                     "baseModel": model_id,
+                    "placement": PLACEMENT_TRAINING_SFT_HOSTED,
                 }),
             },
             OptimizerExecutionBinding {
@@ -556,9 +555,7 @@ async fn start_craftax_nemotron(
         cloud_config: None,
         local_path: None,
     };
-    let (run, event) = service.create(create).await?;
-    spawn_hosted_worker(service, client, run_id, Some(config_toml), 0).await;
-    Ok((run, event))
+    admit_hosted(service, request, create, config_toml).await
 }
 
 fn local_craftax_slot_url() -> Result<String> {
@@ -585,6 +582,26 @@ fn local_craftax_slot_url() -> Result<String> {
     Ok(url)
 }
 
+async fn admit_hosted(
+    service: &OptimizerService,
+    request: OptimizerRecipeRunRequest,
+    create: OptimizerCreateRequest,
+    config_toml: String,
+) -> Result<(
+    super::models::OptimizerRunRecord,
+    Option<crate::storage::AppEvent>,
+)> {
+    super::sidecar_training::create_and_watch(
+        service,
+        request,
+        create,
+        PLACEMENT_TRAINING_SFT_HOSTED,
+        json!({ "config_toml": config_toml }),
+    )
+    .await
+}
+
+#[allow(dead_code)]
 async fn spawn_hosted_worker(
     service: &OptimizerService,
     client: SftOptimizerClient,
@@ -630,11 +647,13 @@ pub async fn restore_hosted_mirrors(service: &OptimizerService) {
         return;
     };
     let registered = service.registered_local_recipes().await;
-    let Ok(client) = SftOptimizerClient::from_env() else {
+    let Ok(client) =
+        super::sidecar_training::SidecarTrainingClient::from_manager(service.manager()).await
+    else {
         return;
     };
     for (run_id, cursor) in hosted_runs_needing_restore(&runs, &registered) {
-        spawn_hosted_worker(service, client.clone(), run_id, None, cursor).await;
+        super::sidecar_training::spawn_watch_worker(service, client.clone(), run_id, cursor).await;
     }
 }
 
@@ -693,6 +712,7 @@ async fn persist_hosted_cursor(
     Ok(())
 }
 
+#[allow(dead_code)]
 async fn run_hosted_worker(
     service: OptimizerService,
     client: SftOptimizerClient,
@@ -1158,5 +1178,70 @@ mod tests {
         registered.insert("sft_queued".into());
         let restore = hosted_runs_needing_restore(&[running, queued, done], &registered);
         assert_eq!(restore, vec![("sft_live".into(), 12)]);
+    }
+
+    #[test]
+    fn start_paths_do_not_dial_the_public_sft_loopback() {
+        let production = include_str!("hosted_sft.rs")
+            .split("#[cfg(test)]")
+            .next()
+            .unwrap();
+        assert!(!production.contains("client.base_url"));
+        assert!(production.contains("admit_hosted"));
+        assert!(production.contains("PLACEMENT_TRAINING_SFT_HOSTED"));
+    }
+
+    #[tokio::test]
+    async fn hosted_fixture_completes_through_sidecar_without_sft_service() {
+        let dir = tempfile::tempdir().unwrap();
+        let storage = crate::storage::Storage::open(dir.path().join("core")).unwrap();
+        let journal = crate::storage::EventJournal::new(storage.database().clone());
+        let content = crate::storage::ContentStore::new(storage.content_root());
+        let visuals = crate::visuals::VisualRegistry::new(
+            storage.database().clone(),
+            journal.clone(),
+            content,
+        );
+        let (events_tx, _) = tokio::sync::broadcast::channel(16);
+        let manager = std::sync::Arc::new(crate::optimizers::OptimizerManager::with_home(
+            dir.path().join("optimizer-home"),
+        ));
+        manager.install(None).unwrap();
+        assert_eq!(manager.start().await.unwrap().phase, "ready");
+        let service = OptimizerService::new_with_manager(
+            storage.database().clone(),
+            journal,
+            visuals,
+            events_tx,
+            manager,
+        );
+        let (run, _) = start(
+            &service,
+            OptimizerRecipeRunRequest {
+                recipe_id: HOSTED_SFT_FIXTURE_RECIPE.into(),
+                session_ref: Some("sess_hosted_sft_e2e".into()),
+                open_visual: Some(false),
+                base_model: None,
+                dataset_shard: None,
+                candidate_set_id: None,
+                search: None,
+            },
+        )
+        .await
+        .unwrap();
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(8);
+        let terminal = loop {
+            let current = service.get(run.id.clone()).await.unwrap();
+            if matches!(
+                current.status.as_str(),
+                "completed" | "failed" | "cancelled"
+            ) {
+                break current;
+            }
+            assert!(tokio::time::Instant::now() < deadline, "{}", current.status);
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        };
+        assert_eq!(terminal.status, "completed");
+        let _ = service.manager().stop().await;
     }
 }

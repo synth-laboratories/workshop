@@ -155,13 +155,21 @@ pub const OPTIMIZERS: RuntimeContract = RuntimeContract {
     // that cannot serve them. Raise this when the dev channel is cut again.
     min_supported_dev: "0.2.9.dev20260814",
     workshop_compat: "0.4.0",
-    algorithms: &["gepa"],
-    templates: &["optimizer.gepa.live.v1", "optimizer.run.v1"],
+    algorithms: &["gepa", "sft", "cispo"],
+    templates: &[
+        "optimizer.gepa.live.v1",
+        "optimizer.sft.live.v1",
+        "optimizer.run.v1",
+    ],
     bounded_recipes: &[
         "gepa.banking77.smoke.v1",
         "gepa.banking77.luna.v1",
         "gepa.banking77.sol.v1",
         "gepa.craftax.smoke.v1",
+        "sft.qwen35-0.8b.mlx.v1",
+        "sft.hosted.fixture.v1",
+        "cispo.banking77.mlx.v1",
+        "cispo.slime.hosted.v1",
     ],
     recipe_schema: "gepa.recipe.v1",
     provisioned_by_desktop: true,

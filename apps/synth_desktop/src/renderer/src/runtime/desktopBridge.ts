@@ -4,7 +4,7 @@ import { commands as spectaCommands } from "../generated/protocol";
 import { open } from "@tauri-apps/plugin-dialog";
 import desktopPackage from "../../../../package.json";
 import type { AppEvent, InternSessionControlRequest, InternSessionCreateRequest, InternSessionSendRequest, RuntimeEvent, Session } from "@synth/runtime-protocol";
-import type { CodexEvent, CodexOauthBegin, CodexOauthStatus, CodexSessionInfo, ComposerImageAttachment, ContextSnapshot, DesktopInstanceDiagnostics, DesktopPermissionSettings, InventoryCounts, LagunaDownloadProgress, LagunaModelHit, LagunaStatus, ModelMultiAgentSetting, ModelPerformanceSummary, ModelPerformanceTurnSample, PersistedCodexSession, ProductTelemetryPolicy, RequestOptions, RuntimeBridge, SecretAuditEvent, SecretCapabilitySummary, SecretImportPreview, SecretSummary, SecretsBridge, SecretsInbox, SkillHit, SynthAccountSummary, SynthBackendSettings, SynthSignInBegin, SynthSignInPoll, TariffCard, TerminalEvent, TerminalInfo, UpdateStatus, VisualAnnotation, VisualSeal, VisualSealBundle, VisualTemplateMeta, VisualUpload, WhisperDownloadProgress, WhisperModelHit, WhisperRuntimeStatus, WorkspaceAccessSettings } from "../bridge";
+import type { CodexEvent, CodexOauthBegin, CodexOauthStatus, CodexSessionInfo, ComposerImageAttachment, ContextSnapshot, DesktopInstanceDiagnostics, DesktopPermissionSettings, InventoryCounts, LagunaDownloadProgress, LagunaModelHit, LagunaStatus, ModelMultiAgentSetting, ModelPerformanceSummary, ModelPerformanceTurnSample, PersistedCodexSession, ProductTelemetryPolicy, RequestOptions, RuntimeBridge, SecretAuditEvent, SecretCapabilitySummary, SecretImportPreview, SecretSummary, SecretsBridge, SecretsInbox, SkillHit, SynthAccountSummary, SynthBackendSettings, SynthSignInBegin, SynthSignInPoll, TariffCard, TerminalEvent, TerminalInfo, TrainingModelDownloadProgress, TrainingModelHit, UpdateStatus, VisualAnnotation, VisualSeal, VisualSealBundle, VisualTemplateMeta, VisualUpload, WhisperDownloadProgress, WhisperModelHit, WhisperRuntimeStatus, WorkspaceAccessSettings } from "../bridge";
 import type { CoreDiagnostics, VisualRecord, VisualRevision } from "@synth/runtime-protocol";
 import type { ContainerDeployment, ResolvedTraceProjection, TraceBundleIngestResult, TraceV5Record, UsageLedgerEntry, UsageSummary, UsageWindow } from "@synth/runtime-protocol";
 import { publicError } from "../runtime/publicError";
@@ -261,6 +261,32 @@ export function installDesktopBridge(): void {
 			setModelDirectory: async () => { throw new Error("Model folders require the desktop app"); },
 			clearModelDirectory: async () => undefined,
 			onStatus: () => () => undefined
+		};
+	window.synthTrainingModels ??= isTauri
+		? {
+			listModels: () => invokeCommand<TrainingModelHit[]>(COMMANDS.TRAINING_MODELS_LIST),
+			downloadModel: (modelId) =>
+				invokeCommand<TrainingModelHit>(COMMANDS.TRAINING_MODELS_DOWNLOAD, { modelId }),
+			deleteModel: (modelId) =>
+				invokeCommand<void>(COMMANDS.TRAINING_MODELS_DELETE, { modelId }),
+			onDownloadProgress(listener) {
+				let disposed = false;
+				let unlisten: (() => void) | undefined;
+				void listen<TrainingModelDownloadProgress>(
+					EVENT_CHANNELS.TRAINING_MODELS_DOWNLOAD,
+					({ payload }) => listener(payload)
+				).then((next) => {
+					if (disposed) next();
+					else unlisten = next;
+				});
+				return () => { disposed = true; unlisten?.(); };
+			}
+		}
+		: {
+			listModels: async () => [],
+			downloadModel: async () => { throw new Error("Training model downloads require Synth Desktop"); },
+			deleteModel: async () => { throw new Error("Training model deletion requires Synth Desktop"); },
+			onDownloadProgress: () => () => undefined
 		};
 	window.synthWhisper ??= isTauri
 		? {
@@ -870,6 +896,9 @@ export const bridges = {
 	},
 	get laguna() {
 		return window.synthLaguna;
+	},
+	get trainingModels() {
+		return window.synthTrainingModels;
 	},
 	get whisper() {
 		return window.synthWhisper;

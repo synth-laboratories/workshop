@@ -56,6 +56,7 @@ mod telemetry;
 mod terminal;
 pub mod trace_ingest;
 pub mod trace_query;
+pub mod training_models;
 mod update_check;
 mod visuals;
 pub mod visuals_ipc;
@@ -860,7 +861,10 @@ pub(crate) async fn authorize_optimizer_recipe_start(
     // the pinned local container runtime. Neither depends on plugin lifecycle.
     if matches!(
         request.recipe_id.as_str(),
-        "sft.hosted.fixture.v1" | "eval.fixture.policy-smoke.v1"
+        "sft.hosted.fixture.v1"
+            | "sft.qwen35-0.8b.mlx.v1"
+            | "cispo.banking77.mlx.v1"
+            | "eval.fixture.policy-smoke.v1"
     ) {
         let (run, event) = state
             .optimizers()
@@ -4194,7 +4198,11 @@ pub fn run() {
                 if let Err(error) = bootstrap_core.resume_intern_providers().await {
                     eprintln!("Intern restart reconciliation failed: {error}");
                 }
-                if let Err(error) = bootstrap_core.optimizers().reconcile_stale_local_runs().await {
+                if let Err(error) = bootstrap_core
+                    .optimizers()
+                    .reconcile_stale_local_runs()
+                    .await
+                {
                     eprintln!("optimizer restart reconciliation failed: {error}");
                 }
                 // Fallback arm: if the main window never finished loading, the

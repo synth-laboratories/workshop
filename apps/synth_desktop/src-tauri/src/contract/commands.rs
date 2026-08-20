@@ -67,6 +67,9 @@ impl Commands {
     pub const LAGUNA_INFERENCE_SNAPSHOT: &'static str = "laguna_inference_snapshot";
     pub const LAGUNA_SETTINGS_SNAPSHOT: &'static str = "laguna_settings_snapshot";
     pub const LAGUNA_SETTINGS_UPDATE: &'static str = "laguna_settings_update";
+    pub const TRAINING_MODELS_LIST: &'static str = "training_models_list";
+    pub const TRAINING_MODELS_DOWNLOAD: &'static str = "training_models_download";
+    pub const TRAINING_MODELS_DELETE: &'static str = "training_models_delete";
     pub const WHISPER_RUNTIME_STATUS: &'static str = "whisper_runtime_status";
     pub const WHISPER_RUNTIME_WARM: &'static str = "whisper_runtime_warm";
     pub const WHISPER_MODELS_LIST: &'static str = "whisper_models_list";
