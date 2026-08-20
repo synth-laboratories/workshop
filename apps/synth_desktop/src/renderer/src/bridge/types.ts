@@ -139,6 +139,54 @@ export type TrainingModelsBridge = {
 	onDownloadProgress(listener: (progress: TrainingModelDownloadProgress) => void): () => void;
 };
 
+export type MlxReadinessFailureClass = "runtime" | "platform" | "disk" | "network" | "auth_license" | "model_compatibility" | "checksum";
+
+export type MlxReadiness = {
+	platform: "apple_silicon" | "unsupported" | "unknown";
+	compatibility: "compatible" | "incompatible" | "unknown";
+	runtimeHealth: "ready" | "missing" | "unhealthy" | "unknown";
+	runtimeVersion?: string | null;
+	availableMemoryBytes?: number | null;
+	availableDiskBytes?: number | null;
+	failureClass?: MlxReadinessFailureClass | null;
+};
+
+export type ModelInstallPlan = {
+	modelId: string;
+	title: string;
+	source: string;
+	revision: string;
+	digest?: string | null;
+	license: string;
+	downloadBytes: number;
+	minimumFreeDiskBytes: number;
+	alreadyPresent: boolean;
+	compatible: boolean;
+};
+
+export type TrainingArtifact = {
+	id: string;
+	kind: "mlx-lora.v1" | "training-checkpoint.v1" | "hosted-lora.v1";
+	algorithm: "sft" | "cispo";
+	baseModel: { id: string; revision?: string | null };
+	producingRunId: string;
+	datasetDigest?: string | null;
+	configDigest?: string | null;
+	sha256?: string | null;
+	sizeBytes?: number | null;
+	integrity: "verified" | "pending" | "failed" | "unknown";
+	compatibleBackends: string[];
+	parentArtifactId?: string | null;
+};
+
+export type TrainingArtifactsBridge = {
+	list(): Promise<TrainingArtifact[]>;
+	inspect(id: string): Promise<TrainingArtifact>;
+	launchInference(id: string, options?: { mergeAdapter?: boolean }): Promise<{ artifactId: string; status: "planned" | "started" }>;
+	launchEval(id: string, recipeId: string): Promise<{ artifactId: string; recipeId: string; status: "planned" | "started" }>;
+	delete(id: string): Promise<void>;
+};
+
 export type WhisperModelHit = {
 	id: string;
 	title: string;

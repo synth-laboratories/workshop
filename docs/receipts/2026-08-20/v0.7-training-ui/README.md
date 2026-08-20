@@ -4,15 +4,15 @@ Fixture-fed renderer receipts captured by `training-workspace.spec.ts` on base `
 
 | Receipt | Viewport | SHA-256 |
 | --- | --- | --- |
-| `wide-artifacts.png` | 1440×900 | `e47ce7575ab57d0745a55f2c3777379c454509cb8bf7214c9d09b2d2631ecdd3` |
-| `wide-setup-ready.png` | 1440×900 | `37f1044cfe6c9ff128245b2f22c99fec93d806930c906af033cb301d34170d91` |
-| `wide-setup-installing.png` | 1440×900 | `34657113951020486851c40c2cdd9827a61a4dcdff7c07c71db4fcaa72c8cf02` |
-| `wide-train-cispo.png` | 1440×900 | `067ab02867a2f82bcb2fd1bc60898dd9eaa24bb689902599797c7b782eab3ca7` |
-| `wide-run-cispo.png` | 1440×900 | `d97495887ac4984ae57556695b79da86f68b4ee50d7dae3b8ae976f2e53a6ce6` |
-| `wide-artifacts-dark.png` | 1440×900 dark | `d00de57491cc6da0f274579ad50e459f8d59f13d1392b88041c8419ddaae42f6` |
-| `narrow-artifacts.png` | 980×760 | `2abda1a0a273f985115197a107b503e437907c5cfa25da4fc8617b89906ec7b7` |
-| `narrow-setup-ready.png` | 980×760 | `290b32d775ffd2571446385d62937da307f911c689bb19eade8b25661b8ba804` |
-| `narrow-setup-installing.png` | 980×760 | `ffbd7cbcb7402e7d9f0e38a067716240bf78c658501dc5838a3e6b00fb0abd2d` |
-| `narrow-train-cispo.png` | 980×760 | `d8caf6b1aa2b7e0d33b90ee2a81ac724482fbd84979cd1fc5d00659971a4ec07` |
-| `narrow-run-cispo.png` | 980×760 | `3628e877b3772a43507388eae181846614e3df00036fe0da2074bd35b72dc599` |
-| `narrow-artifacts-dark.png` | 980×760 dark | `e031464f1eba1d67e1ba378e02cf1f97516b493268090899938ab73b275f0d4f` |
+| `wide-artifacts.png` | 1440×900 | `c6d87fddbbde0269ee533fcd3e7368cf28df755a4157d00ef0e7b50626030767` |
+| `wide-setup-ready.png` | 1440×900 | `1571efde82b3a4770d435711763cadb66d663aefd7531934df7688760961c901` |
+| `wide-setup-installing.png` | 1440×900 | `eb49c370f44f4aa799456490f0858f332c2b14dc14c26dba1f4e10322ac9a7c8` |
+| `wide-train-cispo.png` | 1440×900 | `f497ce08399f9cf26e280167325011b2181e1650d998ed5cc685f6045a993191` |
+| `wide-run-cispo.png` | 1440×900 | `2d860b2616770cfb1b103c234eb8a1f321756aab4acd4b03a79dfa7f112e7b21` |
+| `wide-artifacts-dark.png` | 1440×900 dark | `33dee0631864258030886441c6d4a787a6ab0bcbf10bf35ba89dddb63ff788aa` |
+| `narrow-artifacts.png` | 980×760 | `21595cb6920fe541ab28ca6b1c2cb0da24fdfa8da94ae62f6dfb5724cd8b47bd` |
+| `narrow-setup-ready.png` | 980×760 | `26e665c7d331994bafcb8c30916c14c1e3af94cf9ac04c7aa61b3a7a1e3a77a6` |
+| `narrow-setup-installing.png` | 980×760 | `c66b1b5f8d7da97bf59b45cd74bc5641ea9a7ff295b62e2f203b44bdc7a25d0f` |
+| `narrow-train-cispo.png` | 980×760 | `9730f466069e1c92045d754c119ad03d7bf15b8dc4ca17209acbb44564e1a891` |
+| `narrow-run-cispo.png` | 980×760 | `afd9ccf442a430d2dc6e9a6d7f03920bfcb164786993b2bf2204c7ebc2d52780` |
+| `narrow-artifacts-dark.png` | 980×760 dark | `9040682a0673f222e8f7f00fa718f125f5de2a63932dc37ecc7b605dcf1a9e69` |

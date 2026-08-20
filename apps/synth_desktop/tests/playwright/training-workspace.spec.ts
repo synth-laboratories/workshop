@@ -2,6 +2,12 @@ import { expect, test } from "./browser.fixture";
 
 test.beforeEach(async ({ page }) => {
 	await page.addInitScript(() => {
+		(window as any).synthTrainingModels = {
+			listModels: async () => [],
+			downloadModel: async (modelId: string) => new Promise(() => modelId),
+			deleteModel: async () => undefined,
+			onDownloadProgress: () => () => undefined
+		};
 		(window as any).synthOptimizers = {
 			listAlgorithms: async () => [], list: async () => [], listRecipes: async () => [], listCloud: async () => [],
 			hostedTrainingModels: async () => ({ revision: "fixture", models: [] }), searchSavedLoras: async () => ({ items: [], total: 0 }),

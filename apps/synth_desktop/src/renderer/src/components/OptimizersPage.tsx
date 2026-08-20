@@ -867,7 +867,7 @@ export function OptimizersPage({
 				</section>
 			) : null}
 
-			<TrainingWorkspace onStartFixture={() => void startSftFixture()} fixtureBusy={startingSftFixture} />
+			<TrainingWorkspace onStartFixture={() => void startSftFixture()} onStartAgent={() => { const guide = OPTIMIZER_GUIDES.find((item) => item.id === "sft"); if (guide) void startAgent(guide); }} fixtureBusy={startingSftFixture} />
 
 			<section className="optimizer-recipes" aria-labelledby="optimizer-recipes-title">
 				<div className="optimizer-recipes-head">
