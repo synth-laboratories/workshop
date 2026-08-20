@@ -426,6 +426,14 @@ evaluation_schema = "training.evaluation.plan.v1"
 evaluation_phases = ["baseline", "checkpoint", "final"]
 evaluation_transport = "tunnel"
 evaluation_metric = "reward"
+evaluation_required = true
+evaluation_exact_checkpoint_required = true
+evaluation_auth = "sidecar_tunnel_lease"
+evaluation_harness = "classify"
+evaluation_plan_ref = "{BANKING77_PLAN_REF}"
+evaluation_world_ref = "{BANKING77_WORLD_REF}"
+evaluation_sample_count = 16
+evaluation_timeout_s = {CHECKPOINT_EVALUATION_TIMEOUT_S}
 
 # The classify harness resolves the checkpoint through evaluator-owned keys
 # (inference_target, sampler_path, …), which this recipe must not set. It still
@@ -896,6 +904,14 @@ evaluation_schema = "training.evaluation.plan.v1"
 evaluation_phases = ["baseline", "checkpoint", "final"]
 evaluation_transport = "tunnel"
 evaluation_metric = "reward"
+evaluation_required = true
+evaluation_exact_checkpoint_required = true
+evaluation_auth = "sidecar_tunnel_lease"
+evaluation_harness = "react"
+evaluation_plan_ref = "craftax_eval.v1"
+evaluation_world_ref = "world:craftax"
+evaluation_sample_count = 2
+evaluation_timeout_s = {CHECKPOINT_EVALUATION_TIMEOUT_S}
 
 # Every field the ReAct harness needs, named. It refuses to default any of
 # them: they define the policy under test, and a wrong one is indistinguishable
@@ -1066,6 +1082,10 @@ mod tests {
         assert!(toml.contains("checkpoint_evaluation_world_ref = \"world:banking77@heldout\""));
         assert!(toml.contains("evaluation_phases = [\"baseline\", \"checkpoint\", \"final\"]"));
         assert!(toml.contains("evaluation_transport = \"tunnel\""));
+        assert!(toml.contains("evaluation_required = true"));
+        assert!(toml.contains("evaluation_exact_checkpoint_required = true"));
+        assert!(toml.contains("evaluation_auth = \"sidecar_tunnel_lease\""));
+        assert!(toml.contains("evaluation_sample_count = 16"));
         assert!(toml.contains("container_url = \"http://127.0.0.1:8110\""));
         assert!(!toml.contains("goex.sft"));
     }
@@ -1301,6 +1321,31 @@ mod tests {
             tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         };
         assert_eq!(terminal.status, "completed");
+        let events = service
+            .events_after(run.id.clone(), 0, Some(500))
+            .await
+            .unwrap();
+        let evaluations = events
+            .iter()
+            .filter(|event| event.event_type == "training.evaluation.completed")
+            .collect::<Vec<_>>();
+        assert_eq!(evaluations.len(), 3);
+        for (evaluation, phase) in evaluations.iter().zip(["baseline", "checkpoint", "final"]) {
+            assert_eq!(evaluation.delta["phase"], phase);
+            assert_eq!(evaluation.delta["evaluation"]["phase"], phase);
+            assert_eq!(
+                evaluation.delta["evaluation"]["candidate"]["exact_checkpoint"],
+                true
+            );
+            assert!(evaluation.delta["evaluation"]["candidate"]["checkpoint_id"]
+                .as_str()
+                .is_some_and(|value| !value.is_empty()));
+            assert!(
+                evaluation.delta["evaluation"]["candidate"]["artifact_digest"]
+                    .as_str()
+                    .is_some_and(|value| !value.is_empty())
+            );
+        }
         let _ = service.manager().stop().await;
     }
 }
