@@ -108,9 +108,32 @@ test("hosted SFT uses only the public synth-optimizers control plane", () => {
 	assert.doesNotMatch(hostedSft, /OPTIMIZERS_BETA|SYNTH_OPTIMIZERS_BETA/);
 	assert.match(sftClient, /Workshop never contacts Optimizers-beta directly/);
 	assert.doesNotMatch(privateGeloClient, /\bsubmit_toml\b|fn optimizer_events_after/);
-	assert.match(service, /SftOptimizerClient::from_env\(\)\?\s*\.cancel\(&id\)/s);
-	assert.match(hostedSft, /kind:\s*"synth_optimizers_sft"\.into\(\)/);
-	assert.match(service, /fn primary_visual_template[\s\S]*"sft" => "optimizer\.sft\.live\.v1"/);
+	// Cancel must reach the canonical public SFT run through the sidecar proxy,
+	// which in turn holds the only SftOptimizerClient. Bound both checks to the
+	// function bodies so a stray mention elsewhere cannot satisfy them, and keep
+	// refusing any path that dials :8787 / Optimizers-beta directly.
+	const sidecarTraining = readTauri("optimizers/sidecar_training.rs");
+	const cancelStart = service.indexOf("pub async fn cancel(&self, id: String)");
+	const cancelEnd = service.indexOf("pub async fn pause(&self, id: String)", cancelStart);
+	assert.ok(cancelStart !== -1 && cancelEnd > cancelStart, "OptimizerService::cancel body not found");
+	const cancelBody = service.slice(cancelStart, cancelEnd);
+	assert.match(
+		cancelBody,
+		/matches!\(run\.algorithm_id\.as_str\(\), "sft" \| "cispo"\)[\s\S]*?SidecarTrainingClient::from_manager\(self\.manager\(\)\)[\s\S]*?client\.cancel\(&id\)\.await/,
+	);
+	assert.doesNotMatch(cancelBody, /8787|MlxLoopback|HostedOptimizerClient|reqwest|SftOptimizerClient/);
+	const hostedStart = sidecarTraining.indexOf("async fn drive_hosted_sft_job(");
+	assert.notEqual(hostedStart, -1, "drive_hosted_sft_job not found");
+	const hostedEnd = sidecarTraining.indexOf("\nasync fn ", hostedStart + 1);
+	const hostedSftBody = sidecarTraining.slice(hostedStart, hostedEnd === -1 ? undefined : hostedEnd);
+	assert.match(
+		hostedSftBody,
+		/let client = SftOptimizerClient::from_env\(\)\?;[\s\S]*?job\.cancelled[\s\S]*?client\.cancel\(job_id\)\.await/,
+	);
+	assert.doesNotMatch(hostedSftBody, /HostedOptimizerClient|MlxLoopback/);
+	assert.doesNotMatch(sidecarTraining, /8787|OPTIMIZERS_BETA|SYNTH_OPTIMIZERS_BETA/);
+	assert.match(hostedSft, /kind:\s*"optimizer_sidecar"\.into\(\)/);
+	assert.match(service, /fn primary_visual_template[\s\S]*"sft" \| "cispo" => "optimizer\.sft\.live\.v1"/);
 	assert.match(commands, /"sft\.hosted\.fixture\.v1"[\s\S]*SYNTH_OPTIMIZERS_SFT_SERVICE_TOKEN/);
 	assert.match(
 		commands,
