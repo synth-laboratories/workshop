@@ -15,14 +15,14 @@ if [[ -n "$GIT_COMMON_DIR" ]]; then
 fi
 COMMAND="${1:-dev}"
 NAME="${2:-${SYNTH_DESKTOP_INSTANCE:-codex}}"
-RELEASE_LINE="${SYNTH_DESKTOP_RELEASE_LINE:-v0.6}"
-APP_VERSION="${SYNTH_DESKTOP_APP_VERSION:-0.6.0}"
+RELEASE_LINE="${SYNTH_DESKTOP_RELEASE_LINE:-v0.7}"
+APP_VERSION="${SYNTH_DESKTOP_APP_VERSION:-0.7.0}"
 
-if [[ "$RELEASE_LINE" != "v0.6" ]]; then
-	  echo "[desktop:$NAME] invalid release line; this branch only builds v0.6 instances" >&2
+if [[ "$RELEASE_LINE" != "v0.7" ]]; then
+	  echo "[desktop:$NAME] invalid release line; this branch only builds v0.7 instances" >&2
 	  exit 2
 fi
-RELEASE_SLUG="v06"
+RELEASE_SLUG="v07"
 
 usage() {
   cat <<'EOF'

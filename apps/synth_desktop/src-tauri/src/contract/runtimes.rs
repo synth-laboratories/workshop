@@ -139,18 +139,17 @@ fn numeric_segments(version: &str) -> Vec<u64> {
 pub const OPTIMIZERS: RuntimeContract = RuntimeContract {
     runtime_id: "optimizers",
     package: "synth-optimizers",
-    official: "0.2.14",
+    official: "0.2.15",
     // Behind official: this cut predates both required routes. It still
     // installs — its own channel's floor is what it is measured against — and
     // then fails the handshake, which is the honest place for that failure.
     // Blocking the install instead would take the dev channel offline to
     // report a problem the gate already reports precisely.
     dev: "0.2.9.dev20260814",
-    // 0.2.14 preserves the required routes and legacy-workspace migration, and
-    // identifies the running Rust service with the same version as the Python
-    // distribution. Earlier releases either fail migration or advertise a
-    // stale heartbeat identity that Desktop must refuse.
-    min_supported: "0.2.14",
+    // 0.2.15 is the plain v0.7 cut (experiment layer excluded). It preserves
+    // the required routes and legacy-workspace migration, and identifies the
+    // running Rust service with the same version as the Python distribution.
+    min_supported: "0.2.15",
     // No dev cut carries the required routes yet; the handshake refuses one
     // that cannot serve them. Raise this when the dev channel is cut again.
     min_supported_dev: "0.2.9.dev20260814",

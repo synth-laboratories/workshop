@@ -6,12 +6,13 @@ import { findPluginStatus, pluginPresentation, type PluginPresentation } from ".
 import { publicError } from "../runtime/publicError";
 
 type OptimizerGuide = {
-	id: "gepa" | "go-ex" | "sft" | "cispo" | "ppo" | "eval";
+	id: "gepa" | "go-ex" | "sft" | "cispo" | "eval";
 	label: string;
 	name: string;
 	description: string;
 	flow: string[];
 	prompt: string;
+	kind: "optimizer" | "training";
 };
 
 const OPTIMIZER_GUIDES: OptimizerGuide[] = [
@@ -19,6 +20,7 @@ const OPTIMIZER_GUIDES: OptimizerGuide[] = [
 		id: "gepa",
 		label: "GE",
 		name: "GEPA",
+		kind: "optimizer",
 		description: "Improve prompts by proposing candidates, evaluating them, and maintaining a quality frontier.",
 		flow: ["Propose", "Evaluate", "Select"],
 		prompt: "Help me set up a GEPA optimization in Workshop. Do not start compute yet. First ask what I want to optimize, then help me choose or create the evaluation Container, dataset splits, scoring contract, proposer model, budget, and stopping criteria. Verify the target and event-stream contracts before proposing a run. Explain tradeoffs and wait for my explicit approval before starting paid compute."
@@ -27,6 +29,7 @@ const OPTIMIZER_GUIDES: OptimizerGuide[] = [
 		id: "go-ex",
 		label: "GX",
 		name: "GELO",
+		kind: "optimizer",
 		description: "Explore prompt-policy variants from rollout evidence and branch from useful intermediate states.",
 		flow: ["Explore", "Branch", "Verify"],
 		prompt: "Help me set up a prompt-only GELO (GoEx) optimization in Workshop. Do not start compute yet. First ask what behavior I want to improve and which Container or evaluation target should measure it. Discover the target's actual capabilities, including streaming, rewards, prompt treatment, checkpoints, and restore support; fail the plan early if required affordances are missing. Then help me choose seeds, proposer policy, budget, heldout evaluation, and stopping criteria. Wait for my explicit approval before starting paid compute."
@@ -35,6 +38,7 @@ const OPTIMIZER_GUIDES: OptimizerGuide[] = [
 		id: "sft",
 		label: "SF",
 		name: "SFT",
+		kind: "training",
 		description: "Collect strong demonstrations, train checkpoints, and compare the adapted model against its baseline. This Mac (MLX) or hosted.",
 		flow: ["Collect", "Train", "Compare"],
 		prompt: "Help me set up an SFT optimization in Workshop. Do not start compute yet. Ask whether I want This Mac (recipe sft.qwen35-0.8b.mlx.v1) or hosted (sft.hosted.fixture.v1 / Tinker recipes). Never dial :8787 or name synth-mlx-rl. Wait for my explicit approval before starting paid compute."
@@ -43,19 +47,15 @@ const OPTIMIZER_GUIDES: OptimizerGuide[] = [
 		id: "cispo",
 		label: "CI",
 		name: "CISPO · slime reference",
+		kind: "training",
 		description: "Run on-policy training with the pinned slime CISPO objective. This Mac (MLX) or hosted after the clip canary.",
 		flow: ["Preflight", "Roll out", "Train"],
-		prompt: "Help me set up CISPO in Workshop. Do not start paid compute yet. Prefer recipe cispo.banking77.mlx.v1 on this Mac, or cispo.slime.hosted.v1 if hosted is admitted. Never draft a free-form HostedOptimizerClient.launch_training call. Wait for my explicit approval before launch."
-	},
-	{
-		id: "ppo",
-		label: "PP",
-		name: "PPO · GLM 5.2/5.3",
-		description: "Run clipped policy/value optimization with explicit GLM provenance and a live HealthBench rollout plane.",
-		flow: ["Preflight", "Roll out", "Optimize"],
-		prompt: "Help me set up hosted PPO using implementation ppo.glm-5.3.v1. Do not start paid compute yet. Default to HealthBench. Verify the immutable public GLM/slime reference status, Tinker capabilities, Container and grader provenance, capability hash, SynthTunnel lease, direct-HTTPS sampler path, bounded steps/time/cost, checkpoint cadence, and evaluation plan. Refuse to claim unreleased GLM defaults as verified. Wait for my explicit approval before launch."
+		prompt: "Help me set up CISPO in Workshop. Do not start paid compute yet. Prefer recipe cispo.banking77.mlx.v1 on this Mac, or the bounded hosted recipe cispo.slime.hosted.v1 if hosted is admitted. Never draft a free-form HostedOptimizerClient.launch_training call. Wait for my explicit approval before launch."
 	}
 ];
+
+const SEARCH_GUIDES = OPTIMIZER_GUIDES.filter((guide) => guide.kind === "optimizer");
+const TRAINING_GUIDES = OPTIMIZER_GUIDES.filter((guide) => guide.kind === "training");
 
 type Props = {
 	onOpenVisual: (visualId: string) => void;
@@ -86,8 +86,7 @@ function algorithmLabel(id: string): string {
 	if (id === "gepa") return "GEPA";
 	if (id === "go-ex") return "GELO";
 	if (id === "sft") return "SFT";
-	if (id === "cispo") return "CISPO · slime";
-	if (id === "ppo") return "PPO · GLM";
+	if (id === "cispo") return "CISPO";
 	if (id === "eval") return "Eval";
 	return id;
 }
@@ -322,7 +321,7 @@ export function OptimizersPage({
 	const [evalRecipes, setEvalRecipes] = useState<OptimizerRecipeInfo[]>([]);
 	const [evalState, setEvalState] = useState<EvalState | null>(null);
 	const [trainingProjection, setTrainingProjection] = useState<TrainingProjection | null>(null);
-	const [trainingAlgorithm, setTrainingAlgorithm] = useState<"cispo" | "ppo">("cispo");
+	const [trainingAlgorithm, setTrainingAlgorithm] = useState<"cispo">("cispo");
 	const [trainingModel, setTrainingModel] = useState("openai/gpt-oss-20b");
 	const [trainingTask, setTrainingTask] = useState("banking77");
 	const [trainingContainerUrl, setTrainingContainerUrl] = useState("http://127.0.0.1:8000");
@@ -618,11 +617,11 @@ export function OptimizersPage({
 	};
 
 	const reviewTrainingLaunch = async () => {
-		const guide = OPTIMIZER_GUIDES.find((item) => item.id === trainingAlgorithm);
+		const guide = TRAINING_GUIDES.find((item) => item.id === "cispo");
 		if (!guide) return;
 		await startAgent({
 			...guide,
-			prompt: `${guide.prompt}\n\nThe user supplied this typed launch draft:\n- model: ${trainingModel}\n- task: ${trainingTask}\n- local container URL: ${trainingContainerUrl}\n- hard step cap: ${trainingSteps}\n- hard wall-clock cap: ${trainingWallSeconds} seconds\n- hard cost cap: $${trainingCostUsd}\n- checkpoint every: ${trainingCheckpointEvery} step(s)\n\nUse the synth-optimizers HostedTrainingSpec and HostedOptimizerClient.launch_training path so the client performs provider preflight, container capability validation, SynthTunnel setup, and lease ownership. Echo the effective config and both capability hashes. If preflight is supported, ask for one final paid-compute confirmation and then launch; if it is unsupported, stop before spend and report the exact missing capability.`
+			prompt: `${guide.prompt}\n\nLaunch the bounded hosted recipe cispo.slime.hosted.v1. Do not call HostedOptimizerClient.launch_training.\n\nTyped launch draft:\n- recipe: cispo.slime.hosted.v1\n- model: ${trainingModel}\n- task: ${trainingTask}\n- local container URL: ${trainingContainerUrl}\n- hard step cap: ${trainingSteps}\n- hard wall-clock cap: ${trainingWallSeconds} seconds\n- hard cost cap: $${trainingCostUsd}\n- checkpoint every: ${trainingCheckpointEvery} step(s)\n\nUse recipe admission so the sidecar performs provider preflight, container capability validation, SynthTunnel setup, and lease ownership. Echo the effective config and both capability hashes. If the recipe is not admitted, stop before spend.`
 		});
 	};
 
@@ -883,7 +882,7 @@ export function OptimizersPage({
 					<p>The agent will help choose the Container, evaluation, and budget.</p>
 				</div>
 				<div className="optimizer-recipe-grid">
-					{OPTIMIZER_GUIDES.map((guide) => (
+					{SEARCH_GUIDES.map((guide) => (
 						<article className="optimizer-recipe-card" aria-labelledby={`optimizer-guide-${guide.id}`} data-testid={`optimizer-guide-${guide.id}`} key={guide.id}>
 							<div className="optimizer-recipe-top"><span className="optimizer-recipe-mark">{guide.label}</span><span className="optimizer-recipe-runtime">Optimization algorithm</span></div>
 							<h3 id={`optimizer-guide-${guide.id}`}>{guide.name}</h3>
@@ -892,9 +891,35 @@ export function OptimizersPage({
 							<button
 								className="secondary-button"
 								type="button"
-								// A plugin that is disabled, stopped, uninstalled, or
-								// unhealthy cannot take work; offering the launch would
-								// fail deep inside the sidecar instead of here.
+								disabled={startingAgent !== null || (plugin != null && !presentation.isUsable)}
+								title={plugin != null && !presentation.isUsable && presentation.label
+									? `Optimizers: ${presentation.label}`
+									: undefined}
+								onClick={() => void startAgent(guide)}
+								data-testid={`start-${guide.id}-agent`}
+							>
+								{startingAgent === guide.id ? "Opening agent…" : "Plan with agent"}
+							</button>
+						</article>
+					))}
+				</div>
+			</section>
+
+			<section className="optimizer-recipes" aria-labelledby="optimizer-training-title" data-testid="optimizer-training-guides">
+				<div className="optimizer-recipes-head">
+					<div><span className="optimizer-eyebrow">Training</span><h2 id="optimizer-training-title">Train a model</h2></div>
+					<p>SFT and CISPO are training lanes, not search algorithms. They live here, not in the optimizer card grid.</p>
+				</div>
+				<div className="optimizer-recipe-grid">
+					{TRAINING_GUIDES.map((guide) => (
+						<article className="optimizer-recipe-card" aria-labelledby={`optimizer-guide-${guide.id}`} data-testid={`optimizer-guide-${guide.id}`} key={guide.id}>
+							<div className="optimizer-recipe-top"><span className="optimizer-recipe-mark">{guide.label}</span><span className="optimizer-recipe-runtime">Training lane</span></div>
+							<h3 id={`optimizer-guide-${guide.id}`}>{guide.name}</h3>
+							<p>{guide.description}</p>
+							<div className="optimizer-recipe-flow" aria-label={`${guide.name} workflow`}>{guide.flow.map((step) => <span key={step}>{step}</span>)}</div>
+							<button
+								className="secondary-button"
+								type="button"
 								disabled={startingAgent !== null || (plugin != null && !presentation.isUsable)}
 								title={plugin != null && !presentation.isUsable && presentation.label
 									? `Optimizers: ${presentation.label}`
@@ -920,7 +945,7 @@ export function OptimizersPage({
 									<button className="secondary-button" type="button" disabled={startingLocalCispo || (plugin != null && !presentation.isUsable)} onClick={() => void startBoundedRecipe("cispo.banking77.mlx.v1", setStartingLocalCispo)} data-testid="start-cispo-mlx">
 										{startingLocalCispo ? "Starting…" : "This Mac · Banking77 CISPO"}
 									</button>
-									<small>Hosted CISPO stays fail-closed until the slime clip canary admits it.</small>
+									<small>Hosted CISPO stays fail-closed until the slime clip canary admits it. Use the bounded recipe below.</small>
 								</>
 							) : null}
 						</article>
@@ -935,10 +960,9 @@ export function OptimizersPage({
 				</div>
 				<div className="optimizer-training-form">
 					<label><span>Algorithm</span><select value={trainingAlgorithm} onChange={(event) => {
-						const next = event.target.value as "cispo" | "ppo";
-						setTrainingAlgorithm(next);
-						setTrainingTask(next === "cispo" ? "banking77" : "healthbench");
-					}}><option value="cispo">CISPO · slime reference</option><option value="ppo">PPO · GLM 5.2/5.3</option></select></label>
+						setTrainingAlgorithm(event.target.value as "cispo");
+						setTrainingTask("banking77");
+					}}><option value="cispo">CISPO · slime reference</option></select></label>
 					<label><span>Model</span><select value={trainingModel} onChange={(event) => setTrainingModel(event.target.value)}>{hostedTrainingModels.map((model) => { const support = model.algorithms[trainingAlgorithm]; return <option key={model.modelId} value={model.modelId} disabled={support?.status === "blocked"}>{model.label} · {support?.status ?? "not validated"}</option>; })}</select></label>
 					<label><span>Task</span><input value={trainingTask} onChange={(event) => setTrainingTask(event.target.value)} /></label>
 					<label><span>Local Container URL</span><input value={trainingContainerUrl} onChange={(event) => setTrainingContainerUrl(event.target.value)} /></label>
@@ -949,7 +973,7 @@ export function OptimizersPage({
 				</div>
 				<div className="optimizer-training-launch-actions">
 					<button className="primary-button" type="button" disabled={startingAgent !== null || hostedLaunchBlocked || !trainingModel.trim() || !trainingTask.trim() || !trainingContainerUrl.trim()} onClick={() => void reviewTrainingLaunch()} data-testid="review-hosted-training-launch">Review &amp; launch</button>
-					<small>{hostedLaunchBlocked ? selectedHostedSupport?.block_reason ?? "This model and algorithm combination is not admitted by the hosted catalog." : trainingAlgorithm === "cispo" ? "Default golden path: CISPO → Banking77." : "Default golden path: PPO → HealthBench."}{hostedModelCatalogRevision ? ` Catalog ${hostedModelCatalogRevision}; live provider preflight still required.` : ""}</small>
+					<small>{hostedLaunchBlocked ? selectedHostedSupport?.block_reason ?? "This model and algorithm combination is not admitted by the hosted catalog." : "Bounded recipe: cispo.slime.hosted.v1. Default golden path: CISPO → Banking77."}{hostedModelCatalogRevision ? ` Catalog ${hostedModelCatalogRevision}; live provider preflight still required.` : ""}</small>
 				</div>
 			</section>
 
