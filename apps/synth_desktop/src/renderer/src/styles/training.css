@@ -58,13 +58,19 @@
 .training-chart-line { fill: none; stroke-width: 3; stroke-linecap: round; stroke-linejoin: round; vector-effect: non-scaling-stroke; }
 .training-chart-reward { stroke: var(--color-selection); }
 .training-chart-loss { stroke: var(--color-danger-text); stroke-dasharray: 6 4; }
+.training-chart-point { cursor: pointer; outline: none; }
 .training-chart-point circle { fill: var(--color-surface-raised); stroke: var(--color-selection); stroke-width: 3; vector-effect: non-scaling-stroke; }
+.training-chart-point:focus circle, .training-chart-point:hover circle { fill: var(--color-selection); stroke-width: 5; }
 .training-evaluation-ledger { display: grid; grid-template-columns: repeat(auto-fit, minmax(8.5rem, 1fr)); gap: var(--sp-2); }
-.training-evaluation-ledger article { display: grid; gap: 2px; min-width: 0; padding: var(--sp-2); border-left: 3px solid var(--color-selection); background: var(--color-surface-sunken); }
-.training-evaluation-ledger article[data-phase="baseline"] { border-left-color: var(--color-text-muted); }
-.training-evaluation-ledger article[data-phase="final"] { border-left-color: var(--color-success); }
+.training-evaluation-ledger button { display: grid; gap: 2px; min-width: 0; padding: var(--sp-2); border: 0; border-left: 3px solid var(--color-selection); background: var(--color-surface-sunken); color: var(--color-text); text-align: left; }
+.training-evaluation-ledger button:hover, .training-evaluation-ledger button:focus-visible { background: var(--color-surface); outline: 2px solid var(--color-selection); outline-offset: 1px; }
+.training-evaluation-ledger button[data-phase="baseline"] { border-left-color: var(--color-text-muted); }
+.training-evaluation-ledger button[data-phase="final"] { border-left-color: var(--color-success); }
 .training-evaluation-ledger span, .training-evaluation-ledger small { color: var(--color-text-muted); font-size: var(--text-xs); }
 .training-evaluation-ledger span { text-transform: uppercase; letter-spacing: .05em; }
 .training-evaluation-ledger code { overflow: hidden; color: var(--color-text-faint); font-size: var(--text-xs); text-overflow: ellipsis; white-space: nowrap; }
+.training-evaluation-dialog { width: min(48rem, calc(100vw - var(--sp-8))); }
+.training-evaluation-dialog .optimizer-eval-scorecard { margin: 0; }
+.training-evaluation-evidence pre { max-height: 16rem; overflow: auto; padding: var(--sp-3); background: var(--color-surface-sunken); color: var(--color-text-muted); font: var(--text-xs)/1.5 var(--font-mono); white-space: pre-wrap; }
 @media (max-width: 62rem) { .training-workspace { padding: var(--sp-4); } .training-artifact-grid { grid-template-columns: 1fr; } .training-kv { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 @media (max-width: 40rem) { .training-kv, .training-form-grid { grid-template-columns: 1fr; } }
