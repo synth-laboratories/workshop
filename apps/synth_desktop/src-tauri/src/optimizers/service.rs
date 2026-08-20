@@ -291,7 +291,8 @@ impl OptimizerService {
         vec![
             json!({"id":"gepa","title":"GEPA","availability":"available","description":"Genetic-Pareto prompt optimization"}),
             json!({"id":"go-ex","title":"GELO / Go-Ex","availability":"available","description":"Hosted exploration with optional local slot binding"}),
-            json!({"id":"sft","title":"SFT","availability":"available","description":"Hosted fine-tuning through the public Optimizers SFT service, streamed live into optimizer.sft visuals"}),
+            json!({"id":"sft","title":"SFT","kind":"training","availability":"available","description":"Supervised fine-tuning. Local MLX on this Mac or hosted through the public Optimizers SFT service. Both placements are admitted by the Optimizers sidecar."}),
+            json!({"id":"cispo","title":"CISPO","kind":"training","availability":"available","description":"On-policy CISPO. Local MLX on this Mac, or hosted slime.v1 after the clip-identity canary. Distinct from GEPA/GELO search."}),
             // Local only, and only when its own runtime and a pinned target
             // recipe preflight. `eval` is never hosted.
             super::eval_recipes::algorithm_entry(),
@@ -304,6 +305,7 @@ impl OptimizerService {
         recipes.push(super::sft_recipes::recipe_catalog());
         recipes.extend(super::hosted_sft::recipe_catalog());
         recipes.push(super::mlx_sft::recipe_catalog());
+        recipes.extend(super::cispo::recipe_catalog());
         // Local eval is the authority for eval.* admission. Older sidecar
         // catalogs can carry compatibility copies of the same ids without the
         // product-owned bounds; a plain concatenation made callers select the
@@ -346,12 +348,15 @@ impl OptimizerService {
             super::hosted_gelo::HOSTED_GELO_CRAFTAX_RECIPE => {
                 super::hosted_gelo::start(self, request).await
             }
-            super::hosted_sft::HOSTED_SFT_FIXTURE_RECIPE
-            | super::hosted_sft::HOSTED_SFT_CRAFTAX_NEMOTRON_RECIPE
+            super::hosted_sft::HOSTED_SFT_CRAFTAX_NEMOTRON_RECIPE
             | super::hosted_sft::HOSTED_SFT_BANKING77_RECIPE => {
                 super::hosted_sft::start(self, request).await
             }
             super::mlx_sft::QWEN_MLX_SFT_RECIPE => super::mlx_sft::start(self, request).await,
+            super::sidecar_training::LOCAL_MLX_CISPO_RECIPE
+            | super::sidecar_training::HOSTED_CISPO_RECIPE => {
+                super::cispo::start(self, request).await
+            }
             id if super::eval_recipes::is_eval_recipe(id) => {
                 super::eval_recipes::start(self, request).await
             }
@@ -549,6 +554,7 @@ impl OptimizerService {
     pub async fn restore_hosted_sft_mirrors(&self) {
         super::hosted_sft::restore_hosted_mirrors(self).await;
         super::mlx_sft::restore_mirrors(self).await;
+        super::cispo::restore_mirrors(self).await;
     }
 
     pub async fn wait_milestone(
@@ -1287,14 +1293,14 @@ impl OptimizerService {
                     })
                     .await;
             }
-            if run.source == "hosted" && run.algorithm_id == "sft" {
-                // A restarted desktop has no in-memory recipe worker, but cancellation
-                // must still reach the canonical public SFT run. Do not fall back to
-                // Optimizers-beta: it is an executor, not a Workshop control plane.
-                super::sft_client::SftOptimizerClient::from_env()?
-                    .cancel(&id)
-                    .await?;
-                return self.command(id, "cancel", "cancelled").await;
+            if matches!(run.algorithm_id.as_str(), "sft" | "cispo") {
+                if let Ok(client) =
+                    super::sidecar_training::SidecarTrainingClient::from_manager(self.manager())
+                        .await
+                {
+                    let _ = client.cancel(&id).await;
+                    return self.command(id, "cancel", "cancelled").await;
+                }
             }
         }
         self.command(id, "cancel", "cancelled").await
@@ -1324,6 +1330,13 @@ impl OptimizerService {
         let is_eval = run.algorithm_id == super::eval_recipes::EVAL_ALGORITHM_ID;
         if is_eval {
             super::eval_recipes::set_paused(&id, false)?;
+        }
+        if matches!(run.algorithm_id.as_str(), "sft" | "cispo") {
+            if let Ok(client) =
+                super::sidecar_training::SidecarTrainingClient::from_manager(self.manager()).await
+            {
+                let _ = client.resume(&id).await;
+            }
         }
         match self.command(id.clone(), "resume", "running").await {
             Ok(result) => Ok(result),
@@ -1992,7 +2005,7 @@ fn algorithm_label(algorithm_id: &str) -> &'static str {
 
 pub(in crate::optimizers) fn primary_visual_template(algorithm_id: &str) -> &'static str {
     match algorithm_id {
-        "sft" => "optimizer.sft.live.v1",
+        "sft" | "cispo" => "optimizer.sft.live.v1",
         "gepa" => "optimizer.gepa.live.v1",
         "eval" => "optimizer.eval.live.v1",
         id if id == "dag" || id.starts_with("dag.") => "optimizer.dag.live.v1",
@@ -3191,13 +3204,14 @@ fn project_from_events(
             "sft.checkpoint_eval.completed"
             | "sft.heldout_eval.completed"
             | "sft.checkpoint_evaluation.completed"
-            | "sft.checkpoint_evaluation.allocated" => {
+            | "sft.checkpoint_evaluation.allocated"
+            | "training.evaluation.completed" => {
                 checkpoint_evals.push(json!({
                     "sequence": event.sequence_number,
                     "delta": event.delta,
                     "snapshot": event.snapshot,
                     "item": event.item,
-                    "role": event.delta.get("role").cloned().unwrap_or(json!("selection")),
+                    "role": event.delta.get("role").or_else(|| event.delta.get("phase")).cloned().unwrap_or(json!("selection")),
                     "measurementOnly": event.delta.get("measurementOnly").cloned().unwrap_or(json!(false))
                 }));
             }
@@ -4879,15 +4893,12 @@ pub(in crate::optimizers) mod tests {
 
     #[test]
     fn visual_selection_is_host_owned_and_capability_checks_guard_execution() {
-        // Visual selection never consults the plugin. It used to intersect
-        // against `compatibleTemplateIds` — host vocabulary the plugin only
-        // knew because Desktop's install payload told it — so the check
-        // compared a host constant against a round-trip of that same constant.
-        // Worse, tightening it would have broken every run the managed sidecar
-        // does not serve: the real plugin advertises only `gepa`, so hosted SFT
-        // and local eval would have lost their visuals entirely.
+        // Visual selection never consults the plugin. Execution still checks
+        // the handshake; the sidecar now advertises sft/cispo placements from
+        // the training routes it serves.
         assert_eq!(negotiate_visual_template("gepa"), "optimizer.gepa.live.v1");
         assert_eq!(negotiate_visual_template("sft"), "optimizer.sft.live.v1");
+        assert_eq!(negotiate_visual_template("cispo"), "optimizer.sft.live.v1");
         assert_eq!(negotiate_visual_template("eval"), "optimizer.eval.live.v1");
 
         // Execution is where a capability claim has to hold up.
@@ -5220,15 +5231,21 @@ pub(in crate::optimizers) mod tests {
     }
 
     #[tokio::test]
-    async fn lists_hosted_sft_fixture_recipe() {
+    async fn reports_cispo_as_available_algorithm_and_lists_bounded_recipes() {
         let (svc, _dir, _) = service().await;
-        let recipe = svc
-            .list_recipes()
+        let cispo = svc
+            .list_algorithms()
             .into_iter()
-            .find(|item| item.get("id") == Some(&json!("sft.hosted.fixture.v1")))
+            .find(|a| a.get("id") == Some(&json!("cispo")))
             .unwrap();
-        assert_eq!(recipe.get("algorithmId"), Some(&json!("sft")));
-        assert_ne!(recipe.get("id"), Some(&json!("goex.sft.v1")));
+        assert_eq!(cispo.get("availability"), Some(&json!("available")));
+        let recipes = svc.list_recipes();
+        assert!(recipes
+            .iter()
+            .any(|item| item.get("id") == Some(&json!("cispo.banking77.mlx.v1"))));
+        assert!(recipes
+            .iter()
+            .any(|item| item.get("id") == Some(&json!("cispo.slime.hosted.v1"))));
     }
 
     #[tokio::test]
@@ -5249,6 +5266,7 @@ pub(in crate::optimizers) mod tests {
         }
         let err = svc
             .start_recipe(super::super::models::OptimizerRecipeRunRequest {
+				training_artifact_id: None,
                 recipe_id: "sft.craftax.nemotron-nano.tinker.v1".into(),
                 session_ref: None,
                 open_visual: Some(false),

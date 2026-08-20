@@ -34,6 +34,8 @@ export type ShellProps = {
   events?: OptimizerEvent[];
   run?: OptimizerRun;
   loadError?: string;
+  visualId?: string;
+  revision?: number;
 };
 
 function asPayload(raw: unknown): FixturePayload | null {
@@ -209,6 +211,8 @@ export function Shell(props: ShellProps) {
           state={projected}
           selectedId={selectedCandidate}
           onSelect={setSelectedCandidate}
+          visualId={props.visualId}
+          visualRevision={props.revision}
         />
       ) : null}
       {run.algorithmId === "go-ex" ? <GoExOverlay state={projected} /> : null}

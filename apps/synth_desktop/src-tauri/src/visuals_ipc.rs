@@ -1248,15 +1248,7 @@ async fn register_hydrated_container(
         .as_ref()
         .and_then(|value| classify_live_eval_family(value, request.task_family.as_deref()))
         .or_else(|| classify_live_eval_family(&json!({}), request.task_family.as_deref()));
-    let family = classified
-        .map(|family| family.as_str().to_string())
-        .or_else(|| {
-            info.as_ref()
-                .and_then(|value| value.get("env_family").or_else(|| value.get("task_family")))
-                .and_then(Value::as_str)
-                .map(str::to_string)
-        })
-        .or_else(|| request.task_family.clone());
+    let family = observed_task_family(info.as_ref(), classified, request.task_family.as_deref());
     let mut metadata = request
         .metadata
         .clone()
@@ -1317,6 +1309,29 @@ async fn register_hydrated_container(
         family,
     )
     .await
+}
+
+/// Preserve an explicitly advertised service family when it is not one of the
+/// visual-template families.  This is an observed capability, never an
+/// inference from a name, port, or URL.
+fn observed_task_family(
+    info: Option<&Value>,
+    classified: Option<crate::visuals::LiveEvalFamily>,
+    requested: Option<&str>,
+) -> Option<String> {
+    classified
+        .map(|family| family.as_str().to_string())
+        .or_else(|| {
+            info.and_then(|value| {
+                value
+                    .get("env_family")
+                    .or_else(|| value.get("task_family"))
+                    .or_else(|| value.get("runtime_family"))
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+            })
+        })
+        .or_else(|| requested.map(str::to_string))
 }
 
 pub async fn dispatch(method: &str, path: &str, body: Value, core: &CoreRuntime) -> Result<Value> {
@@ -1557,11 +1572,11 @@ pub async fn dispatch(method: &str, path: &str, body: Value, core: &CoreRuntime)
                     }
                 }
             }
-            let family = info
-                .as_ref()
-                .and_then(|v| v.get("env_family"))
-                .and_then(Value::as_str)
-                .map(str::to_string);
+            let family = observed_task_family(
+                info.as_ref(),
+                classified,
+                container.task_family.as_deref(),
+            );
             let updated = core
                 .update_container_hydration(
                     id.to_string(),
@@ -2522,6 +2537,89 @@ pub(crate) async fn dispatch_optimizer(
             let manifest = optimizers.stage_eval_candidates(request).await?;
             Ok(json!({ "candidateSet": manifest }))
         }
+        ("POST", path)
+            if path.starts_with("/v1/training/artifacts/") && path.ends_with("/chat") =>
+        {
+            let id = path
+                .trim_start_matches("/v1/training/artifacts/")
+                .trim_end_matches("/chat")
+                .trim_end_matches('/');
+            let confirm = body.get("confirm").and_then(Value::as_bool).unwrap_or(false);
+            if !confirm {
+                anyhow::bail!("launch_artifact_inference requires confirm=true");
+            }
+            let message = body
+                .get("message")
+                .and_then(Value::as_str)
+                .unwrap_or("Reply with one short sentence confirming which adapter you are.");
+            let inference = crate::optimizers::launch_artifact_inference(id, message).await?;
+            Ok(json!({ "inference": inference }))
+        }
+        ("GET", "/v1/mlx/inspect") => Ok(crate::optimizers::typed_capabilities::inspect_local_mlx()),
+        ("GET", "/v1/mlx/install-plan") => {
+            let model_id = body.get("model_id").and_then(Value::as_str);
+            crate::optimizers::typed_capabilities::plan_model_install(model_id)
+        }
+        ("POST", "/v1/mlx/install") => {
+            let confirm = body.get("confirm").and_then(Value::as_bool).unwrap_or(false);
+            let model_id = body.get("model_id").and_then(Value::as_str);
+            crate::optimizers::typed_capabilities::install_model_or_runtime(model_id, confirm)
+        }
+        ("POST", "/v1/training/plans") => {
+            let recipe_id = body
+                .get("recipe_id")
+                .and_then(Value::as_str)
+                .ok_or_else(|| anyhow::anyhow!("recipe_id required"))?;
+            crate::optimizers::typed_capabilities::create_training_plan(recipe_id)
+        }
+        ("GET", "/v1/training/artifacts") => {
+            crate::optimizers::typed_capabilities::list_training_artifacts()
+        }
+        ("GET", path) if path.starts_with("/v1/training/artifacts/") => {
+            let id = path.trim_start_matches("/v1/training/artifacts/");
+            crate::optimizers::typed_capabilities::inspect_training_artifact(id)
+        }
+        ("POST", path)
+            if path.starts_with("/v1/training/artifacts/") && path.ends_with("/eval") =>
+        {
+            let id = path
+                .trim_start_matches("/v1/training/artifacts/")
+                .trim_end_matches("/eval")
+                .trim_end_matches('/');
+            let confirm = body.get("confirm").and_then(Value::as_bool).unwrap_or(false);
+            let recipe_id = body.get("recipe_id").and_then(Value::as_str);
+            let request = crate::optimizers::typed_capabilities::launch_artifact_eval_request(
+                id, recipe_id, confirm,
+            )?;
+            let admitted: crate::optimizers::OptimizerRecipeRunRequest =
+                serde_json::from_value(json!({
+                    "recipeId": request["recipeId"],
+                    "trainingArtifactId": request["trainingArtifactId"],
+                    "sessionRef": body.get("sessionRef").cloned().or_else(|| body.get("session_ref").cloned()),
+                    "openVisual": body.get("openVisual").cloned().or_else(|| body.get("open_visual").cloned()).unwrap_or(json!(true))
+                }))?;
+            let codex = app.state::<Arc<crate::codex::CodexManager>>();
+            let run = crate::authorize_optimizer_recipe_start(app, core, &codex, admitted)
+                .await
+                .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+            Ok(json!({ "run": run }))
+        }
+        ("POST", path)
+            if path.starts_with("/v1/training/artifacts/")
+                && (path.ends_with("/export") || path.ends_with("/delete")) =>
+        {
+            let export = path.ends_with("/export");
+            let id = path
+                .trim_start_matches("/v1/training/artifacts/")
+                .trim_end_matches(if export { "/export" } else { "/delete" })
+                .trim_end_matches('/');
+            let confirm = body.get("confirm").and_then(Value::as_bool).unwrap_or(false);
+            crate::optimizers::typed_capabilities::export_or_delete_artifact(
+                id,
+                if export { "export" } else { "delete" },
+                confirm,
+            )
+        }
         ("POST", "/v1/optimizers/recipes/prepare") => {
             let request: crate::optimizers::OptimizerRecipeRunRequest =
                 serde_json::from_value(body)?;
@@ -2979,10 +3077,11 @@ fn dispatch_secrets(method: &str, path: &str, body: Value, core: &CoreRuntime) -
                 "capabilityId": result.capability_id,
                 "proxyOrigin": result.proxy_origin,
                 "handle": result.handle,
+                "provider_routes": result.provider_routes,
                 "guidance": if result.status == "approval_required" {
                     "Ask the user to allow this in Settings → Secrets, then call request_use again."
                 } else {
-                    "Use the handle only as a Bearer token against the local provider proxy. It is not the provider key."
+                    "Use provider_routes.openai_base unchanged with OPENAI_API_KEY=workshop-proxy. Do not construct a route from proxyOrigin or handle."
                 }
             }))
         }
@@ -3877,6 +3976,19 @@ mod diagnostics_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn preserves_explicit_runtime_family_for_gepa_v2_selection() {
+        let info = json!({
+            "runtime_family": "healthbench",
+            "metadata": {"optimizer": {"contract": "synth_optimizers.gepa.v2"}},
+            "capabilities": {"operations": {"prepare": true, "start": true}}
+        });
+        assert_eq!(
+            observed_task_family(Some(&info), None, None).as_deref(),
+            Some("healthbench")
+        );
+    }
 
     #[test]
     fn parses_query_values() {

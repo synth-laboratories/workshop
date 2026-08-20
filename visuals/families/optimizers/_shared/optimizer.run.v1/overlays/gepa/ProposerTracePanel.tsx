@@ -105,7 +105,7 @@ function traceItems(trace: GepaProposerTrace): TraceV5Item[] {
   return items.sort((a, b) => a.sequence - b.sequence);
 }
 
-export function ProposerTracePanel({ gepa, onSelectCandidate }: { gepa: GepaState; onSelectCandidate?: (id: string) => void }) {
+export function ProposerTracePanel({ gepa, onSelectCandidate, selectedItemId, onSelectItem }: { gepa: GepaState; onSelectCandidate?: (id: string) => void; selectedItemId?: string | null; onSelectItem?: (item: TraceV5Item, generation: number) => void }) {
   const [selectedGeneration, setSelectedGeneration] = useState<number | null>(null);
   const orderedTraces = [...gepa.proposerTraces].sort((a, b) => a.generation - b.generation);
   const selectedTrace = orderedTraces.find((trace) => trace.generation === selectedGeneration) ?? orderedTraces.at(-1);
@@ -163,7 +163,7 @@ export function ProposerTracePanel({ gepa, onSelectCandidate }: { gepa: GepaStat
                 <strong>Generation {selectedTrace.generation}</strong>
                 <span className="sv-mono" style={{ color: "var(--sv-text-muted)", fontSize: 10.5 }}>{selectedTrace.model ?? "proposer"} · {selectedTrace.status}{selectedTrace.wallSeconds != null ? ` · ${selectedTrace.wallSeconds.toFixed(1)}s` : ""}</span>
               </div>
-              <TraceV5EventList key={selectedTrace.generation} items={traceItems(selectedTrace)} onSelectCandidate={onSelectCandidate} defaultView="full" emptyToolText="0 structured tool calls captured. This proposer transport currently preserves their effects and artifacts, but not tool-call envelopes; nothing is inferred or fabricated." />
+              <TraceV5EventList key={selectedTrace.generation} items={traceItems(selectedTrace)} onSelectCandidate={onSelectCandidate} selectedItemId={selectedItemId} onSelectItem={onSelectItem ? (item) => onSelectItem(item, selectedTrace.generation) : undefined} defaultView="full" emptyToolText="0 structured tool calls captured. This proposer transport currently preserves their effects and artifacts, but not tool-call envelopes; nothing is inferred or fabricated." />
             </article>
           ) : null}
         </div>

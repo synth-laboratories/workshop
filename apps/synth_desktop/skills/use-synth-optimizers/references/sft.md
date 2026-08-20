@@ -1,22 +1,24 @@
 # SFT
 
-Use SFT when the output is a trained adapter/checkpoint rather than a prompt candidate. Hosted SFT lives in the public `synth-optimizers` service (`algorithm_id: "sft"`), not in Workshop's private beta client and not in `goex.sft.v1`. Workshop mirrors `optimizer_event_page.v1` and opens `optimizer.sft.live.v1`.
+Use SFT when the output is a trained adapter/checkpoint rather than a prompt candidate. SFT is a **training** algorithm. Local vs hosted is recipe placement, admitted by the Optimizers sidecar. Never dial `127.0.0.1:8787`, `127.0.0.1:8878`, or name `synth-mlx-rl` in a shell. The agent only sees `recipe_id` → `optimizer_run_id` → `watch_run` / `open_visual`.
 
-## Start the hosted fixture (streaming)
+Workshop mirrors `optimizer_event_page.v1` and opens `optimizer.sft.live.v1`. Held-out evaluation arrives as `sft.heldout_evaluation.completed`.
 
-Recipe: `sft.hosted.fixture.v1`.
+## This Mac (MLX · Qwen 0.8B)
 
-Requires the public service plus `SYNTH_OPTIMIZERS_SFT_SERVICE_URL` (defaults to `http://127.0.0.1:8878`) and `SYNTH_OPTIMIZERS_SFT_SERVICE_TOKEN`. The fixture backend charges nothing. Each explicit start creates a distinct canonical public run.
+Recipe: `sft.qwen35-0.8b.mlx.v1`.
 
-After explicit user instruction (no paid-compute approval is needed for this no-cost fixture):
+Requires the Optimizers plugin/sidecar. Datasets: cookbook `cookbooks/optimizers/sft/qwen35_mlx/{train,eval}.jsonl` or explicit `SYNTH_MLX_SFT_TRAIN_JSONL` / `SYNTH_MLX_SFT_EVAL_JSONL`. Missing real datasets fail closed. Apple Silicon. The sidecar starts and probes `synth-mlx-rl`; do not tell a shell to dial `:8787`. No hosted provider charges.
+
+After explicit user instruction:
 
 ```json
-{"operation":"start_workflow","arguments":{"recipe_id":"sft.hosted.fixture.v1","open_visual":true}}
+{"operation":"start_workflow","arguments":{"recipe_id":"sft.qwen35-0.8b.mlx.v1","open_visual":true}}
 ```
 
-Follow `wait_milestone` from sequence 0 (`kinds`: `validation`, then `checkpoint`, then `eval_phase`, then `terminal`). Expect `optimizer.visual.ready`, then `sft.training.metrics` (not `sft.step.metrics`). Null `validation_loss` stays missing (`—`) with coverage `unsupported` when Tinker does not compute it. `sft.checkpoint.ready` is not promotion. `sft.checkpoint.selected` retains a checkpoint; `improvement_verdict` is the uplift claim. Checkpoint-eval children start without reward/cost; `sft.checkpoint_rollout.completed` patches those fields. Missing stays `—`, never `0`. Adapter rank is `lora_r8` unless the request named another rank; Workshop labels must match the SFT service.
+Follow training metrics, `sft.checkpoint.ready`, and the paired `sft.heldout_evaluation.completed` receipt. Resume uses `resume_run`; chat-with-checkpoint is sidecar-owned.
 
-`get_result` for SFT is typed from the durable event stream. It does not read `best_candidate.json` and is not GEPA-shaped.
+`get_result` for SFT is typed from the durable event stream. It does not read `best_candidate.json` and is not GEPA-shaped. Missing scores stay `—`, never `0`.
 
 ## Craftax Nemotron 3.5 Lightning Tinker (hosted, local Craftax slot)
 

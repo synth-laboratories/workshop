@@ -5,7 +5,7 @@
  * and artifacts live behind the debug section the host template provides.
  */
 
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { formatMissingUsd } from "../../../../../../runtime/liveStream.ts";
 import type { ReactNode } from "react";
 import {
@@ -35,6 +35,17 @@ import {
   minibatchComparison,
   stageTitle
 } from "./model.ts";
+import {
+  DEFAULT_GEPA_PRESENTATION_STATE,
+  loadGepaPresentationState,
+  resolvedSelection,
+  saveGepaPresentationState,
+  visibleCandidates,
+  type CandidateDecisionFilter,
+  type CandidateSort,
+  type GepaLinkedSelection,
+  type GepaPresentationState
+} from "./presentationState.ts";
 
 const STAGE_FILTER_TO_EVAL: Record<string, string[]> = {
   seed: ["seed_full_train"],
@@ -157,6 +168,9 @@ export function GepaWorkspace({
   debug,
   selectedCandidate,
   setSelectedCandidate,
+  visualId,
+  visualRevision,
+  sourceDigest,
   embedded = false
 }: {
   projected: ProjectedState;
@@ -165,12 +179,37 @@ export function GepaWorkspace({
   debug?: ReactNode;
   selectedCandidate: string | null;
   setSelectedCandidate: (id: string | null) => void;
+  visualId?: string;
+  visualRevision?: number;
+  sourceDigest?: string;
   embedded?: boolean;
 }) {
   const gepa = projected.gepa;
-  const [stageFilter, setStageFilter] = useState<string | null>(null);
+  const [presentationState, setPresentationState] = useState<GepaPresentationState>(DEFAULT_GEPA_PRESENTATION_STATE);
+  const [hydratedRunId, setHydratedRunId] = useState<string | null>(null);
   const tracesRef = useRef<HTMLDivElement | null>(null);
   const candidateInspectorRef = useRef<HTMLDivElement | null>(null);
+  const stageFilter = presentationState.stageFilter;
+
+  useEffect(() => {
+    const restored = loadGepaPresentationState(run.id, typeof window === "undefined" ? undefined : window.localStorage);
+    setPresentationState(restored);
+    setHydratedRunId(run.id);
+  }, [run.id]);
+
+  useEffect(() => {
+    if (hydratedRunId !== run.id) return;
+    saveGepaPresentationState(run.id, presentationState, typeof window === "undefined" ? undefined : window.localStorage);
+  }, [hydratedRunId, presentationState, run.id]);
+
+  useEffect(() => {
+    if (!gepa || hydratedRunId !== run.id) return;
+    const restored = resolvedSelection(presentationState.selection, gepa);
+    const candidateId = restored?.candidateId ?? ((restored?.kind === "candidate" || restored?.kind === "proposal") ? restored.id : null);
+    if (candidateId && candidateId !== selectedCandidate && gepa.candidates.some((candidate) => String(candidate.id) === candidateId)) {
+      setSelectedCandidate(candidateId);
+    }
+  }, [gepa, hydratedRunId, presentationState.selection, run.id, selectedCandidate, setSelectedCandidate]);
   const comparisonProjection = useMemo(() => {
     if (!comparison) return null;
     try {
@@ -263,8 +302,35 @@ export function GepaWorkspace({
 
   if (!gepa) return null;
 
-  const selectAndRevealCandidate = (id: string) => {
+  const selection = resolvedSelection(presentationState.selection, gepa);
+  const candidates = visibleCandidates(gepa, presentationState);
+  const selectedEvaluationId = selection?.kind === "evaluation" || selection?.kind === "trial" ? selection.id : null;
+  const updatePresentation = (patch: Partial<GepaPresentationState>) => {
+    setPresentationState((current) => ({ ...current, ...patch }));
+  };
+  const selectCandidate = (id: string | null) => {
     setSelectedCandidate(id);
+    if (!id) {
+      updatePresentation({ selection: null });
+      return;
+    }
+    const candidate = gepa.candidates.find((row) => String(row.id) === id);
+    updatePresentation({
+      selection: {
+        runId: run.id,
+        kind: String(candidate?.source ?? "") === "seed" ? "candidate" : "proposal",
+        id,
+        candidateId: id,
+        ...(visualId ? { visualId } : {}),
+        ...(visualRevision != null ? { visualRevision } : {}),
+        ...(sourceDigest ? { sourceDigest } : {}),
+        ...(typeof candidate?.sequence === "number" ? { sequenceNumber: candidate.sequence } : {})
+      }
+    });
+  };
+
+  const selectAndRevealCandidate = (id: string) => {
+    selectCandidate(id);
     // Candidate links in the proposer trace live well below the inspector.
     // Move the viewport only after React has committed the new selection so
     // the click produces an immediate, visible result in embedded panels too.
@@ -374,7 +440,7 @@ export function GepaWorkspace({
   };
 
   return (
-    <div className="sv-workspace" data-testid="gepa-workspace">
+    <div className="sv-workspace" data-testid="gepa-workspace" data-visual-id={visualId} data-visual-revision={visualRevision} data-source-digest={sourceDigest}>
       {!embedded ? (
         <WorkspaceHeader
           statusText={presentation.text}
@@ -392,24 +458,60 @@ export function GepaWorkspace({
         stages={gepa.stages}
         selected={stageFilter}
         onSelect={(id) => {
-          setStageFilter(id);
+          updatePresentation({ stageFilter: id });
           if (id === "proposal") showTrace();
         }}
         testId="gepa-stage-timeline"
       />
+      <section className="sv-section" aria-label="GEPA candidate controls" data-testid="gepa-workbench-controls" style={{ marginTop: 0 }}>
+        <div className="sv-section-head">
+          <h3>Candidate view</h3>
+          <span className="sv-mono">{candidates.length} of {gepa.candidates.length}</span>
+        </div>
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 7, alignItems: "center" }}>
+          <input
+            type="search"
+            aria-label="Search GEPA candidates"
+            data-testid="gepa-candidate-search"
+            value={presentationState.query}
+            placeholder="Find ID, prompt, source, or status"
+            onChange={(event) => updatePresentation({ query: event.currentTarget.value })}
+            style={{ flex: "2 1 220px", minWidth: 140, padding: "6px 9px", border: "1px solid var(--sv-border-strong)", borderRadius: 8, font: "inherit", fontSize: 12 }}
+          />
+          <select aria-label="Filter candidate decisions" data-testid="gepa-decision-filter" value={presentationState.decision} onChange={(event) => updatePresentation({ decision: event.currentTarget.value as CandidateDecisionFilter })} style={{ flex: "1 1 130px", padding: "6px 8px", border: "1px solid var(--sv-border-strong)", borderRadius: 8, background: "var(--sv-surface)" }}>
+            <option value="all">All decisions</option><option value="accepted">Accepted</option><option value="rejected">Rejected</option><option value="pending">Pending</option>
+          </select>
+          <select aria-label="Sort candidates" data-testid="gepa-candidate-sort" value={presentationState.sort} onChange={(event) => updatePresentation({ sort: event.currentTarget.value as CandidateSort })} style={{ flex: "1 1 130px", padding: "6px 8px", border: "1px solid var(--sv-border-strong)", borderRadius: 8, background: "var(--sv-surface)" }}>
+            <option value="sequence">Run order</option><option value="score">Train score</option><option value="generation">Generation</option><option value="status">Status</option><option value="frontier_credit">Frontier credit</option>
+          </select>
+          <select aria-label="Sort direction" data-testid="gepa-sort-direction" value={presentationState.direction} onChange={(event) => updatePresentation({ direction: event.currentTarget.value as "asc" | "desc" })} style={{ flex: "1 1 110px", padding: "6px 8px", border: "1px solid var(--sv-border-strong)", borderRadius: 8, background: "var(--sv-surface)" }}>
+            <option value="asc">Ascending</option><option value="desc">Descending</option>
+          </select>
+          <button type="button" className="sv-btn" aria-pressed={presentationState.frontierOnly} data-testid="gepa-frontier-filter" onClick={() => updatePresentation({ frontierOnly: !presentationState.frontierOnly })}>Frontier only</button>
+        </div>
+        {selection ? (
+          <div data-testid="gepa-linked-selection" style={{ display: "flex", flexWrap: "wrap", alignItems: "baseline", gap: 7, marginTop: 9, paddingTop: 8, borderTop: "1px solid var(--sv-border)", fontSize: 11.5 }}>
+            <strong>Linked selection</strong>
+            <span className="sv-chip">{selection.kind.replaceAll("_", " ")}</span>
+            <span className="sv-mono" style={{ overflowWrap: "anywhere" }}>{selection.id}</span>
+            {selection.candidateId && selection.candidateId !== selection.id ? <span>candidate · <span className="sv-mono">{selection.candidateId}</span></span> : null}
+            <button type="button" className="sv-btn" style={{ marginLeft: "auto" }} onClick={() => selectCandidate(null)}>Clear</button>
+          </div>
+        ) : null}
+      </section>
       <SearchOverviewPanel gepa={gepa} />
       <EvidenceIntegrity gepa={gepa} />
-      <HillClimbPanel gepa={gepa} onSelect={setSelectedCandidate} />
+      <HillClimbPanel gepa={gepa} onSelect={selectCandidate} />
       <div className="sv-workspace-canvas">
         <div>
-          <FrontierPanel gepa={gepa} selectedId={selectedCandidate} onSelect={setSelectedCandidate} />
-          <CandidateList gepa={gepa} selectedId={selectedCandidate} onSelect={setSelectedCandidate} />
+          <FrontierPanel gepa={gepa} selectedId={selectedCandidate} onSelect={selectCandidate} />
+          <CandidateList gepa={gepa} candidates={candidates} selectedId={selectedCandidate} onSelect={selectCandidate} />
         </div>
         <div ref={candidateInspectorRef} tabIndex={-1} style={{ scrollMarginTop: 12, outline: "none" }}>
           <CandidateInspector
             gepa={gepa}
             selectedId={selectedCandidate}
-            onSelect={setSelectedCandidate}
+            onSelect={selectCandidate}
             onShowTrace={showTrace}
           />
         </div>
@@ -421,9 +523,45 @@ export function GepaWorkspace({
           ? "No rollouts for the selected stage yet. Clear the stage filter to see everything."
           : "Evaluation rollouts appear as candidates are scored."}
         testId="gepa-child-evaluations"
+        selectedId={selectedEvaluationId}
+        onInspect={(row) => {
+          if (!row) {
+            updatePresentation({ selection: selectedCandidate ? { runId: run.id, kind: "candidate", id: selectedCandidate, candidateId: selectedCandidate } : null });
+            return;
+          }
+          const candidateId = row.groupKey.split("::", 1)[0];
+          if (gepa.candidates.some((candidate) => String(candidate.id) === candidateId)) setSelectedCandidate(candidateId);
+          const next: GepaLinkedSelection = {
+            runId: run.id,
+            kind: "evaluation",
+            id: row.id,
+            sequenceNumber: row.sequence,
+            candidateId,
+            ...(visualId ? { visualId } : {}),
+            ...(visualRevision != null ? { visualRevision } : {}),
+            ...(sourceDigest ? { sourceDigest } : {})
+          };
+          updatePresentation({ selection: next });
+        }}
       />
       <div ref={tracesRef}>
-        <ProposerTracePanel gepa={gepa} onSelectCandidate={selectAndRevealCandidate} />
+        <ProposerTracePanel
+          gepa={gepa}
+          onSelectCandidate={selectAndRevealCandidate}
+          selectedItemId={selection?.kind === "trace_item" ? selection.id : null}
+          onSelectItem={(item) => updatePresentation({
+            selection: {
+              runId: run.id,
+              kind: item.family === "artifact" ? "artifact" : "trace_item",
+              id: item.id,
+              sequenceNumber: item.sequence,
+              ...(item.candidateId ? { candidateId: item.candidateId } : {}),
+              ...(visualId ? { visualId } : {}),
+              ...(visualRevision != null ? { visualRevision } : {}),
+              ...(sourceDigest ? { sourceDigest } : {})
+            }
+          })}
+        />
       </div>
       {comparisonProjection ? (
         <ComparisonCard

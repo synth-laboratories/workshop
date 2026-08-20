@@ -155,6 +155,111 @@ pub fn load(candidate_set_id: &str) -> Result<Value> {
     Ok(serde_json::from_slice(&fs::read(path)?)?)
 }
 
+/// Stage a managed training artifact as an `mlx-lora.v1` candidate set.
+///
+/// Paths come from the instance-owned artifact record, never from an agent.
+pub fn stage_training_artifact(
+    artifact: &crate::training_artifacts::TrainingArtifact,
+) -> Result<Value> {
+    if artifact.adapter_kind != "mlx-lora.v1" {
+        bail!(
+            "training artifact {} is {}, not mlx-lora.v1",
+            artifact.id,
+            artifact.adapter_kind
+        );
+    }
+    if !artifact.is_inference_ready() {
+        bail!(
+            "training artifact {} is not inference-ready ({})",
+            artifact.id,
+            artifact.integrity
+        );
+    }
+    let origin = artifact
+        .path
+        .as_deref()
+        .map(Path::new)
+        .ok_or_else(|| anyhow!("training artifact {} has no adapter path", artifact.id))?;
+    let origin = origin.canonicalize().with_context(|| {
+        format!("training artifact {} path is missing: {}", artifact.id, origin.display())
+    })?;
+    let state = crate::instance::state_root();
+    let data = crate::instance::data_root();
+    if !(origin.starts_with(&state) || origin.starts_with(&data)) {
+        bail!("training artifact {} path escapes the instance roots", artifact.id);
+    }
+
+    let set_id = format!(
+        "policy_set_{}",
+        artifact
+            .id
+            .chars()
+            .map(|ch| if ch.is_ascii_alphanumeric() { ch } else { '_' })
+            .collect::<String>()
+    );
+    let root = store_root().join(&set_id);
+    if root.join("candidate_set.json").is_file() {
+        return load(&set_id);
+    }
+    let artifacts = root.join("artifacts");
+    fs::create_dir_all(&artifacts).context("create candidate store")?;
+    let staging = artifacts.join(format!("pending_{}", uuid::Uuid::new_v4().simple()));
+    copy_tree(&origin, &staging).context("copy training artifact into the candidate store")?;
+    if !staging.join("policy.json").is_file() {
+        let digest = format!(
+            "sha256:{:x}",
+            Sha256::digest(b"synth.workshop.v07.qwen35-0.8b.thinking-off")
+        );
+        let policy = json!({
+            "schema_version": "eval.mlx-lora-policy.v1",
+            "base_model": artifact.base_model_id,
+            "adapter": true,
+            "chat_template_digest": digest,
+            "thinking_mode": "off",
+            "rank": 8,
+        });
+        fs::write(staging.join("policy.json"), serde_json::to_vec_pretty(&policy)?)?;
+    }
+    let digest = digest_tree(&staging)?;
+    let hex = digest.trim_start_matches("sha256:").to_string();
+    let final_path = artifacts.join(&hex);
+    if final_path.exists() {
+        let _ = fs::remove_dir_all(&staging);
+    } else {
+        fs::rename(&staging, &final_path).context("seal staged training artifact")?;
+        freeze(&final_path)?;
+    }
+    let candidate_id = format!("policy_{hex}");
+    let manifest = json!({
+        "schema_version": CANDIDATE_SET_SCHEMA,
+        "id": set_id,
+        "created_at": chrono::Utc::now().to_rfc3339(),
+        "baseline_id": serde_json::Value::Null,
+        "candidates": [{
+            "schema_version": POLICY_CANDIDATE_SCHEMA,
+            "id": candidate_id,
+            "label": artifact.id,
+            "kind": "mlx-lora.v1",
+            "artifact": {"uri": format!("local-artifact://sha256/{hex}"), "digest": digest},
+            "entrypoint": "policy.json",
+            "metadata": {
+                "source": {"kind": "training_artifact", "id": artifact.id},
+                "parent_optimizer_run_id": artifact.producing_run_id,
+                "base_model_id": artifact.base_model_id,
+                "config_digest": artifact.config_digest,
+                "dataset_digest": artifact.dataset_digest,
+                "training_artifact": artifact,
+            }
+        }],
+    });
+    fs::write(
+        root.join("candidate_set.json"),
+        serde_json::to_vec_pretty(&manifest)?,
+    )
+    .context("write candidate set manifest")?;
+    Ok(manifest)
+}
+
 /// A candidate path is workspace-relative. `..`, absolute paths, and symlinks
 /// that escape the workspace are refused: staging must not be a way to read
 /// arbitrary parts of the disk.
@@ -295,7 +400,49 @@ mod tests {
 
     #[test]
     fn candidate_set_ids_are_constrained() {
-        assert!(manifest_path("../../etc").is_err());
+        assert!(manifest_path("../etc/passwd").is_err());
         assert!(manifest_path("").is_err());
+    }
+
+    #[test]
+    fn staging_a_training_artifact_retains_identity() {
+        let isolated = std::env::temp_dir().join(format!(
+            "synth-desktop-eval-artifact-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        let _ = fs::remove_dir_all(&isolated);
+        fs::create_dir_all(&isolated).unwrap();
+        let previous = std::env::var_os(crate::instance::DATA_ROOT_ENV);
+        std::env::set_var(crate::instance::DATA_ROOT_ENV, &isolated);
+        let adapter = isolated.join("adapter");
+        fs::create_dir_all(&adapter).unwrap();
+        fs::write(adapter.join("adapter_config.json"), b"{\"rank\":8}").unwrap();
+        fs::write(adapter.join("adapters.safetensors"), b"lora-weights").unwrap();
+        let artifact = crate::training_artifacts::TrainingArtifact {
+            schema_version: crate::training_artifacts::ARTIFACT_SCHEMA.into(),
+            id: "run-9-terminal".into(),
+            adapter_kind: "mlx-lora.v1".into(),
+            base_model_id: crate::training_models::QWEN_TRAINING_MODEL_ID.into(),
+            producing_run_id: "run-9".into(),
+            producing_algorithm: "sft".into(),
+            dataset_digest: Some("sha256:dataset".into()),
+            config_digest: Some("sha256:config".into()),
+            digest: Some("sha256:deadbeef".into()),
+            path: Some(adapter.to_string_lossy().into_owned()),
+            size_bytes: Some(12),
+            integrity: "present".into(),
+            compatible_inference: vec!["mlx-loopback".into()],
+            created_at: "1".into(),
+        };
+        let staged = stage_training_artifact(&artifact).unwrap();
+        assert_eq!(staged["candidates"][0]["metadata"]["parent_optimizer_run_id"], "run-9");
+        assert_eq!(staged["candidates"][0]["metadata"]["base_model_id"], artifact.base_model_id);
+        assert_eq!(staged["candidates"][0]["metadata"]["config_digest"], "sha256:config");
+        assert_eq!(staged["candidates"][0]["kind"], "mlx-lora.v1");
+        match previous {
+            Some(value) => std::env::set_var(crate::instance::DATA_ROOT_ENV, value),
+            None => std::env::remove_var(crate::instance::DATA_ROOT_ENV),
+        }
+        let _ = fs::remove_dir_all(isolated);
     }
 }

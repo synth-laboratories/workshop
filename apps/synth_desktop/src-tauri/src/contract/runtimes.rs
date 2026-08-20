@@ -139,29 +139,35 @@ fn numeric_segments(version: &str) -> Vec<u64> {
 pub const OPTIMIZERS: RuntimeContract = RuntimeContract {
     runtime_id: "optimizers",
     package: "synth-optimizers",
-    official: "0.2.14",
+    official: "0.2.15",
     // Behind official: this cut predates both required routes. It still
     // installs — its own channel's floor is what it is measured against — and
     // then fails the handshake, which is the honest place for that failure.
     // Blocking the install instead would take the dev channel offline to
     // report a problem the gate already reports precisely.
     dev: "0.2.9.dev20260814",
-    // 0.2.14 preserves the required routes and legacy-workspace migration, and
-    // identifies the running Rust service with the same version as the Python
-    // distribution. Earlier releases either fail migration or advertise a
-    // stale heartbeat identity that Desktop must refuse.
-    min_supported: "0.2.14",
+    // 0.2.15 is the plain v0.7 cut (experiment layer excluded). It preserves
+    // the required routes and legacy-workspace migration, and identifies the
+    // running Rust service with the same version as the Python distribution.
+    min_supported: "0.2.15",
     // No dev cut carries the required routes yet; the handshake refuses one
     // that cannot serve them. Raise this when the dev channel is cut again.
     min_supported_dev: "0.2.9.dev20260814",
     workshop_compat: "0.4.0",
-    algorithms: &["gepa"],
-    templates: &["optimizer.gepa.live.v1", "optimizer.run.v1"],
+    algorithms: &["gepa", "sft", "cispo"],
+    templates: &[
+        "optimizer.gepa.live.v1",
+        "optimizer.sft.live.v1",
+        "optimizer.run.v1",
+    ],
     bounded_recipes: &[
         "gepa.banking77.smoke.v1",
         "gepa.banking77.luna.v1",
         "gepa.banking77.sol.v1",
         "gepa.craftax.smoke.v1",
+        "sft.qwen35-0.8b.mlx.v1",
+        "cispo.banking77.mlx.v1",
+        "cispo.slime.hosted.v1",
     ],
     recipe_schema: "gepa.recipe.v1",
     provisioned_by_desktop: true,
@@ -169,18 +175,15 @@ pub const OPTIMIZERS: RuntimeContract = RuntimeContract {
 
 /// The local container-evaluation runtime.
 ///
-/// Present so About can report it honestly. Its interpreter lives at
-/// `data_root()/runtime/optimizers/bin/python3` and is installed by nothing in
-/// this tree — there is no manifest, digest, or installer to attach a floor to,
-/// hence `provisioned_by_desktop: false`. Owning provisioning is a prerequisite
-/// to owning a version.
+/// Desktop provisions it from the same 0.2.15 `synth-optimizers` install as
+/// GEPA, writing a digest-pinned manifest under `data_root()/runtime/eval`.
 pub const EVAL: RuntimeContract = RuntimeContract {
     runtime_id: "eval",
     package: "synth-optimizers[eval]",
-    official: "unmanaged",
-    dev: "unmanaged",
-    min_supported: "0",
-    min_supported_dev: "0",
+    official: "0.2.15",
+    dev: "0.2.15",
+    min_supported: "0.2.15",
+    min_supported_dev: "0.2.15",
     workshop_compat: "0.4.0",
     algorithms: &["eval"],
     templates: &["optimizer.eval.live.v1", "optimizer.run.v1"],
@@ -192,9 +195,10 @@ pub const EVAL: RuntimeContract = RuntimeContract {
         "eval.gamebench.llm-policy.confirm.v1",
         "eval.banking77.baseline.v1",
         "eval.healthbench.smoke.v1",
+        "eval.mlx.local-policy.smoke.v1",
     ],
     recipe_schema: "eval.worker-manifest.v1",
-    provisioned_by_desktop: false,
+    provisioned_by_desktop: true,
 };
 
 pub const ALL: &[RuntimeContract] = &[OPTIMIZERS, EVAL];
@@ -311,13 +315,14 @@ mod tests {
         assert_ne!(OPTIMIZERS.official, OPTIMIZERS.dev);
     }
 
-    /// The table is Desktop's claim, and the handshake is what tests it. A
-    /// runtime Desktop does not install cannot be held to a version floor.
+    /// Eval is provisioned by Desktop from the 0.2.15 sidecar pin.
     #[test]
-    fn unprovisioned_runtimes_do_not_claim_a_version() {
-        assert!(!EVAL.provisioned_by_desktop);
-        assert_eq!(EVAL.official, "unmanaged");
-        assert!(EVAL.meets_floor("anything"));
+    fn eval_runtime_is_pinned_and_managed() {
+        assert!(EVAL.provisioned_by_desktop);
+        assert_eq!(EVAL.official, "0.2.15");
+        assert_eq!(EVAL.min_supported, "0.2.15");
+        assert!(EVAL.meets_floor("0.2.15"));
+        assert!(!EVAL.meets_floor("0.2.14"));
         assert!(OPTIMIZERS.provisioned_by_desktop);
     }
 

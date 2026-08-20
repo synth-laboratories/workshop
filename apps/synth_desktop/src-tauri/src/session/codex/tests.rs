@@ -1063,6 +1063,69 @@ async fn closing_a_session_still_closes_it_durably() {
     );
 }
 
+/// Settings and tab navigation can detach a completed chat before the operator
+/// approves a capability. Selecting that chat and sending "continue" must
+/// reopen the durable session before the provider turn starts; otherwise the
+/// upstream turn exists without a run row and surfaces `RunNotPersisted`.
+#[tokio::test]
+async fn sending_to_a_closed_session_reopens_with_a_durable_run() {
+    let _machine =
+        crate::synth_config::test_machine_permissions::install("never", "workspace-write");
+    let temp = tempdir().unwrap();
+    let codex_root = temp.path().join("codex");
+    let core = Arc::new(CoreRuntime::open(temp.path().join("core")).unwrap());
+    let manager = CodexManager::with_paths(
+        SessionPersistence::from_core(Some(core.clone())),
+        codex_root,
+        fixture_binary(),
+        CodexManager::test_broker(),
+    );
+    let app = tauri::test::mock_app();
+    let request = test_request(temp.path(), "closed-session-reconnect");
+
+    let first = manager
+        .send_turn(
+            app.handle().clone(),
+            send_request(request.clone(), "request capability"),
+        )
+        .await
+        .expect("first turn starts");
+    let first_turn = first.turn_id.expect("first turn id");
+    manager.close(&request.session_id).await.unwrap();
+
+    let resumed = manager
+        .send_turn(
+            app.handle().clone(),
+            send_request(request.clone(), "continue after approval"),
+        )
+        .await
+        .expect("closed conversation reconnects");
+    let resumed_turn = resumed.turn_id.expect("resumed turn id");
+    assert_ne!(resumed_turn, first_turn);
+
+    let sessions = SessionService::new(core.storage().database().clone());
+    let session = sessions
+        .get(request.session_id.clone())
+        .await
+        .unwrap()
+        .expect("session row");
+    assert_eq!(session.status, SessionStatus::Running.as_str());
+    assert_eq!(
+        session.active_run_id.as_deref(),
+        Some(resumed_turn.as_str())
+    );
+
+    let runs = RunService::new(core.storage().database().clone());
+    let durable = runs
+        .get(resumed_turn)
+        .await
+        .unwrap()
+        .expect("resumed turn has a durable run");
+    assert_eq!(durable.session_id, request.session_id);
+
+    manager.close(&request.session_id).await.unwrap();
+}
+
 #[tokio::test]
 async fn terminal_before_run_creation_reconciles_the_exact_turn() {
     let _machine =

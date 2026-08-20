@@ -135,6 +135,7 @@ impl SessionStatus {
                         Self::Ready | Self::Running | Self::Closed
                     )
                     | (Self::Failed, Self::Ready | Self::Running | Self::Closed)
+                    | (Self::Closed, Self::Ready)
             )
     }
 }

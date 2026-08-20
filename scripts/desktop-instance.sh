@@ -15,14 +15,14 @@ if [[ -n "$GIT_COMMON_DIR" ]]; then
 fi
 COMMAND="${1:-dev}"
 NAME="${2:-${SYNTH_DESKTOP_INSTANCE:-codex}}"
-RELEASE_LINE="${SYNTH_DESKTOP_RELEASE_LINE:-v0.6}"
-APP_VERSION="${SYNTH_DESKTOP_APP_VERSION:-0.6.0}"
+RELEASE_LINE="${SYNTH_DESKTOP_RELEASE_LINE:-v0.7}"
+APP_VERSION="${SYNTH_DESKTOP_APP_VERSION:-0.7.0}"
 
-if [[ "$RELEASE_LINE" != "v0.6" ]]; then
-	  echo "[desktop:$NAME] invalid release line; this branch only builds v0.6 instances" >&2
+if [[ "$RELEASE_LINE" != "v0.7" ]]; then
+	  echo "[desktop:$NAME] invalid release line; this branch only builds v0.7 instances" >&2
 	  exit 2
 fi
-RELEASE_SLUG="v06"
+RELEASE_SLUG="v07"
 
 usage() {
   cat <<'EOF'
@@ -810,6 +810,35 @@ PY
       echo "[desktop:$NAME] signed CUA app is missing; run cua-build first" >&2
       exit 1
     fi
+    # `cua-run` used to return before the named-instance environment below was
+    # exported.  When launched from another Workshop/Codex instance it then
+    # inherited that caller's data root, Codex home, backend, and cookbook
+    # paths.  The window title looked correct while the process silently read
+    # and mutated another instance.  Reassert the complete isolation boundary
+    # before executing an already-built bundle.
+    export SYNTH_DESKTOP_INSTANCE="$NAME"
+    export SYNTH_DESKTOP_DATA_ROOT="$DATA_ROOT"
+    export SYNTH_DESKTOP_CONFIG="$DATA_ROOT/config.toml"
+    export SYNTH_CODEX_HOME="$DATA_ROOT/codex"
+    export SYNTH_DESKTOP_WORKSPACE="$WORKSPACE"
+    export SYNTH_DESKTOP_APP_NAME="$APP_TITLE"
+    export SYNTH_DESKTOP_BUNDLE_ID="$BUNDLE_ID"
+    export SYNTH_DESKTOP_INSTANCE_MANIFEST="$MANIFEST"
+    export SYNTH_DESKTOP_SOURCE_REVISION="$SOURCE_REVISION"
+    export SYNTH_DESKTOP_VITE_URL="http://127.0.0.1:$VITE_PORT"
+    export SYNTH_EVAL_ALLOW_LOCAL_PINNED_TARGETS=1
+    shared_oauth_root="${SYNTH_DESKTOP_SHARED_ROOT:-$HOME/.synth-desktop/shared}/oauth"
+    mkdir -p "$shared_oauth_root"
+    chmod 700 "$shared_oauth_root"
+    if [[ -f "$HOME/.codex/auth.json" ]]; then
+      export SYNTH_DESKTOP_DEV_OAUTH_FILE="$HOME/.codex/auth.json"
+    else
+      unset SYNTH_DESKTOP_DEV_OAUTH_FILE
+    fi
+    export SYNTH_DESKTOP_DEV_OAUTH_STATE_FILE="$shared_oauth_root/codex.json"
+    # These values are instance-owned and must never be inherited from the
+    # shell that happened to launch the CUA bundle.
+    unset SYNTH_BACKEND_URL SYNTH_INTERN_PROFILE
     codesign --verify --deep --strict "$(dirname "$(dirname "$(dirname "$CUA_EXE")")")"
     echo "[desktop:$NAME] launching existing signed CUA app from $INSTANCE_ROOT"
     cd "$INSTANCE_ROOT"

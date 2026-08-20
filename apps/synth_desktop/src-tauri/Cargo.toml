@@ -1,6 +1,6 @@
 [package]
 name = "synth-desktop"
-version = "0.6.0"
+version = "0.7.0"
 description = "Synth Workshop Tauri host"
 edition = "2021"
 default-run = "synth-desktop"

@@ -115,6 +115,61 @@ export type LagunaBridge = {
 	onDownloadProgress?(listener: (progress: LagunaDownloadProgress) => void): () => void;
 };
 
+export type TrainingModelHit = {
+	path: string;
+	modelsRoot: string;
+	modelId: string;
+	revision: string;
+	shardCount: number;
+	totalBytes: number;
+};
+
+export type TrainingModelDownloadProgress = {
+	modelId: string;
+	phase: "preparing" | "downloading" | "ready" | "error";
+	detail: string;
+	downloadedBytes?: number;
+	totalBytes?: number;
+};
+
+export type TrainingModelsBridge = {
+	listModels(): Promise<TrainingModelHit[]>;
+	downloadModel(modelId: string): Promise<TrainingModelHit>;
+	deleteModel(modelId: string): Promise<void>;
+	onDownloadProgress(listener: (progress: TrainingModelDownloadProgress) => void): () => void;
+};
+
+export type TrainingArtifact = {
+	schemaVersion: string;
+	id: string;
+	adapterKind: string;
+	baseModelId: string;
+	producingRunId: string;
+	producingAlgorithm: string;
+	datasetDigest?: string | null;
+	configDigest?: string | null;
+	digest?: string | null;
+	path?: string | null;
+	sizeBytes?: number | null;
+	integrity: string;
+	compatibleInference: string[];
+	createdAt: string;
+};
+
+export type TrainingArtifactsBridge = {
+	list(): Promise<TrainingArtifact[]>;
+	get(id: string): Promise<TrainingArtifact>;
+	launchInference(request: { id: string; message?: string; confirm: boolean }): Promise<{
+		artifactId: string;
+		policySnapshotId: string;
+		reply: string;
+		baseModelId: string;
+		producingRunId: string;
+		configDigest?: string | null;
+		digest?: string | null;
+	}>;
+};
+
 export type WhisperModelHit = {
 	id: string;
 	title: string;
@@ -1169,8 +1224,10 @@ export type OptimizersBridge = {
 		sessionRef?: string;
 		openVisual?: boolean;
 		baseModel?: string;
-		/** Required by `eval.*` recipes. An id from `stageEvalCandidates`, never a path. */
+		/** Required by `eval.*` recipes unless `trainingArtifactId` is set. */
 		candidateSetId?: string;
+		/** Managed training adapter. Eval stages it and retains identity in the receipt. */
+		trainingArtifactId?: string;
 	}): Promise<OptimizerRunRecord>;
 	stageEvalCandidates(request: {
 		sessionRef: string;
@@ -1261,6 +1318,20 @@ export type TrainingProjection = {
 	attempt_id?: string | null;
 	metrics: Record<string, number>;
 	checkpoints: unknown[];
+	evaluations: Array<{
+		phase?: "baseline" | "checkpoint" | "final" | string;
+		checkpoint_id?: string | null;
+		artifact_digest?: string | null;
+		step?: number | null;
+		evaluator?: string | null;
+		metric?: string;
+		score?: number | null;
+		loss?: number | null;
+		baseline_score?: number | null;
+		delta?: number | null;
+		sample_count?: number | null;
+		status?: string;
+	}>;
 	warnings: unknown[];
 	latest_rollout?: unknown;
 	tunnel_health?: { status?: string; occurred_at?: string; detail?: unknown } | null;

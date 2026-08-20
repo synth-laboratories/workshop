@@ -46,14 +46,16 @@ function safeFilePart(value: string): string {
 
 export function CandidateList({
   gepa,
+  candidates,
   selectedId,
   onSelect
 }: {
   gepa: GepaState;
+  candidates?: CandidateRecord[];
   selectedId?: string | null;
   onSelect?: (id: string) => void;
 }) {
-  const ordered = [...gepa.candidates].sort((a, b) => Number(a.sequence ?? 0) - Number(b.sequence ?? 0));
+  const ordered = candidates ?? [...gepa.candidates].sort((a, b) => Number(a.sequence ?? 0) - Number(b.sequence ?? 0));
   return (
     <section className="sv-section" aria-label="Candidates" style={{ marginTop: 14 }}>
       <div className="sv-section-head">
@@ -86,6 +88,8 @@ export function CandidateList({
               className="sv-candidate-card"
               data-selected={selected}
               data-testid={`optimizer-candidate-${id}`}
+              data-annotation-kind="candidate"
+              data-annotation-id={id}
               aria-pressed={selected}
               aria-label={`Inspect candidate ${candidateName(candidate)}`}
               onClick={() => onSelect?.(id)}

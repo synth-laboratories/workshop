@@ -84,13 +84,8 @@ remaining work. Preserve that architecture instead of rebuilding it:
 
 `Workshop → Workshop optimizer service → public synth-optimizers SFT service → Optimizers-beta executor`
 
-The no-cost `sft.hosted.fixture.v1` run completed through Workshop's public
-control-plane client with 29 durable events, two checkpoints, a promoted
-checkpoint, and a stable completed state after Refresh. Workshop did not call
-Optimizers-beta directly and no provider charge was incurred. Public SFT API
-compatibility is therefore established; the open scope is application
-bootstrap, planner UX, regression coverage, Visual behavior, and production
-operations.
+Hosted SFT qualification must use a real provider run and preserve missing
+metrics as missing. Deterministic training results are not product evidence.
 
 - [ ] Make a clean named CUA instance dependency-complete without a manually
   supplied `SYNTH_PYTHON`. Provision a pinned instance-local Laguna environment
@@ -100,17 +95,11 @@ operations.
 - [ ] Require a clean CUA instance to reach `Laguna-XS-2.1 ready`, produce no
   Python import failure, and expose the sidecar health endpoint on its assigned
   port.
-- [ ] Provide a direct bounded SFT fixture action in Optimizers → SFT, or make
-  `Plan with agent` deterministically call `optimizer_start_recipe` with
-  `sft.hosted.fixture.v1`. A no-path, no-secret, no-cost allowlisted fixture
-  must not require exploratory shell discovery first.
-- [ ] Retain confirmation and budget gates for paid recipes while allowing the
-  free fixture to start immediately after explicit approval.
-- [ ] Add one clean-instance automated E2E that starts the public SFT service
-  and fixture executor, launches a fresh named CUA app, proves local-agent
-  health, invokes the recipe through Workshop IPC/MCP, and asserts one hosted
-  completed run with exactly 29 events and the same status/cursor after
-  Refresh. It must not require a Tinker key or paid work.
+- [ ] Retain confirmation and budget gates for every paid hosted recipe.
+- [ ] Add one clean-instance automated E2E that starts the public SFT service,
+  launches a fresh named CUA app, proves local-agent health, invokes a real
+  authorized recipe through Workshop IPC/MCP, and asserts the same terminal
+  status/cursor after Refresh.
 - [ ] Add an accessibility/API-driven Visual regression: `Open visual` creates
   or focuses the SFT visual, binds it to the test run, and reports the same
   durable event cursor/state as the inspector.
@@ -120,19 +109,19 @@ operations.
   separately authorized provider smoke test; and document failure,
   cancellation, and artifact retention.
 
-Reference evidence: public service commit `780affb` on
+Reference implementation: public service commit `780affb` on
 `agent/sft-public-service-20260815`; Workshop integration commit `7d86721` on
-`agent/aug12-modern-stack-completion`; fixture run `sft_hosted_f870684d`.
+`agent/aug12-modern-stack-completion`.
 
 ## Qualification sequence
 
 1. Run focused Rust, Python, visuals, typecheck, and production frontend-build
    gates on this branch.
-2. Run the new integration suite against an isolated debug instance with
-   deterministic provider fixtures.
+2. Run the new integration suite against an isolated debug instance with real
+   provider execution and bounded approval.
 3. Install the exact v0.4 candidate ZIP and repeat the core persona suite:
    fresh local-only, Synth Cloud, ChatGPT, OpenRouter, and local MLX.
-4. Run the clean-instance, no-cost hosted-SFT fixture gate from tranche D.
+4. Run the clean-instance hosted-SFT gate from tranche D.
 5. Run the v0.1→v0.4 and v0.2/v0.3→v0.4 state migration matrix.
 6. Publish a claim ledger containing artifact hash, test revision, environment,
    negative control, receipt, and verdict for every release claim.

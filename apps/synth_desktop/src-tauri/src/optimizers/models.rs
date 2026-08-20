@@ -565,6 +565,11 @@ pub struct OptimizerRecipeRunRequest {
     /// source is content-addressed at staging time, not at launch.
     #[serde(default)]
     pub candidate_set_id: Option<String>,
+    /// Managed training artifact to evaluate. When set, Workshop stages an
+    /// `mlx-lora.v1` candidate set from that record and retains its identity
+    /// on the Eval receipt. Mutually exclusive with `candidate_set_id`.
+    #[serde(default)]
+    pub training_artifact_id: Option<String>,
     /// Optional GEPA search overrides. Omitted fields keep the recipe defaults.
     /// `proposalsPerGeneration` is capped at 10; `policyConcurrency` at 120.
     #[serde(default)]

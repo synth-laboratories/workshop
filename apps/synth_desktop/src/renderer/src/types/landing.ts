@@ -146,6 +146,8 @@ export type ArtifactRef = {
 	visualId?: string;
 	/** Durable revision used to invalidate asynchronous binding resolutions. */
 	revision?: number;
+	/** Digest of the exact visual content revision, used to bind annotations. */
+	contentDigest?: string;
 	bindings?: import("@synth/runtime-protocol").VisualBindings | Record<string, unknown>;
 	/** Durable visual metadata, including presentation and authoring review receipts. */
 	metadata?: Record<string, unknown>;

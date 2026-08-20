@@ -26,6 +26,7 @@ test.beforeEach(async ({ page }) => {
 		});
 		(window as any).__optimizerCreateCount = 0;
 		(window as any).__optimizerAgentCalls = [];
+		(window as any).__visualAnnotations = [];
 		(window as any).__setOptimizerRuns = (next: any[]) => { runs = next; };
 		(window as any).prompt = () => { throw new Error("window.prompt must not be used"); };
 		(window as any).synthOptimizers = {
@@ -38,16 +39,16 @@ test.beforeEach(async ({ page }) => {
 			listRecipes: async () => [
 				{ id: "gepa.banking77.luna.v1", title: "Banking77 GEPA · Luna medium", availability: "available", limits: { maxTotalRollouts: 240, maxCostUsd: 2.45 } },
 				{ id: "gepa.banking77.sol.v1", title: "Banking77 GEPA · Sol medium", availability: "available", limits: { maxTotalRollouts: 240, maxCostUsd: 2.45 } },
-				{ id: "sft.hosted.fixture.v1", title: "Hosted SFT fixture", availability: "available", limits: { trainSteps: 4 } }
+				{ id: "sft.banking77.nemotron-lightning.tinker.v1", title: "Banking77 Tinker SFT", availability: "available", limits: { trainingSteps: 30 } }
 			],
 			startRecipe: async (request: any) => {
 				(window as any).__optimizerCreateCount += 1;
 				(window as any).__optimizerCreateRequest = request;
-				const isSft = request.recipeId === "sft.hosted.fixture.v1";
-				const run = makeRun(isSft ? "sft_hosted_fixture" : "banking77_cua_smoke", isSft ? "sft" : "gepa");
+				const isSft = request.recipeId === "sft.banking77.nemotron-lightning.tinker.v1";
+				const run = makeRun(isSft ? "sft_banking77_tinker" : "banking77_cua_smoke", isSft ? "sft" : "gepa");
 				if (isSft) {
 					run.source = "hosted";
-					run.objective = "Hosted SFT fixture · streamed from public Optimizers";
+					run.objective = "Hosted SFT · streamed from public Optimizers";
 					run.executionBindings = [{ kind: "synth_optimizers_sft", id: "http://127.0.0.1:8878", label: "public Optimizers hosted SFT", status: "starting" }];
 				}
 				runs = [run];
@@ -73,11 +74,18 @@ test.beforeEach(async ({ page }) => {
 			get: async (visualId: string) => {
 				const runId = visualId.replace(/^visual-/, "");
 				return {
-					schemaVersion: "synth.desktop-visual.v1", id: visualId, templateId: "optimizer.run.v1",
+					schemaVersion: "synth.desktop-visual.v1", id: visualId, currentRevision: 3, contentDigest: "sha256:banking77-rich", templateId: "optimizer.run.v1",
 					title: "Banking77 GEPA smoke", status: "saved", createdAt: now, updatedAt: now,
 					bindings: { schemaVersion: "synth.visual-bindings.v1", slots: [{ slot: "optimizer_run", kind: "optimizer_run", source: runId }] },
 					metadata: {}
 				};
+			},
+			annotations: async () => [],
+			listSeals: async () => [],
+			createAnnotation: async (visualId: string, request: any) => {
+				const annotation = { id: `annotation-${(window as any).__visualAnnotations.length + 1}`, visualId, ...request, metadata: request.metadata ?? {}, authorId: "tester", tombstoned: false, createdAt: now, updatedAt: now };
+				(window as any).__visualAnnotations.push(annotation);
+				return annotation;
 			},
 			onEvent: () => () => undefined,
 			onShow: () => () => undefined
@@ -145,13 +153,18 @@ test("native GEPA candidates, frontier, usage, and artifacts render in the visua
 	});
 	await page.getByTestId("optimizers-search").fill("rich");
 	await page.getByTestId("open-optimizer-visual").click();
+	await expect(page.getByTestId("gepa-workbench-controls")).toBeVisible();
+	await page.getByTestId("gepa-candidate-sort").selectOption("score");
+	await page.getByTestId("gepa-sort-direction").selectOption("desc");
 	await expect(page.getByTestId("optimizer-candidate-cand_seed")).toContainText("0.50");
 	await page.getByTestId("optimizer-candidate-cand_seed").click();
+	await expect(page.getByTestId("gepa-linked-selection")).toContainText("cand_seed");
+	await expect.poll(() => page.evaluate(() => window.localStorage.getItem("synth.optimizer.gepa.presentation.v1:banking77_rich"))).toContain('"sort":"score"');
 	// The frontier canvas names candidates semantically; the seed candidate reads "Seed".
 	await expect(page.getByTestId("gepa-pareto-frontier")).toContainText("Seed");
 	await expect(page.getByLabel("Usage")).toContainText("4");
 	await expect(page.getByLabel("Usage")).toContainText("105");
-	await expect(page.getByLabel("Artifacts")).toContainText("result_manifest.json");
+	await expect(page.getByLabel("Artifacts", { exact: true })).toContainText("result_manifest.json");
 	await expect(page.getByTestId("optimizer-artifact-0")).toContainText("Result manifest");
 	await expect(page.getByTestId("optimizer-artifact-0")).not.toContainText('{"kind"');
 	await page.getByTestId("copy-artifact-path-0").click();
@@ -165,6 +178,15 @@ test("native GEPA candidates, frontier, usage, and artifacts render in the visua
 	await page.getByTestId("download-gepa-candidate").click();
 	const download = await downloadPromise;
 	expect(download.suggestedFilename()).toBe("cand_seed.json");
+	await page.getByRole("button", { name: /^Label/ }).click();
+	await page.getByTestId("optimizer-candidate-cand_seed").click();
+	await page.getByLabel("Label note").fill("Review the accepted seed prompt");
+	await page.getByRole("button", { name: "Save label" }).click();
+	await expect.poll(() => page.evaluate(() => (window as any).__visualAnnotations.length)).toBe(1);
+	const [annotation] = await page.evaluate(() => (window as any).__visualAnnotations);
+	expect(annotation.visualRevision).toBe(3);
+	expect(annotation.sourceDigest).toBe("sha256:banking77-rich");
+	expect(annotation.selector).toEqual({ type: "candidate", candidateId: "cand_seed" });
 });
 
 test("optimizer entry points describe algorithms without binding them to environments", async ({ page }) => {
@@ -176,21 +198,8 @@ test("optimizer entry points describe algorithms without binding them to environ
 	await expect(page.getByTestId("start-gepa-agent")).toBeEnabled();
 	await expect(page.getByTestId("start-go-ex-agent")).toBeEnabled();
 	await expect(page.getByTestId("start-sft-agent")).toBeEnabled();
-	await expect(page.getByTestId("start-sft-fixture")).toBeEnabled();
-	await expect(page.getByTestId("optimizer-guide-sft")).toContainText("no provider charges");
-});
-
-test("the explicit free SFT fixture uses the public hosted recipe and opens its visual", async ({ page }) => {
-	await page.getByTestId("start-sft-fixture").click();
-	await expect.poll(() => page.evaluate(() => (window as any).__optimizerCreateCount)).toBe(1);
-	expect(await page.evaluate(() => (window as any).__optimizerCreateRequest)).toEqual({
-		recipeId: "sft.hosted.fixture.v1",
-		openVisual: true
-	});
-	expect(await page.evaluate(() => (window as any).__optimizerAgentCalls.length)).toBe(0);
-	await expect(page.getByTestId("optimizer-execution-mode")).toHaveText("public Optimizers hosted SFT");
-	await expect(page.getByTestId("optimizer-run-sft_hosted_fixture")).toBeVisible();
-	await expect(page.getByTestId("visual-pane")).toBeVisible();
+	await expect(page.getByTestId("start-sft-fixture")).toHaveCount(0);
+	await expect(page.getByTestId("optimizer-guide-sft")).not.toContainText("no provider charges");
 });
 
 test("starting GELO opens an agent session that discovers the target before compute", async ({ page }) => {

@@ -12,10 +12,12 @@ test("Settings → Secrets is write-only and never reveals a value", async ({ pa
 
 	const pane = page.getByTestId("settings-secrets");
 	await expect(pane).toBeVisible();
-	await expect(pane.getByText("Not registered")).toHaveCount(3);
+	await expect(pane.getByText("Not registered")).toHaveCount(5);
 	await expect(page.getByTestId("secrets-provider-openai")).toBeVisible();
 	await expect(page.getByTestId("secrets-provider-anthropic")).toBeVisible();
 	await expect(page.getByTestId("secrets-provider-openrouter")).toBeVisible();
+	await expect(page.getByTestId("secrets-provider-tinker")).toBeVisible();
+	await expect(page.getByTestId("secrets-provider-groq")).toBeVisible();
 	await expect(page.getByTestId("secrets-add")).toBeVisible();
 	await expect(page.getByTestId("secrets-import")).toBeVisible();
 

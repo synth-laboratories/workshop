@@ -56,6 +56,8 @@ mod telemetry;
 mod terminal;
 pub mod trace_ingest;
 pub mod trace_query;
+pub mod training_artifacts;
+pub mod training_models;
 mod update_check;
 mod visuals;
 pub mod visuals_ipc;
@@ -139,23 +141,29 @@ fn runtime_contracts(
         "dev" => ReleaseChannel::Dev,
         _ => ReleaseChannel::Official,
     };
-    let installed = state
+    let sidecar = state
         .optimizers()
         .manager()
         .version()
         .ok()
         .flatten()
         .map(|hit| hit.version);
+    let eval = crate::optimizers::eval_runtime::installed_version()
+        .or_else(|| {
+            crate::optimizers::eval_runtime::provision_from_disk()
+                .ok()
+                .map(|manifest| manifest.version)
+        });
     Ok(ALL
         .iter()
         .map(|entry| {
-            // Only the managed sidecar has an install to inspect. An
-            // unprovisioned runtime reports no version rather than borrowing
-            // one it cannot substantiate.
-            let found = entry
-                .provisioned_by_desktop
-                .then(|| installed.clone())
-                .flatten();
+            let found = match entry.runtime_id {
+                "eval" => eval.clone(),
+                _ => entry
+                    .provisioned_by_desktop
+                    .then(|| sidecar.clone())
+                    .flatten(),
+            };
             entry.view(channel, found)
         })
         .collect())
@@ -391,6 +399,29 @@ async fn intern_session_events_after(
             limit.map(|value| value.0).unwrap_or(500).clamp(1, 2_000),
         )
         .await
+        .map_err(AppError::from)
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn training_artifacts_launch_inference(
+    id: String,
+    message: Option<String>,
+    confirm: bool,
+) -> Result<contract::specta::OpaqueJson, AppError> {
+    if !confirm {
+        return Err(AppError::from(anyhow::anyhow!(
+            "launch_artifact_inference requires confirm=true"
+        )));
+    }
+    let prompt = message
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("Reply with one short sentence confirming which adapter you are.");
+    optimizers::launch_artifact_inference(&id, prompt)
+        .await
+        .map(contract::specta::OpaqueJson)
         .map_err(AppError::from)
 }
 
@@ -854,13 +885,11 @@ pub(crate) async fn authorize_optimizer_recipe_start(
                 request.recipe_id
             ))
         })?;
-    // These product-owned fixtures are deterministic and cannot incur provider
-    // charges. The click itself is the operator's explicit instruction. The
-    // hosted SFT fixture uses the public service; the eval fixture uses only
-    // the pinned local container runtime. Neither depends on plugin lifecycle.
+    // Local MLX recipes and the pinned local eval smoke do not incur provider
+    // charges. The click itself is the operator's explicit instruction.
     if matches!(
         request.recipe_id.as_str(),
-        "sft.hosted.fixture.v1" | "eval.fixture.policy-smoke.v1"
+        "sft.qwen35-0.8b.mlx.v1" | "cispo.banking77.mlx.v1" | "eval.fixture.policy-smoke.v1"
     ) {
         let (run, event) = state
             .optimizers()
@@ -906,9 +935,12 @@ pub(crate) async fn authorize_optimizer_recipe_start(
             limits.get("maxTotalRollouts").and_then(Value::as_u64),
         )
     } else if is_local_eval {
-        let (cost, trials) =
-            optimizers::paid_compute_bounds(&recipe, request.candidate_set_id.as_deref())
+        let (cost, trials) = {
+            let candidate_set_id = optimizers::resolve_eval_candidate_set(&request)
                 .map_err(AppError::from)?;
+            optimizers::paid_compute_bounds(&recipe, Some(candidate_set_id.as_str()))
+                .map_err(AppError::from)?
+        };
         (Some(cost), Some(trials))
     } else {
         (
@@ -1148,9 +1180,7 @@ fn optimizer_recipe_credentials(recipe_id: &str) -> &'static [&'static str] {
         &["OPTIMIZERS_BETA_SERVICE_TOKEN"]
     } else if matches!(
         recipe_id,
-        "sft.hosted.fixture.v1"
-            | "sft.craftax.nemotron-nano.tinker.v1"
-            | "sft.banking77.nemotron-lightning.tinker.v1"
+        "sft.craftax.nemotron-nano.tinker.v1" | "sft.banking77.nemotron-lightning.tinker.v1"
     ) {
         &["SYNTH_OPTIMIZERS_SFT_SERVICE_TOKEN"]
     } else {
@@ -4194,7 +4224,11 @@ pub fn run() {
                 if let Err(error) = bootstrap_core.resume_intern_providers().await {
                     eprintln!("Intern restart reconciliation failed: {error}");
                 }
-                if let Err(error) = bootstrap_core.optimizers().reconcile_stale_local_runs().await {
+                if let Err(error) = bootstrap_core
+                    .optimizers()
+                    .reconcile_stale_local_runs()
+                    .await
+                {
                     eprintln!("optimizer restart reconciliation failed: {error}");
                 }
                 // Fallback arm: if the main window never finished loading, the
