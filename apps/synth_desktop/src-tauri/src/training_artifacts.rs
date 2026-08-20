@@ -33,7 +33,9 @@ pub struct TrainingArtifact {
     pub digest: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub path: Option<String>,
+    // specta cannot export u64 (BigInt); the wire value is a JSON number.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[specta(type = f64)]
     pub size_bytes: Option<u64>,
     pub integrity: String,
     pub compatible_inference: Vec<String>,

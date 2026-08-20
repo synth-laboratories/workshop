@@ -68,6 +68,17 @@ test("plugin navigation announces the active page and hides impossible pre-insta
   assert.match(optimizers, /operation: "disable"[\s\S]*status\.phase !== "not_installed" && status\.enabled/);
 });
 
+test("hosted CISPO requires an explicit compatible retained SFT training state", () => {
+  const optimizers = read("components/OptimizersPage.tsx");
+  assert.match(optimizers, /data-testid="hosted-cispo-warm-start"/);
+  assert.match(optimizers, /optimizerAlgorithm: "sft"/);
+  assert.match(optimizers, /checkpointKind: "training"/);
+  assert.match(optimizers, /provider: "tinker"/);
+  assert.match(optimizers, /selectedWarmStart\.baseModel !== trainingModel/);
+  assert.match(optimizers, /algorithm_config\.initial_state_path/);
+  assert.match(optimizers, /never defaults to latest/);
+});
+
 test("execution targets include Laguna local + OpenRouter Luna/Laguna + Synth Cloud + Intern", () => {
   const types = read("types/landing.ts");
   const composer = read("components/Composer.tsx");
