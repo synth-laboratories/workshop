@@ -57,6 +57,64 @@ export type ExecutionTargetOption = {
 	group: "local" | "remote" | "subscription" | "cloud";
 };
 
+export type ModelAccessKind = "local" | "api" | "chatgpt";
+
+export const MODEL_ACCESS_ORDER: ModelAccessKind[] = ["local", "api", "chatgpt"];
+export const MODEL_ACCESS_LABEL: Record<ModelAccessKind, string> = {
+	local: "Local",
+	api: "API",
+	chatgpt: "ChatGPT"
+};
+
+export function modelAccessForTarget(target: ExecutionTargetOption): ModelAccessKind {
+	if (target.group === "local") return "local";
+	if (target.group === "subscription") return "chatgpt";
+	return "api";
+}
+
+export function apiProviderForTarget(target: ExecutionTargetOption): "Synth" | "OpenRouter" | null {
+	if (target.group === "remote") return "OpenRouter";
+	if (target.group === "cloud") return "Synth";
+	return null;
+}
+
+export type DefaultModelPreference = {
+	model: string;
+	effort: string;
+	providers: string[];
+};
+
+/** Resolve the TOML-authored provider fallback chain without crossing auth boundaries. */
+export function resolveDefaultTargetId(
+	preference: DefaultModelPreference,
+	availability: { chatgpt: boolean; openrouter: boolean; synth?: boolean },
+	usage: Array<{ targetId: string; updatedAt: string }> = []
+): string {
+	const model = preference.model.toLowerCase();
+	for (const provider of preference.providers) {
+		if (provider === "chatgpt" && availability.chatgpt && model === CHATGPT_LUNA_MODEL) return "chatgpt-luna";
+		if (provider === "openrouter" && availability.openrouter && (model === CHATGPT_LUNA_MODEL || model === OPENROUTER_LUNA_MODEL)) return "openrouter-luna";
+	}
+	const usable = (targetId: string) => {
+		if (targetId.startsWith("chatgpt-")) return availability.chatgpt;
+		if (targetId.startsWith("openrouter-")) return availability.openrouter;
+		if (targetId.startsWith("synth-cloud-")) return availability.synth === true;
+		return targetId === "local-laguna";
+	};
+	const ranked = new Map<string, { count: number; lastUsed: number }>();
+	for (const record of usage) {
+		if (!LAUNCH_PICKER_TARGETS.some((target) => target.id === record.targetId) || !usable(record.targetId)) continue;
+		const current = ranked.get(record.targetId) ?? { count: 0, lastUsed: 0 };
+		ranked.set(record.targetId, {
+			count: current.count + 1,
+			lastUsed: Math.max(current.lastUsed, Date.parse(record.updatedAt) || 0)
+		});
+	}
+	const mostUsed = [...ranked].sort((a, b) => b[1].count - a[1].count || b[1].lastUsed - a[1].lastUsed)[0]?.[0];
+	if (mostUsed) return mostUsed;
+	return "local-laguna";
+}
+
 /** First-class visual / artifact (Claude Artifacts analogue, Synth-shaped). */
 export type ArtifactKind =
 	| "html"
@@ -88,6 +146,8 @@ export type ArtifactRef = {
 	visualId?: string;
 	/** Durable revision used to invalidate asynchronous binding resolutions. */
 	revision?: number;
+	/** Digest of the exact visual content revision, used to bind annotations. */
+	contentDigest?: string;
 	bindings?: import("@synth/runtime-protocol").VisualBindings | Record<string, unknown>;
 	/** Durable visual metadata, including presentation and authoring review receipts. */
 	metadata?: Record<string, unknown>;
@@ -209,7 +269,7 @@ export type LandingState = {
 	apiKeyConfigured?: boolean;
 	/** OpenRouter API key present — gates direct OpenRouter models. Boolean only; never the secret. */
 	openrouterApiKeyConfigured?: boolean;
-	/** ChatGPT subscription OAuth present in the native keychain. */
+	/** ChatGPT subscription OAuth present in Workshop's private credential file. */
 	codexOauthConfigured?: boolean;
 	/** Rust-owned ChatGPT auth state and recovery instructions. */
 	codexOauthStatus?: import("../bridge").CodexOauthStatus;

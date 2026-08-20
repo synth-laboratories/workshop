@@ -41,6 +41,7 @@ pub struct CoreRuntime {
     sessions: SessionService,
     runs: RunService,
     events_tx: broadcast::Sender<AppEvent>,
+    secrets: Arc<crate::secrets::SecretsService>,
 }
 
 impl CoreRuntime {
@@ -157,8 +158,12 @@ impl CoreRuntime {
             diagnostics_root,
         );
         optimizers.attach_diagnostics(diagnostics.clone());
+        visuals.attach_optimizer_runs(optimizers.clone());
         visuals.attach_diagnostics(diagnostics.clone());
         optimizer_manager.attach_diagnostics(diagnostics.clone());
+        let secrets = Arc::new(crate::secrets::SecretsService::new(
+            storage.database().clone(),
+        ));
         Self {
             storage,
             journal,
@@ -175,6 +180,7 @@ impl CoreRuntime {
             sessions,
             runs,
             events_tx,
+            secrets,
         }
     }
 
@@ -242,6 +248,10 @@ impl CoreRuntime {
 
     pub fn runs(&self) -> &RunService {
         &self.runs
+    }
+
+    pub fn secrets(&self) -> &Arc<crate::secrets::SecretsService> {
+        &self.secrets
     }
 
     pub fn broadcast_committed(&self, event: Option<AppEvent>) {

@@ -198,7 +198,14 @@ mod tests {
             provider: "openai".into(),
             purpose: "bounded optimizer recipe".into(),
         };
-        let kinds = [shell, paid(), sidecar_start, sidecar_stop, plugin_install, credential];
+        let kinds = [
+            shell,
+            paid(),
+            sidecar_start,
+            sidecar_stop,
+            plugin_install,
+            credential,
+        ];
         for policy in ["never", "on-request", "untrusted"] {
             for kind in &kinds {
                 let host = auto_decision(policy, kind).unwrap();

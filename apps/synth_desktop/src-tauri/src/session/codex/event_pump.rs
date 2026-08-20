@@ -149,6 +149,12 @@ pub(crate) async fn spawn_server<R: tauri::Runtime>(
     if let Some((name, value)) = provider_child_env(request)? {
         command.env(name, value);
     }
+    // A Stop must contain every process the app-server owns, not merely the
+    // JSON-RPC parent. Shell tools commonly spawn grandchildren, and killing
+    // only the parent leaves a command (or its container client) running after
+    // the composer has been told the turn is over. Give each attachment its
+    // own process group so the transport can terminate that exact tree.
+    isolate_process_group(&mut command);
     let mut child = command.spawn().context("spawn codex app-server")?;
     let stdin = Arc::new(Mutex::new(
         child.stdin.take().context("capture app-server stdin")?,
@@ -180,7 +186,7 @@ pub(crate) async fn spawn_server<R: tauri::Runtime>(
     tauri::async_runtime::spawn(async move {
         let mut lines = BufReader::new(stderr).lines();
         while let Ok(Some(line)) = lines.next_line().await {
-            let line = crate::codex_oauth::redact_text(&line);
+            let line = crate::secrets::redact_live(&crate::codex_oauth::redact_text(&line));
             stderr_persistence
                 .notify_codex_event(&app, sid.clone(), "app-server/stderr", json!({"line":line}))
                 .await;
@@ -188,6 +194,15 @@ pub(crate) async fn spawn_server<R: tauri::Runtime>(
     });
     Ok(server)
 }
+
+#[cfg(unix)]
+fn isolate_process_group(command: &mut Command) {
+    use std::os::unix::process::CommandExt;
+    command.as_std_mut().process_group(0);
+}
+
+#[cfg(not(unix))]
+fn isolate_process_group(_command: &mut Command) {}
 
 async fn read_stdout<R: tauri::Runtime>(
     app: AppHandle<R>,
@@ -224,6 +239,7 @@ async fn read_stdout<R: tauri::Runtime>(
         // about delivery, and every millisecond spent below this line would
         // otherwise be charged to the model.
         let received_at_us = monotonic_us();
+        let line = crate::secrets::redact_live(&line);
         let Ok(message) = serde_json::from_str::<Value>(&line) else {
             continue;
         };

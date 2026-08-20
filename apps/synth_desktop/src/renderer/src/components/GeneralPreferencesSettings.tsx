@@ -15,6 +15,8 @@ import {
 	setToolActivityMode
 } from "../preferences";
 import { SettingsCard, SettingsRow } from "./SettingsCard";
+import { bridges } from "../runtime/desktopBridge";
+import type { ProductTelemetryPolicy } from "../bridge";
 
 type Props = {
 	preferences: DesktopPreferences;
@@ -79,6 +81,42 @@ function SegmentedControl<T extends string>({
 				</button>
 			))}
 		</div>
+	);
+}
+
+function PrivacyTelemetrySettings() {
+	const [policy, setPolicy] = useState<ProductTelemetryPolicy | null>(null);
+	useEffect(() => {
+		void bridges.telemetry?.getPolicy().then(setPolicy).catch(() => undefined);
+	}, []);
+	const optionalEnabled = policy?.optionalEnabled !== false;
+	return (
+		<SettingsCard
+			title="Privacy"
+			description="Optional product analytics never include prompts, traces, filenames, or secret values. Essential sign-in and billing still work when this is off. Sign out deletes optional events on this device; essential recovery events expire after 365 days."
+			testId="settings-privacy"
+		>
+			<SettingsRow
+				label="Product analytics"
+				description="Download, first launch, signup, and activation funnel. Hosted usage remains server-authoritative either way."
+			>
+				<SegmentedControl
+					ariaLabel="Product analytics"
+					options={[{ id: "on", label: "On" }, { id: "off", label: "Off" }]}
+					value={optionalEnabled ? "on" : "off"}
+					testIdPrefix="telemetry-optional"
+					onChange={(value) => {
+						void bridges.telemetry
+							?.setOptOut(value === "off")
+							.then(setPolicy)
+							.catch(() => undefined);
+					}}
+				/>
+			</SettingsRow>
+			<p className="settings-item-subhead" data-testid="telemetry-policy-version">
+				{policy?.dictionaryVersion ?? "workshop.product-telemetry.v1"} · 90-day optional retention
+			</p>
+		</SettingsCard>
 	);
 }
 
@@ -219,6 +257,8 @@ export function GeneralPreferencesSettings({ preferences, onPreferencesChange }:
 					/>
 				</SettingsRow>
 			</SettingsCard>
+
+			<PrivacyTelemetrySettings />
 
 			<SettingsCard
 				title="Prompt submission"

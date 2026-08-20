@@ -140,6 +140,26 @@ only for a distinct experiment identity or research question. The inline
 - `lineage` is an ordered compact projection, not a substitute for a full trace or DAG.
 - `limitations` records missing baselines, incomplete heldout evidence, failed runs, and other caveats.
 
+The decision core stays small: identity plus `hypotheses` (each with `claim`,
+`verdict`, `confidence`, and `why`). Add the following typed modules only when
+the evidence exists and it helps the reader. Missing and empty modules do not
+render:
+
+- `results.metrics` and `results.rollouts` add exact result values and compact per-rollout rows. A rollout may include `seed`, `reward`, `steps`, `achievements`, `stopReason`, and `traceId`.
+- `traces` adds durable trace references with concise summaries, reward/step context, `traceId`, or `visualId`. Prefer references over embedding transcripts.
+- `task` records task/benchmark identity and version, objective, split, or harness revision.
+- `runtime` records model, reasoning effort, limits, container/image identity, digest, and run timing.
+- `artifacts` adds files or durable objects via `path`, `visualId`, `traceId`, or `containerId`; do not paste long paths into prose.
+- `provenance` records repository, commit, dirty state, configuration digest, and other reproducibility facts.
+
+`traces` and `artifacts` accept either a plain array or
+`{ prominence: "detail" | "summary", items: [...] }`. `detail` is the default
+and stays collapsed. Use `summary` sparingly when that module is central to the
+claim; Workshop then opens that one module initially. Workshop owns layout and
+reference-chip rendering—the agent supplies typed facts, short summaries, and
+durable IDs. Never add empty placeholder modules merely to make the record look
+complete.
+
 Missing measurements must be omitted or `null`, never written as zero. Do not
 mark an arm selected merely because it is latest, and do not describe an
 experiment as improved without baseline and comparison evidence. Keep every

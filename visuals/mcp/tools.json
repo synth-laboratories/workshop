@@ -7,7 +7,7 @@
         "openWorldHint": false,
         "readOnlyHint": false
       },
-      "description": "Direct tool for Synth visuals; do not call MCP resources or search the filesystem. For a diagram, load author-synth-diagrams, create with arguments.content, show, then capture_review and examine its returned image before review.",
+      "description": "Direct tool for Synth visuals; do not call MCP resources or search the filesystem. For a diagram, load author-synth-diagrams, create with arguments.content, show, then capture_review and examine its returned image before review. For ad-hoc data charts use operation \"chart\" (or the visual_chart tool): it writes the spec, renders it, and returns the PNG in one call.",
       "inputSchema": {
         "additionalProperties": false,
         "properties": {
@@ -29,6 +29,7 @@
               "show",
               "render",
               "capture_review",
+              "chart",
               "authoring_context",
               "review",
               "mark_ready",
@@ -111,6 +112,86 @@
         "type": "object"
       },
       "name": "visual_get"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": false,
+        "openWorldHint": false,
+        "readOnlyHint": false
+      },
+      "description": "Author or revise an ad-hoc data chart and get the rendered PNG back in one call. Pass a synth.visual.chart-spec.v1 object as spec; omit visual_id to create, pass it to revise. Panels either carry literal values or derive them from bound evidence \u2014 bind a trace digest, fixture, CAS blob, or query snapshot with slot/kind/source and the host reads it, so charting a trace does not mean pasting its numbers. Renders deterministically in the host, so no Desktop window has to be open. Null values render as gaps, hatched cells, or em dashes \u2014 never as zero.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "bindings": {
+            "description": "A full synth.visual-bindings.v1 envelope instead of slot/kind/source",
+            "type": "object"
+          },
+          "capture": {
+            "description": "Default true; false returns revision and findings without a PNG",
+            "type": "boolean"
+          },
+          "data": {
+            "description": "Required when kind is inline"
+          },
+          "kind": {
+            "description": "Binding kind for slot. An optimizer_run may be read before it seals; the reading is recorded as a snapshot with its cursor.",
+            "enum": [
+              "inline",
+              "fixture",
+              "local_cas",
+              "trace_v5",
+              "query_snapshot",
+              "optimizer_run"
+            ],
+            "type": "string"
+          },
+          "presentation": {
+            "enum": [
+              "canvas",
+              "pane"
+            ],
+            "type": "string"
+          },
+          "slot": {
+            "description": "Bind evidence in the same call: the slot name a from block reads",
+            "type": "string"
+          },
+          "source": {
+            "description": "Trace digest, fixture path under visuals/, CAS blob digest, query snapshot id, or optimizer run id",
+            "type": "string"
+          },
+          "spec": {
+            "description": "synth.visual.chart-spec.v1: {version:1, title?, subtitle?, theme?:light|dark, width?:480-2000, panels:[...]}. A panel carries literal values OR a from block that derives them from a bound slot: {from:{source:{slot,path?,projection?,transform:[...]}, ...channel mapping}}. Transforms: filter, sort, limit, select, unwind, unpivot, derive, groupAggregate, bin.",
+            "type": "object"
+          },
+          "title": {
+            "type": "string"
+          },
+          "viewport": {
+            "additionalProperties": false,
+            "description": "Capture width; height follows the chart so nothing is scaled down",
+            "properties": {
+              "width": {
+                "maximum": 2400,
+                "minimum": 320,
+                "type": "integer"
+              }
+            },
+            "type": "object"
+          },
+          "visual_id": {
+            "description": "Revise this chart instead of creating one",
+            "type": "string"
+          }
+        },
+        "required": [
+          "spec"
+        ],
+        "type": "object"
+      },
+      "name": "visual_chart"
     },
     {
       "annotations": {

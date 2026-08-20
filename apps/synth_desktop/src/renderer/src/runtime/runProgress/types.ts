@@ -218,6 +218,17 @@ export type RunProgressProjection = {
 	warning?: string;
 	warnings: string[];
 	details: RunProgressDetail[];
+	/** Compact provider-proxy status. Never includes a key or capability token. */
+	providerAccess?: {
+		provider: string;
+		status: string;
+		suffix?: string;
+		usedCalls: number;
+		maxCalls: number;
+		usedCostUsd: number;
+		maxCostUsd: number;
+		note?: string;
+	};
 	result?: RunProgressResult;
 	/** Visual instance id for "Open full run", when the run published one. */
 	fullVisualRef?: string;

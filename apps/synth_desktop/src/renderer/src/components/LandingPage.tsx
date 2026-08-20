@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
-import { EXECUTION_TARGETS, LAUNCH_PICKER_TARGETS, TARGET_GROUP_LABEL } from "../types/landing";
-import type { ExecutionTargetOption, LandingState } from "../types/landing";
+import { apiProviderForTarget, EXECUTION_TARGETS, LAUNCH_PICKER_TARGETS, MODEL_ACCESS_LABEL, MODEL_ACCESS_ORDER, modelAccessForTarget, TARGET_GROUP_LABEL } from "../types/landing";
+import type { ExecutionTargetOption, LandingState, ModelAccessKind } from "../types/landing";
 import { SynthLogo } from "./SynthLogo";
 import { ProviderMark, providerMarkForTarget } from "./ProviderMark";
 
@@ -36,6 +36,7 @@ export function ModelPicker({
 	onResolveBilling?: () => void;
 }) {
 	const [open, setOpen] = useState(false);
+	const [activeAccess, setActiveAccess] = useState<ModelAccessKind | null>(null);
 	const ref = useRef<HTMLDivElement>(null);
 	const selected = EXECUTION_TARGETS.find((t) => t.id === selectedTargetId) ?? EXECUTION_TARGETS[0];
 	// The dropdown must stay inside the viewport with an 8px inset, never cover
@@ -102,7 +103,10 @@ export function ModelPicker({
 			<button
 				type="button"
 				className="model-pill"
-				onClick={() => setOpen((v) => !v)}
+				onClick={() => setOpen((v) => {
+					if (!v) setActiveAccess(null);
+					return !v;
+				})}
 				data-testid="model-picker"
 				aria-label="Select execution target"
 				aria-expanded={open}
@@ -132,12 +136,33 @@ export function ModelPicker({
 						}
 						: undefined}
 				>
-					{(["local", "remote", "subscription", "cloud"] as const).map((group) => {
+					{activeAccess === null ? MODEL_ACCESS_ORDER.map((access) => (
+						<button
+							key={access}
+							type="button"
+							role="option"
+							aria-selected={modelAccessForTarget(selected) === access}
+							className={`model-option model-access-option${modelAccessForTarget(selected) === access ? " selected" : ""}`}
+							data-testid={`model-access-${access}`}
+							onClick={() => setActiveAccess(access)}
+						>
+							<span className="model-option-label">{MODEL_ACCESS_LABEL[access]}</span>
+							<span className="model-option-desc">{access === "local" ? "Models on this Mac" : access === "api" ? "Synth and third-party providers" : "Your ChatGPT subscription"} ›</span>
+						</button>
+					)) : <>
+						<button type="button" className="model-option model-access-back" data-testid="model-access-back" onClick={() => setActiveAccess(null)}>
+							<span className="model-option-label">‹ {MODEL_ACCESS_LABEL[activeAccess]}</span>
+							<span className="model-option-desc">All access methods</span>
+						</button>
+					{(["local", "cloud", "remote", "subscription"] as const).filter((group) => {
+						const sample = LAUNCH_PICKER_TARGETS.find((target) => target.group === group);
+						return sample ? modelAccessForTarget(sample) === activeAccess : false;
+					}).map((group) => {
 						const items = LAUNCH_PICKER_TARGETS.filter((t) => t.group === group);
 						if (!items.length) return null;
 						return (
 							<div key={group} className="model-dropdown-group">
-								<div className="model-dropdown-group-label">{TARGET_GROUP_LABEL[group]}</div>
+								<div className="model-dropdown-group-label">{activeAccess === "api" ? apiProviderForTarget(items[0]) : TARGET_GROUP_LABEL[group]}</div>
 								{items.map((target: ExecutionTargetOption) => {
 									const needsSynthKey =
 										target.id.startsWith("synth-cloud-") && apiKeyConfigured !== true;
@@ -228,7 +253,7 @@ export function ModelPicker({
 								})}
 							</div>
 						);
-					})}
+					})}</>}
 				</div>
 			) : null}
 		</div>

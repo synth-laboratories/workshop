@@ -378,9 +378,11 @@ pub fn project_capabilities(
     capabilities
 }
 
-/// A normalized block is one that names the protocol or carries an explicit
-/// `operations` map. The Craftax pool already ships an unrelated
-/// `capabilities: {async_rollout: true, …}` object; that is not this.
+/// A normalized block is one that names the protocol or carries at least one
+/// exact normalized operation name. A raw container may independently expose
+/// an `operations` object such as `prepare`/`start`/`get`; that is useful
+/// service metadata, but it is not permission to bypass the typed live-eval
+/// gate or to prevent an explicit GEPA-v2 adapter from being projected.
 fn normalized_block(source: &Value) -> Option<Value> {
     for pointer in [
         "/capabilities",
@@ -395,8 +397,7 @@ fn normalized_block(source: &Value) -> Option<Value> {
             .get("protocol")
             .and_then(Value::as_str)
             .is_some_and(|protocol| protocol == LIVE_EVAL_PROTOCOL);
-        let has_operations = block.get("operations").is_some_and(Value::is_object);
-        if names_protocol || has_operations {
+        if names_protocol || has_normalized_operations(block) {
             return Some(block.clone());
         }
     }
@@ -406,6 +407,17 @@ fn normalized_block(source: &Value) -> Option<Value> {
         .is_some_and(|protocol| protocol == LIVE_EVAL_PROTOCOL);
     (names_protocol && source.get("operations").is_some_and(Value::is_object))
         .then(|| source.clone())
+}
+
+fn has_normalized_operations(block: &Value) -> bool {
+    block
+        .get("operations")
+        .and_then(Value::as_object)
+        .is_some_and(|operations| {
+            operations
+                .keys()
+                .any(|name| ContainerOperation::parse(name).is_some())
+        })
 }
 
 fn parse_normalized_block(block: &Value, source: CapabilitySource) -> ContainerCapabilities {
@@ -553,10 +565,7 @@ fn gepa_v2_projection(info: &Value) -> Option<ContainerCapabilities> {
 
 fn merge_gepa_evidence(target: &mut ContainerCapabilities, adapted: &ContainerCapabilities) {
     for (name, state) in &adapted.operations {
-        target
-            .operations
-            .entry(name.clone())
-            .or_insert(*state);
+        target.operations.entry(name.clone()).or_insert(*state);
     }
     if target.policy_refs.is_empty() {
         target.policy_refs = adapted.policy_refs.clone();
@@ -605,7 +614,11 @@ fn apply_model_roles(capabilities: &mut ContainerCapabilities, info: Option<&Val
                         .and_then(Value::as_str)
                         .map(str::to_string),
                 };
-                if !capabilities.policy_refs.iter().any(|existing| existing.satisfies(&next)) {
+                if !capabilities
+                    .policy_refs
+                    .iter()
+                    .any(|existing| existing.satisfies(&next))
+                {
                     capabilities.policy_refs.push(next);
                 }
             }
@@ -623,11 +636,7 @@ fn apply_model_roles(capabilities: &mut ContainerCapabilities, info: Option<&Val
     }
 }
 
-fn push_credential_requirement(
-    capabilities: &mut ContainerCapabilities,
-    role: &Value,
-    lane: &str,
-) {
+fn push_credential_requirement(capabilities: &mut ContainerCapabilities, role: &Value, lane: &str) {
     let Some(env) = role.get("api_key_env").and_then(Value::as_str) else {
         return;
     };
@@ -1517,6 +1526,13 @@ mod tests {
             "capabilities": {
                 "contract_version": "container_contract.v1",
                 "rollout_modes": ["blocking"],
+                "operations": {
+                    "prepare": true,
+                    "start": true,
+                    "get": true,
+                    "poll": true,
+                    "reward": true
+                },
                 "metadata": {"policy_ready": true}
             },
             "metadata": {
@@ -1617,7 +1633,8 @@ mod tests {
             false,
             Duration::from_secs(900),
         );
-        preflight_prepare(&record, &request, now()).expect("configurable OpenAI policy is accepted");
+        preflight_prepare(&record, &request, now())
+            .expect("configurable OpenAI policy is accepted");
         assert_eq!(
             capabilities.scorer_role.as_ref().unwrap()["usage_lane"],
             "grader"

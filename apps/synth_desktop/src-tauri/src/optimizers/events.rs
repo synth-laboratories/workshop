@@ -112,7 +112,12 @@ impl OptimizerEventDraft {
 
     /// Seal into a durable envelope at `sequence_number`. Called by the service
     /// only, inside the append transaction.
-    pub fn seal(self, run_id: &str, sequence_number: u64, sealed_at: &str) -> OptimizerEventEnvelope {
+    pub fn seal(
+        self,
+        run_id: &str,
+        sequence_number: u64,
+        sealed_at: &str,
+    ) -> OptimizerEventEnvelope {
         let event_id = self
             .idempotency_key
             .map(|key| format!("{run_id}:{key}"))
@@ -253,7 +258,10 @@ fn validate_shape(run_id: &str, event: &OptimizerEventEnvelope) -> Result<()> {
         bail!("event {} has no algorithm id", event.event_type);
     }
     if event.sequence_number == 0 {
-        bail!("event {} has sequence 0; sequences start at 1", event.event_type);
+        bail!(
+            "event {} has sequence 0; sequences start at 1",
+            event.event_type
+        );
     }
     if chrono::DateTime::parse_from_rfc3339(&event.occurred_at).is_err() {
         bail!(
@@ -317,12 +325,19 @@ mod tests {
             "run_1",
             1,
             &durable,
-            &[envelope(1, "optimizer.run.completed", Some("run_1:terminal"))],
+            &[envelope(
+                1,
+                "optimizer.run.completed",
+                Some("run_1:terminal"),
+            )],
             SequenceContract::ServiceAllocated,
         )
         .unwrap_err()
         .to_string();
-        assert!(error.contains("already holds event run_1:started"), "{error}");
+        assert!(
+            error.contains("already holds event run_1:started"),
+            "{error}"
+        );
         assert!(error.contains("optimizer.run.completed"), "{error}");
     }
 

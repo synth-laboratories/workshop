@@ -236,6 +236,7 @@ for (const phase of ["starting", "loading"] as const) {
 	test(`the model menu describes ${phase} without fake download progress`, async ({ page }) => {
 		await installLagunaFixture(page, phase);
 		await page.getByTestId("composer-model").click();
+		await page.getByTestId("composer-model-access-local").click();
 
 		const menu = page.getByTestId("composer-model-menu");
 		await expect(menu).toBeVisible();
@@ -248,15 +249,19 @@ test("a blocked local startup does not trap remote or cloud target selection", a
 	await installConfiguredOpenRouter(page);
 	await installLagunaFixture(page, "starting");
 	await page.getByTestId("composer-model").click();
+	await page.getByTestId("composer-model-access-local").click();
 
 	const local = page.getByRole("option", { name: /Laguna XS 2\.1/ }).first();
 	await expect(local).toBeDisabled();
+	await page.getByTestId("composer-model-access-back").click();
+	await page.getByTestId("composer-model-access-api").click();
 	await page.getByTestId("composer-model-option-openrouter-luna").click();
 	await expect(page.getByTestId("composer-model")).toHaveAccessibleName(/GPT 5\.6 Luna/);
-	await expect(page.getByTestId("reasoning-effort-select")).toHaveAccessibleName("Reasoning effort: Medium");
+	await expect(page.getByTestId("reasoning-effort-select")).toHaveAccessibleName("Reasoning effort: XHigh");
 	await expect(page.getByTestId("composer-input")).toBeEnabled();
 
 	await page.getByTestId("composer-model").click();
+	await page.getByTestId("composer-model-access-api").click();
 	await page.getByTestId("composer-model-option-openrouter-laguna-s").click();
 	await expect(page.getByTestId("composer-model")).toHaveAccessibleName(/Laguna S 2\.1/);
 	await expect(page.getByTestId("composer-input")).toBeEnabled();
@@ -837,12 +842,13 @@ test("changing providers mid-chat stays in the thread and switches on send", asy
 	await expect(page.getByRole("button", { name: "Stop generating" })).toHaveCount(0);
 	await expect.poll(() => page.evaluate(() => localStorage.getItem("synth.models.local-laguna.reasoning"))).toBe("none");
 	await page.getByTestId("composer-model").click();
+	await page.getByTestId("composer-model-access-api").click();
 	await page.getByTestId("composer-model-option-openrouter-luna").click();
 	// Chip fiddle stays in the same chat; compact/rebind wait for send.
 	await expect(page.getByTestId("chat-transcript")).toBeVisible();
 	await expect(page.getByText("Start a new conversation using")).toHaveCount(0);
 	await expect(page.getByTestId("composer-model")).toHaveAccessibleName("Model: GPT 5.6 Luna");
-	await expect(page.getByTestId("reasoning-effort-select")).toHaveAccessibleName("Reasoning effort: Medium");
+	await expect(page.getByTestId("reasoning-effort-select")).toHaveAccessibleName("Reasoning effort: XHigh");
 	await page.getByTestId("reasoning-effort-select").click();
 	const effortMenu = page.getByTestId("reasoning-effort-menu");
 	await expect(effortMenu.getByRole("option")).toHaveCount(5);
@@ -860,6 +866,7 @@ test("changing providers mid-chat stays in the thread and switches on send", asy
 	await expect.poll(() => page.evaluate(() => localStorage.getItem("synth.reasoningEffort"))).toBe("high");
 
 	await page.getByTestId("composer-model").click();
+	await page.getByTestId("composer-model-access-api").click();
 	await page.getByTestId("composer-model-option-openrouter-laguna-s").click();
 	await expect(page.getByTestId("chat-transcript")).toBeVisible();
 	await expect(page.getByTestId("composer-model")).toHaveAccessibleName("Model: Laguna S 2.1");

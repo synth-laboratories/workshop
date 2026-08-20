@@ -115,6 +115,78 @@ export type LagunaBridge = {
 	onDownloadProgress?(listener: (progress: LagunaDownloadProgress) => void): () => void;
 };
 
+export type TrainingModelHit = {
+	path: string;
+	modelsRoot: string;
+	modelId: string;
+	revision: string;
+	shardCount: number;
+	totalBytes: number;
+};
+
+export type TrainingModelDownloadProgress = {
+	modelId: string;
+	phase: "preparing" | "downloading" | "ready" | "error";
+	detail: string;
+	downloadedBytes?: number;
+	totalBytes?: number;
+};
+
+export type TrainingModelsBridge = {
+	listModels(): Promise<TrainingModelHit[]>;
+	downloadModel(modelId: string): Promise<TrainingModelHit>;
+	deleteModel(modelId: string): Promise<void>;
+	onDownloadProgress(listener: (progress: TrainingModelDownloadProgress) => void): () => void;
+};
+
+export type MlxReadinessFailureClass = "runtime" | "platform" | "disk" | "network" | "auth_license" | "model_compatibility" | "checksum";
+
+export type MlxReadiness = {
+	platform: "apple_silicon" | "unsupported" | "unknown";
+	compatibility: "compatible" | "incompatible" | "unknown";
+	runtimeHealth: "ready" | "missing" | "unhealthy" | "unknown";
+	runtimeVersion?: string | null;
+	availableMemoryBytes?: number | null;
+	availableDiskBytes?: number | null;
+	failureClass?: MlxReadinessFailureClass | null;
+};
+
+export type ModelInstallPlan = {
+	modelId: string;
+	title: string;
+	source: string;
+	revision: string;
+	digest?: string | null;
+	license: string;
+	downloadBytes: number;
+	minimumFreeDiskBytes: number;
+	alreadyPresent: boolean;
+	compatible: boolean;
+};
+
+export type TrainingArtifact = {
+	id: string;
+	kind: "mlx-lora.v1" | "training-checkpoint.v1" | "hosted-lora.v1";
+	algorithm: "sft" | "cispo";
+	baseModel: { id: string; revision?: string | null };
+	producingRunId: string;
+	datasetDigest?: string | null;
+	configDigest?: string | null;
+	sha256?: string | null;
+	sizeBytes?: number | null;
+	integrity: "verified" | "pending" | "failed" | "unknown";
+	compatibleBackends: string[];
+	parentArtifactId?: string | null;
+};
+
+export type TrainingArtifactsBridge = {
+	list(): Promise<TrainingArtifact[]>;
+	inspect(id: string): Promise<TrainingArtifact>;
+	launchInference(id: string, options?: { mergeAdapter?: boolean }): Promise<{ artifactId: string; status: "planned" | "started" }>;
+	launchEval(id: string, recipeId: string): Promise<{ artifactId: string; recipeId: string; status: "planned" | "started" }>;
+	delete(id: string): Promise<void>;
+};
+
 export type WhisperModelHit = {
 	id: string;
 	title: string;
@@ -203,6 +275,11 @@ export type SynthBackendSettings = {
 	openrouterApiKeyConfigured: boolean;
 	openrouterApiKeyFingerprint?: string | null;
 	openrouterApiKeySource?: string | null;
+	defaultModel?: {
+		model: string;
+		effort: string;
+		providers: string[];
+	};
 };
 
 export type MultiAgentVersion = "none" | "v1" | "v2";
@@ -708,6 +785,9 @@ export type PluginsBridge = {
 };
 
 export type ReportStatus = "draft" | "sealed";
+export type ReportReferenceMode = "live" | "pinned";
+export type ReportAccessState = "available" | "redacted" | "forbidden" | "missing";
+export type ReportIntegrityState = "verified" | "digest_mismatch" | "unresolved" | "unsupported" | "source_changed";
 export type ExperimentStatus =
 	| "planned"
 	| "running"
@@ -725,8 +805,9 @@ export type ReportBlock = {
 	payload: Record<string, unknown>;
 	sourceRevision?: string | null;
 	sourceDigest?: string | null;
-	accessState: string;
-	integrityState: string;
+	referenceMode?: ReportReferenceMode;
+	accessState: ReportAccessState;
+	integrityState: ReportIntegrityState;
 };
 
 export type ReportSource = {
@@ -735,16 +816,35 @@ export type ReportSource = {
 	resourceId: string;
 	resourceRevision?: string | null;
 	resourceDigest?: string | null;
+	referenceMode?: ReportReferenceMode;
 	relation: string;
-	accessState: string;
-	integrityState: string;
+	accessState: ReportAccessState;
+	integrityState: ReportIntegrityState;
 };
 
 export type ReportClaim = {
 	claimId: string;
 	statement: string;
-	status: string;
+	status: "true" | "false" | "needs_more_analysis" | "unresolved";
+	confidence?: "low" | "medium" | "high" | "overwhelming";
+	why?: string;
 	evidenceRefs: string[];
+};
+
+export type ReportValidationFinding = {
+	code: string;
+	severity: "error" | "warning" | "info";
+	blockId?: string | null;
+	claimId?: string | null;
+	message: string;
+	remediation?: string | null;
+};
+
+export type ReportValidationResult = {
+	reportId: string;
+	revision: number;
+	sealable: boolean;
+	findings: ReportValidationFinding[];
 };
 
 export type ReportLimitation = {
@@ -870,6 +970,17 @@ export type ReportPromotion = {
 	publicUrl: string;
 };
 
+export type ReportAudience =
+	| { kind: "private" }
+	| { kind: "workspace"; workspaceId: string }
+	| { kind: "members"; memberIds: string[] };
+
+export type ReportAudienceState = {
+	publicationId: string;
+	audience: ReportAudience;
+	status: "active" | "revoked";
+};
+
 export type ReportVisibilityRequest = {
 	requestId: string;
 	reportId: string;
@@ -903,6 +1014,8 @@ export type ReportsBridge = {
 	list(query?: { status?: string; search?: string; limit?: number; includeArchived?: boolean }): Promise<ReportRecord[]>;
 	get(reportId: string): Promise<ReportRecord>;
 	getRevision(reportId: string, revision?: number | null): Promise<ReportRevision>;
+	validate(reportId: string, revision?: number | null): Promise<ReportValidationResult>;
+	pinAll(reportId: string): Promise<ReportRecord>;
 	create(request: {
 		title?: string;
 		summary?: string;
@@ -939,6 +1052,12 @@ export type ReportsBridge = {
 	compareSeals(leftDigest: string, rightDigest: string): Promise<ReportRevisionCompare>;
 	uploadStatus(receiptDigest: string): Promise<ReportUpload | null>;
 	shareSeal(receiptDigest: string): Promise<ReportUpload>;
+	setAudience(publicationId: string, request: {
+		receiptDigest: string;
+		audience: ReportAudience;
+		redactionPolicyVersion: string;
+	}): Promise<ReportAudienceState>;
+	revokeAudience(publicationId: string, receiptDigest: string): Promise<ReportAudienceState>;
 	promote(publicationId: string, slug: string): Promise<ReportPromotion>;
 	openShared(committedUrl: string): Promise<ReportSealBundle>;
 	listComments(reportId: string, revision?: number | null): Promise<ReportComment[]>;
@@ -991,6 +1110,127 @@ export type OptimizerRecipeInfo = {
 	description?: string;
 	limits?: Record<string, unknown>;
 	prerequisites?: string[];
+};
+
+export type SavedLoraCheckpoint = {
+	schemaVersion: "saved_lora_checkpoint.v1";
+	checkpointId: string;
+	orgId: string;
+	ownerUserId?: string | null;
+	visibility: "private" | "org";
+	name: string;
+	description: string;
+	provider: "tinker" | "river" | "synth" | "imported";
+	checkpointKind: "inference" | "training";
+	providerCheckpointReference?: string | null;
+	runId?: string | null;
+	attemptId?: string | null;
+	sourceCheckpointId?: string | null;
+	optimizerAlgorithm?: "sft" | "cispo" | "ppo" | null;
+	baseModel: string;
+	loraRank?: number | null;
+	step?: number | null;
+	status: "uploading" | "ready" | "failed" | "archived";
+	storage: {
+		backend: "wasabi" | "minio";
+		bucket: string;
+		key: string;
+		version?: string | null;
+		etag?: string | null;
+		sha256?: string | null;
+		sizeBytes?: number | null;
+		contentType: string;
+	};
+	lineage: {
+		optimizerAlgorithm?: "sft" | "cispo" | "ppo" | null;
+		runId?: string | null;
+		attemptId?: string | null;
+		sourceCheckpointId?: string | null;
+		providerCheckpointReference?: string | null;
+	};
+	tags: string[];
+	metadata: Record<string, unknown>;
+	createdAt?: string | null;
+	updatedAt?: string | null;
+	archivedAt?: string | null;
+};
+
+export type SavedLoraCheckpointPage = {
+	schemaVersion: "saved_lora_checkpoint.page.v1";
+	items: SavedLoraCheckpoint[];
+	total: number;
+	limit: number;
+	offset: number;
+};
+
+export type SavedLoraRunPage = {
+	schemaVersion: "saved_lora_checkpoint.run_page.v1";
+	run: {
+		runId: string;
+		attemptId?: string | null;
+		optimizerAlgorithm: string;
+		status: string;
+	};
+	items: SavedLoraCheckpoint[];
+	counts: { total: number; inference: number; training: number };
+	total: number;
+	limit: number;
+	offset: number;
+};
+
+export type OptimizerRunOutputs = {
+	schemaVersion: "optimizer.run_outputs.v1";
+	run: {
+		runId: string;
+		attemptId?: string | null;
+		optimizerAlgorithm: string;
+		status: string;
+	};
+	result?: Record<string, unknown> | null;
+	artifacts: Array<{
+		artifactId: string;
+		runId: string;
+		artifactName: string;
+		contentType?: string | null;
+		sizeBytes: number;
+		sha256?: string | null;
+		storageBackend: string;
+		uri: string;
+		downloadPath: string;
+		metadata: Record<string, unknown>;
+		createdAt?: string | null;
+		updatedAt?: string | null;
+	}>;
+	modelCheckpoints: SavedLoraCheckpoint[];
+	counts: { artifacts: number; modelCheckpoints: number };
+};
+
+export type SavedLoraDownload = {
+	checkpointId: string;
+	url: string;
+	expiresIn: number;
+	contentType: string;
+	sizeBytes?: number | null;
+	sha256?: string | null;
+};
+
+export type HostedTrainingModel = {
+	modelId: string;
+	label: string;
+	provider: string;
+	providerRevision: string;
+	architecture: string;
+	maxContextLength: number;
+	rank: { default?: number; minimum?: number; maximum?: number };
+	algorithms: Record<string, { status?: string; block_reason?: string; note?: string }>;
+};
+
+export type HostedTrainingModelCatalog = {
+	schemaVersion: "hosted_training_model_catalog.v1";
+	catalogRevision: string;
+	livePreflightRequired: boolean;
+	models: HostedTrainingModel[];
+	total: number;
 };
 
 export type OptimizersBridge = {
@@ -1049,6 +1289,31 @@ export type OptimizersBridge = {
 	importLocal(request: { path: string; sessionRef?: string; openVisual?: boolean }): Promise<OptimizerRunRecord>;
 	reconcileCloud(request: { optimizerRunId: string; afterSeq?: number; openVisual?: boolean }): Promise<OptimizerRunRecord>;
 	listCloud(query?: { algorithm?: string; status?: string; limit?: number }): Promise<unknown[]>;
+	searchSavedLoras(query?: {
+		search?: string;
+		scope?: "all" | "mine" | "org";
+		provider?: string;
+		checkpointKind?: string;
+		baseModel?: string;
+		runId?: string;
+		attemptId?: string;
+		sourceCheckpointId?: string;
+		optimizerAlgorithm?: "sft" | "cispo" | "ppo";
+		status?: string;
+		tags?: string[];
+		limit?: number;
+		offset?: number;
+	}): Promise<SavedLoraCheckpointPage>;
+	listRunCheckpoints(optimizerRunId: string): Promise<SavedLoraRunPage>;
+	runOutputs(optimizerRunId: string): Promise<OptimizerRunOutputs>;
+	hostedTrainingModels(): Promise<HostedTrainingModelCatalog>;
+	archiveSavedLora(checkpointId: string): Promise<SavedLoraCheckpoint>;
+	savedLoraDownload(checkpointId: string): Promise<SavedLoraDownload>;
+	reconcileTraining(optimizerRunId: string): Promise<{
+		schemaVersion: "workshop.training_snapshot.v1";
+		runId: string;
+		projection: TrainingProjection;
+	}>;
 	recordVisualReady?(request: {
 		visualId: string;
 		optimizerRunId: string;
@@ -1058,6 +1323,22 @@ export type OptimizersBridge = {
 		templateDigest?: string;
 	}): Promise<unknown>;
 	onEvent(listener: (event: AppEvent) => void): () => void;
+};
+
+export type TrainingProjection = {
+	lifecycle: string;
+	phase?: string | null;
+	last_sequence: number;
+	last_event_id?: string | null;
+	attempt_id?: string | null;
+	metrics: Record<string, number>;
+	checkpoints: unknown[];
+	warnings: unknown[];
+	latest_rollout?: unknown;
+	tunnel_health?: { status?: string; occurred_at?: string; detail?: unknown } | null;
+	provider_usage?: Record<string, unknown> | null;
+	terminal_summary?: unknown;
+	attempt_history: unknown[];
 };
 
 export type TerminalInfo = { id: string; workspaceId: string; cwd: string; shell: string; title: string; status: "running" | "exited" | "failed"; createdAt: number; exitCode?: number | null };
@@ -1147,6 +1428,10 @@ export type SynthAccountOrganization = {
 export type SynthAccountUsageWindow = {
 	events: number;
 	costUsd: number;
+	finalizedUsd?: number;
+	pendingUsd?: number;
+	tokens?: number;
+	runtimeSeconds?: number;
 };
 
 export type SynthAccountCloudUsage = {
@@ -1186,6 +1471,10 @@ export type SynthAccountSummary = {
 	/** True when the cloud facts shown are a cached copy after a failed refresh. */
 	stale?: boolean;
 	error?: string;
+	sessionHealth?: "local_only" | "signed_out" | "active" | "revoked" | "offline" | "malformed";
+	failureKind?: "none" | "auth" | "entitlement" | "quota" | "outage" | "malformed";
+	quotaExhausted?: boolean;
+	reconciliation?: "ok" | "stale" | "failed";
 };
 
 export type SynthBillingAction = "upgrade" | "manage";
@@ -1200,6 +1489,18 @@ export type SynthAccountBridge = {
 	refresh?(): Promise<SynthAccountSummary>;
 	/** Opens a backend-issued hosted URL in the system browser. */
 	openBilling?(action: SynthBillingAction, tier?: string): Promise<string>;
+};
+
+export type ProductTelemetryPolicy = {
+	dictionaryVersion: string;
+	collectionPolicyVersion: string;
+	optionalEnabled: boolean;
+	consentVersion: string;
+};
+
+export type ProductTelemetryBridge = {
+	getPolicy(): Promise<ProductTelemetryPolicy>;
+	setOptOut(optOut: boolean): Promise<ProductTelemetryPolicy>;
 };
 
 export type CodexOauthBegin = {
@@ -1225,4 +1526,104 @@ export type CodexOauthBridge = {
 	ensureReady(): Promise<CodexOauthStatus>;
 	disconnect(): Promise<CodexOauthStatus>;
 	cancel(): Promise<void>;
+};
+
+export type SecretSummary = {
+	id: string;
+	alias: string;
+	provider: string;
+	scope: string;
+	status: string;
+	backend: string;
+	displaySuffix?: string | null;
+	createdAt: string;
+	lastValidatedAt?: string | null;
+	allowedRecipes: string[];
+};
+
+export type SecretCapabilitySummary = {
+	id: string;
+	secretId: string;
+	runId: string;
+	recipeId: string;
+	provider: string;
+	status: string;
+	maxCalls: number;
+	usedCalls: number;
+	maxCostUsd: number;
+	usedCostUsd: number;
+	usedInputTokens: number;
+	usedOutputTokens: number;
+	expiresAt: string;
+	displaySuffix?: string | null;
+};
+
+export type SecretAuditEvent = {
+	schema: string;
+	eventId: string;
+	at: string;
+	actorKind: string;
+	actorId: string;
+	action: string;
+	secretId?: string | null;
+	provider?: string | null;
+	operation?: string | null;
+	model?: string | null;
+	decision: string;
+	capabilityId?: string | null;
+	usage?: unknown;
+	detail?: string | null;
+};
+
+export type MaskedImportCandidate = {
+	variable: string;
+	provider?: string | null;
+	masked: string;
+	classification: string;
+	selected: boolean;
+};
+
+export type SecretImportPreview = {
+	requestId: string;
+	status: string;
+	sourcePath: string;
+	candidates: MaskedImportCandidate[];
+	sourceRemainsReadable: boolean;
+	warning?: string | null;
+	cleanupDiff?: string | null;
+};
+
+export type PendingGrantSummary = {
+	requestId: string;
+	secretId: string;
+	alias?: string | null;
+	provider?: string | null;
+	runId: string;
+	recipeId: string;
+	models: string[];
+	maxCalls: number;
+	maxCostUsd: number;
+};
+
+export type SecretsInbox = {
+	imports: SecretImportPreview[];
+	grants: PendingGrantSummary[];
+	proxy: { origin?: string | null; running: boolean };
+};
+
+export type SecretsBridge = {
+	list(provider?: string, scope?: string): Promise<SecretSummary[]>;
+	create(request: { alias: string; provider: string; scope?: string; value: string }): Promise<SecretSummary>;
+	replace(secretId: string, value: string): Promise<SecretSummary>;
+	delete(secretId: string): Promise<void>;
+	test(secretId: string): Promise<SecretSummary>;
+	requestEnvImport(sourcePath: string, variableNames?: string[]): Promise<SecretImportPreview>;
+	commitEnvImport(requestId: string, selected: string[], after: "keep" | "replace_aliases" | "remove_entries", confirm?: boolean): Promise<SecretSummary[]>;
+	denyEnvImport(requestId: string): Promise<void>;
+	pending(): Promise<SecretsInbox>;
+	capabilities(): Promise<SecretCapabilitySummary[]>;
+	revokeCapability(capabilityId: string): Promise<void>;
+	audit(limit?: number): Promise<SecretAuditEvent[]>;
+	grantUse(secretId: string, runId: string, recipeId: string, rememberRecipe: boolean, requestId?: string): Promise<unknown>;
+	denyUse(secretId: string): Promise<unknown>;
 };

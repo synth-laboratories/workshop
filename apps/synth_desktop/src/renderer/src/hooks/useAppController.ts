@@ -39,7 +39,8 @@ import {
 } from "../stores/sessionStore";
 import {
 	EXECUTION_TARGETS,
-	isInternTargetId
+	isInternTargetId,
+	resolveDefaultTargetId
 } from "../types/landing";
 import { useInferenceMonitor } from "../components/InferencePanel";
 import { artifactFromVisualRecord } from "../components/VisualHost";
@@ -170,7 +171,8 @@ export function useAppController() {
 	const transcriptLruRef = useRef(new Map<string, true>());
 	const activeChatIdRef = useRef<string | null>(null);
 	const [transcriptHistoryBySession, setTranscriptHistoryBySession] = useState<Record<string, TranscriptHistoryState>>({});
-	const [selectedTargetId, setSelectedTargetId] = useState("local-laguna");
+	const [selectedTargetId, setSelectedTargetId] = useState("chatgpt-luna");
+	const defaultModelResolvedRef = useRef(false);
 	useEffect(() => {
 		// v0.1 pickers hide Intern; never leave a hidden target selected.
 		if (isInternTargetId(selectedTargetId)) setSelectedTargetId("local-laguna");
@@ -371,6 +373,29 @@ export function useAppController() {
 		openBilling
 	} = useAccountShell(showToast);
 
+	useEffect(() => {
+		if (defaultModelResolvedRef.current || view.kind !== "landing" || !backendSettings || !codexOauthStatus) return;
+		const targetId = resolveDefaultTargetId(backendSettings.defaultModel ?? { model: "gpt-5.6-luna", effort: "xhigh", providers: ["chatgpt", "openrouter"] }, {
+			chatgpt: codexOauthStatus.canUseModels,
+			openrouter: backendSettings.openrouterApiKeyConfigured,
+			synth: backendSettings.apiKeyConfigured
+		}, sessions.filter((session) => session.latestCursor > 0).map((session) => ({
+			targetId: executionTargetToUiId(session.target),
+			updatedAt: session.updatedAt
+		})));
+		setSelectedTargetId(targetId);
+		const defaultPreference = backendSettings.defaultModel ?? { model: "gpt-5.6-luna", effort: "xhigh", providers: ["chatgpt", "openrouter"] };
+		if ((targetId === "chatgpt-luna" || targetId === "openrouter-luna") && defaultPreference.model.toLowerCase().includes("gpt-5.6-luna")) {
+			const knob = modelKnobForTarget(targetId, "reasoning");
+			const effort = defaultPreference.effort as ModelKnobTransportValue;
+			if (knob?.options.some((option) => option.transportValue === effort)) {
+				setModelKnobValues((current) => ({ ...current, [modelKnobKey(targetId, "reasoning")]: effort }));
+				window.localStorage.setItem(knob.storageKey, effort);
+			}
+		}
+		defaultModelResolvedRef.current = true;
+	}, [backendSettings, codexOauthStatus, sessions, view.kind]);
+
 	// One owner for plugin registry status; Sidebar and OptimizersPage read it.
 	const { pluginStatuses, refreshPluginStatuses } = usePluginStatuses();
 
@@ -406,12 +431,10 @@ export function useAppController() {
 
 	useEffect(() => {
 		const refreshOauthStatus = () => {
-			// A packaged or named CUA instance may start from an expired but
-			// refreshable canonical Codex credential. Refresh it during startup so
-			// the passwordless instance contract is true before the model picker is
-			// shown; waiting until the first send incorrectly presents Sol/Luna/Terra
-			// as unavailable and sends the operator into the full re-auth flow.
-			void bridges.codexOauth?.ensureReady().then((status) => {
+			// Startup performs a passive read of Workshop's private credential file.
+			// Network refresh is deferred until the user selects a ChatGPT model or
+			// explicitly opens account settings.
+			void bridges.codexOauth?.status().then((status) => {
 				setCodexOauthStatus(status);
 				setCodexOauthConfigured(status.canUseModels);
 			}).catch(() => undefined);
@@ -914,15 +937,33 @@ export function useAppController() {
 			[sessionId]: { state: "loading", hasMore: false }
 		}));
 		responseTraceStore.setLoading(sessionId);
-		void Promise.all([
+		void Promise.allSettled([
 			core.sessionEventsTail(sessionId, TRANSCRIPT_INITIAL_PAGE_SIZE + 1),
-			bridges.visuals?.list({ sessionId, limit: 500 }) ?? Promise.resolve([])
-		]).then(([fetched, ownedVisuals]) => {
+			bridges.visuals?.list({ sessionId, limit: 500 }) ?? Promise.resolve([]),
+			bridges.optimizers?.list({ sessionRef: sessionId, limit: 500 }) ?? Promise.resolve([])
+		]).then(([journal, visualRegistry, optimizerRegistry]) => {
 			// Hydration belongs to the session cache, not to the currently mounted
 			// chat view. Navigation, target attachment and StrictMode effect replay
 			// must not throw away a completed journal read. A generation changes only
 			// when the cache entry itself is evicted or explicitly superseded.
 			if (transcriptHydrationRef.current.get(sessionId)?.generation !== generation) return;
+			// The journal is a conversation-history authority, while the visual
+			// registry is the durable Outputs authority. Do not couple them: an
+			// interrupted journal read during restart used to make an owned visual
+			// disappear from Outputs even though the registry had successfully
+			// reopened the same stable visual id.
+			const fetched = journal.status === "fulfilled" ? journal.value : [];
+			const ownedVisuals = visualRegistry.status === "fulfilled" ? visualRegistry.value : [];
+			const ownedRuns = optimizerRegistry.status === "fulfilled" ? optimizerRegistry.value : [];
+			const journalError = journal.status === "rejected" ? desktopBootError(journal.reason) : null;
+			const visualRegistryError = visualRegistry.status === "rejected"
+				? desktopBootError(visualRegistry.reason)
+				: null;
+			for (const run of ownedRuns) {
+				if (run.source !== "local") continue;
+				if (["completed", "succeeded", "failed", "cancelled", "degraded"].includes(run.status)) continue;
+				void bridges.optimizers?.refresh(run.id);
+			}
 			const hasMore = fetched.length > TRANSCRIPT_INITIAL_PAGE_SIZE;
 			const rows = hasMore ? fetched.slice(1) : fetched;
 			const hydrated = rows
@@ -962,41 +1003,33 @@ export function useAppController() {
 				eventsBySessionRef.current[sessionId]?.at(-1)?.sequence ?? 0,
 				hydratedHead
 			));
+			const error = journalError ?? visualRegistryError;
 			transcriptHydrationRef.current.set(sessionId, {
 				initialized: true,
-				state: "loaded",
+				state: error ? "error" : "loaded",
 				hasMore,
 				earliestSequence: rows[0]?.sessionSequence ?? undefined,
+				error: error ?? undefined,
 				generation
 			});
 			setTranscriptHistoryBySession((current) => ({
 				...current,
-				[sessionId]: { state: "loaded", hasMore }
+				[sessionId]: error
+					? { state: "error", hasMore, error }
+					: { state: "loaded", hasMore }
 			}));
-			responseTraceStore.setJournal(sessionId, rows);
-		}).catch((reason: unknown) => {
-			if (transcriptHydrationRef.current.get(sessionId)?.generation !== generation) return;
-			const message = desktopBootError(reason);
-			transcriptHydrationRef.current.set(sessionId, {
-				initialized: false,
-				state: "error",
-				hasMore: false,
-				error: message,
-				generation
-			});
-			setTranscriptHistoryBySession((current) => ({
-				...current,
-				[sessionId]: { state: "error", hasMore: false, error: message }
-			}));
-			responseTraceStore.setError(sessionId, message);
-			mergeSessionReplay([[sessionId, [{
+			if (!journalError) responseTraceStore.setJournal(sessionId, rows);
+			else responseTraceStore.setError(sessionId, journalError);
+			if (error) mergeSessionReplay([[sessionId, [{
 				schemaVersion: "synth.desktop-runtime-event.v1",
 				sessionId,
 				sequence: 1,
 				eventKind: "session/unhealthy",
 				payload: {
-					reason: "session_replay_failed",
-					message: `This conversation could not be restored: ${message}`
+					reason: journalError ? "session_replay_failed" : "visual_registry_replay_failed",
+					message: journalError
+						? `Conversation history could not be restored; saved Outputs remain available: ${journalError}`
+						: `Saved Outputs could not be reconciled: ${visualRegistryError}`
 				},
 				createdAt: new Date().toISOString(),
 				source: "local"

@@ -11,6 +11,9 @@
         "title": "Banking77 baseline eval",
         "question": "What is the scored accuracy of the current classify policy on 10 labeled examples?",
         "status": "running",
+        "hypotheses": [
+          {"id": "accuracy", "claim": "The current policy exceeds 80% accuracy", "verdict": "unresolved", "confidence": "low", "why": "Scoring is still in progress."}
+        ],
         "progress": {
           "phase": "scoring",
           "completed": 4,
@@ -23,6 +26,23 @@
         "arms": [
           {"id": "baseline", "label": "classify", "baseline": true, "status": "running", "score": null}
         ],
+        "results": {
+          "rollouts": [
+            {"id": "example-1", "label": "Example 1", "seed": 1, "reward": 1, "steps": 1, "stopReason": "scored", "traceId": "trace_banking77_example_1"}
+          ]
+        },
+        "traces": {
+          "prominence": "detail",
+          "items": [
+            {"id": "trace-1", "label": "Example 1 trace", "traceId": "trace_banking77_example_1", "reward": 1, "steps": 1, "summary": "Policy output and grader evidence."}
+          ]
+        },
+        "task": {"name": "Banking77", "split": "heldout", "examples": 10},
+        "runtime": {"model": "example-model", "reasoningEffort": "low", "containerId": "container_example"},
+        "artifacts": [
+          {"id": "results", "label": "Results", "kind": "results", "path": "/tmp/banking77/results.json"}
+        ],
+        "provenance": {"repository": "synth-laboratories/workshop", "commit": "example", "dirty": false},
         "limitations": [
           "Baseline-only. No candidate generation and no uplift claim."
         ]

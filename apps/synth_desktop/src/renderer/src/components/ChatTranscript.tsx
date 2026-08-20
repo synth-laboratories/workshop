@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type { ArtifactRef, LocalActivityLine, LocalChat } from "../types/landing";
-import type { RuntimeEvent, Session } from "@synth/runtime-protocol";
+import type { OptimizerRunRecord, RuntimeEvent, Session } from "@synth/runtime-protocol";
 import { FileTypeIcon, shortenPath } from "./FileTypeIcon";
 import { ContainerIcon } from "./ContainerPane";
 import { ManderPresence } from "./mander";
@@ -13,7 +13,9 @@ import {
 import { contextCompactionTokenSummary } from "../runtime/sessionView";
 import { runProgressItemsByMessage } from "../runtime/runProgress/transcript";
 import { useTurnPerformanceLabels } from "../hooks/useTurnPerformanceLabels";
+import { outputContainerIds as chatOutputContainerIds, primaryVisualId, useChatOutputs } from "../hooks/useChatOutputs";
 import { RunProgressCard } from "./runProgress/RunProgressCard";
+import { openPath, revealItemInDir } from "@tauri-apps/plugin-opener";
 import "./PaidComputeApprovalModal.css";
 
 type Props = {
@@ -24,6 +26,8 @@ type Props = {
 	onOpenArtifact: (id: string | null) => void;
 	openContainerId?: string | null;
 	onOpenContainer?: (id: string | null) => void;
+	onOpenReport?: (id: string) => void;
+	onOpenRun?: (run: OptimizerRunRecord) => void;
 	onApprove?: (approvalId: string) => void;
 	onAlwaysAllow?: (approvalId: string) => void;
 	onReject?: (approvalId: string) => void;
@@ -57,23 +61,30 @@ export type TranscriptHistoryState = {
 };
 
 export function outputContainerIds(chat: LocalChat): string[] {
-	return [...new Set(Object.values(chat.activityByMessageId ?? {}).flat().map((line) => line.containerId).filter((id): id is string => Boolean(id)))];
+	return chatOutputContainerIds(chat);
 }
 
-export function OutputsPanel({ chat, openArtifactId, onOpenArtifact, openContainerId = null, onOpenContainer }: Pick<Props, "chat" | "openArtifactId" | "onOpenArtifact" | "openContainerId" | "onOpenContainer">) {
+export function OutputsPanel({
+	chat,
+	openArtifactId,
+	onOpenArtifact,
+	openContainerId = null,
+	onOpenContainer,
+	onOpenReport,
+	onOpenRun
+}: Pick<Props, "chat" | "openArtifactId" | "onOpenArtifact" | "openContainerId" | "onOpenContainer" | "onOpenReport" | "onOpenRun">) {
 	const artifacts = chat.artifacts ?? [];
+	const outputs = useChatOutputs(chat);
 	const subagents = artifacts.filter((artifact) => artifact.templateId === "synth.subagents.v1");
 	const visuals = artifacts.filter((artifact) => artifact.templateId !== "synth.subagents.v1");
-	const containerIds = outputContainerIds(chat);
-	const hasResources = containerIds.length > 0 || artifacts.length > 0;
 	return <div id="chat-resource-shelf" className="resource-shelf resource-shelf-docked" aria-label="Outputs" data-testid="resource-shelf">
-		{!hasResources ? <div className="resource-shelf-empty" data-testid="resource-shelf-empty">
+		{!outputs.hasResources ? <div className="resource-shelf-empty" data-testid="resource-shelf-empty">
 			<span className="resource-shelf-empty-icon" aria-hidden>
 				<svg viewBox="0 0 24 24" fill="none"><path d="M7.5 3.75h6l3 3v13.5h-9z"/><path d="M13.5 3.75v3h3M9.75 11h4.5M9.75 14h4.5"/></svg>
 			</span>
-			<span className="resource-shelf-empty-copy"><strong>No outputs yet</strong><span>Files, visuals, and containers will appear here.</span></span>
+			<span className="resource-shelf-empty-copy"><strong>No outputs yet</strong><span>Files, visuals, runs, and containers will appear here.</span></span>
 		</div> : null}
-		{containerIds.length > 0 ? <section className="containers-rail" data-testid="containers-rail"><h3>Containers</h3>{containerIds.map((id) => (
+		{outputs.containerIds.length > 0 ? <section className="containers-rail" data-testid="containers-rail"><h3>Containers</h3>{outputs.containerIds.map((id) => (
 			<button key={id} type="button" className={`resource-shelf-row container-rail-btn${openContainerId === id ? " active" : ""}`} onClick={() => onOpenContainer?.(openContainerId === id ? null : id)} aria-pressed={openContainerId === id} aria-label={openContainerId === id ? "Hide container inspector" : "Open container inspector"} data-testid={`container-icon-${id}`}>
 				<span className="resource-shelf-icon"><ContainerIcon /></span><span><strong>Container</strong><code>{id}</code></span><span aria-hidden>›</span>
 			</button>
@@ -84,6 +95,26 @@ export function OutputsPanel({ chat, openArtifactId, onOpenArtifact, openContain
 				<span className="resource-shelf-icon"><IconSubagents /></span><span><strong>{artifact.title}</strong><code>{artifact.summary ?? artifact.templateId}</code></span><span aria-hidden>›</span>
 			</button>;
 		})}</section> : null}
+		{outputs.reports.length > 0 ? <section className="reports-rail" data-testid="reports-rail"><h3>Saved reports</h3>{outputs.reports.map((report) => (
+			<button key={report.id} type="button" className="resource-shelf-row" onClick={() => onOpenReport?.(report.id)} aria-label={`Open report ${report.title}`} data-testid={`report-output-${report.id}`}>
+				<span className="resource-shelf-icon"><FileTypeIcon path="report.md" /></span><span><strong>{report.title}</strong><code>{report.id} · {report.status}</code></span><span aria-hidden>›</span>
+			</button>
+		))}</section> : null}
+		{outputs.runs.length > 0 ? <section className="runs-rail" data-testid="runs-rail"><h3>Runs</h3>{outputs.runs.map((run) => {
+			const visualId = primaryVisualId(run);
+			const active = Boolean(visualId && openArtifactId === visualId);
+			return <button key={run.id} type="button" className={`resource-shelf-row${active ? " active" : ""}`} onClick={() => onOpenRun?.(run)} aria-pressed={active} aria-label={`Open ${run.algorithmId} run ${run.objective ?? run.id}`} data-testid={`run-output-${run.id}`}>
+				<span className="resource-shelf-icon"><IconVisual /></span><span><strong>{run.objective ?? run.algorithmId}</strong><code>{run.id} · {run.status}</code></span><span aria-hidden>›</span>
+			</button>;
+		})}</section> : null}
+		{outputs.checkpoints.length > 0 ? <section className="checkpoints-rail" data-testid="checkpoints-rail"><h3>Checkpoints</h3>{outputs.checkpoints.map(({ runId, ref }) => (
+			<button key={`${runId}:${ref.id}`} type="button" className="resource-shelf-row" onClick={() => {
+				const run = outputs.runs.find((candidate) => candidate.id === runId);
+				if (run) onOpenRun?.(run);
+			}} aria-label={`Inspect checkpoint ${ref.title ?? ref.id}`} data-testid={`checkpoint-output-${ref.id}`}>
+				<span className="resource-shelf-icon"><FileTypeIcon path="checkpoint.bin" /></span><span><strong>{ref.title ?? ref.id}</strong><code>{ref.id} · {ref.kind}</code></span><span aria-hidden>›</span>
+			</button>
+		))}</section> : null}
 		{visuals.length > 0 ? <section className="visuals-rail" data-testid="visuals-rail"><h3>Visuals</h3>{visuals.map((artifact) => {
 			const active = openArtifactId === artifact.id;
 			return <button key={artifact.id} type="button" className={`resource-shelf-row${active ? " active" : ""}`} onClick={() => onOpenArtifact(artifact.id)} title={active ? `Hide ${artifact.title}` : `Show ${artifact.title}`} aria-pressed={active} aria-label={active ? `Hide visual ${artifact.title}` : `Show visual ${artifact.title}`} data-testid={`visuals-icon-${artifact.id}`}>
@@ -579,6 +610,31 @@ function CopyMessageButton({ body }: { body: string }) {
 	);
 }
 
+function AssistantMessageBody({ body, onOpenVisual }: { body: string; onOpenVisual: (id: string) => void }) {
+	const linkPattern = /\[([^\]]+)]\(([^)\n]+)\)/g;
+	const parts: ReactNode[] = [];
+	let cursor = 0;
+	for (const match of body.matchAll(linkPattern)) {
+		const index = match.index ?? 0;
+		if (index > cursor) parts.push(body.slice(cursor, index));
+		const label = match[1] ?? "Open";
+		const rawTarget = (match[2] ?? "").trim();
+		const visualId = rawTarget.match(/^synth visual\s+`?([^`\s]+)`?$/i)?.[1];
+		if (visualId) {
+			parts.push(<button key={`${index}-visual`} type="button" className="assistant-resource-chip assistant-visual-chip" onClick={() => onOpenVisual(visualId)} title={`Open visual ${label}`}><span aria-hidden>◈</span><strong>{label}</strong></button>);
+		} else if (rawTarget.startsWith("/")) {
+			parts.push(<span key={`${index}-file`} className="assistant-file-link"><button type="button" className="assistant-resource-chip" onClick={() => void openPath(rawTarget)} title={rawTarget}><FileTypeIcon path={rawTarget} /><strong>{label}</strong></button><button type="button" className="assistant-file-reveal" onClick={() => void revealItemInDir(rawTarget)} aria-label={`Reveal ${label} in Finder`} title="Reveal in Finder">⌗</button></span>);
+		} else if (/^https?:\/\//i.test(rawTarget)) {
+			parts.push(<a key={`${index}-url`} href={rawTarget} target="_blank" rel="noreferrer">{label}</a>);
+		} else {
+			parts.push(match[0]);
+		}
+		cursor = index + match[0].length;
+	}
+	if (cursor < body.length) parts.push(body.slice(cursor));
+	return <p className="assistant-rich-body">{parts}</p>;
+}
+
 /**
  * A pasted brief can be important, but it must not turn the current turn into
  * a screen-height blue wall. Keep the full value in the DOM and make expansion
@@ -660,8 +716,8 @@ export function ChatTranscript({
 	const [liveAnnouncement, setLiveAnnouncement] = useState("");
 	const activityByMessageId = chat.activityByMessageId ?? {};
 	const artifacts = chat.artifacts ?? [];
-	const containerIds = outputContainerIds(chat);
-	const hasResources = containerIds.length > 0 || artifacts.length > 0;
+	const outputs = useChatOutputs(chat);
+	const hasResources = outputs.hasResources;
 	const turnTpsLabels = useTurnPerformanceLabels(chat, events, running);
 	// One card per run, anchored to the turn that first referenced it. Recomputed
 	// from activity rather than stored, so a reopened conversation reconstructs
@@ -862,7 +918,7 @@ export function ChatTranscript({
 					</div>
 				) : null}
 			</div>
-			<button type="button" className={`resource-shelf-trigger${outputsOpen ? " active" : ""}`} onClick={onToggleOutputs} aria-expanded={outputsOpen} aria-controls="workbench-side-panel" data-testid="resource-shelf-trigger"><span aria-hidden>☷</span> Outputs {hasResources ? <strong>{containerIds.length + artifacts.length}</strong> : null}</button>
+			<button type="button" className={`resource-shelf-trigger${outputsOpen ? " active" : ""}`} onClick={onToggleOutputs} aria-expanded={outputsOpen} aria-controls="workbench-side-panel" data-testid="resource-shelf-trigger"><span aria-hidden>☷</span> Outputs {hasResources ? <strong>{outputs.count}</strong> : null}</button>
 			</div>
 			<div className="sr-only" role="status" aria-live="polite" data-testid="activity-live-region">{liveAnnouncement}</div>
 
@@ -910,7 +966,7 @@ export function ChatTranscript({
 								) : (
 									<div className={`local-assistant${showAdvancedAtMessage ? " local-assistant-with-advanced" : ""}`}>
 										<div className="local-assistant-content">
-											<p>{m.body}</p>
+											<AssistantMessageBody body={m.body} onOpenVisual={onOpenArtifact} />
 											{showAdvancedAtMessage ? <button type="button" className="message-advanced" onClick={onAdvanced} aria-label="Open advanced trace">Advanced</button> : null}
 										</div>
 										<div className="assistant-message-footer">

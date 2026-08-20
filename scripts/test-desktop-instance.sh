@@ -28,8 +28,8 @@ default_instance="$($ROOT/scripts/desktop-instance.sh print)"
 printf '%s' "$default_instance" | jq -e '
   .mode == "development" and
   .product == "workshop" and
-  .releaseLine == "v0.5" and
-  .appVersion == "0.5.0" and
+  .releaseLine == "v0.6" and
+  .appVersion == "0.6.0" and
   (.sourceRoot | length > 0) and
   (.sourceRevision | length > 0) and
   .hotReload.renderer == true and
@@ -45,13 +45,13 @@ printf '%s' "$default_instance" | jq -e '
 [[ "$(printf '%s' "$beta" | jq -r .iconLabel)" == "2" ]]
 [[ -f "$(printf '%s' "$alpha" | jq -r .icon)" ]]
 printf '%s' "$alpha" | jq -e '
-  (.appBundle | endswith("/Synth Workshop v0.5 · alpha.app")) and
+  (.appBundle | endswith("/Synth Workshop v0.6 · alpha.app")) and
   (.executable | endswith("/debug/synth-desktop"))
 ' >/dev/null
 
 # Refreshing an instance contract after a build or identity assertion must not
 # erase the binary provenance those earlier phases recorded.
-alpha_manifest="$TEST_ROOT/instances/v05/alpha/instance.json"
+alpha_manifest="$TEST_ROOT/instances/v06/alpha/instance.json"
 jq '.provenance={phase:"bundle-signed", executableDigest:"sha256:fixture"} | .executable="/tmp/Synth Workshop.app/Contents/MacOS/synth-desktop" | .executableDigest="sha256:fixture"' \
   "$alpha_manifest" >"$alpha_manifest.tmp"
 mv "$alpha_manifest.tmp" "$alpha_manifest"
@@ -62,7 +62,7 @@ printf '%s' "$alpha_refreshed" | jq -e '
   .executable == "/tmp/Synth Workshop.app/Contents/MacOS/synth-desktop" and
   .executableDigest == "sha256:fixture"
 ' >/dev/null
-alpha_env="$TEST_ROOT/instances/v05/alpha/data/.env"
+alpha_env="$TEST_ROOT/instances/v06/alpha/data/.env"
 [[ "$(stat -f '%Lp' "$alpha_env")" == "600" ]]
 rg -q '^SYNTH_API_KEY=' "$alpha_env"
 rg -q '^OPENROUTER_API_KEY=' "$alpha_env"
@@ -104,14 +104,14 @@ if "$ROOT/scripts/desktop-instance.sh" print '../unsafe' >/dev/null 2>&1; then
   exit 1
 fi
 if SYNTH_DESKTOP_RELEASE_LINE=v0.1 "$ROOT/scripts/desktop-instance.sh" print alpha >/dev/null 2>&1; then
-  echo "non-v0.5 release line was accepted by the v0.5 launcher" >&2
+  echo "non-v0.6 release line was accepted by the v0.6 launcher" >&2
   exit 1
 fi
 
 jq -e '
-  .identifier == "com.synth.desktop.v05.dev.alpha" and
-  .productName == "Synth Workshop v0.5 · alpha" and
-  .version == "0.5.0" and
+  .identifier == "com.synth.desktop.v06.dev.alpha" and
+  .productName == "Synth Workshop v0.6 · alpha" and
+  .version == "0.6.0" and
   (.bundle.icon | length) == 2 and
   .bundle.targets == ["app"] and
   (.bundle.resources | to_entries | map(.value) | sort) == [
@@ -120,7 +120,7 @@ jq -e '
   ] and
   .bundle.macOS.minimumSystemVersion == "14.0"
 ' \
-  "$TEST_ROOT/instances/v05/alpha/generated/tauri.instance.json" >/dev/null
+  "$TEST_ROOT/instances/v06/alpha/generated/tauri.instance.json" >/dev/null
 jq -e '.bundle.macOS.minimumSystemVersion == "14.0"' \
   "$ROOT/apps/synth_desktop/src-tauri/tauri.conf.json" >/dev/null
 jq -e '.bundle.resources["generated-resources/cookbooks"] == "cookbooks"' \
@@ -142,6 +142,28 @@ rg -q 'optimizer runtime=immutable installed plugin' "$ROOT/scripts/desktop-inst
 rg -q 'verify_packaged_provenance' "$ROOT/scripts/desktop-instance.sh"
 rg -q 'runtime_executable=.*lsof' "$ROOT/scripts/desktop-instance.sh"
 ! rg -q 'bundle_cdhash.*exit|/\^CDHash=/\{print \$2; exit\}' "$ROOT/scripts/desktop-instance.sh"
+
+# Official releases fail closed unless Developer ID signing, Apple notarization,
+# stapling, Gatekeeper, and immutable provenance all succeed.
+rg -q 'SYNTH_RELEASE_SIGN_IDENTITY is required' "$ROOT/scripts/release-artifact.sh"
+rg -q 'SYNTH_RELEASE_NOTARY_PROFILE is required' "$ROOT/scripts/release-artifact.sh"
+rg -q 'notarytool submit.*--wait' "$ROOT/scripts/release-artifact.sh"
+rg -q 'stapler staple' "$ROOT/scripts/release-artifact.sh"
+rg -q 'source=Notarized Developer ID' "$ROOT/scripts/release-artifact.sh"
+rg -q 'notarized:true, stapled:true' "$ROOT/scripts/release-artifact.sh"
+! rg -q 'UNNOTARIZED' "$ROOT/scripts/release-artifact.sh"
+! rg -q 'awk.*\{print \$2; exit\}' "$ROOT/scripts/release-artifact.sh"
+! rg -q '\[\[ -d "\$CONTAINERS_ROOT/.git" \]\]' "$ROOT/scripts/release-artifact.sh"
+
+# Pre-notary acceptance uses an explicit candidate lane. It records the lack of
+# notarization, preserves the official app, and never calls Apple's notary API.
+rg -q 'candidate-all' "$ROOT/scripts/release-artifact.sh"
+rg -q 'distribution:"candidate"' "$ROOT/scripts/release-artifact.sh"
+rg -q 'notarized:false, stapled:false' "$ROOT/scripts/release-artifact.sh"
+rg -q 'Synth Workshop Candidate.app' "$ROOT/scripts/release-artifact.sh"
+rg -q 'com.synth.desktop.v06.candidate' "$ROOT/apps/synth_desktop/src-tauri/tauri.candidate.conf.json"
+candidate_case="$(sed -n '/candidate-stage)/,/help|-h|--help)/p' "$ROOT/scripts/release-artifact.sh")"
+! grep -q 'notarize_artifact' <<<"$candidate_case"
 
 # Canonical lifecycle commands must never stop an arbitrary copied app or a
 # named development instance. Exact executable paths are the process authority.

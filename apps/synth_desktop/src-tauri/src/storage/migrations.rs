@@ -27,6 +27,9 @@ const MIGRATIONS: &[&str] = &[
     MIGRATION_22,
     MIGRATION_23,
     MIGRATION_24,
+    MIGRATION_25,
+    MIGRATION_26,
+    MIGRATION_27,
 ];
 
 /// Apply every migration the database has not reached yet.
@@ -72,7 +75,11 @@ pub fn apply_migrations(conn: &Connection) -> Result<i64> {
 /// forever — `apply_migrations` only runs versions above the recorded maximum.
 /// The DDL is `CREATE TABLE IF NOT EXISTS`, so re-running it costs nothing and
 /// closes that hole regardless of which lane merged first.
-const REQUIRED_TABLES: &[(&str, &str)] = &[("optimizer_terminal_manifests", MIGRATION_23)];
+const REQUIRED_TABLES: &[(&str, &str)] = &[
+    ("optimizer_terminal_manifests", MIGRATION_23),
+    ("secret_refs", MIGRATION_25),
+    ("product_telemetry_events", MIGRATION_26),
+];
 
 fn heal_missing_tables(conn: &Connection) -> Result<()> {
     for (table, ddl) in REQUIRED_TABLES {
@@ -1466,6 +1473,117 @@ CREATE INDEX IF NOT EXISTS experiment_group_members_kind
 ON experiment_group_members(member_kind, member_id);
 "#;
 
+/// Local secrets vault metadata. Values live in the OS credential store;
+/// these tables hold only aliases, opaque refs, fingerprints, and audit.
+const MIGRATION_25: &str = r#"
+CREATE TABLE IF NOT EXISTS secret_refs (
+    id TEXT PRIMARY KEY,
+    alias TEXT NOT NULL,
+    provider TEXT NOT NULL,
+    scope TEXT NOT NULL,
+    backend TEXT NOT NULL,
+    backend_ref TEXT NOT NULL UNIQUE,
+    fingerprint TEXT NOT NULL,
+    display_suffix TEXT NOT NULL,
+    status TEXT NOT NULL CHECK (status IN ('valid','invalid','untested','locked')),
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    last_validated_at TEXT
+);
+
+CREATE INDEX IF NOT EXISTS secret_refs_provider ON secret_refs(provider, alias);
+
+CREATE TABLE IF NOT EXISTS secret_recipe_grants (
+    secret_id TEXT NOT NULL REFERENCES secret_refs(id) ON DELETE CASCADE,
+    recipe_id TEXT NOT NULL,
+    granted_at TEXT NOT NULL,
+    PRIMARY KEY (secret_id, recipe_id)
+);
+
+CREATE TABLE IF NOT EXISTS secret_audit (
+    event_id TEXT PRIMARY KEY,
+    at TEXT NOT NULL,
+    actor_kind TEXT NOT NULL,
+    actor_id TEXT NOT NULL,
+    action TEXT NOT NULL,
+    secret_id TEXT,
+    provider TEXT,
+    operation TEXT,
+    model TEXT,
+    decision TEXT NOT NULL,
+    capability_id TEXT,
+    usage_json TEXT,
+    detail TEXT
+);
+
+CREATE INDEX IF NOT EXISTS secret_audit_at ON secret_audit(at DESC);
+CREATE INDEX IF NOT EXISTS secret_audit_secret ON secret_audit(secret_id, at DESC);
+
+CREATE TABLE IF NOT EXISTS secret_capabilities (
+    id TEXT PRIMARY KEY,
+    handle TEXT NOT NULL UNIQUE,
+    secret_id TEXT NOT NULL REFERENCES secret_refs(id) ON DELETE CASCADE,
+    run_id TEXT NOT NULL,
+    recipe_id TEXT NOT NULL,
+    provider TEXT NOT NULL,
+    operations_json TEXT NOT NULL,
+    models_json TEXT NOT NULL,
+    reasoning_efforts_json TEXT NOT NULL,
+    max_calls INTEGER NOT NULL,
+    max_input_tokens INTEGER NOT NULL,
+    max_output_tokens INTEGER NOT NULL,
+    max_cost_usd_micros INTEGER NOT NULL,
+    used_calls INTEGER NOT NULL DEFAULT 0,
+    used_input_tokens INTEGER NOT NULL DEFAULT 0,
+    used_output_tokens INTEGER NOT NULL DEFAULT 0,
+    used_cost_usd_micros INTEGER NOT NULL DEFAULT 0,
+    status TEXT NOT NULL CHECK (status IN ('granted','active','exhausted','expired','revoked')),
+    created_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    revoked_at TEXT
+);
+
+CREATE INDEX IF NOT EXISTS secret_capabilities_run ON secret_capabilities(run_id, status);
+"#;
+
+const MIGRATION_26: &str = r#"
+CREATE TABLE IF NOT EXISTS product_telemetry_events (
+    event_id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    at TEXT NOT NULL,
+    sensitivity TEXT NOT NULL CHECK (sensitivity IN ('optional','essential')),
+    properties_json TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS product_telemetry_events_at ON product_telemetry_events(at DESC);
+CREATE INDEX IF NOT EXISTS product_telemetry_events_name ON product_telemetry_events(name, at DESC);
+"#;
+
+/// Reports v0.6 makes evidence mode and claim rationale explicit while keeping
+/// every v1 row readable. Legacy claims receive deliberately conservative
+/// metadata instead of silently acquiring high confidence.
+const MIGRATION_27: &str = r#"
+ALTER TABLE report_revision_blocks ADD COLUMN reference_mode TEXT NOT NULL DEFAULT 'live'
+    CHECK(reference_mode IN ('live','pinned'));
+ALTER TABLE report_sources ADD COLUMN reference_mode TEXT NOT NULL DEFAULT 'live'
+    CHECK(reference_mode IN ('live','pinned'));
+ALTER TABLE report_claims ADD COLUMN confidence TEXT NOT NULL DEFAULT 'low'
+    CHECK(confidence IN ('low','medium','high','overwhelming'));
+ALTER TABLE report_claims ADD COLUMN why TEXT NOT NULL DEFAULT
+    'Migrated legacy claim; rationale was not recorded.';
+
+UPDATE report_revision_blocks
+SET reference_mode = 'pinned'
+WHERE source_revision IS NOT NULL AND source_digest IS NOT NULL
+  AND source_revision NOT IN ('working','live');
+UPDATE report_sources
+SET reference_mode = 'pinned'
+WHERE resource_revision IS NOT NULL AND resource_digest IS NOT NULL;
+UPDATE report_revision_blocks SET access_state = 'available' WHERE access_state = 'accessible';
+UPDATE report_revision_blocks SET integrity_state = 'unresolved' WHERE integrity_state = 'unknown';
+UPDATE report_sources SET access_state = 'available' WHERE access_state = 'accessible';
+UPDATE report_sources SET integrity_state = 'unresolved' WHERE integrity_state = 'unknown';
+"#;
 #[cfg(test)]
 mod tests {
     /// Derived, not pinned: adding a migration should not mean editing
@@ -1520,10 +1638,8 @@ mod tests {
         let conn = seed_at_version(MIGRATIONS.len() - 1);
         // Another lane's migration 23 landed here: the version is consumed, but
         // this lane's table was never created.
-        conn.execute_batch(
-            "CREATE TABLE IF NOT EXISTS experiment_groups (id TEXT PRIMARY KEY);",
-        )
-        .unwrap();
+        conn.execute_batch("CREATE TABLE IF NOT EXISTS experiment_groups (id TEXT PRIMARY KEY);")
+            .unwrap();
         conn.execute(
             "INSERT INTO schema_migrations(version, applied_at) VALUES (?1, datetime('now'))",
             [MIGRATIONS.len() as i64],
@@ -1538,7 +1654,10 @@ mod tests {
                     |row| row.get(0),
                 )
                 .unwrap();
-            assert!(present, "{table} must exist even when its version was consumed elsewhere");
+            assert!(
+                present,
+                "{table} must exist even when its version was consumed elsewhere"
+            );
         }
     }
 

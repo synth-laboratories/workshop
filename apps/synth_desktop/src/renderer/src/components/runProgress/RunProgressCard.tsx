@@ -101,6 +101,7 @@ export function RunProgressCard({ runId, sessionRef, onOpenFullRun }: Props) {
 		status: projection.status
 	});
 	const elapsed = formatDurationMs(projection.timing.elapsedMs);
+	const proposerActive = projection.runKind === "gepa" && projection.phase.id === "proposal" && !projection.terminal;
 	const canControl =
 		!projection.terminal &&
 		(projection.capabilities.pause || projection.capabilities.resume || projection.capabilities.cancel);
@@ -126,11 +127,32 @@ export function RunProgressCard({ runId, sessionRef, onOpenFullRun }: Props) {
 			</div>
 
 			<div className="run-progress-phase" data-testid={`run-progress-phase-${runId}`} data-phase-id={projection.phase.id}>
-				<span>{projection.phase.label}</span>
+				<span className={proposerActive ? "run-progress-active-label" : undefined}>
+					{proposerActive ? <span className="run-progress-live-dot" aria-hidden="true" /> : null}
+					{projection.phase.label}
+				</span>
 				{projection.phase.detail ? <span className="run-progress-faint">{projection.phase.detail}</span> : null}
 			</div>
 
 			{projection.terminal ? null : <RunProgressBar projection={projection} />}
+
+			{projection.providerAccess ? (
+				<div className="run-progress-provider" data-testid={`run-progress-provider-${runId}`}>
+					<span>
+						{projection.providerAccess.provider}
+						{projection.providerAccess.suffix ? ` · ${projection.providerAccess.suffix}` : ""}
+					</span>
+					<span className="run-progress-faint">
+						{projection.providerAccess.note ?? projection.providerAccess.status}
+						{projection.providerAccess.maxCalls > 0
+							? ` · ${projection.providerAccess.usedCalls} / ${projection.providerAccess.maxCalls} calls`
+							: ""}
+						{projection.providerAccess.maxCostUsd > 0
+							? ` · $${projection.providerAccess.usedCostUsd.toFixed(2)} / $${projection.providerAccess.maxCostUsd.toFixed(2)}`
+							: ""}
+					</span>
+				</div>
+			) : null}
 
 			<div className="run-progress-metrics">
 				{work ? <span data-testid={`run-progress-work-${runId}`}>{work}</span> : null}

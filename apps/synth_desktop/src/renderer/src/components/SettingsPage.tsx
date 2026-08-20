@@ -13,6 +13,7 @@ import { publicError } from "../runtime/publicError";
 import type { AccountViewModel } from "../runtime/accountView";
 import type { DeviceUsageSummary } from "./UsageSheet";
 import { OnDeviceModelsSettings } from "./OnDeviceModelsSettings";
+import { TrainingModelsSettings } from "./TrainingModelsSettings";
 import { InferenceSettings } from "./InferenceSettings";
 import { VoiceRecognitionSettings } from "./VoiceRecognitionSettings";
 import { ModelObservabilitySettings } from "./ModelObservabilitySettings";
@@ -25,6 +26,7 @@ import { ProviderMark } from "./ProviderMark";
 import { bridges } from "../runtime/desktopBridge";
 import { ChatgptCodexSubscriptionCard } from "./ChatgptCodexSubscriptionCard";
 import { ContextSettings } from "./ContextSettings";
+import { SecretsSettings } from "./SecretsSettings";
 
 type Props = {
 	onBack: () => void;
@@ -89,6 +91,15 @@ function IconPerson() {
 	);
 }
 
+function IconKey() {
+	return (
+		<svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden>
+			<circle cx="5.5" cy="8" r="2.4" stroke="currentColor" strokeWidth="1.3" />
+			<path d="M7.6 8h5.2M11.2 8v2.2M12.8 8v1.4" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
+		</svg>
+	);
+}
+
 function IconInfo() {
 	return (
 		<svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden>
@@ -115,6 +126,7 @@ const SECTIONS = [
 	{ id: "inference", label: "Inference", icon: IconGauge },
 	{ id: "voice", label: "Voice", icon: IconMic },
 	{ id: "account", label: "Account", icon: IconPerson },
+	{ id: "secrets", label: "Secrets", icon: IconKey },
 	{ id: "about", label: "About", icon: IconInfo }
 ] as const;
 
@@ -225,7 +237,7 @@ const CHANGELOG = [
 				label: "Fixed",
 				items: [
 					"Sequence diagrams render multiline labels instead of showing literal break markup, and wide diagrams no longer open clipped offscreen.",
-					"Named development instances can use an explicit read-only Codex auth file without creating or opening a Keychain credential prompt."
+					"Installed and development instances keep ChatGPT authorization in a private Workshop-owned file and never invoke the macOS Keychain."
 				]
 			}
 		]
@@ -460,6 +472,7 @@ export function SettingsPage({
 								type="button"
 								className={`settings-nav-item${section === s.id ? " active" : ""}`}
 								aria-current={section === s.id ? "page" : undefined}
+								data-testid={`settings-nav-${s.id}`}
 								onClick={() => {
 									setSection(s.id);
 									onSectionChange?.(s.id);
@@ -486,12 +499,20 @@ export function SettingsPage({
 					{section === "models" ? (
 						<div className="settings-sections" data-testid="settings-models">
 							<SettingsCard
-								title="On-device"
-								description="Managed local models and inference runtimes."
-								testId="models-on-device"
+								title="On-device inference"
+								description="Laguna XS powers local chat and the policy daemon."
+								testId="models-on-device-inference"
 								className="settings-card-embed"
 							>
 								<OnDeviceModelsSettings lagunaPhase={lagunaPhase} onReloadLaguna={onReloadLaguna} />
+							</SettingsCard>
+							<SettingsCard
+								title="On-device training"
+								description="Models for Optimizers local SFT/CISPO via mlx-rl. Not used for chat inference."
+								testId="models-on-device-training"
+								className="settings-card-embed"
+							>
+								<TrainingModelsSettings />
 							</SettingsCard>
 							<AuthorizedModelsSettings connection={account.connection} />
 							<ChatgptCodexSubscriptionCard />
@@ -528,6 +549,7 @@ export function SettingsPage({
 							onOpenDeviceUsage={account.onOpenDeviceUsage}
 						/>
 					) : null}
+					{section === "secrets" ? <SecretsSettings /> : null}
 					{section === "about" ? (
 						<div className="settings-sections" data-testid="settings-about">
 							<SettingsCard title="Synth Desktop">

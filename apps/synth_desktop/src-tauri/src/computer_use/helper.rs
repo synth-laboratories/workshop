@@ -141,7 +141,10 @@ pub fn current_process_designated_requirement() -> Result<String> {
     let report = String::from_utf8_lossy(&output.stderr);
     report
         .lines()
-        .find_map(|line| line.split_once("designated => ").map(|(_, value)| value.trim()))
+        .find_map(|line| {
+            line.split_once("designated => ")
+                .map(|(_, value)| value.trim())
+        })
         .filter(|value| !value.is_empty())
         .map(str::to_owned)
         .ok_or_else(|| anyhow!("codesign returned no designated requirement for Workshop"))

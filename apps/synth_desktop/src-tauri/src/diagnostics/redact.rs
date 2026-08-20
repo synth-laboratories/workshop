@@ -129,7 +129,7 @@ pub fn redact_text(value: &str) -> String {
         rest = remainder;
     }
     out.push_str(rest);
-    out
+    crate::secrets::redact_live(&out)
 }
 
 /// Find the earliest secret-shaped run in `value`.
@@ -157,7 +157,7 @@ fn next_secret(value: &str) -> Option<(&str, &str, &str)> {
     // Provider key shapes and other self-identifying credential prefixes.
     for prefix in [
         "sk-", "sk_", "rk_", "pk_live_", "ghp_", "gho_", "ghu_", "ghs_", "ghr_", "xoxb-", "xoxp-",
-        "xoxa-", "xapp-", "AKIA", "ASIA", "synth_", "eyJ",
+        "xoxa-", "xapp-", "AKIA", "ASIA", "synth_", "eyJ", "wcap_",
     ] {
         let mut search = 0usize;
         while let Some(found) = value[search..].find(prefix) {

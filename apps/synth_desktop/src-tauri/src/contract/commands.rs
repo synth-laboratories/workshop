@@ -67,6 +67,9 @@ impl Commands {
     pub const LAGUNA_INFERENCE_SNAPSHOT: &'static str = "laguna_inference_snapshot";
     pub const LAGUNA_SETTINGS_SNAPSHOT: &'static str = "laguna_settings_snapshot";
     pub const LAGUNA_SETTINGS_UPDATE: &'static str = "laguna_settings_update";
+    pub const TRAINING_MODELS_LIST: &'static str = "training_models_list";
+    pub const TRAINING_MODELS_DOWNLOAD: &'static str = "training_models_download";
+    pub const TRAINING_MODELS_DELETE: &'static str = "training_models_delete";
     pub const WHISPER_RUNTIME_STATUS: &'static str = "whisper_runtime_status";
     pub const WHISPER_RUNTIME_WARM: &'static str = "whisper_runtime_warm";
     pub const WHISPER_MODELS_LIST: &'static str = "whisper_models_list";
@@ -134,6 +137,8 @@ impl Commands {
     pub const REPORTS_LIST: &'static str = "reports_list";
     pub const REPORTS_GET: &'static str = "reports_get";
     pub const REPORTS_REVISION_GET: &'static str = "reports_revision_get";
+    pub const REPORTS_VALIDATE: &'static str = "reports_validate";
+    pub const REPORTS_PIN_ALL: &'static str = "reports_pin_all";
     pub const REPORTS_CREATE: &'static str = "reports_create";
     pub const REPORTS_UPDATE: &'static str = "reports_update";
     pub const REPORTS_ARCHIVE: &'static str = "reports_archive";
@@ -151,6 +156,8 @@ impl Commands {
     pub const REPORTS_LOG_APPEND: &'static str = "reports_log_append";
     pub const REPORTS_UPLOAD_STATUS: &'static str = "reports_upload_status";
     pub const REPORTS_SHARE: &'static str = "reports_share";
+    pub const REPORTS_AUDIENCE_SET: &'static str = "reports_audience_set";
+    pub const REPORTS_AUDIENCE_REVOKE: &'static str = "reports_audience_revoke";
     pub const REPORTS_PROMOTE: &'static str = "reports_promote";
     pub const REPORTS_OPEN_SHARED: &'static str = "reports_open_shared";
     pub const REPORTS_COMMENTS_LIST: &'static str = "reports_comments_list";
@@ -173,6 +180,13 @@ impl Commands {
     pub const OPTIMIZERS_IMPORT_LOCAL: &'static str = "optimizers_import_local";
     pub const OPTIMIZERS_RECONCILE_CLOUD: &'static str = "optimizers_reconcile_cloud";
     pub const OPTIMIZERS_LIST_CLOUD: &'static str = "optimizers_list_cloud";
+    pub const OPTIMIZERS_SAVED_LORAS_SEARCH: &'static str = "optimizers_saved_loras_search";
+    pub const OPTIMIZERS_RUN_CHECKPOINTS_LIST: &'static str = "optimizers_run_checkpoints_list";
+    pub const OPTIMIZERS_RUN_OUTPUTS: &'static str = "optimizers_run_outputs";
+    pub const OPTIMIZERS_TRAINING_MODELS: &'static str = "optimizers_training_models";
+    pub const OPTIMIZERS_SAVED_LORA_ARCHIVE: &'static str = "optimizers_saved_lora_archive";
+    pub const OPTIMIZERS_SAVED_LORA_DOWNLOAD: &'static str = "optimizers_saved_lora_download";
+    pub const OPTIMIZERS_TRAINING_RECONCILE: &'static str = "optimizers_training_reconcile";
     pub const PLUGINS_STATUS: &'static str = "plugins_status";
     pub const PLUGINS_LIST: &'static str = "plugins_list";
     pub const COMPUTER_USE_STATUS: &'static str = "computer_use_status";
@@ -211,6 +225,24 @@ impl Commands {
     pub const MIGRATION_PREPARE: &'static str = "migration_prepare";
     pub const MIGRATION_APPLY: &'static str = "migration_apply";
     pub const MIGRATION_CANCEL: &'static str = "migration_cancel";
+    pub const SECRETS_LIST: &'static str = "secrets_list";
+    pub const SECRETS_CREATE: &'static str = "secrets_create";
+    pub const SECRETS_REPLACE: &'static str = "secrets_replace";
+    pub const SECRETS_DELETE: &'static str = "secrets_delete";
+    pub const SECRETS_TEST: &'static str = "secrets_test";
+    pub const SECRETS_REQUEST_USE: &'static str = "secrets_request_use";
+    pub const SECRETS_GRANT_USE: &'static str = "secrets_grant_use";
+    pub const SECRETS_DENY_USE: &'static str = "secrets_deny_use";
+    pub const SECRETS_CAPABILITIES_LIST: &'static str = "secrets_capabilities_list";
+    pub const SECRETS_REVOKE_CAPABILITY: &'static str = "secrets_revoke_capability";
+    pub const SECRETS_REQUEST_ENV_IMPORT: &'static str = "secrets_request_env_import";
+    pub const SECRETS_COMMIT_ENV_IMPORT: &'static str = "secrets_commit_env_import";
+    pub const SECRETS_AUDIT_LIST: &'static str = "secrets_audit_list";
+    pub const SECRETS_PROXY_STATUS: &'static str = "secrets_proxy_status";
+    pub const SECRETS_PENDING: &'static str = "secrets_pending";
+    pub const SECRETS_DENY_ENV_IMPORT: &'static str = "secrets_deny_env_import";
+    pub const PRODUCT_TELEMETRY_GET_POLICY: &'static str = "product_telemetry_get_policy";
+    pub const PRODUCT_TELEMETRY_SET_OPT_OUT: &'static str = "product_telemetry_set_opt_out";
 }
 
 /// Alias matching the TS `COMMANDS` export shape.

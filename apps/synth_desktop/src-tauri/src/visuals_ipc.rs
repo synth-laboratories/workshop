@@ -638,6 +638,9 @@ async fn dispatch_request(
     if path.starts_with("/v1/diagnostics") {
         return dispatch_diagnostics(method, path, json_body, core).await;
     }
+    if path.starts_with("/v1/secrets") {
+        return dispatch_secrets(method, path, json_body, core);
+    }
     dispatch(method, path, json_body, core).await
 }
 
@@ -1245,15 +1248,7 @@ async fn register_hydrated_container(
         .as_ref()
         .and_then(|value| classify_live_eval_family(value, request.task_family.as_deref()))
         .or_else(|| classify_live_eval_family(&json!({}), request.task_family.as_deref()));
-    let family = classified
-        .map(|family| family.as_str().to_string())
-        .or_else(|| {
-            info.as_ref()
-                .and_then(|value| value.get("env_family").or_else(|| value.get("task_family")))
-                .and_then(Value::as_str)
-                .map(str::to_string)
-        })
-        .or_else(|| request.task_family.clone());
+    let family = observed_task_family(info.as_ref(), classified, request.task_family.as_deref());
     let mut metadata = request
         .metadata
         .clone()
@@ -1314,6 +1309,29 @@ async fn register_hydrated_container(
         family,
     )
     .await
+}
+
+/// Preserve an explicitly advertised service family when it is not one of the
+/// visual-template families.  This is an observed capability, never an
+/// inference from a name, port, or URL.
+fn observed_task_family(
+    info: Option<&Value>,
+    classified: Option<crate::visuals::LiveEvalFamily>,
+    requested: Option<&str>,
+) -> Option<String> {
+    classified
+        .map(|family| family.as_str().to_string())
+        .or_else(|| {
+            info.and_then(|value| {
+                value
+                    .get("env_family")
+                    .or_else(|| value.get("task_family"))
+                    .or_else(|| value.get("runtime_family"))
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+            })
+        })
+        .or_else(|| requested.map(str::to_string))
 }
 
 pub async fn dispatch(method: &str, path: &str, body: Value, core: &CoreRuntime) -> Result<Value> {
@@ -1554,11 +1572,11 @@ pub async fn dispatch(method: &str, path: &str, body: Value, core: &CoreRuntime)
                     }
                 }
             }
-            let family = info
-                .as_ref()
-                .and_then(|v| v.get("env_family"))
-                .and_then(Value::as_str)
-                .map(str::to_string);
+            let family = observed_task_family(
+                info.as_ref(),
+                classified,
+                container.task_family.as_deref(),
+            );
             let updated = core
                 .update_container_hydration(
                     id.to_string(),
@@ -2096,6 +2114,21 @@ pub async fn dispatch(method: &str, path: &str, body: Value, core: &CoreRuntime)
                     let source = String::from_utf8(bytes)
                         .context("systems authoring source must be UTF-8")?;
                     crate::visuals::systems::authoring_findings(&source, kind)?
+                } else if crate::visuals::charts::is_chart_template(&visual.template_id) {
+                    // Recorded by the render that produced the image. A chart's
+                    // real width is only known after its bindings resolve, so
+                    // re-deriving from the spec alone would under-report.
+                    visual
+                        .metadata
+                        .get("authoringFindings")
+                        .and_then(Value::as_array)
+                        .map(|items| {
+                            items
+                                .iter()
+                                .filter_map(|item| item.as_str().map(str::to_owned))
+                                .collect()
+                        })
+                        .unwrap_or_default()
                 } else {
                     Vec::new()
                 };
@@ -2362,6 +2395,25 @@ pub async fn dispatch(method: &str, path: &str, body: Value, core: &CoreRuntime)
                 if !findings.is_empty() {
                     anyhow::bail!(
                         "systems visual has unresolved automated findings: {}",
+                        findings.join("; ")
+                    );
+                }
+            }
+            if crate::visuals::charts::is_chart_template(&current.template_id) {
+                let findings: Vec<String> = current
+                    .metadata
+                    .get("authoringFindings")
+                    .and_then(Value::as_array)
+                    .map(|items| {
+                        items
+                            .iter()
+                            .filter_map(|item| item.as_str().map(str::to_owned))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                if !findings.is_empty() {
+                    anyhow::bail!(
+                        "chart visual has unresolved automated findings: {}",
                         findings.join("; ")
                     );
                 }
@@ -2849,6 +2901,107 @@ async fn dispatch_diagnostics(
         }
         ("POST", "/v1/diagnostics/clear-index") => service.clear_index().await,
         (method, path) => anyhow::bail!("unknown diagnostics route {method} {path}"),
+    }
+}
+
+fn dispatch_secrets(method: &str, path: &str, body: Value, core: &CoreRuntime) -> Result<Value> {
+    let lower = path.to_ascii_lowercase();
+    if lower.contains("create")
+        || lower.contains("replace")
+        || lower.contains("delete")
+        || lower.contains("reveal")
+        || lower.contains("export")
+        || lower.contains("commit")
+        || lower.contains("grant")
+        || lower.contains("get")
+        || lower.contains("test")
+        || lower.contains("value")
+    {
+        anyhow::bail!(
+            "secrets MCP cannot create, reveal, export, commit, or test credentials; \
+             list registered aliases, request a host-mediated .env import, or request use. \
+             The user approves in Settings → Secrets."
+        );
+    }
+    let secrets = core.secrets();
+    let mut request = body.clone();
+    if let Some(object) = request.as_object_mut() {
+        object.remove("sessionRef");
+    }
+    let str_field = |key: &str, alt: &str| {
+        request
+            .get(key)
+            .or_else(|| request.get(alt))
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_owned)
+    };
+    match (method, path) {
+        ("GET", "/v1/secrets") | ("POST", "/v1/secrets") | ("POST", "/v1/secrets/list") => {
+            let provider = str_field("provider", "provider");
+            let scope = str_field("scope", "scope");
+            let listed = secrets.list(provider.as_deref(), scope.as_deref())?;
+            Ok(json!({
+                "secrets": listed,
+                "guidance": "Registered connections are aliases only. To add one, call request_env_import with an absolute .env path, or ask the user to add it in Settings → Secrets."
+            }))
+        }
+        ("POST", "/v1/secrets/import") => {
+            let source = str_field("sourcePath", "source_path")
+                .ok_or_else(|| anyhow::anyhow!("sourcePath is required"))?;
+            let names = request
+                .get("variableNames")
+                .or_else(|| request.get("variable_names"))
+                .and_then(Value::as_array)
+                .map(|items| {
+                    items
+                        .iter()
+                        .filter_map(Value::as_str)
+                        .map(str::to_owned)
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+            let preview = secrets.request_env_import(
+                &source,
+                &names,
+                "personal/development/providers",
+                &crate::secrets::import_roots(),
+            )?;
+            Ok(json!({
+                "status": preview.status,
+                "requestId": preview.request_id,
+                "sourcePath": preview.source_path,
+                "candidates": preview.candidates,
+                "guidance": "Approve or deny this import in Settings → Secrets. This result contains masked suffixes only."
+            }))
+        }
+        ("POST", "/v1/secrets/use") => {
+            let secret_id = str_field("secretId", "secret_id")
+                .ok_or_else(|| anyhow::anyhow!("secretId is required"))?;
+            let run_id = str_field("runId", "run_id").unwrap_or_else(|| "session".into());
+            let recipe_id = str_field("recipeId", "recipe_id").unwrap_or_else(|| "session".into());
+            let result = secrets.request_use(
+                &secret_id,
+                &run_id,
+                &recipe_id,
+                crate::secrets::SecretsUsePolicy::default(),
+                "agent",
+            )?;
+            Ok(json!({
+                "status": result.status,
+                "requestId": result.request_id,
+                "capabilityId": result.capability_id,
+                "proxyOrigin": result.proxy_origin,
+                "handle": result.handle,
+                "guidance": if result.status == "approval_required" {
+                    "Ask the user to allow this in Settings → Secrets, then call request_use again."
+                } else {
+                    "Use the handle only as a Bearer token against the local provider proxy. It is not the provider key."
+                }
+            }))
+        }
+        (method, path) => anyhow::bail!("unknown secrets route {method} {path}"),
     }
 }
 
@@ -3739,6 +3892,19 @@ mod diagnostics_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn preserves_explicit_runtime_family_for_gepa_v2_selection() {
+        let info = json!({
+            "runtime_family": "healthbench",
+            "metadata": {"optimizer": {"contract": "synth_optimizers.gepa.v2"}},
+            "capabilities": {"operations": {"prepare": true, "start": true}}
+        });
+        assert_eq!(
+            observed_task_family(Some(&info), None, None).as_deref(),
+            Some("healthbench")
+        );
+    }
 
     #[test]
     fn parses_query_values() {

@@ -1,0 +1,67 @@
+/* ──────────────────────────────────────────────────────────────────────────
+   Ad-hoc chart panes (analysis.chart.v1).
+
+   The chart itself is an SVG rendition produced by the runtime, so this file
+   styles only the frame around it: a status strip, the actions, and the two
+   surfaces the pane can show (rendition or spec). Token-only, per the styles
+   README's rules for a page dialect outside app.css.
+   ────────────────────────────────────────────────────────────────────────── */
+
+.chart-visual {
+	display: flex;
+	flex-direction: column;
+	min-height: 0;
+	height: 100%;
+	background: var(--surface-page);
+}
+
+.chart-visual-toolbar {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: var(--sp-3);
+	padding: var(--sp-2) var(--sp-3);
+	border-bottom: 1px solid var(--border-subtle);
+	background: var(--surface-raised);
+}
+
+.chart-visual-status {
+	font-size: var(--fs-micro);
+	font-weight: var(--fw-medium);
+	letter-spacing: var(--tracking-eyebrow);
+	color: var(--color-text-muted);
+}
+
+.chart-visual-actions {
+	display: flex;
+	align-items: center;
+	gap: var(--sp-1);
+}
+
+.chart-visual-stage {
+	flex: 1;
+	min-height: 0;
+	overflow: auto;
+	padding: var(--sp-3);
+}
+
+.chart-visual-stage img {
+	display: block;
+	width: 100%;
+	height: auto;
+	max-width: 100%;
+}
+
+.chart-visual-spec {
+	flex: 1;
+	min-height: 0;
+	overflow: auto;
+	margin: 0;
+	padding: var(--sp-3);
+	font-size: var(--fs-meta);
+	line-height: var(--lh-body);
+	white-space: pre-wrap;
+	word-break: break-word;
+	color: var(--color-text-muted);
+	background: var(--surface-sunken);
+}

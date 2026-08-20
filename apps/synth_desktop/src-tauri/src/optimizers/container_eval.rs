@@ -149,7 +149,7 @@ impl EvalSpec {
             .collect()
     }
 
-    fn policy_config_body(self) -> Option<Value> {
+    fn policy_config_body(self, openai_base_url: Option<&str>) -> Option<Value> {
         let config = if self.family == "banking77" {
             json!({
                 "provider": "openrouter",
@@ -160,11 +160,12 @@ impl EvalSpec {
                 "max_tokens": 32,
             })
         } else if self.family == "healthbench" {
+            let base_url = openai_base_url?;
             json!({
                 "provider": "openai",
                 "model": "gpt-4.1-mini-2025-04-14",
                 "api_key_env": "OPENAI_API_KEY",
-                "base_url": "https://api.openai.com/v1",
+                "base_url": base_url,
                 "max_tokens": 1536,
             })
         } else {
@@ -188,6 +189,8 @@ struct EvalExample {
 struct ReadyContainer {
     id: String,
     base_url: String,
+    protocol: String,
+    image_digest: Option<String>,
 }
 
 pub(super) async fn start(
@@ -204,9 +207,10 @@ pub(super) async fn start(
         "recipeId": spec.recipe_id,
         "task": spec.family,
         "semantics": "baseline_eval",
-        "containerProtocol": "synth_optimizers.gepa.v2",
+        "containerProtocol": container.protocol,
         "containerId": container.id,
         "containerBaseUrl": container.base_url,
+        "containerImageDigest": container.image_digest,
         "expectedVisual": EXPERIMENT_TEMPLATE,
         "policyRef": { "harness": spec.harness, "config": spec.policy_config },
         "taskPools": { "train": spec.train.len(), "heldout": spec.heldout.len() },
@@ -266,6 +270,8 @@ pub(super) async fn start(
         .await;
     let worker = service.clone();
     let worker_run_id = run.id.clone();
+    let planned_trials = examples.len();
+    let worker_visual_id = visual_id.clone();
     tokio::spawn(async move {
         if let Err(error) = run_eval_worker(
             worker.clone(),
@@ -273,16 +279,79 @@ pub(super) async fn start(
             spec,
             container,
             examples,
-            visual_id,
+            worker_visual_id.clone(),
             cancel_rx,
         )
         .await
         {
+            // A worker can fail before its first progress projection (for
+            // example when Workshop refuses to mint a secrets proxy).  Its
+            // durable run is terminal in that case, so its chat-owned visual
+            // must not survive as a false live/running artifact.
+            let _ = project_worker_failure_visual(
+                &worker,
+                &worker_run_id,
+                spec,
+                &worker_visual_id,
+                planned_trials,
+            )
+            .await;
             settle_worker_failure(&worker, &worker_run_id, error).await;
         }
         worker.unregister_local_recipe(&worker_run_id).await;
     });
     Ok((service.get(run.id).await?, event))
+}
+
+async fn project_worker_failure_visual(
+    service: &OptimizerService,
+    run_id: &str,
+    spec: EvalSpec,
+    visual_id: &str,
+    planned_trials: usize,
+) -> Result<()> {
+    let run = service.get(run_id.to_string()).await?;
+    let records = run
+        .summary
+        .get("records")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let total = run
+        .summary
+        .pointer("/progress/total")
+        .and_then(Value::as_u64)
+        .map(|value| value as usize)
+        .unwrap_or(planned_trials);
+    let mean = mean_for_pool(&records, "train").or_else(|| mean_reward(&records));
+    let (updated, event) = service
+        .visuals()
+        .update(
+            visual_id.to_string(),
+            VisualUpdateRequest {
+                title: None,
+                bindings: Some(experiment_bindings(
+                    spec,
+                    "failed",
+                    records.len(),
+                    total,
+                    &records,
+                    mean,
+                )),
+                status: Some(VisualStatus::Failed),
+                renderer_kind: None,
+                message_id: None,
+                run_id: None,
+                trace_id: None,
+                content: None,
+                metadata: None,
+                bump_revision: Some(true),
+            },
+        )
+        .await?;
+    service.publish_visual_event(event)?;
+    debug_assert_eq!(updated.status, VisualStatus::Failed);
+    Ok(())
 }
 
 /// Refuse admission when a lane the container declares has no credential.
@@ -509,6 +578,7 @@ async fn run_eval_worker(
     visual_id: String,
     cancel: watch::Receiver<bool>,
 ) -> Result<()> {
+    let _revoke = crate::secrets::RevokeRunOnDrop(run_id.clone());
     evidence(
         "run_started",
         append_status(&service, &run_id, "optimizer.run.started", "running"),
@@ -536,7 +606,8 @@ async fn run_eval_worker(
         }
         _ => json!({}),
     };
-    let policy_pin = register_policy_pin(&client, &container.base_url, spec, &info).await?;
+    let policy_pin =
+        register_policy_pin(&client, &container.base_url, spec, &info, &run_id).await?;
     persist_policy_pin(&service, &run_id, &policy_pin).await?;
     let scale_leases = info
         .get("scale_leases")
@@ -764,11 +835,69 @@ async fn append_eval_selection(
     Ok(())
 }
 
+fn secrets_proxy_error(code: &str, message: &str) -> anyhow::Error {
+    anyhow::anyhow!(
+        "{}",
+        json!({
+            "code": code,
+            "contract": "workshop.secrets_proxy",
+            "retryable": code == "secrets_proxy_unavailable",
+            "message": message,
+        })
+    )
+}
+
+fn healthbench_provider_policy(spec: EvalSpec) -> crate::secrets::SecretsUsePolicy {
+    let mut policy = crate::secrets::SecretsUsePolicy::default();
+    policy.operations = vec!["chat.completions.create".into()];
+    policy.models = vec!["gpt-4.1-mini-2025-04-14".into()];
+    policy.max_cost_usd = COST_CEILING_USD;
+    let trials = spec.examples().len() as u64;
+    policy.max_calls = trials.saturating_mul(64).clamp(128, u32::MAX as u64) as u32;
+    policy
+}
+
+fn healthbench_container_openai_base(run_id: &str, spec: EvalSpec) -> Result<String> {
+    let secrets = crate::secrets::live().ok_or_else(|| {
+        secrets_proxy_error(
+            "secrets_proxy_unavailable",
+            "HealthBench requires the Workshop secrets proxy",
+        )
+    })?;
+    let env = secrets
+        .workload_env(
+            "openai",
+            run_id,
+            spec.recipe_id,
+            healthbench_provider_policy(spec),
+            "eval",
+        )
+        .map_err(|error| secrets_proxy_error("secrets_proxy_denied", &error.to_string()))?;
+    let base = env.container_openai_base_url.clone().ok_or_else(|| {
+        secrets_proxy_error(
+            "secrets_proxy_route_unbound",
+            "Workshop did not bind an OpenAI proxy base URL for HealthBench",
+        )
+    })?;
+    if base.contains("api.openai.com")
+        || base.contains("127.0.0.1")
+        || base.contains("localhost")
+        || !base.contains("/cap/wcap_")
+    {
+        return Err(secrets_proxy_error(
+            "secrets_proxy_unreachable",
+            "HealthBench policy base_url must be the container-reachable Workshop proxy",
+        ));
+    }
+    Ok(base)
+}
+
 async fn register_policy_pin(
     client: &reqwest::Client,
     base: &str,
     spec: EvalSpec,
     container_info: &Value,
+    run_id: &str,
 ) -> Result<Value> {
     let pin = json!({ "harness": spec.harness, "config": spec.policy_config });
     // Banking77 owns an immutable, already-registered policy. Its public
@@ -802,7 +931,18 @@ async fn register_policy_pin(
             "authority": "container_advertisement",
         }));
     }
-    let Some(body) = spec.policy_config_body() else {
+    let openai_base = if spec.family == "healthbench" {
+        Some(healthbench_container_openai_base(run_id, spec)?)
+    } else {
+        None
+    };
+    let Some(body) = spec.policy_config_body(openai_base.as_deref()) else {
+        if spec.family == "healthbench" {
+            return Err(secrets_proxy_error(
+                "secrets_proxy_route_unbound",
+                "HealthBench requires a Workshop proxy base_url; refusing api.openai.com",
+            ));
+        }
         return Ok(pin);
     };
     let response = client
@@ -1313,10 +1453,21 @@ async fn find_ready_container(service: &OptimizerService, family: &str) -> Resul
         }
         if matches && ready {
             if let Some(base_url) = base_url.filter(|value| !value.trim().is_empty()) {
-                return Ok(ReadyContainer {
-                    id,
-                    base_url: base_url.trim_end_matches('/').to_string(),
-                });
+                if let Some(protocol) = advertised_gepa_v2_protocol(&metadata) {
+                    return Ok(ReadyContainer {
+                        id,
+                        base_url: base_url.trim_end_matches('/').to_string(),
+                        protocol,
+                        image_digest: container_image_digest(&metadata),
+                    });
+                }
+                seen.push(format!(
+                    "{id} ({status}, protocol={})",
+                    metadata
+                        .pointer("/capabilities/protocol")
+                        .and_then(Value::as_str)
+                        .unwrap_or("null")
+                ));
             }
         }
     }
@@ -1326,9 +1477,37 @@ async fn find_ready_container(service: &OptimizerService, family: &str) -> Resul
         );
     }
     bail!(
-        "registered {family} containers are not ready: {}. Probe and wait until status is ready/healthy.",
-        seen.join(", ")
+        "registered {family} containers are not a ready GEPA v2 pool: {}. Probe until status is ready/healthy and the container advertises {}.",
+        seen.join(", "),
+        crate::container_capabilities::GEPA_V2_CONTRACT
     )
+}
+
+fn advertised_gepa_v2_protocol(metadata: &Value) -> Option<String> {
+    for pointer in [
+        "/capabilities/protocol",
+        "/optimizer_contracts/gepa/version",
+        "/metadata/optimizer_contracts/gepa/version",
+    ] {
+        if let Some(version) = metadata.pointer(pointer).and_then(Value::as_str) {
+            if version == crate::container_capabilities::GEPA_V2_CONTRACT {
+                return Some(version.to_string());
+            }
+        }
+    }
+    None
+}
+
+fn container_image_digest(metadata: &Value) -> Option<String> {
+    for pointer in ["/imageDigest", "/image_digest", "/digest", "/image/digest"] {
+        if let Some(digest) = metadata.pointer(pointer).and_then(Value::as_str) {
+            let digest = digest.trim();
+            if digest.starts_with("sha256:") && digest.len() == 71 {
+                return Some(digest.to_string());
+            }
+        }
+    }
+    None
 }
 
 fn container_matches_family(task_family: Option<&str>, metadata: &Value, family: &str) -> bool {
@@ -1466,6 +1645,9 @@ mod tests {
     async fn spawn_eval_mock_opts(
         opts: MockEvalOptions,
     ) -> (String, tokio::task::JoinHandle<()>, Arc<AtomicUsize>) {
+        if opts.family == "healthbench" {
+            crate::secrets::install_test_live_openai();
+        }
         let starts = Arc::new(AtomicUsize::new(0));
         let starts_h = starts.clone();
         let prepared = Arc::new(Mutex::new(BTreeMap::<String, bool>::new()));
@@ -1505,6 +1687,24 @@ mod tests {
                             }) } else { json!({}) },
                         })),
                         ("POST", path) if path == "/policy-configs" || path.starts_with("/policy-configs/") => {
+                            if family == "healthbench" {
+                                let url = request
+                                    .body
+                                    .pointer("/config/base_url")
+                                    .and_then(Value::as_str)
+                                    .unwrap_or("");
+                                if url.contains("api.openai.com")
+                                    || url.contains("127.0.0.1")
+                                    || url.contains("localhost")
+                                    || !url.contains("/cap/wcap_")
+                                    || request.body.pointer("/config/api_key").is_some()
+                                {
+                                    return JsonHttpResponse::error(
+                                        StatusCode::BAD_REQUEST,
+                                        "healthbench must use the workshop proxy, not api.openai.com",
+                                    );
+                                }
+                            }
                             if opts.policy_status == 200 {
                                 JsonHttpResponse::ok(json!({"config_id": opts.policy_config_id}))
                             } else {
@@ -1660,7 +1860,19 @@ mod tests {
                         status,
                         base_url,
                         family,
-                        json!({"runtime_family": family}).to_string()
+                        json!({
+                            "runtime_family": family,
+                            "capabilities": {
+                                "protocol": crate::container_capabilities::GEPA_V2_CONTRACT,
+                                "operations": {
+                                    "rollouts.prepare": true,
+                                    "rollouts.start": true,
+                                    "rollouts.events": true
+                                }
+                            },
+                            "imageDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                        })
+                        .to_string()
                     ],
                 )?;
                 Ok(())
@@ -1729,6 +1941,14 @@ mod tests {
         let (run, task) = start_banking77(&svc, "sess_evidence").await;
         let finished = wait_terminal(&svc, &run.id).await;
         assert_eq!(finished.status, "completed");
+        assert_eq!(
+            finished.summary["containerProtocol"],
+            json!(crate::container_capabilities::GEPA_V2_CONTRACT)
+        );
+        assert_eq!(
+            finished.summary["containerImageDigest"],
+            json!("sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+        );
 
         let events = svc
             .events_after(run.id.clone(), 0, Some(500))
@@ -1827,6 +2047,27 @@ mod tests {
             1,
             "the chat-owned artifact is still bound after a restart"
         );
+    }
+
+    #[tokio::test]
+    async fn worker_failure_marks_the_published_experiment_visual_terminal() {
+        let (svc, _dir, _) = service().await;
+        let (run, task) = start_banking77(&svc, "sess_worker_failure_visual").await;
+        let finished = wait_terminal(&svc, &run.id).await;
+        let visual_id = finished.summary["visualId"].as_str().unwrap();
+        let spec = EvalSpec::for_recipe(BANKING77_EVAL_BASELINE_RECIPE).unwrap();
+
+        project_worker_failure_visual(&svc, &run.id, spec, visual_id, 10)
+            .await
+            .unwrap();
+
+        let visual = svc.visuals().get(visual_id.to_string()).await.unwrap();
+        assert_eq!(visual.status, VisualStatus::Failed);
+        assert_eq!(
+            visual.bindings.pointer("/slots/0/data/status"),
+            Some(&json!("failed"))
+        );
+        task.abort();
     }
 
     /// `get_result` for an eval is typed, and is answerable without a candidate.
@@ -2259,7 +2500,10 @@ mod tests {
             .await
             .unwrap_err()
             .to_string();
-        assert!(error.contains("credential_readiness_unavailable"), "{error}");
+        assert!(
+            error.contains("credential_readiness_unavailable"),
+            "{error}"
+        );
         assert!(error.contains("model_roles"), "{error}");
         assert_eq!(
             starts.load(Ordering::SeqCst),
@@ -2352,6 +2596,54 @@ mod tests {
             "expected a structured missing-container error, got {error}"
         );
         assert!(!error.contains("unknown optimizer recipe"));
+    }
+
+    #[tokio::test]
+    async fn container_eval_refuses_a_ready_pool_that_does_not_advertise_gepa_v2() {
+        let (svc, _dir, _) = service().await;
+        let (base, task, starts) = spawn_eval_mock("healthbench", BTreeMap::new()).await;
+        let family = "healthbench".to_string();
+        let base_url = base.clone();
+        svc.database()
+            .clone()
+            .run_transaction(move |conn| {
+                conn.execute(
+                    "INSERT INTO containers(id,name,location,status,base_url,task_family,health_json,metadata_json,created_at,updated_at)
+                     VALUES('ctr_healthbench_null_protocol','healthbench null','local','ready',?1,?2,'{\"ok\":true}',?3,'2026-08-17','2026-08-17')",
+                    params![
+                        base_url,
+                        family,
+                        json!({
+                            "runtime_family": "healthbench",
+                            "capabilities": {
+                                "protocol": Value::Null,
+                                "operations": "unknown"
+                            }
+                        })
+                        .to_string()
+                    ],
+                )?;
+                Ok(())
+            })
+            .await
+            .unwrap();
+        let error = svc
+            .start_recipe(recipe(HEALTHBENCH_EVAL_SMOKE_RECIPE, "sess_null_protocol"))
+            .await
+            .err()
+            .map(|error| error.to_string())
+            .unwrap();
+        assert!(
+            error.contains("GEPA v2")
+                && error.contains(crate::container_capabilities::GEPA_V2_CONTRACT),
+            "expected a GEPA v2 admission refusal, got {error}"
+        );
+        assert!(
+            error.contains("protocol=null"),
+            "expected the advertised protocol to be named, got {error}"
+        );
+        assert_eq!(starts.load(Ordering::SeqCst), 0);
+        task.abort();
     }
 
     fn recipe(id: &str, session: &str) -> OptimizerRecipeRunRequest {
@@ -2487,5 +2779,33 @@ mod tests {
             Some(4)
         );
         task.abort();
+    }
+
+    #[test]
+    fn healthbench_policy_config_requires_workshop_proxy_base() {
+        let spec = EvalSpec::for_recipe(HEALTHBENCH_EVAL_SMOKE_RECIPE).unwrap();
+        assert!(spec.policy_config_body(None).is_none());
+        let body = spec
+            .policy_config_body(Some(
+                "http://host.docker.internal:9/cap/wcap_abc12345/v1/providers/openai",
+            ))
+            .unwrap();
+        let dump = body.to_string();
+        assert_eq!(
+            body["config"]["base_url"],
+            "http://host.docker.internal:9/cap/wcap_abc12345/v1/providers/openai"
+        );
+        assert!(dump.contains("/cap/wcap_abc12345/"));
+        assert!(!dump.contains("api.openai.com"));
+        assert!(!dump.contains("127.0.0.1"));
+        assert!(body.pointer("/config/api_key").is_none());
+    }
+
+    #[test]
+    fn banking77_policy_config_stays_on_openrouter() {
+        let spec = EvalSpec::for_recipe(BANKING77_EVAL_BASELINE_RECIPE).unwrap();
+        let body = spec.policy_config_body(None).unwrap();
+        assert_eq!(body["config"]["base_url"], "https://openrouter.ai/api/v1");
+        assert_eq!(body["config"]["api_key_env"], "OPENROUTER_API_KEY");
     }
 }

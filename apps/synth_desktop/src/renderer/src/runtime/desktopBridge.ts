@@ -4,7 +4,7 @@ import { commands as spectaCommands } from "../generated/protocol";
 import { open } from "@tauri-apps/plugin-dialog";
 import desktopPackage from "../../../../package.json";
 import type { AppEvent, InternSessionControlRequest, InternSessionCreateRequest, InternSessionSendRequest, RuntimeEvent, Session } from "@synth/runtime-protocol";
-import type { CodexEvent, CodexOauthBegin, CodexOauthStatus, CodexSessionInfo, ComposerImageAttachment, ContextSnapshot, DesktopInstanceDiagnostics, DesktopPermissionSettings, InventoryCounts, LagunaDownloadProgress, LagunaModelHit, LagunaStatus, ModelMultiAgentSetting, ModelPerformanceSummary, ModelPerformanceTurnSample, PersistedCodexSession, RequestOptions, RuntimeBridge, SkillHit, SynthAccountSummary, SynthBackendSettings, SynthSignInBegin, SynthSignInPoll, TariffCard, TerminalEvent, TerminalInfo, UpdateStatus, VisualAnnotation, VisualSeal, VisualSealBundle, VisualTemplateMeta, VisualUpload, WhisperDownloadProgress, WhisperModelHit, WhisperRuntimeStatus, WorkspaceAccessSettings } from "../bridge";
+import type { CodexEvent, CodexOauthBegin, CodexOauthStatus, CodexSessionInfo, ComposerImageAttachment, ContextSnapshot, DesktopInstanceDiagnostics, DesktopPermissionSettings, InventoryCounts, LagunaDownloadProgress, LagunaModelHit, LagunaStatus, ModelMultiAgentSetting, ModelPerformanceSummary, ModelPerformanceTurnSample, PersistedCodexSession, ProductTelemetryPolicy, RequestOptions, RuntimeBridge, SecretAuditEvent, SecretCapabilitySummary, SecretImportPreview, SecretSummary, SecretsBridge, SecretsInbox, SkillHit, SynthAccountSummary, SynthBackendSettings, SynthSignInBegin, SynthSignInPoll, TariffCard, TerminalEvent, TerminalInfo, TrainingModelDownloadProgress, TrainingModelHit, UpdateStatus, VisualAnnotation, VisualSeal, VisualSealBundle, VisualTemplateMeta, VisualUpload, WhisperDownloadProgress, WhisperModelHit, WhisperRuntimeStatus, WorkspaceAccessSettings } from "../bridge";
 import type { CoreDiagnostics, VisualRecord, VisualRevision } from "@synth/runtime-protocol";
 import type { ContainerDeployment, ResolvedTraceProjection, TraceBundleIngestResult, TraceV5Record, UsageLedgerEntry, UsageSummary, UsageWindow } from "@synth/runtime-protocol";
 import { publicError } from "../runtime/publicError";
@@ -262,6 +262,32 @@ export function installDesktopBridge(): void {
 			clearModelDirectory: async () => undefined,
 			onStatus: () => () => undefined
 		};
+	window.synthTrainingModels ??= isTauri
+		? {
+			listModels: () => invokeCommand<TrainingModelHit[]>(COMMANDS.TRAINING_MODELS_LIST),
+			downloadModel: (modelId) =>
+				invokeCommand<TrainingModelHit>(COMMANDS.TRAINING_MODELS_DOWNLOAD, { modelId }),
+			deleteModel: (modelId) =>
+				invokeCommand<void>(COMMANDS.TRAINING_MODELS_DELETE, { modelId }),
+			onDownloadProgress(listener) {
+				let disposed = false;
+				let unlisten: (() => void) | undefined;
+				void listen<TrainingModelDownloadProgress>(
+					EVENT_CHANNELS.TRAINING_MODELS_DOWNLOAD,
+					({ payload }) => listener(payload)
+				).then((next) => {
+					if (disposed) next();
+					else unlisten = next;
+				});
+				return () => { disposed = true; unlisten?.(); };
+			}
+		}
+		: {
+			listModels: async () => [],
+			downloadModel: async () => { throw new Error("Training model downloads require Synth Desktop"); },
+			deleteModel: async () => { throw new Error("Training model deletion requires Synth Desktop"); },
+			onDownloadProgress: () => () => undefined
+		};
 	window.synthWhisper ??= isTauri
 		? {
 			getRuntimeStatus: () => invokeCommand<WhisperRuntimeStatus>(COMMANDS.WHISPER_RUNTIME_STATUS),
@@ -349,6 +375,31 @@ window.synthAccount ??= isTauri
 			refresh: async () => ({ signedIn: false, state: "local_only", environment: "local", source: "none" }),
 			openBilling: async () => { throw new Error("Billing requires Synth Desktop"); }
 		};
+window.synthTelemetry ??= isTauri
+	? {
+		getPolicy: () => invokeCommand<ProductTelemetryPolicy>(COMMANDS.PRODUCT_TELEMETRY_GET_POLICY),
+		setOptOut: (optOut) => invokeCommand<ProductTelemetryPolicy>(COMMANDS.PRODUCT_TELEMETRY_SET_OPT_OUT, { optOut })
+	}
+	: (() => {
+		let optionalEnabled = true;
+		return {
+			getPolicy: async () => ({
+				dictionaryVersion: "workshop.product-telemetry.v1",
+				collectionPolicyVersion: "workshop.product-telemetry.policy.v1",
+				optionalEnabled,
+				consentVersion: "workshop.product-telemetry.policy.v1"
+			}),
+			setOptOut: async (optOut: boolean) => {
+				optionalEnabled = !optOut;
+				return {
+					dictionaryVersion: "workshop.product-telemetry.v1",
+					collectionPolicyVersion: "workshop.product-telemetry.policy.v1",
+					optionalEnabled,
+					consentVersion: "workshop.product-telemetry.policy.v1"
+				};
+			}
+		};
+	})();
 window.synthCodexOauth ??= isTauri
 	? {
 		begin: () => invokeCommand<CodexOauthBegin>(COMMANDS.CODEX_OAUTH_BEGIN),
@@ -365,6 +416,39 @@ window.synthCodexOauth ??= isTauri
 		ensureReady: async () => ({ state: "disconnected", action: "connect", canUseModels: false, guidance: "ChatGPT sign-in requires Synth Desktop.", configured: false }),
 		disconnect: async () => ({ state: "disconnected", action: "connect", canUseModels: false, guidance: "ChatGPT sign-in requires Synth Desktop.", configured: false }),
 		cancel: async () => undefined
+	};
+window.synthSecrets ??= isTauri
+	? {
+		list: (provider, scope) => invokeCommand<SecretSummary[]>(COMMANDS.SECRETS_LIST, { provider, scope }),
+		create: (request) => invokeCommand<SecretSummary>(COMMANDS.SECRETS_CREATE, { request }),
+		replace: (secretId, value) => invokeCommand<SecretSummary>(COMMANDS.SECRETS_REPLACE, { secretId, value }),
+		delete: (secretId) => invokeCommand<void>(COMMANDS.SECRETS_DELETE, { secretId }),
+		test: (secretId) => invokeCommand<SecretSummary>(COMMANDS.SECRETS_TEST, { secretId }),
+		requestEnvImport: (sourcePath, variableNames) => invokeCommand<SecretImportPreview>(COMMANDS.SECRETS_REQUEST_ENV_IMPORT, { request: { sourcePath, variableNames } }),
+		commitEnvImport: (requestId, selected, after, confirm) => invokeCommand<SecretSummary[]>(COMMANDS.SECRETS_COMMIT_ENV_IMPORT, { requestId, selected, after, confirm: confirm ?? false }),
+		denyEnvImport: (requestId) => invokeCommand<void>(COMMANDS.SECRETS_DENY_ENV_IMPORT, { requestId }),
+		pending: () => invokeCommand<SecretsInbox>(COMMANDS.SECRETS_PENDING),
+		capabilities: () => invokeCommand<SecretCapabilitySummary[]>(COMMANDS.SECRETS_CAPABILITIES_LIST),
+		revokeCapability: (capabilityId) => invokeCommand<void>(COMMANDS.SECRETS_REVOKE_CAPABILITY, { capabilityId }),
+		audit: (limit) => invokeCommand<SecretAuditEvent[]>(COMMANDS.SECRETS_AUDIT_LIST, { limit }),
+		grantUse: (secretId, runId, recipeId, rememberRecipe, requestId) => invokeCommand(COMMANDS.SECRETS_GRANT_USE, { secretId, runId, recipeId, rememberRecipe, requestId: requestId ?? null }),
+		denyUse: (secretId) => invokeCommand(COMMANDS.SECRETS_DENY_USE, { secretId })
+	} satisfies SecretsBridge
+	: {
+		list: async () => [],
+		create: async () => { throw new Error("Secrets require Synth Desktop"); },
+		replace: async () => { throw new Error("Secrets require Synth Desktop"); },
+		delete: async () => undefined,
+		test: async () => { throw new Error("Secrets require Synth Desktop"); },
+		requestEnvImport: async () => { throw new Error("Secrets require Synth Desktop"); },
+		commitEnvImport: async () => [],
+		denyEnvImport: async () => undefined,
+		pending: async () => ({ imports: [], grants: [], proxy: { running: false } }),
+		capabilities: async () => [],
+		revokeCapability: async () => undefined,
+		audit: async () => [],
+		grantUse: async () => ({ status: "denied" }),
+		denyUse: async () => ({ status: "denied" })
 	};
 window.synthConfig ??= isTauri
 		? {
@@ -708,6 +792,9 @@ window.synthWorkspaceScope ??= isTauri
 			get: (reportId) => invokeCommand(COMMANDS.REPORTS_GET, { reportId }),
 			getRevision: (reportId, revision) =>
 				invokeCommand(COMMANDS.REPORTS_REVISION_GET, { reportId, revision: revision ?? null }),
+			validate: (reportId, revision) =>
+				invokeCommand(COMMANDS.REPORTS_VALIDATE, { reportId, revision: revision ?? null }),
+			pinAll: (reportId) => invokeCommand(COMMANDS.REPORTS_PIN_ALL, { reportId }),
 			create: (request) => invokeCommand(COMMANDS.REPORTS_CREATE, { request }),
 			update: (reportId, request) => invokeCommand(COMMANDS.REPORTS_UPDATE, { reportId, request }),
 			archive: (reportId) => invokeCommand(COMMANDS.REPORTS_ARCHIVE, { reportId }),
@@ -726,6 +813,10 @@ window.synthWorkspaceScope ??= isTauri
 			uploadStatus: (receiptDigest) =>
 				invokeCommand(COMMANDS.REPORTS_UPLOAD_STATUS, { receiptDigest }),
 			shareSeal: (receiptDigest) => invokeCommand(COMMANDS.REPORTS_SHARE, { receiptDigest }),
+			setAudience: (publicationId, request) =>
+				invokeCommand(COMMANDS.REPORTS_AUDIENCE_SET, { publicationId, request }),
+			revokeAudience: (publicationId, receiptDigest) =>
+				invokeCommand(COMMANDS.REPORTS_AUDIENCE_REVOKE, { publicationId, receiptDigest }),
 			promote: (publicationId, slug) => invokeCommand(COMMANDS.REPORTS_PROMOTE, { publicationId, slug }),
 			openShared: (committedUrl) => invokeCommand(COMMANDS.REPORTS_OPEN_SHARED, { committedUrl }),
 			listComments: (reportId, revision) =>
@@ -771,6 +862,19 @@ window.synthWorkspaceScope ??= isTauri
 					status: query?.status ?? null,
 					limit: query?.limit ?? null
 				}),
+			searchSavedLoras: (query) =>
+				invokeCommand(COMMANDS.OPTIMIZERS_SAVED_LORAS_SEARCH, { query: query ?? null }),
+			listRunCheckpoints: (optimizerRunId) =>
+				invokeCommand(COMMANDS.OPTIMIZERS_RUN_CHECKPOINTS_LIST, { optimizerRunId }),
+			runOutputs: (optimizerRunId) =>
+				invokeCommand(COMMANDS.OPTIMIZERS_RUN_OUTPUTS, { optimizerRunId }),
+			hostedTrainingModels: () => invokeCommand(COMMANDS.OPTIMIZERS_TRAINING_MODELS),
+			archiveSavedLora: (checkpointId) =>
+				invokeCommand(COMMANDS.OPTIMIZERS_SAVED_LORA_ARCHIVE, { checkpointId }),
+			savedLoraDownload: (checkpointId) =>
+				invokeCommand(COMMANDS.OPTIMIZERS_SAVED_LORA_DOWNLOAD, { checkpointId }),
+			reconcileTraining: (optimizerRunId) =>
+				invokeCommand(COMMANDS.OPTIMIZERS_TRAINING_RECONCILE, { optimizerRunId }),
 			recordVisualReady: (request) => invokeCommand(COMMANDS.VISUAL_SUBSCRIPTION_READY, { request }),
 			onEvent(listener) {
 				return listenRuntimeAppEvents((payload) => {
@@ -792,6 +896,9 @@ export const bridges = {
 	},
 	get laguna() {
 		return window.synthLaguna;
+	},
+	get trainingModels() {
+		return window.synthTrainingModels;
 	},
 	get whisper() {
 		return window.synthWhisper;
@@ -855,6 +962,12 @@ export const bridges = {
 	},
 	get optimizers() {
 		return window.synthOptimizers;
+	},
+	get secrets() {
+		return window.synthSecrets;
+	},
+	get telemetry() {
+		return window.synthTelemetry;
 	},
 	get terminal() {
 		return window.synthTerminal;

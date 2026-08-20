@@ -6,12 +6,12 @@ use super::event_pump::{
 use super::home::{
     apply_brokered_credential, apply_local_laguna_catalog_metadata, apply_local_laguna_provider,
     apply_openrouter_provider, apply_synth_cloud_provider, auto_compact_token_limit,
-    automatic_thread_title, ensure_home, install_local_laguna_catalog, local_laguna_catalog,
-    mcp_enabled_tools, mcp_env_config, mcp_ipc_env_key, multi_agent_flags, nested_id,
-    normalize_gateway_origin, provider_class, requires_disabled_response_storage,
-    responses_base_url, safe_component, supports_provider_compaction, toml_string,
-    validate_reasoning_effort, validate_start, workspace_write_config, ProviderClass,
-    OPENROUTER_RESPONSES_BASE_URL,
+    automatic_thread_title, credential_read_policy_comment, ensure_home,
+    install_local_laguna_catalog, local_laguna_catalog, mcp_enabled_tools, mcp_env_config,
+    mcp_ipc_env_key, multi_agent_flags, nested_id, normalize_gateway_origin, provider_class,
+    requires_disabled_response_storage, responses_base_url, safe_component,
+    supports_provider_compaction, toml_string, validate_reasoning_effort, validate_start,
+    workspace_write_config, ProviderClass, OPENROUTER_RESPONSES_BASE_URL,
 };
 
 use super::generation_speed::{
@@ -201,7 +201,8 @@ fn test_request(workspace: &Path, session_id: &str) -> CodexSessionStartRequest 
 
 #[tokio::test]
 async fn missing_rollout_on_resume_starts_a_replacement_thread() {
-    let _machine = crate::synth_config::test_machine_permissions::install("never", "workspace-write");
+    let _machine =
+        crate::synth_config::test_machine_permissions::install("never", "workspace-write");
     let temp = tempdir().unwrap();
     let codex_root = temp.path().join("codex");
     let manager = CodexManager::with_paths(
@@ -300,7 +301,8 @@ async fn wait_for_pending_approval(manager: &CodexManager) {
 
 #[tokio::test]
 async fn shell_approval_resolves_through_the_broker_and_drains_pending_state() {
-    let _machine = crate::synth_config::test_machine_permissions::install("untrusted", "workspace-write");
+    let _machine =
+        crate::synth_config::test_machine_permissions::install("untrusted", "workspace-write");
     let temp = tempdir().unwrap();
     let codex_root = temp.path().join("codex");
     let core = Arc::new(CoreRuntime::open(temp.path().join("core")).unwrap());
@@ -378,7 +380,8 @@ async fn shell_approval_resolves_through_the_broker_and_drains_pending_state() {
 
 #[tokio::test]
 async fn dead_approval_origin_expires_and_drains_pending_state() {
-    let _machine = crate::synth_config::test_machine_permissions::install("untrusted", "workspace-write");
+    let _machine =
+        crate::synth_config::test_machine_permissions::install("untrusted", "workspace-write");
     let temp = tempdir().unwrap();
     let codex_root = temp.path().join("codex");
     let core = Arc::new(CoreRuntime::open(temp.path().join("core")).unwrap());
@@ -456,7 +459,8 @@ async fn dead_approval_origin_expires_and_drains_pending_state() {
 
 #[tokio::test]
 async fn killed_app_server_interrupts_sqlite_and_resumes_the_same_thread() {
-    let _machine = crate::synth_config::test_machine_permissions::install("never", "workspace-write");
+    let _machine =
+        crate::synth_config::test_machine_permissions::install("never", "workspace-write");
     let temp = tempdir().unwrap();
     let codex_root = temp.path().join("codex");
     let core = Arc::new(CoreRuntime::open(temp.path().join("core")).unwrap());
@@ -554,9 +558,123 @@ async fn killed_app_server_interrupts_sqlite_and_resumes_the_same_thread() {
     manager.close(&request.session_id).await.unwrap();
 }
 
+/// Stop is a containment boundary, not a cosmetic state transition. A
+/// non-cooperative app-server may acknowledge `turn/interrupt` while its shell
+/// tool keeps running, so the Desktop must terminate the attachment's isolated
+/// process group, persist the exact terminal state, and permit a fresh turn on
+/// the durable thread.
+#[cfg(unix)]
+#[tokio::test]
+async fn interrupt_terminates_non_cooperative_tool_tree_and_allows_a_new_turn() {
+    let _machine =
+        crate::synth_config::test_machine_permissions::install("never", "workspace-write");
+    let temp = tempdir().unwrap();
+    let codex_root = temp.path().join("codex");
+    let core = Arc::new(CoreRuntime::open(temp.path().join("core")).unwrap());
+    let manager = CodexManager::with_paths(
+        SessionPersistence::from_core(Some(core.clone())),
+        codex_root.clone(),
+        fixture_binary(),
+        CodexManager::test_broker(),
+    );
+    let app = tauri::test::mock_app();
+    let app_handle = app.handle().clone();
+    let request = test_request(temp.path(), "stop-tool-tree");
+    let home = codex_root.join("homes").join("stop-tool-tree");
+    fs::create_dir_all(&home).unwrap();
+    fs::write(home.join("ignore-interrupt-and-spawn-sleeper"), "1").unwrap();
+
+    manager
+        .start(app_handle.clone(), request.clone())
+        .await
+        .unwrap();
+    let first_turn = manager
+        .start_turn(
+            app_handle.clone(),
+            CodexTurnStartRequest {
+                session_id: request.session_id.clone(),
+                prompt: "start a tool that ignores cooperative cancellation".into(),
+                effort: Some("none".into()),
+                client_message_id: None,
+            },
+        )
+        .await
+        .unwrap()
+        .turn_id
+        .unwrap();
+    let sleeper_pid = tokio::time::timeout(SETTLE_TIMEOUT, async {
+        loop {
+            if let Ok(pid) = fs::read_to_string(home.join("sleeping-child.pid")) {
+                break pid.trim().parse::<libc::pid_t>().unwrap();
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("fixture tool never started");
+
+    manager
+        .interrupt(app_handle.clone(), &request.session_id)
+        .await
+        .unwrap();
+    wait_for_record_status(
+        &manager,
+        &request.session_id,
+        SessionStatus::Interrupted.as_str(),
+    )
+    .await;
+    wait_for_run_status(&core, &first_turn, RunStatus::Interrupted.as_str()).await;
+    let first_run = RunService::new(core.storage().database().clone())
+        .get(first_turn.clone())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(first_run.outcome.unwrap()["reason"], "operator_cancelled");
+    assert!(!manager
+        .sessions
+        .read()
+        .await
+        .contains_key(&request.session_id));
+    tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            if unsafe { libc::kill(sleeper_pid, 0) } != 0 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("Stop left the descendant tool process alive");
+
+    // The process tree is gone, but the conversation is still restartable.
+    fs::remove_file(home.join("ignore-interrupt-and-spawn-sleeper")).unwrap();
+    let resumed = manager
+        .start(app_handle.clone(), request.clone())
+        .await
+        .unwrap();
+    assert_eq!(resumed.thread_id, "thread-fixture");
+    let second_turn = manager
+        .start_turn(
+            app_handle,
+            CodexTurnStartRequest {
+                session_id: request.session_id.clone(),
+                prompt: "start a new turn after Stop".into(),
+                effort: Some("none".into()),
+                client_message_id: None,
+            },
+        )
+        .await
+        .unwrap()
+        .turn_id
+        .unwrap();
+    assert_ne!(first_turn, second_turn);
+    manager.close(&request.session_id).await.unwrap();
+}
+
 #[tokio::test]
 async fn final_answer_before_app_server_exit_completes_the_run() {
-    let _machine = crate::synth_config::test_machine_permissions::install("never", "workspace-write");
+    let _machine =
+        crate::synth_config::test_machine_permissions::install("never", "workspace-write");
     let temp = tempdir().unwrap();
     let codex_root = temp.path().join("codex");
     let core = Arc::new(CoreRuntime::open(temp.path().join("core")).unwrap());
@@ -595,7 +713,8 @@ async fn final_answer_before_app_server_exit_completes_the_run() {
 
 #[tokio::test]
 async fn steer_turn_sends_turn_steer_with_the_active_turn_id() {
-    let _machine = crate::synth_config::test_machine_permissions::install("never", "workspace-write");
+    let _machine =
+        crate::synth_config::test_machine_permissions::install("never", "workspace-write");
     let temp = tempdir().unwrap();
     let codex_root = temp.path().join("codex");
     let core = Arc::new(CoreRuntime::open(temp.path().join("core")).unwrap());
@@ -673,7 +792,8 @@ async fn steer_turn_sends_turn_steer_with_the_active_turn_id() {
 
 #[tokio::test]
 async fn compact_sends_thread_compact_start_for_the_attached_thread() {
-    let _machine = crate::synth_config::test_machine_permissions::install("never", "workspace-write");
+    let _machine =
+        crate::synth_config::test_machine_permissions::install("never", "workspace-write");
     let temp = tempdir().unwrap();
     let codex_root = temp.path().join("codex");
     let core = Arc::new(CoreRuntime::open(temp.path().join("core")).unwrap());
@@ -703,7 +823,8 @@ async fn compact_sends_thread_compact_start_for_the_attached_thread() {
 
 #[tokio::test]
 async fn steer_turn_fails_when_there_is_no_active_turn() {
-    let _machine = crate::synth_config::test_machine_permissions::install("never", "workspace-write");
+    let _machine =
+        crate::synth_config::test_machine_permissions::install("never", "workspace-write");
     let temp = tempdir().unwrap();
     let codex_root = temp.path().join("codex");
     let core = Arc::new(CoreRuntime::open(temp.path().join("core")).unwrap());
@@ -780,7 +901,8 @@ fn send_request(start: CodexSessionStartRequest, prompt: &str) -> CodexTurnSendR
 
 #[tokio::test]
 async fn turn_send_journals_the_renderer_message_id_once() {
-    let _machine = crate::synth_config::test_machine_permissions::install("never", "workspace-write");
+    let _machine =
+        crate::synth_config::test_machine_permissions::install("never", "workspace-write");
     let temp = tempdir().unwrap();
     let codex_root = temp.path().join("codex");
     let core = Arc::new(CoreRuntime::open(temp.path().join("core")).unwrap());
@@ -825,7 +947,8 @@ async fn turn_send_journals_the_renderer_message_id_once() {
 /// storage string in the composer.
 #[tokio::test]
 async fn switching_model_mid_conversation_keeps_creating_durable_runs() {
-    let _machine = crate::synth_config::test_machine_permissions::install("never", "workspace-write");
+    let _machine =
+        crate::synth_config::test_machine_permissions::install("never", "workspace-write");
     let temp = tempdir().unwrap();
     let codex_root = temp.path().join("codex");
     let core = Arc::new(CoreRuntime::open(temp.path().join("core")).unwrap());
@@ -906,7 +1029,8 @@ async fn switching_model_mid_conversation_keeps_creating_durable_runs() {
 /// not weaken the real close.
 #[tokio::test]
 async fn closing_a_session_still_closes_it_durably() {
-    let _machine = crate::synth_config::test_machine_permissions::install("never", "workspace-write");
+    let _machine =
+        crate::synth_config::test_machine_permissions::install("never", "workspace-write");
     let temp = tempdir().unwrap();
     let codex_root = temp.path().join("codex");
     let core = Arc::new(CoreRuntime::open(temp.path().join("core")).unwrap());
@@ -941,7 +1065,8 @@ async fn closing_a_session_still_closes_it_durably() {
 
 #[tokio::test]
 async fn terminal_before_run_creation_reconciles_the_exact_turn() {
-    let _machine = crate::synth_config::test_machine_permissions::install("never", "workspace-write");
+    let _machine =
+        crate::synth_config::test_machine_permissions::install("never", "workspace-write");
     let temp = tempdir().unwrap();
     let codex_root = temp.path().join("codex");
     let core = Arc::new(CoreRuntime::open(temp.path().join("core")).unwrap());
@@ -1016,7 +1141,8 @@ async fn terminal_before_run_creation_reconciles_the_exact_turn() {
 /// renderer gets the typed detachment. A later retry resumes the same thread.
 #[tokio::test]
 async fn turn_send_reports_detachment_after_event_pump_finalizes_the_run() {
-    let _machine = crate::synth_config::test_machine_permissions::install("never", "workspace-write");
+    let _machine =
+        crate::synth_config::test_machine_permissions::install("never", "workspace-write");
     let temp = tempdir().unwrap();
     let codex_root = temp.path().join("codex");
     let core = Arc::new(CoreRuntime::open(temp.path().join("core")).unwrap());
@@ -1116,7 +1242,8 @@ async fn turn_send_reports_detachment_after_event_pump_finalizes_the_run() {
 /// successful send, never a transient error it has to model.
 #[tokio::test]
 async fn turn_send_retries_once_through_a_dying_app_server() {
-    let _machine = crate::synth_config::test_machine_permissions::install("never", "workspace-write");
+    let _machine =
+        crate::synth_config::test_machine_permissions::install("never", "workspace-write");
     let temp = tempdir().unwrap();
     let codex_root = temp.path().join("codex");
     let manager = CodexManager::with_paths(
@@ -1149,7 +1276,8 @@ async fn turn_send_retries_once_through_a_dying_app_server() {
 /// `running` but nothing is attached. Sending must reattach and resume.
 #[tokio::test]
 async fn turn_send_reattaches_a_restored_running_record_without_an_attachment() {
-    let _machine = crate::synth_config::test_machine_permissions::install("never", "workspace-write");
+    let _machine =
+        crate::synth_config::test_machine_permissions::install("never", "workspace-write");
     let temp = tempdir().unwrap();
     let codex_root = temp.path().join("codex");
     fs::create_dir_all(&codex_root).unwrap();
@@ -1285,7 +1413,8 @@ async fn rejected_turn_send_arguments_never_mark_the_session_running() {
 
 #[tokio::test]
 async fn turn_send_compacts_on_source_model_before_rebind() {
-    let _machine = crate::synth_config::test_machine_permissions::install("never", "workspace-write");
+    let _machine =
+        crate::synth_config::test_machine_permissions::install("never", "workspace-write");
     let temp = tempdir().unwrap();
     let codex_root = temp.path().join("codex");
     let core = Arc::new(CoreRuntime::open(temp.path().join("core")).unwrap());
@@ -1389,7 +1518,8 @@ async fn turn_send_compacts_on_source_model_before_rebind() {
 /// Divergent UUIDs were the CUA P1: every submitted prompt rendered twice.
 #[tokio::test]
 async fn turn_send_reuses_client_message_id_in_journalled_user_prompt() {
-    let _machine = crate::synth_config::test_machine_permissions::install("never", "workspace-write");
+    let _machine =
+        crate::synth_config::test_machine_permissions::install("never", "workspace-write");
     let temp = tempdir().unwrap();
     let codex_root = temp.path().join("codex");
     let core = Arc::new(CoreRuntime::open(temp.path().join("core")).unwrap());
@@ -1462,7 +1592,8 @@ fn only_lost_process_failures_are_treated_as_detachment() {
 
 #[tokio::test]
 async fn stale_attachment_exit_cannot_detach_its_replacement() {
-    let _machine = crate::synth_config::test_machine_permissions::install("never", "workspace-write");
+    let _machine =
+        crate::synth_config::test_machine_permissions::install("never", "workspace-write");
     let temp = tempdir().unwrap();
     let codex_root = temp.path().join("codex");
     let manager = CodexManager::with_paths(
@@ -1654,7 +1785,8 @@ fn approval_request_variants_and_nested_decisions_are_normalized() {
 }
 #[tokio::test]
 async fn app_server_approval_is_journaled_and_resumes_after_one_approval() {
-    let _machine = crate::synth_config::test_machine_permissions::install("untrusted", "workspace-write");
+    let _machine =
+        crate::synth_config::test_machine_permissions::install("untrusted", "workspace-write");
     let temp = tempdir().unwrap();
     let codex_root = temp.path().join("codex");
     let core = Arc::new(CoreRuntime::open(temp.path().join("core")).unwrap());
@@ -1760,6 +1892,19 @@ fn renders_additional_workspace_roots_for_codex() {
     );
 }
 #[test]
+fn workspace_write_config_does_not_invent_a_read_denylist_field() {
+    let config = workspace_write_config(&["/tmp".into()]);
+    assert!(config.contains("[sandbox_workspace_write]"));
+    assert!(config.contains("writable_roots"));
+    assert!(!config.contains("read_deny"));
+    assert!(!config.contains("denied_read"));
+    assert!(!config.contains("exclude_globs"));
+    let comment = credential_read_policy_comment();
+    assert!(comment.contains(".env"));
+    assert!(comment.contains("no sandbox read-denylist"));
+    assert!(!comment.contains("writable_roots"));
+}
+#[test]
 fn advertises_only_the_compact_visual_tool_to_codex() {
     assert_eq!(
         mcp_enabled_tools("synth_visuals"),
@@ -1773,6 +1918,10 @@ fn advertises_only_the_compact_visual_tool_to_codex() {
     assert_eq!(
         mcp_enabled_tools("synth_session"),
         "enabled_tools = [\"session_present\"]\n"
+    );
+    assert_eq!(
+        mcp_enabled_tools("synth_secrets"),
+        "enabled_tools = [\"secrets_manage\"]\n"
     );
 }
 
@@ -1845,6 +1994,22 @@ fn materializes_diagram_skill_with_direct_tool_first_contract() {
     assert!(session_skill.contains("tools.mcp__synth_session__session_present"));
     assert!(session_skill.contains("seven"));
     assert!(session_skill.contains("Manual"));
+    let secrets_skill = fs::read_to_string(home.join("skills/use-synth-secrets/SKILL.md")).unwrap();
+    assert_eq!(
+        secrets_skill,
+        fs::read_to_string(home.join("skills/.system/use-synth-secrets/SKILL.md")).unwrap()
+    );
+    assert!(secrets_skill.contains("tools.mcp__synth_secrets__secrets_manage"));
+    assert!(secrets_skill.contains("request_env_import"));
+    assert!(secrets_skill.contains("Codex sandbox cannot deny those reads"));
+    assert!(!secrets_skill.contains("secrets_create"));
+    let agents = fs::read_to_string(home.join("AGENTS.md")).unwrap();
+    assert!(agents.contains(".env"));
+    assert!(agents.contains("no read-denylist field"));
+    let generated = fs::read_to_string(home.join("config.toml")).unwrap();
+    assert!(generated.contains("no sandbox read-denylist"));
+    assert!(!generated.contains("read_deny"));
+    assert!(!generated.contains("denied_read"));
     assert!(optimizers_skill.contains("mcp__synth_session__session_present"));
     assert!(optimizers_skill.contains("run ID's final 6 characters"));
 
@@ -2305,7 +2470,8 @@ fn synth_cloud_normalizes_a_local_bind_address_for_the_client() {
 /// the live child's lease untouched.
 #[tokio::test]
 async fn reusing_a_live_child_leaves_its_lease_untouched() {
-    let _machine = crate::synth_config::test_machine_permissions::install("never", "workspace-write");
+    let _machine =
+        crate::synth_config::test_machine_permissions::install("never", "workspace-write");
     let temp = tempdir().unwrap();
     let manager = CodexManager::with_paths(
         SessionPersistence::Null,
@@ -2346,7 +2512,8 @@ async fn reusing_a_live_child_leaves_its_lease_untouched() {
 /// `close()` had already deleted.
 #[tokio::test]
 async fn rebinding_a_session_spawns_the_new_child_with_a_live_lease() {
-    let _machine = crate::synth_config::test_machine_permissions::install("never", "workspace-write");
+    let _machine =
+        crate::synth_config::test_machine_permissions::install("never", "workspace-write");
     let temp = tempdir().unwrap();
     let manager = CodexManager::with_paths(
         SessionPersistence::Null,
@@ -2389,7 +2556,8 @@ async fn rebinding_a_session_spawns_the_new_child_with_a_live_lease() {
 /// receipts born under the old one.
 #[tokio::test]
 async fn a_provider_name_change_alone_respawns_the_child() {
-    let _machine = crate::synth_config::test_machine_permissions::install("never", "workspace-write");
+    let _machine =
+        crate::synth_config::test_machine_permissions::install("never", "workspace-write");
     let temp = tempdir().unwrap();
     let manager = CodexManager::with_paths(
         SessionPersistence::Null,
@@ -2450,7 +2618,8 @@ async fn a_provider_name_change_alone_respawns_the_child() {
 /// it rather than leave it talking through the stale credential.
 #[tokio::test]
 async fn a_rotated_credential_respawns_the_child_with_a_fresh_lease() {
-    let _machine = crate::synth_config::test_machine_permissions::install("never", "workspace-write");
+    let _machine =
+        crate::synth_config::test_machine_permissions::install("never", "workspace-write");
     let temp = tempdir().unwrap();
     let manager = CodexManager::with_paths(
         SessionPersistence::Null,
@@ -2495,7 +2664,8 @@ async fn a_rotated_credential_respawns_the_child_with_a_fresh_lease() {
 
 #[tokio::test]
 async fn a_refreshed_chatgpt_access_token_rebinds_without_delegating_refresh() {
-    let _machine = crate::synth_config::test_machine_permissions::install("never", "workspace-write");
+    let _machine =
+        crate::synth_config::test_machine_permissions::install("never", "workspace-write");
     let temp = tempdir().unwrap();
     let root = temp.path().join("codex");
     let manager = CodexManager::with_paths(

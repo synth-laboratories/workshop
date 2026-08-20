@@ -45,6 +45,7 @@ pub enum RendererKind {
     Mermaid,
     Systems,
     SystemsDynamic,
+    Chart,
 }
 
 impl RendererKind {
@@ -56,6 +57,7 @@ impl RendererKind {
             Self::Mermaid => "mermaid",
             Self::Systems => "systems",
             Self::SystemsDynamic => "systems-dynamic",
+            Self::Chart => "chart",
         }
     }
 
@@ -66,6 +68,7 @@ impl RendererKind {
             "mermaid" => Self::Mermaid,
             "systems" => Self::Systems,
             "systems-dynamic" => Self::SystemsDynamic,
+            "chart" => Self::Chart,
             _ => Self::Template,
         }
     }
