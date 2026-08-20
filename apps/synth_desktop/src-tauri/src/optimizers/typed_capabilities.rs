@@ -73,10 +73,15 @@ pub fn create_training_plan(recipe_id: &str) -> Result<Value> {
             .ok_or_else(|| anyhow::anyhow!("local CISPO recipe missing from catalog"))?,
         other => bail!("create_training_plan admits `{LOCAL_MLX_SFT_RECIPE}` or `{LOCAL_MLX_CISPO_RECIPE}`, not `{other}`"),
     };
+    let limits = recipe.get("limits").cloned().unwrap_or(Value::Null);
+    let resolved_config = limits
+        .get("resolvedConfig")
+        .cloned()
+        .unwrap_or_else(|| limits.clone());
     Ok(json!({
         "recipeId": recipe_id,
         "startsRun": false,
-        "resolvedConfig": recipe.get("limits").and_then(|limits| limits.get("resolvedConfig")).cloned().unwrap_or(Value::Null),
+        "resolvedConfig": resolved_config,
         "availability": recipe.get("availability"),
         "availabilityReason": recipe.get("availabilityReason"),
         "preflight": recipe.get("preflight")

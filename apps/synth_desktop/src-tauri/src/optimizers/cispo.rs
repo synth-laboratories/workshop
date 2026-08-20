@@ -129,8 +129,8 @@ async fn start_local(
         .ok_or_else(|| anyhow::anyhow!("local CISPO requires a pinned rollout target at cookbooks/optimizers/cispo/rollout.json"))?;
     let evaluation_plan = tunneled_banking77_evaluation_plan(
         Some(rollout.url.clone()),
-        "SYNTH_MLX_CISPO_ROLLOUT_URL",
-        "SYNTH_MLX_CISPO_ROLLOUT_TOKEN",
+        "SYNTH_OPTIMIZERS_CISPO_ROLLOUT_URL",
+        "SYNTH_OPTIMIZERS_CISPO_ROLLOUT_TOKEN",
         2,
         vec![2, 4],
     );
