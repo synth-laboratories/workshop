@@ -68,6 +68,14 @@ test("CISPO run exposes algorithm-specific diagnostics and next artifact", async
 	await expect(comparison).toContainText("+0.304 vs baseline");
 	await expect(comparison).toContainText("2 checkpoints · 4 observations");
 	await expect(comparison.getByRole("img", { name: "Reward across 4 evaluation observations" })).toBeVisible();
+	await comparison.getByRole("button", { name: "Review checkpoint evaluation at step 40" }).last().click();
+	const review = page.getByTestId("training-evaluation-dialog");
+	await expect(review).toContainText("run-cispo-20260820-02:step-40");
+	await expect(review).toContainText("banking77_eval.v1");
+	await expect(review.getByRole("table")).toContainText("0.594");
+	await expect(review.getByRole("table")).toContainText("+0.156");
+	await review.getByRole("button", { name: "Close evaluation review" }).click();
+	await expect(review).toBeHidden();
 	await page.getByRole("button", { name: "Open artifact" }).click();
 	await expect(page.getByTestId("training-artifact-detail")).toContainText("mlx-lora-cispo-b921");
 });
@@ -95,6 +103,9 @@ test("retain CUA-1 training receipts", async ({ page }) => {
 		await page.screenshot({ path: `${receiptRoot}/${viewport.name}-train-cispo.png`, fullPage: true });
 		await page.getByTestId("training-tab-run").click();
 		await page.screenshot({ path: `${receiptRoot}/${viewport.name}-run-cispo.png`, fullPage: true });
+		await page.getByTestId("training-evaluation-comparison").getByRole("button", { name: "Review checkpoint evaluation at step 40" }).last().click();
+		await page.screenshot({ path: `${receiptRoot}/${viewport.name}-checkpoint-eval-review.png`, fullPage: true });
+		await page.getByRole("button", { name: "Close evaluation review" }).click();
 		await page.evaluate(() => document.documentElement.setAttribute("data-theme", "dark"));
 		await page.getByTestId("training-tab-artifacts").click();
 		await page.screenshot({ path: `${receiptRoot}/${viewport.name}-artifacts-dark.png`, fullPage: true });
