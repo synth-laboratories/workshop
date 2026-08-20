@@ -1,6 +1,6 @@
 import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
 import type { OptimizerAlgorithmInfo, OptimizerRunRecord } from "@synth/runtime-protocol";
-import type { HostedTrainingModel, OptimizerRecipeInfo, OptimizerRunOutputs, PluginActionReceipt, PluginLifecycleOperation, PluginStatus, SavedLoraCheckpoint, TrainingProjection } from "../bridge/types";
+import type { HostedTrainingModel, OptimizerRecipeInfo, OptimizerRunOutputs, PluginActionReceipt, PluginLifecycleOperation, PluginStatus, SavedLoraCheckpoint, TrainingArtifact, TrainingProjection } from "../bridge/types";
 import { bridges } from "../runtime/desktopBridge";
 import { findPluginStatus, pluginPresentation, type PluginPresentation } from "../runtime/pluginPresentation";
 import { publicError } from "../runtime/publicError";
@@ -332,6 +332,7 @@ export function OptimizersPage({
 	const [hostedTrainingModels, setHostedTrainingModels] = useState<HostedTrainingModel[]>([]);
 	const [hostedModelCatalogRevision, setHostedModelCatalogRevision] = useState<string | null>(null);
 	const [savedLoras, setSavedLoras] = useState<SavedLoraCheckpoint[]>([]);
+	const [localArtifacts, setLocalArtifacts] = useState<TrainingArtifact[]>([]);
 	const [savedLoraTotal, setSavedLoraTotal] = useState(0);
 	const [savedLoraSearch, setSavedLoraSearch] = useState("");
 	const [savedLoraScope, setSavedLoraScope] = useState<"all" | "mine" | "org">("all");
@@ -400,6 +401,8 @@ export function OptimizersPage({
 		setAlgorithms(nextAlgorithms);
 		setEvalRecipes(nextRecipes.filter((recipe) => recipe.algorithmId === "eval"));
 		if (!selectedId && nextRuns[0]) setSelectedId(nextRuns[0].id);
+		const artifacts = await bridges.trainingArtifacts?.list().catch(() => [] as TrainingArtifact[]);
+		setLocalArtifacts(artifacts ?? []);
 	}, [algorithm, search, selectedId, source, status]);
 
 	// No plugin poller here. Registry status arrives from useAppController,
@@ -975,6 +978,48 @@ export function OptimizersPage({
 					<button className="primary-button" type="button" disabled={startingAgent !== null || hostedLaunchBlocked || !trainingModel.trim() || !trainingTask.trim() || !trainingContainerUrl.trim()} onClick={() => void reviewTrainingLaunch()} data-testid="review-hosted-training-launch">Review &amp; launch</button>
 					<small>{hostedLaunchBlocked ? selectedHostedSupport?.block_reason ?? "This model and algorithm combination is not admitted by the hosted catalog." : "Bounded recipe: cispo.slime.hosted.v1. Default golden path: CISPO → Banking77."}{hostedModelCatalogRevision ? ` Catalog ${hostedModelCatalogRevision}; live provider preflight still required.` : ""}</small>
 				</div>
+			</section>
+
+			<section id="optimizer-local-artifact-library" className="optimizer-checkpoint-library" aria-labelledby="optimizer-local-artifact-library-title" data-testid="optimizer-local-artifact-library">
+				<div className="optimizer-recipes-head">
+					<div><span className="optimizer-eyebrow">This Mac</span><h2 id="optimizer-local-artifact-library-title">Training artifacts</h2></div>
+					<p>{localArtifacts.length} retained adapters. Inference and Eval must name one of these ids; they never fall back to ambient latest.</p>
+				</div>
+				{localArtifacts.length === 0 ? (
+					<p data-testid="local-artifact-empty">No local adapters yet. Finish a bounded SFT or CISPO run on this Mac.</p>
+				) : (
+					<ul className="optimizer-checkpoint-list">
+						{localArtifacts.map((artifact) => (
+							<li key={artifact.id} data-testid={`local-artifact-${artifact.id}`}>
+								<div>
+									<strong>{artifact.id}</strong>
+									<p>{artifact.adapterKind} · {artifact.baseModelId} · run {artifact.producingRunId} · {artifact.producingAlgorithm}</p>
+									<p>digest {artifact.digest ?? "none"} · dataset {artifact.datasetDigest ?? "none"} · config {artifact.configDigest ?? "none"} · {artifact.integrity}{artifact.sizeBytes != null ? ` · ${formatBytes(artifact.sizeBytes)}` : ""}</p>
+								</div>
+								<div>
+									<button className="secondary-button" type="button" disabled={!artifact.integrity || artifact.integrity === "unavailable"} onClick={() => void startAgent({
+										id: "sft",
+										label: "SF",
+										name: "SFT",
+										kind: "training",
+										description: "",
+										flow: [],
+										prompt: `Launch inference against training artifact ${artifact.id} (base model ${artifact.baseModelId}, adapter ${artifact.adapterKind}, producing run ${artifact.producingRunId}). Do not use an ambient latest checkpoint. If the adapter fails to load, fail visibly.`
+									})} data-testid={`local-artifact-infer-${artifact.id}`}>Run inference</button>
+									<button className="secondary-button" type="button" onClick={() => void startAgent({
+										id: "eval",
+										label: "EV",
+										name: "Eval",
+										kind: "optimizer",
+										description: "",
+										flow: [],
+										prompt: `Launch an Eval recipe against training artifact ${artifact.id} (base model ${artifact.baseModelId}, producing run ${artifact.producingRunId}, config ${artifact.configDigest ?? "unknown"}). Retain that artifact id in the Eval receipt.`
+									})} data-testid={`local-artifact-eval-${artifact.id}`}>Evaluate</button>
+								</div>
+							</li>
+						))}
+					</ul>
+				)}
 			</section>
 
 			<section id="optimizer-checkpoint-library" className="optimizer-checkpoint-library" aria-labelledby="optimizer-checkpoint-library-title" data-testid="optimizer-checkpoint-library">

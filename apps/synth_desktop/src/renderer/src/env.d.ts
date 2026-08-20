@@ -15,6 +15,7 @@ import type {
 	InventoryBridge,
 	LagunaBridge,
 	TrainingModelsBridge,
+	TrainingArtifactsBridge,
 	ModelPerformanceBridge,
 	OptimizersBridge,
 	ComputerUseBridge,
@@ -52,6 +53,7 @@ declare global {
 		synthRuntime?: RuntimeBridge;
 		synthLaguna?: LagunaBridge;
 		synthTrainingModels?: TrainingModelsBridge;
+		synthTrainingArtifacts?: TrainingArtifactsBridge;
 		synthWhisper?: WhisperBridge;
 		synthSkills?: SkillsBridge;
 		synthContext?: ContextBridge;

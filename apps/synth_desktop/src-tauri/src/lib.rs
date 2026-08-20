@@ -56,6 +56,7 @@ mod telemetry;
 mod terminal;
 pub mod trace_ingest;
 pub mod trace_query;
+pub mod training_artifacts;
 pub mod training_models;
 mod update_check;
 mod visuals;

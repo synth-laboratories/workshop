@@ -848,19 +848,58 @@ async fn persist_handoff(
     };
     let mut run = service.get(run_id.into()).await?;
     if handoff.pointer("/inference/kind").and_then(Value::as_str) == Some("mlx-lora.v1") {
-        run.output_refs.push(OptimizerResourceRef {
-            kind: "checkpoint".into(),
-            id: handoff["checkpoint"]["checkpoint_id"]
-                .as_str()
-                .unwrap_or("terminal")
-                .into(),
-            digest: handoff["checkpoint"]["sha256"]
-                .as_str()
-                .map(|value| format!("sha256:{value}")),
-            role: Some("terminal_adapter".into()),
-            title: Some("Training adapter".into()),
-            metadata: handoff.clone(),
-        });
+        let dataset_digest = run
+            .summary
+            .pointer("/datasetDigest")
+            .and_then(Value::as_str)
+            .map(str::to_string);
+        let config_digest = run
+            .summary
+            .pointer("/configDigest")
+            .and_then(Value::as_str)
+            .map(str::to_string);
+        match crate::training_artifacts::TrainingArtifact::from_mlx_handoff(
+            run_id,
+            &run.algorithm_id,
+            crate::training_models::QWEN_TRAINING_MODEL_ID,
+            &handoff,
+            dataset_digest,
+            config_digest,
+        ) {
+            Ok(artifact) => {
+                let stored = crate::training_artifacts::register(artifact.clone())
+                    .unwrap_or(artifact);
+                run.output_refs.push(OptimizerResourceRef {
+                    kind: "checkpoint".into(),
+                    id: stored.id.clone(),
+                    digest: stored.digest.clone(),
+                    role: Some("terminal_adapter".into()),
+                    title: Some("Training adapter".into()),
+                    metadata: json!({
+                        "handoff": handoff,
+                        "trainingArtifact": stored,
+                    }),
+                });
+            }
+            Err(error) => {
+                run.output_refs.push(OptimizerResourceRef {
+                    kind: "checkpoint".into(),
+                    id: handoff["checkpoint"]["checkpoint_id"]
+                        .as_str()
+                        .unwrap_or("terminal")
+                        .into(),
+                    digest: handoff["checkpoint"]["sha256"]
+                        .as_str()
+                        .map(|value| format!("sha256:{value}")),
+                    role: Some("terminal_adapter".into()),
+                    title: Some("Training adapter".into()),
+                    metadata: json!({
+                        "handoff": handoff,
+                        "artifactError": error.to_string(),
+                    }),
+                });
+            }
+        }
     }
     let mut summary = run.summary.as_object().cloned().unwrap_or_default();
     summary.insert("adapterHandoff".into(), handoff);
