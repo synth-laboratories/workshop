@@ -4,6 +4,7 @@ import type { HostedTrainingModel, OptimizerRecipeInfo, OptimizerRunOutputs, Plu
 import { bridges } from "../runtime/desktopBridge";
 import { findPluginStatus, pluginPresentation, type PluginPresentation } from "../runtime/pluginPresentation";
 import { publicError } from "../runtime/publicError";
+import { TrainingWorkspace } from "./TrainingWorkspace";
 
 type OptimizerGuide = {
 	id: "gepa" | "go-ex" | "sft" | "cispo" | "ppo" | "eval";
@@ -47,14 +48,6 @@ const OPTIMIZER_GUIDES: OptimizerGuide[] = [
 		flow: ["Preflight", "Roll out", "Train"],
 		prompt: "Help me set up hosted CISPO using implementation cispo.slime.v1. Do not start paid compute yet. Default to Banking77. Verify the exact Tinker capability response, local Container capability hash, SynthTunnel lease, direct-HTTPS sampler path, bounded steps/time/cost, pinned slime commit, checkpoint cadence, and evaluation plan. Explain how env_unreachable hold and stale-policy limits will behave. Wait for my explicit approval before launch."
 	},
-	{
-		id: "ppo",
-		label: "PP",
-		name: "PPO · GLM 5.2/5.3",
-		description: "Run clipped policy/value optimization with explicit GLM provenance and a live HealthBench rollout plane.",
-		flow: ["Preflight", "Roll out", "Optimize"],
-		prompt: "Help me set up hosted PPO using implementation ppo.glm-5.3.v1. Do not start paid compute yet. Default to HealthBench. Verify the immutable public GLM/slime reference status, Tinker capabilities, Container and grader provenance, capability hash, SynthTunnel lease, direct-HTTPS sampler path, bounded steps/time/cost, checkpoint cadence, and evaluation plan. Refuse to claim unreleased GLM defaults as verified. Wait for my explicit approval before launch."
-	}
 ];
 
 type Props = {
@@ -87,7 +80,6 @@ function algorithmLabel(id: string): string {
 	if (id === "go-ex") return "GELO";
 	if (id === "sft") return "SFT";
 	if (id === "cispo") return "CISPO · slime";
-	if (id === "ppo") return "PPO · GLM";
 	if (id === "eval") return "Eval";
 	return id;
 }
@@ -320,7 +312,7 @@ export function OptimizersPage({
 	const [evalRecipes, setEvalRecipes] = useState<OptimizerRecipeInfo[]>([]);
 	const [evalState, setEvalState] = useState<EvalState | null>(null);
 	const [trainingProjection, setTrainingProjection] = useState<TrainingProjection | null>(null);
-	const [trainingAlgorithm, setTrainingAlgorithm] = useState<"cispo" | "ppo">("cispo");
+	const trainingAlgorithm = "cispo" as const;
 	const [trainingModel, setTrainingModel] = useState("openai/gpt-oss-20b");
 	const [trainingTask, setTrainingTask] = useState("banking77");
 	const [trainingContainerUrl, setTrainingContainerUrl] = useState("http://127.0.0.1:8000");
@@ -329,7 +321,6 @@ export function OptimizersPage({
 	const [trainingCostUsd, setTrainingCostUsd] = useState(0.1);
 	const [trainingCheckpointEvery, setTrainingCheckpointEvery] = useState(1);
 	const [hostedTrainingModels, setHostedTrainingModels] = useState<HostedTrainingModel[]>([]);
-	const [hostedModelCatalogRevision, setHostedModelCatalogRevision] = useState<string | null>(null);
 	const [savedLoras, setSavedLoras] = useState<SavedLoraCheckpoint[]>([]);
 	const [savedLoraTotal, setSavedLoraTotal] = useState(0);
 	const [savedLoraSearch, setSavedLoraSearch] = useState("");
@@ -420,7 +411,6 @@ export function OptimizersPage({
 		void loadHostedTrainingModels().then((catalog) => {
 			if (!live) return;
 			setHostedTrainingModels(catalog.models);
-			setHostedModelCatalogRevision(catalog.catalogRevision);
 			if (!catalog.models.some((model) => model.modelId === trainingModel)) {
 				const preferred = catalog.models.find((model) => model.algorithms[trainingAlgorithm]?.status !== "blocked");
 				if (preferred) setTrainingModel(preferred.modelId);
@@ -871,13 +861,14 @@ export function OptimizersPage({
 				</section>
 			) : null}
 
+			<TrainingWorkspace onStartFixture={() => void startSftFixture()} fixtureBusy={startingSftFixture} />
+
 			<section className="optimizer-recipes" aria-labelledby="optimizer-recipes-title">
 				<div className="optimizer-recipes-head">
 					<div><span className="optimizer-eyebrow">Agent-guided setup</span><h2 id="optimizer-recipes-title">What do you want to optimize?</h2></div>
-					<p>The agent will help choose the Container, evaluation, and budget.</p>
 				</div>
 				<div className="optimizer-recipe-grid">
-					{OPTIMIZER_GUIDES.map((guide) => (
+					{OPTIMIZER_GUIDES.filter((guide) => guide.id !== "sft" && guide.id !== "cispo").map((guide) => (
 						<article className="optimizer-recipe-card" aria-labelledby={`optimizer-guide-${guide.id}`} data-testid={`optimizer-guide-${guide.id}`} key={guide.id}>
 							<div className="optimizer-recipe-top"><span className="optimizer-recipe-mark">{guide.label}</span><span className="optimizer-recipe-runtime">Optimization algorithm</span></div>
 							<h3 id={`optimizer-guide-${guide.id}`}>{guide.name}</h3>
@@ -914,14 +905,9 @@ export function OptimizersPage({
 			<section className="optimizer-training-launch" aria-labelledby="optimizer-training-launch-title" data-testid="optimizer-training-launch">
 				<div className="optimizer-recipes-head">
 					<div><span className="optimizer-eyebrow">Hosted on-policy training</span><h2 id="optimizer-training-launch-title">Configure a bounded launch</h2></div>
-					<p>The client validates provider and Container capabilities before opening paid compute.</p>
 				</div>
 				<div className="optimizer-training-form">
-					<label><span>Algorithm</span><select value={trainingAlgorithm} onChange={(event) => {
-						const next = event.target.value as "cispo" | "ppo";
-						setTrainingAlgorithm(next);
-						setTrainingTask(next === "cispo" ? "banking77" : "healthbench");
-					}}><option value="cispo">CISPO · slime reference</option><option value="ppo">PPO · GLM 5.2/5.3</option></select></label>
+					<label><span>Algorithm</span><select value={trainingAlgorithm} disabled><option value="cispo">CISPO · slime reference</option></select></label>
 					<label><span>Model</span><select value={trainingModel} onChange={(event) => setTrainingModel(event.target.value)}>{hostedTrainingModels.map((model) => { const support = model.algorithms[trainingAlgorithm]; return <option key={model.modelId} value={model.modelId} disabled={support?.status === "blocked"}>{model.label} · {support?.status ?? "not validated"}</option>; })}</select></label>
 					<label><span>Task</span><input value={trainingTask} onChange={(event) => setTrainingTask(event.target.value)} /></label>
 					<label><span>Local Container URL</span><input value={trainingContainerUrl} onChange={(event) => setTrainingContainerUrl(event.target.value)} /></label>
@@ -932,7 +918,7 @@ export function OptimizersPage({
 				</div>
 				<div className="optimizer-training-launch-actions">
 					<button className="primary-button" type="button" disabled={startingAgent !== null || hostedLaunchBlocked || !trainingModel.trim() || !trainingTask.trim() || !trainingContainerUrl.trim()} onClick={() => void reviewTrainingLaunch()} data-testid="review-hosted-training-launch">Review &amp; launch</button>
-					<small>{hostedLaunchBlocked ? selectedHostedSupport?.block_reason ?? "This model and algorithm combination is not admitted by the hosted catalog." : trainingAlgorithm === "cispo" ? "Default golden path: CISPO → Banking77." : "Default golden path: PPO → HealthBench."}{hostedModelCatalogRevision ? ` Catalog ${hostedModelCatalogRevision}; live provider preflight still required.` : ""}</small>
+					{hostedLaunchBlocked ? <span className="optimizer-status failed">Unavailable</span> : null}
 				</div>
 			</section>
 
