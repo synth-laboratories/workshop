@@ -32,8 +32,7 @@ pub struct VisualRegistry {
     /// Attached once by the composition root, like diagnostics. Charts can bind
     /// an optimizer run's typed result; the optimizer service owns that read and
     /// the registry must not grow a second way to compute it.
-    pub(super) optimizer_runs:
-        Arc<std::sync::OnceLock<crate::optimizers::OptimizerService>>,
+    pub(super) optimizer_runs: Arc<std::sync::OnceLock<crate::optimizers::OptimizerService>>,
 }
 
 impl VisualRegistry {
@@ -2506,12 +2505,21 @@ mod tests {
         )
         .unwrap();
         // Categories, series names, and table rows all came out of the fixture.
-        assert!(svg.contains("move_left"), "bar categories derive from the data");
+        assert!(
+            svg.contains("move_left"),
+            "bar categories derive from the data"
+        );
         // A single series draws no legend, so prove the derivation by what it
         // plotted: a line exists, and the empty state does not.
         assert!(!svg.contains("no plotted values"));
-        assert!(svg.contains("stroke-width=\"1.8\""), "the cumulative series plotted a line");
-        assert!(svg.contains("drink"), "unwound achievements reach the table");
+        assert!(
+            svg.contains("stroke-width=\"1.8\""),
+            "the cumulative series plotted a line"
+        );
+        assert!(
+            svg.contains("drink"),
+            "unwound achievements reach the table"
+        );
         assert!(svg.contains("Reward by turn"));
 
         // A slot the visual does not bind is a render failure that names it,
@@ -2581,8 +2589,13 @@ mod tests {
                 "vis_chart_broken",
             ))
             .await;
-        let message = broken.expect_err("mismatched shape must refuse").to_string();
-        assert!(message.contains("2 categories"), "refusal must name the defect: {message}");
+        let message = broken
+            .expect_err("mismatched shape must refuse")
+            .to_string();
+        assert!(
+            message.contains("2 categories"),
+            "refusal must name the defect: {message}"
+        );
     }
 
     #[tokio::test]

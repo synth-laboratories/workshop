@@ -257,6 +257,9 @@ pub fn builder() -> Builder<tauri::Wry> {
         crate::laguna::laguna_model_delete,
         crate::laguna::laguna_settings_snapshot,
         crate::laguna::laguna_settings_update,
+        crate::training_models::training_models_list,
+        crate::training_models::training_models_download,
+        crate::training_models::training_models_delete,
         crate::whisper::whisper_models_list,
         crate::whisper::whisper_model_download,
         crate::whisper::whisper_models_set_selected,
@@ -418,8 +421,10 @@ mod tests {
         // arbitrary event-name/property IPC.
         // 230 → 235: hosted training model and saved-LoRA checkpoint search,
         // run-output, archive, and download commands retained from main.
+        // 235 → 238: the three training-sidecar model commands (list, download,
+        // delete on-device base models under the instance-scoped model root).
         assert_eq!(
-            exported, 235,
+            exported, 238,
             "generated bindings must contain the complete desktop command set"
         );
         assert_eq!(

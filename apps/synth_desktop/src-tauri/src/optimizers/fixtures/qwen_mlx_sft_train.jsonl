@@ -1,0 +1,4 @@
+{"messages":[{"role":"user","content":"Classify: I want to check my balance."},{"role":"assistant","content":"balance"}]}
+{"messages":[{"role":"user","content":"Classify: Please cancel my card."},{"role":"assistant","content":"card_cancel"}]}
+{"messages":[{"role":"user","content":"Classify: What is my routing number?"},{"role":"assistant","content":"routing"}]}
+{"messages":[{"role":"user","content":"Classify: Unlock my mobile app."},{"role":"assistant","content":"app_unlock"}]}
