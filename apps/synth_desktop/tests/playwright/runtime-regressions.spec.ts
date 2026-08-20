@@ -304,7 +304,7 @@ test("Settings offers and completes a real model-download bridge when weights ar
 	await page.reload();
 	await openSettings(page);
 	await page.getByTestId("settings-page").getByRole("button", { name: "Models" }).click();
-	await page.getByTestId("settings-page").getByRole("button", { name: "Download", exact: true }).click();
+	await page.getByTestId("download-laguna-xs-2.1").click();
 	const locations = page.getByTestId("laguna-model-locations");
 	await expect(locations).toContainText("/models/poolside/Laguna-XS-2.1-NVFP4-mlx");
 	await expect(locations.getByText("In use")).toBeVisible();
