@@ -3,7 +3,22 @@ import fixtures from "../fixtures/training.json";
 
 type TrainingView = "setup" | "train" | "artifacts" | "run" | "inference" | "eval";
 type Confirmation = "install" | "start" | "inference" | "eval" | "delete" | null;
-type Artifact = (typeof fixtures.artifacts)[number];
+type Artifact = { id: string; kind: string; algorithm: string; baseModel: string; runId: string; dataset: string; datasetDigest: string; configDigest: string; sha256: string; size: string; integrity: string; backends: string[]; parentArtifactId: string | null };
+
+function formatBytes(bytes: number | null | undefined): string {
+	if (bytes == null) return "—";
+	return bytes >= 1024 ** 3 ? `${(bytes / 1024 ** 3).toFixed(2)} GB` : `${(bytes / 1024 ** 2).toFixed(1)} MB`;
+}
+
+function errorMessage(error: unknown): string {
+	if (error instanceof Error) return error.message;
+	if (typeof error === "object" && error !== null && "message" in error && typeof error.message === "string") return error.message;
+	return String(error);
+}
+
+function presentArtifact(item: TrainingArtifact): Artifact {
+	return { id: item.id, kind: item.kind, algorithm: item.algorithm.toUpperCase(), baseModel: `${item.baseModel.id}${item.baseModel.revision ? ` · ${item.baseModel.revision}` : ""}`, runId: item.producingRunId, dataset: item.datasetDigest ?? "—", datasetDigest: item.datasetDigest ?? "—", configDigest: item.configDigest ?? "—", sha256: item.sha256 ?? "—", size: formatBytes(item.sizeBytes), integrity: item.integrity[0].toUpperCase() + item.integrity.slice(1), backends: item.compatibleBackends, parentArtifactId: item.parentArtifactId ?? null };
+}
 
 function Kv({ values }: { values: Array<[string, string]> }) {
 	return <dl className="training-kv">{values.map(([key, value]) => <div key={key}><dt>{key}</dt><dd>{value}</dd></div>)}</dl>;
@@ -34,10 +49,70 @@ export function TrainingWorkspace({ onStartFixture, fixtureBusy = false }: { onS
 	const [confirmation, setConfirmation] = useState<Confirmation>(null);
 	const [installState, setInstallState] = useState<"absent" | "installing" | "cancelled" | "failed" | "ready">("ready");
 	const [failedLoad, setFailedLoad] = useState(false);
+	const [artifacts, setArtifacts] = useState<Artifact[]>(fixtures.artifacts);
+	const [readiness, setReadiness] = useState<MlxReadiness | null>(null);
+	const [installPlan, setInstallPlan] = useState<ModelInstallPlan | null>(null);
+	const [nativeRun, setNativeRun] = useState<{ id: string; status: string; algorithm: "sft" | "cispo"; error?: string } | null>(null);
 	const dialogReturn = useRef<TrainingView>("artifacts");
 	const artifact = useMemo(() => fixtures.artifacts.find((item) => item.id === selectedId) ?? fixtures.artifacts[0], [selectedId]);
 	const openArtifactAction = (next: "inference" | "eval") => { dialogReturn.current = next; setView(next); setFailedLoad(false); };
 	const confirm = (kind: Exclude<Confirmation, null>) => setConfirmation(kind);
+	const executeConfirmation = async (kind: Exclude<Confirmation, null>) => {
+		setConfirmation(null);
+		if (kind === "install") {
+			setInstallState("installing");
+			try { await bridges.trainingModels?.downloadModel(installPlan?.modelId ?? "Qwen/Qwen3.5-0.8B"); setInstallState("ready"); }
+			catch { setInstallState("failed"); }
+			return;
+		}
+		if (kind === "delete") { await trainingArtifacts.delete(artifact.id); setArtifacts((items) => items.filter((item) => item.id !== artifact.id)); return; }
+		if (kind === "inference") { await trainingArtifacts.launchInference(artifact.id, { mergeAdapter: false }); return; }
+		if (kind === "eval") await trainingArtifacts.launchEval(artifact.id, "eval.gsm8k.mlx.v1");
+		if (kind === "start") {
+			setNativeRun({ id: "starting", status: "starting", algorithm });
+			setView("run");
+			try {
+				if (!bridges.optimizers) throw new Error("Local optimizer runtime is unavailable");
+				const run = await bridges.optimizers.startRecipe({
+					recipeId: algorithm === "cispo" ? "cispo.banking77.mlx.v1" : "sft.qwen35-0.8b.mlx.v1",
+					openVisual: false
+				});
+				setNativeRun({ id: run.id, status: run.status, algorithm });
+			} catch (error) {
+				setNativeRun({ id: "failed-to-start", status: "failed", algorithm, error: errorMessage(error) });
+			}
+		}
+	};
+	useEffect(() => {
+		let live = true;
+		void Promise.all([inspectMlxReadiness(), planModelInstall(), trainingArtifacts.list()]).then(([nextReadiness, nextPlan, nextArtifacts]) => {
+			if (!live) return;
+			setReadiness(nextReadiness);
+			setInstallPlan(nextPlan);
+			if (nextArtifacts.length > 0) {
+				const presented = nextArtifacts.map(presentArtifact);
+				setArtifacts(presented);
+				setSelectedId((current) => presented.some((item) => item.id === current) ? current : presented[0].id);
+			}
+		}).catch(() => undefined);
+		return () => { live = false; };
+	}, []);
+	useEffect(() => {
+		if (!nativeRun || nativeRun.id === "starting" || nativeRun.id === "failed-to-start" || ["completed", "failed", "cancelled"].includes(nativeRun.status)) return;
+		const optimizerBridge = bridges.optimizers;
+		if (!optimizerBridge) return;
+		const timer = window.setInterval(() => {
+			void optimizerBridge.refresh(nativeRun.id).then((run) => {
+				setNativeRun((current) => current?.id === run.id ? { ...current, status: run.status } : current);
+				if (["completed", "failed", "cancelled"].includes(run.status)) {
+					void trainingArtifacts.list().then((items) => {
+						if (items.length > 0) setArtifacts(items.map(presentArtifact));
+					});
+				}
+			}).catch((error) => setNativeRun((current) => current ? { ...current, status: "failed", error: errorMessage(error) } : current));
+		}, 1000);
+		return () => window.clearInterval(timer);
+	}, [nativeRun?.id, nativeRun?.status]);
 
 	return <section className="training-workspace" aria-labelledby="training-title" data-testid="training-workspace">
 		<div className="training-heading"><div><span className="optimizer-eyebrow">Local MLX</span><h2 id="training-title">Training</h2></div><span className="training-status" data-state={fixtures.readiness.runtimeHealth.toLowerCase()}>{fixtures.readiness.runtimeHealth}</span></div>
@@ -72,7 +147,7 @@ export function TrainingWorkspace({ onStartFixture, fixtureBusy = false }: { onS
 			<div className="training-detail" data-testid="training-artifact-detail"><div className="training-section-head"><div><span className="optimizer-eyebrow">Artifact detail</span><h3>{artifact.id}</h3></div><span className="training-status" data-state="ready">{artifact.integrity}</span></div><Kv values={[["Base model", artifact.baseModel], ["Adapter", `${artifact.kind} · ${artifact.sha256}`], ["Producing run", artifact.runId], ["Dataset", artifact.datasetDigest], ["Config", artifact.configDigest], ["Compatible", artifact.backends.join(" · ")]]} /><div className="training-actions"><button type="button" className="primary-button" onClick={() => openArtifactAction("inference")}>Run inference</button><button type="button" className="secondary-button" onClick={() => openArtifactAction("eval")}>Evaluate</button><button type="button" className="secondary-button">Export</button><button type="button" className="secondary-button training-danger" onClick={() => confirm("delete")}>Delete</button></div></div>
 		</div> : null}
 
-		{view === "run" ? <div className="training-panel" data-testid="training-run-view"><div className="training-section-head"><div><span className="training-algorithm">CISPO</span><h3>run-cispo-20260820-02</h3></div><span className="training-status" data-state="ready">Completed</span></div><Kv values={[["Input artifact", "mlx-lora-sft-7f31"], ["Step", "120 / 120"], ["Elapsed", "18m 42s"], ["Output", "mlx-lora-cispo-b921"]]} /><div className="training-metrics" data-testid="training-cispo-diagnostics"><div><span>Policy objective</span><strong>0.184</strong></div><div><span>Reward</span><strong>0.742</strong></div><div><span>Clip fraction</span><strong>0.091</strong></div><div><span>Valid rollouts</span><strong>116 / 120</strong></div></div><div className="training-actions"><button type="button" className="primary-button" onClick={() => { setSelectedId("mlx-lora-cispo-b921"); setView("artifacts"); }}>Open artifact</button><button type="button" className="secondary-button">View metrics</button></div></div> : null}
+		{view === "run" ? <div className="training-panel" data-testid="training-run-view"><div className="training-section-head"><div><span className="training-algorithm">{(nativeRun?.algorithm ?? "cispo").toUpperCase()}</span><h3>{nativeRun?.id ?? "run-cispo-20260820-02"}</h3></div><span className="training-status" data-state={nativeRun?.status === "failed" ? "failed" : nativeRun?.status === "completed" ? "ready" : "installing"}>{nativeRun?.status ?? "Completed"}</span></div>{nativeRun?.error ? <div className="training-terminal" role="alert" data-testid="training-run-failure"><strong>Training failed</strong><span>{nativeRun.error}</span></div> : <Kv values={nativeRun ? [["Recipe", nativeRun.algorithm === "cispo" ? "cispo.banking77.mlx.v1" : "sft.qwen35-0.8b.mlx.v1"], ["Status", nativeRun.status], ["Execution", "Local MLX"], ["Output", "Managed artifacts"]] : [["Input artifact", "mlx-lora-sft-7f31"], ["Step", "120 / 120"], ["Elapsed", "18m 42s"], ["Output", "mlx-lora-cispo-b921"]]} />}{(!nativeRun || nativeRun.algorithm === "cispo") ? <div className="training-metrics" data-testid="training-cispo-diagnostics"><div><span>Policy objective</span><strong>0.184</strong></div><div><span>Reward</span><strong>0.742</strong></div><div><span>Clip fraction</span><strong>0.091</strong></div><div><span>Valid rollouts</span><strong>116 / 120</strong></div></div> : null}<div className="training-actions"><button type="button" className="primary-button" disabled={nativeRun != null && nativeRun.status !== "completed"} onClick={() => { const next = artifacts.at(-1); if (next) setSelectedId(next.id); setView("artifacts"); }}>Open artifact</button><button type="button" className="secondary-button">View metrics</button></div></div> : null}
 
 		{view === "inference" || view === "eval" ? <div className="training-panel" data-testid={`artifact-${view}`}><button type="button" className="training-back" onClick={() => setView("artifacts")}>← Artifacts</button><div className="training-section-head"><div><span className="optimizer-eyebrow">{view === "eval" ? "Local Eval" : "MLX inference"}</span><h3>{view === "eval" ? "Evaluate artifact" : "Run inference"}</h3></div><span className="training-status" data-state={failedLoad ? "failed" : "ready"}>{failedLoad ? "Failed" : "Prefilled"}</span></div><Kv values={[["Artifact", artifact.id], ["Base model", artifact.baseModel], ["Adapter", `${artifact.kind} · ${artifact.sha256}`], ["Producing run", artifact.runId], ["Config", artifact.configDigest], ...(view === "eval" ? [["Recipe", "GSM8K exact-match"], ["Metric", "exact_match · higher"]] as Array<[string, string]> : [["Load", "Base + adapter"], ["Merge", "Off"]] as Array<[string, string]>)]} />{failedLoad ? <div className="training-terminal" role="alert" data-testid="artifact-failed-load"><strong>Adapter load failed</strong><span>Base model revision mismatch</span></div> : <div className="training-actions"><button type="button" className="primary-button" onClick={() => confirm(view)}>{view === "eval" ? "Review Eval" : "Review inference"}</button><button type="button" className="secondary-button" onClick={() => setFailedLoad(true)}>Failed-load state</button></div>}</div> : null}
 
