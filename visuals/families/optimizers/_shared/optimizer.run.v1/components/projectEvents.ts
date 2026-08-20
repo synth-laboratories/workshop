@@ -2327,7 +2327,13 @@ export function projectAtCursor(
     // that carries the frozen split digest.
     if (event.type === "sft.baseline_rollout.completed") {
       const entry = seedResult({ ...(event.delta ?? {}), ...(event.item?.raw ?? {}) });
-      if (entry) baselineSeeds.set(entry.seed, entry);
+      if (entry) {
+        baselineSeeds.set(entry.seed, entry);
+        // Baseline and terminal use the same frozen seeds. Keeping the base
+        // arm here lets the later heldout rollouts form an honest paired
+        // before/after comparison without duplicating provider inference.
+        comparisonBase.set(entry.seed, entry);
+      }
     }
     if (
       event.type === "sft.baseline_evaluation.completed" ||
