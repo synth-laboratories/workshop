@@ -207,6 +207,20 @@ pub fn get(id: &str) -> Result<TrainingArtifact> {
         .ok_or_else(|| anyhow::anyhow!("training artifact `{id}` is not in the managed library"))
 }
 
+pub fn export(id: &str) -> Result<TrainingArtifact> {
+    get(id)
+}
+
+pub fn delete(id: &str) -> Result<TrainingArtifact> {
+    let mut artifacts = load_index()?;
+    let Some(index) = artifacts.iter().position(|item| item.id == id) else {
+        bail!("training artifact `{id}` is not in the managed library");
+    };
+    let removed = artifacts.remove(index);
+    save_index(&artifacts)?;
+    Ok(removed)
+}
+
 #[tauri::command]
 #[specta::specta]
 pub fn training_artifacts_list() -> Vec<TrainingArtifact> {

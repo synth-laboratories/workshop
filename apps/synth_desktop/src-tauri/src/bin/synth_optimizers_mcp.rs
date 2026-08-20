@@ -96,12 +96,20 @@ fn request_inner(
 
 fn tools() -> Value {
     json!({"tools":[
-        {"name":"optimizer_manage","description":"Operate Synth optimizer runs. Prefer start_workflow for a bounded product recipe: it performs fresh admission, approval, run creation, and visual opening in one call. Advanced callers may still use prepare, open_visual, await_ready, start. Never install the plugin from this tool.","inputSchema":{"type":"object","properties":{"operation":{"type":"string","enum":["list_algorithms","list_recipes","start_workflow","prepare","open_visual","await_ready","start","start_recipe","stage_eval_candidates","launch_artifact_inference","list_runs","get_run","watch_run","get_state","get_result","reconcile_cloud","cancel_run","cancel","pause_run","resume_run","finalize"]},"arguments":{"type":"object","additionalProperties":true}},"required":["operation","arguments"],"additionalProperties":false}},
+        {"name":"optimizer_manage","description":"Operate Synth optimizer runs. Prefer start_workflow for a bounded product recipe: it performs fresh admission, approval, run creation, and visual opening in one call. Advanced callers may still use prepare, open_visual, await_ready, start. Never install the plugin from this tool.","inputSchema":{"type":"object","properties":{"operation":{"type":"string","enum":["list_algorithms","list_recipes","start_workflow","prepare","open_visual","await_ready","start","start_recipe","stage_eval_candidates","launch_artifact_inference","inspect_local_mlx","plan_model_install","install_model_or_runtime","create_training_plan","list_training_artifacts","inspect_training_artifact","launch_artifact_eval","export_or_delete_artifact","list_runs","get_run","watch_run","get_state","get_result","reconcile_cloud","cancel_run","cancel","pause_run","resume_run","finalize"]},"arguments":{"type":"object","additionalProperties":true}},"required":["operation","arguments"],"additionalProperties":false}},
         {"name":"optimizer_list_algorithms","description":"List optimizer algorithms and availability","inputSchema":{"type":"object","properties":{},"additionalProperties":false}},
         {"name":"optimizer_list_recipes","description":"List product-owned bounded optimizer recipes and their hard limits","inputSchema":{"type":"object","properties":{},"additionalProperties":false}},
         {"name":"optimizer_start_recipe","description":"Prepare an allowlisted paid/plugin recipe. For local eval.* recipes, start the fixed pinned recipe with a candidate_set_id staged by optimizer_stage_eval_candidates. Container baseline evals (Banking77, HealthBench) start from a registered container and do not take a candidate set.","inputSchema":{"type":"object","properties":{"recipe_id":{"type":"string","enum":["gepa.banking77.smoke.v1","gepa.banking77.luna.v1","gepa.banking77.sol.v1","gepa.craftax.smoke.v1","gelo.craftax.hosted.v1","sft.qwen35-0.8b.mlx.v1","sft.craftax.gpt-oss.smoke.v1","sft.hosted.fixture.v1","sft.craftax.nemotron-nano.tinker.v1","sft.banking77.nemotron-lightning.tinker.v1","cispo.banking77.mlx.v1","cispo.slime.hosted.v1","eval.fixture.policy-smoke.v1","eval.craftax.code-policy.smoke.v1","eval.gamebench.craftax-code-policy.confirm.v1","eval.craftax.llm-policy.smoke.v1","eval.gamebench.llm-policy.confirm.v1","eval.banking77.baseline.v1","eval.healthbench.smoke.v1","eval.mlx.local-policy.smoke.v1"]},"session_ref":{"type":"string"},"open_visual":{"type":"boolean"},"base_model":{"type":"string"},"dataset_shard":{"type":"string","enum":["train_a","train_b"]},"candidate_set_id":{"type":"string","description":"Required by pinned local eval.* recipes unless training_artifact_id is set. An id returned by optimizer_stage_eval_candidates, never a path."},"training_artifact_id":{"type":"string","description":"Managed training artifact id. Eval stages mlx-lora.v1 from this record and retains identity in the receipt."}},"required":["recipe_id"],"additionalProperties":false}},
         {"name":"optimizer_start_workflow","description":"Start one bounded product workflow in one call. Freshens relevant registered-container capabilities, performs host approval and sidecar admission, creates the run, and opens its chat-owned visual. Craftax policy evals still require a staged candidate_set_id.","inputSchema":{"type":"object","properties":{"recipe_id":{"type":"string","enum":["gepa.banking77.smoke.v1","gepa.banking77.luna.v1","gepa.banking77.sol.v1","gepa.craftax.smoke.v1","gelo.craftax.hosted.v1","sft.qwen35-0.8b.mlx.v1","sft.craftax.gpt-oss.smoke.v1","sft.hosted.fixture.v1","sft.craftax.nemotron-nano.tinker.v1","sft.banking77.nemotron-lightning.tinker.v1","cispo.banking77.mlx.v1","cispo.slime.hosted.v1","eval.fixture.policy-smoke.v1","eval.craftax.code-policy.smoke.v1","eval.gamebench.craftax-code-policy.confirm.v1","eval.craftax.llm-policy.smoke.v1","eval.gamebench.llm-policy.confirm.v1","eval.banking77.baseline.v1","eval.healthbench.smoke.v1","eval.mlx.local-policy.smoke.v1"]},"session_ref":{"type":"string"},"open_visual":{"type":"boolean"},"base_model":{"type":"string"},"dataset_shard":{"type":"string","enum":["train_a","train_b"]},"candidate_set_id":{"type":"string"}},"required":["recipe_id"],"additionalProperties":false}},
         {"name":"launch_artifact_inference","description":"Load a managed training artifact into local MLX and chat against that exact snapshot. Fails visibly if the adapter cannot load. Never uses ambient latest.","inputSchema":{"type":"object","properties":{"artifact_id":{"type":"string"},"message":{"type":"string"},"confirm":{"type":"boolean","description":"Must be true; inference is not silent."}},"required":["artifact_id","confirm"],"additionalProperties":false}},
+        {"name":"inspect_local_mlx","description":"Read Apple Silicon, managed Qwen pin, revision, license, disk, and whether training weights are present. Never downloads.","inputSchema":{"type":"object","properties":{},"additionalProperties":false}},
+        {"name":"plan_model_install","description":"Preview the one-entry Qwen 3.5 0.8B training install (size, revision, license, already present). Never downloads.","inputSchema":{"type":"object","properties":{"model_id":{"type":"string"}},"additionalProperties":false}},
+        {"name":"install_model_or_runtime","description":"Install the managed Qwen training weights after explicit confirm. Never silent. Does not set HF_HUB_OFFLINE off on the MLX child.","inputSchema":{"type":"object","properties":{"model_id":{"type":"string"},"confirm":{"type":"boolean"}},"required":["confirm"],"additionalProperties":false}},
+        {"name":"create_training_plan","description":"Return the resolved local SFT or CISPO config without starting a run.","inputSchema":{"type":"object","properties":{"recipe_id":{"type":"string","enum":["sft.qwen35-0.8b.mlx.v1","cispo.banking77.mlx.v1"]}},"required":["recipe_id"],"additionalProperties":false}},
+        {"name":"list_training_artifacts","description":"List managed training adapters (base model, producing run, digests, integrity).","inputSchema":{"type":"object","properties":{},"additionalProperties":false}},
+        {"name":"inspect_training_artifact","description":"Inspect one managed training artifact by id.","inputSchema":{"type":"object","properties":{"artifact_id":{"type":"string"}},"required":["artifact_id"],"additionalProperties":false}},
+        {"name":"launch_artifact_eval","description":"Start eval.mlx.local-policy.smoke.v1 against a managed training artifact. Requires confirm.","inputSchema":{"type":"object","properties":{"artifact_id":{"type":"string"},"recipe_id":{"type":"string"},"confirm":{"type":"boolean"}},"required":["artifact_id","confirm"],"additionalProperties":false}},
+        {"name":"export_or_delete_artifact","description":"Export (return path) or delete a managed training artifact. Always requires confirm.","inputSchema":{"type":"object","properties":{"artifact_id":{"type":"string"},"operation":{"type":"string","enum":["export","delete"]},"confirm":{"type":"boolean"}},"required":["artifact_id","operation","confirm"],"additionalProperties":false}},
         {"name":"optimizer_stage_eval_candidates","description":"Freeze policy files from the session workspace into one immutable content-addressed candidate set and return its id. Paths are workspace-relative; absolute paths and traversal are refused.","inputSchema":{"type":"object","properties":{"session_ref":{"type":"string","description":"Optional. Defaults to the calling session; an agent has no way to know its own id, so do not guess one."},"candidates":{"type":"array","minItems":1,"maxItems":16,"items":{"type":"object","properties":{"label":{"type":"string"},"path":{"type":"string"},"entrypoint":{"type":"string"},"kind":{"type":"string"},"baseline":{"type":"boolean"}},"required":["label","path"],"additionalProperties":false}}},"required":["candidates"],"additionalProperties":false}},
         {"name":"optimizer_list_runs","description":"List local optimizer run mirrors","inputSchema":{"type":"object","properties":{"status":{"type":"string"},"algorithm_id":{"type":"string"},"source":{"type":"string"},"search":{"type":"string"}},"additionalProperties":false}},
         {"name":"optimizer_get_run","description":"Get one optimizer run mirror","inputSchema":{"type":"object","properties":{"optimizer_run_id":{"type":"string"}},"required":["optimizer_run_id"],"additionalProperties":false}},
@@ -152,6 +160,14 @@ fn call_tool(name: &str, args: &Value) -> Result<Value, String> {
             "prepare" => "optimizer_prepare",
             "start_recipe" => "optimizer_start_recipe",
             "launch_artifact_inference" => "launch_artifact_inference",
+            "inspect_local_mlx" => "inspect_local_mlx",
+            "plan_model_install" => "plan_model_install",
+            "install_model_or_runtime" => "install_model_or_runtime",
+            "create_training_plan" => "create_training_plan",
+            "list_training_artifacts" => "list_training_artifacts",
+            "inspect_training_artifact" => "inspect_training_artifact",
+            "launch_artifact_eval" => "launch_artifact_eval",
+            "export_or_delete_artifact" => "export_or_delete_artifact",
             "stage_eval_candidates" => "optimizer_stage_eval_candidates",
             "start" => "optimizer_start",
             "await_ready" => "optimizer_await_ready",
@@ -246,6 +262,78 @@ fn call_tool(name: &str, args: &Value) -> Result<Value, String> {
                     "message": args.get("message"),
                     "confirm": true
                 })),
+            )
+        }
+        "inspect_local_mlx" => request("GET", "/v1/mlx/inspect", None),
+        "plan_model_install" => request(
+            "GET",
+            "/v1/mlx/install-plan",
+            Some(json!({ "model_id": args.get("model_id") })),
+        ),
+        "install_model_or_runtime" => {
+            if args.get("confirm").and_then(Value::as_bool) != Some(true) {
+                return Err("install_model_or_runtime requires confirm=true".into());
+            }
+            request(
+                "POST",
+                "/v1/mlx/install",
+                Some(json!({
+                    "model_id": args.get("model_id"),
+                    "confirm": true
+                })),
+            )
+        }
+        "create_training_plan" => request(
+            "POST",
+            "/v1/training/plans",
+            Some(json!({ "recipe_id": args.get("recipe_id") })),
+        ),
+        "list_training_artifacts" => request("GET", "/v1/training/artifacts", None),
+        "inspect_training_artifact" => {
+            let id = args
+                .get("artifact_id")
+                .and_then(Value::as_str)
+                .ok_or_else(|| "artifact_id required".to_string())?;
+            request("GET", &format!("/v1/training/artifacts/{id}"), None)
+        }
+        "launch_artifact_eval" => {
+            let id = args
+                .get("artifact_id")
+                .and_then(Value::as_str)
+                .ok_or_else(|| "artifact_id required".to_string())?;
+            if args.get("confirm").and_then(Value::as_bool) != Some(true) {
+                return Err("launch_artifact_eval requires confirm=true".into());
+            }
+            request(
+                "POST",
+                &format!("/v1/training/artifacts/{id}/eval"),
+                Some(json!({
+                    "recipe_id": args.get("recipe_id"),
+                    "confirm": true,
+                    "session_ref": session_ref(),
+                    "open_visual": args.get("open_visual").cloned().unwrap_or(json!(true))
+                })),
+            )
+        }
+        "export_or_delete_artifact" => {
+            let id = args
+                .get("artifact_id")
+                .and_then(Value::as_str)
+                .ok_or_else(|| "artifact_id required".to_string())?;
+            if args.get("confirm").and_then(Value::as_bool) != Some(true) {
+                return Err("export_or_delete_artifact requires confirm=true".into());
+            }
+            let operation = args
+                .get("operation")
+                .and_then(Value::as_str)
+                .ok_or_else(|| "operation required".to_string())?;
+            if operation != "export" && operation != "delete" {
+                return Err("export_or_delete_artifact operation must be export or delete".into());
+            }
+            request(
+                "POST",
+                &format!("/v1/training/artifacts/{id}/{operation}"),
+                Some(json!({ "confirm": true })),
             )
         }
         "optimizer_start" => request(
@@ -406,6 +494,14 @@ mod tests {
         assert!(encoded.contains("eval.healthbench.smoke.v1"));
         assert!(encoded.contains("eval.mlx.local-policy.smoke.v1"));
         assert!(encoded.contains("launch_artifact_inference"));
+        assert!(encoded.contains("inspect_local_mlx"));
+        assert!(encoded.contains("plan_model_install"));
+        assert!(encoded.contains("install_model_or_runtime"));
+        assert!(encoded.contains("create_training_plan"));
+        assert!(encoded.contains("list_training_artifacts"));
+        assert!(encoded.contains("inspect_training_artifact"));
+        assert!(encoded.contains("launch_artifact_eval"));
+        assert!(encoded.contains("export_or_delete_artifact"));
         assert!(encoded.contains("training_artifact_id"));
         assert!(encoded.contains("dataset_shard"));
         assert!(encoded.contains("optimizer_pause_run"));
@@ -466,5 +562,33 @@ mod tests {
         )
         .unwrap_err();
         assert!(err.contains("reject"));
+    }
+
+    #[test]
+    fn mutating_mlx_capabilities_require_confirm_before_ipc() {
+        let err = call_tool(
+            "install_model_or_runtime",
+            &json!({ "confirm": false }),
+        )
+        .unwrap_err();
+        assert!(err.contains("confirm=true"), "{err}");
+        let err = call_tool(
+            "launch_artifact_eval",
+            &json!({ "artifact_id": "a1", "confirm": false }),
+        )
+        .unwrap_err();
+        assert!(err.contains("confirm=true"), "{err}");
+        let err = call_tool(
+            "export_or_delete_artifact",
+            &json!({ "artifact_id": "a1", "operation": "delete", "confirm": false }),
+        )
+        .unwrap_err();
+        assert!(err.contains("confirm=true"), "{err}");
+        let src = include_str!("synth_optimizers_mcp.rs");
+        let forbidden = ["training_models", "_download"].concat();
+        assert!(
+            !src.contains(&forbidden),
+            "MCP must not call the Settings download command by name"
+        );
     }
 }

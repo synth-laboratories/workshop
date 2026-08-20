@@ -304,6 +304,12 @@ for shard in sorted(shards):
     Ok(hit)
 }
 
+/// Operator-confirmed install path. Agents reach this only through
+/// `install_model_or_runtime` with `confirm=true`.
+pub fn download_training_model(model_id: &str) -> Result<TrainingModelHit> {
+    download_model_with_progress(model_id, |_, _, _, _| {})
+}
+
 fn delete_model(model_id: &str) -> Result<()> {
     let target = training_model_dir(model_id)
         .ok_or_else(|| anyhow::anyhow!("Unknown on-device training model `{model_id}`"))?;

@@ -2555,6 +2555,71 @@ pub(crate) async fn dispatch_optimizer(
             let inference = crate::optimizers::launch_artifact_inference(id, message).await?;
             Ok(json!({ "inference": inference }))
         }
+        ("GET", "/v1/mlx/inspect") => Ok(crate::optimizers::typed_capabilities::inspect_local_mlx()),
+        ("GET", "/v1/mlx/install-plan") => {
+            let model_id = body.get("model_id").and_then(Value::as_str);
+            crate::optimizers::typed_capabilities::plan_model_install(model_id)
+        }
+        ("POST", "/v1/mlx/install") => {
+            let confirm = body.get("confirm").and_then(Value::as_bool).unwrap_or(false);
+            let model_id = body.get("model_id").and_then(Value::as_str);
+            crate::optimizers::typed_capabilities::install_model_or_runtime(model_id, confirm)
+        }
+        ("POST", "/v1/training/plans") => {
+            let recipe_id = body
+                .get("recipe_id")
+                .and_then(Value::as_str)
+                .ok_or_else(|| anyhow::anyhow!("recipe_id required"))?;
+            crate::optimizers::typed_capabilities::create_training_plan(recipe_id)
+        }
+        ("GET", "/v1/training/artifacts") => {
+            crate::optimizers::typed_capabilities::list_training_artifacts()
+        }
+        ("GET", path) if path.starts_with("/v1/training/artifacts/") => {
+            let id = path.trim_start_matches("/v1/training/artifacts/");
+            crate::optimizers::typed_capabilities::inspect_training_artifact(id)
+        }
+        ("POST", path)
+            if path.starts_with("/v1/training/artifacts/") && path.ends_with("/eval") =>
+        {
+            let id = path
+                .trim_start_matches("/v1/training/artifacts/")
+                .trim_end_matches("/eval")
+                .trim_end_matches('/');
+            let confirm = body.get("confirm").and_then(Value::as_bool).unwrap_or(false);
+            let recipe_id = body.get("recipe_id").and_then(Value::as_str);
+            let request = crate::optimizers::typed_capabilities::launch_artifact_eval_request(
+                id, recipe_id, confirm,
+            )?;
+            let admitted: crate::optimizers::OptimizerRecipeRunRequest =
+                serde_json::from_value(json!({
+                    "recipeId": request["recipeId"],
+                    "trainingArtifactId": request["trainingArtifactId"],
+                    "sessionRef": body.get("sessionRef").cloned().or_else(|| body.get("session_ref").cloned()),
+                    "openVisual": body.get("openVisual").cloned().or_else(|| body.get("open_visual").cloned()).unwrap_or(json!(true))
+                }))?;
+            let codex = app.state::<Arc<crate::codex::CodexManager>>();
+            let run = crate::authorize_optimizer_recipe_start(app, core, &codex, admitted)
+                .await
+                .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+            Ok(json!({ "run": run }))
+        }
+        ("POST", path)
+            if path.starts_with("/v1/training/artifacts/")
+                && (path.ends_with("/export") || path.ends_with("/delete")) =>
+        {
+            let export = path.ends_with("/export");
+            let id = path
+                .trim_start_matches("/v1/training/artifacts/")
+                .trim_end_matches(if export { "/export" } else { "/delete" })
+                .trim_end_matches('/');
+            let confirm = body.get("confirm").and_then(Value::as_bool).unwrap_or(false);
+            crate::optimizers::typed_capabilities::export_or_delete_artifact(
+                id,
+                if export { "export" } else { "delete" },
+                confirm,
+            )
+        }
         ("POST", "/v1/optimizers/recipes/prepare") => {
             let request: crate::optimizers::OptimizerRecipeRunRequest =
                 serde_json::from_value(body)?;

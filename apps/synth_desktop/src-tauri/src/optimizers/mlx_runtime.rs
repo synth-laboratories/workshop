@@ -342,6 +342,14 @@ mod tests {
                 .unwrap(),
             model_path.as_os_str()
         );
+        assert_eq!(
+            std_cmd
+                .get_envs()
+                .find(|(key, _)| *key == "HF_HUB_OFFLINE")
+                .and_then(|(_, value)| value)
+                .unwrap(),
+            "1"
+        );
         std::env::remove_var("SYNTH_MLX_RL_BIN");
     }
 
