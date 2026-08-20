@@ -17,6 +17,12 @@
     "size": "1.12 GB",
     "diskAfter": "213.1 GB available"
   },
+  "evaluations": [
+    { "phase": "baseline", "step": 0, "score": 0.438, "delta": 0.0, "checkpointId": "Qwen/Qwen3.5-0.8B", "digest": "sha256:7f84b1c9" },
+    { "phase": "checkpoint", "step": 40, "score": 0.594, "delta": 0.156, "checkpointId": "run-cispo-20260820-02:step-40", "digest": "sha256:aa19c1d4" },
+    { "phase": "checkpoint", "step": 80, "score": 0.681, "delta": 0.243, "checkpointId": "run-cispo-20260820-02:step-80", "digest": "sha256:ce6143a0" },
+    { "phase": "final", "step": 120, "score": 0.742, "delta": 0.304, "checkpointId": "mlx-lora-cispo-b921", "digest": "sha256:bf38d201" }
+  ],
   "artifacts": [
     {
       "id": "mlx-lora-sft-7f31",

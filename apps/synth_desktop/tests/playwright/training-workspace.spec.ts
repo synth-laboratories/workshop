@@ -49,6 +49,10 @@ test("CISPO plan requires an artifact and resolves bounded config", async ({ pag
 	await page.getByLabel("Recipe").selectOption("cispo");
 	await expect(page.getByLabel("Parent artifact")).toHaveValue("mlx-lora-sft-7f31");
 	await expect(page.getByTestId("training-resolved-config")).toContainText("120 steps · 20 min · 12 GB");
+	await expect(page.getByTestId("training-resolved-config")).toContainText("Before · every 40 steps · final");
+	await expect(page.getByTestId("training-resolved-config")).toContainText("Container tunnel · exact checkpoint");
+	await page.getByLabel("Compute").selectOption("tinker");
+	await expect(page.getByTestId("training-resolved-config")).toContainText("Hosted · Tinker");
 	await page.getByRole("button", { name: "Review run" }).click();
 	await expect(page.getByTestId("training-confirm-start")).toContainText("Managed artifacts");
 });
@@ -57,6 +61,11 @@ test("CISPO run exposes algorithm-specific diagnostics and next artifact", async
 	await page.getByTestId("training-tab-run").click();
 	await expect(page.getByTestId("training-run-view")).toContainText("CISPO");
 	await expect(page.getByTestId("training-cispo-diagnostics")).toContainText("Policy objective");
+	const comparison = page.getByTestId("training-evaluation-comparison");
+	await expect(comparison).toContainText("baseline");
+	await expect(comparison).toContainText("checkpoint");
+	await expect(comparison).toContainText("final");
+	await expect(comparison).toContainText("+0.304 vs baseline");
 	await page.getByRole("button", { name: "Open artifact" }).click();
 	await expect(page.getByTestId("training-artifact-detail")).toContainText("mlx-lora-cispo-b921");
 });

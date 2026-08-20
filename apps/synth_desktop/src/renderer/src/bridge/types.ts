@@ -1333,6 +1333,19 @@ export type TrainingProjection = {
 	attempt_id?: string | null;
 	metrics: Record<string, number>;
 	checkpoints: unknown[];
+	evaluations: Array<{
+		phase?: "baseline" | "checkpoint" | "final" | string;
+		checkpoint_id?: string | null;
+		artifact_digest?: string | null;
+		step?: number | null;
+		evaluator?: string | null;
+		metric?: string;
+		score?: number | null;
+		baseline_score?: number | null;
+		delta?: number | null;
+		sample_count?: number | null;
+		status?: string;
+	}>;
 	warnings: unknown[];
 	latest_rollout?: unknown;
 	tunnel_health?: { status?: string; occurred_at?: string; detail?: unknown } | null;

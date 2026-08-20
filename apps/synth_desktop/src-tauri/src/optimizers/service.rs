@@ -3205,13 +3205,14 @@ fn project_from_events(
             "sft.checkpoint_eval.completed"
             | "sft.heldout_eval.completed"
             | "sft.checkpoint_evaluation.completed"
-            | "sft.checkpoint_evaluation.allocated" => {
+            | "sft.checkpoint_evaluation.allocated"
+            | "training.evaluation.completed" => {
                 checkpoint_evals.push(json!({
                     "sequence": event.sequence_number,
                     "delta": event.delta,
                     "snapshot": event.snapshot,
                     "item": event.item,
-                    "role": event.delta.get("role").cloned().unwrap_or(json!("selection")),
+                    "role": event.delta.get("role").or_else(|| event.delta.get("phase")).cloned().unwrap_or(json!("selection")),
                     "measurementOnly": event.delta.get("measurementOnly").cloned().unwrap_or(json!(false))
                 }));
             }

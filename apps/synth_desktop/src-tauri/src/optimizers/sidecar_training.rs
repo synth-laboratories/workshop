@@ -819,13 +819,29 @@ fn mapped_event_draft(kind: &str, algorithm: &str, payload: &Value) -> Optimizer
                 "uri": payload["path"],
                 "digest": payload["sha256"]
             })]),
-        "evaluation.completed" | "heldout_eval.completed" => {
-            OptimizerEventDraft::new("sft.heldout_evaluation.completed", algorithm)
+        "evaluation.completed"
+        | "heldout_eval.completed"
+        | "checkpoint_evaluation.completed"
+        | "checkpoint_eval.completed"
+        | "baseline_eval.completed"
+        | "final_eval.completed" => {
+            let phase = evaluation_phase(kind, payload);
+            let checkpoint_id = payload
+                .get("checkpoint_id")
+                .or_else(|| payload.get("artifact_id"))
+                .cloned()
+                .unwrap_or(Value::Null);
+            OptimizerEventDraft::new("training.evaluation.completed", algorithm)
                 .delta(Map::from_iter([
-                    ("kind".into(), json!(kind)),
-                    ("evaluation".into(), payload.clone()),
+                    ("phase".into(), json!(phase)),
+                    ("algorithm".into(), json!(algorithm)),
+                    ("checkpoint_id".into(), checkpoint_id),
+                    (
+                        "evaluation".into(),
+                        normalized_sidecar_evaluation(kind, algorithm, payload),
+                    ),
                 ]))
-                .item(payload.clone())
+                .item(normalized_sidecar_evaluation(kind, algorithm, payload))
         }
         "training.clip" => OptimizerEventDraft::new("cispo.clip.identity", algorithm)
             .delta(Map::from_iter([("clip".into(), payload.clone())])),
@@ -836,6 +852,69 @@ fn mapped_event_draft(kind: &str, algorithm: &str, payload: &Value) -> Optimizer
         }
         _ => OptimizerEventDraft::new(format!("training.{kind}"), algorithm),
     }
+}
+
+fn evaluation_phase<'a>(kind: &str, payload: &'a Value) -> &'a str {
+    let phase = payload
+        .get("evaluation_phase")
+        .or_else(|| payload.get("role"))
+        .or_else(|| payload.get("phase"))
+        .and_then(Value::as_str)
+        .unwrap_or_else(|| {
+            if kind.contains("baseline") {
+                "baseline"
+            } else if kind.contains("checkpoint") {
+                "checkpoint"
+            } else {
+                "final"
+            }
+        });
+    match phase {
+        "before" | "base" | "untrained" => "baseline",
+        "trained" | "terminal" | "heldout" => "final",
+        other => other,
+    }
+}
+
+fn normalized_sidecar_evaluation(kind: &str, algorithm: &str, payload: &Value) -> Value {
+    let score = payload
+        .get("score")
+        .or_else(|| payload.get("reward"))
+        .or_else(|| payload.get("mean_reward"))
+        .or_else(|| payload.pointer("/metrics/score"))
+        .cloned()
+        .unwrap_or(Value::Null);
+    let baseline = payload
+        .get("baseline_score")
+        .or_else(|| payload.pointer("/comparison/baseline_score"))
+        .cloned()
+        .unwrap_or(Value::Null);
+    let delta = payload
+        .get("delta")
+        .or_else(|| payload.pointer("/comparison/delta"))
+        .cloned()
+        .unwrap_or_else(|| match (score.as_f64(), baseline.as_f64()) {
+            (Some(score), Some(baseline)) => json!(score - baseline),
+            _ => Value::Null,
+        });
+    json!({
+        "schema_version": "training.evaluation.v1",
+        "phase": evaluation_phase(kind, payload),
+        "algorithm": algorithm,
+        "placement": payload.get("placement").cloned().unwrap_or(Value::Null),
+        "checkpoint_id": payload.get("checkpoint_id").or_else(|| payload.get("artifact_id")).cloned().unwrap_or(Value::Null),
+        "artifact_digest": payload.get("artifact_digest").or_else(|| payload.get("sha256")).cloned().unwrap_or(Value::Null),
+        "step": payload.get("step").cloned().unwrap_or(Value::Null),
+        "evaluator": payload.get("evaluator").or_else(|| payload.get("plan_ref")).cloned().unwrap_or(Value::Null),
+        "container": payload.get("container").or_else(|| payload.get("container_url")).cloned().unwrap_or(Value::Null),
+        "metric": payload.get("metric").cloned().unwrap_or_else(|| json!("reward")),
+        "score": score,
+        "baseline_score": baseline,
+        "delta": delta,
+        "sample_count": payload.get("sample_count").or_else(|| payload.get("samples")).or_else(|| payload.get("instances")).cloned().unwrap_or(Value::Null),
+        "status": payload.get("status").cloned().unwrap_or_else(|| json!("completed")),
+        "detail": payload,
+    })
 }
 
 async fn persist_handoff(
@@ -964,6 +1043,16 @@ pub fn local_sft_config(run_id: &str, dataset: Option<&Path>, evaluation: Option
             "output_dir": crate::instance::data_root().join("optimizers/mlx-sft").join(run_id),
             "max_steps": MAX_STEPS,
             "checkpoint_every": CHECKPOINT_EVERY,
+            "evaluation": {
+                "schema_version": "training.evaluation.plan.v1",
+                "phases": ["baseline", "checkpoint", "final"],
+                "checkpoint_every": CHECKPOINT_EVERY,
+                "transport": "tunnel",
+                "container_url_env": "SYNTH_MLX_SFT_EVAL_URL",
+                "bearer_token_env": "SYNTH_MLX_SFT_EVAL_TOKEN",
+                "task": "banking77",
+                "metric": "reward"
+            },
             "learning_rate": 0.00005,
             "lora_rank": LORA_RANK,
             "lora_alpha": LORA_ALPHA,
@@ -1253,7 +1342,7 @@ mod tests {
             (
                 "heldout_eval.completed",
                 json!({"phase":"trained","instances":4,"mean_reward":0.75,"rewards":[1.0,1.0,0.0,1.0]}),
-                "sft.heldout_evaluation.completed",
+                "training.evaluation.completed",
             ),
             (
                 "training.clip",
@@ -1267,5 +1356,38 @@ mod tests {
                 expected
             );
         }
+    }
+
+    #[test]
+    fn maps_all_training_evaluations_to_shared_comparison_evidence() {
+        for (kind, phase) in [
+            ("baseline_eval.completed", "baseline"),
+            ("checkpoint_eval.completed", "checkpoint"),
+            ("final_eval.completed", "final"),
+        ] {
+            let payload = json!({
+                "checkpoint_id": "run:step-2", "sha256": "abc",
+                "score": 0.8, "baseline_score": 0.5, "sample_count": 16,
+                "container_url": "https://tunnel.invalid"
+            });
+            let draft = mapped_event_draft(kind, "cispo", &payload);
+            assert_eq!(draft.event_type, "training.evaluation.completed");
+            assert_eq!(draft.delta["phase"], phase);
+            assert_eq!(draft.item.as_ref().unwrap()["algorithm"], "cispo");
+            let delta = draft.item.as_ref().unwrap()["delta"].as_f64().unwrap();
+            assert!((delta - 0.3).abs() < f64::EPSILON * 2.0);
+            assert_eq!(draft.item.as_ref().unwrap()["artifact_digest"], "abc");
+        }
+    }
+
+    #[test]
+    fn local_sft_requests_tunneled_before_checkpoint_and_final_evaluations() {
+        let config = local_sft_config("run", None, None);
+        assert_eq!(config["config"]["evaluation"]["transport"], "tunnel");
+        assert_eq!(
+            config["config"]["evaluation"]["phases"],
+            json!(["baseline", "checkpoint", "final"])
+        );
+        assert_eq!(config["config"]["evaluation"]["checkpoint_every"], 2);
     }
 }

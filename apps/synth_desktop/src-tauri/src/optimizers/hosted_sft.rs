@@ -112,6 +112,7 @@ fn craftax_nemotron_recipe() -> Value {
         "limits": {
             "backend": "tinker",
             "checkpointSteps": CRAFTAX_CHECKPOINT_STEPS,
+            "evaluationPlan": { "phases": ["baseline", "checkpoint", "final"], "checkpointSteps": CRAFTAX_CHECKPOINT_STEPS, "transport": "tunnel", "metric": "reward" },
             "trainingSteps": CRAFTAX_TRAINING_STEPS,
             "campaignRolloutsPerCheckpoint": 2,
             "evalSeeds": [501, 502],
@@ -145,6 +146,7 @@ fn banking77_recipe() -> Value {
         "limits": {
             "backend": "tinker",
             "checkpointSteps": BANKING77_CHECKPOINT_STEPS,
+            "evaluationPlan": { "phases": ["baseline", "checkpoint", "final"], "checkpointSteps": BANKING77_CHECKPOINT_STEPS, "transport": "tunnel", "metric": "reward" },
             "campaignRolloutsPerCheckpoint": BANKING77_CAMPAIGN_ROLLOUTS,
             "datasetShards": BANKING77_SHARDS,
             "evalSeeds": [1, 2],
@@ -390,6 +392,12 @@ checkpoint_evaluation_plan_ref = "{BANKING77_PLAN_REF}"
 checkpoint_evaluation_world_ref = "{BANKING77_WORLD_REF}"
 checkpoint_evaluation_timeout_s = {CHECKPOINT_EVALUATION_TIMEOUT_S}
 
+[metadata]
+evaluation_schema = "training.evaluation.plan.v1"
+evaluation_phases = ["baseline", "checkpoint", "final"]
+evaluation_transport = "tunnel"
+evaluation_metric = "reward"
+
 # The classify harness resolves the checkpoint through evaluator-owned keys
 # (inference_target, sampler_path, …), which this recipe must not set. It still
 # has to declare a policy: an empty one is refused, because the policy under
@@ -547,6 +555,7 @@ async fn start_craftax_nemotron(
             "datasetDigest": dataset_digest,
             "localSlot": container_url,
             "checkpointSteps": CRAFTAX_CHECKPOINT_STEPS,
+            "evaluationPlan": { "phases": ["baseline", "checkpoint", "final"], "checkpointSteps": CRAFTAX_CHECKPOINT_STEPS, "transport": "tunnel", "metric": "reward" },
             "trainingSteps": CRAFTAX_TRAINING_STEPS,
             "datasetDigest": dataset_digest,
         })),
@@ -853,6 +862,12 @@ checkpoint_evaluation_plan_ref = "craftax_eval.v1"
 checkpoint_evaluation_world_ref = "world:craftax"
 checkpoint_evaluation_timeout_s = {CHECKPOINT_EVALUATION_TIMEOUT_S}
 
+[metadata]
+evaluation_schema = "training.evaluation.plan.v1"
+evaluation_phases = ["baseline", "checkpoint", "final"]
+evaluation_transport = "tunnel"
+evaluation_metric = "reward"
+
 # Every field the ReAct harness needs, named. It refuses to default any of
 # them: they define the policy under test, and a wrong one is indistinguishable
 # from a failing checkpoint downstream.
@@ -1020,6 +1035,8 @@ mod tests {
         assert!(toml.contains("campaign_rollouts_per_checkpoint = 2"));
         assert!(toml.contains("checkpoint_evaluation_plan_ref = \"banking77_eval.v1\""));
         assert!(toml.contains("checkpoint_evaluation_world_ref = \"world:banking77@heldout\""));
+        assert!(toml.contains("evaluation_phases = [\"baseline\", \"checkpoint\", \"final\"]"));
+        assert!(toml.contains("evaluation_transport = \"tunnel\""));
         assert!(toml.contains("container_url = \"http://127.0.0.1:8110\""));
         assert!(!toml.contains("goex.sft"));
     }
@@ -1080,6 +1097,7 @@ mod tests {
         assert!(toml.contains("base_model = \"nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16\""));
         assert!(toml.contains("evaluator_version = \"craftax_gamebench.v1\""));
         assert!(toml.contains("checkpoint_evaluation_seeds = [501, 502]"));
+        assert!(toml.contains("evaluation_phases = [\"baseline\", \"checkpoint\", \"final\"]"));
         assert!(toml.contains("checkpoint_steps = [16, 33, 66]"));
         assert!(toml.contains("training_steps = 66"));
         assert!(toml.contains("world:craftax"));

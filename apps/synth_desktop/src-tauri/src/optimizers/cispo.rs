@@ -117,7 +117,8 @@ async fn start_local(
             "recipeId": LOCAL_MLX_CISPO_RECIPE,
             "backend": "cispo",
             "placement": PLACEMENT_TRAINING_CISPO_LOCAL,
-            "trainingCursor": 0
+            "trainingCursor": 0,
+            "evaluationPlan": { "phases": ["baseline", "checkpoint", "final"], "checkpointEvery": 2, "transport": "tunnel", "metric": "reward" }
         }),
         input_refs,
     );
@@ -140,6 +141,17 @@ async fn start_local(
             "output_dir": output_dir,
             "max_steps": 4,
             "checkpoint_every": 2,
+            "evaluation": {
+                "schema_version": "training.evaluation.plan.v1",
+                "phases": ["baseline", "checkpoint", "final"],
+                "checkpoint_every": 2,
+                "transport": "tunnel",
+                "url": rollout_url,
+                "bearer_token": rollout_token,
+                "task": "banking77",
+                "metric": "reward",
+                "heldout_instances": 16
+            },
             "lora_rank": 8,
             "lora_alpha": 16.0,
             "max_seq_length": 4096,
@@ -168,7 +180,8 @@ async fn start_hosted(
             "recipeId": HOSTED_CISPO_RECIPE,
             "backend": "cispo.slime.v1",
             "placement": PLACEMENT_TRAINING_CISPO_HOSTED,
-            "trainingCursor": 0
+            "trainingCursor": 0,
+            "evaluationPlan": { "phases": ["baseline", "checkpoint", "final"], "checkpointEvery": 1, "transport": "tunnel", "metric": "reward" }
         }),
         vec![OptimizerResourceRef {
             kind: "recipe".into(),
@@ -188,7 +201,19 @@ async fn start_hosted(
             "algorithm": "cispo",
             "implementation": "cispo.slime.v1",
             "task": "banking77",
-            "eps_high": 4.0
+            "eps_high": 4.0,
+            "evaluation": {
+                "schema_version": "training.evaluation.plan.v1",
+                "phases": ["baseline", "checkpoint", "final"],
+                "checkpoint_every": 1,
+                "transport": "tunnel",
+                "container_url_env": "SYNTH_OPTIMIZERS_CISPO_CONTAINER_URL",
+                "bearer_token_env": "SYNTH_OPTIMIZERS_CISPO_CONTAINER_TOKEN",
+                "plan_ref": "banking77_eval.v1",
+                "world_ref": "world:banking77@heldout",
+                "metric": "reward",
+                "seeds": [1, 2]
+            }
         }),
     )
     .await
