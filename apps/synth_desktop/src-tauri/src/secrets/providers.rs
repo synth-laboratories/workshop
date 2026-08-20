@@ -25,6 +25,31 @@ pub enum AuthStyle {
 
 pub const ROUTES: &[ProviderRoute] = &[
     ProviderRoute {
+        provider: "tinker",
+        operation: "chat.completions.create",
+        method: "POST",
+        local_path: "/v1/providers/tinker/chat/completions",
+        upstream_url:
+            "https://tinker.thinkingmachines.dev/services/tinker-prod/oai/api/v1/chat/completions",
+        auth: AuthStyle::Bearer,
+    },
+    ProviderRoute {
+        provider: "groq",
+        operation: "chat.completions.create",
+        method: "POST",
+        local_path: "/v1/providers/groq/chat/completions",
+        upstream_url: "https://api.groq.com/openai/v1/chat/completions",
+        auth: AuthStyle::Bearer,
+    },
+    ProviderRoute {
+        provider: "openrouter",
+        operation: "chat.completions.create",
+        method: "POST",
+        local_path: "/v1/providers/openrouter/chat/completions",
+        upstream_url: "https://openrouter.ai/api/v1/chat/completions",
+        auth: AuthStyle::Bearer,
+    },
+    ProviderRoute {
         provider: "openai",
         operation: "chat.completions.create",
         method: "POST",
@@ -63,6 +88,8 @@ pub fn classify_variable(name: &str) -> Option<&'static str> {
         "OPENAI_API_KEY" => Some("openai"),
         "ANTHROPIC_API_KEY" => Some("anthropic"),
         "OPENROUTER_API_KEY" => Some("openrouter"),
+        "TINKER_API_KEY" => Some("tinker"),
+        "GROQ_API_KEY" => Some("groq"),
         _ if upper.contains("OPENAI") && upper.contains("KEY") => Some("openai"),
         _ if upper.contains("ANTHROPIC") && upper.contains("KEY") => Some("anthropic"),
         _ if upper.contains("DATABASE") || upper.ends_with("_DSN") || upper == "DATABASE_URL" => {
@@ -74,7 +101,9 @@ pub fn classify_variable(name: &str) -> Option<&'static str> {
 
 pub fn classification_label(provider: Option<&str>) -> &'static str {
     match provider {
-        Some("openai") | Some("anthropic") | Some("openrouter") => "provider_api_key",
+        Some("openai") | Some("anthropic") | Some("openrouter") | Some("tinker") | Some("groq") => {
+            "provider_api_key"
+        }
         Some("database") => "database_url",
         _ => "secret",
     }
@@ -173,6 +202,53 @@ pub fn default_alias(provider: &str) -> String {
         "openai" => "Personal OpenAI".into(),
         "anthropic" => "Personal Anthropic".into(),
         "openrouter" => "Personal OpenRouter".into(),
+        "tinker" => "Personal Tinker".into(),
+        "groq" => "Personal Groq".into(),
         other => format!("Personal {other}"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn provider_key_inventory_is_explicit() {
+        assert_eq!(classify_variable("OPENROUTER_API_KEY"), Some("openrouter"));
+        assert_eq!(classify_variable("TINKER_API_KEY"), Some("tinker"));
+        assert_eq!(classify_variable("GROQ_API_KEY"), Some("groq"));
+        assert_eq!(classify_variable("UNRELATED_API_KEY"), None);
+    }
+
+    #[test]
+    fn openai_compatible_routes_are_provider_scoped() {
+        for (provider, upstream) in [
+            ("openrouter", "https://openrouter.ai/"),
+            ("tinker", "https://tinker.thinkingmachines.dev/"),
+            ("groq", "https://api.groq.com/"),
+        ] {
+            let path = format!("/v1/providers/{provider}/chat/completions");
+            let route = route_for("POST", &path).expect("allowlisted provider route");
+            assert_eq!(route.provider, provider);
+            assert!(route.upstream_url.starts_with(upstream));
+        }
+        assert!(route_for("POST", "/v1/providers/tinker/anything").is_none());
+    }
+
+    #[test]
+    fn bearer_auth_is_injected_for_openrouter() {
+        let route = route_for("POST", "/v1/providers/openrouter/chat/completions").unwrap();
+        let request = inject_auth(
+            reqwest::Client::new().post(route.upstream_url),
+            route,
+            &SecretBytes::from_utf8("test-provider-key"),
+        )
+        .unwrap()
+        .build()
+        .unwrap();
+        assert_eq!(
+            request.headers().get("authorization").unwrap(),
+            "Bearer test-provider-key"
+        );
     }
 }

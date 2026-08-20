@@ -8,7 +8,9 @@ import type { MaskedImportCandidate, PendingGrantSummary, SecretAuditEvent, Secr
 const PROVIDERS = [
 	{ id: "openai", label: "OpenAI" },
 	{ id: "anthropic", label: "Anthropic" },
-	{ id: "openrouter", label: "OpenRouter" }
+	{ id: "openrouter", label: "OpenRouter" },
+	{ id: "tinker", label: "Tinker" },
+	{ id: "groq", label: "Groq" }
 ];
 
 function backendLabel(backend: string) {
