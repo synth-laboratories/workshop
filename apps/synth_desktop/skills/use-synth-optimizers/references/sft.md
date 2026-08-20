@@ -1,6 +1,22 @@
 # SFT
 
-Use SFT when the output is a trained adapter/checkpoint rather than a prompt candidate. Hosted SFT lives in the public `synth-optimizers` service (`algorithm_id: "sft"`), not in Workshop's private beta client and not in `goex.sft.v1`. Workshop mirrors `optimizer_event_page.v1` and opens `optimizer.sft.live.v1`.
+Use SFT when the output is a trained adapter/checkpoint rather than a prompt candidate. SFT is a **training** algorithm. Local vs hosted is recipe placement, admitted by the Optimizers sidecar. Never dial `127.0.0.1:8787`, `127.0.0.1:8878`, or name `synth-mlx-rl` in a shell. The agent only sees `recipe_id` → `optimizer_run_id` → `watch_run` / `open_visual`.
+
+Workshop mirrors `optimizer_event_page.v1` and opens `optimizer.sft.live.v1`. Held-out evaluation arrives as `sft.heldout_evaluation.completed`.
+
+## This Mac (MLX · Qwen 0.8B)
+
+Recipe: `sft.qwen35-0.8b.mlx.v1`.
+
+Requires the Optimizers plugin/sidecar. Datasets: cookbook `cookbooks/optimizers/sft/qwen35_mlx/{train,eval}.jsonl`, optional `SYNTH_MLX_SFT_TRAIN_JSONL` / `SYNTH_MLX_SFT_EVAL_JSONL`, or the bundled 4-step canary. Apple Silicon. The sidecar starts and probes `synth-mlx-rl`; do not tell a shell to dial `:8787`. No hosted provider charges.
+
+After explicit user instruction:
+
+```json
+{"operation":"start_workflow","arguments":{"recipe_id":"sft.qwen35-0.8b.mlx.v1","open_visual":true}}
+```
+
+Follow training metrics, `sft.checkpoint.ready`, and the paired `sft.heldout_evaluation.completed` receipt. Resume uses `resume_run`; chat-with-checkpoint is sidecar-owned.
 
 ## Start the hosted fixture (streaming)
 

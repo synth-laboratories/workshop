@@ -350,6 +350,9 @@ export const commands = {
 	lagunaModelDelete: (modelId: string) => typedError<null, string>(__TAURI_INVOKE("laguna_model_delete", { modelId })),
 	lagunaSettingsSnapshot: () => typedError<LagunaSettingsExchange, string>(__TAURI_INVOKE("laguna_settings_snapshot")),
 	lagunaSettingsUpdate: (patch: unknown) => typedError<LagunaSettingsExchange, string>(__TAURI_INVOKE("laguna_settings_update", { patch })),
+	trainingModelsList: () => __TAURI_INVOKE<TrainingModelHit[]>("training_models_list"),
+	trainingModelsDownload: (modelId: string) => typedError<TrainingModelHit, string>(__TAURI_INVOKE("training_models_download", { modelId })),
+	trainingModelsDelete: (modelId: string) => typedError<null, string>(__TAURI_INVOKE("training_models_delete", { modelId })),
 	whisperModelsList: () => __TAURI_INVOKE<WhisperModelHit[]>("whisper_models_list"),
 	whisperModelDownload: (id: string) => typedError<WhisperModelHit, string>(__TAURI_INVOKE("whisper_model_download", { id })),
 	whisperModelsSetSelected: (id: string) => typedError<WhisperModelHit, string>(__TAURI_INVOKE("whisper_models_set_selected", { id })),
@@ -3002,6 +3005,15 @@ export type TraceRecord = {
 	path: string | null,
 	metadata: unknown,
 	createdAt: string,
+};
+
+export type TrainingModelHit = {
+	path: string,
+	modelsRoot: string,
+	modelId: string,
+	revision: string,
+	shardCount: unknown,
+	totalBytes: unknown,
 };
 
 export type UpdateStatus = {
