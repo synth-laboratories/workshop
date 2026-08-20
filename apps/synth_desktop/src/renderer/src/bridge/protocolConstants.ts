@@ -19,6 +19,7 @@ export const EVENT_CHANNELS = {
 	LAGUNA_STATUS: "laguna:status",
 	LAGUNA_DOWNLOAD: "laguna:download",
 	LAGUNA_INFERENCE: "laguna:inference",
+	TRAINING_MODELS_DOWNLOAD: "training-models:download",
 	WHISPER_RUNTIME: "whisper:runtime",
 	WHISPER_DOWNLOAD: "whisper:download",
 	OPTIMIZER_STATUS: "optimizer:status"
@@ -96,6 +97,9 @@ export const COMMANDS = {
 	LAGUNA_INFERENCE_SNAPSHOT: "laguna_inference_snapshot",
 	LAGUNA_SETTINGS_SNAPSHOT: "laguna_settings_snapshot",
 	LAGUNA_SETTINGS_UPDATE: "laguna_settings_update",
+	TRAINING_MODELS_LIST: "training_models_list",
+	TRAINING_MODELS_DOWNLOAD: "training_models_download",
+	TRAINING_MODELS_DELETE: "training_models_delete",
 	WHISPER_RUNTIME_STATUS: "whisper_runtime_status",
 	WHISPER_RUNTIME_WARM: "whisper_runtime_warm",
 	WHISPER_MODELS_LIST: "whisper_models_list",

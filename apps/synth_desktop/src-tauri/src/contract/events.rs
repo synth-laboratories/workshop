@@ -20,6 +20,7 @@ impl EventChannel {
     pub const LAGUNA_STATUS: &'static str = "laguna:status";
     pub const LAGUNA_DOWNLOAD: &'static str = "laguna:download";
     pub const LAGUNA_INFERENCE: &'static str = "laguna:inference";
+    pub const TRAINING_MODELS_DOWNLOAD: &'static str = "training-models:download";
     pub const WHISPER_RUNTIME: &'static str = "whisper:runtime";
     pub const WHISPER_DOWNLOAD: &'static str = "whisper:download";
     pub const OPTIMIZER_STATUS: &'static str = "optimizer:status";
@@ -34,6 +35,7 @@ pub const EVENT_CHANNELS: &[&str] = &[
     EventChannel::LAGUNA_STATUS,
     EventChannel::LAGUNA_DOWNLOAD,
     EventChannel::LAGUNA_INFERENCE,
+    EventChannel::TRAINING_MODELS_DOWNLOAD,
     EventChannel::WHISPER_RUNTIME,
     EventChannel::WHISPER_DOWNLOAD,
     EventChannel::OPTIMIZER_STATUS,

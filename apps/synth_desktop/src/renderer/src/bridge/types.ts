@@ -115,6 +115,30 @@ export type LagunaBridge = {
 	onDownloadProgress?(listener: (progress: LagunaDownloadProgress) => void): () => void;
 };
 
+export type TrainingModelHit = {
+	path: string;
+	modelsRoot: string;
+	modelId: string;
+	revision: string;
+	shardCount: number;
+	totalBytes: number;
+};
+
+export type TrainingModelDownloadProgress = {
+	modelId: string;
+	phase: "preparing" | "downloading" | "ready" | "error";
+	detail: string;
+	downloadedBytes?: number;
+	totalBytes?: number;
+};
+
+export type TrainingModelsBridge = {
+	listModels(): Promise<TrainingModelHit[]>;
+	downloadModel(modelId: string): Promise<TrainingModelHit>;
+	deleteModel(modelId: string): Promise<void>;
+	onDownloadProgress(listener: (progress: TrainingModelDownloadProgress) => void): () => void;
+};
+
 export type WhisperModelHit = {
 	id: string;
 	title: string;

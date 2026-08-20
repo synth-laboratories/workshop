@@ -1,7 +1,7 @@
 //! Derived SVG/PNG renditions for Mermaid visuals. Canonical source stays in CAS blobs.
 
-use super::mermaid::{self, RenderedDiagram, Theme, MEDIA_TYPE_SVG, RENDERER_VERSION};
 use super::charts;
+use super::mermaid::{self, RenderedDiagram, Theme, MEDIA_TYPE_SVG, RENDERER_VERSION};
 use super::systems;
 use anyhow::{bail, Result};
 use chrono::Utc;

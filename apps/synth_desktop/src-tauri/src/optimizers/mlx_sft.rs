@@ -1,176 +1,60 @@
-//! Product SFT recipe for the local `synth-mlx-rl` Qwen service.
-//!
-//! This is intentionally not an MLX scalar smoke. Admission requires the
-//! service to advertise the exact resident Qwen LoRA/render contract, and the
-//! terminal artifact must be a content-addressed `mlx-lora.v1` adapter.
+//! Local Qwen MLX LoRA SFT recipe. Execution lives in the Optimizers sidecar.
 
-use super::events::OptimizerEventDraft;
 use super::models::{
-    OptimizerCapabilities, OptimizerCreateRequest, OptimizerExecutionBinding, OptimizerQuery,
-    OptimizerRecipeRunRequest, OptimizerResourceRef, OptimizerRunRecord,
+    OptimizerQuery, OptimizerRecipeRunRequest, OptimizerResourceRef, OptimizerRunRecord,
+};
+use super::sidecar_training::{
+    advertised_placement, local_sft_config, optional_jsonl, spawn_watch_worker,
+    training_create_request, SidecarTrainingClient, LOCAL_MLX_SFT_RECIPE,
+    PLACEMENT_TRAINING_SFT_LOCAL,
 };
 use super::OptimizerService;
-use anyhow::{anyhow, bail, Context, Result};
-use reqwest::{Client, Response, Url};
-use serde_json::{json, Map, Value};
+use anyhow::{Context, Result};
+use serde_json::{json, Value};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
-use tokio::{sync::watch, time::sleep};
 
-pub const QWEN_MLX_SFT_RECIPE: &str = "sft.qwen35-0.8b.mlx.v1";
-const DEFAULT_URL: &str = "http://127.0.0.1:8787";
+pub const QWEN_MLX_SFT_RECIPE: &str = LOCAL_MLX_SFT_RECIPE;
 const BASE_MODEL: &str = "Qwen/Qwen3.5-0.8B";
 const MAX_STEPS: u64 = 4;
 const CHECKPOINT_EVERY: u64 = 2;
 const LORA_RANK: u64 = 8;
 const LORA_ALPHA: f64 = 16.0;
 const MAX_SEQ_LENGTH: u64 = 4096;
-const MAX_PAGE_ERRORS: u32 = 20;
-
-#[derive(Clone)]
-struct MlxClient {
-    base_url: String,
-    http: Client,
-}
-
-impl MlxClient {
-    fn from_env() -> Result<Self> {
-        let raw = std::env::var("SYNTH_MLX_RL_URL").unwrap_or_else(|_| DEFAULT_URL.into());
-        let url = Url::parse(raw.trim()).context("parse SYNTH_MLX_RL_URL")?;
-        let local = matches!(url.host_str(), Some("127.0.0.1" | "localhost" | "::1"));
-        if url.scheme() != "http" || !local {
-            bail!("SYNTH_MLX_RL_URL must be a loopback http URL");
-        }
-        Ok(Self {
-            base_url: url.as_str().trim_end_matches('/').to_string(),
-            http: Client::builder().timeout(Duration::from_secs(10)).build()?,
-        })
-    }
-
-    async fn get(&self, path: &str) -> Result<Value> {
-        decode(
-            self.http
-                .get(format!("{}{path}", self.base_url))
-                .send()
-                .await?,
-            path,
-        )
-        .await
-    }
-
-    async fn post(&self, path: &str, body: Option<&Value>) -> Result<Value> {
-        let mut request = self.http.post(format!("{}{path}", self.base_url));
-        if let Some(value) = body {
-            request = request.json(value);
-        }
-        decode(request.send().await?, path).await
-    }
-}
-
-async fn decode(response: Response, operation: &str) -> Result<Value> {
-    let status = response.status();
-    let text = response.text().await.context("read MLX response")?;
-    if !status.is_success() {
-        bail!(
-            "MLX service {operation} failed with {status}: {}",
-            text.trim()
-        );
-    }
-    serde_json::from_str(&text).with_context(|| format!("decode MLX response for {operation}"))
-}
-
-fn dataset_path() -> Result<PathBuf> {
-    let raw = std::env::var("SYNTH_MLX_SFT_TRAIN_JSONL")
-        .context("local Qwen SFT requires SYNTH_MLX_SFT_TRAIN_JSONL")?;
-    let path = PathBuf::from(raw.trim());
-    if !path.is_file() {
-        bail!("local Qwen SFT dataset is not a file: {}", path.display());
-    }
-    Ok(path)
-}
-
-fn evaluation_dataset_path() -> Result<PathBuf> {
-    let raw = std::env::var("SYNTH_MLX_SFT_EVAL_JSONL")
-        .context("local Qwen SFT requires SYNTH_MLX_SFT_EVAL_JSONL")?;
-    let path = PathBuf::from(raw.trim());
-    if !path.is_file() {
-        bail!(
-            "local Qwen SFT evaluation dataset is not a file: {}",
-            path.display()
-        );
-    }
-    Ok(path)
-}
-
-fn service_reachable() -> bool {
-    let Ok(client) = MlxClient::from_env() else {
-        return false;
-    };
-    let Ok(url) = Url::parse(&client.base_url) else {
-        return false;
-    };
-    let Some(host) = url.host_str() else {
-        return false;
-    };
-    let Some(port) = url.port_or_known_default() else {
-        return false;
-    };
-    let Ok(addresses) = std::net::ToSocketAddrs::to_socket_addrs(&(host, port)) else {
-        return false;
-    };
-    addresses.into_iter().any(|address| {
-        std::net::TcpStream::connect_timeout(&address, Duration::from_millis(200)).is_ok()
-    })
-}
-
-fn sha256(path: &Path) -> Result<String> {
-    use sha2::{Digest, Sha256};
-    Ok(format!("{:x}", Sha256::digest(std::fs::read(path)?)))
-}
-
-fn contract_error(capabilities: &Value) -> Option<String> {
-    if capabilities
-        .pointer("/capabilities/qwen_lora_training/supported")
-        .and_then(Value::as_bool)
-        != Some(true)
-    {
-        return Some(
-            capabilities
-                .pointer("/capabilities/qwen_lora_training/reason")
-                .and_then(Value::as_str)
-                .unwrap_or("real Qwen LoRA is unavailable")
-                .into(),
-        );
-    }
-    let Some(contract) = capabilities.get("qwen_lora_contract") else {
-        return Some("MLX service omitted the resident Qwen LoRA contract".into());
-    };
-    let exact = contract.get("backend").and_then(Value::as_str) == Some("qwen_lora")
-        && contract.get("base_model").and_then(Value::as_str) == Some(BASE_MODEL)
-        && contract.get("lora_rank").and_then(Value::as_u64) == Some(LORA_RANK)
-        && contract.get("lora_alpha").and_then(Value::as_f64) == Some(LORA_ALPHA)
-        && contract.get("max_seq_length").and_then(Value::as_u64) == Some(MAX_SEQ_LENGTH)
-        && contract.get("enable_thinking").and_then(Value::as_bool) == Some(false)
-        && contract.get("adapter_kind").and_then(Value::as_str) == Some("mlx-lora.v1")
-        && contract.get("renderer").and_then(Value::as_str) == Some("qwen-chat-template.v1");
-    (!exact).then(|| "resident MLX service does not match the v0.6 Qwen LoRA contract".into())
-}
+const CANARY_TRAIN: &str = include_str!("fixtures/qwen_mlx_sft_train.jsonl");
+const CANARY_EVAL: &str = include_str!("fixtures/qwen_mlx_sft_eval.jsonl");
 
 pub fn recipe_catalog() -> Value {
-    let dataset = dataset_path();
-    let evaluation_dataset = evaluation_dataset_path();
-    let available = cfg!(all(target_os = "macos", target_arch = "aarch64"))
-        && dataset.is_ok()
-        && evaluation_dataset.is_ok()
-        && service_reachable();
+    let (dataset, evaluation, dataset_source) = resolve_local_sft_datasets();
+    let apple_silicon = cfg!(all(target_os = "macos", target_arch = "aarch64"));
+    let model_ready = super::mlx_runtime::require_training_model().is_ok();
+    let mut reasons = Vec::new();
+    if !apple_silicon {
+        reasons.push("Local MLX SFT requires Apple Silicon.");
+    }
+    if !model_ready {
+        reasons.push("Download the training model in Settings → Models → On-device training.");
+    }
+    if dataset.is_none() || evaluation.is_none() {
+        reasons.push(
+            "Train/eval JSONL is missing (cookbook, SYNTH_MLX_SFT_*_JSONL, or bundled canary).",
+        );
+    }
+    let available = apple_silicon && model_ready && dataset.is_some() && evaluation.is_some();
     json!({
         "id": QWEN_MLX_SFT_RECIPE,
-        "title": "Local Qwen 3.5 0.8B MLX LoRA SFT",
+        "title": "This Mac · Qwen 3.5 0.8B MLX LoRA SFT",
         "algorithmId": "sft",
         "task": "local-qwen",
+        "placement": PLACEMENT_TRAINING_SFT_LOCAL,
         "availability": if available { "available" } else { "unavailable" },
-        "availabilityReason": if available { Value::Null } else { json!("Requires Apple Silicon, a local synth-mlx-rl service, and fixed train/evaluation JSONL datasets.") },
+        "availabilityReason": if available { Value::Null } else { json!(reasons.join(" ")) },
+        "preflight": {
+            "appleSilicon": apple_silicon,
+            "dataset": dataset.is_some() && evaluation.is_some(),
+            "datasetSource": dataset_source,
+            "trainingModel": model_ready,
+        },
         "limits": {
             "backend": "qwen_lora", "baseModel": BASE_MODEL,
             "maxSteps": MAX_STEPS, "checkpointEvery": CHECKPOINT_EVERY,
@@ -180,28 +64,7 @@ pub fn recipe_catalog() -> Value {
             "costNotice": "Local Apple Silicon MLX compute; no hosted provider charges."
         },
         "credentialInputs": [],
-        "prerequisites": ["synth-mlx-rl on 127.0.0.1:8787", "SYNTH_MLX_SFT_TRAIN_JSONL", "SYNTH_MLX_SFT_EVAL_JSONL"]
-    })
-}
-
-fn request_payload(
-    run_id: &str,
-    dataset: &Path,
-    evaluation_dataset: &Path,
-    output: &Path,
-) -> Value {
-    json!({
-        "job_id": run_id,
-        "config": {
-            "backend": "qwen_lora", "base_model": BASE_MODEL,
-            "dataset": {"path": dataset, "sha256": sha256(dataset).ok()},
-            "evaluation_dataset": {"path": evaluation_dataset, "sha256": sha256(evaluation_dataset).ok()},
-            "output_dir": output, "max_steps": MAX_STEPS,
-            "checkpoint_every": CHECKPOINT_EVERY, "learning_rate": 0.00005,
-            "lora_rank": LORA_RANK, "lora_alpha": LORA_ALPHA,
-            "max_seq_length": MAX_SEQ_LENGTH, "enable_thinking": false,
-            "seed": 0, "max_disk_bytes": 8589934592_u64
-        }
+        "prerequisites": ["Optimizers sidecar", "cookbook, SYNTH_MLX_SFT_*_JSONL, or bundled 4-step canary"]
     })
 }
 
@@ -209,332 +72,128 @@ pub async fn start(
     service: &OptimizerService,
     request: OptimizerRecipeRunRequest,
 ) -> Result<(OptimizerRunRecord, Option<crate::storage::AppEvent>)> {
-    let client = MlxClient::from_env()?;
-    let dataset = dataset_path()?;
-    let evaluation_dataset = evaluation_dataset_path()?;
-    let capabilities = client.get("/v1/capabilities").await?;
-    if let Some(reason) = contract_error(&capabilities) {
-        bail!("{reason}");
-    }
+    super::mlx_runtime::require_training_model()?;
     let suffix = uuid::Uuid::new_v4().simple().to_string();
     let run_id = format!("sft_mlx_qwen_{}", &suffix[..12]);
-    let output = crate::instance::data_root()
-        .join("optimizers/mlx-sft")
-        .join(&run_id);
-    let payload = request_payload(&run_id, &dataset, &evaluation_dataset, &output);
-    let preflight = client.post("/v1/jobs/preflight", Some(&payload)).await?;
-    if preflight.get("accepted").and_then(Value::as_bool) != Some(true) {
-        bail!(
-            "MLX Qwen preflight rejected the fixed recipe: {}",
-            preflight["checks"]
+    let (dataset, evaluation, _) = resolve_local_sft_datasets();
+    let mut input_refs = Vec::new();
+    if let Some(path) = dataset.as_ref() {
+        input_refs.push(dataset_ref(path, "train", "Local Qwen SFT dataset"));
+    }
+    if let Some(path) = evaluation.as_ref() {
+        input_refs.push(dataset_ref(
+            path,
+            "heldout_evaluation",
+            "Fixed held-out Qwen evaluation dataset",
+        ));
+    }
+    let create = training_create_request(
+        &run_id,
+        "sft",
+        "qwen35-0.8b-mlx-lora-v1",
+        "Local Qwen 3.5 0.8B LoRA SFT on Apple Silicon MLX",
+        "local",
+        QWEN_MLX_SFT_RECIPE,
+        &request,
+        json!({
+            "recipeId": QWEN_MLX_SFT_RECIPE,
+            "backend": "qwen_lora",
+            "baseModel": BASE_MODEL,
+            "placement": PLACEMENT_TRAINING_SFT_LOCAL,
+            "trainingCursor": 0,
+            "adapterKind": "mlx-lora.v1"
+        }),
+        input_refs,
+    );
+    super::sidecar_training::create_and_watch(
+        service,
+        request,
+        create,
+        PLACEMENT_TRAINING_SFT_LOCAL,
+        local_sft_config(&run_id, dataset.as_deref(), evaluation.as_deref()),
+    )
+    .await
+}
+
+fn dataset_ref(path: &PathBuf, role: &str, title: &str) -> OptimizerResourceRef {
+    OptimizerResourceRef {
+        kind: "dataset".into(),
+        id: path.display().to_string(),
+        digest: None,
+        role: Some(role.into()),
+        title: Some(title.into()),
+        metadata: json!({}),
+    }
+}
+
+/// Env override, then cookbook JSONL, then the bundled 4-step canary.
+pub fn resolve_local_sft_datasets() -> (Option<PathBuf>, Option<PathBuf>, &'static str) {
+    if let (Some(train), Some(eval)) = (
+        optional_jsonl("SYNTH_MLX_SFT_TRAIN_JSONL"),
+        optional_jsonl("SYNTH_MLX_SFT_EVAL_JSONL"),
+    ) {
+        return (Some(train), Some(eval), "env");
+    }
+    if let Some(dir) = cookbook_sft_dir() {
+        let train = dir.join("train.jsonl");
+        let eval = dir.join("eval.jsonl");
+        if train.is_file() && eval.is_file() {
+            return (Some(train), Some(eval), "cookbook");
+        }
+    }
+    match materialize_canary() {
+        Ok((train, eval)) => (Some(train), Some(eval), "canary"),
+        Err(_) => (None, None, "missing"),
+    }
+}
+
+fn cookbook_sft_dir() -> Option<PathBuf> {
+    if let Ok(raw) = std::env::var("SYNTH_MLX_SFT_COOKBOOK") {
+        let path = PathBuf::from(raw.trim());
+        if path.is_dir() {
+            return Some(path);
+        }
+    }
+    let rel = Path::new("cookbooks/optimizers/sft/qwen35_mlx");
+    let mut candidates = Vec::new();
+    candidates.push(crate::instance::data_root().join(rel));
+    candidates.push(crate::instance::state_root().join(rel));
+    if let Ok(manifest) = std::env::var("CARGO_MANIFEST_DIR") {
+        candidates.push(
+            PathBuf::from(manifest)
+                .join("generated-resources")
+                .join(rel),
         );
     }
-    let digest = sha256(&dataset)?;
-    let create = OptimizerCreateRequest {
-        algorithm_id: "sft".into(),
-        algorithm_version: Some("qwen35-0.8b-mlx-lora-v1".into()),
-        objective: Some("Local Qwen 3.5 0.8B LoRA SFT on Apple Silicon MLX".into()),
-        source: Some("local".into()),
-        project_ref: Some("qwen35-0.8b@mlx-lora".into()),
-        session_ref: request.session_ref,
-        id: Some(run_id.clone()),
-        execution_bindings: Some(vec![OptimizerExecutionBinding {
-            kind: "synth_mlx_rl".into(),
-            id: client.base_url.clone(),
-            label: Some("local Qwen MLX training service".into()),
-            status: Some("preflighted".into()),
-            metadata: json!({"serviceVersion": capabilities["service_version"], "contract": capabilities["qwen_lora_contract"]}),
-        }]),
-        input_refs: Some(vec![
-            OptimizerResourceRef {
-                kind: "dataset".into(),
-                id: dataset.display().to_string(),
-                digest: Some(format!("sha256:{digest}")),
-                role: Some("train".into()),
-                title: Some("Local Qwen SFT dataset".into()),
-                metadata: json!({}),
-            },
-            OptimizerResourceRef {
-                kind: "dataset".into(),
-                id: evaluation_dataset.display().to_string(),
-                digest: Some(format!("sha256:{}", sha256(&evaluation_dataset)?)),
-                role: Some("heldout_evaluation".into()),
-                title: Some("Fixed held-out Qwen evaluation dataset".into()),
-                metadata: json!({}),
-            },
-        ]),
-        capabilities: Some(OptimizerCapabilities {
-            cancel: true,
-            stream_events: true,
-            checkpoints: true,
-            inference_endpoint: true,
-            ..OptimizerCapabilities::default()
-        }),
-        summary: Some(
-            json!({"recipeId": QWEN_MLX_SFT_RECIPE, "backend": "qwen_lora", "baseModel": BASE_MODEL,
-            "datasetDigest": format!("sha256:{digest}"), "mlxJobId": run_id, "mlxCursor": 0,
-            "outputDir": output, "preflight": preflight, "adapterKind": "mlx-lora.v1"}),
-        ),
-        open_visual: request.open_visual.or(Some(true)),
-        seed_fixture: None,
-        cloud_config: None,
-        local_path: None,
-    };
-    let (run, event) = service.create(create).await?;
-    spawn_worker(service, client, run_id, Some(payload), 0).await;
-    Ok((run, event))
+    candidates
+        .into_iter()
+        .find(|path| path.join("train.jsonl").is_file() && path.join("eval.jsonl").is_file())
 }
 
-async fn spawn_worker(
-    service: &OptimizerService,
-    client: MlxClient,
-    run_id: String,
-    payload: Option<Value>,
-    cursor: u64,
-) {
-    let (cancel_tx, cancel_rx) = watch::channel(false);
-    service
-        .register_local_recipe(run_id.clone(), cancel_tx)
-        .await;
-    let worker = service.clone();
-    tokio::spawn(async move {
-        if let Err(error) = run_worker(
-            worker.clone(),
-            client,
-            run_id.clone(),
-            payload,
-            cursor,
-            cancel_rx,
-        )
-        .await
-        {
-            let _ = append_failure(&worker, &run_id, &format!("{error:#}")).await;
-        }
-        worker.unregister_local_recipe(&run_id).await;
-    });
-}
-
-async fn run_worker(
-    service: OptimizerService,
-    client: MlxClient,
-    run_id: String,
-    payload: Option<Value>,
-    mut cursor: u64,
-    mut cancel: watch::Receiver<bool>,
-) -> Result<()> {
-    if let Some(body) = payload.as_ref() {
-        client.post("/v1/jobs", Some(body)).await?;
-        client
-            .post(&format!("/v1/jobs/{run_id}/launch"), None)
-            .await?;
+fn materialize_canary() -> Result<(PathBuf, PathBuf)> {
+    let dir = crate::instance::data_root().join("optimizers/mlx-sft/canary");
+    std::fs::create_dir_all(&dir).context("create bundled MLX SFT canary directory")?;
+    let train = dir.join("train.jsonl");
+    let eval = dir.join("eval.jsonl");
+    if !train.is_file() {
+        std::fs::write(&train, CANARY_TRAIN).context("write bundled MLX SFT train canary")?;
     }
-    let mut errors = 0;
-    loop {
-        if *cancel.borrow() {
-            let _ = client
-                .post(&format!("/v1/jobs/{run_id}/cancel"), None)
-                .await;
-        }
-        let page = match client
-            .get(&format!("/v1/jobs/{run_id}/events?after={cursor}"))
-            .await
-        {
-            Ok(page) => {
-                errors = 0;
-                page
-            }
-            Err(_error) if errors < MAX_PAGE_ERRORS => {
-                errors += 1;
-                sleep(Duration::from_millis(500)).await;
-                continue;
-            }
-            Err(error) => return Err(error.context("MLX event polling stayed unavailable")),
-        };
-        for event in page
-            .get("events")
-            .and_then(Value::as_array)
-            .cloned()
-            .unwrap_or_default()
-        {
-            let sequence = event
-                .get("sequence")
-                .and_then(Value::as_u64)
-                .ok_or_else(|| anyhow!("MLX event omitted sequence"))?;
-            if sequence != cursor + 1 {
-                bail!("MLX event sequence gap after {cursor}: {sequence}");
-            }
-            append_mlx_event(&service, &run_id, &event, sequence).await?;
-            cursor = sequence;
-        }
-        persist_cursor(&service, &run_id, cursor).await?;
-        let job = client.get(&format!("/v1/jobs/{run_id}")).await?;
-        match job
-            .get("status")
-            .and_then(Value::as_str)
-            .unwrap_or("running")
-        {
-            "succeeded" => {
-                persist_handoff(&service, &client, &run_id).await?;
-                append_status(&service, &run_id, "optimizer.run.completed", "completed").await?;
-                return Ok(());
-            }
-            "failed" | "interrupted" => {
-                return Err(anyhow!(
-                    "MLX job failed: {}",
-                    job.get("error_detail")
-                        .and_then(Value::as_str)
-                        .unwrap_or("unknown error")
-                ))
-            }
-            "cancelled" => {
-                append_status(&service, &run_id, "optimizer.run.cancelled", "cancelled").await?;
-                return Ok(());
-            }
-            _ => {}
-        }
-        tokio::select! { _ = cancel.changed() => {}, _ = sleep(Duration::from_millis(300)) => {} }
+    if !eval.is_file() {
+        std::fs::write(&eval, CANARY_EVAL).context("write bundled MLX SFT eval canary")?;
     }
-}
-
-async fn append_mlx_event(
-    service: &OptimizerService,
-    run_id: &str,
-    event: &Value,
-    sequence: u64,
-) -> Result<()> {
-    let kind = event
-        .get("type")
-        .and_then(Value::as_str)
-        .unwrap_or("job.event");
-    let payload = event.get("payload").cloned().unwrap_or_else(|| json!({}));
-    let draft = match kind {
-        "job.started" => OptimizerEventDraft::new("optimizer.run.started", "sft").delta(Map::from_iter([("status".into(), json!("running"))])),
-        "training.metric" => OptimizerEventDraft::new("sft.training.metrics", "sft").delta(Map::from_iter([
-            ("step".into(), payload["step"].clone()), ("train_loss".into(), payload["loss"].clone()),
-            ("learning_rate".into(), payload["learning_rate"].clone()), ("throughput".into(), payload["throughput_steps_per_second"].clone())])),
-        "checkpoint.created" => OptimizerEventDraft::new("sft.checkpoint.ready", "sft").item(json!({
-            "id": payload["checkpoint_id"], "step": payload["step"], "status": "ready", "ready": true,
-            "path": payload["path"], "sha256": payload["sha256"], "bytes": payload["bytes"], "kind": "mlx-lora.v1", "raw": payload
-        })).artifact_refs(vec![json!({"kind":"checkpoint", "id": payload["checkpoint_id"], "uri": payload["path"], "digest": payload["sha256"]})]),
-        _ => OptimizerEventDraft::new(format!("mlx.{kind}"), "sft"),
-    };
-    service
-        .append_event_payloads(
-            run_id.into(),
-            vec![draft
-                .idempotency_key(format!("mlx:{sequence}"))
-                .raw(event.clone())],
-        )
-        .await?;
-    Ok(())
-}
-
-async fn persist_handoff(
-    service: &OptimizerService,
-    client: &MlxClient,
-    run_id: &str,
-) -> Result<()> {
-    let handoff = client.get(&format!("/v1/jobs/{run_id}/handoff")).await?;
-    if handoff.pointer("/inference/kind").and_then(Value::as_str) != Some("mlx-lora.v1") {
-        bail!("MLX job did not produce an mlx-lora.v1 handoff");
-    }
-    let mut run = service.get(run_id.into()).await?;
-    run.output_refs.push(OptimizerResourceRef {
-        kind: "checkpoint".into(),
-        id: handoff["checkpoint"]["checkpoint_id"]
-            .as_str()
-            .unwrap_or("terminal")
-            .into(),
-        digest: handoff["checkpoint"]["sha256"]
-            .as_str()
-            .map(|v| format!("sha256:{v}")),
-        role: Some("terminal_adapter".into()),
-        title: Some("Qwen MLX LoRA adapter".into()),
-        metadata: handoff.clone(),
-    });
-    let mut summary = run.summary.as_object().cloned().unwrap_or_default();
-    summary.insert("adapterHandoff".into(), handoff);
-    run.summary = Value::Object(summary);
-    service.persist_run(run).await?;
-    Ok(())
-}
-
-async fn persist_cursor(service: &OptimizerService, run_id: &str, cursor: u64) -> Result<()> {
-    let mut run = service.get(run_id.into()).await?;
-    let mut summary = run.summary.as_object().cloned().unwrap_or_default();
-    summary.insert("mlxCursor".into(), json!(cursor));
-    run.summary = Value::Object(summary);
-    service.persist_run(run).await?;
-    Ok(())
-}
-
-async fn append_status(
-    service: &OptimizerService,
-    run_id: &str,
-    kind: &str,
-    status: &str,
-) -> Result<()> {
-    service
-        .append_event_payloads(
-            run_id.into(),
-            vec![OptimizerEventDraft::new(kind, "sft")
-                .idempotency_key(format!("mlx:{kind}"))
-                .delta(Map::from_iter([("status".into(), json!(status))]))
-                .raw(json!({"source":"synth-mlx-rl"}))],
-        )
-        .await?;
-    Ok(())
-}
-
-async fn append_failure(service: &OptimizerService, run_id: &str, reason: &str) -> Result<()> {
-    service
-        .append_event_payloads(
-            run_id.into(),
-            vec![OptimizerEventDraft::new("optimizer.run.failed", "sft")
-                .idempotency_key("mlx:optimizer.run.failed")
-                .level("error")
-                .delta(Map::from_iter([("status".into(), json!("failed"))]))
-                .error(json!({"message":reason}))
-                .raw(json!({"source":"synth-mlx-rl"}))],
-        )
-        .await?;
-    Ok(())
+    Ok((train, eval))
 }
 
 pub async fn reconcile(service: &OptimizerService, run_id: &str) -> Result<OptimizerRunRecord> {
-    let client = MlxClient::from_env()?;
-    let job = client.get(&format!("/v1/jobs/{run_id}")).await?;
     let cursor = service
         .get(run_id.into())
         .await?
         .summary
-        .get("mlxCursor")
+        .get("trainingCursor")
         .and_then(Value::as_u64)
         .unwrap_or(0);
-    let page = client
-        .get(&format!("/v1/jobs/{run_id}/events?after={cursor}"))
-        .await?;
-    let mut next = cursor;
-    for event in page
-        .get("events")
-        .and_then(Value::as_array)
-        .cloned()
-        .unwrap_or_default()
-    {
-        let sequence = event
-            .get("sequence")
-            .and_then(Value::as_u64)
-            .ok_or_else(|| anyhow!("MLX event omitted sequence"))?;
-        if sequence != next + 1 {
-            bail!("MLX event sequence gap after {next}: {sequence}");
-        }
-        append_mlx_event(service, run_id, &event, sequence).await?;
-        next = sequence;
-    }
-    persist_cursor(service, run_id, next).await?;
-    if job.get("status").and_then(Value::as_str) == Some("succeeded") {
-        persist_handoff(service, &client, run_id).await?;
-        append_status(service, run_id, "optimizer.run.completed", "completed").await?;
+    if let Ok(client) = SidecarTrainingClient::from_manager(service.manager()).await {
+        spawn_watch_worker(service, client, run_id.to_string(), cursor).await;
     }
     service.get(run_id.into()).await
 }
@@ -551,7 +210,7 @@ pub async fn restore_mirrors(service: &OptimizerService) {
         return;
     };
     let registered: HashSet<String> = service.registered_local_recipes().await;
-    let Ok(client) = MlxClient::from_env() else {
+    let Ok(client) = SidecarTrainingClient::from_manager(service.manager()).await else {
         return;
     };
     for run in runs.into_iter().filter(|run| {
@@ -561,24 +220,137 @@ pub async fn restore_mirrors(service: &OptimizerService) {
     }) {
         let cursor = run
             .summary
-            .get("mlxCursor")
+            .get("trainingCursor")
             .and_then(Value::as_u64)
             .unwrap_or(0);
-        spawn_worker(service, client.clone(), run.id, None, cursor).await;
+        spawn_watch_worker(service, client.clone(), run.id, cursor).await;
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::storage::{ContentStore, EventJournal, Storage};
+    use crate::visuals::VisualRegistry;
+    use std::sync::Arc;
+    use std::time::Duration;
+    use tempfile::tempdir;
+    use tokio::time::sleep;
+
     #[test]
-    fn exact_contract_is_required() {
-        let good = json!({"capabilities":{"qwen_lora_training":{"supported":true}}, "qwen_lora_contract":{
-            "backend":"qwen_lora","base_model":BASE_MODEL,"lora_rank":8,"lora_alpha":16.0,
-            "max_seq_length":4096,"enable_thinking":false,"adapter_kind":"mlx-lora.v1","renderer":"qwen-chat-template.v1"}});
-        assert_eq!(contract_error(&good), None);
-        let mut bad = good;
-        bad["qwen_lora_contract"]["enable_thinking"] = json!(true);
-        assert!(contract_error(&bad).unwrap().contains("does not match"));
+    fn production_source_does_not_dial_mlx_loopback() {
+        let production = include_str!("mlx_sft.rs")
+            .split("#[cfg(test)]")
+            .next()
+            .unwrap();
+        assert!(!production.contains(&["127.0.0.1:", "8787"].concat()));
+        assert!(!production.contains("SYNTH_MLX_RL_URL"));
+        assert!(production.contains("PLACEMENT_TRAINING_SFT_LOCAL"));
+        assert!(production.contains("create_and_watch"));
+        assert!(production.contains("resolve_local_sft_datasets"));
+    }
+
+    #[test]
+    fn bundled_canary_is_used_when_env_and_cookbook_are_absent() {
+        std::env::remove_var("SYNTH_MLX_SFT_TRAIN_JSONL");
+        std::env::remove_var("SYNTH_MLX_SFT_EVAL_JSONL");
+        std::env::remove_var("SYNTH_MLX_SFT_COOKBOOK");
+        let (train, eval, source) = resolve_local_sft_datasets();
+        assert_eq!(source, "canary");
+        assert!(train.unwrap().is_file());
+        assert!(eval.unwrap().is_file());
+    }
+
+    #[test]
+    fn recipe_card_reports_preflight_and_is_not_env_only() {
+        let recipe = recipe_catalog();
+        assert_eq!(recipe["id"], QWEN_MLX_SFT_RECIPE);
+        assert!(recipe["preflight"]["dataset"].as_bool().unwrap());
+        assert_ne!(recipe["preflight"]["datasetSource"], "missing");
+        assert!(recipe["prerequisites"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item.as_str().unwrap().contains("cookbook")));
+    }
+
+    #[tokio::test]
+    #[ignore = "needs synth-mlx-rl and managed Qwen training weights"]
+    async fn local_sft_dispatch_needs_synth_mlx_rl() {
+        let dir = tempdir().unwrap();
+        let storage = Storage::open(dir.path().join("core")).unwrap();
+        let journal = EventJournal::new(storage.database().clone());
+        let content = ContentStore::new(storage.content_root());
+        let visuals = VisualRegistry::new(storage.database().clone(), journal.clone(), content);
+        let (events_tx, _) = tokio::sync::broadcast::channel(16);
+        let manager = Arc::new(crate::optimizers::OptimizerManager::with_home(
+            dir.path().join("optimizer-home"),
+        ));
+        manager.install(None).unwrap();
+        let started = manager.start().await.unwrap();
+        assert_eq!(started.phase, "ready");
+        let caps = manager.advertised_capabilities();
+        assert!(advertised_placement(&caps, PLACEMENT_TRAINING_SFT_LOCAL));
+        let service = OptimizerService::new_with_manager(
+            storage.database().clone(),
+            journal,
+            visuals,
+            events_tx,
+            manager,
+        );
+        let (run, _) = start(
+            &service,
+            OptimizerRecipeRunRequest {
+                recipe_id: QWEN_MLX_SFT_RECIPE.into(),
+                session_ref: Some("sess_training_e2e".into()),
+                open_visual: Some(false),
+                base_model: None,
+                dataset_shard: None,
+                candidate_set_id: None,
+                search: None,
+            },
+        )
+        .await
+        .unwrap();
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(8);
+        let terminal = loop {
+            let current = service.get(run.id.clone()).await.unwrap();
+            if matches!(
+                current.status.as_str(),
+                "completed" | "failed" | "cancelled"
+            ) {
+                break current;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "local SFT sidecar fixture timed out at {}",
+                current.status
+            );
+            sleep(Duration::from_millis(50)).await;
+        };
+        assert_eq!(terminal.status, "completed");
+        let events = service
+            .events_after(run.id.clone(), 0, Some(500))
+            .await
+            .unwrap();
+        assert!(events
+            .iter()
+            .any(|event| event.event_type == "sft.heldout_evaluation.completed"));
+        assert!(events
+            .iter()
+            .any(|event| event.event_type == "sft.checkpoint.ready"));
+        assert!(events
+            .iter()
+            .any(|event| event.event_type == "sft.training.metrics"));
+        let client = SidecarTrainingClient::from_manager(service.manager())
+            .await
+            .unwrap();
+        let chat = client.chat(&run.id, "hello from checkpoint").await.unwrap();
+        assert!(chat["reply"]
+            .as_str()
+            .unwrap()
+            .contains("hello from checkpoint"));
+        let _ = client.resume(&run.id).await.unwrap();
+        let _ = service.manager().stop().await;
     }
 }

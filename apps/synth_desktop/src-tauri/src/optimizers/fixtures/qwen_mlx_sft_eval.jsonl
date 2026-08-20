@@ -1,0 +1,2 @@
+{"messages":[{"role":"user","content":"Classify: Lost my debit card."},{"role":"assistant","content":"card_lost"}]}
+{"messages":[{"role":"user","content":"Classify: Transfer fifty dollars."},{"role":"assistant","content":"transfer"}]}

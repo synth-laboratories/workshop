@@ -13,6 +13,7 @@ import { publicError } from "../runtime/publicError";
 import type { AccountViewModel } from "../runtime/accountView";
 import type { DeviceUsageSummary } from "./UsageSheet";
 import { OnDeviceModelsSettings } from "./OnDeviceModelsSettings";
+import { TrainingModelsSettings } from "./TrainingModelsSettings";
 import { InferenceSettings } from "./InferenceSettings";
 import { VoiceRecognitionSettings } from "./VoiceRecognitionSettings";
 import { ModelObservabilitySettings } from "./ModelObservabilitySettings";
@@ -498,12 +499,20 @@ export function SettingsPage({
 					{section === "models" ? (
 						<div className="settings-sections" data-testid="settings-models">
 							<SettingsCard
-								title="On-device"
-								description="Managed local models and inference runtimes."
-								testId="models-on-device"
+								title="On-device inference"
+								description="Laguna XS powers local chat and the policy daemon."
+								testId="models-on-device-inference"
 								className="settings-card-embed"
 							>
 								<OnDeviceModelsSettings lagunaPhase={lagunaPhase} onReloadLaguna={onReloadLaguna} />
+							</SettingsCard>
+							<SettingsCard
+								title="On-device training"
+								description="Models for Optimizers local SFT/CISPO via mlx-rl. Not used for chat inference."
+								testId="models-on-device-training"
+								className="settings-card-embed"
+							>
+								<TrainingModelsSettings />
 							</SettingsCard>
 							<AuthorizedModelsSettings connection={account.connection} />
 							<ChatgptCodexSubscriptionCard />

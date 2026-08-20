@@ -36,17 +36,17 @@ const OPTIMIZER_GUIDES: OptimizerGuide[] = [
 		id: "sft",
 		label: "SF",
 		name: "SFT",
-		description: "Collect strong demonstrations, train checkpoints, and compare the adapted model against its baseline.",
+		description: "Collect strong demonstrations, train checkpoints, and compare the adapted model against its baseline. This Mac (MLX) or hosted.",
 		flow: ["Collect", "Train", "Compare"],
-		prompt: "Help me set up an SFT optimization in Workshop. Do not start compute yet. First ask what capability I want to improve and which Container or evaluation target should measure it. Help me design demonstration collection and filtering, the student and training provider, checkpoint cadence, baseline-versus-checkpoint evaluation, budget, and uplift criteria. Verify that training and inference targets are executable and that lifecycle events will be inspectable. Wait for my explicit approval before starting paid compute."
+		prompt: "Help me set up an SFT optimization in Workshop. Do not start compute yet. Ask whether I want This Mac (recipe sft.qwen35-0.8b.mlx.v1) or hosted (sft.hosted.fixture.v1 / Tinker recipes). Never dial :8787 or name synth-mlx-rl. Wait for my explicit approval before starting paid compute."
 	},
 	{
 		id: "cispo",
 		label: "CI",
 		name: "CISPO · slime reference",
-		description: "Run on-policy training with the pinned slime CISPO objective and a capability-validated local Container.",
+		description: "Run on-policy training with the pinned slime CISPO objective. This Mac (MLX) or hosted after the clip canary.",
 		flow: ["Preflight", "Roll out", "Train"],
-		prompt: "Help me set up hosted CISPO using implementation cispo.slime.v1. Do not start paid compute yet. Default to Banking77. Verify the exact Tinker capability response, local Container capability hash, SynthTunnel lease, direct-HTTPS sampler path, bounded steps/time/cost, pinned slime commit, checkpoint cadence, and evaluation plan. Explain how env_unreachable hold and stale-policy limits will behave. Wait for my explicit approval before launch."
+		prompt: "Help me set up CISPO in Workshop. Do not start paid compute yet. Prefer recipe cispo.banking77.mlx.v1 on this Mac, or cispo.slime.hosted.v1 if hosted is admitted. Never draft a free-form HostedOptimizerClient.launch_training call. Wait for my explicit approval before launch."
 	},
 ];
 
@@ -309,6 +309,8 @@ export function OptimizersPage({
 	const [selectedId, setSelectedId] = useState<string | null>(null);
 	const [startingAgent, setStartingAgent] = useState<OptimizerGuide["id"] | null>(null);
 	const [startingSftFixture, setStartingSftFixture] = useState(false);
+	const [startingLocalSft, setStartingLocalSft] = useState(false);
+	const [startingLocalCispo, setStartingLocalCispo] = useState(false);
 	const [evalRecipes, setEvalRecipes] = useState<OptimizerRecipeInfo[]>([]);
 	const [evalState, setEvalState] = useState<EvalState | null>(null);
 	const [trainingProjection, setTrainingProjection] = useState<TrainingProjection | null>(null);
@@ -635,13 +637,13 @@ export function OptimizersPage({
 		});
 	};
 
-	const startSftFixture = async () => {
+	const startBoundedRecipe = async (recipeId: string, setter: (busy: boolean) => void) => {
 		if (!bridges.optimizers) return;
-		setStartingSftFixture(true);
+		setter(true);
 		setError(null);
 		try {
 			const run = await bridges.optimizers.startRecipe({
-				recipeId: "sft.hosted.fixture.v1",
+				recipeId,
 				openVisual: true
 			});
 			setSelectedId(run.id);
@@ -651,8 +653,12 @@ export function OptimizersPage({
 		} catch (reason) {
 			setError(presentError(reason).message);
 		} finally {
-			setStartingSftFixture(false);
+			setter(false);
 		}
+	};
+
+	const startSftFixture = async () => {
+		await startBoundedRecipe("sft.hosted.fixture.v1", setStartingSftFixture);
 	};
 
 	const openSelectedVisual = async () => {
@@ -891,10 +897,21 @@ export function OptimizersPage({
 							</button>
 							{guide.id === "sft" ? (
 								<>
-									<button className="secondary-button" type="button" disabled={startingSftFixture} onClick={() => void startSftFixture()} data-testid="start-sft-fixture">
-										{startingSftFixture ? "Starting fixture…" : "Run free fixture"}
+									<button className="secondary-button" type="button" disabled={startingLocalSft || (plugin != null && !presentation.isUsable)} onClick={() => void startBoundedRecipe("sft.qwen35-0.8b.mlx.v1", setStartingLocalSft)} data-testid="start-sft-mlx">
+										{startingLocalSft ? "Starting…" : "This Mac · Qwen 0.8B MLX"}
 									</button>
-									<small>Public Optimizers fixture · no provider charges</small>
+									<button className="secondary-button" type="button" disabled={startingSftFixture} onClick={() => void startSftFixture()} data-testid="start-sft-fixture">
+										{startingSftFixture ? "Starting fixture…" : "Run hosted fixture"}
+									</button>
+									<small>Sidecar admits local MLX or hosted public SFT. Never dial :8787.</small>
+								</>
+							) : null}
+							{guide.id === "cispo" ? (
+								<>
+									<button className="secondary-button" type="button" disabled={startingLocalCispo || (plugin != null && !presentation.isUsable)} onClick={() => void startBoundedRecipe("cispo.banking77.mlx.v1", setStartingLocalCispo)} data-testid="start-cispo-mlx">
+										{startingLocalCispo ? "Starting…" : "This Mac · Banking77 CISPO"}
+									</button>
+									<small>Hosted CISPO stays fail-closed until the slime clip canary admits it.</small>
 								</>
 							) : null}
 						</article>
