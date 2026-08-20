@@ -161,7 +161,7 @@ rg -q 'candidate-all' "$ROOT/scripts/release-artifact.sh"
 rg -q 'distribution:"candidate"' "$ROOT/scripts/release-artifact.sh"
 rg -q 'notarized:false, stapled:false' "$ROOT/scripts/release-artifact.sh"
 rg -q 'Synth Workshop Candidate.app' "$ROOT/scripts/release-artifact.sh"
-rg -q 'com.synth.desktop.v06.candidate' "$ROOT/apps/synth_desktop/src-tauri/tauri.candidate.conf.json"
+rg -q 'com.synth.desktop.v07.candidate' "$ROOT/apps/synth_desktop/src-tauri/tauri.candidate.conf.json"
 candidate_case="$(sed -n '/candidate-stage)/,/help|-h|--help)/p' "$ROOT/scripts/release-artifact.sh")"
 ! grep -q 'notarize_artifact' <<<"$candidate_case"
 
