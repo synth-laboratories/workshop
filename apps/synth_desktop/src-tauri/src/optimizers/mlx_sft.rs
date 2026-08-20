@@ -121,7 +121,8 @@ pub async fn start(
             "baseModel": BASE_MODEL,
             "placement": PLACEMENT_TRAINING_SFT_LOCAL,
             "trainingCursor": 0,
-            "adapterKind": "mlx-lora.v1"
+            "adapterKind": "mlx-lora.v1",
+            "evaluationPlan": { "phases": ["baseline", "checkpoint", "final"], "checkpointEvery": 2, "transport": "tunnel", "metric": "reward" }
         }),
         input_refs,
     );

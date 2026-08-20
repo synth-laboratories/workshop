@@ -37,5 +37,14 @@
 .training-sheet { display: grid; gap: var(--sp-5); width: min(34rem, 100%); max-height: calc(100vh - var(--sp-8)); overflow: auto; padding: var(--sp-6); border: 1px solid var(--color-border); border-radius: var(--radius-lg); background: var(--color-surface-raised); box-shadow: var(--shadow-lg); }
 .training-sheet h2 { margin: 0; }
 .training-check { display: flex; align-items: center; gap: var(--sp-2); }
+.training-evaluation-series { display: grid; grid-template-columns: repeat(auto-fit, minmax(8.5rem, 1fr)); gap: var(--sp-2); margin-top: var(--sp-3); }
+.training-evaluation-series article { position: relative; display: grid; gap: var(--sp-1); min-width: 0; padding: var(--sp-3); overflow: hidden; border: 1px solid var(--color-border); border-radius: var(--radius-sm); background: var(--color-surface-raised); }
+.training-evaluation-series article::before { content: ""; position: absolute; inset: 0 auto 0 0; width: 3px; background: var(--color-selection); }
+.training-evaluation-series article[data-phase="baseline"]::before { background: var(--color-text-muted); }
+.training-evaluation-series article[data-phase="final"]::before { background: var(--color-success); }
+.training-evaluation-series span { color: var(--color-text-muted); font-size: var(--text-xs); text-transform: uppercase; letter-spacing: .06em; }
+.training-evaluation-series strong { font: 700 var(--text-lg)/1.1 var(--font-mono); }
+.training-evaluation-series small { color: var(--color-text-muted); }
+.training-evaluation-series code { overflow: hidden; color: var(--color-text-faint); font-size: var(--text-xs); text-overflow: ellipsis; white-space: nowrap; }
 @media (max-width: 62rem) { .training-workspace { padding: var(--sp-4); } .training-artifact-grid { grid-template-columns: 1fr; } .training-kv { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 @media (max-width: 40rem) { .training-kv, .training-form-grid { grid-template-columns: 1fr; } }

@@ -824,6 +824,7 @@ export function OptimizersPage({
 		: null;
 	const selectedTrainingUsage = trainingProjection?.provider_usage ?? null;
 	const selectedTrainingCheckpoints = trainingProjection?.checkpoints.map(checkpointValue) ?? [];
+	const selectedTrainingEvaluations = trainingProjection?.evaluations ?? [];
 	const selectedHostedModel = hostedTrainingModels.find((model) => model.modelId === trainingModel);
 	const selectedHostedSupport = selectedHostedModel?.algorithms[trainingAlgorithm];
 	const selectedWarmStart = hostedSftWarmStarts.find((checkpoint) => checkpoint.checkpointId === trainingWarmStartCheckpointId);
@@ -1258,6 +1259,20 @@ export function OptimizersPage({
 									{Object.keys(trainingProjection.metrics).length > 0 ? (
 										<div className="optimizer-training-metrics" data-testid="optimizer-training-metrics">
 											{Object.entries(trainingProjection.metrics).map(([name, value]) => <span key={name}><small>{name}</small><strong>{value.toFixed(4)}</strong></span>)}
+										</div>
+									) : null}
+									{selectedTrainingEvaluations.length > 0 ? (
+										<div className="training-evaluation-series" data-testid="optimizer-training-evaluations" aria-label="Baseline and checkpoint evaluation comparison">
+											{selectedTrainingEvaluations.map((evaluation, index) => {
+												const score = typeof evaluation.score === "number" ? evaluation.score : null;
+												const delta = typeof evaluation.delta === "number" ? evaluation.delta : null;
+												return <article key={`${evaluation.phase ?? "evaluation"}-${evaluation.checkpoint_id ?? evaluation.step ?? index}`} data-phase={evaluation.phase ?? "checkpoint"}>
+													<span>{evaluation.phase ?? "checkpoint"}</span>
+													<strong>{score == null ? "—" : score.toFixed(3)}</strong>
+													<small>{delta == null ? evaluation.metric ?? "reward" : `${delta >= 0 ? "+" : ""}${delta.toFixed(3)} vs baseline`}</small>
+													<code>{evaluation.checkpoint_id ?? (evaluation.step == null ? "base model" : `step ${evaluation.step}`)}</code>
+												</article>;
+											})}
 										</div>
 									) : null}
 									{selectedTrainingCheckpoints.length > 0 ? (
