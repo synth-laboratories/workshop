@@ -53,7 +53,11 @@ export function TrainingEvaluationCurve({ evaluations, testId }: { evaluations: 
 	const points = evaluations
 		.filter((evaluation): evaluation is EvaluationPoint & { score: number } => typeof evaluation.score === "number")
 		.map((evaluation, index) => ({ ...evaluation, step: typeof evaluation.step === "number" ? evaluation.step : index }));
-	if (points.length === 0) return null;
+	if (points.length === 0) return <section className="training-evaluation-plot" data-testid={testId} aria-label="Checkpoint evaluation evidence">
+		<div className="training-evaluation-legend"><strong>Checkpoint evaluations</strong><small>{evaluations.length} observations · no scores returned</small></div>
+		<div className="training-evaluation-ledger">{evaluations.map((point, index) => <button type="button" key={`${point.phase}-${point.step}-${index}`} data-phase={point.phase ?? "checkpoint"} onClick={() => setSelected(point)} aria-label={`Review ${point.phase ?? "checkpoint"} evaluation at step ${point.step ?? "unknown"}`}><span>{point.phase ?? "checkpoint"}</span><strong>—</strong><small>{point.status ?? "unscored"}</small><code>step {point.step ?? "—"} · {point.digest ?? point.artifact_digest ?? point.checkpointId ?? point.checkpoint_id ?? "no artifact digest"}</code></button>)}</div>
+		{selected ? <EvaluationReviewDialog evaluation={selected} onClose={() => setSelected(null)} /> : null}
+	</section>;
 	const steps = points.map((point) => point.step);
 	const rewards = points.map((point) => point.score);
 	const losses = points.flatMap((point) => typeof point.loss === "number" ? [point.loss] : []);

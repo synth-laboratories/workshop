@@ -39,16 +39,16 @@ test.beforeEach(async ({ page }) => {
 			listRecipes: async () => [
 				{ id: "gepa.banking77.luna.v1", title: "Banking77 GEPA · Luna medium", availability: "available", limits: { maxTotalRollouts: 240, maxCostUsd: 2.45 } },
 				{ id: "gepa.banking77.sol.v1", title: "Banking77 GEPA · Sol medium", availability: "available", limits: { maxTotalRollouts: 240, maxCostUsd: 2.45 } },
-				{ id: "sft.hosted.fixture.v1", title: "Hosted SFT fixture", availability: "available", limits: { trainSteps: 4 } }
+				{ id: "sft.banking77.nemotron-lightning.tinker.v1", title: "Banking77 Tinker SFT", availability: "available", limits: { trainingSteps: 30 } }
 			],
 			startRecipe: async (request: any) => {
 				(window as any).__optimizerCreateCount += 1;
 				(window as any).__optimizerCreateRequest = request;
-				const isSft = request.recipeId === "sft.hosted.fixture.v1";
-				const run = makeRun(isSft ? "sft_hosted_fixture" : "banking77_cua_smoke", isSft ? "sft" : "gepa");
+				const isSft = request.recipeId === "sft.banking77.nemotron-lightning.tinker.v1";
+				const run = makeRun(isSft ? "sft_banking77_tinker" : "banking77_cua_smoke", isSft ? "sft" : "gepa");
 				if (isSft) {
 					run.source = "hosted";
-					run.objective = "Hosted SFT fixture · streamed from public Optimizers";
+					run.objective = "Hosted SFT · streamed from public Optimizers";
 					run.executionBindings = [{ kind: "synth_optimizers_sft", id: "http://127.0.0.1:8878", label: "public Optimizers hosted SFT", status: "starting" }];
 				}
 				runs = [run];
@@ -198,21 +198,8 @@ test("optimizer entry points describe algorithms without binding them to environ
 	await expect(page.getByTestId("start-gepa-agent")).toBeEnabled();
 	await expect(page.getByTestId("start-go-ex-agent")).toBeEnabled();
 	await expect(page.getByTestId("start-sft-agent")).toBeEnabled();
-	await expect(page.getByTestId("start-sft-fixture")).toBeEnabled();
-	await expect(page.getByTestId("optimizer-guide-sft")).toContainText("no provider charges");
-});
-
-test("the explicit free SFT fixture uses the public hosted recipe and opens its visual", async ({ page }) => {
-	await page.getByTestId("start-sft-fixture").click();
-	await expect.poll(() => page.evaluate(() => (window as any).__optimizerCreateCount)).toBe(1);
-	expect(await page.evaluate(() => (window as any).__optimizerCreateRequest)).toEqual({
-		recipeId: "sft.hosted.fixture.v1",
-		openVisual: true
-	});
-	expect(await page.evaluate(() => (window as any).__optimizerAgentCalls.length)).toBe(0);
-	await expect(page.getByTestId("optimizer-execution-mode")).toHaveText("public Optimizers hosted SFT");
-	await expect(page.getByTestId("optimizer-run-sft_hosted_fixture")).toBeVisible();
-	await expect(page.getByTestId("visual-pane")).toBeVisible();
+	await expect(page.getByTestId("start-sft-fixture")).toHaveCount(0);
+	await expect(page.getByTestId("optimizer-guide-sft")).not.toContainText("no provider charges");
 });
 
 test("starting GELO opens an agent session that discovers the target before compute", async ({ page }) => {
