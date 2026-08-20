@@ -1,19 +1,19 @@
 import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
 import type { OptimizerAlgorithmInfo, OptimizerRunRecord } from "@synth/runtime-protocol";
-import type { HostedTrainingModel, OptimizerRecipeInfo, OptimizerRunOutputs, PluginActionReceipt, PluginLifecycleOperation, PluginStatus, SavedLoraCheckpoint, TrainingArtifact, TrainingProjection } from "../bridge/types";
+import type { HostedTrainingModel, OptimizerRecipeInfo, OptimizerRunOutputs, PluginActionReceipt, PluginLifecycleOperation, PluginStatus, SavedLoraCheckpoint, TrainingProjection } from "../bridge/types";
 import { bridges } from "../runtime/desktopBridge";
 import { findPluginStatus, pluginPresentation, type PluginPresentation } from "../runtime/pluginPresentation";
 import { publicError } from "../runtime/publicError";
 import { TrainingWorkspace } from "./TrainingWorkspace";
+import { TrainingEvaluationCurve } from "./TrainingEvaluationCurve";
 
 type OptimizerGuide = {
-	id: "gepa" | "go-ex" | "sft" | "cispo" | "eval";
+	id: "gepa" | "go-ex" | "sft" | "cispo" | "ppo" | "eval";
 	label: string;
 	name: string;
 	description: string;
 	flow: string[];
 	prompt: string;
-	kind: "optimizer" | "training";
 };
 
 const OPTIMIZER_GUIDES: OptimizerGuide[] = [
@@ -21,7 +21,6 @@ const OPTIMIZER_GUIDES: OptimizerGuide[] = [
 		id: "gepa",
 		label: "GE",
 		name: "GEPA",
-		kind: "optimizer",
 		description: "Improve prompts by proposing candidates, evaluating them, and maintaining a quality frontier.",
 		flow: ["Propose", "Evaluate", "Select"],
 		prompt: "Help me set up a GEPA optimization in Workshop. Do not start compute yet. First ask what I want to optimize, then help me choose or create the evaluation Container, dataset splits, scoring contract, proposer model, budget, and stopping criteria. Verify the target and event-stream contracts before proposing a run. Explain tradeoffs and wait for my explicit approval before starting paid compute."
@@ -30,7 +29,6 @@ const OPTIMIZER_GUIDES: OptimizerGuide[] = [
 		id: "go-ex",
 		label: "GX",
 		name: "GELO",
-		kind: "optimizer",
 		description: "Explore prompt-policy variants from rollout evidence and branch from useful intermediate states.",
 		flow: ["Explore", "Branch", "Verify"],
 		prompt: "Help me set up a prompt-only GELO (GoEx) optimization in Workshop. Do not start compute yet. First ask what behavior I want to improve and which Container or evaluation target should measure it. Discover the target's actual capabilities, including streaming, rewards, prompt treatment, checkpoints, and restore support; fail the plan early if required affordances are missing. Then help me choose seeds, proposer policy, budget, heldout evaluation, and stopping criteria. Wait for my explicit approval before starting paid compute."
@@ -39,24 +37,19 @@ const OPTIMIZER_GUIDES: OptimizerGuide[] = [
 		id: "sft",
 		label: "SF",
 		name: "SFT",
-		kind: "training",
 		description: "Collect strong demonstrations, train checkpoints, and compare the adapted model against its baseline. This Mac (MLX) or hosted.",
 		flow: ["Collect", "Train", "Compare"],
-		prompt: "Help me set up an SFT optimization in Workshop. Do not start compute yet. Ask whether I want This Mac (recipe sft.qwen35-0.8b.mlx.v1) or hosted (sft.hosted.fixture.v1 / Tinker recipes). Never dial :8787 or name synth-mlx-rl. Wait for my explicit approval before starting paid compute."
+		prompt: "Help me set up an SFT optimization in Workshop. Do not start compute yet. Ask whether I want This Mac (recipe sft.qwen35-0.8b.mlx.v1) or hosted Tinker. Never dial :8787 or name synth-mlx-rl. Wait for my explicit approval before starting paid compute."
 	},
 	{
 		id: "cispo",
 		label: "CI",
 		name: "CISPO · slime reference",
-		kind: "training",
 		description: "Run on-policy training with the pinned slime CISPO objective. This Mac (MLX) or hosted after the clip canary.",
 		flow: ["Preflight", "Roll out", "Train"],
-		prompt: "Help me set up CISPO in Workshop. Do not start paid compute yet. Prefer recipe cispo.banking77.mlx.v1 on this Mac, or the bounded hosted recipe cispo.slime.hosted.v1 if hosted is admitted. Never draft a free-form HostedOptimizerClient.launch_training call. Wait for my explicit approval before launch."
-	}
+		prompt: "Help me set up CISPO in Workshop. Do not start paid compute yet. Prefer recipe cispo.banking77.mlx.v1 on this Mac, or cispo.slime.hosted.v1 if hosted is admitted. Never draft a free-form HostedOptimizerClient.launch_training call. Wait for my explicit approval before launch."
+	},
 ];
-
-const SEARCH_GUIDES = OPTIMIZER_GUIDES.filter((guide) => guide.kind === "optimizer");
-const TRAINING_GUIDES = OPTIMIZER_GUIDES.filter((guide) => guide.kind === "training");
 
 type Props = {
 	onOpenVisual: (visualId: string) => void;
@@ -87,7 +80,7 @@ function algorithmLabel(id: string): string {
 	if (id === "gepa") return "GEPA";
 	if (id === "go-ex") return "GELO";
 	if (id === "sft") return "SFT";
-	if (id === "cispo") return "CISPO";
+	if (id === "cispo") return "CISPO · slime";
 	if (id === "eval") return "Eval";
 	return id;
 }
@@ -316,7 +309,6 @@ export function OptimizersPage({
 	const [busy, setBusy] = useState(false);
 	const [selectedId, setSelectedId] = useState<string | null>(null);
 	const [startingAgent, setStartingAgent] = useState<OptimizerGuide["id"] | null>(null);
-	const [startingSftFixture, setStartingSftFixture] = useState(false);
 	const [startingLocalSft, setStartingLocalSft] = useState(false);
 	const [startingLocalCispo, setStartingLocalCispo] = useState(false);
 	const [evalRecipes, setEvalRecipes] = useState<OptimizerRecipeInfo[]>([]);
@@ -330,12 +322,8 @@ export function OptimizersPage({
 	const [trainingWallSeconds, setTrainingWallSeconds] = useState(300);
 	const [trainingCostUsd, setTrainingCostUsd] = useState(0.1);
 	const [trainingCheckpointEvery, setTrainingCheckpointEvery] = useState(1);
-	const [trainingWarmStartCheckpointId, setTrainingWarmStartCheckpointId] = useState("");
 	const [hostedTrainingModels, setHostedTrainingModels] = useState<HostedTrainingModel[]>([]);
 	const [savedLoras, setSavedLoras] = useState<SavedLoraCheckpoint[]>([]);
-	const [localArtifacts, setLocalArtifacts] = useState<TrainingArtifact[]>([]);
-	const [localArtifactReply, setLocalArtifactReply] = useState<string | null>(null);
-	const [hostedSftWarmStarts, setHostedSftWarmStarts] = useState<SavedLoraCheckpoint[]>([]);
 	const [savedLoraTotal, setSavedLoraTotal] = useState(0);
 	const [savedLoraSearch, setSavedLoraSearch] = useState("");
 	const [savedLoraScope, setSavedLoraScope] = useState<"all" | "mine" | "org">("all");
@@ -404,8 +392,6 @@ export function OptimizersPage({
 		setAlgorithms(nextAlgorithms);
 		setEvalRecipes(nextRecipes.filter((recipe) => recipe.algorithmId === "eval"));
 		if (!selectedId && nextRuns[0]) setSelectedId(nextRuns[0].id);
-		const artifacts = await bridges.trainingArtifacts?.list().catch(() => [] as TrainingArtifact[]);
-		setLocalArtifacts(artifacts ?? []);
 	}, [algorithm, search, selectedId, source, status]);
 
 	// No plugin poller here. Registry status arrives from useAppController,
@@ -463,27 +449,6 @@ export function OptimizersPage({
 		const timer = window.setTimeout(() => void refreshSavedLoras(), 250);
 		return () => window.clearTimeout(timer);
 	}, [refreshSavedLoras]);
-
-	useEffect(() => {
-		let live = true;
-		const searchSavedLoras = bridges.optimizers?.searchSavedLoras;
-		if (typeof searchSavedLoras !== "function") return () => { live = false; };
-		void searchSavedLoras({
-			provider: "tinker",
-			optimizerAlgorithm: "sft",
-			checkpointKind: "training",
-			status: "ready",
-			limit: 100
-		}).then((page) => {
-			if (!live) return;
-			setHostedSftWarmStarts(page.items.filter((checkpoint) =>
-				Boolean(checkpoint.lineage.providerCheckpointReference ?? checkpoint.providerCheckpointReference)
-			));
-		}).catch((reason) => {
-			if (live) setError(presentError(reason).message);
-		});
-		return () => { live = false; };
-	}, []);
 
 	const downloadSavedLora = async (checkpoint: SavedLoraCheckpoint) => {
 		if (!bridges.optimizers) return;
@@ -643,15 +608,11 @@ export function OptimizersPage({
 	};
 
 	const reviewTrainingLaunch = async () => {
-		const guide = TRAINING_GUIDES.find((item) => item.id === "cispo");
+		const guide = OPTIMIZER_GUIDES.find((item) => item.id === trainingAlgorithm);
 		if (!guide) return;
-		const warmStartReference = selectedWarmStart?.lineage.providerCheckpointReference
-			?? selectedWarmStart?.providerCheckpointReference;
-		if (!selectedWarmStart || !warmStartReference || warmStartMismatch) return;
-		const warmStartLines = `\n- SFT checkpoint id: ${selectedWarmStart.checkpointId}\n- SFT provider state: ${warmStartReference}\n- producing SFT run: ${selectedWarmStart.lineage.runId ?? selectedWarmStart.runId ?? "unknown"}\n- SFT base model: ${selectedWarmStart.baseModel}`;
 		await startAgent({
 			...guide,
-			prompt: `${guide.prompt}\n\nLaunch the bounded hosted recipe cispo.slime.hosted.v1. Do not call HostedOptimizerClient.launch_training.\n\nTyped launch draft:\n- recipe: cispo.slime.hosted.v1\n- model: ${trainingModel}\n- task: ${trainingTask}\n- local container URL: ${trainingContainerUrl}\n- hard step cap: ${trainingSteps}\n- hard wall-clock cap: ${trainingWallSeconds} seconds\n- hard cost cap: $${trainingCostUsd}\n- checkpoint every: ${trainingCheckpointEvery} step(s)${warmStartLines}\n\nUse recipe admission so the sidecar performs provider preflight, container capability validation, SynthTunnel setup, and lease ownership. Put the exact SFT provider state in algorithm_config.initial_state_path, its checkpoint id in algorithm_config.source_checkpoint_id, and its producing run in algorithm_config.source_run_id; hosted CISPO never defaults to latest, another checkpoint, or a sampler-only checkpoint. Echo the effective config, both capability hashes, the SFT checkpoint id, provider state, and producing run. If the recipe is not admitted, stop before spend.`
+			prompt: `${guide.prompt}\n\nThe user supplied this typed launch draft:\n- model: ${trainingModel}\n- task: ${trainingTask}\n- local container URL: ${trainingContainerUrl}\n- hard step cap: ${trainingSteps}\n- hard wall-clock cap: ${trainingWallSeconds} seconds\n- hard cost cap: $${trainingCostUsd}\n- checkpoint every: ${trainingCheckpointEvery} step(s)\n\nUse the synth-optimizers HostedTrainingSpec and HostedOptimizerClient.launch_training path so the client performs provider preflight, container capability validation, SynthTunnel setup, and lease ownership. Echo the effective config and both capability hashes. If preflight is supported, ask for one final paid-compute confirmation and then launch; if it is unsupported, stop before spend and report the exact missing capability.`
 		});
 	};
 
@@ -667,53 +628,13 @@ export function OptimizersPage({
 				? "Resume this run from the checkpoint using HostedOptimizerClient.resume_training with a fresh validated SynthTunnel lease and a new idempotent attempt."
 				: "Compare this checkpoint and its evaluation against the baseline, attach or update the experiment visual, and create or update the report with run, attempt, checkpoint lineage, config/task digests, usage reconciliation, and artifact links.";
 		await startAgent({
-			id: action === "resume" ? "cispo" : "eval",
-			kind: action === "resume" ? "training" : "optimizer",
+			id: action === "resume" && selected.algorithmId === "ppo" ? "ppo" : action === "resume" ? "cispo" : "eval",
 			label: action === "evaluate" ? "EV" : action === "resume" ? "RE" : "RP",
 			name: action === "evaluate" ? "Evaluate checkpoint" : action === "resume" ? "Resume checkpoint" : "Compare and report",
 			description: `${actionPrompt} Run ${selected.id}, checkpoint ${checkpointId}.`,
 			flow: action === "resume" ? ["Preflight", "Resume", "Follow"] : ["Evaluate", "Compare", "Report"],
 			prompt: `${actionPrompt}\n\nRun: ${selected.id}\nAlgorithm: ${selected.algorithmId}\nCheckpoint: ${checkpointId}\nTask: ${String(selected.summary?.taskId ?? "from the sealed run config")}\nDo not substitute another checkpoint. Verify ready/evaluation/resume eligibility from canonical backend evidence before acting.`
 		});
-	};
-
-	const runLocalArtifactInference = async (artifact: TrainingArtifact) => {
-		if (!bridges.trainingArtifacts) return;
-		setBusy(true);
-		setError(null);
-		setLocalArtifactReply(null);
-		try {
-			const result = await bridges.trainingArtifacts.launchInference({
-				id: artifact.id,
-				confirm: true
-			});
-			setLocalArtifactReply(`${result.policySnapshotId}: ${result.reply}`);
-		} catch (reason) {
-			setError(presentError(reason).message);
-		} finally {
-			setBusy(false);
-		}
-	};
-
-	const evaluateLocalArtifact = async (artifact: TrainingArtifact) => {
-		if (!bridges.optimizers) return;
-		setBusy(true);
-		setError(null);
-		try {
-			const run = await bridges.optimizers.startRecipe({
-				recipeId: "eval.mlx.local-policy.smoke.v1",
-				trainingArtifactId: artifact.id,
-				openVisual: true
-			});
-			setSelectedId(run.id);
-			await refresh();
-			const visualId = run.visualRefs.find((ref) => ref.kind === "visual")?.id;
-			if (visualId) onOpenVisual(visualId);
-		} catch (reason) {
-			setError(presentError(reason).message);
-		} finally {
-			setBusy(false);
-		}
 	};
 
 	const startBoundedRecipe = async (recipeId: string, setter: (busy: boolean) => void) => {
@@ -734,10 +655,6 @@ export function OptimizersPage({
 		} finally {
 			setter(false);
 		}
-	};
-
-	const startSftFixture = async () => {
-		await startBoundedRecipe("sft.hosted.fixture.v1", setStartingSftFixture);
 	};
 
 	const openSelectedVisual = async () => {
@@ -824,14 +741,10 @@ export function OptimizersPage({
 		: null;
 	const selectedTrainingUsage = trainingProjection?.provider_usage ?? null;
 	const selectedTrainingCheckpoints = trainingProjection?.checkpoints.map(checkpointValue) ?? [];
+	const selectedTrainingEvaluations = trainingProjection?.evaluations ?? [];
 	const selectedHostedModel = hostedTrainingModels.find((model) => model.modelId === trainingModel);
 	const selectedHostedSupport = selectedHostedModel?.algorithms[trainingAlgorithm];
-	const selectedWarmStart = hostedSftWarmStarts.find((checkpoint) => checkpoint.checkpointId === trainingWarmStartCheckpointId);
-	const warmStartMismatch = selectedWarmStart !== undefined && selectedWarmStart.baseModel !== trainingModel;
-	const hostedLaunchBlocked = !selectedHostedSupport
-		|| selectedHostedSupport.status === "blocked"
-		|| !selectedWarmStart
-		|| warmStartMismatch;
+	const hostedLaunchBlocked = !selectedHostedSupport || selectedHostedSupport.status === "blocked";
 
 	const refreshSelected = async () => {
 		if (!selected || !bridges.optimizers) return;
@@ -951,14 +864,14 @@ export function OptimizersPage({
 				</section>
 			) : null}
 
-			<TrainingWorkspace onStartFixture={() => void startSftFixture()} fixtureBusy={startingSftFixture} />
+			<TrainingWorkspace onStartAgent={() => { const guide = OPTIMIZER_GUIDES.find((item) => item.id === "sft"); if (guide) void startAgent(guide); }} />
 
 			<section className="optimizer-recipes" aria-labelledby="optimizer-recipes-title">
 				<div className="optimizer-recipes-head">
 					<div><span className="optimizer-eyebrow">Agent-guided setup</span><h2 id="optimizer-recipes-title">What do you want to optimize?</h2></div>
 				</div>
 				<div className="optimizer-recipe-grid">
-					{SEARCH_GUIDES.map((guide) => (
+					{OPTIMIZER_GUIDES.filter((guide) => guide.id !== "sft" && guide.id !== "cispo").map((guide) => (
 						<article className="optimizer-recipe-card" aria-labelledby={`optimizer-guide-${guide.id}`} data-testid={`optimizer-guide-${guide.id}`} key={guide.id}>
 							<div className="optimizer-recipe-top"><span className="optimizer-recipe-mark">{guide.label}</span><span className="optimizer-recipe-runtime">Optimization algorithm</span></div>
 							<h3 id={`optimizer-guide-${guide.id}`}>{guide.name}</h3>
@@ -967,35 +880,9 @@ export function OptimizersPage({
 							<button
 								className="secondary-button"
 								type="button"
-								disabled={startingAgent !== null || (plugin != null && !presentation.isUsable)}
-								title={plugin != null && !presentation.isUsable && presentation.label
-									? `Optimizers: ${presentation.label}`
-									: undefined}
-								onClick={() => void startAgent(guide)}
-								data-testid={`start-${guide.id}-agent`}
-							>
-								{startingAgent === guide.id ? "Opening agent…" : "Plan with agent"}
-							</button>
-						</article>
-					))}
-				</div>
-			</section>
-
-			<section className="optimizer-recipes" aria-labelledby="optimizer-training-title" data-testid="optimizer-training-guides">
-				<div className="optimizer-recipes-head">
-					<div><span className="optimizer-eyebrow">Training</span><h2 id="optimizer-training-title">Train a model</h2></div>
-					<p>SFT and CISPO are training lanes, not search algorithms. They live here, not in the optimizer card grid.</p>
-				</div>
-				<div className="optimizer-recipe-grid">
-					{TRAINING_GUIDES.map((guide) => (
-						<article className="optimizer-recipe-card" aria-labelledby={`optimizer-guide-${guide.id}`} data-testid={`optimizer-guide-${guide.id}`} key={guide.id}>
-							<div className="optimizer-recipe-top"><span className="optimizer-recipe-mark">{guide.label}</span><span className="optimizer-recipe-runtime">Training lane</span></div>
-							<h3 id={`optimizer-guide-${guide.id}`}>{guide.name}</h3>
-							<p>{guide.description}</p>
-							<div className="optimizer-recipe-flow" aria-label={`${guide.name} workflow`}>{guide.flow.map((step) => <span key={step}>{step}</span>)}</div>
-							<button
-								className="secondary-button"
-								type="button"
+								// A plugin that is disabled, stopped, uninstalled, or
+								// unhealthy cannot take work; offering the launch would
+								// fail deep inside the sidecar instead of here.
 								disabled={startingAgent !== null || (plugin != null && !presentation.isUsable)}
 								title={plugin != null && !presentation.isUsable && presentation.label
 									? `Optimizers: ${presentation.label}`
@@ -1010,18 +897,15 @@ export function OptimizersPage({
 									<button className="secondary-button" type="button" disabled={startingLocalSft || (plugin != null && !presentation.isUsable)} onClick={() => void startBoundedRecipe("sft.qwen35-0.8b.mlx.v1", setStartingLocalSft)} data-testid="start-sft-mlx">
 										{startingLocalSft ? "Starting…" : "This Mac · Qwen 0.8B MLX"}
 									</button>
-									<button className="secondary-button" type="button" disabled={startingSftFixture} onClick={() => void startSftFixture()} data-testid="start-sft-fixture">
-										{startingSftFixture ? "Starting fixture…" : "Run hosted fixture"}
-									</button>
-									<small>Public Optimizers fixture · no provider charges</small>
+									<small>Sidecar admits local MLX or hosted public SFT. Never dial :8787.</small>
 								</>
 							) : null}
 							{guide.id === "cispo" ? (
 								<>
 									<button className="secondary-button" type="button" disabled={startingLocalCispo || (plugin != null && !presentation.isUsable)} onClick={() => void startBoundedRecipe("cispo.banking77.mlx.v1", setStartingLocalCispo)} data-testid="start-cispo-mlx">
-										{startingLocalCispo ? "Starting…" : "This Mac · CISPO (MLX)"}
+										{startingLocalCispo ? "Starting…" : "This Mac · Banking77 CISPO"}
 									</button>
-									<small>Hosted CISPO stays fail-closed until the slime clip canary admits it. Use the bounded recipe below.</small>
+									<small>Hosted CISPO stays fail-closed until the slime clip canary admits it.</small>
 								</>
 							) : null}
 						</article>
@@ -1036,7 +920,6 @@ export function OptimizersPage({
 				<div className="optimizer-training-form">
 					<label><span>Algorithm</span><select value={trainingAlgorithm} disabled><option value="cispo">CISPO · slime reference</option></select></label>
 					<label><span>Model</span><select value={trainingModel} onChange={(event) => setTrainingModel(event.target.value)}>{hostedTrainingModels.map((model) => { const support = model.algorithms[trainingAlgorithm]; return <option key={model.modelId} value={model.modelId} disabled={support?.status === "blocked"}>{model.label} · {support?.status ?? "not validated"}</option>; })}</select></label>
-					<label><span>SFT warm start</span><select aria-label="SFT warm-start checkpoint" value={trainingWarmStartCheckpointId} onChange={(event) => setTrainingWarmStartCheckpointId(event.target.value)} data-testid="hosted-cispo-warm-start"><option value="">—</option>{hostedSftWarmStarts.map((checkpoint) => <option key={checkpoint.checkpointId} value={checkpoint.checkpointId}>{checkpoint.name} · {checkpoint.baseModel} · step {checkpoint.step ?? "—"}</option>)}</select></label>
 					<label><span>Task</span><input value={trainingTask} onChange={(event) => setTrainingTask(event.target.value)} /></label>
 					<label><span>Local Container URL</span><input value={trainingContainerUrl} onChange={(event) => setTrainingContainerUrl(event.target.value)} /></label>
 					<label><span>Steps</span><input type="number" min={1} value={trainingSteps} onChange={(event) => setTrainingSteps(Math.max(1, Number(event.target.value)))} /></label>
@@ -1048,33 +931,6 @@ export function OptimizersPage({
 					<button className="primary-button" type="button" disabled={startingAgent !== null || hostedLaunchBlocked || !trainingModel.trim() || !trainingTask.trim() || !trainingContainerUrl.trim()} onClick={() => void reviewTrainingLaunch()} data-testid="review-hosted-training-launch">Review &amp; launch</button>
 					{hostedLaunchBlocked ? <span className="optimizer-status failed">Unavailable</span> : null}
 				</div>
-			</section>
-
-			<section id="optimizer-local-artifact-library" className="optimizer-checkpoint-library" aria-labelledby="optimizer-local-artifact-library-title" data-testid="optimizer-local-artifact-library">
-				<div className="optimizer-recipes-head">
-					<div><span className="optimizer-eyebrow">This Mac</span><h2 id="optimizer-local-artifact-library-title">Training artifacts</h2></div>
-					<p>{localArtifacts.length} retained adapters. Inference and Eval must name one of these ids; they never fall back to ambient latest.</p>
-				</div>
-				{localArtifactReply ? <p data-testid="local-artifact-reply">{localArtifactReply}</p> : null}
-				{localArtifacts.length === 0 ? (
-					<p data-testid="local-artifact-empty">No local adapters yet. Finish a bounded SFT or CISPO run on this Mac.</p>
-				) : (
-					<ul className="optimizer-checkpoint-list">
-						{localArtifacts.map((artifact) => (
-							<li key={artifact.id} data-testid={`local-artifact-${artifact.id}`}>
-								<div>
-									<strong>{artifact.id}</strong>
-									<p>{artifact.adapterKind} · {artifact.baseModelId} · run {artifact.producingRunId} · {artifact.producingAlgorithm}</p>
-									<p>digest {artifact.digest ?? "none"} · dataset {artifact.datasetDigest ?? "none"} · config {artifact.configDigest ?? "none"} · {artifact.integrity}{artifact.sizeBytes != null ? ` · ${formatBytes(artifact.sizeBytes)}` : ""}</p>
-								</div>
-								<div>
-									<button className="secondary-button" type="button" disabled={!artifact.integrity || artifact.integrity === "unavailable"} onClick={() => void runLocalArtifactInference(artifact)} data-testid={`local-artifact-infer-${artifact.id}`}>Run inference</button>
-									<button className="secondary-button" type="button" onClick={() => void evaluateLocalArtifact(artifact)} data-testid={`local-artifact-eval-${artifact.id}`}>Evaluate</button>
-								</div>
-							</li>
-						))}
-					</ul>
-				)}
 			</section>
 
 			<section id="optimizer-checkpoint-library" className="optimizer-checkpoint-library" aria-labelledby="optimizer-checkpoint-library-title" data-testid="optimizer-checkpoint-library">
@@ -1106,7 +962,7 @@ export function OptimizersPage({
 							<p>{checkpoint.description || checkpoint.baseModel}</p>
 							<dl><dt>Base</dt><dd>{checkpoint.baseModel}</dd><dt>Algorithm</dt><dd>{checkpoint.lineage.optimizerAlgorithm ?? checkpoint.optimizerAlgorithm ?? "Imported"}</dd><dt>Run</dt><dd>{checkpoint.lineage.runId ?? checkpoint.runId ?? "—"}</dd><dt>Attempt</dt><dd>{checkpoint.lineage.attemptId ?? checkpoint.attemptId ?? "—"}</dd><dt>Source</dt><dd>{checkpoint.lineage.sourceCheckpointId ?? checkpoint.sourceCheckpointId ?? "—"}</dd><dt>Provider</dt><dd>{checkpoint.provider} · {checkpoint.checkpointKind}</dd><dt>Rank / step</dt><dd>{checkpoint.loraRank ?? "—"} / {checkpoint.step ?? "—"}</dd><dt>Storage</dt><dd>{checkpoint.storage.backend} · {formatBytes(checkpoint.storage.sizeBytes)}</dd><dt>Saved</dt><dd>{checkpoint.updatedAt ? formatWhen(checkpoint.updatedAt) : "—"}</dd></dl>
 							{checkpoint.tags.length > 0 ? <div className="optimizer-checkpoint-tags">{checkpoint.tags.map((tag) => <span key={tag}>{tag}</span>)}</div> : null}
-							<div className="optimizer-checkpoint-actions">{hostedSftWarmStarts.some((candidate) => candidate.checkpointId === checkpoint.checkpointId) ? <button className="primary-button" type="button" onClick={() => { setTrainingModel(checkpoint.baseModel); setTrainingWarmStartCheckpointId(checkpoint.checkpointId); document.querySelector<HTMLElement>("[data-testid='optimizer-training-launch']")?.scrollIntoView({ behavior: "smooth", block: "start" }); }} data-testid={`use-for-cispo-${checkpoint.checkpointId}`}>Use for hosted CISPO</button> : null}{checkpoint.lineage.runId || checkpoint.runId ? <button className="secondary-button" type="button" onClick={() => void openCheckpointRun(checkpoint)}>Open run</button> : null}<button className="secondary-button" type="button" disabled={savedLoraBusy} onClick={() => void downloadSavedLora(checkpoint)}>Download</button><button className="secondary-button optimizer-danger-button" type="button" disabled={savedLoraBusy} onClick={() => void archiveSavedLora(checkpoint)}>Archive</button></div>
+							<div className="optimizer-checkpoint-actions">{checkpoint.lineage.runId || checkpoint.runId ? <button className="secondary-button" type="button" onClick={() => void openCheckpointRun(checkpoint)}>Open run</button> : null}<button className="secondary-button" type="button" disabled={savedLoraBusy} onClick={() => void downloadSavedLora(checkpoint)}>Download</button><button className="secondary-button optimizer-danger-button" type="button" disabled={savedLoraBusy} onClick={() => void archiveSavedLora(checkpoint)}>Archive</button></div>
 						</article>
 					))}
 					{savedLoras.length === 0 && !savedLoraBusy ? <div className="optimizer-empty"><span className="optimizer-empty-icon" aria-hidden>◇</span><strong>No checkpoints match</strong><p>Inference LoRAs and resumable training state appear automatically after object-storage verification.</p></div> : null}
@@ -1149,7 +1005,6 @@ export function OptimizersPage({
 										data-testid={`start-eval-${recipe.id}`}
 										onClick={() => void startAgent({
 											id: "eval",
-											kind: "optimizer",
 											label: "EV",
 											name: recipe.title,
 											description: recipe.description ?? "",
@@ -1260,6 +1115,7 @@ export function OptimizersPage({
 											{Object.entries(trainingProjection.metrics).map(([name, value]) => <span key={name}><small>{name}</small><strong>{value.toFixed(4)}</strong></span>)}
 										</div>
 									) : null}
+									{selectedTrainingEvaluations.length > 0 ? <TrainingEvaluationCurve evaluations={selectedTrainingEvaluations} testId="optimizer-training-evaluations" /> : null}
 									{selectedTrainingCheckpoints.length > 0 ? (
 										<div className="optimizer-training-checkpoints" data-testid="optimizer-training-checkpoints">
 											<strong>Ready checkpoints</strong>

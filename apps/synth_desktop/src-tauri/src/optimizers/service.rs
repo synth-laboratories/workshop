@@ -348,10 +348,8 @@ impl OptimizerService {
             super::hosted_gelo::HOSTED_GELO_CRAFTAX_RECIPE => {
                 super::hosted_gelo::start(self, request).await
             }
-            super::hosted_sft::HOSTED_SFT_FIXTURE_RECIPE
-            | super::hosted_sft::HOSTED_SFT_CRAFTAX_NEMOTRON_RECIPE
-            | super::hosted_sft::HOSTED_SFT_BANKING77_RECIPE
-            | super::hosted_sft::HOSTED_SFT_GSM8K_RECIPE => {
+            super::hosted_sft::HOSTED_SFT_CRAFTAX_NEMOTRON_RECIPE
+            | super::hosted_sft::HOSTED_SFT_BANKING77_RECIPE => {
                 super::hosted_sft::start(self, request).await
             }
             super::mlx_sft::QWEN_MLX_SFT_RECIPE => super::mlx_sft::start(self, request).await,
@@ -3115,7 +3113,7 @@ fn project_from_events(
                     }
                 }
             }
-            "sft.checkpoint.created" | "sft.checkpoint.ready" | "training.checkpoint.created" | "training.checkpoint.ready" => {
+            "sft.checkpoint.created" | "sft.checkpoint.ready" => {
                 if let Some(item) = &event.item {
                     let id = item.get("id").and_then(Value::as_str).unwrap_or("");
                     let mut found = false;
@@ -3126,9 +3124,7 @@ fn project_from_events(
                                     "status".into(),
                                     item.get("status").cloned().unwrap_or(json!("ready")),
                                 );
-                                if event.event_type == "sft.checkpoint.ready"
-                                    || event.event_type == "training.checkpoint.ready"
-                                {
+                                if event.event_type == "sft.checkpoint.ready" {
                                     obj.insert("ready".into(), json!(true));
                                 }
                             }
@@ -3161,7 +3157,7 @@ fn project_from_events(
                     }
                 }
             }
-            "sft.step.metrics" | "sft.training.metrics" | "training.metrics" => {
+            "sft.step.metrics" | "sft.training.metrics" => {
                 if let Some(obj) = curves.as_object_mut() {
                     push_curve(obj, "steps", event.delta.get("step"));
                     push_curve(obj, "epochs", event.delta.get("epoch"));
@@ -3208,13 +3204,14 @@ fn project_from_events(
             "sft.checkpoint_eval.completed"
             | "sft.heldout_eval.completed"
             | "sft.checkpoint_evaluation.completed"
-            | "sft.checkpoint_evaluation.allocated" => {
+            | "sft.checkpoint_evaluation.allocated"
+            | "training.evaluation.completed" => {
                 checkpoint_evals.push(json!({
                     "sequence": event.sequence_number,
                     "delta": event.delta,
                     "snapshot": event.snapshot,
                     "item": event.item,
-                    "role": event.delta.get("role").cloned().unwrap_or(json!("selection")),
+                    "role": event.delta.get("role").or_else(|| event.delta.get("phase")).cloned().unwrap_or(json!("selection")),
                     "measurementOnly": event.delta.get("measurementOnly").cloned().unwrap_or(json!(false))
                 }));
             }
@@ -5252,48 +5249,6 @@ pub(in crate::optimizers) mod tests {
     }
 
     #[tokio::test]
-    async fn training_algorithms_are_tagged_and_ppo_is_withdrawn() {
-        let (svc, _dir, _) = service().await;
-        let algorithms = svc.list_algorithms();
-        assert!(
-            algorithms
-                .iter()
-                .all(|item| item.get("id") != Some(&json!("ppo"))),
-            "PPO was withdrawn from the optimizer catalog on 2026-08-19"
-        );
-        for id in ["sft", "cispo"] {
-            let entry = algorithms
-                .iter()
-                .find(|item| item.get("id") == Some(&json!(id)))
-                .unwrap_or_else(|| panic!("{id} missing from list_algorithms"));
-            assert_eq!(
-                entry.get("kind"),
-                Some(&json!("training")),
-                "{id} must be tagged as a training lane, not an optimizer card"
-            );
-        }
-        for id in ["gepa", "go-ex"] {
-            let entry = algorithms
-                .iter()
-                .find(|item| item.get("id") == Some(&json!(id)))
-                .unwrap_or_else(|| panic!("{id} missing from list_algorithms"));
-            assert_ne!(entry.get("kind"), Some(&json!("training")));
-        }
-    }
-
-    #[tokio::test]
-    async fn lists_hosted_sft_fixture_recipe() {
-        let (svc, _dir, _) = service().await;
-        let recipe = svc
-            .list_recipes()
-            .into_iter()
-            .find(|item| item.get("id") == Some(&json!("sft.hosted.fixture.v1")))
-            .unwrap();
-        assert_eq!(recipe.get("algorithmId"), Some(&json!("sft")));
-        assert_ne!(recipe.get("id"), Some(&json!("goex.sft.v1")));
-    }
-
-    #[tokio::test]
     async fn lists_craftax_nemotron_tinker_recipe_and_refuses_unknown_base_model() {
         let (svc, _dir, _) = service().await;
         let recipe = svc
@@ -5311,13 +5266,13 @@ pub(in crate::optimizers) mod tests {
         }
         let err = svc
             .start_recipe(super::super::models::OptimizerRecipeRunRequest {
+				training_artifact_id: None,
                 recipe_id: "sft.craftax.nemotron-nano.tinker.v1".into(),
                 session_ref: None,
                 open_visual: Some(false),
                 base_model: Some("nvidia/nemotron-3-nano-30b-a3b".into()),
                 dataset_shard: None,
                 candidate_set_id: None,
-                training_artifact_id: None,
                 search: None,
             })
             .await

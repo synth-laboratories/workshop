@@ -106,6 +106,11 @@ pub struct TrainingProjection {
     pub attempt_id: Option<String>,
     pub metrics: BTreeMap<String, f64>,
     pub checkpoints: Vec<Value>,
+    /// Immutable evaluator receipts in baseline -> checkpoint -> final order.
+    /// Provider payloads are retained under `detail`; the top-level identity is
+    /// shared by SFT/CISPO and MLX/Tinker.
+    #[serde(default)]
+    pub evaluations: Vec<Value>,
     pub warnings: Vec<Value>,
     pub latest_rollout: Option<Value>,
     pub tunnel_health: Option<Value>,
@@ -149,6 +154,7 @@ impl TrainingProjection {
                 self.attempt_id = Some(event.attempt_id.clone());
                 self.metrics.clear();
                 self.checkpoints.clear();
+                self.evaluations.clear();
                 self.warnings.clear();
                 self.latest_rollout = None;
                 self.tunnel_health = None;
@@ -175,6 +181,9 @@ impl TrainingProjection {
             "checkpoint.ready" | "checkpoint.failed" => {
                 self.checkpoints.push(event.payload.clone())
             }
+            "evaluation.completed" | "checkpoint.evaluation.completed" => {
+                self.evaluations.push(normalized_evaluation(event));
+            }
             "warning" | "error.recoverable" | "cap.enforced" => {
                 self.warnings.push(event.payload.clone())
             }
@@ -198,6 +207,61 @@ impl TrainingProjection {
             _ => {}
         }
         Ok(())
+    }
+}
+
+fn normalized_evaluation(event: &TrainingEvent) -> Value {
+    let payload = &event.payload;
+    let phase = payload
+        .get("evaluation_phase")
+        .or_else(|| payload.get("role"))
+        .or_else(|| payload.get("phase"))
+        .and_then(Value::as_str)
+        .unwrap_or(if event.kind == "checkpoint.evaluation.completed" {
+            "checkpoint"
+        } else {
+            "final"
+        });
+    let score = payload
+        .get("score")
+        .or_else(|| payload.get("reward"))
+        .or_else(|| payload.get("mean_reward"))
+        .or_else(|| payload.pointer("/metrics/score"))
+        .cloned()
+        .unwrap_or(Value::Null);
+    let baseline = payload
+        .get("baseline_score")
+        .or_else(|| payload.pointer("/comparison/baseline_score"))
+        .cloned()
+        .unwrap_or(Value::Null);
+    let delta = payload
+        .get("delta")
+        .or_else(|| payload.pointer("/comparison/delta"))
+        .cloned()
+        .or_else(|| Some(json_number_delta(&score, &baseline)))
+        .unwrap_or(Value::Null);
+    serde_json::json!({
+        "phase": phase,
+        "checkpoint_id": payload.get("checkpoint_id").or_else(|| payload.get("artifact_id")).cloned().unwrap_or(Value::Null),
+        "artifact_digest": payload.get("artifact_digest").or_else(|| payload.get("sha256")).cloned().unwrap_or(Value::Null),
+        "step": payload.get("step").cloned().unwrap_or(Value::Null),
+        "evaluator": payload.get("evaluator").or_else(|| payload.get("plan_ref")).cloned().unwrap_or(Value::Null),
+        "metric": payload.get("metric").cloned().unwrap_or_else(|| Value::String("reward".into())),
+        "score": score,
+        "loss": payload.get("loss").or_else(|| payload.pointer("/metrics/loss")).cloned().unwrap_or(Value::Null),
+        "baseline_score": baseline,
+        "delta": delta,
+        "sample_count": payload.get("sample_count").or_else(|| payload.get("samples")).or_else(|| payload.get("instances")).cloned().unwrap_or(Value::Null),
+        "status": payload.get("status").cloned().unwrap_or_else(|| Value::String("completed".into())),
+        "occurred_at": event.occurred_at,
+        "detail": payload,
+    })
+}
+
+fn json_number_delta(score: &Value, baseline: &Value) -> Value {
+    match (score.as_f64(), baseline.as_f64()) {
+        (Some(score), Some(baseline)) => serde_json::json!(score - baseline),
+        _ => Value::Null,
     }
 }
 
@@ -313,5 +377,33 @@ mod tests {
         assert_eq!(projection.lifecycle, TrainingLifecycle::Queued);
         assert_eq!(projection.attempt_id.as_deref(), Some("attempt-2"));
         assert_eq!(projection.attempt_history.len(), 1);
+    }
+
+    #[test]
+    fn reducer_projects_comparable_evaluation_receipts() {
+        let mut projection = TrainingProjection::default();
+        let mut baseline = fixture();
+        baseline.kind = "evaluation.completed".into();
+        baseline.phase = "evaluating".into();
+        baseline.payload = serde_json::json!({
+            "evaluation_phase": "baseline", "score": 0.25,
+            "metric": "accuracy", "sample_count": 16,
+            "evaluator": "banking77_eval.v1"
+        });
+        projection.apply(&baseline).unwrap();
+        let mut checkpoint = baseline.clone();
+        checkpoint.sequence += 1;
+        checkpoint.event_id = "checkpoint-eval-1".into();
+        checkpoint.kind = "checkpoint.evaluation.completed".into();
+        checkpoint.payload = serde_json::json!({
+            "evaluation_phase": "checkpoint", "checkpoint_id": "run:step-2",
+            "artifact_digest": "sha256:abc", "step": 2, "score": 0.75,
+            "baseline_score": 0.25, "metric": "accuracy", "sample_count": 16
+        });
+        projection.apply(&checkpoint).unwrap();
+        assert_eq!(projection.evaluations.len(), 2);
+        assert_eq!(projection.evaluations[0]["phase"], "baseline");
+        assert_eq!(projection.evaluations[1]["checkpoint_id"], "run:step-2");
+        assert_eq!(projection.evaluations[1]["delta"], 0.5);
     }
 }

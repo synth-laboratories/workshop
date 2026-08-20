@@ -60,15 +60,9 @@ executor. Workshop does not fetch an executor-specific config contract.
 
 | Recipe | Path | Cost behavior |
 | --- | --- | --- |
-| `sft.hosted.fixture.v1` | Public service, deterministic fixture backend | No provider charges |
 | `sft.banking77.nemotron-lightning.tinker.v1` | Public service, Tinker backend | Provider charges apply |
 | `sft.craftax.nemotron-nano.tinker.v1` | Public service, Tinker + local Craftax evaluation | Provider charges apply |
 | `sft.craftax.gpt-oss.smoke.v1` | Local product-owned Python runner | Separate legacy smoke |
-
-The fixture is the clean integration test: it must create a canonical public run,
-stream events, expose at least two checkpoints, produce a promotion decision, and
-open `optimizer.sft.live.v1`. It is conformance evidence, not paid-training uplift
-evidence.
 
 Paid recipes must wait for explicit capped-compute approval. Missing reward, cost,
 or validation loss remains missing (`null`/omitted) and renders as `—`; Workshop
@@ -100,15 +94,14 @@ producer sequence as `sourceSequenceNumber`.
 | `apps/synth_desktop/src-tauri/src/optimizers/hosted_client.rs` | Private beta client for GELO only |
 | `apps/synth_desktop/src-tauri/src/optimizers/ingest.rs` | Fail-closed event-page normalization |
 | `apps/synth_desktop/src-tauri/src/optimizers/service.rs` | Recipe routing and restarted-run cancellation |
-| `apps/synth_desktop/src/renderer/src/components/OptimizersPage.tsx` | Agent planning and explicit free-fixture start |
+| `apps/synth_desktop/src/renderer/src/components/OptimizersPage.tsx` | Agent planning and training workspace entry |
 
 ## Acceptance and verification
 
 - Hosted SFT submit, poll, and cancel contain no `HostedOptimizerClient` or beta
   environment-variable references.
 - Restarted hosted SFT cancellation reaches the public service.
-- The UI's “Run free fixture” action starts only `sft.hosted.fixture.v1`, says that
-  it has no provider charges, selects the run, and opens its visual.
+- No product UI or recipe path emits deterministic training results.
 - The public service's SFT tests pass independently.
 - Workshop Rust tests, source invariants, typecheck, and targeted Playwright tests
   pass.

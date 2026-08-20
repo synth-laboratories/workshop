@@ -37,5 +37,40 @@
 .training-sheet { display: grid; gap: var(--sp-5); width: min(34rem, 100%); max-height: calc(100vh - var(--sp-8)); overflow: auto; padding: var(--sp-6); border: 1px solid var(--color-border); border-radius: var(--radius-lg); background: var(--color-surface-raised); box-shadow: var(--shadow-lg); }
 .training-sheet h2 { margin: 0; }
 .training-check { display: flex; align-items: center; gap: var(--sp-2); }
+.training-evaluation-series { display: grid; grid-template-columns: repeat(auto-fit, minmax(8.5rem, 1fr)); gap: var(--sp-2); margin-top: var(--sp-3); }
+.training-evaluation-series article { position: relative; display: grid; gap: var(--sp-1); min-width: 0; padding: var(--sp-3); overflow: hidden; border: 1px solid var(--color-border); border-radius: var(--radius-sm); background: var(--color-surface-raised); }
+.training-evaluation-series article::before { content: ""; position: absolute; inset: 0 auto 0 0; width: 3px; background: var(--color-selection); }
+.training-evaluation-series article[data-phase="baseline"]::before { background: var(--color-text-muted); }
+.training-evaluation-series article[data-phase="final"]::before { background: var(--color-success); }
+.training-evaluation-series span { color: var(--color-text-muted); font-size: var(--text-xs); text-transform: uppercase; letter-spacing: .06em; }
+.training-evaluation-series strong { font: 700 var(--text-lg)/1.1 var(--font-mono); }
+.training-evaluation-series small { color: var(--color-text-muted); }
+.training-evaluation-series code { overflow: hidden; color: var(--color-text-faint); font-size: var(--text-xs); text-overflow: ellipsis; white-space: nowrap; }
+.training-evaluation-plot { display: grid; gap: var(--sp-2); margin-top: var(--sp-3); padding: var(--sp-3); border: 1px solid var(--color-border); border-radius: var(--radius-md); background: var(--color-surface-raised); }
+.training-evaluation-legend { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-3); }
+.training-evaluation-legend span { display: inline-flex; align-items: center; gap: var(--sp-1); color: var(--color-text-muted); font-size: var(--text-xs); }
+.training-evaluation-legend span::before { content: ""; width: 1.25rem; height: 2px; background: var(--color-selection); }
+.training-evaluation-legend span[data-series="loss"]::before { background: var(--color-danger-text); }
+.training-evaluation-legend small { margin-left: auto; color: var(--color-text-faint); }
+.training-evaluation-plot svg { width: 100%; min-height: 12rem; overflow: visible; }
+.training-evaluation-plot svg text { fill: var(--color-text-faint); font: 10px var(--font-mono); }
+.training-chart-grid { stroke: var(--color-border); stroke-width: 1; }
+.training-chart-line { fill: none; stroke-width: 3; stroke-linecap: round; stroke-linejoin: round; vector-effect: non-scaling-stroke; }
+.training-chart-reward { stroke: var(--color-selection); }
+.training-chart-loss { stroke: var(--color-danger-text); stroke-dasharray: 6 4; }
+.training-chart-point { cursor: pointer; outline: none; }
+.training-chart-point circle { fill: var(--color-surface-raised); stroke: var(--color-selection); stroke-width: 3; vector-effect: non-scaling-stroke; }
+.training-chart-point:focus circle, .training-chart-point:hover circle { fill: var(--color-selection); stroke-width: 5; }
+.training-evaluation-ledger { display: grid; grid-template-columns: repeat(auto-fit, minmax(8.5rem, 1fr)); gap: var(--sp-2); }
+.training-evaluation-ledger button { display: grid; gap: 2px; min-width: 0; padding: var(--sp-2); border: 0; border-left: 3px solid var(--color-selection); background: var(--color-surface-sunken); color: var(--color-text); text-align: left; }
+.training-evaluation-ledger button:hover, .training-evaluation-ledger button:focus-visible { background: var(--color-surface); outline: 2px solid var(--color-selection); outline-offset: 1px; }
+.training-evaluation-ledger button[data-phase="baseline"] { border-left-color: var(--color-text-muted); }
+.training-evaluation-ledger button[data-phase="final"] { border-left-color: var(--color-success); }
+.training-evaluation-ledger span, .training-evaluation-ledger small { color: var(--color-text-muted); font-size: var(--text-xs); }
+.training-evaluation-ledger span { text-transform: uppercase; letter-spacing: .05em; }
+.training-evaluation-ledger code { overflow: hidden; color: var(--color-text-faint); font-size: var(--text-xs); text-overflow: ellipsis; white-space: nowrap; }
+.training-evaluation-dialog { width: min(48rem, calc(100vw - var(--sp-8))); }
+.training-evaluation-dialog .optimizer-eval-scorecard { margin: 0; }
+.training-evaluation-evidence pre { max-height: 16rem; overflow: auto; padding: var(--sp-3); background: var(--color-surface-sunken); color: var(--color-text-muted); font: var(--text-xs)/1.5 var(--font-mono); white-space: pre-wrap; }
 @media (max-width: 62rem) { .training-workspace { padding: var(--sp-4); } .training-artifact-grid { grid-template-columns: 1fr; } .training-kv { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 @media (max-width: 40rem) { .training-kv, .training-form-grid { grid-template-columns: 1fr; } }

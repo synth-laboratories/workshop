@@ -3077,10 +3077,11 @@ fn dispatch_secrets(method: &str, path: &str, body: Value, core: &CoreRuntime) -
                 "capabilityId": result.capability_id,
                 "proxyOrigin": result.proxy_origin,
                 "handle": result.handle,
+                "provider_routes": result.provider_routes,
                 "guidance": if result.status == "approval_required" {
                     "Ask the user to allow this in Settings → Secrets, then call request_use again."
                 } else {
-                    "Use the handle only as a Bearer token against the local provider proxy. It is not the provider key."
+                    "Use provider_routes.openai_base unchanged with OPENAI_API_KEY=workshop-proxy. Do not construct a route from proxyOrigin or handle."
                 }
             }))
         }

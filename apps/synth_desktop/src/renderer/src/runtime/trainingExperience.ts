@@ -1,0 +1,86 @@
+import { bridges } from "./desktopBridge";
+
+export type MlxReadiness = {
+	platform: "apple_silicon" | "unknown";
+	compatibility: "compatible" | "unknown";
+	runtimeHealth: "ready" | "missing" | "unhealthy";
+	runtimeVersion: string | null;
+	availableMemoryBytes: number | null;
+	availableDiskBytes: number | null;
+	failureClass: "runtime" | null;
+};
+
+export type ModelInstallPlan = {
+	modelId: string;
+	title: string;
+	source: string;
+	revision: string;
+	digest: string | null;
+	license: string;
+	downloadBytes: number;
+	minimumFreeDiskBytes: number;
+	alreadyPresent: boolean;
+	compatible: boolean;
+};
+
+const MODEL_ID = "Qwen/Qwen3.5-0.8B";
+const MODEL_REVISION = "2fc06364715b967f1860aea9cf38778875588b17";
+
+export async function inspectMlxReadiness(): Promise<MlxReadiness> {
+	const appleSilicon = /Mac/.test(navigator.platform) && navigator.maxTouchPoints === 0;
+	if (!bridges.trainingModels) {
+		return { platform: appleSilicon ? "apple_silicon" : "unknown", compatibility: appleSilicon ? "compatible" : "unknown", runtimeHealth: "missing", runtimeVersion: null, availableMemoryBytes: null, availableDiskBytes: null, failureClass: "runtime" };
+	}
+	try {
+		await bridges.trainingModels.listModels();
+	} catch {
+		return { platform: appleSilicon ? "apple_silicon" : "unknown", compatibility: appleSilicon ? "compatible" : "unknown", runtimeHealth: "unhealthy", runtimeVersion: null, availableMemoryBytes: null, availableDiskBytes: null, failureClass: "runtime" };
+	}
+	return {
+		platform: appleSilicon ? "apple_silicon" : "unknown",
+		compatibility: appleSilicon ? "compatible" : "unknown",
+		runtimeHealth: "ready",
+		runtimeVersion: null,
+		availableMemoryBytes: null,
+		availableDiskBytes: null,
+		failureClass: null
+	};
+}
+
+export async function planModelInstall(): Promise<ModelInstallPlan> {
+	const installed = await bridges.trainingModels?.listModels() ?? [];
+	return {
+		modelId: MODEL_ID,
+		title: "Qwen 3.5 0.8B (MLX training)",
+		source: MODEL_ID,
+		revision: MODEL_REVISION,
+		digest: null,
+		license: "Apache-2.0",
+		downloadBytes: 1_750_000_000,
+		minimumFreeDiskBytes: 3 * 1024 ** 3,
+		alreadyPresent: installed.some((hit) => hit.modelId === MODEL_ID && hit.revision === MODEL_REVISION),
+		compatible: true
+	};
+}
+
+export const trainingArtifacts = {
+	async list() {
+		return await bridges.trainingArtifacts?.list() ?? [];
+	},
+	async inspect(id: string) {
+		if (!bridges.trainingArtifacts) throw new Error("Training artifact storage is unavailable");
+		return bridges.trainingArtifacts.get(id);
+	},
+	async launchInference(id: string) {
+		if (!bridges.trainingArtifacts) throw new Error("Training artifact inference is unavailable");
+		return bridges.trainingArtifacts.launchInference({ id, confirm: false });
+	},
+	async launchEval(id: string, recipeId: string) {
+		await this.inspect(id);
+		throw new Error(`Native artifact Eval ${recipeId} is unavailable; no run was started`);
+	},
+	async delete(id: string) {
+		await this.inspect(id);
+		throw new Error("Training artifact deletion is unavailable; no artifact was changed");
+	}
+};
