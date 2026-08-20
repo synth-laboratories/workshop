@@ -96,7 +96,7 @@ fn request_inner(
 
 fn tools() -> Value {
     json!({"tools":[
-        {"name":"optimizer_manage","description":"Operate Synth optimizer runs. Prefer start_workflow for a bounded product recipe: it performs fresh admission, approval, run creation, and visual opening in one call. Advanced callers may still use prepare, open_visual, await_ready, start. Never install the plugin from this tool.","inputSchema":{"type":"object","properties":{"operation":{"type":"string","enum":["list_algorithms","list_recipes","start_workflow","prepare","open_visual","await_ready","start","start_recipe","stage_eval_candidates","launch_artifact_inference","inspect_local_mlx","plan_model_install","install_model_or_runtime","create_training_plan","list_training_artifacts","inspect_training_artifacts","launch_artifact_eval","export_or_delete_artifact","list_runs","get_run","watch_run","get_state","get_result","reconcile_cloud","cancel_run","cancel","pause_run","resume_run","finalize"]},"arguments":{"type":"object","additionalProperties":true}},"required":["operation","arguments"],"additionalProperties":false}},
+        {"name":"optimizer_manage","description":"Operate Synth optimizer runs. Prefer start_workflow for a bounded product recipe: it performs fresh admission, approval, run creation, and visual opening in one call. Advanced callers may still use prepare, open_visual, await_ready, start. Never install the plugin from this tool.","inputSchema":{"type":"object","properties":{"operation":{"type":"string","enum":["list_algorithms","list_recipes","start_workflow","prepare","open_visual","await_ready","start","start_recipe","stage_eval_candidates","launch_artifact_inference","inspect_local_mlx","plan_model_install","install_model_or_runtime","create_training_plan","list_training_artifacts","inspect_training_artifact","launch_artifact_eval","export_or_delete_artifact","list_runs","get_run","watch_run","get_state","get_result","reconcile_cloud","cancel_run","cancel","pause_run","resume_run","finalize"]},"arguments":{"type":"object","additionalProperties":true}},"required":["operation","arguments"],"additionalProperties":false}},
         {"name":"optimizer_list_algorithms","description":"List optimizer algorithms and availability","inputSchema":{"type":"object","properties":{},"additionalProperties":false}},
         {"name":"optimizer_list_recipes","description":"List product-owned bounded optimizer recipes and their hard limits","inputSchema":{"type":"object","properties":{},"additionalProperties":false}},
         {"name":"optimizer_start_recipe","description":"Prepare an allowlisted paid/plugin recipe. For local eval.* recipes, start the fixed pinned recipe with a candidate_set_id staged by optimizer_stage_eval_candidates. Container baseline evals (Banking77, HealthBench) start from a registered container and do not take a candidate set.","inputSchema":{"type":"object","properties":{"recipe_id":{"type":"string","enum":["gepa.banking77.smoke.v1","gepa.banking77.luna.v1","gepa.banking77.sol.v1","gepa.craftax.smoke.v1","gelo.craftax.hosted.v1","sft.qwen35-0.8b.mlx.v1","sft.craftax.gpt-oss.smoke.v1","sft.hosted.fixture.v1","sft.craftax.nemotron-nano.tinker.v1","sft.banking77.nemotron-lightning.tinker.v1","sft.gsm8k.gpt-oss.smoke.v1","cispo.banking77.mlx.v1","cispo.slime.hosted.v1","eval.fixture.policy-smoke.v1","eval.craftax.code-policy.smoke.v1","eval.gamebench.craftax-code-policy.confirm.v1","eval.craftax.llm-policy.smoke.v1","eval.gamebench.llm-policy.confirm.v1","eval.banking77.baseline.v1","eval.healthbench.smoke.v1","eval.mlx.local-policy.smoke.v1"]},"session_ref":{"type":"string"},"open_visual":{"type":"boolean"},"base_model":{"type":"string"},"dataset_shard":{"type":"string","enum":["train_a","train_b"]},"candidate_set_id":{"type":"string","description":"Required by pinned local eval.* recipes unless training_artifact_id is set. An id returned by optimizer_stage_eval_candidates, never a path."},"training_artifact_id":{"type":"string","description":"Managed training artifact id. Eval stages mlx-lora.v1 from this record and retains identity in the receipt."}},"required":["recipe_id"],"additionalProperties":false}},
@@ -107,7 +107,7 @@ fn tools() -> Value {
         {"name":"install_model_or_runtime","description":"Install the managed Qwen training weights after explicit confirm. Never silent. Does not set HF_HUB_OFFLINE off on the MLX child.","inputSchema":{"type":"object","properties":{"model_id":{"type":"string"},"confirm":{"type":"boolean"}},"required":["confirm"],"additionalProperties":false}},
         {"name":"create_training_plan","description":"Return the resolved local SFT or CISPO config without starting a run.","inputSchema":{"type":"object","properties":{"recipe_id":{"type":"string","enum":["sft.qwen35-0.8b.mlx.v1","cispo.banking77.mlx.v1"]}},"required":["recipe_id"],"additionalProperties":false}},
         {"name":"list_training_artifacts","description":"List managed training adapters (base model, producing run, digests, integrity).","inputSchema":{"type":"object","properties":{},"additionalProperties":false}},
-        {"name":"inspect_training_artifacts","description":"Inspect one managed training artifact by id.","inputSchema":{"type":"object","properties":{"artifact_id":{"type":"string"}},"required":["artifact_id"],"additionalProperties":false}},
+        {"name":"inspect_training_artifact","description":"Inspect one managed training artifact by id.","inputSchema":{"type":"object","properties":{"artifact_id":{"type":"string"}},"required":["artifact_id"],"additionalProperties":false}},
         {"name":"launch_artifact_eval","description":"Start eval.mlx.local-policy.smoke.v1 against a managed training artifact. Requires confirm.","inputSchema":{"type":"object","properties":{"artifact_id":{"type":"string"},"recipe_id":{"type":"string"},"confirm":{"type":"boolean"}},"required":["artifact_id","confirm"],"additionalProperties":false}},
         {"name":"export_or_delete_artifact","description":"Export (return path) or delete a managed training artifact. Always requires confirm.","inputSchema":{"type":"object","properties":{"artifact_id":{"type":"string"},"operation":{"type":"string","enum":["export","delete"]},"confirm":{"type":"boolean"}},"required":["artifact_id","operation","confirm"],"additionalProperties":false}},
         {"name":"optimizer_stage_eval_candidates","description":"Freeze policy files from the session workspace into one immutable content-addressed candidate set and return its id. Paths are workspace-relative; absolute paths and traversal are refused.","inputSchema":{"type":"object","properties":{"session_ref":{"type":"string","description":"Optional. Defaults to the calling session; an agent has no way to know its own id, so do not guess one."},"candidates":{"type":"array","minItems":1,"maxItems":16,"items":{"type":"object","properties":{"label":{"type":"string"},"path":{"type":"string"},"entrypoint":{"type":"string"},"kind":{"type":"string"},"baseline":{"type":"boolean"}},"required":["label","path"],"additionalProperties":false}}},"required":["candidates"],"additionalProperties":false}},
@@ -165,7 +165,7 @@ fn call_tool(name: &str, args: &Value) -> Result<Value, String> {
             "install_model_or_runtime" => "install_model_or_runtime",
             "create_training_plan" => "create_training_plan",
             "list_training_artifacts" => "list_training_artifacts",
-            "inspect_training_artifacts" => "inspect_training_artifacts",
+            "inspect_training_artifact" => "inspect_training_artifact",
             "launch_artifact_eval" => "launch_artifact_eval",
             "export_or_delete_artifact" => "export_or_delete_artifact",
             "stage_eval_candidates" => "optimizer_stage_eval_candidates",
@@ -289,7 +289,7 @@ fn call_tool(name: &str, args: &Value) -> Result<Value, String> {
             Some(json!({ "recipe_id": args.get("recipe_id") })),
         ),
         "list_training_artifacts" => request("GET", "/v1/training/artifacts", None),
-        "inspect_training_artifacts" => {
+        "inspect_training_artifact" => {
             let id = args
                 .get("artifact_id")
                 .and_then(Value::as_str)
@@ -500,7 +500,7 @@ mod tests {
         assert!(encoded.contains("install_model_or_runtime"));
         assert!(encoded.contains("create_training_plan"));
         assert!(encoded.contains("list_training_artifacts"));
-        assert!(encoded.contains("inspect_training_artifacts"));
+        assert!(encoded.contains("inspect_training_artifact"));
         assert!(encoded.contains("launch_artifact_eval"));
         assert!(encoded.contains("export_or_delete_artifact"));
         assert!(encoded.contains("training_artifact_id"));
