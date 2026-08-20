@@ -37,5 +37,29 @@ stage_cookbook() {
 stage_cookbook banking77_container
 stage_cookbook crafter_container
 
+# The staged cookbooks are what a Banking77 or Crafter run actually executes,
+# and they come from a sibling working tree rather than a submodule -- so
+# without this receipt the bundle cannot say which cookbook it carries, and two
+# builds of the same Workshop commit are indistinguishable.
+if git -C "$SOURCE_ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+  cookbooks_sha="$(git -C "$SOURCE_ROOT" rev-parse HEAD)"
+  cookbooks_ref="$(git -C "$SOURCE_ROOT" rev-parse --abbrev-ref HEAD)"
+  cookbooks_dirty=false
+  [[ -z "$(git -C "$SOURCE_ROOT" status --porcelain=v1 --untracked-files=no)" ]] || cookbooks_dirty=true
+else
+  cookbooks_sha=""
+  cookbooks_ref=""
+  cookbooks_dirty=true
+fi
+cat > "$DESTINATION/COOKBOOKS_SOURCE.json" <<JSON
+{
+  "schema": "synth.packaged-cookbooks-source.v1",
+  "commit": "$cookbooks_sha",
+  "ref": "$cookbooks_ref",
+  "dirty": $cookbooks_dirty,
+  "cookbooks": ["banking77_container", "crafter_container"]
+}
+JSON
+
 [[ -f "$DESTINATION/crafter_container/crafter_text_env.py" ]]
 [[ -f "$DESTINATION/crafter_container/uv.lock" ]]

@@ -30,6 +30,16 @@ BUILT_APP="$ROOT/apps/synth_desktop/src-tauri/target/release/bundle/macos/$APP_N
 CANDIDATE_BUILT_APP="$ROOT/apps/synth_desktop/src-tauri/target/release/bundle/macos/$CANDIDATE_APP_NAME"
 INSTALLED_APP="${SYNTH_RELEASE_INSTALL_APP:-/Applications/$APP_NAME}"
 CONTAINERS_ROOT="${SYNTH_CONTAINERS_ROOT:-$(dirname "$ROOT")/containers}"
+# Resolved exactly as scripts/stage-packaged-cookbooks.sh resolves it, so the
+# provenance names the cookbook tree that was actually baked into Resources.
+COOKBOOKS_ROOT="${SYNTH_COOKBOOKS_SOURCE_ROOT:-}"
+if [[ -z "$COOKBOOKS_ROOT" ]]; then
+  COOKBOOKS_ROOT="$(dirname "$ROOT")/synth-cookbooks-public"
+  cookbooks_git_common_dir="$(git -C "$ROOT" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)"
+  if [[ ! -d "$COOKBOOKS_ROOT/cookbooks/optimizers/gepa" && -n "$cookbooks_git_common_dir" ]]; then
+    COOKBOOKS_ROOT="$(dirname "$(dirname "$cookbooks_git_common_dir")")/synth-cookbooks-public"
+  fi
+fi
 SIGN_IDENTITY="${SYNTH_RELEASE_SIGN_IDENTITY:-}"
 NOTARY_PROFILE="${SYNTH_RELEASE_NOTARY_PROFILE:-}"
 CANDIDATE_SIGN_IDENTITY="${SYNTH_CANDIDATE_SIGN_IDENTITY:-}"
@@ -64,6 +74,20 @@ EOF
 }
 
 die() { echo "[release-artifact] ERROR: $*" >&2; exit 1; }
+
+# The packaged cookbooks are a release input, not a build detail: they are
+# copied into Contents/Resources and are what a Banking77 or Crafter run
+# actually executes. Recording the commit is what makes two builds of the same
+# Workshop commit distinguishable when the cookbook tree differs.
+resolve_cookbooks_pin() {
+  git -C "$COOKBOOKS_ROOT" rev-parse --is-inside-work-tree 2>/dev/null | grep -qx true \
+    || die "packaged cookbook repository is unavailable: $COOKBOOKS_ROOT"
+  [[ -z "$(git -C "$COOKBOOKS_ROOT" status --porcelain=v1 --untracked-files=no)" ]] \
+    || die "packaged cookbook pin tree is dirty: $COOKBOOKS_ROOT"
+  cookbooks_sha="$(git -C "$COOKBOOKS_ROOT" rev-parse HEAD)"
+  cookbooks_tree="$(git -C "$COOKBOOKS_ROOT" rev-parse 'HEAD^{tree}')"
+  cookbooks_ref="$(git -C "$COOKBOOKS_ROOT" rev-parse --abbrev-ref HEAD)"
+}
 note() { echo "[release-artifact] $*"; }
 sha256() { shasum -a 256 "$1" | awk '{print $1}'; }
 cdhash() { /usr/bin/codesign -dvvv "$1" 2>&1 | awk -F= '/^CDHash=/{if (!found++) print $2}'; }
@@ -186,6 +210,8 @@ record_artifact() {
     || die "staged app changed after notarization"
   mkdir -p "$OUTPUT"
   local source_sha source_tree container_sha container_tree executable executable_sha bundle_id version signing cd_hash frontend_hash
+  local cookbooks_sha cookbooks_tree cookbooks_ref
+  resolve_cookbooks_pin
   source_sha="$(git -C "$ROOT" rev-parse HEAD)"
   source_tree="$(git -C "$ROOT" rev-parse 'HEAD^{tree}')"
   if git -C "$CONTAINERS_ROOT" rev-parse --is-inside-work-tree 2>/dev/null | grep -qx true; then
@@ -209,12 +235,16 @@ record_artifact() {
     --arg generatedAt "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" \
     --arg sourceSha "$source_sha" --arg sourceTree "$source_tree" \
     --arg containersSha "$container_sha" --arg containersTree "$container_tree" \
+    --arg cookbooksSha "$cookbooks_sha" --arg cookbooksTree "$cookbooks_tree" \
+    --arg cookbooksRef "$cookbooks_ref" \
     --arg app "$STAGED_APP" --arg bundleId "$bundle_id" --arg version "$version" \
     --arg signing "$signing" --arg cdHash "$cd_hash" \
     --arg executableSha256 "$executable_sha" --arg frontendSha256 "$frontend_hash" \
     '{schema:"synth.desktop-release-provenance.v1", generatedAt:$generatedAt,
       stage:{path:$app, launched:false}, source:{workshopCommit:$sourceSha, workshopTree:$sourceTree,
-      containersCommit:$containersSha, containersTree:$containersTree}, app:{bundleId:$bundleId,
+      containersCommit:$containersSha, containersTree:$containersTree,
+      cookbooksCommit:$cookbooksSha, cookbooksTree:$cookbooksTree, cookbooksRef:$cookbooksRef},
+      app:{bundleId:$bundleId,
       version:$version, signing:$signing, notarized:true, stapled:true, cdHash:$cdHash, executableSha256:$executableSha256,
       frontendSha256:$frontendSha256}, zip:null, roundTrip:null}' > "$PROVENANCE.tmp"
   mv "$PROVENANCE.tmp" "$PROVENANCE"
@@ -229,6 +259,8 @@ record_candidate_artifact() {
     || die "staged candidate changed after signing"
   mkdir -p "$OUTPUT"
   local source_sha source_tree container_sha container_tree executable executable_sha bundle_id version signing cd_hash frontend_hash
+  local cookbooks_sha cookbooks_tree cookbooks_ref
+  resolve_cookbooks_pin
   source_sha="$(git -C "$ROOT" rev-parse HEAD)"
   source_tree="$(git -C "$ROOT" rev-parse 'HEAD^{tree}')"
   if git -C "$CONTAINERS_ROOT" rev-parse --is-inside-work-tree 2>/dev/null | grep -qx true; then
@@ -252,12 +284,16 @@ record_candidate_artifact() {
     --arg generatedAt "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" \
     --arg sourceSha "$source_sha" --arg sourceTree "$source_tree" \
     --arg containersSha "$container_sha" --arg containersTree "$container_tree" \
+    --arg cookbooksSha "$cookbooks_sha" --arg cookbooksTree "$cookbooks_tree" \
+    --arg cookbooksRef "$cookbooks_ref" \
     --arg app "$CANDIDATE_STAGED_APP" --arg bundleId "$bundle_id" --arg version "$version" \
     --arg signing "$signing" --arg cdHash "$cd_hash" \
     --arg executableSha256 "$executable_sha" --arg frontendSha256 "$frontend_hash" \
     '{schema:"synth.desktop-release-provenance.v1", distribution:"candidate", generatedAt:$generatedAt,
       stage:{path:$app, launched:false}, source:{workshopCommit:$sourceSha, workshopTree:$sourceTree,
-      containersCommit:$containersSha, containersTree:$containersTree}, app:{bundleId:$bundleId,
+      containersCommit:$containersSha, containersTree:$containersTree,
+      cookbooksCommit:$cookbooksSha, cookbooksTree:$cookbooksTree, cookbooksRef:$cookbooksRef},
+      app:{bundleId:$bundleId,
       version:$version, signing:$signing, notarized:false, stapled:false, cdHash:$cdHash, executableSha256:$executableSha256,
       frontendSha256:$frontendSha256}, zip:null, roundTrip:null}' > "$PROVENANCE.tmp"
   mv "$PROVENANCE.tmp" "$PROVENANCE"

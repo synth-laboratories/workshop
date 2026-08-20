@@ -126,6 +126,16 @@ jq -e '.bundle.macOS.minimumSystemVersion == "14.0"' \
 jq -e '.bundle.resources["generated-resources/cookbooks"] == "cookbooks"' \
   "$ROOT/apps/synth_desktop/src-tauri/tauri.conf.json" >/dev/null
 
+# The packaged cookbooks come from a sibling working tree, not a submodule, so
+# the staged tree must carry the commit it came from. Without it a release
+# cannot say which cookbook it shipped, and two builds of the same Workshop
+# commit look identical while running different code.
+cookbooks_source="$ROOT/apps/synth_desktop/src-tauri/generated-resources/cookbooks/optimizers/gepa/COOKBOOKS_SOURCE.json"
+[[ -f "$cookbooks_source" ]] \
+  || { echo "staged cookbooks carry no source receipt: $cookbooks_source" >&2; exit 1; }
+jq -e '.schema == "synth.packaged-cookbooks-source.v1" and (.commit | length) == 40' \
+  "$cookbooks_source" >/dev/null
+
 # Local CUA builds sign with the stable local certificate by default so TCC
 # and Keychain grants survive rebuilds; ad-hoc is an explicit opt-out. The
 # deprecated `--deep` signing flag stamps the outer identifier onto nested
