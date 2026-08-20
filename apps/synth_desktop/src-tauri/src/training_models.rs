@@ -4,7 +4,7 @@
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{json, Value};
 use std::{
     collections::HashSet,
     fs,
@@ -18,7 +18,68 @@ use tauri::{AppHandle, Emitter};
 
 pub const QWEN_TRAINING_MODEL_ID: &str = "Qwen/Qwen3.5-0.8B";
 // Verified Hugging Face repository revision published on 2026-03-02.
-const QWEN_TRAINING_MODEL_REVISION: &str = "2fc06364715b967f1860aea9cf38778875588b17";
+pub const QWEN_TRAINING_MODEL_REVISION: &str = "2fc06364715b967f1860aea9cf38778875588b17";
+pub const QWEN_TRAINING_LICENSE_URL: &str = "https://huggingface.co/Qwen/Qwen3.5-0.8B";
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum TrainingFailureClass {
+    DiskSpace,
+    IncompleteModel,
+    ChecksumMismatch,
+    Provider,
+    UnknownModel,
+    WeightsInUse,
+    RuntimeMissing,
+    Other,
+}
+
+pub fn classify_training_failure(message: &str) -> TrainingFailureClass {
+    let lower = message.to_ascii_lowercase();
+    if lower.contains("free disk") || lower.contains("disk space") {
+        TrainingFailureClass::DiskSpace
+    } else if lower.contains("checksum") || lower.contains("sha-256") {
+        TrainingFailureClass::ChecksumMismatch
+    } else if lower.contains("incomplete") || lower.contains("weight shard is missing") {
+        TrainingFailureClass::IncompleteModel
+    } else if lower.contains("unknown on-device") {
+        TrainingFailureClass::UnknownModel
+    } else if lower.contains("has them open") {
+        TrainingFailureClass::WeightsInUse
+    } else if lower.contains("managed python") || lower.contains("python was not found") {
+        TrainingFailureClass::RuntimeMissing
+    } else if lower.contains("huggingface")
+        || lower.contains("hf_hub")
+        || lower.contains("connection")
+        || lower.contains("timed out")
+        || lower.contains("timeout")
+    {
+        TrainingFailureClass::Provider
+    } else {
+        TrainingFailureClass::Other
+    }
+}
+
+/// Setup-view facts the UI and `inspect_local_mlx` share. Does not download.
+pub fn inspect_local_mlx() -> Value {
+    let spec = TRAINING_MODEL_CATALOG[0];
+    json!({
+        "appleSilicon": cfg!(all(target_os = "macos", target_arch = "aarch64")),
+        "platform": std::env::consts::OS,
+        "architecture": std::env::consts::ARCH,
+        "modelId": spec.id,
+        "revision": spec.revision,
+        "licenseUrl": QWEN_TRAINING_LICENSE_URL,
+        "modelPresent": training_model_present(spec.id),
+        "modelsRoot": training_models_root().display().to_string(),
+        "availableDiskBytes": available_disk_bytes(&training_models_root()),
+        "downloadBytes": spec.download_bytes,
+        "minDiskBytes": spec.min_disk_bytes,
+        "mlxRuntime": "synth-mlx-rl",
+        "loraDropoutDefault": 0.0,
+        "resumeWithDropout": "refused"
+    })
+}
 
 #[derive(Clone, Copy)]
 struct TrainingModelSpec {
@@ -297,6 +358,7 @@ pub async fn training_models_download(
         Err(error) => serde_json::json!({
             "phase": "error",
             "detail": error,
+            "failureClass": classify_training_failure(error),
             "modelId": spec.id,
         }),
     };
@@ -364,6 +426,43 @@ fn available_disk_bytes(path: &Path) -> Option<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn download_failures_are_typed() {
+        assert_eq!(
+            classify_training_failure(
+                "Qwen 3.5 0.8B (MLX training) needs at least 3 GiB of free disk space; only 0.4 GiB is available."
+            ),
+            TrainingFailureClass::DiskSpace
+        );
+        assert_eq!(
+            classify_training_failure("provider checksum mismatch for training weight: model.safetensors"),
+            TrainingFailureClass::ChecksumMismatch
+        );
+        assert_eq!(
+            classify_training_failure("Training model is incomplete: missing config.json"),
+            TrainingFailureClass::IncompleteModel
+        );
+        assert_eq!(
+            classify_training_failure("Training weights cannot be deleted while a training process has them open."),
+            TrainingFailureClass::WeightsInUse
+        );
+        assert_eq!(
+            classify_training_failure("Unknown on-device training model `foo`"),
+            TrainingFailureClass::UnknownModel
+        );
+    }
+
+    #[test]
+    fn inspect_local_mlx_names_the_pin_without_downloading() {
+        let ready = inspect_local_mlx();
+        assert_eq!(ready["modelId"], QWEN_TRAINING_MODEL_ID);
+        assert_eq!(ready["revision"], QWEN_TRAINING_MODEL_REVISION);
+        assert_eq!(ready["licenseUrl"], QWEN_TRAINING_LICENSE_URL);
+        assert_eq!(ready["resumeWithDropout"], "refused");
+        assert_eq!(ready["loraDropoutDefault"], 0.0);
+        assert!(ready.get("modelPresent").and_then(Value::as_bool).is_some());
+    }
 
     #[test]
     fn training_catalog_excludes_laguna() {
