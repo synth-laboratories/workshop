@@ -46,5 +46,25 @@
 .training-evaluation-series strong { font: 700 var(--text-lg)/1.1 var(--font-mono); }
 .training-evaluation-series small { color: var(--color-text-muted); }
 .training-evaluation-series code { overflow: hidden; color: var(--color-text-faint); font-size: var(--text-xs); text-overflow: ellipsis; white-space: nowrap; }
+.training-evaluation-plot { display: grid; gap: var(--sp-2); margin-top: var(--sp-3); padding: var(--sp-3); border: 1px solid var(--color-border); border-radius: var(--radius-md); background: var(--color-surface-raised); }
+.training-evaluation-legend { display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-3); }
+.training-evaluation-legend span { display: inline-flex; align-items: center; gap: var(--sp-1); color: var(--color-text-muted); font-size: var(--text-xs); }
+.training-evaluation-legend span::before { content: ""; width: 1.25rem; height: 2px; background: var(--color-selection); }
+.training-evaluation-legend span[data-series="loss"]::before { background: var(--color-danger-text); }
+.training-evaluation-legend small { margin-left: auto; color: var(--color-text-faint); }
+.training-evaluation-plot svg { width: 100%; min-height: 12rem; overflow: visible; }
+.training-evaluation-plot svg text { fill: var(--color-text-faint); font: 10px var(--font-mono); }
+.training-chart-grid { stroke: var(--color-border); stroke-width: 1; }
+.training-chart-line { fill: none; stroke-width: 3; stroke-linecap: round; stroke-linejoin: round; vector-effect: non-scaling-stroke; }
+.training-chart-reward { stroke: var(--color-selection); }
+.training-chart-loss { stroke: var(--color-danger-text); stroke-dasharray: 6 4; }
+.training-chart-point circle { fill: var(--color-surface-raised); stroke: var(--color-selection); stroke-width: 3; vector-effect: non-scaling-stroke; }
+.training-evaluation-ledger { display: grid; grid-template-columns: repeat(auto-fit, minmax(8.5rem, 1fr)); gap: var(--sp-2); }
+.training-evaluation-ledger article { display: grid; gap: 2px; min-width: 0; padding: var(--sp-2); border-left: 3px solid var(--color-selection); background: var(--color-surface-sunken); }
+.training-evaluation-ledger article[data-phase="baseline"] { border-left-color: var(--color-text-muted); }
+.training-evaluation-ledger article[data-phase="final"] { border-left-color: var(--color-success); }
+.training-evaluation-ledger span, .training-evaluation-ledger small { color: var(--color-text-muted); font-size: var(--text-xs); }
+.training-evaluation-ledger span { text-transform: uppercase; letter-spacing: .05em; }
+.training-evaluation-ledger code { overflow: hidden; color: var(--color-text-faint); font-size: var(--text-xs); text-overflow: ellipsis; white-space: nowrap; }
 @media (max-width: 62rem) { .training-workspace { padding: var(--sp-4); } .training-artifact-grid { grid-template-columns: 1fr; } .training-kv { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 @media (max-width: 40rem) { .training-kv, .training-form-grid { grid-template-columns: 1fr; } }

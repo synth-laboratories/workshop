@@ -60,6 +60,8 @@ test("CISPO run exposes algorithm-specific diagnostics and next artifact", async
 	await expect(comparison).toContainText("checkpoint");
 	await expect(comparison).toContainText("final");
 	await expect(comparison).toContainText("+0.304 vs baseline");
+	await expect(comparison).toContainText("2 checkpoints · 4 observations");
+	await expect(comparison.getByRole("img", { name: "Reward across 4 evaluation observations" })).toBeVisible();
 	await page.getByRole("button", { name: "Open artifact" }).click();
 	await expect(page.getByTestId("training-artifact-detail")).toContainText("mlx-lora-cispo-b921");
 });
