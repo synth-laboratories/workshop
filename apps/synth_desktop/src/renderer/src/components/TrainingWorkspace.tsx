@@ -1,0 +1,81 @@
+import { useMemo, useRef, useState } from "react";
+import fixtures from "../fixtures/training.json";
+
+type TrainingView = "setup" | "train" | "artifacts" | "run" | "inference" | "eval";
+type Confirmation = "install" | "start" | "inference" | "eval" | "delete" | null;
+type Artifact = (typeof fixtures.artifacts)[number];
+
+function Kv({ values }: { values: Array<[string, string]> }) {
+	return <dl className="training-kv">{values.map(([key, value]) => <div key={key}><dt>{key}</dt><dd>{value}</dd></div>)}</dl>;
+}
+
+function ConfirmationSheet({ kind, artifact, onClose, onConfirm }: { kind: Exclude<Confirmation, null>; artifact: Artifact; onClose: () => void; onConfirm: () => void }) {
+	const title = { install: "Confirm model install", start: "Confirm training run", inference: "Confirm inference", eval: "Confirm Eval", delete: "Confirm artifact deletion" }[kind];
+	const rows: Array<[string, string]> = kind === "install" ? [
+		["Target", fixtures.model.name], ["Source", fixtures.model.source], ["Revision", fixtures.model.revision], ["Download", fixtures.model.size], ["Disk after", fixtures.model.diskAfter], ["License", fixtures.model.license]
+	] : kind === "start" ? [
+		["Recipe", "SFT · MLX LoRA"], ["Bounds", "120 steps · 20 min · 12 GB"], ["Dataset", "GSM8K · main@e53f"], ["Output", "Managed artifacts"], ["Runtime", fixtures.readiness.runtime]
+	] : kind === "delete" ? [
+		["Artifact", artifact.id], ["Kind", artifact.kind], ["References", "2 retained receipts"], ["Result", "Local files removed"]
+	] : [
+		["Artifact", artifact.id], ["Base model", artifact.baseModel], ["Backend", kind === "eval" ? "Local Eval" : "MLX inference"], [kind === "eval" ? "Recipe" : "Load", kind === "eval" ? "GSM8K exact-match" : "Base + adapter"], [kind === "eval" ? "Metric" : "Resources", kind === "eval" ? "exact_match · higher" : "8 GB memory"]
+	];
+	return <div className="training-sheet-backdrop"><section className="training-sheet" role="dialog" aria-modal="true" aria-labelledby="training-confirm-title" data-testid={`training-confirm-${kind}`}>
+		<h2 id="training-confirm-title">{title}</h2><Kv values={rows} />
+		{kind === "install" ? <label className="training-check"><input type="checkbox" required /> <span>License acknowledged</span></label> : null}
+		<div className="training-actions"><button type="button" className="secondary-button" onClick={onClose}>Cancel</button><button type="button" className={kind === "delete" ? "secondary-button training-danger" : "primary-button"} onClick={onConfirm}>{kind === "delete" ? "Delete artifact" : "Confirm"}</button></div>
+	</section></div>;
+}
+
+export function TrainingWorkspace({ onStartFixture, fixtureBusy = false }: { onStartFixture?: () => void; fixtureBusy?: boolean }) {
+	const [view, setView] = useState<TrainingView>("artifacts");
+	const [algorithm, setAlgorithm] = useState<"sft" | "cispo">("sft");
+	const [selectedId, setSelectedId] = useState(fixtures.artifacts[1].id);
+	const [confirmation, setConfirmation] = useState<Confirmation>(null);
+	const [installState, setInstallState] = useState<"absent" | "installing" | "cancelled" | "failed" | "ready">("ready");
+	const [failedLoad, setFailedLoad] = useState(false);
+	const dialogReturn = useRef<TrainingView>("artifacts");
+	const artifact = useMemo(() => fixtures.artifacts.find((item) => item.id === selectedId) ?? fixtures.artifacts[0], [selectedId]);
+	const openArtifactAction = (next: "inference" | "eval") => { dialogReturn.current = next; setView(next); setFailedLoad(false); };
+	const confirm = (kind: Exclude<Confirmation, null>) => setConfirmation(kind);
+
+	return <section className="training-workspace" aria-labelledby="training-title" data-testid="training-workspace">
+		<div className="training-heading"><div><span className="optimizer-eyebrow">Local MLX</span><h2 id="training-title">Training</h2></div><span className="training-status" data-state={fixtures.readiness.runtimeHealth.toLowerCase()}>{fixtures.readiness.runtimeHealth}</span></div>
+		<div className="training-launch-row" data-testid="training-launch-row"><div className="training-flow" aria-label="SFT workflow"><span>Collect</span><span>Train</span><span>Compare</span></div>{onStartFixture ? <button className="secondary-button" type="button" disabled={fixtureBusy} onClick={onStartFixture} data-testid="training-start-sft-fixture">{fixtureBusy ? "Starting fixture…" : "Run free fixture"}</button> : null}</div>
+		<nav className="training-tabs" aria-label="Training sections">
+			{(["setup", "train", "artifacts", "run"] as const).map((item) => <button key={item} type="button" aria-current={view === item ? "page" : undefined} onClick={() => setView(item)} data-testid={`training-tab-${item}`}>{item === "setup" ? "Setup" : item === "train" ? "New run" : item[0].toUpperCase() + item.slice(1)}</button>)}
+		</nav>
+
+		{view === "setup" ? <div className="training-panel" data-testid="training-setup" data-install-state={installState}>
+			<div className="training-section-head"><h3>MLX readiness</h3><span className="training-status" data-state="ready">Compatible</span></div>
+			<Kv values={[["Platform", fixtures.readiness.platform], ["Runtime", fixtures.readiness.runtime], ["Runtime health", fixtures.readiness.runtimeHealth], ["Memory", fixtures.readiness.memory], ["Disk", fixtures.readiness.disk]]} />
+			<div className="training-model" data-testid="on-device-training-catalog"><div className="training-section-head"><h3>{fixtures.model.name}</h3><span className="training-status" data-state={installState}>{installState === "failed" ? "Checksum failed" : installState[0].toUpperCase() + installState.slice(1)}</span></div>
+				<Kv values={[["Source", fixtures.model.source], ["Revision", fixtures.model.revision], ["Digest", fixtures.model.digest], ["License", fixtures.model.license], ["Download", fixtures.model.size], ["Disk after", fixtures.model.diskAfter]]} />
+				{installState === "installing" ? <div className="training-progress"><progress value={63} max={100} aria-label="Qwen model download" data-testid={`progress-${fixtures.model.id}`} /><span>706 MB / 1.12 GB · 63%</span><div className="training-actions"><button type="button" className="secondary-button" onClick={() => setInstallState("cancelled")}>Cancel download</button></div></div> : null}
+				{installState === "failed" ? <div role="alert" className="training-terminal" data-testid="training-install-failure"><strong>Checksum failed</strong><span>Managed copy not installed</span></div> : null}
+				<div className="training-actions"><button type="button" className="primary-button" onClick={() => confirm("install")}>Install managed copy</button><button type="button" className="secondary-button" onClick={() => setInstallState(installState === "installing" ? "cancelled" : "installing")}>{installState === "cancelled" ? "Resume download" : "Show progress"}</button><button type="button" className="secondary-button" onClick={() => setInstallState("failed")}>Checksum state</button></div>
+			</div>
+		</div> : null}
+
+		{view === "train" ? <form className="training-panel training-form" data-testid="training-form" onSubmit={(event) => { event.preventDefault(); confirm("start"); }}>
+			<h3>New training run</h3><div className="training-form-grid">
+				<label><span>Base model</span><select defaultValue={fixtures.model.id}><option value={fixtures.model.id}>{fixtures.model.name}</option></select></label>
+				<label><span>Dataset</span><select defaultValue="gsm8k"><option value="gsm8k">GSM8K · main@e53f</option></select></label>
+				<label><span>Recipe</span><select value={algorithm} onChange={(event) => setAlgorithm(event.target.value as "sft" | "cispo")}><option value="sft">SFT</option><option value="cispo">CISPO</option></select></label>
+				{algorithm === "cispo" ? <label><span>Parent artifact</span><select value={selectedId} onChange={(event) => setSelectedId(event.target.value)}>{fixtures.artifacts.filter((item) => item.algorithm === "SFT").map((item) => <option key={item.id} value={item.id}>{item.id}</option>)}</select></label> : null}
+				<label><span>Steps</span><input type="number" min="1" max="240" defaultValue="120" /></label><label><span>Wall clock</span><select defaultValue="20"><option value="20">20 min</option></select></label><label><span>Memory cap</span><select defaultValue="12"><option value="12">12 GB</option></select></label>
+			</div><div className="training-preview" data-testid="training-resolved-config"><h4>Resolved configuration</h4><Kv values={[["Model", `${fixtures.model.name} · ${fixtures.model.revision}`], ["Dataset", "GSM8K · sha256:e53f219a"], ["Recipe", algorithm.toUpperCase()], ["LoRA", "rank 16 · alpha 32 · q/k/v/o_proj"], ["Bounds", "120 steps · 20 min · 12 GB"], ["Output", "Managed artifacts"], ["Runtime", fixtures.readiness.runtime]]} /></div>
+			<div className="training-actions"><button type="submit" className="primary-button">Review run</button></div>
+		</form> : null}
+
+		{view === "artifacts" ? <div className="training-panel" data-testid="training-artifact-library"><div className="training-section-head"><h3>Local artifacts</h3><span>{fixtures.artifacts.length}</span></div><div className="training-artifact-grid">{fixtures.artifacts.map((item) => <article className="training-artifact" key={item.id} data-testid={`training-artifact-${item.id}`}><div className="training-section-head"><span className="training-algorithm">{item.algorithm}</span><span className="training-status" data-state="ready">{item.integrity}</span></div><button type="button" className="training-artifact-title" onClick={() => setSelectedId(item.id)} aria-pressed={selectedId === item.id}>{item.id}</button><Kv values={[["Base model", item.baseModel], ["Kind", item.kind], ["Producing run", item.runId], ["Dataset", item.datasetDigest], ["Config", item.configDigest], ["Size", item.size]]} />{item.parentArtifactId ? <div className="training-lineage" data-testid="training-artifact-lineage"><span>Parent</span><button type="button" onClick={() => setSelectedId(String(item.parentArtifactId))}>{item.parentArtifactId}</button></div> : null}<div className="training-actions"><button type="button" className="primary-button" onClick={() => openArtifactAction("inference")}>Run inference</button><button type="button" className="secondary-button" onClick={() => openArtifactAction("eval")}>Evaluate</button></div></article>)}</div>
+			<div className="training-detail" data-testid="training-artifact-detail"><div className="training-section-head"><div><span className="optimizer-eyebrow">Artifact detail</span><h3>{artifact.id}</h3></div><span className="training-status" data-state="ready">{artifact.integrity}</span></div><Kv values={[["Base model", artifact.baseModel], ["Adapter", `${artifact.kind} · ${artifact.sha256}`], ["Producing run", artifact.runId], ["Dataset", artifact.datasetDigest], ["Config", artifact.configDigest], ["Compatible", artifact.backends.join(" · ")]]} /><div className="training-actions"><button type="button" className="primary-button" onClick={() => openArtifactAction("inference")}>Run inference</button><button type="button" className="secondary-button" onClick={() => openArtifactAction("eval")}>Evaluate</button><button type="button" className="secondary-button">Export</button><button type="button" className="secondary-button training-danger" onClick={() => confirm("delete")}>Delete</button></div></div>
+		</div> : null}
+
+		{view === "run" ? <div className="training-panel" data-testid="training-run-view"><div className="training-section-head"><div><span className="training-algorithm">CISPO</span><h3>run-cispo-20260820-02</h3></div><span className="training-status" data-state="ready">Completed</span></div><Kv values={[["Input artifact", "mlx-lora-sft-7f31"], ["Step", "120 / 120"], ["Elapsed", "18m 42s"], ["Output", "mlx-lora-cispo-b921"]]} /><div className="training-metrics" data-testid="training-cispo-diagnostics"><div><span>Policy objective</span><strong>0.184</strong></div><div><span>Reward</span><strong>0.742</strong></div><div><span>Clip fraction</span><strong>0.091</strong></div><div><span>Valid rollouts</span><strong>116 / 120</strong></div></div><div className="training-actions"><button type="button" className="primary-button" onClick={() => { setSelectedId("mlx-lora-cispo-b921"); setView("artifacts"); }}>Open artifact</button><button type="button" className="secondary-button">View metrics</button></div></div> : null}
+
+		{view === "inference" || view === "eval" ? <div className="training-panel" data-testid={`artifact-${view}`}><button type="button" className="training-back" onClick={() => setView("artifacts")}>← Artifacts</button><div className="training-section-head"><div><span className="optimizer-eyebrow">{view === "eval" ? "Local Eval" : "MLX inference"}</span><h3>{view === "eval" ? "Evaluate artifact" : "Run inference"}</h3></div><span className="training-status" data-state={failedLoad ? "failed" : "ready"}>{failedLoad ? "Failed" : "Prefilled"}</span></div><Kv values={[["Artifact", artifact.id], ["Base model", artifact.baseModel], ["Adapter", `${artifact.kind} · ${artifact.sha256}`], ["Producing run", artifact.runId], ["Config", artifact.configDigest], ...(view === "eval" ? [["Recipe", "GSM8K exact-match"], ["Metric", "exact_match · higher"]] as Array<[string, string]> : [["Load", "Base + adapter"], ["Merge", "Off"]] as Array<[string, string]>)]} />{failedLoad ? <div className="training-terminal" role="alert" data-testid="artifact-failed-load"><strong>Adapter load failed</strong><span>Base model revision mismatch</span></div> : <div className="training-actions"><button type="button" className="primary-button" onClick={() => confirm(view)}>{view === "eval" ? "Review Eval" : "Review inference"}</button><button type="button" className="secondary-button" onClick={() => setFailedLoad(true)}>Failed-load state</button></div>}</div> : null}
+
+		{confirmation ? <ConfirmationSheet kind={confirmation} artifact={artifact} onClose={() => setConfirmation(null)} onConfirm={() => { if (confirmation === "install") setInstallState("installing"); setConfirmation(null); }} /> : null}
+	</section>;
+}

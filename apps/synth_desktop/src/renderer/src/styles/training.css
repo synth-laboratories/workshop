@@ -1,0 +1,41 @@
+.training-workspace { display: grid; gap: var(--sp-5); padding: var(--sp-5); border-block: 1px solid var(--color-border); background: var(--color-surface); }
+.training-heading, .training-section-head { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-4); }
+.training-launch-row, .training-flow { display: flex; align-items: center; gap: var(--sp-2); }
+.training-launch-row { justify-content: space-between; }
+.training-flow span { padding: var(--sp-1) var(--sp-3); border-radius: var(--radius-pill); background: var(--color-surface-sunken); color: var(--color-text-muted); font-size: var(--text-xs); }
+.training-heading h2, .training-section-head h3, .training-panel h3, .training-preview h4 { margin: 0; }
+.training-tabs { display: flex; gap: var(--sp-2); overflow-x: auto; border-bottom: 1px solid var(--color-border); }
+.training-tabs button { padding: var(--sp-3) var(--sp-4); border: 0; border-bottom: 2px solid transparent; background: transparent; color: var(--color-text-muted); }
+.training-tabs button[aria-current="page"] { color: var(--color-text); border-color: var(--color-selection); }
+.training-panel { display: grid; gap: var(--sp-5); min-width: 0; }
+.training-model, .training-detail, .training-preview, .training-terminal { display: grid; gap: var(--sp-4); padding: var(--sp-5); border: 1px solid var(--color-border); border-radius: var(--radius-md); background: var(--color-surface-raised); }
+.training-kv { display: grid; grid-template-columns: repeat(auto-fit, minmax(10rem, 1fr)); gap: var(--sp-4); margin: 0; }
+.training-kv div { min-width: 0; }
+.training-kv dt, .training-metrics span, .training-lineage span { color: var(--color-text-muted); font-size: var(--text-xs); }
+.training-kv dd { margin: var(--sp-1) 0 0; overflow-wrap: anywhere; }
+.training-status, .training-algorithm { display: inline-flex; width: fit-content; padding: var(--sp-1) var(--sp-3); border-radius: var(--radius-pill); background: var(--color-surface-sunken); color: var(--color-text-muted); font-size: var(--text-xs); font-weight: 650; }
+.training-status[data-state="ready"], .training-status[data-state="compatible"] { color: var(--color-success); }
+.training-status[data-state="failed"] { color: var(--color-danger); }
+.training-progress { display: grid; gap: var(--sp-2); }
+.training-progress progress { width: 100%; accent-color: var(--color-selection); }
+.training-actions { display: flex; flex-wrap: wrap; gap: var(--sp-2); }
+.training-danger { color: var(--color-danger); }
+.training-form-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(12rem, 1fr)); gap: var(--sp-4); }
+.training-form-grid label { display: grid; gap: var(--sp-2); color: var(--color-text-muted); }
+.training-form-grid input, .training-form-grid select { min-width: 0; }
+.training-artifact-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(19rem, 1fr)); gap: var(--sp-4); }
+.training-artifact { display: grid; gap: var(--sp-4); padding: var(--sp-5); border: 1px solid var(--color-border); border-radius: var(--radius-md); background: var(--color-surface-raised); }
+.training-artifact-title, .training-lineage button, .training-back { width: fit-content; padding: 0; border: 0; background: transparent; color: var(--color-selection); text-align: left; }
+.training-artifact-title { font-weight: 700; }
+.training-lineage { display: flex; gap: var(--sp-2); align-items: baseline; }
+.training-metrics { display: grid; grid-template-columns: repeat(auto-fit, minmax(8rem, 1fr)); gap: var(--sp-3); }
+.training-metrics div { display: grid; gap: var(--sp-1); padding: var(--sp-4); background: var(--color-surface-sunken); border-radius: var(--radius-sm); }
+.training-metrics strong { font-size: var(--text-lg); }
+.training-terminal strong { color: var(--color-danger); }
+.training-terminal span { color: var(--color-text-muted); }
+.training-sheet-backdrop { position: fixed; inset: 0; z-index: 80; display: grid; place-items: center; padding: var(--sp-5); background: var(--color-overlay); }
+.training-sheet { display: grid; gap: var(--sp-5); width: min(34rem, 100%); max-height: calc(100vh - var(--sp-8)); overflow: auto; padding: var(--sp-6); border: 1px solid var(--color-border); border-radius: var(--radius-lg); background: var(--color-surface-raised); box-shadow: var(--shadow-lg); }
+.training-sheet h2 { margin: 0; }
+.training-check { display: flex; align-items: center; gap: var(--sp-2); }
+@media (max-width: 62rem) { .training-workspace { padding: var(--sp-4); } .training-artifact-grid { grid-template-columns: 1fr; } .training-kv { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 40rem) { .training-kv, .training-form-grid { grid-template-columns: 1fr; } }
