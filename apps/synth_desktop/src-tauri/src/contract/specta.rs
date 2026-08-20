@@ -423,8 +423,10 @@ mod tests {
         // arbitrary event-name/property IPC.
         // 230 → 235: hosted training model and saved-LoRA checkpoint search,
         // run-output, archive, and download commands retained from main.
+        // 235 → 238: the three training-sidecar model commands (list, download,
+        // delete on-device base models under the instance-scoped model root).
         assert_eq!(
-            exported, 235,
+            exported, 238,
             "generated bindings must contain the complete desktop command set"
         );
         assert_eq!(

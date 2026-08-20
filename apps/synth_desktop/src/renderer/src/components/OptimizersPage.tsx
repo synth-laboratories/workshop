@@ -640,7 +640,8 @@ export function OptimizersPage({
 				? "Resume this run from the checkpoint using HostedOptimizerClient.resume_training with a fresh validated SynthTunnel lease and a new idempotent attempt."
 				: "Compare this checkpoint and its evaluation against the baseline, attach or update the experiment visual, and create or update the report with run, attempt, checkpoint lineage, config/task digests, usage reconciliation, and artifact links.";
 		await startAgent({
-			id: action === "resume" && selected.algorithmId === "ppo" ? "ppo" : action === "resume" ? "cispo" : "eval",
+			id: action === "resume" ? "cispo" : "eval",
+			kind: action === "resume" ? "training" : "optimizer",
 			label: action === "evaluate" ? "EV" : action === "resume" ? "RE" : "RP",
 			name: action === "evaluate" ? "Evaluate checkpoint" : action === "resume" ? "Resume checkpoint" : "Compare and report",
 			description: `${actionPrompt} Run ${selected.id}, checkpoint ${checkpointId}.`,
@@ -940,13 +941,13 @@ export function OptimizersPage({
 									<button className="secondary-button" type="button" disabled={startingSftFixture} onClick={() => void startSftFixture()} data-testid="start-sft-fixture">
 										{startingSftFixture ? "Starting fixture…" : "Run hosted fixture"}
 									</button>
-									<small>Sidecar admits local MLX or hosted public SFT. Never dial :8787.</small>
+									<small>Public Optimizers fixture · no provider charges</small>
 								</>
 							) : null}
 							{guide.id === "cispo" ? (
 								<>
 									<button className="secondary-button" type="button" disabled={startingLocalCispo || (plugin != null && !presentation.isUsable)} onClick={() => void startBoundedRecipe("cispo.banking77.mlx.v1", setStartingLocalCispo)} data-testid="start-cispo-mlx">
-										{startingLocalCispo ? "Starting…" : "This Mac · Banking77 CISPO"}
+										{startingLocalCispo ? "Starting…" : "This Mac · CISPO (MLX)"}
 									</button>
 									<small>Hosted CISPO stays fail-closed until the slime clip canary admits it. Use the bounded recipe below.</small>
 								</>
@@ -1094,6 +1095,7 @@ export function OptimizersPage({
 										data-testid={`start-eval-${recipe.id}`}
 										onClick={() => void startAgent({
 											id: "eval",
+											kind: "optimizer",
 											label: "EV",
 											name: recipe.title,
 											description: recipe.description ?? "",
