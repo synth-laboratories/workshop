@@ -5249,6 +5249,36 @@ pub(in crate::optimizers) mod tests {
     }
 
     #[tokio::test]
+    async fn training_algorithms_are_tagged_and_ppo_is_withdrawn() {
+        let (svc, _dir, _) = service().await;
+        let algorithms = svc.list_algorithms();
+        assert!(
+            algorithms
+                .iter()
+                .all(|item| item.get("id") != Some(&json!("ppo"))),
+            "PPO was withdrawn from the optimizer catalog on 2026-08-19"
+        );
+        for id in ["sft", "cispo"] {
+            let entry = algorithms
+                .iter()
+                .find(|item| item.get("id") == Some(&json!(id)))
+                .unwrap_or_else(|| panic!("{id} missing from list_algorithms"));
+            assert_eq!(
+                entry.get("kind"),
+                Some(&json!("training")),
+                "{id} must be tagged as a training lane, not an optimizer card"
+            );
+        }
+        for id in ["gepa", "go-ex"] {
+            let entry = algorithms
+                .iter()
+                .find(|item| item.get("id") == Some(&json!(id)))
+                .unwrap_or_else(|| panic!("{id} missing from list_algorithms"));
+            assert_ne!(entry.get("kind"), Some(&json!("training")));
+        }
+    }
+
+    #[tokio::test]
     async fn lists_hosted_sft_fixture_recipe() {
         let (svc, _dir, _) = service().await;
         let recipe = svc
