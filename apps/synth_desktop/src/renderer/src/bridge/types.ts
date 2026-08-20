@@ -1341,6 +1341,7 @@ export type TrainingProjection = {
 		evaluator?: string | null;
 		metric?: string;
 		score?: number | null;
+		loss?: number | null;
 		baseline_score?: number | null;
 		delta?: number | null;
 		sample_count?: number | null;

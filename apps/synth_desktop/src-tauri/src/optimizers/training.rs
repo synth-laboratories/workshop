@@ -248,6 +248,7 @@ fn normalized_evaluation(event: &TrainingEvent) -> Value {
         "evaluator": payload.get("evaluator").or_else(|| payload.get("plan_ref")).cloned().unwrap_or(Value::Null),
         "metric": payload.get("metric").cloned().unwrap_or_else(|| Value::String("reward".into())),
         "score": score,
+        "loss": payload.get("loss").or_else(|| payload.pointer("/metrics/loss")).cloned().unwrap_or(Value::Null),
         "baseline_score": baseline,
         "delta": delta,
         "sample_count": payload.get("sample_count").or_else(|| payload.get("samples")).or_else(|| payload.get("instances")).cloned().unwrap_or(Value::Null),

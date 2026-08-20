@@ -909,6 +909,7 @@ fn normalized_sidecar_evaluation(kind: &str, algorithm: &str, payload: &Value) -
         "container": payload.get("container").or_else(|| payload.get("container_url")).cloned().unwrap_or(Value::Null),
         "metric": payload.get("metric").cloned().unwrap_or_else(|| json!("reward")),
         "score": score,
+        "loss": payload.get("loss").or_else(|| payload.pointer("/metrics/loss")).cloned().unwrap_or(Value::Null),
         "baseline_score": baseline,
         "delta": delta,
         "sample_count": payload.get("sample_count").or_else(|| payload.get("samples")).or_else(|| payload.get("instances")).cloned().unwrap_or(Value::Null),

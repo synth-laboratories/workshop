@@ -5,6 +5,7 @@ import { bridges } from "../runtime/desktopBridge";
 import { findPluginStatus, pluginPresentation, type PluginPresentation } from "../runtime/pluginPresentation";
 import { publicError } from "../runtime/publicError";
 import { TrainingWorkspace } from "./TrainingWorkspace";
+import { TrainingEvaluationCurve } from "./TrainingEvaluationCurve";
 
 type OptimizerGuide = {
 	id: "gepa" | "go-ex" | "sft" | "cispo" | "ppo" | "eval";
@@ -1122,20 +1123,7 @@ export function OptimizersPage({
 											{Object.entries(trainingProjection.metrics).map(([name, value]) => <span key={name}><small>{name}</small><strong>{value.toFixed(4)}</strong></span>)}
 										</div>
 									) : null}
-									{selectedTrainingEvaluations.length > 0 ? (
-										<div className="training-evaluation-series" data-testid="optimizer-training-evaluations" aria-label="Baseline and checkpoint evaluation comparison">
-											{selectedTrainingEvaluations.map((evaluation, index) => {
-												const score = typeof evaluation.score === "number" ? evaluation.score : null;
-												const delta = typeof evaluation.delta === "number" ? evaluation.delta : null;
-												return <article key={`${evaluation.phase ?? "evaluation"}-${evaluation.checkpoint_id ?? evaluation.step ?? index}`} data-phase={evaluation.phase ?? "checkpoint"}>
-													<span>{evaluation.phase ?? "checkpoint"}</span>
-													<strong>{score == null ? "—" : score.toFixed(3)}</strong>
-													<small>{delta == null ? evaluation.metric ?? "reward" : `${delta >= 0 ? "+" : ""}${delta.toFixed(3)} vs baseline`}</small>
-													<code>{evaluation.checkpoint_id ?? (evaluation.step == null ? "base model" : `step ${evaluation.step}`)}</code>
-												</article>;
-											})}
-										</div>
-									) : null}
+									{selectedTrainingEvaluations.length > 0 ? <TrainingEvaluationCurve evaluations={selectedTrainingEvaluations} testId="optimizer-training-evaluations" /> : null}
 									{selectedTrainingCheckpoints.length > 0 ? (
 										<div className="optimizer-training-checkpoints" data-testid="optimizer-training-checkpoints">
 											<strong>Ready checkpoints</strong>
