@@ -41,7 +41,7 @@ export function TrainingWorkspace({ onStartFixture, fixtureBusy = false }: { onS
 
 	return <section className="training-workspace" aria-labelledby="training-title" data-testid="training-workspace">
 		<div className="training-heading"><div><span className="optimizer-eyebrow">Local MLX</span><h2 id="training-title">Training</h2></div><span className="training-status" data-state={fixtures.readiness.runtimeHealth.toLowerCase()}>{fixtures.readiness.runtimeHealth}</span></div>
-		<div className="training-launch-row" data-testid="optimizer-guide-sft"><div className="training-flow" aria-label="SFT workflow"><span>Collect</span><span>Train</span><span>Compare</span></div>{onStartFixture ? <button className="secondary-button" type="button" disabled={fixtureBusy} onClick={onStartFixture} data-testid="start-sft-fixture">{fixtureBusy ? "Starting fixture…" : "Run free fixture"}</button> : null}</div>
+		<div className="training-launch-row" data-testid="training-launch-row"><div className="training-flow" aria-label="SFT workflow"><span>Collect</span><span>Train</span><span>Compare</span></div>{onStartFixture ? <button className="secondary-button" type="button" disabled={fixtureBusy} onClick={onStartFixture} data-testid="training-start-sft-fixture">{fixtureBusy ? "Starting fixture…" : "Run free fixture"}</button> : null}</div>
 		<nav className="training-tabs" aria-label="Training sections">
 			{(["setup", "train", "artifacts", "run"] as const).map((item) => <button key={item} type="button" aria-current={view === item ? "page" : undefined} onClick={() => setView(item)} data-testid={`training-tab-${item}`}>{item === "setup" ? "Setup" : item === "train" ? "New run" : item[0].toUpperCase() + item.slice(1)}</button>)}
 		</nav>
