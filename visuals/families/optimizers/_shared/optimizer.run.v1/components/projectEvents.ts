@@ -2162,7 +2162,7 @@ export function projectAtCursor(
         goexAgents = { ...goexAgents, ...(agentData as Record<string, unknown>) };
       }
     }
-    if (event.type === "sft.checkpoint.created" && event.item) {
+    if (event.type === "sft.checkpoint.created" || event.type === "training.checkpoint.created") && event.item {
       checkpoints.push({
         id: event.item.id,
         status: event.item.status ?? "created",
@@ -2172,7 +2172,7 @@ export function projectAtCursor(
         ...(event.item.raw ?? {})
       });
     }
-    if (event.type === "sft.checkpoint.ready" && event.item) {
+    if ((event.type === "sft.checkpoint.ready" || event.type === "training.checkpoint.ready") && event.item) {
       const id = event.item.id;
       const existing = checkpoints.find((ckpt) => ckpt.id === id);
       if (existing) {
@@ -2209,7 +2209,7 @@ export function projectAtCursor(
         };
       }
     }
-    if (event.type === "sft.step.metrics" || event.type === "sft.training.metrics") {
+    if (event.type === "sft.step.metrics" || event.type === "sft.training.metrics" || event.type === "training.metrics") {
       const step = missingNumber(event.delta?.step ?? event.delta?.global_step);
       const epoch = missingNumber(event.delta?.epoch);
       const trainLoss = missingNumber(event.delta?.train_loss ?? event.delta?.trainLoss);

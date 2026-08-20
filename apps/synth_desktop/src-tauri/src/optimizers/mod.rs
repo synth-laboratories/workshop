@@ -27,6 +27,7 @@ mod sidecar_training;
 mod terminal;
 mod tinker_catalog;
 mod training;
+mod training_adapter;
 
 pub use eval_candidates::EvalStageCandidatesRequest;
 pub(crate) use eval_recipes::{paid_compute_bounds, resolve_eval_candidate_set};
