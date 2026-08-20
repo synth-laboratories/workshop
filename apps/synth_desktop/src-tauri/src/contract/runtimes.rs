@@ -176,18 +176,15 @@ pub const OPTIMIZERS: RuntimeContract = RuntimeContract {
 
 /// The local container-evaluation runtime.
 ///
-/// Present so About can report it honestly. Its interpreter lives at
-/// `data_root()/runtime/optimizers/bin/python3` and is installed by nothing in
-/// this tree — there is no manifest, digest, or installer to attach a floor to,
-/// hence `provisioned_by_desktop: false`. Owning provisioning is a prerequisite
-/// to owning a version.
+/// Desktop provisions it from the same 0.2.15 `synth-optimizers` install as
+/// GEPA, writing a digest-pinned manifest under `data_root()/runtime/eval`.
 pub const EVAL: RuntimeContract = RuntimeContract {
     runtime_id: "eval",
     package: "synth-optimizers[eval]",
-    official: "unmanaged",
-    dev: "unmanaged",
-    min_supported: "0",
-    min_supported_dev: "0",
+    official: "0.2.15",
+    dev: "0.2.15",
+    min_supported: "0.2.15",
+    min_supported_dev: "0.2.15",
     workshop_compat: "0.4.0",
     algorithms: &["eval"],
     templates: &["optimizer.eval.live.v1", "optimizer.run.v1"],
@@ -199,9 +196,10 @@ pub const EVAL: RuntimeContract = RuntimeContract {
         "eval.gamebench.llm-policy.confirm.v1",
         "eval.banking77.baseline.v1",
         "eval.healthbench.smoke.v1",
+        "eval.mlx.local-policy.smoke.v1",
     ],
     recipe_schema: "eval.worker-manifest.v1",
-    provisioned_by_desktop: false,
+    provisioned_by_desktop: true,
 };
 
 pub const ALL: &[RuntimeContract] = &[OPTIMIZERS, EVAL];
@@ -318,13 +316,14 @@ mod tests {
         assert_ne!(OPTIMIZERS.official, OPTIMIZERS.dev);
     }
 
-    /// The table is Desktop's claim, and the handshake is what tests it. A
-    /// runtime Desktop does not install cannot be held to a version floor.
+    /// Eval is provisioned by Desktop from the 0.2.15 sidecar pin.
     #[test]
-    fn unprovisioned_runtimes_do_not_claim_a_version() {
-        assert!(!EVAL.provisioned_by_desktop);
-        assert_eq!(EVAL.official, "unmanaged");
-        assert!(EVAL.meets_floor("anything"));
+    fn eval_runtime_is_pinned_and_managed() {
+        assert!(EVAL.provisioned_by_desktop);
+        assert_eq!(EVAL.official, "0.2.15");
+        assert_eq!(EVAL.min_supported, "0.2.15");
+        assert!(EVAL.meets_floor("0.2.15"));
+        assert!(!EVAL.meets_floor("0.2.14"));
         assert!(OPTIMIZERS.provisioned_by_desktop);
     }
 

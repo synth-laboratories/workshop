@@ -112,6 +112,10 @@ fn resolve_python() -> Result<PathBuf> {
     if let Some(project) = super::manager::optimizer_project_root()? {
         return resolve_developer_python(&project);
     }
+    let _ = super::eval_runtime::provision_from_disk();
+    if let Some(python) = super::eval_runtime::provisioned_python() {
+        return Ok(python);
+    }
     if let Ok(text) = fs::read_to_string(config_path()) {
         if let Some(configured) = text
             .lines()
