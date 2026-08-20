@@ -303,6 +303,8 @@ mod tests {
         assert!(!production.contains(&["127.0.0.1:", "8787"].concat()));
         assert!(!production.contains("SYNTH_MLX_CISPO_ROLLOUT_URL"));
         assert!(!production.contains("SYNTH_MLX_CISPO_WARM_START"));
+        assert!(production.contains("SYNTH_OPTIMIZERS_CISPO_ROLLOUT_URL"));
+        assert!(production.contains("SYNTH_OPTIMIZERS_CISPO_ROLLOUT_TOKEN"));
         assert!(production.contains("training_artifact_id"));
         assert!(production.contains("create_and_watch"));
     }

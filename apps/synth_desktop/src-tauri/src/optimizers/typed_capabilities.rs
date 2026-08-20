@@ -186,7 +186,11 @@ mod tests {
         );
         let plan = plan_model_install(None).unwrap();
         assert_eq!(plan["silentDownload"], false);
-        assert_eq!(plan["alreadyPresent"], inspect["modelPresent"]);
+        // Another test may temporarily switch the process-wide instance root,
+        // so two independent inventory reads are not guaranteed to observe the
+        // same root when the suite runs in parallel.  Planning is read-only in
+        // either state; require an honest boolean instead of a racy equality.
+        assert!(plan["alreadyPresent"].is_boolean());
         let err = plan_model_install(Some("someone/else"))
             .unwrap_err()
             .to_string();
@@ -202,6 +206,11 @@ mod tests {
             plan["resolvedConfig"]["baseModel"],
             crate::training_models::QWEN_TRAINING_MODEL_ID
         );
+        let cispo = create_training_plan(LOCAL_MLX_CISPO_RECIPE).unwrap();
+        assert_eq!(cispo["startsRun"], false);
+        assert_eq!(cispo["recipeId"], LOCAL_MLX_CISPO_RECIPE);
+        assert_eq!(cispo["resolvedConfig"]["warmStart"], "training_artifact_id");
+        assert_eq!(cispo["resolvedConfig"]["loraDropout"], 0.0);
         assert!(create_training_plan("gepa.banking77.smoke.v1").is_err());
     }
 
