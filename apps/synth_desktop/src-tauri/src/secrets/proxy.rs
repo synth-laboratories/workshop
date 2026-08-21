@@ -34,6 +34,7 @@ pub struct ProviderProxy {
 pub struct ProxyState {
     pub db: Arc<Database>,
     pub backend: Arc<dyn SecretBackend>,
+    pub env_sources: Arc<super::lease::EnvSourceStore>,
     pub capabilities: Arc<CapabilityStore>,
 }
 
@@ -551,7 +552,12 @@ async fn handle(
     }
 
     let secret = match state.db.with_conn(|conn| {
-        vault::resolve_for_proxy(conn, state.backend.as_ref(), &reserved.secret_id)
+        vault::resolve_for_proxy(
+            conn,
+            state.backend.as_ref(),
+            Some(state.env_sources.as_ref()),
+            &reserved.secret_id,
+        )
     }) {
         Ok(secret) => secret,
         Err(error) => {
@@ -803,6 +809,10 @@ impl WorkloadEnv {
             ("OPENAI_API_KEY".into(), API_KEY_SENTINEL.to_owned()),
             ("WORKSHOP_RUN_ID".into(), self.workshop_run_id.clone()),
             ("WORKSHOP_CAPABILITY".into(), self.capability_handle.clone()),
+            (
+                "WORKSHOP_CREDENTIAL_MODE".into(),
+                super::lease::CREDENTIAL_MODE_WORKSHOP_PROXY.into(),
+            ),
         ];
         if let Some(file) = &self.capability_file {
             pairs.push(("WORKSHOP_CAPABILITY_FILE".into(), file.clone()));
@@ -818,6 +828,7 @@ impl WorkloadEnv {
         }
         if let Some(url) = &self.container_openai_base_url {
             pairs.push(("WORKSHOP_OPENAI_BASE_URL".into(), url.clone()));
+            pairs.push(("WORKSHOP_INFERENCE_URL".into(), url.clone()));
         }
         if let Some(socket) = &self.proxy_socket {
             pairs.push(("WORKSHOP_PROXY_SOCKET".into(), socket.clone()));

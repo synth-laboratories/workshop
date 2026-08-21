@@ -990,9 +990,18 @@ async fn run_recipe_worker(
 ) -> Result<()> {
     let _revoke = crate::secrets::RevokeRunOnDrop(run_id.clone());
     append_status_event(&service, &run_id, "optimizer.run.started", "running").await?;
-    let openai = resolve_openai_workload(&run_id, "gepa")?;
+    let openai = resolve_openai_workload(&run_id, recipe_id_for_lease(&config_path))?;
+    if let Some(lease) = openai.lease.as_ref() {
+        crate::secrets::lease::bind_lease_into_toml(&config_path, lease)?;
+        let _ = service.persist_credential_chain(&run_id).await;
+    }
     let stdout = fs::File::create(run_dir.join("workshop.stdout.log"))?;
     let stderr = fs::File::create(run_dir.join("workshop.stderr.log"))?;
+    let extra_env = openai
+        .lease
+        .as_ref()
+        .map(|lease| lease.compile_host_env())
+        .unwrap_or_default();
     let mut child = manager
         .spawn_gepa_recipe(
             &run_id,
@@ -1002,6 +1011,7 @@ async fn run_recipe_worker(
             stderr,
             &openai.api_key,
             openai.base_url.as_deref(),
+            &extra_env,
         )
         .await?;
 
@@ -1090,9 +1100,8 @@ async fn run_recipe_worker(
     }
 }
 
-/// Resolve OpenAI access for a recipe through the local vault and provider
-/// proxy. Paid workers never receive a provider key and never fall back to a
-/// process variable or dotenv file.
+/// Resolve OpenAI access for a recipe through the config-declared `.env` and
+/// the Workshop provider proxy. Paid workers never receive a provider key.
 fn resolve_openai_workload(run_id: &str, recipe_id: &str) -> Result<OpenAiWorkload> {
     #[cfg(test)]
     {
@@ -1102,33 +1111,47 @@ fn resolve_openai_workload(run_id: &str, recipe_id: &str) -> Result<OpenAiWorklo
             return Ok(OpenAiWorkload {
                 api_key: crate::secrets::API_KEY_SENTINEL.to_owned(),
                 base_url: None,
+                lease: None,
             });
         }
     }
     let secrets = crate::secrets::live().ok_or_else(|| {
-        anyhow!("missing_credential: add an OpenAI connection in Settings → Secrets")
+        crate::secrets::lease::CredentialError::new(
+            crate::secrets::lease::PROXY_NOT_RUNNING,
+            "proxy",
+            true,
+            "Workshop secrets proxy is not running",
+        )
+        .anyhow()
     })?;
-    let env = secrets
-        .workload_env(
+    let lease = secrets
+        .issue_lease(
             "openai",
             run_id,
             recipe_id,
             crate::secrets::SecretsUsePolicy::default(),
             "optimizer",
         )
-        .map_err(|error| {
-            anyhow!("missing_credential: add an OpenAI connection in Settings → Secrets ({error})")
-        })?;
+        .map_err(|error| anyhow!("{error}"))?;
     Ok(OpenAiWorkload {
         api_key: crate::secrets::API_KEY_SENTINEL.to_owned(),
-        base_url: env.openai_base_url,
+        base_url: Some(lease.host_base_url.clone()),
+        lease: Some(lease),
     })
+}
+
+fn recipe_id_for_lease(config_path: &Path) -> &str {
+    config_path
+        .file_stem()
+        .and_then(|name| name.to_str())
+        .unwrap_or("gepa")
 }
 
 #[derive(Clone, Debug)]
 pub(super) struct OpenAiWorkload {
     pub api_key: String,
     pub base_url: Option<String>,
+    pub lease: Option<crate::secrets::CredentialLease>,
 }
 
 async fn ingest_available(
@@ -1571,6 +1594,7 @@ async fn append_terminal_event(
     if matches!(run.status.as_str(), "completed" | "failed" | "cancelled") {
         return Ok(());
     }
+    let _ = service.seal_credential_chain(run_id).await;
     let status = if failed { "failed" } else { "completed" };
     append_status_event(
         service,
@@ -2256,6 +2280,10 @@ fn materialize_craftax_config(
         "api_key_env".into(),
         toml::Value::String("OPENAI_API_KEY".into()),
     );
+    policy.insert(
+        "credential_mode".into(),
+        toml::Value::String("workshop_proxy".into()),
+    );
     policy.remove("base_url");
 
     let proposer = table_mut(&mut config, "proposer")?;
@@ -2772,6 +2800,10 @@ namespace = "base"
         assert_eq!(
             config["policy"]["api_key_env"].as_str(),
             Some("OPENAI_API_KEY")
+        );
+        assert_eq!(
+            config["policy"]["credential_mode"].as_str(),
+            Some("workshop_proxy")
         );
         assert!(text.contains("\"--frozen\""));
         assert!(text.contains("\"CRAFTER_MAX_TURNS=8\""));

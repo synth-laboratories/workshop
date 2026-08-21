@@ -609,10 +609,15 @@ impl OptimizerManager {
         let hit = load_verified_manifest(&self.home, &dir)?;
         if let Some(status) = self.probe().await {
             if status.phase == "ready" && status.version.as_deref() == Some(hit.version.as_str()) {
-                self.set_status(status).await;
-                return Ok(self.status().await);
+                if runtime_lease_is_current(&self.home, &hit.version) {
+                    self.set_status(status).await;
+                    return Ok(self.status().await);
+                }
+                self.abort_runtime().await;
+                let _ = std::fs::remove_file(self.home.join("runtime-lease.json"));
+            } else {
+                self.abort_runtime().await;
             }
-            self.abort_runtime().await;
         }
         self.set_status(OptimizerSidecarStatus {
             phase: "starting".into(),
@@ -696,6 +701,27 @@ impl OptimizerManager {
                         &hit.version,
                         &runtime_epoch,
                     )?;
+                    if let Some(child) = self.runtime.lock().await.as_ref().and_then(|runtime| {
+                        runtime.child.as_ref().and_then(|child| child.id())
+                    }) {
+                        let instance_id = std::env::var(crate::instance::INSTANCE_ENV)
+                            .unwrap_or_else(|_| "canonical".into());
+                        let _ = crate::secrets::lease::write_runtime_lease(
+                            &self.home.join("runtime-lease.json"),
+                            &crate::secrets::OptimizerRuntimeLease {
+                                schema_version: crate::secrets::lease::RUNTIME_LEASE_SCHEMA.into(),
+                                pid: child,
+                                process_start_identity: crate::secrets::lease::process_start_identity(child),
+                                service_url: base_url.clone(),
+                                database_digest: crate::secrets::lease::database_digest(
+                                    &self.home.join("gepa.sqlite3"),
+                                ),
+                                instance_id,
+                                version: hit.version.clone(),
+                                started_at: chrono::Utc::now().to_rfc3339(),
+                            },
+                        );
+                    }
                     self.set_status(status).await;
                     return Ok(self.status().await);
                 }
@@ -818,6 +844,7 @@ impl OptimizerManager {
         stderr: fs::File,
         openai_api_key: &str,
         openai_base_url: Option<&str>,
+        extra_env: &[(String, String)],
     ) -> Result<Child> {
         validate_optimizer_run_id(run_id)?;
         if self.runtime.lock().await.is_none() {
@@ -860,6 +887,7 @@ impl OptimizerManager {
             stderr,
             openai_api_key,
             openai_base_url,
+            extra_env,
         ) {
             Ok(mut child) => {
                 let pid = child
@@ -1325,6 +1353,7 @@ fn launch_gepa_recipe_process(
     stderr: fs::File,
     openai_api_key: &str,
     openai_base_url: Option<&str>,
+    extra_env: &[(String, String)],
 ) -> Result<Child> {
     #[cfg(test)]
     {
@@ -1335,7 +1364,7 @@ fn launch_gepa_recipe_process(
                 cookbook,
                 openai_api_key,
                 openai_base_url,
-                config_path,
+                extra_env,
             );
             // The stand-in normally exits at once. Tests that need to observe
             // what the supervisor does to a *live* child — the never-indexed
@@ -1378,6 +1407,22 @@ fn launch_gepa_recipe_process(
         {
             command.env("WORKSHOP_CAPABILITY", handle);
         }
+    }
+    for (key, value) in extra_env {
+        command.env(key, value);
+    }
+    if let Some(base_url) = openai_base_url {
+        command.env("OPENAI_BASE_URL", base_url);
+        if let Some(handle) = base_url
+            .split("/cap/")
+            .nth(1)
+            .and_then(|rest| rest.split('/').next())
+        {
+            command.env("WORKSHOP_CAPABILITY", handle);
+        }
+    }
+    for (key, value) in extra_env {
+        command.env(key, value);
     }
     let _ = openai_api_key;
     command
@@ -1495,6 +1540,28 @@ async fn launch_sidecar_upstream(
 fn isolate_process_group(command: &mut Command) {
     use std::os::unix::process::CommandExt;
     command.as_std_mut().process_group(0);
+}
+
+fn runtime_lease_is_current(home: &Path, version: &str) -> bool {
+    let Ok(Some(lease)) =
+        crate::secrets::lease::read_runtime_lease(&home.join("runtime-lease.json"))
+    else {
+        return false;
+    };
+    if lease.version != version {
+        return false;
+    }
+    #[cfg(unix)]
+    {
+        if owned_process_group(lease.pid).is_none() {
+            return false;
+        }
+        let identity = crate::secrets::lease::process_start_identity(lease.pid);
+        if identity != lease.process_start_identity {
+            return false;
+        }
+    }
+    true
 }
 
 #[cfg(not(unix))]
@@ -3141,6 +3208,7 @@ mod tests {
                 stderr,
                 "sk-test",
                 None,
+                &[],
             )
             .await
             .unwrap_err();
@@ -3228,6 +3296,7 @@ mod tests {
                 fs::File::create(home.path().join("luna.err")).unwrap(),
                 "sk-test",
                 None,
+                &[],
             )
             .await
             .unwrap();
@@ -3240,6 +3309,7 @@ mod tests {
                 fs::File::create(home.path().join("sol.err")).unwrap(),
                 "sk-test",
                 None,
+                &[],
             )
             .await
             .unwrap();

@@ -376,6 +376,7 @@ pub(super) fn derive(
             .collect::<Vec<_>>(),
         "artifactRefs": artifact_refs,
         "degradation": degradation.unwrap_or(Value::Null),
+        "credentialChain": run.summary.get("credentialChain").cloned().unwrap_or(Value::Null),
         "startedAt": run.started_at,
         "finishedAt": run.finished_at,
         "error": run.error.clone().unwrap_or(Value::Null),
@@ -477,6 +478,7 @@ pub(super) fn reconcile(
         "selection",
         "gepaEvidence",
         "degradation",
+        "credentialChain",
         "startedAt",
         "finishedAt",
     ] {
@@ -638,6 +640,27 @@ mod tests {
         let manifest = derive(&run("eval"), &[], "completed", None);
         assert_eq!(manifest.pointer("/usage/costUsd"), Some(&Value::Null));
         assert_eq!(manifest.pointer("/work/planned"), Some(&Value::Null));
+    }
+
+    #[test]
+    fn a_manifest_carries_the_credential_receipt_chain() {
+        let mut record = run("eval");
+        record.summary = json!({
+            "credentialChain": {
+                "schemaVersion": "workshop.credential-chain.v1",
+                "leaseDigest": "sha256:abc",
+                "capabilityRevoked": true
+            }
+        });
+        let manifest = derive(&record, &[], "completed", None);
+        assert_eq!(
+            manifest.pointer("/credentialChain/leaseDigest"),
+            Some(&json!("sha256:abc"))
+        );
+        assert_eq!(
+            manifest.pointer("/credentialChain/capabilityRevoked"),
+            Some(&json!(true))
+        );
     }
 
     #[test]

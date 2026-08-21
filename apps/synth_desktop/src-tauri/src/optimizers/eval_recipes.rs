@@ -526,7 +526,23 @@ pub(crate) fn bind_provider_routes_into_manifest(path: &Path, routes: Value) -> 
         ));
     };
     object.insert("credential_mode".into(), json!("workshop_proxy"));
-    object.insert("provider_routes".into(), routes);
+    object.insert(
+        "inference_url".into(),
+        routes
+            .get("openai_base")
+            .cloned()
+            .unwrap_or(Value::Null),
+    );
+    let mut bound_routes = routes.clone();
+    if let Some(object) = bound_routes.as_object_mut() {
+        object
+            .entry("extra_hosts".to_string())
+            .or_insert_with(|| json!(["host.docker.internal:host-gateway"]));
+        object
+            .entry("api_key_sentinel".to_string())
+            .or_insert_with(|| json!(crate::secrets::API_KEY_SENTINEL));
+    }
+    object.insert("provider_routes".into(), bound_routes);
     fs::write(path, serde_json::to_vec_pretty(&manifest)?)
         .context("write eval worker provider_routes")?;
     Ok(())
@@ -933,6 +949,7 @@ async fn run_worker(
             secrets_proxy_error("secrets_proxy_route_unbound", &error.to_string())
         })?;
         bind_provider_routes_into_manifest(&manifest_path, routes)?;
+        let _ = service.persist_credential_chain(&run_id).await;
         for (key, value) in env.as_pairs() {
             command.env(key, value);
         }
@@ -1574,6 +1591,7 @@ async fn append_terminal(
     {
         return Ok(());
     }
+    let _ = service.seal_credential_chain(run_id).await;
     let event_type = match status {
         "failed" => "optimizer.run.failed",
         "cancelled" => "optimizer.run.cancelled",
@@ -2458,6 +2476,10 @@ mod immutable_target_tests {
         .unwrap();
         let manifest: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
         assert_eq!(manifest["credential_mode"], "workshop_proxy");
+        assert_eq!(
+            manifest["inference_url"],
+            "http://host.docker.internal:18451/cap/wcap_abc/v1/providers/openai"
+        );
         let route = manifest["provider_routes"]["openai"].as_str().unwrap();
         assert!(route.contains("host.docker.internal"));
         assert!(route.ends_with("/v1/providers/openai/chat/completions"));

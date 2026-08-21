@@ -173,7 +173,7 @@ export function SecretsSettings() {
 				title="Secrets & providers"
 				description={
 					registeredCount === 0
-						? "No provider credentials are registered on this device yet. Add one here or ask the agent to import a .env — Workshop stores the value in Keychain and never shows it again."
+						? "No provider credentials are loaded from the config-declared .env yet. Add OPENAI_API_KEY there — Workshop keeps the value in memory and never copies it into Keychain or into a workload."
 						: `${registeredCount} registered on this device. Agents see aliases only. ${inbox.proxy.running ? "Provider proxy is running." : "Provider proxy is not running."}`
 				}
 				actions={

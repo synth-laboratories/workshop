@@ -1592,6 +1592,7 @@ async fn append_terminal(
     {
         return Ok(());
     }
+    let _ = service.seal_credential_chain(run_id).await;
     append_status(
         service,
         run_id,

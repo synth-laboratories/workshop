@@ -279,22 +279,59 @@ pub fn has_recipe_grant(conn: &Connection, secret_id: &str, recipe_id: &str) -> 
     Ok(count > 0)
 }
 
+pub fn find_configured_source(conn: &Connection, provider: &str) -> Result<Option<SecretRecord>> {
+    conn.query_row(
+        "SELECT id, alias, provider, scope, backend, backend_ref, fingerprint,
+                display_suffix, status, created_at, last_validated_at
+         FROM secret_refs WHERE provider=?1 AND backend='configured_env_file'
+         ORDER BY updated_at DESC LIMIT 1",
+        [provider],
+        |row| {
+            Ok(SecretRecord {
+                id: row.get(0)?,
+                alias: row.get(1)?,
+                provider: row.get(2)?,
+                scope: row.get(3)?,
+                backend: row.get(4)?,
+                backend_ref: row.get(5)?,
+                fingerprint: row.get(6)?,
+                display_suffix: row.get(7)?,
+                status: row.get(8)?,
+                created_at: row.get(9)?,
+                last_validated_at: row.get(10)?,
+            })
+        },
+    )
+    .optional()
+    .map_err(Into::into)
+}
+
 /// Host-only resolution. Callers must be the provider proxy or a validation path.
-///
-/// Resolve is the only Keychain read. A prior `status()` probe would prompt
-/// twice on macOS for the same item.
 pub fn resolve_for_proxy(
     conn: &Connection,
     backend: &dyn SecretBackend,
+    env_sources: Option<&super::lease::EnvSourceStore>,
     id: &str,
 ) -> Result<SecretBytes> {
     let record = record(conn, id)?.ok_or_else(|| anyhow!("secret {id} was not found"))?;
+    if record.backend == super::lease::BACKEND_CONFIGURED_ENV {
+        let store = env_sources.ok_or_else(|| {
+            super::lease::CredentialError::new(
+                super::lease::CREDENTIAL_VALUE_UNLOADED,
+                "source",
+                false,
+                "configured env credential store is not attached to the proxy",
+            )
+            .anyhow()
+        })?;
+        return super::lease::resolve_configured_env(store, &record.backend_ref);
+    }
     backend.resolve(&record.backend_ref).map_err(|error| {
         let message = error.to_string();
         if message.contains("locked") {
             anyhow!("the OS credential store is locked")
         } else if message.contains("not stored") || message.contains("not found") {
-            anyhow!("secret {id} is missing from the OS credential store")
+            anyhow!("secret {id} is missing from the credential backend")
         } else {
             error
         }

@@ -9,6 +9,7 @@ mod backend;
 mod capability;
 mod fingerprint;
 mod importer;
+pub mod lease;
 mod providers;
 mod proxy;
 mod vault;
@@ -32,6 +33,11 @@ use proxy::{ProviderProxy, ProxyState, WorkloadEnv};
 use vault::SecretSummary;
 
 pub use capability::ProviderUsePolicy as SecretsUsePolicy;
+#[allow(unused_imports)]
+pub use lease::{
+    CredentialLease, CredentialReadinessReceipt, CredentialSourceDescriptor, OptimizerRuntimeLease,
+    CREDENTIAL_MODE_WORKSHOP_PROXY, CONTRACT as CREDENTIAL_CONTRACT,
+};
 pub use proxy::API_KEY_SENTINEL;
 
 static LIVE: OnceLock<Arc<SecretsService>> = OnceLock::new();
@@ -57,15 +63,12 @@ pub(crate) fn install_test_live_openai() {
             storage.database().clone(),
             Arc::new(backend::MemoryBackend::new()),
         ));
+        let env_file = path.join(".env");
+        std::fs::write(&env_file, "OPENAI_API_KEY=sk-test-healthbench-not-real\n")
+            .expect("seed test env");
         service
-            .create(
-                "Personal OpenAI",
-                "openai",
-                "personal/development/providers",
-                "sk-test-healthbench-not-real",
-                "test",
-            )
-            .expect("seed openai secret");
+            .load_one_env_source("openai", "OPENAI_API_KEY", &env_file)
+            .expect("load configured openai env source");
         let _ = service.start_proxy();
         install_live(service);
     });
@@ -100,13 +103,16 @@ impl Drop for RevokeRunOnDrop {
 
 #[derive(Clone)]
 pub struct SecretsService {
-    db: Arc<Database>,
-    backend: Arc<dyn SecretBackend>,
+    pub(crate) db: Arc<Database>,
+    pub(crate) backend: Arc<dyn SecretBackend>,
+    pub(crate) env_sources: Arc<lease::EnvSourceStore>,
     capabilities: Arc<CapabilityStore>,
     pending_imports: Arc<Mutex<HashMap<String, PendingImport>>>,
     pending_grants: Arc<Mutex<HashMap<String, PendingGrant>>>,
-    redaction: Arc<RedactionIndex>,
+    pub(crate) redaction: Arc<RedactionIndex>,
     proxy: Arc<Mutex<Option<Arc<ProviderProxy>>>>,
+    pub(crate) readiness: Arc<Mutex<HashMap<String, lease::CredentialReadinessReceipt>>>,
+    pub(crate) chains: Arc<Mutex<HashMap<String, serde_json::Value>>>,
 }
 
 #[derive(Clone, Debug)]
@@ -187,11 +193,14 @@ impl SecretsService {
         Self {
             db,
             backend,
+            env_sources: Arc::new(lease::EnvSourceStore::new()),
             capabilities: Arc::new(CapabilityStore::new()),
             pending_imports: Arc::new(Mutex::new(HashMap::new())),
             pending_grants: Arc::new(Mutex::new(HashMap::new())),
             redaction: Arc::new(RedactionIndex::new()),
             proxy: Arc::new(Mutex::new(None)),
+            readiness: Arc::new(Mutex::new(HashMap::new())),
+            chains: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -203,6 +212,7 @@ impl SecretsService {
         let state = Arc::new(ProxyState {
             db: self.db.clone(),
             backend: self.backend.clone(),
+            env_sources: self.env_sources.clone(),
             capabilities: self.capabilities.clone(),
         });
         let proxy = Arc::new(ProviderProxy::start(state)?);
@@ -282,7 +292,14 @@ impl SecretsService {
     pub fn test(&self, id: &str, actor: &str) -> Result<SecretSummary> {
         let secret = self
             .db
-            .with_conn(|conn| vault::resolve_for_proxy(conn, self.backend.as_ref(), id))?;
+            .with_conn(|conn| {
+                vault::resolve_for_proxy(
+                    conn,
+                    self.backend.as_ref(),
+                    Some(self.env_sources.as_ref()),
+                    id,
+                )
+            })?;
         let valid = !secret.as_bytes().is_empty();
         let status = if valid { "valid" } else { "invalid" };
         drop(secret);
@@ -612,13 +629,36 @@ impl SecretsService {
             if !selected.is_empty() && !selected.iter().any(|name| name == &entry.variable) {
                 continue;
             }
-            let summary = self.create(
-                &entry.alias,
-                &entry.provider,
-                &pending.destination_scope,
-                entry.value.as_utf8().unwrap_or(""),
-                actor,
-            )?;
+            let backend_ref = lease::env_backend_ref(&entry.provider, &entry.variable);
+            self.env_sources.put(&backend_ref, &entry.value);
+            self.redaction.register(&entry.value);
+            let fingerprint = fingerprint::fingerprint(&entry.value);
+            let id = self.db.with_conn(|conn| {
+                lease::upsert_env_source_descriptor(
+                    conn,
+                    &entry.provider,
+                    &entry.variable,
+                    &pending.source_path,
+                    Some(&fingerprint),
+                    true,
+                )
+            })?;
+            let summary = self
+                .db
+                .with_conn(|conn| vault::get(conn, &id))?
+                .unwrap_or(SecretSummary {
+                    id: id.clone(),
+                    alias: entry.alias.clone(),
+                    provider: entry.provider.clone(),
+                    scope: "project/config/env".into(),
+                    status: "valid".into(),
+                    backend: lease::BACKEND_CONFIGURED_ENV.into(),
+                    display_suffix: Some(fingerprint::mask_suffix(&entry.suffix)),
+                    created_at: chrono::Utc::now().to_rfc3339(),
+                    last_validated_at: Some(chrono::Utc::now().to_rfc3339()),
+                    allowed_recipes: Vec::new(),
+                });
+            let _ = actor;
             aliases.insert(entry.variable.clone(), summary.id.clone());
             imported.push(summary);
         }
@@ -636,107 +676,12 @@ impl SecretsService {
         policy: ProviderUsePolicy,
         actor: &str,
     ) -> Result<WorkloadEnv> {
-        let record = self
-            .db
-            .with_conn(|conn| vault::find_by_provider(conn, provider))?
-            .ok_or_else(|| {
-                anyhow!(
-                    "{}",
-                    serde_json::json!({
-                        "code": "missing_credential",
-                        "contract": "workshop.secrets_proxy",
-                        "retryable": false,
-                        "message": format!("no {provider} credential is stored in Workshop; add a connection in Settings → Secrets"),
-                    })
-                )
-            })?;
-        let granted = self
-            .grant_use(&record.id, run_id, recipe_id, policy, actor, false)
-            .map_err(|error| {
-                anyhow!(
-                    "{}",
-                    serde_json::json!({
-                        "code": "secrets_proxy_denied",
-                        "contract": "workshop.secrets_proxy",
-                        "retryable": false,
-                        "message": format!("could not issue a run-scoped {provider} capability: {error}"),
-                    })
-                )
-            })?;
-        let origin = granted
-            .proxy_origin
-            .clone()
-            .filter(|value| !value.is_empty())
-            .ok_or_else(|| {
-                anyhow!(
-                    "{}",
-                    serde_json::json!({
-                        "code": "secrets_proxy_unavailable",
-                        "contract": "workshop.secrets_proxy",
-                        "retryable": true,
-                        "message": "the Workshop provider proxy is not running",
-                    })
-                )
-            })?;
-        let handle = granted.handle.clone().ok_or_else(|| {
-            anyhow!(
-                "{}",
-                serde_json::json!({
-                    "code": "secrets_proxy_denied",
-                    "contract": "workshop.secrets_proxy",
-                    "retryable": false,
-                    "message": "capability handle missing",
-                })
-            )
-        })?;
-        let openai_compatible_provider =
-            matches!(provider, "openai" | "openrouter" | "tinker" | "groq");
-        let openai_base_url = if openai_compatible_provider {
-            Some(proxy::capability_base_url(&origin, &handle, &provider))
-        } else {
-            None
-        };
-        let anthropic_base_url = if provider == "anthropic" {
-            Some(proxy::capability_base_url(&origin, &handle, "anthropic"))
-        } else {
-            None
-        };
-        let container_origin = proxy::rewrite_origin_for_containers(&origin);
-        let (openai_route, container_openai_base_url, container_openai_route) =
-            if openai_compatible_provider {
-                (
-                    Some(proxy::capability_chat_completions_url(
-                        &origin, &handle, &provider,
-                    )),
-                    Some(proxy::capability_base_url(
-                        &container_origin,
-                        &handle,
-                        &provider,
-                    )),
-                    Some(proxy::capability_chat_completions_url(
-                        &container_origin,
-                        &handle,
-                        &provider,
-                    )),
-                )
-            } else {
-                (None, None, None)
-            };
-        let mut env = WorkloadEnv {
-            openai_base_url,
-            anthropic_base_url,
-            openai_api_key: API_KEY_SENTINEL.to_owned(),
-            capability_handle: handle,
-            capability_file: None,
-            workshop_run_id: run_id.into(),
-            capability_id: granted.capability_id.unwrap_or_default(),
-            openai_route,
-            container_openai_base_url,
-            container_openai_route,
-            proxy_socket: self
-                .proxy_socket_path()
+        let lease = self.issue_lease(provider, run_id, recipe_id, policy, actor)?;
+        let mut env = lease.to_workload_env(
+            None,
+            self.proxy_socket_path()
                 .map(|path| path.display().to_string()),
-        };
+        );
         let cap_dir = self
             .db
             .path()
@@ -745,7 +690,7 @@ impl SecretsService {
             .join("capabilities")
             .join(run_id);
         let _ = env.write_capability_file(&cap_dir);
-        if openai_compatible_provider {
+        if matches!(provider, "openai" | "openrouter" | "tinker" | "groq") {
             let _ = env.provider_routes()?;
         }
         Ok(env)
@@ -1475,14 +1420,14 @@ mod tests {
 
     #[test]
     fn workload_env_is_sentinel_not_provider_key() {
-        let (_dir, service) = service();
+        let (dir, service) = service();
+        let env_file = dir.path().join(".env");
         service
-            .create(
-                "Personal OpenAI",
+            .load_test_env_source(
                 "openai",
-                "personal/development/providers",
+                "OPENAI_API_KEY",
                 "sk-proj-NEVERINENV",
-                "test",
+                &env_file,
             )
             .unwrap();
         let env = service
@@ -1703,5 +1648,212 @@ mod tests {
             "http://host.docker.internal:18451/cap/wcap_abc12345/v1/providers/openai/chat/completions"
         );
         assert!(!route.contains("api.openai.com"));
+    }
+
+    #[test]
+    fn vault_rows_are_not_a_fallback_for_code_workflows() {
+        let (_dir, service) = service();
+        service
+            .create(
+                "Personal OpenAI",
+                "openai",
+                "personal/development/providers",
+                "sk-vault-must-not-authorize",
+                "test",
+            )
+            .unwrap();
+        let error = service
+            .workload_env(
+                "openai",
+                "run_vault",
+                "gepa.craftax.smoke.v1",
+                ProviderUsePolicy::default(),
+                "test",
+            )
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("credential_value_missing")
+                || error.contains("credential_value_unloaded"),
+            "vault secret must not authorize a code workflow: {error}"
+        );
+        assert!(!error.contains("sk-vault"));
+    }
+
+    #[test]
+    fn stale_memory_descriptor_is_not_a_live_connection() {
+        let (dir, service) = service();
+        let env_file = dir.path().join(".env");
+        service
+            .load_test_env_source("openai", "OPENAI_API_KEY", "sk-live-then-gone", &env_file)
+            .unwrap();
+        service.env_sources.clear();
+        let error = service
+            .issue_lease(
+                "openai",
+                "run_stale",
+                "eval.craftax.llm-policy.smoke.v1",
+                ProviderUsePolicy::default(),
+                "test",
+            )
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("credential_value_unloaded")
+                || error.contains("credential_value_missing"),
+            "unloaded descriptor must not look valid: {error}"
+        );
+    }
+
+    #[test]
+    fn managed_recipe_cannot_select_byok() {
+        let error = lease::reject_managed_byok("gepa.craftax.smoke.v1", Some("byok"))
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("managed_byok_rejected"));
+    }
+
+    #[test]
+    fn lease_compiler_never_emits_the_real_key() {
+        let (dir, service) = service();
+        let env_file = dir.path().join(".env");
+        service
+            .load_test_env_source("openai", "OPENAI_API_KEY", "sk-real-must-not-leak", &env_file)
+            .unwrap();
+        let lease = service
+            .issue_lease(
+                "openai",
+                "run_compile",
+                "gepa.craftax.smoke.v1",
+                ProviderUsePolicy::default(),
+                "test",
+            )
+            .unwrap();
+        lease.assert_managed_proxy().unwrap();
+        assert_eq!(lease.credential_mode, lease::CREDENTIAL_MODE_WORKSHOP_PROXY);
+        assert_eq!(lease.api_key_sentinel, API_KEY_SENTINEL);
+        let dump = format!(
+            "{:?}{:?}{:?}",
+            lease.compile_host_env(),
+            lease.compile_container_env(),
+            lease.compile_eval_manifest_patch()
+        );
+        assert!(!dump.contains("sk-real-must-not-leak"));
+        assert!(dump.contains(API_KEY_SENTINEL));
+        assert!(lease.inference_url.contains("host.docker.internal"));
+        assert!(!lease.inference_url.contains("api.openai.com"));
+    }
+
+    #[test]
+    fn default_backend_never_opens_keychain() {
+        assert_eq!(backend::default_backend().backend_name(), "memory");
+    }
+
+    #[test]
+    fn classify_upstream_status_is_typed() {
+        assert_eq!(
+            lease::classify_upstream_status(401),
+            lease::PROVIDER_AUTH_REJECTED
+        );
+        assert_eq!(
+            lease::classify_upstream_status(429),
+            lease::PROVIDER_RATE_LIMITED
+        );
+        assert_eq!(
+            lease::classify_upstream_status(503),
+            lease::PROVIDER_UNAVAILABLE
+        );
+    }
+
+    #[test]
+    fn restart_does_not_restore_in_memory_leases() {
+        let (dir, service) = service();
+        let env_file = dir.path().join(".env");
+        service
+            .load_test_env_source("openai", "OPENAI_API_KEY", "sk-restart", &env_file)
+            .unwrap();
+        let lease = service
+            .issue_lease(
+                "openai",
+                "run_restart",
+                "eval.craftax.llm-policy.smoke.v1",
+                ProviderUsePolicy::default(),
+                "test",
+            )
+            .unwrap();
+        let restarted = SecretsService::with_backend(
+            service.db.clone(),
+            Arc::new(backend::MemoryBackend::new()),
+        );
+        assert!(restarted
+            .env_sources
+            .get(&lease::env_backend_ref("openai", "OPENAI_API_KEY"))
+            .is_none());
+        let error = restarted
+            .issue_lease(
+                "openai",
+                "run_restart_2",
+                "eval.craftax.llm-policy.smoke.v1",
+                ProviderUsePolicy::default(),
+                "test",
+            )
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("credential_value_unloaded")
+                || error.contains("credential_value_missing"),
+            "restarted process must not reuse the old in-memory lease: {error}"
+        );
+        let _ = lease;
+    }
+
+    #[test]
+    fn preflight_probes_host_and_container_route() {
+        let (dir, service) = service();
+        let env_file = dir.path().join(".env");
+        service
+            .load_test_env_source("openai", "OPENAI_API_KEY", "sk-preflight", &env_file)
+            .unwrap();
+        let receipt = service
+            .preflight_openai_route(
+                "eval.craftax.llm-policy.smoke.v1",
+                ProviderUsePolicy::default(),
+            )
+            .unwrap();
+        assert!(receipt.proxy_reachable);
+        assert!(receipt.container_reachable);
+        assert!(receipt.capability_policy_verified);
+        assert!(receipt.lease_digest.is_some());
+        assert!(!format!("{receipt:?}").contains("sk-preflight"));
+    }
+
+    #[test]
+    fn issue_lease_records_a_receipt_chain_without_the_key() {
+        let (dir, service) = service();
+        let env_file = dir.path().join(".env");
+        service
+            .load_test_env_source("openai", "OPENAI_API_KEY", "sk-chain-secret", &env_file)
+            .unwrap();
+        let lease = service
+            .issue_lease(
+                "openai",
+                "run_chain",
+                "eval.craftax.llm-policy.smoke.v1",
+                ProviderUsePolicy::default(),
+                "test",
+            )
+            .unwrap();
+        let chain = service.chain_for_run("run_chain").expect("chain recorded");
+        let dump = chain.to_string();
+        assert!(!dump.contains("sk-chain-secret"));
+        assert!(!dump.contains(&lease.capability_handle));
+        assert_eq!(chain["leaseDigest"], json!(lease.digest()));
+        assert_eq!(chain["capabilityRevoked"], json!(false));
+        let sealed = service
+            .seal_run_chain("run_chain")
+            .unwrap()
+            .expect("sealed chain");
+        assert_eq!(sealed["capabilityRevoked"], json!(true));
+        assert!(sealed.get("revokedAt").and_then(|value| value.as_str()).is_some());
     }
 }

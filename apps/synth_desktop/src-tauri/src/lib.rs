@@ -983,6 +983,26 @@ pub(crate) async fn authorize_optimizer_recipe_start(
             .map(|name| (*name).to_owned())
             .collect()
     };
+    if credential_names.iter().any(|name| name == "OPENAI_API_KEY") {
+        if let Some(secrets) = crate::secrets::live() {
+            secrets
+                .preflight_openai_route(
+                    &request.recipe_id,
+                    crate::secrets::SecretsUsePolicy::default(),
+                )
+                .map_err(AppError::from)?;
+        } else {
+            return Err(AppError::from(
+                crate::secrets::lease::CredentialError::new(
+                    crate::secrets::lease::PROXY_NOT_RUNNING,
+                    "proxy",
+                    true,
+                    "Workshop secrets proxy is not running",
+                )
+                .anyhow(),
+            ));
+        }
+    }
     let paid = session::approval::ApprovalKind::PaidCompute {
         operation: "optimizer.recipe.start".into(),
         parameters: serde_json::json!({
@@ -1172,7 +1192,7 @@ pub(crate) async fn refresh_optimizer_workflow_containers(
 }
 
 fn optimizer_recipe_credentials(recipe_id: &str) -> &'static [&'static str] {
-    if recipe_id.starts_with("gepa.banking77.") {
+    if recipe_id.starts_with("gepa.banking77.") || recipe_id.starts_with("gepa.craftax.") {
         &["OPENAI_API_KEY"]
     } else if recipe_id == "sft.craftax.gpt-oss.smoke.v1" {
         &["GROQ_API_KEY", "TINKER_API_KEY"]

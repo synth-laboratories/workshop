@@ -156,7 +156,7 @@ export function useRunProgress(runId: string, sessionRef?: string): RunProgressS
 					maxCalls: 0,
 					usedCostUsd: 0,
 					maxCostUsd: 0,
-					note: "Add an OpenAI connection in Settings → Secrets"
+					note: "OPENAI_API_KEY is missing from the config-declared .env (credential_value_missing)"
 				});
 			} catch {
 				/* Secrets are optional on this surface. */

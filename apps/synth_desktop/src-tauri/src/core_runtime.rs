@@ -164,6 +164,7 @@ impl CoreRuntime {
         let secrets = Arc::new(crate::secrets::SecretsService::new(
             storage.database().clone(),
         ));
+        let _ = secrets.load_configured_env_sources();
         Self {
             storage,
             journal,

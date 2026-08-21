@@ -53,6 +53,20 @@ pub const MCP_REQUEST_FAILED: &str = "mcp_request_failed";
 // Optimizers.
 pub const OPTIMIZER_SIDECAR_UNAVAILABLE: &str = "optimizer_sidecar_unavailable";
 pub const OPTIMIZER_WORKER_FAILED: &str = "optimizer_worker_failed";
+pub const OPTIMIZER_RUNTIME_STALE: &str = "optimizer_runtime_stale";
+pub const OPTIMIZER_RUNTIME_UNHEALTHY: &str = "optimizer_runtime_unhealthy";
+pub const CREDENTIAL_SOURCE_UNCONFIGURED: &str = "credential_source_unconfigured";
+pub const CREDENTIAL_VALUE_MISSING: &str = "credential_value_missing";
+pub const CREDENTIAL_VALUE_UNLOADED: &str = "credential_value_unloaded";
+pub const PROXY_NOT_RUNNING: &str = "proxy_not_running";
+pub const PROXY_ROUTE_UNBOUND: &str = "proxy_route_unbound";
+pub const PROXY_CONTAINER_UNREACHABLE: &str = "proxy_container_unreachable";
+pub const CAPABILITY_DENIED: &str = "capability_denied";
+pub const CAPABILITY_EXPIRED: &str = "capability_expired";
+pub const PROVIDER_AUTH_REJECTED: &str = "provider_auth_rejected";
+pub const PROVIDER_RATE_LIMITED: &str = "provider_rate_limited";
+pub const PROVIDER_UNAVAILABLE: &str = "provider_unavailable";
+pub const MANAGED_BYOK_REJECTED: &str = "managed_byok_rejected";
 
 // Providers and sessions.
 pub const PROVIDER_DISCONNECTED: &str = "provider_disconnected";
@@ -68,6 +82,20 @@ const RANKS: &[(&str, u8)] = &[
     (CONTAINER_CAPABILITY_REJECTED, RANK_INFRASTRUCTURE),
     (CONTAINER_HEALTH_FAILED, RANK_INFRASTRUCTURE),
     (OPTIMIZER_SIDECAR_UNAVAILABLE, RANK_INFRASTRUCTURE),
+    (OPTIMIZER_RUNTIME_STALE, RANK_INFRASTRUCTURE),
+    (OPTIMIZER_RUNTIME_UNHEALTHY, RANK_INFRASTRUCTURE),
+    (CREDENTIAL_SOURCE_UNCONFIGURED, RANK_INFRASTRUCTURE),
+    (CREDENTIAL_VALUE_MISSING, RANK_INFRASTRUCTURE),
+    (CREDENTIAL_VALUE_UNLOADED, RANK_INFRASTRUCTURE),
+    (PROXY_NOT_RUNNING, RANK_INFRASTRUCTURE),
+    (MANAGED_BYOK_REJECTED, RANK_CONTRACT),
+    (PROXY_ROUTE_UNBOUND, RANK_CONTRACT),
+    (PROXY_CONTAINER_UNREACHABLE, RANK_TRANSPORT),
+    (CAPABILITY_DENIED, RANK_CONTRACT),
+    (CAPABILITY_EXPIRED, RANK_CONTRACT),
+    (PROVIDER_AUTH_REJECTED, RANK_TRANSPORT),
+    (PROVIDER_RATE_LIMITED, RANK_TRANSPORT),
+    (PROVIDER_UNAVAILABLE, RANK_TRANSPORT),
     (DIAGNOSTICS_INDEX_DEGRADED, RANK_INFRASTRUCTURE),
     (CONTAINER_ROLLOUT_FAILED, RANK_TRANSPORT),
     (STREAM_SUBSCRIBE_TIMEOUT, RANK_TRANSPORT),

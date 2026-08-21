@@ -696,6 +696,45 @@ impl OptimizerService {
         .await
     }
 
+    /// Copy the in-memory credential receipt chain onto the durable run record.
+    pub(super) async fn persist_credential_chain(&self, run_id: &str) -> Result<()> {
+        let Some(secrets) = crate::secrets::live() else {
+            return Ok(());
+        };
+        let Some(chain) = secrets.chain_for_run(run_id) else {
+            return Ok(());
+        };
+        let chain = chain.clone();
+        self.patch_run(run_id.to_string(), move |run| {
+            if let Some(object) = run.summary.as_object_mut() {
+                object.insert("credentialChain".into(), chain);
+            }
+            Ok(())
+        })
+        .await?;
+        Ok(())
+    }
+
+    /// Revoke the run's capability and seal that fact into the run summary
+    /// before the terminal event is appended.
+    pub(super) async fn seal_credential_chain(&self, run_id: &str) -> Result<()> {
+        let Some(secrets) = crate::secrets::live() else {
+            return Ok(());
+        };
+        let Some(chain) = secrets.seal_run_chain(run_id)? else {
+            return Ok(());
+        };
+        let chain = chain.clone();
+        self.patch_run(run_id.to_string(), move |run| {
+            if let Some(object) = run.summary.as_object_mut() {
+                object.insert("credentialChain".into(), chain);
+            }
+            Ok(())
+        })
+        .await?;
+        Ok(())
+    }
+
     pub async fn list(&self, query: OptimizerQuery) -> Result<Vec<OptimizerRunRecord>> {
         let db = self.db.clone();
         db.run(move |conn| list_runs(conn, &query)).await

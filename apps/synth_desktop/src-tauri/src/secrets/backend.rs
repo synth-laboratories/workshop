@@ -276,10 +276,10 @@ impl SecretBackend for CachedBackend {
 }
 
 pub fn default_backend() -> Arc<dyn SecretBackend> {
-    if cfg!(test) || std::env::var("SYNTH_DESKTOP_SECRETS_MEMORY").as_deref() == Ok("1") {
-        return Arc::new(MemoryBackend::new());
-    }
-    CachedBackend::wrap(Arc::new(OsKeychainBackend::new()))
+    // Code and optimizer workflows load provider keys from the config-declared
+    // `.env` into process memory. Keychain is not a fallback and is never
+    // opened on this path.
+    Arc::new(MemoryBackend::new())
 }
 
 #[cfg(test)]

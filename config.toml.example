@@ -12,6 +12,14 @@ env_file = "~/.synth-desktop/.env"
 api_key_env = "SYNTH_API_KEY"
 worker_key_env = "SMR_WORKER_API_KEY" # internal Codex activity only
 
+# Provider keys are loaded only from env_file. Workshop never copies them into
+# Keychain or into optimizer/container processes.
+[credentials.providers.openai]
+variable = "OPENAI_API_KEY"
+
+[credentials.providers.openrouter]
+variable = "OPENROUTER_API_KEY"
+
 [intern.endpoints]
 local-slot1 = "http://127.0.0.1:41109"
 staging = "https://api-dev.usesynth.ai"
