@@ -824,6 +824,7 @@ exec_isolated_cua_bundle() {
     TMPDIR="$temp_dir" \
     PWD="$INSTANCE_ROOT" \
     SYNTH_DESKTOP_INSTANCE="$NAME" \
+    SYNTH_WORKSHOP_INSTANCE_ID="$NAME" \
     SYNTH_DESKTOP_DATA_ROOT="$DATA_ROOT" \
     SYNTH_DESKTOP_CONFIG="$DATA_ROOT/config.toml" \
     SYNTH_CODEX_HOME="$DATA_ROOT/codex" \
