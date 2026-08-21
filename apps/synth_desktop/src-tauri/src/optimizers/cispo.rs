@@ -131,8 +131,8 @@ async fn start_local(
         Some(rollout.url.clone()),
         "SYNTH_OPTIMIZERS_CISPO_ROLLOUT_URL",
         "SYNTH_OPTIMIZERS_CISPO_ROLLOUT_TOKEN",
-        2,
-        vec![2, 4],
+        1,
+        vec![1, 2],
     );
     let suffix = uuid::Uuid::new_v4().simple().to_string();
     let run_id = format!("cispo_mlx_{}", &suffix[..12]);
@@ -176,7 +176,7 @@ async fn start_local(
             "backend": "cispo",
             "placement": PLACEMENT_TRAINING_CISPO_LOCAL,
             "trainingCursor": 0,
-            "evaluationPlan": { "phases": ["baseline", "checkpoint", "final"], "checkpointEvery": 2, "transport": "tunnel", "metric": "reward" }
+            "evaluationPlan": { "phases": ["baseline", "checkpoint", "final"], "checkpointEvery": 1, "transport": "tunnel", "metric": "reward" }
         }),
         input_refs,
     );
@@ -199,9 +199,10 @@ async fn start_local(
                 "heldout_instances": 16
             },
             "output_dir": output_dir,
-            "max_steps": 4,
-            "checkpoint_every": 2,
+            "max_steps": 2,
+            "checkpoint_every": 1,
             "signal_attempts": 24,
+            "learning_rate": 0.00005,
             "evaluation": evaluation_plan,
             "lora_rank": 8,
             "lora_alpha": 16.0,
@@ -309,6 +310,8 @@ mod tests {
         assert!(!production.contains("SYNTH_MLX_CISPO_WARM_START"));
         assert!(production.contains("training_artifact_id"));
         assert!(production.contains("\"signal_attempts\": 24"));
+        assert!(production.contains("\"learning_rate\": 0.00005"));
+        assert!(production.contains("\"checkpoint_every\": 1"));
         assert!(production.contains("\"train_world_ref\": \"world:banking77@train\""));
         assert!(production.contains("\"heldout_world_ref\": \"world:banking77@heldout\""));
         assert!(production.contains("create_and_watch"));
