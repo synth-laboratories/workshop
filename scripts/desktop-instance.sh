@@ -13,10 +13,44 @@ if [[ -n "$GIT_COMMON_DIR" ]]; then
     REPO_SIBLING_ROOT="$PRIMARY_REPO_SIBLING_ROOT"
   fi
 fi
-COMMAND="${1:-dev}"
-NAME="${2:-${SYNTH_DESKTOP_INSTANCE:-codex}}"
+COMMAND="dev"
+if [[ $# -gt 0 ]]; then
+  COMMAND="$1"
+  shift
+fi
+VERBOSE=0
+NAME=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --verbose) VERBOSE=1 ;;
+    --help|-h)
+      # usage is defined below; a second pass after functions would be
+      # later. Print here only after NAME is known — defer via flag.
+      SHOW_HELP=1
+      ;;
+    -*)
+      echo "[desktop] unknown option: $1" >&2
+      exit 2
+      ;;
+    *)
+      if [[ -n "$NAME" ]]; then
+        echo "[desktop] unexpected extra argument: $1" >&2
+        exit 2
+      fi
+      NAME="$1"
+      ;;
+  esac
+  shift
+done
+
+WORKTREE="$(git -C "$ROOT" rev-parse --show-toplevel 2>/dev/null || printf '%s' "$ROOT")"
+WORKTREE_HASH="$(printf '%s' "$WORKTREE" | shasum -a 256 | awk '{print substr($1,1,8)}')"
+DEFAULT_NAME="codex-$WORKTREE_HASH"
+NAME="${NAME:-${SYNTH_DESKTOP_INSTANCE:-$DEFAULT_NAME}}"
 RELEASE_LINE="${SYNTH_DESKTOP_RELEASE_LINE:-v0.7}"
 APP_VERSION="${SYNTH_DESKTOP_APP_VERSION:-0.7.0}"
+BOOT_EPOCH="inst_$(uuidgen | tr -d '-' | tr '[:upper:]' '[:lower:]')"
+PROCESS_START_TIME="$(ps -p $$ -o lstart= | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
 
 if [[ "$RELEASE_LINE" != "v0.7" ]]; then
 	  echo "[desktop:$NAME] invalid release line; this branch only builds v0.7 instances" >&2
@@ -25,8 +59,8 @@ fi
 RELEASE_SLUG="v07"
 
 usage() {
-  cat <<'EOF'
-Usage: ./scripts/desktop-instance.sh <command> [name]
+  cat <<EOF
+Usage: ./scripts/desktop-instance.sh <command> [name] [--verbose]
 
   dev [name]       Run an isolated foreground Tauri/Vite development instance
   cua [name]       Build and run a named debug .app for Computer Use
@@ -34,12 +68,14 @@ Usage: ./scripts/desktop-instance.sh <command> [name]
   cua-run [name]   Run the existing signed CUA app without rebuilding
   assert-identity [name]  Verify the built app's signing identity and record it
   status [name]    Show the exact process and instance paths
+                   --verbose also prints the operation-lock owner
   stage [name]     Stage protected-folder-free runtime inputs without launching
   stop [name]      Stop only the named instance
   clean [name]     Stop and move the named instance data to Trash
   print [name]     Print the resolved instance contract without launching
 
-Names must match [a-z][a-z0-9-]{0,31}. The default name is "codex".
+Names must match [a-z][a-z0-9-]{0,31}. The default name is
+codex-<worktree-hash> so two checkouts cannot collide without intent.
 
 Optimizer services use the immutable installed plugin runtime by default.
 Set SYNTH_OPTIMIZER_USE_LOCAL_SOURCE=1 only when intentionally testing a
@@ -47,12 +83,18 @@ reviewed local synth-optimizers checkout.
 EOF
 }
 
+if [[ "${SHOW_HELP:-0}" == "1" ]]; then
+  usage
+  exit 0
+fi
+
 if [[ ! "$NAME" =~ ^[a-z][a-z0-9-]{0,31}$ ]]; then
   echo "[desktop:$NAME] invalid instance name; expected [a-z][a-z0-9-]{0,31}" >&2
   exit 2
 fi
 
 INSTANCE_ROOT="${SYNTH_DESKTOP_INSTANCES_ROOT:-$HOME/.synth-desktop/instances}/$RELEASE_SLUG/$NAME"
+OPERATION_LOCK="$INSTANCE_ROOT/operation.lock"
 DATA_ROOT="$INSTANCE_ROOT/data"
 WORKSPACE="$INSTANCE_ROOT/workspace"
 GENERATED_ROOT="$INSTANCE_ROOT/generated"
@@ -98,6 +140,186 @@ instance_processes() {
       if ($0 == exe || $0 == cua_exe) print pid "\t" $0
     }
   '
+}
+
+# Children of a named instance carry SYNTH_WORKSHOP_INSTANCE_ID as an exact
+# environment assignment. Match that assignment only — never an instance name
+# or path substring in argv (ID-R-15).
+instance_env_pids() {
+  ps -axwwE -o pid=,command= 2>/dev/null | awk -v name="$NAME" -v self="$$" '
+    BEGIN { needle = "SYNTH_WORKSHOP_INSTANCE_ID=" name }
+    {
+      pid=$1
+      if (pid == self) next
+      if (pid !~ /^[0-9]+$/) next
+      rest = $0
+      sub(/^[[:space:]]*[0-9]+[[:space:]]+/, "", rest)
+      idx = index(rest, needle)
+      if (idx == 0) next
+      after = substr(rest, idx + length(needle))
+      if (after == "" || substr(after, 1, 1) == " ") print pid
+    }
+  '
+}
+
+format_lock_owner() {
+  python3 - "$1" <<'PY'
+import json, sys
+from pathlib import Path
+path = Path(sys.argv[1])
+if not path.is_file():
+    raise SystemExit(1)
+try:
+    record = json.loads(path.read_text())
+except json.JSONDecodeError:
+    raise SystemExit(1)
+keys = ("instance", "pid", "process_start_time", "worktree", "repo_revision", "operation", "created_at")
+parts = ["%s=%s" % (key, record.get(key, "")) for key in keys]
+sys.stdout.write("owner " + " ".join(parts) + "\n")
+PY
+}
+
+operation_lock_helper() {
+  local action="$1"
+  SYNTH_LOCK_INSTANCE="$NAME" \
+  SYNTH_LOCK_PID="$$" \
+  SYNTH_LOCK_START="$PROCESS_START_TIME" \
+  SYNTH_LOCK_WORKTREE="$WORKTREE" \
+  SYNTH_LOCK_REVISION="$SOURCE_REVISION" \
+  SYNTH_LOCK_OPERATION="${2:-$COMMAND}" \
+  SYNTH_LOCK_CREATED="$(date -u '+%Y-%m-%dT%H:%M:%SZ')" \
+  python3 - "$OPERATION_LOCK" "$action" <<'PY'
+import fcntl, json, os, subprocess, sys
+
+lock_path, action = sys.argv[1], sys.argv[2]
+keys = ("instance", "pid", "process_start_time", "worktree", "repo_revision", "operation", "created_at")
+
+def start_time(pid):
+    try:
+        out = subprocess.check_output(
+            ["/bin/ps", "-p", str(pid), "-o", "lstart="],
+            stderr=subprocess.DEVNULL,
+        )
+    except (subprocess.CalledProcessError, OSError):
+        return None
+    text = out.decode().strip()
+    return text or None
+
+def alive(pid, recorded):
+    current = start_time(pid)
+    return current is not None and current == recorded
+
+def owner_line(record):
+    return "owner " + " ".join("%s=%s" % (key, record.get(key, "")) for key in keys)
+
+def read_record(fd):
+    os.lseek(fd, 0, os.SEEK_SET)
+    raw = os.read(fd, 1 << 16).decode("utf-8", "replace").strip()
+    if not raw:
+        return None
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        return None
+
+def write_record(fd, record):
+    body = (json.dumps(record, indent=2) + "\n").encode()
+    os.lseek(fd, 0, os.SEEK_SET)
+    os.ftruncate(fd, 0)
+    os.write(fd, body)
+    os.fsync(fd)
+
+if action == "read":
+    if not os.path.isfile(lock_path):
+        raise SystemExit(1)
+    record = json.loads(open(lock_path).read())
+    sys.stdout.write(owner_line(record) + "\n")
+    raise SystemExit(0)
+
+fd = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o644)
+try:
+    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+except BlockingIOError:
+    record = read_record(fd) or {}
+    sys.stderr.write(owner_line(record) + "\n")
+    raise SystemExit(3)
+
+record = read_record(fd)
+our_pid = int(os.environ["SYNTH_LOCK_PID"])
+if action == "release":
+    if record and int(record.get("pid") or 0) == our_pid:
+        os.close(fd)
+        try:
+            os.unlink(lock_path)
+        except OSError:
+            pass
+        raise SystemExit(0)
+    os.close(fd)
+    raise SystemExit(0)
+
+# acquire
+if record:
+    pid = record.get("pid")
+    start = record.get("process_start_time")
+    if pid and start and alive(int(pid), start) and int(pid) != our_pid:
+        sys.stderr.write(owner_line(record) + "\n")
+        os.close(fd)
+        raise SystemExit(3)
+
+new_record = {
+    "instance": os.environ["SYNTH_LOCK_INSTANCE"],
+    "pid": our_pid,
+    "process_start_time": os.environ["SYNTH_LOCK_START"],
+    "worktree": os.environ["SYNTH_LOCK_WORKTREE"],
+    "repo_revision": os.environ["SYNTH_LOCK_REVISION"],
+    "operation": os.environ["SYNTH_LOCK_OPERATION"],
+    "created_at": os.environ["SYNTH_LOCK_CREATED"],
+}
+write_record(fd, new_record)
+os.close(fd)
+PY
+}
+
+acquire_operation_lock() {
+  local operation="$1" output status
+  mkdir -p "$INSTANCE_ROOT"
+  set +e
+  output="$(operation_lock_helper acquire "$operation" 2>&1)"
+  status=$?
+  set -e
+  if [[ "$status" -ne 0 ]]; then
+    echo "[desktop:$NAME] ERROR instance operation locked" >&2
+    if [[ -n "$output" ]]; then
+      echo "[desktop:$NAME] $output" >&2
+    fi
+    exit 1
+  fi
+  trap release_operation_lock EXIT
+}
+
+release_operation_lock() {
+  operation_lock_helper release "$COMMAND" >/dev/null 2>&1 || true
+}
+
+release_operation_lock_before_exec() {
+  trap - EXIT
+  release_operation_lock
+}
+
+print_operation_lock_status() {
+  local owner=""
+  if [[ ! -f "$OPERATION_LOCK" ]]; then
+    echo "[desktop:$NAME] operation.lock none"
+    return
+  fi
+  set +e
+  owner="$(format_lock_owner "$OPERATION_LOCK" 2>/dev/null)"
+  set -e
+  if [[ -z "$owner" ]]; then
+    echo "[desktop:$NAME] operation.lock unreadable"
+    return
+  fi
+  echo "[desktop:$NAME] $owner"
 }
 
 # Named Workshop instances are disposable test clients. Refresh their provider
@@ -252,12 +474,14 @@ EOF
   "mode": "development",
   "product": "workshop",
   "releaseLine": "$RELEASE_LINE",
+  "releaseSlug": "$RELEASE_SLUG",
   "appVersion": "$APP_VERSION",
   "name": "$NAME",
   "displayName": "$APP_TITLE",
   "bundleId": "$BUNDLE_ID",
   "iconLabel": "$ICON_LABEL",
   "icon": "$ICON_PNG",
+  "instanceRoot": "$INSTANCE_ROOT",
   "dataRoot": "$DATA_ROOT",
   "workspace": "$WORKSPACE",
   "cargoTargetDir": "$TARGET_ROOT",
@@ -265,6 +489,8 @@ EOF
   "appBundle": "$(dirname "$(dirname "$(dirname "$CUA_EXE")")")",
   "sourceRoot": "$ROOT",
   "sourceRevision": "$SOURCE_REVISION",
+  "worktree": "$WORKTREE",
+  "worktreeHash": "$WORKTREE_HASH",
   "viteUrl": "http://127.0.0.1:$VITE_PORT",
   "config": "$CONFIG",
   "hotReload": {
@@ -436,20 +662,26 @@ print_contract() {
 }
 
 stop_instance() {
-  local rows pids
+  local rows pids env_pids all_pids
   rows="$(instance_processes)"
-  if [[ -z "$rows" ]]; then
+  env_pids="$(instance_env_pids)"
+  all_pids="$(printf '%s\n%s\n' "$(printf '%s\n' "$rows" | awk '{print $1}')" "$env_pids" | awk 'NF && !seen[$0]++')"
+  if [[ -z "$all_pids" ]]; then
     rm -f "$DATA_ROOT/eval-driver.json"
     mark_runtime "stopped"
     echo "[desktop:$NAME] stopped"
     return
   fi
-  printf '%s\n' "$rows" | sed "s/^/[desktop:$NAME] stopping /"
-  pids="$(printf '%s\n' "$rows" | awk '{print $1}')"
+  if [[ -n "$rows" ]]; then
+    printf '%s\n' "$rows" | sed "s/^/[desktop:$NAME] stopping /"
+  fi
+  if [[ -n "$env_pids" ]]; then
+    printf '%s\n' "$env_pids" | sed "s/^/[desktop:$NAME] stopping env-pid /"
+  fi
   # shellcheck disable=SC2086
-  kill $pids 2>/dev/null || true
+  kill $all_pids 2>/dev/null || true
   for _ in 1 2 3 4 5 6 7 8 9 10; do
-    if [[ -z "$(instance_processes)" ]]; then
+    if [[ -z "$(instance_processes)" && -z "$(instance_env_pids)" ]]; then
       rm -f "$DATA_ROOT/eval-driver.json"
       mark_runtime "stopped"
       return
@@ -484,6 +716,9 @@ status_instance() {
   echo "[desktop:$NAME] identity $APP_TITLE · badge $ICON_LABEL · $BUNDLE_ID"
   echo "[desktop:$NAME] executable $EXE"
   echo "[desktop:$NAME] manifest $MANIFEST"
+  if [[ "$VERBOSE" == "1" ]]; then
+    print_operation_lock_status
+  fi
 }
 
 stage_gepa_runtime() {
@@ -742,6 +977,7 @@ assert_bundle_identity() {
 # set of names, so the two paths cannot drift again.
 export_instance_env() {
   export SYNTH_DESKTOP_INSTANCE="$NAME"
+  export SYNTH_WORKSHOP_INSTANCE_ID="$NAME"
   export SYNTH_DESKTOP_DATA_ROOT="$DATA_ROOT"
   export SYNTH_DESKTOP_CONFIG="$DATA_ROOT/config.toml"
   export SYNTH_CODEX_HOME="$DATA_ROOT/codex"
@@ -824,6 +1060,12 @@ dry_run_operation() {
   echo "[desktop:$NAME] dry-run operation=$COMMAND"
   echo "[desktop:$NAME] dry-run env_names=$(compgen -e | rg '^(SYNTH_|CARGO_TARGET_DIR$)' | LC_ALL=C sort | paste -sd, -)"
   echo "[desktop:$NAME] dry-run complete; nothing was built or launched"
+  if [[ "${SYNTH_DESKTOP_OPERATION_LOCK_HOLD:-0}" == "1" ]]; then
+    echo "[desktop:$NAME] dry-run holding operation lock"
+    while true; do
+      sleep 1
+    done
+  fi
 }
 
 assert_identity_command() {
@@ -902,6 +1144,7 @@ dev_instance() {
     codesign --verify --deep --strict "$(dirname "$(dirname "$(dirname "$CUA_EXE")")")"
     echo "[desktop:$NAME] launching existing signed CUA app from $INSTANCE_ROOT"
     cd "$INSTANCE_ROOT"
+    release_operation_lock_before_exec
     exec "$CUA_EXE"
   fi
 
@@ -973,8 +1216,10 @@ dev_instance() {
     # traversal to the app and triggers an unnecessary Files & Folders prompt.
     # Runtime data and workspaces already live under this isolated instance.
     cd "$INSTANCE_ROOT"
+    release_operation_lock_before_exec
     exec "$app_executable"
   fi
+  release_operation_lock_before_exec
   exec npx tauri dev --features eval-driver --config "$PACKAGE_CONFIG" --config "$CONFIG"
 }
 
@@ -992,6 +1237,12 @@ clean_instance() {
   mv "$INSTANCE_ROOT" "$trash"
   echo "[desktop:$NAME] moved to $trash (recoverable from Trash)"
 }
+
+case "$COMMAND" in
+  cua-build|cua-run|cua|stop|clean|stage)
+    acquire_operation_lock "$COMMAND"
+    ;;
+esac
 
 case "$COMMAND" in
   dev|cua|cua-build|cua-run) dev_instance ;;

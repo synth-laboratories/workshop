@@ -18,7 +18,9 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 CHECKPOINT="${1:-}"
-NAME="${2:-codex}"
+WORKTREE="$(git -C "$ROOT" rev-parse --show-toplevel 2>/dev/null || printf '%s' "$ROOT")"
+WORKTREE_HASH="$(printf '%s' "$WORKTREE" | shasum -a 256 | awk '{print substr($1,1,8)}')"
+NAME="${2:-codex-$WORKTREE_HASH}"
 RELEASE_SLUG="v05"
 INSTANCE_ROOT="${SYNTH_DESKTOP_INSTANCES_ROOT:-$HOME/.synth-desktop/instances}/$RELEASE_SLUG/$NAME"
 DB="$INSTANCE_ROOT/data/synth.sqlite3"
@@ -69,7 +71,6 @@ PY
 }
 
 if [[ "$CHECKPOINT" == "--inspect" ]]; then
-  NAME="${2:-codex}"
   inspect
   exit 0
 fi

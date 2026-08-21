@@ -4,8 +4,10 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 TEST_ROOT="$(mktemp -d)"
 UNRELATED_PID=""
+LOCK_HOLDER=""
 cleanup() {
   [[ -z "$UNRELATED_PID" ]] || kill "$UNRELATED_PID" 2>/dev/null || true
+  [[ -z "$LOCK_HOLDER" ]] || kill "$LOCK_HOLDER" 2>/dev/null || true
   rm -rf "$TEST_ROOT"
 }
 trap cleanup EXIT
@@ -24,7 +26,10 @@ default_instance="$($ROOT/scripts/desktop-instance.sh print)"
 
 [[ "$(printf '%s' "$alpha" | jq -r .name)" == "alpha" ]]
 [[ "$(printf '%s' "$beta" | jq -r .name)" == "beta" ]]
-[[ "$(printf '%s' "$default_instance" | jq -r .name)" == "codex" ]]
+[[ "$(printf '%s' "$default_instance" | jq -r .name)" == "codex-$(printf '%s' "$default_instance" | jq -r .worktreeHash)" ]]
+[[ "$(printf '%s' "$default_instance" | jq -r .name)" =~ ^codex-[a-f0-9]{8}$ ]]
+[[ "$(printf '%s' "$default_instance" | jq -r .releaseSlug)" == "v07" ]]
+[[ "$(printf '%s' "$default_instance" | jq -r .instanceRoot)" == "$TEST_ROOT/instances/v07/$(printf '%s' "$default_instance" | jq -r .name)" ]]
 printf '%s' "$default_instance" | jq -e '
   .mode == "development" and
   .product == "workshop" and
@@ -176,7 +181,7 @@ env_names_for() {
 build_names="$(env_names_for cua-build)"
 run_names="$(env_names_for cua-run)"
 [[ -n "$build_names" && "$build_names" == "$run_names" ]]
-for required in SYNTH_DESKTOP_INSTANCE SYNTH_DESKTOP_DATA_ROOT SYNTH_DESKTOP_CONFIG SYNTH_CODEX_HOME \
+for required in SYNTH_DESKTOP_INSTANCE SYNTH_WORKSHOP_INSTANCE_ID SYNTH_DESKTOP_DATA_ROOT SYNTH_DESKTOP_CONFIG SYNTH_CODEX_HOME \
   SYNTH_DESKTOP_BUNDLE_ID SYNTH_DESKTOP_INSTANCE_MANIFEST SYNTH_DESKTOP_SOURCE_REVISION \
   SYNTH_DESKTOP_DEV_OAUTH_STATE_FILE SYNTH_COMPUTER_USE_PARENT_REQUIREMENT CARGO_TARGET_DIR; do
   [[ ",$build_names," == *",$required,"* ]] || { echo "launch env missing $required" >&2; exit 1; }
@@ -216,5 +221,49 @@ cc -o "$UNRELATED_APP/Contents/MacOS/synth-desktop" "$TEST_ROOT/unrelated_sleep.
 UNRELATED_PID="$!"
 SYNTH_DESKTOP_APP_PATH="$TEST_ROOT/Canonical.app" "$ROOT/scripts/desktop.sh" stop >/dev/null
 kill -0 "$UNRELATED_PID"
+
+# P1-9: exclusive instance operation lease. A second cua-build is refused
+# with the owner printed; status --verbose shows that owner. The first
+# process is a dry-run that holds the lock — not a 10-minute cua-build.
+lock_file="$TEST_ROOT/instances/v07/alpha/operation.lock"
+SYNTH_DESKTOP_OPERATION_DRY_RUN=1 SYNTH_DESKTOP_OPERATION_LOCK_HOLD=1 \
+  "$ROOT/scripts/desktop-instance.sh" cua-build alpha >/dev/null &
+LOCK_HOLDER="$!"
+lock_wait=0
+while [[ ! -f "$lock_file" && "$lock_wait" -lt 50 ]]; do
+  sleep 0.1
+  lock_wait=$((lock_wait + 1))
+done
+[[ -f "$lock_file" ]] || { echo "operation lock was not created" >&2; kill "$LOCK_HOLDER" 2>/dev/null || true; exit 1; }
+jq -e '.instance == "alpha" and (.pid | type == "number") and
+  (.process_start_time | length > 0) and (.worktree | length > 0) and
+  (.repo_revision | length > 0) and .operation == "cua-build" and
+  (.created_at | length > 0)' "$lock_file" >/dev/null
+status_verbose="$($ROOT/scripts/desktop-instance.sh status --verbose alpha)"
+case "$status_verbose" in
+  *"owner instance=alpha pid="*) ;;
+  *) echo "status --verbose did not print the lock owner: $status_verbose" >&2; kill "$LOCK_HOLDER" 2>/dev/null || true; exit 1 ;;
+esac
+set +e
+refuse_out="$(SYNTH_DESKTOP_OPERATION_DRY_RUN=1 "$ROOT/scripts/desktop-instance.sh" cua-build alpha 2>&1)"
+refuse_status=$?
+set -e
+[[ "$refuse_status" -ne 0 ]] || { echo "second cua-build was not refused" >&2; kill "$LOCK_HOLDER" 2>/dev/null || true; exit 1; }
+case "$refuse_out" in
+  *"owner instance=alpha pid="*" worktree="*" operation=cua-build"*) ;;
+  *) echo "second cua-build did not print the owner: $refuse_out" >&2; kill "$LOCK_HOLDER" 2>/dev/null || true; exit 1 ;;
+esac
+kill "$LOCK_HOLDER" 2>/dev/null || true
+wait "$LOCK_HOLDER" 2>/dev/null || true
+LOCK_HOLDER=""
+
+# ID-R-15: workshop-qa must not signal by instance name or path substring.
+if rg -n 'kill -TERM|\[\[ "\$command" == \*"\$staged_root"\* \]\]' "$ROOT/scripts/workshop-qa" >/dev/null; then
+  echo "workshop-qa still sweeps processes by path substring" >&2
+  exit 1
+fi
+rg -q 'SYNTH_WORKSHOP_INSTANCE_ID' "$ROOT/scripts/desktop-instance.sh"
+rg -q 'qa-\$WORKTREE_HASH|qa-\$\{WORKTREE_HASH\}' "$ROOT/scripts/workshop-qa"
+rg -q 'codex-\$WORKTREE_HASH|codex-\$\{WORKTREE_HASH\}' "$ROOT/scripts/crash-recovery-drill.sh"
 
 echo "desktop instance contract: ok"

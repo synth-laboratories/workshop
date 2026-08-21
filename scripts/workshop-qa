@@ -9,7 +9,9 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 COMMAND="${1:-help}"
-NAME="${2:-qa}"
+WORKTREE="$(git -C "$ROOT" rev-parse --show-toplevel 2>/dev/null || printf '%s' "$ROOT")"
+WORKTREE_HASH="$(printf '%s' "$WORKTREE" | shasum -a 256 | awk '{print substr($1,1,8)}')"
+NAME="${2:-qa-$WORKTREE_HASH}"
 INSTANCE_ROOT="${SYNTH_DESKTOP_INSTANCES_ROOT:-$HOME/.synth-desktop/instances}/v05/$NAME"
 DATA_ROOT="$INSTANCE_ROOT/data"
 RECEIPT_ROOT="$INSTANCE_ROOT/qa-receipts"
@@ -31,7 +33,8 @@ Usage: ./scripts/workshop-qa <command> [name]
                     just appeared: tccd/replayd log, frontmost app, listeners.
   stop [name]       Stop the named instance.
 
-The default instance name is "qa".
+The default instance name is qa-<worktree-hash> so two checkouts cannot
+collide without intent.
 EOF
 }
 
@@ -49,17 +52,12 @@ driver_get() {
     "$(driver_field url)$path"
 }
 
-stop_instance_optimizer_processes() {
-  local staged_root="$INSTANCE_ROOT/runtime/gepa/optimizer-project"
-  local pid command
-  while IFS=$'\t' read -r pid command; do
-    [[ "$pid" =~ ^[0-9]+$ ]] || continue
-    [[ "$command" == *"$staged_root"* ]] || continue
-    # Scope cleanup to this named instance's staged optimizer checkout. This
-    # catches uv's re-parented service/run leaders without touching another
-    # Workshop instance or an unrelated Python/uv process.
-    kill -TERM "$pid" 2>/dev/null || true
-  done < <(ps -axo pid=,command= | awk '{$1=$1; pid=$1; sub(/^[^ ]+[ ]+/, ""); print pid "\t" $0}')
+# Stop is identity-based: desktop-instance.sh kill the exact instance
+# executables and any child whose environment carries
+# SYNTH_WORKSHOP_INSTANCE_ID=<name>. Never signal by instance name or by a
+# path substring in argv (ID-R-15).
+stop_named_instance() {
+  "$ROOT/scripts/desktop-instance.sh" stop "$NAME"
 }
 
 seal_unattended_config() {
@@ -333,8 +331,7 @@ EOF
     "$ROOT/scripts/desktop-instance.sh" cua-run "$NAME" &
     launcher=$!
     cleanup_run() {
-      stop_instance_optimizer_processes
-      "$ROOT/scripts/desktop-instance.sh" stop "$NAME" >/dev/null 2>&1 || true
+      stop_named_instance >/dev/null 2>&1 || true
       wait "$launcher" 2>/dev/null || true
     }
     trap cleanup_run EXIT
