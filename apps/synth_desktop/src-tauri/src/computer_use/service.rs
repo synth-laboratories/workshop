@@ -25,7 +25,7 @@ use crate::session::approval::{
     HostDecisionResolver,
 };
 use crate::storage::content_store::ContentStore;
-use anyhow::{anyhow, bail, Result};
+use anyhow::{anyhow, bail, Context, Result};
 use chrono::Utc;
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -126,14 +126,37 @@ impl ComputerUseService {
     pub async fn refresh_grants(&self) -> Result<()> {
         let mut inner = self.inner.lock().await;
         self.ensure_client(&mut inner).await?;
-        let client = inner
+        let probe = json!({ "operation": "probe" });
+        let first = inner
             .client
             .as_mut()
-            .ok_or_else(|| anyhow!("helper is not running"))?;
-        let reported = client
-            .call_tool("computer_use_permissions", json!({ "operation": "probe" }))
-            .await?;
+            .ok_or_else(|| anyhow!("helper is not running"))?
+            .call_tool("computer_use_permissions", probe.clone())
+            .await;
+        let reported = match first {
+            Ok(reported) => reported,
+            Err(first_error) => {
+                // TCC grants can change while Desktop is open. If the helper
+                // exited or its stdio channel went stale, one failed refresh
+                // must not leave the UI permanently displaying the cached
+                // pre-grant result.
+                if let Some(client) = inner.client.take() {
+                    client.shutdown().await;
+                }
+                self.ensure_client(&mut inner).await.with_context(|| {
+                    format!("restart computer-use helper after failed permission probe: {first_error:#}")
+                })?;
+                inner
+                    .client
+                    .as_mut()
+                    .ok_or_else(|| anyhow!("helper is not running after restart"))?
+                    .call_tool("computer_use_permissions", probe)
+                    .await
+                    .context("probe computer-use permissions after helper restart")?
+            }
+        };
         inner.grants = read_grants(&reported);
+        inner.detail = None;
         Ok(())
     }
 
