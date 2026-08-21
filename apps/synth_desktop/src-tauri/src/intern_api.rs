@@ -49,7 +49,7 @@ impl From<Option<InternBindingRequest>> for RuntimeBinding {
 pub struct InternTarget {
     pub kind: String,
     pub mode: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     #[specta(type = specta_typescript::Unknown)]
     pub binding: Option<Value>,
 }

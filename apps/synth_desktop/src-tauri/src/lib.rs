@@ -3005,7 +3005,7 @@ fn synth_config_get() -> Result<BackendSettings, AppError> {
 }
 
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize, specta::Type)]
-#[serde(rename_all(serialize = "camelCase", deserialize = "snake_case"))]
+#[serde(rename_all = "camelCase")]
 struct ModelPerformanceMetric {
     model_id: String,
     provider: String,
@@ -3028,7 +3028,7 @@ struct ModelPerformanceMetric {
 }
 
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize, specta::Type)]
-#[serde(rename_all(serialize = "camelCase", deserialize = "snake_case"))]
+#[serde(rename_all = "camelCase")]
 struct ModelPerformanceSnapshot {
     window_minutes: u16,
     generated_at: String,

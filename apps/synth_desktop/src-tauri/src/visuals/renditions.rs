@@ -20,10 +20,10 @@ pub struct VisualRendition {
     pub content_digest: String,
     pub media_type: String,
     pub renderer_version: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     #[specta(type = specta_typescript::Number)]
     pub width_px: Option<i64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     #[specta(type = specta_typescript::Number)]
     pub height_px: Option<i64>,
     pub created_at: String,
@@ -37,16 +37,16 @@ pub struct VisualAsset {
     pub revision: i64,
     pub format: String,
     pub media_type: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub theme: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub size_class: Option<String>,
     pub digest: String,
     pub base64: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     #[specta(type = specta_typescript::Number)]
     pub width_px: Option<i64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     #[specta(type = specta_typescript::Number)]
     pub height_px: Option<i64>,
 }

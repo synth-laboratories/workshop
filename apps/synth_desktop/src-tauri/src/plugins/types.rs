@@ -43,7 +43,7 @@ pub const PLUGIN_PHASES: [&str; 14] = [
 #[serde(rename_all = "camelCase")]
 pub struct PluginServiceStatus {
     pub phase: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub started_at: Option<String>,
     #[serde(default)]
     pub active_runs: u32,
@@ -68,10 +68,10 @@ pub struct PluginPermission {
     /// One of [`PLUGIN_PERMISSION_STATES`].
     pub state: String,
     /// Deep link to the exact Privacy & Security pane, where one exists.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub settings_url: Option<String>,
     /// Why the plugin needs it, in one line. A reason, not a pitch.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub detail: Option<String>,
 }
 
@@ -82,16 +82,16 @@ pub struct PluginStatus {
     pub plugin_id: String,
     pub enabled: bool,
     pub phase: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub installed_version: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub selected_version: Option<String>,
     pub release_channel: String,
     pub catalog_version: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub digest: Option<String>,
     pub service: PluginServiceStatus,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub capabilities_digest: Option<String>,
     #[serde(default)]
     pub algorithms: Vec<String>,
@@ -99,11 +99,11 @@ pub struct PluginStatus {
     pub templates: Vec<String>,
     /// OS grants this plugin holds. Empty for plugins that need none, which is
     /// most of them — hence a list rather than an `Option`.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[serde(default)]
     pub permissions: Vec<PluginPermission>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub last_action_receipt_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub detail: Option<String>,
 }
 
@@ -114,19 +114,19 @@ pub struct PluginActionReceipt {
     pub receipt_id: String,
     pub plugin_id: String,
     pub action: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub version: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub digest: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub approval_receipt_id: Option<String>,
     pub started_at: String,
     pub finished_at: String,
     pub result: String,
     pub retained_data: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub status: Option<PluginStatus>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub error: Option<String>,
 }
 
@@ -140,7 +140,7 @@ pub struct PluginNotReady {
     /// Permission ids the caller is missing, when `phase` is
     /// `needs_permissions`. Naming them is what separates a refusal an agent
     /// can act on from one it can only relay.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[serde(default)]
     pub missing_permissions: Vec<String>,
 }
 

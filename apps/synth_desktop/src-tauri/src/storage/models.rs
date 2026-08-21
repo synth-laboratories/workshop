@@ -84,21 +84,21 @@ pub struct AppEvent {
     #[specta(type = specta_typescript::Number)]
     pub sequence: i64,
     pub event_id: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub session_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     #[specta(type = specta_typescript::Number)]
     pub session_sequence: Option<i64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub run_id: Option<String>,
     pub source: EventSource,
     pub kind: String,
     #[specta(type = specta_typescript::Unknown)]
     pub payload: Value,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     #[specta(type = specta_typescript::Number)]
     pub remote_sequence: Option<i64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub command_id: Option<String>,
     pub created_at: String,
 }

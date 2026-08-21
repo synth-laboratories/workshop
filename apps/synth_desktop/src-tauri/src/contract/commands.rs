@@ -1,8 +1,9 @@
-//! Tauri invoke command names. Keep in sync with
-//! `src/renderer/src/bridge/protocolConstants.ts`.
+//! Tauri invoke command names.
 //!
 //! Names match `#[tauri::command]` / `generate_handler!` identifiers.
-//! Drift: `scripts/check-desktop-contract-drift.sh`.
+//! TypeScript call sites use specta-generated `commands.*` in
+//! `src/renderer/src/generated/protocol.ts`. `export_specta_protocol_bindings`
+//! diff-checks that file.
 
 /// Const map of bridge-facing command names.
 pub struct Commands;

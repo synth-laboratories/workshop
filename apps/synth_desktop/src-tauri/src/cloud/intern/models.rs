@@ -7,13 +7,13 @@ pub const RECEIPT_SCHEMA: &str = "smr.intern-runtime-command-receipt.v1";
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RuntimeBinding {
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub factory_id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub project_id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub effort_id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub run_id: Option<String>,
 }
 
@@ -156,13 +156,13 @@ impl SyncCommandRequest {
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct AsyncBudget {
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub maximum_cost_cents: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub maximum_daily_cost_cents: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub maximum_monthly_cost_cents: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub maximum_cycles: Option<u64>,
     #[serde(default = "one")]
     pub maximum_concurrent_runs: u64,

@@ -183,7 +183,7 @@ impl OptimizerRunStatus {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, specta::Type)]
-#[serde(rename_all(deserialize = "snake_case", serialize = "camelCase"))]
+#[serde(rename_all = "camelCase")]
 pub struct SavedLoraStorage {
     pub backend: String,
     pub bucket: String,
@@ -197,7 +197,7 @@ pub struct SavedLoraStorage {
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, specta::Type)]
-#[serde(rename_all(deserialize = "snake_case", serialize = "camelCase"))]
+#[serde(rename_all = "camelCase")]
 pub struct SavedLoraLineage {
     pub optimizer_algorithm: Option<String>,
     pub run_id: Option<String>,
@@ -207,7 +207,7 @@ pub struct SavedLoraLineage {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, specta::Type)]
-#[serde(rename_all(deserialize = "snake_case", serialize = "camelCase"))]
+#[serde(rename_all = "camelCase")]
 pub struct SavedLoraCheckpoint {
     pub schema_version: String,
     pub checkpoint_id: String,
@@ -240,7 +240,7 @@ pub struct SavedLoraCheckpoint {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, specta::Type)]
-#[serde(rename_all(deserialize = "snake_case", serialize = "camelCase"))]
+#[serde(rename_all = "camelCase")]
 pub struct SavedLoraCheckpointPage {
     pub schema_version: String,
     pub items: Vec<SavedLoraCheckpoint>,
@@ -253,7 +253,7 @@ pub struct SavedLoraCheckpointPage {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, specta::Type)]
-#[serde(rename_all(deserialize = "snake_case", serialize = "camelCase"))]
+#[serde(rename_all = "camelCase")]
 pub struct SavedLoraRunIdentity {
     pub run_id: String,
     pub attempt_id: Option<String>,
@@ -262,7 +262,7 @@ pub struct SavedLoraRunIdentity {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, specta::Type)]
-#[serde(rename_all(deserialize = "snake_case", serialize = "camelCase"))]
+#[serde(rename_all = "camelCase")]
 pub struct SavedLoraRunCounts {
     #[specta(type = specta_typescript::Number)]
     pub total: u64,
@@ -273,7 +273,7 @@ pub struct SavedLoraRunCounts {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, specta::Type)]
-#[serde(rename_all(deserialize = "snake_case", serialize = "camelCase"))]
+#[serde(rename_all = "camelCase")]
 pub struct SavedLoraRunPage {
     pub schema_version: String,
     pub run: SavedLoraRunIdentity,
@@ -288,7 +288,7 @@ pub struct SavedLoraRunPage {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, specta::Type)]
-#[serde(rename_all(deserialize = "snake_case", serialize = "camelCase"))]
+#[serde(rename_all = "camelCase")]
 pub struct OptimizerRunOutputIdentity {
     pub run_id: String,
     pub attempt_id: Option<String>,
@@ -297,7 +297,7 @@ pub struct OptimizerRunOutputIdentity {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, specta::Type)]
-#[serde(rename_all(deserialize = "snake_case", serialize = "camelCase"))]
+#[serde(rename_all = "camelCase")]
 pub struct OptimizerRunOutputArtifact {
     pub artifact_id: String,
     pub run_id: String,
@@ -316,7 +316,7 @@ pub struct OptimizerRunOutputArtifact {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, specta::Type)]
-#[serde(rename_all(deserialize = "snake_case", serialize = "camelCase"))]
+#[serde(rename_all = "camelCase")]
 pub struct OptimizerRunOutputCounts {
     #[specta(type = specta_typescript::Number)]
     pub artifacts: u64,
@@ -325,7 +325,7 @@ pub struct OptimizerRunOutputCounts {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, specta::Type)]
-#[serde(rename_all(deserialize = "snake_case", serialize = "camelCase"))]
+#[serde(rename_all = "camelCase")]
 pub struct OptimizerRunOutputs {
     pub schema_version: String,
     pub run: OptimizerRunOutputIdentity,
@@ -357,7 +357,7 @@ pub struct SavedLoraCheckpointQuery {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, specta::Type)]
-#[serde(rename_all(deserialize = "snake_case", serialize = "camelCase"))]
+#[serde(rename_all = "camelCase")]
 pub struct SavedLoraDownload {
     pub checkpoint_id: String,
     pub url: String,
@@ -370,7 +370,7 @@ pub struct SavedLoraDownload {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, specta::Type)]
-#[serde(rename_all(deserialize = "snake_case", serialize = "camelCase"))]
+#[serde(rename_all = "camelCase")]
 pub struct HostedTrainingModel {
     pub model_id: String,
     pub label: String,
@@ -386,7 +386,7 @@ pub struct HostedTrainingModel {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, specta::Type)]
-#[serde(rename_all(deserialize = "snake_case", serialize = "camelCase"))]
+#[serde(rename_all = "camelCase")]
 pub struct HostedTrainingModelCatalog {
     pub schema_version: String,
     pub catalog_revision: String,
@@ -508,11 +508,11 @@ pub struct OptimizerUsageSummary {
 pub struct OptimizerResourceRef {
     pub kind: String,
     pub id: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub digest: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub role: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub title: Option<String>,
     #[serde(default)]
     #[specta(type = specta_typescript::Unknown)]
@@ -524,9 +524,9 @@ pub struct OptimizerResourceRef {
 pub struct OptimizerExecutionBinding {
     pub kind: String,
     pub id: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub label: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub status: Option<String>,
     #[serde(default)]
     #[specta(type = specta_typescript::Unknown)]
@@ -539,20 +539,20 @@ pub struct OptimizerRunRecord {
     pub schema_version: String,
     pub id: String,
     pub algorithm_id: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub algorithm_version: Option<String>,
     pub status: String,
     pub source: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub objective: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub project_ref: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub session_ref: Option<String>,
     pub created_at: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub started_at: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub finished_at: Option<String>,
     #[serde(default)]
     #[specta(type = specta_typescript::Number)]
@@ -572,7 +572,7 @@ pub struct OptimizerRunRecord {
     pub summary: Value,
     #[serde(default)]
     pub usage: OptimizerUsageSummary,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     #[specta(type = specta_typescript::Unknown)]
     pub error: Option<Value>,
 }
@@ -594,7 +594,7 @@ pub struct OptimizerRelationship {
 #[serde(rename_all = "camelCase")]
 pub struct OptimizerEventEnvelope {
     pub schema_version: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub event_id: Option<String>,
     #[serde(rename = "type")]
     pub event_type: String,
@@ -603,24 +603,24 @@ pub struct OptimizerEventEnvelope {
     pub occurred_at: String,
     pub optimizer_run_id: String,
     pub algorithm_id: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub level: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     #[specta(type = specta_typescript::Unknown)]
     pub item: Option<Value>,
     #[serde(default)]
     #[specta(type = specta_typescript::Unknown)]
     pub delta: Map<String, Value>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     #[specta(type = specta_typescript::Unknown)]
     pub snapshot: Option<Map<String, Value>>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     #[specta(type = specta_typescript::Unknown)]
     pub usage_delta: Option<Map<String, Value>>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[serde(default)]
     #[specta(type = specta_typescript::Unknown)]
     pub artifact_refs: Vec<Value>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     #[specta(type = specta_typescript::Unknown)]
     pub error: Option<Value>,
     #[serde(default)]

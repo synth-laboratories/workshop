@@ -17,15 +17,15 @@ export const commands = {
 	 *  installed, and is it new enough?" used to require reading the source.
 	 */
 	runtimeContracts: () => typedError<RuntimeContractView[], AppError>(__TAURI_INVOKE("runtime_contracts")),
-	coreEventsAfter: (afterSequence: number, limit: number | null) => typedError<AppEvent_Serialize[], AppError>(__TAURI_INVOKE("core_events_after", { afterSequence, limit })),
-	coreSessionEventsAfter: (sessionId: string, afterSequence: number, limit: number | null) => typedError<AppEvent_Serialize[], AppError>(__TAURI_INVOKE("core_session_events_after", { sessionId, afterSequence, limit })),
-	coreSessionEventsTail: (sessionId: string, limit: number | null) => typedError<AppEvent_Serialize[], AppError>(__TAURI_INVOKE("core_session_events_tail", { sessionId, limit })),
-	coreSessionEventsBefore: (sessionId: string, beforeSequence: number, limit: number | null) => typedError<AppEvent_Serialize[], AppError>(__TAURI_INVOKE("core_session_events_before", { sessionId, beforeSequence, limit })),
+	coreEventsAfter: (afterSequence: number, limit: number | null) => typedError<AppEvent[], AppError>(__TAURI_INVOKE("core_events_after", { afterSequence, limit })),
+	coreSessionEventsAfter: (sessionId: string, afterSequence: number, limit: number | null) => typedError<AppEvent[], AppError>(__TAURI_INVOKE("core_session_events_after", { sessionId, afterSequence, limit })),
+	coreSessionEventsTail: (sessionId: string, limit: number | null) => typedError<AppEvent[], AppError>(__TAURI_INVOKE("core_session_events_tail", { sessionId, limit })),
+	coreSessionEventsBefore: (sessionId: string, beforeSequence: number, limit: number | null) => typedError<AppEvent[], AppError>(__TAURI_INVOKE("core_session_events_before", { sessionId, beforeSequence, limit })),
 	internSessionsList: () => typedError<InternSessionWire[], AppError>(__TAURI_INVOKE("intern_sessions_list")),
-	internSessionCreate: (request: InternSessionCreateRequest_Deserialize) => typedError<InternSessionWire, AppError>(__TAURI_INVOKE("intern_session_create", { request })),
+	internSessionCreate: (request: InternSessionCreateRequest) => typedError<InternSessionWire, AppError>(__TAURI_INVOKE("intern_session_create", { request })),
 	internSessionSend: (request: InternSessionSendRequest) => typedError<InternSendResult, AppError>(__TAURI_INVOKE("intern_session_send", { request })),
 	internSessionControl: (request: InternSessionControlRequest) => typedError<InternControlResult, AppError>(__TAURI_INVOKE("intern_session_control", { request })),
-	internSessionEventsAfter: (sessionId: string, afterSequence: number, limit: number | null) => typedError<AppEvent_Serialize[], AppError>(__TAURI_INVOKE("intern_session_events_after", { sessionId, afterSequence, limit })),
+	internSessionEventsAfter: (sessionId: string, afterSequence: number, limit: number | null) => typedError<AppEvent[], AppError>(__TAURI_INVOKE("intern_session_events_after", { sessionId, afterSequence, limit })),
 	dataContainersList: () => typedError<ContainerDeployment[], AppError>(__TAURI_INVOKE("data_containers_list")),
 	dataContainersGet: (containerId: string) => typedError<ContainerDeployment, AppError>(__TAURI_INVOKE("data_containers_get", { containerId })),
 	dataContainersRegister: (request: ContainerRegisterRequest) => typedError<ContainerDeployment, AppError>(__TAURI_INVOKE("data_containers_register", { request })),
@@ -57,7 +57,7 @@ export const commands = {
 	dataCounts: () => typedError<DataCounts, AppError>(__TAURI_INVOKE("data_counts")),
 	optimizersAlgorithmsList: () => typedError<unknown[], AppError>(__TAURI_INVOKE("optimizers_algorithms_list")),
 	optimizersRecipesList: () => typedError<unknown[], AppError>(__TAURI_INVOKE("optimizers_recipes_list")),
-	optimizersRecipeStart: (request: OptimizerRecipeRunRequest) => typedError<OptimizerRunRecord_Serialize, AppError>(__TAURI_INVOKE("optimizers_recipe_start", { request })),
+	optimizersRecipeStart: (request: OptimizerRecipeRunRequest) => typedError<OptimizerRunRecord, AppError>(__TAURI_INVOKE("optimizers_recipe_start", { request })),
 	/**
 	 *  Freeze policy files from the session's workspace into one immutable
 	 *  candidate set. Its id is the only policy input `optimizers_recipe_start`
@@ -72,20 +72,20 @@ export const commands = {
 	sessionRef: string | null,
 	limit: number,
 	offset: number,
-} | null) => typedError<OptimizerRunRecord_Serialize[], AppError>(__TAURI_INVOKE("optimizers_list", { query })),
-	optimizersGet: (optimizerRunId: string) => typedError<OptimizerRunRecord_Serialize, AppError>(__TAURI_INVOKE("optimizers_get", { optimizerRunId })),
-	optimizersCreate: (request: OptimizerCreateRequest_Deserialize) => typedError<OptimizerRunRecord_Serialize, AppError>(__TAURI_INVOKE("optimizers_create", { request })),
-	optimizersRefresh: (optimizerRunId: string) => typedError<OptimizerRunRecord_Serialize, AppError>(__TAURI_INVOKE("optimizers_refresh", { optimizerRunId })),
-	optimizersEventsAfter: (optimizerRunId: string, afterSeq: number | null, limit: number | null) => typedError<OptimizerEventEnvelope_Serialize[], AppError>(__TAURI_INVOKE("optimizers_events_after", { optimizerRunId, afterSeq, limit })),
+} | null) => typedError<OptimizerRunRecord[], AppError>(__TAURI_INVOKE("optimizers_list", { query })),
+	optimizersGet: (optimizerRunId: string) => typedError<OptimizerRunRecord, AppError>(__TAURI_INVOKE("optimizers_get", { optimizerRunId })),
+	optimizersCreate: (request: OptimizerCreateRequest) => typedError<OptimizerRunRecord, AppError>(__TAURI_INVOKE("optimizers_create", { request })),
+	optimizersRefresh: (optimizerRunId: string) => typedError<OptimizerRunRecord, AppError>(__TAURI_INVOKE("optimizers_refresh", { optimizerRunId })),
+	optimizersEventsAfter: (optimizerRunId: string, afterSeq: number | null, limit: number | null) => typedError<OptimizerEventEnvelope[], AppError>(__TAURI_INVOKE("optimizers_events_after", { optimizerRunId, afterSeq, limit })),
 	optimizersGetState: (optimizerRunId: string, sliceId: string, atSeq: number | null) => typedError<OptimizerStateSlice, AppError>(__TAURI_INVOKE("optimizers_get_state", { optimizerRunId, sliceId, atSeq })),
 	optimizersGetStateBatch: (optimizerRunId: string, slices: string[] | null, atSeq: number | null) => typedError<OptimizerStateSlice[], AppError>(__TAURI_INVOKE("optimizers_get_state_batch", { optimizerRunId, slices, atSeq })),
 	optimizersRelationships: (optimizerRunId: string) => typedError<OptimizerRelationship[], AppError>(__TAURI_INVOKE("optimizers_relationships", { optimizerRunId })),
-	optimizersCancel: (optimizerRunId: string) => typedError<OptimizerRunRecord_Serialize, AppError>(__TAURI_INVOKE("optimizers_cancel", { optimizerRunId })),
-	optimizersPause: (optimizerRunId: string) => typedError<OptimizerRunRecord_Serialize, AppError>(__TAURI_INVOKE("optimizers_pause", { optimizerRunId })),
-	optimizersResume: (optimizerRunId: string) => typedError<OptimizerRunRecord_Serialize, AppError>(__TAURI_INVOKE("optimizers_resume", { optimizerRunId })),
-	optimizersOpenVisual: (optimizerRunId: string) => typedError<OptimizerRunRecord_Serialize, AppError>(__TAURI_INVOKE("optimizers_open_visual", { optimizerRunId })),
-	optimizersImportLocal: (request: OptimizerImportLocalRequest) => typedError<OptimizerRunRecord_Serialize, AppError>(__TAURI_INVOKE("optimizers_import_local", { request })),
-	optimizersReconcileCloud: (request: OptimizerReconcileRequest) => typedError<OptimizerRunRecord_Serialize, AppError>(__TAURI_INVOKE("optimizers_reconcile_cloud", { request })),
+	optimizersCancel: (optimizerRunId: string) => typedError<OptimizerRunRecord, AppError>(__TAURI_INVOKE("optimizers_cancel", { optimizerRunId })),
+	optimizersPause: (optimizerRunId: string) => typedError<OptimizerRunRecord, AppError>(__TAURI_INVOKE("optimizers_pause", { optimizerRunId })),
+	optimizersResume: (optimizerRunId: string) => typedError<OptimizerRunRecord, AppError>(__TAURI_INVOKE("optimizers_resume", { optimizerRunId })),
+	optimizersOpenVisual: (optimizerRunId: string) => typedError<OptimizerRunRecord, AppError>(__TAURI_INVOKE("optimizers_open_visual", { optimizerRunId })),
+	optimizersImportLocal: (request: OptimizerImportLocalRequest) => typedError<OptimizerRunRecord, AppError>(__TAURI_INVOKE("optimizers_import_local", { request })),
+	optimizersReconcileCloud: (request: OptimizerReconcileRequest) => typedError<OptimizerRunRecord, AppError>(__TAURI_INVOKE("optimizers_reconcile_cloud", { request })),
 	optimizersListCloud: (algorithm: string | null, status: string | null, limit: number | null) => typedError<unknown[], AppError>(__TAURI_INVOKE("optimizers_list_cloud", { algorithm, status, limit })),
 	optimizersSavedLorasSearch: (query: {
 	search: string | null,
@@ -101,15 +101,15 @@ export const commands = {
 	tags: string[] | null,
 	limit: number,
 	offset: number,
-} | null) => typedError<SavedLoraCheckpointPage_Serialize, AppError>(__TAURI_INVOKE("optimizers_saved_loras_search", { query })),
-	optimizersRunCheckpointsList: (optimizerRunId: string) => typedError<SavedLoraRunPage_Serialize, AppError>(__TAURI_INVOKE("optimizers_run_checkpoints_list", { optimizerRunId })),
-	optimizersRunOutputs: (optimizerRunId: string) => typedError<OptimizerRunOutputs_Serialize, AppError>(__TAURI_INVOKE("optimizers_run_outputs", { optimizerRunId })),
-	optimizersTrainingModels: () => typedError<HostedTrainingModelCatalog_Serialize, AppError>(__TAURI_INVOKE("optimizers_training_models")),
-	optimizersSavedLoraArchive: (checkpointId: string) => typedError<SavedLoraCheckpoint_Serialize, AppError>(__TAURI_INVOKE("optimizers_saved_lora_archive", { checkpointId })),
-	optimizersSavedLoraDownload: (checkpointId: string) => typedError<SavedLoraDownload_Serialize, AppError>(__TAURI_INVOKE("optimizers_saved_lora_download", { checkpointId })),
+} | null) => typedError<SavedLoraCheckpointPage, AppError>(__TAURI_INVOKE("optimizers_saved_loras_search", { query })),
+	optimizersRunCheckpointsList: (optimizerRunId: string) => typedError<SavedLoraRunPage, AppError>(__TAURI_INVOKE("optimizers_run_checkpoints_list", { optimizerRunId })),
+	optimizersRunOutputs: (optimizerRunId: string) => typedError<OptimizerRunOutputs, AppError>(__TAURI_INVOKE("optimizers_run_outputs", { optimizerRunId })),
+	optimizersTrainingModels: () => typedError<HostedTrainingModelCatalog, AppError>(__TAURI_INVOKE("optimizers_training_models")),
+	optimizersSavedLoraArchive: (checkpointId: string) => typedError<SavedLoraCheckpoint, AppError>(__TAURI_INVOKE("optimizers_saved_lora_archive", { checkpointId })),
+	optimizersSavedLoraDownload: (checkpointId: string) => typedError<SavedLoraDownload, AppError>(__TAURI_INVOKE("optimizers_saved_lora_download", { checkpointId })),
 	optimizersTrainingReconcile: (optimizerRunId: string) => typedError<unknown, AppError>(__TAURI_INVOKE("optimizers_training_reconcile", { optimizerRunId })),
-	pluginsStatus: (pluginId: string | null) => typedError<PluginStatus_Serialize, AppError>(__TAURI_INVOKE("plugins_status", { pluginId })),
-	pluginsList: () => typedError<PluginStatus_Serialize[], AppError>(__TAURI_INVOKE("plugins_list")),
+	pluginsStatus: (pluginId: string | null) => typedError<PluginStatus, AppError>(__TAURI_INVOKE("plugins_status", { pluginId })),
+	pluginsList: () => typedError<PluginStatus[], AppError>(__TAURI_INVOKE("plugins_list")),
 	/**
 	 *  Human-triggered plugin lifecycle.
 	 *
@@ -120,8 +120,8 @@ export const commands = {
 	 *  Optimizers plugin while the UI had no way to do any of it.
 	 */
 	pluginsManage: (operation: string, pluginId: string, version: string | null, sessionId: string | null) => typedError<unknown, AppError>(__TAURI_INVOKE("plugins_manage", { operation, pluginId, version, sessionId })),
-	pluginsSetReleaseChannel: (pluginId: string, channel: string) => typedError<PluginStatus_Serialize, AppError>(__TAURI_INVOKE("plugins_set_release_channel", { pluginId, channel })),
-	computerUseStatus: (sessionId: string | null) => typedError<ComputerUseSnapshot_Serialize, AppError>(__TAURI_INVOKE("computer_use_status", { sessionId })),
+	pluginsSetReleaseChannel: (pluginId: string, channel: string) => typedError<PluginStatus, AppError>(__TAURI_INVOKE("plugins_set_release_channel", { pluginId, channel })),
+	computerUseStatus: (sessionId: string | null) => typedError<ComputerUseSnapshot, AppError>(__TAURI_INVOKE("computer_use_status", { sessionId })),
 	/**
 	 *  Install the helper that ships inside this app bundle.
 	 *
@@ -129,7 +129,7 @@ export const commands = {
 	 *  is signed with the same identity as Workshop and shipping it separately
 	 *  would mean a second thing to notarize, host, and keep in version step.
 	 */
-	computerUseInstall: () => typedError<PluginStatus_Serialize, AppError>(__TAURI_INVOKE("computer_use_install")),
+	computerUseInstall: () => typedError<PluginStatus, AppError>(__TAURI_INVOKE("computer_use_install")),
 	computerUseRemove: () => typedError<RemovalReport, AppError>(__TAURI_INVOKE("computer_use_remove")),
 	/**  Revoke one app's standing permission to be driven. */
 	computerUseRevokeApp: (bundleId: string) => typedError<number, AppError>(__TAURI_INVOKE("computer_use_revoke_app", { bundleId })),
@@ -188,10 +188,10 @@ export const commands = {
 	search: string | null,
 	limit: number,
 	offset: number,
-} | null) => typedError<VisualRecord_Serialize[], AppError>(__TAURI_INVOKE("visuals_list", { query })),
-	visualsGet: (visualId: string) => typedError<VisualRecord_Serialize, AppError>(__TAURI_INVOKE("visuals_get", { visualId })),
+} | null) => typedError<VisualRecord[], AppError>(__TAURI_INVOKE("visuals_list", { query })),
+	visualsGet: (visualId: string) => typedError<VisualRecord, AppError>(__TAURI_INVOKE("visuals_get", { visualId })),
 	visualsObservationReport: (observation: RenderedVisualObservation) => typedError<null, AppError>(__TAURI_INVOKE("visuals_observation_report", { observation })),
-	visualsRevisions: (visualId: string) => typedError<VisualRevision_Serialize[], AppError>(__TAURI_INVOKE("visuals_revisions", { visualId })),
+	visualsRevisions: (visualId: string) => typedError<VisualRevision[], AppError>(__TAURI_INVOKE("visuals_revisions", { visualId })),
 	visualsAnnotationsList: (visualId: string) => typedError<VisualAnnotation[], AppError>(__TAURI_INVOKE("visuals_annotations_list", { visualId })),
 	visualsAnnotationCreate: (visualId: string, request: VisualAnnotationCreate) => typedError<VisualAnnotation, AppError>(__TAURI_INVOKE("visuals_annotation_create", { visualId, request })),
 	visualsSealsList: (visualId: string | null) => typedError<VisualSeal[], AppError>(__TAURI_INVOKE("visuals_seals_list", { visualId })),
@@ -209,41 +209,41 @@ export const commands = {
 } | null, AppError>(__TAURI_INVOKE("visuals_upload_status", { receiptDigest })),
 	visualsShareSeal: (receiptDigest: string) => typedError<VisualUpload, AppError>(__TAURI_INVOKE("visuals_share_seal", { receiptDigest })),
 	visualsOpenShared: (committedUrl: string) => typedError<VisualSealBundle, AppError>(__TAURI_INVOKE("visuals_open_shared", { committedUrl })),
-	visualsCreate: (request: VisualCreateRequest) => typedError<VisualRecord_Serialize, AppError>(__TAURI_INVOKE("visuals_create", { request })),
-	visualsUpdate: (visualId: string, request: VisualUpdateRequest) => typedError<VisualRecord_Serialize, AppError>(__TAURI_INVOKE("visuals_update", { visualId, request })),
-	visualsSave: (visualId: string, tsx: string | null) => typedError<VisualRecord_Serialize, AppError>(__TAURI_INVOKE("visuals_save", { visualId, tsx })),
-	visualsFork: (visualId: string, title: string | null, sessionId: string | null) => typedError<VisualRecord_Serialize, AppError>(__TAURI_INVOKE("visuals_fork", { visualId, title, sessionId })),
-	visualsArchive: (visualId: string) => typedError<VisualRecord_Serialize, AppError>(__TAURI_INVOKE("visuals_archive", { visualId })),
-	visualsShow: (visualId: string, sessionId: string | null) => typedError<VisualRecord_Serialize, AppError>(__TAURI_INVOKE("visuals_show", { visualId, sessionId })),
-	visualsContent: (visualId: string) => typedError<VisualAsset_Serialize, AppError>(__TAURI_INVOKE("visuals_content", { visualId })),
-	visualsRenditions: (visualId: string) => typedError<VisualRendition_Serialize[], AppError>(__TAURI_INVOKE("visuals_renditions", { visualId })),
-	visualsRendition: (visualId: string, format: string | null, theme: string | null, sizeClass: string | null) => typedError<VisualAsset_Serialize, AppError>(__TAURI_INVOKE("visuals_rendition", { visualId, format, theme, sizeClass })),
-	visualsRender: (visualId: string) => typedError<VisualRecord_Serialize, AppError>(__TAURI_INVOKE("visuals_render", { visualId })),
+	visualsCreate: (request: VisualCreateRequest) => typedError<VisualRecord, AppError>(__TAURI_INVOKE("visuals_create", { request })),
+	visualsUpdate: (visualId: string, request: VisualUpdateRequest) => typedError<VisualRecord, AppError>(__TAURI_INVOKE("visuals_update", { visualId, request })),
+	visualsSave: (visualId: string, tsx: string | null) => typedError<VisualRecord, AppError>(__TAURI_INVOKE("visuals_save", { visualId, tsx })),
+	visualsFork: (visualId: string, title: string | null, sessionId: string | null) => typedError<VisualRecord, AppError>(__TAURI_INVOKE("visuals_fork", { visualId, title, sessionId })),
+	visualsArchive: (visualId: string) => typedError<VisualRecord, AppError>(__TAURI_INVOKE("visuals_archive", { visualId })),
+	visualsShow: (visualId: string, sessionId: string | null) => typedError<VisualRecord, AppError>(__TAURI_INVOKE("visuals_show", { visualId, sessionId })),
+	visualsContent: (visualId: string) => typedError<VisualAsset, AppError>(__TAURI_INVOKE("visuals_content", { visualId })),
+	visualsRenditions: (visualId: string) => typedError<VisualRendition[], AppError>(__TAURI_INVOKE("visuals_renditions", { visualId })),
+	visualsRendition: (visualId: string, format: string | null, theme: string | null, sizeClass: string | null) => typedError<VisualAsset, AppError>(__TAURI_INVOKE("visuals_rendition", { visualId, format, theme, sizeClass })),
+	visualsRender: (visualId: string) => typedError<VisualRecord, AppError>(__TAURI_INVOKE("visuals_render", { visualId })),
 	reportsList: (query: {
 	status: string | null,
 	search: string | null,
 	limit: number,
 	includeArchived?: boolean,
-} | null) => typedError<ReportRecord_Serialize[], AppError>(__TAURI_INVOKE("reports_list", { query })),
-	reportsGet: (reportId: string) => typedError<ReportRecord_Serialize, AppError>(__TAURI_INVOKE("reports_get", { reportId })),
-	reportsRevisionGet: (reportId: string, revision: number | null) => typedError<ReportRevision_Serialize, AppError>(__TAURI_INVOKE("reports_revision_get", { reportId, revision })),
-	reportsValidate: (reportId: string, revision: number | null) => typedError<ReportValidationResult_Serialize, AppError>(__TAURI_INVOKE("reports_validate", { reportId, revision })),
-	reportsPinAll: (reportId: string) => typedError<ReportRecord_Serialize, AppError>(__TAURI_INVOKE("reports_pin_all", { reportId })),
-	reportsCreate: (request: ReportCreateRequest_Deserialize) => typedError<ReportRecord_Serialize, AppError>(__TAURI_INVOKE("reports_create", { request })),
-	reportsUpdate: (reportId: string, request: ReportUpdateRequest_Deserialize) => typedError<ReportRecord_Serialize, AppError>(__TAURI_INVOKE("reports_update", { reportId, request })),
-	reportsArchive: (reportId: string) => typedError<ReportRecord_Serialize, AppError>(__TAURI_INVOKE("reports_archive", { reportId })),
-	reportsRestore: (reportId: string) => typedError<ReportRecord_Serialize, AppError>(__TAURI_INVOKE("reports_restore", { reportId })),
-	reportsVisibilityRequests: (reportId: string | null) => typedError<ReportVisibilityRequest_Serialize[], AppError>(__TAURI_INVOKE("reports_visibility_requests", { reportId })),
-	reportsVisibilityRequest: (reportId: string, request: ReportVisibilityRequestCreate_Deserialize) => typedError<ReportVisibilityRequest_Serialize, AppError>(__TAURI_INVOKE("reports_visibility_request", { reportId, request })),
-	reportsVisibilityDecide: (requestId: string, approved: boolean) => typedError<ReportVisibilityRequest_Serialize, AppError>(__TAURI_INVOKE("reports_visibility_decide", { requestId, approved })),
+} | null) => typedError<ReportRecord[], AppError>(__TAURI_INVOKE("reports_list", { query })),
+	reportsGet: (reportId: string) => typedError<ReportRecord, AppError>(__TAURI_INVOKE("reports_get", { reportId })),
+	reportsRevisionGet: (reportId: string, revision: number | null) => typedError<ReportRevision, AppError>(__TAURI_INVOKE("reports_revision_get", { reportId, revision })),
+	reportsValidate: (reportId: string, revision: number | null) => typedError<ReportValidationResult, AppError>(__TAURI_INVOKE("reports_validate", { reportId, revision })),
+	reportsPinAll: (reportId: string) => typedError<ReportRecord, AppError>(__TAURI_INVOKE("reports_pin_all", { reportId })),
+	reportsCreate: (request: ReportCreateRequest) => typedError<ReportRecord, AppError>(__TAURI_INVOKE("reports_create", { request })),
+	reportsUpdate: (reportId: string, request: ReportUpdateRequest) => typedError<ReportRecord, AppError>(__TAURI_INVOKE("reports_update", { reportId, request })),
+	reportsArchive: (reportId: string) => typedError<ReportRecord, AppError>(__TAURI_INVOKE("reports_archive", { reportId })),
+	reportsRestore: (reportId: string) => typedError<ReportRecord, AppError>(__TAURI_INVOKE("reports_restore", { reportId })),
+	reportsVisibilityRequests: (reportId: string | null) => typedError<ReportVisibilityRequest[], AppError>(__TAURI_INVOKE("reports_visibility_requests", { reportId })),
+	reportsVisibilityRequest: (reportId: string, request: ReportVisibilityRequestCreate) => typedError<ReportVisibilityRequest, AppError>(__TAURI_INVOKE("reports_visibility_request", { reportId, request })),
+	reportsVisibilityDecide: (requestId: string, approved: boolean) => typedError<ReportVisibilityRequest, AppError>(__TAURI_INVOKE("reports_visibility_decide", { requestId, approved })),
 	reportsSeal: (reportId: string, revision: number) => typedError<ReportSeal, AppError>(__TAURI_INVOKE("reports_seal", { reportId, revision })),
 	reportsSealsList: (reportId: string | null) => typedError<ReportSeal[], AppError>(__TAURI_INVOKE("reports_seals_list", { reportId })),
 	reportsSealGet: (receiptDigest: string) => typedError<ReportSealBundle, AppError>(__TAURI_INVOKE("reports_seal_get", { receiptDigest })),
 	reportsSealsCompare: (leftDigest: string, rightDigest: string) => typedError<ReportRevisionCompare, AppError>(__TAURI_INVOKE("reports_seals_compare", { leftDigest, rightDigest })),
-	reportsExperimentsList: (reportId: string) => typedError<ExperimentRecord_Serialize[], AppError>(__TAURI_INVOKE("reports_experiments_list", { reportId })),
-	reportsExperimentUpsert: (reportId: string, request: ExperimentRecordUpsert) => typedError<ExperimentRecord_Serialize, AppError>(__TAURI_INVOKE("reports_experiment_upsert", { reportId, request })),
-	reportsLogList: (reportId: string) => typedError<ResearchLogEntry_Serialize[], AppError>(__TAURI_INVOKE("reports_log_list", { reportId })),
-	reportsLogAppend: (reportId: string, request: ResearchLogAppend) => typedError<ResearchLogEntry_Serialize, AppError>(__TAURI_INVOKE("reports_log_append", { reportId, request })),
+	reportsExperimentsList: (reportId: string) => typedError<ExperimentRecord[], AppError>(__TAURI_INVOKE("reports_experiments_list", { reportId })),
+	reportsExperimentUpsert: (reportId: string, request: ExperimentRecordUpsert) => typedError<ExperimentRecord, AppError>(__TAURI_INVOKE("reports_experiment_upsert", { reportId, request })),
+	reportsLogList: (reportId: string) => typedError<ResearchLogEntry[], AppError>(__TAURI_INVOKE("reports_log_list", { reportId })),
+	reportsLogAppend: (reportId: string, request: ResearchLogAppend) => typedError<ResearchLogEntry, AppError>(__TAURI_INVOKE("reports_log_append", { reportId, request })),
 	reportsUploadStatus: (receiptDigest: string) => typedError<{
 	receiptDigest: string,
 	collectionId: string | null,
@@ -255,26 +255,26 @@ export const commands = {
 	updatedAt: string,
 } | null, AppError>(__TAURI_INVOKE("reports_upload_status", { receiptDigest })),
 	reportsShare: (receiptDigest: string) => typedError<ReportUpload, AppError>(__TAURI_INVOKE("reports_share", { receiptDigest })),
-	reportsAudienceSet: (publicationId: string, request: ReportAudienceRequest_Deserialize) => typedError<ReportAudienceState_Serialize, AppError>(__TAURI_INVOKE("reports_audience_set", { publicationId, request })),
-	reportsAudienceRevoke: (publicationId: string, receiptDigest: string) => typedError<ReportAudienceState_Serialize, AppError>(__TAURI_INVOKE("reports_audience_revoke", { publicationId, receiptDigest })),
-	reportsPromote: (publicationId: string, slug: string) => typedError<ReportPromotion_Serialize, AppError>(__TAURI_INVOKE("reports_promote", { publicationId, slug })),
+	reportsAudienceSet: (publicationId: string, request: ReportAudienceRequest) => typedError<ReportAudienceState, AppError>(__TAURI_INVOKE("reports_audience_set", { publicationId, request })),
+	reportsAudienceRevoke: (publicationId: string, receiptDigest: string) => typedError<ReportAudienceState, AppError>(__TAURI_INVOKE("reports_audience_revoke", { publicationId, receiptDigest })),
+	reportsPromote: (publicationId: string, slug: string) => typedError<ReportPromotion, AppError>(__TAURI_INVOKE("reports_promote", { publicationId, slug })),
 	reportsOpenShared: (committedUrl: string) => typedError<ReportSealBundle, AppError>(__TAURI_INVOKE("reports_open_shared", { committedUrl })),
-	reportsCommentsList: (reportId: string, revision: number | null) => typedError<ReportComment_Serialize[], AppError>(__TAURI_INVOKE("reports_comments_list", { reportId, revision })),
-	reportsCommentCreate: (reportId: string, revision: number, request: ReportCommentCreate) => typedError<ReportComment_Serialize, AppError>(__TAURI_INVOKE("reports_comment_create", { reportId, revision, request })),
+	reportsCommentsList: (reportId: string, revision: number | null) => typedError<ReportComment[], AppError>(__TAURI_INVOKE("reports_comments_list", { reportId, revision })),
+	reportsCommentCreate: (reportId: string, revision: number, request: ReportCommentCreate) => typedError<ReportComment, AppError>(__TAURI_INVOKE("reports_comment_create", { reportId, revision, request })),
 	synthConfigGet: () => typedError<BackendSettings, AppError>(__TAURI_INVOKE("synth_config_get")),
 	synthConfigUpdate: (request: BackendSettingsUpdate) => typedError<BackendSettings, AppError>(__TAURI_INVOKE("synth_config_update", { request })),
-	modelPerformanceGet: (windowMinutes: number | null) => typedError<ModelPerformanceSnapshot_Serialize, AppError>(__TAURI_INVOKE("model_performance_get", { windowMinutes })),
+	modelPerformanceGet: (windowMinutes: number | null) => typedError<ModelPerformanceSnapshot, AppError>(__TAURI_INVOKE("model_performance_get", { windowMinutes })),
 	/**
 	 *  Begin (or resume) browser sign-in via Workshop device pairing and open the
 	 *  system browser. Returns display-safe state only.
 	 */
 	accountBeginSignIn: () => typedError<SignInBegin, AppError>(__TAURI_INVOKE("account_begin_sign_in")),
-	accountGetSummary: () => typedError<AccountSummary_Serialize, AppError>(__TAURI_INVOKE("account_get_summary")),
+	accountGetSummary: () => typedError<AccountSummary, AppError>(__TAURI_INVOKE("account_get_summary")),
 	/**
 	 *  Force a snapshot refetch — used after returning from hosted checkout and by
 	 *  the explicit retry in the account menu.
 	 */
-	accountRefresh: () => typedError<AccountSummary_Serialize, AppError>(__TAURI_INVOKE("account_refresh")),
+	accountRefresh: () => typedError<AccountSummary, AppError>(__TAURI_INVOKE("account_refresh")),
 	/**
 	 *  Open a backend-issued hosted billing URL in the system browser. Desktop
 	 *  never renders a payment form and never receives card data.
@@ -353,10 +353,10 @@ export const commands = {
 	trainingModelsList: () => __TAURI_INVOKE<TrainingModelHit[]>("training_models_list"),
 	trainingModelsDownload: (modelId: string) => typedError<TrainingModelHit, string>(__TAURI_INVOKE("training_models_download", { modelId })),
 	trainingModelsDelete: (modelId: string) => typedError<null, string>(__TAURI_INVOKE("training_models_delete", { modelId })),
-	trainingArtifactsList: () => __TAURI_INVOKE<TrainingArtifact_Serialize[]>("training_artifacts_list"),
-	trainingArtifactsGet: (id: string) => typedError<TrainingArtifact_Serialize, string>(__TAURI_INVOKE("training_artifacts_get", { id })),
-	trainingArtifactsExport: (id: string, destination: string, expectedDigest: string | null, confirm: boolean) => typedError<ArtifactMutationReceipt_Serialize, string>(__TAURI_INVOKE("training_artifacts_export", { id, destination, expectedDigest, confirm })),
-	trainingArtifactsDelete: (id: string, confirm: boolean) => typedError<ArtifactMutationReceipt_Serialize, string>(__TAURI_INVOKE("training_artifacts_delete", { id, confirm })),
+	trainingArtifactsList: () => __TAURI_INVOKE<TrainingArtifact[]>("training_artifacts_list"),
+	trainingArtifactsGet: (id: string) => typedError<TrainingArtifact, string>(__TAURI_INVOKE("training_artifacts_get", { id })),
+	trainingArtifactsExport: (id: string, destination: string, expectedDigest: string | null, confirm: boolean) => typedError<ArtifactMutationReceipt, string>(__TAURI_INVOKE("training_artifacts_export", { id, destination, expectedDigest, confirm })),
+	trainingArtifactsDelete: (id: string, confirm: boolean) => typedError<ArtifactMutationReceipt, string>(__TAURI_INVOKE("training_artifacts_delete", { id, confirm })),
 	trainingArtifactsLaunchInference: (id: string, message: string | null, confirm: boolean) => typedError<unknown, AppError>(__TAURI_INVOKE("training_artifacts_launch_inference", { id, message, confirm })),
 	whisperModelsList: () => __TAURI_INVOKE<WhisperModelHit[]>("whisper_models_list"),
 	whisperModelDownload: (id: string) => typedError<WhisperModelHit, string>(__TAURI_INVOKE("whisper_model_download", { id })),
@@ -429,15 +429,7 @@ export const commands = {
 };
 
 /* Types */
-export type AccountBilling = AccountBilling_Serialize | AccountBilling_Deserialize;
-
-export type AccountBilling_Deserialize = {
-	checkoutUrl: string | null,
-	portalUrl: string | null,
-	upgradeTier: string | null,
-};
-
-export type AccountBilling_Serialize = {
+export type AccountBilling = {
 	checkoutUrl?: string | null,
 	portalUrl?: string | null,
 	upgradeTier?: string | null,
@@ -449,48 +441,13 @@ export type AccountCloudUsage = {
 	thirtyDays: AccountUsageWindow,
 };
 
-export type AccountOrganization = AccountOrganization_Serialize | AccountOrganization_Deserialize;
-
-export type AccountOrganization_Deserialize = {
-	id: string,
-	displayName: string | null,
-	role: string | null,
-};
-
-export type AccountOrganization_Serialize = {
+export type AccountOrganization = {
 	id: string,
 	displayName?: string | null,
 	role?: string | null,
 };
 
-export type AccountPlan = AccountPlan_Serialize | AccountPlan_Deserialize;
-
-export type AccountPlanOption = {
-	tier: string,
-	displayName: string,
-	priceUsd: number | null,
-	monthlyAllowanceUsd: number | null,
-};
-
-export type AccountPlan_Deserialize = {
-	name: string,
-	tier: string | null,
-	state: string | null,
-	/**
-	 *  False when the backend reports no dollar limit for this account: the UI
-	 *  must then omit allowance figures instead of showing zeros.
-	 */
-	metered: boolean,
-	monthlyAllowanceUsd: number | null,
-	usedUsd: number | null,
-	remainingUsd: number | null,
-	resetsAt: string | null,
-	renewsAt: string | null,
-	/**  `cloud` or `dev_seed`; the UI labels the stand-in explicitly. */
-	source: string,
-};
-
-export type AccountPlan_Serialize = {
+export type AccountPlan = {
 	name: string,
 	tier?: string | null,
 	state?: string | null,
@@ -508,36 +465,14 @@ export type AccountPlan_Serialize = {
 	source: string,
 };
 
-export type AccountSummary = AccountSummary_Serialize | AccountSummary_Deserialize;
-
-export type AccountSummary_Deserialize = {
-	signedIn: boolean,
-	state: string,
-	environment: string,
-	/**  Where the rendered plan came from, so the UI can label a dev stand-in. */
-	source: string,
-	accountId: string | null,
-	displayName: string | null,
-	email: string | null,
-	organization: AccountOrganization_Deserialize | null,
-	plan: AccountPlan_Deserialize | null,
-	cloudUsage: AccountCloudUsage | null,
-	billing: AccountBilling_Deserialize,
-	catalog: AccountPlanOption[],
-	/**  When the rendered cloud facts were fetched, for a `Last updated` line. */
-	lastUpdated: string | null,
-	stale: boolean,
-	error: string | null,
-	/**  `local_only` | `signed_out` | `active` | `revoked` | `offline` | `malformed` */
-	sessionHealth: string,
-	/**  `none` | `auth` | `entitlement` | `quota` | `outage` | `malformed` */
-	failureKind: string,
-	quotaExhausted: boolean,
-	/**  `ok` | `stale` | `failed` — hosted usage vs the last successful snapshot. */
-	reconciliation: string,
+export type AccountPlanOption = {
+	tier: string,
+	displayName: string,
+	priceUsd: number | null,
+	monthlyAllowanceUsd: number | null,
 };
 
-export type AccountSummary_Serialize = {
+export type AccountSummary = {
 	signedIn: boolean,
 	state: string,
 	environment: string,
@@ -546,10 +481,10 @@ export type AccountSummary_Serialize = {
 	accountId?: string | null,
 	displayName?: string | null,
 	email?: string | null,
-	organization?: AccountOrganization_Serialize | null,
-	plan?: AccountPlan_Serialize | null,
+	organization?: AccountOrganization | null,
+	plan?: AccountPlan | null,
 	cloudUsage?: AccountCloudUsage | null,
-	billing: AccountBilling_Serialize,
+	billing: AccountBilling,
 	catalog: AccountPlanOption[],
 	/**  When the rendered cloud facts were fetched, for a `Last updated` line. */
 	lastUpdated?: string | null,
@@ -585,9 +520,7 @@ export type AppError = {
 	detail: string,
 };
 
-export type AppEvent = AppEvent_Serialize | AppEvent_Deserialize;
-
-export type AppEvent_Deserialize = {
+export type AppEvent = {
 	schemaVersion: string,
 	sequence: number,
 	eventId: string,
@@ -602,33 +535,7 @@ export type AppEvent_Deserialize = {
 	createdAt: string,
 };
 
-export type AppEvent_Serialize = {
-	schemaVersion: string,
-	sequence: number,
-	eventId: string,
-	sessionId?: string | null,
-	sessionSequence?: number,
-	runId?: string | null,
-	source: EventSource,
-	kind: string,
-	payload: unknown,
-	remoteSequence?: number,
-	commandId?: string | null,
-	createdAt: string,
-};
-
-export type ArtifactMutationReceipt = ArtifactMutationReceipt_Serialize | ArtifactMutationReceipt_Deserialize;
-
-export type ArtifactMutationReceipt_Deserialize = {
-	operation: string,
-	artifactId: string,
-	digest?: string | null,
-	bytes?: number | null,
-	destination?: string | null,
-	status: string,
-};
-
-export type ArtifactMutationReceipt_Serialize = {
+export type ArtifactMutationReceipt = {
 	operation: string,
 	artifactId: string,
 	digest?: string | null,
@@ -851,18 +758,8 @@ export type CommandReceipt = {
 };
 
 /**  What the Computer Use page renders. */
-export type ComputerUseSnapshot = ComputerUseSnapshot_Serialize | ComputerUseSnapshot_Deserialize;
-
-/**  What the Computer Use page renders. */
-export type ComputerUseSnapshot_Deserialize = {
-	status: PluginStatus_Deserialize,
-	/**  Bundle identifiers this session may drive without a fresh card. */
-	allowedApps: string[],
-};
-
-/**  What the Computer Use page renders. */
-export type ComputerUseSnapshot_Serialize = {
-	status: PluginStatus_Serialize,
+export type ComputerUseSnapshot = {
+	status: PluginStatus,
 	/**  Bundle identifiers this session may drive without a fresh card. */
 	allowedApps: string[],
 };
@@ -1041,7 +938,25 @@ export type EvalStageCandidatesRequest = {
 
 export type EventSource = "local" | "remote" | "intern" | "codex" | "system" | "mlx" | "visual" | "report";
 
-export type ExperimentRecord = ExperimentRecord_Serialize | ExperimentRecord_Deserialize;
+export type ExperimentRecord = {
+	experimentId: string,
+	reportId?: string | null,
+	revision?: number,
+	title: string,
+	hypothesis?: string | null,
+	status: ExperimentStatus,
+	protocolDigest?: string | null,
+	arms: unknown,
+	runs: unknown,
+	results: unknown,
+	evaluatorRefs: unknown,
+	traceCollectionRefs: unknown,
+	claimRefs: unknown,
+	researchLogRefs: unknown,
+	limitations: unknown,
+	createdAt: string,
+	createdBy: string,
+};
 
 export type ExperimentRecordUpsert = {
 	experimentId: string | null,
@@ -1060,80 +975,9 @@ export type ExperimentRecordUpsert = {
 	createdBy: string | null,
 };
 
-export type ExperimentRecord_Deserialize = {
-	experimentId: string,
-	reportId?: string | null,
-	revision?: number,
-	title: string,
-	hypothesis?: string | null,
-	status: ExperimentStatus,
-	protocolDigest?: string | null,
-	arms: unknown,
-	runs: unknown,
-	results: unknown,
-	evaluatorRefs: unknown,
-	traceCollectionRefs: unknown,
-	claimRefs: unknown,
-	researchLogRefs: unknown,
-	limitations: unknown,
-	createdAt: string,
-	createdBy: string,
-};
-
-export type ExperimentRecord_Serialize = {
-	experimentId: string,
-	reportId?: string | null,
-	revision?: number,
-	title: string,
-	hypothesis?: string | null,
-	status: ExperimentStatus,
-	protocolDigest?: string | null,
-	arms: unknown,
-	runs: unknown,
-	results: unknown,
-	evaluatorRefs: unknown,
-	traceCollectionRefs: unknown,
-	claimRefs: unknown,
-	researchLogRefs: unknown,
-	limitations: unknown,
-	createdAt: string,
-	createdBy: string,
-};
-
 export type ExperimentStatus = "planned" | "running" | "completed" | "failed" | "aborted" | "superseded" | "excluded";
 
-export type HostedTrainingModel = HostedTrainingModel_Serialize | HostedTrainingModel_Deserialize;
-
-export type HostedTrainingModelCatalog = HostedTrainingModelCatalog_Serialize | HostedTrainingModelCatalog_Deserialize;
-
-export type HostedTrainingModelCatalog_Deserialize = {
-	schema_version: string,
-	catalog_revision: string,
-	live_preflight_required: boolean,
-	models: HostedTrainingModel_Deserialize[],
-	total: number,
-};
-
-export type HostedTrainingModelCatalog_Serialize = {
-	schemaVersion: string,
-	catalogRevision: string,
-	livePreflightRequired: boolean,
-	models: HostedTrainingModel_Serialize[],
-	total: number,
-};
-
-export type HostedTrainingModel_Deserialize = {
-	model_id: string,
-	label: string,
-	provider: string,
-	provider_revision: string,
-	architecture: string,
-	max_context_length: number,
-	rank: unknown,
-	algorithms: unknown,
-};
-
-export type HostedTrainingModel_Serialize = {
+export type HostedTrainingModel = {
 	modelId: string,
 	label: string,
 	provider: string,
@@ -1142,6 +986,14 @@ export type HostedTrainingModel_Serialize = {
 	maxContextLength: number,
 	rank: unknown,
 	algorithms: unknown,
+};
+
+export type HostedTrainingModelCatalog = {
+	schemaVersion: string,
+	catalogRevision: string,
+	livePreflightRequired: boolean,
+	models: HostedTrainingModel[],
+	total: number,
 };
 
 export type ImportPreview = {
@@ -1186,17 +1038,8 @@ export type InternSessionControlRequest = {
 	payload?: unknown,
 };
 
-export type InternSessionCreateRequest = InternSessionCreateRequest_Serialize | InternSessionCreateRequest_Deserialize;
-
-export type InternSessionCreateRequest_Deserialize = {
-	target: InternTarget_Deserialize,
-	objective: string,
-	title: string | null,
-	projectId: string | null,
-};
-
-export type InternSessionCreateRequest_Serialize = {
-	target: InternTarget_Serialize,
+export type InternSessionCreateRequest = {
+	target: InternTarget,
 	objective: string,
 	title: string | null,
 	projectId: string | null,
@@ -1222,15 +1065,7 @@ export type InternSessionWire = {
 	metadata: unknown,
 };
 
-export type InternTarget = InternTarget_Serialize | InternTarget_Deserialize;
-
-export type InternTarget_Deserialize = {
-	kind: string,
-	mode: string,
-	binding?: unknown,
-};
-
-export type InternTarget_Serialize = {
+export type InternTarget = {
 	kind: string,
 	mode: string,
 	binding?: unknown,
@@ -1434,25 +1269,7 @@ export type ModelMultiAgentUpdate = {
 	version: MultiAgentVersion | null,
 };
 
-export type ModelPerformanceMetric = ModelPerformanceMetric_Serialize | ModelPerformanceMetric_Deserialize;
-
-export type ModelPerformanceMetric_Deserialize = {
-	model_id: string,
-	provider: string,
-	sample_count: number,
-	input_tokens: number,
-	cached_input_tokens: number,
-	output_tokens: number,
-	total_tokens: number,
-	output_tps_p50: number | null,
-	output_tps_p95: number | null,
-	total_tpm_p50: number | null,
-	total_tpm_p95: number | null,
-	latency_ms_p50: number | null,
-	latency_ms_p95: number | null,
-};
-
-export type ModelPerformanceMetric_Serialize = {
+export type ModelPerformanceMetric = {
 	modelId: string,
 	provider: string,
 	sampleCount: number,
@@ -1468,18 +1285,10 @@ export type ModelPerformanceMetric_Serialize = {
 	latencyMsP95: number | null,
 };
 
-export type ModelPerformanceSnapshot = ModelPerformanceSnapshot_Serialize | ModelPerformanceSnapshot_Deserialize;
-
-export type ModelPerformanceSnapshot_Deserialize = {
-	window_minutes: number,
-	generated_at: string,
-	models: ModelPerformanceMetric_Deserialize[],
-};
-
-export type ModelPerformanceSnapshot_Serialize = {
+export type ModelPerformanceSnapshot = {
 	windowMinutes: number,
 	generatedAt: string,
-	models: ModelPerformanceMetric_Serialize[],
+	models: ModelPerformanceMetric[],
 };
 
 export type ModelPerformanceSummary = {
@@ -1521,9 +1330,7 @@ export type OptimizerCapabilities = {
 	localSlotBinding?: boolean,
 };
 
-export type OptimizerCreateRequest = OptimizerCreateRequest_Serialize | OptimizerCreateRequest_Deserialize;
-
-export type OptimizerCreateRequest_Deserialize = {
+export type OptimizerCreateRequest = {
 	algorithmId: string,
 	algorithmVersion?: string | null,
 	objective?: string | null,
@@ -1531,8 +1338,8 @@ export type OptimizerCreateRequest_Deserialize = {
 	projectRef?: string | null,
 	sessionRef?: string | null,
 	id?: string | null,
-	executionBindings?: OptimizerExecutionBinding_Deserialize[] | null,
-	inputRefs?: OptimizerResourceRef_Deserialize[] | null,
+	executionBindings?: OptimizerExecutionBinding[] | null,
+	inputRefs?: OptimizerResourceRef[] | null,
 	capabilities?: OptimizerCapabilities | null,
 	summary?: unknown,
 	openVisual?: boolean | null,
@@ -1543,29 +1350,7 @@ export type OptimizerCreateRequest_Deserialize = {
 	localPath?: string | null,
 };
 
-export type OptimizerCreateRequest_Serialize = {
-	algorithmId: string,
-	algorithmVersion: string | null,
-	objective: string | null,
-	source: string | null,
-	projectRef: string | null,
-	sessionRef: string | null,
-	id: string | null,
-	executionBindings: OptimizerExecutionBinding_Serialize[] | null,
-	inputRefs: OptimizerResourceRef_Serialize[] | null,
-	capabilities: OptimizerCapabilities | null,
-	summary: unknown,
-	openVisual: boolean | null,
-	seedFixture: string | null,
-	/**  Cloud create payload: `{ config_toml }` or `{ config_json }`. */
-	cloudConfig: unknown,
-	/**  Import a local OSS / optimizers-beta workspace or events file. */
-	localPath: string | null,
-};
-
-export type OptimizerEventEnvelope = OptimizerEventEnvelope_Serialize | OptimizerEventEnvelope_Deserialize;
-
-export type OptimizerEventEnvelope_Deserialize = {
+export type OptimizerEventEnvelope = {
 	schemaVersion: string,
 	eventId?: string | null,
 	type: string,
@@ -1583,40 +1368,12 @@ export type OptimizerEventEnvelope_Deserialize = {
 	raw?: unknown,
 };
 
-export type OptimizerEventEnvelope_Serialize = {
-	schemaVersion: string,
-	eventId?: string | null,
-	type: string,
-	sequenceNumber: number,
-	occurredAt: string,
-	optimizerRunId: string,
-	algorithmId: string,
-	level?: string | null,
-	item?: unknown,
-	delta: unknown,
-	snapshot?: unknown,
-	usageDelta?: unknown,
-	artifactRefs?: unknown,
-	error?: unknown,
-	raw: unknown,
-};
-
-export type OptimizerExecutionBinding = OptimizerExecutionBinding_Serialize | OptimizerExecutionBinding_Deserialize;
-
-export type OptimizerExecutionBinding_Deserialize = {
+export type OptimizerExecutionBinding = {
 	kind: string,
 	id: string,
 	label?: string | null,
 	status?: string | null,
 	metadata?: unknown,
-};
-
-export type OptimizerExecutionBinding_Serialize = {
-	kind: string,
-	id: string,
-	label?: string | null,
-	status?: string | null,
-	metadata: unknown,
 };
 
 export type OptimizerImportLocalRequest = {
@@ -1697,9 +1454,7 @@ export type OptimizerRelationship = {
 	metadata?: unknown,
 };
 
-export type OptimizerResourceRef = OptimizerResourceRef_Serialize | OptimizerResourceRef_Deserialize;
-
-export type OptimizerResourceRef_Deserialize = {
+export type OptimizerResourceRef = {
 	kind: string,
 	id: string,
 	digest?: string | null,
@@ -1708,33 +1463,7 @@ export type OptimizerResourceRef_Deserialize = {
 	metadata?: unknown,
 };
 
-export type OptimizerResourceRef_Serialize = {
-	kind: string,
-	id: string,
-	digest?: string | null,
-	role?: string | null,
-	title?: string | null,
-	metadata: unknown,
-};
-
-export type OptimizerRunOutputArtifact = OptimizerRunOutputArtifact_Serialize | OptimizerRunOutputArtifact_Deserialize;
-
-export type OptimizerRunOutputArtifact_Deserialize = {
-	artifact_id: string,
-	run_id: string,
-	artifact_name: string,
-	content_type: string | null,
-	size_bytes: number,
-	sha256: string | null,
-	storage_backend: string,
-	uri: string,
-	download_path: string,
-	metadata: unknown,
-	created_at: string | null,
-	updated_at: string | null,
-};
-
-export type OptimizerRunOutputArtifact_Serialize = {
+export type OptimizerRunOutputArtifact = {
 	artifactId: string,
 	runId: string,
 	artifactName: string,
@@ -1749,57 +1478,28 @@ export type OptimizerRunOutputArtifact_Serialize = {
 	updatedAt: string | null,
 };
 
-export type OptimizerRunOutputCounts = OptimizerRunOutputCounts_Serialize | OptimizerRunOutputCounts_Deserialize;
-
-export type OptimizerRunOutputCounts_Deserialize = {
-	artifacts: number,
-	model_checkpoints: number,
-};
-
-export type OptimizerRunOutputCounts_Serialize = {
+export type OptimizerRunOutputCounts = {
 	artifacts: number,
 	modelCheckpoints: number,
 };
 
-export type OptimizerRunOutputIdentity = OptimizerRunOutputIdentity_Serialize | OptimizerRunOutputIdentity_Deserialize;
-
-export type OptimizerRunOutputIdentity_Deserialize = {
-	run_id: string,
-	attempt_id: string | null,
-	optimizer_algorithm: string,
-	status: string,
-};
-
-export type OptimizerRunOutputIdentity_Serialize = {
+export type OptimizerRunOutputIdentity = {
 	runId: string,
 	attemptId: string | null,
 	optimizerAlgorithm: string,
 	status: string,
 };
 
-export type OptimizerRunOutputs = OptimizerRunOutputs_Serialize | OptimizerRunOutputs_Deserialize;
-
-export type OptimizerRunOutputs_Deserialize = {
-	schema_version: string,
-	run: OptimizerRunOutputIdentity_Deserialize,
-	result: unknown,
-	artifacts: OptimizerRunOutputArtifact_Deserialize[],
-	model_checkpoints: SavedLoraCheckpoint_Deserialize[],
-	counts: OptimizerRunOutputCounts_Deserialize,
-};
-
-export type OptimizerRunOutputs_Serialize = {
+export type OptimizerRunOutputs = {
 	schemaVersion: string,
-	run: OptimizerRunOutputIdentity_Serialize,
+	run: OptimizerRunOutputIdentity,
 	result: unknown,
-	artifacts: OptimizerRunOutputArtifact_Serialize[],
-	modelCheckpoints: SavedLoraCheckpoint_Serialize[],
-	counts: OptimizerRunOutputCounts_Serialize,
+	artifacts: OptimizerRunOutputArtifact[],
+	modelCheckpoints: SavedLoraCheckpoint[],
+	counts: OptimizerRunOutputCounts,
 };
 
-export type OptimizerRunRecord = OptimizerRunRecord_Serialize | OptimizerRunRecord_Deserialize;
-
-export type OptimizerRunRecord_Deserialize = {
+export type OptimizerRunRecord = {
 	schemaVersion: string,
 	id: string,
 	algorithmId: string,
@@ -1814,85 +1514,14 @@ export type OptimizerRunRecord_Deserialize = {
 	finishedAt?: string | null,
 	cursorSeq?: number,
 	capabilities?: OptimizerCapabilities,
-	executionBindings?: OptimizerExecutionBinding_Deserialize[],
-	inputRefs?: OptimizerResourceRef_Deserialize[],
-	outputRefs?: OptimizerResourceRef_Deserialize[],
-	visualRefs?: OptimizerResourceRef_Deserialize[],
+	executionBindings?: OptimizerExecutionBinding[],
+	inputRefs?: OptimizerResourceRef[],
+	outputRefs?: OptimizerResourceRef[],
+	visualRefs?: OptimizerResourceRef[],
 	summary?: unknown,
 	usage?: OptimizerUsageSummary,
 	error?: unknown,
 };
-
-export type OptimizerRunRecord_Serialize = {
-	schemaVersion: string,
-	id: string,
-	algorithmId: string,
-	algorithmVersion?: string | null,
-	status: string,
-	source: string,
-	objective?: string | null,
-	projectRef?: string | null,
-	sessionRef?: string | null,
-	createdAt: string,
-	startedAt?: string | null,
-	finishedAt?: string | null,
-	cursorSeq: number,
-	capabilities: OptimizerCapabilities,
-	executionBindings: OptimizerExecutionBinding_Serialize[],
-	inputRefs: OptimizerResourceRef_Serialize[],
-	outputRefs: OptimizerResourceRef_Serialize[],
-	visualRefs: OptimizerResourceRef_Serialize[],
-	summary: unknown,
-	usage: OptimizerUsageSummary,
-	error?: unknown,
-};
-
-/**
- *  The one status vocabulary for `optimizer_runs`.
- *
- *  Before this type there were four disagreeing terminal predicates
- *  (`service::is_terminal_status`, `validate_control`, the milestone wait, and
- *  `recipes::reconcile_persisted`) over an untyped `String` column with a
- *  fifteen-word vocabulary. A run that read as finished to one of them read as
- *  live to another, which is how a settled run kept a spinner turning.
- *
- *  The variants are exactly the spellings a producer writes today — the local
- *  recipe workers, the training-lifecycle projection, and the Synth Cloud
- *  mirror. [`OptimizerRunStatus::parse`] additionally accepts the legacy
- *  aliases those producers used to emit so a database written by an older
- *  build still reads; every alias normalizes onto one canonical spelling, and
- *  migration 28 rewrites the stored column so the trigger domain holds. The
- *  aliases live in `parse` and not in `#[serde(alias)]` on purpose: they are a
- *  read-compatibility detail of this build, not part of the contract the
- *  renderer is handed, and putting them on the variants would export them as
- *  legal values in the generated TypeScript union.
- */
-export type OptimizerRunStatus =
-/**  Admitted, not yet started. */
-"queued" |
-/**  Config admission is running (training lane). */
-"validating" |
-/**  Compute is being acquired (training lane). */
-"provisioning" |
-/**  The worker process is coming up. */
-"starting" |
-/**  A prepared run held until its viewer attaches. */
-"waiting_for_viewer" | "running" | "paused" |
-/**  A cancel was accepted and is being carried out. */
-"cancelling" |
-/**  The training environment stopped answering; compute may still be live. */
-"env_unreachable" |
-/**  Finished, but its evidence lane did not settle cleanly. */
-"degraded" | "completed" | "failed" |
-/**
- *  Terminal with unusable evidence — distinct from `Failed` because the
- *  work ran; only the receipt is missing.
- */
-"failed_evidence" | "cancelled" |
-/**  The owner process died without sealing; recovery rewrote the row. */
-"interrupted" | "infrastructure_lost" |
-/**  Stopped because a spend or step ceiling was reached. */
-"cap_reached";
 
 export type OptimizerSearchOverrides = {
 	proposalsPerGeneration?: number,
@@ -1961,13 +1590,7 @@ export type PendingGrantSummary = {
  *  One row in the permission list: what the OS was asked for, what it said, and
  *  where the operator goes to change it.
  */
-export type PluginPermission = PluginPermission_Serialize | PluginPermission_Deserialize;
-
-/**
- *  One row in the permission list: what the OS was asked for, what it said, and
- *  where the operator goes to change it.
- */
-export type PluginPermission_Deserialize = {
+export type PluginPermission = {
 	/**  Stable identifier, e.g. `accessibility`, `screen_recording`. */
 	id: string,
 	/**
@@ -1983,43 +1606,13 @@ export type PluginPermission_Deserialize = {
 	detail?: string | null,
 };
 
-/**
- *  One row in the permission list: what the OS was asked for, what it said, and
- *  where the operator goes to change it.
- */
-export type PluginPermission_Serialize = {
-	/**  Stable identifier, e.g. `accessibility`, `screen_recording`. */
-	id: string,
-	/**
-	 *  What macOS itself calls this in System Settings. Matching its wording is
-	 *  what makes the row findable; our own name for it would not be.
-	 */
-	label: string,
-	/**  One of [`PLUGIN_PERMISSION_STATES`]. */
-	state: string,
-	/**  Deep link to the exact Privacy & Security pane, where one exists. */
-	settingsUrl?: string | null,
-	/**  Why the plugin needs it, in one line. A reason, not a pitch. */
-	detail?: string | null,
-};
-
-export type PluginServiceStatus = PluginServiceStatus_Serialize | PluginServiceStatus_Deserialize;
-
-export type PluginServiceStatus_Deserialize = {
+export type PluginServiceStatus = {
 	phase: string,
 	startedAt?: string | null,
 	activeRuns?: number,
 };
 
-export type PluginServiceStatus_Serialize = {
-	phase: string,
-	startedAt?: string | null,
-	activeRuns: number,
-};
-
-export type PluginStatus = PluginStatus_Serialize | PluginStatus_Deserialize;
-
-export type PluginStatus_Deserialize = {
+export type PluginStatus = {
 	schemaVersion: string,
 	pluginId: string,
 	enabled: boolean,
@@ -2029,7 +1622,7 @@ export type PluginStatus_Deserialize = {
 	releaseChannel: string,
 	catalogVersion: string,
 	digest?: string | null,
-	service: PluginServiceStatus_Deserialize,
+	service: PluginServiceStatus,
 	capabilitiesDigest?: string | null,
 	algorithms?: string[],
 	templates?: string[],
@@ -2037,30 +1630,7 @@ export type PluginStatus_Deserialize = {
 	 *  OS grants this plugin holds. Empty for plugins that need none, which is
 	 *  most of them — hence a list rather than an `Option`.
 	 */
-	permissions?: PluginPermission_Deserialize[],
-	lastActionReceiptId?: string | null,
-	detail?: string | null,
-};
-
-export type PluginStatus_Serialize = {
-	schemaVersion: string,
-	pluginId: string,
-	enabled: boolean,
-	phase: string,
-	installedVersion?: string | null,
-	selectedVersion?: string | null,
-	releaseChannel: string,
-	catalogVersion: string,
-	digest?: string | null,
-	service: PluginServiceStatus_Serialize,
-	capabilitiesDigest?: string | null,
-	algorithms: string[],
-	templates: string[],
-	/**
-	 *  OS grants this plugin holds. Empty for plugins that need none, which is
-	 *  most of them — hence a list rather than an `Option`.
-	 */
-	permissions?: PluginPermission_Serialize[],
+	permissions?: PluginPermission[],
 	lastActionReceiptId?: string | null,
 	detail?: string | null,
 };
@@ -2156,58 +1726,21 @@ export type RenderedVisualObservation = {
 
 export type RendererKind = "template" | "tsx" | "html" | "mermaid" | "systems" | "systems-dynamic" | "chart";
 
-export type ReportAudience = ReportAudience_Serialize | ReportAudience_Deserialize;
+export type ReportAudience = { kind: "private" } | { kind: "workspace"; workspace_id: string } | { kind: "members"; member_ids: string[] };
 
-export type ReportAudienceRequest = ReportAudienceRequest_Serialize | ReportAudienceRequest_Deserialize;
-
-export type ReportAudienceRequest_Deserialize = {
-	audience: ReportAudience_Deserialize,
-} & {
-	receipt_digest: string,
-} & {
-	redaction_policy_version: string,
+export type ReportAudienceRequest = {
+	receiptDigest: string,
+	audience: ReportAudience,
+	redactionPolicyVersion: string,
 };
 
-export type ReportAudienceRequest_Serialize = {
-	receipt_digest: string,
-	audience: ReportAudience_Serialize,
-	redaction_policy_version: string,
-};
-
-export type ReportAudienceState = ReportAudienceState_Serialize | ReportAudienceState_Deserialize;
-
-export type ReportAudienceState_Deserialize = {
-	audience: ReportAudience_Deserialize,
-	status: string,
-} & {
+export type ReportAudienceState = {
 	publicationId: string,
-} | {
-	publication_id: string,
-};
-
-export type ReportAudienceState_Serialize = {
-	publicationId: string,
-	audience: ReportAudience_Serialize,
+	audience: ReportAudience,
 	status: string,
 };
 
-export type ReportAudience_Deserialize = ({ private: {
-	kind: "private",
-} }) & { members?: never; workspace?: never } | ({ workspace: {
-	kind: "workspace",
-} & {
-	workspace_id: string,
-} }) & { members?: never; private?: never } | ({ members: {
-	kind: "members",
-} & {
-	member_ids: string[],
-} }) & { private?: never; workspace?: never };
-
-export type ReportAudience_Serialize = ({ kind: "private" }) & { member_ids?: never; workspace_id?: never } | ({ kind: "workspace"; workspace_id: string }) & { member_ids?: never } | ({ kind: "members"; member_ids: string[] }) & { workspace_id?: never };
-
-export type ReportBlock = ReportBlock_Serialize | ReportBlock_Deserialize;
-
-export type ReportBlock_Deserialize = {
+export type ReportBlock = {
 	blockId: string,
 	kind: string,
 	anchor: string,
@@ -2216,19 +1749,6 @@ export type ReportBlock_Deserialize = {
 	sourceRevision?: string | null,
 	sourceDigest?: string | null,
 	referenceMode?: string,
-	accessState: string,
-	integrityState: string,
-};
-
-export type ReportBlock_Serialize = {
-	blockId: string,
-	kind: string,
-	anchor: string,
-	title?: string | null,
-	payload: unknown,
-	sourceRevision?: string | null,
-	sourceDigest?: string | null,
-	referenceMode: string,
 	accessState: string,
 	integrityState: string,
 };
@@ -2242,7 +1762,17 @@ export type ReportClaim = {
 	evidenceRefs: string[],
 };
 
-export type ReportComment = ReportComment_Serialize | ReportComment_Deserialize;
+export type ReportComment = {
+	commentId: string,
+	reportId: string,
+	reportRevision: number,
+	receiptDigest?: string | null,
+	publicationId?: string | null,
+	anchor?: string | null,
+	body: string,
+	authorId: string,
+	createdAt: string,
+};
 
 export type ReportCommentCreate = {
 	body: string,
@@ -2252,50 +1782,14 @@ export type ReportCommentCreate = {
 	publicationId: string | null,
 };
 
-export type ReportComment_Deserialize = {
-	commentId: string,
-	reportId: string,
-	reportRevision: number,
-	receiptDigest?: string | null,
-	publicationId?: string | null,
-	anchor?: string | null,
-	body: string,
-	authorId: string,
-	createdAt: string,
-};
-
-export type ReportComment_Serialize = {
-	commentId: string,
-	reportId: string,
-	reportRevision: number,
-	receiptDigest?: string | null,
-	publicationId?: string | null,
-	anchor?: string | null,
-	body: string,
-	authorId: string,
-	createdAt: string,
-};
-
-export type ReportCreateRequest = ReportCreateRequest_Serialize | ReportCreateRequest_Deserialize;
-
-export type ReportCreateRequest_Deserialize = {
+export type ReportCreateRequest = {
 	title: string | null,
 	summary: string | null,
 	authors: string[] | null,
 	projectRef: string | null,
 	id: string | null,
 	createdBy: string | null,
-	blocks: ReportBlock_Deserialize[] | null,
-};
-
-export type ReportCreateRequest_Serialize = {
-	title: string | null,
-	summary: string | null,
-	authors: string[] | null,
-	projectRef: string | null,
-	id: string | null,
-	createdBy: string | null,
-	blocks: ReportBlock_Serialize[] | null,
+	blocks: ReportBlock[] | null,
 };
 
 export type ReportLimitation = {
@@ -2303,22 +1797,7 @@ export type ReportLimitation = {
 	body: string,
 };
 
-export type ReportPromotion = ReportPromotion_Serialize | ReportPromotion_Deserialize;
-
-export type ReportPromotion_Deserialize = {
-	slug: string,
-	status: string,
-} & {
-	publicationId: string,
-} | {
-	publication_id: string,
-} & {
-	publicUrl: string,
-} | {
-	public_url: string,
-};
-
-export type ReportPromotion_Serialize = {
+export type ReportPromotion = {
 	publicationId: string,
 	slug: string,
 	status: string,
@@ -2332,9 +1811,7 @@ export type ReportQuery = {
 	includeArchived?: boolean,
 };
 
-export type ReportRecord = ReportRecord_Serialize | ReportRecord_Deserialize;
-
-export type ReportRecord_Deserialize = {
+export type ReportRecord = {
 	schemaVersion: string,
 	id: string,
 	projectRef?: string | null,
@@ -2349,65 +1826,29 @@ export type ReportRecord_Deserialize = {
 	archivedAt?: string | null,
 };
 
-export type ReportRecord_Serialize = {
+export type ReportRevision = {
 	schemaVersion: string,
-	id: string,
-	projectRef?: string | null,
-	currentRevision: number,
+	reportId: string,
+	revision: number,
 	title: string,
 	summary?: string | null,
 	authors: string[],
 	status: ReportStatus,
+	blocks: ReportBlock[],
+	sources: ReportSource[],
+	claims: ReportClaim[],
+	limitations: ReportLimitation[],
+	contentDigest?: string | null,
+	compilerName?: string | null,
+	compilerVersion?: string | null,
 	createdBy: string,
 	createdAt: string,
-	updatedAt: string,
-	archivedAt?: string | null,
 };
-
-export type ReportRevision = ReportRevision_Serialize | ReportRevision_Deserialize;
 
 export type ReportRevisionCompare = {
 	left: ReportSealBundle,
 	right: ReportSealBundle,
 	sameDigest: boolean,
-};
-
-export type ReportRevision_Deserialize = {
-	schemaVersion: string,
-	reportId: string,
-	revision: number,
-	title: string,
-	summary?: string | null,
-	authors: string[],
-	status: ReportStatus,
-	blocks: ReportBlock_Deserialize[],
-	sources: ReportSource_Deserialize[],
-	claims: ReportClaim[],
-	limitations: ReportLimitation[],
-	contentDigest?: string | null,
-	compilerName?: string | null,
-	compilerVersion?: string | null,
-	createdBy: string,
-	createdAt: string,
-};
-
-export type ReportRevision_Serialize = {
-	schemaVersion: string,
-	reportId: string,
-	revision: number,
-	title: string,
-	summary?: string | null,
-	authors: string[],
-	status: ReportStatus,
-	blocks: ReportBlock_Serialize[],
-	sources: ReportSource_Serialize[],
-	claims: ReportClaim[],
-	limitations: ReportLimitation[],
-	contentDigest?: string | null,
-	compilerName?: string | null,
-	compilerVersion?: string | null,
-	createdBy: string,
-	createdAt: string,
 };
 
 export type ReportSeal = {
@@ -2432,9 +1873,7 @@ export type ReportSealBundle = {
 	receipt: unknown,
 };
 
-export type ReportSource = ReportSource_Serialize | ReportSource_Deserialize;
-
-export type ReportSource_Deserialize = {
+export type ReportSource = {
 	sourceId: string,
 	resourceKind: string,
 	resourceId: string,
@@ -2446,45 +1885,16 @@ export type ReportSource_Deserialize = {
 	integrityState: string,
 };
 
-export type ReportSource_Serialize = {
-	sourceId: string,
-	resourceKind: string,
-	resourceId: string,
-	resourceRevision?: string | null,
-	resourceDigest?: string | null,
-	referenceMode: string,
-	relation: string,
-	accessState: string,
-	integrityState: string,
-};
-
 export type ReportStatus = "draft" | "sealed";
 
-export type ReportUpdateRequest = ReportUpdateRequest_Serialize | ReportUpdateRequest_Deserialize;
-
-export type ReportUpdateRequest_Deserialize = {
-	title: string | null,
-	summary: string | null,
-	authors: string[] | null,
-	projectRef: string | null,
-	blocks: ReportBlock_Deserialize[] | null,
-	sources: ReportSource_Deserialize[] | null,
-	claims: ReportClaim[] | null,
-	limitations: ReportLimitation[] | null,
-} & {
+export type ReportUpdateRequest = {
 	expectedRevision?: number,
-} | {
-	expected_revision?: number,
-};
-
-export type ReportUpdateRequest_Serialize = {
-	expectedRevision: number,
 	title: string | null,
 	summary: string | null,
 	authors: string[] | null,
 	projectRef: string | null,
-	blocks: ReportBlock_Serialize[] | null,
-	sources: ReportSource_Serialize[] | null,
+	blocks: ReportBlock[] | null,
+	sources: ReportSource[] | null,
 	claims: ReportClaim[] | null,
 	limitations: ReportLimitation[] | null,
 };
@@ -2500,9 +1910,7 @@ export type ReportUpload = {
 	updatedAt: string,
 };
 
-export type ReportValidationFinding = ReportValidationFinding_Serialize | ReportValidationFinding_Deserialize;
-
-export type ReportValidationFinding_Deserialize = {
+export type ReportValidationFinding = {
 	code: string,
 	severity: string,
 	blockId?: string | null,
@@ -2511,55 +1919,14 @@ export type ReportValidationFinding_Deserialize = {
 	remediation?: string | null,
 };
 
-export type ReportValidationFinding_Serialize = {
-	code: string,
-	severity: string,
-	blockId?: string | null,
-	claimId?: string | null,
-	message: string,
-	remediation?: string | null,
-};
-
-export type ReportValidationResult = ReportValidationResult_Serialize | ReportValidationResult_Deserialize;
-
-export type ReportValidationResult_Deserialize = {
+export type ReportValidationResult = {
 	reportId: string,
 	revision: number,
 	sealable: boolean,
-	findings: ReportValidationFinding_Deserialize[],
+	findings: ReportValidationFinding[],
 };
 
-export type ReportValidationResult_Serialize = {
-	reportId: string,
-	revision: number,
-	sealable: boolean,
-	findings: ReportValidationFinding_Serialize[],
-};
-
-export type ReportVisibilityRequest = ReportVisibilityRequest_Serialize | ReportVisibilityRequest_Deserialize;
-
-export type ReportVisibilityRequestCreate = ReportVisibilityRequestCreate_Serialize | ReportVisibilityRequestCreate_Deserialize;
-
-export type ReportVisibilityRequestCreate_Deserialize = {
-	target: string,
-	slug: string | null,
-	reason: string | null,
-	requestedBy: string | null,
-} & {
-	receiptDigest: string,
-} | {
-	receipt_digest: string,
-};
-
-export type ReportVisibilityRequestCreate_Serialize = {
-	receiptDigest: string,
-	target: string,
-	slug: string | null,
-	reason: string | null,
-	requestedBy: string | null,
-};
-
-export type ReportVisibilityRequest_Deserialize = {
+export type ReportVisibilityRequest = {
 	requestId: string,
 	reportId: string,
 	reportRevision: number,
@@ -2576,21 +1943,12 @@ export type ReportVisibilityRequest_Deserialize = {
 	expiresAt: string,
 };
 
-export type ReportVisibilityRequest_Serialize = {
-	requestId: string,
-	reportId: string,
-	reportRevision: number,
+export type ReportVisibilityRequestCreate = {
 	receiptDigest: string,
 	target: string,
-	slug?: string | null,
-	reason?: string | null,
-	requestedBy: string,
-	status: string,
-	decisionBy?: string | null,
-	error?: string | null,
-	createdAt: string,
-	updatedAt: string,
-	expiresAt: string,
+	slug: string | null,
+	reason: string | null,
+	requestedBy: string | null,
 };
 
 export type ResearchLogAppend = {
@@ -2606,27 +1964,7 @@ export type ResearchLogAppend = {
 	supersedesEntryId: string | null,
 };
 
-export type ResearchLogEntry = ResearchLogEntry_Serialize | ResearchLogEntry_Deserialize;
-
-export type ResearchLogEntry_Deserialize = {
-	entryId: string,
-	reportId?: string | null,
-	sequence: number,
-	occurredAt: string,
-	recordedAt: string,
-	author: string,
-	actorKind: string,
-	entryKind: string,
-	title: string,
-	body: string,
-	tags: string[],
-	links: unknown,
-	claimEffect?: string | null,
-	supersedesEntryId?: string | null,
-	sourceDigest?: string | null,
-};
-
-export type ResearchLogEntry_Serialize = {
+export type ResearchLogEntry = {
 	entryId: string,
 	reportId?: string | null,
 	sequence: number,
@@ -2692,21 +2030,37 @@ export type RuntimeContractView = {
 
 export type RuntimeKind = "sync" | "async";
 
-export type SavedLoraCheckpoint = SavedLoraCheckpoint_Serialize | SavedLoraCheckpoint_Deserialize;
-
-export type SavedLoraCheckpointPage = SavedLoraCheckpointPage_Serialize | SavedLoraCheckpointPage_Deserialize;
-
-export type SavedLoraCheckpointPage_Deserialize = {
-	schema_version: string,
-	items: SavedLoraCheckpoint_Deserialize[],
-	total: number,
-	limit: number,
-	offset: number,
+export type SavedLoraCheckpoint = {
+	schemaVersion: string,
+	checkpointId: string,
+	orgId: string,
+	ownerUserId: string | null,
+	visibility: string,
+	name: string,
+	description: string,
+	provider: string,
+	checkpointKind: string,
+	providerCheckpointReference: string | null,
+	runId: string | null,
+	attemptId: string | null,
+	sourceCheckpointId: string | null,
+	optimizerAlgorithm: string | null,
+	baseModel: string,
+	loraRank: number | null,
+	step: number,
+	status: string,
+	storage: SavedLoraStorage,
+	lineage?: SavedLoraLineage,
+	tags: string[],
+	metadata: unknown,
+	createdAt: string | null,
+	updatedAt: string | null,
+	archivedAt: string | null,
 };
 
-export type SavedLoraCheckpointPage_Serialize = {
+export type SavedLoraCheckpointPage = {
 	schemaVersion: string,
-	items: SavedLoraCheckpoint_Serialize[],
+	items: SavedLoraCheckpoint[],
 	total: number,
 	limit: number,
 	offset: number,
@@ -2728,74 +2082,7 @@ export type SavedLoraCheckpointQuery = {
 	offset: number,
 };
 
-export type SavedLoraCheckpoint_Deserialize = {
-	schema_version: string,
-	checkpoint_id: string,
-	org_id: string,
-	owner_user_id: string | null,
-	visibility: string,
-	name: string,
-	description: string,
-	provider: string,
-	checkpoint_kind: string,
-	provider_checkpoint_reference: string | null,
-	run_id: string | null,
-	attempt_id: string | null,
-	source_checkpoint_id: string | null,
-	optimizer_algorithm: string | null,
-	base_model: string,
-	lora_rank: number | null,
-	step: number,
-	status: string,
-	storage: SavedLoraStorage_Deserialize,
-	lineage?: SavedLoraLineage_Deserialize,
-	tags: string[],
-	metadata: unknown,
-	created_at: string | null,
-	updated_at: string | null,
-	archived_at: string | null,
-};
-
-export type SavedLoraCheckpoint_Serialize = {
-	schemaVersion: string,
-	checkpointId: string,
-	orgId: string,
-	ownerUserId: string | null,
-	visibility: string,
-	name: string,
-	description: string,
-	provider: string,
-	checkpointKind: string,
-	providerCheckpointReference: string | null,
-	runId: string | null,
-	attemptId: string | null,
-	sourceCheckpointId: string | null,
-	optimizerAlgorithm: string | null,
-	baseModel: string,
-	loraRank: number | null,
-	step: number,
-	status: string,
-	storage: SavedLoraStorage_Serialize,
-	lineage: SavedLoraLineage_Serialize,
-	tags: string[],
-	metadata: unknown,
-	createdAt: string | null,
-	updatedAt: string | null,
-	archivedAt: string | null,
-};
-
-export type SavedLoraDownload = SavedLoraDownload_Serialize | SavedLoraDownload_Deserialize;
-
-export type SavedLoraDownload_Deserialize = {
-	checkpoint_id: string,
-	url: string,
-	expires_in: number,
-	content_type: string,
-	size_bytes: number,
-	sha256: string | null,
-};
-
-export type SavedLoraDownload_Serialize = {
+export type SavedLoraDownload = {
 	checkpointId: string,
 	url: string,
 	expiresIn: number,
@@ -2804,17 +2091,7 @@ export type SavedLoraDownload_Serialize = {
 	sha256: string | null,
 };
 
-export type SavedLoraLineage = SavedLoraLineage_Serialize | SavedLoraLineage_Deserialize;
-
-export type SavedLoraLineage_Deserialize = {
-	optimizer_algorithm: string | null,
-	run_id: string | null,
-	attempt_id: string | null,
-	source_checkpoint_id: string | null,
-	provider_checkpoint_reference: string | null,
-};
-
-export type SavedLoraLineage_Serialize = {
+export type SavedLoraLineage = {
 	optimizerAlgorithm: string | null,
 	runId: string | null,
 	attemptId: string | null,
@@ -2822,72 +2099,30 @@ export type SavedLoraLineage_Serialize = {
 	providerCheckpointReference: string | null,
 };
 
-export type SavedLoraRunCounts = SavedLoraRunCounts_Serialize | SavedLoraRunCounts_Deserialize;
-
-export type SavedLoraRunCounts_Deserialize = {
+export type SavedLoraRunCounts = {
 	total: number,
 	inference: number,
 	training: number,
 };
 
-export type SavedLoraRunCounts_Serialize = {
-	total: number,
-	inference: number,
-	training: number,
-};
-
-export type SavedLoraRunIdentity = SavedLoraRunIdentity_Serialize | SavedLoraRunIdentity_Deserialize;
-
-export type SavedLoraRunIdentity_Deserialize = {
-	run_id: string,
-	attempt_id: string | null,
-	optimizer_algorithm: string,
-	status: string,
-};
-
-export type SavedLoraRunIdentity_Serialize = {
+export type SavedLoraRunIdentity = {
 	runId: string,
 	attemptId: string | null,
 	optimizerAlgorithm: string,
 	status: string,
 };
 
-export type SavedLoraRunPage = SavedLoraRunPage_Serialize | SavedLoraRunPage_Deserialize;
-
-export type SavedLoraRunPage_Deserialize = {
-	schema_version: string,
-	run: SavedLoraRunIdentity_Deserialize,
-	items: SavedLoraCheckpoint_Deserialize[],
-	counts: SavedLoraRunCounts_Deserialize,
-	total: number,
-	limit: number,
-	offset: number,
-};
-
-export type SavedLoraRunPage_Serialize = {
+export type SavedLoraRunPage = {
 	schemaVersion: string,
-	run: SavedLoraRunIdentity_Serialize,
-	items: SavedLoraCheckpoint_Serialize[],
-	counts: SavedLoraRunCounts_Serialize,
+	run: SavedLoraRunIdentity,
+	items: SavedLoraCheckpoint[],
+	counts: SavedLoraRunCounts,
 	total: number,
 	limit: number,
 	offset: number,
 };
 
-export type SavedLoraStorage = SavedLoraStorage_Serialize | SavedLoraStorage_Deserialize;
-
-export type SavedLoraStorage_Deserialize = {
-	backend: string,
-	bucket: string,
-	key: string,
-	version: string | null,
-	etag: string | null,
-	sha256: string | null,
-	size_bytes: number,
-	content_type: string,
-};
-
-export type SavedLoraStorage_Serialize = {
+export type SavedLoraStorage = {
 	backend: string,
 	bucket: string,
 	key: string,
@@ -3092,26 +2327,7 @@ export type TraceRecord = {
 	createdAt: string,
 };
 
-export type TrainingArtifact = TrainingArtifact_Serialize | TrainingArtifact_Deserialize;
-
-export type TrainingArtifact_Deserialize = {
-	schemaVersion: string,
-	id: string,
-	adapterKind: string,
-	baseModelId: string,
-	producingRunId: string,
-	producingAlgorithm: string,
-	datasetDigest?: string | null,
-	configDigest?: string | null,
-	digest?: string | null,
-	path?: string | null,
-	sizeBytes?: number | null,
-	integrity: string,
-	compatibleInference: string[],
-	createdAt: string,
-};
-
-export type TrainingArtifact_Serialize = {
+export type TrainingArtifact = {
 	schemaVersion: string,
 	id: string,
 	adapterKind: string,
@@ -3247,22 +2463,7 @@ export type VisualAnnotationCreate = {
 	supersedesId: string | null,
 };
 
-export type VisualAsset = VisualAsset_Serialize | VisualAsset_Deserialize;
-
-export type VisualAsset_Deserialize = {
-	visualId: string,
-	revision: number,
-	format: string,
-	mediaType: string,
-	theme?: string | null,
-	sizeClass?: string | null,
-	digest: string,
-	base64: string,
-	widthPx?: number,
-	heightPx?: number,
-};
-
-export type VisualAsset_Serialize = {
+export type VisualAsset = {
 	visualId: string,
 	revision: number,
 	format: string,
@@ -3311,9 +2512,7 @@ export type VisualReadyRequest = {
 	templateDigest: string | null,
 };
 
-export type VisualRecord = VisualRecord_Serialize | VisualRecord_Deserialize;
-
-export type VisualRecord_Deserialize = {
+export type VisualRecord = {
 	schemaVersion: string,
 	id: string,
 	currentRevision: number,
@@ -3336,32 +2535,7 @@ export type VisualRecord_Deserialize = {
 	updatedAt: string,
 };
 
-export type VisualRecord_Serialize = {
-	schemaVersion: string,
-	id: string,
-	currentRevision: number,
-	title: string,
-	templateId: string,
-	status: VisualStatus,
-	rendererKind: RendererKind,
-	bindings: unknown,
-	sessionId?: string | null,
-	messageId?: string | null,
-	runId?: string | null,
-	traceId?: string | null,
-	parentVisualId?: string | null,
-	sourceAgentId?: string | null,
-	sourceModel?: string | null,
-	contentDigest?: string | null,
-	previewDigest?: string | null,
-	metadata: unknown,
-	createdAt: string,
-	updatedAt: string,
-};
-
-export type VisualRendition = VisualRendition_Serialize | VisualRendition_Deserialize;
-
-export type VisualRendition_Deserialize = {
+export type VisualRendition = {
 	visualId: string,
 	revision: number,
 	format: string,
@@ -3375,37 +2549,7 @@ export type VisualRendition_Deserialize = {
 	createdAt: string,
 };
 
-export type VisualRendition_Serialize = {
-	visualId: string,
-	revision: number,
-	format: string,
-	theme: string,
-	sizeClass: string,
-	contentDigest: string,
-	mediaType: string,
-	rendererVersion: string,
-	widthPx?: number,
-	heightPx?: number,
-	createdAt: string,
-};
-
-export type VisualRevision = VisualRevision_Serialize | VisualRevision_Deserialize;
-
-export type VisualRevision_Deserialize = {
-	visualId: string,
-	revision: number,
-	templateId: string,
-	rendererKind: RendererKind,
-	contentDigest?: string | null,
-	bindingsDigest?: string | null,
-	bindings?: unknown,
-	previewDigest?: string | null,
-	authorAgentId?: string | null,
-	parentRevision?: number,
-	createdAt: string,
-};
-
-export type VisualRevision_Serialize = {
+export type VisualRevision = {
 	visualId: string,
 	revision: number,
 	templateId: string,
