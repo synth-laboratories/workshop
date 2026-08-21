@@ -281,13 +281,14 @@ mod tests {
         let (run, _) = start(
             &service,
             OptimizerRecipeRunRequest {
-				training_artifact_id: None,
+                training_artifact_id: None,
                 recipe_id: QWEN_MLX_SFT_RECIPE.into(),
                 session_ref: Some("sess_training_e2e".into()),
                 open_visual: Some(false),
                 base_model: None,
                 dataset_shard: None,
                 candidate_set_id: None,
+                container_id: None,
                 search: None,
             },
         )

@@ -5312,13 +5312,14 @@ pub(in crate::optimizers) mod tests {
         }
         let err = svc
             .start_recipe(super::super::models::OptimizerRecipeRunRequest {
-				training_artifact_id: None,
+                training_artifact_id: None,
                 recipe_id: "sft.craftax.nemotron-nano.tinker.v1".into(),
                 session_ref: None,
                 open_visual: Some(false),
                 base_model: Some("nvidia/nemotron-3-nano-30b-a3b".into()),
                 dataset_shard: None,
                 candidate_set_id: None,
+                container_id: None,
                 search: None,
             })
             .await

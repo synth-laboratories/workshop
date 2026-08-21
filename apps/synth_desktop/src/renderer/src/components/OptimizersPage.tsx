@@ -55,10 +55,14 @@ type Props = {
 	onOpenVisual: (visualId: string) => void;
 	onStartAgent: (guide: OptimizerGuide) => Promise<void>;
 	onBack: () => void;
+	/** Data-selected registered container; binds Banking77/HealthBench baseline evals. */
+	selectedContainerId?: string | null;
 	/** Owned by useAppController; this page no longer reads the registry itself. */
 	pluginStatuses?: readonly PluginStatus[] | null;
 	onRefreshPlugins?: () => Promise<void>;
 };
+
+const CONTAINER_EVAL_RECIPES = new Set(["eval.banking77.baseline.v1", "eval.healthbench.smoke.v1"]);
 
 function formatWhen(iso: string): string {
 	try {
@@ -295,6 +299,7 @@ export function OptimizersPage({
 	onOpenVisual,
 	onStartAgent,
 	onBack,
+	selectedContainerId = null,
 	pluginStatuses = null,
 	onRefreshPlugins
 }: Props) {
@@ -644,7 +649,10 @@ export function OptimizersPage({
 		try {
 			const run = await bridges.optimizers.startRecipe({
 				recipeId,
-				openVisual: true
+				openVisual: true,
+				...(CONTAINER_EVAL_RECIPES.has(recipeId)
+					? { containerId: selectedContainerId ?? undefined }
+					: {})
 			});
 			setSelectedId(run.id);
 			await refresh();
@@ -1001,18 +1009,26 @@ export function OptimizersPage({
 									<button
 										className="secondary-button"
 										type="button"
-										disabled={!available || startingAgent !== null}
+										disabled={!available || startingAgent !== null || busy}
 										data-testid={`start-eval-${recipe.id}`}
-										onClick={() => void startAgent({
-											id: "eval",
-											label: "EV",
-											name: recipe.title,
-											description: recipe.description ?? "",
-											flow: ["Stage", "Score", "Select"],
-											prompt: `Run the Workshop eval recipe ${recipe.id} on policy variants in this project. Stage the policy files with optimizer_stage_eval_candidates using workspace-relative paths, kind python-code.v1, entrypoint policy:Policy, one labelled candidate each, marking the baseline; then call optimizer_start_recipe with the recipe id and returned candidate_set_id. Never replace a policy on your own. Report the run status and selection status separately, the per-candidate scorecard, and the evidence directory.`
-										})}
+										onClick={() => {
+											if (CONTAINER_EVAL_RECIPES.has(recipe.id)) {
+												void startBoundedRecipe(recipe.id, setBusy);
+												return;
+											}
+											void startAgent({
+												id: "eval",
+												label: "EV",
+												name: recipe.title,
+												description: recipe.description ?? "",
+												flow: ["Stage", "Score", "Select"],
+												prompt: `Run the Workshop eval recipe ${recipe.id} on policy variants in this project. Stage the policy files with optimizer_stage_eval_candidates using workspace-relative paths, kind python-code.v1, entrypoint policy:Policy, one labelled candidate each, marking the baseline; then call optimizer_start_recipe with the recipe id and returned candidate_set_id. Never replace a policy on your own. Report the run status and selection status separately, the per-candidate scorecard, and the evidence directory.`
+											});
+										}}
 									>
-										{startingAgent === "eval" ? "Opening agent…" : "Set up run"}
+										{CONTAINER_EVAL_RECIPES.has(recipe.id)
+											? (busy ? "Starting…" : "Start eval")
+											: (startingAgent === "eval" ? "Opening agent…" : "Set up run")}
 									</button>
 								</article>
 							);

@@ -1663,6 +1663,13 @@ export type OptimizerRecipeRunRequest = {
 	 */
 	candidateSetId?: string | null,
 	/**
+	 *  Explicit registered-container identity for a container-backed baseline
+	 *  evaluation. This is an opaque host id, never a URL or a user-provided
+	 *  path. When multiple healthy pools advertise the same family, omission
+	 *  fails closed rather than selecting whichever probe happened last.
+	 */
+	containerId?: string | null,
+	/**
 	 *  Managed training artifact to evaluate. When set, Workshop stages an
 	 *  `mlx-lora.v1` candidate set from that record and retains its identity
 	 *  on the Eval receipt. Mutually exclusive with `candidate_set_id`.
