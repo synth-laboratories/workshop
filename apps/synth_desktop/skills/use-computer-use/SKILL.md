@@ -11,13 +11,14 @@ Use this native path for macOS applications and when the user explicitly asks fo
 
 Every call takes a `verb`. Every verb except `list_apps` also takes an `app` bundle identifier such as `com.apple.Safari` or `com.apple.mail`.
 
-Always pass the `id` returned by `list_apps`, never its `displayName`. For Safari, use exactly `"app": "com.apple.Safari"`; never pass `"Safari"`.
+Always pass the `id` returned by `list_apps`, never its `displayName`. For Safari, use exactly `"app": "com.apple.Safari"`; never pass `"Safari"`. `list_apps` returns `pids` for each identifier. If more than one pid is listed, do not guess — `launch` starts a new copy; driving requires a single running process.
 
 Check `mcp__synth_computer_use__computer_use_status` first. It is advertised even when the plugin is not ready, so a refusal tells you which permission is missing instead of leaving you to guess.
 
 ## Verbs
 
 - `list_apps`: `{ "verb": "list_apps" }`
+- `launch`: `{ "verb": "launch", "app": "com.apple.mail" }` — starts a new copy and returns the pid it created. Never a side effect of a read.
 - `get_app_outline`: `{ "verb": "get_app_outline", "app": "com.apple.Safari", "max_chars": 4000 }`
 - `find_elements`: `{ "verb": "find_elements", "app": "com.apple.Safari", "role": "AXButton", "name": "Back" }`
 - `get_subtree`: `{ "verb": "get_subtree", "app": "com.apple.Safari", "element_index": 12, "depth": 3, "max_chars": 6000 }`
@@ -31,7 +32,7 @@ Check `mcp__synth_computer_use__computer_use_status` first. It is advertised eve
 - `drag`: `{ "verb": "drag", "app": "com.example.app", "from_x": 100, "from_y": 100, "to_x": 300, "to_y": 300 }`
 - `perform_secondary_action`: `{ "verb": "perform_secondary_action", "app": "com.apple.Safari", "element_index": 42, "action": "AXShowMenu" }`
 
-Do not invent verbs such as `open`, `navigate`, `insert_text`, or `key`. Launch an app by calling `get_app_state` with its bundle identifier. Navigate and edit through the exposed controls using the verbs above.
+Do not invent verbs such as `open`, `navigate`, `insert_text`, or `key`. If the app is not running, call `launch` with its bundle identifier; never treat a read as a launch. Two running copies of the same bundle refuse with `ambiguous_target` rather than picking one. Navigate and edit through the exposed controls using the verbs above. Mutating verbs check `{pid, instance_id}` against a Workshop target's `/health` before acting.
 
 ## Safari: open a URL
 
