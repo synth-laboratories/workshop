@@ -105,19 +105,19 @@ impl ExperimentStatus {
 pub struct ReportRecord {
     pub schema_version: String,
     pub id: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub project_ref: Option<String>,
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = specta_typescript::Number)]
     pub current_revision: i64,
     pub title: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub summary: Option<String>,
     pub authors: Vec<String>,
     pub status: ReportStatus,
     pub created_by: String,
     pub created_at: String,
     pub updated_at: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub archived_at: Option<String>,
 }
 
@@ -126,10 +126,10 @@ pub struct ReportRecord {
 pub struct ReportRevision {
     pub schema_version: String,
     pub report_id: String,
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = specta_typescript::Number)]
     pub revision: i64,
     pub title: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub summary: Option<String>,
     pub authors: Vec<String>,
     pub status: ReportStatus,
@@ -137,11 +137,11 @@ pub struct ReportRevision {
     pub sources: Vec<ReportSource>,
     pub claims: Vec<ReportClaim>,
     pub limitations: Vec<ReportLimitation>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub content_digest: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub compiler_name: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub compiler_version: Option<String>,
     pub created_by: String,
     pub created_at: String,
@@ -153,13 +153,13 @@ pub struct ReportBlock {
     pub block_id: String,
     pub kind: String,
     pub anchor: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub title: Option<String>,
     #[specta(type = specta_typescript::Unknown)]
     pub payload: Value,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub source_revision: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub source_digest: Option<String>,
     #[serde(default = "default_reference_mode")]
     pub reference_mode: String,
@@ -173,9 +173,9 @@ pub struct ReportSource {
     pub source_id: String,
     pub resource_kind: String,
     pub resource_id: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub resource_revision: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub resource_digest: Option<String>,
     #[serde(default = "default_reference_mode")]
     pub reference_mode: String,
@@ -202,12 +202,12 @@ pub struct ReportClaim {
 pub struct ReportValidationFinding {
     pub code: String,
     pub severity: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub block_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub claim_id: Option<String>,
     pub message: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub remediation: Option<String>,
 }
 
@@ -215,7 +215,7 @@ pub struct ReportValidationFinding {
 #[serde(rename_all = "camelCase")]
 pub struct ReportValidationResult {
     pub report_id: String,
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = specta_typescript::Number)]
     pub revision: i64,
     pub sealable: bool,
     pub findings: Vec<ReportValidationFinding>,
@@ -242,16 +242,16 @@ pub struct ReportLimitation {
 #[serde(rename_all = "camelCase")]
 pub struct ExperimentRecord {
     pub experiment_id: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub report_id: Option<String>,
-    #[specta(type = specta_typescript::Unknown)]
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[specta(type = specta_typescript::Number)]
+    #[serde(default)]
     pub revision: Option<i64>,
     pub title: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub hypothesis: Option<String>,
     pub status: ExperimentStatus,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub protocol_digest: Option<String>,
     #[specta(type = specta_typescript::Unknown)]
     pub arms: Value,
@@ -277,9 +277,9 @@ pub struct ExperimentRecord {
 #[serde(rename_all = "camelCase")]
 pub struct ResearchLogEntry {
     pub entry_id: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub report_id: Option<String>,
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = specta_typescript::Number)]
     pub sequence: i64,
     pub occurred_at: String,
     pub recorded_at: String,
@@ -291,11 +291,11 @@ pub struct ResearchLogEntry {
     pub tags: Vec<String>,
     #[specta(type = specta_typescript::Unknown)]
     pub links: Value,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub claim_effect: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub supersedes_entry_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub source_digest: Option<String>,
 }
 
@@ -304,7 +304,7 @@ pub struct ResearchLogEntry {
 pub struct ReportSeal {
     pub receipt_digest: String,
     pub report_id: String,
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = specta_typescript::Number)]
     pub report_revision: i64,
     pub schema_version: String,
     pub compiler_name: String,
@@ -312,9 +312,9 @@ pub struct ReportSeal {
     pub runtime_digest: String,
     pub index_digest: String,
     pub data_digest: String,
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = specta_typescript::Number)]
     pub receipt_size_bytes: i64,
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = specta_typescript::Number)]
     pub total_size_bytes: i64,
     pub created_at: String,
 }
@@ -344,7 +344,7 @@ pub struct ReportUpload {
     pub receipt_digest: String,
     pub collection_id: Option<String>,
     pub publication_id: Option<String>,
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = specta_typescript::Number)]
     pub publication_revision: Option<i64>,
     pub state: String,
     pub committed_url: Option<String>,
@@ -355,11 +355,9 @@ pub struct ReportUpload {
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub struct ReportPromotion {
-    #[serde(alias = "publication_id")]
     pub publication_id: String,
     pub slug: String,
     pub status: String,
-    #[serde(alias = "public_url")]
     pub public_url: String,
 }
 
@@ -368,11 +366,9 @@ pub struct ReportPromotion {
 pub enum ReportAudience {
     Private,
     Workspace {
-        #[serde(rename = "workspace_id", alias = "workspaceId")]
         workspace_id: String,
     },
     Members {
-        #[serde(rename = "member_ids", alias = "memberIds")]
         member_ids: Vec<String>,
     },
 }
@@ -380,17 +376,14 @@ pub enum ReportAudience {
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub struct ReportAudienceRequest {
-    #[serde(rename = "receipt_digest", alias = "receiptDigest")]
     pub receipt_digest: String,
     pub audience: ReportAudience,
-    #[serde(rename = "redaction_policy_version", alias = "redactionPolicyVersion")]
     pub redaction_policy_version: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub struct ReportAudienceState {
-    #[serde(alias = "publication_id")]
     pub publication_id: String,
     pub audience: ReportAudience,
     pub status: String,
@@ -401,13 +394,13 @@ pub struct ReportAudienceState {
 pub struct ReportComment {
     pub comment_id: String,
     pub report_id: String,
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = specta_typescript::Number)]
     pub report_revision: i64,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub receipt_digest: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub publication_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub anchor: Option<String>,
     pub body: String,
     pub author_id: String,
@@ -427,20 +420,15 @@ pub struct ReportCommentCreate {
 #[derive(Clone, Debug, Deserialize, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub struct ReportAttachTrace {
-    #[serde(alias = "trace_digest")]
     pub trace_digest: String,
-    #[serde(default, skip_serializing_if = "Option::is_none", alias = "trace_id")]
+    #[serde(default)]
     pub trace_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub label: Option<String>,
-    #[serde(
-        default,
-        skip_serializing_if = "Option::is_none",
-        alias = "collection_id"
-    )]
+    #[serde(default)]
     pub collection_id: Option<String>,
     #[specta(type = specta_typescript::Unknown)]
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub projection: Option<Value>,
 }
 
@@ -459,8 +447,8 @@ pub struct ReportCreateRequest {
 #[derive(Clone, Debug, Deserialize, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub struct ReportUpdateRequest {
-    #[specta(type = specta_typescript::Unknown)]
-    #[serde(default, alias = "expected_revision")]
+    #[specta(type = specta_typescript::Number)]
+    #[serde(default)]
     pub expected_revision: Option<i64>,
     pub title: Option<String>,
     pub summary: Option<String>,
@@ -477,7 +465,7 @@ pub struct ReportUpdateRequest {
 pub struct ReportQuery {
     pub status: Option<String>,
     pub search: Option<String>,
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = specta_typescript::Number)]
     pub limit: Option<i64>,
     #[serde(default)]
     pub include_archived: bool,
@@ -488,19 +476,19 @@ pub struct ReportQuery {
 pub struct ReportVisibilityRequest {
     pub request_id: String,
     pub report_id: String,
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = specta_typescript::Number)]
     pub report_revision: i64,
     pub receipt_digest: String,
     pub target: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub slug: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub reason: Option<String>,
     pub requested_by: String,
     pub status: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub decision_by: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub error: Option<String>,
     pub created_at: String,
     pub updated_at: String,
@@ -510,7 +498,6 @@ pub struct ReportVisibilityRequest {
 #[derive(Clone, Debug, Deserialize, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub struct ReportVisibilityRequestCreate {
-    #[serde(alias = "receipt_digest")]
     pub receipt_digest: String,
     pub target: String,
     pub slug: Option<String>,

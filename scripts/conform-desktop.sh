@@ -69,8 +69,8 @@ env_d_ts_lines="$(wc -l < src/renderer/src/env.d.ts | tr -d '[:space:]')"
 use_state_app="$(count_rg 'useState' src/renderer/src/App.tsx)"
 invoke_string="$(count_rg 'invoke\("' src/renderer/src --glob '!**/generated/**')"
 
-# Wave 2 boundary: Rust contract consts ↔ TS protocolConstants must match.
-"$ROOT/scripts/check-desktop-contract-drift.sh"
+# Wave 2 boundary: specta-generated `commands.*` is the invoke surface.
+# Event-channel names remain in protocolConstants.ts.
 
 cat <<EOF
 [conform] apps/synth_desktop SynthStyle CONFORM CHECKS (counts may only decrease)

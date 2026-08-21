@@ -71,21 +71,21 @@ pub const SOURCE_NONE: &str = "none";
 #[serde(rename_all = "camelCase")]
 pub struct AccountPlan {
     pub name: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub tier: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub state: Option<String>,
     /// False when the backend reports no dollar limit for this account: the UI
     /// must then omit allowance figures instead of showing zeros.
     pub metered: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub monthly_allowance_usd: Option<f64>,
     pub used_usd: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub remaining_usd: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub resets_at: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub renews_at: Option<String>,
     /// `cloud` or `dev_seed`; the UI labels the stand-in explicitly.
     pub source: String,
@@ -95,25 +95,25 @@ pub struct AccountPlan {
 #[serde(rename_all = "camelCase")]
 pub struct AccountOrganization {
     pub id: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub display_name: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub role: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub struct AccountUsageWindow {
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = specta_typescript::Number)]
     pub events: i64,
     /// Finalized billed dollars. Never the sum of pending + billed.
     pub cost_usd: f64,
     pub finalized_usd: f64,
     /// Nominal minus billed for this window. Live estimates, not ledger truth.
     pub pending_usd: f64,
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = specta_typescript::Number)]
     pub tokens: i64,
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = specta_typescript::Number)]
     pub runtime_seconds: i64,
 }
 
@@ -128,11 +128,11 @@ pub struct AccountCloudUsage {
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub struct AccountBilling {
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub checkout_url: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub portal_url: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub upgrade_tier: Option<String>,
 }
 
@@ -153,25 +153,25 @@ pub struct AccountSummary {
     pub environment: String,
     /// Where the rendered plan came from, so the UI can label a dev stand-in.
     pub source: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub account_id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub display_name: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub email: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub organization: Option<AccountOrganization>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub plan: Option<AccountPlan>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub cloud_usage: Option<AccountCloudUsage>,
     pub billing: AccountBilling,
     pub catalog: Vec<AccountPlanOption>,
     /// When the rendered cloud facts were fetched, for a `Last updated` line.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub last_updated: Option<String>,
     pub stale: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub error: Option<String>,
     /// `local_only` | `signed_out` | `active` | `revoked` | `offline` | `malformed`
     pub session_health: String,

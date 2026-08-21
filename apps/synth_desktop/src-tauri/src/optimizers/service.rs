@@ -11,13 +11,14 @@ use super::terminal;
 use crate::storage::{append_event, AppEvent, Database, EventAppend, EventJournal, EventSource};
 use crate::visuals::{VisualCreateRequest, VisualRegistry, VISUAL_BINDINGS_SCHEMA_VERSION};
 use anyhow::{anyhow, bail, Context, Result};
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::{json, Map, Value};
 use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::{broadcast, watch, Mutex};
 use uuid::Uuid;
 
@@ -242,6 +243,78 @@ pub struct OptimizerService {
     diagnostics: Arc<std::sync::OnceLock<Arc<crate::diagnostics::DiagnosticsService>>>,
 }
 
+/// Live claim for one optimizer worker. Heartbeats every
+/// [`crate::recovery::HEARTBEAT_INTERVAL`] and releases the row on drop.
+pub(super) struct OptimizerRunOwnershipGuard {
+    db: Arc<Database>,
+    run_id: String,
+    heartbeat: Option<tokio::task::JoinHandle<()>>,
+}
+
+impl OptimizerRunOwnershipGuard {
+    fn arm(db: Arc<Database>, run_id: String) -> Result<Self> {
+        let instance_id = crate::instance::boot_epoch().to_string();
+        let pid = std::process::id();
+        let identity = super::manager::process_start_identity(pid);
+        let claimed_run = run_id.clone();
+        let claimed_instance = instance_id.clone();
+        let claimed_identity = identity.clone();
+        db.with_conn(move |conn| {
+            crate::recovery::ownership::claim_optimizer_run(
+                conn,
+                &claimed_run,
+                &claimed_instance,
+                &claimed_instance,
+                Some(pid),
+                claimed_identity.as_deref(),
+                Utc::now(),
+            )
+        })?;
+        let db_hb = db.clone();
+        let run_hb = run_id.clone();
+        let instance_hb = instance_id;
+        let heartbeat = tokio::spawn(async move {
+            let period = crate::recovery::HEARTBEAT_INTERVAL
+                .to_std()
+                .unwrap_or(Duration::from_secs(5));
+            let mut ticks = tokio::time::interval(period);
+            ticks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            ticks.tick().await;
+            loop {
+                ticks.tick().await;
+                let db = db_hb.clone();
+                let run_id = run_hb.clone();
+                let instance_id = instance_hb.clone();
+                let _ = db.with_conn(move |conn| {
+                    crate::recovery::ownership::heartbeat_optimizer_run(
+                        conn,
+                        &run_id,
+                        &instance_id,
+                        Utc::now(),
+                    )
+                });
+            }
+        });
+        Ok(Self {
+            db,
+            run_id,
+            heartbeat: Some(heartbeat),
+        })
+    }
+}
+
+impl Drop for OptimizerRunOwnershipGuard {
+    fn drop(&mut self) {
+        if let Some(task) = self.heartbeat.take() {
+            task.abort();
+        }
+        let run_id = self.run_id.clone();
+        let _ = self.db.with_conn(move |conn| {
+            crate::recovery::ownership::release_optimizer_run(conn, &run_id)
+        });
+    }
+}
+
 impl OptimizerService {
     /// Publish a durable visual event produced by an internal optimizer worker.
     ///
@@ -295,6 +368,10 @@ impl OptimizerService {
 
     pub(super) fn database(&self) -> &Arc<Database> {
         &self.db
+    }
+
+    pub(super) fn hold_run_ownership(&self, run_id: &str) -> Result<OptimizerRunOwnershipGuard> {
+        OptimizerRunOwnershipGuard::arm(self.db.clone(), run_id.to_string())
     }
 
     pub(super) fn visuals(&self) -> &VisualRegistry {
@@ -925,26 +1002,12 @@ impl OptimizerService {
     /// projections can be a lie. Walk them and let each algorithm's durable
     /// worker log win before the renderer hydrates Outputs.
     pub async fn reconcile_stale_local_runs(&self) -> Result<Vec<OptimizerRunRecord>> {
-        let runs = self
-            .list(OptimizerQuery {
-                limit: Some(500),
-                ..OptimizerQuery::default()
-            })
-            .await?;
-        let mut recovered = Vec::new();
-        for run in runs {
-            if run.source != "local" || is_terminal_status(&run.status) {
-                continue;
-            }
-            match self.refresh(run.id.clone()).await {
-                Ok(next) => recovered.push(next),
-                Err(error) => eprintln!(
-                    "synth-desktop: failed to reconcile optimizer run {}: {error:#}",
-                    run.id
-                ),
-            }
-        }
-        Ok(recovered)
+        let db = self.db.clone();
+        let instance_id = crate::instance::boot_epoch().to_string();
+        db.run_transaction(move |conn| {
+            reconcile_stale_local_runs_in_tx(conn, &instance_id, Utc::now())
+        })
+        .await
     }
 
     pub async fn events_after(
@@ -2881,6 +2944,50 @@ pub(super) fn is_terminal_status(status: &str) -> bool {
     OptimizerRunStatus::str_is_terminal(status)
 }
 
+/// Rewrite any non-terminal local optimizer run that has no live ownership
+/// claim to `interrupted`, and seal a terminal manifest in the same
+/// transaction. Called from `CoreRuntime::open`, not a spawned bootstrap task.
+pub(crate) fn reconcile_stale_local_runs_in_tx(
+    conn: &Connection,
+    instance_id: &str,
+    now: DateTime<Utc>,
+) -> Result<Vec<OptimizerRunRecord>> {
+    let mut stmt = conn.prepare("SELECT payload_json FROM optimizer_runs WHERE source = 'local'")?;
+    let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
+    let mut payloads = Vec::new();
+    for row in rows {
+        payloads.push(row?);
+    }
+    drop(stmt);
+    let mut recovered = Vec::new();
+    for payload in payloads {
+        let mut run: OptimizerRunRecord = serde_json::from_str(&payload)?;
+        if is_terminal_status(&run.status) {
+            continue;
+        }
+        if crate::recovery::ownership::optimizer_run_is_live(conn, &run.id, instance_id, now)? {
+            continue;
+        }
+        run.status = "interrupted".into();
+        run.finished_at = Some(now.to_rfc3339());
+        run.error = Some(json!({
+            "code": "unowned",
+            "message": "no live optimizer run ownership claim at open",
+        }));
+        upsert_run(conn, &run)?;
+        crate::recovery::ownership::release_optimizer_run(conn, &run.id)?;
+        let events = load_events_upto(conn, &run.id, run.cursor_seq)?;
+        let manifest = terminal::derive(&run, &events, "interrupted", None);
+        let sealed = terminal::seal(conn, &run.id, &manifest)?;
+        if let Some(object) = run.summary.as_object_mut() {
+            object.insert("terminalManifest".into(), sealed);
+        }
+        upsert_run(conn, &run)?;
+        recovered.push(run);
+    }
+    Ok(recovered)
+}
+
 /// The `sequence -> event_id` map for exactly the sequences a batch touches.
 /// Scoped to the batch so validating one settlement does not read a campaign's
 /// whole history.
@@ -4520,6 +4627,62 @@ pub(in crate::optimizers) mod tests {
                 .try_register_local_recipe("local-training-run".into(), replacement)
                 .await
         );
+    }
+
+    #[tokio::test]
+    async fn open_reconciles_unowned_running_run_to_interrupted_and_seals() {
+        let dir = tempdir().unwrap();
+        let run_id = "opt_unowned_running";
+        {
+            let core = crate::core_runtime::CoreRuntime::open(dir.path()).unwrap();
+            let svc = core.optimizers().clone();
+            let (mut run, _) = svc
+                .create(OptimizerCreateRequest {
+                    algorithm_id: "gepa".into(),
+                    algorithm_version: Some("1".into()),
+                    objective: Some("ownership reconcile".into()),
+                    source: Some("local".into()),
+                    project_ref: None,
+                    session_ref: Some("session_unowned".into()),
+                    id: Some(run_id.into()),
+                    execution_bindings: None,
+                    input_refs: None,
+                    capabilities: None,
+                    summary: None,
+                    open_visual: Some(false),
+                    seed_fixture: None,
+                    cloud_config: None,
+                    local_path: None,
+                })
+                .await
+                .unwrap();
+            run.status = "running".into();
+            svc.persist_run(run).await.unwrap();
+            assert_eq!(svc.get(run_id.into()).await.unwrap().status, "running");
+            svc.database()
+                .with_conn(|conn| {
+                    assert!(crate::recovery::ownership::load_optimizer_run(conn, run_id)?.is_none());
+                    Ok(())
+                })
+                .unwrap();
+        }
+        let core = crate::core_runtime::CoreRuntime::open(dir.path()).unwrap();
+        let run = core
+            .optimizers()
+            .get(run_id.to_string())
+            .await
+            .unwrap();
+        assert_eq!(run.status, "interrupted");
+        core.storage()
+            .database()
+            .with_conn(|conn| {
+                assert!(
+                    terminal::load(conn, run_id)?.is_some(),
+                    "open() must seal a terminal manifest in the same transaction"
+                );
+                Ok(())
+            })
+            .unwrap();
     }
 
     async fn eval_run(svc: &OptimizerService, id: &str, session: &str) -> OptimizerRunRecord {

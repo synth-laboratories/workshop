@@ -29,7 +29,7 @@ struct PendingPair {
 #[serde(rename_all = "camelCase")]
 pub struct SignInBegin {
     pub verification_uri: String,
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = specta_typescript::Number)]
     pub expires_at_epoch_s: u64,
 }
 

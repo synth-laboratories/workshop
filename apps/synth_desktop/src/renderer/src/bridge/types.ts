@@ -28,7 +28,160 @@ import type {
 	OptimizerAlgorithmInfo,
 	OptimizerRunRecord
 } from "@synth/runtime-protocol";
-import type { InstanceDiagnostics } from "../generated/protocol";
+export type { OptimizerAlgorithmInfo, OptimizerRunRecord };
+import type {
+	ArtifactMutationReceipt,
+	BeginResult,
+	BrowserRuntimeStatus,
+	CapabilitySummary,
+	CodexSessionInfo,
+	CodexTurnFailure,
+	ComputerUseSnapshot,
+	ContextFile,
+	ContextSkill,
+	ContextSnapshot,
+	ConversationWorkspaceScope,
+	CookbookContext,
+	DesktopPermissionSettings,
+	ExperimentRecord,
+	ExperimentStatus,
+	HostedTrainingModel,
+	HostedTrainingModelCatalog,
+	InstanceDiagnostics,
+	LagunaModelHit,
+	LagunaStatus,
+	MaskedImportCandidate,
+	McpContextGroup,
+	ModelMultiAgentSetting,
+	ModelPerformanceSummary,
+	ModelPerformanceTurnSample,
+	MultiAgentVersion,
+	OptimizerRunOutputs,
+	PendingGrantSummary,
+	PluginPermission,
+	PluginStatus,
+	ReportAudience,
+	ReportAudienceState,
+	ReportBlock,
+	ReportClaim,
+	ReportComment,
+	ReportLimitation,
+	ReportPromotion,
+	ReportRecord,
+	ReportRevision,
+	ReportRevisionCompare,
+	ReportSeal,
+	ReportSealBundle,
+	ReportSource,
+	ReportStatus,
+	ReportUpload,
+	ReportValidationFinding,
+	ReportValidationResult,
+	ReportVisibilityRequest,
+	ResearchLogEntry,
+	SavedLoraCheckpoint,
+	SavedLoraCheckpointPage,
+	SavedLoraDownload,
+	SavedLoraRunPage,
+	SecretAuditEvent,
+	SecretSummary,
+	SecretsInbox,
+	SkillHit,
+	Status,
+	TariffCard,
+	TemplateMeta,
+	TerminalCreateRequest,
+	TerminalEvent,
+	TerminalInfo,
+	TrainingArtifact,
+	TrainingModelHit,
+	UpdateStatus,
+	VisualAnnotation,
+	VisualSeal,
+	VisualSealBundle,
+	VisualUpload,
+	WhisperModelHit,
+	WhisperRuntimeStatus,
+	WorkspaceAccessMode,
+	WorkspaceAccessSettings,
+	WorkspaceAttachment,
+	WorkspaceGrantRequest
+} from "../generated/protocol";
+
+export type {
+	ArtifactMutationReceipt,
+	BrowserRuntimeStatus,
+	CodexSessionInfo,
+	CodexTurnFailure,
+	ComputerUseSnapshot,
+	ContextFile,
+	ContextSkill,
+	ContextSnapshot,
+	ConversationWorkspaceScope,
+	CookbookContext,
+	DesktopPermissionSettings,
+	ExperimentRecord,
+	ExperimentStatus,
+	HostedTrainingModel,
+	HostedTrainingModelCatalog,
+	LagunaModelHit,
+	LagunaStatus,
+	MaskedImportCandidate,
+	McpContextGroup,
+	ModelMultiAgentSetting,
+	ModelPerformanceSummary,
+	ModelPerformanceTurnSample,
+	MultiAgentVersion,
+	OptimizerRunOutputs,
+	PendingGrantSummary,
+	PluginPermission,
+	PluginStatus,
+	ReportAudience,
+	ReportAudienceState,
+	ReportBlock,
+	ReportClaim,
+	ReportComment,
+	ReportLimitation,
+	ReportPromotion,
+	ReportRecord,
+	ReportRevision,
+	ReportRevisionCompare,
+	ReportSeal,
+	ReportSealBundle,
+	ReportSource,
+	ReportStatus,
+	ReportUpload,
+	ReportValidationFinding,
+	ReportValidationResult,
+	ReportVisibilityRequest,
+	ResearchLogEntry,
+	SavedLoraCheckpoint,
+	SavedLoraCheckpointPage,
+	SavedLoraDownload,
+	SavedLoraRunPage,
+	SecretAuditEvent,
+	SecretSummary,
+	SecretsInbox,
+	SkillHit,
+	TariffCard,
+	TerminalCreateRequest,
+	TerminalEvent,
+	TerminalInfo,
+	TrainingArtifact,
+	TrainingModelHit,
+	UpdateStatus,
+	VisualAnnotation,
+	VisualSeal,
+	VisualSealBundle,
+	VisualUpload,
+	WhisperModelHit,
+	WhisperRuntimeStatus,
+	WorkspaceAccessMode,
+	WorkspaceAccessSettings,
+	WorkspaceAttachment,
+	WorkspaceGrantRequest
+};
+
 
 /** One selectable inference policy. Speed fields are null until measured. */
 export type LagunaPolicy = {
@@ -93,31 +246,6 @@ export type LagunaPhase =
 	| "error"
 	| "unavailable";
 
-export type LagunaStatus = {
-	phase: LagunaPhase;
-	baseUrl: string | null;
-	backend: string | null;
-	loadedModel: string | null;
-	detail: string | null;
-	memoryBytes: number | null;
-	idleSeconds?: number | null;
-	idleUnloadAfterSeconds?: number | null;
-	lastUsedAt?: number | null;
-	freeAt?: number | null;
-	updatedAt: number;
-};
-
-export type LagunaModelHit = {
-	path: string;
-	modelsRoot: string;
-	modelId: string;
-	shardCount: number;
-	totalBytes: number;
-	selected: boolean;
-	runtimeReady: boolean;
-	companionBytes: number;
-};
-
 export type LagunaDownloadProgress = {
 	modelId: string;
 	phase: "preparing" | "provisioning" | "downloading" | "ready" | "error";
@@ -149,15 +277,6 @@ export type LagunaBridge = {
 	onDownloadProgress?(listener: (progress: LagunaDownloadProgress) => void): () => void;
 };
 
-export type TrainingModelHit = {
-	path: string;
-	modelsRoot: string;
-	modelId: string;
-	revision: string;
-	shardCount: number;
-	totalBytes: number;
-};
-
 export type TrainingModelDownloadProgress = {
 	modelId: string;
 	phase: "preparing" | "downloading" | "ready" | "error";
@@ -171,32 +290,6 @@ export type TrainingModelsBridge = {
 	downloadModel(modelId: string): Promise<TrainingModelHit>;
 	deleteModel(modelId: string): Promise<void>;
 	onDownloadProgress(listener: (progress: TrainingModelDownloadProgress) => void): () => void;
-};
-
-export type TrainingArtifact = {
-	schemaVersion: string;
-	id: string;
-	adapterKind: string;
-	baseModelId: string;
-	producingRunId: string;
-	producingAlgorithm: string;
-	datasetDigest?: string | null;
-	configDigest?: string | null;
-	digest?: string | null;
-	path?: string | null;
-	sizeBytes?: number | null;
-	integrity: string;
-	compatibleInference: string[];
-	createdAt: string;
-};
-
-export type ArtifactMutationReceipt = {
-	operation: string;
-	artifactId: string;
-	digest?: string | null;
-	bytes?: number | null;
-	destination?: string | null;
-	status: string;
 };
 
 export type TrainingArtifactsBridge = {
@@ -215,35 +308,12 @@ export type TrainingArtifactsBridge = {
 	delete?(request: { id: string; confirm: boolean }): Promise<ArtifactMutationReceipt>;
 };
 
-export type WhisperModelHit = {
-	id: string;
-	title: string;
-	description?: string | null;
-	recommended: boolean;
-	multilingual: boolean;
-	downloadBytes: number;
-	installedBytes?: number | null;
-	path?: string | null;
-	selected: boolean;
-	modelsRoot: string;
-};
-
 export type WhisperDownloadProgress = {
 	id: string;
 	phase: "preparing" | "downloading" | "ready" | "error";
 	detail: string;
 	downloadedBytes?: number;
 	totalBytes?: number;
-};
-
-export type WhisperRuntimeStatus = {
-	phase: string;
-	loadedModel: string | null;
-	idleSeconds: number | null;
-	idleUnloadAfterSeconds: number;
-	lastUsedAt: number | null;
-	freeAt: number | null;
-	updatedAt: number;
 };
 
 export type WhisperBridge = {
@@ -264,21 +334,10 @@ export type WhisperBridge = {
 	transcribeAudio?(base64: string, mimeType: string): Promise<string>;
 };
 
-export type SkillHit = {
-	id: string;
-	name: string;
-	description: string;
-};
-
 export type SkillsBridge = {
 	list(): Promise<SkillHit[]>;
 };
 
-export type ContextFile = { path: string; content: string; state: "bundled" | "absent" | "empty" | "overriding"; editable: boolean; version?: string | null };
-export type ContextSkill = { id: string; name: string; description: string; source: "bundled" | "cookbook" | "yours"; enabled: boolean; editable: boolean; content: string; path?: string | null };
-export type McpContextGroup = { id: string; label: string; enabled: boolean; servers: string[]; enabledTools: Record<string, string[]> };
-export type CookbookContext = { enabled: boolean; installed: boolean; phase: string; pin?: string | null; digest?: string | null; path?: string | null; lastFetch?: string | null; detail?: string | null };
-export type ContextSnapshot = { workshopAgents: ContextFile; workspaceAgents: ContextFile; cookbooks: CookbookContext; skills: ContextSkill[]; mcpGroups: McpContextGroup[] };
 export type ContextBridge = {
 	snapshot(workspace: string): Promise<ContextSnapshot>;
 	updateWorkspaceAgents(workspace: string, content: string): Promise<ContextSnapshot>;
@@ -308,25 +367,6 @@ export type SynthBackendSettings = {
 		effort: string;
 		providers: string[];
 	};
-};
-
-export type MultiAgentVersion = "none" | "v1" | "v2";
-export type ModelMultiAgentSetting = {
-	modelId: string;
-	displayName: string;
-	preset: MultiAgentVersion;
-	effective: MultiAgentVersion;
-	overridden: boolean;
-};
-
-export type WorkspaceAccessSettings = {
-	allowedRoots: string[];
-};
-
-export type DesktopPermissionSettings = {
-	configPath: string;
-	approvalPolicy: "untrusted" | "on-request" | "never";
-	sandboxMode: "read-only" | "workspace-write" | "danger-full-access";
 };
 
 export type SynthConfigBridge = {
@@ -377,7 +417,6 @@ export type CodexSessionStart = {
 	adapter?: string | null;
 };
 
-export type CodexSessionInfo = { sessionId: string; threadId: string; turnId?: string | null };
 export type ComposerImageAttachment = { path: string; name: string; previewUrl: string };
 export type PersistedCodexSession = {
 	sessionId: string;
@@ -401,13 +440,7 @@ export type PersistedCodexSession = {
 };
 export type CodexEvent = { sessionId: string; method: string; params: Record<string, unknown>; createdAt?: string };
 /** Typed rejection payload of `codex_turn_send`. */
-export type CodexTurnFailure = {
-	code: "codex_session_detached" | "codex_turn_start_failed" | "codex_provider_unavailable" | string;
-	message: string;
-	sessionId: string;
-	/** Developer detail. Debug logs only — never a user-facing surface. */
-	detail: string;
-};
+
 export type CodexBridge = {
 	defaultWorkspace(): Promise<string>;
 	list(): Promise<PersistedCodexSession[]>;
@@ -512,14 +545,6 @@ export type UsageBridge = {
 
 /** One provider price card, served from the native tariff catalog — the same
  * numbers the cost estimator prices with. */
-export type TariffCard = {
-	provider: string;
-	modelId: string;
-	inputUsdPerM: number;
-	outputUsdPerM: number;
-	cachedInputUsdPerM: number | null;
-	cacheWriteUsdPerM: number | null;
-};
 
 export type TariffsBridge = {
 	catalog(): Promise<TariffCard[]>;
@@ -527,80 +552,13 @@ export type TariffsBridge = {
 
 /** Passive release check: version facts only. The download action always
  * opens the fixed public download page. */
-export type UpdateStatus = {
-	currentVersion: string;
-	channel: string;
-	latestVersion: string | null;
-	updateAvailable: boolean;
-};
 
 export type UpdatesBridge = {
 	status(): Promise<UpdateStatus>;
 	openDownload(): Promise<void>;
 };
 
-export type VisualTemplateMeta = {
-	id: string;
-	title: string;
-	genre?: string | null;
-	version?: string | null;
-	description?: string | null;
-	path?: string | null;
-	shellPath?: string | null;
-	exampleBinding?: Record<string, unknown> | null;
-	slots?: unknown[] | null;
-	bindingSchema?: unknown[] | null;
-};
-
-export type VisualAnnotation = {
-	id: string;
-	visualId: string;
-	visualRevision: number;
-	sourceDigest?: string | null;
-	selector: Record<string, unknown>;
-	kind: "note" | "bug" | "highlight" | "reward" | "acceptance";
-	body?: string | null;
-	metadata: Record<string, unknown>;
-	authorId: string;
-	supersedesId?: string | null;
-	tombstoned: boolean;
-	createdAt: string;
-	updatedAt: string;
-};
-
-export type VisualSeal = {
-	receiptDigest: string;
-	visualId: string;
-	visualRevision: number;
-	artifactId: string;
-	schemaVersion: "synth.artifact-bundle.v1";
-	compilerName: string;
-	compilerVersion: string;
-	runtimeDigest: string;
-	indexDigest: string;
-	dataDigest: string;
-	receiptSizeBytes: number;
-	totalSizeBytes: number;
-	createdAt: string;
-};
-
-export type VisualSealBundle = {
-	seal: VisualSeal;
-	indexHtml: string;
-	data: Record<string, unknown>;
-	receipt: Record<string, unknown>;
-};
-
-export type VisualUpload = {
-	receiptDigest: string;
-	collectionId?: string | null;
-	publicationId?: string | null;
-	publicationRevision?: number | null;
-	state: "prepared" | "uploading" | "finalizing" | "committed" | "failed";
-	committedUrl?: string | null;
-	error?: string | null;
-	updatedAt: string;
-};
+export type VisualTemplateMeta = TemplateMeta;
 
 export type VisualsBridge = {
 	listTemplates(genre?: string | null): Promise<VisualTemplateMeta[]>;
@@ -692,35 +650,6 @@ export type VisualsBridge = {
 /** `PluginPermission` from src-tauri/src/plugins/types.rs. */
 export type PluginPermissionState = "granted" | "denied" | "not_determined" | "not_applicable";
 
-export type PluginPermission = {
-	id: string;
-	/** What macOS calls this in System Settings. */
-	label: string;
-	state: PluginPermissionState;
-	settingsUrl?: string | null;
-	detail?: string | null;
-};
-
-export type PluginStatus = {
-	schemaVersion: string;
-	pluginId: string;
-	enabled: boolean;
-	phase: string;
-	installedVersion?: string | null;
-	selectedVersion?: string | null;
-	releaseChannel: "official" | "dev";
-	catalogVersion: string;
-	digest?: string | null;
-	service: { phase: string; startedAt?: string | null; activeRuns: number };
-	capabilitiesDigest?: string | null;
-	algorithms: string[];
-	templates: string[];
-	/** Omitted entirely for plugins that need no OS grants. */
-	permissions?: PluginPermission[];
-	lastActionReceiptId?: string | null;
-	detail?: string | null;
-};
-
 /** Mirrors the operations `PluginService::manage` accepts. */
 export type PluginLifecycleOperation =
 	| "enable"
@@ -757,11 +686,6 @@ export type ComputerUseRemovalReport = {
 	allowlistEntriesRemoved: number;
 };
 
-export type ComputerUseSnapshot = {
-	status: PluginStatus;
-	allowedApps: string[];
-};
-
 /**
  * Computer Use is human-only: there is no agent path to any of these. The
  * agent's MCP surface offers status and nothing else.
@@ -772,20 +696,6 @@ export type ComputerUseBridge = {
 	remove(): Promise<ComputerUseRemovalReport>;
 	revokeApp(bundleId: string): Promise<number>;
 	openSettings(permissionId: string): Promise<void>;
-};
-
-export type BrowserRuntimeStatus = {
-	phase: "ready" | "not_ready";
-	detail: string;
-	backendPresent: boolean;
-	nodePresent: boolean;
-	playwrightPresent: boolean;
-	chromiumPresent: boolean;
-	nodeVersion?: string | null;
-	backendPath: string;
-	profileRoot: string;
-	allowedOrigins: string[];
-	defaultLocalOrigins: string[];
 };
 
 /** Human-only browser setup. Agent tools can consume policy but cannot mutate it. */
@@ -816,231 +726,9 @@ export type PluginsBridge = {
 	onStatusChanged?(listener: () => void): () => void;
 };
 
-export type ReportStatus = "draft" | "sealed";
 export type ReportReferenceMode = "live" | "pinned";
 export type ReportAccessState = "available" | "redacted" | "forbidden" | "missing";
 export type ReportIntegrityState = "verified" | "digest_mismatch" | "unresolved" | "unsupported" | "source_changed";
-export type ExperimentStatus =
-	| "planned"
-	| "running"
-	| "completed"
-	| "failed"
-	| "aborted"
-	| "superseded"
-	| "excluded";
-
-export type ReportBlock = {
-	blockId: string;
-	kind: string;
-	anchor: string;
-	title?: string | null;
-	payload: Record<string, unknown>;
-	sourceRevision?: string | null;
-	sourceDigest?: string | null;
-	referenceMode?: ReportReferenceMode;
-	accessState: ReportAccessState;
-	integrityState: ReportIntegrityState;
-};
-
-export type ReportSource = {
-	sourceId: string;
-	resourceKind: string;
-	resourceId: string;
-	resourceRevision?: string | null;
-	resourceDigest?: string | null;
-	referenceMode?: ReportReferenceMode;
-	relation: string;
-	accessState: ReportAccessState;
-	integrityState: ReportIntegrityState;
-};
-
-export type ReportClaim = {
-	claimId: string;
-	statement: string;
-	status: "true" | "false" | "needs_more_analysis" | "unresolved";
-	confidence?: "low" | "medium" | "high" | "overwhelming";
-	why?: string;
-	evidenceRefs: string[];
-};
-
-export type ReportValidationFinding = {
-	code: string;
-	severity: "error" | "warning" | "info";
-	blockId?: string | null;
-	claimId?: string | null;
-	message: string;
-	remediation?: string | null;
-};
-
-export type ReportValidationResult = {
-	reportId: string;
-	revision: number;
-	sealable: boolean;
-	findings: ReportValidationFinding[];
-};
-
-export type ReportLimitation = {
-	limitationId: string;
-	body: string;
-};
-
-export type ReportRecord = {
-	schemaVersion: string;
-	id: string;
-	projectRef?: string | null;
-	currentRevision: number;
-	title: string;
-	summary?: string | null;
-	authors: string[];
-	status: ReportStatus;
-	createdBy: string;
-	createdAt: string;
-	updatedAt: string;
-	archivedAt?: string | null;
-};
-
-export type ReportRevision = {
-	schemaVersion: string;
-	reportId: string;
-	revision: number;
-	title: string;
-	summary?: string | null;
-	authors: string[];
-	status: ReportStatus;
-	blocks: ReportBlock[];
-	sources: ReportSource[];
-	claims: ReportClaim[];
-	limitations: ReportLimitation[];
-	contentDigest?: string | null;
-	compilerName?: string | null;
-	compilerVersion?: string | null;
-	createdBy: string;
-	createdAt: string;
-};
-
-export type ExperimentRecord = {
-	experimentId: string;
-	reportId?: string | null;
-	revision?: number | null;
-	title: string;
-	hypothesis?: string | null;
-	status: ExperimentStatus;
-	protocolDigest?: string | null;
-	arms: unknown;
-	runs: unknown;
-	results: unknown;
-	evaluatorRefs: unknown;
-	traceCollectionRefs: unknown;
-	claimRefs: unknown;
-	researchLogRefs: unknown;
-	limitations: unknown;
-	createdAt: string;
-	createdBy: string;
-};
-
-export type ResearchLogEntry = {
-	entryId: string;
-	reportId?: string | null;
-	sequence: number;
-	occurredAt: string;
-	recordedAt: string;
-	author: string;
-	actorKind: "human" | "agent" | string;
-	entryKind: string;
-	title: string;
-	body: string;
-	tags: string[];
-	links: unknown;
-	claimEffect?: string | null;
-	supersedesEntryId?: string | null;
-	sourceDigest?: string | null;
-};
-
-export type ReportSeal = {
-	receiptDigest: string;
-	reportId: string;
-	reportRevision: number;
-	schemaVersion: string;
-	compilerName: string;
-	compilerVersion: string;
-	runtimeDigest: string;
-	indexDigest: string;
-	dataDigest: string;
-	receiptSizeBytes: number;
-	totalSizeBytes: number;
-	createdAt: string;
-};
-
-export type ReportSealBundle = {
-	seal: ReportSeal;
-	indexHtml: string;
-	data: Record<string, unknown>;
-	receipt: Record<string, unknown>;
-};
-
-export type ReportRevisionCompare = {
-	left: ReportSealBundle;
-	right: ReportSealBundle;
-	sameDigest: boolean;
-};
-
-export type ReportUpload = {
-	receiptDigest: string;
-	collectionId?: string | null;
-	publicationId?: string | null;
-	publicationRevision?: number | null;
-	state: "prepared" | "uploading" | "finalizing" | "committed" | "failed";
-	committedUrl?: string | null;
-	error?: string | null;
-	updatedAt: string;
-};
-
-export type ReportPromotion = {
-	publicationId: string;
-	slug: string;
-	status: "published" | "unpublished";
-	publicUrl: string;
-};
-
-export type ReportAudience =
-	| { kind: "private" }
-	| { kind: "workspace"; workspaceId: string }
-	| { kind: "members"; memberIds: string[] };
-
-export type ReportAudienceState = {
-	publicationId: string;
-	audience: ReportAudience;
-	status: "active" | "revoked";
-};
-
-export type ReportVisibilityRequest = {
-	requestId: string;
-	reportId: string;
-	reportRevision: number;
-	receiptDigest: string;
-	target: "private" | "public" | "unpublished";
-	slug?: string | null;
-	reason?: string | null;
-	requestedBy: string;
-	status: "pending" | "approved" | "denied" | "executed" | "failed" | "expired";
-	decisionBy?: string | null;
-	error?: string | null;
-	createdAt: string;
-	updatedAt: string;
-	expiresAt: string;
-};
-
-export type ReportComment = {
-	commentId: string;
-	reportId: string;
-	reportRevision: number;
-	receiptDigest?: string | null;
-	publicationId?: string | null;
-	anchor?: string | null;
-	body: string;
-	authorId: string;
-	createdAt: string;
-};
 
 export type ReportsBridge = {
 	list(query?: { status?: string; search?: string; limit?: number; includeArchived?: boolean }): Promise<ReportRecord[]>;
@@ -1407,9 +1095,6 @@ export type TrainingProjection = {
 	attempt_history: unknown[];
 };
 
-export type TerminalInfo = { id: string; workspaceId: string; cwd: string; shell: string; title: string; status: "running" | "exited" | "failed"; createdAt: number; exitCode?: number | null };
-export type TerminalEvent = { terminalId: string; sequence: number; kind: "output" | "exit" | "error"; dataBase64?: string | null; exitCode?: number | null; message?: string | null };
-export type TerminalCreateRequest = { workspaceId: string; workspaceRoot: string; cwd?: string; cols?: number; rows?: number };
 export type TerminalBridge = {
 	available: boolean;
 	create(request: TerminalCreateRequest): Promise<TerminalInfo>;
@@ -1421,10 +1106,6 @@ export type TerminalBridge = {
 	onEvent(listener: (event: TerminalEvent) => void): () => void;
 };
 
-export type WorkspaceAccessMode = "read_only" | "read_write";
-export type WorkspaceAttachment = { path: string; access: WorkspaceAccessMode; source: "user_picker" | "recent_folder" | "agent_request" | "migrated_default"; createdAt: string };
-export type ConversationWorkspaceScope = { sessionId: string; workspace: string; attachments: WorkspaceAttachment[]; revision: number; boundRevision: number; bindingStatus: "pending" | "active" | "failed"; bindingError?: string | null };
-export type WorkspaceGrantRequest = { id: string; sessionId: string; path: string; access: WorkspaceAccessMode; reason: string; status: "pending" | "approved" | "denied"; createdAt: string; resolvedAt?: string | null };
 export type WorkspaceScopeBridge = {
 	get(sessionId: string): Promise<ConversationWorkspaceScope | null>;
 	chooseAndAttach(sessionId: string, access: WorkspaceAccessMode): Promise<ConversationWorkspaceScope | null>;
@@ -1569,21 +1250,9 @@ export type ProductTelemetryBridge = {
 	setOptOut(optOut: boolean): Promise<ProductTelemetryPolicy>;
 };
 
-export type CodexOauthBegin = {
-	authorizeUrl: string;
-	mode: "auto" | "manual";
-};
+export type CodexOauthBegin = BeginResult;
 
-export type CodexOauthStatus = {
-	state: "disconnected" | "authenticating" | "ready" | "expiring" | "expired" | "refresh_failed";
-	action: "connect" | "wait" | "none" | "reauthenticate" | "retry";
-	canUseModels: boolean;
-	guidance: string;
-	configured: boolean;
-	accountHint?: string | null;
-	lastRefresh?: string | null;
-	expiresAt?: string | null;
-};
+export type CodexOauthStatus = Status;
 
 export type CodexOauthBridge = {
 	begin(): Promise<CodexOauthBegin>;
@@ -1594,60 +1263,7 @@ export type CodexOauthBridge = {
 	cancel(): Promise<void>;
 };
 
-export type SecretSummary = {
-	id: string;
-	alias: string;
-	provider: string;
-	scope: string;
-	status: string;
-	backend: string;
-	displaySuffix?: string | null;
-	createdAt: string;
-	lastValidatedAt?: string | null;
-	allowedRecipes: string[];
-};
-
-export type SecretCapabilitySummary = {
-	id: string;
-	secretId: string;
-	runId: string;
-	recipeId: string;
-	provider: string;
-	status: string;
-	maxCalls: number;
-	usedCalls: number;
-	maxCostUsd: number;
-	usedCostUsd: number;
-	usedInputTokens: number;
-	usedOutputTokens: number;
-	expiresAt: string;
-	displaySuffix?: string | null;
-};
-
-export type SecretAuditEvent = {
-	schema: string;
-	eventId: string;
-	at: string;
-	actorKind: string;
-	actorId: string;
-	action: string;
-	secretId?: string | null;
-	provider?: string | null;
-	operation?: string | null;
-	model?: string | null;
-	decision: string;
-	capabilityId?: string | null;
-	usage?: unknown;
-	detail?: string | null;
-};
-
-export type MaskedImportCandidate = {
-	variable: string;
-	provider?: string | null;
-	masked: string;
-	classification: string;
-	selected: boolean;
-};
+export type SecretCapabilitySummary = CapabilitySummary;
 
 export type SecretImportPreview = {
 	requestId: string;
@@ -1657,24 +1273,6 @@ export type SecretImportPreview = {
 	sourceRemainsReadable: boolean;
 	warning?: string | null;
 	cleanupDiff?: string | null;
-};
-
-export type PendingGrantSummary = {
-	requestId: string;
-	secretId: string;
-	alias?: string | null;
-	provider?: string | null;
-	runId: string;
-	recipeId: string;
-	models: string[];
-	maxCalls: number;
-	maxCostUsd: number;
-};
-
-export type SecretsInbox = {
-	imports: SecretImportPreview[];
-	grants: PendingGrantSummary[];
-	proxy: { origin?: string | null; running: boolean };
 };
 
 export type SecretsBridge = {

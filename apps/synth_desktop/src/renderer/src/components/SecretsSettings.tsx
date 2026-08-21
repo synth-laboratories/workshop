@@ -31,7 +31,7 @@ export function SecretsSettings() {
 	const [items, setItems] = useState<SecretSummary[]>([]);
 	const [capabilities, setCapabilities] = useState<SecretCapabilitySummary[]>([]);
 	const [audit, setAudit] = useState<SecretAuditEvent[]>([]);
-	const [inbox, setInbox] = useState<SecretsInbox>({ imports: [], grants: [], proxy: { running: false } });
+	const [inbox, setInbox] = useState<SecretsInbox>({ imports: [], grants: [], proxy: { running: false, origin: null } });
 	const [error, setError] = useState<string | null>(null);
 	const [adding, setAdding] = useState<{ provider: string; alias: string; value: string } | null>(null);
 	const [replacing, setReplacing] = useState<{ id: string; value: string } | null>(null);
@@ -287,7 +287,7 @@ export function SecretsSettings() {
 						<div className="secrets-row" key={grant.requestId}>
 							<div>
 								<strong>{grant.alias ?? grant.secretId}</strong>
-								<p>{grant.provider} · {grant.recipeId} · {grant.maxCalls} calls · ${grant.maxCostUsd.toFixed(2)}</p>
+								<p>{grant.provider} · {grant.recipeId} · {grant.maxCalls} calls · ${(grant.maxCostUsd ?? 0).toFixed(2)}</p>
 							</div>
 							<div className="secrets-row-actions">
 								<button type="button" className="settings-secondary-btn" disabled={busy} onClick={() => void allowGrant(grant, false)}>Allow once</button>
@@ -346,7 +346,7 @@ export function SecretsSettings() {
 					<div className="secrets-row" key={capability.id}>
 						<div>
 							<strong>{capability.provider} · {capability.recipeId}</strong>
-							<p>{capability.usedCalls} / {capability.maxCalls} calls · ${capability.usedCostUsd.toFixed(2)} / ${capability.maxCostUsd.toFixed(2)} · {capability.status}</p>
+							<p>{capability.usedCalls} / {capability.maxCalls} calls · ${(capability.usedCostUsd ?? 0).toFixed(2)} / ${(capability.maxCostUsd ?? 0).toFixed(2)} · {capability.status}</p>
 						</div>
 						<button type="button" className="settings-secondary-btn" onClick={() => void secrets?.revokeCapability(capability.id).then(refresh)}>Revoke</button>
 					</div>

@@ -143,11 +143,11 @@ test("renderer keeps the HTTP runtime bridge browser-only", () => {
 
 test("renderer uses Tauri commands for desktop capabilities", () => {
   const bridge = read("runtime/desktopBridge.ts");
-  const constants = read("bridge/protocolConstants.ts");
-  assert.ok(constants.includes("WORKSPACE_CHOOSE_DIRECTORY"));
-  assert.ok(constants.includes("LAGUNA_GET_STATUS"));
-  assert.ok(constants.includes("INTERN_SESSION_EVENTS_AFTER"));
-  assert.ok(constants.includes("CODEX_SESSIONS_LIST"));
+  const protocol = read("generated/protocol.ts");
+  assert.ok(protocol.includes("workspaceChooseDirectory"));
+  assert.ok(protocol.includes("lagunaGetStatus"));
+  assert.ok(protocol.includes("internSessionEventsAfter"));
+  assert.ok(protocol.includes("codexSessionsList"));
   assert.ok(!bridge.includes('"core_projects_list"'));
   assert.ok(bridge.includes("EVENT_CHANNELS.RUNTIME") || bridge.includes("listen<AppEvent>(EVENT_CHANNELS.RUNTIME"));
 });
@@ -244,10 +244,11 @@ test("migrated demo async pins cannot mask the Rust singleton", () => {
 
 test("renderer exposes CoreRuntime visual registry bridge commands", () => {
   const bridge = read("runtime/desktopBridge.ts");
+  const protocol = read("generated/protocol.ts");
   const constants = read("bridge/protocolConstants.ts");
-  assert.ok(constants.includes("VISUALS_LIST"));
-  assert.ok(constants.includes("VISUALS_CREATE"));
-  assert.ok(constants.includes("VISUALS_SHOW"));
+  assert.ok(protocol.includes("visualsList"));
+  assert.ok(protocol.includes("visualsCreate"));
+  assert.ok(protocol.includes("visualsShow"));
   assert.ok(bridge.includes("window.synthVisuals ??="));
   assert.ok(constants.includes("VISUAL_SHOW"));
 });
@@ -263,16 +264,16 @@ test("Rust run counts remain projected without a Runtime Settings surface", () =
 
 test("v0.2 Intern bridge remains typed while v0.1 creation stays unreachable", () => {
   const bridge = read("runtime/desktopBridge.ts");
-  const constants = read("bridge/protocolConstants.ts");
+  const protocol = read("generated/protocol.ts");
   const controller = read("hooks/useAppController.ts");
   const foreignBridge = read("hooks/useForeignSessionEventBridge.ts");
   for (const command of [
-    "INTERN_SESSIONS_LIST",
-    "INTERN_SESSION_CREATE",
-    "INTERN_SESSION_SEND",
-    "INTERN_SESSION_CONTROL",
-    "INTERN_SESSION_EVENTS_AFTER",
-  ]) assert.ok(constants.includes(command), command);
+    "internSessionsList",
+    "internSessionCreate",
+    "internSessionSend",
+    "internSessionControl",
+    "internSessionEventsAfter",
+  ]) assert.ok(protocol.includes(command), command);
   assert.ok(bridge.includes("EVENT_CHANNELS.RUNTIME") || bridge.includes("listen<AppEvent>(EVENT_CHANNELS.RUNTIME"));
 	assert.ok(controller.includes("nativeIntern.createSession"));
 	assert.ok(!controller.includes('setSelectedTargetId("intern-sync")'));

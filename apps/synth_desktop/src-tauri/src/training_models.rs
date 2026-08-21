@@ -105,9 +105,9 @@ pub struct TrainingModelHit {
     pub models_root: String,
     pub model_id: String,
     pub revision: String,
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = specta_typescript::Number)]
     pub shard_count: usize,
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = specta_typescript::Number)]
     pub total_bytes: u64,
 }
 

@@ -40,13 +40,13 @@ impl InternMode {
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, Default, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub struct InternBinding {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub factory_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub project_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub effort_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub run_id: Option<String>,
 }
 

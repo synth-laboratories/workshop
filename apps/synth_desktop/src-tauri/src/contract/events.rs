@@ -1,7 +1,6 @@
 //! Tauri event channel names + origin tagging. Keep in sync with
-//! `src/renderer/src/bridge/protocolConstants.ts`.
-//!
-//! Drift: `scripts/check-desktop-contract-drift.sh`.
+//! `src/renderer/src/bridge/protocolConstants.ts` `EVENT_CHANNELS` /
+//! `EVENT_ORIGINS`. Command names live in generated `protocol.ts`.
 
 use serde::{Deserialize, Serialize};
 

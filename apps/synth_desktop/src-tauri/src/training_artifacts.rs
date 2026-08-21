@@ -25,16 +25,16 @@ pub struct TrainingArtifact {
     pub base_model_id: String,
     pub producing_run_id: String,
     pub producing_algorithm: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub dataset_digest: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub config_digest: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub digest: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub path: Option<String>,
     // specta cannot export u64 (BigInt); the wire value is a JSON number.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     #[specta(type = f64)]
     pub size_bytes: Option<u64>,
     pub integrity: String,
@@ -282,12 +282,12 @@ pub fn is_in_use(id: &str) -> bool {
 pub struct ArtifactMutationReceipt {
     pub operation: String,
     pub artifact_id: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub digest: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     #[specta(type = f64)]
     pub bytes: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub destination: Option<String>,
     pub status: String,
 }

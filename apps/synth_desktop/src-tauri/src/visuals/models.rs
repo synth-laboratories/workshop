@@ -79,7 +79,7 @@ impl RendererKind {
 pub struct VisualRecord {
     pub schema_version: String,
     pub id: String,
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = specta_typescript::Number)]
     pub current_revision: i64,
     pub title: String,
     pub template_id: String,
@@ -87,23 +87,23 @@ pub struct VisualRecord {
     pub renderer_kind: RendererKind,
     #[specta(type = specta_typescript::Unknown)]
     pub bindings: Value,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub session_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub message_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub run_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub trace_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub parent_visual_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub source_agent_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub source_model: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub content_digest: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub preview_digest: Option<String>,
     #[specta(type = specta_typescript::Unknown)]
     pub metadata: Value,
@@ -115,23 +115,23 @@ pub struct VisualRecord {
 #[serde(rename_all = "camelCase")]
 pub struct VisualRevision {
     pub visual_id: String,
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = specta_typescript::Number)]
     pub revision: i64,
     pub template_id: String,
     pub renderer_kind: RendererKind,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub content_digest: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub bindings_digest: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     #[specta(type = specta_typescript::Unknown)]
     pub bindings: Option<Value>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub preview_digest: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub author_agent_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[specta(type = specta_typescript::Unknown)]
+    #[serde(default)]
+    #[specta(type = specta_typescript::Number)]
     pub parent_revision: Option<i64>,
     pub created_at: String,
 }
@@ -141,7 +141,7 @@ pub struct VisualRevision {
 pub struct VisualAnnotation {
     pub id: String,
     pub visual_id: String,
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = specta_typescript::Number)]
     pub visual_revision: i64,
     pub source_digest: Option<String>,
     #[specta(type = specta_typescript::Unknown)]
@@ -160,7 +160,7 @@ pub struct VisualAnnotation {
 #[derive(Clone, Debug, Deserialize, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub struct VisualAnnotationCreate {
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = specta_typescript::Number)]
     pub visual_revision: i64,
     pub source_digest: Option<String>,
     #[specta(type = specta_typescript::Unknown)]
@@ -178,7 +178,7 @@ pub struct VisualAnnotationCreate {
 pub struct VisualSeal {
     pub receipt_digest: String,
     pub visual_id: String,
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = specta_typescript::Number)]
     pub visual_revision: i64,
     pub artifact_id: String,
     pub schema_version: String,
@@ -187,9 +187,9 @@ pub struct VisualSeal {
     pub runtime_digest: String,
     pub index_digest: String,
     pub data_digest: String,
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = specta_typescript::Number)]
     pub receipt_size_bytes: i64,
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = specta_typescript::Number)]
     pub total_size_bytes: i64,
     pub created_at: String,
 }
@@ -211,7 +211,7 @@ pub struct VisualUpload {
     pub receipt_digest: String,
     pub collection_id: Option<String>,
     pub publication_id: Option<String>,
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = specta_typescript::Number)]
     pub publication_revision: Option<i64>,
     pub state: String,
     pub committed_url: Option<String>,
@@ -266,9 +266,9 @@ pub struct VisualQuery {
     pub session_id: Option<String>,
     pub template_id: Option<String>,
     pub search: Option<String>,
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = specta_typescript::Number)]
     pub limit: Option<i64>,
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = specta_typescript::Number)]
     pub offset: Option<i64>,
 }
 

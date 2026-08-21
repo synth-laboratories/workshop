@@ -59,7 +59,7 @@ pub struct ModelPerformanceSummary {
     pub provider: String,
     pub model_id: String,
     pub measurement_kind: MeasurementKind,
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = specta_typescript::Number)]
     pub sample_count: usize,
     pub tps_p50: Option<f64>,
     pub tps_p95: Option<f64>,
@@ -75,9 +75,9 @@ pub struct ModelPerformanceSummary {
 pub struct ModelPerformanceTurnSample {
     pub run_id: Option<String>,
     pub measurement_kind: MeasurementKind,
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = specta_typescript::Number)]
     pub started_at_ms: i64,
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = specta_typescript::Number)]
     pub completed_at_ms: i64,
     pub output_tps: f64,
 }

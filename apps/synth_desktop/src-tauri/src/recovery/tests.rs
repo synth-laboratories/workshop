@@ -699,3 +699,49 @@ fn a_claim_is_live_for_this_owner_or_a_fresh_peer() {
     };
     assert!(!corrupt_heartbeat.is_live(PREVIOUS_BOOT, now));
 }
+
+#[test]
+fn optimizer_run_claim_is_live_only_for_its_owner_and_only_before_it_expires() {
+    let fx = Fixture::new();
+    let now = Utc::now();
+    fx.db()
+        .with_conn(|conn| {
+            ownership::claim_optimizer_run(
+                conn,
+                "opt_1",
+                CURRENT_BOOT,
+                CURRENT_BOOT,
+                Some(1),
+                None,
+                now,
+            )?;
+            assert!(ownership::optimizer_run_is_live(
+                conn,
+                "opt_1",
+                CURRENT_BOOT,
+                now
+            )?);
+            assert!(!ownership::optimizer_run_is_live(
+                conn,
+                "opt_1",
+                PREVIOUS_BOOT,
+                now
+            )?);
+            assert!(!ownership::claim_is_live(
+                conn,
+                ownership::KIND_OPTIMIZER_RUN,
+                "opt_1",
+                PREVIOUS_BOOT,
+                now
+            )?);
+            assert!(ownership::claim_is_live(
+                conn,
+                ownership::KIND_OPTIMIZER_RUN,
+                "opt_1",
+                CURRENT_BOOT,
+                now
+            )?);
+            Ok(())
+        })
+        .unwrap();
+}

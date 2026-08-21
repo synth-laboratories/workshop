@@ -11,7 +11,7 @@ use super::{
     },
     recipes::{BANKING77_EVAL_BASELINE_RECIPE, HEALTHBENCH_EVAL_SMOKE_RECIPE},
     service::ChatVisualPublication,
-    OptimizerService,
+    OptimizerManager, OptimizerService,
 };
 use crate::container_stream::{
     authoritative_poll_telemetry, declared_poll_url, declared_stream_descriptor,
@@ -580,6 +580,7 @@ async fn run_eval_worker(
     cancel: watch::Receiver<bool>,
 ) -> Result<()> {
     let _revoke = crate::secrets::RevokeRunOnDrop(run_id.clone());
+    let _ownership = service.hold_run_ownership(&run_id)?;
     evidence(
         "run_started",
         append_status(&service, &run_id, "optimizer.run.started", "running"),
@@ -1359,17 +1360,53 @@ async fn poll_until_terminal(
     rollout_id: &str,
 ) -> Result<Value> {
     let deadline = Instant::now() + POLL_TIMEOUT;
+    let outage_wait = crate::limits::OPTIMIZER_RUN_INDEX_WAIT;
+    let mut event_endpoint_outage_started: Option<Instant> = None;
     loop {
         let response = client
             .get(format!("{base}/rollouts/{rollout_id}"))
             .send()
             .await
-            .context("GET /rollouts/{id}")?;
-        if response.status().is_success() {
-            let state = response.json::<Value>().await?;
-            if rollout_terminal(&state) {
-                return Ok(state);
+            .context("GET /rollouts/{id}");
+        match response {
+            Ok(response) if response.status().is_success() => {
+                event_endpoint_outage_started = None;
+                let state = response.json::<Value>().await?;
+                if rollout_terminal(&state) {
+                    return Ok(state);
+                }
             }
+            Ok(response)
+                if OptimizerManager::observer_http_status_is_transient(
+                    response.status().as_u16(),
+                ) =>
+            {
+                let started = event_endpoint_outage_started.get_or_insert_with(Instant::now);
+                if started.elapsed() >= outage_wait {
+                    bail!(
+                        "event_endpoint_outage: GET /rollouts/{rollout_id} stayed unavailable \
+                         for {:.1}s (last status {})",
+                        outage_wait.as_secs_f32(),
+                        response.status()
+                    );
+                }
+            }
+            Ok(_) => {
+                // Non-gateway, non-success: the rollout is not terminal yet
+                // (or the container is still admitting). Keep polling until
+                // POLL_TIMEOUT, as before.
+            }
+            Err(error) if super::manager::observer_error_is_transient_gateway(&error) => {
+                let started = event_endpoint_outage_started.get_or_insert_with(Instant::now);
+                if started.elapsed() >= outage_wait {
+                    bail!(
+                        "event_endpoint_outage: GET /rollouts/{rollout_id} stayed unavailable \
+                         for {:.1}s (last error: {error})",
+                        outage_wait.as_secs_f32()
+                    );
+                }
+            }
+            Err(error) => return Err(error),
         }
         if Instant::now() >= deadline {
             bail!("timed out waiting for terminal state of {rollout_id}");
