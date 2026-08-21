@@ -900,6 +900,17 @@ pub fn require_responses_gateway_url(resolved: &ResolvedBackend) -> Result<Strin
 }
 
 fn config_path() -> PathBuf {
+    // A bundled instance descriptor owns the complete runtime identity,
+    // including its state/config root. Ignore login-session environment left
+    // behind by another Workshop instance; otherwise a Finder/LaunchServices
+    // launch can silently load another instance's config and credential file.
+    if crate::instance::identity()
+        .ok()
+        .and_then(|identity| identity.descriptor)
+        .is_some()
+    {
+        return crate::instance::state_root().join("config.toml");
+    }
     env::var_os("SYNTH_DESKTOP_CONFIG")
         .or_else(|| env::var_os("SYNTH_INTERN_CONFIG"))
         .map(PathBuf::from)
