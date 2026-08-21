@@ -201,3 +201,159 @@ pub fn owned_sessions(conn: &Connection, instance_id: &str) -> Result<Vec<TurnCl
     })?;
     Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
 }
+
+/// Ownership kinds this module speaks. Turns stay on `turn_ownership`;
+/// optimizer campaigns use `optimizer_run_ownership`. Both are `(kind, id)`
+/// claims; `TurnClaim::is_live` is unchanged.
+pub const KIND_TURN: &str = "turn";
+pub const KIND_OPTIMIZER_RUN: &str = "optimizer_run";
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OptimizerRunClaim {
+    pub run_id: String,
+    pub owner_instance_id: String,
+    pub boot_epoch: String,
+    pub pid: Option<u32>,
+    pub process_start_identity: Option<String>,
+    pub heartbeat_at: String,
+    pub lease_expires_at: String,
+}
+
+impl OptimizerRunClaim {
+    /// Same two-halves rule as [`TurnClaim::is_live`]: this process holds it,
+    /// and the lease has not expired. Do not change `TurnClaim::is_live`.
+    pub fn is_live(&self, instance_id: &str, now: DateTime<Utc>) -> bool {
+        self.owner_instance_id == instance_id && !self.lease_expired(now)
+    }
+
+    pub fn lease_expired(&self, now: DateTime<Utc>) -> bool {
+        match DateTime::parse_from_rfc3339(&self.lease_expires_at) {
+            Err(_) => true,
+            Ok(expires) => now > expires.with_timezone(&Utc),
+        }
+    }
+}
+
+pub fn claim_optimizer_run(
+    conn: &Connection,
+    run_id: &str,
+    instance_id: &str,
+    boot_epoch: &str,
+    pid: Option<u32>,
+    process_start_identity: Option<&str>,
+    now: DateTime<Utc>,
+) -> Result<()> {
+    conn.execute(
+        "INSERT INTO optimizer_run_ownership(
+            run_id, owner_instance_id, boot_epoch, pid, process_start_identity,
+            heartbeat_at, lease_expires_at
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+         ON CONFLICT(run_id) DO UPDATE SET
+            owner_instance_id = excluded.owner_instance_id,
+            boot_epoch = excluded.boot_epoch,
+            pid = excluded.pid,
+            process_start_identity = excluded.process_start_identity,
+            heartbeat_at = excluded.heartbeat_at,
+            lease_expires_at = excluded.lease_expires_at",
+        params![
+            run_id,
+            instance_id,
+            boot_epoch,
+            pid.map(|pid| pid as i64),
+            process_start_identity,
+            now.to_rfc3339(),
+            (now + LEASE_DURATION).to_rfc3339(),
+        ],
+    )?;
+    Ok(())
+}
+
+pub fn heartbeat_optimizer_run(
+    conn: &Connection,
+    run_id: &str,
+    instance_id: &str,
+    now: DateTime<Utc>,
+) -> Result<bool> {
+    let changed = conn.execute(
+        "UPDATE optimizer_run_ownership
+         SET heartbeat_at = ?1,
+             lease_expires_at = ?2
+         WHERE run_id = ?3 AND owner_instance_id = ?4",
+        params![
+            now.to_rfc3339(),
+            (now + LEASE_DURATION).to_rfc3339(),
+            run_id,
+            instance_id,
+        ],
+    )?;
+    Ok(changed > 0)
+}
+
+pub fn release_optimizer_run(conn: &Connection, run_id: &str) -> Result<()> {
+    conn.execute(
+        "DELETE FROM optimizer_run_ownership WHERE run_id = ?1",
+        params![run_id],
+    )?;
+    Ok(())
+}
+
+pub fn load_optimizer_run(
+    conn: &Connection,
+    run_id: &str,
+) -> Result<Option<OptimizerRunClaim>> {
+    let claim = conn
+        .query_row(
+            "SELECT run_id, owner_instance_id, boot_epoch, pid, process_start_identity,
+                    heartbeat_at, lease_expires_at
+             FROM optimizer_run_ownership WHERE run_id = ?1",
+            params![run_id],
+            |row| {
+                Ok(OptimizerRunClaim {
+                    run_id: row.get(0)?,
+                    owner_instance_id: row.get(1)?,
+                    boot_epoch: row.get(2)?,
+                    pid: row
+                        .get::<_, Option<i64>>(3)?
+                        .and_then(|pid| u32::try_from(pid).ok()),
+                    process_start_identity: row.get(4)?,
+                    heartbeat_at: row.get(5)?,
+                    lease_expires_at: row.get(6)?,
+                })
+            },
+        )
+        .optional()?;
+    Ok(claim)
+}
+
+pub fn optimizer_run_is_live(
+    conn: &Connection,
+    run_id: &str,
+    instance_id: &str,
+    now: DateTime<Utc>,
+) -> Result<bool> {
+    let Some(claim) = load_optimizer_run(conn, run_id)? else {
+        return Ok(false);
+    };
+    Ok(claim.is_live(instance_id, now))
+}
+
+/// Dispatch liveness for a `(kind, id)` claim. Turn liveness still goes through
+/// [`TurnClaim::is_live`] unchanged.
+pub fn claim_is_live(
+    conn: &Connection,
+    kind: &str,
+    id: &str,
+    instance_id: &str,
+    now: DateTime<Utc>,
+) -> Result<bool> {
+    match kind {
+        KIND_TURN => {
+            let Some(claim) = load(conn, id)? else {
+                return Ok(false);
+            };
+            Ok(claim.is_live(instance_id, now))
+        }
+        KIND_OPTIMIZER_RUN => optimizer_run_is_live(conn, id, instance_id, now),
+        _ => Ok(false),
+    }
+}

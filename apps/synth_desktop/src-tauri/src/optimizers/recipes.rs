@@ -826,12 +826,11 @@ pub(super) async fn reconcile_persisted(
     run_id: &str,
 ) -> Result<super::models::OptimizerRunRecord> {
     let run = service.get(run_id.to_string()).await?;
-    if !super::service::is_terminal_status(&run.status)
-        || run
-            .summary
-            .get("recipeId")
-            .and_then(serde_json::Value::as_str)
-            .is_none_or(|recipe_id| ProposerProfile::for_recipe(recipe_id).is_err())
+    if run
+        .summary
+        .get("recipeId")
+        .and_then(serde_json::Value::as_str)
+        .is_none_or(|recipe_id| ProposerProfile::for_recipe(recipe_id).is_err())
     {
         return Ok(run);
     }
@@ -989,6 +988,7 @@ async fn run_recipe_worker(
     mut cancel_rx: watch::Receiver<bool>,
 ) -> Result<()> {
     let _revoke = crate::secrets::RevokeRunOnDrop(run_id.clone());
+    let _ownership = service.hold_run_ownership(&run_id)?;
     append_status_event(&service, &run_id, "optimizer.run.started", "running").await?;
     let openai = resolve_openai_workload(&run_id, "gepa")?;
     let stdout = fs::File::create(run_dir.join("workshop.stdout.log"))?;
@@ -1016,17 +1016,51 @@ async fn run_recipe_worker(
     let mut indexed = false;
     let index_wait = run_index_wait();
     let index_deadline = tokio::time::Instant::now() + index_wait;
+    // Producer, observer, control are three planes. This loop is the observer:
+    // when the event endpoint answers with a gateway failure *after* the run
+    // has already been seen, the producer is still spending in its own process
+    // and the page will be there on a later poll. Killing the child on the
+    // first 502 turned a proxy hiccup into a full-budget failure whose recorded
+    // cause was whatever telemetry line happened to be last. The outage is
+    // bounded by the same window as indexing; past it the run fails under a
+    // code that names the outage.
+    let mut event_endpoint_outage_started: Option<tokio::time::Instant> = None;
     loop {
         match ingest_available(&service, &manager, &run_id, &mut upstream_cursor).await {
-            Ok(()) => indexed = true,
+            Ok(()) => {
+                indexed = true;
+                event_endpoint_outage_started = None;
+            }
             Err(error) => {
-                // The producer registers its durable index shortly after spawn.
-                // A 404 is retryable only while the child is demonstrably alive;
-                // it is not a successful empty event page.
-                if !super::OptimizerManager::optimizer_run_not_indexed(&error) {
+                if indexed
+                    && super::OptimizerManager::optimizer_event_endpoint_temporarily_unavailable(
+                        &error,
+                    )
+                {
+                    let outage_started = event_endpoint_outage_started
+                        .get_or_insert_with(tokio::time::Instant::now);
+                    if outage_started.elapsed() >= index_wait {
+                        manager.terminate_gepa_recipe(&run_id).await;
+                        if child.try_wait()?.is_none() {
+                            let _ = child.kill().await;
+                        }
+                        let waited = index_wait.as_secs_f32();
+                        let message = format!(
+                            "event_endpoint_outage: the optimizer event endpoint stayed \
+                             unavailable for {waited}s while recipe process for {run_id} was \
+                             live; the child was terminated before spending further \
+                             (last error: {error})"
+                        );
+                        append_terminal_event(&service, &run_id, true, message.clone()).await?;
+                        bail!(message);
+                    }
+                } else if !super::OptimizerManager::optimizer_run_not_indexed(&error) {
+                    // The producer registers its durable index shortly after
+                    // spawn. A 404 is retryable only while the child is
+                    // demonstrably alive; it is not a successful empty event
+                    // page. Everything else is a contract violation.
                     return Err(error);
-                }
-                if !indexed && tokio::time::Instant::now() >= index_deadline {
+                } else if !indexed && tokio::time::Instant::now() >= index_deadline {
                     manager.terminate_gepa_recipe(&run_id).await;
                     if child.try_wait()?.is_none() {
                         let _ = child.kill().await;
@@ -1056,7 +1090,17 @@ async fn run_recipe_worker(
         tokio::select! {
             status = child.wait() => {
                 let status = status.context("wait for product-owned GEPA process")?;
-                ingest_available(&service, &manager, &run_id, &mut upstream_cursor).await?;
+                if let Err(error) = ingest_available(&service, &manager, &run_id, &mut upstream_cursor).await {
+                    // The child has already finished its work. A gateway miss on
+                    // the final observer read is not a reason to record that
+                    // work as failed; the durable run directory is reconciled
+                    // below regardless.
+                    if !indexed
+                        || !super::OptimizerManager::optimizer_event_endpoint_temporarily_unavailable(&error)
+                    {
+                        return Err(error);
+                    }
+                }
                 if !status.success() {
                     bail!("GEPA recipe exited with {status}; see {}", run_dir.join("workshop.stderr.log").display());
                 }
@@ -2914,6 +2958,208 @@ namespace = "base"
         );
     }
 
+    /// Worker tests steer the in-process stand-in through process-global env
+    /// vars, so they must not overlap in one test binary.
+    fn worker_env_lock() -> std::sync::MutexGuard<'static, ()> {
+        static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    struct WorkerFixture {
+        service: OptimizerService,
+        manager: std::sync::Arc<super::super::OptimizerManager>,
+        dir: tempfile::TempDir,
+    }
+
+    async fn worker_fixture() -> WorkerFixture {
+        use super::super::OptimizerManager;
+        use std::sync::Arc;
+
+        let dir = tempdir().unwrap();
+        let storage = Storage::open(dir.path().join("core")).unwrap();
+        let journal = EventJournal::new(storage.database().clone());
+        let content = ContentStore::new(storage.content_root());
+        let visuals = VisualRegistry::new(storage.database().clone(), journal.clone(), content);
+        let (events_tx, _) = tokio::sync::broadcast::channel(16);
+        let manager = Arc::new(OptimizerManager::with_home(dir.path().join("manager")));
+        manager.install(None).unwrap();
+        manager.start().await.unwrap();
+        let service = OptimizerService::new_with_manager(
+            storage.database().clone(),
+            journal,
+            visuals,
+            events_tx,
+            manager.clone(),
+        );
+        WorkerFixture {
+            service,
+            manager,
+            dir,
+        }
+    }
+
+    impl WorkerFixture {
+        async fn create_run(&self, run_id: &str) -> String {
+            let (run, _) = self
+                .service
+                .create(
+                    serde_json::from_value(json!({
+                        "algorithmId": "gepa",
+                        "id": run_id,
+                        "openVisual": false
+                    }))
+                    .unwrap(),
+                )
+                .await
+                .unwrap();
+            run.id
+        }
+
+        /// Spawn the worker against a live stand-in child that sleeps for
+        /// `child_secs`, with the index/outage window set to `window_ms`.
+        fn spawn_worker(
+            &self,
+            run_id: &str,
+            child_secs: &str,
+            window_ms: &str,
+        ) -> (
+            tokio::task::JoinHandle<Result<()>>,
+            watch::Sender<bool>,
+        ) {
+            std::env::set_var("OPENAI_API_KEY", "sk-test");
+            std::env::set_var("SYNTH_OPTIMIZER_TEST_INDEX_WAIT_MS", window_ms);
+            std::env::set_var("SYNTH_OPTIMIZER_TEST_CHILD_SLEEP_SECS", child_secs);
+            let run_dir = self.dir.path().join(format!("run-{run_id}"));
+            fs::create_dir_all(&run_dir).unwrap();
+            let config_path = run_dir.join("recipe.toml");
+            fs::write(&config_path, "").unwrap();
+            let (cancel_tx, cancel_rx) = watch::channel(false);
+            let handle = tokio::spawn(run_recipe_worker(
+                self.service.clone(),
+                run_id.to_string(),
+                run_dir.clone(),
+                config_path,
+                run_dir,
+                self.manager.clone(),
+                cancel_rx,
+            ));
+            (handle, cancel_tx)
+        }
+
+        fn clear_env() {
+            std::env::remove_var("SYNTH_OPTIMIZER_TEST_INDEX_WAIT_MS");
+            std::env::remove_var("SYNTH_OPTIMIZER_TEST_CHILD_SLEEP_SECS");
+            std::env::remove_var("SYNTH_OPTIMIZER_TEST_SUPPRESS_SPOOL");
+        }
+    }
+
+    /// P1-7. A gateway failure from the event endpoint after the run has been
+    /// indexed is an observer miss, not a producer failure: the child keeps
+    /// running, the poll resumes when the page is back, and the run settles
+    /// from its own exit.
+    #[tokio::test]
+    async fn transient_502_after_indexing_does_not_kill_worker() {
+        use super::super::manager::{set_test_event_endpoint_fault, TestEventEndpointFault};
+        let _env = worker_env_lock();
+        let fixture = worker_fixture().await;
+        let run_id = fixture.create_run("gepa_transient_502").await;
+        // Outage window far wider than the injected outage; child outlives it.
+        let (worker, _cancel) = fixture.spawn_worker(&run_id, "4", "30000");
+        // First poll happens before the first select tick; let it index.
+        sleep(Duration::from_millis(300)).await;
+        set_test_event_endpoint_fault(&run_id, Some(TestEventEndpointFault::Status(502)));
+        // At least one failing poll (750 ms cadence) lands inside this span.
+        sleep(Duration::from_millis(1_700)).await;
+        set_test_event_endpoint_fault(&run_id, None);
+
+        let result = tokio::time::timeout(Duration::from_secs(20), worker)
+            .await
+            .expect("worker did not return after the child exited")
+            .unwrap();
+        WorkerFixture::clear_env();
+        assert!(result.is_ok(), "transient 502 killed the worker: {result:?}");
+        let stored = fixture.service.get(run_id.clone()).await.unwrap();
+        assert_eq!(stored.status, "completed");
+        let _ = fixture.manager.stop().await;
+    }
+
+    /// P1-7. Past the outage window the run fails, and the recorded cause is
+    /// the outage itself — not whatever telemetry line happened to be last.
+    #[tokio::test]
+    async fn sustained_502_past_outage_window_is_fatal_with_reason() {
+        use super::super::manager::{set_test_event_endpoint_fault, TestEventEndpointFault};
+        let _env = worker_env_lock();
+        let fixture = worker_fixture().await;
+        let run_id = fixture.create_run("gepa_sustained_502").await;
+        // A 120 s child: only the bound can end this test in time.
+        let (worker, _cancel) = fixture.spawn_worker(&run_id, "120", "250");
+        sleep(Duration::from_millis(300)).await;
+        set_test_event_endpoint_fault(&run_id, Some(TestEventEndpointFault::Status(502)));
+
+        let started = std::time::Instant::now();
+        let error = tokio::time::timeout(Duration::from_secs(30), worker)
+            .await
+            .expect("the outage bound did not fire")
+            .unwrap()
+            .unwrap_err();
+        set_test_event_endpoint_fault(&run_id, None);
+        WorkerFixture::clear_env();
+
+        assert!(
+            error.to_string().starts_with("event_endpoint_outage:"),
+            "failure must be coded as the outage, got: {error}"
+        );
+        assert!(started.elapsed() < Duration::from_secs(30));
+        assert!(
+            fixture.manager.active_gepa_run_ids().await.is_empty(),
+            "the terminated child was left registered"
+        );
+        let stored = fixture.service.get(run_id.clone()).await.unwrap();
+        assert_eq!(stored.status, "failed");
+        let diagnostic = fixture
+            .service
+            .events_after(run_id.clone(), 0, Some(200))
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|event| event.event_type == "optimizer.recipe.diagnostic")
+            .expect("outage failure is recorded as run evidence");
+        assert!(
+            serde_json::to_string(&diagnostic)
+                .unwrap()
+                .contains("event_endpoint_outage"),
+            "diagnostic must name the outage"
+        );
+        let _ = fixture.manager.stop().await;
+    }
+
+    /// P1-7. Tolerance is for gateway failures only. A page for another run is
+    /// a contract violation and ends the worker at once, indexed or not.
+    #[tokio::test]
+    async fn corrupt_or_cross_run_page_stays_fatal() {
+        use super::super::manager::{set_test_event_endpoint_fault, TestEventEndpointFault};
+        let _env = worker_env_lock();
+        let fixture = worker_fixture().await;
+        let run_id = fixture.create_run("gepa_cross_run_page").await;
+        let (worker, _cancel) = fixture.spawn_worker(&run_id, "120", "30000");
+        sleep(Duration::from_millis(300)).await;
+        set_test_event_endpoint_fault(&run_id, Some(TestEventEndpointFault::CrossRun));
+
+        let error = tokio::time::timeout(Duration::from_secs(10), worker)
+            .await
+            .expect("a cross-run page was tolerated")
+            .unwrap()
+            .unwrap_err();
+        set_test_event_endpoint_fault(&run_id, None);
+        WorkerFixture::clear_env();
+
+        assert!(
+            error.to_string().contains("cross-run"),
+            "expected the cross-run contract failure, got: {error}"
+        );
+        let _ = fixture.manager.stop().await;
+    }
+
     /// A10 / test 1b. The failing-path twin of run→poll visibility.
     ///
     /// A run the polled service can never see used to be waited out until the
@@ -2927,6 +3173,7 @@ namespace = "base"
         use super::super::OptimizerManager;
         use std::sync::Arc;
 
+        let _env = worker_env_lock();
         let dir = tempdir().unwrap();
         let storage = Storage::open(dir.path().join("core")).unwrap();
         let journal = EventJournal::new(storage.database().clone());

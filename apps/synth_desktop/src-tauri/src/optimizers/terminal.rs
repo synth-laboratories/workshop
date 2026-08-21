@@ -420,7 +420,7 @@ pub(super) fn seal(conn: &Connection, run_id: &str, manifest: &Value) -> Result<
     load(conn, run_id)?.context("terminal manifest disappeared immediately after sealing")
 }
 
-pub(super) fn load(conn: &Connection, run_id: &str) -> Result<Option<Value>> {
+pub(crate) fn load(conn: &Connection, run_id: &str) -> Result<Option<Value>> {
     let payload: Option<String> = conn
         .query_row(
             "SELECT payload_json FROM optimizer_terminal_manifests WHERE optimizer_run_id = ?1",

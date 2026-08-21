@@ -901,6 +901,7 @@ async fn run_worker(
     mut cancel: watch::Receiver<bool>,
 ) -> Result<()> {
     let _revoke = crate::secrets::RevokeRunOnDrop(run_id.clone());
+    let _ownership = service.hold_run_ownership(&run_id)?;
     append_status(&service, &run_id, "optimizer.run.started", "running").await?;
     fs::create_dir_all(&run_dir).context("create eval run directory")?;
     let stdout_path = run_dir.join("worker.stdout.log");
@@ -958,6 +959,11 @@ async fn run_worker(
     let mut streaming = true;
 
     let mut cancelled_at: Option<Instant> = None;
+    // Same observer policy as the GEPA poll loop: a gateway miss from the
+    // evidence plane must not kill a live worker on the first tick, but a
+    // sustained outage ends the run under a named code.
+    let mut event_endpoint_outage_started: Option<Instant> = None;
+    let outage_wait = crate::limits::OPTIMIZER_RUN_INDEX_WAIT;
     loop {
         tokio::select! {
             line = lines.next_line(), if streaming => {
@@ -966,10 +972,30 @@ async fn run_worker(
                         use std::io::Write;
                         let _ = writeln!(log, "{line}");
                         let _ = log.flush();
-                        if let Err(error) = ingest.push(&line).await {
-                            // One unusable line must not end a live run; the
-                            // durable log still has it for reconcile.
-                            eprintln!("eval event ingest failed: {error}");
+                        match ingest.push(&line).await {
+                            Ok(()) => event_endpoint_outage_started = None,
+                            Err(error)
+                                if super::manager::observer_error_is_transient_gateway(&error) =>
+                            {
+                                let started = event_endpoint_outage_started
+                                    .get_or_insert_with(Instant::now);
+                                if started.elapsed() >= outage_wait {
+                                    let waited = outage_wait.as_secs_f32();
+                                    let _ = child.kill().await;
+                                    bail!(
+                                        "event_endpoint_outage: the eval observer stayed \
+                                         unavailable for {waited}s while the worker for {run_id} \
+                                         was live (last error: {error})"
+                                    );
+                                }
+                                eprintln!("eval event ingest failed: {error}");
+                            }
+                            Err(error) => {
+                                // Durable-log write misses stay on the log;
+                                // the producer is still running. Restart
+                                // reconcile rereads worker.stdout.log.
+                                eprintln!("eval event ingest failed: {error}");
+                            }
                         }
                     }
                     // Stdout closed: the worker is finishing. Stop selecting on
@@ -2094,7 +2120,13 @@ mod tests {
 
         let recovered = svc.reconcile_stale_local_runs().await.unwrap();
         let recovered = recovered.into_iter().find(|run| run.id == run_id).unwrap();
-        assert_eq!(recovered.status, "completed");
+        assert_eq!(recovered.status, "interrupted");
+        svc.database()
+            .with_conn(|conn| {
+                assert!(super::super::terminal::load(conn, &run_id)?.is_some());
+                Ok(())
+            })
+            .unwrap();
         assert_eq!(svc.get(run_id).await.unwrap().id, recovered.id);
     }
 

@@ -86,6 +86,27 @@ impl CoreRuntime {
                     .join(", ")
             );
         }
+        let recovered_runs = storage
+            .database()
+            .transaction(|conn| {
+                crate::optimizers::reconcile_stale_local_runs_in_tx(
+                    conn,
+                    crate::instance::boot_epoch(),
+                    Utc::now(),
+                )
+            })
+            .context("reconcile abandoned optimizer runs at startup")?;
+        if !recovered_runs.is_empty() {
+            eprintln!(
+                "synth-desktop: recovered {} abandoned optimizer run(s) from a previous boot ({})",
+                recovered_runs.len(),
+                recovered_runs
+                    .iter()
+                    .map(|run| run.id.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            );
+        }
         let backend = crate::synth_config::resolve().context("resolve Synth backend")?;
         let intern = Arc::new(match backend.api_key {
             Some(api_key) => InternRuntime::configured(

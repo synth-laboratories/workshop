@@ -48,5 +48,6 @@ pub use models::{
     SavedLoraRunPage,
 };
 pub(crate) use recipes::{BANKING77_EVAL_BASELINE_RECIPE, HEALTHBENCH_EVAL_SMOKE_RECIPE};
+pub(crate) use service::reconcile_stale_local_runs_in_tx;
 pub use service::OptimizerService;
 pub use training::{TrainingEvent, TrainingLifecycle, TrainingProjection};
