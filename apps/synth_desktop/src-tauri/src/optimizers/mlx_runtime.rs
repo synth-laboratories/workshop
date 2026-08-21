@@ -151,17 +151,12 @@ pub fn mlx_serve_command(port: u16, root: &Path) -> Result<Command> {
 
 fn mlx_serve_command_with_model(port: u16, root: &Path, model_path: &Path) -> Result<Command> {
     let mut command = Command::new(mlx_bin()?);
-    command.args([
-        "serve",
-        "--host",
-        "127.0.0.1",
-        "--port",
-        &port.to_string(),
-        "--root",
-        &root.display().to_string(),
-        "--model",
-        TRAINING_MODEL_ID,
-    ]);
+    command
+        .arg("serve")
+        .args(["--host", "127.0.0.1"])
+        .args(["--port", &port.to_string()])
+        .args(["--root", &root.display().to_string()])
+        .args(["--model", &model_path.display().to_string()]);
     command.env("SYNTH_MLX_RL_MODEL_PATH", model_path);
     command.env("HF_HUB_OFFLINE", "1");
     command.kill_on_drop(true);
@@ -331,7 +326,7 @@ mod tests {
                 "--root",
                 "/tmp/mlx-root",
                 "--model",
-                TRAINING_MODEL_ID
+                "/tmp/managed-training-model"
             ]
         );
         assert_eq!(
@@ -402,6 +397,29 @@ mod tests {
         match previous {
             Some(value) => std::env::set_var("SYNTH_DESKTOP_DATA_ROOT", value),
             None => std::env::remove_var("SYNTH_DESKTOP_DATA_ROOT"),
+        }
+    }
+
+    #[test]
+    fn managed_model_path_is_the_offline_serve_argument() {
+        let previous = std::env::var_os("SYNTH_MLX_RL_BIN");
+        std::env::set_var("SYNTH_MLX_RL_BIN", "/usr/bin/true");
+        let model = Path::new("/managed/Qwen/Qwen3.5-0.8B");
+        let command = mlx_serve_command_with_model(57855, Path::new("/jobs"), model).unwrap();
+        let args: Vec<_> = command
+            .as_std()
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(
+            args.windows(2)
+                .find(|pair| pair[0] == "--model")
+                .map(|pair| pair[1].as_str()),
+            Some("/managed/Qwen/Qwen3.5-0.8B")
+        );
+        match previous {
+            Some(value) => std::env::set_var("SYNTH_MLX_RL_BIN", value),
+            None => std::env::remove_var("SYNTH_MLX_RL_BIN"),
         }
     }
 }
