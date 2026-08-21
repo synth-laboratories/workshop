@@ -156,6 +156,15 @@ export type TrainingArtifact = {
 	createdAt: string;
 };
 
+export type ArtifactMutationReceipt = {
+	operation: string;
+	artifactId: string;
+	digest?: string | null;
+	bytes?: number | null;
+	destination?: string | null;
+	status: string;
+};
+
 export type TrainingArtifactsBridge = {
 	list(): Promise<TrainingArtifact[]>;
 	get(id: string): Promise<TrainingArtifact>;
@@ -168,6 +177,8 @@ export type TrainingArtifactsBridge = {
 		configDigest?: string | null;
 		digest?: string | null;
 	}>;
+	export?(request: { id: string; destination: string; expectedDigest?: string; confirm: boolean }): Promise<ArtifactMutationReceipt>;
+	delete?(request: { id: string; confirm: boolean }): Promise<ArtifactMutationReceipt>;
 };
 
 export type WhisperModelHit = {

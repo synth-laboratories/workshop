@@ -158,6 +158,7 @@ async fn start_local(
             title: Some("SFT warm-start adapter".into()),
             metadata: json!({"trainingArtifact": artifact}),
         });
+        crate::training_artifacts::lease(artifact_id, &run_id)?;
         Some(std::path::PathBuf::from(path))
     } else {
         None

@@ -355,6 +355,8 @@ export const commands = {
 	trainingModelsDelete: (modelId: string) => typedError<null, string>(__TAURI_INVOKE("training_models_delete", { modelId })),
 	trainingArtifactsList: () => __TAURI_INVOKE<TrainingArtifact_Serialize[]>("training_artifacts_list"),
 	trainingArtifactsGet: (id: string) => typedError<TrainingArtifact_Serialize, string>(__TAURI_INVOKE("training_artifacts_get", { id })),
+	trainingArtifactsExport: (id: string, destination: string, expectedDigest: string | null, confirm: boolean) => typedError<ArtifactMutationReceipt_Serialize, string>(__TAURI_INVOKE("training_artifacts_export", { id, destination, expectedDigest, confirm })),
+	trainingArtifactsDelete: (id: string, confirm: boolean) => typedError<ArtifactMutationReceipt_Serialize, string>(__TAURI_INVOKE("training_artifacts_delete", { id, confirm })),
 	trainingArtifactsLaunchInference: (id: string, message: string | null, confirm: boolean) => typedError<unknown, AppError>(__TAURI_INVOKE("training_artifacts_launch_inference", { id, message, confirm })),
 	whisperModelsList: () => __TAURI_INVOKE<WhisperModelHit[]>("whisper_models_list"),
 	whisperModelDownload: (id: string) => typedError<WhisperModelHit, string>(__TAURI_INVOKE("whisper_model_download", { id })),
@@ -613,6 +615,26 @@ export type AppEvent_Serialize = {
 	remoteSequence?: unknown,
 	commandId?: string | null,
 	createdAt: string,
+};
+
+export type ArtifactMutationReceipt = ArtifactMutationReceipt_Serialize | ArtifactMutationReceipt_Deserialize;
+
+export type ArtifactMutationReceipt_Deserialize = {
+	operation: string,
+	artifactId: string,
+	digest?: string | null,
+	bytes?: number | null,
+	destination?: string | null,
+	status: string,
+};
+
+export type ArtifactMutationReceipt_Serialize = {
+	operation: string,
+	artifactId: string,
+	digest?: string | null,
+	bytes?: number | null,
+	destination?: string | null,
+	status: string,
 };
 
 export type AttachmentSource = "user_picker" | "recent_folder" | "agent_request" | "migrated_default";
