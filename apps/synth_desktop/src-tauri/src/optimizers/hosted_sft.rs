@@ -8,7 +8,7 @@ use super::{
     ingest,
     models::{
         OptimizerCapabilities, OptimizerCreateRequest, OptimizerExecutionBinding, OptimizerQuery,
-        OptimizerRecipeRunRequest, OptimizerResourceRef, OptimizerRunRecord,
+        OptimizerRecipeRunRequest, OptimizerResourceRef, OptimizerRunRecord, OptimizerRunStatus,
     },
     sft_client::SftOptimizerClient,
     sidecar_training::PLACEMENT_TRAINING_SFT_HOSTED,
@@ -595,10 +595,7 @@ pub(crate) fn hosted_runs_needing_restore(
         .filter(|run| {
             run.source == "hosted"
                 && run.algorithm_id == "sft"
-                && !matches!(
-                    run.status.as_str(),
-                    "completed" | "failed" | "cancelled" | "canceled"
-                )
+                && !OptimizerRunStatus::str_is_terminal(&run.status)
                 && !registered.contains(&run.id)
         })
         .map(|run| (run.id.clone(), resume_cursor(run)))
@@ -698,7 +695,7 @@ async fn run_hosted_worker(
             }
             _ = sleep(Duration::from_millis(750)) => {}
         }
-        if matches!(status, "succeeded" | "failed" | "cancelled") {
+        if OptimizerRunStatus::str_is_terminal(status) {
             ingest::ingest_event_page(
                 &service,
                 &run_id,
@@ -850,15 +847,17 @@ async fn persist_remote_terminal(
     remote_status: &str,
     error: Option<&str>,
 ) -> Result<()> {
-    let mapped = match remote_status {
-        "succeeded" => "completed",
-        other => other,
-    };
+    // Backend P0-3 is the producer authority: it no longer emits `succeeded`.
+    // The one remaining fold is `OptimizerRunStatus::parse` — do not keep a
+    // second remote-status rewrite arm here.
+    let status = OptimizerRunStatus::parse(remote_status)
+        .with_context(|| format!("{remote_status} is not an OptimizerRunStatus"))?;
+    let mapped = status.as_str();
     let mut run = service.get(run_id.to_string()).await?;
     if run.status != mapped {
         run.status = mapped.into();
     }
-    if mapped != "completed" {
+    if status != OptimizerRunStatus::Completed {
         if let Some(message) = error.filter(|value| !value.is_empty()) {
             run.error = Some(json!({"message": message}));
         } else if run.error.is_none() {
