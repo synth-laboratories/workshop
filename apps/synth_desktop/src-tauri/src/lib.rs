@@ -527,6 +527,22 @@ async fn hydrate_container(
                 .map(str::to_string)
         })
         .or_else(|| {
+            // Packaged GEPA services identify their task through the immutable
+            // runtime id rather than an optional top-level `task_family`.
+            // Use that advertised value only; never infer the target from the
+            // user supplied name, URL, or port.
+            info.as_ref()
+                .and_then(|value| value.pointer("/runtime/runtime_id"))
+                .and_then(|value| value.as_str())
+                .and_then(|runtime_id| {
+                    let normalized = runtime_id.to_ascii_lowercase();
+                    ["banking77", "healthbench", "craftax"]
+                        .into_iter()
+                        .find(|family| normalized.contains(family))
+                        .map(str::to_string)
+                })
+        })
+        .or_else(|| {
             health
                 .get("payload")
                 .and_then(|value| value.get("env_family"))
