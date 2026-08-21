@@ -1016,10 +1016,39 @@ impl CodexManager {
         let Some(turn_id) = session.turn_id.read().await.clone() else {
             return Ok(());
         };
-        // Ask the provider to cancel first so it can stop container leases and
-        // seal any partial evidence. A provider acknowledgement is not proof
-        // that its child tool actually died, though, and a stuck RPC must not
-        // keep the composer locked for the transport's 30-second timeout.
+        // Terminalize durable state before asking the provider. Its own
+        // turn/interrupted notification can race the request acknowledgement;
+        // recording cancellation first keeps a deliberate Stop distinct from
+        // a transport interruption even when that notification wins the race.
+        if let Some(event) = self
+            .persistence
+            .cancel_active_run(session_id, "operator_cancelled")
+            .await?
+        {
+            self.persistence.publish_event(&app, event).await?;
+        }
+        // The durable run transition above is authoritative storage, while this
+        // protocol-shaped envelope is the transcript's explicit user-cancel
+        // terminal. Emit it ourselves because a non-cooperative provider may
+        // never send turn/interrupted before its process tree is fenced.
+        self.persistence
+            .append_and_emit(
+                &app,
+                EventAppend::codex(
+                    session_id.to_owned(),
+                    "turn/interrupted",
+                    json!({
+                        "threadId": session.thread_id,
+                        "turnId": turn_id,
+                        "reason": "operator_cancelled",
+                        "cancelledBy": "user",
+                    }),
+                ),
+            )
+            .await?;
+        // Give the provider a bounded opportunity to stop leases and seal
+        // partial evidence. An acknowledgement is not proof that a child tool
+        // died, so the owned process group is fenced below in every case.
         let _ = tokio::time::timeout(
             Duration::from_secs(2),
             session.server.request(
@@ -1028,18 +1057,10 @@ impl CodexManager {
             ),
         )
         .await;
-        if let Some(event) = self
-            .persistence
-            .interrupt_active_run(session_id, "operator_cancelled")
-            .await?
-        {
-            self.persistence.publish_event(&app, event).await?;
-        }
         // Persist and publish terminal state before tearing down the transport.
         // This makes Stop deterministic even when the app-server ignores the
         // interrupt request or never emits turn/interrupted.
-        self.set_status(session_id, SessionStatus::Interrupted)
-            .await?;
+        self.set_status(session_id, SessionStatus::Ready).await?;
         self.approvals
             .expire_session(&app, session_id, "origin_interrupted")
             .await?;

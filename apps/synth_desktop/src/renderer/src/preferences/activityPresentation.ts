@@ -46,6 +46,7 @@ type ActivityStatus = "running" | "completed" | "failed" | "cancelled" | "interr
 function lineStatus(line: LocalActivityLine): ActivityStatus {
 	if (line.toolStatus === "running") return "running";
 	if (line.toolStatus === "failed") return "failed";
+	if (line.toolStatus === "cancelled") return "cancelled";
 	if (/cancel/i.test(line.label)) return "cancelled";
 	if (/interrupt/i.test(line.label)) return "interrupted";
 	if (/unhealthy|detach/i.test(line.label)) return "unhealthy";
