@@ -7065,6 +7065,23 @@ html.sidebar-hidden .titlebar {
 	letter-spacing: 0.01em;
 }
 
+.inference-model-identity {
+	display: grid;
+	gap: 3px;
+}
+
+.inference-policy-kind {
+	color: var(--text-muted);
+	font-size: 10px;
+	font-weight: 650;
+	letter-spacing: .04em;
+	text-transform: uppercase;
+}
+
+.inference-policy-kind[data-finetuned="yes"] {
+	color: var(--accent-strong, #d8502a);
+}
+
 .inference-residency {
 	font-size: 10px;
 	font-weight: 650;

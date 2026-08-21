@@ -194,6 +194,17 @@ test("idle state says so and offers a working Free now control", () => {
 	assert.match(html, /Release the model weights now/);
 });
 
+test("a pinned finetune is identified as a LoRA model while idle", () => {
+	const html = render({
+		monitor: monitor({ snapshot: snapshot() }),
+		selectedModel: "synth/Laguna-XS-2.1-ft"
+	});
+	assert.match(html, /Inference.*Laguna XS 2\.1 ft/);
+	assert.match(html, /data-testid="inference-policy-kind"/);
+	assert.match(html, /data-finetuned="yes"/);
+	assert.match(html, /Fine-tuned model · LoRA attached/);
+});
+
 test("an active local turn is not labelled idle between inference calls", () => {
 	const html = render({ monitor: monitor({ snapshot: snapshot() }), turnRunning: true });
 	assert.match(html, /data-phase="turn-active"/);

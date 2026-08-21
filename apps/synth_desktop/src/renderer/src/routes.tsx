@@ -539,6 +539,7 @@ export function MainRoutes(props: MainRoutesProps): ReactNode {
 														observedPerformance={
 															persistedPerformanceByTarget.get("local-laguna") ?? null
 														}
+														selectedModel={activeChatSession?.target.kind === "local" ? activeChatSession.target.model : null}
 														turnRunning={Boolean(
 															activeChatRunning && activeChatSession?.target.kind === "local"
 														)}
