@@ -543,6 +543,25 @@ impl OptimizerService {
         self.local_recipes.lock().await.insert(run_id, cancel);
     }
 
+    /// Claim one local run watcher without replacing an existing owner.
+    ///
+    /// Refresh/get-result calls may race the watcher started with the recipe.
+    /// Replacing its cancellation sender and starting a second poller makes
+    /// both workers append the same durable event page concurrently, which can
+    /// turn a healthy local training run into a transient SQLite-lock failure.
+    pub(super) async fn try_register_local_recipe(
+        &self,
+        run_id: String,
+        cancel: watch::Sender<bool>,
+    ) -> bool {
+        let mut recipes = self.local_recipes.lock().await;
+        if recipes.contains_key(&run_id) {
+            return false;
+        }
+        recipes.insert(run_id, cancel);
+        true
+    }
+
     pub(super) async fn unregister_local_recipe(&self, run_id: &str) {
         self.local_recipes.lock().await.remove(run_id);
     }
@@ -4154,6 +4173,33 @@ pub(in crate::optimizers) mod tests {
             events_tx,
             manager,
         )
+    }
+
+    #[tokio::test]
+    async fn local_recipe_watchers_have_one_owner() {
+        let dir = tempdir().unwrap();
+        let service = reopen(&dir).await;
+        let (first, _) = watch::channel(false);
+        let (duplicate, _) = watch::channel(false);
+
+        assert!(
+            service
+                .try_register_local_recipe("local-training-run".into(), first)
+                .await
+        );
+        assert!(
+            !service
+                .try_register_local_recipe("local-training-run".into(), duplicate)
+                .await
+        );
+
+        service.unregister_local_recipe("local-training-run").await;
+        let (replacement, _) = watch::channel(false);
+        assert!(
+            service
+                .try_register_local_recipe("local-training-run".into(), replacement)
+                .await
+        );
     }
 
     async fn eval_run(svc: &OptimizerService, id: &str, session: &str) -> OptimizerRunRecord {

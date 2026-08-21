@@ -597,9 +597,12 @@ pub async fn spawn_watch_worker(
     cursor: u64,
 ) {
     let (cancel_tx, cancel_rx) = watch::channel(false);
-    service
-        .register_local_recipe(run_id.clone(), cancel_tx)
-        .await;
+    if !service
+        .try_register_local_recipe(run_id.clone(), cancel_tx)
+        .await
+    {
+        return;
+    }
     let worker = service.clone();
     tokio::spawn(async move {
         if let Err(error) =
