@@ -908,7 +908,9 @@ pub fn bind_lease_into_toml(path: &Path, lease: &CredentialLease) -> Result<()> 
         })?;
     policy.insert(
         "credential_mode".into(),
-        toml::Value::String(CREDENTIAL_MODE_WORKSHOP_PROXY.into()),
+        // The lease contract calls this route `workshop_proxy`; the pinned
+        // optimizer TOML schema calls the same managed route `proxy`.
+        toml::Value::String("proxy".into()),
     );
     policy.insert(
         "inference_url".into(),
