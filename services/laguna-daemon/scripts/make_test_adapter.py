@@ -119,6 +119,10 @@ def main() -> None:
         json.dumps(
             {
                 "fine_tune_type": "lora",
+                # The catalog reads this on import; without it every imported
+                # adapter is stamped with the local SFT student and can never
+                # pass the Laguna compatibility filter.
+                "base_model": f"poolside/{model_dir.name}",
                 "num_layers": args.layers,
                 "lora_parameters": {
                     "rank": args.rank,

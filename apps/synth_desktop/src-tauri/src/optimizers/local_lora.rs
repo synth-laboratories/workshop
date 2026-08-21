@@ -196,7 +196,11 @@ pub fn import_local_lora_dir(conn: &Connection, path: &Path) -> Result<SavedLora
             sha256: sha,
             name,
             description: "Imported mlx-lora.v1 adapter".into(),
-            base_model: "Qwen/Qwen3.5-0.8B".into(),
+            // An adapter that declares its base is taken at its word. Stamping
+            // every import with the local SFT student made a Laguna adapter
+            // fail `is_laguna_compatible`, so no imported adapter could reach
+            // the Composer picker.
+            base_model: read_base_model(&adapter).unwrap_or_else(|| "Qwen/Qwen3.5-0.8B".into()),
             optimizer_algorithm: None,
             checkpoint_kind: "inference".into(),
             step: None,
@@ -628,6 +632,24 @@ fn dir_size(root: &Path) -> Result<u64> {
     Ok(total)
 }
 
+fn read_base_model(root: &Path) -> Option<String> {
+    let raw = fs::read_to_string(root.join("adapter_config.json")).ok()?;
+    let value: Value = serde_json::from_str(&raw).ok()?;
+    for pointer in [
+        "/base_model",
+        "/base_model_name_or_path",
+        "/synth_test_fixture/base_model",
+    ] {
+        if let Some(name) = value.pointer(pointer).and_then(Value::as_str) {
+            let name = name.trim();
+            if !name.is_empty() {
+                return Some(name.to_string());
+            }
+        }
+    }
+    None
+}
+
 fn read_lora_rank(root: &Path) -> Option<i32> {
     let raw = fs::read_to_string(root.join("adapter_config.json")).ok()?;
     let value: Value = serde_json::from_str(&raw).ok()?;
@@ -655,6 +677,46 @@ mod tests {
         conn.execute_batch(LOCAL_LORA_DDL).unwrap();
         let err = import_local_lora_dir(&conn, dir.path()).unwrap_err();
         assert!(err.to_string().contains("mlx-lora.v1"), "{err}");
+    }
+
+    #[test]
+    fn import_reads_the_declared_base_model() {
+        let store = tempfile::tempdir().unwrap();
+        std::env::set_var("SYNTH_LOCAL_LORA_ROOT", store.path());
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(
+            dir.path().join("adapter_config.json"),
+            r#"{"base_model":"poolside/Laguna-XS-2.1-NVFP4-mlx","lora_parameters":{"rank":8}}"#,
+        )
+        .unwrap();
+        fs::File::create(dir.path().join("adapters.safetensors"))
+            .unwrap()
+            .write_all(&[1, 2, 3, 4])
+            .unwrap();
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(LOCAL_LORA_DDL).unwrap();
+        let imported = import_local_lora_dir(&conn, dir.path()).unwrap();
+        assert_eq!(imported.base_model, "poolside/Laguna-XS-2.1-NVFP4-mlx");
+        // The whole point of reading the declared base: an imported Laguna
+        // adapter has to be selectable in the Composer picker.
+        assert!(is_laguna_compatible(&imported));
+    }
+
+    #[test]
+    fn import_without_a_declared_base_stays_on_the_sft_student() {
+        let store = tempfile::tempdir().unwrap();
+        std::env::set_var("SYNTH_LOCAL_LORA_ROOT", store.path());
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("adapter_config.json"), r#"{"r":8}"#).unwrap();
+        fs::File::create(dir.path().join("adapters.safetensors"))
+            .unwrap()
+            .write_all(&[5, 6, 7, 8])
+            .unwrap();
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(LOCAL_LORA_DDL).unwrap();
+        let imported = import_local_lora_dir(&conn, dir.path()).unwrap();
+        assert_eq!(imported.base_model, "Qwen/Qwen3.5-0.8B");
+        assert!(!is_laguna_compatible(&imported));
     }
 
     #[test]
