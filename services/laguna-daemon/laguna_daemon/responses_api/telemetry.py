@@ -60,6 +60,14 @@ class GenerationTiming:
     cached_tokens: int = 0
     output_tokens: int = 0
     measured_decode_tps: float | None = None
+    #: The policy this generation ran under: which model id the client asked
+    #: for, and therefore whether a LoRA was attached. Throughput is only
+    #: comparable within a policy.
+    policy: str | None = None
+    #: Per-token decode latencies in seconds. Aggregates take a low percentile
+    #: rather than a mean: on a contended machine the mean measures the
+    #: scheduler, while the fastest tokens approximate uncontended speed.
+    decode_latencies: list[float] = field(default_factory=list)
     phase: str = "queued"
 
     def ttft_ms(self) -> float | None:

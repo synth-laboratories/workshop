@@ -19,6 +19,7 @@ from .chat_api import ChatService
 from .config import LagunaConfig
 from .responses_api import ResponsesService
 from .responses_api.errors import ResponsesError
+from .responses_api.policies import PolicyError
 from .settings import SettingsStore
 from .synth_control import SynthControl, register_control_routes
 
@@ -168,8 +169,7 @@ def build_app(config: LagunaConfig | None = None) -> FastAPI:
     def model_id() -> str:
         return cfg.default_model
 
-    def models_payload() -> dict[str, Any]:
-        mid = model_id()
+    def describe_model(mid: str) -> tuple[dict[str, Any], dict[str, Any]]:
         name = mid.split("/")[-1].replace("-", " ")
         runtime_description = "Native local MLX model served by Synth Laguna."
         reasoning_levels = [
@@ -238,12 +238,21 @@ def build_app(config: LagunaConfig | None = None) -> FastAPI:
             "prefer_websockets": True,
             "base_instructions": "You are Codex, a coding agent running on local Synth Laguna.",
         }
+        return item, codex_item
+
+    def models_payload() -> dict[str, Any]:
+        # One entry per selectable policy. The base weights and each registered
+        # adapter are peers here: a client picks one by asking for its model id,
+        # which is what keeps the pin in the request instead of in daemon state.
+        described = [
+            describe_model(policy.model_id) for policy in responses_service.policies.list()
+        ]
         return {
             "object": "list",
-            "data": [item],
+            "data": [item for item, _ in described],
             # Codex app-server's model manager consumes its native envelope,
             # while OpenAI SDKs consume data. Supplying both is additive.
-            "models": [codex_item],
+            "models": [codex for _, codex in described],
         }
 
     @app.get("/health")
@@ -289,6 +298,77 @@ def build_app(config: LagunaConfig | None = None) -> FastAPI:
     @app.get("/v1/models")
     async def list_models() -> dict[str, Any]:
         return models_payload()
+
+    @app.get("/v1/synth/policies")
+    async def list_policies() -> dict[str, Any]:
+        return {
+            "default_model": responses_service.policies.default_model,
+            "policies": [policy.json() for policy in responses_service.policies.list()],
+        }
+
+    @app.post("/v1/synth/policies")
+    async def register_policy(request: Request) -> Any:
+        """Register an adapter under a model id clients can ask for.
+
+        Workshop owns adapter identity in its catalog; the daemon only needs a
+        name, a validated `mlx-lora.v1` directory, and the digest to report
+        back so the two sides can be checked against each other.
+        """
+        try:
+            body = await request.json()
+        except (ValueError, TypeError):
+            body = {}
+        if not isinstance(body, dict):
+            body = {}
+        try:
+            policy = responses_service.policies.register(
+                str(body.get("model_id") or ""),
+                str(body.get("adapter_path") or ""),
+                digest=body.get("digest"),
+                title=body.get("title"),
+            )
+        except PolicyError as error:
+            return JSONResponse(
+                status_code=400,
+                content={
+                    "error": {
+                        "type": "invalid_request_error",
+                        "code": "invalid_policy",
+                        "message": str(error),
+                        "param": error.field,
+                    }
+                },
+            )
+        return {"policy": policy.json()}
+
+    @app.delete("/v1/synth/policies/{model_id:path}")
+    async def remove_policy(model_id: str) -> Any:
+        try:
+            removed = responses_service.policies.remove(model_id)
+        except PolicyError as error:
+            return JSONResponse(
+                status_code=400,
+                content={
+                    "error": {
+                        "type": "invalid_request_error",
+                        "code": "invalid_policy",
+                        "message": str(error),
+                        "param": error.field,
+                    }
+                },
+            )
+        if not removed:
+            return JSONResponse(
+                status_code=404,
+                content={
+                    "error": {
+                        "type": "invalid_request_error",
+                        "code": "policy_not_found",
+                        "message": f"No policy registered as {model_id!r}.",
+                    }
+                },
+            )
+        return {"removed": model_id}
 
     @app.post("/v1/chat/completions")
     async def chat_completions(request: Request) -> Any:

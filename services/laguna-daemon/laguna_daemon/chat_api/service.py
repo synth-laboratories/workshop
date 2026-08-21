@@ -46,6 +46,18 @@ class ChatService:
         requested = body.get("model") or self.config.default_model
         if requested in MODEL_ALIASES:
             requested = self.config.default_model
+        # Chat is a peer surface, so a policy pin has to be honoured — and
+        # refused — here exactly as it is on Responses.
+        policies = getattr(self.responses, "policies", None)
+        if policies is not None:
+            from ..responses_api.policies import PolicyError
+
+            try:
+                policies.resolve(requested)
+            except PolicyError as error:
+                raise ResponsesError(
+                    "model_not_found", str(error), 404, error_type="invalid_request_error"
+                ) from error
         return {**body, "model": requested}
 
     async def _prepare(self, body: dict[str, Any]) -> tuple[Any, ChatEventAssembler]:
