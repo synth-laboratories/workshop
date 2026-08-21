@@ -691,7 +691,7 @@ impl OptimizerManager {
         let hit = load_verified_manifest(&self.home, &dir)?;
         if let Some(status) = self.probe().await {
             if status.phase == "ready" && status.version.as_deref() == Some(hit.version.as_str()) {
-                if runtime_lease_is_current(&self.home, &hit.version) {
+                if credential_runtime_lease_is_current(&self.home, &hit.version) {
                     self.set_status(status).await;
                     return Ok(self.status().await);
                 }
@@ -1768,7 +1768,7 @@ fn isolate_process_group(command: &mut Command) {
     command.as_std_mut().process_group(0);
 }
 
-fn runtime_lease_is_current(home: &Path, version: &str) -> bool {
+fn credential_runtime_lease_is_current(home: &Path, version: &str) -> bool {
     let Ok(Some(lease)) =
         crate::secrets::lease::read_runtime_lease(&home.join("runtime-lease.json"))
     else {
@@ -2027,7 +2027,6 @@ async fn serve_in_process_spool_page(
     }))
 }
 
-#[cfg(test)]
 fn parse_optimizer_events_request(path_and_query: &str) -> Option<(String, u64, usize)> {
     let (path, query) = path_and_query
         .split_once('?')
