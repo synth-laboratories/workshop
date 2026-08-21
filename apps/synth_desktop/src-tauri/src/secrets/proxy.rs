@@ -657,7 +657,9 @@ async fn handle(
             cost_usd: 0.0,
         }
     };
-    if let Ok(live) = state.capabilities.debit_usage(&handle, &usage) {
+    if status.is_success()
+        && let Ok(live) = state.capabilities.debit_usage(&handle, &usage)
+    {
         let _ = state.db.with_conn(|conn| {
             capability::persist_usage(conn, &live)?;
             let mut event = SecretAuditEvent::new("run", &live.run_id, "provider.use", "allowed");
