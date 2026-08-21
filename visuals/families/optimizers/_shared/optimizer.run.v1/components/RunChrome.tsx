@@ -1,4 +1,7 @@
 import { useState, type ReactNode } from "react";
+import { algorithmLabel } from "./algorithmLabel.ts";
+
+export { algorithmLabel };
 
 export function RunHeader({
   algorithmId,
@@ -296,13 +299,6 @@ export function CandidateRail({
       </div>
     </section>
   );
-}
-
-function algorithmLabel(id: string): string {
-  if (id === "gepa") return "GEPA";
-  if (id === "go-ex") return "GELO";
-  if (id === "sft") return "SFT";
-  return id;
 }
 
 function formatScore(value: unknown): string {

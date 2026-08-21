@@ -106,7 +106,7 @@ function Panel({
 
 /* ── Phase A · baseline ─────────────────────────────────────────────────── */
 
-function BaselinePanel({ sft }: { sft: SftState }) {
+function BaselinePanel({ sft, isCispo }: { sft: SftState; isCispo?: boolean }) {
   const baseline = sft.baseline;
   const distribution = useMemo(
     () => sftDistribution((baseline?.seeds ?? []).map((seed) => seed.reward)),
@@ -114,9 +114,9 @@ function BaselinePanel({ sft }: { sft: SftState }) {
   );
   return (
     <Panel
-      title="Baseline — unchanged student"
+      title={isCispo ? "Baseline — policy before CISPO" : "Baseline — unchanged student"}
       aside={baseline?.splitDigest ? `split ${shortDigest(baseline.splitDigest)}` : undefined}
-      testId="sft-baseline"
+      testId={isCispo ? "cispo-baseline" : "sft-baseline"}
     >
       {!baseline || baseline.seeds.length === 0 ? (
         <p className="sv-empty">
@@ -601,6 +601,49 @@ function ProvenancePanel({ sft }: { sft: SftState }) {
   );
 }
 
+function CispoIdentityPanel({
+  cispo
+}: {
+  cispo: NonNullable<ProjectedState["cispo"]>;
+}) {
+  const clip =
+    cispo.clipLow != null || cispo.clipHigh != null
+      ? `${formatMissingNumber(cispo.clipLow)} … ${formatMissingNumber(cispo.clipHigh)}`
+      : "—";
+  return (
+    <Panel title="CISPO identity" testId="cispo-identity">
+      <dl className="sv-kv">
+        <dt>Objective</dt>
+        <dd>{cispo.objective}</dd>
+        <dt>Clip bounds</dt>
+        <dd className="sv-mono">{clip}</dd>
+        <dt>Group size</dt>
+        <dd className="sv-mono">{formatMissingNumber(cispo.groupSize, 0)}</dd>
+        <dt>Reward variance</dt>
+        <dd className="sv-mono">{formatMissingNumber(cispo.rewardVariance)}</dd>
+        <dt>Advantage mean</dt>
+        <dd className="sv-mono">{formatMissingNumber(cispo.advantageMean)}</dd>
+        <dt>Advantage std</dt>
+        <dd className="sv-mono">{formatMissingNumber(cispo.advantageStd)}</dd>
+        <dt>Optimizer steps</dt>
+        <dd className="sv-mono">{String(cispo.optimizerSteps)}</dd>
+        <dt>Warm-start artifact</dt>
+        <dd>{cispo.warmStartArtifactId ? <Identifier value={cispo.warmStartArtifactId} max={28} /> : "—"}</dd>
+        <dt>Checkpoint lineage</dt>
+        <dd className="sv-mono">
+          {cispo.checkpointIds.length > 0 ? cispo.checkpointIds.join(" → ") : "—"}
+        </dd>
+        {cispo.noLearningSignal ? (
+          <>
+            <dt>Learning signal</dt>
+            <dd>Stopped truthfully — uniform group, no fabricated advantage</dd>
+          </>
+        ) : null}
+      </dl>
+    </Panel>
+  );
+}
+
 /* ── Workspace ──────────────────────────────────────────────────────────── */
 
 export function SftWorkspace({
@@ -615,6 +658,8 @@ export function SftWorkspace({
   embedded?: boolean;
 }) {
   const sft = projected.sft;
+  const cispo = projected.cispo;
+  const isCispo = run.algorithmId === "cispo";
   const status = String(projected.summary.status ?? run.status ?? "");
   const nested = (projected.summary.summary as Record<string, unknown> | undefined) ?? {};
   const promotedCheckpointId = typeof nested.promotedCheckpointId === "string" ? nested.promotedCheckpointId : undefined;
@@ -679,6 +724,26 @@ export function SftWorkspace({
         : "Preparing run";
 
   const metrics: WorkspaceMetric[] = [
+    ...(isCispo && cispo
+      ? [
+          { label: "Algorithm", value: "CISPO" },
+          {
+            label: "Clip",
+            value:
+              cispo.clipLow != null || cispo.clipHigh != null
+                ? `${formatMissingNumber(cispo.clipLow)} … ${formatMissingNumber(cispo.clipHigh)}`
+                : "—"
+          },
+          { label: "Group size", value: formatMissingNumber(cispo.groupSize, 0) },
+          { label: "Reward var", value: formatMissingNumber(cispo.rewardVariance) },
+          {
+            label: "Advantage",
+            value: `${formatMissingNumber(cispo.advantageMean)} ± ${formatMissingNumber(cispo.advantageStd)}`
+          },
+          { label: "Opt. steps", value: String(cispo.optimizerSteps) },
+          { label: "Warm start", value: cispo.warmStartArtifactId ?? "none" }
+        ]
+      : []),
     {
       label: "Heldout uplift",
       value: comparison ? signed(comparison.absoluteUplift) : "not measured",
@@ -718,7 +783,7 @@ export function SftWorkspace({
   ];
 
   return (
-    <div className="sv-workspace" data-testid="sft-workspace">
+    <div className="sv-workspace" data-testid={isCispo ? "cispo-workspace" : "sft-workspace"}>
       {!embedded ? (
         <WorkspaceHeader
           statusText={chip.text}
@@ -726,13 +791,15 @@ export function SftWorkspace({
           live={chip.dot}
           headline={headline}
           metrics={metrics}
-          testId="sft-run-header"
+          testId={isCispo ? "cispo-run-header" : "sft-run-header"}
         />
       ) : null}
-      <StageTimeline stages={stages} testId="sft-stage-timeline" />
+      <StageTimeline stages={stages} testId={isCispo ? "cispo-stage-timeline" : "sft-stage-timeline"} />
+
+      {isCispo && cispo ? <CispoIdentityPanel cispo={cispo} /> : null}
 
       <div className="sv-workspace-canvas">
-        <BaselinePanel sft={sft} />
+        <BaselinePanel sft={sft} isCispo={isCispo} />
         <CurationPanel sft={sft} />
       </div>
 
