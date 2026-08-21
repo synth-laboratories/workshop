@@ -233,7 +233,9 @@ where
             let mut response = if let Some(raw) = raw_body {
                 bytes_response(
                     status,
-                    content_type.as_deref().unwrap_or("application/octet-stream"),
+                    content_type
+                        .as_deref()
+                        .unwrap_or("application/octet-stream"),
                     raw,
                 )
             } else {

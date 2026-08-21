@@ -2,9 +2,8 @@ use super::events::{plan_batch, EventVerdict, OptimizerEventDraft, SequenceContr
 use super::models::{
     OptimizerCapabilities, OptimizerCreateRequest, OptimizerEventEnvelope, OptimizerQuery,
     OptimizerRelationship, OptimizerResourceRef, OptimizerRunRecord, OptimizerRunStatus,
-    OptimizerStateSlice,
-    OptimizerUsageSummary, OPTIMIZER_EVENT_SCHEMA_VERSION, OPTIMIZER_RUN_SCHEMA_VERSION,
-    OPTIMIZER_STATE_SLICE_SCHEMA_VERSION,
+    OptimizerStateSlice, OptimizerUsageSummary, OPTIMIZER_EVENT_SCHEMA_VERSION,
+    OPTIMIZER_RUN_SCHEMA_VERSION, OPTIMIZER_STATE_SLICE_SCHEMA_VERSION,
 };
 use super::results;
 use super::terminal;
@@ -71,7 +70,11 @@ fn project_recipe_readiness(mut recipe: Value) -> Value {
                 "A required runtime, service, credential, or packaged asset is unavailable.",
             );
         let (code, contract, owner) = if detail.contains("workspace recipe") {
-            ("workspace_recipe_unavailable", "assets.workspace_recipe", "Optimizers")
+            (
+                "workspace_recipe_unavailable",
+                "assets.workspace_recipe",
+                "Optimizers",
+            )
         } else if detail.contains("runtime is not installed") {
             ("runtime_unavailable", "runtime.local", "Optimizers")
         } else {
@@ -415,8 +418,6 @@ impl OptimizerService {
                 }
             }
         }
-        recipes.push(super::hosted_gelo::recipe_catalog());
-        recipes.push(super::sft_recipes::recipe_catalog());
         recipes.extend(super::hosted_sft::recipe_catalog());
         recipes.push(super::mlx_sft::recipe_catalog());
         recipes.extend(super::cispo::recipe_catalog());
@@ -446,16 +447,7 @@ impl OptimizerService {
         request: super::models::OptimizerRecipeRunRequest,
     ) -> Result<(OptimizerRunRecord, Option<AppEvent>)> {
         match request.recipe_id.as_str() {
-            super::sft_recipes::CRAFTAX_SFT_SMOKE_RECIPE => {
-                super::sft_recipes::start(self, request).await
-            }
-            super::hosted_gelo::HOSTED_GELO_CRAFTAX_RECIPE => {
-                super::hosted_gelo::start(self, request).await
-            }
-            super::hosted_sft::HOSTED_SFT_CRAFTAX_NEMOTRON_RECIPE
-            | super::hosted_sft::HOSTED_SFT_BANKING77_RECIPE => {
-                super::hosted_sft::start(self, request).await
-            }
+            super::hosted_sft::HOSTED_SFT_RECIPE => super::hosted_sft::start(self, request).await,
             super::mlx_sft::QWEN_MLX_SFT_RECIPE => super::mlx_sft::start(self, request).await,
             super::sidecar_training::LOCAL_MLX_CISPO_RECIPE
             | super::sidecar_training::HOSTED_CISPO_RECIPE => {
@@ -967,11 +959,6 @@ impl OptimizerService {
                 == Some(super::mlx_sft::QWEN_MLX_SFT_RECIPE)
         {
             run = super::mlx_sft::reconcile(self, &optimizer_run_id).await?;
-        }
-        if run.summary.get("recipeId").and_then(Value::as_str)
-            == Some(super::hosted_gelo::HOSTED_GELO_CRAFTAX_RECIPE)
-        {
-            run = super::hosted_gelo::reconcile_persisted(self, &optimizer_run_id).await?;
         }
         if run.source == "local"
             && matches!(run.status.as_str(), "completed" | "failed" | "cancelled")
@@ -2009,10 +1996,7 @@ impl OptimizerService {
             .await
     }
 
-    pub async fn infer_saved_lora(
-        &self,
-        request: super::CheckpointInferRequest,
-    ) -> Result<Value> {
+    pub async fn infer_saved_lora(&self, request: super::CheckpointInferRequest) -> Result<Value> {
         super::sidecar_training::infer_checkpoint(self, request, |_| {}).await
     }
 
@@ -2119,12 +2103,9 @@ impl OptimizerService {
             .await
     }
 
-    pub async fn upsert_local_lora_from_event(
-        &self,
-        run_id: String,
-        payload: Value,
-    ) -> Result<()> {
-        let Some(row) = super::local_lora::LocalLoraUpsert::from_checkpoint_event(&run_id, &payload)
+    pub async fn upsert_local_lora_from_event(&self, run_id: String, payload: Value) -> Result<()> {
+        let Some(row) =
+            super::local_lora::LocalLoraUpsert::from_checkpoint_event(&run_id, &payload)
         else {
             return Ok(());
         };
@@ -2944,7 +2925,8 @@ pub(crate) fn reconcile_stale_local_runs_in_tx(
     instance_id: &str,
     now: DateTime<Utc>,
 ) -> Result<Vec<OptimizerRunRecord>> {
-    let mut stmt = conn.prepare("SELECT payload_json FROM optimizer_runs WHERE source = 'local'")?;
+    let mut stmt =
+        conn.prepare("SELECT payload_json FROM optimizer_runs WHERE source = 'local'")?;
     let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
     let mut payloads = Vec::new();
     for row in rows {
@@ -4653,17 +4635,15 @@ pub(in crate::optimizers) mod tests {
             assert_eq!(svc.get(run_id.into()).await.unwrap().status, "running");
             svc.database()
                 .with_conn(|conn| {
-                    assert!(crate::recovery::ownership::load_optimizer_run(conn, run_id)?.is_none());
+                    assert!(
+                        crate::recovery::ownership::load_optimizer_run(conn, run_id)?.is_none()
+                    );
                     Ok(())
                 })
                 .unwrap();
         }
         let core = crate::core_runtime::CoreRuntime::open(dir.path()).unwrap();
-        let run = core
-            .optimizers()
-            .get(run_id.to_string())
-            .await
-            .unwrap();
+        let run = core.optimizers().get(run_id.to_string()).await.unwrap();
         assert_eq!(run.status, "interrupted");
         core.storage()
             .database()
@@ -5773,19 +5753,19 @@ pub(in crate::optimizers) mod tests {
         let recipes = svc.list_recipes();
         assert!(recipes
             .iter()
-            .any(|item| item.get("id") == Some(&json!("cispo.banking77.mlx.v1"))));
+            .any(|item| item.get("id") == Some(&json!("cispo.mlx.v1"))));
         assert!(recipes
             .iter()
             .any(|item| item.get("id") == Some(&json!("cispo.slime.hosted.v1"))));
     }
 
     #[tokio::test]
-    async fn lists_craftax_nemotron_tinker_recipe_and_refuses_unknown_base_model() {
+    async fn lists_hosted_tinker_recipe_and_refuses_unknown_base_model() {
         let (svc, _dir, _) = service().await;
         let recipe = svc
             .list_recipes()
             .into_iter()
-            .find(|item| item.get("id") == Some(&json!("sft.craftax.nemotron-nano.tinker.v1")))
+            .find(|item| item.get("id") == Some(&json!("sft.hosted.tinker.v1")))
             .unwrap();
         assert_eq!(recipe.get("algorithmId"), Some(&json!("sft")));
         if std::env::var("SYNTH_OPTIMIZERS_SFT_SERVICE_TOKEN")
@@ -5798,7 +5778,7 @@ pub(in crate::optimizers) mod tests {
         let err = svc
             .start_recipe(super::super::models::OptimizerRecipeRunRequest {
                 training_artifact_id: None,
-                recipe_id: "sft.craftax.nemotron-nano.tinker.v1".into(),
+                recipe_id: "sft.hosted.tinker.v1".into(),
                 session_ref: None,
                 open_visual: Some(false),
                 base_model: Some("nvidia/nemotron-3-nano-30b-a3b".into()),

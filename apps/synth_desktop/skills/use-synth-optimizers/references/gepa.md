@@ -3,7 +3,7 @@
 Use GEPA for prompt/candidate optimization with rollout-based evaluation.
 
 Workshop does not ship task GEPA recipes. Fresh `list_recipes` has no
-`gepa.banking77.*` or `gepa.craftax.*` ids. A GEPA run exists only after the
+task-family GEPA ids. A GEPA run exists only after the
 session workspace declares it in `workshop.recipe.toml` (or
 `workshop.recipes/*.toml`) with `algorithm = "gepa"` and a container from
 `workshop.containers.toml`. Author the target with `$author-synth-container`

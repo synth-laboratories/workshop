@@ -54,29 +54,17 @@ use super::{
 
 pub const EVAL_ALGORITHM_ID: &str = "eval";
 pub const EVAL_FIXTURE_SMOKE_RECIPE: &str = "eval.fixture.policy-smoke.v1";
-pub const EVAL_CRAFTAX_SMOKE_RECIPE: &str = "eval.craftax.code-policy.smoke.v1";
-pub const EVAL_GAMEBENCH_CONFIRM_RECIPE: &str = "eval.gamebench.craftax-code-policy.confirm.v1";
-pub const EVAL_CRAFTAX_LLM_RECIPE: &str = "eval.craftax.llm-policy.smoke.v1";
-pub const EVAL_GAMEBENCH_LLM_RECIPE: &str = "eval.gamebench.llm-policy.confirm.v1";
 pub const EVAL_MLX_LOCAL_RECIPE: &str = "eval.mlx.local-policy.smoke.v1";
 
-/// The product contract for the report-only Craftax smoke is two seeds per
-/// staged candidate. Older local runtime catalogs omitted `limits.trials`,
-/// even though the worker recipe itself was fixed-cardinality. Keep the
-/// authority here until every supported runtime publishes the field itself;
-/// this is a compatibility projection, not an agent-selected limit.
-const CRAFTAX_CODE_SMOKE_TRIALS_PER_CANDIDATE: u64 = 10;
-
 /// The allowlist the MCP schema publishes. A recipe id outside it never
-/// reaches the worker.
-pub const EVAL_RECIPE_IDS: [&str; 6] = [
-    EVAL_FIXTURE_SMOKE_RECIPE,
-    EVAL_CRAFTAX_SMOKE_RECIPE,
-    EVAL_GAMEBENCH_CONFIRM_RECIPE,
-    EVAL_CRAFTAX_LLM_RECIPE,
-    EVAL_GAMEBENCH_LLM_RECIPE,
-    EVAL_MLX_LOCAL_RECIPE,
-];
+/// reaches the worker. Sidecar catalogs may advertise additional eval ids;
+/// those stay opaque recipe data, not Workshop-owned container names.
+pub const EVAL_RECIPE_IDS: [&str; 2] = [EVAL_FIXTURE_SMOKE_RECIPE, EVAL_MLX_LOCAL_RECIPE];
+
+#[cfg(test)]
+const EVAL_CRAFTAX_SMOKE_RECIPE: &str = "eval.craftax.code-policy.smoke.v1";
+#[cfg(test)]
+const EVAL_CRAFTAX_LLM_RECIPE: &str = "eval.craftax.llm-policy.smoke.v1";
 
 /// How long a cancelled worker gets to stop its containers, release its
 /// semaphore leases, and seal evidence before it is killed outright.
@@ -87,7 +75,13 @@ const PAUSE_SENTINEL: &str = "PAUSE";
 const PREFLIGHT_TTL: Duration = Duration::from_secs(20);
 
 pub fn is_eval_recipe(recipe_id: &str) -> bool {
-    EVAL_RECIPE_IDS.contains(&recipe_id)
+    if EVAL_RECIPE_IDS.contains(&recipe_id) {
+        return true;
+    }
+    recipe_id.starts_with("eval.")
+        && recipe_catalog()
+            .iter()
+            .any(|recipe| recipe.get("id").and_then(Value::as_str) == Some(recipe_id))
 }
 
 pub fn eval_home() -> PathBuf {
@@ -315,7 +309,7 @@ pub fn recipe_catalog() -> Vec<Value> {
                 recipe
                     .get("id")
                     .and_then(Value::as_str)
-                    .is_some_and(is_eval_recipe)
+                    .is_some_and(|id| id.starts_with("eval."))
             })
             .map(normalize_builtin_recipe_contract)
             .collect(),
@@ -325,27 +319,6 @@ pub fn recipe_catalog() -> Vec<Value> {
 
 fn normalize_builtin_recipe_contract(mut recipe: Value) -> Value {
     mark_unreproducible_target_unavailable(&mut recipe);
-    if recipe.get("id").and_then(Value::as_str) != Some(EVAL_CRAFTAX_SMOKE_RECIPE)
-        || recipe.pointer("/limits/trials").is_some()
-    {
-        return recipe;
-    }
-    let Some(object) = recipe.as_object_mut() else {
-        return recipe;
-    };
-    let limits = object
-        .entry("limits")
-        .or_insert_with(|| Value::Object(Map::new()));
-    if let Some(limits) = limits.as_object_mut() {
-        limits.insert(
-            "trials".into(),
-            json!(CRAFTAX_CODE_SMOKE_TRIALS_PER_CANDIDATE),
-        );
-        limits.insert(
-            "trialAuthority".into(),
-            json!("workshop.builtin.eval.craftax.code-policy.smoke.v1"),
-        );
-    }
     recipe
 }
 
@@ -369,9 +342,7 @@ fn mark_unreproducible_target_unavailable(recipe: &mut Value) {
 /// Resolve the candidate-set id an eval launch will actually score.
 /// A training artifact is staged first so paid-compute approval sees the same
 /// set the worker will run.
-pub(crate) fn resolve_eval_candidate_set(
-    request: &OptimizerRecipeRunRequest,
-) -> Result<String> {
+pub(crate) fn resolve_eval_candidate_set(request: &OptimizerRecipeRunRequest) -> Result<String> {
     if request.training_artifact_id.is_some() && request.candidate_set_id.is_some() {
         bail!("eval recipes take either training_artifact_id or candidate_set_id, not both");
     }
@@ -393,7 +364,9 @@ pub(crate) fn resolve_eval_candidate_set(
         .candidate_set_id
         .clone()
         .filter(|value| !value.trim().is_empty())
-        .ok_or_else(|| anyhow!("eval recipes require a staged candidate_set_id or a training_artifact_id"))
+        .ok_or_else(|| {
+            anyhow!("eval recipes require a staged candidate_set_id or a training_artifact_id")
+        })
 }
 
 /// Convert the eval runtime's per-trial budget into the total product approval
@@ -528,10 +501,7 @@ pub(crate) fn bind_provider_routes_into_manifest(path: &Path, routes: Value) -> 
     object.insert("credential_mode".into(), json!("workshop_proxy"));
     object.insert(
         "inference_url".into(),
-        routes
-            .get("openai_base")
-            .cloned()
-            .unwrap_or(Value::Null),
+        routes.get("openai_base").cloned().unwrap_or(Value::Null),
     );
     let mut bound_routes = routes.clone();
     if let Some(object) = bound_routes.as_object_mut() {
@@ -698,10 +668,9 @@ pub async fn start(
         training_artifact = Some(artifact);
         staged_id
     } else {
-        request
-            .candidate_set_id
-            .clone()
-            .ok_or_else(|| anyhow!("eval recipes require a staged candidate_set_id or a training_artifact_id"))?
+        request.candidate_set_id.clone().ok_or_else(|| {
+            anyhow!("eval recipes require a staged candidate_set_id or a training_artifact_id")
+        })?
     };
     let candidate_set_path = super::eval_candidates::manifest_path(&candidate_set_id)?;
     let candidate_set = super::eval_candidates::load(&candidate_set_id)?;
@@ -825,28 +794,28 @@ pub async fn start(
         }]),
         input_refs: Some({
             let mut refs = vec![
-            OptimizerResourceRef {
-                kind: "candidate_set".into(),
-                id: candidate_set_id.clone(),
-                digest: None,
-                role: Some("candidates".into()),
-                title: Some("Staged policy candidates".into()),
-                metadata: candidate_set.clone(),
-            },
-            OptimizerResourceRef {
-                kind: "recipe".into(),
-                id: recipe_id.clone(),
-                digest: recipe
-                    .get("targetManifestDigest")
-                    .and_then(Value::as_str)
-                    .map(str::to_string),
-                role: Some("configuration".into()),
-                title: recipe
-                    .get("title")
-                    .and_then(Value::as_str)
-                    .map(str::to_string),
-                metadata: recipe.clone(),
-            },
+                OptimizerResourceRef {
+                    kind: "candidate_set".into(),
+                    id: candidate_set_id.clone(),
+                    digest: None,
+                    role: Some("candidates".into()),
+                    title: Some("Staged policy candidates".into()),
+                    metadata: candidate_set.clone(),
+                },
+                OptimizerResourceRef {
+                    kind: "recipe".into(),
+                    id: recipe_id.clone(),
+                    digest: recipe
+                        .get("targetManifestDigest")
+                        .and_then(Value::as_str)
+                        .map(str::to_string),
+                    role: Some("configuration".into()),
+                    title: recipe
+                        .get("title")
+                        .and_then(Value::as_str)
+                        .map(str::to_string),
+                    metadata: recipe.clone(),
+                },
             ];
             if let Some(artifact) = &training_artifact {
                 refs.push(OptimizerResourceRef {
@@ -1802,10 +1771,10 @@ mod tests {
 
     #[test]
     fn only_allowlisted_recipe_ids_are_eval() {
-        assert!(is_eval_recipe(EVAL_CRAFTAX_SMOKE_RECIPE));
+        assert!(is_eval_recipe(EVAL_FIXTURE_SMOKE_RECIPE));
         assert!(is_eval_recipe(EVAL_MLX_LOCAL_RECIPE));
         assert!(!is_eval_recipe("eval.anything.else.v1"));
-        assert!(!is_eval_recipe("sft.craftax.gpt-oss.smoke.v1"));
+        assert!(!is_eval_recipe("sft.qwen35-0.8b.mlx.v1"));
     }
 
     #[test]

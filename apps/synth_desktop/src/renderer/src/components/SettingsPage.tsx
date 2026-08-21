@@ -157,8 +157,8 @@ const CHANGELOG = [
 			{
 				label: "New",
 				items: [
-					"Product-owned GEPA workflows prepare and run bounded Banking77 and Craftax optimization with digest-bound paid-compute approval.",
-					"Craftax opens in a transcript-first full-trace viewer with model-call input, reasoning, output, tool evidence, and raw envelopes.",
+					"Product-owned GEPA workflows prepare and run bounded workspace optimization with digest-bound paid-compute approval.",
+					"Container runs open in a transcript-first full-trace viewer with model-call input, reasoning, output, tool evidence, and raw envelopes.",
 					"Programmatic eval lanes and container capability checks fail closed when a selected runtime cannot satisfy a recipe.",
 					"Local diagnostics correlate optimizer runs, containers, streams, visuals, and terminal outcomes."
 				]

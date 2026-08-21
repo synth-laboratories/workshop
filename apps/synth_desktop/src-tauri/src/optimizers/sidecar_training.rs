@@ -9,9 +9,9 @@
 use super::events::OptimizerEventDraft;
 use super::mlx_runtime::MlxLoopback;
 use super::models::{
-    CheckpointInferRequest, OptimizerCapabilities, OptimizerCreateRequest, OptimizerExecutionBinding,
-    OptimizerRecipeRunRequest, OptimizerResourceRef, OptimizerRunRecord, SavedLoraCheckpoint,
-    TrainingJobStatus,
+    CheckpointInferRequest, OptimizerCapabilities, OptimizerCreateRequest,
+    OptimizerExecutionBinding, OptimizerRecipeRunRequest, OptimizerResourceRef, OptimizerRunRecord,
+    SavedLoraCheckpoint, TrainingJobStatus,
 };
 use super::sft_client::SftOptimizerClient;
 use super::training_adapter::TerminalMapping;
@@ -35,7 +35,7 @@ pub const PLACEMENT_TRAINING_CISPO_LOCAL: &str = "training.cispo.local";
 pub const PLACEMENT_TRAINING_CISPO_HOSTED: &str = "training.cispo.hosted";
 
 pub const LOCAL_MLX_SFT_RECIPE: &str = "sft.qwen35-0.8b.mlx.v1";
-pub const LOCAL_MLX_CISPO_RECIPE: &str = "cispo.banking77.mlx.v1";
+pub const LOCAL_MLX_CISPO_RECIPE: &str = "cispo.mlx.v1";
 pub const HOSTED_CISPO_RECIPE: &str = "cispo.slime.hosted.v1";
 
 const BASE_MODEL: &str = "Qwen/Qwen3.5-0.8B";
@@ -268,7 +268,9 @@ impl TrainingRuntime {
     async fn job_handoff(&self, job_id: &str) -> JsonHttpResponse {
         let jobs = self.jobs.lock().await;
         match jobs.get(job_id) {
-            Some(job) if job.status == TrainingJobStatus::Succeeded => JsonHttpResponse::ok(job.handoff.clone()),
+            Some(job) if job.status == TrainingJobStatus::Succeeded => {
+                JsonHttpResponse::ok(job.handoff.clone())
+            }
             Some(_) => JsonHttpResponse::error(StatusCode::CONFLICT, "handoff is not ready"),
             None => JsonHttpResponse::error(StatusCode::NOT_FOUND, "training job not found"),
         }
@@ -717,7 +719,8 @@ async fn watch_job(
                             .or_else(|| Some(value.to_string()))
                     })
                     .unwrap_or_else(|| "unknown error".into());
-                append_terminal_mapping(&service, &run_id, TerminalMapping::failed(&detail)).await?;
+                append_terminal_mapping(&service, &run_id, TerminalMapping::failed(&detail))
+                    .await?;
                 return Err(anyhow!("training job failed: {detail}"));
             }
             "cancelled" => {
@@ -789,8 +792,7 @@ fn mapped_event_draft(kind: &str, algorithm: &str, payload: &Value) -> Optimizer
                 "uri": payload["path"],
                 "digest": payload["sha256"]
             })]),
-        kind if kind.ends_with("evaluation.completed")
-            || kind.ends_with("eval.completed") => {
+        kind if kind.ends_with("evaluation.completed") || kind.ends_with("eval.completed") => {
             let detail = payload.get("delta").unwrap_or(payload);
             let phase = evaluation_phase(kind, detail);
             let checkpoint_id = detail
@@ -931,7 +933,10 @@ async fn persist_handoff(
             if let Some(path) = handoff.pointer("/inference/path").and_then(Value::as_str) {
                 object.insert("path".into(), json!(path));
             }
-            if let Some(sha) = handoff.pointer("/checkpoint/sha256").and_then(Value::as_str) {
+            if let Some(sha) = handoff
+                .pointer("/checkpoint/sha256")
+                .and_then(Value::as_str)
+            {
                 object.insert("sha256".into(), json!(sha));
             }
         }
@@ -1047,20 +1052,46 @@ pub fn training_create_request(
     }
 }
 
-pub fn local_sft_config(run_id: &str, dataset: Option<&Path>, evaluation: Option<&Path>) -> Value {
-    let evaluation_plan = tunneled_banking77_evaluation_plan(
-        std::env::var("SYNTH_MLX_SFT_EVAL_URL").ok(),
+pub fn local_sft_config(
+    run_id: &str,
+    dataset: Option<&Path>,
+    evaluation: Option<&Path>,
+    bind: Option<&super::container_training::ContainerTrainingBind>,
+) -> Value {
+    let task = bind
+        .map(|bind| bind.task_id.clone())
+        .or_else(|| {
+            std::env::var("SYNTH_MLX_SFT_TASK_ID")
+                .ok()
+                .filter(|value| !value.is_empty())
+        })
+        .unwrap_or_else(|| "local".into());
+    let evaluator = bind
+        .and_then(|bind| bind.cispo.as_ref())
+        .map(|cispo| EvaluationContract {
+            task: task.clone(),
+            harness: cispo.harness.clone(),
+            plan_ref: cispo.plan_ref.clone(),
+            world_ref: cispo.heldout_world_ref.clone(),
+        })
+        .unwrap_or_else(|| EvaluationContract::from_task(&task));
+    let container_url = bind
+        .map(|bind| bind.base_url.clone())
+        .or_else(|| std::env::var("SYNTH_MLX_SFT_EVAL_URL").ok());
+    let evaluation_plan = tunneled_evaluation_plan(
+        container_url,
         "SYNTH_MLX_SFT_EVAL_URL",
         "SYNTH_MLX_SFT_EVAL_TOKEN",
         CHECKPOINT_EVERY,
         vec![CHECKPOINT_EVERY, MAX_STEPS],
+        evaluator,
     );
     json!({
         "job_id": run_id,
         "config": {
             "backend": "qwen_lora",
             "base_model": BASE_MODEL,
-            "task_id": std::env::var("SYNTH_MLX_SFT_TASK_ID").ok().filter(|value| !value.is_empty()),
+            "task_id": task,
             "dataset": dataset.map(|path| json!({"path": path})),
             "evaluation_dataset": evaluation.map(|path| json!({"path": path})),
             "output_dir": crate::instance::data_root().join("optimizers/mlx-sft").join(run_id),
@@ -1078,12 +1109,43 @@ pub fn local_sft_config(run_id: &str, dataset: Option<&Path>, evaluation: Option
     })
 }
 
-pub fn tunneled_banking77_evaluation_plan(
+pub struct EvaluationContract {
+    pub task: String,
+    pub harness: String,
+    pub plan_ref: String,
+    pub world_ref: String,
+}
+
+impl EvaluationContract {
+    pub fn from_task(task: &str) -> Self {
+        let harness = std::env::var("SYNTH_TRAINING_EVAL_HARNESS")
+            .ok()
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| "rollout".into());
+        let plan_ref = std::env::var("SYNTH_TRAINING_EVAL_PLAN_REF")
+            .ok()
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| format!("{task}_eval.v1"));
+        let world_ref = std::env::var("SYNTH_TRAINING_EVAL_WORLD_REF")
+            .ok()
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| format!("world:{task}@heldout"));
+        Self {
+            task: task.to_string(),
+            harness,
+            plan_ref,
+            world_ref,
+        }
+    }
+}
+
+pub fn tunneled_evaluation_plan(
     container_url: Option<String>,
     container_url_env: &str,
     bearer_token_env: &str,
     checkpoint_every: u64,
     checkpoint_steps: Vec<u64>,
+    evaluator: EvaluationContract,
 ) -> Value {
     json!({
         "schema_version": "training.evaluation.plan.v1",
@@ -1107,10 +1169,10 @@ pub fn tunneled_banking77_evaluation_plan(
             "final_target": "terminal_artifact"
         },
         "evaluator": {
-            "task": "banking77",
-            "harness": "classify",
-            "plan_ref": "banking77_eval.v1",
-            "world_ref": "world:banking77@heldout",
+            "task": evaluator.task,
+            "harness": evaluator.harness,
+            "plan_ref": evaluator.plan_ref,
+            "world_ref": evaluator.world_ref,
             "metric": "reward",
             "seeds": [1, 2],
             "sample_count": 16,
@@ -1275,10 +1337,7 @@ async fn resume_mlx_job(job_id: &str) -> Result<()> {
     Ok(())
 }
 
-pub(crate) async fn launch_artifact_inference(
-    artifact_id: &str,
-    message: &str,
-) -> Result<Value> {
+pub(crate) async fn launch_artifact_inference(artifact_id: &str, message: &str) -> Result<Value> {
     let artifact = crate::training_artifacts::get(artifact_id)?;
     let policy_dir = artifact
         .path
@@ -1427,7 +1486,10 @@ where
     F: FnMut(&str) + Send,
 {
     let family = normalize_family(&request.family)?;
-    if let Some(checkpoint) = service.get_local_lora(request.checkpoint_id.clone()).await? {
+    if let Some(checkpoint) = service
+        .get_local_lora(request.checkpoint_id.clone())
+        .await?
+    {
         return Ok(
             infer_local(&checkpoint, family, &request.body, &mut on_delta)
                 .await?
@@ -1535,19 +1597,21 @@ where
     let stream = wants_stream(&payload);
     let load_if_missing = |error: &anyhow::Error| error.to_string().contains("policy_snapshot");
     if stream {
-        let (content_type, bytes) = match mlx_family_stream(&client, family, &payload, on_delta).await
-        {
-            Ok(value) => value,
-            Err(error) if load_if_missing(&error) => {
-                let name = adapter_path
-                    .and_then(|path| path.file_name())
-                    .and_then(|value| value.to_str())
-                    .ok_or_else(|| anyhow!("adapter path is required to load a missing snapshot"))?;
-                client.load_adapter(name).await?;
-                mlx_family_stream(&client, family, &payload, on_delta).await?
-            }
-            Err(error) => return Err(error),
-        };
+        let (content_type, bytes) =
+            match mlx_family_stream(&client, family, &payload, on_delta).await {
+                Ok(value) => value,
+                Err(error) if load_if_missing(&error) => {
+                    let name = adapter_path
+                        .and_then(|path| path.file_name())
+                        .and_then(|value| value.to_str())
+                        .ok_or_else(|| {
+                            anyhow!("adapter path is required to load a missing snapshot")
+                        })?;
+                    client.load_adapter(name).await?;
+                    mlx_family_stream(&client, family, &payload, on_delta).await?
+                }
+                Err(error) => return Err(error),
+            };
         if content_type.contains("event-stream") {
             let text = String::from_utf8_lossy(&bytes);
             return Ok(InferOutcome {
@@ -1584,10 +1648,7 @@ where
             if !text.is_empty() {
                 on_delta(&text);
             }
-            Ok(InferOutcome {
-                json,
-                sse: None,
-            })
+            Ok(InferOutcome { json, sse: None })
         }
         Err(error) => Err(error),
     }
@@ -1686,8 +1747,7 @@ fn sse_text_delta(family: &str, block: &str) -> Option<String> {
     let payload: Value = serde_json::from_str(raw).ok()?;
     if family == "responses" {
         let is_delta = event == Some("response.output_text.delta")
-            || payload.get("type").and_then(Value::as_str)
-                == Some("response.output_text.delta");
+            || payload.get("type").and_then(Value::as_str) == Some("response.output_text.delta");
         if !is_delta {
             return None;
         }
@@ -1750,7 +1810,9 @@ fn assemble_family_json(family: &str, sse: &str) -> Result<Value> {
             if chunk.get("model").is_some() {
                 model = chunk["model"].clone();
             }
-            if let Some(delta) = chunk.pointer("/choices/0/delta/content").and_then(Value::as_str)
+            if let Some(delta) = chunk
+                .pointer("/choices/0/delta/content")
+                .and_then(Value::as_str)
             {
                 text.push_str(delta);
             }
@@ -1798,7 +1860,10 @@ event: response.completed\ndata: {}\n\n",
             .pointer("/choices/0/message/content")
             .and_then(Value::as_str)
             .unwrap_or("");
-        let id = payload.get("id").cloned().unwrap_or(json!("chatcmpl-hosted"));
+        let id = payload
+            .get("id")
+            .cloned()
+            .unwrap_or(json!("chatcmpl-hosted"));
         let created = payload.get("created").cloned().unwrap_or(json!(0));
         let model = payload.get("model").cloned().unwrap_or(json!("hosted"));
         let chunk = |delta: Value, finish: Value| {
@@ -1930,7 +1995,7 @@ mod tests {
 
     #[test]
     fn local_sft_requests_tunneled_before_checkpoint_and_final_evaluations() {
-        let config = local_sft_config("run", None, None);
+        let config = local_sft_config("run", None, None, None);
         assert_eq!(config["config"]["evaluation"]["transport"], "tunnel");
         assert_eq!(
             config["config"]["evaluation"]["schedule"]["phases"],
@@ -1950,7 +2015,7 @@ mod tests {
         );
         assert_eq!(
             config["config"]["evaluation"]["evaluator"]["plan_ref"],
-            "banking77_eval.v1"
+            "local_eval.v1"
         );
         assert_eq!(
             config["config"]["evaluation"]["evaluator"]["sample_count"],
@@ -1962,8 +2027,9 @@ mod tests {
     #[test]
     fn training_evaluation_plan_fails_closed_when_checkpoint_identity_is_missing() {
         let mut config = json!({
-            "evaluation": tunneled_banking77_evaluation_plan(
-                Some("https://tunnel.invalid".into()), "URL_ENV", "TOKEN_ENV", 2, vec![2, 4]
+            "evaluation": tunneled_evaluation_plan(
+                Some("https://tunnel.invalid".into()), "URL_ENV", "TOKEN_ENV", 2, vec![2, 4],
+                EvaluationContract::from_task("local")
             )
         });
         config["evaluation"]["candidate"]["exact_checkpoint_required"] = json!(false);
@@ -1982,8 +2048,9 @@ mod tests {
             "sha256": "abc123",
             "bytes": 128
         });
-        let row = super::super::local_lora::LocalLoraUpsert::from_checkpoint_event("run1", &payload)
-            .expect("checkpoint event");
+        let row =
+            super::super::local_lora::LocalLoraUpsert::from_checkpoint_event("run1", &payload)
+                .expect("checkpoint event");
         assert_eq!(row.sha256, "sha256:abc123");
         assert_eq!(row.adapter_path.as_os_str(), "/tmp/adapter");
     }
@@ -2030,9 +2097,6 @@ mod tests {
             .as_deref(),
             Some("yo")
         );
-        assert_eq!(
-            sse_text_delta("chat_completions", "data: [DONE]"),
-            None
-        );
+        assert_eq!(sse_text_delta("chat_completions", "data: [DONE]"), None);
     }
 }

@@ -8,7 +8,7 @@ use crate::container_stream::{
     SUBSCRIBE_READY_TIMEOUT,
 };
 use crate::core_runtime::CoreRuntime;
-use crate::data::ContainerRegisterRequest;
+use crate::data::{ContainerDeployment, ContainerRegisterRequest};
 use crate::domain::{PresentationField, SessionTitleOrigin};
 use crate::ipc::{serve_json, JsonHttpRequest, JsonHttpResponse};
 use crate::limits;
@@ -17,8 +17,8 @@ use crate::reports::{
     ReportUpdateRequest, ReportVisibilityRequestCreate, ResearchLogAppend,
 };
 use crate::visuals::{
-    assert_live_eval_slot, classify_live_eval_family, live_eval_bind_metadata,
-    require_visualsbench_start_policy, VisualAnnotationCreate, VisualCreateRequest, VisualQuery,
+    advertised_live_eval_template, assert_live_eval_slot, live_eval_bind_metadata,
+    require_advertised_mcp_bind, VisualAnnotationCreate, VisualCreateRequest, VisualQuery,
     VisualStatus, VisualUpdateRequest, LIVE_EVAL_SLOT,
 };
 use crate::visuals::{TemplateMeta, TemplateObservationContract};
@@ -614,7 +614,10 @@ async fn dispatch_request(
     if method == "POST" && path == "/v1/sessions/present" {
         return present_session(app, core, json_body).await;
     }
-    if path.starts_with("/v1/optimizers") {
+    if path.starts_with("/v1/optimizers")
+        || path.starts_with("/v1/mlx")
+        || path.starts_with("/v1/training")
+    {
         return dispatch_optimizer(method, path, json_body, core, app).await;
     }
     if path.starts_with("/v1/campaigns") {
@@ -1015,7 +1018,12 @@ pub(crate) async fn start_rollout_idempotently(
             .json(start_body)
     };
     match send().send().await {
-        Ok(response) => return Ok((response.error_for_status()?.json::<Value>().await?, false)),
+        Ok(response) => {
+            return Ok((
+                decode_container_response(response, "POST /rollouts").await?,
+                false,
+            ))
+        }
         Err(first_error) => {
             if let Some(state) = get_rollout_status(recovery_client, base, rollout_id).await? {
                 if rollout_started(&state) {
@@ -1027,7 +1035,10 @@ pub(crate) async fn start_rollout_idempotently(
             // exact immutable identity is safe: Containers owns the idempotency boundary.
             match send().send().await {
                 Ok(response) => {
-                    return Ok((response.error_for_status()?.json::<Value>().await?, true));
+                    return Ok((
+                        decode_container_response(response, "POST /rollouts retry").await?,
+                        true,
+                    ));
                 }
                 Err(retry_error) => {
                     if let Some(state) =
@@ -1046,6 +1057,174 @@ pub(crate) async fn start_rollout_idempotently(
             }
         }
     }
+}
+
+async fn decode_container_response(response: reqwest::Response, operation: &str) -> Result<Value> {
+    let status = response.status();
+    let text = response.text().await?;
+    if !status.is_success() {
+        let detail = serde_json::from_str::<Value>(&text)
+            .ok()
+            .and_then(|body| body.get("detail").cloned())
+            .map(|detail| match detail {
+                Value::String(value) => value,
+                value => value.to_string(),
+            })
+            .unwrap_or_else(|| text.trim().to_string());
+        anyhow::bail!("container {operation} returned {status}: {detail}");
+    }
+    serde_json::from_str(&text).context("decode container rollout start response")
+}
+
+fn advertised_policy<'a>(
+    container: &'a ContainerDeployment,
+    requested: &Value,
+) -> Option<&'a Value> {
+    let harness = requested.get("harness").and_then(Value::as_str)?;
+    let config = requested.get("config").and_then(Value::as_str);
+    [
+        container.metadata.pointer("/capabilities/policy_refs"),
+        container.metadata.pointer("/info/capabilities/policy_refs"),
+        container.metadata.pointer("/info/policy_refs"),
+        container.metadata.pointer("/liveEval/policyRefs"),
+    ]
+    .into_iter()
+    .flatten()
+    .filter_map(Value::as_array)
+    .flatten()
+    .find(|entry| {
+        entry.get("harness").and_then(Value::as_str) == Some(harness)
+            && config
+                .is_none_or(|wanted| entry.get("config").and_then(Value::as_str) == Some(wanted))
+    })
+}
+
+fn proxy_policy_registration(
+    container: &ContainerDeployment,
+    requested: &Value,
+    base_url: &str,
+) -> Result<Option<Value>> {
+    let advertised = advertised_policy(container, requested);
+    let auth = requested.get("auth").and_then(Value::as_str).or_else(|| {
+        advertised
+            .and_then(|entry| entry.get("auth"))
+            .and_then(Value::as_str)
+    });
+    if auth != Some("workshop_proxy") {
+        return Ok(None);
+    }
+    let config_id = requested
+        .get("config")
+        .and_then(Value::as_str)
+        .context("workshop_proxy policy_ref requires config")?;
+    let harness = requested
+        .get("harness")
+        .and_then(Value::as_str)
+        .context("workshop_proxy policy_ref requires harness")?;
+    let advertised =
+        advertised.context("workshop_proxy policy_ref was not advertised by container")?;
+    let model = requested
+        .get("model")
+        .and_then(Value::as_str)
+        .or_else(|| advertised.get("model").and_then(Value::as_str))
+        .context("workshop_proxy policy_ref requires an advertised model")?;
+    let provider = advertised
+        .get("provider")
+        .and_then(Value::as_str)
+        .or_else(|| model.split_once('/').map(|(provider, _)| provider))
+        .unwrap_or("openai");
+    let provider_model = model.strip_prefix(&format!("{provider}/")).unwrap_or(model);
+    Ok(Some(json!({
+        "config_id": config_id,
+        "harness": harness,
+        "provider": provider,
+        "model": provider_model,
+        "config": {
+            "provider": provider,
+            "model": provider_model,
+            "base_url": base_url,
+            "api_family": "chat_completions",
+            "reasoning_effort": advertised.get("reasoning_effort").and_then(Value::as_str).unwrap_or("low"),
+            "temperature": 0
+        }
+    })))
+}
+
+pub(crate) async fn bind_workshop_proxy_policy(
+    client: &reqwest::Client,
+    container: &ContainerDeployment,
+    base: &str,
+    rollout_id: &str,
+    policy_ref: &Value,
+) -> Result<Option<Value>> {
+    let advertised = advertised_policy(container, policy_ref);
+    let auth = policy_ref.get("auth").and_then(Value::as_str).or_else(|| {
+        advertised
+            .and_then(|entry| entry.get("auth"))
+            .and_then(Value::as_str)
+    });
+    if auth != Some("workshop_proxy") {
+        return Ok(None);
+    }
+    let advertised =
+        advertised.context("workshop_proxy policy_ref was not advertised by container")?;
+    let model = policy_ref
+        .get("model")
+        .and_then(Value::as_str)
+        .or_else(|| advertised.get("model").and_then(Value::as_str))
+        .context("workshop_proxy policy_ref requires an advertised model")?;
+    let provider = advertised
+        .get("provider")
+        .and_then(Value::as_str)
+        .or_else(|| model.split_once('/').map(|(provider, _)| provider))
+        .unwrap_or("openai");
+    let mut policy = crate::secrets::SecretsUsePolicy::default();
+    policy.operations = vec!["chat.completions.create".into()];
+    policy.models = vec![model
+        .strip_prefix(&format!("{provider}/"))
+        .unwrap_or(model)
+        .to_string()];
+    policy.max_calls = 128;
+    let secrets = crate::secrets::live()
+        .context("secrets_proxy_unavailable: Workshop proxy is not running")?;
+    let env = secrets
+        .workload_env(
+            provider,
+            rollout_id,
+            "container.prepared_rollout",
+            policy,
+            "container-eval",
+        )
+        .context("secrets_proxy_unbound: cannot issue configured-env proxy capability")?;
+    let proxy_base = env
+        .container_openai_base_url
+        .as_deref()
+        .context("secrets_proxy_route_unbound: no container-reachable proxy URL")?;
+    let body = proxy_policy_registration(container, policy_ref, proxy_base)?
+        .context("workshop_proxy policy did not produce a registration")?;
+    let response = client
+        .post(format!("{base}/policy-configs"))
+        .json(&body)
+        .send()
+        .await
+        .context("POST /policy-configs")?;
+    let registered = decode_container_response(response, "POST /policy-configs")
+        .await
+        .context("register Workshop proxy policy")?;
+    let wanted = body.get("config_id").and_then(Value::as_str);
+    let returned = registered
+        .get("config_id")
+        .or_else(|| registered.get("configId"))
+        .and_then(Value::as_str);
+    if returned != wanted {
+        anyhow::bail!("policy config identity mismatch: wanted {wanted:?}, got {returned:?}");
+    }
+    Ok(Some(json!({
+        "config_id": returned,
+        "auth": "workshop_proxy",
+        "model": body.pointer("/config/model"),
+        "bound": true
+    })))
 }
 
 #[derive(Debug)]
@@ -1235,11 +1414,7 @@ async fn register_hydrated_container(
             }
         }
     }
-    let classified = info
-        .as_ref()
-        .and_then(|value| classify_live_eval_family(value, request.task_family.as_deref()))
-        .or_else(|| classify_live_eval_family(&json!({}), request.task_family.as_deref()));
-    let family = observed_task_family(info.as_ref(), classified, request.task_family.as_deref());
+    let family = observed_task_family(info.as_ref(), request.task_family.as_deref());
     let mut metadata = request
         .metadata
         .clone()
@@ -1256,15 +1431,15 @@ async fn register_hydrated_container(
             "health-only"
         }),
     );
-    if let Some(family) = classified {
+    if info
+        .as_ref()
+        .and_then(advertised_live_eval_template)
+        .is_some()
+    {
         let policy_refs = metadata.get("policyRefs").cloned();
         metadata.insert(
             "liveEval".into(),
-            live_eval_bind_metadata(
-                family,
-                info.as_ref().unwrap_or(&json!({})),
-                policy_refs.as_ref(),
-            )?,
+            live_eval_bind_metadata(info.as_ref().unwrap_or(&json!({})), policy_refs.as_ref())?,
         );
     }
     let declared = crate::synth_config::container_capability_declaration(base).unwrap_or_default();
@@ -1302,27 +1477,18 @@ async fn register_hydrated_container(
     .await
 }
 
-/// Preserve an explicitly advertised service family when it is not one of the
-/// visual-template families.  This is an observed capability, never an
-/// inference from a name, port, or URL.
-fn observed_task_family(
-    info: Option<&Value>,
-    classified: Option<crate::visuals::LiveEvalFamily>,
-    requested: Option<&str>,
-) -> Option<String> {
-    classified
-        .map(|family| family.as_str().to_string())
-        .or_else(|| {
-            info.and_then(|value| {
-                value
-                    .get("env_family")
-                    .or_else(|| value.get("task_family"))
-                    .or_else(|| value.get("runtime_family"))
-                    .and_then(Value::as_str)
-                    .map(str::to_string)
-            })
-        })
-        .or_else(|| requested.map(str::to_string))
+/// Preserve an explicitly advertised service family. This is an observed
+/// capability, never an inference from a name, port, URL, or visual template.
+fn observed_task_family(info: Option<&Value>, requested: Option<&str>) -> Option<String> {
+    info.and_then(|value| {
+        value
+            .get("env_family")
+            .or_else(|| value.get("task_family"))
+            .or_else(|| value.get("runtime_family"))
+            .and_then(Value::as_str)
+            .map(str::to_string)
+    })
+    .or_else(|| requested.map(str::to_string))
 }
 
 pub async fn dispatch(method: &str, path: &str, body: Value, core: &CoreRuntime) -> Result<Value> {
@@ -1555,15 +1721,11 @@ pub async fn dispatch(method: &str, path: &str, body: Value, core: &CoreRuntime)
             if let Some(value) = info.clone() {
                 metadata.insert("info".into(), value);
             }
-            let classified = info
+            if info
                 .as_ref()
-                .and_then(|value| {
-                    classify_live_eval_family(value, container.task_family.as_deref())
-                })
-                .or_else(|| {
-                    classify_live_eval_family(&json!({}), container.task_family.as_deref())
-                });
-            if let Some(family) = classified {
+                .and_then(advertised_live_eval_template)
+                .is_some()
+            {
                 let policy_refs = metadata
                     .get("liveEval")
                     .and_then(|value| value.get("policyRefs"))
@@ -1571,7 +1733,6 @@ pub async fn dispatch(method: &str, path: &str, body: Value, core: &CoreRuntime)
                 metadata.insert(
                     "liveEval".into(),
                     live_eval_bind_metadata(
-                        family,
                         info.as_ref().unwrap_or(&json!({})),
                         policy_refs.as_ref(),
                     )?,
@@ -1591,11 +1752,7 @@ pub async fn dispatch(method: &str, path: &str, body: Value, core: &CoreRuntime)
                     }
                 }
             }
-            let family = observed_task_family(
-                info.as_ref(),
-                classified,
-                container.task_family.as_deref(),
-            );
+            let family = observed_task_family(info.as_ref(), container.task_family.as_deref());
             let updated = core
                 .update_container_hydration(
                     id.to_string(),
@@ -1825,23 +1982,16 @@ pub async fn dispatch(method: &str, path: &str, body: Value, core: &CoreRuntime)
                 .context("start requires visual_id")?;
             // The pre-start gate proves that a real visual exists and that its
             // declared stream is subscribed below. Full screenshot-backed
-            // readiness is deliberately post-data: Craftax's imageReplay check
-            // cannot truthfully pass until the first rollout emits frames.
+            // readiness is deliberately post-data: imageReplay cannot
+            // truthfully pass until the first rollout emits frames.
             let visual = registry.get(visual_id.to_string()).await?;
             let stream = body
                 .get("stream")
                 .filter(|value| value.is_object())
                 .context("start requires the exact prepared stream descriptor")?;
             let policy_ref = require_caller_policy_ref(&body)?;
-            if container
-                .metadata
-                .pointer("/liveEval/requiresVisualsMcp")
-                .and_then(Value::as_bool)
-                == Some(true)
-            {
-                require_visualsbench_start_policy(&policy_ref).context(
-                    "refusing VisualsBench start: synth_visuals is not bound to the Codex policy",
-                )?;
+            if let Some(live_eval) = container.metadata.get("liveEval") {
+                require_advertised_mcp_bind(live_eval, &policy_ref)?;
             }
             let task_instance_id = require_task_instance(&body)?;
             // A planned rollout runs the plan. Silently starting campaign
@@ -1908,6 +2058,13 @@ pub async fn dispatch(method: &str, path: &str, body: Value, core: &CoreRuntime)
             {
                 start_body["world_ref"] = world_ref;
             }
+            // An advertised workshop_proxy policy is configurable, not yet executable.
+            // Resolve a run-scoped capability from the configured project env and bind it
+            // immediately before launch. The provider key never enters this request or the
+            // container; only the revocable container-reachable proxy URL is registered.
+            let policy_binding =
+                bind_workshop_proxy_policy(&client, &container, &base, rollout_id, &policy_ref)
+                    .await?;
             // Launching a rollout spends real compute. Record that it is about
             // to leave the process *before* it does, so a crash in the gap is
             // recoverable as "outcome unknown" rather than replayed blind into a
@@ -1951,7 +2108,7 @@ pub async fn dispatch(method: &str, path: &str, body: Value, core: &CoreRuntime)
                     .await?;
             }
             Ok(
-                json!({"container_id":id,"rollout_id":rollout_id,"visual_id":visual_id,"visual_revision":visual.current_revision,"state":state,"subscription":subscription,"started":true,"recovered":recovered,"campaign_id":campaign_id}),
+                json!({"container_id":id,"rollout_id":rollout_id,"visual_id":visual_id,"visual_revision":visual.current_revision,"state":state,"subscription":subscription,"policy_binding":policy_binding,"started":true,"recovered":recovered,"campaign_id":campaign_id}),
             )
         }
         ("POST", path) if path.starts_with("/v1/containers/") && path.ends_with("/rollouts") => {
@@ -2568,7 +2725,10 @@ pub(crate) async fn dispatch_optimizer(
                 .trim_start_matches("/v1/training/artifacts/")
                 .trim_end_matches("/chat")
                 .trim_end_matches('/');
-            let confirm = body.get("confirm").and_then(Value::as_bool).unwrap_or(false);
+            let confirm = body
+                .get("confirm")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
             if !confirm {
                 anyhow::bail!("launch_artifact_inference requires confirm=true");
             }
@@ -2579,13 +2739,18 @@ pub(crate) async fn dispatch_optimizer(
             let inference = crate::optimizers::launch_artifact_inference(id, message).await?;
             Ok(json!({ "inference": inference }))
         }
-        ("GET", "/v1/mlx/inspect") => Ok(crate::optimizers::typed_capabilities::inspect_local_mlx()),
+        ("GET", "/v1/mlx/inspect") => {
+            Ok(crate::optimizers::typed_capabilities::inspect_local_mlx())
+        }
         ("GET", "/v1/mlx/install-plan") => {
             let model_id = body.get("model_id").and_then(Value::as_str);
             crate::optimizers::typed_capabilities::plan_model_install(model_id)
         }
         ("POST", "/v1/mlx/install") => {
-            let confirm = body.get("confirm").and_then(Value::as_bool).unwrap_or(false);
+            let confirm = body
+                .get("confirm")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
             let model_id = body.get("model_id").and_then(Value::as_str);
             crate::optimizers::typed_capabilities::install_model_or_runtime(model_id, confirm)
         }
@@ -2610,18 +2775,22 @@ pub(crate) async fn dispatch_optimizer(
                 .trim_start_matches("/v1/training/artifacts/")
                 .trim_end_matches("/eval")
                 .trim_end_matches('/');
-            let confirm = body.get("confirm").and_then(Value::as_bool).unwrap_or(false);
+            let confirm = body
+                .get("confirm")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
             let recipe_id = body.get("recipe_id").and_then(Value::as_str);
             let request = crate::optimizers::typed_capabilities::launch_artifact_eval_request(
                 id, recipe_id, confirm,
             )?;
-            let admitted: crate::optimizers::OptimizerRecipeRunRequest =
-                serde_json::from_value(json!({
+            let admitted: crate::optimizers::OptimizerRecipeRunRequest = serde_json::from_value(
+                json!({
                     "recipeId": request["recipeId"],
                     "trainingArtifactId": request["trainingArtifactId"],
                     "sessionRef": body.get("sessionRef").cloned().or_else(|| body.get("session_ref").cloned()),
                     "openVisual": body.get("openVisual").cloned().or_else(|| body.get("open_visual").cloned()).unwrap_or(json!(true))
-                }))?;
+                }),
+            )?;
             let codex = app.state::<Arc<crate::codex::CodexManager>>();
             let run = crate::authorize_optimizer_recipe_start(app, core, &codex, admitted)
                 .await
@@ -2637,7 +2806,10 @@ pub(crate) async fn dispatch_optimizer(
                 .trim_start_matches("/v1/training/artifacts/")
                 .trim_end_matches(if export { "/export" } else { "/delete" })
                 .trim_end_matches('/');
-            let confirm = body.get("confirm").and_then(Value::as_bool).unwrap_or(false);
+            let confirm = body
+                .get("confirm")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
             let destination = body
                 .get("destination")
                 .and_then(Value::as_str)
@@ -2733,7 +2905,9 @@ pub(crate) async fn dispatch_optimizer(
                         .summary
                         .get("recipeId")
                         .and_then(Value::as_str)
-                        .ok_or_else(|| anyhow::anyhow!("prepared optimizer run omitted recipeId"))?;
+                        .ok_or_else(|| {
+                            anyhow::anyhow!("prepared optimizer run omitted recipeId")
+                        })?;
                     let max_cost_usd = run
                         .summary
                         .pointer("/limits/maxCostUsd")
@@ -3003,10 +3177,7 @@ pub(crate) async fn dispatch_optimizer(
                 .and_then(Value::as_str)
                 .ok_or_else(|| anyhow::anyhow!("checkpoint_id required"))?;
             let patch = crate::optimizers::SavedLoraPatchRequest {
-                name: body
-                    .get("name")
-                    .and_then(Value::as_str)
-                    .map(str::to_string),
+                name: body.get("name").and_then(Value::as_str).map(str::to_string),
                 description: body
                     .get("description")
                     .and_then(Value::as_str)
@@ -3925,6 +4096,71 @@ pub fn local_addr(url: &str) -> Result<SocketAddr> {
 }
 
 #[cfg(test)]
+mod policy_binding_tests {
+    use super::*;
+
+    fn container() -> ContainerDeployment {
+        ContainerDeployment {
+            id: "ctr_harvey".into(),
+            name: "Harvey".into(),
+            location: "local".into(),
+            status: "ready".into(),
+            base_url: Some("http://127.0.0.1:8876".into()),
+            pool_id: None,
+            task_family: Some("corporate-ma".into()),
+            last_rollout_id: None,
+            health: json!({"ok": true}),
+            metadata: json!({
+                "info": {"capabilities": {"policy_refs": [{
+                    "harness": "desktop_eval",
+                    "config": "harvey_luna_low",
+                    "model": "openai/gpt-5.6-luna",
+                    "auth": "workshop_proxy"
+                }]}}
+            }),
+            created_at: "2026-08-21T00:00:00Z".into(),
+            updated_at: "2026-08-21T00:00:00Z".into(),
+        }
+    }
+
+    #[test]
+    fn advertised_proxy_policy_compiles_to_ephemeral_chat_completions_registration() {
+        let body = proxy_policy_registration(
+            &container(),
+            &json!({"harness":"desktop_eval","config":"harvey_luna_low"}),
+            "http://host.docker.internal:43123/cap/wcap_test/v1/providers/openai",
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(body["config_id"], "harvey_luna_low");
+        assert_eq!(body["config"]["model"], "gpt-5.6-luna");
+        assert_eq!(body["config"]["api_family"], "chat_completions");
+        assert!(body["config"]["base_url"]
+            .as_str()
+            .unwrap()
+            .contains("host.docker.internal"));
+        assert!(body.to_string().find("api_key").is_none());
+    }
+
+    #[test]
+    fn unadvertised_or_non_proxy_policy_is_not_silently_bound() {
+        assert!(proxy_policy_registration(
+            &container(),
+            &json!({"harness":"desktop_eval","config":"missing","auth":"workshop_proxy"}),
+            "http://host.docker.internal:1/cap/wcap_test/v1/providers/openai",
+        )
+        .is_err());
+        assert!(proxy_policy_registration(
+            &container(),
+            &json!({"harness":"desktop_eval","config":"harvey_luna_low","auth":"none"}),
+            "http://host.docker.internal:1/cap/wcap_test/v1/providers/openai",
+        )
+        .unwrap()
+        .is_none());
+    }
+}
+
+#[cfg(test)]
 mod diagnostics_tests {
     use super::*;
     use crate::diagnostics::DiagnosticQuery;
@@ -4080,13 +4316,13 @@ mod tests {
     #[test]
     fn preserves_explicit_runtime_family_for_gepa_v2_selection() {
         let info = json!({
-            "runtime_family": "healthbench",
+            "runtime_family": "example-family",
             "metadata": {"optimizer": {"contract": "synth_optimizers.gepa.v2"}},
             "capabilities": {"operations": {"prepare": true, "start": true}}
         });
         assert_eq!(
-            observed_task_family(Some(&info), None, None).as_deref(),
-            Some("healthbench")
+            observed_task_family(Some(&info), None).as_deref(),
+            Some("example-family")
         );
     }
 
@@ -4703,25 +4939,29 @@ mod tests {
     }
 
     #[test]
-    fn harbor_and_digbench_register_metadata_is_visual_first() {
-        let harbor =
-            live_eval_bind_metadata(crate::visuals::LiveEvalFamily::Harbor, &json!({}), None)
-                .unwrap();
-        assert_eq!(harbor["templateId"], "live.harbor_eval.v1");
-        assert_eq!(harbor["slot"], "stream");
-        assert_eq!(harbor["liveFrames"], "unsupported");
-        assert_eq!(harbor["policyRefs"].as_array().map(Vec::len), Some(2));
-        assert!(live_eval_bind_metadata(
-            crate::visuals::LiveEvalFamily::Harbor,
-            &json!({"live_frames": "native"}),
-            None
+    fn advertised_live_eval_register_metadata_is_visual_first() {
+        let bind = live_eval_bind_metadata(
+            &json!({
+                "visual_template": "live.eval.v1",
+                "live_frames": "unsupported",
+                "policy_refs": [
+                    {"harness": "fused", "config": "policy_a"},
+                    {"harness": "fused", "config": "policy_b"}
+                ]
+            }),
+            None,
         )
-        .is_err());
-        let digbench =
-            live_eval_bind_metadata(crate::visuals::LiveEvalFamily::Digbench, &json!({}), None)
-                .unwrap();
-        assert_eq!(digbench["templateId"], "live.digbench.v1");
-        assert_eq!(digbench["policyRefs"][0]["harness"], "react_legal_actions");
-        assert_eq!(digbench["policyRefs"][1]["mcp_bind"], "digbench-mcp");
+        .unwrap();
+        assert_eq!(bind["templateId"], "live.eval.v1");
+        assert_eq!(bind["slot"], "stream");
+        assert_eq!(bind["liveFrames"], "unsupported");
+        assert_eq!(bind["policyRefs"].as_array().map(Vec::len), Some(2));
+        let native = live_eval_bind_metadata(
+            &json!({"visual_template": "live.eval.v1", "live_frames": "native"}),
+            None,
+        )
+        .unwrap();
+        assert_eq!(native["liveFrames"], "native");
+        assert!(live_eval_bind_metadata(&json!({}), None).is_err());
     }
 }

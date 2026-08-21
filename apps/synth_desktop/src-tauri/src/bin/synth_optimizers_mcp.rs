@@ -142,7 +142,10 @@ fn call_tool(name: &str, args: &Value) -> Result<Value, String> {
             .and_then(Value::as_str)
             .ok_or_else(|| "operation required".to_string())?;
         let nested = args.get("arguments").cloned().unwrap_or_else(|| json!({}));
-        let allow_path = matches!(operation, "import_local" | "create_run" | "import_checkpoint");
+        let allow_path = matches!(
+            operation,
+            "import_local" | "create_run" | "import_checkpoint"
+        );
         reject_secret_keys(&nested, allow_path)?;
         let tool = match operation {
             "list_algorithms" => "optimizer_list_algorithms",

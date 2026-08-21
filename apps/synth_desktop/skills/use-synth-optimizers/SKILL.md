@@ -1,6 +1,6 @@
 ---
 name: use-synth-optimizers
-description: Start, inspect, follow, reconcile, cancel, and visualize first-class Synth optimizer runs through CoreRuntime. Use for GEPA, GELO/Go-Ex, SFT, CISPO, and local eval. Workspace recipes come from workshop.recipe.toml; do not name shipped Banking77 or Craftax GEPA/eval ids.
+description: Start, inspect, follow, reconcile, cancel, and visualize first-class Synth optimizer runs through CoreRuntime. Use for GEPA, GELO/Go-Ex, SFT, CISPO, and local eval. Workspace recipes come from workshop.recipe.toml; do not name shipped task-family GEPA/eval ids.
 ---
 
 # Use Synth Optimizers
@@ -11,14 +11,14 @@ Use `mcp__synth_optimizers__optimizer_manage`. Treat returned run IDs and cursor
 
 1. Call `list_algorithms` and `list_recipes` before proposing a run. Fresh Workshop has no GEPA/eval task catalog; those recipes appear only after the workspace declares `workshop.recipe.toml`. To author a target, use `$author-synth-container`.
 2. Choose the algorithm from the user's objective:
-   - GEPA: improve prompts or other candidate values against a workspace-declared container. Read [references/gepa.md](references/gepa.md). Never start `gepa.banking77.*` or `gepa.craftax.*` as product ids.
+   - GEPA: improve prompts or other candidate values against a workspace-declared container. Read [references/gepa.md](references/gepa.md). Never start a task-family `gepa.*` id as a product recipe.
    - GELO / Go-Ex: explore a hosted search space or reconcile an existing hosted run. Read [references/gelo.md](references/gelo.md).
    - Eval: score a workspace-declared container (`algorithm = "eval"` in `workshop.recipe.toml`) or a local candidate-set eval. Stage candidates only for candidate-comparison evals. Read [references/eval.md](references/eval.md).
    - SFT: train and compare model weights/checkpoints. Local MLX is `sft.qwen35-0.8b.mlx.v1` (This Mac). Hosted recipes use the public `synth-optimizers` SFT service through the Optimizers sidecar — never dial `:8787` or `:8878` from a shell. Student ids: `docs/sft_tinker_base_models.toml`. Read [references/sft.md](references/sft.md).
-   - CISPO: on-policy training. Local MLX is `cispo.banking77.mlx.v1`. Hosted slime.v1 is `cispo.slime.hosted.v1` and stays unavailable until the clip-identity canary admits it. Read [references/cispo.md](references/cispo.md). PPO is not a local/hosted picker option.
+   - CISPO: on-policy training. Local MLX is `cispo.mlx.v1`; it binds rollout/worlds/harness from the registered container contract. Hosted slime.v1 is `cispo.slime.hosted.v1` and stays unavailable until the clip-identity canary admits it. Never invent `cispo.<task>.mlx.v1`. Read [references/cispo.md](references/cispo.md). PPO is not a local/hosted picker option.
 3. For a local recipe, report its availability, exact fixed inputs, hard limits, prerequisite services, credential names, and whether its cost is dollar-capped or only compute-bounded.
 4. Start a bounded product recipe with `start_workflow`. It returns the authoritative run, visual references, event cursor, and admission status. The host owns approval, fresh capability observation, sidecar readiness, and visual opening.
-   - Recipe identity is exact. If the requested recipe is unavailable, stop and present its structured readiness blocker. Never substitute another algorithm family, another recipe, a hand-built rollout loop, or a shell workflow. In particular, an unavailable `eval.craftax.*` recipe must never become `gepa.craftax.*`.
+   - Recipe identity is exact. If the requested recipe is unavailable, stop and present its structured readiness blocker. Never substitute another algorithm family, another recipe, a hand-built rollout loop, or a shell workflow.
    - The advanced/recovery sequence remains `prepare` → `open_visual` → `await_ready` → `start`. Use it only when resuming an already-prepared run or diagnosing a structured admission blocker. `start` requires a visual readiness receipt and a separate compute approval bound to the prepared run.
    - Local `eval.*` recipes are the explicit exception: stage candidates, then call `start_recipe` with the returned `candidate_set_id`. They do not install or depend on the Optimizers plugin, and the pinned target plus fixed recipe owns the compute bounds.
    - `open_visual` owns and configures the product visual. Do not call `authoring_context`, `capture_review`, `review`, `update`, or `mark_ready` for it.
@@ -31,7 +31,7 @@ Use `mcp__synth_optimizers__optimizer_manage`. Treat returned run IDs and cursor
 1. For a run started from chat, pass `open_visual: true`. The host creates and binds the algorithm-family visual before starting compute, reuses one durable visual ID, and shows it in the current conversation's right pane. Do not create a second generic visual for the same run.
 2. For an existing or historical run, call `open_visual` with its `optimizer_run_id`. This reuses its primary visual and presents it in the current conversation without changing the run's original ownership.
 3. Record `run.id`, the primary visual ID in `run.visualRefs`, and `run.cursorSeq`. Keep the pane open while following the run; the visual reads the same durable event cursor and continues updating independently of tool polling.
-   After the run ID is known, call `mcp__synth_session__session_present` once with a concise title containing the task family and the run ID's final 6 characters, for example `Banking77 eval · a1b2c3`. This is the current conversation's scoped title MCP; it prevents concurrent or restored runs from becoming indistinguishable. Do not pass a session ID and do not rename another conversation.
+   After the run ID is known, call `mcp__synth_session__session_present` once with a concise title containing the task family and the run ID's final 6 characters, for example `Classify eval · a1b2c3`. This is the current conversation's scoped title MCP; it prevents concurrent or restored runs from becoming indistinguishable. Do not pass a session ID and do not rename another conversation.
 4. Call `watch_run` with `optimizer_run_id` and `after_seq` equal to the last processed sequence. Advance to the greatest returned sequence. Empty batches are normal.
    - Wait for progress only by calling `watch_run` again (or `get_run` when a status snapshot is useful). Never run a shell or terminal command, including `sleep`, just to delay or poll an optimizer run; repeated optimizer MCP calls are the supported waiting mechanism.
 5. Use `get_run` for status and summary, and `get_state` for the algorithm-specific slices in its reference.

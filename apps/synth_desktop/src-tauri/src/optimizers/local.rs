@@ -1,12 +1,12 @@
 //! Import local OSS optimizer workspaces (GEPA event feed / GELO events.jsonl).
 
+use super::models::TrainingJobStatus;
 use anyhow::{anyhow, bail, Context, Result};
 use serde_json::{json, Map, Value};
 use std::{
     fs,
     path::{Path, PathBuf},
 };
-use super::models::TrainingJobStatus;
 
 #[derive(Clone, Debug)]
 pub struct LocalOptimizerImport {

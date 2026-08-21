@@ -135,10 +135,10 @@ export type ArtifactRef = {
 	shownByAgent?: boolean;
 	/** Mock preview payload for the Visual pane. */
 	preview?: {
-		variant: "craftax_pareto" | "craftax_frame" | "generic";
+		variant: "generic";
 		metrics?: { label: string; value: string }[];
 	};
-	/** Runtime visual template id (e.g. craftax.eval_matrix.v1). */
+	/** Runtime visual template id. */
 	templateId?: string;
 	/** Rust renderer kind; first-class diagrams bypass the TSX template shell. */
 	rendererKind?: string;

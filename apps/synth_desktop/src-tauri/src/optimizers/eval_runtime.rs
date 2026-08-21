@@ -72,7 +72,10 @@ pub fn load_manifest() -> Result<Option<EvalRuntimeManifest>> {
 }
 
 pub fn installed_version() -> Option<String> {
-    load_manifest().ok().flatten().map(|manifest| manifest.version)
+    load_manifest()
+        .ok()
+        .flatten()
+        .map(|manifest| manifest.version)
 }
 
 pub fn provisioned_python() -> Option<PathBuf> {
@@ -84,9 +87,7 @@ pub fn provisioned_python() -> Option<PathBuf> {
         .filter(|path| path.is_file())
 }
 
-pub fn provision_from_sidecar(
-    sidecar: &OptimizerSidecarVersion,
-) -> Result<EvalRuntimeManifest> {
+pub fn provision_from_sidecar(sidecar: &OptimizerSidecarVersion) -> Result<EvalRuntimeManifest> {
     sidecar_to_manifest(sidecar).and_then(write_manifest)
 }
 
@@ -149,9 +150,7 @@ fn sidecar_to_manifest(sidecar: &OptimizerSidecarVersion) -> Result<EvalRuntimeM
         package: EVAL.package.into(),
         version: sidecar.version.clone(),
         digest: sidecar.digest.clone(),
-        python: python
-            .as_ref()
-            .map(|path| path.display().to_string()),
+        python: python.as_ref().map(|path| path.display().to_string()),
         sidecar_path: sidecar.path.clone(),
         provisioned_at: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
     })
@@ -217,10 +216,7 @@ mod tests {
         let manifest = sidecar_to_manifest(&sidecar).unwrap();
         assert_eq!(manifest.version, "0.2.16");
         assert_eq!(manifest.digest, "abc123");
-        assert_eq!(
-            manifest.python.as_deref(),
-            Some(python.to_str().unwrap())
-        );
+        assert_eq!(manifest.python.as_deref(), Some(python.to_str().unwrap()));
         manifest.validate().unwrap();
     }
 

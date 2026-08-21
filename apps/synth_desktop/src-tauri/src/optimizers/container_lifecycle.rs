@@ -98,12 +98,9 @@ fn start_command(workspace: &Path, spec: &ContainerSpec) -> Result<()> {
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
-    let child = command.spawn().with_context(|| {
-        format!(
-            "start container `{}` command {:?}",
-            spec.id, spec.command
-        )
-    })?;
+    let child = command
+        .spawn()
+        .with_context(|| format!("start container `{}` command {:?}", spec.id, spec.command))?;
     children()
         .lock()
         .expect("container process table")
@@ -137,11 +134,7 @@ async fn wait_healthy(base_url: &str, health_path: &str) -> Result<()> {
     bail!("container at {base_url} never became healthy on {url}: {last}")
 }
 
-async fn upsert_ready(
-    db: &Arc<Database>,
-    spec: &ContainerSpec,
-    base_url: &str,
-) -> Result<String> {
+async fn upsert_ready(db: &Arc<Database>, spec: &ContainerSpec, base_url: &str) -> Result<String> {
     let spec_id = spec.id.clone();
     let family = spec.family.clone();
     let contract = spec.contract.clone();

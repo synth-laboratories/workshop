@@ -103,7 +103,7 @@ function ReportEvidence({ block }: { block: ReportBlock }) {
 	if (block.kind === "report.prose.v1" || typeof block.payload.markdown === "string") {
 		return <p className="reports-prose">{String(block.payload.markdown || "")}</p>;
 	}
-	if (block.kind === "report.result.v1" && block.payload.schema_version === "craftax.compare-story.v1") {
+	if (block.kind === "report.result.v1" && typeof block.payload.schema_version === "string" && block.payload.schema_version.endsWith("compare-story.v1")) {
 		return <CompareStory payload={block.payload} />;
 	}
 	if ((block.kind === "report.visual.v1" || block.kind === "report.diagram.v1") && typeof block.payload.sealedHtml === "string") {

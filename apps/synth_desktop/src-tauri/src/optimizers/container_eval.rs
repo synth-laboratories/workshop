@@ -98,7 +98,10 @@ impl EvalSpec {
             recipe_id: recipe.id.clone(),
             family: recipe.family.clone(),
             title: recipe.title.clone(),
-            question: format!("Score the advertised {} policy on the declared eval pool.", recipe.family),
+            question: format!(
+                "Score the advertised {} policy on the declared eval pool.",
+                recipe.family
+            ),
             world_ref: format!("world:{}@eval", recipe.family),
             evaluation_plan_ref: format!("{}_eval.v1", recipe.family),
             harness: recipe.harness.clone(),
@@ -397,7 +400,10 @@ async fn project_worker_failure_visual(
 /// A container that declares no roles is not failed here; there is nothing to
 /// fail it on, and inventing a refusal from absent metadata would block every
 /// family that has not implemented the contract yet.
-async fn preflight_container_credentials(container: &ReadyContainer, spec: &EvalSpec) -> Result<()> {
+async fn preflight_container_credentials(
+    container: &ReadyContainer,
+    spec: &EvalSpec,
+) -> Result<()> {
     let client = crate::http::http_client_with_timeout(Duration::from_secs(15));
     let info = client
         .get(format!("{}/info", container.base_url))
@@ -1017,7 +1023,12 @@ async fn persist_policy_pin(
     Ok(())
 }
 
-fn failed_record(example: EvalExample, spec: &EvalSpec, policy_pin: &Value, error: String) -> Value {
+fn failed_record(
+    example: EvalExample,
+    spec: &EvalSpec,
+    policy_pin: &Value,
+    error: String,
+) -> Value {
     json!({
         "pool": example.pool,
         "seed": example.seed,
@@ -2079,13 +2090,9 @@ max_total_rollouts = 4
         })
         .await
         .unwrap();
-        crate::workspace_scope::provision(
-            svc.database(),
-            session,
-            workspace.to_str().unwrap(),
-        )
-        .await
-        .unwrap();
+        crate::workspace_scope::provision(svc.database(), session, workspace.to_str().unwrap())
+            .await
+            .unwrap();
     }
 
     async fn start_banking77(
@@ -2359,7 +2366,15 @@ max_total_rollouts = 4
         // The visual the campaign was supposed to keep current is gone.
         let failure = evidence(
             "progress_projection",
-            persist_progress(&svc, &run.id, &spec, "vis_missing", &records, 1, "completed"),
+            persist_progress(
+                &svc,
+                &run.id,
+                &spec,
+                "vis_missing",
+                &records,
+                1,
+                "completed",
+            ),
         )
         .await
         .unwrap_err();
@@ -2553,11 +2568,7 @@ max_total_rollouts = 4
         task.abort();
     }
 
-    async fn recipe(
-        svc: &OptimizerService,
-        id: &str,
-        session: &str,
-    ) -> OptimizerRecipeRunRequest {
+    async fn recipe(svc: &OptimizerService, id: &str, session: &str) -> OptimizerRecipeRunRequest {
         recipe_on(svc, id, session, None).await
     }
 
@@ -2652,12 +2663,15 @@ max_total_rollouts = 4
         )
         .await;
         let (run, _) = svc
-            .start_recipe(recipe_on(
-                &svc,
-                CLASSIFY_EVAL,
-                "sess_explicit_isolated",
-                Some("ctr_banking77_isolated"),
-            ).await)
+            .start_recipe(
+                recipe_on(
+                    &svc,
+                    CLASSIFY_EVAL,
+                    "sess_explicit_isolated",
+                    Some("ctr_banking77_isolated"),
+                )
+                .await,
+            )
             .await
             .unwrap();
         assert_eq!(run.summary["containerId"], json!("ctr_banking77_isolated"));
@@ -2709,12 +2723,15 @@ max_total_rollouts = 4
         .await;
 
         let not_ready = svc
-            .start_recipe(recipe_on(
-                &svc,
-                CLASSIFY_EVAL,
-                "sess_not_ready",
-                Some("ctr_banking77_offline"),
-            ).await)
+            .start_recipe(
+                recipe_on(
+                    &svc,
+                    CLASSIFY_EVAL,
+                    "sess_not_ready",
+                    Some("ctr_banking77_offline"),
+                )
+                .await,
+            )
             .await
             .unwrap_err()
             .to_string();
@@ -2730,12 +2747,15 @@ max_total_rollouts = 4
         );
 
         let wrong_family = svc
-            .start_recipe(recipe_on(
-                &svc,
-                CLASSIFY_EVAL,
-                "sess_wrong_family",
-                Some("ctr_healthbench_ready"),
-            ).await)
+            .start_recipe(
+                recipe_on(
+                    &svc,
+                    CLASSIFY_EVAL,
+                    "sess_wrong_family",
+                    Some("ctr_healthbench_ready"),
+                )
+                .await,
+            )
             .await
             .unwrap_err()
             .to_string();
@@ -2871,11 +2891,7 @@ max_total_rollouts = 4
         let (svc, _dir, _) = service().await;
         insert_container(&svc, "healthbench", &base, "ready").await;
         let (run, _) = svc
-            .start_recipe(recipe(
-                &svc,
-                HEALTH_EVAL,
-                "sess_policy_mismatch",
-            ).await)
+            .start_recipe(recipe(&svc, HEALTH_EVAL, "sess_policy_mismatch").await)
             .await
             .unwrap();
         let finished = wait_terminal(&svc, &run.id).await;
@@ -2953,9 +2969,10 @@ max_total_rollouts = 4
     }
 
     #[test]
-    fn healthbench_policy_config_requires_workshop_proxy_base() {
+    fn policy_config_requires_proxy_base_when_advertised() {
         let spec = EvalSpec::healthbench_fixture();
-        assert!(spec.policy_config_body(None).is_none());
+        let body = spec.policy_config_body(None).unwrap();
+        assert!(body["config"].get("base_url").is_none());
         let body = spec
             .policy_config_body(Some(
                 "http://host.docker.internal:9/cap/wcap_abc12345/v1/providers/openai",
@@ -2973,10 +2990,10 @@ max_total_rollouts = 4
     }
 
     #[test]
-    fn banking77_policy_config_stays_on_openrouter() {
+    fn policy_config_without_proxy_omits_a_provider_origin() {
         let spec = EvalSpec::classify_fixture();
         let body = spec.policy_config_body(None).unwrap();
-        assert_eq!(body["config"]["base_url"], "https://openrouter.ai/api/v1");
-        assert_eq!(body["config"]["api_key_env"], "OPENROUTER_API_KEY");
+        assert!(body["config"].get("base_url").is_none());
+        assert!(body["config"].get("api_key_env").is_none());
     }
 }

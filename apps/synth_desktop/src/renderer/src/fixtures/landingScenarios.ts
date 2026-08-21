@@ -9,32 +9,32 @@ import type {
 	SyncSession
 } from "../types/landing";
 
-const ARTIFACT_CRAFTAX_PARETO: ArtifactRef = {
-	id: "art-craftax-pareto",
+const ARTIFACT_EVAL_OVERVIEW: ArtifactRef = {
+	id: "art-eval-overview",
 	kind: "score_series",
-	title: "Craftax cost vs performance",
-	summary: "Achievements against $/rollout — same surface as usesynth.ai/evals/craftax, native in Desktop.",
+	title: "Eval cost vs performance",
+	summary: "Primary metric against $/rollout — native in Desktop.",
 	messageId: "lm4",
 	shownByAgent: true,
 	preview: {
-		variant: "craftax_pareto",
+		variant: "generic",
 		metrics: [
-			{ label: "Laguna XS ach.", value: "11.4" },
+			{ label: "Primary metric", value: "11.4" },
 			{ label: "$ / rollout", value: "$0.12" },
-			{ label: "vs Flash", value: "+2.1 ach" }
+			{ label: "vs baseline", value: "+2.1" }
 		]
 	}
 };
 
-const ARTIFACT_CRAFTAX_FRAME: ArtifactRef = {
-	id: "art-craftax-frame",
+const ARTIFACT_ROLLOUT_FRAME: ArtifactRef = {
+	id: "art-rollout-frame",
 	kind: "environment_frame",
 	title: "Rollout 482 · step 37",
 	summary: "Failure cluster after first wood — canvas + accessible state.",
 	messageId: "m3",
 	shownByAgent: true,
 	preview: {
-		variant: "craftax_frame",
+		variant: "generic",
 		metrics: [{ label: "State", value: "Player (12,17) HP7 wood3" }]
 	}
 };
@@ -65,7 +65,7 @@ const CHAT_PORTING: LocalChat = {
 		{
 			id: "lm4",
 			role: "assistant",
-			body: "Yes — and here’s a Craftax cost/perf visual you can open beside this chat (same surface as the public evals page).",
+			body: "Yes — and here’s a cost/perf visual you can open beside this chat (same surface as the public evals page).",
 			at: "14:59:12"
 		}
 	],
@@ -95,13 +95,13 @@ const CHAT_PORTING: LocalChat = {
 			{ id: "la4", label: "… Thought", kind: "thought" },
 			{
 				id: "la5",
-				label: "… Created visual · Craftax cost vs performance",
+				label: "… Created visual · Eval cost vs performance",
 				kind: "visual",
 				detail: "artifact_kind=score_series · shown_by_agent=true · click to open"
 			}
 		]
 	},
-	artifacts: [ARTIFACT_CRAFTAX_PARETO]
+	artifacts: [ARTIFACT_EVAL_OVERVIEW]
 };
 
 const CHAT_HARNESS: LocalChat = {
@@ -182,7 +182,7 @@ const SYNC_CRAFTAX: SyncSession = {
 			at: "15:04:02"
 		}
 	],
-	artifacts: [ARTIFACT_CRAFTAX_FRAME],
+	artifacts: [ARTIFACT_ROLLOUT_FRAME],
 	activity: [
 		{
 			sequence: 1,

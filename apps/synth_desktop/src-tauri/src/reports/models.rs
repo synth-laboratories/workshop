@@ -365,12 +365,8 @@ pub struct ReportPromotion {
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum ReportAudience {
     Private,
-    Workspace {
-        workspace_id: String,
-    },
-    Members {
-        member_ids: Vec<String>,
-    },
+    Workspace { workspace_id: String },
+    Members { member_ids: Vec<String> },
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, specta::Type)]

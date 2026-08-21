@@ -214,7 +214,10 @@ pub fn import_local_lora_dir(conn: &Connection, path: &Path) -> Result<SavedLora
     )
 }
 
-pub fn get_local_lora(conn: &Connection, checkpoint_id: &str) -> Result<Option<SavedLoraCheckpoint>> {
+pub fn get_local_lora(
+    conn: &Connection,
+    checkpoint_id: &str,
+) -> Result<Option<SavedLoraCheckpoint>> {
     let id = normalize_digest(checkpoint_id);
     let row = conn
         .query_row(
@@ -257,7 +260,10 @@ pub fn patch_local_lora(
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .unwrap_or(&existing.name);
-    let description = patch.description.as_deref().unwrap_or(&existing.description);
+    let description = patch
+        .description
+        .as_deref()
+        .unwrap_or(&existing.description);
     let tags = patch.tags.clone().unwrap_or(existing.tags);
     let tags_json = serde_json::to_string(&tags)?;
     let now = iso_now();
@@ -293,11 +299,7 @@ pub fn upsert_hosted_overlay(
         .map(str::trim)
         .filter(|value| !value.is_empty());
     let description = patch.description.as_deref();
-    let tags_json = patch
-        .tags
-        .as_ref()
-        .map(serde_json::to_string)
-        .transpose()?;
+    let tags_json = patch.tags.as_ref().map(serde_json::to_string).transpose()?;
     let now = iso_now();
     conn.execute(
         "INSERT INTO hosted_lora_overlays(checkpoint_id, name, description, tags_json, updated_at)
@@ -496,11 +498,19 @@ pub fn search_local_loras(
         sql.push_str(" AND status = ?");
         binds.push(Box::new(status));
     }
-    if let Some(algorithm) = query.optimizer_algorithm.as_deref().filter(|value| *value != "all") {
+    if let Some(algorithm) = query
+        .optimizer_algorithm
+        .as_deref()
+        .filter(|value| *value != "all")
+    {
         sql.push_str(" AND optimizer_algorithm = ?");
         binds.push(Box::new(algorithm.to_string()));
     }
-    if let Some(kind) = query.checkpoint_kind.as_deref().filter(|value| *value != "all") {
+    if let Some(kind) = query
+        .checkpoint_kind
+        .as_deref()
+        .filter(|value| *value != "all")
+    {
         sql.push_str(" AND checkpoint_kind = ?");
         binds.push(Box::new(kind.to_string()));
     }
@@ -508,7 +518,11 @@ pub fn search_local_loras(
         sql.push_str(" AND run_id = ?");
         binds.push(Box::new(run_id.to_string()));
     }
-    if let Some(search) = query.search.as_deref().filter(|value| !value.trim().is_empty()) {
+    if let Some(search) = query
+        .search
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+    {
         sql.push_str(" AND (name LIKE ? OR checkpoint_id LIKE ? OR base_model LIKE ? OR adapter_path LIKE ?)");
         let pattern = format!("%{}%", search.trim());
         binds.push(Box::new(pattern.clone()));
@@ -807,7 +821,9 @@ mod tests {
         assert_eq!(stacked.tags, Some(vec!["eval".into()]));
 
         clear_hosted_overlay(&conn, "ckpt_hosted_1").unwrap();
-        assert!(get_hosted_overlay(&conn, "ckpt_hosted_1").unwrap().is_none());
+        assert!(get_hosted_overlay(&conn, "ckpt_hosted_1")
+            .unwrap()
+            .is_none());
     }
 
     fn hosted_checkpoint(name: &str, description: &str, tags: Vec<String>) -> SavedLoraCheckpoint {

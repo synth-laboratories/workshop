@@ -183,19 +183,20 @@ pub fn list() -> Result<Vec<TrainingArtifact>> {
 pub fn snapshot_id_for(artifact: &TrainingArtifact) -> String {
     if let Some(digest) = artifact.digest.as_deref() {
         let hex = digest.trim_start_matches("sha256:");
-        if !hex.is_empty()
-            && hex
-                .bytes()
-                .all(|byte| byte.is_ascii_hexdigit())
-            && hex.len() <= 64
-        {
+        if !hex.is_empty() && hex.bytes().all(|byte| byte.is_ascii_hexdigit()) && hex.len() <= 64 {
             return format!("snap_{hex}");
         }
     }
     let slug: String = artifact
         .id
         .chars()
-        .map(|ch| if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' { ch } else { '_' })
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' {
+                ch
+            } else {
+                '_'
+            }
+        })
         .collect();
     format!("snap_{slug}")
 }
@@ -205,8 +206,7 @@ pub fn require_artifact_id(id: &str) -> Result<&str> {
     if id.is_empty() || id.len() > 128 {
         bail!("training artifact id is invalid");
     }
-    if id.contains('/') || id.contains('\\') || id.contains("..") || Path::new(id).is_absolute()
-    {
+    if id.contains('/') || id.contains('\\') || id.contains("..") || Path::new(id).is_absolute() {
         bail!("training artifact id must not be a path");
     }
     if !id
@@ -299,7 +299,10 @@ fn copy_tree_no_symlinks(src: &Path, dest: &Path) -> Result<u64> {
         bail!("artifact path refuses symlink {}", src.display());
     }
     if !src_meta.is_dir() {
-        bail!("training artifact path is not a directory: {}", src.display());
+        bail!(
+            "training artifact path is not a directory: {}",
+            src.display()
+        );
     }
     fs::create_dir_all(dest)
         .with_context(|| format!("create export destination {}", dest.display()))?;
@@ -386,12 +389,16 @@ pub fn export_to(
     expected_digest: Option<&str>,
 ) -> Result<ArtifactMutationReceipt> {
     let artifact = get(id)?;
-    if let Some(expected) = expected_digest.map(str::trim).filter(|value| !value.is_empty()) {
+    if let Some(expected) = expected_digest
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
         let actual = artifact
             .digest
             .as_deref()
             .ok_or_else(|| anyhow::anyhow!("training artifact `{id}` has no digest to verify"))?;
-        if actual != expected && actual.trim_start_matches("sha256:") != expected.trim_start_matches("sha256:")
+        if actual != expected
+            && actual.trim_start_matches("sha256:") != expected.trim_start_matches("sha256:")
         {
             bail!("export digest does not match training artifact `{id}`");
         }
@@ -402,7 +409,9 @@ pub fn export_to(
         .as_deref()
         .map(Path::new)
         .filter(|path| path.is_dir())
-        .ok_or_else(|| anyhow::anyhow!("training artifact `{id}` has no local adapter directory"))?;
+        .ok_or_else(|| {
+            anyhow::anyhow!("training artifact `{id}` has no local adapter directory")
+        })?;
     if dest.exists() {
         let receipt_path = dest.join(".synth-export-receipt.json");
         if receipt_path.is_file() {
@@ -596,10 +605,7 @@ mod tests {
         assert_eq!(artifact.size_bytes, Some(128));
         assert_eq!(artifact.integrity, "unavailable");
         assert!(!artifact.is_inference_ready());
-        assert_eq!(
-            snapshot_id_for(&artifact),
-            "snap_deadbeef"
-        );
+        assert_eq!(snapshot_id_for(&artifact), "snap_deadbeef");
     }
 
     #[test]
@@ -680,7 +686,9 @@ mod tests {
         for id in ["../escape", "a/b", "/tmp/x", "id with space"] {
             let error = require_artifact_id(id).unwrap_err().to_string();
             assert!(
-                error.contains("path") || error.contains("alphanumeric") || error.contains("invalid"),
+                error.contains("path")
+                    || error.contains("alphanumeric")
+                    || error.contains("invalid"),
                 "{id}: {error}"
             );
         }
@@ -698,9 +706,13 @@ mod tests {
         let dest_parent = isolated.path.join("exports");
         fs::create_dir_all(&dest_parent).unwrap();
 
-        let traversal = export_to("cap-export", dest_parent.join("../outside").to_str().unwrap(), None)
-            .unwrap_err()
-            .to_string();
+        let traversal = export_to(
+            "cap-export",
+            dest_parent.join("../outside").to_str().unwrap(),
+            None,
+        )
+        .unwrap_err()
+        .to_string();
         assert!(traversal.contains("traversal"), "{traversal}");
 
         let link = isolated.path.join("link-dest");
@@ -728,7 +740,12 @@ mod tests {
         assert!(wrong.contains("digest"), "{wrong}");
 
         let dest = dest_parent.join("cap-export");
-        let first = export_to("cap-export", dest.to_str().unwrap(), Some(&artifact.digest.clone().unwrap())).unwrap();
+        let first = export_to(
+            "cap-export",
+            dest.to_str().unwrap(),
+            Some(&artifact.digest.clone().unwrap()),
+        )
+        .unwrap();
         assert_eq!(first.operation, "export");
         assert_eq!(first.artifact_id, "cap-export");
         assert!(first.bytes.unwrap() >= 4);
@@ -737,7 +754,11 @@ mod tests {
         let duplicate = export_to("cap-export", dest.to_str().unwrap(), None).unwrap();
         assert_eq!(duplicate.digest, first.digest);
 
-        fs::write(dest.join(".synth-export-receipt.json"), br#"{"operation":"export","artifactId":"other","status":"exported"}"#).unwrap();
+        fs::write(
+            dest.join(".synth-export-receipt.json"),
+            br#"{"operation":"export","artifactId":"other","status":"exported"}"#,
+        )
+        .unwrap();
         let conflict = export_to("cap-export", dest.to_str().unwrap(), None)
             .unwrap_err()
             .to_string();

@@ -21,7 +21,11 @@ const BREAKER_FAILURE_LIMIT: usize = 2;
 /// The key is tool + operation + target id, and the failure signature prefers a
 /// structured error `code`, so a different root cause on the same target also
 /// gets a fresh recovery budget.
-const BREAKER_TARGET_FIELDS: [&str; 7] = [
+const BREAKER_TARGET_FIELDS: [&str; 9] = [
+    // A prepared rollout is the immutable execution identity. Prefer it over
+    // the visual/container so one failed launch cannot poison a later lane.
+    "rollout_id",
+    "rolloutId",
     "visual_id",
     "visualId",
     "trace_id",
@@ -602,6 +606,25 @@ mod tests {
             breaker_key("visual_manage", &bind),
             breaker_key("visual_manage", &show)
         );
+    }
+
+    #[test]
+    fn prepared_rollout_breaker_is_scoped_to_immutable_rollout_identity() {
+        let first = json!({
+            "container_id": "ctr_1",
+            "visual_id": "vis_1",
+            "rollout_id": "rollout_1"
+        });
+        let second = json!({
+            "container_id": "ctr_1",
+            "visual_id": "vis_1",
+            "rollout_id": "rollout_2"
+        });
+        assert_ne!(
+            breaker_key("container_start_prepared_rollout", &first),
+            breaker_key("container_start_prepared_rollout", &second)
+        );
+        assert!(breaker_key("container_start_prepared_rollout", &first).contains("#rollout_1"));
     }
 
     #[test]

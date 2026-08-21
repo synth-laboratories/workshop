@@ -100,8 +100,8 @@ export function DataPage({
 	const [error, setError] = useState<string | null>(null);
 	const [busyId, setBusyId] = useState<string | null>(null);
 	const [attachOpen, setAttachOpen] = useState(false);
-	const [attachName, setAttachName] = useState("Craftax Rust");
-	const [attachUrl, setAttachUrl] = useState("http://127.0.0.1:8098");
+	const [attachName, setAttachName] = useState("");
+	const [attachUrl, setAttachUrl] = useState("");
 	const [traceFilter, setTraceFilter] = useState("");
 	const [traceContainer, setTraceContainer] = useState("all");
 	const [traceModel, setTraceModel] = useState("all");

@@ -76,7 +76,12 @@ impl MlxLoopback {
         self.post_timed(path, body, Duration::from_secs(10)).await
     }
 
-    async fn post_timed(&self, path: &str, body: Option<&Value>, timeout: Duration) -> Result<Value> {
+    async fn post_timed(
+        &self,
+        path: &str,
+        body: Option<&Value>,
+        timeout: Duration,
+    ) -> Result<Value> {
         let mut request = self
             .http
             .post(format!("{}{path}", self.base_url))
@@ -225,15 +230,17 @@ impl MlxLoopback {
             body["artifact_digest"] = json!(digest);
         }
         let response = self
-            .post_timed("/v1/synth/policies/register", Some(&body), Duration::from_secs(120))
+            .post_timed(
+                "/v1/synth/policies/register",
+                Some(&body),
+                Duration::from_secs(120),
+            )
             .await?;
         response
             .get("policy_snapshot_id")
             .and_then(Value::as_str)
             .map(str::to_string)
-            .ok_or_else(|| {
-                anyhow::anyhow!("MLX policy registration omitted policy_snapshot_id")
-            })
+            .ok_or_else(|| anyhow::anyhow!("MLX policy registration omitted policy_snapshot_id"))
     }
 }
 

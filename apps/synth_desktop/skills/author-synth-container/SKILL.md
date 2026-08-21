@@ -1,6 +1,6 @@
 ---
 name: author-synth-container
-description: Author a task container and workspace recipe from scratch, then evaluate it through Workshop. Use when the user wants a new eval or GEPA target, Banking77-from-scratch, a custom classify/chat world, or when list_recipes is empty. Never name a shipped Workshop recipe id.
+description: Author a task container and workspace recipe from scratch, then evaluate it through Workshop. Use when the user wants a new eval or GEPA target, a custom classify/chat world, or when list_recipes is empty. Never name a shipped Workshop recipe id.
 ---
 
 # Author a Workshop container
@@ -61,6 +61,6 @@ max_total_rollouts = 10
 
 ## Run eval
 
-`list_recipes` in this session should now include the workspace id. Call `start_workflow` / `optimizer_start_recipe` with that id and `container_id` from ensure. Do not pass `eval.banking77.baseline.v1` unless that string is the id you wrote in this workspace.
+`list_recipes` in this session should now include the workspace id. Call `start_workflow` / `optimizer_start_recipe` with that id and `container_id` from ensure. Pass the workspace recipe id you declared, never a shipped task-family id.
 
 Proof that the cutover worked: no shipped recipe id, no cookbook cwd, no loopback policy URL for `locality=container`.

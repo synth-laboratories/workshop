@@ -225,7 +225,10 @@ pub fn load_recipes(workspace: &Path) -> Result<Vec<WorkspaceRecipe>> {
     let mut seen = std::collections::HashSet::new();
     for recipe in &recipes {
         if !seen.insert(recipe.id.as_str()) {
-            bail!("workspace declares recipe id `{}` more than once", recipe.id);
+            bail!(
+                "workspace declares recipe id `{}` more than once",
+                recipe.id
+            );
         }
     }
     Ok(recipes)
@@ -249,8 +252,7 @@ pub fn load_container_specs(workspace: &Path) -> Result<Vec<ContainerSpec>> {
     if !path.is_file() {
         return Ok(Vec::new());
     }
-    let text = fs::read_to_string(&path)
-        .with_context(|| format!("read {}", path.display()))?;
+    let text = fs::read_to_string(&path).with_context(|| format!("read {}", path.display()))?;
     parse_containers(workspace, &text)
 }
 
@@ -258,12 +260,16 @@ pub fn find_container_spec(workspace: &Path, spec_id: &str) -> Result<ContainerS
     load_container_specs(workspace)?
         .into_iter()
         .find(|spec| spec.id == spec_id)
-        .ok_or_else(|| {
-            anyhow!("container spec `{spec_id}` is not declared in {CONTAINERS_FILE}")
-        })
+        .ok_or_else(|| anyhow!("container spec `{spec_id}` is not declared in {CONTAINERS_FILE}"))
 }
 
 pub fn catalog_entry(recipe: &WorkspaceRecipe) -> Value {
+    let credential_input = match recipe.provider.as_str() {
+        "openrouter" => "OPENROUTER_API_KEY",
+        "anthropic" => "ANTHROPIC_API_KEY",
+        "groq" => "GROQ_API_KEY",
+        _ => "OPENAI_API_KEY",
+    };
     json!({
         "id": recipe.id,
         "title": recipe.title,
@@ -292,7 +298,7 @@ pub fn catalog_entry(recipe: &WorkspaceRecipe) -> Value {
             "harness": recipe.harness,
             "config": recipe.policy_config,
         },
-        "credentialInputs": ["OPENAI_API_KEY"],
+        "credentialInputs": [credential_input],
         "expectedVisual": match recipe.algorithm {
             AlgorithmKind::Gepa => "optimizer.gepa.v1",
             AlgorithmKind::Eval => "experiment.overview.v1",
@@ -336,7 +342,10 @@ fn parse_recipe(path: &Path) -> Result<WorkspaceRecipe> {
         .max_total_rollouts
         .unwrap_or(PRODUCT_MAX_TOTAL_ROLLOUTS);
     if !(max_cost_usd.is_finite() && max_cost_usd > 0.0) {
-        bail!("recipe `{}` bounds.max_cost_usd must be a positive finite number", parsed.id);
+        bail!(
+            "recipe `{}` bounds.max_cost_usd must be a positive finite number",
+            parsed.id
+        );
     }
     if max_cost_usd > PRODUCT_MAX_COST_USD {
         bail!(
@@ -375,7 +384,9 @@ fn parse_recipe(path: &Path) -> Result<WorkspaceRecipe> {
         family,
         harness: parsed.harness.unwrap_or_else(|| "desktop_eval".into()),
         policy_config: parsed.policy_config.unwrap_or_else(|| "default".into()),
-        train_seeds: parsed.train_seeds.unwrap_or_else(|| vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9]),
+        train_seeds: parsed
+            .train_seeds
+            .unwrap_or_else(|| vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9]),
         heldout_seeds: parsed.heldout_seeds.unwrap_or_default(),
         concurrency: parsed.concurrency.unwrap_or(1).max(1),
         proposer_model: parsed.proposer_model,
@@ -387,15 +398,11 @@ fn parse_recipe(path: &Path) -> Result<WorkspaceRecipe> {
 }
 
 fn parse_containers(workspace: &Path, text: &str) -> Result<Vec<ContainerSpec>> {
-    let parsed: ContainersFile =
-        toml::from_str(text).context("parse workshop.containers.toml")?;
+    let parsed: ContainersFile = toml::from_str(text).context("parse workshop.containers.toml")?;
     let mut specs = Vec::new();
     for item in parsed.container {
         if item.command.is_empty() && item.url.as_deref().map(str::trim).unwrap_or("").is_empty() {
-            bail!(
-                "container `{}` must declare command or url",
-                item.id
-            );
+            bail!("container `{}` must declare command or url", item.id);
         }
         let cwd_rel = item.cwd.unwrap_or_else(|| ".".into());
         let cwd = resolve_workspace_path(workspace, &cwd_rel)?;
@@ -451,19 +458,19 @@ pub fn bind_locality_urls(
 ) -> Result<()> {
     let (base_url, inference_url) = match locality {
         PolicyLocality::Host => {
-            let base = host_base_url.ok_or_else(|| {
-                anyhow!("locality=host requires the host provider proxy URL")
-            })?;
+            let base = host_base_url
+                .ok_or_else(|| anyhow!("locality=host requires the host provider proxy URL"))?;
             (base.to_string(), None)
         }
         PolicyLocality::Container => {
             let base = container_base_url.ok_or_else(|| {
-                anyhow!("locality=container requires container_openai_base_url; refusing host loopback")
+                anyhow!(
+                    "locality=container requires container_openai_base_url; refusing host loopback"
+                )
             })?;
             refuse_loopback(base)?;
-            let inference = container_inference_url.ok_or_else(|| {
-                anyhow!("locality=container requires container_openai_route")
-            })?;
+            let inference = container_inference_url
+                .ok_or_else(|| anyhow!("locality=container requires container_openai_route"))?;
             refuse_loopback(inference)?;
             (base.to_string(), Some(inference.to_string()))
         }
@@ -475,10 +482,7 @@ pub fn bind_locality_urls(
         .ok_or_else(|| anyhow!("recipe [policy] must be a table"))?;
     policy.insert("base_url".into(), toml::Value::String(base_url));
     if let Some(inference_url) = inference_url {
-        policy.insert(
-            "inference_url".into(),
-            toml::Value::String(inference_url),
-        );
+        policy.insert("inference_url".into(), toml::Value::String(inference_url));
     }
     policy.insert(
         "credential_mode".into(),
@@ -489,10 +493,7 @@ pub fn bind_locality_urls(
 
 pub fn refuse_loopback(url: &str) -> Result<()> {
     let lowered = url.to_ascii_lowercase();
-    if lowered.contains("127.0.0.1")
-        || lowered.contains("localhost")
-        || lowered.contains("[::1]")
-    {
+    if lowered.contains("127.0.0.1") || lowered.contains("localhost") || lowered.contains("[::1]") {
         bail!("locality=container cannot bind a loopback URL: {url}");
     }
     Ok(())
@@ -557,7 +558,9 @@ max_total_rollouts = 10
 "#,
         )
         .unwrap();
-        let error = find_recipe(&workspace, "eval.too-rich.v1").unwrap_err().to_string();
+        let error = find_recipe(&workspace, "eval.too-rich.v1")
+            .unwrap_err()
+            .to_string();
         assert!(error.contains("exceeds product cap"), "{error}");
     }
 

@@ -62,14 +62,14 @@ test.describe("design locks (must pass)", () => {
 		await expect(changelog).toContainText("build provenance");
 	});
 
-	test("Inventory exposes Attach container defaulting to Craftax Rust :8098", async ({ page }) => {
+	test("Inventory Attach container starts with empty name and URL", async ({ page }) => {
 		await page.getByTestId("open-inventory").click();
 		await expect(page.getByTestId("inventory-page")).toBeVisible();
 		await page.getByTestId("attach-container").click();
 		const form = page.locator(".inventory-attach-form");
 		await expect(form).toBeVisible();
-		await expect(form.locator('input[inputmode="url"]')).toHaveValue("http://127.0.0.1:8098");
-		await expect(form.locator("input").first()).toHaveValue("Craftax Rust");
+		await expect(form.locator('input[inputmode="url"]')).toHaveValue("");
+		await expect(form.locator("input").first()).toHaveValue("");
 	});
 
 	test("Inventory Traces honestly scopes the v0.2 catalog as read-only", async ({ page }) => {

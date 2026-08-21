@@ -165,7 +165,7 @@ pub const OPTIMIZERS: RuntimeContract = RuntimeContract {
     ],
     bounded_recipes: &[
         "sft.qwen35-0.8b.mlx.v1",
-        "cispo.banking77.mlx.v1",
+        "cispo.mlx.v1",
         "cispo.slime.hosted.v1",
     ],
     recipe_schema: "gepa.recipe.v1",
@@ -189,10 +189,6 @@ pub const EVAL: RuntimeContract = RuntimeContract {
     templates: &["optimizer.eval.live.v1", "optimizer.run.v1"],
     bounded_recipes: &[
         "eval.fixture.policy-smoke.v1",
-        "eval.craftax.code-policy.smoke.v1",
-        "eval.gamebench.craftax-code-policy.confirm.v1",
-        "eval.craftax.llm-policy.smoke.v1",
-        "eval.gamebench.llm-policy.confirm.v1",
         "eval.mlx.local-policy.smoke.v1",
     ],
     recipe_schema: "eval.worker-manifest.v1",

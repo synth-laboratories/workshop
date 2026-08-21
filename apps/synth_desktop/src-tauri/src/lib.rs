@@ -83,8 +83,8 @@ use intern_api::{
 };
 use laguna::{LagunaManager, LagunaModelHit, LagunaStatus};
 use optimizers::{
-    CheckpointInferRequest, HostedTrainingModelCatalog, OptimizerCreateRequest, OptimizerEventEnvelope,
-    OptimizerImportLocalRequest, OptimizerQuery, OptimizerRecipeRunRequest,
+    CheckpointInferRequest, HostedTrainingModelCatalog, OptimizerCreateRequest,
+    OptimizerEventEnvelope, OptimizerImportLocalRequest, OptimizerQuery, OptimizerRecipeRunRequest,
     OptimizerReconcileRequest, OptimizerRelationship, OptimizerRunRecord, OptimizerStateSlice,
     SavedLoraCheckpoint, SavedLoraCheckpointPage, SavedLoraCheckpointQuery, SavedLoraDownload,
     SavedLoraPatchRequest,
@@ -150,12 +150,11 @@ fn runtime_contracts(
         .ok()
         .flatten()
         .map(|hit| hit.version);
-    let eval = crate::optimizers::eval_runtime::installed_version()
-        .or_else(|| {
-            crate::optimizers::eval_runtime::provision_from_disk()
-                .ok()
-                .map(|manifest| manifest.version)
-        });
+    let eval = crate::optimizers::eval_runtime::installed_version().or_else(|| {
+        crate::optimizers::eval_runtime::provision_from_disk()
+            .ok()
+            .map(|manifest| manifest.version)
+    });
     Ok(ALL
         .iter()
         .map(|entry| {
@@ -510,21 +509,12 @@ async fn hydrate_container(
     let task_family = info
         .as_ref()
         .and_then(|value| {
-            crate::visuals::classify_live_eval_family(value, None)
-                .map(|family| family.as_str().to_string())
-        })
-        .or_else(|| {
-            info.as_ref()
-                .and_then(|value| {
-                    value
-                        .get("env_family")
-                        .or_else(|| value.get("task_family"))
-                        // HealthBench publishes its explicit service family as
-                        // `runtime_family`; preserve that observed contract so
-                        // the selector can find the registered GEPA-v2 pool.
-                        // Do not infer from a caller name, port, or URL.
-                        .or_else(|| value.get("runtime_family"))
-                })
+            value
+                .get("env_family")
+                .or_else(|| value.get("task_family"))
+                // Preserve an explicitly advertised service family. Do not
+                // infer from a caller name, port, URL, or visual template.
+                .or_else(|| value.get("runtime_family"))
                 .and_then(|value| value.as_str())
                 .map(str::to_string)
         })
@@ -537,11 +527,8 @@ async fn hydrate_container(
                 .and_then(|value| value.pointer("/runtime/runtime_id"))
                 .and_then(|value| value.as_str())
                 .and_then(|runtime_id| {
-                    let normalized = runtime_id.to_ascii_lowercase();
-                    ["banking77", "healthbench", "craftax"]
-                        .into_iter()
-                        .find(|family| normalized.contains(family))
-                        .map(str::to_string)
+                    let family = runtime_id.trim();
+                    (!family.is_empty()).then(|| family.to_string())
                 })
         })
         .or_else(|| {
@@ -579,18 +566,12 @@ async fn hydrate_container(
         );
     }
     if let Some(info_value) = &info {
-        if let Some(family) =
-            crate::visuals::classify_live_eval_family(info_value, task_family.as_deref())
-        {
+        if crate::visuals::advertised_live_eval_template(info_value).is_some() {
             let existing_refs = metadata
                 .get("liveEval")
                 .and_then(|value| value.get("policyRefs"))
                 .cloned();
-            match crate::visuals::live_eval_bind_metadata(
-                family,
-                info_value,
-                existing_refs.as_ref(),
-            ) {
+            match crate::visuals::live_eval_bind_metadata(info_value, existing_refs.as_ref()) {
                 Ok(bind) => {
                     metadata.insert("liveEval".into(), bind);
                 }
@@ -907,7 +888,7 @@ pub(crate) async fn authorize_optimizer_recipe_start(
     // charges. The click itself is the operator's explicit instruction.
     if matches!(
         request.recipe_id.as_str(),
-        "sft.qwen35-0.8b.mlx.v1" | "cispo.banking77.mlx.v1" | "eval.fixture.policy-smoke.v1"
+        "sft.qwen35-0.8b.mlx.v1" | "cispo.mlx.v1" | "eval.fixture.policy-smoke.v1"
     ) {
         let (run, event) = state
             .optimizers()
@@ -933,8 +914,8 @@ pub(crate) async fn authorize_optimizer_recipe_start(
     // Hosted SFT is owned by the public synth-optimizers control plane and
     // does not use the optional local Optimizers sidecar. Requiring that
     // sidecar made an otherwise configured public SFT recipe unreachable.
-    let is_hosted_sft =
-        algorithm_id == Some("sft") && request.recipe_id != "sft.craftax.gpt-oss.smoke.v1";
+    let is_hosted_sft = algorithm_id == Some("sft")
+        && recipe.get("source").and_then(Value::as_str) == Some("hosted");
     let limits = recipe
         .get("limits")
         .cloned()
@@ -953,8 +934,8 @@ pub(crate) async fn authorize_optimizer_recipe_start(
         )
     } else if is_local_eval {
         let (cost, trials) = {
-            let candidate_set_id = optimizers::resolve_eval_candidate_set(&request)
-                .map_err(AppError::from)?;
+            let candidate_set_id =
+                optimizers::resolve_eval_candidate_set(&request).map_err(AppError::from)?;
             optimizers::paid_compute_bounds(&recipe, Some(candidate_set_id.as_str()))
                 .map_err(AppError::from)?
         };
@@ -985,7 +966,8 @@ pub(crate) async fn authorize_optimizer_recipe_start(
             request.recipe_id
         )));
     }
-    let credential_names: Vec<String> = if is_local_eval {
+    let workspace_recipe = recipe.get("source").and_then(Value::as_str) == Some("workspace");
+    let credential_names: Vec<String> = if is_local_eval || workspace_recipe {
         recipe
             .get("credentialInputs")
             .and_then(Value::as_array)
@@ -1190,14 +1172,9 @@ pub(crate) async fn refresh_optimizer_workflow_containers(
 }
 
 fn optimizer_recipe_credentials(recipe_id: &str) -> &'static [&'static str] {
-    if recipe_id == "sft.craftax.gpt-oss.smoke.v1" {
-        &["GROQ_API_KEY", "TINKER_API_KEY"]
-    } else if recipe_id == "gelo.craftax.hosted.v1" {
+    if recipe_id.starts_with("gelo.") {
         &["OPTIMIZERS_BETA_SERVICE_TOKEN"]
-    } else if matches!(
-        recipe_id,
-        "sft.craftax.nemotron-nano.tinker.v1" | "sft.banking77.nemotron-lightning.tinker.v1"
-    ) {
+    } else if recipe_id.starts_with("sft.") && !recipe_id.contains("mlx") {
         &["SYNTH_OPTIMIZERS_SFT_SERVICE_TOKEN"]
     } else if recipe_id.starts_with("gepa.") || recipe_id.starts_with("eval.") {
         &["OPENAI_API_KEY"]
@@ -3571,8 +3548,8 @@ async fn laguna_adapter_download(
     let spec = laguna_adapters::adapter_spec(&model_id).map_err(AppError::from)?;
     // Through the backend, with the account's own credential. No adapter
     // object is public and Workshop never reaches object storage directly.
-    let client = crate::optimizers::cloud::CloudOptimizerClient::from_config()
-        .map_err(AppError::from)?;
+    let client =
+        crate::optimizers::cloud::CloudOptimizerClient::from_config().map_err(AppError::from)?;
     let emit = |phase: &str, detail: &str, done: u64, total: u64| {
         let _ = app.emit(
             crate::contract::events::EventChannel::LAGUNA_DOWNLOAD,
@@ -3586,13 +3563,18 @@ async fn laguna_adapter_download(
         );
     };
 
-    emit("preparing", "Reading the adapter manifest…", 0, spec.download_bytes);
+    emit(
+        "preparing",
+        "Reading the adapter manifest…",
+        0,
+        spec.download_bytes,
+    );
     let manifest_json = client
         .adapter_manifest(spec.digest)
         .await
         .map_err(AppError::from)?;
-    let manifest = laguna_adapters::parse_manifest(&manifest_json.to_string())
-        .map_err(AppError::from)?;
+    let manifest =
+        laguna_adapters::parse_manifest(&manifest_json.to_string()).map_err(AppError::from)?;
     laguna_adapters::check_pinned(&spec, &manifest).map_err(AppError::from)?;
     laguna_adapters::check_base_revision(&manifest, laguna::installed_base_revision())
         .map_err(AppError::from)?;
@@ -3601,7 +3583,12 @@ async fn laguna_adapter_download(
     let mut fetched: Vec<(String, Vec<u8>)> = Vec::new();
     let mut done = 0u64;
     for file in &manifest.files {
-        emit("downloading", &format!("Downloading {}…", file.path), done, total);
+        emit(
+            "downloading",
+            &format!("Downloading {}…", file.path),
+            done,
+            total,
+        );
         let bytes = client
             .adapter_file(spec.digest, &file.path)
             .await

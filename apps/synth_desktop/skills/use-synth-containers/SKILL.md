@@ -37,9 +37,9 @@ means the requested task is incomplete.
 supported, and it is never inferred:
 
 - `health` proves liveness, not workflow compatibility.
-- SSE support does not imply prepared-rollout support. A raw Gold `/info`
+- SSE support does not imply prepared-rollout support. A raw engine `/info`
   advertising `rollout_stream_sse` supports no normalized operation.
-- Never fall back from a selected policy pool to raw Gold, to another port, or
+- Never fall back from a selected policy pool to a raw engine, to another port, or
   to a different policy config.
 - After a preflight failure, do not perform shell or repository archaeology as
   a substitute for execution. Report the failure and its remediation.
@@ -77,7 +77,7 @@ has already completed. Do not report this as ReAct or LLM policy evidence.
 For a live policy eval, follow `run-live-container-evals`: prepare, bind the
 declared stream on a task-family visual, then `container_start_prepared_rollout`
 with an explicit `policy_ref` (`harness` + `config`). The coding agent names
-the pin; the host does not default `luna_med`.
+the pin; the host does not default a policy config.
 
 Use only the normalized Containers contract: plural rollout routes,
 `snake_case` wire fields, and descriptor-nested transport URLs. Never consume
@@ -105,11 +105,10 @@ configuration. Do not copy policy logic into Workshop, its MCP adapters, or the
 skill. If no real policy harness exists, report that boundary. Implement one in
 the benchmark/evals project only when the user asks to build it.
 
-For GameBench Craftax, a nearby `evals` checkout may provide the Python module
-`suites.nonproduct.craftax`. Discover its available TOML configurations rather
-than assuming a particular checkout path or config name. Use its ReAct policy
-mode for LLM rollouts; its uniform policy is a transport baseline, not an LLM
-evaluation.
+Discover harness TOML from the nearby evals checkout for the advertised task
+family rather than assuming a particular module, checkout path, or config name.
+Use a ReAct policy mode for LLM rollouts; a uniform policy is a transport
+baseline, not an LLM evaluation.
 
 ## Verify that a rollout is real
 

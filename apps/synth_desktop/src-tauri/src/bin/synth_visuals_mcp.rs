@@ -61,10 +61,7 @@ struct Connection {
 }
 
 fn connection_file() -> PathBuf {
-    instance_paths::ipc_connection_file(
-        &["SYNTH_VISUALS_IPC_FILE"],
-        "visuals-ipc.json",
-    )
+    instance_paths::ipc_connection_file(&["SYNTH_VISUALS_IPC_FILE"], "visuals-ipc.json")
 }
 
 fn load_connection() -> Result<Connection, String> {

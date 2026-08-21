@@ -50,12 +50,7 @@ export function artifactFromVisualRecord(visual: VisualRecord): ArtifactRef {
 		metadata: visual.metadata,
 		summary: typeof visual.metadata?.summary === "string" ? visual.metadata.summary : undefined,
 		preview: {
-			variant:
-				visual.templateId.includes("scrub") || visual.templateId.includes("rollout")
-					? "craftax_frame"
-					: visual.templateId.includes("craftax") || visual.templateId.includes("eval_matrix")
-						? "craftax_pareto"
-						: "generic"
+			variant: "generic"
 		}
 	};
 }
@@ -180,81 +175,7 @@ function SubagentsVisual({ artifact }: { artifact: ArtifactRef }) {
 	);
 }
 
-function CraftaxEvalVisual({ artifact }: { artifact: ArtifactRef }) {
-	const models = [
-		{ name: "Laguna XS", ach: 11.4, cost: 0.12, accent: true },
-		{ name: "Luna", ach: 10.1, cost: 0.09 },
-		{ name: "Terra", ach: 9.4, cost: 0.15 },
-		{ name: "Flash Lite", ach: 7.2, cost: 0.04 },
-		{ name: "Kimi K3", ach: 8.8, cost: 0.11 }
-	];
-	const achievements = [
-		["drink", "food", "sapling", "wood", "cow", "zombie"],
-		["pickaxe", "sword", "plant", "table", "coal", "stone"],
-		["skeleton", "iron", "furnace", "ladder", "bow", "arrow"]
-	];
-	return (
-		<div className="craftax-visual" data-testid="visual-craftax-pareto">
-			<div className="craftax-visual-hero">
-				<p className="visual-kicker">Open-ended agents · Craftax</p>
-				<h2>{artifact.title}</h2>
-				{artifact.summary ? <p className="visual-lede">{artifact.summary}</p> : null}
-			</div>
-			<section className="craftax-section">
-				<div className="craftax-section-head">
-					<h3>Cost vs performance</h3>
-					<span>ACH ↑ · $ / rollout →</span>
-				</div>
-				<div className="pareto-plot" role="img" aria-label="Pareto chart of achievements vs cost">
-					<svg viewBox="0 0 320 200" className="pareto-svg">
-						{[40, 80, 120, 160].map((y) => (
-							<line key={y} x1="36" y1={y} x2="300" y2={y} stroke="#e8eaee" strokeWidth="1" />
-						))}
-						{models.map((m, i) => {
-							const x = 70 + i * 45;
-							const y = 155 - m.ach * 9;
-							return <circle key={m.name} cx={x} cy={y} r={m.accent ? 6 : 4} fill={m.accent ? "#f05f22" : "#9aa3b2"} />;
-						})}
-					</svg>
-				</div>
-			</section>
-			<section className="craftax-section">
-				<h3>Achievement matrix</h3>
-				<div className="achievement-matrix">
-					{achievements.map((row, rowIndex) => (
-						<div key={rowIndex} className="achievement-row">
-							{row.map((cell) => <span key={cell}>{cell}</span>)}
-						</div>
-					))}
-				</div>
-			</section>
-		</div>
-	);
-}
-
-function CraftaxFrameVisual({ artifact }: { artifact: ArtifactRef }) {
-	return (
-		<div className="craftax-visual" data-testid="visual-craftax-frame">
-			<div className="craftax-visual-hero">
-				<p className="visual-kicker">Environment frame</p>
-				<h2>{artifact.title}</h2>
-				{artifact.summary ? <p className="visual-lede">{artifact.summary}</p> : null}
-			</div>
-			<div className="env-frame" role="img" aria-label="Craftax frame">
-				<div className="env-grid">
-					{Array.from({ length: 96 }, (_, i) => (
-						<span key={i} className={`env-tile t-${(i * 7) % 5}`} />
-					))}
-				</div>
-			</div>
-		</div>
-	);
-}
-
 function MockFallback({ artifact }: { artifact: ArtifactRef }) {
-	const variant = artifact.preview?.variant ?? "generic";
-	if (variant === "craftax_pareto") return <CraftaxEvalVisual artifact={artifact} />;
-	if (variant === "craftax_frame") return <CraftaxFrameVisual artifact={artifact} />;
 	return (
 		<div className="visual-generic" data-testid="visual-fallback">
 			<h2>{artifact.title}</h2>

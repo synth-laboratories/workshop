@@ -50,7 +50,7 @@ const OPTIMIZER_GUIDES: OptimizerGuide[] = [
 		name: "CISPO · slime reference",
 		description: "Run on-policy training with the pinned slime CISPO objective. This Mac (MLX) or hosted after the clip canary.",
 		flow: ["Preflight", "Roll out", "Train"],
-		prompt: "Help me set up CISPO in Workshop. Do not start paid compute yet. Prefer recipe cispo.banking77.mlx.v1 on this Mac, or cispo.slime.hosted.v1 if hosted is admitted. Never draft a free-form HostedOptimizerClient.launch_training call. Wait for my explicit approval before launch."
+		prompt: "Help me set up CISPO in Workshop. Do not start paid compute yet. Prefer recipe cispo.mlx.v1 on this Mac, or cispo.slime.hosted.v1 if hosted is admitted. Never draft a free-form HostedOptimizerClient.launch_training call. Wait for my explicit approval before launch."
 	},
 ];
 
@@ -326,7 +326,7 @@ export function OptimizersPage({
 	const [trainingProjection, setTrainingProjection] = useState<TrainingProjection | null>(null);
 	const trainingAlgorithm = "cispo" as const;
 	const [trainingModel, setTrainingModel] = useState("openai/gpt-oss-20b");
-	const [trainingTask, setTrainingTask] = useState("banking77");
+	const [trainingTask, setTrainingTask] = useState("");
 	const [trainingContainerUrl, setTrainingContainerUrl] = useState("http://127.0.0.1:8000");
 	const [trainingSteps, setTrainingSteps] = useState(2);
 	const [trainingWallSeconds, setTrainingWallSeconds] = useState(300);
@@ -1004,8 +1004,8 @@ export function OptimizersPage({
 							) : null}
 							{guide.id === "cispo" ? (
 								<>
-									<button className="secondary-button" type="button" disabled={startingLocalCispo || (plugin != null && !presentation.isUsable)} onClick={() => void startBoundedRecipe("cispo.banking77.mlx.v1", setStartingLocalCispo)} data-testid="start-cispo-mlx">
-										{startingLocalCispo ? "Starting…" : "This Mac · Banking77 CISPO"}
+									<button className="secondary-button" type="button" disabled={startingLocalCispo || (plugin != null && !presentation.isUsable)} onClick={() => void startBoundedRecipe("cispo.mlx.v1", setStartingLocalCispo)} data-testid="start-cispo-mlx">
+										{startingLocalCispo ? "Starting…" : "This Mac · CISPO"}
 									</button>
 									<small>Hosted CISPO stays fail-closed until the slime clip canary admits it.</small>
 								</>

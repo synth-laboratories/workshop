@@ -402,9 +402,7 @@ impl OptimizerManager {
     /// for a bounded window instead of terminating the run on the first miss.
     /// Anything else — a cross-run page, a corrupt body, a missing route — is
     /// a contract violation and stays fatal.
-    pub(crate) fn optimizer_event_endpoint_temporarily_unavailable(
-        error: &anyhow::Error,
-    ) -> bool {
+    pub(crate) fn optimizer_event_endpoint_temporarily_unavailable(error: &anyhow::Error) -> bool {
         observer_error_is_transient_gateway(error)
     }
 
@@ -503,9 +501,8 @@ impl OptimizerManager {
                     .unwrap_or(true);
                 if expired {
                     current.phase = "degraded".into();
-                    current.detail = Some(
-                        "Optimizer health probe missed beyond the stale-ready bound".into(),
-                    );
+                    current.detail =
+                        Some("Optimizer health probe missed beyond the stale-ready bound".into());
                 } else {
                     current.detail = Some(
                         "Optimizer health probe was missed; retaining the managed runtime".into(),
@@ -786,16 +783,21 @@ impl OptimizerManager {
                         &hit.version,
                         &runtime_epoch,
                     )?;
-                    if let Some(child) = self.runtime.lock().await.as_ref().and_then(|runtime| {
-                        runtime.child.as_ref().and_then(|child| child.id())
-                    }) {
+                    if let Some(child) = self
+                        .runtime
+                        .lock()
+                        .await
+                        .as_ref()
+                        .and_then(|runtime| runtime.child.as_ref().and_then(|child| child.id()))
+                    {
                         let instance_id = crate::instance::instance_id();
                         let _ = crate::secrets::lease::write_runtime_lease(
                             &self.home.join("runtime-lease.json"),
                             &crate::secrets::OptimizerRuntimeLease {
                                 schema_version: crate::secrets::lease::RUNTIME_LEASE_SCHEMA.into(),
                                 pid: child,
-                                process_start_identity: crate::secrets::lease::process_start_identity(child),
+                                process_start_identity:
+                                    crate::secrets::lease::process_start_identity(child),
                                 service_url: base_url.clone(),
                                 database_digest: crate::secrets::lease::database_digest(
                                     &self.home.join("gepa.sqlite3"),
@@ -1365,9 +1367,7 @@ impl OptimizerManager {
                             .unwrap_or_else(|| "optimizer sidecar child exited".into()),
                     )
                     .retryable(false);
-                    input
-                        .details
-                        .insert("phase".into(), json!(snapshot.phase));
+                    input.details.insert("phase".into(), json!(snapshot.phase));
                     input
                         .details
                         .insert("previous_phase".into(), json!(previous_phase));
@@ -1646,7 +1646,7 @@ fn launch_gepa_recipe_process(
     }
     command
         .spawn()
-        .context("launch Desktop-managed Banking77 GEPA recipe")
+        .context("launch Desktop-managed GEPA recipe")
 }
 
 async fn launch_sidecar_upstream(
@@ -1950,8 +1950,8 @@ pub(crate) fn set_test_event_endpoint_fault(run_id: &str, fault: Option<TestEven
 }
 
 #[cfg(test)]
-fn test_event_endpoint_faults(
-) -> &'static std::sync::Mutex<HashMap<String, TestEventEndpointFault>> {
+fn test_event_endpoint_faults() -> &'static std::sync::Mutex<HashMap<String, TestEventEndpointFault>>
+{
     static FAULTS: std::sync::OnceLock<std::sync::Mutex<HashMap<String, TestEventEndpointFault>>> =
         std::sync::OnceLock::new();
     FAULTS.get_or_init(|| std::sync::Mutex::new(HashMap::new()))
@@ -3334,10 +3334,7 @@ mod tests {
         let started = mgr.start().await.unwrap();
         assert_eq!(started.phase, "ready");
         let lease = home.path().join(RUNTIME_LEASE_FILE);
-        assert!(
-            lease.is_file(),
-            "handshake must write runtime-lease.json"
-        );
+        assert!(lease.is_file(), "handshake must write runtime-lease.json");
         assert!(
             runtime_lease_is_current(home.path()),
             "a live fixture child must make the runtime lease current"
@@ -3348,7 +3345,11 @@ mod tests {
             .expect("fixture sidecar must be a real child");
         let pid = libc::pid_t::try_from(pid).expect("child pid");
         unsafe {
-            assert_eq!(libc::kill(pid, libc::SIGKILL), 0, "kill -9 of spawned child");
+            assert_eq!(
+                libc::kill(pid, libc::SIGKILL),
+                0,
+                "kill -9 of spawned child"
+            );
         }
         let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
         loop {
@@ -3387,7 +3388,9 @@ mod tests {
         assert_eq!(started.phase, "ready");
         let digest = mgr.lease_database_digest();
         assert!(
-            digest.as_deref().is_some_and(|value| value.starts_with("sha256:")),
+            digest
+                .as_deref()
+                .is_some_and(|value| value.starts_with("sha256:")),
             "lease must digest runtime/gepa.sqlite via gepa_db_path, got {digest:?}"
         );
         let _ = mgr.stop().await;

@@ -219,7 +219,10 @@ impl TrainingJobStatus {
     }
 
     pub const fn is_terminal(self) -> bool {
-        matches!(self, Self::Succeeded | Self::Failed | Self::Cancelled | Self::Interrupted)
+        matches!(
+            self,
+            Self::Succeeded | Self::Failed | Self::Cancelled | Self::Interrupted
+        )
     }
 }
 
@@ -798,8 +801,7 @@ pub struct OptimizerRecipeRunRequest {
     pub session_ref: Option<String>,
     #[serde(default)]
     pub open_visual: Option<bool>,
-    /// Tinker `create_lora_training_client(base_model=...)` id. Ignored except
-    /// on the Craftax hosted SFT recipe. Must be in `docs/sft_tinker_base_models.toml`.
+    /// Tinker student id from `docs/sft_tinker_base_models.toml`. Omitted uses that file's default.
     #[serde(default)]
     pub base_model: Option<String>,
     /// Allowlisted dataset shard id. Ignored except on recipes that publish

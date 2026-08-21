@@ -46,7 +46,8 @@ async fn start_inner(
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .ok_or_else(|| anyhow!("workspace recipes require session_ref"))?;
-    let workspace = super::workspace_recipe::require_session_workspace(service.database(), session)?;
+    let workspace =
+        super::workspace_recipe::require_session_workspace(service.database(), session)?;
     let recipe = super::workspace_recipe::find_recipe(&workspace, &request.recipe_id)?;
     match recipe.algorithm {
         super::workspace_recipe::AlgorithmKind::Eval => {
@@ -56,12 +57,9 @@ async fn start_inner(
     }
     let manager = service.manager().clone();
     require_plugin_ready(&manager).await?;
-    let ensured = super::container_lifecycle::ensure(
-        service.database(),
-        &workspace,
-        &recipe.container,
-    )
-    .await?;
+    let ensured =
+        super::container_lifecycle::ensure(service.database(), &workspace, &recipe.container)
+            .await?;
     let run_id = format!(
         "gepa_{}_{}",
         recipe
@@ -96,12 +94,9 @@ async fn start_inner(
     table.insert(
         "container".into(),
         toml::Value::Table(
-            [(
-                "url".into(),
-                toml::Value::String(ensured.base_url.clone()),
-            )]
-            .into_iter()
-            .collect(),
+            [("url".into(), toml::Value::String(ensured.base_url.clone()))]
+                .into_iter()
+                .collect(),
         ),
     );
     let openai = resolve_provider_workload(&recipe.provider, &run_id, &recipe.id)?;
@@ -485,11 +480,16 @@ async fn run_recipe_worker(
     let _revoke = crate::secrets::RevokeRunOnDrop(run_id.clone());
     let _ownership = service.hold_run_ownership(&run_id)?;
     append_status_event(&service, &run_id, "optimizer.run.started", "running").await?;
-    let openai = resolve_provider_workload(
-        "openai",
-        &run_id,
-        recipe_id_for_lease(&config_path),
-    )?;
+    let recipe_config: toml::Value = toml::from_str(
+        &fs::read_to_string(&config_path).context("read run-owned GEPA recipe")?,
+    )
+    .context("parse run-owned GEPA recipe")?;
+    let provider = recipe_config
+        .get("provider")
+        .and_then(toml::Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or("openai");
+    let openai = resolve_provider_workload(provider, &run_id, recipe_id_for_lease(&config_path))?;
     if let Some(lease) = openai.lease.as_ref() {
         crate::secrets::lease::bind_lease_into_toml(&config_path, lease)?;
         let _ = service.persist_credential_chain(&run_id).await;

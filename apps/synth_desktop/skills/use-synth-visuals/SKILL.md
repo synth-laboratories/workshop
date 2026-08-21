@@ -62,7 +62,7 @@ other clients but are intentionally not advertised to Codex.
 5. Show exact units and provenance. Preserve small costs rather than rounding them to `$0.00`.
 6. Call the `show` operation after creation or update so the result opens in the Desktop pane.
 7. Inspect the rendered visual in Desktop canvas mode. Fix clipped labels, empty sections, misleading encodings, weak hierarchy, and excessive whitespace.
-8. Perform at least two explicit render-and-critique iterations at distinct viewport widths. Call `capture_review` for authored visual families—evals (`analysis.*`, `live.*`, `craftax.*`), UML/Mermaid, static 2D systems maps, and Benjamin Dicken Style dynamic systems visuals. Do **not** capture, review, or `mark_ready` `optimizer.*` product visuals; report `visualEvidence.state` instead and never loop capture/repair. For each viewport inspect the PNG attached to the tool result. Pass its returned `screenshot_path` to `review`; never shell-search for captures, invent a path, or submit checks without looking at the image. Do not reuse a review after the visual revision changes. For systems visuals, resolve every deterministic finding returned by `authoring_context` before readiness.
+8. Perform at least two explicit render-and-critique iterations at distinct viewport widths. Call `capture_review` for authored visual families—evals (`analysis.*`, `live.*`), UML/Mermaid, static 2D systems maps, and Benjamin Dicken Style dynamic systems visuals. Do **not** capture, review, or `mark_ready` `optimizer.*` product visuals; report `visualEvidence.state` instead and never loop capture/repair. For each viewport inspect the PNG attached to the tool result. Pass its returned `screenshot_path` to `review`; never shell-search for captures, invent a path, or submit checks without looking at the image. Do not reuse a review after the visual revision changes. For systems visuals, resolve every deterministic finding returned by `authoring_context` before readiness.
 9. Call `mark_ready` only when all required landmarks pass. A trusted live template is configured through `visual_config`; saved arbitrary TSX is retained as source evidence but is never executed by Desktop.
 
 ## Composition rules
@@ -171,13 +171,13 @@ await tools.mcp__synth_visuals__visual_manage({
   operation: "create_with_bind",
   arguments: {
     template_id: "experiment.overview.v1",
-    title: "Banking77 baseline eval",
+    title: "Baseline eval",
     slot: "experiment",
     kind: "inline",
     data: {
       schemaVersion: "synth.experiment.overview.v1",
-      experimentId: "exp.banking77.baseline.v1",
-      title: "Banking77 baseline eval",
+      experimentId: "exp.example.baseline.v1",
+      title: "Baseline eval",
       question: "What is scored accuracy on 10 labeled examples?",
       status: "running",
       progress: { phase: "scoring", completed: 0, total: 10 },
@@ -187,7 +187,7 @@ await tools.mcp__synth_visuals__visual_manage({
 });
 ```
 
-Use specialized rollout or trace templates only when their interaction is genuinely useful. Use `craftax.rollout_scrub.v1` for step-by-step environment inspection and `trace.rollout_inspector.v1` for event/tool/message filtering.
+Use specialized rollout or trace templates only when their interaction is genuinely useful. Use `trace.rollout_inspector.v1` for event/tool/message filtering. Open a live or scrub template only when the container or catalog advertises it.
 
 For a Trace V5 record, bind the canonical `synth.trace-projection.rollout-inspector.v1` projection and let the first-class inspector preserve the trace hierarchy. Start in **Focus** for agent messages, tool activity, failures, and evaluation evidence; switch to **Full** only when model-call and lifecycle provenance matter. Put verdicts and grader rationale in **Evidence**, and identity, digests, visibility, token usage, and lane coverage in **Metadata**. Search commands and outputs or jump to an exact sequence instead of flattening the run into a generic chart. Never reconstruct missing events, expose content above the projection's visibility ceiling, or imply that an incomplete lane has complete coverage.
 
@@ -230,8 +230,9 @@ await tools.mcp__synth_visuals__visual_manage({
 
 ## Live container evals
 
-Use the task-family live template for an eval that is still running:
-`live.craftax.v1`, `live.harbor_eval.v1`, or `live.digbench.v1`. Bind its required
+Use the task's advertised live template for an eval that is still running:
+`metadata.liveEval.templateId`, or `visual_template` / `live_eval_template` from
+`/info`. Bind its required
 `stream` slot as `live_sse` with the absolute SSE endpoint and exact poll
 endpoint declared by rollout preparation. Every live binding needs `poll_url`:
 the durable poll authority is what lets a completed run replay, and a stream
@@ -247,22 +248,19 @@ Prepare in this order:
 3. Create the task-family visual with `presentation: "canvas"`, bind the returned `stream` slot, and call `show`. Review at least twice, then `mark_ready`.
 4. Get `authoring_context`. Use a prior real trace or the template's example only to develop layout; label example evidence and replace it with the declared stream before readiness.
 5. Wait until the control envelope reports `stream.subscribed` with `ready: true`. HTTP 200 and heartbeats are not ready.
-6. Call `container_start_prepared_rollout` with the exact prepared stream descriptor, `visual_id`, `task_instance_id` or `seed`, and `policy_ref` (`harness` + `config`). Desktop refuses a missing pin, a stale visual receipt, and still waits for control-only `stream.subscribed`. The host does not pick `luna_med`.
+6. Call `container_start_prepared_rollout` with the exact prepared stream descriptor, `visual_id`, `task_instance_id` or `seed`, and `policy_ref` (`harness` + `config`). Desktop refuses a missing pin, a stale visual receipt, and still waits for control-only `stream.subscribed`. The host does not pick a policy config.
 7. **Refuse start** if visuals MCP is down, declared poll returns 503, the URL was guessed, or `stream.subscribed` is missing. Never fabricate evidence, frames, rewards, or usage.
 8. Leave the canvas open through terminal status and confirm every lane finishes or exposes its named failure.
 
-Harbor: open `live.harbor_eval.v1` from register `metadata.liveEval` before trial start. Two `policy_ref`s (`luna_med` and `sol_med`). `live_frames=native` fails.
+Open the advertised live visual from register `metadata.liveEval` before trial start. Copy advertised `policyRefs` and `liveFrames`; do not invent pins or native frames.
 
-VisualsBench keeps that Harbor outer card but grades the separate product
-visual authored by Codex. Its register metadata pins `harbor_fused` + Codex
-with `mcp_bind: synth_visuals`; do not start without that bind, and never use
-the `stream` slot on the product visual.
+If the container advertises `requiresVisualsMcp` / `mcpBind`, the start policy must carry that bind. Codex may then author a separate product visual; never use the `stream` slot on that product visual.
 
-dig.bench: open `live.digbench.v1` before `start_session`. Basic ReAct and agentic Codex + `digbench-mcp` on the same game. No frames. Token never in bindings or screenshots. `/reward` is `completed` → 1, `game_over` → 0, incomplete → null.
+Do not put tokens in logs, bindings, or screenshots. Incomplete `/reward` from env status is null, not 0.
 
 ## Iteration rubric
 
-Every review supplies these booleans: `rendered`, `noOverflow`, `primarySurfaceVisible`, `temporalControls`, `traceInspector`, and `realEvidence`. Systems visuals additionally require `noTextCollisions`, `focalDensity`, and `screenshotInspected`; their reviews require a PNG/JPEG screenshot path, and readiness is refused while deterministic authoring findings remain. `live.craftax.v1` additionally requires `imageReplay`, which is true only when ordered Containers PNG frame URLs render and can be scrubbed or played. Also critique:
+Every review supplies these booleans: `rendered`, `noOverflow`, `primarySurfaceVisible`, `temporalControls`, `traceInspector`, and `realEvidence`. Systems visuals additionally require `noTextCollisions`, `focalDensity`, and `screenshotInspected`; their reviews require a PNG/JPEG screenshot path, and readiness is refused while deterministic authoring findings remain. A live template that advertises `imageReplay` requires it only when ordered PNG frame URLs render and can be scrubbed or played. Also critique:
 
 - Is the primary environment or decision surface dominant above the fold?
 - Can the operator tell environment facts from policy facts and evaluator authority?
@@ -273,8 +271,8 @@ Every review supplies these booleans: `rendered`, `noOverflow`, `primarySurfaceV
 
 The live view should emphasize true environment step progress, rollout state,
 cumulative reward, achievement count, vitals, usage/cost when present, and the
-latest semantic engine event. Craftax also exposes a per-lane through-time
-cutoff and policy span partials. Never substitute elapsed time for step progress,
+latest semantic engine event. Per-lane through-time cutoffs and policy span
+partials belong on the live template when it advertises them. Never substitute elapsed time for step progress,
 invent missing values, or fill the pane with raw JSON; retain the journal and
 sealed Trace V5 for deeper inspection and post-run reopening.
 

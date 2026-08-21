@@ -24,8 +24,8 @@ identify the policy files in the session workspace first, then freeze them:
 ```json
 {"operation":"stage_eval_candidates","arguments":{
   "candidates":[
-    {"label":"baseline","path":"policies/baseline","entrypoint":"heuristic_baseline:choose_actions","kind":"python-code.craftax-choose-actions.v1","baseline":true},
-    {"label":"memory-v2","path":"policies/memory_v2","entrypoint":"heuristic_baseline:choose_actions","kind":"python-code.craftax-choose-actions.v1"}
+    {"label":"baseline","path":"policies/baseline","entrypoint":"policy:Policy","kind":"python-code.v1","baseline":true},
+    {"label":"memory-v2","path":"policies/memory_v2","entrypoint":"policy:Policy","kind":"python-code.v1"}
   ]}}
 ```
 
@@ -39,7 +39,7 @@ Then start with the returned id:
 
 ```json
 {"operation":"start_workflow","arguments":{
-  "recipe_id":"eval.craftax.code-policy.smoke.v1",
+  "recipe_id":"eval.fixture.policy-smoke.v1",
   "candidate_set_id":"policy_set_...",
   "open_visual":true}}
 ```
@@ -58,10 +58,9 @@ loop, a fixture, or a similarly named recipe as a replacement.
 | Recipe | Candidate kind | Decision |
 |---|---|---|
 | `eval.fixture.policy-smoke.v1` | `python-code.v1` (`policy:Policy`) | promotes; deterministic, no benchmark |
-| `eval.craftax.code-policy.smoke.v1` | `python-code.craftax-choose-actions.v1` | report-only |
-| `eval.gamebench.craftax-code-policy.confirm.v1` | `python-code.craftax-choose-actions.v1` | promotes |
-| `eval.craftax.llm-policy.smoke.v1` | `llm-policy.v1` | report-only |
-| `eval.gamebench.llm-policy.confirm.v1` | `llm-policy.v1` | promotes |
+| `eval.mlx.local-policy.smoke.v1` | `python-code.v1` | report-only local MLX |
+
+Sidecar catalogs may advertise additional `eval.*` ids. Those stay opaque recipe data: start the exact id `list_recipes` returned. Do not invent a task-family eval id.
 
 Workspace baseline evals (`algorithm = "eval"` in `workshop.recipe.toml`) are
 fixed measurement recipes, not candidate comparisons. They appear in

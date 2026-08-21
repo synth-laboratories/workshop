@@ -21,9 +21,9 @@ use crate::storage::{EventAppend, EventSource};
 use crate::synth_config;
 use crate::trace_ingest::TraceBundleIngestRequest;
 use crate::visuals::{
-    assert_declared_stream_source, assert_live_eval_slot, assert_no_live_secrets,
-    classify_live_eval_family, craftax_ten_lane_pins, live_sse_bindings, pending_stream_bindings,
-    resolve_live_eval_template, VisualCreateRequest, VisualUpdateRequest, CRAFTAX_TEN_LANE_SEEDS,
+    advertised_live_eval_template, assert_declared_stream_source, assert_live_eval_slot,
+    assert_no_live_secrets, live_sse_bindings, pending_stream_bindings, resolve_live_eval_template,
+    seed_lane_pins, VisualCreateRequest, VisualStatus, VisualUpdateRequest, TEN_LANE_SEEDS,
 };
 use crate::visuals_ipc;
 use anyhow::{anyhow, bail, Context, Result};
@@ -1157,31 +1157,30 @@ async fn open_visual(core: &CoreRuntime, body: Value) -> Result<Value> {
         .get("containerId")
         .or_else(|| body.get("container_id"))
         .and_then(Value::as_str);
-    let mut family = body
-        .get("family")
-        .and_then(Value::as_str)
-        .and_then(|value| classify_live_eval_family(&json!({"runtime_family": value}), None));
+    let mut advertised: Option<String> = None;
+    let mut family_label: Option<String> = None;
     if let Some(id) = container_id {
         let container = core.data().get_container(id.to_string()).await?;
-        family = family.or_else(|| {
-            container
-                .metadata
-                .get("liveEval")
-                .and_then(|value| value.get("family"))
-                .and_then(Value::as_str)
-                .and_then(|value| {
-                    classify_live_eval_family(&json!({"runtime_family": value}), None)
-                })
-        });
-        family = family.or_else(|| {
-            classify_live_eval_family(
-                container.metadata.get("info").unwrap_or(&json!({})),
-                container.task_family.as_deref(),
-            )
-        });
+        advertised = container
+            .metadata
+            .get("liveEval")
+            .and_then(|value| value.get("templateId"))
+            .and_then(Value::as_str)
+            .map(str::to_string)
+            .or_else(|| {
+                advertised_live_eval_template(container.metadata.get("info").unwrap_or(&json!({})))
+                    .map(str::to_string)
+            });
+        family_label = container
+            .metadata
+            .get("liveEval")
+            .and_then(|value| value.get("family"))
+            .and_then(Value::as_str)
+            .map(str::to_string)
+            .or(container.task_family.clone());
     }
     let requested = body.get("templateId").and_then(Value::as_str);
-    let template_id = resolve_live_eval_template(requested, family)?;
+    let template_id = resolve_live_eval_template(requested, advertised.as_deref())?;
     let session_id = body
         .get("sessionId")
         .and_then(Value::as_str)
@@ -1190,8 +1189,8 @@ async fn open_visual(core: &CoreRuntime, body: Value) -> Result<Value> {
         .get("title")
         .and_then(Value::as_str)
         .map(str::to_string)
-        .unwrap_or_else(|| match family {
-            Some(family) => format!("{} live eval", family.as_str()),
+        .unwrap_or_else(|| match family_label.as_deref() {
+            Some(family) => format!("{family} live eval"),
             None => "Live container eval".into(),
         });
     let bindings = body
@@ -1203,7 +1202,10 @@ async fn open_visual(core: &CoreRuntime, body: Value) -> Result<Value> {
         title: Some(title),
         bindings: Some(bindings),
         id: None,
-        status: None,
+        status: body
+            .get("status")
+            .and_then(Value::as_str)
+            .map(VisualStatus::parse),
         renderer_kind: None,
         session_id: session_id.clone(),
         message_id: None,
@@ -1225,7 +1227,7 @@ async fn open_visual(core: &CoreRuntime, body: Value) -> Result<Value> {
         "createEvent": event,
         "showEvent": show_event,
         "templateId": shown.template_id,
-        "family": family.map(|value| value.as_str()),
+        "family": family_label,
     }))
 }
 
@@ -1283,6 +1285,43 @@ async fn ingest_trace_bundle(core: &CoreRuntime, body: Value) -> Result<Value> {
     let (result, event) = core.data().ingest_trace_bundle(request).await?;
     core.broadcast_committed(event);
     Ok(serde_json::to_value(result)?)
+}
+
+async fn ingest_container_trace(
+    core: &CoreRuntime,
+    client: &reqwest::Client,
+    base: &str,
+    rollout_id: &str,
+) -> Result<String> {
+    let trace_url = format!("{base}/rollouts/{rollout_id}/trace-bundle");
+    let bytes = client
+        .get(&trace_url)
+        .send()
+        .await?
+        .error_for_status()
+        .context("GET sealed container Trace V5 bundle")?
+        .bytes()
+        .await?;
+    let downloads = crate::storage::app_data_root().join("trace-downloads");
+    fs::create_dir_all(&downloads)?;
+    let name = format!("{:x}.trace-v5.zip", Sha256::digest(rollout_id.as_bytes()));
+    let path = downloads.join(name);
+    fs::write(&path, &bytes)?;
+    let request = TraceBundleIngestRequest {
+        source_path: path.display().to_string(),
+        source_kind: Some("container_trace_v5_bundle".into()),
+        title: Some(format!("Container rollout {rollout_id}")),
+        source_uri: Some(trace_url),
+    };
+    let ingested = core.data().ingest_trace_bundle(request).await;
+    let _ = fs::remove_file(&path);
+    let (result, event) = ingested.context("ingest sealed container Trace V5 bundle")?;
+    core.broadcast_committed(event);
+    result
+        .traces
+        .first()
+        .map(|trace| trace.id.clone())
+        .context("Trace V5 ingestion returned no trace record")
 }
 
 async fn policy_preflight(deps: &EvalDriverDeps, body: Value) -> Result<Value> {
@@ -1629,13 +1668,14 @@ async fn run_policy_rollout(
     )
     .await?;
 
+    let policy_ref = require_caller_policy_ref(&body)?;
     let mut start_body = json!({
         "rollout_id": rollout_id,
         "task_instance_id": task_instance_id,
         "seed": seed,
         "telemetry": telemetry,
         "slot": slot,
-        "policy_ref": require_caller_policy_ref(&body)?,
+        "policy_ref": policy_ref,
     });
     if let Some(candidate) = body.get("candidate").cloned() {
         if !candidate.is_object() {
@@ -1665,6 +1705,14 @@ async fn run_policy_rollout(
     {
         start_body["task_world"] = task_world;
     }
+    let _policy_binding = visuals_ipc::bind_workshop_proxy_policy(
+        &client,
+        &container,
+        &base,
+        &rollout_id,
+        &policy_ref,
+    )
+    .await?;
     let started = std::time::Instant::now();
     let (initial_state, recovered) = visuals_ipc::start_rollout_idempotently(
         &client,
@@ -1701,8 +1749,25 @@ async fn run_policy_rollout(
         .await?;
     let events = envelopes_from_policy_log(&event_log);
     let actions_taken = harvest_actions(&events);
-    let usage_total = harvest_usage(state.get("usage"), &events);
-    let calls = harvest_policy_calls(&events, state.get("usage"));
+    // Blocking rollout responses may be serialized before the container's
+    // trace-backed usage projection is reloaded. Read the declared usage
+    // resource after terminal so tokens and cost come from sealed evidence.
+    let authoritative_usage = client
+        .get(format!("{base}/rollouts/{rollout_id}/usage"))
+        .send()
+        .await
+        .ok()
+        .filter(|response| response.status().is_success());
+    let authoritative_usage = match authoritative_usage {
+        Some(response) => response.json::<Value>().await.ok(),
+        None => None,
+    };
+    let usage_source = authoritative_usage
+        .as_ref()
+        .and_then(|value| value.get("usage"))
+        .or_else(|| state.get("usage"));
+    let usage_total = harvest_usage(usage_source, &events);
+    let calls = harvest_policy_calls(&events, usage_source);
     let spool = crate::storage::persist_live_envelopes(
         core.content(),
         stream
@@ -1731,7 +1796,11 @@ async fn run_policy_rollout(
             _ => Value::Null,
         },
     };
-    let achievements = harvest_achievements(&events);
+    let achievements = state
+        .pointer("/progress/achievements")
+        .and_then(Value::as_array)
+        .map(|values| Value::Array(values.clone()))
+        .unwrap_or_else(|| Value::from(harvest_achievements(&events)));
 
     let env_terminated = state
         .get("terminated")
@@ -1742,6 +1811,59 @@ async fn run_policy_rollout(
         .and_then(Value::as_bool)
         .unwrap_or(false);
     let policy_model = harvest_policy_model(&events).unwrap_or(model.clone());
+
+    let trace_id = if state.pointer("/trace_v5/status").and_then(Value::as_str) == Some("sealed") {
+        Some(ingest_container_trace(core, &client, &base, &rollout_id).await?)
+    } else {
+        None
+    };
+    let visual = core.visuals().get(visual_id.clone()).await?;
+    let mut terminal_metadata = visual.metadata.as_object().cloned().unwrap_or_default();
+    terminal_metadata.insert("streamState".into(), json!("closed"));
+    terminal_metadata.insert("terminal".into(), json!(env_terminated));
+    terminal_metadata.insert("reward".into(), reward.clone());
+    terminal_metadata.insert(
+        "usage".into(),
+        json!({
+            "promptTokens": usage_total.prompt,
+            "completionTokens": usage_total.completion,
+            "totalTokens": usage_total.total,
+            "costUsd": usage_total.cost_usd,
+            "calls": calls,
+        }),
+    );
+    if let Some(rate) = state.pointer("/reward_info/criterion_pass_rate").cloned() {
+        terminal_metadata.insert("criterionPassRate".into(), rate);
+    }
+    if let Some(count) = state
+        .pointer("/reward_info/details/achievement_count")
+        .cloned()
+    {
+        terminal_metadata.insert("achievementCount".into(), count);
+    }
+    let (terminal_visual, visual_event) = core
+        .visuals()
+        .update(
+            visual_id.clone(),
+            VisualUpdateRequest {
+                title: None,
+                bindings: None,
+                status: Some(if env_terminated {
+                    VisualStatus::Saved
+                } else {
+                    VisualStatus::Failed
+                }),
+                renderer_kind: None,
+                message_id: None,
+                run_id: None,
+                trace_id: trace_id.clone(),
+                content: None,
+                metadata: Some(Value::Object(terminal_metadata)),
+                bump_revision: Some(true),
+            },
+        )
+        .await?;
+    core.broadcast_committed(Some(serde_json::from_value(visual_event)?));
 
     let _ = core
         .append_and_broadcast(EventAppend {
@@ -1763,6 +1885,7 @@ async fn run_policy_rollout(
                 "terminated": env_terminated,
                 "truncated": env_truncated,
                 "visualId": visual_id,
+                "traceId": trace_id,
                 "policyAuthority": "container",
             }),
             remote_sequence: None,
@@ -1806,6 +1929,8 @@ async fn run_policy_rollout(
         }),
         "stream": stream,
         "visualId": visual_id,
+        "traceId": trace_id,
+        "visualRevision": terminal_visual.current_revision,
         "policyAuthority": "container",
         "recovered": recovered,
         "usage": {
@@ -1921,6 +2046,9 @@ fn harvest_usage(start_usage: Option<&Value>, events: &[Value]) -> UsageAcc {
 }
 
 fn add_usage(acc: &mut UsageAcc, usage: &Value) {
+    let before_total = acc.total;
+    let before_prompt = acc.prompt;
+    let before_completion = acc.completion;
     let read = |keys: &[&str]| {
         keys.iter()
             .find_map(|key| usage.get(*key).and_then(Value::as_u64))
@@ -1934,6 +2062,15 @@ fn add_usage(acc: &mut UsageAcc, usage: &Value) {
     if let Some(value) = read(&["total_tokens", "totalTokens"]) {
         acc.total = acc.total.saturating_add(value);
     }
+    if acc.total == before_total
+        && (acc.prompt > before_prompt || acc.completion > before_completion)
+    {
+        acc.total = acc.total.saturating_add(
+            acc.prompt
+                .saturating_sub(before_prompt)
+                .saturating_add(acc.completion.saturating_sub(before_completion)),
+        );
+    }
     if let Some(value) = usage
         .get("cost_usd")
         .or_else(|| usage.get("costUsd"))
@@ -1945,7 +2082,11 @@ fn add_usage(acc: &mut UsageAcc, usage: &Value) {
 }
 
 fn harvest_policy_calls(events: &[Value], start_usage: Option<&Value>) -> u64 {
-    if let Some(calls) = start_usage.and_then(|usage| usage.get("calls").and_then(Value::as_u64)) {
+    if let Some(calls) = start_usage.and_then(|usage| {
+        ["calls", "requests", "model_calls", "modelCalls"]
+            .iter()
+            .find_map(|key| usage.get(*key).and_then(Value::as_u64))
+    }) {
         return calls;
     }
     events
@@ -1971,7 +2112,7 @@ fn harvest_policy_model(events: &[Value]) -> Option<String> {
     })
 }
 
-fn harvest_achievements(events: &[Value]) -> Value {
+fn harvest_achievements(events: &[Value]) -> Vec<String> {
     let mut names = Vec::new();
     for event in events {
         if event_kind(event) != "achievement_unlocked" {
@@ -1988,7 +2129,7 @@ fn harvest_achievements(events: &[Value]) -> Value {
             }
         }
     }
-    json!(names)
+    names
 }
 
 #[derive(Default)]
@@ -2354,14 +2495,12 @@ fn extract_actions(text: &str, valid: &[String]) -> Vec<String> {
 }
 
 fn seed_from_task_instance(task_instance_id: &str) -> Result<i64> {
-    // craftax:test:2001 → 2001
+    // split:pool:2001 → 2001
     let seed = task_instance_id
         .rsplit(':')
         .next()
         .and_then(|value| value.parse::<i64>().ok())
-        .context(
-            "taskInstanceId must end with an integer seed (for example, `craftax:test:2001`)",
-        )?;
+        .context("taskInstanceId must end with an integer seed (for example, `split:pool:2001`)")?;
     Ok(seed)
 }
 
@@ -2379,34 +2518,34 @@ fn require_stream_slot(body: &Value) -> Result<&'static str> {
     Ok(LIVE_EVAL_SLOT)
 }
 
-/// Pin 10 Craftax lanes (seeds 0–9) for Containers HTTP. Does not call a paid policy.
-fn craftax_ten_lane_request(body: &Value) -> Result<Vec<Value>> {
+/// Pin 10 live-eval lanes (seeds 0–9) for Containers HTTP. Does not call a paid policy.
+fn ten_lane_request(body: &Value) -> Result<Vec<Value>> {
     let environment_ref = body
         .get("environment_ref")
         .or_else(|| body.get("environmentRef"))
         .and_then(Value::as_str)
-        .context("10-lane Craftax pin requires environment_ref")?;
+        .context("10-lane pin requires environment_ref")?;
     let policy_ref = require_caller_policy_ref(body)?;
     let task_world = body
         .get("task_world")
         .or_else(|| body.get("taskWorld"))
         .cloned()
-        .context("10-lane Craftax pin requires task_world")?;
-    let pins = craftax_ten_lane_pins(environment_ref, &policy_ref, &task_world)?;
-    if pins.len() != CRAFTAX_TEN_LANE_SEEDS.len() {
-        bail!("10-lane Craftax pin must emit seeds 0–9");
+        .context("10-lane pin requires task_world")?;
+    let pins = seed_lane_pins(environment_ref, &policy_ref, &task_world)?;
+    if pins.len() != TEN_LANE_SEEDS.len() {
+        bail!("10-lane pin must emit seeds 0–9");
     }
     Ok(pins)
 }
 
-fn wants_craftax_ten_lane(body: &Value) -> bool {
+fn wants_ten_lane(body: &Value) -> bool {
     body.get("count").and_then(Value::as_u64) == Some(10)
         || body
             .get("seeds")
             .and_then(Value::as_array)
             .is_some_and(|seeds| {
                 seeds.iter().filter_map(Value::as_i64).collect::<Vec<_>>()
-                    == CRAFTAX_TEN_LANE_SEEDS.to_vec()
+                    == TEN_LANE_SEEDS.to_vec()
             })
 }
 
@@ -2516,10 +2655,7 @@ mod tests {
             .block_on(refuse_overwrite_if_peer_alive(&path))
             .expect_err("a /health with another pid must refuse");
         let message = format!("{error:#}");
-        assert!(
-            message.contains("eval_driver_busy pid=1"),
-            "{message}"
-        );
+        assert!(message.contains("eval_driver_busy pid=1"), "{message}");
     }
 
     #[test]
@@ -2621,8 +2757,22 @@ mod tests {
 
     #[test]
     fn extracts_seed_from_task_instance() {
-        assert_eq!(seed_from_task_instance("craftax:test:2001").unwrap(), 2001);
+        assert_eq!(seed_from_task_instance("split:pool:2001").unwrap(), 2001);
         assert!(seed_from_task_instance("bad").is_err());
+    }
+
+    #[test]
+    fn container_owned_usage_projects_requests_and_derived_total_tokens() {
+        let usage = json!({
+            "model_calls": 2,
+            "prompt_tokens": 33_369,
+            "completion_tokens": 16_013
+        });
+        let harvested = harvest_usage(Some(&usage), &[]);
+        assert_eq!(harvested.prompt, 33_369);
+        assert_eq!(harvested.completion, 16_013);
+        assert_eq!(harvested.total, 49_382);
+        assert_eq!(harvest_policy_calls(&[], Some(&usage)), 2);
     }
 
     #[test]
@@ -2711,7 +2861,7 @@ mod tests {
         let usage = harvest_usage(None, &events);
         assert_eq!(usage.total, 13);
         assert_eq!(harvest_policy_model(&events).as_deref(), Some("from-log"));
-        assert_eq!(harvest_achievements(&events), json!(["wood"]));
+        assert_eq!(harvest_achievements(&events), vec!["wood"]);
         assert_eq!(harvest_policy_calls(&events, None), 1);
     }
 
@@ -2783,29 +2933,29 @@ mod tests {
     }
 
     #[test]
-    fn craftax_ten_lane_request_pins_seeds_zero_through_nine() {
-        assert!(wants_craftax_ten_lane(&json!({"count": 10})));
-        assert!(wants_craftax_ten_lane(&json!({
+    fn ten_lane_request_pins_seeds_zero_through_nine() {
+        assert!(wants_ten_lane(&json!({"count": 10})));
+        assert!(wants_ten_lane(&json!({
             "seeds": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
         })));
-        assert!(!wants_craftax_ten_lane(&json!({"count": 1})));
-        let pins = craftax_ten_lane_request(&json!({
-            "environment_ref": "env:craftax_gold",
-            "policy_ref": {"harness": "react", "config": "luna_med"},
-            "task_world": {"world_id": "craftax_default", "revision": "symbolic_survival"}
+        assert!(!wants_ten_lane(&json!({"count": 1})));
+        let pins = ten_lane_request(&json!({
+            "environment_ref": "env:example",
+            "policy_ref": {"harness": "react", "config": "default"},
+            "task_world": {"world_id": "world_default", "revision": "v1"}
         }))
         .unwrap();
         assert_eq!(pins.len(), 10);
         assert_eq!(pins[0]["seed"], 0);
         assert_eq!(pins[9]["seed"], 9);
         assert_eq!(pins[3]["task_instance_id"], "seed:3");
-        assert_eq!(pins[3]["environment_ref"], "env:craftax_gold");
-        assert_eq!(pins[3]["policy_ref"]["config"], "luna_med");
+        assert_eq!(pins[3]["environment_ref"], "env:example");
+        assert_eq!(pins[3]["policy_ref"]["config"], "default");
         assert_eq!(pins[3]["task_world"]["seed"], 3);
         assert_eq!(pins[3]["slot"], "stream");
-        assert!(craftax_ten_lane_request(&json!({
-            "policy_ref": {"harness": "react", "config": "luna_med"},
-            "task_world": {"world_id": "craftax_default"}
+        assert!(ten_lane_request(&json!({
+            "policy_ref": {"harness": "react", "config": "default"},
+            "task_world": {"world_id": "world_default"}
         }))
         .is_err());
     }
@@ -2904,7 +3054,7 @@ mod tests {
         let value = trace_correlation_payload(
             "container-1",
             "rollout-1",
-            "craftax:test:2001",
+            "split:pool:2001",
             2001,
             "openrouter",
             "openai/gpt-5.6-luna",

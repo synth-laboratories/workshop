@@ -1726,13 +1726,7 @@ function toolResultToArtifact(event: RuntimeEvent): ArtifactRef | undefined {
 		bindings: objectValue(visual.bindings),
 		metadata,
 		status,
-		preview: {
-			variant: templateId.includes("scrub") || templateId.includes("rollout")
-				? "craftax_frame"
-				: templateId.includes("craftax") || templateId.includes("eval_matrix")
-					? "craftax_pareto"
-					: "generic"
-		}
+		preview: { variant: "generic" }
 	};
 }
 
@@ -1786,9 +1780,7 @@ export function eventsToArtifacts(events: RuntimeEvent[]): ArtifactRef[] {
 				payload.bindings && typeof payload.bindings === "object"
 					? (payload.bindings as Record<string, unknown>)
 					: prior?.bindings,
-			preview: {
-				variant: templateId?.includes("scrub") ? "craftax_frame" : "generic"
-			}
+			preview: { variant: "generic" }
 		});
 	}
 	const agents = eventsToSubagents(events);
@@ -1837,15 +1829,7 @@ export function visualRecordToArtifact(visual: VisualInstanceRecord): ArtifactRe
 		visualId: visual.id,
 		rendererKind: typeof visual.metadata?.rendererKind === "string" ? visual.metadata.rendererKind : undefined,
 		bindings: visual.bindings,
-		preview: {
-			variant:
-				visual.templateId.includes("scrub") || visual.templateId.includes("rollout")
-					? "craftax_frame"
-					: visual.templateId.includes("craftax") ||
-						  visual.templateId.includes("eval_matrix")
-						? "craftax_pareto"
-						: "generic"
-		}
+		preview: { variant: "generic" }
 	};
 }
 
