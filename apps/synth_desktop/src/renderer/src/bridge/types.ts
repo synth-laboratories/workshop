@@ -287,9 +287,18 @@ export type TrainingModelDownloadProgress = {
 
 export type TrainingModelsBridge = {
 	listModels(): Promise<TrainingModelHit[]>;
+	runtimeStatus(): Promise<MlxRuntimeStatus>;
+	installRuntime(confirm: boolean): Promise<MlxRuntimeStatus>;
 	downloadModel(modelId: string): Promise<TrainingModelHit>;
 	deleteModel(modelId: string): Promise<void>;
 	onDownloadProgress(listener: (progress: TrainingModelDownloadProgress) => void): () => void;
+};
+
+export type MlxRuntimeStatus = {
+	installed: boolean;
+	executable: string | null;
+	version: string;
+	installHint: string;
 };
 
 export type TrainingArtifactsBridge = {

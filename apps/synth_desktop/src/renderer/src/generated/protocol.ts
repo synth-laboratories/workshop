@@ -360,6 +360,8 @@ export const commands = {
 	lagunaSettingsSnapshot: () => typedError<LagunaSettingsExchange, string>(__TAURI_INVOKE("laguna_settings_snapshot")),
 	lagunaSettingsUpdate: (patch: unknown) => typedError<LagunaSettingsExchange, string>(__TAURI_INVOKE("laguna_settings_update", { patch })),
 	trainingModelsList: () => __TAURI_INVOKE<TrainingModelHit[]>("training_models_list"),
+	trainingMlxRuntimeStatus: () => __TAURI_INVOKE<MlxRuntimeStatus>("training_mlx_runtime_status"),
+	trainingMlxRuntimeInstall: (confirm: boolean) => typedError<MlxRuntimeStatus, string>(__TAURI_INVOKE("training_mlx_runtime_install", { confirm })),
 	trainingModelsDownload: (modelId: string) => typedError<TrainingModelHit, string>(__TAURI_INVOKE("training_models_download", { modelId })),
 	trainingModelsDelete: (modelId: string) => typedError<null, string>(__TAURI_INVOKE("training_models_delete", { modelId })),
 	trainingArtifactsList: () => __TAURI_INVOKE<TrainingArtifact[]>("training_artifacts_list"),
@@ -2461,6 +2463,13 @@ export type TrainingModelHit = {
 	revision: string,
 	shardCount: number,
 	totalBytes: number,
+};
+
+export type MlxRuntimeStatus = {
+	installed: boolean,
+	executable: string | null,
+	version: string,
+	installHint: string,
 };
 
 export type UpdateStatus = {

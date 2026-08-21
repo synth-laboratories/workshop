@@ -336,10 +336,18 @@ pub struct OptimizerRuntimeLease {
     pub schema_version: String,
     pub pid: u32,
     pub process_start_identity: String,
+    #[serde(default)]
+    pub process_group_id: Option<u32>,
     pub service_url: String,
     pub database_digest: String,
     pub instance_id: String,
+    #[serde(default)]
+    pub boot_epoch: String,
     pub version: String,
+    #[serde(default)]
+    pub digest: String,
+    #[serde(default)]
+    pub runtime_epoch: String,
     pub started_at: String,
 }
 

@@ -162,6 +162,43 @@ instance_env_pids() {
   '
 }
 
+# Return only the PID named by this instance's optimizer lease after proving
+# that the PID still has the recorded process-start identity. This lets the
+# launcher clean up a sidecar even when the desktop process cannot run its
+# normal shutdown handler, without relying on broad process-name matching.
+optimizer_lease_pid() {
+  python3 - "$DATA_ROOT/optimizers/runtime-lease.json" "$NAME" <<'PY'
+import json
+import subprocess
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+instance_id = sys.argv[2]
+try:
+    lease = json.loads(path.read_text())
+    pid = int(lease["pid"])
+    expected_identity = str(lease["processStartIdentity"]).strip()
+except (FileNotFoundError, KeyError, TypeError, ValueError, json.JSONDecodeError):
+    raise SystemExit(0)
+
+if lease.get("schemaVersion") != "workshop.optimizer-runtime-lease.v1":
+    raise SystemExit(0)
+if lease.get("instanceId") != instance_id or pid <= 1 or not expected_identity:
+    raise SystemExit(0)
+
+result = subprocess.run(
+    ["/bin/ps", "-p", str(pid), "-o", "lstart="],
+    check=False,
+    capture_output=True,
+    text=True,
+)
+actual_identity = f"ps-lstart:{result.stdout.strip()}"
+if result.returncode == 0 and actual_identity == expected_identity:
+    print(pid)
+PY
+}
+
 format_lock_owner() {
   python3 - "$1" <<'PY'
 import json, sys
@@ -691,10 +728,11 @@ print_contract() {
 }
 
 stop_instance() {
-  local rows pids env_pids all_pids
+  local rows pids env_pids lease_pid all_pids
   rows="$(instance_processes)"
   env_pids="$(instance_env_pids)"
-  all_pids="$(printf '%s\n%s\n' "$(printf '%s\n' "$rows" | awk '{print $1}')" "$env_pids" | awk 'NF && !seen[$0]++')"
+  lease_pid="$(optimizer_lease_pid)"
+  all_pids="$(printf '%s\n%s\n%s\n' "$(printf '%s\n' "$rows" | awk '{print $1}')" "$env_pids" "$lease_pid" | awk 'NF && !seen[$0]++')"
   if [[ -z "$all_pids" ]]; then
     rm -f "$DATA_ROOT/eval-driver.json"
     mark_runtime "stopped"
@@ -707,10 +745,13 @@ stop_instance() {
   if [[ -n "$env_pids" ]]; then
     printf '%s\n' "$env_pids" | sed "s/^/[desktop:$NAME] stopping env-pid /"
   fi
+  if [[ -n "$lease_pid" ]]; then
+    printf '%s\n' "$lease_pid" | sed "s/^/[desktop:$NAME] stopping optimizer lease-pid /"
+  fi
   # shellcheck disable=SC2086
   kill $all_pids 2>/dev/null || true
   for _ in 1 2 3 4 5 6 7 8 9 10; do
-    if [[ -z "$(instance_processes)" && -z "$(instance_env_pids)" ]]; then
+    if [[ -z "$(instance_processes)" && -z "$(instance_env_pids)" && -z "$(optimizer_lease_pid)" ]]; then
       rm -f "$DATA_ROOT/eval-driver.json"
       mark_runtime "stopped"
       return
@@ -1213,6 +1254,8 @@ dev_instance() {
     # local CUA loop.
     # Instance builds carry the QA control plane; release artifacts never
     # enable this feature.
+    SYNTH_MLX_RL_PROJECT_ROOT="${SYNTH_MLX_RL_PROJECT_ROOT:-$REPO_SIBLING_ROOT/synth-mlx-rl}" \
+      "$ROOT/scripts/stage-mlx-runtime-distribution.sh"
     npx tauri build --debug --features eval-driver --bundles app --config "$PACKAGE_CONFIG" --config "$CONFIG"
     local app_bundle="$CARGO_TARGET_DIR/debug/bundle/macos/$APP_TITLE.app"
     local app_executable="$CUA_EXE"

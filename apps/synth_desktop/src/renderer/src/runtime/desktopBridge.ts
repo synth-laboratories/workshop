@@ -278,6 +278,8 @@ export function installDesktopBridge(): void {
 	window.synthTrainingModels ??= isTauri
 		? {
 			listModels: () => fromGenerated(spectaCommands.trainingModelsList()),
+			runtimeStatus: () => fromGenerated(spectaCommands.trainingMlxRuntimeStatus()),
+			installRuntime: (confirm) => fromGenerated(spectaCommands.trainingMlxRuntimeInstall(confirm)),
 			downloadModel: (modelId) =>
 				fromGenerated(spectaCommands.trainingModelsDownload(modelId)),
 			deleteModel: (modelId) =>
@@ -297,6 +299,8 @@ export function installDesktopBridge(): void {
 		}
 		: {
 			listModels: async () => [],
+			runtimeStatus: async () => ({ installed: false, executable: null, version: "0.0.1", installHint: "Install the Synth MLX training runtime, then check again." }),
+			installRuntime: async () => { throw new Error("MLX runtime installation requires Synth Desktop"); },
 			downloadModel: async () => { throw new Error("Training model downloads require Synth Desktop"); },
 			deleteModel: async () => { throw new Error("Training model deletion requires Synth Desktop"); },
 			onDownloadProgress: () => () => undefined

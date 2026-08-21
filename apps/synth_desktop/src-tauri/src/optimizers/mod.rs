@@ -17,7 +17,7 @@ mod ingest;
 mod local;
 mod local_lora;
 pub(crate) mod manager;
-mod mlx_runtime;
+pub mod mlx_runtime;
 mod mlx_sft;
 mod models;
 mod normalize;

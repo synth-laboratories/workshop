@@ -4,19 +4,259 @@
 //! proxy; the proxy is the only Workshop code allowed to dial MLX loopback.
 
 use anyhow::{bail, Context, Result};
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
+use std::fs;
 use std::path::{Path, PathBuf};
+use std::process::{Command as StdCommand, Stdio};
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
+use tauri::{AppHandle, Emitter};
 use tokio::process::{Child, Command};
 use tokio::time::sleep;
+use uuid::Uuid;
 
 const MLX_DEFAULT_URL: &str = "http://127.0.0.1:8787";
 const TRAINING_MODEL_ID: &str = "Qwen/Qwen3.5-0.8B";
 const HEALTH_TRIES: u32 = 40;
 const HEALTH_WAIT: Duration = Duration::from_millis(250);
+const MLX_RUNTIME_VERSION: &str = "0.0.1";
+const MLX_RUNTIME_SCHEMA: &str = "synth.mlx-runtime-wheelhouse.v1";
+const MLX_RUNTIME_EVENT: &str = "training://mlx-runtime-install";
 
 static SUPERVISOR: OnceLock<Mutex<MlxSupervisor>> = OnceLock::new();
+static INSTALL_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RuntimeWheel {
+    file_name: String,
+    sha256: String,
+    size_bytes: u64,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RuntimeWheelhouse {
+    schema_version: String,
+    package: String,
+    version: String,
+    artifacts: Vec<RuntimeWheel>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct MlxRuntimeStatus {
+    pub installed: bool,
+    pub executable: Option<String>,
+    pub version: &'static str,
+    pub install_hint: &'static str,
+}
+
+/// Read-only preflight used by the Training setup UI. A responsive model
+/// catalog does not imply that the separate MLX training executable exists.
+pub fn runtime_status() -> MlxRuntimeStatus {
+    let executable = resolve_mlx_bin().ok().filter(|path| path.is_file());
+    MlxRuntimeStatus {
+        installed: executable.is_some(),
+        executable: executable.map(|path| path.to_string_lossy().into_owned()),
+        version: MLX_RUNTIME_VERSION,
+        install_hint: "Install the Synth MLX training runtime, then check again. Training will not start until the runtime is available.",
+    }
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn training_mlx_runtime_status() -> MlxRuntimeStatus {
+    runtime_status()
+}
+
+#[tauri::command]
+#[specta::specta]
+pub async fn training_mlx_runtime_install(
+    app: AppHandle,
+    confirm: bool,
+) -> std::result::Result<MlxRuntimeStatus, String> {
+    if !confirm {
+        return Err("MLX runtime installation requires confirmation".into());
+    }
+    let progress = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let _guard = INSTALL_LOCK
+            .get_or_init(|| Mutex::new(()))
+            .lock()
+            .map_err(|_| anyhow::anyhow!("MLX runtime install lock is poisoned"))?;
+        emit_install(&progress, "verifying", "Verifying signed MLX runtime wheelhouse…");
+        let result = install_managed_runtime(&progress);
+        match &result {
+            Ok(_) => emit_install(&progress, "ready", "MLX training runtime installed."),
+            Err(error) => emit_install(&progress, "error", &error.to_string()),
+        }
+        result
+    })
+    .await
+    .map_err(|error| error.to_string())?
+    .map_err(|error| error.to_string())?;
+    Ok(runtime_status())
+}
+
+fn emit_install(app: &AppHandle, phase: &str, detail: &str) {
+    let _ = app.emit(
+        MLX_RUNTIME_EVENT,
+        json!({ "phase": phase, "detail": detail, "version": MLX_RUNTIME_VERSION }),
+    );
+}
+
+fn managed_runtime_root() -> PathBuf {
+    crate::instance::state_root()
+        .join("runtime/mlx-rl/versions")
+        .join(MLX_RUNTIME_VERSION)
+}
+
+fn embedded_distribution_root() -> Result<PathBuf> {
+    if let Some(path) = std::env::var_os("SYNTH_MLX_RL_DISTRIBUTION") {
+        let path = PathBuf::from(path);
+        if path.join("manifest.json").is_file() {
+            return Ok(path);
+        }
+        bail!("SYNTH_MLX_RL_DISTRIBUTION has no manifest.json");
+    }
+    let executable = std::env::current_exe().context("resolve Workshop executable")?;
+    let resources = executable
+        .parent()
+        .and_then(Path::parent)
+        .map(|contents| contents.join("Resources/runtimes/mlx-rl"))
+        .ok_or_else(|| anyhow::anyhow!("resolve Workshop Resources directory"))?;
+    if !resources.join("manifest.json").is_file() {
+        bail!("This Workshop build does not include the MLX training runtime distribution");
+    }
+    Ok(resources)
+}
+
+fn read_verified_wheelhouse(root: &Path) -> Result<RuntimeWheelhouse> {
+    let manifest: RuntimeWheelhouse = serde_json::from_slice(
+        &fs::read(root.join("manifest.json")).context("read MLX runtime manifest")?,
+    )
+    .context("decode MLX runtime manifest")?;
+    if manifest.schema_version != MLX_RUNTIME_SCHEMA
+        || manifest.package != "synth-mlx-rl"
+        || manifest.version != MLX_RUNTIME_VERSION
+    {
+        bail!("MLX runtime manifest does not match the pinned catalog");
+    }
+    if manifest.artifacts.is_empty() {
+        bail!("MLX runtime wheelhouse is empty");
+    }
+    let mut primary = false;
+    for artifact in &manifest.artifacts {
+        if artifact.file_name.contains('/') || artifact.file_name.contains('\\') {
+            bail!("MLX runtime manifest contains an unsafe wheel name");
+        }
+        primary |= artifact
+            .file_name
+            .starts_with(&format!("synth_mlx_rl-{MLX_RUNTIME_VERSION}-"));
+        let bytes = fs::read(root.join("wheels").join(&artifact.file_name))
+            .with_context(|| format!("read MLX runtime wheel {}", artifact.file_name))?;
+        let digest = format!("{:x}", Sha256::digest(&bytes));
+        if bytes.len() as u64 != artifact.size_bytes || digest != artifact.sha256 {
+            bail!("MLX runtime wheel `{}` failed digest verification", artifact.file_name);
+        }
+    }
+    if !primary {
+        bail!("MLX runtime wheelhouse omits synth-mlx-rl=={MLX_RUNTIME_VERSION}");
+    }
+    Ok(manifest)
+}
+
+fn install_managed_runtime(app: &AppHandle) -> Result<()> {
+    let source = embedded_distribution_root()?;
+    let _manifest = read_verified_wheelhouse(&source)?;
+    let destination = managed_runtime_root();
+    if managed_runtime_is_valid(&destination) {
+        return Ok(());
+    }
+    let parent = destination
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("resolve MLX runtime versions directory"))?;
+    fs::create_dir_all(parent)?;
+    let staging = parent.join(format!(".{}.staging-{}", MLX_RUNTIME_VERSION, Uuid::new_v4()));
+    fs::create_dir_all(&staging)?;
+    let outcome = (|| {
+        copy_tree(&source, &staging)?;
+        read_verified_wheelhouse(&staging)?;
+        emit_install(app, "installing", "Installing the verified wheelhouse offline…");
+        let uv = super::manager::resolve_uv()?;
+        let runtime = staging.join("runtime");
+        let status = StdCommand::new(&uv)
+            .args(["venv", "--clear"])
+            .arg(&runtime)
+            .stdin(Stdio::null())
+            .status()
+            .context("create MLX runtime environment")?;
+        if !status.success() {
+            bail!("failed to create the MLX runtime environment");
+        }
+        let python = runtime.join("bin/python");
+        let install = StdCommand::new(&uv)
+            .args(["pip", "install", "--offline", "--no-index", "--find-links"])
+            .arg(staging.join("wheels"))
+            .arg("--python")
+            .arg(&python)
+            .arg(format!("synth-mlx-rl[mlx]=={MLX_RUNTIME_VERSION}"))
+            .stdin(Stdio::null())
+            .status()
+            .context("install the MLX runtime offline")?;
+        if !install.success() {
+            bail!("failed to install the verified MLX runtime wheelhouse");
+        }
+        prove_managed_runtime(&staging)?;
+        if destination.exists() {
+            let retained = parent.join(format!(".{}.invalid-{}", MLX_RUNTIME_VERSION, Uuid::new_v4()));
+            fs::rename(&destination, retained).context("retain invalid MLX runtime")?;
+        }
+        fs::rename(&staging, &destination).context("activate verified MLX runtime")?;
+        Ok(())
+    })();
+    if outcome.is_err() {
+        let _ = fs::remove_dir_all(&staging);
+    }
+    outcome
+}
+
+fn copy_tree(source: &Path, destination: &Path) -> Result<()> {
+    for entry in fs::read_dir(source)? {
+        let entry = entry?;
+        let target = destination.join(entry.file_name());
+        if entry.file_type()?.is_dir() {
+            fs::create_dir_all(&target)?;
+            copy_tree(&entry.path(), &target)?;
+        } else {
+            fs::copy(entry.path(), target)?;
+        }
+    }
+    Ok(())
+}
+
+fn prove_managed_runtime(root: &Path) -> Result<()> {
+    read_verified_wheelhouse(root)?;
+    let python = root.join("runtime/bin/python");
+    let output = StdCommand::new(python)
+        .args(["-c", "import importlib.metadata; print(importlib.metadata.version('synth-mlx-rl'))"])
+        .output()
+        .context("prove installed MLX runtime version")?;
+    if !output.status.success()
+        || String::from_utf8_lossy(&output.stdout).trim() != MLX_RUNTIME_VERSION
+        || !root.join("runtime/bin/synth-mlx-rl").is_file()
+    {
+        bail!("installed MLX runtime failed its offline version proof");
+    }
+    Ok(())
+}
+
+fn managed_runtime_is_valid(root: &Path) -> bool {
+    prove_managed_runtime(root).is_ok()
+}
 
 struct MlxSupervisor {
     base_url: Option<String>,
@@ -275,12 +515,19 @@ pub fn require_training_model() -> Result<PathBuf> {
 }
 
 fn mlx_bin() -> Result<PathBuf> {
+    resolve_mlx_bin()
+}
+
+fn resolve_mlx_bin() -> Result<PathBuf> {
     if let Ok(raw) = std::env::var("SYNTH_MLX_RL_BIN") {
         let path = PathBuf::from(raw.trim());
         if path.as_os_str().is_empty() {
             bail!("SYNTH_MLX_RL_BIN is empty");
         }
-        return Ok(path);
+        if path.is_file() {
+            return Ok(path);
+        }
+        bail!("SYNTH_MLX_RL_BIN {} does not exist", path.display());
     }
     if let Ok(root) = std::env::var("SYNTH_MLX_RL_ROOT") {
         for candidate in [
@@ -296,7 +543,18 @@ fn mlx_bin() -> Result<PathBuf> {
             root
         );
     }
-    Ok(PathBuf::from("synth-mlx-rl"))
+    let managed = managed_runtime_root().join("runtime/bin/synth-mlx-rl");
+    if managed.is_file() && managed_runtime_is_valid(&managed_runtime_root()) {
+        return Ok(managed);
+    }
+    if let Some(path) = std::env::var_os("PATH").and_then(|paths| {
+        std::env::split_paths(&paths)
+            .map(|dir| dir.join("synth-mlx-rl"))
+            .find(|candidate| candidate.is_file())
+    }) {
+        return Ok(path);
+    }
+    bail!("Synth MLX training runtime is not installed")
 }
 
 fn supervisor() -> &'static Mutex<MlxSupervisor> {
@@ -400,13 +658,13 @@ mod tests {
     #[test]
     fn serve_command_uses_the_pinned_bin_and_loopback_port() {
         let model_path = Path::new("/tmp/managed-training-model");
-        std::env::set_var("SYNTH_MLX_RL_BIN", "/tmp/synth-mlx-rl-test-bin");
+        std::env::set_var("SYNTH_MLX_RL_BIN", "/usr/bin/true");
         let command =
             mlx_serve_command_with_model(9123, Path::new("/tmp/mlx-root"), model_path).unwrap();
         let std_cmd = command.as_std();
         assert_eq!(
             std_cmd.get_program().to_string_lossy(),
-            "/tmp/synth-mlx-rl-test-bin"
+            "/usr/bin/true"
         );
         let args: Vec<String> = std_cmd
             .get_args()
@@ -518,5 +776,38 @@ mod tests {
             Some(value) => std::env::set_var("SYNTH_MLX_RL_BIN", value),
             None => std::env::remove_var("SYNTH_MLX_RL_BIN"),
         }
+    }
+
+    #[test]
+    fn wheelhouse_digest_tampering_fails_closed() {
+        let root = std::env::temp_dir().join(format!(
+            "synth-desktop-mlx-wheelhouse-{}-{}",
+            std::process::id(),
+            Uuid::new_v4()
+        ));
+        fs::create_dir_all(root.join("wheels")).unwrap();
+        let name = format!("synth_mlx_rl-{MLX_RUNTIME_VERSION}-py3-none-any.whl");
+        let bytes = b"verified-wheel";
+        fs::write(root.join("wheels").join(&name), bytes).unwrap();
+        fs::write(
+            root.join("manifest.json"),
+            serde_json::to_vec_pretty(&RuntimeWheelhouse {
+                schema_version: MLX_RUNTIME_SCHEMA.into(),
+                package: "synth-mlx-rl".into(),
+                version: MLX_RUNTIME_VERSION.into(),
+                artifacts: vec![RuntimeWheel {
+                    file_name: name.clone(),
+                    sha256: format!("{:x}", Sha256::digest(bytes)),
+                    size_bytes: bytes.len() as u64,
+                }],
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        read_verified_wheelhouse(&root).unwrap();
+        fs::write(root.join("wheels").join(name), b"tampered").unwrap();
+        let error = read_verified_wheelhouse(&root).unwrap_err().to_string();
+        assert!(error.contains("digest verification"), "{error}");
+        fs::remove_dir_all(root).unwrap();
     }
 }

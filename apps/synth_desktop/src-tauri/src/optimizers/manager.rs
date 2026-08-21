@@ -515,7 +515,10 @@ impl OptimizerManager {
             self.set_status(current).await;
             return self.status().await;
         }
-        let phase = if selected.is_some() {
+        let leased_runtime = current_runtime_lease(&self.home);
+        let phase = if leased_runtime.is_some() {
+            "degraded"
+        } else if selected.is_some() {
             "stopped"
         } else if discovered.is_empty() {
             "not_installed"
@@ -530,6 +533,10 @@ impl OptimizerManager {
             detail: Some(match phase {
                 "not_installed" => "Optimizer sidecar is not installed".into(),
                 "stopped" => "Optimizer sidecar is installed and stopped".into(),
+                "degraded" => {
+                    "A sidecar from a previous Workshop process is still running; Start or Stop will reconcile it"
+                        .into()
+                }
                 _ => "Optimizer sidecar versions are installed; none selected".into(),
             }),
             updated_at: now_ms(),
@@ -682,8 +689,9 @@ impl OptimizerManager {
         let _guard = self.ensure_lock.lock().await;
         if self.runtime.lock().await.is_none() && runtime_lease_is_current(&self.home) {
             eprintln!(
-                "synth-desktop: optimizer runtime lease is current on a fresh boot; starting a replacement proxy"
+                "synth-desktop: reconciling optimizer runtime left by a previous boot before start"
             );
+            self.abort_runtime().await;
         }
         let selected = read_selected_version(&self.home)?
             .ok_or_else(|| anyhow!("Optimizer sidecar is not installed"))?;
@@ -786,26 +794,6 @@ impl OptimizerManager {
                         &hit.version,
                         &runtime_epoch,
                     )?;
-                    if let Some(child) = self.runtime.lock().await.as_ref().and_then(|runtime| {
-                        runtime.child.as_ref().and_then(|child| child.id())
-                    }) {
-                        let instance_id = crate::instance::instance_id();
-                        let _ = crate::secrets::lease::write_runtime_lease(
-                            &self.home.join("runtime-lease.json"),
-                            &crate::secrets::OptimizerRuntimeLease {
-                                schema_version: crate::secrets::lease::RUNTIME_LEASE_SCHEMA.into(),
-                                pid: child,
-                                process_start_identity: crate::secrets::lease::process_start_identity(child),
-                                service_url: base_url.clone(),
-                                database_digest: crate::secrets::lease::database_digest(
-                                    &self.home.join("gepa.sqlite3"),
-                                ),
-                                instance_id,
-                                version: hit.version.clone(),
-                                started_at: chrono::Utc::now().to_rfc3339(),
-                            },
-                        );
-                    }
                     let child_pid = self.sidecar_child_pid().await;
                     write_runtime_lease(
                         &self.home,
@@ -813,6 +801,7 @@ impl OptimizerManager {
                         &hit.version,
                         &hit.digest,
                         &runtime_epoch,
+                        &base_url,
                     )?;
                     self.set_status(status).await;
                     return Ok(self.status().await);
@@ -1286,7 +1275,10 @@ impl OptimizerManager {
         // The exported address describes a service that is about to stop
         // existing. Every teardown goes through here.
         clear_env_sh(&self.home);
-        clear_runtime_lease(&self.home);
+        // The durable lease is the ownership authority across app boots. Read
+        // it before clearing anything so Stop can terminate a sidecar whose
+        // in-memory Child belonged to a previous Workshop process.
+        let leased_pid = current_runtime_lease(&self.home).map(|lease| lease.pid);
         if let Ok(mut since) = self.missed_ready_since.lock() {
             *since = None;
         }
@@ -1301,6 +1293,9 @@ impl OptimizerManager {
             })
             .collect::<Vec<_>>();
         terminate_process_groups(&worker_pids).await;
+        if let Some(pid) = leased_pid {
+            terminate_process_groups(&[pid]).await;
+        }
         if let Some(mut runtime) = self.runtime.lock().await.take() {
             if let Some(task) = runtime.exit_watcher.take() {
                 task.abort();
@@ -1313,6 +1308,7 @@ impl OptimizerManager {
                 task.abort();
             }
         }
+        clear_runtime_lease(&self.home);
     }
 
     async fn arm_child_exit_watcher(&self) {
@@ -1411,7 +1407,7 @@ fn bind_addr() -> std::net::SocketAddr {
     std::net::SocketAddr::from(([127, 0, 0, 1], port))
 }
 
-fn resolve_uv() -> Result<PathBuf> {
+pub(crate) fn resolve_uv() -> Result<PathBuf> {
     let mut candidates = Vec::new();
     if let Some(path) = env::var_os("SYNTH_OPTIMIZER_UV_PATH") {
         candidates.push(PathBuf::from(path));
@@ -1787,6 +1783,32 @@ fn credential_runtime_lease_is_current(home: &Path, version: &str) -> bool {
         }
     }
     true
+}
+
+fn current_runtime_lease(home: &Path) -> Option<crate::secrets::OptimizerRuntimeLease> {
+    let lease = crate::secrets::lease::read_runtime_lease(&runtime_lease_path(home))
+        .ok()
+        .flatten()?;
+    if lease.instance_id != crate::instance::instance_id() {
+        return None;
+    }
+    if !sidecar_pid_is_alive(lease.pid) {
+        return None;
+    }
+    if crate::secrets::lease::process_start_identity(lease.pid) != lease.process_start_identity {
+        return None;
+    }
+    #[cfg(unix)]
+    {
+        let pgid = owned_process_group(lease.pid)?;
+        if lease
+            .process_group_id
+            .is_some_and(|expected| expected != pgid as u32)
+        {
+            return None;
+        }
+    }
+    Some(lease)
 }
 
 #[cfg(not(unix))]
@@ -2243,22 +2265,39 @@ fn write_runtime_lease(
     version: &str,
     digest: &str,
     epoch: &str,
+    service_url: &str,
 ) -> Result<()> {
     let db_path = ensure_gepa_db(home)?;
-    let body = json!({
-        "pid": pid,
-        "version": version,
-        "digest": digest,
-        "epoch": epoch,
-        "databaseDigest": database_digest_of(&db_path),
-        "processStartIdentity": pid.and_then(process_start_identity),
-        "writtenAt": chrono::Utc::now().to_rfc3339(),
-    });
-    write_secret(
+    let pid = pid.ok_or_else(|| anyhow!("optimizer sidecar did not expose a child pid"))?;
+    let process_start_identity = crate::secrets::lease::process_start_identity(pid);
+    crate::secrets::lease::write_runtime_lease(
         &runtime_lease_path(home),
-        serde_json::to_vec_pretty(&body)?.as_slice(),
-        false,
+        &crate::secrets::OptimizerRuntimeLease {
+            schema_version: crate::secrets::lease::RUNTIME_LEASE_SCHEMA.into(),
+            pid,
+            process_start_identity,
+            process_group_id: runtime_process_group_id(pid),
+            service_url: service_url.into(),
+            database_digest: database_digest_of(&db_path)
+                .ok_or_else(|| anyhow!("optimizer database digest was unavailable"))?,
+            instance_id: crate::instance::instance_id(),
+            boot_epoch: crate::instance::boot_epoch().into(),
+            version: version.into(),
+            digest: digest.into(),
+            runtime_epoch: epoch.into(),
+            started_at: chrono::Utc::now().to_rfc3339(),
+        },
     )
+}
+
+#[cfg(unix)]
+fn runtime_process_group_id(pid: u32) -> Option<u32> {
+    owned_process_group(pid).map(|pgid| pgid as u32)
+}
+
+#[cfg(not(unix))]
+fn runtime_process_group_id(_pid: u32) -> Option<u32> {
+    None
 }
 
 fn clear_runtime_lease(home: &Path) {
@@ -2266,23 +2305,7 @@ fn clear_runtime_lease(home: &Path) {
 }
 
 pub(crate) fn runtime_lease_is_current(home: &Path) -> bool {
-    let Ok(raw) = fs::read_to_string(runtime_lease_path(home)) else {
-        return false;
-    };
-    let Ok(value) = serde_json::from_str::<Value>(&raw) else {
-        return false;
-    };
-    let Some(pid) = value.get("pid").and_then(Value::as_u64) else {
-        return false;
-    };
-    let pid = pid as u32;
-    if !sidecar_pid_is_alive(pid) {
-        return false;
-    }
-    match value.get("processStartIdentity").and_then(Value::as_str) {
-        Some(expected) => process_start_identity(pid).as_deref() == Some(expected),
-        None => true,
-    }
+    current_runtime_lease(home).is_some()
 }
 
 #[cfg(test)]
@@ -2300,6 +2323,7 @@ fn spawn_fixture_hold_child(home: &Path, version: &str) -> Result<Child> {
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .kill_on_drop(true);
+    isolate_process_group(&mut command);
     command
         .spawn()
         .context("spawn fixture sidecar as a real child")
@@ -3375,6 +3399,60 @@ mod tests {
         }
         assert!(!home.path().join("env.sh").exists());
         let _ = mgr.stop().await;
+    }
+
+    /// A normal app process can disappear before its async RunEvent drain
+    /// completes. The next manager must use the durable lease to terminate the
+    /// previous boot's process before it starts a replacement.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn fresh_boot_start_reconciles_leased_sidecar_before_replacement() {
+        let home = tempfile::tempdir().unwrap();
+        let first = OptimizerManager::with_home(home.path().to_path_buf());
+        first.enable_real_child_fixture().unwrap();
+        first.install(None).unwrap();
+        first.start().await.unwrap();
+        let first_pid = first.sidecar_child_pid().await.unwrap();
+        assert!(sidecar_pid_is_alive(first_pid));
+
+        // Constructing a new manager models a new Workshop boot: it has no
+        // in-memory Child, but it shares the instance-scoped durable lease.
+        let second = OptimizerManager::with_home(home.path().to_path_buf());
+        second.enable_real_child_fixture().unwrap();
+        let before = second.refresh().await;
+        assert_eq!(before.phase, "degraded");
+        assert!(before
+            .detail
+            .as_deref()
+            .is_some_and(|detail| detail.contains("previous Workshop process")));
+
+        second.start().await.unwrap();
+        let second_pid = second.sidecar_child_pid().await.unwrap();
+        assert_ne!(first_pid, second_pid);
+        assert!(!sidecar_pid_is_alive(first_pid));
+        assert!(sidecar_pid_is_alive(second_pid));
+        assert!(runtime_lease_is_current(home.path()));
+
+        second.stop().await.unwrap();
+        assert!(!sidecar_pid_is_alive(second_pid));
+        assert!(!home.path().join(RUNTIME_LEASE_FILE).exists());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn fresh_boot_stop_terminates_leased_sidecar_without_in_memory_child() {
+        let home = tempfile::tempdir().unwrap();
+        let first = OptimizerManager::with_home(home.path().to_path_buf());
+        first.enable_real_child_fixture().unwrap();
+        first.install(None).unwrap();
+        first.start().await.unwrap();
+        let pid = first.sidecar_child_pid().await.unwrap();
+        assert!(sidecar_pid_is_alive(pid));
+
+        let second = OptimizerManager::with_home(home.path().to_path_buf());
+        second.stop().await.unwrap();
+        assert!(!sidecar_pid_is_alive(pid));
+        assert!(!home.path().join(RUNTIME_LEASE_FILE).exists());
     }
 
     #[cfg(unix)]

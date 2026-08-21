@@ -32,19 +32,23 @@ export async function inspectMlxReadiness(): Promise<MlxReadiness> {
 		return { platform: appleSilicon ? "apple_silicon" : "unknown", compatibility: appleSilicon ? "compatible" : "unknown", runtimeHealth: "missing", runtimeVersion: null, availableMemoryBytes: null, availableDiskBytes: null, failureClass: "runtime" };
 	}
 	try {
+		const runtime = await bridges.trainingModels.runtimeStatus();
+		if (!runtime.installed) {
+			return { platform: appleSilicon ? "apple_silicon" : "unknown", compatibility: appleSilicon ? "compatible" : "unknown", runtimeHealth: "missing", runtimeVersion: runtime.version, availableMemoryBytes: null, availableDiskBytes: null, failureClass: "runtime" };
+		}
 		await bridges.trainingModels.listModels();
+		return {
+			platform: appleSilicon ? "apple_silicon" : "unknown",
+			compatibility: appleSilicon ? "compatible" : "unknown",
+			runtimeHealth: "ready",
+			runtimeVersion: runtime.version,
+			availableMemoryBytes: null,
+			availableDiskBytes: null,
+			failureClass: null
+		};
 	} catch {
 		return { platform: appleSilicon ? "apple_silicon" : "unknown", compatibility: appleSilicon ? "compatible" : "unknown", runtimeHealth: "unhealthy", runtimeVersion: null, availableMemoryBytes: null, availableDiskBytes: null, failureClass: "runtime" };
 	}
-	return {
-		platform: appleSilicon ? "apple_silicon" : "unknown",
-		compatibility: appleSilicon ? "compatible" : "unknown",
-		runtimeHealth: "ready",
-		runtimeVersion: null,
-		availableMemoryBytes: null,
-		availableDiskBytes: null,
-		failureClass: null
-	};
 }
 
 export async function planModelInstall(): Promise<ModelInstallPlan> {

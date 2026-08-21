@@ -285,6 +285,8 @@ pub fn builder() -> Builder<tauri::Wry> {
         crate::training_models::training_models_list,
         crate::training_models::training_models_download,
         crate::training_models::training_models_delete,
+        crate::optimizers::mlx_runtime::training_mlx_runtime_status,
+        crate::optimizers::mlx_runtime::training_mlx_runtime_install,
         crate::training_artifacts::training_artifacts_list,
         crate::training_artifacts::training_artifacts_get,
         crate::training_artifacts::training_artifacts_export,
