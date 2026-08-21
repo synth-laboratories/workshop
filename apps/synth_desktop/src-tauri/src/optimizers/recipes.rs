@@ -46,7 +46,8 @@ async fn start_inner(
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .ok_or_else(|| anyhow!("workspace recipes require session_ref"))?;
-    let workspace = super::workspace_recipe::require_session_workspace(service.database(), session)?;
+    let workspace =
+        super::workspace_recipe::require_session_workspace(service.database(), session)?;
     let recipe = super::workspace_recipe::find_recipe(&workspace, &request.recipe_id)?;
     match recipe.algorithm {
         super::workspace_recipe::AlgorithmKind::Eval => {
@@ -56,12 +57,9 @@ async fn start_inner(
     }
     let manager = service.manager().clone();
     require_plugin_ready(&manager).await?;
-    let ensured = super::container_lifecycle::ensure(
-        service.database(),
-        &workspace,
-        &recipe.container,
-    )
-    .await?;
+    let ensured =
+        super::container_lifecycle::ensure(service.database(), &workspace, &recipe.container)
+            .await?;
     let run_id = format!(
         "gepa_{}_{}",
         recipe
@@ -96,12 +94,9 @@ async fn start_inner(
     table.insert(
         "container".into(),
         toml::Value::Table(
-            [(
-                "url".into(),
-                toml::Value::String(ensured.base_url.clone()),
-            )]
-            .into_iter()
-            .collect(),
+            [("url".into(), toml::Value::String(ensured.base_url.clone()))]
+                .into_iter()
+                .collect(),
         ),
     );
     let openai = resolve_provider_workload(&recipe.provider, &run_id, &recipe.id)?;
@@ -494,11 +489,7 @@ async fn run_recipe_worker(
         .filter(|value| !value.is_empty())
         .ok_or_else(|| anyhow!("run-owned recipe is missing provider"))?
         .to_string();
-    let openai = resolve_provider_workload(
-        &provider,
-        &run_id,
-        recipe_id_for_lease(&config_path),
-    )?;
+    let openai = resolve_provider_workload(&provider, &run_id, recipe_id_for_lease(&config_path))?;
     if let Some(lease) = openai.lease.as_ref() {
         crate::secrets::lease::bind_lease_into_toml(&config_path, lease)?;
         let _ = service.persist_credential_chain(&run_id).await;
@@ -538,6 +529,13 @@ async fn run_recipe_worker(
         match ingest_available(&service, &manager, &run_id, &mut upstream_cursor).await {
             Ok(()) => indexed = true,
             Err(error) => {
+                if super::OptimizerManager::optimizer_event_endpoint_temporarily_unavailable(&error)
+                {
+                    // The producer is independently supervised and paid work
+                    // may still be progressing. Keep the bounded index wait
+                    // below, but do not turn one observer gateway miss into a
+                    // terminal optimizer failure.
+                } else
                 // The producer registers its durable index shortly after spawn.
                 // A 404 is retryable only while the child is demonstrably alive;
                 // it is not a successful empty event page.
