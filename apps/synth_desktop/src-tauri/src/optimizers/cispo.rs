@@ -198,6 +198,7 @@ async fn start_local(
             "output_dir": output_dir,
             "max_steps": 4,
             "checkpoint_every": 2,
+            "signal_attempts": 24,
             "evaluation": evaluation_plan,
             "lora_rank": 8,
             "lora_alpha": 16.0,
@@ -304,6 +305,7 @@ mod tests {
         assert!(!production.contains("SYNTH_MLX_CISPO_ROLLOUT_URL"));
         assert!(!production.contains("SYNTH_MLX_CISPO_WARM_START"));
         assert!(production.contains("training_artifact_id"));
+        assert!(production.contains("\"signal_attempts\": 24"));
         assert!(production.contains("create_and_watch"));
     }
 
