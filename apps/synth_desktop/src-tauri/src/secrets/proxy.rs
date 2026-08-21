@@ -224,6 +224,78 @@ fn bind_unix_listener(path: &Path) -> Result<std::os::unix::net::UnixListener> {
     Ok(listener)
 }
 
+/// Marks who produced a response: the proxy itself, or the upstream provider.
+/// Without this, a proxy-generated 502 and a relayed upstream 502 are
+/// indistinguishable to the caller. Never carries a handle, key, or URL.
+pub const RELAY_ORIGIN_HEADER: &str = "x-workshop-proxy-origin";
+pub const RELAY_ORIGIN_PROXY: &str = "proxy";
+pub const RELAY_ORIGIN_UPSTREAM: &str = "upstream";
+
+/// Secret-free classification of a transport failure. `reqwest::Error`'s
+/// `Display` embeds the request URL — which carries the capability handle — so
+/// the error is classified into a fixed vocabulary and the value itself is
+/// never rendered into a response, an audit row, or a log line.
+fn classify_transport_error(error: &reqwest::Error) -> (StatusCode, &'static str, &'static str) {
+    if error.is_timeout() {
+        (
+            StatusCode::GATEWAY_TIMEOUT,
+            "upstream_timeout",
+            "the approved provider endpoint did not answer in time",
+        )
+    } else if error.is_connect() {
+        (
+            StatusCode::BAD_GATEWAY,
+            "upstream_unreachable",
+            "the approved provider endpoint could not be reached",
+        )
+    } else if error.is_body() || error.is_decode() {
+        (
+            StatusCode::BAD_GATEWAY,
+            "upstream_body_unreadable",
+            "the approved provider endpoint returned an unreadable body",
+        )
+    } else if error.is_request() || error.is_builder() {
+        (
+            StatusCode::BAD_GATEWAY,
+            "upstream_request_rejected",
+            "the provider request could not be issued",
+        )
+    } else {
+        (
+            StatusCode::BAD_GATEWAY,
+            "upstream_unavailable",
+            "the approved provider endpoint is unavailable",
+        )
+    }
+}
+
+/// Record a provider call that never produced billable usage. Without this the
+/// audit ledger holds a `capability.issue` row and nothing else, so a failed
+/// run is indistinguishable from a run that was never attempted. Carries the
+/// classification code only — never a handle, key, URL, prompt, or response.
+fn audit_provider_failure(
+    state: &ProxyState,
+    live: &capability::LiveCapability,
+    operation: &str,
+    model: Option<&str>,
+    code: &str,
+    upstream_status: Option<u16>,
+) {
+    let _ = state.db.with_conn(|conn| {
+        let mut event = SecretAuditEvent::new("run", &live.run_id, "provider.use", "failed");
+        event.secret_id = Some(live.secret_id.clone());
+        event.provider = Some(live.provider.clone());
+        event.operation = Some(operation.to_owned());
+        event.model = model.map(str::to_owned);
+        event.capability_id = Some(live.id.clone());
+        event.detail = Some(match upstream_status {
+            Some(status) => format!("{code}:{status}"),
+            None => code.to_owned(),
+        });
+        audit::append(conn, &event)
+    });
+}
+
 fn json_error(status: StatusCode, code: &str, message: &str) -> Response<ProxyBody> {
     let body = serde_json::json!({
         "error": { "code": code, "message": providers::sanitize_error_message(message) }
@@ -232,6 +304,7 @@ fn json_error(status: StatusCode, code: &str, message: &str) -> Response<ProxyBo
     Response::builder()
         .status(status)
         .header("content-type", "application/json")
+        .header(RELAY_ORIGIN_HEADER, RELAY_ORIGIN_PROXY)
         .body(
             Full::new(Bytes::from(body))
                 .map_err(|never| match never {})
@@ -352,7 +425,7 @@ fn is_forbidden_header(name: &str) -> bool {
             | "transfer-encoding"
             | "upgrade"
             | "content-length"
-    )
+    ) || name.eq_ignore_ascii_case(RELAY_ORIGIN_HEADER)
 }
 
 async fn handle(
@@ -516,12 +589,17 @@ async fn handle(
 
     let upstream = match outbound.send().await {
         Ok(response) => response,
-        Err(_) => {
-            return Ok(json_error(
-                StatusCode::BAD_GATEWAY,
-                "upstream_unavailable",
-                "the approved provider endpoint is unavailable",
-            ))
+        Err(error) => {
+            let (status, code, message) = classify_transport_error(&error);
+            audit_provider_failure(
+                &state,
+                &reserved,
+                route.operation,
+                model.as_deref(),
+                code,
+                None,
+            );
+            return Ok(json_error(status, code, message));
         }
     };
     let status = upstream.status();
@@ -541,12 +619,17 @@ async fn handle(
 
     let bytes = match upstream.bytes().await {
         Ok(bytes) => bytes,
-        Err(_) => {
-            return Ok(json_error(
-                StatusCode::BAD_GATEWAY,
-                "upstream_unavailable",
-                "the approved provider endpoint is unavailable",
-            ))
+        Err(error) => {
+            let (relay_status, code, message) = classify_transport_error(&error);
+            audit_provider_failure(
+                &state,
+                &reserved,
+                route.operation,
+                model.as_deref(),
+                code,
+                Some(status.as_u16()),
+            );
+            return Ok(json_error(relay_status, code, message));
         }
     };
     let bytes = sanitize_upstream_body(status, bytes);
@@ -587,8 +670,19 @@ async fn handle(
         });
     }
 
+    if !status.is_success() {
+        audit_provider_failure(
+            &state,
+            &reserved,
+            route.operation,
+            model.as_deref(),
+            "upstream_status",
+            Some(status.as_u16()),
+        );
+    }
     Ok(builder
         .header("content-type", content_type)
+        .header(RELAY_ORIGIN_HEADER, RELAY_ORIGIN_UPSTREAM)
         .body(Full::new(bytes).map_err(|never| match never {}).boxed())
         .unwrap_or_else(|_| {
             json_error(
@@ -734,4 +828,87 @@ impl WorkloadEnv {
 
 fn looks_like_loopback(url: &str) -> bool {
     url.contains("127.0.0.1") || url.contains("localhost") || url.contains("[::1]")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The Banking77 v0.7 boundary: a proxy-generated 502 and a relayed
+    /// upstream 502 carried the same status and the same body, so ten failed
+    /// rollouts recorded no attributable cause. The relay marker separates them.
+    #[test]
+    fn proxy_generated_errors_are_marked_as_proxy_origin() {
+        let response = json_error(
+            StatusCode::BAD_GATEWAY,
+            "upstream_unreachable",
+            "the approved provider endpoint could not be reached",
+        );
+        assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+        assert_eq!(
+            response
+                .headers()
+                .get(RELAY_ORIGIN_HEADER)
+                .and_then(|value| value.to_str().ok()),
+            Some(RELAY_ORIGIN_PROXY)
+        );
+    }
+
+    /// The relay marker is proxy-owned: an inbound or upstream copy must never
+    /// survive into the response, or the marker could be spoofed.
+    #[test]
+    fn relay_origin_header_is_never_forwarded() {
+        assert!(is_forbidden_header(RELAY_ORIGIN_HEADER));
+        assert!(is_forbidden_header("X-Workshop-Proxy-Origin"));
+    }
+
+    /// A timeout, an unreachable host, and an unreadable body are three
+    /// different operator actions. Collapsing them into one 502 was the defect.
+    ///
+    /// Bind a port, drop the listener, then connect to it: the refusal is
+    /// immediate and local. An unroutable address would sit until a timeout
+    /// and perturb scheduling for the rest of the suite, which shares a
+    /// process-global data root through `isolated_root()`.
+    #[tokio::test]
+    async fn transport_failures_classify_into_distinct_codes() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("reserve a port");
+        let port = listener.local_addr().expect("port").port();
+        drop(listener);
+
+        let client = crate::http::http_client_builder()
+            .build()
+            .expect("test client");
+        let connect_error = client
+            .post(format!("http://127.0.0.1:{port}/v1/chat/completions"))
+            .body("{}")
+            .send()
+            .await
+            .expect_err("a closed port must not accept");
+
+        let (status, code, message) = classify_transport_error(&connect_error);
+        assert_eq!(status, StatusCode::BAD_GATEWAY);
+        assert_eq!(code, "upstream_unreachable");
+
+        // Neither the code nor the message may echo the request URL -- under a
+        // capability route that string carries the handle.
+        assert!(!message.contains(&port.to_string()));
+        assert!(!message.contains("127.0.0.1"));
+        assert!(!code.contains("127.0.0.1"));
+    }
+
+    /// `reqwest::Error`'s own Display embeds the URL. The classifier must not
+    /// be the thing that leaks it back to a caller.
+    #[test]
+    fn classification_vocabulary_is_a_closed_set() {
+        for code in [
+            "upstream_timeout",
+            "upstream_unreachable",
+            "upstream_body_unreadable",
+            "upstream_request_rejected",
+            "upstream_unavailable",
+            "upstream_status",
+        ] {
+            assert_eq!(providers::sanitize_error_message(code), code);
+        }
+    }
 }

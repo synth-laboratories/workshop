@@ -281,6 +281,7 @@ mod tests {
         let (run, _) = start(
             &service,
             OptimizerRecipeRunRequest {
+				training_artifact_id: None,
                 recipe_id: QWEN_MLX_SFT_RECIPE.into(),
                 session_ref: Some("sess_training_e2e".into()),
                 open_visual: Some(false),

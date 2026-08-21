@@ -320,8 +320,9 @@ impl TrainingRuntime {
         );
         drop(jobs);
         if local {
+            let snapshot_id = snapshot.as_str().unwrap_or(job_id);
             match MlxLoopback::from_env() {
-                Ok(client) => match client.chat(&prompt).await {
+                Ok(client) => match client.chat(&prompt, snapshot_id).await {
                     Ok(reply) => {
                         return JsonHttpResponse::ok(json!({
                             "job_id": job_id,
@@ -1193,6 +1194,36 @@ async fn resume_mlx_job(job_id: &str) -> Result<()> {
         .post(&format!("/v1/jobs/{job_id}/resume"), None)
         .await?;
     Ok(())
+}
+
+pub(crate) async fn launch_artifact_inference(
+    artifact_id: &str,
+    message: &str,
+) -> Result<Value> {
+    let artifact = crate::training_artifacts::get(artifact_id)?;
+    let policy_dir = artifact
+        .path
+        .as_deref()
+        .ok_or_else(|| anyhow!("training artifact `{artifact_id}` has no local adapter path"))?;
+    let requested_snapshot = crate::training_artifacts::snapshot_id_for(&artifact);
+    let client = MlxLoopback::ensure().await?;
+    let policy_snapshot_id = client
+        .register_policy(
+            std::path::Path::new(policy_dir),
+            &requested_snapshot,
+            artifact.digest.as_deref(),
+        )
+        .await?;
+    let reply = client.chat(message, &policy_snapshot_id).await?;
+    Ok(json!({
+        "artifactId": artifact.id,
+        "policySnapshotId": policy_snapshot_id,
+        "reply": reply,
+        "baseModelId": artifact.base_model_id,
+        "producingRunId": artifact.producing_run_id,
+        "configDigest": artifact.config_digest,
+        "digest": artifact.digest,
+    }))
 }
 
 async fn drive_hosted_sft_job(

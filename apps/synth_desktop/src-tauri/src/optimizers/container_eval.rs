@@ -1289,7 +1289,7 @@ async fn run_one_example(
         client,
         &poll_url,
         SUBSCRIBE_READY_TIMEOUT,
-        &StreamDiagnostics::none(),
+        &StreamDiagnostics::none().with_rollout(&rollout_id),
     )
     .await?;
 
@@ -1923,6 +1923,7 @@ mod tests {
                 base_model: None,
                 dataset_shard: None,
                 candidate_set_id: None,
+                training_artifact_id: None,
                 search: None,
             })
             .await
@@ -2180,6 +2181,7 @@ mod tests {
                     base_model: None,
                     dataset_shard: None,
                     candidate_set_id: None,
+                    training_artifact_id: None,
                     search: None,
                 })
                 .await
@@ -2299,6 +2301,7 @@ mod tests {
                 base_model: None,
                 dataset_shard: None,
                 candidate_set_id: None,
+                training_artifact_id: None,
                 search: None,
             })
             .await
@@ -2395,6 +2398,7 @@ mod tests {
                 base_model: None,
                 dataset_shard: None,
                 candidate_set_id: None,
+                training_artifact_id: None,
                 search: None,
             })
             .await
@@ -2585,6 +2589,7 @@ mod tests {
                 base_model: None,
                 dataset_shard: None,
                 candidate_set_id: None,
+                training_artifact_id: None,
                 search: None,
             })
             .await
@@ -2654,6 +2659,7 @@ mod tests {
             base_model: None,
             dataset_shard: None,
             candidate_set_id: None,
+            training_artifact_id: None,
             search: None,
         }
     }

@@ -358,7 +358,7 @@ export function projectSft(input: AdapterInput, projected: ProjectedState): RunP
 			// reports every 100 steps and a producer that reports every step are
 			// both handled by dividing by the observed steps-per-record.
 			const completions = input.events
-				.filter((event) => event.type === "sft.step.metrics" || event.type === "sft.training.metrics")
+				.filter((event) => event.type === "sft.step.metrics" || event.type === "sft.training.metrics" || event.type === "training.metrics")
 				.map((event) => Date.parse(event.occurredAt))
 				.filter((value) => Number.isFinite(value));
 			const point = latestPoint(sft);

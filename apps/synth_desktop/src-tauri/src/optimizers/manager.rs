@@ -47,7 +47,7 @@ pub const DEFAULT_RECIPE_SCHEMA_VERSION: &str = OPTIMIZERS_CONTRACT.recipe_schem
 /// `{package}-{official}`. Spelled out because `format!` is not const and ten
 /// call sites want `&'static str`; `algorithm_version_matches_the_contract`
 /// fails if it drifts from the table.
-pub const DEFAULT_ALGORITHM_VERSION: &str = "synth-optimizers-0.2.14";
+pub const DEFAULT_ALGORITHM_VERSION: &str = "synth-optimizers-0.2.15";
 /// Optimizer-family visuals bind this slot. `live` and `jobs` are refused.
 pub const OPTIMIZER_VISUAL_SLOT: &str = "optimizer_run";
 const MAX_CONCURRENT_GEPA_RECIPES: usize = 2;

@@ -5,6 +5,7 @@ mod cloud;
 mod container_eval;
 mod eval_candidates;
 mod eval_recipes;
+pub(crate) mod eval_runtime;
 mod events;
 mod gepa_evidence;
 mod hosted_client;
@@ -27,9 +28,12 @@ mod sidecar_training;
 mod terminal;
 mod tinker_catalog;
 mod training;
+mod training_adapter;
+pub(crate) mod typed_capabilities;
 
 pub use eval_candidates::EvalStageCandidatesRequest;
-pub(crate) use eval_recipes::paid_compute_bounds;
+pub(crate) use eval_recipes::{paid_compute_bounds, resolve_eval_candidate_set};
+pub(crate) use sidecar_training::launch_artifact_inference;
 #[allow(unused_imports)] // public sidecar status/version types for Desktop callers
 pub use manager::{OptimizerManager, OptimizerSidecarStatus, OptimizerSidecarVersion};
 #[allow(unused_imports)] // Nested Specta type is part of HostedTrainingModelCatalog.
