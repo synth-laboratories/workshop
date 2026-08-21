@@ -29,7 +29,7 @@ use std::{
     io::Write,
     path::{Path, PathBuf},
     process::Stdio,
-    sync::Arc,
+    sync::{Arc, Mutex as StdMutex},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 use tauri::State;
@@ -57,6 +57,9 @@ const API_KEY_FILE: &str = "api_key";
 const PAYLOAD_FILE: &str = "payload.json";
 const MANIFEST_FILE: &str = "manifest.json";
 const WHEELHOUSE_MANIFEST_FILE: &str = "wheelhouse-manifest.json";
+const RUNTIME_LEASE_FILE: &str = "runtime-lease.json";
+#[cfg(test)]
+const TEST_REAL_CHILD_SENTINEL: &str = ".test-real-child";
 
 thread_local! {
     static TEST_FORCE_DIGEST_MISMATCH: Cell<bool> = const { Cell::new(false) };
@@ -192,6 +195,8 @@ fn catalog_spec(version: &str) -> OptimizerSidecarInstallSpec {
 struct SidecarRuntime {
     proxy_task: tokio::task::JoinHandle<()>,
     child: Option<Child>,
+    child_pid: Option<u32>,
+    exit_watcher: Option<tokio::task::JoinHandle<()>>,
     upstream_task: Option<tokio::task::JoinHandle<()>>,
     base_url: String,
     api_key: String,
@@ -208,10 +213,13 @@ struct RunSpoolState {
 
 pub struct OptimizerManager {
     home: PathBuf,
-    status: RwLock<OptimizerSidecarStatus>,
+    status: Arc<RwLock<OptimizerSidecarStatus>>,
     ensure_lock: Mutex<()>,
     updates: broadcast::Sender<OptimizerSidecarStatus>,
     runtime: Mutex<Option<SidecarRuntime>>,
+    /// First missed `/health` while the cached phase is still `ready`. After
+    /// `2 × OPTIMIZER_SIDECAR_HEALTH_TIMEOUT` the projection becomes `degraded`.
+    missed_ready_since: StdMutex<Option<tokio::time::Instant>>,
     /// Concurrent GEPA recipe workers, keyed by run id. Not a singleton.
     /// Process-group leaders for active recipe workers. Tracking only logical
     /// run ids is insufficient: a Tauri exit can outlive the task that owns
@@ -245,17 +253,18 @@ impl OptimizerManager {
         let (updates, _) = broadcast::channel(32);
         Self {
             home,
-            status: RwLock::new(OptimizerSidecarStatus {
+            status: Arc::new(RwLock::new(OptimizerSidecarStatus {
                 phase: "unknown".into(),
                 base_url: None,
                 version: None,
                 digest: None,
                 detail: None,
                 updated_at: now_ms(),
-            }),
+            })),
             ensure_lock: Mutex::new(()),
             updates,
             runtime: Mutex::new(None),
+            missed_ready_since: StdMutex::new(None),
             gepa_workers: Mutex::new(HashMap::new()),
             gepa_capacity: Arc::new(Semaphore::new(MAX_CONCURRENT_GEPA_RECIPES)),
             run_spools: Arc::new(Mutex::new(HashMap::new())),
@@ -275,6 +284,30 @@ impl OptimizerManager {
 
     pub fn home(&self) -> &Path {
         &self.home
+    }
+
+    pub fn lease_database_digest(&self) -> Option<String> {
+        let raw = fs::read_to_string(runtime_lease_path(&self.home)).ok()?;
+        let value: Value = serde_json::from_str(&raw).ok()?;
+        value
+            .get("databaseDigest")
+            .and_then(Value::as_str)
+            .filter(|digest| !digest.is_empty())
+            .map(str::to_string)
+    }
+
+    pub async fn sidecar_child_pid(&self) -> Option<u32> {
+        self.runtime
+            .lock()
+            .await
+            .as_ref()
+            .and_then(|runtime| runtime.child_pid)
+    }
+
+    #[cfg(test)]
+    pub fn enable_real_child_fixture(&self) -> Result<()> {
+        fs::write(self.home.join(TEST_REAL_CHILD_SENTINEL), b"1")
+            .context("enable fixture sidecar as a real child")
     }
 
     /// One spool directory per `optimizer_run_id`. Two run ids never share a spool.
@@ -444,15 +477,41 @@ impl OptimizerManager {
         let selected = discovered.iter().find(|hit| hit.selected).cloned();
         if self.runtime.lock().await.is_some() {
             if let Some(probed) = self.probe().await {
+                if let Ok(mut since) = self.missed_ready_since.lock() {
+                    *since = None;
+                }
                 self.set_status(probed).await;
                 return self.status().await;
             }
             // Status is a read path. A transient missed probe must not SIGTERM
             // a live paid run merely because the renderer polls this method.
-            // Explicit start/stop and process-exit reconciliation own teardown.
+            // Cached `ready` may last at most two health timeouts; after that
+            // the projection is `degraded` until a probe succeeds or the
+            // child-exit watcher sets `error`.
             let mut current = self.status().await;
-            current.detail =
-                Some("Optimizer health probe was missed; retaining the managed runtime".into());
+            if current.phase == "ready" {
+                let bound = crate::limits::OPTIMIZER_SIDECAR_HEALTH_TIMEOUT
+                    .checked_mul(2)
+                    .unwrap_or(crate::limits::OPTIMIZER_SIDECAR_HEALTH_TIMEOUT);
+                let expired = self
+                    .missed_ready_since
+                    .lock()
+                    .map(|mut since| {
+                        let started = *since.get_or_insert_with(tokio::time::Instant::now);
+                        started.elapsed() >= bound
+                    })
+                    .unwrap_or(true);
+                if expired {
+                    current.phase = "degraded".into();
+                    current.detail = Some(
+                        "Optimizer health probe missed beyond the stale-ready bound".into(),
+                    );
+                } else {
+                    current.detail = Some(
+                        "Optimizer health probe was missed; retaining the managed runtime".into(),
+                    );
+                }
+            }
             self.set_status(current).await;
             return self.status().await;
         }
@@ -672,13 +731,16 @@ impl OptimizerManager {
         });
         *self.runtime.lock().await = Some(SidecarRuntime {
             proxy_task,
+            child_pid: child.as_ref().and_then(Child::id),
             child,
+            exit_watcher: None,
             upstream_task,
             base_url: base_url.clone(),
             api_key: api_key.clone(),
             version: hit.version.clone(),
             digest: hit.digest.clone(),
         });
+        self.arm_child_exit_watcher().await;
         // env.sh is written after the handshake, not here. Publishing the
         // address before the service has proven anything is what left a
         // convincing file pointing at a dead port.
@@ -712,6 +774,14 @@ impl OptimizerManager {
                         &api_key,
                         &base_url,
                         &hit.version,
+                        &runtime_epoch,
+                    )?;
+                    let child_pid = self.sidecar_child_pid().await;
+                    write_runtime_lease(
+                        &self.home,
+                        child_pid,
+                        &hit.version,
+                        &hit.digest,
                         &runtime_epoch,
                     )?;
                     self.set_status(status).await;
@@ -1120,7 +1190,11 @@ impl OptimizerManager {
         let (base_url, api_key, version, digest) = {
             let mut runtime = self.runtime.lock().await;
             let runtime = runtime.as_mut()?;
-            if let Some(child) = runtime.child.as_mut() {
+            if let Some(pid) = runtime.child_pid {
+                if !sidecar_pid_is_alive(pid) {
+                    return None;
+                }
+            } else if let Some(child) = runtime.child.as_mut() {
                 if child.try_wait().ok().flatten().is_some() {
                     return None;
                 }
@@ -1161,6 +1235,10 @@ impl OptimizerManager {
         // The exported address describes a service that is about to stop
         // existing. Every teardown goes through here.
         clear_env_sh(&self.home);
+        clear_runtime_lease(&self.home);
+        if let Ok(mut since) = self.missed_ready_since.lock() {
+            *since = None;
+        }
         let worker_pids = self
             .gepa_workers
             .lock()
@@ -1173,6 +1251,9 @@ impl OptimizerManager {
             .collect::<Vec<_>>();
         terminate_process_groups(&worker_pids).await;
         if let Some(mut runtime) = self.runtime.lock().await.take() {
+            if let Some(task) = runtime.exit_watcher.take() {
+                task.abort();
+            }
             runtime.proxy_task.abort();
             if let Some(child) = runtime.child.as_mut() {
                 terminate_child(child).await;
@@ -1181,6 +1262,68 @@ impl OptimizerManager {
                 task.abort();
             }
         }
+    }
+
+    async fn arm_child_exit_watcher(&self) {
+        let mut runtime = self.runtime.lock().await;
+        let Some(runtime) = runtime.as_mut() else {
+            return;
+        };
+        let Some(mut child) = runtime.child.take() else {
+            return;
+        };
+        runtime.child_pid = child.id().or(runtime.child_pid);
+        let home = self.home.clone();
+        let status = self.status.clone();
+        let updates = self.updates.clone();
+        let diagnostics = self.diagnostics.clone();
+        runtime.exit_watcher = Some(tokio::spawn(async move {
+            let exit = child.wait().await;
+            clear_env_sh(&home);
+            clear_runtime_lease(&home);
+            let previous = status.read().await.clone();
+            let detail = match exit {
+                Ok(code) => format!("optimizer sidecar child exited with {code}"),
+                Err(error) => format!("optimizer sidecar child wait failed: {error}"),
+            };
+            let snapshot = OptimizerSidecarStatus {
+                phase: "error".into(),
+                base_url: None,
+                version: previous.version,
+                digest: previous.digest,
+                detail: Some(detail),
+                updated_at: now_ms(),
+            };
+            let previous_phase = {
+                let mut current = status.write().await;
+                let previous_phase = current.phase.clone();
+                *current = snapshot.clone();
+                previous_phase
+            };
+            let _ = updates.send(snapshot.clone());
+            if previous_phase != snapshot.phase {
+                if let Some(service) = diagnostics.get() {
+                    let mut input = crate::diagnostics::DiagnosticInput::new(
+                        crate::diagnostics::Severity::Error,
+                        "optimizer-sidecar",
+                        "optimizer.sidecar.child_exit",
+                        crate::diagnostics::codes::OPTIMIZER_SIDECAR_UNAVAILABLE,
+                        snapshot
+                            .detail
+                            .clone()
+                            .unwrap_or_else(|| "optimizer sidecar child exited".into()),
+                    )
+                    .retryable(false);
+                    input
+                        .details
+                        .insert("phase".into(), json!(snapshot.phase));
+                    input
+                        .details
+                        .insert("previous_phase".into(), json!(previous_phase));
+                    service.emit(input);
+                }
+            }
+        }));
     }
 }
 
@@ -1308,8 +1451,15 @@ fn optimizer_gepa_home(home: &Path) -> PathBuf {
     home.join("runtime/gepa-home")
 }
 
-fn optimizer_gepa_db(home: &Path) -> PathBuf {
+/// One SQLite path per instance. Callers must not invent a second filename
+/// (`gepa.sqlite3`, `gepa-service-<uuid>.sqlite`) — the service stores run
+/// requests, resolved configs, and terminal cursors here across restarts.
+pub(crate) fn gepa_db_path(home: &Path) -> PathBuf {
     home.join("runtime/gepa.sqlite")
+}
+
+fn optimizer_gepa_db(home: &Path) -> PathBuf {
+    gepa_db_path(home)
 }
 
 fn developer_uv_mode() -> Result<bool> {
@@ -1481,7 +1631,13 @@ async fn launch_sidecar_upstream(
                 })
                 .await;
             });
-            return Ok((None, upstream_base_url, Some(task)));
+            let child = if want_real_child_fixture(home) {
+                Some(spawn_fixture_hold_child(home, &hit.version)?)
+            } else {
+                let _ = (home, hit);
+                None
+            };
+            return Ok((child, upstream_base_url, Some(task)));
         }
     }
     let _ = run_spools;
@@ -1927,6 +2083,132 @@ fn clear_env_sh(home: &Path) {
     let _ = fs::remove_file(home.join("env.sh"));
 }
 
+fn runtime_lease_path(home: &Path) -> PathBuf {
+    home.join(RUNTIME_LEASE_FILE)
+}
+
+fn ensure_gepa_db(home: &Path) -> Result<PathBuf> {
+    let path = gepa_db_path(home);
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    if !path.is_file() {
+        fs::write(&path, b"")?;
+    }
+    Ok(path)
+}
+
+fn database_digest_of(path: &Path) -> Option<String> {
+    let bytes = fs::read(path).ok()?;
+    Some(format!("sha256:{}", sha256_hex(&bytes)))
+}
+
+fn process_start_identity(pid: u32) -> Option<String> {
+    #[cfg(target_os = "macos")]
+    {
+        let output = std::process::Command::new("/bin/ps")
+            .args(["-p", &pid.to_string(), "-o", "lstart="])
+            .output()
+            .ok()?;
+        let identity = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        return (!identity.is_empty()).then_some(identity);
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let stat = fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+        return stat.split_whitespace().nth(21).map(str::to_string);
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    {
+        let _ = pid;
+        None
+    }
+}
+
+fn write_runtime_lease(
+    home: &Path,
+    pid: Option<u32>,
+    version: &str,
+    digest: &str,
+    epoch: &str,
+) -> Result<()> {
+    let db_path = ensure_gepa_db(home)?;
+    let body = json!({
+        "pid": pid,
+        "version": version,
+        "digest": digest,
+        "epoch": epoch,
+        "databaseDigest": database_digest_of(&db_path),
+        "processStartIdentity": pid.and_then(process_start_identity),
+        "writtenAt": chrono::Utc::now().to_rfc3339(),
+    });
+    write_secret(
+        &runtime_lease_path(home),
+        serde_json::to_vec_pretty(&body)?.as_slice(),
+        false,
+    )
+}
+
+fn clear_runtime_lease(home: &Path) {
+    let _ = fs::remove_file(runtime_lease_path(home));
+}
+
+pub(crate) fn runtime_lease_is_current(home: &Path) -> bool {
+    let Ok(raw) = fs::read_to_string(runtime_lease_path(home)) else {
+        return false;
+    };
+    let Ok(value) = serde_json::from_str::<Value>(&raw) else {
+        return false;
+    };
+    let Some(pid) = value.get("pid").and_then(Value::as_u64) else {
+        return false;
+    };
+    let pid = pid as u32;
+    if !sidecar_pid_is_alive(pid) {
+        return false;
+    }
+    match value.get("processStartIdentity").and_then(Value::as_str) {
+        Some(expected) => process_start_identity(pid).as_deref() == Some(expected),
+        None => true,
+    }
+}
+
+#[cfg(test)]
+fn want_real_child_fixture(home: &Path) -> bool {
+    home.join(TEST_REAL_CHILD_SENTINEL).is_file()
+}
+
+#[cfg(test)]
+fn spawn_fixture_hold_child(home: &Path, version: &str) -> Result<Child> {
+    let bin = installed_runtime_bin(home, version)?;
+    let mut command = Command::new(bin);
+    command
+        .arg("hold")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .kill_on_drop(true);
+    command
+        .spawn()
+        .context("spawn fixture sidecar as a real child")
+}
+
+#[cfg(unix)]
+fn sidecar_pid_is_alive(pid: u32) -> bool {
+    let Ok(pid) = libc::pid_t::try_from(pid) else {
+        return false;
+    };
+    if pid <= 1 {
+        return false;
+    }
+    unsafe { libc::kill(pid, 0) == 0 }
+}
+
+#[cfg(not(unix))]
+fn sidecar_pid_is_alive(_pid: u32) -> bool {
+    false
+}
+
 fn read_selected_version(home: &Path) -> Result<Option<String>> {
     match fs::read_to_string(home.join(SELECTED_VERSION_FILE)) {
         Ok(value) => {
@@ -2129,7 +2411,10 @@ fn materialize_fixture_runtime(staging: &Path, spec: &OptimizerSidecarInstallSpe
         fs::write(
             &bin,
             format!(
-                "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo synth-optimizers {}; exit 0; fi\nexit 0\n",
+                "#!/bin/sh\n\
+                 if [ \"$1\" = \"--version\" ]; then echo synth-optimizers {}; exit 0; fi\n\
+                 if [ \"$1\" = \"hold\" ]; then exec /bin/sleep 3600; fi\n\
+                 exit 0\n",
                 spec.version
             ),
         )?;
@@ -2919,6 +3204,61 @@ mod tests {
         assert!(child.try_wait().unwrap().is_none());
         child.kill().await.unwrap();
         child.wait().await.unwrap();
+    }
+
+    /// P1-3. The fixture binary is a real OS child. SIGKILL of *that* pid —
+    /// not a name sweep — must flip status to `error` and delete the lease
+    /// within the health interval, not wait for the next renderer poll.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn child_exit_sets_error_and_clears_lease_within_3s() {
+        let (mgr, home) = manager();
+        mgr.enable_real_child_fixture().unwrap();
+        mgr.install(None).unwrap();
+        let started = mgr.start().await.unwrap();
+        assert_eq!(started.phase, "ready");
+        let lease = home.path().join(RUNTIME_LEASE_FILE);
+        assert!(
+            lease.is_file(),
+            "handshake must write runtime-lease.json"
+        );
+        assert!(
+            runtime_lease_is_current(home.path()),
+            "a live fixture child must make the runtime lease current"
+        );
+        let pid = mgr
+            .sidecar_child_pid()
+            .await
+            .expect("fixture sidecar must be a real child");
+        let pid = libc::pid_t::try_from(pid).expect("child pid");
+        unsafe {
+            assert_eq!(libc::kill(pid, libc::SIGKILL), 0, "kill -9 of spawned child");
+        }
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
+        loop {
+            let status = mgr.status().await;
+            if status.phase == "error" && !lease.exists() {
+                assert!(
+                    status
+                        .detail
+                        .as_deref()
+                        .is_some_and(|detail| detail.contains("exited")),
+                    "error detail must name the exit, got {:?}",
+                    status.detail
+                );
+                break;
+            }
+            if tokio::time::Instant::now() >= deadline {
+                panic!(
+                    "child-exit watcher did not settle: phase={}, lease_exists={}",
+                    status.phase,
+                    lease.exists()
+                );
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        assert!(!home.path().join("env.sh").exists());
+        let _ = mgr.stop().await;
     }
 
     #[cfg(unix)]
