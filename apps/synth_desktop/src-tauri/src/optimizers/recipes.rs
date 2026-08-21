@@ -826,7 +826,7 @@ pub(super) async fn reconcile_persisted(
     run_id: &str,
 ) -> Result<super::models::OptimizerRunRecord> {
     let run = service.get(run_id.to_string()).await?;
-    if !matches!(run.status.as_str(), "completed" | "failed" | "cancelled")
+    if !super::service::is_terminal_status(&run.status)
         || run
             .summary
             .get("recipeId")

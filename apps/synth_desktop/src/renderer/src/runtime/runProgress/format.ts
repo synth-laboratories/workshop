@@ -57,7 +57,9 @@ const STATUS_WORDS: Record<RunProgressStatus, string> = {
 	completed: "Completed",
 	failed: "Failed",
 	cancelled: "Cancelled",
-	degraded: "Evidence unavailable"
+	degraded: "Evidence unavailable",
+	// A status word this build does not know. Say so; do not guess a state.
+	unknown: "Status unavailable"
 };
 
 export function statusLabel(status: RunProgressStatus): string {
@@ -66,7 +68,7 @@ export function statusLabel(status: RunProgressStatus): string {
 
 export function statusBadgeClass(status: RunProgressStatus): string {
 	if (status === "failed" || status === "degraded") return "ws-badge ws-badge-danger";
-	if (status === "interrupted") return "ws-badge ws-badge-warn";
+	if (status === "interrupted" || status === "unknown") return "ws-badge ws-badge-warn";
 	if (status === "cancelled" || status === "paused" || status === "queued") return "ws-badge ws-badge-warn";
 	if (status === "completed") return "ws-badge ws-badge-success";
 	return "ws-badge ws-badge-running";

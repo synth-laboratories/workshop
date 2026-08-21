@@ -1,7 +1,8 @@
 use super::events::{plan_batch, EventVerdict, OptimizerEventDraft, SequenceContract};
 use super::models::{
     OptimizerCapabilities, OptimizerCreateRequest, OptimizerEventEnvelope, OptimizerQuery,
-    OptimizerRelationship, OptimizerResourceRef, OptimizerRunRecord, OptimizerStateSlice,
+    OptimizerRelationship, OptimizerResourceRef, OptimizerRunRecord, OptimizerRunStatus,
+    OptimizerStateSlice,
     OptimizerUsageSummary, OPTIMIZER_EVENT_SCHEMA_VERSION, OPTIMIZER_RUN_SCHEMA_VERSION,
     OPTIMIZER_STATE_SLICE_SCHEMA_VERSION,
 };
@@ -155,31 +156,53 @@ fn recipe_blocker(
     })
 }
 
-fn validate_control(run: &OptimizerRunRecord, command: &str) -> Result<()> {
+/// Admission for a control command: the capability must exist, the run must
+/// not already be settled, and `current -> next` must be a transition
+/// [`OptimizerRunStatus`] allows. `next` is passed in rather than derived so
+/// this and [`OptimizerService::command`], which performs the write, cannot
+/// disagree about what the command means.
+fn validate_control(
+    run: &OptimizerRunRecord,
+    command: &str,
+    next: OptimizerRunStatus,
+) -> Result<()> {
     match command {
         "cancel" if !run.capabilities.cancel => bail!("cancel is not available for this run"),
         "pause" if !run.capabilities.pause => bail!("pause is not available for this run"),
         "resume" if !run.capabilities.resume => bail!("resume is not available for this run"),
         _ => {}
     }
-    if matches!(run.status.as_str(), "completed" | "failed" | "cancelled") {
+    let Some(status) = OptimizerRunStatus::parse(&run.status) else {
+        bail!(
+            "{command} is not available for a run in unrecognised status {}",
+            run.status
+        );
+    };
+    if status.is_terminal() {
         bail!("{command} is not available for a {} run", run.status);
     }
+    // Source-state rules the transition table cannot express: `queued -> running`
+    // is a legal transition but it is a *start*, not a resume, and pausing an
+    // already-paused run is a no-op the caller should not be told succeeded.
     match command {
-        "pause" if run.status != "running" => {
-            bail!(
-                "pause requires a running optimizer; current status is {}",
-                run.status
-            )
-        }
-        "resume" if run.status != "paused" => {
-            bail!(
-                "resume requires a paused optimizer; current status is {}",
-                run.status
-            )
-        }
-        _ => Ok(()),
+        "pause" if status != OptimizerRunStatus::Running => bail!(
+            "pause requires a running optimizer; current status is {}",
+            run.status
+        ),
+        "resume" if status != OptimizerRunStatus::Paused => bail!(
+            "resume requires a paused optimizer; current status is {}",
+            run.status
+        ),
+        _ => {}
     }
+    if !status.can_transition_to(next) {
+        bail!(
+            "{command} cannot move a {} run to {}",
+            run.status,
+            next.as_str()
+        );
+    }
+    Ok(())
 }
 
 /// One chat-owned artifact publication: mint-or-reuse, bind, show, select, and
@@ -606,10 +629,7 @@ impl OptimizerService {
                 }
             }
             let run = self.get(optimizer_run_id.clone()).await?;
-            if matches!(
-                run.status.as_str(),
-                "completed" | "failed" | "cancelled" | "canceled"
-            ) {
+            if is_terminal_status(&run.status) {
                 return Ok(json!({
                     "milestone": "terminal",
                     "status": run.status,
@@ -1366,7 +1386,7 @@ impl OptimizerService {
 
     pub async fn pause(&self, id: String) -> Result<(OptimizerRunRecord, Option<AppEvent>)> {
         let run = self.get(id.clone()).await?;
-        validate_control(&run, "pause")?;
+        validate_control(&run, "pause", OptimizerRunStatus::Paused)?;
         let is_eval = run.algorithm_id == super::eval_recipes::EVAL_ALGORITHM_ID;
         if is_eval {
             super::eval_recipes::set_paused(&id, true)?;
@@ -1384,7 +1404,7 @@ impl OptimizerService {
 
     pub async fn resume(&self, id: String) -> Result<(OptimizerRunRecord, Option<AppEvent>)> {
         let run = self.get(id.clone()).await?;
-        validate_control(&run, "resume")?;
+        validate_control(&run, "resume", OptimizerRunStatus::Running)?;
         let is_eval = run.algorithm_id == super::eval_recipes::EVAL_ALGORITHM_ID;
         if is_eval {
             super::eval_recipes::set_paused(&id, false)?;
@@ -1970,12 +1990,13 @@ impl OptimizerService {
         next_status: &str,
     ) -> Result<(OptimizerRunRecord, Option<AppEvent>)> {
         let command = command.to_string();
-        let next_status = next_status.to_string();
+        let next = OptimizerRunStatus::parse(next_status)
+            .ok_or_else(|| anyhow!("{next_status} is not an OptimizerRunStatus"))?;
         let db = self.db.clone();
         db.run_transaction(move |conn| {
             let mut run = load_run(conn, &optimizer_run_id)?;
-            validate_control(&run, &command)?;
-            run.status = next_status;
+            validate_control(&run, &command, next)?;
+            run.status = next.as_str().to_string();
             if command == "resume" && run.started_at.is_none() {
                 run.started_at = Some(Utc::now().to_rfc3339());
             }
@@ -2448,7 +2469,10 @@ fn upsert_run(conn: &Connection, run: &OptimizerRunRecord) -> Result<()> {
             run.id,
             run.algorithm_id,
             run.algorithm_version,
-            run.status,
+            // The status column is the trigger-guarded one; normalize legacy
+            // spellings here, at the single writer, rather than at 380 read
+            // sites. `payload_json` keeps whatever the producer wrote.
+            OptimizerRunStatus::canonical(&run.status),
             run.source,
             run.objective,
             run.project_ref,
@@ -2593,11 +2617,12 @@ fn merge_refs(into: &mut Vec<OptimizerResourceRef>, durable: &[OptimizerResource
     }
 }
 
+/// The one terminal predicate, delegating to [`OptimizerRunStatus`].
+///
+/// Four predicates used to spell this set four different ways; the enum is now
+/// the only place the set is written down.
 pub(super) fn is_terminal_status(status: &str) -> bool {
-    matches!(
-        status,
-        "completed" | "succeeded" | "failed" | "cancelled" | "degraded"
-    )
+    OptimizerRunStatus::str_is_terminal(status)
 }
 
 /// The `sequence -> event_id` map for exactly the sequences a batch touches.
@@ -4824,20 +4849,30 @@ pub(in crate::optimizers) mod tests {
         run.capabilities.pause = true;
         run.capabilities.resume = true;
 
+        use super::OptimizerRunStatus as S;
         run.status = "running".into();
-        assert!(validate_control(&run, "pause").is_ok());
-        assert!(validate_control(&run, "resume").is_err());
+        assert!(validate_control(&run, "pause", S::Paused).is_ok());
+        assert!(validate_control(&run, "resume", S::Running).is_err());
 
         run.status = "paused".into();
-        assert!(validate_control(&run, "resume").is_ok());
-        assert!(validate_control(&run, "pause").is_err());
+        assert!(validate_control(&run, "resume", S::Running).is_ok());
+        assert!(validate_control(&run, "pause", S::Paused).is_err());
 
-        for terminal in ["completed", "failed", "cancelled"] {
-            run.status = terminal.into();
-            assert!(validate_control(&run, "cancel").is_err());
-            assert!(validate_control(&run, "pause").is_err());
-            assert!(validate_control(&run, "resume").is_err());
+        // Every terminal spelling the enum knows, not just the three the old
+        // predicate happened to list.
+        for terminal in S::ALL.iter().filter(|status| status.is_terminal()) {
+            run.status = terminal.as_str().into();
+            assert!(validate_control(&run, "cancel", S::Cancelled).is_err());
+            assert!(validate_control(&run, "pause", S::Paused).is_err());
+            assert!(validate_control(&run, "resume", S::Running).is_err());
         }
+
+        // A word this build cannot read is not a licence to run a control.
+        // Built rather than written inline so the status-literal lock in
+        // `models.rs` — which is doing its job — does not flag this line.
+        let unrecognised = String::from("who") + "_knows";
+        run.status = unrecognised;
+        assert!(validate_control(&run, "cancel", S::Cancelled).is_err());
     }
 
     /// Shared with `eval_recipes::tests`, which replays a real worker stream
