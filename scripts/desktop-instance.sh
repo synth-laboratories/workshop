@@ -523,6 +523,34 @@ EOF
   mv "$manifest_tmp" "$MANIFEST"
 }
 
+write_bundle_descriptor() {
+  local app_bundle="$1"
+  local dest="$app_bundle/Contents/Resources/instance.json"
+  mkdir -p "$(dirname "$dest")"
+  jq -n \
+    --arg schemaVersion "synth.desktop.instance-descriptor.v1" \
+    --arg instance_id "$NAME" \
+    --arg instance_root "$INSTANCE_ROOT" \
+    --arg config_path "$DATA_ROOT/config.toml" \
+    --arg data_root "$DATA_ROOT" \
+    --arg bundle_id "$BUNDLE_ID" \
+    --arg release_line "$RELEASE_LINE" \
+    --arg source_revision "$SOURCE_REVISION" \
+    --arg generated_at "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" \
+    '{
+      schemaVersion: $schemaVersion,
+      instance_id: $instance_id,
+      instance_root: $instance_root,
+      config_path: $config_path,
+      data_root: $data_root,
+      bundle_id: $bundle_id,
+      release_line: $release_line,
+      source_revision: $source_revision,
+      generated_at: $generated_at
+    }' >"$dest.tmp"
+  mv "$dest.tmp" "$dest"
+}
+
 executable_digest() {
   local executable="${1:-$EXE}"
   if [[ -f "$executable" ]]; then
@@ -644,6 +672,8 @@ mark_runtime() {
     --arg executable "$runtime_executable" \
     --arg executableDigest "$digest" \
     --arg sourceRevision "$SOURCE_REVISION" \
+    --arg bootEpoch "$BOOT_EPOCH" \
+    --arg processStartIdentity "$PROCESS_START_TIME" \
     --arg checkedAt "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" \
     '.runtime = ((.runtime // {}) + {
       status: $status,
@@ -651,6 +681,8 @@ mark_runtime() {
       executable: $executable,
       executableDigest: (if $executableDigest == "" then null else $executableDigest end),
       sourceRevision: $sourceRevision,
+      bootEpoch: $bootEpoch,
+      processStartIdentity: $processStartIdentity,
       checkedAt: $checkedAt
     })' "$MANIFEST" >"$manifest_tmp"
   mv "$manifest_tmp" "$MANIFEST"
@@ -1057,6 +1089,8 @@ PY
 # or launching anything. Prints variable names only, never values.
 dry_run_operation() {
   export_instance_env
+  write_bundle_descriptor "$GENERATED_ROOT/descriptor-preview.app"
+  mark_runtime "dry-run" "$$"
   echo "[desktop:$NAME] dry-run operation=$COMMAND"
   echo "[desktop:$NAME] dry-run env_names=$(compgen -e | rg '^(SYNTH_|CARGO_TARGET_DIR$)' | LC_ALL=C sort | paste -sd, -)"
   echo "[desktop:$NAME] dry-run complete; nothing was built or launched"
@@ -1144,6 +1178,7 @@ dev_instance() {
     codesign --verify --deep --strict "$(dirname "$(dirname "$(dirname "$CUA_EXE")")")"
     echo "[desktop:$NAME] launching existing signed CUA app from $INSTANCE_ROOT"
     cd "$INSTANCE_ROOT"
+    mark_runtime "launching" "$$"
     release_operation_lock_before_exec
     exec "$CUA_EXE"
   fi
@@ -1202,6 +1237,7 @@ dev_instance() {
       exit 1
     fi
     revalidate_provenance "bundle-built" "$pre_build_revision"
+    write_bundle_descriptor "$app_bundle"
     sign_cua_bundle "$app_bundle"
     codesign --verify --deep --strict "$app_bundle"
     record_packaged_provenance "$app_bundle"
@@ -1216,6 +1252,7 @@ dev_instance() {
     # traversal to the app and triggers an unnecessary Files & Folders prompt.
     # Runtime data and workspaces already live under this isolated instance.
     cd "$INSTANCE_ROOT"
+    mark_runtime "launching" "$$"
     release_operation_lock_before_exec
     exec "$app_executable"
   fi

@@ -266,4 +266,26 @@ rg -q 'SYNTH_WORKSHOP_INSTANCE_ID' "$ROOT/scripts/desktop-instance.sh"
 rg -q 'qa-\$WORKTREE_HASH|qa-\$\{WORKTREE_HASH\}' "$ROOT/scripts/workshop-qa"
 rg -q 'codex-\$WORKTREE_HASH|codex-\$\{WORKTREE_HASH\}' "$ROOT/scripts/crash-recovery-drill.sh"
 
+# P1-5: cua-build writes a bundle-resident descriptor with the W3b contract
+# and records bootEpoch + processStartIdentity on the launcher manifest.
+SYNTH_DESKTOP_OPERATION_DRY_RUN=1 "$ROOT/scripts/desktop-instance.sh" cua-build alpha >/dev/null
+descriptor="$TEST_ROOT/instances/v07/alpha/generated/descriptor-preview.app/Contents/Resources/instance.json"
+[[ -f "$descriptor" ]] || { echo "bundle descriptor was not written" >&2; exit 1; }
+jq -e '
+  .schemaVersion == "synth.desktop.instance-descriptor.v1" and
+  .instance_id == "alpha" and
+  (.instance_root | endswith("/instances/v07/alpha")) and
+  (.config_path | endswith("/instances/v07/alpha/data/config.toml")) and
+  (.data_root | endswith("/instances/v07/alpha/data")) and
+  .bundle_id == "com.synth.desktop.v07.dev.alpha" and
+  .release_line == "v0.7" and
+  (.source_revision | length > 0) and
+  (.generated_at | length > 0)
+' "$descriptor" >/dev/null
+jq -e '
+  (.runtime.bootEpoch | startswith("inst_")) and
+  (.runtime.processStartIdentity | length > 0)
+' "$TEST_ROOT/instances/v07/alpha/instance.json" >/dev/null
+rg -q 'write_bundle_descriptor "\$app_bundle"' "$ROOT/scripts/desktop-instance.sh"
+
 echo "desktop instance contract: ok"
