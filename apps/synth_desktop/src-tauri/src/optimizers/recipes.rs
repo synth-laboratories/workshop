@@ -561,10 +561,22 @@ async fn run_recipe_worker(
         tokio::select! {
             status = child.wait() => {
                 let status = status.context("wait for product-owned GEPA process")?;
-                ingest_available(&service, &manager, &run_id, &mut upstream_cursor).await?;
+                let final_ingest =
+                    ingest_available(&service, &manager, &run_id, &mut upstream_cursor).await;
                 if !status.success() {
-                    bail!("GEPA recipe exited with {status}; see {}", run_dir.join("workshop.stderr.log").display());
+                    let ingest_detail = final_ingest
+                        .as_ref()
+                        .err()
+                        .map(|error| format!("; final event ingestion also failed: {error:#}"))
+                        .unwrap_or_default();
+                    bail!(
+                        "GEPA recipe {}{ingest_detail}; stdout={} stderr={}",
+                        describe_exit_status(&status),
+                        run_dir.join("workshop.stdout.log").display(),
+                        run_dir.join("workshop.stderr.log").display()
+                    );
                 }
+                final_ingest.context("ingest final GEPA event page after successful child exit")?;
                 append_recipe_artifacts(&service, &run_id, &run_dir).await?;
                 append_recipe_candidates(&service, &run_id, &run_dir).await?;
                 append_proposer_transcripts(&service, &run_id, &run_dir).await?;
@@ -1126,20 +1138,35 @@ async fn append_diagnostic_event(
         .get("runDirectory")
         .and_then(serde_json::Value::as_str)
         .map(PathBuf::from);
+    let stdout_path = run_directory
+        .as_ref()
+        .map(|directory| directory.join("workshop.stdout.log"));
     let stderr_path = run_directory
         .as_ref()
         .map(|directory| directory.join("workshop.stderr.log"));
+    let stdout_tail = stdout_path
+        .as_ref()
+        .and_then(|path| bounded_log_tail(path, 4_000).ok())
+        .filter(|text| !text.trim().is_empty());
     let stderr_tail = stderr_path
         .as_ref()
         .and_then(|path| bounded_log_tail(path, 4_000).ok())
         .filter(|text| !text.trim().is_empty());
-    let display_message = stderr_tail.as_deref().unwrap_or(&detail);
+    // `detail` is the supervisor's causal error (exit status, signal, ingest
+    // failure, etc.). Log output is supporting evidence and must never replace
+    // it: stderr may contain only a warning, which previously hid the actual
+    // failure and produced a polished-looking lie in the run UI.
+    let display_message = detail.trim();
     let mut draft = OptimizerEventDraft::new("optimizer.recipe.diagnostic", "gepa")
         .level("error")
         .error(json!({
             "message": display_message.chars().take(1_000).collect::<String>(),
+            "supervisorDetail": detail.chars().take(4_000).collect::<String>(),
+            "stdoutTail": stdout_tail,
             "stderrTail": stderr_tail,
             "logPath": stderr_path,
+            "stdoutLogPath": stdout_path,
+            "stderrLogPath": stderr_path,
         }));
     draft.delta.insert("status".into(), json!("failed"));
     service
@@ -1169,6 +1196,20 @@ async fn append_diagnostic_event(
         diagnostics.emit(input);
     }
     Ok(())
+}
+
+fn describe_exit_status(status: &std::process::ExitStatus) -> String {
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::ExitStatusExt;
+        if let Some(signal) = status.signal() {
+            return format!("terminated by signal {signal}");
+        }
+    }
+    match status.code() {
+        Some(code) => format!("exited with code {code}"),
+        None => format!("exited with unknown status {status}"),
+    }
 }
 
 fn bounded_log_tail(path: &Path, max_chars: usize) -> Result<String> {
