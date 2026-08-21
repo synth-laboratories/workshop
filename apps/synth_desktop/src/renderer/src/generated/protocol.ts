@@ -1523,6 +1523,53 @@ export type OptimizerRunRecord = {
 	error?: unknown,
 };
 
+/**
+ *  The one status vocabulary for `optimizer_runs`.
+ *
+ *  Before this type there were four disagreeing terminal predicates
+ *  (`service::is_terminal_status`, `validate_control`, the milestone wait, and
+ *  `recipes::reconcile_persisted`) over an untyped `String` column with a
+ *  fifteen-word vocabulary. A run that read as finished to one of them read as
+ *  live to another, which is how a settled run kept a spinner turning.
+ *
+ *  The variants are exactly the spellings a producer writes today — the local
+ *  recipe workers, the training-lifecycle projection, and the Synth Cloud
+ *  mirror. [`OptimizerRunStatus::parse`] additionally accepts the legacy
+ *  aliases those producers used to emit so a database written by an older
+ *  build still reads; every alias normalizes onto one canonical spelling, and
+ *  migration 28 rewrites the stored column so the trigger domain holds. The
+ *  aliases live in `parse` and not in `#[serde(alias)]` on purpose: they are a
+ *  read-compatibility detail of this build, not part of the contract the
+ *  renderer is handed, and putting them on the variants would export them as
+ *  legal values in the generated TypeScript union.
+ */
+export type OptimizerRunStatus =
+/**  Admitted, not yet started. */
+"queued" |
+/**  Config admission is running (training lane). */
+"validating" |
+/**  Compute is being acquired (training lane). */
+"provisioning" |
+/**  The worker process is coming up. */
+"starting" |
+/**  A prepared run held until its viewer attaches. */
+"waiting_for_viewer" | "running" | "paused" |
+/**  A cancel was accepted and is being carried out. */
+"cancelling" |
+/**  The training environment stopped answering; compute may still be live. */
+"env_unreachable" |
+/**  Finished, but its evidence lane did not settle cleanly. */
+"degraded" | "completed" | "failed" |
+/**
+ *  Terminal with unusable evidence — distinct from `Failed` because the
+ *  work ran; only the receipt is missing.
+ */
+"failed_evidence" | "cancelled" |
+/**  The owner process died without sealing; recovery rewrote the row. */
+"interrupted" | "infrastructure_lost" |
+/**  Stopped because a spend or step ceiling was reached. */
+"cap_reached";
+
 export type OptimizerSearchOverrides = {
 	proposalsPerGeneration?: number,
 	maxInFlightCandidates?: number,
