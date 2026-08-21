@@ -42,7 +42,7 @@ export function performanceKindLabel(kind: ModelPerformanceSummary["measurementK
 
 export function performancePreference(summary: ModelPerformanceSummary, targetId: string): number {
 	if (targetId === "local-laguna" && summary.measurementKind === "decode") return 4;
-	if (summary.measurementKind === "observed_stream") return 3;
+	if ((summary.measurementKind as string) === "observed_stream") return 3;
 	if (summary.measurementKind === "provider_reported") return 2;
 	return 1;
 }

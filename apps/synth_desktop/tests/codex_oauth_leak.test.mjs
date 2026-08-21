@@ -16,10 +16,10 @@ test("renderer OAuth contract exposes status but never token fields", () => {
 
 test("OAuth commands stay aligned across Rust and TypeScript", () => {
 	const rust = read("src-tauri/src/contract/commands.rs");
-	const ts = read("src/renderer/src/bridge/protocolConstants.ts");
+	const protocol = read("src/renderer/src/generated/protocol.ts");
 	for (const command of ["codex_oauth_begin", "codex_oauth_complete_manual", "codex_oauth_status", "codex_oauth_disconnect", "codex_oauth_cancel"]) {
 		assert.ok(rust.includes(command), `Rust command missing ${command}`);
-		assert.ok(ts.includes(command), `TypeScript command missing ${command}`);
+		assert.ok(protocol.includes(command), `TypeScript command missing ${command}`);
 	}
 });
 
