@@ -137,10 +137,7 @@ pub struct OsKeychainBackend {
 
 impl OsKeychainBackend {
     pub fn new() -> Self {
-        let instance = std::env::var(crate::instance::INSTANCE_ENV)
-            .ok()
-            .filter(|value| !value.is_empty())
-            .unwrap_or_else(|| "canonical".into());
+        let instance = crate::instance::instance_id();
         let service = format!("synth-desktop.secrets.{instance}");
         Self { service }
     }

@@ -46,7 +46,7 @@ done
 WORKTREE="$(git -C "$ROOT" rev-parse --show-toplevel 2>/dev/null || printf '%s' "$ROOT")"
 WORKTREE_HASH="$(printf '%s' "$WORKTREE" | shasum -a 256 | awk '{print substr($1,1,8)}')"
 DEFAULT_NAME="codex-$WORKTREE_HASH"
-NAME="${NAME:-${SYNTH_DESKTOP_INSTANCE:-$DEFAULT_NAME}}"
+NAME="${NAME:-$DEFAULT_NAME}"
 RELEASE_LINE="${SYNTH_DESKTOP_RELEASE_LINE:-v0.7}"
 APP_VERSION="${SYNTH_DESKTOP_APP_VERSION:-0.7.0}"
 BOOT_EPOCH="inst_$(uuidgen | tr -d '-' | tr '[:upper:]' '[:lower:]')"
@@ -143,9 +143,8 @@ instance_processes() {
   '
 }
 
-# Children of a named instance carry SYNTH_WORKSHOP_INSTANCE_ID as an exact
-# environment assignment. Match that assignment only — never an instance name
-# or path substring in argv (ID-R-15).
+# Legacy cleanup only. Older builds marked children with this variable; current
+# builds derive identity from the bundle descriptor and never export it.
 instance_env_pids() {
   ps -axwwE -o pid=,command= 2>/dev/null | awk -v name="$NAME" -v self="$$" '
     BEGIN { needle = "SYNTH_WORKSHOP_INSTANCE_ID=" name }
@@ -823,15 +822,10 @@ exec_isolated_cua_bundle() {
     LOGNAME="$logname" \
     TMPDIR="$temp_dir" \
     PWD="$INSTANCE_ROOT" \
-    SYNTH_DESKTOP_INSTANCE="$NAME" \
-    SYNTH_WORKSHOP_INSTANCE_ID="$NAME" \
     SYNTH_DESKTOP_DATA_ROOT="$DATA_ROOT" \
     SYNTH_DESKTOP_CONFIG="$DATA_ROOT/config.toml" \
     SYNTH_CODEX_HOME="$DATA_ROOT/codex" \
     SYNTH_DESKTOP_WORKSPACE="$WORKSPACE" \
-    SYNTH_DESKTOP_APP_NAME="$APP_TITLE" \
-    SYNTH_DESKTOP_BUNDLE_ID="$BUNDLE_ID" \
-    SYNTH_DESKTOP_INSTANCE_MANIFEST="$MANIFEST" \
     SYNTH_DESKTOP_SOURCE_REVISION="$SOURCE_REVISION" \
     SYNTH_DESKTOP_VITE_URL="http://127.0.0.1:$VITE_PORT" \
     SYNTH_EVAL_ALLOW_LOCAL_PINNED_TARGETS=1 \
@@ -1002,22 +996,13 @@ assert_bundle_identity() {
   echo "[desktop:$NAME] signing requirement=$host_requirement"
 }
 
-# The complete named-instance environment, exported exactly once for every
-# launch path. `cua-run` once re-exported these by hand because an early
-# return had skipped the first block; when launched from another Workshop
-# instance it inherited that caller's data root, Codex home, backend, and
-# cookbook paths while the window title looked correct. One function, one
-# set of names, so the two paths cannot drift again.
+# Non-identity runtime paths for development launches. Instance name and bundle
+# identity come only from the embedded descriptor and Info.plist.
 export_instance_env() {
-  export SYNTH_DESKTOP_INSTANCE="$NAME"
-  export SYNTH_WORKSHOP_INSTANCE_ID="$NAME"
   export SYNTH_DESKTOP_DATA_ROOT="$DATA_ROOT"
   export SYNTH_DESKTOP_CONFIG="$DATA_ROOT/config.toml"
   export SYNTH_CODEX_HOME="$DATA_ROOT/codex"
   export SYNTH_DESKTOP_WORKSPACE="$WORKSPACE"
-  export SYNTH_DESKTOP_APP_NAME="$APP_TITLE"
-  export SYNTH_DESKTOP_BUNDLE_ID="$BUNDLE_ID"
-  export SYNTH_DESKTOP_INSTANCE_MANIFEST="$MANIFEST"
   export SYNTH_DESKTOP_SOURCE_REVISION="$SOURCE_REVISION"
   export SYNTH_DESKTOP_VITE_URL="http://127.0.0.1:$VITE_PORT"
   # Named development instances may execute an operator-pinned image already

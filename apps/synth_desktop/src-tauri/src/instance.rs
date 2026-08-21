@@ -1,12 +1,13 @@
 //! Which Workshop this process is, where its data lives, and the proof that it
 //! is the only process holding that data root.
 //!
-//! Identity has two sources and one rule. The bundle descriptor
+//! Identity has one naming source. The bundle descriptor
 //! (`Contents/Resources/instance.json`, written at build time) is authoritative
 //! because it survives every launch path — Finder, `open -b`, a LaunchServices
-//! relaunch — none of which carry the launcher's environment. The
-//! `SYNTH_DESKTOP_*` environment is accepted when it agrees with the
-//! descriptor and refused when it does not. A bundle whose identifier marks it
+//! relaunch — none of which reliably carry the launcher's environment.
+//! Environment variables may select non-identity runtime paths for an
+//! undescriptored development binary, but they never name an instance or
+//! override descriptor identity. A bundle whose identifier marks it
 //! as a named development instance (`.dev.`) but that has neither source
 //! refuses to start: the one thing it must never do is open the canonical
 //! profile under a window titled with another instance's name.
@@ -99,17 +100,11 @@ pub struct EnvIdentity {
 impl EnvIdentity {
     pub fn from_process_env() -> Self {
         Self {
-            instance: env::var(INSTANCE_ENV)
-                .ok()
-                .map(|value| value.trim().to_string())
-                .filter(|value| !value.is_empty()),
+            instance: None,
             data_root: env::var_os(DATA_ROOT_ENV)
                 .filter(|value| !value.is_empty())
                 .map(PathBuf::from),
-            bundle_id: env::var(BUNDLE_ID_ENV)
-                .ok()
-                .map(|value| value.trim().to_string())
-                .filter(|value| !value.is_empty()),
+            bundle_id: None,
         }
     }
 
@@ -123,9 +118,9 @@ impl EnvIdentity {
 pub enum IdentitySource {
     /// Bundle descriptor only (a LaunchServices launch).
     Descriptor,
-    /// Descriptor and environment, and they agree.
+    /// Legacy serialized value; new resolution never emits it.
     DescriptorAndEnv,
-    /// Environment only (a `tauri dev` or un-descriptored launcher run).
+    /// An undescriptored development process with an environment-selected data root.
     Env,
     /// Nothing named an instance: the installed app.
     Canonical,
@@ -301,33 +296,6 @@ pub fn resolve_identity(
 
     match descriptor {
         Some(descriptor) => {
-            if let Some(instance) = &env.instance {
-                if *instance != descriptor.instance_id {
-                    return Err(IdentityRefusal::Mismatch {
-                        field: "instance_id",
-                        descriptor: descriptor.instance_id.clone(),
-                        env: instance.clone(),
-                    });
-                }
-            }
-            if let Some(root) = &env.data_root {
-                if !same_path(root, &descriptor.data_root) {
-                    return Err(IdentityRefusal::Mismatch {
-                        field: "data_root",
-                        descriptor: descriptor.data_root.display().to_string(),
-                        env: root.display().to_string(),
-                    });
-                }
-            }
-            if let Some(bundle_id) = &env.bundle_id {
-                if *bundle_id != descriptor.bundle_id {
-                    return Err(IdentityRefusal::Mismatch {
-                        field: "bundle_id",
-                        descriptor: descriptor.bundle_id.clone(),
-                        env: bundle_id.clone(),
-                    });
-                }
-            }
             if !validate_name(&descriptor.instance_id) {
                 return Err(IdentityRefusal::UnusableDescriptor {
                     detail: format!(
@@ -337,11 +305,7 @@ pub fn resolve_identity(
                 });
             }
             Ok(Identity {
-                source: if env.is_empty() {
-                    IdentitySource::Descriptor
-                } else {
-                    IdentitySource::DescriptorAndEnv
-                },
+                source: IdentitySource::Descriptor,
                 instance: Some(descriptor.instance_id.clone()),
                 data_root: Some(descriptor.data_root.clone()),
                 bundle_id: Some(descriptor.bundle_id.clone()),
@@ -349,14 +313,6 @@ pub fn resolve_identity(
             })
         }
         None => {
-            if let (Some(env_bundle), Some(plist)) = (&env.bundle_id, plist_bundle_id) {
-                if env_bundle != plist {
-                    return Err(IdentityRefusal::EnvBundleMismatch {
-                        env: env_bundle.clone(),
-                        plist: plist.to_owned(),
-                    });
-                }
-            }
             if is_dev_bundle && env.data_root.is_none() {
                 return Err(IdentityRefusal::DevBundleWithoutIdentity {
                     bundle_id: plist_bundle_id.unwrap_or_default().to_owned(),
@@ -368,12 +324,9 @@ pub fn resolve_identity(
                 } else {
                     IdentitySource::Env
                 },
-                instance: env
-                    .instance
-                    .clone()
-                    .filter(|value| validate_name(value)),
+                instance: None,
                 data_root: env.data_root.clone(),
-                bundle_id: env.bundle_id.clone(),
+                bundle_id: plist_bundle_id.map(str::to_owned),
                 descriptor: None,
             })
         }
@@ -394,6 +347,15 @@ pub fn identity() -> Result<Identity, IdentityRefusal> {
         &EnvIdentity::from_process_env(),
         facts.plist_bundle_id.as_deref(),
     )
+}
+
+/// Descriptor-owned instance id for runtime correlation. Process environment
+/// is deliberately not consulted for naming.
+pub fn instance_id() -> String {
+    identity()
+        .ok()
+        .and_then(|identity| identity.instance)
+        .unwrap_or_else(|| "canonical".into())
 }
 
 /// Boot-time assertion. Prints one structured line and, on refusal, shows a
@@ -495,12 +457,6 @@ pub fn state_root() -> PathBuf {
 }
 
 pub fn display_name() -> String {
-    if let Ok(value) = env::var(APP_NAME_ENV) {
-        let value = value.trim();
-        if !value.is_empty() {
-            return value.to_owned();
-        }
-    }
     name()
         .map(|value| format!("Synth Desktop · {value}"))
         .unwrap_or_else(|| "Synth Desktop".into())
@@ -510,12 +466,8 @@ pub fn bundle_id() -> Option<String> {
     identity().ok().and_then(|identity| identity.bundle_id)
 }
 
-/// The launcher's mutable manifest: the env names it; a descriptor-only launch
-/// finds it beside the instance root the descriptor recorded.
+/// Mutable manifest beside the instance root recorded by the descriptor.
 pub fn manifest_path() -> Option<PathBuf> {
-    if let Some(path) = env::var_os(MANIFEST_ENV) {
-        return Some(PathBuf::from(path));
-    }
     let descriptor = identity().ok()?.descriptor?;
     let candidate = descriptor.instance_root?.join("instance.json");
     candidate.is_file().then_some(candidate)
@@ -1087,47 +1039,6 @@ mod tests {
     }
 
     #[test]
-    fn an_agreeing_environment_is_accepted_beside_the_descriptor() {
-        let identity = resolve_identity(
-            Some(Ok(descriptor("alpha", "/tmp/instances/alpha/data", DEV_BUNDLE))),
-            // Trailing slash is the same root.
-            &env(Some("alpha"), Some("/tmp/instances/alpha/data/"), Some(DEV_BUNDLE)),
-            Some(DEV_BUNDLE),
-        )
-        .unwrap();
-        assert_eq!(identity.source, IdentitySource::DescriptorAndEnv);
-        assert_eq!(identity.instance.as_deref(), Some("alpha"));
-    }
-
-    #[test]
-    fn a_disagreeing_environment_is_refused_on_every_identity_field() {
-        let base = descriptor("alpha", "/tmp/instances/alpha/data", DEV_BUNDLE);
-        let cases = [
-            (
-                env(Some("beta"), None, None),
-                "instance_id",
-            ),
-            (
-                env(None, Some("/tmp/instances/beta/data"), None),
-                "data_root",
-            ),
-            (
-                env(None, None, Some("com.synth.desktop.v07.dev.beta")),
-                "bundle_id",
-            ),
-        ];
-        for (environment, field) in cases {
-            let refusal =
-                resolve_identity(Some(Ok(base.clone())), &environment, Some(DEV_BUNDLE)).unwrap_err();
-            assert_eq!(refusal.code(), "identity_mismatch", "{field}");
-            assert!(
-                matches!(&refusal, IdentityRefusal::Mismatch { field: got, .. } if *got == field),
-                "{refusal}"
-            );
-        }
-    }
-
-    #[test]
     fn a_descriptor_for_another_bundle_is_refused() {
         let refusal = resolve_identity(
             Some(Ok(descriptor("alpha", "/tmp/x", "com.synth.desktop.v07.dev.alpha"))),
@@ -1158,27 +1069,6 @@ mod tests {
             assert!(identity.data_root.is_none());
             assert!(identity.instance.is_none());
         }
-    }
-
-    #[test]
-    fn an_environment_without_a_descriptor_keeps_the_launcher_contract() {
-        let identity = resolve_identity(
-            None,
-            &env(Some("alpha"), Some("/tmp/instances/alpha/data"), Some(DEV_BUNDLE)),
-            Some(DEV_BUNDLE),
-        )
-        .unwrap();
-        assert_eq!(identity.source, IdentitySource::Env);
-        assert_eq!(identity.instance.as_deref(), Some("alpha"));
-        assert_eq!(identity.bundle_id.as_deref(), Some(DEV_BUNDLE));
-
-        let refusal = resolve_identity(
-            None,
-            &env(Some("alpha"), Some("/tmp/x"), Some("com.synth.desktop.v07.dev.beta")),
-            Some(DEV_BUNDLE),
-        )
-        .unwrap_err();
-        assert_eq!(refusal.code(), "bundle_id_mismatch");
     }
 
     #[test]

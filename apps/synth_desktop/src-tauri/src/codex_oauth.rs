@@ -320,7 +320,7 @@ pub struct Manager {
 
 impl Manager {
     pub fn production() -> Self {
-        let named_instance = std::env::var_os("SYNTH_DESKTOP_INSTANCE").is_some();
+        let named_instance = crate::instance::name().is_some();
         let dev_file = std::env::var_os(DEV_CREDENTIAL_FILE_ENV).map(PathBuf::from);
         let dev_state_file = std::env::var_os(DEV_CREDENTIAL_STATE_FILE_ENV).map(PathBuf::from);
         let explicit_qa_file = std::env::var(PACKAGED_QA_CREDENTIAL_ENV).as_deref() == Ok("1");

@@ -789,8 +789,7 @@ impl OptimizerManager {
                     if let Some(child) = self.runtime.lock().await.as_ref().and_then(|runtime| {
                         runtime.child.as_ref().and_then(|child| child.id())
                     }) {
-                        let instance_id = std::env::var(crate::instance::INSTANCE_ENV)
-                            .unwrap_or_else(|_| "canonical".into());
+                        let instance_id = crate::instance::instance_id();
                         let _ = crate::secrets::lease::write_runtime_lease(
                             &self.home.join("runtime-lease.json"),
                             &crate::secrets::OptimizerRuntimeLease {
@@ -1589,7 +1588,7 @@ fn launch_gepa_recipe_process(
         // Pin both processes to the same instance-owned directory instead of
         // relying on whichever user-global HOME the Desktop inherited.
         .env("GEPA_HOME", optimizer_gepa_home(home))
-        .env("SYNTH_WORKSHOP_INSTANCE_ID", workshop_instance_id())
+        .env_remove("SYNTH_WORKSHOP_INSTANCE_ID")
         .env("OPENAI_API_KEY", crate::secrets::API_KEY_SENTINEL);
     if let Some(base_url) = openai_base_url {
         command.env("OPENAI_BASE_URL", base_url);
@@ -1729,7 +1728,7 @@ async fn launch_sidecar_upstream(
         .args(["--bind", &addr.to_string()])
         .args(["--instance-id", crate::instance::boot_epoch()])
         .env("GEPA_HOME", &gepa_home)
-        .env("SYNTH_WORKSHOP_INSTANCE_ID", workshop_instance_id())
+        .env_remove("SYNTH_WORKSHOP_INSTANCE_ID")
         .env("SYNTH_OPTIMIZER_API_KEY", &api_key)
         .stdin(Stdio::null())
         .stdout(Stdio::from(log.try_clone()?))
@@ -2194,12 +2193,6 @@ fn write_env_sh(
 /// never outlives the service it describes.
 fn clear_env_sh(home: &Path) {
     let _ = fs::remove_file(home.join("env.sh"));
-}
-
-fn workshop_instance_id() -> String {
-    let instance = std::env::var(crate::instance::INSTANCE_ENV)
-        .unwrap_or_else(|_| "canonical".into());
-    format!("{instance}:{}", crate::instance::boot_epoch())
 }
 
 fn runtime_lease_path(home: &Path) -> PathBuf {

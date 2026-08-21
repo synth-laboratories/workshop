@@ -168,7 +168,7 @@ pub async fn spawn(deps: EvalDriverDeps, root: PathBuf) -> Result<EvalDriverConn
 }
 
 fn patch_instance_manifest(connection: &EvalDriverConnection) {
-    let Some(path) = std::env::var_os(crate::instance::MANIFEST_ENV).map(PathBuf::from) else {
+    let Some(path) = crate::instance::manifest_path() else {
         return;
     };
     let Ok(raw) = fs::read_to_string(&path) else {

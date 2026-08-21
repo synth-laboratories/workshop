@@ -1051,8 +1051,8 @@ pub(crate) fn mcp_env_config(
     server: &str,
     ipc: &Path,
     session_id: &str,
-    app_name: &str,
-    bundle_id: &str,
+    _app_name: &str,
+    _bundle_id: &str,
 ) -> String {
     let browser_policy = (server == "synth_browser")
         .then(|| {
@@ -1064,12 +1064,10 @@ pub(crate) fn mcp_env_config(
         })
         .unwrap_or_default();
     format!(
-        "env = {{ {} = \"{}\", SYNTH_SESSION_ID = \"{}\", SYNTH_DESKTOP_APP_NAME = \"{}\", SYNTH_DESKTOP_BUNDLE_ID = \"{}\"{} }}\n",
+        "env = {{ {} = \"{}\", SYNTH_SESSION_ID = \"{}\"{} }}\n",
         mcp_ipc_env_key(server),
         toml_string(&ipc.display().to_string()),
         toml_string(session_id),
-        toml_string(app_name),
-        toml_string(bundle_id),
         browser_policy,
     )
 }
