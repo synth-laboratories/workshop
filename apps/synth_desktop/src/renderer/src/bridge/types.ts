@@ -446,7 +446,7 @@ export type InventoryBridge = {
 export type ModelPerformanceSummary = {
 	provider: string;
 	modelId: string;
-	measurementKind: "decode" | "observed_stream" | "end_to_end" | "provider_reported";
+	measurementKind: "decode" | "observed_stream" | "observed_stream_segment" | "end_to_end" | "provider_reported";
 	sampleCount: number;
 	tpsP50: number | null;
 	tpsP95: number | null;

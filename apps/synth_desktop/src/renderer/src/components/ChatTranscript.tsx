@@ -12,6 +12,7 @@ import {
 } from "../preferences";
 import { contextCompactionTokenSummary } from "../runtime/sessionView";
 import { runProgressItemsByMessage } from "../runtime/runProgress/transcript";
+import { bridges } from "../runtime/desktopBridge";
 import { useTurnPerformanceLabels } from "../hooks/useTurnPerformanceLabels";
 import { outputContainerIds as chatOutputContainerIds, primaryVisualId, useChatOutputs } from "../hooks/useChatOutputs";
 import { RunProgressCard } from "./runProgress/RunProgressCard";
@@ -718,7 +719,12 @@ export function ChatTranscript({
 	const artifacts = chat.artifacts ?? [];
 	const outputs = useChatOutputs(chat);
 	const hasResources = outputs.hasResources;
-	const turnTpsLabels = useTurnPerformanceLabels(chat, events, running);
+	const turnTpsLabels = useTurnPerformanceLabels(
+		chat,
+		events,
+		running,
+		bridges.modelPerformance?.turnSamples
+	);
 	// One card per run, anchored to the turn that first referenced it. Recomputed
 	// from activity rather than stored, so a reopened conversation reconstructs
 	// the same placement from its durable events.

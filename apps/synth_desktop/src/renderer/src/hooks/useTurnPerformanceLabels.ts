@@ -1,6 +1,7 @@
-import { useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type { RuntimeEvent } from "@synth/runtime-protocol";
 import type { LocalChat } from "../types/landing";
+import type { ModelPerformanceTurnSample } from "../bridge";
 
 const GENERATION_TPS_UNAVAILABLE = "Generation speed unavailable";
 const GENERATION_SPEED_EVENT = "turn/generationSpeed";
@@ -102,6 +103,29 @@ function generationLabel(value: GenerationSpeedMeasurement | undefined): string 
 	return value.status === "partial" ? `${rate} (partial)` : rate;
 }
 
+function endToEndSample(
+	samples: ModelPerformanceTurnSample[],
+	messageAt: number,
+	terminalAt: number | null
+): ModelPerformanceTurnSample | null {
+	const matches = samples.filter((sample) =>
+		sample.measurementKind === "end_to_end"
+		&& sample.startedAtMs <= messageAt
+		&& sample.completedAtMs >= messageAt
+		&& (terminalAt == null || sample.completedAtMs <= terminalAt + 1_000)
+	);
+	return matches.sort((a, b) => a.completedAtMs - b.completedAtMs).at(0) ?? null;
+}
+
+function endToEndLabel(sample: ModelPerformanceTurnSample | null): TurnPerformanceLabel | null {
+	if (!sample || !Number.isFinite(sample.outputTps) || sample.outputTps <= 0) return null;
+	return {
+		generation: `End-to-end output: ${formatTps(sample.outputTps)} tok/s`,
+		worked: null,
+		detail: "Authoritative provider output tokens divided by turn acceptance-to-completion time. Includes first-token latency; this is not decoder-only TPS."
+	};
+}
+
 export type TurnPerformanceLabel = {
 	generation: string;
 	worked: string | null;
@@ -127,7 +151,12 @@ export type TurnPerformanceLabel = {
  * never render time. It is elapsed wall time for the whole turn — deliberately
  * a different quantity from generation speed, and never divided into one.
  */
-export function turnPerformanceLabels(chat: LocalChat, events: RuntimeEvent[], running = false) {
+export function turnPerformanceLabels(
+	chat: LocalChat,
+	events: RuntimeEvent[],
+	running = false,
+	turnSamples: ModelPerformanceTurnSample[] = []
+) {
 	const byMessageId: Record<string, TurnPerformanceLabel> = {};
 	const ordered = [...events].sort((a, b) => a.sequence - b.sequence);
 	const messages = chat.messages;
@@ -185,7 +214,10 @@ export function turnPerformanceLabels(chat: LocalChat, events: RuntimeEvent[], r
 		const worked = isFinal && terminalAt != null && acceptedAt != null && terminalAt >= acceptedAt
 			? `Worked ${compactDuration(terminalAt - acceptedAt)}`
 			: null;
-		byMessageId[message.id] = {
+		const fallback = (!value || !isPublishable(value)) && !running && isFinal
+			? endToEndLabel(endToEndSample(turnSamples, messageAt, terminalAt))
+			: null;
+		byMessageId[message.id] = fallback ?? {
 			generation: generationLabel(value),
 			worked,
 			detail: value ? detail(value) : null
@@ -197,6 +229,31 @@ export function turnPerformanceLabels(chat: LocalChat, events: RuntimeEvent[], r
 	return { byMessageId, live: null as string | null };
 }
 
-export function useTurnPerformanceLabels(chat: LocalChat, events: RuntimeEvent[], running: boolean) {
-	return useMemo(() => turnPerformanceLabels(chat, events, running), [chat, events, running]);
+export type TurnSamplesLoader = (sessionId: string) => Promise<ModelPerformanceTurnSample[]>;
+
+export function useTurnPerformanceLabels(
+	chat: LocalChat,
+	events: RuntimeEvent[],
+	running: boolean,
+	loadTurnSamples?: TurnSamplesLoader
+) {
+	const [turnSamples, setTurnSamples] = useState<ModelPerformanceTurnSample[]>([]);
+	const terminalCursor = useMemo(
+		() => events.filter(isTerminal).map((event) => event.sequence).join(","),
+		[events]
+	);
+
+	useEffect(() => {
+		let disposed = false;
+		if (running || !loadTurnSamples) return () => { disposed = true; };
+		void loadTurnSamples(chat.id)
+			.then((samples) => { if (!disposed) setTurnSamples(samples); })
+			.catch(() => { if (!disposed) setTurnSamples([]); });
+		return () => { disposed = true; };
+	}, [chat.id, loadTurnSamples, running, terminalCursor]);
+
+	return useMemo(
+		() => turnPerformanceLabels(chat, events, running, turnSamples),
+		[chat, events, running, turnSamples]
+	);
 }

@@ -88,6 +88,24 @@ test("a message with no measurement at all is unavailable, not estimated", () =>
 	assert.equal(labels.byMessageId.msg_a.detail, null);
 });
 
+test("a hosted model falls back to its settled end-to-end output rate", () => {
+	const chat = { id: "hosted", title: "hosted", messages: [
+		{ id: "u", role: "user", body: "go", at: at(0) },
+		{ id: "msg_hosted", role: "assistant", body: "answer", at: at(2) }
+	] };
+	const events = [event(1, 1, "turn/accepted"), event(2, 4, "turn/completed")];
+	const samples = [{
+		runId: "turn-hosted",
+		measurementKind: "end_to_end",
+		startedAtMs: Date.parse(at(1)),
+		completedAtMs: Date.parse(at(4)),
+		outputTps: 24.75
+	}];
+	const label = turnPerformanceLabels(chat, events, false, samples).byMessageId.msg_hosted;
+	assert.equal(label.generation, "End-to-end output: 24.8 tok/s");
+	assert.match(label.detail, /Authoritative provider output tokens/);
+});
+
 test("an interrupted segment is labelled partial rather than presented as a headline", () => {
 	const { chat, events } = fixture();
 	const cut = events.map((entry) => entry.sequence === 7
