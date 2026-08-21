@@ -104,16 +104,16 @@ pub struct AccountOrganization {
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub struct AccountUsageWindow {
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = specta_typescript::Number)]
     pub events: i64,
     /// Finalized billed dollars. Never the sum of pending + billed.
     pub cost_usd: f64,
     pub finalized_usd: f64,
     /// Nominal minus billed for this window. Live estimates, not ledger truth.
     pub pending_usd: f64,
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = specta_typescript::Number)]
     pub tokens: i64,
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = specta_typescript::Number)]
     pub runtime_seconds: i64,
 }
 

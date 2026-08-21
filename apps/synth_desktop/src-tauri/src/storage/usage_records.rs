@@ -96,21 +96,21 @@ pub struct UsageRecord {
 pub struct UsageBreakdown {
     pub provider: String,
     pub model_id: String,
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = specta_typescript::Number)]
     pub requests: i64,
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = specta_typescript::Number)]
     pub input_tokens: i64,
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = specta_typescript::Number)]
     pub cached_input_tokens: Option<i64>,
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = specta_typescript::Number)]
     pub non_cached_input_tokens: Option<i64>,
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = specta_typescript::Number)]
     pub cache_write_tokens: Option<i64>,
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = specta_typescript::Number)]
     pub reasoning_tokens: Option<i64>,
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = specta_typescript::Number)]
     pub output_tokens: i64,
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = specta_typescript::Number)]
     pub total_tokens: i64,
     pub cache_hit_rate: Option<f64>,
     pub billed_cost_usd: Option<f64>,
@@ -122,7 +122,7 @@ pub struct UsageBreakdown {
     pub end_to_end_tps_p95: Option<f64>,
     pub ttft_ms_p50: Option<f64>,
     pub ttft_ms_p95: Option<f64>,
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = specta_typescript::Number)]
     pub perf_sample_count: i64,
 }
 

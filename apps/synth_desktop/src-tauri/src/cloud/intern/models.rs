@@ -321,9 +321,9 @@ pub struct CommandReceipt {
     pub runtime_kind: RuntimeKind,
     pub runtime_id: String,
     pub status: String,
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = specta_typescript::Number)]
     pub previous_generation: u64,
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = specta_typescript::Number)]
     pub state_generation: u64,
     pub decision_code: String,
     pub created_at: String,

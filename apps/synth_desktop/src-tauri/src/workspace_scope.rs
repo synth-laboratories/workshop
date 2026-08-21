@@ -64,9 +64,9 @@ pub struct ConversationWorkspaceScope {
     pub session_id: String,
     pub workspace: String,
     pub attachments: Vec<WorkspaceAttachment>,
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = specta_typescript::Number)]
     pub revision: i64,
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = specta_typescript::Number)]
     pub bound_revision: i64,
     pub binding_status: String,
     pub binding_error: Option<String>,

@@ -51,15 +51,25 @@ impl specta::Type for OpaqueJson {
     }
 }
 
-/// Existing Tauri integers arrive as JSON numbers; do not claim in generated
-/// TypeScript that every Rust i64/u64 is losslessly representable as `number`.
+/// A command argument that crosses the boundary as a JSON number.
+///
+/// specta refuses to export a bare `i64`/`u64` because values above 2^53 are
+/// not representable in JavaScript. Every integer on this boundary is a
+/// sequence number, a cursor, a byte count, a token count or a millisecond
+/// timestamp, none of which reaches that ceiling; if one ever does, it belongs
+/// on the wire as a string, not as an integer this type quietly widens.
+///
+/// This used to export as `unknown`, which is what made the generated bindings
+/// unusable: every call site had to cast, so the renderer kept a second,
+/// hand-written copy of the same types instead. `number` is the tradeoff that
+/// lets the generated bindings be the only ones.
 #[derive(Clone, Copy, Debug, Deserialize)]
 #[serde(transparent)]
 pub struct OpaqueInteger<T>(pub T);
 
 impl<T> specta::Type for OpaqueInteger<T> {
     fn definition(types: &mut specta::Types) -> specta::datatype::DataType {
-        <specta_typescript::Unknown as specta::Type>::definition(types)
+        <specta_typescript::Number as specta::Type>::definition(types)
     }
 }
 
