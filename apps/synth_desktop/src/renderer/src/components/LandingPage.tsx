@@ -3,11 +3,16 @@ import { apiProviderForTarget, EXECUTION_TARGETS, LAUNCH_PICKER_TARGETS, MODEL_A
 import type { ExecutionTargetOption, LandingState, ModelAccessKind } from "../types/landing";
 import { SynthLogo } from "./SynthLogo";
 import { ProviderMark, providerMarkForTarget } from "./ProviderMark";
+import type { LagunaPolicy } from "../bridge/types";
+import { policyLabel } from "../runtime/lagunaPolicies";
 
 type Props = {
 	state: LandingState;
 	selectedTargetId: string;
 	onSelectTarget: (id: string) => void;
+	lagunaAdapters?: LagunaPolicy[];
+	selectedLagunaAdapterId?: string | null;
+	onSelectLagunaAdapter?: (checkpointId: string | null) => void;
 	onConfigureAccount?: () => void;
 	onConfigureModels?: () => void;
 	onResolveBilling?: () => void;
@@ -22,7 +27,10 @@ export function ModelPicker({
 	onSelectTarget,
 	onConfigureAccount,
 	onConfigureModels,
-	onResolveBilling
+	onResolveBilling,
+	lagunaPolicies = [],
+	selectedLagunaPolicyId = null,
+	onSelectLagunaPolicy
 }: {
 	selectedTargetId: string;
 	apiKeyConfigured?: boolean;
@@ -34,11 +42,20 @@ export function ModelPicker({
 	onConfigureAccount?: () => void;
 	onConfigureModels?: () => void;
 	onResolveBilling?: () => void;
+	lagunaPolicies?: LagunaPolicy[];
+	selectedLagunaPolicyId?: string | null;
+	onSelectLagunaPolicy?: (modelId: string | null) => void;
 }) {
 	const [open, setOpen] = useState(false);
 	const [activeAccess, setActiveAccess] = useState<ModelAccessKind | null>(null);
 	const ref = useRef<HTMLDivElement>(null);
 	const selected = EXECUTION_TARGETS.find((t) => t.id === selectedTargetId) ?? EXECUTION_TARGETS[0];
+	const selectedLagunaPolicy = lagunaPolicies.find((policy) =>
+		policy.isBase ? selectedLagunaPolicyId === null : policy.modelId === selectedLagunaPolicyId
+	);
+	const selectedLabel = selectedTargetId === "local-laguna" && selectedLagunaPolicy
+		? policyLabel(selectedLagunaPolicy)
+		: selected.label;
 	// The dropdown must stay inside the viewport with an 8px inset, never cover
 	// the composer, and flip above the trigger when the space below is tighter
 	// than the space above. Content taller than the slot scrolls internally.
@@ -117,7 +134,7 @@ export function ModelPicker({
 					kind={providerMarkForTarget(selectedTargetId)}
 					className={`model-pill-logo model-pill-logo-${providerMarkForTarget(selectedTargetId)}`}
 				/>
-				<span className="model-pill-label">{selected.label}</span>
+				<span className="model-pill-label">{selectedLabel}</span>
 				<svg className="model-pill-chevron" width="12" height="12" viewBox="0 0 12 12" aria-hidden>
 					<path d="M3 4.5L6 7.5L9 4.5" stroke="currentColor" strokeWidth="1.5" fill="none" />
 				</svg>
@@ -164,6 +181,30 @@ export function ModelPicker({
 							<div key={group} className="model-dropdown-group">
 								<div className="model-dropdown-group-label">{activeAccess === "api" ? apiProviderForTarget(items[0]) : TARGET_GROUP_LABEL[group]}</div>
 								{items.map((target: ExecutionTargetOption) => {
+									if (target.id === "local-laguna" && lagunaPolicies.length) {
+										return lagunaPolicies.map((policy) => {
+											const policyId = policy.isBase ? null : policy.modelId;
+											const selectedHere = selectedTargetId === target.id && selectedLagunaPolicyId === policyId;
+											return (
+												<button
+													key={policy.modelId}
+													type="button"
+													role="option"
+													aria-selected={selectedHere}
+													data-testid={`model-option-local-laguna-${policy.isBase ? "base" : policy.modelId}`}
+													className={`model-option${selectedHere ? " selected" : ""}`}
+													onClick={() => {
+														onSelectTarget(target.id);
+														onSelectLagunaPolicy?.(policyId);
+														setOpen(false);
+													}}
+												>
+													<span className="model-option-label">{policyLabel(policy)}</span>
+													<span className="model-option-desc">{policy.isBase ? "Base model · This Mac" : "Fine-tuned model · This Mac"}</span>
+												</button>
+											);
+										});
+									}
 									const needsSynthKey =
 										target.id.startsWith("synth-cloud-") && apiKeyConfigured !== true;
 									const needsOpenRouterKey =
@@ -264,6 +305,9 @@ export function LandingPage({
 	state,
 	selectedTargetId,
 	onSelectTarget,
+	lagunaAdapters = [],
+	selectedLagunaAdapterId = null,
+	onSelectLagunaAdapter,
 	onConfigureAccount,
 	onConfigureModels,
 	onResolveBilling
@@ -288,8 +332,11 @@ export function LandingPage({
 						onSelectTarget={onSelectTarget}
 						onConfigureAccount={onConfigureAccount}
 						onConfigureModels={onConfigureModels}
-						onResolveBilling={onResolveBilling}
-					/>
+							onResolveBilling={onResolveBilling}
+							lagunaPolicies={lagunaAdapters}
+							selectedLagunaPolicyId={selectedLagunaAdapterId}
+							onSelectLagunaPolicy={onSelectLagunaAdapter}
+						/>
 				</div>
 				{!state.apiKeyConfigured && !accountChoiceMade ? (
 					<div className="quick-actions" data-testid="first-run-account-choice">

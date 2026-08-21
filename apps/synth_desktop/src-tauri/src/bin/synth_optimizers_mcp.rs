@@ -3,6 +3,9 @@
 #[path = "../ipc/mcp_stdio.rs"]
 mod mcp_stdio;
 
+#[path = "../instance_paths.rs"]
+mod instance_paths;
+
 use mcp_stdio::{run_stdio_server, McpServerInfo};
 use serde_json::{json, Value};
 use std::{
@@ -19,19 +22,10 @@ struct Connection {
 }
 
 fn connection_file() -> PathBuf {
-    env::var("SYNTH_DESKTOP_IPC_FILE")
-        .or_else(|_| env::var("SYNTH_VISUALS_IPC_FILE"))
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| {
-            env::var_os("SYNTH_DESKTOP_DATA_ROOT")
-                .map(PathBuf::from)
-                .unwrap_or_else(|| {
-                    dirs::data_dir()
-                        .unwrap_or_else(|| PathBuf::from("."))
-                        .join("Synth Desktop")
-                })
-                .join("visuals-ipc.json")
-        })
+    instance_paths::ipc_connection_file(
+        &["SYNTH_DESKTOP_IPC_FILE", "SYNTH_VISUALS_IPC_FILE"],
+        "visuals-ipc.json",
+    )
 }
 
 fn display_err(error: impl std::fmt::Display) -> String {
@@ -96,11 +90,11 @@ fn request_inner(
 
 fn tools() -> Value {
     json!({"tools":[
-        {"name":"optimizer_manage","description":"Operate Synth optimizer runs. Prefer start_workflow for a bounded product recipe: it performs fresh admission, approval, run creation, and visual opening in one call. Advanced callers may still use prepare, open_visual, await_ready, start. Never install the plugin from this tool.","inputSchema":{"type":"object","properties":{"operation":{"type":"string","enum":["list_algorithms","list_recipes","start_workflow","prepare","open_visual","await_ready","start","start_recipe","stage_eval_candidates","list_runs","get_run","watch_run","get_state","get_result","reconcile_cloud","cancel_run","cancel","pause_run","resume_run","finalize"]},"arguments":{"type":"object","additionalProperties":true}},"required":["operation","arguments"],"additionalProperties":false}},
+        {"name":"optimizer_manage","description":"Operate Synth optimizer runs and the checkpoint catalog. Prefer start_workflow for a bounded product recipe: it performs fresh admission, approval, run creation, and visual opening in one call. Advanced callers may still use prepare, open_visual, await_ready, start. Catalog LoRAs use list_checkpoints then infer_checkpoint. Never install the plugin from this tool.","inputSchema":{"type":"object","properties":{"operation":{"type":"string","enum":["list_algorithms","list_recipes","start_workflow","prepare","open_visual","await_ready","start","start_recipe","stage_eval_candidates","launch_artifact_inference","inspect_local_mlx","plan_model_install","install_model_or_runtime","create_training_plan","list_training_artifacts","inspect_training_artifact","launch_artifact_eval","export_or_delete_artifact","list_runs","get_run","watch_run","get_state","get_result","reconcile_cloud","cancel_run","cancel","pause_run","resume_run","finalize","list_checkpoints","archive_checkpoint","import_checkpoint","infer_checkpoint","update_checkpoint","publish_checkpoint"]},"arguments":{"type":"object","additionalProperties":true}},"required":["operation","arguments"],"additionalProperties":false}},
         {"name":"optimizer_list_algorithms","description":"List optimizer algorithms and availability","inputSchema":{"type":"object","properties":{},"additionalProperties":false}},
         {"name":"optimizer_list_recipes","description":"List product-owned bounded optimizer recipes and their hard limits","inputSchema":{"type":"object","properties":{},"additionalProperties":false}},
-        {"name":"optimizer_start_recipe","description":"Prepare an allowlisted paid/plugin recipe. For local eval.* recipes, start the fixed pinned recipe with a candidate_set_id staged by optimizer_stage_eval_candidates. Container baseline evals (Banking77, HealthBench) start from a registered container and do not take a candidate set.","inputSchema":{"type":"object","properties":{"recipe_id":{"type":"string","enum":["gepa.banking77.smoke.v1","gepa.banking77.luna.v1","gepa.banking77.sol.v1","gepa.craftax.smoke.v1","gelo.craftax.hosted.v1","sft.qwen35-0.8b.mlx.v1","sft.craftax.gpt-oss.smoke.v1","sft.craftax.nemotron-nano.tinker.v1","sft.banking77.nemotron-lightning.tinker.v1","cispo.banking77.mlx.v1","cispo.slime.hosted.v1","eval.fixture.policy-smoke.v1","eval.craftax.code-policy.smoke.v1","eval.gamebench.craftax-code-policy.confirm.v1","eval.craftax.llm-policy.smoke.v1","eval.gamebench.llm-policy.confirm.v1","eval.banking77.baseline.v1","eval.healthbench.smoke.v1"]},"session_ref":{"type":"string"},"open_visual":{"type":"boolean"},"base_model":{"type":"string"},"dataset_shard":{"type":"string","enum":["train_a","train_b"]},"candidate_set_id":{"type":"string","description":"Required by pinned local eval.* recipes. An id returned by optimizer_stage_eval_candidates, never a path. Not used by Banking77/HealthBench container baseline evals."},"container_id":{"type":"string","description":"Optional registered-container identity for Banking77/HealthBench baseline evals. Required when multiple healthy GEPA v2 pools advertise the same family; omitting then fails closed rather than substituting."}},"required":["recipe_id"],"additionalProperties":false}},
-        {"name":"optimizer_start_workflow","description":"Start one bounded product workflow in one call. Freshens relevant registered-container capabilities, performs host approval and sidecar admission, creates the run, and opens its chat-owned visual. Craftax policy evals still require a staged candidate_set_id.","inputSchema":{"type":"object","properties":{"recipe_id":{"type":"string","enum":["gepa.banking77.smoke.v1","gepa.banking77.luna.v1","gepa.banking77.sol.v1","gepa.craftax.smoke.v1","gelo.craftax.hosted.v1","sft.qwen35-0.8b.mlx.v1","sft.craftax.gpt-oss.smoke.v1","sft.craftax.nemotron-nano.tinker.v1","sft.banking77.nemotron-lightning.tinker.v1","cispo.banking77.mlx.v1","cispo.slime.hosted.v1","eval.fixture.policy-smoke.v1","eval.craftax.code-policy.smoke.v1","eval.gamebench.craftax-code-policy.confirm.v1","eval.craftax.llm-policy.smoke.v1","eval.gamebench.llm-policy.confirm.v1","eval.banking77.baseline.v1","eval.healthbench.smoke.v1"]},"session_ref":{"type":"string"},"open_visual":{"type":"boolean"},"base_model":{"type":"string"},"dataset_shard":{"type":"string","enum":["train_a","train_b"]},"candidate_set_id":{"type":"string"},"container_id":{"type":"string","description":"Optional registered-container identity for Banking77/HealthBench baseline evals. Required when multiple healthy GEPA v2 pools advertise the same family; omitting then fails closed rather than substituting."}},"required":["recipe_id"],"additionalProperties":false}},
+        {"name":"optimizer_start_recipe","description":"Prepare an allowlisted paid/plugin recipe. For local eval.* recipes, start the fixed pinned recipe with a candidate_set_id staged by optimizer_stage_eval_candidates. Container baseline evals (Banking77, HealthBench) start from a registered container and do not take a candidate set.","inputSchema":{"type":"object","properties":{"recipe_id":{"type":"string","enum":["gepa.banking77.smoke.v1","gepa.banking77.luna.v1","gepa.banking77.sol.v1","gepa.craftax.smoke.v1","gelo.craftax.hosted.v1","sft.qwen35-0.8b.mlx.v1","sft.craftax.gpt-oss.smoke.v1","sft.craftax.nemotron-nano.tinker.v1","sft.banking77.nemotron-lightning.tinker.v1","cispo.banking77.mlx.v1","cispo.slime.hosted.v1","eval.fixture.policy-smoke.v1","eval.craftax.code-policy.smoke.v1","eval.gamebench.craftax-code-policy.confirm.v1","eval.craftax.llm-policy.smoke.v1","eval.gamebench.llm-policy.confirm.v1","eval.banking77.baseline.v1","eval.healthbench.smoke.v1"]},"session_ref":{"type":"string"},"open_visual":{"type":"boolean"},"base_model":{"type":"string"},"dataset_shard":{"type":"string","enum":["train_a","train_b"]},"candidate_set_id":{"type":"string","description":"Required by pinned local eval.* recipes. An id returned by optimizer_stage_eval_candidates, never a path. Not used by Banking77/HealthBench container baseline evals."},"training_artifact_id":{"type":"string","description":"Verified local training artifact used as the CISPO warm start."},"container_id":{"type":"string","description":"Optional registered-container identity for Banking77/HealthBench baseline evals. Required when multiple healthy GEPA v2 pools advertise the same family; omitting then fails closed rather than substituting."}},"required":["recipe_id"],"additionalProperties":false}},
+        {"name":"optimizer_start_workflow","description":"Start one bounded product workflow in one call. Freshens relevant registered-container capabilities, performs host approval and sidecar admission, creates the run, and opens its chat-owned visual. Craftax policy evals still require a staged candidate_set_id.","inputSchema":{"type":"object","properties":{"recipe_id":{"type":"string","enum":["gepa.banking77.smoke.v1","gepa.banking77.luna.v1","gepa.banking77.sol.v1","gepa.craftax.smoke.v1","gelo.craftax.hosted.v1","sft.qwen35-0.8b.mlx.v1","sft.craftax.gpt-oss.smoke.v1","sft.craftax.nemotron-nano.tinker.v1","sft.banking77.nemotron-lightning.tinker.v1","cispo.banking77.mlx.v1","cispo.slime.hosted.v1","eval.fixture.policy-smoke.v1","eval.craftax.code-policy.smoke.v1","eval.gamebench.craftax-code-policy.confirm.v1","eval.craftax.llm-policy.smoke.v1","eval.gamebench.llm-policy.confirm.v1","eval.banking77.baseline.v1","eval.healthbench.smoke.v1"]},"session_ref":{"type":"string"},"open_visual":{"type":"boolean"},"base_model":{"type":"string"},"dataset_shard":{"type":"string","enum":["train_a","train_b"]},"candidate_set_id":{"type":"string"},"training_artifact_id":{"type":"string","description":"Verified local training artifact used as the CISPO warm start."},"container_id":{"type":"string","description":"Optional registered-container identity for Banking77/HealthBench baseline evals. Required when multiple healthy GEPA v2 pools advertise the same family; omitting then fails closed rather than substituting."}},"required":["recipe_id"],"additionalProperties":false}},
         {"name":"optimizer_stage_eval_candidates","description":"Freeze policy files from the session workspace into one immutable content-addressed candidate set and return its id. Paths are workspace-relative; absolute paths and traversal are refused.","inputSchema":{"type":"object","properties":{"session_ref":{"type":"string","description":"Optional. Defaults to the calling session; an agent has no way to know its own id, so do not guess one."},"candidates":{"type":"array","minItems":1,"maxItems":16,"items":{"type":"object","properties":{"label":{"type":"string"},"path":{"type":"string"},"entrypoint":{"type":"string"},"kind":{"type":"string"},"baseline":{"type":"boolean"}},"required":["label","path"],"additionalProperties":false}}},"required":["candidates"],"additionalProperties":false}},
         {"name":"optimizer_list_runs","description":"List local optimizer run mirrors","inputSchema":{"type":"object","properties":{"status":{"type":"string"},"algorithm_id":{"type":"string"},"source":{"type":"string"},"search":{"type":"string"}},"additionalProperties":false}},
         {"name":"optimizer_get_run","description":"Get one optimizer run mirror","inputSchema":{"type":"object","properties":{"optimizer_run_id":{"type":"string"}},"required":["optimizer_run_id"],"additionalProperties":false}},
@@ -113,7 +107,13 @@ fn tools() -> Value {
         {"name":"optimizer_cancel_run","description":"Cancel an optimizer run when capability allows","inputSchema":{"type":"object","properties":{"optimizer_run_id":{"type":"string"}},"required":["optimizer_run_id"],"additionalProperties":false}},
         {"name":"optimizer_pause_run","description":"Hold a running optimizer when capability allows. An eval run stops dispatching new trials; trials already running finish and seal, and the run releases its semaphore capacity.","inputSchema":{"type":"object","properties":{"optimizer_run_id":{"type":"string"}},"required":["optimizer_run_id"],"additionalProperties":false}},
         {"name":"optimizer_resume_run","description":"Resume a paused optimizer run where it left off. A pause changes timing, not evidence.","inputSchema":{"type":"object","properties":{"optimizer_run_id":{"type":"string"}},"required":["optimizer_run_id"],"additionalProperties":false}},
-        {"name":"optimizer_open_visual","description":"Create or reuse the optimizer's primary visual and show it live in the current Desktop conversation","inputSchema":{"type":"object","properties":{"optimizer_run_id":{"type":"string"},"session_ref":{"type":"string"}},"required":["optimizer_run_id"],"additionalProperties":false}}
+        {"name":"optimizer_open_visual","description":"Create or reuse the optimizer's primary visual and show it live in the current Desktop conversation","inputSchema":{"type":"object","properties":{"optimizer_run_id":{"type":"string"},"session_ref":{"type":"string"}},"required":["optimizer_run_id"],"additionalProperties":false}},
+        {"name":"optimizer_list_checkpoints","description":"List This Mac MLX and hosted Tinker LoRA checkpoints in the union catalog. Placement is this_mac, hosted, or all.","inputSchema":{"type":"object","properties":{"search":{"type":"string"},"placement":{"type":"string","enum":["all","this_mac","hosted"]},"scope":{"type":"string","enum":["all","mine","org"]},"provider":{"type":"string"},"checkpoint_kind":{"type":"string","enum":["inference","training"]},"base_model":{"type":"string"},"run_id":{"type":"string"},"optimizer_algorithm":{"type":"string","enum":["sft","cispo","ppo"]},"status":{"type":"string"},"limit":{"type":"integer"},"offset":{"type":"integer"}},"additionalProperties":false}},
+        {"name":"optimizer_archive_checkpoint","description":"Archive a catalog LoRA. Local archive hides the row; hosted archive uses the cloud API.","inputSchema":{"type":"object","properties":{"checkpoint_id":{"type":"string"}},"required":["checkpoint_id"],"additionalProperties":false}},
+        {"name":"optimizer_import_checkpoint","description":"Import a validated mlx-lora.v1 folder into the This Mac catalog. Path must be a local adapter directory with adapter_config.json and adapters.safetensors.","inputSchema":{"type":"object","properties":{"path":{"type":"string"}},"required":["path"],"additionalProperties":false}},
+        {"name":"optimizer_infer_checkpoint","description":"Sample an inference-kind catalog LoRA with a native OpenAI family body. family is chat_completions or responses. Never wrap a {message, reply} helper and never name mlx-rl, Tinker, or loopback ports.","inputSchema":{"type":"object","properties":{"checkpoint_id":{"type":"string"},"family":{"type":"string","enum":["chat_completions","responses"]},"body":{"type":"object","additionalProperties":true}},"required":["checkpoint_id","family","body"],"additionalProperties":false}},
+        {"name":"optimizer_update_checkpoint","description":"Rename, tag, or add notes on a catalog LoRA. Bytes stay immutable.","inputSchema":{"type":"object","properties":{"checkpoint_id":{"type":"string"},"name":{"type":"string"},"description":{"type":"string"},"tags":{"type":"array","items":{"type":"string"}}},"required":["checkpoint_id"],"additionalProperties":false}},
+        {"name":"optimizer_publish_checkpoint","description":"Explicitly publish a This Mac MLX adapter into the hosted catalog. Never auto-upload.","inputSchema":{"type":"object","properties":{"checkpoint_id":{"type":"string"}},"required":["checkpoint_id"],"additionalProperties":false}}
     ]})
 }
 
@@ -142,7 +142,7 @@ fn call_tool(name: &str, args: &Value) -> Result<Value, String> {
             .and_then(Value::as_str)
             .ok_or_else(|| "operation required".to_string())?;
         let nested = args.get("arguments").cloned().unwrap_or_else(|| json!({}));
-        let allow_path = matches!(operation, "import_local" | "create_run");
+        let allow_path = matches!(operation, "import_local" | "create_run" | "import_checkpoint");
         reject_secret_keys(&nested, allow_path)?;
         let tool = match operation {
             "list_algorithms" => "optimizer_list_algorithms",
@@ -164,6 +164,12 @@ fn call_tool(name: &str, args: &Value) -> Result<Value, String> {
             "pause_run" => "optimizer_pause_run",
             "resume_run" => "optimizer_resume_run",
             "open_visual" => "optimizer_open_visual",
+            "list_checkpoints" => "optimizer_list_checkpoints",
+            "archive_checkpoint" => "optimizer_archive_checkpoint",
+            "import_checkpoint" => "optimizer_import_checkpoint",
+            "infer_checkpoint" => "optimizer_infer_checkpoint",
+            "update_checkpoint" => "optimizer_update_checkpoint",
+            "publish_checkpoint" => "optimizer_publish_checkpoint",
             other => return Err(format!("unknown optimizer operation {other}")),
         };
         return call_tool(tool, &nested);
@@ -205,6 +211,7 @@ fn call_tool(name: &str, args: &Value) -> Result<Value, String> {
                 "baseModel": args.get("base_model"),
                 "datasetShard": args.get("dataset_shard"),
                 "candidateSetId": args.get("candidate_set_id"),
+                "trainingArtifactId": args.get("training_artifact_id"),
                 "containerId": args.get("container_id")
             })),
         ),
@@ -218,6 +225,7 @@ fn call_tool(name: &str, args: &Value) -> Result<Value, String> {
                 "baseModel": args.get("base_model"),
                 "datasetShard": args.get("dataset_shard"),
                 "candidateSetId": args.get("candidate_set_id"),
+                "trainingArtifactId": args.get("training_artifact_id"),
                 "containerId": args.get("container_id")
             })),
         ),
@@ -347,6 +355,57 @@ fn call_tool(name: &str, args: &Value) -> Result<Value, String> {
             &format!("/v1/optimizers/runs/{}/open_visual", id()?),
             Some(json!({ "sessionRef": session_ref() })),
         ),
+        "optimizer_list_checkpoints" => request(
+            "GET",
+            "/v1/optimizers/checkpoints",
+            Some(json!({
+                "search": args.get("search"),
+                "placement": args.get("placement"),
+                "scope": args.get("scope"),
+                "provider": args.get("provider"),
+                "checkpointKind": args.get("checkpoint_kind"),
+                "baseModel": args.get("base_model"),
+                "runId": args.get("run_id"),
+                "optimizerAlgorithm": args.get("optimizer_algorithm"),
+                "status": args.get("status"),
+                "limit": args.get("limit"),
+                "offset": args.get("offset")
+            })),
+        ),
+        "optimizer_archive_checkpoint" => request(
+            "POST",
+            "/v1/optimizers/checkpoints/archive",
+            Some(json!({ "checkpointId": args.get("checkpoint_id") })),
+        ),
+        "optimizer_import_checkpoint" => request(
+            "POST",
+            "/v1/optimizers/checkpoints/import",
+            Some(json!({ "path": args.get("path") })),
+        ),
+        "optimizer_infer_checkpoint" => request(
+            "POST",
+            "/v1/optimizers/checkpoints/infer",
+            Some(json!({
+                "checkpointId": args.get("checkpoint_id"),
+                "family": args.get("family"),
+                "body": args.get("body")
+            })),
+        ),
+        "optimizer_update_checkpoint" => request(
+            "POST",
+            "/v1/optimizers/checkpoints/update",
+            Some(json!({
+                "checkpointId": args.get("checkpoint_id"),
+                "name": args.get("name"),
+                "description": args.get("description"),
+                "tags": args.get("tags")
+            })),
+        ),
+        "optimizer_publish_checkpoint" => request(
+            "POST",
+            "/v1/optimizers/checkpoints/publish",
+            Some(json!({ "checkpointId": args.get("checkpoint_id") })),
+        ),
         _ => Err(format!("unknown tool {name}")),
     }
 }
@@ -391,6 +450,11 @@ mod tests {
         assert!(encoded.contains("optimizer_resume_run"));
         assert!(encoded.contains("optimizer_start_workflow"));
         assert!(encoded.contains("start_workflow"));
+        assert!(encoded.contains("optimizer_list_checkpoints"));
+        assert!(encoded.contains("optimizer_infer_checkpoint"));
+        assert!(encoded.contains("optimizer_update_checkpoint"));
+        assert!(encoded.contains("optimizer_publish_checkpoint"));
+        assert!(encoded.contains("chat_completions"));
         assert!(!encoded.contains("api_key"));
     }
 

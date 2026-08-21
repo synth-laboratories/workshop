@@ -211,7 +211,7 @@ pub fn require_artifact_id(id: &str) -> Result<&str> {
     }
     if !id
         .chars()
-        .all(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '_')
+        .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | ':'))
     {
         bail!("training artifact id must be alphanumeric");
     }
@@ -511,24 +511,56 @@ mod tests {
     use serde_json::json;
     use std::path::Path;
 
-    fn isolated_root() -> (PathBuf, Option<std::ffi::OsString>) {
-        let isolated = std::env::temp_dir().join(format!(
-            "synth-desktop-training-artifacts-{}",
-            std::process::id()
-        ));
-        let _ = fs::remove_dir_all(&isolated);
-        fs::create_dir_all(&isolated).unwrap();
-        let previous = std::env::var_os(crate::instance::DATA_ROOT_ENV);
-        std::env::set_var(crate::instance::DATA_ROOT_ENV, &isolated);
-        (isolated, previous)
+    /// Serialises the tests that repoint the data root.
+    ///
+    /// `state_root()` reads a process-global variable, so two tests holding
+    /// different roots cannot run at the same time however carefully each one
+    /// cleans up after itself.
+    static ROOT_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    static ROOT_SEQUENCE: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+    /// A private data root for one test, restored when the test ends.
+    ///
+    /// The directory is unique per call: keying it on the process id alone
+    /// gave every test in this module the same path, and each one deletes that
+    /// path on entry and exit, so concurrent tests removed each other's files
+    /// mid-run. Restoration is a `Drop` rather than a call at the end of the
+    /// test, because a panicking test used to leave the variable pointing at a
+    /// directory it had already deleted, failing whatever ran next.
+    struct IsolatedRoot {
+        path: PathBuf,
+        previous: Option<std::ffi::OsString>,
+        _guard: std::sync::MutexGuard<'static, ()>,
     }
 
-    fn restore(previous: Option<std::ffi::OsString>, isolated: PathBuf) {
-        match previous {
-            Some(value) => std::env::set_var(crate::instance::DATA_ROOT_ENV, value),
-            None => std::env::remove_var(crate::instance::DATA_ROOT_ENV),
+    impl Drop for IsolatedRoot {
+        fn drop(&mut self) {
+            match self.previous.take() {
+                Some(value) => std::env::set_var(crate::instance::DATA_ROOT_ENV, value),
+                None => std::env::remove_var(crate::instance::DATA_ROOT_ENV),
+            }
+            let _ = fs::remove_dir_all(&self.path);
         }
-        let _ = fs::remove_dir_all(isolated);
+    }
+
+    fn isolated_root() -> IsolatedRoot {
+        // A poisoned lock means some earlier test panicked; the root is still
+        // ours to take, so recover rather than cascade the failure.
+        let guard = ROOT_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+        let ordinal = ROOT_SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let path = std::env::temp_dir().join(format!(
+            "synth-desktop-training-artifacts-{}-{ordinal}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&path);
+        fs::create_dir_all(&path).unwrap();
+        let previous = std::env::var_os(crate::instance::DATA_ROOT_ENV);
+        std::env::set_var(crate::instance::DATA_ROOT_ENV, &path);
+        IsolatedRoot {
+            path,
+            previous,
+            _guard: guard,
+        }
     }
 
     #[test]
@@ -572,7 +604,7 @@ mod tests {
 
     #[test]
     fn registry_is_instance_scoped_and_idempotent() {
-        let (isolated, previous) = isolated_root();
+        let isolated = isolated_root();
         let artifact = TrainingArtifact::from_mlx_handoff(
             "run-2",
             "cispo",
@@ -594,8 +626,7 @@ mod tests {
         assert_eq!(listed.len(), 1);
         assert_eq!(listed[0].id, "run-2-terminal");
         assert_eq!(listed[0].producing_algorithm, "cispo");
-        assert!(index_path().starts_with(&isolated));
-        restore(previous, isolated);
+        assert!(index_path().starts_with(&isolated.path));
     }
 
     #[test]
@@ -654,13 +685,17 @@ mod tests {
             );
         }
         assert_eq!(require_artifact_id("ckpt_10k").unwrap(), "ckpt_10k");
+        assert_eq!(
+            require_artifact_id("sft_mlx_qwen_57c9c1e7762a:step-4").unwrap(),
+            "sft_mlx_qwen_57c9c1e7762a:step-4"
+        );
     }
 
     #[test]
     fn export_refuses_traversal_symlink_wrong_digest_and_duplicate_conflict() {
-        let (isolated, previous) = isolated_root();
-        let artifact = registered(&isolated, "cap-export", "abcd");
-        let dest_parent = isolated.join("exports");
+        let isolated = isolated_root();
+        let artifact = registered(&isolated.path, "cap-export", "abcd");
+        let dest_parent = isolated.path.join("exports");
         fs::create_dir_all(&dest_parent).unwrap();
 
         let traversal = export_to("cap-export", dest_parent.join("../outside").to_str().unwrap(), None)
@@ -668,7 +703,7 @@ mod tests {
             .to_string();
         assert!(traversal.contains("traversal"), "{traversal}");
 
-        let link = isolated.join("link-dest");
+        let link = isolated.path.join("link-dest");
         #[cfg(unix)]
         {
             std::os::unix::fs::symlink(&dest_parent, &link).unwrap();
@@ -707,14 +742,12 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(conflict.contains("already exists"), "{conflict}");
-
-        restore(previous, isolated);
     }
 
     #[test]
     fn delete_refuses_in_use_and_records_a_tombstone() {
-        let (isolated, previous) = isolated_root();
-        registered(&isolated, "cap-del", "abcd");
+        let isolated = isolated_root();
+        registered(&isolated.path, "cap-del", "abcd");
         lease("cap-del", "cispo_run").unwrap();
         let in_use = delete("cap-del").unwrap_err().to_string();
         assert!(in_use.contains("in use"), "{in_use}");
@@ -724,6 +757,5 @@ mod tests {
         assert!(tombstone_path("cap-del").is_file());
         let missing = get("cap-del").unwrap_err().to_string();
         assert!(missing.contains("deleted"), "{missing}");
-        restore(previous, isolated);
     }
 }

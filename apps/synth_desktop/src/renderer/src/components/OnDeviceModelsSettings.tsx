@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import type { LagunaDownloadProgress, LagunaModelHit, LagunaStatus } from "../bridge";
+import type { LagunaAdapterStatus, LagunaDownloadProgress, LagunaModelHit, LagunaStatus } from "../bridge";
 import { ProviderMark } from "./ProviderMark";
 import { bridges } from "../runtime/desktopBridge";
 import { publicError } from "../runtime/publicError";
@@ -38,6 +38,7 @@ export function OnDeviceModelsSettings({ lagunaPhase, onReloadLaguna }: Props) {
 	const [reloadState, setReloadState] = useState<"idle" | "reloading" | "ready" | "error">("idle");
 	const [reloadDetail, setReloadDetail] = useState<string | null>(null);
 	const [downloadProgress, setDownloadProgress] = useState<LagunaDownloadProgress | null>(null);
+	const [adapters, setAdapters] = useState<LagunaAdapterStatus[]>([]);
 
 	const refresh = useCallback(async () => {
 		setBusy(true);
@@ -56,6 +57,31 @@ export function OnDeviceModelsSettings({ lagunaPhase, onReloadLaguna }: Props) {
 	}, [refresh]);
 
 	useEffect(() => bridges.laguna?.onDownloadProgress?.(setDownloadProgress), []);
+
+	const refreshAdapters = useCallback(async () => {
+		try {
+			setAdapters((await bridges.laguna?.adapterStatus?.()) ?? []);
+		} catch {
+			setAdapters([]);
+		}
+	}, []);
+
+	useEffect(() => {
+		void refreshAdapters();
+	}, [refreshAdapters]);
+
+	const downloadAdapter = useCallback(async (modelId: string) => {
+		setBusy(true);
+		setError(null);
+		try {
+			await bridges.laguna?.adapterDownload?.(modelId);
+			await refreshAdapters();
+		} catch (reason) {
+			setError(publicError(reason));
+		} finally {
+			setBusy(false);
+		}
+	}, [refreshAdapters]);
 
 	const selected = hits.find((hit) => hit.selected) ?? null;
 	const modelsRoot = selected?.modelsRoot ?? hits[0]?.modelsRoot ?? "~/.synth-desktop/models";
@@ -288,6 +314,52 @@ export function OnDeviceModelsSettings({ lagunaPhase, onReloadLaguna }: Props) {
 				</article>;
 				})}
 			</div>
+
+			{adapters.length ? (
+				<div className="on-device-grid" data-testid="on-device-adapters">
+					{adapters.map((adapter) => (
+						<article key={adapter.modelId} className={`on-device-card${adapter.installed ? " installed" : ""}`} data-testid={`on-device-adapter-${adapter.modelId}`}>
+							<header className="on-device-card-top">
+								<div className="on-device-card-identity">
+									<div>
+										<div className="on-device-card-title-row">
+											<strong>{adapter.title}</strong>
+											{adapter.installed ? <span className="model-location-badge">Installed</span> : null}
+										</div>
+										<p>{adapter.modelId}</p>
+									</div>
+								</div>
+								{adapter.installed ? null : (
+									<button
+										type="button"
+										className="on-device-download"
+										disabled={busy || !adapter.baseMatches}
+										onClick={() => void downloadAdapter(adapter.modelId)}
+										data-testid={`download-adapter-${adapter.modelId}`}
+									>
+										{busy ? "Downloading…" : "Download"}
+									</button>
+								)}
+							</header>
+							<dl className="on-device-specs">
+								<div>
+									<dt>Download size</dt>
+									<dd>{formatBytes(adapter.downloadBytes)}</dd>
+								</div>
+								<div>
+									<dt>Base revision</dt>
+									<dd>{adapter.baseRevision.slice(0, 12)}</dd>
+								</div>
+							</dl>
+							{adapter.baseMatches ? null : (
+								<p className="on-device-installed" role="alert">
+									Needs Laguna XS revision {adapter.baseRevision.slice(0, 12)}
+								</p>
+							)}
+						</article>
+					))}
+				</div>
+			) : null}
 
 			{alternates.length ? (
 				<div className="on-device-alternates">

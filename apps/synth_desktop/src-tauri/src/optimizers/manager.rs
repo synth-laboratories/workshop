@@ -2519,7 +2519,12 @@ async fn route_sidecar(
                 .split('?')
                 .next()
                 .unwrap_or(path)
-                .starts_with("/v1/training/") =>
+                .starts_with("/v1/training/")
+                || path
+                    .split('?')
+                    .next()
+                    .unwrap_or(path)
+                    .starts_with("/v1/inference/") =>
         {
             training.handle(&request).await
         }

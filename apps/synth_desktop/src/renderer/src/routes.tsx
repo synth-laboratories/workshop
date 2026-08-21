@@ -14,6 +14,7 @@ import type { DeviceUsageSummary } from "./components/UsageSheet";
 import type { DesktopPreferences, ToolActivityMode } from "./preferences";
 import { applyPreferencesToDocument } from "./preferences";
 import type { LagunaStatus, ModelPerformanceSummary, PluginPermission, PluginStatus, SynthAccountSummary, SynthBackendSettings } from "./bridge";
+import type { LagunaPolicy } from "./bridge/types";
 import type { ComputerUseView } from "./runtime/computerUse";
 import type { InferenceMonitor } from "./components/InferencePanel";
 import type { ApprovalMode, ApprovalPolicy, SandboxMode } from "./runtime/nativeCodex";
@@ -64,6 +65,9 @@ export type MainRoutesProps = {
 	sessions: Session[];
 	selectedTargetId: string;
 	onSelectTarget: (id: string) => void;
+	lagunaAdapters: LagunaPolicy[];
+	selectedLagunaAdapterId: string | null;
+	onSelectLagunaAdapter: (checkpointId: string | null) => void;
 	activeChat: LocalChat | null;
 	eventsBySession: Record<string, RuntimeEvent[]>;
 	activeChatSession: Session | undefined;
@@ -137,6 +141,9 @@ export function MainRoutes(props: MainRoutesProps): ReactNode {
 		sessions,
 		selectedTargetId,
 		onSelectTarget,
+		lagunaAdapters,
+		selectedLagunaAdapterId,
+		onSelectLagunaAdapter,
 		activeChat,
 		eventsBySession,
 		activeChatSession,
@@ -392,6 +399,9 @@ export function MainRoutes(props: MainRoutesProps): ReactNode {
 					state={state}
 					selectedTargetId={selectedTargetId}
 					onSelectTarget={onSelectTarget}
+					lagunaAdapters={lagunaAdapters}
+					selectedLagunaAdapterId={selectedLagunaAdapterId}
+					onSelectLagunaAdapter={onSelectLagunaAdapter}
 					onConfigureAccount={() => setView({ kind: "settings", section: "account" })}
 					onConfigureModels={() => setView({ kind: "settings", section: "models" })}
 					onResolveBilling={() => setUsageSheetOpen(true)}
@@ -529,6 +539,7 @@ export function MainRoutes(props: MainRoutesProps): ReactNode {
 														observedPerformance={
 															persistedPerformanceByTarget.get("local-laguna") ?? null
 														}
+														selectedModel={activeChatSession?.target.kind === "local" ? activeChatSession.target.model : null}
 														turnRunning={Boolean(
 															activeChatRunning && activeChatSession?.target.kind === "local"
 														)}

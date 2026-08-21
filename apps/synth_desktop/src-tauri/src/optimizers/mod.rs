@@ -1,7 +1,7 @@
 //! First-class Optimizer noun: durable local mirror, cursor, relationships, and projection.
 
 mod cispo;
-mod cloud;
+pub(crate) mod cloud;
 mod container_eval;
 mod eval_candidates;
 mod eval_recipes;
@@ -13,6 +13,7 @@ mod hosted_gelo;
 mod hosted_sft;
 mod ingest;
 mod local;
+mod local_lora;
 pub(crate) mod manager;
 mod mlx_runtime;
 mod mlx_sft;
@@ -38,15 +39,27 @@ pub(crate) use sidecar_training::launch_artifact_inference;
 pub use manager::{OptimizerManager, OptimizerSidecarStatus, OptimizerSidecarVersion};
 #[allow(unused_imports)] // Nested Specta type is part of HostedTrainingModelCatalog.
 pub use models::{
-    HostedTrainingModel, HostedTrainingModelCatalog, OptimizerCreateRequest,
+    CheckpointInferRequest, HostedTrainingModel, HostedTrainingModelCatalog, OptimizerCreateRequest,
     OptimizerEventEnvelope, OptimizerImportLocalRequest, OptimizerQuery, OptimizerRecipeRunRequest,
     OptimizerReconcileRequest, OptimizerRelationship, OptimizerRunOutputArtifact,
     OptimizerRunStatus,
     OptimizerRunOutputCounts, OptimizerRunOutputIdentity, OptimizerRunOutputs, OptimizerRunRecord,
     OptimizerStateSlice, SavedLoraCheckpoint, SavedLoraCheckpointPage, SavedLoraCheckpointQuery,
-    SavedLoraDownload, SavedLoraLineage, SavedLoraRunCounts, SavedLoraRunIdentity,
-    SavedLoraRunPage,
+    SavedLoraDownload, SavedLoraLineage, SavedLoraPatchRequest, SavedLoraRunCounts,
+    SavedLoraRunIdentity, SavedLoraRunPage,
 };
 pub(crate) use recipes::{BANKING77_EVAL_BASELINE_RECIPE, HEALTHBENCH_EVAL_SMOKE_RECIPE};
 pub use service::OptimizerService;
 pub use training::{TrainingEvent, TrainingLifecycle, TrainingProjection};
+
+/// The adapter-tree digest the catalog keys on. Re-exported so the installer
+/// and the publisher share one definition of identity.
+pub fn digest_adapter_directory(root: &std::path::Path) -> anyhow::Result<String> {
+    local_lora::digest_directory(root)
+}
+
+pub use local_lora::durable_lora_root;
+
+pub fn local_lora_is_laguna_compatible(checkpoint: &SavedLoraCheckpoint) -> bool {
+    local_lora::is_laguna_compatible(checkpoint)
+}

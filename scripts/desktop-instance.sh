@@ -13,10 +13,44 @@ if [[ -n "$GIT_COMMON_DIR" ]]; then
     REPO_SIBLING_ROOT="$PRIMARY_REPO_SIBLING_ROOT"
   fi
 fi
-COMMAND="${1:-dev}"
-NAME="${2:-${SYNTH_DESKTOP_INSTANCE:-codex}}"
+COMMAND="dev"
+if [[ $# -gt 0 ]]; then
+  COMMAND="$1"
+  shift
+fi
+VERBOSE=0
+NAME=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --verbose) VERBOSE=1 ;;
+    --help|-h)
+      # usage is defined below; a second pass after functions would be
+      # later. Print here only after NAME is known — defer via flag.
+      SHOW_HELP=1
+      ;;
+    -*)
+      echo "[desktop] unknown option: $1" >&2
+      exit 2
+      ;;
+    *)
+      if [[ -n "$NAME" ]]; then
+        echo "[desktop] unexpected extra argument: $1" >&2
+        exit 2
+      fi
+      NAME="$1"
+      ;;
+  esac
+  shift
+done
+
+WORKTREE="$(git -C "$ROOT" rev-parse --show-toplevel 2>/dev/null || printf '%s' "$ROOT")"
+WORKTREE_HASH="$(printf '%s' "$WORKTREE" | shasum -a 256 | awk '{print substr($1,1,8)}')"
+DEFAULT_NAME="codex-$WORKTREE_HASH"
+NAME="${NAME:-${SYNTH_DESKTOP_INSTANCE:-$DEFAULT_NAME}}"
 RELEASE_LINE="${SYNTH_DESKTOP_RELEASE_LINE:-v0.7}"
 APP_VERSION="${SYNTH_DESKTOP_APP_VERSION:-0.7.0}"
+BOOT_EPOCH="inst_$(uuidgen | tr -d '-' | tr '[:upper:]' '[:lower:]')"
+PROCESS_START_TIME="$(ps -p $$ -o lstart= | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
 
 if [[ "$RELEASE_LINE" != "v0.7" ]]; then
 	  echo "[desktop:$NAME] invalid release line; this branch only builds v0.7 instances" >&2
@@ -25,21 +59,24 @@ fi
 RELEASE_SLUG="v07"
 
 usage() {
-  cat <<'EOF'
-Usage: ./scripts/desktop-instance.sh <command> [name]
+  cat <<EOF
+Usage: ./scripts/desktop-instance.sh <command> [name] [--verbose]
 
   dev [name]       Run an isolated foreground Tauri/Vite development instance
   cua [name]       Build and run a named debug .app for Computer Use
   cua-build [name] Build and sign the named debug .app without launching it
   cua-run [name]   Run the existing signed CUA app without rebuilding
+  rebuild-run [name]  Build, bundle, sign, record, verify, launch, wait for health
   assert-identity [name]  Verify the built app's signing identity and record it
   status [name]    Show the exact process and instance paths
+                   --verbose also prints the operation-lock owner
   stage [name]     Stage protected-folder-free runtime inputs without launching
   stop [name]      Stop only the named instance
   clean [name]     Stop and move the named instance data to Trash
   print [name]     Print the resolved instance contract without launching
 
-Names must match [a-z][a-z0-9-]{0,31}. The default name is "codex".
+Names must match [a-z][a-z0-9-]{0,31}. The default name is
+codex-<worktree-hash> so two checkouts cannot collide without intent.
 
 Optimizer services use the immutable installed plugin runtime by default.
 Set SYNTH_OPTIMIZER_USE_LOCAL_SOURCE=1 only when intentionally testing a
@@ -47,12 +84,18 @@ reviewed local synth-optimizers checkout.
 EOF
 }
 
+if [[ "${SHOW_HELP:-0}" == "1" ]]; then
+  usage
+  exit 0
+fi
+
 if [[ ! "$NAME" =~ ^[a-z][a-z0-9-]{0,31}$ ]]; then
   echo "[desktop:$NAME] invalid instance name; expected [a-z][a-z0-9-]{0,31}" >&2
   exit 2
 fi
 
 INSTANCE_ROOT="${SYNTH_DESKTOP_INSTANCES_ROOT:-$HOME/.synth-desktop/instances}/$RELEASE_SLUG/$NAME"
+OPERATION_LOCK="$INSTANCE_ROOT/operation.lock"
 DATA_ROOT="$INSTANCE_ROOT/data"
 WORKSPACE="$INSTANCE_ROOT/workspace"
 GENERATED_ROOT="$INSTANCE_ROOT/generated"
@@ -98,6 +141,186 @@ instance_processes() {
       if ($0 == exe || $0 == cua_exe) print pid "\t" $0
     }
   '
+}
+
+# Children of a named instance carry SYNTH_WORKSHOP_INSTANCE_ID as an exact
+# environment assignment. Match that assignment only — never an instance name
+# or path substring in argv (ID-R-15).
+instance_env_pids() {
+  ps -axwwE -o pid=,command= 2>/dev/null | awk -v name="$NAME" -v self="$$" '
+    BEGIN { needle = "SYNTH_WORKSHOP_INSTANCE_ID=" name }
+    {
+      pid=$1
+      if (pid == self) next
+      if (pid !~ /^[0-9]+$/) next
+      rest = $0
+      sub(/^[[:space:]]*[0-9]+[[:space:]]+/, "", rest)
+      idx = index(rest, needle)
+      if (idx == 0) next
+      after = substr(rest, idx + length(needle))
+      if (after == "" || substr(after, 1, 1) == " ") print pid
+    }
+  '
+}
+
+format_lock_owner() {
+  python3 - "$1" <<'PY'
+import json, sys
+from pathlib import Path
+path = Path(sys.argv[1])
+if not path.is_file():
+    raise SystemExit(1)
+try:
+    record = json.loads(path.read_text())
+except json.JSONDecodeError:
+    raise SystemExit(1)
+keys = ("instance", "pid", "process_start_time", "worktree", "repo_revision", "operation", "created_at")
+parts = ["%s=%s" % (key, record.get(key, "")) for key in keys]
+sys.stdout.write("owner " + " ".join(parts) + "\n")
+PY
+}
+
+operation_lock_helper() {
+  local action="$1"
+  SYNTH_LOCK_INSTANCE="$NAME" \
+  SYNTH_LOCK_PID="$$" \
+  SYNTH_LOCK_START="$PROCESS_START_TIME" \
+  SYNTH_LOCK_WORKTREE="$WORKTREE" \
+  SYNTH_LOCK_REVISION="$SOURCE_REVISION" \
+  SYNTH_LOCK_OPERATION="${2:-$COMMAND}" \
+  SYNTH_LOCK_CREATED="$(date -u '+%Y-%m-%dT%H:%M:%SZ')" \
+  python3 - "$OPERATION_LOCK" "$action" <<'PY'
+import fcntl, json, os, subprocess, sys
+
+lock_path, action = sys.argv[1], sys.argv[2]
+keys = ("instance", "pid", "process_start_time", "worktree", "repo_revision", "operation", "created_at")
+
+def start_time(pid):
+    try:
+        out = subprocess.check_output(
+            ["/bin/ps", "-p", str(pid), "-o", "lstart="],
+            stderr=subprocess.DEVNULL,
+        )
+    except (subprocess.CalledProcessError, OSError):
+        return None
+    text = out.decode().strip()
+    return text or None
+
+def alive(pid, recorded):
+    current = start_time(pid)
+    return current is not None and current == recorded
+
+def owner_line(record):
+    return "owner " + " ".join("%s=%s" % (key, record.get(key, "")) for key in keys)
+
+def read_record(fd):
+    os.lseek(fd, 0, os.SEEK_SET)
+    raw = os.read(fd, 1 << 16).decode("utf-8", "replace").strip()
+    if not raw:
+        return None
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        return None
+
+def write_record(fd, record):
+    body = (json.dumps(record, indent=2) + "\n").encode()
+    os.lseek(fd, 0, os.SEEK_SET)
+    os.ftruncate(fd, 0)
+    os.write(fd, body)
+    os.fsync(fd)
+
+if action == "read":
+    if not os.path.isfile(lock_path):
+        raise SystemExit(1)
+    record = json.loads(open(lock_path).read())
+    sys.stdout.write(owner_line(record) + "\n")
+    raise SystemExit(0)
+
+fd = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o644)
+try:
+    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+except BlockingIOError:
+    record = read_record(fd) or {}
+    sys.stderr.write(owner_line(record) + "\n")
+    raise SystemExit(3)
+
+record = read_record(fd)
+our_pid = int(os.environ["SYNTH_LOCK_PID"])
+if action == "release":
+    if record and int(record.get("pid") or 0) == our_pid:
+        os.close(fd)
+        try:
+            os.unlink(lock_path)
+        except OSError:
+            pass
+        raise SystemExit(0)
+    os.close(fd)
+    raise SystemExit(0)
+
+# acquire
+if record:
+    pid = record.get("pid")
+    start = record.get("process_start_time")
+    if pid and start and alive(int(pid), start) and int(pid) != our_pid:
+        sys.stderr.write(owner_line(record) + "\n")
+        os.close(fd)
+        raise SystemExit(3)
+
+new_record = {
+    "instance": os.environ["SYNTH_LOCK_INSTANCE"],
+    "pid": our_pid,
+    "process_start_time": os.environ["SYNTH_LOCK_START"],
+    "worktree": os.environ["SYNTH_LOCK_WORKTREE"],
+    "repo_revision": os.environ["SYNTH_LOCK_REVISION"],
+    "operation": os.environ["SYNTH_LOCK_OPERATION"],
+    "created_at": os.environ["SYNTH_LOCK_CREATED"],
+}
+write_record(fd, new_record)
+os.close(fd)
+PY
+}
+
+acquire_operation_lock() {
+  local operation="$1" output status
+  mkdir -p "$INSTANCE_ROOT"
+  set +e
+  output="$(operation_lock_helper acquire "$operation" 2>&1)"
+  status=$?
+  set -e
+  if [[ "$status" -ne 0 ]]; then
+    echo "[desktop:$NAME] ERROR instance operation locked" >&2
+    if [[ -n "$output" ]]; then
+      echo "[desktop:$NAME] $output" >&2
+    fi
+    exit 1
+  fi
+  trap release_operation_lock EXIT
+}
+
+release_operation_lock() {
+  operation_lock_helper release "$COMMAND" >/dev/null 2>&1 || true
+}
+
+release_operation_lock_before_exec() {
+  trap - EXIT
+  release_operation_lock
+}
+
+print_operation_lock_status() {
+  local owner=""
+  if [[ ! -f "$OPERATION_LOCK" ]]; then
+    echo "[desktop:$NAME] operation.lock none"
+    return
+  fi
+  set +e
+  owner="$(format_lock_owner "$OPERATION_LOCK" 2>/dev/null)"
+  set -e
+  if [[ -z "$owner" ]]; then
+    echo "[desktop:$NAME] operation.lock unreadable"
+    return
+  fi
+  echo "[desktop:$NAME] $owner"
 }
 
 # Named Workshop instances are disposable test clients. Refresh their provider
@@ -155,7 +378,7 @@ PY
 }
 
 write_contract() {
-	local old_runtime="" old_signing="" old_provenance="" old_executable="" old_executable_digest="" manifest_tmp="$MANIFEST.tmp"
+	local old_runtime="" old_signing="" old_provenance="" old_executable="" old_executable_digest="" manifest_tmp="$MANIFEST.$$.tmp"
   mkdir -p "$DATA_ROOT" "$WORKSPACE" "$GENERATED_ROOT" "$TARGET_ROOT"
   chmod 700 "$INSTANCE_ROOT" "$DATA_ROOT" "$WORKSPACE"
 
@@ -252,12 +475,14 @@ EOF
   "mode": "development",
   "product": "workshop",
   "releaseLine": "$RELEASE_LINE",
+  "releaseSlug": "$RELEASE_SLUG",
   "appVersion": "$APP_VERSION",
   "name": "$NAME",
   "displayName": "$APP_TITLE",
   "bundleId": "$BUNDLE_ID",
   "iconLabel": "$ICON_LABEL",
   "icon": "$ICON_PNG",
+  "instanceRoot": "$INSTANCE_ROOT",
   "dataRoot": "$DATA_ROOT",
   "workspace": "$WORKSPACE",
   "cargoTargetDir": "$TARGET_ROOT",
@@ -265,6 +490,8 @@ EOF
   "appBundle": "$(dirname "$(dirname "$(dirname "$CUA_EXE")")")",
   "sourceRoot": "$ROOT",
   "sourceRevision": "$SOURCE_REVISION",
+  "worktree": "$WORKTREE",
+  "worktreeHash": "$WORKTREE_HASH",
   "viteUrl": "http://127.0.0.1:$VITE_PORT",
   "config": "$CONFIG",
   "hotReload": {
@@ -295,6 +522,34 @@ EOF
     mv "$manifest_tmp.merged" "$manifest_tmp"
   fi
   mv "$manifest_tmp" "$MANIFEST"
+}
+
+write_bundle_descriptor() {
+  local app_bundle="$1"
+  local dest="$app_bundle/Contents/Resources/instance.json"
+  mkdir -p "$(dirname "$dest")"
+  jq -n \
+    --arg schemaVersion "synth.desktop.instance-descriptor.v1" \
+    --arg instance_id "$NAME" \
+    --arg instance_root "$INSTANCE_ROOT" \
+    --arg config_path "$DATA_ROOT/config.toml" \
+    --arg data_root "$DATA_ROOT" \
+    --arg bundle_id "$BUNDLE_ID" \
+    --arg release_line "$RELEASE_LINE" \
+    --arg source_revision "$SOURCE_REVISION" \
+    --arg generated_at "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" \
+    '{
+      schemaVersion: $schemaVersion,
+      instance_id: $instance_id,
+      instance_root: $instance_root,
+      config_path: $config_path,
+      data_root: $data_root,
+      bundle_id: $bundle_id,
+      release_line: $release_line,
+      source_revision: $source_revision,
+      generated_at: $generated_at
+    }' >"$dest.tmp"
+  mv "$dest.tmp" "$dest"
 }
 
 executable_digest() {
@@ -375,7 +630,7 @@ verify_packaged_provenance() {
   local app_bundle actual_digest recorded_digest actual_cdhash recorded_cdhash recorded_revision phase
   app_bundle="$(dirname "$(dirname "$(dirname "$CUA_EXE")")")"
   [[ -x "$CUA_EXE" ]] || {
-    echo "[desktop:$NAME] ERROR packaged executable is missing: $CUA_EXE" >&2
+    echo "[desktop:$NAME] bundle was not produced by cua-build; run desktop-instance.sh rebuild-run $NAME" >&2
     return 1
   }
   codesign --verify --deep --strict "$app_bundle"
@@ -386,7 +641,7 @@ verify_packaged_provenance() {
   recorded_revision="$(jq -r '.provenance.sourceRevision // empty' "$MANIFEST")"
   phase="$(jq -r '.provenance.phase // empty' "$MANIFEST")"
   [[ "$phase" == "bundle-signed" ]] || {
-    echo "[desktop:$NAME] ERROR packaged provenance is not sealed; run cua-build" >&2
+    echo "[desktop:$NAME] bundle was not produced by cua-build; run desktop-instance.sh rebuild-run $NAME" >&2
     return 1
   }
   [[ "$recorded_revision" == "$SOURCE_REVISION" ]] || {
@@ -404,7 +659,7 @@ verify_packaged_provenance() {
 }
 
 mark_runtime() {
-  local status="$1" pid="${2:-}" manifest_tmp="$MANIFEST.runtime.tmp"
+  local status="$1" pid="${2:-}" manifest_tmp="$MANIFEST.runtime.$$.tmp"
   local digest runtime_executable="$EXE"
   [[ -f "$MANIFEST" ]] || write_contract
   if [[ -n "$pid" ]]; then
@@ -418,6 +673,8 @@ mark_runtime() {
     --arg executable "$runtime_executable" \
     --arg executableDigest "$digest" \
     --arg sourceRevision "$SOURCE_REVISION" \
+    --arg bootEpoch "$BOOT_EPOCH" \
+    --arg processStartIdentity "$PROCESS_START_TIME" \
     --arg checkedAt "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" \
     '.runtime = ((.runtime // {}) + {
       status: $status,
@@ -425,6 +682,8 @@ mark_runtime() {
       executable: $executable,
       executableDigest: (if $executableDigest == "" then null else $executableDigest end),
       sourceRevision: $sourceRevision,
+      bootEpoch: $bootEpoch,
+      processStartIdentity: $processStartIdentity,
       checkedAt: $checkedAt
     })' "$MANIFEST" >"$manifest_tmp"
   mv "$manifest_tmp" "$MANIFEST"
@@ -436,20 +695,26 @@ print_contract() {
 }
 
 stop_instance() {
-  local rows pids
+  local rows pids env_pids all_pids
   rows="$(instance_processes)"
-  if [[ -z "$rows" ]]; then
+  env_pids="$(instance_env_pids)"
+  all_pids="$(printf '%s\n%s\n' "$(printf '%s\n' "$rows" | awk '{print $1}')" "$env_pids" | awk 'NF && !seen[$0]++')"
+  if [[ -z "$all_pids" ]]; then
     rm -f "$DATA_ROOT/eval-driver.json"
     mark_runtime "stopped"
     echo "[desktop:$NAME] stopped"
     return
   fi
-  printf '%s\n' "$rows" | sed "s/^/[desktop:$NAME] stopping /"
-  pids="$(printf '%s\n' "$rows" | awk '{print $1}')"
+  if [[ -n "$rows" ]]; then
+    printf '%s\n' "$rows" | sed "s/^/[desktop:$NAME] stopping /"
+  fi
+  if [[ -n "$env_pids" ]]; then
+    printf '%s\n' "$env_pids" | sed "s/^/[desktop:$NAME] stopping env-pid /"
+  fi
   # shellcheck disable=SC2086
-  kill $pids 2>/dev/null || true
+  kill $all_pids 2>/dev/null || true
   for _ in 1 2 3 4 5 6 7 8 9 10; do
-    if [[ -z "$(instance_processes)" ]]; then
+    if [[ -z "$(instance_processes)" && -z "$(instance_env_pids)" ]]; then
       rm -f "$DATA_ROOT/eval-driver.json"
       mark_runtime "stopped"
       return
@@ -484,6 +749,9 @@ status_instance() {
   echo "[desktop:$NAME] identity $APP_TITLE · badge $ICON_LABEL · $BUNDLE_ID"
   echo "[desktop:$NAME] executable $EXE"
   echo "[desktop:$NAME] manifest $MANIFEST"
+  if [[ "$VERBOSE" == "1" ]]; then
+    print_operation_lock_status
+  fi
 }
 
 stage_gepa_runtime() {
@@ -557,6 +825,50 @@ stage_gepa_runtime() {
   fi
   export SYNTH_GEPA_SECRET_ENV_FILE="$secret_target"
   export SYNTH_BANKING77_SECRET_ENV_FILE="$secret_target"
+}
+
+# A packaged CUA bundle must not inherit the parent Workshop process's
+# environment.  This is more than defense in depth: macOS lets multiple
+# development bundles share one login session, and a caller's
+# SYNTH_DESKTOP_DATA_ROOT used to make the correctly named bundle attach to
+# the caller's database and provider proxy.  Keep this allowlist deliberately
+# small. Provider credentials live in the named instance's private .env and
+# are loaded by the app, never inherited here.
+exec_isolated_cua_bundle() {
+  local oauth_file="${SYNTH_DESKTOP_DEV_OAUTH_FILE:-}"
+  local oauth_state="${SYNTH_DESKTOP_DEV_OAUTH_STATE_FILE:-}"
+  local home_dir="${HOME:?HOME must be set to launch a CUA bundle}"
+  local user_name="${USER:-$(id -un)}"
+  local logname="${LOGNAME:-$user_name}"
+  local temp_dir="${TMPDIR:-/tmp}"
+
+  mark_runtime "launching" "$$"
+  release_operation_lock_before_exec
+  exec env -i \
+    PATH="$PATH" \
+    HOME="$home_dir" \
+    USER="$user_name" \
+    LOGNAME="$logname" \
+    TMPDIR="$temp_dir" \
+    PWD="$INSTANCE_ROOT" \
+    SYNTH_DESKTOP_INSTANCE="$NAME" \
+    SYNTH_DESKTOP_DATA_ROOT="$DATA_ROOT" \
+    SYNTH_DESKTOP_CONFIG="$DATA_ROOT/config.toml" \
+    SYNTH_CODEX_HOME="$DATA_ROOT/codex" \
+    SYNTH_DESKTOP_WORKSPACE="$WORKSPACE" \
+    SYNTH_DESKTOP_APP_NAME="$APP_TITLE" \
+    SYNTH_DESKTOP_BUNDLE_ID="$BUNDLE_ID" \
+    SYNTH_DESKTOP_INSTANCE_MANIFEST="$MANIFEST" \
+    SYNTH_DESKTOP_SOURCE_REVISION="$SOURCE_REVISION" \
+    SYNTH_DESKTOP_VITE_URL="http://127.0.0.1:$VITE_PORT" \
+    SYNTH_EVAL_ALLOW_LOCAL_PINNED_TARGETS=1 \
+    SYNTH_LAGUNA_HOME="$SYNTH_LAGUNA_HOME" \
+    SYNTH_LAGUNA_PORT="$SYNTH_LAGUNA_PORT" \
+    SYNTH_LAGUNA_BASE_URL="$SYNTH_LAGUNA_BASE_URL" \
+    SYNTH_COMPUTER_USE_PARENT_REQUIREMENT="$SYNTH_COMPUTER_USE_PARENT_REQUIREMENT" \
+    SYNTH_DESKTOP_DEV_OAUTH_FILE="$oauth_file" \
+    SYNTH_DESKTOP_DEV_OAUTH_STATE_FILE="$oauth_state" \
+    "$CUA_EXE"
 }
 
 stage_instance() {
@@ -734,6 +1046,107 @@ assert_bundle_identity() {
   echo "[desktop:$NAME] signing requirement=$host_requirement"
 }
 
+# The complete named-instance environment, exported exactly once for every
+# launch path. `cua-run` once re-exported these by hand because an early
+# return had skipped the first block; when launched from another Workshop
+# instance it inherited that caller's data root, Codex home, backend, and
+# cookbook paths while the window title looked correct. One function, one
+# set of names, so the two paths cannot drift again.
+export_instance_env() {
+  export SYNTH_DESKTOP_INSTANCE="$NAME"
+  export SYNTH_WORKSHOP_INSTANCE_ID="$NAME"
+  export SYNTH_DESKTOP_DATA_ROOT="$DATA_ROOT"
+  export SYNTH_DESKTOP_CONFIG="$DATA_ROOT/config.toml"
+  export SYNTH_CODEX_HOME="$DATA_ROOT/codex"
+  export SYNTH_DESKTOP_WORKSPACE="$WORKSPACE"
+  export SYNTH_DESKTOP_APP_NAME="$APP_TITLE"
+  export SYNTH_DESKTOP_BUNDLE_ID="$BUNDLE_ID"
+  export SYNTH_DESKTOP_INSTANCE_MANIFEST="$MANIFEST"
+  export SYNTH_DESKTOP_SOURCE_REVISION="$SOURCE_REVISION"
+  export SYNTH_DESKTOP_VITE_URL="http://127.0.0.1:$VITE_PORT"
+  # Named development instances may execute an operator-pinned image already
+  # present in the local OCI daemon. The Rust admission check still requires a
+  # full sha256 identity; release builds ignore this development-only lane.
+  export SYNTH_EVAL_ALLOW_LOCAL_PINNED_TARGETS=1
+  # Debug instances use the existing Codex file as a seed and never touch
+  # Keychain. Refreshed credentials live in one private machine-local cache so
+  # rebuilds and differently named instances reuse a still-valid session.
+  local shared_oauth_root="${SYNTH_DESKTOP_SHARED_ROOT:-$HOME/.synth-desktop/shared}/oauth"
+  mkdir -p "$shared_oauth_root"
+  chmod 700 "$shared_oauth_root"
+  if [[ -z "${SYNTH_DESKTOP_DEV_OAUTH_FILE:-}" && -f "$HOME/.codex/auth.json" ]]; then
+    SYNTH_DESKTOP_DEV_OAUTH_FILE="$HOME/.codex/auth.json"
+  fi
+  if [[ -n "${SYNTH_DESKTOP_DEV_OAUTH_FILE:-}" ]]; then
+    export SYNTH_DESKTOP_DEV_OAUTH_FILE
+  else
+    unset SYNTH_DESKTOP_DEV_OAUTH_FILE
+  fi
+  if [[ -z "${SYNTH_DESKTOP_DEV_OAUTH_STATE_FILE:-}" ]]; then
+    SYNTH_DESKTOP_DEV_OAUTH_STATE_FILE="$shared_oauth_root/codex.json"
+  fi
+  export SYNTH_DESKTOP_DEV_OAUTH_STATE_FILE
+  export CARGO_TARGET_DIR="$TARGET_ROOT"
+
+  # Profile/account-backend routing is instance-owned: it comes from the
+  # instance TOML, never from the shell that happened to launch the app.
+  # (write_contract seeds a new TOML from the shell once, at creation.)
+  # Responses gateway routing is source-owned by Rust and has no override.
+  unset SYNTH_BACKEND_URL SYNTH_INTERN_PROFILE
+  if [[ -f "$DATA_ROOT/config.toml" ]]; then
+    SYNTH_INTERN_PROFILE="$(python3 - <<'PY' "$DATA_ROOT/config.toml"
+import sys, tomllib
+from pathlib import Path
+data = tomllib.loads(Path(sys.argv[1]).read_text())
+print((data.get("intern") or {}).get("profile") or "")
+PY
+)"
+    SYNTH_BACKEND_URL="$(python3 - <<'PY' "$DATA_ROOT/config.toml"
+import sys, tomllib
+from pathlib import Path
+data = tomllib.loads(Path(sys.argv[1]).read_text())
+intern = data.get("intern") or {}
+profile = intern.get("profile") or ""
+endpoints = intern.get("endpoints") or {}
+print(endpoints.get(profile) or "")
+PY
+)"
+    if [[ -n "$SYNTH_INTERN_PROFILE" ]]; then
+      export SYNTH_INTERN_PROFILE
+    else
+      unset SYNTH_INTERN_PROFILE
+    fi
+    if [[ -n "$SYNTH_BACKEND_URL" ]]; then
+      export SYNTH_BACKEND_URL
+    else
+      unset SYNTH_BACKEND_URL
+    fi
+  fi
+
+  # Named local CUA bundles are ad-hoc or development signed and therefore
+  # cannot satisfy the production helper's Apple-team requirement. Keep the
+  # weaker requirement explicit and confined to this development launcher;
+  # release builds do not receive this environment override.
+  export SYNTH_COMPUTER_USE_PARENT_REQUIREMENT="identifier \"$BUNDLE_ID\" or identifier \"com.synth.desktop.v05.dev.shared\""
+}
+
+# Test hook: exercise the environment contract without compiling, signing,
+# or launching anything. Prints variable names only, never values.
+dry_run_operation() {
+  export_instance_env
+  write_bundle_descriptor "$GENERATED_ROOT/descriptor-preview.app"
+  mark_runtime "dry-run" "$$"
+  echo "[desktop:$NAME] dry-run operation=$COMMAND"
+  echo "[desktop:$NAME] dry-run env_names=$(compgen -e | rg '^(SYNTH_|CARGO_TARGET_DIR$)' | LC_ALL=C sort | paste -sd, -)"
+  echo "[desktop:$NAME] dry-run complete; nothing was built or launched"
+  if [[ "${SYNTH_DESKTOP_OPERATION_LOCK_HOLD:-0}" == "1" ]]; then
+    echo "[desktop:$NAME] dry-run holding operation lock"
+    while true; do
+      sleep 1
+    done
+  fi
+}
+
 assert_identity_command() {
   local app_bundle
   app_bundle="$(dirname "$(dirname "$(dirname "$CUA_EXE")")")"
@@ -748,6 +1161,10 @@ assert_identity_command() {
 
 dev_instance() {
   write_contract
+  if [[ "${SYNTH_DESKTOP_OPERATION_DRY_RUN:-0}" == "1" ]]; then
+    dry_run_operation
+    return
+  fi
   if [[ -n "$(instance_processes)" ]]; then
     echo "[desktop:$NAME] already running; use desktop:instance:stop first" >&2
     exit 1
@@ -794,108 +1211,19 @@ dev_instance() {
     fi
   fi
 
-  export SYNTH_DESKTOP_INSTANCE="$NAME"
-  export SYNTH_DESKTOP_DATA_ROOT="$DATA_ROOT"
-  export SYNTH_DESKTOP_CONFIG="$DATA_ROOT/config.toml"
-  export SYNTH_CODEX_HOME="$DATA_ROOT/codex"
-  export SYNTH_DESKTOP_WORKSPACE="$WORKSPACE"
-  export SYNTH_DESKTOP_APP_NAME="$APP_TITLE"
-  export SYNTH_DESKTOP_BUNDLE_ID="$BUNDLE_ID"
-  export SYNTH_DESKTOP_INSTANCE_MANIFEST="$MANIFEST"
-  export SYNTH_DESKTOP_SOURCE_REVISION="$SOURCE_REVISION"
-  export SYNTH_DESKTOP_VITE_URL="http://127.0.0.1:$VITE_PORT"
-  # Named development instances may execute an operator-pinned image already
-  # present in the local OCI daemon. The Rust admission check still requires a
-  # full sha256 identity; release builds ignore this development-only lane.
-  export SYNTH_EVAL_ALLOW_LOCAL_PINNED_TARGETS=1
-  # Debug instances use the existing Codex file as a seed and never touch
-  # Keychain. Refreshed credentials live in one private machine-local cache so
-  # rebuilds and differently named instances reuse a still-valid session.
-  local shared_oauth_root="${SYNTH_DESKTOP_SHARED_ROOT:-$HOME/.synth-desktop/shared}/oauth"
-  mkdir -p "$shared_oauth_root"
-  chmod 700 "$shared_oauth_root"
-  if [[ -z "${SYNTH_DESKTOP_DEV_OAUTH_FILE:-}" && -f "$HOME/.codex/auth.json" ]]; then
-    SYNTH_DESKTOP_DEV_OAUTH_FILE="$HOME/.codex/auth.json"
-  fi
-  [[ -z "${SYNTH_DESKTOP_DEV_OAUTH_FILE:-}" ]] || export SYNTH_DESKTOP_DEV_OAUTH_FILE
-  if [[ -z "${SYNTH_DESKTOP_DEV_OAUTH_STATE_FILE:-}" ]]; then
-    SYNTH_DESKTOP_DEV_OAUTH_STATE_FILE="$shared_oauth_root/codex.json"
-  fi
-  export SYNTH_DESKTOP_DEV_OAUTH_STATE_FILE
-  export CARGO_TARGET_DIR="$TARGET_ROOT"
+  export_instance_env
   stage_gepa_runtime
-
-  # Export profile/account-backend routing from the instance TOML. Responses
-  # gateway routing is source-owned by Rust and has no launcher override.
-  if [[ -z "${SYNTH_INTERN_PROFILE:-}" && -f "$DATA_ROOT/config.toml" ]]; then
-    SYNTH_INTERN_PROFILE="$(python3 - <<'PY' "$DATA_ROOT/config.toml"
-import sys, tomllib
-from pathlib import Path
-data = tomllib.loads(Path(sys.argv[1]).read_text())
-print((data.get("intern") or {}).get("profile") or "")
-PY
-)"
-    export SYNTH_INTERN_PROFILE
-  fi
-  if [[ -z "${SYNTH_BACKEND_URL:-}" && -f "$DATA_ROOT/config.toml" ]]; then
-    SYNTH_BACKEND_URL="$(python3 - <<'PY' "$DATA_ROOT/config.toml"
-import sys, tomllib
-from pathlib import Path
-data = tomllib.loads(Path(sys.argv[1]).read_text())
-intern = data.get("intern") or {}
-profile = intern.get("profile") or ""
-endpoints = intern.get("endpoints") or {}
-print(endpoints.get(profile) or "")
-PY
-)"
-    [[ -n "$SYNTH_BACKEND_URL" ]] && export SYNTH_BACKEND_URL
-  fi
   echo "[desktop:$NAME] profile=${SYNTH_INTERN_PROFILE:-} backend=${SYNTH_BACKEND_URL:-} gateway=source-owned"
-
-  # Named local CUA bundles are ad-hoc or development signed and therefore
-  # cannot satisfy the production helper's Apple-team requirement. Keep the
-  # weaker requirement explicit and confined to this development launcher;
-  # release builds do not receive this environment override.
-  export SYNTH_COMPUTER_USE_PARENT_REQUIREMENT="identifier \"$BUNDLE_ID\" or identifier \"com.synth.desktop.v05.dev.shared\""
 
   if [[ "$COMMAND" == "cua-run" ]]; then
     if [[ ! -x "$CUA_EXE" ]]; then
-      echo "[desktop:$NAME] signed CUA app is missing; run cua-build first" >&2
+      echo "[desktop:$NAME] bundle was not produced by cua-build; run desktop-instance.sh rebuild-run $NAME" >&2
       exit 1
     fi
-    # `cua-run` used to return before the named-instance environment below was
-    # exported.  When launched from another Workshop/Codex instance it then
-    # inherited that caller's data root, Codex home, backend, and cookbook
-    # paths.  The window title looked correct while the process silently read
-    # and mutated another instance.  Reassert the complete isolation boundary
-    # before executing an already-built bundle.
-    export SYNTH_DESKTOP_INSTANCE="$NAME"
-    export SYNTH_DESKTOP_DATA_ROOT="$DATA_ROOT"
-    export SYNTH_DESKTOP_CONFIG="$DATA_ROOT/config.toml"
-    export SYNTH_CODEX_HOME="$DATA_ROOT/codex"
-    export SYNTH_DESKTOP_WORKSPACE="$WORKSPACE"
-    export SYNTH_DESKTOP_APP_NAME="$APP_TITLE"
-    export SYNTH_DESKTOP_BUNDLE_ID="$BUNDLE_ID"
-    export SYNTH_DESKTOP_INSTANCE_MANIFEST="$MANIFEST"
-    export SYNTH_DESKTOP_SOURCE_REVISION="$SOURCE_REVISION"
-    export SYNTH_DESKTOP_VITE_URL="http://127.0.0.1:$VITE_PORT"
-    export SYNTH_EVAL_ALLOW_LOCAL_PINNED_TARGETS=1
-    shared_oauth_root="${SYNTH_DESKTOP_SHARED_ROOT:-$HOME/.synth-desktop/shared}/oauth"
-    mkdir -p "$shared_oauth_root"
-    chmod 700 "$shared_oauth_root"
-    if [[ -f "$HOME/.codex/auth.json" ]]; then
-      export SYNTH_DESKTOP_DEV_OAUTH_FILE="$HOME/.codex/auth.json"
-    else
-      unset SYNTH_DESKTOP_DEV_OAUTH_FILE
-    fi
-    export SYNTH_DESKTOP_DEV_OAUTH_STATE_FILE="$shared_oauth_root/codex.json"
-    # These values are instance-owned and must never be inherited from the
-    # shell that happened to launch the CUA bundle.
-    unset SYNTH_BACKEND_URL SYNTH_INTERN_PROFILE
     codesign --verify --deep --strict "$(dirname "$(dirname "$(dirname "$CUA_EXE")")")"
     echo "[desktop:$NAME] launching existing signed CUA app from $INSTANCE_ROOT"
     cd "$INSTANCE_ROOT"
-    exec "$CUA_EXE"
+    exec_isolated_cua_bundle
   fi
 
   # The adapter prebuild compiles the shared desktop library and therefore
@@ -952,6 +1280,7 @@ PY
       exit 1
     fi
     revalidate_provenance "bundle-built" "$pre_build_revision"
+    write_bundle_descriptor "$app_bundle"
     sign_cua_bundle "$app_bundle"
     codesign --verify --deep --strict "$app_bundle"
     record_packaged_provenance "$app_bundle"
@@ -966,8 +1295,9 @@ PY
     # traversal to the app and triggers an unnecessary Files & Folders prompt.
     # Runtime data and workspaces already live under this isolated instance.
     cd "$INSTANCE_ROOT"
-    exec "$app_executable"
+    exec_isolated_cua_bundle
   fi
+  release_operation_lock_before_exec
   exec npx tauri dev --features eval-driver --config "$PACKAGE_CONFIG" --config "$CONFIG"
 }
 
@@ -986,8 +1316,73 @@ clean_instance() {
   echo "[desktop:$NAME] moved to $trash (recoverable from Trash)"
 }
 
+wait_for_health_instance() {
+  local descriptor="$DATA_ROOT/eval-driver.json" i report url token instance
+  for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30; do
+    if [[ -f "$descriptor" ]]; then
+      url="$(jq -r '.url // empty' "$descriptor" 2>/dev/null || true)"
+      token="$(jq -r '.token // empty' "$descriptor" 2>/dev/null || true)"
+      if [[ -n "$url" ]]; then
+        set +e
+        report="$(curl -sf --max-time 2 ${token:+-H "Authorization: Bearer $token"} "$url/health" 2>/dev/null)"
+        set -e
+        instance="$(printf '%s' "${report:-}" | jq -r '.instance.name // empty' 2>/dev/null || true)"
+        if [[ "$instance" == "$NAME" ]]; then
+          printf '%s\n' "$report"
+          return 0
+        fi
+      fi
+    fi
+    sleep 2
+  done
+  echo "[desktop:$NAME] ERROR /health.instance never matched $NAME" >&2
+  return 1
+}
+
+print_runtime_identity() {
+  echo "[desktop:$NAME] runtime identity"
+  jq '{
+    name: .name,
+    bundleId: .bundleId,
+    instanceRoot: .instanceRoot,
+    dataRoot: .dataRoot,
+    sourceRevision: .sourceRevision,
+    runtime: .runtime
+  }' "$MANIFEST"
+}
+
+# build → bundle → sign → record → verify → launch with descriptor →
+# wait for /health.instance == NAME → print runtime identity. One command.
+rebuild_run_instance() {
+  write_contract
+  if [[ "${SYNTH_DESKTOP_OPERATION_DRY_RUN:-0}" == "1" ]]; then
+    echo "[desktop:$NAME] rebuild-run steps=build,bundle,sign,record,verify,launch,wait-health,print-runtime"
+    echo "[desktop:$NAME] rebuild-run would wait for /health.instance == $NAME"
+    dry_run_operation
+    return
+  fi
+  COMMAND=cua-build
+  dev_instance
+  COMMAND=rebuild-run
+  verify_packaged_provenance
+  export_instance_env
+  echo "[desktop:$NAME] launching recorded bundle from $INSTANCE_ROOT"
+  cd "$INSTANCE_ROOT"
+  mark_runtime "launching" "$$"
+  "$CUA_EXE" &
+  wait_for_health_instance >/dev/null
+  print_runtime_identity
+}
+
+case "$COMMAND" in
+  cua-build|cua-run|cua|stop|clean|stage|rebuild-run)
+    acquire_operation_lock "$COMMAND"
+    ;;
+esac
+
 case "$COMMAND" in
   dev|cua|cua-build|cua-run) dev_instance ;;
+  rebuild-run) rebuild_run_instance ;;
   assert-identity) assert_identity_command ;;
   status) status_instance ;;
   stage) stage_instance ;;

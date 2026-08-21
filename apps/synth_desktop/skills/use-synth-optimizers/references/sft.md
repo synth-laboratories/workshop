@@ -16,7 +16,7 @@ After explicit user instruction:
 {"operation":"start_workflow","arguments":{"recipe_id":"sft.qwen35-0.8b.mlx.v1","open_visual":true}}
 ```
 
-Follow training metrics, `sft.checkpoint.ready`, and the paired `sft.heldout_evaluation.completed` receipt. Resume uses `resume_run`; chat-with-checkpoint is sidecar-owned.
+Follow training metrics, `sft.checkpoint.ready`, and the paired `sft.heldout_evaluation.completed` receipt. Resume uses `resume_run`. Chat Completions and Responses against a catalog LoRA use `optimizer_manage` `infer_checkpoint` (`family=chat_completions|responses`) after `list_checkpoints`. Never wrap a `{message, reply}` helper and never name mlx-rl.
 
 `get_result` for SFT is typed from the durable event stream. It does not read `best_candidate.json` and is not GEPA-shaped. Missing scores stay `—`, never `0`.
 

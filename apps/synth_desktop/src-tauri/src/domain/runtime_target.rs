@@ -6,8 +6,10 @@
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::{Map, Value};
 
-/// Laguna on-device model id used by LocalRuntime payloads.
-pub const LOCAL_LAGUNA_MODEL: &str = "laguna-xs-2.1";
+/// The daemon's base policy, and the fallback for a local target that carries
+/// no model. It must be a registered policy id: an unknown one is refused at
+/// turn time rather than quietly served by the base weights.
+pub const LOCAL_LAGUNA_MODEL: &str = "poolside/Laguna-XS-2.1-NVFP4-mlx";
 
 /// Sync vs async Intern wire mode.
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, specta::Type)]
@@ -83,6 +85,15 @@ impl RuntimeTarget {
         Self::LocalRuntime {
             model: LOCAL_LAGUNA_MODEL.into(),
             adapter: None,
+        }
+    }
+
+    /// Stamp a This Mac catalog id onto a local target. Remote/cloud adapters
+    /// stay untouched — Laguna Composer never loads Qwen Optimizers LoRAs.
+    pub fn with_local_adapter(self, adapter: Option<String>) -> Self {
+        match self {
+            Self::LocalRuntime { model, .. } => Self::LocalRuntime { model, adapter },
+            other => other,
         }
     }
 
@@ -378,5 +389,15 @@ mod tests {
         assert!(!target.is_cloud());
         assert_eq!(target.to_json_value()["provider"], "openai-codex-oauth");
         assert_eq!(target.to_json_value()["adapter"], "openai-codex-oauth");
+    }
+
+    #[test]
+    fn local_adapter_stamps_only_laguna_targets() {
+        let local = RuntimeTarget::from_codex_provider("local-laguna", "ignored")
+            .with_local_adapter(Some("sha256:abc".into()));
+        assert_eq!(local.to_json_value()["adapter"], "sha256:abc");
+        let remote = RuntimeTarget::from_codex_provider("openrouter", "openai/gpt-5.6-luna")
+            .with_local_adapter(Some("sha256:abc".into()));
+        assert!(remote.to_json_value()["adapter"].is_null());
     }
 }

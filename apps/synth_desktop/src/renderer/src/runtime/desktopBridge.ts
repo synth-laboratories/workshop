@@ -4,7 +4,7 @@ import { commands as spectaCommands } from "../generated/protocol";
 import { open } from "@tauri-apps/plugin-dialog";
 import desktopPackage from "../../../../package.json";
 import type { AppEvent, InternSessionControlRequest, InternSessionCreateRequest, InternSessionSendRequest, RuntimeEvent, Session } from "@synth/runtime-protocol";
-import type { CodexEvent, CodexOauthBegin, CodexOauthStatus, CodexSessionInfo, ComposerImageAttachment, ContextSnapshot, DesktopInstanceDiagnostics, DesktopPermissionSettings, InventoryCounts, LagunaDownloadProgress, LagunaModelHit, LagunaStatus, ModelMultiAgentSetting, ModelPerformanceSummary, ModelPerformanceTurnSample, PersistedCodexSession, ProductTelemetryPolicy, RequestOptions, RuntimeBridge, SecretAuditEvent, SecretCapabilitySummary, SecretImportPreview, SecretSummary, SecretsBridge, SecretsInbox, SkillHit, SynthAccountSummary, SynthBackendSettings, SynthSignInBegin, SynthSignInPoll, TariffCard, TerminalEvent, TerminalInfo, TrainingArtifact, TrainingModelDownloadProgress, TrainingModelHit, UpdateStatus, VisualAnnotation, VisualSeal, VisualSealBundle, VisualTemplateMeta, VisualUpload, WhisperDownloadProgress, WhisperModelHit, WhisperRuntimeStatus, WorkspaceAccessSettings } from "../bridge";
+import type { CodexEvent, CodexOauthBegin, CodexOauthStatus, CodexSessionInfo, ComposerImageAttachment, ContextSnapshot, DesktopInstanceDiagnostics, DesktopPermissionSettings, InventoryCounts, LagunaDownloadProgress, LagunaAdapterStatus, LagunaModelHit, LagunaPolicy, LagunaStatus, ModelMultiAgentSetting, ModelPerformanceSummary, ModelPerformanceTurnSample, OptimizerInferDelta, PersistedCodexSession, ProductTelemetryPolicy, RequestOptions, RuntimeBridge, SecretAuditEvent, SecretCapabilitySummary, SecretImportPreview, SecretSummary, SecretsBridge, SecretsInbox, SkillHit, SynthAccountSummary, SynthBackendSettings, SynthSignInBegin, SynthSignInPoll, TariffCard, TerminalEvent, TerminalInfo, TrainingArtifact, TrainingModelDownloadProgress, TrainingModelHit, UpdateStatus, VisualAnnotation, VisualSeal, VisualSealBundle, VisualTemplateMeta, VisualUpload, WhisperDownloadProgress, WhisperModelHit, WhisperRuntimeStatus, WorkspaceAccessSettings } from "../bridge";
 import type { CoreDiagnostics, VisualRecord, VisualRevision } from "@synth/runtime-protocol";
 import type { ContainerDeployment, ResolvedTraceProjection, TraceBundleIngestResult, TraceV5Record, UsageLedgerEntry, UsageSummary, UsageWindow } from "@synth/runtime-protocol";
 import { publicError } from "../runtime/publicError";
@@ -43,7 +43,7 @@ function appEventToCodexEvent(event: AppEvent): CodexEvent | null {
 		event.payload && typeof event.payload === "object" && !Array.isArray(event.payload)
 			? (event.payload as Record<string, unknown>)
 			: {};
-	return { sessionId: event.sessionId, method: event.kind, params };
+	return { sessionId: event.sessionId, method: event.kind, params, createdAt: event.createdAt };
 }
 
 function listenRuntimeAppEvents(listener: (event: AppEvent) => void, onAttached?: () => void): () => void {
@@ -223,6 +223,11 @@ export function installDesktopBridge(): void {
 			},
 			setModelDirectory: (path) => invokeCommand<LagunaModelHit>(COMMANDS.LAGUNA_MODELS_SET_DIRECTORY, { path }),
 			clearModelDirectory: () => invokeCommand<void>(COMMANDS.LAGUNA_MODELS_CLEAR_DIRECTORY),
+			policies: () => invokeCommand<LagunaPolicy[]>(COMMANDS.LAGUNA_POLICIES),
+			registerPolicy: (checkpointId, modelId) =>
+				invokeCommand<LagunaPolicy>(COMMANDS.LAGUNA_REGISTER_POLICY, { checkpointId, modelId }),
+			adapterStatus: () => invokeCommand<LagunaAdapterStatus[]>(COMMANDS.LAGUNA_ADAPTER_STATUS),
+			adapterDownload: (modelId) => invokeCommand<LagunaAdapterStatus>(COMMANDS.LAGUNA_ADAPTER_DOWNLOAD, { modelId }),
 			downloadModel: (modelId) => invokeCommand<LagunaModelHit>(COMMANDS.LAGUNA_MODEL_DOWNLOAD, { modelId }),
 			deleteModel: (modelId) => invokeCommand<void>(COMMANDS.LAGUNA_MODEL_DELETE, { modelId }),
 			onDownloadProgress(listener) {
@@ -260,6 +265,10 @@ export function installDesktopBridge(): void {
 			chooseModelDirectory: async () => null,
 			setModelDirectory: async () => { throw new Error("Model folders require the desktop app"); },
 			clearModelDirectory: async () => undefined,
+			policies: async () => [],
+			adapterStatus: async () => [],
+			adapterDownload: async () => { throw new Error("Adapters require Synth Desktop"); },
+			registerPolicy: async () => { throw new Error("Policies require Synth Desktop"); },
 			onStatus: () => () => undefined
 		};
 	window.synthTrainingModels ??= isTauri
@@ -888,6 +897,23 @@ window.synthWorkspaceScope ??= isTauri
 				invokeCommand(COMMANDS.OPTIMIZERS_SAVED_LORA_ARCHIVE, { checkpointId }),
 			savedLoraDownload: (checkpointId) =>
 				invokeCommand(COMMANDS.OPTIMIZERS_SAVED_LORA_DOWNLOAD, { checkpointId }),
+			importSavedLora: (path) =>
+				invokeCommand(COMMANDS.OPTIMIZERS_SAVED_LORA_IMPORT, { path }),
+			patchSavedLora: (checkpointId, patch) =>
+				invokeCommand(COMMANDS.OPTIMIZERS_SAVED_LORA_PATCH, { checkpointId, patch }),
+			publishSavedLora: (checkpointId) =>
+				invokeCommand(COMMANDS.OPTIMIZERS_SAVED_LORA_PUBLISH, { checkpointId }),
+			inferCheckpoint: (request) =>
+				invokeCommand(COMMANDS.OPTIMIZERS_CHECKPOINT_INFER, { request }),
+			onInferDelta(listener) {
+				let disposed = false;
+				let unlisten: (() => void) | undefined;
+				void listen<OptimizerInferDelta>(EVENT_CHANNELS.OPTIMIZER_INFER, ({ payload }) => listener(payload)).then((next) => {
+					if (disposed) next();
+					else unlisten = next;
+				});
+				return () => { disposed = true; unlisten?.(); };
+			},
 			reconcileTraining: (optimizerRunId) =>
 				invokeCommand(COMMANDS.OPTIMIZERS_TRAINING_RECONCILE, { optimizerRunId }),
 			recordVisualReady: (request) => invokeCommand(COMMANDS.VISUAL_SUBSCRIPTION_READY, { request }),

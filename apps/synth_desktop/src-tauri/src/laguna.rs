@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 use rand::RngCore;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{json, Value};
 use std::{
     collections::HashSet,
     env,
@@ -76,6 +76,11 @@ const MODEL_CATALOG: [ModelSpec; 1] = [ModelSpec {
     download_bytes: 21_600_000_000,
 }];
 
+/// The base weights revision this build installs and pins adapters against.
+pub fn installed_base_revision() -> &'static str {
+    DEFAULT_MODEL_REVISION
+}
+
 fn model_spec(model_id: &str) -> Result<ModelSpec> {
     MODEL_CATALOG
         .iter()
@@ -120,6 +125,24 @@ pub struct LagunaStatus {
     pub free_at: Option<u64>,
     #[specta(type = specta_typescript::Unknown)]
     pub updated_at: u64,
+}
+
+/// One selectable inference policy: the base weights, or those weights with a
+/// LoRA attached. Speed fields are `None` until measured — never zero.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct LagunaPolicy {
+    pub model_id: String,
+    pub title: Option<String>,
+    pub is_base: bool,
+    pub digest: Option<String>,
+    pub tokens_per_second_p10: Option<f64>,
+    pub delta_vs_base_pct: Option<f64>,
+    /// Whether the delta exceeds this policy's own measurement noise. False
+    /// means the surface must not render the number, not that it is zero.
+    pub delta_is_resolvable: bool,
+    #[specta(type = specta_typescript::Unknown)]
+    pub token_samples: u64,
 }
 
 /// The generation currently holding the daemon's single GPU admission slot.
@@ -230,6 +253,7 @@ pub struct LagunaManager {
     inference_updates: broadcast::Sender<LagunaInference>,
     inference_task: Mutex<Option<tauri::async_runtime::JoinHandle<()>>>,
     client: Client,
+    adapter_path: Mutex<Option<PathBuf>>,
 }
 
 impl LagunaManager {
@@ -256,6 +280,7 @@ impl LagunaManager {
             inference_updates,
             inference_task: Mutex::new(None),
             client: crate::http::http_client(),
+            adapter_path: Mutex::new(None),
         }
     }
 
@@ -326,6 +351,162 @@ impl LagunaManager {
         }
         self.ensure(workshop_root).await?;
         Ok(self.status().await)
+    }
+
+    /// Register an adapter under a model id clients can ask for.
+    ///
+    /// Registration is not selection. Which policy a turn runs under is
+    /// decided by the `model` on that request, so registering `…-ft` cannot
+    /// change what an already-open conversation is doing.
+    pub async fn register_policy(
+        &self,
+        model_id: &str,
+        adapter_path: &Path,
+        digest: Option<&str>,
+    ) -> Result<LagunaPolicy> {
+        let base_url = self
+            .status()
+            .await
+            .base_url
+            .clone()
+            .ok_or_else(|| anyhow::anyhow!("Laguna is not running"))?;
+        let api_key = env::var("SYNTH_LAGUNA_API_KEY").unwrap_or_default();
+        let response = self
+            .client
+            .post(format!("{}/v1/synth/policies", trim_url(base_url)))
+            .bearer_auth(api_key)
+            .json(&json!({
+                "model_id": model_id,
+                "adapter_path": adapter_path.display().to_string(),
+                "digest": digest,
+            }))
+            .send()
+            .await
+            .context("Laguna policy registration is unreachable")?;
+        let status = response.status();
+        let body: Value = response.json().await.unwrap_or_else(|_| json!({}));
+        if !status.is_success() {
+            let message = body
+                .pointer("/error/message")
+                .and_then(Value::as_str)
+                .unwrap_or("Laguna refused the policy");
+            return Err(anyhow::anyhow!("{message}"));
+        }
+        let policy = body.get("policy").cloned().unwrap_or_else(|| json!({}));
+        Ok(LagunaPolicy {
+            model_id: policy
+                .get("model_id")
+                .and_then(Value::as_str)
+                .unwrap_or(model_id)
+                .to_string(),
+            title: policy.get("title").and_then(Value::as_str).map(str::to_string),
+            is_base: policy.get("is_base").and_then(Value::as_bool).unwrap_or(false),
+            digest: policy.get("digest").and_then(Value::as_str).map(str::to_string),
+            tokens_per_second_p10: None,
+            delta_vs_base_pct: None,
+            delta_is_resolvable: false,
+            token_samples: 0,
+        })
+    }
+
+    /// Selectable policies, joined to whatever the daemon has actually measured.
+    ///
+    /// Speed fields stay `None` until the daemon has enough samples, and the
+    /// delta is only marked resolvable when it exceeds that policy's own
+    /// measurement noise. A caller must not invent a number for a blank.
+    pub async fn policies(&self) -> Result<Vec<LagunaPolicy>> {
+        let base_url = self
+            .status()
+            .await
+            .base_url
+            .clone()
+            .ok_or_else(|| anyhow::anyhow!("Laguna is not running"))?;
+        let base_url = trim_url(base_url);
+        let api_key = env::var("SYNTH_LAGUNA_API_KEY").unwrap_or_default();
+        let listed: Value = self
+            .client
+            .get(format!("{base_url}/v1/synth/policies"))
+            .bearer_auth(&api_key)
+            .send()
+            .await
+            .context("Laguna policy list is unreachable")?
+            .json()
+            .await
+            .unwrap_or_else(|_| json!({}));
+        // Telemetry is enrichment: a policy list still renders when the
+        // daemon has measured nothing yet, with blanks where numbers go.
+        let measured: Value = match self
+            .client
+            .get(format!("{base_url}{INFERENCE_PATH}"))
+            .bearer_auth(&api_key)
+            .send()
+            .await
+        {
+            Ok(response) => response.json().await.unwrap_or_else(|_| json!({})),
+            Err(_) => json!({}),
+        };
+        let rows = measured.pointer("/policies/policies").cloned().unwrap_or_else(|| json!({}));
+        let mut policies = Vec::new();
+        for entry in listed
+            .get("policies")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default()
+        {
+            let model_id = entry
+                .get("model_id")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string();
+            let stats = rows.get(&model_id).cloned().unwrap_or_else(|| json!({}));
+            policies.push(LagunaPolicy {
+                title: entry.get("title").and_then(Value::as_str).map(str::to_string),
+                is_base: entry.get("is_base").and_then(Value::as_bool).unwrap_or(false),
+                digest: entry.get("digest").and_then(Value::as_str).map(str::to_string),
+                tokens_per_second_p10: stats
+                    .get("tokensPerSecondP10")
+                    .and_then(Value::as_f64),
+                delta_vs_base_pct: stats.get("deltaVsBasePct").and_then(Value::as_f64),
+                delta_is_resolvable: stats
+                    .get("deltaIsResolvable")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false),
+                token_samples: stats
+                    .get("tokenSamples")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0),
+                model_id,
+            });
+        }
+        Ok(policies)
+    }
+
+    pub async fn set_adapter(&self, adapter_path: Option<&Path>) -> Result<LagunaStatus> {
+        let previous = self.adapter_path.lock().await.clone();
+        let base_url = self
+            .status()
+            .await
+            .base_url
+            .clone()
+            .ok_or_else(|| anyhow::anyhow!("Laguna is not running"))?;
+        let api_key = env::var("SYNTH_LAGUNA_API_KEY").unwrap_or_default();
+        let model = selected_model_id().unwrap_or_else(|_| DEFAULT_MODEL.to_string());
+        match self
+            .load_model_at(&base_url, &api_key, &model, adapter_path)
+            .await
+        {
+            Ok(()) => {
+                *self.adapter_path.lock().await = adapter_path.map(Path::to_path_buf);
+                self.refresh().await;
+                Ok(self.status().await)
+            }
+            Err(error) => {
+                let _ = self
+                    .load_model_at(&base_url, &api_key, &model, previous.as_deref())
+                    .await;
+                Err(error)
+            }
+        }
     }
 
     pub fn api_key(&self) -> Option<String> {
@@ -615,7 +796,11 @@ for shard in sorted(shards):
         loading.phase = "loading".into();
         loading.detail = Some("Loading Laguna weights for the next turn…".into());
         self.set_status(loading).await;
-        if let Err(error) = self.load_model_at(&base_url, &api_key, &model).await {
+        let adapter = self.adapter_path.lock().await.clone();
+        if let Err(error) = self
+            .load_model_at(&base_url, &api_key, &model, adapter.as_deref())
+            .await
+        {
             self.set_error(error.to_string()).await;
             return Err(error);
         }
@@ -631,7 +816,13 @@ for shard in sorted(shards):
         Ok(Some(base_url))
     }
 
-    async fn load_model_at(&self, base_url: &str, api_key: &str, model: &str) -> Result<()> {
+    async fn load_model_at(
+        &self,
+        base_url: &str,
+        api_key: &str,
+        model: &str,
+        adapter_path: Option<&Path>,
+    ) -> Result<()> {
         let mut url = reqwest::Url::parse(base_url).context("invalid Laguna base URL")?;
         {
             let mut segments = url
@@ -642,11 +833,15 @@ for shard in sorted(shards):
             segments.extend(model.split('/'));
             segments.push("load");
         }
+        let body = json!({
+            "adapter_path": adapter_path.map(|path| path.display().to_string())
+        });
         let response = self
             .client
             .post(url)
             .bearer_auth(api_key)
             .timeout(crate::limits::LAGUNA_READY_WAIT)
+            .json(&body)
             .send()
             .await
             .with_context(|| format!("Laguna model load is unreachable at {base_url}"))?;
@@ -1542,7 +1737,16 @@ fn spawn_sidecar(root: &Path, api_key: &str, backend: &str) -> Result<()> {
     apply_daemon_env(&mut command, api_key, backend, &models_dir()?);
     detach(&mut command);
     let child = command.spawn().context("spawn Laguna sidecar")?;
-    fs::write(home().join("sidecar.pid"), child.id().to_string())?;
+    let identity = crate::instance::ProcessIdentity {
+        pid: child.id(),
+        start: crate::instance::process_start_identity(child.id()).unwrap_or_default(),
+        exe: command.get_program().to_string_lossy().into_owned(),
+    };
+    fs::write(home().join("sidecar.pid"), identity.pid.to_string())?;
+    fs::write(
+        home().join("sidecar.identity.json"),
+        serde_json::to_vec_pretty(&identity)?,
+    )?;
     Ok(())
 }
 
@@ -1643,6 +1847,7 @@ fn is_managed_sidecar_command(command: &str) -> bool {
 
 fn stop_managed_sidecar() -> Result<bool> {
     let path = home().join("sidecar.pid");
+    let identity_path = home().join("sidecar.identity.json");
     let Ok(raw) = fs::read_to_string(&path) else {
         return Ok(false);
     };
@@ -1653,6 +1858,15 @@ fn stop_managed_sidecar() -> Result<bool> {
     if pid == 0 {
         return Ok(false);
     }
+    if let Ok(raw) = fs::read_to_string(&identity_path) {
+        if let Ok(recorded) = serde_json::from_str::<crate::instance::ProcessIdentity>(&raw) {
+            if recorded.pid != pid || !recorded.is_still_running() {
+                let _ = fs::remove_file(&path);
+                let _ = fs::remove_file(&identity_path);
+                return Ok(false);
+            }
+        }
+    }
     #[cfg(unix)]
     {
         let command = Command::new("/bin/ps")
@@ -1660,7 +1874,8 @@ fn stop_managed_sidecar() -> Result<bool> {
             .output()
             .context("inspect stale Synth-managed Laguna sidecar")?;
         if !is_managed_sidecar_command(&String::from_utf8_lossy(&command.stdout)) {
-            let _ = fs::remove_file(path);
+            let _ = fs::remove_file(&path);
+            let _ = fs::remove_file(&identity_path);
             return Ok(false);
         }
         // The daemon is a session/process-group leader. Signal the whole group
@@ -1675,8 +1890,9 @@ fn stop_managed_sidecar() -> Result<bool> {
             return Ok(false);
         }
         for _ in 0..100 {
-            if !process_is_alive(pid) {
-                let _ = fs::remove_file(path);
+            if !crate::instance::pid_exists(pid) {
+                let _ = fs::remove_file(&path);
+                let _ = fs::remove_file(&identity_path);
                 return Ok(true);
             }
             thread::sleep(Duration::from_millis(50));
@@ -1689,8 +1905,9 @@ fn stop_managed_sidecar() -> Result<bool> {
             return Ok(false);
         }
         for _ in 0..40 {
-            if !process_is_alive(pid) {
-                let _ = fs::remove_file(path);
+            if !crate::instance::pid_exists(pid) {
+                let _ = fs::remove_file(&path);
+                let _ = fs::remove_file(&identity_path);
                 return Ok(true);
             }
             thread::sleep(Duration::from_millis(50));
@@ -1705,13 +1922,24 @@ fn stop_managed_sidecar() -> Result<bool> {
 
 #[cfg(unix)]
 fn process_is_alive(pid: u32) -> bool {
-    Command::new("/bin/kill")
-        .args(["-0", &pid.to_string()])
+    // `kill -0` also succeeds for zombies. A daemon that has exited but has
+    // not yet been reaped cannot own the port or respond to another signal,
+    // so treating it as live makes reload wait and eventually report the
+    // impossible "did not terminate after SIGKILL" error.
+    Command::new("/bin/ps")
+        .args(["-p", &pid.to_string(), "-o", "stat="])
         .stdin(Stdio::null())
-        .stdout(Stdio::null())
         .stderr(Stdio::null())
-        .status()
-        .map(|status| status.success())
+        .output()
+        .map(|output| {
+            output.status.success()
+                && output
+                    .stdout
+                    .iter()
+                    .copied()
+                    .find(|byte| !byte.is_ascii_whitespace())
+                    != Some(b'Z')
+        })
         .unwrap_or(false)
 }
 
@@ -1898,7 +2126,7 @@ mod tests {
         )
         .await;
         LagunaManager::new()
-            .load_model_at(&base_url, &credential, DEFAULT_MODEL)
+            .load_model_at(&base_url, &credential, DEFAULT_MODEL, None)
             .await
             .expect("the production load control response restores residency");
         server.await.unwrap();
@@ -1912,7 +2140,7 @@ mod tests {
         )
         .await;
         let error = LagunaManager::new()
-            .load_model_at(&base_url, &credential, DEFAULT_MODEL)
+            .load_model_at(&base_url, &credential, DEFAULT_MODEL, None)
             .await
             .expect_err("a rejected load must fail the turn preflight")
             .to_string();

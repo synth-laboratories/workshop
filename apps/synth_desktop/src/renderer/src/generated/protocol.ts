@@ -90,6 +90,7 @@ export const commands = {
 	optimizersSavedLorasSearch: (query: {
 	search: string | null,
 	scope: string | null,
+	placement: string | null,
 	provider: string | null,
 	checkpointKind: string | null,
 	baseModel: string | null,
@@ -107,6 +108,10 @@ export const commands = {
 	optimizersTrainingModels: () => typedError<HostedTrainingModelCatalog_Serialize, AppError>(__TAURI_INVOKE("optimizers_training_models")),
 	optimizersSavedLoraArchive: (checkpointId: string) => typedError<SavedLoraCheckpoint_Serialize, AppError>(__TAURI_INVOKE("optimizers_saved_lora_archive", { checkpointId })),
 	optimizersSavedLoraDownload: (checkpointId: string) => typedError<SavedLoraDownload_Serialize, AppError>(__TAURI_INVOKE("optimizers_saved_lora_download", { checkpointId })),
+	optimizersSavedLoraImport: (path: string) => typedError<SavedLoraCheckpoint_Serialize, AppError>(__TAURI_INVOKE("optimizers_saved_lora_import", { path })),
+	optimizersCheckpointInfer: (request: CheckpointInferRequest) => typedError<unknown, AppError>(__TAURI_INVOKE("optimizers_checkpoint_infer", { request })),
+	optimizersSavedLoraPatch: (checkpointId: string, patch: SavedLoraPatchRequest) => typedError<SavedLoraCheckpoint_Serialize, AppError>(__TAURI_INVOKE("optimizers_saved_lora_patch", { checkpointId, patch })),
+	optimizersSavedLoraPublish: (checkpointId: string) => typedError<SavedLoraCheckpoint_Serialize, AppError>(__TAURI_INVOKE("optimizers_saved_lora_publish", { checkpointId })),
 	optimizersTrainingReconcile: (optimizerRunId: string) => typedError<unknown, AppError>(__TAURI_INVOKE("optimizers_training_reconcile", { optimizerRunId })),
 	pluginsStatus: (pluginId: string | null) => typedError<PluginStatus_Serialize, AppError>(__TAURI_INVOKE("plugins_status", { pluginId })),
 	pluginsList: () => typedError<PluginStatus_Serialize[], AppError>(__TAURI_INVOKE("plugins_list")),
@@ -339,6 +344,10 @@ export const commands = {
 	migrationCancel: (confirmationToken: string) => __TAURI_INVOKE<MigrationCancelResult>("migration_cancel", { confirmationToken }),
 	lagunaGetStatus: () => typedError<LagunaStatus, AppError>(__TAURI_INVOKE("laguna_get_status")),
 	lagunaReload: () => typedError<LagunaStatus, AppError>(__TAURI_INVOKE("laguna_reload")),
+	lagunaRegisterPolicy: (checkpointId: string, modelId: string) => typedError<LagunaPolicy, AppError>(__TAURI_INVOKE("laguna_register_policy", { checkpointId, modelId })),
+	lagunaPolicies: () => typedError<LagunaPolicy[], AppError>(__TAURI_INVOKE("laguna_policies")),
+	lagunaAdapterStatus: () => typedError<LagunaAdapterStatus[], AppError>(__TAURI_INVOKE("laguna_adapter_status")),
+	lagunaAdapterDownload: (modelId: string) => typedError<LagunaAdapterStatus, AppError>(__TAURI_INVOKE("laguna_adapter_download", { modelId })),
 	lagunaModelsList: () => typedError<LagunaModelHit[], AppError>(__TAURI_INVOKE("laguna_models_list")),
 	lagunaModelsSetDirectory: (path: string) => typedError<LagunaModelHit, AppError>(__TAURI_INVOKE("laguna_models_set_directory", { path })),
 	lagunaModelsClearDirectory: () => typedError<null, AppError>(__TAURI_INVOKE("laguna_models_clear_directory")),
@@ -713,6 +722,12 @@ export type CapabilitySummary = {
 	displaySuffix: string | null,
 };
 
+export type CheckpointInferRequest = {
+	checkpointId: string,
+	family: string,
+	body: unknown,
+};
+
 export type CodexApprovalDecisionRequest = {
 	sessionId: string,
 	approvalId: string,
@@ -740,6 +755,8 @@ export type CodexSessionRecord = {
 	presentationSummary?: string | null,
 	approvalPolicy?: string,
 	sandbox?: string,
+	/**  This Mac Laguna adapter catalog id. `None` is the base model. */
+	adapter?: string | null,
 	/**
 	 *  Set when the previous process died holding this chat's turn. It is what
 	 *  lets the sidebar say "Workshop exited while this task was running"
@@ -772,6 +789,12 @@ export type CodexSessionStartRequest = {
 	 *  discarded by `prepare_codex_start` before launch.
 	 */
 	writableRoots?: string[],
+	/**
+	 *  Catalog identity (`sha256:…`) of a This Mac Laguna-compatible LoRA.
+	 *  `None` is the base Laguna XS weights. Renderer-owned; never forwarded
+	 *  into the Codex app-server provider payload.
+	 */
+	adapter?: string | null,
 };
 
 export type CodexSteerRequest = {
@@ -1236,6 +1259,21 @@ export type InternTarget_Serialize = {
 	binding?: unknown,
 };
 
+/**  What the Settings surface renders for the published finetune. */
+export type LagunaAdapterStatus = {
+	modelId: string,
+	title: string,
+	digest: string,
+	installed: boolean,
+	downloadBytes: unknown,
+	baseRevision: string,
+	/**
+	 *  False when the installed weights are a different revision. The adapter
+	 *  is shown either way; only the action is refused.
+	 */
+	baseMatches: boolean,
+};
+
 /**
  *  The generation currently holding the daemon's single GPU admission slot.
  *
@@ -1283,6 +1321,25 @@ export type LagunaModelHit = {
 	selected: boolean,
 	runtimeReady: boolean,
 	companionBytes: unknown,
+};
+
+/**
+ *  One selectable inference policy: the base weights, or those weights with a
+ *  LoRA attached. Speed fields are `None` until measured — never zero.
+ */
+export type LagunaPolicy = {
+	modelId: string,
+	title: string | null,
+	isBase: boolean,
+	digest: string | null,
+	tokensPerSecondP10: number | null,
+	deltaVsBasePct: number | null,
+	/**
+	 *  Whether the delta exceeds this policy's own measurement noise. False
+	 *  means the surface must not render the number, not that it is zero.
+	 */
+	deltaIsResolvable: boolean,
+	tokenSamples: unknown,
 };
 
 /**
@@ -2715,6 +2772,7 @@ export type SavedLoraCheckpointPage_Serialize = {
 export type SavedLoraCheckpointQuery = {
 	search: string | null,
 	scope: string | null,
+	placement: string | null,
 	provider: string | null,
 	checkpointKind: string | null,
 	baseModel: string | null,
@@ -2749,6 +2807,9 @@ export type SavedLoraCheckpoint_Deserialize = {
 	status: string,
 	storage: SavedLoraStorage_Deserialize,
 	lineage?: SavedLoraLineage_Deserialize,
+	placement?: string,
+	inference_chat_completions?: boolean,
+	inference_responses?: boolean,
 	tags: string[],
 	metadata: unknown,
 	created_at: string | null,
@@ -2777,6 +2838,9 @@ export type SavedLoraCheckpoint_Serialize = {
 	status: string,
 	storage: SavedLoraStorage_Serialize,
 	lineage: SavedLoraLineage_Serialize,
+	placement: string,
+	inferenceChatCompletions: boolean,
+	inferenceResponses: boolean,
 	tags: string[],
 	metadata: unknown,
 	createdAt: string | null,
@@ -2820,6 +2884,12 @@ export type SavedLoraLineage_Serialize = {
 	attemptId: string | null,
 	sourceCheckpointId: string | null,
 	providerCheckpointReference: string | null,
+};
+
+export type SavedLoraPatchRequest = {
+	name: string | null,
+	description: string | null,
+	tags: string[] | null,
 };
 
 export type SavedLoraRunCounts = SavedLoraRunCounts_Serialize | SavedLoraRunCounts_Deserialize;

@@ -194,6 +194,7 @@ fn test_request(workspace: &Path, session_id: &str) -> CodexSessionStartRequest 
         multi_agent_version: Some(MultiAgentVersion::None),
         auto_compact_token_limit: None,
         writable_roots: Vec::new(),
+        adapter: None,
         local_model_catalog: Some(local_catalog_envelope()),
         broker_credential: false,
     }
@@ -1409,6 +1410,7 @@ async fn turn_send_reattaches_a_restored_running_record_without_an_attachment() 
         presentation_summary: None,
         approval_policy: "never".into(),
         sandbox: "workspace-write".into(),
+        adapter: None,
         recovery: None,
     };
     fs::write(
@@ -3301,6 +3303,7 @@ async fn a_running_record_left_by_a_dead_process_never_lists_as_running() {
                 presentation_summary: None,
                 approval_policy: "never".into(),
                 sandbox: "workspace-write".into(),
+                adapter: None,
                 recovery: None,
             },
         );

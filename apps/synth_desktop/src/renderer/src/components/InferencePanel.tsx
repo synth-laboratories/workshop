@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useId, useMemo, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { COMMANDS, EVENT_CHANNELS, invokeCommand } from "../bridge";
+import { LOCAL_BASE_POLICY } from "../runtime/lagunaPolicies";
 
 /**
  * Local inference monitor for the Laguna daemon on 127.0.0.1:7333.
@@ -517,6 +518,8 @@ export type InferencePanelProps = {
 	onOpenSettings?: () => void;
 	/** Cross-session measurements shown until the live monitor has samples. */
 	observedPerformance?: { tpsP50: number | null; tpsP95: number | null; sampleCount: number } | null;
+	/** Policy pinned to this conversation, even while no generation is active. */
+	selectedModel?: string | null;
 };
 
 export function InferencePanel({
@@ -528,7 +531,8 @@ export function InferencePanel({
 	historyLimit,
 	className,
 	onOpenSettings,
-	observedPerformance = null
+	observedPerformance = null,
+	selectedModel = null
 }: InferencePanelProps) {
 	// The panel is mounted in both the rail and the page, so ids must be local.
 	const reasonId = `${useId()}-free-reason`;
@@ -585,6 +589,8 @@ export function InferencePanel({
 	const decodeP50 = rolling.decodeTpsP50 ?? observedPerformance?.tpsP50 ?? null;
 	const decodeP95 = rolling.decodeTpsP95 ?? observedPerformance?.tpsP95 ?? null;
 	const decodeIsPersisted = rolling.decodeTpsP50 == null && observedPerformance?.tpsP50 != null;
+	const displayedModel = selectedModel ?? snapshot.model;
+	const fineTuned = Boolean(displayedModel && displayedModel !== LOCAL_BASE_POLICY);
 
 	const freeBlocked = Boolean(active) || turnRunning || !snapshot.resident || view.unloadState === "pending";
 	const freeReason = active
@@ -603,9 +609,14 @@ export function InferencePanel({
 			data-phase={phase ?? (warmingUp ? "loading" : turnRunning ? "turn-active" : snapshot.resident ? "idle" : "unloaded")}
 		>
 			<header className="inference-head">
-				<h2>
-					Inference <span aria-hidden>·</span> {compactModelName(snapshot.model)}
-				</h2>
+				<div className="inference-model-identity">
+					<h2>
+						Inference <span aria-hidden>·</span> {compactModelName(displayedModel)}
+					</h2>
+					<span className="inference-policy-kind" data-finetuned={fineTuned ? "yes" : "no"} data-testid="inference-policy-kind">
+						{fineTuned ? "Fine-tuned model · LoRA attached" : "Base model · No LoRA attached"}
+					</span>
+				</div>
 				<span
 					className="inference-residency"
 					data-resident={snapshot.resident ? "yes" : "no"}

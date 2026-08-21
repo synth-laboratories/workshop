@@ -64,6 +64,31 @@ impl SftOptimizerClient {
             .await
     }
 
+    pub(super) async fn infer_checkpoint(
+        &self,
+        family: &str,
+        sampler_path: &str,
+        run_id: &str,
+        checkpoint_id: &str,
+        body: &Value,
+    ) -> Result<Value> {
+        let path = match family {
+            "chat_completions" | "chat" => "/v1/checkpoints/infer/chat/completions",
+            "responses" => "/v1/checkpoints/infer/responses",
+            other => bail!("unsupported inference family {other}"),
+        };
+        self.post_json(
+            path,
+            json!({
+                "sampler_path": sampler_path,
+                "run_id": run_id,
+                "checkpoint_id": checkpoint_id,
+                "body": body,
+            }),
+        )
+        .await
+    }
+
     async fn get_json(&self, path: &str) -> Result<Value> {
         let url = format!("{}{path}", self.base_url);
         let response = self

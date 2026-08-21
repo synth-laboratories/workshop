@@ -8,6 +8,7 @@ from typing import Any, AsyncIterator
 
 from ..capabilities import ModelCapabilities
 from ..compiler import compile_messages, compile_turn
+from ..errors import ResponsesError
 from ..ids import new_id
 from ..telemetry import GenerationTiming
 from .protocol import CompiledTurn, ModelEvent, TokenUsageEstimate
@@ -59,6 +60,7 @@ class FakeBackend:
         self._recent_generations: OrderedDict[str, GenerationTiming] = OrderedDict()
         self._loaded = False
         self._last_used_at = time.time()
+        self.adapter_path = None
 
     async def capabilities(self, model: str) -> ModelCapabilities:
         return self._capabilities
@@ -67,6 +69,31 @@ class FakeBackend:
         """Explicit residency request, mirroring the native backend."""
         self._loaded = True
         self._last_used_at = time.time()
+
+    async def set_adapter(self, adapter_path: str | None) -> None:
+        self.adapter_path = adapter_path
+
+    def set_policy_registry(self, registry: Any) -> None:
+        self._policies = registry
+
+    async def _ensure_policy(self, model: str | None) -> None:
+        registry = getattr(self, "_policies", None)
+        if registry is None:
+            return
+        from ..policies import PolicyError
+
+        try:
+            policy = registry.resolve(model)
+        except PolicyError as error:
+            raise ResponsesError(
+                "model_not_found",
+                str(error),
+                404,
+                error_type="invalid_request_error",
+            ) from error
+        self.attached_policy = policy.model_id
+        self.adapter_path = None if policy.is_base else str(policy.adapter_path)
+        self._loaded = False
 
     async def compile(
         self,
@@ -89,6 +116,7 @@ class FakeBackend:
         return TokenUsageEstimate(max(1, (len(serialized) + 3) // 4))
 
     async def stream(self, turn: CompiledTurn) -> AsyncIterator[ModelEvent]:
+        await self._ensure_policy(turn.model)
         usage = await self.count_tokens(turn)
         self._loaded = True
         self._last_used_at = time.time()

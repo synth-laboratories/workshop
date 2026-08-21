@@ -62,6 +62,8 @@ import {
 	openArtifactIdForChat
 } from "../runtime/sessionView";
 import { approvalModeFromConfig, codexStartRequest, coreEventToRuntime, createCodexSession, restoreCodexSession, type ApprovalMode, type ApprovalPolicy, type SandboxMode } from "../runtime/nativeCodex";
+import { LOCAL_BASE_POLICY } from "../runtime/lagunaPolicies";
+import type { LagunaPolicy } from "../bridge/types";
 import {
 	loadModelKnobValues,
 	modelKnobForTarget,
@@ -172,6 +174,8 @@ export function useAppController() {
 	const activeChatIdRef = useRef<string | null>(null);
 	const [transcriptHistoryBySession, setTranscriptHistoryBySession] = useState<Record<string, TranscriptHistoryState>>({});
 	const [selectedTargetId, setSelectedTargetId] = useState("chatgpt-luna");
+	const [selectedLagunaAdapterId, setSelectedLagunaAdapterId] = useState<string | null>(null);
+	const [lagunaAdapters, setLagunaAdapters] = useState<LagunaPolicy[]>([]);
 	const defaultModelResolvedRef = useRef(false);
 	useEffect(() => {
 		// v0.1 pickers hide Intern; never leave a hidden target selected.
@@ -681,6 +685,46 @@ export function useAppController() {
 	}, [view]);
 	activeSessionIdRef.current = activeSessionId;
 	const terminalWorkspaceRoot = defaultWorkspace;
+
+	useEffect(() => {
+		let disposed = false;
+		const load = async () => {
+			try {
+				const policies = (await bridges.laguna?.policies?.()) ?? [];
+				if (!disposed) setLagunaAdapters(policies);
+			} catch {
+				if (!disposed) setLagunaAdapters([]);
+			}
+		};
+		void load();
+		// Speed is measured as turns run, so the list is refreshed on optimizer
+		// activity and whenever a turn completes rather than once at mount.
+		const unlisten = bridges.optimizers?.onEvent?.(() => {
+			void load();
+		});
+		const timer = window.setInterval(() => void load(), 30_000);
+		return () => {
+			disposed = true;
+			unlisten?.();
+			window.clearInterval(timer);
+		};
+	}, []);
+
+	const selectLagunaAdapter = useCallback(async (modelId: string | null) => {
+		// No daemon call: which policy a turn runs under is decided by the
+		// `model` on that request, so selecting one cannot disturb a
+		// conversation that is already open under another.
+		setSelectedLagunaAdapterId(modelId);
+		const sessionId = activeSessionIdRef.current;
+		const session = sessionId
+			? sessionsRef.current.find((candidate) => candidate.id === sessionId)
+			: undefined;
+		if (session?.target.kind === "local") {
+			const next = { ...session, target: { ...session.target, model: modelId ?? LOCAL_BASE_POLICY } };
+			sessionsRef.current = sessionsRef.current.map((item) => item.id === next.id ? next : item);
+			upsertSession(next);
+		}
+	}, []);
 	// Declared after activeSessionId: the allowlist is scoped to the session,
 	// so the hook needs a session to ask about.
 	const computerUseState = useComputerUse(activeSessionId ?? null);
@@ -1439,7 +1483,10 @@ export function useAppController() {
 		) => {
 			setBusy(true);
 			try {
-				const target = targetIdToExecutionTarget(targetId);
+				const target = targetIdToExecutionTarget(
+					targetId,
+					targetId === "local-laguna" ? selectedLagunaAdapterId : null
+				);
 				const internObjective = objective?.trim();
 				if (target.kind === "intern" && !internObjective) {
 					throw new Error("Enter an objective to start an Intern session");
@@ -1508,7 +1555,7 @@ export function useAppController() {
 				setBusy(false);
 			}
 		},
-		[laguna?.baseUrl, loadMachinePermissions, modelKnobValues, nativeCodex, nativeIntern, preferences.agentContext.autoCompactTokenLimits, refreshSessions, selectedTargetId, showToast]
+		[laguna?.baseUrl, loadMachinePermissions, modelKnobValues, nativeCodex, nativeIntern, preferences.agentContext.autoCompactTokenLimits, refreshSessions, selectedLagunaAdapterId, selectedTargetId, showToast]
 	);
 
 	const ensureActiveSession = useCallback(async (objective: string): Promise<{ sessionId: string; objectiveConsumed: boolean } | null> => {
@@ -1572,8 +1619,13 @@ export function useAppController() {
 						return false;
 					}
 					const executionTarget = sendPlan.kind === "model_switch_then_turn"
-						? targetIdToExecutionTarget(sendPlan.destinationTargetId)
-						: session.target;
+						? targetIdToExecutionTarget(
+							sendPlan.destinationTargetId,
+							sendPlan.destinationTargetId === "local-laguna" ? selectedLagunaAdapterId : null
+						)
+						: session.target.kind === "local"
+							? { ...session.target, adapter: selectedLagunaAdapterId }
+							: session.target;
 					const workspace = typeof session.metadata.workspace === "string"
 						? session.metadata.workspace
 						: await nativeCodex.defaultWorkspace();
@@ -1668,7 +1720,7 @@ export function useAppController() {
 				setBusy(false);
 			}
 		},
-		[allocateNativeSequence, approvalPolicy, armTurnStartWatchdog, clearTurnStartWatchdog, ensureCodexOauthReady, ensureOpenRouterReady, failTurnStart, laguna?.baseUrl, modelKnobValues, nativeCodex, nativeIntern, preferences.agentContext.autoCompactTokenLimits, refreshSessions, sandboxMode, selectedTargetId, showToast]
+		[allocateNativeSequence, approvalPolicy, armTurnStartWatchdog, clearTurnStartWatchdog, ensureCodexOauthReady, ensureOpenRouterReady, failTurnStart, laguna?.baseUrl, modelKnobValues, nativeCodex, nativeIntern, preferences.agentContext.autoCompactTokenLimits, refreshSessions, sandboxMode, selectedLagunaAdapterId, selectedTargetId, showToast]
 	);
 	sendToSessionRef.current = sendToSession;
 
@@ -1817,8 +1869,11 @@ export function useAppController() {
 			// Opening a thread adopts its bound model as pendingTarget so a
 			// leftover chip from another chat cannot silently switch on send.
 			setSelectedTargetId(executionTargetToUiId(session.target));
+			if (session.target.kind === "local") {
+				setSelectedLagunaAdapterId(session.target.model ?? null);
+			}
 		}
-	}, []);
+	}, [showToast]);
 
 	useEffect(() => {
 		void bridges.skills?.list()
@@ -2074,6 +2129,9 @@ export function useAppController() {
 		restartRecoveredChat,
 		selectedTargetId,
 		onSelectTarget,
+		lagunaAdapters,
+		selectedLagunaAdapterId,
+		selectLagunaAdapter,
 		onNewConversation,
 		openChat,
 		openArtifactId,

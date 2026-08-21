@@ -30,6 +30,31 @@ import type {
 } from "@synth/runtime-protocol";
 import type { InstanceDiagnostics } from "../generated/protocol";
 
+/** One selectable inference policy. Speed fields are null until measured. */
+export type LagunaPolicy = {
+	modelId: string;
+	title: string | null;
+	isBase: boolean;
+	digest: string | null;
+	tokensPerSecondP10: number | null;
+	deltaVsBasePct: number | null;
+	/** False means the surface must not render the delta, not that it is zero. */
+	deltaIsResolvable: boolean;
+	tokenSamples: number;
+};
+
+/** The Synth-published finetune, installed or not. */
+export type LagunaAdapterStatus = {
+	modelId: string;
+	title: string;
+	digest: string;
+	installed: boolean;
+	downloadBytes: number;
+	baseRevision: string;
+	/** False when the installed weights are a different revision. */
+	baseMatches: boolean;
+};
+
 export type RequestOptions = {
 	method?: "GET" | "POST" | "DELETE";
 	body?: unknown;
@@ -110,6 +135,15 @@ export type LagunaBridge = {
 	chooseModelDirectory(): Promise<string | null>;
 	setModelDirectory(path: string): Promise<LagunaModelHit>;
 	clearModelDirectory(): Promise<void>;
+	/** Selectable policies with whatever decode speed has been measured. */
+	policies?(): Promise<LagunaPolicy[]>;
+	/** Register a Laguna-compatible LoRA under a model id. Registration is not
+	 *  selection: which policy a turn uses is decided by that turn's model. */
+	registerPolicy?(checkpointId: string, modelId: string): Promise<LagunaPolicy>;
+	/** The Synth-published finetune, installed or not. */
+	adapterStatus?(): Promise<LagunaAdapterStatus[]>;
+	/** Download, verify, install, and register the published finetune. */
+	adapterDownload?(modelId: string): Promise<LagunaAdapterStatus>;
 	downloadModel(modelId: string): Promise<LagunaModelHit>;
 	deleteModel(modelId: string): Promise<void>;
 	onDownloadProgress?(listener: (progress: LagunaDownloadProgress) => void): () => void;
@@ -339,6 +373,8 @@ export type CodexSessionStart = {
 	threadId?: string;
 	multiAgentVersion?: MultiAgentVersion;
 	autoCompactTokenLimit: number;
+	/** This Mac Laguna catalog id. Null loads the base Laguna XS weights. */
+	adapter?: string | null;
 };
 
 export type CodexSessionInfo = { sessionId: string; threadId: string; turnId?: string | null };
@@ -358,10 +394,12 @@ export type PersistedCodexSession = {
 	sandbox: string;
 	presentationEmotion?: string | null;
 	presentationSummary?: string | null;
+	/** This Mac Laguna catalog id. Null is the base model. */
+	adapter?: string | null;
 	/** Set when a previous process died holding this chat's turn. */
 	recovery?: RecoveryNotice | null;
 };
-export type CodexEvent = { sessionId: string; method: string; params: Record<string, unknown> };
+export type CodexEvent = { sessionId: string; method: string; params: Record<string, unknown>; createdAt?: string };
 /** Typed rejection payload of `codex_turn_send`. */
 export type CodexTurnFailure = {
 	code: "codex_session_detached" | "codex_turn_start_failed" | "codex_provider_unavailable" | string;
@@ -446,7 +484,7 @@ export type InventoryBridge = {
 export type ModelPerformanceSummary = {
 	provider: string;
 	modelId: string;
-	measurementKind: "decode" | "observed_stream" | "end_to_end" | "provider_reported";
+	measurementKind: "decode" | "observed_stream" | "observed_stream_segment" | "end_to_end" | "provider_reported";
 	sampleCount: number;
 	tpsP50: number | null;
 	tpsP95: number | null;
@@ -1126,7 +1164,7 @@ export type SavedLoraCheckpoint = {
 	step?: number | null;
 	status: "uploading" | "ready" | "failed" | "archived";
 	storage: {
-		backend: "wasabi" | "minio";
+		backend: "wasabi" | "minio" | "mlx-store";
 		bucket: string;
 		key: string;
 		version?: string | null;
@@ -1142,11 +1180,21 @@ export type SavedLoraCheckpoint = {
 		sourceCheckpointId?: string | null;
 		providerCheckpointReference?: string | null;
 	};
+	placement?: "this_mac" | "hosted";
+	inferenceChatCompletions?: boolean;
+	inferenceResponses?: boolean;
 	tags: string[];
 	metadata: Record<string, unknown>;
 	createdAt?: string | null;
 	updatedAt?: string | null;
 	archivedAt?: string | null;
+};
+
+export type OptimizerInferDelta = {
+	checkpointId: string;
+	family: string;
+	delta: string;
+	done: boolean;
 };
 
 export type SavedLoraCheckpointPage = {
@@ -1290,6 +1338,7 @@ export type OptimizersBridge = {
 	searchSavedLoras(query?: {
 		search?: string;
 		scope?: "all" | "mine" | "org";
+		placement?: "all" | "this_mac" | "hosted";
 		provider?: string;
 		checkpointKind?: string;
 		baseModel?: string;
@@ -1307,6 +1356,11 @@ export type OptimizersBridge = {
 	hostedTrainingModels(): Promise<HostedTrainingModelCatalog>;
 	archiveSavedLora(checkpointId: string): Promise<SavedLoraCheckpoint>;
 	savedLoraDownload(checkpointId: string): Promise<SavedLoraDownload>;
+	importSavedLora(path: string): Promise<SavedLoraCheckpoint>;
+	patchSavedLora?(checkpointId: string, patch: { name?: string; description?: string; tags?: string[] }): Promise<SavedLoraCheckpoint>;
+	publishSavedLora?(checkpointId: string): Promise<SavedLoraCheckpoint>;
+	inferCheckpoint(request: { checkpointId: string; family: "chat_completions" | "responses"; body: Record<string, unknown> }): Promise<unknown>;
+	onInferDelta?(listener: (event: OptimizerInferDelta) => void): () => void;
 	reconcileTraining(optimizerRunId: string): Promise<{
 		schemaVersion: "workshop.training_snapshot.v1";
 		runId: string;

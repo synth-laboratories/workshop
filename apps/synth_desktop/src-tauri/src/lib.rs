@@ -38,6 +38,7 @@ mod instance;
 mod intern_api;
 pub mod ipc;
 mod laguna;
+mod laguna_adapters;
 mod limits;
 mod optimizers;
 mod plugins;
@@ -82,10 +83,11 @@ use intern_api::{
 };
 use laguna::{LagunaManager, LagunaModelHit, LagunaStatus};
 use optimizers::{
-    HostedTrainingModelCatalog, OptimizerCreateRequest, OptimizerEventEnvelope,
+    CheckpointInferRequest, HostedTrainingModelCatalog, OptimizerCreateRequest, OptimizerEventEnvelope,
     OptimizerImportLocalRequest, OptimizerQuery, OptimizerRecipeRunRequest,
     OptimizerReconcileRequest, OptimizerRelationship, OptimizerRunRecord, OptimizerStateSlice,
     SavedLoraCheckpoint, SavedLoraCheckpointPage, SavedLoraCheckpointQuery, SavedLoraDownload,
+    SavedLoraPatchRequest,
 };
 use plugins::PluginStatus;
 use reports::{
@@ -1529,6 +1531,73 @@ async fn optimizers_saved_lora_download(
     state
         .optimizers()
         .saved_lora_download(checkpoint_id)
+        .await
+        .map_err(AppError::from)
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn optimizers_saved_lora_import(
+    state: State<'_, Arc<CoreRuntime>>,
+    path: String,
+) -> Result<SavedLoraCheckpoint, AppError> {
+    state
+        .optimizers()
+        .import_saved_lora_dir(path)
+        .await
+        .map_err(AppError::from)
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn optimizers_checkpoint_infer(
+    app: tauri::AppHandle,
+    state: State<'_, Arc<CoreRuntime>>,
+    request: CheckpointInferRequest,
+) -> Result<contract::specta::OpaqueJson, AppError> {
+    let checkpoint_id = request.checkpoint_id.clone();
+    let family = request.family.clone();
+    state
+        .optimizers()
+        .infer_saved_lora_with_delta(request, move |delta| {
+            let _ = app.emit(
+                crate::contract::events::EventChannel::OPTIMIZER_INFER,
+                serde_json::json!({
+                    "checkpointId": checkpoint_id,
+                    "family": family,
+                    "delta": delta,
+                    "done": false
+                }),
+            );
+        })
+        .await
+        .map(contract::specta::OpaqueJson)
+        .map_err(AppError::from)
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn optimizers_saved_lora_patch(
+    state: State<'_, Arc<CoreRuntime>>,
+    checkpoint_id: String,
+    patch: SavedLoraPatchRequest,
+) -> Result<SavedLoraCheckpoint, AppError> {
+    state
+        .optimizers()
+        .patch_saved_lora(checkpoint_id, patch)
+        .await
+        .map_err(AppError::from)
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn optimizers_saved_lora_publish(
+    state: State<'_, Arc<CoreRuntime>>,
+    checkpoint_id: String,
+) -> Result<SavedLoraCheckpoint, AppError> {
+    state
+        .optimizers()
+        .publish_saved_lora(checkpoint_id)
         .await
         .map_err(AppError::from)
 }
@@ -3432,6 +3501,164 @@ async fn laguna_reload(state: State<'_, Arc<LagunaManager>>) -> Result<LagunaSta
 
 #[tauri::command]
 #[specta::specta]
+async fn laguna_register_policy(
+    core: State<'_, Arc<CoreRuntime>>,
+    state: State<'_, Arc<LagunaManager>>,
+    checkpoint_id: String,
+    model_id: String,
+) -> Result<laguna::LagunaPolicy, AppError> {
+    let checkpoint = core
+        .optimizers()
+        .get_local_lora(checkpoint_id.clone())
+        .await
+        .map_err(AppError::from)?
+        .ok_or_else(|| AppError::from(anyhow::anyhow!("adapter is not in the catalog")))?;
+    if !crate::optimizers::local_lora_is_laguna_compatible(&checkpoint) {
+        return Err(AppError::from(anyhow::anyhow!(
+            "this adapter is not Laguna-compatible; Qwen Optimizers LoRAs stay on the catalog Chat Completions / Responses buttons"
+        )));
+    }
+    let path = std::path::PathBuf::from(&checkpoint.storage.key);
+    if !path.is_dir() {
+        return Err(AppError::from(anyhow::anyhow!(
+            "this adapter's bytes are missing at {}",
+            path.display()
+        )));
+    }
+    state
+        .register_policy(&model_id, &path, checkpoint.storage.sha256.as_deref())
+        .await
+        .map_err(AppError::from)
+}
+
+/// What the Settings surface renders for the published finetune.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct LagunaAdapterStatus {
+    pub model_id: String,
+    pub title: String,
+    pub digest: String,
+    pub installed: bool,
+    #[specta(type = specta_typescript::Unknown)]
+    pub download_bytes: u64,
+    pub base_revision: String,
+    /// False when the installed weights are a different revision. The adapter
+    /// is shown either way; only the action is refused.
+    pub base_matches: bool,
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn laguna_adapter_status() -> Result<Vec<LagunaAdapterStatus>, AppError> {
+    Ok(laguna_adapters::ADAPTER_CATALOG
+        .iter()
+        .map(|spec| LagunaAdapterStatus {
+            model_id: spec.model_id.into(),
+            title: spec.title.into(),
+            digest: spec.digest.into(),
+            installed: laguna_adapters::is_installed(spec),
+            download_bytes: spec.download_bytes,
+            base_revision: spec.base_revision.into(),
+            base_matches: spec.base_revision == laguna::installed_base_revision(),
+        })
+        .collect())
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn laguna_adapter_download(
+    app: tauri::AppHandle,
+    core: State<'_, Arc<CoreRuntime>>,
+    state: State<'_, Arc<LagunaManager>>,
+    model_id: String,
+) -> Result<LagunaAdapterStatus, AppError> {
+    let spec = laguna_adapters::adapter_spec(&model_id).map_err(AppError::from)?;
+    // Through the backend, with the account's own credential. No adapter
+    // object is public and Workshop never reaches object storage directly.
+    let client = crate::optimizers::cloud::CloudOptimizerClient::from_config()
+        .map_err(AppError::from)?;
+    let emit = |phase: &str, detail: &str, done: u64, total: u64| {
+        let _ = app.emit(
+            crate::contract::events::EventChannel::LAGUNA_DOWNLOAD,
+            serde_json::json!({
+                "phase": phase,
+                "detail": detail,
+                "modelId": spec.model_id,
+                "downloadedBytes": done,
+                "totalBytes": total,
+            }),
+        );
+    };
+
+    emit("preparing", "Reading the adapter manifest…", 0, spec.download_bytes);
+    let manifest_json = client
+        .adapter_manifest(spec.digest)
+        .await
+        .map_err(AppError::from)?;
+    let manifest = laguna_adapters::parse_manifest(&manifest_json.to_string())
+        .map_err(AppError::from)?;
+    laguna_adapters::check_pinned(&spec, &manifest).map_err(AppError::from)?;
+    laguna_adapters::check_base_revision(&manifest, laguna::installed_base_revision())
+        .map_err(AppError::from)?;
+
+    let total: u64 = manifest.files.iter().map(|file| file.bytes).sum();
+    let mut fetched: Vec<(String, Vec<u8>)> = Vec::new();
+    let mut done = 0u64;
+    for file in &manifest.files {
+        emit("downloading", &format!("Downloading {}…", file.path), done, total);
+        let bytes = client
+            .adapter_file(spec.digest, &file.path)
+            .await
+            .map_err(AppError::from)?;
+        done += bytes.len() as u64;
+        fetched.push((file.path.clone(), bytes));
+    }
+    emit("verifying", "Verifying the adapter…", done, total);
+    let staged =
+        laguna_adapters::stage_verified(&spec, &manifest, &fetched).map_err(AppError::from)?;
+
+    // Install through the catalog's own import so a downloaded adapter and a
+    // hand-imported one are the same row, digested by the same code.
+    let imported = core
+        .optimizers()
+        .import_saved_lora_dir(staged.display().to_string())
+        .await
+        .map_err(AppError::from)?;
+    let _ = std::fs::remove_dir_all(&staged);
+    let install = laguna_adapters::install_dir(&manifest.digest);
+    laguna_adapters::write_manifest_beside(&install, &manifest).map_err(AppError::from)?;
+    if imported.checkpoint_id != manifest.digest {
+        return Err(AppError::from(anyhow::anyhow!(
+            "installed adapter is {} but the manifest published {}",
+            imported.checkpoint_id,
+            manifest.digest
+        )));
+    }
+    state
+        .register_policy(spec.model_id, &install, Some(manifest.digest.as_str()))
+        .await
+        .map_err(AppError::from)?;
+    Ok(LagunaAdapterStatus {
+        model_id: spec.model_id.into(),
+        title: spec.title.into(),
+        digest: spec.digest.into(),
+        installed: true,
+        download_bytes: spec.download_bytes,
+        base_revision: spec.base_revision.into(),
+        base_matches: true,
+    })
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn laguna_policies(
+    state: State<'_, Arc<LagunaManager>>,
+) -> Result<Vec<laguna::LagunaPolicy>, AppError> {
+    state.policies().await.map_err(AppError::from)
+}
+
+#[tauri::command]
+#[specta::specta]
 fn laguna_models_list(
     state: State<'_, Arc<LagunaManager>>,
 ) -> Result<Vec<LagunaModelHit>, AppError> {
@@ -3691,7 +3918,16 @@ async fn prepare_codex_provider(
     match codex::provider_class(request.provider_name.as_deref()) {
         codex::ProviderClass::LocalLaguna => {
             let root = runtime::workshop_root().map_err(AppError::from)?;
-            let model = laguna.configured_model_id().map_err(AppError::from)?;
+            // The daemon routes policies by the Responses `model` field. The
+            // renderer carries the selected catalog id in `adapter` so it can
+            // keep the base serving identity separate from policy metadata;
+            // promote that id here instead of silently forcing every turn
+            // back onto the configured base model. The catalog lookup below
+            // remains the authority and rejects unknown policy ids.
+            let model = request
+                .adapter
+                .clone()
+                .unwrap_or(laguna.configured_model_id().map_err(AppError::from)?);
             codex::apply_local_laguna_provider(&mut request, &model);
             request.base_url = laguna
                 .ensure_for_turn(&root)
@@ -4092,6 +4328,7 @@ pub fn run() {
     if crate::visuals::mermaid::hidden_mode_requested() {
         std::process::exit(crate::visuals::mermaid::run_hidden_mode());
     }
+    crate::instance::install_boot_identity_and_lock();
     let specta = contract::specta::builder();
 
     tauri::Builder::default()

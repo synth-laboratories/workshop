@@ -17,6 +17,7 @@ from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from typing import Any, AsyncIterator
 
+from ..policies import Policy, PolicyError, PolicyRegistry
 from ..capabilities import ModelCapabilities
 from ..compiler import compile_messages, compile_turn
 from ..errors import ResponsesError
@@ -700,6 +701,11 @@ class NativeMlxBackend:
         self._recent_generations: OrderedDict[str, GenerationTiming] = OrderedDict()
         self._max_recent_generations = 32
         self._loading = False
+        # The policy whose adapter is currently attached, and the base modules
+        # it displaced. `None` is the base weights with nothing attached.
+        self._attached_policy: str | None = None
+        self._attached_originals: dict[str, Any] = {}
+        self._policies: PolicyRegistry | None = None
         self._last_used_at = time.time()
         self._system_memory_bytes = (
             system_memory_bytes
@@ -719,6 +725,150 @@ class NativeMlxBackend:
         """
         await self._ensure_loaded()
         self._last_used_at = time.time()
+
+    async def set_adapter(self, adapter_path: str | None) -> None:
+        """Swap the LoRA path and drop resident weights so the next load picks it up."""
+        normalized = str(Path(adapter_path).expanduser().resolve()) if adapter_path else None
+        current = (
+            str(Path(self.adapter_path).expanduser().resolve()) if self.adapter_path else None
+        )
+        if normalized == current and self._model is not None:
+            return
+        async with self._load_lock:
+            async with self._admission_lock:
+                if self._inflight_generations > 0:
+                    raise ResponsesError(
+                        "model_busy",
+                        "A generation is in flight; retry the adapter change once it completes.",
+                        409,
+                        error_type="server_error",
+                    )
+            await self._release_model_memory()
+            self.adapter_path = normalized
+
+    def set_policy_registry(self, registry: PolicyRegistry) -> None:
+        self._policies = registry
+
+    def _lora_target(self, sample_key: str) -> Any:
+        """Find the module the adapter's key paths are relative to.
+
+        mlx-vlm nests a text checkpoint differently depending on how the
+        architecture was registered: Laguna is
+        `Model.language_model.model.layers[...]`, while the text-only fallback
+        is `Model.language_model._model`. Probing with a real key keeps this
+        working across versions instead of hardcoding one shape.
+        """
+        from mlx_vlm.trainer.utils import get_module_by_name
+
+        candidates = [self._model]
+        language_model = getattr(self._model, "language_model", None)
+        if language_model is not None:
+            candidates.append(language_model)
+            inner = getattr(language_model, "_model", None)
+            if inner is not None:
+                candidates.append(inner)
+        for candidate in candidates:
+            try:
+                get_module_by_name(candidate, sample_key)
+            except (AttributeError, KeyError, IndexError, TypeError):
+                continue
+            return candidate
+        raise ResponsesError(
+            "adapter_shape_unsupported",
+            f"No module tree resolves adapter key {sample_key!r}.",
+            503,
+            error_type="server_error",
+        )
+
+    def _attach_adapter(self, adapter_path: Path) -> None:
+        """Swap adapted linears for LoRA wrappers on the resident model.
+
+        Attaching in place is what makes a policy a per-request pin: reloading
+        the checkpoint instead would cost a cold load per switch.
+        """
+        import mlx.core as mx
+        from mlx_vlm.trainer.utils import _to_lora, get_module_by_name, set_module_by_name
+
+        config = json.loads((adapter_path / "adapter_config.json").read_text(encoding="utf-8"))
+        params = dict(config.get("lora_parameters") or {})
+        keys = params.get("keys")
+        if not keys:
+            raise ResponsesError(
+                "adapter_config_unsupported",
+                f"{adapter_path} does not list lora_parameters.keys.",
+                503,
+                error_type="server_error",
+            )
+        target = self._lora_target(keys[0])
+        originals: dict[str, Any] = {}
+        for name in keys:
+            module = get_module_by_name(target, name)
+            originals[name] = module
+            set_module_by_name(target, name, _to_lora(module, params))
+        target.load_weights(str(adapter_path / "adapters.safetensors"), strict=False)
+        mx.eval(target.parameters())
+        # `load_weights(strict=False)` ignores keys it does not recognise, so a
+        # mismatch would leave a silently unadapted model that still answers.
+        saved = mx.load(str(adapter_path / "adapters.safetensors"))
+        live = get_module_by_name(target, keys[0])
+        if not bool(mx.array_equal(live.lora_b, saved[f"{keys[0]}.lora_b"])):
+            self._detach_adapter_locked(originals)
+            raise ResponsesError(
+                "adapter_did_not_bind",
+                f"Adapter weights from {adapter_path} did not bind to the model.",
+                503,
+                error_type="server_error",
+            )
+        self._attached_originals = originals
+
+    def _detach_adapter_locked(self, originals: dict[str, Any]) -> None:
+        from mlx_vlm.trainer.utils import set_module_by_name
+
+        if not originals:
+            return
+        import mlx.core as mx
+
+        target = self._lora_target(next(iter(originals)))
+        for name, module in originals.items():
+            set_module_by_name(target, name, module)
+        mx.eval(target.parameters())
+
+    def _swap_policy(self, policy: Policy) -> None:
+        """Runs on the owned executor: MLX streams are thread-affine."""
+        self._detach_adapter_locked(self._attached_originals)
+        self._attached_originals = {}
+        if policy.adapter_path is not None:
+            self._attach_adapter(policy.adapter_path)
+        self._attached_policy = policy.model_id
+
+    async def _ensure_policy(self, model: str | None) -> None:
+        """Make the requested policy the attached one before generating.
+
+        Called with the generation slot held, so the attach cannot race a
+        turn that is already decoding under a different policy.
+        """
+        if self._policies is None:
+            return
+        try:
+            policy = self._policies.resolve(model)
+        except PolicyError as error:
+            # An unregistered model id is refused rather than quietly served by
+            # the base weights: answering with the wrong policy is the failure
+            # this design exists to prevent.
+            raise ResponsesError(
+                "model_not_found",
+                str(error),
+                404,
+                error_type="invalid_request_error",
+            ) from error
+        if self._attached_policy == policy.model_id and self._model is not None:
+            return
+        await self._ensure_loaded()
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(self._executor, partial(self._swap_policy, policy))
+        # Prompt caches are keyed by prompt, not by policy; a cache built under
+        # one adapter is not reusable under another.
+        self._prompt_caches.clear()
 
     async def _ensure_loaded(self) -> None:
         if self._model is not None:
@@ -894,9 +1044,18 @@ class NativeMlxBackend:
                 self._inflight_generations -= 1
                 self._generations.pop(turn.generation_id, None)
             raise
+        try:
+            await self._ensure_policy(turn.model)
+        except BaseException:
+            self._generation_slot.release()
+            async with self._admission_lock:
+                self._inflight_generations -= 1
+                self._generations.pop(turn.generation_id, None)
+            raise
         async with self._admission_lock:
             timing.admitted_at = time.monotonic()
             timing.phase = "compiling"
+            timing.policy = turn.model
         # Hugging Face's fast tokenizer is not re-entrant. Prompt compilation,
         # token counting, grammar construction, and generation all run on the
         # same owned executor so queued requests cannot borrow it concurrently.
@@ -1009,6 +1168,13 @@ class NativeMlxBackend:
                         # token source. Keep the latest value rather than
                         # deriving a rate from event-loop delivery timing.
                         measured_decode_tps = source_decode_tps
+                    progress = (
+                        time.monotonic(),
+                        output_tokens,
+                        prompt_tokens,
+                        cached_tokens,
+                        measured_decode_tps,
+                    )
                     if response.text:
                         loop.call_soon_threadsafe(
                             queue.put_nowait,
@@ -1016,13 +1182,17 @@ class NativeMlxBackend:
                                 "chunk",
                                 (
                                     response.text,
-                                    time.monotonic(),
-                                    output_tokens,
-                                    prompt_tokens,
-                                    cached_tokens,
-                                    measured_decode_tps,
+                                    *progress,
                                 ),
                             ),
+                        )
+                    else:
+                        # Structured/tool generation can advance tokens before
+                        # a displayable text delta exists. Feed that real
+                        # source-side progress to the monitor without emitting
+                        # a synthetic client-visible chunk.
+                        loop.call_soon_threadsafe(
+                            queue.put_nowait, ("progress", progress)
                         )
                     final_finish_reason = response.finish_reason or final_finish_reason
                 loop.call_soon_threadsafe(
@@ -1068,25 +1238,34 @@ class NativeMlxBackend:
                         500,
                         error_type="model_error",
                     )
-                if kind == "chunk":
-                    (
-                        chunk,
-                        sampled_at,
-                        output_tokens,
-                        prompt_tokens,
-                        cached_tokens,
-                        measured_decode_tps,
-                    ) = payload
-                    chunk = str(chunk)
-                    sampled_at = float(sampled_at)
-                    if timing.first_token_at is None:
-                        timing.first_token_at = sampled_at
-                        timing.phase = "decode"
-                    timing.last_token_at = sampled_at
-                    timing.output_tokens = int(output_tokens)
-                    timing.prompt_tokens = int(prompt_tokens) or timing.prompt_tokens
-                    timing.cached_tokens = int(cached_tokens)
-                    timing.measured_decode_tps = measured_decode_tps
+                if kind in {"chunk", "progress"}:
+                    if kind == "chunk":
+                        (
+                            chunk,
+                            sampled_at,
+                            output_tokens,
+                            prompt_tokens,
+                            cached_tokens,
+                            measured_decode_tps,
+                        ) = payload
+                        chunk = str(chunk)
+                    else:
+                        (
+                            sampled_at,
+                            output_tokens,
+                            prompt_tokens,
+                            cached_tokens,
+                            measured_decode_tps,
+                        ) = payload
+                    timing.record_decode_progress(
+                        sampled_at=float(sampled_at),
+                        output_tokens=int(output_tokens),
+                        prompt_tokens=int(prompt_tokens),
+                        cached_tokens=int(cached_tokens),
+                        measured_decode_tps=measured_decode_tps,
+                    )
+                    if kind == "progress":
+                        continue
                     if splitter is None:
                         if turn.bindings:
                             structured_tool_chunks.append(chunk)
@@ -1312,6 +1491,11 @@ class NativeMlxBackend:
         def release() -> None:
             self._model = None
             self._tokenizer = None
+            # Weights and the modules the adapter displaced go together; a
+            # remembered attachment would be restored onto a model that no
+            # longer exists.
+            self._attached_policy = None
+            self._attached_originals = {}
             self._prompt_caches.clear()
             gc.collect()
             try:
@@ -1331,6 +1515,11 @@ class NativeMlxBackend:
         return {
             "loaded": self._model is not None,
             "loading": self._loading,
+            # Which policy the resident weights are currently wearing. Without
+            # this, the only way to tell an attached adapter from an
+            # unattached one is to compare generated text, which is not a
+            # sound test at any temperature the product actually uses.
+            "attached_policy": self._attached_policy,
             "inflight_generations": self._inflight_generations,
             "max_inflight_generations": self._max_inflight_generations,
             "generation_slot_available": not self._generation_slot.locked(),

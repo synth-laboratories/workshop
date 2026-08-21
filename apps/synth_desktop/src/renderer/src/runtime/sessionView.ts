@@ -6,6 +6,7 @@ import type {
 	Session,
 	VisualInstanceRecord
 } from "@synth/runtime-protocol";
+import { LOCAL_BASE_POLICY } from "./lagunaPolicies";
 import {
 	OPENROUTER_LAGUNA_S_MODEL,
 	OPENROUTER_LUNA_MODEL,
@@ -72,8 +73,8 @@ function tokenTotalFromPayload(payload: Record<string, unknown>): number | undef
 	return undefined;
 }
 
-export function targetIdToExecutionTarget(targetId: string): ExecutionTarget {
-	const adapter = null;
+export function targetIdToExecutionTarget(targetId: string, adapter: string | null = null): ExecutionTarget {
+	const remoteAdapter = null;
 
 	switch (targetId) {
 		case "chatgpt-luna":
@@ -83,14 +84,14 @@ export function targetIdToExecutionTarget(targetId: string): ExecutionTarget {
 				kind: "remote",
 				provider: "openai-codex-oauth",
 				model: targetId === "chatgpt-sol" ? CHATGPT_SOL_MODEL : targetId === "chatgpt-terra" ? CHATGPT_TERRA_MODEL : CHATGPT_LUNA_MODEL,
-				adapter
+				adapter: remoteAdapter
 			};
 		case "openrouter-luna":
 			return {
 				kind: "remote",
 				provider: "openrouter",
 				model: OPENROUTER_LUNA_MODEL,
-				adapter
+				adapter: remoteAdapter
 			};
 		case "openrouter-laguna-s":
 		case "openrouter-poolside":
@@ -98,33 +99,33 @@ export function targetIdToExecutionTarget(targetId: string): ExecutionTarget {
 				kind: "remote",
 				provider: "openrouter",
 				model: OPENROUTER_LAGUNA_S_MODEL,
-				adapter
+				adapter: remoteAdapter
 			};
 		case "openrouter-muse-spark":
 			return {
 				kind: "remote",
 				provider: "openrouter",
 				model: OPENROUTER_MUSE_SPARK_MODEL,
-				adapter
+				adapter: remoteAdapter
 			};
 		case "openrouter-gemini-flash":
 			return {
 				kind: "remote",
 				provider: "openrouter",
 				model: OPENROUTER_GEMINI_FLASH_MODEL,
-				adapter
+				adapter: remoteAdapter
 			};
 		case "synth-cloud-laguna-s":
 			return {
 				kind: "cloud",
 				model: SYNTH_CLOUD_LAGUNA_S_MODEL,
-				adapter
+				adapter: remoteAdapter
 			};
 		case "synth-cloud-muse-spark":
 			return {
 				kind: "cloud",
 				model: SYNTH_CLOUD_MUSE_SPARK_MODEL,
-				adapter
+				adapter: remoteAdapter
 			};
 		case "intern-sync":
 			return { kind: "intern", mode: "sync" };
@@ -134,8 +135,8 @@ export function targetIdToExecutionTarget(targetId: string): ExecutionTarget {
 		default:
 			return {
 				kind: "local",
-				model: "laguna-xs-2.1",
-				adapter
+				model: adapter ?? LOCAL_BASE_POLICY,
+				adapter: null
 			};
 	}
 }

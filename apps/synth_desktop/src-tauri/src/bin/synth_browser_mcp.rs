@@ -4,6 +4,10 @@
 //! no Tauri IPC token and therefore cannot turn hostile page content into a
 //! privileged Desktop command.
 
+#[allow(dead_code)]
+#[path = "../instance_paths.rs"]
+mod instance_paths;
+
 use serde_json::{json, Value};
 use std::{
     env,
