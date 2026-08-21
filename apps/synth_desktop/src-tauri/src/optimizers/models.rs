@@ -786,17 +786,31 @@ mod status_contract_tests {
     /// must be removed from this list, so the debt cannot quietly grow back
     /// under a name that is already excused.
     ///
-    /// `hosted_sft.rs` holds a fifth terminal predicate (`hosted_runs_needing_restore`)
-    /// and the `succeeded -> completed` remote mapping. Both belong to the
-    /// hosted-SFT lane, not the contract lane; handed over rather than edited.
-    const HANDWRITTEN_STATUS_ALLOWLIST: &[&str] = &["hosted_sft.rs"];
+    /// Empty on purpose. The original P0-2 done-when grep
+    /// (`"succeeded"|"canceled"|"done"|"aborted"` under `src/optimizers`) is
+    /// unsatisfiable as written: sidecar *training-job* status in
+    /// `sidecar_training.rs`, `local.rs`, and `sft_result.rs` is a second
+    /// vocabulary (proposed P0-15). This lock is the run-domain slice — it
+    /// only inspects [`RUN_RECEIVERS`] — so those files do not belong here.
+    const HANDWRITTEN_STATUS_ALLOWLIST: &[&str] = &[];
+
+    /// Sidecar training-job status files. Not the run domain. P0-15.
+    const TRAINING_JOB_STATUS_FILES: &[&str] =
+        &["sidecar_training.rs", "local.rs", "sft_result.rs"];
 
     /// Receivers that are an `OptimizerRunRecord`. Deliberately explicit: the
     /// sidecar training *job* and the plugin *service* both have a `status`
     /// field with a different vocabulary, and folding them in here would either
     /// fail the test or force the two vocabularies to merge.
     const RUN_RECEIVERS: &[&str] = &[
-        "run", "current", "stored", "durable", "record", "projected_run", "existing", "seed",
+        "run",
+        "current",
+        "stored",
+        "durable",
+        "record",
+        "projected_run",
+        "existing",
+        "seed",
     ];
 
     fn optimizers_dir() -> std::path::PathBuf {
@@ -947,6 +961,35 @@ mod status_contract_tests {
             "these files no longer spell a status by hand; remove them from \
              HANDWRITTEN_STATUS_ALLOWLIST: {unused:?}"
         );
+    }
+
+    /// Backend P0-3's done-when, handed to workshop: the hosted-SFT mirror
+    /// must not keep a second `succeeded → completed` fold. `parse` is the one.
+    #[test]
+    fn hosted_sft_does_not_map_succeeded_onto_completed() {
+        let source = include_str!("hosted_sft.rs");
+        assert!(
+            !source.contains("\"succeeded\" => \"completed\""),
+            "persist_remote_terminal must not keep a second succeeded→completed fold"
+        );
+    }
+
+    /// The original P0-2 done-when grep is a second vocabulary, not leftover
+    /// run-status aliases. These files must keep speaking training-job status
+    /// until P0-15; if one stops, drop it from the list (shrink-only).
+    #[test]
+    fn training_job_status_vocabulary_is_still_a_second_domain() {
+        for name in TRAINING_JOB_STATUS_FILES {
+            let source = std::fs::read_to_string(optimizers_dir().join(name)).expect(name);
+            let speaks_job_status = source.contains("job.status")
+                || source.contains("\"succeeded\"")
+                || source.contains("\"canceled\"");
+            assert!(
+                speaks_job_status,
+                "{name} was listed as P0-15 training-job vocabulary but no longer speaks it; \
+                 remove it from TRAINING_JOB_STATUS_FILES"
+            );
+        }
     }
 
     /// The database refuses exactly the words the enum refuses.
