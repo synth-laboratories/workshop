@@ -60,7 +60,7 @@ impl Server {
                     "type": "object",
                     "properties": {
                         "verb": {"type": "string", "enum": [
-                            "list_apps", "get_app_state", "get_app_outline", "find_elements",
+                            "list_apps", "launch", "get_app_state", "get_app_outline", "find_elements",
                             "get_subtree", "click", "set_value", "type_text",
                             "press_key", "scroll", "select_text", "drag", "perform_secondary_action"
                         ]},
@@ -138,9 +138,14 @@ impl Server {
             .context("app is required")?
             .to_owned();
 
-        // Reading is allowed to launch the app; §5 says so explicitly, and an
-        // agent that must ask a human to open Mail first is not much use.
-        let pid = apps::resolve_or_launch(&app)?;
+        if verb == "launch" {
+            let pid = apps::launch(&app)?;
+            return Ok(json!({ "app": app, "pid": pid, "launched": true }));
+        }
+
+        // Resolve never launches. A missing app is a `launch` call; two copies
+        // are `ambiguous_target` rather than a guess.
+        let pid = apps::resolve(&app)?;
 
         if matches!(
             verb,
@@ -152,6 +157,10 @@ impl Server {
                 .unwrap_or(false);
             return self.read_observation(&app, pid, verb, disable_diff, arguments);
         }
+
+        // Mutating verbs drive one exact process. A Workshop instance that
+        // publishes /health must match {pid, instance_id} before we act.
+        apps::verify_workshop_target(pid, &app)?;
 
         // Everything below mutates. Resolve the element first so a bad index
         // fails before anything is delivered to the app.
@@ -459,7 +468,7 @@ impl Server {
             .get("app")
             .and_then(Value::as_str)
             .context("app is required")?;
-        let pid = apps::resolve_or_launch(app)?;
+        let pid = apps::resolve(app)?;
         let tree = ax::read_tree(pid)?;
         let rendered = tree.render();
         let screenshot = if arguments
@@ -733,6 +742,7 @@ mod tests {
             verbs,
             vec![
                 "list_apps",
+                "launch",
                 "get_app_state",
                 "get_app_outline",
                 "find_elements",

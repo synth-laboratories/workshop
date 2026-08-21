@@ -24,11 +24,31 @@ pub struct TurnClaim {
 }
 
 impl TurnClaim {
-    /// Live means both halves: the current process holds it, and it has been
-    /// refreshed recently enough. Either half alone is exactly the stale state
-    /// this module exists to refuse.
+    /// Live means a worker is still advancing the turn.
+    ///
+    /// Two cases, because a second process used to treat a live peer as a
+    /// dead owner and interrupt its turns:
+    /// * we own it and the lease has not expired; or
+    /// * someone else owns it and their heartbeat is still fresh.
+    ///
+    /// The second arm is why a concurrent boot must refuse to open the DB
+    /// rather than run `reconcile_orphaned_turns` against a peer that is
+    /// still writing.
     pub fn is_live(&self, instance_id: &str, now: DateTime<Utc>) -> bool {
-        self.owner_instance_id == instance_id && !self.lease_expired(now)
+        if self.owner_instance_id == instance_id {
+            !self.lease_expired(now)
+        } else {
+            self.heartbeat_fresh(now)
+        }
+    }
+
+    /// A peer is still here if it heartbeated inside the lease window.
+    /// An unparseable timestamp is not evidence of liveness.
+    pub fn heartbeat_fresh(&self, now: DateTime<Utc>) -> bool {
+        match DateTime::parse_from_rfc3339(&self.heartbeat_at) {
+            Err(_) => false,
+            Ok(last) => now - last.with_timezone(&Utc) < LEASE_DURATION,
+        }
     }
 
     pub fn lease_expired(&self, now: DateTime<Utc>) -> bool {
