@@ -4,7 +4,9 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 PROJECT="${SYNTH_MLX_RL_PROJECT_ROOT:-$(dirname "$ROOT")/synth-mlx-rl}"
 TARGET="$ROOT/runtime-distributions/mlx-rl"
-VERSION="0.0.1"
+VERSION="0.6.0"
+EXPECTED_SOURCE_REVISION="5e39facb8947524a2bf56711027137757e2dfd52"
+EXPECTED_LOCK_SHA256="7f14b704ba9a6c30e6ced5cc88fc2ba6a58a936a9531cfaf168cbb664f83c420"
 UV="${SYNTH_OPTIMIZER_UV_PATH:-}"
 
 if [[ ! -f "$PROJECT/pyproject.toml" ]] || ! rg -q '^name = "synth-mlx-rl"$' "$PROJECT/pyproject.toml"; then
@@ -14,6 +16,20 @@ if [[ ! -f "$PROJECT/pyproject.toml" ]] || ! rg -q '^name = "synth-mlx-rl"$' "$P
 fi
 if [[ ! -f "$PROJECT/uv.lock" ]]; then
   echo "[mlx-runtime] pinned source lock is unavailable at $PROJECT/uv.lock" >&2
+  exit 1
+fi
+SOURCE_REVISION="$(git -C "$PROJECT" rev-parse HEAD)"
+LOCK_SHA256="$(shasum -a 256 "$PROJECT/uv.lock" | awk '{print $1}')"
+if [[ -n "$(git -C "$PROJECT" status --porcelain=v1 --untracked-files=all)" ]]; then
+  echo "[mlx-runtime] release source must be clean: $PROJECT" >&2
+  exit 1
+fi
+if [[ "$SOURCE_REVISION" != "$EXPECTED_SOURCE_REVISION" ]]; then
+  echo "[mlx-runtime] expected synth-mlx-rl $EXPECTED_SOURCE_REVISION, got $SOURCE_REVISION" >&2
+  exit 1
+fi
+if [[ "$LOCK_SHA256" != "$EXPECTED_LOCK_SHA256" ]]; then
+  echo "[mlx-runtime] expected uv.lock $EXPECTED_LOCK_SHA256, got $LOCK_SHA256" >&2
   exit 1
 fi
 
@@ -44,8 +60,6 @@ fi
   --only-binary=:all: --dest "$STAGING/wheels" --requirement "$STAGING/requirements.txt"
 cp "$WHEEL" "$STAGING/wheels/"
 
-SOURCE_REVISION="$(git -C "$PROJECT" rev-parse HEAD)"
-LOCK_SHA256="$(shasum -a 256 "$PROJECT/uv.lock" | awk '{print $1}')"
 python3 - "$STAGING" "$VERSION" "$SOURCE_REVISION" "$LOCK_SHA256" <<'PY'
 import hashlib, json, pathlib, sys
 root = pathlib.Path(sys.argv[1])

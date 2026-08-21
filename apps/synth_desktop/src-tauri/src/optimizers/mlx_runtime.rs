@@ -21,7 +21,10 @@ const MLX_DEFAULT_URL: &str = "http://127.0.0.1:8787";
 const TRAINING_MODEL_ID: &str = "Qwen/Qwen3.5-0.8B";
 const HEALTH_TRIES: u32 = 40;
 const HEALTH_WAIT: Duration = Duration::from_millis(250);
-const MLX_RUNTIME_VERSION: &str = "0.0.1";
+const MLX_RUNTIME_VERSION: &str = "0.6.0";
+const MLX_RUNTIME_SOURCE_REVISION: &str = "5e39facb8947524a2bf56711027137757e2dfd52";
+const MLX_RUNTIME_LOCK_SHA256: &str =
+    "7f14b704ba9a6c30e6ced5cc88fc2ba6a58a936a9531cfaf168cbb664f83c420";
 const MLX_RUNTIME_SCHEMA: &str = "synth.mlx-runtime-wheelhouse.v1";
 const MLX_RUNTIME_EVENT: &str = "training://mlx-runtime-install";
 
@@ -42,6 +45,8 @@ struct RuntimeWheelhouse {
     schema_version: String,
     package: String,
     version: String,
+    source_revision: String,
+    lock_sha256: String,
     artifacts: Vec<RuntimeWheel>,
 }
 
@@ -115,6 +120,7 @@ fn managed_runtime_root() -> PathBuf {
 }
 
 fn embedded_distribution_root() -> Result<PathBuf> {
+    #[cfg(debug_assertions)]
     if let Some(path) = std::env::var_os("SYNTH_MLX_RL_DISTRIBUTION") {
         let path = PathBuf::from(path);
         if path.join("manifest.json").is_file() {
@@ -142,6 +148,8 @@ fn read_verified_wheelhouse(root: &Path) -> Result<RuntimeWheelhouse> {
     if manifest.schema_version != MLX_RUNTIME_SCHEMA
         || manifest.package != "synth-mlx-rl"
         || manifest.version != MLX_RUNTIME_VERSION
+        || manifest.source_revision != MLX_RUNTIME_SOURCE_REVISION
+        || manifest.lock_sha256 != MLX_RUNTIME_LOCK_SHA256
     {
         bail!("MLX runtime manifest does not match the pinned catalog");
     }
@@ -519,6 +527,7 @@ fn mlx_bin() -> Result<PathBuf> {
 }
 
 fn resolve_mlx_bin() -> Result<PathBuf> {
+    #[cfg(debug_assertions)]
     if let Ok(raw) = std::env::var("SYNTH_MLX_RL_BIN") {
         let path = PathBuf::from(raw.trim());
         if path.as_os_str().is_empty() {
@@ -529,6 +538,7 @@ fn resolve_mlx_bin() -> Result<PathBuf> {
         }
         bail!("SYNTH_MLX_RL_BIN {} does not exist", path.display());
     }
+    #[cfg(debug_assertions)]
     if let Ok(root) = std::env::var("SYNTH_MLX_RL_ROOT") {
         for candidate in [
             PathBuf::from(root.trim()).join(".venv/bin/synth-mlx-rl"),
@@ -547,6 +557,7 @@ fn resolve_mlx_bin() -> Result<PathBuf> {
     if managed.is_file() && managed_runtime_is_valid(&managed_runtime_root()) {
         return Ok(managed);
     }
+    #[cfg(debug_assertions)]
     if let Some(path) = std::env::var_os("PATH").and_then(|paths| {
         std::env::split_paths(&paths)
             .map(|dir| dir.join("synth-mlx-rl"))
@@ -795,6 +806,8 @@ mod tests {
                 schema_version: MLX_RUNTIME_SCHEMA.into(),
                 package: "synth-mlx-rl".into(),
                 version: MLX_RUNTIME_VERSION.into(),
+                source_revision: MLX_RUNTIME_SOURCE_REVISION.into(),
+                lock_sha256: MLX_RUNTIME_LOCK_SHA256.into(),
                 artifacts: vec![RuntimeWheel {
                     file_name: name.clone(),
                     sha256: format!("{:x}", Sha256::digest(bytes)),
