@@ -649,12 +649,16 @@ fn resolve_provider_workload(
         )
         .anyhow()
     })?;
+    let mut use_policy = crate::secrets::SecretsUsePolicy::default();
+    if provider.eq_ignore_ascii_case("openrouter") {
+        use_policy.operations.push("responses.create".into());
+    }
     let lease = secrets
         .issue_lease(
             provider,
             run_id,
             recipe_id,
-            crate::secrets::SecretsUsePolicy::default(),
+            use_policy,
             "optimizer",
         )
         .map_err(|error| anyhow!("{error}"))?;

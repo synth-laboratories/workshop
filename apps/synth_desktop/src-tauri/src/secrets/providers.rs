@@ -50,6 +50,14 @@ pub const ROUTES: &[ProviderRoute] = &[
         auth: AuthStyle::Bearer,
     },
     ProviderRoute {
+        provider: "openrouter",
+        operation: "responses.create",
+        method: "POST",
+        local_path: "/v1/providers/openrouter/responses",
+        upstream_url: "https://openrouter.ai/api/v1/responses",
+        auth: AuthStyle::Bearer,
+    },
+    ProviderRoute {
         provider: "openai",
         operation: "chat.completions.create",
         method: "POST",
