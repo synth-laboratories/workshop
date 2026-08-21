@@ -580,6 +580,10 @@ async fn materialize_craftax_prepared_run(
         proposer,
         &codex_home,
     )?;
+    let openai = resolve_openai_workload(&run_id, "gepa")?;
+    if let Some(lease) = openai.lease.as_ref() {
+        crate::secrets::lease::bind_lease_into_toml(&config_path, lease)?;
+    }
 
     let create = OptimizerCreateRequest {
         algorithm_id: "gepa".into(),
