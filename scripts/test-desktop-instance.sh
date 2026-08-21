@@ -164,6 +164,24 @@ rg -q 'CARGO_TARGET_DIR:-' "$ROOT/scripts/build-computer-use-helper.sh"
 rg -q 'runtime_executable=.*lsof' "$ROOT/scripts/desktop-instance.sh"
 ! rg -q 'bundle_cdhash.*exit|/\^CDHash=/\{print \$2; exit\}' "$ROOT/scripts/desktop-instance.sh"
 
+# ID-R-14: one export_instance_env(), called once, and both launch paths
+# (build/launch vs run-only) export the same variable names. Names only; the
+# dry-run hook prints no values.
+[[ "$(rg -c '^\s*export SYNTH_DESKTOP_DATA_ROOT=' "$ROOT/scripts/desktop-instance.sh")" == "1" ]]
+[[ "$(rg -c '^\s*export_instance_env$' "$ROOT/scripts/desktop-instance.sh")" == "2" ]]
+env_names_for() {
+  SYNTH_DESKTOP_OPERATION_DRY_RUN=1 "$ROOT/scripts/desktop-instance.sh" "$1" alpha \
+    | sed -n 's/^\[desktop:alpha\] dry-run env_names=//p'
+}
+build_names="$(env_names_for cua-build)"
+run_names="$(env_names_for cua-run)"
+[[ -n "$build_names" && "$build_names" == "$run_names" ]]
+for required in SYNTH_DESKTOP_INSTANCE SYNTH_DESKTOP_DATA_ROOT SYNTH_DESKTOP_CONFIG SYNTH_CODEX_HOME \
+  SYNTH_DESKTOP_BUNDLE_ID SYNTH_DESKTOP_INSTANCE_MANIFEST SYNTH_DESKTOP_SOURCE_REVISION \
+  SYNTH_DESKTOP_DEV_OAUTH_STATE_FILE SYNTH_COMPUTER_USE_PARENT_REQUIREMENT CARGO_TARGET_DIR; do
+  [[ ",$build_names," == *",$required,"* ]] || { echo "launch env missing $required" >&2; exit 1; }
+done
+
 # Official releases fail closed unless Developer ID signing, Apple notarization,
 # stapling, Gatekeeper, and immutable provenance all succeed.
 rg -q 'SYNTH_RELEASE_SIGN_IDENTITY is required' "$ROOT/scripts/release-artifact.sh"

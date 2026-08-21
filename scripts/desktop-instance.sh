@@ -734,6 +734,98 @@ assert_bundle_identity() {
   echo "[desktop:$NAME] signing requirement=$host_requirement"
 }
 
+# The complete named-instance environment, exported exactly once for every
+# launch path. `cua-run` once re-exported these by hand because an early
+# return had skipped the first block; when launched from another Workshop
+# instance it inherited that caller's data root, Codex home, backend, and
+# cookbook paths while the window title looked correct. One function, one
+# set of names, so the two paths cannot drift again.
+export_instance_env() {
+  export SYNTH_DESKTOP_INSTANCE="$NAME"
+  export SYNTH_DESKTOP_DATA_ROOT="$DATA_ROOT"
+  export SYNTH_DESKTOP_CONFIG="$DATA_ROOT/config.toml"
+  export SYNTH_CODEX_HOME="$DATA_ROOT/codex"
+  export SYNTH_DESKTOP_WORKSPACE="$WORKSPACE"
+  export SYNTH_DESKTOP_APP_NAME="$APP_TITLE"
+  export SYNTH_DESKTOP_BUNDLE_ID="$BUNDLE_ID"
+  export SYNTH_DESKTOP_INSTANCE_MANIFEST="$MANIFEST"
+  export SYNTH_DESKTOP_SOURCE_REVISION="$SOURCE_REVISION"
+  export SYNTH_DESKTOP_VITE_URL="http://127.0.0.1:$VITE_PORT"
+  # Named development instances may execute an operator-pinned image already
+  # present in the local OCI daemon. The Rust admission check still requires a
+  # full sha256 identity; release builds ignore this development-only lane.
+  export SYNTH_EVAL_ALLOW_LOCAL_PINNED_TARGETS=1
+  # Debug instances use the existing Codex file as a seed and never touch
+  # Keychain. Refreshed credentials live in one private machine-local cache so
+  # rebuilds and differently named instances reuse a still-valid session.
+  local shared_oauth_root="${SYNTH_DESKTOP_SHARED_ROOT:-$HOME/.synth-desktop/shared}/oauth"
+  mkdir -p "$shared_oauth_root"
+  chmod 700 "$shared_oauth_root"
+  if [[ -z "${SYNTH_DESKTOP_DEV_OAUTH_FILE:-}" && -f "$HOME/.codex/auth.json" ]]; then
+    SYNTH_DESKTOP_DEV_OAUTH_FILE="$HOME/.codex/auth.json"
+  fi
+  if [[ -n "${SYNTH_DESKTOP_DEV_OAUTH_FILE:-}" ]]; then
+    export SYNTH_DESKTOP_DEV_OAUTH_FILE
+  else
+    unset SYNTH_DESKTOP_DEV_OAUTH_FILE
+  fi
+  if [[ -z "${SYNTH_DESKTOP_DEV_OAUTH_STATE_FILE:-}" ]]; then
+    SYNTH_DESKTOP_DEV_OAUTH_STATE_FILE="$shared_oauth_root/codex.json"
+  fi
+  export SYNTH_DESKTOP_DEV_OAUTH_STATE_FILE
+  export CARGO_TARGET_DIR="$TARGET_ROOT"
+
+  # Profile/account-backend routing is instance-owned: it comes from the
+  # instance TOML, never from the shell that happened to launch the app.
+  # (write_contract seeds a new TOML from the shell once, at creation.)
+  # Responses gateway routing is source-owned by Rust and has no override.
+  unset SYNTH_BACKEND_URL SYNTH_INTERN_PROFILE
+  if [[ -f "$DATA_ROOT/config.toml" ]]; then
+    SYNTH_INTERN_PROFILE="$(python3 - <<'PY' "$DATA_ROOT/config.toml"
+import sys, tomllib
+from pathlib import Path
+data = tomllib.loads(Path(sys.argv[1]).read_text())
+print((data.get("intern") or {}).get("profile") or "")
+PY
+)"
+    SYNTH_BACKEND_URL="$(python3 - <<'PY' "$DATA_ROOT/config.toml"
+import sys, tomllib
+from pathlib import Path
+data = tomllib.loads(Path(sys.argv[1]).read_text())
+intern = data.get("intern") or {}
+profile = intern.get("profile") or ""
+endpoints = intern.get("endpoints") or {}
+print(endpoints.get(profile) or "")
+PY
+)"
+    if [[ -n "$SYNTH_INTERN_PROFILE" ]]; then
+      export SYNTH_INTERN_PROFILE
+    else
+      unset SYNTH_INTERN_PROFILE
+    fi
+    if [[ -n "$SYNTH_BACKEND_URL" ]]; then
+      export SYNTH_BACKEND_URL
+    else
+      unset SYNTH_BACKEND_URL
+    fi
+  fi
+
+  # Named local CUA bundles are ad-hoc or development signed and therefore
+  # cannot satisfy the production helper's Apple-team requirement. Keep the
+  # weaker requirement explicit and confined to this development launcher;
+  # release builds do not receive this environment override.
+  export SYNTH_COMPUTER_USE_PARENT_REQUIREMENT="identifier \"$BUNDLE_ID\" or identifier \"com.synth.desktop.v05.dev.shared\""
+}
+
+# Test hook: exercise the environment contract without compiling, signing,
+# or launching anything. Prints variable names only, never values.
+dry_run_operation() {
+  export_instance_env
+  echo "[desktop:$NAME] dry-run operation=$COMMAND"
+  echo "[desktop:$NAME] dry-run env_names=$(compgen -e | rg '^(SYNTH_|CARGO_TARGET_DIR$)' | LC_ALL=C sort | paste -sd, -)"
+  echo "[desktop:$NAME] dry-run complete; nothing was built or launched"
+}
+
 assert_identity_command() {
   local app_bundle
   app_bundle="$(dirname "$(dirname "$(dirname "$CUA_EXE")")")"
@@ -748,6 +840,10 @@ assert_identity_command() {
 
 dev_instance() {
   write_contract
+  if [[ "${SYNTH_DESKTOP_OPERATION_DRY_RUN:-0}" == "1" ]]; then
+    dry_run_operation
+    return
+  fi
   if [[ -n "$(instance_processes)" ]]; then
     echo "[desktop:$NAME] already running; use desktop:instance:stop first" >&2
     exit 1
@@ -794,104 +890,15 @@ dev_instance() {
     fi
   fi
 
-  export SYNTH_DESKTOP_INSTANCE="$NAME"
-  export SYNTH_DESKTOP_DATA_ROOT="$DATA_ROOT"
-  export SYNTH_DESKTOP_CONFIG="$DATA_ROOT/config.toml"
-  export SYNTH_CODEX_HOME="$DATA_ROOT/codex"
-  export SYNTH_DESKTOP_WORKSPACE="$WORKSPACE"
-  export SYNTH_DESKTOP_APP_NAME="$APP_TITLE"
-  export SYNTH_DESKTOP_BUNDLE_ID="$BUNDLE_ID"
-  export SYNTH_DESKTOP_INSTANCE_MANIFEST="$MANIFEST"
-  export SYNTH_DESKTOP_SOURCE_REVISION="$SOURCE_REVISION"
-  export SYNTH_DESKTOP_VITE_URL="http://127.0.0.1:$VITE_PORT"
-  # Named development instances may execute an operator-pinned image already
-  # present in the local OCI daemon. The Rust admission check still requires a
-  # full sha256 identity; release builds ignore this development-only lane.
-  export SYNTH_EVAL_ALLOW_LOCAL_PINNED_TARGETS=1
-  # Debug instances use the existing Codex file as a seed and never touch
-  # Keychain. Refreshed credentials live in one private machine-local cache so
-  # rebuilds and differently named instances reuse a still-valid session.
-  local shared_oauth_root="${SYNTH_DESKTOP_SHARED_ROOT:-$HOME/.synth-desktop/shared}/oauth"
-  mkdir -p "$shared_oauth_root"
-  chmod 700 "$shared_oauth_root"
-  if [[ -z "${SYNTH_DESKTOP_DEV_OAUTH_FILE:-}" && -f "$HOME/.codex/auth.json" ]]; then
-    SYNTH_DESKTOP_DEV_OAUTH_FILE="$HOME/.codex/auth.json"
-  fi
-  [[ -z "${SYNTH_DESKTOP_DEV_OAUTH_FILE:-}" ]] || export SYNTH_DESKTOP_DEV_OAUTH_FILE
-  if [[ -z "${SYNTH_DESKTOP_DEV_OAUTH_STATE_FILE:-}" ]]; then
-    SYNTH_DESKTOP_DEV_OAUTH_STATE_FILE="$shared_oauth_root/codex.json"
-  fi
-  export SYNTH_DESKTOP_DEV_OAUTH_STATE_FILE
-  export CARGO_TARGET_DIR="$TARGET_ROOT"
+  export_instance_env
   stage_gepa_runtime
-
-  # Export profile/account-backend routing from the instance TOML. Responses
-  # gateway routing is source-owned by Rust and has no launcher override.
-  if [[ -z "${SYNTH_INTERN_PROFILE:-}" && -f "$DATA_ROOT/config.toml" ]]; then
-    SYNTH_INTERN_PROFILE="$(python3 - <<'PY' "$DATA_ROOT/config.toml"
-import sys, tomllib
-from pathlib import Path
-data = tomllib.loads(Path(sys.argv[1]).read_text())
-print((data.get("intern") or {}).get("profile") or "")
-PY
-)"
-    export SYNTH_INTERN_PROFILE
-  fi
-  if [[ -z "${SYNTH_BACKEND_URL:-}" && -f "$DATA_ROOT/config.toml" ]]; then
-    SYNTH_BACKEND_URL="$(python3 - <<'PY' "$DATA_ROOT/config.toml"
-import sys, tomllib
-from pathlib import Path
-data = tomllib.loads(Path(sys.argv[1]).read_text())
-intern = data.get("intern") or {}
-profile = intern.get("profile") or ""
-endpoints = intern.get("endpoints") or {}
-print(endpoints.get(profile) or "")
-PY
-)"
-    [[ -n "$SYNTH_BACKEND_URL" ]] && export SYNTH_BACKEND_URL
-  fi
   echo "[desktop:$NAME] profile=${SYNTH_INTERN_PROFILE:-} backend=${SYNTH_BACKEND_URL:-} gateway=source-owned"
-
-  # Named local CUA bundles are ad-hoc or development signed and therefore
-  # cannot satisfy the production helper's Apple-team requirement. Keep the
-  # weaker requirement explicit and confined to this development launcher;
-  # release builds do not receive this environment override.
-  export SYNTH_COMPUTER_USE_PARENT_REQUIREMENT="identifier \"$BUNDLE_ID\" or identifier \"com.synth.desktop.v05.dev.shared\""
 
   if [[ "$COMMAND" == "cua-run" ]]; then
     if [[ ! -x "$CUA_EXE" ]]; then
       echo "[desktop:$NAME] signed CUA app is missing; run cua-build first" >&2
       exit 1
     fi
-    # `cua-run` used to return before the named-instance environment below was
-    # exported.  When launched from another Workshop/Codex instance it then
-    # inherited that caller's data root, Codex home, backend, and cookbook
-    # paths.  The window title looked correct while the process silently read
-    # and mutated another instance.  Reassert the complete isolation boundary
-    # before executing an already-built bundle.
-    export SYNTH_DESKTOP_INSTANCE="$NAME"
-    export SYNTH_DESKTOP_DATA_ROOT="$DATA_ROOT"
-    export SYNTH_DESKTOP_CONFIG="$DATA_ROOT/config.toml"
-    export SYNTH_CODEX_HOME="$DATA_ROOT/codex"
-    export SYNTH_DESKTOP_WORKSPACE="$WORKSPACE"
-    export SYNTH_DESKTOP_APP_NAME="$APP_TITLE"
-    export SYNTH_DESKTOP_BUNDLE_ID="$BUNDLE_ID"
-    export SYNTH_DESKTOP_INSTANCE_MANIFEST="$MANIFEST"
-    export SYNTH_DESKTOP_SOURCE_REVISION="$SOURCE_REVISION"
-    export SYNTH_DESKTOP_VITE_URL="http://127.0.0.1:$VITE_PORT"
-    export SYNTH_EVAL_ALLOW_LOCAL_PINNED_TARGETS=1
-    shared_oauth_root="${SYNTH_DESKTOP_SHARED_ROOT:-$HOME/.synth-desktop/shared}/oauth"
-    mkdir -p "$shared_oauth_root"
-    chmod 700 "$shared_oauth_root"
-    if [[ -f "$HOME/.codex/auth.json" ]]; then
-      export SYNTH_DESKTOP_DEV_OAUTH_FILE="$HOME/.codex/auth.json"
-    else
-      unset SYNTH_DESKTOP_DEV_OAUTH_FILE
-    fi
-    export SYNTH_DESKTOP_DEV_OAUTH_STATE_FILE="$shared_oauth_root/codex.json"
-    # These values are instance-owned and must never be inherited from the
-    # shell that happened to launch the CUA bundle.
-    unset SYNTH_BACKEND_URL SYNTH_INTERN_PROFILE
     codesign --verify --deep --strict "$(dirname "$(dirname "$(dirname "$CUA_EXE")")")"
     echo "[desktop:$NAME] launching existing signed CUA app from $INSTANCE_ROOT"
     cd "$INSTANCE_ROOT"
