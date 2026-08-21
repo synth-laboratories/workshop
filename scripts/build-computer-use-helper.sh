@@ -55,12 +55,15 @@ build() {
   note "compiling release binary"
   # SYNTH_TEAM_ID is compiled in so the requirement the helper enforces on its
   # caller and the identity it is signed with cannot drift apart.
+  # Honor CARGO_TARGET_DIR when a named instance exported one; copying from the
+  # crate-local target after a redirected compile is how first cua-build failed.
+  local cargo_target="${CARGO_TARGET_DIR:-$CRATE/target}"
   ( cd "$CRATE" && SYNTH_TEAM_ID="${TEAM_ID:-UNSET}" cargo build --release )
 
   note "assembling bundle at $BUNDLE"
   rm -rf "$BUNDLE"
   mkdir -p "$BUNDLE/Contents/MacOS" "$BUNDLE/Contents/Resources"
-  cp "$CRATE/target/release/synth-computer-use" "$BUNDLE/Contents/MacOS/synth-computer-use"
+  cp "$cargo_target/release/synth-computer-use" "$BUNDLE/Contents/MacOS/synth-computer-use"
   cp "$CRATE/Info.plist" "$BUNDLE/Contents/Info.plist"
   chmod +x "$BUNDLE/Contents/MacOS/synth-computer-use"
   note "bundle assembled"

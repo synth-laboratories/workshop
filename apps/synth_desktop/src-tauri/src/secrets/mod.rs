@@ -126,6 +126,8 @@ pub struct UseRequestResult {
     pub proxy_origin: Option<String>,
     pub handle: Option<String>,
     pub summary: Option<CapabilitySummary>,
+    #[specta(type = specta_typescript::Unknown)]
+    pub provider_routes: Option<serde_json::Value>,
 }
 
 #[derive(Clone, Debug, Serialize, specta::Type)]
@@ -133,6 +135,25 @@ pub struct UseRequestResult {
 pub struct SecretsProxyStatus {
     pub origin: Option<String>,
     pub running: bool,
+}
+
+fn capability_provider_routes(
+    provider: &str,
+    origin: &str,
+    handle: &str,
+) -> Option<serde_json::Value> {
+    if !matches!(provider, "openai" | "openrouter" | "tinker" | "groq") {
+        return None;
+    }
+    let container_origin = proxy::rewrite_origin_for_containers(origin);
+    Some(serde_json::json!({
+        "openai": proxy::capability_chat_completions_url(&container_origin, handle, provider),
+        "openai_base": proxy::capability_base_url(&container_origin, handle, provider),
+        "auth": "capability_path",
+        "api_key_sentinel": API_KEY_SENTINEL,
+        "container_host": proxy::container_proxy_host(),
+        "extra_hosts": ["host.docker.internal:host-gateway"],
+    }))
 }
 
 #[derive(Clone, Debug, Serialize, specta::Type)]
@@ -302,6 +323,7 @@ impl SecretsService {
                     proxy_origin: self.proxy_origin(),
                     handle: None,
                     summary: None,
+                    provider_routes: None,
                 });
             }
         }
@@ -322,6 +344,7 @@ impl SecretsService {
             proxy_origin: self.proxy_origin(),
             handle: None,
             summary: None,
+            provider_routes: None,
         })
     }
 
@@ -382,6 +405,11 @@ impl SecretsService {
     fn issued_result(&self, mut issued: IssuedCapability, suffix: &str) -> UseRequestResult {
         issued.proxy_origin = self.proxy_origin().unwrap_or_default();
         issued.summary.display_suffix = Some(fingerprint::mask_suffix(suffix));
+        let provider_routes = capability_provider_routes(
+            &issued.summary.provider,
+            &issued.proxy_origin,
+            &issued.handle,
+        );
         UseRequestResult {
             status: "granted".into(),
             request_id: None,
@@ -389,6 +417,7 @@ impl SecretsService {
             proxy_origin: Some(issued.proxy_origin),
             handle: Some(issued.handle),
             summary: Some(issued.summary),
+            provider_routes,
         }
     }
 
@@ -397,13 +426,18 @@ impl SecretsService {
             .db
             .with_conn(|conn| vault::record(conn, &live.secret_id))?
             .map(|record| fingerprint::mask_suffix(&record.display_suffix));
+        let origin = self.proxy_origin();
+        let provider_routes = origin
+            .as_deref()
+            .and_then(|origin| capability_provider_routes(&live.provider, origin, &live.handle));
         Ok(UseRequestResult {
             status: "granted".into(),
             request_id: None,
             capability_id: Some(live.id.clone()),
-            proxy_origin: self.proxy_origin(),
+            proxy_origin: origin,
             handle: Some(live.handle.clone()),
             summary: Some(capability::summary_from_live(&live, suffix)),
+            provider_routes,
         })
     }
 
@@ -502,6 +536,7 @@ impl SecretsService {
             proxy_origin: self.proxy_origin(),
             handle: None,
             summary: None,
+            provider_routes: None,
         })
     }
 
@@ -654,8 +689,10 @@ impl SecretsService {
                 })
             )
         })?;
-        let openai_base_url = if provider == "openai" {
-            Some(proxy::capability_base_url(&origin, &handle, "openai"))
+        let openai_compatible_provider =
+            matches!(provider, "openai" | "openrouter" | "tinker" | "groq");
+        let openai_base_url = if openai_compatible_provider {
+            Some(proxy::capability_base_url(&origin, &handle, &provider))
         } else {
             None
         };
@@ -666,20 +703,20 @@ impl SecretsService {
         };
         let container_origin = proxy::rewrite_origin_for_containers(&origin);
         let (openai_route, container_openai_base_url, container_openai_route) =
-            if provider == "openai" {
+            if openai_compatible_provider {
                 (
                     Some(proxy::capability_chat_completions_url(
-                        &origin, &handle, "openai",
+                        &origin, &handle, &provider,
                     )),
                     Some(proxy::capability_base_url(
                         &container_origin,
                         &handle,
-                        "openai",
+                        &provider,
                     )),
                     Some(proxy::capability_chat_completions_url(
                         &container_origin,
                         &handle,
-                        "openai",
+                        &provider,
                     )),
                 )
             } else {
@@ -708,7 +745,7 @@ impl SecretsService {
             .join("capabilities")
             .join(run_id);
         let _ = env.write_capability_file(&cap_dir);
-        if provider == "openai" {
+        if openai_compatible_provider {
             let _ = env.provider_routes()?;
         }
         Ok(env)

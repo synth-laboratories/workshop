@@ -139,52 +139,35 @@ export type TrainingModelsBridge = {
 	onDownloadProgress(listener: (progress: TrainingModelDownloadProgress) => void): () => void;
 };
 
-export type MlxReadinessFailureClass = "runtime" | "platform" | "disk" | "network" | "auth_license" | "model_compatibility" | "checksum";
-
-export type MlxReadiness = {
-	platform: "apple_silicon" | "unsupported" | "unknown";
-	compatibility: "compatible" | "incompatible" | "unknown";
-	runtimeHealth: "ready" | "missing" | "unhealthy" | "unknown";
-	runtimeVersion?: string | null;
-	availableMemoryBytes?: number | null;
-	availableDiskBytes?: number | null;
-	failureClass?: MlxReadinessFailureClass | null;
-};
-
-export type ModelInstallPlan = {
-	modelId: string;
-	title: string;
-	source: string;
-	revision: string;
-	digest?: string | null;
-	license: string;
-	downloadBytes: number;
-	minimumFreeDiskBytes: number;
-	alreadyPresent: boolean;
-	compatible: boolean;
-};
-
 export type TrainingArtifact = {
+	schemaVersion: string;
 	id: string;
-	kind: "mlx-lora.v1" | "training-checkpoint.v1" | "hosted-lora.v1";
-	algorithm: "sft" | "cispo";
-	baseModel: { id: string; revision?: string | null };
+	adapterKind: string;
+	baseModelId: string;
 	producingRunId: string;
+	producingAlgorithm: string;
 	datasetDigest?: string | null;
 	configDigest?: string | null;
-	sha256?: string | null;
+	digest?: string | null;
+	path?: string | null;
 	sizeBytes?: number | null;
-	integrity: "verified" | "pending" | "failed" | "unknown";
-	compatibleBackends: string[];
-	parentArtifactId?: string | null;
+	integrity: string;
+	compatibleInference: string[];
+	createdAt: string;
 };
 
 export type TrainingArtifactsBridge = {
 	list(): Promise<TrainingArtifact[]>;
-	inspect(id: string): Promise<TrainingArtifact>;
-	launchInference(id: string, options?: { mergeAdapter?: boolean }): Promise<{ artifactId: string; status: "planned" | "started" }>;
-	launchEval(id: string, recipeId: string): Promise<{ artifactId: string; recipeId: string; status: "planned" | "started" }>;
-	delete(id: string): Promise<void>;
+	get(id: string): Promise<TrainingArtifact>;
+	launchInference(request: { id: string; message?: string; confirm: boolean }): Promise<{
+		artifactId: string;
+		policySnapshotId: string;
+		reply: string;
+		baseModelId: string;
+		producingRunId: string;
+		configDigest?: string | null;
+		digest?: string | null;
+	}>;
 };
 
 export type WhisperModelHit = {
@@ -1241,8 +1224,10 @@ export type OptimizersBridge = {
 		sessionRef?: string;
 		openVisual?: boolean;
 		baseModel?: string;
-		/** Required by `eval.*` recipes. An id from `stageEvalCandidates`, never a path. */
+		/** Required by `eval.*` recipes unless `trainingArtifactId` is set. */
 		candidateSetId?: string;
+		/** Managed training adapter. Eval stages it and retains identity in the receipt. */
+		trainingArtifactId?: string;
 	}): Promise<OptimizerRunRecord>;
 	stageEvalCandidates(request: {
 		sessionRef: string;

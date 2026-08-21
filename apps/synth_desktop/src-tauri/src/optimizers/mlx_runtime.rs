@@ -73,28 +73,69 @@ impl MlxLoopback {
     }
 
     pub async fn post(&self, path: &str, body: Option<&Value>) -> Result<Value> {
-        let mut request = self.http.post(format!("{}{path}", self.base_url));
+        self.post_timed(path, body, Duration::from_secs(10)).await
+    }
+
+    async fn post_timed(&self, path: &str, body: Option<&Value>, timeout: Duration) -> Result<Value> {
+        let mut request = self
+            .http
+            .post(format!("{}{path}", self.base_url))
+            .timeout(timeout);
         if let Some(value) = body {
             request = request.json(value);
         }
         decode_mlx(request.send().await?, path).await
     }
 
-    pub async fn chat(&self, message: &str) -> Result<String> {
+    pub async fn chat(&self, message: &str, policy_snapshot_id: &str) -> Result<String> {
+        let snapshot_id = policy_snapshot_id.trim();
+        if snapshot_id.is_empty() {
+            bail!("inference requires a policy_snapshot_id; ambient latest is refused");
+        }
         let response = self
-            .post(
+            .post_timed(
                 "/v1/chat/completions",
                 Some(&json!({
-                    "messages": [{"role": "user", "content": message}]
+                    "messages": [{"role": "user", "content": message}],
+                    "policy_snapshot_id": snapshot_id,
                 })),
+                Duration::from_secs(120),
             )
             .await?;
+        if let Some(error) = response.pointer("/error/message").and_then(Value::as_str) {
+            bail!("MLX refused the pinned adapter: {error}");
+        }
         response
             .pointer("/choices/0/message/content")
             .and_then(Value::as_str)
             .map(str::to_string)
             .ok_or_else(|| {
                 anyhow::anyhow!("MLX chat completion omitted choices[0].message.content")
+            })
+    }
+
+    pub async fn register_policy(
+        &self,
+        policy_dir: &Path,
+        snapshot_id: &str,
+        artifact_digest: Option<&str>,
+    ) -> Result<String> {
+        let mut body = json!({
+            "policy_dir": policy_dir,
+            "snapshot_id": snapshot_id,
+        });
+        if let Some(digest) = artifact_digest {
+            body["artifact_digest"] = json!(digest);
+        }
+        let response = self
+            .post_timed("/v1/synth/policies/register", Some(&body), Duration::from_secs(120))
+            .await?;
+        response
+            .get("policy_snapshot_id")
+            .and_then(Value::as_str)
+            .map(str::to_string)
+            .ok_or_else(|| {
+                anyhow::anyhow!("MLX policy registration omitted policy_snapshot_id")
             })
     }
 }
@@ -301,7 +342,33 @@ mod tests {
                 .unwrap(),
             model_path.as_os_str()
         );
+        assert_eq!(
+            std_cmd
+                .get_envs()
+                .find(|(key, _)| *key == "HF_HUB_OFFLINE")
+                .and_then(|(_, value)| value)
+                .unwrap(),
+            "1"
+        );
         std::env::remove_var("SYNTH_MLX_RL_BIN");
+    }
+
+    #[test]
+    fn chat_refuses_an_empty_policy_pin() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let client = MlxLoopback {
+            base_url: "http://127.0.0.1:9".into(),
+            http: reqwest::Client::new(),
+        };
+        let error = runtime
+            .block_on(client.chat("hello", "  "))
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("policy_snapshot_id"), "{error}");
+        assert!(error.contains("ambient latest"), "{error}");
     }
 
     #[test]

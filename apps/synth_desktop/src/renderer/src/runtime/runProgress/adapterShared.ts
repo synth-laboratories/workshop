@@ -151,6 +151,8 @@ const MILESTONE_TYPES = new Set([
 	"gepa.run.finished",
 	"eval.selection.decided",
 	"sft.checkpoint.ready",
+	"training.checkpoint.ready",
+	"training.artifact.materialized",
 	"sft.checkpoint.promoted",
 	"sft.run.completed"
 ]);
