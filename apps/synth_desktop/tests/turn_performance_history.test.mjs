@@ -106,6 +106,23 @@ test("a hosted model falls back to its settled end-to-end output rate", () => {
 	assert.match(label.detail, /Authoritative provider output tokens/);
 });
 
+test("a settled hosted rate is shown after the terminal event even if UI activity lingers", () => {
+	const chat = { id: "hosted", title: "hosted", messages: [
+		{ id: "u", role: "user", body: "go", at: at(0) },
+		{ id: "msg_hosted", role: "assistant", body: "answer", at: at(2) }
+	] };
+	const events = [event(1, 1, "turn/accepted"), event(2, 4, "turn/completed")];
+	const samples = [{
+		runId: "turn-hosted",
+		measurementKind: "end_to_end",
+		startedAtMs: Date.parse(at(1)),
+		completedAtMs: Date.parse(at(4)),
+		outputTps: 24.75
+	}];
+	const label = turnPerformanceLabels(chat, events, true, samples).byMessageId.msg_hosted;
+	assert.equal(label.generation, "End-to-end output: 24.8 tok/s");
+});
+
 test("an interrupted segment is labelled partial rather than presented as a headline", () => {
 	const { chat, events } = fixture();
 	const cut = events.map((entry) => entry.sequence === 7

@@ -214,7 +214,7 @@ export function turnPerformanceLabels(
 		const worked = isFinal && terminalAt != null && acceptedAt != null && terminalAt >= acceptedAt
 			? `Worked ${compactDuration(terminalAt - acceptedAt)}`
 			: null;
-		const fallback = (!value || !isPublishable(value)) && !running && isFinal
+		const fallback = (!value || !isPublishable(value)) && isFinal && terminalAt != null
 			? endToEndLabel(endToEndSample(turnSamples, messageAt, terminalAt))
 			: null;
 		byMessageId[message.id] = fallback ?? {
