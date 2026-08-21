@@ -11,7 +11,11 @@ use std::sync::Arc;
 use std::time::Duration;
 
 pub const STREAM_SUBSCRIBED_KIND: &str = "stream.subscribed";
-pub const SUBSCRIBE_READY_TIMEOUT: Duration = Duration::from_secs(2);
+/// The control ACK is emitted by the container after `prepare`.  A ten-lane
+/// eval can briefly delay that write while every lane is binding its stream, so
+/// do not confuse a short host-side burst with a missing acknowledgement.
+pub const SUBSCRIBE_READY_TIMEOUT: Duration = Duration::from_secs(10);
+const SUBSCRIBE_POLL_INTERVAL: Duration = Duration::from_millis(100);
 
 /// Correlated diagnostic emitter for one rollout's stream.
 ///
@@ -227,7 +231,7 @@ pub async fn wait_for_stream_subscribed(
             if poll_has_stream_subscribed(&poll) {
                 return Ok(poll);
             }
-            tokio::time::sleep(Duration::from_millis(50)).await;
+            tokio::time::sleep(SUBSCRIBE_POLL_INTERVAL).await;
         }
     };
     match tokio::time::timeout(timeout, poll_once).await {
@@ -498,6 +502,57 @@ mod tests {
             err.to_string().contains("503"),
             "expected 503 refuse, got {err}"
         );
+        task.abort();
+    }
+
+    #[tokio::test]
+    async fn concurrent_waiters_accept_a_delayed_ready_ack() {
+        use crate::ipc::{serve_json, JsonHttpRequest, JsonHttpResponse};
+        use std::time::Instant;
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let ready_at = Instant::now() + Duration::from_millis(2_200);
+        let handler = move |_request: JsonHttpRequest| {
+            let ready = ready_at;
+            async move {
+                let events = if Instant::now() >= ready {
+                    json!([{"kind":"stream.subscribed", "payload":{"ready":true}}])
+                } else {
+                    json!([{"kind":"heartbeat"}])
+                };
+                JsonHttpResponse::ok(json!({"events": events}))
+            }
+        };
+        let task = tokio::spawn(async move {
+            let _ = serve_json(listener, handler).await;
+        });
+        let client = crate::http::http_client_builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .timeout(Duration::from_secs(2))
+            .build()
+            .unwrap();
+        let poll_url = format!("http://{addr}/rollouts/concurrent/events");
+        let mut waits = tokio::task::JoinSet::new();
+        for _ in 0..10 {
+            let client = client.clone();
+            let poll_url = poll_url.clone();
+            waits.spawn(async move {
+                wait_for_stream_subscribed(
+                    &client,
+                    &poll_url,
+                    SUBSCRIBE_READY_TIMEOUT,
+                    &StreamDiagnostics::none(),
+                )
+                .await
+            });
+        }
+        while let Some(result) = waits.join_next().await {
+            assert!(
+                result.unwrap().is_ok(),
+                "delayed ready ACK must be accepted"
+            );
+        }
         task.abort();
     }
 }
