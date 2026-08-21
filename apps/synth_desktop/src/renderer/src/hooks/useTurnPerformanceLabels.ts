@@ -245,7 +245,10 @@ export function useTurnPerformanceLabels(
 
 	useEffect(() => {
 		let disposed = false;
-		if (running || !loadTurnSamples) return () => { disposed = true; };
+		// A provider may settle and persist its authoritative usage before the UI
+		// clears its last activity line.  The terminal journal event is the source
+		// of truth for whether a settled sample is eligible to display.
+		if ((!terminalCursor && running) || !loadTurnSamples) return () => { disposed = true; };
 		void loadTurnSamples(chat.id)
 			.then((samples) => { if (!disposed) setTurnSamples(samples); })
 			.catch(() => { if (!disposed) setTurnSamples([]); });
