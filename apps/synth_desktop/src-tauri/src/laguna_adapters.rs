@@ -280,6 +280,40 @@ mod tests {
         }
     }
 
+    /// The install path the Download button runs, end to end.
+    ///
+    /// Ignored by default because it needs the adapters API and an object
+    /// store behind it. With those running:
+    ///   SYNTH_ADAPTERS_API=http://127.0.0.1:8099 \
+    ///   SYNTH_ADAPTERS_API_KEY=sk_dev_… \
+    ///   cargo test --lib installs_from_the_adapters_api -- --ignored --nocapture
+    #[tokio::test]
+    #[ignore = "requires the adapters API and an object store"]
+    async fn installs_from_the_adapters_api() {
+        let base = std::env::var("SYNTH_ADAPTERS_API").expect("SYNTH_ADAPTERS_API");
+        let key = std::env::var("SYNTH_ADAPTERS_API_KEY").expect("SYNTH_ADAPTERS_API_KEY");
+        let client = crate::optimizers::cloud::CloudOptimizerClient::new(base, key);
+        let spec = ADAPTER_CATALOG[0];
+
+        let manifest = parse_manifest(
+            &client.adapter_manifest(spec.digest).await.expect("manifest").to_string(),
+        )
+        .expect("parse");
+        check_pinned(&spec, &manifest).expect("pinned digest");
+        check_base_revision(&manifest, spec.base_revision).expect("base revision");
+
+        let mut fetched = Vec::new();
+        for file in &manifest.files {
+            let bytes = client.adapter_file(spec.digest, &file.path).await.expect("file");
+            println!("fetched {} ({} bytes)", file.path, bytes.len());
+            fetched.push((file.path.clone(), bytes));
+        }
+        let staged = stage_verified(&spec, &manifest, &fetched).expect("verify");
+        assert_eq!(digest_tree(&staged).unwrap(), spec.digest);
+        println!("installed and verified {}", spec.digest);
+        fs::remove_dir_all(&staged).ok();
+    }
+
     #[test]
     fn the_tree_digest_matches_the_publisher() {
         // Pinned against `tools/adapters/synth_adapters.py::digest_tree` for

@@ -298,7 +298,7 @@ impl CloudOptimizerClient {
     /// public, and the account's own credential is what authorises the read.
     pub async fn adapter_manifest(&self, digest: &str) -> Result<Value> {
         let url = format!(
-            "{}/api/v1/optimizers/adapters/{}/manifest",
+            "{}/api/v1/models/adapters/{}/manifest",
             self.base_url,
             urlencoding_lite(digest)
         );
@@ -308,7 +308,7 @@ impl CloudOptimizerClient {
     /// One file of a published adapter, as bytes.
     pub async fn adapter_file(&self, digest: &str, name: &str) -> Result<Vec<u8>> {
         let url = format!(
-            "{}/api/v1/optimizers/adapters/{}/files/{}",
+            "{}/api/v1/models/adapters/{}/files/{}",
             self.base_url,
             urlencoding_lite(digest),
             urlencoding_lite(name)
