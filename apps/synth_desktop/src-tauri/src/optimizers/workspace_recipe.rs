@@ -491,7 +491,7 @@ pub fn bind_locality_urls(
         .to_string();
     let _ = policy;
 
-    // A local Codex proposer is another consumer of the same recipe-owned
+    // A local proposer is another consumer of the same recipe-owned
     // provider capability. Bind it from the canonical policy/provider route
     // instead of allowing an independently defaulted `openai` lane to bypass
     // Workshop and send the proxy sentinel to a public origin.
@@ -499,13 +499,15 @@ pub fn bind_locality_urls(
         .get_mut("proposer")
         .and_then(toml::Value::as_table_mut)
         .filter(|table| {
-            table.get("backend").and_then(toml::Value::as_str)
-                == Some("codex_app_server")
+            matches!(
+                table.get("backend").and_then(toml::Value::as_str),
+                Some("codex_app_server" | "chat_completions" | "deepseek_chat")
+            )
         })
     {
         let provider = canonical_provider;
         let proposer_base = host_base_url.ok_or_else(|| {
-            anyhow!("codex_app_server proposer requires the host provider proxy URL")
+            anyhow!("proposer requires the host provider proxy URL")
         })?;
         proposer.insert("provider".into(), toml::Value::String(provider.clone()));
         proposer.insert(
