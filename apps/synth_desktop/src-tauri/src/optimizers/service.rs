@@ -2746,7 +2746,16 @@ fn load_run(conn: &Connection, optimizer_run_id: &str) -> Result<OptimizerRunRec
 }
 
 fn upsert_run(conn: &Connection, run: &OptimizerRunRecord) -> Result<()> {
-    let payload = serde_json::to_string(run)?;
+    let status = OptimizerRunStatus::parse(&run.status).ok_or_else(|| {
+        anyhow!(
+            "refusing optimizer run {} with non-lifecycle status {:?}; algorithm phases and work-item statuses must remain on their owned projections",
+            run.id,
+            run.status
+        )
+    })?;
+    let mut canonical = run.clone();
+    canonical.status = status.as_str().to_string();
+    let payload = serde_json::to_string(&canonical)?;
     conn.execute(
         "INSERT INTO optimizer_runs(
             id, algorithm_id, algorithm_version, status, source, objective,
@@ -2780,10 +2789,9 @@ fn upsert_run(conn: &Connection, run: &OptimizerRunRecord) -> Result<()> {
             run.id,
             run.algorithm_id,
             run.algorithm_version,
-            // The status column is the trigger-guarded one; normalize legacy
-            // spellings here, at the single writer, rather than at 380 read
-            // sites. `payload_json` keeps whatever the producer wrote.
-            OptimizerRunStatus::canonical(&run.status),
+            // The status column and payload are both canonicalized by this
+            // single writer, so structured reads cannot disagree with SQL.
+            status.as_str(),
             run.source,
             run.objective,
             run.project_ref,
@@ -3148,33 +3156,17 @@ fn load_events_upto(
 }
 
 fn apply_event_to_run(run: &mut OptimizerRunRecord, event: &OptimizerEventEnvelope) {
-    // Training-job status is not the optimizer run status. `sft.training.completed`
-    // / `sft.training.status` emit `succeeded` while promotion and
-    // `optimizer.run.completed` are still outstanding.
-    let copy_delta_status = !event.event_type.starts_with("sft.training.")
-        || matches!(
-            event.event_type.as_str(),
-            "sft.training.queued" | "sft.training.started"
-        );
-    if copy_delta_status {
-        if let Some(status) = event
-            .snapshot
-            .as_ref()
-            .and_then(|s| s.get("status"))
-            .and_then(Value::as_str)
-            .map(str::to_string)
-            .or_else(|| {
-                event
-                    .delta
-                    .get("status")
-                    .and_then(Value::as_str)
-                    .map(str::to_string)
-            })
-        {
-            run.status = status;
-        }
+    // Run lifecycle is the Workshop-owned umbrella state. Runtime phases,
+    // candidate states, rollout states, training-job states, and selection
+    // states remain evidence on their own subjects even when their payload
+    // happens to use the generic field name `status`.
+    if let Some(status) = authoritative_run_lifecycle(event) {
+        run.status = status.as_str().to_string();
     }
-    if event.event_type.ends_with(".started") || event.event_type.ends_with(".created") {
+    if matches!(
+        event.event_type.as_str(),
+        "optimizer.run.created" | "optimizer.run.started" | "run.started"
+    ) {
         if run.started_at.is_none() {
             run.started_at = Some(event.occurred_at.clone());
         }
@@ -3313,6 +3305,27 @@ fn optimizer_terminal_status(event_type: &str) -> Option<&'static str> {
         }
         "optimizer.run.failed" | "run.failed" => Some("failed"),
         "optimizer.run.cancelled" | "run.cancelled" => Some("cancelled"),
+        _ => None,
+    }
+}
+
+/// Project only events whose noun is the optimizer run itself into Workshop's
+/// durable umbrella lifecycle. Payload shape is deliberately irrelevant: a
+/// `status` field owned by a candidate, rollout, training job, or algorithm
+/// phase cannot acquire run authority by sharing a name.
+fn authoritative_run_lifecycle(event: &OptimizerEventEnvelope) -> Option<OptimizerRunStatus> {
+    match event.event_type.as_str() {
+        "optimizer.run.queued" => Some(OptimizerRunStatus::Queued),
+        "optimizer.run.created" | "optimizer.run.started" | "run.started" => {
+            Some(OptimizerRunStatus::Running)
+        }
+        "optimizer.run.paused" => Some(OptimizerRunStatus::Paused),
+        "optimizer.run.resumed" => Some(OptimizerRunStatus::Running),
+        "optimizer.run.cancelling" => Some(OptimizerRunStatus::Cancelling),
+        "optimizer.run.completed" | "gepa.run.finished" | "goex.run_finished"
+        | "run.completed" => Some(OptimizerRunStatus::Completed),
+        "optimizer.run.failed" | "run.failed" => Some(OptimizerRunStatus::Failed),
+        "optimizer.run.cancelled" | "run.cancelled" => Some(OptimizerRunStatus::Cancelled),
         _ => None,
     }
 }
