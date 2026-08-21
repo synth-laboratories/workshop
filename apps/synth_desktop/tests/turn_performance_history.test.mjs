@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { turnPerformanceLabels } from "../src/renderer/src/hooks/useTurnPerformanceLabels.ts";
+import { codexEventToRuntime } from "../src/renderer/src/runtime/nativeCodex.ts";
 
 const at = (seconds) => new Date(Date.UTC(2026, 0, 1, 0, 0, seconds)).toISOString();
 const event = (sequence, seconds, eventKind, payload = {}) => ({ sequence, createdAt: at(seconds), eventKind, payload });
@@ -85,6 +86,12 @@ test("authoritative provider usage can settle a hosted end-to-end output rate", 
 	const labels = turnPerformanceLabels(chat, events);
 	assert.equal(labels.byMessageId.msg_a.generation, "End-to-end output: 80.5 tok/s");
 	assert.match(labels.byMessageId.msg_a.detail, /Authoritative provider output tokens/);
+});
+
+test("Core event timestamps survive Codex adaptation", () => {
+	const createdAt = at(7);
+	const runtime = codexEventToRuntime({ sessionId: "s", method: "turn/completed", params: {}, createdAt }, 3);
+	assert.equal(runtime.createdAt, createdAt);
 });
 
 test("a hosted model falls back to its settled end-to-end output rate", () => {

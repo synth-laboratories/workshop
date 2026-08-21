@@ -361,7 +361,7 @@ export type PersistedCodexSession = {
 	/** Set when a previous process died holding this chat's turn. */
 	recovery?: RecoveryNotice | null;
 };
-export type CodexEvent = { sessionId: string; method: string; params: Record<string, unknown> };
+export type CodexEvent = { sessionId: string; method: string; params: Record<string, unknown>; createdAt?: string };
 /** Typed rejection payload of `codex_turn_send`. */
 export type CodexTurnFailure = {
 	code: "codex_session_detached" | "codex_turn_start_failed" | "codex_provider_unavailable" | string;

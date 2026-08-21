@@ -193,7 +193,7 @@ export function codexEventToRuntime(event: CodexEvent, sequence: number): Runtim
 	return {
 		schemaVersion: "synth.desktop-runtime-event.v1", sessionId: event.sessionId,
 		sequence, eventKind, payload,
-		createdAt: new Date().toISOString(), source: "local"
+		createdAt: event.createdAt ?? new Date().toISOString(), source: "local"
 	};
 }
 
