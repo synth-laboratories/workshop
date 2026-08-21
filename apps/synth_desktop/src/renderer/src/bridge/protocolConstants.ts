@@ -92,6 +92,8 @@ export const COMMANDS = {
 	LAGUNA_RELOAD: "laguna_reload",
 	LAGUNA_REGISTER_POLICY: "laguna_register_policy",
 	LAGUNA_POLICIES: "laguna_policies",
+	LAGUNA_ADAPTER_STATUS: "laguna_adapter_status",
+	LAGUNA_ADAPTER_DOWNLOAD: "laguna_adapter_download",
 	LAGUNA_MODELS_LIST: "laguna_models_list",
 	LAGUNA_MODEL_DOWNLOAD: "laguna_model_download",
 	LAGUNA_MODEL_UNLOAD: "laguna_model_unload",

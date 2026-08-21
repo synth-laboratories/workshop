@@ -252,6 +252,8 @@ pub fn builder() -> Builder<tauri::Wry> {
         crate::laguna_reload,
         crate::laguna_register_policy,
         crate::laguna_policies,
+        crate::laguna_adapter_status,
+        crate::laguna_adapter_download,
         crate::laguna_models_list,
         crate::laguna_models_set_directory,
         crate::laguna_models_clear_directory,
@@ -444,8 +446,9 @@ mod tests {
         // catalog patch/publish, and the Laguna adapter load command.
         // 248 → 249: `laguna_set_adapter` became `laguna_register_policy`
         // (registration, not selection) plus `laguna_policies`.
+        // 249 → 251: the published adapter's status and download.
         assert_eq!(
-            exported, 249,
+            exported, 251,
             "generated bindings must contain the complete desktop command set"
         );
         assert_eq!(

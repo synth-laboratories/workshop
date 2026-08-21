@@ -76,6 +76,11 @@ const MODEL_CATALOG: [ModelSpec; 1] = [ModelSpec {
     download_bytes: 21_600_000_000,
 }];
 
+/// The base weights revision this build installs and pins adapters against.
+pub fn installed_base_revision() -> &'static str {
+    DEFAULT_MODEL_REVISION
+}
+
 fn model_spec(model_id: &str) -> Result<ModelSpec> {
     MODEL_CATALOG
         .iter()

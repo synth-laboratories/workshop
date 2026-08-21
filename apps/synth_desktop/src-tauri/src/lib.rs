@@ -38,6 +38,7 @@ mod instance;
 mod intern_api;
 pub mod ipc;
 mod laguna;
+mod laguna_adapters;
 mod limits;
 mod optimizers;
 mod plugins;
@@ -3508,6 +3509,102 @@ async fn laguna_register_policy(
         .register_policy(&model_id, &path, checkpoint.storage.sha256.as_deref())
         .await
         .map_err(AppError::from)
+}
+
+/// What the Settings surface renders for the published finetune.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct LagunaAdapterStatus {
+    pub model_id: String,
+    pub title: String,
+    pub digest: String,
+    pub installed: bool,
+    #[specta(type = specta_typescript::Unknown)]
+    pub download_bytes: u64,
+    pub base_revision: String,
+    /// False when the installed weights are a different revision. The adapter
+    /// is shown either way; only the action is refused.
+    pub base_matches: bool,
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn laguna_adapter_status() -> Result<Vec<LagunaAdapterStatus>, AppError> {
+    Ok(laguna_adapters::ADAPTER_CATALOG
+        .iter()
+        .map(|spec| LagunaAdapterStatus {
+            model_id: spec.model_id.into(),
+            title: spec.title.into(),
+            digest: spec.digest.into(),
+            installed: laguna_adapters::is_installed(spec),
+            download_bytes: spec.download_bytes,
+            base_revision: spec.base_revision.into(),
+            base_matches: spec.base_revision == laguna::installed_base_revision(),
+        })
+        .collect())
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn laguna_adapter_download(
+    app: tauri::AppHandle,
+    core: State<'_, Arc<CoreRuntime>>,
+    state: State<'_, Arc<LagunaManager>>,
+    model_id: String,
+) -> Result<LagunaAdapterStatus, AppError> {
+    let spec = laguna_adapters::adapter_spec(&model_id).map_err(AppError::from)?;
+    let client = reqwest::Client::new();
+    let progress_app = app.clone();
+    let (staged, manifest) = laguna_adapters::stage_download(
+        &client,
+        &spec,
+        laguna::installed_base_revision(),
+        |phase, detail, downloaded, total| {
+            let _ = progress_app.emit(
+                crate::contract::events::EventChannel::LAGUNA_DOWNLOAD,
+                serde_json::json!({
+                    "phase": phase,
+                    "detail": detail,
+                    "modelId": spec.model_id,
+                    "downloadedBytes": downloaded,
+                    "totalBytes": total,
+                }),
+            );
+        },
+    )
+    .await
+    .map_err(AppError::from)?;
+
+    // Install through the catalog's own import so a downloaded adapter and a
+    // hand-imported one are the same row, digested by the same code.
+    let imported = core
+        .optimizers()
+        .import_saved_lora_dir(staged.display().to_string())
+        .await
+        .map_err(AppError::from)?;
+    let _ = std::fs::remove_dir_all(&staged);
+    let install = laguna_adapters::install_dir(&manifest.digest);
+    laguna_adapters::write_manifest_beside(&install, &manifest).map_err(AppError::from)?;
+    if imported.checkpoint_id != manifest.digest {
+        return Err(AppError::from(anyhow::anyhow!(
+            "installed adapter is {} but the manifest published {}",
+            imported.checkpoint_id,
+            manifest.digest
+        )));
+    }
+    state
+        .register_policy(spec.model_id, &install, Some(manifest.digest.as_str()))
+        .await
+        .map_err(AppError::from)?;
+    Ok(LagunaAdapterStatus {
+        model_id: spec.model_id.into(),
+        title: spec.title.into(),
+        digest: spec.digest.into(),
+        installed: true,
+        download_bytes: spec.download_bytes,
+        base_revision: spec.base_revision.into(),
+        base_matches: true,
+    })
 }
 
 #[tauri::command]

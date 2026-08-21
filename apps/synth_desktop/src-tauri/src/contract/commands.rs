@@ -61,6 +61,8 @@ impl Commands {
     pub const LAGUNA_RELOAD: &'static str = "laguna_reload";
     pub const LAGUNA_REGISTER_POLICY: &'static str = "laguna_register_policy";
     pub const LAGUNA_POLICIES: &'static str = "laguna_policies";
+    pub const LAGUNA_ADAPTER_STATUS: &'static str = "laguna_adapter_status";
+    pub const LAGUNA_ADAPTER_DOWNLOAD: &'static str = "laguna_adapter_download";
     pub const LAGUNA_MODELS_LIST: &'static str = "laguna_models_list";
     pub const LAGUNA_MODEL_DOWNLOAD: &'static str = "laguna_model_download";
     pub const LAGUNA_MODEL_UNLOAD: &'static str = "laguna_model_unload";

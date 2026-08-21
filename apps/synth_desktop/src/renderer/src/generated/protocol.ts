@@ -346,6 +346,8 @@ export const commands = {
 	lagunaReload: () => typedError<LagunaStatus, AppError>(__TAURI_INVOKE("laguna_reload")),
 	lagunaRegisterPolicy: (checkpointId: string, modelId: string) => typedError<LagunaPolicy, AppError>(__TAURI_INVOKE("laguna_register_policy", { checkpointId, modelId })),
 	lagunaPolicies: () => typedError<LagunaPolicy[], AppError>(__TAURI_INVOKE("laguna_policies")),
+	lagunaAdapterStatus: () => typedError<LagunaAdapterStatus[], AppError>(__TAURI_INVOKE("laguna_adapter_status")),
+	lagunaAdapterDownload: (modelId: string) => typedError<LagunaAdapterStatus, AppError>(__TAURI_INVOKE("laguna_adapter_download", { modelId })),
 	lagunaModelsList: () => typedError<LagunaModelHit[], AppError>(__TAURI_INVOKE("laguna_models_list")),
 	lagunaModelsSetDirectory: (path: string) => typedError<LagunaModelHit, AppError>(__TAURI_INVOKE("laguna_models_set_directory", { path })),
 	lagunaModelsClearDirectory: () => typedError<null, AppError>(__TAURI_INVOKE("laguna_models_clear_directory")),
@@ -1255,6 +1257,21 @@ export type InternTarget_Serialize = {
 	kind: string,
 	mode: string,
 	binding?: unknown,
+};
+
+/**  What the Settings surface renders for the published finetune. */
+export type LagunaAdapterStatus = {
+	modelId: string,
+	title: string,
+	digest: string,
+	installed: boolean,
+	downloadBytes: unknown,
+	baseRevision: string,
+	/**
+	 *  False when the installed weights are a different revision. The adapter
+	 *  is shown either way; only the action is refused.
+	 */
+	baseMatches: boolean,
 };
 
 /**

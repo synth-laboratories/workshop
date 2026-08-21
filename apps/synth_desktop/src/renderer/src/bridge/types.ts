@@ -28,9 +28,32 @@ import type {
 	OptimizerAlgorithmInfo,
 	OptimizerRunRecord
 } from "@synth/runtime-protocol";
-import type { InstanceDiagnostics, LagunaPolicy } from "../generated/protocol";
+import type { InstanceDiagnostics } from "../generated/protocol";
 
-export type { LagunaPolicy };
+/** One selectable inference policy. Speed fields are null until measured. */
+export type LagunaPolicy = {
+	modelId: string;
+	title: string | null;
+	isBase: boolean;
+	digest: string | null;
+	tokensPerSecondP10: number | null;
+	deltaVsBasePct: number | null;
+	/** False means the surface must not render the delta, not that it is zero. */
+	deltaIsResolvable: boolean;
+	tokenSamples: number;
+};
+
+/** The Synth-published finetune, installed or not. */
+export type LagunaAdapterStatus = {
+	modelId: string;
+	title: string;
+	digest: string;
+	installed: boolean;
+	downloadBytes: number;
+	baseRevision: string;
+	/** False when the installed weights are a different revision. */
+	baseMatches: boolean;
+};
 
 export type RequestOptions = {
 	method?: "GET" | "POST" | "DELETE";
@@ -117,6 +140,10 @@ export type LagunaBridge = {
 	/** Register a Laguna-compatible LoRA under a model id. Registration is not
 	 *  selection: which policy a turn uses is decided by that turn's model. */
 	registerPolicy?(checkpointId: string, modelId: string): Promise<LagunaPolicy>;
+	/** The Synth-published finetune, installed or not. */
+	adapterStatus?(): Promise<LagunaAdapterStatus[]>;
+	/** Download, verify, install, and register the published finetune. */
+	adapterDownload?(modelId: string): Promise<LagunaAdapterStatus>;
 	downloadModel(modelId: string): Promise<LagunaModelHit>;
 	deleteModel(modelId: string): Promise<void>;
 	onDownloadProgress?(listener: (progress: LagunaDownloadProgress) => void): () => void;

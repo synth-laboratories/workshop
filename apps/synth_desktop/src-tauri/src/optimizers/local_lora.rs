@@ -597,7 +597,12 @@ fn map_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<SavedLoraCheckpoint> {
     })
 }
 
-fn digest_directory(root: &Path) -> Result<String> {
+/// The one definition of an adapter tree's identity.
+///
+/// The publisher reproduces this framing exactly; a second implementation
+/// would mean a downloaded adapter never matches the id it was published
+/// under, so this is a contract rather than an implementation detail.
+pub fn digest_directory(root: &Path) -> Result<String> {
     use sha2::{Digest, Sha256};
     let mut hasher = Sha256::new();
     let mut files: Vec<PathBuf> = fs::read_dir(root)

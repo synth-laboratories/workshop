@@ -49,21 +49,33 @@ def digest_file(path: Path) -> str:
 
 
 def digest_tree(root: Path) -> tuple[str, list[dict[str, Any]]]:
-    """Digest a tree the way the Workshop catalog does: sorted path + content.
+    """Digest a tree exactly as Workshop's catalog does.
 
-    Both sides have to agree bit for bit or an installed adapter will not match
-    the id it was published under, so the ordering and the framing are part of
-    the contract rather than an implementation detail.
+    `local_lora::digest_directory` frames each top-level file as
+    `len(name) || name || len(content) || content`, sorted by path. The framing
+    is a contract, not an implementation detail: a second definition here would
+    mean a downloaded adapter never matches the id it was published under.
     """
-    files = []
+    if any(child.is_dir() for child in root.iterdir()):
+        # The catalog digests top-level files only, so a nested file would be
+        # published without ever being covered by the identity it claims.
+        raise SystemExit(f"{root} has subdirectories; an mlx-lora.v1 tree is flat")
+    files: list[dict[str, Any]] = []
     tree = hashlib.sha256()
-    for path in sorted(p for p in root.rglob("*") if p.is_file() and p.name != MANIFEST):
-        relative = path.relative_to(root).as_posix()
-        file_digest = digest_file(path)
-        tree.update(relative.encode())
-        tree.update(b"\0")
-        tree.update(bytes.fromhex(file_digest))
-        files.append({"path": relative, "bytes": path.stat().st_size, "sha256": file_digest})
+    for path in sorted(child for child in root.iterdir() if child.is_file()):
+        name = path.name.encode()
+        content = path.read_bytes()
+        tree.update(len(name).to_bytes(8, "big"))
+        tree.update(name)
+        tree.update(len(content).to_bytes(8, "big"))
+        tree.update(content)
+        files.append(
+            {
+                "path": path.name,
+                "bytes": len(content),
+                "sha256": hashlib.sha256(content).hexdigest(),
+            }
+        )
     return f"sha256:{tree.hexdigest()}", files
 
 
@@ -202,7 +214,11 @@ def pull(args: argparse.Namespace) -> None:
     recomputed, _ = digest_tree(destination)
     if recomputed != manifest["digest"]:
         raise SystemExit(f"tree digest mismatch: expected {manifest['digest']}, got {recomputed}")
-    (destination / MANIFEST).write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+    # Beside the tree, never inside it: a manifest in the directory would
+    # change the digest the directory is identified by.
+    destination.with_suffix(".manifest.json").write_text(
+        json.dumps(manifest, indent=2) + "\n", encoding="utf-8"
+    )
     print(f"pulled {manifest['digest']} into {destination}")
 
 

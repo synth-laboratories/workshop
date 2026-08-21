@@ -51,6 +51,14 @@ pub(crate) use recipes::{BANKING77_EVAL_BASELINE_RECIPE, HEALTHBENCH_EVAL_SMOKE_
 pub use service::OptimizerService;
 pub use training::{TrainingEvent, TrainingLifecycle, TrainingProjection};
 
+/// The adapter-tree digest the catalog keys on. Re-exported so the installer
+/// and the publisher share one definition of identity.
+pub fn digest_adapter_directory(root: &std::path::Path) -> anyhow::Result<String> {
+    local_lora::digest_directory(root)
+}
+
+pub use local_lora::durable_lora_root;
+
 pub fn local_lora_is_laguna_compatible(checkpoint: &SavedLoraCheckpoint) -> bool {
     local_lora::is_laguna_compatible(checkpoint)
 }
