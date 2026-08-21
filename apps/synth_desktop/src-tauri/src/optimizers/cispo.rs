@@ -195,7 +195,7 @@ async fn start_local(
                 "bearer_token": rollout.token,
                 "train_world_ref": "world:banking77@train",
                 "heldout_world_ref": "world:banking77@heldout",
-                "train_instances": 64,
+                "train_instances": 16,
                 "heldout_instances": 16
             },
             "output_dir": output_dir,
