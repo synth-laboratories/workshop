@@ -894,7 +894,7 @@ pub(crate) async fn authorize_optimizer_recipe_start(
     let visual_session_ref = request.session_ref.clone();
     let recipe = state
         .optimizers()
-        .list_recipes()
+        .list_recipes_for_session(request.session_ref.as_deref())
         .into_iter()
         .find(|recipe| recipe.get("id").and_then(Value::as_str) == Some(request.recipe_id.as_str()))
         .ok_or_else(|| {
@@ -927,10 +927,9 @@ pub(crate) async fn authorize_optimizer_recipe_start(
         .unwrap_or_else(|| "Workshop operator".into());
     let algorithm_id = recipe.get("algorithmId").and_then(Value::as_str);
     let is_local_eval = algorithm_id == Some("eval");
-    let is_container_baseline_eval = matches!(
-        request.recipe_id.as_str(),
-        optimizers::BANKING77_EVAL_BASELINE_RECIPE | optimizers::HEALTHBENCH_EVAL_SMOKE_RECIPE
-    );
+    let is_container_baseline_eval = is_local_eval
+        && recipe.get("source").and_then(Value::as_str) == Some("workspace")
+        && recipe.get("semantics").and_then(Value::as_str) == Some("baseline_eval");
     // Hosted SFT is owned by the public synth-optimizers control plane and
     // does not use the optional local Optimizers sidecar. Requiring that
     // sidecar made an otherwise configured public SFT recipe unreachable.
@@ -1158,33 +1157,14 @@ pub(crate) async fn authorize_optimizer_recipe_start(
 /// keep their own service/cookbook admission in Optimizers.
 pub(crate) async fn refresh_optimizer_workflow_containers(
     state: &CoreRuntime,
-    recipe_id: &str,
+    _recipe_id: &str,
 ) -> Result<(), AppError> {
-    let family = match recipe_id {
-        optimizers::BANKING77_EVAL_BASELINE_RECIPE => Some("banking77"),
-        optimizers::HEALTHBENCH_EVAL_SMOKE_RECIPE => Some("healthbench"),
-        _ => None,
-    };
-    let Some(family) = family else {
-        return Ok(());
-    };
     let rows = state
         .data()
         .list_containers()
         .await
         .map_err(AppError::from)?;
     for row in rows {
-        let hinted = row.task_family.as_deref().is_some_and(|value| {
-            let value = value.to_ascii_lowercase();
-            value == family || value.contains(family)
-        }) || row
-            .metadata
-            .to_string()
-            .to_ascii_lowercase()
-            .contains(family);
-        if !hinted {
-            continue;
-        }
         let Some(base_url) = row
             .base_url
             .as_deref()
@@ -1210,9 +1190,7 @@ pub(crate) async fn refresh_optimizer_workflow_containers(
 }
 
 fn optimizer_recipe_credentials(recipe_id: &str) -> &'static [&'static str] {
-    if recipe_id.starts_with("gepa.banking77.") || recipe_id.starts_with("gepa.craftax.") {
-        &["OPENAI_API_KEY"]
-    } else if recipe_id == "sft.craftax.gpt-oss.smoke.v1" {
+    if recipe_id == "sft.craftax.gpt-oss.smoke.v1" {
         &["GROQ_API_KEY", "TINKER_API_KEY"]
     } else if recipe_id == "gelo.craftax.hosted.v1" {
         &["OPTIMIZERS_BETA_SERVICE_TOKEN"]
@@ -1221,6 +1199,8 @@ fn optimizer_recipe_credentials(recipe_id: &str) -> &'static [&'static str] {
         "sft.craftax.nemotron-nano.tinker.v1" | "sft.banking77.nemotron-lightning.tinker.v1"
     ) {
         &["SYNTH_OPTIMIZERS_SFT_SERVICE_TOKEN"]
+    } else if recipe_id.starts_with("gepa.") || recipe_id.starts_with("eval.") {
+        &["OPENAI_API_KEY"]
     } else {
         &[]
     }

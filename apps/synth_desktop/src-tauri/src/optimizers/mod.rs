@@ -3,6 +3,7 @@
 mod cispo;
 pub(crate) mod cloud;
 mod container_eval;
+pub(crate) mod container_lifecycle;
 mod eval_candidates;
 mod eval_recipes;
 pub(crate) mod eval_runtime;
@@ -22,6 +23,7 @@ mod normalize;
 mod recipes;
 mod results;
 mod service;
+pub(crate) mod workspace_recipe;
 mod sft_client;
 mod sft_recipes;
 mod sft_result;
@@ -48,7 +50,6 @@ pub use models::{
     SavedLoraDownload, SavedLoraLineage, SavedLoraPatchRequest, SavedLoraRunCounts,
     SavedLoraRunIdentity, SavedLoraRunPage,
 };
-pub(crate) use recipes::{BANKING77_EVAL_BASELINE_RECIPE, HEALTHBENCH_EVAL_SMOKE_RECIPE};
 pub(crate) use service::reconcile_stale_local_runs_in_tx;
 pub use service::OptimizerService;
 pub use training::{TrainingEvent, TrainingLifecycle, TrainingProjection};

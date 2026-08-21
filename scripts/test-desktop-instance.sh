@@ -132,18 +132,8 @@ jq -e '.bundle.macOS.minimumSystemVersion == "14.0"' \
 # fresh worktree can `cargo check` without staging cookbooks or the helper.
 jq -e '.bundle | has("resources") | not' \
   "$ROOT/apps/synth_desktop/src-tauri/tauri.conf.json" >/dev/null
-jq -e '.bundle.resources["generated-resources/cookbooks"] == "cookbooks"' \
+jq -e '.bundle.resources | has("generated-resources/cookbooks") | not' \
   "$ROOT/apps/synth_desktop/src-tauri/tauri.package.json" >/dev/null
-
-# The packaged cookbooks come from a sibling working tree, not a submodule, so
-# the staged tree must carry the commit it came from. Without it a release
-# cannot say which cookbook it shipped, and two builds of the same Workshop
-# commit look identical while running different code.
-cookbooks_source="$ROOT/apps/synth_desktop/src-tauri/generated-resources/cookbooks/optimizers/gepa/COOKBOOKS_SOURCE.json"
-[[ -f "$cookbooks_source" ]] \
-  || { echo "staged cookbooks carry no source receipt: $cookbooks_source" >&2; exit 1; }
-jq -e '.schema == "synth.packaged-cookbooks-source.v1" and (.commit | length) == 40' \
-  "$cookbooks_source" >/dev/null
 
 # Local CUA builds sign with the stable local certificate by default so TCC
 # and Keychain grants survive rebuilds; ad-hoc is an explicit opt-out. The
@@ -161,7 +151,7 @@ rg -q 'optimizer runtime=immutable installed plugin' "$ROOT/scripts/desktop-inst
 rg -q 'verify_packaged_provenance' "$ROOT/scripts/desktop-instance.sh"
 rg -q 'packaging_preflight' "$ROOT/scripts/desktop-instance.sh"
 rg -q 'missing Computer Use helper bundle' "$ROOT/scripts/desktop-instance.sh"
-rg -q 'missing staged cookbooks' "$ROOT/scripts/desktop-instance.sh"
+! rg -q 'missing staged cookbooks' "$ROOT/scripts/desktop-instance.sh"
 rg -q 'dirty source tree' "$ROOT/scripts/desktop-instance.sh"
 rg -q 'insufficient disk' "$ROOT/scripts/desktop-instance.sh"
 rg -q 'signing identity not in keychain' "$ROOT/scripts/desktop-instance.sh"

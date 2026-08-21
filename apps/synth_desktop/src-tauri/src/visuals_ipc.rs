@@ -1465,6 +1465,34 @@ pub async fn dispatch(method: &str, path: &str, body: Value, core: &CoreRuntime)
         ("GET", "/v1/containers") => {
             Ok(json!({"containers": core.data().list_containers().await?}))
         }
+        ("POST", "/v1/containers/ensure") => {
+            let spec_id = body
+                .get("specId")
+                .or_else(|| body.get("spec_id"))
+                .and_then(Value::as_str)
+                .ok_or_else(|| anyhow::anyhow!("specId required"))?;
+            let session = body
+                .get("sessionRef")
+                .or_else(|| body.get("session_ref"))
+                .and_then(Value::as_str)
+                .ok_or_else(|| anyhow::anyhow!("sessionRef required"))?;
+            let workspace = crate::optimizers::workspace_recipe::require_session_workspace(
+                core.storage().database(),
+                session,
+            )?;
+            let ensured = crate::optimizers::container_lifecycle::ensure(
+                core.storage().database(),
+                &workspace,
+                spec_id,
+            )
+            .await?;
+            Ok(json!({
+                "containerId": ensured.container_id,
+                "baseUrl": ensured.base_url,
+                "specId": ensured.spec_id,
+                "locality": ensured.locality.as_str(),
+            }))
+        }
         ("POST", "/v1/containers") => {
             let request: ContainerRegisterRequest = serde_json::from_value(body)?;
             let container = register_hydrated_container(core, request).await?;
@@ -2521,7 +2549,12 @@ pub(crate) async fn dispatch_optimizer(
         ("GET", "/v1/optimizers/algorithms") => {
             Ok(json!({ "algorithms": optimizers.list_algorithms() }))
         }
-        ("GET", "/v1/optimizers/recipes") => Ok(json!({ "recipes": optimizers.list_recipes() })),
+        ("GET", "/v1/optimizers/recipes") => {
+            let session = std::env::var("SYNTH_SESSION_ID").ok();
+            Ok(json!({
+                "recipes": optimizers.list_recipes_for_session(session.as_deref())
+            }))
+        }
         ("POST", "/v1/optimizers/eval/candidates") => {
             let request: crate::optimizers::EvalStageCandidatesRequest =
                 serde_json::from_value(body)?;
@@ -2700,7 +2733,7 @@ pub(crate) async fn dispatch_optimizer(
                         .summary
                         .get("recipeId")
                         .and_then(Value::as_str)
-                        .unwrap_or("gepa.banking77.smoke.v1");
+                        .ok_or_else(|| anyhow::anyhow!("prepared optimizer run omitted recipeId"))?;
                     let max_cost_usd = run
                         .summary
                         .pointer("/limits/maxCostUsd")

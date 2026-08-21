@@ -70,8 +70,8 @@ fn project_recipe_readiness(mut recipe: Value) -> Value {
             .unwrap_or(
                 "A required runtime, service, credential, or packaged asset is unavailable.",
             );
-        let (code, contract, owner) = if detail.contains("cookbook") {
-            ("cookbook_unavailable", "assets.cookbook", "Optimizers")
+        let (code, contract, owner) = if detail.contains("workspace recipe") {
+            ("workspace_recipe_unavailable", "assets.workspace_recipe", "Optimizers")
         } else if detail.contains("runtime is not installed") {
             ("runtime_unavailable", "runtime.local", "Optimizers")
         } else {
@@ -401,7 +401,20 @@ impl OptimizerService {
     }
 
     pub fn list_recipes(&self) -> Vec<Value> {
-        let mut recipes = super::recipes::recipe_catalog();
+        self.list_recipes_for_session(None)
+    }
+
+    pub fn list_recipes_for_session(&self, session_ref: Option<&str>) -> Vec<Value> {
+        let mut recipes = Vec::new();
+        if let Some(session) = session_ref.map(str::trim).filter(|value| !value.is_empty()) {
+            if let Ok(Some(workspace)) =
+                super::workspace_recipe::session_workspace(&self.db, session)
+            {
+                if let Ok(declared) = super::workspace_recipe::load_recipes(&workspace) {
+                    recipes.extend(declared.iter().map(super::workspace_recipe::catalog_entry));
+                }
+            }
+        }
         recipes.push(super::hosted_gelo::recipe_catalog());
         recipes.push(super::sft_recipes::recipe_catalog());
         recipes.extend(super::hosted_sft::recipe_catalog());
@@ -433,16 +446,6 @@ impl OptimizerService {
         request: super::models::OptimizerRecipeRunRequest,
     ) -> Result<(OptimizerRunRecord, Option<AppEvent>)> {
         match request.recipe_id.as_str() {
-            super::recipes::BANKING77_GEPA_SMOKE_RECIPE
-            | super::recipes::BANKING77_GEPA_LUNA_RECIPE
-            | super::recipes::BANKING77_GEPA_SOL_RECIPE
-            | super::recipes::CRAFTAX_GEPA_SMOKE_RECIPE => {
-                super::recipes::start(self, request).await
-            }
-            super::recipes::BANKING77_EVAL_BASELINE_RECIPE
-            | super::recipes::HEALTHBENCH_EVAL_SMOKE_RECIPE => {
-                super::recipes::start_container_eval(self, request).await
-            }
             super::sft_recipes::CRAFTAX_SFT_SMOKE_RECIPE => {
                 super::sft_recipes::start(self, request).await
             }
@@ -461,7 +464,7 @@ impl OptimizerService {
             id if super::eval_recipes::is_eval_recipe(id) => {
                 super::eval_recipes::start(self, request).await
             }
-            _ => bail!("unknown optimizer recipe: {}", request.recipe_id),
+            _ => super::recipes::start(self, request).await,
         }
     }
 
@@ -478,18 +481,7 @@ impl OptimizerService {
         &self,
         request: super::models::OptimizerRecipeRunRequest,
     ) -> Result<(OptimizerRunRecord, Option<AppEvent>)> {
-        match request.recipe_id.as_str() {
-            super::recipes::BANKING77_GEPA_SMOKE_RECIPE
-            | super::recipes::BANKING77_GEPA_LUNA_RECIPE
-            | super::recipes::BANKING77_GEPA_SOL_RECIPE
-            | super::recipes::CRAFTAX_GEPA_SMOKE_RECIPE => {
-                super::recipes::prepare(self, request).await
-            }
-            _ => bail!(
-                "prepare is only implemented for bounded product-owned GEPA recipes; got {}",
-                request.recipe_id
-            ),
-        }
+        super::recipes::prepare(self, request).await
     }
 
     pub async fn start_prepared(
@@ -5219,19 +5211,19 @@ pub(in crate::optimizers) mod tests {
     #[test]
     fn recipe_readiness_preserves_a_structured_cookbook_blocker() {
         let projected = project_recipe_readiness(json!({
-            "id": "gepa.craftax.smoke.v1",
+            "id": "gepa.workspace.v1",
             "algorithmId": "gepa",
             "availability": "unavailable",
-            "availabilityReason": "craftax cookbook is unavailable",
+            "availabilityReason": "workspace recipe is unavailable",
             "limits": {"maxTotalRollouts": 6},
         }));
         assert_eq!(
             projected["readiness"]["blockers"][0]["code"],
-            json!("cookbook_unavailable")
+            json!("workspace_recipe_unavailable")
         );
         assert_eq!(
             projected["readiness"]["blockers"][0]["contract"],
-            json!("assets.cookbook")
+            json!("assets.workspace_recipe")
         );
         assert_eq!(
             projected["readiness"]["blockers"][0]["retryable"],

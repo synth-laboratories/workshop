@@ -133,10 +133,6 @@ pub fn compute_kind(
     timeout_seconds: u64,
 ) -> ApprovalKind {
     let micros = (max_cost_usd * 1_000_000.0).round() as u64;
-    let (dataset, evaluator_model) = match recipe_id {
-        "gepa.craftax.smoke.v1" => ("craftax", "craftax_gpt_4_1_nano"),
-        _ => ("banking77", "banking77_candidate"),
-    };
     ApprovalKind::PaidCompute {
         operation: recipe_id.into(),
         parameters: json!({
@@ -150,9 +146,9 @@ pub fn compute_kind(
         },
         requesting_agent: "agent".into(),
         recipe_id: Some(recipe_id.into()),
-        dataset: Some(dataset.into()),
+        dataset: Some(recipe_id.into()),
         proposer_model: Some(proposer_model.into()),
-        evaluator_model: Some(evaluator_model.into()),
+        evaluator_model: Some(recipe_id.into()),
         timeout_seconds: Some(timeout_seconds),
         credential_names: vec!["OPENAI_API_KEY".into()],
         preparation_digest: Some(preparation_digest.into()),
@@ -302,10 +298,10 @@ mod tests {
     }
 
     #[test]
-    fn craftax_compute_approval_discloses_exact_bounded_workload() {
+    fn compute_approval_discloses_the_recipe_id_not_a_shipped_task_family() {
         let approval = compute_kind(
-            "gepa.craftax.smoke.v1",
-            "sha256:craftax",
+            "gepa.workspace.v1",
+            "sha256:prep",
             1.50,
             6,
             "gpt-5.6-luna",
@@ -319,11 +315,11 @@ mod tests {
                 preparation_digest,
                 ..
             } => {
-                assert_eq!(dataset.as_deref(), Some("craftax"));
-                assert_eq!(evaluator_model.as_deref(), Some("craftax_gpt_4_1_nano"));
+                assert_eq!(dataset.as_deref(), Some("gepa.workspace.v1"));
+                assert_eq!(evaluator_model.as_deref(), Some("gepa.workspace.v1"));
                 assert_eq!(requested_cap.max_cost_usd_micros, Some(1_500_000));
                 assert_eq!(requested_cap.max_rollouts, Some(6));
-                assert_eq!(preparation_digest.as_deref(), Some("sha256:craftax"));
+                assert_eq!(preparation_digest.as_deref(), Some("sha256:prep"));
             }
             other => panic!("expected paid compute approval, got {other:?}"),
         }

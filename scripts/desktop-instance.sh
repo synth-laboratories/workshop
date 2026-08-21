@@ -446,10 +446,7 @@ EOF
   "bundle": {
     "targets": ["app"],
     "icon": ["$ICON_PNG", "$ICON_ICNS"],
-    "resources": {
-      "$INSTANCE_ROOT/runtime/gepa/banking77_container": "cookbooks/optimizers/gepa/banking77_container",
-      "$INSTANCE_ROOT/runtime/gepa/crafter_container": "cookbooks/optimizers/gepa/crafter_container"
-    },
+    "resources": {},
     "macOS": {
       "minimumSystemVersion": "14.0"
     }
@@ -756,37 +753,13 @@ status_instance() {
 
 stage_gepa_runtime() {
   local runtime_root="$INSTANCE_ROOT/runtime/gepa"
-  local banking_target="$runtime_root/banking77_container"
-  local banking_source="${SYNTH_BANKING77_GEPA_COOKBOOK_SOURCE:-$REPO_SIBLING_ROOT/synth-cookbooks-public/cookbooks/optimizers/gepa/banking77_container}"
-  local craftax_target="$runtime_root/crafter_container"
-  local craftax_source="${SYNTH_CRAFTAX_GEPA_COOKBOOK_SOURCE:-$REPO_SIBLING_ROOT/synth-cookbooks-public/cookbooks/optimizers/gepa/crafter_container}"
   local optimizer_target="$runtime_root/optimizer-project"
   local optimizer_source="${SYNTH_OPTIMIZER_PROJECT_SOURCE:-$REPO_SIBLING_ROOT/optimizers-g1}"
   local use_local_optimizer="${SYNTH_OPTIMIZER_USE_LOCAL_SOURCE:-0}"
   local secret_target="$DATA_ROOT/gepa-secret.env"
-  local secret_source="${SYNTH_GEPA_SECRET_ENV_SOURCE:-${SYNTH_BANKING77_SECRET_ENV_SOURCE:-$REPO_SIBLING_ROOT/synth-ai/.env}}"
+  local secret_source="${SYNTH_GEPA_SECRET_ENV_SOURCE:-$REPO_SIBLING_ROOT/synth-ai/.env}"
 
-  if [[ ! -f "$banking_source/gepa.toml" || ! -f "$banking_source/synth_service_app.py" ]]; then
-    echo "[desktop:$NAME] ERROR Banking77 GEPA cookbook source is unavailable: $banking_source" >&2
-    exit 1
-  fi
-  if [[ ! -f "$craftax_source/gepa.toml" || ! -f "$craftax_source/synth_service_app.py" || ! -f "$craftax_source/crafter_text_env.py" || ! -f "$craftax_source/uv.lock" ]]; then
-    echo "[desktop:$NAME] ERROR Craftax GEPA cookbook source is unavailable: $craftax_source" >&2
-    exit 1
-  fi
-  mkdir -p "$banking_target" "$craftax_target"
-  rsync -a --delete \
-    --exclude '.venv' \
-    --exclude '__pycache__' \
-    --exclude 'runs' \
-    "$banking_source/" "$banking_target/"
-  rsync -a --delete \
-    --exclude '.venv' \
-    --exclude '__pycache__' \
-    --exclude 'runs' \
-    "$craftax_source/" "$craftax_target/"
-  export SYNTH_BANKING77_GEPA_COOKBOOK_ROOT="$banking_target"
-  export SYNTH_CRAFTAX_GEPA_COOKBOOK_ROOT="$craftax_target"
+  unset SYNTH_BANKING77_GEPA_COOKBOOK_ROOT SYNTH_CRAFTAX_GEPA_COOKBOOK_ROOT
 
   if [[ "$use_local_optimizer" == "1" ]]; then
     if [[ ! -f "$optimizer_source/pyproject.toml" || ! -f "$optimizer_source/rust/crates/synth_gepa/Cargo.toml" ]]; then
@@ -824,7 +797,6 @@ stage_gepa_runtime() {
     fi
   fi
   export SYNTH_GEPA_SECRET_ENV_FILE="$secret_target"
-  export SYNTH_BANKING77_SECRET_ENV_FILE="$secret_target"
 }
 
 # A packaged CUA bundle must not inherit the parent Workshop process's
@@ -891,12 +863,10 @@ resolve_signing_identity() {
   fi
 }
 
-# Fail closed before a named CUA compile borrows helpers/cookbooks from another
+# Fail closed before a named CUA compile borrows helpers from another
 # checkout or signs with a missing identity. Does not notarize or publish.
 packaging_preflight() {
   local helper="$ROOT/helpers/synth-computer-use/target/bundle/Synth Computer Use.app"
-  local cookbooks="$ROOT/apps/synth_desktop/src-tauri/generated-resources/cookbooks/optimizers/gepa"
-  local cookbooks_source="$cookbooks/COOKBOOKS_SOURCE.json"
   local identity avail_kb
 
   if [[ ! -d "$helper" ]]; then
@@ -904,21 +874,6 @@ packaging_preflight() {
     echo "[desktop:$NAME] run: ./scripts/build-computer-use-helper.sh ensure-dev" >&2
     exit 1
   fi
-  if [[ ! -f "$cookbooks/banking77_container/gepa.toml" || ! -f "$cookbooks/crafter_container/gepa.toml" ]]; then
-    echo "[desktop:$NAME] ERROR missing staged cookbooks under $cookbooks" >&2
-    echo "[desktop:$NAME] run: ./scripts/stage-packaged-cookbooks.sh" >&2
-    exit 1
-  fi
-  if [[ ! -f "$cookbooks_source" ]]; then
-    echo "[desktop:$NAME] ERROR missing cookbook provenance: $cookbooks_source" >&2
-    echo "[desktop:$NAME] run: ./scripts/stage-packaged-cookbooks.sh" >&2
-    exit 1
-  fi
-  jq -e '.schema == "synth.packaged-cookbooks-source.v1" and (.commit | length) == 40' \
-    "$cookbooks_source" >/dev/null || {
-    echo "[desktop:$NAME] ERROR mismatched cookbook provenance in $cookbooks_source" >&2
-    exit 1
-  }
   if [[ "$SOURCE_REVISION" == *-dirty ]]; then
     echo "[desktop:$NAME] ERROR dirty source tree; cua-build requires a clean checkout" >&2
     exit 1

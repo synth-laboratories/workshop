@@ -33,7 +33,7 @@ pub fn recipe_catalog() -> Value {
         reasons.push("Download the training model in Settings → Models → On-device training.");
     }
     if dataset.is_none() || evaluation.is_none() {
-        reasons.push("Train/eval JSONL is missing (cookbook or SYNTH_MLX_SFT_*_JSONL).");
+        reasons.push("Train/eval JSONL is missing (set SYNTH_MLX_SFT_TRAIN_JSONL and SYNTH_MLX_SFT_EVAL_JSONL).");
     }
     let available = apple_silicon && model_ready && dataset.is_some() && evaluation.is_some();
     json!({
@@ -130,37 +130,11 @@ pub fn resolve_local_sft_datasets() -> (Option<PathBuf>, Option<PathBuf>, &'stat
     ) {
         return (Some(train), Some(eval), "env");
     }
-    if let Some(dir) = cookbook_sft_dir() {
-        let train = dir.join("train.jsonl");
-        let eval = dir.join("eval.jsonl");
-        if train.is_file() && eval.is_file() {
-            return (Some(train), Some(eval), "cookbook");
-        }
-    }
     (None, None, "missing")
 }
 
 fn cookbook_sft_dir() -> Option<PathBuf> {
-    if let Ok(raw) = std::env::var("SYNTH_MLX_SFT_COOKBOOK") {
-        let path = PathBuf::from(raw.trim());
-        if path.is_dir() {
-            return Some(path);
-        }
-    }
-    let rel = Path::new("cookbooks/optimizers/sft/qwen35_mlx");
-    let mut candidates = Vec::new();
-    candidates.push(crate::instance::data_root().join(rel));
-    candidates.push(crate::instance::state_root().join(rel));
-    if let Ok(manifest) = std::env::var("CARGO_MANIFEST_DIR") {
-        candidates.push(
-            PathBuf::from(manifest)
-                .join("generated-resources")
-                .join(rel),
-        );
-    }
-    candidates
-        .into_iter()
-        .find(|path| path.join("train.jsonl").is_file() && path.join("eval.jsonl").is_file())
+    None
 }
 
 pub async fn reconcile(service: &OptimizerService, run_id: &str) -> Result<OptimizerRunRecord> {

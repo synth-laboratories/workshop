@@ -9,8 +9,8 @@ use super::{
         OptimizerCapabilities, OptimizerCreateRequest, OptimizerExecutionBinding,
         OptimizerRecipeRunRequest, OptimizerResourceRef, OptimizerRunRecord,
     },
-    recipes::{BANKING77_EVAL_BASELINE_RECIPE, HEALTHBENCH_EVAL_SMOKE_RECIPE},
     service::ChatVisualPublication,
+    workspace_recipe::{self, WorkspaceRecipe},
     OptimizerManager, OptimizerService,
 };
 use crate::container_stream::{
@@ -69,73 +69,85 @@ async fn evidence<T>(
     })
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct EvalSpec {
-    recipe_id: &'static str,
-    family: &'static str,
-    title: &'static str,
-    question: &'static str,
-    world_ref: &'static str,
-    evaluation_plan_ref: &'static str,
-    harness: &'static str,
-    policy_config: &'static str,
+    recipe_id: String,
+    family: String,
+    title: String,
+    question: String,
+    world_ref: String,
+    evaluation_plan_ref: String,
+    harness: String,
+    policy_config: String,
     concurrency: usize,
-    train: &'static [i64],
-    heldout: &'static [i64],
+    train: Vec<i64>,
+    heldout: Vec<i64>,
+    cost_ceiling_usd: f64,
+    requires_credential_advertisement: bool,
 }
 
 impl EvalSpec {
-    /// Does this family's rollout need a provider credential the container
-    /// holds? If so, a container that cannot report credential readiness is not
-    /// admissible: the run would spend its wall-clock and settle with a failure
-    /// per rollout rather than a refusal before the first one.
-    ///
-    /// Banking77's policy is served by the container against a pinned,
-    /// advertised config; HealthBench calls a provider for both the policy and
-    /// the grader, and needs a key for each.
     fn requires_credential_advertisement(&self) -> bool {
-        self.family == "healthbench"
+        self.requires_credential_advertisement
     }
-}
 
-const BANKING77_TRAIN: [i64; 10] = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9];
-const HEALTHBENCH_TRAIN: [i64; 2] = [0, 1];
-const HEALTHBENCH_HELDOUT: [i64; 2] = [100, 101];
-
-impl EvalSpec {
-    fn for_recipe(recipe_id: &str) -> Result<Self> {
-        match recipe_id {
-            BANKING77_EVAL_BASELINE_RECIPE => Ok(Self {
-                recipe_id: BANKING77_EVAL_BASELINE_RECIPE,
-                family: "banking77",
-                title: "Banking77 baseline eval",
-                question: "What is the scored accuracy of the advertised Banking77 policy on 10 labeled train examples?",
-                world_ref: "world:banking77@train",
-                evaluation_plan_ref: "banking77_eval.v1",
-                harness: "desktop_eval",
-                policy_config: "banking77_gpt_4_1_nano",
-                concurrency: 10,
-                train: &BANKING77_TRAIN,
-                heldout: &[],
-            }),
-            HEALTHBENCH_EVAL_SMOKE_RECIPE => Ok(Self {
-                recipe_id: HEALTHBENCH_EVAL_SMOKE_RECIPE,
-                family: "healthbench",
-                title: "HealthBench 2 zero-generation smoke",
-                question: "What is the physician-rubric score of gpt-4.1-mini on the eval_smoke.toml pool?",
-                world_ref: "world:healthbench@eval",
-                evaluation_plan_ref: "healthbench_eval.v1",
-                harness: "chat_completion",
-                policy_config: "openai_gpt41_mini",
-                concurrency: 2,
-                train: &HEALTHBENCH_TRAIN,
-                heldout: &HEALTHBENCH_HELDOUT,
-            }),
-            other => bail!("unknown container eval recipe: {other}"),
+    fn from_workspace(recipe: &WorkspaceRecipe) -> Self {
+        Self {
+            recipe_id: recipe.id.clone(),
+            family: recipe.family.clone(),
+            title: recipe.title.clone(),
+            question: format!("Score the advertised {} policy on the declared eval pool.", recipe.family),
+            world_ref: format!("world:{}@eval", recipe.family),
+            evaluation_plan_ref: format!("{}_eval.v1", recipe.family),
+            harness: recipe.harness.clone(),
+            policy_config: recipe.policy_config.clone(),
+            concurrency: recipe.concurrency,
+            train: recipe.train_seeds.clone(),
+            heldout: recipe.heldout_seeds.clone(),
+            cost_ceiling_usd: recipe.bounds.max_cost_usd,
+            requires_credential_advertisement: recipe.requires_credential_advertisement,
         }
     }
 
-    fn examples(self) -> Vec<EvalExample> {
+    #[cfg(test)]
+    fn classify_fixture() -> Self {
+        Self {
+            recipe_id: "eval.classify.baseline.v1".into(),
+            family: "banking77".into(),
+            title: "Classify baseline eval".into(),
+            question: "Score the advertised classify policy.".into(),
+            world_ref: "world:banking77@train".into(),
+            evaluation_plan_ref: "banking77_eval.v1".into(),
+            harness: "desktop_eval".into(),
+            policy_config: "banking77_gpt_4_1_nano".into(),
+            concurrency: 10,
+            train: (0..10).collect(),
+            heldout: Vec::new(),
+            cost_ceiling_usd: 0.50,
+            requires_credential_advertisement: false,
+        }
+    }
+
+    #[cfg(test)]
+    fn healthbench_fixture() -> Self {
+        Self {
+            recipe_id: "eval.healthbench.smoke.v1".into(),
+            family: "healthbench".into(),
+            title: "HealthBench smoke".into(),
+            question: "Score the physician-rubric pool.".into(),
+            world_ref: "world:healthbench@eval".into(),
+            evaluation_plan_ref: "healthbench_eval.v1".into(),
+            harness: "chat_completion".into(),
+            policy_config: "openai_gpt41_mini".into(),
+            concurrency: 2,
+            train: vec![0, 1],
+            heldout: vec![100, 101],
+            cost_ceiling_usd: 0.50,
+            requires_credential_advertisement: true,
+        }
+    }
+
+    fn examples(&self) -> Vec<EvalExample> {
         self.train
             .iter()
             .map(|seed| EvalExample {
@@ -149,7 +161,7 @@ impl EvalSpec {
             .collect()
     }
 
-    fn policy_config_body(self, openai_base_url: Option<&str>) -> Option<Value> {
+    fn policy_config_body(&self, openai_base_url: Option<&str>) -> Option<Value> {
         let config = if self.family == "banking77" {
             json!({
                 "provider": "openrouter",
@@ -197,10 +209,21 @@ pub(super) async fn start(
     service: &OptimizerService,
     request: OptimizerRecipeRunRequest,
 ) -> Result<(OptimizerRunRecord, Option<crate::storage::AppEvent>)> {
-    let spec = EvalSpec::for_recipe(&request.recipe_id)?;
+    let session = request
+        .session_ref
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| anyhow::anyhow!("workspace eval recipes require session_ref"))?;
+    let workspace = workspace_recipe::require_session_workspace(service.database(), session)?;
+    let recipe = workspace_recipe::find_recipe(&workspace, &request.recipe_id)?;
+    if recipe.algorithm != workspace_recipe::AlgorithmKind::Eval {
+        bail!("recipe `{}` is not an eval recipe", recipe.id);
+    }
+    let spec = EvalSpec::from_workspace(&recipe);
     let container =
-        find_ready_container(service, spec.family, request.container_id.as_deref()).await?;
-    preflight_container_credentials(&container, spec).await?;
+        find_ready_container(service, &spec.family, request.container_id.as_deref()).await?;
+    preflight_container_credentials(&container, &spec).await?;
     let examples = spec.examples();
     let suffix = Uuid::new_v4().simple().to_string();
     let run_id = format!("opt_eval_{}_{}", spec.family, &suffix[..12]);
@@ -223,7 +246,7 @@ pub(super) async fn start(
     let create = OptimizerCreateRequest {
         algorithm_id: EVAL_ALGORITHM_ID.into(),
         algorithm_version: Some("1".into()),
-        objective: Some(spec.title.into()),
+        objective: Some(spec.title.clone()),
         source: Some("local".into()),
         project_ref: Some(format!("{}@eval", spec.family)),
         session_ref: request.session_ref.clone(),
@@ -241,10 +264,10 @@ pub(super) async fn start(
         input_refs: Some(vec![
             OptimizerResourceRef {
                 kind: "recipe".into(),
-                id: spec.recipe_id.into(),
+                id: spec.recipe_id.clone(),
                 digest: None,
                 role: Some("configuration".into()),
-                title: Some(spec.title.into()),
+                title: Some(spec.title.clone()),
                 metadata: json!({ "semantics": "baseline_eval" }),
             },
             OptimizerResourceRef {
@@ -264,7 +287,7 @@ pub(super) async fn start(
         local_path: None,
     };
     let (run, event) = service.create(create).await?;
-    let visual_id = mint_experiment_visual(service, &run, spec, examples.len()).await?;
+    let visual_id = mint_experiment_visual(service, &run, &spec, examples.len()).await?;
     let (cancel_tx, cancel_rx) = watch::channel(false);
     service
         .register_local_recipe(run.id.clone(), cancel_tx)
@@ -273,11 +296,12 @@ pub(super) async fn start(
     let worker_run_id = run.id.clone();
     let planned_trials = examples.len();
     let worker_visual_id = visual_id.clone();
+    let worker_spec = spec.clone();
     tokio::spawn(async move {
         if let Err(error) = run_eval_worker(
             worker.clone(),
             worker_run_id.clone(),
-            spec,
+            &worker_spec,
             container,
             examples,
             worker_visual_id.clone(),
@@ -292,7 +316,7 @@ pub(super) async fn start(
             let _ = project_worker_failure_visual(
                 &worker,
                 &worker_run_id,
-                spec,
+                &worker_spec,
                 &worker_visual_id,
                 planned_trials,
             )
@@ -307,7 +331,7 @@ pub(super) async fn start(
 async fn project_worker_failure_visual(
     service: &OptimizerService,
     run_id: &str,
-    spec: EvalSpec,
+    spec: &EvalSpec,
     visual_id: &str,
     planned_trials: usize,
 ) -> Result<()> {
@@ -370,7 +394,7 @@ async fn project_worker_failure_visual(
 /// A container that declares no roles is not failed here; there is nothing to
 /// fail it on, and inventing a refusal from absent metadata would block every
 /// family that has not implemented the contract yet.
-async fn preflight_container_credentials(container: &ReadyContainer, spec: EvalSpec) -> Result<()> {
+async fn preflight_container_credentials(container: &ReadyContainer, spec: &EvalSpec) -> Result<()> {
     let client = crate::http::http_client_with_timeout(Duration::from_secs(15));
     let info = client
         .get(format!("{}/info", container.base_url))
@@ -484,7 +508,7 @@ async fn settle_worker_failure(service: &OptimizerService, run_id: &str, error: 
 async fn mint_experiment_visual(
     service: &OptimizerService,
     run: &OptimizerRunRecord,
-    spec: EvalSpec,
+    spec: &EvalSpec,
     total: usize,
 ) -> Result<String> {
     // One publication, not five calls: mint-or-reuse, bind to the run, publish
@@ -495,7 +519,7 @@ async fn mint_experiment_visual(
             run_id: run.id.clone(),
             session_ref: run.session_ref.clone(),
             template_id: EXPERIMENT_TEMPLATE.into(),
-            title: spec.title.into(),
+            title: spec.title.clone(),
             bindings: experiment_bindings(spec, "running", 0, total, &[], None),
             metadata: json!({
                 "optimizerRunId": run.id,
@@ -510,7 +534,7 @@ async fn mint_experiment_visual(
 }
 
 fn experiment_bindings(
-    spec: EvalSpec,
+    spec: &EvalSpec,
     status: &str,
     completed: usize,
     total: usize,
@@ -573,7 +597,7 @@ fn mean_for_pool(records: &[Value], pool: &str) -> Option<f64> {
 async fn run_eval_worker(
     service: OptimizerService,
     run_id: String,
-    spec: EvalSpec,
+    spec: &EvalSpec,
     container: ReadyContainer,
     examples: Vec<EvalExample>,
     visual_id: String,
@@ -641,8 +665,9 @@ async fn run_eval_worker(
             let client = client.clone();
             let base = container.base_url.clone();
             let pin = policy_pin.clone();
+            let spec = spec.clone();
             tasks.spawn(async move {
-                let result = run_one_example(&client, &base, spec, example, &pin).await;
+                let result = run_one_example(&client, &base, &spec, example, &pin).await;
                 (example, result)
             });
         }
@@ -734,7 +759,7 @@ async fn run_eval_worker(
 async fn append_eval_plan(
     service: &OptimizerService,
     run_id: &str,
-    spec: EvalSpec,
+    spec: &EvalSpec,
     examples: &[EvalExample],
 ) -> Result<()> {
     let mut drafts = vec![
@@ -775,7 +800,7 @@ async fn append_eval_plan(
 async fn append_eval_terminal(
     service: &OptimizerService,
     run_id: &str,
-    spec: EvalSpec,
+    spec: &EvalSpec,
     record: &Value,
 ) -> Result<()> {
     let seed = record.get("seed").cloned().unwrap_or(Value::Null);
@@ -849,7 +874,7 @@ fn secrets_proxy_error(code: &str, message: &str) -> anyhow::Error {
     )
 }
 
-fn healthbench_provider_policy(spec: EvalSpec) -> crate::secrets::SecretsUsePolicy {
+fn healthbench_provider_policy(spec: &EvalSpec) -> crate::secrets::SecretsUsePolicy {
     let mut policy = crate::secrets::SecretsUsePolicy::default();
     policy.operations = vec!["chat.completions.create".into()];
     policy.models = vec!["gpt-4.1-mini-2025-04-14".into()];
@@ -859,7 +884,7 @@ fn healthbench_provider_policy(spec: EvalSpec) -> crate::secrets::SecretsUsePoli
     policy
 }
 
-fn healthbench_container_openai_base(run_id: &str, spec: EvalSpec) -> Result<String> {
+fn healthbench_container_openai_base(run_id: &str, spec: &EvalSpec) -> Result<String> {
     let secrets = crate::secrets::live().ok_or_else(|| {
         secrets_proxy_error(
             "secrets_proxy_unavailable",
@@ -870,7 +895,7 @@ fn healthbench_container_openai_base(run_id: &str, spec: EvalSpec) -> Result<Str
         .workload_env(
             "openai",
             run_id,
-            spec.recipe_id,
+            spec.recipe_id.as_str(),
             healthbench_provider_policy(spec),
             "eval",
         )
@@ -897,7 +922,7 @@ fn healthbench_container_openai_base(run_id: &str, spec: EvalSpec) -> Result<Str
 async fn register_policy_pin(
     client: &reqwest::Client,
     base: &str,
-    spec: EvalSpec,
+    spec: &EvalSpec,
     container_info: &Value,
     run_id: &str,
 ) -> Result<Value> {
@@ -915,8 +940,8 @@ async fn register_policy_pin(
             .into_iter()
             .flatten()
             .any(|entry| {
-                entry.get("harness").and_then(Value::as_str) == Some(spec.harness)
-                    && entry.get("config").and_then(Value::as_str) == Some(spec.policy_config)
+                entry.get("harness").and_then(Value::as_str) == Some(spec.harness.as_str())
+                    && entry.get("config").and_then(Value::as_str) == Some(spec.policy_config.as_str())
             });
         if !advertised {
             bail!(
@@ -966,7 +991,7 @@ async fn register_policy_pin(
         .get("config_id")
         .or_else(|| registered.get("configId"))
         .and_then(Value::as_str);
-    if returned_id != Some(spec.policy_config) {
+    if returned_id != Some(spec.policy_config.as_str()) {
         bail!(
             "policy config identity mismatch: wanted {}, got {returned_id:?}",
             spec.policy_config
@@ -1000,7 +1025,7 @@ async fn persist_policy_pin(
     Ok(())
 }
 
-fn failed_record(example: EvalExample, spec: EvalSpec, policy_pin: &Value, error: String) -> Value {
+fn failed_record(example: EvalExample, spec: &EvalSpec, policy_pin: &Value, error: String) -> Value {
     json!({
         "pool": example.pool,
         "seed": example.seed,
@@ -1048,7 +1073,7 @@ fn lane_cost_usd(blob: &Value) -> Option<f64> {
 async fn persist_progress(
     service: &OptimizerService,
     run_id: &str,
-    spec: EvalSpec,
+    spec: &EvalSpec,
     visual_id: &str,
     records: &[Value],
     total: usize,
@@ -1250,7 +1275,7 @@ fn mean_reward(records: &[Value]) -> Option<f64> {
 async fn run_one_example(
     client: &reqwest::Client,
     base: &str,
-    spec: EvalSpec,
+    spec: &EvalSpec,
     example: EvalExample,
     policy_pin: &Value,
 ) -> Result<Value> {
@@ -1324,7 +1349,7 @@ async fn run_one_example(
     if !rollout_terminal(&state) {
         state = poll_until_terminal(client, base, &rollout_id).await?;
     }
-    let reward = fetch_reward(client, base, &rollout_id, spec.evaluation_plan_ref).await;
+    let reward = fetch_reward(client, base, &rollout_id, spec.evaluation_plan_ref.as_str()).await;
     let usage = state.get("usage").cloned().unwrap_or(Value::Null);
     Ok(json!({
         "rolloutId": rollout_id,
@@ -1660,6 +1685,8 @@ async fn append_terminal(
 #[cfg(test)]
 mod tests {
     use super::*;
+    const CLASSIFY_EVAL: &str = "eval.banking77.baseline.v1";
+    const HEALTH_EVAL: &str = "eval.healthbench.smoke.v1";
     use crate::ipc::{serve_json, JsonHttpRequest, JsonHttpResponse};
     use crate::optimizers::models::OptimizerRecipeRunRequest;
     use crate::optimizers::service::tests::service;
@@ -1997,6 +2024,78 @@ mod tests {
         panic!("run {run_id} never sealed a terminal manifest");
     }
 
+    async fn declare_eval_recipes(svc: &OptimizerService, session: &str) {
+        let workspace = tempfile::Builder::new()
+            .prefix("ws-eval-")
+            .tempdir()
+            .unwrap()
+            .into_path();
+        std::fs::create_dir_all(workspace.join("workshop.recipes")).unwrap();
+        std::fs::write(
+            workspace.join("workshop.recipes/classify.toml"),
+            r#"
+id = "eval.banking77.baseline.v1"
+algorithm = "eval"
+title = "Classify baseline eval"
+container = "classify"
+provider = "openai"
+model = "gpt-4.1-nano"
+locality = "host"
+family = "banking77"
+harness = "desktop_eval"
+policy_config = "banking77_gpt_4_1_nano"
+concurrency = 10
+train_seeds = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+[bounds]
+max_cost_usd = 0.50
+max_total_rollouts = 10
+"#,
+        )
+        .unwrap();
+        std::fs::write(
+            workspace.join("workshop.recipes/healthbench.toml"),
+            r#"
+id = "eval.healthbench.smoke.v1"
+algorithm = "eval"
+title = "HealthBench smoke"
+container = "healthbench"
+provider = "openai"
+model = "gpt-4.1-mini"
+locality = "container"
+family = "healthbench"
+harness = "chat_completion"
+policy_config = "openai_gpt41_mini"
+concurrency = 2
+train_seeds = [0, 1]
+heldout_seeds = [100, 101]
+requires_credential_advertisement = true
+[bounds]
+max_cost_usd = 0.50
+max_total_rollouts = 4
+"#,
+        )
+        .unwrap();
+        let db = svc.database().clone();
+        let session_id = session.to_string();
+        let workspace_path = workspace.to_string_lossy().into_owned();
+        db.run_transaction(move |conn| {
+            conn.execute(
+                "INSERT OR IGNORE INTO sessions(id,title,target_json,status,metadata_json,created_at,updated_at) VALUES(?1,?1,'{}','ready',?2,datetime('now'),datetime('now'))",
+                rusqlite::params![session_id, serde_json::json!({"workspace": workspace_path}).to_string()],
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+        crate::workspace_scope::provision(
+            svc.database(),
+            session,
+            workspace.to_str().unwrap(),
+        )
+        .await
+        .unwrap();
+    }
+
     async fn start_banking77(
         svc: &OptimizerService,
         session: &str,
@@ -2004,9 +2103,10 @@ mod tests {
         let rewards = (0..10).map(|seed| (("train".into(), seed), 1.0)).collect();
         let (base, task, _) = spawn_eval_mock("banking77", rewards).await;
         insert_container(svc, "banking77", &base, "ready").await;
+        declare_eval_recipes(svc, session).await;
         let (run, _) = svc
             .start_recipe(OptimizerRecipeRunRequest {
-                recipe_id: BANKING77_EVAL_BASELINE_RECIPE.into(),
+                recipe_id: CLASSIFY_EVAL.into(),
                 session_ref: Some(session.into()),
                 open_visual: Some(true),
                 base_model: None,
@@ -2146,9 +2246,9 @@ mod tests {
         let (run, task) = start_banking77(&svc, "sess_worker_failure_visual").await;
         let finished = wait_terminal(&svc, &run.id).await;
         let visual_id = finished.summary["visualId"].as_str().unwrap();
-        let spec = EvalSpec::for_recipe(BANKING77_EVAL_BASELINE_RECIPE).unwrap();
+        let spec = EvalSpec::classify_fixture();
 
-        project_worker_failure_visual(&svc, &run.id, spec, visual_id, 10)
+        project_worker_failure_visual(&svc, &run.id, &spec, visual_id, 10)
             .await
             .unwrap();
 
@@ -2192,8 +2292,8 @@ mod tests {
         let finished = wait_terminal(&svc, &run.id).await;
         let visual_id = finished.summary["visualId"].as_str().unwrap().to_string();
 
-        let spec = EvalSpec::for_recipe(BANKING77_EVAL_BASELINE_RECIPE).unwrap();
-        let again = mint_experiment_visual(&svc, &finished, spec, 10)
+        let spec = EvalSpec::classify_fixture();
+        let again = mint_experiment_visual(&svc, &finished, &spec, 10)
             .await
             .unwrap();
         assert_eq!(
@@ -2232,108 +2332,17 @@ mod tests {
         );
         task.abort();
     }
-
-    /// Two product workflows in flight at once. Each keeps its own contiguous
-    /// event log, its own sealed manifest, and its own chat-owned visual — the
-    /// service allocates sequences per run, so concurrency cannot cross them.
-    #[tokio::test]
-    async fn two_container_evals_run_concurrently_without_crossing_evidence() {
-        let (svc, _dir, _) = service().await;
-
-        let banking_rewards = (0..10).map(|seed| (("train".into(), seed), 1.0)).collect();
-        let (banking_base, banking_task, _) = spawn_eval_mock("banking77", banking_rewards).await;
-        insert_container(&svc, "banking77", &banking_base, "ready").await;
-
-        let mut health_rewards = BTreeMap::new();
-        for seed in [0, 1, 100, 101] {
-            health_rewards.insert(
-                (
-                    if seed < 100 {
-                        "train".into()
-                    } else {
-                        "heldout".into()
-                    },
-                    seed,
-                ),
-                0.9,
-            );
-        }
-        let (health_base, health_task, _) = spawn_eval_mock("healthbench", health_rewards).await;
-        insert_container(&svc, "healthbench", &health_base, "ready").await;
-
-        let start = |recipe: &'static str, session: &'static str| {
-            let svc = svc.clone();
-            async move {
-                svc.start_recipe(OptimizerRecipeRunRequest {
-                    recipe_id: recipe.into(),
-                    session_ref: Some(session.into()),
-                    open_visual: Some(true),
-                    base_model: None,
-                    dataset_shard: None,
-                    candidate_set_id: None,
-                    container_id: None,
-                    training_artifact_id: None,
-                    search: None,
-                })
-                .await
-                .unwrap()
-                .0
-            }
-        };
-        let (banking, health) = tokio::join!(
-            start(BANKING77_EVAL_BASELINE_RECIPE, "sess_concurrent_banking"),
-            start(HEALTHBENCH_EVAL_SMOKE_RECIPE, "sess_concurrent_health"),
-        );
-
-        for (run_id, planned, session) in [
-            (banking.id.clone(), 10u64, "sess_concurrent_banking"),
-            (health.id.clone(), 4u64, "sess_concurrent_health"),
-        ] {
-            wait_terminal(&svc, &run_id).await;
-            let manifest = wait_manifest(&svc, &run_id).await;
-            assert_eq!(manifest["work"]["planned"], json!(planned), "{run_id}");
-            assert_eq!(manifest["work"]["succeeded"], json!(planned), "{run_id}");
-
-            let events = svc
-                .events_after(run_id.clone(), 0, Some(500))
-                .await
-                .unwrap();
-            let sequences: Vec<u64> = events.iter().map(|event| event.sequence_number).collect();
-            assert_eq!(
-                sequences,
-                (1..=sequences.len() as u64).collect::<Vec<_>>(),
-                "{run_id} log must be contiguous under concurrency"
-            );
-            assert!(
-                events.iter().all(|event| event.optimizer_run_id == run_id),
-                "one campaign's events must never land in the other's log"
-            );
-            let selected = svc
-                .visuals()
-                .selected_for_session(session.into())
-                .await
-                .unwrap();
-            assert_eq!(
-                selected.as_deref(),
-                svc.get(run_id.clone()).await.unwrap().summary["visualId"].as_str(),
-                "each campaign owns its own chat's pane"
-            );
-        }
-        banking_task.abort();
-        health_task.abort();
-    }
-
     /// A visual projection that fails at settlement makes the run degraded, not
     /// completed — and the rollouts it already paid for stay on the record.
     #[tokio::test]
     async fn a_failed_visual_projection_settles_degraded_not_completed() {
         let (svc, _dir, _) = service().await;
-        let spec = EvalSpec::for_recipe(BANKING77_EVAL_BASELINE_RECIPE).unwrap();
+        let spec = EvalSpec::classify_fixture();
         let (run, _) = svc
             .create(crate::optimizers::models::OptimizerCreateRequest {
                 algorithm_id: EVAL_ALGORITHM_ID.into(),
                 algorithm_version: Some("1".into()),
-                objective: Some(spec.title.into()),
+                objective: Some(spec.title.clone()),
                 source: Some("local".into()),
                 project_ref: None,
                 session_ref: Some("sess_degraded".into()),
@@ -2358,7 +2367,7 @@ mod tests {
         // The visual the campaign was supposed to keep current is gone.
         let failure = evidence(
             "progress_projection",
-            persist_progress(&svc, &run.id, spec, "vis_missing", &records, 1, "completed"),
+            persist_progress(&svc, &run.id, &spec, "vis_missing", &records, 1, "completed"),
         )
         .await
         .unwrap_err();
@@ -2375,172 +2384,6 @@ mod tests {
         assert_eq!(manifest["terminalStatus"], json!("failed_evidence"));
         assert_eq!(manifest["degradation"]["retryable"], json!(true));
     }
-
-    #[tokio::test]
-    async fn banking77_eval_reaches_terminal_records_and_experiment_visual() {
-        let rewards = (0..10)
-            .map(|seed| (("train".into(), seed), if seed < 7 { 1.0 } else { 0.0 }))
-            .collect();
-        let (base, task, starts) = spawn_eval_mock("banking77", rewards).await;
-        let (svc, _dir, mut events_rx) = service().await;
-        insert_container(&svc, "banking77", &base, "ready").await;
-        let (run, _) = svc
-            .start_recipe(OptimizerRecipeRunRequest {
-                recipe_id: BANKING77_EVAL_BASELINE_RECIPE.into(),
-                session_ref: Some("sess_banking77_eval".into()),
-                open_visual: Some(true),
-                base_model: None,
-                dataset_shard: None,
-                candidate_set_id: None,
-                container_id: None,
-                training_artifact_id: None,
-                search: None,
-            })
-            .await
-            .unwrap();
-        let finished = wait_terminal(&svc, &run.id).await;
-        assert_eq!(finished.status, "completed");
-        let records = finished
-            .summary
-            .get("records")
-            .and_then(Value::as_array)
-            .cloned()
-            .unwrap_or_default();
-        assert_eq!(records.len(), 10);
-        assert!(records
-            .iter()
-            .all(|row| row.get("reward").and_then(Value::as_f64).is_some()));
-        assert_eq!(starts.load(Ordering::SeqCst), 10);
-        let visual_id = finished
-            .summary
-            .get("visualId")
-            .and_then(Value::as_str)
-            .expect("chat-owned experiment visual");
-        let visual = svc.visuals().get(visual_id.to_string()).await.unwrap();
-        assert_eq!(visual.template_id, EXPERIMENT_TEMPLATE);
-        assert_eq!(visual.session_id.as_deref(), Some("sess_banking77_eval"));
-        let data = visual
-            .bindings
-            .pointer("/slots/0/data")
-            .cloned()
-            .unwrap_or(Value::Null);
-        assert_eq!(data["status"], json!("completed"));
-        assert_eq!(data["progress"]["completed"], json!(10));
-        let mut published_terminal_visual = false;
-        loop {
-            match events_rx.try_recv() {
-                Ok(event) => {
-                    if event.kind == "visual.updated"
-                        && event.payload["visualId"] == json!(visual_id)
-                        && event.payload["revision"].as_i64().unwrap_or_default() > 1
-                        && event.payload["status"] == json!("saved")
-                    {
-                        published_terminal_visual = true;
-                    }
-                }
-                Err(tokio::sync::broadcast::error::TryRecvError::Lagged(_)) => continue,
-                Err(_) => break,
-            }
-        }
-        assert!(
-            published_terminal_visual,
-            "internal eval visual updates must wake the open renderer"
-        );
-        assert_eq!(finished.usage.prompt_tokens, 80);
-        assert_eq!(finished.usage.completion_tokens, 10);
-        assert_eq!(finished.usage.rollouts, 10);
-        assert_eq!(finished.usage.cost_usd, None);
-        let runtime = svc
-            .get_state(run.id.clone(), "eval.runtime".into(), None)
-            .await
-            .unwrap();
-        assert_eq!(runtime.data["plannedTrials"], json!(10));
-        let progress = svc
-            .get_state(run.id.clone(), "eval.trials".into(), None)
-            .await
-            .unwrap();
-        assert_eq!(progress.data["trials"].as_array().map(Vec::len), Some(10));
-        assert_eq!(
-            progress.data["trials"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .filter(|trial| trial["status"] == json!("evaluated"))
-                .count(),
-            10
-        );
-        task.abort();
-    }
-
-    #[tokio::test]
-    async fn healthbench_eval_reaches_terminal_records_with_policy_and_grader_usage() {
-        let mut rewards = BTreeMap::new();
-        rewards.insert(("train".into(), 0), 0.8);
-        rewards.insert(("train".into(), 1), 0.6);
-        rewards.insert(("heldout".into(), 100), 0.5);
-        rewards.insert(("heldout".into(), 101), 0.4);
-        let (base, task, starts) = spawn_eval_mock("healthbench", rewards).await;
-        let (svc, _dir, _) = service().await;
-        insert_container(&svc, "healthbench", &base, "ready").await;
-        let (run, _) = svc
-            .start_recipe(OptimizerRecipeRunRequest {
-                recipe_id: HEALTHBENCH_EVAL_SMOKE_RECIPE.into(),
-                session_ref: Some("sess_healthbench_eval".into()),
-                open_visual: Some(true),
-                base_model: None,
-                dataset_shard: None,
-                candidate_set_id: None,
-                container_id: None,
-                training_artifact_id: None,
-                search: None,
-            })
-            .await
-            .unwrap();
-        let finished = wait_terminal(&svc, &run.id).await;
-        assert_eq!(finished.status, "completed");
-        let records = finished
-            .summary
-            .get("records")
-            .and_then(Value::as_array)
-            .cloned()
-            .unwrap_or_default();
-        assert_eq!(records.len(), 4);
-        assert_eq!(starts.load(Ordering::SeqCst), 4);
-        assert!(records.iter().any(|row| row["pool"] == json!("heldout")));
-        assert!(records.iter().all(|row| {
-            row.pointer("/usage/policy").is_some()
-                && row.pointer("/usage/grader").is_some()
-                && row.pointer("/policyRef/config") == Some(&json!("openai_gpt41_mini"))
-        }));
-        assert_eq!(
-            finished.summary.pointer("/policyPin/config"),
-            Some(&json!("openai_gpt41_mini"))
-        );
-        assert_eq!(finished.usage.prompt_tokens, 204);
-        assert_eq!(finished.usage.completion_tokens, 64);
-        assert_eq!(finished.usage.rollouts, 4);
-        assert!((finished.usage.cost_usd.unwrap() - 0.012).abs() < 1e-9);
-        assert_eq!(
-            finished.usage.extra["policyUsage"]["promptTokens"],
-            json!(44)
-        );
-        assert_eq!(
-            finished.usage.extra["graderUsage"]["promptTokens"],
-            json!(160)
-        );
-        let listed = svc
-            .visuals()
-            .list(VisualQuery {
-                session_id: Some("sess_healthbench_eval".into()),
-                template_id: Some(EXPERIMENT_TEMPLATE.into()),
-                ..VisualQuery::default()
-            })
-            .await
-            .unwrap();
-        assert_eq!(listed.len(), 1);
-        task.abort();
-    }
-
     #[tokio::test]
     async fn healthbench_admission_blocks_before_dispatch_when_policy_credential_is_missing() {
         let (base, task, starts) = spawn_eval_mock_opts(MockEvalOptions {
@@ -2558,7 +2401,7 @@ mod tests {
         let (svc, _dir, _) = service().await;
         insert_container(&svc, "healthbench", &base, "ready").await;
         let error = svc
-            .start_recipe(recipe(HEALTHBENCH_EVAL_SMOKE_RECIPE, "sess_missing_policy"))
+            .start_recipe(recipe(&svc, HEALTH_EVAL, "sess_missing_policy").await)
             .await
             .unwrap_err()
             .to_string();
@@ -2593,7 +2436,7 @@ mod tests {
         let (svc, _dir, _) = service().await;
         insert_container(&svc, "healthbench", &base, "ready").await;
         let error = svc
-            .start_recipe(recipe(HEALTHBENCH_EVAL_SMOKE_RECIPE, "sess_no_roles"))
+            .start_recipe(recipe(&svc, HEALTH_EVAL, "sess_no_roles").await)
             .await
             .unwrap_err()
             .to_string();
@@ -2634,7 +2477,7 @@ mod tests {
         let (svc, _dir, _) = service().await;
         insert_container(&svc, "banking77", &base, "ready").await;
         let started = svc
-            .start_recipe(recipe(BANKING77_EVAL_BASELINE_RECIPE, "sess_b77_no_roles"))
+            .start_recipe(recipe(&svc, CLASSIFY_EVAL, "sess_b77_no_roles").await)
             .await;
         assert!(
             started.is_ok(),
@@ -2661,7 +2504,7 @@ mod tests {
         let (svc, _dir, _) = service().await;
         insert_container(&svc, "healthbench", &base, "ready").await;
         let error = svc
-            .start_recipe(recipe(HEALTHBENCH_EVAL_SMOKE_RECIPE, "sess_missing_grader"))
+            .start_recipe(recipe(&svc, HEALTH_EVAL, "sess_missing_grader").await)
             .await
             .unwrap_err()
             .to_string();
@@ -2670,33 +2513,6 @@ mod tests {
         assert_eq!(starts.load(Ordering::SeqCst), 0);
         task.abort();
     }
-
-    #[tokio::test]
-    async fn container_eval_fails_fast_without_a_registered_pool() {
-        let (svc, _dir, _) = service().await;
-        let error = svc
-            .start_recipe(OptimizerRecipeRunRequest {
-                recipe_id: BANKING77_EVAL_BASELINE_RECIPE.into(),
-                session_ref: None,
-                open_visual: Some(false),
-                base_model: None,
-                dataset_shard: None,
-                candidate_set_id: None,
-                container_id: None,
-                training_artifact_id: None,
-                search: None,
-            })
-            .await
-            .err()
-            .map(|error| error.to_string())
-            .unwrap();
-        assert!(
-            error.contains("no registered banking77 container"),
-            "expected a structured missing-container error, got {error}"
-        );
-        assert!(!error.contains("unknown optimizer recipe"));
-    }
-
     #[tokio::test]
     async fn container_eval_refuses_a_ready_pool_that_does_not_advertise_gepa_v2() {
         let (svc, _dir, _) = service().await;
@@ -2727,7 +2543,7 @@ mod tests {
             .await
             .unwrap();
         let error = svc
-            .start_recipe(recipe(HEALTHBENCH_EVAL_SMOKE_RECIPE, "sess_null_protocol"))
+            .start_recipe(recipe(&svc, HEALTH_EVAL, "sess_null_protocol").await)
             .await
             .err()
             .map(|error| error.to_string())
@@ -2745,11 +2561,21 @@ mod tests {
         task.abort();
     }
 
-    fn recipe(id: &str, session: &str) -> OptimizerRecipeRunRequest {
-        recipe_on(id, session, None)
+    async fn recipe(
+        svc: &OptimizerService,
+        id: &str,
+        session: &str,
+    ) -> OptimizerRecipeRunRequest {
+        recipe_on(svc, id, session, None).await
     }
 
-    fn recipe_on(id: &str, session: &str, container_id: Option<&str>) -> OptimizerRecipeRunRequest {
+    async fn recipe_on(
+        svc: &OptimizerService,
+        id: &str,
+        session: &str,
+        container_id: Option<&str>,
+    ) -> OptimizerRecipeRunRequest {
+        declare_eval_recipes(svc, session).await;
         OptimizerRecipeRunRequest {
             recipe_id: id.into(),
             session_ref: Some(session.into()),
@@ -2789,7 +2615,7 @@ mod tests {
         )
         .await;
         let error = svc
-            .start_recipe(recipe(BANKING77_EVAL_BASELINE_RECIPE, "sess_ambiguous"))
+            .start_recipe(recipe(&svc, CLASSIFY_EVAL, "sess_ambiguous").await)
             .await
             .unwrap_err()
             .to_string();
@@ -2835,10 +2661,11 @@ mod tests {
         .await;
         let (run, _) = svc
             .start_recipe(recipe_on(
-                BANKING77_EVAL_BASELINE_RECIPE,
+                &svc,
+                CLASSIFY_EVAL,
                 "sess_explicit_isolated",
                 Some("ctr_banking77_isolated"),
-            ))
+            ).await)
             .await
             .unwrap();
         assert_eq!(run.summary["containerId"], json!("ctr_banking77_isolated"));
@@ -2891,10 +2718,11 @@ mod tests {
 
         let not_ready = svc
             .start_recipe(recipe_on(
-                BANKING77_EVAL_BASELINE_RECIPE,
+                &svc,
+                CLASSIFY_EVAL,
                 "sess_not_ready",
                 Some("ctr_banking77_offline"),
-            ))
+            ).await)
             .await
             .unwrap_err()
             .to_string();
@@ -2911,10 +2739,11 @@ mod tests {
 
         let wrong_family = svc
             .start_recipe(recipe_on(
-                BANKING77_EVAL_BASELINE_RECIPE,
+                &svc,
+                CLASSIFY_EVAL,
                 "sess_wrong_family",
                 Some("ctr_healthbench_ready"),
-            ))
+            ).await)
             .await
             .unwrap_err()
             .to_string();
@@ -2949,7 +2778,7 @@ mod tests {
         )
         .await;
         let (run, _) = svc
-            .start_recipe(recipe(BANKING77_EVAL_BASELINE_RECIPE, "sess_single_pool"))
+            .start_recipe(recipe(&svc, CLASSIFY_EVAL, "sess_single_pool").await)
             .await
             .unwrap();
         assert_eq!(run.summary["containerId"], json!("ctr_banking77_only"));
@@ -2989,7 +2818,7 @@ mod tests {
         )
         .await;
         let error = svc
-            .start_recipe(recipe(BANKING77_EVAL_BASELINE_RECIPE, "sess_stale_newer"))
+            .start_recipe(recipe(&svc, CLASSIFY_EVAL, "sess_stale_newer").await)
             .await
             .unwrap_err()
             .to_string();
@@ -3024,7 +2853,7 @@ mod tests {
         let (svc, _dir, _) = service().await;
         insert_container(&svc, "healthbench", &base, "ready").await;
         let (run, _) = svc
-            .start_recipe(recipe(HEALTHBENCH_EVAL_SMOKE_RECIPE, "sess_policy_reject"))
+            .start_recipe(recipe(&svc, HEALTH_EVAL, "sess_policy_reject").await)
             .await
             .unwrap();
         let finished = wait_terminal(&svc, &run.id).await;
@@ -3051,9 +2880,10 @@ mod tests {
         insert_container(&svc, "healthbench", &base, "ready").await;
         let (run, _) = svc
             .start_recipe(recipe(
-                HEALTHBENCH_EVAL_SMOKE_RECIPE,
+                &svc,
+                HEALTH_EVAL,
                 "sess_policy_mismatch",
-            ))
+            ).await)
             .await
             .unwrap();
         let finished = wait_terminal(&svc, &run.id).await;
@@ -3080,7 +2910,7 @@ mod tests {
         let (svc, _dir, _) = service().await;
         insert_container(&svc, "banking77", &base, "ready").await;
         let (run, _) = svc
-            .start_recipe(recipe(BANKING77_EVAL_BASELINE_RECIPE, "sess_partial"))
+            .start_recipe(recipe(&svc, CLASSIFY_EVAL, "sess_partial").await)
             .await
             .unwrap();
         let finished = wait_terminal(&svc, &run.id).await;
@@ -3113,7 +2943,7 @@ mod tests {
         let (svc, _dir, _) = service().await;
         insert_container(&svc, "healthbench", &base, "ready").await;
         let (run, _) = svc
-            .start_recipe(recipe(HEALTHBENCH_EVAL_SMOKE_RECIPE, "sess_budget"))
+            .start_recipe(recipe(&svc, HEALTH_EVAL, "sess_budget").await)
             .await
             .unwrap();
         let finished = wait_terminal(&svc, &run.id).await;
@@ -3132,7 +2962,7 @@ mod tests {
 
     #[test]
     fn healthbench_policy_config_requires_workshop_proxy_base() {
-        let spec = EvalSpec::for_recipe(HEALTHBENCH_EVAL_SMOKE_RECIPE).unwrap();
+        let spec = EvalSpec::healthbench_fixture();
         assert!(spec.policy_config_body(None).is_none());
         let body = spec
             .policy_config_body(Some(
@@ -3152,7 +2982,7 @@ mod tests {
 
     #[test]
     fn banking77_policy_config_stays_on_openrouter() {
-        let spec = EvalSpec::for_recipe(BANKING77_EVAL_BASELINE_RECIPE).unwrap();
+        let spec = EvalSpec::classify_fixture();
         let body = spec.policy_config_body(None).unwrap();
         assert_eq!(body["config"]["base_url"], "https://openrouter.ai/api/v1");
         assert_eq!(body["config"]["api_key_env"], "OPENROUTER_API_KEY");

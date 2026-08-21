@@ -11,7 +11,6 @@
       "../../../visuals/ambient.d.ts": "visuals/ambient.d.ts",
       "../../../visuals/package.json": "visuals/package.json",
       "../../../visuals/tsconfig.json": "visuals/tsconfig.json",
-      "generated-resources/cookbooks": "cookbooks",
       "../../../helpers/synth-computer-use/target/bundle/Synth Computer Use.app": "Synth Computer Use.app",
       "../browser/playwright_backend.mjs": "browser/playwright_backend.mjs"
     }
