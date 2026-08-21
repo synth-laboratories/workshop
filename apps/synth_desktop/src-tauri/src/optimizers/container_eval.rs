@@ -1289,7 +1289,7 @@ async fn run_one_example(
         client,
         &poll_url,
         SUBSCRIBE_READY_TIMEOUT,
-        &StreamDiagnostics::none(),
+        &StreamDiagnostics::none().with_rollout(&rollout_id),
     )
     .await?;
 
