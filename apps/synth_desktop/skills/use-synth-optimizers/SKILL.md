@@ -1,6 +1,6 @@
 ---
 name: use-synth-optimizers
-description: Start, inspect, follow, reconcile, cancel, and visualize first-class Synth optimizer runs through CoreRuntime. Use for GEPA prompt optimization, GELO/Go-Ex exploration, SFT/fine-tuning, local eval scoring of policy candidates, Banking77, Craftax GPT-OSS, GameBench/Harbor, optimizer recipes, candidates, scorecards, frontiers, checkpoints, evaluations, artifacts, usage, diagnostics, or optimizer state slices.
+description: Start, inspect, follow, reconcile, cancel, and visualize first-class Synth optimizer runs through CoreRuntime. Use for GEPA, GELO/Go-Ex, SFT, CISPO, and local eval. Workspace recipes come from workshop.recipe.toml; do not name shipped Banking77 or Craftax GEPA/eval ids.
 ---
 
 # Use Synth Optimizers
@@ -9,12 +9,12 @@ Use `mcp__synth_optimizers__optimizer_manage`. Treat returned run IDs and cursor
 
 ## Choose a workflow
 
-1. Call `list_algorithms` and `list_recipes` before proposing a run.
+1. Call `list_algorithms` and `list_recipes` before proposing a run. Fresh Workshop has no GEPA/eval task catalog; those recipes appear only after the workspace declares `workshop.recipe.toml`. To author a target, use `$author-synth-container`.
 2. Choose the algorithm from the user's objective:
-   - GEPA: improve prompts or other candidate values. The pinned smokes are `gepa.banking77.smoke.v1` and `gepa.craftax.smoke.v1`; read [references/gepa.md](references/gepa.md).
+   - GEPA: improve prompts or other candidate values against a workspace-declared container. Read [references/gepa.md](references/gepa.md). Never start `gepa.banking77.*` or `gepa.craftax.*` as product ids.
    - GELO / Go-Ex: explore a hosted search space or reconcile an existing hosted run. Read [references/gelo.md](references/gelo.md).
-   - Eval: score several policy variants against a pinned evaluation container and pick a winner. Stage candidates first; `start_workflow` takes a `candidate_set_id`, never a path. The fixed-cardinality container baselines `eval.banking77.baseline.v1` and `eval.healthbench.smoke.v1` are measurement-only exceptions: start them directly without staging candidates. Read [references/eval.md](references/eval.md).
-   - SFT: train and compare model weights/checkpoints. Local MLX is `sft.qwen35-0.8b.mlx.v1` (This Mac). Hosted recipes, including `sft.banking77.nemotron-lightning.tinker.v1` and `sft.craftax.nemotron-nano.tinker.v1`, use the public `synth-optimizers` SFT service through the Optimizers sidecar — never dial `:8787` or `:8878` from a shell. The separate local Tinker smoke is `sft.craftax.gpt-oss.smoke.v1`. Student ids: `docs/sft_tinker_base_models.toml`. Read [references/sft.md](references/sft.md).
+   - Eval: score a workspace-declared container (`algorithm = "eval"` in `workshop.recipe.toml`) or a local candidate-set eval. Stage candidates only for candidate-comparison evals. Read [references/eval.md](references/eval.md).
+   - SFT: train and compare model weights/checkpoints. Local MLX is `sft.qwen35-0.8b.mlx.v1` (This Mac). Hosted recipes use the public `synth-optimizers` SFT service through the Optimizers sidecar — never dial `:8787` or `:8878` from a shell. Student ids: `docs/sft_tinker_base_models.toml`. Read [references/sft.md](references/sft.md).
    - CISPO: on-policy training. Local MLX is `cispo.banking77.mlx.v1`. Hosted slime.v1 is `cispo.slime.hosted.v1` and stays unavailable until the clip-identity canary admits it. Read [references/cispo.md](references/cispo.md). PPO is not a local/hosted picker option.
 3. For a local recipe, report its availability, exact fixed inputs, hard limits, prerequisite services, credential names, and whether its cost is dollar-capped or only compute-bounded.
 4. Start a bounded product recipe with `start_workflow`. It returns the authoritative run, visual references, event cursor, and admission status. The host owns approval, fresh capability observation, sidecar readiness, and visual opening.
@@ -24,7 +24,7 @@ Use `mcp__synth_optimizers__optimizer_manage`. Treat returned run IDs and cursor
    - `open_visual` owns and configures the product visual. Do not call `authoring_context`, `capture_review`, `review`, `update`, or `mark_ready` for it.
    - If the first `await_ready` reports that no receipt was posted, call `mcp__synth_visuals__visual_manage` once with `operation: "show"` and the run's primary visual ID, then retry `await_ready`. Do not inspect processes, environment variables, source files, databases, or IPC files to manufacture readiness.
    - Preserve the exact `preparationDigest` returned by `prepare` and pass it as `preparation_digest` with `optimizer_run_id` on the first `start` call. Never request approval with a missing or reconstructed digest.
-5. Pass only `recipe_id` to `start_workflow`; for candidate-comparison `eval.*`, also pass the `candidate_set_id` returned by `stage_eval_candidates`. For container baseline evals (`eval.banking77.baseline.v1`, `eval.healthbench.smoke.v1`), pass `container_id` when more than one healthy GEPA v2 pool is registered for that family. The Rust host owns commands, paths, hyperparameters, capability refresh, and credential resolution. Retrieve the winner with `get_result` — never read result files by filesystem path.
+5. Pass the workspace `recipe_id` to `start_workflow`. For candidate-comparison `eval.*` recipes, also pass the `candidate_set_id` returned by `stage_eval_candidates`. For workspace baseline evals, pass `container_id` from `container_ensure` when more than one healthy pool is registered. The Rust host owns commands, paths, hyperparameters, capability refresh, and credential resolution. Retrieve the winner with `get_result` — never read result files by filesystem path.
 
 ## Follow every run
 

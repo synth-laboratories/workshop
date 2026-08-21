@@ -323,6 +323,12 @@ pub(crate) fn ensure_home(home: &Path, request: &CodexSessionStartRequest) -> Re
         container_skill.join("SKILL.md"),
         include_str!("../../../../skills/use-synth-containers/SKILL.md"),
     )?;
+    let author_container_skill = home.join("skills/author-synth-container");
+    fs::create_dir_all(&author_container_skill)?;
+    fs::write(
+        author_container_skill.join("SKILL.md"),
+        include_str!("../../../../skills/author-synth-container/SKILL.md"),
+    )?;
     let visuals_skill = home.join("skills/use-synth-visuals");
     fs::create_dir_all(visuals_skill.join("references"))?;
     fs::write(
@@ -497,6 +503,7 @@ pub(crate) fn ensure_home(home: &Path, request: &CodexSessionStartRequest) -> Re
     // skills and edited SKILL.md copies authoritative for new sessions.
     for id in [
         "use-synth-containers",
+        "author-synth-container",
         "use-synth-visuals",
         "author-synth-diagrams",
         "use-synth-optimizers",

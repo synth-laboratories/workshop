@@ -58,14 +58,16 @@ type Props = {
 	onOpenVisual: (visualId: string) => void;
 	onStartAgent: (guide: OptimizerGuide) => Promise<void>;
 	onBack: () => void;
-	/** Data-selected registered container; binds Banking77/HealthBench baseline evals. */
+	/** Data-selected registered container; binds workspace baseline evals. */
 	selectedContainerId?: string | null;
 	/** Owned by useAppController; this page no longer reads the registry itself. */
 	pluginStatuses?: readonly PluginStatus[] | null;
 	onRefreshPlugins?: () => Promise<void>;
 };
 
-const CONTAINER_EVAL_RECIPES = new Set(["eval.banking77.baseline.v1", "eval.healthbench.smoke.v1"]);
+function isWorkspaceBaselineEval(recipe: OptimizerRecipeInfo): boolean {
+	return recipe.algorithmId === "eval" && recipe.source === "workspace" && recipe.semantics === "baseline_eval";
+}
 
 function formatWhen(iso: string): string {
 	try {
@@ -744,9 +746,7 @@ export function OptimizersPage({
 			const run = await bridges.optimizers.startRecipe({
 				recipeId,
 				openVisual: true,
-				...(CONTAINER_EVAL_RECIPES.has(recipeId)
-					? { containerId: selectedContainerId ?? undefined }
-					: {})
+				containerId: selectedContainerId ?? undefined
 			});
 			setSelectedId(run.id);
 			await refresh();
@@ -1114,7 +1114,7 @@ export function OptimizersPage({
 										disabled={!available || startingAgent !== null || busy}
 										data-testid={`start-eval-${recipe.id}`}
 										onClick={() => {
-											if (CONTAINER_EVAL_RECIPES.has(recipe.id)) {
+											if (isWorkspaceBaselineEval(recipe)) {
 												void startBoundedRecipe(recipe.id, setBusy);
 												return;
 											}
@@ -1128,7 +1128,7 @@ export function OptimizersPage({
 											});
 										}}
 									>
-										{CONTAINER_EVAL_RECIPES.has(recipe.id)
+										{isWorkspaceBaselineEval(recipe)
 											? (busy ? "Starting…" : "Start eval")
 											: (startingAgent === "eval" ? "Opening agent…" : "Set up run")}
 									</button>

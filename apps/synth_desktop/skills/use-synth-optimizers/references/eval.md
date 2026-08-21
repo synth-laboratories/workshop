@@ -63,20 +63,20 @@ loop, a fixture, or a similarly named recipe as a replacement.
 | `eval.craftax.llm-policy.smoke.v1` | `llm-policy.v1` | report-only |
 | `eval.gamebench.llm-policy.confirm.v1` | `llm-policy.v1` | promotes |
 
-Two packaged container baselines are fixed measurement recipes, not candidate
-comparisons. Start `eval.banking77.baseline.v1` (10 examples, concurrency 10)
-or `eval.healthbench.smoke.v1` (2 train + 2 heldout, concurrency 2, $0.50
-ceiling) directly with `open_visual: true`; do not invent or stage a candidate
-set for either. Pass `container_id` for the registered GEPA v2 pool selected in
-Data whenever more than one healthy pool advertises that family — omitting it
-then fails closed rather than substituting whichever probe happened last. They
-must complete every owed rollout and report retained terminal evidence.
-HealthBench keeps policy and canonical-grader usage separate.
+Workspace baseline evals (`algorithm = "eval"` in `workshop.recipe.toml`) are
+fixed measurement recipes, not candidate comparisons. They appear in
+`list_recipes` only after the session workspace declares them. Start the
+workspace `recipe_id` directly with `open_visual: true`; do not invent or stage
+a candidate set. Pass `container_id` from `container_ensure` whenever more than
+one healthy pool advertises that family — omitting it then fails closed rather
+than substituting whichever probe happened last. They must complete every owed
+rollout and report retained terminal evidence. If the recipe requires a grader
+credential, keep policy and grader usage separate.
 
 ```json
 {"operation":"start_workflow","arguments":{
-  "recipe_id":"eval.banking77.baseline.v1",
-  "container_id":"ctr_selected_in_data",
+  "recipe_id":"<workspace recipe id>",
+  "container_id":"ctr_from_container_ensure",
   "open_visual":true}}
 ```
 

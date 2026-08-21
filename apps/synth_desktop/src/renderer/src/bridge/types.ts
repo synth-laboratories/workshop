@@ -825,6 +825,8 @@ export type OptimizerRecipeInfo = {
 	title: string;
 	algorithmId: string;
 	task?: string;
+	source?: string;
+	semantics?: string;
 	availability: string;
 	availabilityReason?: string | null;
 	description?: string;
@@ -973,7 +975,7 @@ export type OptimizersBridge = {
 		baseModel?: string;
 		/** Required by `eval.*` recipes unless `trainingArtifactId` is set. */
 		candidateSetId?: string;
-		/** Registered-container identity for Banking77/HealthBench baseline evals. */
+		/** Registered-container identity for workspace baseline evals. */
 		containerId?: string;
 		/** Managed training adapter. Eval stages it and retains identity in the receipt. */
 		trainingArtifactId?: string;
