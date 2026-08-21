@@ -197,6 +197,7 @@ struct SidecarRuntime {
     api_key: String,
     version: String,
     digest: String,
+    db_path: PathBuf,
 }
 
 /// One in-process event spool per `optimizer_run_id`. Two campaigns never share
@@ -361,6 +362,15 @@ impl OptimizerManager {
 
     pub(crate) fn optimizer_run_not_indexed(error: &anyhow::Error) -> bool {
         error.downcast_ref::<OptimizerEventRunNotFound>().is_some()
+    }
+
+    pub(crate) fn optimizer_event_endpoint_temporarily_unavailable(
+        error: &anyhow::Error,
+    ) -> bool {
+        let message = error.to_string();
+        message.contains("optimizer event endpoint returned 502")
+            || message.contains("optimizer event endpoint returned 503")
+            || message.contains("optimizer event endpoint returned 504")
     }
 
     pub async fn set_status(&self, mut status: OptimizerSidecarStatus) {
@@ -624,8 +634,17 @@ impl OptimizerManager {
         })
         .await;
         let api_key = ensure_api_key(&self.home)?;
-        let (child, upstream_base_url, upstream_task) =
-            launch_sidecar_upstream(&self.home, &hit, self.run_spools.clone()).await?;
+        let db_path = self.home.join("runtime").join(format!(
+            "gepa-service-{}.sqlite",
+            uuid::Uuid::new_v4().simple()
+        ));
+        let (child, upstream_base_url, upstream_task) = launch_sidecar_upstream(
+            &self.home,
+            &hit,
+            self.run_spools.clone(),
+            &db_path,
+        )
+        .await?;
         let listener = tokio::net::TcpListener::bind(bind_addr())
             .await
             .context("bind optimizer sidecar auth proxy")?;
@@ -660,6 +679,7 @@ impl OptimizerManager {
             api_key: api_key.clone(),
             version: hit.version.clone(),
             digest: hit.digest.clone(),
+            db_path,
         });
         // env.sh is written after the handshake, not here. Publishing the
         // address before the service has proven anything is what left a
@@ -1162,6 +1182,9 @@ impl OptimizerManager {
             if let Some(task) = runtime.upstream_task.take() {
                 task.abort();
             }
+            let _ = fs::remove_file(&runtime.db_path);
+            let _ = fs::remove_file(runtime.db_path.with_extension("sqlite-shm"));
+            let _ = fs::remove_file(runtime.db_path.with_extension("sqlite-wal"));
         }
     }
 }
@@ -1416,6 +1439,7 @@ async fn launch_sidecar_upstream(
     home: &Path,
     hit: &OptimizerSidecarVersion,
     run_spools: Arc<Mutex<HashMap<String, RunSpoolState>>>,
+    db_path: &Path,
 ) -> Result<(Option<Child>, String, Option<tokio::task::JoinHandle<()>>)> {
     let listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
         .await
@@ -1426,7 +1450,7 @@ async fn launch_sidecar_upstream(
     #[cfg(test)]
     {
         if env::var("SYNTH_OPTIMIZER_LIVE_SIDECAR").as_deref() != Ok("1") {
-            let _ = (home, hit);
+            let _ = (home, hit, db_path);
             let body = json!({"status":"ok"});
             let task = tokio::spawn(async move {
                 let _ = serve_json(listener, move |request| {
@@ -1466,7 +1490,6 @@ async fn launch_sidecar_upstream(
     drop(listener);
 
     let gepa_home = optimizer_gepa_home(home);
-    let db_path = optimizer_gepa_db(home);
     fs::create_dir_all(&gepa_home)?;
     let api_key = ensure_api_key(home)?;
     let log = fs::OpenOptions::new()

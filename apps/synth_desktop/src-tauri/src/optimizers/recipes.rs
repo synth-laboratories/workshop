@@ -990,7 +990,10 @@ async fn run_recipe_worker(
 ) -> Result<()> {
     let _revoke = crate::secrets::RevokeRunOnDrop(run_id.clone());
     append_status_event(&service, &run_id, "optimizer.run.started", "running").await?;
-    let openai = resolve_openai_workload(&run_id, "gepa")?;
+    let openai = resolve_banking77_workload(&run_id, "gepa")?;
+    if let Some(base_url) = openai.base_url.as_deref() {
+        bind_policy_base_url(&config_path, base_url)?;
+    }
     let stdout = fs::File::create(run_dir.join("workshop.stdout.log"))?;
     let stderr = fs::File::create(run_dir.join("workshop.stderr.log"))?;
     let mut child = manager
@@ -1014,19 +1017,35 @@ async fn run_recipe_worker(
     // or a service that does not serve the events route at all), so the wait is
     // capped and the child is killed rather than allowed to spend to term.
     let mut indexed = false;
+    let mut event_endpoint_outage_started = None;
     let index_wait = run_index_wait();
     let index_deadline = tokio::time::Instant::now() + index_wait;
     loop {
         match ingest_available(&service, &manager, &run_id, &mut upstream_cursor).await {
-            Ok(()) => indexed = true,
+            Ok(()) => {
+                indexed = true;
+                event_endpoint_outage_started = None;
+            }
             Err(error) => {
                 // The producer registers its durable index shortly after spawn.
                 // A 404 is retryable only while the child is demonstrably alive;
                 // it is not a successful empty event page.
-                if !super::OptimizerManager::optimizer_run_not_indexed(&error) {
+                if indexed
+                    && super::OptimizerManager::optimizer_event_endpoint_temporarily_unavailable(
+                        &error,
+                    )
+                {
+                    let outage_started = event_endpoint_outage_started
+                        .get_or_insert_with(tokio::time::Instant::now);
+                    if outage_started.elapsed() >= index_wait {
+                        bail!(
+                            "optimizer event endpoint remained unavailable for {:.1}s while recipe process was live: {error}",
+                            index_wait.as_secs_f32()
+                        );
+                    }
+                } else if !super::OptimizerManager::optimizer_run_not_indexed(&error) {
                     return Err(error);
-                }
-                if !indexed && tokio::time::Instant::now() >= index_deadline {
+                } else if !indexed && tokio::time::Instant::now() >= index_deadline {
                     manager.terminate_gepa_recipe(&run_id).await;
                     if child.try_wait()?.is_none() {
                         let _ = child.kill().await;
@@ -1056,7 +1075,13 @@ async fn run_recipe_worker(
         tokio::select! {
             status = child.wait() => {
                 let status = status.context("wait for product-owned GEPA process")?;
-                ingest_available(&service, &manager, &run_id, &mut upstream_cursor).await?;
+                if let Err(error) = ingest_available(&service, &manager, &run_id, &mut upstream_cursor).await {
+                    if !indexed
+                        || !super::OptimizerManager::optimizer_event_endpoint_temporarily_unavailable(&error)
+                    {
+                        return Err(error);
+                    }
+                }
                 if !status.success() {
                     bail!("GEPA recipe exited with {status}; see {}", run_dir.join("workshop.stderr.log").display());
                 }
@@ -1093,7 +1118,7 @@ async fn run_recipe_worker(
 /// Resolve OpenAI access for a recipe through the local vault and provider
 /// proxy. Paid workers never receive a provider key and never fall back to a
 /// process variable or dotenv file.
-fn resolve_openai_workload(run_id: &str, recipe_id: &str) -> Result<OpenAiWorkload> {
+fn resolve_banking77_workload(run_id: &str, recipe_id: &str) -> Result<OpenAiWorkload> {
     #[cfg(test)]
     {
         if std::env::var("SYNTH_OPTIMIZER_TEST_CHILD_SLEEP_SECS").is_ok()
@@ -1106,23 +1131,33 @@ fn resolve_openai_workload(run_id: &str, recipe_id: &str) -> Result<OpenAiWorklo
         }
     }
     let secrets = crate::secrets::live().ok_or_else(|| {
-        anyhow!("missing_credential: add an OpenAI connection in Settings → Secrets")
+        anyhow!("missing_credential: add an OpenRouter connection in Settings → Secrets")
     })?;
+    let mut policy = crate::secrets::SecretsUsePolicy::default();
+    policy.models = vec!["openai/gpt-4.1-nano".into()];
     let env = secrets
-        .workload_env(
-            "openai",
-            run_id,
-            recipe_id,
-            crate::secrets::SecretsUsePolicy::default(),
-            "optimizer",
-        )
+        .workload_env("openrouter", run_id, recipe_id, policy, "optimizer")
         .map_err(|error| {
-            anyhow!("missing_credential: add an OpenAI connection in Settings → Secrets ({error})")
+            anyhow!("missing_credential: add an OpenRouter connection in Settings → Secrets ({error})")
         })?;
     Ok(OpenAiWorkload {
         api_key: crate::secrets::API_KEY_SENTINEL.to_owned(),
         base_url: env.openai_base_url,
     })
+}
+
+fn bind_policy_base_url(config_path: &Path, base_url: &str) -> Result<()> {
+    let mut config: toml::Value = toml::from_str(
+        &fs::read_to_string(config_path)
+            .with_context(|| format!("read generated GEPA config {}", config_path.display()))?,
+    )?;
+    table_mut(&mut config, "policy")?.insert(
+        "base_url".into(),
+        toml::Value::String(base_url.to_owned()),
+    );
+    fs::write(config_path, toml::to_string_pretty(&config)?)
+        .with_context(|| format!("bind Banking77 policy proxy in {}", config_path.display()))?;
+    Ok(())
 }
 
 #[derive(Clone, Debug)]
@@ -2065,6 +2100,18 @@ fn materialize_config(
     cache.insert("mode".into(), toml::Value::String("off".into()));
     cache.insert("path".into(), toml::Value::String(String::new()));
     cache.insert("namespace".into(), toml::Value::String(run_id.into()));
+
+    let policy = table_mut(&mut config, "policy")?;
+    policy.insert("provider".into(), toml::Value::String("openrouter".into()));
+    policy.insert(
+        "model".into(),
+        toml::Value::String("openai/gpt-4.1-nano".into()),
+    );
+    policy.insert(
+        "api_key_env".into(),
+        toml::Value::String("OPENAI_API_KEY".into()),
+    );
+    policy.remove("base_url");
 
     let proposer = table_mut(&mut config, "proposer")?;
     proposer.insert(
