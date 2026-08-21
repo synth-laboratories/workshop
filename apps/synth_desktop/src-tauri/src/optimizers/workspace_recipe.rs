@@ -264,6 +264,11 @@ pub fn find_container_spec(workspace: &Path, spec_id: &str) -> Result<ContainerS
 }
 
 pub fn catalog_entry(recipe: &WorkspaceRecipe) -> Value {
+    let credential_input = match recipe.provider.to_ascii_lowercase().as_str() {
+        "openrouter" => "OPENROUTER_API_KEY",
+        "anthropic" => "ANTHROPIC_API_KEY",
+        _ => "OPENAI_API_KEY",
+    };
     json!({
         "id": recipe.id,
         "title": recipe.title,
@@ -292,7 +297,7 @@ pub fn catalog_entry(recipe: &WorkspaceRecipe) -> Value {
             "harness": recipe.harness,
             "config": recipe.policy_config,
         },
-        "credentialInputs": ["OPENAI_API_KEY"],
+        "credentialInputs": [credential_input],
         "expectedVisual": match recipe.algorithm {
             AlgorithmKind::Gepa => "optimizer.gepa.v1",
             AlgorithmKind::Eval => "experiment.overview.v1",
@@ -577,6 +582,31 @@ max_total_rollouts = 10
         assert_eq!(recipe.bounds.max_cost_usd, 0.50);
         assert_eq!(recipe.bounds.max_total_rollouts, 10);
         assert_eq!(recipe.train_seeds, vec![0, 1]);
+    }
+
+    #[test]
+    fn catalog_uses_the_declared_provider_credential() {
+        let (_dir, workspace) = write_workspace();
+        fs::write(
+            workspace.join(RECIPE_FILE),
+            r#"
+id = "gepa.openrouter.smoke.v1"
+algorithm = "gepa"
+container = "fixture"
+provider = "openrouter"
+model = "openai/gpt-5.6-luna"
+locality = "container"
+[bounds]
+max_cost_usd = 0.10
+max_total_rollouts = 1
+"#,
+        )
+        .unwrap();
+        let recipe = find_recipe(&workspace, "gepa.openrouter.smoke.v1").unwrap();
+        assert_eq!(
+            catalog_entry(&recipe)["credentialInputs"],
+            json!(["OPENROUTER_API_KEY"])
+        );
     }
 
     #[test]

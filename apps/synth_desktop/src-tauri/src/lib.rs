@@ -985,21 +985,7 @@ pub(crate) async fn authorize_optimizer_recipe_start(
             request.recipe_id
         )));
     }
-    let credential_names: Vec<String> = if is_local_eval {
-        recipe
-            .get("credentialInputs")
-            .and_then(Value::as_array)
-            .into_iter()
-            .flatten()
-            .filter_map(Value::as_str)
-            .map(str::to_owned)
-            .collect()
-    } else {
-        optimizer_recipe_credentials(&request.recipe_id)
-            .iter()
-            .map(|name| (*name).to_owned())
-            .collect()
-    };
+    let credential_names = optimizer_recipe_credentials_from_catalog(&recipe, &request.recipe_id);
     if credential_names.iter().any(|name| name == "OPENAI_API_KEY") {
         if let Some(secrets) = crate::secrets::live() {
             secrets
@@ -1203,6 +1189,42 @@ fn optimizer_recipe_credentials(recipe_id: &str) -> &'static [&'static str] {
         &["OPENAI_API_KEY"]
     } else {
         &[]
+    }
+}
+
+fn optimizer_recipe_credentials_from_catalog(recipe: &Value, recipe_id: &str) -> Vec<String> {
+    let declared = recipe
+        .get("credentialInputs")
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(Value::as_str)
+                .map(str::to_owned)
+                .collect::<Vec<_>>()
+        });
+    declared.unwrap_or_else(|| {
+        optimizer_recipe_credentials(recipe_id)
+            .iter()
+            .map(|name| (*name).to_owned())
+            .collect()
+    })
+}
+
+#[cfg(test)]
+mod optimizer_recipe_credential_tests {
+    use super::*;
+
+    #[test]
+    fn workspace_recipe_catalog_overrides_legacy_prefix_default() {
+        let recipe = serde_json::json!({
+            "id": "gepa.openrouter.smoke.v1",
+            "credentialInputs": ["OPENROUTER_API_KEY"]
+        });
+        assert_eq!(
+            optimizer_recipe_credentials_from_catalog(&recipe, "gepa.openrouter.smoke.v1"),
+            vec!["OPENROUTER_API_KEY"]
+        );
     }
 }
 

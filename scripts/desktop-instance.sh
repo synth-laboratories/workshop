@@ -812,6 +812,7 @@ stage_gepa_runtime() {
       --exclude '.venv' \
       --exclude 'target' \
       --exclude '.out' \
+      --exclude 'temp' \
       --exclude '.pytest_cache' \
       --exclude '.ruff_cache' \
       --exclude '__pycache__' \
