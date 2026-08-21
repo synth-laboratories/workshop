@@ -57,6 +57,53 @@ pub fn connection_path(root: &std::path::Path) -> PathBuf {
     root.join("eval-driver.json")
 }
 
+/// Pid a live `/health` body names, if the instance diagnostics are present.
+pub fn health_process_id(body: &Value) -> Option<u32> {
+    body.get("instance")
+        .and_then(|instance| instance.get("processId"))
+        .and_then(Value::as_u64)
+        .and_then(|pid| u32::try_from(pid).ok())
+}
+
+/// Refuse to replace a descriptor whose `/health` still answers for a
+/// different process. A missing file or a dead peer is not a holder.
+async fn refuse_overwrite_if_peer_alive(path: &std::path::Path) -> Result<()> {
+    let Ok(raw) = fs::read_to_string(path) else {
+        return Ok(());
+    };
+    let Ok(existing) = serde_json::from_str::<EvalDriverConnection>(&raw) else {
+        return Ok(());
+    };
+    let Some(peer_pid) = probe_peer_health_pid(&existing).await else {
+        return Ok(());
+    };
+    let mine = std::process::id();
+    if peer_pid != mine {
+        bail!(
+            "eval_driver_busy pid={peer_pid} — refusing to overwrite a live descriptor at {}",
+            path.display()
+        );
+    }
+    Ok(())
+}
+
+async fn probe_peer_health_pid(existing: &EvalDriverConnection) -> Option<u32> {
+    let url = format!("{}/health", existing.url.trim_end_matches('/'));
+    let client = crate::http::http_client_with_timeout(Duration::from_millis(400));
+    let response = client
+        .get(&url)
+        .header("Authorization", format!("Bearer {}", existing.token))
+        .header("x-synth-eval-driver", PROTOCOL_VERSION)
+        .send()
+        .await
+        .ok()?;
+    if !response.status().is_success() {
+        return None;
+    }
+    let body: Value = response.json().await.ok()?;
+    health_process_id(&body)
+}
+
 /// Runtime opt-in on top of the `eval-driver` compile-time feature: production
 /// artifacts are built without the feature and contain no driver at all, so
 /// this gate only chooses which feature-enabled builds actually listen.
@@ -91,6 +138,7 @@ pub async fn spawn(deps: EvalDriverDeps, root: PathBuf) -> Result<EvalDriverConn
     };
     fs::create_dir_all(&root)?;
     let connection_file = connection_path(&root);
+    refuse_overwrite_if_peer_alive(&connection_file).await?;
     fs::write(&connection_file, serde_json::to_string_pretty(&connection)?)?;
     #[cfg(unix)]
     {
@@ -2386,6 +2434,91 @@ mod tests {
     #[test]
     fn protocol_version_is_stable() {
         assert_eq!(PROTOCOL_VERSION, "synth.eval-driver.v1");
+    }
+
+    #[test]
+    fn a_health_body_names_the_holders_pid() {
+        assert_eq!(
+            health_process_id(&json!({"ok": true, "instance": {"processId": 4321}})),
+            Some(4321)
+        );
+        assert_eq!(health_process_id(&json!({"ok": true})), None);
+        assert_eq!(
+            health_process_id(&json!({"instance": {"processId": "1"}})),
+            None
+        );
+    }
+
+    #[test]
+    fn a_dead_peer_descriptor_does_not_block_a_fresh_driver() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = connection_path(dir.path());
+        fs::write(
+            &path,
+            serde_json::to_vec(&EvalDriverConnection {
+                schema_version: PROTOCOL_VERSION.into(),
+                url: "http://127.0.0.1:1".into(),
+                token: "synth_eval_dead".into(),
+                path: path.display().to_string(),
+                instance_name: Some("alpha".into()),
+                source_revision: "test".into(),
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime
+            .block_on(refuse_overwrite_if_peer_alive(&path))
+            .expect("a descriptor whose /health cannot answer is not a live peer");
+    }
+
+    #[test]
+    fn a_live_peer_descriptor_is_not_overwritten() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        std::thread::spawn(move || {
+            if let Ok((mut stream, _)) = listener.accept() {
+                use std::io::Write as _;
+                let mut incoming = [0u8; 1024];
+                let _ = std::io::Read::read(&mut stream, &mut incoming);
+                let body = r#"{"ok":true,"instance":{"processId":1}}"#;
+                let _ = write!(
+                    stream,
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+            }
+        });
+        let dir = tempfile::tempdir().unwrap();
+        let path = connection_path(dir.path());
+        fs::write(
+            &path,
+            serde_json::to_vec(&EvalDriverConnection {
+                schema_version: PROTOCOL_VERSION.into(),
+                url: format!("http://{addr}"),
+                token: "synth_eval_peer".into(),
+                path: path.display().to_string(),
+                instance_name: Some("alpha".into()),
+                source_revision: "test".into(),
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let error = runtime
+            .block_on(refuse_overwrite_if_peer_alive(&path))
+            .expect_err("a /health with another pid must refuse");
+        let message = format!("{error:#}");
+        assert!(
+            message.contains("eval_driver_busy pid=1"),
+            "{message}"
+        );
     }
 
     #[test]

@@ -92,6 +92,10 @@ impl Fixture {
             .unwrap();
         let session_id_owned = session_id.to_owned();
         let run_id_owned = run_id.to_owned();
+        // A previous boot that is actually gone: heartbeat older than the lease.
+        // A fresh heartbeat from another owner is a live peer and must not be
+        // interrupted — see `a_live_peer_is_not_interrupted`.
+        let dead_at = Utc::now() - LEASE_DURATION - Duration::seconds(1);
         self.db()
             .run_transaction(move |conn| {
                 ownership::claim(
@@ -101,7 +105,7 @@ impl Fixture {
                     PREVIOUS_BOOT,
                     Some("attach-1"),
                     0,
-                    Utc::now(),
+                    dead_at,
                 )
             })
             .await
@@ -234,6 +238,36 @@ async fn a_turn_this_process_still_owns_keeps_running() {
     assert!(fixture.reconcile().await.is_empty());
     assert_eq!(fixture.session("session-204").await.status, "running");
     assert_eq!(fixture.run("turn-204").await.status, "running");
+}
+
+#[tokio::test]
+async fn a_live_peer_is_not_interrupted() {
+    let fixture = Fixture::new();
+    fixture
+        .abandoned_turn("session-live-peer", "turn-live-peer", "Run seed live")
+        .await;
+    fixture
+        .db()
+        .run_transaction(|conn| {
+            ownership::claim(
+                conn,
+                "session-live-peer",
+                "turn-live-peer",
+                PREVIOUS_BOOT,
+                Some("attach-peer"),
+                0,
+                Utc::now(),
+            )
+        })
+        .await
+        .unwrap();
+
+    assert!(fixture.reconcile().await.is_empty());
+    assert_eq!(
+        fixture.session("session-live-peer").await.status,
+        "running"
+    );
+    assert_eq!(fixture.run("turn-live-peer").await.status, "running");
 }
 
 #[tokio::test]
@@ -631,7 +665,7 @@ async fn a_running_run_whose_session_moved_on_is_still_closed() {
 }
 
 #[test]
-fn a_claim_is_live_only_for_its_owner_and_only_before_it_expires() {
+fn a_claim_is_live_for_this_owner_or_a_fresh_peer() {
     let now = Utc::now();
     let claim = ownership::TurnClaim {
         session_id: "session-1".into(),
@@ -646,13 +680,22 @@ fn a_claim_is_live_only_for_its_owner_and_only_before_it_expires() {
     };
 
     assert!(claim.is_live(CURRENT_BOOT, now));
-    assert!(!claim.is_live(PREVIOUS_BOOT, now));
+    // A live peer is still live: the second process must not interrupt it.
+    assert!(claim.is_live(PREVIOUS_BOOT, now));
     assert!(!claim.is_live(CURRENT_BOOT, now + LEASE_DURATION + Duration::seconds(1)));
+    assert!(!claim.is_live(PREVIOUS_BOOT, now + LEASE_DURATION + Duration::seconds(1)));
 
-    // An unparseable lease is not evidence of liveness.
+    // An unparseable lease is not evidence of liveness for the owner.
     let corrupt = ownership::TurnClaim {
         lease_expires_at: "not-a-timestamp".into(),
-        ..claim
+        ..claim.clone()
     };
     assert!(!corrupt.is_live(CURRENT_BOOT, now));
+
+    // An unparseable heartbeat is not evidence of a live peer.
+    let corrupt_heartbeat = ownership::TurnClaim {
+        heartbeat_at: "not-a-timestamp".into(),
+        ..claim
+    };
+    assert!(!corrupt_heartbeat.is_live(PREVIOUS_BOOT, now));
 }
