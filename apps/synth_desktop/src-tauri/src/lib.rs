@@ -3553,27 +3553,49 @@ async fn laguna_adapter_download(
     model_id: String,
 ) -> Result<LagunaAdapterStatus, AppError> {
     let spec = laguna_adapters::adapter_spec(&model_id).map_err(AppError::from)?;
-    let client = reqwest::Client::new();
-    let progress_app = app.clone();
-    let (staged, manifest) = laguna_adapters::stage_download(
-        &client,
-        &spec,
-        laguna::installed_base_revision(),
-        |phase, detail, downloaded, total| {
-            let _ = progress_app.emit(
-                crate::contract::events::EventChannel::LAGUNA_DOWNLOAD,
-                serde_json::json!({
-                    "phase": phase,
-                    "detail": detail,
-                    "modelId": spec.model_id,
-                    "downloadedBytes": downloaded,
-                    "totalBytes": total,
-                }),
-            );
-        },
-    )
-    .await
-    .map_err(AppError::from)?;
+    // Through the backend, with the account's own credential. No adapter
+    // object is public and Workshop never reaches object storage directly.
+    let client = crate::optimizers::cloud::CloudOptimizerClient::from_config()
+        .map_err(AppError::from)?;
+    let emit = |phase: &str, detail: &str, done: u64, total: u64| {
+        let _ = app.emit(
+            crate::contract::events::EventChannel::LAGUNA_DOWNLOAD,
+            serde_json::json!({
+                "phase": phase,
+                "detail": detail,
+                "modelId": spec.model_id,
+                "downloadedBytes": done,
+                "totalBytes": total,
+            }),
+        );
+    };
+
+    emit("preparing", "Reading the adapter manifest…", 0, spec.download_bytes);
+    let manifest_json = client
+        .adapter_manifest(spec.digest)
+        .await
+        .map_err(AppError::from)?;
+    let manifest = laguna_adapters::parse_manifest(&manifest_json.to_string())
+        .map_err(AppError::from)?;
+    laguna_adapters::check_pinned(&spec, &manifest).map_err(AppError::from)?;
+    laguna_adapters::check_base_revision(&manifest, laguna::installed_base_revision())
+        .map_err(AppError::from)?;
+
+    let total: u64 = manifest.files.iter().map(|file| file.bytes).sum();
+    let mut fetched: Vec<(String, Vec<u8>)> = Vec::new();
+    let mut done = 0u64;
+    for file in &manifest.files {
+        emit("downloading", &format!("Downloading {}…", file.path), done, total);
+        let bytes = client
+            .adapter_file(spec.digest, &file.path)
+            .await
+            .map_err(AppError::from)?;
+        done += bytes.len() as u64;
+        fetched.push((file.path.clone(), bytes));
+    }
+    emit("verifying", "Verifying the adapter…", done, total);
+    let staged =
+        laguna_adapters::stage_verified(&spec, &manifest, &fetched).map_err(AppError::from)?;
 
     // Install through the catalog's own import so a downloaded adapter and a
     // hand-imported one are the same row, digested by the same code.

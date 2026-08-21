@@ -24,15 +24,6 @@ pub const FT_MODEL_ID: &str = "synth/Laguna-XS-2.1-ft";
 pub const MANIFEST_SCHEMA: &str = "synth-adapter.v1";
 const MANIFEST_FILE: &str = "manifest.json";
 
-/// Where a published adapter is fetched from.
-///
-/// Wasabi and MinIO differ by base URL alone, and a HuggingFace mirror slots
-/// in as another base URL over the same verify-and-install path.
-pub fn source_base_url() -> String {
-    std::env::var("SYNTH_ADAPTERS_BASE_URL")
-        .unwrap_or_else(|_| "https://adapters.usesynth.ai".to_string())
-}
-
 /// A published adapter this build is willing to install.
 #[derive(Clone, Copy, Debug)]
 pub struct AdapterSpec {
@@ -188,34 +179,11 @@ pub fn verify_tree(root: &Path, manifest: &AdapterManifest) -> Result<()> {
 /// Returns the staged directory. Installation proper is the catalog's own
 /// import path, so a downloaded adapter and a hand-imported one end up
 /// identical rather than arriving through two subtly different routes.
-pub async fn stage_download<F>(
-    client: &reqwest::Client,
-    spec: &AdapterSpec,
-    installed_base_revision: &str,
-    mut progress: F,
-) -> Result<(PathBuf, AdapterManifest)>
-where
-    F: FnMut(&str, &str, u64, u64),
-{
-    let prefix = format!(
-        "{}/{}/{}",
-        source_base_url().trim_end_matches('/'),
-        spec.object_prefix,
-        spec.digest.replace(':', "-")
-    );
-    progress("preparing", "Reading the adapter manifest…", 0, spec.download_bytes);
-    let body = client
-        .get(format!("{prefix}/{MANIFEST_FILE}"))
-        .send()
-        .await
-        .with_context(|| format!("adapter manifest is unreachable at {prefix}"))?
-        .error_for_status()
-        .context("adapter manifest could not be read")?
-        .text()
-        .await?;
-    let manifest = parse_manifest(&body)?;
-    // The build pins the digest, so a substituted manifest cannot redirect the
-    // install to different bytes than the ones this version was shipped for.
+/// Refuse a manifest that is not the one this build was shipped for.
+///
+/// The digest is pinned in the binary, so a substituted manifest cannot
+/// redirect an install to different bytes.
+pub fn check_pinned(spec: &AdapterSpec, manifest: &AdapterManifest) -> Result<()> {
     if manifest.digest != spec.digest {
         bail!(
             "The published adapter is {} but this version of Workshop installs {}.",
@@ -223,8 +191,19 @@ where
             spec.digest
         );
     }
-    check_base_revision(&manifest, installed_base_revision)?;
+    Ok(())
+}
 
+/// Write fetched bytes to a staging directory and verify them.
+///
+/// Transport lives with the caller: this module decides what a valid adapter
+/// is, which keeps the decision testable without a network and identical no
+/// matter where the bytes came from.
+pub fn stage_verified(
+    spec: &AdapterSpec,
+    manifest: &AdapterManifest,
+    files: &[(String, Vec<u8>)],
+) -> Result<PathBuf> {
     let staging = crate::optimizers::durable_lora_root()
         .join(".staging")
         .join(spec.digest.trim_start_matches("sha256:"));
@@ -232,30 +211,30 @@ where
         fs::remove_dir_all(&staging).ok();
     }
     fs::create_dir_all(&staging)?;
-    let total: u64 = manifest.files.iter().map(|file| file.bytes).sum();
-    let mut done = 0u64;
-    for file in &manifest.files {
-        progress("downloading", &format!("Downloading {}…", file.path), done, total);
-        let bytes = client
-            .get(format!("{prefix}/{}", file.path))
-            .send()
-            .await
-            .with_context(|| format!("{} is unreachable", file.path))?
-            .error_for_status()
-            .with_context(|| format!("{} could not be read", file.path))?
-            .bytes()
-            .await?;
-        fs::write(staging.join(&file.path), &bytes)?;
-        done += bytes.len() as u64;
+    for (name, bytes) in files {
+        fs::write(staging.join(_safe_name(name)?), bytes)?;
     }
-    progress("verifying", "Verifying the adapter…", done, total);
-    if let Err(error) = verify_tree(&staging, &manifest) {
+    if let Err(error) = verify_tree(&staging, manifest) {
         // Never leave unverified bytes where an installer might later find
         // them and assume they were checked.
         fs::remove_dir_all(&staging).ok();
         return Err(error);
     }
-    Ok((staging, manifest))
+    Ok(staging)
+}
+
+/// A manifest-listed file name, never a path: adapter trees are flat, so a
+/// separator or parent reference is refused rather than normalised.
+fn _safe_name(name: &str) -> Result<&str> {
+    let trimmed = name.trim();
+    if trimmed.is_empty()
+        || trimmed.contains('/')
+        || trimmed.contains('\\')
+        || trimmed.starts_with('.')
+    {
+        bail!("invalid adapter file name: {name}");
+    }
+    Ok(trimmed)
 }
 
 /// Record the manifest beside the installed tree, never inside it: a file in
@@ -299,26 +278,6 @@ mod tests {
                 },
             ],
         }
-    }
-
-    /// Ignored by default: needs an object store. Run the MinIO profile and
-    /// publish a fixture, then:
-    ///   SYNTH_ADAPTERS_BASE_URL=http://127.0.0.1:9000/synth-adapters \
-    ///     cargo test --lib downloads_and_verifies -- --ignored --nocapture
-    #[tokio::test]
-    #[ignore = "requires a published adapter in an object store"]
-    async fn downloads_and_verifies_a_published_adapter() {
-        let spec = ADAPTER_CATALOG[0];
-        let client = reqwest::Client::new();
-        let (staged, manifest) =
-            stage_download(&client, &spec, spec.base_revision, |phase, detail, done, total| {
-                println!("{phase}: {detail} ({done}/{total})");
-            })
-            .await
-            .expect("download and verify");
-        assert_eq!(manifest.digest, spec.digest);
-        assert_eq!(digest_tree(&staged).unwrap(), spec.digest);
-        fs::remove_dir_all(&staged).ok();
     }
 
     #[test]

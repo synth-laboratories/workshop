@@ -292,6 +292,46 @@ impl CloudOptimizerClient {
         serde_json::from_value(payload).context("decode archived saved LoRA checkpoint")
     }
 
+    /// The published adapter's manifest, fetched through the backend.
+    ///
+    /// Workshop never reaches object storage directly: no adapter object is
+    /// public, and the account's own credential is what authorises the read.
+    pub async fn adapter_manifest(&self, digest: &str) -> Result<Value> {
+        let url = format!(
+            "{}/api/v1/optimizers/adapters/{}/manifest",
+            self.base_url,
+            urlencoding_lite(digest)
+        );
+        self.get_json(&url).await
+    }
+
+    /// One file of a published adapter, as bytes.
+    pub async fn adapter_file(&self, digest: &str, name: &str) -> Result<Vec<u8>> {
+        let url = format!(
+            "{}/api/v1/optimizers/adapters/{}/files/{}",
+            self.base_url,
+            urlencoding_lite(digest),
+            urlencoding_lite(name)
+        );
+        let response = self
+            .client
+            .get(&url)
+            .header("Authorization", format!("Bearer {}", self.api_key))
+            .send()
+            .await
+            .with_context(|| format!("{name} is unreachable"))?;
+        let status = response.status();
+        let bytes = response.bytes().await?;
+        if !status.is_success() {
+            bail!(
+                "{name} could not be read ({}): {}",
+                status,
+                String::from_utf8_lossy(&bytes).chars().take(200).collect::<String>()
+            );
+        }
+        Ok(bytes.to_vec())
+    }
+
     pub async fn saved_lora_download(&self, checkpoint_id: &str) -> Result<SavedLoraDownload> {
         let url = format!(
             "{}/api/v1/optimizers/checkpoints/{}/download",

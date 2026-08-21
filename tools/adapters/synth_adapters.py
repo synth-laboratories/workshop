@@ -79,16 +79,33 @@ def digest_tree(root: Path) -> tuple[str, list[dict[str, Any]]]:
     return f"sha256:{tree.hexdigest()}", files
 
 
+def credentials() -> tuple[str, str]:
+    """Read credentials from the environment, never from a file we write.
+
+    `WASABI_*` is accepted so the tool composes with `railway run`, which
+    injects the deployment's own variables into the child process. That keeps
+    production secrets out of local files and out of shell history.
+    """
+    key = os.environ.get("SYNTH_ADAPTERS_KEY") or os.environ.get("WASABI_ACCESS_KEY_ID")
+    secret = os.environ.get("SYNTH_ADAPTERS_SECRET") or os.environ.get(
+        "WASABI_SECRET_ACCESS_KEY"
+    )
+    # The local MinIO rehearsal has its own well-known pair; anything else must
+    # be supplied deliberately rather than defaulted into.
+    return key or "synth-local", secret or "synth-local-secret"
+
+
 def client(args: argparse.Namespace):
     try:
         import boto3
     except ImportError:  # pragma: no cover - operator environment
         raise SystemExit("boto3 is required: pip install boto3")
+    key, secret = credentials()
     return boto3.client(
         "s3",
         endpoint_url=args.endpoint,
-        aws_access_key_id=os.environ.get("SYNTH_ADAPTERS_KEY", "synth-local"),
-        aws_secret_access_key=os.environ.get("SYNTH_ADAPTERS_SECRET", "synth-local-secret"),
+        aws_access_key_id=key,
+        aws_secret_access_key=secret,
         region_name=args.region,
     )
 
@@ -269,7 +286,7 @@ def main() -> None:
     parser.add_argument("--endpoint", default=os.environ.get("SYNTH_ADAPTERS_ENDPOINT", DEFAULT_ENDPOINT))
     parser.add_argument("--bucket", default=DEFAULT_BUCKET)
     parser.add_argument("--prefix", default=DEFAULT_PREFIX)
-    parser.add_argument("--region", default="us-east-1")
+    parser.add_argument("--region", default=os.environ.get("WASABI_REGION", "us-east-1"))
     sub = parser.add_subparsers(dest="command", required=True)
 
     publish_cmd = sub.add_parser("publish", help="digest, manifest, and upload an adapter tree")
