@@ -400,4 +400,26 @@ mod tests {
         }
     }
 
+    #[test]
+    fn managed_model_path_is_the_offline_serve_argument() {
+        let previous = std::env::var_os("SYNTH_MLX_RL_BIN");
+        std::env::set_var("SYNTH_MLX_RL_BIN", "/usr/bin/true");
+        let model = Path::new("/managed/Qwen/Qwen3.5-0.8B");
+        let command = mlx_serve_command_with_model(57855, Path::new("/jobs"), model).unwrap();
+        let args: Vec<_> = command
+            .as_std()
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(
+            args.windows(2)
+                .find(|pair| pair[0] == "--model")
+                .map(|pair| pair[1].as_str()),
+            Some("/managed/Qwen/Qwen3.5-0.8B")
+        );
+        match previous {
+            Some(value) => std::env::set_var("SYNTH_MLX_RL_BIN", value),
+            None => std::env::remove_var("SYNTH_MLX_RL_BIN"),
+        }
+    }
 }

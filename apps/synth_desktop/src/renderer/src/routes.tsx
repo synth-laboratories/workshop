@@ -311,6 +311,7 @@ export function MainRoutes(props: MainRoutesProps): ReactNode {
 				<div className={`inventory-workbench${openArtifact ? " with-visual" : ""}`} style={{ "--visual-pane-width": `${inventoryContainerWidth}px` } as CSSProperties}>
 					<OptimizersPage
 						pluginStatuses={pluginStatuses}
+						selectedContainerId={openContainer?.id ?? null}
 						onRefreshPlugins={refreshPluginStatuses}
 						onStartAgent={(guide) => startOptimizerAgent(`Plan a ${guide.name} optimization`, guide.prompt)}
 						onOpenVisual={(visualId) => {
