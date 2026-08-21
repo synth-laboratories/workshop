@@ -21,14 +21,26 @@ CHECKPOINT="${1:-}"
 WORKTREE="$(git -C "$ROOT" rev-parse --show-toplevel 2>/dev/null || printf '%s' "$ROOT")"
 WORKTREE_HASH="$(printf '%s' "$WORKTREE" | shasum -a 256 | awk '{print substr($1,1,8)}')"
 NAME="${2:-codex-$WORKTREE_HASH}"
-RELEASE_SLUG="v05"
-INSTANCE_ROOT="${SYNTH_DESKTOP_INSTANCES_ROOT:-$HOME/.synth-desktop/instances}/$RELEASE_SLUG/$NAME"
-DB="$INSTANCE_ROOT/data/synth.sqlite3"
-THREADS="$INSTANCE_ROOT/codex/threads.json"
+RELEASE_SLUG=""
+INSTANCE_ROOT=""
+DB=""
+THREADS=""
 
 if [[ -z "$CHECKPOINT" ]]; then
   sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//'
   exit 2
+fi
+
+# Identity comes from the launcher print contract. Do not keep a local
+# RELEASE_SLUG constant (ID-R-05).
+contract="$("$ROOT/scripts/desktop-instance.sh" print "$NAME")"
+RELEASE_SLUG="$(printf '%s' "$contract" | jq -r .releaseSlug)"
+INSTANCE_ROOT="$(printf '%s' "$contract" | jq -r .instanceRoot)"
+DB="$INSTANCE_ROOT/data/synth.sqlite3"
+THREADS="$INSTANCE_ROOT/codex/threads.json"
+if [[ -z "$RELEASE_SLUG" || "$RELEASE_SLUG" == "null" || -z "$INSTANCE_ROOT" || "$INSTANCE_ROOT" == "null" ]]; then
+  echo "[drill:$NAME] launcher print did not provide releaseSlug/instanceRoot" >&2
+  exit 1
 fi
 
 require_db() {

@@ -12,11 +12,13 @@ COMMAND="${1:-help}"
 WORKTREE="$(git -C "$ROOT" rev-parse --show-toplevel 2>/dev/null || printf '%s' "$ROOT")"
 WORKTREE_HASH="$(printf '%s' "$WORKTREE" | shasum -a 256 | awk '{print substr($1,1,8)}')"
 NAME="${2:-qa-$WORKTREE_HASH}"
-INSTANCE_ROOT="${SYNTH_DESKTOP_INSTANCES_ROOT:-$HOME/.synth-desktop/instances}/v05/$NAME"
-DATA_ROOT="$INSTANCE_ROOT/data"
-RECEIPT_ROOT="$INSTANCE_ROOT/qa-receipts"
-DRIVER_DESCRIPTOR="$DATA_ROOT/eval-driver.json"
-RELEASE_MANIFEST="$RECEIPT_ROOT/release-manifest.json"
+RELEASE_SLUG=""
+APP_VERSION=""
+INSTANCE_ROOT=""
+DATA_ROOT=""
+RECEIPT_ROOT=""
+DRIVER_DESCRIPTOR=""
+RELEASE_MANIFEST=""
 
 usage() {
   cat <<'EOF'
@@ -40,6 +42,22 @@ EOF
 
 say() { echo "[workshop-qa:$NAME] $*"; }
 fail() { echo "[workshop-qa:$NAME] FAIL: $*" >&2; exit 1; }
+
+# Identity comes from the launcher print contract. Do not keep a local
+# RELEASE_SLUG / app-version constant (ID-R-05).
+resolve_qa_instance() {
+  local contract
+  contract="$("$ROOT/scripts/desktop-instance.sh" print "$NAME")"
+  RELEASE_SLUG="$(printf '%s' "$contract" | jq -r .releaseSlug)"
+  APP_VERSION="$(printf '%s' "$contract" | jq -r .appVersion)"
+  INSTANCE_ROOT="$(printf '%s' "$contract" | jq -r .instanceRoot)"
+  DATA_ROOT="$(printf '%s' "$contract" | jq -r .dataRoot)"
+  RECEIPT_ROOT="$INSTANCE_ROOT/qa-receipts"
+  DRIVER_DESCRIPTOR="$DATA_ROOT/eval-driver.json"
+  RELEASE_MANIFEST="$RECEIPT_ROOT/release-manifest.json"
+  [[ -n "$RELEASE_SLUG" && "$RELEASE_SLUG" != "null" ]] || fail "launcher print did not provide releaseSlug"
+  [[ -n "$INSTANCE_ROOT" && "$INSTANCE_ROOT" != "null" ]] || fail "launcher print did not provide instanceRoot"
+}
 
 driver_field() {
   python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))[sys.argv[2]])' "$DRIVER_DESCRIPTOR" "$1"
@@ -184,9 +202,10 @@ PY
 }
 
 release_manifest_is_complete() {
-  python3 - "$RELEASE_MANIFEST" <<'PY'
+  python3 - "$RELEASE_MANIFEST" "$APP_VERSION" <<'PY'
 import json, pathlib, sys
 path = pathlib.Path(sys.argv[1])
+expected_version = sys.argv[2]
 if not path.is_file():
     raise SystemExit(1)
 m = json.loads(path.read_text())
@@ -200,7 +219,7 @@ ok = (
     and m.get("containers", {}).get("version")
     and image.get("image") and image.get("digest", "").startswith("sha256:")
     and image.get("remotelyResolvable") is True
-    and app.get("version") == "0.5.0" and app.get("bundlePresent") is True
+    and app.get("version") == expected_version and app.get("bundlePresent") is True
     and app.get("executableDigest") and app.get("executableDigest") == app.get("recordedExecutableDigest")
     and app.get("cdHash")
     and app.get("sourceRevision") == m.get("workshop", {}).get("commit", "")[:12]
@@ -212,6 +231,7 @@ PY
 
 case "$COMMAND" in
   prepare)
+    resolve_qa_instance
     say "signing identity"
     "$ROOT/scripts/setup-desktop-dev-signing.sh" >/dev/null
     say "packaged build (eval driver compiled in, stable signature)"
@@ -250,6 +270,7 @@ EOF
     ;;
 
   preflight)
+    resolve_qa_instance
     status=0
     checks=()
     check() { # name ok detail
@@ -317,6 +338,7 @@ EOF
     ;;
 
   run)
+    resolve_qa_instance
     shift 2 || shift $#
     "$0" preflight "$NAME" >/dev/null || fail "preflight refused; fix the report before spending"
     staged_optimizer="$INSTANCE_ROOT/runtime/gepa/optimizer-project"
@@ -355,6 +377,7 @@ sys.exit(0 if ok else 1)' || fail "running app refuses unattended start"
     ;;
 
   incident)
+    resolve_qa_instance
     out="${SYNTH_QA_INCIDENT_ROOT:-$RECEIPT_ROOT}/incident-$(date -u +%Y%m%dT%H%M%SZ)"
     mkdir -p "$out"
     say "collecting into $out"

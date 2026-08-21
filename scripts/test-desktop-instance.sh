@@ -288,4 +288,12 @@ jq -e '
 ' "$TEST_ROOT/instances/v07/alpha/instance.json" >/dev/null
 rg -q 'write_bundle_descriptor "\$app_bundle"' "$ROOT/scripts/desktop-instance.sh"
 
+# ID-R-05: task scripts source RELEASE_SLUG from the launcher print contract.
+if rg -q 'RELEASE_SLUG="v05"|/v05/\$NAME|== "0\.5\.0"' "$ROOT/scripts/workshop-qa" "$ROOT/scripts/crash-recovery-drill.sh"; then
+  echo "workshop-qa or crash-recovery-drill still hard-codes v05/0.5.0" >&2
+  exit 1
+fi
+rg -q 'jq -r \.releaseSlug' "$ROOT/scripts/workshop-qa"
+rg -q 'jq -r \.releaseSlug' "$ROOT/scripts/crash-recovery-drill.sh"
+
 echo "desktop instance contract: ok"

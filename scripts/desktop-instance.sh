@@ -377,7 +377,7 @@ PY
 }
 
 write_contract() {
-	local old_runtime="" old_signing="" old_provenance="" old_executable="" old_executable_digest="" manifest_tmp="$MANIFEST.tmp"
+	local old_runtime="" old_signing="" old_provenance="" old_executable="" old_executable_digest="" manifest_tmp="$MANIFEST.$$.tmp"
   mkdir -p "$DATA_ROOT" "$WORKSPACE" "$GENERATED_ROOT" "$TARGET_ROOT"
   chmod 700 "$INSTANCE_ROOT" "$DATA_ROOT" "$WORKSPACE"
 
@@ -658,7 +658,7 @@ verify_packaged_provenance() {
 }
 
 mark_runtime() {
-  local status="$1" pid="${2:-}" manifest_tmp="$MANIFEST.runtime.tmp"
+  local status="$1" pid="${2:-}" manifest_tmp="$MANIFEST.runtime.$$.tmp"
   local digest runtime_executable="$EXE"
   [[ -f "$MANIFEST" ]] || write_contract
   if [[ -n "$pid" ]]; then
