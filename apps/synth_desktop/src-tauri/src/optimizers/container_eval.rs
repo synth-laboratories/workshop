@@ -198,7 +198,8 @@ pub(super) async fn start(
     request: OptimizerRecipeRunRequest,
 ) -> Result<(OptimizerRunRecord, Option<crate::storage::AppEvent>)> {
     let spec = EvalSpec::for_recipe(&request.recipe_id)?;
-    let container = find_ready_container(service, spec.family).await?;
+    let container =
+        find_ready_container(service, spec.family, request.container_id.as_deref()).await?;
     preflight_container_credentials(&container, spec).await?;
     let examples = spec.examples();
     let suffix = Uuid::new_v4().simple().to_string();
@@ -1415,7 +1416,11 @@ async fn fetch_reward(
     json!({ "status": "absent", "reward": null, "rollout_id": rollout_id })
 }
 
-async fn find_ready_container(service: &OptimizerService, family: &str) -> Result<ReadyContainer> {
+async fn find_ready_container(
+    service: &OptimizerService,
+    family: &str,
+    requested_id: Option<&str>,
+) -> Result<ReadyContainer> {
     let family = family.to_string();
     let rows = service
         .database()
@@ -1441,6 +1446,7 @@ async fn find_ready_container(service: &OptimizerService, family: &str) -> Resul
         })
         .await?;
     let mut seen = Vec::new();
+    let mut ready_containers = Vec::new();
     for (id, status, base_url, task_family, metadata_json) in rows {
         let metadata: Value = serde_json::from_str(&metadata_json).unwrap_or(json!({}));
         let matches = container_matches_family(task_family.as_deref(), &metadata, &family);
@@ -1454,8 +1460,8 @@ async fn find_ready_container(service: &OptimizerService, family: &str) -> Resul
         if matches && ready {
             if let Some(base_url) = base_url.filter(|value| !value.trim().is_empty()) {
                 if let Some(protocol) = advertised_gepa_v2_protocol(&metadata) {
-                    return Ok(ReadyContainer {
-                        id,
+                    ready_containers.push(ReadyContainer {
+                        id: id.clone(),
                         base_url: base_url.trim_end_matches('/').to_string(),
                         protocol,
                         image_digest: container_image_digest(&metadata),
@@ -1470,6 +1476,30 @@ async fn find_ready_container(service: &OptimizerService, family: &str) -> Resul
                 ));
             }
         }
+    }
+    if let Some(requested_id) = requested_id {
+        return ready_containers
+            .into_iter()
+            .find(|container| container.id == requested_id)
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "requested {family} container `{requested_id}` is not a ready GEPA v2 pool: {}",
+                    seen.join(", ")
+                )
+            });
+    }
+    if ready_containers.len() == 1 {
+        return Ok(ready_containers.remove(0));
+    }
+    if ready_containers.len() > 1 {
+        bail!(
+            "ambiguous registered {family} GEPA v2 pools: {}. Pass the explicit containerId selected in Data; refusing to substitute a container.",
+            ready_containers
+                .iter()
+                .map(|container| container.id.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
     }
     if seen.is_empty() {
         bail!(
@@ -1843,17 +1873,37 @@ mod tests {
         base_url: &str,
         status: &str,
     ) {
-        let id = format!("ctr_{family}_test");
+        insert_named_container(
+            service,
+            &format!("ctr_{family}_test"),
+            family,
+            base_url,
+            status,
+            "2026-08-17",
+        )
+        .await;
+    }
+
+    async fn insert_named_container(
+        service: &OptimizerService,
+        id: &str,
+        family: &str,
+        base_url: &str,
+        status: &str,
+        updated_at: &str,
+    ) {
+        let id = id.to_string();
         let family = family.to_string();
         let base_url = base_url.to_string();
         let status = status.to_string();
+        let updated_at = updated_at.to_string();
         service
             .database()
             .clone()
             .run_transaction(move |conn| {
                 conn.execute(
                     "INSERT INTO containers(id,name,location,status,base_url,task_family,health_json,metadata_json,created_at,updated_at)
-                     VALUES(?1,?2,'local',?3,?4,?5,'{\"ok\":true}',?6,'2026-08-17','2026-08-17')",
+                     VALUES(?1,?2,'local',?3,?4,?5,'{\"ok\":true}',?6,'2026-08-17',?7)",
                     params![
                         id,
                         format!("{family} test"),
@@ -1872,7 +1922,8 @@ mod tests {
                             },
                             "imageDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
                         })
-                        .to_string()
+                        .to_string(),
+                        updated_at
                     ],
                 )?;
                 Ok(())
@@ -1923,6 +1974,7 @@ mod tests {
                 base_model: None,
                 dataset_shard: None,
                 candidate_set_id: None,
+                container_id: None,
                 training_artifact_id: None,
                 search: None,
             })
@@ -2181,6 +2233,7 @@ mod tests {
                     base_model: None,
                     dataset_shard: None,
                     candidate_set_id: None,
+                    container_id: None,
                     training_artifact_id: None,
                     search: None,
                 })
@@ -2301,6 +2354,7 @@ mod tests {
                 base_model: None,
                 dataset_shard: None,
                 candidate_set_id: None,
+                container_id: None,
                 training_artifact_id: None,
                 search: None,
             })
@@ -2398,6 +2452,7 @@ mod tests {
                 base_model: None,
                 dataset_shard: None,
                 candidate_set_id: None,
+                container_id: None,
                 training_artifact_id: None,
                 search: None,
             })
@@ -2589,6 +2644,7 @@ mod tests {
                 base_model: None,
                 dataset_shard: None,
                 candidate_set_id: None,
+                container_id: None,
                 training_artifact_id: None,
                 search: None,
             })
@@ -2652,6 +2708,10 @@ mod tests {
     }
 
     fn recipe(id: &str, session: &str) -> OptimizerRecipeRunRequest {
+        recipe_on(id, session, None)
+    }
+
+    fn recipe_on(id: &str, session: &str, container_id: Option<&str>) -> OptimizerRecipeRunRequest {
         OptimizerRecipeRunRequest {
             recipe_id: id.into(),
             session_ref: Some(session.into()),
@@ -2659,9 +2719,254 @@ mod tests {
             base_model: None,
             dataset_shard: None,
             candidate_set_id: None,
+            container_id: container_id.map(str::to_string),
             training_artifact_id: None,
             search: None,
         }
+    }
+
+    #[tokio::test]
+    async fn two_ready_banking77_pools_without_container_id_fail_ambiguous_before_dispatch() {
+        let (isolated_base, isolated_task, isolated_starts) =
+            spawn_eval_mock("banking77", BTreeMap::new()).await;
+        let (stale_base, stale_task, stale_starts) =
+            spawn_eval_mock("banking77", BTreeMap::new()).await;
+        let (svc, _dir, _) = service().await;
+        insert_named_container(
+            &svc,
+            "ctr_banking77_isolated",
+            "banking77",
+            &isolated_base,
+            "ready",
+            "2026-08-17T00:00:00Z",
+        )
+        .await;
+        insert_named_container(
+            &svc,
+            "ctr_banking77_stale",
+            "banking77",
+            &stale_base,
+            "ready",
+            "2026-08-19T00:00:00Z",
+        )
+        .await;
+        let error = svc
+            .start_recipe(recipe(BANKING77_EVAL_BASELINE_RECIPE, "sess_ambiguous"))
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("ambiguous registered banking77 GEPA v2 pools"),
+            "expected an ambiguous-pool refusal, got {error}"
+        );
+        assert!(
+            error.contains("ctr_banking77_isolated") && error.contains("ctr_banking77_stale"),
+            "expected both ready ids in the refusal, got {error}"
+        );
+        assert_eq!(isolated_starts.load(Ordering::SeqCst), 0);
+        assert_eq!(stale_starts.load(Ordering::SeqCst), 0);
+        isolated_task.abort();
+        stale_task.abort();
+    }
+
+    #[tokio::test]
+    async fn explicit_container_id_binds_the_isolated_ready_banking77_pool() {
+        let rewards = (0..10).map(|seed| (("train".into(), seed), 1.0)).collect();
+        let (isolated_base, isolated_task, isolated_starts) =
+            spawn_eval_mock("banking77", rewards).await;
+        let (stale_base, stale_task, stale_starts) =
+            spawn_eval_mock("banking77", BTreeMap::new()).await;
+        let (svc, _dir, _) = service().await;
+        insert_named_container(
+            &svc,
+            "ctr_banking77_isolated",
+            "banking77",
+            &isolated_base,
+            "ready",
+            "2026-08-17T00:00:00Z",
+        )
+        .await;
+        insert_named_container(
+            &svc,
+            "ctr_banking77_stale",
+            "banking77",
+            &stale_base,
+            "ready",
+            "2026-08-19T00:00:00Z",
+        )
+        .await;
+        let (run, _) = svc
+            .start_recipe(recipe_on(
+                BANKING77_EVAL_BASELINE_RECIPE,
+                "sess_explicit_isolated",
+                Some("ctr_banking77_isolated"),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(run.summary["containerId"], json!("ctr_banking77_isolated"));
+        assert_eq!(
+            run.summary["containerBaseUrl"],
+            json!(isolated_base.trim_end_matches('/'))
+        );
+        let finished = wait_terminal(&svc, &run.id).await;
+        assert_eq!(finished.status, "completed");
+        assert_eq!(isolated_starts.load(Ordering::SeqCst), 10);
+        assert_eq!(stale_starts.load(Ordering::SeqCst), 0);
+        isolated_task.abort();
+        stale_task.abort();
+    }
+
+    #[tokio::test]
+    async fn requested_container_id_that_is_not_ready_or_wrong_family_fails_closed() {
+        let (ready_base, ready_task, ready_starts) =
+            spawn_eval_mock("banking77", BTreeMap::new()).await;
+        let (health_base, health_task, health_starts) =
+            spawn_eval_mock("healthbench", BTreeMap::new()).await;
+        let (svc, _dir, _) = service().await;
+        insert_named_container(
+            &svc,
+            "ctr_banking77_ready",
+            "banking77",
+            &ready_base,
+            "ready",
+            "2026-08-17T00:00:00Z",
+        )
+        .await;
+        insert_named_container(
+            &svc,
+            "ctr_banking77_offline",
+            "banking77",
+            &ready_base,
+            "offline",
+            "2026-08-18T00:00:00Z",
+        )
+        .await;
+        insert_named_container(
+            &svc,
+            "ctr_healthbench_ready",
+            "healthbench",
+            &health_base,
+            "ready",
+            "2026-08-19T00:00:00Z",
+        )
+        .await;
+
+        let not_ready = svc
+            .start_recipe(recipe_on(
+                BANKING77_EVAL_BASELINE_RECIPE,
+                "sess_not_ready",
+                Some("ctr_banking77_offline"),
+            ))
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(
+            not_ready.contains(
+                "requested banking77 container `ctr_banking77_offline` is not a ready GEPA v2 pool"
+            ),
+            "expected a fail-closed missing-ready-id error, got {not_ready}"
+        );
+        assert!(
+            !not_ready.contains("ambiguous"),
+            "must not fall back to the other ready pool, got {not_ready}"
+        );
+
+        let wrong_family = svc
+            .start_recipe(recipe_on(
+                BANKING77_EVAL_BASELINE_RECIPE,
+                "sess_wrong_family",
+                Some("ctr_healthbench_ready"),
+            ))
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(
+            wrong_family.contains(
+                "requested banking77 container `ctr_healthbench_ready` is not a ready GEPA v2 pool"
+            ),
+            "expected a fail-closed wrong-family error, got {wrong_family}"
+        );
+        assert!(
+            !wrong_family.contains("ambiguous"),
+            "must not fall back to the banking77 pool, got {wrong_family}"
+        );
+        assert_eq!(ready_starts.load(Ordering::SeqCst), 0);
+        assert_eq!(health_starts.load(Ordering::SeqCst), 0);
+        ready_task.abort();
+        health_task.abort();
+    }
+
+    #[tokio::test]
+    async fn single_ready_banking77_pool_still_starts_when_container_id_is_omitted() {
+        let rewards = (0..10).map(|seed| (("train".into(), seed), 1.0)).collect();
+        let (base, task, starts) = spawn_eval_mock("banking77", rewards).await;
+        let (svc, _dir, _) = service().await;
+        insert_named_container(
+            &svc,
+            "ctr_banking77_only",
+            "banking77",
+            &base,
+            "ready",
+            "2026-08-17T00:00:00Z",
+        )
+        .await;
+        let (run, _) = svc
+            .start_recipe(recipe(BANKING77_EVAL_BASELINE_RECIPE, "sess_single_pool"))
+            .await
+            .unwrap();
+        assert_eq!(run.summary["containerId"], json!("ctr_banking77_only"));
+        assert_eq!(
+            run.summary["containerBaseUrl"],
+            json!(base.trim_end_matches('/'))
+        );
+        let finished = wait_terminal(&svc, &run.id).await;
+        assert_eq!(finished.status, "completed");
+        assert_eq!(starts.load(Ordering::SeqCst), 10);
+        task.abort();
+    }
+
+    #[tokio::test]
+    async fn newer_updated_at_does_not_break_ambiguous_refusal_when_container_id_is_omitted() {
+        let (older_base, older_task, older_starts) =
+            spawn_eval_mock("banking77", BTreeMap::new()).await;
+        let (newer_base, newer_task, newer_starts) =
+            spawn_eval_mock("banking77", BTreeMap::new()).await;
+        let (svc, _dir, _) = service().await;
+        insert_named_container(
+            &svc,
+            "ctr_banking77_older",
+            "banking77",
+            &older_base,
+            "ready",
+            "2026-08-10T00:00:00Z",
+        )
+        .await;
+        insert_named_container(
+            &svc,
+            "ctr_banking77_stale_newer",
+            "banking77",
+            &newer_base,
+            "ready",
+            "2026-08-20T12:00:00Z",
+        )
+        .await;
+        let error = svc
+            .start_recipe(recipe(BANKING77_EVAL_BASELINE_RECIPE, "sess_stale_newer"))
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("ambiguous registered banking77 GEPA v2 pools"),
+            "a newer updated_at must not restore first-match-wins, got {error}"
+        );
+        assert!(
+            error.contains("ctr_banking77_older") && error.contains("ctr_banking77_stale_newer"),
+            "expected both ready ids in the refusal, got {error}"
+        );
+        assert_eq!(older_starts.load(Ordering::SeqCst), 0);
+        assert_eq!(newer_starts.load(Ordering::SeqCst), 0);
+        older_task.abort();
+        newer_task.abort();
     }
 
     #[tokio::test]
