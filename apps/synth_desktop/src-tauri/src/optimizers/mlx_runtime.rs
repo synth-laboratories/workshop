@@ -151,17 +151,12 @@ pub fn mlx_serve_command(port: u16, root: &Path) -> Result<Command> {
 
 fn mlx_serve_command_with_model(port: u16, root: &Path, model_path: &Path) -> Result<Command> {
     let mut command = Command::new(mlx_bin()?);
-    command.args([
-        "serve",
-        "--host",
-        "127.0.0.1",
-        "--port",
-        &port.to_string(),
-        "--root",
-        &root.display().to_string(),
-        "--model",
-        TRAINING_MODEL_ID,
-    ]);
+    command
+        .arg("serve")
+        .args(["--host", "127.0.0.1"])
+        .args(["--port", &port.to_string()])
+        .args(["--root", &root.display().to_string()])
+        .args(["--model", &model_path.display().to_string()]);
     command.env("SYNTH_MLX_RL_MODEL_PATH", model_path);
     command.env("HF_HUB_OFFLINE", "1");
     command.kill_on_drop(true);
@@ -331,7 +326,7 @@ mod tests {
                 "--root",
                 "/tmp/mlx-root",
                 "--model",
-                TRAINING_MODEL_ID
+                "/tmp/managed-training-model"
             ]
         );
         assert_eq!(
@@ -404,4 +399,5 @@ mod tests {
             None => std::env::remove_var("SYNTH_DESKTOP_DATA_ROOT"),
         }
     }
+
 }
