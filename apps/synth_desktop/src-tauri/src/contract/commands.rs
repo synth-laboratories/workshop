@@ -59,7 +59,8 @@ impl Commands {
     pub const WORKSPACE_SCOPE_DENY_REQUEST: &'static str = "workspace_scope_deny_request";
     pub const LAGUNA_GET_STATUS: &'static str = "laguna_get_status";
     pub const LAGUNA_RELOAD: &'static str = "laguna_reload";
-    pub const LAGUNA_SET_ADAPTER: &'static str = "laguna_set_adapter";
+    pub const LAGUNA_REGISTER_POLICY: &'static str = "laguna_register_policy";
+    pub const LAGUNA_POLICIES: &'static str = "laguna_policies";
     pub const LAGUNA_MODELS_LIST: &'static str = "laguna_models_list";
     pub const LAGUNA_MODEL_DOWNLOAD: &'static str = "laguna_model_download";
     pub const LAGUNA_MODEL_UNLOAD: &'static str = "laguna_model_unload";

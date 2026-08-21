@@ -14,7 +14,7 @@ import type { DeviceUsageSummary } from "./components/UsageSheet";
 import type { DesktopPreferences, ToolActivityMode } from "./preferences";
 import { applyPreferencesToDocument } from "./preferences";
 import type { LagunaStatus, ModelPerformanceSummary, PluginPermission, PluginStatus, SynthAccountSummary, SynthBackendSettings } from "./bridge";
-import type { LagunaAdapterOption } from "./runtime/lagunaAdapters";
+import type { LagunaPolicy } from "./bridge/types";
 import type { ComputerUseView } from "./runtime/computerUse";
 import type { InferenceMonitor } from "./components/InferencePanel";
 import type { ApprovalMode, ApprovalPolicy, SandboxMode } from "./runtime/nativeCodex";
@@ -65,7 +65,7 @@ export type MainRoutesProps = {
 	sessions: Session[];
 	selectedTargetId: string;
 	onSelectTarget: (id: string) => void;
-	lagunaAdapters: LagunaAdapterOption[];
+	lagunaAdapters: LagunaPolicy[];
 	selectedLagunaAdapterId: string | null;
 	onSelectLagunaAdapter: (checkpointId: string | null) => void;
 	activeChat: LocalChat | null;

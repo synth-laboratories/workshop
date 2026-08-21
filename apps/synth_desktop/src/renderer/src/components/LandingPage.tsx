@@ -4,13 +4,13 @@ import type { ExecutionTargetOption, LandingState, ModelAccessKind } from "../ty
 import { SynthLogo } from "./SynthLogo";
 import { ProviderMark, providerMarkForTarget } from "./ProviderMark";
 import { LagunaAdapterPicker } from "./LagunaAdapterPicker";
-import type { LagunaAdapterOption } from "../runtime/lagunaAdapters";
+import type { LagunaPolicy } from "../bridge/types";
 
 type Props = {
 	state: LandingState;
 	selectedTargetId: string;
 	onSelectTarget: (id: string) => void;
-	lagunaAdapters?: LagunaAdapterOption[];
+	lagunaAdapters?: LagunaPolicy[];
 	selectedLagunaAdapterId?: string | null;
 	onSelectLagunaAdapter?: (checkpointId: string | null) => void;
 	onConfigureAccount?: () => void;

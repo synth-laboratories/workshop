@@ -6,8 +6,10 @@
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::{Map, Value};
 
-/// Laguna on-device model id used by LocalRuntime payloads.
-pub const LOCAL_LAGUNA_MODEL: &str = "laguna-xs-2.1";
+/// The daemon's base policy, and the fallback for a local target that carries
+/// no model. It must be a registered policy id: an unknown one is refused at
+/// turn time rather than quietly served by the base weights.
+pub const LOCAL_LAGUNA_MODEL: &str = "poolside/Laguna-XS-2.1-NVFP4-mlx";
 
 /// Sync vs async Intern wire mode.
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, specta::Type)]

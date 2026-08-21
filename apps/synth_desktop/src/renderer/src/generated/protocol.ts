@@ -344,7 +344,8 @@ export const commands = {
 	migrationCancel: (confirmationToken: string) => __TAURI_INVOKE<MigrationCancelResult>("migration_cancel", { confirmationToken }),
 	lagunaGetStatus: () => typedError<LagunaStatus, AppError>(__TAURI_INVOKE("laguna_get_status")),
 	lagunaReload: () => typedError<LagunaStatus, AppError>(__TAURI_INVOKE("laguna_reload")),
-	lagunaSetAdapter: (checkpointId: string | null) => typedError<LagunaStatus, AppError>(__TAURI_INVOKE("laguna_set_adapter", { checkpointId })),
+	lagunaRegisterPolicy: (checkpointId: string, modelId: string) => typedError<LagunaPolicy, AppError>(__TAURI_INVOKE("laguna_register_policy", { checkpointId, modelId })),
+	lagunaPolicies: () => typedError<LagunaPolicy[], AppError>(__TAURI_INVOKE("laguna_policies")),
 	lagunaModelsList: () => typedError<LagunaModelHit[], AppError>(__TAURI_INVOKE("laguna_models_list")),
 	lagunaModelsSetDirectory: (path: string) => typedError<LagunaModelHit, AppError>(__TAURI_INVOKE("laguna_models_set_directory", { path })),
 	lagunaModelsClearDirectory: () => typedError<null, AppError>(__TAURI_INVOKE("laguna_models_clear_directory")),
@@ -1303,6 +1304,25 @@ export type LagunaModelHit = {
 	selected: boolean,
 	runtimeReady: boolean,
 	companionBytes: unknown,
+};
+
+/**
+ *  One selectable inference policy: the base weights, or those weights with a
+ *  LoRA attached. Speed fields are `None` until measured — never zero.
+ */
+export type LagunaPolicy = {
+	modelId: string,
+	title: string | null,
+	isBase: boolean,
+	digest: string | null,
+	tokensPerSecondP10: number | null,
+	deltaVsBasePct: number | null,
+	/**
+	 *  Whether the delta exceeds this policy's own measurement noise. False
+	 *  means the surface must not render the number, not that it is zero.
+	 */
+	deltaIsResolvable: boolean,
+	tokenSamples: unknown,
 };
 
 /**

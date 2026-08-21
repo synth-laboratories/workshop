@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState } from "react";
-import type { LagunaAdapterOption } from "../runtime/lagunaAdapters";
+import type { LagunaPolicy } from "../bridge/types";
+import { policyLabel, policySpeed } from "../runtime/lagunaPolicies";
 
 type Props = {
-	adapters: LagunaAdapterOption[];
+	adapters: LagunaPolicy[];
 	selectedId: string | null;
 	onSelect: (checkpointId: string | null) => void;
 	disabled?: boolean;
@@ -18,8 +19,8 @@ export function LagunaAdapterPicker({
 }: Props) {
 	const [open, setOpen] = useState(false);
 	const ref = useRef<HTMLDivElement>(null);
-	const selected = adapters.find((adapter) => adapter.checkpointId === selectedId);
-	const label = selected?.name ?? "Base model";
+	const selected = adapters.find((adapter) => adapter.modelId === selectedId);
+	const label = selected ? policyLabel(selected) : "Base model";
 
 	useEffect(() => {
 		if (!open) return;
@@ -69,47 +70,30 @@ export function LagunaAdapterPicker({
 			</button>
 			{open ? (
 				<div id="laguna-adapter-menu" className={menuClass} role="listbox" data-testid="laguna-adapter-menu">
-					<button
-						type="button"
-						role="option"
-						aria-selected={!selectedId}
-						className={`${optionClass}${selectedId ? "" : " selected"}`}
-						data-testid="laguna-adapter-option-base"
-						onClick={() => pick(null)}
-					>
-						{variant === "landing" ? (
-							<>
-								<span className="model-option-label">Base model</span>
-								<span className="model-option-desc">Laguna XS 2.1 without a LoRA</span>
-							</>
-						) : (
-							<span className="composer-model-option-main">
-								<span className="composer-model-option-label">Base model</span>
-								<span className="composer-model-option-desc">Laguna XS 2.1 without a LoRA</span>
-							</span>
-						)}
-					</button>
-					{adapters.map((adapter) => {
-						const selectedHere = adapter.checkpointId === selectedId;
+					{adapters.map((policy) => {
+						const value = policy.isBase ? null : policy.modelId;
+						const selectedHere = value === selectedId;
+						const { rate, delta } = policySpeed(policy);
+						const speed = delta ? `${rate} · ${delta}` : rate;
 						return (
 							<button
-								key={adapter.checkpointId}
+								key={policy.modelId}
 								type="button"
 								role="option"
 								aria-selected={selectedHere}
 								className={`${optionClass}${selectedHere ? " selected" : ""}`}
-								data-testid={`laguna-adapter-option-${adapter.checkpointId}`}
-								onClick={() => pick(adapter.checkpointId)}
+								data-testid={`laguna-adapter-option-${policy.isBase ? "base" : policy.modelId}`}
+								onClick={() => pick(value)}
 							>
 								{variant === "landing" ? (
 									<>
-										<span className="model-option-label">{adapter.name}</span>
-										<span className="model-option-desc">Loads on this chat · This Mac LoRA</span>
+										<span className="model-option-label">{policyLabel(policy)}</span>
+										<span className="model-option-desc">{speed}</span>
 									</>
 								) : (
 									<span className="composer-model-option-main">
-										<span className="composer-model-option-label">{adapter.name}</span>
-										<span className="composer-model-option-desc">Loads on this chat · This Mac LoRA</span>
+										<span className="composer-model-option-label">{policyLabel(policy)}</span>
+										<span className="composer-model-option-desc">{speed}</span>
 									</span>
 								)}
 							</button>

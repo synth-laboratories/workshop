@@ -26,6 +26,8 @@ export function permissionConfigFromApprovalMode(mode: ApprovalMode): Permission
 	return approvalModeConfig(mode) as PermissionConfig;
 }
 
+import { LOCAL_BASE_POLICY } from "./lagunaPolicies";
+
 /** Where the local daemon listens when nothing else says otherwise. A named
  *  development instance gets its own port, so the caller passes the address the
  *  supervisor actually reported rather than assuming this one. */
@@ -43,7 +45,7 @@ export function codexStartRequest(
 		const autoCompactTokenLimit = autoCompactTokenLimits.lagunaXs ?? 150_000;
 		return {
 			sessionId, workspace, baseUrl: localBaseUrl,
-			model: "poolside/Laguna-XS-2.1-NVFP4-mlx", providerName: "local-laguna",
+			model: target.model || LOCAL_BASE_POLICY, providerName: "local-laguna",
 			providerTitle: "Laguna XS Responses", providerEnvKey: "SYNTH_LAGUNA_API_KEY",
 			autoCompactTokenLimit, adapter: target.adapter, ...approval
 		};
@@ -101,7 +103,7 @@ export function restoreCodexSession(value: PersistedCodexSession): Session {
 	const synthCloud = value.providerName === "synth-cloud";
 	const chatgpt = value.providerName === "openai-codex-oauth";
 	const target: ExecutionTarget = local
-		? { kind: "local", model: "laguna-xs-2.1", adapter: value.adapter ?? null }
+		? { kind: "local", model: value.model || LOCAL_BASE_POLICY, adapter: value.adapter ?? null }
 		: synthCloud
 			? { kind: "cloud", model: value.model, adapter: null }
 			: {

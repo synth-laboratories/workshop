@@ -122,6 +122,24 @@ pub struct LagunaStatus {
     pub updated_at: u64,
 }
 
+/// One selectable inference policy: the base weights, or those weights with a
+/// LoRA attached. Speed fields are `None` until measured — never zero.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct LagunaPolicy {
+    pub model_id: String,
+    pub title: Option<String>,
+    pub is_base: bool,
+    pub digest: Option<String>,
+    pub tokens_per_second_p10: Option<f64>,
+    pub delta_vs_base_pct: Option<f64>,
+    /// Whether the delta exceeds this policy's own measurement noise. False
+    /// means the surface must not render the number, not that it is zero.
+    pub delta_is_resolvable: bool,
+    #[specta(type = specta_typescript::Unknown)]
+    pub token_samples: u64,
+}
+
 /// The generation currently holding the daemon's single GPU admission slot.
 ///
 /// Every metric is `Option` on purpose: `null` from the daemon means the number
@@ -328,6 +346,134 @@ impl LagunaManager {
         }
         self.ensure(workshop_root).await?;
         Ok(self.status().await)
+    }
+
+    /// Register an adapter under a model id clients can ask for.
+    ///
+    /// Registration is not selection. Which policy a turn runs under is
+    /// decided by the `model` on that request, so registering `…-ft` cannot
+    /// change what an already-open conversation is doing.
+    pub async fn register_policy(
+        &self,
+        model_id: &str,
+        adapter_path: &Path,
+        digest: Option<&str>,
+    ) -> Result<LagunaPolicy> {
+        let base_url = self
+            .status()
+            .await
+            .base_url
+            .clone()
+            .ok_or_else(|| anyhow::anyhow!("Laguna is not running"))?;
+        let api_key = env::var("SYNTH_LAGUNA_API_KEY").unwrap_or_default();
+        let response = self
+            .client
+            .post(format!("{}/v1/synth/policies", trim_url(base_url)))
+            .bearer_auth(api_key)
+            .json(&json!({
+                "model_id": model_id,
+                "adapter_path": adapter_path.display().to_string(),
+                "digest": digest,
+            }))
+            .send()
+            .await
+            .context("Laguna policy registration is unreachable")?;
+        let status = response.status();
+        let body: Value = response.json().await.unwrap_or_else(|_| json!({}));
+        if !status.is_success() {
+            let message = body
+                .pointer("/error/message")
+                .and_then(Value::as_str)
+                .unwrap_or("Laguna refused the policy");
+            return Err(anyhow::anyhow!("{message}"));
+        }
+        let policy = body.get("policy").cloned().unwrap_or_else(|| json!({}));
+        Ok(LagunaPolicy {
+            model_id: policy
+                .get("model_id")
+                .and_then(Value::as_str)
+                .unwrap_or(model_id)
+                .to_string(),
+            title: policy.get("title").and_then(Value::as_str).map(str::to_string),
+            is_base: policy.get("is_base").and_then(Value::as_bool).unwrap_or(false),
+            digest: policy.get("digest").and_then(Value::as_str).map(str::to_string),
+            tokens_per_second_p10: None,
+            delta_vs_base_pct: None,
+            delta_is_resolvable: false,
+            token_samples: 0,
+        })
+    }
+
+    /// Selectable policies, joined to whatever the daemon has actually measured.
+    ///
+    /// Speed fields stay `None` until the daemon has enough samples, and the
+    /// delta is only marked resolvable when it exceeds that policy's own
+    /// measurement noise. A caller must not invent a number for a blank.
+    pub async fn policies(&self) -> Result<Vec<LagunaPolicy>> {
+        let base_url = self
+            .status()
+            .await
+            .base_url
+            .clone()
+            .ok_or_else(|| anyhow::anyhow!("Laguna is not running"))?;
+        let base_url = trim_url(base_url);
+        let api_key = env::var("SYNTH_LAGUNA_API_KEY").unwrap_or_default();
+        let listed: Value = self
+            .client
+            .get(format!("{base_url}/v1/synth/policies"))
+            .bearer_auth(&api_key)
+            .send()
+            .await
+            .context("Laguna policy list is unreachable")?
+            .json()
+            .await
+            .unwrap_or_else(|_| json!({}));
+        // Telemetry is enrichment: a policy list still renders when the
+        // daemon has measured nothing yet, with blanks where numbers go.
+        let measured: Value = match self
+            .client
+            .get(format!("{base_url}{INFERENCE_PATH}"))
+            .bearer_auth(&api_key)
+            .send()
+            .await
+        {
+            Ok(response) => response.json().await.unwrap_or_else(|_| json!({})),
+            Err(_) => json!({}),
+        };
+        let rows = measured.pointer("/policies/policies").cloned().unwrap_or_else(|| json!({}));
+        let mut policies = Vec::new();
+        for entry in listed
+            .get("policies")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default()
+        {
+            let model_id = entry
+                .get("model_id")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string();
+            let stats = rows.get(&model_id).cloned().unwrap_or_else(|| json!({}));
+            policies.push(LagunaPolicy {
+                title: entry.get("title").and_then(Value::as_str).map(str::to_string),
+                is_base: entry.get("is_base").and_then(Value::as_bool).unwrap_or(false),
+                digest: entry.get("digest").and_then(Value::as_str).map(str::to_string),
+                tokens_per_second_p10: stats
+                    .get("tokensPerSecondP10")
+                    .and_then(Value::as_f64),
+                delta_vs_base_pct: stats.get("deltaVsBasePct").and_then(Value::as_f64),
+                delta_is_resolvable: stats
+                    .get("deltaIsResolvable")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false),
+                token_samples: stats
+                    .get("tokenSamples")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0),
+                model_id,
+            });
+        }
+        Ok(policies)
     }
 
     pub async fn set_adapter(&self, adapter_path: Option<&Path>) -> Result<LagunaStatus> {

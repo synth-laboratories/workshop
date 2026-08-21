@@ -4,7 +4,7 @@ import { commands as spectaCommands } from "../generated/protocol";
 import { open } from "@tauri-apps/plugin-dialog";
 import desktopPackage from "../../../../package.json";
 import type { AppEvent, InternSessionControlRequest, InternSessionCreateRequest, InternSessionSendRequest, RuntimeEvent, Session } from "@synth/runtime-protocol";
-import type { CodexEvent, CodexOauthBegin, CodexOauthStatus, CodexSessionInfo, ComposerImageAttachment, ContextSnapshot, DesktopInstanceDiagnostics, DesktopPermissionSettings, InventoryCounts, LagunaDownloadProgress, LagunaModelHit, LagunaStatus, ModelMultiAgentSetting, ModelPerformanceSummary, ModelPerformanceTurnSample, OptimizerInferDelta, PersistedCodexSession, ProductTelemetryPolicy, RequestOptions, RuntimeBridge, SecretAuditEvent, SecretCapabilitySummary, SecretImportPreview, SecretSummary, SecretsBridge, SecretsInbox, SkillHit, SynthAccountSummary, SynthBackendSettings, SynthSignInBegin, SynthSignInPoll, TariffCard, TerminalEvent, TerminalInfo, TrainingArtifact, TrainingModelDownloadProgress, TrainingModelHit, UpdateStatus, VisualAnnotation, VisualSeal, VisualSealBundle, VisualTemplateMeta, VisualUpload, WhisperDownloadProgress, WhisperModelHit, WhisperRuntimeStatus, WorkspaceAccessSettings } from "../bridge";
+import type { CodexEvent, CodexOauthBegin, CodexOauthStatus, CodexSessionInfo, ComposerImageAttachment, ContextSnapshot, DesktopInstanceDiagnostics, DesktopPermissionSettings, InventoryCounts, LagunaDownloadProgress, LagunaModelHit, LagunaPolicy, LagunaStatus, ModelMultiAgentSetting, ModelPerformanceSummary, ModelPerformanceTurnSample, OptimizerInferDelta, PersistedCodexSession, ProductTelemetryPolicy, RequestOptions, RuntimeBridge, SecretAuditEvent, SecretCapabilitySummary, SecretImportPreview, SecretSummary, SecretsBridge, SecretsInbox, SkillHit, SynthAccountSummary, SynthBackendSettings, SynthSignInBegin, SynthSignInPoll, TariffCard, TerminalEvent, TerminalInfo, TrainingArtifact, TrainingModelDownloadProgress, TrainingModelHit, UpdateStatus, VisualAnnotation, VisualSeal, VisualSealBundle, VisualTemplateMeta, VisualUpload, WhisperDownloadProgress, WhisperModelHit, WhisperRuntimeStatus, WorkspaceAccessSettings } from "../bridge";
 import type { CoreDiagnostics, VisualRecord, VisualRevision } from "@synth/runtime-protocol";
 import type { ContainerDeployment, ResolvedTraceProjection, TraceBundleIngestResult, TraceV5Record, UsageLedgerEntry, UsageSummary, UsageWindow } from "@synth/runtime-protocol";
 import { publicError } from "../runtime/publicError";
@@ -223,7 +223,9 @@ export function installDesktopBridge(): void {
 			},
 			setModelDirectory: (path) => invokeCommand<LagunaModelHit>(COMMANDS.LAGUNA_MODELS_SET_DIRECTORY, { path }),
 			clearModelDirectory: () => invokeCommand<void>(COMMANDS.LAGUNA_MODELS_CLEAR_DIRECTORY),
-			setAdapter: (checkpointId) => invokeCommand<LagunaStatus>(COMMANDS.LAGUNA_SET_ADAPTER, { checkpointId }),
+			policies: () => invokeCommand<LagunaPolicy[]>(COMMANDS.LAGUNA_POLICIES),
+			registerPolicy: (checkpointId, modelId) =>
+				invokeCommand<LagunaPolicy>(COMMANDS.LAGUNA_REGISTER_POLICY, { checkpointId, modelId }),
 			downloadModel: (modelId) => invokeCommand<LagunaModelHit>(COMMANDS.LAGUNA_MODEL_DOWNLOAD, { modelId }),
 			deleteModel: (modelId) => invokeCommand<void>(COMMANDS.LAGUNA_MODEL_DELETE, { modelId }),
 			onDownloadProgress(listener) {
@@ -261,7 +263,8 @@ export function installDesktopBridge(): void {
 			chooseModelDirectory: async () => null,
 			setModelDirectory: async () => { throw new Error("Model folders require the desktop app"); },
 			clearModelDirectory: async () => undefined,
-			setAdapter: async () => unavailableLaguna,
+			policies: async () => [],
+			registerPolicy: async () => { throw new Error("Policies require Synth Desktop"); },
 			onStatus: () => () => undefined
 		};
 	window.synthTrainingModels ??= isTauri

@@ -3,6 +3,7 @@ import { open } from "@tauri-apps/plugin-dialog";
 import type { OptimizerAlgorithmInfo, OptimizerRunRecord } from "@synth/runtime-protocol";
 import type { HostedTrainingModel, OptimizerRecipeInfo, OptimizerRunOutputs, PluginActionReceipt, PluginLifecycleOperation, PluginStatus, SavedLoraCheckpoint, TrainingProjection } from "../bridge/types";
 import { bridges } from "../runtime/desktopBridge";
+import { isLagunaCompatibleAdapter, LOCAL_FT_POLICY } from "../runtime/lagunaPolicies";
 import { findPluginStatus, pluginPresentation, type PluginPresentation } from "../runtime/pluginPresentation";
 import { publicError } from "../runtime/publicError";
 import { TrainingWorkspace } from "./TrainingWorkspace";
@@ -550,6 +551,17 @@ export function OptimizersPage({
 		}
 	};
 
+	const useInComposer = async (checkpoint: SavedLoraCheckpoint) => {
+		setSavedLoraBusy(true);
+		try {
+			await bridges.laguna?.registerPolicy?.(checkpoint.checkpointId, LOCAL_FT_POLICY);
+		} catch (reason) {
+			setError(presentError(reason).message);
+		} finally {
+			setSavedLoraBusy(false);
+		}
+	};
+
 	const publishSavedLora = async (checkpoint: SavedLoraCheckpoint) => {
 		if (!bridges.optimizers?.publishSavedLora) return;
 		setSavedLoraBusy(true);
@@ -1059,7 +1071,7 @@ export function OptimizersPage({
 							<label className="optimizer-search"><span>Tags</span><input aria-label="Checkpoint tags" defaultValue={checkpoint.tags.join(", ")} placeholder="comma-separated tags" key={`${checkpoint.checkpointId}-tags-${checkpoint.tags.join(",")}`} onBlur={(event) => { const tags = event.target.value.split(",").map((tag) => tag.trim()).filter(Boolean); if (tags.join(",") !== checkpoint.tags.join(",")) void patchSavedLora(checkpoint, { tags }); }} /></label>
 							<dl><dt>Placement</dt><dd>{checkpoint.placement === "this_mac" ? "This Mac" : "Hosted"}</dd><dt>Base</dt><dd>{checkpoint.baseModel}</dd><dt>Algorithm</dt><dd>{checkpoint.lineage.optimizerAlgorithm ?? checkpoint.optimizerAlgorithm ?? "Imported"}</dd><dt>Run</dt><dd>{checkpoint.lineage.runId ?? checkpoint.runId ?? "—"}</dd><dt>Attempt</dt><dd>{checkpoint.lineage.attemptId ?? checkpoint.attemptId ?? "—"}</dd><dt>Source</dt><dd>{checkpoint.lineage.sourceCheckpointId ?? checkpoint.sourceCheckpointId ?? "—"}</dd><dt>Provider</dt><dd>{checkpoint.provider} · {checkpoint.checkpointKind}</dd><dt>Rank / step</dt><dd>{checkpoint.loraRank ?? "—"} / {checkpoint.step ?? "—"}</dd><dt>Storage</dt><dd>{checkpoint.storage.backend} · {formatBytes(checkpoint.storage.sizeBytes)}</dd><dt>Saved</dt><dd>{checkpoint.updatedAt ? formatWhen(checkpoint.updatedAt) : "—"}</dd></dl>
 							{checkpoint.tags.length > 0 ? <div className="optimizer-checkpoint-tags">{checkpoint.tags.map((tag) => <span key={tag}>{tag}</span>)}</div> : null}
-							<div className="optimizer-checkpoint-actions">{checkpoint.lineage.runId || checkpoint.runId ? <button className="secondary-button" type="button" onClick={() => void openCheckpointRun(checkpoint)}>Open run</button> : null}{checkpoint.inferenceChatCompletions ? <button className="secondary-button" type="button" disabled={inferringId !== null} onClick={() => void inferSavedLora(checkpoint, "chat_completions")}>{inferringId === `${checkpoint.checkpointId}:chat_completions` ? "Sampling…" : "Chat Completions"}</button> : null}{checkpoint.inferenceResponses ? <button className="secondary-button" type="button" disabled={inferringId !== null} onClick={() => void inferSavedLora(checkpoint, "responses")}>{inferringId === `${checkpoint.checkpointId}:responses` ? "Sampling…" : "Responses"}</button> : null}{checkpoint.placement === "this_mac" ? <button className="secondary-button" type="button" disabled={savedLoraBusy} onClick={() => void publishSavedLora(checkpoint)}>Publish</button> : null}<button className="secondary-button" type="button" disabled={savedLoraBusy} onClick={() => void downloadSavedLora(checkpoint)}>Download</button><button className="secondary-button optimizer-danger-button" type="button" disabled={savedLoraBusy} onClick={() => void archiveSavedLora(checkpoint)}>Archive</button></div>
+							<div className="optimizer-checkpoint-actions">{checkpoint.lineage.runId || checkpoint.runId ? <button className="secondary-button" type="button" onClick={() => void openCheckpointRun(checkpoint)}>Open run</button> : null}{checkpoint.inferenceChatCompletions ? <button className="secondary-button" type="button" disabled={inferringId !== null} onClick={() => void inferSavedLora(checkpoint, "chat_completions")}>{inferringId === `${checkpoint.checkpointId}:chat_completions` ? "Sampling…" : "Chat Completions"}</button> : null}{checkpoint.inferenceResponses ? <button className="secondary-button" type="button" disabled={inferringId !== null} onClick={() => void inferSavedLora(checkpoint, "responses")}>{inferringId === `${checkpoint.checkpointId}:responses` ? "Sampling…" : "Responses"}</button> : null}{isLagunaCompatibleAdapter(checkpoint) ? <button className="secondary-button" type="button" disabled={savedLoraBusy} onClick={() => void useInComposer(checkpoint)} data-testid={`use-in-composer-${checkpoint.checkpointId}`}>Use in Composer</button> : null}{checkpoint.placement === "this_mac" ? <button className="secondary-button" type="button" disabled={savedLoraBusy} onClick={() => void publishSavedLora(checkpoint)}>Publish</button> : null}<button className="secondary-button" type="button" disabled={savedLoraBusy} onClick={() => void downloadSavedLora(checkpoint)}>Download</button><button className="secondary-button optimizer-danger-button" type="button" disabled={savedLoraBusy} onClick={() => void archiveSavedLora(checkpoint)}>Archive</button></div>
 						</article>
 					))}
 					{savedLoras.length === 0 && !savedLoraBusy ? <div className="optimizer-empty"><span className="optimizer-empty-icon" aria-hidden>◇</span><strong>No checkpoints match</strong><p>Local MLX adapters appear when a This Mac recipe emits them, or when you import an mlx-lora.v1 folder. Hosted SFT/CISPO LoRAs appear after object-storage verification.</p></div> : null}

@@ -62,7 +62,8 @@ import {
 	openArtifactIdForChat
 } from "../runtime/sessionView";
 import { approvalModeFromConfig, codexStartRequest, coreEventToRuntime, createCodexSession, restoreCodexSession, type ApprovalMode, type ApprovalPolicy, type SandboxMode } from "../runtime/nativeCodex";
-import { isLagunaCompatibleAdapter, type LagunaAdapterOption } from "../runtime/lagunaAdapters";
+import { LOCAL_BASE_POLICY } from "../runtime/lagunaPolicies";
+import type { LagunaPolicy } from "../bridge/types";
 import {
 	loadModelKnobValues,
 	modelKnobForTarget,
@@ -174,7 +175,7 @@ export function useAppController() {
 	const [transcriptHistoryBySession, setTranscriptHistoryBySession] = useState<Record<string, TranscriptHistoryState>>({});
 	const [selectedTargetId, setSelectedTargetId] = useState("chatgpt-luna");
 	const [selectedLagunaAdapterId, setSelectedLagunaAdapterId] = useState<string | null>(null);
-	const [lagunaAdapters, setLagunaAdapters] = useState<LagunaAdapterOption[]>([]);
+	const [lagunaAdapters, setLagunaAdapters] = useState<LagunaPolicy[]>([]);
 	const defaultModelResolvedRef = useRef(false);
 	useEffect(() => {
 		// v0.1 pickers hide Intern; never leave a hidden target selected.
@@ -686,56 +687,44 @@ export function useAppController() {
 	const terminalWorkspaceRoot = defaultWorkspace;
 
 	useEffect(() => {
-		const optimizers = bridges.optimizers;
-		if (!optimizers) return;
 		let disposed = false;
 		const load = async () => {
 			try {
-				const page = await optimizers.searchSavedLoras({
-					placement: "this_mac",
-					checkpointKind: "inference",
-					status: "ready",
-					limit: 100,
-					offset: 0
-				});
-				if (disposed) return;
-				setLagunaAdapters(
-					page.items.filter(isLagunaCompatibleAdapter).map((item) => ({
-						checkpointId: item.checkpointId,
-						name: item.name
-					}))
-				);
+				const policies = (await bridges.laguna?.policies?.()) ?? [];
+				if (!disposed) setLagunaAdapters(policies);
 			} catch {
 				if (!disposed) setLagunaAdapters([]);
 			}
 		};
 		void load();
-		const unlisten = optimizers.onEvent?.(() => {
+		// Speed is measured as turns run, so the list is refreshed on optimizer
+		// activity and whenever a turn completes rather than once at mount.
+		const unlisten = bridges.optimizers?.onEvent?.(() => {
 			void load();
 		});
+		const timer = window.setInterval(() => void load(), 30_000);
 		return () => {
 			disposed = true;
 			unlisten?.();
+			window.clearInterval(timer);
 		};
 	}, []);
 
-	const selectLagunaAdapter = useCallback(async (checkpointId: string | null) => {
-		try {
-			await bridges.laguna?.setAdapter?.(checkpointId);
-			setSelectedLagunaAdapterId(checkpointId);
-			const sessionId = activeSessionIdRef.current;
-			const session = sessionId
-				? sessionsRef.current.find((candidate) => candidate.id === sessionId)
-				: undefined;
-			if (session?.target.kind === "local") {
-				const next = { ...session, target: { ...session.target, adapter: checkpointId } };
-				sessionsRef.current = sessionsRef.current.map((item) => item.id === next.id ? next : item);
-				upsertSession(next);
-			}
-		} catch (reason) {
-			showToast(publicError(reason));
+	const selectLagunaAdapter = useCallback(async (modelId: string | null) => {
+		// No daemon call: which policy a turn runs under is decided by the
+		// `model` on that request, so selecting one cannot disturb a
+		// conversation that is already open under another.
+		setSelectedLagunaAdapterId(modelId);
+		const sessionId = activeSessionIdRef.current;
+		const session = sessionId
+			? sessionsRef.current.find((candidate) => candidate.id === sessionId)
+			: undefined;
+		if (session?.target.kind === "local") {
+			const next = { ...session, target: { ...session.target, model: modelId ?? LOCAL_BASE_POLICY } };
+			sessionsRef.current = sessionsRef.current.map((item) => item.id === next.id ? next : item);
+			upsertSession(next);
 		}
-	}, [showToast]);
+	}, []);
 	// Declared after activeSessionId: the allowlist is scoped to the session,
 	// so the hook needs a session to ask about.
 	const computerUseState = useComputerUse(activeSessionId ?? null);
@@ -1881,11 +1870,7 @@ export function useAppController() {
 			// leftover chip from another chat cannot silently switch on send.
 			setSelectedTargetId(executionTargetToUiId(session.target));
 			if (session.target.kind === "local") {
-				const adapterId = session.target.adapter;
-				setSelectedLagunaAdapterId(adapterId);
-				void bridges.laguna?.setAdapter?.(adapterId).catch((reason) => {
-					showToast(publicError(reason));
-				});
+				setSelectedLagunaAdapterId(session.target.model ?? null);
 			}
 		}
 	}, [showToast]);

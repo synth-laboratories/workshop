@@ -6,6 +6,7 @@ import type {
 	Session,
 	VisualInstanceRecord
 } from "@synth/runtime-protocol";
+import { LOCAL_BASE_POLICY } from "./lagunaPolicies";
 import {
 	OPENROUTER_LAGUNA_S_MODEL,
 	OPENROUTER_LUNA_MODEL,
@@ -134,8 +135,8 @@ export function targetIdToExecutionTarget(targetId: string, adapter: string | nu
 		default:
 			return {
 				kind: "local",
-				model: "laguna-xs-2.1",
-				adapter
+				model: adapter ?? LOCAL_BASE_POLICY,
+				adapter: null
 			};
 	}
 }

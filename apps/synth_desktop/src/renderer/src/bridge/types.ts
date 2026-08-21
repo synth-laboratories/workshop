@@ -28,7 +28,9 @@ import type {
 	OptimizerAlgorithmInfo,
 	OptimizerRunRecord
 } from "@synth/runtime-protocol";
-import type { InstanceDiagnostics } from "../generated/protocol";
+import type { InstanceDiagnostics, LagunaPolicy } from "../generated/protocol";
+
+export type { LagunaPolicy };
 
 export type RequestOptions = {
 	method?: "GET" | "POST" | "DELETE";
@@ -110,8 +112,11 @@ export type LagunaBridge = {
 	chooseModelDirectory(): Promise<string | null>;
 	setModelDirectory(path: string): Promise<LagunaModelHit>;
 	clearModelDirectory(): Promise<void>;
-	/** Load a Laguna-compatible This Mac LoRA, or null for the base model. */
-	setAdapter?(checkpointId: string | null): Promise<LagunaStatus>;
+	/** Selectable policies with whatever decode speed has been measured. */
+	policies?(): Promise<LagunaPolicy[]>;
+	/** Register a Laguna-compatible LoRA under a model id. Registration is not
+	 *  selection: which policy a turn uses is decided by that turn's model. */
+	registerPolicy?(checkpointId: string, modelId: string): Promise<LagunaPolicy>;
 	downloadModel(modelId: string): Promise<LagunaModelHit>;
 	deleteModel(modelId: string): Promise<void>;
 	onDownloadProgress?(listener: (progress: LagunaDownloadProgress) => void): () => void;

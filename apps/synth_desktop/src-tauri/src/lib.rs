@@ -3480,32 +3480,42 @@ async fn laguna_reload(state: State<'_, Arc<LagunaManager>>) -> Result<LagunaSta
 
 #[tauri::command]
 #[specta::specta]
-async fn laguna_set_adapter(
+async fn laguna_register_policy(
     core: State<'_, Arc<CoreRuntime>>,
     state: State<'_, Arc<LagunaManager>>,
-    checkpoint_id: Option<String>,
-) -> Result<LagunaStatus, AppError> {
-    let path = match checkpoint_id {
-        None => None,
-        Some(id) => {
-            let checkpoint = core
-                .optimizers()
-                .get_local_lora(id.clone())
-                .await
-                .map_err(AppError::from)?
-                .ok_or_else(|| AppError::from(anyhow::anyhow!("adapter is not in the catalog")))?;
-            if !crate::optimizers::local_lora_is_laguna_compatible(&checkpoint) {
-                return Err(AppError::from(anyhow::anyhow!(
-                    "this adapter is not Laguna-compatible; Qwen Optimizers LoRAs stay on the catalog Chat Completions / Responses buttons"
-                )));
-            }
-            Some(std::path::PathBuf::from(checkpoint.storage.key))
-        }
-    };
+    checkpoint_id: String,
+    model_id: String,
+) -> Result<laguna::LagunaPolicy, AppError> {
+    let checkpoint = core
+        .optimizers()
+        .get_local_lora(checkpoint_id.clone())
+        .await
+        .map_err(AppError::from)?
+        .ok_or_else(|| AppError::from(anyhow::anyhow!("adapter is not in the catalog")))?;
+    if !crate::optimizers::local_lora_is_laguna_compatible(&checkpoint) {
+        return Err(AppError::from(anyhow::anyhow!(
+            "this adapter is not Laguna-compatible; Qwen Optimizers LoRAs stay on the catalog Chat Completions / Responses buttons"
+        )));
+    }
+    let path = std::path::PathBuf::from(&checkpoint.storage.key);
+    if !path.is_dir() {
+        return Err(AppError::from(anyhow::anyhow!(
+            "this adapter's bytes are missing at {}",
+            path.display()
+        )));
+    }
     state
-        .set_adapter(path.as_deref())
+        .register_policy(&model_id, &path, checkpoint.storage.sha256.as_deref())
         .await
         .map_err(AppError::from)
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn laguna_policies(
+    state: State<'_, Arc<LagunaManager>>,
+) -> Result<Vec<laguna::LagunaPolicy>, AppError> {
+    state.policies().await.map_err(AppError::from)
 }
 
 #[tauri::command]

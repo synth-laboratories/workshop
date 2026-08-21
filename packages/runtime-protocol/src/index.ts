@@ -6,7 +6,12 @@ export const RUNTIME_EVENT_SCHEMA_VERSION = "synth.desktop-runtime-event.v1" as 
 /** On-device Laguna (MLX). Maps to Rust `RuntimeTarget::LocalRuntime`. */
 export type LocalRuntimeTarget = {
   kind: "local";
-  model: "laguna-xs-2.1";
+  /** The daemon policy this session pins: the base model id, or the model id a
+   *  registered LoRA is served under. It rides on every request, which is what
+   *  keeps one conversation's policy out of another's turn. */
+  model: string;
+  /** Catalog identity (`sha256:…`) of the adapter behind a non-base policy,
+   *  kept for lineage. Selection is by `model`, never by this. */
   adapter: string | null;
 };
 

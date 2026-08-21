@@ -250,7 +250,8 @@ pub fn builder() -> Builder<tauri::Wry> {
         crate::storage::legacy_migration::commands::migration_cancel,
         crate::laguna_get_status,
         crate::laguna_reload,
-        crate::laguna_set_adapter,
+        crate::laguna_register_policy,
+        crate::laguna_policies,
         crate::laguna_models_list,
         crate::laguna_models_set_directory,
         crate::laguna_models_clear_directory,
@@ -441,8 +442,10 @@ mod tests {
         // and delete (in-use refusal + tombstone).
         // 243 → 248: local LoRA import, dual-family checkpoint inference,
         // catalog patch/publish, and the Laguna adapter load command.
+        // 248 → 249: `laguna_set_adapter` became `laguna_register_policy`
+        // (registration, not selection) plus `laguna_policies`.
         assert_eq!(
-            exported, 248,
+            exported, 249,
             "generated bindings must contain the complete desktop command set"
         );
         assert_eq!(

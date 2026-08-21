@@ -27,7 +27,7 @@ import type { Skill } from "../runtime/skills";
 import type { ComposerImageAttachment, ConversationWorkspaceScope, WhisperRuntimeStatus } from "../bridge";
 import { WorkspaceScopeChip, workspaceLabel } from "./WorkspaceScopeChip";
 import { LagunaAdapterPicker } from "./LagunaAdapterPicker";
-import type { LagunaAdapterOption } from "../runtime/lagunaAdapters";
+import type { LagunaPolicy } from "../bridge/types";
 import { bridges } from "../runtime/desktopBridge";
 import {
 	armedPromptId,
@@ -122,7 +122,7 @@ type Props = {
 	onSend: (text: string, images?: ComposerImageAttachment[]) => void | Promise<void>;
 	onSelectTarget: (id: string) => void;
 	lagunaAdapter?: {
-		adapters: LagunaAdapterOption[];
+		adapters: LagunaPolicy[];
 		selectedId: string | null;
 		onSelect: (checkpointId: string | null) => void;
 	};

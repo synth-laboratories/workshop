@@ -26,7 +26,7 @@ import type { ModelKnobTransportValue } from "../runtime/modelCapabilities";
 import type { FailedSend } from "../runtime/codexTurn";
 import type { MainView } from "../routes";
 import { Composer } from "./Composer";
-import type { LagunaAdapterOption } from "../runtime/lagunaAdapters";
+import type { LagunaPolicy } from "../bridge/types";
 
 export type ComposerDockProps = {
 	show: boolean;
@@ -61,7 +61,7 @@ export type ComposerDockProps = {
 	composerSkills: Array<{ id: string; name: string; description: string }>;
 	selectedTargetId: string;
 	onSelectTarget: (id: string) => void;
-	lagunaAdapters: LagunaAdapterOption[];
+	lagunaAdapters: LagunaPolicy[];
 	selectedLagunaAdapterId: string | null;
 	onSelectLagunaAdapter: (checkpointId: string | null) => void;
 	onComposerSend: (text: string) => void | Promise<void>;
