@@ -819,6 +819,20 @@ impl OptimizerManager {
                     return Ok(self.status().await);
                 }
             }
+            if let Some(exit) = self.sidecar_exit_status().await {
+                let detail = optimizer_start_failure_detail(&self.home, &exit);
+                self.abort_runtime().await;
+                self.set_status(OptimizerSidecarStatus {
+                    phase: "error".into(),
+                    base_url: None,
+                    version: Some(hit.version),
+                    digest: Some(hit.digest),
+                    detail: Some(detail.clone()),
+                    updated_at: now_ms(),
+                })
+                .await;
+                bail!(detail);
+            }
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
         self.abort_runtime().await;
@@ -832,6 +846,11 @@ impl OptimizerManager {
         })
         .await;
         bail!("Timed out waiting for optimizer sidecar");
+    }
+
+    async fn sidecar_exit_status(&self) -> Option<std::process::ExitStatus> {
+        let mut runtime = self.runtime.lock().await;
+        runtime.as_mut()?.child.as_mut()?.try_wait().ok().flatten()
     }
 
     async fn fetch_handshake_capabilities(&self) -> Result<Value> {
@@ -1707,6 +1726,7 @@ async fn launch_sidecar_upstream(
         .args(["gepa", "service", "--db"])
         .arg(&db_path)
         .args(["--bind", &addr.to_string()])
+        .args(["--instance-id", crate::instance::boot_epoch()])
         .env("GEPA_HOME", &gepa_home)
         .env("SYNTH_OPTIMIZER_API_KEY", &api_key)
         .stdin(Stdio::null())
@@ -1717,6 +1737,27 @@ async fn launch_sidecar_upstream(
         .spawn()
         .context("spawn allowlisted synth-optimizers GEPA service")?;
     Ok((Some(child), upstream_base_url, None))
+}
+
+fn optimizer_start_failure_detail(home: &Path, exit: &std::process::ExitStatus) -> String {
+    let prefix = format!("Optimizer sidecar exited during startup ({exit})");
+    let Ok(log) = fs::read_to_string(home.join("sidecar.log")) else {
+        return prefix;
+    };
+    let diagnostic = log
+        .lines()
+        .rev()
+        .find(|line| {
+            line.contains("already_running")
+                || line.contains("already running")
+                || line.contains("No space left on device")
+                || line.contains("database or disk is full")
+        })
+        .map(str::trim)
+        .filter(|line| !line.is_empty());
+    diagnostic
+        .map(|line| format!("{prefix}: {line}"))
+        .unwrap_or(prefix)
 }
 
 #[cfg(unix)]
