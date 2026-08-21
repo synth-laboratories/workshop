@@ -4308,6 +4308,7 @@ pub fn run() {
     if crate::visuals::mermaid::hidden_mode_requested() {
         std::process::exit(crate::visuals::mermaid::run_hidden_mode());
     }
+    crate::instance::install_boot_identity_and_lock();
     let specta = contract::specta::builder();
 
     tauri::Builder::default()

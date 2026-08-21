@@ -3,6 +3,9 @@
 #[path = "../ipc/mcp_stdio.rs"]
 mod mcp_stdio;
 
+#[path = "../instance_paths.rs"]
+mod instance_paths;
+
 use mcp_stdio::{run_stdio_server, McpServerInfo};
 use serde_json::{json, Value};
 use std::{
@@ -25,19 +28,10 @@ struct Connection {
 }
 
 fn connection_file() -> PathBuf {
-    env::var("SYNTH_DESKTOP_IPC_FILE")
-        .or_else(|_| env::var("SYNTH_VISUALS_IPC_FILE"))
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| {
-            env::var_os("SYNTH_DESKTOP_DATA_ROOT")
-                .map(PathBuf::from)
-                .unwrap_or_else(|| {
-                    dirs::data_dir()
-                        .unwrap_or_else(|| PathBuf::from("."))
-                        .join("Synth Desktop")
-                })
-                .join("visuals-ipc.json")
-        })
+    instance_paths::ipc_connection_file(
+        &["SYNTH_DESKTOP_IPC_FILE", "SYNTH_VISUALS_IPC_FILE"],
+        "visuals-ipc.json",
+    )
 }
 
 fn request(method: &str, path: &str, body: Option<Value>) -> Result<Value, String> {

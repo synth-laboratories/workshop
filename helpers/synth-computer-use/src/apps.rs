@@ -11,17 +11,24 @@
 
 use anyhow::{bail, Context, Result};
 use serde::Serialize;
-use std::collections::HashMap;
+use serde_json::Value;
+use std::collections::{HashMap, HashSet};
+use std::io::{Read, Write};
+use std::net::TcpStream;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Mutex;
+use std::time::Duration;
 
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct RunningApp {
     pub id: String,
     pub display_name: String,
-    pub pid: i32,
+    /// Every main-bundle process for this identifier. More than one is a
+    /// targeting error: the caller must `launch` explicitly rather than
+    /// guessing which copy to drive.
+    pub pids: Vec<i32>,
     pub is_running: bool,
 }
 
@@ -165,57 +172,167 @@ pub fn running_apps() -> Result<Vec<RunningApp>> {
         let Some(id) = bundle_identifier(&bundle) else {
             continue;
         };
-        seen.entry(id.clone()).or_insert(RunningApp {
-            id,
-            display_name: display_name(&bundle),
-            pid,
-            is_running: true,
-        });
+        seen.entry(id.clone())
+            .and_modify(|app| {
+                if !app.pids.contains(&pid) {
+                    app.pids.push(pid);
+                }
+            })
+            .or_insert(RunningApp {
+                id,
+                display_name: display_name(&bundle),
+                pids: vec![pid],
+                is_running: true,
+            });
     }
     let mut apps: Vec<RunningApp> = seen.into_values().collect();
+    for app in &mut apps {
+        app.pids.sort_unstable();
+    }
     apps.sort_by(|left, right| left.id.cmp(&right.id));
     Ok(apps)
 }
 
-/// Find the pid for a bundle identifier.
-pub fn pid_for(bundle_id: &str) -> Option<i32> {
+/// Every pid currently running as `bundle_id`'s main executable.
+pub fn pids_for(bundle_id: &str) -> Vec<i32> {
     running_apps()
-        .ok()?
-        .into_iter()
-        .find(|app| app.id.eq_ignore_ascii_case(bundle_id))
-        .map(|app| app.pid)
+        .ok()
+        .and_then(|apps| {
+            apps.into_iter()
+                .find(|app| app.id.eq_ignore_ascii_case(bundle_id))
+                .map(|app| app.pids)
+        })
+        .unwrap_or_default()
 }
 
-/// Launch an app without bringing it forward, then wait for it to register.
+/// Resolve a bundle identifier to exactly one pid. Never launches.
 ///
-/// `open -g` is what keeps this background: launching normally would activate
-/// the app and steal the operator's focus, which is the exact failure G3 is
-/// about.
-pub fn launch_in_background(bundle_id: &str) -> Result<i32> {
+/// Zero copies: the caller must `launch`. More than one: targeting would be a
+/// guess, so this names every pid and refuses.
+pub fn resolve(bundle_id: &str) -> Result<i32> {
+    let pids = pids_for(bundle_id);
+    match pids.as_slice() {
+        [] => bail!("`{bundle_id}` is not running; call launch"),
+        [pid] => Ok(*pid),
+        _ => bail!("ambiguous_target{{pids={pids:?}}}"),
+    }
+}
+
+/// Launch a new copy of `bundle_id` without bringing it forward, and return
+/// the pid that did not exist before the call.
+///
+/// `open -n -g` is load-bearing: without `-n` LaunchServices reuses a running
+/// copy, and without `-g` the new copy steals focus (G3).
+pub fn launch(bundle_id: &str) -> Result<i32> {
+    let before: HashSet<i32> = pids_for(bundle_id).into_iter().collect();
     let status = Command::new("/usr/bin/open")
-        .args(["-g", "-b", bundle_id])
+        .args(["-n", "-g", "-b", bundle_id])
         .status()
         .context("launch app")?;
     if !status.success() {
         bail!("could not launch `{bundle_id}`; is it installed?");
     }
-    // Registration is not instant. Polling beats a fixed sleep: most apps
-    // appear in well under a second and this returns as soon as they do.
     for _ in 0..50 {
-        if let Some(pid) = pid_for(bundle_id) {
-            return Ok(pid);
+        let created: Vec<i32> = pids_for(bundle_id)
+            .into_iter()
+            .filter(|pid| !before.contains(pid))
+            .collect();
+        if created.len() == 1 {
+            return Ok(created[0]);
         }
-        std::thread::sleep(std::time::Duration::from_millis(100));
+        std::thread::sleep(Duration::from_millis(100));
     }
-    bail!("`{bundle_id}` did not start within 5 seconds")
+    bail!("`{bundle_id}` did not start a new process within 5 seconds")
 }
 
-/// Resolve an app to a pid, launching it in the background if needed.
-pub fn resolve_or_launch(bundle_id: &str) -> Result<i32> {
-    match pid_for(bundle_id) {
-        Some(pid) => Ok(pid),
-        None => launch_in_background(bundle_id),
+/// When the target is a Workshop instance that publishes `/health`, mutating
+/// verbs must be driving that exact process. Non-Workshop apps have no
+/// descriptor and skip the check.
+pub fn verify_workshop_target(pid: i32, bundle_id: &str) -> Result<()> {
+    let Some(executable) = executable_path(pid) else {
+        bail!("`{bundle_id}` pid {pid} is gone");
+    };
+    let Some(bundle) = bundle_root(&executable) else {
+        return Ok(());
+    };
+    let descriptor_path = bundle.join("Contents/Resources/instance.json");
+    let Ok(raw) = std::fs::read(&descriptor_path) else {
+        return Ok(());
+    };
+    let descriptor: Value = serde_json::from_slice(&raw)
+        .with_context(|| format!("parse {}", descriptor_path.display()))?;
+    if descriptor
+        .get("schemaVersion")
+        .and_then(Value::as_str)
+        != Some("synth.desktop.instance-descriptor.v1")
+    {
+        return Ok(());
     }
+    let Some(data_root) = descriptor.get("data_root").and_then(Value::as_str) else {
+        return Ok(());
+    };
+    let instance_id = descriptor
+        .get("instance_id")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    let driver_path = Path::new(data_root).join("eval-driver.json");
+    if !driver_path.is_file() {
+        return Ok(());
+    }
+    let connection: Value = serde_json::from_slice(&std::fs::read(&driver_path)?)
+        .with_context(|| format!("parse {}", driver_path.display()))?;
+    let url = connection
+        .get("url")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .trim_end_matches('/');
+    let token = connection.get("token").and_then(Value::as_str).unwrap_or("");
+    if url.is_empty() {
+        bail!("target_health_unreachable: eval-driver.json has no url");
+    }
+    let health = health_get(url, token).with_context(|| {
+        format!("target_health_unreachable pid={pid} instance_id={instance_id}")
+    })?;
+    let health_pid = health
+        .pointer("/instance/processId")
+        .and_then(Value::as_u64)
+        .unwrap_or(0) as i32;
+    let health_instance = health
+        .pointer("/instance/name")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    if health_pid != pid || (!instance_id.is_empty() && health_instance != instance_id) {
+        bail!(
+            "target_identity_mismatch pid={pid} health_pid={health_pid} \
+             instance_id={instance_id:?} health_instance={health_instance:?}"
+        );
+    }
+    Ok(())
+}
+
+fn health_get(base_url: &str, token: &str) -> Result<Value> {
+    let addr = base_url
+        .trim_start_matches("http://")
+        .split('/')
+        .next()
+        .unwrap_or_default()
+        .parse::<std::net::SocketAddr>()
+        .context("eval-driver url")?;
+    let mut stream =
+        TcpStream::connect_timeout(&addr, Duration::from_millis(400)).context("connect /health")?;
+    stream.set_read_timeout(Some(Duration::from_millis(400)))?;
+    stream.set_write_timeout(Some(Duration::from_millis(400)))?;
+    let request = format!(
+        "GET /health HTTP/1.1\r\nHost: {addr}\r\nAuthorization: Bearer {token}\r\nConnection: close\r\n\r\n"
+    );
+    stream.write_all(request.as_bytes())?;
+    let mut response = String::new();
+    stream.read_to_string(&mut response)?;
+    let body = response
+        .split_once("\r\n\r\n")
+        .map(|(_, body)| body)
+        .unwrap_or("");
+    serde_json::from_str(body).context("decode /health")
 }
 
 #[cfg(test)]
@@ -258,8 +375,80 @@ mod tests {
     fn every_listed_app_has_a_real_bundle_identifier() {
         let apps = running_apps().unwrap();
         assert!(apps.iter().all(|app| !app.id.is_empty()));
-        assert!(apps.iter().all(|app| app.pid > 0));
+        assert!(apps
+            .iter()
+            .all(|app| !app.pids.is_empty() && app.pids.iter().all(|pid| *pid > 0)));
         // The window server or Finder is always running on a live macOS session.
         assert!(!apps.is_empty());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn two_copies_of_one_bundle_are_an_ambiguous_target() {
+        use std::fs;
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = std::env::temp_dir().join(format!(
+            "synth-cua-ambiguous-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let bundle = dir.join("Fixture.app");
+        fs::create_dir_all(bundle.join("Contents/MacOS")).unwrap();
+        let exe = bundle.join("Contents/MacOS/Fixture");
+        fs::copy("/bin/sleep", &exe).unwrap();
+        fs::set_permissions(&exe, fs::Permissions::from_mode(0o755)).unwrap();
+        let bundle_id = format!(
+            "ai.usesynth.workshop.test.ambiguous-{}",
+            std::process::id()
+        );
+        fs::write(
+            bundle.join("Contents/Info.plist"),
+            format!(
+                r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>CFBundleExecutable</key><string>Fixture</string>
+<key>CFBundleIdentifier</key><string>{bundle_id}</string>
+<key>CFBundleName</key><string>Fixture</string>
+<key>CFBundlePackageType</key><string>APPL</string>
+</dict></plist>
+"#
+            ),
+        )
+        .unwrap();
+
+        let mut first = Command::new(&exe).arg("30").spawn().unwrap();
+        let mut second = Command::new(&exe).arg("30").spawn().unwrap();
+        let pids = [first.id() as i32, second.id() as i32];
+        let mut message = String::new();
+        for _ in 0..50 {
+            match resolve(&bundle_id) {
+                Err(error) => {
+                    message = error.to_string();
+                    if message.contains("ambiguous_target") {
+                        break;
+                    }
+                }
+                Ok(_) => {}
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        let _ = first.kill();
+        let _ = second.kill();
+        let _ = first.wait();
+        let _ = second.wait();
+        let _ = fs::remove_dir_all(&dir);
+        assert!(
+            message.contains("ambiguous_target"),
+            "expected ambiguous_target, got {message:?}"
+        );
+        assert!(
+            pids.iter().all(|pid| message.contains(&pid.to_string())),
+            "error should name both pids {pids:?}: {message}"
+        );
     }
 }

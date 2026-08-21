@@ -1737,7 +1737,16 @@ fn spawn_sidecar(root: &Path, api_key: &str, backend: &str) -> Result<()> {
     apply_daemon_env(&mut command, api_key, backend, &models_dir()?);
     detach(&mut command);
     let child = command.spawn().context("spawn Laguna sidecar")?;
-    fs::write(home().join("sidecar.pid"), child.id().to_string())?;
+    let identity = crate::instance::ProcessIdentity {
+        pid: child.id(),
+        start: crate::instance::process_start_identity(child.id()).unwrap_or_default(),
+        exe: command.get_program().to_string_lossy().into_owned(),
+    };
+    fs::write(home().join("sidecar.pid"), identity.pid.to_string())?;
+    fs::write(
+        home().join("sidecar.identity.json"),
+        serde_json::to_vec_pretty(&identity)?,
+    )?;
     Ok(())
 }
 
@@ -1838,6 +1847,7 @@ fn is_managed_sidecar_command(command: &str) -> bool {
 
 fn stop_managed_sidecar() -> Result<bool> {
     let path = home().join("sidecar.pid");
+    let identity_path = home().join("sidecar.identity.json");
     let Ok(raw) = fs::read_to_string(&path) else {
         return Ok(false);
     };
@@ -1848,6 +1858,15 @@ fn stop_managed_sidecar() -> Result<bool> {
     if pid == 0 {
         return Ok(false);
     }
+    if let Ok(raw) = fs::read_to_string(&identity_path) {
+        if let Ok(recorded) = serde_json::from_str::<crate::instance::ProcessIdentity>(&raw) {
+            if recorded.pid != pid || !recorded.is_still_running() {
+                let _ = fs::remove_file(&path);
+                let _ = fs::remove_file(&identity_path);
+                return Ok(false);
+            }
+        }
+    }
     #[cfg(unix)]
     {
         let command = Command::new("/bin/ps")
@@ -1855,7 +1874,8 @@ fn stop_managed_sidecar() -> Result<bool> {
             .output()
             .context("inspect stale Synth-managed Laguna sidecar")?;
         if !is_managed_sidecar_command(&String::from_utf8_lossy(&command.stdout)) {
-            let _ = fs::remove_file(path);
+            let _ = fs::remove_file(&path);
+            let _ = fs::remove_file(&identity_path);
             return Ok(false);
         }
         // The daemon is a session/process-group leader. Signal the whole group
@@ -1870,8 +1890,9 @@ fn stop_managed_sidecar() -> Result<bool> {
             return Ok(false);
         }
         for _ in 0..100 {
-            if !process_is_alive(pid) {
-                let _ = fs::remove_file(path);
+            if !crate::instance::pid_exists(pid) {
+                let _ = fs::remove_file(&path);
+                let _ = fs::remove_file(&identity_path);
                 return Ok(true);
             }
             thread::sleep(Duration::from_millis(50));
@@ -1884,8 +1905,9 @@ fn stop_managed_sidecar() -> Result<bool> {
             return Ok(false);
         }
         for _ in 0..40 {
-            if !process_is_alive(pid) {
-                let _ = fs::remove_file(path);
+            if !crate::instance::pid_exists(pid) {
+                let _ = fs::remove_file(&path);
+                let _ = fs::remove_file(&identity_path);
                 return Ok(true);
             }
             thread::sleep(Duration::from_millis(50));
