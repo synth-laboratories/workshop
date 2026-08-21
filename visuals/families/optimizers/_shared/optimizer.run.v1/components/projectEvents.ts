@@ -393,6 +393,7 @@ export type ProjectedState = {
       ref: ContainerRolloutRef;
     }>;
   };
+  cispo?: CispoState;
   sft?: {
     curves: {
       steps: number[];
@@ -503,6 +504,20 @@ export type SftComparisonPair = {
   seed: string;
   base: SftSeedResult | null;
   trained: SftSeedResult | null;
+};
+
+export type CispoState = {
+  objective: string;
+  clipLow: number | null;
+  clipHigh: number | null;
+  groupSize: number | null;
+  rewardVariance: number | null;
+  advantageMean: number | null;
+  advantageStd: number | null;
+  optimizerSteps: number;
+  warmStartArtifactId: string | null;
+  checkpointIds: string[];
+  noLearningSignal: boolean;
 };
 
 export type DagNodeState = {
@@ -851,6 +866,18 @@ export function projectAtCursor(
   let comparisonSplitDigest: string | undefined;
   let comparisonBaseLabel: string | undefined;
   let comparisonTrainedLabel: string | undefined;
+  let cispoClipLow: number | null = null;
+  let cispoClipHigh: number | null = null;
+  let cispoGroupSize: number | null = null;
+  let cispoRewardVariance: number | null = null;
+  let cispoAdvantageMean: number | null = null;
+  let cispoAdvantageStd: number | null = null;
+  let cispoOptimizerSteps = 0;
+  let cispoWarmStartArtifactId: string | null =
+    typeof run.summary?.warmStartArtifactId === "string" ? run.summary.warmStartArtifactId
+      : typeof run.summary?.trainingArtifactId === "string" ? run.summary.trainingArtifactId
+        : null;
+  let cispoNoLearningSignal = false;
   const dagNodes = new Map<string, DagNodeState>();
   const dagFailedPartitions = new Map<string, number>();
   let dagName: string | undefined;
@@ -2229,6 +2256,31 @@ export function projectAtCursor(
       if (trainLoss != null) curves.trainLoss.push(trainLoss);
       if (validationLoss != null) curves.validationLoss.push(validationLoss);
       if (learningRate != null) curves.learningRate.push(learningRate);
+      const groupSize = missingNumber(event.delta?.group_size ?? event.delta?.groupSize);
+      const rewardVariance = missingNumber(event.delta?.reward_variance ?? event.delta?.rewardVariance);
+      const advantageMean = missingNumber(event.delta?.advantage_mean ?? event.delta?.advantageMean);
+      const advantageStd = missingNumber(event.delta?.advantage_std ?? event.delta?.advantageStd ?? event.delta?.advantage_sd);
+      const optimizerStep = missingNumber(event.delta?.optimizer_step ?? event.delta?.optimizerStep);
+      if (groupSize != null) cispoGroupSize = groupSize;
+      if (rewardVariance != null) cispoRewardVariance = rewardVariance;
+      if (advantageMean != null) cispoAdvantageMean = advantageMean;
+      if (advantageStd != null) cispoAdvantageStd = advantageStd;
+      if (optimizerStep != null) cispoOptimizerSteps = Math.max(cispoOptimizerSteps, optimizerStep);
+      else if (step != null && run.algorithmId === "cispo") cispoOptimizerSteps = Math.max(cispoOptimizerSteps, 1);
+    }
+    if (event.type === "cispo.clip.identity") {
+      const clip = (event.delta?.clip && typeof event.delta.clip === "object" && !Array.isArray(event.delta.clip)
+        ? event.delta.clip as Record<string, unknown>
+        : event.delta) ?? {};
+      cispoClipLow = missingNumber(clip.clip_low ?? clip.clipLow ?? clip.eps_low ?? clip.low);
+      cispoClipHigh = missingNumber(clip.clip_high ?? clip.clipHigh ?? clip.eps_high ?? clip.high);
+    }
+    if (event.type === "cispo.no_learning_signal") {
+      cispoNoLearningSignal = true;
+    }
+    if (event.type === "training.warm_start" || event.type === "cispo.warm_start") {
+      const id = event.delta?.training_artifact_id ?? event.delta?.trainingArtifactId ?? event.item?.id;
+      if (typeof id === "string" && id) cispoWarmStartArtifactId = id;
     }
     if (
       event.type === "sft.campaign.updated" ||
@@ -2679,7 +2731,7 @@ export function projectAtCursor(
       globalCapacity: numberOrNull(evalPlan.global_capacity),
       paused: evalPaused
     };
-  } else if (run.algorithmId === "sft") {
+  } else if (run.algorithmId === "sft" || run.algorithmId === "cispo") {
     const candidates = [...curationCandidates.values()];
     const acceptedCount = candidates.filter((candidate) => candidate.accepted).length;
     const rejectionsByReason: Record<string, number> = {};
@@ -2737,6 +2789,26 @@ export function projectAtCursor(
           }
         : undefined
     };
+    if (run.algorithmId === "cispo") {
+      const warmStart = cispoWarmStartArtifactId
+        ?? (typeof lineage.parentArtifactId === "string" ? lineage.parentArtifactId : null)
+        ?? (typeof lineage.warmStartArtifactId === "string" ? lineage.warmStartArtifactId : null);
+      projected.cispo = {
+        objective: typeof run.objective === "string" && run.objective
+          ? run.objective
+          : "CISPO clipped-importance policy optimization",
+        clipLow: cispoClipLow,
+        clipHigh: cispoClipHigh,
+        groupSize: cispoGroupSize,
+        rewardVariance: cispoRewardVariance,
+        advantageMean: cispoAdvantageMean,
+        advantageStd: cispoAdvantageStd,
+        optimizerSteps: cispoOptimizerSteps > 0 ? cispoOptimizerSteps : points.length,
+        warmStartArtifactId: warmStart,
+        checkpointIds: checkpoints.map((ckpt) => String(ckpt.id ?? "")).filter(Boolean),
+        noLearningSignal: cispoNoLearningSignal
+      };
+    }
   } else if (projectDag) {
     projected.dag = finalizeDagState([...dagNodes.values()], dagName, dagSequence);
   }

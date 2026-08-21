@@ -103,6 +103,8 @@ export const COMMANDS = {
 	TRAINING_ARTIFACTS_LIST: "training_artifacts_list",
 	TRAINING_ARTIFACTS_GET: "training_artifacts_get",
 	TRAINING_ARTIFACTS_LAUNCH_INFERENCE: "training_artifacts_launch_inference",
+	TRAINING_ARTIFACTS_EXPORT: "training_artifacts_export",
+	TRAINING_ARTIFACTS_DELETE: "training_artifacts_delete",
 	WHISPER_RUNTIME_STATUS: "whisper_runtime_status",
 	WHISPER_RUNTIME_WARM: "whisper_runtime_warm",
 	WHISPER_MODELS_LIST: "whisper_models_list",

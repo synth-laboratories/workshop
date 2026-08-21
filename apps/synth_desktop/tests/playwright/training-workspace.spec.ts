@@ -6,6 +6,7 @@ test.beforeEach(async ({ page }) => {
 			list: async () => [],
 			get: async () => { throw new Error("artifact not found"); },
 			delete: async () => undefined,
+			export: async () => { throw new Error("real export runtime unavailable"); },
 			launchInference: async () => { throw new Error("real inference runtime unavailable"); },
 			launchEval: async () => { throw new Error("real evaluation runtime unavailable"); }
 		};

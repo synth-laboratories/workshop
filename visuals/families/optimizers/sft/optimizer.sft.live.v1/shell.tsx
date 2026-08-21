@@ -33,7 +33,7 @@ export function Shell(props: ShellProps) {
     <OptimizerFamilyShell
       {...props}
       templateId="optimizer.sft.live.v1"
-      kicker="SFT"
+      kicker="Training"
       testId="visual-optimizer-sft-live"
       chrome="workspace"
     >

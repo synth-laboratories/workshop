@@ -118,23 +118,26 @@ pub fn launch_artifact_eval_request(artifact_id: &str, recipe_id: Option<&str>, 
     }))
 }
 
-pub fn export_or_delete_artifact(id: &str, operation: &str, confirm: bool) -> Result<Value> {
+pub fn export_or_delete_artifact(
+    id: &str,
+    operation: &str,
+    confirm: bool,
+    destination: Option<&str>,
+    expected_digest: Option<&str>,
+) -> Result<Value> {
     require_confirm(confirm, "export_or_delete_artifact")?;
     match operation {
         "export" => {
-            let artifact = crate::training_artifacts::export(id)?;
-            Ok(json!({
-                "operation": "export",
-                "artifact": artifact,
-                "path": artifact.path
-            }))
+            let dest = destination
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .ok_or_else(|| anyhow::anyhow!("export destination is required"))?;
+            let receipt = crate::training_artifacts::export_to(id, dest, expected_digest)?;
+            Ok(serde_json::to_value(receipt)?)
         }
         "delete" => {
-            let artifact = crate::training_artifacts::delete(id)?;
-            Ok(json!({
-                "operation": "delete",
-                "artifact": artifact
-            }))
+            let receipt = crate::training_artifacts::delete(id)?;
+            Ok(serde_json::to_value(receipt)?)
         }
         other => bail!("export_or_delete_artifact operation must be export or delete, not `{other}`"),
     }
@@ -174,7 +177,7 @@ mod tests {
             .to_string();
         assert!(err.contains("confirm=true"), "{err}");
         assert!(launch_artifact_eval_request("x", None, false).is_err());
-        assert!(export_or_delete_artifact("x", "delete", false).is_err());
+        assert!(export_or_delete_artifact("x", "delete", false, None, None).is_err());
     }
 
     #[test]
@@ -208,6 +211,9 @@ mod tests {
     #[test]
     fn artifact_list_inspect_export_delete() {
         let (isolated, previous) = isolated_root();
+        let adapter = isolated.join("adapter");
+        fs::create_dir_all(&adapter).unwrap();
+        fs::write(adapter.join("weights.safetensors"), b"lora").unwrap();
         let artifact = TrainingArtifact::from_mlx_handoff(
             "run-cap",
             "sft",
@@ -217,7 +223,8 @@ mod tests {
                 "checkpoint": {
                     "checkpoint_id": "cap-1",
                     "sha256": "abcd",
-                    "path": "/tmp/adapter"
+                    "path": adapter.to_string_lossy(),
+                    "bytes": 4
                 }
             }),
             None,
@@ -229,11 +236,29 @@ mod tests {
         assert_eq!(listed["artifacts"].as_array().unwrap().len(), 1);
         let inspected = inspect_training_artifact("cap-1").unwrap();
         assert_eq!(inspected["artifact"]["id"], "cap-1");
-        let exported = export_or_delete_artifact("cap-1", "export", true).unwrap();
-        assert_eq!(exported["path"], "/tmp/adapter");
-        export_or_delete_artifact("cap-1", "delete", true).unwrap();
+        let dest = isolated.join("exports");
+        fs::create_dir_all(&dest).unwrap();
+        let dest_path = dest.join("cap-1");
+        let exported = export_or_delete_artifact(
+            "cap-1",
+            "export",
+            true,
+            Some(dest_path.to_str().unwrap()),
+            Some("sha256:abcd"),
+        )
+        .unwrap();
+        assert_eq!(exported["operation"], "export");
+        assert_eq!(exported["artifactId"], "cap-1");
+        assert!(dest_path.join("weights.safetensors").is_file());
+        export_or_delete_artifact("cap-1", "delete", true, None, None).unwrap();
         assert!(inspect_training_artifact("cap-1").is_err());
         restore(previous, isolated);
+    }
+
+    #[test]
+    fn export_without_destination_or_confirm_fails_closed() {
+        assert!(export_or_delete_artifact("cap-1", "export", true, None, None).is_err());
+        assert!(export_or_delete_artifact("cap-1", "export", false, Some("/tmp/x"), None).is_err());
     }
 
     #[test]

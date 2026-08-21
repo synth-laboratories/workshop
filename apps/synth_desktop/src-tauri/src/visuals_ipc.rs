@@ -2614,10 +2614,20 @@ pub(crate) async fn dispatch_optimizer(
                 .trim_end_matches(if export { "/export" } else { "/delete" })
                 .trim_end_matches('/');
             let confirm = body.get("confirm").and_then(Value::as_bool).unwrap_or(false);
+            let destination = body
+                .get("destination")
+                .and_then(Value::as_str)
+                .or_else(|| body.get("path").and_then(Value::as_str));
+            let expected_digest = body
+                .get("digest")
+                .and_then(Value::as_str)
+                .or_else(|| body.get("expectedDigest").and_then(Value::as_str));
             crate::optimizers::typed_capabilities::export_or_delete_artifact(
                 id,
                 if export { "export" } else { "delete" },
                 confirm,
+                destination,
+                expected_digest,
             )
         }
         ("POST", "/v1/optimizers/recipes/prepare") => {

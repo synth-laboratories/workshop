@@ -3,6 +3,7 @@ import { VisualChrome } from "../../../../../chrome/VisualChrome.tsx";
 import { formatMissingNumber, formatMissingUsd } from "../../../../../runtime/liveStream.ts";
 import type { VisualBinding } from "../../../../../runtime/types.ts";
 import { GlobalTimeline, RunHeader } from "./RunChrome.tsx";
+import { algorithmLabel } from "./algorithmLabel.ts";
 import {
   projectAtCursor,
   type OptimizerEvent,
@@ -126,11 +127,14 @@ export function OptimizerFamilyShell(props: FamilyShellProps) {
   const summary = projected.summary;
   const nested = (summary.summary as Record<string, unknown> | undefined) ?? {};
   const bestScore = nested.bestScore ?? summary.bestScore;
+  const kicker = run.algorithmId && run.algorithmId !== "unknown"
+    ? algorithmLabel(run.algorithmId)
+    : props.kicker;
 
   if (!payload && !props.run) {
     return (
       <VisualChrome
-        kicker={props.kicker}
+        kicker={kicker}
         live={false}
         title={props.title ?? unresolvedRunId ?? props.templateId}
         lede={props.lede}
@@ -169,7 +173,7 @@ export function OptimizerFamilyShell(props: FamilyShellProps) {
 
   return (
     <VisualChrome
-      kicker={props.kicker}
+      kicker={kicker}
       live={followLive && String(summary.status) === "running"}
       title={props.title ?? String(summary.objective ?? run.id)}
       lede={props.lede}

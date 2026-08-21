@@ -292,12 +292,16 @@ export function installDesktopBridge(): void {
 		? {
 			list: () => invokeCommand<TrainingArtifact[]>(COMMANDS.TRAINING_ARTIFACTS_LIST),
 			get: (id) => invokeCommand<TrainingArtifact>(COMMANDS.TRAINING_ARTIFACTS_GET, { id }),
-			launchInference: (request) => invokeCommand(COMMANDS.TRAINING_ARTIFACTS_LAUNCH_INFERENCE, request)
+			launchInference: (request) => invokeCommand(COMMANDS.TRAINING_ARTIFACTS_LAUNCH_INFERENCE, request),
+			export: (request) => invokeCommand(COMMANDS.TRAINING_ARTIFACTS_EXPORT, request),
+			delete: (request) => invokeCommand(COMMANDS.TRAINING_ARTIFACTS_DELETE, request)
 		}
 		: {
 			list: async () => [],
 			get: async () => { throw new Error("Training artifacts require Synth Desktop"); },
-			launchInference: async () => { throw new Error("Training artifact inference requires Synth Desktop"); }
+			launchInference: async () => { throw new Error("Training artifact inference requires Synth Desktop"); },
+			export: async () => { throw new Error("Training artifact export requires Synth Desktop"); },
+			delete: async () => { throw new Error("Training artifact deletion requires Synth Desktop"); }
 		};
 	window.synthWhisper ??= isTauri
 		? {

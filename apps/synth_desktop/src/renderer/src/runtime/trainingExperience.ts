@@ -73,14 +73,19 @@ export const trainingArtifacts = {
 	},
 	async launchInference(id: string) {
 		if (!bridges.trainingArtifacts) throw new Error("Training artifact inference is unavailable");
-		return bridges.trainingArtifacts.launchInference({ id, confirm: false });
+		return bridges.trainingArtifacts.launchInference({ id, confirm: true });
 	},
 	async launchEval(id: string, recipeId: string) {
+		if (!bridges.optimizers) throw new Error("Native artifact Eval is unavailable; no run was started");
 		await this.inspect(id);
-		throw new Error(`Native artifact Eval ${recipeId} is unavailable; no run was started`);
+		return bridges.optimizers.startRecipe({ recipeId, trainingArtifactId: id, openVisual: true });
+	},
+	async export(id: string, destination: string) {
+		if (!bridges.trainingArtifacts?.export) throw new Error("Training artifact export is unavailable");
+		return bridges.trainingArtifacts.export({ id, destination, confirm: true });
 	},
 	async delete(id: string) {
-		await this.inspect(id);
-		throw new Error("Training artifact deletion is unavailable; no artifact was changed");
+		if (!bridges.trainingArtifacts?.delete) throw new Error("Training artifact deletion is unavailable; no artifact was changed");
+		return bridges.trainingArtifacts.delete({ id, confirm: true });
 	}
 };
