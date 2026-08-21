@@ -276,7 +276,10 @@ impl SecretBackend for CachedBackend {
 }
 
 pub fn default_backend() -> Arc<dyn SecretBackend> {
-    if cfg!(test) || std::env::var("SYNTH_DESKTOP_SECRETS_MEMORY").as_deref() == Ok("1") {
+    if cfg!(test)
+        || std::env::var("SYNTH_DESKTOP_SECRETS_MEMORY").as_deref() == Ok("1")
+        || super::configured_dotenv_openai().is_some()
+    {
         return Arc::new(MemoryBackend::new());
     }
     CachedBackend::wrap(Arc::new(OsKeychainBackend::new()))

@@ -182,6 +182,36 @@ pub fn find_by_provider(conn: &Connection, provider: &str) -> Result<Option<Secr
     .map_err(Into::into)
 }
 
+pub fn find_by_provider_and_scope(
+    conn: &Connection,
+    provider: &str,
+    scope: &str,
+) -> Result<Option<SecretRecord>> {
+    conn.query_row(
+        "SELECT id, alias, provider, scope, backend, backend_ref, fingerprint,
+                display_suffix, status, created_at, last_validated_at
+         FROM secret_refs WHERE provider=?1 AND scope=?2 ORDER BY updated_at DESC LIMIT 1",
+        params![provider, scope],
+        |row| {
+            Ok(SecretRecord {
+                id: row.get(0)?,
+                alias: row.get(1)?,
+                provider: row.get(2)?,
+                scope: row.get(3)?,
+                backend: row.get(4)?,
+                backend_ref: row.get(5)?,
+                fingerprint: row.get(6)?,
+                display_suffix: row.get(7)?,
+                status: row.get(8)?,
+                created_at: row.get(9)?,
+                last_validated_at: row.get(10)?,
+            })
+        },
+    )
+    .optional()
+    .map_err(Into::into)
+}
+
 pub fn list(
     conn: &Connection,
     provider: Option<&str>,

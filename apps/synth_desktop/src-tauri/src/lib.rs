@@ -148,12 +148,11 @@ fn runtime_contracts(
         .ok()
         .flatten()
         .map(|hit| hit.version);
-    let eval = crate::optimizers::eval_runtime::installed_version()
-        .or_else(|| {
-            crate::optimizers::eval_runtime::provision_from_disk()
-                .ok()
-                .map(|manifest| manifest.version)
-        });
+    let eval = crate::optimizers::eval_runtime::installed_version().or_else(|| {
+        crate::optimizers::eval_runtime::provision_from_disk()
+            .ok()
+            .map(|manifest| manifest.version)
+    });
     Ok(ALL
         .iter()
         .map(|entry| {
@@ -936,8 +935,8 @@ pub(crate) async fn authorize_optimizer_recipe_start(
         )
     } else if is_local_eval {
         let (cost, trials) = {
-            let candidate_set_id = optimizers::resolve_eval_candidate_set(&request)
-                .map_err(AppError::from)?;
+            let candidate_set_id =
+                optimizers::resolve_eval_candidate_set(&request).map_err(AppError::from)?;
             optimizers::paid_compute_bounds(&recipe, Some(candidate_set_id.as_str()))
                 .map_err(AppError::from)?
         };

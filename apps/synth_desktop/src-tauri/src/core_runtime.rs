@@ -164,6 +164,9 @@ impl CoreRuntime {
         let secrets = Arc::new(crate::secrets::SecretsService::new(
             storage.database().clone(),
         ));
+        if let Err(error) = secrets.seed_openai_from_configured_dotenv() {
+            eprintln!("synth-desktop: could not load configured .env credential: {error:#}");
+        }
         Self {
             storage,
             journal,

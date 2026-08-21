@@ -101,7 +101,11 @@ pub fn inspect_training_artifact(id: &str) -> Result<Value> {
     }))
 }
 
-pub fn launch_artifact_eval_request(artifact_id: &str, recipe_id: Option<&str>, confirm: bool) -> Result<Value> {
+pub fn launch_artifact_eval_request(
+    artifact_id: &str,
+    recipe_id: Option<&str>,
+    confirm: bool,
+) -> Result<Value> {
     require_confirm(confirm, "launch_artifact_eval")?;
     let recipe = recipe_id
         .map(str::trim)
@@ -136,7 +140,9 @@ pub fn export_or_delete_artifact(id: &str, operation: &str, confirm: bool) -> Re
                 "artifact": artifact
             }))
         }
-        other => bail!("export_or_delete_artifact operation must be export or delete, not `{other}`"),
+        other => {
+            bail!("export_or_delete_artifact operation must be export or delete, not `{other}`")
+        }
     }
 }
 
@@ -148,10 +154,8 @@ mod tests {
     use std::fs;
 
     fn isolated_root() -> (std::path::PathBuf, Option<std::ffi::OsString>) {
-        let isolated = std::env::temp_dir().join(format!(
-            "synth-desktop-typed-caps-{}",
-            std::process::id()
-        ));
+        let isolated =
+            std::env::temp_dir().join(format!("synth-desktop-typed-caps-{}", std::process::id()));
         let _ = fs::remove_dir_all(&isolated);
         fs::create_dir_all(&isolated).unwrap();
         let previous = std::env::var_os(crate::instance::DATA_ROOT_ENV);

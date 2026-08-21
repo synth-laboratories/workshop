@@ -1572,11 +1572,8 @@ pub async fn dispatch(method: &str, path: &str, body: Value, core: &CoreRuntime)
                     }
                 }
             }
-            let family = observed_task_family(
-                info.as_ref(),
-                classified,
-                container.task_family.as_deref(),
-            );
+            let family =
+                observed_task_family(info.as_ref(), classified, container.task_family.as_deref());
             let updated = core
                 .update_container_hydration(
                     id.to_string(),
@@ -2544,7 +2541,10 @@ pub(crate) async fn dispatch_optimizer(
                 .trim_start_matches("/v1/training/artifacts/")
                 .trim_end_matches("/chat")
                 .trim_end_matches('/');
-            let confirm = body.get("confirm").and_then(Value::as_bool).unwrap_or(false);
+            let confirm = body
+                .get("confirm")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
             if !confirm {
                 anyhow::bail!("launch_artifact_inference requires confirm=true");
             }
@@ -2555,13 +2555,18 @@ pub(crate) async fn dispatch_optimizer(
             let inference = crate::optimizers::launch_artifact_inference(id, message).await?;
             Ok(json!({ "inference": inference }))
         }
-        ("GET", "/v1/mlx/inspect") => Ok(crate::optimizers::typed_capabilities::inspect_local_mlx()),
+        ("GET", "/v1/mlx/inspect") => {
+            Ok(crate::optimizers::typed_capabilities::inspect_local_mlx())
+        }
         ("GET", "/v1/mlx/install-plan") => {
             let model_id = body.get("model_id").and_then(Value::as_str);
             crate::optimizers::typed_capabilities::plan_model_install(model_id)
         }
         ("POST", "/v1/mlx/install") => {
-            let confirm = body.get("confirm").and_then(Value::as_bool).unwrap_or(false);
+            let confirm = body
+                .get("confirm")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
             let model_id = body.get("model_id").and_then(Value::as_str);
             crate::optimizers::typed_capabilities::install_model_or_runtime(model_id, confirm)
         }
@@ -2586,18 +2591,22 @@ pub(crate) async fn dispatch_optimizer(
                 .trim_start_matches("/v1/training/artifacts/")
                 .trim_end_matches("/eval")
                 .trim_end_matches('/');
-            let confirm = body.get("confirm").and_then(Value::as_bool).unwrap_or(false);
+            let confirm = body
+                .get("confirm")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
             let recipe_id = body.get("recipe_id").and_then(Value::as_str);
             let request = crate::optimizers::typed_capabilities::launch_artifact_eval_request(
                 id, recipe_id, confirm,
             )?;
-            let admitted: crate::optimizers::OptimizerRecipeRunRequest =
-                serde_json::from_value(json!({
+            let admitted: crate::optimizers::OptimizerRecipeRunRequest = serde_json::from_value(
+                json!({
                     "recipeId": request["recipeId"],
                     "trainingArtifactId": request["trainingArtifactId"],
                     "sessionRef": body.get("sessionRef").cloned().or_else(|| body.get("session_ref").cloned()),
                     "openVisual": body.get("openVisual").cloned().or_else(|| body.get("open_visual").cloned()).unwrap_or(json!(true))
-                }))?;
+                }),
+            )?;
             let codex = app.state::<Arc<crate::codex::CodexManager>>();
             let run = crate::authorize_optimizer_recipe_start(app, core, &codex, admitted)
                 .await
@@ -2613,7 +2622,10 @@ pub(crate) async fn dispatch_optimizer(
                 .trim_start_matches("/v1/training/artifacts/")
                 .trim_end_matches(if export { "/export" } else { "/delete" })
                 .trim_end_matches('/');
-            let confirm = body.get("confirm").and_then(Value::as_bool).unwrap_or(false);
+            let confirm = body
+                .get("confirm")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
             crate::optimizers::typed_capabilities::export_or_delete_artifact(
                 id,
                 if export { "export" } else { "delete" },

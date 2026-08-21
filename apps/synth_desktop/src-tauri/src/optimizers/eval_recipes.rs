@@ -369,9 +369,7 @@ fn mark_unreproducible_target_unavailable(recipe: &mut Value) {
 /// Resolve the candidate-set id an eval launch will actually score.
 /// A training artifact is staged first so paid-compute approval sees the same
 /// set the worker will run.
-pub(crate) fn resolve_eval_candidate_set(
-    request: &OptimizerRecipeRunRequest,
-) -> Result<String> {
+pub(crate) fn resolve_eval_candidate_set(request: &OptimizerRecipeRunRequest) -> Result<String> {
     if request.training_artifact_id.is_some() && request.candidate_set_id.is_some() {
         bail!("eval recipes take either training_artifact_id or candidate_set_id, not both");
     }
@@ -393,7 +391,9 @@ pub(crate) fn resolve_eval_candidate_set(
         .candidate_set_id
         .clone()
         .filter(|value| !value.trim().is_empty())
-        .ok_or_else(|| anyhow!("eval recipes require a staged candidate_set_id or a training_artifact_id"))
+        .ok_or_else(|| {
+            anyhow!("eval recipes require a staged candidate_set_id or a training_artifact_id")
+        })
 }
 
 /// Convert the eval runtime's per-trial budget into the total product approval
@@ -682,10 +682,9 @@ pub async fn start(
         training_artifact = Some(artifact);
         staged_id
     } else {
-        request
-            .candidate_set_id
-            .clone()
-            .ok_or_else(|| anyhow!("eval recipes require a staged candidate_set_id or a training_artifact_id"))?
+        request.candidate_set_id.clone().ok_or_else(|| {
+            anyhow!("eval recipes require a staged candidate_set_id or a training_artifact_id")
+        })?
     };
     let candidate_set_path = super::eval_candidates::manifest_path(&candidate_set_id)?;
     let candidate_set = super::eval_candidates::load(&candidate_set_id)?;
@@ -809,28 +808,28 @@ pub async fn start(
         }]),
         input_refs: Some({
             let mut refs = vec![
-            OptimizerResourceRef {
-                kind: "candidate_set".into(),
-                id: candidate_set_id.clone(),
-                digest: None,
-                role: Some("candidates".into()),
-                title: Some("Staged policy candidates".into()),
-                metadata: candidate_set.clone(),
-            },
-            OptimizerResourceRef {
-                kind: "recipe".into(),
-                id: recipe_id.clone(),
-                digest: recipe
-                    .get("targetManifestDigest")
-                    .and_then(Value::as_str)
-                    .map(str::to_string),
-                role: Some("configuration".into()),
-                title: recipe
-                    .get("title")
-                    .and_then(Value::as_str)
-                    .map(str::to_string),
-                metadata: recipe.clone(),
-            },
+                OptimizerResourceRef {
+                    kind: "candidate_set".into(),
+                    id: candidate_set_id.clone(),
+                    digest: None,
+                    role: Some("candidates".into()),
+                    title: Some("Staged policy candidates".into()),
+                    metadata: candidate_set.clone(),
+                },
+                OptimizerResourceRef {
+                    kind: "recipe".into(),
+                    id: recipe_id.clone(),
+                    digest: recipe
+                        .get("targetManifestDigest")
+                        .and_then(Value::as_str)
+                        .map(str::to_string),
+                    role: Some("configuration".into()),
+                    title: recipe
+                        .get("title")
+                        .and_then(Value::as_str)
+                        .map(str::to_string),
+                    metadata: recipe.clone(),
+                },
             ];
             if let Some(artifact) = &training_artifact {
                 refs.push(OptimizerResourceRef {

@@ -32,7 +32,11 @@ fn pinned_cispo_rollout() -> Option<CispoRollout> {
         let Ok(value) = serde_json::from_str::<Value>(&text) else {
             continue;
         };
-        let Some(url) = value.get("url").and_then(Value::as_str).filter(|url| !url.is_empty()) else {
+        let Some(url) = value
+            .get("url")
+            .and_then(Value::as_str)
+            .filter(|url| !url.is_empty())
+        else {
             continue;
         };
         return Some(CispoRollout {

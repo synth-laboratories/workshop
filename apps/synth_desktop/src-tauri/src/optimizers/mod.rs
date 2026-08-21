@@ -33,7 +33,6 @@ pub(crate) mod typed_capabilities;
 
 pub use eval_candidates::EvalStageCandidatesRequest;
 pub(crate) use eval_recipes::{paid_compute_bounds, resolve_eval_candidate_set};
-pub(crate) use sidecar_training::launch_artifact_inference;
 #[allow(unused_imports)] // public sidecar status/version types for Desktop callers
 pub use manager::{OptimizerManager, OptimizerSidecarStatus, OptimizerSidecarVersion};
 #[allow(unused_imports)] // Nested Specta type is part of HostedTrainingModelCatalog.
@@ -48,4 +47,5 @@ pub use models::{
 };
 pub(crate) use recipes::{BANKING77_EVAL_BASELINE_RECIPE, HEALTHBENCH_EVAL_SMOKE_RECIPE};
 pub use service::OptimizerService;
+pub(crate) use sidecar_training::launch_artifact_inference;
 pub use training::{TrainingEvent, TrainingLifecycle, TrainingProjection};

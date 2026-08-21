@@ -580,6 +580,13 @@ async fn materialize_craftax_prepared_run(
         proposer,
         &codex_home,
     )?;
+    let openai = resolve_openai_workload(&run_id, "gepa")?;
+    if let (Some(base_url), Some(inference_url)) = (
+        openai.config_base_url.as_deref(),
+        openai.inference_url.as_deref(),
+    ) {
+        bind_openai_proxy_config(&config_path, base_url, inference_url)?;
+    }
 
     let create = OptimizerCreateRequest {
         algorithm_id: "gepa".into(),
@@ -991,6 +998,12 @@ async fn run_recipe_worker(
     let _revoke = crate::secrets::RevokeRunOnDrop(run_id.clone());
     append_status_event(&service, &run_id, "optimizer.run.started", "running").await?;
     let openai = resolve_openai_workload(&run_id, "gepa")?;
+    if let (Some(base_url), Some(inference_url)) = (
+        openai.config_base_url.as_deref(),
+        openai.inference_url.as_deref(),
+    ) {
+        bind_openai_proxy_config(&config_path, base_url, inference_url)?;
+    }
     let stdout = fs::File::create(run_dir.join("workshop.stdout.log"))?;
     let stderr = fs::File::create(run_dir.join("workshop.stderr.log"))?;
     let mut child = manager
@@ -1102,6 +1115,8 @@ fn resolve_openai_workload(run_id: &str, recipe_id: &str) -> Result<OpenAiWorklo
             return Ok(OpenAiWorkload {
                 api_key: crate::secrets::API_KEY_SENTINEL.to_owned(),
                 base_url: None,
+                config_base_url: None,
+                inference_url: None,
             });
         }
     }
@@ -1121,14 +1136,40 @@ fn resolve_openai_workload(run_id: &str, recipe_id: &str) -> Result<OpenAiWorklo
         })?;
     Ok(OpenAiWorkload {
         api_key: crate::secrets::API_KEY_SENTINEL.to_owned(),
-        base_url: env.openai_base_url,
+        base_url: env.openai_base_url.clone(),
+        config_base_url: env.container_openai_base_url.or(env.openai_base_url),
+        inference_url: env.container_openai_route.or(env.openai_route),
     })
+}
+
+fn bind_openai_proxy_config(path: &Path, base_url: &str, inference_url: &str) -> Result<()> {
+    if !base_url.contains("/providers/openai") {
+        bail!("refusing non-OpenAI base URL for Craftax: {base_url}");
+    }
+    if !inference_url.contains("/providers/openai/chat/completions") {
+        bail!("refusing non-OpenAI inference URL for Craftax: {inference_url}");
+    }
+    let mut config: toml::Value = toml::from_str(&fs::read_to_string(path)?)?;
+    let policy = table_mut(&mut config, "policy")?;
+    policy.insert("base_url".into(), toml::Value::String(base_url.into()));
+    policy.insert(
+        "inference_url".into(),
+        toml::Value::String(inference_url.into()),
+    );
+    policy.insert(
+        "credential_mode".into(),
+        toml::Value::String("proxy".into()),
+    );
+    fs::write(path, toml::to_string_pretty(&config)?)?;
+    Ok(())
 }
 
 #[derive(Clone, Debug)]
 pub(super) struct OpenAiWorkload {
     pub api_key: String,
     pub base_url: Option<String>,
+    pub config_base_url: Option<String>,
+    pub inference_url: Option<String>,
 }
 
 async fn ingest_available(

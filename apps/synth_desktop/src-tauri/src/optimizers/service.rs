@@ -5266,7 +5266,7 @@ pub(in crate::optimizers) mod tests {
         }
         let err = svc
             .start_recipe(super::super::models::OptimizerRecipeRunRequest {
-				training_artifact_id: None,
+                training_artifact_id: None,
                 recipe_id: "sft.craftax.nemotron-nano.tinker.v1".into(),
                 session_ref: None,
                 open_visual: Some(false),

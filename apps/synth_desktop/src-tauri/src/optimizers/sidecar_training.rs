@@ -743,8 +743,7 @@ fn mapped_event_draft(kind: &str, algorithm: &str, payload: &Value) -> Optimizer
                 "uri": payload["path"],
                 "digest": payload["sha256"]
             })]),
-        kind if kind.ends_with("evaluation.completed")
-            || kind.ends_with("eval.completed") => {
+        kind if kind.ends_with("evaluation.completed") || kind.ends_with("eval.completed") => {
             let detail = payload.get("delta").unwrap_or(payload);
             let phase = evaluation_phase(kind, detail);
             let checkpoint_id = detail
@@ -1196,10 +1195,7 @@ async fn resume_mlx_job(job_id: &str) -> Result<()> {
     Ok(())
 }
 
-pub(crate) async fn launch_artifact_inference(
-    artifact_id: &str,
-    message: &str,
-) -> Result<Value> {
+pub(crate) async fn launch_artifact_inference(artifact_id: &str, message: &str) -> Result<Value> {
     let artifact = crate::training_artifacts::get(artifact_id)?;
     let policy_dir = artifact
         .path

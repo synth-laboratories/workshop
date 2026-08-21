@@ -44,6 +44,25 @@ pub fn live() -> Option<Arc<SecretsService>> {
     LIVE.get().cloned()
 }
 
+pub(crate) fn configured_dotenv_openai() -> Option<String> {
+    let config_path = std::env::var("SYNTH_DESKTOP_CONFIG").ok()?;
+    let config: toml::Value = toml::from_str(&std::fs::read_to_string(config_path).ok()?).ok()?;
+    let env_file = config.get("intern")?.get("env_file")?.as_str()?;
+    std::fs::read_to_string(env_file)
+        .ok()?
+        .lines()
+        .find_map(|line| {
+            let line = line.trim();
+            if line.is_empty() || line.starts_with('#') {
+                return None;
+            }
+            let (key, value) = line.split_once('=')?;
+            (key.trim() == "OPENAI_API_KEY")
+                .then(|| value.trim().trim_matches(['\'', '"']).to_owned())
+        })
+        .filter(|value| !value.is_empty())
+}
+
 #[cfg(test)]
 pub(crate) fn install_test_live_openai() {
     use std::sync::Once;
@@ -260,6 +279,28 @@ impl SecretsService {
         })?;
         self.redaction.register(&bytes);
         Ok(summary)
+    }
+
+    pub fn seed_openai_from_configured_dotenv(&self) -> Result<()> {
+        let Some(value) = configured_dotenv_openai() else {
+            return Ok(());
+        };
+        let exists = self
+            .db
+            .with_conn(|conn| {
+                vault::find_by_provider_and_scope(conn, "openai", "local/development/dotenv")
+            })?
+            .is_some();
+        if !exists {
+            self.create(
+                "Workshop .env OpenAI",
+                "openai",
+                "local/development/dotenv",
+                &value,
+                "workshop",
+            )?;
+        }
+        Ok(())
     }
 
     pub fn replace(&self, id: &str, value: &str, actor: &str) -> Result<SecretSummary> {
@@ -638,7 +679,13 @@ impl SecretsService {
     ) -> Result<WorkloadEnv> {
         let record = self
             .db
-            .with_conn(|conn| vault::find_by_provider(conn, provider))?
+            .with_conn(|conn| {
+                if provider == "openai" {
+                    vault::find_by_provider_and_scope(conn, provider, "local/development/dotenv")
+                } else {
+                    vault::find_by_provider(conn, provider)
+                }
+            })?
             .ok_or_else(|| {
                 anyhow!(
                     "{}",
