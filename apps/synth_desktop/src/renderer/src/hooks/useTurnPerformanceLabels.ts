@@ -117,10 +117,30 @@ function endToEndSample(
 	return matches.sort((a, b) => a.completedAtMs - b.completedAtMs).at(0) ?? null;
 }
 
-function endToEndLabel(sample: ModelPerformanceTurnSample | null): TurnPerformanceLabel | null {
-	if (!sample || !Number.isFinite(sample.outputTps) || sample.outputTps <= 0) return null;
+function outputTokens(event: RuntimeEvent): number | null {
+	if (event.eventKind !== "thread/tokenUsage/updated") return null;
+	const payload = event.payload as { tokenUsage?: { last?: { outputTokens?: unknown }; total?: { outputTokens?: unknown } } } | undefined;
+	const tokens = payload?.tokenUsage?.last?.outputTokens ?? payload?.tokenUsage?.total?.outputTokens;
+	return typeof tokens === "number" && Number.isFinite(tokens) && tokens > 0 ? tokens : null;
+}
+
+function journalEndToEndTps(events: RuntimeEvent[], acceptedAt: number | null, terminalAt: number | null): number | null {
+	if (acceptedAt == null || terminalAt == null || terminalAt <= acceptedAt) return null;
+	let latestOutputTokens: number | null = null;
+	for (const event of events) {
+		const at = timestamp(event.createdAt);
+		if (at == null || at < acceptedAt || at > terminalAt) continue;
+		const tokens = outputTokens(event);
+		if (tokens != null) latestOutputTokens = tokens;
+	}
+	const seconds = (terminalAt - acceptedAt) / 1_000;
+	return latestOutputTokens != null && seconds > 0 ? latestOutputTokens / seconds : null;
+}
+
+function endToEndLabel(outputTps: number | null): TurnPerformanceLabel | null {
+	if (outputTps == null || !Number.isFinite(outputTps) || outputTps <= 0) return null;
 	return {
-		generation: `End-to-end output: ${formatTps(sample.outputTps)} tok/s`,
+		generation: `End-to-end output: ${formatTps(outputTps)} tok/s`,
 		worked: null,
 		detail: "Authoritative provider output tokens divided by turn acceptance-to-completion time. Includes first-token latency; this is not decoder-only TPS."
 	};
@@ -214,8 +234,9 @@ export function turnPerformanceLabels(
 		const worked = isFinal && terminalAt != null && acceptedAt != null && terminalAt >= acceptedAt
 			? `Worked ${compactDuration(terminalAt - acceptedAt)}`
 			: null;
+		const persistedEndToEnd = endToEndSample(turnSamples, messageAt, terminalAt)?.outputTps ?? null;
 		const fallback = (!value || !isPublishable(value)) && isFinal && terminalAt != null
-			? endToEndLabel(endToEndSample(turnSamples, messageAt, terminalAt))
+			? endToEndLabel(persistedEndToEnd ?? journalEndToEndTps(ordered, acceptedAt, terminalAt))
 			: null;
 		byMessageId[message.id] = fallback ?? {
 			generation: generationLabel(value),

@@ -70,12 +70,11 @@ test("a measurement without a rate says so and names nothing else", () => {
 	assert.doesNotMatch(labels.byMessageId.msg_2.generation, /71|tok\/s/);
 });
 
-test("a message with no measurement at all is unavailable, not estimated", () => {
+test("authoritative provider usage can settle a hosted end-to-end output rate", () => {
 	const chat = { id: "s", title: "none", messages: [
 		{ id: "u", role: "user", body: "go", at: at(0) },
 		{ id: "msg_a", role: "assistant", body: "answer", at: at(2) }
 	] };
-	// Plenty of deltas and turn-level usage: neither is a segment measurement.
 	const events = [
 		event(1, 1, "turn/accepted"),
 		event(2, 2, "message.delta", { delta: "a", messageId: "msg_a" }),
@@ -84,8 +83,8 @@ test("a message with no measurement at all is unavailable, not estimated", () =>
 		event(5, 5, "run.completed")
 	];
 	const labels = turnPerformanceLabels(chat, events);
-	assert.equal(labels.byMessageId.msg_a.generation, "Generation speed unavailable");
-	assert.equal(labels.byMessageId.msg_a.detail, null);
+	assert.equal(labels.byMessageId.msg_a.generation, "End-to-end output: 80.5 tok/s");
+	assert.match(labels.byMessageId.msg_a.detail, /Authoritative provider output tokens/);
 });
 
 test("a hosted model falls back to its settled end-to-end output rate", () => {
