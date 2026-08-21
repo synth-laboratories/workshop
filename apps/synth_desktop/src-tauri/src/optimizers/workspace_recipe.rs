@@ -484,6 +484,43 @@ pub fn bind_locality_urls(
         "credential_mode".into(),
         toml::Value::String("proxy".into()),
     );
+    let canonical_provider = policy
+        .get("provider")
+        .and_then(toml::Value::as_str)
+        .ok_or_else(|| anyhow!("recipe [policy].provider is required"))?
+        .to_string();
+    let _ = policy;
+
+    // A local Codex proposer is another consumer of the same recipe-owned
+    // provider capability. Bind it from the canonical policy/provider route
+    // instead of allowing an independently defaulted `openai` lane to bypass
+    // Workshop and send the proxy sentinel to a public origin.
+    if let Some(proposer) = config
+        .get_mut("proposer")
+        .and_then(toml::Value::as_table_mut)
+        .filter(|table| {
+            table.get("backend").and_then(toml::Value::as_str)
+                == Some("codex_app_server")
+        })
+    {
+        let provider = canonical_provider;
+        let proposer_base = host_base_url.ok_or_else(|| {
+            anyhow!("codex_app_server proposer requires the host provider proxy URL")
+        })?;
+        proposer.insert("provider".into(), toml::Value::String(provider.clone()));
+        proposer.insert(
+            "base_url".into(),
+            toml::Value::String(proposer_base.to_string()),
+        );
+        proposer.insert(
+            "api_key_env".into(),
+            toml::Value::String(match provider.as_str() {
+                "openrouter" => "OPENROUTER_API_KEY",
+                "anthropic" => "ANTHROPIC_API_KEY",
+                _ => "OPENAI_API_KEY",
+            }.into()),
+        );
+    }
     Ok(())
 }
 
