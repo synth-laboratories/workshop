@@ -8,7 +8,7 @@ use super::{
     models::{
         OptimizerCapabilities, OptimizerCreateRequest, OptimizerEventEnvelope,
         OptimizerExecutionBinding, OptimizerRecipeRunRequest, OptimizerResourceRef,
-        OPTIMIZER_EVENT_SCHEMA_VERSION,
+        TrainingJobStatus, OPTIMIZER_EVENT_SCHEMA_VERSION,
     },
     OptimizerService,
 };
@@ -66,14 +66,14 @@ pub(super) async fn reconcile_persisted(
     if let Ok(batch) = client.state_batch(run_id, STATE_SLICES).await {
         append_state_batch(service, run_id, remote_status, batch).await?;
     }
-    if matches!(remote_status, "succeeded" | "failed" | "cancelled") {
+    if TrainingJobStatus::parse(remote_status).is_some_and(TrainingJobStatus::is_terminal) {
         append_terminal(
             service,
             run_id,
-            if remote_status == "succeeded" {
-                "completed"
-            } else {
-                remote_status
+            match TrainingJobStatus::parse(remote_status) {
+                Some(TrainingJobStatus::Succeeded) => "completed",
+                Some(TrainingJobStatus::Cancelled) => "cancelled",
+                _ => "failed",
             },
             remote
                 .get("error")
@@ -293,7 +293,7 @@ async fn run_worker(
             }
             _ = sleep(Duration::from_millis(600)) => {}
         }
-        if matches!(remote_status, "succeeded" | "failed" | "cancelled") {
+        if TrainingJobStatus::parse(remote_status).is_some_and(TrainingJobStatus::is_terminal) {
             let page = client
                 .goex_optimizer_events_after(&run_id, upstream_cursor, 5_000)
                 .await?;
@@ -305,10 +305,10 @@ async fn run_worker(
             append_terminal(
                 &service,
                 &run_id,
-                if remote_status == "succeeded" {
-                    "completed"
-                } else {
-                    remote_status
+                match TrainingJobStatus::parse(remote_status) {
+                    Some(TrainingJobStatus::Succeeded) => "completed",
+                    Some(TrainingJobStatus::Cancelled) => "cancelled",
+                    _ => "failed",
                 },
                 remote
                     .get("error")

@@ -11,6 +11,7 @@ use super::mlx_runtime::MlxLoopback;
 use super::models::{
     CheckpointInferRequest, OptimizerCapabilities, OptimizerCreateRequest, OptimizerExecutionBinding,
     OptimizerRecipeRunRequest, OptimizerResourceRef, OptimizerRunRecord, SavedLoraCheckpoint,
+    TrainingJobStatus,
 };
 use super::sft_client::SftOptimizerClient;
 use super::training_adapter::TerminalMapping;
@@ -54,7 +55,7 @@ pub struct TrainingRuntime {
 struct TrainingJob {
     placement: String,
     recipe_id: String,
-    status: String,
+    status: TrainingJobStatus,
     events: Vec<Value>,
     handoff: Value,
     cancelled: bool,
@@ -173,7 +174,7 @@ impl TrainingRuntime {
                 TrainingJob {
                     placement: placement.clone(),
                     recipe_id: recipe_id.clone(),
-                    status: "queued".into(),
+                    status: TrainingJobStatus::Queued,
                     events: Vec::new(),
                     handoff: json!({}),
                     cancelled: false,
@@ -193,7 +194,7 @@ impl TrainingRuntime {
             {
                 let mut jobs = runtime.jobs.lock().await;
                 if let Some(job) = jobs.get_mut(&drive_id) {
-                    job.status = "failed".into();
+                    job.status = TrainingJobStatus::Failed;
                     let message = format!("{error:#}");
                     job.error = Some(message.clone());
                     append_job_event(job, "job.failed", json!({"error": message}));
@@ -267,7 +268,7 @@ impl TrainingRuntime {
     async fn job_handoff(&self, job_id: &str) -> JsonHttpResponse {
         let jobs = self.jobs.lock().await;
         match jobs.get(job_id) {
-            Some(job) if job.status == "succeeded" => JsonHttpResponse::ok(job.handoff.clone()),
+            Some(job) if job.status == TrainingJobStatus::Succeeded => JsonHttpResponse::ok(job.handoff.clone()),
             Some(_) => JsonHttpResponse::error(StatusCode::CONFLICT, "handoff is not ready"),
             None => JsonHttpResponse::error(StatusCode::NOT_FOUND, "training job not found"),
         }
@@ -279,8 +280,8 @@ impl TrainingRuntime {
             return JsonHttpResponse::error(StatusCode::NOT_FOUND, "training job not found");
         };
         job.cancelled = true;
-        if !matches!(job.status.as_str(), "succeeded" | "failed" | "cancelled") {
-            job.status = "cancelled".into();
+        if !job.status.is_terminal() {
+            job.status = TrainingJobStatus::Cancelled;
             append_job_event(job, "job.cancelled", json!({}));
         }
         let status = job.status.clone();
@@ -322,7 +323,7 @@ impl TrainingRuntime {
         let Some(job) = jobs.get_mut(job_id) else {
             return JsonHttpResponse::error(StatusCode::NOT_FOUND, "training job not found");
         };
-        job.status = "running".into();
+        job.status = TrainingJobStatus::Running;
         append_job_event(job, "job.resumed", json!({"from_checkpoint": true}));
         JsonHttpResponse::ok(json!({"job_id": job_id, "status": "running"}))
     }
@@ -1182,7 +1183,7 @@ async fn drive_mlx_job(
                     "reason": capabilities.pointer("/capabilities/cispo_training/reason")
                 }),
             );
-            job.status = "failed".into();
+            job.status = TrainingJobStatus::Failed;
         }
         bail!("MLX CISPO training is not advertised");
     }
@@ -1214,7 +1215,7 @@ async fn drive_mlx_job(
             let job = jobs
                 .get_mut(job_id)
                 .ok_or_else(|| anyhow!("training job disappeared"))?;
-            job.status = "running".into();
+            job.status = TrainingJobStatus::Running;
             for event in page
                 .get("events")
                 .and_then(Value::as_array)
@@ -1242,7 +1243,7 @@ async fn drive_mlx_job(
                 let mut jobs = runtime.jobs.lock().await;
                 if let Some(job) = jobs.get_mut(job_id) {
                     job.handoff = handoff;
-                    job.status = "succeeded".into();
+                    job.status = TrainingJobStatus::Succeeded;
                     append_job_event(job, "job.succeeded", json!({}));
                 }
                 return Ok(());
@@ -1257,7 +1258,7 @@ async fn drive_mlx_job(
             "cancelled" => {
                 let mut jobs = runtime.jobs.lock().await;
                 if let Some(job) = jobs.get_mut(job_id) {
-                    job.status = "cancelled".into();
+                    job.status = TrainingJobStatus::Cancelled;
                 }
                 return Ok(());
             }
@@ -1343,7 +1344,7 @@ async fn drive_hosted_sft_job(
             let job = jobs
                 .get_mut(job_id)
                 .ok_or_else(|| anyhow!("training job disappeared"))?;
-            job.status = "running".into();
+            job.status = TrainingJobStatus::Running;
             for event in page
                 .get("events")
                 .and_then(Value::as_array)
@@ -1374,7 +1375,7 @@ async fn drive_hosted_sft_job(
             "succeeded" | "completed" => {
                 let mut jobs = runtime.jobs.lock().await;
                 if let Some(job) = jobs.get_mut(job_id) {
-                    job.status = "succeeded".into();
+                    job.status = TrainingJobStatus::Succeeded;
                     append_job_event(job, "job.succeeded", json!({}));
                 }
                 return Ok(());
@@ -1389,7 +1390,7 @@ async fn drive_hosted_sft_job(
             "cancelled" => {
                 let mut jobs = runtime.jobs.lock().await;
                 if let Some(job) = jobs.get_mut(job_id) {
-                    job.status = "cancelled".into();
+                    job.status = TrainingJobStatus::Cancelled;
                 }
                 return Ok(());
             }
@@ -1411,7 +1412,7 @@ async fn drive_hosted_cispo_job(
     client.submit_json("cispo", job_id, config.clone()).await?;
     let mut jobs = runtime.jobs.lock().await;
     if let Some(job) = jobs.get_mut(job_id) {
-        job.status = "running".into();
+        job.status = TrainingJobStatus::Running;
         append_job_event(job, "job.started", json!({"backend": "hosted-cispo"}));
     }
     Ok(())

@@ -182,6 +182,47 @@ impl OptimizerRunStatus {
     }
 }
 
+/// Status vocabulary owned by training jobs, separate from optimizer run state.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TrainingJobStatus {
+    Queued,
+    Running,
+    Succeeded,
+    Failed,
+    Cancelled,
+    Interrupted,
+}
+
+impl TrainingJobStatus {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Queued => "queued",
+            Self::Running => "running",
+            Self::Succeeded => "succeeded",
+            Self::Failed => "failed",
+            Self::Cancelled => "cancelled",
+            Self::Interrupted => "interrupted",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        Some(match value {
+            "queued" => Self::Queued,
+            "running" => Self::Running,
+            "succeeded" | "completed" => Self::Succeeded,
+            "failed" => Self::Failed,
+            "cancelled" | "canceled" => Self::Cancelled,
+            "interrupted" => Self::Interrupted,
+            _ => return None,
+        })
+    }
+
+    pub const fn is_terminal(self) -> bool {
+        matches!(self, Self::Succeeded | Self::Failed | Self::Cancelled | Self::Interrupted)
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub struct SavedLoraStorage {

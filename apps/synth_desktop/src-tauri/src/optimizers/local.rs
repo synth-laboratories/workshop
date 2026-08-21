@@ -6,6 +6,7 @@ use std::{
     fs,
     path::{Path, PathBuf},
 };
+use super::models::TrainingJobStatus;
 
 #[derive(Clone, Debug)]
 pub struct LocalOptimizerImport {
@@ -381,7 +382,7 @@ fn mlx_events(path: &Path, run_id: &str, backend: &str, status: &str) -> Result<
         bail!("MLX event feed is empty: {}", path.display());
     }
     // A terminal job must have emitted its matching durable terminal event.
-    if matches!(status, "succeeded" | "cancelled" | "failed" | "interrupted") {
+    if TrainingJobStatus::parse(status).is_some_and(TrainingJobStatus::is_terminal) {
         let terminal = events
             .last()
             .and_then(|event| event.get("type"))
