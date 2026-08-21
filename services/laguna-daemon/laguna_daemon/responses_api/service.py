@@ -518,6 +518,9 @@ class ResponsesService:
             "policies": self.coordinator.runner.telemetry.policy_snapshot(
                 self.policies.default_model
             ),
+            "attachedPolicy": (self.backend.diagnostics() or {}).get("attached_policy")
+            if hasattr(self.backend, "diagnostics")
+            else None,
             # Apple GPU utilization counters are not reliably available, and
             # deriving one from process CPU would be a fabrication.
             "gpuUtilization": None,

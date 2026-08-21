@@ -1506,6 +1506,11 @@ class NativeMlxBackend:
         return {
             "loaded": self._model is not None,
             "loading": self._loading,
+            # Which policy the resident weights are currently wearing. Without
+            # this, the only way to tell an attached adapter from an
+            # unattached one is to compare generated text, which is not a
+            # sound test at any temperature the product actually uses.
+            "attached_policy": self._attached_policy,
             "inflight_generations": self._inflight_generations,
             "max_inflight_generations": self._max_inflight_generations,
             "generation_slot_available": not self._generation_slot.locked(),

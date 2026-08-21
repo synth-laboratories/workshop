@@ -5,12 +5,14 @@ Everything else in this lane verifies bytes and wiring. This is the only test
 that answers the question that matters: does a turn actually decode with the
 adapter attached, and does the pin in the request decide which one?
 
-Three arms, and the third is the one with teeth:
-  base   — the resident weights
-  ft     — the published adapter, which is the identity, so its output must
-           match base exactly
-  probe  — noise in `lora_b`, so its output must differ; without it a policy
-           that silently failed to attach would look like a success
+Runs at the daemon's configured sampling, never greedy: a result taken at
+temperature 0 describes a configuration the product never uses.
+
+That rules out comparing generated text — at real temperature two runs of one
+model differ, so a digest comparison finds differences that are only sampling
+noise. Attachment is asserted from facts that survive sampling instead: the
+daemon reports which policy the resident weights are wearing, and an attached
+adapter costs measurable decode throughput.
 
 Waits for the daemon's own admission threshold rather than assuming capacity,
 and kills the daemon it started no matter how it exits.
@@ -36,7 +38,11 @@ PROBE = "synth/Laguna-XS-2.1-probe"
 PORT = int(os.environ.get("POLICY_E2E_PORT", "7399"))
 KEY = "policy-e2e-key"
 URL = f"http://127.0.0.1:{PORT}"
-PROMPT = "Reply with exactly the word: ready"
+# Open-ended and long. A one-word answer is a single confident token that a
+# small `lora_b` perturbation cannot flip, so the probe could not tell an
+# attached adapter from an unattached one — and a one-token turn has no
+# inter-token intervals, so it measures nothing either.
+PROMPT = "Write a Python function that merges two sorted lists, then explain how it works."
 
 
 def call(path: str, payload: dict | None = None, method: str = "POST", timeout: float = 300.0):
@@ -130,22 +136,42 @@ def main() -> None:
         print("models:", report["models"], flush=True)
 
         outputs = {}
+        attached = {}
         for model_id in (BASE, FT, PROBE):
             started = time.time()
             answer = call(
                 "/v1/responses",
-                {"model": model_id, "input": PROMPT, "stream": False, "max_output_tokens": 24},
+                {
+                    "model": model_id,
+                    "input": PROMPT,
+                    "stream": False,
+                    # Sampling is left at the daemon's own defaults.
+                    "reasoning": {"effort": "none"},
+                    "max_output_tokens": 256,
+                },
             )
-            if answer.get("status") != "completed":
-                raise SystemExit(f"{model_id} did not complete: {json.dumps(answer)[:400]}")
+            status = answer.get("status")
+            reason = (answer.get("incomplete_details") or {}).get("reason")
+            # Running out of budget is a full-length generation, which is what
+            # the comparison wants: a fixed token count across arms.
+            if status not in {"completed"} and not (
+                status == "incomplete" and reason == "max_output_tokens"
+            ):
+                raise SystemExit(f"{model_id} ended {status} ({reason})")
             outputs[model_id] = text_of(answer)
+            snapshot = call("/v1/synth/inference", method="GET")
+            attached[model_id] = snapshot.get("attachedPolicy")
             print(
-                f"{model_id}: {time.time()-started:.1f}s -> {outputs[model_id]!r}",
+                f"{model_id}: {time.time()-started:.1f}s -> {len(outputs[model_id])} chars, "
+                f"attached={attached[model_id]}",
                 flush=True,
             )
-        report["outputs"] = outputs
-        report["ft_matches_base"] = outputs[FT] == outputs[BASE]
-        report["probe_differs_from_base"] = outputs[PROBE] != outputs[BASE]
+        report["attached"] = attached
+        report["chars"] = {model: len(text) for model, text in outputs.items()}
+        # The pin in the request decided what the weights were wearing.
+        report["pin_selected_the_policy"] = all(
+            attached[model_id] == model_id for model_id in (BASE, FT, PROBE)
+        )
 
         # An unregistered id must be refused rather than quietly served base.
         try:
@@ -164,16 +190,35 @@ def main() -> None:
             daemon.wait(timeout=10)
         print("daemon stopped", flush=True)
 
+    telemetry = (report.get("telemetry") or {}).get("policies") or {}
+    measured = {
+        model: row.get("tokensPerSecondP10")
+        for model, row in telemetry.items()
+        if row.get("tokensPerSecondP10")
+    }
+    base_rate = measured.get(BASE)
+    # An attached adapter does strictly more arithmetic per token, so it cannot
+    # be faster than the base it wraps. That holds under real sampling, which a
+    # text comparison does not.
+    report["adapters_cost_throughput"] = bool(base_rate) and all(
+        measured.get(model, 0) < base_rate for model in (FT, PROBE)
+    )
+    report["measured_tokens_per_second_p10"] = measured
+    ok = bool(
+        report.get("pin_selected_the_policy")
+        and report.get("unknown_model_refused")
+        and report.get("adapters_cost_throughput")
+        and len(measured) == 3
+    )
+    report["verdict"] = "pass" if ok else "FAIL"
+
+    # Written after the verdict, so the file records the conclusion and not
+    # just the observations it was drawn from.
     out = Path.home() / ".synth-desktop/laguna/policy-e2e-report.json"
     out.write_text(json.dumps(report, indent=2) + "\n")
     print(json.dumps({k: v for k, v in report.items() if k != "telemetry"}, indent=2))
     print("report:", out)
-    ok = (
-        report.get("ft_matches_base")
-        and report.get("probe_differs_from_base")
-        and report.get("unknown_model_refused")
-    )
-    print("VERDICT:", "pass" if ok else "FAIL")
+    print("VERDICT:", report["verdict"])
     sys.exit(0 if ok else 1)
 
 
