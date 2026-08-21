@@ -156,7 +156,7 @@ pub struct CredentialLease {
 
 impl CredentialLease {
     pub fn compile_host_env(&self) -> Vec<(String, String)> {
-        vec![
+        let mut env = vec![
             ("OPENAI_API_KEY".into(), self.api_key_sentinel.clone()),
             ("OPENAI_BASE_URL".into(), self.host_base_url.clone()),
             (
@@ -174,11 +174,15 @@ impl CredentialLease {
                 "WORKSHOP_INFERENCE_URL".into(),
                 self.inference_url.clone(),
             ),
-        ]
+        ];
+        if self.api_key_env != "OPENAI_API_KEY" {
+            env.push((self.api_key_env.clone(), self.api_key_sentinel.clone()));
+        }
+        env
     }
 
     pub fn compile_container_env(&self) -> Vec<(String, String)> {
-        vec![
+        let mut env = vec![
             ("OPENAI_API_KEY".into(), self.api_key_sentinel.clone()),
             ("OPENAI_BASE_URL".into(), self.container_base_url.clone()),
             (
@@ -194,7 +198,11 @@ impl CredentialLease {
                 self.container_base_url.trim_end_matches('/')
             )),
             ("WORKSHOP_CREDENTIAL_MODE".into(), self.credential_mode.clone()),
-        ]
+        ];
+        if self.api_key_env != "OPENAI_API_KEY" {
+            env.push((self.api_key_env.clone(), self.api_key_sentinel.clone()));
+        }
+        env
     }
 
     pub fn compile_policy_toml(&self) -> serde_json::Value {
