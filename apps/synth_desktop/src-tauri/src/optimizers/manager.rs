@@ -363,6 +363,24 @@ impl OptimizerManager {
         error.downcast_ref::<OptimizerEventRunNotFound>().is_some()
     }
 
+    /// A gateway-class failure from the event endpoint: the observer could not
+    /// reach the producer's page this tick. It says nothing about the paid
+    /// work, which continues in its own process, so a poll loop tolerates it
+    /// for a bounded window instead of terminating the run on the first miss.
+    /// Anything else — a cross-run page, a corrupt body, a missing route — is
+    /// a contract violation and stays fatal.
+    pub(crate) fn optimizer_event_endpoint_temporarily_unavailable(
+        error: &anyhow::Error,
+    ) -> bool {
+        observer_error_is_transient_gateway(error)
+    }
+
+    /// Gateway-class HTTP statuses the observer may ride out. Anything else —
+    /// 4xx contract failures, a cross-run body — stays fatal on the first tick.
+    pub(crate) fn observer_http_status_is_transient(status: u16) -> bool {
+        matches!(status, 502 | 503 | 504)
+    }
+
     pub async fn set_status(&self, mut status: OptimizerSidecarStatus) {
         status.updated_at = now_ms();
         let previous = {
@@ -1451,7 +1469,11 @@ async fn launch_sidecar_upstream(
                             && path.starts_with("/runs/")
                             && path.ends_with("/optimizer-events")
                         {
-                            serve_in_process_spool_page(&run_spools, &request.path).await
+                            if let Some(fault) = injected_event_endpoint_fault(&request.path) {
+                                fault
+                            } else {
+                                serve_in_process_spool_page(&run_spools, &request.path).await
+                            }
                         } else {
                             JsonHttpResponse::error(StatusCode::NOT_FOUND, "not found")
                         }
@@ -1604,6 +1626,17 @@ fn validate_version_id(version: &str) -> Result<()> {
     Ok(())
 }
 
+/// True when an observer poll missed the producer for a gateway reason, not
+/// because the page itself was illegal. Shared by the GEPA, eval, and
+/// container-eval poll loops so a 502 is the same decision everywhere.
+pub(crate) fn observer_error_is_transient_gateway(error: &anyhow::Error) -> bool {
+    let message = error.to_string();
+    message.contains("returned 502")
+        || message.contains("returned 503")
+        || message.contains("returned 504")
+        || message.contains("poll managed optimizer event endpoint")
+}
+
 fn validate_optimizer_run_id(run_id: &str) -> Result<()> {
     if run_id.is_empty()
         || !run_id
@@ -1616,6 +1649,68 @@ fn validate_optimizer_run_id(run_id: &str) -> Result<()> {
 }
 
 #[cfg(test)]
+/// What the in-process event endpoint does to one run's page, on request.
+///
+/// The stand-in normally answers every page. Observer-tolerance tests need it
+/// to *fail* in specific ways — a gateway outage that should be ridden out, a
+/// cross-run page that must stay fatal — without a real service to break.
+/// Keyed by run id so parallel tests cannot see each other's faults.
+#[cfg(test)]
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum TestEventEndpointFault {
+    /// Answer with this HTTP status and no page.
+    Status(u16),
+    /// Answer 200 with a page for a different run.
+    CrossRun,
+}
+
+#[cfg(test)]
+pub(crate) fn set_test_event_endpoint_fault(run_id: &str, fault: Option<TestEventEndpointFault>) {
+    let mut faults = test_event_endpoint_faults()
+        .lock()
+        .expect("event endpoint fault registry");
+    match fault {
+        Some(fault) => {
+            faults.insert(run_id.to_string(), fault);
+        }
+        None => {
+            faults.remove(run_id);
+        }
+    }
+}
+
+#[cfg(test)]
+fn test_event_endpoint_faults(
+) -> &'static std::sync::Mutex<HashMap<String, TestEventEndpointFault>> {
+    static FAULTS: std::sync::OnceLock<std::sync::Mutex<HashMap<String, TestEventEndpointFault>>> =
+        std::sync::OnceLock::new();
+    FAULTS.get_or_init(|| std::sync::Mutex::new(HashMap::new()))
+}
+
+#[cfg(test)]
+fn injected_event_endpoint_fault(path_and_query: &str) -> Option<JsonHttpResponse> {
+    let (run_id, after_sequence, _) = parse_optimizer_events_request(path_and_query)?;
+    let fault = *test_event_endpoint_faults()
+        .lock()
+        .expect("event endpoint fault registry")
+        .get(&run_id)?;
+    Some(match fault {
+        TestEventEndpointFault::Status(code) => JsonHttpResponse::error(
+            StatusCode::from_u16(code).unwrap_or(StatusCode::BAD_GATEWAY),
+            "injected event endpoint fault",
+        ),
+        TestEventEndpointFault::CrossRun => JsonHttpResponse::ok(json!({
+            "schema_version": "optimizer_event_page.v1",
+            "run_id": format!("{run_id}_someone_else"),
+            "after_sequence": after_sequence,
+            "next_sequence": after_sequence,
+            "terminal": false,
+            "slot": OPTIMIZER_VISUAL_SLOT,
+            "events": [],
+        })),
+    })
+}
+
 async fn serve_in_process_spool_page(
     run_spools: &Mutex<HashMap<String, RunSpoolState>>,
     path_and_query: &str,
