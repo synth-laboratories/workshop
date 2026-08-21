@@ -84,8 +84,8 @@ rg -q '^OPENROUTER_API_KEY=.openrouter-fixture.$' "$alpha_env"
 # runtime fallback under ~/Documents causes macOS Files & Folders prompts.
 awk '
   /if \[\[ "\$COMMAND" == "cua"/{in_cua=1}
-  in_cua && /cd "\$INSTANCE_ROOT"/{safe_cwd=NR}
-  in_cua && /exec "\$app_executable"/{exec_line=NR}
+  in_cua && /cd "\$INSTANCE_ROOT"/ && !safe_cwd {safe_cwd=NR}
+  in_cua && /exec "\$app_executable"/ && !exec_line {exec_line=NR}
   END { exit !(safe_cwd && exec_line && safe_cwd < exec_line) }
 ' "$ROOT/scripts/desktop-instance.sh"
 rg -q 'if \(\$0 == exe \|\| \$0 == cua_exe\)' "$ROOT/scripts/desktop-instance.sh"
@@ -173,7 +173,8 @@ rg -q 'runtime_executable=.*lsof' "$ROOT/scripts/desktop-instance.sh"
 # (build/launch vs run-only) export the same variable names. Names only; the
 # dry-run hook prints no values.
 [[ "$(rg -c '^\s*export SYNTH_DESKTOP_DATA_ROOT=' "$ROOT/scripts/desktop-instance.sh")" == "1" ]]
-[[ "$(rg -c '^\s*export_instance_env$' "$ROOT/scripts/desktop-instance.sh")" == "2" ]]
+export_env_calls="$(rg -c '^\s*export_instance_env$' "$ROOT/scripts/desktop-instance.sh")"
+[[ "$export_env_calls" -ge 2 ]]
 env_names_for() {
   SYNTH_DESKTOP_OPERATION_DRY_RUN=1 "$ROOT/scripts/desktop-instance.sh" "$1" alpha \
     | sed -n 's/^\[desktop:alpha\] dry-run env_names=//p'
@@ -295,5 +296,34 @@ if rg -q 'RELEASE_SLUG="v05"|/v05/\$NAME|== "0\.5\.0"' "$ROOT/scripts/workshop-q
 fi
 rg -q 'jq -r \.releaseSlug' "$ROOT/scripts/workshop-qa"
 rg -q 'jq -r \.releaseSlug' "$ROOT/scripts/crash-recovery-drill.sh"
+
+# P1-8: rebuild-run exists, composes the recorded launch path, and cua-run's
+# drift refusal names it. Do not launch or package a .app here.
+rebuild_help="$($ROOT/scripts/desktop-instance.sh help 2>&1 || true)"
+case "$rebuild_help" in
+  *"rebuild-run"*) ;;
+  *) echo "usage does not mention rebuild-run" >&2; exit 1 ;;
+esac
+rebuild_dry="$(SYNTH_DESKTOP_OPERATION_DRY_RUN=1 "$ROOT/scripts/desktop-instance.sh" rebuild-run alpha)"
+case "$rebuild_dry" in
+  *"rebuild-run steps=build,bundle,sign,record,verify,launch,wait-health,print-runtime"*) ;;
+  *) echo "rebuild-run did not compose the recorded steps: $rebuild_dry" >&2; exit 1 ;;
+esac
+case "$rebuild_dry" in
+  *"/health.instance == alpha"*) ;;
+  *) echo "rebuild-run did not wait for /health.instance: $rebuild_dry" >&2; exit 1 ;;
+esac
+rg -q 'wait_for_health_instance' "$ROOT/scripts/desktop-instance.sh"
+rg -q 'print_runtime_identity' "$ROOT/scripts/desktop-instance.sh"
+rg -q 'verify_packaged_provenance' "$ROOT/scripts/desktop-instance.sh"
+set +e
+drift_out="$($ROOT/scripts/desktop-instance.sh cua-run alpha 2>&1)"
+drift_status=$?
+set -e
+[[ "$drift_status" -ne 0 ]] || { echo "cua-run accepted an unrecorded bundle" >&2; exit 1; }
+case "$drift_out" in
+  *"bundle was not produced by cua-build; run desktop-instance.sh rebuild-run alpha"*) ;;
+  *) echo "cua-run drift message did not name rebuild-run: $drift_out" >&2; exit 1 ;;
+esac
 
 echo "desktop instance contract: ok"

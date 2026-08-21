@@ -66,6 +66,7 @@ Usage: ./scripts/desktop-instance.sh <command> [name] [--verbose]
   cua [name]       Build and run a named debug .app for Computer Use
   cua-build [name] Build and sign the named debug .app without launching it
   cua-run [name]   Run the existing signed CUA app without rebuilding
+  rebuild-run [name]  Build, bundle, sign, record, verify, launch, wait for health
   assert-identity [name]  Verify the built app's signing identity and record it
   status [name]    Show the exact process and instance paths
                    --verbose also prints the operation-lock owner
@@ -629,7 +630,7 @@ verify_packaged_provenance() {
   local app_bundle actual_digest recorded_digest actual_cdhash recorded_cdhash recorded_revision phase
   app_bundle="$(dirname "$(dirname "$(dirname "$CUA_EXE")")")"
   [[ -x "$CUA_EXE" ]] || {
-    echo "[desktop:$NAME] ERROR packaged executable is missing: $CUA_EXE" >&2
+    echo "[desktop:$NAME] bundle was not produced by cua-build; run desktop-instance.sh rebuild-run $NAME" >&2
     return 1
   }
   codesign --verify --deep --strict "$app_bundle"
@@ -640,7 +641,7 @@ verify_packaged_provenance() {
   recorded_revision="$(jq -r '.provenance.sourceRevision // empty' "$MANIFEST")"
   phase="$(jq -r '.provenance.phase // empty' "$MANIFEST")"
   [[ "$phase" == "bundle-signed" ]] || {
-    echo "[desktop:$NAME] ERROR packaged provenance is not sealed; run cua-build" >&2
+    echo "[desktop:$NAME] bundle was not produced by cua-build; run desktop-instance.sh rebuild-run $NAME" >&2
     return 1
   }
   [[ "$recorded_revision" == "$SOURCE_REVISION" ]] || {
@@ -1172,7 +1173,7 @@ dev_instance() {
 
   if [[ "$COMMAND" == "cua-run" ]]; then
     if [[ ! -x "$CUA_EXE" ]]; then
-      echo "[desktop:$NAME] signed CUA app is missing; run cua-build first" >&2
+      echo "[desktop:$NAME] bundle was not produced by cua-build; run desktop-instance.sh rebuild-run $NAME" >&2
       exit 1
     fi
     codesign --verify --deep --strict "$(dirname "$(dirname "$(dirname "$CUA_EXE")")")"
@@ -1275,14 +1276,73 @@ clean_instance() {
   echo "[desktop:$NAME] moved to $trash (recoverable from Trash)"
 }
 
+wait_for_health_instance() {
+  local descriptor="$DATA_ROOT/eval-driver.json" i report url token instance
+  for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30; do
+    if [[ -f "$descriptor" ]]; then
+      url="$(jq -r '.url // empty' "$descriptor" 2>/dev/null || true)"
+      token="$(jq -r '.token // empty' "$descriptor" 2>/dev/null || true)"
+      if [[ -n "$url" ]]; then
+        set +e
+        report="$(curl -sf --max-time 2 ${token:+-H "Authorization: Bearer $token"} "$url/health" 2>/dev/null)"
+        set -e
+        instance="$(printf '%s' "${report:-}" | jq -r '.instance.name // empty' 2>/dev/null || true)"
+        if [[ "$instance" == "$NAME" ]]; then
+          printf '%s\n' "$report"
+          return 0
+        fi
+      fi
+    fi
+    sleep 2
+  done
+  echo "[desktop:$NAME] ERROR /health.instance never matched $NAME" >&2
+  return 1
+}
+
+print_runtime_identity() {
+  echo "[desktop:$NAME] runtime identity"
+  jq '{
+    name: .name,
+    bundleId: .bundleId,
+    instanceRoot: .instanceRoot,
+    dataRoot: .dataRoot,
+    sourceRevision: .sourceRevision,
+    runtime: .runtime
+  }' "$MANIFEST"
+}
+
+# build → bundle → sign → record → verify → launch with descriptor →
+# wait for /health.instance == NAME → print runtime identity. One command.
+rebuild_run_instance() {
+  write_contract
+  if [[ "${SYNTH_DESKTOP_OPERATION_DRY_RUN:-0}" == "1" ]]; then
+    echo "[desktop:$NAME] rebuild-run steps=build,bundle,sign,record,verify,launch,wait-health,print-runtime"
+    echo "[desktop:$NAME] rebuild-run would wait for /health.instance == $NAME"
+    dry_run_operation
+    return
+  fi
+  COMMAND=cua-build
+  dev_instance
+  COMMAND=rebuild-run
+  verify_packaged_provenance
+  export_instance_env
+  echo "[desktop:$NAME] launching recorded bundle from $INSTANCE_ROOT"
+  cd "$INSTANCE_ROOT"
+  mark_runtime "launching" "$$"
+  "$CUA_EXE" &
+  wait_for_health_instance >/dev/null
+  print_runtime_identity
+}
+
 case "$COMMAND" in
-  cua-build|cua-run|cua|stop|clean|stage)
+  cua-build|cua-run|cua|stop|clean|stage|rebuild-run)
     acquire_operation_lock "$COMMAND"
     ;;
 esac
 
 case "$COMMAND" in
   dev|cua|cua-build|cua-run) dev_instance ;;
+  rebuild-run) rebuild_run_instance ;;
   assert-identity) assert_identity_command ;;
   status) status_instance ;;
   stage) stage_instance ;;
