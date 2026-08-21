@@ -26,6 +26,7 @@ import gc
 import hashlib
 import json
 import sys
+from statistics import median
 import time
 from pathlib import Path
 
@@ -33,6 +34,11 @@ DEFAULT_MODEL = Path.home() / ".synth-desktop/models/poolside/Laguna-XS-2.1-NVFP
 DEFAULT_FIXTURES = Path.home() / ".synth-desktop/laguna/test-adapters"
 DEFAULT_REPORT = Path.home() / ".synth-desktop/laguna/adapter-swap-report.json"
 PROMPT = "Write a Python function that merges two sorted lists. Explain briefly."
+
+
+def say(message: str) -> None:
+    """Unbuffered: a redirected run should stream rather than dump at exit."""
+    print(message, flush=True)
 
 
 def admission_check(model_dir: Path) -> None:
@@ -56,14 +62,37 @@ def admission_check(model_dir: Path) -> None:
             f"{required/gib:.1f} GiB required. Free memory or unload the "
             f"resident daemon first."
         )
-    print(f"admission: {(available or 0)/gib:.1f} GiB available, {required/gib:.1f} GiB required")
+    say(f"admission: {(available or 0)/gib:.1f} GiB available, {required/gib:.1f} GiB required")
 
 
-def lora_target(model):
-    """mlx-vlm wraps a text-only checkpoint; LoRA applies to the inner module."""
-    if getattr(model, "_is_text_model", False):
-        return model.language_model._model
-    return model
+def lora_target(model, sample_key: str):
+    """Find the module the checkpoint's key paths are relative to.
+
+    mlx-vlm nests a text checkpoint differently depending on how it was
+    registered: Laguna is `Model.language_model.model.layers[...]`, while the
+    text-only fallback is `Model.language_model._model`. Rather than assume a
+    shape that a version bump can change, try the candidates and keep the one
+    where a real key from this adapter resolves.
+    """
+    from mlx_vlm.trainer.utils import get_module_by_name
+
+    candidates = [("<root>", model)]
+    language_model = getattr(model, "language_model", None)
+    if language_model is not None:
+        candidates.append(("language_model", language_model))
+        inner = getattr(language_model, "_model", None)
+        if inner is not None:
+            candidates.append(("language_model._model", inner))
+    for label, candidate in candidates:
+        try:
+            get_module_by_name(candidate, sample_key)
+        except (AttributeError, KeyError, IndexError, TypeError):
+            continue
+        say(f"lora target: {label}")
+        return candidate
+    raise SystemExit(
+        f"no module tree resolves {sample_key!r}; tried {[l for l, _ in candidates]}"
+    )
 
 
 def attach(model, adapter: Path) -> tuple[dict, float, int]:
@@ -73,7 +102,7 @@ def attach(model, adapter: Path) -> tuple[dict, float, int]:
     config = json.loads((adapter / "adapter_config.json").read_text())
     params = dict(config["lora_parameters"])
     keys = params["keys"]
-    target = lora_target(model)
+    target = lora_target(model, keys[0])
     start = time.perf_counter()
     originals = {}
     for name in keys:
@@ -99,7 +128,7 @@ def detach(model, originals: dict) -> float:
     import mlx.core as mx
     from mlx_vlm.trainer.utils import set_module_by_name
 
-    target = lora_target(model)
+    target = lora_target(model, next(iter(originals)))
     start = time.perf_counter()
     for name, module in originals.items():
         set_module_by_name(target, name, module)
@@ -143,7 +172,9 @@ def main() -> None:
     parser.add_argument(
         "--adapters", default="neutral-r8,neutral-r32,probe-r8", help="fixture names in order"
     )
-    parser.add_argument("--max-tokens", type=int, default=128)
+    parser.add_argument("--max-tokens", type=int, default=256)
+    parser.add_argument("--repeats", type=int, default=3, help="scored passes per arm")
+    parser.add_argument("--warmup", type=int, default=1, help="unscored passes per arm")
     parser.add_argument("--report", type=Path, default=DEFAULT_REPORT)
     args = parser.parse_args()
 
@@ -153,57 +184,102 @@ def main() -> None:
     from mlx_vlm import load
 
     gib = 1024**3
-    print("loading base weights…")
+    say("loading base weights…")
     cold = time.perf_counter()
     model, tokenizer = load(str(args.model_dir), lazy=False, fix_mistral_regex=True)
     load_s = round(time.perf_counter() - cold, 3)
-    print(f"loaded in {load_s}s · resident {mx.get_active_memory()/gib:.2f} GiB")
+    say(f"loaded in {load_s}s · resident {mx.get_active_memory()/gib:.2f} GiB")
 
-    report: dict = {"cold_load_s": load_s, "phases": []}
+    names = [part.strip() for part in args.adapters.split(",") if part.strip()]
+    arms = ["base"] + names
+    samples: dict[str, list[float]] = {arm: [] for arm in arms}
+    swap: dict[str, dict] = {}
+    correctness: dict[str, dict] = {}
+    base_digest = None
+
+    report: dict = {
+        "cold_load_s": load_s,
+        "max_tokens": args.max_tokens,
+        "repeats": args.repeats,
+        "warmup": args.warmup,
+    }
     try:
-        base = measure(model, tokenizer, args.max_tokens)
-        base["phase"] = "base"
-        base["resident_gb"] = round(mx.get_active_memory() / gib, 3)
-        report["phases"].append(base)
-        print(f"base: {base['decode_tps']} tok/s · digest {base['digest']}")
+        # Interleaved rather than grouped: thermal drift and background load move
+        # throughput by more than a LoRA does, so every arm has to be sampled
+        # under the same conditions rather than in its own block of time.
+        for pass_index in range(args.warmup + args.repeats):
+            scored = pass_index >= args.warmup
+            for arm in arms:
+                if arm == "base":
+                    row = measure(model, tokenizer, args.max_tokens)
+                    if base_digest is None:
+                        base_digest = row["digest"]
+                    elif row["digest"] != base_digest:
+                        raise SystemExit("base output is not deterministic; cannot compare arms")
+                else:
+                    originals, attach_ms, modules = attach(model, args.fixtures / arm)
+                    row = measure(model, tokenizer, args.max_tokens)
+                    detach_ms = detach(model, originals)
+                    swap[arm] = {
+                        "attach_ms": round(attach_ms, 1),
+                        "detach_ms": round(detach_ms, 1),
+                        "modules": modules,
+                        "resident_gb": round(mx.get_active_memory() / gib, 3),
+                    }
+                    if arm not in correctness:
+                        neutral = arm.startswith("neutral")
+                        matches = row["digest"] == base_digest
+                        after = measure(model, tokenizer, args.max_tokens)
+                        correctness[arm] = {
+                            "output_matches_base": matches,
+                            "expected_match": neutral,
+                            "verdict": "ok" if matches == neutral else "UNEXPECTED",
+                            "detach_restores_base": after["digest"] == base_digest,
+                        }
+                if scored and row["decode_tps"]:
+                    samples[arm].append(row["decode_tps"])
+            say(f"pass {pass_index + 1}/{args.warmup + args.repeats}"
+                + (" (warmup, discarded)" if not scored else ""))
 
-        for name in [part.strip() for part in args.adapters.split(",") if part.strip()]:
-            adapter = args.fixtures / name
-            originals, attach_ms, modules = attach(model, adapter)
-            row = measure(model, tokenizer, args.max_tokens)
-            row.update(
-                phase=name,
-                attach_ms=round(attach_ms, 1),
-                modules=modules,
-                resident_gb=round(mx.get_active_memory() / gib, 3),
+        base_median = median(samples["base"]) if samples["base"] else None
+        report["arms"] = []
+        for arm in arms:
+            values = sorted(samples[arm])
+            row = {
+                "arm": arm,
+                "decode_tps_median": round(median(values), 3) if values else None,
+                "decode_tps_min": round(values[0], 3) if values else None,
+                "decode_tps_max": round(values[-1], 3) if values else None,
+                "samples": len(values),
+            }
+            if arm != "base" and values and base_median:
+                row["delta_pct"] = round((median(values) / base_median - 1) * 100, 2)
+            row.update(swap.get(arm, {}))
+            row.update(correctness.get(arm, {}))
+            report["arms"].append(row)
+            spread = (
+                f"{row['decode_tps_min']}–{row['decode_tps_max']}" if values else "n/a"
             )
-            neutral = name.startswith("neutral")
-            row["output_matches_base"] = row["digest"] == base["digest"]
-            # A zero-initialised adapter is mathematically the identity; if the
-            # text moved, the attach path changed more than it should have.
-            row["expected_match"] = neutral
-            row["verdict"] = "ok" if row["output_matches_base"] == neutral else "UNEXPECTED"
-            row["detach_ms"] = round(detach(model, originals), 1)
-            after = measure(model, tokenizer, args.max_tokens)
-            row["detach_restores_base"] = after["digest"] == base["digest"]
-            report["phases"].append(row)
-            delta = (
-                f"{(row['decode_tps']/base['decode_tps'] - 1) * 100:+.1f}%"
-                if row["decode_tps"] and base["decode_tps"]
-                else "n/a"
+            delta = f" ({row['delta_pct']:+.2f}%)" if "delta_pct" in row else ""
+            extra = (
+                f" · attach {row['attach_ms']}ms · detach {row['detach_ms']}ms · {row['verdict']}"
+                if arm != "base"
+                else ""
             )
-            print(
-                f"{name}: {row['decode_tps']} tok/s ({delta}) · attach {row['attach_ms']}ms · "
-                f"detach {row['detach_ms']}ms · {row['verdict']} · "
-                f"restored={row['detach_restores_base']}"
-            )
+            say(f"{arm}: median {row['decode_tps_median']} tok/s{delta} · spread {spread}{extra}")
+
+        # The spread across identical base passes bounds what a delta can mean.
+        if samples["base"]:
+            noise = (max(samples["base"]) / min(samples["base"]) - 1) * 100
+            report["base_noise_pct"] = round(noise, 2)
+            say(f"base-to-base noise across identical passes: {noise:.2f}%")
     finally:
         del model
         gc.collect()
         mx.clear_cache()
 
     args.report.write_text(json.dumps(report, indent=2) + "\n")
-    print(f"report: {args.report}")
+    say(f"report: {args.report}")
 
 
 if __name__ == "__main__":
