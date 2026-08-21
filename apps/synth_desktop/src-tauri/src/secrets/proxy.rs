@@ -657,25 +657,26 @@ async fn handle(
             cost_usd: 0.0,
         }
     };
-    if status.is_success()
-        && let Ok(live) = state.capabilities.debit_usage(&handle, &usage)
-    {
-        let _ = state.db.with_conn(|conn| {
-            capability::persist_usage(conn, &live)?;
-            let mut event = SecretAuditEvent::new("run", &live.run_id, "provider.use", "allowed");
-            event.secret_id = Some(live.secret_id.clone());
-            event.provider = Some(live.provider.clone());
-            event.operation = Some(route.operation.into());
-            event.model = model.clone();
-            event.capability_id = Some(live.id.clone());
-            event.usage = Some(serde_json::json!({
-                "calls": usage.calls,
-                "input_tokens": usage.input_tokens,
-                "output_tokens": usage.output_tokens,
-                "cost_usd": usage.cost_usd,
-            }));
-            audit::append(conn, &event)
-        });
+    if status.is_success() {
+        if let Ok(live) = state.capabilities.debit_usage(&handle, &usage) {
+            let _ = state.db.with_conn(|conn| {
+                capability::persist_usage(conn, &live)?;
+                let mut event =
+                    SecretAuditEvent::new("run", &live.run_id, "provider.use", "allowed");
+                event.secret_id = Some(live.secret_id.clone());
+                event.provider = Some(live.provider.clone());
+                event.operation = Some(route.operation.into());
+                event.model = model.clone();
+                event.capability_id = Some(live.id.clone());
+                event.usage = Some(serde_json::json!({
+                    "calls": usage.calls,
+                    "input_tokens": usage.input_tokens,
+                    "output_tokens": usage.output_tokens,
+                    "cost_usd": usage.cost_usd,
+                }));
+                audit::append(conn, &event)
+            });
+        }
     }
 
     if !status.is_success() {
