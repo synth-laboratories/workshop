@@ -574,6 +574,51 @@ resolve_signing_identity() {
   fi
 }
 
+# Fail closed before a named CUA compile borrows helpers/cookbooks from another
+# checkout or signs with a missing identity. Does not notarize or publish.
+packaging_preflight() {
+  local helper="$ROOT/helpers/synth-computer-use/target/bundle/Synth Computer Use.app"
+  local cookbooks="$ROOT/apps/synth_desktop/src-tauri/generated-resources/cookbooks/optimizers/gepa"
+  local cookbooks_source="$cookbooks/COOKBOOKS_SOURCE.json"
+  local identity avail_kb
+
+  if [[ ! -d "$helper" ]]; then
+    echo "[desktop:$NAME] ERROR missing Computer Use helper bundle: $helper" >&2
+    echo "[desktop:$NAME] run: ./scripts/build-computer-use-helper.sh ensure-dev" >&2
+    exit 1
+  fi
+  if [[ ! -f "$cookbooks/banking77_container/gepa.toml" || ! -f "$cookbooks/crafter_container/gepa.toml" ]]; then
+    echo "[desktop:$NAME] ERROR missing staged cookbooks under $cookbooks" >&2
+    echo "[desktop:$NAME] run: ./scripts/stage-packaged-cookbooks.sh" >&2
+    exit 1
+  fi
+  if [[ ! -f "$cookbooks_source" ]]; then
+    echo "[desktop:$NAME] ERROR missing cookbook provenance: $cookbooks_source" >&2
+    echo "[desktop:$NAME] run: ./scripts/stage-packaged-cookbooks.sh" >&2
+    exit 1
+  fi
+  jq -e '.schema == "synth.packaged-cookbooks-source.v1" and (.commit | length) == 40' \
+    "$cookbooks_source" >/dev/null || {
+    echo "[desktop:$NAME] ERROR mismatched cookbook provenance in $cookbooks_source" >&2
+    exit 1
+  }
+  if [[ "$SOURCE_REVISION" == *-dirty ]]; then
+    echo "[desktop:$NAME] ERROR dirty source tree; cua-build requires a clean checkout" >&2
+    exit 1
+  fi
+  avail_kb="$(df -k "$ROOT" | awk 'NR==2 {print $4}')"
+  if [[ "${avail_kb:-0}" -lt 5242880 ]]; then
+    echo "[desktop:$NAME] ERROR insufficient disk (${avail_kb:-0} KiB free; need 5 GiB)" >&2
+    exit 1
+  fi
+  identity="$(resolve_signing_identity)"
+  if [[ "$identity" != "-" ]] && ! security find-identity -v -p codesigning 2>/dev/null | rg -F "$identity" >/dev/null; then
+    echo "[desktop:$NAME] ERROR signing identity not in keychain: $identity" >&2
+    echo "[desktop:$NAME] run: ./scripts/setup-desktop-dev-signing.sh" >&2
+    exit 1
+  fi
+}
+
 sign_cua_bundle() {
   local app_bundle="$1"
   local identity keychain_args=() dev_signing_keychain nested adapter
@@ -707,6 +752,9 @@ dev_instance() {
   # A run-only launch must validate the already-signed bundle instead of
   # replacing its receipt with the unsigned raw target's identity.
   local pre_build_revision="$SOURCE_REVISION"
+  if [[ "$COMMAND" == "cua" || "$COMMAND" == "cua-build" ]]; then
+    packaging_preflight
+  fi
   if [[ "$COMMAND" == "cua-run" ]]; then
     verify_packaged_provenance
   else
