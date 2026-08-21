@@ -35,6 +35,13 @@ export function TerminalPanel({
 	const [terminals, setTerminals] = useState<TerminalInfo[]>([]);
 	const [activeId, setActiveId] = useState<string | null>(null);
 	const [error, setError] = useState<string | null>(null);
+	/**
+	 * Renderer-local transport state. A `terminal:event` error means this view
+	 * lost the stream, not that the host process failed — only the host may say
+	 * that. Writing `status: "failed"` here used to make a live shell read as
+	 * dead in the tab strip.
+	 */
+	const [connection, setConnection] = useState<"live" | "reconnecting">("live");
 	const viewport = useRef<HTMLDivElement>(null);
 	const xterm = useRef<Terminal | null>(null);
 	const fit = useRef<FitAddon | null>(null);
@@ -104,7 +111,7 @@ export function TerminalPanel({
 		const apply = (event: TerminalEvent) => {
 			if (event.terminalId !== activeId || seen.current.has(event.sequence)) return;
 			seen.current.add(event.sequence);
-			if (event.dataBase64) terminal.write(decode(event.dataBase64));
+			if (event.dataBase64) { setConnection("live"); terminal.write(decode(event.dataBase64)); }
 			if (event.kind === "exit") {
 				setTerminals((current) => current.map((item) => item.id === activeId
 					? { ...item, status: "exited", exitCode: event.exitCode }
@@ -112,7 +119,7 @@ export function TerminalPanel({
 				terminal.writeln(`\r\n[process exited${event.exitCode == null ? "" : ` ${event.exitCode}`}]`);
 			}
 			if (event.kind === "error") {
-				setTerminals((current) => current.map((item) => item.id === activeId ? { ...item, status: "failed" } : item));
+				setConnection("reconnecting");
 				if (event.message) terminal.writeln(`\r\n[terminal error: ${event.message}]`);
 			}
 		};
@@ -145,7 +152,7 @@ export function TerminalPanel({
 	const runningCount = terminals.filter((item) => item.status === "running").length;
 
 	if (!open) return null;
-	return <section className="terminal-panel" aria-label="Terminal panel" data-testid="terminal-panel" data-status={activeTerminal?.status ?? "idle"}>
+	return <section className="terminal-panel" aria-label="Terminal panel" data-testid="terminal-panel" data-status={activeTerminal?.status ?? "idle"} data-connection={connection}>
 		<div
 			className="terminal-resize-handle"
 			role="separator"

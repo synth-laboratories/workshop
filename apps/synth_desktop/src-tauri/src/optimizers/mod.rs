@@ -41,6 +41,7 @@ pub use models::{
     HostedTrainingModel, HostedTrainingModelCatalog, OptimizerCreateRequest,
     OptimizerEventEnvelope, OptimizerImportLocalRequest, OptimizerQuery, OptimizerRecipeRunRequest,
     OptimizerReconcileRequest, OptimizerRelationship, OptimizerRunOutputArtifact,
+    OptimizerRunStatus,
     OptimizerRunOutputCounts, OptimizerRunOutputIdentity, OptimizerRunOutputs, OptimizerRunRecord,
     OptimizerStateSlice, SavedLoraCheckpoint, SavedLoraCheckpointPage, SavedLoraCheckpointQuery,
     SavedLoraDownload, SavedLoraLineage, SavedLoraRunCounts, SavedLoraRunIdentity,

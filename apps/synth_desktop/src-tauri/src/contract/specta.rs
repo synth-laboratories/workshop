@@ -75,7 +75,14 @@ pub fn desktop_instance_diagnostics() -> InstanceDiagnostics {
 
 /// Specta builder for the complete desktop command boundary.
 pub fn builder() -> Builder<tauri::Wry> {
-    Builder::<tauri::Wry>::new().commands(collect_commands![
+    Builder::<tauri::Wry>::new()
+        // Exported for its own sake: `OptimizerRunStatus` is the one status
+        // vocabulary for optimizer runs, and the renderer's run projection
+        // reads the union from here instead of keeping its own spelling list.
+        // The record field is still a `String` at the storage edge; see
+        // `optimizers::OptimizerRunStatus`.
+        .typ::<crate::optimizers::OptimizerRunStatus>()
+        .commands(collect_commands![
         desktop_instance_diagnostics,
         crate::desktop_image_preview,
         crate::core_diagnostics,
