@@ -25,8 +25,8 @@ import argparse
 import gc
 import hashlib
 import json
+import os
 import sys
-from statistics import median
 import time
 from pathlib import Path
 
@@ -137,32 +137,57 @@ def detach(model, originals: dict) -> float:
 
 
 def measure(model, tokenizer, max_tokens: int) -> dict:
+    """Sample per-token decode latency rather than end-to-end throughput.
+
+    End-to-end `generation_tps` averages in every moment the process was
+    descheduled, so on a busy Mac it measures the scheduler more than the
+    model. Per-token latencies are individually contaminated but their *low*
+    percentiles are not: the fastest tokens are the ones that ran without
+    interference, so p10 approximates uncontended speed and survives
+    background load that makes a mean meaningless.
+    """
     from mlx_vlm import stream_generate
     from mlx_vlm.sample_utils import make_sampler
 
     sampler = make_sampler(temp=0.0)
     text = ""
-    tps = 0.0
-    tokens = 0
-    start = time.perf_counter()
-    for response in stream_generate(
-        model,
-        tokenizer,
-        prompt=PROMPT,
-        max_tokens=max_tokens,
-        sampler=sampler,
-        verbose=False,
+    latencies: list[float] = []
+    seen_tokens = 0
+    previous = time.perf_counter()
+    for index, response in enumerate(
+        stream_generate(
+            model,
+            tokenizer,
+            prompt=PROMPT,
+            max_tokens=max_tokens,
+            sampler=sampler,
+            verbose=False,
+        )
     ):
+        now = time.perf_counter()
         text += response.text or ""
-        tokens = max(tokens, int(response.generation_tokens or 0))
-        if response.generation_tps:
-            tps = float(response.generation_tps)
+        total = int(response.generation_tokens or 0)
+        produced = max(total - seen_tokens, 0)
+        seen_tokens = max(seen_tokens, total)
+        # The first interval carries prefill, which is not a decode cost.
+        if index > 0 and produced > 0:
+            latencies.extend([(now - previous) / produced] * produced)
+        previous = now
     return {
-        "decode_tps": round(tps, 3) if tps else None,
-        "tokens": tokens,
-        "wall_s": round(time.perf_counter() - start, 3),
+        "latencies": latencies,
+        "tokens": seen_tokens,
         "digest": hashlib.sha256(text.encode()).hexdigest()[:16],
     }
+
+
+def rate(latencies: list[float], quantile: float) -> float | None:
+    """Tokens per second at a latency quantile; 0.0 is the fastest token seen."""
+    if not latencies:
+        return None
+    ordered = sorted(latencies)
+    index = min(int(quantile * len(ordered)), len(ordered) - 1)
+    value = ordered[index]
+    return round(1.0 / value, 3) if value > 0 else None
 
 
 def main() -> None:
@@ -189,10 +214,12 @@ def main() -> None:
     model, tokenizer = load(str(args.model_dir), lazy=False, fix_mistral_regex=True)
     load_s = round(time.perf_counter() - cold, 3)
     say(f"loaded in {load_s}s · resident {mx.get_active_memory()/gib:.2f} GiB")
+    load1, _, _ = os.getloadavg()
+    say(f"load average at start: {load1:.2f}")
 
     names = [part.strip() for part in args.adapters.split(",") if part.strip()]
     arms = ["base"] + names
-    samples: dict[str, list[float]] = {arm: [] for arm in arms}
+    latencies: dict[str, list[float]] = {arm: [] for arm in arms}
     swap: dict[str, dict] = {}
     correctness: dict[str, dict] = {}
     base_digest = None
@@ -202,11 +229,12 @@ def main() -> None:
         "max_tokens": args.max_tokens,
         "repeats": args.repeats,
         "warmup": args.warmup,
+        "load_average_start": round(load1, 2),
+        "statistic": "per-token decode latency; tok/s reported at p10 and best",
     }
     try:
-        # Interleaved rather than grouped: thermal drift and background load move
-        # throughput by more than a LoRA does, so every arm has to be sampled
-        # under the same conditions rather than in its own block of time.
+        # Interleaved so drift hits every arm equally, and per-token rather than
+        # per-pass so a busy scheduler cannot hide the effect being measured.
         for pass_index in range(args.warmup + args.repeats):
             scored = pass_index >= args.warmup
             for arm in arms:
@@ -236,43 +264,50 @@ def main() -> None:
                             "verdict": "ok" if matches == neutral else "UNEXPECTED",
                             "detach_restores_base": after["digest"] == base_digest,
                         }
-                if scored and row["decode_tps"]:
-                    samples[arm].append(row["decode_tps"])
-            say(f"pass {pass_index + 1}/{args.warmup + args.repeats}"
-                + (" (warmup, discarded)" if not scored else ""))
+                if scored:
+                    latencies[arm].extend(row["latencies"])
+            say(
+                f"pass {pass_index + 1}/{args.warmup + args.repeats}"
+                + (" (warmup, discarded)" if not scored else "")
+            )
 
-        base_median = median(samples["base"]) if samples["base"] else None
+        base_p10 = rate(latencies["base"], 0.10)
         report["arms"] = []
         for arm in arms:
-            values = sorted(samples[arm])
+            values = latencies[arm]
             row = {
                 "arm": arm,
-                "decode_tps_median": round(median(values), 3) if values else None,
-                "decode_tps_min": round(values[0], 3) if values else None,
-                "decode_tps_max": round(values[-1], 3) if values else None,
-                "samples": len(values),
+                "tok_s_p10": rate(values, 0.10),
+                "tok_s_best": rate(values, 0.0),
+                "tok_s_median": rate(values, 0.50),
+                "token_samples": len(values),
             }
-            if arm != "base" and values and base_median:
-                row["delta_pct"] = round((median(values) / base_median - 1) * 100, 2)
+            if arm != "base" and row["tok_s_p10"] and base_p10:
+                row["delta_pct_p10"] = round((row["tok_s_p10"] / base_p10 - 1) * 100, 2)
             row.update(swap.get(arm, {}))
             row.update(correctness.get(arm, {}))
             report["arms"].append(row)
-            spread = (
-                f"{row['decode_tps_min']}–{row['decode_tps_max']}" if values else "n/a"
-            )
-            delta = f" ({row['delta_pct']:+.2f}%)" if "delta_pct" in row else ""
+            delta = f" ({row['delta_pct_p10']:+.2f}%)" if "delta_pct_p10" in row else ""
             extra = (
-                f" · attach {row['attach_ms']}ms · detach {row['detach_ms']}ms · {row['verdict']}"
-                if arm != "base"
-                else ""
+                f" · attach {row['attach_ms']}ms · {row['verdict']}" if arm != "base" else ""
             )
-            say(f"{arm}: median {row['decode_tps_median']} tok/s{delta} · spread {spread}{extra}")
+            say(
+                f"{arm}: p10 {row['tok_s_p10']} tok/s{delta} · best {row['tok_s_best']} · "
+                f"median {row['tok_s_median']} · n={row['token_samples']}{extra}"
+            )
 
-        # The spread across identical base passes bounds what a delta can mean.
-        if samples["base"]:
-            noise = (max(samples["base"]) / min(samples["base"]) - 1) * 100
-            report["base_noise_pct"] = round(noise, 2)
-            say(f"base-to-base noise across identical passes: {noise:.2f}%")
+        # Split the base samples in half and compare: two halves of the same arm
+        # must agree, and whatever they disagree by is the floor under which no
+        # cross-arm delta means anything.
+        base_values = latencies["base"]
+        if len(base_values) > 8:
+            half = len(base_values) // 2
+            first, second = rate(base_values[:half], 0.10), rate(base_values[half:], 0.10)
+            if first and second:
+                floor = abs(second / first - 1) * 100
+                report["base_split_half_pct"] = round(floor, 2)
+                say(f"base split-half disagreement at p10: {floor:.2f}% (measurement floor)")
+        report["load_average_end"] = round(os.getloadavg()[0], 2)
     finally:
         del model
         gc.collect()
