@@ -485,8 +485,17 @@ async fn run_recipe_worker(
     let _revoke = crate::secrets::RevokeRunOnDrop(run_id.clone());
     let _ownership = service.hold_run_ownership(&run_id)?;
     append_status_event(&service, &run_id, "optimizer.run.started", "running").await?;
+    let provider = fs::read_to_string(&config_path)
+        .context("read run-owned recipe provider")?
+        .parse::<toml::Value>()?
+        .get("provider")
+        .and_then(toml::Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| anyhow!("run-owned recipe is missing provider"))?
+        .to_string();
     let openai = resolve_provider_workload(
-        "openai",
+        &provider,
         &run_id,
         recipe_id_for_lease(&config_path),
     )?;
