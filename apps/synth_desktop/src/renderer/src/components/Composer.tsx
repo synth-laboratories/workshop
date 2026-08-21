@@ -26,8 +26,8 @@ import { IconSparkle, SlashCommandMenu, type SlashCommandId, type SlashCommandMe
 import type { Skill } from "../runtime/skills";
 import type { ComposerImageAttachment, ConversationWorkspaceScope, WhisperRuntimeStatus } from "../bridge";
 import { WorkspaceScopeChip, workspaceLabel } from "./WorkspaceScopeChip";
-import { LagunaAdapterPicker } from "./LagunaAdapterPicker";
 import type { LagunaPolicy } from "../bridge/types";
+import { policyLabel } from "../runtime/lagunaPolicies";
 import { bridges } from "../runtime/desktopBridge";
 import {
 	armedPromptId,
@@ -376,7 +376,7 @@ function IconChevron() {
 	);
 }
 
-function modelChipLabel(state: LandingState): string {
+function modelChipLabel(state: LandingState, policy?: LagunaPolicy): string {
 	const target = EXECUTION_TARGETS.find((t) => t.id === state.selectedTargetId);
 	if (state.selectedTargetId === "local-laguna") {
 		if (state.model.status === "not_installed" || state.model.status === "error") {
@@ -385,7 +385,7 @@ function modelChipLabel(state: LandingState): string {
 		if (state.model.status === "starting" || state.model.status === "loading") {
 			return "Laguna starting…";
 		}
-		return target?.label ?? `synth/${state.model.name}`;
+		return policy ? policyLabel(policy) : target?.label ?? `synth/${state.model.name}`;
 	}
 	return target?.label ?? "Select model";
 }
@@ -452,6 +452,7 @@ function ModelMenu({
 	onConfigureAccount,
 	onConfigureModels,
 	onResolveBilling,
+	lagunaAdapter,
 	open,
 	onOpenChange
 }: {
@@ -462,12 +463,16 @@ function ModelMenu({
 	onConfigureAccount?: () => void;
 	onConfigureModels?: () => void;
 	onResolveBilling?: () => void;
+	lagunaAdapter?: Props["lagunaAdapter"];
 	open: boolean;
 	onOpenChange: (open: boolean) => void;
 }) {
 	const ref = useRef<HTMLDivElement>(null);
 	const [activeAccess, setActiveAccess] = useState<ModelAccessKind | null>(null);
-	const modelLabel = modelChipLabel(state);
+	const selectedLagunaPolicy = lagunaAdapter?.adapters.find((policy) =>
+		policy.isBase ? lagunaAdapter.selectedId === null : policy.modelId === lagunaAdapter.selectedId
+	);
+	const modelLabel = modelChipLabel(state, selectedLagunaPolicy);
 	const modelReady = !(
 		state.selectedTargetId === "local-laguna" && state.model.status === "not_installed"
 	);
@@ -543,6 +548,33 @@ function ModelMenu({
 							<div key={group} className="composer-model-group">
 								<div className="composer-model-group-label">{activeAccess === "api" ? apiProviderForTarget(items[0]) : TARGET_GROUP_LABEL[group]}</div>
 								{items.map((target) => {
+									if (target.id === "local-laguna" && lagunaAdapter?.adapters.length) {
+										return lagunaAdapter.adapters.map((policy) => {
+											const policyId = policy.isBase ? null : policy.modelId;
+											const selectedHere = state.selectedTargetId === target.id && lagunaAdapter.selectedId === policyId;
+											return (
+												<button
+													key={policy.modelId}
+													type="button"
+													role="option"
+													data-testid={`composer-model-option-local-laguna-${policy.isBase ? "base" : policy.modelId}`}
+													aria-selected={selectedHere}
+													className={`composer-model-option${selectedHere ? " selected" : ""}`}
+													onClick={() => {
+														onSelectTarget(target.id);
+														lagunaAdapter.onSelect(policyId);
+														onOpenChange(false);
+													}}
+												>
+													<span className="composer-model-option-main">
+														<span className="composer-model-option-label">{policyLabel(policy)}</span>
+														<span className="composer-model-option-desc">{policy.isBase ? "Base model · This Mac" : "Fine-tuned model · This Mac"}</span>
+													</span>
+													{selectedHere ? <span className="composer-model-check" aria-hidden>✓</span> : null}
+												</button>
+											);
+										});
+									}
 									const localBlocked =
 										target.id === "local-laguna" &&
 										(state.model.status === "not_installed" ||
@@ -1445,18 +1477,10 @@ export function Composer({
 							onConfigureAccount={onConfigureAccount}
 							onConfigureModels={onConfigureModels}
 							onResolveBilling={onResolveBilling}
+							lagunaAdapter={lagunaAdapter}
 							open={modelMenuOpen}
 							onOpenChange={setModelMenuOpen}
 						/>
-						{state.selectedTargetId === "local-laguna" && lagunaAdapter ? (
-							<LagunaAdapterPicker
-								variant="composer"
-								adapters={lagunaAdapter.adapters}
-								selectedId={lagunaAdapter.selectedId}
-								onSelect={lagunaAdapter.onSelect}
-								disabled={!enabled}
-							/>
-						) : null}
 						{modelCapabilities?.knobs.map((knob) => (
 							<ModelKnobMenu
 								key={knob.id}
