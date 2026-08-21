@@ -1750,7 +1750,7 @@ export function useAppController() {
 					if (kind === "close" || kind === "cancel" || kind === "pause") {
 						dispatchLocalSessionStatus(
 							activeSessionId,
-							kind === "close" ? "completed" : "interrupted"
+							kind === "close" ? "completed" : kind === "cancel" ? "cancelled" : "interrupted"
 						);
 					}
 					return;

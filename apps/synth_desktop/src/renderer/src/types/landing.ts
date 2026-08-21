@@ -199,7 +199,7 @@ export type LocalActivityLine = {
 	 */
 	path?: string;
 	/** Sanitized lifecycle status for an allowlisted tool call. */
-	toolStatus?: "running" | "completed" | "failed";
+	toolStatus?: "running" | "completed" | "failed" | "cancelled";
 	/** Provider-reported wall duration for a finished tool call. */
 	durationMs?: number;
 	/** User-facing visual authoring milestone; never a raw tool operation. */
