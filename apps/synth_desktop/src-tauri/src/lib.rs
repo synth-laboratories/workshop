@@ -4225,13 +4225,6 @@ pub fn run() {
                 if let Err(error) = bootstrap_core.resume_intern_providers().await {
                     eprintln!("Intern restart reconciliation failed: {error}");
                 }
-                if let Err(error) = bootstrap_core
-                    .optimizers()
-                    .reconcile_stale_local_runs()
-                    .await
-                {
-                    eprintln!("optimizer restart reconciliation failed: {error}");
-                }
                 // Fallback arm: if the main window never finished loading, the
                 // renderer's own failure still has somewhere to be recorded.
                 bootstrap_core.diagnostics_service().start();

@@ -31,6 +31,11 @@ const MIGRATIONS: &[&str] = &[
     MIGRATION_26,
     MIGRATION_27,
     MIGRATION_28,
+    MIGRATION_29,
+    MIGRATION_30,
+    MIGRATION_31,
+    MIGRATION_32,
+    MIGRATION_33,
 ];
 
 /// Apply every migration the database has not reached yet.
@@ -80,6 +85,7 @@ const REQUIRED_TABLES: &[(&str, &str)] = &[
     ("optimizer_terminal_manifests", MIGRATION_23),
     ("secret_refs", MIGRATION_25),
     ("product_telemetry_events", MIGRATION_26),
+    ("optimizer_run_ownership", MIGRATION_33),
 ];
 
 fn heal_missing_tables(conn: &Connection) -> Result<()> {
@@ -1585,6 +1591,7 @@ UPDATE report_revision_blocks SET integrity_state = 'unresolved' WHERE integrity
 UPDATE report_sources SET access_state = 'available' WHERE access_state = 'accessible';
 UPDATE report_sources SET integrity_state = 'unresolved' WHERE integrity_state = 'unknown';
 "#;
+
 /// One status vocabulary for `optimizer_runs`, enforced in the database.
 ///
 /// The column carried fifteen spellings for nine states, and four predicates in
@@ -1624,6 +1631,32 @@ FOR EACH ROW WHEN NEW.status NOT IN ('queued','validating','provisioning','start
 BEGIN
     SELECT RAISE(ABORT, 'optimizer_runs.status outside OptimizerRunStatus');
 END;
+"#;
+
+const MIGRATION_29: &str = "SELECT 1;";
+const MIGRATION_30: &str = "SELECT 1;";
+const MIGRATION_31: &str = "SELECT 1;";
+const MIGRATION_32: &str = "SELECT 1;";
+
+/// Optimizer run ownership: one live claim per campaign, held by one boot.
+/// Shaped like `turn_ownership`, keyed by run id. A `running` row is only live
+/// while a claim here names the current instance and its lease has not expired.
+const MIGRATION_33: &str = r#"
+CREATE TABLE IF NOT EXISTS optimizer_run_ownership (
+    run_id TEXT PRIMARY KEY,
+    owner_instance_id TEXT NOT NULL,
+    boot_epoch TEXT NOT NULL,
+    pid INTEGER,
+    process_start_identity TEXT,
+    heartbeat_at TEXT NOT NULL,
+    lease_expires_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS optimizer_run_ownership_owner
+ON optimizer_run_ownership(owner_instance_id);
+
+CREATE INDEX IF NOT EXISTS optimizer_run_ownership_lease
+ON optimizer_run_ownership(lease_expires_at);
 "#;
 #[cfg(test)]
 mod tests {

@@ -826,12 +826,11 @@ pub(super) async fn reconcile_persisted(
     run_id: &str,
 ) -> Result<super::models::OptimizerRunRecord> {
     let run = service.get(run_id.to_string()).await?;
-    if !super::service::is_terminal_status(&run.status)
-        || run
-            .summary
-            .get("recipeId")
-            .and_then(serde_json::Value::as_str)
-            .is_none_or(|recipe_id| ProposerProfile::for_recipe(recipe_id).is_err())
+    if run
+        .summary
+        .get("recipeId")
+        .and_then(serde_json::Value::as_str)
+        .is_none_or(|recipe_id| ProposerProfile::for_recipe(recipe_id).is_err())
     {
         return Ok(run);
     }
@@ -989,6 +988,7 @@ async fn run_recipe_worker(
     mut cancel_rx: watch::Receiver<bool>,
 ) -> Result<()> {
     let _revoke = crate::secrets::RevokeRunOnDrop(run_id.clone());
+    let _ownership = service.hold_run_ownership(&run_id)?;
     append_status_event(&service, &run_id, "optimizer.run.started", "running").await?;
     let openai = resolve_openai_workload(&run_id, "gepa")?;
     let stdout = fs::File::create(run_dir.join("workshop.stdout.log"))?;

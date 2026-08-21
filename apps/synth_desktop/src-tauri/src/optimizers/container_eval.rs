@@ -580,6 +580,7 @@ async fn run_eval_worker(
     cancel: watch::Receiver<bool>,
 ) -> Result<()> {
     let _revoke = crate::secrets::RevokeRunOnDrop(run_id.clone());
+    let _ownership = service.hold_run_ownership(&run_id)?;
     evidence(
         "run_started",
         append_status(&service, &run_id, "optimizer.run.started", "running"),

@@ -680,6 +680,11 @@ impl OptimizerManager {
 
     pub async fn start(&self) -> Result<OptimizerSidecarStatus> {
         let _guard = self.ensure_lock.lock().await;
+        if self.runtime.lock().await.is_none() && runtime_lease_is_current(&self.home) {
+            eprintln!(
+                "synth-desktop: optimizer runtime lease is current on a fresh boot; starting a replacement proxy"
+            );
+        }
         let selected = read_selected_version(&self.home)?
             .ok_or_else(|| anyhow!("Optimizer sidecar is not installed"))?;
         let dir = self.home.join("versions").join(&selected);
@@ -2103,7 +2108,7 @@ fn database_digest_of(path: &Path) -> Option<String> {
     Some(format!("sha256:{}", sha256_hex(&bytes)))
 }
 
-fn process_start_identity(pid: u32) -> Option<String> {
+pub(crate) fn process_start_identity(pid: u32) -> Option<String> {
     #[cfg(target_os = "macos")]
     {
         let output = std::process::Command::new("/bin/ps")
@@ -3258,6 +3263,22 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
         assert!(!home.path().join("env.sh").exists());
+        let _ = mgr.stop().await;
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn database_digest_is_some_after_start() {
+        let (mgr, _home) = manager();
+        mgr.enable_real_child_fixture().unwrap();
+        mgr.install(None).unwrap();
+        let started = mgr.start().await.unwrap();
+        assert_eq!(started.phase, "ready");
+        let digest = mgr.lease_database_digest();
+        assert!(
+            digest.as_deref().is_some_and(|value| value.starts_with("sha256:")),
+            "lease must digest runtime/gepa.sqlite via gepa_db_path, got {digest:?}"
+        );
         let _ = mgr.stop().await;
     }
 

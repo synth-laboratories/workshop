@@ -901,6 +901,7 @@ async fn run_worker(
     mut cancel: watch::Receiver<bool>,
 ) -> Result<()> {
     let _revoke = crate::secrets::RevokeRunOnDrop(run_id.clone());
+    let _ownership = service.hold_run_ownership(&run_id)?;
     append_status(&service, &run_id, "optimizer.run.started", "running").await?;
     fs::create_dir_all(&run_dir).context("create eval run directory")?;
     let stdout_path = run_dir.join("worker.stdout.log");
@@ -2119,7 +2120,13 @@ mod tests {
 
         let recovered = svc.reconcile_stale_local_runs().await.unwrap();
         let recovered = recovered.into_iter().find(|run| run.id == run_id).unwrap();
-        assert_eq!(recovered.status, "completed");
+        assert_eq!(recovered.status, "interrupted");
+        svc.database()
+            .with_conn(|conn| {
+                assert!(super::super::terminal::load(conn, &run_id)?.is_some());
+                Ok(())
+            })
+            .unwrap();
         assert_eq!(svc.get(run_id).await.unwrap().id, recovered.id);
     }
 
