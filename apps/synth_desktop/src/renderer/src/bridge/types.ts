@@ -1224,6 +1224,7 @@ export type OptimizersBridge = {
 		sessionRef?: string;
 		openVisual?: boolean;
 		baseModel?: string;
+		datasetShard?: string;
 		/** Required by `eval.*` recipes unless `trainingArtifactId` is set. */
 		candidateSetId?: string;
 		/** Managed training adapter. Eval stages it and retains identity in the receipt. */
