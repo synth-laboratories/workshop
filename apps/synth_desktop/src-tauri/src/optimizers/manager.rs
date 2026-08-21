@@ -98,7 +98,7 @@ pub struct OptimizerSidecarStatus {
     pub version: Option<String>,
     pub digest: Option<String>,
     pub detail: Option<String>,
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = specta_typescript::Number)]
     pub updated_at: u64,
 }
 

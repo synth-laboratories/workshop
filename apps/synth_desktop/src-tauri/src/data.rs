@@ -131,7 +131,7 @@ pub struct InspectedTrace {
     #[serde(default)]
     pub task_id: Option<String>,
     #[serde(default)]
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = specta_typescript::Number)]
     pub seed: Option<i64>,
     #[serde(default)]
     pub terminal_reason: Option<String>,
@@ -144,29 +144,29 @@ pub struct InspectedTrace {
     #[serde(default)]
     pub cost_usd: Option<f64>,
     #[serde(default)]
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = specta_typescript::Number)]
     pub prompt_tokens: Option<i64>,
     #[serde(default)]
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = specta_typescript::Number)]
     pub completion_tokens: Option<i64>,
     #[serde(default)]
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = specta_typescript::Number)]
     pub span_count: Option<i64>,
     #[serde(default)]
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = specta_typescript::Number)]
     pub event_count: Option<i64>,
     #[serde(default)]
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = specta_typescript::Number)]
     pub tool_call_count: Option<i64>,
     #[serde(default)]
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = specta_typescript::Number)]
     pub error_count: Option<i64>,
     #[serde(default)]
     pub started_at: Option<String>,
     #[serde(default)]
     pub ended_at: Option<String>,
     #[serde(default)]
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = specta_typescript::Number)]
     pub duration_ms: Option<i64>,
 }
 
@@ -182,7 +182,7 @@ pub struct InspectedAsset {
     pub semantic_digest: Option<String>,
     pub media_type: String,
     #[serde(alias = "size")]
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = specta_typescript::Number)]
     pub byte_size: Option<i64>,
     #[serde(default)]
     pub available: bool,
@@ -213,11 +213,11 @@ pub struct UsageEntry {
     pub model: String,
     pub session_id: Option<String>,
     pub run_id: Option<String>,
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = specta_typescript::Number)]
     pub prompt_tokens: i64,
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = specta_typescript::Number)]
     pub completion_tokens: i64,
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = specta_typescript::Number)]
     pub total_tokens: i64,
     pub cost_usd: Option<f64>,
     pub created_at: String,
@@ -226,11 +226,11 @@ pub struct UsageEntry {
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub struct DataCounts {
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = specta_typescript::Number)]
     pub containers: i64,
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = specta_typescript::Number)]
     pub traces: i64,
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = specta_typescript::Number)]
     pub usage: i64,
 }
 

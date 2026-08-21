@@ -18,12 +18,12 @@ pub struct ProviderUsePolicy {
     pub models: Vec<String>,
     pub reasoning_efforts: Vec<String>,
     pub max_calls: u32,
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = specta_typescript::Number)]
     pub max_input_tokens: u64,
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = specta_typescript::Number)]
     pub max_output_tokens: u64,
     pub max_cost_usd: f64,
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = specta_typescript::Number)]
     pub lifetime_seconds: u64,
 }
 
@@ -83,9 +83,9 @@ pub struct CapabilitySummary {
     pub used_calls: u32,
     pub max_cost_usd: f64,
     pub used_cost_usd: f64,
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = specta_typescript::Number)]
     pub used_input_tokens: u64,
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = specta_typescript::Number)]
     pub used_output_tokens: u64,
     pub expires_at: String,
     pub display_suffix: Option<String>,

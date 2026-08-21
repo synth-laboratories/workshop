@@ -191,7 +191,7 @@ pub struct SavedLoraStorage {
     pub version: Option<String>,
     pub etag: Option<String>,
     pub sha256: Option<String>,
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = specta_typescript::Number)]
     pub size_bytes: Option<u64>,
     pub content_type: String,
 }
@@ -225,7 +225,7 @@ pub struct SavedLoraCheckpoint {
     pub optimizer_algorithm: Option<String>,
     pub base_model: String,
     pub lora_rank: Option<i32>,
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = specta_typescript::Number)]
     pub step: Option<u64>,
     pub status: String,
     pub storage: SavedLoraStorage,
@@ -244,11 +244,11 @@ pub struct SavedLoraCheckpoint {
 pub struct SavedLoraCheckpointPage {
     pub schema_version: String,
     pub items: Vec<SavedLoraCheckpoint>,
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = specta_typescript::Number)]
     pub total: u64,
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = specta_typescript::Number)]
     pub limit: u64,
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = specta_typescript::Number)]
     pub offset: u64,
 }
 
@@ -264,11 +264,11 @@ pub struct SavedLoraRunIdentity {
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, specta::Type)]
 #[serde(rename_all(deserialize = "snake_case", serialize = "camelCase"))]
 pub struct SavedLoraRunCounts {
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = specta_typescript::Number)]
     pub total: u64,
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = specta_typescript::Number)]
     pub inference: u64,
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = specta_typescript::Number)]
     pub training: u64,
 }
 
@@ -279,11 +279,11 @@ pub struct SavedLoraRunPage {
     pub run: SavedLoraRunIdentity,
     pub items: Vec<SavedLoraCheckpoint>,
     pub counts: SavedLoraRunCounts,
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = specta_typescript::Number)]
     pub total: u64,
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = specta_typescript::Number)]
     pub limit: u64,
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = specta_typescript::Number)]
     pub offset: u64,
 }
 
@@ -303,7 +303,7 @@ pub struct OptimizerRunOutputArtifact {
     pub run_id: String,
     pub artifact_name: String,
     pub content_type: Option<String>,
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = specta_typescript::Number)]
     pub size_bytes: u64,
     pub sha256: Option<String>,
     pub storage_backend: String,
@@ -318,9 +318,9 @@ pub struct OptimizerRunOutputArtifact {
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, specta::Type)]
 #[serde(rename_all(deserialize = "snake_case", serialize = "camelCase"))]
 pub struct OptimizerRunOutputCounts {
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = specta_typescript::Number)]
     pub artifacts: u64,
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = specta_typescript::Number)]
     pub model_checkpoints: u64,
 }
 
@@ -350,9 +350,9 @@ pub struct SavedLoraCheckpointQuery {
     pub optimizer_algorithm: Option<String>,
     pub status: Option<String>,
     pub tags: Option<Vec<String>>,
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = specta_typescript::Number)]
     pub limit: Option<u64>,
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = specta_typescript::Number)]
     pub offset: Option<u64>,
 }
 
@@ -361,10 +361,10 @@ pub struct SavedLoraCheckpointQuery {
 pub struct SavedLoraDownload {
     pub checkpoint_id: String,
     pub url: String,
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = specta_typescript::Number)]
     pub expires_in: u64,
     pub content_type: String,
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = specta_typescript::Number)]
     pub size_bytes: Option<u64>,
     pub sha256: Option<String>,
 }
@@ -377,7 +377,7 @@ pub struct HostedTrainingModel {
     pub provider: String,
     pub provider_revision: String,
     pub architecture: String,
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = specta_typescript::Number)]
     pub max_context_length: u64,
     #[specta(type = specta_typescript::Unknown)]
     pub rank: Value,
@@ -392,7 +392,7 @@ pub struct HostedTrainingModelCatalog {
     pub catalog_revision: String,
     pub live_preflight_required: bool,
     pub models: Vec<HostedTrainingModel>,
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = specta_typescript::Number)]
     pub total: u64,
 }
 
@@ -487,16 +487,16 @@ pub struct OptimizerUsageSummary {
     #[serde(default)]
     pub cost_usd: Option<f64>,
     #[serde(default)]
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = specta_typescript::Number)]
     pub prompt_tokens: u64,
     #[serde(default)]
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = specta_typescript::Number)]
     pub completion_tokens: u64,
     #[serde(default)]
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = specta_typescript::Number)]
     pub rollouts: u64,
     #[serde(default)]
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = specta_typescript::Number)]
     pub wall_time_ms: u64,
     #[serde(default)]
     #[specta(type = specta_typescript::Unknown)]
@@ -555,7 +555,7 @@ pub struct OptimizerRunRecord {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub finished_at: Option<String>,
     #[serde(default)]
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = specta_typescript::Number)]
     pub cursor_seq: u64,
     #[serde(default)]
     pub capabilities: OptimizerCapabilities,
@@ -598,7 +598,7 @@ pub struct OptimizerEventEnvelope {
     pub event_id: Option<String>,
     #[serde(rename = "type")]
     pub event_type: String,
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = specta_typescript::Number)]
     pub sequence_number: u64,
     pub occurred_at: String,
     pub optimizer_run_id: String,
@@ -636,7 +636,7 @@ pub struct OptimizerStateSlice {
     pub run_id: String,
     pub algorithm_id: String,
     pub slice_id: String,
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = specta_typescript::Number)]
     pub cursor_seq: u64,
     pub updated_at: String,
     #[specta(type = specta_typescript::Unknown)]
@@ -651,9 +651,9 @@ pub struct OptimizerQuery {
     pub source: Option<String>,
     pub search: Option<String>,
     pub session_ref: Option<String>,
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = specta_typescript::Number)]
     pub limit: Option<i64>,
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = specta_typescript::Number)]
     pub offset: Option<i64>,
 }
 
@@ -710,7 +710,7 @@ pub struct OptimizerImportLocalRequest {
 pub struct OptimizerReconcileRequest {
     pub optimizer_run_id: String,
     #[serde(default)]
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = specta_typescript::Number)]
     pub after_seq: Option<u64>,
     #[serde(default)]
     pub open_visual: Option<bool>,
@@ -763,16 +763,16 @@ pub struct OptimizerRecipeRunRequest {
 #[serde(rename_all = "camelCase")]
 pub struct OptimizerSearchOverrides {
     #[serde(default)]
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = specta_typescript::Number)]
     pub proposals_per_generation: Option<i64>,
     #[serde(default)]
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = specta_typescript::Number)]
     pub max_in_flight_candidates: Option<i64>,
     #[serde(default)]
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = specta_typescript::Number)]
     pub policy_concurrency: Option<i64>,
     #[serde(default)]
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = specta_typescript::Number)]
     pub rollout_concurrency: Option<i64>,
 }
 

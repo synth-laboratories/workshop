@@ -81,13 +81,13 @@ impl EventSource {
 #[serde(rename_all = "camelCase")]
 pub struct AppEvent {
     pub schema_version: String,
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = specta_typescript::Number)]
     pub sequence: i64,
     pub event_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = specta_typescript::Number)]
     pub session_sequence: Option<i64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub run_id: Option<String>,
@@ -96,7 +96,7 @@ pub struct AppEvent {
     #[specta(type = specta_typescript::Unknown)]
     pub payload: Value,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = specta_typescript::Number)]
     pub remote_sequence: Option<i64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub command_id: Option<String>,
@@ -119,9 +119,9 @@ pub struct SessionRecord {
     pub remote_id: Option<String>,
     pub codex_thread_id: Option<String>,
     pub status: String,
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = specta_typescript::Number)]
     pub state_generation: Option<i64>,
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = specta_typescript::Number)]
     pub latest_cursor: i64,
     pub active_run_id: Option<String>,
     #[specta(type = specta_typescript::Unknown)]
@@ -144,7 +144,7 @@ pub struct RunRecord {
     pub session_id: String,
     pub mode: String,
     pub status: String,
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = specta_typescript::Number)]
     pub latest_cursor: i64,
     #[specta(type = specta_typescript::Unknown)]
     pub checkpoint: Option<Value>,
@@ -173,7 +173,7 @@ pub struct CommandReceiptRecord {
     pub request: Value,
     #[specta(type = specta_typescript::Unknown)]
     pub response: Option<Value>,
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = specta_typescript::Number)]
     pub remote_cursor: Option<i64>,
     pub created_at: String,
     pub updated_at: String,
@@ -183,17 +183,17 @@ pub struct CommandReceiptRecord {
 #[serde(rename_all = "camelCase")]
 pub struct CoreDiagnostics {
     pub database_path: String,
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = specta_typescript::Number)]
     pub schema_version: i64,
     pub integrity_ok: bool,
     pub content_store_path: String,
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = specta_typescript::Number)]
     pub journal_head: i64,
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = specta_typescript::Number)]
     pub session_count: i64,
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = specta_typescript::Number)]
     pub run_count: i64,
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = specta_typescript::Number)]
     pub visual_count: i64,
     pub migration_complete: bool,
 }

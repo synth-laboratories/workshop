@@ -261,15 +261,15 @@ pub struct VisualsIpcConnection {
 pub struct RenderedVisualObservation {
     pub schema_version: String,
     pub visual_id: String,
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = specta_typescript::Number)]
     pub rendered_revision: i64,
     pub bindings_digest: String,
     pub transport_state: String,
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = specta_typescript::Number)]
     pub rollout_count: u64,
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = specta_typescript::Number)]
     pub rendered_frame_count: u64,
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = specta_typescript::Number)]
     pub semantic_event_count: u64,
     pub terminal: bool,
     pub error: Option<String>,

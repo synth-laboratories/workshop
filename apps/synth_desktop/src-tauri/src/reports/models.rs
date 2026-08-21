@@ -107,7 +107,7 @@ pub struct ReportRecord {
     pub id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub project_ref: Option<String>,
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = specta_typescript::Number)]
     pub current_revision: i64,
     pub title: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -126,7 +126,7 @@ pub struct ReportRecord {
 pub struct ReportRevision {
     pub schema_version: String,
     pub report_id: String,
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = specta_typescript::Number)]
     pub revision: i64,
     pub title: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -215,7 +215,7 @@ pub struct ReportValidationFinding {
 #[serde(rename_all = "camelCase")]
 pub struct ReportValidationResult {
     pub report_id: String,
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = specta_typescript::Number)]
     pub revision: i64,
     pub sealable: bool,
     pub findings: Vec<ReportValidationFinding>,
@@ -244,7 +244,7 @@ pub struct ExperimentRecord {
     pub experiment_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub report_id: Option<String>,
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = specta_typescript::Number)]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub revision: Option<i64>,
     pub title: String,
@@ -279,7 +279,7 @@ pub struct ResearchLogEntry {
     pub entry_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub report_id: Option<String>,
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = specta_typescript::Number)]
     pub sequence: i64,
     pub occurred_at: String,
     pub recorded_at: String,
@@ -304,7 +304,7 @@ pub struct ResearchLogEntry {
 pub struct ReportSeal {
     pub receipt_digest: String,
     pub report_id: String,
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = specta_typescript::Number)]
     pub report_revision: i64,
     pub schema_version: String,
     pub compiler_name: String,
@@ -312,9 +312,9 @@ pub struct ReportSeal {
     pub runtime_digest: String,
     pub index_digest: String,
     pub data_digest: String,
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = specta_typescript::Number)]
     pub receipt_size_bytes: i64,
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = specta_typescript::Number)]
     pub total_size_bytes: i64,
     pub created_at: String,
 }
@@ -344,7 +344,7 @@ pub struct ReportUpload {
     pub receipt_digest: String,
     pub collection_id: Option<String>,
     pub publication_id: Option<String>,
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = specta_typescript::Number)]
     pub publication_revision: Option<i64>,
     pub state: String,
     pub committed_url: Option<String>,
@@ -401,7 +401,7 @@ pub struct ReportAudienceState {
 pub struct ReportComment {
     pub comment_id: String,
     pub report_id: String,
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = specta_typescript::Number)]
     pub report_revision: i64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub receipt_digest: Option<String>,
@@ -459,7 +459,7 @@ pub struct ReportCreateRequest {
 #[derive(Clone, Debug, Deserialize, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub struct ReportUpdateRequest {
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = specta_typescript::Number)]
     #[serde(default, alias = "expected_revision")]
     pub expected_revision: Option<i64>,
     pub title: Option<String>,
@@ -477,7 +477,7 @@ pub struct ReportUpdateRequest {
 pub struct ReportQuery {
     pub status: Option<String>,
     pub search: Option<String>,
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = specta_typescript::Number)]
     pub limit: Option<i64>,
     #[serde(default)]
     pub include_archived: bool,
@@ -488,7 +488,7 @@ pub struct ReportQuery {
 pub struct ReportVisibilityRequest {
     pub request_id: String,
     pub report_id: String,
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = specta_typescript::Number)]
     pub report_revision: i64,
     pub receipt_digest: String,
     pub target: String,

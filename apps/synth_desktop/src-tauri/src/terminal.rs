@@ -39,7 +39,7 @@ pub struct TerminalInfo {
     pub shell: String,
     pub title: String,
     pub status: String,
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = specta_typescript::Number)]
     pub created_at: u64,
     pub exit_code: Option<u32>,
 }
@@ -48,7 +48,7 @@ pub struct TerminalInfo {
 #[serde(rename_all = "camelCase")]
 pub struct TerminalEvent {
     pub terminal_id: String,
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = specta_typescript::Number)]
     pub sequence: u64,
     pub kind: String,
     pub data_base64: Option<String>,
