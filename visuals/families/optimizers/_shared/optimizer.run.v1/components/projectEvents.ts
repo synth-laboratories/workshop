@@ -2272,8 +2272,8 @@ export function projectAtCursor(
       const clip = (event.delta?.clip && typeof event.delta.clip === "object" && !Array.isArray(event.delta.clip)
         ? event.delta.clip as Record<string, unknown>
         : event.delta) ?? {};
-      cispoClipLow = missingNumber(clip.clip_low ?? clip.clipLow ?? clip.eps_low ?? clip.low);
-      cispoClipHigh = missingNumber(clip.clip_high ?? clip.clipHigh ?? clip.eps_high ?? clip.high);
+      cispoClipLow = missingNumber(clip.clip_low ?? clip.clipLow ?? clip.eps_low ?? clip.low) ?? null;
+      cispoClipHigh = missingNumber(clip.clip_high ?? clip.clipHigh ?? clip.eps_high ?? clip.high) ?? null;
     }
     if (event.type === "cispo.no_learning_signal") {
       cispoNoLearningSignal = true;
