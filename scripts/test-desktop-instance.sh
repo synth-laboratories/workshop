@@ -4,8 +4,10 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 TEST_ROOT="$(mktemp -d)"
 UNRELATED_PID=""
+LOCK_HOLDER=""
 cleanup() {
   [[ -z "$UNRELATED_PID" ]] || kill "$UNRELATED_PID" 2>/dev/null || true
+  [[ -z "$LOCK_HOLDER" ]] || kill "$LOCK_HOLDER" 2>/dev/null || true
   rm -rf "$TEST_ROOT"
 }
 trap cleanup EXIT
@@ -24,7 +26,10 @@ default_instance="$($ROOT/scripts/desktop-instance.sh print)"
 
 [[ "$(printf '%s' "$alpha" | jq -r .name)" == "alpha" ]]
 [[ "$(printf '%s' "$beta" | jq -r .name)" == "beta" ]]
-[[ "$(printf '%s' "$default_instance" | jq -r .name)" == "codex" ]]
+[[ "$(printf '%s' "$default_instance" | jq -r .name)" == "codex-$(printf '%s' "$default_instance" | jq -r .worktreeHash)" ]]
+[[ "$(printf '%s' "$default_instance" | jq -r .name)" =~ ^codex-[a-f0-9]{8}$ ]]
+[[ "$(printf '%s' "$default_instance" | jq -r .releaseSlug)" == "v07" ]]
+[[ "$(printf '%s' "$default_instance" | jq -r .instanceRoot)" == "$TEST_ROOT/instances/v07/$(printf '%s' "$default_instance" | jq -r .name)" ]]
 printf '%s' "$default_instance" | jq -e '
   .mode == "development" and
   .product == "workshop" and
@@ -79,8 +84,8 @@ rg -q '^OPENROUTER_API_KEY=.openrouter-fixture.$' "$alpha_env"
 # runtime fallback under ~/Documents causes macOS Files & Folders prompts.
 awk '
   /if \[\[ "\$COMMAND" == "cua"/{in_cua=1}
-  in_cua && /cd "\$INSTANCE_ROOT"/{safe_cwd=NR}
-  in_cua && /exec "\$app_executable"/{exec_line=NR}
+  in_cua && /cd "\$INSTANCE_ROOT"/ && !safe_cwd {safe_cwd=NR}
+  in_cua && /exec "\$app_executable"/ && !exec_line {exec_line=NR}
   END { exit !(safe_cwd && exec_line && safe_cwd < exec_line) }
 ' "$ROOT/scripts/desktop-instance.sh"
 rg -q 'if \(\$0 == exe \|\| \$0 == cua_exe\)' "$ROOT/scripts/desktop-instance.sh"
@@ -164,6 +169,25 @@ rg -q 'CARGO_TARGET_DIR:-' "$ROOT/scripts/build-computer-use-helper.sh"
 rg -q 'runtime_executable=.*lsof' "$ROOT/scripts/desktop-instance.sh"
 ! rg -q 'bundle_cdhash.*exit|/\^CDHash=/\{print \$2; exit\}' "$ROOT/scripts/desktop-instance.sh"
 
+# ID-R-14: one export_instance_env(), called once, and both launch paths
+# (build/launch vs run-only) export the same variable names. Names only; the
+# dry-run hook prints no values.
+[[ "$(rg -c '^\s*export SYNTH_DESKTOP_DATA_ROOT=' "$ROOT/scripts/desktop-instance.sh")" == "1" ]]
+export_env_calls="$(rg -c '^\s*export_instance_env$' "$ROOT/scripts/desktop-instance.sh")"
+[[ "$export_env_calls" -ge 2 ]]
+env_names_for() {
+  SYNTH_DESKTOP_OPERATION_DRY_RUN=1 "$ROOT/scripts/desktop-instance.sh" "$1" alpha \
+    | sed -n 's/^\[desktop:alpha\] dry-run env_names=//p'
+}
+build_names="$(env_names_for cua-build)"
+run_names="$(env_names_for cua-run)"
+[[ -n "$build_names" && "$build_names" == "$run_names" ]]
+for required in SYNTH_DESKTOP_INSTANCE SYNTH_WORKSHOP_INSTANCE_ID SYNTH_DESKTOP_DATA_ROOT SYNTH_DESKTOP_CONFIG SYNTH_CODEX_HOME \
+  SYNTH_DESKTOP_BUNDLE_ID SYNTH_DESKTOP_INSTANCE_MANIFEST SYNTH_DESKTOP_SOURCE_REVISION \
+  SYNTH_DESKTOP_DEV_OAUTH_STATE_FILE SYNTH_COMPUTER_USE_PARENT_REQUIREMENT CARGO_TARGET_DIR; do
+  [[ ",$build_names," == *",$required,"* ]] || { echo "launch env missing $required" >&2; exit 1; }
+done
+
 # Official releases fail closed unless Developer ID signing, Apple notarization,
 # stapling, Gatekeeper, and immutable provenance all succeed.
 rg -q 'SYNTH_RELEASE_SIGN_IDENTITY is required' "$ROOT/scripts/release-artifact.sh"
@@ -198,5 +222,108 @@ cc -o "$UNRELATED_APP/Contents/MacOS/synth-desktop" "$TEST_ROOT/unrelated_sleep.
 UNRELATED_PID="$!"
 SYNTH_DESKTOP_APP_PATH="$TEST_ROOT/Canonical.app" "$ROOT/scripts/desktop.sh" stop >/dev/null
 kill -0 "$UNRELATED_PID"
+
+# P1-9: exclusive instance operation lease. A second cua-build is refused
+# with the owner printed; status --verbose shows that owner. The first
+# process is a dry-run that holds the lock — not a 10-minute cua-build.
+lock_file="$TEST_ROOT/instances/v07/alpha/operation.lock"
+SYNTH_DESKTOP_OPERATION_DRY_RUN=1 SYNTH_DESKTOP_OPERATION_LOCK_HOLD=1 \
+  "$ROOT/scripts/desktop-instance.sh" cua-build alpha >/dev/null &
+LOCK_HOLDER="$!"
+lock_wait=0
+while [[ ! -f "$lock_file" && "$lock_wait" -lt 50 ]]; do
+  sleep 0.1
+  lock_wait=$((lock_wait + 1))
+done
+[[ -f "$lock_file" ]] || { echo "operation lock was not created" >&2; kill "$LOCK_HOLDER" 2>/dev/null || true; exit 1; }
+jq -e '.instance == "alpha" and (.pid | type == "number") and
+  (.process_start_time | length > 0) and (.worktree | length > 0) and
+  (.repo_revision | length > 0) and .operation == "cua-build" and
+  (.created_at | length > 0)' "$lock_file" >/dev/null
+status_verbose="$($ROOT/scripts/desktop-instance.sh status --verbose alpha)"
+case "$status_verbose" in
+  *"owner instance=alpha pid="*) ;;
+  *) echo "status --verbose did not print the lock owner: $status_verbose" >&2; kill "$LOCK_HOLDER" 2>/dev/null || true; exit 1 ;;
+esac
+set +e
+refuse_out="$(SYNTH_DESKTOP_OPERATION_DRY_RUN=1 "$ROOT/scripts/desktop-instance.sh" cua-build alpha 2>&1)"
+refuse_status=$?
+set -e
+[[ "$refuse_status" -ne 0 ]] || { echo "second cua-build was not refused" >&2; kill "$LOCK_HOLDER" 2>/dev/null || true; exit 1; }
+case "$refuse_out" in
+  *"owner instance=alpha pid="*" worktree="*" operation=cua-build"*) ;;
+  *) echo "second cua-build did not print the owner: $refuse_out" >&2; kill "$LOCK_HOLDER" 2>/dev/null || true; exit 1 ;;
+esac
+kill "$LOCK_HOLDER" 2>/dev/null || true
+wait "$LOCK_HOLDER" 2>/dev/null || true
+LOCK_HOLDER=""
+
+# ID-R-15: workshop-qa must not signal by instance name or path substring.
+if rg -n 'kill -TERM|\[\[ "\$command" == \*"\$staged_root"\* \]\]' "$ROOT/scripts/workshop-qa" >/dev/null; then
+  echo "workshop-qa still sweeps processes by path substring" >&2
+  exit 1
+fi
+rg -q 'SYNTH_WORKSHOP_INSTANCE_ID' "$ROOT/scripts/desktop-instance.sh"
+rg -q 'qa-\$WORKTREE_HASH|qa-\$\{WORKTREE_HASH\}' "$ROOT/scripts/workshop-qa"
+rg -q 'codex-\$WORKTREE_HASH|codex-\$\{WORKTREE_HASH\}' "$ROOT/scripts/crash-recovery-drill.sh"
+
+# P1-5: cua-build writes a bundle-resident descriptor with the W3b contract
+# and records bootEpoch + processStartIdentity on the launcher manifest.
+SYNTH_DESKTOP_OPERATION_DRY_RUN=1 "$ROOT/scripts/desktop-instance.sh" cua-build alpha >/dev/null
+descriptor="$TEST_ROOT/instances/v07/alpha/generated/descriptor-preview.app/Contents/Resources/instance.json"
+[[ -f "$descriptor" ]] || { echo "bundle descriptor was not written" >&2; exit 1; }
+jq -e '
+  .schemaVersion == "synth.desktop.instance-descriptor.v1" and
+  .instance_id == "alpha" and
+  (.instance_root | endswith("/instances/v07/alpha")) and
+  (.config_path | endswith("/instances/v07/alpha/data/config.toml")) and
+  (.data_root | endswith("/instances/v07/alpha/data")) and
+  .bundle_id == "com.synth.desktop.v07.dev.alpha" and
+  .release_line == "v0.7" and
+  (.source_revision | length > 0) and
+  (.generated_at | length > 0)
+' "$descriptor" >/dev/null
+jq -e '
+  (.runtime.bootEpoch | startswith("inst_")) and
+  (.runtime.processStartIdentity | length > 0)
+' "$TEST_ROOT/instances/v07/alpha/instance.json" >/dev/null
+rg -q 'write_bundle_descriptor "\$app_bundle"' "$ROOT/scripts/desktop-instance.sh"
+
+# ID-R-05: task scripts source RELEASE_SLUG from the launcher print contract.
+if rg -q 'RELEASE_SLUG="v05"|/v05/\$NAME|== "0\.5\.0"' "$ROOT/scripts/workshop-qa" "$ROOT/scripts/crash-recovery-drill.sh"; then
+  echo "workshop-qa or crash-recovery-drill still hard-codes v05/0.5.0" >&2
+  exit 1
+fi
+rg -q 'jq -r \.releaseSlug' "$ROOT/scripts/workshop-qa"
+rg -q 'jq -r \.releaseSlug' "$ROOT/scripts/crash-recovery-drill.sh"
+
+# P1-8: rebuild-run exists, composes the recorded launch path, and cua-run's
+# drift refusal names it. Do not launch or package a .app here.
+rebuild_help="$($ROOT/scripts/desktop-instance.sh help 2>&1 || true)"
+case "$rebuild_help" in
+  *"rebuild-run"*) ;;
+  *) echo "usage does not mention rebuild-run" >&2; exit 1 ;;
+esac
+rebuild_dry="$(SYNTH_DESKTOP_OPERATION_DRY_RUN=1 "$ROOT/scripts/desktop-instance.sh" rebuild-run alpha)"
+case "$rebuild_dry" in
+  *"rebuild-run steps=build,bundle,sign,record,verify,launch,wait-health,print-runtime"*) ;;
+  *) echo "rebuild-run did not compose the recorded steps: $rebuild_dry" >&2; exit 1 ;;
+esac
+case "$rebuild_dry" in
+  *"/health.instance == alpha"*) ;;
+  *) echo "rebuild-run did not wait for /health.instance: $rebuild_dry" >&2; exit 1 ;;
+esac
+rg -q 'wait_for_health_instance' "$ROOT/scripts/desktop-instance.sh"
+rg -q 'print_runtime_identity' "$ROOT/scripts/desktop-instance.sh"
+rg -q 'verify_packaged_provenance' "$ROOT/scripts/desktop-instance.sh"
+set +e
+drift_out="$($ROOT/scripts/desktop-instance.sh cua-run alpha 2>&1)"
+drift_status=$?
+set -e
+[[ "$drift_status" -ne 0 ]] || { echo "cua-run accepted an unrecorded bundle" >&2; exit 1; }
+case "$drift_out" in
+  *"bundle was not produced by cua-build; run desktop-instance.sh rebuild-run alpha"*) ;;
+  *) echo "cua-run drift message did not name rebuild-run: $drift_out" >&2; exit 1 ;;
+esac
 
 echo "desktop instance contract: ok"
