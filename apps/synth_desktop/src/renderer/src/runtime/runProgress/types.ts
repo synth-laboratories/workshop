@@ -18,6 +18,8 @@
  *     both rather than printing a number they do not have.
  */
 
+import type { OptimizerRunStatus } from "../../generated/protocol";
+
 export const RUN_PROGRESS_SCHEMA_VERSION = "run_progress.v1";
 
 /** Workflows that share the projection. `go-ex` and `dag` runs are not offered in chat. */
@@ -32,7 +34,13 @@ export type RunProgressStatus =
 	| "failed"
 	| "cancelled"
 	/** Terminal: the compute settled but its evidence did not. */
-	| "degraded";
+	| "degraded"
+	/**
+	 * A word this build does not know. Not a state a producer emits — it is
+	 * what the renderer says when it is handed one. It used to say `running`,
+	 * which is how a settled run kept a spinner turning forever.
+	 */
+	| "unknown";
 
 export type RunProgressPhaseStatus = "pending" | "active" | "completed" | "skipped" | "failed";
 
@@ -274,38 +282,93 @@ export function isRunKind(value: unknown): value is RunKind {
 	return typeof value === "string" && (RUN_KINDS as readonly string[]).includes(value);
 }
 
-/** Terminal statuses as the durable record spells them, across producers. */
-const TERMINAL_STATUSES = new Set([
+/**
+ * Every status a producer can write, mapped onto the eight the product shows.
+ *
+ * The key type is the generated `OptimizerRunStatus` union, so this map is the
+ * one place a producer status is interpreted and TypeScript refuses to compile
+ * if Rust adds a status nothing here handles — or if this file invents one Rust
+ * does not have. That check is the lock; there is no runtime list to drift.
+ */
+const PRODUCER_STATUS: Record<OptimizerRunStatus, RunProgressStatus> = {
+	queued: "queued",
+	validating: "queued",
+	provisioning: "queued",
+	starting: "queued",
+	waiting_for_viewer: "queued",
+	running: "running",
+	// A cancel that has been accepted but not carried out is still burning
+	// compute; it is not `cancelled` until the record says so.
+	cancelling: "running",
+	env_unreachable: "running",
+	paused: "paused",
+	degraded: "degraded",
+	// The work ran; only its receipt is missing. Same surface as `degraded`.
+	failed_evidence: "degraded",
+	completed: "completed",
+	failed: "failed",
+	cancelled: "cancelled",
+	interrupted: "interrupted",
+	// Stopped before its own end, and not by its own error. `failed` would
+	// blame the run for the machine, and `completed` would claim a result it
+	// never reached.
+	infrastructure_lost: "interrupted",
+	cap_reached: "interrupted"
+};
+
+/**
+ * Spellings older builds persisted into `payload_json` before migration 28
+ * folded the column. Rust `OptimizerRunStatus::parse` accepts exactly these;
+ * this list exists so a database written by an older build still reads, and it
+ * shrinks as those rows are rewritten.
+ *
+ * `terminated`, `disconnected`, `stalled`, `pending` and `prepared` used to be
+ * listed here too. No producer has ever written any of them as a run status —
+ * they were consumer-only guesses, and they are gone.
+ */
+const LEGACY_PAYLOAD_ALIASES: Record<string, OptimizerRunStatus> = {
+	succeeded: "completed",
+	canceled: "cancelled",
+	created: "queued",
+	error: "failed",
+	done: "failed",
+	stopped: "failed",
+	aborted: "failed"
+};
+
+const TERMINAL_PROGRESS_STATUSES: ReadonlySet<RunProgressStatus> = new Set<RunProgressStatus>([
 	"completed",
-	"succeeded",
 	"failed",
-	"terminated",
 	"cancelled",
-	"canceled",
+	"interrupted",
 	// A run whose evidence lane failed is finished, not still working. Leaving
 	// it live would spin a card forever over compute that already stopped.
 	"degraded"
 ]);
 
-export function isTerminalRunStatus(status: string | null | undefined): boolean {
-	return TERMINAL_STATUSES.has((status ?? "").toLowerCase());
+/** The producer word for a stored status, or `null` when nothing recognises it. */
+function producerStatus(status: string | null | undefined): OptimizerRunStatus | null {
+	const value = (status ?? "").toLowerCase();
+	if (value in PRODUCER_STATUS) return value as OptimizerRunStatus;
+	return LEGACY_PAYLOAD_ALIASES[value] ?? null;
 }
 
 /**
- * Normalize a producer status onto the six the product shows. Anything not
- * recognised while the run is live reads as `running` — the run record is the
- * terminal authority, so only its terminal spellings may end a card.
+ * Has this run stopped? An unrecognised word is *not* terminal: the durable
+ * record is the terminal authority, and a word this build cannot read is not
+ * that authority saying "finished".
+ */
+export function isTerminalRunStatus(status: string | null | undefined): boolean {
+	const producer = producerStatus(status);
+	return producer !== null && TERMINAL_PROGRESS_STATUSES.has(PRODUCER_STATUS[producer]);
+}
+
+/**
+ * Normalize a producer status onto the ones the product shows. Anything this
+ * build does not recognise reads as `unknown` — never `running`, which is the
+ * spelling that used to keep a finished run's card alive.
  */
 export function normalizeRunStatus(status: string | null | undefined): RunProgressStatus {
-	const value = (status ?? "").toLowerCase();
-	if (value === "failed" || value === "terminated") return "failed";
-	if (value === "cancelled" || value === "canceled") return "cancelled";
-	if (value === "completed" || value === "succeeded") return "completed";
-	if (value === "degraded" || value === "failed_evidence") return "degraded";
-	if (value === "paused") return "paused";
-	if (value === "interrupted" || value === "disconnected" || value === "stalled") return "interrupted";
-	if (value === "queued" || value === "created" || value === "pending" || value === "prepared") {
-		return "queued";
-	}
-	return "running";
+	const producer = producerStatus(status);
+	return producer === null ? "unknown" : PRODUCER_STATUS[producer];
 }

@@ -123,8 +123,12 @@ jq -e '
   "$TEST_ROOT/instances/v07/alpha/generated/tauri.instance.json" >/dev/null
 jq -e '.bundle.macOS.minimumSystemVersion == "14.0"' \
   "$ROOT/apps/synth_desktop/src-tauri/tauri.conf.json" >/dev/null
-jq -e '.bundle.resources["generated-resources/cookbooks"] == "cookbooks"' \
+# Packaged resources live in the packaging overlay, not the base config, so a
+# fresh worktree can `cargo check` without staging cookbooks or the helper.
+jq -e '.bundle | has("resources") | not' \
   "$ROOT/apps/synth_desktop/src-tauri/tauri.conf.json" >/dev/null
+jq -e '.bundle.resources["generated-resources/cookbooks"] == "cookbooks"' \
+  "$ROOT/apps/synth_desktop/src-tauri/tauri.package.json" >/dev/null
 
 # The packaged cookbooks come from a sibling working tree, not a submodule, so
 # the staged tree must carry the commit it came from. Without it a release

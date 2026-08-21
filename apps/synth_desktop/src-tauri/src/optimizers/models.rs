@@ -5,6 +5,183 @@ pub const OPTIMIZER_RUN_SCHEMA_VERSION: &str = "optimizer_run.v1";
 pub const OPTIMIZER_EVENT_SCHEMA_VERSION: &str = "optimizer_event.v1";
 pub const OPTIMIZER_STATE_SLICE_SCHEMA_VERSION: &str = "optimizer_state_slice.v1";
 
+/// The one status vocabulary for `optimizer_runs`.
+///
+/// Before this type there were four disagreeing terminal predicates
+/// (`service::is_terminal_status`, `validate_control`, the milestone wait, and
+/// `recipes::reconcile_persisted`) over an untyped `String` column with a
+/// fifteen-word vocabulary. A run that read as finished to one of them read as
+/// live to another, which is how a settled run kept a spinner turning.
+///
+/// The variants are exactly the spellings a producer writes today — the local
+/// recipe workers, the training-lifecycle projection, and the Synth Cloud
+/// mirror. [`OptimizerRunStatus::parse`] additionally accepts the legacy
+/// aliases those producers used to emit so a database written by an older
+/// build still reads; every alias normalizes onto one canonical spelling, and
+/// migration 28 rewrites the stored column so the trigger domain holds. The
+/// aliases live in `parse` and not in `#[serde(alias)]` on purpose: they are a
+/// read-compatibility detail of this build, not part of the contract the
+/// renderer is handed, and putting them on the variants would export them as
+/// legal values in the generated TypeScript union.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, specta::Type)]
+#[serde(rename_all = "snake_case")]
+pub enum OptimizerRunStatus {
+    /// Admitted, not yet started.
+    Queued,
+    /// Config admission is running (training lane).
+    Validating,
+    /// Compute is being acquired (training lane).
+    Provisioning,
+    /// The worker process is coming up.
+    Starting,
+    /// A prepared run held until its viewer attaches.
+    WaitingForViewer,
+    Running,
+    Paused,
+    /// A cancel was accepted and is being carried out.
+    Cancelling,
+    /// The training environment stopped answering; compute may still be live.
+    EnvUnreachable,
+    /// Finished, but its evidence lane did not settle cleanly.
+    Degraded,
+    Completed,
+    Failed,
+    /// Terminal with unusable evidence — distinct from `Failed` because the
+    /// work ran; only the receipt is missing.
+    FailedEvidence,
+    Cancelled,
+    /// The owner process died without sealing; recovery rewrote the row.
+    Interrupted,
+    InfrastructureLost,
+    /// Stopped because a spend or step ceiling was reached.
+    CapReached,
+}
+
+impl OptimizerRunStatus {
+    /// Every canonical spelling, in lifecycle order. The migration-28 trigger
+    /// domain and the generated TypeScript union are both this list.
+    pub const ALL: &'static [Self] = &[
+        Self::Queued,
+        Self::Validating,
+        Self::Provisioning,
+        Self::Starting,
+        Self::WaitingForViewer,
+        Self::Running,
+        Self::Paused,
+        Self::Cancelling,
+        Self::EnvUnreachable,
+        Self::Degraded,
+        Self::Completed,
+        Self::Failed,
+        Self::FailedEvidence,
+        Self::Cancelled,
+        Self::Interrupted,
+        Self::InfrastructureLost,
+        Self::CapReached,
+    ];
+
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Queued => "queued",
+            Self::Validating => "validating",
+            Self::Provisioning => "provisioning",
+            Self::Starting => "starting",
+            Self::WaitingForViewer => "waiting_for_viewer",
+            Self::Running => "running",
+            Self::Paused => "paused",
+            Self::Cancelling => "cancelling",
+            Self::EnvUnreachable => "env_unreachable",
+            Self::Degraded => "degraded",
+            Self::Completed => "completed",
+            Self::Failed => "failed",
+            Self::FailedEvidence => "failed_evidence",
+            Self::Cancelled => "cancelled",
+            Self::Interrupted => "interrupted",
+            Self::InfrastructureLost => "infrastructure_lost",
+            Self::CapReached => "cap_reached",
+        }
+    }
+
+    /// Canonical spelling, or `None` for a word no producer has ever written.
+    ///
+    /// Legacy aliases resolve here rather than at each call site: that is the
+    /// whole point of the type. Unknown input is `None` — never `Running`,
+    /// which is how an unrecognised terminal word used to keep a card live.
+    pub fn parse(value: &str) -> Option<Self> {
+        Some(match value {
+            "queued" | "created" => Self::Queued,
+            "validating" => Self::Validating,
+            "provisioning" => Self::Provisioning,
+            "starting" => Self::Starting,
+            "waiting_for_viewer" => Self::WaitingForViewer,
+            "running" => Self::Running,
+            "paused" => Self::Paused,
+            "cancelling" => Self::Cancelling,
+            "env_unreachable" => Self::EnvUnreachable,
+            "degraded" => Self::Degraded,
+            "completed" | "succeeded" => Self::Completed,
+            "failed" | "error" | "done" | "stopped" | "aborted" => Self::Failed,
+            "failed_evidence" => Self::FailedEvidence,
+            "cancelled" | "canceled" => Self::Cancelled,
+            "interrupted" => Self::Interrupted,
+            "infrastructure_lost" => Self::InfrastructureLost,
+            "cap_reached" => Self::CapReached,
+            _ => return None,
+        })
+    }
+
+    /// The canonical spelling for a stored word, leaving anything unrecognised
+    /// untouched so a write can still be inspected rather than silently
+    /// relabelled. The migration-28 trigger is what refuses the unrecognised.
+    pub fn canonical(value: &str) -> &str {
+        match Self::parse(value) {
+            Some(status) => status.as_str(),
+            None => value,
+        }
+    }
+
+    /// The single terminal predicate. Compute has stopped and the record will
+    /// not move again on its own.
+    pub const fn is_terminal(self) -> bool {
+        matches!(
+            self,
+            Self::Completed
+                | Self::Failed
+                | Self::FailedEvidence
+                | Self::Cancelled
+                | Self::Interrupted
+                | Self::Degraded
+                | Self::InfrastructureLost
+                | Self::CapReached
+        )
+    }
+
+    /// Terminal check straight off a stored word. An unrecognised word is not
+    /// terminal: the run record is the terminal authority, and a word this
+    /// build does not know is not that authority saying "finished".
+    pub fn str_is_terminal(value: &str) -> bool {
+        Self::parse(value).is_some_and(Self::is_terminal)
+    }
+
+    /// Whether `next` is a legal successor. Terminal is terminal: nothing
+    /// leaves it, so a late event cannot resurrect a settled run.
+    pub fn can_transition_to(self, next: Self) -> bool {
+        if self == next {
+            return true;
+        }
+        if self.is_terminal() {
+            return false;
+        }
+        match next {
+            // Only a running optimizer pauses.
+            Self::Paused => self == Self::Running,
+            // A queued run may start; a cancelling one may not go back to work.
+            Self::Running => self != Self::Cancelling,
+            _ => true,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, specta::Type)]
 #[serde(rename_all(deserialize = "snake_case", serialize = "camelCase"))]
 pub struct SavedLoraStorage {
@@ -597,4 +774,280 @@ pub struct OptimizerSearchOverrides {
     #[serde(default)]
     #[specta(type = specta_typescript::Unknown)]
     pub rollout_concurrency: Option<i64>,
+}
+
+#[cfg(test)]
+mod status_contract_tests {
+    use super::OptimizerRunStatus;
+    use std::collections::BTreeSet;
+
+    /// Files that still spell an optimizer run status by hand rather than
+    /// asking [`OptimizerRunStatus`]. Shrink-only: a file that stops offending
+    /// must be removed from this list, so the debt cannot quietly grow back
+    /// under a name that is already excused.
+    ///
+    /// `hosted_sft.rs` holds a fifth terminal predicate (`hosted_runs_needing_restore`)
+    /// and the `succeeded -> completed` remote mapping. Both belong to the
+    /// hosted-SFT lane, not the contract lane; handed over rather than edited.
+    const HANDWRITTEN_STATUS_ALLOWLIST: &[&str] = &["hosted_sft.rs"];
+
+    /// Receivers that are an `OptimizerRunRecord`. Deliberately explicit: the
+    /// sidecar training *job* and the plugin *service* both have a `status`
+    /// field with a different vocabulary, and folding them in here would either
+    /// fail the test or force the two vocabularies to merge.
+    const RUN_RECEIVERS: &[&str] = &[
+        "run", "current", "stored", "durable", "record", "projected_run", "existing", "seed",
+    ];
+
+    fn optimizers_dir() -> std::path::PathBuf {
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/optimizers")
+    }
+
+    /// Balanced-paren body of the `macro!(` that starts at `open`.
+    fn macro_body(source: &str, open: usize) -> Option<&str> {
+        let bytes = source.as_bytes();
+        let mut depth = 0usize;
+        for (offset, byte) in bytes.iter().enumerate().skip(open) {
+            match byte {
+                b'(' => depth += 1,
+                b')' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return Some(&source[open + 1..offset]);
+                    }
+                }
+                _ => {}
+            }
+        }
+        None
+    }
+
+    fn is_run_receiver(expression: &str) -> bool {
+        let expression = expression.trim().trim_end_matches(".as_str()");
+        expression
+            .strip_suffix(".status")
+            .is_some_and(|receiver| RUN_RECEIVERS.contains(&receiver.trim()))
+    }
+
+    /// Every status word compared against, assigned to, or matched on an
+    /// optimizer run record is one the enum knows, spelled canonically.
+    ///
+    /// This reads source rather than types because the field is still a
+    /// `String` at the storage edge: the hazard is a new literal, and only a
+    /// textual check sees one arrive.
+    #[test]
+    fn every_run_status_literal_is_in_the_enum() {
+        let mut offenders: Vec<String> = Vec::new();
+        let mut allowlisted_files: BTreeSet<String> = BTreeSet::new();
+        let mut scanned = 0usize;
+        let mut checked = 0usize;
+
+        for entry in std::fs::read_dir(optimizers_dir()).expect("read src/optimizers") {
+            let path = entry.expect("dir entry").path();
+            let name = path
+                .file_name()
+                .and_then(|value| value.to_str())
+                .unwrap_or_default()
+                .to_owned();
+            if !name.ends_with(".rs") || name == "models.rs" {
+                continue;
+            }
+            let source = std::fs::read_to_string(&path).expect("read optimizer source");
+            scanned += 1;
+            let mut found: Vec<(usize, String)> = Vec::new();
+
+            // `<run>.status == "..."`, `!= "..."`, `= "..."`.
+            for receiver in RUN_RECEIVERS {
+                let needle = format!("{receiver}.status");
+                for (offset, _) in source.match_indices(&needle) {
+                    if offset > 0 {
+                        let previous = source[..offset].chars().next_back().unwrap_or(' ');
+                        if previous.is_alphanumeric() || previous == '_' {
+                            continue;
+                        }
+                    }
+                    let mut tail = &source[offset + needle.len()..];
+                    tail = tail.strip_prefix(".as_str()").unwrap_or(tail);
+                    let tail = tail.trim_start();
+                    let rest = ["==", "!=", "="]
+                        .iter()
+                        .find_map(|operator| tail.strip_prefix(*operator));
+                    let Some(rest) = rest else { continue };
+                    let rest = rest.trim_start();
+                    if let Some(literal) = rest.strip_prefix('"') {
+                        if let Some(end) = literal.find('"') {
+                            found.push((offset, literal[..end].to_owned()));
+                        }
+                    }
+                }
+            }
+
+            // `matches!(<run>.status(.as_str())?, "..." | "...")`.
+            for (offset, _) in source.match_indices("matches!(") {
+                let open = offset + "matches!".len();
+                let Some(body) = macro_body(&source, open) else {
+                    continue;
+                };
+                let Some((head, arms)) = body.split_once(',') else {
+                    continue;
+                };
+                if !is_run_receiver(head) {
+                    continue;
+                }
+                let mut rest = arms;
+                while let Some(quote) = rest.find('"') {
+                    let literal = &rest[quote + 1..];
+                    let Some(end) = literal.find('"') else { break };
+                    found.push((offset, literal[..end].to_owned()));
+                    rest = &literal[end + 1..];
+                }
+            }
+
+            for (offset, literal) in found {
+                if literal.contains('{') || literal.is_empty() {
+                    continue;
+                }
+                checked += 1;
+                if OptimizerRunStatus::parse(&literal)
+                    .is_some_and(|status| status.as_str() == literal)
+                {
+                    continue;
+                }
+                if HANDWRITTEN_STATUS_ALLOWLIST.contains(&name.as_str()) {
+                    allowlisted_files.insert(name.clone());
+                    continue;
+                }
+                let line = source[..offset].matches('\n').count() + 1;
+                offenders.push(format!(
+                    "{name}:{line} writes run status {literal:?}, which is not an \
+                     OptimizerRunStatus spelling"
+                ));
+            }
+        }
+
+        assert!(
+            scanned > 10,
+            "expected to scan the optimizer module, saw {scanned} files"
+        );
+        assert!(
+            checked > 10,
+            "expected to check real status literals, checked {checked}"
+        );
+        assert!(
+            offenders.is_empty(),
+            "optimizer run status is OptimizerRunStatus, not a string:\n  {}",
+            offenders.join("\n  ")
+        );
+        let unused: Vec<&&str> = HANDWRITTEN_STATUS_ALLOWLIST
+            .iter()
+            .filter(|name| !allowlisted_files.contains(**name))
+            .collect();
+        assert!(
+            unused.is_empty(),
+            "these files no longer spell a status by hand; remove them from \
+             HANDWRITTEN_STATUS_ALLOWLIST: {unused:?}"
+        );
+    }
+
+    /// The database refuses exactly the words the enum refuses.
+    ///
+    /// Two authorities for one vocabulary is the failure this whole item
+    /// deletes; the migration text and the enum must not be able to disagree.
+    #[test]
+    fn migration_28_status_domain_equals_the_enum() {
+        let source = include_str!("../storage/migrations.rs");
+        let migration = source
+            .split("const MIGRATION_28: &str = r#\"")
+            .nth(1)
+            .expect("MIGRATION_28 is defined")
+            .split("\"#;")
+            .next()
+            .expect("MIGRATION_28 is terminated");
+        let domains: Vec<BTreeSet<String>> = migration
+            .match_indices("NOT IN (")
+            .map(|(offset, _)| {
+                let tail = &migration[offset + "NOT IN (".len()..];
+                let inner = &tail[..tail.find(')').expect("closed NOT IN list")];
+                inner
+                    .split(',')
+                    .map(|word| word.trim().trim_matches('\'').to_owned())
+                    .collect()
+            })
+            .collect();
+        assert_eq!(
+            domains.len(),
+            3,
+            "expected the data pass plus the insert and update triggers"
+        );
+        let expected: BTreeSet<String> = OptimizerRunStatus::ALL
+            .iter()
+            .map(|status| status.as_str().to_owned())
+            .collect();
+        for domain in &domains {
+            assert_eq!(
+                domain, &expected,
+                "the migration-28 status domain must be OptimizerRunStatus::ALL"
+            );
+        }
+    }
+
+    /// Every alias the migration folds is an alias the enum accepts, and folds
+    /// onto the same canonical word.
+    #[test]
+    fn migration_28_alias_pass_matches_the_enum() {
+        for (alias, canonical) in [
+            ("succeeded", "completed"),
+            ("canceled", "cancelled"),
+            ("done", "failed"),
+            ("stopped", "failed"),
+            ("aborted", "failed"),
+            ("error", "failed"),
+            ("created", "queued"),
+        ] {
+            assert_eq!(
+                OptimizerRunStatus::parse(alias).map(OptimizerRunStatus::as_str),
+                Some(canonical),
+                "alias {alias} must normalize to {canonical}"
+            );
+        }
+    }
+
+    #[test]
+    fn terminal_is_one_set() {
+        let terminal: Vec<&str> = OptimizerRunStatus::ALL
+            .iter()
+            .filter(|status| status.is_terminal())
+            .map(|status| status.as_str())
+            .collect();
+        assert_eq!(
+            terminal,
+            vec![
+                "degraded",
+                "completed",
+                "failed",
+                "failed_evidence",
+                "cancelled",
+                "interrupted",
+                "infrastructure_lost",
+                "cap_reached",
+            ]
+        );
+        // An unrecognised word never reads as finished — and never as running.
+        assert!(!OptimizerRunStatus::str_is_terminal("who_knows"));
+        assert!(OptimizerRunStatus::parse("who_knows").is_none());
+        // Legacy spellings still settle.
+        assert!(OptimizerRunStatus::str_is_terminal("succeeded"));
+        assert!(OptimizerRunStatus::str_is_terminal("canceled"));
+    }
+
+    #[test]
+    fn terminal_states_do_not_reopen() {
+        for status in OptimizerRunStatus::ALL.iter().filter(|s| s.is_terminal()) {
+            assert!(!status.can_transition_to(OptimizerRunStatus::Running));
+            assert!(status.can_transition_to(*status));
+        }
+        assert!(OptimizerRunStatus::Running.can_transition_to(OptimizerRunStatus::Paused));
+        assert!(!OptimizerRunStatus::Queued.can_transition_to(OptimizerRunStatus::Paused));
+        assert!(OptimizerRunStatus::Paused.can_transition_to(OptimizerRunStatus::Running));
+    }
 }
