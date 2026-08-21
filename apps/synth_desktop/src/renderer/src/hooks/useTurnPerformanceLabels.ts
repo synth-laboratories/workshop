@@ -236,7 +236,7 @@ export function turnPerformanceLabels(
 			: null;
 		const persistedEndToEnd = endToEndSample(turnSamples, messageAt, terminalAt)?.outputTps ?? null;
 		const fallback = (!value || !isPublishable(value)) && isFinal && terminalAt != null
-			? endToEndLabel(persistedEndToEnd ?? journalEndToEndTps(ordered, acceptedAt, terminalAt))
+			? endToEndLabel(journalEndToEndTps(ordered, acceptedAt, terminalAt) ?? persistedEndToEnd)
 			: null;
 		byMessageId[message.id] = fallback ?? {
 			generation: generationLabel(value),
