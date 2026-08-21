@@ -104,7 +104,7 @@ async fn start_inner(
             .collect(),
         ),
     );
-    let openai = resolve_openai_workload(&run_id, &recipe.id)?;
+    let openai = resolve_provider_workload(&recipe.provider, &run_id, &recipe.id)?;
     super::workspace_recipe::bind_locality_urls(
         table,
         recipe.locality,
@@ -485,7 +485,11 @@ async fn run_recipe_worker(
     let _revoke = crate::secrets::RevokeRunOnDrop(run_id.clone());
     let _ownership = service.hold_run_ownership(&run_id)?;
     append_status_event(&service, &run_id, "optimizer.run.started", "running").await?;
-    let openai = resolve_openai_workload(&run_id, recipe_id_for_lease(&config_path))?;
+    let openai = resolve_provider_workload(
+        "openai",
+        &run_id,
+        recipe_id_for_lease(&config_path),
+    )?;
     if let Some(lease) = openai.lease.as_ref() {
         crate::secrets::lease::bind_lease_into_toml(&config_path, lease)?;
         let _ = service.persist_credential_chain(&run_id).await;
@@ -610,7 +614,11 @@ async fn run_recipe_worker(
 /// Resolve OpenAI access for a recipe through the local vault and provider
 /// proxy. Paid workers never receive a provider key and never fall back to a
 /// process variable or dotenv file.
-fn resolve_openai_workload(run_id: &str, recipe_id: &str) -> Result<OpenAiWorkload> {
+fn resolve_provider_workload(
+    provider: &str,
+    run_id: &str,
+    recipe_id: &str,
+) -> Result<OpenAiWorkload> {
     #[cfg(test)]
     {
         if std::env::var("SYNTH_OPTIMIZER_TEST_CHILD_SLEEP_SECS").is_ok()
@@ -636,7 +644,7 @@ fn resolve_openai_workload(run_id: &str, recipe_id: &str) -> Result<OpenAiWorklo
     })?;
     let lease = secrets
         .issue_lease(
-            "openai",
+            provider,
             run_id,
             recipe_id,
             crate::secrets::SecretsUsePolicy::default(),
