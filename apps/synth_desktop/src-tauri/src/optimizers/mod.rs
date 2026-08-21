@@ -4,6 +4,7 @@ mod cispo;
 pub(crate) mod cloud;
 mod container_eval;
 pub(crate) mod container_lifecycle;
+mod container_training;
 mod eval_candidates;
 mod eval_recipes;
 pub(crate) mod eval_runtime;
@@ -23,9 +24,8 @@ mod normalize;
 mod recipes;
 mod results;
 mod service;
-pub(crate) mod workspace_recipe;
-mod sft_client;
 mod sft_recipes;
+mod sft_client;
 mod sft_result;
 mod sidecar_training;
 mod terminal;
@@ -33,25 +33,26 @@ mod tinker_catalog;
 mod training;
 mod training_adapter;
 pub(crate) mod typed_capabilities;
+pub(crate) mod workspace_recipe;
 
 pub use eval_candidates::EvalStageCandidatesRequest;
 pub(crate) use eval_recipes::{paid_compute_bounds, resolve_eval_candidate_set};
-pub(crate) use sidecar_training::launch_artifact_inference;
 #[allow(unused_imports)] // public sidecar status/version types for Desktop callers
 pub use manager::{OptimizerManager, OptimizerSidecarStatus, OptimizerSidecarVersion};
 #[allow(unused_imports)] // Nested Specta type is part of HostedTrainingModelCatalog.
 pub use models::{
-    CheckpointInferRequest, HostedTrainingModel, HostedTrainingModelCatalog, OptimizerCreateRequest,
-    OptimizerEventEnvelope, OptimizerImportLocalRequest, OptimizerQuery, OptimizerRecipeRunRequest,
-    OptimizerReconcileRequest, OptimizerRelationship, OptimizerRunOutputArtifact,
-    OptimizerRunStatus,
-    OptimizerRunOutputCounts, OptimizerRunOutputIdentity, OptimizerRunOutputs, OptimizerRunRecord,
-    OptimizerStateSlice, SavedLoraCheckpoint, SavedLoraCheckpointPage, SavedLoraCheckpointQuery,
-    SavedLoraDownload, SavedLoraLineage, SavedLoraPatchRequest, SavedLoraRunCounts,
-    SavedLoraRunIdentity, SavedLoraRunPage,
+    CheckpointInferRequest, HostedTrainingModel, HostedTrainingModelCatalog,
+    OptimizerCreateRequest, OptimizerEventEnvelope, OptimizerImportLocalRequest, OptimizerQuery,
+    OptimizerRecipeRunRequest, OptimizerReconcileRequest, OptimizerRelationship,
+    OptimizerRunOutputArtifact, OptimizerRunOutputCounts, OptimizerRunOutputIdentity,
+    OptimizerRunOutputs, OptimizerRunRecord, OptimizerRunStatus, OptimizerStateSlice,
+    SavedLoraCheckpoint, SavedLoraCheckpointPage, SavedLoraCheckpointQuery, SavedLoraDownload,
+    SavedLoraLineage, SavedLoraPatchRequest, SavedLoraRunCounts, SavedLoraRunIdentity,
+    SavedLoraRunPage,
 };
 pub(crate) use service::reconcile_stale_local_runs_in_tx;
 pub use service::OptimizerService;
+pub(crate) use sidecar_training::launch_artifact_inference;
 pub use training::{TrainingEvent, TrainingLifecycle, TrainingProjection};
 
 /// The adapter-tree digest the catalog keys on. Re-exported so the installer
