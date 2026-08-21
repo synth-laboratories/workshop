@@ -101,6 +101,43 @@ class GenerationTiming:
         # The first token's cost belongs to prefill, not decode.
         return round((self.output_tokens - 1) / elapsed, 3)
 
+    def record_decode_progress(
+        self,
+        *,
+        sampled_at: float,
+        output_tokens: int,
+        prompt_tokens: int,
+        cached_tokens: int,
+        measured_decode_tps: float | None,
+    ) -> None:
+        """Record a source-side generation update, whether or not it has text.
+
+        Token sources sometimes emit a generation update before they can decode
+        a displayable text delta (notably structured/tool turns). Those updates
+        still establish real throughput, so the inference monitor must not tie
+        its timing to presentation text.
+        """
+        output_tokens = max(0, int(output_tokens))
+        self.prompt_tokens = max(self.prompt_tokens, int(prompt_tokens))
+        self.cached_tokens = max(self.cached_tokens, int(cached_tokens))
+        if measured_decode_tps is not None and measured_decode_tps > 0:
+            self.measured_decode_tps = measured_decode_tps
+
+        if output_tokens > self.output_tokens:
+            produced = output_tokens - self.output_tokens
+            if self.first_token_at is None:
+                self.first_token_at = sampled_at
+                self.phase = "decode"
+            elif self.last_token_at is not None:
+                # Preserve one source-side latency sample per decoded token so
+                # policy p10 throughput remains available even when a token
+                # update has no displayable text delta.
+                span = sampled_at - self.last_token_at
+                if span > 0:
+                    self.decode_latencies.extend([span / produced] * produced)
+            self.output_tokens = output_tokens
+            self.last_token_at = sampled_at
+
     def cache_hit_ratio(self) -> float:
         if not self.prompt_tokens:
             return 0.0

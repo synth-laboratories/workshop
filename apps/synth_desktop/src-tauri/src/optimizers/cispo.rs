@@ -193,7 +193,9 @@ async fn start_local(
                 "url": rollout.url,
                 "task_id": rollout.task_id,
                 "bearer_token": rollout.token,
-                "train_instances": 64,
+                "train_world_ref": "world:banking77@train",
+                "heldout_world_ref": "world:banking77@heldout",
+                "train_instances": 16,
                 "heldout_instances": 16
             },
             "output_dir": output_dir,
@@ -307,6 +309,8 @@ mod tests {
         assert!(!production.contains("SYNTH_MLX_CISPO_WARM_START"));
         assert!(production.contains("training_artifact_id"));
         assert!(production.contains("\"signal_attempts\": 24"));
+        assert!(production.contains("\"train_world_ref\": \"world:banking77@train\""));
+        assert!(production.contains("\"heldout_world_ref\": \"world:banking77@heldout\""));
         assert!(production.contains("create_and_watch"));
     }
 

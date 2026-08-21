@@ -1168,6 +1168,13 @@ class NativeMlxBackend:
                         # token source. Keep the latest value rather than
                         # deriving a rate from event-loop delivery timing.
                         measured_decode_tps = source_decode_tps
+                    progress = (
+                        time.monotonic(),
+                        output_tokens,
+                        prompt_tokens,
+                        cached_tokens,
+                        measured_decode_tps,
+                    )
                     if response.text:
                         loop.call_soon_threadsafe(
                             queue.put_nowait,
@@ -1175,13 +1182,17 @@ class NativeMlxBackend:
                                 "chunk",
                                 (
                                     response.text,
-                                    time.monotonic(),
-                                    output_tokens,
-                                    prompt_tokens,
-                                    cached_tokens,
-                                    measured_decode_tps,
+                                    *progress,
                                 ),
                             ),
+                        )
+                    else:
+                        # Structured/tool generation can advance tokens before
+                        # a displayable text delta exists. Feed that real
+                        # source-side progress to the monitor without emitting
+                        # a synthetic client-visible chunk.
+                        loop.call_soon_threadsafe(
+                            queue.put_nowait, ("progress", progress)
                         )
                     final_finish_reason = response.finish_reason or final_finish_reason
                 loop.call_soon_threadsafe(
@@ -1227,36 +1238,34 @@ class NativeMlxBackend:
                         500,
                         error_type="model_error",
                     )
-                if kind == "chunk":
-                    (
-                        chunk,
-                        sampled_at,
-                        output_tokens,
-                        prompt_tokens,
-                        cached_tokens,
-                        measured_decode_tps,
-                    ) = payload
-                    chunk = str(chunk)
-                    sampled_at = float(sampled_at)
-                    if timing.first_token_at is None:
-                        timing.first_token_at = sampled_at
-                        timing.phase = "decode"
-                    elif timing.last_token_at is not None:
-                        # Per-token decode latency, one sample per token the
-                        # chunk carried. Aggregates take a low percentile of
-                        # these rather than a mean: on a contended machine a
-                        # mean measures the scheduler, while the fastest tokens
-                        # approximate uncontended speed. The first interval is
-                        # skipped because it carries prefill.
-                        produced = max(int(output_tokens) - timing.output_tokens, 0)
-                        span = sampled_at - timing.last_token_at
-                        if produced > 0 and span > 0:
-                            timing.decode_latencies.extend([span / produced] * produced)
-                    timing.last_token_at = sampled_at
-                    timing.output_tokens = int(output_tokens)
-                    timing.prompt_tokens = int(prompt_tokens) or timing.prompt_tokens
-                    timing.cached_tokens = int(cached_tokens)
-                    timing.measured_decode_tps = measured_decode_tps
+                if kind in {"chunk", "progress"}:
+                    if kind == "chunk":
+                        (
+                            chunk,
+                            sampled_at,
+                            output_tokens,
+                            prompt_tokens,
+                            cached_tokens,
+                            measured_decode_tps,
+                        ) = payload
+                        chunk = str(chunk)
+                    else:
+                        (
+                            sampled_at,
+                            output_tokens,
+                            prompt_tokens,
+                            cached_tokens,
+                            measured_decode_tps,
+                        ) = payload
+                    timing.record_decode_progress(
+                        sampled_at=float(sampled_at),
+                        output_tokens=int(output_tokens),
+                        prompt_tokens=int(prompt_tokens),
+                        cached_tokens=int(cached_tokens),
+                        measured_decode_tps=measured_decode_tps,
+                    )
+                    if kind == "progress":
+                        continue
                     if splitter is None:
                         if turn.bindings:
                             structured_tool_chunks.append(chunk)

@@ -43,7 +43,7 @@ function appEventToCodexEvent(event: AppEvent): CodexEvent | null {
 		event.payload && typeof event.payload === "object" && !Array.isArray(event.payload)
 			? (event.payload as Record<string, unknown>)
 			: {};
-	return { sessionId: event.sessionId, method: event.kind, params };
+	return { sessionId: event.sessionId, method: event.kind, params, createdAt: event.createdAt };
 }
 
 function listenRuntimeAppEvents(listener: (event: AppEvent) => void, onAttached?: () => void): () => void {

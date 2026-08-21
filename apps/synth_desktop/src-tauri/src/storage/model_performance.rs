@@ -169,10 +169,12 @@ fn summaries(conn: &Connection) -> Result<Vec<ModelPerformanceSummary>> {
 
 fn turn_samples(conn: &Connection, session_id: &str) -> Result<Vec<ModelPerformanceTurnSample>> {
     let mut statement = conn.prepare(
-        "SELECT run_id,measurement_kind,started_at_ms,completed_at_ms,observed_output_tps
+        "SELECT run_id,measurement_kind,started_at_ms,completed_at_ms,
+                COALESCE(observed_output_tps, end_to_end_output_tps)
          FROM usage_records
          WHERE session_id=?1 AND output_tokens IS NOT NULL AND output_tokens>0
-           AND observed_output_tps IS NOT NULL AND observed_output_tps>0
+           AND COALESCE(observed_output_tps, end_to_end_output_tps) IS NOT NULL
+           AND COALESCE(observed_output_tps, end_to_end_output_tps)>0
          ORDER BY started_at_ms,completed_at_ms",
     )?;
     let rows = statement.query_map([session_id], |row| {
@@ -303,19 +305,23 @@ mod tests {
         let mut second = record("two", 29.0);
         second.session_id = Some("session-b".into());
         w.record(second).await.unwrap();
-        let mut end_to_end_only = record("tool-gap", 0.1);
+        let mut end_to_end_only = record("hosted-settled", 0.1);
         end_to_end_only.session_id = Some("session-a".into());
         end_to_end_only.measurement_kind = MeasurementKind::EndToEnd;
         end_to_end_only.observed_output_tps = None;
-        end_to_end_only.end_to_end_output_tps = Some(0.1);
+        end_to_end_only.end_to_end_output_tps = Some(12.5);
+        end_to_end_only.started_at_ms = 3_000;
+        end_to_end_only.completed_at_ms = 4_000;
         w.record(end_to_end_only).await.unwrap();
 
         let rows = ModelPerformanceRepository::new(s.database().clone())
             .turn_samples("session-a".into())
             .await
             .unwrap();
-        assert_eq!(rows.len(), 1);
+        assert_eq!(rows.len(), 2);
         assert_eq!(rows[0].run_id.as_deref(), Some("turn-a"));
         assert_eq!(rows[0].output_tps, 11.0);
+        assert_eq!(rows[1].measurement_kind, MeasurementKind::EndToEnd);
+        assert_eq!(rows[1].output_tps, 12.5);
     }
 }

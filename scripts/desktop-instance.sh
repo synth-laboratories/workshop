@@ -559,6 +559,48 @@ stage_gepa_runtime() {
   export SYNTH_BANKING77_SECRET_ENV_FILE="$secret_target"
 }
 
+# A packaged CUA bundle must not inherit the parent Workshop process's
+# environment.  This is more than defense in depth: macOS lets multiple
+# development bundles share one login session, and a caller's
+# SYNTH_DESKTOP_DATA_ROOT used to make the correctly named bundle attach to
+# the caller's database and provider proxy.  Keep this allowlist deliberately
+# small. Provider credentials live in the named instance's private .env and
+# are loaded by the app, never inherited here.
+exec_isolated_cua_bundle() {
+  local oauth_file="${SYNTH_DESKTOP_DEV_OAUTH_FILE:-}"
+  local oauth_state="${SYNTH_DESKTOP_DEV_OAUTH_STATE_FILE:-}"
+  local home_dir="${HOME:?HOME must be set to launch a CUA bundle}"
+  local user_name="${USER:-$(id -un)}"
+  local logname="${LOGNAME:-$user_name}"
+  local temp_dir="${TMPDIR:-/tmp}"
+
+  env -i \
+    PATH="$PATH" \
+    HOME="$home_dir" \
+    USER="$user_name" \
+    LOGNAME="$logname" \
+    TMPDIR="$temp_dir" \
+    PWD="$INSTANCE_ROOT" \
+    SYNTH_DESKTOP_INSTANCE="$NAME" \
+    SYNTH_DESKTOP_DATA_ROOT="$DATA_ROOT" \
+    SYNTH_DESKTOP_CONFIG="$DATA_ROOT/config.toml" \
+    SYNTH_CODEX_HOME="$DATA_ROOT/codex" \
+    SYNTH_DESKTOP_WORKSPACE="$WORKSPACE" \
+    SYNTH_DESKTOP_APP_NAME="$APP_TITLE" \
+    SYNTH_DESKTOP_BUNDLE_ID="$BUNDLE_ID" \
+    SYNTH_DESKTOP_INSTANCE_MANIFEST="$MANIFEST" \
+    SYNTH_DESKTOP_SOURCE_REVISION="$SOURCE_REVISION" \
+    SYNTH_DESKTOP_VITE_URL="http://127.0.0.1:$VITE_PORT" \
+    SYNTH_EVAL_ALLOW_LOCAL_PINNED_TARGETS=1 \
+    SYNTH_LAGUNA_HOME="$SYNTH_LAGUNA_HOME" \
+    SYNTH_LAGUNA_PORT="$SYNTH_LAGUNA_PORT" \
+    SYNTH_LAGUNA_BASE_URL="$SYNTH_LAGUNA_BASE_URL" \
+    SYNTH_COMPUTER_USE_PARENT_REQUIREMENT="$SYNTH_COMPUTER_USE_PARENT_REQUIREMENT" \
+    SYNTH_DESKTOP_DEV_OAUTH_FILE="$oauth_file" \
+    SYNTH_DESKTOP_DEV_OAUTH_STATE_FILE="$oauth_state" \
+    "$CUA_EXE"
+}
+
 stage_instance() {
   write_contract
   stage_gepa_runtime
@@ -895,7 +937,7 @@ PY
     codesign --verify --deep --strict "$(dirname "$(dirname "$(dirname "$CUA_EXE")")")"
     echo "[desktop:$NAME] launching existing signed CUA app from $INSTANCE_ROOT"
     cd "$INSTANCE_ROOT"
-    exec "$CUA_EXE"
+    exec_isolated_cua_bundle
   fi
 
   # The adapter prebuild compiles the shared desktop library and therefore
@@ -966,7 +1008,7 @@ PY
     # traversal to the app and triggers an unnecessary Files & Folders prompt.
     # Runtime data and workspaces already live under this isolated instance.
     cd "$INSTANCE_ROOT"
-    exec "$app_executable"
+    exec_isolated_cua_bundle
   fi
   exec npx tauri dev --features eval-driver --config "$PACKAGE_CONFIG" --config "$CONFIG"
 }

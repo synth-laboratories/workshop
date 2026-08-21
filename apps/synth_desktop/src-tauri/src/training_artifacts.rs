@@ -211,7 +211,7 @@ pub fn require_artifact_id(id: &str) -> Result<&str> {
     }
     if !id
         .chars()
-        .all(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '_')
+        .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | ':'))
     {
         bail!("training artifact id must be alphanumeric");
     }
@@ -685,6 +685,10 @@ mod tests {
             );
         }
         assert_eq!(require_artifact_id("ckpt_10k").unwrap(), "ckpt_10k");
+        assert_eq!(
+            require_artifact_id("sft_mlx_qwen_57c9c1e7762a:step-4").unwrap(),
+            "sft_mlx_qwen_57c9c1e7762a:step-4"
+        );
     }
 
     #[test]
