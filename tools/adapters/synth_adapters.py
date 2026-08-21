@@ -222,6 +222,48 @@ def pull(args: argparse.Namespace) -> None:
     print(f"pulled {manifest['digest']} into {destination}")
 
 
+def mirror(args: argparse.Namespace) -> None:
+    """Copy a published adapter to HuggingFace, bytes unchanged.
+
+    The mirror is published *from* the object store rather than from a local
+    tree, so the two channels cannot drift: whatever is served from Wasabi is
+    what lands on HuggingFace, and the digest in the manifest still identifies
+    it after download. HuggingFace addresses by commit sha; our identity stays
+    the tree digest, so the client verifies the same way from either source.
+    """
+    try:
+        from huggingface_hub import HfApi
+    except ImportError:  # pragma: no cover - operator environment
+        raise SystemExit("huggingface_hub is required: pip install huggingface_hub")
+
+    import tempfile
+
+    s3 = client(args)
+    key_prefix = object_prefix(args.prefix, args.digest)
+    manifest = json.loads(
+        s3.get_object(Bucket=args.bucket, Key=f"{key_prefix}/{MANIFEST}")["Body"].read()
+    )
+    api = HfApi(token=os.environ.get("HUGGINGFACE_TOKEN"))
+    with tempfile.TemporaryDirectory() as staging:
+        staged = Path(staging)
+        for entry in manifest["files"]:
+            target = staged / entry["path"]
+            s3.download_file(args.bucket, f"{key_prefix}/{entry['path']}", str(target))
+            actual = digest_file(target)
+            if actual != entry["sha256"]:
+                # Mirroring a corrupted object would launder it into a channel
+                # with no way back to the authority that holds the good bytes.
+                raise SystemExit(f"{entry['path']} failed verification before mirroring")
+        (staged / MANIFEST).write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+        api.upload_folder(
+            repo_id=args.repo,
+            folder_path=str(staged),
+            path_in_repo=args.digest.replace(":", "-"),
+            commit_message=f"mirror {args.digest}",
+        )
+    print(f"mirrored {args.digest} to https://huggingface.co/{args.repo}")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--endpoint", default=os.environ.get("SYNTH_ADAPTERS_ENDPOINT", DEFAULT_ENDPOINT))
@@ -250,6 +292,11 @@ def main() -> None:
     pull_cmd.add_argument("digest")
     pull_cmd.add_argument("--into", type=Path, required=True)
     pull_cmd.set_defaults(func=pull)
+
+    mirror_cmd = sub.add_parser("mirror", help="copy a published adapter to HuggingFace")
+    mirror_cmd.add_argument("digest")
+    mirror_cmd.add_argument("--repo", default="synth/Laguna-XS-2.1-ft")
+    mirror_cmd.set_defaults(func=mirror)
 
     args = parser.parse_args()
     args.func(args)
