@@ -30,6 +30,7 @@ const MIGRATIONS: &[&str] = &[
     MIGRATION_25,
     MIGRATION_26,
     MIGRATION_27,
+    MIGRATION_28,
 ];
 
 /// Apply every migration the database has not reached yet.
@@ -1584,6 +1585,46 @@ UPDATE report_revision_blocks SET integrity_state = 'unresolved' WHERE integrity
 UPDATE report_sources SET access_state = 'available' WHERE access_state = 'accessible';
 UPDATE report_sources SET integrity_state = 'unresolved' WHERE integrity_state = 'unknown';
 "#;
+/// One status vocabulary for `optimizer_runs`, enforced in the database.
+///
+/// The column carried fifteen spellings for nine states, and four predicates in
+/// Rust each drew the terminal line somewhere different. `OptimizerRunStatus`
+/// is now the one authority; this migration folds the legacy spellings into it
+/// and installs a trigger pair so a new one cannot be written.
+///
+/// A trigger, not a `CHECK`: adding a column constraint to an existing SQLite
+/// table means rebuilding it, and `optimizer_runs` has four children with
+/// `ON DELETE CASCADE` while `foreign_keys` is ON and migrations run inside a
+/// transaction (so `PRAGMA foreign_keys=OFF` is a no-op). The safe rebuild is
+/// unavailable here; `RAISE(ABORT)` gives the same refusal without risking the
+/// event, cursor, slice, and manifest rows.
+///
+/// Anything still outside the vocabulary after the alias pass is a word no
+/// build in this lineage emits; it is recorded as `failed` rather than left to
+/// abort the next write.
+const MIGRATION_28: &str = r#"
+UPDATE optimizer_runs SET status = 'completed' WHERE status = 'succeeded';
+UPDATE optimizer_runs SET status = 'cancelled' WHERE status = 'canceled';
+UPDATE optimizer_runs SET status = 'failed'
+    WHERE status IN ('done','stopped','aborted','error');
+UPDATE optimizer_runs SET status = 'queued' WHERE status = 'created';
+UPDATE optimizer_runs SET status = 'failed'
+    WHERE status NOT IN ('queued','validating','provisioning','starting','waiting_for_viewer','running','paused','cancelling','env_unreachable','degraded','completed','failed','failed_evidence','cancelled','interrupted','infrastructure_lost','cap_reached');
+
+CREATE TRIGGER IF NOT EXISTS optimizer_runs_status_domain_insert
+BEFORE INSERT ON optimizer_runs
+FOR EACH ROW WHEN NEW.status NOT IN ('queued','validating','provisioning','starting','waiting_for_viewer','running','paused','cancelling','env_unreachable','degraded','completed','failed','failed_evidence','cancelled','interrupted','infrastructure_lost','cap_reached')
+BEGIN
+    SELECT RAISE(ABORT, 'optimizer_runs.status outside OptimizerRunStatus');
+END;
+
+CREATE TRIGGER IF NOT EXISTS optimizer_runs_status_domain_update
+BEFORE UPDATE OF status ON optimizer_runs
+FOR EACH ROW WHEN NEW.status NOT IN ('queued','validating','provisioning','starting','waiting_for_viewer','running','paused','cancelling','env_unreachable','degraded','completed','failed','failed_evidence','cancelled','interrupted','infrastructure_lost','cap_reached')
+BEGIN
+    SELECT RAISE(ABORT, 'optimizer_runs.status outside OptimizerRunStatus');
+END;
+"#;
 #[cfg(test)]
 mod tests {
     /// Derived, not pinned: adding a migration should not mean editing
@@ -1663,6 +1704,88 @@ mod tests {
 
     /// A database stamped `version` with migrations 1..=version applied, as a
     /// real installation of that era would have shipped it.
+    /// Legacy status spellings fold, and the column stops accepting new ones.
+    ///
+    /// The four terminal predicates that used to disagree are gone from Rust;
+    /// this is what stops a fifth spelling from arriving through the database.
+    #[test]
+    fn migration_28_folds_legacy_statuses_and_closes_the_column() {
+        let conn = seed_at_version(27);
+        let insert = "INSERT INTO optimizer_runs(
+                id, algorithm_id, status, source, created_at, payload_json, updated_at)
+             VALUES (?1, 'gepa', ?2, 'local', 'now', '{}', 'now')";
+        for (id, status) in [
+            ("run-succeeded", "succeeded"),
+            ("run-canceled", "canceled"),
+            ("run-done", "done"),
+            ("run-error", "error"),
+            ("run-created", "created"),
+            ("run-nonsense", "who_knows"),
+            ("run-running", "running"),
+        ] {
+            conn.execute(insert, rusqlite::params![id, status]).unwrap();
+        }
+
+        assert_eq!(apply_migrations(&conn).unwrap(), LATEST_VERSION);
+
+        let status_of = |id: &str| -> String {
+            conn.query_row(
+                "SELECT status FROM optimizer_runs WHERE id = ?1",
+                [id],
+                |row| row.get(0),
+            )
+            .unwrap()
+        };
+        assert_eq!(status_of("run-succeeded"), "completed");
+        assert_eq!(status_of("run-canceled"), "cancelled");
+        assert_eq!(status_of("run-done"), "failed");
+        assert_eq!(status_of("run-error"), "failed");
+        assert_eq!(status_of("run-created"), "queued");
+        assert_eq!(status_of("run-running"), "running");
+        // A word from no known producer is recorded as failed rather than left
+        // to abort the next write.
+        assert_eq!(status_of("run-nonsense"), "failed");
+
+        let inserted = conn.execute(insert, rusqlite::params!["run-new", "succeeded"]);
+        assert!(
+            inserted.is_err(),
+            "the column must refuse a status outside OptimizerRunStatus"
+        );
+        let updated = conn.execute(
+            "UPDATE optimizer_runs SET status = 'terminated' WHERE id = 'run-running'",
+            [],
+        );
+        assert!(updated.is_err(), "an update must be refused the same way");
+        assert_eq!(status_of("run-running"), "running");
+
+        // Every canonical spelling is still writable.
+        for status in [
+            "queued",
+            "validating",
+            "provisioning",
+            "starting",
+            "waiting_for_viewer",
+            "running",
+            "paused",
+            "cancelling",
+            "env_unreachable",
+            "degraded",
+            "completed",
+            "failed",
+            "failed_evidence",
+            "cancelled",
+            "interrupted",
+            "infrastructure_lost",
+            "cap_reached",
+        ] {
+            conn.execute(
+                "UPDATE optimizer_runs SET status = ?1 WHERE id = 'run-running'",
+                [status],
+            )
+            .unwrap_or_else(|error| panic!("{status} must be writable: {error}"));
+        }
+    }
+
     fn seed_at_version(version: usize) -> Connection {
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch(
