@@ -79,6 +79,8 @@ struct EvalSpec {
     evaluation_plan_ref: String,
     harness: String,
     policy_config: String,
+    provider: String,
+    model: String,
     concurrency: usize,
     train: Vec<i64>,
     heldout: Vec<i64>,
@@ -101,6 +103,8 @@ impl EvalSpec {
             evaluation_plan_ref: format!("{}_eval.v1", recipe.family),
             harness: recipe.harness.clone(),
             policy_config: recipe.policy_config.clone(),
+            provider: recipe.provider.clone(),
+            model: recipe.model.clone(),
             concurrency: recipe.concurrency,
             train: recipe.train_seeds.clone(),
             heldout: recipe.heldout_seeds.clone(),
@@ -120,6 +124,8 @@ impl EvalSpec {
             evaluation_plan_ref: "banking77_eval.v1".into(),
             harness: "desktop_eval".into(),
             policy_config: "banking77_gpt_4_1_nano".into(),
+            provider: "openrouter".into(),
+            model: "openai/gpt-4.1-nano".into(),
             concurrency: 10,
             train: (0..10).collect(),
             heldout: Vec::new(),
@@ -139,6 +145,8 @@ impl EvalSpec {
             evaluation_plan_ref: "healthbench_eval.v1".into(),
             harness: "chat_completion".into(),
             policy_config: "openai_gpt41_mini".into(),
+            provider: "openai".into(),
+            model: "gpt-4.1-mini-2025-04-14".into(),
             concurrency: 2,
             train: vec![0, 1],
             heldout: vec![100, 101],
@@ -162,27 +170,22 @@ impl EvalSpec {
     }
 
     fn policy_config_body(&self, openai_base_url: Option<&str>) -> Option<Value> {
-        let config = if self.family == "banking77" {
-            json!({
-                "provider": "openrouter",
-                "model": "openai/gpt-4.1-nano",
-                "api_key_env": "OPENROUTER_API_KEY",
-                "base_url": "https://openrouter.ai/api/v1",
-                "temperature": 0,
-                "max_tokens": 32,
-            })
-        } else if self.family == "healthbench" {
-            let base_url = openai_base_url?;
-            json!({
-                "provider": "openai",
-                "model": "gpt-4.1-mini-2025-04-14",
-                "api_key_env": "OPENAI_API_KEY",
-                "base_url": base_url,
-                "max_tokens": 1536,
-            })
-        } else {
+        if self.policy_config.is_empty() {
             return None;
-        };
+        }
+        let mut config = json!({
+            "provider": self.provider,
+            "model": self.model,
+            "temperature": 0,
+        });
+        if let Some(base_url) = openai_base_url {
+            config
+                .as_object_mut()?
+                .insert("base_url".into(), json!(base_url));
+            config
+                .as_object_mut()?
+                .insert("api_key_env".into(), json!("OPENAI_API_KEY"));
+        }
         Some(json!({
             "config_id": self.policy_config,
             "harness": self.harness,
@@ -874,36 +877,38 @@ fn secrets_proxy_error(code: &str, message: &str) -> anyhow::Error {
     )
 }
 
-fn healthbench_provider_policy(spec: &EvalSpec) -> crate::secrets::SecretsUsePolicy {
+fn container_proxy_policy(spec: &EvalSpec) -> crate::secrets::SecretsUsePolicy {
     let mut policy = crate::secrets::SecretsUsePolicy::default();
     policy.operations = vec!["chat.completions.create".into()];
-    policy.models = vec!["gpt-4.1-mini-2025-04-14".into()];
-    policy.max_cost_usd = COST_CEILING_USD;
+    if !spec.model.is_empty() {
+        policy.models = vec![spec.model.clone()];
+    }
+    policy.max_cost_usd = spec.cost_ceiling_usd;
     let trials = spec.examples().len() as u64;
     policy.max_calls = trials.saturating_mul(64).clamp(128, u32::MAX as u64) as u32;
     policy
 }
 
-fn healthbench_container_openai_base(run_id: &str, spec: &EvalSpec) -> Result<String> {
+fn container_openai_proxy_base(run_id: &str, spec: &EvalSpec) -> Result<String> {
     let secrets = crate::secrets::live().ok_or_else(|| {
         secrets_proxy_error(
             "secrets_proxy_unavailable",
-            "HealthBench requires the Workshop secrets proxy",
+            "this recipe requires the Workshop secrets proxy",
         )
     })?;
     let env = secrets
         .workload_env(
-            "openai",
+            spec.provider.as_str(),
             run_id,
             spec.recipe_id.as_str(),
-            healthbench_provider_policy(spec),
+            container_proxy_policy(spec),
             "eval",
         )
         .map_err(|error| secrets_proxy_error("secrets_proxy_denied", &error.to_string()))?;
     let base = env.container_openai_base_url.clone().ok_or_else(|| {
         secrets_proxy_error(
             "secrets_proxy_route_unbound",
-            "Workshop did not bind an OpenAI proxy base URL for HealthBench",
+            "Workshop did not bind a container-reachable provider proxy base URL",
         )
     })?;
     if base.contains("api.openai.com")
@@ -913,7 +918,7 @@ fn healthbench_container_openai_base(run_id: &str, spec: &EvalSpec) -> Result<St
     {
         return Err(secrets_proxy_error(
             "secrets_proxy_unreachable",
-            "HealthBench policy base_url must be the container-reachable Workshop proxy",
+            "policy base_url must be the container-reachable Workshop proxy",
         ));
     }
     Ok(base)
@@ -927,29 +932,16 @@ async fn register_policy_pin(
     run_id: &str,
 ) -> Result<Value> {
     let pin = json!({ "harness": spec.harness, "config": spec.policy_config });
-    // Banking77 owns an immutable, already-registered policy. Its public
-    // service advertises that exact identity and intentionally has no mutable
-    // `/policy-configs` route. Requiring a registration POST here made a
-    // healthy packaged run fail with a guaranteed 404 before its first
-    // rollout. Verify the advertised identity instead; do not pretend a
-    // mutable route exists and do not accept a similarly named substitute.
-    if spec.family == "banking77" {
-        let advertised = container_info
-            .pointer("/capabilities/policy_refs")
-            .and_then(Value::as_array)
-            .into_iter()
-            .flatten()
-            .any(|entry| {
-                entry.get("harness").and_then(Value::as_str) == Some(spec.harness.as_str())
-                    && entry.get("config").and_then(Value::as_str) == Some(spec.policy_config.as_str())
-            });
-        if !advertised {
-            bail!(
-                "container does not advertise the exact immutable policy {}/{}",
-                spec.harness,
-                spec.policy_config
-            );
-        }
+    let advertised = container_info
+        .pointer("/capabilities/policy_refs")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .any(|entry| {
+            entry.get("harness").and_then(Value::as_str) == Some(spec.harness.as_str())
+                && entry.get("config").and_then(Value::as_str) == Some(spec.policy_config.as_str())
+        });
+    if !spec.requires_credential_advertisement() && advertised {
         return Ok(json!({
             "harness": spec.harness,
             "config": spec.policy_config,
@@ -958,16 +950,16 @@ async fn register_policy_pin(
             "authority": "container_advertisement",
         }));
     }
-    let openai_base = if spec.family == "healthbench" {
-        Some(healthbench_container_openai_base(run_id, spec)?)
+    let openai_base = if spec.requires_credential_advertisement() {
+        Some(container_openai_proxy_base(run_id, spec)?)
     } else {
         None
     };
     let Some(body) = spec.policy_config_body(openai_base.as_deref()) else {
-        if spec.family == "healthbench" {
+        if spec.requires_credential_advertisement() {
             return Err(secrets_proxy_error(
                 "secrets_proxy_route_unbound",
-                "HealthBench requires a Workshop proxy base_url; refusing api.openai.com",
+                "this recipe requires a Workshop proxy base_url; refusing a public provider origin",
             ));
         }
         return Ok(pin);
