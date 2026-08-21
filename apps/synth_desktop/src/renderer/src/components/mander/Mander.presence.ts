@@ -12,7 +12,7 @@ export function sessionHasOpenTools(chat: LocalChat | null | undefined): boolean
 
 function lineIsOpenTool(line: LocalActivityLine): boolean {
 	if (line.toolStatus === "running") return true;
-	if (line.toolStatus === "completed" || line.toolStatus === "failed") return false;
+	if (line.toolStatus === "completed" || line.toolStatus === "failed" || line.toolStatus === "cancelled") return false;
 	return line.kind === "command"
 		|| line.kind === "file_read"
 		|| line.kind === "file_write"

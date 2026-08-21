@@ -338,7 +338,7 @@ function ActivityLine({
 				<span className="tool-activity-body">
 					<code className="mcp-activity-name">{line.label}</code>
 					{line.detail ? <span className="tool-activity-detail">{line.detail}</span> : null}
-					<span className={`tool-status tool-status-${line.toolStatus}`}>{line.toolStatus === "running" ? "Running" : line.toolStatus === "completed" ? "Completed" : "Failed"}</span>
+					<span className={`tool-status tool-status-${line.toolStatus}`}>{line.toolStatus === "running" ? "Running" : line.toolStatus === "completed" ? "Completed" : line.toolStatus === "cancelled" ? "Cancelled" : "Failed"}</span>
 				</span>
 				{duration}
 				{onToggleVisual ? (

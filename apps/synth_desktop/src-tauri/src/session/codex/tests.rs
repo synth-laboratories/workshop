@@ -617,19 +617,31 @@ async fn interrupt_terminates_non_cooperative_tool_tree_and_allows_a_new_turn() 
         .interrupt(app_handle.clone(), &request.session_id)
         .await
         .unwrap();
-    wait_for_record_status(
-        &manager,
-        &request.session_id,
-        SessionStatus::Interrupted.as_str(),
-    )
-    .await;
-    wait_for_run_status(&core, &first_turn, RunStatus::Interrupted.as_str()).await;
+    wait_for_record_status(&manager, &request.session_id, SessionStatus::Ready.as_str()).await;
+    wait_for_run_status(&core, &first_turn, RunStatus::Cancelled.as_str()).await;
     let first_run = RunService::new(core.storage().database().clone())
         .get(first_turn.clone())
         .await
         .unwrap()
         .unwrap();
     assert_eq!(first_run.outcome.unwrap()["reason"], "operator_cancelled");
+    let cancelled = core
+        .journal()
+        .session_events_after(request.session_id.clone(), 0, 200)
+        .await
+        .unwrap()
+        .into_iter()
+        .filter(|event| {
+            event.kind == "turn/interrupted"
+                && event.payload["turnId"] == first_turn
+                && event.payload["reason"] == "operator_cancelled"
+                && event.payload["cancelledBy"] == "user"
+        })
+        .count();
+    assert_eq!(
+        cancelled, 1,
+        "Stop must journal one explicit user cancellation"
+    );
     assert!(!manager
         .sessions
         .read()
@@ -668,6 +680,15 @@ async fn interrupt_terminates_non_cooperative_tool_tree_and_allows_a_new_turn() 
         .turn_id
         .unwrap();
     assert_ne!(first_turn, second_turn);
+    let runs = RunService::new(core.storage().database().clone())
+        .list_for_session(request.session_id.clone(), 20)
+        .await
+        .unwrap();
+    assert_eq!(
+        runs.len(),
+        2,
+        "Stop + follow-up must create no duplicate run"
+    );
     manager.close(&request.session_id).await.unwrap();
 }
 

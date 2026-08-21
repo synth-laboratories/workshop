@@ -125,6 +125,46 @@ test("duplicate turn terminals after an assistant answer do not synthesize a fal
 	);
 });
 
+test("operator Stop is explicit, deduped, and a follow-up resumes normally", () => {
+	const events = [
+		event({ sequence: 1, eventKind: "message.created", payload: { messageId: "user-stop", role: "user", content: "start the long tool" } }),
+		event({ sequence: 2, eventKind: "run.started", payload: { runId: "turn-stop" } }),
+		event({ sequence: 3, eventKind: "message.completed", payload: { messageId: "partial-stop", role: "assistant", content: "I started the tool." } }),
+		event({ sequence: 4, eventKind: "run.cancelled", payload: { runId: "turn-stop", reason: "operator_cancelled", cancelledBy: "user" } }),
+		// Provider and durable projections may both deliver the same terminal.
+		event({ sequence: 5, eventKind: "run.cancelled", payload: { runId: "turn-stop", reason: "operator_cancelled", cancelledBy: "user" } }),
+		event({ sequence: 6, eventKind: "message.created", payload: { messageId: "user-resume", role: "user", content: "continue without that tool" } }),
+		event({ sequence: 7, eventKind: "run.started", payload: { runId: "turn-resume" } }),
+		event({ sequence: 8, eventKind: "message.completed", payload: { messageId: "answer-resume", role: "assistant", content: "Continued cleanly." } }),
+		event({ sequence: 9, eventKind: "run.completed", payload: { runId: "turn-resume" } })
+	];
+	assert.deepEqual(
+		eventsToMessages(events).map(({ role, body }) => ({ role, body })),
+		[
+			{ role: "user", body: "start the long tool" },
+			{ role: "assistant", body: "I started the tool." },
+			{ role: "system", body: "You stopped this response." },
+			{ role: "user", body: "continue without that tool" },
+			{ role: "assistant", body: "Continued cleanly." }
+		]
+	);
+});
+
+test("operator Stop marks an in-flight transcript tool cancelled", () => {
+	const activity = eventsToLocalActivity([
+		event({ sequence: 1, eventKind: "run.started", payload: { runId: "turn-stop" } }),
+		event({
+			sequence: 2,
+			eventKind: "item/started",
+			payload: { item: { type: "commandExecution", id: "cmd-stop", command: "long-running-command" } }
+		}),
+		event({ sequence: 3, eventKind: "run.cancelled", payload: { runId: "turn-stop", reason: "operator_cancelled", cancelledBy: "user" } })
+	], []);
+	const command = Object.values(activity).flat().find((line) => line.kind === "command");
+	assert.equal(command.toolStatus, "cancelled");
+	assert.equal(Object.values(activity).flat().filter((line) => line.kind === "run_summary").length, 1);
+});
+
 test("replayed terminal envelopes do not duplicate or age a run summary", () => {
 	const activity = eventsToLocalActivity([
 		event({ sequence: 1, eventKind: "run.started", payload: { runId: "turn-1" }, createdAt: "2026-08-12T00:00:00.000Z" }),

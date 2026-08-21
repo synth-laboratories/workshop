@@ -394,6 +394,17 @@ export function eventsToMessages(events: RuntimeEvent[]): ChatMessage[] {
 			// must not manufacture a contradictory "no response" message.
 			if (terminalSeenForTurn) continue;
 			terminalSeenForTurn = true;
+			const userCancelled = event.eventKind === "run.cancelled"
+				&& (payload.reason === "operator_cancelled" || payload.cancelledBy === "user");
+			if (userCancelled) {
+				const message = "You stopped this response.";
+				const previous = order.length ? byId.get(order[order.length - 1]) : undefined;
+				if (previous?.role !== "system" || previous.body !== message) {
+					const id = `terminal-${event.sequence}`;
+					order.push(id);
+					byId.set(id, { id, role: "system", body: message, at: event.createdAt });
+				}
+			}
 			// A typed final agent item can be the terminal run payload when the
 			// app-server closes immediately after its final answer. Preserve that
 			// authoritative content as an assistant message before deciding that
@@ -407,7 +418,7 @@ export function eventsToMessages(events: RuntimeEvent[]): ChatMessage[] {
 					producedAssistantForTurn = true;
 				}
 			}
-			if (!producedAssistantForTurn && !compactedDuringTurn) {
+			if (!userCancelled && !producedAssistantForTurn && !compactedDuringTurn) {
 				const detail = terminalTurnDetail(event.payload ?? {});
 				const providerLimitMessage = providerLimitMessageFor(event.payload ?? {});
 				const failureDetail = detail ? `: ${detail.replace(/[.!?]+$/, "")}.` : ".";
@@ -1399,6 +1410,11 @@ export function eventsToLocalActivity(
 			const key = runIdentity(payload) ?? activeRunKey;
 			if (key && completedRunKeys.has(key)) continue;
 			const actions = actionCountLabel(runActions);
+			if (event.eventKind === "run.cancelled") {
+				for (const line of shownToolLines.values()) {
+					if (line.toolStatus === "running") line.toolStatus = "cancelled";
+				}
+			}
 			const outcome = event.eventKind === "run.completed" ? "Worked" : event.eventKind === "run.failed" ? "Stopped with an error after" : "Stopped after";
 			(byMessage[current] ??= []).unshift({
 				id: `run-summary-${event.sequence}`,
