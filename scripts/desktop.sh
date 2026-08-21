@@ -218,7 +218,7 @@ build_desktop() {
 	# so overlap it with the real packaging compilation instead of serializing it.
 	run_renderer_typecheck &
 	type_pid=$!
-	(cd "$ROOT/apps/synth_desktop" && npx tauri build --bundles app) || build_status=$?
+	(cd "$ROOT/apps/synth_desktop" && npx tauri build --bundles app --config src-tauri/tauri.package.json) || build_status=$?
 	wait "$type_pid" || type_status=$?
 	[[ "$type_status" -eq 0 && "$build_status" -eq 0 ]]
 }

@@ -58,6 +58,11 @@ WORKSPACE="$INSTANCE_ROOT/workspace"
 GENERATED_ROOT="$INSTANCE_ROOT/generated"
 TARGET_ROOT="$INSTANCE_ROOT/build/target"
 CONFIG="$GENERATED_ROOT/tauri.instance.json"
+# Packaged resources (cookbooks, Computer Use helper, visuals) live in the
+# packaging overlay, never in the base tauri.conf.json, so `cargo check` and
+# library tests need no staged resources. The overlay merges first; the
+# instance overlay adds its own resources on top.
+PACKAGE_CONFIG="src-tauri/tauri.package.json"
 MANIFEST="$INSTANCE_ROOT/instance.json"
 ICON_PNG="$GENERATED_ROOT/icon.png"
 ICON_ICNS="$GENERATED_ROOT/icon.icns"
@@ -939,7 +944,7 @@ PY
     # local CUA loop.
     # Instance builds carry the QA control plane; release artifacts never
     # enable this feature.
-    npx tauri build --debug --features eval-driver --bundles app --config "$CONFIG"
+    npx tauri build --debug --features eval-driver --bundles app --config "$PACKAGE_CONFIG" --config "$CONFIG"
     local app_bundle="$CARGO_TARGET_DIR/debug/bundle/macos/$APP_TITLE.app"
     local app_executable="$CUA_EXE"
     if [[ ! -x "$app_executable" ]]; then
@@ -963,7 +968,7 @@ PY
     cd "$INSTANCE_ROOT"
     exec "$app_executable"
   fi
-  exec npx tauri dev --features eval-driver --config "$CONFIG"
+  exec npx tauri dev --features eval-driver --config "$PACKAGE_CONFIG" --config "$CONFIG"
 }
 
 clean_instance() {

@@ -6,7 +6,7 @@
  * documenting debt; flip to assert absence when the design is fixed.
  */
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
@@ -194,4 +194,66 @@ test("Data Inspect persists trace identity and digest binding without projection
 	// archive stays the source and the projection is resolved on demand.
 	assert.doesNotMatch(inventory, /payload:\s*projection/);
 	assert.doesNotMatch(inspector, /payload:\s*projection/);
+});
+
+/**
+ * P0-2 lock — the renderer does not write a run status.
+ *
+ * `TrainingWorkspace` marked a run `failed` when its *poll* threw, and
+ * `TerminalPanel` marked a shell `failed` when its *stream* errored. Neither
+ * knew anything about the process; both produced a durable-looking terminal
+ * word from a transport problem. Transport state belongs in a `connection`
+ * field, and the durable status has exactly one writer: the host.
+ */
+test("components never write a terminal status themselves", () => {
+	const componentsDir = join(renderer, "components");
+	const offenders = [];
+	for (const name of readdirSync(componentsDir)) {
+		if (!name.endsWith(".tsx") && !name.endsWith(".ts")) continue;
+		const source = readFileSync(join(componentsDir, name), "utf8");
+		source.split("\n").forEach((line, index) => {
+			// Prose about the rule is not a violation of it.
+			const code = line.replace(/\/\*.*?\*\//g, "").split("//")[0];
+			if (/^\s*\*/.test(line)) return;
+			if (/status:\s*"(failed|cancelled|completed)"/.test(code)) {
+				offenders.push(`components/${name}:${index + 1}: ${line.trim().slice(0, 120)}`);
+			}
+		});
+	}
+	assert.deepEqual(
+		offenders,
+		[],
+		`the renderer must not write a terminal run status; use a renderer-local \`connection\` field:\n  ${offenders.join("\n  ")}`
+	);
+});
+
+/**
+ * P0-2 lock — one status vocabulary, and it comes from Rust.
+ *
+ * `normalizeRunStatus` used to accept nine spellings no producer ever emitted
+ * and read anything unrecognised as `running`, which is how a settled run kept
+ * a spinner turning. The map is now keyed by the generated `OptimizerRunStatus`
+ * union so `tsc` refuses a status Rust does not have — and refuses to omit one
+ * Rust adds.
+ */
+test("run status normalization is keyed by the generated Rust union", () => {
+	const types = read("runtime/runProgress/types.ts");
+	assert.match(
+		types,
+		/import type \{ OptimizerRunStatus \} from "\.\.\/\.\.\/generated\/protocol"/,
+		"the producer vocabulary must come from the generated bindings"
+	);
+	assert.match(
+		types,
+		/const PRODUCER_STATUS: Record<OptimizerRunStatus, RunProgressStatus>/,
+		"the map must be exhaustive over the generated union"
+	);
+	assert.match(types, /return producer === null \? "unknown" : PRODUCER_STATUS\[producer\]/);
+	for (const consumerOnly of ["terminated", "disconnected", "stalled", "prepared"]) {
+		assert.doesNotMatch(
+			types,
+			new RegExp(`"${consumerOnly}"`),
+			`${consumerOnly} is not a status any producer writes; it must not be normalized`
+		);
+	}
 });
