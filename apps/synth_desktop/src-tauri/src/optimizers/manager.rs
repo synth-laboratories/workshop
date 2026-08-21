@@ -47,7 +47,7 @@ pub const DEFAULT_RECIPE_SCHEMA_VERSION: &str = OPTIMIZERS_CONTRACT.recipe_schem
 /// `{package}-{official}`. Spelled out because `format!` is not const and ten
 /// call sites want `&'static str`; `algorithm_version_matches_the_contract`
 /// fails if it drifts from the table.
-pub const DEFAULT_ALGORITHM_VERSION: &str = "synth-optimizers-0.2.15";
+pub const DEFAULT_ALGORITHM_VERSION: &str = "synth-optimizers-0.2.16";
 /// Optimizer-family visuals bind this slot. `live` and `jobs` are refused.
 pub const OPTIMIZER_VISUAL_SLOT: &str = "optimizer_run";
 const MAX_CONCURRENT_GEPA_RECIPES: usize = 2;
@@ -1589,6 +1589,7 @@ fn launch_gepa_recipe_process(
         // Pin both processes to the same instance-owned directory instead of
         // relying on whichever user-global HOME the Desktop inherited.
         .env("GEPA_HOME", optimizer_gepa_home(home))
+        .env("SYNTH_WORKSHOP_INSTANCE_ID", workshop_instance_id())
         .env("OPENAI_API_KEY", crate::secrets::API_KEY_SENTINEL);
     if let Some(base_url) = openai_base_url {
         command.env("OPENAI_BASE_URL", base_url);
@@ -1728,6 +1729,7 @@ async fn launch_sidecar_upstream(
         .args(["--bind", &addr.to_string()])
         .args(["--instance-id", crate::instance::boot_epoch()])
         .env("GEPA_HOME", &gepa_home)
+        .env("SYNTH_WORKSHOP_INSTANCE_ID", workshop_instance_id())
         .env("SYNTH_OPTIMIZER_API_KEY", &api_key)
         .stdin(Stdio::null())
         .stdout(Stdio::from(log.try_clone()?))
@@ -1871,7 +1873,7 @@ fn enforce_version_floor(version: &str) -> Result<()> {
         return Ok(());
     }
     bail!(
-        "optimizer sidecar `{version}` is older than the supported floor \
+        "version_incompatible: optimizer sidecar `{version}` is older than the supported floor \
          `{floor}`; install {floor} or newer",
         floor = OPTIMIZERS_CONTRACT.min_supported
     )
@@ -2173,7 +2175,7 @@ fn write_env_sh(
     api_key: &str,
     base_url: &str,
     version: &str,
-    epoch: &str,
+    _epoch: &str,
 ) -> Result<()> {
     fs::create_dir_all(home)?;
     let written_at = chrono::Utc::now().to_rfc3339();
@@ -2184,7 +2186,6 @@ fn write_env_sh(
          export SYNTH_OPTIMIZER_BASE_URL=\"{base_url}\"\n\
          export SYNTH_OPTIMIZER_API_KEY=\"{api_key}\"\n\
          export SYNTH_OPTIMIZER_VERSION=\"{version}\"\n\
-         export SYNTH_OPTIMIZER_RUNTIME_EPOCH=\"{epoch}\"\n\
          export SYNTH_OPTIMIZER_WRITTEN_AT=\"{written_at}\"\n"
     );
     write_secret(&home.join("env.sh"), body.as_bytes(), false)
@@ -2194,6 +2195,12 @@ fn write_env_sh(
 /// never outlives the service it describes.
 fn clear_env_sh(home: &Path) {
     let _ = fs::remove_file(home.join("env.sh"));
+}
+
+fn workshop_instance_id() -> String {
+    let instance = std::env::var(crate::instance::INSTANCE_ENV)
+        .unwrap_or_else(|_| "canonical".into());
+    format!("{instance}:{}", crate::instance::boot_epoch())
 }
 
 fn runtime_lease_path(home: &Path) -> PathBuf {
@@ -3263,7 +3270,6 @@ mod tests {
         assert!(started.base_url.is_some());
         let env_path = mgr.home().join("env.sh");
         let env_body = fs::read_to_string(&env_path).unwrap();
-        assert!(env_body.contains("SYNTH_OPTIMIZER_RUNTIME_EPOCH"));
         assert!(env_body.contains("SYNTH_OPTIMIZER_WRITTEN_AT"));
         #[cfg(unix)]
         {
