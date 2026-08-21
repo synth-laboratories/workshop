@@ -513,6 +513,11 @@ class ResponsesService:
             "queueCapacity": queue_state["capacity"],
             "active": active_payload,
             "rolling": self.coordinator.runner.telemetry.snapshot(),
+            # Per-policy decode speed, so a picker can show what a LoRA costs
+            # instead of implying every model id runs at one rate.
+            "policies": self.coordinator.runner.telemetry.policy_snapshot(
+                self.policies.default_model
+            ),
             # Apple GPU utilization counters are not reliably available, and
             # deriving one from process CPU would be a fabrication.
             "gpuUtilization": None,

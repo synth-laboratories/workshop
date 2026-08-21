@@ -186,3 +186,61 @@ class PolicyHttpTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PolicyTelemetryTests(unittest.TestCase):
+    """Per-policy decode speed, and the rules about when not to show it."""
+
+    @staticmethod
+    def _record(telemetry, policy: str, latencies: list[float]) -> None:
+        from laguna_daemon.responses_api.telemetry import GenerationTiming
+
+        timing = GenerationTiming(generation_id="gen", queued_at=0.0, policy=policy)
+        timing.decode_latencies = latencies
+        telemetry.record_completed(timing, 1000.0)
+
+    def _telemetry(self):
+        from laguna_daemon.responses_api.telemetry import InferenceTelemetry
+
+        return InferenceTelemetry()
+
+    def test_a_thin_sample_reports_nothing_rather_than_a_confident_number(self) -> None:
+        telemetry = self._telemetry()
+        self._record(telemetry, BASE, [0.02] * 10)
+        row = telemetry.policy_snapshot(BASE)["policies"][BASE]
+        self.assertIsNone(row["tokensPerSecondP10"])
+        self.assertEqual(row["tokenSamples"], 10)
+
+    def test_decode_speed_is_reported_per_policy(self) -> None:
+        telemetry = self._telemetry()
+        self._record(telemetry, BASE, [0.02] * 500)
+        self._record(telemetry, FT, [0.025] * 500)
+        snapshot = telemetry.policy_snapshot(BASE)
+        self.assertEqual(snapshot["policies"][BASE]["tokensPerSecondP10"], 50.0)
+        self.assertEqual(snapshot["policies"][FT]["tokensPerSecondP10"], 40.0)
+        self.assertIsNone(snapshot["policies"][BASE]["deltaVsBasePct"])
+        self.assertEqual(snapshot["policies"][FT]["deltaVsBasePct"], -20.0)
+        self.assertTrue(snapshot["policies"][FT]["deltaIsResolvable"])
+
+    def test_a_delta_under_the_noise_floor_is_not_resolvable(self) -> None:
+        telemetry = self._telemetry()
+        # One half of the base samples is much slower than the other, so this
+        # policy disagrees with itself by more than the two policies differ.
+        self._record(telemetry, BASE, [0.02] * 300 + [0.04] * 300)
+        self._record(telemetry, FT, [0.0201] * 300 + [0.0402] * 300)
+        row = telemetry.policy_snapshot(BASE)["policies"][FT]
+        self.assertIsNotNone(row["deltaVsBasePct"])
+        self.assertGreater(row["measurementFloorPct"], abs(row["deltaVsBasePct"]))
+        self.assertFalse(row["deltaIsResolvable"])
+
+    def test_metrics_omit_a_policy_that_was_never_measured(self) -> None:
+        from laguna_daemon.app import _policy_metric_lines
+
+        telemetry = self._telemetry()
+        self._record(telemetry, BASE, [0.02] * 500)
+        self._record(telemetry, FT, [0.02] * 5)
+        lines = _policy_metric_lines(telemetry.policy_snapshot(BASE))
+        rendered = "\n".join(lines)
+        self.assertIn(f'policy="{BASE}"', rendered)
+        # A zero here would read as "infinitely slow" on a dashboard.
+        self.assertNotIn(FT, rendered)

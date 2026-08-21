@@ -111,6 +111,14 @@ class GenerationTiming:
         return round((end - self.queued_at) * 1000, 3)
 
 
+#: Per-token samples retained per policy. Large enough that a low percentile
+#: is stable, small enough that several policies stay cheap to hold.
+POLICY_SAMPLE_WINDOW = 4096
+#: Below this many tokens a percentile is not reported at all: a confident
+#: number from six samples is worse than an honest blank.
+POLICY_MIN_SAMPLES = 200
+
+
 @dataclass(slots=True)
 class InferenceTelemetry:
     """Bounded rolling aggregates across every wire surface.
@@ -136,6 +144,9 @@ class InferenceTelemetry:
     _prefill_samples: deque[tuple[int, int, float | None, float | None]] = field(
         default_factory=lambda: deque(maxlen=256)
     )
+    #: Per-token decode latencies keyed by policy. Throughput is only
+    #: comparable within a policy, and only at a low percentile.
+    _policy_latencies: dict[str, deque[float]] = field(default_factory=dict)
 
     @staticmethod
     def _prefill_tps(timing: GenerationTiming) -> float | None:
@@ -167,6 +178,11 @@ class InferenceTelemetry:
         decode = timing.decode_tokens_per_second()
         if decode is not None:
             self._decode_tps.append(decode)
+        if timing.policy and timing.decode_latencies:
+            samples = self._policy_latencies.setdefault(
+                timing.policy, deque(maxlen=POLICY_SAMPLE_WINDOW)
+            )
+            samples.extend(timing.decode_latencies)
         self._prefill_samples.append(
             (
                 timing.prompt_tokens,
@@ -204,6 +220,70 @@ class InferenceTelemetry:
                 "prefill_tps_p50": percentile(rates, 0.50),
             }
         return histogram
+
+    @staticmethod
+    def _rate(latencies: list[float], quantile: float) -> float | None:
+        if not latencies:
+            return None
+        ordered = sorted(latencies)
+        index = min(int(quantile * len(ordered)), len(ordered) - 1)
+        value = ordered[index]
+        return round(1.0 / value, 3) if value > 0 else None
+
+    def policy_snapshot(self, base_model: str | None = None) -> dict[str, Any]:
+        """Per-policy decode speed, with the floor under which it means nothing.
+
+        Two halves of a single policy's own samples are compared against each
+        other. They describe identical work, so whatever they disagree by is
+        measurement noise — and a cross-policy delta smaller than that is not
+        evidence of anything. A surface that shows a number has to be able to
+        say when it should not.
+        """
+        policies: dict[str, Any] = {}
+        for model_id, samples in self._policy_latencies.items():
+            values = list(samples)
+            enough = len(values) >= POLICY_MIN_SAMPLES
+            floor = None
+            if len(values) >= 2 * POLICY_MIN_SAMPLES:
+                half = len(values) // 2
+                first = self._rate(values[:half], 0.10)
+                second = self._rate(values[half:], 0.10)
+                if first and second:
+                    floor = round(abs(second / first - 1) * 100, 2)
+            policies[model_id] = {
+                "tokensPerSecondP10": self._rate(values, 0.10) if enough else None,
+                "tokensPerSecondBest": self._rate(values, 0.0) if enough else None,
+                "tokensPerSecondMedian": self._rate(values, 0.50) if enough else None,
+                "tokenSamples": len(values),
+                "measurementFloorPct": floor,
+            }
+        base = policies.get(base_model or "") if base_model else None
+        base_rate = base["tokensPerSecondP10"] if base else None
+        for model_id, row in policies.items():
+            rate = row["tokensPerSecondP10"]
+            if model_id == base_model or not base_rate or not rate:
+                row["deltaVsBasePct"] = None
+                row["deltaIsResolvable"] = False
+                continue
+            delta = (rate / base_rate - 1) * 100
+            row["deltaVsBasePct"] = round(delta, 2)
+            row_floor = row["measurementFloorPct"]
+            base_floor = base["measurementFloorPct"] if base else None
+            if row_floor is None or base_floor is None:
+                # Without a floor from both arms there is nothing to judge the
+                # delta against, so it is not claimed to be resolvable.
+                row["deltaIsResolvable"] = False
+            else:
+                # Below the floor the sign is as likely to be noise as signal,
+                # so the surface is told not to render it rather than left to
+                # guess. A stable measurement has a floor near zero and stays
+                # resolvable, which the previous `floor > 0` test denied it.
+                row["deltaIsResolvable"] = abs(delta) > max(row_floor, base_floor)
+        return {
+            "baseModel": base_model,
+            "minimumSamples": POLICY_MIN_SAMPLES,
+            "policies": policies,
+        }
 
     def record_failed(self) -> None:
         self.requests_failed += 1

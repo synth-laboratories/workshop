@@ -71,6 +71,26 @@ class DisconnectAwareStreamingResponse(StreamingResponse):
             await self.background()
 
 
+def _policy_metric_lines(policies: dict[str, Any]) -> list[str]:
+    """Decode speed labelled by policy; unmeasured policies emit nothing.
+
+    A policy without enough samples is absent rather than zero: a zero here
+    would read as "this policy is infinitely slow" on any dashboard.
+    """
+    rows = policies.get("policies") or {}
+    lines = [
+        "# HELP laguna_policy_decode_tokens_per_second Decode speed at the p10 latency.",
+        "# TYPE laguna_policy_decode_tokens_per_second gauge",
+    ]
+    for model_id, row in sorted(rows.items()):
+        rate = row.get("tokensPerSecondP10")
+        if rate is None:
+            continue
+        label = str(model_id).replace("\\", "\\\\").replace('"', '\\"')
+        lines.append(f'laguna_policy_decode_tokens_per_second{{policy="{label}"}} {rate}')
+    return lines
+
+
 def _openai_error(status: int, message: str) -> JSONResponse:
     return JSONResponse(
         status_code=status,
@@ -598,6 +618,7 @@ def build_app(config: LagunaConfig | None = None) -> FastAPI:
             "# TYPE laguna_tokens_total counter",
             f'laguna_tokens_total{{kind="input"}} {rolling["inputTokens"]}',
             f'laguna_tokens_total{{kind="output"}} {rolling["outputTokens"]}',
+            *_policy_metric_lines(snapshot.get("policies") or {}),
             f'laguna_tokens_total{{kind="cached"}} {rolling["cachedTokens"]}',
         ]
         # An unmeasured percentile is omitted rather than exported as zero.

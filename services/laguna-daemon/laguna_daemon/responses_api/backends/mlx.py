@@ -1241,6 +1241,17 @@ class NativeMlxBackend:
                     if timing.first_token_at is None:
                         timing.first_token_at = sampled_at
                         timing.phase = "decode"
+                    elif timing.last_token_at is not None:
+                        # Per-token decode latency, one sample per token the
+                        # chunk carried. Aggregates take a low percentile of
+                        # these rather than a mean: on a contended machine a
+                        # mean measures the scheduler, while the fastest tokens
+                        # approximate uncontended speed. The first interval is
+                        # skipped because it carries prefill.
+                        produced = max(int(output_tokens) - timing.output_tokens, 0)
+                        span = sampled_at - timing.last_token_at
+                        if produced > 0 and span > 0:
+                            timing.decode_latencies.extend([span / produced] * produced)
                     timing.last_token_at = sampled_at
                     timing.output_tokens = int(output_tokens)
                     timing.prompt_tokens = int(prompt_tokens) or timing.prompt_tokens
