@@ -17,8 +17,11 @@ the Optimizers catalog and Tauri/MCP. There is no fixture catalog.
 ## Runtime loading
 
 `laguna_set_adapter` resolves a catalog id, refuses non-Laguna bases, and
-reloads the daemon with `--adapter-path` (or clears it for the base model).
-Failed reloads keep the previous known-good adapter and surface an error.
+POSTs `{"adapter_path": …}` to `/v1/synth/models/{model}/load` (or `null` for
+the base model). The daemon is not restarted and there is no `--adapter-path`
+flag: `NativeMlxBackend.set_adapter` records the new path and releases the
+resident weights, so the next turn pays a cold load. Failed reloads keep the
+previous known-good adapter and surface an error.
 Changing the picker in a Laguna chat reloads in place; it does not start a
 new conversation.
 
