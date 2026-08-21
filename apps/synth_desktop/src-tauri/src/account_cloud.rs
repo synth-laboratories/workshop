@@ -86,7 +86,7 @@ pub struct CloudPlan {
     pub display_name: String,
     pub state: String,
     #[serde(default)]
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = specta_typescript::Number)]
     pub price_cents: i64,
     #[serde(default)]
     pub renews_at: Option<String>,
@@ -99,13 +99,13 @@ pub struct CloudAllowance {
     /// `None` means the backend does not meter this account in dollars. The UI
     /// must then show no dollar figure at all.
     #[serde(default)]
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = specta_typescript::Number)]
     pub limit_cents: Option<i64>,
     #[serde(default)]
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = specta_typescript::Number)]
     pub used_cents: Option<i64>,
     #[serde(default)]
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = specta_typescript::Number)]
     pub remaining_cents: Option<i64>,
     #[serde(default)]
     pub resets_at: Option<String>,
@@ -116,19 +116,19 @@ pub struct CloudAllowance {
 #[derive(Clone, Debug, Default, Deserialize, Serialize, PartialEq, specta::Type)]
 pub struct CloudUsageWindow {
     #[serde(default)]
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = specta_typescript::Number)]
     pub events: i64,
     #[serde(default)]
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = specta_typescript::Number)]
     pub billed_cents: i64,
     #[serde(default)]
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = specta_typescript::Number)]
     pub nominal_cents: i64,
     #[serde(default)]
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = specta_typescript::Number)]
     pub tokens: i64,
     #[serde(default)]
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = specta_typescript::Number)]
     pub runtime_seconds: i64,
 }
 
@@ -156,9 +156,9 @@ pub struct CloudBillingActions {
 pub struct CloudPlanOption {
     pub tier: String,
     pub display_name: String,
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = specta_typescript::Number)]
     pub price_cents: i64,
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = specta_typescript::Number)]
     pub monthly_allowance_cents: i64,
     #[serde(default)]
     pub interval: String,

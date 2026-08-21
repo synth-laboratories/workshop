@@ -12,13 +12,13 @@ pub struct TemplateReadinessContract {
     #[serde(default)]
     pub reject_transport_states: Vec<String>,
     #[serde(default)]
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = specta_typescript::Number)]
     pub minimum_rollout_count: u64,
     #[serde(default)]
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = specta_typescript::Number)]
     pub minimum_rendered_frame_count: u64,
     #[serde(default)]
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = specta_typescript::Number)]
     pub minimum_semantic_event_count: u64,
     #[serde(default)]
     pub require_terminal: bool,

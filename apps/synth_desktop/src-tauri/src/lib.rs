@@ -1811,7 +1811,7 @@ struct DiagnosticReportRequest {
     #[serde(default)]
     visual_id: Option<String>,
     #[serde(default)]
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = specta_typescript::Number)]
     visual_revision: Option<i64>,
     #[serde(default)]
     container_id: Option<String>,
@@ -3005,19 +3005,19 @@ fn synth_config_get() -> Result<BackendSettings, AppError> {
 }
 
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize, specta::Type)]
-#[serde(rename_all(serialize = "camelCase", deserialize = "snake_case"))]
+#[serde(rename_all = "camelCase")]
 struct ModelPerformanceMetric {
     model_id: String,
     provider: String,
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = specta_typescript::Number)]
     sample_count: u64,
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = specta_typescript::Number)]
     input_tokens: u64,
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = specta_typescript::Number)]
     cached_input_tokens: u64,
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = specta_typescript::Number)]
     output_tokens: u64,
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = specta_typescript::Number)]
     total_tokens: u64,
     output_tps_p50: f64,
     output_tps_p95: f64,
@@ -3028,7 +3028,7 @@ struct ModelPerformanceMetric {
 }
 
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize, specta::Type)]
-#[serde(rename_all(serialize = "camelCase", deserialize = "snake_case"))]
+#[serde(rename_all = "camelCase")]
 struct ModelPerformanceSnapshot {
     window_minutes: u16,
     generated_at: String,

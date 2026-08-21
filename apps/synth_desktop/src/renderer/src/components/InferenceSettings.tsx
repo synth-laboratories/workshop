@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { COMMANDS, invokeCommand } from "../bridge";
-import type { LagunaStatus } from "../bridge";
+import { fromGenerated, spectaCommands } from "../bridge";
 
 /**
  * Editor for the Laguna daemon's runtime settings (`/v1/synth/settings`).
@@ -141,8 +140,8 @@ function isTauri(): boolean {
 export function defaultSettingsTransport(): SettingsTransport {
 	if (!isTauri()) return unavailableTransport;
 	tauriTransport ??= {
-		snapshot: () => invokeCommand<SettingsExchange>(COMMANDS.LAGUNA_SETTINGS_SNAPSHOT),
-		update: (patch) => invokeCommand<SettingsExchange>(COMMANDS.LAGUNA_SETTINGS_UPDATE, { patch })
+		snapshot: () => fromGenerated(spectaCommands.lagunaSettingsSnapshot()),
+		update: (patch) => fromGenerated(spectaCommands.lagunaSettingsUpdate(patch))
 	};
 	return tauriTransport;
 }
@@ -306,7 +305,7 @@ export function InferenceSettings({ transport, controller }: InferenceSettingsPr
 	useEffect(() => {
 		if (view.state !== "unsupported") return;
 		if (!isTauri()) return;
-		void invokeCommand<LagunaStatus>(COMMANDS.LAGUNA_GET_STATUS)
+		void fromGenerated(spectaCommands.lagunaGetStatus())
 			.then((status) => setDaemon({ detail: status.detail ?? status.phase, baseUrl: status.baseUrl }))
 			.catch(() => undefined);
 	}, [view.state]);

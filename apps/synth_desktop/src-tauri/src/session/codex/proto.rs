@@ -41,7 +41,7 @@ pub struct CodexSessionStartRequest {
     pub thread_id: Option<String>,
     pub multi_agent_version: Option<MultiAgentVersion>,
     #[serde(default)]
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = specta_typescript::Number)]
     pub auto_compact_token_limit: Option<u64>,
     /// Rust-populated exact roots for this conversation. Renderer input is
     /// discarded by `prepare_codex_start` before launch.
