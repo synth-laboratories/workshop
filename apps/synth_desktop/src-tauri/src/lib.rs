@@ -3898,7 +3898,16 @@ async fn prepare_codex_provider(
     match codex::provider_class(request.provider_name.as_deref()) {
         codex::ProviderClass::LocalLaguna => {
             let root = runtime::workshop_root().map_err(AppError::from)?;
-            let model = laguna.configured_model_id().map_err(AppError::from)?;
+            // The daemon routes policies by the Responses `model` field. The
+            // renderer carries the selected catalog id in `adapter` so it can
+            // keep the base serving identity separate from policy metadata;
+            // promote that id here instead of silently forcing every turn
+            // back onto the configured base model. The catalog lookup below
+            // remains the authority and rejects unknown policy ids.
+            let model = request
+                .adapter
+                .clone()
+                .unwrap_or(laguna.configured_model_id().map_err(AppError::from)?);
             codex::apply_local_laguna_provider(&mut request, &model);
             request.base_url = laguna
                 .ensure_for_turn(&root)
