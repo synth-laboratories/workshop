@@ -1900,13 +1900,24 @@ fn stop_managed_sidecar() -> Result<bool> {
 
 #[cfg(unix)]
 fn process_is_alive(pid: u32) -> bool {
-    Command::new("/bin/kill")
-        .args(["-0", &pid.to_string()])
+    // `kill -0` also succeeds for zombies. A daemon that has exited but has
+    // not yet been reaped cannot own the port or respond to another signal,
+    // so treating it as live makes reload wait and eventually report the
+    // impossible "did not terminate after SIGKILL" error.
+    Command::new("/bin/ps")
+        .args(["-p", &pid.to_string(), "-o", "stat="])
         .stdin(Stdio::null())
-        .stdout(Stdio::null())
         .stderr(Stdio::null())
-        .status()
-        .map(|status| status.success())
+        .output()
+        .map(|output| {
+            output.status.success()
+                && output
+                    .stdout
+                    .iter()
+                    .copied()
+                    .find(|byte| !byte.is_ascii_whitespace())
+                    != Some(b'Z')
+        })
         .unwrap_or(false)
 }
 
