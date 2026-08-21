@@ -32,8 +32,9 @@ fn local_mlx_recipe() -> Value {
         "availabilityReason": if available { Value::Null } else { json!("Local CISPO requires Apple Silicon and the managed on-device training model. Start binds a ready container's advertised CISPO contract.") },
         "limits": {
             "backend": "cispo",
-            "maxSteps": 4,
+            "maxSteps": 1,
             "costCeilingUsd": 0.0,
+            "maxTotalEnvironmentRollouts": 12,
             "costNotice": "Local Apple Silicon MLX compute. Warm-start from a selected SFT artifact id; otherwise the visual reports cispo_no_learning_signal.",
             "resolvedConfig": {
                 "baseModel": "Qwen/Qwen3.5-0.8B",
