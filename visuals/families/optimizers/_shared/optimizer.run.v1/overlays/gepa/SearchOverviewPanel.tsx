@@ -20,7 +20,7 @@ export function SearchOverviewPanel({ gepa }: { gepa: GepaState }) {
   return (
     <section className="sv-section" aria-label="GEPA run contract and budget" data-testid="gepa-search-overview" style={{ marginTop: 0 }}>
       <div className="sv-section-head"><h3>Search contract</h3><span className="sv-mono">what can change · how success is judged · when search stops</span></div>
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(230px, 1fr))", gap: 9 }}>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(230px, 100%), 1fr))", gap: 9 }}>
         <div style={{ border: "1px solid var(--sv-border)", borderRadius: 9, padding: 11 }}>
           <strong style={{ fontSize: 12 }}>Task & objective</strong>
           <dl style={{ display: "grid", gridTemplateColumns: "90px 1fr", gap: "5px 9px", margin: "8px 0 0", fontSize: 11 }}>
@@ -55,10 +55,10 @@ export function SearchOverviewPanel({ gepa }: { gepa: GepaState }) {
           const usedPct = max > 0 ? Math.min(100, spent / max * 100) : 0;
           const reservedPct = max > 0 ? Math.min(100 - usedPct, reserved / max * 100) : 0;
           const isNearest = nearest?.kind === limit.kind;
-          return <div key={limit.kind} style={{ display: "grid", gridTemplateColumns: "120px minmax(130px, 1fr) 180px", gap: 10, alignItems: "center", fontSize: 10.5 }}>
-            <span><strong>{limitLabel(limit.kind)}</strong>{isNearest ? <span className="sv-chip" data-tone="warn" style={{ marginLeft: 5 }}>nearest</span> : null}</span>
-            <span style={{ height: 11, position: "relative", borderRadius: 99, background: "var(--sv-surface-muted)", overflow: "hidden" }}><span style={{ position: "absolute", inset: 0, width: `${usedPct}%`, background: "var(--sv-accent)" }} /><span style={{ position: "absolute", top: 0, bottom: 0, left: `${usedPct}%`, width: `${reservedPct}%`, background: "var(--sv-border-strong)" }} /></span>
-            <span className="sv-mono" style={{ color: "var(--sv-text-muted)" }}>{limit.spent ?? "—"} spent + {limit.reserved ?? 0} reserved / {limit.max ?? "—"}{limit.forecast?.secondsToLimit != null ? ` · ~${formatDurationMs(limit.forecast.secondsToLimit * 1000)} left` : ""}</span>
+          return <div key={limit.kind} className="sv-gepa-limit-row" style={{ display: "grid", gap: 10, alignItems: "center", fontSize: 10.5 }}>
+            <span className="sv-gepa-limit-label"><strong>{limitLabel(limit.kind)}</strong>{isNearest ? <span className="sv-chip" data-tone="warn" style={{ marginLeft: 5 }}>nearest</span> : null}</span>
+            <span className="sv-gepa-limit-meter" style={{ height: 11, position: "relative", borderRadius: 99, background: "var(--sv-surface-muted)", overflow: "hidden" }}><span style={{ position: "absolute", inset: 0, width: `${usedPct}%`, background: "var(--sv-accent)" }} /><span style={{ position: "absolute", top: 0, bottom: 0, left: `${usedPct}%`, width: `${reservedPct}%`, background: "var(--sv-border-strong)" }} /></span>
+            <span className="sv-gepa-limit-receipt sv-mono" style={{ color: "var(--sv-text-muted)" }}>{limit.spent ?? "—"} spent + {limit.reserved ?? 0} reserved / {limit.max ?? "—"}{limit.forecast?.secondsToLimit != null ? ` · ~${formatDurationMs(limit.forecast.secondsToLimit * 1000)} left` : ""}</span>
           </div>;
         })}
       </div> : null}

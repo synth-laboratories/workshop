@@ -107,13 +107,13 @@ export function FrontierPanel({
               const optimistic = snapshot.optimisticSolved ?? 0;
               const incumbent = snapshot.bestCandidateSolved ?? 0;
               return (
-                <div key={snapshot.sequence} style={{ display: "grid", gridTemplateColumns: "110px minmax(160px, 1fr) 135px", gap: 9, alignItems: "center" }}>
-                  <span style={{ fontSize: 10.5 }}>{index === 0 ? "Seed" : `Generation ${snapshot.generation ?? index - 1}`}</span>
-                  <span style={{ position: "relative", height: 13, borderRadius: 99, background: "var(--sv-surface-muted)", overflow: "hidden" }} title={`Optimistic union ${optimistic}/${total}; incumbent ${incumbent}/${total}`}>
-                    <span style={{ position: "absolute", inset: 0, width: total ? `${optimistic / total * 100}%` : "0%", background: "var(--sv-border-strong)" }} />
-                    <span style={{ position: "absolute", inset: 0, width: total ? `${incumbent / total * 100}%` : "0%", background: "var(--sv-accent)" }} />
-                  </span>
-                  <span className="sv-mono" style={{ fontSize: 9.5, color: "var(--sv-text-muted)" }}>{incumbent}/{total} incumbent · {optimistic}/{total} ever</span>
+            <div key={snapshot.sequence} className="sv-gepa-explore-row" style={{ display: "grid", gap: 9, alignItems: "center" }}>
+              <span className="sv-gepa-explore-label" style={{ fontSize: 10.5 }}>{index === 0 ? "Seed" : `Generation ${snapshot.generation ?? index - 1}`}</span>
+              <span className="sv-gepa-explore-meter" style={{ position: "relative", height: 13, borderRadius: 99, background: "var(--sv-surface-muted)", overflow: "hidden" }} title={`Optimistic union ${optimistic}/${total}; incumbent ${incumbent}/${total}`}>
+                <span style={{ position: "absolute", inset: 0, width: total ? `${optimistic / total * 100}%` : "0%", background: "var(--sv-border-strong)" }} />
+                <span style={{ position: "absolute", inset: 0, width: total ? `${incumbent / total * 100}%` : "0%", background: "var(--sv-accent)" }} />
+              </span>
+              <span className="sv-gepa-explore-receipt sv-mono" style={{ fontSize: 9.5, color: "var(--sv-text-muted)" }}>{incumbent}/{total} incumbent · {optimistic}/{total} ever</span>
                 </div>
               );
             })}
@@ -122,7 +122,7 @@ export function FrontierPanel({
         </div>
       ) : null}
       <div style={{ border: "1px solid var(--sv-border)", borderRadius: 9, overflow: "hidden" }}>
-        <div style={{ display: "grid", gridTemplateColumns: "minmax(150px, .7fr) minmax(220px, 1.3fr)", gap: 10, padding: "7px 10px", background: "var(--sv-surface-muted)", borderBottom: "1px solid var(--sv-border)", color: "var(--sv-text-faint)", fontSize: 9.5, textTransform: "uppercase", letterSpacing: ".07em" }}>
+        <div className="sv-gepa-frontier-grid" style={{ display: "grid", gap: 10, padding: "7px 10px", background: "var(--sv-surface-muted)", borderBottom: "1px solid var(--sv-border)", color: "var(--sv-text-faint)", fontSize: 9.5, textTransform: "uppercase", letterSpacing: ".07em" }}>
           <span>Candidate / selection credit</span><span>Per-example reward vector</span>
         </div>
         {rows.map((row) => {
@@ -135,7 +135,8 @@ export function FrontierPanel({
             data-testid={`frontier-point-${row.id}`}
             aria-pressed={row.id === selectedId}
             aria-label={`${candidateName(row.candidate)} · ${row.onFrontier ? "Pareto member" : "dominated"} · ${row.wins} winning example cells`}
-            style={{ display: "grid", gridTemplateColumns: "minmax(150px, .7fr) minmax(220px, 1.3fr)", gap: 10, width: "100%", padding: "9px 10px", border: 0, borderLeft: `4px solid ${palette.color}`, borderBottom: "1px solid var(--sv-border)", background: row.id === selectedId ? palette.tint : "var(--sv-surface)", color: "var(--sv-text)", textAlign: "left", cursor: "pointer" }}
+            className="sv-gepa-frontier-grid"
+            style={{ display: "grid", gap: 10, width: "100%", padding: "9px 10px", border: 0, borderLeft: `4px solid ${palette.color}`, borderBottom: "1px solid var(--sv-border)", background: row.id === selectedId ? palette.tint : "var(--sv-surface)", color: "var(--sv-text)", textAlign: "left", cursor: "pointer" }}
           >
             <span>
               <span style={{ display: "flex", alignItems: "center", gap: 6 }}>

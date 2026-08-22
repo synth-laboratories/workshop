@@ -462,6 +462,47 @@
   .sv-workspace-canvas { grid-template-columns: 1fr; }
 }
 
+/* GEPA uses dense evidence receipts.  The desktop grid preserves comparison at
+   a glance; compact panes put the meter below its label and receipt instead of
+   forcing a horizontally scrollable pseudo-table. */
+.sv-gepa-limit-row {
+  grid-template-columns: minmax(0, 120px) minmax(0, 1fr) minmax(0, 180px);
+}
+
+.sv-gepa-explore-row {
+  grid-template-columns: minmax(0, 110px) minmax(0, 1fr) minmax(0, 135px);
+}
+
+.sv-gepa-frontier-grid {
+  grid-template-columns: minmax(0, .7fr) minmax(0, 1.3fr);
+}
+
+@media (max-width: 520px) {
+  .sv-gepa-limit-row,
+  .sv-gepa-explore-row {
+    grid-template-columns: minmax(0, 1fr) auto;
+    column-gap: 8px;
+    row-gap: 5px;
+  }
+
+  .sv-gepa-limit-meter,
+  .sv-gepa-explore-meter {
+    grid-column: 1 / -1;
+    grid-row: 2;
+  }
+
+  .sv-gepa-limit-receipt,
+  .sv-gepa-explore-receipt {
+    min-width: 0;
+    text-align: right;
+    overflow-wrap: anywhere;
+  }
+
+  .sv-gepa-frontier-grid {
+    grid-template-columns: minmax(0, .78fr) minmax(0, 1.22fr);
+  }
+}
+
 .sv-candidate-card {
   width: 100%;
   appearance: none;
