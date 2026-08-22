@@ -16,6 +16,20 @@ test.beforeEach(async ({ page }) => {
 			deleteModel: async () => undefined,
 			onDownloadProgress: () => () => undefined
 		};
+		(window as any).synthInventory = {
+			listContainers: async () => [{
+				id: "ctr-alfworld-cleanroom",
+				name: "ALFWorld cleanroom",
+				taskFamily: "alfworld.text.v1",
+				status: "ready"
+			}],
+			getContainer: async () => { throw new Error("container detail unavailable"); },
+			registerContainer: async () => { throw new Error("registration unavailable"); },
+			probeContainer: async () => { throw new Error("probe unavailable"); },
+			listTraces: async () => [],
+			listUsage: async () => [],
+			counts: async () => ({ containers: 1, traces: 0, usage: 0 })
+		};
 		(window as any).synthOptimizers = {
 			listAlgorithms: async () => [], list: async () => [], listRecipes: async () => [], listCloud: async () => [],
 			hostedTrainingModels: async () => ({ revision: "unavailable", models: [] }), searchSavedLoras: async () => ({ items: [], total: 0 }),
@@ -50,7 +64,9 @@ test("resolved config routes hosted launches through the native optimizer", asyn
 	await expect(page.getByTestId("training-resolved-config")).toContainText("Before · checkpoints · final");
 	await expect(page.getByTestId("training-resolved-config")).toContainText("Container tunnel · exact checkpoint");
 	await page.getByLabel("Compute").selectOption("tinker");
+	await page.getByLabel("Dataset / workload").selectOption("ctr-alfworld-cleanroom");
 	await expect(page.getByTestId("training-resolved-config")).toContainText("Hosted · Tinker");
+	await expect(page.getByTestId("training-resolved-config")).toContainText("alfworld.text.v1");
 	await page.getByRole("button", { name: "Start bounded run" }).click();
 	await expect(page.getByTestId("training-run-failure")).toContainText("native optimizer runtime unavailable");
 });
@@ -66,10 +82,27 @@ test("real unscored checkpoint evidence remains reviewable without inventing a p
 	});
 	await page.getByTestId("training-tab-train").click();
 	await page.getByLabel("Compute").selectOption("tinker");
+	await page.getByLabel("Dataset / workload").selectOption("ctr-alfworld-cleanroom");
 	await page.getByRole("button", { name: "Start bounded run" }).click();
 	const evidence = page.getByTestId("training-evaluation-comparison");
 	await expect(evidence).toContainText("no scores returned");
 	await evidence.getByRole("button", { name: "Review checkpoint evaluation at step 10" }).click();
 	await expect(page.getByTestId("training-evaluation-dialog")).toContainText("ckpt-10");
 	await expect(page.getByTestId("training-evaluation-dialog")).toContainText('"scored": 0');
+});
+
+test("a run cannot start until an exact training workload is advertised", async ({ page }) => {
+	// Runs after the beforeEach init script, so it replaces that ready container.
+	await page.addInitScript(() => {
+		(window as any).synthInventory.listContainers = async () => [];
+	});
+	await page.reload();
+	await page.getByTestId("titlebar").waitFor();
+	await page.getByRole("button", { name: "Optimizers" }).click();
+	await page.getByTestId("training-tab-train").click();
+	await expect(
+		page.getByRole("alert").filter({ hasText: "No training workload" })
+	).toBeVisible();
+	await expect(page.getByRole("button", { name: "Start bounded run" })).toBeDisabled();
+	await expect(page.getByTestId("training-resolved-config")).toContainText("No ready container");
 });
