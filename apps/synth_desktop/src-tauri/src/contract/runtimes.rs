@@ -141,17 +141,17 @@ fn numeric_segments(version: &str) -> Vec<u64> {
 pub const OPTIMIZERS: RuntimeContract = RuntimeContract {
     runtime_id: "optimizers",
     package: "synth-optimizers",
-    official: "0.2.17",
+    official: "0.2.18",
     // Behind official: this cut predates both required routes. It still
     // installs — its own channel's floor is what it is measured against — and
     // then fails the handshake, which is the honest place for that failure.
     // Blocking the install instead would take the dev channel offline to
     // report a problem the gate already reports precisely.
     dev: "0.2.9.dev20260814",
-    // 0.2.17 carries ownership protocol v2 and preserves
+    // 0.2.18 carries ownership protocol v2 and preserves
     // the required routes and legacy-workspace migration, and identifies the
     // running Rust service with the same version as the Python distribution.
-    min_supported: "0.2.17",
+    min_supported: "0.2.18",
     // No dev cut carries the required routes yet; the handshake refuses one
     // that cannot serve them. Raise this when the dev channel is cut again.
     min_supported_dev: "0.2.9.dev20260814",
@@ -174,15 +174,15 @@ pub const OPTIMIZERS: RuntimeContract = RuntimeContract {
 
 /// The local container-evaluation runtime.
 ///
-/// Desktop provisions it from the same 0.2.17 `synth-optimizers` install as
+/// Desktop provisions it from the same 0.2.18 `synth-optimizers` install as
 /// GEPA, writing a digest-pinned manifest under `data_root()/runtime/eval`.
 pub const EVAL: RuntimeContract = RuntimeContract {
     runtime_id: "eval",
     package: "synth-optimizers[eval]",
-    official: "0.2.17",
-    dev: "0.2.17",
-    min_supported: "0.2.17",
-    min_supported_dev: "0.2.17",
+    official: "0.2.18",
+    dev: "0.2.18",
+    min_supported: "0.2.18",
+    min_supported_dev: "0.2.18",
     ownership_protocol: 2,
     workshop_compat: "0.4.0",
     algorithms: &["eval"],
@@ -315,13 +315,13 @@ mod tests {
         assert_ne!(OPTIMIZERS.official, OPTIMIZERS.dev);
     }
 
-    /// Eval is provisioned by Desktop from the 0.2.17 sidecar pin.
+    /// Eval is provisioned by Desktop from the 0.2.18 sidecar pin.
     #[test]
     fn eval_runtime_is_pinned_and_managed() {
         assert!(EVAL.provisioned_by_desktop);
-        assert_eq!(EVAL.official, "0.2.17");
-        assert_eq!(EVAL.min_supported, "0.2.17");
-        assert!(EVAL.meets_floor("0.2.17"));
+        assert_eq!(EVAL.official, "0.2.18");
+        assert_eq!(EVAL.min_supported, "0.2.18");
+        assert!(EVAL.meets_floor("0.2.18"));
         assert!(!EVAL.meets_floor("0.2.14"));
         assert!(OPTIMIZERS.provisioned_by_desktop);
     }
