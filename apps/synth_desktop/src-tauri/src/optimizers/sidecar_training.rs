@@ -435,17 +435,13 @@ impl TrainingRuntime {
 }
 
 pub fn admitted_placements() -> Vec<&'static str> {
-    let mut placements = vec![
+    vec![
         PLACEMENT_SEARCH_GEPA_LOCAL,
         PLACEMENT_SEARCH_GELO_HOSTED,
         PLACEMENT_TRAINING_SFT_LOCAL,
         PLACEMENT_TRAINING_SFT_HOSTED,
         PLACEMENT_TRAINING_CISPO_LOCAL,
-    ];
-    if hosted_cispo_admitted() {
-        placements.push(PLACEMENT_TRAINING_CISPO_HOSTED);
-    }
-    placements
+    ]
 }
 
 pub fn merge_training_capabilities(mut upstream: Value) -> Value {
@@ -498,10 +494,6 @@ pub fn require_placement(capabilities: &Value, placement: &str) -> Result<()> {
         return Ok(());
     }
     bail!("optimizer sidecar does not advertise placement `{placement}`")
-}
-
-fn hosted_cispo_admitted() -> bool {
-    std::env::var("SYNTH_OPTIMIZERS_CISPO_HOSTED_ADMITTED").as_deref() == Ok("1")
 }
 
 fn append_job_event(job: &mut TrainingJob, kind: &str, payload: Value) {
@@ -1606,17 +1598,10 @@ async fn drive_hosted_cispo_job(
     config: &Value,
 ) -> Result<()> {
     validate_tunneled_evaluation_plan(config)?;
-    if !hosted_cispo_admitted() {
-        bail!("hosted CISPO is fail-closed until the slime clip canary admits it");
-    }
-    let client = super::hosted_client::HostedOptimizerClient::from_env()?;
-    client.submit_json("cispo", job_id, config.clone()).await?;
-    let mut jobs = runtime.jobs.lock().await;
-    if let Some(job) = jobs.get_mut(job_id) {
-        job.status = TrainingJobStatus::Running;
-        append_job_event(job, "job.started", json!({"backend": "hosted-cispo"}));
-    }
-    Ok(())
+    let _ = (runtime, job_id);
+    bail!(
+        "hosted CISPO is fail-closed until an authenticated sidecar capability projects a durable signed slime-canary admission receipt"
+    )
 }
 
 pub async fn infer_checkpoint<F>(
@@ -2065,12 +2050,11 @@ mod tests {
     }
 
     #[test]
-    fn local_cispo_is_admitted_and_hosted_cispo_follows_the_canary_gate() {
+    fn local_cispo_is_admitted_and_hosted_cispo_has_no_environment_bypass() {
         assert!(admitted_placements().contains(&PLACEMENT_TRAINING_CISPO_LOCAL));
-        assert_eq!(
-            admitted_placements().contains(&PLACEMENT_TRAINING_CISPO_HOSTED),
-            hosted_cispo_admitted()
-        );
+        std::env::set_var("SYNTH_OPTIMIZERS_CISPO_HOSTED_ADMITTED", "1");
+        assert!(!admitted_placements().contains(&PLACEMENT_TRAINING_CISPO_HOSTED));
+        std::env::remove_var("SYNTH_OPTIMIZERS_CISPO_HOSTED_ADMITTED");
     }
 
     #[test]

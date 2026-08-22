@@ -68,7 +68,7 @@ fn hosted_slime_recipe() -> Value {
             "costNotice": "Hosted Tinker plus the bound container. Sidecar owns the tunnel lease."
         },
         "credentialInputs": [],
-        "prerequisites": ["Optimizers sidecar", "SYNTH_OPTIMIZERS_CISPO_HOSTED_ADMITTED after canary"]
+        "prerequisites": ["Optimizers sidecar", "authenticated sidecar capability projecting a durable signed slime-canary admission receipt"]
     })
 }
 
@@ -383,9 +383,10 @@ mod tests {
     }
 
     #[test]
-    fn hosted_cispo_is_not_admitted_without_the_canary_gate() {
-        std::env::remove_var("SYNTH_OPTIMIZERS_CISPO_HOSTED_ADMITTED");
+    fn hosted_cispo_is_not_admitted_even_when_the_legacy_environment_flag_is_set() {
+        std::env::set_var("SYNTH_OPTIMIZERS_CISPO_HOSTED_ADMITTED", "1");
         assert!(!crate::optimizers::sidecar_training::admitted_placements()
             .contains(&PLACEMENT_TRAINING_CISPO_HOSTED));
+        std::env::remove_var("SYNTH_OPTIMIZERS_CISPO_HOSTED_ADMITTED");
     }
 }
