@@ -2575,6 +2575,15 @@ fn materialize_uv_runtime(
         bail!("failed to create optimizer runtime venv");
     }
     let python = runtime.join("bin/python");
+    let package_source = env::var_os("SYNTH_OPTIMIZER_WHEEL_FILE")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(format!("synth-optimizers=={}", spec.version)));
+    if package_source.is_absolute() && !package_source.is_file() {
+        bail!(
+            "optimizer wheel override does not exist: {}",
+            package_source.display()
+        );
+    }
     let download = std::process::Command::new(&uv)
         .args([
             "run",
@@ -2589,7 +2598,7 @@ fn materialize_uv_runtime(
             "-d",
         ])
         .arg(&wheels)
-        .arg(format!("synth-optimizers=={}", spec.version))
+        .arg(&package_source)
         .status()
         .context("download optimizer wheel")?;
     if !download.success() {
