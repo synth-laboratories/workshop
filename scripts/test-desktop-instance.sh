@@ -85,9 +85,16 @@ rg -q '^OPENROUTER_API_KEY=.openrouter-fixture.$' "$alpha_env"
 awk '
   /if \[\[ "\$COMMAND" == "cua"/{in_cua=1}
   in_cua && /cd "\$INSTANCE_ROOT"/ && !safe_cwd {safe_cwd=NR}
-  in_cua && /exec "\$app_executable"/ && !exec_line {exec_line=NR}
-  END { exit !(safe_cwd && exec_line && safe_cwd < exec_line) }
+  in_cua && /exec_isolated_cua_bundle/ && !launch_line {launch_line=NR}
+  END { exit !(safe_cwd && launch_line && safe_cwd < launch_line) }
 ' "$ROOT/scripts/desktop-instance.sh"
+# The helper itself must end in an environment-scrubbed exec of the recorded
+# bundle executable; checking a removed inline exec made this gate stale while
+# missing the stronger isolation contract.
+isolated_exec="$(sed -n '/^exec_isolated_cua_bundle()/,/^}/p' "$ROOT/scripts/desktop-instance.sh")"
+grep -q 'exec env -i' <<<"$isolated_exec"
+grep -q 'PWD="\$INSTANCE_ROOT"' <<<"$isolated_exec"
+grep -q '"\$CUA_EXE"' <<<"$isolated_exec"
 rg -q 'if \(\$0 == exe \|\| \$0 == cua_exe\)' "$ROOT/scripts/desktop-instance.sh"
 rg -q 'SYNTH_DESKTOP_DEV_OAUTH_FILE' "$ROOT/scripts/desktop-instance.sh"
 rg -q 'SYNTH_DESKTOP_DEV_OAUTH_STATE_FILE' "$ROOT/scripts/desktop-instance.sh"
@@ -119,10 +126,7 @@ jq -e '
   .version == "0.7.0" and
   (.bundle.icon | length) == 2 and
   .bundle.targets == ["app"] and
-  (.bundle.resources | to_entries | map(.value) | sort) == [
-    "cookbooks/optimizers/gepa/banking77_container",
-    "cookbooks/optimizers/gepa/crafter_container"
-  ] and
+  .bundle.resources == {} and
   .bundle.macOS.minimumSystemVersion == "14.0"
 ' \
   "$TEST_ROOT/instances/v07/alpha/generated/tauri.instance.json" >/dev/null
@@ -172,8 +176,8 @@ env_names_for() {
 build_names="$(env_names_for cua-build)"
 run_names="$(env_names_for cua-run)"
 [[ -n "$build_names" && "$build_names" == "$run_names" ]]
-for required in SYNTH_DESKTOP_INSTANCE SYNTH_WORKSHOP_INSTANCE_ID SYNTH_DESKTOP_DATA_ROOT SYNTH_DESKTOP_CONFIG SYNTH_CODEX_HOME \
-  SYNTH_DESKTOP_BUNDLE_ID SYNTH_DESKTOP_INSTANCE_MANIFEST SYNTH_DESKTOP_SOURCE_REVISION \
+for required in SYNTH_DESKTOP_INSTANCE SYNTH_DESKTOP_DATA_ROOT SYNTH_DESKTOP_CONFIG SYNTH_CODEX_HOME \
+  SYNTH_DESKTOP_INSTANCE_MANIFEST SYNTH_DESKTOP_SOURCE_REVISION \
   SYNTH_DESKTOP_DEV_OAUTH_STATE_FILE SYNTH_COMPUTER_USE_PARENT_REQUIREMENT CARGO_TARGET_DIR; do
   [[ ",$build_names," == *",$required,"* ]] || { echo "launch env missing $required" >&2; exit 1; }
 done
