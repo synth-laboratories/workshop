@@ -27,6 +27,7 @@ const MLX_RUNTIME_VERSION: &str = "0.6.0";
 const MLX_RUNTIME_SOURCE_REVISION: &str = "5e39facb8947524a2bf56711027137757e2dfd52";
 const MLX_RUNTIME_LOCK_SHA256: &str =
     "7f14b704ba9a6c30e6ced5cc88fc2ba6a58a936a9531cfaf168cbb664f83c420";
+pub const LOCAL_TRAINING_MAX_SEQ_LENGTH: u64 = 1024;
 const MLX_RUNTIME_SCHEMA: &str = "synth.mlx-runtime-wheelhouse.v1";
 const MLX_RUNTIME_EVENT: &str = "training://mlx-runtime-install";
 
@@ -94,7 +95,11 @@ pub async fn training_mlx_runtime_install(
             .get_or_init(|| Mutex::new(()))
             .lock()
             .map_err(|_| anyhow::anyhow!("MLX runtime install lock is poisoned"))?;
-        emit_install(&progress, "verifying", "Verifying signed MLX runtime wheelhouse…");
+        emit_install(
+            &progress,
+            "verifying",
+            "Verifying signed MLX runtime wheelhouse…",
+        );
         let result = install_managed_runtime(&progress);
         match &result {
             Ok(_) => emit_install(&progress, "ready", "MLX training runtime installed."),
@@ -170,7 +175,10 @@ fn read_verified_wheelhouse(root: &Path) -> Result<RuntimeWheelhouse> {
             .with_context(|| format!("read MLX runtime wheel {}", artifact.file_name))?;
         let digest = format!("{:x}", Sha256::digest(&bytes));
         if bytes.len() as u64 != artifact.size_bytes || digest != artifact.sha256 {
-            bail!("MLX runtime wheel `{}` failed digest verification", artifact.file_name);
+            bail!(
+                "MLX runtime wheel `{}` failed digest verification",
+                artifact.file_name
+            );
         }
     }
     if !primary {
@@ -190,12 +198,20 @@ fn install_managed_runtime(app: &AppHandle) -> Result<()> {
         .parent()
         .ok_or_else(|| anyhow::anyhow!("resolve MLX runtime versions directory"))?;
     fs::create_dir_all(parent)?;
-    let staging = parent.join(format!(".{}.staging-{}", MLX_RUNTIME_VERSION, Uuid::new_v4()));
+    let staging = parent.join(format!(
+        ".{}.staging-{}",
+        MLX_RUNTIME_VERSION,
+        Uuid::new_v4()
+    ));
     fs::create_dir_all(&staging)?;
     let outcome = (|| {
         copy_tree(&source, &staging)?;
         read_verified_wheelhouse(&staging)?;
-        emit_install(app, "installing", "Installing the verified wheelhouse offline…");
+        emit_install(
+            app,
+            "installing",
+            "Installing the verified wheelhouse offline…",
+        );
         let uv = super::manager::resolve_uv()?;
         let runtime = staging.join("runtime");
         let status = StdCommand::new(&uv)
@@ -222,7 +238,11 @@ fn install_managed_runtime(app: &AppHandle) -> Result<()> {
         }
         prove_managed_runtime(&staging)?;
         if destination.exists() {
-            let retained = parent.join(format!(".{}.invalid-{}", MLX_RUNTIME_VERSION, Uuid::new_v4()));
+            let retained = parent.join(format!(
+                ".{}.invalid-{}",
+                MLX_RUNTIME_VERSION,
+                Uuid::new_v4()
+            ));
             fs::rename(&destination, retained).context("retain invalid MLX runtime")?;
         }
         fs::rename(&staging, &destination).context("activate verified MLX runtime")?;
@@ -273,7 +293,10 @@ fn prove_managed_runtime(root: &Path) -> Result<()> {
     read_verified_wheelhouse(root)?;
     let python = root.join("runtime/bin/python");
     let output = StdCommand::new(python)
-        .args(["-c", "import importlib.metadata; print(importlib.metadata.version('synth-mlx-rl'))"])
+        .args([
+            "-c",
+            "import importlib.metadata; print(importlib.metadata.version('synth-mlx-rl'))",
+        ])
         .output()
         .context("prove installed MLX runtime version")?;
     let executable = root.join("runtime/bin/synth-mlx-rl");
@@ -357,7 +380,12 @@ impl MlxLoopback {
         self.post_timed(path, body, Duration::from_secs(10)).await
     }
 
-    async fn post_timed(&self, path: &str, body: Option<&Value>, timeout: Duration) -> Result<Value> {
+    async fn post_timed(
+        &self,
+        path: &str,
+        body: Option<&Value>,
+        timeout: Duration,
+    ) -> Result<Value> {
         let mut request = self
             .http
             .post(format!("{}{path}", self.base_url))
@@ -506,15 +534,17 @@ impl MlxLoopback {
             body["artifact_digest"] = json!(digest);
         }
         let response = self
-            .post_timed("/v1/synth/policies/register", Some(&body), Duration::from_secs(120))
+            .post_timed(
+                "/v1/synth/policies/register",
+                Some(&body),
+                Duration::from_secs(120),
+            )
             .await?;
         response
             .get("policy_snapshot_id")
             .and_then(Value::as_str)
             .map(str::to_string)
-            .ok_or_else(|| {
-                anyhow::anyhow!("MLX policy registration omitted policy_snapshot_id")
-            })
+            .ok_or_else(|| anyhow::anyhow!("MLX policy registration omitted policy_snapshot_id"))
     }
 }
 
@@ -534,7 +564,15 @@ fn mlx_serve_command_with_model(port: u16, root: &Path, model_path: &Path) -> Re
         .args(["--host", "127.0.0.1"])
         .args(["--port", &port.to_string()])
         .args(["--root", &root.display().to_string()])
-        .args(["--model", &model_path.display().to_string()]);
+        .args(["--model", &model_path.display().to_string()])
+        // The managed 0.8B runtime is a local-training service, not a 4K chat
+        // server. Keeping its resident render contract at 1024 makes the
+        // preflight's memory estimate honest on supported Apple Silicon while
+        // leaving ample room for classification and text-trajectory recipes.
+        .args([
+            "--max-seq-length",
+            &LOCAL_TRAINING_MAX_SEQ_LENGTH.to_string(),
+        ]);
     command.env("SYNTH_MLX_RL_MODEL_PATH", model_path);
     command.env("HF_HUB_OFFLINE", "1");
     command.kill_on_drop(true);
@@ -706,10 +744,7 @@ mod tests {
         let command =
             mlx_serve_command_with_model(9123, Path::new("/tmp/mlx-root"), model_path).unwrap();
         let std_cmd = command.as_std();
-        assert_eq!(
-            std_cmd.get_program().to_string_lossy(),
-            "/usr/bin/true"
-        );
+        assert_eq!(std_cmd.get_program().to_string_lossy(), "/usr/bin/true");
         let args: Vec<String> = std_cmd
             .get_args()
             .map(|arg| arg.to_string_lossy().into_owned())
@@ -725,7 +760,9 @@ mod tests {
                 "--root",
                 "/tmp/mlx-root",
                 "--model",
-                "/tmp/managed-training-model"
+                "/tmp/managed-training-model",
+                "--max-seq-length",
+                "1024"
             ]
         );
         assert_eq!(
@@ -870,7 +907,10 @@ mod tests {
         let script = destination.join("runtime/bin/synth-mlx-rl");
         fs::write(
             &script,
-            format!("#!/bin/sh\nexec {}/runtime/bin/python \"$@\"\n", staging.display()),
+            format!(
+                "#!/bin/sh\nexec {}/runtime/bin/python \"$@\"\n",
+                staging.display()
+            ),
         )
         .unwrap();
         rewrite_runtime_prefix(&destination, &staging, &destination).unwrap();

@@ -44,7 +44,7 @@ const MAX_STEPS: u64 = 4;
 const CHECKPOINT_EVERY: u64 = 2;
 const LORA_RANK: u64 = 8;
 const LORA_ALPHA: f64 = 16.0;
-const MAX_SEQ_LENGTH: u64 = 4096;
+const MAX_SEQ_LENGTH: u64 = super::mlx_runtime::LOCAL_TRAINING_MAX_SEQ_LENGTH;
 const MAX_PAGE_ERRORS: u32 = 20;
 
 #[derive(Clone, Default)]

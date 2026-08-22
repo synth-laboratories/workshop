@@ -176,13 +176,15 @@ async fn start_local(
             "max_steps": 1,
             "checkpoint_every": 1,
             "signal_attempts": 24,
-            "group_size": 4,
+            // One 16-member on-policy group reproduces the accepted Banking77
+            // flow; the MLX service accumulates it at micro-batch size one.
+            "group_size": 16,
             "learning_rate": 0.00005,
             "evaluation": evaluation_plan,
             "lora_rank": 8,
             "lora_alpha": 16.0,
             "lora_dropout": 0.0,
-            "max_seq_length": 4096,
+            "max_seq_length": super::mlx_runtime::LOCAL_TRAINING_MAX_SEQ_LENGTH,
             "enable_thinking": false,
             "warm_start": warm_start
         }),
@@ -303,6 +305,7 @@ mod tests {
         assert!(production.contains("bind_cispo"));
         assert!(production.contains("training_artifact_id"));
         assert!(production.contains("\"signal_attempts\": 24"));
+        assert!(production.contains("\"group_size\": 16"));
         assert!(production.contains("\"learning_rate\": 0.00005"));
         assert!(production.contains("\"checkpoint_every\": 1"));
         assert!(production.contains("create_and_watch"));

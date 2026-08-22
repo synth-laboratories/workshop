@@ -20,7 +20,7 @@ const MAX_STEPS: u64 = 4;
 const CHECKPOINT_EVERY: u64 = 2;
 const LORA_RANK: u64 = 8;
 const LORA_ALPHA: f64 = 16.0;
-const MAX_SEQ_LENGTH: u64 = 4096;
+const MAX_SEQ_LENGTH: u64 = super::mlx_runtime::LOCAL_TRAINING_MAX_SEQ_LENGTH;
 
 pub fn recipe_catalog() -> Value {
     let (dataset, evaluation, dataset_source) = resolve_local_sft_datasets();
@@ -156,13 +156,7 @@ pub fn resolve_local_sft_datasets() -> (Option<PathBuf>, Option<PathBuf>, &'stat
 
 pub async fn reconcile(service: &OptimizerService, run_id: &str) -> Result<OptimizerRunRecord> {
     let current = service.get(run_id.into()).await?;
-    if super::sidecar_training::reconcile_persisted_sft(
-        service,
-        run_id,
-        &current.summary,
-    )
-    .await?
-    {
+    if super::sidecar_training::reconcile_persisted_sft(service, run_id, &current.summary).await? {
         return service.get(run_id.into()).await;
     }
     let cursor = current
