@@ -163,7 +163,18 @@ async fn fetch_bind(container: &ReadyTrainingContainer) -> Result<ContainerTrain
     let manifest = get_json(&client, &join_route(&container.base_url, manifest_route))
         .await
         .ok();
-    parse_bind(container, manifest.as_ref(), info.as_ref())
+    let rollout_capabilities = get_json(
+        &client,
+        &join_route(&container.base_url, "/training/capabilities"),
+    )
+    .await
+    .ok();
+    parse_bind(
+        container,
+        manifest.as_ref(),
+        info.as_ref(),
+        rollout_capabilities.as_ref(),
+    )
 }
 
 async fn get_json(client: &reqwest::Client, url: &str) -> Result<Value> {
@@ -185,12 +196,15 @@ fn parse_bind(
     container: &ReadyTrainingContainer,
     manifest: Option<&Value>,
     info: Option<&Value>,
+    rollout_capabilities: Option<&Value>,
 ) -> Result<ContainerTrainingBind> {
     let task_id = first_string(&[
         manifest.and_then(|value| value.get("task")),
         manifest.and_then(|value| value.get("task_id")),
         info.and_then(|value| value.pointer("/task/task_id")),
         info.and_then(|value| value.pointer("/runtime/runtime_id")),
+        rollout_capabilities.and_then(|value| value.get("task_id")),
+        info.and_then(|value| value.get("runtime_family")),
     ])
     .ok_or_else(|| {
         anyhow!(
@@ -198,7 +212,13 @@ fn parse_bind(
             container.id
         )
     })?;
-    let cispo = parse_cispo(&container.base_url, &task_id, manifest, info);
+    let cispo = parse_cispo(
+        &container.base_url,
+        &task_id,
+        manifest,
+        info,
+        rollout_capabilities,
+    );
     let sft = parse_sft(&container.base_url, manifest, info);
     if cispo.is_none() && sft.is_none() {
         bail!(
@@ -220,11 +240,23 @@ fn parse_cispo(
     task_id: &str,
     manifest: Option<&Value>,
     info: Option<&Value>,
+    rollout_capabilities: Option<&Value>,
 ) -> Option<CispoContract> {
     let cispo = manifest.and_then(|value| value.get("cispo"));
     let contracts = info.and_then(|value| value.pointer("/metadata/optimizer_contracts/cispo"));
     let capabilities = info.and_then(|value| value.pointer("/capabilities/cispo"));
-    if cispo.is_none() && contracts.is_none() && capabilities.is_none() {
+    let native_rollouts = rollout_capabilities.filter(|value| {
+        value
+            .get("operations")
+            .and_then(Value::as_array)
+            .is_some_and(|operations| {
+                operations
+                    .iter()
+                    .any(|item| item.as_str() == Some("rollout"))
+            })
+    });
+    if cispo.is_none() && contracts.is_none() && capabilities.is_none() && native_rollouts.is_none()
+    {
         return None;
     }
     let rollout_route = first_string(&[
@@ -232,7 +264,8 @@ fn parse_cispo(
         cispo.and_then(|value| value.get("rollout_route")),
         contracts.and_then(|value| value.get("rollout_route")),
         contracts.and_then(|value| value.get("rollout_url")),
-    ])?;
+    ])
+    .or_else(|| native_rollouts.map(|_| "/training/rollouts".into()))?;
     let reward_route = first_string(&[
         cispo.and_then(|value| value.get("reward_url")),
         cispo.and_then(|value| value.get("reward_route")),
@@ -243,6 +276,7 @@ fn parse_cispo(
         cispo.and_then(|value| value.get("implementation")),
         capabilities.and_then(|value| value.get("version")),
         contracts.and_then(|value| value.get("version")),
+        native_rollouts.and_then(|value| value.get("schema_version")),
     ])
     .unwrap_or_else(|| "cispo.v1".into());
     let harness = first_string(&[cispo.and_then(|value| value.get("harness"))])
@@ -391,7 +425,7 @@ mod tests {
                 "heldout_world_ref": "world:household@test"
             }
         });
-        let bind = parse_bind(&container, Some(&manifest), None).unwrap();
+        let bind = parse_bind(&container, Some(&manifest), None, None).unwrap();
         assert_eq!(bind.task_id, "household.text.v1");
         let cispo = bind.cispo.unwrap();
         assert_eq!(cispo.rollout_url, "http://127.0.0.1:9/rollout");
@@ -427,7 +461,7 @@ mod tests {
                 }
             }
         });
-        let bind = parse_bind(&container, None, Some(&info)).unwrap();
+        let bind = parse_bind(&container, None, Some(&info), None).unwrap();
         assert_eq!(bind.task_id, "classify.v1");
         let cispo = bind.cispo.unwrap();
         assert_eq!(cispo.harness, "classify");
@@ -441,10 +475,36 @@ mod tests {
             id: "ctr_3".into(),
             base_url: "http://127.0.0.1:9".into(),
         };
-        let err = parse_bind(&container, Some(&json!({"task": "only-eval.v1"})), None)
-            .unwrap_err()
-            .to_string();
+        let err = parse_bind(
+            &container,
+            Some(&json!({"task": "only-eval.v1"})),
+            None,
+            None,
+        )
+        .unwrap_err()
+        .to_string();
         assert!(err.contains("no SFT or CISPO contract"), "{err}");
+    }
+
+    #[test]
+    fn binds_native_training_rollout_capabilities() {
+        let container = ReadyTrainingContainer {
+            id: "ctr_banking77".into(),
+            base_url: "http://127.0.0.1:8115".into(),
+        };
+        let info = json!({"runtime_family": "banking77"});
+        let capabilities = json!({
+            "schema_version": "training.rollout.capabilities.v1",
+            "task_id": "banking77",
+            "operations": ["rollout", "reward", "heartbeat"]
+        });
+        let bind = parse_bind(&container, None, Some(&info), Some(&capabilities)).unwrap();
+        assert_eq!(bind.task_id, "banking77");
+        let cispo = bind.cispo.unwrap();
+        assert_eq!(cispo.rollout_url, "http://127.0.0.1:8115/training/rollouts");
+        assert_eq!(cispo.implementation, "training.rollout.capabilities.v1");
+        assert_eq!(cispo.harness, "rollout");
+        assert!(bind.sft.is_none());
     }
 
     #[test]
