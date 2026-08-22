@@ -224,12 +224,33 @@ fn install_managed_runtime(app: &AppHandle) -> Result<()> {
             fs::rename(&destination, retained).context("retain invalid MLX runtime")?;
         }
         fs::rename(&staging, &destination).context("activate verified MLX runtime")?;
+        rewrite_runtime_prefix(&destination, &staging, &destination)?;
+        prove_managed_runtime(&destination)?;
         Ok(())
     })();
     if outcome.is_err() {
         let _ = fs::remove_dir_all(&staging);
     }
     outcome
+}
+
+fn rewrite_runtime_prefix(root: &Path, old: &Path, new: &Path) -> Result<()> {
+    let old = old.to_string_lossy();
+    let new = new.to_string_lossy();
+    for entry in fs::read_dir(root.join("runtime/bin"))? {
+        let path = entry?.path();
+        if !path.is_file() {
+            continue;
+        }
+        let bytes = fs::read(&path)?;
+        let Ok(text) = std::str::from_utf8(&bytes) else {
+            continue;
+        };
+        if text.contains(old.as_ref()) {
+            fs::write(&path, text.replace(old.as_ref(), new.as_ref()))?;
+        }
+    }
+    Ok(())
 }
 
 fn copy_tree(source: &Path, destination: &Path) -> Result<()> {
@@ -823,5 +844,28 @@ mod tests {
         let error = read_verified_wheelhouse(&root).unwrap_err().to_string();
         assert!(error.contains("digest verification"), "{error}");
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn activated_runtime_scripts_replace_the_staging_prefix() {
+        let parent = std::env::temp_dir().join(format!(
+            "synth-desktop-mlx-prefix-{}-{}",
+            std::process::id(),
+            Uuid::new_v4()
+        ));
+        let staging = parent.join(".0.6.0.staging-test");
+        let destination = parent.join("0.6.0");
+        fs::create_dir_all(destination.join("runtime/bin")).unwrap();
+        let script = destination.join("runtime/bin/synth-mlx-rl");
+        fs::write(
+            &script,
+            format!("#!/bin/sh\nexec {}/runtime/bin/python \"$@\"\n", staging.display()),
+        )
+        .unwrap();
+        rewrite_runtime_prefix(&destination, &staging, &destination).unwrap();
+        let activated = fs::read_to_string(script).unwrap();
+        assert!(!activated.contains(staging.to_string_lossy().as_ref()));
+        assert!(activated.contains(destination.to_string_lossy().as_ref()));
+        fs::remove_dir_all(parent).unwrap();
     }
 }
