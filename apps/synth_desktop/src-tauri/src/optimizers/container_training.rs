@@ -62,14 +62,65 @@ pub async fn bind_cispo(
     service: &OptimizerService,
     container_id: Option<&str>,
 ) -> Result<(ContainerTrainingBind, CispoContract)> {
-    let bind = bind(service, container_id).await?;
-    let cispo = bind.cispo.clone().ok_or_else(|| {
-        anyhow!(
-            "container `{}` does not advertise a CISPO contract on /workshop/manifest or /info",
-            bind.container_id
-        )
-    })?;
-    Ok((bind, cispo))
+    if container_id
+        .map(str::trim)
+        .is_some_and(|value| !value.is_empty())
+    {
+        let bind = bind(service, container_id).await?;
+        let cispo = bind.cispo.clone().ok_or_else(|| {
+            anyhow!(
+                "container `{}` does not advertise a CISPO contract on /workshop/manifest or /info",
+                bind.container_id
+            )
+        })?;
+        return Ok((bind, cispo));
+    }
+
+    // TrainingWorkspace currently asks for a CISPO recipe, not an arbitrary
+    // container. Probe every ready registration and select only when exactly
+    // one advertises the requested contract. This preserves fail-closed
+    // behavior without making an unrelated GEPA container render local CISPO
+    // unusable merely because both are healthy.
+    let ready = ready_containers(service).await?;
+    let mut candidates = Vec::new();
+    let mut failures = Vec::new();
+    for container in ready {
+        match fetch_bind(&container).await {
+            Ok(bind) if bind.cispo.is_some() => candidates.push(bind),
+            Ok(_) => {}
+            Err(error) => failures.push(format!("{}: {error}", container.id)),
+        }
+    }
+    select_cispo_bind(candidates, failures)
+}
+
+fn select_cispo_bind(
+    mut candidates: Vec<ContainerTrainingBind>,
+    failures: Vec<String>,
+) -> Result<(ContainerTrainingBind, CispoContract)> {
+    match candidates.len() {
+        1 => {
+            let bind = candidates.remove(0);
+            let cispo = bind.cispo.clone().expect("candidate has CISPO contract");
+            Ok((bind, cispo))
+        }
+        0 => bail!(
+            "no ready registered container advertises a CISPO contract{}",
+            if failures.is_empty() {
+                String::new()
+            } else {
+                format!("; discovery failures: {}", failures.join("; "))
+            }
+        ),
+        _ => bail!(
+            "ambiguous CISPO containers: {}. Pass the explicit containerId; refusing to substitute a container.",
+            candidates
+                .iter()
+                .map(|bind| bind.container_id.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+    }
 }
 
 async fn ready_containers(service: &OptimizerService) -> Result<Vec<ReadyTrainingContainer>> {
@@ -548,6 +599,52 @@ mod tests {
         assert_eq!(cispo.implementation, "training.rollout.capabilities.v1");
         assert_eq!(cispo.harness, "classify");
         assert!(bind.sft.is_none());
+    }
+
+    fn cispo_bind(id: &str) -> ContainerTrainingBind {
+        ContainerTrainingBind {
+            container_id: id.into(),
+            base_url: format!("http://{id}.test"),
+            task_id: "banking77".into(),
+            cispo: Some(CispoContract {
+                rollout_url: format!("http://{id}.test/training/rollouts"),
+                reward_url: None,
+                implementation: "training.rollout.capabilities.v1".into(),
+                harness: "classify".into(),
+                plan_ref: "banking77_eval.v1".into(),
+                train_world_ref: "world:banking77@train".into(),
+                heldout_world_ref: "world:banking77@heldout".into(),
+                token: None,
+            }),
+            sft: None,
+        }
+    }
+
+    #[test]
+    fn selects_the_unique_cispo_capable_container() {
+        let (bind, _) = select_cispo_bind(vec![cispo_bind("training")], vec![]).unwrap();
+        assert_eq!(bind.container_id, "training");
+    }
+
+    #[test]
+    fn refuses_ambiguous_cispo_capable_containers() {
+        let error = select_cispo_bind(
+            vec![cispo_bind("training-a"), cispo_bind("training-b")],
+            vec![],
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("ambiguous CISPO containers"), "{error}");
+        assert!(error.contains("training-a, training-b"), "{error}");
+    }
+
+    #[test]
+    fn reports_discovery_failures_when_no_cispo_container_qualifies() {
+        let error = select_cispo_bind(vec![], vec!["eval-only: no training contract".into()])
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("no ready registered container"), "{error}");
+        assert!(error.contains("eval-only: no training contract"), "{error}");
     }
 
     #[test]

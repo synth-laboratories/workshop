@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import type { TrainingArtifact } from "../bridge";
 import { bridges } from "../runtime/desktopBridge";
+import { publicError } from "../runtime/publicError";
 import { isTerminalRunStatus } from "../runtime/runProgress/types";
 import { inspectMlxReadiness, planModelInstall, trainingArtifacts } from "../runtime/trainingExperience";
 import type { MlxReadiness, ModelInstallPlan } from "../runtime/trainingExperience";
@@ -31,7 +32,7 @@ const MODEL_TITLE = "Qwen 3.5 0.8B";
 const MODEL_REVISION = "2fc06364715b967f1860aea9cf38778875588b17";
 
 function bytes(value?: number | null): string { return value == null ? "—" : value >= 1024 ** 3 ? `${(value / 1024 ** 3).toFixed(2)} GB` : `${(value / 1024 ** 2).toFixed(1)} MB`; }
-function message(error: unknown): string { return error instanceof Error ? error.message : String(error); }
+function message(error: unknown): string { return publicError(error); }
 function Kv({ values }: { values: Array<[string, string]> }) { return <dl className="training-kv">{values.map(([key, value]) => <div key={key}><dt>{key}</dt><dd>{value}</dd></div>)}</dl>; }
 function present(item: TrainingArtifact): Artifact { return { id: item.id, kind: item.adapterKind, algorithm: item.producingAlgorithm.toUpperCase(), baseModel: item.baseModelId, runId: item.producingRunId, datasetDigest: item.datasetDigest ?? "—", configDigest: item.configDigest ?? "—", sha256: item.digest ?? "—", size: bytes(item.sizeBytes), integrity: item.integrity[0].toUpperCase() + item.integrity.slice(1), backends: item.compatibleInference }; }
 function evaluations(events: unknown[]): Evaluation[] { return events.flatMap((raw) => { if (typeof raw !== "object" || raw == null) return []; const event = raw as Record<string, unknown>; const delta = typeof event.delta === "object" && event.delta != null ? event.delta as Record<string, unknown> : {}; return event.type === "training.evaluation.completed" && typeof delta.evaluation === "object" && delta.evaluation != null ? [delta.evaluation as Evaluation] : []; }); }
