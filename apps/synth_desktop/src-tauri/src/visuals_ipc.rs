@@ -2580,6 +2580,19 @@ pub(crate) async fn dispatch_optimizer(
             Ok(json!({ "inference": inference }))
         }
         ("GET", "/v1/mlx/inspect") => Ok(crate::optimizers::typed_capabilities::inspect_local_mlx()),
+        ("GET", "/v1/training/mlx-runtime") => {
+            Ok(serde_json::to_value(crate::optimizers::mlx_runtime::runtime_status())?)
+        }
+        ("POST", "/v1/training/mlx-runtime/install") => {
+            let confirm = body.get("confirm").and_then(Value::as_bool).unwrap_or(false);
+            let status = crate::optimizers::mlx_runtime::training_mlx_runtime_install(
+                app.clone(),
+                confirm,
+            )
+            .await
+            .map_err(anyhow::Error::msg)?;
+            Ok(serde_json::to_value(status)?)
+        }
         ("GET", "/v1/mlx/install-plan") => {
             let model_id = body.get("model_id").and_then(Value::as_str);
             crate::optimizers::typed_capabilities::plan_model_install(model_id)
