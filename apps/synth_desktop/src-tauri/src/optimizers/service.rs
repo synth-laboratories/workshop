@@ -582,7 +582,7 @@ impl OptimizerService {
     /// Never on which files happen to exist on disk: reading a baseline eval
     /// through GEPA's candidate-materialization path is what answered a
     /// successful 10/10 campaign with "completed GEPA result omitted a
-    /// materialized prompt".
+    /// materialized candidate values".
     pub async fn get_result(&self, optimizer_run_id: String) -> Result<Value> {
         let run = self.get(optimizer_run_id.clone()).await?;
         let manifest = self.terminal_manifest(optimizer_run_id.clone()).await?;
@@ -2493,23 +2493,21 @@ async fn materialize_optimizer_result(
             }));
         }
     }
-    let prompt = candidate_raw.as_ref().and_then(|bytes| {
+    let materialized_values = candidate_raw.as_ref().and_then(|bytes| {
         let value: Value = serde_json::from_slice(bytes).ok()?;
-        value
-            .get("prompt")
-            .or_else(|| value.pointer("/values/prompt"))
-            .or_else(|| value.pointer("/payload/prompt"))
-            .or_else(|| value.pointer("/lever_bundle/values/prompt"))
-            .or_else(|| value.get("stage2_system"))
-            .or_else(|| value.pointer("/values/stage2_system"))
-            .or_else(|| value.pointer("/payload/stage2_system"))
-            .or_else(|| value.pointer("/lever_bundle/values/stage2_system"))
-            .or_else(|| value.get("react_system_prompt"))
-            .or_else(|| value.pointer("/values/react_system_prompt"))
-            .or_else(|| value.pointer("/payload/react_system_prompt"))
-            .or_else(|| value.pointer("/lever_bundle/values/react_system_prompt"))
-            .and_then(Value::as_str)
-            .map(str::to_owned)
+        let values = value
+            .get("values")
+            .or_else(|| value.get("payload"))
+            .or_else(|| value.pointer("/lever_bundle/values"))
+            .and_then(Value::as_object)
+            .filter(|values| !values.is_empty())
+            .cloned();
+        values.or_else(|| {
+            ["prompt", "stage2_system", "react_system_prompt"]
+                .into_iter()
+                .find_map(|key| value.get(key).cloned().map(|item| (key, item)))
+                .map(|(key, item)| serde_json::Map::from_iter([(key.to_string(), item)]))
+        })
     });
     let candidate_id = candidate_raw.as_ref().and_then(|bytes| {
         let value: Value = serde_json::from_slice(bytes).ok()?;
@@ -2527,19 +2525,16 @@ async fn materialize_optimizer_result(
             .and_then(Value::as_str)
             .map(str::to_owned)
     });
-    let materialized_digest = prompt.as_ref().map(|text| {
+    let materialized_digest = materialized_values.as_ref().map(|values| {
         use sha2::{Digest, Sha256};
-        format!("sha256:{:x}", Sha256::digest(text.as_bytes()))
+        let bytes = serde_json::to_vec(values).expect("materialized candidate values serialize");
+        format!("sha256:{:x}", Sha256::digest(bytes))
     });
     if run.algorithm_id == "gepa"
         && run.status == "completed"
-        && prompt
-            .as_deref()
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .is_none()
+        && materialized_values.is_none()
     {
-        bail!("completed GEPA result omitted a materialized prompt");
+        bail!("completed GEPA result omitted materialized candidate values");
     }
     let mut selected_candidate = json!({});
     if let Some(id) = candidate_id {
@@ -2548,8 +2543,8 @@ async fn materialize_optimizer_result(
     if let Some(parent) = parent_id {
         selected_candidate["parentId"] = json!(parent);
     }
-    if let Some(prompt) = prompt {
-        selected_candidate["materializedValues"] = json!({ "prompt": prompt });
+    if let Some(values) = materialized_values {
+        selected_candidate["materializedValues"] = Value::Object(values);
     }
     if let Some(digest) = materialized_digest {
         selected_candidate["materializedDigest"] = json!(digest);
@@ -4726,7 +4721,7 @@ pub(in crate::optimizers) mod tests {
 
     /// A GEPA search that spends its whole budget and keeps its seed is the
     /// common outcome, and `get_result` used to describe it exactly like a win:
-    /// a `selectedCandidate` with a materialized prompt and `frontierMember:
+    /// a `selectedCandidate` with materialized values and `frontierMember:
     /// true`, no verdict, and nothing saying the winner was the incumbent.
     ///
     /// The result now leads with the verdict and keeps deployment separate from
@@ -5195,7 +5190,7 @@ pub(in crate::optimizers) mod tests {
         match gepa_result {
             Ok(value) => assert_eq!(value["resultKind"], json!("gepa_run_result.v1")),
             Err(error) => assert!(
-                format!("{error:#}").contains("materialized prompt"),
+                format!("{error:#}").contains("materialized candidate values"),
                 "{error:#}"
             ),
         }
@@ -6321,7 +6316,7 @@ pub(in crate::optimizers) mod tests {
         let result = svc.get_result(run.id.clone()).await.unwrap();
         assert_eq!(result["schemaVersion"], json!("optimizer_result.v1"));
         assert_eq!(
-            result["selectedCandidate"]["materializedValues"]["prompt"],
+            result["selectedCandidate"]["materializedValues"]["stage2_system"],
             json!("Classify the Banking77 intent carefully.")
         );
         assert!(result["selectedCandidate"]["materializedDigest"]
@@ -6381,7 +6376,7 @@ pub(in crate::optimizers) mod tests {
         let result = svc.get_result(run.id).await.unwrap();
         assert_eq!(result["schemaVersion"], json!("optimizer_result.v1"));
         assert_eq!(
-            result["selectedCandidate"]["materializedValues"]["prompt"],
+            result["selectedCandidate"]["materializedValues"]["react_system_prompt"],
             json!("Observe carefully, choose one valid Craftax action, then reassess.")
         );
         assert!(result["selectedCandidate"]["materializedDigest"]
@@ -6395,7 +6390,7 @@ pub(in crate::optimizers) mod tests {
     }
 
     #[tokio::test]
-    async fn completed_result_without_prompt_fails_closed() {
+    async fn completed_result_without_materialized_values_fails_closed() {
         let (svc, dir, _) = service().await;
         let run_dir = dir.path().join("banking77_empty");
         std::fs::create_dir_all(&run_dir).unwrap();
@@ -6420,6 +6415,8 @@ pub(in crate::optimizers) mod tests {
         stored.summary = json!({ "runDirectory": run_dir.display().to_string() });
         svc.persist_run(stored).await.unwrap();
         let error = svc.get_result(run.id).await.unwrap_err();
-        assert!(error.to_string().contains("materialized prompt"));
+        assert!(error
+            .to_string()
+            .contains("materialized candidate values"));
     }
 }
