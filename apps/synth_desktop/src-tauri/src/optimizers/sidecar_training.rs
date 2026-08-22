@@ -773,6 +773,9 @@ async fn watch_job(
             .unwrap_or("running")
         {
             "succeeded" => {
+                if algorithm == "sft" {
+                    append_paired_sft_evaluation(&service, &run_id, &job).await?;
+                }
                 persist_handoff(&service, &client, &run_id).await?;
                 append_status(&service, &run_id, "optimizer.run.completed", "completed").await?;
                 return Ok(());
@@ -805,6 +808,76 @@ async fn watch_job(
             _ = sleep(Duration::from_millis(150)) => {}
         }
     }
+}
+
+async fn append_paired_sft_evaluation(
+    service: &OptimizerService,
+    run_id: &str,
+    job: &Value,
+) -> Result<()> {
+    let Some(draft) = paired_sft_evaluation_draft(job) else {
+        return Ok(());
+    };
+    service
+        .append_event_payloads(run_id.into(), vec![draft])
+        .await?;
+    Ok(())
+}
+
+fn paired_sft_evaluation_draft(job: &Value) -> Option<OptimizerEventDraft> {
+    let evaluation = job.get("evaluation")?;
+    let items = evaluation.get("items")?.as_array()?;
+    if items.is_empty() {
+        return None;
+    }
+    let mut base = Vec::with_capacity(items.len());
+    let mut trained = Vec::with_capacity(items.len());
+    for (index, item) in items.iter().enumerate() {
+        let before = item.get("before_loss")?.as_f64()?;
+        let after = item.get("after_loss")?.as_f64()?;
+        let seed = item
+            .get("item")
+            .and_then(Value::as_u64)
+            .unwrap_or(index as u64)
+            .to_string();
+        // The shared paired-comparison visual uses a higher-is-better scalar.
+        // Negated token loss preserves the authoritative ordering without
+        // relabelling loss as accuracy or reward.
+        base.push(json!({ "seed": seed, "reward": -before, "loss": before }));
+        trained.push(json!({ "seed": seed, "reward": -after, "loss": after }));
+    }
+    let checkpoint_id = job
+        .get("checkpoints")
+        .and_then(Value::as_array)
+        .and_then(|items| items.last())
+        .and_then(|item| item.get("checkpoint_id"))
+        .cloned()
+        .unwrap_or(Value::Null);
+    let split_digest = evaluation
+        .get("dataset_sha256")
+        .cloned()
+        .unwrap_or(Value::Null);
+    let payload = json!({
+        "role": "heldout",
+        "metric": "negative_token_loss",
+        "measurementOnly": true,
+        "split_digest": split_digest,
+        "checkpoint_id": checkpoint_id,
+        "base": { "label": "Unchanged base model", "seeds": base },
+        "trained": { "label": "Trained SFT adapter", "seeds": trained },
+        "mean_before_loss": evaluation.get("mean_before_loss"),
+        "mean_after_loss": evaluation.get("mean_after_loss"),
+        "mean_paired_delta": evaluation.get("mean_paired_delta"),
+        "improved_items": evaluation.get("improved_items"),
+        "item_count": evaluation.get("item_count"),
+        "evaluation_sha256": evaluation.get("sha256"),
+    });
+    Some(
+        OptimizerEventDraft::new("sft.heldout_evaluation.completed", "sft")
+            .delta(payload.as_object()?.clone())
+            .item(payload)
+            .idempotency_key("local-sft:paired-heldout-evaluation"),
+    )
 }
 
 pub async fn append_mapped_event(
@@ -2118,6 +2191,33 @@ mod tests {
         assert_eq!(hosted.event_type, "training.evaluation.completed");
         assert_eq!(hosted.item.as_ref().unwrap()["checkpoint_id"], "ckpt-10");
         assert_eq!(hosted.item.as_ref().unwrap()["score"], 0.7);
+    }
+
+    #[test]
+    fn completed_local_sft_job_projects_paired_loss_into_the_visual() {
+        let draft = paired_sft_evaluation_draft(&json!({
+            "evaluation": {
+                "dataset_sha256": "heldout-digest",
+                "mean_before_loss": 0.4,
+                "mean_after_loss": 0.2,
+                "mean_paired_delta": -0.2,
+                "improved_items": 2,
+                "item_count": 2,
+                "sha256": "evaluation-digest",
+                "items": [
+                    {"item": 0, "before_loss": 0.5, "after_loss": 0.1},
+                    {"item": 1, "before_loss": 0.3, "after_loss": 0.3}
+                ]
+            },
+            "checkpoints": [{"checkpoint_id": "run:step-4"}]
+        }))
+        .expect("paired evaluation draft");
+        assert_eq!(draft.event_type, "sft.heldout_evaluation.completed");
+        assert_eq!(draft.delta["split_digest"], "heldout-digest");
+        assert_eq!(draft.delta["checkpoint_id"], "run:step-4");
+        assert_eq!(draft.delta["base"]["seeds"][0]["reward"], -0.5);
+        assert_eq!(draft.delta["trained"]["seeds"][0]["reward"], -0.1);
+        assert_eq!(draft.delta["metric"], "negative_token_loss");
     }
 
     #[test]
