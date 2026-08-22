@@ -5,7 +5,7 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 PROJECT="${SYNTH_MLX_RL_PROJECT_ROOT:-$(dirname "$ROOT")/synth-mlx-rl}"
 TARGET="$ROOT/runtime-distributions/mlx-rl"
 VERSION="0.6.0"
-EXPECTED_SOURCE_REVISION="5e39facb8947524a2bf56711027137757e2dfd52"
+EXPECTED_SOURCE_REVISION="aada48f8eb66dcb488c5e4e31fe8f2ec164db97f"
 EXPECTED_LOCK_SHA256="7f14b704ba9a6c30e6ced5cc88fc2ba6a58a936a9531cfaf168cbb664f83c420"
 UV="${SYNTH_OPTIMIZER_UV_PATH:-}"
 
