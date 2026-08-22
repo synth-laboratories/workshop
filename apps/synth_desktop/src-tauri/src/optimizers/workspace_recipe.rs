@@ -658,6 +658,13 @@ locality = "container"
         refuse_loopback("http://127.0.0.1:9/providers/openai").unwrap_err();
         refuse_loopback("http://host.docker.internal:9/providers/openai").unwrap();
         let mut table = toml::map::Map::new();
+        table.insert(
+            "policy".into(),
+            toml::Value::Table(toml::map::Map::from_iter([(
+                "provider".into(),
+                toml::Value::String("openai".into()),
+            )])),
+        );
         bind_locality_urls(
             &mut table,
             PolicyLocality::Container,

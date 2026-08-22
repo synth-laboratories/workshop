@@ -948,7 +948,7 @@ mod tests {
             return json_response(
                 StatusCode::OK,
                 json!({
-                    "publication_id": PUBLICATION_ID,
+                    "publicationId": PUBLICATION_ID,
                     "audience": audience,
                     "status": "active",
                 }),
@@ -961,7 +961,7 @@ mod tests {
             return json_response(
                 StatusCode::OK,
                 json!({
-                    "publication_id": PUBLICATION_ID,
+                    "publicationId": PUBLICATION_ID,
                     "audience": {"kind": "private"},
                     "status": "revoked",
                 }),
@@ -977,10 +977,10 @@ mod tests {
             return json_response(
                 StatusCode::OK,
                 json!({
-                    "publication_id": PUBLICATION_ID,
+                    "publicationId": PUBLICATION_ID,
                     "slug": "craftax-oss-contrast",
                     "status": "published",
-                    "public_url": "/reports/craftax-oss-contrast",
+                    "publicUrl": "/reports/craftax-oss-contrast",
                 }),
             );
         }

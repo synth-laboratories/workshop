@@ -4871,7 +4871,7 @@ pub(in crate::optimizers) mod tests {
         // The prompt is still materialized — callers need to read what ran — but
         // it is no longer the whole answer.
         assert_eq!(
-            result["selectedCandidate"]["materializedValues"]["prompt"],
+            result["selectedCandidate"]["materializedValues"]["stage2_system"],
             json!("Classify the Banking77 intent.")
         );
         assert_eq!(
@@ -5781,7 +5781,7 @@ pub(in crate::optimizers) mod tests {
         let recipes = svc.list_recipes();
         assert!(recipes
             .iter()
-            .any(|item| item.get("id") == Some(&json!("cispo.banking77.mlx.v1"))));
+            .any(|item| item.get("id") == Some(&json!("cispo.mlx.v1"))));
         assert!(recipes
             .iter()
             .any(|item| item.get("id") == Some(&json!("cispo.slime.hosted.v1"))));

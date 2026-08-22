@@ -866,8 +866,7 @@ mod status_contract_tests {
     const HANDWRITTEN_STATUS_ALLOWLIST: &[&str] = &[];
 
     /// Sidecar training-job status files. Not the run domain. P0-15.
-    const TRAINING_JOB_STATUS_FILES: &[&str] =
-        &["sidecar_training.rs", "local.rs", "sft_result.rs"];
+    const TRAINING_JOB_STATUS_FILES: &[&str] = &["sidecar_training.rs", "local.rs"];
 
     /// Receivers that are an `OptimizerRunRecord`. Deliberately explicit: the
     /// sidecar training *job* and the plugin *service* both have a `status`

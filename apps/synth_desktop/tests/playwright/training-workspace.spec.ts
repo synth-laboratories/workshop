@@ -51,7 +51,7 @@ test("resolved config routes hosted launches through the native optimizer", asyn
 	await expect(page.getByTestId("training-resolved-config")).toContainText("Container tunnel · exact checkpoint");
 	await page.getByLabel("Compute").selectOption("tinker");
 	await expect(page.getByTestId("training-resolved-config")).toContainText("Hosted · Tinker");
-	await page.getByRole("button", { name: "Review run" }).click();
+	await page.getByRole("button", { name: "Start bounded run" }).click();
 	await expect(page.getByTestId("training-run-failure")).toContainText("native optimizer runtime unavailable");
 });
 
@@ -66,7 +66,7 @@ test("real unscored checkpoint evidence remains reviewable without inventing a p
 	});
 	await page.getByTestId("training-tab-train").click();
 	await page.getByLabel("Compute").selectOption("tinker");
-	await page.getByRole("button", { name: "Review run" }).click();
+	await page.getByRole("button", { name: "Start bounded run" }).click();
 	const evidence = page.getByTestId("training-evaluation-comparison");
 	await expect(evidence).toContainText("no scores returned");
 	await evidence.getByRole("button", { name: "Review checkpoint evaluation at step 10" }).click();

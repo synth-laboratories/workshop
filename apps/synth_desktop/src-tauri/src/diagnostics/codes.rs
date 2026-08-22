@@ -206,6 +206,62 @@ const REMEDIATIONS: &[(&str, &str)] = &[
         "The optimizer sidecar is not running or not installed. Start or install it from the Optimizers pane before starting a run.",
     ),
     (
+        OPTIMIZER_RUNTIME_STALE,
+        "The optimizer runtime no longer matches its recorded installation. Reinstall the pinned optimizer version, then retry only after its digest and health probe agree.",
+    ),
+    (
+        OPTIMIZER_RUNTIME_UNHEALTHY,
+        "The pinned optimizer runtime failed its health probe. Inspect its bounded diagnostic, repair or reinstall that exact version, and confirm health before starting paid work.",
+    ),
+    (
+        CREDENTIAL_SOURCE_UNCONFIGURED,
+        "No approved credential source is configured for this provider. Configure the project-local environment source, then request a new Workshop proxy capability.",
+    ),
+    (
+        CREDENTIAL_VALUE_MISSING,
+        "The configured credential variable has no usable value. Add it to the authorized project-local environment file, restart the proxy, and request a fresh capability.",
+    ),
+    (
+        CREDENTIAL_VALUE_UNLOADED,
+        "The credential exists but is not loaded into the active non-Keychain source. Reload the authorized environment configuration and issue a new proxy capability.",
+    ),
+    (
+        PROXY_NOT_RUNNING,
+        "The Workshop provider proxy is not running. Start the instance proxy and wait for its health check before launching the container or optimizer workload.",
+    ),
+    (
+        PROXY_ROUTE_UNBOUND,
+        "The capability does not include the requested provider route. Issue a new least-privilege capability for this provider and model, then retry through that route.",
+    ),
+    (
+        PROXY_CONTAINER_UNREACHABLE,
+        "The container cannot reach the Workshop proxy address. Verify the container-local proxy origin and network bridge, then rerun preflight before spending begins.",
+    ),
+    (
+        CAPABILITY_DENIED,
+        "The requested provider capability was denied. Review the declared provider, model, call ceiling, and cost ceiling, then submit a correctly scoped request.",
+    ),
+    (
+        CAPABILITY_EXPIRED,
+        "The provider capability expired before the workload completed. Request a fresh bounded capability and restart only the unfinished operation.",
+    ),
+    (
+        PROVIDER_AUTH_REJECTED,
+        "The upstream provider rejected authentication. Validate the authorized project-local credential without exposing it, then rotate the proxy capability and retry.",
+    ),
+    (
+        PROVIDER_RATE_LIMITED,
+        "The upstream provider rate-limited the request. Respect the reported retry window and resume within the existing workload bounds rather than widening them.",
+    ),
+    (
+        PROVIDER_UNAVAILABLE,
+        "The upstream provider is unavailable. Confirm proxy health and provider status, then retry the same bounded request when the upstream service recovers.",
+    ),
+    (
+        MANAGED_BYOK_REJECTED,
+        "This managed recipe does not accept bring-your-own credentials. Select its managed provider route or use a workspace-owned recipe that explicitly declares BYOK support.",
+    ),
+    (
         OPTIMIZER_WORKER_FAILED,
         "An optimizer worker exited before its run completed. The run's own bounded diagnostic evidence is correlated by optimizer_run_id.",
     ),

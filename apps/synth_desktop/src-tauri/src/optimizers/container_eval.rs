@@ -173,19 +173,14 @@ impl EvalSpec {
         if self.policy_config.is_empty() {
             return None;
         }
-        let mut config = json!({
+        let base_url = openai_base_url?;
+        let config = json!({
             "provider": self.provider,
             "model": self.model,
             "temperature": 0,
+            "base_url": base_url,
+            "api_key_env": "OPENAI_API_KEY",
         });
-        if let Some(base_url) = openai_base_url {
-            config
-                .as_object_mut()?
-                .insert("base_url".into(), json!(base_url));
-            config
-                .as_object_mut()?
-                .insert("api_key_env".into(), json!("OPENAI_API_KEY"));
-        }
         Some(json!({
             "config_id": self.policy_config,
             "harness": self.harness,
@@ -2973,10 +2968,13 @@ max_total_rollouts = 4
     }
 
     #[test]
-    fn banking77_policy_config_stays_on_openrouter() {
+    fn banking77_policy_config_stays_on_workshop_proxy() {
         let spec = EvalSpec::classify_fixture();
-        let body = spec.policy_config_body(None).unwrap();
-        assert_eq!(body["config"]["base_url"], "https://openrouter.ai/api/v1");
-        assert_eq!(body["config"]["api_key_env"], "OPENROUTER_API_KEY");
+        assert!(spec.policy_config_body(None).is_none());
+        let proxy = "http://host.docker.internal:9/cap/wcap_banking77/v1/providers/openrouter";
+        let body = spec.policy_config_body(Some(proxy)).unwrap();
+        assert_eq!(body["config"]["base_url"], proxy);
+        assert_eq!(body["config"]["api_key_env"], "OPENAI_API_KEY");
+        assert!(!body.to_string().contains("openrouter.ai"));
     }
 }

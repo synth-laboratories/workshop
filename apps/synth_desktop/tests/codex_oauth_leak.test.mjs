@@ -9,9 +9,12 @@ const read = (path) => readFileSync(join(root, path), "utf8");
 
 test("renderer OAuth contract exposes status but never token fields", () => {
 	const types = read("src/renderer/src/bridge/types.ts");
+	const protocol = read("src/renderer/src/generated/protocol.ts");
 	const oauth = types.slice(types.indexOf("export type CodexOauthBegin"), types.indexOf("export type CodexOauthBridge") + 500);
-	assert.match(oauth, /accountHint/);
+	const status = protocol.slice(protocol.indexOf("export type Status"), protocol.indexOf("export type Status") + 800);
+	assert.match(status, /accountHint/);
 	assert.doesNotMatch(oauth, /accessToken|refreshToken|idToken|authorization/i);
+	assert.doesNotMatch(status, /accessToken|refreshToken|idToken|authorization/i);
 });
 
 test("OAuth commands stay aligned across Rust and TypeScript", () => {

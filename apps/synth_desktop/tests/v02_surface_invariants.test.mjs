@@ -32,7 +32,7 @@ test("v0.4 transcript shows immutable generation speed and final elapsed work", 
 	const labels = read("runtime/modelPerformanceLabels.ts");
 	assert.match(source, /data-testid="model-working-generation-tps"/);
 	assert.match(source, /data-testid={`assistant-generation-tps-\${m\.id}`}/);
-	assert.match(source, /useTurnPerformanceLabels\(chat, events, running\)/);
+	assert.match(source, /useTurnPerformanceLabels\(\s*chat,\s*events,\s*running,/);
 	assert.doesNotMatch(source, /medianTpsLabel\?\.replace/);
 	assert.match(turnLabels, /Generation speed unavailable/);
 	assert.match(turnLabels, /event\.eventKind === "turn\/accepted"/);
@@ -128,16 +128,16 @@ test("hosted SFT uses only the public synth-optimizers control plane", () => {
 	const hostedSftBody = sidecarTraining.slice(hostedStart, hostedEnd === -1 ? undefined : hostedEnd);
 	assert.match(
 		hostedSftBody,
-		/let client = SftOptimizerClient::from_env\(\)\?;[\s\S]*?job\.cancelled[\s\S]*?client\.cancel\(job_id\)\.await/,
+		/let client = SftOptimizerClient::from_env\(\)\?;[\s\S]*?job\.cancelled[\s\S]*?client\s*\.cancel\(job_id\)\s*\.await/,
 	);
 	assert.doesNotMatch(hostedSftBody, /HostedOptimizerClient|MlxLoopback/);
 	assert.doesNotMatch(sidecarTraining, /8787|OPTIMIZERS_BETA|SYNTH_OPTIMIZERS_BETA/);
 	assert.match(hostedSft, /kind:\s*"optimizer_sidecar"\.into\(\)/);
 	assert.match(service, /fn primary_visual_template[\s\S]*"sft" \| "cispo" => "optimizer\.sft\.live\.v1"/);
-	assert.match(commands, /"sft\.hosted\.fixture\.v1"[\s\S]*SYNTH_OPTIMIZERS_SFT_SERVICE_TOKEN/);
+	assert.match(commands, /"sft\.craftax\.nemotron-nano\.tinker\.v1"[\s\S]*SYNTH_OPTIMIZERS_SFT_SERVICE_TOKEN/);
 	assert.match(
 		commands,
-		/matches!\([\s\S]*request\.recipe_id\.as_str\(\)[\s\S]*"sft\.hosted\.fixture\.v1"[\s\S]*start_recipe\(request\)[\s\S]*return Ok\(run\)/,
+		/matches!\([\s\S]*request\.recipe_id\.as_str\(\)[\s\S]*"cispo\.mlx\.v1"[\s\S]*start_recipe\(request\)[\s\S]*return Ok\(run\)/,
 	);
 });
 

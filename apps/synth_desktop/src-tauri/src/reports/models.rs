@@ -420,12 +420,15 @@ pub struct ReportCommentCreate {
 #[derive(Clone, Debug, Deserialize, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub struct ReportAttachTrace {
+    #[serde(alias = "trace_digest")]
     pub trace_digest: String,
     #[serde(default)]
+    #[serde(alias = "trace_id")]
     pub trace_id: Option<String>,
     #[serde(default)]
     pub label: Option<String>,
     #[serde(default)]
+    #[serde(alias = "collection_id")]
     pub collection_id: Option<String>,
     #[specta(type = specta_typescript::Unknown)]
     #[serde(default)]

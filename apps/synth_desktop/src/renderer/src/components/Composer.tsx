@@ -1237,9 +1237,9 @@ export function Composer({
 
 	// A prompt that vanished from the persisted queue — removed here, or
 	// replaced by a reconnect — can no longer be promoted.
-	const queuedPromptKey = queuedPrompts.map((item) => item.id).join("");
+	const queuedPromptKey = JSON.stringify(queuedPrompts.map((item) => item.id));
 	useEffect(() => {
-		dispatchSteer({ type: "queueReconciled", promptIds: queuedPromptKey ? queuedPromptKey.split("") : [] });
+		dispatchSteer({ type: "queueReconciled", promptIds: JSON.parse(queuedPromptKey) as string[] });
 		// dispatchSteer is stable in effect; the id list is the real dependency.
 		// eslint-disable-next-line react-hooks/exhaustive-deps
 	}, [queuedPromptKey]);

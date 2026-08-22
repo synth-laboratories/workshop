@@ -46,10 +46,17 @@ import type {
 	ExperimentRecord,
 	ExperimentStatus,
 	InstanceDiagnostics,
+	HostedTrainingModel,
+	HostedTrainingModelCatalog,
+	LagunaAdapterStatus,
 	LagunaModelHit,
+	LagunaPolicy,
 	LagunaStatus,
 	MaskedImportCandidate,
 	McpContextGroup,
+	MlxRuntimeStatus,
+	ModelPerformanceSummary,
+	ModelPerformanceTurnSample,
 	ModelMultiAgentSetting,
 	MultiAgentVersion,
 	PendingGrantSummary,
@@ -74,6 +81,11 @@ import type {
 	ReportValidationResult,
 	ReportVisibilityRequest,
 	ResearchLogEntry,
+	OptimizerRunOutputs,
+	SavedLoraCheckpoint,
+	SavedLoraCheckpointPage,
+	SavedLoraDownload,
+	SavedLoraRunPage,
 	SecretAuditEvent,
 	SecretSummary,
 	SecretsInbox,
@@ -113,10 +125,17 @@ export type {
 	DesktopPermissionSettings,
 	ExperimentRecord,
 	ExperimentStatus,
+	HostedTrainingModel,
+	HostedTrainingModelCatalog,
+	LagunaAdapterStatus,
 	LagunaModelHit,
+	LagunaPolicy,
 	LagunaStatus,
 	MaskedImportCandidate,
 	McpContextGroup,
+	MlxRuntimeStatus,
+	ModelPerformanceSummary,
+	ModelPerformanceTurnSample,
 	ModelMultiAgentSetting,
 	MultiAgentVersion,
 	PendingGrantSummary,
@@ -141,6 +160,11 @@ export type {
 	ReportValidationResult,
 	ReportVisibilityRequest,
 	ResearchLogEntry,
+	OptimizerRunOutputs,
+	SavedLoraCheckpoint,
+	SavedLoraCheckpointPage,
+	SavedLoraDownload,
+	SavedLoraRunPage,
 	SecretAuditEvent,
 	SecretSummary,
 	SecretsInbox,
@@ -164,31 +188,6 @@ export type {
 	WorkspaceGrantRequest
 };
 
-
-/** One selectable inference policy. Speed fields are null until measured. */
-export type LagunaPolicy = {
-	modelId: string;
-	title: string | null;
-	isBase: boolean;
-	digest: string | null;
-	tokensPerSecondP10: number | null;
-	deltaVsBasePct: number | null;
-	/** False means the surface must not render the delta, not that it is zero. */
-	deltaIsResolvable: boolean;
-	tokenSamples: number;
-};
-
-/** The Synth-published finetune, installed or not. */
-export type LagunaAdapterStatus = {
-	modelId: string;
-	title: string;
-	digest: string;
-	installed: boolean;
-	downloadBytes: number;
-	baseRevision: string;
-	/** False when the installed weights are a different revision. */
-	baseMatches: boolean;
-};
 
 export type RequestOptions = {
 	method?: "GET" | "POST" | "DELETE";
@@ -274,13 +273,6 @@ export type TrainingModelsBridge = {
 	downloadModel(modelId: string): Promise<TrainingModelHit>;
 	deleteModel(modelId: string): Promise<void>;
 	onDownloadProgress(listener: (progress: TrainingModelDownloadProgress) => void): () => void;
-};
-
-export type MlxRuntimeStatus = {
-	installed: boolean;
-	executable: string | null;
-	version: string;
-	installHint: string;
 };
 
 export type TrainingArtifactsBridge = {
@@ -503,25 +495,6 @@ export type InventoryBridge = {
 	resolveTraceProjection(traceDigest: string, projectionKind?: string): Promise<ResolvedTraceProjection>;
 	listUsage(limit?: number): Promise<UsageLedgerEntry[]>;
 	counts(): Promise<InventoryCounts>;
-};
-
-export type ModelPerformanceSummary = {
-	provider: string;
-	modelId: string;
-	measurementKind: "decode" | "observed_stream" | "observed_stream_segment" | "end_to_end" | "provider_reported";
-	sampleCount: number;
-	tpsP50: number | null;
-	tpsP95: number | null;
-	ttftP50Ms: number | null;
-	lastObservedAt: string;
-};
-
-export type ModelPerformanceTurnSample = {
-	runId: string | null;
-	measurementKind: ModelPerformanceSummary["measurementKind"];
-	startedAtMs: number;
-	completedAtMs: number;
-	outputTps: number;
 };
 
 export type ModelPerformanceBridge = {
@@ -825,135 +798,11 @@ export type OptimizerRecipeInfo = {
 	prerequisites?: string[];
 };
 
-export type SavedLoraCheckpoint = {
-	schemaVersion: "saved_lora_checkpoint.v1";
-	checkpointId: string;
-	orgId: string;
-	ownerUserId?: string | null;
-	visibility: "private" | "org";
-	name: string;
-	description: string;
-	provider: "tinker" | "river" | "synth" | "imported";
-	checkpointKind: "inference" | "training";
-	providerCheckpointReference?: string | null;
-	runId?: string | null;
-	attemptId?: string | null;
-	sourceCheckpointId?: string | null;
-	optimizerAlgorithm?: "sft" | "cispo" | "ppo" | null;
-	baseModel: string;
-	loraRank?: number | null;
-	step?: number | null;
-	status: "uploading" | "ready" | "failed" | "archived";
-	storage: {
-		backend: "wasabi" | "minio" | "mlx-store";
-		bucket: string;
-		key: string;
-		version?: string | null;
-		etag?: string | null;
-		sha256?: string | null;
-		sizeBytes?: number | null;
-		contentType: string;
-	};
-	lineage: {
-		optimizerAlgorithm?: "sft" | "cispo" | "ppo" | null;
-		runId?: string | null;
-		attemptId?: string | null;
-		sourceCheckpointId?: string | null;
-		providerCheckpointReference?: string | null;
-	};
-	placement?: "this_mac" | "hosted";
-	inferenceChatCompletions?: boolean;
-	inferenceResponses?: boolean;
-	tags: string[];
-	metadata: Record<string, unknown>;
-	createdAt?: string | null;
-	updatedAt?: string | null;
-	archivedAt?: string | null;
-};
-
 export type OptimizerInferDelta = {
 	checkpointId: string;
 	family: string;
 	delta: string;
 	done: boolean;
-};
-
-export type SavedLoraCheckpointPage = {
-	schemaVersion: "saved_lora_checkpoint.page.v1";
-	items: SavedLoraCheckpoint[];
-	total: number;
-	limit: number;
-	offset: number;
-};
-
-export type SavedLoraRunPage = {
-	schemaVersion: "saved_lora_checkpoint.run_page.v1";
-	run: {
-		runId: string;
-		attemptId?: string | null;
-		optimizerAlgorithm: string;
-		status: string;
-	};
-	items: SavedLoraCheckpoint[];
-	counts: { total: number; inference: number; training: number };
-	total: number;
-	limit: number;
-	offset: number;
-};
-
-export type OptimizerRunOutputs = {
-	schemaVersion: "optimizer.run_outputs.v1";
-	run: {
-		runId: string;
-		attemptId?: string | null;
-		optimizerAlgorithm: string;
-		status: string;
-	};
-	result?: Record<string, unknown> | null;
-	artifacts: Array<{
-		artifactId: string;
-		runId: string;
-		artifactName: string;
-		contentType?: string | null;
-		sizeBytes: number;
-		sha256?: string | null;
-		storageBackend: string;
-		uri: string;
-		downloadPath: string;
-		metadata: Record<string, unknown>;
-		createdAt?: string | null;
-		updatedAt?: string | null;
-	}>;
-	modelCheckpoints: SavedLoraCheckpoint[];
-	counts: { artifacts: number; modelCheckpoints: number };
-};
-
-export type SavedLoraDownload = {
-	checkpointId: string;
-	url: string;
-	expiresIn: number;
-	contentType: string;
-	sizeBytes?: number | null;
-	sha256?: string | null;
-};
-
-export type HostedTrainingModel = {
-	modelId: string;
-	label: string;
-	provider: string;
-	providerRevision: string;
-	architecture: string;
-	maxContextLength: number;
-	rank: { default?: number; minimum?: number; maximum?: number };
-	algorithms: Record<string, { status?: string; block_reason?: string; note?: string }>;
-};
-
-export type HostedTrainingModelCatalog = {
-	schemaVersion: "hosted_training_model_catalog.v1";
-	catalogRevision: string;
-	livePreflightRequired: boolean;
-	models: HostedTrainingModel[];
-	total: number;
 };
 
 export type OptimizersBridge = {
@@ -1016,7 +865,7 @@ export type OptimizersBridge = {
 	importLocal(request: { path: string; sessionRef?: string; openVisual?: boolean }): Promise<OptimizerRunRecord>;
 	reconcileCloud(request: { optimizerRunId: string; afterSeq?: number; openVisual?: boolean }): Promise<OptimizerRunRecord>;
 	listCloud(query?: { algorithm?: string; status?: string; limit?: number }): Promise<unknown[]>;
-	searchSavedLoras(query?: {
+	searchSavedLoras?(query?: {
 		search?: string;
 		scope?: "all" | "mine" | "org";
 		placement?: "all" | "this_mac" | "hosted";

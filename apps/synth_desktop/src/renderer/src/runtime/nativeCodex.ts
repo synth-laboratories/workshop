@@ -27,7 +27,7 @@ export function permissionConfigFromApprovalMode(mode: ApprovalMode): Permission
 	return approvalModeConfig(mode) as PermissionConfig;
 }
 
-import { LOCAL_BASE_POLICY } from "./lagunaPolicies";
+import { LOCAL_BASE_POLICY } from "./lagunaPolicies.ts";
 
 /** Where the local daemon listens when nothing else says otherwise. A named
  *  development instance gets its own port, so the caller passes the address the

@@ -3324,7 +3324,7 @@ async fn a_running_record_left_by_a_dead_process_never_lists_as_running() {
                 "inst_previous_process",
                 Some("attach-dead"),
                 0,
-                chrono::Utc::now(),
+                chrono::Utc::now() - chrono::Duration::minutes(5),
             )
         })
         .unwrap();

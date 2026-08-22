@@ -10,11 +10,12 @@ import assert from "node:assert/strict";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { tmpdir } from "node:os";
 import test from "node:test";
 import { transformSync } from "esbuild";
 
 const appRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
-const compiledDir = join(appRoot, "node_modules/.cache/synth-desktop-tests");
+const compiledDir = join(tmpdir(), "synth-desktop-tests");
 mkdirSync(compiledDir, { recursive: true });
 
 function compile(relative, outName) {
@@ -43,6 +44,7 @@ const {
 	sessionRecoveryNotice
 } = await import(compile("src/renderer/src/stores/applyRuntimeEvent.ts", "applyRuntimeEventRecovery.mjs"));
 
+compile("src/renderer/src/runtime/lagunaPolicies.ts", "lagunaPolicies.ts");
 const { restoreCodexSession } = await import(
 	compile("src/renderer/src/runtime/nativeCodex.ts", "nativeCodexRecovery.mjs")
 );

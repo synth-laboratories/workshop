@@ -360,10 +360,10 @@ export const commands = {
 	lagunaSettingsSnapshot: () => typedError<LagunaSettingsExchange, string>(__TAURI_INVOKE("laguna_settings_snapshot")),
 	lagunaSettingsUpdate: (patch: unknown) => typedError<LagunaSettingsExchange, string>(__TAURI_INVOKE("laguna_settings_update", { patch })),
 	trainingModelsList: () => __TAURI_INVOKE<TrainingModelHit[]>("training_models_list"),
-	trainingMlxRuntimeStatus: () => __TAURI_INVOKE<MlxRuntimeStatus>("training_mlx_runtime_status"),
-	trainingMlxRuntimeInstall: (confirm: boolean) => typedError<MlxRuntimeStatus, string>(__TAURI_INVOKE("training_mlx_runtime_install", { confirm })),
 	trainingModelsDownload: (modelId: string) => typedError<TrainingModelHit, string>(__TAURI_INVOKE("training_models_download", { modelId })),
 	trainingModelsDelete: (modelId: string) => typedError<null, string>(__TAURI_INVOKE("training_models_delete", { modelId })),
+	trainingMlxRuntimeStatus: () => __TAURI_INVOKE<MlxRuntimeStatus>("training_mlx_runtime_status"),
+	trainingMlxRuntimeInstall: (confirm: boolean) => typedError<MlxRuntimeStatus, string>(__TAURI_INVOKE("training_mlx_runtime_install", { confirm })),
 	trainingArtifactsList: () => __TAURI_INVOKE<TrainingArtifact[]>("training_artifacts_list"),
 	trainingArtifactsGet: (id: string) => typedError<TrainingArtifact, string>(__TAURI_INVOKE("training_artifacts_get", { id })),
 	trainingArtifactsExport: (id: string, destination: string, expectedDigest: string | null, confirm: boolean) => typedError<ArtifactMutationReceipt, string>(__TAURI_INVOKE("training_artifacts_export", { id, destination, expectedDigest, confirm })),
@@ -1102,7 +1102,7 @@ export type LagunaAdapterStatus = {
 	title: string,
 	digest: string,
 	installed: boolean,
-	downloadBytes: unknown,
+	downloadBytes: number,
 	baseRevision: string,
 	/**
 	 *  False when the installed weights are a different revision. The adapter
@@ -1315,6 +1315,13 @@ export type MigrationReceipt = {
 	rollback: RollbackMetadata,
 };
 
+export type MlxRuntimeStatus = {
+	installed: boolean,
+	executable: string | null,
+	version: string,
+	installHint: string,
+};
+
 export type ModelMultiAgentSetting = {
 	modelId: string,
 	displayName: string,
@@ -1462,10 +1469,7 @@ export type OptimizerRecipeRunRequest = {
 	recipeId: string,
 	sessionRef?: string | null,
 	openVisual?: boolean | null,
-	/**
-	 *  Tinker `create_lora_training_client(base_model=...)` id. Ignored except
-	 *  on the Craftax hosted SFT recipe. Must be in `docs/sft_tinker_base_models.toml`.
-	 */
+	/**  Tinker student id from `docs/sft_tinker_base_models.toml`. Omitted uses that file's default. */
 	baseModel?: string | null,
 	/**
 	 *  Allowlisted dataset shard id. Ignored except on recipes that publish
@@ -2122,6 +2126,7 @@ export type RuntimeContractView = {
 	/**  Version Desktop pins for the active channel. */
 	expected: string,
 	minSupported: string,
+	ownershipProtocol: number,
 	releaseChannel: string,
 	workshopCompat: string,
 	algorithms: string[],
@@ -2157,6 +2162,9 @@ export type SavedLoraCheckpoint = {
 	status: string,
 	storage: SavedLoraStorage,
 	lineage?: SavedLoraLineage,
+	placement?: string,
+	inferenceChatCompletions?: boolean,
+	inferenceResponses?: boolean,
 	tags: string[],
 	metadata: unknown,
 	createdAt: string | null,
@@ -2175,6 +2183,7 @@ export type SavedLoraCheckpointPage = {
 export type SavedLoraCheckpointQuery = {
 	search: string | null,
 	scope: string | null,
+	placement: string | null,
 	provider: string | null,
 	checkpointKind: string | null,
 	baseModel: string | null,
@@ -2463,13 +2472,6 @@ export type TrainingModelHit = {
 	revision: string,
 	shardCount: number,
 	totalBytes: number,
-};
-
-export type MlxRuntimeStatus = {
-	installed: boolean,
-	executable: string | null,
-	version: string,
-	installHint: string,
 };
 
 export type UpdateStatus = {

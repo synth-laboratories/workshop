@@ -2,10 +2,13 @@
   "events": [
     {
       "algorithmId": "eval",
+      "artifactRefs": [],
       "delta": {
         "message": "Planned 4 trials across 2 candidates"
       },
+      "error": null,
       "eventId": "opt_eval_example:eval:1",
+      "item": null,
       "level": "info",
       "occurredAt": "2026-08-15T16:31:51.856270+00:00",
       "optimizerRunId": "opt_eval_example",
@@ -57,14 +60,18 @@
         "planned_trials": 4,
         "recipe_id": "eval.craftax.llm-policy.smoke.v1"
       },
-      "type": "eval.run.planned"
+      "type": "eval.run.planned",
+      "usageDelta": null
     },
     {
       "algorithmId": "eval",
+      "artifactRefs": [],
       "delta": {
         "message": "Sealed the seed ledger"
       },
+      "error": null,
       "eventId": "opt_eval_example:eval:2",
+      "item": null,
       "level": "info",
       "occurredAt": "2026-08-15T16:31:51.856379+00:00",
       "optimizerRunId": "opt_eval_example",
@@ -103,10 +110,12 @@
           "sealed_at": "2026-08-15T16:31:51.855102+00:00"
         }
       },
-      "type": "eval.seed_ledger.sealed"
+      "type": "eval.seed_ledger.sealed",
+      "usageDelta": null
     },
     {
       "algorithmId": "eval",
+      "artifactRefs": [],
       "delta": {
         "candidate_id": "policy_e8d067b11684",
         "scenario": "craftax-default-48x48",
@@ -114,7 +123,9 @@
         "stage": "screen",
         "trial_id": "trial_screen_policy_e8d067b11684_craftax-default-48x48_102"
       },
+      "error": null,
       "eventId": "opt_eval_example:eval:3",
+      "item": null,
       "level": "info",
       "occurredAt": "2026-08-15T16:31:51.856690+00:00",
       "optimizerRunId": "opt_eval_example",
@@ -132,10 +143,13 @@
       },
       "schemaVersion": "optimizer_event.v1",
       "sequenceNumber": 3,
-      "type": "eval.trial.queued"
+      "snapshot": null,
+      "type": "eval.trial.queued",
+      "usageDelta": null
     },
     {
       "algorithmId": "eval",
+      "artifactRefs": [],
       "delta": {
         "candidate_id": "policy_30d2c7e911d3",
         "scenario": "craftax-default-48x48",
@@ -143,7 +157,9 @@
         "stage": "screen",
         "trial_id": "trial_screen_policy_30d2c7e911d3_craftax-default-48x48_101"
       },
+      "error": null,
       "eventId": "opt_eval_example:eval:4",
+      "item": null,
       "level": "info",
       "occurredAt": "2026-08-15T16:31:51.856910+00:00",
       "optimizerRunId": "opt_eval_example",
@@ -161,10 +177,13 @@
       },
       "schemaVersion": "optimizer_event.v1",
       "sequenceNumber": 4,
-      "type": "eval.trial.queued"
+      "snapshot": null,
+      "type": "eval.trial.queued",
+      "usageDelta": null
     },
     {
       "algorithmId": "eval",
+      "artifactRefs": [],
       "delta": {
         "candidate_id": "policy_e8d067b11684",
         "scenario": "craftax-default-48x48",
@@ -172,7 +191,9 @@
         "stage": "screen",
         "trial_id": "trial_screen_policy_e8d067b11684_craftax-default-48x48_101"
       },
+      "error": null,
       "eventId": "opt_eval_example:eval:5",
+      "item": null,
       "level": "info",
       "occurredAt": "2026-08-15T16:31:51.857034+00:00",
       "optimizerRunId": "opt_eval_example",
@@ -190,10 +211,13 @@
       },
       "schemaVersion": "optimizer_event.v1",
       "sequenceNumber": 5,
-      "type": "eval.trial.queued"
+      "snapshot": null,
+      "type": "eval.trial.queued",
+      "usageDelta": null
     },
     {
       "algorithmId": "eval",
+      "artifactRefs": [],
       "delta": {
         "candidate_id": "policy_30d2c7e911d3",
         "scenario": "craftax-default-48x48",
@@ -201,7 +225,9 @@
         "stage": "screen",
         "trial_id": "trial_screen_policy_30d2c7e911d3_craftax-default-48x48_102"
       },
+      "error": null,
       "eventId": "opt_eval_example:eval:6",
+      "item": null,
       "level": "info",
       "occurredAt": "2026-08-15T16:31:51.857161+00:00",
       "optimizerRunId": "opt_eval_example",
@@ -219,10 +245,13 @@
       },
       "schemaVersion": "optimizer_event.v1",
       "sequenceNumber": 6,
-      "type": "eval.trial.queued"
+      "snapshot": null,
+      "type": "eval.trial.queued",
+      "usageDelta": null
     },
     {
       "algorithmId": "eval",
+      "artifactRefs": [],
       "delta": {
         "candidate_id": "policy_e8d067b11684",
         "scenario": "craftax-default-48x48",
@@ -230,7 +259,9 @@
         "stage": "screen",
         "trial_id": "trial_screen_policy_e8d067b11684_craftax-default-48x48_102"
       },
+      "error": null,
       "eventId": "opt_eval_example:eval:7",
+      "item": null,
       "level": "info",
       "occurredAt": "2026-08-15T16:31:51.858057+00:00",
       "optimizerRunId": "opt_eval_example",
@@ -249,10 +280,13 @@
       },
       "schemaVersion": "optimizer_event.v1",
       "sequenceNumber": 7,
-      "type": "eval.trial.started"
+      "snapshot": null,
+      "type": "eval.trial.started",
+      "usageDelta": null
     },
     {
       "algorithmId": "eval",
+      "artifactRefs": [],
       "delta": {
         "candidate_id": "policy_30d2c7e911d3",
         "scenario": "craftax-default-48x48",
@@ -260,7 +294,9 @@
         "stage": "screen",
         "trial_id": "trial_screen_policy_30d2c7e911d3_craftax-default-48x48_101"
       },
+      "error": null,
       "eventId": "opt_eval_example:eval:8",
+      "item": null,
       "level": "info",
       "occurredAt": "2026-08-15T16:31:51.858362+00:00",
       "optimizerRunId": "opt_eval_example",
@@ -279,10 +315,13 @@
       },
       "schemaVersion": "optimizer_event.v1",
       "sequenceNumber": 8,
-      "type": "eval.trial.started"
+      "snapshot": null,
+      "type": "eval.trial.started",
+      "usageDelta": null
     },
     {
       "algorithmId": "eval",
+      "artifactRefs": [],
       "delta": {
         "candidate_id": "policy_e8d067b11684",
         "scenario": "craftax-default-48x48",
@@ -290,7 +329,9 @@
         "stage": "screen",
         "trial_id": "trial_screen_policy_e8d067b11684_craftax-default-48x48_101"
       },
+      "error": null,
       "eventId": "opt_eval_example:eval:9",
+      "item": null,
       "level": "info",
       "occurredAt": "2026-08-15T16:31:51.862139+00:00",
       "optimizerRunId": "opt_eval_example",
@@ -309,10 +350,13 @@
       },
       "schemaVersion": "optimizer_event.v1",
       "sequenceNumber": 9,
-      "type": "eval.trial.started"
+      "snapshot": null,
+      "type": "eval.trial.started",
+      "usageDelta": null
     },
     {
       "algorithmId": "eval",
+      "artifactRefs": [],
       "delta": {
         "candidate_id": "policy_30d2c7e911d3",
         "scenario": "craftax-default-48x48",
@@ -320,7 +364,9 @@
         "stage": "screen",
         "trial_id": "trial_screen_policy_30d2c7e911d3_craftax-default-48x48_102"
       },
+      "error": null,
       "eventId": "opt_eval_example:eval:10",
+      "item": null,
       "level": "info",
       "occurredAt": "2026-08-15T16:31:51.863424+00:00",
       "optimizerRunId": "opt_eval_example",
@@ -339,10 +385,13 @@
       },
       "schemaVersion": "optimizer_event.v1",
       "sequenceNumber": 10,
-      "type": "eval.trial.started"
+      "snapshot": null,
+      "type": "eval.trial.started",
+      "usageDelta": null
     },
     {
       "algorithmId": "eval",
+      "artifactRefs": [],
       "delta": {
         "containerEvent": {
           "at": 1786811512.1970153,
@@ -354,7 +403,9 @@
         "message": "trial.started",
         "trial_id": "trial_screen_policy_e8d067b11684_craftax-default-48x48_102"
       },
+      "error": null,
       "eventId": "opt_eval_example:eval:11",
+      "item": null,
       "level": "debug",
       "occurredAt": "2026-08-15T16:31:52.263907+00:00",
       "optimizerRunId": "opt_eval_example",
@@ -375,10 +426,13 @@
       },
       "schemaVersion": "optimizer_event.v1",
       "sequenceNumber": 11,
-      "type": "eval.trial.event"
+      "snapshot": null,
+      "type": "eval.trial.event",
+      "usageDelta": null
     },
     {
       "algorithmId": "eval",
+      "artifactRefs": [],
       "delta": {
         "containerEvent": {
           "at": 1786811512.1980317,
@@ -390,7 +444,9 @@
         "message": "rollout.started",
         "trial_id": "trial_screen_policy_e8d067b11684_craftax-default-48x48_102"
       },
+      "error": null,
       "eventId": "opt_eval_example:eval:12",
+      "item": null,
       "level": "debug",
       "occurredAt": "2026-08-15T16:31:52.264240+00:00",
       "optimizerRunId": "opt_eval_example",
@@ -411,10 +467,13 @@
       },
       "schemaVersion": "optimizer_event.v1",
       "sequenceNumber": 12,
-      "type": "eval.trial.event"
+      "snapshot": null,
+      "type": "eval.trial.event",
+      "usageDelta": null
     },
     {
       "algorithmId": "eval",
+      "artifactRefs": [],
       "delta": {
         "containerEvent": {
           "at": 1786811512.232303,
@@ -426,7 +485,9 @@
         "message": "trial.started",
         "trial_id": "trial_screen_policy_30d2c7e911d3_craftax-default-48x48_101"
       },
+      "error": null,
       "eventId": "opt_eval_example:eval:13",
+      "item": null,
       "level": "debug",
       "occurredAt": "2026-08-15T16:31:52.264750+00:00",
       "optimizerRunId": "opt_eval_example",
@@ -447,10 +508,13 @@
       },
       "schemaVersion": "optimizer_event.v1",
       "sequenceNumber": 13,
-      "type": "eval.trial.event"
+      "snapshot": null,
+      "type": "eval.trial.event",
+      "usageDelta": null
     },
     {
       "algorithmId": "eval",
+      "artifactRefs": [],
       "delta": {
         "containerEvent": {
           "at": 1786811512.2332523,
@@ -462,7 +526,9 @@
         "message": "rollout.started",
         "trial_id": "trial_screen_policy_30d2c7e911d3_craftax-default-48x48_101"
       },
+      "error": null,
       "eventId": "opt_eval_example:eval:14",
+      "item": null,
       "level": "debug",
       "occurredAt": "2026-08-15T16:31:52.264928+00:00",
       "optimizerRunId": "opt_eval_example",
@@ -483,10 +549,13 @@
       },
       "schemaVersion": "optimizer_event.v1",
       "sequenceNumber": 14,
-      "type": "eval.trial.event"
+      "snapshot": null,
+      "type": "eval.trial.event",
+      "usageDelta": null
     },
     {
       "algorithmId": "eval",
+      "artifactRefs": [],
       "delta": {
         "containerEvent": {
           "at": 1786811512.2103975,
@@ -498,7 +567,9 @@
         "message": "trial.started",
         "trial_id": "trial_screen_policy_e8d067b11684_craftax-default-48x48_101"
       },
+      "error": null,
       "eventId": "opt_eval_example:eval:15",
+      "item": null,
       "level": "debug",
       "occurredAt": "2026-08-15T16:31:52.268965+00:00",
       "optimizerRunId": "opt_eval_example",
@@ -519,10 +590,13 @@
       },
       "schemaVersion": "optimizer_event.v1",
       "sequenceNumber": 15,
-      "type": "eval.trial.event"
+      "snapshot": null,
+      "type": "eval.trial.event",
+      "usageDelta": null
     },
     {
       "algorithmId": "eval",
+      "artifactRefs": [],
       "delta": {
         "containerEvent": {
           "at": 1786811512.2113242,
@@ -534,7 +608,9 @@
         "message": "rollout.started",
         "trial_id": "trial_screen_policy_e8d067b11684_craftax-default-48x48_101"
       },
+      "error": null,
       "eventId": "opt_eval_example:eval:16",
+      "item": null,
       "level": "debug",
       "occurredAt": "2026-08-15T16:31:52.269110+00:00",
       "optimizerRunId": "opt_eval_example",
@@ -555,10 +631,13 @@
       },
       "schemaVersion": "optimizer_event.v1",
       "sequenceNumber": 16,
-      "type": "eval.trial.event"
+      "snapshot": null,
+      "type": "eval.trial.event",
+      "usageDelta": null
     },
     {
       "algorithmId": "eval",
+      "artifactRefs": [],
       "delta": {
         "containerEvent": {
           "at": 1786811512.2251587,
@@ -570,7 +649,9 @@
         "message": "trial.started",
         "trial_id": "trial_screen_policy_30d2c7e911d3_craftax-default-48x48_102"
       },
+      "error": null,
       "eventId": "opt_eval_example:eval:17",
+      "item": null,
       "level": "debug",
       "occurredAt": "2026-08-15T16:31:52.272962+00:00",
       "optimizerRunId": "opt_eval_example",
@@ -591,10 +672,13 @@
       },
       "schemaVersion": "optimizer_event.v1",
       "sequenceNumber": 17,
-      "type": "eval.trial.event"
+      "snapshot": null,
+      "type": "eval.trial.event",
+      "usageDelta": null
     },
     {
       "algorithmId": "eval",
+      "artifactRefs": [],
       "delta": {
         "containerEvent": {
           "at": 1786811512.2258265,
@@ -606,7 +690,9 @@
         "message": "rollout.started",
         "trial_id": "trial_screen_policy_30d2c7e911d3_craftax-default-48x48_102"
       },
+      "error": null,
       "eventId": "opt_eval_example:eval:18",
+      "item": null,
       "level": "debug",
       "occurredAt": "2026-08-15T16:31:52.273120+00:00",
       "optimizerRunId": "opt_eval_example",
@@ -627,10 +713,13 @@
       },
       "schemaVersion": "optimizer_event.v1",
       "sequenceNumber": 18,
-      "type": "eval.trial.event"
+      "snapshot": null,
+      "type": "eval.trial.event",
+      "usageDelta": null
     },
     {
       "algorithmId": "eval",
+      "artifactRefs": [],
       "delta": {
         "containerEvent": {
           "achievements": 2.0,
@@ -642,7 +731,9 @@
         "message": "rollout.finished",
         "trial_id": "trial_screen_policy_e8d067b11684_craftax-default-48x48_102"
       },
+      "error": null,
       "eventId": "opt_eval_example:eval:19",
+      "item": null,
       "level": "debug",
       "occurredAt": "2026-08-15T16:33:00.707533+00:00",
       "optimizerRunId": "opt_eval_example",
@@ -663,7 +754,9 @@
       },
       "schemaVersion": "optimizer_event.v1",
       "sequenceNumber": 19,
-      "type": "eval.trial.event"
+      "snapshot": null,
+      "type": "eval.trial.event",
+      "usageDelta": null
     },
     {
       "algorithmId": "eval",
@@ -712,6 +805,7 @@
       "delta": {
         "message": "Trial trial_screen_policy_e8d067b11684_craftax-default-48x48_102 evaluated"
       },
+      "error": null,
       "eventId": "opt_eval_example:eval:20",
       "item": {
         "artifacts": [
@@ -1025,6 +1119,7 @@
       },
       "schemaVersion": "optimizer_event.v1",
       "sequenceNumber": 20,
+      "snapshot": null,
       "type": "eval.trial.terminal",
       "usageDelta": {
         "cost_usd": 0.009256,
@@ -1034,6 +1129,7 @@
     },
     {
       "algorithmId": "eval",
+      "artifactRefs": [],
       "delta": {
         "containerEvent": {
           "achievements": 0.0,
@@ -1045,7 +1141,9 @@
         "message": "rollout.finished",
         "trial_id": "trial_screen_policy_e8d067b11684_craftax-default-48x48_101"
       },
+      "error": null,
       "eventId": "opt_eval_example:eval:21",
+      "item": null,
       "level": "debug",
       "occurredAt": "2026-08-15T16:33:12.489345+00:00",
       "optimizerRunId": "opt_eval_example",
@@ -1066,7 +1164,9 @@
       },
       "schemaVersion": "optimizer_event.v1",
       "sequenceNumber": 21,
-      "type": "eval.trial.event"
+      "snapshot": null,
+      "type": "eval.trial.event",
+      "usageDelta": null
     },
     {
       "algorithmId": "eval",
@@ -1115,6 +1215,7 @@
       "delta": {
         "message": "Trial trial_screen_policy_e8d067b11684_craftax-default-48x48_101 evaluated"
       },
+      "error": null,
       "eventId": "opt_eval_example:eval:22",
       "item": {
         "artifacts": [
@@ -1428,6 +1529,7 @@
       },
       "schemaVersion": "optimizer_event.v1",
       "sequenceNumber": 22,
+      "snapshot": null,
       "type": "eval.trial.terminal",
       "usageDelta": {
         "cost_usd": 0.009946,
@@ -1437,6 +1539,7 @@
     },
     {
       "algorithmId": "eval",
+      "artifactRefs": [],
       "delta": {
         "containerEvent": {
           "achievements": 2.0,
@@ -1448,7 +1551,9 @@
         "message": "rollout.finished",
         "trial_id": "trial_screen_policy_30d2c7e911d3_craftax-default-48x48_102"
       },
+      "error": null,
       "eventId": "opt_eval_example:eval:23",
+      "item": null,
       "level": "debug",
       "occurredAt": "2026-08-15T16:33:35.131238+00:00",
       "optimizerRunId": "opt_eval_example",
@@ -1469,7 +1574,9 @@
       },
       "schemaVersion": "optimizer_event.v1",
       "sequenceNumber": 23,
-      "type": "eval.trial.event"
+      "snapshot": null,
+      "type": "eval.trial.event",
+      "usageDelta": null
     },
     {
       "algorithmId": "eval",
@@ -1518,6 +1625,7 @@
       "delta": {
         "message": "Trial trial_screen_policy_30d2c7e911d3_craftax-default-48x48_102 evaluated"
       },
+      "error": null,
       "eventId": "opt_eval_example:eval:24",
       "item": {
         "artifacts": [
@@ -1831,6 +1939,7 @@
       },
       "schemaVersion": "optimizer_event.v1",
       "sequenceNumber": 24,
+      "snapshot": null,
       "type": "eval.trial.terminal",
       "usageDelta": {
         "cost_usd": 0.013944,
@@ -1840,6 +1949,7 @@
     },
     {
       "algorithmId": "eval",
+      "artifactRefs": [],
       "delta": {
         "containerEvent": {
           "achievements": 0.0,
@@ -1851,7 +1961,9 @@
         "message": "rollout.finished",
         "trial_id": "trial_screen_policy_30d2c7e911d3_craftax-default-48x48_101"
       },
+      "error": null,
       "eventId": "opt_eval_example:eval:25",
+      "item": null,
       "level": "debug",
       "occurredAt": "2026-08-15T16:33:57.710266+00:00",
       "optimizerRunId": "opt_eval_example",
@@ -1872,7 +1984,9 @@
       },
       "schemaVersion": "optimizer_event.v1",
       "sequenceNumber": 25,
-      "type": "eval.trial.event"
+      "snapshot": null,
+      "type": "eval.trial.event",
+      "usageDelta": null
     },
     {
       "algorithmId": "eval",
@@ -1921,6 +2035,7 @@
       "delta": {
         "message": "Trial trial_screen_policy_30d2c7e911d3_craftax-default-48x48_101 evaluated"
       },
+      "error": null,
       "eventId": "opt_eval_example:eval:26",
       "item": {
         "artifacts": [
@@ -2234,6 +2349,7 @@
       },
       "schemaVersion": "optimizer_event.v1",
       "sequenceNumber": 26,
+      "snapshot": null,
       "type": "eval.trial.terminal",
       "usageDelta": {
         "cost_usd": 0.016233,
@@ -2243,9 +2359,11 @@
     },
     {
       "algorithmId": "eval",
+      "artifactRefs": [],
       "delta": {
         "candidate_id": "policy_e8d067b11684"
       },
+      "error": null,
       "eventId": "opt_eval_example:eval:27",
       "item": {
         "budgetExhaustedTrials": null,
@@ -2363,13 +2481,17 @@
       },
       "schemaVersion": "optimizer_event.v1",
       "sequenceNumber": 27,
-      "type": "eval.candidate.scored"
+      "snapshot": null,
+      "type": "eval.candidate.scored",
+      "usageDelta": null
     },
     {
       "algorithmId": "eval",
+      "artifactRefs": [],
       "delta": {
         "candidate_id": "policy_30d2c7e911d3"
       },
+      "error": null,
       "eventId": "opt_eval_example:eval:28",
       "item": {
         "budgetExhaustedTrials": null,
@@ -2487,14 +2609,19 @@
       },
       "schemaVersion": "optimizer_event.v1",
       "sequenceNumber": 28,
-      "type": "eval.candidate.scored"
+      "snapshot": null,
+      "type": "eval.candidate.scored",
+      "usageDelta": null
     },
     {
       "algorithmId": "eval",
+      "artifactRefs": [],
       "delta": {
         "message": "recipe is report-only; it measures candidates but never promotes one"
       },
+      "error": null,
       "eventId": "opt_eval_example:eval:29",
+      "item": null,
       "level": "info",
       "occurredAt": "2026-08-15T16:33:57.753652+00:00",
       "optimizerRunId": "opt_eval_example",
@@ -2529,17 +2656,21 @@
           "winner_id": null
         }
       },
-      "type": "eval.selection.completed"
+      "type": "eval.selection.completed",
+      "usageDelta": null
     },
     {
       "algorithmId": "eval",
+      "artifactRefs": [],
       "delta": {
         "evidenceDir": "/private/tmp/claude-501/-Users-joshuapurtell-Documents-GitHub/3556bd8e-5dc7-44c4-9eb7-8ffcaf5b255c/scratchpad/evalhome/runs/opt_eval_craftax_luna_1",
         "selectionStatus": "inconclusive",
         "status": "completed",
         "winnerId": null
       },
+      "error": null,
       "eventId": "opt_eval_example:eval:30",
+      "item": null,
       "level": "info",
       "occurredAt": "2026-08-15T16:33:57.753776+00:00",
       "optimizerRunId": "opt_eval_example",
@@ -2556,7 +2687,9 @@
       },
       "schemaVersion": "optimizer_event.v1",
       "sequenceNumber": 30,
-      "type": "optimizer.run.completed"
+      "snapshot": null,
+      "type": "optimizer.run.completed",
+      "usageDelta": null
     }
   ],
   "run": {

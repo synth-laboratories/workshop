@@ -1696,12 +1696,7 @@ async fn launch_sidecar_upstream(
                 })
                 .await;
             });
-            let child = if want_real_child_fixture(home) {
-                Some(spawn_fixture_hold_child(home, &hit.version)?)
-            } else {
-                let _ = (home, hit);
-                None
-            };
+            let child = Some(spawn_fixture_hold_child(home, &hit.version)?);
             return Ok((child, upstream_base_url, Some(task)));
         }
     }

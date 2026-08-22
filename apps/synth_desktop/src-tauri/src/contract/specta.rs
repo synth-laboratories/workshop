@@ -466,8 +466,9 @@ mod tests {
         // 248 → 249: `laguna_set_adapter` became `laguna_register_policy`
         // (registration, not selection) plus `laguna_policies`.
         // 249 → 251: the published adapter's status and download.
+        // 251 → 253: saved-LoRA checkpoint detail and artifact detail.
         assert_eq!(
-            exported, 251,
+            exported, 253,
             "generated bindings must contain the complete desktop command set"
         );
         assert_eq!(

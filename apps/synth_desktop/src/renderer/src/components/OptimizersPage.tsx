@@ -334,6 +334,7 @@ export function OptimizersPage({
 	const [trainingCheckpointEvery, setTrainingCheckpointEvery] = useState(1);
 	const [trainingWarmStartCheckpointId, setTrainingWarmStartCheckpointId] = useState("");
 	const [hostedTrainingModels, setHostedTrainingModels] = useState<HostedTrainingModel[]>([]);
+	const [hostedModelCatalogRevision, setHostedModelCatalogRevision] = useState("");
 	const [savedLoras, setSavedLoras] = useState<SavedLoraCheckpoint[]>([]);
 	const [hostedSftWarmStarts, setHostedSftWarmStarts] = useState<SavedLoraCheckpoint[]>([]);
 	const [savedLoraTotal, setSavedLoraTotal] = useState(0);
@@ -429,6 +430,7 @@ export function OptimizersPage({
 		void loadHostedTrainingModels().then((catalog) => {
 			if (!live) return;
 			setHostedTrainingModels(catalog.models);
+			setHostedModelCatalogRevision(catalog.catalogRevision);
 			if (!catalog.models.some((model) => model.modelId === trainingModel)) {
 				const preferred = catalog.models.find((model) => model.algorithms[trainingAlgorithm]?.status !== "blocked");
 				if (preferred) setTrainingModel(preferred.modelId);
@@ -440,7 +442,7 @@ export function OptimizersPage({
 	}, [trainingAlgorithm]);
 
 	const refreshSavedLoras = useCallback(async () => {
-		if (!bridges.optimizers) return;
+		if (typeof bridges.optimizers?.searchSavedLoras !== "function") return;
 		setSavedLoraBusy(true);
 		try {
 			const page = await bridges.optimizers.searchSavedLoras({
@@ -469,8 +471,9 @@ export function OptimizersPage({
 
 	useEffect(() => {
 		let live = true;
-		if (!bridges.optimizers) return () => { live = false; };
-		void bridges.optimizers.searchSavedLoras({
+		const searchSavedLoras = bridges.optimizers?.searchSavedLoras;
+		if (typeof searchSavedLoras !== "function") return () => { live = false; };
+		void searchSavedLoras({
 			provider: "tinker",
 			optimizerAlgorithm: "sft",
 			checkpointKind: "training",
@@ -1043,7 +1046,7 @@ export function OptimizersPage({
 							) : null}
 							{guide.id === "cispo" ? (
 								<>
-									<button className="secondary-button" type="button" disabled={startingLocalCispo || (plugin != null && !presentation.isUsable)} onClick={() => void startBoundedRecipe("cispo.banking77.mlx.v1", setStartingLocalCispo)} data-testid="start-cispo-mlx">
+									<button className="secondary-button" type="button" disabled={startingLocalCispo || (plugin != null && !presentation.isUsable)} onClick={() => void startBoundedRecipe("cispo.mlx.v1", setStartingLocalCispo)} data-testid="start-cispo-mlx">
 										{startingLocalCispo ? "Starting…" : "This Mac · Banking77 CISPO"}
 									</button>
 									<small>Hosted CISPO stays fail-closed until the slime clip canary admits it.</small>

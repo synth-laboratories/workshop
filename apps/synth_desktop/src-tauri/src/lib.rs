@@ -907,7 +907,7 @@ pub(crate) async fn authorize_optimizer_recipe_start(
     // charges. The click itself is the operator's explicit instruction.
     if matches!(
         request.recipe_id.as_str(),
-        "sft.qwen35-0.8b.mlx.v1" | "cispo.banking77.mlx.v1" | "eval.fixture.policy-smoke.v1"
+        "sft.qwen35-0.8b.mlx.v1" | "cispo.mlx.v1" | "eval.fixture.policy-smoke.v1"
     ) {
         let (run, event) = state
             .optimizers()
@@ -3557,7 +3557,7 @@ pub struct LagunaAdapterStatus {
     pub title: String,
     pub digest: String,
     pub installed: bool,
-    #[specta(type = specta_typescript::Unknown)]
+    #[specta(type = specta_typescript::Number)]
     pub download_bytes: u64,
     pub base_revision: String,
     /// False when the installed weights are a different revision. The adapter
