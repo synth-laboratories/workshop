@@ -99,7 +99,12 @@ async fn start_inner(
                 .collect(),
         ),
     );
-    let openai = resolve_provider_workload(&recipe.provider, &run_id, &recipe.id)?;
+    let openai = resolve_provider_workload(
+        &recipe.provider,
+        &run_id,
+        &recipe.id,
+        Some(&config_path),
+    )?;
     super::workspace_recipe::bind_locality_urls(
         table,
         recipe.locality,
@@ -489,7 +494,12 @@ async fn run_recipe_worker(
         .filter(|value| !value.is_empty())
         .ok_or_else(|| anyhow!("run-owned recipe is missing provider"))?
         .to_string();
-    let openai = resolve_provider_workload(&provider, &run_id, recipe_id_for_lease(&config_path))?;
+    let openai = resolve_provider_workload(
+        &provider,
+        &run_id,
+        recipe_id_for_lease(&config_path),
+        Some(&config_path),
+    )?;
     if let Some(lease) = openai.lease.as_ref() {
         crate::secrets::lease::bind_lease_into_toml(&config_path, lease)?;
         let _ = service.persist_credential_chain(&run_id).await;
@@ -625,6 +635,7 @@ fn resolve_provider_workload(
     provider: &str,
     run_id: &str,
     recipe_id: &str,
+    config_path: Option<&Path>,
 ) -> Result<OpenAiWorkload> {
     #[cfg(test)]
     {
@@ -649,7 +660,7 @@ fn resolve_provider_workload(
         )
         .anyhow()
     })?;
-    let mut use_policy = crate::secrets::SecretsUsePolicy::default();
+    let mut use_policy = provider_use_policy(config_path)?;
     if provider.eq_ignore_ascii_case("openrouter") {
         use_policy.operations.push("responses.create".into());
     }
@@ -669,6 +680,45 @@ fn resolve_provider_workload(
         inference_url: Some(lease.inference_url.clone()),
         lease: Some(lease),
     })
+}
+
+fn provider_use_policy(config_path: Option<&Path>) -> Result<crate::secrets::SecretsUsePolicy> {
+    let mut policy = crate::secrets::SecretsUsePolicy::default();
+    let Some(path) = config_path else {
+        return Ok(policy);
+    };
+    let config = fs::read_to_string(path)
+        .with_context(|| format!("read provider policy from {}", path.display()))?
+        .parse::<toml::Value>()?;
+    let proposer = config.get("proposer").and_then(toml::Value::as_table);
+    if let Some(effort) = proposer
+        .and_then(|section| section.get("reasoning_effort"))
+        .and_then(toml::Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        policy.reasoning_efforts = vec![effort.to_string()];
+    }
+    policy.models = [
+        config.get("model").and_then(toml::Value::as_str),
+        proposer
+            .and_then(|section| section.get("model"))
+            .and_then(toml::Value::as_str),
+        config
+            .get("policy")
+            .and_then(toml::Value::as_table)
+            .and_then(|section| section.get("model"))
+            .and_then(toml::Value::as_str),
+    ]
+    .into_iter()
+    .flatten()
+    .map(str::trim)
+    .filter(|value| !value.is_empty())
+    .map(str::to_string)
+    .collect();
+    policy.models.sort();
+    policy.models.dedup();
+    Ok(policy)
 }
 
 fn recipe_id_for_lease(config_path: &Path) -> &str {
@@ -1263,6 +1313,29 @@ fn gepa_runs_root() -> Result<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn provider_policy_uses_the_run_owned_model_and_reasoning_effort() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = dir.path().join("workshop.recipe.toml");
+        fs::write(
+            &config,
+            r#"
+model = "openai/gpt-5.6-luna"
+
+[proposer]
+model = "openai/gpt-5.6-luna"
+reasoning_effort = "low"
+
+[policy]
+model = "openai/gpt-5.6-luna"
+"#,
+        )
+        .unwrap();
+        let policy = provider_use_policy(Some(&config)).unwrap();
+        assert_eq!(policy.reasoning_efforts, ["low"]);
+        assert_eq!(policy.models, ["openai/gpt-5.6-luna"]);
+    }
 
     #[test]
     fn sealed_app_server_events_project_to_trace_v5_without_invented_reasoning() {
