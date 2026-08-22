@@ -34,7 +34,7 @@ fn local_mlx_recipe() -> Value {
             "backend": "cispo",
             "maxSteps": 1,
             "costCeilingUsd": 0.0,
-            "maxTotalEnvironmentRollouts": 12,
+            "maxTotalEnvironmentRollouts": 128,
             "costNotice": "Local Apple Silicon MLX compute. Warm-start from a selected SFT artifact id; otherwise the visual reports cispo_no_learning_signal.",
             "resolvedConfig": {
                 "baseModel": "Qwen/Qwen3.5-0.8B",
@@ -169,14 +169,14 @@ async fn start_local(
                 "reward_url": cispo.reward_url,
                 "train_world_ref": cispo.train_world_ref,
                 "heldout_world_ref": cispo.heldout_world_ref,
-                "train_instances": 4,
-                "heldout_instances": 4
+                "train_instances": 16,
+                "heldout_instances": 16
             },
             "output_dir": output_dir,
             "max_steps": 1,
             "checkpoint_every": 1,
-            "signal_attempts": 2,
-            "group_size": 2,
+            "signal_attempts": 24,
+            "group_size": 4,
             "learning_rate": 0.00005,
             "evaluation": evaluation_plan,
             "lora_rank": 8,
@@ -306,6 +306,13 @@ mod tests {
         assert!(production.contains("\"learning_rate\": 0.00005"));
         assert!(production.contains("\"checkpoint_every\": 1"));
         assert!(production.contains("create_and_watch"));
+    }
+
+    #[test]
+    fn local_recipe_publishes_its_worst_case_rollout_bound() {
+        let recipe = local_mlx_recipe();
+        assert_eq!(recipe["limits"]["maxTotalEnvironmentRollouts"], 128);
+        assert_eq!(recipe["limits"]["maxSteps"], 1);
     }
 
     #[tokio::test]
