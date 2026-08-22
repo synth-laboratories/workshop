@@ -880,6 +880,37 @@ fn paired_sft_evaluation_draft(job: &Value) -> Option<OptimizerEventDraft> {
     )
 }
 
+pub async fn reconcile_persisted_sft(
+    service: &OptimizerService,
+    run_id: &str,
+    summary: &Value,
+) -> Result<bool> {
+    let Some(handoff) = summary.get("adapterHandoff") else {
+        return Ok(false);
+    };
+    let evaluation = handoff.get("evaluation").cloned().unwrap_or(Value::Null);
+    if evaluation.get("status").and_then(Value::as_str) != Some("completed") {
+        return Ok(false);
+    }
+    let checkpoint = handoff.get("checkpoint").cloned().unwrap_or(Value::Null);
+    let job = json!({ "evaluation": evaluation, "checkpoints": [checkpoint] });
+    let Some(comparison) = paired_sft_evaluation_draft(&job) else {
+        return Ok(false);
+    };
+    service
+        .append_event_payloads(
+            run_id.into(),
+            vec![
+                comparison,
+                OptimizerEventDraft::new("optimizer.run.completed", "sft")
+                    .delta(Map::from_iter([("status".into(), json!("completed"))]))
+                    .idempotency_key("local-sft:persisted-terminal-reconciliation"),
+            ],
+        )
+        .await?;
+    Ok(true)
+}
+
 pub async fn append_mapped_event(
     service: &OptimizerService,
     run_id: &str,
@@ -2218,6 +2249,25 @@ mod tests {
         assert_eq!(draft.delta["base"]["seeds"][0]["reward"], -0.5);
         assert_eq!(draft.delta["trained"]["seeds"][0]["reward"], -0.1);
         assert_eq!(draft.delta["metric"], "negative_token_loss");
+    }
+
+    #[test]
+    fn persisted_sft_handoff_has_enough_evidence_for_restart_reconciliation() {
+        let summary = json!({"adapterHandoff": {
+            "evaluation": {
+                "status": "completed", "dataset_sha256": "heldout",
+                "items": [{"item": 7, "before_loss": 0.4, "after_loss": 0.2}]
+            },
+            "checkpoint": {"checkpoint_id": "run:step-4", "sha256": "abc"}
+        }});
+        let handoff = summary["adapterHandoff"].clone();
+        let job = json!({
+            "evaluation": handoff["evaluation"].clone(),
+            "checkpoints": [handoff["checkpoint"].clone()]
+        });
+        let draft = paired_sft_evaluation_draft(&job).expect("persisted comparison");
+        assert_eq!(draft.delta["base"]["seeds"][0]["seed"], "7");
+        assert_eq!(draft.delta["trained"]["seeds"][0]["reward"], -0.2);
     }
 
     #[test]

@@ -155,9 +155,17 @@ pub fn resolve_local_sft_datasets() -> (Option<PathBuf>, Option<PathBuf>, &'stat
 }
 
 pub async fn reconcile(service: &OptimizerService, run_id: &str) -> Result<OptimizerRunRecord> {
-    let cursor = service
-        .get(run_id.into())
-        .await?
+    let current = service.get(run_id.into()).await?;
+    if super::sidecar_training::reconcile_persisted_sft(
+        service,
+        run_id,
+        &current.summary,
+    )
+    .await?
+    {
+        return service.get(run_id.into()).await;
+    }
+    let cursor = current
         .summary
         .get("trainingCursor")
         .and_then(Value::as_u64)
