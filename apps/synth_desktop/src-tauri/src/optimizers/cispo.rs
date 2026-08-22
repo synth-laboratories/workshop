@@ -113,8 +113,40 @@ async fn start_local(
         .ok_or_else(|| anyhow::anyhow!("local CISPO output directory has no parent"))?;
     std::fs::create_dir_all(output_parent)?;
     let mut input_refs = Vec::new();
+    if let Some(dataset_digest) = bind.dataset_digest.clone() {
+        input_refs.push(OptimizerResourceRef {
+            kind: "dataset".into(),
+            id: format!("{}:workload", bind.task_id),
+            digest: Some(dataset_digest),
+            role: Some("rollout_workload".into()),
+            title: Some("Container rollout workload".into()),
+            metadata: json!({
+                "containerId": bind.container_id,
+                "taskId": bind.task_id,
+                "source": "workshop_container"
+            }),
+        });
+    }
     let warm_start = if let Some(artifact_id) = request.training_artifact_id.as_deref() {
-        let artifact = crate::training_artifacts::get(artifact_id)?;
+        let mut artifact = crate::training_artifacts::get(artifact_id)?;
+        if artifact.dataset_digest.is_none() || artifact.config_digest.is_none() {
+            let producing_run = service.get(artifact.producing_run_id.clone()).await?;
+            artifact.dataset_digest = artifact.dataset_digest.or_else(|| {
+                producing_run
+                    .input_refs
+                    .iter()
+                    .find(|item| item.kind == "dataset" && item.role.as_deref() == Some("train"))
+                    .and_then(|item| item.digest.clone())
+            });
+            artifact.config_digest = artifact.config_digest.or_else(|| {
+                producing_run
+                    .input_refs
+                    .iter()
+                    .find(|item| item.kind == "training_configuration")
+                    .and_then(|item| item.digest.clone())
+            });
+            crate::training_artifacts::register(artifact.clone())?;
+        }
         let path = artifact
             .path
             .as_ref()

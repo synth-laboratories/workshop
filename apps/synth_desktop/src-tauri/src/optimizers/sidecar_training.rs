@@ -778,6 +778,7 @@ async fn watch_job(
                 }
                 persist_handoff(&service, &client, &run_id).await?;
                 append_status(&service, &run_id, "optimizer.run.completed", "completed").await?;
+                service.open_visual(run_id.clone()).await?;
                 return Ok(());
             }
             "failed" => {
@@ -1133,13 +1134,23 @@ async fn persist_handoff(
         }
         // Compatibility projection for callers that still use training
         // artifact ids. The canonical bytes and identity live in SQLite.
+        let dataset_digest = handoff
+            .pointer("/provenance/dataset_sha256")
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty())
+            .map(|value| format!("sha256:{}", value.trim_start_matches("sha256:")));
+        let config_digest = handoff
+            .pointer("/provenance/config_sha256")
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty())
+            .map(|value| format!("sha256:{}", value.trim_start_matches("sha256:")));
         let artifact = crate::training_artifacts::TrainingArtifact::from_mlx_handoff(
             run_id,
             &run.algorithm_id,
             crate::training_models::QWEN_TRAINING_MODEL_ID,
             &handoff,
-            None,
-            None,
+            dataset_digest,
+            config_digest,
         )?;
         crate::training_artifacts::register(artifact)
             .context("project canonical terminal adapter into training artifacts")?;

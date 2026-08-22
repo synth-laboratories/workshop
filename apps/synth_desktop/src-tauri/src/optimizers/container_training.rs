@@ -50,6 +50,7 @@ pub struct ContainerTrainingBind {
     pub container_id: String,
     pub base_url: String,
     pub task_id: String,
+    pub dataset_digest: Option<String>,
     pub cispo: Option<CispoContract>,
     pub sft: Option<SftContract>,
 }
@@ -276,6 +277,11 @@ fn parse_bind(
         rollout_capabilities,
     );
     let sft = parse_sft(&container.base_url, manifest, info);
+    let dataset_digest = rollout_capabilities
+        .and_then(|value| value.get("dataset_digest"))
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
     if cispo.is_none() && sft.is_none() {
         bail!(
             "container `{}` advertised task `{task_id}` but no SFT or CISPO contract",
@@ -286,6 +292,7 @@ fn parse_bind(
         container_id: container.id.clone(),
         base_url: container.base_url.clone(),
         task_id,
+        dataset_digest,
         cispo,
         sft,
     })
@@ -642,10 +649,15 @@ mod tests {
         let capabilities = json!({
             "schema_version": "training.rollout.capabilities.v1",
             "task_id": "banking77",
+            "dataset_digest": format!("sha256:{}", "a".repeat(64)),
             "operations": ["rollout", "reward", "heartbeat"]
         });
         let bind = parse_bind(&container, None, Some(&info), Some(&capabilities)).unwrap();
         assert_eq!(bind.task_id, "banking77");
+        assert_eq!(
+            bind.dataset_digest.as_deref(),
+            Some(format!("sha256:{}", "a".repeat(64)).as_str())
+        );
         let cispo = bind.cispo.unwrap();
         assert_eq!(cispo.rollout_url, "http://127.0.0.1:8115/training/rollouts");
         assert_eq!(cispo.implementation, "training.rollout.capabilities.v1");
@@ -658,6 +670,7 @@ mod tests {
             container_id: id.into(),
             base_url: format!("http://{id}.test"),
             task_id: "banking77".into(),
+            dataset_digest: Some(format!("sha256:{}", "b".repeat(64))),
             cispo: Some(CispoContract {
                 rollout_url: format!("http://{id}.test/training/rollouts"),
                 reward_url: None,
