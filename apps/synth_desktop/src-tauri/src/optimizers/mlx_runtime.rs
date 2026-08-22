@@ -19,7 +19,9 @@ use uuid::Uuid;
 
 const MLX_DEFAULT_URL: &str = "http://127.0.0.1:8787";
 const TRAINING_MODEL_ID: &str = "Qwen/Qwen3.5-0.8B";
-const HEALTH_TRIES: u32 = 40;
+// First launch loads the managed Qwen weights before FastAPI finishes startup.
+// Keep the probe bounded, but allow realistic Apple Silicon cold-start time.
+const HEALTH_TRIES: u32 = 480;
 const HEALTH_WAIT: Duration = Duration::from_millis(250);
 const MLX_RUNTIME_VERSION: &str = "0.6.0";
 const MLX_RUNTIME_SOURCE_REVISION: &str = "5e39facb8947524a2bf56711027137757e2dfd52";
