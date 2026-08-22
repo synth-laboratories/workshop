@@ -718,6 +718,36 @@ fn provider_use_policy(config_path: Option<&Path>) -> Result<crate::secrets::Sec
     .collect();
     policy.models.sort();
     policy.models.dedup();
+    let rollout_limit = config
+        .get("bounds")
+        .and_then(toml::Value::as_table)
+        .and_then(|section| section.get("max_total_rollouts"))
+        .and_then(toml::Value::as_integer)
+        .and_then(|value| u64::try_from(value).ok())
+        .unwrap_or(0);
+    let rollout_output_limit = config
+        .get("policy")
+        .and_then(toml::Value::as_table)
+        .and_then(|section| section.get("max_tokens"))
+        .and_then(toml::Value::as_integer)
+        .and_then(|value| u64::try_from(value).ok())
+        .unwrap_or(0);
+    if rollout_limit > 0 && rollout_output_limit > 0 {
+        // A recipe capability must cover every provider call admitted by the
+        // run's own rollout bound. The dollar ceiling remains authoritative;
+        // these token/call ceilings prevent the generic interactive defaults
+        // from terminating a valid bounded optimizer before held-out evidence.
+        let declared_output_tokens = rollout_limit.saturating_mul(rollout_output_limit);
+        policy.max_output_tokens = policy.max_output_tokens.max(declared_output_tokens);
+        policy.max_input_tokens = policy
+            .max_input_tokens
+            .max(declared_output_tokens.saturating_mul(4));
+        policy.max_calls = policy.max_calls.max(
+            rollout_limit
+                .saturating_mul(16)
+                .min(u64::from(u32::MAX)) as u32,
+        );
+    }
     Ok(policy)
 }
 
@@ -1335,6 +1365,28 @@ model = "openai/gpt-5.6-luna"
         let policy = provider_use_policy(Some(&config)).unwrap();
         assert_eq!(policy.reasoning_efforts, ["low"]);
         assert_eq!(policy.models, ["openai/gpt-5.6-luna"]);
+    }
+
+    #[test]
+    fn provider_policy_covers_the_declared_rollout_token_budget() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = dir.path().join("workshop.recipe.toml");
+        fs::write(
+            &config,
+            r#"
+[bounds]
+max_total_rollouts = 6
+
+[policy]
+max_tokens = 16000
+"#,
+        )
+        .unwrap();
+        let policy = provider_use_policy(Some(&config)).unwrap();
+        assert_eq!(policy.max_output_tokens, 96_000);
+        assert_eq!(policy.max_input_tokens, 384_000);
+        assert_eq!(policy.max_calls, 96);
+        assert_eq!(policy.max_cost_usd, 0.60);
     }
 
     #[test]
