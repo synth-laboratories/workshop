@@ -1,6 +1,6 @@
 //! Desktop-owned Eval runtime pin.
 //!
-//! Eval is not a second Python distribution. It consumes the same 0.2.18
+//! Eval is not a second Python distribution. It consumes the same 0.2.19
 //! `synth-optimizers` install GEPA uses, but it has its own manifest, digest,
 //! and About row so a missing pin is visible instead of resolving from a
 //! developer `.venv`.
@@ -185,11 +185,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn pinned_eval_runtime_is_managed_at_0_2_18() {
+    fn pinned_eval_runtime_is_managed_at_0_2_19() {
         assert!(EVAL.provisioned_by_desktop);
-        assert_eq!(EVAL.official, "0.2.18");
-        assert_eq!(EVAL.min_supported, "0.2.18");
-        assert!(EVAL.meets_floor("0.2.18"));
+        assert_eq!(EVAL.official, "0.2.19");
+        assert_eq!(EVAL.min_supported, "0.2.19");
+        assert!(EVAL.meets_floor("0.2.19"));
         assert!(!EVAL.meets_floor("0.2.14"));
     }
 
@@ -201,11 +201,11 @@ mod tests {
         let python = runtime.join("python3");
         fs::write(&python, b"#!/bin/sh\nexit 0\n").unwrap();
         let sidecar = OptimizerSidecarVersion {
-            version: "0.2.18".into(),
+            version: "0.2.19".into(),
             digest: "abc123".into(),
             signature: "sig".into(),
             algorithm_id: "gepa".into(),
-            algorithm_version: "synth-optimizers-0.2.18".into(),
+            algorithm_version: "synth-optimizers-0.2.19".into(),
             recipe_schema_version: "gepa.recipe.v1".into(),
             selected: true,
             path: root.path().display().to_string(),
@@ -215,7 +215,7 @@ mod tests {
         let python = runtime.join("python3");
         fs::write(&python, b"#!/bin/sh\nexit 0\n").unwrap();
         let manifest = sidecar_to_manifest(&sidecar).unwrap();
-        assert_eq!(manifest.version, "0.2.18");
+        assert_eq!(manifest.version, "0.2.19");
         assert_eq!(manifest.digest, "abc123");
         assert_eq!(
             manifest.python.as_deref(),
