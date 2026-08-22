@@ -69,16 +69,24 @@ pub async fn start(
     super::mlx_runtime::require_training_model()?;
     let suffix = uuid::Uuid::new_v4().simple().to_string();
     let run_id = format!("sft_mlx_qwen_{}", &suffix[..12]);
-    let env_datasets = resolve_local_sft_datasets();
-    let (dataset, evaluation, bind) =
+    // An explicit Workshop container is an identity/provenance binding, not a
+    // hint. Never let ambient SYNTH_MLX_SFT_* paths silently substitute a
+    // different workload after the user selected a concrete container.
+    let (dataset, evaluation, bind) = if has_explicit_container(&request) {
+        let bind =
+            super::container_training::bind(service, request.container_id.as_deref()).await?;
+        let (train, eval) = super::container_training::materialize_sft_jsonl(&bind).await?;
+        (train, eval, Some(bind))
+    } else {
+        let env_datasets = resolve_local_sft_datasets();
         if let (Some(train), Some(eval)) = (env_datasets.0, env_datasets.1) {
             (train, eval, None)
         } else {
-            let bind =
-                super::container_training::bind(service, request.container_id.as_deref()).await?;
+            let bind = super::container_training::bind(service, None).await?;
             let (train, eval) = super::container_training::materialize_sft_jsonl(&bind).await?;
             (train, eval, Some(bind))
-        };
+        }
+    };
     if !dataset.is_file() || !evaluation.is_file() {
         bail!("local MLX SFT requires train and eval JSONL from the bound container or SYNTH_MLX_SFT_*_JSONL");
     }
@@ -121,6 +129,13 @@ pub async fn start(
         ),
     )
     .await
+}
+
+fn has_explicit_container(request: &OptimizerRecipeRunRequest) -> bool {
+    request
+        .container_id
+        .as_deref()
+        .is_some_and(|value| !value.trim().is_empty())
 }
 
 fn validate_generation_learning_rate(learning_rate: f64) -> Result<()> {
@@ -253,6 +268,29 @@ mod tests {
             .to_string();
         assert!(error.contains("generation gate rejected"));
         assert!(error.contains("collapse the adapter to EOS"));
+    }
+
+    #[test]
+    fn explicit_container_is_a_strict_dataset_binding() {
+        let request = recipe_request(Some("ctr_alfworld"));
+        assert!(has_explicit_container(&request));
+
+        let ambient_only = recipe_request(Some("   "));
+        assert!(!has_explicit_container(&ambient_only));
+    }
+
+    fn recipe_request(container_id: Option<&str>) -> OptimizerRecipeRunRequest {
+        OptimizerRecipeRunRequest {
+            training_artifact_id: None,
+            recipe_id: QWEN_MLX_SFT_RECIPE.into(),
+            session_ref: None,
+            open_visual: Some(false),
+            base_model: None,
+            dataset_shard: None,
+            candidate_set_id: None,
+            container_id: container_id.map(str::to_string),
+            search: None,
+        }
     }
 
     #[tokio::test]
