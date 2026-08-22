@@ -274,9 +274,18 @@ fn prove_managed_runtime(root: &Path) -> Result<()> {
         .args(["-c", "import importlib.metadata; print(importlib.metadata.version('synth-mlx-rl'))"])
         .output()
         .context("prove installed MLX runtime version")?;
+    let executable = root.join("runtime/bin/synth-mlx-rl");
+    let runnable = executable.is_file()
+        && StdCommand::new(&executable)
+            .arg("--help")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .is_ok_and(|status| status.success());
     if !output.status.success()
         || String::from_utf8_lossy(&output.stdout).trim() != MLX_RUNTIME_VERSION
-        || !root.join("runtime/bin/synth-mlx-rl").is_file()
+        || !runnable
     {
         bail!("installed MLX runtime failed its offline version proof");
     }
