@@ -165,6 +165,12 @@ async fn start_local(
                 // registered service base, never an operation like `/rollout`.
                 "url": bind.base_url,
                 "task_id": bind.task_id,
+                // The MLX preflight reserves prompt plus generation. Leaving
+                // the runtime's 512-token default implicit makes a one-row
+                // micro-batch exceed supported unified-memory budgets. A 256
+                // token completion still covers text trajectories and is far
+                // above the Banking77 label contract.
+                "max_tokens": 256,
                 "bearer_token": cispo.token,
                 "reward_url": cispo.reward_url,
                 "train_world_ref": cispo.train_world_ref,
@@ -306,6 +312,7 @@ mod tests {
         assert!(production.contains("training_artifact_id"));
         assert!(production.contains("\"signal_attempts\": 24"));
         assert!(production.contains("\"group_size\": 16"));
+        assert!(production.contains("\"max_tokens\": 256"));
         assert!(production.contains("\"learning_rate\": 0.00005"));
         assert!(production.contains("\"checkpoint_every\": 1"));
         assert!(production.contains("create_and_watch"));
