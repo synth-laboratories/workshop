@@ -15,6 +15,11 @@ const FETCH_TIMEOUT: Duration = Duration::from_secs(8);
 // Keep contract discovery responsive, but do not impose an API-style deadline
 // on downloading the declared training data.
 const SFT_MATERIALIZATION_TIMEOUT: Duration = Duration::from_secs(30 * 60);
+// Product recipes promise bounded local work. Container datasets may contain
+// an entire benchmark, so bind a deterministic prefix rather than allowing a
+// four-step acceptance run to score tens of thousands of rows.
+const LOCAL_SFT_TRAIN_MAX_ROWS: usize = 256;
+const LOCAL_SFT_EVAL_MAX_ROWS: usize = 64;
 
 #[derive(Clone, Debug)]
 pub struct ReadyTrainingContainer {
@@ -414,7 +419,11 @@ fn first_string(candidates: &[Option<&Value>]) -> Option<String> {
     })
 }
 
-pub async fn materialize_jsonl(url: &str, destination: PathBuf) -> Result<PathBuf> {
+pub async fn materialize_jsonl(
+    url: &str,
+    destination: PathBuf,
+    max_rows: usize,
+) -> Result<PathBuf> {
     let client = reqwest::Client::builder()
         .timeout(SFT_MATERIALIZATION_TIMEOUT)
         .build()
@@ -431,6 +440,7 @@ pub async fn materialize_jsonl(url: &str, destination: PathBuf) -> Result<PathBu
     if bytes.is_empty() {
         bail!("SFT JSONL at {url} is empty");
     }
+    let bytes = bounded_jsonl(&bytes, max_rows)?;
     if let Some(parent) = destination.parent() {
         std::fs::create_dir_all(parent).with_context(|| format!("create {}", parent.display()))?;
     }
@@ -449,9 +459,40 @@ pub async fn materialize_sft_jsonl(bind: &ContainerTrainingBind) -> Result<(Path
     let root = crate::instance::data_root()
         .join("optimizers/datasets")
         .join(&bind.container_id);
-    let train = materialize_jsonl(&sft.train_jsonl_url, root.join("train.jsonl")).await?;
-    let eval = materialize_jsonl(&sft.eval_jsonl_url, root.join("eval.jsonl")).await?;
+    let train = materialize_jsonl(
+        &sft.train_jsonl_url,
+        root.join("train.jsonl"),
+        LOCAL_SFT_TRAIN_MAX_ROWS,
+    )
+    .await?;
+    let eval = materialize_jsonl(
+        &sft.eval_jsonl_url,
+        root.join("eval.jsonl"),
+        LOCAL_SFT_EVAL_MAX_ROWS,
+    )
+    .await?;
     Ok((train, eval))
+}
+
+fn bounded_jsonl(bytes: &[u8], max_rows: usize) -> Result<Vec<u8>> {
+    if max_rows == 0 {
+        bail!("SFT JSONL row bound must be positive");
+    }
+    let text = std::str::from_utf8(bytes).context("SFT JSONL must be UTF-8")?;
+    let mut output = Vec::new();
+    for line in text
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .take(max_rows)
+    {
+        serde_json::from_str::<Value>(line).context("SFT JSONL contains an invalid row")?;
+        output.extend_from_slice(line.as_bytes());
+        output.push(b'\n');
+    }
+    if output.is_empty() {
+        bail!("SFT JSONL contains no rows");
+    }
+    Ok(output)
 }
 
 #[cfg(test)]
@@ -558,6 +599,17 @@ mod tests {
         assert_eq!(cispo.harness, "classify");
         assert_eq!(cispo.train_world_ref, "world:classify.v1@train");
         assert!(bind.sft.is_some());
+    }
+
+    #[test]
+    fn bounded_jsonl_is_deterministic_and_rejects_invalid_rows() {
+        let source = b"{\"id\":1}\n{\"id\":2}\n{\"id\":3}\n";
+        assert_eq!(
+            bounded_jsonl(source, 2).unwrap(),
+            b"{\"id\":1}\n{\"id\":2}\n"
+        );
+        assert!(bounded_jsonl(b"not-json\n", 1).is_err());
+        assert!(bounded_jsonl(source, 0).is_err());
     }
 
     #[test]
