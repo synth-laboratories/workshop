@@ -53,3 +53,9 @@ test("every build entry point passes the packaging overlay", () => {
 	const desktop = readFileSync(join(repoRoot, "scripts/desktop.sh"), "utf8");
 	assert.match(desktop, /tauri build --bundles app --config src-tauri\/tauri\.package\.json/);
 });
+
+test("isolated packaged QA launches preserve operator-provided SFT dataset paths", () => {
+	const instance = readFileSync(join(repoRoot, "scripts/desktop-instance.sh"), "utf8");
+	assert.match(instance, /SYNTH_MLX_SFT_TRAIN_JSONL="\$sft_train_jsonl"/);
+	assert.match(instance, /SYNTH_MLX_SFT_EVAL_JSONL="\$sft_eval_jsonl"/);
+});

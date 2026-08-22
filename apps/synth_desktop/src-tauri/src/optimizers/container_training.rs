@@ -6,7 +6,7 @@
 
 use super::OptimizerService;
 use anyhow::{anyhow, bail, Context, Result};
-use serde_json::{json, Value};
+use serde_json::Value;
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -403,6 +403,7 @@ pub async fn materialize_sft_jsonl(bind: &ContainerTrainingBind) -> Result<(Path
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     #[test]
     fn parses_manifest_cispo_and_sft_without_host_task_names() {

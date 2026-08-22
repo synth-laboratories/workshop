@@ -850,6 +850,8 @@ stage_gepa_runtime() {
 exec_isolated_cua_bundle() {
   local oauth_file="${SYNTH_DESKTOP_DEV_OAUTH_FILE:-}"
   local oauth_state="${SYNTH_DESKTOP_DEV_OAUTH_STATE_FILE:-}"
+  local sft_train_jsonl="${SYNTH_MLX_SFT_TRAIN_JSONL:-}"
+  local sft_eval_jsonl="${SYNTH_MLX_SFT_EVAL_JSONL:-}"
   local home_dir="${HOME:?HOME must be set to launch a CUA bundle}"
   local user_name="${USER:-$(id -un)}"
   local logname="${LOGNAME:-$user_name}"
@@ -877,6 +879,8 @@ exec_isolated_cua_bundle() {
     SYNTH_COMPUTER_USE_PARENT_REQUIREMENT="$SYNTH_COMPUTER_USE_PARENT_REQUIREMENT" \
     SYNTH_DESKTOP_DEV_OAUTH_FILE="$oauth_file" \
     SYNTH_DESKTOP_DEV_OAUTH_STATE_FILE="$oauth_state" \
+    SYNTH_MLX_SFT_TRAIN_JSONL="$sft_train_jsonl" \
+    SYNTH_MLX_SFT_EVAL_JSONL="$sft_eval_jsonl" \
     "$CUA_EXE"
 }
 
