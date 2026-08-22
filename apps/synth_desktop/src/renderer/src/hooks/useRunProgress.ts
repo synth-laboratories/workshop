@@ -20,6 +20,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { bridges } from "../runtime/desktopBridge";
 import { publicError } from "../runtime/publicError";
 import { projectRunProgress } from "../runtime/runProgress/project";
+import { providerAccessFromSecrets } from "../runtime/runProgress/providerAccess";
 import {
 	resolveOwnedRun,
 	subscribeToRun,
@@ -91,74 +92,18 @@ export function useRunProgress(runId: string, sessionRef?: string): RunProgressS
 		const secrets = bridges.secrets;
 		if (!secrets) return;
 		let cancelled = false;
-		const algorithmId = snapshot?.run?.algorithmId;
 		const load = async () => {
 			try {
 				const [caps, inbox] = await Promise.all([secrets.capabilities(), secrets.pending()]);
 				if (cancelled) return;
 				const match = caps.find((cap) => cap.runId === runId);
-				if (match) {
-					const status = match.status === "exhausted"
-						? "exhausted"
-						: match.status === "expired"
-							? "expired"
-							: inbox.proxy.running
-								? "healthy"
-								: "proxy_down";
-					setProviderAccess({
-						provider: match.provider,
-						status,
-						suffix: match.displaySuffix ?? undefined,
-						usedCalls: match.usedCalls,
-						maxCalls: match.maxCalls,
-						usedCostUsd: match.usedCostUsd,
-						maxCostUsd: match.maxCostUsd,
-						note: status === "proxy_down"
-							? "Provider proxy is not running."
-							: status === "exhausted"
-								? "Call or spend ceiling reached."
-								: "Via Workshop proxy"
-					});
-					return;
-				}
 				const grant = inbox.grants.find((item) => item.runId === runId);
-				if (grant) {
-					setProviderAccess({
-						provider: grant.provider ?? "openai",
-						status: "approval_required",
-						usedCalls: 0,
-						maxCalls: grant.maxCalls,
-						usedCostUsd: 0,
-						maxCostUsd: grant.maxCostUsd,
-						note: "Allow this in Settings → Secrets"
-					});
-					return;
-				}
-				if (!inbox.proxy.running) {
-					setProviderAccess({
-						provider: "openai",
-						status: "proxy_down",
-						usedCalls: 0,
-						maxCalls: 0,
-						usedCostUsd: 0,
-						maxCostUsd: 0,
-						note: "Provider proxy is not running."
-					});
-					return;
-				}
-				if (algorithmId !== "gepa" && algorithmId !== "eval") {
-					setProviderAccess(undefined);
-					return;
-				}
-				setProviderAccess({
-					provider: "openai",
-					status: "missing",
-					usedCalls: 0,
-					maxCalls: 0,
-					usedCostUsd: 0,
-					maxCostUsd: 0,
-					note: "OPENAI_API_KEY is missing from the config-declared .env (credential_value_missing)"
-				});
+				setProviderAccess(providerAccessFromSecrets({
+					terminal,
+					capability: match,
+					grant,
+					proxyRunning: inbox.proxy.running
+				}));
 			} catch {
 				/* Secrets are optional on this surface. */
 			}
