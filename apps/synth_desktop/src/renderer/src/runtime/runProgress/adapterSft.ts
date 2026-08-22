@@ -101,7 +101,8 @@ function sftPhases(
 	sft: SftState,
 	terminal: boolean,
 	failed: boolean,
-	promoted: string | undefined
+	promoted: string | undefined,
+	executionStarted: boolean
 ): RunProgressPhase[] {
 	const baselineScored = (sft.baseline?.seeds.length ?? 0) > 0;
 	const collected = sft.curation.collected ?? 0;
@@ -130,7 +131,17 @@ function sftPhases(
 	};
 
 	return [
-		settle("queue", "Queue", true, training || checkpointCount > 0 || baselineScored, "waiting for an accelerator"),
+		// `run.started` is the authoritative transition out of the accelerator
+		// queue. Local MLX may legitimately take time before its first metric or
+		// baseline fact; requiring one of those facts here turns an admitted,
+		// already-started job into a false "waiting for an accelerator" report.
+		settle(
+			"queue",
+			"Queue",
+			true,
+			executionStarted || training || checkpointCount > 0 || baselineScored,
+			"waiting for an accelerator"
+		),
 		settle("baseline", "Baseline", baselineScored, baselineScored, baselineScored ? `${sft.baseline?.seeds.length} seeds scored` : undefined),
 		settle("collection", "Collection", collected > 0, collected > 0 && curated, collected > 0 ? `${collected} teacher rollouts` : undefined),
 		settle(
@@ -326,9 +337,10 @@ export function projectSft(input: AdapterInput, projected: ProjectedState): RunP
 	const promoted = typeof runSummary.promotedCheckpointId === "string"
 		? runSummary.promotedCheckpointId
 		: typeof explicitPromotionId === "string" ? explicitPromotionId : undefined;
-	const phases = sftPhases(sft, base.terminal, base.status === "failed", promoted);
+	const executionStarted = input.events.some((event) => STARTED_TYPES.has(event.type));
+	const phases = sftPhases(sft, base.terminal, base.status === "failed", promoted, executionStarted);
 	const active = phases.find((phase) => phase.status === "active");
-	const phaseId = active?.id ?? (base.terminal ? "heldout" : "queue");
+	const phaseId = active?.id ?? (base.terminal ? "heldout" : executionStarted ? "starting" : "queue");
 	const rawWork = sftWork(sft, phaseId);
 	const workEvidence = evidenceOf(input, input.events.length, "training");
 	const work = workEvidence.state === "present" ? rawWork : { unit: rawWork.unit };
@@ -434,9 +446,13 @@ export function projectSft(input: AdapterInput, projected: ProjectedState): RunP
 		...base,
 		phase: active ?? {
 			id: phaseId,
-			label: base.terminal ? "Finished" : "Queued",
+			label: base.terminal ? "Finished" : executionStarted ? "Starting" : "Queued",
 			status: base.terminal ? "completed" : "pending",
-			detail: base.terminal ? undefined : "waiting for an accelerator"
+			detail: base.terminal
+				? undefined
+				: executionStarted
+					? "run started; waiting for its first training fact"
+					: "waiting for an accelerator"
 		},
 		phases,
 		work,

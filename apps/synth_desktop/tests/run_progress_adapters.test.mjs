@@ -510,6 +510,17 @@ test("SFT: queue time is displayed and excluded from the training estimate", () 
 	assert.equal(projection.timing.eta.remainingMs, 10_000 * 5);
 });
 
+test("SFT: a started local job is not presented as still waiting for an accelerator", () => {
+	const events = sftEvents({ steps: 0 }).slice(0, 2);
+	const projection = projectRunProgress(snapshot(sftRun(), events), NOW);
+	const queue = projection.phases.find((phase) => phase.id === "queue");
+	assert.equal(queue.status, "completed");
+	assert.equal(projection.phase.id, "starting");
+	assert.equal(projection.phase.label, "Starting");
+	assert.match(projection.phase.detail, /run started; waiting for its first training fact/);
+	assert.doesNotMatch(projection.phase.detail, /accelerator/);
+});
+
 test("SFT: usage the provider never reported stays unavailable", () => {
 	const projection = projectRunProgress(snapshot(sftRun(), sftEvents()), NOW);
 	assert.equal(projection.usage.costUsd.value, undefined);
