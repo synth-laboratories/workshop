@@ -11,7 +11,9 @@ use super::sidecar_training::{
 use super::OptimizerService;
 use anyhow::{bail, Result};
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 use std::collections::HashSet;
+use std::fs;
 use std::path::PathBuf;
 
 pub const QWEN_MLX_SFT_RECIPE: &str = LOCAL_MLX_SFT_RECIPE;
@@ -90,13 +92,26 @@ pub async fn start(
     if !dataset.is_file() || !evaluation.is_file() {
         bail!("local MLX SFT requires train and eval JSONL from the bound container or SYNTH_MLX_SFT_*_JSONL");
     }
+    let config = local_sft_config(
+        &run_id,
+        Some(dataset.as_path()),
+        Some(evaluation.as_path()),
+        bind.as_ref(),
+    );
     let mut input_refs = Vec::new();
-    input_refs.push(dataset_ref(&dataset, "train", "Local Qwen SFT dataset"));
+    input_refs.push(dataset_ref(
+        &dataset,
+        "train",
+        "Local Qwen SFT dataset",
+        bind.as_ref(),
+    )?);
     input_refs.push(dataset_ref(
         &evaluation,
         "heldout_evaluation",
         "Fixed held-out Qwen evaluation dataset",
-    ));
+        bind.as_ref(),
+    )?);
+    input_refs.push(config_ref(&config));
     let create = training_create_request(
         &run_id,
         "sft",
@@ -121,12 +136,7 @@ pub async fn start(
         request,
         create,
         PLACEMENT_TRAINING_SFT_LOCAL,
-        local_sft_config(
-            &run_id,
-            Some(dataset.as_path()),
-            Some(evaluation.as_path()),
-            bind.as_ref(),
-        ),
+        config,
     )
     .await
 }
@@ -147,14 +157,42 @@ fn validate_generation_learning_rate(learning_rate: f64) -> Result<()> {
     Ok(())
 }
 
-fn dataset_ref(path: &PathBuf, role: &str, title: &str) -> OptimizerResourceRef {
-    OptimizerResourceRef {
+fn dataset_ref(
+    path: &PathBuf,
+    role: &str,
+    title: &str,
+    bind: Option<&super::container_training::ContainerTrainingBind>,
+) -> Result<OptimizerResourceRef> {
+    let bytes = fs::read(path)?;
+    Ok(OptimizerResourceRef {
         kind: "dataset".into(),
         id: path.display().to_string(),
-        digest: None,
+        digest: Some(format!("sha256:{:x}", Sha256::digest(&bytes))),
         role: Some(role.into()),
         title: Some(title.into()),
-        metadata: json!({}),
+        metadata: bind.map_or_else(
+            || json!({"source": "operator_environment"}),
+            |bind| {
+                json!({
+                    "source": "workshop_container",
+                    "containerId": bind.container_id,
+                    "taskId": bind.task_id,
+                    "baseUrl": bind.base_url,
+                })
+            },
+        ),
+    })
+}
+
+fn config_ref(config: &Value) -> OptimizerResourceRef {
+    let canonical = serde_json::to_vec(config).expect("training config is JSON");
+    OptimizerResourceRef {
+        kind: "training_configuration".into(),
+        id: QWEN_MLX_SFT_RECIPE.into(),
+        digest: Some(format!("sha256:{:x}", Sha256::digest(canonical))),
+        role: Some("resolved_configuration".into()),
+        title: Some("Resolved local MLX SFT configuration".into()),
+        metadata: json!({"schemaVersion": "synth-mlx-rl.training-config.v1"}),
     }
 }
 
@@ -277,6 +315,27 @@ mod tests {
 
         let ambient_only = recipe_request(Some("   "));
         assert!(!has_explicit_container(&ambient_only));
+    }
+
+    #[test]
+    fn dataset_and_config_refs_are_digest_bound() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("train.jsonl");
+        fs::write(&path, b"{\"messages\":[]}\n").unwrap();
+        let path = PathBuf::from(path);
+        let reference = dataset_ref(&path, "train", "dataset", None).unwrap();
+        assert_eq!(
+            reference.digest.as_deref(),
+            Some("sha256:967f89089aeadc7e90a8ecac9d3c9aca28ee83f59003525afa418983f5afd4b3")
+        );
+        assert_eq!(reference.metadata["source"], "operator_environment");
+
+        let config = json!({"b": 2, "a": 1});
+        let reference = config_ref(&config);
+        assert_eq!(
+            reference.digest.as_deref(),
+            Some("sha256:43258cff783fe7036d8a43033f830adfc60ec037382473548ac742b888292777")
+        );
     }
 
     fn recipe_request(container_id: Option<&str>) -> OptimizerRecipeRunRequest {
