@@ -614,7 +614,10 @@ async fn dispatch_request(
     if method == "POST" && path == "/v1/sessions/present" {
         return present_session(app, core, json_body).await;
     }
-    if path.starts_with("/v1/optimizers") {
+    if path.starts_with("/v1/optimizers")
+        || path.starts_with("/v1/training")
+        || path.starts_with("/v1/mlx")
+    {
         return dispatch_optimizer(method, path, json_body, core, app).await;
     }
     if path.starts_with("/v1/campaigns") {
