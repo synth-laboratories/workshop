@@ -537,7 +537,7 @@ async fn hydrate_container(
                 .and_then(|value| value.as_str())
                 .and_then(|runtime_id| {
                     let normalized = runtime_id.to_ascii_lowercase();
-                    ["banking77", "healthbench", "craftax"]
+                    ["banking77", "healthbench", "craftax", "alfworld"]
                         .into_iter()
                         .find(|family| normalized.contains(family))
                         .map(str::to_string)
