@@ -296,14 +296,15 @@ impl MlxLoopback {
         Self::client(url)
     }
 
-    /// Probe an already-running service, or start `synth-mlx-rl serve` as a
-    /// sidecar child when the operator did not pin a URL.
+    /// Attach only to an operator-pinned service. Normal product operation
+    /// always starts the verified, instance-scoped runtime on a free port;
+    /// probing a conventional default port could capture another instance.
     pub async fn ensure() -> Result<Self> {
-        if let Some(url) = probe_url(&configured_mlx_url()).await {
-            remember_url(&url);
-            return Self::client(url);
-        }
-        if std::env::var("SYNTH_MLX_RL_URL").is_ok() {
+        if let Ok(configured) = std::env::var("SYNTH_MLX_RL_URL") {
+            if let Some(url) = probe_url(&configured).await {
+                remember_url(&url);
+                return Self::client(url);
+            }
             bail!("SYNTH_MLX_RL_URL is set but synth-mlx-rl is not reachable");
         }
         start_child().await
