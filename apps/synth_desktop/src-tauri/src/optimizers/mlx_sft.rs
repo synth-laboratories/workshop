@@ -5,7 +5,8 @@ use super::models::{
 };
 use super::sidecar_training::{
     local_sft_config, optional_jsonl, spawn_watch_worker, training_create_request,
-    SidecarTrainingClient, LOCAL_MLX_SFT_RECIPE, PLACEMENT_TRAINING_SFT_LOCAL,
+    SidecarTrainingClient, LOCAL_MLX_SFT_RECIPE, LOCAL_SFT_LEARNING_RATE,
+    PLACEMENT_TRAINING_SFT_LOCAL,
 };
 use super::OptimizerService;
 use anyhow::{bail, Result};
@@ -64,6 +65,7 @@ pub async fn start(
     service: &OptimizerService,
     request: OptimizerRecipeRunRequest,
 ) -> Result<(OptimizerRunRecord, Option<crate::storage::AppEvent>)> {
+    validate_generation_learning_rate(LOCAL_SFT_LEARNING_RATE)?;
     super::mlx_runtime::require_training_model()?;
     let suffix = uuid::Uuid::new_v4().simple().to_string();
     let run_id = format!("sft_mlx_qwen_{}", &suffix[..12]);
@@ -119,6 +121,15 @@ pub async fn start(
         ),
     )
     .await
+}
+
+fn validate_generation_learning_rate(learning_rate: f64) -> Result<()> {
+    if learning_rate > 0.0001 {
+        bail!(
+            "local MLX SFT generation gate rejected learning_rate={learning_rate}: values above 1e-4 can collapse the adapter to EOS"
+        );
+    }
+    Ok(())
 }
 
 fn dataset_ref(path: &PathBuf, role: &str, title: &str) -> OptimizerResourceRef {
@@ -230,6 +241,16 @@ mod tests {
             .unwrap()
             .iter()
             .any(|item| item.as_str().unwrap().contains("container")));
+    }
+
+    #[test]
+    fn generation_gate_accepts_safe_1e_5_and_rejects_unsafe_1e_3() {
+        assert!(validate_generation_learning_rate(1e-5).is_ok());
+        let error = validate_generation_learning_rate(1e-3)
+            .expect_err("unsafe learning rate must fail closed")
+            .to_string();
+        assert!(error.contains("generation gate rejected"));
+        assert!(error.contains("collapse the adapter to EOS"));
     }
 
     #[tokio::test]

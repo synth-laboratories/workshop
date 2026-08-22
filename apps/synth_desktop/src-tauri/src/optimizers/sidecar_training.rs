@@ -35,6 +35,7 @@ pub const PLACEMENT_TRAINING_CISPO_LOCAL: &str = "training.cispo.local";
 pub const PLACEMENT_TRAINING_CISPO_HOSTED: &str = "training.cispo.hosted";
 
 pub const LOCAL_MLX_SFT_RECIPE: &str = "sft.qwen35-0.8b.mlx.v1";
+pub const LOCAL_SFT_LEARNING_RATE: f64 = 0.00001;
 pub const LOCAL_MLX_CISPO_RECIPE: &str = "cispo.mlx.v1";
 pub const HOSTED_CISPO_RECIPE: &str = "cispo.slime.hosted.v1";
 
@@ -1193,7 +1194,7 @@ pub fn local_sft_config(
             "max_steps": MAX_STEPS,
             "checkpoint_every": CHECKPOINT_EVERY,
             "evaluation": evaluation_plan,
-            "learning_rate": 0.00005,
+            "learning_rate": LOCAL_SFT_LEARNING_RATE,
             "lora_rank": LORA_RANK,
             "lora_alpha": LORA_ALPHA,
             "max_seq_length": MAX_SEQ_LENGTH,
