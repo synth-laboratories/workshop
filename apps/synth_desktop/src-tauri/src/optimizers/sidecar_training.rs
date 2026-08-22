@@ -335,11 +335,23 @@ impl TrainingRuntime {
         let Some(job) = jobs.get(job_id) else {
             return JsonHttpResponse::error(StatusCode::NOT_FOUND, "training job not found");
         };
-        let snapshot = job
+        let registered_snapshot = job
             .handoff
             .get("policy_snapshot_id")
             .cloned()
-            .unwrap_or_else(|| json!(format!("{job_id}-snap")));
+            .and_then(|value| value.as_str().map(str::to_string))
+            .filter(|value| !value.trim().is_empty());
+        let adapter_path = job
+            .handoff
+            .pointer("/inference/path")
+            .or_else(|| job.handoff.pointer("/checkpoint/path"))
+            .and_then(Value::as_str)
+            .map(PathBuf::from);
+        let artifact_digest = job
+            .handoff
+            .pointer("/checkpoint/sha256")
+            .and_then(Value::as_str)
+            .map(str::to_string);
         let prompt = body
             .get("message")
             .and_then(Value::as_str)
@@ -351,20 +363,65 @@ impl TrainingRuntime {
         );
         drop(jobs);
         if local {
-            let snapshot_id = snapshot.as_str().unwrap_or(job_id);
             match MlxLoopback::from_env() {
-                Ok(client) => match client.chat(&prompt, snapshot_id).await {
-                    Ok(reply) => {
-                        return JsonHttpResponse::ok(json!({
-                            "job_id": job_id,
-                            "policy_snapshot_id": snapshot,
-                            "reply": reply
-                        }));
+                Ok(client) => {
+                    let snapshot_id = match registered_snapshot {
+                        Some(snapshot) => snapshot,
+                        None => {
+                            let Some(adapter_path) = adapter_path else {
+                                return JsonHttpResponse::error(
+                                    StatusCode::CONFLICT,
+                                    "local checkpoint handoff omitted its adapter path",
+                                );
+                            };
+                            // A local checkpoint has bytes and a digest but no resident
+                            // snapshot after a process restart. Register the exact adapter
+                            // before inference; a guessed `-snap` identifier is not a pin.
+                            let requested_snapshot =
+                                artifact_digest.as_deref().unwrap_or(job_id).to_string();
+                            let snapshot = match client
+                                .register_policy(
+                                    &adapter_path,
+                                    &requested_snapshot,
+                                    artifact_digest.as_deref(),
+                                )
+                                .await
+                            {
+                                Ok(snapshot) => snapshot,
+                                Err(error) => {
+                                    return JsonHttpResponse::error(
+                                        StatusCode::BAD_GATEWAY,
+                                        error.to_string(),
+                                    );
+                                }
+                            };
+                            if let Some(job) = self.jobs.lock().await.get_mut(job_id) {
+                                if let Some(handoff) = job.handoff.as_object_mut() {
+                                    handoff.insert(
+                                        "policy_snapshot_id".into(),
+                                        json!(snapshot.clone()),
+                                    );
+                                }
+                            }
+                            snapshot
+                        }
+                    };
+                    match client.chat(&prompt, &snapshot_id).await {
+                        Ok(reply) => {
+                            return JsonHttpResponse::ok(json!({
+                                "job_id": job_id,
+                                "policy_snapshot_id": snapshot_id,
+                                "reply": reply
+                            }));
+                        }
+                        Err(error) => {
+                            return JsonHttpResponse::error(
+                                StatusCode::BAD_GATEWAY,
+                                error.to_string(),
+                            );
+                        }
                     }
-                    Err(error) => {
-                        return JsonHttpResponse::error(StatusCode::BAD_GATEWAY, error.to_string());
-                    }
-                },
+                }
                 Err(error) => {
                     return JsonHttpResponse::error(StatusCode::BAD_GATEWAY, error.to_string());
                 }
@@ -1353,6 +1410,31 @@ async fn drive_mlx_job(
             .unwrap_or("running")
         {
             "succeeded" => {
+                // The MLX job record becomes terminal only after it appends its
+                // final evaluation and terminal lifecycle facts. The preceding
+                // page can still be one poll behind that durable record, so
+                // drain once more before advertising completion to Workshop.
+                let final_page = client
+                    .get(&format!("/v1/jobs/{job_id}/events?after={cursor}"))
+                    .await?;
+                {
+                    let mut jobs = runtime.jobs.lock().await;
+                    let job = jobs
+                        .get_mut(job_id)
+                        .ok_or_else(|| anyhow!("training job disappeared"))?;
+                    for event in final_page
+                        .get("events")
+                        .and_then(Value::as_array)
+                        .cloned()
+                        .unwrap_or_default()
+                    {
+                        let sequence = event.get("sequence").and_then(Value::as_u64).unwrap_or(0);
+                        if sequence > cursor {
+                            job.events.push(event);
+                            cursor = sequence;
+                        }
+                    }
+                }
                 let handoff = client
                     .get(&format!("/v1/jobs/{job_id}/handoff"))
                     .await

@@ -447,6 +447,42 @@ mod tests {
     }
 
     #[test]
+    fn binds_the_alfworld_cleanroom_training_contract() {
+        let container = ReadyTrainingContainer {
+            id: "alfworld_local".into(),
+            base_url: "http://127.0.0.1:18116".into(),
+        };
+        let manifest = json!({
+            "schema_version": "workshop.alfworld.training.v1",
+            "task": "alfworld.text.v1",
+            "sft": {
+                "train": {"route": "/sft/train.jsonl", "split": "train"},
+                "evaluation": {"route": "/sft/eval.jsonl", "split": "test"}
+            },
+            "cispo": {
+                "contract": "cispo.text-trajectory.v1",
+                "harness": "text_trajectory",
+                "plan_ref": "alfworld_text_eval.v1",
+                "rollout_route": "/rollout",
+                "reward_route": "/reward",
+                "train_world_ref": "world:alfworld@train",
+                "heldout_world_ref": "world:alfworld@test"
+            }
+        });
+        let bind = parse_bind(&container, Some(&manifest), None, None).unwrap();
+        assert_eq!(bind.task_id, "alfworld.text.v1");
+        assert_eq!(
+            bind.sft.unwrap().train_jsonl_url,
+            "http://127.0.0.1:18116/sft/train.jsonl"
+        );
+        let cispo = bind.cispo.unwrap();
+        assert_eq!(cispo.harness, "text_trajectory");
+        assert_eq!(cispo.plan_ref, "alfworld_text_eval.v1");
+        assert_eq!(cispo.train_world_ref, "world:alfworld@train");
+        assert_eq!(cispo.heldout_world_ref, "world:alfworld@test");
+    }
+
+    #[test]
     fn falls_back_to_info_optimizer_contracts() {
         let container = ReadyTrainingContainer {
             id: "ctr_2".into(),

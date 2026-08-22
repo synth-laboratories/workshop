@@ -295,7 +295,7 @@ mod tests {
             .unwrap();
         assert!(events
             .iter()
-            .any(|event| event.event_type == "sft.heldout_evaluation.completed"));
+            .any(|event| event.event_type == "training.evaluation.completed"));
         assert!(events
             .iter()
             .any(|event| event.event_type == "sft.checkpoint.ready"));
