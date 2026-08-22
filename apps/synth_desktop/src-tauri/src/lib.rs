@@ -83,8 +83,8 @@ use intern_api::{
 };
 use laguna::{LagunaManager, LagunaModelHit, LagunaStatus};
 use optimizers::{
-    CheckpointInferRequest, HostedTrainingModelCatalog, OptimizerCreateRequest, OptimizerEventEnvelope,
-    OptimizerImportLocalRequest, OptimizerQuery, OptimizerRecipeRunRequest,
+    CheckpointInferRequest, HostedTrainingModelCatalog, OptimizerCreateRequest,
+    OptimizerEventEnvelope, OptimizerImportLocalRequest, OptimizerQuery, OptimizerRecipeRunRequest,
     OptimizerReconcileRequest, OptimizerRelationship, OptimizerRunRecord, OptimizerStateSlice,
     SavedLoraCheckpoint, SavedLoraCheckpointPage, SavedLoraCheckpointQuery, SavedLoraDownload,
     SavedLoraPatchRequest,
@@ -150,12 +150,11 @@ fn runtime_contracts(
         .ok()
         .flatten()
         .map(|hit| hit.version);
-    let eval = crate::optimizers::eval_runtime::installed_version()
-        .or_else(|| {
-            crate::optimizers::eval_runtime::provision_from_disk()
-                .ok()
-                .map(|manifest| manifest.version)
-        });
+    let eval = crate::optimizers::eval_runtime::installed_version().or_else(|| {
+        crate::optimizers::eval_runtime::provision_from_disk()
+            .ok()
+            .map(|manifest| manifest.version)
+    });
     Ok(ALL
         .iter()
         .map(|entry| {
@@ -953,8 +952,8 @@ pub(crate) async fn authorize_optimizer_recipe_start(
         )
     } else if is_local_eval {
         let (cost, trials) = {
-            let candidate_set_id = optimizers::resolve_eval_candidate_set(&request)
-                .map_err(AppError::from)?;
+            let candidate_set_id =
+                optimizers::resolve_eval_candidate_set(&request).map_err(AppError::from)?;
             optimizers::paid_compute_bounds(&recipe, Some(candidate_set_id.as_str()))
                 .map_err(AppError::from)?
         };
@@ -3593,8 +3592,8 @@ async fn laguna_adapter_download(
     let spec = laguna_adapters::adapter_spec(&model_id).map_err(AppError::from)?;
     // Through the backend, with the account's own credential. No adapter
     // object is public and Workshop never reaches object storage directly.
-    let client = crate::optimizers::cloud::CloudOptimizerClient::from_config()
-        .map_err(AppError::from)?;
+    let client =
+        crate::optimizers::cloud::CloudOptimizerClient::from_config().map_err(AppError::from)?;
     let emit = |phase: &str, detail: &str, done: u64, total: u64| {
         let _ = app.emit(
             crate::contract::events::EventChannel::LAGUNA_DOWNLOAD,
@@ -3608,13 +3607,18 @@ async fn laguna_adapter_download(
         );
     };
 
-    emit("preparing", "Reading the adapter manifest…", 0, spec.download_bytes);
+    emit(
+        "preparing",
+        "Reading the adapter manifest…",
+        0,
+        spec.download_bytes,
+    );
     let manifest_json = client
         .adapter_manifest(spec.digest)
         .await
         .map_err(AppError::from)?;
-    let manifest = laguna_adapters::parse_manifest(&manifest_json.to_string())
-        .map_err(AppError::from)?;
+    let manifest =
+        laguna_adapters::parse_manifest(&manifest_json.to_string()).map_err(AppError::from)?;
     laguna_adapters::check_pinned(&spec, &manifest).map_err(AppError::from)?;
     laguna_adapters::check_base_revision(&manifest, laguna::installed_base_revision())
         .map_err(AppError::from)?;
@@ -3623,7 +3627,12 @@ async fn laguna_adapter_download(
     let mut fetched: Vec<(String, Vec<u8>)> = Vec::new();
     let mut done = 0u64;
     for file in &manifest.files {
-        emit("downloading", &format!("Downloading {}…", file.path), done, total);
+        emit(
+            "downloading",
+            &format!("Downloading {}…", file.path),
+            done,
+            total,
+        );
         let bytes = client
             .adapter_file(spec.digest, &file.path)
             .await
@@ -4438,6 +4447,7 @@ pub fn run() {
             let supervisor = Arc::new(services::ServiceSupervisor::new());
             supervisor.register(laguna.clone());
             supervisor.register(optimizer_manager.clone());
+            supervisor.register(Arc::new(optimizers::mlx_runtime::MlxRuntimeService::new()));
             supervisor.register(whisper.clone());
             supervisor.register(core.diagnostics_service().sidecar().clone());
             app.manage(core.clone());

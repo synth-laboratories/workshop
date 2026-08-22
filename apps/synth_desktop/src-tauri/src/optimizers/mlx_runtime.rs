@@ -30,6 +30,7 @@ const MLX_RUNTIME_LOCK_SHA256: &str =
 pub const LOCAL_TRAINING_MAX_SEQ_LENGTH: u64 = 1024;
 const MLX_RUNTIME_SCHEMA: &str = "synth.mlx-runtime-wheelhouse.v1";
 const MLX_RUNTIME_EVENT: &str = "training://mlx-runtime-install";
+const MLX_PROCESS_LEASE_SCHEMA: &str = "synth.mlx-runtime-process-lease.v1";
 
 static SUPERVISOR: OnceLock<Mutex<MlxSupervisor>> = OnceLock::new();
 static INSTALL_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
@@ -51,6 +52,38 @@ struct RuntimeWheelhouse {
     source_revision: String,
     lock_sha256: String,
     artifacts: Vec<RuntimeWheel>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct MlxProcessLease {
+    schema_version: String,
+    pid: u32,
+    executable: String,
+    artifact_root: String,
+}
+
+/// Registers the lazily-started MLX runtime with Workshop's application-wide
+/// shutdown fence and reconciles a child inherited from an unclean restart.
+pub struct MlxRuntimeService;
+
+impl MlxRuntimeService {
+    pub fn new() -> Self {
+        if let Err(error) = reconcile_process_lease() {
+            eprintln!("synth-desktop: failed to reconcile MLX runtime lease: {error:#}");
+        }
+        Self
+    }
+}
+
+impl crate::services::ManagedService for MlxRuntimeService {
+    fn name(&self) -> &'static str {
+        "mlx-training-runtime"
+    }
+
+    fn stop(&self) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<()>> + Send + '_>> {
+        Box::pin(async move { stop_child().await })
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, specta::Type)]
@@ -124,6 +157,77 @@ fn managed_runtime_root() -> PathBuf {
     crate::instance::state_root()
         .join("runtime/mlx-rl/versions")
         .join(MLX_RUNTIME_VERSION)
+}
+
+fn process_lease_path() -> PathBuf {
+    crate::instance::data_root().join("runtime/mlx-rl/process-lease.json")
+}
+
+fn write_process_lease(pid: u32, executable: &Path, artifact_root: &Path) -> Result<()> {
+    let path = process_lease_path();
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let lease = MlxProcessLease {
+        schema_version: MLX_PROCESS_LEASE_SCHEMA.into(),
+        pid,
+        executable: executable.to_string_lossy().into_owned(),
+        artifact_root: artifact_root.to_string_lossy().into_owned(),
+    };
+    let temporary = path.with_extension(format!("json.tmp-{}", Uuid::new_v4()));
+    fs::write(&temporary, serde_json::to_vec_pretty(&lease)?)?;
+    fs::rename(temporary, path)?;
+    Ok(())
+}
+
+fn lease_owns_process(lease: &MlxProcessLease) -> bool {
+    if lease.schema_version != MLX_PROCESS_LEASE_SCHEMA || lease.pid == 0 {
+        return false;
+    }
+    let output = StdCommand::new("ps")
+        .args(["-p", &lease.pid.to_string(), "-o", "command="])
+        .output();
+    let Ok(output) = output else { return false };
+    if !output.status.success() {
+        return false;
+    }
+    let command = String::from_utf8_lossy(&output.stdout);
+    command.contains(&lease.executable)
+        && command.contains(" serve ")
+        && command.contains(&lease.artifact_root)
+}
+
+fn reconcile_process_lease() -> Result<()> {
+    let path = process_lease_path();
+    let lease = match fs::read(&path) {
+        Ok(bytes) => serde_json::from_slice::<MlxProcessLease>(&bytes)
+            .context("decode MLX runtime process lease")?,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error.into()),
+    };
+    if lease_owns_process(&lease) {
+        // The lease is instance-scoped and the exact executable + artifact root
+        // were revalidated above, so this cannot target another Workshop.
+        unsafe { libc::kill(lease.pid as i32, libc::SIGTERM) };
+    }
+    fs::remove_file(path).context("remove reconciled MLX runtime process lease")?;
+    Ok(())
+}
+
+async fn stop_child() -> Result<()> {
+    let child = supervisor().lock().ok().and_then(|mut guard| {
+        guard.base_url = None;
+        guard.child.take()
+    });
+    if let Some(mut child) = child {
+        let _ = child.kill().await;
+        let _ = child.wait().await;
+    }
+    match fs::remove_file(process_lease_path()) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error.into()),
+    }
 }
 
 fn embedded_distribution_root() -> Result<PathBuf> {
@@ -673,10 +777,21 @@ async fn start_child() -> Result<MlxLoopback> {
     drop(listener);
     let root = crate::instance::data_root().join("optimizers/mlx-rl");
     std::fs::create_dir_all(&root).context("create synth-mlx-rl artifact root")?;
+    reconcile_process_lease()?;
+    let executable = mlx_bin()?;
     let mut command = mlx_serve_command(port, &root)?;
     let child = command
         .spawn()
         .context("start synth-mlx-rl as an Optimizers sidecar child")?;
+    let pid = child
+        .id()
+        .ok_or_else(|| anyhow::anyhow!("started synth-mlx-rl without a process id"))?;
+    if let Err(error) = write_process_lease(pid, &executable, &root) {
+        let mut child = child;
+        let _ = child.kill().await;
+        let _ = child.wait().await;
+        return Err(error).context("persist synth-mlx-rl process lease");
+    }
     let url = format!("http://127.0.0.1:{port}");
     if let Ok(mut guard) = supervisor().lock() {
         guard.child = Some(child);
