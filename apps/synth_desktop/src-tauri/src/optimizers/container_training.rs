@@ -279,8 +279,11 @@ fn parse_cispo(
         native_rollouts.and_then(|value| value.get("schema_version")),
     ])
     .unwrap_or_else(|| "cispo.v1".into());
-    let harness = first_string(&[cispo.and_then(|value| value.get("harness"))])
-        .unwrap_or_else(|| harness_from_contract(&implementation));
+    let harness = first_string(&[
+        cispo.and_then(|value| value.get("harness")),
+        info.and_then(|value| value.pointer("/policy_ref/harness")),
+    ])
+    .unwrap_or_else(|| harness_from_contract(&implementation));
     let plan_ref = first_string(&[cispo.and_then(|value| value.get("plan_ref"))])
         .unwrap_or_else(|| format!("{task_id}_eval.v1"));
     let train_world_ref = first_string(&[cispo.and_then(|value| value.get("train_world_ref"))])
@@ -493,7 +496,10 @@ mod tests {
             id: "ctr_banking77".into(),
             base_url: "http://127.0.0.1:8115".into(),
         };
-        let info = json!({"runtime_family": "banking77"});
+        let info = json!({
+            "runtime_family": "banking77",
+            "policy_ref": {"harness": "classify"}
+        });
         let capabilities = json!({
             "schema_version": "training.rollout.capabilities.v1",
             "task_id": "banking77",
@@ -504,7 +510,7 @@ mod tests {
         let cispo = bind.cispo.unwrap();
         assert_eq!(cispo.rollout_url, "http://127.0.0.1:8115/training/rollouts");
         assert_eq!(cispo.implementation, "training.rollout.capabilities.v1");
-        assert_eq!(cispo.harness, "rollout");
+        assert_eq!(cispo.harness, "classify");
         assert!(bind.sft.is_none());
     }
 
