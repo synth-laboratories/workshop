@@ -4,9 +4,9 @@ import { commands as spectaCommands } from "../generated/protocol";
 import { open } from "@tauri-apps/plugin-dialog";
 import desktopPackage from "../../../../package.json";
 import type { AppEvent, InternSessionControlRequest, InternSessionCreateRequest, InternSessionSendRequest, RuntimeEvent, Session } from "@synth/runtime-protocol";
-import type { CodexEvent, CodexOauthBegin, CodexOauthStatus, CodexSessionInfo, ComposerImageAttachment, ContextSnapshot, DesktopInstanceDiagnostics, DesktopPermissionSettings, InventoryCounts, LagunaDownloadProgress, LagunaAdapterStatus, LagunaModelHit, LagunaPolicy, LagunaStatus, ModelMultiAgentSetting, ModelPerformanceSummary, ModelPerformanceTurnSample, OptimizerInferDelta, PersistedCodexSession, ProductTelemetryPolicy, RequestOptions, RuntimeBridge, SecretAuditEvent, SecretCapabilitySummary, SecretImportPreview, SecretSummary, SecretsBridge, SecretsInbox, SkillHit, SynthAccountSummary, SynthBackendSettings, SynthSignInBegin, SynthSignInPoll, TariffCard, TerminalEvent, TerminalInfo, TrainingArtifact, TrainingModelDownloadProgress, TrainingModelHit, UpdateStatus, VisualAnnotation, VisualSeal, VisualSealBundle, VisualTemplateMeta, VisualUpload, WhisperDownloadProgress, WhisperModelHit, WhisperRuntimeStatus, WorkspaceAccessSettings } from "../bridge";
-import type { CoreDiagnostics, VisualRecord, VisualRevision } from "@synth/runtime-protocol";
-import type { ContainerDeployment, ResolvedTraceProjection, TraceBundleIngestResult, TraceV5Record, UsageLedgerEntry, UsageSummary, UsageWindow } from "@synth/runtime-protocol";
+import type { CodexEvent, ComposerImageAttachment, DesktopInstanceDiagnostics, HostedTrainingModelCatalog, LagunaAdapterStatus, LagunaDownloadProgress, LagunaModelHit, LagunaPolicy, LagunaStatus, ModelPerformanceSummary, ModelPerformanceTurnSample, OptimizerInferDelta, OptimizerRunOutputs, PersistedCodexSession, RequestOptions, RuntimeBridge, SavedLoraCheckpoint, SavedLoraCheckpointPage, SavedLoraDownload, SavedLoraRunPage, SecretsBridge, TerminalEvent, TrainingModelDownloadProgress, WhisperDownloadProgress, WhisperRuntimeStatus } from "../bridge";
+import type { CoreDiagnostics } from "@synth/runtime-protocol";
+import type { ContainerDeployment, TraceV5Record, UsageLedgerEntry, UsageWindow } from "@synth/runtime-protocol";
 import { publicError } from "../runtime/publicError";
 
 // The packaged WebKit view is always served from the `tauri:` protocol.  The
@@ -14,6 +14,10 @@ import { publicError } from "../runtime/publicError";
 // so treating it as the only signal can accidentally install the browser/
 // legacy-runtime bridge inside the desktop app.
 const isTauri = window.location.protocol === "tauri:" || "__TAURI_INTERNALS__" in window;
+
+function bridgeResult<T>(promise: Promise<unknown>): Promise<T> {
+	return promise as Promise<T>;
+}
 
 /** Wire envelope for `runtime:event` after the dual-channel collapse. */
 type OriginTaggedAppEvent = { origin: EventOrigin; payload: AppEvent };
@@ -225,15 +229,15 @@ export function installDesktopBridge(): void {
 				const selection = await open({ directory: true, multiple: false, title: "Choose a Laguna model folder" });
 				return typeof selection === "string" ? selection : null;
 			},
-			setModelDirectory: (path) => invokeCommand<LagunaModelHit>(COMMANDS.LAGUNA_MODELS_SET_DIRECTORY, { path }),
-			clearModelDirectory: () => invokeCommand<void>(COMMANDS.LAGUNA_MODELS_CLEAR_DIRECTORY),
-			policies: () => invokeCommand<LagunaPolicy[]>(COMMANDS.LAGUNA_POLICIES),
+			setModelDirectory: (path) => bridgeResult<LagunaModelHit>(fromGenerated(spectaCommands.lagunaModelsSetDirectory(path))),
+			clearModelDirectory: () => fromGenerated(spectaCommands.lagunaModelsClearDirectory()).then(() => undefined),
+			policies: () => bridgeResult<LagunaPolicy[]>(fromGenerated(spectaCommands.lagunaPolicies())),
 			registerPolicy: (checkpointId, modelId) =>
-				invokeCommand<LagunaPolicy>(COMMANDS.LAGUNA_REGISTER_POLICY, { checkpointId, modelId }),
-			adapterStatus: () => invokeCommand<LagunaAdapterStatus[]>(COMMANDS.LAGUNA_ADAPTER_STATUS),
-			adapterDownload: (modelId) => invokeCommand<LagunaAdapterStatus>(COMMANDS.LAGUNA_ADAPTER_DOWNLOAD, { modelId }),
-			downloadModel: (modelId) => invokeCommand<LagunaModelHit>(COMMANDS.LAGUNA_MODEL_DOWNLOAD, { modelId }),
-			deleteModel: (modelId) => invokeCommand<void>(COMMANDS.LAGUNA_MODEL_DELETE, { modelId }),
+				bridgeResult<LagunaPolicy>(fromGenerated(spectaCommands.lagunaRegisterPolicy(checkpointId, modelId))),
+			adapterStatus: () => bridgeResult<LagunaAdapterStatus[]>(fromGenerated(spectaCommands.lagunaAdapterStatus())),
+			adapterDownload: (modelId) => bridgeResult<LagunaAdapterStatus>(fromGenerated(spectaCommands.lagunaAdapterDownload(modelId))),
+			downloadModel: (modelId) => bridgeResult<LagunaModelHit>(fromGenerated(spectaCommands.lagunaModelDownload(modelId))),
+			deleteModel: (modelId) => fromGenerated(spectaCommands.lagunaModelDelete(modelId)).then(() => undefined),
 			onDownloadProgress(listener) {
 				let disposed = false;
 				let unlisten: (() => void) | undefined;
@@ -618,8 +622,8 @@ window.synthWorkspaceScope ??= isTauri
 		};
 	window.synthModelPerformance ??= isTauri
 		? {
-			summaries: () => fromGenerated(spectaCommands.modelPerformanceSummary()),
-			turnSamples: (sessionId) => fromGenerated(spectaCommands.modelPerformanceTurnSamples(sessionId))
+			summaries: () => bridgeResult<ModelPerformanceSummary[]>(fromGenerated(spectaCommands.modelPerformanceSummary())),
+			turnSamples: (sessionId) => bridgeResult<ModelPerformanceTurnSample[]>(fromGenerated(spectaCommands.modelPerformanceTurnSamples(sessionId)))
 		}
 		: { summaries: async () => [], turnSamples: async () => [] };
 	window.synthUpdates ??= isTauri
@@ -893,24 +897,28 @@ window.synthWorkspaceScope ??= isTauri
 					query?.limit ?? null
 				)),
 			searchSavedLoras: (query) =>
-				fromGenerated(spectaCommands.optimizersSavedLorasSearch(wire(query ?? null))),
+				bridgeResult<SavedLoraCheckpointPage>(fromGenerated(spectaCommands.optimizersSavedLorasSearch(wire(query ?? null)))),
 			listRunCheckpoints: (optimizerRunId) =>
-				fromGenerated(spectaCommands.optimizersRunCheckpointsList(optimizerRunId)),
+				bridgeResult<SavedLoraRunPage>(fromGenerated(spectaCommands.optimizersRunCheckpointsList(optimizerRunId))),
 			runOutputs: (optimizerRunId) =>
-				fromGenerated(spectaCommands.optimizersRunOutputs(optimizerRunId)),
-			hostedTrainingModels: () => fromGenerated(spectaCommands.optimizersTrainingModels()),
+				bridgeResult<OptimizerRunOutputs>(fromGenerated(spectaCommands.optimizersRunOutputs(optimizerRunId))),
+			hostedTrainingModels: () => bridgeResult<HostedTrainingModelCatalog>(fromGenerated(spectaCommands.optimizersTrainingModels())),
 			archiveSavedLora: (checkpointId) =>
-				fromGenerated(spectaCommands.optimizersSavedLoraArchive(checkpointId)),
+				bridgeResult<SavedLoraCheckpoint>(fromGenerated(spectaCommands.optimizersSavedLoraArchive(checkpointId))),
 			savedLoraDownload: (checkpointId) =>
-				invokeCommand(COMMANDS.OPTIMIZERS_SAVED_LORA_DOWNLOAD, { checkpointId }),
+				bridgeResult<SavedLoraDownload>(fromGenerated(spectaCommands.optimizersSavedLoraDownload(checkpointId))),
 			importSavedLora: (path) =>
-				invokeCommand(COMMANDS.OPTIMIZERS_SAVED_LORA_IMPORT, { path }),
+				bridgeResult<SavedLoraCheckpoint>(fromGenerated(spectaCommands.optimizersSavedLoraImport(path))),
 			patchSavedLora: (checkpointId, patch) =>
-				invokeCommand(COMMANDS.OPTIMIZERS_SAVED_LORA_PATCH, { checkpointId, patch }),
+				bridgeResult<SavedLoraCheckpoint>(fromGenerated(spectaCommands.optimizersSavedLoraPatch(checkpointId, {
+					name: patch.name ?? null,
+					description: patch.description ?? null,
+					tags: patch.tags ?? null
+				}))),
 			publishSavedLora: (checkpointId) =>
-				invokeCommand(COMMANDS.OPTIMIZERS_SAVED_LORA_PUBLISH, { checkpointId }),
+				bridgeResult<SavedLoraCheckpoint>(fromGenerated(spectaCommands.optimizersSavedLoraPublish(checkpointId))),
 			inferCheckpoint: (request) =>
-				invokeCommand(COMMANDS.OPTIMIZERS_CHECKPOINT_INFER, { request }),
+				fromGenerated(spectaCommands.optimizersCheckpointInfer(request)),
 			onInferDelta(listener) {
 				let disposed = false;
 				let unlisten: (() => void) | undefined;
