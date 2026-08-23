@@ -146,7 +146,7 @@ accelerator_slots = 1
 checkpoint_steps = [10, 20]
 campaign_rollouts_per_checkpoint = 2
 evaluator_version = "craftax_gamebench.v1"
-container_url = "http://127.0.0.1:8098"
+container_url = "http://127.0.0.1:8080"
 checkpoint_evaluation_seeds = [501, 502]
 checkpoint_evaluation_policy_harness = "react"
 checkpoint_evaluation_plan_ref = "craftax_eval.v1"
@@ -173,7 +173,7 @@ Desktop is a **mirror**. It does not train.
 5. `ingest_event_page`: fail closed on gap / dropped normalize / wrong `algorithm_id`; remap onto SQLite cursor; store `sourceSequenceNumber`.
 6. Bus `optimizer.run.updated`. VisualHost reloads. Stop polling at `completed|failed|cancelled`.
 
-Env: `SYNTH_OPTIMIZERS_BETA_URL` or `OPTIMIZERS_BETA_URL`, plus `OPTIMIZERS_BETA_SERVICE_TOKEN`. Craftax URL for the live recipe: `CRAFTAX_URL` or `http://127.0.0.1:8098`.
+Env: `SYNTH_OPTIMIZERS_BETA_URL` or `OPTIMIZERS_BETA_URL`, plus `OPTIMIZERS_BETA_SERVICE_TOKEN`. Craftax URL for the live recipe: `CRAFTAX_URL` or `http://127.0.0.1:8080` (`python -m craftax_gold`).
 
 ### Visual projection (A6 — this tree)
 
@@ -209,7 +209,7 @@ Do not enable the Optimizers card by editing TSX alone. Catalog `availability` i
 | --- | --- |
 | Student catalog | Loaded from [`sft_tinker_base_models.toml`](./sft_tinker_base_models.toml) |
 | Local beta | `OPTIMIZERS_BETA_SERVICE_TOKEN`; URL env or `http://127.0.0.1:8879` |
-| Local Craftax slot | `CRAFTAX_URL` or `http://127.0.0.1:8098`, must be listening |
+| Local Craftax slot | `CRAFTAX_URL` or `http://127.0.0.1:8080`, must be the catalog façade |
 | Training rows | `SYNTH_SFT_TRAIN_JSONL` (Desktop copies into TOML; beta also reads the env) |
 
 ---
@@ -277,7 +277,7 @@ Do not enable the Optimizers card by editing TSX alone. Catalog `availability` i
 - [x] Load [`sft_tinker_base_models.toml`](./sft_tinker_base_models.toml); agent-configurable `base_model` on the run from that list (default = 3.5 Lightning). Not a Rust constant.
 - [x] Card enables from catalog; MCP start is the same `start_recipe` call; skill start JSON.
 - [x] Open visual before submit. Poll the same page API. No new ingest.
-- [x] Bind local Craftax slot (`127.0.0.1:8098` or `CRAFTAX_URL`).
+- [x] Bind local Craftax façade (`127.0.0.1:8080` or `CRAFTAX_URL`).
 
 ### Phase 3 — A4 / A6 live receipt
 

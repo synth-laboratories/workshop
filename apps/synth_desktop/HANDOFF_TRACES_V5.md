@@ -118,7 +118,7 @@ Harbor is a **benchmark harness** over containerized agent envs (Codex-in-contai
 | --- | --- |
 | Pipeline | `run → score → save evidence → index` — folders authority; indexes rebuildable |
 | Native artifacts | Harbor owns trajectory + verifier results; Desktop **references** or imports into Trace V5 / CAS with provenance |
-| Dual products | Gold Craftax (`:8098` frames/NEV) ≠ Harbor DEO (agent + verifier). Different event sources |
+| Dual products | Craftax façade (`:8080`) ≠ Harbor DEO (agent + verifier). Different event sources |
 | Live Harbor jobs | Template `live.harbor_eval.v1` — job status + rollout stream (SSE/fixtures), not gold `render.png` |
 
 Do **not** force Harbor trajectories through the Craftax gold container contract. Import path: Harbor JSON → seal/cite as Trace V5 (or bind with explicit `source: harbor` metadata) → same viewer.
@@ -253,7 +253,7 @@ Priority order:
 3. Assert row: title, digest prefix, reward if present.  
 4. **Open** → Visual pane shows PostTrain scrubber; scrub steps; observation text visible.  
 5. Re-ingest same bytes → same digest / single row (idempotent).  
-6. (Optional) With Craftax `:8098` up and container registered: seal a short rollout → second Trace row → Open.  
+6. (Optional) With Craftax façade `:8080` up and container registered: seal a short rollout → second Trace row → Open.  
 7. Screenshot vault + open pane for PR.
 
 ### Pass / fail

@@ -19,7 +19,7 @@ use tokio::{sync::watch, time::sleep};
 pub const HOSTED_SFT_FIXTURE_RECIPE: &str = "sft.hosted.fixture.v1";
 pub const HOSTED_SFT_CRAFTAX_NEMOTRON_RECIPE: &str = "sft.craftax.nemotron-nano.tinker.v1";
 pub const HOSTED_SFT_BANKING77_RECIPE: &str = "sft.banking77.nemotron-lightning.tinker.v1";
-const LOCAL_CRAFTAX_SLOT: &str = "http://127.0.0.1:8098";
+const LOCAL_CRAFTAX_SLOT: &str = "http://127.0.0.1:8080";
 const LOCAL_BANKING77_SLOT: &str = "http://127.0.0.1:8110";
 /// Checkpoint evaluation campaigns run against `banking77_classify`, whose
 /// plan and world are the container's, not something this recipe invents.
@@ -90,7 +90,7 @@ fn craftax_nemotron_recipe() -> Value {
             "SYNTH_OPTIMIZERS_BETA_URL (or local http://127.0.0.1:8879)",
             "OPTIMIZERS_BETA_SERVICE_TOKEN",
             "TINKER_API_KEY on the beta process",
-            "Craftax gold / GameBench on 127.0.0.1:8098"
+            "Craftax GameBench rust façade on 127.0.0.1:8080"
         ],
     })
 }
@@ -504,7 +504,7 @@ fn local_craftax_slot_url() -> Result<String> {
     }
     if std::net::TcpStream::connect_timeout(&address, Duration::from_millis(400)).is_err() {
         bail!(
-            "Craftax local slot is not listening at {url}; start gold Craftax or set CRAFTAX_URL"
+            "Craftax local slot is not listening at {url}; start `python -m craftax_gold` or set CRAFTAX_URL"
         );
     }
     Ok(url)
@@ -822,7 +822,7 @@ mod tests {
             "sft_craftax_nemo_ab12cd34",
             "file_train_ab12cd34",
             "nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16",
-            "http://127.0.0.1:8098",
+            "http://127.0.0.1:8080",
             None,
         );
         assert!(toml.contains("backend = \"tinker\""));

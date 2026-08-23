@@ -1945,7 +1945,7 @@ async fn finalize_turn(
 
 async fn usage_totals(core: &Arc<CoreRuntime>) -> UsageBreakdown {
     UsageRecordsRepository::new(core.storage().database().clone())
-        .summary("all".into(), None)
+        .summary("all".into(), None, 0)
         .await
         .unwrap()
         .totals

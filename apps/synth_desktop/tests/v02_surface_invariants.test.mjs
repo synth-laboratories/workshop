@@ -19,6 +19,13 @@ test("v0.2 pending approval cards pin above Working in ChatTranscript", () => {
 	assert.match(source, /Always allow for this session/);
 });
 
+test("v0.2 transcript shows median throughput while working and after assistant messages", () => {
+	const source = read("components/ChatTranscript.tsx");
+	assert.match(source, /data-testid="model-working-median-tps"/);
+	assert.match(source, /data-testid={`assistant-median-tps-\${m\.id}`}/);
+	assert.match(source, /medianTpsLabel\?\.replace\(\/\\bp50\\b\/g, "median"\)/);
+});
+
 test("v0.2 grouped activity keeps visual and container MCP calls out of used-tools summaries", () => {
 	const source = read("preferences/activityPresentation.ts");
 	assert.match(source, /export function isAuthoredEvidence/);

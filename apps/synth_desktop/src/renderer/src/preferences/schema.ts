@@ -57,7 +57,7 @@ export type DesktopPreferences = {
 		codeFontSize: number;
 		terminalFontFamily: string;
 		terminalFontSize: number;
-		/** Optional larval-mander header in the chat column. Default off. */
+		/** Optional larval-mander companion to the right of the composer. Default off. */
 		showMascot: boolean;
 	};
 	submission: {

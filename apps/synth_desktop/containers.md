@@ -8,7 +8,7 @@ Package: PyPI `synth-containers` · repo [`containers`](https://github.com/synth
 
 Desktop should treat a container as a durable registry record (URL + hydrated metadata), show it in chat, probe “still up,” and bind visual templates (dataset viewer, live rollouts, eval matrix) to that handle.
 
-**First dogfood:** GameBench Craftax Rust gold lane on `:8098` (see §4). That service is a **related interactive gold HTTP** surface, not a full synth-containers optimizer container yet.
+**First dogfood:** catalog image `craftax-gamebench-rust` on `:8080` (see §4). That is rust GameBench gold **plus** the synth-containers façade. Do not attach raw gold `:8098`.
 
 ---
 
@@ -186,20 +186,21 @@ Yes for containers that expose the contract. Desktop does **not** invent the tas
 
 ---
 
-## 4. First example — GameBench Craftax Rust (`:8098`)
+## 4. First example — Craftax GameBench rust façade (`:8080`)
 
-Repo: `gamebench/tasks/craftax-singleplayer/` · binary `craftax_gold` · port **8098** (Python gold **8097**).
-
-Bring-up:
+Catalog image: `evals/containers/images/craftax-gamebench-rust`  
+Operator README: that directory. **Attach this URL**, not rust gold on `:8098`.
 
 ```bash
-cd ~/Documents/GitHub/gamebench/tasks/craftax-singleplayer
-python3 scripts/run_service.py --lane rust --port 8098
-# or: cargo run --release --bin craftax_gold -- --host 127.0.0.1 --port 8098
+export SYNTH_CONTAINER_IMAGE_CATALOG=~/Documents/GitHub/evals/containers/images
+cd ~/Documents/GitHub/evals/containers/images/craftax-gamebench-rust
+PYTHONPATH=. python -m craftax_gold --port 8080
+# or: synth-containers up craftax-gamebench-rust --port 8080
 ```
 
-Policies already use **register-by-URL**:  
-`run_policy_sweep.py --lane rust --base-url http://127.0.0.1:8098`.
+`GET /health` is 200 only when rust gold is up (`gold_ok`, `environment_ref=env:craftax_gold`).
+Workshop eval-driver speaks façade `/rollouts/prepare` + `policy_ref`. Do not
+`python3 scripts/run_service.py --lane rust --port 8098` and register that.
 
 ### GameBench routes (actual)
 
@@ -226,7 +227,7 @@ Policies already use **register-by-URL**:
 
 ### Dogfood loop
 
-1. Start Craftax Rust on `:8098`.
+1. Start `python -m craftax_gold` on `:8080`.
 2. Register in Desktop → chip in chat + Inventory row.
 3. Create rollout / run a few steps (agent or “Run seed” action).
 4. Open `craftax.rollout_scrub.v1` bound to `{ containerId, rolloutId }` → live PNG + text + reward.
@@ -242,11 +243,11 @@ Replace demo `:8100` seed with this real endpoint (or dual-seed and label clearl
 2. **MCP / bridge** — `containers_register`, `containers_probe`, `containers_show` (journal + chat ref).
 3. **UI** — chat chip + inspector (Tasks gated on capabilities; cached task_info detail); Inventory as vault.
 4. **Visual templates** — live bindings for Craftax scrub first; dataset viewer next for full synth-containers; eval matrix on sweeps.
-5. **Tests** — Playwright: register mock baseUrl → probe → chip; optional GameBench smoke when `:8098` up.
+5. **Tests** — Playwright: register mock baseUrl → probe → chip; optional GameBench smoke when façade `:8080` up.
 
 ### Acceptance (Craftax slice)
 
-- [x] Register `http://127.0.0.1:8098` → Inventory shows Craftax Rust with hydrated `/info`.
+- [x] Register `http://127.0.0.1:8080` → Inventory shows Craftax GameBench rust with hydrated `/info`.
 - [x] Probe refreshes readiness and `/info` metadata.
 - [ ] Chat shows container chip; open inspector.
 - [x] Visual scrub shows real per-step symbolic state, readout, action, vitals, inventory, achievements, and reward.

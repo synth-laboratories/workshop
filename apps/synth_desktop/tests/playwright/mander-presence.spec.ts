@@ -77,6 +77,61 @@ test.describe("optional chat mascot", () => {
 		await expect(page.getByTestId("mander-presence-summary")).toHaveText("Reward curve flattened");
 	});
 
+	test("composer toolbar toggle shows the mascot on landing", async ({ page }) => {
+		await expect(page.getByTestId("landing-page")).toBeVisible();
+		await expect(page.getByTestId("composer-mascot")).toHaveAttribute("aria-pressed", "false");
+		await expect(page.getByTestId("mander-presence")).toHaveCount(0);
+		await page.getByTestId("composer-mascot").click();
+		await expect(page.getByTestId("composer-mascot")).toHaveAttribute("aria-pressed", "true");
+		await expect(page.getByTestId("mander-presence")).toBeVisible();
+		await expect(page.getByTestId("mander")).toHaveAttribute("data-mander-state", "idle");
+		const composerBox = await page.getByTestId("composer").boundingBox();
+		const mascotBox = await page.getByTestId("mander-presence").boundingBox();
+		expect(composerBox && mascotBox).toBeTruthy();
+		expect(mascotBox!.x).toBeGreaterThan(composerBox!.x + composerBox!.width - 12);
+		expect(mascotBox!.y).toBeLessThan(composerBox!.y + composerBox!.height / 3);
+		const stored = await page.evaluate(() => window.localStorage.getItem("synth.preferences.v1"));
+		expect(JSON.parse(stored!).appearance.showMascot).toBe(true);
+	});
+
+	test("composer toolbar toggle shows the mascot in the active chat", async ({ page }) => {
+		await page.addInitScript(() => {
+			(window as typeof window & { synthCodex?: unknown }).synthCodex = {
+				defaultWorkspace: async () => "/workspaces/default",
+				list: async () => [{
+					sessionId: "mascot-toggle",
+					threadId: "mascot-thread",
+					workspace: "/workspaces/default",
+					model: "poolside/Laguna-XS-2.1-NVFP4-mlx",
+					providerName: "local-laguna",
+					providerTitle: "Laguna XS Responses",
+					baseUrl: "http://127.0.0.1:7333/v1",
+					status: "ready",
+					title: "Inspect Craftax rollouts",
+					presentationEmotion: "thinking",
+					presentationSummary: "Reading reward traces",
+					approvalPolicy: "untrusted",
+					sandbox: "workspace-write"
+				}],
+				start: async () => ({ sessionId: "mascot-toggle", threadId: "mascot-thread" }),
+				startTurn: async () => ({ sessionId: "mascot-toggle", threadId: "mascot-thread", turnId: "turn-1" }),
+				interrupt: async () => undefined,
+				close: async () => undefined,
+				onEvent: () => () => undefined
+			};
+		});
+		await page.reload();
+		await page.getByTestId("local-chat-mascot-toggle").click();
+		await expect(page.getByTestId("composer-mascot")).toHaveAttribute("aria-pressed", "false");
+		await expect(page.getByTestId("mander-presence")).toHaveCount(0);
+		await page.getByTestId("composer-mascot").click();
+		await expect(page.getByTestId("composer-mascot")).toHaveAttribute("aria-pressed", "true");
+		await expect(page.getByTestId("mander-presence")).toBeVisible();
+		await expect(page.getByTestId("mander-presence-summary")).toHaveText("Reading reward traces");
+		const stored = await page.evaluate(() => window.localStorage.getItem("synth.preferences.v1"));
+		expect(JSON.parse(stored!).appearance.showMascot).toBe(true);
+	});
+
 	test("mascot on persists through settings", async ({ page }) => {
 		await openSettings(page);
 		await page.getByTestId("show-mascot-on").click();

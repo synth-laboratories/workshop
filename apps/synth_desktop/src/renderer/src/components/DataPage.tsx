@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { InferencePanel } from "./InferencePanel";
+import { UsagePanel } from "./UsagePanel";
 import type {
 	ContainerDeployment,
 	TraceV5Record,
@@ -89,8 +90,8 @@ export function DataPage({
 	const [error, setError] = useState<string | null>(null);
 	const [busyId, setBusyId] = useState<string | null>(null);
 	const [attachOpen, setAttachOpen] = useState(false);
-	const [attachName, setAttachName] = useState("Craftax Rust");
-	const [attachUrl, setAttachUrl] = useState("http://127.0.0.1:8098");
+	const [attachName, setAttachName] = useState("Craftax GameBench rust");
+	const [attachUrl, setAttachUrl] = useState("http://127.0.0.1:8080");
 	const [traceFilter, setTraceFilter] = useState("");
 	const [traceContainer, setTraceContainer] = useState("all");
 	const [traceModel, setTraceModel] = useState("all");
@@ -487,19 +488,26 @@ export function DataPage({
 
 			{tab === "usage" ? (
 				<div className="ws-stack" data-testid="inventory-usage">
-					<div className="ws-note">
-						<strong>Rust CoreRuntime Data store</strong>
-						<span>{counts.containers} containers · {counts.traces} traces · {counts.usage} usage entries</span>
-					</div>
-					{usage.length === 0 ? <div className="ws-empty"><p>No usage entries yet.</p></div> : (
-						<ul className="ws-list">
-							{usage.map((entry) => (
-								<li key={entry.id} className="ws-item">
-									<div className="ws-item-main"><strong className="ws-item-title">{entry.model}</strong><span className="ws-item-meta">{entry.provider} · {entry.totalTokens} tokens{entry.costUsd != null ? ` · $${entry.costUsd.toFixed(4)}` : ""}</span><span className="ws-item-meta ws-faint">{formatWhen(entry.createdAt)}</span></div>
-								</li>
-							))}
-						</ul>
-					)}
+					{/* The dashboard reduces the whole ledger in Rust. The raw
+					    rows below stay as the receipt behind it — the most
+					    recent entries, unaggregated, for when a number needs
+					    to be traced back to a request. */}
+					<UsagePanel />
+					<details className="usage-ledger">
+						<summary data-testid="inventory-usage-ledger-toggle">
+							Recent ledger entries
+							<span className="ws-item-meta ws-faint">{counts.containers} containers · {counts.traces} traces · {counts.usage} usage entries</span>
+						</summary>
+						{usage.length === 0 ? <div className="ws-empty"><p>No usage entries yet.</p></div> : (
+							<ul className="ws-list">
+								{usage.map((entry) => (
+									<li key={entry.id} className="ws-item">
+										<div className="ws-item-main"><strong className="ws-item-title">{entry.model}</strong><span className="ws-item-meta">{entry.provider} · {entry.totalTokens} tokens{entry.costUsd != null ? ` · $${entry.costUsd.toFixed(4)}` : ""}</span><span className="ws-item-meta ws-faint">{formatWhen(entry.createdAt)}</span></div>
+									</li>
+								))}
+							</ul>
+						)}
+					</details>
 				</div>
 			) : null}
 		</div>

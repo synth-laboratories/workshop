@@ -488,7 +488,7 @@ mod tests {
             Some(LiveEvalFamily::Harbor)
         );
         assert_eq!(
-            classify_live_eval_family(&json!({"target_id": "craftax_engine"}), None),
+            classify_live_eval_family(&json!({"target_id": "craftax_react"}), None),
             Some(LiveEvalFamily::Craftax)
         );
         assert_eq!(

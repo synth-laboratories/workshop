@@ -106,6 +106,7 @@ const toolbar = extract((state: any) => {
 		'[data-testid="composer-add-images"]',
 		'[data-testid="composer-slash-btn"]',
 		'[data-testid="approval-mode-select"]',
+		'[data-testid="composer-mascot"]',
 		'[data-testid="composer-model"]',
 		'[data-testid="reasoning-effort-select"]',
 		'[data-testid="service-tier-select"]',

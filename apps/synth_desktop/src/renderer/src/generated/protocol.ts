@@ -455,6 +455,8 @@ export type CodexSessionRecord = {
 	status: string,
 	title?: string | null,
 	titleOrigin?: string | null,
+	presentationEmotion?: string | null,
+	presentationSummary?: string | null,
 	approvalPolicy?: string,
 	sandbox?: string,
 };
@@ -1399,6 +1401,16 @@ export type UsageBreakdown = {
 	perfSampleCount: unknown,
 };
 
+/**
+ *  One local calendar day for one provider. Reduced from the same ledger rows
+ *  as `totals`, by the same `Bucket`, so a daily chart can never disagree with
+ *  the headline it sits under. The provider rides on `totals.provider`.
+ */
+export type UsageDayPoint = {
+	day: string,
+	totals: UsageBreakdown,
+};
+
 export type UsageEntry = {
 	id: string,
 	provider: string,
@@ -1416,6 +1428,11 @@ export type UsageSummary = {
 	window: string,
 	totals: UsageBreakdown,
 	models: UsageBreakdown[],
+	/**
+	 *  Ascending by day, then provider. Days with no requests are absent
+	 *  rather than zero-filled — the caller owns the calendar it draws.
+	 */
+	days: UsageDayPoint[],
 	generatedAt: string,
 };
 

@@ -18,7 +18,7 @@ Follow `watch_run` from sequence 0. Expect `optimizer.visual.ready`, then `sft.t
 
 ## Craftax Nemotron 3.5 Lightning Tinker (hosted, local Craftax slot)
 
-Recipe: `sft.craftax.nemotron-nano.tinker.v1`. Available when `OPTIMIZERS_BETA_SERVICE_TOKEN` is set (URL defaults to `http://127.0.0.1:8879`). Student ids: workshop `docs/sft_tinker_base_models.toml` (default is 3.5 Lightning). Optional `base_model` must be an id from that file. Checkpoint evals hit the local Craftax slot (`CRAFTAX_URL` or `http://127.0.0.1:8098`). Training rows: `SYNTH_SFT_TRAIN_JSONL` on Desktop (copied into the recipe TOML) or on the beta process. Spec: workshop `docs/optimizers_beta_sft.md`. Do not present `goex.sft.v1` as this recipe. Tinker charges apply; say that before asking for approval.
+Recipe: `sft.craftax.nemotron-nano.tinker.v1`. Available when `OPTIMIZERS_BETA_SERVICE_TOKEN` is set (URL defaults to `http://127.0.0.1:8879`). Student ids: workshop `docs/sft_tinker_base_models.toml` (default is 3.5 Lightning). Optional `base_model` must be an id from that file. Checkpoint evals hit the local Craftax façade (`CRAFTAX_URL` or `http://127.0.0.1:8080`). Training rows: `SYNTH_SFT_TRAIN_JSONL` on Desktop (copied into the recipe TOML) or on the beta process. Spec: workshop `docs/optimizers_beta_sft.md`. Do not present `goex.sft.v1` as this recipe. Tinker charges apply; say that before asking for approval.
 
 After explicit approval:
 
@@ -37,7 +37,7 @@ The recipe fixes:
 - held-out comparison: seeds 501–502, each evaluated on base and adapter;
 - ceilings: 4 teacher rollouts, 4 evaluation rollouts, 8 total environment rollouts.
 
-It requires the trusted Craftax binary and bridge runtime plus `GROQ_API_KEY` and `TINKER_API_KEY`. The Rust host reuses Craftax at `127.0.0.1:8098` when present; otherwise it starts and owns the trusted binary for the duration of the run. Provider charges apply. This smoke is bounded by fixed rollouts and steps, not by a dollar ceiling; say that plainly before asking for approval.
+It requires the trusted Craftax binary and bridge runtime plus `GROQ_API_KEY` and `TINKER_API_KEY`. The Rust host reuses Craftax at `127.0.0.1:8080` when present; otherwise it starts and owns the catalog image for the duration of the run. Provider charges apply. This smoke is bounded by fixed rollouts and steps, not by a dollar ceiling; say that plainly before asking for approval.
 
 After explicit approval:
 

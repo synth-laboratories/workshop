@@ -5,11 +5,11 @@ import { presentationSummary, resolveManderEmotion, sessionHasOpenTools } from "
 
 type Props = {
 	session?: Session;
-	chat: LocalChat;
-	running: boolean;
+	chat?: LocalChat;
+	running?: boolean;
 };
 
-export function ManderPresence({ session, chat, running }: Props) {
+export function ManderPresence({ session, chat, running = false }: Props) {
 	const state = resolveManderEmotion({
 		running,
 		toolsOpen: sessionHasOpenTools(chat),
@@ -19,7 +19,7 @@ export function ManderPresence({ session, chat, running }: Props) {
 
 	return (
 		<div className="mander-presence" data-testid="mander-presence" data-mander-emotion={state}>
-			<Mander state={state} size={40} label="Session mascot" />
+			<Mander state={state} size={64} label="Session mascot" />
 			{summary ? (
 				<p className="mander-presence-summary" data-testid="mander-presence-summary">{summary}</p>
 			) : null}

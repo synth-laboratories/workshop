@@ -6,6 +6,7 @@ import {
 	enqueuePrompt,
 	promptsForConversation,
 	removeQueuedPrompt,
+	setShowMascot,
 	updateQueuedPrompt
 } from "../preferences";
 import { nextQueuedPrompt } from "../runtime/promptQueue";
@@ -209,6 +210,13 @@ export function ComposerDock({
 				onConfigureModels: () => setView({ kind: "settings", section: "models" }),
 				onResolveBilling: () => setUsageSheetOpen(true),
 				onOpenVoiceSettings: () => setView({ kind: "settings", section: "voice" })
+			}}
+			mascot={{
+				shown: preferences.appearance.showMascot,
+				onToggle: (shown) => setPreferences(setShowMascot(shown)),
+				session: sessions.find((item) => item.id === activeSessionId),
+				chat: activeChat,
+				running: activeChatRunning
 			}}
 		/>
 	);

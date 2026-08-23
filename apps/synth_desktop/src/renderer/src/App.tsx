@@ -160,6 +160,7 @@ export default function App() {
 						setSidePanelTab={c.setSidePanelTab}
 						setSidePanelOpen={c.setSidePanelOpen}
 						inferenceMonitor={c.inferenceMonitor}
+						selectedModelMedianTpsLabel={c.selectedModelMedianTpsLabel}
 						persistedPerformanceByTarget={c.persistedPerformanceByTarget}
 						preferences={c.preferences}
 						setPreferences={c.setPreferences}

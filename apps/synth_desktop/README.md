@@ -105,9 +105,9 @@ rollouts to that service. For interference-free Craftax work, launch one server
 per instance and attach only its URL:
 
 ```bash
-cd ~/Documents/GitHub/gamebench/tasks/craftax-singleplayer
-python3 scripts/run_service.py --lane rust --port 18098  # alice
-python3 scripts/run_service.py --lane rust --port 18099  # beta, another terminal
+cd ~/Documents/GitHub/evals/containers/images/craftax-gamebench-rust
+PYTHONPATH=. python -m craftax_gold --port 18098  # alice
+PYTHONPATH=. python -m craftax_gold --port 18099  # beta, another terminal
 ```
 
 Use Inventory → Containers in each app to attach its corresponding URL. The

@@ -10,7 +10,7 @@
 
 ## 0. One-liner
 
-> Spin up **GameBench Craftax Rust** on `:8098`, **register** that URL into Desktop’s container vault, hydrate `/health` + `/info`, show it in Inventory (and a minimal inspector), then **CUA-dogfood** that an agent can find the container and the right metadata shows up.
+> Spin up **`craftax-gamebench-rust`** on `:8080`, **register** that URL into Desktop’s container vault, hydrate `/health` + `/info`, show it in Inventory, then **CUA-dogfood** that an agent can find it.
 
 Out of scope for this handoff: full visuals live scrub, SSE, synth-containers GEPA `/dataset`/`/program`, chat `container_ref` polish beyond a thin chip if time allows, port scanning.
 
@@ -23,7 +23,7 @@ Out of scope for this handoff: full visuals live scrub, SSE, synth-containers GE
 | Inventory · Containers tab | Renders list; empty state as in screenshot |
 | Rust | `inventory_containers_list` / `_get` / `_probe` (`GET {baseUrl}/health` only) |
 | Bridge | `window.synthInventory` — list / get / probe / traces / usage / counts — **no register** |
-| Seed | Demo used to point at `:8100` + fake `synth-containers` — do **not** rely on that; use real `:8098` |
+| Seed | Demo used to point at `:8100` + fake `synth-containers` — do **not** rely on that; use façade `:8080` |
 | Discovery | **Register only** (see `containers.md` § Discovery). No LAN scan |
 
 ---
@@ -34,23 +34,20 @@ Repo (sibling checkout): `~/Documents/GitHub/gamebench`
 Task: `tasks/craftax-singleplayer/`
 
 ```bash
-cd ~/Documents/GitHub/gamebench/tasks/craftax-singleplayer
-
-# build once
-cargo build --release --manifest-path gold_rust/Cargo.toml
-
-# serve (default Rust port 8098)
-python3 scripts/run_service.py --lane rust --port 8098
-# or:
-# cargo run --release --manifest-path gold_rust/Cargo.toml --bin craftax_gold -- --host 127.0.0.1 --port 8098
+export SYNTH_CONTAINER_IMAGE_CATALOG=~/Documents/GitHub/evals/containers/images
+cd ~/Documents/GitHub/evals/containers/images/craftax-gamebench-rust
+PYTHONPATH=. python -m craftax_gold --port 8080
 ```
 
 Smoke (another terminal):
 
 ```bash
-curl -s http://127.0.0.1:8098/health | jq .
-curl -s http://127.0.0.1:8098/info | jq .
+curl -s http://127.0.0.1:8080/health | jq .
+curl -s http://127.0.0.1:8080/info | jq .
 ```
+
+Expect `/health`: `status=ok`, `gold_ok=true`, `environment_ref=env:craftax_gold`.
+Do not serve `gamebench/.../run_service.py --lane rust --port 8098` as the Attach URL.
 
 Expect roughly:
 
@@ -86,7 +83,7 @@ Wire `window.synthInventory.registerContainer(...)` (and types in `env.d.ts`).
 
 On Inventory · Containers (empty state and header):
 
-- **Attach container** control: URL default `http://127.0.0.1:8098`, name default `Craftax Rust`, call register, refresh list
+- **Attach container** control: URL default `http://127.0.0.1:8080`, name default `Craftax GameBench rust`
 - Row should show at least: **name**, **location**, **status**, **taskFamily**, **baseUrl** (or short host:port)
 - Row expand / detail panel (keep simple): pretty-print cached `/info` capabilities (and health). No full Tasks tab required unless `/task_catalog` exists (Craftax won’t)
 - Probe button already exists — must refresh the hydrated info after Probe
@@ -102,14 +99,14 @@ On Inventory · Containers (empty state and header):
 
 ## 4. Phase C — Dogfood via CUA
 
-With Desktop running (`npm run dev --workspace @synth/synth-desktop` or packaged app) **and** Craftax on `:8098`:
+With Desktop running (`npm run dev --workspace @synth/synth-desktop` or packaged app) **and** Craftax façade on `:8080`:
 
 ### CUA script (give the agent this)
 
 1. Confirm Craftax is up (or tell the human to start Phase A).
 2. Open Synth Desktop → sidebar **Inventory** (Containers · Traces · Usage).
 3. Confirm starting state: Containers **0** / “No containers yet” (matches `refs/inventory-containers-empty.png`) **or** clear old demo rows if present.
-4. Use **Attach container** → `http://127.0.0.1:8098` → submit.
+4. Use **Attach container** → `http://127.0.0.1:8080` → submit.
 5. Assert list shows **1** container: name mentions Craftax/Rust, status **ready**, task family / meta mentions `craftax-singleplayer` or lane rust.
 6. Open detail / expand → assert `/info`-derived fields visible (capabilities include something like `render_png` or `rollout`; lane rust if shown).
 7. Click **Probe** → still **ready**; `hydratedAt` / updated time moves if shown.
@@ -122,11 +119,11 @@ With Desktop running (`npm run dev --workspace @synth/synth-desktop` or packaged
 | Check | Pass |
 | --- | --- |
 | Found after attach | Containers count ≥ 1, not empty copy |
-| Right info | Hydrated from live `:8098` `/info`, not hardcoded fake digest-only demo |
+| Right info | Hydrated from live `:8080` `/info`, not hardcoded fake digest-only demo |
 | Probe up/down | Reflects process lifecycle |
 | No scan | Attach/register path only |
 
-Optional Playwright smoke mirroring steps 4–7 with a mock HTTP server if CUA env lacks GameBench — still run real CUA once against `:8098`.
+Optional Playwright smoke mirroring steps 4–7 with a mock HTTP server if CUA env lacks GameBench — still run real CUA once against `:8080`.
 
 ---
 
@@ -144,7 +141,7 @@ Optional Playwright smoke mirroring steps 4–7 with a mock HTTP server if CUA e
 
 ## 6. Acceptance checklist
 
-- [x] Craftax Rust serves `:8098` (`/health` + `/info` OK)
+- [x] Craftax façade serves `:8080` (`/health` + `/info` OK)
 - [x] `registerContainer` persists + hydrates info into SQLite
 - [x] Inventory Attach and MCP register → row appears with correct family/status/url
 - [x] Probe refreshes health + info; unit/renderer coverage exercises status refresh

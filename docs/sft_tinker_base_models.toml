@@ -36,3 +36,12 @@ size = "medium"
 arch = "moe"
 default = false
 note = "Same size class as 3.5 Lightning. Not the default student."
+
+[[model]]
+id = "openai/gpt-oss-20b"
+label = "GPT-OSS-20B"
+context = "32K"
+size = "small"
+arch = "moe"
+default = false
+note = "Craftax student. Exact Tinker create_lora_training_client / create_sampling_client id."

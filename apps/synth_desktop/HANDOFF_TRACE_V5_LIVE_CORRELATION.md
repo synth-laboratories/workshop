@@ -21,8 +21,8 @@ Without this, Workshop can show a Container, a Visual, and a Trace that look rel
 ```text
                     LIVE PATH (must be proven)
   ┌─────────────────────────────────────────────────────────────────────┐
-  │  Craftax gold :8098                                                 │
-  │    POST /rollouts → step → readout / event_log / frames / reward    │
+  │  Craftax GameBench rust façade :8080                                │
+  │    /health (gold_ok) · POST /rollouts + policy_ref · /events        │
   │                              │                                      │
   │                              ▼                                      │
   │  Eval-driver (debug instance only)                                  │
@@ -182,7 +182,7 @@ If not already on the automated path:
 | Eval-driver HTTP | `apps/synth_desktop/src-tauri/src/eval_driver.rs` |
 | Policy rollout (actions + eventLog already) | `run_policy_rollout` in same file |
 | Driver contract doc | `apps/synth_desktop/EVAL_DRIVER.md` |
-| Craftax HTTP | GameBench `:8098` (see `containers.md` §4) |
+| Craftax HTTP | façade `:8080` (see `containers.md` §4) |
 | Trace ingest / vault | `inventory.rs`, `trace_ingest.rs`, `synth_trace_import` |
 | Visuals IPC / event_log fetch | `visuals_ipc.rs` |
 | Templates | `live.container_rollouts.v1`, `craftax.rollout_scrub.v1`, `trace.rollout_inspector.v1` |
@@ -192,13 +192,13 @@ If not already on the automated path:
 
 ## 6. Topology / how to run
 
-Debug Workshop instance with eval-driver enabled (`EVAL_DRIVER.md`: debug build + instance or `SYNTH_DESKTOP_EVAL_DRIVER=1`). Craftax healthy on `:8098`. Then:
+Debug Workshop instance with eval-driver enabled (`EVAL_DRIVER.md`: debug build + instance or `SYNTH_DESKTOP_EVAL_DRIVER=1`). Craftax façade healthy on `:8080`. Then:
 
 ```bash
 # Workshop instance with eval-driver descriptor present
 # Craftax:
-#   cd ~/Documents/GitHub/gamebench/tasks/craftax-singleplayer
-#   python3 scripts/run_service.py --lane rust --port 8098
+#   cd ~/Documents/GitHub/evals/containers/images/craftax-gamebench-rust
+#   PYTHONPATH=. python -m craftax_gold --port 8080
 
 npm --prefix /Users/joshuapurtell/Documents/GitHub/evals/workshop run gate:local -- \
   --slot <slot-id> \
@@ -207,7 +207,7 @@ npm --prefix /Users/joshuapurtell/Documents/GitHub/evals/workshop run gate:local
   --frontend-url http://127.0.0.1:<frontend-port> \
   --slot-health-url http://127.0.0.1:<slot-port>/health \
   --mlx-health-url http://127.0.0.1:<mlx-port>/health \
-  --craftax-url http://127.0.0.1:8098
+  --craftax-url http://127.0.0.1:8080
 ```
 
 Expect `LIVE-TRACE-CORRELATION` → **pass** with concrete ids in `detail`. Release builds must **not** expose eval-driver (`EVAL_DRIVER.md`).

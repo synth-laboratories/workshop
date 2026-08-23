@@ -5,6 +5,7 @@ import { bridges, installDesktopBridge } from "./runtime/desktopBridge";
 import "./styles/tokens.css";
 import "./styles/primitives.css";
 import "./styles/app.css";
+import "./styles/usage.css";
 
 installDesktopBridge();
 void bridges.desktop.getInstanceDiagnostics().then((identity) => {

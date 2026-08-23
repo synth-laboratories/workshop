@@ -4,7 +4,8 @@ import {
 	LAUNCH_PICKER_TARGETS,
 	TARGET_GROUP_LABEL,
 	type ExecutionTargetOption,
-	type LandingState
+	type LandingState,
+	type LocalChat
 } from "../types/landing";
 import { ProviderMark, providerMarkForTarget } from "./ProviderMark";
 import type { ApprovalPolicy, SandboxMode } from "../runtime/nativeCodex";
@@ -21,6 +22,8 @@ import type { Skill } from "../runtime/skills";
 import type { ComposerImageAttachment, ConversationWorkspaceScope, WhisperRuntimeStatus } from "../bridge";
 import { WorkspaceScopeChip, workspaceLabel } from "./WorkspaceScopeChip";
 import { bridges } from "../runtime/desktopBridge";
+import type { Session } from "@synth/runtime-protocol";
+import { ManderPresence } from "./mander";
 
 /** Permission chip + menus — injectable like InferenceTransport. */
 export type ComposerPermissions = {
@@ -90,6 +93,14 @@ export type ComposerAccountNav = {
 	onOpenVoiceSettings?: () => void;
 };
 
+export type ComposerMascot = {
+	shown: boolean;
+	onToggle: (shown: boolean) => void;
+	session?: Session;
+	chat?: LocalChat | null;
+	running?: boolean;
+};
+
 type Props = {
 	state: LandingState;
 	/** User messages from the active chat, oldest first. */
@@ -103,6 +114,7 @@ type Props = {
 	workspace: ComposerWorkspace;
 	slash: ComposerSlash;
 	account: ComposerAccountNav;
+	mascot?: ComposerMascot;
 };
 
 const APPROVAL_OPTIONS: Array<{ id: ApprovalPolicy; label: string; description: string }> = [
@@ -229,6 +241,19 @@ function IconAsk() {
 
 function IconWorkspace() {
 	return <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden><path d="M1.75 4.25h10.5v6.5a1 1 0 01-1 1h-8.5a1 1 0 01-1-1v-6.5Z" stroke="currentColor" strokeWidth="1.2" strokeLinejoin="round"/><path d="M1.75 4.25V3.5a1 1 0 011-1h2.1l1.1 1.25h5.3a1 1 0 011 1" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round"/></svg>;
+}
+
+function IconMander() {
+	return (
+		<svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden>
+			<path d="M3.4 6.1c.4-1.4 1.5-2.2 2.7-2.2" stroke="currentColor" strokeWidth="1.25" strokeLinecap="round" />
+			<path d="M4.15 7.35c-.85-.45-1.7-.35-2.35.2" stroke="currentColor" strokeWidth="1.25" strokeLinecap="round" />
+			<path d="M5.35 5.15c.15-1.15.7-2 1.45-2.25" stroke="currentColor" strokeWidth="1.25" strokeLinecap="round" />
+			<path d="M4.6 8.15c.35-1.7 1.85-2.85 4.05-2.55 1.55.2 2.55.95 3.15 1.7.45.55 1.35.75 2.05.4" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" />
+			<path d="M6.15 10.2v1.85M8.35 10.35v1.7M5.45 9.35l-1.25.95M10.05 9.2l1 .9" stroke="currentColor" strokeWidth="1.25" strokeLinecap="round" />
+			<circle cx="10.05" cy="6.95" r="0.65" fill="currentColor" />
+		</svg>
+	);
 }
 
 function IconMic() {
@@ -653,7 +678,8 @@ export function Composer({
 	turn,
 	workspace,
 	slash,
-	account
+	account,
+	mascot
 }: Props) {
 	const { approvalPolicy, sandboxMode, onSelect: onSelectPermissions } = permissions;
 	const {
@@ -1194,6 +1220,7 @@ export function Composer({
 								: "Whisper needs attention"}
 				</p>
 			) : null}
+			<div className="composer-anchor">
 			<div className={`composer${enabled ? "" : " is-disabled"}${imageDragActive ? " is-image-drag-active" : ""}`} data-testid="composer" data-enter-action={enterAction}>
 				{imageDragActive ? <div className="composer-image-drop-target" aria-hidden>Drop screenshots here</div> : null}
 				{imageAttachments.length ? <div className="composer-image-tray" data-testid="composer-image-tray">{imageAttachments.map((image) => <figure key={image.path} className="composer-image-chip"><img src={image.previewUrl} alt={image.name}/><button type="button" aria-label={`Remove ${image.name}`} onClick={() => { setImageAttachments((items) => items.filter((item) => item.path !== image.path)); setAttachmentError(null); }}>×</button></figure>)}</div> : null}
@@ -1290,6 +1317,19 @@ export function Composer({
 							open={permissionMenuOpen}
 							onOpenChange={setPermissionMenuOpen}
 						/>
+						{mascot ? (
+							<button
+								type="button"
+								className="composer-icon-btn composer-mascot-btn"
+								aria-label={mascot.shown ? "Hide session mascot" : "Show session mascot"}
+								aria-pressed={mascot.shown}
+								title={mascot.shown ? "Hide Larval Mander" : "Show Larval Mander"}
+								data-testid="composer-mascot"
+								onClick={() => mascot.onToggle(!mascot.shown)}
+							>
+								<IconMander />
+							</button>
+						) : null}
 					</div>
 					<div className="composer-right">
 						<ModelMenu
@@ -1336,6 +1376,10 @@ export function Composer({
 						</button>
 					</div>
 				</div>
+			</div>
+			{mascot?.shown ? (
+				<ManderPresence session={mascot.session} chat={mascot.chat ?? undefined} running={mascot.running} />
+			) : null}
 			</div>
 		</div>
 	);

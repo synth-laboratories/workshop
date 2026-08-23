@@ -17,7 +17,7 @@ use std::time::Duration;
 use tokio::{sync::watch, time::sleep};
 
 pub const HOSTED_GELO_CRAFTAX_RECIPE: &str = "gelo.craftax.hosted.v1";
-const DEFAULT_CRAFTAX_CONTAINERS_URL: &str = "http://127.0.0.1:8100";
+const DEFAULT_CRAFTAX_CONTAINERS_URL: &str = "http://127.0.0.1:8080";
 const STATE_SLICES: &[&str] = &[
     "board",
     "themes",
@@ -111,7 +111,7 @@ pub fn recipe_catalog() -> Value {
         "prerequisites": [
             "SYNTH_OPTIMIZERS_BETA_URL (default http://127.0.0.1:8879)",
             "OPTIMIZERS_BETA_SERVICE_TOKEN",
-            "SYNTH_CONTAINERS_CRAFTAX_URL (default http://127.0.0.1:8100)",
+            "SYNTH_CONTAINERS_CRAFTAX_URL (default http://127.0.0.1:8080)",
             "optimizers-beta proposer credentials"
         ]
     })
@@ -227,7 +227,7 @@ fn craftax_containers_url() -> Result<String> {
         .with_context(|| format!("Craftax Containers URL is not a host:port: {url}"))?;
     if std::net::TcpStream::connect_timeout(&address, Duration::from_millis(500)).is_err() {
         bail!(
-            "Craftax Containers service is not listening at {url}; start the craftax_engine façade or set SYNTH_CONTAINERS_CRAFTAX_URL"
+            "Craftax Containers service is not listening at {url}; start `python -m craftax_gold` or set SYNTH_CONTAINERS_CRAFTAX_URL"
         );
     }
     Ok(url)

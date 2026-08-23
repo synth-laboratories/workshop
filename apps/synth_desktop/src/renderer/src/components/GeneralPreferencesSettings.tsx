@@ -190,7 +190,7 @@ export function GeneralPreferencesSettings({ preferences, onPreferencesChange }:
 				</SettingsRow>
 				<SettingsRow
 					label="Mascot"
-					description="Show Larval Mander and the seven-word summary in the chat column. Off by default."
+					description="Show Larval Mander to the right of the composer, with the seven-word summary when a session has one. Off by default."
 				>
 					<SegmentedControl
 						ariaLabel="Chat mascot"

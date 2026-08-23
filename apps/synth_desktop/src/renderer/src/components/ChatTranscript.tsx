@@ -1,9 +1,7 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type { ArtifactRef, LocalActivityLine, LocalChat } from "../types/landing";
-import type { Session } from "@synth/runtime-protocol";
 import { FileTypeIcon, shortenPath } from "./FileTypeIcon";
 import { ContainerIcon } from "./ContainerPane";
-import { ManderPresence } from "./mander";
 import {
 	activityStatusAnnouncement,
 	pairActivityGroupLines,
@@ -27,10 +25,10 @@ type Props = {
 	onStop?: () => void;
 	activityMode?: ToolActivityMode;
 	onActivityModeChange?: (mode: ToolActivityMode) => void;
+	/** Rolling model p50 throughput, shared by the live row and completed responses. */
+	medianTpsLabel?: string | null;
 	outputsOpen?: boolean;
 	onToggleOutputs?: () => void;
-	showMascot?: boolean;
-	session?: Session;
 };
 
 export function outputContainerIds(chat: LocalChat): string[] {
@@ -520,10 +518,9 @@ export function ChatTranscript({
 	onStop,
 	activityMode = "grouped",
 	onActivityModeChange,
+	medianTpsLabel = null,
 	outputsOpen = false,
-	onToggleOutputs,
-	showMascot = false,
-	session
+	onToggleOutputs
 }: Props) {
 	const [expandedGroupIds, setExpandedGroupIds] = useState<Set<string>>(() => new Set());
 	const [modeMenuOpen, setModeMenuOpen] = useState(false);
@@ -537,6 +534,7 @@ export function ChatTranscript({
 	const artifacts = chat.artifacts ?? [];
 	const containerIds = outputContainerIds(chat);
 	const hasResources = containerIds.length > 0 || artifacts.length > 0;
+	const transcriptMedianTpsLabel = medianTpsLabel?.replace(/\bp50\b/g, "median") ?? null;
 	const activeLines = activityByMessageId.__active__ ?? [];
 	// A pending approval is a turn-level blocking condition, not ordinary
 	// message activity. Message-id rotation and replay ordering can attach it to
@@ -668,7 +666,6 @@ export function ChatTranscript({
 
 	return (
 		<div className={`chat-transcript${outputsOpen ? " resources-open" : ""}`} data-testid="chat-transcript" data-activity-mode={activityMode}>
-			{showMascot ? <ManderPresence session={session} chat={chat} running={running} /> : null}
 			<div className="transcript-toolbar" data-testid="transcript-toolbar">
 			<div className="activity-mode-bar" ref={modeMenuRef}>
 				<button
@@ -741,7 +738,10 @@ export function ChatTranscript({
 								) : (
 									<div className="local-assistant">
 										<p>{m.body}</p>
-										<div className="message-actions"><CopyMessageButton body={m.body} /></div>
+										<div className="assistant-message-footer">
+											{transcriptMedianTpsLabel ? <span className="message-throughput" data-testid={`assistant-median-tps-${m.id}`}>{transcriptMedianTpsLabel}</span> : null}
+											<div className="message-actions"><CopyMessageButton body={m.body} /></div>
+										</div>
 									</div>
 								)}
 								{m.role === "assistant" ? renderPresented(presentedAfter, [], false, running) : null}
@@ -762,6 +762,7 @@ export function ChatTranscript({
 							<div className="model-working" role="status" aria-live="polite" data-testid="model-working">
 								<span className="model-working-dots" aria-hidden><i /><i /><i /></span>
 								<span>{warmingUp ? "Warming up…" : "Working…"}</span>
+								{transcriptMedianTpsLabel ? <span className="model-working-throughput" data-testid="model-working-median-tps">{transcriptMedianTpsLabel}</span> : null}
 								<button type="button" onClick={onStop} aria-label="Stop generating">Stop</button>
 							</div>
 						) : null}

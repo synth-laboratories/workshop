@@ -20,7 +20,7 @@ Owner handoff: [`HANDOFF_POLISH_CUA_TESTS.md`](./HANDOFF_POLISH_CUA_TESTS.md).
 
 ### 2026-08-09 — Bootstrap (prior work)
 
-- **Shipped:** Removed stub LoRA / Finetunes UI (Composer + Settings); Settings shows Adapters · Not wired; Inventory Attach defaults to Craftax `http://127.0.0.1:8098`.
+- **Shipped:** Removed stub LoRA / Finetunes UI (Composer + Settings); Settings shows Adapters · Not wired; Inventory Attach defaults to Craftax GameBench rust `http://127.0.0.1:8080`.
 - **Tests:** Added `tests/playwright/design-debt.spec.ts` (4 design locks + 9 `test.fail` debt flags) and `tests/design_debt.test.mjs` (static stub greps + LoRA regression locks). Documented in `testing.md`.
 - **Flagged:** Account / Downloads / Expand toast stubs; Always-ask inert; Set up agent stub; Reload Laguna stub; async leave-safe `!isSync`; Codex `adapter: null`; VisualHost Craftax preview heuristics; Attach/Open-trace browser dogfood fragility.
 - **CUA notes:** Empty Inventory screenshot archived at `refs/inventory-containers-empty.png`.

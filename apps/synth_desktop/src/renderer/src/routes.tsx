@@ -65,6 +65,7 @@ export type MainRoutesProps = {
 	setSidePanelTab: (tab: "outputs" | "inference") => void;
 	setSidePanelOpen: (open: boolean) => void;
 	inferenceMonitor: InferenceMonitor;
+	selectedModelMedianTpsLabel: string | null;
 	persistedPerformanceByTarget: Map<string, ModelPerformanceSummary>;
 	preferences: DesktopPreferences;
 	setPreferences: (next: DesktopPreferences) => void;
@@ -126,6 +127,7 @@ export function MainRoutes(props: MainRoutesProps): ReactNode {
 		setSidePanelTab,
 		setSidePanelOpen,
 		inferenceMonitor,
+		selectedModelMedianTpsLabel,
 		persistedPerformanceByTarget,
 		preferences,
 		setPreferences,
@@ -341,14 +343,13 @@ export function MainRoutes(props: MainRoutesProps): ReactNode {
 						}}
 						activityMode={preferences.toolActivity.mode}
 						onActivityModeChange={onActivityModeChange}
+						medianTpsLabel={selectedModelMedianTpsLabel}
 						outputsOpen={showSidePanel && sidePanelTab === "outputs"}
 						onToggleOutputs={() => {
 							const next = !(showSidePanel && sidePanelTab === "outputs");
 							setSidePanelTab("outputs");
 							setSidePanelOpen(next);
 						}}
-						showMascot={preferences.appearance.showMascot}
-						session={activeChatSession}
 					/>
 					{openArtifact ? (
 						<VisualPane artifact={openArtifact} onClose={() => toggleArtifact(null)} />

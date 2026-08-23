@@ -864,8 +864,12 @@
 	flex-direction: column;
 	align-items: center;
 	gap: var(--sp-2);
-	padding: var(--sp-4) var(--sp-5) 0;
+	position: absolute;
+	left: calc(100% + 8px);
+	top: 8px;
+	padding: 0;
 	flex: 0 0 auto;
+	pointer-events: auto;
 }
 
 .mander-presence-summary {
