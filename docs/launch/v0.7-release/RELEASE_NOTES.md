@@ -1,6 +1,12 @@
 # Synth Workshop v0.7.0 — release notes (living draft)
 
-Status: **draft, not released.** The published stable line is v0.6.0 (`frontend/public/releases/v0.6.0/`). Last revised 2026-08-20 against workshop `origin/v0.7` `701b483e`.
+Status: **superseded.** v0.7.0 was never published. The v0.7 line shipped as patch releases:
+v0.7.1 -> v0.7.2 -> v0.7.3 -> **v0.7.4** (current stable, released 2026-08-22 at workshop
+`937a316f`). The shipped, user-facing notes for v0.7.4 are the public catalog entry in
+`frontend/src/lib/desktopRelease.ts` (`"0.7.4"`) and
+`frontend/content/changelog/2026-08-22-workshop-v074-release.mdx`; the measured release facts are in
+`POST_RELEASE.md` and `TEST_REPORT.md`. The v0.7.0 draft below is retained as scope history only and
+is **not** a release claim.
 
 v0.7 is an integration-and-proof release: first-class Hosted SFT/CISPO, Local MLX SFT/CISPO, GEPA, and Eval under one Optimizers sidecar, with pinned runtimes, durable evidence, honest terminal state, and retained acceptance receipts. Source of truth for scope: `v0.7-release-plan.md` and the v0.7 release work register (Codex `2026-08-20/wha/outputs/`).
 

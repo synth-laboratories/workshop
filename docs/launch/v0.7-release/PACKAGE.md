@@ -1,4 +1,55 @@
-# v0.7 package (procedure; facts filled when the bytes exist)
+# v0.7 packaging
+
+## v0.7.4 — as actually built and shipped (2026-08-22)
+
+**This section is the measured record. The v0.7.0 procedure below it is historical and its
+Developer ID / notarization steps were NOT used.**
+
+- Artifact (ZIP): `Synth-Workshop-v0.7.4-macOS-arm64-UNNOTARIZED.zip`
+  - SHA-256 `782ea3d25323cb7deb08f95d943d7078c18bebdcc7575e95dea14099a9b64e1c`, bytes `121985840`
+- Artifact (DMG): `Synth-Workshop-v0.7.4-macOS-arm64-UNNOTARIZED.dmg`
+  - SHA-256 `ab1fbf03eebbeb0bf816e474bc645d9ff54a527c08ddb30c0d1f628c319c913d`, bytes `126277366`
+- App CDHash `a81e3ad2045f1050a05e166b99c33a5fac075974`; bundle id `com.synth.desktop`; version `0.7.4`
+- Main executable SHA-256 `608e6c68f77f326caf1f565ee1cbf14ea1a0ab8d12d1e1db82e54579eaca29ae`
+- Workshop source `937a316fcb85e8371faf2bd6f57aceadc4cc1873` / tree `8df5a3e58046fd7fc689580de5000a0ec813e0d4`
+- Containers source `e1df8c6ac5629cb11d5bc01bbebc7ffcee0cacbf` / tree `8809da8a335714b837c321c339d03dd9bf7eee1a`
+- MLX runtime `synth-mlx-rl` 0.6.0 at `5d6db14330babcff170d2afbb8535de2138385a9`, lock SHA-256 `7f14b704ba9a6c30e6ced5cc88fc2ba6a58a936a9531cfaf168cbb664f83c420`
+- Packaged cookbooks: none. `scripts/stage-packaged-cookbooks.sh` is a no-op; cookbooks are not bundled into Workshop.
+
+### Exact commands used
+
+```sh
+# 1. build (clean worktree, MLX checkout supplied explicitly)
+cd <workshop-worktree>
+SYNTH_MLX_RL_PROJECT_ROOT=<synth-mlx-rl worktree> \
+  npm run build --workspace @synth/synth-desktop
+
+# 2. stage a copy, then ad-hoc sign it (identity "-", no Keychain)
+ditto "apps/synth_desktop/src-tauri/target/release/bundle/macos/Synth Workshop.app" "$OUT/stage/Synth Workshop.app"
+codesign --force --deep --options runtime --sign - --identifier com.synth.desktop "$OUT/stage/Synth Workshop.app"
+codesign --verify --deep --strict "$OUT/stage/Synth Workshop.app"
+
+# 3. ZIP and DMG
+(cd "$OUT/stage" && ditto -c -k --sequesterRsrc --keepParent "Synth Workshop.app" "$OUT/<zip>")
+hdiutil create -volname "Synth Workshop 0.7.4" -srcfolder "$OUT/dmg-root" -ov -format UDZO "$OUT/<dmg>"
+```
+
+`scripts/release-artifact.sh` was **not** used: its `stage` and `notarize` commands require
+`security find-identity` and `notarytool --keychain-profile`, and this release ran under a standing
+constraint forbidding macOS Keychain access.
+
+### Verification performed on the shipped bytes
+
+ZIP extracted and DMG mounted; `codesign --verify --deep --strict` passed on both; CDHash identical
+across both round trips and equal to the staged app; both reported `CFBundleShortVersionString`
+`0.7.4`; the embedded `runtimes/mlx-rl/manifest.json` reported source revision `5d6db143…` and lock
+SHA-256 `7f14b704…`. `spctl --assess --type execute` returns **rejected**, which is the expected and
+disclosed result for an unnotarized build.
+
+---
+
+## v0.7.0 procedure (historical)
+
 
 - Product: Synth Workshop — Version: `0.7.0` — Channel: stable (manual update) — Architecture: macOS arm64
 - Signing / notarization: per D8. Default: ad-hoc + hardened runtime, **not** notarized (the `candidate-*` path below). Developer ID + notarization uses the official path.

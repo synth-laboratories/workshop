@@ -1,24 +1,29 @@
 # v0.7 readiness
 
-Status: **not ready — release candidate held** (D6: the RC waits for the artifact → inference → Eval flow).
+Status: **v0.7.4 shipped** (ad-hoc signed, unnotarized) on 2026-08-22.
 
-Last revised 2026-08-20 at workshop `origin/v0.7` `701b483e`.
+This file previously gated an unreleased `v0.7.0`. That gate is **superseded**: v0.7.0 was never
+published, and the v0.7 line shipped as a sequence of patch releases under explicit release-owner
+waivers. The shipped facts live in `POST_RELEASE.md`; the measured suite counts live in
+`TEST_REPORT.md`.
 
-## What is true now
+## What is true for v0.7.4
 
-- Merged on `v0.7`: GEPA workbench (#41), training sidecar with instance-scoped model roots (#42), v0.7 instance line + 0.2.15 sidecar pin + training taxonomy (#47), hosted CISPO bound to retained SFT state (#50). optimizers 0.2.15 is on PyPI (`d3c9edd`); experiment layer merged separately (#44). backend `v0.7` contains staging (#1244); synth-mlx-rl `v0.7` has the real-only backend (#2); evals `dev` has the CUA lanes (#280).
-- Open in the stack (in merge order): #45 managed artifacts → #46 artifact inference → #48 training-event adapter → #49 Eval provisioning → #51 local MLX GSM8K + dropout refusal → #52 typed agent capabilities; #43 UI artifact-first workspace rebases on the stack.
-- Not deployed, not spent, not notarized: see `KNOWN_ISSUES.md` K8, K10, K24 and decisions D2/D4/D8.
+- Workshop `937a316f` (tree `8df5a3e5`), Containers `e1df8c6`, `synth-mlx-rl` `5d6db143`.
+  All three worktrees were clean at freeze; the packaged app embeds the pinned MLX wheelhouse.
+- Clean-tree suites green on the frozen commit: Rust 1,305 passed / 0 failed / 8 ignored;
+  Playwright 251 passed / 0 failed / 2 skipped; Containers 489 passed / 10 skipped;
+  TypeScript typecheck clean; run-progress node suites 36 passed.
+- Artifact built, ad-hoc signed, and round-trip verified from both ZIP and DMG at a stable CDHash.
 
-## Ready when
+## What is explicitly NOT claimed
 
-1. `ACCEPTANCE.md` per-lane table has a verdict in every row with receipt paths, and no row is **no-go**.
-2. `TEST_REPORT.md` carries the integrator's rows for every changed repo at the frozen SHAs.
-3. `PROVENANCE.md` has no `TBD` in the desktop-artifact section; `PACKAGE.md` records the ZIP SHA-256, bytes, CDHash.
-4. `COMMIT_MAP.md` names the verified release head per repo and the promotion SHAs.
-5. `RELEASE_NOTES.md` core table has its **proven** column filled for every lane that ships as core; anything still pending is moved to opt-in or deferred before tagging.
-6. Josh has answered D2 (deploy), D4 (spend), D8 (notarization), and D3 (catalog wording) or the defaults in register §10 are recorded here as applied.
+- No Developer ID signature and no Apple notarization (no non-Keychain mechanism exists; see
+  `POST_RELEASE.md`).
+- No GitHub Release asset mirror.
+- No fresh workload training E2E: ALFWorld, Craftax, HealthBench, hosted CISPO, Harvey/OpenRouter,
+  and the full Banking77 training replays were deferred and are not represented as passing.
+- No packaged Computer Use / lifecycle acceptance for this candidate.
 
-## Promotion
-
-`v07/<lane>` → `v0.7` (merge commits, stack order, tree-identity checks) → `main` → annotated tag `v0.7.0` → GitHub release → frontend catalog PR → `POST_RELEASE.md`.
+Hosted CISPO is fail-closed and stays that way until an authenticated `cispo.slime.v1` canary is
+durably admitted.
