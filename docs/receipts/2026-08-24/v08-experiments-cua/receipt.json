@@ -3,6 +3,14 @@
   "acceptanceId": "V08-EXPERIMENTS-MVP-001",
   "capturedAt": "2026-08-24T15:56:59Z",
   "implementationCommit": "84dea5ed37b0",
+  "traceAffordanceFollowup": {
+    "commit": "cc7615383825",
+    "verifiedAt": "2026-08-24T16:12:00Z",
+    "buildRevision": "cc7615383825",
+    "result": "Inspectable Trace V5 references route through the durable inspector; non-self-contained lite seals are labeled unavailable instead of presenting a dead Open trace action.",
+    "organizedPanelVerified": true,
+    "durableReopenVerified": true
+  },
   "app": {
     "instance": "v08exp0824",
     "bundleId": "com.synth.desktop.v07.dev.v08exp0824",
@@ -116,6 +124,10 @@
     {
       "path": "15-lineage-result-inspector.jpeg",
       "sha256": "51ee354a515c732ddd8eb06dea8ef29bccdf0940d40fa4e8d647dc2bd0011477"
+    },
+    {
+      "path": "organized-trace-state.png",
+      "sha256": "0f9cf4cdcdaca31d03cd73bd9bc20fe8cba24827c70dd5727cef82664219f607"
     }
   ],
   "limitations": [
