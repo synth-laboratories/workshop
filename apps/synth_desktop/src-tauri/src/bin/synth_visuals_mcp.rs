@@ -433,6 +433,8 @@ fn tools() -> Value {
               "data":{"description":"Required when kind is inline"},
               "bindings":{"type":"object","description":"A full synth.visual-bindings.v1 envelope, instead of slot/kind/source"},"viewport":{"type":"object","properties":{"width":{"type":"integer","minimum":320,"maximum":2400}},"additionalProperties":false,"description":"Capture width; the height follows the chart so nothing is scaled down"},"capture":{"type":"boolean","description":"Default true; false returns the revision and findings without a PNG"},"presentation":{"type":"string","enum":["canvas","pane"]}},"required":["spec"],"additionalProperties":false}},
             {"name":"experiment_attach_evidence","description":"Attach a durable trace, visual/plot, or artifact reference to an experiment. References are local-first and may be materialized just in time when opened. Replaying the same evidence_id is idempotent.","inputSchema":{"type":"object","properties":{"experiment_id":{"type":"string"},"node_id":{"type":"string","description":"Optional experiment node; defaults to the latest result node"},"evidence_id":{"type":"string","description":"Stable caller-chosen idempotency key"},"kind":{"type":"string","enum":["trace","visual","artifact"]},"label":{"type":"string"},"digest":{"type":"string"},"container_id":{"type":"string"},"rollout_id":{"type":"string"},"trace_id":{"type":"string"},"visual_id":{"type":"string"},"artifact_uri":{"type":"string"},"metadata":{"type":"object"}},"required":["experiment_id","evidence_id","kind","label"],"additionalProperties":false}},
+            {"name":"experiment_create","description":"Create or reopen the current task's durable experiment record. request_id is the stable idempotency key.","inputSchema":{"type":"object","properties":{"request_id":{"type":"string"},"title":{"type":"string"},"task":{"type":"string"},"model":{"type":"string"}},"required":["request_id","title"],"additionalProperties":false}},
+            {"name":"experiment_finalize","description":"Finalize a task-owned experiment with authoritative measured results and an honest assessment. Missing measurements must be null, never zero.","inputSchema":{"type":"object","properties":{"experiment_id":{"type":"string"},"status":{"type":"string","enum":["completed","partial","failed"]},"result":{"type":"object"},"assessment":{"type":"object"}},"required":["experiment_id","status","result"],"additionalProperties":false}},
             {"name":"visual_authoring_context","description":"Get the template contract, example evidence, revision, presentation, and outstanding quality gate for one visual","inputSchema":{"type":"object","properties":{"visual_id":{"type":"string"}},"required":["visual_id"],"additionalProperties":false}},
             {"name":"visual_list_annotations","description":"List durable labels for a visual and its current overlay digest","inputSchema":{"type":"object","properties":{"visual_id":{"type":"string"}},"required":["visual_id"],"additionalProperties":false}},
             {"name":"visual_annotate","description":"Write a durable label anchored to one exact visual revision","inputSchema":{"type":"object","properties":{"visual_id":{"type":"string"},"revision":{"type":"integer"},"selector":{"type":"object"},"kind":{"type":"string","enum":["note","bug","highlight","reward","acceptance"]},"body":{"type":"string"},"source_digest":{"type":"string"},"supersedes_id":{"type":"string"}},"required":["visual_id","revision","selector","kind"],"additionalProperties":false}},
@@ -858,15 +860,26 @@ fn call_tool(name: &str, args: &Value) -> Result<Value, String> {
             }))
         }
         "experiment_attach_evidence" => {
+            let session_id = require_session_identity(&session_env, "attach experiment evidence")?;
             let experiment_id = args
                 .get("experiment_id")
                 .and_then(Value::as_str)
                 .ok_or("experiment_id required")?;
-            request(
-                "POST",
-                &format!("/v1/experiments/{experiment_id}/evidence"),
-                Some(args.clone()),
-            )
+            request("POST", &format!("/v1/experiments/{experiment_id}/evidence"), Some(json!({
+                "sessionId": session_id, "nodeId": args.get("node_id"), "evidenceId": args.get("evidence_id"), "kind": args.get("kind"),
+                "label": args.get("label"), "digest": args.get("digest"), "containerId": args.get("container_id"),
+                "rolloutId": args.get("rollout_id"), "traceId": args.get("trace_id"), "visualId": args.get("visual_id"),
+                "artifactUri": args.get("artifact_uri"), "metadata": args.get("metadata")
+            })))
+        }
+        "experiment_create" => {
+            let session_id = require_session_identity(&session_env, "create an experiment")?;
+            request("POST", "/v1/experiments", Some(json!({"sessionId":session_id,"requestId":args.get("request_id"),"title":args.get("title"),"task":args.get("task"),"model":args.get("model")})))
+        }
+        "experiment_finalize" => {
+            let session_id = require_session_identity(&session_env, "finalize an experiment")?;
+            let id = args.get("experiment_id").and_then(Value::as_str).ok_or("experiment_id required")?;
+            request("POST", &format!("/v1/experiments/{id}/finalize"), Some(json!({"sessionId":session_id,"status":args.get("status"),"result":args.get("result"),"assessment":args.get("assessment")})))
         }
         "visual_authoring_context" => {
             let id = args

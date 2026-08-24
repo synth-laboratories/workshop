@@ -400,6 +400,7 @@ pub fn settle(conn: &Connection, id: &str, at: &str) -> Result<Value> {
             &campaign.id,
             crate::experiments::ExperimentEvidenceAttachRequest {
                 experiment_id: String::new(),
+                session_id: None,
                 node_id: None,
                 evidence_id: format!("trace:{}:{}", campaign.container_id, rollout.rollout_id),
                 kind: "trace".into(),

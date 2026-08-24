@@ -38,6 +38,7 @@ const MIGRATIONS: &[&str] = &[
     MIGRATION_33,
     MIGRATION_34,
     MIGRATION_35,
+    MIGRATION_36,
 ];
 
 /// Apply every migration the database has not reached yet.
@@ -1744,6 +1745,21 @@ CREATE INDEX IF NOT EXISTS experiment_edges_experiment ON experiment_edges(exper
 /// just in time; the experiment stores identity, expected digest, and locator.
 const MIGRATION_35: &str = r#"
 ALTER TABLE experiment_nodes ADD COLUMN evidence_refs_json TEXT NOT NULL DEFAULT '[]';
+"#;
+
+const MIGRATION_36: &str = r#"
+ALTER TABLE experiment_group_members RENAME TO experiment_group_members_v35;
+CREATE TABLE experiment_group_members (
+    group_id TEXT NOT NULL REFERENCES experiment_groups(id) ON DELETE CASCADE,
+    member_kind TEXT NOT NULL CHECK (member_kind IN ('eval_campaign','optimizer_run','direct_evaluation')),
+    member_id TEXT NOT NULL,
+    title TEXT NOT NULL,
+    attached_at TEXT NOT NULL,
+    PRIMARY KEY (group_id, member_kind, member_id)
+);
+INSERT INTO experiment_group_members SELECT * FROM experiment_group_members_v35;
+DROP TABLE experiment_group_members_v35;
+CREATE INDEX experiment_group_members_kind ON experiment_group_members(member_kind, member_id);
 "#;
 #[cfg(test)]
 mod tests {

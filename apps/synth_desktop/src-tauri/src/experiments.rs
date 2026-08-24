@@ -14,6 +14,56 @@ use crate::storage::{append_event, EventAppend, EventSource};
 
 pub const MEMBER_CAMPAIGN: &str = "eval_campaign";
 pub const MEMBER_OPTIMIZER: &str = "optimizer_run";
+pub const MEMBER_DIRECT: &str = "direct_evaluation";
+
+#[derive(Clone, Debug, Serialize, Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct ExperimentCreateRequest {
+    pub session_id: String,
+    pub request_id: String,
+    pub title: String,
+    pub task: Option<String>,
+    pub model: Option<String>,
+    pub created_at: String,
+}
+
+pub fn create(conn: &Connection, request: ExperimentCreateRequest) -> Result<ExperimentGroup> {
+    anyhow::ensure!(!request.session_id.trim().is_empty(), "sessionId is required");
+    anyhow::ensure!(!request.request_id.trim().is_empty(), "requestId is required");
+    anyhow::ensure!(!request.title.trim().is_empty(), "title is required");
+    let group = attach(conn, &request.session_id, MEMBER_DIRECT, &request.request_id, &request.created_at, &request.title)?;
+    conn.execute(
+        "UPDATE experiment_groups SET title=?2,task=COALESCE(?3,task),model=COALESCE(?4,model),updated_at=?5 WHERE id=?1",
+        params![group.id, request.title, request.task, request.model, request.created_at],
+    )?;
+    load_for_session(conn, &request.session_id)?.ok_or_else(|| anyhow::anyhow!("experiment disappeared after create"))
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct ExperimentFinalizeRequest {
+    pub experiment_id: String,
+    pub session_id: String,
+    pub status: String,
+    pub result: OpaqueJson,
+    pub assessment: Option<OpaqueJson>,
+    pub finalized_at: String,
+}
+
+pub fn finalize(conn: &Connection, request: ExperimentFinalizeRequest) -> Result<ExperimentGroup> {
+    let owner: String = conn.query_row("SELECT session_id FROM experiment_groups WHERE id=?1", [&request.experiment_id], |row| row.get(0))?;
+    anyhow::ensure!(owner == request.session_id, "experiment is owned by another session");
+    anyhow::ensure!(["completed", "failed", "partial"].contains(&request.status.as_str()), "invalid terminal experiment status");
+    let result_id: String = conn.query_row(
+        "SELECT id FROM experiment_nodes WHERE experiment_id=?1 AND kind='result' ORDER BY created_at DESC,id DESC LIMIT 1",
+        [&request.experiment_id], |row| row.get(0),
+    )?;
+    let provenance = serde_json::json!({"assessment": request.assessment.map(|value| value.0), "authority":"agent_recorded"});
+    conn.execute("UPDATE experiment_nodes SET status=?2,metrics_json=?3,provenance_json=?4,updated_at=?5 WHERE id=?1", params![result_id, request.status, request.result.0.to_string(), provenance.to_string(), request.finalized_at])?;
+    conn.execute("UPDATE experiment_nodes SET status=?2,updated_at=?3 WHERE experiment_id=?1 AND kind IN ('baseline','variant')", params![request.experiment_id, request.status, request.finalized_at])?;
+    conn.execute("UPDATE experiment_groups SET status=?2,best_result_json=?3,updated_at=?4 WHERE id=?1", params![request.experiment_id, request.status, request.result.0.to_string(), request.finalized_at])?;
+    get(conn, &request.experiment_id)?.ok_or_else(|| anyhow::anyhow!("experiment disappeared after finalize"))
+}
 
 pub fn settle_member(
     conn: &Connection,
@@ -143,6 +193,7 @@ pub struct ExperimentEvidenceRef {
 #[serde(rename_all = "camelCase")]
 pub struct ExperimentEvidenceAttachRequest {
     pub experiment_id: String,
+    pub session_id: Option<String>,
     pub node_id: Option<String>,
     pub evidence_id: String,
     pub kind: String,
@@ -197,6 +248,9 @@ pub fn attach_evidence(
         "SELECT g.session_id,n.evidence_refs_json FROM experiment_nodes n JOIN experiment_groups g ON g.id=n.experiment_id WHERE n.id=?1 AND n.experiment_id=?2",
         params![node_id, request.experiment_id], |row| Ok((row.get(0)?, row.get(1)?)),
     )?;
+    if let Some(claimed) = request.session_id.as_deref() {
+        anyhow::ensure!(claimed == session_id, "experiment is owned by another session");
+    }
     let mut refs: Vec<ExperimentEvidenceRef> = serde_json::from_str(&raw).unwrap_or_default();
     let evidence = ExperimentEvidenceRef {
         evidence_id: request.evidence_id.clone(),
@@ -676,6 +730,7 @@ mod tests {
         .unwrap();
         let request = ExperimentEvidenceAttachRequest {
             experiment_id: experiment.id.clone(),
+            session_id: Some("task_1".into()),
             node_id: None,
             evidence_id: "trace:craftax:rollout_1".into(),
             kind: "trace".into(),
@@ -720,5 +775,19 @@ mod tests {
             )
             .unwrap();
         assert_eq!(events, 1);
+    }
+
+    #[test]
+    fn direct_agent_lifecycle_is_indexed_idempotent_and_session_owned() {
+        let conn = database();
+        let request = ExperimentCreateRequest { session_id:"task_direct".into(), request_id:"CRAFTAX-EMBER-0824".into(), title:"Craftax survival comparison".into(), task:Some("CRAFTAX-EMBER-0824".into()), model:Some("gpt-5.6-luna".into()), created_at:"2026-08-24T12:00:00Z".into() };
+        let first = create(&conn, request.clone()).unwrap();
+        let replay = create(&conn, ExperimentCreateRequest { created_at:"2026-08-24T12:01:00Z".into(), ..request }).unwrap();
+        assert_eq!(first.id, replay.id);
+        assert_eq!(replay.nodes.len(), 3);
+        let done = finalize(&conn, ExperimentFinalizeRequest { experiment_id:first.id.clone(), session_id:"task_direct".into(), status:"completed".into(), result:OpaqueJson(serde_json::json!({"baselineReward":0.5,"variantReward":0.5,"delta":0})), assessment:Some(OpaqueJson(serde_json::json!({"verdict":"insufficient evidence"}))), finalized_at:"2026-08-24T12:02:00Z".into() }).unwrap();
+        assert_eq!(done.status, "completed");
+        assert_eq!(list(&conn, Some("craftax")).unwrap().len(), 1);
+        assert!(finalize(&conn, ExperimentFinalizeRequest { experiment_id:first.id, session_id:"another_task".into(), status:"failed".into(), result:OpaqueJson(serde_json::json!({})), assessment:None, finalized_at:"2026-08-24T12:03:00Z".into() }).is_err());
     }
 }

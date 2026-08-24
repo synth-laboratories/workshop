@@ -1353,6 +1353,12 @@ pub async fn dispatch(method: &str, path: &str, body: Value, core: &CoreRuntime)
     let registry = core.visuals();
     let reports = core.reports();
     match (method, path) {
+        ("POST", "/v1/experiments") | ("POST", "/v1/experiments/") => {
+            let mut payload = body;
+            if payload.get("createdAt").is_none() { payload["createdAt"] = json!(chrono::Utc::now().to_rfc3339()); }
+            let request: crate::experiments::ExperimentCreateRequest = serde_json::from_value(payload)?;
+            Ok(json!({"experiment": core.data().experiment_create(request).await?}))
+        }
         ("GET", "/health") => Ok(json!({"ok": true, "service": "synth-visuals-ipc"})),
         ("GET", "/v1/reports") => {
             let query: ReportQuery = serde_json::from_value(body.clone()).unwrap_or_default();
@@ -3663,6 +3669,14 @@ async fn dispatch_experiments(
             let request: crate::experiments::ExperimentEvidenceAttachRequest =
                 serde_json::from_value(payload)?;
             Ok(json!({"experiment": core.data().experiment_attach_evidence(request).await?}))
+        }
+        ("POST", path) if path.starts_with("/v1/experiments/") && path.ends_with("/finalize") => {
+            let experiment_id = path.trim_start_matches("/v1/experiments/").trim_end_matches("/finalize").trim_end_matches('/');
+            let mut payload = body;
+            payload["experimentId"] = json!(experiment_id);
+            if payload.get("finalizedAt").is_none() { payload["finalizedAt"] = json!(chrono::Utc::now().to_rfc3339()); }
+            let request: crate::experiments::ExperimentFinalizeRequest = serde_json::from_value(payload)?;
+            Ok(json!({"experiment": core.data().experiment_finalize(request).await?}))
         }
         _ => anyhow::bail!("unknown experiments route {method} {path}"),
     }

@@ -77,7 +77,7 @@ use data::{
     TraceRecord, UsageEntry,
 };
 use error::AppError;
-use experiments::{ExperimentEvidenceAttachRequest, ExperimentGroup};
+use experiments::{ExperimentCreateRequest, ExperimentEvidenceAttachRequest, ExperimentFinalizeRequest, ExperimentGroup};
 use intern_api::{
     InternControlResult, InternSendResult, InternSessionControlRequest, InternSessionCreateRequest,
     InternSessionSendRequest, InternSessionWire,
@@ -2980,6 +2980,18 @@ async fn experiments_attach_evidence(
         .experiment_attach_evidence(request)
         .await
         .map_err(AppError::from)
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn experiments_create(state: State<'_, Arc<CoreRuntime>>, request: ExperimentCreateRequest) -> Result<ExperimentGroup, AppError> {
+    state.data().experiment_create(request).await.map_err(AppError::from)
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn experiments_finalize(state: State<'_, Arc<CoreRuntime>>, request: ExperimentFinalizeRequest) -> Result<ExperimentGroup, AppError> {
+    state.data().experiment_finalize(request).await.map_err(AppError::from)
 }
 
 #[tauri::command]

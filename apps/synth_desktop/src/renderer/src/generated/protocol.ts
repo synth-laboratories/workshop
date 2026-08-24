@@ -263,6 +263,8 @@ export const commands = {
 	edges: ExperimentEdge[],
 } | null, AppError>(__TAURI_INVOKE("experiments_get", { experimentId })),
 	experimentsAttachEvidence: (request: ExperimentEvidenceAttachRequest) => typedError<ExperimentGroup, AppError>(__TAURI_INVOKE("experiments_attach_evidence", { request })),
+	experimentsCreate: (request: ExperimentCreateRequest) => typedError<ExperimentGroup, AppError>(__TAURI_INVOKE("experiments_create", { request })),
+	experimentsFinalize: (request: ExperimentFinalizeRequest) => typedError<ExperimentGroup, AppError>(__TAURI_INVOKE("experiments_finalize", { request })),
 	reportsLogList: (reportId: string) => typedError<ResearchLogEntry[], AppError>(__TAURI_INVOKE("reports_log_list", { reportId })),
 	reportsLogAppend: (reportId: string, request: ResearchLogAppend) => typedError<ResearchLogEntry, AppError>(__TAURI_INVOKE("reports_log_append", { reportId, request })),
 	reportsUploadStatus: (receiptDigest: string) => typedError<{
@@ -979,6 +981,15 @@ export type EvalStageCandidatesRequest = {
 
 export type EventSource = "local" | "remote" | "intern" | "codex" | "system" | "mlx" | "visual" | "report";
 
+export type ExperimentCreateRequest = {
+	sessionId: string,
+	requestId: string,
+	title: string,
+	task: string | null,
+	model: string | null,
+	createdAt: string,
+};
+
 export type ExperimentEdge = {
 	id: string,
 	sourceNodeId: string,
@@ -989,6 +1000,7 @@ export type ExperimentEdge = {
 
 export type ExperimentEvidenceAttachRequest = {
 	experimentId: string,
+	sessionId: string | null,
 	nodeId: string | null,
 	evidenceId: string,
 	kind: string,
@@ -1015,6 +1027,15 @@ export type ExperimentEvidenceRef = {
 	artifactUri: string | null,
 	metadata: unknown,
 	attachedAt: string,
+};
+
+export type ExperimentFinalizeRequest = {
+	experimentId: string,
+	sessionId: string,
+	status: string,
+	result: unknown,
+	assessment: unknown | null,
+	finalizedAt: string,
 };
 
 export type ExperimentGroup = {

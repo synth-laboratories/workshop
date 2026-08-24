@@ -223,6 +223,8 @@ pub fn builder() -> Builder<tauri::Wry> {
             crate::experiments_list,
             crate::experiments_get,
             crate::experiments_attach_evidence,
+            crate::experiments_create,
+            crate::experiments_finalize,
             crate::reports_log_list,
             crate::reports_log_append,
             crate::reports_upload_status,
