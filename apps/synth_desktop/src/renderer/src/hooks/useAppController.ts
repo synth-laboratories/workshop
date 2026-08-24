@@ -62,7 +62,7 @@ import {
 	visualRecordToArtifact,
 	openArtifactIdForChat
 } from "../runtime/sessionView";
-import { chatIsWarmingUp } from "../runtime/chatWarmingState";
+import { chatInferencePhase } from "../runtime/chatWarmingState";
 import { approvalModeFromConfig, codexStartRequest, coreEventToRuntime, createCodexSession, restoreCodexSession, type ApprovalMode, type ApprovalPolicy, type SandboxMode } from "../runtime/nativeCodex";
 import { LOCAL_BASE_POLICY } from "../runtime/lagunaPolicies";
 import type { LagunaPolicy } from "../bridge/types";
@@ -1152,7 +1152,7 @@ export function useAppController() {
 	const activeChatRunning = activeChat
 		? selectSessionRunning(activeChatSession, eventsBySession[activeChat.id] ?? [], presentationLiveTurns)
 		: false;
-	const activeChatWarmingUp = chatIsWarmingUp({
+	const activeChatInferencePhase = chatInferencePhase({
 		running: activeChatRunning,
 		targetKind: activeChatSession?.target.kind ?? null,
 		targetModel: activeChatSession?.target.kind === "cloud" ? activeChatSession.target.model : null,
@@ -1160,6 +1160,7 @@ export function useAppController() {
 		localPhase: laguna?.phase ?? null,
 		localLoadedModel: laguna?.loadedModel ?? null
 	});
+	const activeChatWarmingUp = activeChatInferencePhase === "warming";
 	const activeLocalModel = activeChatSession?.target.kind === "local";
 	const workbenchWidth = viewportWidth - (sidebarVisible ? sidebarWidth : 0);
 	const sidePanelFits = workbenchWidth >= 368 + 300;

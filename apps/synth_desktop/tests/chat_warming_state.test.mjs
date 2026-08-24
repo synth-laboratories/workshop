@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { chatIsWarmingUp } from "../src/renderer/src/runtime/chatWarmingState.ts";
+import { chatInferencePhase, chatIsWarmingUp } from "../src/renderer/src/runtime/chatWarmingState.ts";
 
 const base = {
 	running: true,
@@ -12,13 +12,31 @@ const base = {
 };
 
 test("hosted Laguna shows warmup before the first model output", () => {
+	assert.equal(chatInferencePhase(base), "warming");
 	assert.equal(chatIsWarmingUp(base), true);
 });
 
 test("hosted Laguna leaves warmup when model output begins", () => {
+	assert.equal(chatInferencePhase({ ...base, lastMessageRole: "assistant" }), "working");
 	assert.equal(chatIsWarmingUp({ ...base, lastMessageRole: "assistant" }), false);
 });
 
 test("unrelated cloud models never claim a Laguna warmup", () => {
 	assert.equal(chatIsWarmingUp({ ...base, targetModel: "gpt-5.6-luna" }), false);
+});
+
+test("local and hosted Laguna share the same lifecycle phases", () => {
+	const local = {
+		...base,
+		targetKind: "local",
+		targetModel: null,
+		localPhase: "loading",
+		localLoadedModel: null
+	};
+	assert.equal(chatInferencePhase(local), chatInferencePhase(base));
+	assert.equal(
+		chatInferencePhase({ ...local, localPhase: "ready", localLoadedModel: "laguna" }),
+		chatInferencePhase({ ...base, lastMessageRole: "assistant" })
+	);
+	assert.equal(chatInferencePhase({ ...local, running: false }), "idle");
 });
