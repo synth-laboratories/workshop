@@ -1,4 +1,4 @@
-import type { CSSProperties, ReactNode } from "react";
+import { useEffect, type CSSProperties, type ReactNode } from "react";
 import type {
 	ContainerDeployment,
 	OptimizerRunRecord,
@@ -38,6 +38,7 @@ import { ResponsesTracePanel } from "./components/ResponsesTracePanel";
 import { DiagnosticsPanel } from "./components/DiagnosticsPanel";
 import { sessionIsLocalChat, sessionIsSync } from "./runtime/sessionView";
 import { bridges } from "./runtime/desktopBridge";
+import { VISUAL_REFERENCE_ERROR_EVENT, VISUAL_REFERENCE_OPENED_EVENT } from "./runtime/visualReferences";
 
 export type MainView =
 	| { kind: "landing" }
@@ -199,6 +200,16 @@ export function MainRoutes(props: MainRoutesProps): ReactNode {
 		transcriptHistoryBySession,
 		loadOlderTranscript
 	} = props;
+	useEffect(() => {
+		const opened = (event: Event) => openVisualRecord((event as CustomEvent<VisualRecord>).detail);
+		const failed = (event: Event) => showToast((event as CustomEvent<string>).detail);
+		window.addEventListener(VISUAL_REFERENCE_OPENED_EVENT, opened);
+		window.addEventListener(VISUAL_REFERENCE_ERROR_EVENT, failed);
+		return () => {
+			window.removeEventListener(VISUAL_REFERENCE_OPENED_EVENT, opened);
+			window.removeEventListener(VISUAL_REFERENCE_ERROR_EVENT, failed);
+		};
+	}, [openVisualRecord, showToast]);
 	const chatOutputs = useChatOutputs(activeChat ?? { id: "", title: "", messages: [] });
 	const openOwnedRun = (run: OptimizerRunRecord) => {
 		const visualId = primaryVisualId(run);

@@ -85,7 +85,7 @@ test("experiment overview keeps missing measurements distinct from zero", () => 
 	assert.doesNotMatch(html, /No variants have been recorded[\s\S]*0 variants/);
 });
 
-test("experiment overview leads with hypothesis verdicts and collapses supporting detail", () => {
+test("experiment overview leads with a compact summary and conclusion, then opens results", () => {
 	const html = renderToStaticMarkup(createElement(Shell, {
 		experiment: {
 			title: "Craftax harness study",
@@ -101,16 +101,16 @@ test("experiment overview leads with hypothesis verdicts and collapses supportin
 		}
 	}));
 
-	assert.match(html, /Hypotheses/);
+	assert.match(html, /Experiment summary/);
+	assert.match(html, /Conclusion/);
 	assert.match(html, /Survival saves steps/);
 	assert.match(html, /True/);
 	assert.match(html, /Needs more analysis/);
 	assert.match(html, /low/);
 	assert.match(html, /73.5 vs 102 mean steps/);
 	assert.doesNotMatch(html, /Question:/);
-	assert.match(html, /<details[^>]*class="sv-section"/);
-	assert.doesNotMatch(html, /<details[^>]*open/);
-	assert.match(html, /Results &amp; assessment/);
+	assert.match(html, /<details[^>]*class="sv-section"[^>]*open/);
+	assert.match(html, /Comparison &amp; results/);
 	assert.match(html, /Survival is more efficient/);
 });
 
@@ -129,6 +129,8 @@ test("experiment overview renders optional evidence modules only when supplied",
 	}));
 	assert.match(html, /Rollout results/);
 	assert.match(html, /trace_46/);
+	assert.match(html, /<button[^>]*data-reference-kind="trace"[^>]*data-reference-value="trace_46"/);
+	assert.match(html, /data-reference-container-id="ctr_123"/);
 	assert.match(html, /<details[^>]*open=""[^>]*>[\s\S]*Traces/);
 	assert.match(html, /Run context/);
 	assert.match(html, /openai\/gpt-5.6-luna/);

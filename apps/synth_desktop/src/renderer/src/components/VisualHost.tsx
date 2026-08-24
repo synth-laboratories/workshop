@@ -1,5 +1,5 @@
 // @ts-nocheck — P0-1 generated protocol is stricter than prior handwritten DTOs; UI follow-up is out of specta-cutover file ownership.
-import { Component, useEffect, useMemo, useRef, useState, type ComponentType, type ErrorInfo, type ReactNode } from "react";
+import { Component, useEffect, useMemo, useRef, useState, type ComponentType, type ErrorInfo, type MouseEvent, type ReactNode } from "react";
 import type { ArtifactRef } from "../types/landing";
 import type { VisualRecord } from "@synth/runtime-protocol";
 import {
@@ -28,6 +28,7 @@ import { ChartVisual } from "./ChartVisual";
 import { SystemsDynamicVisual } from "./SystemsDynamicVisual";
 import type { SubagentState } from "../runtime/sessionView";
 import { bindingAuthorityKey } from "../runtime/visualRevisionState";
+import { openTraceReference, VISUAL_REFERENCE_ERROR_EVENT, VISUAL_REFERENCE_OPENED_EVENT } from "../runtime/visualReferences";
 
 type ShellProps = {
 	title?: string;
@@ -856,7 +857,24 @@ function VisualObservationBoundary({ artifact, children }: { artifact: ArtifactR
 		};
 	}, [artifact.revision, artifact.visualId, bindingsDigest, contract]);
 
-	return <div ref={root} data-visual-observation-contract={contract?.schemaVersion}>{children}</div>;
+	const openReference = async (event: MouseEvent<HTMLDivElement>) => {
+		const target = event.target instanceof Element ? event.target.closest<HTMLElement>("[data-reference-kind]") : null;
+		if (!target || target.dataset.referenceKind !== "trace" || !target.dataset.referenceValue) return;
+		event.preventDefault();
+		event.stopPropagation();
+		if (target.getAttribute("aria-busy") === "true") return;
+		target.setAttribute("aria-busy", "true");
+		try {
+			const visual = await openTraceReference(target.dataset.referenceValue, target.dataset.referenceContainerId);
+			window.dispatchEvent(new CustomEvent(VISUAL_REFERENCE_OPENED_EVENT, { detail: visual }));
+		} catch (reason) {
+			window.dispatchEvent(new CustomEvent(VISUAL_REFERENCE_ERROR_EVENT, { detail: publicError(reason) }));
+		} finally {
+			target.removeAttribute("aria-busy");
+		}
+	};
+
+	return <div ref={root} data-visual-observation-contract={contract?.schemaVersion} onClick={openReference}>{children}</div>;
 }
 
 /** A failed pane still has to be diagnosable. The sentence goes on top; the
