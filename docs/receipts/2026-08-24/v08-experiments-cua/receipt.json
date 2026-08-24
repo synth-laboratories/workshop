@@ -1,7 +1,7 @@
 {
   "schemaVersion": "workshop.v08.experiments-cua-receipt.v1",
   "acceptanceId": "V08-EXPERIMENTS-MVP-001",
-  "capturedAt": "2026-08-24T15:20:15Z",
+  "capturedAt": "2026-08-24T15:30:27Z",
   "implementationCommit": "cc5efc2a88f6b3cd8383a96617ee302bbf24d3f6",
   "app": {
     "instance": "v08exp0824",
@@ -25,6 +25,33 @@
     "experimentRunIds": [],
     "visualId": null
   },
+  "credentialFreePushthrough": {
+    "optimizerRuntime": "synth-optimizers 0.2.19 ready from a local wheel built from the clean committed Optimizers head",
+    "containerId": "ctr_709437b959b245579a49611f1ed9b359",
+    "containerTarget": "craftax_engine",
+    "containerUrl": "http://127.0.0.1:18768",
+    "fixtureIdentity": "env:craftax_fixture",
+    "world": "world:craftax_default@symbolic_survival",
+    "episodeStepCap": 8,
+    "advertisedPolicy": {
+      "harness": "react",
+      "config": "gpt-5.6-luna",
+      "model": "gpt-5.6-luna",
+      "reasoningEffort": "low",
+      "maxTokens": 256
+    },
+    "providerCalls": 0,
+    "capabilityRevision": "cbf7b0b11e009e49",
+    "status": "blocked_capability_admission",
+    "unknownRequiredOperations": [
+      "rollouts.prepare",
+      "rollouts.start_prepared",
+      "rollouts.poll",
+      "rollouts.get",
+      "reward.get",
+      "trace_v5.capture"
+    ]
+  },
   "observations": {
     "experimentsDestinationVisible": true,
     "localOnlyCopyVisible": true,
@@ -44,12 +71,16 @@
     {
       "path": "02-craftax-blocker.png",
       "sha256": "f8e54165e7416458da25388f361cba9b31e658c5f66764c2a5f48306c184b0f2"
+    },
+    {
+      "path": "04-capability-admission-blocker.jpeg",
+      "sha256": "ccf8e9eaf3d7a17240334e6c91a3af7a7848a3c2a28c00c5af1184586d7b6d6b"
     }
   ],
   "limitations": [
-    "No Craftax container was registered in the fresh instance.",
-    "The local Optimizers plugin was absent; its visible Install action failed to download synth-optimizers==0.2.19.",
-    "The Workshop agent stopped at preflight, so no experiment, comparison run, reward, trace, artifact, cost cap, visual, lineage selection, or durable experiment reopen exists to claim.",
+    "Credential-free pushthrough installed the local Optimizers 0.2.19 runtime and registered a healthy instance-owned craftax_engine fixture; no macOS Keychain or Keychain-backed Workshop secret mechanism was used.",
+    "The fixture is scripted CI infrastructure rather than gold Craftax. It advertises the exact requested Luna/low policy and bounded caps, but its normalized protocol still reports the prepared-rollout, polling, reward, and Trace V5 operations as unknown.",
+    "Workshop correctly failed closed at capability admission, so no experiment, comparison run, reward, trace, artifact, actual cost, visual, lineage selection, or durable experiment reopen exists to claim.",
     "The agent explicitly reported that the evidence neither supports nor refutes the hypothesis."
   ]
 }
