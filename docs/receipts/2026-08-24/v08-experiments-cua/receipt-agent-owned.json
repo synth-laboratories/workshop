@@ -1,7 +1,7 @@
 {
   "schemaVersion": "workshop.v08.agent-owned-experiment-cua.v1",
   "capturedAt": "2026-08-24T17:37:08Z",
-  "implementationCommit": "af9e4f81",
+  "implementationCommit": "1d5225f4",
   "app": {
     "instance": "v08evidence0824",
     "bundleId": "com.synth.desktop.v07.dev.v08evidence0824",
@@ -46,15 +46,16 @@
     "evidenceAttachedToDurableResult": true,
     "restartRecoveryWithoutDuplicateExperiment": true,
     "endpointTraceImportedJustInTime": true,
-    "traceInspectorOpened": true
+    "traceInspectorOpened": true,
+    "organizedIndexResultSummary": true
   },
   "screenshots": [
     {"path": "18-agent-owned-index.jpeg", "sha256": "11f6c32f1860a32d6ad0b3a8fd28dd3ad251abc2eb241d8824e3ae79e4465bce"},
     {"path": "19-agent-owned-result-evidence.jpeg", "sha256": "7daa62b7d26afb993fa417ef962871b17090136675cb29f2866b283632c0f689"},
-    {"path": "20-jit-trace-inspector.jpeg", "sha256": "d2c0782311504c4db3eb41912029affb3e51341782bf26ebc5f681d754e20f9e"}
+    {"path": "20-jit-trace-inspector.jpeg", "sha256": "d2c0782311504c4db3eb41912029affb3e51341782bf26ebc5f681d754e20f9e"},
+    {"path": "21-organized-index-result.jpeg", "sha256": "58f3ab57c2204d88b27843a46bc33a2987c591e9664d226167998e8a4df6357a"}
   ],
   "limitations": [
-    "The credential-free endpoint produced scripted fixture evidence, not real model calls.",
-    "The experiment index result cell still renders the structured result compactly as JSON and should receive a presentation-only summarizer follow-up."
+    "The credential-free endpoint produced scripted fixture evidence, not real model calls."
   ]
 }
