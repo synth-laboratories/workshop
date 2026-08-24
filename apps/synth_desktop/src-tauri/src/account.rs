@@ -234,14 +234,19 @@ fn usd(cents: i64) -> f64 {
 
 fn used_cents_since(storage: &Storage, since: DateTime<Utc>) -> Result<i64> {
     let floor = since.to_rfc3339();
-    // One ledger: settled charge first, else its labeled estimate. Legacy
-    // `usage_ledger` rows were folded into `usage_records` by migration 11.
+    // One ledger: count authoritative settled charges, or a Backend-owned
+    // Synth Cloud estimate when settlement has not arrived yet. Legacy local
+    // tariff estimates are deliberately excluded.
     let used_usd: f64 = storage.database().with_conn(|conn| {
         let mut statement = conn.prepare(
-            "SELECT COALESCE(SUM(COALESCE(billed_cost_usd, estimated_cost_usd)), 0)
+            "SELECT COALESCE(SUM(CASE
+                         WHEN cost_source IN ('provider_reported', 'synth_cloud')
+                              AND billed_cost_usd IS NOT NULL THEN billed_cost_usd
+                         WHEN cost_source = 'synth_cloud' THEN estimated_cost_usd
+                         ELSE NULL
+                     END), 0)
              FROM usage_records
-             WHERE COALESCE(billed_cost_usd, estimated_cost_usd) IS NOT NULL
-               AND created_at >= ?1",
+             WHERE created_at >= ?1",
         )?;
         let value: f64 = statement.query_row([&floor], |row| row.get(0))?;
         Ok(value)
@@ -970,6 +975,32 @@ mod tests {
         .unwrap();
         assert_eq!(plan.used_usd, Some(13.0));
         assert_eq!(plan.remaining_usd, Some(187.0));
+    }
+
+    #[test]
+    fn only_backend_owned_estimates_count_toward_cloud_usage() {
+        let (_root, storage) = open_storage();
+        storage
+            .database()
+            .with_conn(|conn| {
+                for (id, source) in [("backend", "synth_cloud"), ("legacy", "tariff_estimate")] {
+                    conn.execute(
+                        "INSERT INTO usage_records(
+                            id,provider,model_id,request_id,measurement_kind,status,
+                            started_at_ms,completed_at_ms,input_tokens,output_tokens,
+                            billed_cost_usd,estimated_cost_usd,cost_source,source,created_at
+                         ) VALUES(
+                            ?1,'synth','laguna-xs',?1,'provider_reported','completed',
+                            0,0,10,10,NULL,1.25,?2,'test','2026-08-06T00:00:00+00:00'
+                         )",
+                        rusqlite::params![id, source],
+                    )?;
+                }
+                Ok(())
+            })
+            .unwrap();
+
+        assert_eq!(used_cents_since(&storage, month_start(now())).unwrap(), 125);
     }
 
     #[test]

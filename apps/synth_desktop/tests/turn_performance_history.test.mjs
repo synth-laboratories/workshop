@@ -71,7 +71,7 @@ test("a measurement without a rate says so and names nothing else", () => {
 	assert.doesNotMatch(labels.byMessageId.msg_2.generation, /71|tok\/s/);
 });
 
-test("authoritative provider usage can settle a hosted end-to-end output rate", () => {
+test("provider token totals never become acceptance-to-completion TPS", () => {
 	const chat = { id: "s", title: "none", messages: [
 		{ id: "u", role: "user", body: "go", at: at(0) },
 		{ id: "msg_a", role: "assistant", body: "answer", at: at(2) }
@@ -84,8 +84,8 @@ test("authoritative provider usage can settle a hosted end-to-end output rate", 
 		event(5, 5, "run.completed")
 	];
 	const labels = turnPerformanceLabels(chat, events);
-	assert.equal(labels.byMessageId.msg_a.generation, "End-to-end output: 80.5 tok/s");
-	assert.match(labels.byMessageId.msg_a.detail, /Authoritative provider output tokens/);
+	assert.equal(labels.byMessageId.msg_a.generation, "Generation speed unavailable");
+	assert.equal(labels.byMessageId.msg_a.detail, null);
 });
 
 test("Core event timestamps survive Codex adaptation", () => {
@@ -94,7 +94,7 @@ test("Core event timestamps survive Codex adaptation", () => {
 	assert.equal(runtime.createdAt, createdAt);
 });
 
-test("a hosted model falls back to its settled end-to-end output rate", () => {
+test("a hosted model never falls back to a persisted end-to-end rate", () => {
 	const chat = { id: "hosted", title: "hosted", messages: [
 		{ id: "u", role: "user", body: "go", at: at(0) },
 		{ id: "msg_hosted", role: "assistant", body: "answer", at: at(2) }
@@ -108,11 +108,11 @@ test("a hosted model falls back to its settled end-to-end output rate", () => {
 		outputTps: 24.75
 	}];
 	const label = turnPerformanceLabels(chat, events, false, samples).byMessageId.msg_hosted;
-	assert.equal(label.generation, "End-to-end output: 24.8 tok/s");
-	assert.match(label.detail, /Authoritative provider output tokens/);
+	assert.equal(label.generation, "Generation speed unavailable");
+	assert.equal(label.detail, null);
 });
 
-test("a settled hosted rate is shown after the terminal event even if UI activity lingers", () => {
+test("a persisted end-to-end rate stays hidden while UI activity lingers", () => {
 	const chat = { id: "hosted", title: "hosted", messages: [
 		{ id: "u", role: "user", body: "go", at: at(0) },
 		{ id: "msg_hosted", role: "assistant", body: "answer", at: at(2) }
@@ -126,7 +126,7 @@ test("a settled hosted rate is shown after the terminal event even if UI activit
 		outputTps: 24.75
 	}];
 	const label = turnPerformanceLabels(chat, events, true, samples).byMessageId.msg_hosted;
-	assert.equal(label.generation, "End-to-end output: 24.8 tok/s");
+	assert.equal(label.generation, "Generation speed unavailable");
 });
 
 test("an interrupted segment is labelled partial rather than presented as a headline", () => {

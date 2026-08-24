@@ -4266,8 +4266,8 @@ async fn a_segment_without_exact_tokens_records_its_refusal_and_leaves_the_ledge
     let totals = usage_totals(&core).await;
     assert_eq!(totals.requests, 1);
     assert_eq!(totals.decode_tps_p50, None);
-    assert!(
-        totals.end_to_end_tps_p50.is_some(),
-        "latency is still tracked"
+    assert_eq!(
+        totals.end_to_end_tps_p50, None,
+        "acceptance-to-completion latency must not be exposed as TPS"
     );
 }

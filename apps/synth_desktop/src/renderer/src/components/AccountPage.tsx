@@ -219,7 +219,7 @@ export function AccountPage({
 
 				<h4 className="account-page-subhead">This device</h4>
 				<Row label="Tokens this week" value={formatTokens(deviceUsage?.weeklyTokens)} testId="account-page-device-weekly" />
-				{showDollarFigures ? <Row label="Estimated cost this week" value={formatUsd(deviceUsage?.weeklyCostUsd)} /> : null}
+				{showDollarFigures ? <Row label="Backend-accounted cost this week" value={formatUsd(deviceUsage?.weeklyCostUsd)} /> : null}
 				<Row label="All tracked tokens" value={formatTokens(deviceUsage?.totalTokens)} />
 				<Row label="Tracked runs" value={formatTokens(deviceUsage?.entries)} />
 				<p className="account-page-note">Device totals are local runs on this Mac — not your Synth Cloud allowance.</p>

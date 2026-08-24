@@ -1228,14 +1228,20 @@ fn usage_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<UsageEntry> {
 /// Raw request-level inspection feed over the one authoritative
 /// `usage_records` ledger (legacy `usage_ledger` rows were folded in by
 /// migration 11). The exposed cost is the settled charge when one exists,
-/// otherwise the labeled estimate — never a mixture per request.
+/// otherwise a Backend-owned Synth Cloud estimate. Legacy local tariff
+/// estimates are never exposed as money.
 fn list_usage(conn: &Connection, limit: i64) -> Result<Vec<UsageEntry>> {
     let mut statement = conn.prepare(
         "SELECT id, provider, model_id AS model, session_id, run_id,
                 COALESCE(input_tokens, 0) AS prompt_tokens,
                 COALESCE(output_tokens, 0) AS completion_tokens,
                 COALESCE(total_tokens, 0) AS total_tokens,
-                COALESCE(billed_cost_usd, estimated_cost_usd) AS cost_usd,
+                CASE
+                    WHEN cost_source IN ('provider_reported', 'synth_cloud')
+                         AND billed_cost_usd IS NOT NULL THEN billed_cost_usd
+                    WHEN cost_source = 'synth_cloud' THEN estimated_cost_usd
+                    ELSE NULL
+                END AS cost_usd,
                 created_at
          FROM usage_records
          ORDER BY created_at DESC, id LIMIT ?1",

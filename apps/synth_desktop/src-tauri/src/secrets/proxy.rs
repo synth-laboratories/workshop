@@ -647,14 +647,14 @@ async fn handle(
                 calls: 1,
                 input_tokens: 0,
                 output_tokens: 0,
-                cost_usd: 0.0,
+                cost_usd: None,
             })
     } else {
         MeasuredUsage {
             calls: 1,
             input_tokens: 0,
             output_tokens: 0,
-            cost_usd: 0.0,
+            cost_usd: None,
         }
     };
     if status.is_success() {

@@ -331,7 +331,7 @@ export function UsagePanel() {
 	const totals = summary?.totals ?? null;
 	const totalSpend = totals ? spendUsd(totals) : null;
 	const totalBilled = totals?.billedCostUsd ?? null;
-	const totalEstimated = totals?.estimatedCostUsd ?? null;
+	const totalEstimated = totals?.costSource === "synth_cloud" ? totals.estimatedCostUsd : null;
 	const activeDays = new Set((summary?.days ?? []).map((point) => point.day)).size;
 
 	return (
@@ -386,10 +386,12 @@ export function UsagePanel() {
 								{totalSpend == null
 									? "No request in this window carried a price."
 									: totalBilled != null && totalEstimated != null
-										? `${usd(totalBilled)} settled · ${usd(totalEstimated)} estimated at list rates`
+										? `${usd(totalBilled)} settled · ${usd(totalEstimated)} estimated by Backend`
 										: totalBilled != null
 											? `${usd(totalBilled)} settled with the provider`
-											: `Estimated at list rates — nothing has settled yet`}
+											: totalEstimated != null
+												? `${usd(totalEstimated)} estimated by Backend · not settled`
+												: "Cost unavailable — Backend reported no estimate or actual receipt."}
 							</p>
 
 							<div className="usage-provider-bars" data-testid="usage-provider-bars">
@@ -407,9 +409,11 @@ export function UsagePanel() {
 													<i className={`usage-swatch usage-series-${slots.get(roll.provider) ?? OTHER_SLOT}`} />
 													{roll.label}
 												</span>
-												<strong>
-													{roll.spendUsd == null ? "No charge" : usd(roll.spendUsd)}
-												</strong>
+											<strong>
+												{roll.spendUsd == null
+													? roll.provider === "local-laguna" ? "No provider charge" : "Unavailable"
+													: usd(roll.spendUsd)}
+											</strong>
 											</div>
 											{/* A provider with no charge has no share to draw; an
 											    empty track would read as "spent zero" rather
@@ -423,9 +427,11 @@ export function UsagePanel() {
 												</div>
 											)}
 											<span className="usage-provider-meta">
-												{roll.spendUsd == null
+											{roll.spendUsd == null
+												? roll.provider === "local-laguna"
 													? "On-device · no provider charge"
-													: `${percent(roll.share)} of spend`}
+													: "Cost unavailable"
+												: `${percent(roll.share)} of spend`}
 												{" · "}
 												{compactTokens(roll.totalTokens)} tokens
 											</span>

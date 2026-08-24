@@ -17,7 +17,6 @@ use tokio::sync::Mutex;
 use super::generation_speed::{
     protocol_event, GenerationSpeedMeasurement, SegmentPhase, SegmentStatus, TurnSegmentTracker,
 };
-use super::home::ProviderClass;
 
 #[derive(Clone, Debug, Default)]
 pub(crate) struct TurnTokenUsage {
@@ -323,34 +322,25 @@ pub(crate) async fn finalize_performance_tracker(
         }
     }
     let output_tokens = tracker.usage.output_tokens.filter(|tokens| *tokens > 0);
-    let end_to_end_seconds = ((completed_at_ms - tracker.started_at_ms) as f64 / 1_000.0).max(0.0);
     // The ledger's throughput column now carries a real measurement or nothing.
     // Only a completed final-answer segment qualifies: it is the one segment
     // whose scope a per-request row can honestly stand for. A turn with several
     // answer segments has no single rate, and inventing one by blending them is
     // the defect this replaced.
     let observed_output_tps = turn_headline_tps(&tracker);
-    let end_to_end_output_tps = output_tokens
-        .filter(|_| end_to_end_seconds > 0.0)
-        .map(|tokens| tokens as f64 / end_to_end_seconds);
+    // Acceptance-to-completion includes queueing, model warmup, prefill, and
+    // tool time. It is latency, never generation TPS. Only the measured text
+    // delivery segment above is eligible for a throughput field.
+    let end_to_end_output_tps = None;
     let measurement_kind = if observed_output_tps.is_some() {
         MeasurementKind::ObservedStreamSegment
     } else {
         MeasurementKind::EndToEnd
     };
-    // A failed or interrupted turn still consumed whatever the provider
-    // reported, so it is recorded — and estimated — like any other request.
-    let estimated_cost_usd = crate::tariffs::estimate_cost_usd(
-        &tracker.provider,
-        &tracker.model_id,
-        completed_at_ms,
-        crate::tariffs::BillableTokens {
-            input_tokens: tracker.usage.input_tokens,
-            cached_input_tokens: tracker.usage.cached_input_tokens,
-            cache_write_tokens: tracker.usage.cache_write_tokens,
-            output_tokens: tracker.usage.output_tokens,
-        },
-    );
+    // Usage rows record tokens even when money is unknown. Workshop never
+    // invents a dollar amount from a built-in tariff: only a provider-settled
+    // receipt may populate billed_cost_usd.
+    let estimated_cost_usd = None;
     // Settled Synth Cloud accounting, captured by the credential broker as the
     // child's responses streamed through it. Only cloud turns drain: local /
     // on-device providers have no provider charge and their rows stay exactly
@@ -373,12 +363,8 @@ pub(crate) async fn finalize_performance_tracker(
     } else {
         None
     };
-    // A settled receipt is authoritative; the tariff figure stays in
-    // `estimated_cost_usd` and must never override it.
     let cost_source = if settled_cost_usd.is_some() {
         CostSource::SynthCloud
-    } else if estimated_cost_usd.is_some() {
-        CostSource::TariffEstimate
     } else {
         CostSource::None
     };

@@ -103,49 +103,6 @@ function generationLabel(value: GenerationSpeedMeasurement | undefined): string 
 	return value.status === "partial" ? `${rate} (partial)` : rate;
 }
 
-function endToEndSample(
-	samples: ModelPerformanceTurnSample[],
-	messageAt: number,
-	terminalAt: number | null
-): ModelPerformanceTurnSample | null {
-	const matches = samples.filter((sample) =>
-		sample.measurementKind === "end_to_end"
-		&& sample.startedAtMs <= messageAt
-		&& sample.completedAtMs >= messageAt
-		&& (terminalAt == null || sample.completedAtMs <= terminalAt + 1_000)
-	);
-	return matches.sort((a, b) => a.completedAtMs - b.completedAtMs).at(0) ?? null;
-}
-
-function outputTokens(event: RuntimeEvent): number | null {
-	if (event.eventKind !== "thread/tokenUsage/updated") return null;
-	const payload = event.payload as { tokenUsage?: { last?: { outputTokens?: unknown }; total?: { outputTokens?: unknown } } } | undefined;
-	const tokens = payload?.tokenUsage?.last?.outputTokens ?? payload?.tokenUsage?.total?.outputTokens;
-	return typeof tokens === "number" && Number.isFinite(tokens) && tokens > 0 ? tokens : null;
-}
-
-function journalEndToEndTps(events: RuntimeEvent[], acceptedAt: number | null, terminalAt: number | null): number | null {
-	if (acceptedAt == null || terminalAt == null || terminalAt <= acceptedAt) return null;
-	let latestOutputTokens: number | null = null;
-	for (const event of events) {
-		const at = timestamp(event.createdAt);
-		if (at == null || at < acceptedAt || at > terminalAt) continue;
-		const tokens = outputTokens(event);
-		if (tokens != null) latestOutputTokens = tokens;
-	}
-	const seconds = (terminalAt - acceptedAt) / 1_000;
-	return latestOutputTokens != null && seconds > 0 ? latestOutputTokens / seconds : null;
-}
-
-function endToEndLabel(outputTps: number | null): TurnPerformanceLabel | null {
-	if (outputTps == null || !Number.isFinite(outputTps) || outputTps <= 0) return null;
-	return {
-		generation: `End-to-end output: ${formatTps(outputTps)} tok/s`,
-		worked: null,
-		detail: "Authoritative provider output tokens divided by turn acceptance-to-completion time. Includes first-token latency; this is not decoder-only TPS."
-	};
-}
-
 export type TurnPerformanceLabel = {
 	generation: string;
 	worked: string | null;
@@ -175,7 +132,7 @@ export function turnPerformanceLabels(
 	chat: LocalChat,
 	events: RuntimeEvent[],
 	running = false,
-	turnSamples: ModelPerformanceTurnSample[] = []
+	_turnSamples: ModelPerformanceTurnSample[] = []
 ) {
 	const byMessageId: Record<string, TurnPerformanceLabel> = {};
 	const ordered = [...events].sort((a, b) => a.sequence - b.sequence);
@@ -234,11 +191,7 @@ export function turnPerformanceLabels(
 		const worked = isFinal && terminalAt != null && acceptedAt != null && terminalAt >= acceptedAt
 			? `Worked ${compactDuration(terminalAt - acceptedAt)}`
 			: null;
-		const persistedEndToEnd = endToEndSample(turnSamples, messageAt, terminalAt)?.outputTps ?? null;
-		const fallback = (!value || !isPublishable(value)) && isFinal && terminalAt != null
-			? endToEndLabel(journalEndToEndTps(ordered, acceptedAt, terminalAt) ?? persistedEndToEnd)
-			: null;
-		byMessageId[message.id] = fallback ?? {
+		byMessageId[message.id] = {
 			generation: generationLabel(value),
 			worked,
 			detail: value ? detail(value) : null

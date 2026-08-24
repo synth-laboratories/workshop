@@ -137,43 +137,15 @@ pub fn parse_usage(body: &Value) -> MeasuredUsage {
     };
     let input = int(&["prompt_tokens", "input_tokens"]);
     let output = int(&["completion_tokens", "output_tokens"]);
-    let cost = ["cost", "cost_usd"]
+    let cost_usd = ["cost", "cost_usd"]
         .iter()
         .find_map(|key| usage.get(*key).and_then(Value::as_f64))
-        .or_else(|| {
-            let model = body.get("model").and_then(Value::as_str).unwrap_or("");
-            let at = chrono::Utc::now().timestamp_millis();
-            crate::tariffs::estimate_cost_usd(
-                "openai",
-                model,
-                at,
-                crate::tariffs::BillableTokens {
-                    input_tokens: Some(input as i64),
-                    cached_input_tokens: None,
-                    cache_write_tokens: None,
-                    output_tokens: Some(output as i64),
-                },
-            )
-            .or_else(|| {
-                crate::tariffs::estimate_cost_usd(
-                    "openrouter",
-                    model,
-                    at,
-                    crate::tariffs::BillableTokens {
-                        input_tokens: Some(input as i64),
-                        cached_input_tokens: None,
-                        cache_write_tokens: None,
-                        output_tokens: Some(output as i64),
-                    },
-                )
-            })
-        })
-        .unwrap_or(0.0);
+        .filter(|cost| cost.is_finite() && *cost >= 0.0);
     MeasuredUsage {
         calls: 1,
         input_tokens: input,
         output_tokens: output,
-        cost_usd: cost,
+        cost_usd,
     }
 }
 
@@ -258,5 +230,24 @@ mod tests {
             request.headers().get("authorization").unwrap(),
             "Bearer test-provider-key"
         );
+    }
+
+    #[test]
+    fn usage_without_provider_cost_remains_unpriced() {
+        let usage = parse_usage(&serde_json::json!({
+            "model": "openai/gpt-5.6-luna",
+            "usage": {"prompt_tokens": 12, "completion_tokens": 8}
+        }));
+        assert_eq!(usage.input_tokens, 12);
+        assert_eq!(usage.output_tokens, 8);
+        assert_eq!(usage.cost_usd, None);
+    }
+
+    #[test]
+    fn exact_provider_cost_is_preserved() {
+        let usage = parse_usage(&serde_json::json!({
+            "usage": {"input_tokens": 12, "output_tokens": 8, "cost": 0.0042}
+        }));
+        assert_eq!(usage.cost_usd, Some(0.0042));
     }
 }

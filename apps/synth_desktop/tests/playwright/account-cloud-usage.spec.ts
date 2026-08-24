@@ -238,9 +238,9 @@ test("the device dashboard labels billing authority per provider and model", asy
 	await page.getByTestId("account-open-usage").click();
 	const device = page.getByTestId("usage-sheet-device");
 
-	// Totals keep settled and estimated money in separate labeled rows.
+	// Totals show settled money only; estimates never appear as usage cost.
 	await expect(device.getByTestId("usage-total-billed")).toHaveText("$0.42");
-	await expect(device.getByTestId("usage-total-estimated")).toHaveText("$0.07");
+	await expect(device.getByTestId("usage-total-estimated")).toHaveCount(0);
 	await expect(device.getByTestId("usage-total-cached")).toContainText("80,000");
 	await expect(device.getByTestId("usage-total-cached")).toContainText("47% hit");
 
@@ -251,14 +251,14 @@ test("the device dashboard labels billing authority per provider and model", asy
 	await expect(luna).toContainText("cached 80,000 (67%)");
 	const lunaPerf = luna.getByTestId("usage-model-openrouter-openai-gpt-5-6-luna-perf");
 	await expect(lunaPerf).toContainText("decode 25 tok/s (p95 40 tok/s)");
-	await expect(lunaPerf).toContainText("end-to-end 18 tok/s");
+	await expect(lunaPerf).not.toContainText("end-to-end");
 	await expect(lunaPerf).toContainText("TTFT 800 ms (p95 2.0 s)");
 	await expect(lunaPerf).toContainText("12 samples");
 
 	// Unsettled money is clearly an estimate, and unreported cache telemetry
 	// reads unavailable — never zero.
 	const lagunaS = device.getByTestId("usage-model-openrouter-poolside-laguna-s-2-1");
-	await expect(lagunaS.getByTestId("usage-model-openrouter-poolside-laguna-s-2-1-cost")).toHaveText("$0.07 estimated");
+	await expect(lagunaS.getByTestId("usage-model-openrouter-poolside-laguna-s-2-1-cost")).toHaveText("Cost unavailable");
 	await expect(lagunaS).toContainText("cached unavailable");
 
 	// Local runs carry no provider charge and never render $0.00.
@@ -430,7 +430,8 @@ test("an exhausted allowance blocks the cloud model and offers upgrade; local st
 	await page.getByTestId("model-picker").click();
 	await page.getByTestId("model-access-api").click();
 	await expect(page.getByTestId("model-option-allowance-blocked").first()).toContainText("allowance is used up");
-	await expect(page.getByTestId("model-option-allowance-blocked")).toHaveCount(2);
+	// Every hosted Synth Cloud model is blocked; local models remain available.
+	await expect(page.getByTestId("model-option-allowance-blocked")).toHaveCount(4);
 	// The local target is untouched by a cloud billing state.
 	await page.getByTestId("model-access-back").click();
 	await page.getByTestId("model-access-local").click();

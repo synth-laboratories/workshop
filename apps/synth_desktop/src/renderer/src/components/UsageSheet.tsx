@@ -20,17 +20,17 @@ import { bridges } from "../runtime/desktopBridge";
  *                  facts (tokens, cache traffic, throughput, provider bills),
  *                  not an allowance.
  *
- * Dollar rules: a settled provider charge renders as billed; a tariff figure
- * always says estimated; local runs say "On-device · no provider charge";
- * missing telemetry renders "Unavailable", never zero.
+ * Dollar rules: only a settled charge or Backend-supplied Shoal estimate renders;
+ * local runs say "On-device · no provider charge"; missing telemetry renders
+ * "Unavailable", never zero.
  */
 
 /** Compact device rollup consumed by the Settings/Account pages. */
 export type DeviceUsageSummary = {
 	weeklyTokens: number;
-	weeklyCostUsd: number;
+	weeklyCostUsd: number | null;
 	totalTokens: number;
-	totalCostUsd: number;
+	totalCostUsd: number | null;
 	entries: number;
 };
 
@@ -82,25 +82,22 @@ function costLine(row: UsageBreakdown): { text: string; kind: "local" | "billed"
 	if (row.provider === "local-laguna") {
 		return { text: "On-device · no provider charge", kind: "local" };
 	}
-	const parts: string[] = [];
-	if (row.billedCostUsd != null) parts.push(`${formatUsd(row.billedCostUsd)} billed`);
-	if (row.estimatedCostUsd != null) parts.push(`${formatUsd(row.estimatedCostUsd)} estimated`);
-	if (parts.length === 0) {
-		return { text: row.provider === "synth-cloud" ? "Billed by Synth Cloud" : "Cost unavailable", kind: "none" };
+	if (row.billedCostUsd == null) {
+		if (row.costSource === "synth_cloud" && row.estimatedCostUsd != null) {
+			return { text: `${formatUsd(row.estimatedCostUsd)} Backend estimate`, kind: "estimate" };
+		}
+		return { text: "Cost unavailable", kind: "none" };
 	}
-	return { text: parts.join(" + "), kind: row.billedCostUsd != null ? "billed" : "estimate" };
+	return { text: `${formatUsd(row.billedCostUsd)} billed`, kind: "billed" };
 }
 
 function perfLine(row: UsageBreakdown): string {
 	const parts: string[] = [];
 	const decode = tps(row.decodeTpsP50);
 	const decodeP95 = tps(row.decodeTpsP95);
-	const endToEnd = tps(row.endToEndTpsP50);
-	const endToEndP95 = tps(row.endToEndTpsP95);
 	const firstToken = ttft(row.ttftMsP50);
 	const firstTokenP95 = ttft(row.ttftMsP95);
 	if (decode) parts.push(`decode ${decode}${decodeP95 ? ` (p95 ${decodeP95})` : ""}`);
-	if (endToEnd) parts.push(`end-to-end ${endToEnd}${endToEndP95 ? ` (p95 ${endToEndP95})` : ""}`);
 	if (firstToken) parts.push(`TTFT ${firstToken}${firstTokenP95 ? ` (p95 ${firstTokenP95})` : ""}`);
 	if (parts.length === 0) return `Throughput ${UNAVAILABLE.toLowerCase()}`;
 	return `${parts.join(" · ")} · ${row.perfSampleCount} sample${row.perfSampleCount === 1 ? "" : "s"}`;
@@ -428,18 +425,18 @@ export function UsageSheet({
 									testId="usage-total-cached"
 								/>
 								<UsageRow label="Output" value={maybeTokens(totals.outputTokens)} testId="usage-total-output" />
-								<UsageRow
-									label="Billed"
-									value={totals.billedCostUsd == null ? UNAVAILABLE : formatUsd(totals.billedCostUsd)}
-									testId="usage-total-billed"
-								/>
-								{totals.estimatedCostUsd != null ? (
 									<UsageRow
-										label="Estimated (unbilled)"
-										value={formatUsd(totals.estimatedCostUsd)}
-										testId="usage-total-estimated"
+										label="Billed"
+									value={totals.billedCostUsd == null ? UNAVAILABLE : formatUsd(totals.billedCostUsd)}
+										testId="usage-total-billed"
 									/>
-								) : null}
+									{totals.estimatedCostUsd != null && totals.costSource === "synth_cloud" ? (
+										<UsageRow
+											label="Backend estimate (unbilled)"
+											value={formatUsd(totals.estimatedCostUsd)}
+											testId="usage-total-estimated"
+										/>
+									) : null}
 								<UsageRow label="Requests" value={maybeTokens(totals.requests)} testId="usage-total-requests" />
 							</div>
 

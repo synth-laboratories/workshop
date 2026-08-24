@@ -117,7 +117,7 @@ struct Aggregate {
 }
 
 fn summaries(conn: &Connection) -> Result<Vec<ModelPerformanceSummary>> {
-    let mut statement = conn.prepare("SELECT provider,model_id,measurement_kind,completed_at_ms,ttft_ms,observed_output_tps,end_to_end_output_tps FROM usage_records WHERE status='completed' AND output_tokens IS NOT NULL AND output_tokens>0 ORDER BY completed_at_ms")?;
+    let mut statement = conn.prepare("SELECT provider,model_id,measurement_kind,completed_at_ms,ttft_ms,observed_output_tps FROM usage_records WHERE status='completed' AND output_tokens IS NOT NULL AND output_tokens>0 AND observed_output_tps IS NOT NULL AND observed_output_tps>0 ORDER BY completed_at_ms")?;
     let rows = statement.query_map([], |row| {
         Ok((
             row.get::<_, String>(0)?,
@@ -126,12 +126,11 @@ fn summaries(conn: &Connection) -> Result<Vec<ModelPerformanceSummary>> {
             row.get::<_, i64>(3)?,
             row.get::<_, Option<f64>>(4)?,
             row.get::<_, Option<f64>>(5)?,
-            row.get::<_, Option<f64>>(6)?,
         ))
     })?;
     let mut groups: BTreeMap<(String, String, MeasurementKind), Aggregate> = BTreeMap::new();
     for row in rows {
-        let (provider, model, kind, completed, ttft, observed, e2e) = row?;
+        let (provider, model, kind, completed, ttft, observed) = row?;
         let a = groups
             .entry((provider, model, MeasurementKind::parse(&kind)))
             .or_default();
@@ -139,7 +138,7 @@ fn summaries(conn: &Connection) -> Result<Vec<ModelPerformanceSummary>> {
         if let Some(v) = finite_positive(ttft) {
             a.ttft.push(v)
         }
-        if let Some(v) = finite_positive(observed.or(e2e)) {
+        if let Some(v) = finite_positive(observed) {
             a.tps.push(v)
         }
     }
@@ -170,11 +169,11 @@ fn summaries(conn: &Connection) -> Result<Vec<ModelPerformanceSummary>> {
 fn turn_samples(conn: &Connection, session_id: &str) -> Result<Vec<ModelPerformanceTurnSample>> {
     let mut statement = conn.prepare(
         "SELECT run_id,measurement_kind,started_at_ms,completed_at_ms,
-                COALESCE(observed_output_tps, end_to_end_output_tps)
+                observed_output_tps
          FROM usage_records
          WHERE session_id=?1 AND output_tokens IS NOT NULL AND output_tokens>0
-           AND COALESCE(observed_output_tps, end_to_end_output_tps) IS NOT NULL
-           AND COALESCE(observed_output_tps, end_to_end_output_tps)>0
+           AND observed_output_tps IS NOT NULL
+           AND observed_output_tps>0
          ORDER BY started_at_ms,completed_at_ms",
     )?;
     let rows = statement.query_map([session_id], |row| {
@@ -318,10 +317,10 @@ mod tests {
             .turn_samples("session-a".into())
             .await
             .unwrap();
-        assert_eq!(rows.len(), 2);
+        assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].run_id.as_deref(), Some("turn-a"));
         assert_eq!(rows[0].output_tps, 11.0);
-        assert_eq!(rows[1].measurement_kind, MeasurementKind::EndToEnd);
-        assert_eq!(rows[1].output_tps, 12.5);
+        // Acceptance-to-completion rates include warm-up and are latency, not
+        // generation throughput. They must never reach the TPS UI.
     }
 }

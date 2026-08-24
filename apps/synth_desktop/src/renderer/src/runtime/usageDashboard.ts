@@ -9,10 +9,8 @@ export type { UsageBreakdown, UsageDayPoint };
  * lives apart from the component so the numbers can be tested without a
  * webview, and so the rules they encode are written down in one place:
  *
- *   · A dollar figure always says who vouches for it. Settled charges and
- *     tariff estimates are added — the ledger drops an estimate the moment its
- *     request settles, so the sum cannot double-count — but the split is never
- *     hidden.
+ *   · A dollar figure comes from a settled receipt or a Backend estimate.
+ *     Legacy/local tariff estimates are never counted as spend.
  *   · Missing telemetry is `null`, and renders "Unavailable". A real zero and
  *     an unreported field must not look alike.
  *   · On-device runs have no provider charge, so they carry tokens and no
@@ -116,8 +114,9 @@ export function longDay(day: string): string {
  * which is different from a priced zero (an on-device run).
  */
 export function spendUsd(row: UsageBreakdown): number | null {
-	if (row.billedCostUsd == null && row.estimatedCostUsd == null) return null;
-	return (row.billedCostUsd ?? 0) + (row.estimatedCostUsd ?? 0);
+	const backendEstimate = row.costSource === "synth_cloud" ? row.estimatedCostUsd : null;
+	if (row.billedCostUsd == null && backendEstimate == null) return null;
+	return (row.billedCostUsd ?? 0) + (backendEstimate ?? 0);
 }
 
 export type ProviderRoll = {
@@ -151,7 +150,10 @@ export function providerRollup(models: UsageBreakdown[]): ProviderRoll[] {
 			share: 0
 		};
 		next.billedUsd = addNullable(next.billedUsd, row.billedCostUsd);
-		next.estimatedUsd = addNullable(next.estimatedUsd, row.estimatedCostUsd);
+		next.estimatedUsd = addNullable(
+			next.estimatedUsd,
+			row.costSource === "synth_cloud" ? row.estimatedCostUsd : null
+		);
 		next.spendUsd = addNullable(next.billedUsd, next.estimatedUsd);
 		next.totalTokens += row.totalTokens;
 		next.requests += row.requests;
@@ -248,8 +250,8 @@ export type CostQualityRow = { key: string; label: string; amountUsd: number; sh
 
 const COST_AUTHORITY: Array<[string, string]> = [
 	["provider_reported", "Provider reported"],
-	["synth_cloud", "Synth Cloud"],
-	["tariff_estimate", "Tariff estimate"],
+	["synth_cloud", "Synth Cloud actual"],
+	["backend_estimate", "Backend estimate"],
 	["none", "Unpriced"]
 ];
 
@@ -261,7 +263,15 @@ const COST_AUTHORITY: Array<[string, string]> = [
 export function costQuality(models: UsageBreakdown[]): CostQualityRow[] {
 	const totals = new Map<string, number>();
 	for (const row of models) {
-		totals.set(row.costSource, (totals.get(row.costSource) ?? 0) + (spendUsd(row) ?? 0));
+		if (row.billedCostUsd != null) {
+			totals.set(row.costSource, (totals.get(row.costSource) ?? 0) + row.billedCostUsd);
+		}
+		if (row.costSource === "synth_cloud" && row.estimatedCostUsd != null) {
+			totals.set("backend_estimate", (totals.get("backend_estimate") ?? 0) + row.estimatedCostUsd);
+		}
+		if (row.billedCostUsd == null && !(row.costSource === "synth_cloud" && row.estimatedCostUsd != null)) {
+			totals.set("none", totals.get("none") ?? 0);
+		}
 	}
 	const total = [...totals.values()].reduce((sum, value) => sum + value, 0);
 	return COST_AUTHORITY.map(([key, label]) => {

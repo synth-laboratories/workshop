@@ -141,7 +141,9 @@ pub struct MeasuredUsage {
     pub calls: u32,
     pub input_tokens: u64,
     pub output_tokens: u64,
-    pub cost_usd: f64,
+    /// Exact provider-reported charge. `None` means the provider did not
+    /// report a settled cost; it must not be replaced by a tariff estimate.
+    pub cost_usd: Option<f64>,
 }
 
 #[derive(Default)]
@@ -247,8 +249,13 @@ impl CapabilityStore {
             .ok_or_else(|| anyhow!("capability is not valid"))?;
         live.used_input_tokens = live.used_input_tokens.saturating_add(usage.input_tokens);
         live.used_output_tokens = live.used_output_tokens.saturating_add(usage.output_tokens);
-        let micros = (usage.cost_usd * 1_000_000.0).round() as u64;
-        live.used_cost_usd_micros = live.used_cost_usd_micros.saturating_add(micros);
+        if let Some(cost_usd) = usage
+            .cost_usd
+            .filter(|cost| cost.is_finite() && *cost >= 0.0)
+        {
+            let micros = (cost_usd * 1_000_000.0).round() as u64;
+            live.used_cost_usd_micros = live.used_cost_usd_micros.saturating_add(micros);
+        }
         if live.used_input_tokens > live.max_input_tokens
             || live.used_output_tokens > live.max_output_tokens
             || (live.max_cost_usd_micros > 0
