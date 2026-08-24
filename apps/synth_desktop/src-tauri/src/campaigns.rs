@@ -345,7 +345,7 @@ pub fn settle(conn: &Connection, id: &str, at: &str) -> Result<Value> {
         params![id, status, at],
     )?;
     let aggregate = aggregate(&terminal);
-    Ok(json!({
+    let result = json!({
         "campaignId": campaign.id,
         "title": campaign.title,
         "containerId": campaign.container_id,
@@ -357,7 +357,25 @@ pub fn settle(conn: &Connection, id: &str, at: &str) -> Result<Value> {
         "aggregate": aggregate,
         "rollouts": campaign.rollouts,
         "settledAt": at,
-    }))
+    });
+    let trace_refs = terminal.iter().filter_map(|rollout| {
+        rollout.terminal.as_ref()
+            .and_then(|value| value.pointer("/trace/url").or_else(|| value.pointer("/trace/bundle_url")))
+            .and_then(Value::as_str).map(str::to_owned)
+    }).collect::<Vec<_>>();
+    let model = campaign.policy_ref.get("model").or_else(|| campaign.policy_ref.get("config")).and_then(Value::as_str);
+    crate::experiments::settle_member(
+        conn,
+        crate::experiments::MEMBER_CAMPAIGN,
+        &campaign.id,
+        status,
+        &campaign.title,
+        model,
+        &result["aggregate"],
+        &trace_refs,
+        at,
+    )?;
+    Ok(result)
 }
 
 fn number(terminal: &Value, pointers: &[&str]) -> Option<f64> {

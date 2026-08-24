@@ -15,6 +15,41 @@ use crate::contract::specta::OpaqueJson;
 pub const MEMBER_CAMPAIGN: &str = "eval_campaign";
 pub const MEMBER_OPTIMIZER: &str = "optimizer_run";
 
+pub fn settle_member(
+    conn: &Connection,
+    member_kind: &str,
+    member_id: &str,
+    status: &str,
+    task: &str,
+    model: Option<&str>,
+    result: &serde_json::Value,
+    trace_refs: &[String],
+    at: &str,
+) -> Result<()> {
+    let experiment_id: Option<String> = conn.query_row(
+        "SELECT group_id FROM experiment_group_members WHERE member_kind=?1 AND member_id=?2",
+        params![member_kind, member_id],
+        |row| row.get(0),
+    ).optional()?;
+    let Some(experiment_id) = experiment_id else { return Ok(()); };
+    let group_status = match status { "complete" => "completed", "failed" => "failed", _ => status };
+    conn.execute(
+        "UPDATE experiment_groups SET status=?2, task=?3, model=?4, best_result_json=?5, updated_at=?6 WHERE id=?1",
+        params![experiment_id, group_status, task, model, result.to_string(), at],
+    )?;
+    let variant = format!("{experiment_id}:variant:{member_id}");
+    let result_id = format!("{experiment_id}:result:{member_id}");
+    conn.execute(
+        "UPDATE experiment_nodes SET status=?2, provenance_json=?3, updated_at=?4 WHERE id=?1",
+        params![variant, group_status, serde_json::json!({"memberKind":member_kind,"memberId":member_id,"task":task,"model":model}).to_string(), at],
+    )?;
+    conn.execute(
+        "UPDATE experiment_nodes SET status=?2, metrics_json=?3, trace_refs_json=?4, provenance_json=?5, updated_at=?6 WHERE id=?1",
+        params![result_id, group_status, result.to_string(), serde_json::to_string(trace_refs)?, serde_json::json!({"memberKind":member_kind,"memberId":member_id,"task":task,"model":model}).to_string(), at],
+    )?;
+    Ok(())
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub struct ExperimentMember {
@@ -331,6 +366,28 @@ mod tests {
         assert_eq!(again.edges[1].relation, "evaluated");
         assert!(again.nodes.iter().all(|node| node.cost_usd.is_none()));
         assert!(again.nodes.iter().all(|node| node.metrics.is_none()));
+    }
+
+    #[test]
+    fn settling_a_member_updates_summary_nodes_and_preserves_missing_cost() {
+        let conn = database();
+        attach(&conn, "session_1", MEMBER_CAMPAIGN, "camp_1", "2026-08-17T00:00:00Z", "Craftax compare").unwrap();
+        settle_member(
+            &conn, MEMBER_CAMPAIGN, "camp_1", "complete", "CRAFTAX-EMBER-0824",
+            Some("gpt-5.6-luna"),
+            &serde_json::json!({"reward":{"mean":null},"sampleSize":2}),
+            &["/rollouts/a/trace".into(), "/rollouts/b/trace".into()],
+            "2026-08-17T00:01:00Z",
+        ).unwrap();
+        let group = load_for_session(&conn, "session_1").unwrap().unwrap();
+        assert_eq!(group.status, "completed");
+        assert_eq!(group.task.as_deref(), Some("CRAFTAX-EMBER-0824"));
+        assert_eq!(group.model.as_deref(), Some("gpt-5.6-luna"));
+        let result = group.nodes.iter().find(|node| node.kind == "result").unwrap();
+        assert_eq!(result.status, "completed");
+        assert_eq!(result.trace_refs.len(), 2);
+        assert!(result.cost_usd.is_none());
+        assert_eq!(result.metrics.as_ref().unwrap().0["reward"]["mean"], serde_json::Value::Null);
     }
 
     #[test]
