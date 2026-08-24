@@ -3214,11 +3214,15 @@ fn dispatch_secrets(method: &str, path: &str, body: Value, core: &CoreRuntime) -
                 .ok_or_else(|| anyhow::anyhow!("secretId is required"))?;
             let run_id = str_field("runId", "run_id").unwrap_or_else(|| "session".into());
             let recipe_id = str_field("recipeId", "recipe_id").unwrap_or_else(|| "session".into());
+            // An MCP client may select a known workload contract, never arbitrary
+            // operations or spend limits. Codex is a Responses client, whereas
+            // the generic assistant path remains Chat Completions only.
+            let policy = agent_use_policy(str_field("workload", "workload").as_deref())?;
             let result = secrets.request_use(
                 &secret_id,
                 &run_id,
                 &recipe_id,
-                crate::secrets::SecretsUsePolicy::default(),
+                policy.clone(),
                 "agent",
             )?;
             Ok(json!({
@@ -3228,6 +3232,11 @@ fn dispatch_secrets(method: &str, path: &str, body: Value, core: &CoreRuntime) -
                 "proxyOrigin": result.proxy_origin,
                 "handle": result.handle,
                 "provider_routes": result.provider_routes,
+                "requestedPolicy": {
+                    "operations": policy.operations,
+                    "maxCalls": policy.max_calls,
+                    "maxCostUsd": policy.max_cost_usd,
+                },
                 "guidance": if result.status == "approval_required" {
                     "Ask the user to allow this in Settings → Secrets, then call request_use again."
                 } else {
@@ -3236,6 +3245,23 @@ fn dispatch_secrets(method: &str, path: &str, body: Value, core: &CoreRuntime) -
             }))
         }
         (method, path) => anyhow::bail!("unknown secrets route {method} {path}"),
+    }
+}
+
+/// Product-owned, least-privilege policies available to the agent-facing
+/// secrets adapter. The agent can name a workload shape, but it cannot widen
+/// its operation set, model allowance, budget, or lifetime.
+fn agent_use_policy(workload: Option<&str>) -> Result<crate::secrets::SecretsUsePolicy> {
+    let mut policy = crate::secrets::SecretsUsePolicy::default();
+    match workload.unwrap_or("chat_completions") {
+        "chat_completions" => Ok(policy),
+        "codex_responses" => {
+            policy.operations = vec!["responses.create".into()];
+            Ok(policy)
+        }
+        other => anyhow::bail!(
+            "unsupported secrets workload `{other}`; use chat_completions or codex_responses"
+        ),
     }
 }
 
@@ -4167,6 +4193,19 @@ mod diagnostics_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn agent_secret_workload_selects_only_fixed_wire_operations() {
+        let chat = agent_use_policy(None).unwrap();
+        assert_eq!(chat.operations, vec!["chat.completions.create"]);
+
+        let codex = agent_use_policy(Some("codex_responses")).unwrap();
+        assert_eq!(codex.operations, vec!["responses.create"]);
+        assert_eq!(codex.max_calls, chat.max_calls);
+        assert_eq!(codex.max_cost_usd, chat.max_cost_usd);
+
+        assert!(agent_use_policy(Some("arbitrary.operations")).is_err());
+    }
 
     #[test]
     fn preserves_explicit_runtime_family_for_gepa_v2_selection() {

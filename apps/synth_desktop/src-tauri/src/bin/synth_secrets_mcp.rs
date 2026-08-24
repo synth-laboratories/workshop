@@ -107,7 +107,8 @@ fn tools() -> Value {
                     "variableNames": {"type": "array", "items": {"type": "string"}},
                     "secretId": {"type": "string"},
                     "runId": {"type": "string"},
-                    "recipeId": {"type": "string"}
+                    "recipeId": {"type": "string"},
+                    "workload": {"type": "string", "enum": ["chat_completions", "codex_responses"], "description": "Fixed provider-wire contract. The agent cannot set operations, models, cost, or lifetime."}
                 },
                 "required": ["operation"],
                 "additionalProperties": false
@@ -194,6 +195,7 @@ mod tests {
         assert!(encoded.contains("secrets_manage"));
         assert!(encoded.contains("request_env_import"));
         assert!(encoded.contains("request_use"));
+        assert!(encoded.contains("codex_responses"));
         for forbidden in [
             "secrets_create",
             "secrets_get",
