@@ -398,7 +398,16 @@ for key in allowed:
         seed[key] = os.environ[key].strip()
 
 existing = destination.read_text().splitlines() if destination.is_file() else []
-kept = [line for line in existing if not re.match(r"^\s*(?:export\s+)?(?:SYNTH_API_KEY|OPENROUTER_API_KEY|OPENAI_API_KEY)\s*=", line)]
+# A diagnostic or run-only launch might not receive the original source file.
+# Refresh only values available from the selected source; retain an already
+# staged allowlisted value rather than silently making the next launch invalid.
+refresh_keys = {key for key in allowed if seed.get(key)}
+refresh_pattern = re.compile(r"^\s*(?:export\s+)?(" + "|".join(allowed) + r")\s*=")
+kept = [
+    line
+    for line in existing
+    if (match := refresh_pattern.match(line)) is None or match.group(1) not in refresh_keys
+]
 for key in allowed:
     value = seed.get(key)
     if value:
