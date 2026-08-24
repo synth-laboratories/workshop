@@ -28,13 +28,13 @@ default_instance="$($ROOT/scripts/desktop-instance.sh print)"
 [[ "$(printf '%s' "$beta" | jq -r .name)" == "beta" ]]
 [[ "$(printf '%s' "$default_instance" | jq -r .name)" == "codex-$(printf '%s' "$default_instance" | jq -r .worktreeHash)" ]]
 [[ "$(printf '%s' "$default_instance" | jq -r .name)" =~ ^codex-[a-f0-9]{8}$ ]]
-[[ "$(printf '%s' "$default_instance" | jq -r .releaseSlug)" == "v07" ]]
-[[ "$(printf '%s' "$default_instance" | jq -r .instanceRoot)" == "$TEST_ROOT/instances/v07/$(printf '%s' "$default_instance" | jq -r .name)" ]]
+[[ "$(printf '%s' "$default_instance" | jq -r .releaseSlug)" == "v08" ]]
+[[ "$(printf '%s' "$default_instance" | jq -r .instanceRoot)" == "$TEST_ROOT/instances/v08/$(printf '%s' "$default_instance" | jq -r .name)" ]]
 printf '%s' "$default_instance" | jq -e '
   .mode == "development" and
   .product == "workshop" and
-  .releaseLine == "v0.7" and
-  .appVersion == "0.7.0" and
+  .releaseLine == "v0.8" and
+  .appVersion == "0.8.0" and
   (.sourceRoot | length > 0) and
   (.sourceRevision | length > 0) and
   .hotReload.renderer == true and
@@ -50,13 +50,13 @@ printf '%s' "$default_instance" | jq -e '
 [[ "$(printf '%s' "$beta" | jq -r .iconLabel)" == "2" ]]
 [[ -f "$(printf '%s' "$alpha" | jq -r .icon)" ]]
 printf '%s' "$alpha" | jq -e '
-  (.appBundle | endswith("/Synth Workshop v0.7 · alpha.app")) and
+  (.appBundle | endswith("/Synth Workshop v0.8 · alpha.app")) and
   (.executable | endswith("/debug/synth-desktop"))
 ' >/dev/null
 
 # Refreshing an instance contract after a build or identity assertion must not
 # erase the binary provenance those earlier phases recorded.
-alpha_manifest="$TEST_ROOT/instances/v07/alpha/instance.json"
+alpha_manifest="$TEST_ROOT/instances/v08/alpha/instance.json"
 jq '.provenance={phase:"bundle-signed", executableDigest:"sha256:fixture"} | .executable="/tmp/Synth Workshop.app/Contents/MacOS/synth-desktop" | .executableDigest="sha256:fixture"' \
   "$alpha_manifest" >"$alpha_manifest.tmp"
 mv "$alpha_manifest.tmp" "$alpha_manifest"
@@ -67,7 +67,7 @@ printf '%s' "$alpha_refreshed" | jq -e '
   .executable == "/tmp/Synth Workshop.app/Contents/MacOS/synth-desktop" and
   .executableDigest == "sha256:fixture"
 ' >/dev/null
-alpha_env="$TEST_ROOT/instances/v07/alpha/data/.env"
+alpha_env="$TEST_ROOT/instances/v08/alpha/data/.env"
 [[ "$(stat -f '%Lp' "$alpha_env")" == "600" ]]
 rg -q '^SYNTH_API_KEY=' "$alpha_env"
 rg -q '^OPENROUTER_API_KEY=' "$alpha_env"
@@ -116,20 +116,20 @@ if "$ROOT/scripts/desktop-instance.sh" print '../unsafe' >/dev/null 2>&1; then
   exit 1
 fi
 if SYNTH_DESKTOP_RELEASE_LINE=v0.6 "$ROOT/scripts/desktop-instance.sh" print alpha >/dev/null 2>&1; then
-  echo "non-v0.7 release line was accepted by the v0.7 launcher" >&2
+  echo "non-v0.8 release line was accepted by the v0.8 launcher" >&2
   exit 1
 fi
 
 jq -e '
-  .identifier == "com.synth.desktop.v07.dev.alpha" and
-  .productName == "Synth Workshop v0.7 · alpha" and
-  .version == "0.7.0" and
+  .identifier == "com.synth.desktop.v08.dev.alpha" and
+  .productName == "Synth Workshop v0.8 · alpha" and
+  .version == "0.8.0" and
   (.bundle.icon | length) == 2 and
   .bundle.targets == ["app"] and
   .bundle.resources == {} and
   .bundle.macOS.minimumSystemVersion == "14.0"
 ' \
-  "$TEST_ROOT/instances/v07/alpha/generated/tauri.instance.json" >/dev/null
+  "$TEST_ROOT/instances/v08/alpha/generated/tauri.instance.json" >/dev/null
 jq -e '.bundle.macOS.minimumSystemVersion == "14.0"' \
   "$ROOT/apps/synth_desktop/src-tauri/tauri.conf.json" >/dev/null
 # Packaged resources live in the packaging overlay, not the base config, so a
@@ -200,7 +200,7 @@ rg -q 'candidate-all' "$ROOT/scripts/release-artifact.sh"
 rg -q 'distribution:"candidate"' "$ROOT/scripts/release-artifact.sh"
 rg -q 'notarized:false, stapled:false' "$ROOT/scripts/release-artifact.sh"
 rg -q 'Synth Workshop Candidate.app' "$ROOT/scripts/release-artifact.sh"
-rg -q 'com.synth.desktop.v07.candidate' "$ROOT/apps/synth_desktop/src-tauri/tauri.candidate.conf.json"
+rg -q 'com.synth.desktop.v08.candidate' "$ROOT/apps/synth_desktop/src-tauri/tauri.candidate.conf.json"
 candidate_case="$(sed -n '/candidate-stage)/,/help|-h|--help)/p' "$ROOT/scripts/release-artifact.sh")"
 ! grep -q 'notarize_artifact' <<<"$candidate_case"
 
@@ -220,7 +220,7 @@ kill -0 "$UNRELATED_PID"
 # P1-9: exclusive instance operation lease. A second cua-build is refused
 # with the owner printed; status --verbose shows that owner. The first
 # process is a dry-run that holds the lock — not a 10-minute cua-build.
-lock_file="$TEST_ROOT/instances/v07/alpha/operation.lock"
+lock_file="$TEST_ROOT/instances/v08/alpha/operation.lock"
 SYNTH_DESKTOP_OPERATION_DRY_RUN=1 SYNTH_DESKTOP_OPERATION_LOCK_HOLD=1 \
   "$ROOT/scripts/desktop-instance.sh" cua-build alpha >/dev/null &
 LOCK_HOLDER="$!"
@@ -264,23 +264,23 @@ rg -q 'codex-\$WORKTREE_HASH|codex-\$\{WORKTREE_HASH\}' "$ROOT/scripts/crash-rec
 # P1-5: cua-build writes a bundle-resident descriptor with the W3b contract
 # and records bootEpoch + processStartIdentity on the launcher manifest.
 SYNTH_DESKTOP_OPERATION_DRY_RUN=1 "$ROOT/scripts/desktop-instance.sh" cua-build alpha >/dev/null
-descriptor="$TEST_ROOT/instances/v07/alpha/generated/descriptor-preview.app/Contents/Resources/instance.json"
+descriptor="$TEST_ROOT/instances/v08/alpha/generated/descriptor-preview.app/Contents/Resources/instance.json"
 [[ -f "$descriptor" ]] || { echo "bundle descriptor was not written" >&2; exit 1; }
 jq -e '
   .schemaVersion == "synth.desktop.instance-descriptor.v1" and
   .instance_id == "alpha" and
-  (.instance_root | endswith("/instances/v07/alpha")) and
-  (.config_path | endswith("/instances/v07/alpha/data/config.toml")) and
-  (.data_root | endswith("/instances/v07/alpha/data")) and
-  .bundle_id == "com.synth.desktop.v07.dev.alpha" and
-  .release_line == "v0.7" and
+  (.instance_root | endswith("/instances/v08/alpha")) and
+  (.config_path | endswith("/instances/v08/alpha/data/config.toml")) and
+  (.data_root | endswith("/instances/v08/alpha/data")) and
+  .bundle_id == "com.synth.desktop.v08.dev.alpha" and
+  .release_line == "v0.8" and
   (.source_revision | length > 0) and
   (.generated_at | length > 0)
 ' "$descriptor" >/dev/null
 jq -e '
   (.runtime.bootEpoch | startswith("inst_")) and
   (.runtime.processStartIdentity | length > 0)
-' "$TEST_ROOT/instances/v07/alpha/instance.json" >/dev/null
+' "$TEST_ROOT/instances/v08/alpha/instance.json" >/dev/null
 rg -q 'write_bundle_descriptor "\$app_bundle"' "$ROOT/scripts/desktop-instance.sh"
 
 # ID-R-05: task scripts source RELEASE_SLUG from the launcher print contract.
