@@ -36,6 +36,7 @@ type Props = {
 	inventoryActive?: boolean;
 	visualsActive?: boolean;
 	reportsActive?: boolean;
+	experimentsActive?: boolean;
 	optimizersActive?: boolean;
 	computerUseActive?: boolean;
 	workingChatIds?: ReadonlySet<string>;
@@ -54,6 +55,7 @@ type Props = {
 	onOpenInventory: () => void;
 	onOpenVisuals: () => void;
 	onOpenReports: () => void;
+	onOpenExperiments: () => void;
 	onOpenOptimizers: () => void;
 	onOpenComputerUse: () => void;
 	onSearch: () => void;
@@ -209,6 +211,7 @@ function IconComputerUse(): ReactElement {
 const PLUGIN_NAV_ICONS: Record<PluginNavEntry["id"], () => ReactElement> = {
 	visuals: IconVisuals,
 	reports: IconReports,
+	experiments: IconOptimizers,
 	optimizers: IconOptimizers,
 	inventory: IconInventory,
 	"computer-use": IconComputerUse
@@ -221,6 +224,7 @@ export function Sidebar({
 	inventoryActive = false,
 	visualsActive = false,
 	reportsActive = false,
+	experimentsActive = false,
 	optimizersActive = false,
 	computerUseActive = false,
 	workingChatIds = new Set<string>(),
@@ -234,6 +238,7 @@ export function Sidebar({
 	onOpenInventory,
 	onOpenVisuals,
 	onOpenReports,
+	onOpenExperiments,
 	onOpenOptimizers,
 	onOpenComputerUse,
 	onSearch,
@@ -341,6 +346,7 @@ export function Sidebar({
 	const pluginRowActive: Record<PluginNavEntry["id"], boolean> = {
 		visuals: visualsActive,
 		reports: reportsActive,
+		experiments: experimentsActive,
 		optimizers: optimizersActive,
 		inventory: inventoryActive,
 		"computer-use": computerUseActive
@@ -348,6 +354,7 @@ export function Sidebar({
 	const pluginRowOpen: Record<PluginNavEntry["id"], () => void> = {
 		visuals: onOpenVisuals,
 		reports: onOpenReports,
+		experiments: onOpenExperiments,
 		optimizers: onOpenOptimizers,
 		inventory: onOpenInventory,
 		"computer-use": onOpenComputerUse

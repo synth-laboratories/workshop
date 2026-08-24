@@ -1997,6 +1997,8 @@ export function useAppController() {
 				? "Visuals"
 			: view.kind === "reports"
 				? "Reports"
+			: view.kind === "experiments"
+				? "Experiments"
 			: view.kind === "optimizers"
 				? "Optimizers"
 			: view.kind === "inventory"

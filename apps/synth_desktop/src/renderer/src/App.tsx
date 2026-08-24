@@ -33,6 +33,7 @@ export default function App() {
 						inventoryActive={c.view.kind === "inventory"}
 						visualsActive={c.view.kind === "visuals"}
 						reportsActive={c.view.kind === "reports"}
+						experimentsActive={c.view.kind === "experiments"}
 						optimizersActive={c.view.kind === "optimizers"}
 						computerUseActive={c.view.kind === "computer-use"}
 						workingChatIds={c.workingChatIds}
@@ -76,6 +77,7 @@ export default function App() {
 						onOpenInventory={() => c.setView({ kind: "inventory" })}
 						onOpenVisuals={() => c.setView({ kind: "visuals" })}
 						onOpenReports={() => c.setView({ kind: "reports" })}
+						onOpenExperiments={() => c.setView({ kind: "experiments" })}
 						onOpenOptimizers={() => c.setView({ kind: "optimizers" })}
 						onOpenComputerUse={() => c.setView({ kind: "computer-use" })}
 						onSearch={c.openSearch}

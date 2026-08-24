@@ -36,6 +36,7 @@ const MIGRATIONS: &[&str] = &[
     MIGRATION_31,
     MIGRATION_32,
     MIGRATION_33,
+    MIGRATION_34,
 ];
 
 /// Apply every migration the database has not reached yet.
@@ -1691,6 +1692,50 @@ ON optimizer_run_ownership(owner_instance_id);
 
 CREATE INDEX IF NOT EXISTS optimizer_run_ownership_lease
 ON optimizer_run_ownership(lease_expires_at);
+"#;
+
+/// v0.8 local-first experiment projection. The v0.5 group remains the stable
+/// experiment identity; nodes and edges are explicit facts, never inferred by
+/// the renderer from titles or timestamps.
+const MIGRATION_34: &str = r#"
+ALTER TABLE experiment_groups ADD COLUMN updated_at TEXT;
+ALTER TABLE experiment_groups ADD COLUMN status TEXT NOT NULL DEFAULT 'draft';
+ALTER TABLE experiment_groups ADD COLUMN task TEXT;
+ALTER TABLE experiment_groups ADD COLUMN model TEXT;
+ALTER TABLE experiment_groups ADD COLUMN best_result_json TEXT;
+
+UPDATE experiment_groups SET updated_at = created_at WHERE updated_at IS NULL;
+
+CREATE TABLE IF NOT EXISTS experiment_nodes (
+    id TEXT PRIMARY KEY,
+    experiment_id TEXT NOT NULL REFERENCES experiment_groups(id) ON DELETE CASCADE,
+    kind TEXT NOT NULL CHECK (kind IN ('baseline','variant','run','result')),
+    title TEXT NOT NULL,
+    status TEXT NOT NULL,
+    config_json TEXT NOT NULL DEFAULT '{}',
+    metrics_json TEXT,
+    cost_usd REAL,
+    artifact_refs_json TEXT NOT NULL DEFAULT '[]',
+    trace_refs_json TEXT NOT NULL DEFAULT '[]',
+    provenance_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE(experiment_id, id)
+);
+
+CREATE TABLE IF NOT EXISTS experiment_edges (
+    id TEXT PRIMARY KEY,
+    experiment_id TEXT NOT NULL REFERENCES experiment_groups(id) ON DELETE CASCADE,
+    source_node_id TEXT NOT NULL REFERENCES experiment_nodes(id) ON DELETE CASCADE,
+    target_node_id TEXT NOT NULL REFERENCES experiment_nodes(id) ON DELETE CASCADE,
+    relation TEXT NOT NULL CHECK (relation IN ('forked_from','rerun_of','warm_started_from','produced','evaluated','compared_with','promoted_to','reproduced_on','rolled_back_to')),
+    created_at TEXT NOT NULL,
+    UNIQUE(experiment_id, source_node_id, target_node_id, relation)
+);
+
+CREATE INDEX IF NOT EXISTS experiment_groups_updated ON experiment_groups(updated_at DESC);
+CREATE INDEX IF NOT EXISTS experiment_nodes_experiment ON experiment_nodes(experiment_id, created_at, id);
+CREATE INDEX IF NOT EXISTS experiment_edges_experiment ON experiment_edges(experiment_id, created_at, id);
 "#;
 #[cfg(test)]
 mod tests {

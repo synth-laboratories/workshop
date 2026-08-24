@@ -32,6 +32,7 @@ import { SettingsPage } from "./components/SettingsPage";
 import { VisualPane } from "./components/VisualHost";
 import { VisualsPage } from "./components/VisualsPage";
 import { ReportsPage } from "./components/ReportsPage";
+import { ExperimentsPage } from "./components/ExperimentsPage";
 import { WorkbenchSidePanel } from "./components/WorkbenchSidePanel";
 import { ResponsesTracePanel } from "./components/ResponsesTracePanel";
 import { DiagnosticsPanel } from "./components/DiagnosticsPanel";
@@ -48,6 +49,7 @@ export type MainView =
 	| { kind: "inventory" }
 	| { kind: "visuals" }
 	| { kind: "reports"; reportId?: string }
+	| { kind: "experiments"; experimentId?: string }
 	| { kind: "optimizers" }
 	| { kind: "computer-use" };
 
@@ -313,6 +315,8 @@ export function MainRoutes(props: MainRoutesProps): ReactNode {
 					<ReportsPage initialReportId={view.reportId} onBack={() => setView({ kind: "landing" })} />
 				</div>
 			) : null}
+
+			{view.kind === "experiments" ? <ExperimentsPage initialId={view.experimentId} onBack={() => setView({ kind: "landing" })} /> : null}
 
 			{view.kind === "optimizers" ? (
 				<div className={`inventory-workbench${openArtifact ? " with-visual" : ""}`} style={{ "--visual-pane-width": `${inventoryContainerWidth}px` } as CSSProperties}>

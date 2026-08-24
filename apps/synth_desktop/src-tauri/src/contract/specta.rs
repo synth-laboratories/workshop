@@ -220,6 +220,8 @@ pub fn builder() -> Builder<tauri::Wry> {
         crate::reports_seals_compare,
         crate::reports_experiments_list,
         crate::reports_experiment_upsert,
+        crate::experiments_list,
+        crate::experiments_get,
         crate::reports_log_list,
         crate::reports_log_append,
         crate::reports_upload_status,
@@ -468,7 +470,7 @@ mod tests {
         // 249 → 251: the published adapter's status and download.
         // 251 → 253: saved-LoRA checkpoint detail and artifact detail.
         assert_eq!(
-            exported, 253,
+            exported, 255,
             "generated bindings must contain the complete desktop command set"
         );
         assert_eq!(

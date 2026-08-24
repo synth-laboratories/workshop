@@ -1,5 +1,4 @@
-//! Bounded v0.5 experiment grouping: one session-owned DAG of campaigns and
-//! optimizer runs. Not the v0.6 canvas or reports engine.
+//! Local-first experiment registry and explicit lineage projection.
 //!
 //! A chat that starts an evaluation campaign and a GEPA run should be able to
 //! name both as members of the same experiment without either leaking into
@@ -11,11 +10,12 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::storage::{append_event, EventAppend, EventSource};
+use crate::contract::specta::OpaqueJson;
 
 pub const MEMBER_CAMPAIGN: &str = "eval_campaign";
 pub const MEMBER_OPTIMIZER: &str = "optimizer_run";
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub struct ExperimentMember {
     pub member_kind: String,
@@ -24,14 +24,48 @@ pub struct ExperimentMember {
     pub attached_at: String,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub struct ExperimentGroup {
     pub id: String,
     pub session_id: String,
     pub title: String,
     pub created_at: String,
+    pub updated_at: String,
+    pub status: String,
+    pub task: Option<String>,
+    pub model: Option<String>,
+    pub best_result: Option<OpaqueJson>,
     pub members: Vec<ExperimentMember>,
+    pub nodes: Vec<ExperimentNode>,
+    pub edges: Vec<ExperimentEdge>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct ExperimentNode {
+    pub id: String,
+    pub kind: String,
+    pub title: String,
+    pub status: String,
+    pub config: OpaqueJson,
+    pub metrics: Option<OpaqueJson>,
+    pub cost_usd: Option<f64>,
+    pub artifact_refs: Vec<String>,
+    pub trace_refs: Vec<String>,
+    pub provenance: OpaqueJson,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct ExperimentEdge {
+    pub id: String,
+    pub source_node_id: String,
+    pub target_node_id: String,
+    pub relation: String,
+    pub created_at: String,
 }
 
 /// Attach a campaign or optimizer run to the session's experiment group,
@@ -51,6 +85,11 @@ pub fn attach(
         params![group.id, member_kind, member_id, title, attached_at],
     )?;
     if inserted > 0 {
+        project_member_lineage(conn, &group.id, member_kind, member_id, title, attached_at)?;
+        conn.execute(
+            "UPDATE experiment_groups SET updated_at=?2, status='running' WHERE id=?1",
+            params![group.id, attached_at],
+        )?;
         let _ = append_event(
             conn,
             EventAppend {
@@ -85,7 +124,7 @@ pub fn attach(
 pub fn load_for_session(conn: &Connection, session_id: &str) -> Result<Option<ExperimentGroup>> {
     let Some(mut group) = conn
         .query_row(
-            "SELECT id, session_id, title, created_at FROM experiment_groups WHERE session_id = ?1",
+            "SELECT id, session_id, title, created_at, COALESCE(updated_at, created_at), status, task, model, best_result_json FROM experiment_groups WHERE session_id = ?1",
             params![session_id],
             |row| {
                 Ok(ExperimentGroup {
@@ -93,7 +132,14 @@ pub fn load_for_session(conn: &Connection, session_id: &str) -> Result<Option<Ex
                     session_id: row.get(1)?,
                     title: row.get(2)?,
                     created_at: row.get(3)?,
+                    updated_at: row.get(4)?,
+                    status: row.get(5)?,
+                    task: row.get(6)?,
+                    model: row.get(7)?,
+                    best_result: row.get::<_, Option<String>>(8)?.and_then(|value| serde_json::from_str(&value).ok()).map(OpaqueJson),
                     members: Vec::new(),
+                    nodes: Vec::new(),
+                    edges: Vec::new(),
                 })
             },
         )
@@ -117,7 +163,65 @@ pub fn load_for_session(conn: &Connection, session_id: &str) -> Result<Option<Ex
             })
         })?
         .collect::<rusqlite::Result<_>>()?;
+    group.nodes = load_nodes(conn, &group.id)?;
+    group.edges = load_edges(conn, &group.id)?;
     Ok(Some(group))
+}
+
+pub fn get(conn: &Connection, id: &str) -> Result<Option<ExperimentGroup>> {
+    let session_id: Option<String> = conn.query_row(
+        "SELECT session_id FROM experiment_groups WHERE id=?1",
+        [id], |row| row.get(0),
+    ).optional()?;
+    match session_id { Some(id) => load_for_session(conn, &id), None => Ok(None) }
+}
+
+pub fn list(conn: &Connection, query: Option<&str>) -> Result<Vec<ExperimentGroup>> {
+    let needle = format!("%{}%", query.unwrap_or("").trim().to_lowercase());
+    let mut stmt = conn.prepare(
+        "SELECT session_id FROM experiment_groups
+         WHERE lower(title) LIKE ?1 OR lower(COALESCE(task,'')) LIKE ?1 OR lower(COALESCE(model,'')) LIKE ?1 OR lower(status) LIKE ?1
+         ORDER BY COALESCE(updated_at, created_at) DESC, id",
+    )?;
+    let ids = stmt.query_map([needle], |row| row.get::<_, String>(0))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    ids.into_iter().filter_map(|id| load_for_session(conn, &id).transpose()).collect()
+}
+
+fn project_member_lineage(conn: &Connection, experiment_id: &str, member_kind: &str, member_id: &str, title: &str, at: &str) -> Result<()> {
+    let baseline = format!("{experiment_id}:baseline");
+    let variant = format!("{experiment_id}:variant:{member_id}");
+    let result = format!("{experiment_id}:result:{member_id}");
+    for (id, kind, label, status, config) in [
+        (&baseline, "baseline", "Current baseline", "completed", serde_json::json!({"role":"baseline"})),
+        (&variant, "variant", title, "running", serde_json::json!({"memberKind":member_kind,"memberId":member_id})),
+        (&result, "result", "Comparison result", "running", serde_json::json!({"memberKind":member_kind,"memberId":member_id})),
+    ] {
+        conn.execute("INSERT OR IGNORE INTO experiment_nodes(id,experiment_id,kind,title,status,config_json,created_at,updated_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?7)", params![id, experiment_id, kind, label, status, config.to_string(), at])?;
+    }
+    for (source, target, relation) in [(&baseline, &variant, "forked_from"), (&variant, &result, "evaluated")] {
+        let edge_id = format!("edge:{source}:{relation}:{target}");
+        conn.execute("INSERT OR IGNORE INTO experiment_edges(id,experiment_id,source_node_id,target_node_id,relation,created_at) VALUES(?1,?2,?3,?4,?5,?6)", params![edge_id, experiment_id, source, target, relation, at])?;
+    }
+    Ok(())
+}
+
+fn load_nodes(conn: &Connection, experiment_id: &str) -> Result<Vec<ExperimentNode>> {
+    let mut stmt = conn.prepare("SELECT id,kind,title,status,config_json,metrics_json,cost_usd,artifact_refs_json,trace_refs_json,provenance_json,created_at,updated_at FROM experiment_nodes WHERE experiment_id=?1 ORDER BY created_at,id")?;
+    let rows = stmt.query_map([experiment_id], |row| Ok(ExperimentNode {
+        id: row.get(0)?, kind: row.get(1)?, title: row.get(2)?, status: row.get(3)?,
+        config: OpaqueJson(serde_json::from_str(&row.get::<_, String>(4)?).unwrap_or_default()),
+        metrics: row.get::<_, Option<String>>(5)?.and_then(|v| serde_json::from_str(&v).ok()).map(OpaqueJson), cost_usd: row.get(6)?,
+        artifact_refs: serde_json::from_str(&row.get::<_, String>(7)?).unwrap_or_default(), trace_refs: serde_json::from_str(&row.get::<_, String>(8)?).unwrap_or_default(),
+        provenance: OpaqueJson(serde_json::from_str(&row.get::<_, String>(9)?).unwrap_or_default()), created_at: row.get(10)?, updated_at: row.get(11)?,
+    }))?.collect::<rusqlite::Result<_>>()?;
+    Ok(rows)
+}
+
+fn load_edges(conn: &Connection, experiment_id: &str) -> Result<Vec<ExperimentEdge>> {
+    let mut stmt = conn.prepare("SELECT id,source_node_id,target_node_id,relation,created_at FROM experiment_edges WHERE experiment_id=?1 ORDER BY created_at,id")?;
+    let rows = stmt.query_map([experiment_id], |row| Ok(ExperimentEdge { id: row.get(0)?, source_node_id: row.get(1)?, target_node_id: row.get(2)?, relation: row.get(3)?, created_at: row.get(4)? }))?.collect::<rusqlite::Result<_>>()?;
+    Ok(rows)
 }
 
 fn ensure_group(
@@ -131,8 +235,8 @@ fn ensure_group(
     }
     let id = format!("exp_{}", Uuid::new_v4().simple());
     conn.execute(
-        "INSERT INTO experiment_groups(id, session_id, title, created_at)
-         VALUES(?1, ?2, ?3, ?4)",
+        "INSERT INTO experiment_groups(id, session_id, title, created_at, updated_at)
+         VALUES(?1, ?2, ?3, ?4, ?4)",
         params![id, session_id, format!("{title} experiment"), created_at],
     )?;
     load_for_session(conn, session_id)?
@@ -221,5 +325,21 @@ mod tests {
         )
         .unwrap();
         assert_eq!(again.members.len(), 1);
+        assert_eq!(again.nodes.len(), 3);
+        assert_eq!(again.edges.len(), 2);
+        assert_eq!(again.edges[0].relation, "forked_from");
+        assert_eq!(again.edges[1].relation, "evaluated");
+        assert!(again.nodes.iter().all(|node| node.cost_usd.is_none()));
+        assert!(again.nodes.iter().all(|node| node.metrics.is_none()));
+    }
+
+    #[test]
+    fn search_and_reopen_return_the_same_durable_identity() {
+        let conn = database();
+        let created = attach(&conn, "task_craftax", MEMBER_CAMPAIGN, "run_1", "2026-08-24T12:00:00Z", "Craftax prompt variant").unwrap();
+        let found = list(&conn, Some("craftax")).unwrap();
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].id, created.id);
+        assert_eq!(get(&conn, &created.id).unwrap().unwrap().id, created.id);
     }
 }

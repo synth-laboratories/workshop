@@ -247,6 +247,21 @@ export const commands = {
 	reportsSealsCompare: (leftDigest: string, rightDigest: string) => typedError<ReportRevisionCompare, AppError>(__TAURI_INVOKE("reports_seals_compare", { leftDigest, rightDigest })),
 	reportsExperimentsList: (reportId: string) => typedError<ExperimentRecord[], AppError>(__TAURI_INVOKE("reports_experiments_list", { reportId })),
 	reportsExperimentUpsert: (reportId: string, request: ExperimentRecordUpsert) => typedError<ExperimentRecord, AppError>(__TAURI_INVOKE("reports_experiment_upsert", { reportId, request })),
+	experimentsList: (query: string | null) => typedError<ExperimentGroup[], AppError>(__TAURI_INVOKE("experiments_list", { query })),
+	experimentsGet: (experimentId: string) => typedError<{
+	id: string,
+	sessionId: string,
+	title: string,
+	createdAt: string,
+	updatedAt: string,
+	status: string,
+	task: string | null,
+	model: string | null,
+	bestResult: unknown | null,
+	members: ExperimentMember[],
+	nodes: ExperimentNode[],
+	edges: ExperimentEdge[],
+} | null, AppError>(__TAURI_INVOKE("experiments_get", { experimentId })),
 	reportsLogList: (reportId: string) => typedError<ResearchLogEntry[], AppError>(__TAURI_INVOKE("reports_log_list", { reportId })),
 	reportsLogAppend: (reportId: string, request: ResearchLogAppend) => typedError<ResearchLogEntry, AppError>(__TAURI_INVOKE("reports_log_append", { reportId, request })),
 	reportsUploadStatus: (receiptDigest: string) => typedError<{
@@ -962,6 +977,51 @@ export type EvalStageCandidatesRequest = {
 };
 
 export type EventSource = "local" | "remote" | "intern" | "codex" | "system" | "mlx" | "visual" | "report";
+
+export type ExperimentEdge = {
+	id: string,
+	sourceNodeId: string,
+	targetNodeId: string,
+	relation: string,
+	createdAt: string,
+};
+
+export type ExperimentGroup = {
+	id: string,
+	sessionId: string,
+	title: string,
+	createdAt: string,
+	updatedAt: string,
+	status: string,
+	task: string | null,
+	model: string | null,
+	bestResult: unknown | null,
+	members: ExperimentMember[],
+	nodes: ExperimentNode[],
+	edges: ExperimentEdge[],
+};
+
+export type ExperimentMember = {
+	memberKind: string,
+	memberId: string,
+	title: string,
+	attachedAt: string,
+};
+
+export type ExperimentNode = {
+	id: string,
+	kind: string,
+	title: string,
+	status: string,
+	config: unknown,
+	metrics: unknown | null,
+	costUsd: number | null,
+	artifactRefs: string[],
+	traceRefs: string[],
+	provenance: unknown,
+	createdAt: string,
+	updatedAt: string,
+};
 
 export type ExperimentRecord = {
 	experimentId: string,

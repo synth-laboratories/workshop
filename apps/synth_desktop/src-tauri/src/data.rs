@@ -314,6 +314,14 @@ impl DataStore {
             .await
     }
 
+    pub async fn experiments_list(&self, query: Option<String>) -> Result<Vec<crate::experiments::ExperimentGroup>> {
+        self.db.clone().run(move |conn| crate::experiments::list(conn, query.as_deref())).await
+    }
+
+    pub async fn experiment_get(&self, id: String) -> Result<Option<crate::experiments::ExperimentGroup>> {
+        self.db.clone().run(move |conn| crate::experiments::get(conn, &id)).await
+    }
+
     pub async fn list_containers(&self) -> Result<Vec<ContainerDeployment>> {
         self.db.clone().run(|conn| list_containers(conn)).await
     }
