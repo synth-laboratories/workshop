@@ -327,7 +327,14 @@ export function MainRoutes(props: MainRoutesProps): ReactNode {
 				</div>
 			) : null}
 
-			{view.kind === "experiments" ? <ExperimentsPage initialId={view.experimentId} onBack={() => setView({ kind: "landing" })} /> : null}
+			{view.kind === "experiments" ? (
+				<div className={`inventory-workbench${openArtifact ? " with-visual" : ""}`} style={{ "--visual-pane-width": `${inventoryContainerWidth}px` } as CSSProperties}>
+					<ExperimentsPage initialId={view.experimentId} onBack={() => setView({ kind: "landing" })} />
+					{openArtifact ? (
+						<><PaneResizeHandle value={inventoryContainerWidth} onChange={(width) => { setInventoryContainerWidth(width); persistLayoutSnapshot({ outputPaneWidth: width }); }} ariaLabel="Resize visual pane" /><VisualPane artifact={openArtifact} onClose={() => toggleArtifact(null)} /></>
+					) : null}
+				</div>
+			) : null}
 
 			{view.kind === "optimizers" ? (
 				<div className={`inventory-workbench${openArtifact ? " with-visual" : ""}`} style={{ "--visual-pane-width": `${inventoryContainerWidth}px` } as CSSProperties}>
