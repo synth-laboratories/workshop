@@ -8841,6 +8841,7 @@ html.sidebar-hidden .sidebar {
 .experiment-table { margin-top:18px; border:1px solid #cfb99f; border-radius:14px; overflow:hidden; background:#fffaf0; }
 .experiment-row { display:grid; grid-template-columns:minmax(170px,2fr) minmax(130px,1.5fr) 90px minmax(100px,1fr) 55px 145px; gap:12px; width:100%; padding:13px 15px; align-items:center; text-align:left; border:0; border-bottom:1px solid #e4d6c3; background:transparent; color:inherit; }
 button.experiment-row:hover { background:#f1e2cd; }
+.experiment-result-summary { font-variant-numeric:tabular-nums; color:#614f43; white-space:nowrap; }
 .experiment-row.heading { font-size:10px; font-weight:800; color:#8c7565; text-transform:uppercase; }
 .status.completed { color:#27704d; }
 .lineage-workspace { display:grid; grid-template-columns:minmax(0,2fr) minmax(240px,1fr); gap:16px; }

@@ -3,6 +3,7 @@ import { commands, type ExperimentEvidenceRef, type ExperimentGroup, type Experi
 import { fromGenerated, n } from "../bridge";
 import { bridges } from "../runtime/desktopBridge";
 import { openTraceReference, VISUAL_REFERENCE_OPENED_EVENT } from "../runtime/visualReferences";
+import { formatExperimentResult } from "../runtime/experimentPresentation";
 
 const missing = (value: unknown) => value == null || value === "" ? "—" : String(value);
 
@@ -38,7 +39,7 @@ export function ExperimentsPage({ initialId, onBack }: { initialId?: string; onB
 		<div className="experiment-table" role="table">
 			<div className="experiment-row heading" role="row"><span>Experiment</span><span>Task / model</span><span>Status</span><span>Result</span><span>Runs</span><span>Updated</span></div>
 			{rows.map((row) => <button className="experiment-row" role="row" key={row.id} onClick={() => { setSelectedId(row.id); setNodeId(null); }}>
-				<strong>{row.title}</strong><span>{missing(row.task)} · {missing(row.model)}</span><span className={`status ${row.status}`}>{row.status}</span><span>{row.bestResult ? JSON.stringify(row.bestResult) : "—"}</span><span>{row.nodes.length}</span><time>{new Date(row.updatedAt).toLocaleString()}</time>
+				<strong>{row.title}</strong><span>{missing(row.task)} · {missing(row.model)}</span><span className={`status ${row.status}`}>{row.status}</span><span className="experiment-result-summary">{formatExperimentResult(row.bestResult)}</span><span>{row.nodes.length}</span><time>{new Date(row.updatedAt).toLocaleString()}</time>
 			</button>)}
 		</div>
 	</section>;
