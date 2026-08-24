@@ -300,7 +300,15 @@ export function MainRoutes(props: MainRoutesProps): ReactNode {
 								}
 								try {
 									const templates = await bridges.visuals.listTemplates();
-									const templateId = templates[0]?.id ?? "reward.breakdown.v1";
+									// The registry's first template is the chart template, whose
+									// content is intentionally mandatory.  A generic “New visual”
+									// action must create an immediately valid draft instead of
+									// presenting that validation error before the user can choose a
+									// template or add content.
+									const templateId = templates.find((template) => template.id === "blank.canvas.v1")?.id
+										?? templates.find((template) => template.id === "reward.breakdown.v1")?.id
+										?? templates[0]?.id
+										?? "blank.canvas.v1";
 									const visual = await bridges.visuals.create({
 										templateId,
 										title: "New visual",
