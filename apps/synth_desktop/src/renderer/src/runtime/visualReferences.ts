@@ -9,7 +9,8 @@ type TraceImportResult = { inspectable?: boolean; note?: string; traces?: Array<
 
 function rolloutIdFromReference(reference: string): string | null {
 	const match = reference.match(/(?:^|\/)rollouts\/([^/]+)\/trace(?:\/|$)/);
-	return match?.[1] ? decodeURIComponent(match[1]) : null;
+	if (match?.[1]) return decodeURIComponent(match[1]);
+	return /^[a-zA-Z0-9_.:-]+$/.test(reference) && !reference.startsWith("sha256:") ? reference : null;
 }
 
 function matchesTraceReference(trace: TraceV5Record, reference: string): boolean {

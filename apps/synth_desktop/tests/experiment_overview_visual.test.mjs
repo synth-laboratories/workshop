@@ -140,3 +140,13 @@ test("experiment overview renders optional evidence modules only when supplied",
 	const minimal = renderToStaticMarkup(createElement(Shell, { experiment: { title: "Minimal", hypotheses: [{ id: "h", claim: "A", verdict: "unresolved" }] } }));
 	assert.doesNotMatch(minimal, /Results &amp; assessment|Traces|Run context|Artifacts|Method &amp; caveats/);
 });
+
+test("experiment overview does not offer a dead inspector action for lite seals", () => {
+	const html = renderToStaticMarkup(createElement(Shell, { experiment: {
+		title: "Lite trace",
+		results: { rollouts: [{ id: "r1", traceId: "rollout_1" }] },
+		traces: { items: [{ id: "t1", traceId: "rollout_1", summary: "75 events; lite seal" }] }
+	} }));
+	assert.match(html, /Unavailable/);
+	assert.doesNotMatch(html, /data-reference-value="rollout_1"/);
+});
