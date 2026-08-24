@@ -704,6 +704,19 @@ async fn data_traces_get(
 
 #[tauri::command]
 #[specta::specta]
+async fn data_trace_materialize(
+    state: State<'_, Arc<CoreRuntime>>,
+    container_id: String,
+    rollout_id: String,
+) -> Result<contract::specta::OpaqueJson, AppError> {
+    crate::visuals_ipc::import_container_trace(&state, &container_id, &rollout_id)
+        .await
+        .map(contract::specta::OpaqueJson)
+        .map_err(AppError::from)
+}
+
+#[tauri::command]
+#[specta::specta]
 async fn data_traces_ingest(
     state: State<'_, Arc<CoreRuntime>>,
     request: TraceBundleIngestRequest,

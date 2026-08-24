@@ -32,6 +32,7 @@ export const commands = {
 	dataContainersProbe: (containerId: string) => typedError<ContainerDeployment, AppError>(__TAURI_INVOKE("data_containers_probe", { containerId })),
 	dataTracesList: () => typedError<TraceRecord[], AppError>(__TAURI_INVOKE("data_traces_list")),
 	dataTracesGet: (traceId: string) => typedError<TraceRecord, AppError>(__TAURI_INVOKE("data_traces_get", { traceId })),
+	dataTraceMaterialize: (containerId: string, rolloutId: string) => typedError<unknown, AppError>(__TAURI_INVOKE("data_trace_materialize", { containerId, rolloutId })),
 	dataTracesIngest: (request: TraceBundleIngestRequest) => typedError<TraceBundleIngestResult, AppError>(__TAURI_INVOKE("data_traces_ingest", { request })),
 	dataTraceProjectionResolve: (traceDigest: string, projectionKind: string) => typedError<ResolvedTraceProjection, AppError>(__TAURI_INVOKE("data_trace_projection_resolve", { traceDigest, projectionKind })),
 	dataUsageList: (limit: number | null) => typedError<UsageEntry[], AppError>(__TAURI_INVOKE("data_usage_list", { limit })),

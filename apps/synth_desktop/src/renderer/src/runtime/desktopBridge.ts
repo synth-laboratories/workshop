@@ -583,6 +583,7 @@ window.synthWorkspaceScope ??= isTauri
 			probeContainer: (containerId) => fromGenerated(spectaCommands.dataContainersProbe(containerId)),
 			listTraces: () => fromGenerated(spectaCommands.dataTracesList()),
 			getTrace: (traceId) => fromGenerated(spectaCommands.dataTracesGet(traceId)),
+			materializeContainerTrace: (containerId, rolloutId) => fromGenerated(spectaCommands.dataTraceMaterialize(containerId, rolloutId)),
 			chooseTraceInput: async () => {
 				const selection = await open({
 					directory: false,
@@ -609,6 +610,7 @@ window.synthWorkspaceScope ??= isTauri
 				return (await window.synthRuntime!.request<{ traces: TraceV5Record[] }>("/v1/traces")).traces;
 			},
 			getTrace: (traceId) => window.synthRuntime!.request(`/v1/traces/${encodeURIComponent(traceId)}`),
+			materializeContainerTrace: (containerId, rolloutId) => window.synthRuntime!.request("/v1/traces/import", { method: "POST", body: { container_id: containerId, rollout_id: rolloutId } }),
 			chooseTraceInput: async () => null,
 			ingestTraceBundle: async () => { throw new Error("Trace bundle import requires the desktop app"); },
 			resolveTraceProjection: async () => { throw new Error("Trace projection resolution requires the desktop app"); },

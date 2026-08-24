@@ -490,6 +490,7 @@ export type InventoryBridge = {
 	probeContainer(containerId: string): Promise<ContainerDeployment>;
 	listTraces(): Promise<TraceV5Record[]>;
 	getTrace(traceId: string): Promise<TraceV5Record>;
+	materializeContainerTrace(containerId: string, rolloutId: string): Promise<{ inspectable?: boolean; note?: string; traces?: Array<{ traceId?: string }> }>;
 	chooseTraceInput(): Promise<string | null>;
 	ingestTraceBundle(request: TraceBundleIngestRequest): Promise<TraceBundleIngestResult>;
 	resolveTraceProjection(traceDigest: string, projectionKind?: string): Promise<ResolvedTraceProjection>;

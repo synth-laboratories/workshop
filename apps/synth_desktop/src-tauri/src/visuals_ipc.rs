@@ -3293,7 +3293,7 @@ async fn import_terminal_trace(
 /// lite seal document is recorded as a provenance-bearing import but cannot be
 /// projected, and this says so rather than reporting a success the inspector
 /// will contradict.
-async fn import_container_trace(
+pub(crate) async fn import_container_trace(
     core: &CoreRuntime,
     container_id: &str,
     rollout_id: &str,

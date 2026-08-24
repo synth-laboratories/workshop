@@ -112,6 +112,7 @@ pub fn builder() -> Builder<tauri::Wry> {
         crate::data_containers_probe,
         crate::data_traces_list,
         crate::data_traces_get,
+        crate::data_trace_materialize,
         crate::data_traces_ingest,
         crate::data_trace_projection_resolve,
         crate::data_usage_list,

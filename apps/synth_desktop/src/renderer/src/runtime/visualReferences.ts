@@ -26,8 +26,8 @@ async function ensureTrace(reference: string, containerId?: string): Promise<Tra
 	let trace = traces.find((candidate) => matchesTraceReference(candidate, reference));
 	if (trace) return trace;
 	const rolloutId = rolloutIdFromReference(reference);
-	if (!rolloutId || !containerId || !bridges.runtime) throw new Error("This trace has not been retained in the local registry.");
-	const imported = await bridges.runtime.request<TraceImportResult>("/v1/traces/import", { method: "POST", body: { container_id: containerId, rollout_id: rolloutId } });
+	if (!rolloutId || !containerId) throw new Error("This trace has not been retained in the local registry.");
+	const imported: TraceImportResult = await bridges.inventory.materializeContainerTrace(containerId, rolloutId);
 	if (!imported.inspectable) throw new Error(imported.note ?? "The container retained provenance, but no inspectable Trace V5 bundle.");
 	traces = await bridges.inventory.listTraces();
 	const importedIds = new Set((imported.traces ?? []).map((item) => item.traceId).filter(Boolean));
