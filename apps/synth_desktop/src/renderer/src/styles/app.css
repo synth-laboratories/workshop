@@ -8858,4 +8858,11 @@ button.experiment-row:hover { background:#f1e2cd; }
 .experiment-inspector dl div { padding:9px 0; border-top:1px solid #65564c; }
 .experiment-inspector dt { font-size:9px; color:#d99a6e; text-transform:uppercase; }
 .experiment-inspector dd { margin:4px 0 0; overflow-wrap:anywhere; }
+.experiment-evidence { margin-top:18px; border-top:1px solid #806a5b; padding-top:14px; }
+.experiment-evidence h3 { margin:0 0 10px; font-size:13px; }
+.experiment-evidence-row { display:flex; align-items:center; justify-content:space-between; gap:12px; padding:10px 0; border-top:1px solid #65564c; }
+.experiment-evidence-row div { min-width:0; }
+.experiment-evidence-row strong,.experiment-evidence-row small { display:block; overflow-wrap:anywhere; }
+.experiment-evidence-row small { margin-top:3px; color:#dbc4ae; }
+.experiment-evidence-row button { flex:none; border:1px solid #c87545; border-radius:9px; padding:7px 10px; background:#f0c38e; color:#33251d; }
 @media (max-width:780px) { .experiment-row { grid-template-columns:1fr 85px; }.experiment-row > :nth-child(2),.experiment-row > :nth-child(4),.experiment-row > :nth-child(6){display:none}.lineage-workspace{grid-template-columns:1fr}.lineage-canvas{min-height:220px}.experiment-inspector{min-height:220px} }

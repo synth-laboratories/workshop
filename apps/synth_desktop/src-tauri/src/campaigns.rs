@@ -358,12 +358,26 @@ pub fn settle(conn: &Connection, id: &str, at: &str) -> Result<Value> {
         "rollouts": campaign.rollouts,
         "settledAt": at,
     });
-    let trace_refs = terminal.iter().filter_map(|rollout| {
-        rollout.terminal.as_ref()
-            .and_then(|value| value.pointer("/trace/url").or_else(|| value.pointer("/trace/bundle_url")))
-            .and_then(Value::as_str).map(str::to_owned)
-    }).collect::<Vec<_>>();
-    let model = campaign.policy_ref.get("model").or_else(|| campaign.policy_ref.get("config")).and_then(Value::as_str);
+    let trace_refs = terminal
+        .iter()
+        .filter_map(|rollout| {
+            rollout
+                .terminal
+                .as_ref()
+                .and_then(|value| {
+                    value
+                        .pointer("/trace/url")
+                        .or_else(|| value.pointer("/trace/bundle_url"))
+                })
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+        })
+        .collect::<Vec<_>>();
+    let model = campaign
+        .policy_ref
+        .get("model")
+        .or_else(|| campaign.policy_ref.get("config"))
+        .and_then(Value::as_str);
     crate::experiments::settle_member(
         conn,
         crate::experiments::MEMBER_CAMPAIGN,
@@ -375,6 +389,42 @@ pub fn settle(conn: &Connection, id: &str, at: &str) -> Result<Value> {
         &trace_refs,
         at,
     )?;
+    for rollout in terminal {
+        let Some(state) = rollout.terminal.as_ref() else {
+            continue;
+        };
+        let trace = state.get("trace").unwrap_or(&Value::Null);
+        crate::experiments::attach_member_evidence(
+            conn,
+            crate::experiments::MEMBER_CAMPAIGN,
+            &campaign.id,
+            crate::experiments::ExperimentEvidenceAttachRequest {
+                experiment_id: String::new(),
+                node_id: None,
+                evidence_id: format!("trace:{}:{}", campaign.container_id, rollout.rollout_id),
+                kind: "trace".into(),
+                label: format!("Seed {} trace", rollout.seed),
+                digest: trace
+                    .get("content_digest")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned),
+                container_id: Some(campaign.container_id.clone()),
+                rollout_id: Some(rollout.rollout_id.clone()),
+                trace_id: trace
+                    .get("trace_id")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned),
+                visual_id: None,
+                artifact_uri: None,
+                metadata: Some(crate::contract::specta::OpaqueJson(serde_json::json!({
+                    "announcedKind": trace.get("kind"),
+                    "inspectable": trace.get("inspectable"),
+                    "eventCount": trace.get("event_count"),
+                }))),
+                attached_at: at.to_owned(),
+            },
+        )?;
+    }
     Ok(result)
 }
 
@@ -408,10 +458,23 @@ fn aggregate(terminal: &[&CampaignRolloutPlan]) -> Value {
         }
         if let Some(latency) = number(record, &["/duration_ms", "/summary/duration_ms"]) {
             latencies.push(latency);
+        } else if let (Some(started), Some(settled)) = (&rollout.started_at, &rollout.settled_at) {
+            if let (Ok(started), Ok(settled)) = (
+                chrono::DateTime::parse_from_rfc3339(started),
+                chrono::DateTime::parse_from_rfc3339(settled),
+            ) {
+                latencies.push((settled - started).num_milliseconds().max(0) as f64);
+            }
         }
         if let Some(calls) = number(
             record,
-            &["/model_calls", "/summary/model_calls", "/usage/requests"],
+            &[
+                "/model_calls",
+                "/summary/model_calls",
+                "/usage/requests",
+                "/usage/calls",
+                "/usage/llm_calls",
+            ],
         ) {
             calls_total += calls;
             calls_reported += 1;
@@ -594,6 +657,25 @@ mod tests {
         );
         assert_eq!(result["aggregate"]["terminationReasons"]["max_steps"], 10);
         assert_eq!(result["aggregate"]["coverage"]["usageReportedBy"], 10);
+    }
+
+    #[test]
+    fn container_usage_calls_and_rollout_timestamps_are_preserved() {
+        let conn = database();
+        create(&conn, request("camp_1", vec![201])).unwrap();
+        record_started(&conn, "camp_1_r01", "2026-08-17T00:01:00Z").unwrap();
+        record_terminal(
+            &conn,
+            "camp_1_r01",
+            &json!({"status":"completed","reward":0.0,"usage":{"calls":2}}),
+            "2026-08-17T00:01:04Z",
+        )
+        .unwrap();
+        let result = settle(&conn, "camp_1", "2026-08-17T00:01:05Z").unwrap();
+        assert_eq!(result["aggregate"]["reward"]["mean"], 0.0);
+        assert_eq!(result["aggregate"]["modelCalls"], 2.0);
+        assert_eq!(result["aggregate"]["coverage"]["callCountReportedBy"], 1);
+        assert_eq!(result["aggregate"]["latencyMs"]["mean"], 4000.0);
     }
 
     #[test]

@@ -314,12 +314,34 @@ impl DataStore {
             .await
     }
 
-    pub async fn experiments_list(&self, query: Option<String>) -> Result<Vec<crate::experiments::ExperimentGroup>> {
-        self.db.clone().run(move |conn| crate::experiments::list(conn, query.as_deref())).await
+    pub async fn experiments_list(
+        &self,
+        query: Option<String>,
+    ) -> Result<Vec<crate::experiments::ExperimentGroup>> {
+        self.db
+            .clone()
+            .run(move |conn| crate::experiments::list(conn, query.as_deref()))
+            .await
     }
 
-    pub async fn experiment_get(&self, id: String) -> Result<Option<crate::experiments::ExperimentGroup>> {
-        self.db.clone().run(move |conn| crate::experiments::get(conn, &id)).await
+    pub async fn experiment_get(
+        &self,
+        id: String,
+    ) -> Result<Option<crate::experiments::ExperimentGroup>> {
+        self.db
+            .clone()
+            .run(move |conn| crate::experiments::get(conn, &id))
+            .await
+    }
+
+    pub async fn experiment_attach_evidence(
+        &self,
+        request: crate::experiments::ExperimentEvidenceAttachRequest,
+    ) -> Result<crate::experiments::ExperimentGroup> {
+        self.db
+            .clone()
+            .run_transaction(move |conn| crate::experiments::attach_evidence(conn, request))
+            .await
     }
 
     pub async fn list_containers(&self) -> Result<Vec<ContainerDeployment>> {

@@ -37,6 +37,7 @@ const MIGRATIONS: &[&str] = &[
     MIGRATION_32,
     MIGRATION_33,
     MIGRATION_34,
+    MIGRATION_35,
 ];
 
 /// Apply every migration the database has not reached yet.
@@ -1736,6 +1737,13 @@ CREATE TABLE IF NOT EXISTS experiment_edges (
 CREATE INDEX IF NOT EXISTS experiment_groups_updated ON experiment_groups(updated_at DESC);
 CREATE INDEX IF NOT EXISTS experiment_nodes_experiment ON experiment_nodes(experiment_id, created_at, id);
 CREATE INDEX IF NOT EXISTS experiment_edges_experiment ON experiment_edges(experiment_id, created_at, id);
+"#;
+
+/// Typed, idempotent evidence references on experiment nodes. Bodies remain in
+/// their authoritative CAS/container/visual registry and may be materialized
+/// just in time; the experiment stores identity, expected digest, and locator.
+const MIGRATION_35: &str = r#"
+ALTER TABLE experiment_nodes ADD COLUMN evidence_refs_json TEXT NOT NULL DEFAULT '[]';
 "#;
 #[cfg(test)]
 mod tests {

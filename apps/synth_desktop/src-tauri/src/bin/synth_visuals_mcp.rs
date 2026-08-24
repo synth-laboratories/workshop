@@ -61,10 +61,7 @@ struct Connection {
 }
 
 fn connection_file() -> PathBuf {
-    instance_paths::ipc_connection_file(
-        &["SYNTH_VISUALS_IPC_FILE"],
-        "visuals-ipc.json",
-    )
+    instance_paths::ipc_connection_file(&["SYNTH_VISUALS_IPC_FILE"], "visuals-ipc.json")
 }
 
 fn load_connection() -> Result<Connection, String> {
@@ -435,6 +432,7 @@ fn tools() -> Value {
               "source":{"type":"string","description":"Trace digest, fixture path under visuals/, CAS digest, query snapshot id, or optimizer run id"},
               "data":{"description":"Required when kind is inline"},
               "bindings":{"type":"object","description":"A full synth.visual-bindings.v1 envelope, instead of slot/kind/source"},"viewport":{"type":"object","properties":{"width":{"type":"integer","minimum":320,"maximum":2400}},"additionalProperties":false,"description":"Capture width; the height follows the chart so nothing is scaled down"},"capture":{"type":"boolean","description":"Default true; false returns the revision and findings without a PNG"},"presentation":{"type":"string","enum":["canvas","pane"]}},"required":["spec"],"additionalProperties":false}},
+            {"name":"experiment_attach_evidence","description":"Attach a durable trace, visual/plot, or artifact reference to an experiment. References are local-first and may be materialized just in time when opened. Replaying the same evidence_id is idempotent.","inputSchema":{"type":"object","properties":{"experiment_id":{"type":"string"},"node_id":{"type":"string","description":"Optional experiment node; defaults to the latest result node"},"evidence_id":{"type":"string","description":"Stable caller-chosen idempotency key"},"kind":{"type":"string","enum":["trace","visual","artifact"]},"label":{"type":"string"},"digest":{"type":"string"},"container_id":{"type":"string"},"rollout_id":{"type":"string"},"trace_id":{"type":"string"},"visual_id":{"type":"string"},"artifact_uri":{"type":"string"},"metadata":{"type":"object"}},"required":["experiment_id","evidence_id","kind","label"],"additionalProperties":false}},
             {"name":"visual_authoring_context","description":"Get the template contract, example evidence, revision, presentation, and outstanding quality gate for one visual","inputSchema":{"type":"object","properties":{"visual_id":{"type":"string"}},"required":["visual_id"],"additionalProperties":false}},
             {"name":"visual_list_annotations","description":"List durable labels for a visual and its current overlay digest","inputSchema":{"type":"object","properties":{"visual_id":{"type":"string"}},"required":["visual_id"],"additionalProperties":false}},
             {"name":"visual_annotate","description":"Write a durable label anchored to one exact visual revision","inputSchema":{"type":"object","properties":{"visual_id":{"type":"string"},"revision":{"type":"integer"},"selector":{"type":"object"},"kind":{"type":"string","enum":["note","bug","highlight","reward","acceptance"]},"body":{"type":"string"},"source_digest":{"type":"string"},"supersedes_id":{"type":"string"}},"required":["visual_id","revision","selector","kind"],"additionalProperties":false}},
@@ -858,6 +856,17 @@ fn call_tool(name: &str, args: &Value) -> Result<Value, String> {
                 "findings": findings,
                 "data_provenance": provenance,
             }))
+        }
+        "experiment_attach_evidence" => {
+            let experiment_id = args
+                .get("experiment_id")
+                .and_then(Value::as_str)
+                .ok_or("experiment_id required")?;
+            request(
+                "POST",
+                &format!("/v1/experiments/{experiment_id}/evidence"),
+                Some(args.clone()),
+            )
         }
         "visual_authoring_context" => {
             let id = args

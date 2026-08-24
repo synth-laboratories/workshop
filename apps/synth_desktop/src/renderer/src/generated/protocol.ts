@@ -262,6 +262,7 @@ export const commands = {
 	nodes: ExperimentNode[],
 	edges: ExperimentEdge[],
 } | null, AppError>(__TAURI_INVOKE("experiments_get", { experimentId })),
+	experimentsAttachEvidence: (request: ExperimentEvidenceAttachRequest) => typedError<ExperimentGroup, AppError>(__TAURI_INVOKE("experiments_attach_evidence", { request })),
 	reportsLogList: (reportId: string) => typedError<ResearchLogEntry[], AppError>(__TAURI_INVOKE("reports_log_list", { reportId })),
 	reportsLogAppend: (reportId: string, request: ResearchLogAppend) => typedError<ResearchLogEntry, AppError>(__TAURI_INVOKE("reports_log_append", { reportId, request })),
 	reportsUploadStatus: (receiptDigest: string) => typedError<{
@@ -986,6 +987,36 @@ export type ExperimentEdge = {
 	createdAt: string,
 };
 
+export type ExperimentEvidenceAttachRequest = {
+	experimentId: string,
+	nodeId: string | null,
+	evidenceId: string,
+	kind: string,
+	label: string,
+	digest: string | null,
+	containerId: string | null,
+	rolloutId: string | null,
+	traceId: string | null,
+	visualId: string | null,
+	artifactUri: string | null,
+	metadata: unknown | null,
+	attachedAt: string,
+};
+
+export type ExperimentEvidenceRef = {
+	evidenceId: string,
+	kind: string,
+	label: string,
+	digest: string | null,
+	containerId: string | null,
+	rolloutId: string | null,
+	traceId: string | null,
+	visualId: string | null,
+	artifactUri: string | null,
+	metadata: unknown,
+	attachedAt: string,
+};
+
 export type ExperimentGroup = {
 	id: string,
 	sessionId: string,
@@ -1018,6 +1049,7 @@ export type ExperimentNode = {
 	costUsd: number | null,
 	artifactRefs: string[],
 	traceRefs: string[],
+	evidenceRefs: ExperimentEvidenceRef[],
 	provenance: unknown,
 	createdAt: string,
 	updatedAt: string,

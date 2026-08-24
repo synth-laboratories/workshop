@@ -934,6 +934,27 @@ pub(crate) async fn get_rollout_status(
     Ok(Some(response.error_for_status()?.json::<Value>().await?))
 }
 
+async fn enrich_terminal_evidence(
+    client: &reqwest::Client,
+    base: &str,
+    rollout_id: &str,
+    mut state: Value,
+) -> Result<Value> {
+    let response = client
+        .get(format!("{base}/rollouts/{rollout_id}/reward"))
+        .send()
+        .await
+        .context("GET authoritative rollout reward")?;
+    if response.status() != reqwest::StatusCode::NOT_FOUND {
+        let reward = response.error_for_status()?.json::<Value>().await?;
+        if let Some(value) = reward.get("reward").and_then(Value::as_f64) {
+            state["reward"] = json!(value);
+        }
+        state["reward_receipt"] = reward;
+    }
+    Ok(state)
+}
+
 /// Open a durable receipt for a rollout launch, returning its id.
 ///
 /// Best-effort by design: a receipt is a recovery aid, and failing the user's
@@ -1594,11 +1615,8 @@ pub async fn dispatch(method: &str, path: &str, body: Value, core: &CoreRuntime)
                     }
                 }
             }
-            let family = observed_task_family(
-                info.as_ref(),
-                classified,
-                container.task_family.as_deref(),
-            );
+            let family =
+                observed_task_family(info.as_ref(), classified, container.task_family.as_deref());
             let updated = core
                 .update_container_hydration(
                     id.to_string(),
@@ -2571,7 +2589,10 @@ pub(crate) async fn dispatch_optimizer(
                 .trim_start_matches("/v1/training/artifacts/")
                 .trim_end_matches("/chat")
                 .trim_end_matches('/');
-            let confirm = body.get("confirm").and_then(Value::as_bool).unwrap_or(false);
+            let confirm = body
+                .get("confirm")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
             if !confirm {
                 anyhow::bail!("launch_artifact_inference requires confirm=true");
             }
@@ -2582,18 +2603,21 @@ pub(crate) async fn dispatch_optimizer(
             let inference = crate::optimizers::launch_artifact_inference(id, message).await?;
             Ok(json!({ "inference": inference }))
         }
-        ("GET", "/v1/mlx/inspect") => Ok(crate::optimizers::typed_capabilities::inspect_local_mlx()),
-        ("GET", "/v1/training/mlx-runtime") => {
-            Ok(serde_json::to_value(crate::optimizers::mlx_runtime::runtime_status())?)
+        ("GET", "/v1/mlx/inspect") => {
+            Ok(crate::optimizers::typed_capabilities::inspect_local_mlx())
         }
+        ("GET", "/v1/training/mlx-runtime") => Ok(serde_json::to_value(
+            crate::optimizers::mlx_runtime::runtime_status(),
+        )?),
         ("POST", "/v1/training/mlx-runtime/install") => {
-            let confirm = body.get("confirm").and_then(Value::as_bool).unwrap_or(false);
-            let status = crate::optimizers::mlx_runtime::training_mlx_runtime_install(
-                app.clone(),
-                confirm,
-            )
-            .await
-            .map_err(anyhow::Error::msg)?;
+            let confirm = body
+                .get("confirm")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            let status =
+                crate::optimizers::mlx_runtime::training_mlx_runtime_install(app.clone(), confirm)
+                    .await
+                    .map_err(anyhow::Error::msg)?;
             Ok(serde_json::to_value(status)?)
         }
         ("GET", "/v1/mlx/install-plan") => {
@@ -2601,7 +2625,10 @@ pub(crate) async fn dispatch_optimizer(
             crate::optimizers::typed_capabilities::plan_model_install(model_id)
         }
         ("POST", "/v1/mlx/install") => {
-            let confirm = body.get("confirm").and_then(Value::as_bool).unwrap_or(false);
+            let confirm = body
+                .get("confirm")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
             let model_id = body.get("model_id").and_then(Value::as_str);
             crate::optimizers::typed_capabilities::install_model_or_runtime(model_id, confirm)
         }
@@ -2626,18 +2653,22 @@ pub(crate) async fn dispatch_optimizer(
                 .trim_start_matches("/v1/training/artifacts/")
                 .trim_end_matches("/eval")
                 .trim_end_matches('/');
-            let confirm = body.get("confirm").and_then(Value::as_bool).unwrap_or(false);
+            let confirm = body
+                .get("confirm")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
             let recipe_id = body.get("recipe_id").and_then(Value::as_str);
             let request = crate::optimizers::typed_capabilities::launch_artifact_eval_request(
                 id, recipe_id, confirm,
             )?;
-            let admitted: crate::optimizers::OptimizerRecipeRunRequest =
-                serde_json::from_value(json!({
+            let admitted: crate::optimizers::OptimizerRecipeRunRequest = serde_json::from_value(
+                json!({
                     "recipeId": request["recipeId"],
                     "trainingArtifactId": request["trainingArtifactId"],
                     "sessionRef": body.get("sessionRef").cloned().or_else(|| body.get("session_ref").cloned()),
                     "openVisual": body.get("openVisual").cloned().or_else(|| body.get("open_visual").cloned()).unwrap_or(json!(true))
-                }))?;
+                }),
+            )?;
             let codex = app.state::<Arc<crate::codex::CodexManager>>();
             let run = crate::authorize_optimizer_recipe_start(app, core, &codex, admitted)
                 .await
@@ -2653,7 +2684,10 @@ pub(crate) async fn dispatch_optimizer(
                 .trim_start_matches("/v1/training/artifacts/")
                 .trim_end_matches(if export { "/export" } else { "/delete" })
                 .trim_end_matches('/');
-            let confirm = body.get("confirm").and_then(Value::as_bool).unwrap_or(false);
+            let confirm = body
+                .get("confirm")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
             let destination = body
                 .get("destination")
                 .and_then(Value::as_str)
@@ -2749,7 +2783,9 @@ pub(crate) async fn dispatch_optimizer(
                         .summary
                         .get("recipeId")
                         .and_then(Value::as_str)
-                        .ok_or_else(|| anyhow::anyhow!("prepared optimizer run omitted recipeId"))?;
+                        .ok_or_else(|| {
+                            anyhow::anyhow!("prepared optimizer run omitted recipeId")
+                        })?;
                     let max_cost_usd = run
                         .summary
                         .pointer("/limits/maxCostUsd")
@@ -3019,10 +3055,7 @@ pub(crate) async fn dispatch_optimizer(
                 .and_then(Value::as_str)
                 .ok_or_else(|| anyhow::anyhow!("checkpoint_id required"))?;
             let patch = crate::optimizers::SavedLoraPatchRequest {
-                name: body
-                    .get("name")
-                    .and_then(Value::as_str)
-                    .map(str::to_string),
+                name: body.get("name").and_then(Value::as_str).map(str::to_string),
                 description: body
                     .get("description")
                     .and_then(Value::as_str)
@@ -3613,6 +3646,24 @@ async fn dispatch_experiments(
                 "experiment": group,
             }))
         }
+        ("POST", path) if path.starts_with("/v1/experiments/") && path.ends_with("/evidence") => {
+            let experiment_id = path
+                .trim_start_matches("/v1/experiments/")
+                .trim_end_matches("/evidence")
+                .trim_end_matches('/');
+            anyhow::ensure!(
+                !experiment_id.is_empty() && !experiment_id.contains('/'),
+                "invalid experiment evidence path"
+            );
+            let mut payload = body;
+            payload["experimentId"] = json!(experiment_id);
+            if payload.get("attachedAt").is_none() && payload.get("attached_at").is_none() {
+                payload["attachedAt"] = json!(chrono::Utc::now().to_rfc3339());
+            }
+            let request: crate::experiments::ExperimentEvidenceAttachRequest =
+                serde_json::from_value(payload)?;
+            Ok(json!({"experiment": core.data().experiment_attach_evidence(request).await?}))
+        }
         _ => anyhow::bail!("unknown experiments route {method} {path}"),
     }
 }
@@ -3638,14 +3689,21 @@ async fn reconcile_campaign(core: &CoreRuntime, id: &str) -> Result<crate::campa
         let Some(state) = get_rollout_status(&client, &base, &rollout.rollout_id).await? else {
             continue;
         };
+        let state = if state.get("terminated").and_then(Value::as_bool) == Some(true) {
+            enrich_terminal_evidence(&client, &base, &rollout.rollout_id, state).await?
+        } else {
+            state
+        };
         let now = chrono::Utc::now().to_rfc3339();
         let already_settled = matches!(rollout.status.as_str(), "terminal" | "failed");
-        if !already_settled {
-            if state.get("terminated").and_then(Value::as_bool) == Some(true) {
-                core.data()
-                    .campaign_record_terminal(rollout.rollout_id.clone(), state.clone(), now)
-                    .await?;
-            } else if state.get("started").and_then(Value::as_bool) == Some(true) {
+        if state.get("terminated").and_then(Value::as_bool) == Some(true) {
+            // Always refresh the terminal JSON. Reward receipts or a canonical
+            // trace bundle may become available after the first terminal poll.
+            core.data()
+                .campaign_record_terminal(rollout.rollout_id.clone(), state.clone(), now)
+                .await?;
+        } else if !already_settled {
+            if state.get("started").and_then(Value::as_bool) == Some(true) {
                 core.data()
                     .campaign_record_started(rollout.rollout_id.clone(), now)
                     .await?;
