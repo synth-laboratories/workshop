@@ -67,7 +67,10 @@ function NodeInspector({ node }: { node: ExperimentNode | null }) {
 		setOpenError(null);
 		try {
 			if (evidence.kind === "trace") {
-				const reference = evidence.traceId ?? evidence.rolloutId;
+				// A retained endpoint trace is materialized through its rollout route.
+				// The Trace V5 id is the post-import identity, not a valid endpoint
+				// rollout locator, so prefer the explicit rollout id when both exist.
+				const reference = evidence.rolloutId ?? evidence.traceId;
 				if (!reference) throw new Error("Trace reference is unavailable.");
 				const visual = await openTraceReference(reference, evidence.containerId ?? undefined);
 				window.dispatchEvent(new CustomEvent(VISUAL_REFERENCE_OPENED_EVENT, { detail: visual }));
