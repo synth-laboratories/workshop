@@ -374,7 +374,7 @@ import sys
 from pathlib import Path
 
 source, destination = map(Path, sys.argv[1:])
-allowed = ("SYNTH_API_KEY", "OPENROUTER_API_KEY")
+allowed = ("SYNTH_API_KEY", "OPENROUTER_API_KEY", "OPENAI_API_KEY")
 
 def parse(path):
     values = {}
@@ -398,7 +398,7 @@ for key in allowed:
         seed[key] = os.environ[key].strip()
 
 existing = destination.read_text().splitlines() if destination.is_file() else []
-kept = [line for line in existing if not re.match(r"^\s*(?:export\s+)?(?:SYNTH_API_KEY|OPENROUTER_API_KEY)\s*=", line)]
+kept = [line for line in existing if not re.match(r"^\s*(?:export\s+)?(?:SYNTH_API_KEY|OPENROUTER_API_KEY|OPENAI_API_KEY)\s*=", line)]
 for key in allowed:
     value = seed.get(key)
     if value:
