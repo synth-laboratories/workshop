@@ -1,0 +1,55 @@
+{
+  "schemaVersion": "workshop.v08.experiments-cua-receipt.v1",
+  "acceptanceId": "V08-EXPERIMENTS-MVP-001",
+  "capturedAt": "2026-08-24T15:20:15Z",
+  "implementationCommit": "cc5efc2a88f6b3cd8383a96617ee302bbf24d3f6",
+  "app": {
+    "instance": "v08exp0824",
+    "bundleId": "com.synth.desktop.v07.dev.v08exp0824",
+    "dataRoot": "/Users/joshuapurtell/.synth-desktop/instances/v07/v08exp0824/data",
+    "buildRevision": "cc5efc2a88f6",
+    "executableDigest": "sha256:2a043ef67099c602d90f9644af928e5b1d56b6c9c5cd7caeba4640208a6e5c25"
+  },
+  "task": {
+    "sessionId": "e2dd61ca-d923-441c-9f95-f6e55ac74260",
+    "runId": "01a0345a-a027-7023-8764-ae7580011828",
+    "prompt": "CRAFTAX-EMBER-0824: Create a small Craftax experiment comparing the current baseline prompt against one variant that adds: ‘Before each action batch, explicitly check energy and food; when either is 3 or lower, prioritize survival before exploration.’ Use gpt-5.6-luna at low reasoning. Run the smallest meaningful bounded comparison, retain traces and rewards, and explain whether the evidence supports the hypothesis.",
+    "model": "openai/gpt-5.6-luna",
+    "reasoningEffort": "low",
+    "startedAt": "2026-08-24T15:19:09.798146Z",
+    "completedAt": "2026-08-24T15:19:20.443625Z",
+    "status": "blocked_preflight",
+    "declaredCapUsd": null,
+    "actualCostUsd": null,
+    "experimentId": null,
+    "experimentRunIds": [],
+    "visualId": null
+  },
+  "observations": {
+    "experimentsDestinationVisible": true,
+    "localOnlyCopyVisible": true,
+    "taskModelAndReasoningVisible": true,
+    "experimentOpenedInRightPanel": false,
+    "stablePanelUpdatesObserved": false,
+    "durableExperimentReopenObserved": false,
+    "craftaxRewards": null,
+    "traceRefs": [],
+    "upliftClaimed": false
+  },
+  "screenshots": [
+    {
+      "path": "01-experiments-index.png",
+      "sha256": "51ef42247deffcdcae48d270c87bb80f8669b3178c7cf6f60b2114886dfb6fda"
+    },
+    {
+      "path": "02-craftax-blocker.png",
+      "sha256": "f8e54165e7416458da25388f361cba9b31e658c5f66764c2a5f48306c184b0f2"
+    }
+  ],
+  "limitations": [
+    "No Craftax container was registered in the fresh instance.",
+    "The local Optimizers plugin was absent; its visible Install action failed to download synth-optimizers==0.2.19.",
+    "The Workshop agent stopped at preflight, so no experiment, comparison run, reward, trace, artifact, cost cap, visual, lineage selection, or durable experiment reopen exists to claim.",
+    "The agent explicitly reported that the evidence neither supports nor refutes the hypothesis."
+  ]
+}
