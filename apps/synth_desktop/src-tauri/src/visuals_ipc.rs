@@ -1353,12 +1353,6 @@ pub async fn dispatch(method: &str, path: &str, body: Value, core: &CoreRuntime)
     let registry = core.visuals();
     let reports = core.reports();
     match (method, path) {
-        ("POST", "/v1/experiments") | ("POST", "/v1/experiments/") => {
-            let mut payload = body;
-            if payload.get("createdAt").is_none() { payload["createdAt"] = json!(chrono::Utc::now().to_rfc3339()); }
-            let request: crate::experiments::ExperimentCreateRequest = serde_json::from_value(payload)?;
-            Ok(json!({"experiment": core.data().experiment_create(request).await?}))
-        }
         ("GET", "/health") => Ok(json!({"ok": true, "service": "synth-visuals-ipc"})),
         ("GET", "/v1/reports") => {
             let query: ReportQuery = serde_json::from_value(body.clone()).unwrap_or_default();
@@ -3637,6 +3631,15 @@ async fn dispatch_experiments(
     core: &CoreRuntime,
 ) -> Result<Value> {
     match (method, path) {
+        ("POST", "/v1/experiments") | ("POST", "/v1/experiments/") => {
+            let mut payload = body;
+            if payload.get("createdAt").is_none() {
+                payload["createdAt"] = json!(chrono::Utc::now().to_rfc3339());
+            }
+            let request: crate::experiments::ExperimentCreateRequest =
+                serde_json::from_value(payload)?;
+            Ok(json!({"experiment": core.data().experiment_create(request).await?}))
+        }
         ("GET", "/v1/experiments") | ("GET", "/v1/experiments/") => {
             let session_id = json_field(&body, "sessionId", "session_id")
                 .and_then(Value::as_str)
