@@ -288,8 +288,10 @@ export const OPENROUTER_LUNA_MODEL = "openai/gpt-5.6-luna";
 export const OPENROUTER_LAGUNA_S_MODEL = "poolside/laguna-s-2.1";
 export const OPENROUTER_MUSE_SPARK_MODEL = "meta/muse-spark-1.2";
 export const OPENROUTER_GEMINI_FLASH_MODEL = "google/gemini-3.7-flash";
-/** Fully qualified — bare `laguna-s-2.1` resolves to a different catalog entry server-side. */
-export const SYNTH_CLOUD_LAGUNA_S_MODEL = "openrouter/poolside/laguna-s-2.1";
+/** Synth-hosted Shoal routes. Hardware/precision stay explicit in the id. */
+export const SYNTH_CLOUD_LAGUNA_S_MODEL = "synth_internal/laguna-s-2.1-nvfp4";
+export const SYNTH_CLOUD_LAGUNA_XS_B200_MODEL = "synth_internal/laguna-xs-2.1-nvfp4";
+export const SYNTH_CLOUD_LAGUNA_XS_H100_MODEL = "synth_internal/laguna-xs-2.1-fp8-h100";
 export const SYNTH_CLOUD_MUSE_SPARK_MODEL = "meta/muse-spark-1.2";
 export const CHATGPT_LUNA_MODEL = "gpt-5.6-luna";
 export const CHATGPT_SOL_MODEL = "gpt-5.6-sol";
@@ -347,7 +349,19 @@ export const EXECUTION_TARGETS: ExecutionTargetOption[] = [
 	{
 		id: "synth-cloud-laguna-s",
 		label: "Laguna S 2.1",
-		description: "Synth Cloud · usage tracked",
+		description: "Synth Cloud · B200 · usage tracked",
+		group: "cloud"
+	},
+	{
+		id: "synth-cloud-laguna-xs-b200",
+		label: "Laguna XS 2.1 · B200",
+		description: "Synth Cloud · B200 · usage tracked",
+		group: "cloud"
+	},
+	{
+		id: "synth-cloud-laguna-xs-h100",
+		label: "Laguna XS 2.1 · H100",
+		description: "Synth Cloud · H100 option · usage tracked",
 		group: "cloud"
 	},
 	{

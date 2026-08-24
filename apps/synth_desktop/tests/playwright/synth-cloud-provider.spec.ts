@@ -41,6 +41,10 @@ test("Synth Cloud hosted models appear under SYNTH CLOUD when api key is configu
 		.not.toContainText("usage tracked");
 	await expect(cloudGroup.getByTestId("composer-model-option-synth-cloud-laguna-s"))
 		.not.toHaveAttribute("aria-disabled", "true");
+	await expect(cloudGroup.getByTestId("composer-model-option-synth-cloud-laguna-xs-b200"))
+		.toHaveText(/Laguna XS 2\.1.*B200/);
+	await expect(cloudGroup.getByTestId("composer-model-option-synth-cloud-laguna-xs-h100"))
+		.toHaveText(/Laguna XS 2\.1.*H100/);
 	await expect(cloudGroup.getByTestId("composer-model-option-synth-cloud-muse-spark"))
 		.toHaveText(/Muse Spark 1\.2/);
 	await expect(cloudGroup.getByTestId("composer-model-option-synth-cloud-muse-spark"))

@@ -42,6 +42,20 @@ test("a capability refusal keeps its code, remediation and retryability", () => 
 	assert.match(projected.remediation, /normalized pool/);
 });
 
+test("a typed Shoal cold-start response becomes an actionable warming state", () => {
+	const projected = toPublicError({
+		error: {
+			code: "inference_target_not_ready",
+			message: "cold target missed its deadline",
+			retryable: true,
+			warm_operation_id: "op-redacted"
+		}
+	});
+	assert.equal(projected.message, "The hosted model is warming up.");
+	assert.equal(projected.retryable, true);
+	assert.match(projected.remediation, /Retry in a moment/);
+});
+
 test("secrets in boundary text are redacted", () => {
 	const rendered = publicError({ message: "upstream rejected sk-abcdef0123456789 for this call" });
 	assert.equal(rendered.includes("sk-abcdef0123456789"), false);

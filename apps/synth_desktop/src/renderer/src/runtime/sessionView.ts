@@ -16,6 +16,8 @@ import {
 	CHATGPT_SOL_MODEL,
 	CHATGPT_TERRA_MODEL,
 	SYNTH_CLOUD_LAGUNA_S_MODEL,
+	SYNTH_CLOUD_LAGUNA_XS_B200_MODEL,
+	SYNTH_CLOUD_LAGUNA_XS_H100_MODEL,
 	SYNTH_CLOUD_MUSE_SPARK_MODEL,
 	type ActivityEvent,
 	type ArtifactRef,
@@ -121,6 +123,18 @@ export function targetIdToExecutionTarget(targetId: string, adapter: string | nu
 				model: SYNTH_CLOUD_LAGUNA_S_MODEL,
 				adapter: remoteAdapter
 			};
+		case "synth-cloud-laguna-xs-b200":
+			return {
+				kind: "cloud",
+				model: SYNTH_CLOUD_LAGUNA_XS_B200_MODEL,
+				adapter: remoteAdapter
+			};
+		case "synth-cloud-laguna-xs-h100":
+			return {
+				kind: "cloud",
+				model: SYNTH_CLOUD_LAGUNA_XS_H100_MODEL,
+				adapter: remoteAdapter
+			};
 		case "synth-cloud-muse-spark":
 			return {
 				kind: "cloud",
@@ -147,6 +161,8 @@ export function executionTargetToUiId(target: ExecutionTarget): string {
 		return target.mode === "async" ? "intern-async" : "intern-sync";
 	}
 	if (target.kind === "cloud") {
+		if (target.model === SYNTH_CLOUD_LAGUNA_XS_B200_MODEL) return "synth-cloud-laguna-xs-b200";
+		if (target.model === SYNTH_CLOUD_LAGUNA_XS_H100_MODEL) return "synth-cloud-laguna-xs-h100";
 		return target.model === SYNTH_CLOUD_MUSE_SPARK_MODEL
 			? "synth-cloud-muse-spark"
 			: "synth-cloud-laguna-s";

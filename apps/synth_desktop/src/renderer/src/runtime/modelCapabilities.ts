@@ -1,5 +1,5 @@
 import type { ExecutionTarget } from "@synth/runtime-protocol";
-import { OPENROUTER_GEMINI_FLASH_MODEL, OPENROUTER_LAGUNA_S_MODEL, OPENROUTER_LUNA_MODEL, OPENROUTER_MUSE_SPARK_MODEL, SYNTH_CLOUD_LAGUNA_S_MODEL, SYNTH_CLOUD_MUSE_SPARK_MODEL } from "../types/landing";
+import { OPENROUTER_GEMINI_FLASH_MODEL, OPENROUTER_LAGUNA_S_MODEL, OPENROUTER_LUNA_MODEL, OPENROUTER_MUSE_SPARK_MODEL, SYNTH_CLOUD_LAGUNA_S_MODEL, SYNTH_CLOUD_LAGUNA_XS_B200_MODEL, SYNTH_CLOUD_LAGUNA_XS_H100_MODEL, SYNTH_CLOUD_MUSE_SPARK_MODEL } from "../types/landing";
 
 /**
  * Declarative registry for model-specific composer controls.
@@ -207,6 +207,25 @@ export const MODEL_CAPABILITY_REGISTRY: ModelCapabilitySpec[] = [
 		inputModalities: ["text"],
 		maxContextTokens: 262_144
 	},
+	...[
+		["synth-cloud-laguna-xs-b200", SYNTH_CLOUD_LAGUNA_XS_B200_MODEL],
+		["synth-cloud-laguna-xs-h100", SYNTH_CLOUD_LAGUNA_XS_H100_MODEL]
+	].map(([targetId, model]) => ({
+		targetId,
+		target: { kind: "cloud" as const, models: [model] },
+		knobs: [{
+			id: "reasoning",
+			label: "Thinking",
+			testId: "reasoning-effort",
+			storageKey: `synth.models.${targetId}.reasoning`,
+			defaultValue: "max" as const,
+			options: BINARY_THINKING_OPTIONS,
+			turnStartField: "effort" as const
+		}],
+		reasoningDisplay: "summary" as const,
+		inputModalities: ["text" as const],
+		maxContextTokens: 262_144
+	})),
 	{
 		targetId: "synth-cloud-muse-spark",
 		target: { kind: "remote", models: [SYNTH_CLOUD_MUSE_SPARK_MODEL] },

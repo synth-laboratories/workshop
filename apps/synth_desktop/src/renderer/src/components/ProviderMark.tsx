@@ -10,7 +10,7 @@ export type ProviderMarkKind = "openai" | "laguna" | "meta" | "google" | "synth"
  *  Synth-hosted Laguna stays Synth-branded; local / OpenRouter Laguna use Poolside. */
 export function providerMarkForTarget(targetId: string): ProviderMarkKind {
 	if (targetId === "openrouter-luna") return "openai";
-	if (targetId === "local-laguna" || targetId === "openrouter-laguna-s") return "laguna";
+	if (targetId === "local-laguna" || targetId === "openrouter-laguna-s" || targetId.startsWith("synth-cloud-laguna")) return "laguna";
 	if (targetId === "openrouter-muse-spark") return "meta";
 	if (targetId === "openrouter-gemini-flash") return "google";
 	return "synth";

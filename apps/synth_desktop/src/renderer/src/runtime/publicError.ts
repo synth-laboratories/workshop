@@ -42,11 +42,25 @@ export function toPublicError(reason: unknown, fallback = "The operation failed.
 	if (typeof reason === "string") return { message: redact(reason) || fallback };
 	if (reason && typeof reason === "object") {
 		const value = reason as Record<string, unknown>;
+		const nested = value.error && typeof value.error === "object"
+			? value.error as Record<string, unknown>
+			: null;
 		// `detail` is deliberately last and never alone: it is developer-facing.
-		const message = field(value, "safeMessage", "safe_message", "message", "error", "reason");
-		const code = field(value, "code");
+		const message = field(value, "safeMessage", "safe_message", "message", "error", "reason")
+			?? (nested ? field(nested, "message") : undefined);
+		const code = field(value, "code") ?? (nested ? field(nested, "code") : undefined);
 		const remediation = field(value, "remediation");
-		const retryable = typeof value.retryable === "boolean" ? value.retryable : undefined;
+		const retryable = typeof value.retryable === "boolean"
+			? value.retryable
+			: nested && typeof nested.retryable === "boolean" ? nested.retryable : undefined;
+		if (code === "inference_target_not_ready" && retryable) {
+			return {
+				code,
+				message: "The hosted model is warming up.",
+				remediation: "Retry in a moment; your workspace and prompt are preserved.",
+				retryable: true
+			};
+		}
 		if (message) return { code, message: redact(message), remediation: remediation && redact(remediation), retryable };
 		// No message field: name the failure by its code rather than dumping the
 		// object, so the surface stays legible and free of arbitrary payload.
