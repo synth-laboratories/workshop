@@ -1012,9 +1012,17 @@ export function ChatTranscript({
 						))}
 						{inlineApprovals.map((line) => renderActivityLine(line, [], false, false))}
 						{running ? (
-							<div className="model-working" role="status" aria-live="polite" data-testid="model-working">
+							<div
+								className="model-working"
+								role="status"
+								aria-live="polite"
+								data-testid="model-working"
+								data-waiting-on={warmingUp ? (session?.target.kind === "local" ? "local" : "cloud") : undefined}
+							>
 								<span className="model-working-dots" aria-hidden><i /><i /><i /></span>
-								<span>{warmingUp ? "Warming up…" : "Working…"}</span>
+								<span>{warmingUp
+									? session?.target.kind === "local" ? "Waiting on local…" : "Waiting on cloud…"
+									: "Working…"}</span>
 								{turnTpsLabels.live ? <small className="model-working-throughput" data-testid="model-working-generation-tps">{turnTpsLabels.live}</small> : null}
 								{onStop ? <button type="button" onClick={onStop} aria-label="Stop generating">Stop</button> : null}
 								{onAdvanced ? <button type="button" onClick={onAdvanced} aria-label="Open advanced trace">Advanced</button> : null}

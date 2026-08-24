@@ -1004,7 +1004,7 @@ test("resident model disappears immediately when Laguna reports automatic unload
 	await expect(page.getByText(/Frees automatically in now/i)).toHaveCount(0);
 });
 
-test("a cold local turn says Warming up until model residency is reported", async ({ page }) => {
+test("a cold local turn says it is waiting on local until model residency is reported", async ({ page }) => {
 	await page.addInitScript(() => {
 		const testWindow = window as typeof window & {
 			synthLaguna?: unknown;
@@ -1046,7 +1046,8 @@ test("a cold local turn says Warming up until model residency is reported", asyn
 	await page.reload();
 	await page.getByTestId("local-chat-cold-session").click();
 	await page.evaluate(() => (window as typeof window & { __emitColdTurn: () => void }).__emitColdTurn());
-	await expect(page.getByTestId("model-working")).toContainText("Warming up…");
+	await expect(page.getByTestId("model-working")).toContainText("Waiting on local…");
+	await expect(page.getByTestId("model-working")).toHaveAttribute("data-waiting-on", "local");
 	await expect(page.getByTestId("model-working")).not.toContainText("Working…");
 	await expect(page.getByRole("button", { name: "Stop generating" })).toBeVisible();
 });
