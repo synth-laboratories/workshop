@@ -1,0 +1,60 @@
+{
+  "schemaVersion": "workshop.v08.agent-owned-experiment-cua.v1",
+  "capturedAt": "2026-08-24T17:37:08Z",
+  "implementationCommit": "af9e4f81",
+  "app": {
+    "instance": "v08evidence0824",
+    "bundleId": "com.synth.desktop.v07.dev.v08evidence0824",
+    "dataRoot": "/Users/joshuapurtell/.synth-desktop/instances/v07/v08evidence0824/data"
+  },
+  "task": {
+    "sessionId": "06d0dc27-66e6-4b51-881b-a9fd5a206b98",
+    "prompt": "CRAFTAX-EMBER-0824: Create a small Craftax experiment comparing the current baseline prompt against one variant that adds: ‘Before each action batch, explicitly check energy and food; when either is 3 or lower, prioritize survival before exploration.’ Use gpt-5.6-luna at low reasoning. Run the smallest meaningful bounded comparison, retain traces and rewards, and explain whether the evidence supports the hypothesis.",
+    "model": "gpt-5.6-luna",
+    "reasoningEffort": "low",
+    "status": "completed_fixture",
+    "experimentId": "exp_d42ca68afc5b49be9e7b61e3851826f5",
+    "visualId": "vis_a0bca30303d34eac8db22fbe3c33e3c7",
+    "containerId": "ctr_c4e36b0dc71c4a209c1c8f900ec6ffbb",
+    "rolloutIds": [
+      "CRAFTAX-EMBER-0824-baseline-seed0",
+      "CRAFTAX-EMBER-0824-survival-seed0"
+    ],
+    "traceIds": [
+      "tracev5_0c971a06dd3195964da13a9ac526824f3b15c2520d2356cf20baf22965e4066e",
+      "tracev5_2d01391f470ee710dd23c06b818d650e571031336fa17a99cbb8219ac4d119a"
+    ]
+  },
+  "result": {
+    "baselineReward": 0.5,
+    "variantReward": 0.5,
+    "delta": 0,
+    "stepsPerArm": 8,
+    "seed": 0,
+    "declaredProviderCostCapUsd": 0,
+    "actualProviderCostUsd": null,
+    "meteringStatus": "not_applicable",
+    "upliftClaimed": false,
+    "assessment": "Fixture-only scripted_react evidence; not a graded gpt-5.6-luna capability result. The hypothesis is not supported by this one-seed comparison."
+  },
+  "observations": {
+    "agentCreatedExperimentBeforeRollout": true,
+    "rightPanelOpenedBeforeExecution": true,
+    "stableVisualUpdatedInPlace": true,
+    "typedLineageVisible": true,
+    "missingDistinctFromZero": true,
+    "evidenceAttachedToDurableResult": true,
+    "restartRecoveryWithoutDuplicateExperiment": true,
+    "endpointTraceImportedJustInTime": true,
+    "traceInspectorOpened": true
+  },
+  "screenshots": [
+    {"path": "18-agent-owned-index.jpeg", "sha256": "11f6c32f1860a32d6ad0b3a8fd28dd3ad251abc2eb241d8824e3ae79e4465bce"},
+    {"path": "19-agent-owned-result-evidence.jpeg", "sha256": "7daa62b7d26afb993fa417ef962871b17090136675cb29f2866b283632c0f689"},
+    {"path": "20-jit-trace-inspector.jpeg", "sha256": "d2c0782311504c4db3eb41912029affb3e51341782bf26ebc5f681d754e20f9e"}
+  ],
+  "limitations": [
+    "The credential-free endpoint produced scripted fixture evidence, not real model calls.",
+    "The experiment index result cell still renders the structured result compactly as JSON and should receive a presentation-only summarizer follow-up."
+  ]
+}
