@@ -88,6 +88,7 @@ pub struct ContainerSpec {
     pub locality: PolicyLocality,
     pub family: Option<String>,
     pub credential_providers: Vec<String>,
+    pub environment: std::collections::BTreeMap<String, String>,
 }
 
 #[derive(Deserialize)]
@@ -156,6 +157,8 @@ struct ContainerFile {
     family: Option<String>,
     #[serde(default)]
     credential_providers: Vec<String>,
+    #[serde(default)]
+    environment: std::collections::BTreeMap<String, String>,
 }
 
 fn default_provider() -> String {
@@ -416,6 +419,18 @@ fn parse_containers(workspace: &Path, text: &str) -> Result<Vec<ContainerSpec>> 
                 );
             }
         }
+        for name in item.environment.keys() {
+            let upper = name.to_ascii_uppercase();
+            if !name.chars().all(|ch| ch == '_' || ch.is_ascii_alphanumeric())
+                || name.is_empty()
+                || upper.contains("KEY")
+                || upper.contains("SECRET")
+                || upper.contains("TOKEN")
+                || upper.contains("PASSWORD")
+            {
+                bail!("container `{}` has unsafe environment name `{name}`", item.id);
+            }
+        }
         specs.push(ContainerSpec {
             id: item.id,
             command: item.command,
@@ -426,6 +441,7 @@ fn parse_containers(workspace: &Path, text: &str) -> Result<Vec<ContainerSpec>> 
             locality: item.locality,
             family: item.family,
             credential_providers: item.credential_providers,
+            environment: item.environment,
         });
     }
     Ok(specs)
@@ -659,6 +675,7 @@ health = "/health"
 contract = "synth-containers/v1"
 locality = "container"
 credential_providers = ["openrouter"]
+environment = { SYNTH_CRAFTAX_URL = "http://127.0.0.1:8098" }
 "#,
         )
         .unwrap();
@@ -666,6 +683,7 @@ credential_providers = ["openrouter"]
         assert!(spec.cwd.starts_with(&workspace.canonicalize().unwrap()));
         assert!(spec.cwd.ends_with("svc"));
         assert_eq!(spec.credential_providers, vec!["openrouter"]);
+        assert_eq!(spec.environment["SYNTH_CRAFTAX_URL"], "http://127.0.0.1:8098");
     }
 
     #[test]

@@ -92,6 +92,7 @@ fn start_command(workspace: &Path, spec: &ContainerSpec) -> Result<()> {
         .first()
         .ok_or_else(|| anyhow!("container `{}` command is empty", spec.id))?;
     let mut command = Command::new(program);
+    command.envs(&spec.environment);
     for provider in &spec.credential_providers {
         match provider.as_str() {
             "openrouter" => {
