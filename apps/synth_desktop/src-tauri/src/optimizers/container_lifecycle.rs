@@ -1,17 +1,19 @@
-//! Start a workspace-declared container, wait until it is healthy, register it.
+//! Start a catalogued container, wait until it is healthy, register it.
 //!
 //! Registration is the durable handle. This module only brings a process up
 //! (or attaches an already-running URL) so agents do not scan ports or execute
 //! out of a cookbook pin.
 
-use super::workspace_recipe::{self, ContainerSpec, PolicyLocality};
+use super::{
+    container_catalog::{self, ContainerSource},
+    workspace_recipe::{self, ContainerSpec, PolicyLocality},
+};
 use crate::storage::Database;
 use anyhow::{anyhow, bail, Context, Result};
 use rusqlite::{params, OptionalExtension};
 use serde_json::json;
 use std::{
     collections::HashMap,
-    path::Path,
     process::{Child, Command, Stdio},
     sync::{Arc, Mutex, OnceLock},
     time::{Duration, Instant},
@@ -30,28 +32,42 @@ fn children() -> &'static Mutex<HashMap<String, Child>> {
 pub struct EnsuredContainer {
     pub container_id: String,
     pub base_url: String,
+    pub source_id: String,
+    pub manifest_hash: String,
     pub spec_id: String,
     pub locality: PolicyLocality,
 }
 
 pub async fn ensure(
     db: &Arc<Database>,
-    workspace: &Path,
+    source_id: &str,
     spec_id: &str,
 ) -> Result<EnsuredContainer> {
-    let spec = workspace_recipe::find_container_spec(workspace, spec_id)?;
-    ensure_spec(db, workspace, &spec).await
+    let (source, spec) = container_catalog::resolve(db, source_id, spec_id).await?;
+    ensure_spec(db, &source, &spec).await
 }
 
-pub async fn ensure_spec(
+/// Compatibility path for recipe declarations which only name a `spec_id`.
+/// Ambiguous matches are refused; the caller must first select a source via
+/// `container_discover` and use the returned explicit identity.
+pub async fn ensure_unique(db: &Arc<Database>, spec_id: &str) -> Result<EnsuredContainer> {
+    let (source, spec) = container_catalog::resolve_unique(db, spec_id).await?;
+    ensure_spec(db, &source, &spec).await
+}
+
+async fn ensure_spec(
     db: &Arc<Database>,
-    workspace: &Path,
+    source: &ContainerSource,
     spec: &ContainerSpec,
 ) -> Result<EnsuredContainer> {
     let base_url = if let Some(url) = spec.url.as_deref() {
         let base = url.trim_end_matches('/').to_string();
-        if !spec.command.is_empty() {
-            start_command(workspace, spec)?;
+        // A declaration is both a launch recipe and a durable attachment
+        // contract. Probe its declared health URL before spawning so a second
+        // ensure can register an already-running compatible service without
+        // racing it for the port.
+        if !spec.command.is_empty() && !is_healthy(&base, &spec.health).await {
+            start_command(source, spec)?;
         }
         base
     } else {
@@ -61,30 +77,34 @@ pub async fn ensure_spec(
         );
     };
     wait_healthy(&base_url, &spec.health).await?;
-    let container_id = upsert_ready(db, spec, &base_url).await?;
+    let container_id = upsert_ready(db, source, spec, &base_url).await?;
     Ok(EnsuredContainer {
         container_id,
         base_url,
+        source_id: source.id.clone(),
+        manifest_hash: source.manifest_hash.clone(),
         spec_id: spec.id.clone(),
         locality: spec.locality,
     })
 }
 
-fn start_command(workspace: &Path, spec: &ContainerSpec) -> Result<()> {
+fn start_command(source: &ContainerSource, spec: &ContainerSpec) -> Result<()> {
     let cwd = if spec.cwd.exists() {
         spec.cwd.clone()
     } else {
-        workspace_recipe::resolve_workspace_path(workspace, ".")?
+        workspace_recipe::resolve_source_path(&source.root, ".")?
     };
     if !cwd.starts_with(
-        workspace
+        source
+            .root
             .canonicalize()
-            .unwrap_or_else(|_| workspace.to_path_buf()),
+            .unwrap_or_else(|_| source.root.to_path_buf()),
     ) {
         bail!(
-            "container `{}` cwd {} is not inside the workspace",
+            "container `{}` cwd {} is not inside source `{}`",
             spec.id,
-            cwd.display()
+            cwd.display(),
+            source.id,
         );
     }
     let program = spec
@@ -98,21 +118,18 @@ fn start_command(workspace: &Path, spec: &ContainerSpec) -> Result<()> {
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
-    let child = command.spawn().with_context(|| {
-        format!(
-            "start container `{}` command {:?}",
-            spec.id, spec.command
-        )
-    })?;
+    let child = command
+        .spawn()
+        .with_context(|| format!("start container `{}` command {:?}", spec.id, spec.command))?;
     children()
         .lock()
         .expect("container process table")
-        .insert(spec.id.clone(), child);
+        .insert(format!("{}:{}", source.id, spec.id), child);
     Ok(())
 }
 
-async fn wait_healthy(base_url: &str, health_path: &str) -> Result<()> {
-    let url = format!(
+fn health_url(base_url: &str, health_path: &str) -> String {
+    format!(
         "{}{}",
         base_url.trim_end_matches('/'),
         if health_path.starts_with('/') {
@@ -120,7 +137,24 @@ async fn wait_healthy(base_url: &str, health_path: &str) -> Result<()> {
         } else {
             format!("/{health_path}")
         }
-    );
+    )
+}
+
+async fn is_healthy(base_url: &str, health_path: &str) -> bool {
+    let Ok(client) = crate::http::http_client_builder()
+        .timeout(Duration::from_secs(2))
+        .build()
+    else {
+        return false;
+    };
+    matches!(
+        client.get(health_url(base_url, health_path)).send().await,
+        Ok(response) if response.status().is_success()
+    )
+}
+
+async fn wait_healthy(base_url: &str, health_path: &str) -> Result<()> {
+    let url = health_url(base_url, health_path);
     let client = crate::http::http_client_builder()
         .timeout(Duration::from_secs(2))
         .build()?;
@@ -139,6 +173,7 @@ async fn wait_healthy(base_url: &str, health_path: &str) -> Result<()> {
 
 async fn upsert_ready(
     db: &Arc<Database>,
+    source: &ContainerSource,
     spec: &ContainerSpec,
     base_url: &str,
 ) -> Result<String> {
@@ -147,6 +182,10 @@ async fn upsert_ready(
     let contract = spec.contract.clone();
     let locality = spec.locality.as_str().to_string();
     let base_url = base_url.to_string();
+    let source_id = source.id.clone();
+    let source_path = source.root.to_string_lossy().to_string();
+    let manifest_hash = source.manifest_hash.clone();
+    let git_revision = source.git_revision.clone();
     db.clone()
         .run_transaction(move |conn| {
             let existing: Option<String> = conn
@@ -159,10 +198,14 @@ async fn upsert_ready(
             let id = existing.unwrap_or_else(|| format!("ctr_{}", Uuid::new_v4().simple()));
             let now = chrono::Utc::now().to_rfc3339();
             let metadata = serde_json::to_string(&json!({
-                "workspaceSpecId": spec_id,
+                "sourceId": source_id,
+                "sourcePath": source_path,
+                "manifestHash": manifest_hash,
+                "gitRevision": git_revision,
+                "specId": spec_id,
                 "contract": contract,
                 "locality": locality,
-                "source": "workspace",
+                "source": "container_catalog",
             }))?;
             conn.execute(
                 "INSERT INTO containers(id,name,location,status,base_url,task_family,health_json,metadata_json,created_at,updated_at)

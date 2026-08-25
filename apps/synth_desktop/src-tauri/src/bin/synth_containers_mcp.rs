@@ -108,7 +108,8 @@ fn parse_status_code(head: &str) -> Option<u16> {
 fn tools() -> Value {
     json!({"tools":[
         {"name":"container_list","description":"List registered local containers with cached readiness, task family, and the typed live-eval capability projection (operations, advertised policy_refs, capability source, observation time)","inputSchema":{"type":"object","properties":{},"additionalProperties":false},"annotations":{"readOnlyHint":true,"destructiveHint":false,"idempotentHint":true,"openWorldHint":false}},
-        {"name":"container_ensure","description":"Start or attach the workspace-declared container spec (workshop.containers.toml), wait until /health succeeds, and return the registered handle. Does not scan ports. cwd must stay inside the session workspace. v1 is a supervised child process, not Docker.","inputSchema":{"type":"object","properties":{"spec_id":{"type":"string","description":"id from workshop.containers.toml"},"session_ref":{"type":"string","description":"Optional. Defaults to the calling session."}},"required":["spec_id"],"additionalProperties":false},"annotations":{"readOnlyHint":false,"destructiveHint":false,"idempotentHint":true,"openWorldHint":true}},
+        {"name":"container_discover","description":"Discover container sources from the desktop-level catalog. Sources are independent of chat workspaces. Select one returned source_id before starting a container; discovery never starts a process.","inputSchema":{"type":"object","properties":{"query":{"type":"string","description":"Optional id, family, or source hint."}},"additionalProperties":false},"annotations":{"readOnlyHint":true,"destructiveHint":false,"idempotentHint":true,"openWorldHint":false}},
+        {"name":"container_ensure","description":"Start or attach one catalogued container spec, wait until /health succeeds, and return the registered handle. Call container_discover first and pass its source_id; no chat workspace is consulted. Does not scan ports. cwd must stay inside the catalogued source. v1 is a supervised child process, not Docker.","inputSchema":{"type":"object","properties":{"source_id":{"type":"string","description":"source id returned by container_discover"},"spec_id":{"type":"string","description":"id from the source's workshop.containers.toml"}},"required":["source_id","spec_id"],"additionalProperties":false},"annotations":{"readOnlyHint":false,"destructiveHint":false,"idempotentHint":true,"openWorldHint":true}},
         {"name":"container_get","description":"Get a container including cached health, hydrated /info metadata, and metadata.capabilities: the typed live-eval capability state. Health proves liveness only; read capabilities.operations before planning a prepared-rollout workflow.","inputSchema":{"type":"object","properties":{"container_id":{"type":"string"}},"required":["container_id"],"additionalProperties":false},"annotations":{"readOnlyHint":true,"destructiveHint":false,"idempotentHint":true,"openWorldHint":false}},
         {"name":"container_probe","description":"Probe one registered container and refresh /health, /info, and the typed capability projection. Read-only against the container; never scans ports and never issues a rollout to discover support.","inputSchema":{"type":"object","properties":{"container_id":{"type":"string"}},"required":["container_id"],"additionalProperties":false},"annotations":{"readOnlyHint":true,"destructiveHint":false,"idempotentHint":true,"openWorldHint":false}}
         ,{"name":"container_prepare_rollout","description":"Idempotently prepare one caller-stable rollout identity and return its declared stream descriptor. Fails locally before any request when the record is unhealthy (container_unhealthy), its capability observation is stale (container_capabilities_stale), or it does not advertise the prepared-rollout workflow or the requested policy_ref (container_capability_mismatch). Repeating the same rollout_id restores the same preparation; changed transport or retention conflicts.","inputSchema":{"type":"object","properties":{"container_id":{"type":"string"},"rollout_id":{"type":"string"},"task_instance_id":{"type":"string"},"seed":{"type":"integer"},"policy_ref":{"type":"object","properties":{"harness":{"type":"string"},"config":{"type":"string"},"code":{}},"additionalProperties":true},"require_trace_v5":{"type":"boolean","default":false,"description":"Set true when this workflow promises sealed Trace V5 evidence; preflight then also requires an explicitly advertised trace_v5.capture."},"telemetry":{"type":"object"}},"required":["container_id"],"additionalProperties":false},"annotations":{"readOnlyHint":false,"destructiveHint":false,"idempotentHint":true,"openWorldHint":true}}
@@ -147,31 +148,25 @@ fn call_tool(name: &str, args: &Value) -> Result<Value, String> {
     };
     match name {
         "container_list" => request("GET", "/v1/containers", None),
+        "container_discover" => request(
+            "POST",
+            "/v1/container-sources/discover",
+            Some(json!({"query": args.get("query")})),
+        ),
         "container_ensure" => {
+            let source_id = args
+                .get("source_id")
+                .and_then(Value::as_str)
+                .ok_or_else(|| "source_id required; call container_discover first".to_string())?;
             let spec_id = args
                 .get("spec_id")
                 .and_then(Value::as_str)
                 .ok_or_else(|| "spec_id required".to_string())?;
-            let mut payload = json!({ "specId": spec_id });
-            if let Some(session) = args
-                .get("session_ref")
-                .and_then(Value::as_str)
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-                .map(str::to_owned)
-                .or_else(|| {
-                    std::env::var("SYNTH_SESSION_ID")
-                        .ok()
-                        .map(|value| value.trim().to_string())
-                        .filter(|value| !value.is_empty())
-                })
-            {
-                payload
-                    .as_object_mut()
-                    .expect("object")
-                    .insert("sessionRef".into(), json!(session));
-            }
-            request("POST", "/v1/containers/ensure", Some(payload))
+            request(
+                "POST",
+                "/v1/containers/ensure",
+                Some(json!({ "sourceId": source_id, "specId": spec_id })),
+            )
         }
         "container_register" => {
             let base_url = args
@@ -334,6 +329,27 @@ mod tests {
             .unwrap()
             .iter()
             .any(|tool| tool["name"] == "container_ensure"));
+        let discover = catalog["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|tool| tool["name"] == "container_discover")
+            .expect("container source discovery must be agent-accessible");
+        assert_eq!(discover["annotations"]["readOnlyHint"], true);
+        let ensure = catalog["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|tool| tool["name"] == "container_ensure")
+            .unwrap();
+        assert!(ensure["inputSchema"]["required"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|value| value == "source_id"));
+        assert!(ensure["inputSchema"]["properties"]
+            .get("session_ref")
+            .is_none());
         for name in ["container_list", "container_get", "container_probe"] {
             let tool = catalog["tools"]
                 .as_array()

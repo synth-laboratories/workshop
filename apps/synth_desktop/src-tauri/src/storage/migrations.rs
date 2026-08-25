@@ -39,6 +39,7 @@ const MIGRATIONS: &[&str] = &[
     MIGRATION_34,
     MIGRATION_35,
     MIGRATION_36,
+    MIGRATION_37,
 ];
 
 /// Apply every migration the database has not reached yet.
@@ -91,6 +92,7 @@ const REQUIRED_TABLES: &[(&str, &str)] = &[
     ("local_lora_checkpoints", MIGRATION_28),
     ("hosted_lora_overlays", MIGRATION_29),
     ("optimizer_run_ownership", MIGRATION_33),
+    ("container_sources", MIGRATION_37),
 ];
 
 fn heal_missing_tables(conn: &Connection) -> Result<()> {
@@ -1760,6 +1762,23 @@ CREATE TABLE experiment_group_members (
 INSERT INTO experiment_group_members SELECT * FROM experiment_group_members_v35;
 DROP TABLE experiment_group_members_v35;
 CREATE INDEX experiment_group_members_kind ON experiment_group_members(member_kind, member_id);
+"#;
+
+/// Durable source identity for the desktop-level container catalog. A source
+/// path may move or disappear after discovery; ensures always refresh it from
+/// configured roots before executing, while this record preserves provenance
+/// for registrations and evidence.
+const MIGRATION_37: &str = r#"
+CREATE TABLE IF NOT EXISTS container_sources (
+    id TEXT PRIMARY KEY,
+    canonical_path TEXT NOT NULL UNIQUE,
+    manifest_path TEXT NOT NULL,
+    manifest_hash TEXT NOT NULL,
+    git_revision TEXT,
+    discovered_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS container_sources_updated_at ON container_sources(updated_at DESC);
 "#;
 #[cfg(test)]
 mod tests {

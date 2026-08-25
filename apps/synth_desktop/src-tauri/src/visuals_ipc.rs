@@ -1489,30 +1489,73 @@ pub async fn dispatch(method: &str, path: &str, body: Value, core: &CoreRuntime)
         ("GET", "/v1/containers") => {
             Ok(json!({"containers": core.data().list_containers().await?}))
         }
+        ("POST", "/v1/container-sources/discover") => {
+            let query = body
+                .get("query")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(|value| value.to_ascii_lowercase());
+            let sources = crate::optimizers::container_catalog::discover(core.storage().database())
+                .await?
+                .into_iter()
+                .filter(|source| {
+                    let Some(query) = query.as_deref() else {
+                        return true;
+                    };
+                    source.id.to_ascii_lowercase().contains(query)
+                        || source
+                            .root
+                            .to_string_lossy()
+                            .to_ascii_lowercase()
+                            .contains(query)
+                        || source.specs.iter().any(|spec| {
+                            spec.id.to_ascii_lowercase().contains(query)
+                                || spec.family.as_deref().is_some_and(|family| {
+                                    family.to_ascii_lowercase().contains(query)
+                                })
+                        })
+                })
+                .map(|source| {
+                    json!({
+                        "sourceId": source.id,
+                        "manifestHash": source.manifest_hash,
+                        "gitRevision": source.git_revision,
+                        "specs": source.specs.into_iter().map(|spec| json!({
+                            "id": spec.id,
+                            "family": spec.family,
+                            "locality": spec.locality.as_str(),
+                            "contract": spec.contract,
+                        })).collect::<Vec<_>>(),
+                    })
+                })
+                .collect::<Vec<_>>();
+            Ok(json!({"sources": sources}))
+        }
         ("POST", "/v1/containers/ensure") => {
             let spec_id = body
                 .get("specId")
                 .or_else(|| body.get("spec_id"))
                 .and_then(Value::as_str)
                 .ok_or_else(|| anyhow::anyhow!("specId required"))?;
-            let session = body
-                .get("sessionRef")
-                .or_else(|| body.get("session_ref"))
+            let source_id = body
+                .get("sourceId")
+                .or_else(|| body.get("source_id"))
                 .and_then(Value::as_str)
-                .ok_or_else(|| anyhow::anyhow!("sessionRef required"))?;
-            let workspace = crate::optimizers::workspace_recipe::require_session_workspace(
-                core.storage().database(),
-                session,
-            )?;
+                .ok_or_else(|| {
+                    anyhow::anyhow!("sourceId required; call container_discover first")
+                })?;
             let ensured = crate::optimizers::container_lifecycle::ensure(
                 core.storage().database(),
-                &workspace,
+                source_id,
                 spec_id,
             )
             .await?;
             Ok(json!({
                 "containerId": ensured.container_id,
                 "baseUrl": ensured.base_url,
+                "sourceId": ensured.source_id,
+                "manifestHash": ensured.manifest_hash,
                 "specId": ensured.spec_id,
                 "locality": ensured.locality.as_str(),
             }))

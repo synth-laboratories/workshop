@@ -1,9 +1,9 @@
-//! Workspace-declared optimizer recipes and container specs.
+//! Workspace-declared optimizer recipes and source-declared container specs.
 //!
-//! Workshop does not ship task identity. A session workspace may declare
-//! `workshop.recipe.toml`, `workshop.recipes/*.toml`, and
-//! `workshop.containers.toml`. The host validates, clamps bounds to product
-//! caps, copies the recipe into a run-owned directory, and executes that copy.
+//! Workshop does not ship task identity. Recipes may be declared by a session
+//! workspace, while containers are catalogued from independent source roots.
+//! The host validates, clamps bounds to product caps, copies recipes into a
+//! run-owned directory, and executes that copy.
 
 use anyhow::{anyhow, bail, Context, Result};
 use serde::Deserialize;
@@ -244,23 +244,14 @@ pub fn find_recipe(workspace: &Path, recipe_id: &str) -> Result<WorkspaceRecipe>
         })
 }
 
-pub fn load_container_specs(workspace: &Path) -> Result<Vec<ContainerSpec>> {
-    let path = workspace.join(CONTAINERS_FILE);
+pub fn load_container_specs(source_root: &Path) -> Result<Vec<ContainerSpec>> {
+    let path = source_root.join(CONTAINERS_FILE);
     if !path.is_file() {
         return Ok(Vec::new());
     }
     let text = fs::read_to_string(&path)
         .with_context(|| format!("read {}", path.display()))?;
-    parse_containers(workspace, &text)
-}
-
-pub fn find_container_spec(workspace: &Path, spec_id: &str) -> Result<ContainerSpec> {
-    load_container_specs(workspace)?
-        .into_iter()
-        .find(|spec| spec.id == spec_id)
-        .ok_or_else(|| {
-            anyhow!("container spec `{spec_id}` is not declared in {CONTAINERS_FILE}")
-        })
+    parse_containers(source_root, &text)
 }
 
 pub fn catalog_entry(recipe: &WorkspaceRecipe) -> Value {
@@ -391,7 +382,7 @@ fn parse_recipe(path: &Path) -> Result<WorkspaceRecipe> {
     })
 }
 
-fn parse_containers(workspace: &Path, text: &str) -> Result<Vec<ContainerSpec>> {
+fn parse_containers(source_root: &Path, text: &str) -> Result<Vec<ContainerSpec>> {
     let parsed: ContainersFile =
         toml::from_str(text).context("parse workshop.containers.toml")?;
     let mut specs = Vec::new();
@@ -403,7 +394,7 @@ fn parse_containers(workspace: &Path, text: &str) -> Result<Vec<ContainerSpec>> 
             );
         }
         let cwd_rel = item.cwd.unwrap_or_else(|| ".".into());
-        let cwd = resolve_workspace_path(workspace, &cwd_rel)?;
+        let cwd = resolve_source_path(source_root, &cwd_rel)?;
         specs.push(ContainerSpec {
             id: item.id,
             command: item.command,
@@ -418,23 +409,23 @@ fn parse_containers(workspace: &Path, text: &str) -> Result<Vec<ContainerSpec>> 
     Ok(specs)
 }
 
-pub fn resolve_workspace_path(workspace: &Path, relative: &str) -> Result<PathBuf> {
-    let workspace = workspace
+pub fn resolve_source_path(source_root: &Path, relative: &str) -> Result<PathBuf> {
+    let source_root = source_root
         .canonicalize()
-        .unwrap_or_else(|_| workspace.to_path_buf());
+        .unwrap_or_else(|_| source_root.to_path_buf());
     let candidate = if Path::new(relative).is_absolute() {
         PathBuf::from(relative)
     } else {
-        workspace.join(relative)
+        source_root.join(relative)
     };
     let canonical = candidate
         .canonicalize()
         .with_context(|| format!("path `{}` does not exist", candidate.display()))?;
-    if !canonical.starts_with(&workspace) {
+    if !canonical.starts_with(&source_root) {
         bail!(
-            "path {} escapes the workspace {}",
+            "path {} escapes the source root {}",
             canonical.display(),
-            workspace.display()
+            source_root.display()
         );
     }
     Ok(canonical)
@@ -631,7 +622,7 @@ max_total_rollouts = 10
     }
 
     #[test]
-    fn container_command_must_stay_inside_workspace() {
+    fn container_command_must_stay_inside_source_root() {
         let (_dir, workspace) = write_workspace();
         fs::create_dir_all(workspace.join("svc")).unwrap();
         fs::write(workspace.join("svc/serve.py"), "print('ok')").unwrap();
@@ -648,7 +639,11 @@ locality = "container"
 "#,
         )
         .unwrap();
-        let spec = find_container_spec(&workspace, "classify").unwrap();
+        let spec = load_container_specs(&workspace)
+            .unwrap()
+            .into_iter()
+            .find(|spec| spec.id == "classify")
+            .unwrap();
         assert!(spec.cwd.starts_with(&workspace.canonicalize().unwrap()));
         assert!(spec.cwd.ends_with("svc"));
     }

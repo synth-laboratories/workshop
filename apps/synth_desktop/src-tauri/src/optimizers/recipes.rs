@@ -58,8 +58,7 @@ async fn start_inner(
     let manager = service.manager().clone();
     require_plugin_ready(&manager).await?;
     let ensured =
-        super::container_lifecycle::ensure(service.database(), &workspace, &recipe.container)
-            .await?;
+        super::container_lifecycle::ensure_unique(service.database(), &recipe.container).await?;
     let run_id = format!(
         "gepa_{}_{}",
         recipe
