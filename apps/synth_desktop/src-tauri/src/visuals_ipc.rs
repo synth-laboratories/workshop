@@ -1628,6 +1628,57 @@ pub async fn dispatch(method: &str, path: &str, body: Value, core: &CoreRuntime)
                 .await?;
             Ok(json!({"container":updated}))
         }
+        ("POST", path) if path.starts_with("/v1/containers/") && path.ends_with("/stop") => {
+            let id = path
+                .trim_start_matches("/v1/containers/")
+                .trim_end_matches("/stop")
+                .trim_end_matches('/');
+            let stopped = crate::optimizers::container_lifecycle::stop(
+                core.storage().database(),
+                id,
+            )
+            .await?;
+            Ok(json!({
+                "containerId": stopped.container_id,
+                "specId": stopped.spec_id,
+                "pid": stopped.pid,
+                "status": "stopped",
+            }))
+        }
+        ("POST", path) if path.starts_with("/v1/containers/") && path.ends_with("/restart") => {
+            let id = path
+                .trim_start_matches("/v1/containers/")
+                .trim_end_matches("/restart")
+                .trim_end_matches('/');
+            let session = body
+                .get("sessionRef")
+                .or_else(|| body.get("session_ref"))
+                .and_then(Value::as_str)
+                .ok_or_else(|| anyhow::anyhow!("sessionRef required"))?;
+            let workspace = crate::optimizers::workspace_recipe::require_session_workspace(
+                core.storage().database(),
+                session,
+            )?;
+            let stopped = crate::optimizers::container_lifecycle::stop(
+                core.storage().database(),
+                id,
+            )
+            .await?;
+            let ensured = crate::optimizers::container_lifecycle::ensure(
+                core.storage().database(),
+                &workspace,
+                &stopped.spec_id,
+            )
+            .await?;
+            Ok(json!({
+                "containerId": ensured.container_id,
+                "baseUrl": ensured.base_url,
+                "specId": ensured.spec_id,
+                "locality": ensured.locality.as_str(),
+                "replacedPid": stopped.pid,
+                "status": "ready",
+            }))
+        }
         ("POST", path)
             if path.starts_with("/v1/containers/") && path.ends_with("/rollouts/prepare") =>
         {

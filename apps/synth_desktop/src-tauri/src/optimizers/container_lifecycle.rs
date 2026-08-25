@@ -34,6 +34,13 @@ pub struct EnsuredContainer {
     pub locality: PolicyLocality,
 }
 
+#[derive(Clone, Debug)]
+pub struct StoppedContainer {
+    pub container_id: String,
+    pub spec_id: String,
+    pub pid: u32,
+}
+
 pub async fn ensure(
     db: &Arc<Database>,
     workspace: &Path,
@@ -48,12 +55,16 @@ pub async fn ensure_spec(
     workspace: &Path,
     spec: &ContainerSpec,
 ) -> Result<EnsuredContainer> {
-    let base_url = if let Some(url) = spec.url.as_deref() {
+    let (base_url, process) = if let Some(url) = spec.url.as_deref() {
         let base = url.trim_end_matches('/').to_string();
-        if !spec.command.is_empty() {
-            start_command(workspace, spec)?;
-        }
-        base
+        let process = if spec.command.is_empty() {
+            None
+        } else if healthy_now(&base, &spec.health).await {
+            None
+        } else {
+            Some(start_command(workspace, spec)?)
+        };
+        (base, process)
     } else {
         bail!(
             "container `{}` must declare url so Workshop can probe /health without scanning ports",
@@ -61,7 +72,7 @@ pub async fn ensure_spec(
         );
     };
     wait_healthy(&base_url, &spec.health).await?;
-    let container_id = upsert_ready(db, spec, &base_url).await?;
+    let container_id = upsert_ready(db, spec, &base_url, process).await?;
     Ok(EnsuredContainer {
         container_id,
         base_url,
@@ -70,7 +81,7 @@ pub async fn ensure_spec(
     })
 }
 
-fn start_command(workspace: &Path, spec: &ContainerSpec) -> Result<()> {
+fn start_command(workspace: &Path, spec: &ContainerSpec) -> Result<(u32, String)> {
     let cwd = if spec.cwd.exists() {
         spec.cwd.clone()
     } else {
@@ -115,11 +126,79 @@ fn start_command(workspace: &Path, spec: &ContainerSpec) -> Result<()> {
             spec.id, spec.command
         )
     })?;
+    let pid = child.id();
+    let start = crate::instance::process_start_identity(pid)
+        .ok_or_else(|| anyhow!("container `{}` process identity is unavailable", spec.id))?;
     children()
         .lock()
         .expect("container process table")
         .insert(spec.id.clone(), child);
-    Ok(())
+    Ok((pid, start))
+}
+
+pub async fn stop(db: &Arc<Database>, container_id: &str) -> Result<StoppedContainer> {
+    let id = container_id.to_string();
+    let (spec_id, pid, expected_start): (String, u32, String) = db.with_conn(|conn| {
+        let metadata: String = conn.query_row(
+            "SELECT metadata_json FROM containers WHERE id=?1",
+            [&id],
+            |row| row.get(0),
+        )?;
+        let metadata: serde_json::Value = serde_json::from_str(&metadata)?;
+        let spec_id = metadata
+            .get("workspaceSpecId")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| anyhow!("container `{id}` is not a Workshop-owned process"))?
+            .to_string();
+        let pid = metadata
+            .get("supervisedPid")
+            .and_then(serde_json::Value::as_u64)
+            .and_then(|value| u32::try_from(value).ok())
+            .ok_or_else(|| anyhow!("container `{id}` has no supervised process receipt"))?;
+        let start = metadata
+            .get("processStartIdentity")
+            .and_then(serde_json::Value::as_str)
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| anyhow!("container `{id}` has no process start identity"))?
+            .to_string();
+        Ok((spec_id, pid, start))
+    })?;
+
+    let actual_start = crate::instance::process_start_identity(pid);
+    if actual_start.as_deref() != Some(expected_start.as_str()) {
+        bail!("container `{container_id}` process identity is stale; refusing to signal PID {pid}");
+    }
+    if let Some(mut child) = children()
+        .lock()
+        .expect("container process table")
+        .remove(&spec_id)
+    {
+        child.kill().context("stop supervised container")?;
+        let _ = child.wait();
+    } else {
+        let result = unsafe { libc::kill(pid as libc::pid_t, libc::SIGTERM) };
+        if result != 0 {
+            return Err(std::io::Error::last_os_error()).context("stop restored container process");
+        }
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while Instant::now() < deadline && crate::instance::process_start_identity(pid).is_some() {
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        if crate::instance::process_start_identity(pid).as_deref() == Some(expected_start.as_str()) {
+            unsafe { libc::kill(pid as libc::pid_t, libc::SIGKILL) };
+        }
+    }
+    let stopped_id = id.clone();
+    db.clone()
+        .run_transaction(move |conn| {
+            conn.execute(
+                "UPDATE containers SET status='stopped',health_json='{\"ok\":false}',updated_at=?2 WHERE id=?1",
+                params![stopped_id, chrono::Utc::now().to_rfc3339()],
+            )?;
+            Ok(())
+        })
+        .await?;
+    Ok(StoppedContainer { container_id: id, spec_id, pid })
 }
 
 async fn wait_healthy(base_url: &str, health_path: &str) -> Result<()> {
@@ -148,32 +227,76 @@ async fn wait_healthy(base_url: &str, health_path: &str) -> Result<()> {
     bail!("container at {base_url} never became healthy on {url}: {last}")
 }
 
+async fn healthy_now(base_url: &str, health_path: &str) -> bool {
+    let path = if health_path.starts_with('/') {
+        health_path.to_string()
+    } else {
+        format!("/{health_path}")
+    };
+    let Ok(client) = crate::http::http_client_builder()
+        .timeout(Duration::from_millis(500))
+        .build()
+    else {
+        return false;
+    };
+    client
+        .get(format!("{}{path}", base_url.trim_end_matches('/')))
+        .send()
+        .await
+        .is_ok_and(|response| response.status().is_success())
+}
+
 async fn upsert_ready(
     db: &Arc<Database>,
     spec: &ContainerSpec,
     base_url: &str,
+    process: Option<(u32, String)>,
 ) -> Result<String> {
     let spec_id = spec.id.clone();
     let family = spec.family.clone();
     let contract = spec.contract.clone();
     let locality = spec.locality.as_str().to_string();
     let base_url = base_url.to_string();
+    let (supervised_pid, process_start_identity) = process
+        .map(|(pid, start)| (Some(pid), Some(start)))
+        .unwrap_or((None, None));
     db.clone()
         .run_transaction(move |conn| {
-            let existing: Option<String> = conn
+            let existing: Option<(String, String)> = conn
                 .query_row(
-                    "SELECT id FROM containers WHERE base_url = ?1 LIMIT 1",
+                    "SELECT id,metadata_json FROM containers WHERE base_url = ?1 LIMIT 1",
                     params![&base_url],
-                    |row| row.get(0),
+                    |row| Ok((row.get(0)?, row.get(1)?)),
                 )
                 .optional()?;
-            let id = existing.unwrap_or_else(|| format!("ctr_{}", Uuid::new_v4().simple()));
+            let prior_metadata = existing
+                .as_ref()
+                .and_then(|(_, raw)| serde_json::from_str::<serde_json::Value>(raw).ok());
+            let id = existing
+                .map(|(id, _)| id)
+                .unwrap_or_else(|| format!("ctr_{}", Uuid::new_v4().simple()));
+            let retained_pid = supervised_pid.or_else(|| {
+                prior_metadata
+                    .as_ref()
+                    .and_then(|value| value.get("supervisedPid"))
+                    .and_then(serde_json::Value::as_u64)
+                    .and_then(|value| u32::try_from(value).ok())
+            });
+            let retained_start = process_start_identity.or_else(|| {
+                prior_metadata
+                    .as_ref()
+                    .and_then(|value| value.get("processStartIdentity"))
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_owned)
+            });
             let now = chrono::Utc::now().to_rfc3339();
             let metadata = serde_json::to_string(&json!({
                 "workspaceSpecId": spec_id,
                 "contract": contract,
                 "locality": locality,
                 "source": "workspace",
+                "supervisedPid": retained_pid,
+                "processStartIdentity": retained_start,
             }))?;
             conn.execute(
                 "INSERT INTO containers(id,name,location,status,base_url,task_family,health_json,metadata_json,created_at,updated_at)
