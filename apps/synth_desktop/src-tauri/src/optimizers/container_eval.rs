@@ -98,7 +98,10 @@ impl EvalSpec {
             recipe_id: recipe.id.clone(),
             family: recipe.family.clone(),
             title: recipe.title.clone(),
-            question: format!("Score the advertised {} policy on the declared eval pool.", recipe.family),
+            question: format!(
+                "Score the advertised {} policy on the declared eval pool.",
+                recipe.family
+            ),
             world_ref: format!("world:{}@eval", recipe.family),
             evaluation_plan_ref: format!("{}_eval.v1", recipe.family),
             harness: recipe.harness.clone(),
@@ -207,14 +210,7 @@ pub(super) async fn start(
     service: &OptimizerService,
     request: OptimizerRecipeRunRequest,
 ) -> Result<(OptimizerRunRecord, Option<crate::storage::AppEvent>)> {
-    let session = request
-        .session_ref
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .ok_or_else(|| anyhow::anyhow!("workspace eval recipes require session_ref"))?;
-    let workspace = workspace_recipe::require_session_workspace(service.database(), session)?;
-    let recipe = workspace_recipe::find_recipe(&workspace, &request.recipe_id)?;
+    let recipe = workspace_recipe::resolve(service.database(), &request.recipe_id).await?;
     if recipe.algorithm != workspace_recipe::AlgorithmKind::Eval {
         bail!("recipe `{}` is not an eval recipe", recipe.id);
     }
@@ -392,7 +388,10 @@ async fn project_worker_failure_visual(
 /// A container that declares no roles is not failed here; there is nothing to
 /// fail it on, and inventing a refusal from absent metadata would block every
 /// family that has not implemented the contract yet.
-async fn preflight_container_credentials(container: &ReadyContainer, spec: &EvalSpec) -> Result<()> {
+async fn preflight_container_credentials(
+    container: &ReadyContainer,
+    spec: &EvalSpec,
+) -> Result<()> {
     let client = crate::http::http_client_with_timeout(Duration::from_secs(15));
     let info = client
         .get(format!("{}/info", container.base_url))
@@ -1012,7 +1011,12 @@ async fn persist_policy_pin(
     Ok(())
 }
 
-fn failed_record(example: EvalExample, spec: &EvalSpec, policy_pin: &Value, error: String) -> Value {
+fn failed_record(
+    example: EvalExample,
+    spec: &EvalSpec,
+    policy_pin: &Value,
+    error: String,
+) -> Value {
     json!({
         "pool": example.pool,
         "seed": example.seed,
@@ -2011,7 +2015,7 @@ mod tests {
         panic!("run {run_id} never sealed a terminal manifest");
     }
 
-    async fn declare_eval_recipes(svc: &OptimizerService, session: &str) {
+    async fn declare_eval_recipes(svc: &OptimizerService, _session: &str) {
         let workspace = tempfile::Builder::new()
             .prefix("ws-eval-")
             .tempdir()
@@ -2062,25 +2066,9 @@ max_total_rollouts = 4
 "#,
         )
         .unwrap();
-        let db = svc.database().clone();
-        let session_id = session.to_string();
-        let workspace_path = workspace.to_string_lossy().into_owned();
-        db.run_transaction(move |conn| {
-            conn.execute(
-                "INSERT OR IGNORE INTO sessions(id,title,target_json,status,metadata_json,created_at,updated_at) VALUES(?1,?1,'{}','ready',?2,datetime('now'),datetime('now'))",
-                rusqlite::params![session_id, serde_json::json!({"workspace": workspace_path}).to_string()],
-            )?;
-            Ok(())
-        })
-        .await
-        .unwrap();
-        crate::workspace_scope::provision(
-            svc.database(),
-            session,
-            workspace.to_str().unwrap(),
-        )
-        .await
-        .unwrap();
+        workspace_recipe::remember_source_for_test(svc.database(), &workspace)
+            .await
+            .unwrap();
     }
 
     async fn start_banking77(
@@ -2159,6 +2147,35 @@ max_total_rollouts = 4
         assert_eq!(manifest["work"]["failed"], json!(0));
         assert_eq!(manifest["work"]["skipped"], json!(0));
         assert_eq!(manifest["terminalCursor"], json!(finished.cursor_seq));
+        task.abort();
+    }
+
+    #[tokio::test]
+    async fn source_declared_eval_runs_without_a_session_workspace() {
+        let (svc, _dir, _) = service().await;
+        let rewards = (0..10).map(|seed| (("train".into(), seed), 1.0)).collect();
+        let (base, task, _) = spawn_eval_mock("banking77", rewards).await;
+        insert_container(&svc, "banking77", &base, "ready").await;
+        declare_eval_recipes(&svc, "ownership_is_optional").await;
+
+        let (run, _) = svc
+            .start_recipe(OptimizerRecipeRunRequest {
+                recipe_id: CLASSIFY_EVAL.into(),
+                session_ref: None,
+                open_visual: Some(false),
+                base_model: None,
+                dataset_shard: None,
+                candidate_set_id: None,
+                container_id: None,
+                training_artifact_id: None,
+                search: None,
+            })
+            .await
+            .unwrap();
+        let finished = wait_terminal(&svc, &run.id).await;
+        assert_eq!(finished.status, "completed");
+        assert!(finished.session_ref.is_none());
+        assert_eq!(finished.summary["recipeId"], json!(CLASSIFY_EVAL));
         task.abort();
     }
 
@@ -2354,7 +2371,15 @@ max_total_rollouts = 4
         // The visual the campaign was supposed to keep current is gone.
         let failure = evidence(
             "progress_projection",
-            persist_progress(&svc, &run.id, &spec, "vis_missing", &records, 1, "completed"),
+            persist_progress(
+                &svc,
+                &run.id,
+                &spec,
+                "vis_missing",
+                &records,
+                1,
+                "completed",
+            ),
         )
         .await
         .unwrap_err();
@@ -2548,11 +2573,7 @@ max_total_rollouts = 4
         task.abort();
     }
 
-    async fn recipe(
-        svc: &OptimizerService,
-        id: &str,
-        session: &str,
-    ) -> OptimizerRecipeRunRequest {
+    async fn recipe(svc: &OptimizerService, id: &str, session: &str) -> OptimizerRecipeRunRequest {
         recipe_on(svc, id, session, None).await
     }
 
@@ -2647,12 +2668,15 @@ max_total_rollouts = 4
         )
         .await;
         let (run, _) = svc
-            .start_recipe(recipe_on(
-                &svc,
-                CLASSIFY_EVAL,
-                "sess_explicit_isolated",
-                Some("ctr_banking77_isolated"),
-            ).await)
+            .start_recipe(
+                recipe_on(
+                    &svc,
+                    CLASSIFY_EVAL,
+                    "sess_explicit_isolated",
+                    Some("ctr_banking77_isolated"),
+                )
+                .await,
+            )
             .await
             .unwrap();
         assert_eq!(run.summary["containerId"], json!("ctr_banking77_isolated"));
@@ -2704,12 +2728,15 @@ max_total_rollouts = 4
         .await;
 
         let not_ready = svc
-            .start_recipe(recipe_on(
-                &svc,
-                CLASSIFY_EVAL,
-                "sess_not_ready",
-                Some("ctr_banking77_offline"),
-            ).await)
+            .start_recipe(
+                recipe_on(
+                    &svc,
+                    CLASSIFY_EVAL,
+                    "sess_not_ready",
+                    Some("ctr_banking77_offline"),
+                )
+                .await,
+            )
             .await
             .unwrap_err()
             .to_string();
@@ -2725,12 +2752,15 @@ max_total_rollouts = 4
         );
 
         let wrong_family = svc
-            .start_recipe(recipe_on(
-                &svc,
-                CLASSIFY_EVAL,
-                "sess_wrong_family",
-                Some("ctr_healthbench_ready"),
-            ).await)
+            .start_recipe(
+                recipe_on(
+                    &svc,
+                    CLASSIFY_EVAL,
+                    "sess_wrong_family",
+                    Some("ctr_healthbench_ready"),
+                )
+                .await,
+            )
             .await
             .unwrap_err()
             .to_string();
@@ -2866,11 +2896,7 @@ max_total_rollouts = 4
         let (svc, _dir, _) = service().await;
         insert_container(&svc, "healthbench", &base, "ready").await;
         let (run, _) = svc
-            .start_recipe(recipe(
-                &svc,
-                HEALTH_EVAL,
-                "sess_policy_mismatch",
-            ).await)
+            .start_recipe(recipe(&svc, HEALTH_EVAL, "sess_policy_mismatch").await)
             .await
             .unwrap();
         let finished = wait_terminal(&svc, &run.id).await;

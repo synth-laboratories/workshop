@@ -3,7 +3,7 @@
 //! paths, environment variables, or credentials.
 
 use anyhow::{anyhow, bail, Context, Result};
-use serde_json::{json, Value};
+use serde_json::json;
 use std::{
     fs,
     path::{Path, PathBuf},
@@ -40,15 +40,7 @@ async fn start_inner(
     super::models::OptimizerRunRecord,
     Option<crate::storage::AppEvent>,
 )> {
-    let session = request
-        .session_ref
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .ok_or_else(|| anyhow!("workspace recipes require session_ref"))?;
-    let workspace =
-        super::workspace_recipe::require_session_workspace(service.database(), session)?;
-    let recipe = super::workspace_recipe::find_recipe(&workspace, &request.recipe_id)?;
+    let recipe = super::workspace_recipe::resolve(service.database(), &request.recipe_id).await?;
     match recipe.algorithm {
         super::workspace_recipe::AlgorithmKind::Eval => {
             return super::container_eval::start(service, request).await;
@@ -98,12 +90,8 @@ async fn start_inner(
                 .collect(),
         ),
     );
-    let openai = resolve_provider_workload(
-        &recipe.provider,
-        &run_id,
-        &recipe.id,
-        Some(&config_path),
-    )?;
+    let openai =
+        resolve_provider_workload(&recipe.provider, &run_id, &recipe.id, Some(&config_path))?;
     super::workspace_recipe::bind_locality_urls(
         table,
         recipe.locality,
@@ -120,7 +108,7 @@ async fn start_inner(
         algorithm_version: Some(DEFAULT_ALGORITHM_VERSION.into()),
         objective: Some(recipe.title.clone()),
         source: Some("local".into()),
-        project_ref: Some(workspace.display().to_string()),
+        project_ref: Some(recipe.source_root.display().to_string()),
         session_ref: request.session_ref.clone(),
         id: Some(run_id.clone()),
         execution_bindings: Some(vec![OptimizerExecutionBinding {
@@ -664,13 +652,7 @@ fn resolve_provider_workload(
         use_policy.operations.push("responses.create".into());
     }
     let lease = secrets
-        .issue_lease(
-            provider,
-            run_id,
-            recipe_id,
-            use_policy,
-            "optimizer",
-        )
+        .issue_lease(provider, run_id, recipe_id, use_policy, "optimizer")
         .map_err(|error| anyhow!("{error}"))?;
     Ok(OpenAiWorkload {
         api_key: crate::secrets::API_KEY_SENTINEL.to_owned(),
@@ -741,11 +723,9 @@ fn provider_use_policy(config_path: Option<&Path>) -> Result<crate::secrets::Sec
         policy.max_input_tokens = policy
             .max_input_tokens
             .max(declared_output_tokens.saturating_mul(4));
-        policy.max_calls = policy.max_calls.max(
-            rollout_limit
-                .saturating_mul(16)
-                .min(u64::from(u32::MAX)) as u32,
-        );
+        policy.max_calls = policy
+            .max_calls
+            .max(rollout_limit.saturating_mul(16).min(u64::from(u32::MAX)) as u32);
     }
     Ok(policy)
 }

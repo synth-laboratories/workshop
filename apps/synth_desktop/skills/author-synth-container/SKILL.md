@@ -1,15 +1,15 @@
 ---
 name: author-synth-container
-description: Author a task container and workspace recipe from scratch, then evaluate it through Workshop. Use when the user wants a new eval or GEPA target, Banking77-from-scratch, a custom classify/chat world, or when list_recipes is empty. Never name a shipped Workshop recipe id.
+description: Author a task container and source-declared recipe from scratch, then evaluate it through Workshop. Use when the user wants a new eval or GEPA target, Banking77-from-scratch, a custom classify/chat world, or when list_recipes is empty. Never name a shipped Workshop recipe id.
 ---
 
 # Author a Workshop container
 
-Workshop does not ship task containers or cookbook recipes. The session workspace declares them. Cookbooks are a read-only pin you may copy from; they are never a spawn cwd.
+Workshop does not ship task containers or cookbook recipes. A configured desktop source root declares them; a chat/session never does. Cookbooks are a read-only pin you may copy from; they are never a spawn cwd.
 
 ## Write the service
 
-In the workspace, author a small HTTP service that implements the container contract:
+In the source checkout, author a small HTTP service that implements the container contract:
 
 - `GET /health` → 200 when ready
 - `GET /info` → family, capabilities (policy_refs, operations). Missing advertisement is a refusal, not a Workshop fallback.
@@ -33,9 +33,9 @@ locality = "container"
 family = "classify"
 ```
 
-`url` is required so Workshop can probe health without scanning. `cwd` must stay inside this workspace.
+`url` is required so Workshop can probe health without scanning. `cwd` must stay inside this declared source checkout.
 
-Call `container_ensure` with `spec_id`. It starts the command if needed, waits for `/health`, and returns `containerId`. Do not `container_register` a guessed URL after a scan.
+Call `container_manage` with `operation: "discover"` to obtain `source_id`, then `operation: "ensure"` with that `source_id` and `spec_id`. It starts the command if needed, waits for `/health`, and returns `containerId`. Do not register a guessed URL after a scan.
 
 ## Declare the recipe
 
@@ -61,6 +61,6 @@ max_total_rollouts = 10
 
 ## Run eval
 
-`list_recipes` in this session should now include the workspace id. Call `start_workflow` / `optimizer_start_recipe` with that id and `container_id` from ensure. Do not pass `eval.banking77.baseline.v1` unless that string is the id you wrote in this workspace.
+`list_recipes` should now include the catalog id. Call `start_workflow` / `optimizer_start_recipe` with that id and `container_id` from ensure. Do not pass `eval.banking77.baseline.v1` unless that string is the id you wrote in this source checkout.
 
 Proof that the cutover worked: no shipped recipe id, no cookbook cwd, no loopback policy URL for `locality=container`.

@@ -2,9 +2,8 @@ use super::events::{plan_batch, EventVerdict, OptimizerEventDraft, SequenceContr
 use super::models::{
     OptimizerCapabilities, OptimizerCreateRequest, OptimizerEventEnvelope, OptimizerQuery,
     OptimizerRelationship, OptimizerResourceRef, OptimizerRunRecord, OptimizerRunStatus,
-    OptimizerStateSlice,
-    OptimizerUsageSummary, OPTIMIZER_EVENT_SCHEMA_VERSION, OPTIMIZER_RUN_SCHEMA_VERSION,
-    OPTIMIZER_STATE_SLICE_SCHEMA_VERSION,
+    OptimizerStateSlice, OptimizerUsageSummary, OPTIMIZER_EVENT_SCHEMA_VERSION,
+    OPTIMIZER_RUN_SCHEMA_VERSION, OPTIMIZER_STATE_SLICE_SCHEMA_VERSION,
 };
 use super::results;
 use super::terminal;
@@ -71,7 +70,11 @@ fn project_recipe_readiness(mut recipe: Value) -> Value {
                 "A required runtime, service, credential, or packaged asset is unavailable.",
             );
         let (code, contract, owner) = if detail.contains("workspace recipe") {
-            ("workspace_recipe_unavailable", "assets.workspace_recipe", "Optimizers")
+            (
+                "workspace_recipe_unavailable",
+                "assets.workspace_recipe",
+                "Optimizers",
+            )
         } else if detail.contains("runtime is not installed") {
             ("runtime_unavailable", "runtime.local", "Optimizers")
         } else {
@@ -404,17 +407,12 @@ impl OptimizerService {
         self.list_recipes_for_session(None)
     }
 
-    pub fn list_recipes_for_session(&self, session_ref: Option<&str>) -> Vec<Value> {
-        let mut recipes = Vec::new();
-        if let Some(session) = session_ref.map(str::trim).filter(|value| !value.is_empty()) {
-            if let Ok(Some(workspace)) =
-                super::workspace_recipe::session_workspace(&self.db, session)
-            {
-                if let Ok(declared) = super::workspace_recipe::load_recipes(&workspace) {
-                    recipes.extend(declared.iter().map(super::workspace_recipe::catalog_entry));
-                }
-            }
-        }
+    pub fn list_recipes_for_session(&self, _session_ref: Option<&str>) -> Vec<Value> {
+        let mut recipes: Vec<Value> = super::workspace_recipe::catalog(&self.db)
+            .unwrap_or_default()
+            .iter()
+            .map(super::workspace_recipe::catalog_entry)
+            .collect();
         recipes.push(super::hosted_gelo::recipe_catalog());
         recipes.push(super::sft_recipes::recipe_catalog());
         recipes.extend(super::hosted_sft::recipe_catalog());
@@ -2009,10 +2007,7 @@ impl OptimizerService {
             .await
     }
 
-    pub async fn infer_saved_lora(
-        &self,
-        request: super::CheckpointInferRequest,
-    ) -> Result<Value> {
+    pub async fn infer_saved_lora(&self, request: super::CheckpointInferRequest) -> Result<Value> {
         super::sidecar_training::infer_checkpoint(self, request, |_| {}).await
     }
 
@@ -2119,12 +2114,9 @@ impl OptimizerService {
             .await
     }
 
-    pub async fn upsert_local_lora_from_event(
-        &self,
-        run_id: String,
-        payload: Value,
-    ) -> Result<()> {
-        let Some(row) = super::local_lora::LocalLoraUpsert::from_checkpoint_event(&run_id, &payload)
+    pub async fn upsert_local_lora_from_event(&self, run_id: String, payload: Value) -> Result<()> {
+        let Some(row) =
+            super::local_lora::LocalLoraUpsert::from_checkpoint_event(&run_id, &payload)
         else {
             return Ok(());
         };
@@ -2530,10 +2522,7 @@ async fn materialize_optimizer_result(
         let bytes = serde_json::to_vec(values).expect("materialized candidate values serialize");
         format!("sha256:{:x}", Sha256::digest(bytes))
     });
-    if run.algorithm_id == "gepa"
-        && run.status == "completed"
-        && materialized_values.is_none()
-    {
+    if run.algorithm_id == "gepa" && run.status == "completed" && materialized_values.is_none() {
         bail!("completed GEPA result omitted materialized candidate values");
     }
     let mut selected_candidate = json!({});
@@ -2947,7 +2936,8 @@ pub(crate) fn reconcile_stale_local_runs_in_tx(
     instance_id: &str,
     now: DateTime<Utc>,
 ) -> Result<Vec<OptimizerRunRecord>> {
-    let mut stmt = conn.prepare("SELECT payload_json FROM optimizer_runs WHERE source = 'local'")?;
+    let mut stmt =
+        conn.prepare("SELECT payload_json FROM optimizer_runs WHERE source = 'local'")?;
     let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
     let mut payloads = Vec::new();
     for row in rows {
@@ -3317,8 +3307,9 @@ fn authoritative_run_lifecycle(event: &OptimizerEventEnvelope) -> Option<Optimiz
         "optimizer.run.paused" => Some(OptimizerRunStatus::Paused),
         "optimizer.run.resumed" => Some(OptimizerRunStatus::Running),
         "optimizer.run.cancelling" => Some(OptimizerRunStatus::Cancelling),
-        "optimizer.run.completed" | "gepa.run.finished" | "goex.run_finished"
-        | "run.completed" => Some(OptimizerRunStatus::Completed),
+        "optimizer.run.completed" | "gepa.run.finished" | "goex.run_finished" | "run.completed" => {
+            Some(OptimizerRunStatus::Completed)
+        }
         "optimizer.run.failed" | "run.failed" => Some(OptimizerRunStatus::Failed),
         "optimizer.run.cancelled" | "run.cancelled" => Some(OptimizerRunStatus::Cancelled),
         _ => None,
@@ -4661,17 +4652,15 @@ pub(in crate::optimizers) mod tests {
             assert_eq!(svc.get(run_id.into()).await.unwrap().status, "running");
             svc.database()
                 .with_conn(|conn| {
-                    assert!(crate::recovery::ownership::load_optimizer_run(conn, run_id)?.is_none());
+                    assert!(
+                        crate::recovery::ownership::load_optimizer_run(conn, run_id)?.is_none()
+                    );
                     Ok(())
                 })
                 .unwrap();
         }
         let core = crate::core_runtime::CoreRuntime::open(dir.path()).unwrap();
-        let run = core
-            .optimizers()
-            .get(run_id.to_string())
-            .await
-            .unwrap();
+        let run = core.optimizers().get(run_id.to_string()).await.unwrap();
         assert_eq!(run.status, "interrupted");
         core.storage()
             .database()
@@ -6415,8 +6404,6 @@ pub(in crate::optimizers) mod tests {
         stored.summary = json!({ "runDirectory": run_dir.display().to_string() });
         svc.persist_run(stored).await.unwrap();
         let error = svc.get_result(run.id).await.unwrap_err();
-        assert!(error
-            .to_string()
-            .contains("materialized candidate values"));
+        assert!(error.to_string().contains("materialized candidate values"));
     }
 }

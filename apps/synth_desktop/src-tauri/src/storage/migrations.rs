@@ -40,6 +40,7 @@ const MIGRATIONS: &[&str] = &[
     MIGRATION_35,
     MIGRATION_36,
     MIGRATION_37,
+    MIGRATION_38,
 ];
 
 /// Apply every migration the database has not reached yet.
@@ -93,6 +94,7 @@ const REQUIRED_TABLES: &[(&str, &str)] = &[
     ("hosted_lora_overlays", MIGRATION_29),
     ("optimizer_run_ownership", MIGRATION_33),
     ("container_sources", MIGRATION_37),
+    ("optimizer_recipe_sources", MIGRATION_38),
 ];
 
 fn heal_missing_tables(conn: &Connection) -> Result<()> {
@@ -1779,6 +1781,20 @@ CREATE TABLE IF NOT EXISTS container_sources (
     updated_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS container_sources_updated_at ON container_sources(updated_at DESC);
+"#;
+
+/// Durable provenance for the desktop-level optimizer recipe catalog. Recipe
+/// sources are configured independently of chat/session workspaces and are
+/// re-read before every run, so this record is evidence rather than authority
+/// to execute a stale local declaration.
+const MIGRATION_38: &str = r#"
+CREATE TABLE IF NOT EXISTS optimizer_recipe_sources (
+    canonical_path TEXT PRIMARY KEY,
+    source_hash TEXT NOT NULL,
+    discovered_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS optimizer_recipe_sources_updated_at ON optimizer_recipe_sources(updated_at DESC);
 "#;
 #[cfg(test)]
 mod tests {

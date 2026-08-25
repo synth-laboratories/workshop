@@ -64,10 +64,10 @@ loop, a fixture, or a similarly named recipe as a replacement.
 | `eval.craftax.llm-policy.smoke.v1` | `llm-policy.v1` | report-only |
 | `eval.gamebench.llm-policy.confirm.v1` | `llm-policy.v1` | promotes |
 
-Workspace baseline evals (`algorithm = "eval"` in `workshop.recipe.toml`) are
+Source-declared baseline evals (`algorithm = "eval"` in `workshop.recipe.toml`) are
 fixed measurement recipes, not candidate comparisons. They appear in
-`list_recipes` only after the session workspace declares them. Start the
-workspace `recipe_id` directly with `open_visual: true`; do not invent or stage
+`list_recipes` only after a configured desktop source root declares them. Start the
+catalog `recipe_id` directly with `open_visual: true`; do not invent or stage
 a candidate set. Pass `container_id` from `container_ensure` whenever more than
 one healthy pool advertises that family — omitting it then fails closed rather
 than substituting whichever probe happened last. They must complete every owed
@@ -76,7 +76,7 @@ credential, keep policy and grader usage separate.
 
 ```json
 {"operation":"start_workflow","arguments":{
-  "recipe_id":"<workspace recipe id>",
+  "recipe_id":"<catalog recipe id>",
   "container_id":"ctr_from_container_ensure",
   "open_visual":true}}
 ```

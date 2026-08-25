@@ -1,17 +1,21 @@
-//! Workspace-declared optimizer recipes and source-declared container specs.
+//! Desktop-source-declared optimizer recipes and container specs.
 //!
-//! Workshop does not ship task identity. Recipes may be declared by a session
-//! workspace, while containers are catalogued from independent source roots.
-//! The host validates, clamps bounds to product caps, copies recipes into a
-//! run-owned directory, and executes that copy.
+//! Workshop does not infer task identity from a chat. Recipes and containers
+//! are discovered from bounded desktop source roots, then copied into a
+//! run-owned directory. Session references may own the resulting run and its
+//! visuals, but they never select project code or configuration.
 
 use anyhow::{anyhow, bail, Context, Result};
+use chrono::Utc;
+use rusqlite::params;
 use serde::Deserialize;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::{
-    fs,
+    collections::{BTreeMap, HashSet},
+    env, fs,
     path::{Path, PathBuf},
+    sync::Arc,
 };
 
 /// Product ceiling. Workspace `[bounds]` may be stricter, never looser.
@@ -21,6 +25,8 @@ pub const PRODUCT_MAX_TOTAL_ROLLOUTS: i64 = 240;
 const RECIPE_FILE: &str = "workshop.recipe.toml";
 const RECIPES_DIR: &str = "workshop.recipes";
 const CONTAINERS_FILE: &str = "workshop.containers.toml";
+const RECIPE_SOURCE_ROOTS_ENV: &str = "SYNTH_RECIPE_SOURCE_ROOTS";
+const CONTAINER_SOURCE_ROOTS_ENV: &str = "SYNTH_CONTAINER_SOURCE_ROOTS";
 
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -75,6 +81,14 @@ pub struct WorkspaceRecipe {
     pub requires_credential_advertisement: bool,
     pub source_path: PathBuf,
     pub source_hash: String,
+    pub source_root: PathBuf,
+}
+
+#[derive(Clone, Debug)]
+struct RecipeSource {
+    root: PathBuf,
+    source_hash: String,
+    recipes: Vec<WorkspaceRecipe>,
 }
 
 #[derive(Clone, Debug)]
@@ -168,36 +182,174 @@ fn default_contract() -> String {
     "synth-containers/v1".into()
 }
 
-pub fn session_workspace(
-    db: &crate::storage::Database,
-    session_id: &str,
-) -> Result<Option<PathBuf>> {
-    let id = session_id.to_string();
-    let workspace: Option<String> = db.with_conn(|conn| {
-        use rusqlite::OptionalExtension;
-        conn.query_row(
-            "SELECT workspace FROM conversation_workspace_scopes WHERE session_id=?1",
-            [&id],
-            |row| row.get(0),
-        )
-        .optional()
-        .map_err(anyhow::Error::from)
-    })?;
-    match workspace {
-        Some(path) if !path.trim().is_empty() => {
-            Ok(Some(crate::workspace_scope::canonical_directory(&path)?))
-        }
-        _ => Ok(None),
-    }
+/// List recipe declarations available to this desktop. Sources come from
+/// configured roots and persisted desktop provenance, never from the active
+/// chat or its isolated workspace.
+pub fn catalog(db: &crate::storage::Database) -> Result<Vec<WorkspaceRecipe>> {
+    let mut roots = discovery_roots();
+    roots.extend(remembered_roots(db)?);
+    flatten_sources(discover_sources_in_roots(&roots)?)
 }
 
-pub fn require_session_workspace(
-    db: &crate::storage::Database,
-    session_id: &str,
-) -> Result<PathBuf> {
-    session_workspace(db, session_id)?.ok_or_else(|| {
-        anyhow!("session `{session_id}` has no workspace; declare workshop.recipe.toml there")
+/// Resolve one recipe from the desktop catalog and retain its refreshed source
+/// provenance before a run copies the declaration into app-owned state.
+pub async fn resolve(
+    db: &Arc<crate::storage::Database>,
+    recipe_id: &str,
+) -> Result<WorkspaceRecipe> {
+    let recipe_id = recipe_id.trim();
+    if recipe_id.is_empty() || recipe_id.len() > 256 {
+        bail!("recipe_id is required");
+    }
+    let mut roots = discovery_roots();
+    roots.extend(remembered_roots(db)?);
+    let sources = discover_sources_in_roots(&roots)?;
+    persist_sources(db, &sources).await?;
+    flatten_sources(sources)?
+        .into_iter()
+        .find(|recipe| recipe.id == recipe_id)
+        .ok_or_else(|| anyhow!("catalog recipe `{recipe_id}` is not declared"))
+}
+
+/// Unit-test declarations are stored against the test database, so tests use
+/// the same catalog flow without mutating process-wide source-root settings.
+#[cfg(test)]
+pub(crate) async fn remember_source_for_test(
+    db: &Arc<crate::storage::Database>,
+    root: &Path,
+) -> Result<()> {
+    let sources = discover_sources_in_roots(&[root.to_path_buf()])?;
+    if sources.is_empty() {
+        bail!("test recipe source {} declares no recipes", root.display());
+    }
+    persist_sources(db, &sources).await
+}
+
+fn discovery_roots() -> Vec<PathBuf> {
+    let configured: Vec<PathBuf> = env::var_os(RECIPE_SOURCE_ROOTS_ENV)
+        .or_else(|| env::var_os(CONTAINER_SOURCE_ROOTS_ENV))
+        .map(|value| env::split_paths(&value).collect())
+        .unwrap_or_default();
+    if !configured.is_empty() {
+        return configured;
+    }
+    let mut roots = Vec::new();
+    if let Some(home) = env::var_os("HOME") {
+        roots.push(PathBuf::from(home).join("GitHub"));
+    }
+    if let Some(workshop) = env::var_os("SYNTH_WORKSHOP_ROOT") {
+        roots.push(PathBuf::from(workshop));
+    }
+    roots
+}
+
+fn remembered_roots(db: &crate::storage::Database) -> Result<Vec<PathBuf>> {
+    db.with_conn(|conn| {
+        let mut statement = conn.prepare(
+            "SELECT canonical_path FROM optimizer_recipe_sources ORDER BY updated_at DESC, canonical_path",
+        )?;
+        let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
+        let paths = rows
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(anyhow::Error::from)?;
+        Ok(paths.into_iter().map(PathBuf::from).collect())
     })
+}
+
+fn discover_sources_in_roots(roots: &[PathBuf]) -> Result<Vec<RecipeSource>> {
+    let mut candidates = Vec::new();
+    let mut seen = HashSet::new();
+    for root in roots {
+        let Ok(root) = root.canonicalize() else {
+            continue;
+        };
+        if !root.is_dir() {
+            continue;
+        }
+        candidates.push(root.clone());
+        let entries = fs::read_dir(&root)
+            .with_context(|| format!("read recipe source root {}", root.display()))?;
+        for entry in entries {
+            let entry = entry.with_context(|| format!("read entry below {}", root.display()))?;
+            if entry.file_type()?.is_dir() {
+                candidates.push(entry.path());
+            }
+        }
+    }
+
+    let mut sources = Vec::new();
+    for candidate in candidates {
+        let Ok(root) = candidate.canonicalize() else {
+            continue;
+        };
+        if !seen.insert(root.clone()) {
+            continue;
+        }
+        // One malformed declaration in a broad desktop root must not hide all
+        // other valid sources. Fixing it makes it discoverable next refresh.
+        let Ok(recipes) = load_recipes(&root) else {
+            continue;
+        };
+        if recipes.is_empty() {
+            continue;
+        }
+        sources.push(RecipeSource {
+            source_hash: source_hash(&recipes),
+            root,
+            recipes,
+        });
+    }
+    sources.sort_by(|left, right| left.root.cmp(&right.root));
+    Ok(sources)
+}
+
+fn flatten_sources(sources: Vec<RecipeSource>) -> Result<Vec<WorkspaceRecipe>> {
+    let mut by_id = BTreeMap::new();
+    for source in sources {
+        for recipe in source.recipes {
+            if let Some(previous) = by_id.insert(recipe.id.clone(), recipe.clone()) {
+                bail!(
+                    "catalog recipe `{}` is declared by both {} and {}",
+                    recipe.id,
+                    previous.source_path.display(),
+                    recipe.source_path.display()
+                );
+            }
+        }
+    }
+    Ok(by_id.into_values().collect())
+}
+
+async fn persist_sources(
+    db: &Arc<crate::storage::Database>,
+    sources: &[RecipeSource],
+) -> Result<()> {
+    let rows: Vec<_> = sources
+        .iter()
+        .map(|source| {
+            (
+                source.root.to_string_lossy().to_string(),
+                source.source_hash.clone(),
+            )
+        })
+        .collect();
+    db.clone()
+        .run_transaction(move |conn| {
+            let now = Utc::now().to_rfc3339();
+            for (root, source_hash) in rows {
+                conn.execute(
+                    "INSERT INTO optimizer_recipe_sources(canonical_path,source_hash,discovered_at,updated_at)
+                     VALUES(?1,?2,?3,?3)
+                     ON CONFLICT(canonical_path) DO UPDATE SET
+                        source_hash=excluded.source_hash,
+                        discovered_at=excluded.discovered_at,
+                        updated_at=excluded.updated_at",
+                    params![root, source_hash, now],
+                )?;
+            }
+            Ok(())
+        })
+        .await
 }
 
 pub fn load_recipes(workspace: &Path) -> Result<Vec<WorkspaceRecipe>> {
@@ -222,11 +374,14 @@ pub fn load_recipes(workspace: &Path) -> Result<Vec<WorkspaceRecipe>> {
             recipes.push(parse_recipe(&path)?);
         }
     }
-    let mut seen = std::collections::HashSet::new();
+    let mut seen = HashSet::new();
     for recipe in &recipes {
         if !seen.insert(recipe.id.as_str()) {
-            bail!("workspace declares recipe id `{}` more than once", recipe.id);
+            bail!("source declares recipe id `{}` more than once", recipe.id);
         }
+    }
+    for recipe in &mut recipes {
+        recipe.source_root = workspace.to_path_buf();
     }
     Ok(recipes)
 }
@@ -237,7 +392,7 @@ pub fn find_recipe(workspace: &Path, recipe_id: &str) -> Result<WorkspaceRecipe>
         .find(|recipe| recipe.id == recipe_id)
         .ok_or_else(|| {
             anyhow!(
-                "workspace recipe `{recipe_id}` is not declared in {} or {}/",
+                "catalog recipe `{recipe_id}` is not declared in {} or {}/",
                 RECIPE_FILE,
                 RECIPES_DIR
             )
@@ -249,8 +404,7 @@ pub fn load_container_specs(source_root: &Path) -> Result<Vec<ContainerSpec>> {
     if !path.is_file() {
         return Ok(Vec::new());
     }
-    let text = fs::read_to_string(&path)
-        .with_context(|| format!("read {}", path.display()))?;
+    let text = fs::read_to_string(&path).with_context(|| format!("read {}", path.display()))?;
     parse_containers(source_root, &text)
 }
 
@@ -268,7 +422,8 @@ pub fn catalog_entry(recipe: &WorkspaceRecipe) -> Value {
             AlgorithmKind::Eval => "eval",
         },
         "task": recipe.family,
-        "source": "workspace",
+        "source": "catalog",
+        "sourceRoot": recipe.source_root,
         "availability": "available",
         "semantics": match recipe.algorithm {
             AlgorithmKind::Gepa => "gepa_optimization",
@@ -332,7 +487,10 @@ fn parse_recipe(path: &Path) -> Result<WorkspaceRecipe> {
         .max_total_rollouts
         .unwrap_or(PRODUCT_MAX_TOTAL_ROLLOUTS);
     if !(max_cost_usd.is_finite() && max_cost_usd > 0.0) {
-        bail!("recipe `{}` bounds.max_cost_usd must be a positive finite number", parsed.id);
+        bail!(
+            "recipe `{}` bounds.max_cost_usd must be a positive finite number",
+            parsed.id
+        );
     }
     if max_cost_usd > PRODUCT_MAX_COST_USD {
         bail!(
@@ -371,27 +529,26 @@ fn parse_recipe(path: &Path) -> Result<WorkspaceRecipe> {
         family,
         harness: parsed.harness.unwrap_or_else(|| "desktop_eval".into()),
         policy_config: parsed.policy_config.unwrap_or_else(|| "default".into()),
-        train_seeds: parsed.train_seeds.unwrap_or_else(|| vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9]),
+        train_seeds: parsed
+            .train_seeds
+            .unwrap_or_else(|| vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9]),
         heldout_seeds: parsed.heldout_seeds.unwrap_or_default(),
         concurrency: parsed.concurrency.unwrap_or(1).max(1),
         proposer_model: parsed.proposer_model,
         requires_credential_advertisement: parsed.requires_credential_advertisement,
         source_path: path.to_path_buf(),
         source_hash: content_hash(&text),
+        source_root: path.parent().unwrap_or_else(|| Path::new("")).to_path_buf(),
         id: parsed.id,
     })
 }
 
 fn parse_containers(source_root: &Path, text: &str) -> Result<Vec<ContainerSpec>> {
-    let parsed: ContainersFile =
-        toml::from_str(text).context("parse workshop.containers.toml")?;
+    let parsed: ContainersFile = toml::from_str(text).context("parse workshop.containers.toml")?;
     let mut specs = Vec::new();
     for item in parsed.container {
         if item.command.is_empty() && item.url.as_deref().map(str::trim).unwrap_or("").is_empty() {
-            bail!(
-                "container `{}` must declare command or url",
-                item.id
-            );
+            bail!("container `{}` must declare command or url", item.id);
         }
         let cwd_rel = item.cwd.unwrap_or_else(|| ".".into());
         let cwd = resolve_source_path(source_root, &cwd_rel)?;
@@ -437,6 +594,22 @@ fn content_hash(text: &str) -> String {
     format!("sha256:{:x}", hasher.finalize())
 }
 
+fn source_hash(recipes: &[WorkspaceRecipe]) -> String {
+    let mut entries: Vec<_> = recipes
+        .iter()
+        .map(|recipe| (recipe.id.as_str(), recipe.source_hash.as_str()))
+        .collect();
+    entries.sort_unstable();
+    let mut hasher = Sha256::new();
+    for (id, hash) in entries {
+        hasher.update(id.as_bytes());
+        hasher.update([0]);
+        hasher.update(hash.as_bytes());
+        hasher.update([0]);
+    }
+    format!("sha256:{:x}", hasher.finalize())
+}
+
 /// Bind policy URLs from locality. Container locality cannot yield loopback.
 pub fn bind_locality_urls(
     config: &mut toml::value::Table,
@@ -447,19 +620,19 @@ pub fn bind_locality_urls(
 ) -> Result<()> {
     let (base_url, inference_url) = match locality {
         PolicyLocality::Host => {
-            let base = host_base_url.ok_or_else(|| {
-                anyhow!("locality=host requires the host provider proxy URL")
-            })?;
+            let base = host_base_url
+                .ok_or_else(|| anyhow!("locality=host requires the host provider proxy URL"))?;
             (base.to_string(), None)
         }
         PolicyLocality::Container => {
             let base = container_base_url.ok_or_else(|| {
-                anyhow!("locality=container requires container_openai_base_url; refusing host loopback")
+                anyhow!(
+                    "locality=container requires container_openai_base_url; refusing host loopback"
+                )
             })?;
             refuse_loopback(base)?;
-            let inference = container_inference_url.ok_or_else(|| {
-                anyhow!("locality=container requires container_openai_route")
-            })?;
+            let inference = container_inference_url
+                .ok_or_else(|| anyhow!("locality=container requires container_openai_route"))?;
             refuse_loopback(inference)?;
             (base.to_string(), Some(inference.to_string()))
         }
@@ -471,10 +644,7 @@ pub fn bind_locality_urls(
         .ok_or_else(|| anyhow!("recipe [policy] must be a table"))?;
     policy.insert("base_url".into(), toml::Value::String(base_url));
     if let Some(inference_url) = inference_url {
-        policy.insert(
-            "inference_url".into(),
-            toml::Value::String(inference_url),
-        );
+        policy.insert("inference_url".into(), toml::Value::String(inference_url));
     }
     policy.insert(
         "credential_mode".into(),
@@ -502,9 +672,8 @@ pub fn bind_locality_urls(
         })
     {
         let provider = canonical_provider;
-        let proposer_base = host_base_url.ok_or_else(|| {
-            anyhow!("proposer requires the host provider proxy URL")
-        })?;
+        let proposer_base = host_base_url
+            .ok_or_else(|| anyhow!("proposer requires the host provider proxy URL"))?;
         proposer.insert("provider".into(), toml::Value::String(provider.clone()));
         proposer.insert(
             "base_url".into(),
@@ -512,11 +681,14 @@ pub fn bind_locality_urls(
         );
         proposer.insert(
             "api_key_env".into(),
-            toml::Value::String(match provider.as_str() {
-                "openrouter" => "OPENROUTER_API_KEY",
-                "anthropic" => "ANTHROPIC_API_KEY",
-                _ => "OPENAI_API_KEY",
-            }.into()),
+            toml::Value::String(
+                match provider.as_str() {
+                    "openrouter" => "OPENROUTER_API_KEY",
+                    "anthropic" => "ANTHROPIC_API_KEY",
+                    _ => "OPENAI_API_KEY",
+                }
+                .into(),
+            ),
         );
     }
     Ok(())
@@ -524,10 +696,7 @@ pub fn bind_locality_urls(
 
 pub fn refuse_loopback(url: &str) -> Result<()> {
     let lowered = url.to_ascii_lowercase();
-    if lowered.contains("127.0.0.1")
-        || lowered.contains("localhost")
-        || lowered.contains("[::1]")
-    {
+    if lowered.contains("127.0.0.1") || lowered.contains("localhost") || lowered.contains("[::1]") {
         bail!("locality=container cannot bind a loopback URL: {url}");
     }
     Ok(())
@@ -617,7 +786,9 @@ max_total_rollouts = 10
 "#,
         )
         .unwrap();
-        let error = find_recipe(&workspace, "eval.too-rich.v1").unwrap_err().to_string();
+        let error = find_recipe(&workspace, "eval.too-rich.v1")
+            .unwrap_err()
+            .to_string();
         assert!(error.contains("exceeds product cap"), "{error}");
     }
 
@@ -686,5 +857,32 @@ locality = "container"
     fn empty_workspace_has_no_recipes() {
         let (_dir, workspace) = write_workspace();
         assert!(load_recipes(&workspace).unwrap().is_empty());
+    }
+
+    #[test]
+    fn desktop_source_catalog_discovers_recipes_without_a_session_workspace() {
+        let (_dir, sources_root) = write_workspace();
+        let source = sources_root.join("craftax-source");
+        fs::create_dir_all(source.join(RECIPES_DIR)).unwrap();
+        fs::write(
+            source.join(RECIPES_DIR).join("craftax.toml"),
+            r#"
+id = "eval.craftax.catalog-smoke.v1"
+algorithm = "eval"
+container = "craftax_react"
+model = "gpt-4.1-nano"
+locality = "host"
+[bounds]
+max_cost_usd = 0.10
+max_total_rollouts = 1
+"#,
+        )
+        .unwrap();
+
+        let recipes = flatten_sources(discover_sources_in_roots(&[sources_root]).unwrap()).unwrap();
+        assert_eq!(recipes.len(), 1);
+        assert_eq!(recipes[0].id, "eval.craftax.catalog-smoke.v1");
+        assert_eq!(recipes[0].source_root, source.canonicalize().unwrap());
+        assert_eq!(catalog_entry(&recipes[0])["source"], json!("catalog"));
     }
 }

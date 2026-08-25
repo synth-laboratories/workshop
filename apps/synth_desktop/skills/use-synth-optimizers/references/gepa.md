@@ -4,25 +4,25 @@ Use GEPA for prompt/candidate optimization with rollout-based evaluation.
 
 Workshop does not ship task GEPA recipes. Fresh `list_recipes` has no
 `gepa.banking77.*` or `gepa.craftax.*` ids. A GEPA run exists only after the
-session workspace declares it in `workshop.recipe.toml` (or
+configured desktop source root declares it in `workshop.recipe.toml` (or
 `workshop.recipes/*.toml`) with `algorithm = "gepa"` and a container from
 `workshop.containers.toml`. Author the target with `$author-synth-container`
-when the workspace has none.
+when the catalog has none. A session never selects the source root.
 
 ## Before starting
 
-Call `list_recipes` and report the selected workspace recipe's catalog values
+Call `list_recipes` and report the selected source recipe's catalog values
 exactly: id, container, locality, bounds (`max_cost_usd`, `max_total_rollouts`).
-Product caps are `$2.45` and `240` rollouts; the workspace may be stricter,
+Product caps are `$2.45` and `240` rollouts; the source declaration may be stricter,
 never looser. The trusted Desktop OpenAI credential is required. Do not look
 for a packaged cookbook.
 
-Use the one-shot workflow admission path. Pass the workspace `recipe_id` and
+Use the one-shot workflow admission path. Pass the catalog `recipe_id` and
 `container_id` from `container_ensure` when more than one healthy pool
 advertises that family. Do not pass URLs, paths, commands, or credentials:
 
 ```json
-{"operation":"start_workflow","arguments":{"recipe_id":"<workspace recipe id>","open_visual":true}}
+{"operation":"start_workflow","arguments":{"recipe_id":"<catalog recipe id>","open_visual":true}}
 {"operation":"get_result","arguments":{"optimizer_run_id":"<id>"}}
 ```
 
