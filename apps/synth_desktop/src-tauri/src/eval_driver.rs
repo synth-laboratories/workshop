@@ -817,6 +817,7 @@ async fn create_session(deps: &EvalDriverDeps, body: Value) -> Result<Value> {
             .to_string(),
         api_key: String::new(),
         model,
+        target_id: body.get("targetId").and_then(Value::as_str).map(str::to_string),
         provider_name: Some(provider_name),
         provider_title: body
             .get("providerTitle")
@@ -954,6 +955,7 @@ async fn send_message(deps: &EvalDriverDeps, session_id: &str, body: Value) -> R
             .to_string(),
         api_key: String::new(),
         model,
+        target_id: body.get("targetId").and_then(Value::as_str).map(str::to_string),
         provider_name: Some(provider_name),
         provider_title: None,
         provider_env_key: None,

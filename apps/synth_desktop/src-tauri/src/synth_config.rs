@@ -15,6 +15,71 @@ const DEFAULT_MODEL: &str = "gpt-5.6-luna";
 const DEFAULT_MODEL_EFFORT: &str = "xhigh";
 const DEFAULT_MODEL_PROVIDERS: &[&str] = &["chatgpt", "openrouter"];
 
+/// A deliberately narrow, instance-local OpenRouter target declaration.  This
+/// is configuration, not a provider adapter: it cannot carry credentials,
+/// headers, URLs, prompts, prices, or arbitrary generation-body fields.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct OpenRouterModelConfig {
+    pub id: String,
+    pub model: String,
+    #[serde(default = "default_openrouter_model_enabled")]
+    pub enabled: bool,
+    #[serde(default)]
+    pub display_name: Option<String>,
+    #[serde(default)]
+    pub routing: Option<OpenRouterRoutingConfig>,
+    #[serde(default)]
+    pub ui: Option<OpenRouterModelUiConfig>,
+}
+
+fn default_openrouter_model_enabled() -> bool {
+    true
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct OpenRouterRoutingConfig {
+    #[serde(default)]
+    pub allow_fallbacks: Option<bool>,
+    #[serde(default)]
+    pub require_parameters: Option<bool>,
+    #[serde(default)]
+    pub data_collection: Option<OpenRouterDataCollection>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub(crate) enum OpenRouterDataCollection {
+    Allow,
+    Deny,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct OpenRouterModelUiConfig {
+    #[serde(default)]
+    pub reasoning_control: Option<OpenRouterReasoningControl>,
+    #[serde(default)]
+    pub default_reasoning: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub(crate) enum OpenRouterReasoningControl {
+    None,
+    Binary,
+    Effort,
+}
+
+#[derive(Clone, Debug, Default)]
+pub(crate) struct OpenRouterModelConfigSet {
+    pub models: Vec<OpenRouterModelConfig>,
+    /// Errors are scoped to a config path so one invalid entry cannot remove
+    /// source-owned targets or valid neighboring entries.
+    pub diagnostics: Vec<String>,
+}
+
 /// Checked-in backend endpoint defaults for the explicit workshop lane
 /// profile names, layered on top of the legacy `prod`/`staging`/`local`
 /// fallback `resolve()` already had. `[intern.endpoints].<profile>` in
@@ -917,6 +982,121 @@ fn config_path() -> PathBuf {
         .unwrap_or_else(|| crate::instance::state_root().join("config.toml"))
 }
 
+/// Parse only `[[models.openrouter]]` from the existing TOML document.  The
+/// rest of config.toml remains independently owned, so a malformed custom
+/// target never blocks built-ins or unrelated settings from loading.
+pub(crate) fn openrouter_model_configs() -> Result<OpenRouterModelConfigSet> {
+    let path = config_path();
+    let document = read_toml(&path)?;
+    let Some(models) = document.get("models").and_then(toml::Value::as_table) else {
+        return Ok(OpenRouterModelConfigSet::default());
+    };
+    let Some(entries) = models.get("openrouter") else {
+        return Ok(OpenRouterModelConfigSet::default());
+    };
+    let Some(entries) = entries.as_array() else {
+        return Ok(OpenRouterModelConfigSet {
+            models: Vec::new(),
+            diagnostics: vec![format!(
+                "{}: models.openrouter must be an array of tables",
+                path.display()
+            )],
+        });
+    };
+
+    let mut result = OpenRouterModelConfigSet::default();
+    let mut seen_ids = std::collections::HashSet::new();
+    for (index, raw) in entries.iter().enumerate() {
+        let location = format!(
+            "{}: [[models.openrouter]] entry {}",
+            path.display(),
+            index + 1
+        );
+        let entry = match raw.clone().try_into::<OpenRouterModelConfig>() {
+            Ok(entry) => entry,
+            Err(error) => {
+                result.diagnostics.push(format!("{location}: {error}"));
+                continue;
+            }
+        };
+        if let Err(error) = validate_openrouter_model_config(&entry) {
+            result.diagnostics.push(format!("{location}: {error}"));
+            continue;
+        }
+        if !seen_ids.insert(entry.id.clone()) {
+            result.diagnostics.push(format!(
+                "{location}: duplicate OpenRouter target id `{}`",
+                entry.id
+            ));
+            continue;
+        }
+        result.models.push(entry);
+    }
+    Ok(result)
+}
+
+fn validate_openrouter_model_config(entry: &OpenRouterModelConfig) -> Result<()> {
+    if entry.id.is_empty()
+        || !entry.id.chars().all(|character| {
+            character.is_ascii_lowercase()
+                || character.is_ascii_digit()
+                || matches!(character, '_' | '-')
+        })
+    {
+        return Err(anyhow!(
+            "id must use lowercase ASCII letters, digits, `_`, or `-`"
+        ));
+    }
+    if !is_openrouter_model_slug(&entry.model) {
+        return Err(anyhow!(
+            "model must be an exact OpenRouter slug such as `vendor/model` or `@preset/name`"
+        ));
+    }
+    if entry
+        .display_name
+        .as_deref()
+        .is_some_and(|value| value.trim().is_empty() || value.chars().count() > 120)
+    {
+        return Err(anyhow!(
+            "display_name must be 1–120 visible characters when set"
+        ));
+    }
+    if let Some(ui) = &entry.ui {
+        if ui.default_reasoning.as_deref().is_some_and(|value| {
+            !matches!(value, "none" | "low" | "medium" | "high" | "xhigh" | "max")
+        }) {
+            return Err(anyhow!(
+                "ui.default_reasoning must be one of none, low, medium, high, xhigh, max"
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn is_openrouter_model_slug(value: &str) -> bool {
+    let value = value.trim();
+    if value.is_empty() || value.len() > 240 || value.contains(char::is_whitespace) {
+        return false;
+    }
+    if let Some(name) = value.strip_prefix("@preset/") {
+        return !name.is_empty()
+            && name.chars().all(|character| {
+                character.is_ascii_alphanumeric() || matches!(character, '/' | '-' | '_' | '.')
+            });
+    }
+    let body = value;
+    let mut pieces = body.split('/');
+    let first = pieces.next().unwrap_or_default();
+    let second = pieces.next().unwrap_or_default();
+    // Ordinary model slugs are exactly vendor/model.
+    if first.is_empty() || second.is_empty() || pieces.next().is_some() {
+        return false;
+    }
+    value.chars().all(|character| {
+        character.is_ascii_alphanumeric() || matches!(character, '@' | '/' | '-' | '_' | '.')
+    })
+}
+
 fn read_toml(path: &Path) -> Result<toml::Value> {
     match fs::read_to_string(path) {
         Ok(raw) => raw
@@ -1180,6 +1360,35 @@ fn secret_fingerprint(secret: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn configurable_openrouter_model_accepts_minimal_ox_alpha_entry() {
+        let entry: OpenRouterModelConfig = toml::from_str(
+            r#"
+id = "ox-alpha"
+model = "stealth/ox-alpha"
+enabled = true
+"#,
+        )
+        .unwrap();
+        validate_openrouter_model_config(&entry).unwrap();
+        assert_eq!(entry.id, "ox-alpha");
+        assert_eq!(entry.model, "stealth/ox-alpha");
+        assert!(entry.enabled);
+    }
+
+    #[test]
+    fn configurable_openrouter_model_rejects_unknown_and_unsafe_fields() {
+        let unknown = toml::from_str::<OpenRouterModelConfig>(
+            "id = \"ox-alpha\"\nmodel = \"stealth/ox-alpha\"\napi_key = \"never\"\n",
+        );
+        assert!(unknown.is_err());
+
+        let invalid: OpenRouterModelConfig =
+            toml::from_str("id = \"Ox Alpha\"\nmodel = \"https://example.invalid/model\"\n")
+                .unwrap();
+        assert!(validate_openrouter_model_config(&invalid).is_err());
+    }
 
     #[test]
     fn materializes_luna_xhigh_default_without_overwriting_operator_choice() {

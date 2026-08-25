@@ -53,6 +53,13 @@ export type ExecutionTargetOption = {
 	id: string;
 	label: string;
 	description: string;
+	/** Exact provider slug where this target is remote. */
+	modelId?: string;
+	/** Native catalog state; false means visible but not selectable for new turns. */
+	selectable?: boolean;
+	availability?: "ready" | "credential_required" | "unverified" | "unavailable" | "expired";
+	source?: "builtin" | "user_config";
+	diagnostic?: string | null;
 	/** Where tokens run — local Metal, remote API, or Synth Cloud Intern. */
 	group: "local" | "remote" | "subscription" | "cloud";
 };
@@ -88,22 +95,29 @@ export type DefaultModelPreference = {
 export function resolveDefaultTargetId(
 	preference: DefaultModelPreference,
 	availability: { chatgpt: boolean; openrouter: boolean; synth?: boolean },
-	usage: Array<{ targetId: string; updatedAt: string }> = []
+	usage: Array<{ targetId: string; updatedAt: string }> = [],
+	targets: ExecutionTargetOption[] = LAUNCH_PICKER_TARGETS
 ): string {
 	const model = preference.model.toLowerCase();
 	for (const provider of preference.providers) {
 		if (provider === "chatgpt" && availability.chatgpt && model === CHATGPT_LUNA_MODEL) return "chatgpt-luna";
-		if (provider === "openrouter" && availability.openrouter && (model === CHATGPT_LUNA_MODEL || model === OPENROUTER_LUNA_MODEL)) return "openrouter-luna";
+		if (provider === "openrouter" && availability.openrouter && model === CHATGPT_LUNA_MODEL) {
+			return targets.find((target) => target.modelId === "openai/gpt-5.6-luna" && target.selectable !== false)?.id ?? "local-laguna";
+		}
+		if (provider === "openrouter" && availability.openrouter) {
+			const configured = targets.find((target) => target.modelId?.toLowerCase() === model && target.selectable !== false);
+			if (configured) return configured.id;
+		}
 	}
 	const usable = (targetId: string) => {
 		if (targetId.startsWith("chatgpt-")) return availability.chatgpt;
-		if (targetId.startsWith("openrouter-")) return availability.openrouter;
+		if (isOpenRouterTargetId(targetId)) return availability.openrouter;
 		if (targetId.startsWith("synth-cloud-")) return availability.synth === true;
 		return targetId === "local-laguna";
 	};
 	const ranked = new Map<string, { count: number; lastUsed: number }>();
 	for (const record of usage) {
-		if (!LAUNCH_PICKER_TARGETS.some((target) => target.id === record.targetId) || !usable(record.targetId)) continue;
+		if (!targets.some((target) => target.id === record.targetId && target.selectable !== false) || !usable(record.targetId)) continue;
 		const current = ranked.get(record.targetId) ?? { count: 0, lastUsed: 0 };
 		ranked.set(record.targetId, {
 			count: current.count + 1,
@@ -177,6 +191,18 @@ export type LocalActivityLine = {
 	alwaysAllowSupported?: boolean;
 	/** Expanded raw detail (tool output / thought) when the line is opened. */
 	detail?: string;
+	/**
+	 * Bounded, inspectable payloads associated with an activity.  These are
+	 * normalized before they reach React so nested runtime values can never
+	 * accidentally stringify to `[object Object]` in a transcript.
+	 */
+	inspectable?: Array<{
+		label: string;
+		value: string;
+		format: "json" | "text";
+		truncated?: boolean;
+		unavailable?: boolean;
+	}>;
 	/** Whether the disclosure contains local thought text or a provider summary. */
 	reasoningDisplay?: "full" | "summary";
 	/** Opens the first-class runtime artifact associated with this activity. */
@@ -208,6 +234,8 @@ export type LocalActivityLine = {
 	placement?: "before" | "after";
 	/** Source event sequence — used by the placement chronology invariant. */
 	sequence?: number;
+	/** Child thread opened by this delegation activity. */
+	subagentId?: string;
 	/** Token totals surrounding a context compaction (for the disclosure). */
 	tokensBefore?: number;
 	tokensAfter?: number;
@@ -283,11 +311,6 @@ export type LandingState = {
 	composerPlaceholder: string;
 };
 
-/** OpenRouter model ids used by the remote ACP adapter. */
-export const OPENROUTER_LUNA_MODEL = "openai/gpt-5.6-luna";
-export const OPENROUTER_LAGUNA_S_MODEL = "poolside/laguna-s-2.1";
-export const OPENROUTER_MUSE_SPARK_MODEL = "meta/muse-spark-1.2";
-export const OPENROUTER_GEMINI_FLASH_MODEL = "google/gemini-3.7-flash";
 /** Synth-hosted Shoal routes. Hardware/precision stay explicit in the id. */
 export const SYNTH_CLOUD_LAGUNA_S_MODEL = "synth_internal/laguna-s-2.1-nvfp4";
 export const SYNTH_CLOUD_LAGUNA_XS_B200_MODEL = "synth_internal/laguna-xs-2.1-nvfp4";
@@ -297,36 +320,16 @@ export const CHATGPT_LUNA_MODEL = "gpt-5.6-luna";
 export const CHATGPT_SOL_MODEL = "gpt-5.6-sol";
 export const CHATGPT_TERRA_MODEL = "gpt-5.6-terra";
 
-export const EXECUTION_TARGETS: ExecutionTargetOption[] = [
+export function isOpenRouterTargetId(id: string): boolean {
+	return id.startsWith("openrouter-") || id.startsWith("openrouter:");
+}
+
+const BUILTIN_EXECUTION_TARGETS: ExecutionTargetOption[] = [
 	{
 		id: "local-laguna",
 		label: "Laguna XS 2.1",
 		description: "Local · MLX · Metal · usage tracked",
 		group: "local"
-	},
-	{
-		id: "openrouter-luna",
-		label: "GPT 5.6 Luna",
-		description: `OpenRouter · ${OPENROUTER_LUNA_MODEL} · usage tracked`,
-		group: "remote"
-	},
-	{
-		id: "openrouter-laguna-s",
-		label: "Laguna S 2.1",
-		description: `OpenRouter · ${OPENROUTER_LAGUNA_S_MODEL} · usage tracked`,
-		group: "remote"
-	},
-	{
-		id: "openrouter-muse-spark",
-		label: "Muse Spark 1.2",
-		description: `OpenRouter · ${OPENROUTER_MUSE_SPARK_MODEL} · usage tracked`,
-		group: "remote"
-	},
-	{
-		id: "openrouter-gemini-flash",
-		label: "Gemini 3.7 Flash",
-		description: `OpenRouter · ${OPENROUTER_GEMINI_FLASH_MODEL} · usage tracked`,
-		group: "remote"
 	},
 	{
 		id: "chatgpt-luna",
@@ -384,18 +387,28 @@ export const EXECUTION_TARGETS: ExecutionTargetOption[] = [
 	}
 ];
 
+/**
+ * The OpenRouter portion is replaced by the native catalog once it arrives.
+ * Keeping the non-OpenRouter targets source-owned avoids moving unrelated
+ * local, ChatGPT, Synth Cloud, and Intern policies into config.toml.
+ */
+export let EXECUTION_TARGETS: ExecutionTargetOption[] = [...BUILTIN_EXECUTION_TARGETS];
+
 /** Intern Live/Background stay in the catalog for fixtures, but are hidden from v0.1 pickers. */
 export function isInternTargetId(id: string): boolean {
 	return id === "intern-sync" || id === "intern-async";
 }
 
 /** Targets shown in Composer / Landing model menus for the v0.1 launch. */
-export const LAUNCH_PICKER_TARGETS: ExecutionTargetOption[] = EXECUTION_TARGETS.filter(
+export let LAUNCH_PICKER_TARGETS: ExecutionTargetOption[] = EXECUTION_TARGETS.filter(
 	(target) => !isInternTargetId(target.id)
 );
 
-/** @deprecated Prefer openrouter-laguna-s — kept for fixture compatibility. */
-export const OPENROUTER_POOLSIDE_TARGET_ID = "openrouter-laguna-s";
+export function replaceOpenRouterExecutionTargets(entries: ExecutionTargetOption[]): void {
+	const sourceOwned = BUILTIN_EXECUTION_TARGETS.filter((target) => !isOpenRouterTargetId(target.id));
+	EXECUTION_TARGETS = [...sourceOwned.slice(0, 1), ...entries, ...sourceOwned.slice(1)];
+	LAUNCH_PICKER_TARGETS = EXECUTION_TARGETS.filter((target) => !isInternTargetId(target.id));
+}
 
 export const TARGET_GROUP_LABEL: Record<ExecutionTargetOption["group"], string> = {
 	local: "Local",

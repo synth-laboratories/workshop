@@ -43,6 +43,14 @@ allowed_roots = ["/Users/you/Documents/GitHub"]
 # "laguna-xs-2.1" = "none" # may be forced to "v1" or "v2"
 # "laguna-s-2.1" = "none"
 
+# Add an OpenRouter target without rebuilding Desktop. `model` is the exact
+# provider slug. Keep OpenRouter credentials in the adjacent .env file; do
+# not place keys or prices in config.toml.
+# [[models.openrouter]]
+# id = "ox-alpha"
+# model = "stealth/ox-alpha"
+# enabled = true
+
 # ~/.synth-desktop/.env
 # SYNTH_API_KEY=...
 

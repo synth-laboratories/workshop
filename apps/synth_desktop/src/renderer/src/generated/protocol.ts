@@ -286,6 +286,16 @@ export const commands = {
 	reportsCommentsList: (reportId: string, revision: number | null) => typedError<ReportComment[], AppError>(__TAURI_INVOKE("reports_comments_list", { reportId, revision })),
 	reportsCommentCreate: (reportId: string, revision: number, request: ReportCommentCreate) => typedError<ReportComment, AppError>(__TAURI_INVOKE("reports_comment_create", { reportId, revision, request })),
 	synthConfigGet: () => typedError<BackendSettings, AppError>(__TAURI_INVOKE("synth_config_get")),
+	/**
+	 *  The startup-safe catalog path: configuration plus a persisted public
+	 *  OpenRouter metadata snapshot only. It deliberately never waits for network.
+	 */
+	modelCatalogGet: () => typedError<ModelCatalog, AppError>(__TAURI_INVOKE("model_catalog_get")),
+	/**
+	 *  Explicit background follow-up used after the picker has rendered. OpenRouter
+	 *  metadata is public; no credential is sent to or exposed by this command.
+	 */
+	modelCatalogRefresh: () => typedError<ModelCatalog, AppError>(__TAURI_INVOKE("model_catalog_refresh")),
 	synthConfigUpdate: (request: BackendSettingsUpdate) => typedError<BackendSettings, AppError>(__TAURI_INVOKE("synth_config_update", { request })),
 	modelPerformanceGet: (windowMinutes: number | null) => typedError<ModelPerformanceSnapshot, AppError>(__TAURI_INVOKE("model_performance_get", { windowMinutes })),
 	/**
@@ -673,6 +683,12 @@ export type CodexSessionRecord = {
 	threadId: string,
 	workspace: string,
 	model: string,
+	/**
+	 *  Stable picker/catalog identity for a remote model. This is retained
+	 *  independently from the slug so removing a config entry cannot make a
+	 *  historical session look like a different model.
+	 */
+	targetId?: string | null,
 	providerName: string,
 	providerTitle: string,
 	baseUrl: string,
@@ -703,6 +719,11 @@ export type CodexSessionStartRequest = {
 	baseUrl: string,
 	apiKey?: string,
 	model: string,
+	/**
+	 *  Stable renderer catalog identity for this exact provider/model target.
+	 *  It is stored in the session target but is never forwarded upstream.
+	 */
+	targetId?: string | null,
 	providerName: string | null,
 	providerTitle: string | null,
 	providerEnvKey: string | null,
@@ -892,8 +913,8 @@ export type CoreDiagnostics = {
 };
 
 /**
- *  Who vouches for a request's dollar figure. Ordered by authority: a settled
- *  provider charge beats a Synth Cloud figure beats a tariff estimate.
+ *  Who vouches for a request's dollar figure. `TariffEstimate` is retained
+ *  solely to decode legacy rows; it is never surfaced as actual spend.
  */
 export type CostSource = "provider_reported" | "synth_cloud" | "tariff_estimate" | "none";
 
@@ -1435,6 +1456,51 @@ export type MlxRuntimeStatus = {
 	version: string,
 	installHint: string,
 };
+
+export type ModelCatalog = {
+	entries: ModelCatalogEntry[],
+	diagnostics: ModelCatalogDiagnostic[],
+	generatedAt: string,
+};
+
+export type ModelCatalogAvailability = "ready" | "credential_required" | "unverified" | "unavailable" | "expired";
+
+export type ModelCatalogCapabilities = {
+	inputModalities: string[],
+	outputModalities: string[],
+	tools: boolean,
+	reasoningControl: ModelCatalogReasoningControl,
+	defaultReasoning: string | null,
+	/**
+	 *  JavaScript-safe numeric values for the generated Tauri contract.
+	 *  OpenRouter model limits are far below `Number.MAX_SAFE_INTEGER`.
+	 */
+	maxContextTokens: number | null,
+	maxCompletionTokens: number | null,
+};
+
+export type ModelCatalogDiagnostic = {
+	location: string,
+	message: string,
+};
+
+export type ModelCatalogEntry = {
+	targetId: string,
+	provider: string,
+	modelId: string,
+	displayName: string,
+	source: ModelCatalogSource,
+	enabled: boolean,
+	availability: ModelCatalogAvailability,
+	capabilities: ModelCatalogCapabilities,
+	metadataObservedAt: string | null,
+	metadataSource: string | null,
+	diagnostic: string | null,
+};
+
+export type ModelCatalogReasoningControl = "none" | "binary" | "effort";
+
+export type ModelCatalogSource = "builtin" | "user_config";
 
 export type ModelMultiAgentSetting = {
 	modelId: string,

@@ -1,5 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
-import { apiProviderForTarget, EXECUTION_TARGETS, LAUNCH_PICKER_TARGETS, MODEL_ACCESS_LABEL, MODEL_ACCESS_ORDER, modelAccessForTarget, TARGET_GROUP_LABEL } from "../types/landing";
+import { apiProviderForTarget, EXECUTION_TARGETS, isOpenRouterTargetId, LAUNCH_PICKER_TARGETS, MODEL_ACCESS_LABEL, MODEL_ACCESS_ORDER, modelAccessForTarget, TARGET_GROUP_LABEL } from "../types/landing";
+import { targetOptionForId } from "../runtime/modelCatalog";
 import type { ExecutionTargetOption, LandingState, ModelAccessKind } from "../types/landing";
 import { SynthLogo } from "./SynthLogo";
 import { ProviderMark, providerMarkForTarget } from "./ProviderMark";
@@ -49,7 +50,7 @@ export function ModelPicker({
 	const [open, setOpen] = useState(false);
 	const [activeAccess, setActiveAccess] = useState<ModelAccessKind | null>(null);
 	const ref = useRef<HTMLDivElement>(null);
-	const selected = EXECUTION_TARGETS.find((t) => t.id === selectedTargetId) ?? EXECUTION_TARGETS[0];
+	const selected = targetOptionForId(selectedTargetId) ?? EXECUTION_TARGETS[0];
 	const selectedLagunaPolicy = lagunaPolicies.find((policy) =>
 		policy.isBase ? selectedLagunaPolicyId === null : policy.modelId === selectedLagunaPolicyId
 	);
@@ -208,11 +209,21 @@ export function ModelPicker({
 									const needsSynthKey =
 										target.id.startsWith("synth-cloud-") && apiKeyConfigured !== true;
 									const needsOpenRouterKey =
-										target.id.startsWith("openrouter-") && openrouterApiKeyConfigured !== true;
+										isOpenRouterTargetId(target.id) && openrouterApiKeyConfigured !== true;
 									const needsCodexOauth =
 										target.id.startsWith("chatgpt-") && codexOauthConfigured !== true;
 									const allowanceBlocked =
 										target.id.startsWith("synth-cloud-") && !needsSynthKey && Boolean(cloudBlockedReason);
+									if (target.selectable === false) {
+										return (
+											<div key={target.id} className="model-option is-disabled" data-testid={`model-option-${target.id}`}>
+												<span className="model-option-copy" role="option" aria-selected={false} aria-disabled="true">
+													<span className="model-option-label">{target.label}</span>
+													<span className="model-option-desc">{target.diagnostic ?? target.availability ?? "Unavailable"}</span>
+												</span>
+											</div>
+										);
+									}
 									if (allowanceBlocked) {
 										return (
 											<div

@@ -81,7 +81,7 @@ export function codexStartRequest(
 	return {
 		sessionId, workspace, baseUrl: "https://openrouter.ai/api/v1",
 		model: target.model, providerName: "openrouter", providerTitle: "OpenRouter Responses",
-		providerEnvKey: "OPENROUTER_API_KEY", autoCompactTokenLimit, ...approval
+		providerEnvKey: "OPENROUTER_API_KEY", autoCompactTokenLimit, targetId: target.targetId ?? null, ...approval
 	};
 }
 
@@ -111,7 +111,8 @@ export function restoreCodexSession(value: PersistedCodexSession): Session {
 				kind: "remote",
 				provider: chatgpt ? "openai-codex-oauth" : "openrouter",
 				model: value.model,
-				adapter: null
+				adapter: null,
+				targetId: value.targetId ?? null
 			};
 	const allowedStatuses = new Set<Session["status"]>([
 		"created", "ready", "running", "waiting_for_input", "paused", "interrupted", "completed", "failed", "cancelled", "configuration_required"

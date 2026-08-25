@@ -184,6 +184,7 @@ fn test_request(workspace: &Path, session_id: &str) -> CodexSessionStartRequest 
         base_url: "http://127.0.0.1:7333".into(),
         api_key: String::new(),
         model: "poolside/Laguna-XS-2.1-NVFP4-mlx".into(),
+        target_id: None,
         provider_name: Some("local-laguna".into()),
         provider_title: Some("Laguna fixture".into()),
         provider_env_key: Some("SYNTH_LAGUNA_API_KEY".into()),
@@ -1400,6 +1401,7 @@ async fn turn_send_reattaches_a_restored_running_record_without_an_attachment() 
         thread_id: "thread-restored".into(),
         workspace: temp.path().display().to_string(),
         model: "laguna".into(),
+        target_id: None,
         provider_name: "local-laguna".into(),
         provider_title: "Laguna fixture".into(),
         base_url: "http://127.0.0.1:7333/v1".into(),
@@ -2525,6 +2527,31 @@ fn openrouter_provider_overwrites_renderer_endpoint_before_leasing() {
 }
 
 #[test]
+fn configured_openrouter_model_reaches_codex_with_its_exact_slug() {
+    let temp = tempdir().unwrap();
+    let home = temp.path().join("home");
+    let workspace = temp.path().join("workspace");
+    fs::create_dir_all(&workspace).unwrap();
+    let (broker, _listener) =
+        CredentialBroker::bind(std::sync::Arc::new(credential_broker::ReceiptStore::new()))
+            .unwrap();
+    let mut request = test_request(&workspace, "ox-alpha-exact-slug");
+    request.model = "stealth/ox-alpha".into();
+    request.target_id = Some("openrouter:ox-alpha".into());
+    request.provider_name = Some("openrouter".into());
+    request.provider_title = Some("OpenRouter Responses".into());
+    request.provider_env_key = Some("OPENROUTER_API_KEY".into());
+    apply_openrouter_provider(&mut request, Some("sk-or-fixture")).unwrap();
+    apply_brokered_credential(&mut request, &broker).unwrap();
+    ensure_home(&home, &request).unwrap();
+
+    let config = fs::read_to_string(home.join("config.toml")).unwrap();
+    assert!(config.contains("model = \"stealth/ox-alpha\""));
+    assert!(config.contains("model_provider = \"openrouter\""));
+    assert!(!config.contains("sk-or-fixture"));
+}
+
+#[test]
 fn synth_cloud_normalizes_a_local_bind_address_for_the_client() {
     let temp = tempdir().unwrap();
     let (broker, _listener) =
@@ -3184,6 +3211,26 @@ async fn a_synth_cloud_turn_records_the_sum_of_its_settled_receipts() {
 }
 
 #[tokio::test]
+async fn an_openrouter_turn_uses_only_its_provider_reported_settled_cost() {
+    let temp = tempdir().unwrap();
+    let core = Arc::new(CoreRuntime::open(temp.path().join("core")).unwrap());
+    let receipts = credential_broker::ReceiptStore::new();
+    let session = "custom-ox-alpha-settles";
+    // This is provider response accounting, not a catalog price. A custom slug
+    // must retain a missing cost as missing and accept a settled cost when one
+    // arrives through the existing OpenRouter lease/proxy.
+    receipts.push(settled_receipt(session, "resp-ox", Some(0.0123)));
+    finalize_turn(&core, &receipts, session, "openrouter", "turn-1").await;
+
+    let totals = usage_totals(&core).await;
+    assert_eq!(totals.requests, 1);
+    assert_eq!(totals.cost_source, CostSource::ProviderReported);
+    assert_eq!(totals.estimated_cost_usd, None);
+    assert_eq!(totals.billed_cost_usd, Some(0.0123));
+    assert!(receipts.drain(session).is_empty());
+}
+
+#[tokio::test]
 async fn cloud_receipts_without_money_leave_billed_unset() {
     let temp = tempdir().unwrap();
     let core = Arc::new(CoreRuntime::open(temp.path().join("core")).unwrap());
@@ -3291,6 +3338,7 @@ async fn a_running_record_left_by_a_dead_process_never_lists_as_running() {
                 thread_id: format!("thread-{seed}"),
                 workspace: temp.path().display().to_string(),
                 model: "gpt-5.6-luna".into(),
+                target_id: None,
                 provider_name: "openrouter".into(),
                 provider_title: "OpenRouter Responses".into(),
                 base_url: "https://openrouter.ai/api/v1".into(),

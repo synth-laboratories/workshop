@@ -341,10 +341,10 @@ pub(crate) async fn finalize_performance_tracker(
     // invents a dollar amount from a built-in tariff: only a provider-settled
     // receipt may populate billed_cost_usd.
     let estimated_cost_usd = None;
-    // Settled Synth Cloud accounting, captured by the credential broker as the
-    // child's responses streamed through it. Only cloud turns drain: local /
-    // on-device providers have no provider charge and their rows stay exactly
-    // as the tracker built them — billed stays `None`, never $0.
+    // Settled OpenRouter and Synth Cloud accounting is captured by the
+    // credential broker as the child's responses stream through it. Only those
+    // relayed providers drain receipts; local/on-device rows stay exactly as
+    // the tracker built them — billed stays `None`, never $0.
     //
     // Laguna-local turns (`ProviderClass::LocalLaguna` / `local-laguna`) write
     // into this same `usage_records` ledger via finalize — tokens and
@@ -356,17 +356,17 @@ pub(crate) async fn finalize_performance_tracker(
     // under this turn, and draining removes those receipts. A late receipt
     // keeps the old scope and is never charged to a later turn; session close
     // logs and drops anything that arrived too late to be finalized.
-    let settled_cost_usd = if super::home::provider_class(Some(&tracker.provider))
-        == super::home::ProviderClass::SynthCloud
-    {
-        settled_cost_from_receipts(&receipts.drain_for_turn(session_id, &tracker.receipt_scope))
-    } else {
-        None
+    let provider_class = super::home::provider_class(Some(&tracker.provider));
+    let settled_cost_usd = match provider_class {
+        super::home::ProviderClass::OpenRouter | super::home::ProviderClass::SynthCloud => {
+            settled_cost_from_receipts(&receipts.drain_for_turn(session_id, &tracker.receipt_scope))
+        }
+        _ => None,
     };
-    let cost_source = if settled_cost_usd.is_some() {
-        CostSource::SynthCloud
-    } else {
-        CostSource::None
+    let cost_source = match (provider_class, settled_cost_usd) {
+        (super::home::ProviderClass::OpenRouter, Some(_)) => CostSource::ProviderReported,
+        (super::home::ProviderClass::SynthCloud, Some(_)) => CostSource::SynthCloud,
+        _ => CostSource::None,
     };
     let record = UsageRecord {
         id: format!("perf:{}:{}", tracker.provider, tracker.turn_id),

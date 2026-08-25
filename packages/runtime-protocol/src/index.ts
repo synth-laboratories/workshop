@@ -79,6 +79,8 @@ export type RemoteRuntimeTarget = {
   provider?: "openrouter" | "openai-codex-oauth";
   model: string;
   adapter: string | null;
+  /** Stable native catalog identity. Model slug remains the request authority. */
+  targetId?: string | null;
 };
 
 /** Synth gateway. Maps to Rust `RuntimeTarget::CloudRuntime`. */
@@ -123,6 +125,8 @@ export type RemoteExecutionTarget = {
   provider: "openrouter" | "synth-cloud" | "openai-codex-oauth";
   model: string;
   adapter: string | null;
+  /** Stable UI target identity retained when reading older runtime payloads. */
+  targetId?: string | null;
 };
 /** @deprecated Prefer {@link InternRuntimeTarget}. */
 export type InternExecutionTarget = InternRuntimeTarget;
@@ -143,7 +147,8 @@ export function normalizeRuntimeTarget(
       kind: "remote",
       provider: "openrouter",
       model: target.model,
-      adapter: target.adapter
+      adapter: target.adapter,
+      targetId: target.targetId
     };
   }
   return target;

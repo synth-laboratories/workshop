@@ -393,6 +393,7 @@ impl CodexManager {
                 thread_id: thread_id.clone(),
                 workspace: request.workspace.clone(),
                 model: session.model.clone(),
+                target_id: request.target_id.clone(),
                 provider_name: request.provider_name.unwrap_or_else(|| "custom".into()),
                 provider_title: request
                     .provider_title
@@ -427,7 +428,8 @@ impl CodexManager {
             title,
             kind: SessionKind::Codex,
             target: RuntimeTarget::from_codex_provider(&session.provider_name, &session.model)
-                .with_local_adapter(request.adapter.clone()),
+                .with_local_adapter(request.adapter.clone())
+                .with_target_id(request.target_id.clone()),
             project_id: None,
             remote_id: None,
             codex_thread_id: Some(thread_id.clone()),
@@ -436,6 +438,7 @@ impl CodexManager {
             metadata: json!({
                 "workspace": request.workspace,
                 "model": session.model,
+                "targetId": request.target_id.clone(),
                 "approvalPolicy": request.approval_policy.clone().unwrap_or_else(default_approval_policy),
                 "sandbox": request.sandbox.clone().unwrap_or_else(default_sandbox),
                 "titleOrigin": title_origin,
@@ -739,6 +742,13 @@ impl CodexManager {
         // that Workshop died mid-task.
         let recovery = self.persistence.pending_recovery(&request.session_id).await;
         let mut run_metadata = json!({"threadId": session.thread_id, "effort": effort});
+        let record = self.records.read().await.get(&request.session_id).cloned();
+        if let (Some(target_id), Some(object)) = (
+            record.as_ref().and_then(|record| record.target_id.clone()),
+            run_metadata.as_object_mut(),
+        ) {
+            object.insert("targetId".into(), json!(target_id));
+        }
         if let (Some(recovery), Some(object)) = (&recovery, run_metadata.as_object_mut()) {
             object.insert("recoveryAttempt".into(), json!(recovery.recovery_attempt));
             object.insert("recoveredAfterCrash".into(), json!(true));
@@ -751,12 +761,7 @@ impl CodexManager {
             session_id: request.session_id.clone(),
             mode: "codex_turn".into(),
             model: Some(session.model.clone()),
-            adapter: self
-                .records
-                .read()
-                .await
-                .get(&request.session_id)
-                .and_then(|record| record.adapter.clone()),
+            adapter: record.and_then(|record| record.adapter),
             metadata: run_metadata,
             source: EventSource::Codex,
         });

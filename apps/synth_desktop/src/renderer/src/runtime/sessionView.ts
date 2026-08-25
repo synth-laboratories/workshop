@@ -8,10 +8,6 @@ import type {
 } from "@synth/runtime-protocol";
 import { LOCAL_BASE_POLICY } from "./lagunaPolicies";
 import {
-	OPENROUTER_LAGUNA_S_MODEL,
-	OPENROUTER_LUNA_MODEL,
-	OPENROUTER_MUSE_SPARK_MODEL,
-	OPENROUTER_GEMINI_FLASH_MODEL,
 	CHATGPT_LUNA_MODEL,
 	CHATGPT_SOL_MODEL,
 	CHATGPT_TERRA_MODEL,
@@ -33,6 +29,13 @@ import {
 } from "../types/landing";
 import { assertLocalActivityPlacementInvariant } from "./activityPlacementInvariant";
 import { modelCapabilitiesForExecutionTarget } from "./modelCapabilities";
+import {
+	modelCatalogEntry,
+	modelCatalogEntryForModel,
+	rememberHistoricalOpenRouterTarget,
+	targetOptionForId,
+	unknownOpenRouterTargetId
+} from "./modelCatalog";
 
 /** Transcript divider copy for `thread/compacted` events. */
 export function contextCompactionLabel(source: string): string {
@@ -77,6 +80,26 @@ function tokenTotalFromPayload(payload: Record<string, unknown>): number | undef
 
 export function targetIdToExecutionTarget(targetId: string, adapter: string | null = null): ExecutionTarget {
 	const remoteAdapter = null;
+	const catalogTarget = modelCatalogEntry(targetId);
+	if (catalogTarget?.provider === "openrouter") {
+		return {
+			kind: "remote",
+			provider: "openrouter",
+			model: catalogTarget.modelId,
+			adapter: remoteAdapter,
+			targetId: catalogTarget.targetId
+		};
+	}
+	const retainedTarget = targetOptionForId(targetId);
+	if (retainedTarget?.group === "remote" && retainedTarget.modelId) {
+		return {
+			kind: "remote",
+			provider: "openrouter",
+			model: retainedTarget.modelId,
+			adapter: remoteAdapter,
+			targetId
+		};
+	}
 
 	switch (targetId) {
 		case "chatgpt-luna":
@@ -86,35 +109,6 @@ export function targetIdToExecutionTarget(targetId: string, adapter: string | nu
 				kind: "remote",
 				provider: "openai-codex-oauth",
 				model: targetId === "chatgpt-sol" ? CHATGPT_SOL_MODEL : targetId === "chatgpt-terra" ? CHATGPT_TERRA_MODEL : CHATGPT_LUNA_MODEL,
-				adapter: remoteAdapter
-			};
-		case "openrouter-luna":
-			return {
-				kind: "remote",
-				provider: "openrouter",
-				model: OPENROUTER_LUNA_MODEL,
-				adapter: remoteAdapter
-			};
-		case "openrouter-laguna-s":
-		case "openrouter-poolside":
-			return {
-				kind: "remote",
-				provider: "openrouter",
-				model: OPENROUTER_LAGUNA_S_MODEL,
-				adapter: remoteAdapter
-			};
-		case "openrouter-muse-spark":
-			return {
-				kind: "remote",
-				provider: "openrouter",
-				model: OPENROUTER_MUSE_SPARK_MODEL,
-				adapter: remoteAdapter
-			};
-		case "openrouter-gemini-flash":
-			return {
-				kind: "remote",
-				provider: "openrouter",
-				model: OPENROUTER_GEMINI_FLASH_MODEL,
 				adapter: remoteAdapter
 			};
 		case "synth-cloud-laguna-s":
@@ -170,12 +164,15 @@ export function executionTargetToUiId(target: ExecutionTarget): string {
 	if (target.provider === "openai-codex-oauth") {
 		return target.model === CHATGPT_SOL_MODEL ? "chatgpt-sol" : target.model === CHATGPT_TERRA_MODEL ? "chatgpt-terra" : "chatgpt-luna";
 	}
-	if (target.model === OPENROUTER_LUNA_MODEL || target.model.includes("kimi")) {
-		return "openrouter-luna";
+	if (target.targetId) {
+		if (!modelCatalogEntry(target.targetId)) rememberHistoricalOpenRouterTarget(target, target.targetId);
+		return target.targetId;
 	}
-	if (target.model === OPENROUTER_MUSE_SPARK_MODEL) return "openrouter-muse-spark";
-	if (target.model === OPENROUTER_GEMINI_FLASH_MODEL) return "openrouter-gemini-flash";
-	return "openrouter-laguna-s";
+	const catalogMatch = modelCatalogEntryForModel(target.model);
+	if (catalogMatch) return catalogMatch.targetId;
+	const unknown = unknownOpenRouterTargetId(target.model);
+	rememberHistoricalOpenRouterTarget(target, unknown);
+	return unknown;
 }
 
 export function sessionIsLocalChat(session: Session): boolean {

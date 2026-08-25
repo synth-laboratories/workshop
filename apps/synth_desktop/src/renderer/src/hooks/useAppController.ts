@@ -70,10 +70,18 @@ import {
 	loadModelKnobValues,
 	modelKnobForTarget,
 	modelKnobKey,
+	modelSupportsImageInput,
 	serviceTierForExecutionTarget,
 	turnStartEffortForExecutionTarget,
 	type ModelKnobTransportValue
 } from "../runtime/modelCapabilities";
+import {
+	canStartNewTurn,
+	installModelCatalog,
+	isOpenRouterCatalogTarget,
+	modelCatalog,
+	targetOptionForId
+} from "../runtime/modelCatalog";
 import {
 	planComposerSend,
 	planModelChipChange,
@@ -176,6 +184,8 @@ export function useAppController() {
 	const activeChatIdRef = useRef<string | null>(null);
 	const [transcriptHistoryBySession, setTranscriptHistoryBySession] = useState<Record<string, TranscriptHistoryState>>({});
 	const [selectedTargetId, setSelectedTargetId] = useState("chatgpt-luna");
+	const [catalogLoaded, setCatalogLoaded] = useState(false);
+	const [catalogRevision, setCatalogRevision] = useState(0);
 	const [selectedLagunaAdapterId, setSelectedLagunaAdapterId] = useState<string | null>(null);
 	const [lagunaAdapters, setLagunaAdapters] = useState<LagunaPolicy[]>([]);
 	const defaultModelResolvedRef = useRef(false);
@@ -275,6 +285,35 @@ export function useAppController() {
 		setToast(message);
 		window.setTimeout(() => setToast(null), 2200);
 	}, []);
+
+	useEffect(() => {
+		let disposed = false;
+		const apply = (catalog: ReturnType<typeof modelCatalog>) => {
+			if (disposed) return;
+			installModelCatalog(catalog);
+			setCatalogLoaded(true);
+			setCatalogRevision((revision) => revision + 1);
+		};
+		const load = async () => {
+			const catalog = await bridges.config?.modelCatalog();
+			if (catalog) apply(catalog);
+		};
+		void load().then(async () => {
+			const refreshed = await bridges.config?.refreshModelCatalog();
+			if (refreshed) apply(refreshed);
+		}).catch((reason) => {
+			if (!disposed) {
+				setCatalogLoaded(true);
+				showToast(`Could not refresh model catalog: ${publicError(reason)}`);
+			}
+		});
+		const onFocus = () => { void load().catch(() => undefined); };
+		window.addEventListener("focus", onFocus);
+		return () => {
+			disposed = true;
+			window.removeEventListener("focus", onFocus);
+		};
+	}, [showToast]);
 
 	const clearTurnStartWatchdog = useCallback((sessionId: string) => {
 		const timer = turnStartWatchdogsRef.current.get(sessionId);
@@ -380,7 +419,7 @@ export function useAppController() {
 	} = useAccountShell(showToast);
 
 	useEffect(() => {
-		if (defaultModelResolvedRef.current || view.kind !== "landing" || !backendSettings || !codexOauthStatus) return;
+		if (defaultModelResolvedRef.current || !catalogLoaded || view.kind !== "landing" || !backendSettings || !codexOauthStatus) return;
 		const targetId = resolveDefaultTargetId(backendSettings.defaultModel ?? { model: "gpt-5.6-luna", effort: "xhigh", providers: ["chatgpt", "openrouter"] }, {
 			chatgpt: codexOauthStatus.canUseModels,
 			openrouter: backendSettings.openrouterApiKeyConfigured,
@@ -400,7 +439,7 @@ export function useAppController() {
 			}
 		}
 		defaultModelResolvedRef.current = true;
-	}, [backendSettings, codexOauthStatus, sessions, view.kind]);
+	}, [backendSettings, catalogLoaded, catalogRevision, codexOauthStatus, sessions, view.kind]);
 
 	// One owner for plugin registry status; Sidebar and OptimizersPage read it.
 	const { pluginStatuses, refreshPluginStatuses } = usePluginStatuses();
@@ -1454,7 +1493,7 @@ export function useAppController() {
 	}, [reconcileOpenVisual, viewKey]);
 
 	const ensureOpenRouterReady = useCallback(async (targetId: string): Promise<boolean> => {
-		if (!targetId.startsWith("openrouter-")) return true;
+		if (!isOpenRouterCatalogTarget(targetId)) return true;
 		const config = await bridges.config?.get().catch(() => null);
 		const configured = config?.openrouterApiKeyConfigured ?? health?.openrouter.mode === "ready";
 		if (configured) {
@@ -1489,6 +1528,10 @@ export function useAppController() {
 		) => {
 			setBusy(true);
 			try {
+				if (isOpenRouterCatalogTarget(targetId) && !canStartNewTurn(targetId)) {
+					const entry = modelCatalog().entries.find((candidate) => candidate.targetId === targetId);
+					throw new Error(entry?.diagnostic ?? "This OpenRouter target is unavailable for new turns.");
+				}
 				const target = targetIdToExecutionTarget(
 					targetId,
 					targetId === "local-laguna" ? selectedLagunaAdapterId : null
@@ -1618,7 +1661,7 @@ export function useAppController() {
 						threadHasHistory: threadHasHistoryFromEvents(eventsBySessionRef.current[sessionId] ?? []),
 						turnRunning: session.status === "running",
 						hasPendingImages: Boolean(options?.images?.length),
-						destinationSupportsImages: false
+						destinationSupportsImages: modelSupportsImageInput(pendingTargetId)
 					});
 					if (sendPlan.kind === "block") {
 						showToast(sendPlan.message);

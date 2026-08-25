@@ -2,14 +2,11 @@ import {
 	CHATGPT_LUNA_MODEL,
 	CHATGPT_SOL_MODEL,
 	CHATGPT_TERRA_MODEL,
-	OPENROUTER_LAGUNA_S_MODEL,
-	OPENROUTER_LUNA_MODEL,
-	OPENROUTER_MUSE_SPARK_MODEL,
-	OPENROUTER_GEMINI_FLASH_MODEL,
 	SYNTH_CLOUD_LAGUNA_S_MODEL,
 	SYNTH_CLOUD_MUSE_SPARK_MODEL
 } from "../types/landing";
 import type { ModelPerformanceSummary } from "../bridge";
+import { modelCatalogEntryForModel } from "./modelCatalog";
 
 export function performanceTargetId(summary: ModelPerformanceSummary): string | null {
 	if (summary.provider === "local-laguna") return "local-laguna";
@@ -26,10 +23,8 @@ export function performanceTargetId(summary: ModelPerformanceSummary): string | 
 		return "synth-cloud-muse-spark";
 	}
 	if (summary.provider !== "openrouter") return null;
-	if (summary.modelId === OPENROUTER_LUNA_MODEL) return "openrouter-luna";
-	if (summary.modelId === OPENROUTER_LAGUNA_S_MODEL) return "openrouter-laguna-s";
-	if (summary.modelId === OPENROUTER_MUSE_SPARK_MODEL) return "openrouter-muse-spark";
-	if (summary.modelId === OPENROUTER_GEMINI_FLASH_MODEL) return "openrouter-gemini-flash";
+	const catalogEntry = modelCatalogEntryForModel(summary.modelId);
+	if (catalogEntry) return catalogEntry.targetId;
 	return null;
 }
 

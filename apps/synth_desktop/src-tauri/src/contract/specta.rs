@@ -237,6 +237,8 @@ pub fn builder() -> Builder<tauri::Wry> {
         crate::reports_comments_list,
         crate::reports_comment_create,
         crate::synth_config_get,
+        crate::model_catalog_get,
+        crate::model_catalog_refresh,
         crate::synth_config_update,
         crate::model_performance_get,
         crate::account_begin_sign_in,
@@ -473,8 +475,10 @@ mod tests {
         // (registration, not selection) plus `laguna_policies`.
         // 249 → 251: the published adapter's status and download.
         // 251 → 253: saved-LoRA checkpoint detail and artifact detail.
+        // 255 → 261: current command graph, including the Rust-owned
+        // OpenRouter model catalog read/refresh commands.
         assert_eq!(
-            exported, 255,
+            exported, 261,
             "generated bindings must contain the complete desktop command set"
         );
         assert_eq!(

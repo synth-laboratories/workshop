@@ -40,6 +40,7 @@ pub mod ipc;
 mod laguna;
 mod laguna_adapters;
 mod limits;
+mod model_catalog;
 mod optimizers;
 mod plugins;
 pub mod presentation;
@@ -3173,6 +3174,22 @@ async fn reports_comment_create(
 #[specta::specta]
 fn synth_config_get() -> Result<BackendSettings, AppError> {
     synth_config::get().map_err(AppError::from)
+}
+
+/// The startup-safe catalog path: configuration plus a persisted public
+/// OpenRouter metadata snapshot only. It deliberately never waits for network.
+#[tauri::command]
+#[specta::specta]
+fn model_catalog_get() -> Result<model_catalog::ModelCatalog, AppError> {
+    model_catalog::catalog().map_err(AppError::from)
+}
+
+/// Explicit background follow-up used after the picker has rendered. OpenRouter
+/// metadata is public; no credential is sent to or exposed by this command.
+#[tauri::command]
+#[specta::specta]
+async fn model_catalog_refresh() -> Result<model_catalog::ModelCatalog, AppError> {
+    model_catalog::refresh().await.map_err(AppError::from)
 }
 
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize, specta::Type)]

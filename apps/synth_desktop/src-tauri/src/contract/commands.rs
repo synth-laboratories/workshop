@@ -46,6 +46,8 @@ impl Commands {
     pub const CODEX_OAUTH_CANCEL: &'static str = "codex_oauth_cancel";
     pub const SYNTH_CONFIG_GET: &'static str = "synth_config_get";
     pub const SYNTH_CONFIG_UPDATE: &'static str = "synth_config_update";
+    pub const MODEL_CATALOG_GET: &'static str = "model_catalog_get";
+    pub const MODEL_CATALOG_REFRESH: &'static str = "model_catalog_refresh";
     pub const MODEL_MULTI_AGENT_LIST: &'static str = "model_multi_agent_list";
     pub const MODEL_MULTI_AGENT_UPDATE: &'static str = "model_multi_agent_update";
     pub const WORKSPACE_ACCESS_GET: &'static str = "workspace_access_get";

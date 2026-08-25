@@ -8,6 +8,7 @@ import type { CodexEvent, ComposerImageAttachment, DesktopInstanceDiagnostics, H
 import type { CoreDiagnostics } from "@synth/runtime-protocol";
 import type { ContainerDeployment, TraceV5Record, UsageLedgerEntry, UsageWindow } from "@synth/runtime-protocol";
 import { publicError } from "../runtime/publicError";
+import { BROWSER_MODEL_CATALOG } from "./modelCatalog";
 
 // The packaged WebKit view is always served from the `tauri:` protocol.  The
 // injected internals global can appear too late for eager ES-module evaluation,
@@ -493,6 +494,8 @@ window.synthSecrets ??= isTauri
 window.synthConfig ??= isTauri
 		? {
 			get: () => fromGenerated(spectaCommands.synthConfigGet()),
+			modelCatalog: () => fromGenerated(spectaCommands.modelCatalogGet()),
+			refreshModelCatalog: () => fromGenerated(spectaCommands.modelCatalogRefresh()),
 			update: (request) => fromGenerated(spectaCommands.synthConfigUpdate(wire(request))),
 			listModelMultiAgent: () => fromGenerated(spectaCommands.modelMultiAgentList()),
 			updateModelMultiAgent: (request) => fromGenerated(spectaCommands.modelMultiAgentUpdate(wire(request))),
@@ -512,6 +515,8 @@ window.synthConfig ??= isTauri
 				workerKeyConfigured: false,
 				openrouterApiKeyConfigured: false
 			}),
+			modelCatalog: async () => BROWSER_MODEL_CATALOG,
+			refreshModelCatalog: async () => BROWSER_MODEL_CATALOG,
 			update: async () => { throw new Error("Backend settings require Synth Desktop"); },
 			listModelMultiAgent: async () => [
 				{ modelId: "gpt-5.6-sol", displayName: "GPT-5.6 Sol", preset: "v2", effective: "v2", overridden: false },

@@ -58,6 +58,7 @@ import type {
 	ModelPerformanceSummary,
 	ModelPerformanceTurnSample,
 	ModelMultiAgentSetting,
+	ModelCatalog,
 	MultiAgentVersion,
 	PendingGrantSummary,
 	PluginPermission,
@@ -137,6 +138,7 @@ export type {
 	ModelPerformanceSummary,
 	ModelPerformanceTurnSample,
 	ModelMultiAgentSetting,
+	ModelCatalog,
 	MultiAgentVersion,
 	PendingGrantSummary,
 	PluginPermission,
@@ -354,6 +356,10 @@ export type SynthBackendSettings = {
 
 export type SynthConfigBridge = {
 	get(): Promise<SynthBackendSettings>;
+	/** Rust-owned model projection; this never parses config.toml in the renderer. */
+	modelCatalog(): Promise<ModelCatalog>;
+	/** Explicit bounded refresh of OpenRouter's public, credential-free metadata. */
+	refreshModelCatalog(): Promise<ModelCatalog>;
 	update(request: {
 		profile: string;
 		backendUrl: string;
@@ -387,6 +393,7 @@ export type CodexSessionStart = {
 	baseUrl: string;
 	apiKey?: string;
 	model: string;
+	targetId?: string | null;
 	providerName: string;
 	providerTitle: string;
 	providerEnvKey: string;
@@ -406,6 +413,7 @@ export type PersistedCodexSession = {
 	threadId: string;
 	workspace: string;
 	model: string;
+	targetId?: string | null;
 	providerName: string;
 	providerTitle: string;
 	baseUrl: string;

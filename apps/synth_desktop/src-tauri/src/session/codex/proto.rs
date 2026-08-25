@@ -32,6 +32,10 @@ pub struct CodexSessionStartRequest {
     #[serde(default)]
     pub api_key: String,
     pub model: String,
+    /// Stable renderer catalog identity for this exact provider/model target.
+    /// It is stored in the session target but is never forwarded upstream.
+    #[serde(default)]
+    pub target_id: Option<String>,
     pub provider_name: Option<String>,
     pub provider_title: Option<String>,
     pub provider_env_key: Option<String>,
@@ -75,6 +79,7 @@ impl fmt::Debug for CodexSessionStartRequest {
             .field("base_url", &self.base_url)
             .field("api_key", &"<redacted>")
             .field("model", &self.model)
+            .field("target_id", &self.target_id)
             .field("provider_name", &self.provider_name)
             .field("provider_title", &self.provider_title)
             .field("provider_env_key", &self.provider_env_key)
@@ -278,6 +283,11 @@ pub struct CodexSessionRecord {
     pub thread_id: String,
     pub workspace: String,
     pub model: String,
+    /// Stable picker/catalog identity for a remote model. This is retained
+    /// independently from the slug so removing a config entry cannot make a
+    /// historical session look like a different model.
+    #[serde(default)]
+    pub target_id: Option<String>,
     pub provider_name: String,
     pub provider_title: String,
     pub base_url: String,

@@ -2,17 +2,17 @@ import openaiLogo from "../assets/openai-logo.svg";
 import poolsideLogo from "../assets/poolside-logomark.svg";
 import metaLogo from "../assets/meta-logomark.svg";
 import googleLogo from "../assets/google-logomark.svg";
+import { isOpenRouterTargetId } from "../types/landing";
 import { SynthLogo } from "./SynthLogo";
 
-export type ProviderMarkKind = "openai" | "laguna" | "meta" | "google" | "synth";
+export type ProviderMarkKind = "openai" | "laguna" | "meta" | "google" | "openrouter" | "synth";
 
-/** Underlying model house — not the transport (OpenRouter vs direct).
- *  Synth-hosted Laguna stays Synth-branded; local / OpenRouter Laguna use Poolside. */
+/** Source-owned providers retain their own marks. All OpenRouter catalog
+ * entries use the OpenRouter mark so a custom slug is never misidentified. */
 export function providerMarkForTarget(targetId: string): ProviderMarkKind {
-	if (targetId === "openrouter-luna") return "openai";
-	if (targetId === "local-laguna" || targetId === "openrouter-laguna-s" || targetId.startsWith("synth-cloud-laguna")) return "laguna";
-	if (targetId === "openrouter-muse-spark") return "meta";
-	if (targetId === "openrouter-gemini-flash") return "google";
+	if (targetId === "local-laguna") return "laguna";
+	if (targetId.startsWith("synth-cloud-laguna")) return "laguna";
+	if (isOpenRouterTargetId(targetId)) return "openrouter";
 	return "synth";
 }
 
@@ -52,6 +52,9 @@ export function ProviderMark({
 	}
 	if (kind === "google") {
 		return <img className={className} src={googleLogo} alt="" aria-hidden draggable={false} data-provider-mark="google" />;
+	}
+	if (kind === "openrouter") {
+		return <span className={className} aria-hidden data-provider-mark="openrouter">OR</span>;
 	}
 	return <SynthLogo className={className} compact />;
 }

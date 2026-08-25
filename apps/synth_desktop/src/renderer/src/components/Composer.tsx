@@ -1,16 +1,17 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import {
-	EXECUTION_TARGETS,
 	LAUNCH_PICKER_TARGETS,
 	MODEL_ACCESS_LABEL,
 	MODEL_ACCESS_ORDER,
 	apiProviderForTarget,
+	isOpenRouterTargetId,
 	modelAccessForTarget,
 	TARGET_GROUP_LABEL,
 	type ExecutionTargetOption,
 	type LandingState,
 	type ModelAccessKind
 } from "../types/landing";
+import { targetOptionForId } from "../runtime/modelCatalog";
 import { publicError } from "../runtime/publicError";
 import { ProviderMark, providerMarkForTarget } from "./ProviderMark";
 import type { ApprovalPolicy, SandboxMode } from "../runtime/nativeCodex";
@@ -377,7 +378,7 @@ function IconChevron() {
 }
 
 function modelChipLabel(state: LandingState, policy?: LagunaPolicy): string {
-	const target = EXECUTION_TARGETS.find((t) => t.id === state.selectedTargetId);
+	const target = targetOptionForId(state.selectedTargetId);
 	if (state.selectedTargetId === "local-laguna") {
 		if (state.model.status === "not_installed" || state.model.status === "error") {
 			return "Laguna offline";
@@ -398,7 +399,7 @@ function composerPlaceholder(state: LandingState): string {
 		if (state.apiKeyConfigured !== true) return "Configure Synth API key in Settings → Account";
 		return state.cloudBlockedReason ?? "Ask anything…";
 	}
-	if (state.selectedTargetId.startsWith("openrouter-")) {
+	if (isOpenRouterTargetId(state.selectedTargetId)) {
 		return state.openrouterApiKeyConfigured
 			? "Ask anything…"
 			: "Configure an OpenRouter API key in Settings → Account";
@@ -425,7 +426,7 @@ function composerEnabled(state: LandingState): boolean {
 		// billable cloud target is closed off.
 		return state.apiKeyConfigured === true && !state.cloudBlockedReason;
 	}
-	if (state.selectedTargetId.startsWith("openrouter-")) {
+	if (isOpenRouterTargetId(state.selectedTargetId)) {
 		return state.openrouterApiKeyConfigured === true;
 	}
 	if (state.selectedTargetId.startsWith("chatgpt-")) {
@@ -476,7 +477,7 @@ function ModelMenu({
 	const modelReady = !(
 		state.selectedTargetId === "local-laguna" && state.model.status === "not_installed"
 	);
-	const selected = EXECUTION_TARGETS.find((t) => t.id === state.selectedTargetId);
+	const selected = targetOptionForId(state.selectedTargetId);
 	const selectedCapability = modelCapabilitiesForTarget(state.selectedTargetId);
 	const selectedSupportsImages = selectedCapability?.inputModalities.includes("image") ?? false;
 	const selectedThroughput = aggregateModelTpsLabels?.[state.selectedTargetId] ?? modelMedianTpsLabel ?? null;
@@ -584,7 +585,7 @@ function ModelMenu({
 									const needsSynthKey =
 										target.id.startsWith("synth-cloud-") && state.apiKeyConfigured !== true;
 									const needsOpenRouterKey =
-										target.id.startsWith("openrouter-") && state.openrouterApiKeyConfigured !== true;
+										isOpenRouterTargetId(target.id) && state.openrouterApiKeyConfigured !== true;
 									const needsCodexOauth =
 										target.id.startsWith("chatgpt-") && state.codexOauthConfigured !== true;
 									const allowanceBlocked =
@@ -600,6 +601,16 @@ function ModelMenu({
 														: null
 											: null;
 									const selectedHere = target.id === state.selectedTargetId;
+									if (target.selectable === false) {
+										return (
+											<div key={target.id} className="composer-model-option is-disabled" data-testid={`composer-model-option-${target.id}`}>
+												<span className="composer-model-option-main" role="option" aria-selected={false} aria-disabled="true">
+													<span className="composer-model-option-label">{target.label}</span>
+													<span className="composer-model-option-desc">{target.diagnostic ?? target.availability ?? "Unavailable"}</span>
+												</span>
+											</div>
+										);
+									}
 									if (allowanceBlocked) {
 										return (
 											<div
@@ -707,7 +718,7 @@ function ModelMenu({
 										</div>
 										<div>
 											<span>Context</span>
-											<strong>{formatContextWindow(selectedCapability.maxContextTokens)}</strong>
+											<strong>{selectedCapability.maxContextTokens ? formatContextWindow(selectedCapability.maxContextTokens) : "Not verified"}</strong>
 										</div>
 									</>
 								) : null}
@@ -1337,7 +1348,7 @@ export function Composer({
 					Queued — Return again to steer
 				</p>
 			) : null}
-			{state.selectedTargetId.startsWith("openrouter-") && !state.openrouterApiKeyConfigured ? (
+			{isOpenRouterTargetId(state.selectedTargetId) && !state.openrouterApiKeyConfigured ? (
 				<div className="composer-configuration-required" role="alert" data-testid="openrouter-key-required">
 					<span><strong>OpenRouter API key required</strong> Add it under Settings → Account before sending a message.</span>
 					<button type="button" onClick={onConfigureAccount} data-testid="configure-openrouter-api-key">Open Settings</button>

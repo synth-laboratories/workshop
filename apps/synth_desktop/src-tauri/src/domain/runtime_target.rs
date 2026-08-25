@@ -67,6 +67,8 @@ pub enum RuntimeTarget {
     RemoteRuntime {
         model: String,
         adapter: Option<String>,
+        /// Stable catalog/picker identity, distinct from the provider slug.
+        target_id: Option<String>,
     },
     /// Synth gateway (Credential lease → cloud).
     CloudRuntime {
@@ -97,6 +99,26 @@ impl RuntimeTarget {
         }
     }
 
+    /// Persist a renderer-selected catalog key beside the request identity.
+    /// It is never used to select a provider or rewrite a model slug.
+    pub fn with_target_id(self, target_id: Option<String>) -> Self {
+        match self {
+            Self::RemoteRuntime { model, adapter, .. } => Self::RemoteRuntime {
+                model,
+                adapter,
+                target_id,
+            },
+            other => other,
+        }
+    }
+
+    pub fn target_id(&self) -> Option<&str> {
+        match self {
+            Self::RemoteRuntime { target_id, .. } => target_id.as_deref(),
+            _ => None,
+        }
+    }
+
     /// Map Codex app-server provider names onto RuntimeTarget variants.
     /// SessionKind remains Codex; this is only the inference substrate.
     pub fn from_codex_provider(provider_name: &str, model: &str) -> Self {
@@ -109,16 +131,19 @@ impl RuntimeTarget {
             "openrouter" => Self::RemoteRuntime {
                 model: model.to_owned(),
                 adapter: None,
+                target_id: None,
             },
             "openai-codex-oauth" => Self::RemoteRuntime {
                 model: model.to_owned(),
                 adapter: Some("openai-codex-oauth".into()),
+                target_id: None,
             },
             _ => {
                 // Unknown / custom providers still run through the remote path.
                 Self::RemoteRuntime {
                     model: model.to_owned(),
                     adapter: None,
+                    target_id: None,
                 }
             }
         }
@@ -196,9 +221,14 @@ impl Serialize for RuntimeTarget {
                 map.serialize_entry("adapter", adapter)?;
                 map.end()
             }
-            Self::RemoteRuntime { model, adapter } => {
+            Self::RemoteRuntime {
+                model,
+                adapter,
+                target_id,
+            } => {
                 // Keep provider for renderer payloads that still expect it.
-                let mut map = serializer.serialize_map(Some(4))?;
+                let mut map =
+                    serializer.serialize_map(Some(if target_id.is_some() { 5 } else { 4 }))?;
                 map.serialize_entry("kind", "remote")?;
                 let provider = if adapter.as_deref() == Some("openai-codex-oauth") {
                     "openai-codex-oauth"
@@ -208,6 +238,9 @@ impl Serialize for RuntimeTarget {
                 map.serialize_entry("provider", provider)?;
                 map.serialize_entry("model", model)?;
                 map.serialize_entry("adapter", adapter)?;
+                if let Some(target_id) = target_id {
+                    map.serialize_entry("targetId", target_id)?;
+                }
                 map.end()
             }
             Self::CloudRuntime { model, adapter } => {
@@ -263,11 +296,17 @@ fn parse_runtime_target_value(value: &Value) -> Result<RuntimeTarget, String> {
             let adapter = optional_string(obj, "adapter").or_else(|| {
                 (provider == "openai-codex-oauth").then(|| "openai-codex-oauth".into())
             });
+            let target_id =
+                optional_string(obj, "targetId").or_else(|| optional_string(obj, "target_id"));
             if provider == "synth-cloud" {
                 // Historical synonym: remote + synth-cloud → CloudRuntime.
                 Ok(RuntimeTarget::CloudRuntime { model, adapter })
             } else {
-                Ok(RuntimeTarget::RemoteRuntime { model, adapter })
+                Ok(RuntimeTarget::RemoteRuntime {
+                    model,
+                    adapter,
+                    target_id,
+                })
             }
         }
         "cloud" => Ok(RuntimeTarget::CloudRuntime {
@@ -334,6 +373,7 @@ mod tests {
             RuntimeTarget::RemoteRuntime {
                 model: "openai/gpt-5.6-luna".into(),
                 adapter: None,
+                target_id: None,
             },
             RuntimeTarget::CloudRuntime {
                 model: "openrouter/poolside/laguna-s-2.1".into(),
@@ -376,10 +416,12 @@ mod tests {
         let target = RuntimeTarget::RemoteRuntime {
             model: "poolside/laguna-s-2.1".into(),
             adapter: None,
+            target_id: Some("openrouter:laguna".into()),
         };
         let encoded = serde_json::to_value(&target).unwrap();
         assert_eq!(encoded["kind"], "remote");
         assert_eq!(encoded["provider"], "openrouter");
+        assert_eq!(encoded["targetId"], "openrouter:laguna");
     }
 
     #[test]
