@@ -25,7 +25,7 @@ use sha2::{Digest, Sha256};
 use std::{
     cell::Cell,
     collections::HashMap,
-    env, fs,
+    env, ffi::OsString, fs,
     io::Write,
     path::{Path, PathBuf},
     process::Stdio,
@@ -2592,9 +2592,10 @@ fn materialize_uv_runtime(
         bail!("failed to create optimizer runtime venv");
     }
     let python = runtime.join("bin/python");
-    let package_source = env::var_os("SYNTH_OPTIMIZER_WHEEL_FILE")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(format!("synth-optimizers=={}", spec.version)));
+    let package_source = optimizer_package_source(
+        env::var_os("SYNTH_OPTIMIZER_WHEEL_FILE"),
+        &spec.version,
+    );
     if package_source.is_absolute() && !package_source.is_file() {
         bail!(
             "optimizer wheel override does not exist: {}",
@@ -2655,6 +2656,19 @@ fn materialize_uv_runtime(
     }
     write_relocatable_optimizer_launcher(&runtime)?;
     Ok(artifacts)
+}
+
+/// An isolated CUA launch deliberately forwards a small allowlist of optional
+/// inputs. Shells represent an omitted optional value as `NAME=""`, so an
+/// empty override must mean the same thing as no override. Passing it through
+/// to `pip download` succeeds without a requirement and leaves an empty
+/// wheelhouse, which makes the product's Install action fail later with a
+/// misleading integrity error.
+fn optimizer_package_source(override_path: Option<OsString>, version: &str) -> PathBuf {
+    override_path
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(format!("synth-optimizers=={version}")))
 }
 
 #[cfg(unix)]
@@ -3197,6 +3211,23 @@ mod tests {
                 .find(|(key, _)| *key == std::ffi::OsStr::new("PYTHONPATH"))
                 .and_then(|(_, value)| value),
             Some(expected_pythonpath.as_os_str())
+        );
+    }
+
+    #[test]
+    fn blank_optimizer_wheel_override_uses_the_pinned_package_requirement() {
+        assert_eq!(
+            optimizer_package_source(Some(OsString::new()), OFFICIAL_SIDECAR_VERSION),
+            PathBuf::from(format!("synth-optimizers=={OFFICIAL_SIDECAR_VERSION}"))
+        );
+    }
+
+    #[test]
+    fn optimizer_wheel_override_preserves_a_real_wheel_path() {
+        let path = PathBuf::from("/tmp/synth_optimizers-0.2.19.whl");
+        assert_eq!(
+            optimizer_package_source(Some(path.clone().into_os_string()), OFFICIAL_SIDECAR_VERSION),
+            path
         );
     }
 
