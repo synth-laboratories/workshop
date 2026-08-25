@@ -1310,19 +1310,9 @@ dev_instance() {
     # local CUA loop.
     # Instance builds carry the QA control plane; release artifacts never
     # enable this feature.
-    # Packaging pins synth-mlx-rl 5d6db143 + lock sha. The sibling working
-    # tree is often dirty WIP and will fail closed; prefer the v0.8 pin.
-    if [[ -z "${SYNTH_MLX_RL_PROJECT_ROOT:-}" ]]; then
-      if [[ -f "$REPO_SIBLING_ROOT/synth-mlx-rl-v08-compat/pyproject.toml" ]]; then
-        SYNTH_MLX_RL_PROJECT_ROOT="$REPO_SIBLING_ROOT/synth-mlx-rl-v08-compat"
-      elif [[ -f "$REPO_SIBLING_ROOT/synth-mlx-rl-v08-pinned/pyproject.toml" ]]; then
-        SYNTH_MLX_RL_PROJECT_ROOT="$REPO_SIBLING_ROOT/synth-mlx-rl-v08-pinned"
-      else
-        SYNTH_MLX_RL_PROJECT_ROOT="$REPO_SIBLING_ROOT/synth-mlx-rl"
-      fi
-    fi
-    export SYNTH_MLX_RL_PROJECT_ROOT
-    "$ROOT/scripts/stage-mlx-runtime-distribution.sh"
+    "$ROOT/scripts/stage-optimizer-runtime-distribution.sh"
+    SYNTH_MLX_RL_PROJECT_ROOT="${SYNTH_MLX_RL_PROJECT_ROOT:-$REPO_SIBLING_ROOT/synth-mlx-rl}" \
+      "$ROOT/scripts/stage-mlx-runtime-distribution.sh"
     npx tauri build --debug --features eval-driver --bundles app --config "$PACKAGE_CONFIG" --config "$CONFIG"
     local app_bundle="$CARGO_TARGET_DIR/debug/bundle/macos/$APP_TITLE.app"
     local app_executable="$CUA_EXE"
