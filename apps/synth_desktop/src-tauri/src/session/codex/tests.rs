@@ -1994,7 +1994,7 @@ fn workspace_write_config_does_not_invent_a_read_denylist_field() {
 fn advertises_compact_visual_and_experiment_lifecycle_tools_to_codex() {
     assert_eq!(
         mcp_enabled_tools("synth_visuals"),
-        "enabled_tools = [\"visual_manage\", \"experiment_create\", \"experiment_attach_evidence\", \"experiment_finalize\"]\n"
+        "enabled_tools = [\"visual_manage\"]\n"
     );
     assert_eq!(mcp_enabled_tools("synth_containers"), "");
     assert_eq!(

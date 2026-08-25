@@ -1019,8 +1019,10 @@ pub(crate) fn mcp_enabled_tools(server: &str) -> &'static str {
     match server {
         // Codex sees one compact namespace member. The adapter keeps legacy
         // tools callable for other MCP clients, while visual_manage routes the
-        // same operations after the visual skill is loaded.
-        "synth_visuals" => "enabled_tools = [\"visual_manage\", \"experiment_create\", \"experiment_attach_evidence\", \"experiment_finalize\"]\n",
+        // visual and experiment lifecycle operations after the visual skill is
+        // loaded. Keeping the catalog to this one facade prevents the local
+        // provider from advertising an alias that its runtime cannot invoke.
+        "synth_visuals" => "enabled_tools = [\"visual_manage\"]\n",
         // Keep the compact facade and the two eval-specific aliases visible.
         // Some models reliably select a dedicated schema while others follow
         // the facade; both route through the same production adapter.

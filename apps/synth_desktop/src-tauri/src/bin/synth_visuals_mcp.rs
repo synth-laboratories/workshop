@@ -264,6 +264,18 @@ mod tests {
         );
         assert_eq!(managed_tool_name("fork").unwrap(), "visual_fork");
         assert_eq!(managed_tool_name("archive").unwrap(), "visual_archive");
+        assert_eq!(
+            managed_tool_name("experiment_create").unwrap(),
+            "experiment_create"
+        );
+        assert_eq!(
+            managed_tool_name("experiment_attach_evidence").unwrap(),
+            "experiment_attach_evidence"
+        );
+        assert_eq!(
+            managed_tool_name("experiment_finalize").unwrap(),
+            "experiment_finalize"
+        );
         assert!(managed_tool_name("delete_everything").is_err());
         let listed = tools();
         let advertised = listed["tools"][0]["inputSchema"]["properties"]["operation"]["enum"]
@@ -396,6 +408,13 @@ const VISUAL_OPERATIONS: &[(&str, &str)] = &[
     ("get_seal", "visual_get_seal"),
     ("fork", "visual_fork"),
     ("archive", "visual_archive"),
+    // Experiment records are a lifecycle concern of the same durable visual
+    // evidence surface. Codex receives only this facade, so map the lifecycle
+    // actions here instead of advertising aliases the local provider may not
+    // register in its compact MCP catalog.
+    ("experiment_create", "experiment_create"),
+    ("experiment_attach_evidence", "experiment_attach_evidence"),
+    ("experiment_finalize", "experiment_finalize"),
 ];
 
 fn managed_tool_name(operation: &str) -> Result<&'static str, String> {
@@ -415,7 +434,7 @@ fn managed_tool_name(operation: &str) -> Result<&'static str, String> {
 fn tools() -> Value {
     let mut result = json!({
         "tools": [
-            {"name":"visual_manage","description":"Synth visuals. Use author-synth-diagrams; do not call MCP resources. Create/show, review PNGs wide and compact, revise defects, then mark_ready. Mermaid source goes in arguments.content. Data charts: use visual_chart.","inputSchema":{"type":"object","properties":{"operation":{"type":"string","description":"Visual operation."},"arguments":{"type":"object","description":"Operation arguments. capture_review returns a PNG and screenshot_path; review and mark_ready use the current revision.","additionalProperties":true}},"required":["operation","arguments"],"additionalProperties":false}},
+            {"name":"visual_manage","description":"Synth visuals and durable experiment records. Use author-synth-diagrams for visuals; do not call MCP resources. Create/show, review PNGs wide and compact, revise defects, then mark_ready. Create an experiment with operation experiment_create; attach durable evidence with experiment_attach_evidence; finalize with experiment_finalize. Mermaid source goes in arguments.content. Data charts: use visual_chart.","inputSchema":{"type":"object","properties":{"operation":{"type":"string","description":"Visual or experiment lifecycle operation."},"arguments":{"type":"object","description":"Operation arguments. capture_review returns a PNG and screenshot_path; review and mark_ready use the current revision.","additionalProperties":true}},"required":["operation","arguments"],"additionalProperties":false}},
             {"name":"visual_list_templates","description":"List Synth visual templates","inputSchema":{"type":"object","properties":{"genre":{"type":"string"}},"additionalProperties":false}},
             {"name":"visual_list","description":"List visuals in the local registry","inputSchema":{"type":"object","properties":{"search":{"type":"string"},"status":{"type":"string"},"session_id":{"type":"string"}},"additionalProperties":false}},
             {"name":"visual_get","description":"Get a visual by id","inputSchema":{"type":"object","properties":{"visual_id":{"type":"string"}},"required":["visual_id"],"additionalProperties":false}},
