@@ -559,15 +559,20 @@ pub(crate) fn select_default_workspace_path(
     if let Some(root) = allowed_roots.first() {
         return root.into();
     }
-    // `danger-full-access` is a machine-wide access promise. Keep an explicit
-    // attached root authoritative, but do not strand an otherwise unrestricted
-    // task in the named instance's empty workspace. Starting at the user's home
-    // makes normal repository discovery possible while Codex's sandbox setting
-    // remains the actual access boundary.
-    if sandbox_mode == "danger-full-access" {
-        return home.or(launcher_workspace).unwrap_or(isolated_default);
+    // Named and packaged instances explicitly provide an isolated launcher
+    // workspace. Keep that boundary authoritative even with full-system
+    // permissions so workspace-local manifests (containers, recipes, and
+    // experiments) resolve where the release runner staged them.
+    if let Some(workspace) = launcher_workspace {
+        return workspace;
     }
-    launcher_workspace.unwrap_or(isolated_default)
+    // `danger-full-access` is a machine-wide access promise. Keep an explicit
+    // attached root or launcher workspace authoritative. For ordinary launches
+    // without either, starting at home preserves repository discovery.
+    if sandbox_mode == "danger-full-access" {
+        return home.unwrap_or(isolated_default);
+    }
+    isolated_default
 }
 
 pub fn update_workspace_access(request: WorkspaceAccessUpdate) -> Result<WorkspaceAccessSettings> {
@@ -1561,7 +1566,7 @@ operations = { "rollouts.prepare" = false }
     }
 
     #[test]
-    fn full_system_access_starts_at_home_without_an_explicit_workspace() {
+    fn launcher_workspace_wins_under_full_system_access() {
         let selected = select_default_workspace_path(
             &[],
             "danger-full-access",
@@ -1569,7 +1574,7 @@ operations = { "rollouts.prepare" = false }
             Some(PathBuf::from("/Users/example")),
             PathBuf::from("/isolated/default"),
         );
-        assert_eq!(selected, PathBuf::from("/Users/example"));
+        assert_eq!(selected, PathBuf::from("/isolated/instance/workspace"));
     }
 
     #[test]
