@@ -869,9 +869,8 @@ async fn optimizers_recipes_list(
         .collect())
 }
 
-/// Freeze policy files from the session's workspace into one immutable
-/// candidate set. Its id is the only policy input `optimizers_recipe_start`
-/// accepts for an `eval.*` recipe.
+/// Freeze inline policy source into one immutable candidate set. Its id is the
+/// only policy input `optimizers_recipe_start` accepts for an `eval.*` recipe.
 #[tauri::command]
 #[specta::specta]
 async fn optimizers_stage_eval_candidates(

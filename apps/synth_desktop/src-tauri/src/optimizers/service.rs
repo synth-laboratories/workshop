@@ -468,13 +468,13 @@ impl OptimizerService {
         }
     }
 
-    /// Freeze workspace policy source into an immutable content-addressed set
+    /// Freeze inline policy source into an immutable content-addressed set
     /// before any local eval recipe can start.
     pub async fn stage_eval_candidates(
         &self,
         request: super::eval_candidates::EvalStageCandidatesRequest,
     ) -> Result<Value> {
-        super::eval_candidates::stage(&self.db, request).await
+        super::eval_candidates::stage(request).await
     }
 
     pub async fn prepare_recipe(

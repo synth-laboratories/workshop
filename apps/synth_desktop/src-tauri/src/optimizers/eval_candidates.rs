@@ -1,10 +1,10 @@
 //! Staging policy source into immutable, content-addressed candidate sets.
 //!
 //! This is why `optimizer_start_recipe` can take a `candidate_set_id` instead
-//! of paths or inline code. An agent names policies it already created inside
-//! the session's own workspace; Workshop copies them into the app-owned
-//! candidate store, freezes them, and returns an id. Nothing an agent says
-//! becomes a path, an image, a command, or an environment variable.
+//! of paths or inline code. An agent supplies bounded policy source as data;
+//! Workshop writes it directly into the app-owned candidate store, freezes it,
+//! and returns an id. Nothing an agent says becomes a path, an image, a
+//! command, an environment variable, or a session-workspace lookup.
 
 use anyhow::{anyhow, bail, Context, Result};
 use serde::Deserialize;
@@ -17,48 +17,59 @@ use std::{
 
 pub const CANDIDATE_SET_SCHEMA: &str = "optimizer.policy-candidate-set.v1";
 pub const POLICY_CANDIDATE_SCHEMA: &str = "optimizer.policy-candidate.v1";
+const MAX_INLINE_SOURCE_BYTES: usize = 1024 * 1024;
+const DEFAULT_SOURCE_FILE_NAME: &str = "policy.py";
 
-/// One staged policy. `path` is relative to the session's workspace: absolute
-/// paths and parent traversal are refused rather than sanitized.
+/// One policy whose source is supplied directly to the host as bounded data.
 #[derive(Clone, Debug, Deserialize, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub struct EvalCandidateSource {
     pub label: String,
-    pub path: String,
+    pub content: String,
+    #[serde(default, alias = "file_name")]
+    pub file_name: Option<String>,
     #[serde(default)]
     pub entrypoint: Option<String>,
     #[serde(default)]
     pub kind: Option<String>,
     #[serde(default)]
     pub baseline: Option<bool>,
+    /// Retained only to turn old clients into an actionable migration error.
+    #[serde(default, rename = "path")]
+    pub legacy_path: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub struct EvalStageCandidatesRequest {
-    pub session_ref: String,
     pub candidates: Vec<EvalCandidateSource>,
+    /// Retained only to turn old clients into an actionable migration error.
+    #[serde(default, rename = "sessionRef", alias = "session_ref")]
+    pub legacy_session_ref: Option<String>,
 }
 
 pub fn store_root() -> PathBuf {
     super::eval_recipes::eval_home().join("candidates")
 }
 
-/// Copy each source into the store, content-address it, and seal the set.
-pub async fn stage(
-    db: &std::sync::Arc<crate::storage::Database>,
-    request: EvalStageCandidatesRequest,
-) -> Result<Value> {
+/// Write each inline source into the store, content-address it, and seal the
+/// set. This deliberately has no session or workspace dependency.
+pub async fn stage(request: EvalStageCandidatesRequest) -> Result<Value> {
     if request.candidates.is_empty() {
         bail!("a candidate set needs at least one candidate");
     }
     if request.candidates.len() > 16 {
         bail!("a candidate set is capped at 16 candidates");
     }
-    let scope = crate::workspace_scope::get(db, &request.session_ref)
-        .await?
-        .ok_or_else(|| anyhow!("session {} has no workspace scope", request.session_ref))?;
-    let workspace = crate::workspace_scope::canonical_directory(&scope.workspace)?;
+    if request
+        .legacy_session_ref
+        .as_deref()
+        .is_some_and(|value| !value.trim().is_empty())
+    {
+        bail!(
+            "session workspaces are not supported for candidate staging; send candidate content directly"
+        );
+    }
 
     let mut labels = std::collections::HashSet::new();
     for candidate in &request.candidates {
@@ -87,9 +98,17 @@ pub async fn stage(
     let mut entries = Vec::new();
     let mut baseline_id: Option<String> = None;
     for source in &request.candidates {
-        let origin = resolve_in_workspace(&workspace, &source.path)?;
+        if source
+            .legacy_path
+            .as_deref()
+            .is_some_and(|value| !value.trim().is_empty())
+        {
+            bail!(
+                "candidate paths are no longer supported; send candidate content directly instead"
+            );
+        }
         let staging = artifacts.join(format!("pending_{}", uuid::Uuid::new_v4().simple()));
-        copy_tree(&origin, &staging)
+        let file_name = write_inline_source(&staging, source)
             .with_context(|| format!("stage candidate {}", source.label))?;
         let digest = digest_tree(&staging)?;
         let hex = digest.trim_start_matches("sha256:").to_string();
@@ -112,7 +131,7 @@ pub async fn stage(
             "artifact": {"uri": format!("local-artifact://sha256/{hex}"), "digest": digest},
             "entrypoint": source.entrypoint.clone().unwrap_or_else(|| "policy:Policy".into()),
             "metadata": {
-                "source": {"kind": "workspace", "name": source.path},
+                "source": {"kind": "inline", "name": file_name},
                 "parent_optimizer_run_id": Value::Null
             }
         }));
@@ -260,28 +279,34 @@ pub fn stage_training_artifact(
     Ok(manifest)
 }
 
-/// A candidate path is workspace-relative. `..`, absolute paths, and symlinks
-/// that escape the workspace are refused: staging must not be a way to read
-/// arbitrary parts of the disk.
-fn resolve_in_workspace(workspace: &Path, relative: &str) -> Result<PathBuf> {
-    let candidate = Path::new(relative);
-    if candidate.is_absolute() {
-        bail!("candidate paths are workspace-relative; {relative} is absolute");
+fn write_inline_source(staging: &Path, source: &EvalCandidateSource) -> Result<String> {
+    if source.content.is_empty() {
+        bail!("candidate source content must not be empty");
     }
-    if candidate
-        .components()
-        .any(|component| matches!(component, std::path::Component::ParentDir))
+    if source.content.len() > MAX_INLINE_SOURCE_BYTES {
+        bail!(
+            "candidate source exceeds the {} byte limit",
+            MAX_INLINE_SOURCE_BYTES
+        );
+    }
+    let file_name = source
+        .file_name
+        .as_deref()
+        .unwrap_or(DEFAULT_SOURCE_FILE_NAME)
+        .trim();
+    if file_name.is_empty()
+        || file_name == "."
+        || file_name == ".."
+        || file_name.len() > 128
+        || !file_name
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
     {
-        bail!("candidate paths must not traverse outside the workspace: {relative}");
+        bail!("candidate file_name must be a simple file name using letters, numbers, '.', '_' or '-'");
     }
-    let resolved = workspace
-        .join(candidate)
-        .canonicalize()
-        .with_context(|| format!("policy source does not exist: {relative}"))?;
-    if !resolved.starts_with(workspace) {
-        bail!("candidate path resolves outside the workspace: {relative}");
-    }
-    Ok(resolved)
+    fs::create_dir_all(staging)?;
+    fs::write(staging.join(file_name), source.content.as_bytes())?;
+    Ok(file_name.to_string())
 }
 
 fn copy_tree(origin: &Path, destination: &Path) -> Result<()> {
@@ -374,10 +399,38 @@ mod tests {
     use super::*;
 
     #[test]
-    fn workspace_paths_cannot_escape() {
-        let workspace = std::env::temp_dir().canonicalize().unwrap();
-        assert!(resolve_in_workspace(&workspace, "/etc/passwd").is_err());
-        assert!(resolve_in_workspace(&workspace, "../secrets").is_err());
+    fn inline_source_file_names_cannot_escape_the_candidate_store() {
+        for file_name in ["", ".", "..", "../secrets", "policy/source.py", "policy\\source.py"] {
+            let source = EvalCandidateSource {
+                label: "test".into(),
+                content: "pass\n".into(),
+                file_name: Some(file_name.into()),
+                entrypoint: None,
+                kind: None,
+                baseline: None,
+                legacy_path: None,
+            };
+            let staging = std::env::temp_dir().join(format!("eval-inline-{}", uuid::Uuid::new_v4()));
+            assert!(write_inline_source(&staging, &source).is_err());
+            let _ = fs::remove_dir_all(staging);
+        }
+    }
+
+    #[test]
+    fn inline_source_is_written_as_app_owned_policy_data() {
+        let staging = std::env::temp_dir().join(format!("eval-inline-{}", uuid::Uuid::new_v4()));
+        let source = EvalCandidateSource {
+            label: "baseline".into(),
+            content: "def choose_actions(*args):\n    return []\n".into(),
+            file_name: None,
+            entrypoint: Some("policy:choose_actions".into()),
+            kind: Some("python-code.craftax-choose-actions.v1".into()),
+            baseline: Some(true),
+            legacy_path: None,
+        };
+        assert_eq!(write_inline_source(&staging, &source).unwrap(), "policy.py");
+        assert_eq!(fs::read_to_string(staging.join("policy.py")).unwrap(), source.content);
+        let _ = fs::remove_dir_all(staging);
     }
 
     /// The Python runner recomputes this digest before it starts a container

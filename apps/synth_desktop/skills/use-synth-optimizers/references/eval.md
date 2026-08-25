@@ -18,20 +18,21 @@ no winner, and saying "completed" alone misrepresents it.
 
 ## Stage before you start
 
-`start_workflow` takes a `candidate_set_id`, never a path or inline code. Create or
-identify the policy files in the session workspace first, then freeze them:
+`start_workflow` takes a `candidate_set_id`, never a path or inline code. Stage
+the bounded policy source as data first; Workshop writes it into its own
+immutable candidate store. It never resolves a session workspace or any source
+path while staging:
 
 ```json
 {"operation":"stage_eval_candidates","arguments":{
   "candidates":[
-    {"label":"baseline","path":"policies/baseline","entrypoint":"heuristic_baseline:choose_actions","kind":"python-code.craftax-choose-actions.v1","baseline":true},
-    {"label":"memory-v2","path":"policies/memory_v2","entrypoint":"heuristic_baseline:choose_actions","kind":"python-code.craftax-choose-actions.v1"}
+    {"label":"baseline","content":"def choose_actions(*args):\\n    return []\\n","file_name":"policy.py","entrypoint":"policy:choose_actions","kind":"python-code.craftax-choose-actions.v1","baseline":true},
+    {"label":"memory-v2","content":"def choose_actions(*args):\\n    return []\\n","file_name":"policy.py","entrypoint":"policy:choose_actions","kind":"python-code.craftax-choose-actions.v1"}
   ]}}
 ```
 
-Paths are **workspace-relative**; absolute paths and `..` are refused. The
-host fills in the calling session, so omit `session_ref` rather than inventing
-one. Mark
+Each candidate is limited to 1 MiB and `file_name` must be a simple file name.
+Paths and `session_ref` are not accepted. Mark
 exactly one baseline — a recipe whose `decision_mode` is `promote` cannot compute
 a paired lift without one, and will return `inconclusive`.
 
@@ -82,9 +83,9 @@ credential, keep policy and grader usage separate.
 
 ### LLM candidates
 
-For an `llm-policy.v1` recipe the candidate is **data, not code**: a directory
-containing `policy.toml`, staged with `kind: "llm-policy.v1"` and
-`entrypoint: "policy.toml"`.
+For an `llm-policy.v1` recipe the candidate is **data, not code**: pass the
+`policy.toml` content with `file_name: "policy.toml"`,
+`kind: "llm-policy.v1"`, and `entrypoint: "policy.toml"`.
 
 ```toml
 model = "gpt-5.6-luna"   # must be in the recipe's published `models` allowlist
