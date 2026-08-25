@@ -1267,6 +1267,7 @@ dev_instance() {
     # local CUA loop.
     # Instance builds carry the QA control plane; release artifacts never
     # enable this feature.
+    "$ROOT/scripts/stage-optimizer-runtime-distribution.sh"
     SYNTH_MLX_RL_PROJECT_ROOT="${SYNTH_MLX_RL_PROJECT_ROOT:-$REPO_SIBLING_ROOT/synth-mlx-rl}" \
       "$ROOT/scripts/stage-mlx-runtime-distribution.sh"
     npx tauri build --debug --features eval-driver --bundles app --config "$PACKAGE_CONFIG" --config "$CONFIG"

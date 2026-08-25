@@ -34,6 +34,7 @@ test("tauri.package.json is the one place packaged resources are declared", () =
 	const overlay = readJson("src-tauri/tauri.package.json");
 	const resources = overlay.bundle?.resources ?? {};
 	assert.equal(resources["../../../runtime-distributions/mlx-rl"], "runtimes/mlx-rl");
+	assert.equal(resources["../../../runtime-distributions/optimizers"], "runtimes/optimizers");
 	assert.equal(resources["generated-resources/cookbooks"], undefined, "product-owned cookbooks are not packaged");
 	const helper = Object.entries(resources).find(([source]) => source.includes("helpers/synth-computer-use"));
 	assert.ok(helper, "Computer Use helper bundle is a packaged resource");
