@@ -56,6 +56,28 @@ test("a typed Shoal cold-start response becomes an actionable warming state", ()
 	assert.match(projected.remediation, /Retry in a moment/);
 });
 
+test("a Shoal capacity response distinguishes cloud scheduling from model warmup", () => {
+	const projected = toPublicError({
+		detail: {
+			error: {
+				code: "inference_provider_capacity_pending",
+				message: "provider pending",
+				retryable: true,
+				state: "provider_start_pending",
+				source: "cloud",
+				warm_operation_id: "warm-123",
+				elapsed_ms: 30125
+			}
+		}
+	});
+	assert.equal(projected.message, "Waiting for Synth Cloud GPU capacity.");
+	assert.equal(projected.state, "provider_start_pending");
+	assert.equal(projected.source, "cloud");
+	assert.equal(projected.warmOperationId, "warm-123");
+	assert.equal(projected.elapsedMs, 30125);
+	assert.match(projected.remediation, /same warm operation continues/);
+});
+
 test("secrets in boundary text are redacted", () => {
 	const rendered = publicError({ message: "upstream rejected sk-abcdef0123456789 for this call" });
 	assert.equal(rendered.includes("sk-abcdef0123456789"), false);
