@@ -1690,8 +1690,20 @@ pub async fn dispatch(method: &str, path: &str, body: Value, core: &CoreRuntime)
             if returned_rollout_id != rollout_id {
                 anyhow::bail!("prepare returned a different rollout_id than the caller-stable id");
             }
-            let stream = declared_stream_descriptor(&prepared)?
+            let mut stream = declared_stream_descriptor(&prepared)?
                 .context("prepare omitted stream descriptor")?;
+            if let Some(raw_max_steps) = body.get("max_steps") {
+                let max_steps = raw_max_steps
+                    .as_u64()
+                    .context("max_steps must be a positive integer")?;
+                if max_steps == 0 {
+                    anyhow::bail!("max_steps must be a positive integer");
+                }
+                stream
+                    .as_object_mut()
+                    .context("prepare stream descriptor must be an object")?
+                    .insert("max_steps".into(), json!(max_steps));
+            }
             let poll_url = resolve_declared_url(&base, &declared_poll_url(&stream)?)?;
             let sse_url = resolve_declared_url(&base, &declared_sse_url(&stream)?)?;
             crate::visuals::assert_declared_stream_source(&sse_url)?;
@@ -1908,6 +1920,9 @@ pub async fn dispatch(method: &str, path: &str, body: Value, core: &CoreRuntime)
                 "rollout_id": rollout_id, "seed": body.get("seed"), "task_instance_id": task_instance_id,
                 "policy_ref": policy_ref, "telemetry": telemetry, "slot": LIVE_EVAL_SLOT
             });
+            if let Some(max_steps) = stream.get("max_steps").and_then(Value::as_u64) {
+                start_body["max_steps"] = json!(max_steps);
+            }
             if let Some(environment_ref) = body
                 .get("environment_ref")
                 .or_else(|| body.get("environmentRef"))
