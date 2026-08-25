@@ -60,12 +60,13 @@ pub const EVAL_CRAFTAX_LLM_RECIPE: &str = "eval.craftax.llm-policy.smoke.v1";
 pub const EVAL_GAMEBENCH_LLM_RECIPE: &str = "eval.gamebench.llm-policy.confirm.v1";
 pub const EVAL_MLX_LOCAL_RECIPE: &str = "eval.mlx.local-policy.smoke.v1";
 
-/// The product contract for the report-only Craftax smoke is two seeds per
+/// The product contract for the report-only Craftax smoke recipes is fixed per
 /// staged candidate. Older local runtime catalogs omitted `limits.trials`,
-/// even though the worker recipe itself was fixed-cardinality. Keep the
+/// even though the worker recipes themselves were fixed-cardinality. Keep the
 /// authority here until every supported runtime publishes the field itself;
 /// this is a compatibility projection, not an agent-selected limit.
 const CRAFTAX_CODE_SMOKE_TRIALS_PER_CANDIDATE: u64 = 10;
+const CRAFTAX_LLM_SMOKE_TRIALS_PER_CANDIDATE: u64 = 2;
 
 /// The allowlist the MCP schema publishes. A recipe id outside it never
 /// reaches the worker.
@@ -325,9 +326,20 @@ pub fn recipe_catalog() -> Vec<Value> {
 
 fn normalize_builtin_recipe_contract(mut recipe: Value) -> Value {
     mark_unreproducible_target_unavailable(&mut recipe);
-    if recipe.get("id").and_then(Value::as_str) != Some(EVAL_CRAFTAX_SMOKE_RECIPE)
-        || recipe.pointer("/limits/trials").is_some()
-    {
+    let Some((trials, authority)) = (match recipe.get("id").and_then(Value::as_str) {
+        Some(EVAL_CRAFTAX_SMOKE_RECIPE) => Some((
+            CRAFTAX_CODE_SMOKE_TRIALS_PER_CANDIDATE,
+            "workshop.builtin.eval.craftax.code-policy.smoke.v1",
+        )),
+        Some(EVAL_CRAFTAX_LLM_RECIPE) => Some((
+            CRAFTAX_LLM_SMOKE_TRIALS_PER_CANDIDATE,
+            "workshop.builtin.eval.craftax.llm-policy.smoke.v1",
+        )),
+        _ => None,
+    }) else {
+        return recipe;
+    };
+    if recipe.pointer("/limits/trials").is_some() {
         return recipe;
     }
     let Some(object) = recipe.as_object_mut() else {
@@ -339,11 +351,11 @@ fn normalize_builtin_recipe_contract(mut recipe: Value) -> Value {
     if let Some(limits) = limits.as_object_mut() {
         limits.insert(
             "trials".into(),
-            json!(CRAFTAX_CODE_SMOKE_TRIALS_PER_CANDIDATE),
+            json!(trials),
         );
         limits.insert(
             "trialAuthority".into(),
-            json!("workshop.builtin.eval.craftax.code-policy.smoke.v1"),
+            json!(authority),
         );
     }
     recipe
@@ -2309,6 +2321,22 @@ mod tests {
         );
         let (_, total_trials) = paid_compute_bounds_for_candidate_count(&normalized, 2).unwrap();
         assert_eq!(total_trials, 20);
+    }
+
+    #[test]
+    fn craftax_llm_smoke_backfills_its_product_owned_trial_contract() {
+        let normalized = normalize_builtin_recipe_contract(json!({
+            "id": EVAL_CRAFTAX_LLM_RECIPE,
+            "algorithmId": "eval",
+            "limits": {"parallelism": 4},
+        }));
+        assert_eq!(normalized["limits"]["trials"], json!(2));
+        assert_eq!(
+            normalized["limits"]["trialAuthority"],
+            json!("workshop.builtin.eval.craftax.llm-policy.smoke.v1")
+        );
+        let (_, total_trials) = paid_compute_bounds_for_candidate_count(&normalized, 2).unwrap();
+        assert_eq!(total_trials, 4);
     }
 
     #[test]

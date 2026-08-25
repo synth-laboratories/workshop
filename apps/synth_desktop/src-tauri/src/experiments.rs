@@ -213,7 +213,7 @@ pub fn attach_evidence(
     request: ExperimentEvidenceAttachRequest,
 ) -> Result<ExperimentGroup> {
     anyhow::ensure!(
-        ["trace", "visual", "artifact"].contains(&request.kind.as_str()),
+        ["trace", "visual", "artifact", "container"].contains(&request.kind.as_str()),
         "unsupported experiment evidence kind {}",
         request.kind
     );
@@ -234,6 +234,10 @@ pub fn attach_evidence(
         "artifact" => anyhow::ensure!(
             request.artifact_uri.is_some(),
             "artifact evidence requires artifactUri"
+        ),
+        "container" => anyhow::ensure!(
+            request.container_id.is_some(),
+            "container evidence requires containerId"
         ),
         _ => unreachable!(),
     }
@@ -775,6 +779,50 @@ mod tests {
             )
             .unwrap();
         assert_eq!(events, 1);
+    }
+
+    #[test]
+    fn container_evidence_records_an_admitted_container() {
+        let conn = database();
+        let experiment = attach(
+            &conn,
+            "task_1",
+            MEMBER_CAMPAIGN,
+            "camp_1",
+            "2026-08-25T12:00:00Z",
+            "Craftax",
+        )
+        .unwrap();
+        let group = attach_evidence(
+            &conn,
+            ExperimentEvidenceAttachRequest {
+                experiment_id: experiment.id,
+                session_id: Some("task_1".into()),
+                node_id: None,
+                evidence_id: "container:craftax".into(),
+                kind: "container".into(),
+                label: "Admitted Craftax container".into(),
+                digest: Some("sha256:manifest".into()),
+                container_id: Some("ctr_craftax".into()),
+                rollout_id: None,
+                trace_id: None,
+                visual_id: None,
+                artifact_uri: None,
+                metadata: Some(OpaqueJson(serde_json::json!({"source": "container_catalog"}))),
+                attached_at: "2026-08-25T12:01:00Z".into(),
+            },
+        )
+        .unwrap();
+        let result = group
+            .nodes
+            .iter()
+            .find(|node| node.kind == "result")
+            .unwrap();
+        assert_eq!(result.evidence_refs[0].kind, "container");
+        assert_eq!(
+            result.evidence_refs[0].container_id.as_deref(),
+            Some("ctr_craftax")
+        );
     }
 
     #[test]
