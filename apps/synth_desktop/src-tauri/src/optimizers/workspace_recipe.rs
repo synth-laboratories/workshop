@@ -87,6 +87,7 @@ pub struct ContainerSpec {
     pub contract: String,
     pub locality: PolicyLocality,
     pub family: Option<String>,
+    pub credential_providers: Vec<String>,
 }
 
 #[derive(Deserialize)]
@@ -153,6 +154,8 @@ struct ContainerFile {
     locality: PolicyLocality,
     #[serde(default)]
     family: Option<String>,
+    #[serde(default)]
+    credential_providers: Vec<String>,
 }
 
 fn default_provider() -> String {
@@ -404,6 +407,15 @@ fn parse_containers(workspace: &Path, text: &str) -> Result<Vec<ContainerSpec>> 
         }
         let cwd_rel = item.cwd.unwrap_or_else(|| ".".into());
         let cwd = resolve_workspace_path(workspace, &cwd_rel)?;
+        for provider in &item.credential_providers {
+            if provider != "openrouter" {
+                bail!(
+                    "container `{}` requests unsupported credential provider `{}`",
+                    item.id,
+                    provider
+                );
+            }
+        }
         specs.push(ContainerSpec {
             id: item.id,
             command: item.command,
@@ -413,6 +425,7 @@ fn parse_containers(workspace: &Path, text: &str) -> Result<Vec<ContainerSpec>> 
             contract: item.contract,
             locality: item.locality,
             family: item.family,
+            credential_providers: item.credential_providers,
         });
     }
     Ok(specs)
@@ -645,12 +658,14 @@ cwd = "svc"
 health = "/health"
 contract = "synth-containers/v1"
 locality = "container"
+credential_providers = ["openrouter"]
 "#,
         )
         .unwrap();
         let spec = find_container_spec(&workspace, "classify").unwrap();
         assert!(spec.cwd.starts_with(&workspace.canonicalize().unwrap()));
         assert!(spec.cwd.ends_with("svc"));
+        assert_eq!(spec.credential_providers, vec!["openrouter"]);
     }
 
     #[test]

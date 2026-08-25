@@ -92,6 +92,16 @@ fn start_command(workspace: &Path, spec: &ContainerSpec) -> Result<()> {
         .first()
         .ok_or_else(|| anyhow!("container `{}` command is empty", spec.id))?;
     let mut command = Command::new(program);
+    for provider in &spec.credential_providers {
+        match provider.as_str() {
+            "openrouter" => {
+                let value = crate::synth_config::openrouter_api_key()?
+                    .ok_or_else(|| anyhow!("container `{}` requires an OpenRouter credential", spec.id))?;
+                command.env("OPENROUTER_API_KEY", value);
+            }
+            other => bail!("container `{}` requests unsupported credential provider `{other}`", spec.id),
+        }
+    }
     command
         .args(&spec.command[1..])
         .current_dir(&cwd)
