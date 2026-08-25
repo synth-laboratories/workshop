@@ -79,6 +79,32 @@ declared stream on a task-family visual, then `container_start_prepared_rollout`
 with an explicit `policy_ref` (`harness` + `config`). The coding agent names
 the pin; the host does not default `luna_med`.
 
+After `container_prepare_rollout`, do not guess the compact visuals schema and
+do not call `list_templates`. Create and bind the advertised live visual in one
+call using the exact `templateId` from `container_probe.metadata.liveEval` and
+the exact `visual_binding` returned by preparation:
+
+```js
+const created = await tools.mcp__synth_visuals__visual_manage({
+  operation: "create_with_bind",
+  arguments: {
+    template_id: probe.container.metadata.liveEval.templateId,
+    title: rolloutId,
+    slot: "stream",
+    kind: prepared.visual_binding.kind,
+    source: prepared.visual_binding.source,
+    poll_url: prepared.visual_binding.poll_url,
+    schema: prepared.visual_binding.schema
+  }
+});
+```
+
+Use the returned visual ID for `show`, readiness review, and
+`container_start_prepared_rollout`. A `visual_manage` create request with
+`kind` in place of `template_id` is invalid; never retry it with speculative
+fields. If the atomic call fails, report its exact error instead of spending
+the turn exploring unrelated visual templates.
+
 Use only the normalized Containers contract: plural rollout routes,
 `snake_case` wire fields, and descriptor-nested transport URLs. Never consume
 flat `poll_url`/`sse_url`, singular `/rollout`, native `event_log`, or a guessed
