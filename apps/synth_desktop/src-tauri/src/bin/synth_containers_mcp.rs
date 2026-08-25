@@ -105,8 +105,39 @@ fn parse_status_code(head: &str) -> Option<u16> {
         .ok()
 }
 
+const CONTAINER_OPERATIONS: &[(&str, &str)] = &[
+    ("list", "container_list"),
+    ("discover", "container_discover"),
+    ("ensure", "container_ensure"),
+    ("get", "container_get"),
+    ("probe", "container_probe"),
+    ("prepare_rollout", "container_prepare_rollout"),
+    ("start_prepared_rollout", "container_start_prepared_rollout"),
+    ("get_rollout", "container_get_rollout"),
+    ("poll_rollout", "container_poll_rollout"),
+    ("create_campaign", "campaign_create"),
+    ("campaign_status", "campaign_status"),
+    ("campaign_result", "campaign_result"),
+    ("run_rollouts", "container_run_rollouts"),
+];
+
+fn managed_tool_name(operation: &str) -> Result<&'static str, String> {
+    CONTAINER_OPERATIONS
+        .iter()
+        .find_map(|(candidate, tool)| (*candidate == operation).then_some(*tool))
+        .ok_or_else(|| {
+            let supported = CONTAINER_OPERATIONS
+                .iter()
+                .map(|(candidate, _)| *candidate)
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!("unknown container operation {operation}; supported operations: {supported}")
+        })
+}
+
 fn tools() -> Value {
-    json!({"tools":[
+    let mut catalog = json!({"tools":[
+        {"name":"container_manage","description":"Synth container registry and rollout workflows. Use operation discover to find desktop-catalogued sources independent of chat workspaces; then ensure, probe, and get a live service. Do not scan ports, use a shell, or invent a source. Use create_campaign and the prepared-rollout operations only for declared live evaluation workflows.","inputSchema":{"type":"object","properties":{"operation":{"type":"string","description":"Container registry or rollout operation."},"arguments":{"type":"object","description":"Operation arguments.","additionalProperties":true}},"required":["operation","arguments"],"additionalProperties":false}},
         {"name":"container_list","description":"List registered local containers with cached readiness, task family, and the typed live-eval capability projection (operations, advertised policy_refs, capability source, observation time)","inputSchema":{"type":"object","properties":{},"additionalProperties":false},"annotations":{"readOnlyHint":true,"destructiveHint":false,"idempotentHint":true,"openWorldHint":false}},
         {"name":"container_discover","description":"Discover container sources from the desktop-level catalog. Sources are independent of chat workspaces. Select one returned source_id before starting a container; discovery never starts a process.","inputSchema":{"type":"object","properties":{"query":{"type":"string","description":"Optional id, family, or source hint."}},"additionalProperties":false},"annotations":{"readOnlyHint":true,"destructiveHint":false,"idempotentHint":true,"openWorldHint":false}},
         {"name":"container_ensure","description":"Start or attach one catalogued container spec, wait until /health succeeds, and return the registered handle. Call container_discover first and pass its source_id; no chat workspace is consulted. Does not scan ports. cwd must stay inside the catalogued source. v1 is a supervised child process, not Docker.","inputSchema":{"type":"object","properties":{"source_id":{"type":"string","description":"source id returned by container_discover"},"spec_id":{"type":"string","description":"id from the source's workshop.containers.toml"}},"required":["source_id","spec_id"],"additionalProperties":false},"annotations":{"readOnlyHint":false,"destructiveHint":false,"idempotentHint":true,"openWorldHint":true}},
@@ -120,7 +151,19 @@ fn tools() -> Value {
         ,{"name":"campaign_status","description":"The campaign plan with each rollout's current state, reconciled against the container's authoritative records rather than any report of them.","inputSchema":{"type":"object","properties":{"campaign_id":{"type":"string"}},"required":["campaign_id"],"additionalProperties":false},"annotations":{"readOnlyHint":true,"destructiveHint":false,"idempotentHint":true,"openWorldHint":false}}
         ,{"name":"campaign_result","description":"Reconcile, then settle: the campaign's own aggregate over its terminal rollouts — reward distribution, achievement rates, termination reasons, latency, calls, and usage coverage. Returns status complete only when every planned rollout has a terminal record; otherwise partial, naming the missing ones. Do not recompute this yourself.","inputSchema":{"type":"object","properties":{"campaign_id":{"type":"string"}},"required":["campaign_id"],"additionalProperties":false},"annotations":{"readOnlyHint":false,"destructiveHint":false,"idempotentHint":true,"openWorldHint":false}}
         ,{"name":"container_run_rollouts","description":"Scripted engine-acceptance only: 1-10 bounded rollouts with an explicit action list. Not a ReAct or model evaluation. Live policy evals use container_prepare_rollout then container_start_prepared_rollout with policy_ref.","inputSchema":{"type":"object","properties":{"container_id":{"type":"string"},"count":{"type":"integer","minimum":1,"maximum":10},"seeds":{"type":"array","items":{"type":"integer"},"maxItems":10},"actions":{"type":"array","items":{"type":"string"},"minItems":1,"maxItems":64}},"required":["container_id","count","actions"],"additionalProperties":false},"annotations":{"readOnlyHint":false,"destructiveHint":false,"idempotentHint":false,"openWorldHint":true}}
-    ]})
+    ]});
+    if let Some(facade) = catalog["tools"]
+        .as_array_mut()
+        .and_then(|items| items.iter_mut().find(|tool| tool["name"] == "container_manage"))
+    {
+        facade["inputSchema"]["properties"]["operation"]["enum"] = Value::Array(
+            CONTAINER_OPERATIONS
+                .iter()
+                .map(|(operation, _)| Value::String((*operation).into()))
+                .collect(),
+        );
+    }
+    catalog
 }
 
 /// A campaign id is a path segment, so it may not smuggle one.
@@ -147,6 +190,17 @@ fn call_tool(name: &str, args: &Value) -> Result<Value, String> {
             .ok_or_else(|| "container_id required".to_string())
     };
     match name {
+        "container_manage" => {
+            let operation = args
+                .get("operation")
+                .and_then(Value::as_str)
+                .ok_or("operation required")?;
+            let arguments = args
+                .get("arguments")
+                .filter(|value| value.is_object())
+                .ok_or("arguments must be an object")?;
+            call_tool(managed_tool_name(operation)?, arguments)
+        }
         "container_list" => request("GET", "/v1/containers", None),
         "container_discover" => request(
             "POST",
@@ -399,5 +453,34 @@ mod tests {
             assert_eq!(tool["annotations"]["readOnlyHint"], true);
             assert_eq!(tool["annotations"]["idempotentHint"], true);
         }
+    }
+
+    #[test]
+    fn compact_facade_routes_catalogued_container_operations() {
+        assert_eq!(managed_tool_name("discover").unwrap(), "container_discover");
+        assert_eq!(managed_tool_name("ensure").unwrap(), "container_ensure");
+        assert_eq!(managed_tool_name("probe").unwrap(), "container_probe");
+        assert!(managed_tool_name("scan_ports").is_err());
+
+        let catalog = tools();
+        let facade = catalog["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|tool| tool["name"] == "container_manage")
+            .expect("Codex must receive the compact container facade");
+        let operations = facade["inputSchema"]["properties"]["operation"]["enum"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(Value::as_str)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            operations,
+            CONTAINER_OPERATIONS
+                .iter()
+                .map(|(operation, _)| *operation)
+                .collect::<Vec<_>>()
+        );
     }
 }

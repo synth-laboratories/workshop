@@ -1023,6 +1023,10 @@ pub(crate) fn mcp_enabled_tools(server: &str) -> &'static str {
         // loaded. Keeping the catalog to this one facade prevents the local
         // provider from advertising an alias that its runtime cannot invoke.
         "synth_visuals" => "enabled_tools = [\"visual_manage\"]\n",
+        // Containers follows the same compact-adapter rule. The local provider
+        // may otherwise select one of the legacy aliases without registering
+        // it, turning an ordinary discovery request into an unknown-tool error.
+        "synth_containers" => "enabled_tools = [\"container_manage\"]\n",
         // Keep the compact facade and the two eval-specific aliases visible.
         // Some models reliably select a dedicated schema while others follow
         // the facade; both route through the same production adapter.

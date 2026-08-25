@@ -8,19 +8,24 @@ description: Use for Synth container discovery, real workspace-owned rollout har
 Use `synth-containers-mcp` as the registry authority. Never scan ports or invent
 container records, endpoints, results, model metadata, token usage, or rewards.
 
-Codex exposes this MCP server as the `mcp__synth_containers` namespace. Call its
-named operations directly; do not use shell or scan ports as a fallback.
+Codex exposes one compact tool,
+`mcp__synth_containers__container_manage`. Call it as `{ operation, arguments }`;
+do not call separate `container_discover` or `container_probe` tools, use a
+shell, or scan ports as a fallback. Legacy MCP names remain compatible for
+other clients but are intentionally not advertised to Codex.
 
 ## Discover the engine
 
-1. Call `container_list` in the `mcp__synth_containers` namespace.
+1. Call `container_manage` with `operation: "list"`, or `operation: "discover"`
+   when selecting a catalogued source to start.
 2. Select a registered container by task family and by its typed
    `metadata.capabilities`, not by a guessed name or port.
-3. Refresh it with `container_probe` and read it with `container_get`.
+3. Refresh it with `operation: "probe"` and read it with `operation: "get"`.
 4. Treat `/health`, `/info`, or `/metadata` as engine discovery only. A ready
    engine is not a policy and proves no model was in the loop.
 5. Register a container only when the user or workspace gives an explicit URL.
-   Use `container_register`; never infer a localhost port.
+   Use the legacy registration path only for a user- or workspace-supplied URL;
+   never infer a localhost port.
 
 ## Select by capability, not by liveness
 

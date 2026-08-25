@@ -7,6 +7,9 @@ description: Run and verify live Synth container evaluations with declared strea
 
 Use `synth_containers` for container discovery and rollout requests and
 `synth_visuals` for the live view. Do not scan ports or substitute fixtures.
+In Codex, container actions go through
+`mcp__synth_containers__container_manage({ operation, arguments })`; the
+operation names below are its `operation` values, not separate callable tools.
 
 ## An evaluation is a campaign, not a rollout
 

@@ -223,7 +223,7 @@ fn mcp_groups(current: &ContextSettings) -> Vec<McpContextGroup> {
             "Bundled",
             &["synth_containers", "synth_visuals", "synth_optimizers"],
             &[
-                ("synth_containers", &[]),
+                ("synth_containers", &["container_manage"]),
                 ("synth_visuals", &["visual_manage"]),
                 (
                     "synth_optimizers",
@@ -607,6 +607,10 @@ mod tests {
     #[test]
     fn mcp_group_uses_declared_tool_names() {
         let groups = mcp_groups(&ContextSettings::default());
+        assert_eq!(
+            groups[0].enabled_tools["synth_containers"],
+            vec!["container_manage"]
+        );
         assert_eq!(
             groups[0].enabled_tools["synth_visuals"],
             vec!["visual_manage"]

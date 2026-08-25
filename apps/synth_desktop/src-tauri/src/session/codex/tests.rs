@@ -1996,7 +1996,10 @@ fn advertises_compact_visual_and_experiment_lifecycle_tools_to_codex() {
         mcp_enabled_tools("synth_visuals"),
         "enabled_tools = [\"visual_manage\"]\n"
     );
-    assert_eq!(mcp_enabled_tools("synth_containers"), "");
+    assert_eq!(
+        mcp_enabled_tools("synth_containers"),
+        "enabled_tools = [\"container_manage\"]\n"
+    );
     assert_eq!(
         mcp_enabled_tools("synth_optimizers"),
         "enabled_tools = [\"optimizer_manage\", \"optimizer_stage_eval_candidates\", \"optimizer_start_recipe\"]\n"
