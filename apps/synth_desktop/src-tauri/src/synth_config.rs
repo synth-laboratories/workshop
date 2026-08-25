@@ -556,15 +556,15 @@ pub(crate) fn select_default_workspace_path(
     home: Option<std::path::PathBuf>,
     isolated_default: std::path::PathBuf,
 ) -> std::path::PathBuf {
-    if let Some(root) = allowed_roots.first() {
-        return root.into();
-    }
     // Named and packaged instances explicitly provide an isolated launcher
     // workspace. Keep that boundary authoritative even with full-system
     // permissions so workspace-local manifests (containers, recipes, and
     // experiments) resolve where the release runner staged them.
     if let Some(workspace) = launcher_workspace {
         return workspace;
+    }
+    if let Some(root) = allowed_roots.first() {
+        return root.into();
     }
     // `danger-full-access` is a machine-wide access promise. Keep an explicit
     // attached root or launcher workspace authoritative. For ordinary launches
@@ -1578,7 +1578,7 @@ operations = { "rollouts.prepare" = false }
     }
 
     #[test]
-    fn explicit_workspace_still_wins_under_full_system_access() {
+    fn named_instance_workspace_wins_over_machine_allowed_roots() {
         let selected = select_default_workspace_path(
             &["/Users/example/Documents/GitHub/containers".into()],
             "danger-full-access",
@@ -1586,10 +1586,7 @@ operations = { "rollouts.prepare" = false }
             Some(PathBuf::from("/Users/example")),
             PathBuf::from("/isolated/default"),
         );
-        assert_eq!(
-            selected,
-            PathBuf::from("/Users/example/Documents/GitHub/containers")
-        );
+        assert_eq!(selected, PathBuf::from("/isolated/instance/workspace"));
     }
 
     #[test]

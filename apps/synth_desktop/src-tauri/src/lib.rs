@@ -4349,10 +4349,24 @@ fn codex_default_workspace() -> Result<String, AppError> {
     let permissions = synth_config::desktop_permission_settings().map_err(|error| {
         AppError::message(format!("Cannot read desktop permission settings: {error}"))
     })?;
+    // Finder and LaunchServices do not reliably preserve launcher environment.
+    // A named bundle's descriptor is the durable authority for its isolated
+    // instance root, so recover the staged workspace from it when the explicit
+    // launch variable is absent.
+    let launcher_workspace = std::env::var_os("SYNTH_DESKTOP_WORKSPACE")
+        .map(std::path::PathBuf::from)
+        .or_else(|| {
+            crate::instance::identity()
+                .ok()
+                .and_then(|identity| identity.descriptor)
+                .and_then(|descriptor| descriptor.instance_root)
+                .map(|root| root.join("workspace"))
+                .filter(|path| path.is_dir())
+        });
     let path = synth_config::select_default_workspace_path(
         &configured,
         &permissions.sandbox_mode,
-        std::env::var_os("SYNTH_DESKTOP_WORKSPACE").map(std::path::PathBuf::from),
+        launcher_workspace,
         dirs::home_dir(),
         crate::instance::state_root().join("workspaces/default"),
     );
