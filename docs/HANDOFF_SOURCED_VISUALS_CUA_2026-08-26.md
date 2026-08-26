@@ -22,7 +22,7 @@ Automated acceptance **passed**. Live CUA **was correctly blocked**.
 | Computer Use vs `com.synth.desktop.v08.dev.codex` | refuses: raw process has no LaunchServices identity |
 | `./scripts/desktop-instance.sh cua` on the dirty original | correctly refuses: `cua-build requires a clean checkout` |
 
-Do **not** retry `desktop:dev` for this proof. Do **not** bypass the dirty-tree check. Do **not** target `com.synth.desktop.v08.dev.codex`.
+Do **not** retry `desktop:dev` for this proof. Do **not** bypass the dirty-tree check. Do **not** target `com.synth.desktop.v08.dev.codex`. Do **not** commit `/Users/joshuapurtell/GitHub/synth-mlx-rl` to satisfy packaging — `cua-build` stages the **pinned** mlx-rl (`5d6db143` + lock `7f14b704…`), not current HEAD.
 
 The launcher says this explicitly: raw `tauri dev` binaries have no LaunchServices app identity, so accessibility clients cannot address a named instance. Only a signed debug `.app` registers `BUNDLE_ID`.
 
@@ -52,13 +52,24 @@ If the agent dumps TSX into `blank.canvas.v1`, guesses `/events`, or `fetch`es a
 | --- | --- | --- |
 | `/Users/joshuapurtell/GitHub/workshop-v08-release` | `codex/v08-release-integration` | **Leave dirty.** Sourced visuals plus other WIP. Do not commit here. |
 
-Leave `containers`, `optimizers`, `optimizers-beta`, `synth-mlx-rl` alone.
+Leave `containers`, `optimizers`, `optimizers-beta` alone. Leave `/Users/joshuapurtell/GitHub/synth-mlx-rl` dirty (perf WIP). Packaging uses `/Users/joshuapurtell/GitHub/synth-mlx-rl-v08-pinned` (`5d6db143`, already clean).
 
 File work only under `/Users/joshuapurtell/GitHub`. Do not write under `Documents`.
 
 ---
 
 ## Required path: snapshot worktree → packaged CUA
+
+The snapshot **already exists** at `/Users/joshuapurtell/GitHub/workshop-v08-sourced-cua` on `cua/sourced-visuals-dogfood`. Do not delete it and re-rsync unless the original tree moved. From that tree:
+
+```bash
+cd /Users/joshuapurtell/GitHub/workshop-v08-sourced-cua
+./scripts/desktop-instance.sh cua sourced-cua
+```
+
+`cua-build` stages mlx-rl from `/Users/joshuapurtell/GitHub/synth-mlx-rl-v08-pinned` (clean `5d6db143`). It will **not** use the dirty sibling `/Users/joshuapurtell/GitHub/synth-mlx-rl`. Do not `git add` that sibling to unstick this.
+
+If you must recreate the snapshot:
 
 `cua-build` needs a **clean git status in the tree it builds from**. Snapshot the dirty working copy into a sibling worktree, commit **there only**, then package. Do not push that branch. Do not amend or commit `workshop-v08-release`.
 
@@ -110,6 +121,8 @@ df -k . | awk 'NR==2 {print $4}'   # need ≥ 5242880 KiB (~5 GiB)
 #   ./scripts/setup-desktop-dev-signing.sh
 
 npm install
+# mlx-rl: do not use the dirty sibling. Launcher defaults to
+# /Users/joshuapurtell/GitHub/synth-mlx-rl-v08-pinned when that tree exists.
 ./scripts/desktop-instance.sh cua sourced-cua
 ```
 
@@ -209,6 +222,7 @@ Host still builds `ReplayClient`. The module must not discover URLs.
 | Agent `fetch`es or binds `http://127.0.0.1:…/events` | Guessed URL — fail closed |
 | Two different ids in chat vs pane | Did not `show` the created id |
 | Helper / signing / disk preflight | Report the exact launcher error. Do not fall back to `dev`. |
+| `[mlx-runtime] release source must be clean` / wrong revision | Staging used dirty `/Users/joshuapurtell/GitHub/synth-mlx-rl`. Use the pin at `synth-mlx-rl-v08-pinned`. Do not commit mlx-rl WIP. |
 | Live Craftax invented as a 5×5 stub | Wrong env — gold is rust GameBench only; fail closed if gold is down |
 
 `desktop:dev` remains valid for **human eyeball** of Codex MCP. It is **not** this CUA proof.
