@@ -323,6 +323,15 @@ function managedHtmlPayload(value: unknown): unknown {
 	if (value && typeof value === "object") {
 		const record = value as Record<string, unknown>;
 		if (record.type === "synth.visual.update.v1") return record.payload ?? {};
+		// Canonical bindings expose an inline value by its declared input name.
+		// A managed package's input is commonly named `payload`, so unwrap that
+		// binding envelope only when it is itself an update message; never guess
+		// through an arbitrary application payload that happens to have a field
+		// with the same name.
+		if (record.payload && typeof record.payload === "object") {
+			const nested = record.payload as Record<string, unknown>;
+			if (nested.type === "synth.visual.update.v1") return nested.payload ?? {};
+		}
 		if (Array.isArray(record.frames) && record.frames.length > 0) {
 			return managedHtmlPayload(record.frames[record.frames.length - 1]);
 		}
