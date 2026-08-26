@@ -394,9 +394,6 @@ impl OptimizerService {
             json!({"id":"go-ex","title":"GELO / Go-Ex","availability":"available","description":"Hosted exploration with optional local slot binding"}),
             json!({"id":"sft","title":"SFT","kind":"training","availability":"available","description":"Supervised fine-tuning. Local MLX on this Mac or hosted through the public Optimizers SFT service. Both placements are admitted by the Optimizers sidecar."}),
             json!({"id":"cispo","title":"CISPO","kind":"training","availability":"available","description":"On-policy CISPO. Local MLX on this Mac, or hosted slime.v1 after the clip-identity canary. Distinct from GEPA/GELO search."}),
-            // Local only, and only when its own runtime and a pinned target
-            // recipe preflight. `eval` is never hosted.
-            super::eval_recipes::algorithm_entry(),
         ]
     }
 

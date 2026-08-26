@@ -435,6 +435,16 @@ $profile = "$backend_url"
 EOF
     fi
   fi
+  # Durable instance authority for signed debug/CUA bundles. LaunchServices
+  # does not inherit the shell launcher's environment.
+  if [[ "$COMMAND" == "cua" || "$COMMAND" == "cua-build" || "$COMMAND" == "cua-run" || "$COMMAND" == "rebuild-run" ]]; then
+    cat >"$DATA_ROOT/eval-admission.toml" <<'EOF'
+[target_admission.local_pinned_digest]
+enabled = true
+source = "instance_config"
+EOF
+    chmod 600 "$DATA_ROOT/eval-admission.toml"
+  fi
   if [[ ! -e "$DATA_ROOT/.env" ]]; then
     if [[ "${SYNTH_DESKTOP_SEED_GLOBAL_CONFIG:-0}" == "1" && -f "$HOME/.synth-desktop/.env" ]]; then
       cp "$HOME/.synth-desktop/.env" "$DATA_ROOT/.env"
