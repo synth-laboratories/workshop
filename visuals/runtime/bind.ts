@@ -1,5 +1,5 @@
 /**
- * Bind Trace V5 / local CAS / live SSE / fixture sources into template slot payloads.
+ * Bind Trace V5 / local CAS / live SSE / fixture sources into template input payloads.
  */
 
 import type {
@@ -12,11 +12,18 @@ import type {
   VisualBindingKind,
   VisualTemplateMeta
 } from "./types.ts";
-import { VISUAL_BINDINGS_SCHEMA_VERSION } from "./types.ts";
+import {
+  VISUAL_BINDINGS_SCHEMA_VERSION,
+  bindingInputName,
+  resolveInputName,
+  stampBindingInput,
+  templateInputs
+} from "./types.ts";
 import { assertDeclaredStreamSource, assertLiveEvalSlot } from "./liveStream.ts";
 import { presentRuntimeErrorMessage } from "./presentError.ts";
 
 export type BoundSlotPayload = {
+  input: string;
   slot: string;
   kind: VisualBindingKind;
   source: string;
@@ -53,7 +60,7 @@ export type BindContext = {
   loadOptimizerRun?: (optimizerRunId: string) => Promise<unknown> | unknown;
   /** Declared create-rollout stream descriptor; required to bind guessed-looking URLs. */
   declaredStream?: import("./liveStream.ts").DeclaredStreamDescriptor | null;
-  /** When true, missing optional slots are ignored. */
+  /** When true, missing optional inputs are ignored. */
   skipOptional?: boolean;
 };
 
@@ -77,48 +84,48 @@ async function resolveBinding(
       return dig(binding.data, binding.path);
     case "fixture": {
       if (!ctx.loadFixture) {
-        throw new Error(`No fixture loader for slot "${binding.slot}"`);
+        throw new Error(`No fixture loader for input "${bindingInputName(binding) ?? "?"}"`);
       }
       return dig(await ctx.loadFixture(binding.source!), binding.path);
     }
     case "trace_v5": {
       if (!binding.source) {
-        throw new Error(`Trace V5 binding for slot "${binding.slot}" requires a sealed trace digest`);
+        throw new Error(`Trace V5 binding for input "${bindingInputName(binding) ?? "?"}" requires a sealed trace digest`);
       }
       if (!ctx.loadTraceV5) {
-        throw new Error(`No Trace V5 loader for slot "${binding.slot}"`);
+        throw new Error(`No Trace V5 loader for input "${bindingInputName(binding) ?? "?"}"`);
       }
       return dig(await ctx.loadTraceV5(binding.source), binding.path);
     }
     case "local_cas": {
       if (binding.data !== undefined) return dig(binding.data, binding.path);
       if (!binding.source) {
-        throw new Error(`local_cas binding for slot "${binding.slot}" requires a content digest`);
+        throw new Error(`local_cas binding for input "${bindingInputName(binding) ?? "?"}" requires a content digest`);
       }
       if (!ctx.loadLocalCas) {
-        throw new Error(`No local CAS loader for slot "${binding.slot}"`);
+        throw new Error(`No local CAS loader for input "${bindingInputName(binding) ?? "?"}"`);
       }
       return dig(await ctx.loadLocalCas(binding.source), binding.path);
     }
     case "query_snapshot": {
       if (binding.data !== undefined) return dig(binding.data, binding.path);
       if (!binding.source) {
-        throw new Error(`query_snapshot binding for slot "${binding.slot}" requires a snapshot id`);
+        throw new Error(`query_snapshot binding for input "${bindingInputName(binding) ?? "?"}" requires a snapshot id`);
       }
       if (!ctx.loadQuerySnapshot) {
-        throw new Error(`No query snapshot loader for slot "${binding.slot}"`);
+        throw new Error(`No query snapshot loader for input "${bindingInputName(binding) ?? "?"}"`);
       }
       return dig(await ctx.loadQuerySnapshot(binding.source), binding.path);
     }
     case "run_ref": {
       if (binding.data !== undefined) return dig(binding.data, binding.path);
-      if (!ctx.loadRun) throw new Error(`No run loader for slot "${binding.slot}"`);
+      if (!ctx.loadRun) throw new Error(`No run loader for input "${bindingInputName(binding) ?? "?"}"`);
       return dig(await ctx.loadRun(binding.source!), binding.path);
     }
     case "optimizer_run": {
       if (binding.data !== undefined) return dig(binding.data, binding.path);
       if (!ctx.loadOptimizerRun) {
-        throw new Error(`No optimizer run loader for slot "${binding.slot}"`);
+        throw new Error(`No optimizer run loader for input "${bindingInputName(binding) ?? "?"}"`);
       }
       return dig(await ctx.loadOptimizerRun(binding.source!), binding.path);
     }
@@ -144,7 +151,7 @@ function describeError(err: unknown): string {
 }
 
 /**
- * Resolve all bindings for a template into slot payloads.
+ * Resolve all bindings for a template into input payloads.
  * Does not open SSE streams — use `subscribeLiveSlot` for live.* templates.
  */
 export async function bindTemplateSlots(
@@ -159,41 +166,60 @@ export async function bindTemplateSlots(
   const bindingSlots = resolved.slots;
   const bySlot = new Map<string, VisualBinding[]>();
   for (const binding of bindingSlots) {
-    const existing = bySlot.get(binding.slot) ?? [];
+    const name = bindingInputName(binding);
+    if (!name) {
+      continue;
+    }
+    const existing = bySlot.get(name) ?? [];
     existing.push(binding);
-    bySlot.set(binding.slot, existing);
+    bySlot.set(name, existing);
   }
   const slots: Record<string, BoundSlotPayload> = {};
   const errors: string[] = [];
 
   for (const binding of bindingSlots) {
-    const slotError = assertLiveEvalSlot(binding.slot, template.id);
+    const conflict = resolveInputName(binding.input, binding.slot);
+    if (!conflict.ok) {
+      errors.push(conflict.error);
+      continue;
+    }
+    const name = conflict.name;
+    if (!name) {
+      errors.push("A visual binding is missing its input name");
+      continue;
+    }
+    const slotError = assertLiveEvalSlot(name, template.id);
     if (slotError) errors.push(slotError);
   }
 
-  for (const slot of template.slots) {
+  const declared = templateInputs(template);
+  if (template.inputs && template.slots && JSON.stringify(template.inputs) !== JSON.stringify(template.slots)) {
+    errors.push("template inputs and slots disagree; send one list");
+  }
+  for (const slot of declared) {
     const slotError = assertLiveEvalSlot(slot.name, template.id);
     if (slotError) errors.push(slotError);
     const candidates = bySlot.get(slot.name) ?? [];
     const required = slot.required !== false;
     if (candidates.length === 0) {
       if (required && !ctx.skipOptional) {
-        errors.push(`Missing required binding for slot "${slot.name}"`);
+        errors.push(`Missing required binding for input "${slot.name}"`);
       }
       continue;
     }
     if (candidates.length > 1 && !slot.multiple) {
-      errors.push(`Slot "${slot.name}" accepts one binding, received ${candidates.length}`);
+      errors.push(`Input "${slot.name}" accepts one binding, received ${candidates.length}`);
       continue;
     }
-    const resolved: BoundSlotPayload[] = [];
+    const resolvedPayloads: BoundSlotPayload[] = [];
     for (const binding of candidates) {
       if (!slot.accepts.includes(binding.kind)) {
-        errors.push(`Slot "${slot.name}" does not accept kind "${binding.kind}" (accepts: ${slot.accepts.join(", ")})`);
+        errors.push(`Input "${slot.name}" does not accept kind "${binding.kind}" (accepts: ${slot.accepts.join(", ")})`);
         continue;
       }
       try {
-        resolved.push({
+        resolvedPayloads.push({
+          input: slot.name,
           slot: slot.name,
           kind: binding.kind,
           source: binding.source ?? "inline",
@@ -203,10 +229,10 @@ export async function bindTemplateSlots(
         errors.push(describeError(err));
       }
     }
-    if (resolved.length > 0) {
+    if (resolvedPayloads.length > 0) {
       slots[slot.name] = slot.multiple
-        ? { slot: slot.name, kind: resolved[0].kind, source: "multiple", data: resolved.map((item) => item.data) }
-        : resolved[0];
+        ? { input: slot.name, slot: slot.name, kind: resolvedPayloads[0].kind, source: "multiple", data: resolvedPayloads.map((item) => item.data) }
+        : resolvedPayloads[0];
     }
   }
 
@@ -216,7 +242,10 @@ export async function bindTemplateSlots(
 export function isVisualBindings(value: unknown): value is VisualBindings {
   if (!value || typeof value !== "object") return false;
   const candidate = value as Partial<VisualBindings>;
-  return candidate.schemaVersion === "synth.visual-bindings.v1" && Array.isArray(candidate.slots);
+  return (
+    candidate.schemaVersion === "synth.visual-bindings.v1"
+    && (Array.isArray(candidate.inputs) || Array.isArray(candidate.slots))
+  );
 }
 
 const BINDING_KINDS: readonly string[] = [
@@ -245,7 +274,7 @@ function isBindingDescriptor(value: unknown): boolean {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
   const candidate = value as Record<string, unknown>;
   if (typeof candidate.kind !== "string" || !BINDING_KINDS.includes(candidate.kind)) return false;
-  return ["slot", "source", "data", "poll_url"].some((field) => field in candidate);
+  return ["input", "slot", "source", "data", "poll_url"].some((field) => field in candidate);
 }
 
 function isDescriptorEntry(value: unknown): boolean {
@@ -253,8 +282,43 @@ function isDescriptorEntry(value: unknown): boolean {
   return isBindingDescriptor(value);
 }
 
+function stampResolvedBindings(bindings: VisualBinding[]): VisualBinding[] | { error: string } {
+  const out: VisualBinding[] = [];
+  for (const binding of bindings) {
+    const resolved = resolveInputName(binding.input, binding.slot);
+    if (!resolved.ok) return { error: resolved.error };
+    if (!resolved.name) return { error: "A visual binding is missing its input name" };
+    out.push(stampBindingInput(binding, resolved.name));
+  }
+  return out;
+}
+
+function stableBindingJson(bindings: VisualBinding[]): string {
+  return JSON.stringify(
+    bindings.map((binding) =>
+      Object.fromEntries(Object.entries(binding).sort(([left], [right]) => left.localeCompare(right)))
+    )
+  );
+}
+
+function envelopeDescriptors(value: VisualBindings): VisualBinding[] | { error: string } {
+  const inputs = value.inputs;
+  const slots = value.slots;
+  if (inputs && slots) {
+    const left = stampResolvedBindings(inputs);
+    const right = stampResolvedBindings(slots);
+    if ("error" in left) return left;
+    if ("error" in right) return right;
+    if (stableBindingJson(left) !== stableBindingJson(right)) {
+      return { error: "visual bindings inputs and slots disagree; send one array" };
+    }
+    return left;
+  }
+  return stampResolvedBindings(inputs ?? slots ?? []);
+}
+
 /**
- * Resolve any persisted bindings value into slots the renderer can read.
+ * Resolve any persisted bindings value into inputs the renderer can read.
  *
  * Mirrors `visuals::models::canonicalize_bindings` in Rust; the two must agree,
  * because Rust decides what is written and this decides what is rendered.
@@ -267,10 +331,18 @@ function isDescriptorEntry(value: unknown): boolean {
  */
 export function resolveVisualBindings(value: unknown): ResolvedVisualBindings {
   if (Array.isArray(value)) {
-    return { status: "canonical", slots: value as VisualBinding[], error: null, upgradedSlots: [] };
+    const stamped = stampResolvedBindings(value as VisualBinding[]);
+    if ("error" in stamped) {
+      return { status: "rejected", slots: [], error: stamped.error, upgradedSlots: [] };
+    }
+    return { status: "canonical", slots: stamped, error: null, upgradedSlots: [] };
   }
   if (isVisualBindings(value)) {
-    return { status: "canonical", slots: value.slots, error: null, upgradedSlots: [] };
+    const descriptors = envelopeDescriptors(value);
+    if ("error" in descriptors) {
+      return { status: "rejected", slots: [], error: descriptors.error, upgradedSlots: [] };
+    }
+    return { status: "canonical", slots: descriptors, error: null, upgradedSlots: [] };
   }
   if (!value || typeof value !== "object") {
     return {
@@ -302,13 +374,13 @@ export function resolveVisualBindings(value: unknown): ResolvedVisualBindings {
       return {
         status: "rejected",
         slots: [],
-        error: `Visual bindings mix descriptors and inline data on ${unreadable.join(", ")}; re-bind with an explicit slots array`,
+        error: `Visual bindings mix descriptors and inline data on ${unreadable.join(", ")}; re-bind with an explicit inputs array`,
         upgradedSlots: []
       };
     }
-    const slots = entries.flatMap(([slot, entry]) =>
+    const slots = entries.flatMap(([name, entry]) =>
       (Array.isArray(entry) ? entry : [entry]).map(
-        (descriptor) => ({ ...(descriptor as VisualBinding), slot })
+        (descriptor) => stampBindingInput({ ...(descriptor as VisualBinding) }, name)
       )
     );
     return { status: "upgraded", slots, error: null, upgradedSlots: entries.map(([slot]) => slot) };
@@ -316,13 +388,13 @@ export function resolveVisualBindings(value: unknown): ResolvedVisualBindings {
   // A legacy inline prop bag. Its values are data, not transports.
   return {
     status: "upgraded",
-    slots: entries.map(([slot, data]) => ({ slot, kind: "inline" as const, data })),
+    slots: entries.map(([name, data]) => stampBindingInput({ kind: "inline" as const, data }, name)),
     error: null,
     upgradedSlots: entries.map(([slot]) => slot)
   };
 }
 
-/** Desktop passes the bindings envelope; some hosts still pass a raw slot array. */
+/** Desktop passes the bindings envelope; some hosts still pass a raw input array. */
 export function bindingSlots(value: unknown): VisualBinding[] {
   return resolveVisualBindings(value).slots;
 }
@@ -335,40 +407,41 @@ export function propsFromBindings(value: unknown): { props: Record<string, unkno
   const props: Record<string, unknown> = {};
   const errors: string[] = [];
   for (const binding of resolved.slots) {
-    if (!binding.slot || typeof binding.slot !== "string") {
-      errors.push("A visual binding is missing its slot name");
+    const name = bindingInputName(binding);
+    if (!name) {
+      errors.push("A visual binding is missing its input name");
       continue;
     }
-    const slotError = assertLiveEvalSlot(binding.slot);
+    const slotError = assertLiveEvalSlot(name);
     if (slotError) {
       errors.push(slotError);
       continue;
     }
     if (binding.kind === "inline") {
-      if (!("data" in binding)) errors.push(`Inline slot "${binding.slot}" has no data`);
-      else props[binding.slot] = binding.data;
+      if (!("data" in binding)) errors.push(`Inline input "${name}" has no data`);
+      else props[name] = binding.data;
     } else if (binding.kind === "live_sse" && binding.source) {
       const guessed = assertDeclaredStreamSource(binding.source);
       if (guessed) errors.push(guessed);
       else {
-        props[binding.slot] = {
+        props[name] = {
           sse_url: binding.source,
           ...(binding.poll_url ? { poll_url: binding.poll_url } : {}),
           schema: binding.schema ?? "evals.event-stream.v1"
         };
       }
     } else if (binding.kind === "optimizer_run" && binding.source) {
-      props[binding.slot] = {
+      props[name] = {
         optimizer_run_id: binding.source,
         schema: binding.schema ?? "optimizer_run.v1"
       };
     } else if (binding.kind === "query_snapshot" && binding.source) {
-      props[binding.slot] = {
+      props[name] = {
         snapshot_id: binding.source,
         schema: binding.schema ?? "synth.trace-query-result.v1"
       };
-    } else if ("data" in binding) props[binding.slot] = binding.data;
-    else errors.push(`Slot "${binding.slot}" (${binding.kind}) has not been resolved by the Rust runtime`);
+    } else if ("data" in binding) props[name] = binding.data;
+    else errors.push(`Input "${name}" (${binding.kind}) has not been resolved by the Rust runtime`);
   }
   return { props, errors };
 }

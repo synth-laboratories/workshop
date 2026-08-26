@@ -164,7 +164,7 @@ export type LiveTemplateProps = {
 
 /** Declared live streams, in binding order, from resolved binding slots. */
 export function replayStreamsFromBindings(
-  slots: Array<{ slot: string; kind: string; source?: string; poll_url?: string }>
+  slots: Array<{ input?: string; slot?: string; kind: string; source?: string; poll_url?: string }>
 ): { streams: ReplayStream[]; missingTransport: string[] } {
   const live = slots.filter((slot) => slot.kind === "live_sse");
   const streams: ReplayStream[] = [];
@@ -173,7 +173,7 @@ export function replayStreamsFromBindings(
     if (!binding.poll_url) {
       // A stream with no durable poll authority cannot be replayed after it
       // closes, so it is reported rather than quietly dropped.
-      missingTransport.push(binding.source ?? `${binding.slot}[${index}]`);
+      missingTransport.push(binding.source ?? `${binding.input ?? binding.slot}[${index}]`);
       continue;
     }
     streams.push({

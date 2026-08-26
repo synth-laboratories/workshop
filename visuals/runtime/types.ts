@@ -3,7 +3,7 @@
  * Templates bind data through VisualBinding; Desktop renders VisualInstance shells.
  */
 
-/** How a template slot is fed at runtime. */
+/** How a template input is fed at runtime. */
 export const VISUAL_BINDINGS_SCHEMA_VERSION = "synth.visual-bindings.v1" as const;
 export type VisualBindingKind =
   | "inline"
@@ -15,9 +15,57 @@ export type VisualBindingKind =
   | "optimizer_run"
   | "query_snapshot";
 
+/**
+ * Bind-point name: canonical `input`, one-release alias `slot`.
+ * Both present and unequal is a conflict; callers must fail closed.
+ */
+export function resolveInputName(
+  canonical: unknown,
+  alias: unknown
+): { ok: true; name: string | undefined } | { ok: false; error: string } {
+  const input = typeof canonical === "string" && canonical.trim() ? canonical.trim() : undefined;
+  const slot = typeof alias === "string" && alias.trim() ? alias.trim() : undefined;
+  if (input && slot && input !== slot) {
+    return {
+      ok: false,
+      error: `input ${JSON.stringify(input)} and slot ${JSON.stringify(slot)} disagree; send one name`
+    };
+  }
+  return { ok: true, name: input ?? slot };
+}
+
+export function bindingInputName(binding: { input?: string; slot?: string }): string | undefined {
+  const resolved = resolveInputName(binding.input, binding.slot);
+  return resolved.ok ? resolved.name : undefined;
+}
+
+export function stampBindingInput<T extends { input?: string; slot?: string }>(
+  binding: T,
+  name: string
+): T {
+  return { ...binding, input: name, slot: name };
+}
+
+export function templateInputs(template: {
+  inputs?: VisualTemplateSlot[];
+  slots?: VisualTemplateSlot[];
+}): VisualTemplateSlot[] {
+  return template.inputs ?? template.slots ?? [];
+}
+
+export function bindingList(
+  bindings: VisualBinding[] | { inputs?: VisualBinding[]; slots?: VisualBinding[] } | undefined
+): VisualBinding[] {
+  if (!bindings) return [];
+  if (Array.isArray(bindings)) return bindings;
+  return bindings.inputs ?? bindings.slots ?? [];
+}
+
 export type VisualBinding = {
-  /** Slot name declared in template.json `slots`. */
-  slot: string;
+  /** Canonical bind-point name declared in template.json `inputs` (alias `slots`). */
+  input?: string;
+  /** COMPAT: one-release alias of `input`. */
+  slot?: string;
   kind: VisualBindingKind;
   /**
    * Kind-specific locator:
@@ -42,16 +90,28 @@ export type VisualBinding = {
 
 export type VisualBindings = {
   schemaVersion: typeof VISUAL_BINDINGS_SCHEMA_VERSION;
-  slots: VisualBinding[];
+  /** Canonical descriptor array. */
+  inputs?: VisualBinding[];
+  /** COMPAT: one-release copy of `inputs`. */
+  slots?: VisualBinding[];
+};
+
+export type VisualComponentMeta = {
+  id: string;
+  kind: string;
+  protocolId: string;
+  consumes: string[];
+  emits?: string[];
+  description?: string;
 };
 
 export type VisualTemplateSlot = {
   name: string;
   description: string;
-  /** Accepted binding kinds for this slot. */
+  /** Accepted binding kinds for this input. */
   accepts: VisualBindingKind[];
   required?: boolean;
-  /** Allow several independently declared sources to feed one semantic slot. */
+  /** Allow several independently declared sources to feed one semantic input. */
   multiple?: boolean;
   schema?: string;
 };
@@ -64,10 +124,18 @@ export type VisualTemplateMeta = {
   version: string;
   description: string;
   accent?: string;
+  rendererKind?: string;
+  kind?: string;
+  protocolId?: string;
+  /** Canonical bind-point list. */
+  inputs?: VisualTemplateSlot[];
+  /** COMPAT: one-release copy of `inputs`. */
   slots: VisualTemplateSlot[];
   /** Relative path to the React shell from the template root. */
   shell: string;
   tags?: string[];
+  /** Advertised compose parts. Kind is the render contract; protocolId the bind dialect. */
+  components?: VisualComponentMeta[];
   observationContract?: {
     schemaVersion: "synth.visual-observation-contract.v1";
     readiness: {
@@ -142,6 +210,8 @@ export type LiveEvalEvent = {
   occurred_at?: string;
   run_id: string;
   kind: string;
+  /** Optimizer envelopes use `type`; includeKinds matches kind or type. */
+  type?: string;
   lane?: string | null;
   source?: string;
   sequence?: number | string | null;
