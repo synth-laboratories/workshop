@@ -1479,10 +1479,11 @@ fn optimizer_command(home: &Path, version: &str) -> Result<Command> {
             // `uv run` is a launcher, not the workload authority. Tracking it
             // as the recipe leader lets the shim exit or receive SIGTERM while
             // the real Python child survives re-parented; Workshop then seals
-            // a false failed run and leaks paid compute. Prepared QA/dev
-            // projects already have an immutable venv, so supervise its real
-            // executable directly and keep PID/process-group ownership honest.
-            return developer_project_command(&project);
+            // a false failed run and leaks paid compute. Prefer a prepared
+            // project venv. A packaged CUA snapshot intentionally excludes
+            // `.venv`; in that lane supervise the immutable installed runtime
+            // directly and overlay only the staged, reviewed Python source.
+            return developer_project_command(home, version, &project);
         }
         let uv = resolve_uv()?;
         let mut command = Command::new(uv);
@@ -1499,7 +1500,7 @@ fn optimizer_command(home: &Path, version: &str) -> Result<Command> {
     Ok(Command::new(bin))
 }
 
-fn developer_project_command(project: &Path) -> Result<Command> {
+fn developer_project_command(home: &Path, version: &str, project: &Path) -> Result<Command> {
     for candidate in [
         project.join(".venv/bin/synth-optimizers"),
         project.join(".venv/Scripts/synth-optimizers.exe"),
@@ -1508,10 +1509,9 @@ fn developer_project_command(project: &Path) -> Result<Command> {
             return Ok(Command::new(candidate));
         }
     }
-    bail!(
-        "developer optimizer project {} has no prepared .venv runtime; run uv sync before launching Workshop",
-        project.display()
-    )
+    let mut command = Command::new(installed_runtime_bin(home, version)?);
+    command.env("PYTHONPATH", project.join("src"));
+    Ok(command)
 }
 
 fn optimizer_gepa_home(home: &Path) -> PathBuf {
@@ -3170,21 +3170,38 @@ mod tests {
     #[test]
     fn developer_project_supervises_real_venv_executable() {
         let dir = tempfile::tempdir().unwrap();
+        let home = tempfile::tempdir().unwrap();
         let bin = dir.path().join(".venv/bin");
         fs::create_dir_all(&bin).unwrap();
         let executable = bin.join("synth-optimizers");
         fs::write(&executable, b"prepared optimizer runtime").unwrap();
 
-        let command = developer_project_command(dir.path()).unwrap();
+        let command = developer_project_command(home.path(), "0.2.19", dir.path()).unwrap();
         assert_eq!(Path::new(command.as_std().get_program()), executable);
         assert_ne!(command.as_std().get_program(), std::ffi::OsStr::new("uv"));
     }
 
     #[test]
-    fn developer_project_without_prepared_runtime_fails_closed() {
-        let dir = tempfile::tempdir().unwrap();
-        let error = developer_project_command(dir.path()).unwrap_err();
-        assert!(error.to_string().contains("uv sync"));
+    fn staged_project_without_venv_overlays_installed_runtime() {
+        let project = tempfile::tempdir().unwrap();
+        let home = tempfile::tempdir().unwrap();
+        let bin = home.path().join("versions/0.2.19/runtime/bin");
+        fs::create_dir_all(&bin).unwrap();
+        let executable = bin.join("synth-optimizers");
+        fs::write(&executable, b"installed optimizer runtime").unwrap();
+
+        let command =
+            developer_project_command(home.path(), "0.2.19", project.path()).unwrap();
+        let expected_pythonpath = project.path().join("src");
+        assert_eq!(Path::new(command.as_std().get_program()), executable);
+        assert_eq!(
+            command
+                .as_std()
+                .get_envs()
+                .find(|(key, _)| *key == std::ffi::OsStr::new("PYTHONPATH"))
+                .and_then(|(_, value)| value),
+            Some(expected_pythonpath.as_os_str())
+        );
     }
 
     #[tokio::test]
