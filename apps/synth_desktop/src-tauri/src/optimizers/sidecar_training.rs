@@ -39,7 +39,7 @@ pub const LOCAL_SFT_LEARNING_RATE: f64 = 0.00001;
 pub const LOCAL_MLX_CISPO_RECIPE: &str = "cispo.mlx.v1";
 pub const HOSTED_CISPO_RECIPE: &str = "cispo.slime.hosted.v1";
 
-const BASE_MODEL: &str = "Qwen/Qwen3.5-0.8B";
+const BASE_MODEL: &str = "Qwen/Qwen3.5-2B";
 const MAX_STEPS: u64 = 4;
 const CHECKPOINT_EVERY: u64 = 2;
 const LORA_RANK: u64 = 8;

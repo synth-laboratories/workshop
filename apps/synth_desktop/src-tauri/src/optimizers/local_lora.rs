@@ -92,7 +92,7 @@ impl LocalLoraUpsert {
             base_model: payload
                 .get("base_model")
                 .and_then(Value::as_str)
-                .unwrap_or("Qwen/Qwen3.5-0.8B")
+                .unwrap_or("Qwen/Qwen3.5-2B")
                 .to_string(),
             optimizer_algorithm: payload
                 .get("algorithm")
@@ -200,7 +200,7 @@ pub fn import_local_lora_dir(conn: &Connection, path: &Path) -> Result<SavedLora
             // every import with the local SFT student made a Laguna adapter
             // fail `is_laguna_compatible`, so no imported adapter could reach
             // the Composer picker.
-            base_model: read_base_model(&adapter).unwrap_or_else(|| "Qwen/Qwen3.5-0.8B".into()),
+            base_model: read_base_model(&adapter).unwrap_or_else(|| "Qwen/Qwen3.5-2B".into()),
             optimizer_algorithm: None,
             checkpoint_kind: "inference".into(),
             step: None,
@@ -720,7 +720,7 @@ mod tests {
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch(LOCAL_LORA_DDL).unwrap();
         let imported = import_local_lora_dir(&conn, dir.path()).unwrap();
-        assert_eq!(imported.base_model, "Qwen/Qwen3.5-0.8B");
+        assert_eq!(imported.base_model, "Qwen/Qwen3.5-2B");
         assert!(!is_laguna_compatible(&imported));
     }
 
@@ -826,7 +826,7 @@ mod tests {
             attempt_id: None,
             source_checkpoint_id: None,
             optimizer_algorithm: Some("sft".into()),
-            base_model: "Qwen/Qwen3.5-0.8B".into(),
+            base_model: "Qwen/Qwen3.5-2B".into(),
             lora_rank: Some(8),
             step: Some(2),
             status: "ready".into(),

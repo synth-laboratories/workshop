@@ -193,7 +193,7 @@ mod tests {
         let err = plan_model_install(Some("someone/else"))
             .unwrap_err()
             .to_string();
-        assert!(err.contains("Qwen/Qwen3.5-0.8B"), "{err}");
+        assert!(err.contains("Qwen/Qwen3.5-2B"), "{err}");
     }
 
     #[test]

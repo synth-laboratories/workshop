@@ -16,10 +16,10 @@ use std::{
 };
 use tauri::{AppHandle, Emitter};
 
-pub const QWEN_TRAINING_MODEL_ID: &str = "Qwen/Qwen3.5-0.8B";
-// Verified Hugging Face repository revision published on 2026-03-02.
-pub const QWEN_TRAINING_MODEL_REVISION: &str = "2fc06364715b967f1860aea9cf38778875588b17";
-pub const QWEN_TRAINING_LICENSE_URL: &str = "https://huggingface.co/Qwen/Qwen3.5-0.8B";
+pub const QWEN_TRAINING_MODEL_ID: &str = "Qwen/Qwen3.5-2B";
+// Verified Hugging Face repository revision used by the NanoHorizon 2B kit.
+pub const QWEN_TRAINING_MODEL_REVISION: &str = "15852e8c16360a2fea060d615a32b45270f8a8fc";
+pub const QWEN_TRAINING_LICENSE_URL: &str = "https://huggingface.co/Qwen/Qwen3.5-2B";
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -93,9 +93,9 @@ struct TrainingModelSpec {
 const TRAINING_MODEL_CATALOG: [TrainingModelSpec; 1] = [TrainingModelSpec {
     id: QWEN_TRAINING_MODEL_ID,
     revision: QWEN_TRAINING_MODEL_REVISION,
-    title: "Qwen 3.5 0.8B (MLX training)",
-    min_disk_bytes: 3 * 1024 * 1024 * 1024,
-    download_bytes: 1_750_000_000,
+    title: "Qwen 3.5 2B (MLX training)",
+    min_disk_bytes: 7 * 1024 * 1024 * 1024,
+    download_bytes: 4_500_000_000,
 }];
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, specta::Type)]
@@ -437,7 +437,7 @@ mod tests {
     fn download_failures_are_typed() {
         assert_eq!(
             classify_training_failure(
-                "Qwen 3.5 0.8B (MLX training) needs at least 3 GiB of free disk space; only 0.4 GiB is available."
+                "Qwen 3.5 2B (MLX training) needs at least 7 GiB of free disk space; only 0.4 GiB is available."
             ),
             TrainingFailureClass::DiskSpace
         );

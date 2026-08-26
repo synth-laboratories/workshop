@@ -561,7 +561,7 @@ mod tests {
               "status":"succeeded",
               "config_sha256":"configdigest",
               "dataset_sha256":"datasetdigest",
-              "config":{"backend":"mlx_scalar_smoke","base_model":"Qwen/Qwen3.5-0.8B","dataset":{"path":"/tmp/dataset.jsonl"}},
+              "config":{"backend":"mlx_scalar_smoke","base_model":"Qwen/Qwen3.5-2B","dataset":{"path":"/tmp/dataset.jsonl"}},
               "checkpoints":[{"checkpoint_id":"mlx-smoke-1:step-4","path":"/tmp/checkpoint.json","sha256":"checkpointdigest","bytes":44}]
             }"#,
         )

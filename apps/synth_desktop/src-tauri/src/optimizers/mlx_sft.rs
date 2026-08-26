@@ -17,7 +17,7 @@ use std::fs;
 use std::path::PathBuf;
 
 pub const QWEN_MLX_SFT_RECIPE: &str = LOCAL_MLX_SFT_RECIPE;
-const BASE_MODEL: &str = "Qwen/Qwen3.5-0.8B";
+const BASE_MODEL: &str = "Qwen/Qwen3.5-2B";
 const MAX_STEPS: u64 = 4;
 const CHECKPOINT_EVERY: u64 = 2;
 const LORA_RANK: u64 = 8;
@@ -38,7 +38,7 @@ pub fn recipe_catalog() -> Value {
     let available = apple_silicon && model_ready;
     json!({
         "id": QWEN_MLX_SFT_RECIPE,
-        "title": "This Mac · Qwen 3.5 0.8B MLX LoRA SFT",
+        "title": "This Mac · Qwen 3.5 2B MLX LoRA SFT",
         "algorithmId": "sft",
         "task": Value::Null,
         "placement": PLACEMENT_TRAINING_SFT_LOCAL,
@@ -116,7 +116,7 @@ pub async fn start(
         &run_id,
         "sft",
         "qwen35-0.8b-mlx-lora-v1",
-        "Local Qwen 3.5 0.8B LoRA SFT on Apple Silicon MLX",
+        "Local Qwen 3.5 2B LoRA SFT on Apple Silicon MLX",
         "local",
         QWEN_MLX_SFT_RECIPE,
         &request,
