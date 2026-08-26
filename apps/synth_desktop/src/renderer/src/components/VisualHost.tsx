@@ -306,7 +306,10 @@ const MANAGED_HTML_RUNTIME = String.raw`(() => {
     try {
       if (data.type !== "synth.visual.managed.load.v1") return;
       if (!initialized) { renderSource(String(data.source || "")); initialized = true; }
-      dispatchEvent(new MessageEvent("message", { data: { type: "synth.visual.update.v1", payload: data.payload || {} } }));
+      // Deliver a real queued MessageEvent. WebKit does not reliably notify the
+      // imported renderer's listener when an opaque sandbox dispatches a
+      // synthetic MessageEvent synchronously during the load handler.
+      window.postMessage({ type: "synth.visual.update.v1", payload: data.payload || {} }, "*");
       report("synth.visual.managed.ready", "ready");
     } catch (error) {
       report("synth.visual.managed.error", error && error.message ? error.message : error);
