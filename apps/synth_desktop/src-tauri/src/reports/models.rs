@@ -540,7 +540,7 @@ pub struct ExperimentRecordUpsert {
     #[specta(type = specta_typescript::Unknown)]
     pub limitations: Option<Value>,
     pub created_by: Option<String>,
-    #[serde(default)]
+    #[serde(default, alias = "experiment_group_id")]
     pub experiment_group_id: Option<String>,
 }
 

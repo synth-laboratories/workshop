@@ -221,3 +221,66 @@ test("an open pane clears when the artifact is not in this chat", () => {
 	assert.equal(openArtifactIdForChat("visual_own", artifacts), "visual_own");
 	assert.equal(openArtifactIdForChat("visual_foreign", artifacts), null);
 });
+
+test("tool results copy durable VisualStatus instead of mapping live to ready", () => {
+	const [artifact] = eventsToArtifacts([
+		toolEvent(1, "visual_manage", { operation: "create", arguments: { template_id: "live.craftax.v1" } }, {
+			id: "visual_live_1",
+			templateId: "live.craftax.v1",
+			title: "Live Craftax",
+			sessionId: "session_current",
+			status: "live",
+			metadata: { reviews: [{ id: "rev_1" }] }
+		})
+	]);
+	assert.equal(artifact.status, "live");
+});
+
+test("review receipts do not invent a review status on ArtifactRef", () => {
+	const [artifact] = eventsToArtifacts([
+		toolEvent(1, "visual_manage", { operation: "create", arguments: { template_id: "blank.canvas.v1" } }, {
+			id: "visual_draft_reviewed",
+			templateId: "blank.canvas.v1",
+			title: "Draft with reviews",
+			sessionId: "session_current",
+			status: "draft",
+			metadata: { reviews: [{ id: "rev_1" }, { id: "rev_2" }] }
+		})
+	]);
+	assert.equal(artifact.status, "draft");
+});
+
+test("saved and failed VisualStatus survive tool-result projection", () => {
+	const [saved] = eventsToArtifacts([
+		toolEvent(1, "visual_manage", { operation: "create", arguments: { template_id: "blank.canvas.v1" } }, {
+			id: "visual_saved_1",
+			templateId: "blank.canvas.v1",
+			title: "Saved visual",
+			sessionId: "session_current",
+			status: "saved"
+		})
+	]);
+	const [failed] = eventsToArtifacts([
+		toolEvent(1, "visual_manage", { operation: "create", arguments: { template_id: "blank.canvas.v1" } }, {
+			id: "visual_failed_1",
+			templateId: "blank.canvas.v1",
+			title: "Failed visual",
+			sessionId: "session_current",
+			status: "failed"
+		})
+	]);
+	assert.equal(saved.status, "saved");
+	assert.equal(failed.status, "failed");
+});
+
+test("visual.created copies payload status onto the viewer pointer", () => {
+	const [artifact] = eventsToArtifacts([
+		runtimeEvent(1, "visual.created", {
+			visualId: "visual_gepa_live",
+			title: "GEPA live",
+			templateId: "optimizer.gepa.live.v1",
+			status: "live"
+		})
+	]);
+	assert.equal(artifact.status, "live");
+});

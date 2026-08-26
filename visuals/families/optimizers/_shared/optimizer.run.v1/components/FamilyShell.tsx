@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { VisualChrome } from "../../../../../chrome/VisualChrome.tsx";
 import { formatMissingNumber, formatMissingUsd } from "../../../../../runtime/liveStream.ts";
 import type { VisualBinding } from "../../../../../runtime/types.ts";
+import { bindingInputName } from "../../../../../runtime/types.ts";
 import { GlobalTimeline, RunHeader } from "./RunChrome.tsx";
 import { algorithmLabel } from "./algorithmLabel.ts";
 import {
@@ -25,7 +26,7 @@ export type FamilyShellProps = {
   lede?: string;
   data?: unknown;
   optimizer_run?: unknown;
-  bindings?: VisualBinding[] | { slots?: VisualBinding[] };
+  bindings?: VisualBinding[] | { inputs?: VisualBinding[]; slots?: VisualBinding[] };
   events?: OptimizerEvent[];
   run?: OptimizerRun;
   loadError?: string;
@@ -78,8 +79,8 @@ function normalizeRun(raw: Record<string, unknown>): OptimizerRun {
 }
 
 export function OptimizerFamilyShell(props: FamilyShellProps) {
-  const bindingList = Array.isArray(props.bindings) ? props.bindings : props.bindings?.slots;
-  const binding = bindingList?.find((b) => b.slot === "optimizer_run");
+  const bindingList = Array.isArray(props.bindings) ? props.bindings : (props.bindings?.inputs ?? props.bindings?.slots);
+  const binding = bindingList?.find((b) => bindingInputName(b) === "optimizer_run");
   const hintAlgorithm = (() => {
     const candidate = props.run ?? props.optimizer_run;
     if (candidate && typeof candidate === "object" && "algorithmId" in candidate) {

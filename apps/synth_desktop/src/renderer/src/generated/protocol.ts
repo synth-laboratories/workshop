@@ -247,7 +247,7 @@ export const commands = {
 	reportsSealGet: (receiptDigest: string) => typedError<ReportSealBundle, AppError>(__TAURI_INVOKE("reports_seal_get", { receiptDigest })),
 	reportsSealsCompare: (leftDigest: string, rightDigest: string) => typedError<ReportRevisionCompare, AppError>(__TAURI_INVOKE("reports_seals_compare", { leftDigest, rightDigest })),
 	reportsExperimentsList: (reportId: string) => typedError<ExperimentRecord[], AppError>(__TAURI_INVOKE("reports_experiments_list", { reportId })),
-	reportsExperimentUpsert: (reportId: string, request: ExperimentRecordUpsert) => typedError<ExperimentRecord, AppError>(__TAURI_INVOKE("reports_experiment_upsert", { reportId, request })),
+	reportsExperimentUpsert: (reportId: string, request: ExperimentRecordUpsert_Deserialize) => typedError<ExperimentRecord, AppError>(__TAURI_INVOKE("reports_experiment_upsert", { reportId, request })),
 	experimentsList: (query: string | null) => typedError<ExperimentGroup[], AppError>(__TAURI_INVOKE("experiments_list", { query })),
 	experimentsGet: (experimentId: string) => typedError<{
 	id: string,
@@ -262,9 +262,13 @@ export const commands = {
 	members: ExperimentMember[],
 	nodes: ExperimentNode[],
 	edges: ExperimentEdge[],
+	lineage?: ExperimentLineageEdge[],
 } | null, AppError>(__TAURI_INVOKE("experiments_get", { experimentId })),
 	experimentsAttachEvidence: (request: ExperimentEvidenceAttachRequest) => typedError<ExperimentGroup, AppError>(__TAURI_INVOKE("experiments_attach_evidence", { request })),
 	experimentsCreate: (request: ExperimentCreateRequest) => typedError<ExperimentGroup, AppError>(__TAURI_INVOKE("experiments_create", { request })),
+	experimentsCreateChild: (request: ExperimentChildCreateRequest) => typedError<ExperimentGroup, AppError>(__TAURI_INVOKE("experiments_create_child", { request })),
+	experimentsRelate: (request: ExperimentRelateRequest) => typedError<ExperimentGroup, AppError>(__TAURI_INVOKE("experiments_relate", { request })),
+	experimentsActivate: (sessionId: string, experimentId: string) => typedError<ExperimentGroup, AppError>(__TAURI_INVOKE("experiments_activate", { sessionId, experimentId })),
 	experimentsFinalize: (request: ExperimentFinalizeRequest) => typedError<ExperimentGroup, AppError>(__TAURI_INVOKE("experiments_finalize", { request })),
 	reportsLogList: (reportId: string) => typedError<ResearchLogEntry[], AppError>(__TAURI_INVOKE("reports_log_list", { reportId })),
 	reportsLogAppend: (reportId: string, request: ResearchLogAppend) => typedError<ResearchLogEntry, AppError>(__TAURI_INVOKE("reports_log_append", { reportId, request })),
@@ -643,6 +647,27 @@ export type BrowserRuntimeStatus = {
 	defaultLocalOrigins: string[],
 };
 
+/**
+ *  Producer identity projected onto an `optimizer_run` member. Not a member
+ *  kind and not an experiment edge.
+ */
+export type CandidateRecord = {
+	id: string,
+	experimentId: string,
+	optimizerRunId: string,
+	producerCandidateId: string,
+	kind: string | null,
+	protocolId: string | null,
+	status: string | null,
+	parentIds?: string[],
+	metrics: unknown | null,
+	contentDigest: string | null,
+	comparedWith?: string[],
+	promotedTo: string | null,
+	createdAt: string,
+	updatedAt: string,
+};
+
 export type CapabilitySummary = {
 	id: string,
 	secretId: string,
@@ -1003,6 +1028,18 @@ export type EvalStageCandidatesRequest = {
 
 export type EventSource = "local" | "remote" | "intern" | "codex" | "system" | "mlx" | "visual" | "report";
 
+export type ExperimentChildCreateRequest = {
+	parentExperimentId: string,
+	sessionId: string | null,
+	requestId: string,
+	title: string,
+	task: string | null,
+	model: string | null,
+	createdAt: string,
+	/**  `follow_up` (default) | `forked_from` | `rerun_of`. Unknown fails closed. */
+	relation?: string | null,
+};
+
 export type ExperimentCreateRequest = {
 	sessionId: string,
 	requestId: string,
@@ -1060,6 +1097,10 @@ export type ExperimentFinalizeRequest = {
 	finalizedAt: string,
 };
 
+/**
+ *  Composition DTO: experiment row + members + lineage projection.
+ *  Assembled at the command boundary; not a stored graph blob.
+ */
 export type ExperimentGroup = {
 	id: string,
 	sessionId: string,
@@ -1073,6 +1114,15 @@ export type ExperimentGroup = {
 	members: ExperimentMember[],
 	nodes: ExperimentNode[],
 	edges: ExperimentEdge[],
+	lineage?: ExperimentLineageEdge[],
+};
+
+export type ExperimentLineageEdge = {
+	id: string,
+	sourceExperimentId: string,
+	targetExperimentId: string,
+	relation: string,
+	createdAt: string,
 };
 
 export type ExperimentMember = {
@@ -1096,6 +1146,11 @@ export type ExperimentNode = {
 	provenance: unknown,
 	createdAt: string,
 	updatedAt: string,
+	/**
+	 *  Durable Candidate rows for an `optimizer_run` member. Empty for other
+	 *  kinds and for SFT/CISPO runs that never emitted candidate identity.
+	 */
+	candidates?: CandidateRecord[],
 };
 
 export type ExperimentRecord = {
@@ -1116,9 +1171,13 @@ export type ExperimentRecord = {
 	limitations: unknown,
 	createdAt: string,
 	createdBy: string,
+	/**  Pointer at `experiment_groups.id`. Null means leftover appendix JSON. */
+	experimentGroupId?: string | null,
 };
 
-export type ExperimentRecordUpsert = {
+export type ExperimentRecordUpsert = ExperimentRecordUpsert_Serialize | ExperimentRecordUpsert_Deserialize;
+
+export type ExperimentRecordUpsert_Deserialize = {
 	experimentId: string | null,
 	title: string,
 	hypothesis: string | null,
@@ -1133,6 +1192,40 @@ export type ExperimentRecordUpsert = {
 	researchLogRefs: unknown,
 	limitations: unknown,
 	createdBy: string | null,
+} & {
+	experimentGroupId?: string | null,
+} | {
+	experiment_group_id?: string | null,
+};
+
+export type ExperimentRecordUpsert_Serialize = {
+	experimentId: string | null,
+	title: string,
+	hypothesis: string | null,
+	status: string | null,
+	protocolDigest: string | null,
+	arms: unknown,
+	runs: unknown,
+	results: unknown,
+	evaluatorRefs: unknown,
+	traceCollectionRefs: unknown,
+	claimRefs: unknown,
+	researchLogRefs: unknown,
+	limitations: unknown,
+	createdBy: string | null,
+	experimentGroupId: string | null,
+};
+
+export type ExperimentRelateRequest = {
+	experimentId: string,
+	/**  `compared_with` | `promoted_to`. Unknown fails closed. */
+	relation: string,
+	/**  `member` | `candidate`. Mixed kinds fail closed. */
+	sourceKind: string,
+	sourceId: string,
+	targetKind: string,
+	targetId: string,
+	createdAt: string,
 };
 
 export type ExperimentStatus = "planned" | "running" | "completed" | "failed" | "aborted" | "superseded" | "excluded";
@@ -2207,6 +2300,8 @@ export type ReportValidationFinding = {
 	claimId?: string | null,
 	message: string,
 	remediation?: string | null,
+	visualId?: string | null,
+	receiptDigest?: string | null,
 };
 
 export type ReportValidationResult = {
@@ -2549,7 +2644,9 @@ export type TemplateMeta = {
 	path?: string | null,
 	shellPath?: string | null,
 	exampleBinding?: unknown,
+	inputs?: unknown,
 	slots?: unknown,
+	components?: unknown,
 	bindingSchema?: unknown,
 	observationContract?: TemplateObservationContract | null,
 };

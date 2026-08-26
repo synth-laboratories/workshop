@@ -135,6 +135,7 @@ test("status lookup matches on plugin id and tolerates an empty registry", () =>
 	const optimizers = status();
 	assert.equal(findPluginStatus([optimizers], "optimizers"), optimizers);
 	assert.equal(findPluginStatus([optimizers], "visuals"), null);
+	assert.equal(findPluginStatus([optimizers], "laguna"), null);
 	assert.equal(findPluginStatus(null, "optimizers"), null);
 	assert.equal(findPluginStatus([], "optimizers"), null);
 });

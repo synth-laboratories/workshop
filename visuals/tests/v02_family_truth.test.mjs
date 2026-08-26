@@ -100,7 +100,9 @@ test("v0.2 live shells read the bindings envelope, not bindings.find", () => {
     "families/first_class_example_containers/live.digbench.v1/shell.tsx",
     "families/first_class_example_containers/live.eval_stream.v1/shell.tsx",
     "families/compatibility/live.intern_acceptance.v1/shell.tsx",
-    "families/first_class_example_containers/live.craftax.v1/shell.tsx"
+    "families/first_class_example_containers/live.craftax.v1/shell.tsx",
+    "families/analysis/compose.visual.v1/shell.tsx",
+    "families/analysis/sourced.visual.v1/shell.tsx"
   ]) {
     const source = readFileSync(join(root, rel), "utf8");
     assert.equal(

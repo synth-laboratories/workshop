@@ -1,6 +1,6 @@
 # Workshop visuals and data model
 
-Date: 2026-08-25  
+Date: 2026-08-25 (updated 2026-08-26)  
 Tied to: [`v08-right-panel-cua-20260825.md`](v08-right-panel-cua-20260825.md)  
 IA reference: [`refs/eiso-kant-model-factory-2026-08-18.png`](refs/eiso-kant-model-factory-2026-08-18.png) — Eiso Kant / Poolside Model Factory (index beside lineage canvas)
 
@@ -12,25 +12,27 @@ Workshop                         product (Synth Desktop). Not a domain record.
 ├─ Workshop window               Tauri + WebView chrome. “Workbench” in code is this, not a noun.
 │    ├─ Sidebar                  chats, Visuals, Reports, Experiments, Data, Optimizers, Settings
 │    ├─ Main column              the page for the current route
-│    └─ Right pane               VisualPane / Outputs / inspect  (duplicated per route)
-│         └─ ArtifactRef         viewer pointer. Not VisualRecord; own status vocab.
+│    └─ Right pane               VisualPane / Outputs / inspect
+│         └─ ArtifactRef         viewer pointer. Not VisualRecord; status is VisualStatus
+│                                (draft|live|saved|failed|archived). Reviews stay on metadata.
+│                                Chat + inventory routes share one VisualPane host.
 │
 ├─ Session                       one chat. Kind is exactly one of:
 │    ├─ Codex                    app-server → Responses (local or Shoal Laguna)
 │    └─ Intern                   Synth Cloud (sync | async)
 │
-├─ CoreRuntime                   sole durable authority
+├─ Local store                   sqlite + journal + CAS. Durable authority, not a class.
 │    ├─ sqlite / WAL             ids, revisions, edges, indexes
 │    ├─ event journal            append-only facts (rebuildable projection)
-│    └─ CAS store/               traces, seals, checkpoints, TSX/HTML bodies
+│    └─ CAS                      traces, seals, checkpoints, TSX/HTML bodies
 │
-└─ Records                       class (shipped)  →  instance (durable row)
+└─ Records                       class (shipped)  →  instance (row in the local store)
      │
      ├─ Visual
      │    ├─ Visual template     class: blank.canvas.v1, shell.tsx under visuals/families
      │    └─ VisualRecord        instance vis_…  (SQLite row + optional CAS body)
      │         └─ VisualRevision numbered snapshot
-     │              ├─ Binding   slot fill (stream, document, …)
+     │              ├─ Binding   input fill (stream, document, …)
      │              └─ VisualSeal receipt that a rendition is immutable
      │
      ├─ Report                   pointer document, not a copy of the visual
@@ -39,11 +41,14 @@ Workshop                         product (Synth Desktop). Not a domain record.
      │         └─ ReportRevision numbered snapshot
      │              ├─ ReportBlock  pointer at vis_ / digest
      │              ├─ ReportSeal   receipt that this revision is frozen
-     │              └─ ExperimentRecord  appendix JSON (one of three “experiment” types)
+     │              └─ ExperimentRecord  appendix JSON; optional pointer at ExperimentGroup
      │
-     ├─ Experiment               three live types share the word
-     │    ├─ ExperimentGroup     chat membership bag
-     │    └─ ExperimentNode      DAG node: baseline | variant | result
+     ├─ Experiment               durable row, many per session
+     │    ├─ ExperimentGroup     identity + task/model + members
+     │    ├─ ExperimentNode      member: optimizer_run | eval_campaign | direct_evaluation
+     │    ├─ CandidateRecord     hangs off optimizer_run (producer id, not a member kind)
+│    ├─ experiment_edges    intra-group: evaluated | compared_with | promoted_to
+│    └─ experiment_lineage  inter-group: follow_up | forked_from | rerun_of
      │
      ├─ Container
      │    ├─ capability          class: live-eval.v1 ops
@@ -51,12 +56,38 @@ Workshop                         product (Synth Desktop). Not a domain record.
      │
      ├─ Optimizer
      │    ├─ recipe              class: gepa / sft / eval
-     │    └─ OptimizerRun        one execution
+     │    └─ OptimizerRun        one execution; attaches as optimizer_run when session_ref set
      │
-     └─ Plugin                   Laguna | Optimizers | CUA     installed | not installed
+     └─ Plugin                   PluginStatus.phase (14 values) + PluginNotReady receipt
+                                 LagunaStatus is a parallel machine, not this registry
+                                 CUA is a plugin id the agent cannot install
 ```
 
-CoreRuntime owns durable records. The renderer is a projection. The same visual is one local record, then five independent projections. The CUA contradictions are those projections disagreeing, plus two different “seal” verbs.
+Records persist in the local store. The renderer is a projection. The same visual is one local record, then five independent projections. The CUA contradictions are those projections disagreeing, plus two different “seal” verbs. Rust `CoreRuntime` is the composition root that opens the store; it is not a domain noun.
+
+## Cuts landed 2026-08-26
+
+Experiment is no longer three leftover types. Member DAG and child experiments are local-store rows. The renderer canvas is a projection of those rows, not a second graph store.
+
+- **Intra-experiment.** Members are `optimizer_run` | `eval_campaign` | `direct_evaluation`. The only written member edge is `evaluated` on `experiment_edges` (node FKs inside one group). Historical `baseline` | `variant` | `result` | `run` rows stay readable; nothing new writes them. `optimizer_relationships.started_from` is not an experiment edge.
+- **Inter-experiment.** Migration 38 dropped `experiment_groups.session_id` uniqueness. A session owns many groups. Parent → child is `experiment_lineage` with `follow_up` (default), `forked_from`, or `rerun_of`. `create_child.relation` selects which; unknown fails closed. Follow-up cannot live on `experiment_edges` (those FKs are nodes, not groups).
+- **Attach target.** `experiment_session_cursor` → `sessions.active_experiment_id` → oldest group for that session. Cursor exists because some `session_id` values are not `sessions` rows. Do not attach an optimizer when `session_ref` is empty.
+- **Producers.** Optimizer `experiment_bind`: attach on create/seed/import; settle on terminal event commit, cancel, and stale-run reconcile. Terminal settle writes `cost_usd` and attaches `visual_refs` as evidence kind `visual`. Campaigns already attached themselves.
+- **Surfaces.** `experiments_create_child` / `experiments_activate` (Tauri + MCP `experiment_create_child` + HTTP). GET by experiment id returns that child, not the session primary. UI: searchable index | ranked pan/zoom DAG | inspector. Forest when nothing selected; member DAG when selected. Compact stack at 780px. Layout coords are view state, not sqlite.
+- **Candidate.** Durable sqlite class on the experiment spine (migration 39). Rows hang off an `optimizer_run` member: producer id, kind, `protocol_id`, parents, metrics. Read DTO is `ExperimentNode.candidates[]` (empty for eval/direct and for SFT/CISPO with no candidate events). Folded from `optimizer_event.v1` already parsed in `optimizers/service.rs`. Container still owns `POST /candidates`.
+- **Compare / promote.** Member↔member writes `experiment_edges` `compared_with` | `promoted_to`. Candidate↔candidate stays on the Candidate row (`compared_with_json`, `promoted_to`; migration 40) — not a member kind and not an experiment edge. Mixed kinds fail closed. `experiments_relate` (specta 264). Auto-attach still only writes `evaluated`.
+- **Report appendix.** `reports.ExperimentRecord.experimentGroupId` is an optional pointer at `ExperimentGroup`. Unlinked rows stay appendix JSON (`appendix · unlinked`). Unknown group id fails closed. Arms/runs/results stay. `reports_promote` stays off agent visuals MCP.
+
+Plugin was never a boolean. `PluginStatus.phase` has 14 values; `pluginPresentation.ts` is the single presentation owner; recipes gate on `require_plugin_ready`. Laguna is a parallel `LagunaStatus` object, not a plugin registry row. CUA is plugin id `computer-use` (human-only install).
+
+Window chrome: Chat, Visuals, Experiments, Optimizers, Data, and Reports share one pane host so `VisualPane` does not remount across those routes. Settings joins that host only while a pane is open. `ArtifactRef.status` is `VisualStatus`. Chat Outputs ownership does not evict the window pane. CloudDesk still mounts its own pane and stays unmounted. Data/Outputs catalogs show `formatVisualAdmissionIdentity` (title stays the human label).
+
+- **list_templates components.** `TemplateMeta.inputs` copies `template.json` `inputs`/`slots` (same vec; `slots` is a one-release copy). `TemplateMeta.components` copies `template.json` `components[]`. MCP `visual_list_templates` / GET `/v1/visuals/templates` echo both. Empty `components` when unadvertised. No `list_components` or `list_inputs` verb. Specta field-on-existing-type (no bump at that cut).
+- **Laguna vs Plugin.** Catalog and MCP `plugin_id` remain `optimizers` (catalog) + `computer-use` (human-only, no catalog). `PLUGIN_NAV` has no Laguna row. `require_plugin_ready` is the Optimizers sidecar. `LagunaStatus` stays a parallel object.
+- **Admission (visual/diagram).** `admit_visual_evidence` is the shared predicate: pin and report seal of `report.visual.v1` / `report.diagram.v1` require a `VisualSeal` for that `visualId`+revision. Attach still writes a live pointer (`integrity=unresolved`); if a seal exists it copies `receiptDigest` into `sourceDigest` and stays `referenceMode: live` until pin. `validate_revision` errors `unresolved_visual_evidence` so “Ready to seal” is no longer shape-true for a blank canvas. Experiment-records / research-log appendix stay on auto-limitations. `contentDigest` and `receiptDigest` stay labeled, never merged. No `ArtifactRevision` sqlite class.
+
+- **Sourced / compose CUA (packaged).** Instance `sourced-cua` (`com.synth.desktop.v08.dev.sourced-cua`). Compose `vis_4fb0164a8f544ad0a6602fe73662b848` (`CUA-SOURCED-1`); sourced `vis_1a80f20f24c04fef96bc774c881d86c2` (`CUA-SOURCED-2`, authored TSX + host EventStream); fail-closed `vis_bdac981b99604681ad814e64d5d0e948` (`Unknown import "lodash"`, no event log). Captures under that instance’s `visual-review-captures/`. Original `workshop-v08-release` not committed.
+- **Compose later kit.** `metrics.v1`, `scrubber.v1`, `candidate_inspector.v1` advertised on `compose.visual.v1`. Product `optimizer.*` overlays stay private.
 
 ## Core nouns (how Workshop works)
 
@@ -69,8 +100,8 @@ CoreRuntime owns durable records. The renderer is a projection. The same visual 
   │  Visuals   │         Experiments | Data | Settings        │  or Outputs  │
   │  Reports   │                                              │  or inspect  │
   │  Experiments                                              │              │
-  │  Data      │   transcript / registry / DAG / catalog      │  (duplicated │
-  │  Optimizers│                                              │   per route) │
+  │  Data      │   transcript / registry / DAG / catalog      │  inventory   │
+  │  Optimizers│                                              │  host shared │
   │  Settings  │   composer ──────────────────────────────┐   │              │
   └────────────┴──────────────────────────────────────────┼───┴──────────────┘
                                                           │
@@ -81,7 +112,7 @@ CoreRuntime owns durable records. The renderer is a projection. The same visual 
 
   Visual template          blank.canvas.v1           VisualRecord      vis_…
     rendererKind           template|systems|…          VisualRevision
-    slots[]                stream, document            bindings
+    inputs[]               stream, document            bindings
                                                        VisualSeal      receipt  (optional)
 
   Report block schema      report.visual.v1          ReportRecord      rep_…
@@ -89,14 +120,18 @@ CoreRuntime owns durable records. The renderer is a projection. The same visual 
                                                        ReportBlock     pointer at vis_/digest
                                                        ReportSeal      receipt  (optional)
 
-  Experiment (v0.8)        recipe / task-contract    three live nouns share the word:
-                           candidate kind              ExperimentGroup    chat bag of members
-                                                       ExperimentNode     baseline|variant|result
-                                                       reports.ExperimentRecord  appendix JSON
+  Experiment               task / model on the group  ExperimentGroup     exp_…  (many per session)
+                           member kinds                 ExperimentNode      optimizer_run | eval_campaign | direct_evaluation
+                           follow_up | forked_from |    experiment_lineage  parent → child
+                           rerun_of                     experiment_edges    evaluated | compared_with | promoted_to
+                                                       CandidateRecord      can:… on optimizer_run
+                                                                            compared_with / promoted_to on the row
+                                                       reports.ExperimentRecord  appendix; optional ExperimentGroup pointer
 
   Container capability     live-eval.v1 ops          ContainerDeployment  registered pool
-  Optimizer recipe         gepa / sft / eval         OptimizerRun
-  Plugin / service         Laguna, Optimizers, CUA   installed | not installed
+  Optimizer recipe         gepa / sft / eval         OptimizerRun         attached via experiment_bind
+  Plugin / service         PluginStatus.phase        Optimizers, CUA      14-phase registry + receipts
+                           LagunaStatus.phase        Laguna sidecar       separate status object
 
 
   SESSION  (routing law: exactly one runtime)
@@ -109,18 +144,18 @@ CoreRuntime owns durable records. The renderer is a projection. The same visual 
 
   AUTHORITY  (who may be telling the truth)
 
-      local disk     CoreRuntime sqlite + journal + CAS     default, no account
+      local disk     sqlite + journal + CAS                 default, no account
       backend        Synth Cloud intern / publish           explicit opt-in
       Shoal          hosted Laguna desired vs observed      serving
       Modal          NanoHorizon iteration                  not a Workshop route
 
 
-  WHAT THE KERNEL ACTUALLY STORES
+  WHAT THE LOCAL STORE HOLDS
 
-      CoreRuntime
+      local store
         ├── sqlite / WAL     ids, revisions, edges, indexes
         ├── event journal    append-only facts  (rebuildable projection)
-        └── CAS store/       traces, seals, checkpoints, export bodies
+        └── CAS              traces, seals, checkpoints, export bodies
               ▲
               │  typed Tauri commands  (renderer never owns authority)
               │
@@ -130,6 +165,239 @@ CoreRuntime owns durable records. The renderer is a projection. The same visual 
                            each re-projects the same rows
                            with a different status vocabulary
 ```
+
+## Experiment zoom (two graphs, one sqlite)
+
+Kind is the load/run contract of a member. Relation is a typed edge. Do not invent a property graph, a second sqlite, or `baseline`/`variant`/`result` nodes.
+
+```
+  session  ──many──►  ExperimentGroup (exp_…)
+                          │
+                          ├─ members     optimizer_run | eval_campaign | direct_evaluation
+                          ├─ nodes       one row per member (FK inside this group)
+                          ├─ candidates  CandidateRecord[] on optimizer_run nodes (sqlite, not overlay JSON)
+                          ├─ edges       evaluated | compared_with | promoted_to  (member → member)
+                          └─ lineage     follow_up | forked_from | rerun_of  (this group → child group)
+
+  attach target for the next run:
+      experiment_session_cursor.active_experiment_id
+        else sessions.active_experiment_id
+        else oldest experiment_groups row for that session_id
+```
+
+Renderer: list stays mounted. Empty selection shows the forest (`follow_up` / `forked_from` / `rerun_of`). Selecting a group drills into that group's member DAG. `+ child` / `+ fork` / `+ rerun` call `experiments_create_child` with the matching relation. Canvas ranks are computed in the WebView.
+
+GEPA `candidate_id` is a durable `CandidateRecord` on the `optimizer_run` node (`experiments_get` / list). Kind is the load/run contract; `protocol_id` is the mutation dialect. Do not stuff it into member `kind`. Overlay JSON is no longer the authority. Compare / promote: members write `experiment_edges`; candidates write columns on the Candidate row. Mixed kinds fail closed.
+
+## Visual composition (how it works)
+
+The agent already has three escape hatches. None of them is a kit.
+
+```
+  shipped template          whole pane class     optimizer.gepa.live.v1, live.eval_stream.v1
+  analysis.visual.v1        static block spec    note | metrics | ranked-bars | table | scatter
+  blank.canvas.v1           dump HTML/SVG        reinvent chrome every time
+```
+
+Ingest already exists and must stay owned by the host:
+
+```
+  agent bind input "stream"  (kind live_sse, declared poll_url — never guessed)
+       │
+       v
+  VisualHost  →  ReplayClient   (visual_replay_transport.md)
+       │
+       v
+  useLiveEvalStream / useLiveEvalStreams
+       │
+       v
+  events[] + transport state   idle|declared|replaying|live|terminal|error
+```
+
+Templates must not discover URLs. `live.eval_stream.v1` already follows this and then hardcodes MetricStrip + a JSON event log. Optimizer families share `RunChrome` / `GlobalTimeline` / candidate inspector as private TSX. None of that is advertised.
+
+**Custom visuals are the point.** The agent authors a pane and Desktop **runs it**. The old rule (“saved TSX is evidence, never executed”) was a scar from unconstrained modules that fetched their own URLs. That is not the product. Two authoring dialects, same host ingest, same advertised components:
+
+```
+  compose spec     JSON placements of shipped parts     compose.visual.v1
+  sourced_visual   agent TSX that imports those parts   kind sourced_visual
+```
+
+`blank.canvas.v1` stays HTML/SVG with no scripts. It is not the TSX path.
+
+### Nouns
+
+```
+  Visual template          class: whole pane. Still one per VisualRecord.
+  VisualRecord             instance vis_…  (unchanged)
+  bindings                 how data enters  (stream, spec, …)
+  Visual component         class: shipped renderer + bind dialect
+  placement                instance: { id, component, input?, from?, config }
+```
+
+Kind is the load/render contract (`event_stream`, `detail_modal`, `sourced_visual`). `protocol_id` is the bind dialect (`event_stream.v1`, `whole_file.v1`). A placement is not a VisualRecord and not a node in a property graph.
+
+### Compose template (agent path)
+
+Do not grow `analysis.visual.v1` a live `stream` input. Static analysis stays static. New template `compose.visual.v1`:
+
+```
+  inputs:
+    spec            required   inline   synth.visual.compose_spec.v1
+    stream          optional   live_sse / fixture / inline     container eval
+    optimizer_run   optional   optimizer_run / fixture / inline   optimizer_event.v1
+```
+
+`stream` / `optimizer_run` are required at bind time only if a placement consumes that input. Unknown `component` ids fail closed (same as unknown protocol ids). Layout is an ordered vertical list. No xy graph. Product `optimizer.*` and `diagram.*` do not switch.
+
+Compose is the ad-hoc live overlay for **evals and optimizer event streaming**. It does not replace `optimizer.gepa.live.v1` / `optimizer.sft.live.v1` / `optimizer.eval.live.v1`. Those stay product-owned. Two host-owned bind dialects, not one mashed firehose:
+
+```
+  stream          live_sse / fixture / inline     container eval (Harbor, Craftax gold, …)
+  optimizer_run   optimizer_run / fixture / inline   optimizer_event.v1 (GEPA, SFT, CISPO)
+```
+
+`includeKinds` matches envelope `kind` or `type`. Do not flatten child eval traces into optimizer events. Do not invent a generic `rlvr.*` pane: hosted RLVR is **CISPO** (`algorithmId: cispo`, `cispo.*` events). Exact RLVR payloads stay producer-owned; compose filters by those type names.
+
+```json
+{
+  "schemaVersion": "synth.visual.compose_spec.v1",
+  "title": "Harbor smoke · live stream",
+  "lede": "Declared SSE only. Heartbeats are not evidence.",
+  "placements": [
+    { "id": "log", "component": "event_stream.v1", "input": "stream",
+      "config": { "includeKinds": ["rollout.finished", "run_finished"] } },
+    { "id": "inspect", "component": "detail_modal.v1", "from": "log" }
+  ]
+}
+```
+
+Optimizer dialect (same components; placement `input` is `optimizer_run`):
+
+```json
+{
+  "schemaVersion": "synth.visual.compose_spec.v1",
+  "title": "CISPO clip · optimizer_run",
+  "placements": [
+    { "id": "log", "component": "event_stream.v1", "input": "optimizer_run",
+      "config": { "includeKinds": ["candidate.accepted", "sft.training.metrics", "cispo.clip.identity"] } },
+    { "id": "inspect", "component": "detail_modal.v1", "from": "log" }
+  ]
+}
+```
+
+Agent still uses `visual_manage` `create_with_bind` / `bind`. No new MCP verb per component. `list_templates` echoes `components[]` (id, kind, protocolId, consumes, emits) next to `inputs` and `example_binding`. Empty when the template does not advertise parts. There is no `list_components` verb.
+
+### Runtime (one ingest, many placements)
+
+```
+  VisualHost
+    load shell compose.visual.v1
+    ReplayClient from bound stream input        (eval SSE; idle if none)
+    optimizerPayload from bound optimizer_run  (subscribeToRun / inline events)
+         │
+         v
+  Compose shell
+    useLiveEvalStream once when a placement consumes stream
+    optimizerEventsToLiveEval when a placement consumes optimizer_run
+    cursor: { placementId, eventId, sequence }     view state, not sqlite
+         │
+         ├─ event_stream.v1    reads the input it named; writes cursor on select
+         └─ detail_modal.v1    reads cursor via `from`; in-pane overlay
+```
+
+`detail_modal` is not a second VisualPane and not a second VisualRecord. It is a dialog/drawer inside this visual's chrome. Cursor identity is envelope `event_id` + `sequence`, not array index (replay re-ingests).
+
+Components never call `poll`, never read bindings, never invent SSE URLs. Filter (`includeKinds`) is placement config, not a second stream.
+
+### Advertised compose components
+
+```
+  event_stream.v1           kind event_stream
+                            consumes stream | optimizer_run
+                            emits cursor
+                            renderer: visuals/components/event_stream.v1
+
+  detail_modal.v1           kind detail_modal
+                            consumes cursor from a named placement
+                            renderer: visuals/components/detail_modal.v1
+
+  metrics.v1                kind metrics
+                            protocolId metrics.reduce.v1
+                            consumes stream | optimizer_run
+                            reduce events → strip
+
+  scrubber.v1               kind scrubber
+                            protocolId scrubber.v1
+                            consumes stream | optimizer_run
+                            emits cursor
+
+  candidate_inspector.v1    kind candidate_inspector
+                            protocolId candidate_inspector.v1
+                            consumes optimizer_run (fail closed on stream)
+                            emits cursor on select
+                            empty/honest when no candidate.accepted
+```
+
+Product `optimizer.*` overlays stay private. `live.eval_stream.v1` is still the shortcut whole-pane template.
+
+### What the agent does
+
+1. Ground: declared stream URL from the container / create-rollout receipt, or an `optimizer_run` id. Guessed Craftax/Harbor URLs still fail `liveStream.ts`.
+2. `create_with_bind` `compose.visual.v1` with `spec` inline, then bind `stream` (`live_sse` + `poll_url`) or `optimizer_run` (`optimizer_run` / inline `optimizer_event.v1`).
+3. Host stores one VisualRecord. Compose shell hydrates from ReplayClient and/or host optimizer payload. The two dialects stay separate.
+4. `show`. Capture/review still apply to authored families. `optimizer.*` stay product-owned.
+
+`live.eval_stream.v1` remains a shortcut whole-pane template. Do not rewrite it in the first cut. `blank.canvas.v1` remains last resort.
+
+### Sourced visual TSX (agent custom pane)
+
+Kind `sourced_visual`. Protocol `whole_file.v1`. Register-then-show: host stores the module on the VisualRecord, compiles it, mounts it as the pane Shell. Do not re-compile per seed. Same MCP: `create` / `update` with source, `bind`, `show`. No eval-in-the-renderer of random strings.
+
+Allowlisted imports only:
+
+```
+  react / react-dom
+  @synth/visuals/chrome
+  @synth/visuals/components/<advertised id>
+  useLiveEvalStream   (consumes host ReplayClient; does not discover URLs)
+```
+
+Unknown import, `fetch`, `EventSource`, `eval`, or a guessed `/events` URL fails closed (visible error, no shell). Host still builds `ReplayClient` / `optimizerPayload` and passes `replay`, `events`, `state`. The agent TSX lays out advertised components; it does not own ingest.
+
+```tsx
+import { EventStream } from "@synth/visuals/components/event_stream.v1";
+import { DetailModal } from "@synth/visuals/components/detail_modal.v1";
+import { VisualChrome } from "@synth/visuals/chrome";
+
+export default function Shell({ title, events, state, replay }) {
+  return (
+    <VisualChrome title={title} testId="visual-sourced">
+      <EventStream events={events} state={state} onSelect={...} />
+      <DetailModal event={selected} onClose={...} />
+    </VisualChrome>
+  );
+}
+```
+
+`visual_save_tsx` on other templates still writes a frozen wrapper around a registered family shell. `sourced.visual.v1` is the executed path: host stores the module, compiles allowlisted imports, and mounts it as the pane Shell. Compose spec remains the JSON shortcut when the layout is an ordered list of placements.
+
+### Non-goals
+
+- Nested compose / widget trees as a second product
+- Components as durable sqlite rows
+- Unconstrained TSX (own fetch, own EventSource, npm imports)
+- A second ingest path inside agent modules
+- Conflating this with `diagram.systems.dynamic.v1` (storyboard + time, not live eval)
+
+## Remaining noun ranking
+
+The ranking items from 2026-08-26 (lineage writers, compare/promote including Candidate, report ExperimentRecord pointer, compose later components, pane-host / catalog identity) are landed. What is left is not a new class:
+
+1. One-release bind COMPAT: still emit `slot` / `slots` beside `input` / `inputs`; ~140 `template.json` files still use `slots[].name`. Drop in a later release.
+2. CHECK leftovers with no writers: `experiment_edges` `warm_started_from` | `produced` | `reproduced_on` | `rolled_back_to`. Do not invent writers to fill the leftover.
+3. `ArtifactRevision` as a sqlite class is still not built — attach/pin/preflight/seal of visual/diagram blocks share `admit_visual_evidence` instead. `reports_promote` exists and must not be advertised on agent visuals MCP. Laguna vs Plugin is already two machines.
+4. `live.eval_stream.v1` rewrite; CloudDesk own pane; Shoal/Modal ops IDs on the visual.
 
 Read the rest of this file as a zoom into the **Visual** noun and how it is (mis)projected into Reports, Data, Chat, and the right pane.
 
@@ -167,16 +435,16 @@ Read the rest of this file as a zoom into the **Visual** noun and how it is (mis
                 ┌───────────────┼────────────────┐
                 v               v                v
          annotations      VisualSeal        chat ArtifactRef
-         (labels)         receiptDigest     (viewer pointer,
-                          visualRevision     different status
-                          artifactId         vocab)
+         (labels)         receiptDigest     (viewer pointer;
+                          visualRevision     status = VisualStatus)
+                          artifactId
                           index/data/runtime
                           digests
 ```
 
 `VisualRecord.status` is **authoring persistence**. A `VisualSeal` is **immutability of a rendition**. They are not the same state machine. A draft can exist forever with no seal; a seal can exist while the live record keeps mutating.
 
-There is also a third status enum used only by the chat pane (`ArtifactRef.status`: `draft | review | ready | failed`) and a fourth evidence enum in `visuals/runtime/visualEvidence.ts` (`ready | reviewed | partial | failed`) whose comment already says pinning, sealing, and sharing are separate facets. None of those drive Reports.
+`ArtifactRef.status` is the same `VisualStatus` machine (`draft | live | saved | failed | archived`). Review receipts stay on metadata. A fourth evidence enum in `visuals/runtime/visualEvidence.ts` (`ready | reviewed | partial | failed`) still exists; its comment already says pinning, sealing, and sharing are separate facets. None of those drive Reports.
 
 ## How the same row is shown
 
@@ -192,28 +460,26 @@ There is also a third status enum used only by the chat pane (`ArtifactRef.statu
    Visuals     Data→Visuals  Reports     Chat         Right pane
    registry    catalog       block       Outputs      (VisualPane)
 
-   "Draft·rev 1"  title +     live        Saved        title only
-   Open / Label   templateId  available   reports      no vis_ id
-   Seal / Add     no lifecycle unresolved  (draft!)    no digest
-                  actions     "Frozen     Back → new
-                              evidence"   blank chat
+   "Draft·rev 1"  vis_ +      live        vis_ +       title · identity
+   Open / Label   labeled     available   labeled      vis_ + digest
+   Seal / Add     digest      unresolved  digest
 ```
 
 That is RP-CUA-054 / 060 / 061: **one row, four vocabularies, identity stripped at the edges.**
 
-Attach from Visuals does this on purpose (`VisualsPage.addSelectedToReport`):
+Attach from Visuals (`VisualsPage.addSelectedToReport`):
 
 ```
-payload.visualId      = vis_...
+payload.visualId      = vis_...          // full id
 payload.visualRevision= 1
-referenceMode         = "live"         // not pinned
-accessState           = "available"    // not proven
-integrityState        = "unresolved"   // honest, then ignored
+referenceMode         = "live"           // pin flips this
+accessState           = "available"
+integrityState        = "unresolved"     // honest until resolve/pin
 sourceRevision        = "1"
-sourceDigest          = (omitted)
+sourceDigest          = VisualSeal.receiptDigest when that revision is already sealed, else omitted
 ```
 
-The report renderer then falls through to hardcoded copy: *“Frozen evidence attached to this revision.”* That string is not computed from pin/seal. Any visual block without `sealedHtml` gets it.
+A visual/diagram block without `sealedHtml` is a **live pointer** (`vis_… · rev N · receipt|content|digest —`), not “Frozen evidence.” Frozen/pinned copy is only for `sealedHtml` or `referenceMode=pinned` + `integrity=verified`.
 
 ## Report is a pointer document, not a copy of the visual
 
@@ -234,52 +500,24 @@ ReportRecord (draft|sealed)
         experiments[] / research log   (sibling stores, frozen only at pin/seal)
 ```
 
-Joins are **title + truncated anchor**, not `id + contentDigest`. Duplicate drafts look identical. Second `Add to report` fails as `duplicate_block_anchor` (schema uniqueness), not “already attached.”
+Joins for attach/pin/seal chrome are **`visualId` + revision + labeled digest**. Title stays the human label. Anchor is `visual-{full id}`.
 
-## The five evidence gates (they do not share a predicate)
+## Visual/diagram evidence gates share `admit_visual_evidence`
 
 ```
                     VisualRecord
                     (draft blank canvas, no VisualSeal)
 
-  (1) ATTACH          (2) CLAIMS         (3) PIN ALL
-  VisualsPage         claim picker       reports.pin_all
-  ─────────────       ────────────       ────────────────
-  enabled if a        lists any          resolve_evidence_state:
-  visual is selected  attached visual    need VisualSeal for that
-  writes live +       including blank    revision
-  unresolved          draft              no seal → integrity unknown
-  ALWAYS succeeds                        → bail "cannot pin unresolved"
-                                         (internal)
-
-  (4) PREFLIGHT / UI  (5) SEAL
-  validate_revision   reports.seal
-  ─────────────────   ────────────
-  errors only:        freeze experiment/log payloads
-  duplicate id/anchor then resolve_evidence_state again
-  pinned-without-     then SAME validate_revision
-  digest              unknown/unresolved is NOT an error
-  digest_mismatch     empty prose is NOT an error
-  bad claim shape     blank visual is NOT an error
-                      sealable = !any(severity==error)
-                      → "Ready to seal"
+  ATTACH                 PIN ALL / PREFLIGHT / SEAL
+  VisualsPage            admit_visual_evidence
+  ─────────────          ──────────────────────────
+  live pointer always    VisualSeal for visualId+rev?
+  allowed                yes → pin can freeze; sealable
+  copy receiptDigest     no  → unresolved_visual_evidence
+  when a seal exists     Ready to seal follows sealable
 ```
 
-Pin is **content-true** (needs a visual seal receipt + digest). Seal validation is **document-shape-true** (ids unique, pinned rows complete if already pinned). The UI then labels shape-true as “Ready to seal.”
-
-```
-  pin_all                      validate_revision / sealable
-  ───────                      ────────────────────────────
-  visual has VisualSeal?  ──►  integrity unresolved?  ignored
-  digest present?         ──►  live referenceMode?    ignored
-  else FAIL                    empty findings/methods ignored
-                               blank canvas             ignored
-                               → Ready to seal = YES
-```
-
-That is RP-CUA-009 / 014 / 024 / 025 / 057, grounded in code, not copy.
-
-`decideVisualEvidence` in the visuals package **explicitly does not block completion**. Reports never call it.
+Pin and report seal of visual/diagram blocks are **receipt-true** (need a VisualSeal). Experiment-records / research-log appendix still freeze via `freeze_blocks` and do not use this gate. `decideVisualEvidence` still does not block completion and Reports still do not call it.
 
 ## Viewer state is another store
 
@@ -297,7 +535,7 @@ The right pane does not hold `VisualRecord`. It holds a reducer over `ArtifactRe
   bindingAuthorityKey()   = hash(bindings)  [revision and metadata excluded]
 ```
 
-Chat, Visuals, Experiments, Data, and Optimizers each mount their own `VisualPane` + splitter. Closing a pane, Escape, and Back operate on **route + this reducer**, not on a shared window-layout stack. That is why IDs/digests vanish in the pane header and why Back from a report mints a blank chat: the origin was never part of the record.
+Chat, Visuals, Experiments, Data, Optimizers, and Reports share one `VisualPane` host. Settings joins that host only while a pane is open. Closing a pane, Escape, and Back still operate on **route + this reducer**, not on a shared window-layout stack. Reports Back returns to the prior chat/inventory or landing; it does not mint a blank chat. Attach/pin/seal chrome and Data/Outputs catalogs show `visualId` + labeled digest; title stays the human label.
 
 ## Intended lifecycle vs what shipped
 
@@ -319,7 +557,7 @@ Chat, Visuals, Experiments, Data, and Optimizers each mount their own `VisualPan
        ├── filter Live looks for status==="live"  → empty copy "no visuals yet"
        ├── archive() exists on the bridge; UI only exposes Open
        ├── VisualSeal is a separate button/table
-       └── report attach copies live+unresolved and calls it Frozen
+       └── report attach copies live+unresolved (live pointer, not Frozen)
 ```
 
 RP-CUA-001 / 015 / 050 / 051 / 052: filters and labels are **instance projections** (`status === "live"`, `rendererKind === "template"`) pretending to be product concepts (Live feed, template library, empty registry).
@@ -329,40 +567,28 @@ RP-CUA-001 / 015 / 050 / 051 / 052: filters and labels are **instance projection
 ```
   vis_b38ea7d7  +  contentDigest?  +  VisualSeal.receiptDigest
            │
-           │  attach uses visualId, truncates to anchor visual-vis_b38ea7d7
-           │  pane header shows title · rev N
-           │  Data shows title · templateId
-           │  Outputs shows report title
+  │  attach uses full visualId; chrome shows vis_ + labeled digest
+  │  pane header shows title · identity
+  │  Data / Outputs catalogs show title · identity
+  │  Reports Back returns to origin, not a minted chat
            v
         "New visual" × 2 drafts, indistinguishable
         cannot prove Visuals row === Reports block === sealed receipt
 ```
 
-`contentDigest` is optional on create; blank canvas leaves it null. Pin wants a **seal receipt digest**, not the visual content digest. Two digest spaces, neither shown at the handoff.
+`contentDigest` is optional on create; blank canvas leaves it null. Pin wants a **seal receipt digest**, not the visual content digest. Attach/pin/seal chrome labels which space it is showing.
 
 ## How this maps to the system findings
 
 | Finding | On this diagram |
 |---|---|
-| No canonical artifact machine | `VisualStatus` ≠ `VisualSeal` ≠ `ReportBlock.integrity` ≠ `ArtifactRef.status` ≠ `VisualEvidence` |
-| Evidence validity disagrees | attach writes unresolved; pin requires seal; `validate_revision` ignores unresolved |
-| IDs disappear | join key is title / truncated anchor; pane omits `id`+digest |
-| Multiple registries | Visuals, Data, Reports, Outputs are four browsers over the same rows |
-| Right panel / nav / layout | pane is a per-route viewer of `ArtifactRef`, not a host for the record |
+| No canonical artifact machine | `VisualStatus` = `ArtifactRef.status`; VisualSeal vs integrity vs VisualEvidence still exist; visual/diagram pin/seal share `admit_visual_evidence` |
+| Evidence validity disagrees | attach still writes unresolved; pin and report seal of visual/diagram now fail closed without a VisualSeal |
+| IDs disappear | attach/pin/seal chrome and Data/Outputs catalogs show `visualId` + labeled digest; title stays the human label |
+| Multiple registries | Visuals, Data, Reports, Outputs are four browsers over the same rows (identity is now the same join) |
+| Right panel / nav / layout | chat + inventory + Reports share one `VisualPane` host; Settings joins while a pane is open; `ArtifactRef` is not `VisualRecord` |
 | Authority / ops IDs | `sessionId`/`runId`/`traceId` exist on the visual but are not the operation the UI follows into Shoal/Modal |
 
-The kernel that is missing is not “better Visuals copy.” It is one admission object every surface must project:
+Visual/diagram attach, pin, preflight, and report seal now project one decision (`admit_visual_evidence`) without an `ArtifactRevision` sqlite class. VisualStatus, VisualSeal, and report integrity remain separate stores; this helper is the join for visual/diagram blocks. Claims still list any attached visual.
 
-```
-  ArtifactRevision
-    id + revision + contentDigest
-    lifecycle: draft | resolved | sealed | unavailable | superseded
-    authority: local | backend | shoal | modal
-    admission: { ok | blocked, reasons[], remediation }
-
-  ReportBlock.payload  ──must──►  that revision
-  Pin / claim / preflight / seal  ──must──►  that admission
-  UI chrome  ──must──►  id+digest whenever attach/pin/seal is offered
-```
-
-Until attach, pin, and seal consume that one decision, a blank `blank.canvas.v1` will keep showing up as draft, live, frozen, and ready-to-seal at the same time — because that is what the current types allow.
+A blank `blank.canvas.v1` can still be attached as a live pointer. It is no longer “Ready to seal.”

@@ -44,3 +44,25 @@ test("bombadil grouped Craftax uses a bundled fixture stream", () => {
   assert.match(harness, /kind: "fixture", source: "examples\/events\.json"/);
   assert.equal(harness.includes("data: { events: [] }"), false);
 });
+
+test("routes.tsx mounts one VisualPane host including chat", () => {
+  const source = readFileSync(
+    join(dirname(fileURLToPath(import.meta.url)), "../src/renderer/src/routes.tsx"),
+    "utf8"
+  );
+  assert.equal((source.match(/<VisualPane/g) ?? []).length, 1);
+  assert.match(source, /key="window-visual-host"/);
+  assert.match(source, /view\.kind === "reports"/);
+  assert.match(source, /const paneHost = inventoryHost \|\| chatRoute \|\| settingsWithPane/);
+  assert.match(source, /<ReportsPage initialReportId=\{view\.reportId\} onBack=\{leaveReports\} \/>/);
+  assert.doesNotMatch(source, /Chat still remounts/);
+  assert.doesNotMatch(source, /onBack=\{\(\) => openChat/);
+  assert.doesNotMatch(source, /crypto\.randomUUID\(\)/);
+
+  const controller = readFileSync(
+    join(dirname(fileURLToPath(import.meta.url)), "../src/renderer/src/hooks/useAppController.ts"),
+    "utf8"
+  );
+  assert.match(controller, /view\.kind === "reports"/);
+  assert.match(controller, /view\.kind === "settings" && Boolean\(openArtifactId\)/);
+});

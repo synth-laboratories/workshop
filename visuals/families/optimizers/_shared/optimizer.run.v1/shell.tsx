@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { VisualChrome } from "../../../../chrome/VisualChrome.tsx";
 import type { VisualBinding } from "../../../../runtime/types.ts";
+import { bindingInputName } from "../../../../runtime/types.ts";
 import {
   ArtifactList,
   ExecutionBindings,
@@ -29,7 +30,7 @@ export type ShellProps = {
   lede?: string;
   data?: FixturePayload;
   optimizer_run?: FixturePayload | OptimizerRun;
-  bindings?: VisualBinding[] | { slots?: VisualBinding[] };
+  bindings?: VisualBinding[] | { inputs?: VisualBinding[]; slots?: VisualBinding[] };
   /** Desktop can inject live/reconciled events for an optimizer_run binding. */
   events?: OptimizerEvent[];
   run?: OptimizerRun;
@@ -91,8 +92,8 @@ function normalizeEvents(events: unknown[]): OptimizerEvent[] {
 }
 
 export function Shell(props: ShellProps) {
-  const bindingList = Array.isArray(props.bindings) ? props.bindings : props.bindings?.slots;
-  const binding = bindingList?.find((b) => b.slot === "optimizer_run");
+  const bindingList = Array.isArray(props.bindings) ? props.bindings : (props.bindings?.inputs ?? props.bindings?.slots);
+  const binding = bindingList?.find((b) => bindingInputName(b) === "optimizer_run");
   const hintAlgorithm = (() => {
     const candidate = props.run ?? props.optimizer_run;
     if (candidate && typeof candidate === "object" && "algorithmId" in candidate) {

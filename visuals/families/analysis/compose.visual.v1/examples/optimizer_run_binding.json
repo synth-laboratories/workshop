@@ -1,0 +1,187 @@
+{
+  "schemaVersion": "synth.visual-bindings.v1",
+  "inputs": [
+    {
+      "input": "spec",
+      "slot": "spec",
+      "kind": "inline",
+      "schema": "synth.visual.compose_spec.v1",
+      "data": {
+        "schemaVersion": "synth.visual.compose_spec.v1",
+        "title": "CISPO clip · optimizer_run",
+        "lede": "Host-owned optimizer_event.v1. Eval traces stay on input stream.",
+        "placements": [
+          {
+            "id": "log",
+            "component": "event_stream.v1",
+            "input": "optimizer_run",
+            "config": {
+              "includeKinds": [
+                "candidate.accepted",
+                "sft.training.metrics",
+                "cispo.clip.identity"
+              ]
+            }
+          },
+          {
+            "id": "inspect",
+            "component": "detail_modal.v1",
+            "from": "log"
+          }
+        ]
+      }
+    },
+    {
+      "input": "optimizer_run",
+      "slot": "optimizer_run",
+      "kind": "inline",
+      "schema": "optimizer_event.v1",
+      "data": {
+        "events": [
+          {
+            "schema_version": "optimizer_event.v1",
+            "type": "optimizer.visual.ready",
+            "sequence_number": 1,
+            "created_at": "2026-08-26T16:00:01.000Z",
+            "run_id": "opt_compose_fixture",
+            "algorithm_id": "cispo",
+            "delta": {
+              "ready": true,
+              "slot": "optimizer_run"
+            }
+          },
+          {
+            "schema_version": "optimizer_event.v1",
+            "type": "candidate.accepted",
+            "sequence_number": 2,
+            "created_at": "2026-08-26T16:00:02.000Z",
+            "run_id": "opt_compose_fixture",
+            "algorithm_id": "gepa",
+            "delta": {
+              "marker": "CUA-OPT-GEPA",
+              "candidate_id": "cand_live",
+              "train_reward": 0.74
+            }
+          },
+          {
+            "schemaVersion": "optimizer_event.v1",
+            "type": "sft.training.metrics",
+            "sequenceNumber": 3,
+            "occurredAt": "2026-08-26T16:00:02.500Z",
+            "optimizerRunId": "opt_compose_fixture",
+            "algorithmId": "sft",
+            "delta": {
+              "marker": "CUA-OPT-SFT",
+              "step": 20,
+              "train_loss": 1.1
+            }
+          },
+          {
+            "schema_version": "optimizer_event.v1",
+            "type": "cispo.clip.identity",
+            "sequence_number": 4,
+            "created_at": "2026-08-26T16:00:03.000Z",
+            "run_id": "opt_compose_fixture",
+            "algorithm_id": "cispo",
+            "delta": {
+              "marker": "CUA-OPT-CISPO",
+              "clip": 0.2
+            }
+          }
+        ]
+      }
+    }
+  ],
+  "slots": [
+    {
+      "input": "spec",
+      "slot": "spec",
+      "kind": "inline",
+      "schema": "synth.visual.compose_spec.v1",
+      "data": {
+        "schemaVersion": "synth.visual.compose_spec.v1",
+        "title": "CISPO clip · optimizer_run",
+        "lede": "Host-owned optimizer_event.v1. Eval traces stay on input stream.",
+        "placements": [
+          {
+            "id": "log",
+            "component": "event_stream.v1",
+            "input": "optimizer_run",
+            "config": {
+              "includeKinds": [
+                "candidate.accepted",
+                "sft.training.metrics",
+                "cispo.clip.identity"
+              ]
+            }
+          },
+          {
+            "id": "inspect",
+            "component": "detail_modal.v1",
+            "from": "log"
+          }
+        ]
+      }
+    },
+    {
+      "input": "optimizer_run",
+      "slot": "optimizer_run",
+      "kind": "inline",
+      "schema": "optimizer_event.v1",
+      "data": {
+        "events": [
+          {
+            "schema_version": "optimizer_event.v1",
+            "type": "optimizer.visual.ready",
+            "sequence_number": 1,
+            "created_at": "2026-08-26T16:00:01.000Z",
+            "run_id": "opt_compose_fixture",
+            "algorithm_id": "cispo",
+            "delta": {
+              "ready": true,
+              "slot": "optimizer_run"
+            }
+          },
+          {
+            "schema_version": "optimizer_event.v1",
+            "type": "candidate.accepted",
+            "sequence_number": 2,
+            "created_at": "2026-08-26T16:00:02.000Z",
+            "run_id": "opt_compose_fixture",
+            "algorithm_id": "gepa",
+            "delta": {
+              "marker": "CUA-OPT-GEPA",
+              "candidate_id": "cand_live",
+              "train_reward": 0.74
+            }
+          },
+          {
+            "schemaVersion": "optimizer_event.v1",
+            "type": "sft.training.metrics",
+            "sequenceNumber": 3,
+            "occurredAt": "2026-08-26T16:00:02.500Z",
+            "optimizerRunId": "opt_compose_fixture",
+            "algorithmId": "sft",
+            "delta": {
+              "marker": "CUA-OPT-SFT",
+              "step": 20,
+              "train_loss": 1.1
+            }
+          },
+          {
+            "schema_version": "optimizer_event.v1",
+            "type": "cispo.clip.identity",
+            "sequence_number": 4,
+            "created_at": "2026-08-26T16:00:03.000Z",
+            "run_id": "opt_compose_fixture",
+            "algorithm_id": "cispo",
+            "delta": {
+              "marker": "CUA-OPT-CISPO",
+              "clip": 0.2
+            }
+          }
+        ]
+      }
+    }
+  ]
+}

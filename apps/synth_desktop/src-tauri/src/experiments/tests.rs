@@ -810,8 +810,8 @@ fn relate_candidates_compare_both_ways_and_promote_survives_reload() {
         },
     )
     .unwrap();
-    let alpha = format!("can:opt_promote:alpha");
-    let beta = format!("can:opt_promote:beta");
+    let alpha = "can:opt_promote:alpha".to_string();
+    let beta = "can:opt_promote:beta".to_string();
     relate(
         &conn,
         ExperimentRelateRequest {

@@ -154,8 +154,12 @@
             ],
             "type": "string"
           },
+          "input": {
+            "description": "Bind evidence in the same call: the input name a from block reads",
+            "type": "string"
+          },
           "slot": {
-            "description": "Bind evidence in the same call: the slot name a from block reads",
+            "description": "COMPAT alias of input",
             "type": "string"
           },
           "source": {
@@ -200,7 +204,7 @@
         "openWorldHint": false,
         "readOnlyHint": false
       },
-      "description": "Create a visual from a trusted registered template. Interactive live viewers are configured templates; arbitrary TSX is not executed.",
+      "description": "Create a visual from a registered template. sourced.visual.v1 compiles arguments.content (allowlisted TSX) in the pane. Unconstrained fetch/EventSource modules fail closed.",
       "inputSchema": {
         "additionalProperties": false,
         "properties": {
@@ -345,7 +349,12 @@
             "description": "Exact normalized poll URL declared beside a live SSE source",
             "type": "string"
           },
+          "input": {
+            "description": "Bind-point name, e.g. spec, stream, optimizer_run",
+            "type": "string"
+          },
           "slot": {
+            "description": "COMPAT alias of input",
             "type": "string"
           },
           "source": {
@@ -353,10 +362,7 @@
           }
         },
         "required": [
-          "instance_id",
-          "slot",
-          "kind",
-          "source"
+          "instance_id"
         ],
         "type": "object"
       },

@@ -1245,9 +1245,17 @@ export function useAppController() {
 		dispatchVisualRevision({ type: "select", id: openArtifactId, artifact: contextualArtifact });
 	}, [contextualArtifact, openArtifactId]);
 
+	const windowPane =
+		view.kind === "chat" ||
+		view.kind === "visuals" ||
+		view.kind === "experiments" ||
+		view.kind === "optimizers" ||
+		view.kind === "inventory" ||
+		view.kind === "reports" ||
+		(view.kind === "settings" && Boolean(openArtifactId));
 	const viewKey =
-		view.kind === "chat"
-			? `chat:${view.chatId}`
+		windowPane
+			? "window"
 			: view.kind === "sync"
 				? `sync:${view.sessionId}`
 				: view.kind === "async"
@@ -1255,6 +1263,10 @@ export function useAppController() {
 					: view.kind;
 
 	useEffect(() => {
+		if (windowPane && openArtifactIdRef.current) {
+			openArtifactByViewRef.current[viewKey] = openArtifactIdRef.current;
+			return;
+		}
 		const hasRemembered = Object.prototype.hasOwnProperty.call(openArtifactByViewRef.current, viewKey);
 		let remembered = hasRemembered ? openArtifactByViewRef.current[viewKey] : null;
 		if (!hasRemembered) {
@@ -1279,15 +1291,14 @@ export function useAppController() {
 		dispatchVisualRevision(remembered ? { type: "select", id: remembered } : { type: "close" });
 		setOpenContainer(null);
 		setContainerPaneExpanded(false);
-	}, [viewKey, activeChatSession?.metadata?.openVisualId, activeChat?.id, activeSync?.id]);
+	}, [viewKey, windowPane, activeChatSession?.metadata?.openVisualId, activeChat?.id, activeSync?.id]);
 
 	useEffect(() => {
 		if (!openArtifactId) return;
-		// Ownership enforcement applies to chat-scoped panes only. Inventory,
-		// Visuals, and Optimizers intentionally open registry artifacts that are
-		// not members of an active chat transcript.
-		if (!activeChat && !activeSync) return;
-		const artifacts = activeChat?.artifacts ?? activeSync?.artifacts ?? [];
+		// Chat shares the window VisualPane with Visuals / Experiments / Optimizers / Data.
+		// Transcript Outputs still use ownedChatArtifacts; they do not evict the pane.
+		if (view.kind !== "sync" && view.kind !== "async") return;
+		const artifacts = activeSync?.artifacts ?? [];
 		if (!openArtifactIdForChat(openArtifactId, artifacts)) {
 			setOpenArtifactId(null);
 			openArtifactIdRef.current = null;
@@ -1295,7 +1306,7 @@ export function useAppController() {
 			pendingVisualRefreshRef.current = null;
 			dispatchVisualRevision({ type: "close" });
 		}
-	}, [openArtifactId, activeChat, activeSync]);
+	}, [openArtifactId, view.kind, activeSync]);
 
 	useEffect(() => {
 		if (openArtifactId || openContainer) return;
@@ -1472,6 +1483,7 @@ export function useAppController() {
 							: null;
 				const ownerViewKey = owner ? `chat:${owner}` : viewKey;
 				openArtifactByViewRef.current[ownerViewKey] = visualId;
+				openArtifactByViewRef.current.window = visualId;
 				if (owner && owner !== activeSessionIdRef.current) {
 					return;
 				}

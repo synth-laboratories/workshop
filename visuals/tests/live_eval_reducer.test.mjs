@@ -59,7 +59,7 @@ function formatMissingNumber(value) {
 
 function assertLiveEvalSlot(slot) {
   if (slot === "live" || slot === "jobs") {
-    return `Forbidden live-eval slot "${slot}"; bind slot "stream"`;
+    return `Forbidden live-eval input "${slot}"; bind input "stream"`;
   }
   return null;
 }
@@ -128,8 +128,8 @@ test("C7-W04 same reducer: craftax frames, harbor reward.txt, digbench neither",
 });
 
 test("C7-W01 forbidden slots live/jobs fail", () => {
-  assert.match(assertLiveEvalSlot("live"), /Forbidden live-eval slot "live"/);
-  assert.match(assertLiveEvalSlot("jobs"), /Forbidden live-eval slot "jobs"/);
+  assert.match(assertLiveEvalSlot("live"), /Forbidden live-eval input "live"/);
+  assert.match(assertLiveEvalSlot("jobs"), /Forbidden live-eval input "jobs"/);
   assert.equal(assertLiveEvalSlot("stream"), null);
 });
 

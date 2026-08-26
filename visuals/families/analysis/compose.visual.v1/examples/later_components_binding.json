@@ -1,0 +1,217 @@
+{
+  "schemaVersion": "synth.visual-bindings.v1",
+  "inputs": [
+    {
+      "input": "spec",
+      "slot": "spec",
+      "kind": "inline",
+      "schema": "synth.visual.compose_spec.v1",
+      "data": {
+        "schemaVersion": "synth.visual.compose_spec.v1",
+        "title": "Compose kit · later components",
+        "lede": "metrics.reduce.v1, scrubber.v1, and candidate_inspector.v1. Bind-point noun is input.",
+        "placements": [
+          {
+            "id": "strip",
+            "component": "metrics.v1",
+            "input": "stream"
+          },
+          {
+            "id": "playhead",
+            "component": "scrubber.v1",
+            "input": "stream"
+          },
+          {
+            "id": "candidates",
+            "component": "candidate_inspector.v1",
+            "input": "optimizer_run"
+          },
+          {
+            "id": "inspect",
+            "component": "detail_modal.v1",
+            "from": "playhead"
+          }
+        ]
+      }
+    },
+    {
+      "input": "stream",
+      "slot": "stream",
+      "kind": "inline",
+      "schema": "synth.visual.live_eval_events.v1",
+      "data": {
+        "events": [
+          {
+            "ts": "2026-08-26T16:00:00.000Z",
+            "run_id": "compose_kit_run",
+            "kind": "stream.subscribed",
+            "sequence": null,
+            "payload": {
+              "stream.id": "stream_compose_kit",
+              "ready": true
+            }
+          },
+          {
+            "ts": "2026-08-26T16:00:01.000Z",
+            "run_id": "compose_kit_run",
+            "kind": "run_started",
+            "sequence": 1,
+            "payload": {
+              "suite": "harbor_smoke"
+            }
+          },
+          {
+            "ts": "2026-08-26T16:00:02.000Z",
+            "run_id": "compose_kit_run",
+            "kind": "rollout.finished",
+            "sequence": 2,
+            "payload": {
+              "marker": "PROTOTYPE-REWARD-3.1",
+              "reward": 3.1
+            }
+          }
+        ]
+      }
+    },
+    {
+      "input": "optimizer_run",
+      "slot": "optimizer_run",
+      "kind": "inline",
+      "schema": "optimizer_event.v1",
+      "data": {
+        "events": [
+          {
+            "schema_version": "optimizer_event.v1",
+            "type": "candidate.accepted",
+            "sequence_number": 2,
+            "created_at": "2026-08-26T16:00:02.000Z",
+            "run_id": "opt_compose_kit",
+            "algorithm_id": "gepa",
+            "delta": {
+              "candidate_id": "cand_live",
+              "train_reward": 0.74
+            }
+          },
+          {
+            "schema_version": "optimizer_event.v1",
+            "type": "cispo.clip.identity",
+            "sequence_number": 4,
+            "created_at": "2026-08-26T16:00:03.000Z",
+            "run_id": "opt_compose_kit",
+            "algorithm_id": "cispo",
+            "delta": {
+              "clip": 0.2
+            }
+          }
+        ]
+      }
+    }
+  ],
+  "slots": [
+    {
+      "input": "spec",
+      "slot": "spec",
+      "kind": "inline",
+      "schema": "synth.visual.compose_spec.v1",
+      "data": {
+        "schemaVersion": "synth.visual.compose_spec.v1",
+        "title": "Compose kit · later components",
+        "lede": "metrics.reduce.v1, scrubber.v1, and candidate_inspector.v1. Bind-point noun is input.",
+        "placements": [
+          {
+            "id": "strip",
+            "component": "metrics.v1",
+            "input": "stream"
+          },
+          {
+            "id": "playhead",
+            "component": "scrubber.v1",
+            "input": "stream"
+          },
+          {
+            "id": "candidates",
+            "component": "candidate_inspector.v1",
+            "input": "optimizer_run"
+          },
+          {
+            "id": "inspect",
+            "component": "detail_modal.v1",
+            "from": "playhead"
+          }
+        ]
+      }
+    },
+    {
+      "input": "stream",
+      "slot": "stream",
+      "kind": "inline",
+      "schema": "synth.visual.live_eval_events.v1",
+      "data": {
+        "events": [
+          {
+            "ts": "2026-08-26T16:00:00.000Z",
+            "run_id": "compose_kit_run",
+            "kind": "stream.subscribed",
+            "sequence": null,
+            "payload": {
+              "stream.id": "stream_compose_kit",
+              "ready": true
+            }
+          },
+          {
+            "ts": "2026-08-26T16:00:01.000Z",
+            "run_id": "compose_kit_run",
+            "kind": "run_started",
+            "sequence": 1,
+            "payload": {
+              "suite": "harbor_smoke"
+            }
+          },
+          {
+            "ts": "2026-08-26T16:00:02.000Z",
+            "run_id": "compose_kit_run",
+            "kind": "rollout.finished",
+            "sequence": 2,
+            "payload": {
+              "marker": "PROTOTYPE-REWARD-3.1",
+              "reward": 3.1
+            }
+          }
+        ]
+      }
+    },
+    {
+      "input": "optimizer_run",
+      "slot": "optimizer_run",
+      "kind": "inline",
+      "schema": "optimizer_event.v1",
+      "data": {
+        "events": [
+          {
+            "schema_version": "optimizer_event.v1",
+            "type": "candidate.accepted",
+            "sequence_number": 2,
+            "created_at": "2026-08-26T16:00:02.000Z",
+            "run_id": "opt_compose_kit",
+            "algorithm_id": "gepa",
+            "delta": {
+              "candidate_id": "cand_live",
+              "train_reward": 0.74
+            }
+          },
+          {
+            "schema_version": "optimizer_event.v1",
+            "type": "cispo.clip.identity",
+            "sequence_number": 4,
+            "created_at": "2026-08-26T16:00:03.000Z",
+            "run_id": "opt_compose_kit",
+            "algorithm_id": "cispo",
+            "delta": {
+              "clip": 0.2
+            }
+          }
+        ]
+      }
+    }
+  ]
+}

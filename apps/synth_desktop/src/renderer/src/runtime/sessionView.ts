@@ -16,6 +16,7 @@ import {
 	SYNTH_CLOUD_LAGUNA_XS_H100_MODEL,
 	SYNTH_CLOUD_MUSE_SPARK_MODEL,
 	type ActivityEvent,
+	parseArtifactRefStatus,
 	type ArtifactRef,
 	type AsyncInternPin,
 	type AsyncPhase,
@@ -790,7 +791,7 @@ function mcpToolActivity(
 		"synth_visuals.visual_create": ["template_id", "title"],
 		"synth_visuals.visual_create_from_template": ["template_id", "title"],
 		"synth_visuals.visual_update": ["visual_id", "instance_id", "title", "status"],
-		"synth_visuals.visual_bind_data_source": ["visual_id", "instance_id", "slot"],
+		"synth_visuals.visual_bind_data_source": ["visual_id", "instance_id", "input", "slot"],
 		"synth_visuals.visual_save": ["visual_id", "instance_id"],
 		"synth_visuals.visual_save_tsx": ["visual_id", "instance_id"],
 		"synth_visuals.visual_fork": ["visual_id", "instance_id", "title"],
@@ -1718,15 +1719,6 @@ function toolResultToArtifact(event: RuntimeEvent): ArtifactRef | undefined {
 	if (!id || !templateId) return undefined;
 	const title = stringField(visual, "title") ?? "Visual";
 	const metadata = objectValue(visual.metadata);
-	const durableStatus = stringField(visual, "status");
-	const reviewReceipts = metadata && Array.isArray(metadata.reviews) ? metadata.reviews.length : 0;
-	const status: ArtifactRef["status"] = durableStatus === "failed"
-		? "failed"
-		: durableStatus === "live" || durableStatus === "saved"
-			? "ready"
-			: reviewReceipts > 0
-				? "review"
-				: "draft";
 	return {
 		id,
 		kind: "report",
@@ -1738,7 +1730,7 @@ function toolResultToArtifact(event: RuntimeEvent): ArtifactRef | undefined {
 		visualId: id,
 		bindings: objectValue(visual.bindings),
 		metadata,
-		status,
+		status: parseArtifactRefStatus(stringField(visual, "status")),
 		preview: {
 			variant: templateId.includes("scrub") || templateId.includes("rollout")
 				? "craftax_frame"
@@ -1799,6 +1791,7 @@ export function eventsToArtifacts(events: RuntimeEvent[]): ArtifactRef[] {
 				payload.bindings && typeof payload.bindings === "object"
 					? (payload.bindings as Record<string, unknown>)
 					: prior?.bindings,
+			status: parseArtifactRefStatus(payload.status ?? prior?.status),
 			preview: {
 				variant: templateId?.includes("scrub") ? "craftax_frame" : "generic"
 			}
@@ -1850,6 +1843,7 @@ export function visualRecordToArtifact(visual: VisualInstanceRecord): ArtifactRe
 		visualId: visual.id,
 		rendererKind: typeof visual.metadata?.rendererKind === "string" ? visual.metadata.rendererKind : undefined,
 		bindings: visual.bindings,
+		status: parseArtifactRefStatus(visual.metadata?.status),
 		preview: {
 			variant:
 				visual.templateId.includes("scrub") || visual.templateId.includes("rollout")

@@ -9,8 +9,19 @@ visual may persist and what the renderer may read. They must agree.
 ```json
 {
   "schemaVersion": "synth.visual-bindings.v1",
+  "inputs": [
+    {
+      "input": "stream",
+      "slot": "stream",
+      "kind": "live_sse",
+      "source": "http://127.0.0.1:8114/rollouts/roll_a/stream",
+      "poll_url": "http://127.0.0.1:8114/rollouts/roll_a/events",
+      "schema": "synth.trace-stream-event.v1"
+    }
+  ],
   "slots": [
     {
+      "input": "stream",
       "slot": "stream",
       "kind": "live_sse",
       "source": "http://127.0.0.1:8114/rollouts/roll_a/stream",
@@ -21,9 +32,13 @@ visual may persist and what the renderer may read. They must agree.
 }
 ```
 
-`slots` is a flat array. A template slot declaring `"multiple": true` accepts
-several entries with the same `slot` name — ten rollout streams on one `stream`
-slot is the supported case, not a workaround.
+`inputs` is the canonical flat array. `slots` is a one-release copy of the same
+descriptors. A template input declaring `"multiple": true` accepts several
+entries with the same `input` name — ten rollout streams on one `stream` input
+is the supported case, not a workaround.
+
+Readers accept `input` or `slot` (and `inputs` or `slots`). If both names are
+present and disagree, fail closed. Writers stamp both fields.
 
 `kind` is drawn from a closed vocabulary: `inline`, `trace_v5`, `local_cas`,
 `run_ref`, `live_sse`, `fixture`, `optimizer_run`, `query_snapshot`. An unknown
@@ -60,8 +75,8 @@ the shape alone has to separate them. One heuristic, in one function, in each
 language:
 
 > A value is a binding descriptor when it names a `kind` from the vocabulary
-> **and** carries at least one field only a descriptor has: `slot`, `source`,
-> `data`, or `poll_url`.
+> **and** carries at least one field only a descriptor has: `input`, `slot`,
+> `source`, `data`, or `poll_url`.
 
 So `{"chart": {"kind": "bar"}}` stays inline chart data. A slot map that mixes
 descriptors and raw data is refused rather than guessed at.
@@ -90,7 +105,7 @@ canonicalise is left untouched and counted, never silently repaired.
 ## Authoring
 
 `visual_bind_data_source` is the supported way to write bindings: it emits the
-envelope. Use `mode: "append"` with `bindings: [...]` for a `multiple` slot.
+envelope. Use `mode: "append"` with `bindings: [...]` for a `multiple` input.
 
 `visual_update` still accepts a raw `bindings` object because importers use it.
 Send the envelope.
