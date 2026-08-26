@@ -203,6 +203,51 @@ a,
 	bottom: calc(var(--bottom-panel-height) + 20px);
 }
 
+/* A review capture is a photograph of the selected visual, not of Desktop's
+   navigation. Rust toggles this transient attribute around one self-capture;
+   it is never persisted to user layout preferences. */
+html[data-synth-review-capture] .sidebar,
+html[data-synth-review-capture] .titlebar,
+html[data-synth-review-capture] .terminal-panel,
+html[data-synth-review-capture] .composer-dock,
+html[data-synth-review-capture] .dev-bar {
+	display: none !important;
+}
+
+html[data-synth-review-capture] .visuals-page {
+	box-sizing: border-box;
+	display: flex;
+	flex: 1;
+	flex-direction: column;
+	min-height: 0;
+	padding: 0;
+}
+
+html[data-synth-review-capture] .visuals-page-head,
+html[data-synth-review-capture] .visuals-tabs,
+html[data-synth-review-capture] .visuals-grid,
+html[data-synth-review-capture] .primary-resize-handle,
+html[data-synth-review-capture] .visuals-preview > header {
+	display: none !important;
+}
+
+html[data-synth-review-capture] .visuals-layout,
+html[data-synth-review-capture] .visuals-preview {
+	box-sizing: border-box;
+	flex: 1;
+	min-height: 0;
+	width: 100%;
+	margin: 0;
+}
+
+html[data-synth-review-capture] .visuals-layout { display: flex; }
+html[data-synth-review-capture] .visuals-preview {
+	border: 0;
+	border-radius: 0;
+	padding: 0;
+	overflow: auto;
+}
+
 /* ── Dev scenario chip (bottom-left so top chrome stays draggable) ── */
 .dev-bar {
 	position: fixed;

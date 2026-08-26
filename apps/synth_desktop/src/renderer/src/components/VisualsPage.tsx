@@ -138,6 +138,21 @@ export function VisualsPage({ onOpenVisual, onGoToChat, onBack, onCreate }: Prop
 		setCompareBundle(null);
 	}, [selected?.id, selected?.metadata?.presentation]);
 
+	useEffect(() => {
+		type ReviewRequest = { active?: boolean; visualId?: string };
+		const applyReviewRequest = (request: ReviewRequest | undefined) => {
+			if (!request?.active || typeof request.visualId !== "string") return;
+			setSelectedId(request.visualId);
+			setFocusVisualId(request.visualId);
+		};
+		const onReviewCapture = (event: Event) => {
+			applyReviewRequest((event as CustomEvent<ReviewRequest>).detail);
+		};
+		window.addEventListener("synth:visual-review-capture", onReviewCapture);
+		applyReviewRequest((window as Window & { __synthVisualReviewCapture?: ReviewRequest }).__synthVisualReviewCapture);
+		return () => window.removeEventListener("synth:visual-review-capture", onReviewCapture);
+	}, []);
+
 	async function reopenSeal(receiptDigest: string) {
 		try {
 			setSealedBundle(await bridges.visuals!.getSeal(receiptDigest));

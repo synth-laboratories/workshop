@@ -690,11 +690,31 @@ fn resize_review_window(app: &AppHandle, body: &Value) -> Result<Value> {
 /// How long the renderer gets to relayout at the review viewport before the
 /// snapshot. Carried over from the previous capture pipeline, where the helper
 /// slept between resize and `screencapture` for the same reason.
-const REVIEW_CAPTURE_SETTLE: std::time::Duration = std::time::Duration::from_millis(500);
+const REVIEW_CAPTURE_SETTLE: std::time::Duration = std::time::Duration::from_millis(750);
 
 /// The whole snapshot round trip, resize excluded. Bounds the window a wedged
 /// WebKit could hold the resized viewport, and the IPC route with it.
 const REVIEW_CAPTURE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// Tell the React shell to make one selected visual the only visible surface
+/// while a review image is taken. This is deliberately an ephemeral renderer
+/// state: a review must not mutate the user's saved layout, nor should a
+/// narrow viewport spend most of its pixels on navigation chrome.
+#[cfg(target_os = "macos")]
+fn set_review_capture_mode(app: &AppHandle, visual_id: &str, active: bool) -> Result<()> {
+    let window = app
+        .get_webview_window("main")
+        .context("review capture requires the main Desktop window")?;
+    let detail = serde_json::to_string(&json!({
+        "active": active,
+        "visualId": visual_id,
+    }))?;
+    window
+        .eval(format!(
+            "window.__synthVisualReviewCapture={detail};document.documentElement.toggleAttribute('data-synth-review-capture',{active});window.dispatchEvent(new CustomEvent('synth:visual-review-capture',{{detail:window.__synthVisualReviewCapture}}));"
+        ))
+        .context("set review capture renderer mode")
+}
 
 /// Resize the main window, snapshot its own webview, restore — one call.
 ///
@@ -734,7 +754,23 @@ async fn capture_review_window(app: &AppHandle, body: &Value) -> Result<Value> {
             canonical_root.display()
         );
     }
-    let resize = resize_review_window(app, body)?;
+    let visual_id = body
+        .get("visualId")
+        .or_else(|| body.get("visual_id"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .context("review capture requires visualId")?;
+    // Enter review mode before resizing so React has the entire settle window
+    // to select the requested visual and lay out its primary surface.
+    set_review_capture_mode(app, visual_id, true)?;
+    let resize = match resize_review_window(app, body) {
+        Ok(resize) => resize,
+        Err(error) => {
+            let _ = set_review_capture_mode(app, visual_id, false);
+            return Err(error);
+        }
+    };
     // Do not `?` between here and the restore: the window is resized, and any
     // early return from this span leaves it that way.
     tokio::time::sleep(REVIEW_CAPTURE_SETTLE).await;
@@ -751,22 +787,26 @@ async fn capture_review_window(app: &AppHandle, body: &Value) -> Result<Value> {
         .cloned()
         .context("review window resize omitted its previous size")
         .and_then(|previous| resize_review_window(app, &previous));
+    let review_mode_restore = set_review_capture_mode(app, visual_id, false);
     let written = match &snapshot {
         Ok(bytes) => fs::write(&output, bytes).context("write review capture PNG"),
         Err(_) => Ok(()),
     };
     // A failed restore leaves the user's window at the review viewport; it has
     // to reach the caller even when the capture itself failed.
-    match (snapshot, restore, written) {
-        (Err(capture), Err(restore), _) => Err(anyhow::anyhow!(
+    match (snapshot, restore, review_mode_restore, written) {
+        (Err(capture), Err(restore), _, _) => Err(anyhow::anyhow!(
             "{capture:#}; additionally the Desktop window was not restored: {restore:#}"
         )),
-        (Err(capture), Ok(_), _) => Err(capture),
-        (Ok(_), Err(restore), _) => Err(anyhow::anyhow!(
+        (Err(capture), Ok(_), _, _) => Err(capture),
+        (Ok(_), Err(restore), _, _) => Err(anyhow::anyhow!(
             "captured review but failed to restore Desktop window: {restore:#}"
         )),
-        (Ok(_), Ok(_), Err(write)) => Err(write),
-        (Ok(bytes), Ok(_), Ok(())) => {
+        (Ok(_), Ok(_), Err(review_mode_restore), _) => Err(anyhow::anyhow!(
+            "captured review but failed to restore the renderer layout: {review_mode_restore:#}"
+        )),
+        (Ok(_), Ok(_), Ok(()), Err(write)) => Err(write),
+        (Ok(bytes), Ok(_), Ok(()), Ok(())) => {
             let (width, height) = png_dimensions(&bytes).unwrap_or((0, 0));
             Ok(json!({
                 "path": output.to_string_lossy(),

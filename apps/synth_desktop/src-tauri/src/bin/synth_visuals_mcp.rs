@@ -1655,6 +1655,7 @@ fn capture_macos_desktop_review(
         "POST",
         "/v1/review-window/capture",
         Some(json!({
+            "visualId": id,
             "width": width,
             "height": height,
             "outputPath": png_path.to_string_lossy(),
