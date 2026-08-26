@@ -9,6 +9,7 @@ import type {
 	VisualRecord
 } from "@synth/runtime-protocol";
 import { publicError } from "../runtime/publicError";
+import { formatVisualAdmissionIdentity } from "../types/landing";
 
 import { CONTAINER_POLL_MS } from "../limits";
 import { bridges } from "../runtime/desktopBridge";
@@ -527,6 +528,14 @@ export function DataPage({
 								<li key={v.id} className="ws-item" data-testid={`inventory-visual-${v.id}`}>
 									<div className="ws-item-main">
 										<strong className="ws-item-title">{v.title}</strong>
+										<span className="ws-item-meta" data-testid={`inventory-visual-identity-${v.id}`}>
+											{formatVisualAdmissionIdentity({
+												visualId: v.id,
+												revision: v.currentRevision,
+												contentDigest: v.contentDigest,
+												receiptDigest: typeof v.receiptDigest === "string" ? v.receiptDigest : undefined
+											})}
+										</span>
 										<span className="ws-item-meta">{v.templateId}</span>
 										<span className="ws-item-meta ws-faint">{formatWhen(v.updatedAt)}</span>
 									</div>
