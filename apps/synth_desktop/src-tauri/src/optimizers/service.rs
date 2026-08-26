@@ -5879,6 +5879,7 @@ pub(in crate::optimizers) mod tests {
                 dataset_shard: None,
                 candidate_set_id: None,
                 container_id: None,
+                plan_override: None,
                 search: None,
             })
             .await

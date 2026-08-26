@@ -94,7 +94,7 @@ fn tools() -> Value {
         {"name":"optimizer_list_algorithms","description":"List optimizer algorithms and availability","inputSchema":{"type":"object","properties":{},"additionalProperties":false}},
         {"name":"optimizer_list_recipes","description":"List workspace-declared recipes for this session plus remaining product training recipes. Task GEPA/eval ids come from workshop.recipe.toml, never a shipped catalog.","inputSchema":{"type":"object","properties":{"session_ref":{"type":"string"}},"additionalProperties":false}},
         {"name":"optimizer_start_recipe","description":"Start a workspace-declared or remaining product recipe. Workspace GEPA/eval ids are whatever workshop.recipe.toml declared. Local candidate-comparison eval.* still takes candidate_set_id. Workspace baseline evals take container_id from container_ensure.","inputSchema":{"type":"object","properties":{"recipe_id":{"type":"string"},"session_ref":{"type":"string"},"open_visual":{"type":"boolean"},"base_model":{"type":"string"},"dataset_shard":{"type":"string","enum":["train_a","train_b"]},"candidate_set_id":{"type":"string","description":"Required by pinned local candidate-comparison eval.* recipes. An id returned by optimizer_stage_eval_candidates, never a path."},"training_artifact_id":{"type":"string","description":"Verified local training artifact used as the CISPO warm start."},"container_id":{"type":"string","description":"Registered-container identity from container_ensure. Required when multiple healthy pools advertise the same family."}},"required":["recipe_id"],"additionalProperties":false}},
-        {"name":"optimizer_start_workflow","description":"Start one bounded workflow in one call. Workspace task recipes are declared in workshop.recipe.toml. Freshens registered-container capabilities, performs host approval and sidecar admission, creates the run, and opens its chat-owned visual.","inputSchema":{"type":"object","properties":{"recipe_id":{"type":"string"},"session_ref":{"type":"string"},"open_visual":{"type":"boolean"},"base_model":{"type":"string"},"dataset_shard":{"type":"string","enum":["train_a","train_b"]},"candidate_set_id":{"type":"string"},"training_artifact_id":{"type":"string","description":"Verified local training artifact used as the CISPO warm start."},"container_id":{"type":"string"}},"required":["recipe_id"],"additionalProperties":false}},
+        {"name":"optimizer_start_workflow","description":"Start one bounded workflow in one call. Workspace task recipes are declared in workshop.recipe.toml. Freshens registered-container capabilities, performs host approval and sidecar admission, creates the run, and opens its chat-owned visual.","inputSchema":{"type":"object","properties":{"recipe_id":{"type":"string"},"session_ref":{"type":"string"},"open_visual":{"type":"boolean"},"base_model":{"type":"string"},"dataset_shard":{"type":"string","enum":["train_a","train_b"]},"candidate_set_id":{"type":"string"},"training_artifact_id":{"type":"string","description":"Verified local training artifact used as the CISPO warm start."},"container_id":{"type":"string"},"plan_override":{"type":"object","description":"Optional trusted narrowing only: candidate_ids, seeds/screening_seeds/confirmation_seeds, and model_efforts."}},"required":["recipe_id"],"additionalProperties":false}},
         {"name":"optimizer_stage_eval_candidates","description":"Freeze policy files from the session workspace into one immutable content-addressed candidate set and return its id. Paths are workspace-relative; absolute paths and traversal are refused.","inputSchema":{"type":"object","properties":{"session_ref":{"type":"string","description":"Optional. Defaults to the calling session; an agent has no way to know its own id, so do not guess one."},"candidates":{"type":"array","minItems":1,"maxItems":16,"items":{"type":"object","properties":{"label":{"type":"string"},"path":{"type":"string"},"entrypoint":{"type":"string"},"kind":{"type":"string"},"baseline":{"type":"boolean"}},"required":["label","path"],"additionalProperties":false}}},"required":["candidates"],"additionalProperties":false}},
         {"name":"optimizer_list_runs","description":"List local optimizer run mirrors","inputSchema":{"type":"object","properties":{"status":{"type":"string"},"algorithm_id":{"type":"string"},"source":{"type":"string"},"search":{"type":"string"}},"additionalProperties":false}},
         {"name":"optimizer_get_run","description":"Get one optimizer run mirror","inputSchema":{"type":"object","properties":{"optimizer_run_id":{"type":"string"}},"required":["optimizer_run_id"],"additionalProperties":false}},
@@ -212,7 +212,8 @@ fn call_tool(name: &str, args: &Value) -> Result<Value, String> {
                 "datasetShard": args.get("dataset_shard"),
                 "candidateSetId": args.get("candidate_set_id"),
                 "trainingArtifactId": args.get("training_artifact_id"),
-                "containerId": args.get("container_id")
+                "containerId": args.get("container_id"),
+                "planOverride": args.get("plan_override")
             })),
         ),
         "optimizer_start_workflow" => request(
@@ -226,7 +227,8 @@ fn call_tool(name: &str, args: &Value) -> Result<Value, String> {
                 "datasetShard": args.get("dataset_shard"),
                 "candidateSetId": args.get("candidate_set_id"),
                 "trainingArtifactId": args.get("training_artifact_id"),
-                "containerId": args.get("container_id")
+                "containerId": args.get("container_id"),
+                "planOverride": args.get("plan_override")
             })),
         ),
         "optimizer_stage_eval_candidates" => request(
@@ -438,6 +440,7 @@ mod tests {
         assert!(!encoded.contains("sft.hosted.fixture.v1"));
         assert!(encoded.contains("container_id"));
         assert!(encoded.contains("dataset_shard"));
+        assert!(encoded.contains("plan_override"));
         assert!(encoded.contains("optimizer_pause_run"));
         assert!(encoded.contains("optimizer_resume_run"));
         assert!(encoded.contains("optimizer_start_workflow"));

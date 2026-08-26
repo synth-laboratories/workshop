@@ -824,6 +824,10 @@ pub struct OptimizerRecipeRunRequest {
     /// on the Eval receipt. Mutually exclusive with `candidate_set_id`.
     #[serde(default)]
     pub training_artifact_id: Option<String>,
+    /// Trusted recipe subset selection. The optimizer worker validates that
+    /// every candidate, seed, model, and effort only narrows the recipe.
+    #[serde(default)]
+    pub plan_override: Option<Value>,
     /// Optional GEPA search overrides. Omitted fields keep the recipe defaults.
     /// `proposalsPerGeneration` is capped at 10; `policyConcurrency` at 120.
     #[serde(default)]

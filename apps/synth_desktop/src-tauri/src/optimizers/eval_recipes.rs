@@ -763,8 +763,9 @@ pub async fn start(
             "recipe_id": recipe_id,
             "home": home,
             "candidate_set_path": candidate_set_path,
-            "session_ref": request.session_ref,
+            "session_ref": request.session_ref.clone(),
             "mlx_inference_url": mlx_inference_url,
+            "plan_override": request.plan_override.clone(),
         }))?,
     )
     .context("write eval worker manifest")?;

@@ -2101,6 +2101,7 @@ max_total_rollouts = 4
                 candidate_set_id: None,
                 container_id: None,
                 training_artifact_id: None,
+                plan_override: None,
                 search: None,
             })
             .await
@@ -2572,6 +2573,7 @@ max_total_rollouts = 4
             candidate_set_id: None,
             container_id: container_id.map(str::to_string),
             training_artifact_id: None,
+            plan_override: None,
             search: None,
         }
     }

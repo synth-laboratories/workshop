@@ -393,6 +393,7 @@ mod tests {
                 candidate_set_id: None,
                 container_id: None,
                 training_artifact_id: None,
+                plan_override: None,
                 search: None,
             },
         )
