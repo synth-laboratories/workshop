@@ -711,9 +711,44 @@ fn set_review_capture_mode(app: &AppHandle, visual_id: &str, active: bool) -> Re
     }))?;
     window
         .eval(format!(
-            "window.__synthVisualReviewCapture={detail};document.documentElement.toggleAttribute('data-synth-review-capture',{active});window.dispatchEvent(new CustomEvent('synth:visual-review-capture',{{detail:window.__synthVisualReviewCapture}}));"
+            "window.__synthVisualReviewCapture={detail};document.documentElement.removeAttribute('data-synth-review-capture-ready');document.documentElement.toggleAttribute('data-synth-review-capture',{active});window.dispatchEvent(new CustomEvent('synth:visual-review-capture',{{detail:window.__synthVisualReviewCapture}}));"
         ))
         .context("set review capture renderer mode")
+}
+
+/// The fixed layout delay above permits CSS and WebKit to react to a resize.
+/// This acknowledgement closes the remaining cold-start race: React may still
+/// be mounting the requested visual when that delay expires.
+#[cfg(target_os = "macos")]
+async fn wait_for_review_capture_surface(app: &AppHandle, visual_id: &str) -> Result<()> {
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(3);
+    loop {
+        let window = app
+            .get_webview_window("main")
+            .context("review capture requires the main Desktop window")?;
+        let (sender, receiver) = tokio::sync::oneshot::channel();
+        let sender = std::sync::Arc::new(std::sync::Mutex::new(Some(sender)));
+        let callback_sender = std::sync::Arc::clone(&sender);
+        window
+            .eval_with_callback(
+                "document.documentElement.dataset.synthReviewCaptureReady || ''",
+                move |value| {
+                    if let Some(sender) = callback_sender.lock().ok().and_then(|mut sender| sender.take()) {
+                        let _ = sender.send(value);
+                    }
+                },
+            )
+            .context("query review capture renderer readiness")?;
+        if let Ok(Ok(value)) = tokio::time::timeout(std::time::Duration::from_millis(250), receiver).await {
+            if value.contains(visual_id) {
+                return Ok(());
+            }
+        }
+        if tokio::time::Instant::now() >= deadline {
+            anyhow::bail!("review visual did not become ready before capture");
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
 }
 
 /// Resize the main window, snapshot its own webview, restore — one call.
@@ -774,13 +809,14 @@ async fn capture_review_window(app: &AppHandle, body: &Value) -> Result<Value> {
     // Do not `?` between here and the restore: the window is resized, and any
     // early return from this span leaves it that way.
     tokio::time::sleep(REVIEW_CAPTURE_SETTLE).await;
-    let snapshot = match app.get_webview_window("main") {
-        Some(window) => {
-            crate::visuals::snapshot::capture_webview_png(&window, REVIEW_CAPTURE_TIMEOUT).await
-        }
-        None => Err(anyhow::anyhow!(
-            "review capture requires the main Desktop window"
-        )),
+    let snapshot = match wait_for_review_capture_surface(app, visual_id).await {
+        Ok(()) => match app.get_webview_window("main") {
+            Some(window) => crate::visuals::snapshot::capture_webview_png(&window, REVIEW_CAPTURE_TIMEOUT).await,
+            None => Err(anyhow::anyhow!(
+                "review capture requires the main Desktop window"
+            )),
+        },
+        Err(error) => Err(error),
     };
     let restore = resize
         .get("previous")

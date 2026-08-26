@@ -153,6 +153,16 @@ export function VisualsPage({ onOpenVisual, onGoToChat, onBack, onCreate }: Prop
 		return () => window.removeEventListener("synth:visual-review-capture", onReviewCapture);
 	}, []);
 
+	useEffect(() => {
+		if (!focusVisualId || selected?.id !== focusVisualId) return;
+		const request = (window as Window & { __synthVisualReviewCapture?: { active?: boolean; visualId?: string } }).__synthVisualReviewCapture;
+		if (!request?.active || request.visualId !== selected.id) return;
+		const frame = requestAnimationFrame(() => {
+			document.documentElement.dataset.synthReviewCaptureReady = selected.id;
+		});
+		return () => cancelAnimationFrame(frame);
+	}, [focusVisualId, selected?.id]);
+
 	async function reopenSeal(receiptDigest: string) {
 		try {
 			setSealedBundle(await bridges.visuals!.getSeal(receiptDigest));
