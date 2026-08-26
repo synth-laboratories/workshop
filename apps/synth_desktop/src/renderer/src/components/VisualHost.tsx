@@ -292,6 +292,14 @@ function sandboxedHtml(source: string) {
 	return `<!doctype html><html><head>${head}</head><body>${source}</body></html>`;
 }
 
+function sandboxedHtmlDataUrl(source: string) {
+	// `srcdoc` inherits the Desktop document's CSP. Its script policy correctly
+	// rejects arbitrary inline code, but that also rejects the reviewed inline
+	// renderer. A data document has its own opaque origin and uses the strict
+	// CSP injected above; the iframe sandbox remains the execution boundary.
+	return `data:text/html;charset=utf-8,${encodeURIComponent(sandboxedHtml(source))}`;
+}
+
 function managedHtmlPayload(value: unknown): unknown {
 	if (value && typeof value === "object") {
 		const record = value as Record<string, unknown>;
@@ -330,7 +338,7 @@ function ManagedHtmlFrame({ source, payload, title }: { source: string; payload:
 		title={title ?? "Managed visual"}
 		data-testid="visual-managed-html"
 		sandbox="allow-scripts"
-		srcDoc={sandboxedHtml(source)}
+		src={sandboxedHtmlDataUrl(source)}
 		onLoad={() => setLoaded(true)}
 		style={{ border: 0, display: "block", height: "100%", minHeight: 420, width: "100%" }}
 	/>;
