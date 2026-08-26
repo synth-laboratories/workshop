@@ -1513,7 +1513,7 @@ async fn find_ready_container(
         }
         if matches && ready {
             if let Some(base_url) = base_url.filter(|value| !value.trim().is_empty()) {
-                if let Some(protocol) = advertised_gepa_v2_protocol(&metadata) {
+                if let Some(protocol) = advertised_eval_protocol(&metadata) {
                     ready_containers.push(ReadyContainer {
                         id: id.clone(),
                         base_url: base_url.trim_end_matches('/').to_string(),
@@ -1537,7 +1537,7 @@ async fn find_ready_container(
             .find(|container| container.id == requested_id)
             .ok_or_else(|| {
                 anyhow::anyhow!(
-                    "requested {family} container `{requested_id}` is not a ready GEPA v2 pool: {}",
+                    "requested {family} container `{requested_id}` is not a ready live-eval container: {}",
                     seen.join(", ")
                 )
             });
@@ -1547,7 +1547,7 @@ async fn find_ready_container(
     }
     if ready_containers.len() > 1 {
         bail!(
-            "ambiguous registered {family} GEPA v2 pools: {}. Pass the explicit containerId selected in Data; refusing to substitute a container.",
+            "ambiguous registered {family} live-eval containers: {}. Pass the explicit containerId selected in Data; refusing to substitute a container.",
             ready_containers
                 .iter()
                 .map(|container| container.id.as_str())
@@ -1557,19 +1557,25 @@ async fn find_ready_container(
     }
     if seen.is_empty() {
         bail!(
-            "no registered {family} container. Register a healthy {family} GEPA v2 pool before starting this baseline eval."
+            "no registered {family} container. Register a healthy {family} live-eval container before starting this baseline eval."
         );
     }
     bail!(
-        "registered {family} containers are not a ready GEPA v2 pool: {}. Probe until status is ready/healthy and the container advertises {}.",
+        "registered {family} containers are not ready live-eval containers: {}. Probe until status is ready/healthy and the container advertises {}.",
         seen.join(", "),
-        crate::container_capabilities::GEPA_V2_CONTRACT
+        crate::container_capabilities::LIVE_EVAL_PROTOCOL
     )
 }
 
-fn advertised_gepa_v2_protocol(metadata: &Value) -> Option<String> {
+fn advertised_eval_protocol(metadata: &Value) -> Option<String> {
+    if let Some(protocol) = metadata
+        .pointer("/capabilities/protocol")
+        .and_then(Value::as_str)
+        .filter(|protocol| *protocol == crate::container_capabilities::LIVE_EVAL_PROTOCOL)
+    {
+        return Some(protocol.to_string());
+    }
     for pointer in [
-        "/capabilities/protocol",
         "/optimizer_contracts/gepa/version",
         "/metadata/optimizer_contracts/gepa/version",
     ] {
