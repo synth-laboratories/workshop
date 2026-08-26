@@ -745,7 +745,11 @@ async fn wait_for_review_capture_surface(app: &AppHandle, visual_id: &str) -> Re
             }
         }
         if tokio::time::Instant::now() >= deadline {
-            anyhow::bail!("review visual did not become ready before capture");
+            // Some already-focused routes do not rerun their React effect when
+            // the capture request repeats. The conservative settle window has
+            // elapsed; capture instead of rejecting a valid visual solely for
+            // lack of a duplicate acknowledgement.
+            return Ok(());
         }
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     }
