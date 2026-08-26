@@ -53,7 +53,13 @@ pub struct TemplateMeta {
     pub example_binding: Option<Value>,
     #[serde(default)]
     #[specta(type = specta_typescript::Unknown)]
+    pub inputs: Vec<Value>,
+    #[serde(default)]
+    #[specta(type = specta_typescript::Unknown)]
     pub slots: Vec<Value>,
+    #[serde(default)]
+    #[specta(type = specta_typescript::Unknown)]
+    pub components: Vec<Value>,
     #[serde(default)]
     #[specta(type = specta_typescript::Unknown)]
     pub binding_schema: Vec<Value>,
@@ -245,11 +251,14 @@ fn load_template_meta(path: &Path) -> anyhow::Result<TemplateMeta> {
     if version.as_deref().unwrap_or_default().split('.').count() != 3 {
         anyhow::bail!("template {id} requires a semantic version");
     }
-    let slots = value
-        .get("slots")
-        .and_then(Value::as_array)
-        .cloned()
-        .unwrap_or_default();
+    let declared = match (value.get("inputs"), value.get("slots")) {
+        (Some(a), Some(b)) if a != b => {
+            anyhow::bail!("template {id} inputs and slots disagree")
+        }
+        (Some(a), _) => a.as_array().cloned().unwrap_or_default(),
+        (_, Some(b)) => b.as_array().cloned().unwrap_or_default(),
+        _ => Vec::new(),
+    };
     let mut meta = TemplateMeta {
         schema_version,
         id,
@@ -266,8 +275,14 @@ fn load_template_meta(path: &Path) -> anyhow::Result<TemplateMeta> {
         path: None,
         shell_path: None,
         example_binding: None,
-        binding_schema: slots.clone(),
-        slots,
+        binding_schema: declared.clone(),
+        inputs: declared.clone(),
+        slots: declared,
+        components: value
+            .get("components")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default(),
         observation_contract: value
             .get("observationContract")
             .cloned()
@@ -299,6 +314,7 @@ mod tests {
                 .find(|template| template.id == "experiment.overview.v1")
                 .expect("experiment.overview.v1");
             assert_eq!(experiment.slots, experiment.binding_schema);
+            assert_eq!(experiment.inputs, experiment.slots);
             assert!(experiment.example_binding.is_some());
             let analysis = templates
                 .iter()
@@ -309,6 +325,42 @@ mod tests {
                 .as_array()
                 .expect("analysis accepts");
             assert!(accepts.iter().any(|value| value == "inline"));
+            let compose = templates
+                .iter()
+                .find(|template| template.id == "compose.visual.v1")
+                .expect("compose.visual.v1");
+            assert!(compose.example_binding.is_some());
+            let compose_slots: Vec<&str> = compose
+                .slots
+                .iter()
+                .filter_map(|slot| slot.get("name").and_then(Value::as_str))
+                .collect();
+            assert_eq!(compose_slots, ["spec", "stream", "optimizer_run"]);
+            assert_eq!(compose.inputs, compose.slots);
+            let compose_components: Vec<&str> = compose
+                .components
+                .iter()
+                .filter_map(|row| row.get("id").and_then(Value::as_str))
+                .collect();
+            assert_eq!(compose_components, ["event_stream.v1", "detail_modal.v1"]);
+            let sourced = templates
+                .iter()
+                .find(|template| template.id == "sourced.visual.v1")
+                .expect("sourced.visual.v1");
+            assert!(sourced.example_binding.is_some());
+            let sourced_slots: Vec<&str> = sourced
+                .slots
+                .iter()
+                .filter_map(|slot| slot.get("name").and_then(Value::as_str))
+                .collect();
+            assert_eq!(sourced_slots, ["stream"]);
+            let sourced_components: Vec<&str> = sourced
+                .components
+                .iter()
+                .filter_map(|row| row.get("id").and_then(Value::as_str))
+                .collect();
+            assert_eq!(sourced_components, ["event_stream.v1", "detail_modal.v1"]);
+            assert!(analysis.components.is_empty());
         }
     }
 
@@ -337,6 +389,7 @@ mod tests {
             .as_deref()
             .unwrap()
             .contains("families/analysis/example.v1"));
+        assert!(indexed["example.v1"].components.is_empty());
     }
 
     #[test]

@@ -225,6 +225,9 @@ pub fn builder() -> Builder<tauri::Wry> {
             crate::experiments_get,
             crate::experiments_attach_evidence,
             crate::experiments_create,
+            crate::experiments_create_child,
+            crate::experiments_relate,
+            crate::experiments_activate,
             crate::experiments_finalize,
             crate::reports_log_list,
             crate::reports_log_append,
@@ -477,8 +480,10 @@ mod tests {
         // 251 → 253: saved-LoRA checkpoint detail and artifact detail.
         // 255 → 261: current command graph, including the Rust-owned
         // OpenRouter model catalog read/refresh commands.
+        // 261 → 263: experiment create_child + activate (follow_up lineage).
+        // 263 → 264: experiment relate (member/candidate compared_with + promoted_to).
         assert_eq!(
-            exported, 261,
+            exported, 264,
             "generated bindings must contain the complete desktop command set"
         );
         assert_eq!(

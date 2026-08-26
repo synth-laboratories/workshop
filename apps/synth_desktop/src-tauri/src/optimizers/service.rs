@@ -902,6 +902,7 @@ impl OptimizerService {
         let (mut run, event) = db
             .run_transaction(move |conn| {
                 upsert_run(conn, &inserted)?;
+                super::experiment_bind::attach_run(conn, &inserted)?;
                 if let Some(session_ref) = inserted.session_ref.as_deref() {
                     insert_relationship(
                         conn,
@@ -1632,6 +1633,7 @@ impl OptimizerService {
         db.run_transaction(move |conn| {
             upsert_run(conn, &seed)?;
             upsert_cursor(conn, &seed.id, 0, &seed.created_at)?;
+            super::experiment_bind::attach_run(conn, &seed)?;
             Ok(())
         })
         .await?;
@@ -1699,6 +1701,7 @@ impl OptimizerService {
         db.run_transaction(move |conn| {
             upsert_run(conn, &seed)?;
             upsert_cursor(conn, &seed.id, 0, &seed.created_at)?;
+            super::experiment_bind::attach_run(conn, &seed)?;
             if let Some(session_ref) = seed.session_ref.as_deref() {
                 insert_relationship(
                     conn,
@@ -2278,6 +2281,7 @@ impl OptimizerService {
                 run.finished_at = Some(Utc::now().to_rfc3339());
             }
             upsert_run(conn, &run)?;
+            super::experiment_bind::settle_run(conn, &run)?;
             let event = append_event(
                 conn,
                 EventAppend {
@@ -2827,6 +2831,7 @@ fn commit_validated_events(
         .with_context(|| format!("validate optimizer event batch for {}", run.id))?;
     let mut appended = 0usize;
     for (event, verdict) in events.iter().zip(plan) {
+        super::experiment_bind::fold_candidate(conn, event)?;
         if verdict == EventVerdict::ConfirmedReplay {
             continue;
         }
@@ -2856,6 +2861,7 @@ fn commit_validated_events(
         }
     }
     upsert_run(conn, &run)?;
+    super::experiment_bind::settle_run(conn, &run)?;
     let projected = project_from_events(&run, &history, None)
         .with_context(|| format!("project optimizer run {} at {}", run.id, run.cursor_seq))?;
     for slice in projected {
@@ -2978,6 +2984,7 @@ pub(crate) fn reconcile_stale_local_runs_in_tx(
             object.insert("terminalManifest".into(), sealed);
         }
         upsert_run(conn, &run)?;
+        super::experiment_bind::settle_run(conn, &run)?;
         recovered.push(run);
     }
     Ok(recovered)
@@ -4707,6 +4714,65 @@ pub(in crate::optimizers) mod tests {
             .await
             .unwrap();
         run
+    }
+
+    #[tokio::test]
+    async fn creating_an_optimizer_with_session_ref_writes_a_member_node_and_settles() {
+        let (svc, _dir, _) = service().await;
+        let run = eval_run(&svc, "opt_exp_bind", "session_exp_bind").await;
+        svc.database()
+            .with_conn(|conn| {
+                let group = crate::experiments::load_for_session(conn, "session_exp_bind")?
+                    .expect("session owns an experiment");
+                assert_eq!(group.members.len(), 1);
+                assert_eq!(group.members[0].member_kind, crate::experiments::MEMBER_OPTIMIZER);
+                assert_eq!(group.members[0].member_id, run.id);
+                assert_eq!(group.nodes.len(), 1);
+                assert_eq!(group.nodes[0].kind, crate::experiments::MEMBER_OPTIMIZER);
+                assert_eq!(group.nodes[0].status, "running");
+                assert!(group.edges.is_empty());
+                Ok(())
+            })
+            .unwrap();
+
+        svc.append_event_payloads(
+            run.id.clone(),
+            vec![
+                draft("optimizer.run.started"),
+                draft("optimizer.run.completed"),
+            ],
+        )
+        .await
+        .unwrap();
+
+        svc.database()
+            .with_conn(|conn| {
+                crate::experiments::attach(
+                    conn,
+                    "session_exp_bind",
+                    crate::experiments::MEMBER_CAMPAIGN,
+                    "camp_exp_bind",
+                    "2026-08-26T00:00:02Z",
+                    "Eval",
+                )?;
+                let group = crate::experiments::load_for_session(conn, "session_exp_bind")?
+                    .expect("session still owns an experiment");
+                assert_eq!(group.nodes.len(), 2);
+                assert_eq!(group.edges.len(), 1);
+                assert_eq!(group.edges[0].relation, "evaluated");
+                let optimizer = group
+                    .nodes
+                    .iter()
+                    .find(|node| node.kind == crate::experiments::MEMBER_OPTIMIZER)
+                    .unwrap();
+                assert_eq!(optimizer.status, "completed");
+                assert_eq!(
+                    group.edges[0].source_node_id,
+                    optimizer.id
+                );
+                Ok(())
+            })
+            .unwrap();
     }
 
     fn draft(event_type: &str) -> OptimizerEventDraft {

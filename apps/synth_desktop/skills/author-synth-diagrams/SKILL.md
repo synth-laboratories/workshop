@@ -68,7 +68,7 @@ Then call `visual_manage` again with `{"operation":"show","arguments":{"visual_i
 
 - `diagram.mermaid.v1` content is UTF-8 Mermaid. `diagram.systems.v1` and `diagram.systems.dynamic.v1` content is bounded UTF-8 JSON. Never paste arbitrary SVG, HTML, or JavaScript into a canvas.
 - Default `presentation` is `"pane"`.
-- Never bind slot `stream`.
+- Never bind input `stream`.
 - Missing `content` fails closed. Do not retry as `blank.canvas.v1`.
 - Preserve stable IDs across revisions. In 2D/4D sources, every group and node has an explicit finite rectangle and every edge references existing nodes.
 - Prefer 5–7 focal elements per beat. Stage secondary evidence through later beats instead of showing every node and connector in the poster state.

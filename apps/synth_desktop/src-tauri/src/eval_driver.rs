@@ -1515,7 +1515,7 @@ async fn run_policy_rollout(
 
     let seed = seed_from_task_instance(&task_instance_id)?;
     // A1: open the family visual before prepare so the pane exists before any
-    // paid call. After prepare, rebind slot `stream` to the declared SSE URL
+    // paid call. After prepare, rebind input `stream` to the declared SSE URL
     // (never guess `/events`) and wait for `stream.subscribed` before start.
     let supplied_visual_id = body
         .get("visualId")
@@ -2376,7 +2376,7 @@ fn require_stream_slot(body: &Value) -> Result<&'static str> {
         .unwrap_or(LIVE_EVAL_SLOT);
     assert_live_eval_slot(requested)?;
     if requested != LIVE_EVAL_SLOT {
-        bail!("eval driver visual-attached rollouts bind slot \"{LIVE_EVAL_SLOT}\", not \"{requested}\"");
+        bail!("eval driver visual-attached rollouts bind input \"{LIVE_EVAL_SLOT}\", not \"{requested}\"");
     }
     Ok(LIVE_EVAL_SLOT)
 }

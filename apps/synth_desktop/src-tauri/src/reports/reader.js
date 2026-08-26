@@ -129,11 +129,29 @@
       });
       frame.srcdoc = payload.sealedHtml;
       section.append(frame);
+    } else if (kind === "report.visual.v1" || kind === "report.diagram.v1") {
+      const identity = field(payload, "visualId", "visual_id");
+      const receipt = field(block, "sourceDigest", "source_digest");
+      const revision = field(block, "sourceRevision", "source_revision") || field(payload, "visualRevision", "visual_revision");
+      const pinned = field(block, "referenceMode", "reference_mode") === "pinned" && field(block, "integrityState", "integrity_state") === "verified";
+      const card = el("div", { class: "evidence-card" });
+      card.append(el("div", { class: "kind" }, escape(kind)));
+      const digestLabel = receipt ? `receipt ${escape(receipt.slice(0, 8))}` : "digest —";
+      card.append(
+        el(
+          "div",
+          {},
+          pinned
+            ? `Pinned · ${escape(identity || "vis —")} · rev ${escape(revision || "—")} · ${digestLabel}`
+            : `Live pointer · ${escape(identity || "vis —")} · rev ${escape(revision || "—")} · ${digestLabel}`
+        )
+      );
+      section.append(card);
     } else {
       const identity = field(payload, "visualId", "visual_id", "collectionId", "collection_id", "diagramId", "diagram_id");
       const card = el("div", { class: "evidence-card" });
       card.append(el("div", { class: "kind" }, escape(kind)));
-      card.append(el("div", {}, identity ? `Frozen identity ${escape(identity)}` : "Frozen evidence is attached to this revision."));
+      card.append(el("div", {}, identity ? `Attached identity ${escape(identity)}` : "Evidence is attached to this revision."));
       const sourceRevision = field(block, "sourceRevision", "source_revision") || field(payload, "sourceRevision", "source_revision");
       if (sourceRevision) {
         card.append(el("div", { class: "path" }, `revision ${escape(sourceRevision)}`));

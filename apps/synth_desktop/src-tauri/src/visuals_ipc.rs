@@ -1210,7 +1210,7 @@ fn require_scripted_stream_slot(body: &Value) -> Result<()> {
     assert_live_eval_slot(requested)?;
     if requested != LIVE_EVAL_SLOT {
         anyhow::bail!(
-            "visuals IPC scripted rollouts bind slot \"{LIVE_EVAL_SLOT}\", not \"{requested}\""
+            "visuals IPC scripted rollouts bind input \"{LIVE_EVAL_SLOT}\", not \"{requested}\""
         );
     }
     Ok(())
@@ -3727,6 +3727,70 @@ async fn dispatch_experiments(
                 serde_json::from_value(payload)?;
             Ok(json!({"experiment": core.data().experiment_create(request).await?}))
         }
+        ("POST", path)
+            if path.starts_with("/v1/experiments/") && path.ends_with("/children") =>
+        {
+            let parent_id = path
+                .trim_start_matches("/v1/experiments/")
+                .trim_end_matches("/children")
+                .trim_end_matches('/');
+            anyhow::ensure!(
+                !parent_id.is_empty() && !parent_id.contains('/'),
+                "invalid experiment children path"
+            );
+            let mut payload = body;
+            payload["parentExperimentId"] = json!(parent_id);
+            if payload.get("createdAt").is_none() && payload.get("created_at").is_none() {
+                payload["createdAt"] = json!(chrono::Utc::now().to_rfc3339());
+            }
+            let request: crate::experiments::ExperimentChildCreateRequest =
+                serde_json::from_value(payload)?;
+            Ok(json!({
+                "experiment": core.data().experiment_create_child(request).await?
+            }))
+        }
+        ("POST", path)
+            if path.starts_with("/v1/experiments/") && path.ends_with("/relate") =>
+        {
+            let experiment_id = path
+                .trim_start_matches("/v1/experiments/")
+                .trim_end_matches("/relate")
+                .trim_end_matches('/');
+            anyhow::ensure!(
+                !experiment_id.is_empty() && !experiment_id.contains('/'),
+                "invalid experiment relate path"
+            );
+            let mut payload = body;
+            payload["experimentId"] = json!(experiment_id);
+            if payload.get("createdAt").is_none() && payload.get("created_at").is_none() {
+                payload["createdAt"] = json!(chrono::Utc::now().to_rfc3339());
+            }
+            let request: crate::experiments::ExperimentRelateRequest =
+                serde_json::from_value(payload)?;
+            Ok(json!({
+                "experiment": core.data().experiment_relate(request).await?
+            }))
+        }
+        ("POST", path)
+            if path.starts_with("/v1/experiments/") && path.ends_with("/activate") =>
+        {
+            let experiment_id = path
+                .trim_start_matches("/v1/experiments/")
+                .trim_end_matches("/activate")
+                .trim_end_matches('/');
+            anyhow::ensure!(
+                !experiment_id.is_empty() && !experiment_id.contains('/'),
+                "invalid experiment activate path"
+            );
+            let session_id = json_field(&body, "sessionId", "session_id")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .context("experiments activate requires sessionId")?;
+            Ok(json!({
+                "experiment": core.data().experiment_activate(session_id.to_owned(), experiment_id.to_owned()).await?
+            }))
+        }
         ("GET", "/v1/experiments") | ("GET", "/v1/experiments/") => {
             let session_id = json_field(&body, "sessionId", "session_id")
                 .and_then(Value::as_str)
@@ -3740,6 +3804,18 @@ async fn dispatch_experiments(
             Ok(json!({
                 "sessionId": session_id,
                 "experiment": group,
+            }))
+        }
+        ("GET", path) if path.starts_with("/v1/experiments/") => {
+            let experiment_id = path
+                .trim_start_matches("/v1/experiments/")
+                .trim_end_matches('/');
+            anyhow::ensure!(
+                !experiment_id.is_empty() && !experiment_id.contains('/'),
+                "invalid experiment path"
+            );
+            Ok(json!({
+                "experiment": core.data().experiment_get(experiment_id.to_owned()).await?
             }))
         }
         ("POST", path) if path.starts_with("/v1/experiments/") && path.ends_with("/evidence") => {

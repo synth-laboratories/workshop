@@ -1,4 +1,4 @@
-//! W0 live-eval bind contract: slot `stream` only; never guess Craftax/Harbor URLs.
+//! W0 live-eval bind contract: input `stream` only; never guess Craftax/Harbor URLs.
 
 use anyhow::{bail, Result};
 use serde_json::{json, Value};
@@ -58,7 +58,7 @@ pub fn is_never_declared_stream_url(source: &str) -> bool {
 
 pub fn assert_live_eval_slot(slot: &str) -> Result<()> {
     if FORBIDDEN_LIVE_EVAL_SLOTS.contains(&slot) {
-        bail!("Forbidden live-eval slot \"{slot}\"; bind slot \"{LIVE_EVAL_SLOT}\"");
+        bail!("Forbidden live-eval input \"{slot}\"; bind input \"{LIVE_EVAL_SLOT}\"");
     }
     Ok(())
 }

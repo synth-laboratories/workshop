@@ -772,6 +772,9 @@ mod tests {
             group.members[0].member_kind,
             crate::experiments::MEMBER_CAMPAIGN
         );
+        assert_eq!(group.nodes.len(), 1);
+        assert_eq!(group.nodes[0].kind, crate::experiments::MEMBER_CAMPAIGN);
+        assert!(group.edges.is_empty());
     }
 
     #[test]

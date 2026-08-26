@@ -325,14 +325,77 @@ pub struct CanonicalBindings {
     pub upgraded_slots: Vec<String>,
 }
 
+/// Canonical bind-point name. `input` is the wire field; `slot` is the
+/// one-release alias. Both present and unequal fails closed.
+pub fn descriptor_input_name(descriptor: &Value) -> anyhow::Result<String> {
+    let object = descriptor.as_object().ok_or_else(|| {
+        anyhow::anyhow!("visual binding descriptors must be objects")
+    })?;
+    let input = object.get("input").and_then(Value::as_str);
+    let slot = object.get("slot").and_then(Value::as_str);
+    match (input, slot) {
+        (Some(a), Some(b)) if a == b => Ok(a.to_string()),
+        (Some(_), Some(_)) => anyhow::bail!(
+            "visual binding input and slot disagree; send one name"
+        ),
+        (Some(a), None) | (None, Some(a)) => Ok(a.to_string()),
+        (None, None) => anyhow::bail!("visual binding requires an input name"),
+    }
+}
+
+pub fn stamp_binding_input(descriptor: &mut Value, name: &str) {
+    if let Some(object) = descriptor.as_object_mut() {
+        object.insert("input".into(), json!(name));
+        object.insert("slot".into(), json!(name));
+    }
+}
+
+fn stamp_descriptors(items: &[Value]) -> anyhow::Result<Vec<Value>> {
+    let mut out = Vec::with_capacity(items.len());
+    for item in items {
+        let mut descriptor = item.clone();
+        let name = descriptor_input_name(&descriptor)?;
+        stamp_binding_input(&mut descriptor, &name);
+        out.push(descriptor);
+    }
+    Ok(out)
+}
+
+/// Envelope array: canonical `inputs`, one-release alias `slots`.
+pub fn binding_descriptors(bindings: &Value) -> anyhow::Result<Vec<Value>> {
+    let object = bindings
+        .as_object()
+        .ok_or_else(|| anyhow::anyhow!("visual bindings must be a JSON object"))?;
+    envelope_arrays(object)
+}
+
+fn envelope_arrays(object: &serde_json::Map<String, Value>) -> anyhow::Result<Vec<Value>> {
+    let inputs = object.get("inputs").and_then(Value::as_array);
+    let slots = object.get("slots").and_then(Value::as_array);
+    match (inputs, slots) {
+        (None, None) => {
+            anyhow::bail!("canonical visual bindings require an inputs array")
+        }
+        (Some(a), None) | (None, Some(a)) => stamp_descriptors(a),
+        (Some(a), Some(b)) => {
+            let left = stamp_descriptors(a)?;
+            let right = stamp_descriptors(b)?;
+            if left != right {
+                anyhow::bail!("visual bindings inputs and slots disagree; send one array");
+            }
+            Ok(left)
+        }
+    }
+}
+
 /// Decide whether one authored value is a binding descriptor rather than
-/// inline slot data.
+/// inline input data.
 ///
 /// This is a **heuristic** and it is deliberately the only one: a legacy prop
 /// bag and a slot-keyed descriptor map are both bare JSON objects, so the shape
 /// alone has to tell them apart. A value counts as a descriptor when it names a
 /// `kind` from `VISUAL_BINDING_KINDS` *and* carries at least one field only a
-/// descriptor has (`slot`, `source`, `data`, `poll_url`). Inline chart data such
+/// descriptor has (`input`, `slot`, `source`, `data`, `poll_url`). Inline chart data such
 /// as `{"kind": "bar"}` therefore stays inline data.
 ///
 /// It exists because writers were allowed to persist un-canonical bindings for
@@ -348,7 +411,7 @@ fn is_binding_descriptor(value: &Value) -> bool {
     if !VISUAL_BINDING_KINDS.contains(&kind) {
         return false;
     }
-    ["slot", "source", "data", "poll_url"]
+    ["input", "slot", "source", "data", "poll_url"]
         .iter()
         .any(|field| object.contains_key(*field))
 }
@@ -383,13 +446,10 @@ pub fn canonicalize_bindings(bindings: &Value) -> anyhow::Result<CanonicalBindin
                 VISUAL_BINDINGS_SCHEMA_VERSION
             );
         }
-        let slots = object
-            .get("slots")
-            .and_then(Value::as_array)
-            .ok_or_else(|| anyhow::anyhow!("canonical visual bindings require a slots array"))?;
-        validate_slots(slots)?;
+        let descriptors = envelope_arrays(object)?;
+        validate_bindings(&descriptors)?;
         return Ok(CanonicalBindings {
-            value: bindings.clone(),
+            value: canonical_envelope(descriptors),
             form: BindingsForm::Canonical,
             upgraded_slots: Vec::new(),
         });
@@ -420,7 +480,7 @@ pub fn canonicalize_bindings(bindings: &Value) -> anyhow::Result<CanonicalBindin
         super::live_eval::assert_live_eval_slot(name)?;
         upgraded_slots.push(name.clone());
         if form == BindingsForm::UpgradedPropBag {
-            slots.push(json!({"slot": name, "kind": "inline", "data": value}));
+            slots.push(json!({"input": name, "slot": name, "kind": "inline", "data": value}));
             continue;
         }
         // A slot map that mixes descriptors and raw data cannot be read either
@@ -429,7 +489,7 @@ pub fn canonicalize_bindings(bindings: &Value) -> anyhow::Result<CanonicalBindin
         if !is_descriptor_entry(value) {
             anyhow::bail!(
                 "visual binding slot {name:?} mixes descriptors and inline data; \
-                 send {VISUAL_BINDINGS_SCHEMA_VERSION} bindings with an explicit slots array"
+                 send {VISUAL_BINDINGS_SCHEMA_VERSION} bindings with an explicit inputs array"
             );
         }
         let descriptors = match value {
@@ -438,15 +498,13 @@ pub fn canonicalize_bindings(bindings: &Value) -> anyhow::Result<CanonicalBindin
         };
         for descriptor in descriptors {
             let mut descriptor = descriptor;
-            if let Some(entry) = descriptor.as_object_mut() {
-                // The slot key is authoritative: a descriptor filed under
-                // "stream" is a stream binding whatever its own field claims.
-                entry.insert("slot".into(), json!(name));
-            }
+            // The map key is authoritative: a descriptor filed under
+            // "stream" is a stream binding whatever its own field claims.
+            stamp_binding_input(&mut descriptor, name);
             slots.push(descriptor);
         }
     }
-    validate_slots(&slots)?;
+    validate_bindings(&slots)?;
     Ok(CanonicalBindings {
         value: canonical_envelope(slots),
         form,
@@ -455,36 +513,33 @@ pub fn canonicalize_bindings(bindings: &Value) -> anyhow::Result<CanonicalBindin
 }
 
 fn canonical_envelope(slots: Vec<Value>) -> Value {
+    let stamped = stamp_descriptors(&slots).unwrap_or(slots);
     json!({
         "schemaVersion": VISUAL_BINDINGS_SCHEMA_VERSION,
-        "slots": slots,
+        "inputs": stamped,
+        "slots": stamped,
     })
 }
 
-fn validate_slots(slots: &[Value]) -> anyhow::Result<()> {
+fn validate_bindings(slots: &[Value]) -> anyhow::Result<()> {
     for slot in slots {
-        let slot = slot
-            .as_object()
-            .ok_or_else(|| anyhow::anyhow!("visual binding slots must be objects"))?;
-        let slot_name = slot
-            .get("slot")
-            .and_then(Value::as_str)
-            .ok_or_else(|| anyhow::anyhow!("visual binding slot requires a slot name"))?;
-        super::live_eval::assert_live_eval_slot(slot_name)?;
+        let slot_name = descriptor_input_name(slot)?;
+        super::live_eval::assert_live_eval_slot(&slot_name)?;
         let kind = slot.get("kind").and_then(Value::as_str).unwrap_or_default();
         if !VISUAL_BINDING_KINDS.contains(&kind) {
             anyhow::bail!("unsupported visual binding kind: {kind}");
         }
-        if kind == "inline" && !slot.contains_key("data") {
+        if kind == "inline" && !slot.as_object().is_some_and(|object| object.contains_key("data")) {
             anyhow::bail!(
                 "{}",
                 json!({
                     "code": "visual_binding_invalid",
+                    "input": slot_name,
                     "slot": slot_name,
                     "kind": "inline",
                     "expected_source_kind": "inline",
                     "missing_field": "data",
-                    "remediation": "Inline bindings require a data object for this slot."
+                    "remediation": "Inline bindings require a data object for this input."
                 })
             );
         }
@@ -493,6 +548,7 @@ fn validate_slots(slots: &[Value]) -> anyhow::Result<()> {
                 "{}",
                 json!({
                     "code": "visual_binding_invalid",
+                    "input": slot_name,
                     "slot": slot_name,
                     "kind": kind,
                     "expected_source_kind": kind,
@@ -625,7 +681,11 @@ mod tests {
         assert_eq!(slots.len(), 10);
         assert!(slots
             .iter()
-            .all(|slot| slot["slot"] == json!("stream") && slot["kind"] == json!("live_sse")));
+            .all(|slot| {
+                slot["slot"] == json!("stream")
+                    && slot["input"] == json!("stream")
+                    && slot["kind"] == json!("live_sse")
+            }));
         assert_eq!(declared_poll_urls(&authored).len(), 10);
     }
 
@@ -665,6 +725,7 @@ mod tests {
         .unwrap();
         assert_eq!(canonical.form, BindingsForm::UpgradedSlotMap);
         assert_eq!(canonical.value["slots"][0]["slot"], json!("stream"));
+        assert_eq!(canonical.value["slots"][0]["input"], json!("stream"));
     }
 
     #[test]
@@ -711,6 +772,35 @@ mod tests {
         let canonical = canonicalize_bindings(&json!({})).unwrap();
         assert_eq!(canonical.form, BindingsForm::Canonical);
         assert_eq!(canonical.value["slots"], json!([]));
+        assert_eq!(canonical.value["inputs"], json!([]));
+    }
+
+    #[test]
+    fn dual_reads_input_and_restamps_slot() {
+        let canonical = canonicalize_bindings(&json!({
+            "schemaVersion": VISUAL_BINDINGS_SCHEMA_VERSION,
+            "inputs": [{"input": "stream", "kind": "live_sse", "source": "http://127.0.0.1:8114/rollouts/r1/stream"}]
+        }))
+        .unwrap();
+        assert_eq!(canonical.form, BindingsForm::Canonical);
+        assert_eq!(canonical.value["inputs"][0]["input"], json!("stream"));
+        assert_eq!(canonical.value["inputs"][0]["slot"], json!("stream"));
+        assert_eq!(canonical.value["slots"], canonical.value["inputs"]);
+    }
+
+    #[test]
+    fn refuses_when_input_and_slot_disagree() {
+        assert!(canonicalize_bindings(&json!({
+            "schemaVersion": VISUAL_BINDINGS_SCHEMA_VERSION,
+            "slots": [{"input": "stream", "slot": "spec", "kind": "inline", "data": {}}]
+        }))
+        .is_err());
+        assert!(canonicalize_bindings(&json!({
+            "schemaVersion": VISUAL_BINDINGS_SCHEMA_VERSION,
+            "inputs": [{"input": "stream", "kind": "inline", "data": {}}],
+            "slots": [{"slot": "spec", "kind": "inline", "data": {}}]
+        }))
+        .is_err());
     }
 
     #[test]
