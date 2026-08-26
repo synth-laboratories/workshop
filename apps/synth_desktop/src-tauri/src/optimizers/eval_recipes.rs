@@ -2487,8 +2487,8 @@ mod immutable_target_tests {
             Some("craftax-eval-target"),
             Some("sha256:d1b3eaccfd833f0f67eaf682be0ea162e93ddacb71db944be9b3e03c82cd09bd"),
         ));
-        assert!(error.contains("names no registry"), "{error}");
-        assert!(error.contains("target_not_digest_pinned"), "{error}");
+        assert!(error.contains("Evaluation is supported"), "{error}");
+        assert!(error.contains("local_pinned_target_disabled"), "{error}");
     }
 
     #[test]
@@ -2498,9 +2498,13 @@ mod immutable_target_tests {
             Some("sha256:d1b3eaccfd833f0f67eaf682be0ea162e93ddacb71db944be9b3e03c82cd09bd"),
         ));
         assert_eq!(normalized["availability"], json!("unavailable"));
-        assert!(normalized["availabilityReason"]
-            .as_str()
-            .is_some_and(|reason| reason.contains("names no registry")));
+        assert_eq!(
+            normalized["admissionError"]["code"],
+            json!("local_pinned_target_disabled")
+        );
+        assert_eq!(normalized["executionKind"], json!("evaluation"));
+        assert_eq!(normalized["executionSupported"], json!(true));
+        assert_eq!(normalized["targetAdmitted"], json!(false));
     }
 
     #[test]
