@@ -169,9 +169,40 @@ export type ArtifactRef = {
 	ownerSessionId?: string;
 	/** Cross-task discovery is labeled, never adopted as this chat's output. */
 	foreign?: boolean;
-	/** Durable authoring state projected for transcript and pane chrome. */
-	status?: "draft" | "review" | "ready" | "failed";
+	/** Durable VisualStatus. Review receipts stay on metadata; they are not a fourth vocab. */
+	status?: ArtifactRefStatus;
+	/** Seal receipt digest for this revision, when a VisualSeal exists. Not contentDigest. */
+	receiptDigest?: string;
 };
+
+export function formatVisualAdmissionIdentity(input: {
+	visualId?: string | null;
+	revision?: number | string | null;
+	receiptDigest?: string | null;
+	contentDigest?: string | null;
+}): string {
+	const visualId = input.visualId?.trim() || "vis —";
+	const revision =
+		input.revision === 0 || input.revision
+			? `rev ${input.revision}`
+			: "rev —";
+	const digest = input.receiptDigest?.trim()
+		? `receipt ${input.receiptDigest.slice(0, 8)}`
+		: input.contentDigest?.trim()
+			? `content ${input.contentDigest.slice(0, 8)}`
+			: "digest —";
+	return `${visualId} · ${revision} · ${digest}`;
+}
+
+/** Same machine as `VisualStatus` on VisualRecord. Viewer pointer, not a second lifecycle. */
+export const ARTIFACT_REF_STATUSES = ["draft", "live", "saved", "failed", "archived"] as const;
+export type ArtifactRefStatus = (typeof ARTIFACT_REF_STATUSES)[number];
+
+export function parseArtifactRefStatus(value: unknown): ArtifactRefStatus {
+	return ARTIFACT_REF_STATUSES.includes(value as ArtifactRefStatus)
+		? (value as ArtifactRefStatus)
+		: "draft";
+}
 
 /** Inline activity line in a local Laguna transcript (Poolside-style). */
 export type LocalActivityLine = {

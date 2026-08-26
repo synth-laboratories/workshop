@@ -7,6 +7,7 @@ import { getPreferences, updatePreferences } from "../preferences";
 import { PaneResizeHandle } from "./PaneResizeHandle";
 import type { ReportBlock, ReportRecord, VisualSeal, VisualSealBundle } from "../bridge";
 import { publicError } from "../runtime/publicError";
+import { formatVisualAdmissionIdentity } from "../types/landing";
 
 type Tab = "all" | "recent" | "live" | "sealed" | "templates";
 
@@ -85,13 +86,17 @@ export function VisualsPage({ onOpenVisual, onGoToChat, onBack, onCreate }: Prop
 	async function addSelectedToReport() {
 		if (!selected || !bridges.reports) return;
 		try {
+			const sealForRevision = seals.find(
+				(seal) => seal.visualId === selected.id && seal.visualRevision === selected.currentRevision
+			);
 			const block: ReportBlock = {
 				blockId: `blk_visual_${crypto.randomUUID().replaceAll("-", "").slice(0, 10)}`,
 				kind: selected.rendererKind === "mermaid" || selected.rendererKind === "systems" ? "report.diagram.v1" : "report.visual.v1",
-				anchor: `visual-${selected.id.slice(0, 12)}`,
+				anchor: `visual-${selected.id}`,
 				title: selected.title,
 				payload: { visualId: selected.id, visualRevision: selected.currentRevision },
 				sourceRevision: String(selected.currentRevision),
+				sourceDigest: sealForRevision?.receiptDigest ?? undefined,
 				referenceMode: "live",
 				accessState: "available",
 				integrityState: "unresolved"
@@ -235,8 +240,28 @@ export function VisualsPage({ onOpenVisual, onGoToChat, onBack, onCreate }: Prop
 							</div>
 							<div className="reports-inline-form">
 								<select value={reportTarget} onChange={(event) => setReportTarget(event.target.value)} aria-label="Report destination"><option value="new">New report</option>{reports.map((report) => <option key={report.id} value={report.id}>{report.title}</option>)}</select>
-								<button type="button" data-testid="visual-add-to-report" onClick={() => void addSelectedToReport()}>Add to report</button>
+								<button
+									type="button"
+									data-testid="visual-add-to-report"
+									title={formatVisualAdmissionIdentity({
+										visualId: selected.id,
+										revision: selected.currentRevision,
+										receiptDigest: seals.find((seal) => seal.visualId === selected.id && seal.visualRevision === selected.currentRevision)?.receiptDigest,
+										contentDigest: selected.contentDigest
+									})}
+									onClick={() => void addSelectedToReport()}
+								>
+									Add to report
+								</button>
 							</div>
+							<p className="reports-provenance" data-testid="visual-add-to-report-identity">
+								{formatVisualAdmissionIdentity({
+									visualId: selected.id,
+									revision: selected.currentRevision,
+									receiptDigest: seals.find((seal) => seal.visualId === selected.id && seal.visualRevision === selected.currentRevision)?.receiptDigest,
+									contentDigest: selected.contentDigest
+								})}
+							</p>
 							<button
 								type="button"
 								className="ghost-button"

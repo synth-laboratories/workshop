@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import type { ArtifactRef, LocalActivityLine, LocalChat } from "../types/landing";
+import { formatVisualAdmissionIdentity, type ArtifactRef, type LocalActivityLine, type LocalChat } from "../types/landing";
 import type { OptimizerRunRecord, RuntimeEvent, Session } from "@synth/runtime-protocol";
 import { FileTypeIcon, shortenPath } from "./FileTypeIcon";
 import { ContainerIcon } from "./ContainerPane";
@@ -118,8 +118,14 @@ export function OutputsPanel({
 		))}</section> : null}
 		{visuals.length > 0 ? <section className="visuals-rail" data-testid="visuals-rail"><h3>Visuals</h3>{visuals.map((artifact) => {
 			const active = openArtifactId === artifact.id;
+			const identity = formatVisualAdmissionIdentity({
+				visualId: artifact.visualId ?? artifact.id,
+				revision: artifact.revision,
+				receiptDigest: artifact.receiptDigest,
+				contentDigest: artifact.contentDigest
+			});
 			return <button key={artifact.id} type="button" className={`resource-shelf-row${active ? " active" : ""}`} onClick={() => onOpenArtifact(artifact.id)} title={active ? `Hide ${artifact.title}` : `Show ${artifact.title}`} aria-pressed={active} aria-label={active ? `Hide visual ${artifact.title}` : `Show visual ${artifact.title}`} data-testid={`visuals-icon-${artifact.id}`}>
-				<span className="resource-shelf-icon"><IconVisual /></span><span><strong>{artifact.title}</strong><code>{artifact.templateId ?? artifact.kind}</code></span><span aria-hidden>›</span>
+				<span className="resource-shelf-icon"><IconVisual /></span><span><strong>{artifact.title}</strong><code data-testid={`outputs-visual-identity-${artifact.id}`}>{identity}</code></span><span aria-hidden>›</span>
 			</button>;
 		})}</section> : null}
 	</div>;
@@ -476,9 +482,11 @@ function VisualCard({
 	active: boolean;
 	onToggle: () => void;
 }) {
-	const lifecycle = artifact.status === "review" ? "In review"
-		: artifact.status === "ready" ? "Ready"
-			: artifact.status === "failed" ? "Needs attention" : "Draft";
+	const lifecycle = artifact.status === "live" ? "Live"
+		: artifact.status === "saved" ? "Saved"
+			: artifact.status === "failed" ? "Failed"
+				: artifact.status === "archived" ? "Archived"
+					: "Draft";
 	return (
 		<button
 			type="button"
@@ -499,6 +507,7 @@ function VisualCard({
 				<span className="visual-card-title">{artifact.title}</span>
 				<span className="visual-card-meta">
 					<span className={`visual-card-status status-${artifact.status ?? "draft"}`}>{lifecycle}</span>
+					{artifact.visualId || artifact.id.startsWith("vis_") ? ` · ${formatVisualAdmissionIdentity({ visualId: artifact.visualId ?? artifact.id, revision: artifact.revision, receiptDigest: artifact.receiptDigest, contentDigest: artifact.contentDigest })}` : null}
 					{active ? " · open" : " · click to open"}
 				</span>
 			</span>

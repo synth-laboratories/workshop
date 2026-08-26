@@ -1,9 +1,10 @@
 // @ts-nocheck — P0-1 generated protocol is stricter than prior handwritten DTOs; UI follow-up is out of specta-cutover file ownership.
 import { Component, useEffect, useMemo, useRef, useState, type ComponentType, type ErrorInfo, type MouseEvent, type ReactNode } from "react";
-import type { ArtifactRef } from "../types/landing";
+import { formatVisualAdmissionIdentity, type ArtifactRef } from "../types/landing";
 import type { VisualRecord } from "@synth/runtime-protocol";
 import {
 	bindTemplateSlots,
+	bindingInputName,
 	consumeInjectedRendererCrash,
 	createReplayClient,
 	isVisualBindings,
@@ -12,7 +13,10 @@ import {
 	replayStreamsFromBindings,
 	resolveTemplate,
 	resolveVisualBindings,
-	selectRenderedProjection
+	selectRenderedProjection,
+	compileSourcedModule,
+	isSourcedTemplate,
+	sourcedInvalidShell
 } from "@synth/visuals";
 import { publicError, toPublicError, type PublicError } from "../runtime/publicError";
 import type { VisualAnnotation, VisualSeal, VisualSealBundle, VisualUpload } from "../bridge";
@@ -49,6 +53,7 @@ export function artifactFromVisualRecord(visual: VisualRecord): ArtifactRef {
 		rendererKind: visual.rendererKind,
 		bindings: visual.bindings,
 		metadata: visual.metadata,
+		status: visual.status,
 		summary: typeof visual.metadata?.summary === "string" ? visual.metadata.summary : undefined,
 		preview: {
 			variant:
@@ -265,6 +270,11 @@ function MockFallback({ artifact }: { artifact: ArtifactRef }) {
 	);
 }
 
+function decodeBase64Utf8(base64: string): string {
+	const bytes = Uint8Array.from(atob(base64), (char) => char.charCodeAt(0));
+	return new TextDecoder().decode(bytes);
+}
+
 function TemplateVisualHost({ artifact }: { artifact: ArtifactRef }) {
 	const [Shell, setShell] = useState<ComponentType<ShellProps> | null>(null);
 	const [failed, setFailed] = useState(false);
@@ -314,11 +324,14 @@ function TemplateVisualHost({ artifact }: { artifact: ArtifactRef }) {
 		if (!isVisualBindings(artifact.bindings) || asyncBindings.length === 0) {
 			return propsFromBindings(artifact.bindings);
 		}
-		const skip = new Set(asyncBindings.map((binding) => `${binding.slot}:${binding.kind}:${binding.source ?? ""}`));
+		const skip = new Set(asyncBindings.map((binding) => `${bindingInputName(binding)}:${binding.kind}:${binding.source ?? ""}`));
 		return propsFromBindings({
 			schemaVersion: "synth.visual-bindings.v1",
-			slots: artifact.bindings.slots.filter((binding) =>
-				!skip.has(`${binding.slot}:${binding.kind}:${binding.source ?? ""}`)
+			inputs: resolvedBindings.slots.filter((binding) =>
+				!skip.has(`${bindingInputName(binding)}:${binding.kind}:${binding.source ?? ""}`)
+			),
+			slots: resolvedBindings.slots.filter((binding) =>
+				!skip.has(`${bindingInputName(binding)}:${binding.kind}:${binding.source ?? ""}`)
 			)
 		});
 	}, [artifact.bindings, asyncBindings]);
@@ -342,9 +355,9 @@ function TemplateVisualHost({ artifact }: { artifact: ArtifactRef }) {
 		}),
 		[artifact.id, artifact.visualId, artifact.revision]
 	);
-	const optimizerRunId = isVisualBindings(artifact.bindings)
-		? artifact.bindings.slots.find(
-			(entry) => entry.slot === "optimizer_run" && entry.kind === "optimizer_run"
+	const optimizerRunId = resolvedBindings.status !== "rejected"
+		? resolvedBindings.slots.find(
+			(entry) => bindingInputName(entry) === "optimizer_run" && entry.kind === "optimizer_run"
 		)?.source
 		: undefined;
 	const templateDigest = typeof artifact.metadata?.templateDigest === "string"
@@ -374,7 +387,7 @@ function TemplateVisualHost({ artifact }: { artifact: ArtifactRef }) {
 			event: "visual.bindings.upgraded",
 			code: DIAGNOSTIC_CODES.visualBindingsUpgraded,
 			message: `Rendered from upgraded legacy bindings on ${resolvedBindings.upgradedSlots.join(", ")}`,
-			details: { templateId: artifact.templateId ?? null, slots: resolvedBindings.upgradedSlots }
+			details: { templateId: artifact.templateId ?? null, inputs: resolvedBindings.upgradedSlots, slots: resolvedBindings.upgradedSlots }
 		});
 	}, [artifact.templateId, resolvedBindings, visualIdentity]);
 
@@ -395,37 +408,60 @@ function TemplateVisualHost({ artifact }: { artifact: ArtifactRef }) {
 			});
 			return;
 		}
-		void loadVisualShell(templateId)
-			.then((Component) => {
+		const load = async () => {
+			if (isSourcedTemplate(templateId)) {
+				const visualId = artifact.visualId ?? artifact.id;
+				let source = "";
+				try {
+					const asset = await bridges.visuals?.content?.(visualId);
+					if (asset?.base64) source = decodeBase64Utf8(asset.base64);
+				} catch (reason) {
+					if (!cancelled) setShell(() => sourcedInvalidShell(publicError(reason)));
+					return;
+				}
+				const compiled = compileSourcedModule(source);
 				if (cancelled) return;
-				if (!Component) {
-					setFailed(true);
-					reportDiagnostic({
-						...visualIdentity,
-						severity: "error",
-						component: "visual-host",
-						event: "visual.shell.unavailable",
-						code: DIAGNOSTIC_CODES.visualTemplateUnavailable,
-						message: `Template ${templateId} resolved no shell component`,
-						details: { templateId },
-					});
-				} else setShell(() => Component);
-			})
-			.catch((reason) => {
-				if (cancelled) return;
+				if (!compiled.ok) {
+					setShell(() => sourcedInvalidShell(compiled.error));
+					return;
+				}
+				setShell(() => compiled.Shell);
+				return;
+			}
+			const Component = await loadVisualShell(templateId);
+			if (cancelled) return;
+			if (!Component) {
 				setFailed(true);
 				reportDiagnostic({
 					...visualIdentity,
 					severity: "error",
 					component: "visual-host",
-					event: "visual.shell.load_failed",
-					code: DIAGNOSTIC_CODES.visualShellLoadFailed,
-					message: publicError(reason),
+					event: "visual.shell.unavailable",
+					code: DIAGNOSTIC_CODES.visualTemplateUnavailable,
+					message: `Template ${templateId} resolved no shell component`,
 					details: { templateId },
 				});
+			} else setShell(() => Component);
+		};
+		void load().catch((reason) => {
+			if (cancelled) return;
+			if (isSourcedTemplate(templateId)) {
+				setShell(() => sourcedInvalidShell(publicError(reason)));
+				return;
+			}
+			setFailed(true);
+			reportDiagnostic({
+				...visualIdentity,
+				severity: "error",
+				component: "visual-host",
+				event: "visual.shell.load_failed",
+				code: DIAGNOSTIC_CODES.visualShellLoadFailed,
+				message: publicError(reason),
+				details: { templateId },
 			});
+		});
 		return () => { cancelled = true; };
-	}, [artifact.templateId, visualIdentity]);
+	}, [artifact.templateId, artifact.visualId, artifact.id, artifact.contentDigest, artifact.revision, visualIdentity]);
 
 	useEffect(() => {
 		let cancelled = false;
@@ -472,7 +508,8 @@ function TemplateVisualHost({ artifact }: { artifact: ArtifactRef }) {
 					receivedSchema: unsupportedBinding.schema ?? null,
 					expectedSchemas: ["synth.trace-projection.rollout-inspector.v1"],
 					templateId: artifact.templateId ?? null,
-					slot: unsupportedBinding.slot ?? null,
+					slot: bindingInputName(unsupportedBinding) ?? null,
+					input: bindingInputName(unsupportedBinding) ?? null,
 					remediation: "Project Trace V5 into the visual's accepted input contract.",
 				},
 			});
@@ -531,7 +568,7 @@ function TemplateVisualHost({ artifact }: { artifact: ArtifactRef }) {
 				const props = Object.fromEntries(
 					Object.values(result.slots)
 						.filter((slot) => slot.kind !== "inline" && slot.kind !== "live_sse" && slot.kind !== "optimizer_run")
-						.map((slot) => [slot.slot, slot.data])
+						.map((slot) => [slot.input ?? slot.slot, slot.data])
 				);
 				setTraceResolution({ status: "ready", props });
 				setLastKnownGoodProps((current) => rememberLastKnownGood(current, props, false));
@@ -757,8 +794,9 @@ function TemplateVisualHost({ artifact }: { artifact: ArtifactRef }) {
 			data-visual-projection-stale={selected.stale ? "true" : undefined}
 			data-visual-subscription={connectionState}
 			data-visual-compute={transportTerminal ? "terminal" : "running"}
-			data-visual-review={artifact.status === "review" || artifact.status === "ready" ? artifact.status : "none"}
-			data-visual-readiness={artifact.status === "ready" ? "ready" : "waiting"}
+			data-visual-status={artifact.status ?? "draft"}
+			data-visual-review={Array.isArray(artifact.metadata?.reviews) && artifact.metadata.reviews.length > 0 ? "review" : "none"}
+			data-visual-readiness={artifact.status === "live" || artifact.status === "saved" ? "ready" : "waiting"}
 			data-visual-pinning={artifact.metadata?.pinned === true ? "pinned" : "unpinned"}
 			data-visual-sealing={artifact.metadata?.sealed === true || artifact.metadata?.seal ? "sealed" : "unsealed"}
 			data-visual-sharing={typeof artifact.metadata?.visibility === "string" ? String(artifact.metadata.visibility) : "private"}
@@ -1160,6 +1198,14 @@ export function VisualPane({ artifact, onClose }: { artifact: ArtifactRef; onClo
 						{revisionSync?.loading ? ` · reconciling${(revisionSync.requestedRevision ?? -1) > (revisionSync.acceptedRevision ?? -1) ? ` rev ${revisionSync.requestedRevision}` : ""}` : ""}
 					</span>
 					<span className="visual-pane-title">{artifact.title}</span>
+					<span className="visual-pane-identity" data-testid="visual-pane-identity">
+						{formatVisualAdmissionIdentity({
+							visualId: visualId ?? artifact.id,
+							revision,
+							receiptDigest: seals.find((seal) => seal.visualRevision === revision)?.receiptDigest ?? artifact.receiptDigest,
+							contentDigest: artifact.contentDigest
+						})}
+					</span>
 				</div>
 				<div className="visual-pane-head-actions">
 					{isSubagents ? null : sealedBundle ? (
