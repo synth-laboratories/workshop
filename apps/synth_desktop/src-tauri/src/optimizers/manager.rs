@@ -625,14 +625,25 @@ impl OptimizerManager {
     }
 
     pub fn advertised_capabilities(&self) -> Value {
-        read_capabilities(&self.home).unwrap_or_else(|| {
+        let mut capabilities = read_capabilities(&self.home).unwrap_or_else(|| {
             json!({
                 "algorithms": [],
                 "controls": [],
                 "replay": false,
                 "cancellation": false
             })
-        })
+        });
+        if let Some(object) = capabilities.as_object_mut() {
+            if let Some(algorithms) = object.remove("algorithms") {
+                object.insert("optimization_algorithms".into(), algorithms);
+            }
+            object.entry("optimization_algorithms").or_insert_with(|| json!([]));
+            object.insert(
+                "execution_capabilities".into(),
+                super::eval_recipes::execution_capability_projection(),
+            );
+        }
+        capabilities
     }
 
     pub fn has_offline_runtime(&self, version: &str) -> bool {
@@ -894,6 +905,12 @@ impl OptimizerManager {
             if !algorithms_valid {
                 bail!("optimizer capability handshake omitted algorithms");
             }
+            let algorithms = object.remove("algorithms").expect("validated algorithms");
+            object.insert("optimization_algorithms".into(), algorithms);
+            object.insert(
+                "execution_capabilities".into(),
+                super::eval_recipes::execution_capability_projection(),
+            );
             for field in ["replay", "cancellation"] {
                 if object.get(field).and_then(Value::as_bool).is_none() {
                     bail!("optimizer capability handshake omitted {field}");

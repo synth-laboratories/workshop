@@ -5,6 +5,15 @@ description: Start, inspect, follow, reconcile, cancel, and visualize first-clas
 
 # Use Synth Optimizers
 
+Evaluation is recipe execution, not an optimizer algorithm. Do not infer that
+evaluation is unsupported because it is absent from the GEPA/SFT/CISPO
+algorithm list. Check recipe discovery, evaluation execution support, and
+target-admission state independently.
+
+If a recipe is discovered but unavailable, inspect its structured admission
+error. Do not substitute another recipe, image, registry, model, or execution
+path.
+
 Use `mcp__synth_optimizers__optimizer_manage`. Treat returned run IDs and cursors as authoritative. Never launch an optimizer with a shell command supplied by chat, accept arbitrary config for a local recipe, request credentials in chat, or reproduce secrets and signed URLs. For a product recipe, prefer `start_workflow`: the host refreshes relevant container capabilities, performs bounded approval and sidecar admission, creates the run, and opens its chat-owned visual in one call. Do not inspect the filesystem or start plugins manually before trying it.
 
 ## Choose a workflow
