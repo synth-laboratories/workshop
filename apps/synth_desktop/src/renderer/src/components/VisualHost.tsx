@@ -322,7 +322,39 @@ function managedRuntimeDocument() {
 	return `<!doctype html><html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src data: 'unsafe-eval'; img-src data:"><script src="${runtime}"></script></head><body><p id="managed-visual-status">Loading managed visual…</p></body></html>`;
 }
 
-function managedHtmlPayload(value: unknown): unknown {
+function promoteRetainedFrames(value: unknown): unknown {
+	if (!value || typeof value !== "object" || Array.isArray(value)) return value;
+	const record = value as Record<string, unknown>;
+	const mediaBySeed = record.mediaBySeed && typeof record.mediaBySeed === "object"
+		? { ...(record.mediaBySeed as Record<string, unknown>) }
+		: {};
+	let changed = false;
+	const project = (candidate: unknown): unknown => {
+		if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) return candidate;
+		const event = candidate as Record<string, unknown>;
+		if (!event.item || typeof event.item !== "object" || Array.isArray(event.item)) return candidate;
+		const item = event.item as Record<string, unknown>;
+		const retained = item.retainedFrame ?? item.retained_frame;
+		if (!retained || typeof retained !== "object" || Array.isArray(retained)) return candidate;
+		const frame = retained as Record<string, unknown>;
+		const seed = Number(frame.seed);
+		const chunks = frame.chunks;
+		if (!Number.isSafeInteger(seed) || !Array.isArray(chunks) || !chunks.every((chunk) => typeof chunk === "string")) return candidate;
+		const dataUrl = chunks.join("");
+		if (!dataUrl.startsWith("data:image/png;base64,")) return candidate;
+		mediaBySeed[String(seed)] = { frame: { data_url: dataUrl } };
+		const { retainedFrame: _camel, retained_frame: _snake, ...rest } = item;
+		changed = true;
+		return { ...event, item: Object.keys(rest).length > 0 ? rest : null };
+	};
+	const events = Array.isArray(record.events) ? record.events.map(project) : record.events;
+	const enrichmentEvents = Array.isArray(record.enrichmentEvents)
+		? record.enrichmentEvents.map(project)
+		: record.enrichmentEvents;
+	return changed ? { ...record, events, enrichmentEvents, mediaBySeed } : value;
+}
+
+export function managedHtmlPayload(value: unknown): unknown {
 	if (value && typeof value === "object") {
 		const record = value as Record<string, unknown>;
 		if (record.type === "synth.visual.update.v1") return record.payload ?? {};
@@ -345,7 +377,7 @@ function managedHtmlPayload(value: unknown): unknown {
 			return managedHtmlPayload(record.frames);
 		}
 	}
-	return value ?? {};
+	return promoteRetainedFrames(value) ?? {};
 }
 
 function ManagedHtmlFrame({ source, payload, title }: { source: string; payload: unknown; title?: string }) {
