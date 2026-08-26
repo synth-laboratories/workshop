@@ -409,6 +409,7 @@ const CHART_TEMPLATE_ID: &str = "analysis.chart.v1";
 
 const VISUAL_OPERATIONS: &[(&str, &str)] = &[
     ("list_templates", "visual_list_templates"),
+    ("import_template", "visual_import_template"),
     ("list", "visual_list"),
     ("get", "visual_get"),
     ("create", "visual_create"),
@@ -451,6 +452,7 @@ fn tools() -> Value {
         "tools": [
             {"name":"visual_manage","description":"Synth visuals. Use author-synth-diagrams; do not call MCP resources. Create/show, review PNGs wide and compact, revise defects, then mark_ready. Mermaid source goes in arguments.content. Data charts: use visual_chart.","inputSchema":{"type":"object","properties":{"operation":{"type":"string","description":"Visual operation."},"arguments":{"type":"object","description":"Operation arguments. capture_review returns a PNG and screenshot_path; review and mark_ready use the current revision.","additionalProperties":true}},"required":["operation","arguments"],"additionalProperties":false}},
             {"name":"visual_list_templates","description":"List Synth visual templates","inputSchema":{"type":"object","properties":{"genre":{"type":"string"}},"additionalProperties":false}},
+            {"name":"visual_import_template","description":"Import one networkless template.json + renderer.html package into this Desktop instance's managed visual registry","inputSchema":{"type":"object","properties":{"source_path":{"type":"string","description":"Absolute package directory containing template.json and renderer.html"}},"required":["source_path"],"additionalProperties":false}},
             {"name":"visual_list","description":"List visuals in the local registry","inputSchema":{"type":"object","properties":{"search":{"type":"string"},"status":{"type":"string"},"session_id":{"type":"string"}},"additionalProperties":false}},
             {"name":"visual_get","description":"Get a visual by id","inputSchema":{"type":"object","properties":{"visual_id":{"type":"string"}},"required":["visual_id"],"additionalProperties":false}},
             {"name":"visual_create","description":"Create a visual from a registered template. sourced.visual.v1 compiles arguments.content (allowlisted TSX) in the pane. Prefer create_with_bind with input+kind+data for experiment.overview.v1, analysis.visual.v1, and compose.visual.v1. compose.visual.v1 binds spec, then stream (eval) or optimizer_run (GEPA/SFT/CISPO optimizer_event.v1). Do not flatten Harbor/Craftax eval traces into optimizer_run. Hosted RLVR is CISPO, not rlvr.*. Unconstrained fetch/EventSource modules fail closed. For ad-hoc data charts prefer visual_chart.","inputSchema":{"type":"object","properties":{"template_id":{"type":"string"},"title":{"type":"string"},"content":{"type":"string"},"props":{"type":"object"},"bindings":{"type":"object"},"input":{"type":"string","description":"Required input name for create_with_bind, e.g. experiment or spec. slot is a one-release alias."},"slot":{"type":"string","description":"COMPAT alias of input"},"kind":{"type":"string","description":"Binding kind. Inline inputs require data."},"data":{"description":"Required when kind is inline"},"source":{"type":"string"},"poll_url":{"type":"string"},"path":{"type":"string"},"schema":{"type":"string"},"visual_config":{"type":"object"},"presentation":{"type":"string","enum":["canvas","pane"]},"session_id":{"type":"string"},"instance_id":{"type":"string"}},"required":["template_id"],"additionalProperties":false}},
@@ -667,6 +669,13 @@ fn call_tool(name: &str, args: &Value) -> Result<Value, String> {
             call_tool(managed_tool_name(operation)?, arguments)
         }
         "visual_list_templates" => request("GET", "/v1/visuals/templates", None),
+        "visual_import_template" => {
+            let source_path = args
+                .get("source_path")
+                .and_then(Value::as_str)
+                .ok_or("source_path required")?;
+            request("POST", "/v1/visuals/templates/import", Some(json!({"sourcePath": source_path})))
+        }
         "visual_list" => request("GET", "/v1/visuals", Some(args.clone())),
         "visual_get" => {
             let id = args

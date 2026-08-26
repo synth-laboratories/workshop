@@ -275,6 +275,45 @@ function decodeBase64Utf8(base64: string): string {
 	return new TextDecoder().decode(bytes);
 }
 
+const MANAGED_HTML_CSP = `<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; img-src data:">`;
+
+function sandboxedHtml(source: string) {
+	return /<head(?:\s[^>]*)?>/i.test(source)
+		? source.replace(/<head(?:\s[^>]*)?>/i, (head) => `${head}${MANAGED_HTML_CSP}`)
+		: `${MANAGED_HTML_CSP}${source}`;
+}
+
+function managedHtmlPayload(value: unknown): unknown {
+	if (value && typeof value === "object") {
+		const record = value as Record<string, unknown>;
+		if (record.type === "synth.visual.update.v1") return record.payload ?? {};
+		if (Array.isArray(record.frames) && record.frames.length > 0) {
+			return managedHtmlPayload(record.frames[record.frames.length - 1]);
+		}
+	}
+	return value ?? {};
+}
+
+function ManagedHtmlFrame({ source, payload, title }: { source: string; payload: unknown; title?: string }) {
+	const frame = useRef<HTMLIFrameElement>(null);
+	const [loaded, setLoaded] = useState(false);
+	useEffect(() => {
+		if (!loaded || !frame.current?.contentWindow) return;
+		// An opaque sandbox has no stable origin; the CSP and the importer are
+		// the security boundary. The renderer receives data only from this host.
+		frame.current.contentWindow.postMessage({ type: "synth.visual.update.v1", payload: managedHtmlPayload(payload) }, "*");
+	}, [loaded, payload]);
+	return <iframe
+		ref={frame}
+		title={title ?? "Managed visual"}
+		data-testid="visual-managed-html"
+		sandbox="allow-scripts"
+		srcDoc={sandboxedHtml(source)}
+		onLoad={() => setLoaded(true)}
+		style={{ border: 0, display: "block", height: "100%", minHeight: 420, width: "100%" }}
+	/>;
+}
+
 function TemplateVisualHost({ artifact }: { artifact: ArtifactRef }) {
 	const [Shell, setShell] = useState<ComponentType<ShellProps> | null>(null);
 	const [failed, setFailed] = useState(false);
@@ -409,6 +448,29 @@ function TemplateVisualHost({ artifact }: { artifact: ArtifactRef }) {
 			return;
 		}
 		const load = async () => {
+			if (artifact.rendererKind === "html") {
+				const visualId = artifact.visualId ?? artifact.id;
+				try {
+					const asset = await bridges.visuals?.content?.(visualId);
+					const source = asset?.base64 ? decodeBase64Utf8(asset.base64) : "";
+					if (!source) throw new Error("Managed renderer source is unavailable");
+					if (!cancelled) setShell(() => (props: ShellProps) => <ManagedHtmlFrame source={source} payload={props.data} title={artifact.title} />);
+				} catch (reason) {
+					if (!cancelled) {
+						setFailed(true);
+						reportDiagnostic({
+							...visualIdentity,
+							severity: "error",
+							component: "visual-host",
+							event: "visual.managed_html.load_failed",
+							code: DIAGNOSTIC_CODES.visualShellLoadFailed,
+							message: publicError(reason),
+							details: { templateId },
+						});
+					}
+				}
+				return;
+			}
 			if (isSourcedTemplate(templateId)) {
 				const visualId = artifact.visualId ?? artifact.id;
 				let source = "";
@@ -824,7 +886,7 @@ function TemplateVisualHost({ artifact }: { artifact: ArtifactRef }) {
 				visualMetadata={artifact.metadata}
 				loadError={optimizerLoadError ?? undefined}
 				{...(optimizerPayload ?? {})}
-				data={optimizerPayload ?? resolvedProps.optimizer_run}
+				data={optimizerPayload ?? resolvedProps.optimizer_run ?? resolvedProps}
 				comparison={comparisonPayload ?? undefined}
 				replay={replayClient}
 				replayMissingTransport={replay.missingTransport}
