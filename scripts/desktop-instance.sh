@@ -853,7 +853,7 @@ exec_isolated_cua_bundle() {
   local sft_train_jsonl="${SYNTH_MLX_SFT_TRAIN_JSONL:-}"
   local sft_eval_jsonl="${SYNTH_MLX_SFT_EVAL_JSONL:-}"
   local optimizer_wheel_file="${SYNTH_OPTIMIZER_WHEEL_FILE:-}"
-  local optimizer_project_root="${SYNTH_OPTIMIZER_PROJECT_ROOT:-}"
+  local mlx_rl_url="${SYNTH_MLX_RL_URL:-}"
   local home_dir="${HOME:?HOME must be set to launch a CUA bundle}"
   local user_name="${USER:-$(id -un)}"
   local logname="${LOGNAME:-$user_name}"
@@ -884,7 +884,7 @@ exec_isolated_cua_bundle() {
     SYNTH_MLX_SFT_TRAIN_JSONL="$sft_train_jsonl" \
     SYNTH_MLX_SFT_EVAL_JSONL="$sft_eval_jsonl" \
     SYNTH_OPTIMIZER_WHEEL_FILE="$optimizer_wheel_file" \
-    SYNTH_OPTIMIZER_PROJECT_ROOT="$optimizer_project_root" \
+    SYNTH_MLX_RL_URL="$mlx_rl_url" \
     "$CUA_EXE"
 }
 
