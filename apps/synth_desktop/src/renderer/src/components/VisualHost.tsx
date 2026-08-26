@@ -276,11 +276,20 @@ function decodeBase64Utf8(base64: string): string {
 }
 
 const MANAGED_HTML_CSP = `<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; img-src data:">`;
+const MANAGED_HTML_ERROR_BRIDGE = `<script>addEventListener('error',function(e){parent.postMessage({type:'synth.visual.managed.error',message:String(e.message||'Managed renderer failed')},'*')});addEventListener('unhandledrejection',function(e){parent.postMessage({type:'synth.visual.managed.error',message:String(e.reason||'Managed renderer rejected')},'*')})</script>`;
 
 function sandboxedHtml(source: string) {
-	return /<head(?:\s[^>]*)?>/i.test(source)
-		? source.replace(/<head(?:\s[^>]*)?>/i, (head) => `${head}${MANAGED_HTML_CSP}`)
-		: `${MANAGED_HTML_CSP}${source}`;
+	const head = `${MANAGED_HTML_CSP}${MANAGED_HTML_ERROR_BRIDGE}`;
+	if (/<head(?:\s[^>]*)?>/i.test(source)) {
+		return source.replace(/<head(?:\s[^>]*)?>/i, (opening) => `${opening}${head}`);
+	}
+	if (/<html(?:\s[^>]*)?>/i.test(source)) {
+		return source.replace(/<html(?:\s[^>]*)?>/i, (opening) => `${opening}<head>${head}</head>`);
+	}
+	// CSP meta elements are honoured only in a document head. Imported packages
+	// often omit document scaffolding, so make it explicit rather than prepending
+	// a meta tag before a style/script fragment and relying on WebKit recovery.
+	return `<!doctype html><html><head>${head}</head><body>${source}</body></html>`;
 }
 
 function managedHtmlPayload(value: unknown): unknown {
@@ -297,12 +306,25 @@ function managedHtmlPayload(value: unknown): unknown {
 function ManagedHtmlFrame({ source, payload, title }: { source: string; payload: unknown; title?: string }) {
 	const frame = useRef<HTMLIFrameElement>(null);
 	const [loaded, setLoaded] = useState(false);
+	const [runtimeError, setRuntimeError] = useState<string | null>(null);
+	useEffect(() => {
+		const onMessage = (event: MessageEvent) => {
+			if (event.source !== frame.current?.contentWindow) return;
+			const data = event.data as { type?: unknown; message?: unknown } | null;
+			if (data?.type === "synth.visual.managed.error") {
+				setRuntimeError(typeof data.message === "string" ? data.message : "Managed renderer failed");
+			}
+		};
+		addEventListener("message", onMessage);
+		return () => removeEventListener("message", onMessage);
+	}, []);
 	useEffect(() => {
 		if (!loaded || !frame.current?.contentWindow) return;
 		// An opaque sandbox has no stable origin; the CSP and the importer are
 		// the security boundary. The renderer receives data only from this host.
 		frame.current.contentWindow.postMessage({ type: "synth.visual.update.v1", payload: managedHtmlPayload(payload) }, "*");
 	}, [loaded, payload]);
+	if (runtimeError) return <p role="alert" data-testid="visual-managed-html-error">Managed visual failed: {runtimeError}</p>;
 	return <iframe
 		ref={frame}
 		title={title ?? "Managed visual"}
