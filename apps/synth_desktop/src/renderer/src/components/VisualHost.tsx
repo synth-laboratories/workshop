@@ -283,7 +283,10 @@ function decodeBase64Utf8(base64: string): string {
 // postMessage after native admission checks.
 const MANAGED_HTML_RUNTIME = String.raw`(() => {
   let initialized = false;
+  let latestPayload = {};
+  const frameChunks = new Map();
   const report = (type, message) => parent.postMessage({ type, message: String(message || "Managed renderer failed") }, "*");
+  const deliver = () => window.postMessage({ type: "synth.visual.update.v1", payload: latestPayload }, "*");
   const renderSource = (source) => {
     const parsed = new DOMParser().parseFromString(source, "text/html");
     if (parsed.querySelector("script[src]")) throw new Error("Managed renderer contains an external script");
@@ -304,13 +307,36 @@ const MANAGED_HTML_RUNTIME = String.raw`(() => {
   addEventListener("message", (event) => {
     const data = event.data || {};
     try {
-      if (data.type !== "synth.visual.managed.load.v1") return;
-      if (!initialized) { renderSource(String(data.source || "")); initialized = true; }
-      // Deliver a real queued MessageEvent. WebKit does not reliably notify the
-      // imported renderer's listener when an opaque sandbox dispatches a
-      // synthetic MessageEvent synchronously during the load handler.
-      window.postMessage({ type: "synth.visual.update.v1", payload: data.payload || {} }, "*");
-      report("synth.visual.managed.ready", "ready");
+      if (data.type === "synth.visual.managed.load.v1") {
+        if (!initialized) { renderSource(String(data.source || "")); initialized = true; }
+        latestPayload = data.payload || {};
+        frameChunks.clear();
+        // Deliver a real queued MessageEvent. WebKit does not reliably notify the
+        // imported renderer's listener when an opaque sandbox dispatches a
+        // synthetic MessageEvent synchronously during the load handler.
+        deliver();
+        report("synth.visual.managed.ready", "ready");
+        return;
+      }
+      if (data.type !== "synth.visual.managed.frame-chunk.v1") return;
+      const seed = String(data.seed || "");
+      const index = Number(data.index);
+      const total = Number(data.total);
+      if (!seed || !Number.isSafeInteger(index) || !Number.isSafeInteger(total) || total < 1 || index < 0 || index >= total || typeof data.chunk !== "string") return;
+      const chunks = frameChunks.get(seed) || new Array(total);
+      if (chunks.length !== total) return;
+      chunks[index] = data.chunk;
+      frameChunks.set(seed, chunks);
+      if (chunks.filter((chunk) => typeof chunk === "string").length !== total) return;
+      latestPayload = {
+        ...latestPayload,
+        mediaBySeed: {
+          ...(latestPayload.mediaBySeed || {}),
+          [seed]: { frame: { data_url: chunks.join("") } }
+        }
+      };
+      frameChunks.delete(seed);
+      deliver();
     } catch (error) {
       report("synth.visual.managed.error", error && error.message ? error.message : error);
     }
@@ -409,11 +435,34 @@ function ManagedHtmlFrame({ source, payload, title }: { source: string; payload:
 		// so a reviewed renderer can bind successfully yet paint nothing. The
 		// sandboxed runtime accepts the immutable source once, executes its inline
 		// script under its narrower CSP, and relays subsequent update frames.
+		const record = admittedPayload && typeof admittedPayload === "object" && !Array.isArray(admittedPayload)
+			? admittedPayload as Record<string, unknown>
+			: {};
+		const mediaBySeed = record.mediaBySeed && typeof record.mediaBySeed === "object"
+			? record.mediaBySeed as Record<string, unknown>
+			: {};
+		const { mediaBySeed: _media, ...basePayload } = record;
 		frame.current.contentWindow.postMessage({
 			type: "synth.visual.managed.load.v1",
 			source,
-			payload: admittedPayload,
+			payload: basePayload,
 		}, "*");
+		for (const [seed, media] of Object.entries(mediaBySeed)) {
+			const dataUrl = media && typeof media === "object" && !Array.isArray(media)
+				? ((media as Record<string, unknown>).frame as Record<string, unknown> | undefined)?.data_url
+				: undefined;
+			if (typeof dataUrl !== "string") continue;
+			const chunks = dataUrl.match(/[\s\S]{1,16384}/g) ?? [];
+			for (const [index, chunk] of chunks.entries()) {
+				frame.current.contentWindow.postMessage({
+					type: "synth.visual.managed.frame-chunk.v1",
+					seed,
+					index,
+					total: chunks.length,
+					chunk,
+				}, "*");
+			}
+		}
 	}, [admittedPayload, loaded, source]);
 	if (runtimeError) return <p role="alert" data-testid="visual-managed-html-error">Managed visual failed: {runtimeError}</p>;
 	return <iframe
