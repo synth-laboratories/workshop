@@ -1008,7 +1008,7 @@ impl OptimizerService {
     ) -> Result<Vec<OptimizerEventEnvelope>> {
         let db = self.db.clone();
         let limit = limit.unwrap_or(500).clamp(1, 2000);
-        db.run(move |conn| {
+        let mut events = db.run(move |conn| {
             let mut stmt = conn.prepare(
                 "SELECT payload_json FROM optimizer_events
                  WHERE optimizer_run_id = ?1 AND sequence_number > ?2
@@ -1024,7 +1024,9 @@ impl OptimizerService {
             }
             Ok(out)
         })
-        .await
+        .await?;
+        super::compact_frame_bodies_for_ipc(&mut events);
+        Ok(events)
     }
 
     pub async fn has_event_id(&self, optimizer_run_id: String, event_id: String) -> Result<bool> {
