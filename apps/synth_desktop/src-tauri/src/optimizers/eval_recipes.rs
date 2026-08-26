@@ -353,8 +353,9 @@ pub fn recipe_catalog() -> Vec<Value> {
 }
 
 fn normalize_builtin_recipe_contract(mut recipe: Value) -> Value {
+    let producer_ready = recipe.get("availability").and_then(Value::as_str) == Some("available");
     mark_unreproducible_target_unavailable(&mut recipe);
-    project_eval_recipe_state(&mut recipe);
+    project_eval_recipe_state(&mut recipe, producer_ready);
     if recipe.get("id").and_then(Value::as_str) != Some(EVAL_CRAFTAX_SMOKE_RECIPE)
         || recipe.pointer("/limits/trials").is_some()
     {
@@ -379,11 +380,13 @@ fn normalize_builtin_recipe_contract(mut recipe: Value) -> Value {
     recipe
 }
 
-fn project_eval_recipe_state(recipe: &mut Value) {
+fn project_eval_recipe_state(recipe: &mut Value, producer_ready: bool) {
     let Some(object) = recipe.as_object_mut() else { return };
     object.insert("executionKind".into(), json!("evaluation"));
     object.insert("recipeDiscovered".into(), json!(true));
     object.insert("executionSupported".into(), json!(true));
+    object.insert("targetPresent".into(), json!(producer_ready));
+    object.insert("targetDigestMatches".into(), json!(producer_ready));
     let available = object.get("availability").and_then(Value::as_str) == Some("available");
     object.insert("targetAdmitted".into(), json!(available));
     if let Some(reason) = object.get("availabilityReason").and_then(Value::as_str) {
