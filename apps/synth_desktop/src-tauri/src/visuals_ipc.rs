@@ -690,7 +690,7 @@ fn resize_review_window(app: &AppHandle, body: &Value) -> Result<Value> {
 /// How long the renderer gets to relayout at the review viewport before the
 /// snapshot. Carried over from the previous capture pipeline, where the helper
 /// slept between resize and `screencapture` for the same reason.
-const REVIEW_CAPTURE_SETTLE: std::time::Duration = std::time::Duration::from_millis(750);
+const REVIEW_CAPTURE_SETTLE: std::time::Duration = std::time::Duration::from_secs(3);
 
 /// The whole snapshot round trip, resize excluded. Bounds the window a wedged
 /// WebKit could hold the resized viewport, and the IPC route with it.
