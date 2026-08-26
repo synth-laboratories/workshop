@@ -80,6 +80,7 @@ struct EvalSpec {
     harness: String,
     policy_config: String,
     policy: serde_json::Map<String, Value>,
+    policy_code: Option<String>,
     provider: String,
     model: String,
     concurrency: usize,
@@ -94,8 +95,17 @@ impl EvalSpec {
         self.requires_credential_advertisement
     }
 
-    fn from_workspace(recipe: &WorkspaceRecipe) -> Self {
-        Self {
+    fn from_workspace(recipe: &WorkspaceRecipe, workspace: &std::path::Path) -> Result<Self> {
+        let policy_code = recipe
+            .policy_source
+            .as_deref()
+            .map(|relative| {
+                let path = workspace_recipe::resolve_workspace_path(workspace, relative)?;
+                std::fs::read_to_string(&path)
+                    .with_context(|| format!("read policy source {}", path.display()))
+            })
+            .transpose()?;
+        Ok(Self {
             recipe_id: recipe.id.clone(),
             family: recipe.family.clone(),
             title: recipe.title.clone(),
@@ -105,6 +115,7 @@ impl EvalSpec {
             harness: recipe.harness.clone(),
             policy_config: recipe.policy_config.clone(),
             policy: recipe.policy.clone(),
+            policy_code,
             provider: recipe.provider.clone(),
             model: recipe.model.clone(),
             concurrency: recipe.concurrency,
@@ -112,7 +123,7 @@ impl EvalSpec {
             heldout: recipe.heldout_seeds.clone(),
             cost_ceiling_usd: recipe.bounds.max_cost_usd,
             requires_credential_advertisement: recipe.requires_credential_advertisement,
-        }
+        })
     }
 
     #[cfg(test)]
@@ -127,6 +138,7 @@ impl EvalSpec {
             harness: "desktop_eval".into(),
             policy_config: "banking77_gpt_4_1_nano".into(),
             policy: serde_json::Map::new(),
+            policy_code: None,
             provider: "openrouter".into(),
             model: "openai/gpt-4.1-nano".into(),
             concurrency: 10,
@@ -149,6 +161,7 @@ impl EvalSpec {
             harness: "chat_completion".into(),
             policy_config: "openai_gpt41_mini".into(),
             policy: serde_json::Map::new(),
+            policy_code: None,
             provider: "openai".into(),
             model: "gpt-4.1-mini-2025-04-14".into(),
             concurrency: 2,
@@ -223,7 +236,7 @@ pub(super) async fn start(
     if recipe.algorithm != workspace_recipe::AlgorithmKind::Eval {
         bail!("recipe `{}` is not an eval recipe", recipe.id);
     }
-    let spec = EvalSpec::from_workspace(&recipe);
+    let spec = EvalSpec::from_workspace(&recipe, &workspace)?;
     let container =
         find_ready_container(service, &spec.family, request.container_id.as_deref()).await?;
     preflight_container_credentials(&container, &spec).await?;
@@ -955,6 +968,19 @@ async fn register_policy_pin(
     // its own while still requiring Workshop to register a scoped proxy route.
     // Only an already-advertised immutable config may skip registration.
     let openai_base = Some(container_openai_proxy_base(run_id, spec)?);
+    if let Some(code) = spec.policy_code.as_deref() {
+        let response = client
+            .put(format!("{base}/policy"))
+            .json(&json!({ "code": code, "harness": spec.harness }))
+            .send()
+            .await
+            .context("PUT /policy")?;
+        if !response.status().is_success() {
+            let status = response.status();
+            let text = response.text().await.unwrap_or_default();
+            bail!("policy source registration failed: {status} {text}");
+        }
+    }
     let Some(body) = spec.policy_config_body(openai_base.as_deref()) else {
         if spec.requires_credential_advertisement() {
             return Err(secrets_proxy_error(
@@ -988,6 +1014,16 @@ async fn register_policy_pin(
             "policy config identity mismatch: wanted {}, got {returned_id:?}",
             spec.policy_config
         );
+    }
+    if spec.policy_code.is_some() {
+        let response = client
+            .post(format!("{base}/policy/restart"))
+            .send()
+            .await
+            .context("POST /policy/restart")?;
+        if !response.status().is_success() {
+            bail!("policy restart failed: {}", response.status());
+        }
     }
     Ok(json!({
         "harness": spec.harness,
