@@ -1,6 +1,6 @@
+use anyhow::Context;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use anyhow::Context;
 use std::{
     collections::BTreeMap,
     fs,
@@ -180,12 +180,18 @@ fn build_template_index(visuals_root: &Path) -> anyhow::Result<BTreeMap<String, 
         entries.sort_by_key(|entry| entry.file_name());
         for entry in entries {
             let path = entry.path();
-            if !path.is_dir() || !path.join("template.json").is_file() || !path.join("renderer.html").is_file() {
+            if !path.is_dir()
+                || !path.join("template.json").is_file()
+                || !path.join("renderer.html").is_file()
+            {
                 continue;
             }
             let mut meta = load_template_meta(&path)?;
             if templates.contains_key(&meta.id) {
-                anyhow::bail!("managed visual template id collides with bundled template: {}", meta.id);
+                anyhow::bail!(
+                    "managed visual template id collides with bundled template: {}",
+                    meta.id
+                );
             }
             meta.path = Some(path.display().to_string());
             meta.renderer_path = Some(path.join("renderer.html").display().to_string());
@@ -221,8 +227,9 @@ pub fn import_managed_template(source_path: &str) -> anyhow::Result<TemplateMeta
     let manifest = source.join("template.json");
     let renderer = source.join("renderer.html");
     for file in [&manifest, &renderer] {
-        let metadata = fs::symlink_metadata(file)
-            .map_err(|_| anyhow::anyhow!("managed template requires template.json and renderer.html"))?;
+        let metadata = fs::symlink_metadata(file).map_err(|_| {
+            anyhow::anyhow!("managed template requires template.json and renderer.html")
+        })?;
         if !metadata.is_file() || metadata.file_type().is_symlink() {
             anyhow::bail!("managed template files must be regular files, not symlinks");
         }
@@ -246,12 +253,71 @@ pub fn import_managed_template(source_path: &str) -> anyhow::Result<TemplateMeta
 fn validate_managed_renderer(bytes: &[u8]) -> anyhow::Result<()> {
     let source = std::str::from_utf8(bytes).context("renderer.html must be UTF-8")?;
     let lower = source.to_ascii_lowercase();
-    for forbidden in ["<script src", "http://", "https://", "fetch(", "xmlhttprequest", "eventsource", "import("] {
+    // Do not reject a URL-shaped string everywhere: compiled Preact embeds the
+    // SVG namespace (`http://www.w3.org/2000/svg`) as a plain string.  Reject
+    // the places that could actually initiate a request instead.  The iframe
+    // CSP is the runtime backstop; this check keeps an unsafe package out of
+    // the managed registry in the first place.
+    for forbidden in [
+        "<script src",
+        "fetch(",
+        "xmlhttprequest",
+        "eventsource",
+        "websocket(",
+        "navigator.sendbeacon",
+        "import(",
+        "url(http",
+        "url(//",
+        "url(\\\"http",
+        "url('http",
+    ] {
         if lower.contains(forbidden) {
             anyhow::bail!("renderer.html is not networkless: forbidden token {forbidden:?}");
         }
     }
+    for attribute in [
+        "src",
+        "href",
+        "action",
+        "formaction",
+        "poster",
+        "data",
+        "srcset",
+    ] {
+        if contains_external_url_attribute(&lower, attribute) {
+            anyhow::bail!(
+                "renderer.html is not networkless: external URL in {attribute} attribute"
+            );
+        }
+    }
     Ok(())
+}
+
+fn contains_external_url_attribute(source: &str, attribute: &str) -> bool {
+    let mut remainder = source;
+    while let Some(offset) = remainder.find(attribute) {
+        let before = &remainder[..offset];
+        let after = &remainder[offset + attribute.len()..];
+        // Attribute names must have a boundary; this excludes e.g. `dataUrl`.
+        let bounded_before = before
+            .chars()
+            .last()
+            .is_none_or(|character| !character.is_ascii_alphanumeric() && character != '-');
+        if bounded_before {
+            let value = after.trim_start();
+            if let Some(value) = value.strip_prefix('=') {
+                let value = value.trim_start().trim_start_matches(['\'', '\"']);
+                if value.starts_with("http://")
+                    || value.starts_with("https://")
+                    || value.starts_with("//")
+                {
+                    return true;
+                }
+            }
+        }
+        remainder = &after[1..];
+    }
+    false
 }
 
 fn discover_template_directories(
