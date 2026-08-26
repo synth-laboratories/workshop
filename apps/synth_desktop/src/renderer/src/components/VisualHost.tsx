@@ -338,6 +338,12 @@ function managedHtmlPayload(value: unknown): unknown {
 		if (Array.isArray(record.frames) && record.frames.length > 0) {
 			return managedHtmlPayload(record.frames[record.frames.length - 1]);
 		}
+		// Managed imports may declare their inline update input as `frames` even
+		// when the persisted value is a single canonical update envelope. Treat
+		// that declared binding envelope the same way as an array replay frame.
+		if (record.frames && typeof record.frames === "object") {
+			return managedHtmlPayload(record.frames);
+		}
 	}
 	return value ?? {};
 }
