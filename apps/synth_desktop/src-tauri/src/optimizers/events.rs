@@ -82,17 +82,24 @@ pub fn compact_frame_bodies_for_ipc(events: &mut [OptimizerEventEnvelope]) {
         }
     }
     for (index, event) in events.iter_mut().enumerate() {
-        let keep = latest.values().find(|(latest_index, _)| *latest_index == index).cloned();
         if let Some(container) = mutable_container_event(event, true) {
             strip_frame_body(container);
         }
         if let Some(container) = mutable_container_event(event, false) {
             strip_frame_body(container);
-            if let Some((_, data_url)) = &keep {
-                if let Some(frame) = container.get_mut("frame").and_then(Value::as_object_mut) {
-                    frame.insert("data_url".into(), Value::String(data_url.clone()));
+        }
+        if let Some((seed, (_, data_url))) = latest.iter().find(|(_, (latest_index, _))| *latest_index == index) {
+            const CHUNK_BYTES: usize = 16 * 1024;
+            let chunks = data_url.as_bytes().chunks(CHUNK_BYTES)
+                .map(|chunk| Value::String(String::from_utf8_lossy(chunk).into_owned()))
+                .collect::<Vec<_>>();
+            event.item = Some(json!({
+                "retainedFrame": {
+                    "seed": seed.parse::<i64>().ok(),
+                    "contentType": "image/png",
+                    "chunks": chunks,
                 }
-            }
+            }));
         }
     }
 }
@@ -546,8 +553,8 @@ mod tests {
         compact_frame_bodies_for_ipc(&mut page);
         assert!(serde_json::to_string(&page[0]).unwrap().contains("width"));
         assert!(!serde_json::to_string(&page[0]).unwrap().contains(prefix));
-        assert!(serde_json::to_string(&page[1]).unwrap().contains(&format!("{prefix}other")));
-        assert!(serde_json::to_string(&page[2]).unwrap().contains(&format!("{prefix}latest")));
-        assert_eq!(serde_json::to_string(&page[2]).unwrap().matches(prefix).count(), 1);
+        assert_eq!(page[1].item.as_ref().unwrap()["retainedFrame"]["chunks"][0], format!("{prefix}other"));
+        assert_eq!(page[2].item.as_ref().unwrap()["retainedFrame"]["chunks"][0], format!("{prefix}latest"));
+        assert!(!serde_json::to_string(&page[2].delta).unwrap().contains(prefix));
     }
 }
