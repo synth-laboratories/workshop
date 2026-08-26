@@ -288,15 +288,8 @@ pub(crate) fn local_pinned_target_policy() -> LocalPinnedTargetPolicy {
     if !cfg!(debug_assertions) {
         return LocalPinnedTargetPolicy { supported: false, enabled: false, source: "build_default" };
     }
-    if let Some(value) = std::env::var_os("SYNTH_EVAL_ALLOW_LOCAL_PINNED_TARGETS") {
-        return LocalPinnedTargetPolicy {
-            supported: true,
-            enabled: value == "1",
-            source: "environment_override",
-        };
-    }
     let path = crate::instance::data_root().join("eval-admission.toml");
-    let enabled = fs::read_to_string(path)
+    let configured = fs::read_to_string(path)
         .ok()
         .and_then(|text| text.parse::<toml::Value>().ok())
         .and_then(|value| {
@@ -306,8 +299,22 @@ pub(crate) fn local_pinned_target_policy() -> LocalPinnedTargetPolicy {
                 .and_then(|value| value.get("enabled"))
                 .and_then(toml::Value::as_bool)
         })
-        .unwrap_or(false);
-    LocalPinnedTargetPolicy { supported: true, enabled, source: if enabled { "instance_config" } else { "build_default" } }
+        ;
+    if let Some(value) = std::env::var_os("SYNTH_EVAL_ALLOW_LOCAL_PINNED_TARGETS") {
+        let enabled = value == "1";
+        if configured != Some(enabled) {
+            return LocalPinnedTargetPolicy {
+                supported: true,
+                enabled,
+                source: "environment_override",
+            };
+        }
+    }
+    LocalPinnedTargetPolicy {
+        supported: true,
+        enabled: configured.unwrap_or(false),
+        source: if configured.is_some() { "instance_config" } else { "build_default" },
+    }
 }
 
 pub(crate) fn execution_capability_projection() -> Value {
