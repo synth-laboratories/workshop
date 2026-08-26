@@ -770,10 +770,14 @@ pub async fn start(
     .context("write eval worker manifest")?;
 
     let run_dir = home.join("runs").join(&run_id);
-    let requires_openai = recipe
+    let paid_provider = recipe
         .get("models")
         .and_then(Value::as_array)
-        .is_some_and(|models| !models.is_empty());
+        .and_then(|models| models.first())
+        .and_then(|model| model.get("route"))
+        .and_then(Value::as_str)
+        .map(|route| if route.contains("openrouter.ai") { "openrouter" } else { "openai" })
+        .map(str::to_string);
     let limits = recipe.get("limits").cloned().unwrap_or_else(|| json!({}));
     let candidates = candidate_set
         .get("candidates")
@@ -889,7 +893,7 @@ pub async fn start(
             python,
             manifest_path,
             run_dir,
-            requires_openai,
+            paid_provider,
             worker_recipe_id,
             worker_recipe,
             worker_candidate_count,
@@ -910,7 +914,7 @@ async fn run_worker(
     python: PathBuf,
     manifest_path: PathBuf,
     run_dir: PathBuf,
-    requires_openai: bool,
+    paid_provider: Option<String>,
     recipe_id: String,
     recipe: Value,
     candidate_count: u64,
@@ -935,7 +939,7 @@ async fn run_worker(
         // can truthfully report Docker ready and the worker can still fail
         // immediately with `docker is not on PATH`.
         .env("PATH", eval_cli_path(std::env::var_os("PATH").as_deref())?);
-    if requires_openai {
+    if let Some(provider) = paid_provider.as_deref() {
         let secrets = crate::secrets::live().ok_or_else(|| {
             secrets_proxy_error(
                 "secrets_proxy_unavailable",
@@ -944,7 +948,7 @@ async fn run_worker(
         })?;
         let policy = policy_from_eval_recipe(&recipe, candidate_count)?;
         let env = secrets
-            .workload_env("openai", &run_id, &recipe_id, policy, "eval")
+            .workload_env(provider, &run_id, &recipe_id, policy, "eval")
             .map_err(|error| secrets_proxy_error("secrets_proxy_denied", &error.to_string()))?;
         let routes = env.provider_routes().map_err(|error| {
             secrets_proxy_error("secrets_proxy_route_unbound", &error.to_string())
