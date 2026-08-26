@@ -18,7 +18,7 @@ use tokio::time::sleep;
 use uuid::Uuid;
 
 const MLX_DEFAULT_URL: &str = "http://127.0.0.1:8787";
-const TRAINING_MODEL_ID: &str = "Qwen/Qwen3.5-2B";
+pub(super) const TRAINING_MODEL_ID: &str = "Qwen/Qwen3.5-2B";
 // First launch loads the managed Qwen weights before FastAPI finishes startup.
 // Keep the probe bounded, but allow realistic Apple Silicon cold-start time.
 const HEALTH_TRIES: u32 = 480;

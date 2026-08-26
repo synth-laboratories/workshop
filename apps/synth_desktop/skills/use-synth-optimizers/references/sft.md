@@ -4,16 +4,16 @@ Use SFT when the output is a trained adapter/checkpoint rather than a prompt can
 
 Workshop mirrors `optimizer_event_page.v1` and opens `optimizer.sft.live.v1`. Held-out evaluation arrives as `sft.heldout_evaluation.completed`.
 
-## This Mac (MLX · Qwen 0.8B)
+## This Mac (MLX · Qwen 2B)
 
-Recipe: `sft.qwen35-0.8b.mlx.v1`.
+Recipe: `sft.qwen35-2b.mlx.v1`.
 
 Requires the Optimizers plugin/sidecar. Datasets: cookbook `cookbooks/optimizers/sft/qwen35_mlx/{train,eval}.jsonl` or explicit `SYNTH_MLX_SFT_TRAIN_JSONL` / `SYNTH_MLX_SFT_EVAL_JSONL`. Missing real datasets fail closed. Apple Silicon. The sidecar starts and probes `synth-mlx-rl`; do not tell a shell to dial `:8787`. No hosted provider charges.
 
 After explicit user instruction:
 
 ```json
-{"operation":"start_workflow","arguments":{"recipe_id":"sft.qwen35-0.8b.mlx.v1","open_visual":true}}
+{"operation":"start_workflow","arguments":{"recipe_id":"sft.qwen35-2b.mlx.v1","open_visual":true}}
 ```
 
 Follow training metrics, `sft.checkpoint.ready`, and the paired `sft.heldout_evaluation.completed` receipt. Resume uses `resume_run`. Chat Completions and Responses against a catalog LoRA use `optimizer_manage` `infer_checkpoint` (`family=chat_completions|responses`) after `list_checkpoints`. Never wrap a `{message, reply}` helper and never name mlx-rl.

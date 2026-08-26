@@ -827,6 +827,7 @@ pub struct OptimizerRecipeRunRequest {
     /// Trusted recipe subset selection. The optimizer worker validates that
     /// every candidate, seed, model, and effort only narrows the recipe.
     #[serde(default)]
+    #[specta(type = specta_typescript::Unknown)]
     pub plan_override: Option<Value>,
     /// Optional GEPA search overrides. Omitted fields keep the recipe defaults.
     /// `proposalsPerGeneration` is capped at 10; `policyConcurrency` at 120.

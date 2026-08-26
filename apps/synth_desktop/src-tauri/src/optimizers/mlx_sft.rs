@@ -115,7 +115,7 @@ pub async fn start(
     let create = training_create_request(
         &run_id,
         "sft",
-        "qwen35-0.8b-mlx-lora-v1",
+        "qwen35-2b-mlx-lora-v1",
         "Local Qwen 3.5 2B LoRA SFT on Apple Silicon MLX",
         "local",
         QWEN_MLX_SFT_RECIPE,

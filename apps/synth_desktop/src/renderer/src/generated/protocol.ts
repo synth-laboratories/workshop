@@ -78,6 +78,9 @@ export const commands = {
 	optimizersCreate: (request: OptimizerCreateRequest) => typedError<OptimizerRunRecord, AppError>(__TAURI_INVOKE("optimizers_create", { request })),
 	optimizersRefresh: (optimizerRunId: string) => typedError<OptimizerRunRecord, AppError>(__TAURI_INVOKE("optimizers_refresh", { optimizerRunId })),
 	optimizersEventsAfter: (optimizerRunId: string, afterSeq: number | null, limit: number | null) => typedError<OptimizerEventEnvelope[], AppError>(__TAURI_INVOKE("optimizers_events_after", { optimizerRunId, afterSeq, limit })),
+	optimizersFramesLatest: (optimizerRunId: string, afterFrameSequence: number | null) => typedError<OptimizerFrameDelta, AppError>(__TAURI_INVOKE("optimizers_frames_latest", { optimizerRunId, afterFrameSequence })),
+	optimizersFramesList: (optimizerRunId: string, seed: number, beforeFrameSequence: number | null, limit: number | null) => typedError<OptimizerFrameRef[], AppError>(__TAURI_INVOKE("optimizers_frames_list", { optimizerRunId, seed, beforeFrameSequence, limit })),
+	optimizersFrameContent: (optimizerRunId: string, seed: number, frameSequence: number) => typedError<OptimizerFrameContent, AppError>(__TAURI_INVOKE("optimizers_frame_content", { optimizerRunId, seed, frameSequence })),
 	optimizersGetState: (optimizerRunId: string, sliceId: string, atSeq: number | null) => typedError<OptimizerStateSlice, AppError>(__TAURI_INVOKE("optimizers_get_state", { optimizerRunId, sliceId, atSeq })),
 	optimizersGetStateBatch: (optimizerRunId: string, slices: string[] | null, atSeq: number | null) => typedError<OptimizerStateSlice[], AppError>(__TAURI_INVOKE("optimizers_get_state_batch", { optimizerRunId, slices, atSeq })),
 	optimizersRelationships: (optimizerRunId: string) => typedError<OptimizerRelationship[], AppError>(__TAURI_INVOKE("optimizers_relationships", { optimizerRunId })),
@@ -1715,6 +1718,37 @@ export type OptimizerExecutionBinding = {
 	metadata?: unknown,
 };
 
+export type OptimizerFrameContent = {
+	frame: OptimizerFrameRef,
+	/**
+	 *  Raw base64 without a data-URL prefix. The renderer adds the catalog's
+	 *  admitted content type and chunks it across the sandbox boundary.
+	 */
+	base64: string,
+};
+
+export type OptimizerFrameDelta = {
+	schemaVersion: string,
+	optimizerRunId: string,
+	afterFrameSequence: number,
+	frameCursor: number,
+	observedFrames: number,
+	coalescedFrames: number,
+	frames: OptimizerFrameRef[],
+};
+
+export type OptimizerFrameRef = {
+	schemaVersion: string,
+	optimizerRunId: string,
+	seed: number,
+	frameSequence: number,
+	eventId: string,
+	contentDigest: string,
+	contentType: string,
+	sizeBytes: number,
+	occurredAt: string,
+};
+
 export type OptimizerImportLocalRequest = {
 	path: string,
 	sessionRef?: string | null,
@@ -1768,6 +1802,11 @@ export type OptimizerRecipeRunRequest = {
 	 *  on the Eval receipt. Mutually exclusive with `candidate_set_id`.
 	 */
 	trainingArtifactId?: string | null,
+	/**
+	 *  Trusted recipe subset selection. The optimizer worker validates that
+	 *  every candidate, seed, model, and effort only narrows the recipe.
+	 */
+	planOverride?: unknown,
 	/**
 	 *  Optional GEPA search overrides. Omitted fields keep the recipe defaults.
 	 *  `proposalsPerGeneration` is capped at 10; `policyConcurrency` at 120.
@@ -2643,6 +2682,13 @@ export type TemplateMeta = {
 	description?: string | null,
 	path?: string | null,
 	shellPath?: string | null,
+	/**
+	 *  `renderer.html` packages are imported into the instance-local managed
+	 *  registry. They are rendered in a sandbox rather than Vite's static TSX
+	 *  graph, so the renderer source remains immutable after import.
+	 */
+	rendererPath?: string | null,
+	sourceKind?: string | null,
 	exampleBinding?: unknown,
 	inputs?: unknown,
 	slots?: unknown,

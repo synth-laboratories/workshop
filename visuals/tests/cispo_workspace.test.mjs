@@ -56,7 +56,7 @@ function cispoEvents() {
       item: {
         kind: "model",
         id: "cispo-ckpt-1",
-        raw: { baseModel: "Qwen/Qwen3.5-0.8B", checkpointId: "cispo-ckpt-1", parentArtifactId: "sft-adapter-7" }
+        raw: { baseModel: "Qwen/Qwen3.5-2B", checkpointId: "cispo-ckpt-1", parentArtifactId: "sft-adapter-7" }
       }
     }
   ];

@@ -208,7 +208,7 @@ pub fn stage_training_artifact(
     if !staging.join("policy.json").is_file() {
         let digest = format!(
             "sha256:{:x}",
-            Sha256::digest(b"synth.workshop.v07.qwen35-0.8b.thinking-off")
+            Sha256::digest(b"synth.workshop.v08.qwen35-2b.thinking-off")
         );
         let policy = json!({
             "schema_version": "eval.mlx-lora-policy.v1",

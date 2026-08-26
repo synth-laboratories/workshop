@@ -388,7 +388,9 @@ export function resolveVisualBindings(value: unknown): ResolvedVisualBindings {
   // A legacy inline prop bag. Its values are data, not transports.
   return {
     status: "upgraded",
-    slots: entries.map(([name, data]) => stampBindingInput({ kind: "inline" as const, data }, name)),
+    slots: entries.map(([name, data]) =>
+      stampBindingInput({ kind: "inline", data } as VisualBinding, name)
+    ),
     error: null,
     upgradedSlots: entries.map(([slot]) => slot)
   };

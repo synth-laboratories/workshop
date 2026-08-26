@@ -29,9 +29,9 @@ type Run = {
 	evaluations: Evaluation[];
 };
 
-const MODEL_ID = "Qwen/Qwen3.5-0.8B";
-const MODEL_TITLE = "Qwen 3.5 0.8B";
-const MODEL_REVISION = "2fc06364715b967f1860aea9cf38778875588b17";
+const MODEL_ID = "Qwen/Qwen3.5-2B";
+const MODEL_TITLE = "Qwen 3.5 2B";
+const MODEL_REVISION = "15852e8c16360a2fea060d615a32b45270f8a8fc";
 
 function bytes(value?: number | null): string { return value == null ? "—" : value >= 1024 ** 3 ? `${(value / 1024 ** 3).toFixed(2)} GB` : `${(value / 1024 ** 2).toFixed(1)} MB`; }
 function message(error: unknown): string { return publicError(error); }
@@ -82,7 +82,7 @@ export function TrainingWorkspace({ onStartAgent }: { onStartAgent?: () => void 
 			return;
 		}
 		setRun({ id: "starting", status: "starting", connection: "live", algorithm, evaluations: [] }); setView("run");
-		try { if (!bridges.optimizers) throw new Error("Local optimizer runtime is unavailable"); const recipeId = placement === "mlx" ? algorithm === "cispo" ? "cispo.mlx.v1" : "sft.qwen35-0.8b.mlx.v1" : algorithm === "cispo" ? "cispo.slime.hosted.v1" : "sft.banking77.nemotron-lightning.tinker.v1"; if (algorithm === "cispo" && !parentArtifact) throw new Error("CISPO requires an explicit SFT parent training artifact id"); const record = await bridges.optimizers.startRecipe({ recipeId, containerId: targetId, openVisual: false, ...(algorithm === "cispo" ? { trainingArtifactId: parentArtifact!.id } : {}) }); setRun({ id: record.id, status: record.status, connection: "live", algorithm, evaluations: [] }); } catch (reason) { setRun({ id: "failed-to-start", status: "unstarted", connection: "reconnecting", algorithm, evaluations: [], error: message(reason) }); }
+		try { if (!bridges.optimizers) throw new Error("Local optimizer runtime is unavailable"); const recipeId = placement === "mlx" ? algorithm === "cispo" ? "cispo.mlx.v1" : "sft.qwen35-2b.mlx.v1" : algorithm === "cispo" ? "cispo.slime.hosted.v1" : "sft.banking77.nemotron-lightning.tinker.v1"; if (algorithm === "cispo" && !parentArtifact) throw new Error("CISPO requires an explicit SFT parent training artifact id"); const record = await bridges.optimizers.startRecipe({ recipeId, containerId: targetId, openVisual: false, ...(algorithm === "cispo" ? { trainingArtifactId: parentArtifact!.id } : {}) }); setRun({ id: record.id, status: record.status, connection: "live", algorithm, evaluations: [] }); } catch (reason) { setRun({ id: "failed-to-start", status: "unstarted", connection: "reconnecting", algorithm, evaluations: [], error: message(reason) }); }
 	};
 	const target = targets.find((item) => item.id === targetId) ?? null;
 

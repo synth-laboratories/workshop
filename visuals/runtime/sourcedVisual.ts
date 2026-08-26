@@ -78,13 +78,13 @@ export function sourcedInvalidShell(error: string): ComponentType<ShellProps> {
       {
         kicker: "Sourced",
         title: typeof props.title === "string" ? props.title : "Custom visual",
-        testId: "visual-sourced"
-      },
-      createElement(
-        "p",
-        { role: "alert", "data-testid": "visual-sourced-invalid" },
-        error
-      )
+        testId: "visual-sourced",
+        children: createElement(
+          "p",
+          { role: "alert", "data-testid": "visual-sourced-invalid" },
+          error
+        )
+      }
     );
   };
 }

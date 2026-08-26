@@ -285,7 +285,6 @@ const MANAGED_HTML_RUNTIME = String.raw`(() => {
   let initialized = false;
   let latestPayload = {};
   const frameChunks = new Map();
-  let expectedFrameSeeds = new Set();
   const report = (type, message) => parent.postMessage({ type, message: String(message || "Managed renderer failed") }, "*");
   const deliver = () => window.postMessage({ type: "synth.visual.update.v1", payload: latestPayload }, "*");
   const renderSource = (source) => {
@@ -311,35 +310,39 @@ const MANAGED_HTML_RUNTIME = String.raw`(() => {
       if (data.type === "synth.visual.managed.load.v1") {
         if (!initialized) { renderSource(String(data.source || "")); initialized = true; }
         latestPayload = data.payload || {};
-        frameChunks.clear();
-        expectedFrameSeeds = new Set(Array.isArray(data.frameSeeds) ? data.frameSeeds.map(String) : []);
-        // Deliver a real queued MessageEvent. WebKit does not reliably notify the
-        // imported renderer's listener when an opaque sandbox dispatches a
-        // synthetic MessageEvent synchronously during the load handler.
-        if (expectedFrameSeeds.size === 0) deliver();
+        // The telemetry lane can update independently of media. Never wait for
+        // a frame body before delivering run progress.
+        deliver();
         report("synth.visual.managed.ready", "ready");
+        return;
+      }
+      if (data.type === "synth.visual.managed.frame-history.v1") {
+        window.postMessage({
+          type: "synth.visual.frame-history.v1",
+          payload: { seed: data.seed, frames: Array.isArray(data.frames) ? data.frames : [] }
+        }, "*");
         return;
       }
       if (data.type !== "synth.visual.managed.frame-chunk.v1") return;
       const seed = String(data.seed || "");
+      const frameSequence = Number(data.frameSequence);
       const index = Number(data.index);
       const total = Number(data.total);
-      if (!seed || !Number.isSafeInteger(index) || !Number.isSafeInteger(total) || total < 1 || index < 0 || index >= total || typeof data.chunk !== "string") return;
-      const chunks = frameChunks.get(seed) || new Array(total);
+      if (!seed || !Number.isSafeInteger(frameSequence) || !Number.isSafeInteger(index) || !Number.isSafeInteger(total) || total < 1 || index < 0 || index >= total || typeof data.chunk !== "string") return;
+      const key = seed + ":" + frameSequence;
+      const chunks = frameChunks.get(key) || new Array(total);
       if (chunks.length !== total) return;
       chunks[index] = data.chunk;
-      frameChunks.set(seed, chunks);
+      frameChunks.set(key, chunks);
       if (chunks.filter((chunk) => typeof chunk === "string").length !== total) return;
-      latestPayload = {
-        ...latestPayload,
-        mediaBySeed: {
-          ...(latestPayload.mediaBySeed || {}),
-          [seed]: { frame: { data_url: chunks.join("") } }
-        }
-      };
-      frameChunks.delete(seed);
-      expectedFrameSeeds.delete(seed);
-      if (expectedFrameSeeds.size === 0) deliver();
+      const dataUrl = "data:" + String(data.contentType || "image/png") + ";base64," + chunks.join("");
+      frameChunks.delete(key);
+      // Media has its own delta lane. Reposting latestPayload here would clone
+      // all ten base64 thumbnails for every single changed seed.
+      window.postMessage({
+        type: "synth.visual.frame-delta.v1",
+        payload: { seed: Number(seed), frameSequence, dataUrl, mode: data.mode || "live", frame: data.frameRef || null }
+      }, "*");
     } catch (error) {
       report("synth.visual.managed.error", error && error.message ? error.message : error);
     }
@@ -349,6 +352,27 @@ const MANAGED_HTML_RUNTIME = String.raw`(() => {
 function managedRuntimeDocument() {
 	const runtime = `data:text/javascript;charset=utf-8,${encodeURIComponent(MANAGED_HTML_RUNTIME)}`;
 	return `<!doctype html><html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src data: 'unsafe-eval'; img-src data:"><script src="${runtime}"></script></head><body><p id="managed-visual-status">Loading managed visual…</p></body></html>`;
+}
+
+function postManagedFrame(
+	target: Window,
+	content: { frame: { seed: number; frameSequence: number; contentType: string }; base64: string },
+	mode: "live" | "history"
+) {
+	const chunks = content.base64.match(/[\s\S]{1,16384}/g) ?? [];
+	for (const [index, chunk] of chunks.entries()) {
+		target.postMessage({
+			type: "synth.visual.managed.frame-chunk.v1",
+			seed: content.frame.seed,
+			frameSequence: content.frame.frameSequence,
+			contentType: content.frame.contentType,
+			mode,
+			frameRef: content.frame,
+			index,
+			total: chunks.length,
+			chunk,
+		}, "*");
+	}
 }
 
 function promoteRetainedFrames(value: unknown): unknown {
@@ -413,13 +437,12 @@ function ManagedHtmlFrame({ source, payload, title }: { source: string; payload:
 	const frame = useRef<HTMLIFrameElement>(null);
 	const [loaded, setLoaded] = useState(false);
 	const [runtimeError, setRuntimeError] = useState<string | null>(null);
+	const [frameStreamError, setFrameStreamError] = useState<string | null>(null);
+	const [nativeFrameCount, setNativeFrameCount] = useState(0);
 	const admittedPayload = useMemo(() => managedHtmlPayload(payload), [payload]);
-	const nativeFrameCount = admittedPayload && typeof admittedPayload === "object"
-		&& !Array.isArray(admittedPayload)
-		&& (admittedPayload as Record<string, unknown>).mediaBySeed
-		&& typeof (admittedPayload as Record<string, unknown>).mediaBySeed === "object"
-		? Object.keys((admittedPayload as Record<string, unknown>).mediaBySeed as Record<string, unknown>).length
-		: 0;
+	const optimizerRunId = admittedPayload && typeof admittedPayload === "object" && !Array.isArray(admittedPayload)
+		? (((admittedPayload as Record<string, unknown>).run as Record<string, unknown> | undefined)?.id as string | undefined)
+		: undefined;
 	useEffect(() => {
 		const onMessage = (event: MessageEvent) => {
 			if (event.source !== frame.current?.contentWindow) return;
@@ -427,10 +450,26 @@ function ManagedHtmlFrame({ source, payload, title }: { source: string; payload:
 			if (data?.type === "synth.visual.managed.error") {
 				setRuntimeError(typeof data.message === "string" ? data.message : "Managed renderer failed");
 			}
+			if (
+				data?.type === "synth.visual.managed.frame-request.v1"
+				&& optimizerRunId
+				&& bridges.optimizers?.frameContent
+			) {
+				const request = data as { seed?: unknown; frameSequence?: unknown };
+				const seed = Number(request.seed);
+				const frameSequence = Number(request.frameSequence);
+				if (!Number.isSafeInteger(seed) || !Number.isSafeInteger(frameSequence)) return;
+				void bridges.optimizers.frameContent(optimizerRunId, seed, frameSequence).then((content) => {
+					if (frame.current?.contentWindow) {
+						postManagedFrame(frame.current.contentWindow, content, "history");
+						setFrameStreamError(null);
+					}
+				}).catch((reason) => setFrameStreamError(publicError(reason, "Historical frame load failed")));
+			}
 		};
 		addEventListener("message", onMessage);
 		return () => removeEventListener("message", onMessage);
-	}, []);
+	}, [optimizerRunId]);
 	useEffect(() => {
 		if (!loaded || !frame.current?.contentWindow) return;
 		// The public runtime is an external, app-bundled script. That matters on
@@ -441,37 +480,74 @@ function ManagedHtmlFrame({ source, payload, title }: { source: string; payload:
 		const record = admittedPayload && typeof admittedPayload === "object" && !Array.isArray(admittedPayload)
 			? admittedPayload as Record<string, unknown>
 			: {};
-		const mediaBySeed = record.mediaBySeed && typeof record.mediaBySeed === "object"
-			? record.mediaBySeed as Record<string, unknown>
-			: {};
 		const { mediaBySeed: _media, ...basePayload } = record;
 		frame.current.contentWindow.postMessage({
 			type: "synth.visual.managed.load.v1",
 			source,
 			payload: basePayload,
-			frameSeeds: Object.keys(mediaBySeed),
 		}, "*");
-		for (const [seed, media] of Object.entries(mediaBySeed)) {
-			const dataUrl = media && typeof media === "object" && !Array.isArray(media)
-				? ((media as Record<string, unknown>).frame as Record<string, unknown> | undefined)?.data_url
-				: undefined;
-			if (typeof dataUrl !== "string") continue;
-			const chunks = dataUrl.match(/[\s\S]{1,16384}/g) ?? [];
-			for (const [index, chunk] of chunks.entries()) {
-				frame.current.contentWindow.postMessage({
-					type: "synth.visual.managed.frame-chunk.v1",
-					seed,
-					index,
-					total: chunks.length,
-					chunk,
-				}, "*");
-			}
-		}
 	}, [admittedPayload, loaded, source]);
+	useEffect(() => {
+		if (!loaded || !optimizerRunId || !bridges.optimizers?.framesLatest || !bridges.optimizers.frameContent) return;
+		let cancelled = false;
+		let frameCursor = 0;
+		let timer: ReturnType<typeof globalThis.setTimeout> | null = null;
+		let polling = false;
+		const latestBySeed = new Map<number, number>();
+		const historyLoaded = new Set<number>();
+		const poll = async () => {
+			if (cancelled || polling) return;
+			polling = true;
+			try {
+				const delta = await bridges.optimizers!.framesLatest(optimizerRunId, frameCursor);
+				const nextCursor = Math.max(frameCursor, delta.frameCursor);
+				// Deliberately sequential: at most one decoded base64 frame is live in
+				// the host while ten rollout thumbnails advance together.
+				for (const next of delta.frames) {
+					if (cancelled) return;
+					if ((latestBySeed.get(next.seed) ?? -1) >= next.frameSequence) continue;
+					const content = await bridges.optimizers!.frameContent(optimizerRunId, next.seed, next.frameSequence);
+					if (cancelled || !frame.current?.contentWindow) return;
+					latestBySeed.set(next.seed, next.frameSequence);
+					postManagedFrame(frame.current.contentWindow, content, "live");
+					if (!historyLoaded.has(next.seed) && bridges.optimizers?.framesList) {
+						historyLoaded.add(next.seed);
+						void bridges.optimizers.framesList(optimizerRunId, next.seed, undefined, 200).then((frames) => {
+							frame.current?.contentWindow?.postMessage({
+								type: "synth.visual.managed.frame-history.v1",
+								seed: next.seed,
+								frames,
+							}, "*");
+						}).catch(() => historyLoaded.delete(next.seed));
+					}
+				}
+				if (!cancelled) {
+					// Commit the durable cursor only after every changed body was posted.
+					// A failed content read then retries the same delta; already-delivered
+					// seeds are skipped by latestBySeed without cloning their PNG again.
+					frameCursor = nextCursor;
+					setNativeFrameCount(latestBySeed.size);
+					setFrameStreamError(null);
+				}
+			} catch (reason) {
+				// Media is an independent, retryable lane. A transient read failure must
+				// never replace the still-valid telemetry visual or reset its state.
+				if (!cancelled) setFrameStreamError(publicError(reason, "Native frame stream failed"));
+			} finally {
+				polling = false;
+				if (!cancelled) timer = globalThis.setTimeout(poll, 750);
+			}
+		};
+		void poll();
+		return () => {
+			cancelled = true;
+			if (timer != null) globalThis.clearTimeout(timer);
+		};
+	}, [loaded, optimizerRunId]);
 	if (runtimeError) return <p role="alert" data-testid="visual-managed-html-error">Managed visual failed: {runtimeError}</p>;
 	return <iframe
 		ref={frame}
-		title={`${title ?? "Managed visual"} · ${nativeFrameCount} native frames`}
+		title={`${title ?? "Managed visual"} · ${nativeFrameCount} native frames${frameStreamError ? " · media retrying" : ""}`}
 		data-testid="visual-managed-html"
 		sandbox="allow-scripts"
 		srcDoc={managedRuntimeDocument()}

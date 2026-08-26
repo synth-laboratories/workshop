@@ -2595,6 +2595,7 @@ mod tests {
             thread_id: "thread-1".into(),
             workspace: "/tmp/workspace".into(),
             model: "openai/gpt-5.6-luna".into(),
+            target_id: None,
             provider_name: "openrouter".into(),
             provider_title: "OpenRouter Responses".into(),
             base_url: "http://127.0.0.1:12345/v1".into(),

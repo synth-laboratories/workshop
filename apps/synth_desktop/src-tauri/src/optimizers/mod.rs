@@ -9,8 +9,9 @@ mod eval_candidates;
 mod eval_recipes;
 pub(crate) mod eval_runtime;
 mod events;
-pub(crate) use events::compact_frame_bodies_for_ipc;
+pub(crate) use events::strip_frame_bodies_for_ipc;
 mod experiment_bind;
+mod frames;
 mod gepa_evidence;
 mod hosted_client;
 mod hosted_gelo;
@@ -26,8 +27,8 @@ mod normalize;
 mod recipes;
 mod results;
 mod service;
-mod sft_recipes;
 mod sft_client;
+mod sft_recipes;
 mod sft_result;
 mod sidecar_training;
 mod terminal;
@@ -39,6 +40,7 @@ pub(crate) mod workspace_recipe;
 
 pub use eval_candidates::EvalStageCandidatesRequest;
 pub(crate) use eval_recipes::{paid_compute_bounds, resolve_eval_candidate_set};
+pub use frames::{OptimizerFrameContent, OptimizerFrameDelta, OptimizerFrameRef};
 #[allow(unused_imports)] // public sidecar status/version types for Desktop callers
 pub use manager::{OptimizerManager, OptimizerSidecarStatus, OptimizerSidecarVersion};
 #[allow(unused_imports)] // Nested Specta type is part of HostedTrainingModelCatalog.

@@ -23,28 +23,6 @@ use std::collections::HashMap;
 
 use super::models::{OptimizerEventEnvelope, OPTIMIZER_EVENT_SCHEMA_VERSION};
 
-fn container_event(event: &OptimizerEventEnvelope, raw: bool) -> Option<&Map<String, Value>> {
-    if raw {
-        let object = event.raw.as_object()?;
-        object.get("container_event").or_else(|| object.get("containerEvent"))?.as_object()
-    } else {
-        event.delta.get("containerEvent").or_else(|| event.delta.get("container_event"))?.as_object()
-    }
-}
-
-fn frame_body(event: &OptimizerEventEnvelope) -> Option<(String, String)> {
-    for raw in [false, true] {
-        let Some(container) = container_event(event, raw) else { continue };
-        let Some(seed) = container.get("seed").and_then(Value::as_i64) else { continue };
-        let Some(frame) = container.get("frame").and_then(Value::as_object) else { continue };
-        let Some(data_url) = frame.get("data_url").or_else(|| frame.get("dataUrl")).and_then(Value::as_str) else { continue };
-        if data_url.starts_with("data:image/png;base64,") {
-            return Some((seed.to_string(), data_url.to_string()));
-        }
-    }
-    None
-}
-
 fn strip_frame_body(container: &mut Map<String, Value>) {
     if let Some(frame) = container.get_mut("frame").and_then(Value::as_object_mut) {
         frame.remove("data_url");
@@ -52,7 +30,10 @@ fn strip_frame_body(container: &mut Map<String, Value>) {
     }
 }
 
-fn mutable_container_event(event: &mut OptimizerEventEnvelope, raw: bool) -> Option<&mut Map<String, Value>> {
+fn mutable_container_event(
+    event: &mut OptimizerEventEnvelope,
+    raw: bool,
+) -> Option<&mut Map<String, Value>> {
     if raw {
         let object = event.raw.as_object_mut()?;
         let value = if object.contains_key("container_event") {
@@ -71,35 +52,17 @@ fn mutable_container_event(event: &mut OptimizerEventEnvelope, raw: bool) -> Opt
     }
 }
 
-/// Keep SQLite lossless while bounding the native page sent through WebKit.
-/// Each page carries at most one PNG body per seed; older frames and the
-/// duplicate raw copy retain metadata but not repeated base64 bytes.
-pub fn compact_frame_bodies_for_ipc(events: &mut [OptimizerEventEnvelope]) {
-    let mut latest = HashMap::<String, (usize, String)>::new();
-    for (index, event) in events.iter().enumerate() {
-        if let Some((seed, data_url)) = frame_body(event) {
-            latest.insert(seed, (index, data_url));
-        }
-    }
-    for (index, event) in events.iter_mut().enumerate() {
+/// Event subscriptions carry telemetry only. Native frame bodies have their
+/// own cursor and content APIs; allowing even one base64 PNG per event page to
+/// enter the shared run store makes memory grow with the number of pages and
+/// surfaces. Legacy rows may still contain inline bodies, so strip them here.
+pub fn strip_frame_bodies_for_ipc(events: &mut [OptimizerEventEnvelope]) {
+    for event in events.iter_mut() {
         if let Some(container) = mutable_container_event(event, true) {
             strip_frame_body(container);
         }
         if let Some(container) = mutable_container_event(event, false) {
             strip_frame_body(container);
-        }
-        if let Some((seed, (_, data_url))) = latest.iter().find(|(_, (latest_index, _))| *latest_index == index) {
-            const CHUNK_BYTES: usize = 16 * 1024;
-            let chunks = data_url.as_bytes().chunks(CHUNK_BYTES)
-                .map(|chunk| Value::String(String::from_utf8_lossy(chunk).into_owned()))
-                .collect::<Vec<_>>();
-            event.item = Some(json!({
-                "retainedFrame": {
-                    "seed": seed.parse::<i64>().ok(),
-                    "contentType": "image/png",
-                    "chunks": chunks,
-                }
-            }));
         }
     }
 }
@@ -530,13 +493,16 @@ mod tests {
     }
 
     #[test]
-    fn ipc_page_keeps_only_the_latest_png_per_seed() {
+    fn ipc_page_never_carries_png_bodies() {
         fn framed(seq: u64, seed: i64, body: &str) -> OptimizerEventEnvelope {
             let mut event = envelope(seq, "eval.trial.event", Some(&format!("run_1:{seq}")));
-            event.delta.insert("containerEvent".into(), json!({
-                "event": "rollout.step", "seed": seed,
-                "frame": {"data_url": body, "width": 768}
-            }));
+            event.delta.insert(
+                "containerEvent".into(),
+                json!({
+                    "event": "rollout.step", "seed": seed,
+                    "frame": {"data_url": body, "width": 768}
+                }),
+            );
             event.raw = json!({"container_event": {
                 "event": "rollout.step", "seed": seed,
                 "frame": {"data_url": body, "sha256": format!("sha-{seq}")}
@@ -549,11 +515,11 @@ mod tests {
             framed(2, 91002, &format!("{prefix}other")),
             framed(3, 91001, &format!("{prefix}latest")),
         ];
-        compact_frame_bodies_for_ipc(&mut page);
+        strip_frame_bodies_for_ipc(&mut page);
         assert!(serde_json::to_string(&page[0]).unwrap().contains("width"));
-        assert!(!serde_json::to_string(&page[0]).unwrap().contains(prefix));
-        assert_eq!(page[1].item.as_ref().unwrap()["retainedFrame"]["chunks"][0], format!("{prefix}other"));
-        assert_eq!(page[2].item.as_ref().unwrap()["retainedFrame"]["chunks"][0], format!("{prefix}latest"));
-        assert!(!serde_json::to_string(&page[2].delta).unwrap().contains(prefix));
+        assert!(page
+            .iter()
+            .all(|event| !serde_json::to_string(event).unwrap().contains(prefix)));
+        assert!(page.iter().all(|event| event.item.is_none()));
     }
 }

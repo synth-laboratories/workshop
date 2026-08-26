@@ -815,6 +815,33 @@ export type OptimizerInferDelta = {
 	done: boolean;
 };
 
+export type OptimizerFrameRef = {
+	schemaVersion: "optimizer_frame_ref.v1" | string;
+	optimizerRunId: string;
+	seed: number;
+	frameSequence: number;
+	eventId: string;
+	contentDigest: string;
+	contentType: "image/png" | string;
+	sizeBytes: number;
+	occurredAt: string;
+};
+
+export type OptimizerFrameDelta = {
+	schemaVersion: "optimizer_frame_delta.v1" | string;
+	optimizerRunId: string;
+	afterFrameSequence: number;
+	frameCursor: number;
+	observedFrames: number;
+	coalescedFrames: number;
+	frames: OptimizerFrameRef[];
+};
+
+export type OptimizerFrameContent = {
+	frame: OptimizerFrameRef;
+	base64: string;
+};
+
 export type OptimizersBridge = {
 	listAlgorithms(): Promise<OptimizerAlgorithmInfo[]>;
 	listRecipes(): Promise<OptimizerRecipeInfo[]>;
@@ -866,6 +893,9 @@ export type OptimizersBridge = {
 	}): Promise<OptimizerRunRecord>;
 	refresh(optimizerRunId: string): Promise<OptimizerRunRecord>;
 	eventsAfter(optimizerRunId: string, afterSeq?: number, limit?: number): Promise<unknown[]>;
+	framesLatest(optimizerRunId: string, afterFrameSequence?: number): Promise<OptimizerFrameDelta>;
+	framesList(optimizerRunId: string, seed: number, beforeFrameSequence?: number, limit?: number): Promise<OptimizerFrameRef[]>;
+	frameContent(optimizerRunId: string, seed: number, frameSequence: number): Promise<OptimizerFrameContent>;
 	getState(optimizerRunId: string, sliceId: string, atSeq?: number): Promise<unknown>;
 	getStateBatch(optimizerRunId: string, slices?: string[], atSeq?: number): Promise<unknown[]>;
 	cancel(optimizerRunId: string): Promise<OptimizerRunRecord>;

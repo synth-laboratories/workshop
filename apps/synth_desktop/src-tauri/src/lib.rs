@@ -34,13 +34,13 @@ pub mod error;
 mod eval_driver;
 pub mod experiments;
 mod http;
-pub mod lineage;
 mod instance;
 mod intern_api;
 pub mod ipc;
 mod laguna;
 mod laguna_adapters;
 mod limits;
+pub mod lineage;
 mod model_catalog;
 mod optimizers;
 mod plugins;
@@ -925,7 +925,7 @@ pub(crate) async fn authorize_optimizer_recipe_start(
     // charges. The click itself is the operator's explicit instruction.
     if matches!(
         request.recipe_id.as_str(),
-        "sft.qwen35-0.8b.mlx.v1" | "cispo.mlx.v1" | "eval.fixture.policy-smoke.v1"
+        "sft.qwen35-2b.mlx.v1" | "cispo.mlx.v1" | "eval.fixture.policy-smoke.v1"
     ) {
         let (run, event) = state
             .optimizers()
@@ -1316,6 +1316,59 @@ async fn optimizers_events_after(
             after_seq.map(|value| value.0).unwrap_or(0),
             limit.map(|value| value.0),
         )
+        .await
+        .map_err(AppError::from)
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn optimizers_frames_latest(
+    state: State<'_, Arc<CoreRuntime>>,
+    optimizer_run_id: String,
+    after_frame_sequence: Option<contract::specta::OpaqueInteger<u64>>,
+) -> Result<crate::optimizers::OptimizerFrameDelta, AppError> {
+    state
+        .optimizers()
+        .frames_latest(
+            optimizer_run_id,
+            after_frame_sequence.map(|value| value.0).unwrap_or(0),
+        )
+        .await
+        .map_err(AppError::from)
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn optimizers_frames_list(
+    state: State<'_, Arc<CoreRuntime>>,
+    optimizer_run_id: String,
+    seed: contract::specta::OpaqueInteger<i64>,
+    before_frame_sequence: Option<contract::specta::OpaqueInteger<u64>>,
+    limit: Option<contract::specta::OpaqueInteger<i64>>,
+) -> Result<Vec<crate::optimizers::OptimizerFrameRef>, AppError> {
+    state
+        .optimizers()
+        .frames_list(
+            optimizer_run_id,
+            seed.0,
+            before_frame_sequence.map(|value| value.0),
+            limit.map(|value| value.0),
+        )
+        .await
+        .map_err(AppError::from)
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn optimizers_frame_content(
+    state: State<'_, Arc<CoreRuntime>>,
+    optimizer_run_id: String,
+    seed: contract::specta::OpaqueInteger<i64>,
+    frame_sequence: contract::specta::OpaqueInteger<u64>,
+) -> Result<crate::optimizers::OptimizerFrameContent, AppError> {
+    state
+        .optimizers()
+        .frame_content(optimizer_run_id, seed.0, frame_sequence.0)
         .await
         .map_err(AppError::from)
 }
@@ -3002,8 +3055,15 @@ async fn experiments_attach_evidence(
 
 #[tauri::command]
 #[specta::specta]
-async fn experiments_create(state: State<'_, Arc<CoreRuntime>>, request: ExperimentCreateRequest) -> Result<ExperimentGroup, AppError> {
-    state.data().experiment_create(request).await.map_err(AppError::from)
+async fn experiments_create(
+    state: State<'_, Arc<CoreRuntime>>,
+    request: ExperimentCreateRequest,
+) -> Result<ExperimentGroup, AppError> {
+    state
+        .data()
+        .experiment_create(request)
+        .await
+        .map_err(AppError::from)
 }
 
 #[tauri::command]
@@ -3048,8 +3108,15 @@ async fn experiments_activate(
 
 #[tauri::command]
 #[specta::specta]
-async fn experiments_finalize(state: State<'_, Arc<CoreRuntime>>, request: ExperimentFinalizeRequest) -> Result<ExperimentGroup, AppError> {
-    state.data().experiment_finalize(request).await.map_err(AppError::from)
+async fn experiments_finalize(
+    state: State<'_, Arc<CoreRuntime>>,
+    request: ExperimentFinalizeRequest,
+) -> Result<ExperimentGroup, AppError> {
+    state
+        .data()
+        .experiment_finalize(request)
+        .await
+        .map_err(AppError::from)
 }
 
 #[tauri::command]

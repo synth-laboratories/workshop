@@ -286,7 +286,11 @@ pub(crate) struct LocalPinnedTargetPolicy {
 
 pub(crate) fn local_pinned_target_policy() -> LocalPinnedTargetPolicy {
     if !cfg!(debug_assertions) {
-        return LocalPinnedTargetPolicy { supported: false, enabled: false, source: "build_default" };
+        return LocalPinnedTargetPolicy {
+            supported: false,
+            enabled: false,
+            source: "build_default",
+        };
     }
     let path = crate::instance::data_root().join("eval-admission.toml");
     let configured = fs::read_to_string(path)
@@ -298,8 +302,7 @@ pub(crate) fn local_pinned_target_policy() -> LocalPinnedTargetPolicy {
                 .and_then(|value| value.get("local_pinned_digest"))
                 .and_then(|value| value.get("enabled"))
                 .and_then(toml::Value::as_bool)
-        })
-        ;
+        });
     if let Some(value) = std::env::var_os("SYNTH_EVAL_ALLOW_LOCAL_PINNED_TARGETS") {
         let enabled = value == "1";
         if configured != Some(enabled) {
@@ -313,7 +316,11 @@ pub(crate) fn local_pinned_target_policy() -> LocalPinnedTargetPolicy {
     LocalPinnedTargetPolicy {
         supported: true,
         enabled: configured.unwrap_or(false),
-        source: if configured.is_some() { "instance_config" } else { "build_default" },
+        source: if configured.is_some() {
+            "instance_config"
+        } else {
+            "build_default"
+        },
     }
 }
 
@@ -381,7 +388,9 @@ fn normalize_builtin_recipe_contract(mut recipe: Value) -> Value {
 }
 
 fn project_eval_recipe_state(recipe: &mut Value, producer_ready: bool) {
-    let Some(object) = recipe.as_object_mut() else { return };
+    let Some(object) = recipe.as_object_mut() else {
+        return;
+    };
     object.insert("executionKind".into(), json!("evaluation"));
     object.insert("recipeDiscovered".into(), json!(true));
     object.insert("executionSupported".into(), json!(true));
@@ -416,9 +425,7 @@ fn mark_unreproducible_target_unavailable(recipe: &mut Value) {
 /// Resolve the candidate-set id an eval launch will actually score.
 /// A training artifact is staged first so paid-compute approval sees the same
 /// set the worker will run.
-pub(crate) fn resolve_eval_candidate_set(
-    request: &OptimizerRecipeRunRequest,
-) -> Result<String> {
+pub(crate) fn resolve_eval_candidate_set(request: &OptimizerRecipeRunRequest) -> Result<String> {
     if request.training_artifact_id.is_some() && request.candidate_set_id.is_some() {
         bail!("eval recipes take either training_artifact_id or candidate_set_id, not both");
     }
@@ -440,7 +447,9 @@ pub(crate) fn resolve_eval_candidate_set(
         .candidate_set_id
         .clone()
         .filter(|value| !value.trim().is_empty())
-        .ok_or_else(|| anyhow!("eval recipes require a staged candidate_set_id or a training_artifact_id"))
+        .ok_or_else(|| {
+            anyhow!("eval recipes require a staged candidate_set_id or a training_artifact_id")
+        })
 }
 
 /// Convert the eval runtime's per-trial budget into the total product approval
@@ -575,10 +584,7 @@ pub(crate) fn bind_provider_routes_into_manifest(path: &Path, routes: Value) -> 
     object.insert("credential_mode".into(), json!("workshop_proxy"));
     object.insert(
         "inference_url".into(),
-        routes
-            .get("openai_base")
-            .cloned()
-            .unwrap_or(Value::Null),
+        routes.get("openai_base").cloned().unwrap_or(Value::Null),
     );
     let mut bound_routes = routes.clone();
     if let Some(object) = bound_routes.as_object_mut() {
@@ -652,7 +658,8 @@ fn require_digest_pinned_target_with_policy(
         || image.starts_with("oci-archive:")
         || image.starts_with("docker-archive:")
     {
-        return Err(refuse("registry_target_required",
+        return Err(refuse(
+            "registry_target_required",
             "the eval target resolves to a local checkout; publish the image and pin its digest",
         ));
     }
@@ -685,12 +692,14 @@ fn require_digest_pinned_target_with_policy(
     let inline = image.split_once("@sha256:").map(|(_, hex)| hex);
     let declared = digest.and_then(|digest| digest.strip_prefix("sha256:"));
     let Some(hex) = inline.or(declared) else {
-        return Err(refuse("target_digest_missing",
+        return Err(refuse(
+            "target_digest_missing",
             "the eval target is a mutable tag; publish the image and record its sha256 digest",
         ));
     };
     if hex.len() != 64 || !hex.chars().all(|c| c.is_ascii_hexdigit()) {
-        return Err(refuse("target_digest_mismatch",
+        return Err(refuse(
+            "target_digest_mismatch",
             "the eval target digest is not a sha256 manifest digest",
         ));
     }
@@ -698,7 +707,8 @@ fn require_digest_pinned_target_with_policy(
     // record one identity and execute another.
     if let (Some(inline), Some(declared)) = (inline, declared) {
         if inline != declared {
-            return Err(refuse("target_digest_mismatch",
+            return Err(refuse(
+                "target_digest_mismatch",
                 "the eval target reference and its recorded digest disagree",
             ));
         }
@@ -751,10 +761,9 @@ pub async fn start(
         training_artifact = Some(artifact);
         staged_id
     } else {
-        request
-            .candidate_set_id
-            .clone()
-            .ok_or_else(|| anyhow!("eval recipes require a staged candidate_set_id or a training_artifact_id"))?
+        request.candidate_set_id.clone().ok_or_else(|| {
+            anyhow!("eval recipes require a staged candidate_set_id or a training_artifact_id")
+        })?
     };
     let candidate_set_path = super::eval_candidates::manifest_path(&candidate_set_id)?;
     let candidate_set = super::eval_candidates::load(&candidate_set_id)?;
@@ -841,6 +850,11 @@ pub async fn start(
         "candidateCount": candidates.len(),
         "baselineId": candidate_set.get("baseline_id"),
         "limits": limits,
+        "model": if recipe_id == EVAL_MLX_LOCAL_RECIPE || recipe_id == EVAL_CRAFTAX_MLX_LOCAL_RECIPE {
+            Some(super::mlx_runtime::TRAINING_MODEL_ID)
+        } else {
+            None
+        },
         "image": recipe.get("image"),
         "imageDigest": recipe.get("imageDigest"),
         "targetManifestDigest": recipe.get("targetManifestDigest"),
@@ -879,28 +893,28 @@ pub async fn start(
         }]),
         input_refs: Some({
             let mut refs = vec![
-            OptimizerResourceRef {
-                kind: "candidate_set".into(),
-                id: candidate_set_id.clone(),
-                digest: None,
-                role: Some("candidates".into()),
-                title: Some("Staged policy candidates".into()),
-                metadata: candidate_set.clone(),
-            },
-            OptimizerResourceRef {
-                kind: "recipe".into(),
-                id: recipe_id.clone(),
-                digest: recipe
-                    .get("targetManifestDigest")
-                    .and_then(Value::as_str)
-                    .map(str::to_string),
-                role: Some("configuration".into()),
-                title: recipe
-                    .get("title")
-                    .and_then(Value::as_str)
-                    .map(str::to_string),
-                metadata: recipe.clone(),
-            },
+                OptimizerResourceRef {
+                    kind: "candidate_set".into(),
+                    id: candidate_set_id.clone(),
+                    digest: None,
+                    role: Some("candidates".into()),
+                    title: Some("Staged policy candidates".into()),
+                    metadata: candidate_set.clone(),
+                },
+                OptimizerResourceRef {
+                    kind: "recipe".into(),
+                    id: recipe_id.clone(),
+                    digest: recipe
+                        .get("targetManifestDigest")
+                        .and_then(Value::as_str)
+                        .map(str::to_string),
+                    role: Some("configuration".into()),
+                    title: recipe
+                        .get("title")
+                        .and_then(Value::as_str)
+                        .map(str::to_string),
+                    metadata: recipe.clone(),
+                },
             ];
             if let Some(artifact) = &training_artifact {
                 refs.push(OptimizerResourceRef {

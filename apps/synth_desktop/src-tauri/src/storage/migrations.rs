@@ -43,6 +43,7 @@ const MIGRATIONS: &[&str] = &[
     MIGRATION_38,
     MIGRATION_39,
     MIGRATION_40,
+    MIGRATION_41,
 ];
 
 /// Apply every migration the database has not reached yet.
@@ -1896,6 +1897,40 @@ ALTER TABLE experiment_candidates ADD COLUMN compared_with_json TEXT NOT NULL DE
 ALTER TABLE experiment_candidates ADD COLUMN promoted_to TEXT;
 
 ALTER TABLE experiment_records ADD COLUMN experiment_group_id TEXT REFERENCES experiment_groups(id);
+"#;
+
+/// Native optimizer frames are durable media, not event-state payload. The
+/// event log retains a small immutable reference while the PNG bytes live once
+/// in the content-addressed store. A run/seed sequence index supports both the
+/// live "latest per seed" cursor and bounded, lazy drill-down history.
+const MIGRATION_41: &str = r#"
+CREATE TABLE IF NOT EXISTS optimizer_frames (
+    optimizer_run_id TEXT NOT NULL REFERENCES optimizer_runs(id) ON DELETE CASCADE,
+    seed INTEGER NOT NULL,
+    frame_sequence INTEGER NOT NULL,
+    event_id TEXT NOT NULL,
+    content_digest TEXT NOT NULL,
+    content_type TEXT NOT NULL CHECK (content_type = 'image/png'),
+    size_bytes INTEGER NOT NULL CHECK (size_bytes > 0),
+    occurred_at TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (optimizer_run_id, seed, frame_sequence),
+    UNIQUE (optimizer_run_id, event_id)
+);
+
+CREATE INDEX IF NOT EXISTS optimizer_frames_run_sequence
+ON optimizer_frames(optimizer_run_id, frame_sequence);
+
+CREATE INDEX IF NOT EXISTS optimizer_frames_run_seed_sequence
+ON optimizer_frames(optimizer_run_id, seed, frame_sequence DESC);
+
+CREATE TABLE IF NOT EXISTS optimizer_frame_usage (
+    optimizer_run_id TEXT PRIMARY KEY REFERENCES optimizer_runs(id) ON DELETE CASCADE,
+    retained_frames INTEGER NOT NULL DEFAULT 0,
+    retained_bytes INTEGER NOT NULL DEFAULT 0,
+    rejected_frames INTEGER NOT NULL DEFAULT 0,
+    updated_at TEXT NOT NULL
+);
 "#;
 
 #[cfg(test)]
