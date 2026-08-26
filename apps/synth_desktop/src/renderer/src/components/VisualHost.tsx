@@ -275,31 +275,6 @@ function decodeBase64Utf8(base64: string): string {
 	return new TextDecoder().decode(bytes);
 }
 
-const MANAGED_HTML_CSP = `<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; img-src data:">`;
-const MANAGED_HTML_ERROR_BRIDGE = `<script>addEventListener('error',function(e){parent.postMessage({type:'synth.visual.managed.error',message:String(e.message||'Managed renderer failed')},'*')});addEventListener('unhandledrejection',function(e){parent.postMessage({type:'synth.visual.managed.error',message:String(e.reason||'Managed renderer rejected')},'*')})</script>`;
-
-function sandboxedHtml(source: string) {
-	const head = `${MANAGED_HTML_CSP}${MANAGED_HTML_ERROR_BRIDGE}`;
-	if (/<head(?:\s[^>]*)?>/i.test(source)) {
-		return source.replace(/<head(?:\s[^>]*)?>/i, (opening) => `${opening}${head}`);
-	}
-	if (/<html(?:\s[^>]*)?>/i.test(source)) {
-		return source.replace(/<html(?:\s[^>]*)?>/i, (opening) => `${opening}<head>${head}</head>`);
-	}
-	// CSP meta elements are honoured only in a document head. Imported packages
-	// often omit document scaffolding, so make it explicit rather than prepending
-	// a meta tag before a style/script fragment and relying on WebKit recovery.
-	return `<!doctype html><html><head>${head}</head><body>${source}</body></html>`;
-}
-
-function sandboxedHtmlDataUrl(source: string) {
-	// `srcdoc` inherits the Desktop document's CSP. Its script policy correctly
-	// rejects arbitrary inline code, but that also rejects the reviewed inline
-	// renderer. A data document has its own opaque origin and uses the strict
-	// CSP injected above; the iframe sandbox remains the execution boundary.
-	return `data:text/html;charset=utf-8,${encodeURIComponent(sandboxedHtml(source))}`;
-}
-
 function managedHtmlPayload(value: unknown): unknown {
 	if (value && typeof value === "object") {
 		const record = value as Record<string, unknown>;
@@ -328,17 +303,24 @@ function ManagedHtmlFrame({ source, payload, title }: { source: string; payload:
 	}, []);
 	useEffect(() => {
 		if (!loaded || !frame.current?.contentWindow) return;
-		// An opaque sandbox has no stable origin; the CSP and the importer are
-		// the security boundary. The renderer receives data only from this host.
-		frame.current.contentWindow.postMessage({ type: "synth.visual.update.v1", payload: managedHtmlPayload(payload) }, "*");
-	}, [loaded, payload]);
+		// The public runtime is an external, app-bundled script. That matters on
+		// WebKit: srcdoc and data documents inherit the host's inline-script CSP,
+		// so a reviewed renderer can bind successfully yet paint nothing. The
+		// sandboxed runtime accepts the immutable source once, executes its inline
+		// script under its narrower CSP, and relays subsequent update frames.
+		frame.current.contentWindow.postMessage({
+			type: "synth.visual.managed.load.v1",
+			source,
+			payload: managedHtmlPayload(payload),
+		}, "*");
+	}, [loaded, payload, source]);
 	if (runtimeError) return <p role="alert" data-testid="visual-managed-html-error">Managed visual failed: {runtimeError}</p>;
 	return <iframe
 		ref={frame}
 		title={title ?? "Managed visual"}
 		data-testid="visual-managed-html"
 		sandbox="allow-scripts"
-		src={sandboxedHtmlDataUrl(source)}
+		src="/managed-visual-runtime.html"
 		onLoad={() => setLoaded(true)}
 		style={{ border: 0, display: "block", height: "100%", minHeight: 420, width: "100%" }}
 	/>;
