@@ -23,6 +23,80 @@ use std::collections::HashMap;
 
 use super::models::{OptimizerEventEnvelope, OPTIMIZER_EVENT_SCHEMA_VERSION};
 
+fn container_event(event: &OptimizerEventEnvelope, raw: bool) -> Option<&Map<String, Value>> {
+    if raw {
+        let object = event.raw.as_object()?;
+        object.get("container_event").or_else(|| object.get("containerEvent"))?.as_object()
+    } else {
+        event.delta.get("containerEvent").or_else(|| event.delta.get("container_event"))?.as_object()
+    }
+}
+
+fn frame_body(event: &OptimizerEventEnvelope) -> Option<(String, String)> {
+    for raw in [false, true] {
+        let Some(container) = container_event(event, raw) else { continue };
+        let Some(seed) = container.get("seed").and_then(Value::as_i64) else { continue };
+        let Some(frame) = container.get("frame").and_then(Value::as_object) else { continue };
+        let Some(data_url) = frame.get("data_url").or_else(|| frame.get("dataUrl")).and_then(Value::as_str) else { continue };
+        if data_url.starts_with("data:image/png;base64,") {
+            return Some((seed.to_string(), data_url.to_string()));
+        }
+    }
+    None
+}
+
+fn strip_frame_body(container: &mut Map<String, Value>) {
+    if let Some(frame) = container.get_mut("frame").and_then(Value::as_object_mut) {
+        frame.remove("data_url");
+        frame.remove("dataUrl");
+    }
+}
+
+fn mutable_container_event(event: &mut OptimizerEventEnvelope, raw: bool) -> Option<&mut Map<String, Value>> {
+    if raw {
+        let object = event.raw.as_object_mut()?;
+        let value = if object.contains_key("container_event") {
+            object.get_mut("container_event")
+        } else {
+            object.get_mut("containerEvent")
+        }?;
+        value.as_object_mut()
+    } else {
+        let value = if event.delta.contains_key("containerEvent") {
+            event.delta.get_mut("containerEvent")
+        } else {
+            event.delta.get_mut("container_event")
+        }?;
+        value.as_object_mut()
+    }
+}
+
+/// Keep SQLite lossless while bounding the native page sent through WebKit.
+/// Each page carries at most one PNG body per seed; older frames and the
+/// duplicate raw copy retain metadata but not repeated base64 bytes.
+pub fn compact_frame_bodies_for_ipc(events: &mut [OptimizerEventEnvelope]) {
+    let mut latest = HashMap::<String, (usize, String)>::new();
+    for (index, event) in events.iter().enumerate() {
+        if let Some((seed, data_url)) = frame_body(event) {
+            latest.insert(seed, (index, data_url));
+        }
+    }
+    for (index, event) in events.iter_mut().enumerate() {
+        let keep = latest.values().find(|(latest_index, _)| *latest_index == index).cloned();
+        if let Some(container) = mutable_container_event(event, true) {
+            strip_frame_body(container);
+        }
+        if let Some(container) = mutable_container_event(event, false) {
+            strip_frame_body(container);
+            if let Some((_, data_url)) = &keep {
+                if let Some(frame) = container.get_mut("frame").and_then(Value::as_object_mut) {
+                    frame.insert("data_url".into(), Value::String(data_url.clone()));
+                }
+            }
+        }
+    }
+}
+
 /// Event content, without identity or order.
 ///
 /// Producers build these; the service assigns `sequence_number`, `event_id`, and
@@ -447,5 +521,33 @@ mod tests {
         assert_eq!(sealed.event_id.as_deref(), Some("run_1:terminal"));
         assert_eq!(sealed.sequence_number, 12);
         assert_eq!(sealed.occurred_at, "2026-08-17T21:36:57+00:00");
+    }
+
+    #[test]
+    fn ipc_page_keeps_only_the_latest_png_per_seed() {
+        fn framed(seq: u64, seed: i64, body: &str) -> OptimizerEventEnvelope {
+            let mut event = envelope(seq, "eval.trial.event", Some(&format!("run_1:{seq}")));
+            event.delta.insert("containerEvent".into(), json!({
+                "event": "rollout.step", "seed": seed,
+                "frame": {"data_url": body, "width": 768}
+            }));
+            event.raw = json!({"container_event": {
+                "event": "rollout.step", "seed": seed,
+                "frame": {"data_url": body, "sha256": format!("sha-{seq}")}
+            }});
+            event
+        }
+        let prefix = "data:image/png;base64,";
+        let mut page = vec![
+            framed(1, 91001, &format!("{prefix}old")),
+            framed(2, 91002, &format!("{prefix}other")),
+            framed(3, 91001, &format!("{prefix}latest")),
+        ];
+        compact_frame_bodies_for_ipc(&mut page);
+        assert!(serde_json::to_string(&page[0]).unwrap().contains("width"));
+        assert!(!serde_json::to_string(&page[0]).unwrap().contains(prefix));
+        assert!(serde_json::to_string(&page[1]).unwrap().contains(&format!("{prefix}other")));
+        assert!(serde_json::to_string(&page[2]).unwrap().contains(&format!("{prefix}latest")));
+        assert_eq!(serde_json::to_string(&page[2]).unwrap().matches(prefix).count(), 1);
     }
 }

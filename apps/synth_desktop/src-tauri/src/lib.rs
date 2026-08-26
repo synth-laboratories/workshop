@@ -1309,7 +1309,7 @@ async fn optimizers_events_after(
     after_seq: Option<contract::specta::OpaqueInteger<u64>>,
     limit: Option<contract::specta::OpaqueInteger<i64>>,
 ) -> Result<Vec<OptimizerEventEnvelope>, AppError> {
-    state
+    let mut events = state
         .optimizers()
         .events_after(
             optimizer_run_id,
@@ -1317,7 +1317,9 @@ async fn optimizers_events_after(
             limit.map(|value| value.0),
         )
         .await
-        .map_err(AppError::from)
+        .map_err(AppError::from)?;
+    optimizers::compact_frame_bodies_for_ipc(&mut events);
+    Ok(events)
 }
 
 #[tauri::command]

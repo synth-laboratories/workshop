@@ -9,6 +9,7 @@ mod eval_candidates;
 mod eval_recipes;
 pub(crate) mod eval_runtime;
 mod events;
+pub(crate) use events::compact_frame_bodies_for_ipc;
 mod experiment_bind;
 mod gepa_evidence;
 mod hosted_client;
