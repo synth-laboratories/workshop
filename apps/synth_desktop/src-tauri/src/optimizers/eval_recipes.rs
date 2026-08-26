@@ -102,15 +102,38 @@ fn config_path() -> PathBuf {
         .join("eval.toml")
 }
 
+fn selected_runtime_python() -> Option<PathBuf> {
+    let optimizers_root = crate::instance::data_root().join("optimizers");
+    let selected = fs::read_to_string(optimizers_root.join("selected_version")).ok()?;
+    let selected = selected.trim();
+    if selected.is_empty()
+        || !selected.chars().all(|character| {
+            character.is_ascii_alphanumeric() || matches!(character, '.' | '-' | '_')
+        })
+    {
+        return None;
+    }
+    ["python3", "python"]
+        .into_iter()
+        .map(|executable| {
+            optimizers_root
+                .join("versions")
+                .join(selected)
+                .join("runtime/bin")
+                .join(executable)
+        })
+        .find(|path| path.is_file())
+}
+
 /// The app owns the Optimizers runtime. There is deliberately no ambient
 /// `SYNTH_PYTHON` fallback: an interpreter that happens to be on the operator's
 /// PATH is not the one this feature was packaged against.
 fn resolve_python() -> Result<PathBuf> {
     // Developer/QA builds stage one reviewed Optimizers checkout. Eval and
-    // GEPA must execute that same runtime authority; falling through to the
-    // previously selected installed version makes the catalog and worker
-    // silently disagree (for example, 2 stale Craftax trials instead of the
-    // staged digest-pinned 10-trial contract).
+    // GEPA must execute that same source authority. A packaged CUA snapshot
+    // intentionally excludes `.venv`, so resolve_developer_python may reuse
+    // the immutable selected interpreter; run_cli overlays the staged source
+    // on that interpreter to keep the catalog and worker in agreement.
     if let Some(project) = super::manager::optimizer_project_root()? {
         return resolve_developer_python(&project);
     }
@@ -139,25 +162,8 @@ fn resolve_python() -> Result<PathBuf> {
     // The plugin installer stores immutable versioned runtimes and records
     // the active selection. Eval must consume the same selected runtime as the
     // sidecar instead of looking only at the obsolete unversioned layout.
-    let optimizers_root = crate::instance::data_root().join("optimizers");
-    if let Ok(selected) = fs::read_to_string(optimizers_root.join("selected_version")) {
-        let selected = selected.trim();
-        if !selected.is_empty()
-            && selected.chars().all(|character| {
-                character.is_ascii_alphanumeric() || matches!(character, '.' | '-' | '_')
-            })
-        {
-            for executable in ["python3", "python"] {
-                let path = optimizers_root
-                    .join("versions")
-                    .join(selected)
-                    .join("runtime/bin")
-                    .join(executable);
-                if path.is_file() {
-                    return Ok(path);
-                }
-            }
-        }
+    if let Some(python) = selected_runtime_python() {
+        return Ok(python);
     }
     let owned = crate::instance::data_root()
         .join("runtime")
@@ -176,6 +182,13 @@ fn resolve_python() -> Result<PathBuf> {
 }
 
 fn resolve_developer_python(project: &Path) -> Result<PathBuf> {
+    resolve_developer_python_with_fallback(project, selected_runtime_python())
+}
+
+fn resolve_developer_python_with_fallback(
+    project: &Path,
+    fallback: Option<PathBuf>,
+) -> Result<PathBuf> {
     for candidate in [
         project.join(".venv/bin/python"),
         project.join(".venv/Scripts/python.exe"),
@@ -184,17 +197,21 @@ fn resolve_developer_python(project: &Path) -> Result<PathBuf> {
             return Ok(candidate);
         }
     }
-    bail!(
-        "developer optimizer project {} has no prepared .venv Python; run uv sync before launching Workshop",
-        project.display()
-    )
+    fallback.ok_or_else(|| {
+        anyhow!(
+            "developer optimizer project {} has no prepared .venv Python and no selected installed runtime",
+            project.display()
+        )
+    })
 }
 
 fn run_cli(python: &Path, args: &[&str]) -> Result<Value> {
-    let output = std::process::Command::new(python)
-        .arg("-m")
-        .arg("synth_optimizers.eval")
-        .args(args)
+    let mut command = std::process::Command::new(python);
+    command.arg("-m").arg("synth_optimizers.eval").args(args);
+    if let Some(project) = super::manager::optimizer_project_root()? {
+        command.env("PYTHONPATH", project.join("src"));
+    }
+    let output = command
         // Finder launches do not inherit the operator's shell PATH. Docker is
         // commonly installed by OrbStack in /usr/local/bin or Homebrew in
         // /opt/homebrew/bin; the eval producer must see that supported runtime.
@@ -1772,10 +1789,17 @@ mod tests {
     }
 
     #[test]
-    fn developer_eval_without_prepared_python_fails_closed() {
-        let dir = tempfile::tempdir().unwrap();
-        let error = resolve_developer_python(dir.path()).unwrap_err();
-        assert!(error.to_string().contains("uv sync"));
+    fn staged_eval_without_venv_reuses_selected_runtime_python() {
+        let project = tempfile::tempdir().unwrap();
+        let runtime = tempfile::NamedTempFile::new().unwrap();
+        assert_eq!(
+            resolve_developer_python_with_fallback(
+                project.path(),
+                Some(runtime.path().to_path_buf())
+            )
+            .unwrap(),
+            runtime.path()
+        );
     }
 
     async fn probe_run(svc: &OptimizerService, id: &str) {
