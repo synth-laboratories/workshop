@@ -60,7 +60,6 @@ loop, a fixture, or a similarly named recipe as a replacement.
 | `eval.fixture.policy-smoke.v1` | `python-code.v1` (`policy:Policy`) | promotes; deterministic, no benchmark |
 | `eval.craftax.code-policy.smoke.v1` | `python-code.craftax-choose-actions.v1` | report-only |
 | `eval.gamebench.craftax-code-policy.confirm.v1` | `python-code.craftax-choose-actions.v1` | promotes |
-| `eval.craftax.llm-policy.smoke.v1` | `llm-policy.v1` | report-only |
 | `eval.gamebench.llm-policy.confirm.v1` | `llm-policy.v1` | promotes |
 
 Workspace baseline evals (`algorithm = "eval"` in `workshop.recipe.toml`) are

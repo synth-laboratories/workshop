@@ -79,6 +79,7 @@ struct EvalSpec {
     evaluation_plan_ref: String,
     harness: String,
     policy_config: String,
+    policy: serde_json::Map<String, Value>,
     provider: String,
     model: String,
     concurrency: usize,
@@ -103,6 +104,7 @@ impl EvalSpec {
             evaluation_plan_ref: format!("{}_eval.v1", recipe.family),
             harness: recipe.harness.clone(),
             policy_config: recipe.policy_config.clone(),
+            policy: recipe.policy.clone(),
             provider: recipe.provider.clone(),
             model: recipe.model.clone(),
             concurrency: recipe.concurrency,
@@ -124,6 +126,7 @@ impl EvalSpec {
             evaluation_plan_ref: "banking77_eval.v1".into(),
             harness: "desktop_eval".into(),
             policy_config: "banking77_gpt_4_1_nano".into(),
+            policy: serde_json::Map::new(),
             provider: "openrouter".into(),
             model: "openai/gpt-4.1-nano".into(),
             concurrency: 10,
@@ -145,6 +148,7 @@ impl EvalSpec {
             evaluation_plan_ref: "healthbench_eval.v1".into(),
             harness: "chat_completion".into(),
             policy_config: "openai_gpt41_mini".into(),
+            policy: serde_json::Map::new(),
             provider: "openai".into(),
             model: "gpt-4.1-mini-2025-04-14".into(),
             concurrency: 2,
@@ -174,13 +178,14 @@ impl EvalSpec {
             return None;
         }
         let base_url = openai_base_url?;
-        let config = json!({
-            "provider": self.provider,
-            "model": self.model,
-            "temperature": 0,
-            "base_url": base_url,
-            "api_key_env": "OPENAI_API_KEY",
-        });
+        let mut config = self.policy.clone();
+        config.extend(serde_json::Map::from_iter([
+            ("provider".into(), json!(self.provider)),
+            ("model".into(), json!(self.model)),
+            ("base_url".into(), json!(base_url)),
+            ("api_key_env".into(), json!("OPENAI_API_KEY")),
+        ]));
+        let config = Value::Object(config);
         Some(json!({
             "config_id": self.policy_config,
             "harness": self.harness,

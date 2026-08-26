@@ -68,6 +68,7 @@ pub struct WorkspaceRecipe {
     pub family: String,
     pub harness: String,
     pub policy_config: String,
+    pub policy: serde_json::Map<String, Value>,
     pub train_seeds: Vec<i64>,
     pub heldout_seeds: Vec<i64>,
     pub concurrency: usize,
@@ -110,6 +111,8 @@ struct RecipeFile {
     harness: Option<String>,
     #[serde(default)]
     policy_config: Option<String>,
+    #[serde(default)]
+    policy: toml::value::Table,
     #[serde(default)]
     proposer_model: Option<String>,
     #[serde(default)]
@@ -365,6 +368,23 @@ fn parse_recipe(path: &Path) -> Result<WorkspaceRecipe> {
         .family
         .filter(|value| !value.trim().is_empty())
         .unwrap_or_else(|| parsed.container.clone());
+    const POLICY_KEYS: &[&str] = &[
+        "api", "effort", "temperature", "top_p", "top_k", "max_calls",
+        "max_steps", "context_token_budget", "compact_at", "compact_after_tokens",
+        "max_compactions", "thinking_budget", "answer_max_tokens", "timeout_seconds",
+        "min_request_interval", "sampler_retries", "retry_max_wait", "min_actions",
+        "max_actions",
+    ];
+    for key in parsed.policy.keys() {
+        if !POLICY_KEYS.contains(&key.as_str()) {
+            bail!("recipe `{}` policy.{key} is not an admitted policy option", parsed.id);
+        }
+    }
+    let policy = serde_json::to_value(&parsed.policy)
+        .context("encode workspace policy options")?
+        .as_object()
+        .cloned()
+        .unwrap_or_default();
     Ok(WorkspaceRecipe {
         title: parsed
             .title
@@ -386,6 +406,7 @@ fn parse_recipe(path: &Path) -> Result<WorkspaceRecipe> {
         family,
         harness: parsed.harness.unwrap_or_else(|| "desktop_eval".into()),
         policy_config: parsed.policy_config.unwrap_or_else(|| "default".into()),
+        policy,
         train_seeds: parsed.train_seeds.unwrap_or_else(|| vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9]),
         heldout_seeds: parsed.heldout_seeds.unwrap_or_default(),
         concurrency: parsed.concurrency.unwrap_or(1).max(1),
