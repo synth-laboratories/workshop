@@ -210,7 +210,9 @@ html[data-synth-review-capture] .sidebar,
 html[data-synth-review-capture] .titlebar,
 html[data-synth-review-capture] .terminal-panel,
 html[data-synth-review-capture] .composer-dock,
-html[data-synth-review-capture] .dev-bar {
+html[data-synth-review-capture] .dev-bar,
+html[data-synth-review-capture] .inventory-workbench > .visual-pane,
+html[data-synth-review-capture] .inventory-workbench > .pane-resize-handle {
 	display: none !important;
 }
 
