@@ -751,6 +751,18 @@ async fn wait_for_review_capture_surface(app: &AppHandle, visual_id: &str) -> Re
     }
 }
 
+#[cfg(target_os = "macos")]
+fn reset_review_capture_scroll(app: &AppHandle) -> Result<()> {
+    let window = app
+        .get_webview_window("main")
+        .context("review capture requires the main Desktop window")?;
+    window
+        .eval(
+            "window.scrollTo(0,0);document.scrollingElement?.scrollTo(0,0);document.querySelectorAll('*').forEach((element)=>{element.scrollTop=0;element.scrollLeft=0;});",
+        )
+        .context("reset review capture scroll position")
+}
+
 /// Resize the main window, snapshot its own webview, restore — one call.
 ///
 /// The snapshot is the app photographing its own WKWebView surface, so this
@@ -810,11 +822,14 @@ async fn capture_review_window(app: &AppHandle, body: &Value) -> Result<Value> {
     // early return from this span leaves it that way.
     tokio::time::sleep(REVIEW_CAPTURE_SETTLE).await;
     let snapshot = match wait_for_review_capture_surface(app, visual_id).await {
-        Ok(()) => match app.get_webview_window("main") {
-            Some(window) => crate::visuals::snapshot::capture_webview_png(&window, REVIEW_CAPTURE_TIMEOUT).await,
-            None => Err(anyhow::anyhow!(
-                "review capture requires the main Desktop window"
-            )),
+        Ok(()) => match reset_review_capture_scroll(app) {
+            Ok(()) => match app.get_webview_window("main") {
+                Some(window) => crate::visuals::snapshot::capture_webview_png(&window, REVIEW_CAPTURE_TIMEOUT).await,
+                None => Err(anyhow::anyhow!(
+                    "review capture requires the main Desktop window"
+                )),
+            },
+            Err(error) => Err(error),
         },
         Err(error) => Err(error),
     };
