@@ -275,6 +275,50 @@ function decodeBase64Utf8(base64: string): string {
 	return new TextDecoder().decode(bytes);
 }
 
+// The runtime is loaded as an external `data:` script in an opaque iframe.
+// WebKit correctly treats a sandboxed document as having no `self` origin,
+// which blocks a Tauri-asset script even though the asset is app-bundled. A
+// data script avoids that origin ambiguity without allowing inline scripts in
+// the desktop document. The imported renderer itself still arrives only via
+// postMessage after native admission checks.
+const MANAGED_HTML_RUNTIME = String.raw`(() => {
+  let initialized = false;
+  const report = (type, message) => parent.postMessage({ type, message: String(message || "Managed renderer failed") }, "*");
+  const renderSource = (source) => {
+    const parsed = new DOMParser().parseFromString(source, "text/html");
+    if (parsed.querySelector("script[src]")) throw new Error("Managed renderer contains an external script");
+    document.querySelectorAll("style[data-synth-managed]").forEach((node) => node.remove());
+    for (const style of parsed.querySelectorAll("style")) {
+      const copy = document.createElement("style");
+      copy.dataset.synthManaged = "true";
+      copy.textContent = style.textContent;
+      document.head.append(copy);
+    }
+    document.body.replaceChildren(...[...parsed.body.childNodes].filter((node) => node.nodeName !== "SCRIPT"));
+    const scripts = [...parsed.querySelectorAll("script:not([src])")];
+    if (scripts.length === 0) throw new Error("Managed renderer has no inline runtime");
+    for (const script of scripts) new Function(script.textContent || "")();
+  };
+  addEventListener("error", (event) => report("synth.visual.managed.error", event.message));
+  addEventListener("unhandledrejection", (event) => report("synth.visual.managed.error", event.reason));
+  addEventListener("message", (event) => {
+    const data = event.data || {};
+    try {
+      if (data.type !== "synth.visual.managed.load.v1") return;
+      if (!initialized) { renderSource(String(data.source || "")); initialized = true; }
+      dispatchEvent(new MessageEvent("message", { data: { type: "synth.visual.update.v1", payload: data.payload || {} } }));
+      report("synth.visual.managed.ready", "ready");
+    } catch (error) {
+      report("synth.visual.managed.error", error && error.message ? error.message : error);
+    }
+  });
+})();`;
+
+function managedRuntimeDocument() {
+	const runtime = `data:text/javascript;charset=utf-8,${encodeURIComponent(MANAGED_HTML_RUNTIME)}`;
+	return `<!doctype html><html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src data: 'unsafe-eval'; img-src data:"><script src="${runtime}"></script></head><body><p id="managed-visual-status">Loading managed visual…</p></body></html>`;
+}
+
 function managedHtmlPayload(value: unknown): unknown {
 	if (value && typeof value === "object") {
 		const record = value as Record<string, unknown>;
@@ -320,7 +364,7 @@ function ManagedHtmlFrame({ source, payload, title }: { source: string; payload:
 		title={title ?? "Managed visual"}
 		data-testid="visual-managed-html"
 		sandbox="allow-scripts"
-		src="/managed-visual-runtime.html"
+		srcDoc={managedRuntimeDocument()}
 		onLoad={() => setLoaded(true)}
 		style={{ border: 0, display: "block", height: "100%", minHeight: 420, width: "100%" }}
 	/>;
