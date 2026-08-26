@@ -24,6 +24,7 @@ import { loadVisualShell } from "../runtime/visualsLoader";
 import { bridges } from "../runtime/desktopBridge";
 import { subscribeToRun } from "../runtime/runProgress/subscription";
 import { progressAgreement, projectRunProgress, splitSnapshotEvents } from "../runtime/runProgress/project";
+import { projectManagedOptimizerPayload } from "../runtime/runProgress/managedPayload";
 import type { ProgressAgreement } from "../runtime/runProgress/project";
 import { DIAGNOSTIC_CODES, reportDiagnostic } from "../runtime/diagnostics";
 import { MermaidVisual } from "./MermaidVisual";
@@ -345,7 +346,7 @@ function managedHtmlPayload(value: unknown): unknown {
 			return managedHtmlPayload(record.frames);
 		}
 	}
-	return value ?? {};
+	return projectManagedOptimizerPayload(value ?? {});
 }
 
 function ManagedHtmlFrame({ source, payload, title }: { source: string; payload: unknown; title?: string }) {
