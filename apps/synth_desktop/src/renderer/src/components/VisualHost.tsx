@@ -384,6 +384,13 @@ function ManagedHtmlFrame({ source, payload, title }: { source: string; payload:
 	const frame = useRef<HTMLIFrameElement>(null);
 	const [loaded, setLoaded] = useState(false);
 	const [runtimeError, setRuntimeError] = useState<string | null>(null);
+	const admittedPayload = useMemo(() => managedHtmlPayload(payload), [payload]);
+	const nativeFrameCount = admittedPayload && typeof admittedPayload === "object"
+		&& !Array.isArray(admittedPayload)
+		&& (admittedPayload as Record<string, unknown>).mediaBySeed
+		&& typeof (admittedPayload as Record<string, unknown>).mediaBySeed === "object"
+		? Object.keys((admittedPayload as Record<string, unknown>).mediaBySeed as Record<string, unknown>).length
+		: 0;
 	useEffect(() => {
 		const onMessage = (event: MessageEvent) => {
 			if (event.source !== frame.current?.contentWindow) return;
@@ -405,13 +412,13 @@ function ManagedHtmlFrame({ source, payload, title }: { source: string; payload:
 		frame.current.contentWindow.postMessage({
 			type: "synth.visual.managed.load.v1",
 			source,
-			payload: managedHtmlPayload(payload),
+			payload: admittedPayload,
 		}, "*");
-	}, [loaded, payload, source]);
+	}, [admittedPayload, loaded, source]);
 	if (runtimeError) return <p role="alert" data-testid="visual-managed-html-error">Managed visual failed: {runtimeError}</p>;
 	return <iframe
 		ref={frame}
-		title={title ?? "Managed visual"}
+		title={`${title ?? "Managed visual"} · ${nativeFrameCount} native frames`}
 		data-testid="visual-managed-html"
 		sandbox="allow-scripts"
 		srcDoc={managedRuntimeDocument()}
