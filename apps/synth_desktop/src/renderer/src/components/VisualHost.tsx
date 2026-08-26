@@ -285,6 +285,7 @@ const MANAGED_HTML_RUNTIME = String.raw`(() => {
   let initialized = false;
   let latestPayload = {};
   const frameChunks = new Map();
+  let expectedFrameSeeds = new Set();
   const report = (type, message) => parent.postMessage({ type, message: String(message || "Managed renderer failed") }, "*");
   const deliver = () => window.postMessage({ type: "synth.visual.update.v1", payload: latestPayload }, "*");
   const renderSource = (source) => {
@@ -311,10 +312,11 @@ const MANAGED_HTML_RUNTIME = String.raw`(() => {
         if (!initialized) { renderSource(String(data.source || "")); initialized = true; }
         latestPayload = data.payload || {};
         frameChunks.clear();
+        expectedFrameSeeds = new Set(Array.isArray(data.frameSeeds) ? data.frameSeeds.map(String) : []);
         // Deliver a real queued MessageEvent. WebKit does not reliably notify the
         // imported renderer's listener when an opaque sandbox dispatches a
         // synthetic MessageEvent synchronously during the load handler.
-        deliver();
+        if (expectedFrameSeeds.size === 0) deliver();
         report("synth.visual.managed.ready", "ready");
         return;
       }
@@ -336,7 +338,8 @@ const MANAGED_HTML_RUNTIME = String.raw`(() => {
         }
       };
       frameChunks.delete(seed);
-      deliver();
+      expectedFrameSeeds.delete(seed);
+      if (expectedFrameSeeds.size === 0) deliver();
     } catch (error) {
       report("synth.visual.managed.error", error && error.message ? error.message : error);
     }
@@ -446,6 +449,7 @@ function ManagedHtmlFrame({ source, payload, title }: { source: string; payload:
 			type: "synth.visual.managed.load.v1",
 			source,
 			payload: basePayload,
+			frameSeeds: Object.keys(mediaBySeed),
 		}, "*");
 		for (const [seed, media] of Object.entries(mediaBySeed)) {
 			const dataUrl = media && typeof media === "object" && !Array.isArray(media)
