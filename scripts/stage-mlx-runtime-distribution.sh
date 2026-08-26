@@ -33,6 +33,42 @@ if [[ "$LOCK_SHA256" != "$EXPECTED_LOCK_SHA256" ]]; then
   exit 1
 fi
 
+# A matching wheelhouse is enough for CUA/debug packaging. Rebuilding with
+# `uv build` is Killed:9 on this machine and is not required when every
+# artifact hash already matches the pinned source and lock.
+reuse_existing_wheelhouse() {
+  [[ "${SYNTH_MLX_RL_REBUILD:-0}" == "1" ]] && return 1
+  [[ -f "$TARGET/manifest.json" ]] || return 1
+  /usr/bin/python3 - "$TARGET" "$VERSION" "$EXPECTED_SOURCE_REVISION" "$EXPECTED_LOCK_SHA256" <<'PY'
+import hashlib, json, pathlib, sys
+root = pathlib.Path(sys.argv[1])
+version, expected_rev, expected_lock = sys.argv[2], sys.argv[3], sys.argv[4]
+manifest = json.loads((root / "manifest.json").read_text())
+if manifest.get("schemaVersion") != "synth.mlx-runtime-wheelhouse.v1": raise SystemExit("schema")
+if manifest.get("package") != "synth-mlx-rl": raise SystemExit("package")
+if manifest.get("version") != version: raise SystemExit("version")
+if manifest.get("sourceRevision") != expected_rev: raise SystemExit("revision")
+if manifest.get("lockSha256") != expected_lock: raise SystemExit("lock")
+artifacts = manifest.get("artifacts") or []
+if not artifacts: raise SystemExit("empty")
+wheels, have_package = root / "wheels", False
+for artifact in artifacts:
+    name = artifact.get("fileName") or ""
+    path = wheels / name
+    if not path.is_file(): raise SystemExit(f"missing {name}")
+    if hashlib.sha256(path.read_bytes()).hexdigest() != artifact.get("sha256"):
+        raise SystemExit(f"hash {name}")
+    if name.startswith(f"synth_mlx_rl-{version}-") and name.endswith(".whl"):
+        have_package = True
+if not have_package: raise SystemExit("package wheel")
+PY
+}
+
+if reuse_existing_wheelhouse; then
+  echo "[mlx-runtime] reusing verified wheelhouse at $TARGET"
+  exit 0
+fi
+
 if [[ -z "$UV" ]]; then
   for candidate in /opt/homebrew/bin/uv /usr/local/bin/uv "$HOME/.local/bin/uv" "$HOME/.cargo/bin/uv"; do
     if [[ -x "$candidate" ]]; then UV="$candidate"; break; fi
@@ -60,7 +96,7 @@ fi
   --only-binary=:all: --dest "$STAGING/wheels" --requirement "$STAGING/requirements.txt"
 cp "$WHEEL" "$STAGING/wheels/"
 
-python3 - "$STAGING" "$VERSION" "$SOURCE_REVISION" "$LOCK_SHA256" <<'PY'
+/usr/bin/python3 - "$STAGING" "$VERSION" "$SOURCE_REVISION" "$LOCK_SHA256" <<'PY'
 import hashlib, json, pathlib, sys
 root = pathlib.Path(sys.argv[1])
 version = sys.argv[2]
