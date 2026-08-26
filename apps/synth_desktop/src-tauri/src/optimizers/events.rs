@@ -18,7 +18,7 @@
 //! replay, or an error. Nothing is silently skipped.
 
 use anyhow::{bail, Result};
-use serde_json::{Map, Value};
+use serde_json::{json, Map, Value};
 use std::collections::HashMap;
 
 use super::models::{OptimizerEventEnvelope, OPTIMIZER_EVENT_SCHEMA_VERSION};
@@ -362,7 +362,6 @@ fn validate_shape(run_id: &str, event: &OptimizerEventEnvelope) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::json;
 
     fn envelope(seq: u64, event_type: &str, event_id: Option<&str>) -> OptimizerEventEnvelope {
         OptimizerEventEnvelope {
