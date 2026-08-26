@@ -950,11 +950,11 @@ async fn register_policy_pin(
             "authority": "container_advertisement",
         }));
     }
-    let openai_base = if spec.requires_credential_advertisement() {
-        Some(container_openai_proxy_base(run_id, spec)?)
-    } else {
-        None
-    };
+    // Credential advertisement and policy registration are independent.
+    // A container-backed policy may intentionally hold no provider secret of
+    // its own while still requiring Workshop to register a scoped proxy route.
+    // Only an already-advertised immutable config may skip registration.
+    let openai_base = Some(container_openai_proxy_base(run_id, spec)?);
     let Some(body) = spec.policy_config_body(openai_base.as_deref()) else {
         if spec.requires_credential_advertisement() {
             return Err(secrets_proxy_error(
