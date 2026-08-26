@@ -69,6 +69,8 @@ cd /Users/joshuapurtell/GitHub/workshop-v08-sourced-cua
 
 `cua-build` stages mlx-rl from `/Users/joshuapurtell/GitHub/synth-mlx-rl-v08-pinned` (clean `5d6db143`). It will **not** use the dirty sibling `/Users/joshuapurtell/GitHub/synth-mlx-rl`. Do not `git add` that sibling to unstick this.
 
+If `uv build` is `Killed: 9`, do not rebuild mlx. This tree already has a verified `runtime-distributions/mlx-rl` for that pin; the stager reuses it. `SYNTH_MLX_RL_REBUILD=1` is the only way to force a wheel rebuild.
+
 If you must recreate the snapshot:
 
 `cua-build` needs a **clean git status in the tree it builds from**. Snapshot the dirty working copy into a sibling worktree, commit **there only**, then package. Do not push that branch. Do not amend or commit `workshop-v08-release`.
@@ -223,6 +225,7 @@ Host still builds `ReplayClient`. The module must not discover URLs.
 | Two different ids in chat vs pane | Did not `show` the created id |
 | Helper / signing / disk preflight | Report the exact launcher error. Do not fall back to `dev`. |
 | `[mlx-runtime] release source must be clean` / wrong revision | Staging used dirty `/Users/joshuapurtell/GitHub/synth-mlx-rl`. Use the pin at `synth-mlx-rl-v08-pinned`. Do not commit mlx-rl WIP. |
+| `uv build` `Killed: 9` | Do not rebuild. Stager must reuse `runtime-distributions/mlx-rl`. Pull latest `cua/sourced-visuals-dogfood` if this snapshot still rebuilds every time. |
 | Live Craftax invented as a 5×5 stub | Wrong env — gold is rust GameBench only; fail closed if gold is down |
 
 `desktop:dev` remains valid for **human eyeball** of Codex MCP. It is **not** this CUA proof.
