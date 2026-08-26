@@ -57,6 +57,7 @@ pub const EVAL_FIXTURE_SMOKE_RECIPE: &str = "eval.fixture.policy-smoke.v1";
 pub const EVAL_CRAFTAX_SMOKE_RECIPE: &str = "eval.craftax.code-policy.smoke.v1";
 pub const EVAL_GAMEBENCH_CONFIRM_RECIPE: &str = "eval.gamebench.craftax-code-policy.confirm.v1";
 pub const EVAL_CRAFTAX_LLM_RECIPE: &str = "eval.craftax.llm-policy.smoke.v1";
+pub const EVAL_CRAFTAX_MLX_LOCAL_RECIPE: &str = "eval.craftax.mlx-local-policy.smoke.v1";
 pub const EVAL_GAMEBENCH_LLM_RECIPE: &str = "eval.gamebench.llm-policy.confirm.v1";
 pub const EVAL_MLX_LOCAL_RECIPE: &str = "eval.mlx.local-policy.smoke.v1";
 
@@ -69,11 +70,12 @@ const CRAFTAX_CODE_SMOKE_TRIALS_PER_CANDIDATE: u64 = 10;
 
 /// The allowlist the MCP schema publishes. A recipe id outside it never
 /// reaches the worker.
-pub const EVAL_RECIPE_IDS: [&str; 6] = [
+pub const EVAL_RECIPE_IDS: [&str; 7] = [
     EVAL_FIXTURE_SMOKE_RECIPE,
     EVAL_CRAFTAX_SMOKE_RECIPE,
     EVAL_GAMEBENCH_CONFIRM_RECIPE,
     EVAL_CRAFTAX_LLM_RECIPE,
+    EVAL_CRAFTAX_MLX_LOCAL_RECIPE,
     EVAL_GAMEBENCH_LLM_RECIPE,
     EVAL_MLX_LOCAL_RECIPE,
 ];
@@ -746,7 +748,7 @@ pub async fn start(
 
     let home = eval_home();
     let mut mlx_inference_url = None;
-    if recipe_id == EVAL_MLX_LOCAL_RECIPE {
+    if recipe_id == EVAL_MLX_LOCAL_RECIPE || recipe_id == EVAL_CRAFTAX_MLX_LOCAL_RECIPE {
         let client = super::mlx_runtime::MlxLoopback::ensure().await?;
         mlx_inference_url = Some(client.base_url.clone());
     }
