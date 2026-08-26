@@ -7,12 +7,24 @@
   "description": "A composable visual document whose blocks and chart grammar are selected by the agent at creation time.",
   "accent": "#F05F22",
   "shell": "shell.tsx",
-  "tags": ["ad-hoc", "agent-authored", "comparison", "analysis"],
-  "slots": [{
-    "name": "spec",
-    "description": "Agent-authored visual spec with metrics, deltas, tables, scatter plots, and at most one concise evidence note when interpretation requires it.",
-            "accepts": ["inline", "fixture", "local_cas", "trace_v5"],
-    "required": true,
-    "schema": "synth.visual.analysis_spec.v1"
-  }]
+  "tags": [
+    "ad-hoc",
+    "agent-authored",
+    "comparison",
+    "analysis"
+  ],
+  "inputs": [
+    {
+      "name": "spec",
+      "description": "Agent-authored visual spec with metrics, deltas, tables, scatter plots, and at most one concise evidence note when interpretation requires it.",
+      "accepts": [
+        "inline",
+        "fixture",
+        "local_cas",
+        "trace_v5"
+      ],
+      "required": true,
+      "schema": "synth.visual.analysis_spec.v1"
+    }
+  ]
 }

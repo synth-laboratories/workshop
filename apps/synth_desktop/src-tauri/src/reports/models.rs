@@ -209,6 +209,10 @@ pub struct ReportValidationFinding {
     pub message: String,
     #[serde(default)]
     pub remediation: Option<String>,
+    #[serde(default)]
+    pub visual_id: Option<String>,
+    #[serde(default)]
+    pub receipt_digest: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, specta::Type)]
@@ -271,6 +275,9 @@ pub struct ExperimentRecord {
     pub limitations: Value,
     pub created_at: String,
     pub created_by: String,
+    /// Pointer at `experiment_groups.id`. Null means leftover appendix JSON.
+    #[serde(default)]
+    pub experiment_group_id: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, specta::Type)]
@@ -533,6 +540,8 @@ pub struct ExperimentRecordUpsert {
     #[specta(type = specta_typescript::Unknown)]
     pub limitations: Option<Value>,
     pub created_by: Option<String>,
+    #[serde(default, alias = "experiment_group_id")]
+    pub experiment_group_id: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, specta::Type)]

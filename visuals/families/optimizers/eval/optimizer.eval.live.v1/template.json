@@ -7,22 +7,37 @@
   "description": "Candidate scorecards, the candidate x seed x scenario trial matrix, and the selection verdict. Orchestration progress and promotion are shown as separate claims.",
   "accent": "#0B6E75",
   "shell": "shell.tsx",
-  "tags": ["optimizer", "eval", "live"],
+  "tags": [
+    "optimizer",
+    "eval",
+    "live"
+  ],
   "observationContract": {
     "schemaVersion": "synth.visual-observation-contract.v1",
     "readiness": {
-      "rejectTransportStates": ["idle", "declared", "replaying", "error", "connecting", "reconnecting"],
+      "rejectTransportStates": [
+        "idle",
+        "declared",
+        "replaying",
+        "error",
+        "connecting",
+        "reconnecting"
+      ],
       "minimumRolloutCount": 0,
       "minimumRenderedFrameCount": 0,
       "minimumSemanticEventCount": 1,
       "requireTerminal": true
     }
   },
-  "slots": [
+  "inputs": [
     {
       "name": "optimizer_run",
       "description": "Optimizer run + optimizer_event.v1 eval trial/scorecard/selection events",
-      "accepts": ["optimizer_run", "fixture", "inline"],
+      "accepts": [
+        "optimizer_run",
+        "fixture",
+        "inline"
+      ],
       "required": true,
       "schema": "optimizer_event.v1"
     }

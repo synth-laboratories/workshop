@@ -223,6 +223,23 @@ pub(crate) fn is_not_recorded_failure(error: &anyhow::Error) -> bool {
     error.chain().any(|cause| cause.is::<RunNotPersisted>())
 }
 
+/// Codex app-server has no rollout for a remembered `threadId` (for example
+/// after `CODEX_HOME` changed). Classified once at the transport boundary;
+/// resume callers start a replacement thread via [`error_is`].
+#[derive(Debug)]
+pub(crate) struct MissingThreadRollout;
+
+impl std::fmt::Display for MissingThreadRollout {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("Codex has no rollout for this remembered thread")
+    }
+}
+
+impl std::error::Error for MissingThreadRollout {}
+
+/// Exact prose the app-server emits. Matched only here, then wrapped.
+const MISSING_THREAD_ROLLOUT: &str = "no rollout found for thread id";
+
 #[derive(Clone, Debug, Deserialize, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub struct CodexSessionRequest {
@@ -415,6 +432,10 @@ impl AppServer {
                 .context(format!("codex app-server {method} lost its process"))),
             Ok(Ok(Err(error))) if error.contains("database is locked") => {
                 Err(anyhow!(crate::error::DatabaseLocked)
+                    .context(format!("codex app-server {method} error: {error}")))
+            }
+            Ok(Ok(Err(error))) if error.contains(MISSING_THREAD_ROLLOUT) => {
+                Err(anyhow!(MissingThreadRollout)
                     .context(format!("codex app-server {method} error: {error}")))
             }
             Ok(Ok(Err(error))) => Err(anyhow!("codex app-server {method} error: {error}")),

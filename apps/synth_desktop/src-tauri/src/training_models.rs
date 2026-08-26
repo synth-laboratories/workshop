@@ -461,6 +461,7 @@ mod tests {
 
     #[test]
     fn inspect_local_mlx_names_the_pin_without_downloading() {
+        let _lock = crate::instance::lock_data_root_for_test();
         let ready = inspect_local_mlx();
         assert_eq!(ready["modelId"], QWEN_TRAINING_MODEL_ID);
         assert_eq!(ready["revision"], QWEN_TRAINING_MODEL_REVISION);
@@ -481,22 +482,13 @@ mod tests {
 
     #[test]
     fn training_models_root_follows_instance_data_root() {
-        let isolated = std::env::temp_dir().join(format!(
-            "synth-desktop-training-models-root-{}",
-            std::process::id()
-        ));
-        let previous = std::env::var_os(crate::instance::DATA_ROOT_ENV);
-        std::env::set_var(crate::instance::DATA_ROOT_ENV, &isolated);
+        let isolated = crate::instance::IsolatedDataRoot::new("training-models-root");
         let root = training_models_root();
-        assert_eq!(root, isolated.join("models/training"));
+        assert_eq!(root, isolated.path.join("models/training"));
         let expected = root.join(QWEN_TRAINING_MODEL_ID);
         assert_eq!(
             training_model_dir(QWEN_TRAINING_MODEL_ID),
             Some(expected)
         );
-        match previous {
-            Some(value) => std::env::set_var(crate::instance::DATA_ROOT_ENV, value),
-            None => std::env::remove_var(crate::instance::DATA_ROOT_ENV),
-        }
     }
 }

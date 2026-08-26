@@ -14,6 +14,7 @@ import {
 	providerLabel,
 	providerRollup,
 	seriesSlots,
+	spendCopy,
 	spendUsd,
 	usd
 } from "../runtime/usageDashboard";
@@ -410,9 +411,7 @@ export function UsagePanel() {
 													{roll.label}
 												</span>
 											<strong>
-												{roll.spendUsd == null
-													? roll.provider === "local-laguna" ? "No provider charge" : "Unavailable"
-													: usd(roll.spendUsd)}
+												{spendCopy(roll.spendUsd, roll.provider)}
 											</strong>
 											</div>
 											{/* A provider with no charge has no share to draw; an
@@ -644,7 +643,7 @@ function BreakdownTable({
 								<span className="usage-table-provider">{providerLabel(row.provider)}</span>
 							</th>
 							<td className="usage-num">
-								{row.spendUsd == null ? "No charge" : usd(row.spendUsd)}
+								{spendCopy(row.spendUsd, row.provider)}
 							</td>
 							<td className="usage-num usage-faint">
 								{total > 0 && row.spendUsd != null ? percent(row.spendUsd / total) : "—"}

@@ -112,16 +112,6 @@ cd /Users/joshuapurtell/Documents/GitHub/containers
 uv run python -c "import uvicorn; from synth_containers.platform import create_compat_app; uvicorn.run(create_compat_app('harbor_public'), host='127.0.0.1', port=8095, log_level='warning')"
 ```
 
-## dig.bench — agent API / mock dungeon
-
-| Role | Path |
-| --- | --- |
-| Mock | `digbench_mock` |
-| Live relay | `digbench_public` |
-| Runtime | `containers/src/synth_containers/platform/runtimes/digbench.py` |
-| Workshop visual | `visuals/families/first_class_example_containers/live.digbench.v1/` |
-| Tests | `containers/tests/test_digbench_live.py` |
-
 No frames. Do not guess stream URLs; bind the descriptor from prepare.
 
 ## Shared quality bar
@@ -144,7 +134,7 @@ Use `synth-optimizers==0.2.14` (`--prerelease=allow`) for GEPA v2 `[taskset]` co
 
 ## Last local confirmation (2026-08-17)
 
-Paid GEPA/eval receipts used `synth-optimizers==0.2.14` against live loopback containers. Harbor, dig.bench, and `craftax_engine` have no GEPA recipe; they were scored with prepare / start / `/reward`.
+Paid GEPA/eval receipts used `synth-optimizers==0.2.14` against live loopback containers. Harbor and `craftax_engine` have no GEPA recipe; they were scored with prepare / start / `/reward`. Workshop live-eval families are now Craftax and Harbor only.
 
 | Container | Eval | GEPA |
 | --- | --- | --- |
@@ -152,6 +142,5 @@ Paid GEPA/eval receipts used `synth-optimizers==0.2.14` against live loopback co
 | HealthBench platform `:18114` | 0-gen `eval_smoke` pool. Train **0.64**, heldout **0.67**, `$0.12`, 4 rollouts. | Same: seed eval + proposal written, then 0.2.14 proposal ingest failed. |
 | Crafter cookbook `:18768` | Fixture `craftax_engine` seed 0 scored **0.5**. | Needs `rollout_submission_mode = "sync"`. Seed episode scored **0.0**; proposal written; same 0.2.14 ingest failure. |
 | Harbor `harbor_public` | Fixture trial reward **1.0**. No GEPA contract. | — |
-| dig.bench `digbench_mock` | Mock trial reward **1.0**. No GEPA contract. | — |
 
 `capabilities.metadata.policy_ready` must be `true` or 0.2.14 refuses the container at preflight. Crafter `/rollout` only accepts `submission_mode=sync`.

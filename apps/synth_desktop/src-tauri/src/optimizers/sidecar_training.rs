@@ -7,7 +7,8 @@
 //! canary admits it.
 
 use super::events::OptimizerEventDraft;
-use super::mlx_runtime::MlxLoopback;
+use super::mlx_runtime::{MlxLoopback, PolicySnapshotMissing};
+use crate::error::error_is;
 use super::models::{
     CheckpointInferRequest, OptimizerCapabilities, OptimizerCreateRequest,
     OptimizerExecutionBinding, OptimizerRecipeRunRequest, OptimizerResourceRef, OptimizerRunRecord,
@@ -1838,12 +1839,11 @@ where
         object.insert("policy_snapshot_id".into(), json!(pin));
     }
     let stream = wants_stream(&payload);
-    let load_if_missing = |error: &anyhow::Error| error.to_string().contains("policy_snapshot");
     if stream {
         let (content_type, bytes) =
             match mlx_family_stream(&client, family, &payload, on_delta).await {
                 Ok(value) => value,
-                Err(error) if load_if_missing(&error) => {
+                Err(error) if error_is::<PolicySnapshotMissing>(&error) => {
                     let name = adapter_path
                         .and_then(|path| path.file_name())
                         .and_then(|value| value.to_str())
@@ -1880,7 +1880,7 @@ where
                 sse: None,
             })
         }
-        Err(error) if load_if_missing(&error) => {
+        Err(error) if error_is::<PolicySnapshotMissing>(&error) => {
             let name = adapter_path
                 .and_then(|path| path.file_name())
                 .and_then(|value| value.to_str())

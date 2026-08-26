@@ -39,11 +39,12 @@ impl BindingsBackfill {
     }
 }
 
-/// Canonical rows are skipped by a prefix match rather than parsed, so a
+/// Canonical rows are skipped by a contains match rather than parsed, so a
 /// database that has already been backfilled costs one indexed scan at launch.
-/// `serde_json` writes object keys in sorted order, so the canonical envelope
-/// always starts with its `schemaVersion`.
-const CANONICAL_PREFIX: &str = r#"{"schemaVersion":"synth.visual-bindings.v1"%"#;
+/// `serde_json` writes object keys in sorted order. After the bind write drop
+/// the envelope is `{ inputs, schemaVersion }`, so `schemaVersion` is no longer
+/// a prefix — match the version token anywhere in the JSON.
+const CANONICAL_PREFIX: &str = r#"%"schemaVersion":"synth.visual-bindings.v1"%"#;
 
 pub fn canonicalize_persisted_bindings(conn: &Connection) -> Result<BindingsBackfill> {
     let mut report = BindingsBackfill::default();
@@ -107,7 +108,7 @@ pub fn canonicalize_persisted_bindings(conn: &Connection) -> Result<BindingsBack
         metadata["bindingsUpgrade"] = json!({
             "schemaVersion": VISUAL_BINDINGS_SCHEMA_VERSION,
             "form": canonical.form.as_str(),
-            "slots": canonical.upgraded_slots,
+            "inputs": canonical.upgraded_slots,
             "revision": revision,
             "previousBindingsDigest": previous_digest,
             "upgradedAt": Utc::now().to_rfc3339(),
@@ -218,7 +219,8 @@ mod tests {
             upgraded["schemaVersion"],
             json!(VISUAL_BINDINGS_SCHEMA_VERSION)
         );
-        assert_eq!(upgraded["slots"].as_array().unwrap().len(), 1);
+        assert_eq!(upgraded["inputs"].as_array().unwrap().len(), 1);
+        assert!(upgraded.get("slots").is_none());
         let metadata: String = conn
             .query_row(
                 "SELECT metadata_json FROM visuals WHERE id = 'vis_incident'",

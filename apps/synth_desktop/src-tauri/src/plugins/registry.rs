@@ -273,6 +273,17 @@ mod tests {
     }
 
     #[test]
+    fn laguna_is_not_a_catalog_plugin() {
+        let error = PluginRegistry::catalog_entry("laguna", None)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("no catalog is registered for plugin `laguna`"),
+            "{error}"
+        );
+    }
+
+    #[test]
     fn the_optimizers_catalog_still_carries_its_own_payload() {
         let entry = PluginRegistry::catalog_entry(OPTIMIZERS_PLUGIN_ID, None).unwrap();
         assert_eq!(entry.plugin_id, OPTIMIZERS_PLUGIN_ID);

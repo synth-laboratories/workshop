@@ -690,11 +690,82 @@ fn resize_review_window(app: &AppHandle, body: &Value) -> Result<Value> {
 /// How long the renderer gets to relayout at the review viewport before the
 /// snapshot. Carried over from the previous capture pipeline, where the helper
 /// slept between resize and `screencapture` for the same reason.
-const REVIEW_CAPTURE_SETTLE: std::time::Duration = std::time::Duration::from_millis(500);
+const REVIEW_CAPTURE_SETTLE: std::time::Duration = std::time::Duration::from_secs(3);
 
 /// The whole snapshot round trip, resize excluded. Bounds the window a wedged
 /// WebKit could hold the resized viewport, and the IPC route with it.
 const REVIEW_CAPTURE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// Tell the React shell to make one selected visual the only visible surface
+/// while a review image is taken. This is deliberately an ephemeral renderer
+/// state: a review must not mutate the user's saved layout, nor should a
+/// narrow viewport spend most of its pixels on navigation chrome.
+#[cfg(target_os = "macos")]
+fn set_review_capture_mode(app: &AppHandle, visual_id: &str, active: bool) -> Result<()> {
+    let window = app
+        .get_webview_window("main")
+        .context("review capture requires the main Desktop window")?;
+    let detail = serde_json::to_string(&json!({
+        "active": active,
+        "visualId": visual_id,
+    }))?;
+    window
+        .eval(format!(
+            "window.__synthVisualReviewCapture={detail};document.documentElement.removeAttribute('data-synth-review-capture-ready');document.documentElement.toggleAttribute('data-synth-review-capture',{active});window.dispatchEvent(new CustomEvent('synth:visual-review-capture',{{detail:window.__synthVisualReviewCapture}}));"
+        ))
+        .context("set review capture renderer mode")
+}
+
+/// The fixed layout delay above permits CSS and WebKit to react to a resize.
+/// This acknowledgement closes the remaining cold-start race: React may still
+/// be mounting the requested visual when that delay expires.
+#[cfg(target_os = "macos")]
+async fn wait_for_review_capture_surface(app: &AppHandle, visual_id: &str) -> Result<()> {
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(3);
+    loop {
+        let window = app
+            .get_webview_window("main")
+            .context("review capture requires the main Desktop window")?;
+        let (sender, receiver) = tokio::sync::oneshot::channel();
+        let sender = std::sync::Arc::new(std::sync::Mutex::new(Some(sender)));
+        let callback_sender = std::sync::Arc::clone(&sender);
+        window
+            .eval_with_callback(
+                "document.documentElement.dataset.synthReviewCaptureReady || ''",
+                move |value| {
+                    if let Some(sender) = callback_sender.lock().ok().and_then(|mut sender| sender.take()) {
+                        let _ = sender.send(value);
+                    }
+                },
+            )
+            .context("query review capture renderer readiness")?;
+        if let Ok(Ok(value)) = tokio::time::timeout(std::time::Duration::from_millis(250), receiver).await {
+            if value.contains(visual_id) {
+                return Ok(());
+            }
+        }
+        if tokio::time::Instant::now() >= deadline {
+            // Some already-focused routes do not rerun their React effect when
+            // the capture request repeats. The conservative settle window has
+            // elapsed; capture instead of rejecting a valid visual solely for
+            // lack of a duplicate acknowledgement.
+            return Ok(());
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn reset_review_capture_scroll(app: &AppHandle) -> Result<()> {
+    let window = app
+        .get_webview_window("main")
+        .context("review capture requires the main Desktop window")?;
+    window
+        .eval(
+            "window.scrollTo(0,0);document.scrollingElement?.scrollTo(0,0);document.querySelectorAll('*').forEach((element)=>{element.scrollTop=0;element.scrollLeft=0;});",
+        )
+        .context("reset review capture scroll position")
+}
 
 /// Resize the main window, snapshot its own webview, restore — one call.
 ///
@@ -734,39 +805,63 @@ async fn capture_review_window(app: &AppHandle, body: &Value) -> Result<Value> {
             canonical_root.display()
         );
     }
-    let resize = resize_review_window(app, body)?;
+    let visual_id = body
+        .get("visualId")
+        .or_else(|| body.get("visual_id"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .context("review capture requires visualId")?;
+    // Enter review mode before resizing so React has the entire settle window
+    // to select the requested visual and lay out its primary surface.
+    set_review_capture_mode(app, visual_id, true)?;
+    let resize = match resize_review_window(app, body) {
+        Ok(resize) => resize,
+        Err(error) => {
+            let _ = set_review_capture_mode(app, visual_id, false);
+            return Err(error);
+        }
+    };
     // Do not `?` between here and the restore: the window is resized, and any
     // early return from this span leaves it that way.
     tokio::time::sleep(REVIEW_CAPTURE_SETTLE).await;
-    let snapshot = match app.get_webview_window("main") {
-        Some(window) => {
-            crate::visuals::snapshot::capture_webview_png(&window, REVIEW_CAPTURE_TIMEOUT).await
-        }
-        None => Err(anyhow::anyhow!(
-            "review capture requires the main Desktop window"
-        )),
+    let snapshot = match wait_for_review_capture_surface(app, visual_id).await {
+        Ok(()) => match reset_review_capture_scroll(app) {
+            Ok(()) => match app.get_webview_window("main") {
+                Some(window) => crate::visuals::snapshot::capture_webview_png(&window, REVIEW_CAPTURE_TIMEOUT).await,
+                None => Err(anyhow::anyhow!(
+                    "review capture requires the main Desktop window"
+                )),
+            },
+            Err(error) => Err(error),
+        },
+        Err(error) => Err(error),
     };
     let restore = resize
         .get("previous")
         .cloned()
         .context("review window resize omitted its previous size")
         .and_then(|previous| resize_review_window(app, &previous));
+    let review_mode_restore = set_review_capture_mode(app, visual_id, false);
     let written = match &snapshot {
         Ok(bytes) => fs::write(&output, bytes).context("write review capture PNG"),
         Err(_) => Ok(()),
     };
     // A failed restore leaves the user's window at the review viewport; it has
     // to reach the caller even when the capture itself failed.
-    match (snapshot, restore, written) {
-        (Err(capture), Err(restore), _) => Err(anyhow::anyhow!(
+    match (snapshot, restore, review_mode_restore, written) {
+        (Err(capture), Err(restore), _, _) => Err(anyhow::anyhow!(
             "{capture:#}; additionally the Desktop window was not restored: {restore:#}"
         )),
-        (Err(capture), Ok(_), _) => Err(capture),
-        (Ok(_), Err(restore), _) => Err(anyhow::anyhow!(
+        (Err(capture), Ok(_), _, _) => Err(capture),
+        (Ok(_), Err(restore), _, _) => Err(anyhow::anyhow!(
             "captured review but failed to restore Desktop window: {restore:#}"
         )),
-        (Ok(_), Ok(_), Err(write)) => Err(write),
-        (Ok(bytes), Ok(_), Ok(())) => {
+        (Ok(_), Ok(_), Err(review_mode_restore), _) => Err(anyhow::anyhow!(
+            "captured review but failed to restore the renderer layout: {review_mode_restore:#}"
+        )),
+        (Ok(_), Ok(_), Ok(()), Err(write)) => Err(write),
+        (Ok(bytes), Ok(_), Ok(()), Ok(())) => {
             let (width, height) = png_dimensions(&bytes).unwrap_or((0, 0));
             Ok(json!({
                 "path": output.to_string_lossy(),
@@ -1202,7 +1297,8 @@ async fn step_until_done(
 
 fn require_scripted_stream_slot(body: &Value) -> Result<()> {
     let requested = body
-        .get("slot")
+        .get("input")
+        .or_else(|| body.get("slot"))
         .or_else(|| body.get("streamSlot"))
         .or_else(|| body.get("stream_slot"))
         .and_then(Value::as_str)
@@ -1210,7 +1306,7 @@ fn require_scripted_stream_slot(body: &Value) -> Result<()> {
     assert_live_eval_slot(requested)?;
     if requested != LIVE_EVAL_SLOT {
         anyhow::bail!(
-            "visuals IPC scripted rollouts bind slot \"{LIVE_EVAL_SLOT}\", not \"{requested}\""
+            "visuals IPC scripted rollouts bind input \"{LIVE_EVAL_SLOT}\", not \"{requested}\""
         );
     }
     Ok(())
@@ -1761,7 +1857,7 @@ pub async fn dispatch(method: &str, path: &str, body: Value, core: &CoreRuntime)
             Ok(json!({
                 "container_id": id, "rollout_id": rollout_id, "prepared": prepared, "stream": stream,
                 "resolved": {"poll_url": poll_url, "sse_url": sse_url},
-                "visual_binding": {"slot":"stream","kind":"live_sse","source":sse_url,"poll_url":poll_url,"schema":"synth.trace-stream-event.v1"},
+                "visual_binding": {"input":"stream","kind":"live_sse","source":sse_url,"poll_url":poll_url,"schema":"synth.trace-stream-event.v1"},
                 "start_blocked_until": "stream.subscribed"
             }))
         }
@@ -3727,6 +3823,70 @@ async fn dispatch_experiments(
                 serde_json::from_value(payload)?;
             Ok(json!({"experiment": core.data().experiment_create(request).await?}))
         }
+        ("POST", path)
+            if path.starts_with("/v1/experiments/") && path.ends_with("/children") =>
+        {
+            let parent_id = path
+                .trim_start_matches("/v1/experiments/")
+                .trim_end_matches("/children")
+                .trim_end_matches('/');
+            anyhow::ensure!(
+                !parent_id.is_empty() && !parent_id.contains('/'),
+                "invalid experiment children path"
+            );
+            let mut payload = body;
+            payload["parentExperimentId"] = json!(parent_id);
+            if payload.get("createdAt").is_none() && payload.get("created_at").is_none() {
+                payload["createdAt"] = json!(chrono::Utc::now().to_rfc3339());
+            }
+            let request: crate::experiments::ExperimentChildCreateRequest =
+                serde_json::from_value(payload)?;
+            Ok(json!({
+                "experiment": core.data().experiment_create_child(request).await?
+            }))
+        }
+        ("POST", path)
+            if path.starts_with("/v1/experiments/") && path.ends_with("/relate") =>
+        {
+            let experiment_id = path
+                .trim_start_matches("/v1/experiments/")
+                .trim_end_matches("/relate")
+                .trim_end_matches('/');
+            anyhow::ensure!(
+                !experiment_id.is_empty() && !experiment_id.contains('/'),
+                "invalid experiment relate path"
+            );
+            let mut payload = body;
+            payload["experimentId"] = json!(experiment_id);
+            if payload.get("createdAt").is_none() && payload.get("created_at").is_none() {
+                payload["createdAt"] = json!(chrono::Utc::now().to_rfc3339());
+            }
+            let request: crate::experiments::ExperimentRelateRequest =
+                serde_json::from_value(payload)?;
+            Ok(json!({
+                "experiment": core.data().experiment_relate(request).await?
+            }))
+        }
+        ("POST", path)
+            if path.starts_with("/v1/experiments/") && path.ends_with("/activate") =>
+        {
+            let experiment_id = path
+                .trim_start_matches("/v1/experiments/")
+                .trim_end_matches("/activate")
+                .trim_end_matches('/');
+            anyhow::ensure!(
+                !experiment_id.is_empty() && !experiment_id.contains('/'),
+                "invalid experiment activate path"
+            );
+            let session_id = json_field(&body, "sessionId", "session_id")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .context("experiments activate requires sessionId")?;
+            Ok(json!({
+                "experiment": core.data().experiment_activate(session_id.to_owned(), experiment_id.to_owned()).await?
+            }))
+        }
         ("GET", "/v1/experiments") | ("GET", "/v1/experiments/") => {
             let session_id = json_field(&body, "sessionId", "session_id")
                 .and_then(Value::as_str)
@@ -3740,6 +3900,18 @@ async fn dispatch_experiments(
             Ok(json!({
                 "sessionId": session_id,
                 "experiment": group,
+            }))
+        }
+        ("GET", path) if path.starts_with("/v1/experiments/") => {
+            let experiment_id = path
+                .trim_start_matches("/v1/experiments/")
+                .trim_end_matches('/');
+            anyhow::ensure!(
+                !experiment_id.is_empty() && !experiment_id.contains('/'),
+                "invalid experiment path"
+            );
+            Ok(json!({
+                "experiment": core.data().experiment_get(experiment_id.to_owned()).await?
             }))
         }
         ("POST", path) if path.starts_with("/v1/experiments/") && path.ends_with("/evidence") => {
@@ -4674,8 +4846,9 @@ mod tests {
     fn scripted_rollouts_bind_slot_stream() {
         assert!(require_scripted_stream_slot(&json!({})).is_ok());
         assert!(require_scripted_stream_slot(&json!({"slot": "stream"})).is_ok());
+        assert!(require_scripted_stream_slot(&json!({"input": "stream"})).is_ok());
         assert!(require_scripted_stream_slot(&json!({"slot": "live"})).is_err());
-        assert!(require_scripted_stream_slot(&json!({"slot": "jobs"})).is_err());
+        assert!(require_scripted_stream_slot(&json!({"input": "jobs"})).is_err());
     }
 
     #[test]
@@ -4894,11 +5067,12 @@ mod tests {
     }
 
     #[test]
-    fn harbor_and_digbench_register_metadata_is_visual_first() {
+    fn harbor_register_metadata_is_visual_first() {
         let harbor =
             live_eval_bind_metadata(crate::visuals::LiveEvalFamily::Harbor, &json!({}), None)
                 .unwrap();
         assert_eq!(harbor["templateId"], "live.harbor_eval.v1");
+        assert_eq!(harbor["input"], "stream");
         assert_eq!(harbor["slot"], "stream");
         assert_eq!(harbor["liveFrames"], "unsupported");
         assert_eq!(harbor["policyRefs"].as_array().map(Vec::len), Some(2));
@@ -4908,11 +5082,5 @@ mod tests {
             None
         )
         .is_err());
-        let digbench =
-            live_eval_bind_metadata(crate::visuals::LiveEvalFamily::Digbench, &json!({}), None)
-                .unwrap();
-        assert_eq!(digbench["templateId"], "live.digbench.v1");
-        assert_eq!(digbench["policyRefs"][0]["harness"], "react_legal_actions");
-        assert_eq!(digbench["policyRefs"][1]["mcp_bind"], "digbench-mcp");
     }
 }

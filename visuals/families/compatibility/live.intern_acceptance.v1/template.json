@@ -7,12 +7,22 @@
   "description": "Intern sync/async acceptance cell stream for research factory gates.",
   "accent": "#FF5C00",
   "shell": "shell.tsx",
-  "tags": ["live", "intern", "acceptance", "sync", "async"],
-  "slots": [
+  "tags": [
+    "live",
+    "intern",
+    "acceptance",
+    "sync",
+    "async"
+  ],
+  "inputs": [
     {
       "name": "acceptance",
       "description": "Live SSE or fixture with acceptance / cell decisions",
-      "accepts": ["live_sse", "fixture", "inline"],
+      "accepts": [
+        "live_sse",
+        "fixture",
+        "inline"
+      ],
       "required": true,
       "schema": "synth.visual.live_eval_events.v1"
     }

@@ -6,6 +6,7 @@ import type {
 	ModelMultiAgentSetting,
 	ModelCatalog,
 	MultiAgentVersion,
+	PluginStatus,
 	SynthAccountSummary,
 	SynthBackendSettings,
 	TariffCard,
@@ -29,6 +30,7 @@ import { bridges } from "../runtime/desktopBridge";
 import { ChatgptCodexSubscriptionCard } from "./ChatgptCodexSubscriptionCard";
 import { ContextSettings } from "./ContextSettings";
 import { SecretsSettings } from "./SecretsSettings";
+import { CapabilityManifest } from "./CapabilityManifest";
 
 type Props = {
 	onBack: () => void;
@@ -36,6 +38,7 @@ type Props = {
 	account: AccountSectionProps;
 	onReloadLaguna: () => Promise<LagunaStatus>;
 	lagunaPhase?: string | null;
+	pluginStatuses?: readonly PluginStatus[] | null;
 	initialSection?: SectionId;
 	onSectionChange?: (section: SectionId) => void;
 	preferences?: DesktopPreferences;
@@ -453,6 +456,7 @@ export function SettingsPage({
 	account,
 	onReloadLaguna,
 	lagunaPhase,
+	pluginStatuses,
 	initialSection = "general",
 	onSectionChange,
 	preferences,
@@ -579,6 +583,9 @@ export function SettingsPage({
 					{section === "secrets" ? <SecretsSettings /> : null}
 					{section === "about" ? (
 						<div className="settings-sections" data-testid="settings-about">
+							<SettingsCard title="v0.8 capabilities">
+								<CapabilityManifest pluginStatuses={pluginStatuses} lagunaPhase={lagunaPhase} />
+							</SettingsCard>
 							<SettingsCard title="Synth Desktop">
 								<div className="finetune-base-card" data-testid="about-build-identity">
 									<span className="finetune-kicker">Build</span>

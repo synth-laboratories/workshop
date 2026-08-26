@@ -26,7 +26,8 @@ use super::proto::{
     CodexApprovalDecisionRequest, CodexSessionInfo, CodexSessionRecord, CodexSessionRequest,
     CodexSessionStartRequest, CodexSteerRequest, CodexThreadItemsRequest, CodexThreadReadRequest,
     CodexTurnFailure, CodexTurnSendRequest, CodexTurnStartRequest, CompactWaiters,
-    ProviderTransport, RunNotPersisted, Session, SessionDetached, COMPACT_PROMPT, DETACHED_MESSAGE,
+    MissingThreadRollout, ProviderTransport, RunNotPersisted, Session, SessionDetached,
+    COMPACT_PROMPT, DETACHED_MESSAGE,
 };
 use super::telemetry::{PerformanceTrackers, TurnPerformanceTracker, TurnTokenUsage};
 
@@ -314,7 +315,7 @@ impl CodexManager {
                 }
                 Err(error)
                     if method == "thread/resume"
-                        && error.to_string().contains("no rollout found for thread id") =>
+                        && crate::error::error_is::<MissingThreadRollout>(&error) =>
                 {
                     // A locally remembered thread can outlive the Codex rollout that
                     // backed it (for example after switching CODEX_HOME or clearing
@@ -1671,12 +1672,8 @@ fn session_status_for_run(status: RunStatus) -> SessionStatus {
 }
 
 fn terminal_session_status(status: &str) -> Option<SessionStatus> {
-    match status {
-        "completed" => Some(SessionStatus::Ready),
-        "failed" => Some(SessionStatus::Failed),
-        "interrupted" | "cancelled" => Some(SessionStatus::Interrupted),
-        _ => None,
-    }
+    let run = RunStatus::parse(status).ok()?;
+    run.terminal().then(|| session_status_for_run(run))
 }
 
 fn payload_mentions_thread(payload: &Value, thread_id: &str) -> bool {

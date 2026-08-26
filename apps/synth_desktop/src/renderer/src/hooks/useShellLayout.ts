@@ -6,6 +6,9 @@ import {
 	saveLayout,
 	type DesktopPreferences
 } from "../preferences";
+import { restoreFocusIfLost } from "../runtime/restoreFocus";
+
+export type SidePanelTab = "outputs" | "inference" | "trace" | "diagnostics";
 
 export type ShellLayoutState = {
 	sidebarVisible: boolean;
@@ -14,14 +17,14 @@ export type ShellLayoutState = {
 	viewportWidth: number;
 	inventoryContainerWidth: number;
 	sidePanelOpen: boolean;
-	sidePanelTab: "outputs" | "inference" | "trace";
+	sidePanelTab: SidePanelTab;
 	containerPaneExpanded: boolean;
 	setSidebarVisible: (visible: boolean) => void;
 	setSidebarWidth: (width: number) => void;
 	setTerminalOpen: (open: boolean | ((current: boolean) => boolean)) => void;
 	setInventoryContainerWidth: (width: number) => void;
 	setSidePanelOpen: (open: boolean | ((current: boolean) => boolean)) => void;
-	setSidePanelTab: (tab: "outputs" | "inference" | "trace") => void;
+	setSidePanelTab: (tab: SidePanelTab) => void;
 	setContainerPaneExpanded: (expanded: boolean) => void;
 	persistLayoutSnapshot: (patch: Partial<DesktopPreferences["layout"]["last"]>) => void;
 };
@@ -41,7 +44,7 @@ export function useShellLayout(
 		}
 		return window.localStorage.getItem("synth.inferenceRailOpen") !== "0";
 	});
-	const [sidePanelTab, setSidePanelTab] = useState<"outputs" | "inference" | "trace">("inference");
+	const [sidePanelTab, setSidePanelTab] = useState<SidePanelTab>("inference");
 	const [inventoryContainerWidth, setInventoryContainerWidth] = useState(
 		() => loadPreferences().layout.last.outputPaneWidth
 	);
@@ -63,6 +66,20 @@ export function useShellLayout(
 		return () => window.removeEventListener("resize", onResize);
 	}, []);
 
+	useEffect(() => {
+		const root = document.documentElement;
+		const media = window.matchMedia("(max-width: 860px)");
+		const syncCompactWorkbench = () => {
+			root.classList.toggle("compact-workbench", media.matches);
+		};
+		syncCompactWorkbench();
+		media.addEventListener("change", syncCompactWorkbench);
+		return () => {
+			media.removeEventListener("change", syncCompactWorkbench);
+			root.classList.remove("compact-workbench");
+		};
+	}, []);
+
 	const persistLayoutSnapshot = useCallback(
 		(patch: Partial<DesktopPreferences["layout"]["last"]>) => {
 			const current = getPreferences().layout.last;
@@ -80,10 +97,14 @@ export function useShellLayout(
 			if ("sidebarVisible" in patch) setSidebarVisible(next.sidebarVisible);
 			if ("sidebarWidth" in patch) setSidebarWidth(next.sidebarWidth);
 			if ("outputPaneWidth" in patch) setInventoryContainerWidth(next.outputPaneWidth);
-			if ("bottomPanelVisible" in patch) setTerminalOpen(next.bottomPanelVisible);
+			if ("bottomPanelVisible" in patch) {
+				const hiding = terminalOpen && !next.bottomPanelVisible;
+				setTerminalOpen(next.bottomPanelVisible);
+				if (hiding) restoreFocusIfLost('[data-testid="toggle-terminal"]');
+			}
 			if (!unchanged) setPreferences(saveLayout(next));
 		},
-		[setPreferences]
+		[setPreferences, terminalOpen]
 	);
 
 	return {

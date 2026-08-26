@@ -25,8 +25,8 @@ test("TOML default prefers ChatGPT Luna over OpenRouter Luna", () => {
 	assert.equal(resolveDefaultTargetId(preference, { chatgpt: true, openrouter: true }), "chatgpt-luna");
 });
 
-test("TOML default falls back to OpenRouter and only then local", () => {
-	assert.equal(resolveDefaultTargetId(preference, { chatgpt: false, openrouter: true }), "openrouter-luna");
+test("TOML default falls back to local Laguna when ChatGPT and OpenRouter Luna are unavailable", () => {
+	assert.equal(resolveDefaultTargetId(preference, { chatgpt: false, openrouter: true }), "local-laguna");
 	assert.equal(resolveDefaultTargetId(preference, { chatgpt: false, openrouter: false }), "local-laguna");
 });
 

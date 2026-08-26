@@ -4,6 +4,13 @@ import { findTraceInspectorVisual, traceDigestBinding, traceInspectorCreateReque
 
 export const VISUAL_REFERENCE_OPENED_EVENT = "synth:visual-reference-opened";
 export const VISUAL_REFERENCE_ERROR_EVENT = "synth:visual-reference-error";
+export const VISUAL_OPS_FOLLOW_EVENT = "synth:visual-ops-follow";
+export const VISUAL_OPS_UNREACHABLE_EVENT = "synth:visual-ops-unreachable";
+
+export type VisualOpsFollowDetail = {
+	kind: "session" | "run" | "trace";
+	id: string;
+};
 
 type TraceImportResult = { inspectable?: boolean; note?: string; traces?: Array<{ traceId?: string }> };
 

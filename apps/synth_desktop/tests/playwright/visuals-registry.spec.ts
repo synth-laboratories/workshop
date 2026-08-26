@@ -85,6 +85,68 @@ test("chat visual card, registry, and right pane resolve one visual_id", async (
 	await expect(page.getByTestId("visuals-preview")).toBeVisible();
 });
 
+test("an open visual pane keeps its title when switching chat and Visuals", async ({ page }) => {
+	await page.addInitScript((visual) => {
+		const store = [visual] as VisualRecord[];
+		(window as typeof window & { synthVisuals?: unknown }).synthVisuals = {
+			listTemplates: async () => [{ id: visual.templateId, title: visual.title, genre: "reward" }],
+			getTemplate: async (templateId: string) => ({ id: templateId, title: templateId }),
+			list: async () => store,
+			get: async (visualId: string) => {
+				const hit = store.find((row) => row.id === visualId);
+				if (!hit) throw new Error(`missing visual ${visualId}`);
+				return hit;
+			},
+			revisions: async () => [],
+			show: async (visualId: string) => {
+				const hit = store.find((row) => row.id === visualId);
+				if (!hit) throw new Error(`missing visual ${visualId}`);
+				return hit;
+			},
+			onEvent: () => () => undefined,
+			onShow: () => () => undefined
+		};
+		const session = {
+			id: "pane-host-chat",
+			title: "Pane host chat",
+			target: { kind: "local", model: "laguna-xs-2.1", adapter: null },
+			createdAt: "2026-08-09T12:00:00.000Z",
+			updatedAt: "2026-08-09T12:00:00.000Z",
+			status: "ready",
+			latestCursor: 0,
+			metadata: {}
+		};
+		(window as typeof window & { synthRuntime?: unknown }).synthRuntime = {
+			async request(path: string) {
+				if (path === "/v1/health") return {
+					runtimeId: "renderer-test", local: { mode: "unavailable", modelPath: null },
+					intern: { mode: "demo" }, openrouter: { mode: "unconfigured" },
+					inventory: { containers: 0, traces: 0, visuals: 1 }
+				};
+				if (path === "/v1/sessions") return { sessions: [session] };
+				if (path === "/v1/projects") return { projects: [] };
+				if (path.includes("/events")) return { events: [], nextCursor: 0, hasMore: false };
+				throw new Error(`Unexpected renderer test request: ${path}`);
+			},
+			async subscribe() { return { close() {} }; }
+		};
+	}, sampleVisual);
+	await page.reload();
+	await page.getByTestId("titlebar").waitFor();
+	await page.getByTestId("open-visuals").click();
+	await page.getByTestId("visuals-card-vis_test_reward").getByRole("button", { name: "Open" }).click();
+	await expect(page.getByTestId("visual-pane")).toBeVisible();
+	await expect(page.getByTestId("visual-pane")).toContainText("Reward breakdown");
+	await page.getByTestId("local-chat-pane-host-chat").click();
+	await expect(page.getByTestId("chat-transcript")).toBeVisible();
+	await expect(page.getByTestId("visual-pane")).toBeVisible();
+	await expect(page.getByTestId("visual-pane")).toContainText("Reward breakdown");
+	await page.getByTestId("open-visuals").click();
+	await expect(page.getByTestId("visuals-page")).toBeVisible();
+	await expect(page.getByTestId("visual-pane")).toBeVisible();
+	await expect(page.getByTestId("visual-pane")).toContainText("Reward breakdown");
+});
+
 test("Visuals page can create a draft visual from the registry", async ({ page }) => {
 	await installVisualsFixture(page, []);
 	await page.getByTestId("open-visuals").click();

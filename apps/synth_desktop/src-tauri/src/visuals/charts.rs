@@ -1108,7 +1108,7 @@ pub fn render_svg(source: &str) -> Result<RenderedChart> {
 
 pub fn render_spec(spec: &ChartSpec) -> Result<RenderedChart> {
     if let Some(slot) = unresolved_slot(spec) {
-        bail!("panel still reads slot {slot}; resolve bindings before rendering");
+        bail!("panel still reads input {slot}; resolve bindings before rendering");
     }
     let spec = spec.clone();
     let palette = palette(&spec.theme);
@@ -1248,13 +1248,13 @@ pub fn render_spec(spec: &ChartSpec) -> Result<RenderedChart> {
 
 fn unresolved_slot(spec: &ChartSpec) -> Option<String> {
     spec.panels.iter().find_map(|panel| match panel {
-        Panel::Metrics(p) => p.from.as_ref().map(|from| from.source.slot.clone()),
-        Panel::Series(p) => p.from.as_ref().map(|from| from.source.slot.clone()),
-        Panel::Bars(p) => p.from.as_ref().map(|from| from.source.slot.clone()),
-        Panel::Scatter(p) => p.from.as_ref().map(|from| from.source.slot.clone()),
-        Panel::Histogram(p) => p.from.as_ref().map(|from| from.source.slot.clone()),
-        Panel::Heatmap(p) => p.from.as_ref().map(|from| from.source.slot.clone()),
-        Panel::Table(p) => p.from.as_ref().map(|from| from.source.slot.clone()),
+        Panel::Metrics(p) => p.from.as_ref().map(|from| from.source.input.clone()),
+        Panel::Series(p) => p.from.as_ref().map(|from| from.source.input.clone()),
+        Panel::Bars(p) => p.from.as_ref().map(|from| from.source.input.clone()),
+        Panel::Scatter(p) => p.from.as_ref().map(|from| from.source.input.clone()),
+        Panel::Histogram(p) => p.from.as_ref().map(|from| from.source.input.clone()),
+        Panel::Heatmap(p) => p.from.as_ref().map(|from| from.source.input.clone()),
+        Panel::Table(p) => p.from.as_ref().map(|from| from.source.input.clone()),
         Panel::Note(_) => None,
     })
 }

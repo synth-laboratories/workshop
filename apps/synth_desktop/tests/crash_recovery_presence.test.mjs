@@ -180,7 +180,8 @@ test("a restored Codex record is never running, and carries its notice", () => {
 		kind: "remote",
 		provider: "openrouter",
 		model: "gpt-5.6-luna",
-		adapter: null
+		adapter: null,
+		targetId: null
 	});
 });
 

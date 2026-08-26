@@ -33,7 +33,7 @@ finished evaluation, and do not present one rollout as an evaluation result.
 
 ## Operator clock (W1–W3)
 
-This is one bind for Craftax, Harbor, and dig.bench. Skipping a step is a
+This is one bind for Craftax and Harbor. Skipping a step is a
 closed failure, not a retry.
 
 1. **Discover the provider.** Call `container_list`, then `container_probe`.
@@ -54,11 +54,10 @@ closed failure, not a retry.
    shell or repository archaeology as a substitute for execution; prior
    evidence may be reported as prior evidence only and cannot satisfy a new
    live request. Then confirm the declared poll/SSE/WS URLs, slot `stream`
-   (never `live` or `jobs`), and `live_frames`. Harbor and dig.bench are
-   `live_frames=unsupported`. `live_frames=native` on those families is a
-   stop. dig.bench has no frames.
-3. **Create and subscribe the visual first.** `live.craftax.v1`,
-   `live.harbor_eval.v1`, or `live.digbench.v1` from the classified family.
+   (never `live` or `jobs`), and `live_frames`. Harbor is
+   `live_frames=unsupported`. `live_frames=native` on Harbor is a stop.
+3. **Create and subscribe the visual first.** `live.craftax.v1` or
+   `live.harbor_eval.v1` from the classified family.
    Bind slot `stream` only after prepare returns a descriptor. Pre-start
    readiness means the visual exists, the exact prepared descriptor is bound,
    and the stream has acknowledged subscription. Do not require screenshot,
@@ -70,8 +69,7 @@ closed failure, not a retry.
    stream URL was guessed, the visual is absent or incorrectly bound, or `stream.subscribed` is
    missing. Do not invent a replacement URL.
 6. **Never fabricate evidence.** Missing reward/usage/frames stay missing.
-   Incomplete dig.bench `/reward` is null, not 0. Do not draw dungeon frames.
-   Do not put `DIGBENCH_API_TOKEN` in logs, bindings, or screenshots.
+   Do not invent Craftax frames for Harbor.
 
 Harbor register writes `metadata.liveEval` with template `live.harbor_eval.v1`,
 slot `stream`, `liveFrames: unsupported`, and two `policy_ref`s (`harbor_fused`
@@ -84,10 +82,6 @@ connects before start; Codex then authors a separate product visual that the
 post-exit script node grades. Refuse start if the Codex policy does not carry
 the visuals bind. Missing or ambiguous product identity and incomplete export
 are rig failure with null reward, never task score `0`.
-
-dig.bench opens `live.digbench.v1` before `start_session`. Two `policy_ref`s on
-the same game: basic (`react_legal_actions`) and agentic (`codex` +
-`mcp_bind: digbench-mcp`). Token starts at `start_session`.
 
 Craftax's default 10-lane benchmark pins are seeds 0–9 with `environment_ref` /
 `policy_ref` / `task_world`, but an explicit seed set in the user's request
@@ -114,7 +108,7 @@ Do not claim a paid Luna 10× run from this skill.
    probe another port, register a new record, or switch to a raw engine.
 5. Create the task-family visual through `synth_visuals.visual_manage`:
    `live.craftax.v1` for native Craftax, `live.harbor_eval.v1` for a Harbor
-   attempt, or `live.digbench.v1` for dig.bench. Bind slot `stream` (never
+   attempt. Bind slot `stream` (never
    `live` or `jobs`) as `live_sse` to the **declared** SSE URL, with the
    declared `poll_url` beside it. Do not construct `/events` or
    `/rollouts/{id}/stream`.

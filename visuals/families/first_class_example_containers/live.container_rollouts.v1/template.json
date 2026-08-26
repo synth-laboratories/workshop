@@ -7,12 +7,23 @@
   "description": "A live operational view of concurrent container eval rollouts: real step progress, rewards, achievements, vitals, usage, and recent engine activity.",
   "accent": "#FF5C00",
   "shell": "shell.tsx",
-  "tags": ["live", "sse", "container", "eval", "rollout", "craftax"],
-  "slots": [
+  "tags": [
+    "live",
+    "sse",
+    "container",
+    "eval",
+    "rollout",
+    "craftax"
+  ],
+  "inputs": [
     {
       "name": "stream",
       "description": "A synth.rollout.event.v1 or evals.event-stream.v1 SSE endpoint or replay fixture",
-      "accepts": ["live_sse", "fixture", "inline"],
+      "accepts": [
+        "live_sse",
+        "fixture",
+        "inline"
+      ],
       "required": true,
       "schema": "synth.rollout.event.v1"
     }

@@ -4,6 +4,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 import {
+  LIVE_EVAL_INPUT,
   LIVE_EVAL_SLOT,
   assertDeclaredStreamSource,
   assertLiveEvalSlot,
@@ -21,9 +22,10 @@ test("live.harbor_eval.v1 binds slot stream, not jobs", () => {
     readFileSync(join(root, "families/first_class_example_containers/live.harbor_eval.v1/template.json"), "utf8"),
   );
   assert.deepEqual(
-    meta.slots.map((slot) => slot.name),
-    [LIVE_EVAL_SLOT],
+    (meta.inputs ?? meta.slots).map((slot) => slot.name),
+    [LIVE_EVAL_INPUT],
   );
+  assert.equal(LIVE_EVAL_SLOT, LIVE_EVAL_INPUT);
 });
 
 test("forbidden live-eval slots live and jobs fail closed", () => {

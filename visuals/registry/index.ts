@@ -115,6 +115,7 @@ export const TEMPLATE_IDS = ORDERED_ENTRIES.map((entry) => entry.meta.id);
 export const INTERNAL_TEMPLATE_IDS = [...INTERNAL_IDS].sort();
 
 export type { VisualTemplate, VisualTemplateMeta, VisualInstance, VisualBinding } from "../runtime/types.ts";
+export { bindingInputName, bindingList, resolveInputName, stampBindingInput, templateInputs } from "../runtime/types.ts";
 export { bindTemplateSlots, subscribeLiveSlot, isVisualBindings, bindingSlots, propsFromBindings, resolveVisualBindings } from "../runtime/bind.ts";
 export { selectRenderedProjection, rememberLastKnownGood } from "../runtime/lastKnownGood.ts";
 export type { ProjectionSource, SelectedProjection } from "../runtime/lastKnownGood.ts";
@@ -135,5 +136,12 @@ export {
   REPLAY_PAGE_LIMIT_MAX
 } from "../runtime/replayClient.ts";
 export type { LiveTemplateProps, ReplayClient, ReplayCursor, ReplayPage, ReplayStream, TransportState } from "../runtime/replayClient.ts";
-export { ingestLiveEnvelopes, assertLiveEvalSlot, LIVE_EVAL_SLOT } from "../runtime/liveStream.ts";
+export { ingestLiveEnvelopes, assertLiveEvalSlot, LIVE_EVAL_INPUT, LIVE_EVAL_SLOT } from "../runtime/liveStream.ts";
 export { saveVisualInstanceTsx, renderInstanceTsx, markInstanceSaved } from "../runtime/save_tsx.ts";
+export {
+  compileSourcedModule,
+  isSourcedTemplate,
+  sourcedInvalidShell,
+  SOURCED_TEMPLATE_ID,
+  validateSourcedSource
+} from "../runtime/sourcedVisual.ts";

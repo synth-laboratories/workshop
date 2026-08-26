@@ -90,7 +90,7 @@ const created = await tools.mcp__synth_visuals__visual_manage({
   arguments: {
     template_id: probe.container.metadata.liveEval.templateId,
     title: rolloutId,
-    slot: "stream",
+    input: "stream",
     kind: prepared.visual_binding.kind,
     source: prepared.visual_binding.source,
     poll_url: prepared.visual_binding.poll_url,

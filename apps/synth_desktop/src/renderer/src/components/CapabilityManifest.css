@@ -1,0 +1,52 @@
+.capability-manifest {
+	width: 100%;
+	border-collapse: collapse;
+	font-size: var(--fs-meta, 12px);
+	line-height: var(--lh-body, 1.5);
+	color: var(--color-text);
+}
+
+.capability-manifest-caption {
+	caption-side: top;
+	text-align: left;
+	font-size: var(--fs-micro, 11px);
+	font-weight: var(--fw-semi, 650);
+	letter-spacing: var(--tracking-eyebrow, 0.08em);
+	text-transform: uppercase;
+	color: var(--color-text-muted);
+	padding-bottom: var(--sp-2, 8px);
+}
+
+.capability-manifest th,
+.capability-manifest td {
+	text-align: left;
+	vertical-align: top;
+	padding: var(--sp-1, 4px) var(--sp-2, 8px) var(--sp-1, 4px) 0;
+	border-bottom: 1px solid var(--color-border);
+}
+
+.capability-manifest th {
+	font-size: var(--fs-micro, 11px);
+	font-weight: var(--fw-medium, 550);
+	color: var(--color-text-muted);
+}
+
+.capability-manifest td:first-child {
+	font-family: var(--code-font-family);
+	white-space: nowrap;
+}
+
+.capability-manifest td:nth-child(2) {
+	color: var(--color-text-muted);
+	white-space: nowrap;
+}
+
+.settings-card-body > .capability-manifest {
+	padding: var(--sp-3, 12px) var(--sp-4, 16px) var(--sp-4, 16px);
+}
+
+.diagnostics-panel > .capability-manifest {
+	padding-bottom: var(--sp-2, 8px);
+	border-bottom: 1px solid var(--color-border);
+	margin-bottom: var(--sp-1, 4px);
+}

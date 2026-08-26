@@ -62,7 +62,22 @@ export type InferenceSnapshot = {
 	/** `null` while the daemon is idle. */
 	active: InferenceGeneration | null;
 	rolling: InferenceRolling;
+	/** Observation authority when the payload already names it. Absent ⇒ local sidecar. */
+	source?: string | null;
+	baseUrl?: string | null;
+	observedAt?: number | string | null;
+	updatedAt?: number | string | null;
 };
+
+export type InferenceObservation = {
+	source?: string | null;
+	baseUrl?: string | null;
+	observedAt?: number | string | null;
+	updatedAt?: number | string | null;
+};
+
+export const INFERENCE_AUTHORITY_LOCAL = "Local";
+export const INFERENCE_AUTHORITY_SHOAL = "Synth Cloud · Shoal";
 
 export type InferenceUnloadOutcome = {
 	released: boolean;
@@ -190,6 +205,60 @@ export function formatElapsed(milliseconds: number | null): string {
 export function formatQueue(depth: number | null, capacity: number | null): string {
 	if (!isNumber(depth)) return UNAVAILABLE;
 	return isNumber(capacity) ? `${depth}/${capacity}` : `${depth}`;
+}
+
+function isLoopbackHost(url: string): boolean {
+	try {
+		const host = new URL(url).hostname.toLowerCase();
+		return host === "127.0.0.1" || host === "localhost" || host === "::1" || host === "[::1]";
+	} catch {
+		return /127\.0\.0\.1|localhost/i.test(url);
+	}
+}
+
+/**
+ * Observation source for the Inference tab. The Laguna sidecar is Local.
+ * `Synth Cloud · Shoal` is reserved for an observation that is actually hosted
+ * — never a Workshop route to Shoal.
+ */
+export function inferenceAuthorityLabel(observation: InferenceObservation = {}): typeof INFERENCE_AUTHORITY_LOCAL | typeof INFERENCE_AUTHORITY_SHOAL {
+	const source = (observation.source ?? "").trim().toLowerCase();
+	if (
+		source === "shoal" ||
+		source === "synth-cloud" ||
+		source === "synth_cloud" ||
+		source === "synth cloud" ||
+		source === "hosted"
+	) {
+		return INFERENCE_AUTHORITY_SHOAL;
+	}
+	if (source === "local" || source === "laguna" || source === "sidecar") {
+		return INFERENCE_AUTHORITY_LOCAL;
+	}
+	if (observation.baseUrl && !isLoopbackHost(observation.baseUrl)) {
+		return INFERENCE_AUTHORITY_SHOAL;
+	}
+	return INFERENCE_AUTHORITY_LOCAL;
+}
+
+export function inferenceObservedAt(observation: InferenceObservation = {}): { iso: string; label: string } | null {
+	const raw = observation.observedAt ?? observation.updatedAt;
+	if (raw == null || raw === "") return null;
+	const date = typeof raw === "number" ? new Date(raw) : new Date(raw);
+	if (Number.isNaN(date.getTime())) return null;
+	return { iso: date.toISOString(), label: date.toLocaleString() };
+}
+
+function mergeObservation(
+	snapshot: InferenceObservation | null | undefined,
+	status: InferenceObservation | null | undefined
+): InferenceObservation {
+	return {
+		source: snapshot?.source ?? status?.source ?? null,
+		baseUrl: snapshot?.baseUrl ?? status?.baseUrl ?? null,
+		observedAt: snapshot?.observedAt ?? status?.observedAt ?? null,
+		updatedAt: snapshot?.updatedAt ?? status?.updatedAt ?? null
+	};
 }
 
 /**
@@ -458,6 +527,24 @@ function InferenceSettingsButton({ onOpen }: { onOpen?: () => void }) {
 	);
 }
 
+function InferenceAuthorityMark({ observation }: { observation: InferenceObservation }) {
+	const label = inferenceAuthorityLabel(observation);
+	const observed = inferenceObservedAt(observation);
+	return (
+		<span className="inference-authority-row">
+			<span data-testid="inference-authority">{label}</span>
+			{observed ? (
+				<>
+					<span aria-hidden> · </span>
+					<time dateTime={observed.iso} data-testid="inference-observed-at">
+						{observed.label}
+					</time>
+				</>
+			) : null}
+		</span>
+	);
+}
+
 function Unavailable({ label }: { label: string }) {
 	return (
 		<span className="inference-unavailable" title={`${label} is not reported by the daemon`}>
@@ -521,6 +608,8 @@ export type InferencePanelProps = {
 	observedPerformance?: { tpsP50: number | null; tpsP95: number | null; sampleCount: number } | null;
 	/** Policy pinned to this conversation, even while no generation is active. */
 	selectedModel?: string | null;
+	/** Laguna status timestamps / URL when the snapshot itself has none. */
+	status?: InferenceObservation | null;
 };
 
 export function InferencePanel({
@@ -533,7 +622,8 @@ export function InferencePanel({
 	className,
 	onOpenSettings,
 	observedPerformance = null,
-	selectedModel = null
+	selectedModel = null,
+	status = null
 }: InferencePanelProps) {
 	// The panel is mounted in both the rail and the page, so ids must be local.
 	const reasonId = `${useId()}-free-reason`;
@@ -550,6 +640,8 @@ export function InferencePanel({
 	const active = snapshot?.active ?? null;
 	const phase = active?.phase ?? null;
 	const rolling = snapshot?.rolling;
+	const observation = mergeObservation(snapshot, status);
+	const authority = inferenceAuthorityLabel(observation);
 
 	const shell = ["inference-panel", className].filter(Boolean).join(" ");
 
@@ -558,6 +650,7 @@ export function InferencePanel({
 			<section className={shell} data-testid="inference-panel" data-state={state}>
 				<header className="inference-head">
 					<h2>Inference</h2>
+					<InferenceAuthorityMark observation={observation} />
 					<InferenceSettingsButton onOpen={onOpenSettings} />
 				</header>
 				<p
@@ -576,6 +669,7 @@ export function InferencePanel({
 			<section className={shell} data-testid="inference-panel" data-state="error">
 				<header className="inference-head">
 					<h2>Inference</h2>
+					<InferenceAuthorityMark observation={observation} />
 					<InferenceSettingsButton onOpen={onOpenSettings} />
 				</header>
 				<p className="inference-error" role="alert" data-testid="inference-error">
@@ -617,10 +711,12 @@ export function InferencePanel({
 					<span className="inference-policy-kind" data-finetuned={fineTuned ? "yes" : "no"} data-testid="inference-policy-kind">
 						{fineTuned ? "Fine-tuned model · LoRA attached" : "Base model · No LoRA attached"}
 					</span>
+					<InferenceAuthorityMark observation={observation} />
 				</div>
 				<span
 					className="inference-residency"
 					data-resident={snapshot.resident ? "yes" : "no"}
+					data-authority={authority === INFERENCE_AUTHORITY_SHOAL ? "shoal" : "local"}
 					data-testid="inference-residency"
 				>
 					{snapshot.resident ? (
@@ -629,7 +725,7 @@ export function InferencePanel({
 							<Metric label="Resident memory" value={formatBytes(snapshot.residentBytes)} />
 						</>
 					) : (
-						"UNLOADED"
+						<>UNLOADED on {authority}</>
 					)}
 				</span>
 				<InferenceSettingsButton onOpen={onOpenSettings} />

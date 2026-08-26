@@ -7,22 +7,41 @@
   "description": "Immersive Craftax gameplay, dual-time replay, reward/achievement plots, environment state, ReAct policy spans, activity, and Trace V5 inspection.",
   "accent": "#FF5C00",
   "shell": "shell.tsx",
-  "tags": ["live", "craftax", "eval", "stream", "canvas", "gameplay", "trace-v5"],
+  "tags": [
+    "live",
+    "craftax",
+    "eval",
+    "stream",
+    "canvas",
+    "gameplay",
+    "trace-v5"
+  ],
   "observationContract": {
     "schemaVersion": "synth.visual-observation-contract.v1",
     "readiness": {
-      "rejectTransportStates": ["idle", "declared", "replaying", "error", "connecting", "reconnecting"],
+      "rejectTransportStates": [
+        "idle",
+        "declared",
+        "replaying",
+        "error",
+        "connecting",
+        "reconnecting"
+      ],
       "minimumRolloutCount": 1,
       "minimumRenderedFrameCount": 1,
       "minimumSemanticEventCount": 1,
       "requireTerminal": true
     }
   },
-  "slots": [
+  "inputs": [
     {
       "name": "stream",
       "description": "Declared live SSE or fixture with Craftax C7-W04 kinds",
-      "accepts": ["live_sse", "fixture", "inline"],
+      "accepts": [
+        "live_sse",
+        "fixture",
+        "inline"
+      ],
       "required": true,
       "multiple": true,
       "schema": "synth.trace-stream-event.v1"

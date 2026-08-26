@@ -406,15 +406,8 @@ mod tests {
 
     #[test]
     fn staging_a_training_artifact_retains_identity() {
-        let isolated = std::env::temp_dir().join(format!(
-            "synth-desktop-eval-artifact-{}",
-            uuid::Uuid::new_v4().simple()
-        ));
-        let _ = fs::remove_dir_all(&isolated);
-        fs::create_dir_all(&isolated).unwrap();
-        let previous = std::env::var_os(crate::instance::DATA_ROOT_ENV);
-        std::env::set_var(crate::instance::DATA_ROOT_ENV, &isolated);
-        let adapter = isolated.join("adapter");
+        let isolated = crate::instance::IsolatedDataRoot::new("eval-artifact");
+        let adapter = isolated.path.join("adapter");
         fs::create_dir_all(&adapter).unwrap();
         fs::write(adapter.join("adapter_config.json"), b"{\"rank\":8}").unwrap();
         fs::write(adapter.join("adapters.safetensors"), b"lora-weights").unwrap();
@@ -439,10 +432,5 @@ mod tests {
         assert_eq!(staged["candidates"][0]["metadata"]["base_model_id"], artifact.base_model_id);
         assert_eq!(staged["candidates"][0]["metadata"]["config_digest"], "sha256:config");
         assert_eq!(staged["candidates"][0]["kind"], "mlx-lora.v1");
-        match previous {
-            Some(value) => std::env::set_var(crate::instance::DATA_ROOT_ENV, value),
-            None => std::env::remove_var(crate::instance::DATA_ROOT_ENV),
-        }
-        let _ = fs::remove_dir_all(isolated);
     }
 }

@@ -2,6 +2,7 @@ export type {
   VisualBinding,
   VisualBindingKind,
   VisualBindings,
+  VisualComponentMeta,
   VisualInstance,
   VisualTemplate,
   VisualTemplateMeta,
@@ -13,7 +14,42 @@ export type {
   VisualChromeTheme
 } from "./types.ts";
 
-export { DEFAULT_CHROME } from "./types.ts";
+export {
+  DEFAULT_CHROME,
+  bindingInputName,
+  bindingList,
+  resolveInputName,
+  stampBindingInput,
+  templateInputs
+} from "./types.ts";
+export {
+  COMPOSE_COMPONENTS,
+  COMPOSE_EVENT_STREAM_INPUTS,
+  COMPOSE_EVENT_STREAM_SLOTS,
+  COMPOSE_SPEC_SCHEMA,
+  composeComponentEmitsCursor,
+  composeConsumesOptimizerRun,
+  composeConsumesStreamOrOptimizer,
+  composeEventStreamSlot,
+  composePlacementNeedsOptimizerRun,
+  composePlacementNeedsStream,
+  isComposeComponentId,
+  isComposeEventStreamSlot,
+  parseComposeSpec
+} from "./composeSpec.ts";
+export type {
+  ComposeComponentId,
+  ComposeEventStreamSlot,
+  ComposePlacement,
+  ComposeSpec,
+  ComposeSpecResult
+} from "./composeSpec.ts";
+export {
+  OPTIMIZER_EVENT_SCHEMA,
+  looksLikeEvalTrace,
+  optimizerEventsToLiveEval
+} from "./optimizerCompose.ts";
+export type { OptimizerComposeResult } from "./optimizerCompose.ts";
 export {
   bindTemplateSlots,
   subscribeLiveSlot,
@@ -64,12 +100,14 @@ export type {
   TransportState
 } from "./replayClient.ts";
 export {
+  LIVE_EVAL_INPUT,
   LIVE_EVAL_SLOT,
   FORBIDDEN_LIVE_EVAL_SLOTS,
   assertLiveEvalSlot,
   assertDeclaredStreamSource,
   ingestLiveEnvelope,
   ingestLiveEnvelopes,
+  eventMatchesIncludeKinds,
   formatMissingNumber,
   formatMissingUsd,
   isGuessedStreamUrl,
@@ -83,3 +121,13 @@ export {
   renderInstanceTsx,
   markInstanceSaved
 } from "./save_tsx.ts";
+export {
+  compileSourcedModule,
+  isSourcedTemplate,
+  sourcedInvalidShell,
+  SOURCED_ALLOWED_IMPORTS,
+  SOURCED_KIND,
+  SOURCED_PROTOCOL,
+  SOURCED_TEMPLATE_ID,
+  validateSourcedSource
+} from "./sourcedVisual.ts";

@@ -7,6 +7,10 @@
   "description": "Agent-authored Mermaid source rendered by Desktop. Canonical bytes are the visual content field; this template has no example diagram.",
   "accent": "#2563EB",
   "rendererKind": "mermaid",
-  "tags": ["diagram", "mermaid", "uml"],
-  "slots": []
+  "tags": [
+    "diagram",
+    "mermaid",
+    "uml"
+  ],
+  "inputs": []
 }

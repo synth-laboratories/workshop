@@ -1,6 +1,7 @@
 import { SynthLogo } from "./SynthLogo";
 import { ProviderMark } from "./ProviderMark";
 import { truncate } from "../runtime/codexTurn";
+import type { SidePanelTab } from "../hooks/useShellLayout";
 
 function IconSidePanel() {
 	return (
@@ -32,7 +33,7 @@ export type AppTitlebarProps = {
 	activeLocalModel: boolean;
 	terminalOpen: boolean;
 	sidePanelOpen: boolean;
-	sidePanelTab: "outputs" | "inference" | "trace";
+	sidePanelTab: SidePanelTab;
 	reserveNativeControls?: boolean;
 	brand?: "synth" | "openai";
 	onCloseTab: () => void;

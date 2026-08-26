@@ -1,14 +1,74 @@
 import { useCallback, useEffect, useRef, useState, type KeyboardEvent, type PointerEvent } from "react";
 
+export type PaneResizeDirection = "output" | "sidebar" | "primary";
+
 type Props = {
 	value: number;
 	onChange: (value: number) => void;
 	minPrimary?: number;
 	minSecondary?: number;
 	ariaLabel?: string;
-	direction?: "output" | "sidebar" | "primary";
+	direction?: PaneResizeDirection;
 	resetValue?: number;
 };
+
+/**
+ * Keyboard spatial model (RP-CUA-012): Left shrinks the control's named
+ * dimension for every splitter (visual pane, visuals list, sidebar). Right
+ * grows it. Arrow keys move 40px; Shift+Arrow moves 64px. Home/End jump to
+ * the advertised min/max.
+ */
+export const PANE_KEYBOARD_STEP_PX = 40;
+export const PANE_KEYBOARD_SHIFT_STEP_PX = 64;
+
+export function clampPaneWidth(value: number, min: number, max: number): number {
+	return Math.round(Math.min(max, Math.max(min, value)));
+}
+
+/** CSS-pixel width after min/max. Prefer the layout box when it has been measured. */
+export function realizedPaneWidth(requested: number, min: number, max: number, cssWidth?: number | null): number {
+	if (typeof cssWidth === "number" && Number.isFinite(cssWidth)) {
+		return Math.round(cssWidth);
+	}
+	return clampPaneWidth(requested, min, max);
+}
+
+/**
+ * Left always decreases the named pane width. Directions do not invert the
+ * keyboard axis — pointer geometry may still measure from the right edge.
+ */
+export function keyboardWidthDelta(key: string, shiftKey = false): number | null {
+	const step = shiftKey ? PANE_KEYBOARD_SHIFT_STEP_PX : PANE_KEYBOARD_STEP_PX;
+	if (key === "ArrowLeft") return -step;
+	if (key === "ArrowRight") return step;
+	return null;
+}
+
+export function applyKeyboardResize(options: {
+	key: string;
+	shiftKey?: boolean;
+	value: number;
+	min: number;
+	max: number;
+}): number | null {
+	const { key, shiftKey = false, value, min, max } = options;
+	if (key === "Home") return Math.round(min);
+	if (key === "End") return Math.round(max);
+	const delta = keyboardWidthDelta(key, shiftKey);
+	if (delta == null) return null;
+	return clampPaneWidth(value + delta, min, max);
+}
+
+/** The pane whose width this separator names and reports. */
+export function namedPaneElement(handle: HTMLElement, direction: PaneResizeDirection): HTMLElement | null {
+	if (direction === "sidebar") return handle.parentElement;
+	if (direction === "primary") return handle.previousElementSibling instanceof HTMLElement ? handle.previousElementSibling : null;
+	return handle.nextElementSibling instanceof HTMLElement ? handle.nextElementSibling : null;
+}
+
+export function paneKeyboardValueText(width: number): string {
+	return `${width} pixels. Arrow keys move ${PANE_KEYBOARD_STEP_PX} pixels. Shift+Arrow moves ${PANE_KEYBOARD_SHIFT_STEP_PX} pixels. Home and End jump to the minimum and maximum.`;
+}
 
 export function PaneResizeHandle({
 	value,
@@ -21,8 +81,14 @@ export function PaneResizeHandle({
 }: Props) {
 	const handleRef = useRef<HTMLDivElement>(null);
 	const activePointer = useRef<number | null>(null);
+	const valueRef = useRef(value);
+	const onChangeRef = useRef(onChange);
 	const [maximum, setMaximum] = useState(value);
+	const [realized, setRealized] = useState<number | null>(null);
 	const resolvedResetValue = resetValue ?? (direction === "sidebar" ? 260 : direction === "primary" ? 560 : 420);
+	const minimum = direction === "primary" ? minPrimary : minSecondary;
+	valueRef.current = value;
+	onChangeRef.current = onChange;
 
 	const measureMaximum = useCallback((target: HTMLElement) => {
 		if (direction === "sidebar") {
@@ -30,29 +96,39 @@ export function PaneResizeHandle({
 			return appRow ? Math.max(minSecondary, appRow.getBoundingClientRect().width - minPrimary) : minSecondary;
 		}
 		const parent = target.parentElement;
-		const minimum = direction === "primary" ? minPrimary : minSecondary;
-		return parent ? Math.max(minimum, parent.getBoundingClientRect().width - (direction === "primary" ? minSecondary : minPrimary)) : minimum;
+		const floor = direction === "primary" ? minPrimary : minSecondary;
+		return parent ? Math.max(floor, parent.getBoundingClientRect().width - (direction === "primary" ? minSecondary : minPrimary)) : floor;
 	}, [direction, minPrimary, minSecondary]);
 
+	const persistRealized = useCallback((target: HTMLElement) => {
+		const named = namedPaneElement(target, direction);
+		if (!named) return;
+		const cssWidth = Math.round(named.getBoundingClientRect().width);
+		if (!Number.isFinite(cssWidth) || cssWidth < 1) return;
+		setRealized(cssWidth);
+		if (Math.abs(cssWidth - valueRef.current) >= 1) onChangeRef.current(cssWidth);
+	}, [direction]);
+
 	const resize = useCallback((clientX: number, target: HTMLElement) => {
+		const max = measureMaximum(target);
 		if (direction === "primary") {
 			const parent = target.parentElement;
 			if (!parent) return;
 			const bounds = parent.getBoundingClientRect();
-			onChange(Math.round(Math.min(measureMaximum(target), Math.max(minPrimary, clientX - bounds.left))));
+			onChange(clampPaneWidth(clientX - bounds.left, minPrimary, max));
 			return;
 		}
 		if (direction === "sidebar") {
 			const appRow = target.parentElement?.parentElement;
 			if (!appRow) return;
 			const bounds = appRow.getBoundingClientRect();
-			onChange(Math.round(Math.min(measureMaximum(target), Math.max(minSecondary, clientX - bounds.left))));
+			onChange(clampPaneWidth(clientX - bounds.left, minSecondary, max));
 			return;
 		}
 		const parent = target.parentElement;
 		if (!parent) return;
 		const bounds = parent.getBoundingClientRect();
-		onChange(Math.round(Math.min(measureMaximum(target), Math.max(minSecondary, bounds.right - clientX))));
+		onChange(clampPaneWidth(bounds.right - clientX, minSecondary, max));
 	}, [direction, measureMaximum, minPrimary, minSecondary, onChange]);
 
 	const release = useCallback(() => {
@@ -60,16 +136,28 @@ export function PaneResizeHandle({
 		const pointerId = activePointer.current;
 		activePointer.current = null;
 		if (target && pointerId !== null && target.hasPointerCapture(pointerId)) target.releasePointerCapture(pointerId);
-	}, []);
+		if (target) requestAnimationFrame(() => persistRealized(target));
+	}, [persistRealized]);
 
 	useEffect(() => {
 		const target = handleRef.current;
 		if (!target) return;
-		const measure = () => setMaximum(Math.round(measureMaximum(target)));
+		const named = namedPaneElement(target, direction);
+		const parentObserved = direction === "sidebar" ? target.parentElement?.parentElement : target.parentElement;
+		const measure = () => {
+			setMaximum(Math.round(measureMaximum(target)));
+			if (!named) return;
+			const cssWidth = Math.round(named.getBoundingClientRect().width);
+			if (!Number.isFinite(cssWidth) || cssWidth < 1) return;
+			setRealized(cssWidth);
+			if (activePointer.current === null && Math.abs(cssWidth - valueRef.current) >= 1) {
+				onChangeRef.current(cssWidth);
+			}
+		};
 		measure();
 		const observer = new ResizeObserver(measure);
-		const observed = direction === "sidebar" ? target.parentElement?.parentElement : target.parentElement;
-		if (observed) observer.observe(observed);
+		if (parentObserved) observer.observe(parentObserved);
+		if (named) observer.observe(named);
 		window.addEventListener("blur", release);
 		return () => { observer.disconnect(); window.removeEventListener("blur", release); release(); };
 	}, [direction, measureMaximum, release]);
@@ -91,15 +179,20 @@ export function PaneResizeHandle({
 	};
 
 	const onKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
-		if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+		const current = realizedPaneWidth(value, minimum, maximum, realized);
+		const next = applyKeyboardResize({
+			key: event.key,
+			shiftKey: event.shiftKey,
+			value: current,
+			min: minimum,
+			max: maximum
+		});
+		if (next == null) return;
 		event.preventDefault();
-		const delta = event.shiftKey ? 64 : 24;
-		const signed = direction === "sidebar" || direction === "primary"
-			? (event.key === "ArrowRight" ? delta : -delta)
-			: (event.key === "ArrowLeft" ? delta : -delta);
-		const minimum = direction === "primary" ? minPrimary : minSecondary;
-		onChange(Math.round(Math.min(maximum, Math.max(minimum, value + signed))));
+		onChange(next);
 	};
+
+	const reported = realizedPaneWidth(value, minimum, maximum, realized);
 
 	return <div
 		ref={handleRef}
@@ -107,17 +200,22 @@ export function PaneResizeHandle({
 		role="separator"
 		aria-label={ariaLabel}
 		aria-orientation="vertical"
-		aria-valuemin={direction === "primary" ? minPrimary : minSecondary}
+		aria-valuemin={minimum}
 		aria-valuemax={maximum}
-		aria-valuenow={value}
+		aria-valuenow={reported}
+		aria-valuetext={paneKeyboardValueText(reported)}
 		tabIndex={0}
 		data-testid={direction === "sidebar" ? "sidebar-resize-handle" : direction === "primary" ? "visuals-resize-handle" : "pane-resize-handle"}
 		onPointerDown={onPointerDown}
 		onPointerMove={onPointerMove}
 		onPointerUp={onPointerUp}
 		onPointerCancel={onPointerUp}
-		onLostPointerCapture={() => { activePointer.current = null; }}
+		onLostPointerCapture={() => {
+			activePointer.current = null;
+			const target = handleRef.current;
+			if (target) persistRealized(target);
+		}}
 		onKeyDown={onKeyDown}
-		onDoubleClick={() => onChange(Math.min(maximum, Math.max(direction === "primary" ? minPrimary : minSecondary, resolvedResetValue)))}
+		onDoubleClick={() => onChange(clampPaneWidth(resolvedResetValue, minimum, maximum))}
 	/>;
 }

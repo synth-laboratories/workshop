@@ -13,6 +13,14 @@ test("shared pane separator exposes bounded keyboard and pointer behavior", () =
 		assert.ok(handle.includes(contract), contract);
 	}
 	assert.match(handle, /parent\.getBoundingClientRect\(\)/);
+	assert.match(handle, /PANE_KEYBOARD_STEP_PX = 40/);
+	assert.match(handle, /key === "Home"/);
+	assert.match(handle, /key === "End"/);
+	assert.match(handle, /namedPaneElement/);
+	assert.doesNotMatch(
+		handle,
+		/direction === "sidebar" \|\| direction === "primary"[\s\S]*ArrowLeft \? delta/
+	);
 });
 
 test("Visuals library has an independently persisted list-to-preview separator", () => {

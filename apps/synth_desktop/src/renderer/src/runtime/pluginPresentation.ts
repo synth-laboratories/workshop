@@ -1,9 +1,11 @@
 /**
  * The single owner of plugin lifecycle presentation.
  *
- * Sidebar, Optimizers page, and any future plugin detail surface derive their
- * label, tone, and usability from here — never from a local boolean and never
- * from a second copy of the phase map.
+ * Sidebar, Optimizers page, the v0.8 capability manifest, and any future
+ * plugin detail surface derive their label, tone, and usability from here —
+ * never from a local boolean and never from a second copy of the phase map.
+ *
+ * Laguna is not a plugin: its phase comes from LagunaStatus, not this map.
  */
 
 import type { PluginStatus } from "../bridge/types";

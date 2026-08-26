@@ -937,6 +937,60 @@ pub fn focus_existing_instance(identifier: &str) -> io::Result<()> {
     }
 }
 
+/// Serialises tests that read or repoint `SYNTH_DESKTOP_DATA_ROOT`.
+///
+/// The variable is process-global. A per-module mutex cannot stop
+/// `typed_capabilities` from racing `training_artifacts` under
+/// `--test-threads=8`.
+#[cfg(test)]
+pub fn lock_data_root_for_test() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// Private data root for one test. Restored on drop so a panic cannot leave
+/// later tests pointing at a deleted directory.
+#[cfg(test)]
+pub struct IsolatedDataRoot {
+    pub path: PathBuf,
+    previous: Option<std::ffi::OsString>,
+    _guard: std::sync::MutexGuard<'static, ()>,
+}
+
+#[cfg(test)]
+impl IsolatedDataRoot {
+    pub fn new(label: &str) -> Self {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static SEQ: AtomicUsize = AtomicUsize::new(0);
+        let guard = lock_data_root_for_test();
+        let path = env::temp_dir().join(format!(
+            "synth-desktop-{label}-{}-{}",
+            std::process::id(),
+            SEQ.fetch_add(1, Ordering::SeqCst)
+        ));
+        let _ = fs::remove_dir_all(&path);
+        fs::create_dir_all(&path).expect("isolated data root");
+        let previous = env::var_os(DATA_ROOT_ENV);
+        env::set_var(DATA_ROOT_ENV, &path);
+        Self {
+            path,
+            previous,
+            _guard: guard,
+        }
+    }
+}
+
+#[cfg(test)]
+impl Drop for IsolatedDataRoot {
+    fn drop(&mut self) {
+        match self.previous.take() {
+            Some(value) => env::set_var(DATA_ROOT_ENV, value),
+            None => env::remove_var(DATA_ROOT_ENV),
+        }
+        let _ = fs::remove_dir_all(&self.path);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -42,7 +42,39 @@ test("the canonical envelope resolves unchanged", () => {
   });
   assert.equal(resolved.status, "canonical");
   assert.equal(resolved.slots.length, 1);
+  assert.equal(resolved.slots[0].input, "stream");
+  assert.equal(resolved.slots[0].slot, undefined);
   assert.equal(resolved.error, null);
+});
+
+test("the canonical inputs array does not emit slot", () => {
+  const resolved = resolveVisualBindings({
+    schemaVersion: "synth.visual-bindings.v1",
+    inputs: [{ input: "stream", kind: "live_sse", source: "http://127.0.0.1:8114/rollouts/r1/stream" }]
+  });
+  assert.equal(resolved.status, "canonical");
+  assert.equal(resolved.slots[0].input, "stream");
+  assert.equal(resolved.slots[0].slot, undefined);
+});
+
+test("disagreeing input and slot fail closed", () => {
+  const resolved = resolveVisualBindings({
+    schemaVersion: "synth.visual-bindings.v1",
+    slots: [{ input: "stream", slot: "spec", kind: "inline", data: {} }]
+  });
+  assert.equal(resolved.status, "rejected");
+  assert.match(resolved.error, /disagree/);
+});
+
+test("agreeing inputs and slots arrays bind regardless of field order", () => {
+  const resolved = resolveVisualBindings({
+    schemaVersion: "synth.visual-bindings.v1",
+    inputs: [{ input: "stream", kind: "inline", data: { n: 1 } }],
+    slots: [{ kind: "inline", data: { n: 1 }, slot: "stream" }]
+  });
+  assert.equal(resolved.status, "canonical");
+  assert.equal(resolved.slots[0].input, "stream");
+  assert.equal(resolved.slots[0].slot, undefined);
 });
 
 test("the slot-keyed map that rendered nothing now resolves to ten live streams", () => {
@@ -51,7 +83,7 @@ test("the slot-keyed map that rendered nothing now resolves to ten live streams"
   assert.equal(resolved.status, "upgraded");
   assert.equal(resolved.slots.length, 10);
   assert.deepEqual(resolved.upgradedSlots, ["stream"]);
-  assert.ok(resolved.slots.every((slot) => slot.slot === "stream" && slot.kind === "live_sse"));
+  assert.ok(resolved.slots.every((slot) => slot.input === "stream" && slot.slot === undefined && slot.kind === "live_sse"));
 
   // And the transport the renderer would actually open.
   const { streams, missingTransport } = replayStreamsFromBindings(resolved.slots);
@@ -63,7 +95,8 @@ test("the slot key is authoritative over a descriptor's own claim", () => {
   const resolved = resolveVisualBindings({
     stream: { slot: "somewhere_else", kind: "live_sse", source: "http://127.0.0.1:8114/rollouts/r1/stream" }
   });
-  assert.equal(resolved.slots[0].slot, "stream");
+  assert.equal(resolved.slots[0].slot, undefined);
+  assert.equal(resolved.slots[0].input, "stream");
 });
 
 test("a legacy prop bag becomes inline slots and keeps its data", () => {
@@ -71,7 +104,7 @@ test("a legacy prop bag becomes inline slots and keeps its data", () => {
   assert.equal(resolved.status, "upgraded");
   assert.equal(resolved.slots.length, 2);
   assert.ok(resolved.slots.every((slot) => slot.kind === "inline"));
-  assert.deepEqual(resolved.slots.find((slot) => slot.slot === "matrix").data, [1, 2, 3]);
+  assert.deepEqual(resolved.slots.find((slot) => slot.input === "matrix").data, [1, 2, 3]);
 });
 
 test("inline chart data carrying a kind field stays inline data", () => {

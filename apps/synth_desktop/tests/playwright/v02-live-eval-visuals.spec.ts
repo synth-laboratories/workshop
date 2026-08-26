@@ -1,6 +1,6 @@
 /**
- * v0.2 live-eval visual families: fixture replay of Craftax, Harbor, and
- * dig.bench. Proves visual-first slot `stream`, missing ≠ 0, campaign
+ * v0.2 live-eval visual families: fixture replay of Craftax and Harbor.
+ * Proves visual-first slot `stream`, missing ≠ 0, campaign
  * isolation, and no invented frames. Paid providers are not used.
  */
 import { readFileSync } from "node:fs";
@@ -68,25 +68,6 @@ test("[v0.2] Harbor live visual fails closed when reward.txt is missing", async 
 	await expect(viewer).not.toContainText("$0.00");
 });
 
-test("[v0.2] dig.bench live visual is text-only and keeps incomplete reward null", async ({ page }) => {
-	const events = loadEvents("families/first_class_example_containers/live.digbench.v1/examples/events.json");
-	await installVisuals(page, [liveVisual({
-		id: "vis_v02_digbench",
-		templateId: "live.digbench.v1",
-		title: "dig.bench P-1",
-		bindings: streamBinding(events)
-	})]);
-	const pane = await openVisual(page, "vis_v02_digbench");
-	const viewer = pane.getByTestId("visual-live-digbench");
-	await expect(viewer).toBeVisible();
-	await expect(viewer.getByTestId("digbench-observation")).toContainText("A locked door", { timeout: 25_000 });
-	await expect(viewer.getByTestId("digbench-legal-actions")).toContainText("inspect");
-	expect(await metricValue(viewer, "/reward")).toBe("pending");
-	await expect(viewer.locator("img")).toHaveCount(0);
-	await expect(viewer).not.toContainText("PNG");
-	await expect(viewer).not.toContainText("0.00");
-});
-
 test("[v0.2] guessed /events bindings fail closed instead of rendering a live visual", async ({ page }) => {
 	await installVisuals(page, [liveVisual({
 		id: "vis_v02_guessed",
@@ -135,4 +116,39 @@ test("[v0.2] two live visuals do not import each other's evidence", async ({ pag
 	await page.getByTestId("visuals-card-vis_v02_iso_b").getByRole("button", { name: "Open" }).click();
 	await expect(page.getByTestId("visual-pane").getByTestId("visual-live-craftax")).toContainText("BRAVO-ONLY observation", { timeout: 20_000 });
 	await expect(page.getByTestId("visual-pane").getByTestId("visual-live-craftax")).not.toContainText("ALPHA-ONLY observation");
+});
+
+test("[v0.2] live.eval_stream.v1 shortcut pane mounts advertised compose landmarks", async ({ page }) => {
+	const events = [
+		envelope("stream.subscribed", null, { "stream.id": "stream_eval_shortcut", ready: true }),
+		envelope("run_started", 1, { suite: "eval_acceptance" }),
+		envelope("rollout.finished", 2, { marker: "EVAL-REWARD-3.1", reward: 3.1 }),
+		envelope("run_finished", 3, { status: "completed", mean_reward: 3.1 })
+	];
+	await installVisuals(page, [liveVisual({
+		id: "vis_v02_eval_stream",
+		templateId: "live.eval_stream.v1",
+		title: "Eval stream shortcut",
+		bindings: {
+			schemaVersion: "synth.visual-bindings.v1",
+			inputs: [{ input: "stream", kind: "inline", data: { events } }]
+		}
+	})]);
+	const pane = await openVisual(page, "vis_v02_eval_stream");
+	const viewer = pane.getByTestId("visual-live-eval-stream");
+	await expect(viewer).toBeVisible();
+	await expect(viewer.getByTestId("compose-metrics")).toBeVisible();
+	await expect(viewer.getByTestId("compose-event-stream")).toBeVisible();
+	await expect(viewer.getByTestId("compose-scrubber")).toBeVisible();
+	await expect(viewer.getByRole("button", { name: /rollout\.finished/ })).toBeVisible({ timeout: 20_000 });
+	await expect(viewer.getByTestId("compose-metrics-count")).toHaveText("3", { timeout: 20_000 });
+	await expect(viewer.getByTestId("compose-metrics-scalar")).toContainText("3.1");
+	const slider = viewer.getByTestId("compose-scrubber-slider");
+	await expect(slider).toBeVisible();
+	await slider.fill("2");
+	await expect(viewer.getByTestId("compose-scrubber-sequence")).toHaveText("2");
+	await viewer.getByRole("button", { name: /rollout\.finished/ }).click();
+	const modal = viewer.getByTestId("compose-detail-modal");
+	await expect(modal).toBeVisible();
+	await expect(modal.getByTestId("compose-detail-payload")).toContainText("EVAL-REWARD-3.1");
 });

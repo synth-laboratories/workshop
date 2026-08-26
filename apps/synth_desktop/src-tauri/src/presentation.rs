@@ -11,7 +11,9 @@ use serde_json::{json, Value};
 
 use crate::core_runtime::CoreRuntime;
 use crate::data::TraceRecord;
-use crate::visuals::{VisualCreateRequest, VisualQuery, VisualRecord};
+use crate::visuals::{
+    binding_descriptors, descriptor_input_name, VisualCreateRequest, VisualQuery, VisualRecord,
+};
 
 pub const TRACE_INSPECTOR_TEMPLATE: &str = "trace.rollout_inspector.v1";
 pub const TRACE_PROJECTION_SCHEMA: &str = "synth.trace-projection.rollout-inspector.v1";
@@ -98,23 +100,23 @@ pub fn trace_inspector_visual_id(trace: &TraceRecord) -> String {
     }
 }
 
-/// The digest a visual's projection slot is bound to.
+/// The digest a visual's projection input is bound to.
 pub fn trace_digest_binding(visual: &VisualRecord) -> Option<String> {
     if visual.template_id != TRACE_INSPECTOR_TEMPLATE {
         return None;
     }
-    visual
-        .bindings
-        .get("slots")
-        .and_then(Value::as_array)?
-        .iter()
-        .find(|slot| {
-            slot.get("slot").and_then(Value::as_str) == Some("projection")
+    binding_descriptors(&visual.bindings)
+        .ok()?
+        .into_iter()
+        .find_map(|slot| {
+            if descriptor_input_name(&slot).ok().as_deref() == Some("projection")
                 && slot.get("kind").and_then(Value::as_str) == Some("trace_v5")
+            {
+                slot.get("source").and_then(Value::as_str).map(str::to_owned)
+            } else {
+                None
+            }
         })
-        .and_then(|slot| slot.get("source"))
-        .and_then(Value::as_str)
-        .map(str::to_owned)
 }
 
 fn trace_inspector_create_request(trace: &TraceRecord) -> VisualCreateRequest {
@@ -123,8 +125,8 @@ fn trace_inspector_create_request(trace: &TraceRecord) -> VisualCreateRequest {
         title: Some(trace.title.clone()),
         bindings: Some(json!({
             "schemaVersion": "synth.visual-bindings.v1",
-            "slots": [{
-                "slot": "projection",
+            "inputs": [{
+                "input": "projection",
                 "kind": "trace_v5",
                 "source": trace.digest,
                 "schema": TRACE_PROJECTION_SCHEMA,
@@ -236,8 +238,8 @@ pub async fn ensure_query_catalog(core: &CoreRuntime, snapshot_id: &str) -> Resu
         title: Some(title),
         bindings: Some(json!({
             "schemaVersion": "synth.visual-bindings.v1",
-            "slots": [{
-                "slot": "result",
+            "inputs": [{
+                "input": "result",
                 "kind": "query_snapshot",
                 "source": snapshot.snapshot_id,
                 "schema": crate::trace_query::TRACE_QUERY_RESULT_SCHEMA,

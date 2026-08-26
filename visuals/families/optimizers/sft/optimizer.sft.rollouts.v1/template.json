@@ -7,22 +7,37 @@
   "description": "SFT campaign child rollout resource-refs. Not sparse metric arrays as lanes.",
   "accent": "#F05F22",
   "shell": "shell.tsx",
-  "tags": ["optimizer", "sft", "rollouts"],
+  "tags": [
+    "optimizer",
+    "sft",
+    "rollouts"
+  ],
   "observationContract": {
     "schemaVersion": "synth.visual-observation-contract.v1",
     "readiness": {
-      "rejectTransportStates": ["idle", "declared", "replaying", "error", "connecting", "reconnecting"],
+      "rejectTransportStates": [
+        "idle",
+        "declared",
+        "replaying",
+        "error",
+        "connecting",
+        "reconnecting"
+      ],
       "minimumRolloutCount": 0,
       "minimumRenderedFrameCount": 0,
       "minimumSemanticEventCount": 1,
       "requireTerminal": true
     }
   },
-  "slots": [
+  "inputs": [
     {
       "name": "optimizer_run",
       "description": "Optimizer run + campaign child container_rollout refs",
-      "accepts": ["optimizer_run", "fixture", "inline"],
+      "accepts": [
+        "optimizer_run",
+        "fixture",
+        "inline"
+      ],
       "required": true,
       "schema": "optimizer_event.v1"
     }

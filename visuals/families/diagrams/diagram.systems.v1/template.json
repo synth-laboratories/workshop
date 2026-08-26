@@ -7,6 +7,11 @@
   "description": "An explicitly positioned, bounded JSON systems scene rendered deterministically to SVG.",
   "accent": "#7C3AED",
   "rendererKind": "systems",
-  "tags": ["diagram", "systems", "2d", "architecture"],
-  "slots": []
+  "tags": [
+    "diagram",
+    "systems",
+    "2d",
+    "architecture"
+  ],
+  "inputs": []
 }

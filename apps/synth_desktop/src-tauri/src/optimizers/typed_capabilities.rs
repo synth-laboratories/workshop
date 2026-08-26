@@ -150,24 +150,8 @@ mod tests {
     use serde_json::json;
     use std::fs;
 
-    fn isolated_root() -> (std::path::PathBuf, Option<std::ffi::OsString>) {
-        let isolated = std::env::temp_dir().join(format!(
-            "synth-desktop-typed-caps-{}",
-            std::process::id()
-        ));
-        let _ = fs::remove_dir_all(&isolated);
-        fs::create_dir_all(&isolated).unwrap();
-        let previous = std::env::var_os(crate::instance::DATA_ROOT_ENV);
-        std::env::set_var(crate::instance::DATA_ROOT_ENV, &isolated);
-        (isolated, previous)
-    }
-
-    fn restore(previous: Option<std::ffi::OsString>, isolated: std::path::PathBuf) {
-        match previous {
-            Some(value) => std::env::set_var(crate::instance::DATA_ROOT_ENV, value),
-            None => std::env::remove_var(crate::instance::DATA_ROOT_ENV),
-        }
-        let _ = fs::remove_dir_all(isolated);
+    fn isolated_root() -> crate::instance::IsolatedDataRoot {
+        crate::instance::IsolatedDataRoot::new("typed-caps")
     }
 
     #[test]
@@ -182,6 +166,7 @@ mod tests {
 
     #[test]
     fn inspect_and_plan_never_download() {
+        let _lock = crate::instance::lock_data_root_for_test();
         let inspect = inspect_local_mlx();
         assert_eq!(
             inspect["modelId"],
@@ -210,8 +195,8 @@ mod tests {
 
     #[test]
     fn artifact_list_inspect_export_delete() {
-        let (isolated, previous) = isolated_root();
-        let adapter = isolated.join("adapter");
+        let isolated = isolated_root();
+        let adapter = isolated.path.join("adapter");
         fs::create_dir_all(&adapter).unwrap();
         fs::write(adapter.join("weights.safetensors"), b"lora").unwrap();
         let artifact = TrainingArtifact::from_mlx_handoff(
@@ -236,7 +221,7 @@ mod tests {
         assert_eq!(listed["artifacts"].as_array().unwrap().len(), 1);
         let inspected = inspect_training_artifact("cap-1").unwrap();
         assert_eq!(inspected["artifact"]["id"], "cap-1");
-        let dest = isolated.join("exports");
+        let dest = isolated.path.join("exports");
         fs::create_dir_all(&dest).unwrap();
         let dest_path = dest.join("cap-1");
         let exported = export_or_delete_artifact(
@@ -252,7 +237,6 @@ mod tests {
         assert!(dest_path.join("weights.safetensors").is_file());
         export_or_delete_artifact("cap-1", "delete", true, None, None).unwrap();
         assert!(inspect_training_artifact("cap-1").is_err());
-        restore(previous, isolated);
     }
 
     #[test]
@@ -263,7 +247,7 @@ mod tests {
 
     #[test]
     fn eval_launch_retains_artifact_id() {
-        let (isolated, previous) = isolated_root();
+        let _isolated = isolated_root();
         let artifact = TrainingArtifact::from_mlx_handoff(
             "run-eval",
             "sft",
@@ -280,6 +264,5 @@ mod tests {
         let body = launch_artifact_eval_request("eval-art", None, true).unwrap();
         assert_eq!(body["recipeId"], EVAL_MLX_LOCAL_RECIPE);
         assert_eq!(body["trainingArtifactId"], "eval-art");
-        restore(previous, isolated);
     }
 }

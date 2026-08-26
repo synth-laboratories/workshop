@@ -219,7 +219,7 @@ mod tests {
     fn bearer_auth_is_injected_for_openrouter() {
         let route = route_for("POST", "/v1/providers/openrouter/chat/completions").unwrap();
         let request = inject_auth(
-            reqwest::Client::new().post(route.upstream_url),
+            crate::http::http_client().post(route.upstream_url),
             route,
             &SecretBytes::from_utf8("test-provider-key"),
         )

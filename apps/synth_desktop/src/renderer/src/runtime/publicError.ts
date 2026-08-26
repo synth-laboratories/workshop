@@ -110,6 +110,8 @@ export function publicError(reason: unknown, fallback = "The operation failed.")
 	if (remediation && remediation !== message) parts.push(remediation);
 	const line = parts.join(" ");
 	// A code the message already names adds nothing; otherwise it is how a
-	// person finds the same failure in Diagnostics.
+	// person finds the same failure in Diagnostics. `internal` is a developer
+	// classification, not a public diagnostic code — never append `(internal)`.
+	if (code === "internal") return line;
 	return code && !line.includes(code) ? `${line} (${code})` : line;
 }

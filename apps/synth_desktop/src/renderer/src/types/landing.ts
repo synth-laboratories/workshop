@@ -167,11 +167,107 @@ export type ArtifactRef = {
 	metadata?: Record<string, unknown>;
 	/** Session that authored this visual. Read-only display never copies this. */
 	ownerSessionId?: string;
+	/** Workshop session id from VisualRecord. Display/follow only; not Outputs ownership. */
+	sessionId?: string;
+	/** Optimizer run id from VisualRecord. Local follow only. */
+	runId?: string;
+	/** Local trace id from VisualRecord. Data traces follow only. */
+	traceId?: string;
 	/** Cross-task discovery is labeled, never adopted as this chat's output. */
 	foreign?: boolean;
-	/** Durable authoring state projected for transcript and pane chrome. */
-	status?: "draft" | "review" | "ready" | "failed";
+	/** Durable VisualStatus. Review receipts stay on metadata; they are not a fourth vocab. */
+	status?: ArtifactRefStatus;
+	/** Seal receipt digest for this revision, when a VisualSeal exists. Not contentDigest. */
+	receiptDigest?: string;
 };
+
+export function formatVisualAdmissionIdentity(input: {
+	visualId?: string | null;
+	revision?: number | string | null;
+	receiptDigest?: string | null;
+	contentDigest?: string | null;
+}): string {
+	const visualId = input.visualId?.trim() || "vis —";
+	const revision =
+		input.revision === 0 || input.revision
+			? `rev ${input.revision}`
+			: "rev —";
+	const digest = input.receiptDigest?.trim()
+		? `receipt ${input.receiptDigest.slice(0, 8)}`
+		: input.contentDigest?.trim()
+			? `content ${input.contentDigest.slice(0, 8)}`
+			: "digest —";
+	return `${visualId} · ${revision} · ${digest}`;
+}
+
+export const VISUAL_OPS_NOT_A_WORKSHOP_ROUTE = "not a Workshop route";
+
+export type VisualOpsKind = "session" | "run" | "trace";
+
+export type VisualOpsRoute =
+	| "missing"
+	| "workshop-session"
+	| "optimizer-run"
+	| "local-trace"
+	| "not-a-workshop-route";
+
+/** Local disk is the default Workshop space. Intern/Shoal/Modal are not routes. */
+export function classifyVisualOpsRoute(
+	kind: VisualOpsKind,
+	id: string | null | undefined,
+	locallyOpenable: boolean | null = null
+): VisualOpsRoute {
+	if (!id?.trim()) return "missing";
+	if (locallyOpenable === false) return "not-a-workshop-route";
+	if (kind === "session") return "workshop-session";
+	if (kind === "run") return "optimizer-run";
+	return "local-trace";
+}
+
+export function visualOpsSpaceLabel(route: VisualOpsRoute): string | null {
+	if (route === "workshop-session") return "Workshop session";
+	if (route === "optimizer-run") return "optimizer run";
+	if (route === "local-trace") return "local trace";
+	if (route === "not-a-workshop-route") return VISUAL_OPS_NOT_A_WORKSHOP_ROUTE;
+	return null;
+}
+
+export function formatVisualOpsPart(
+	kind: VisualOpsKind,
+	id: string | null | undefined,
+	locallyOpenable: boolean | null = null
+): string {
+	const route = classifyVisualOpsRoute(kind, id, locallyOpenable);
+	const value = id?.trim() || "—";
+	if (route === "missing") return `${kind} —`;
+	const space = visualOpsSpaceLabel(route);
+	return space ? `${kind} ${value} · ${space}` : `${kind} ${value}`;
+}
+
+export function formatVisualOpsIdentity(input: {
+	sessionId?: string | null;
+	runId?: string | null;
+	traceId?: string | null;
+	sessionOpenable?: boolean | null;
+	runOpenable?: boolean | null;
+	traceOpenable?: boolean | null;
+}): string {
+	return [
+		formatVisualOpsPart("session", input.sessionId, input.sessionOpenable ?? null),
+		formatVisualOpsPart("run", input.runId, input.runOpenable ?? null),
+		formatVisualOpsPart("trace", input.traceId, input.traceOpenable ?? null)
+	].join(" · ");
+}
+
+/** Same machine as `VisualStatus` on VisualRecord. Viewer pointer, not a second lifecycle. */
+export const ARTIFACT_REF_STATUSES = ["draft", "live", "saved", "failed", "archived"] as const;
+export type ArtifactRefStatus = (typeof ARTIFACT_REF_STATUSES)[number];
+
+export function parseArtifactRefStatus(value: unknown): ArtifactRefStatus {
+	return ARTIFACT_REF_STATUSES.includes(value as ArtifactRefStatus)
+		? (value as ArtifactRefStatus)
+		: "draft";
+}
 
 /** Inline activity line in a local Laguna transcript (Poolside-style). */
 export type LocalActivityLine = {

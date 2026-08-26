@@ -776,6 +776,7 @@ export type ReportsBridge = {
 		claimRefs?: unknown;
 		researchLogRefs?: unknown;
 		limitations?: unknown;
+		experimentGroupId?: string;
 	}): Promise<ExperimentRecord>;
 	listLog(reportId: string): Promise<ResearchLogEntry[]>;
 	appendLog(reportId: string, request: {

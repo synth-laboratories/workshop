@@ -2,10 +2,12 @@ use super::chart_data;
 use super::charts;
 use super::mermaid::{self, Theme};
 use super::models::{
-    canonicalize_bindings, BindingsForm, RendererKind, VisualCreateRequest, VisualQuery,
-    VisualRecord, VisualRevision, VisualStatus, VisualUpdateRequest, VISUAL_SCHEMA_VERSION,
+    binding_descriptors, canonicalize_bindings, descriptor_input_name, BindingsForm, RendererKind,
+    VisualCreateRequest, VisualQuery, VisualRecord, VisualRevision, VisualStatus,
+    VisualUpdateRequest, VISUAL_SCHEMA_VERSION,
 };
 use super::renditions::{self, VisualAsset, VisualRendition};
+use super::sourced;
 use super::systems::{self, SystemsKind};
 use super::templates::{resolve_template, TemplateMeta};
 use crate::storage::{ContentStore, Database, EventAppend, EventJournal, EventSource};
@@ -144,7 +146,7 @@ impl VisualRegistry {
         input.details.insert("form".into(), json!(form.as_str()));
         // Slot names come from a template contract, not from free text, so the
         // cardinality here is bounded by the template's declared slots.
-        input.details.insert("slots".into(), json!(upgraded_slots));
+        input.details.insert("inputs".into(), json!(upgraded_slots));
         service.emit(input);
     }
 
@@ -182,6 +184,7 @@ impl VisualRegistry {
         let is_mermaid = mermaid::is_mermaid_template(&template.id);
         let systems_kind = systems::template_kind(&template.id);
         let is_chart = charts::is_chart_template(&template.id);
+        let is_sourced = sourced::is_sourced_template(&template.id);
         if is_mermaid {
             let source = request
                 .content
@@ -211,6 +214,17 @@ impl VisualRegistry {
                 .ok_or_else(|| anyhow!("{} requires content", template.id))?;
             charts::validate_source(source)?;
         }
+        if is_sourced {
+            let source = request
+                .content
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .ok_or_else(|| anyhow!("{} requires content", template.id))?;
+            if source.len() > sourced::MAX_SOURCE_BYTES {
+                bail!("{} exceeds {} bytes", template.id, sourced::MAX_SOURCE_BYTES);
+            }
+        }
         let status = request.status.unwrap_or(VisualStatus::Draft);
         let renderer_kind = if is_mermaid {
             RendererKind::Mermaid
@@ -220,6 +234,8 @@ impl VisualRegistry {
             RendererKind::SystemsDynamic
         } else if is_chart {
             RendererKind::Chart
+        } else if is_sourced {
+            RendererKind::Tsx
         } else {
             request.renderer_kind.unwrap_or(RendererKind::Template)
         };
@@ -262,6 +278,16 @@ impl VisualRegistry {
                 object.insert("renderStatus".into(), json!("queued"));
                 object.insert("rendererVersion".into(), json!(charts::RENDERER_VERSION));
                 object.insert("specSchema".into(), json!(charts::SCHEMA_VERSION));
+            }
+        }
+        if is_sourced {
+            if let Some(object) = metadata.as_object_mut() {
+                object
+                    .entry("presentation")
+                    .or_insert_with(|| json!("pane"));
+                object.insert("mediaType".into(), json!(sourced::MEDIA_TYPE_SOURCE));
+                object.insert("visualKind".into(), json!(sourced::KIND));
+                object.insert("protocolId".into(), json!(sourced::PROTOCOL_ID));
             }
         }
         let content_digest = if let Some(content) = request.content.as_ref() {
@@ -382,6 +408,19 @@ impl VisualRegistry {
             }
             if charts::is_chart_template(&existing.template_id) {
                 charts::validate_source(source)?;
+            }
+            if sourced::is_sourced_template(&existing.template_id) {
+                let trimmed = source.trim();
+                if trimmed.is_empty() {
+                    bail!("{} requires content", existing.template_id);
+                }
+                if trimmed.len() > sourced::MAX_SOURCE_BYTES {
+                    bail!(
+                        "{} exceeds {} bytes",
+                        existing.template_id,
+                        sourced::MAX_SOURCE_BYTES
+                    );
+                }
             }
         }
         // Canonicalise before anything reads the bindings. The mermaid and
@@ -518,7 +557,12 @@ impl VisualRegistry {
 
     pub async fn save(&self, id: String, tsx: Option<String>) -> Result<(VisualRecord, Value)> {
         let current = self.get(id.clone()).await?;
-        let body = tsx.unwrap_or_else(|| default_tsx_stub(&current));
+        let body = if sourced::is_sourced_template(&current.template_id) {
+            tsx.filter(|value| !value.trim().is_empty())
+                .ok_or_else(|| anyhow!("{} requires content", current.template_id))?
+        } else {
+            tsx.unwrap_or_else(|| default_tsx_stub(&current))
+        };
         let digest = self.content.put_bytes("blobs", body.as_bytes())?;
         let mut metadata = current.metadata.clone();
         if let Some(object) = metadata.as_object_mut() {
@@ -673,6 +717,8 @@ impl VisualRegistry {
             systems::MEDIA_TYPE_SOURCE
         } else if charts::is_chart_template(&visual.template_id) {
             charts::MEDIA_TYPE_SOURCE
+        } else if sourced::is_sourced_template(&visual.template_id) {
+            sourced::MEDIA_TYPE_SOURCE
         } else {
             bail!(
                 "visual {} does not expose canonical renderer source",
@@ -942,8 +988,8 @@ impl VisualRegistry {
 
     /// Resolve the evidence a chart's `from` blocks name.
     ///
-    /// One document per slot: a chart is a still image of one thing per slot,
-    /// and two bindings on one slot leave no way to say which one the picture
+    /// One document per input: a chart is a still image of one thing per input,
+    /// and two bindings on one input leave no way to say which one the picture
     /// came from. Kinds that only exist while something is running — a live
     /// stream — are refused here rather than sampled arbitrarily.
     async fn chart_documents(
@@ -951,28 +997,23 @@ impl VisualRegistry {
         visual: &VisualRecord,
         wanted: &std::collections::BTreeMap<String, Option<String>>,
     ) -> Result<(std::collections::BTreeMap<String, Value>, Value)> {
-        let slots = visual
-            .bindings
-            .get("slots")
-            .and_then(Value::as_array)
-            .cloned()
-            .unwrap_or_default();
+        let slots = binding_descriptors(&visual.bindings).unwrap_or_default();
         let mut documents = std::collections::BTreeMap::new();
         let mut provenance = serde_json::Map::new();
         for (slot, projection) in wanted {
             let matching: Vec<&Value> = slots
                 .iter()
                 .filter(|descriptor| {
-                    descriptor.get("slot").and_then(Value::as_str) == Some(slot.as_str())
+                    descriptor_input_name(descriptor).ok().as_deref() == Some(slot.as_str())
                 })
                 .collect();
             let descriptor = match matching.len() {
                 0 => bail!(
-                    "panel reads slot {slot}, which has no binding; bind it with visual_bind_data_source"
+                    "panel reads input {slot}, which has no binding; bind it with visual_bind_data_source"
                 ),
                 1 => matching[0],
                 count => bail!(
-                    "slot {slot} has {count} bindings; a chart reads one document per slot"
+                    "input {slot} has {count} bindings; a chart reads one document per input"
                 ),
             };
             let kind = descriptor
@@ -986,13 +1027,13 @@ impl VisualRegistry {
                     let document = descriptor
                         .get("data")
                         .cloned()
-                        .ok_or_else(|| anyhow!("inline slot {slot} carries no data"))?;
+                        .ok_or_else(|| anyhow!("inline input {slot} carries no data"))?;
                     receipt["digest"] = json!(digest_json(&document));
                     document
                 }
                 "fixture" => {
                     let path = source
-                        .ok_or_else(|| anyhow!("fixture slot {slot} needs a source path"))?;
+                        .ok_or_else(|| anyhow!("fixture input {slot} needs a source path"))?;
                     let (document, digest) = read_visual_fixture(path)?;
                     receipt["source"] = json!(path);
                     // A fixture is a file on disk, so its path is not identity.
@@ -1002,7 +1043,7 @@ impl VisualRegistry {
                 }
                 "local_cas" => {
                     let digest = source
-                        .ok_or_else(|| anyhow!("local_cas slot {slot} needs a blob digest"))?;
+                        .ok_or_else(|| anyhow!("local_cas input {slot} needs a blob digest"))?;
                     let bytes = self.content.get_bytes("blobs", digest)?;
                     receipt["digest"] = json!(digest);
                     serde_json::from_slice(&bytes)
@@ -1010,7 +1051,7 @@ impl VisualRegistry {
                 }
                 "trace_v5" => {
                     let trace = source
-                        .ok_or_else(|| anyhow!("trace_v5 slot {slot} needs a trace digest"))?;
+                        .ok_or_else(|| anyhow!("trace_v5 input {slot} needs a trace digest"))?;
                     let kind = projection
                         .clone()
                         .unwrap_or_else(|| CHART_DEFAULT_PROJECTION.to_string());
@@ -1028,7 +1069,7 @@ impl VisualRegistry {
                 }
                 "query_snapshot" => {
                     let snapshot_id = source
-                        .ok_or_else(|| anyhow!("query_snapshot slot {slot} needs a snapshot id"))?;
+                        .ok_or_else(|| anyhow!("query_snapshot input {slot} needs a snapshot id"))?;
                     let snapshot = crate::data::DataStore::new(
                         self.db.clone(),
                         self.content.clone(),
@@ -1041,9 +1082,9 @@ impl VisualRegistry {
                 }
                 "optimizer_run" => {
                     let run_id = source
-                        .ok_or_else(|| anyhow!("optimizer_run slot {slot} needs a run id"))?;
+                        .ok_or_else(|| anyhow!("optimizer_run input {slot} needs a run id"))?;
                     let service = self.optimizer_runs.get().ok_or_else(|| {
-                        anyhow!("this runtime has no optimizer service attached, so slot {slot} cannot be read")
+                        anyhow!("this runtime has no optimizer service attached, so input {slot} cannot be read")
                     })?;
                     // The typed result points at the per-trial ledger
                     // (`evidenceRefs.records`) rather than carrying it, and a
@@ -1068,7 +1109,7 @@ impl VisualRegistry {
                     document
                 }
                 other => bail!(
-                    "slot {slot} is bound as {other}, which a chart cannot read; supported kinds are inline, fixture, local_cas, trace_v5, query_snapshot, optimizer_run"
+                    "input {slot} is bound as {other}, which a chart cannot read; supported kinds are inline, fixture, local_cas, trace_v5, query_snapshot, optimizer_run"
                 ),
             };
             provenance.insert(slot.clone(), receipt);
@@ -1471,12 +1512,12 @@ impl VisualRegistry {
 }
 
 fn refuse_mermaid_stream_slot(bindings: &Value) -> Result<()> {
-    let Some(slots) = bindings.get("slots").and_then(Value::as_array) else {
+    let Ok(slots) = binding_descriptors(bindings) else {
         return Ok(());
     };
     for slot in slots {
-        if slot.get("slot").and_then(Value::as_str) == Some("stream") {
-            bail!("diagram.mermaid.v1 must not bind slot stream");
+        if descriptor_input_name(&slot).ok().as_deref() == Some("stream") {
+            bail!("diagram.mermaid.v1 must not bind input stream");
         }
     }
     Ok(())
@@ -1974,7 +2015,7 @@ mod tests {
     use tempfile::tempdir;
 
     /// A template these tests can create without canonical source. Mermaid,
-    /// systems, and chart templates all refuse a contentless create by
+    /// systems, chart, and sourced templates all refuse a contentless create by
     /// contract, so picking one here would test the guard, not the registry.
     fn non_mermaid_template(registry: &VisualRegistry) -> Option<String> {
         registry.list_templates(None).ok().and_then(|templates| {
@@ -2670,6 +2711,82 @@ mod tests {
         assert_eq!(dynamic.metadata["beatCount"], 2);
         let source = registry.visual_source(dynamic.id).await.unwrap();
         assert_eq!(source.media_type, systems::MEDIA_TYPE_SOURCE);
+    }
+
+    #[tokio::test]
+    async fn sourced_create_requires_content_and_exposes_source() {
+        let dir = tempdir().unwrap();
+        let storage = Storage::open(dir.path()).unwrap();
+        let registry = VisualRegistry::new(
+            storage.database().clone(),
+            EventJournal::new(storage.database().clone()),
+            ContentStore::new(storage.content_root()),
+        );
+        if registry.get_template(sourced::TEMPLATE_ID).is_err() {
+            return;
+        }
+        let missing = registry
+            .create(VisualCreateRequest {
+                template_id: sourced::TEMPLATE_ID.into(),
+                title: Some("Custom pane".into()),
+                bindings: Some(json!({})),
+                id: Some("vis_sourced_missing".into()),
+                status: None,
+                renderer_kind: None,
+                session_id: None,
+                message_id: None,
+                run_id: None,
+                trace_id: None,
+                parent_visual_id: None,
+                source_agent_id: None,
+                source_model: None,
+                content: None,
+                metadata: None,
+            })
+            .await;
+        assert!(
+            missing.is_err(),
+            "sourced create must fail closed without content"
+        );
+
+        let source = r#"import { VisualChrome } from "@synth/visuals/chrome";
+export default function Shell({ title }) {
+  return <VisualChrome title={title ?? "Custom"} testId="visual-sourced">ok</VisualChrome>;
+}
+"#;
+        let (created, _) = registry
+            .create(VisualCreateRequest {
+                template_id: sourced::TEMPLATE_ID.into(),
+                title: Some("Custom pane".into()),
+                bindings: Some(json!({})),
+                id: Some("vis_sourced_ok".into()),
+                status: Some(VisualStatus::Live),
+                renderer_kind: None,
+                session_id: None,
+                message_id: None,
+                run_id: None,
+                trace_id: None,
+                parent_visual_id: None,
+                source_agent_id: Some("mcp".into()),
+                source_model: None,
+                content: Some(source.into()),
+                metadata: Some(json!({"presentation": "pane"})),
+            })
+            .await
+            .unwrap();
+        assert_eq!(created.renderer_kind, RendererKind::Tsx);
+        assert!(created.content_digest.is_some());
+        assert_eq!(created.metadata["visualKind"], sourced::KIND);
+        assert_eq!(created.metadata["protocolId"], sourced::PROTOCOL_ID);
+        let asset = registry.visual_source(created.id.clone()).await.unwrap();
+        assert_eq!(asset.media_type, sourced::MEDIA_TYPE_SOURCE);
+        let decoded = String::from_utf8(
+            base64::engine::general_purpose::STANDARD
+                .decode(asset.base64)
+                .unwrap(),
+        )
+        .unwrap();
+        assert!(decoded.contains("visual-sourced"));
     }
 
     #[tokio::test]

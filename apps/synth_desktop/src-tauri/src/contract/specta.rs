@@ -1,29 +1,17 @@
 //! tauri-specta boundary scaffold (Wave 2 stretch).
 //!
-//! # Dual-path registration (do not break invoke)
+//! # Invoke registration
 //!
 //! [`crate::run`] registers this complete command collection through
-//! [`Builder::invoke_handler`].
+//! [`Builder::invoke_handler`]. Adding a command means appending it here;
+//! omitting it drops it from the running handler.
 //!
-//! This module owns a growing `tauri_specta::Builder` used **only** for:
-//! 1. TypeScript binding export → `src/renderer/src/generated/protocol.ts`
-//! 2. Documenting the eventual cutover sketch (below)
+//! This module owns the `tauri_specta::Builder` used for:
+//! 1. The live invoke handler (`specta.invoke_handler()` in `lib.rs`)
+//! 2. TypeScript binding export → `src/renderer/src/generated/protocol.ts`
 //!
 //! The seed command lives here (not in `lib.rs`) so `#[tauri::command]` +
 //! `pub` do not collide with macro reimports at the crate root.
-//!
-//! # Cutover sketch (when every command is collected)
-//!
-//! ```ignore
-//! let specta = contract::specta::builder();
-//! // #[cfg(debug_assertions)] { specta.export(...) }
-//! tauri::Builder::default()
-//!     .invoke_handler(specta.invoke_handler())  // replaces generate_handler!
-//!     .setup(move |app| { specta.mount_events(app); Ok(()) })
-//! ```
-//!
-//! Until then: never call `builder().invoke_handler()` from `run()` — it would
-//! drop every command not listed in `collect_commands!`.
 //!
 //! # Migrating the next command
 //!
@@ -225,6 +213,9 @@ pub fn builder() -> Builder<tauri::Wry> {
             crate::experiments_get,
             crate::experiments_attach_evidence,
             crate::experiments_create,
+            crate::experiments_create_child,
+            crate::experiments_relate,
+            crate::experiments_activate,
             crate::experiments_finalize,
             crate::reports_log_list,
             crate::reports_log_append,
@@ -477,8 +468,10 @@ mod tests {
         // 251 → 253: saved-LoRA checkpoint detail and artifact detail.
         // 255 → 261: current command graph, including the Rust-owned
         // OpenRouter model catalog read/refresh commands.
+        // 261 → 263: experiment create_child + activate (follow_up lineage).
+        // 263 → 264: experiment relate (member/candidate compared_with + promoted_to).
         assert_eq!(
-            exported, 261,
+            exported, 264,
             "generated bindings must contain the complete desktop command set"
         );
         assert_eq!(

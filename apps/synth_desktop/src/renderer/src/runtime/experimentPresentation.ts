@@ -25,3 +25,53 @@ export function formatExperimentResult(value: unknown): string {
 	const verdict = first(result, ["verdict", "status", "summary"]);
 	return typeof verdict === "string" && verdict.trim() ? verdict : "Result recorded";
 }
+
+const FAILURE_STATUSES = new Set(["failed", "error", "aborted", "interrupted"]);
+const REASON_KEYS = ["error", "errorMessage", "error_message", "message", "reason", "failureReason", "failure_reason"];
+const RECEIPT_KEYS = ["terminalReceipt", "terminal_receipt", "receipt"];
+
+function oneLine(value: string): string {
+	return value.trim().replace(/\s+/g, " ");
+}
+
+function textsFrom(source: unknown, keys: string[]): string[] {
+	const rec = record(source);
+	if (!rec) return [];
+	const out: string[] = [];
+	for (const key of keys) {
+		const value = rec[key];
+		if (typeof value === "string" && value.trim()) out.push(oneLine(value));
+		const nested = record(value);
+		if (!nested) continue;
+		for (const inner of ["message", "reason", "error", "summary", "text", "detail"]) {
+			const text = nested[inner];
+			if (typeof text === "string" && text.trim()) out.push(oneLine(text));
+		}
+	}
+	return out;
+}
+
+function firstText(sources: unknown[], keys: string[]): string | null {
+	for (const source of sources) {
+		const rec = record(source);
+		const nested = rec ? [source, rec.assessment, rec.error, rec.receipt] : [source];
+		for (const item of nested) {
+			const found = textsFrom(item, keys);
+			if (found[0]) return found[0];
+		}
+	}
+	return null;
+}
+
+/** One-line failure reason for a DAG node. Null when the node is not failed. */
+export function formatNodeFailureReason(node: {
+	status?: string;
+	provenance?: unknown;
+	metrics?: unknown;
+	config?: unknown;
+}): string | null {
+	if (!node.status || !FAILURE_STATUSES.has(node.status.toLowerCase())) return null;
+	return firstText([node.provenance, node.metrics, node.config], REASON_KEYS)
+		?? firstText([node.provenance, node.metrics, node.config], RECEIPT_KEYS)
+		?? "Reason unavailable";
+}

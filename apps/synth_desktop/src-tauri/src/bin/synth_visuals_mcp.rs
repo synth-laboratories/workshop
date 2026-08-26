@@ -191,6 +191,8 @@ mod tests {
             .unwrap();
         let properties = &bind["inputSchema"]["properties"];
         assert!(properties["bindings"]["type"] == "array");
+        assert!(properties["input"]["type"] == "string");
+        assert!(properties["slot"]["type"] == "string");
         let modes = properties["mode"]["enum"].as_array().unwrap();
         assert!(modes.iter().any(|mode| mode == "append"));
         assert!(properties["poll_url"]["type"] == "string");
@@ -212,7 +214,8 @@ mod tests {
             bindings["properties"]["schemaVersion"]["const"],
             "synth.visual-bindings.v1"
         );
-        assert!(bindings["properties"]["slots"]["type"] == "array");
+        assert!(bindings["properties"]["inputs"]["type"] == "array");
+        assert!(bindings["properties"].get("slots").is_none());
     }
 
     #[test]
@@ -265,6 +268,10 @@ mod tests {
         assert_eq!(managed_tool_name("fork").unwrap(), "visual_fork");
         assert_eq!(managed_tool_name("archive").unwrap(), "visual_archive");
         assert!(managed_tool_name("delete_everything").is_err());
+        assert!(
+            managed_tool_name("list_components").is_err(),
+            "components stay on list_templates; there is no list_components verb"
+        );
         let listed = tools();
         let advertised = listed["tools"][0]["inputSchema"]["properties"]["operation"]["enum"]
             .as_array()
@@ -351,8 +358,36 @@ mod tests {
         }))
         .unwrap();
         assert_eq!(bindings["schemaVersion"], "synth.visual-bindings.v1");
-        assert_eq!(bindings["slots"][0]["slot"], "experiment");
-        assert_eq!(bindings["slots"][0]["data"]["experimentId"], "exp.1");
+        assert!(bindings.get("slots").is_none());
+        assert_eq!(bindings["inputs"][0]["input"], "experiment");
+        assert!(bindings["inputs"][0].get("slot").is_none());
+        assert_eq!(bindings["inputs"][0]["data"]["experimentId"], "exp.1");
+    }
+
+    #[test]
+    fn create_with_bind_accepts_input_as_canonical_name() {
+        let bindings = create_bindings_from_args(&json!({
+            "template_id": "compose.visual.v1",
+            "input": "spec",
+            "kind": "inline",
+            "data": {"placements": []}
+        }))
+        .unwrap();
+        assert_eq!(bindings["inputs"][0]["input"], "spec");
+        assert!(bindings["inputs"][0].get("slot").is_none());
+        assert!(bindings.get("slots").is_none());
+    }
+
+    #[test]
+    fn create_with_bind_refuses_when_input_and_slot_disagree() {
+        assert!(create_bindings_from_args(&json!({
+            "template_id": "compose.visual.v1",
+            "input": "spec",
+            "slot": "stream",
+            "kind": "inline",
+            "data": {}
+        }))
+        .is_err());
     }
 
     #[test]
@@ -367,7 +402,9 @@ mod tests {
             "slot": "experiment"
         }))
         .unwrap();
-        assert_eq!(bindings["slots"][0]["slot"], "spec");
+        assert_eq!(bindings["inputs"][0]["input"], "spec");
+        assert!(bindings["inputs"][0].get("slot").is_none());
+        assert!(bindings.get("slots").is_none());
     }
 }
 
@@ -419,21 +456,26 @@ fn tools() -> Value {
             {"name":"visual_list_templates","description":"List Synth visual templates","inputSchema":{"type":"object","properties":{"genre":{"type":"string"}},"additionalProperties":false}},
             {"name":"visual_list","description":"List visuals in the local registry","inputSchema":{"type":"object","properties":{"search":{"type":"string"},"status":{"type":"string"},"session_id":{"type":"string"}},"additionalProperties":false}},
             {"name":"visual_get","description":"Get a visual by id","inputSchema":{"type":"object","properties":{"visual_id":{"type":"string"}},"required":["visual_id"],"additionalProperties":false}},
-            {"name":"visual_create","description":"Create a visual from a trusted registered template. For ad-hoc data charts prefer the visual_chart tool over this one. Prefer create_with_bind with slot+kind+data for experiment.overview.v1 and analysis.visual.v1. Interactive live viewers are configured templates; arbitrary TSX is not executed.","inputSchema":{"type":"object","properties":{"template_id":{"type":"string"},"title":{"type":"string"},"content":{"type":"string"},"props":{"type":"object"},"bindings":{"type":"object"},"slot":{"type":"string","description":"Required slot name for create_with_bind, e.g. experiment or spec"},"kind":{"type":"string","description":"Binding kind. Inline slots require data."},"data":{"description":"Required when kind is inline"},"source":{"type":"string"},"poll_url":{"type":"string"},"path":{"type":"string"},"schema":{"type":"string"},"visual_config":{"type":"object"},"presentation":{"type":"string","enum":["canvas","pane"]},"session_id":{"type":"string"},"instance_id":{"type":"string"}},"required":["template_id"],"additionalProperties":false}},
+            {"name":"visual_create","description":"Create a visual from a registered template. sourced.visual.v1 compiles arguments.content (allowlisted TSX) in the pane. Prefer create_with_bind with input+kind+data for experiment.overview.v1, analysis.visual.v1, and compose.visual.v1. compose.visual.v1 binds spec, then stream (eval) or optimizer_run (GEPA/SFT/CISPO optimizer_event.v1). Do not flatten Harbor/Craftax eval traces into optimizer_run. Hosted RLVR is CISPO, not rlvr.*. Unconstrained fetch/EventSource modules fail closed. For ad-hoc data charts prefer visual_chart.","inputSchema":{"type":"object","properties":{"template_id":{"type":"string"},"title":{"type":"string"},"content":{"type":"string"},"props":{"type":"object"},"bindings":{"type":"object"},"input":{"type":"string","description":"Required input name for create_with_bind, e.g. experiment or spec. slot still binds; new writers use input."},"slot":{"type":"string","description":"Read-only alias of input on stored envelopes; still binds."},"kind":{"type":"string","description":"Binding kind. Inline inputs require data."},"data":{"description":"Required when kind is inline"},"source":{"type":"string"},"poll_url":{"type":"string"},"path":{"type":"string"},"schema":{"type":"string"},"visual_config":{"type":"object"},"presentation":{"type":"string","enum":["canvas","pane"]},"session_id":{"type":"string"},"instance_id":{"type":"string"}},"required":["template_id"],"additionalProperties":false}},
             {"name":"visual_create_from_template","description":"Alias of visual_create","inputSchema":{"type":"object","properties":{"template_id":{"type":"string"},"title":{"type":"string"},"props":{"type":"object"},"instance_id":{"type":"string"}},"required":["template_id"],"additionalProperties":false}},
-            {"name":"visual_update","description":"Revise visual bindings, title, trusted-template configuration, or Mermaid/systems/chart content","inputSchema":{"type":"object","properties":{"visual_id":{"type":"string"},"title":{"type":"string"},"content":{"type":"string"},"bindings":{"type":"object","description":"Canonical synth.visual-bindings.v1 envelope: {\"schemaVersion\":\"synth.visual-bindings.v1\",\"slots\":[{\"slot\":...,\"kind\":...,\"source\":...}]}. A slot-keyed map such as {\"stream\":[...]} is legacy, is upgraded with a warning, and will be refused in a later release. Prefer visual_bind_data_source.","properties":{"schemaVersion":{"type":"string","const":"synth.visual-bindings.v1"},"slots":{"type":"array","items":{"type":"object","properties":{"slot":{"type":"string"},"kind":{"type":"string"},"source":{"type":"string"},"poll_url":{"type":"string"},"path":{"type":"string"},"schema":{"type":"string"},"data":{}},"required":["slot","kind"]}}},"required":["schemaVersion","slots"]},"status":{"type":"string"},"visual_config":{"type":"object"},"presentation":{"type":"string","enum":["canvas","pane"]}},"required":["visual_id"],"additionalProperties":false}},
-            {"name":"visual_bind_data_source","description":"Bind one slot on a visual. This is the only supported way to write bindings: it emits the canonical synth.visual-bindings.v1 envelope. Inline slots require data; other kinds require source. Use mode=append with bindings[] to put several sources on one slot.","inputSchema":{"type":"object","properties":{"instance_id":{"type":"string"},"slot":{"type":"string"},"mode":{"type":"string","enum":["replace","append"],"description":"replace (default) drops existing bindings on this slot; append adds to them"},"kind":{"type":"string","enum":["trace_v5","local_cas","live_sse","fixture","inline","run_ref","optimizer_run","query_snapshot"]},"source":{"type":"string"},"data":{"description":"Required when kind is inline"},"poll_url":{"type":"string","description":"Exact normalized poll URL declared beside a live SSE source"},"path":{"type":"string"},"schema":{"type":"string"},"bindings":{"type":"array","description":"Several descriptors for one slot. Each is {kind, source, data?, poll_url?, path?, schema?}; the named slot is authoritative.","items":{"type":"object","properties":{"kind":{"type":"string"},"source":{"type":"string"},"data":{},"poll_url":{"type":"string"},"path":{"type":"string"},"schema":{"type":"string"}},"required":["kind"],"additionalProperties":false}}},"required":["instance_id","slot"],"additionalProperties":false}},
+            {"name":"visual_update","description":"Revise visual bindings, title, trusted-template configuration, or Mermaid/systems/chart content","inputSchema":{"type":"object","properties":{"visual_id":{"type":"string"},"title":{"type":"string"},"content":{"type":"string"},"bindings":{"type":"object","description":"Canonical synth.visual-bindings.v1 envelope: {\"schemaVersion\":\"synth.visual-bindings.v1\",\"inputs\":[{\"input\":...,\"kind\":...,\"source\":...}]}. slot still binds on stored envelopes; new writers emit input/inputs. A slot-keyed map such as {\"stream\":[...]} is legacy, is upgraded with a warning, and will be refused in a later release. Prefer visual_bind_data_source.","properties":{"schemaVersion":{"type":"string","const":"synth.visual-bindings.v1"},"inputs":{"type":"array","items":{"type":"object","properties":{"input":{"type":"string"},"slot":{"type":"string"},"kind":{"type":"string"},"source":{"type":"string"},"poll_url":{"type":"string"},"path":{"type":"string"},"schema":{"type":"string"},"data":{}},"required":["kind"]}}},"required":["schemaVersion"]},"status":{"type":"string"},"visual_config":{"type":"object"},"presentation":{"type":"string","enum":["canvas","pane"]}},"required":["visual_id"],"additionalProperties":false}},
+            {"name":"visual_bind_data_source","description":"Bind one input on a visual. This is the only supported way to write bindings: it emits the canonical synth.visual-bindings.v1 envelope. Inline inputs require data; other kinds require source. compose.visual.v1 stream is eval SSE; optimizer_run is optimizer_event.v1 (GEPA/SFT/CISPO). Use mode=append with bindings[] to put several sources on one input. slot still binds; new writers use input.","inputSchema":{"type":"object","properties":{"instance_id":{"type":"string"},"input":{"type":"string","description":"Bind-point name, e.g. spec, stream, optimizer_run"},"slot":{"type":"string","description":"Read-only alias of input on stored envelopes; still binds."},"mode":{"type":"string","enum":["replace","append"],"description":"replace (default) drops existing bindings on this input; append adds to them"},"kind":{"type":"string","enum":["trace_v5","local_cas","live_sse","fixture","inline","run_ref","optimizer_run","query_snapshot"]},"source":{"type":"string"},"data":{"description":"Required when kind is inline"},"poll_url":{"type":"string","description":"Exact normalized poll URL declared beside a live SSE source"},"path":{"type":"string"},"schema":{"type":"string"},"bindings":{"type":"array","description":"Several descriptors for one input. Each is {kind, source, data?, poll_url?, path?, schema?}; the named input is authoritative.","items":{"type":"object","properties":{"kind":{"type":"string"},"source":{"type":"string"},"data":{},"poll_url":{"type":"string"},"path":{"type":"string"},"schema":{"type":"string"}},"required":["kind"],"additionalProperties":false}}},"required":["instance_id"],"additionalProperties":false}},
             {"name":"visual_show","description":"Open a visual in the Desktop right pane","inputSchema":{"type":"object","properties":{"visual_id":{"type":"string"},"session_id":{"type":"string"}},"required":["visual_id"],"additionalProperties":false}},
             {"name":"visual_open_in_pane","description":"Alias of visual_show","inputSchema":{"type":"object","properties":{"instance_id":{"type":"string"}},"required":["instance_id"],"additionalProperties":false}},
             {"name":"visual_fork","description":"Fork a visual","inputSchema":{"type":"object","properties":{"visual_id":{"type":"string"},"title":{"type":"string"}},"required":["visual_id"],"additionalProperties":false}},
-            {"name":"visual_chart","description":"Author or revise an ad-hoc data chart and get the rendered PNG back in one call. Pass a synth.visual.chart-spec.v1 object as spec; omit visual_id to create, pass it to revise. Panels: metrics, series (line/stepped/area with optional band), bars (grouped/stacked, vertical/horizontal), scatter (optional Pareto frontier), histogram, heatmap, table, note. Panels either carry literal values or derive them from bound evidence with a from block — bind a trace digest, fixture, CAS blob, or query snapshot with slot/kind/source and the host reads it, so charting a trace does not mean pasting its numbers. Every value channel accepts null for an unmeasured point, which renders as a gap or a hatched cell — never as zero. Renders deterministically without opening the Desktop window.","inputSchema":{"type":"object","properties":{"visual_id":{"type":"string","description":"Revise this chart instead of creating one"},"title":{"type":"string"},"spec":{"type":"object","description":"synth.visual.chart-spec.v1: {version:1, title?, subtitle?, theme?:light|dark, width?:480-2000, panels:[...]}. A panel carries literal values OR a from block: {from:{source:{slot,path?,projection?,transform:[...]}, ...channel mapping}}. Transforms: filter, sort, limit, select, unwind, unpivot, derive, groupAggregate, bin."},
-              "slot":{"type":"string","description":"Bind evidence in the same call: the slot name a from block reads"},
-              "kind":{"type":"string","enum":["inline","fixture","local_cas","trace_v5","query_snapshot","optimizer_run"],"description":"Binding kind for slot. An optimizer_run may be read before it seals; the reading is recorded as a snapshot with its cursor."},
+            {"name":"visual_chart","description":"Author or revise an ad-hoc data chart and get the rendered PNG back in one call. Pass a synth.visual.chart-spec.v1 object as spec; omit visual_id to create, pass it to revise. Panels: metrics, series (line/stepped/area with optional band), bars (grouped/stacked, vertical/horizontal), scatter (optional Pareto frontier), histogram, heatmap, table, note. Panels either carry literal values or derive them from bound evidence with a from block — bind a trace digest, fixture, CAS blob, or query snapshot with input/kind/source and the host reads it, so charting a trace does not mean pasting its numbers. Every value channel accepts null for an unmeasured point, which renders as a gap or a hatched cell — never as zero. Renders deterministically without opening the Desktop window.","inputSchema":{"type":"object","properties":{"visual_id":{"type":"string","description":"Revise this chart instead of creating one"},"title":{"type":"string"},"spec":{"type":"object","description":"synth.visual.chart-spec.v1: {version:1, title?, subtitle?, theme?:light|dark, width?:480-2000, panels:[...]}. A panel carries literal values OR a from block: {from:{source:{slot,path?,projection?,transform:[...]}, ...channel mapping}}. Transforms: filter, sort, limit, select, unwind, unpivot, derive, groupAggregate, bin."},
+              "slot":{"type":"string","description":"Read-only alias of input on stored envelopes; still binds."},
+              "input":{"type":"string","description":"Bind evidence in the same call: the input name a from block reads"},
+              "kind":{"type":"string","enum":["inline","fixture","local_cas","trace_v5","query_snapshot","optimizer_run"],"description":"Binding kind for this input. An optimizer_run may be read before it seals; the reading is recorded as a snapshot with its cursor."},
               "source":{"type":"string","description":"Trace digest, fixture path under visuals/, CAS digest, query snapshot id, or optimizer run id"},
               "data":{"description":"Required when kind is inline"},
-              "bindings":{"type":"object","description":"A full synth.visual-bindings.v1 envelope, instead of slot/kind/source"},"viewport":{"type":"object","properties":{"width":{"type":"integer","minimum":320,"maximum":2400}},"additionalProperties":false,"description":"Capture width; the height follows the chart so nothing is scaled down"},"capture":{"type":"boolean","description":"Default true; false returns the revision and findings without a PNG"},"presentation":{"type":"string","enum":["canvas","pane"]}},"required":["spec"],"additionalProperties":false}},
+              "bindings":{"type":"object","description":"A full synth.visual-bindings.v1 envelope, instead of input/kind/source"},"viewport":{"type":"object","properties":{"width":{"type":"integer","minimum":320,"maximum":2400}},"additionalProperties":false,"description":"Capture width; the height follows the chart so nothing is scaled down"},"capture":{"type":"boolean","description":"Default true; false returns the revision and findings without a PNG"},"presentation":{"type":"string","enum":["canvas","pane"]}},"required":["spec"],"additionalProperties":false}},
             {"name":"experiment_attach_evidence","description":"Attach a durable trace, visual/plot, or artifact reference to an experiment. References are local-first and may be materialized just in time when opened. Replaying the same evidence_id is idempotent.","inputSchema":{"type":"object","properties":{"experiment_id":{"type":"string"},"node_id":{"type":"string","description":"Optional experiment node; defaults to the latest result node"},"evidence_id":{"type":"string","description":"Stable caller-chosen idempotency key"},"kind":{"type":"string","enum":["trace","visual","artifact"]},"label":{"type":"string"},"digest":{"type":"string"},"container_id":{"type":"string"},"rollout_id":{"type":"string"},"trace_id":{"type":"string"},"visual_id":{"type":"string"},"artifact_uri":{"type":"string"},"metadata":{"type":"object"}},"required":["experiment_id","evidence_id","kind","label"],"additionalProperties":false}},
             {"name":"experiment_create","description":"Create or reopen the current task's durable experiment record. request_id is the stable idempotency key.","inputSchema":{"type":"object","properties":{"request_id":{"type":"string"},"title":{"type":"string"},"task":{"type":"string"},"model":{"type":"string"}},"required":["request_id","title"],"additionalProperties":false}},
+            {"name":"experiment_create_child","description":"Create a child experiment linked to a parent. relation is follow_up (default), forked_from, or rerun_of. request_id is the stable idempotency key. Subsequent runs in this chat attach to the child.","inputSchema":{"type":"object","properties":{"parent_experiment_id":{"type":"string"},"request_id":{"type":"string"},"title":{"type":"string"},"task":{"type":"string"},"model":{"type":"string"},"relation":{"type":"string","enum":["follow_up","forked_from","rerun_of"]}},"required":["parent_experiment_id","request_id","title"],"additionalProperties":false}},
+            {"name":"experiment_fork","description":"Fork a parent experiment (create_child with relation=forked_from). request_id is the stable idempotency key.","inputSchema":{"type":"object","properties":{"parent_experiment_id":{"type":"string"},"request_id":{"type":"string"},"title":{"type":"string"},"task":{"type":"string"},"model":{"type":"string"}},"required":["parent_experiment_id","request_id","title"],"additionalProperties":false}},
+            {"name":"experiment_rerun","description":"Rerun a parent experiment (create_child with relation=rerun_of). request_id is the stable idempotency key.","inputSchema":{"type":"object","properties":{"parent_experiment_id":{"type":"string"},"request_id":{"type":"string"},"title":{"type":"string"},"task":{"type":"string"},"model":{"type":"string"}},"required":["parent_experiment_id","request_id","title"],"additionalProperties":false}},
+            {"name":"experiment_relate","description":"Relate two members or two candidates in one experiment. relation is compared_with or promoted_to. Mixed member/candidate fails closed. Candidates are not experiment_edges rows.","inputSchema":{"type":"object","properties":{"experiment_id":{"type":"string"},"relation":{"type":"string","enum":["compared_with","promoted_to"]},"source_kind":{"type":"string","enum":["member","candidate"]},"source_id":{"type":"string"},"target_kind":{"type":"string","enum":["member","candidate"]},"target_id":{"type":"string"}},"required":["experiment_id","relation","source_kind","source_id","target_kind","target_id"],"additionalProperties":false}},
             {"name":"experiment_finalize","description":"Finalize a task-owned experiment with authoritative measured results and an honest assessment. Missing measurements must be null, never zero.","inputSchema":{"type":"object","properties":{"experiment_id":{"type":"string"},"status":{"type":"string","enum":["completed","partial","failed"]},"result":{"type":"object"},"assessment":{"type":"object"}},"required":["experiment_id","status","result"],"additionalProperties":false}},
             {"name":"visual_authoring_context","description":"Get the template contract, example evidence, revision, presentation, and outstanding quality gate for one visual","inputSchema":{"type":"object","properties":{"visual_id":{"type":"string"}},"required":["visual_id"],"additionalProperties":false}},
             {"name":"visual_list_annotations","description":"List durable labels for a visual and its current overlay digest","inputSchema":{"type":"object","properties":{"visual_id":{"type":"string"}},"required":["visual_id"],"additionalProperties":false}},
@@ -457,7 +499,7 @@ fn tools() -> Value {
             {"name":"report_seal","description":"Seal one exact Report revision for offline reopen. Does not upload or promote.","inputSchema":{"type":"object","properties":{"report_id":{"type":"string"},"revision":{"type":"integer"}},"required":["report_id","revision"],"additionalProperties":false}},
             {"name":"report_list_seals","description":"List local sealed Report revisions","inputSchema":{"type":"object","properties":{"report_id":{"type":"string"}},"additionalProperties":false}},
             {"name":"report_get_seal","description":"Reopen one local sealed Report by receipt digest","inputSchema":{"type":"object","properties":{"receipt_digest":{"type":"string"}},"required":["receipt_digest"],"additionalProperties":false}},
-            {"name":"report_upsert_experiment","description":"Create or update an Experiment Record on a Report","inputSchema":{"type":"object","properties":{"report_id":{"type":"string"},"experiment_id":{"type":"string"},"title":{"type":"string"},"hypothesis":{"type":"string"},"status":{"type":"string"},"protocol_digest":{"type":"string"},"arms":{"type":"array"},"runs":{"type":"array"},"results":{"type":"array"}},"required":["report_id","title"],"additionalProperties":false}},
+            {"name":"report_upsert_experiment","description":"Create or update an Experiment Record on a Report. experiment_group_id points at an ExperimentGroup when set.","inputSchema":{"type":"object","properties":{"report_id":{"type":"string"},"experiment_id":{"type":"string"},"experiment_group_id":{"type":"string"},"title":{"type":"string"},"hypothesis":{"type":"string"},"status":{"type":"string"},"protocol_digest":{"type":"string"},"arms":{"type":"array"},"runs":{"type":"array"},"results":{"type":"array"}},"required":["report_id","title"],"additionalProperties":false}},
             {"name":"report_append_log","description":"Append a Research Log entry. Corrections link earlier entries and never rewrite them.","inputSchema":{"type":"object","properties":{"report_id":{"type":"string"},"entry_kind":{"type":"string"},"title":{"type":"string"},"body":{"type":"string"},"author":{"type":"string"},"actor_kind":{"type":"string","enum":["human","agent"]},"claim_effect":{"type":"string"},"supersedes_entry_id":{"type":"string"},"links":{"type":"array"}},"required":["report_id","entry_kind","title","body"],"additionalProperties":false}},
             {"name":"report_archive","description":"Archive a local Report. This is reversible and never deletes sealed bytes.","inputSchema":{"type":"object","properties":{"report_id":{"type":"string"}},"required":["report_id"],"additionalProperties":false}},
             {"name":"report_restore","description":"Restore an archived local Report.","inputSchema":{"type":"object","properties":{"report_id":{"type":"string"}},"required":["report_id"],"additionalProperties":false}},
@@ -536,18 +578,103 @@ fn require_session_identity(session_env: &Option<String>, action: &str) -> Resul
         })
 }
 
+fn arg_input_name(args: &Value) -> Result<Option<String>, String> {
+    let input = args
+        .get("input")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let slot = args
+        .get("slot")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    match (input, slot) {
+        (Some(a), Some(b)) if a == b => Ok(Some(a.to_string())),
+        (Some(_), Some(_)) => Err("input and slot disagree; send one name".into()),
+        (Some(a), None) | (None, Some(a)) => Ok(Some(a.to_string())),
+        (None, None) => Ok(None),
+    }
+}
+
+fn descriptor_name(descriptor: &Value) -> Option<&str> {
+    let input = descriptor.get("input").and_then(Value::as_str);
+    let slot = descriptor.get("slot").and_then(Value::as_str);
+    match (input, slot) {
+        (Some(a), Some(b)) if a == b => Some(a),
+        (Some(a), None) | (None, Some(a)) => Some(a),
+        _ => None,
+    }
+}
+
+fn existing_descriptors(bindings: &Value) -> Vec<Value> {
+    bindings
+        .get("inputs")
+        .or_else(|| bindings.get("slots"))
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default()
+}
+
+fn upgrade_bindings_for_write(bindings: &Value) -> Result<Value, String> {
+    let inputs = bindings.get("inputs").and_then(Value::as_array);
+    let slots = bindings.get("slots").and_then(Value::as_array);
+    let descriptors = match (inputs, slots) {
+        (Some(inputs), Some(slots)) if inputs == slots => inputs.clone(),
+        (Some(_), Some(_)) => {
+            return Err("bindings inputs and slots disagree; send one array".into());
+        }
+        (Some(inputs), None) => inputs.clone(),
+        (None, Some(slots)) => slots.clone(),
+        (None, None) => {
+            return Ok(bindings.clone());
+        }
+    };
+    let mut upgraded = Vec::with_capacity(descriptors.len());
+    for descriptor in descriptors {
+        let mut object = descriptor
+            .as_object()
+            .cloned()
+            .ok_or_else(|| "binding descriptors must be objects".to_string())?;
+        let input = object.get("input").and_then(Value::as_str).map(str::to_string);
+        let slot = object.get("slot").and_then(Value::as_str).map(str::to_string);
+        match (input, slot) {
+            (Some(a), Some(b)) if a != b => {
+                return Err("input and slot disagree; send one name".into());
+            }
+            (Some(name), _) | (None, Some(name)) => {
+                object.insert("input".into(), json!(name));
+            }
+            (None, None) => {}
+        }
+        object.remove("slot");
+        upgraded.push(Value::Object(object));
+    }
+    let mut envelope = bindings.clone();
+    if let Some(object) = envelope.as_object_mut() {
+        object.insert(
+            "schemaVersion".into(),
+            json!("synth.visual-bindings.v1"),
+        );
+        object.insert("inputs".into(), json!(upgraded));
+        object.remove("slots");
+    }
+    Ok(envelope)
+}
+
 fn create_bindings_from_args(args: &Value) -> Result<Value, String> {
     if let Some(bindings) = args.get("bindings").or_else(|| args.get("props")) {
         if bindings.get("schemaVersion").and_then(Value::as_str) == Some("synth.visual-bindings.v1")
             || bindings.get("slots").is_some()
+            || bindings.get("inputs").is_some()
         {
-            return Ok(bindings.clone());
+            return upgrade_bindings_for_write(bindings);
         }
     }
-    if let Some(slot) = args.get("slot").and_then(Value::as_str) {
+    if let Some(name) = arg_input_name(args)? {
         let kind = args.get("kind").and_then(Value::as_str).unwrap_or("inline");
         let mut descriptor = json!({
-            "slot": slot,
+            "input": name,
             "kind": kind,
         });
         if let Some(object) = descriptor.as_object_mut() {
@@ -562,7 +689,7 @@ fn create_bindings_from_args(args: &Value) -> Result<Value, String> {
         }
         return Ok(json!({
             "schemaVersion": "synth.visual-bindings.v1",
-            "slots": [descriptor],
+            "inputs": [descriptor],
         }));
     }
     Ok(args
@@ -654,12 +781,9 @@ fn call_tool(name: &str, args: &Value) -> Result<Value, String> {
                 .pointer("/visual/bindings")
                 .cloned()
                 .unwrap_or(json!({}));
-            let slot = args
-                .get("slot")
-                .and_then(Value::as_str)
-                .unwrap_or("primary");
-            // A template slot declaring `multiple` accepts several bindings —
-            // ten rollout streams on one `stream` slot is the documented case.
+            let name = arg_input_name(args)?.unwrap_or_else(|| "primary".into());
+            // A template input declaring `multiple` accepts several bindings —
+            // ten rollout streams on one `stream` input is the documented case.
             // Replace-only could not express it, which is what pushed authors
             // onto hand-built binding objects the renderer could not read.
             let mode = args
@@ -683,28 +807,25 @@ fn call_tool(name: &str, args: &Value) -> Result<Value, String> {
                     "schema": args.get("schema"),
                 })],
             };
-            let mut slots = existing
-                .get("slots")
-                .and_then(Value::as_array)
-                .cloned()
-                .unwrap_or_default();
+            let mut slots = existing_descriptors(&existing);
             if mode == "replace" {
-                slots.retain(|binding| binding.get("slot").and_then(Value::as_str) != Some(slot));
+                slots.retain(|binding| descriptor_name(binding) != Some(name.as_str()));
             }
             for binding in authored {
                 let mut binding = binding;
                 let entry = binding
                     .as_object_mut()
                     .ok_or("each binding must be an object")?;
-                // The named slot is authoritative, so a batch cannot scatter
-                // bindings across slots the caller did not name.
-                entry.insert("slot".into(), json!(slot));
+                // The named input is authoritative, so a batch cannot scatter
+                // bindings across inputs the caller did not name.
+                entry.insert("input".into(), json!(name.clone()));
+                entry.remove("slot");
                 entry.retain(|_, value| !value.is_null());
                 slots.push(binding);
             }
             let bindings = json!({
                 "schemaVersion": "synth.visual-bindings.v1",
-                "slots": slots,
+                "inputs": slots,
             });
             request(
                 "POST",
@@ -761,7 +882,9 @@ fn call_tool(name: &str, args: &Value) -> Result<Value, String> {
                 .map(str::to_owned);
             // A chart's evidence travels with its spec: binding the slot in the
             // same call is what makes "chart this trace" one round trip.
-            let binds = args.get("bindings").is_some() || args.get("slot").is_some();
+            let binds = args.get("bindings").is_some()
+                || args.get("slot").is_some()
+                || args.get("input").is_some();
             let bindings = if binds {
                 Some(create_bindings_from_args(args)?)
             } else {
@@ -875,6 +998,48 @@ fn call_tool(name: &str, args: &Value) -> Result<Value, String> {
         "experiment_create" => {
             let session_id = require_session_identity(&session_env, "create an experiment")?;
             request("POST", "/v1/experiments", Some(json!({"sessionId":session_id,"requestId":args.get("request_id"),"title":args.get("title"),"task":args.get("task"),"model":args.get("model")})))
+        }
+        "experiment_create_child" | "experiment_fork" | "experiment_rerun" => {
+            let session_id = require_session_identity(&session_env, "create a child experiment")?;
+            let parent = args
+                .get("parent_experiment_id")
+                .and_then(Value::as_str)
+                .ok_or("parent_experiment_id required")?;
+            let relation = match name {
+                "experiment_fork" => json!("forked_from"),
+                "experiment_rerun" => json!("rerun_of"),
+                _ => args.get("relation").cloned().unwrap_or(json!("follow_up")),
+            };
+            request(
+                "POST",
+                &format!("/v1/experiments/{parent}/children"),
+                Some(json!({
+                    "sessionId": session_id,
+                    "requestId": args.get("request_id"),
+                    "title": args.get("title"),
+                    "task": args.get("task"),
+                    "model": args.get("model"),
+                    "relation": relation
+                })),
+            )
+        }
+        "experiment_relate" => {
+            let _session_id = require_session_identity(&session_env, "relate experiment members")?;
+            let experiment_id = args
+                .get("experiment_id")
+                .and_then(Value::as_str)
+                .ok_or("experiment_id required")?;
+            request(
+                "POST",
+                &format!("/v1/experiments/{experiment_id}/relate"),
+                Some(json!({
+                    "relation": args.get("relation"),
+                    "sourceKind": args.get("source_kind"),
+                    "sourceId": args.get("source_id"),
+                    "targetKind": args.get("target_kind"),
+                    "targetId": args.get("target_id")
+                })),
+            )
         }
         "experiment_finalize" => {
             let session_id = require_session_identity(&session_env, "finalize an experiment")?;
@@ -1536,6 +1701,7 @@ fn capture_macos_desktop_review(
         "POST",
         "/v1/review-window/capture",
         Some(json!({
+            "visualId": id,
             "width": width,
             "height": height,
             "outputPath": png_path.to_string_lossy(),

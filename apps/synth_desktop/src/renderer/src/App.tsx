@@ -1,3 +1,4 @@
+import { useEffect } from "react";
 import { formatTps } from "./components/InferencePanel";
 import { AppTitlebar } from "./components/AppTitlebar";
 import { AppOverlays } from "./components/AppOverlays";
@@ -20,6 +21,15 @@ import { bridges } from "./runtime/desktopBridge";
 /** Shell + wiring only — orchestration lives in useAppController / ComposerDock. */
 export default function App() {
 	const c = useAppController();
+
+	useEffect(() => {
+		const openReviewSurface = () => c.setView({ kind: "visuals" });
+		window.addEventListener("synth:visual-review-capture", openReviewSurface);
+		if ((window as Window & { __synthVisualReviewCapture?: { active?: boolean } }).__synthVisualReviewCapture?.active) {
+			openReviewSurface();
+		}
+		return () => window.removeEventListener("synth:visual-review-capture", openReviewSurface);
+	}, [c.setView]);
 
 	return (
 		<div className="app-shell">

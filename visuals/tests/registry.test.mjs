@@ -7,6 +7,10 @@ import test from "node:test";
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const familiesDir = join(root, "families");
 
+function declaredInputs(meta) {
+  return meta.inputs ?? meta.slots ?? [];
+}
+
 function discoverTemplates(directory = familiesDir, found = new Map()) {
   for (const entry of readdirSync(directory, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
     const path = join(directory, entry.name);
@@ -30,6 +34,7 @@ const EXPECTED_IDS = [
   "analysis.visual.v1",
   "annotation.overlay.v1",
   "blank.canvas.v1",
+  "compose.visual.v1",
   "craftax.eval_matrix.v1",
   "craftax.rollout_scrub.v1",
   "diagram.mermaid.v1",
@@ -38,7 +43,6 @@ const EXPECTED_IDS = [
   "experiment.overview.v1",
   "live.container_rollouts.v1",
   "live.craftax.v1",
-  "live.digbench.v1",
   "live.eval_stream.v1",
   "live.harbor_eval.v1",
   "live.intern_acceptance.v1",
@@ -57,6 +61,7 @@ const EXPECTED_IDS = [
   "optimizer.sft.rollouts.v1",
   "posttrain.rollout_viewer.v1",
   "reward.breakdown.v1",
+  "sourced.visual.v1",
   "trace.catalog.v1",
   "trace.rollout_inspector.v1",
 ];
@@ -75,14 +80,43 @@ test("visuals package exposes the registered templates", () => {
     if (
       id === "live.harbor_eval.v1" ||
       id === "live.container_rollouts.v1" ||
-      id === "live.eval_stream.v1" ||
-      id === "live.craftax.v1" ||
-      id === "live.digbench.v1"
+      id === "live.craftax.v1"
     ) {
-      assert.deepEqual(meta.slots.map((slot) => slot.name), ["stream"]);
+      assert.deepEqual(declaredInputs(meta).map((slot) => slot.name), ["stream"]);
+    }
+    if (id === "live.eval_stream.v1") {
+      assert.equal(meta.slots, undefined);
+      assert.deepEqual((meta.inputs ?? []).map((input) => input.name), ["stream"]);
+      assert.equal(meta.inputs[0].required, true);
+      assert.ok(!(meta.inputs ?? []).some((input) => input.name === "optimizer_run"));
+      assert.deepEqual(
+        (meta.components ?? []).map((row) => row.id).sort(),
+        ["detail_modal.v1", "event_stream.v1", "metrics.v1", "scrubber.v1"]
+      );
+    }
+    if (id === "compose.visual.v1") {
+      const declared = declaredInputs(meta);
+      assert.deepEqual(declared.map((slot) => slot.name), ["spec", "stream", "optimizer_run"]);
+      assert.equal(declared[0].required, true);
+      assert.equal(declared[1].required, false);
+      assert.equal(declared[2].required, false);
+      assert.deepEqual(
+        (meta.components ?? []).map((row) => row.id).sort(),
+        ["candidate_inspector.v1", "detail_modal.v1", "event_stream.v1", "metrics.v1", "scrubber.v1"]
+      );
+    }
+    if (id === "sourced.visual.v1") {
+      const declared = declaredInputs(meta);
+      assert.deepEqual(declared.map((slot) => slot.name), ["stream"]);
+      assert.equal(declared[0].required, false);
+      assert.equal(meta.rendererKind, "tsx");
+      assert.deepEqual(
+        (meta.components ?? []).map((row) => row.id).sort(),
+        ["detail_modal.v1", "event_stream.v1"]
+      );
     }
     if (id.startsWith("optimizer.")) {
-      const slotNames = meta.slots.map((slot) => slot.name);
+      const slotNames = declaredInputs(meta).map((slot) => slot.name);
       assert.deepEqual(slotNames, ["optimizer_run"]);
       assert.ok(!slotNames.includes("live"), `${id} must not bind slot live`);
       assert.ok(!slotNames.includes("jobs"), `${id} must not bind slot jobs`);
@@ -94,7 +128,7 @@ test("visuals package exposes the registered templates", () => {
   assert.equal(mermaid.id, "diagram.mermaid.v1");
   assert.equal(mermaid.genre, "diagram");
   assert.equal(mermaid.rendererKind, "mermaid");
-  assert.equal(mermaid.slots.length, 0);
+  assert.equal(declaredInputs(mermaid).length, 0);
   assert.ok(!existsSync(join(mermaidPath, "shell.tsx")));
   assert.ok(!existsSync(join(mermaidPath, "examples")));
   for (const [id, rendererKind] of [
@@ -105,7 +139,7 @@ test("visuals package exposes the registered templates", () => {
     assert.equal(meta.id, id);
     assert.equal(meta.genre, "diagram");
     assert.equal(meta.rendererKind, rendererKind);
-    assert.deepEqual(meta.slots, []);
+    assert.deepEqual(declaredInputs(meta), []);
     assert.ok(!existsSync(join(path, "shell.tsx")));
   }
 });
@@ -159,4 +193,7 @@ test("MCP tools schema lists agent entrypoints", () => {
   ]) {
     assert.ok(names.includes(required), required);
   }
+  assert.ok(!names.includes("visual_list_components"));
+  assert.ok(!names.includes("list_components"));
+  assert.ok(!names.includes("reports_promote"));
 });

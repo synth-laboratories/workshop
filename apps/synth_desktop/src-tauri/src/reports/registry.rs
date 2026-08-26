@@ -4,11 +4,12 @@ use super::models::{
     ReportCreateRequest, ReportLimitation, ReportQuery, ReportRecord, ReportRevision, ReportSeal,
     ReportSealBundle, ReportSource, ReportStatus, ReportUpdateRequest, ReportValidationFinding,
     ReportValidationResult, ReportVisibilityRequest, ReportVisibilityRequestCreate,
-    ResearchLogAppend, ResearchLogEntry, BLOCK_EXPERIMENT_RECORDS, BLOCK_OUTLINE,
-    BLOCK_RESEARCH_LOG, BLOCK_TRACE, REPORT_REVISION_SCHEMA, REPORT_SCHEMA_VERSION,
+    ResearchLogAppend, ResearchLogEntry, BLOCK_DIAGRAM, BLOCK_EXPERIMENT_RECORDS, BLOCK_OUTLINE,
+    BLOCK_PROSE, BLOCK_RESEARCH_LOG, BLOCK_TRACE, BLOCK_VISUAL, REPORT_REVISION_SCHEMA,
+    REPORT_SCHEMA_VERSION,
 };
 use crate::storage::{ContentStore, Database, EventAppend, EventJournal, EventSource};
-use crate::visuals::VisualRegistry;
+use crate::visuals::{VisualRegistry, VisualSeal};
 use anyhow::{anyhow, bail, Context, Result};
 use chrono::{Duration, Utc};
 use rusqlite::{params, Connection, OptionalExtension};
@@ -18,6 +19,8 @@ use std::{collections::HashSet, sync::Arc};
 use uuid::Uuid;
 
 const COMPILER_NAME: &str = "workshop";
+const UNRESOLVED_VISUAL_EVIDENCE: &str = "unresolved_visual_evidence";
+const EMPTY_REPORT: &str = "empty_report";
 const BUNDLE_SCHEMA: &str = super::models::REPORT_BUNDLE_SCHEMA;
 const FROZEN_RUNTIME: &str = concat!(
     include_str!("rollout_inspector.js"),
@@ -84,7 +87,13 @@ impl ReportRegistry {
         report_id: String,
         revision: Option<i64>,
     ) -> Result<ReportValidationResult> {
-        let snapshot = self.get_revision(report_id, revision).await?;
+        let mut snapshot = self.get_revision(report_id, revision).await?;
+        for block in &mut snapshot.blocks {
+            if is_visual_or_diagram(&block.kind) {
+                resolve_evidence_state(block, &self.visuals).await?;
+                normalize_block(block);
+            }
+        }
         Ok(validate_revision(&snapshot))
     }
 
@@ -97,12 +106,34 @@ impl ReportRegistry {
         let log = self.list_research_log(report_id.clone()).await?;
         let mut blocks = freeze_blocks(&revision.blocks, &experiments, &log)?;
         let mut unresolved = Vec::new();
+        let mut visual_unresolved: Vec<ReportValidationFinding> = Vec::new();
         for block in &mut blocks {
             if !is_evidence_kind(&block.kind) {
                 continue;
             }
             resolve_evidence_state(block, &self.visuals).await?;
             normalize_block(block);
+            if is_visual_or_diagram(&block.kind) {
+                let (visual_id, target_revision) = visual_block_target(block).unwrap_or_default();
+                let seals = if visual_id.is_empty() {
+                    Vec::new()
+                } else {
+                    self.visuals.list_seals(Some(visual_id.clone())).await?
+                };
+                let admission = admit_visual_evidence(
+                    &visual_id,
+                    target_revision,
+                    None,
+                    &seals,
+                    Some(block.block_id.clone()),
+                );
+                if admission.ok {
+                    block.reference_mode = "pinned".into();
+                } else {
+                    visual_unresolved.extend(admission.reasons);
+                }
+                continue;
+            }
             if block.access_state == "available"
                 && block.integrity_state == "verified"
                 && block.source_revision.is_some()
@@ -112,6 +143,9 @@ impl ReportRegistry {
             } else if block.access_state != "missing" && block.access_state != "redacted" {
                 unresolved.push(block.anchor.clone());
             }
+        }
+        if let Some(finding) = visual_unresolved.first() {
+            bail!("{}: {}", finding.code, finding.message);
         }
         if !unresolved.is_empty() {
             bail!(
@@ -283,7 +317,7 @@ impl ReportRegistry {
         if let Some(finding) = validation
             .findings
             .iter()
-            .find(|row| row.severity == "error")
+            .find(|row| row.severity == "error" && row.code != EMPTY_REPORT)
         {
             bail!("report validation {}: {}", finding.code, finding.message);
         }
@@ -535,6 +569,12 @@ impl ReportRegistry {
         request: ExperimentRecordUpsert,
     ) -> Result<ExperimentRecord> {
         let now = Utc::now().to_rfc3339();
+        let group_id = request
+            .experiment_group_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_owned);
         let record = ExperimentRecord {
             experiment_id: request
                 .experiment_id
@@ -556,17 +596,30 @@ impl ReportRegistry {
             limitations: request.limitations.unwrap_or_else(|| json!([])),
             created_at: now,
             created_by: request.created_by.unwrap_or_else(|| "user".into()),
+            experiment_group_id: group_id,
         };
         let db = self.db.clone();
         let stored = record.clone();
+        let provided_status = request.status.clone();
         db.run(move |conn| {
             load_report(conn, &report_id)?;
+            let mut stored = stored;
+            if let Some(group_id) = stored.experiment_group_id.as_deref() {
+                let group = load_experiment_group(conn, group_id)?.ok_or_else(|| {
+                    anyhow::anyhow!("unknown experimentGroupId `{group_id}`")
+                })?;
+                stored.title = group.0;
+                if provided_status.is_none() {
+                    stored.status = ExperimentStatus::parse(&group.1);
+                }
+            }
             conn.execute(
                 "INSERT INTO experiment_records(
                     experiment_id, report_id, revision, title, hypothesis, status, protocol_digest,
                     arms_json, runs_json, results_json, evaluator_refs_json, trace_collection_refs_json,
-                    claim_refs_json, research_log_refs_json, limitations_json, created_at, created_by
-                 ) VALUES (?1,?2,NULL,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16)
+                    claim_refs_json, research_log_refs_json, limitations_json, created_at, created_by,
+                    experiment_group_id
+                 ) VALUES (?1,?2,NULL,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17)
                  ON CONFLICT(experiment_id) DO UPDATE SET
                     title=excluded.title, hypothesis=excluded.hypothesis, status=excluded.status,
                     protocol_digest=excluded.protocol_digest, arms_json=excluded.arms_json,
@@ -575,7 +628,8 @@ impl ReportRegistry {
                     trace_collection_refs_json=excluded.trace_collection_refs_json,
                     claim_refs_json=excluded.claim_refs_json,
                     research_log_refs_json=excluded.research_log_refs_json,
-                    limitations_json=excluded.limitations_json",
+                    limitations_json=excluded.limitations_json,
+                    experiment_group_id=excluded.experiment_group_id",
                 params![
                     stored.experiment_id,
                     stored.report_id,
@@ -593,6 +647,7 @@ impl ReportRegistry {
                     serde_json::to_string(&stored.limitations)?,
                     stored.created_at,
                     stored.created_by,
+                    stored.experiment_group_id,
                 ],
             )?;
             Ok(stored)
@@ -1153,6 +1208,100 @@ fn log_ids(block: &ReportBlock) -> Vec<String> {
         .unwrap_or_default()
 }
 
+fn is_visual_or_diagram(kind: &str) -> bool {
+    matches!(kind, BLOCK_VISUAL | BLOCK_DIAGRAM)
+}
+
+fn visual_block_target(block: &ReportBlock) -> Option<(String, i64)> {
+    let visual_id = block
+        .payload
+        .get("visualId")
+        .or_else(|| block.payload.get("visual_id"))
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())?
+        .to_string();
+    let revision = block
+        .payload
+        .get("visualRevision")
+        .or_else(|| block.payload.get("visual_revision"))
+        .and_then(Value::as_i64)
+        .or_else(|| {
+            block
+                .source_revision
+                .as_deref()
+                .and_then(|value| value.parse().ok())
+        })
+        .unwrap_or(0);
+    Some((visual_id, revision))
+}
+
+struct EvidenceAdmission {
+    ok: bool,
+    reasons: Vec<ReportValidationFinding>,
+}
+
+fn admit_visual_evidence(
+    visual_id: &str,
+    revision: i64,
+    content_digest: Option<String>,
+    seals: &[VisualSeal],
+    block_id: Option<String>,
+) -> EvidenceAdmission {
+    let _ = content_digest;
+    if visual_id.is_empty() {
+        return EvidenceAdmission {
+            ok: false,
+            reasons: vec![unresolved_visual_finding(
+                None,
+                block_id,
+                "visual/diagram block is missing visualId".into(),
+                None,
+            )],
+        };
+    }
+    let receipt_digest = seals
+        .iter()
+        .find(|seal| seal.visual_id == visual_id && seal.visual_revision == revision)
+        .map(|seal| seal.receipt_digest.clone());
+    if receipt_digest.is_some() {
+        return EvidenceAdmission {
+            ok: true,
+            reasons: vec![],
+        };
+    }
+    EvidenceAdmission {
+        ok: false,
+        reasons: vec![unresolved_visual_finding(
+            Some(visual_id.to_string()),
+            block_id,
+            format!(
+                "visual {visual_id} rev {revision} has no seal receipt; pin and seal require a VisualSeal"
+            ),
+            None,
+        )],
+    }
+}
+
+fn unresolved_visual_finding(
+    visual_id: Option<String>,
+    block_id: Option<String>,
+    message: String,
+    receipt_digest: Option<String>,
+) -> ReportValidationFinding {
+    ReportValidationFinding {
+        code: UNRESOLVED_VISUAL_EVIDENCE.into(),
+        severity: "error".into(),
+        block_id,
+        claim_id: None,
+        message,
+        remediation: Some(
+            "Seal that exact visual revision, then pin this evidence.".into(),
+        ),
+        visual_id,
+        receipt_digest,
+    }
+}
+
 async fn resolve_evidence_state(block: &mut ReportBlock, visuals: &VisualRegistry) -> Result<()> {
     if block.access_state == "missing" {
         block.integrity_state = "unknown".into();
@@ -1249,6 +1398,37 @@ fn normalize_source(source: &mut ReportSource) {
     }
 }
 
+fn block_markdown(block: &ReportBlock) -> &str {
+    block
+        .payload
+        .get("markdown")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+}
+
+fn revision_has_substantive_content(revision: &ReportRevision) -> bool {
+    if revision
+        .summary
+        .as_deref()
+        .map(str::trim)
+        .is_some_and(|value| !value.is_empty())
+    {
+        return true;
+    }
+    revision.blocks.iter().any(|block| {
+        if matches!(
+            block.kind.as_str(),
+            BLOCK_OUTLINE | BLOCK_EXPERIMENT_RECORDS | BLOCK_RESEARCH_LOG
+        ) {
+            return false;
+        }
+        if block.kind == BLOCK_PROSE {
+            return !block_markdown(block).trim().is_empty();
+        }
+        is_evidence_kind(&block.kind)
+    })
+}
+
 fn validation_finding(
     code: &str,
     block_id: Option<String>,
@@ -1263,6 +1443,8 @@ fn validation_finding(
         claim_id,
         message,
         remediation: Some(remediation.into()),
+        visual_id: None,
+        receipt_digest: None,
     }
 }
 
@@ -1314,6 +1496,24 @@ fn validate_revision(revision: &ReportRevision) -> ReportValidationResult {
                 format!("block integrity is {}", block.integrity_state),
                 "Replace or re-resolve the evidence before sealing.",
             ));
+        } else if is_visual_or_diagram(&block.kind) {
+            let integrity = block.integrity_state.as_str();
+            let missing_digest = block.source_digest.as_deref().unwrap_or("").is_empty();
+            if matches!(integrity, "unresolved" | "unknown") || missing_digest {
+                let (visual_id, revision) = visual_block_target(block).unwrap_or_default();
+                findings.push(unresolved_visual_finding(
+                    (!visual_id.is_empty()).then_some(visual_id.clone()),
+                    Some(block.block_id.clone()),
+                    if visual_id.is_empty() {
+                        "visual/diagram block is missing visualId".into()
+                    } else {
+                        format!(
+                            "visual {visual_id} rev {revision} has no seal receipt; pin and seal require a VisualSeal"
+                        )
+                    },
+                    None,
+                ));
+            }
         }
     }
     for source in &revision.sources {
@@ -1399,6 +1599,15 @@ fn validate_revision(revision: &ReportRevision) -> ReportValidationResult {
                 ));
             }
         }
+    }
+    if !revision_has_substantive_content(revision) {
+        findings.push(validation_finding(
+            EMPTY_REPORT,
+            None,
+            None,
+            "Add a narrative or sealed evidence before sealing".into(),
+            "Write findings or methods, or pin sealed visual evidence.",
+        ));
     }
     ReportValidationResult {
         report_id: revision.report_id.clone(),
@@ -1766,14 +1975,26 @@ fn list_limitations(
 
 fn list_experiments(conn: &Connection, report_id: &str) -> Result<Vec<ExperimentRecord>> {
     let mut statement = conn.prepare(
-        "SELECT experiment_id, report_id, revision, title, hypothesis, status, protocol_digest, arms_json, runs_json, results_json, evaluator_refs_json, trace_collection_refs_json, claim_refs_json, research_log_refs_json, limitations_json, created_at, created_by FROM experiment_records WHERE report_id = ?1 ORDER BY created_at ASC",
+        "SELECT r.experiment_id, r.report_id, r.revision, r.title, r.hypothesis, r.status,
+                r.protocol_digest, r.arms_json, r.runs_json, r.results_json, r.evaluator_refs_json,
+                r.trace_collection_refs_json, r.claim_refs_json, r.research_log_refs_json,
+                r.limitations_json, r.created_at, r.created_by, r.experiment_group_id,
+                g.title
+           FROM experiment_records r
+           LEFT JOIN experiment_groups g ON g.id = r.experiment_group_id
+          WHERE r.report_id = ?1
+          ORDER BY r.created_at ASC",
     )?;
     let rows = statement.query_map([report_id], |row| {
+        let group_title: Option<String> = row.get(18)?;
         Ok(ExperimentRecord {
             experiment_id: row.get(0)?,
             report_id: row.get(1)?,
             revision: row.get(2)?,
-            title: row.get(3)?,
+            title: {
+                let stored: String = row.get(3)?;
+                group_title.unwrap_or(stored)
+            },
             hypothesis: row.get(4)?,
             status: ExperimentStatus::parse(&row.get::<_, String>(5)?),
             protocol_digest: row.get(6)?,
@@ -1789,10 +2010,21 @@ fn list_experiments(conn: &Connection, report_id: &str) -> Result<Vec<Experiment
             limitations: serde_json::from_str(&row.get::<_, String>(14)?).unwrap_or(json!([])),
             created_at: row.get(15)?,
             created_by: row.get(16)?,
+            experiment_group_id: row.get(17)?,
         })
     })?;
     rows.collect::<std::result::Result<Vec<_>, _>>()
         .map_err(Into::into)
+}
+
+fn load_experiment_group(conn: &Connection, id: &str) -> Result<Option<(String, String)>> {
+    conn.query_row(
+        "SELECT title, status FROM experiment_groups WHERE id=?1",
+        [id],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )
+    .optional()
+    .map_err(Into::into)
 }
 
 fn list_log(conn: &Connection, report_id: &str) -> Result<Vec<ResearchLogEntry>> {
@@ -2129,6 +2361,352 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn blank_visual_evidence_is_not_sealable_and_pin_uses_the_same_code() {
+        let dir = tempdir().unwrap();
+        let storage = Storage::open(dir.path()).unwrap();
+        let journal = EventJournal::new(storage.database().clone());
+        let content = ContentStore::new(storage.content_root());
+        let visuals =
+            VisualRegistry::new(storage.database().clone(), journal.clone(), content.clone());
+        let template = visuals
+            .list_templates(None)
+            .unwrap()
+            .into_iter()
+            .find(|row| !crate::visuals::requires_canonical_source(&row.id))
+            .unwrap();
+        let (visual, _) = visuals
+            .create(VisualCreateRequest {
+                template_id: template.id,
+                title: Some("Blank canvas".into()),
+                bindings: None,
+                id: Some("vis_blank_admission".into()),
+                status: Some(VisualStatus::Draft),
+                renderer_kind: None,
+                session_id: None,
+                message_id: None,
+                run_id: None,
+                trace_id: None,
+                parent_visual_id: None,
+                source_agent_id: Some("test".into()),
+                source_model: None,
+                content: None,
+                metadata: None,
+            })
+            .await
+            .unwrap();
+        let reports = ReportRegistry::new(storage.database().clone(), journal, content, visuals);
+        let (report, _) = reports
+            .create(ReportCreateRequest {
+                title: Some("Blank visual report".into()),
+                summary: None,
+                authors: None,
+                project_ref: None,
+                id: Some("rep_blank_admission".into()),
+                created_by: Some("user".into()),
+                blocks: Some(vec![ReportBlock {
+                    block_id: "blk_visual".into(),
+                    kind: "report.visual.v1".into(),
+                    anchor: format!("visual-{}", visual.id),
+                    title: Some("Blank".into()),
+                    payload: json!({"visualId":visual.id,"visualRevision":1}),
+                    source_revision: Some("1".into()),
+                    source_digest: None,
+                    reference_mode: "live".into(),
+                    access_state: "available".into(),
+                    integrity_state: "unresolved".into(),
+                }]),
+            })
+            .await
+            .unwrap();
+        let validation = reports
+            .validate(report.id.clone(), Some(1))
+            .await
+            .unwrap();
+        assert!(!validation.sealable, "{:?}", validation.findings);
+        assert!(
+            validation
+                .findings
+                .iter()
+                .any(|row| row.code == UNRESOLVED_VISUAL_EVIDENCE),
+            "{:?}",
+            validation.findings
+        );
+        let pin_error = reports
+            .pin_all(report.id.clone())
+            .await
+            .expect_err("pin requires a VisualSeal")
+            .to_string();
+        assert!(
+            pin_error.contains(UNRESOLVED_VISUAL_EVIDENCE),
+            "{pin_error}"
+        );
+        let seal_error = reports
+            .seal(report.id.clone(), 1)
+            .await
+            .expect_err("seal requires admitted visual evidence")
+            .to_string();
+        assert!(
+            seal_error.contains(UNRESOLVED_VISUAL_EVIDENCE),
+            "{seal_error}"
+        );
+    }
+
+    #[tokio::test]
+    async fn sealed_visual_can_be_pinned_and_the_report_becomes_sealable() {
+        let dir = tempdir().unwrap();
+        let storage = Storage::open(dir.path()).unwrap();
+        let journal = EventJournal::new(storage.database().clone());
+        let content = ContentStore::new(storage.content_root());
+        let visuals =
+            VisualRegistry::new(storage.database().clone(), journal.clone(), content.clone());
+        let template = visuals
+            .list_templates(None)
+            .unwrap()
+            .into_iter()
+            .find(|row| !crate::visuals::requires_canonical_source(&row.id))
+            .unwrap();
+        let (visual, _) = visuals
+            .create(VisualCreateRequest {
+                template_id: template.id,
+                title: Some("Sealed evidence".into()),
+                bindings: Some(json!({"value": 7})),
+                id: Some("vis_admission_sealed".into()),
+                status: Some(VisualStatus::Saved),
+                renderer_kind: None,
+                session_id: None,
+                message_id: None,
+                run_id: None,
+                trace_id: None,
+                parent_visual_id: None,
+                source_agent_id: Some("test".into()),
+                source_model: None,
+                content: None,
+                metadata: Some(json!({"qualityGate":{"ready":true,"revision":1}})),
+            })
+            .await
+            .unwrap();
+        let (visual_seal, _) = visuals.seal(visual.id.clone(), 1).await.unwrap();
+        let reports = ReportRegistry::new(storage.database().clone(), journal, content, visuals);
+        let (report, _) = reports
+            .create(ReportCreateRequest {
+                title: Some("Admitted visual report".into()),
+                summary: None,
+                authors: None,
+                project_ref: None,
+                id: Some("rep_admission_sealed".into()),
+                created_by: Some("user".into()),
+                blocks: Some(vec![ReportBlock {
+                    block_id: "blk_visual".into(),
+                    kind: "report.visual.v1".into(),
+                    anchor: format!("visual-{}", visual.id),
+                    title: Some("Sealed visual".into()),
+                    payload: json!({"visualId":visual.id,"visualRevision":1}),
+                    source_revision: Some("1".into()),
+                    source_digest: None,
+                    reference_mode: "live".into(),
+                    access_state: "available".into(),
+                    integrity_state: "unresolved".into(),
+                }]),
+            })
+            .await
+            .unwrap();
+        reports.pin_all(report.id.clone()).await.unwrap();
+        let validation = reports
+            .validate(report.id.clone(), Some(1))
+            .await
+            .unwrap();
+        assert!(validation.sealable, "{:?}", validation.findings);
+        let revision = reports
+            .get_revision(report.id.clone(), Some(1))
+            .await
+            .unwrap();
+        let visual_block = revision
+            .blocks
+            .iter()
+            .find(|block| block.kind == "report.visual.v1")
+            .unwrap();
+        assert_eq!(visual_block.reference_mode, "pinned");
+        assert_eq!(
+            visual_block.source_digest.as_deref(),
+            Some(visual_seal.receipt_digest.as_str())
+        );
+    }
+
+    #[tokio::test]
+    async fn appendix_experiment_records_do_not_block_report_seal_by_themselves() {
+        let dir = tempdir().unwrap();
+        let reports = registry(dir.path());
+        let (created, _) = reports
+            .create(ReportCreateRequest {
+                title: Some("Appendix only".into()),
+                summary: None,
+                authors: None,
+                project_ref: None,
+                id: Some("rep_appendix_admission".into()),
+                created_by: Some("user".into()),
+                blocks: None,
+            })
+            .await
+            .unwrap();
+        let validation = reports
+            .validate(created.id.clone(), Some(1))
+            .await
+            .unwrap();
+        assert!(
+            !validation.sealable,
+            "empty reports must not be sealable: {:?}",
+            validation.findings
+        );
+        assert!(
+            validation
+                .findings
+                .iter()
+                .any(|row| row.code == EMPTY_REPORT),
+            "{:?}",
+            validation.findings
+        );
+        assert!(
+            !validation
+                .findings
+                .iter()
+                .any(|row| row.code == UNRESOLVED_VISUAL_EVIDENCE),
+            "experiment-records appendix must not use admit_visual_evidence: {:?}",
+            validation.findings
+        );
+    }
+
+    #[tokio::test]
+    async fn empty_report_is_not_sealable() {
+        let dir = tempdir().unwrap();
+        let reports = registry(dir.path());
+        let (created, _) = reports
+            .create(ReportCreateRequest {
+                title: Some("Empty draft".into()),
+                summary: None,
+                authors: None,
+                project_ref: None,
+                id: Some("rep_empty_report".into()),
+                created_by: Some("user".into()),
+                blocks: None,
+            })
+            .await
+            .unwrap();
+        let validation = reports
+            .validate(created.id.clone(), Some(1))
+            .await
+            .unwrap();
+        assert!(!validation.sealable, "{:?}", validation.findings);
+        assert!(
+            validation
+                .findings
+                .iter()
+                .any(|row| row.code == EMPTY_REPORT
+                    && row.message.contains("Add a narrative or sealed evidence before sealing")),
+            "{:?}",
+            validation.findings
+        );
+        let seal_error = reports
+            .seal(created.id.clone(), 1)
+            .await
+            .expect_err("empty reports must fail closed")
+            .to_string();
+        assert!(seal_error.contains(EMPTY_REPORT), "{seal_error}");
+    }
+
+    #[tokio::test]
+    async fn upsert_experiment_group_pointer_fails_closed_then_stores() {
+        let dir = tempdir().unwrap();
+        let storage = Storage::open(dir.path()).unwrap();
+        let reports = registry(dir.path());
+        let (created, _) = reports
+            .create(ReportCreateRequest {
+                title: Some("Pointer report".into()),
+                summary: None,
+                authors: None,
+                project_ref: None,
+                id: Some("rep_group_pointer".into()),
+                created_by: Some("user".into()),
+                blocks: None,
+            })
+            .await
+            .unwrap();
+        let unknown = reports
+            .upsert_experiment(
+                created.id.clone(),
+                ExperimentRecordUpsert {
+                    experiment_id: None,
+                    title: "Missing group".into(),
+                    hypothesis: None,
+                    status: Some("planned".into()),
+                    protocol_digest: None,
+                    arms: None,
+                    runs: None,
+                    results: None,
+                    evaluator_refs: None,
+                    trace_collection_refs: None,
+                    claim_refs: None,
+                    research_log_refs: None,
+                    limitations: None,
+                    created_by: Some("user".into()),
+                    experiment_group_id: Some("exp_missing".into()),
+                },
+            )
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(
+            unknown.contains("unknown experimentGroupId"),
+            "{unknown}"
+        );
+        let group = storage
+            .database()
+            .run(|conn| {
+                crate::experiments::create(
+                    conn,
+                    crate::experiments::ExperimentCreateRequest {
+                        session_id: "task_pointer".into(),
+                        request_id: "pointer-req".into(),
+                        title: "Gold Craftax study".into(),
+                        task: Some("CRAFTAX-EMBER-0824".into()),
+                        model: None,
+                        created_at: "2026-08-26T00:00:00Z".into(),
+                    },
+                )
+            })
+            .await
+            .unwrap();
+        let stored = reports
+            .upsert_experiment(
+                created.id.clone(),
+                ExperimentRecordUpsert {
+                    experiment_id: None,
+                    title: "ignored title".into(),
+                    hypothesis: None,
+                    status: None,
+                    protocol_digest: None,
+                    arms: Some(json!([])),
+                    runs: Some(json!([])),
+                    results: Some(json!([])),
+                    evaluator_refs: None,
+                    trace_collection_refs: None,
+                    claim_refs: None,
+                    research_log_refs: None,
+                    limitations: None,
+                    created_by: Some("user".into()),
+                    experiment_group_id: Some(group.id.clone()),
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(stored.experiment_group_id.as_deref(), Some(group.id.as_str()));
+        assert_eq!(stored.title, "Gold Craftax study");
+        let listed = reports.list_experiments(created.id).await.unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].experiment_group_id.as_deref(), Some(group.id.as_str()));
+        assert_eq!(listed[0].title, "Gold Craftax study");
+    }
+
+    #[tokio::test]
     async fn seal_freezes_heterogeneous_blocks_and_reopens_offline() {
         let dir = tempdir().unwrap();
         let reports = registry(dir.path());
@@ -2165,6 +2743,7 @@ mod tests {
                     research_log_refs: None,
                     limitations: Some(json!(["reward missing on seed 1"])),
                     created_by: Some("user".into()),
+                    experiment_group_id: None,
                 },
             )
             .await
@@ -2561,10 +3140,7 @@ mod tests {
             .seal(created.id, 1)
             .await
             .expect_err("live stream URLs must fail closed at seal");
-        assert!(
-            error.to_string().contains("live stream"),
-            "unexpected error: {error}"
-        );
+        assert!(error.to_string().contains("live stream"), "unexpected error: {error}");
     }
 
     #[tokio::test]
@@ -2767,7 +3343,7 @@ mod tests {
         let (created, _) = reports
             .create(ReportCreateRequest {
                 title: Some("Approval receipt".into()),
-                summary: None,
+                summary: Some("Reviewed result ready for publication.".into()),
                 authors: None,
                 project_ref: None,
                 id: Some("rep_visibility_receipt".into()),

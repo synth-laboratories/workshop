@@ -41,17 +41,6 @@ function geloFixture(): Json {
   };
 }
 
-function digbenchFixture(): Json {
-  const fixture = json("families/first_class_example_containers/live.digbench.v1/examples/events.json");
-  const events = fixture.events as Json[];
-  return {
-    ...fixture,
-    replay_ms: 10,
-    events: [
-      ...events.map((event) => ({ ...event, lane: "basic-react", run_id: "digbench_basic" })),
-      ...events.map((event) => ({ ...event, lane: "agentic-mcp", run_id: "digbench_agentic" }))
-    ]
-  };
 }
 
 const FIXTURES: Fixture[] = [
@@ -59,8 +48,7 @@ const FIXTURES: Fixture[] = [
   { id: "vis_a11y_gelo", family: "GELO", templateId: "optimizer.run.v1", data: geloFixture(), testId: "visual-optimizer-run" },
   { id: "vis_a11y_sft", family: "SFT", templateId: "optimizer.run.v1", data: json("families/optimizers/_shared/optimizer.run.v1/examples/sft_events.json"), testId: "visual-optimizer-run" },
   { id: "vis_a11y_craftax", family: "Craftax", templateId: "live.craftax.v1", data: { ...json("families/first_class_example_containers/live.craftax.v1/examples/events.json"), replay_ms: 10 }, testId: "visual-live-craftax" },
-  { id: "vis_a11y_harbor", family: "Harbor", templateId: "live.harbor_eval.v1", data: { ...json("families/first_class_example_containers/live.harbor_eval.v1/examples/events.json"), replay_ms: 10 }, testId: "visual-live-harbor-eval" },
-  { id: "vis_a11y_digbench", family: "dig.bench", templateId: "live.digbench.v1", data: digbenchFixture(), testId: "visual-live-digbench" }
+  { id: "vis_a11y_harbor", family: "Harbor", templateId: "live.harbor_eval.v1", data: { ...json("families/first_class_example_containers/live.harbor_eval.v1/examples/events.json"), replay_ms: 10 }, testId: "visual-live-harbor-eval" }
 ];
 
 function record(fixture: Fixture): VisualRecord {
@@ -183,12 +171,6 @@ test("V6: axe, browser AX tree, keyboard names, focus, reduced motion, and 200% 
         await lane.focus();
         await page.keyboard.press("Enter");
         await expect(lane).toHaveAttribute("aria-current", "true");
-      } else if (fixture.family === "dig.bench") {
-        const lane = visual.getByRole("navigation", { name: "Harness lanes" }).getByRole("button").first();
-        await expect(lane).toBeVisible();
-        await lane.focus();
-        await page.keyboard.press("Enter");
-        await expect(lane).toHaveAttribute("aria-pressed", "true");
       }
 
       const ax = await cdp.send("Accessibility.getFullAXTree");

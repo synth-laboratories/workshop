@@ -1,8 +1,13 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { mkdirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import test from "node:test";
+import { buildSync } from "esbuild";
+
+const testsDir = dirname(fileURLToPath(import.meta.url));
+const appRoot = join(testsDir, "..");
+const rendererRoot = join(appRoot, "src/renderer/src");
 
 test("the visual pane keeps the 320px certification floor", () => {
   const css = readFileSync(
@@ -20,6 +25,47 @@ test("the visual pane keeps the 320px certification floor", () => {
     /\.workbench\.with-side-panel\.with-visual\s*\{[^}]*minmax\(260px/s
   );
   assert.match(css, /\.inventory-workbench\.with-visual \.visual-pane\s*\{[^}]*min-width:\s*320px/s);
+});
+
+test("narrow windows cap the visual pane at min(40vw, persisted) then overlay via compact-workbench", () => {
+  const css = readFileSync(
+    join(dirname(fileURLToPath(import.meta.url)), "../src/renderer/src/styles/app.css"),
+    "utf8"
+  );
+  const tokens = readFileSync(
+    join(dirname(fileURLToPath(import.meta.url)), "../src/renderer/src/styles/tokens.css"),
+    "utf8"
+  );
+  const shell = readFileSync(
+    join(dirname(fileURLToPath(import.meta.url)), "../src/renderer/src/hooks/useShellLayout.ts"),
+    "utf8"
+  );
+  assert.match(tokens, /--visual-pane-compact-max:\s*40vw/);
+  assert.match(tokens, /html\.sidebar-hidden/);
+  assert.match(css, /@media \(max-width: 1100px\)/);
+  assert.match(
+    css,
+    /minmax\(320px,\s*min\(var\(--visual-pane-compact-max,\s*40vw\),\s*var\(--visual-pane-width/
+  );
+  assert.match(css, /min\(var\(--visual-pane-compact-max,\s*40vw\),\s*var\(--visual-pane-width/);
+  assert.match(css, /@media \(max-width: 860px\)/);
+  assert.match(css, /html\.compact-workbench/);
+  assert.match(
+    css,
+    /html\.compact-workbench[\s\S]*\.visual-pane:not\(\.visual-pane-expanded\)[\s\S]*position:\s*absolute/s
+  );
+  assert.match(css, /\.visuals-page header[\s\S]*flex-wrap:\s*nowrap/s);
+  assert.match(css, /\.visuals-tabs button[\s\S]*white-space:\s*nowrap/s);
+  assert.match(
+    css,
+    /\.workbench\.with-side-panel\.with-container \.chat-transcript-scroll[\s\S]*padding-bottom:\s*calc\(var\(--composer-clearance/s
+  );
+  assert.match(css, /html\.sidebar-hidden is the existing sidebar toggle/);
+  assert.match(css, /html\.visual-expanded is Expand visual/);
+  assert.match(css, /html\.visual-expanded \.sidebar/);
+  assert.doesNotMatch(css, /html\.compact-workbench\.sidebar-hidden/);
+  assert.match(shell, /classList\.toggle\("compact-workbench"/);
+  assert.match(shell, /matchMedia\("\(max-width: 860px\)"\)/);
 });
 
 test("an 820px stacked workbench still keeps a 320px visual floor so the composer stays in the transcript column", () => {
@@ -43,4 +89,138 @@ test("bombadil grouped Craftax uses a bundled fixture stream", () => {
   );
   assert.match(harness, /kind: "fixture", source: "examples\/events\.json"/);
   assert.equal(harness.includes("data: { events: [] }"), false);
+});
+
+test("routes.tsx mounts one VisualPane host including chat", () => {
+  const source = readFileSync(
+    join(dirname(fileURLToPath(import.meta.url)), "../src/renderer/src/routes.tsx"),
+    "utf8"
+  );
+  assert.equal((source.match(/<VisualPane/g) ?? []).length, 1);
+  assert.match(source, /key="window-visual-host"/);
+  assert.match(source, /view\.kind === "reports"/);
+  assert.match(source, /const paneHost = inventoryHost \|\| chatRoute \|\| settingsWithPane/);
+  assert.match(source, /<ReportsPage initialReportId=\{view\.reportId\} onBack=\{leaveReports\} \/>/);
+  assert.doesNotMatch(source, /Chat still remounts/);
+  assert.doesNotMatch(source, /onBack=\{\(\) => openChat/);
+  assert.doesNotMatch(source, /crypto\.randomUUID\(\)/);
+
+  const controller = readFileSync(
+    join(dirname(fileURLToPath(import.meta.url)), "../src/renderer/src/hooks/useAppController.ts"),
+    "utf8"
+  );
+  assert.match(controller, /view\.kind === "reports"/);
+  assert.match(controller, /view\.kind === "settings" && Boolean\(openArtifactId\)/);
+});
+
+test("Escape hierarchy intercepts labeling and expanded before pane close, and Back restores origin", () => {
+  const root = join(dirname(fileURLToPath(import.meta.url)), "../src/renderer/src");
+  const host = readFileSync(join(root, "components/VisualHost.tsx"), "utf8");
+  const escapeHandler =
+    host.match(/if \(event\.key !== "Escape"\) return;[\s\S]*?addEventListener\("keydown"/)?.[0] ?? "";
+  assert.match(escapeHandler, /if \(labeling\)/);
+  assert.match(escapeHandler, /if \(expanded\)/);
+  assert.match(escapeHandler, /preventDefault/);
+  assert.match(escapeHandler, /stopPropagation/);
+  assert.ok(
+    escapeHandler.indexOf("if (labeling)") < escapeHandler.indexOf("if (expanded)"),
+    "labeling must cancel before expanded restore"
+  );
+  assert.doesNotMatch(escapeHandler, /onClose|dispatchVisualRevision|type: "close"/);
+  assert.match(host, /cancelLabeling/);
+  assert.match(host, /labelButtonRef\.current\?\.focus\(\)/);
+  assert.match(host, /key="window-visual-host"|labelButtonRef/);
+  assert.match(host, /classList\.toggle\("visual-expanded"/);
+  assert.match(host, /<VisualPane|export function VisualPane/);
+
+  const controller = readFileSync(join(root, "hooks/useAppController.ts"), "utf8");
+  const paneEscape =
+    controller.match(/if \(e\.key === "Escape"\) \{[\s\S]*?dispatchVisualRevision\(\{ type: "close" \}\)/)?.[0] ?? "";
+  assert.match(paneEscape, /defaultPrevented/);
+
+  assert.match(controller, /sidePanelTab === "diagnostics"/);
+  assert.match(controller, /sidePanelTab === "outputs"/);
+  assert.match(controller, /sidePanelTab === "trace"/);
+
+  const routes = readFileSync(join(root, "routes.tsx"), "utf8");
+  assert.match(routes, /id: "diagnostics"/);
+  assert.match(routes, /tabId === "diagnostics"/);
+  assert.match(routes, /const leaveInventory = \(fallbackOrigin: MainView \| null\)/);
+  assert.match(routes, /key="window-visual-host"/);
+  assert.match(routes, /<ReportsPage initialReportId=\{view\.reportId\} onBack=\{leaveReports\} \/>/);
+  assert.match(routes, /originStackRef/);
+  assert.match(routes, /sidePanelOpen: showSidePanel/);
+  assert.match(routes, /setSidePanelTab\(frame\.layout\.sidePanelTab\)/);
+  assert.match(routes, /origin\?\.kind === "chat"/);
+  assert.match(routes, /openChat\(origin\.chatId\)/);
+  assert.match(routes, /"research-log"/);
+  assert.match(routes, /history\.replaceState/);
+  const leaveBacks = routes.match(/onBack=\{\(\) => leaveInventory\(inventoryOriginRef\.current\)\}/g) ?? [];
+  assert.ok(
+    leaveBacks.length >= 5,
+    `Settings/Visuals/Experiments/Optimizers/Data Back must use leaveInventory; found ${leaveBacks.length}`
+  );
+  assert.match(routes, /<SettingsPage[\s\S]{0,900}onBack=\{\(\) => leaveInventory\(inventoryOriginRef\.current\)\}/);
+  assert.match(routes, /<VisualsPage[\s\S]{0,900}onBack=\{\(\) => leaveInventory\(inventoryOriginRef\.current\)\}/);
+  assert.doesNotMatch(routes, /onBack=\{\(\) => openChat/);
+  assert.doesNotMatch(routes, /<CloudDesk\b/);
+  const chatRestore = routes.indexOf('origin?.kind === "chat"');
+  const landingFallback = routes.indexOf('setView({ kind: "landing" })', routes.indexOf("const leaveInventory"));
+  assert.ok(chatRestore >= 0 && landingFallback > chatRestore, "chat origin must restore before landing fallback");
+});
+
+const compiledDir = join(appRoot, "node_modules/.cache/synth-desktop-tests");
+mkdirSync(compiledDir, { recursive: true });
+const compiledHandle = join(compiledDir, "PaneResizeHandle.mjs");
+buildSync({
+  entryPoints: [join(rendererRoot, "components/PaneResizeHandle.tsx")],
+  bundle: true,
+  format: "esm",
+  target: "es2022",
+  platform: "neutral",
+  jsx: "automatic",
+  outfile: compiledHandle,
+  external: ["react", "react/jsx-runtime"]
+});
+const {
+  PANE_KEYBOARD_STEP_PX,
+  PANE_KEYBOARD_SHIFT_STEP_PX,
+  applyKeyboardResize,
+  keyboardWidthDelta,
+  paneKeyboardValueText,
+  realizedPaneWidth
+} = await import(pathToFileURL(compiledHandle).href);
+
+test("aria-valuenow reports realized CSS-pixel width after min/max, not the requested drag value", () => {
+  assert.equal(realizedPaneWidth(546, 320, 720, 320), 320);
+  assert.equal(realizedPaneWidth(420, 320, 720, 418.4), 418);
+  assert.equal(realizedPaneWidth(560, 280, 960, null), 560);
+  assert.equal(realizedPaneWidth(120, 280, 960), 280);
+  assert.equal(realizedPaneWidth(2000, 280, 960), 960);
+  const handle = readFileSync(join(rendererRoot, "components/PaneResizeHandle.tsx"), "utf8");
+  assert.match(handle, /aria-valuenow=\{reported\}/);
+  assert.match(handle, /persistRealized/);
+  assert.match(handle, /namedPaneElement/);
+});
+
+test("Left shrinks the named pane width for both the visual pane and the visuals list", () => {
+  assert.equal(PANE_KEYBOARD_STEP_PX, 40);
+  assert.equal(PANE_KEYBOARD_SHIFT_STEP_PX, 64);
+  assert.equal(keyboardWidthDelta("ArrowLeft"), -40);
+  assert.equal(keyboardWidthDelta("ArrowRight"), 40);
+  assert.equal(keyboardWidthDelta("ArrowLeft", true), -64);
+  assert.equal(keyboardWidthDelta("ArrowRight", true), 64);
+  assert.equal(applyKeyboardResize({ key: "ArrowLeft", value: 420, min: 320, max: 720 }), 380);
+  assert.equal(applyKeyboardResize({ key: "ArrowLeft", value: 560, min: 280, max: 960 }), 520);
+  assert.equal(applyKeyboardResize({ key: "ArrowRight", value: 420, min: 320, max: 720 }), 460);
+  assert.equal(applyKeyboardResize({ key: "Home", value: 420, min: 320, max: 720 }), 320);
+  assert.equal(applyKeyboardResize({ key: "End", value: 420, min: 320, max: 720 }), 720);
+  assert.equal(applyKeyboardResize({ key: "ArrowLeft", shiftKey: true, value: 560, min: 280, max: 960 }), 496);
+  assert.match(paneKeyboardValueText(420), /40 pixels/);
+  assert.match(paneKeyboardValueText(420), /Home and End/);
+  const handle = readFileSync(join(rendererRoot, "components/PaneResizeHandle.tsx"), "utf8");
+  assert.doesNotMatch(
+    handle,
+    /direction === "sidebar" \|\| direction === "primary"[\s\S]{0,200}ArrowLeft \? delta/
+  );
 });

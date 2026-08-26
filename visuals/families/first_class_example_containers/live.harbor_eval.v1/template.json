@@ -7,12 +7,22 @@
   "description": "Harbor trial/verifier live view. Bind slot stream only.",
   "accent": "#FF5C00",
   "shell": "shell.tsx",
-  "tags": ["live", "harbor", "eval", "job", "rollout"],
-  "slots": [
+  "tags": [
+    "live",
+    "harbor",
+    "eval",
+    "job",
+    "rollout"
+  ],
+  "inputs": [
     {
       "name": "stream",
       "description": "Declared live SSE or fixture with trial/verifier events",
-      "accepts": ["live_sse", "fixture", "inline"],
+      "accepts": [
+        "live_sse",
+        "fixture",
+        "inline"
+      ],
       "required": true,
       "schema": "synth.trace-stream-event.v1"
     }

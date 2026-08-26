@@ -1,0 +1,112 @@
+{
+  "schemaVersion": "synth.visual-template.v1",
+  "id": "compose.visual.v1",
+  "title": "Composed visual",
+  "genre": "compose",
+  "version": "1.0.0",
+  "description": "Ordered placements of shipped visual components over a host-owned eval stream or optimizer_run. Two bind dialects, not one firehose. Unknown component ids fail closed.",
+  "accent": "#F05F22",
+  "shell": "shell.tsx",
+  "tags": [
+    "compose",
+    "live",
+    "sse",
+    "eval"
+  ],
+  "inputs": [
+    {
+      "name": "spec",
+      "description": "Ordered placements of advertised compose components.",
+      "accepts": [
+        "inline",
+        "fixture",
+        "local_cas"
+      ],
+      "required": true,
+      "schema": "synth.visual.compose_spec.v1"
+    },
+    {
+      "name": "stream",
+      "description": "Live SSE endpoint or fixture event list. Required when a placement consumes stream.",
+      "accepts": [
+        "live_sse",
+        "fixture",
+        "inline"
+      ],
+      "required": false,
+      "schema": "synth.visual.live_eval_events.v1"
+    },
+    {
+      "name": "optimizer_run",
+      "description": "Optimizer event cursor (GEPA, SFT, CISPO). Required when a placement consumes optimizer_run. Do not bind Harbor/Craftax eval traces here.",
+      "accepts": [
+        "optimizer_run",
+        "fixture",
+        "inline"
+      ],
+      "required": false,
+      "schema": "optimizer_event.v1"
+    }
+  ],
+  "components": [
+    {
+      "id": "event_stream.v1",
+      "kind": "event_stream",
+      "protocolId": "event_stream.v1",
+      "consumes": [
+        "stream",
+        "optimizer_run"
+      ],
+      "emits": [
+        "cursor"
+      ],
+      "description": "Live event log. Placement input selects stream or optimizer_run. Filter with includeKinds (envelope kind or type)."
+    },
+    {
+      "id": "detail_modal.v1",
+      "kind": "detail_modal",
+      "protocolId": "detail_modal.v1",
+      "consumes": [
+        "cursor"
+      ],
+      "emits": [],
+      "description": "In-pane overlay that inspects the envelope selected by `from`."
+    },
+    {
+      "id": "metrics.v1",
+      "kind": "metrics",
+      "protocolId": "metrics.reduce.v1",
+      "consumes": [
+        "stream",
+        "optimizer_run"
+      ],
+      "emits": [],
+      "description": "Reduce ingested events to a strip: count and last scalar reward/metric if present."
+    },
+    {
+      "id": "scrubber.v1",
+      "kind": "scrubber",
+      "protocolId": "scrubber.v1",
+      "consumes": [
+        "stream",
+        "optimizer_run"
+      ],
+      "emits": [
+        "cursor"
+      ],
+      "description": "Sequence slider. Writes cursor { placementId, eventId, sequence }."
+    },
+    {
+      "id": "candidate_inspector.v1",
+      "kind": "candidate_inspector",
+      "protocolId": "candidate_inspector.v1",
+      "consumes": [
+        "optimizer_run"
+      ],
+      "emits": [
+        "cursor"
+      ],
+      "description": "Lists candidate identity from optimizer_event.v1 (candidate.accepted, delta.candidate_id, best_candidate_id). Empty and honest when those events are absent. Does not invent CISPO candidates."
+    }
+  ]
+}

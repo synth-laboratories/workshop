@@ -35,6 +35,20 @@ const MLX_PROCESS_LEASE_SCHEMA: &str = "synth.mlx-runtime-process-lease.v1";
 static SUPERVISOR: OnceLock<Mutex<MlxSupervisor>> = OnceLock::new();
 static INSTALL_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
+/// MLX has no loaded adapter for this `policy_snapshot_id` (404/410).
+/// Classified once at the HTTP boundary so inference can load-and-retry
+/// without substring-matching the sidecar prose.
+#[derive(Debug)]
+pub(crate) struct PolicySnapshotMissing;
+
+impl std::fmt::Display for PolicySnapshotMissing {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("MLX policy snapshot is not loaded")
+    }
+}
+
+impl std::error::Error for PolicySnapshotMissing {}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct RuntimeWheel {
@@ -530,10 +544,11 @@ impl MlxLoopback {
             .to_string();
         let bytes = response.bytes().await.context("read MLX body")?.to_vec();
         if !status.is_success() {
-            bail!(
-                "MLX service {path} failed with {status}: {}",
-                String::from_utf8_lossy(&bytes).trim()
-            );
+            return Err(mlx_http_error(
+                path,
+                status,
+                &String::from_utf8_lossy(&bytes),
+            ));
         }
         Ok((content_type, bytes))
     }
@@ -564,10 +579,11 @@ impl MlxLoopback {
             .to_string();
         if !status.is_success() {
             let bytes = response.bytes().await.context("read MLX body")?.to_vec();
-            bail!(
-                "MLX service {path} failed with {status}: {}",
-                String::from_utf8_lossy(&bytes).trim()
-            );
+            return Err(mlx_http_error(
+                path,
+                status,
+                &String::from_utf8_lossy(&bytes),
+            ));
         }
         if !content_type.contains("event-stream") {
             let bytes = response.bytes().await.context("read MLX body")?.to_vec();
@@ -832,12 +848,33 @@ async fn decode_mlx(response: reqwest::Response, operation: &str) -> Result<Valu
     let status = response.status();
     let text = response.text().await.context("read MLX response")?;
     if !status.is_success() {
-        bail!(
-            "MLX service {operation} failed with {status}: {}",
-            text.trim()
-        );
+        return Err(mlx_http_error(operation, status, &text));
     }
     serde_json::from_str(&text).with_context(|| format!("decode MLX response for {operation}"))
+}
+
+fn mlx_http_error(operation: &str, status: reqwest::StatusCode, body: &str) -> anyhow::Error {
+    let message = format!(
+        "MLX service {operation} failed with {status}: {}",
+        body.trim()
+    );
+    if policy_snapshot_missing_from_body(body) {
+        anyhow::Error::new(PolicySnapshotMissing).context(message)
+    } else {
+        anyhow::anyhow!(message)
+    }
+}
+
+fn policy_snapshot_missing_from_body(body: &str) -> bool {
+    let Ok(value) = serde_json::from_str::<Value>(body) else {
+        return false;
+    };
+    let code = value
+        .pointer("/detail/error_code")
+        .or_else(|| value.get("error_code"))
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    matches!(code, "policy_snapshot_not_found" | "policy_snapshot_evicted")
 }
 
 #[cfg(test)]
@@ -900,6 +937,26 @@ mod tests {
     }
 
     #[test]
+    fn missing_policy_snapshot_body_is_a_typed_marker() {
+        assert!(policy_snapshot_missing_from_body(
+            r#"{"detail":{"error_code":"policy_snapshot_not_found","message":"gone"}}"#
+        ));
+        assert!(policy_snapshot_missing_from_body(
+            r#"{"detail":{"error_code":"policy_snapshot_evicted","message":"evicted"}}"#
+        ));
+        assert!(!policy_snapshot_missing_from_body(
+            r#"{"detail":{"error_code":"policy_pin_conflict","message":"nope"}}"#
+        ));
+        let error = mlx_http_error(
+            "/v1/chat/completions",
+            reqwest::StatusCode::NOT_FOUND,
+            r#"{"detail":{"error_code":"policy_snapshot_not_found","message":"gone"}}"#,
+        );
+        assert!(crate::error::error_is::<PolicySnapshotMissing>(&error));
+        assert!(error.to_string().contains("MLX service /v1/chat/completions failed"));
+    }
+
+    #[test]
     fn chat_refuses_an_empty_policy_pin() {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -907,7 +964,7 @@ mod tests {
             .unwrap();
         let client = MlxLoopback {
             base_url: "http://127.0.0.1:9".into(),
-            http: reqwest::Client::new(),
+            http: crate::http::http_client(),
         };
         let error = runtime
             .block_on(client.chat("hello", "  "))

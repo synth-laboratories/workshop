@@ -3,6 +3,7 @@ use super::models::{
     ReportPromotion, ReportSeal, ReportSealBundle, ReportUpload, REPORT_BUNDLE_SCHEMA,
 };
 use super::registry::ReportRegistry;
+use crate::http::http_client;
 use crate::storage::{EventAppend, EventSource};
 use anyhow::{anyhow, bail, Context, Result};
 use chrono::Utc;
@@ -25,7 +26,7 @@ impl ReportRegistry {
         backend_url: String,
         api_key: String,
     ) -> Result<ReportAudienceState> {
-        let response = reqwest::Client::new()
+        let response = http_client()
             .put(format!(
                 "{}/artifacts/v1/workshop/reports/{}/audience",
                 backend_url.trim_end_matches('/'),
@@ -57,7 +58,7 @@ impl ReportRegistry {
         backend_url: String,
         api_key: String,
     ) -> Result<ReportAudienceState> {
-        let response = reqwest::Client::new()
+        let response = http_client()
             .delete(format!(
                 "{}/artifacts/v1/workshop/reports/{}/audience",
                 backend_url.trim_end_matches('/'),
@@ -118,7 +119,7 @@ impl ReportRegistry {
             backend_url.trim_end_matches('/'),
             publication_id
         );
-        let response = reqwest::Client::new()
+        let response = http_client()
             .post(url)
             .bearer_auth(api_key)
             .json(&json!({
@@ -154,7 +155,7 @@ impl ReportRegistry {
         api_key: String,
         reason: Option<String>,
     ) -> Result<ReportPromotion> {
-        let mut request = reqwest::Client::new()
+        let mut request = http_client()
             .delete(format!(
                 "{}/artifacts/v1/workshop/reports/{}/promote",
                 backend_url.trim_end_matches('/'),
@@ -1149,10 +1150,7 @@ mod tests {
             .share_seal(seal.receipt_digest.clone(), origin, SLOT_KEY.into())
             .await
             .expect_err("partial upload must fail closed");
-        assert!(
-            error.to_string().contains("upload failed"),
-            "unexpected error: {error}"
-        );
+        assert!(error.to_string().contains("upload failed"), "unexpected error: {error}");
         let status = reports
             .upload_status(seal.receipt_digest)
             .await
@@ -1176,10 +1174,7 @@ mod tests {
             )
             .await
             .expect_err("index.html is not a Report URL");
-        assert!(
-            error.to_string().contains("not a direct asset"),
-            "unexpected error: {error}"
-        );
+        assert!(error.to_string().contains("not a direct asset"), "unexpected error: {error}");
     }
 
     #[tokio::test]

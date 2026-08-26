@@ -1377,10 +1377,7 @@ mod tests {
                     &[allowed],
                 )
                 .unwrap_err();
-            assert!(
-                error.to_string().contains("outside") || error.to_string().contains("refusing"),
-                "{error}"
-            );
+            assert!(error.to_string().contains("outside") || error.to_string().contains("refusing"), "{error}");
         }
     }
 
@@ -1578,10 +1575,7 @@ mod tests {
             "secrets.toml"
         )));
         let malformed = importer::parse_dotenv("OPENAI_API_KEY=\"unterminated\n");
-        assert!(
-            malformed.unwrap_err().to_string().contains("unterminated"),
-            "malformed quoted values must fail closed"
-        );
+        assert!(malformed.unwrap_err().to_string().contains("unterminated"), "malformed quoted values must fail closed");
     }
 
     #[test]
@@ -1612,10 +1606,7 @@ mod tests {
         store.reserve_call("wcap_ceiling").unwrap();
         store.reserve_call("wcap_ceiling").unwrap();
         let exhausted = store.reserve_call("wcap_ceiling").unwrap_err();
-        assert!(
-            exhausted.to_string().contains("ceiling")
-                || exhausted.to_string().contains("exhausted")
-        );
+        assert!(exhausted.to_string().contains("ceiling") || exhausted.to_string().contains("exhausted"));
         let mut replay = live;
         replay.handle = "wcap_replay".into();
         replay.used_calls = 0;

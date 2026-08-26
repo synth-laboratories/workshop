@@ -9,9 +9,9 @@ visual may persist and what the renderer may read. They must agree.
 ```json
 {
   "schemaVersion": "synth.visual-bindings.v1",
-  "slots": [
+  "inputs": [
     {
-      "slot": "stream",
+      "input": "stream",
       "kind": "live_sse",
       "source": "http://127.0.0.1:8114/rollouts/roll_a/stream",
       "poll_url": "http://127.0.0.1:8114/rollouts/roll_a/events",
@@ -21,9 +21,13 @@ visual may persist and what the renderer may read. They must agree.
 }
 ```
 
-`slots` is a flat array. A template slot declaring `"multiple": true` accepts
-several entries with the same `slot` name — ten rollout streams on one `stream`
-slot is the supported case, not a workaround.
+`inputs` is the canonical flat array. A template input declaring `"multiple": true`
+accepts several entries with the same `input` name — ten rollout streams on one
+`stream` input is the supported case, not a workaround.
+
+New writers emit `input` / `inputs` only. Readers still accept `slot` / `slots`
+on stored envelopes and `template.json`. If both names are present and disagree,
+fail closed.
 
 `kind` is drawn from a closed vocabulary: `inline`, `trace_v5`, `local_cas`,
 `run_ref`, `live_sse`, `fixture`, `optimizer_run`, `query_snapshot`. An unknown
@@ -43,7 +47,7 @@ resolves through the same rules.
 | The envelope above | accepted unchanged |
 | An empty object | an empty envelope; an authoring default, not an upgrade |
 | A slot-keyed descriptor map, `{"stream": [{…}]}` | **upgraded**, reported at warn with `visual_bindings_upgraded` |
-| A legacy inline prop bag, `{"matrix": […]}` | **upgraded** to `inline` slots, reported the same way |
+| A legacy inline prop bag, `{"matrix": […]}` | **upgraded** to `inline` inputs, reported the same way |
 | Anything else | **refused** with a message naming what could not be read |
 
 There is deliberately no "return nothing and let the caller carry on". A shape
@@ -60,18 +64,19 @@ the shape alone has to separate them. One heuristic, in one function, in each
 language:
 
 > A value is a binding descriptor when it names a `kind` from the vocabulary
-> **and** carries at least one field only a descriptor has: `slot`, `source`,
-> `data`, or `poll_url`.
+> **and** carries at least one field only a descriptor has: `input`, `slot`,
+> `source`, `data`, or `poll_url`.
 
 So `{"chart": {"kind": "bar"}}` stays inline chart data. A slot map that mixes
 descriptors and raw data is refused rather than guessed at.
 
-The slot key is authoritative: a descriptor filed under `"stream"` is a stream
-binding whatever its own `slot` field claims.
+The map key is authoritative: a descriptor filed under `"stream"` is a stream
+binding whatever its own `input` or `slot` field claims.
 
 **COMPAT.** Both upgrade paths are compatibility code. They are loud so writers
 get fixed, and they are removed once `visual_bindings_upgraded` stops firing in
-the field. Write the envelope.
+the field. Write the envelope. `slot` / `slots` on stored envelopes remain
+readable; do not emit them on new writes.
 
 ## Digests
 
@@ -90,7 +95,9 @@ canonicalise is left untouched and counted, never silently repaired.
 ## Authoring
 
 `visual_bind_data_source` is the supported way to write bindings: it emits the
-envelope. Use `mode: "append"` with `bindings: [...]` for a `multiple` slot.
+envelope with `inputs` / `input`. Use `mode: "append"` with `bindings: [...]`
+for a `multiple` input.
 
 `visual_update` still accepts a raw `bindings` object because importers use it.
-Send the envelope.
+Send the envelope. `slot` still binds on stored envelopes; new writers emit
+`input`.

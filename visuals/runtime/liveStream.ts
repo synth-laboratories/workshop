@@ -1,20 +1,21 @@
 /**
  * W0 live-eval bind + reducer contract.
  *
- * Slot `stream` only (not `live` or `jobs`). Bind a declared stream URL.
+ * Input `stream` only (not `live` or `jobs`). Bind a declared stream URL.
  * Missing reward / usage / cost stay missing. Heartbeats and
  * `stream.subscribed` do not become evidence.
  */
 
-export const LIVE_EVAL_SLOT = "stream";
+export const LIVE_EVAL_INPUT = "stream";
+/** Alias of `LIVE_EVAL_INPUT` so existing imports compile. */
+export const LIVE_EVAL_SLOT = LIVE_EVAL_INPUT;
 export const FORBIDDEN_LIVE_EVAL_SLOTS = ["live", "jobs"] as const;
 
 const LIVE_EVAL_TEMPLATE_PREFIXES = [
   "live.harbor",
   "live.container",
   "live.eval",
-  "live.craftax",
-  "live.digbench"
+  "live.craftax"
 ] as const;
 
 export type DeclaredStreamDescriptor = {
@@ -60,10 +61,10 @@ export function isLiveEvalTemplate(templateId: string): boolean {
 
 export function assertLiveEvalSlot(slot: string, templateId?: string): string | null {
   if (FORBIDDEN_LIVE_EVAL_SLOTS.includes(slot as (typeof FORBIDDEN_LIVE_EVAL_SLOTS)[number])) {
-    return `Forbidden live-eval slot "${slot}"; bind slot "${LIVE_EVAL_SLOT}"`;
+    return `Forbidden live-eval input "${slot}"; bind input "${LIVE_EVAL_INPUT}"`;
   }
-  if (templateId && isLiveEvalTemplate(templateId) && slot !== LIVE_EVAL_SLOT) {
-    return `Live eval template "${templateId}" must bind slot "${LIVE_EVAL_SLOT}", not "${slot}"`;
+  if (templateId && isLiveEvalTemplate(templateId) && slot !== LIVE_EVAL_INPUT) {
+    return `Live eval template "${templateId}" must bind input "${LIVE_EVAL_INPUT}", not "${slot}"`;
   }
   return null;
 }
@@ -120,6 +121,18 @@ export function isControlEnvelope(event: LiveEnvelope): boolean {
     kind === "stream.heartbeat" ||
     kind === "ping"
   );
+}
+
+/** Placement `includeKinds` matches envelope `kind` or `type`. */
+export function eventMatchesIncludeKinds(
+  event: { kind?: string | null; type?: string | null },
+  includeKinds?: string[]
+): boolean {
+  if (!includeKinds?.length) return true;
+  const labels = [event.kind, event.type].filter(
+    (value): value is string => typeof value === "string" && value.length > 0
+  );
+  return includeKinds.some((kind) => labels.includes(kind));
 }
 
 function payloadString(event: LiveEnvelope, ...keys: string[]): string {

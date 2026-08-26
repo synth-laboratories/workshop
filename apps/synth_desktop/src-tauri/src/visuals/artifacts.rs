@@ -2,6 +2,7 @@ use super::{
     VisualAnnotation, VisualAnnotationCreate, VisualRegistry, VisualSeal, VisualSealBundle,
     VisualUpload,
 };
+use crate::http::http_client;
 use crate::storage::{EventAppend, EventSource};
 use anyhow::{anyhow, bail, Context, Result};
 use chrono::Utc;
@@ -343,7 +344,7 @@ impl VisualRegistry {
             .trim()
             .strip_suffix("index.html")
             .ok_or_else(|| anyhow!("private artifact URL must end in index.html"))?;
-        let client = reqwest::Client::new();
+        let client = http_client();
         let mut fetched = BTreeMap::new();
         for logical_path in ["receipt.json", "data.json", "index.html"] {
             let response = client
@@ -807,6 +808,14 @@ fn freeze_bindings(mut value: Value) -> Result<Value> {
         Ok(())
     }
     walk(&mut value)?;
+    if value.get("inputs").is_some() || value.get("slots").is_some() {
+        if let Some(object) = value.as_object_mut() {
+            object.entry("schemaVersion").or_insert_with(|| {
+                json!(super::VISUAL_BINDINGS_SCHEMA_VERSION)
+            });
+        }
+        return Ok(super::canonicalize_bindings(&value)?.value);
+    }
     Ok(value)
 }
 
@@ -1048,10 +1057,11 @@ mod tests {
 
     #[test]
     fn live_binding_requires_snapshot_and_removes_stream_urls() {
-        let frozen = freeze_bindings(json!({"slots":[{"kind":"live_sse","source":"http://127.0.0.1/events","snapshot":{"reward":null}}]})).unwrap();
-        assert_eq!(frozen["slots"][0]["kind"], "inline");
-        assert!(frozen["slots"][0].get("source").is_none());
-        assert!(frozen["slots"][0]["data"]["reward"].is_null());
+        let frozen = freeze_bindings(json!({"slots":[{"input":"stream","kind":"live_sse","source":"http://127.0.0.1/events","snapshot":{"reward":null}}]})).unwrap();
+        assert_eq!(frozen["inputs"][0]["kind"], "inline");
+        assert!(frozen.get("slots").is_none());
+        assert!(frozen["inputs"][0].get("source").is_none());
+        assert!(frozen["inputs"][0]["data"]["reward"].is_null());
         assert!(freeze_bindings(json!({"kind":"live_sse","source":"x"})).is_err());
     }
 
@@ -1137,8 +1147,11 @@ mod tests {
             .unwrap();
         // Bindings are sealed in the canonical envelope, and the live stream
         // is frozen to inline evidence so the bundle opens offline.
-        let sealed_slot = &bundle.data["bindings"]["slots"][0];
-        assert_eq!(sealed_slot["slot"], "payload");
+        let sealed_slot = bundle.data["bindings"]
+            .get("inputs")
+            .and_then(|value| value.get(0))
+            .unwrap();
+        assert_eq!(sealed_slot["input"], "payload");
         assert_eq!(sealed_slot["kind"], "inline");
         assert!(sealed_slot["data"]["reward"].is_null());
         assert_eq!(bundle.data["overlays"][0]["id"], annotation.id);
@@ -1179,7 +1192,11 @@ mod tests {
             .await
             .unwrap();
         let reopened = registry.get_seal(sealed.receipt_digest).await.unwrap();
-        assert!(reopened.data["bindings"]["slots"][0]["data"]["reward"].is_null());
+        assert!(reopened.data["bindings"]
+            .get("inputs")
+            .and_then(|value| value.get(0))
+            .unwrap()["data"]["reward"]
+            .is_null());
         assert!(registry.seal(created.id, 2).await.is_err());
     }
 }

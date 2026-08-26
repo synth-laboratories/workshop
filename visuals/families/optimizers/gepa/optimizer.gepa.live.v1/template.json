@@ -7,22 +7,37 @@
   "description": "GEPA search, lineage, and budget on optimizer_event.v1. No env frames.",
   "accent": "#F05F22",
   "shell": "shell.tsx",
-  "tags": ["optimizer", "gepa", "live"],
+  "tags": [
+    "optimizer",
+    "gepa",
+    "live"
+  ],
   "observationContract": {
     "schemaVersion": "synth.visual-observation-contract.v1",
     "readiness": {
-      "rejectTransportStates": ["idle", "declared", "replaying", "error", "connecting", "reconnecting"],
+      "rejectTransportStates": [
+        "idle",
+        "declared",
+        "replaying",
+        "error",
+        "connecting",
+        "reconnecting"
+      ],
       "minimumRolloutCount": 0,
       "minimumRenderedFrameCount": 0,
       "minimumSemanticEventCount": 1,
       "requireTerminal": true
     }
   },
-  "slots": [
+  "inputs": [
     {
       "name": "optimizer_run",
       "description": "Optimizer run + optimizer_event.v1 fixture. Search/lineage/budget only.",
-      "accepts": ["optimizer_run", "fixture", "inline"],
+      "accepts": [
+        "optimizer_run",
+        "fixture",
+        "inline"
+      ],
       "required": true,
       "schema": "optimizer_event.v1"
     }

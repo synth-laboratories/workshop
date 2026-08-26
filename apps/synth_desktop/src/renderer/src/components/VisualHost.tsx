@@ -1,9 +1,11 @@
 // @ts-nocheck — P0-1 generated protocol is stricter than prior handwritten DTOs; UI follow-up is out of specta-cutover file ownership.
 import { Component, useEffect, useMemo, useRef, useState, type ComponentType, type ErrorInfo, type MouseEvent, type ReactNode } from "react";
-import type { ArtifactRef } from "../types/landing";
+import { formatVisualAdmissionIdentity, type ArtifactRef } from "../types/landing";
+import { VisualOpsLine } from "./VisualOpsLine";
 import type { VisualRecord } from "@synth/runtime-protocol";
 import {
 	bindTemplateSlots,
+	bindingInputName,
 	consumeInjectedRendererCrash,
 	createReplayClient,
 	isVisualBindings,
@@ -12,7 +14,10 @@ import {
 	replayStreamsFromBindings,
 	resolveTemplate,
 	resolveVisualBindings,
-	selectRenderedProjection
+	selectRenderedProjection,
+	compileSourcedModule,
+	isSourcedTemplate,
+	sourcedInvalidShell
 } from "@synth/visuals";
 import { publicError, toPublicError, type PublicError } from "../runtime/publicError";
 import type { VisualAnnotation, VisualSeal, VisualSealBundle, VisualUpload } from "../bridge";
@@ -49,6 +54,11 @@ export function artifactFromVisualRecord(visual: VisualRecord): ArtifactRef {
 		rendererKind: visual.rendererKind,
 		bindings: visual.bindings,
 		metadata: visual.metadata,
+		status: visual.status,
+		sessionId: visual.sessionId ?? undefined,
+		ownerSessionId: visual.sessionId ?? undefined,
+		runId: visual.runId ?? undefined,
+		traceId: visual.traceId ?? undefined,
 		summary: typeof visual.metadata?.summary === "string" ? visual.metadata.summary : undefined,
 		preview: {
 			variant:
@@ -265,6 +275,11 @@ function MockFallback({ artifact }: { artifact: ArtifactRef }) {
 	);
 }
 
+function decodeBase64Utf8(base64: string): string {
+	const bytes = Uint8Array.from(atob(base64), (char) => char.charCodeAt(0));
+	return new TextDecoder().decode(bytes);
+}
+
 function TemplateVisualHost({ artifact }: { artifact: ArtifactRef }) {
 	const [Shell, setShell] = useState<ComponentType<ShellProps> | null>(null);
 	const [failed, setFailed] = useState(false);
@@ -314,11 +329,14 @@ function TemplateVisualHost({ artifact }: { artifact: ArtifactRef }) {
 		if (!isVisualBindings(artifact.bindings) || asyncBindings.length === 0) {
 			return propsFromBindings(artifact.bindings);
 		}
-		const skip = new Set(asyncBindings.map((binding) => `${binding.slot}:${binding.kind}:${binding.source ?? ""}`));
+		const skip = new Set(asyncBindings.map((binding) => `${bindingInputName(binding)}:${binding.kind}:${binding.source ?? ""}`));
 		return propsFromBindings({
 			schemaVersion: "synth.visual-bindings.v1",
-			slots: artifact.bindings.slots.filter((binding) =>
-				!skip.has(`${binding.slot}:${binding.kind}:${binding.source ?? ""}`)
+			inputs: resolvedBindings.slots.filter((binding) =>
+				!skip.has(`${bindingInputName(binding)}:${binding.kind}:${binding.source ?? ""}`)
+			),
+			slots: resolvedBindings.slots.filter((binding) =>
+				!skip.has(`${bindingInputName(binding)}:${binding.kind}:${binding.source ?? ""}`)
 			)
 		});
 	}, [artifact.bindings, asyncBindings]);
@@ -342,9 +360,9 @@ function TemplateVisualHost({ artifact }: { artifact: ArtifactRef }) {
 		}),
 		[artifact.id, artifact.visualId, artifact.revision]
 	);
-	const optimizerRunId = isVisualBindings(artifact.bindings)
-		? artifact.bindings.slots.find(
-			(entry) => entry.slot === "optimizer_run" && entry.kind === "optimizer_run"
+	const optimizerRunId = resolvedBindings.status !== "rejected"
+		? resolvedBindings.slots.find(
+			(entry) => bindingInputName(entry) === "optimizer_run" && entry.kind === "optimizer_run"
 		)?.source
 		: undefined;
 	const templateDigest = typeof artifact.metadata?.templateDigest === "string"
@@ -374,7 +392,7 @@ function TemplateVisualHost({ artifact }: { artifact: ArtifactRef }) {
 			event: "visual.bindings.upgraded",
 			code: DIAGNOSTIC_CODES.visualBindingsUpgraded,
 			message: `Rendered from upgraded legacy bindings on ${resolvedBindings.upgradedSlots.join(", ")}`,
-			details: { templateId: artifact.templateId ?? null, slots: resolvedBindings.upgradedSlots }
+			details: { templateId: artifact.templateId ?? null, inputs: resolvedBindings.upgradedSlots }
 		});
 	}, [artifact.templateId, resolvedBindings, visualIdentity]);
 
@@ -395,37 +413,60 @@ function TemplateVisualHost({ artifact }: { artifact: ArtifactRef }) {
 			});
 			return;
 		}
-		void loadVisualShell(templateId)
-			.then((Component) => {
+		const load = async () => {
+			if (isSourcedTemplate(templateId)) {
+				const visualId = artifact.visualId ?? artifact.id;
+				let source = "";
+				try {
+					const asset = await bridges.visuals?.content?.(visualId);
+					if (asset?.base64) source = decodeBase64Utf8(asset.base64);
+				} catch (reason) {
+					if (!cancelled) setShell(() => sourcedInvalidShell(publicError(reason)));
+					return;
+				}
+				const compiled = compileSourcedModule(source);
 				if (cancelled) return;
-				if (!Component) {
-					setFailed(true);
-					reportDiagnostic({
-						...visualIdentity,
-						severity: "error",
-						component: "visual-host",
-						event: "visual.shell.unavailable",
-						code: DIAGNOSTIC_CODES.visualTemplateUnavailable,
-						message: `Template ${templateId} resolved no shell component`,
-						details: { templateId },
-					});
-				} else setShell(() => Component);
-			})
-			.catch((reason) => {
-				if (cancelled) return;
+				if (!compiled.ok) {
+					setShell(() => sourcedInvalidShell(compiled.error));
+					return;
+				}
+				setShell(() => compiled.Shell);
+				return;
+			}
+			const Component = await loadVisualShell(templateId);
+			if (cancelled) return;
+			if (!Component) {
 				setFailed(true);
 				reportDiagnostic({
 					...visualIdentity,
 					severity: "error",
 					component: "visual-host",
-					event: "visual.shell.load_failed",
-					code: DIAGNOSTIC_CODES.visualShellLoadFailed,
-					message: publicError(reason),
+					event: "visual.shell.unavailable",
+					code: DIAGNOSTIC_CODES.visualTemplateUnavailable,
+					message: `Template ${templateId} resolved no shell component`,
 					details: { templateId },
 				});
+			} else setShell(() => Component);
+		};
+		void load().catch((reason) => {
+			if (cancelled) return;
+			if (isSourcedTemplate(templateId)) {
+				setShell(() => sourcedInvalidShell(publicError(reason)));
+				return;
+			}
+			setFailed(true);
+			reportDiagnostic({
+				...visualIdentity,
+				severity: "error",
+				component: "visual-host",
+				event: "visual.shell.load_failed",
+				code: DIAGNOSTIC_CODES.visualShellLoadFailed,
+				message: publicError(reason),
+				details: { templateId },
 			});
+		});
 		return () => { cancelled = true; };
-	}, [artifact.templateId, visualIdentity]);
+	}, [artifact.templateId, artifact.visualId, artifact.id, artifact.contentDigest, artifact.revision, visualIdentity]);
 
 	useEffect(() => {
 		let cancelled = false;
@@ -472,7 +513,8 @@ function TemplateVisualHost({ artifact }: { artifact: ArtifactRef }) {
 					receivedSchema: unsupportedBinding.schema ?? null,
 					expectedSchemas: ["synth.trace-projection.rollout-inspector.v1"],
 					templateId: artifact.templateId ?? null,
-					slot: unsupportedBinding.slot ?? null,
+					slot: bindingInputName(unsupportedBinding) ?? null,
+					input: bindingInputName(unsupportedBinding) ?? null,
 					remediation: "Project Trace V5 into the visual's accepted input contract.",
 				},
 			});
@@ -531,7 +573,7 @@ function TemplateVisualHost({ artifact }: { artifact: ArtifactRef }) {
 				const props = Object.fromEntries(
 					Object.values(result.slots)
 						.filter((slot) => slot.kind !== "inline" && slot.kind !== "live_sse" && slot.kind !== "optimizer_run")
-						.map((slot) => [slot.slot, slot.data])
+						.map((slot) => [slot.input ?? slot.slot, slot.data])
 				);
 				setTraceResolution({ status: "ready", props });
 				setLastKnownGoodProps((current) => rememberLastKnownGood(current, props, false));
@@ -757,8 +799,9 @@ function TemplateVisualHost({ artifact }: { artifact: ArtifactRef }) {
 			data-visual-projection-stale={selected.stale ? "true" : undefined}
 			data-visual-subscription={connectionState}
 			data-visual-compute={transportTerminal ? "terminal" : "running"}
-			data-visual-review={artifact.status === "review" || artifact.status === "ready" ? artifact.status : "none"}
-			data-visual-readiness={artifact.status === "ready" ? "ready" : "waiting"}
+			data-visual-status={artifact.status ?? "draft"}
+			data-visual-review={Array.isArray(artifact.metadata?.reviews) && artifact.metadata.reviews.length > 0 ? "review" : "none"}
+			data-visual-readiness={artifact.status === "live" || artifact.status === "saved" ? "ready" : "waiting"}
 			data-visual-pinning={artifact.metadata?.pinned === true ? "pinned" : "unpinned"}
 			data-visual-sealing={artifact.metadata?.sealed === true || artifact.metadata?.seal ? "sealed" : "unsealed"}
 			data-visual-sharing={typeof artifact.metadata?.visibility === "string" ? String(artifact.metadata.visibility) : "private"}
@@ -997,6 +1040,30 @@ export function VisualHost({ artifact }: { artifact: ArtifactRef }) {
 	);
 }
 
+const SHARED_URL_INVALID = "Enter an http(s) private artifact URL.";
+
+function isSharedArtifactUrl(value: string): boolean {
+	const trimmed = value.trim();
+	if (!trimmed) return false;
+	try {
+		const parsed = new URL(trimmed);
+		return parsed.protocol === "http:" || parsed.protocol === "https:";
+	} catch {
+		return false;
+	}
+}
+
+function restoreFocusAfterVisualPaneClose() {
+	const grid = document.querySelector<HTMLElement>('[data-testid="visuals-grid"]');
+	const next =
+		(grid && !grid.hidden ? grid : null)
+		?? document.querySelector<HTMLElement>("main.main-pane")
+		?? document.querySelector<HTMLElement>("main");
+	if (!next) return;
+	if (next.tabIndex < 0) next.tabIndex = -1;
+	next.focus();
+}
+
 export function VisualPane({ artifact, onClose }: { artifact: ArtifactRef; onClose: () => void }) {
 	const [expanded, setExpanded] = useState(false);
 	const [annotations, setAnnotations] = useState<VisualAnnotation[]>([]);
@@ -1010,6 +1077,39 @@ export function VisualPane({ artifact, onClose }: { artifact: ArtifactRef; onClo
 	const [labelBody, setLabelBody] = useState("");
 	const [artifactError, setArtifactError] = useState<string | null>(null);
 	const [busy, setBusy] = useState(false);
+	const labelButtonRef = useRef<HTMLButtonElement | null>(null);
+
+	function cancelLabeling() {
+		setLabeling(false);
+		setLabelPoint(null);
+		requestAnimationFrame(() => labelButtonRef.current?.focus());
+	}
+
+	useEffect(() => {
+		if (!labeling && !expanded) return;
+		const onKeyDown = (event: KeyboardEvent) => {
+			if (event.key !== "Escape") return;
+			// Escape hierarchy: labeling, then expanded; pane close stays in the controller.
+			if (labeling) {
+				event.preventDefault();
+				event.stopPropagation();
+				cancelLabeling();
+				return;
+			}
+			if (expanded) {
+				event.preventDefault();
+				event.stopPropagation();
+				setExpanded(false);
+			}
+		};
+		window.addEventListener("keydown", onKeyDown, true);
+		return () => window.removeEventListener("keydown", onKeyDown, true);
+	}, [labeling, expanded]);
+	useEffect(() => {
+		const root = document.documentElement;
+		root.classList.toggle("visual-expanded", expanded);
+		return () => root.classList.remove("visual-expanded");
+	}, [expanded]);
 	const visualId = artifact.visualId;
 	const revision = artifact.revision;
 	const qualityGate = artifact.metadata?.qualityGate as { ready?: boolean; revision?: number } | undefined;
@@ -1107,19 +1207,29 @@ export function VisualPane({ artifact, onClose }: { artifact: ArtifactRef; onClo
 	}
 
 	async function openSharedUrl() {
-		if (!bridges.visuals || !sharedUrl.trim()) return;
+		const url = sharedUrl.trim();
+		if (!isSharedArtifactUrl(url)) {
+			if (url) setArtifactError(SHARED_URL_INVALID);
+			return;
+		}
+		if (!bridges.visuals) return;
 		setBusy(true);
 		setArtifactError(null);
 		try {
-			const bundle = await bridges.visuals.openShared(sharedUrl.trim());
+			const bundle = await bridges.visuals.openShared(url);
 			setSealedBundle(bundle);
 			setCompareBundle(null);
 			setShareUpload(null);
 		} catch (reason) {
-			setArtifactError(publicError(reason));
+			setArtifactError(publicError(reason, "Could not open the shared visual."));
 		} finally {
 			setBusy(false);
 		}
+	}
+
+	function closeVisualPane() {
+		onClose();
+		requestAnimationFrame(restoreFocusAfterVisualPaneClose);
 	}
 
 	async function shareCurrentSeal() {
@@ -1141,12 +1251,15 @@ export function VisualPane({ artifact, onClose }: { artifact: ArtifactRef; onClo
 	const isSystemsDynamic = artifact.templateId === "diagram.systems.dynamic.v1" || artifact.rendererKind === "systems-dynamic";
 	const isSystems = artifact.templateId === "diagram.systems.v1" || artifact.rendererKind === "systems";
 	const kindLabel = isSubagents ? "Agents" : isSystemsDynamic ? "Benjamin Dicken Style" : isSystems ? "Systems map · 2D" : isMermaid ? "Diagram" : "Visual";
+	const sharedUrlValid = isSharedArtifactUrl(sharedUrl);
+	const sharedUrlError = sharedUrl.trim() && !sharedUrlValid ? SHARED_URL_INVALID : null;
 	const revisionSync = artifact.metadata?.revisionSync as {
 		loading?: boolean;
 		requestedRevision?: number;
 		acceptedRevision?: number;
 		error?: string | null;
 	} | undefined;
+	const paneAlert = sharedUrlError ?? artifactError ?? (revisionSync?.error ? `Visual refresh failed · ${revisionSync.error}` : null);
 	return (
 		<aside
 			className={`visual-pane${expanded ? " visual-pane-expanded" : ""}`}
@@ -1160,6 +1273,21 @@ export function VisualPane({ artifact, onClose }: { artifact: ArtifactRef; onClo
 						{revisionSync?.loading ? ` · reconciling${(revisionSync.requestedRevision ?? -1) > (revisionSync.acceptedRevision ?? -1) ? ` rev ${revisionSync.requestedRevision}` : ""}` : ""}
 					</span>
 					<span className="visual-pane-title">{artifact.title}</span>
+					<span className="visual-pane-identity" data-testid="visual-pane-identity">
+						{formatVisualAdmissionIdentity({
+							visualId: visualId ?? artifact.id,
+							revision,
+							receiptDigest: seals.find((seal) => seal.visualRevision === revision)?.receiptDigest ?? artifact.receiptDigest,
+							contentDigest: artifact.contentDigest
+						})}
+					</span>
+					<VisualOpsLine
+						sessionId={artifact.sessionId ?? artifact.ownerSessionId}
+						runId={artifact.runId}
+						traceId={artifact.traceId}
+						testId="visual-pane-ops"
+						probe
+					/>
 				</div>
 				<div className="visual-pane-head-actions">
 					{isSubagents ? null : sealedBundle ? (
@@ -1173,6 +1301,7 @@ export function VisualPane({ artifact, onClose }: { artifact: ArtifactRef; onClo
 					) : null}
 					{isSubagents ? null : (
 					<button
+						ref={labelButtonRef}
 						type="button"
 						className="visual-expand"
 						onClick={() => { setLabeling(true); setLabelPoint(null); }}
@@ -1203,10 +1332,10 @@ export function VisualPane({ artifact, onClose }: { artifact: ArtifactRef; onClo
 					>
 						{expanded ? "Restore" : "Expand"}
 					</button>
-					<button type="button" className="visual-close" onClick={onClose} aria-label="Close visual">×</button>
+					<button type="button" className="visual-close" onClick={closeVisualPane} aria-label="Close visual">×</button>
 				</div>
 			</header>
-			{artifactError || revisionSync?.error ? <div className="visual-artifact-error" role="alert">{artifactError ?? `Visual refresh failed · ${revisionSync?.error}`}</div> : null}
+			{paneAlert ? <div className="visual-artifact-error" role="alert">{paneAlert}</div> : null}
 			{seals.length ? (
 				<div className="visual-seal-strip" aria-label="Sealed revisions">
 					<span>Offline:</span>
@@ -1228,8 +1357,9 @@ export function VisualPane({ artifact, onClose }: { artifact: ArtifactRef; onClo
 					onChange={(event) => setSharedUrl(event.target.value)}
 					placeholder="Paste private artifact URL"
 					aria-label="Private artifact URL"
+					aria-invalid={Boolean(sharedUrlError)}
 				/>
-				<button type="submit" disabled={!sharedUrl.trim() || busy}>Open shared</button>
+				<button type="submit" disabled={!sharedUrlValid || busy}>Open shared</button>
 			</form>
 			{shareUpload?.committedUrl ? (
 				<div className="visual-share-url">
@@ -1239,11 +1369,13 @@ export function VisualPane({ artifact, onClose }: { artifact: ArtifactRef; onClo
 				</div>
 			) : null}
 			{labeling ? (
-				<form className="visual-label-form" onSubmit={(event) => { event.preventDefault(); void createLabel(); }}>
-					<span>{labelPoint ? (labelPoint.targetLabel ? `Attached to ${labelPoint.targetLabel}` : `Placed at ${Math.round(labelPoint.x * 100)}%, ${Math.round(labelPoint.y * 100)}%`) : "Click the visual to place the label."}</span>
+				<form className="visual-label-form visual-label-form-stack" onSubmit={(event) => { event.preventDefault(); void createLabel(); }}>
+					<span className="visual-label-status">{labelPoint ? (labelPoint.targetLabel ? `Attached to ${labelPoint.targetLabel}` : `Placed at ${Math.round(labelPoint.x * 100)}%, ${Math.round(labelPoint.y * 100)}%`) : "Click the visual to place the label."}</span>
 					<input value={labelBody} onChange={(event) => setLabelBody(event.target.value)} placeholder="Label note (optional)" aria-label="Label note" />
-					<button type="submit" disabled={!labelPoint || busy}>Save label</button>
-					<button type="button" onClick={() => { setLabeling(false); setLabelPoint(null); }}>Cancel</button>
+					<div className="visual-label-actions">
+						<button type="submit" disabled={!labelPoint || busy}>Save label</button>
+						<button type="button" onClick={() => cancelLabeling()}>Cancel</button>
+					</div>
 				</form>
 			) : null}
 			<div
@@ -1269,6 +1401,14 @@ export function VisualPane({ artifact, onClose }: { artifact: ArtifactRef; onClo
 					});
 				} : undefined}
 			>
+				{labelPoint ? (
+					<span
+						className="visual-label-pin"
+						data-testid="visual-label-pin"
+						style={{ left: `${labelPoint.x * 100}%`, top: `${labelPoint.y * 100}%` }}
+						aria-hidden="true"
+					/>
+				) : null}
 				{sealedBundle ? (
 					<div className={compareBundle ? "visual-sealed-compare" : "visual-sealed-single"}>
 						<iframe

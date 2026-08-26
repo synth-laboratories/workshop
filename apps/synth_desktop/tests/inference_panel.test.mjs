@@ -19,6 +19,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 const appRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
 const source = join(appRoot, "src/renderer/src/components/InferencePanel.tsx");
 const sourceText = readFileSync(source, "utf8");
+const appCss = readFileSync(join(appRoot, "src/renderer/src/styles/app.css"), "utf8");
 
 // Bundle into node_modules cache so relative ../bridge resolves, while bare
 // react / @tauri-apps stay external. Nothing generated lands in the tracked tree.
@@ -45,6 +46,10 @@ const {
 	formatMs,
 	formatQueue,
 	formatTps,
+	inferenceAuthorityLabel,
+	inferenceObservedAt,
+	INFERENCE_AUTHORITY_LOCAL,
+	INFERENCE_AUTHORITY_SHOAL,
 	reduceFeed,
 	sparklinePath,
 	HISTORY_LIMIT
@@ -192,6 +197,7 @@ test("idle state says so and offers a working Free now control", () => {
 	assert.match(html, /no generation in flight/);
 	assert.doesNotMatch(html, /data-testid="inference-free"[^>]*disabled/);
 	assert.match(html, /Release the model weights now/);
+	assert.match(html, /data-testid="inference-authority">Local</);
 });
 
 test("a pinned finetune is identified as a LoRA model while idle", () => {
@@ -235,7 +241,7 @@ test("unloaded state reports no residency and disables Free now", () => {
 	});
 	assert.match(html, /data-phase="unloaded"/);
 	assert.match(html, /data-resident="no"/);
-	assert.match(html, /UNLOADED/);
+	assert.match(html, /UNLOADED on Local/);
 	assert.match(html, /data-testid="inference-free"[^>]*disabled/);
 	assert.match(html, /No weights are resident/);
 });
@@ -494,4 +500,52 @@ test("sparkline paths break at unavailable samples", () => {
 	assert.match(path, /^M/);
 	// Two moves: the opening point and the restart after the gap.
 	assert.equal((path.match(/M/g) ?? []).length, 2);
+});
+
+test("inference authority is Local for the on-device Laguna sidecar", () => {
+	assert.equal(inferenceAuthorityLabel({}), INFERENCE_AUTHORITY_LOCAL);
+	assert.equal(inferenceAuthorityLabel({ source: "local" }), "Local");
+	assert.equal(inferenceAuthorityLabel({ baseUrl: "http://127.0.0.1:7333" }), "Local");
+	assert.equal(inferenceAuthorityLabel({ source: "laguna", baseUrl: "http://localhost:7333" }), "Local");
+	assert.equal(inferenceObservedAt({}), null);
+	assert.equal(inferenceObservedAt({ updatedAt: Date.parse("2026-08-26T17:14:00.000Z") })?.iso, "2026-08-26T17:14:00.000Z");
+	const html = render({
+		monitor: monitor({ snapshot: snapshot() }),
+		status: { baseUrl: "http://127.0.0.1:7333", updatedAt: Date.parse("2026-08-26T17:14:00.000Z") }
+	});
+	assert.match(html, /data-testid="inference-authority">Local</);
+	assert.match(html, /data-testid="inference-observed-at"/);
+	assert.match(html, /dateTime="2026-08-26T17:14:00.000Z"/);
+	assert.doesNotMatch(html, /Synth Cloud · Shoal/);
+});
+
+test("inference authority is Synth Cloud · Shoal only when the observation is hosted", () => {
+	assert.equal(inferenceAuthorityLabel({ source: "shoal" }), INFERENCE_AUTHORITY_SHOAL);
+	assert.equal(inferenceAuthorityLabel({ source: "synth-cloud" }), "Synth Cloud · Shoal");
+	assert.equal(inferenceAuthorityLabel({ baseUrl: "https://inference.shoal.synth.dev" }), "Synth Cloud · Shoal");
+	const html = render({
+		monitor: monitor({
+			snapshot: snapshot({
+				resident: false,
+				residentBytes: null,
+				source: "shoal",
+				observedAt: "2026-08-26T17:14:00.000Z"
+			})
+		})
+	});
+	assert.match(html, /data-testid="inference-authority">Synth Cloud · Shoal</);
+	assert.match(html, /UNLOADED on Synth Cloud · Shoal/);
+	assert.match(html, /data-authority="shoal"/);
+	assert.doesNotMatch(html, />UNLOADED</);
+});
+
+test("inference panel fills the side panel and settings workspace", () => {
+	assert.match(sourceText, /className=\{shell\}/);
+	assert.match(sourceText, /"inference-panel"/);
+	assert.match(
+		appCss,
+		/\.workbench-side-panel-content \.inference-panel,[\s\S]*?\.settings-page \.inference-panel,[\s\S]*?width:\s*100%;[\s\S]*?max-width:\s*none/
+	);
+	assert.match(appCss, /\.inference-panel\s*\{[^}]*width:\s*100%;[^}]*max-width:\s*none/s);
+	assert.doesNotMatch(appCss, /\.inference-panel\s*\{[^}]*max-width:\s*390px/s);
 });

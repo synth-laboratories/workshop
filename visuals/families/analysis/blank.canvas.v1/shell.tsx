@@ -59,9 +59,9 @@ export function Shell(props: ShellProps) {
   const title = props.title ?? document?.title ?? "Untitled visual";
   if (!document?.html) {
     return (
-      <div role="alert" style={{ padding: 24, color: "#697180" }}>
-        <strong style={{ color: "#20242c" }}>Blank canvas</strong>
-        <p style={{ marginBottom: 0 }}>No canvas document has been authored yet.</p>
+      <div role="alert" className="visual-empty-preview">
+        <strong>Blank canvas</strong>
+        <p>Bind a document input, use compose.visual.v1 or sourced_visual, or MCP create/update. This is a sandboxed HTML/SVG document, not a drawing editor.</p>
       </div>
     );
   }

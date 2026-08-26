@@ -24,6 +24,12 @@ test("an AppError renders its message, never [object Object]", () => {
 	assert.match(rendered, /invalid_argument/);
 });
 
+test("a surfaced message with code internal does not grow an (internal) suffix", () => {
+	const rendered = publicError({ code: "internal", message: "private artifact URL is invalid" });
+	assert.equal(rendered.includes("(internal)"), false);
+	assert.match(rendered, /private artifact URL is invalid/);
+});
+
 test("developer detail alone never becomes the user-facing message", () => {
 	const rendered = publicError({ code: "internal", detail: "thread 'main' panicked at src/lib.rs:42" });
 	assert.equal(rendered.includes("panicked"), false);

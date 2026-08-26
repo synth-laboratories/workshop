@@ -346,7 +346,7 @@ impl Manager {
     pub fn new(store: Arc<dyn CredentialStore>, authorize_url: &str, token_url: &str) -> Self {
         Self {
             store,
-            client: reqwest::Client::new(),
+            client: crate::http::http_client(),
             authorize_url: authorize_url.into(),
             token_url: token_url.into(),
             pending: Mutex::new(None),

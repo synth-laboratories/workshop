@@ -16,7 +16,8 @@ import type {
 	ReportVisibilityRequest,
 	ResearchLogEntry
 } from "../bridge";
-import { publicError } from "../runtime/publicError";
+import { toPublicError } from "../runtime/publicError";
+import { formatVisualAdmissionIdentity } from "../types/landing";
 
 type Tab = "all" | "draft" | "sealed" | "archived";
 type AppendixView = "ledger" | "lineage" | "inspector";
@@ -109,7 +110,19 @@ function ReportEvidence({ block }: { block: ReportBlock }) {
 	if ((block.kind === "report.visual.v1" || block.kind === "report.diagram.v1") && typeof block.payload.sealedHtml === "string") {
 		return <iframe className="reports-sealed-visual" title={block.title || block.kind} sandbox="allow-scripts" srcDoc={block.payload.sealedHtml} />;
 	}
-	return <div className="reports-evidence-card"><strong>{block.kind}</strong><span>Frozen evidence attached to this revision.</span></div>;
+	if (block.kind === "report.visual.v1" || block.kind === "report.diagram.v1") {
+		const visualId = typeof block.payload.visualId === "string" ? block.payload.visualId : undefined;
+		const pinnedVerified = block.referenceMode === "pinned" && block.integrityState === "verified";
+		return <div className="reports-evidence-card">
+			<strong>{block.kind}</strong>
+			<span data-testid="reports-visual-pointer">
+				{pinnedVerified
+					? `Pinned · ${formatVisualAdmissionIdentity({ visualId, revision: block.sourceRevision, receiptDigest: block.sourceDigest })}`
+					: `Live pointer · ${formatVisualAdmissionIdentity({ visualId, revision: block.sourceRevision ?? block.payload.visualRevision, receiptDigest: block.sourceDigest })}`}
+			</span>
+		</div>;
+	}
+	return <div className="reports-evidence-card"><strong>{block.kind}</strong><span>Evidence attached to this revision.</span></div>;
 }
 
 function outlineItems(revision: ReportRevision | null) {
@@ -119,6 +132,38 @@ function outlineItems(revision: ReportRevision | null) {
 			anchor: block.anchor,
 			title: block.title || block.kind
 		}));
+}
+
+const REPORT_ERROR_COPY: Record<string, string> = {
+	unresolved_visual_evidence: "This visual is not sealed evidence yet. Seal that exact visual revision, then pin this evidence.",
+	duplicate_block_anchor: "This evidence is already on the report.",
+	empty_report: "Add a narrative or sealed evidence before sealing"
+};
+const REPORT_ERROR_CODES = ["unresolved_visual_evidence", "duplicate_block_anchor", "empty_report"] as const;
+const MOVABLE_EXCLUDED_ANCHORS = new Set(["findings", "methods", "outline", "experiment-records", "research-log", "traces"]);
+
+function isUnresolvedVisualEvidence(block: ReportBlock): boolean {
+	const visual = block.kind === "report.visual.v1" || block.kind === "report.diagram.v1";
+	return visual && (block.integrityState === "unresolved" || block.integrityState === "unknown" || !block.sourceDigest);
+}
+
+function blockMarkdown(revision: ReportRevision | null, anchor: string): string {
+	const block = revision?.blocks.find((item) => item.anchor === anchor);
+	return typeof block?.payload?.markdown === "string" ? block.payload.markdown : "";
+}
+
+type SaveStatus = "saved" | "saving" | "error";
+
+function reportSurfaceError(reason: unknown): string {
+	const projected = toPublicError(reason);
+	const raw = [projected.code, projected.message, projected.remediation].filter(Boolean).join(" ");
+	let code = REPORT_ERROR_CODES.find((item) => projected.code === item || raw.includes(item));
+	if (!code && /cannot pin unresolved/i.test(raw)) code = "unresolved_visual_evidence";
+	if (!code && /anchor .+ is duplicated/i.test(raw)) code = "duplicate_block_anchor";
+	let message = (code ? REPORT_ERROR_COPY[code] : projected.message) || projected.message;
+	message = message.replace(/\s*\(internal\)\s*/gi, " ").replace(/\b\S+\.rs(?::\d+)?\b/g, " ").replace(/\s{2,}/g, " ").trim();
+	if (code && !message.includes(code)) message = `${message} (${code})`;
+	return message;
 }
 
 function traceEntries(block: ReportBlock | undefined): ReportTraceEntry[] {
@@ -182,6 +227,7 @@ export function ReportsPage({ onBack, initialReportId }: Props) {
 	const [workspaceId, setWorkspaceId] = useState("");
 	const [memberIds, setMemberIds] = useState("");
 	const [audienceStatus, setAudienceStatus] = useState<string | null>(null);
+	const [saveStatus, setSaveStatus] = useState<SaveStatus>("saved");
 
 	async function load(reportId?: string | null) {
 		const bridge = bridges.reports;
@@ -232,8 +278,10 @@ export function ReportsPage({ onBack, initialReportId }: Props) {
 				setValidation(null);
 			}
 			setError(null);
+			setSaveStatus("saved");
 		} catch (reason) {
-			setError(publicError(reason));
+			setError(reportSurfaceError(reason));
+			setSaveStatus("error");
 		} finally {
 			setLoading(false);
 		}
@@ -262,6 +310,14 @@ export function ReportsPage({ onBack, initialReportId }: Props) {
 		experiments.find((row) => row.experimentId === selectedExperimentId) ?? experiments[0] ?? null;
 	const selectedLog = log.find((row) => row.entryId === selectedLogId) ?? log[0] ?? null;
 	const decisionKinds = new Set(["hypothesis", "decision", "protocol_change", "correction", "claim_decision", "limitation"]);
+	const dirty = Boolean(
+		revision && (
+			draftTitle !== revision.title
+			|| draftSummary !== (revision.summary ?? "")
+			|| draftFindings !== blockMarkdown(revision, "findings")
+			|| draftMethods !== blockMarkdown(revision, "methods")
+		)
+	);
 
 	async function createReport() {
 		try {
@@ -270,7 +326,7 @@ export function ReportsPage({ onBack, initialReportId }: Props) {
 			setCompareBundle(null);
 			await load(created.id);
 		} catch (reason) {
-			setError(publicError(reason));
+			setError(reportSurfaceError(reason));
 		}
 	}
 
@@ -285,6 +341,7 @@ export function ReportsPage({ onBack, initialReportId }: Props) {
 			}
 			return block;
 		});
+		setSaveStatus("saving");
 		try {
 			await bridges.reports!.update(selected.id, {
 				expectedRevision: revision.revision,
@@ -294,7 +351,8 @@ export function ReportsPage({ onBack, initialReportId }: Props) {
 			});
 			await load(selected.id);
 		} catch (reason) {
-			setError(publicError(reason));
+			setSaveStatus("error");
+			setError(reportSurfaceError(reason));
 		}
 	}
 
@@ -307,7 +365,7 @@ export function ReportsPage({ onBack, initialReportId }: Props) {
 			setCompareBundle(null);
 			await load(selected.id);
 		} catch (reason) {
-			setError(publicError(reason));
+			setError(reportSurfaceError(reason));
 		}
 	}
 
@@ -317,27 +375,35 @@ export function ReportsPage({ onBack, initialReportId }: Props) {
 			setValidation(await bridges.reports!.validate(selected.id, revision.revision));
 			setError(null);
 		} catch (reason) {
-			setError(publicError(reason));
+			setError(reportSurfaceError(reason));
 		}
 	}
 
 	async function pinAllEvidence() {
 		if (!selected) return;
+		setSaveStatus("saving");
 		try {
 			await bridges.reports!.pinAll(selected.id);
 			await load(selected.id);
 		} catch (reason) {
-			setError(publicError(reason));
+			setSaveStatus("error");
+			setError(reportSurfaceError(reason));
 		}
 	}
 
 	async function updateComposition(changes: { blocks?: ReportBlock[]; claims?: ReportRevision["claims"]; limitations?: ReportRevision["limitations"] }) {
 		if (!selected || !revision) return;
-		await bridges.reports!.update(selected.id, {
-			expectedRevision: revision.revision,
-			...changes
-		});
-		await load(selected.id);
+		setSaveStatus("saving");
+		try {
+			await bridges.reports!.update(selected.id, {
+				expectedRevision: revision.revision,
+				...changes
+			});
+			await load(selected.id);
+		} catch (reason) {
+			setSaveStatus("error");
+			setError(reportSurfaceError(reason));
+		}
 	}
 
 	async function insertBlock() {
@@ -376,6 +442,8 @@ export function ReportsPage({ onBack, initialReportId }: Props) {
 
 	async function addClaim() {
 		if (!revision || !claimStatement.trim() || !claimWhy.trim() || !claimEvidence) return;
+		const evidence = revision.blocks.find((block) => block.blockId === claimEvidence);
+		if (evidence && isUnresolvedVisualEvidence(evidence)) return;
 		await updateComposition({
 			claims: [...revision.claims, {
 				claimId: `claim_${crypto.randomUUID().replaceAll("-", "").slice(0, 12)}`,
@@ -404,7 +472,7 @@ export function ReportsPage({ onBack, initialReportId }: Props) {
 			setSealedBundle(await bridges.reports!.getSeal(receiptDigest));
 			setCompareBundle(null);
 		} catch (reason) {
-			setError(publicError(reason));
+			setError(reportSurfaceError(reason));
 		}
 	}
 
@@ -414,7 +482,7 @@ export function ReportsPage({ onBack, initialReportId }: Props) {
 			if (!sealedBundle) setSealedBundle(bundle);
 			else setCompareBundle(bundle);
 		} catch (reason) {
-			setError(publicError(reason));
+			setError(reportSurfaceError(reason));
 		}
 	}
 
@@ -431,7 +499,7 @@ export function ReportsPage({ onBack, initialReportId }: Props) {
 			});
 			await load(selected?.id);
 		} catch (reason) {
-			setError(publicError(reason));
+			setError(reportSurfaceError(reason));
 		}
 	}
 
@@ -442,7 +510,7 @@ export function ReportsPage({ onBack, initialReportId }: Props) {
 			setSealedBundle(bundle);
 			setCompareBundle(null);
 		} catch (reason) {
-			setError(publicError(reason));
+			setError(reportSurfaceError(reason));
 		}
 	}
 
@@ -464,7 +532,7 @@ export function ReportsPage({ onBack, initialReportId }: Props) {
 			setAudienceStatus(`${state.status}: ${state.audience.kind}`);
 			setError(null);
 		} catch (reason) {
-			setError(publicError(reason));
+			setError(reportSurfaceError(reason));
 		}
 	}
 
@@ -478,7 +546,7 @@ export function ReportsPage({ onBack, initialReportId }: Props) {
 			setAudienceStatus(`${state.status}: owner only`);
 			setError(null);
 		} catch (reason) {
-			setError(publicError(reason));
+			setError(reportSurfaceError(reason));
 		}
 	}
 
@@ -490,7 +558,7 @@ export function ReportsPage({ onBack, initialReportId }: Props) {
 			}
 			await load(selected?.id);
 		} catch (reason) {
-			setError(publicError(reason));
+			setError(reportSurfaceError(reason));
 		}
 	}
 
@@ -501,12 +569,13 @@ export function ReportsPage({ onBack, initialReportId }: Props) {
 			else await bridges.reports!.archive(selected.id);
 			await load(selected.id);
 		} catch (reason) {
-			setError(publicError(reason));
+			setError(reportSurfaceError(reason));
 		}
 	}
 
 	async function attachTrace() {
 		if (!selected || !revision || !traceDigest.trim()) return;
+		setSaveStatus("saving");
 		try {
 			const resolved = await bridges.inventory!.resolveTraceProjection(traceDigest.trim(), "rollout-inspector");
 			const existing = revision.blocks.find((block) => block.kind === "report.trace-v5.v1");
@@ -540,7 +609,8 @@ export function ReportsPage({ onBack, initialReportId }: Props) {
 			setSelectedTraceIndex(Math.max(nextTraces.length - 1, 0));
 			await load(selected.id);
 		} catch (reason) {
-			setError(publicError(reason));
+			setSaveStatus("error");
+			setError(reportSurfaceError(reason));
 		}
 	}
 
@@ -554,24 +624,27 @@ export function ReportsPage({ onBack, initialReportId }: Props) {
 			setCommentBody("");
 			await load(selected.id);
 		} catch (reason) {
-			setError(publicError(reason));
+			setError(reportSurfaceError(reason));
 		}
 	}
 
 	async function addExperiment() {
 		if (!selected || !experimentTitle.trim()) return;
 		try {
+			const value = experimentTitle.trim();
+			const looksLikeId = value.startsWith("exp_");
 			await bridges.reports!.upsertExperiment(selected.id, {
-				title: experimentTitle.trim(),
+				title: value,
 				status: "planned",
 				arms: [],
 				runs: [],
-				results: []
+				results: [],
+				experimentGroupId: looksLikeId ? value : undefined
 			});
 			setExperimentTitle("");
 			await load(selected.id);
 		} catch (reason) {
-			setError(publicError(reason));
+			setError(reportSurfaceError(reason));
 		}
 	}
 
@@ -588,7 +661,7 @@ export function ReportsPage({ onBack, initialReportId }: Props) {
 			setLogBody("");
 			await load(selected.id);
 		} catch (reason) {
-			setError(publicError(reason));
+			setError(reportSurfaceError(reason));
 		}
 	}
 
@@ -635,13 +708,25 @@ export function ReportsPage({ onBack, initialReportId }: Props) {
 				))}
 			</nav>
 
-			{error ? <p className="visuals-error">{error}</p> : null}
+			{error ? (
+				<p className="visuals-error" role="alert" data-testid="reports-error">
+					<span>{error}</span>
+					<button type="button" className="ghost-button" onClick={() => setError(null)} aria-label="Dismiss error">Dismiss</button>
+				</p>
+			) : null}
 			{loading ? <p className="visuals-loading">Loading reports…</p> : null}
 
 			<div className="visuals-layout reports-layout">
 				<div className="visuals-grid" data-testid="reports-grid">
 					{filtered.length === 0 && !loading ? (
-						<p className="visuals-empty">No reports yet. Create one to freeze narrative plus evidence.</p>
+						reports.length > 0 ? (
+							<p className="visuals-empty">
+								No reports match the active filter.
+								<button type="button" className="ghost-button" onClick={() => setTab("all")}>Clear filter</button>
+							</p>
+						) : (
+							<p className="visuals-empty">No reports yet. Create one to freeze narrative plus evidence.</p>
+						)
 					) : null}
 					{filtered.map((report) => (
 						<article
@@ -670,12 +755,16 @@ export function ReportsPage({ onBack, initialReportId }: Props) {
 									disabled={Boolean(sealedBundle)}
 								/>
 								<p>{selected.status} · {readerRevision.schemaVersion} · rev {readerRevision.revision}</p>
+								<p className="reports-provenance" data-testid="reports-save-status" role="status">
+									{saveStatus === "saving" ? "Saving" : saveStatus === "error" ? "Error" : `Saved · rev ${readerRevision.revision}`}
+								</p>
+								<p className="reports-provenance">Edits save automatically.</p>
 							</div>
 							<div className="reports-actions">
-								<button type="button" onClick={() => void saveDraft()} disabled={Boolean(sealedBundle)}>Save draft</button>
+								<button type="button" onClick={() => void saveDraft()} disabled={Boolean(sealedBundle) || !dirty || saveStatus === "saving"}>Save draft</button>
 								<button type="button" data-testid="reports-preflight" onClick={() => void runPreflight()}>Run preflight</button>
-								<button type="button" data-testid="reports-pin-all" onClick={() => void pinAllEvidence()} disabled={Boolean(sealedBundle)}>Pin all evidence</button>
-								<button type="button" data-testid="reports-seal" onClick={() => void sealReport()} disabled={validation?.sealable === false}>Seal report</button>
+								<button type="button" data-testid="reports-pin-all" onClick={() => void pinAllEvidence()} disabled={Boolean(sealedBundle)} title="Pin freezes visual/diagram blocks to a VisualSeal receipt digest">Pin all evidence</button>
+								<button type="button" data-testid="reports-seal" onClick={() => void sealReport()} disabled={validation?.sealable === false} title={validation?.findings.some((finding) => finding.code === "empty_report") ? "Add a narrative or sealed evidence before sealing" : validation?.sealable === false ? "Resolve unresolved visual evidence before sealing" : "Seal this report revision"}>Seal report</button>
 								<button
 									type="button"
 									data-testid="reports-share"
@@ -698,15 +787,24 @@ export function ReportsPage({ onBack, initialReportId }: Props) {
 									{selected.archivedAt ? "Restore report" : "Archive report"}
 								</button>
 							</div>
+							{readerRevision.blocks.some((block) => block.kind === "report.visual.v1" || block.kind === "report.diagram.v1") ? (
+								<p className="reports-provenance" data-testid="reports-pin-seal-identity">
+									{(readerRevision.blocks.filter((block) => block.kind === "report.visual.v1" || block.kind === "report.diagram.v1")).map((block) => formatVisualAdmissionIdentity({
+										visualId: typeof block.payload.visualId === "string" ? block.payload.visualId : undefined,
+										revision: block.sourceRevision ?? block.payload.visualRevision,
+										receiptDigest: block.sourceDigest
+									})).join(" · ")}
+								</p>
+							) : null}
 						</header>
 						{validation ? (
 							<section className="reports-validation" aria-label="Report validation" data-testid="reports-validation">
-								<strong>{validation.sealable ? "Ready to seal" : "Resolve validation errors"}</strong>
+								<strong>{validation.sealable ? "Ready to seal" : validation.findings.some((finding) => finding.code === "empty_report") ? "Add a narrative or sealed evidence before sealing" : "Resolve validation errors"}</strong>
 								{validation.findings.length ? (
 									<ul>
 										{validation.findings.map((finding, index) => (
 											<li key={`${finding.code}-${finding.blockId ?? finding.claimId ?? index}`}>
-												<span>{finding.severity}: {finding.message}</span>
+												<span>{finding.severity}: {finding.message}{finding.visualId ? ` · ${finding.visualId}` : ""}</span>
 												{finding.remediation ? <small>{finding.remediation}</small> : null}
 											</li>
 										))}
@@ -848,12 +946,15 @@ export function ReportsPage({ onBack, initialReportId }: Props) {
 							/>
 						</section>
 
-						{readerRevision.blocks.filter((block) => !["findings", "methods", "outline", "experiment-records", "research-log", "traces"].includes(block.anchor)).map((block) => (
+						{readerRevision.blocks.filter((block) => !MOVABLE_EXCLUDED_ANCHORS.has(block.anchor)).map((block, index, movable) => {
+							const title = block.title || block.kind;
+							return (
 							<section key={block.blockId} id={block.anchor} className="reports-section">
-								<header className="reports-section-head"><h2>{block.title || block.kind}</h2><span>{block.referenceMode ?? "live"} · {block.accessState} · {block.integrityState}</span>{!sealedBundle ? <><button type="button" onClick={() => void moveBlock(block.blockId, -1)}>↑</button><button type="button" onClick={() => void moveBlock(block.blockId, 1)}>↓</button><button type="button" onClick={() => void removeBlock(block.blockId)}>Remove</button></> : null}</header>
+								<header className="reports-section-head"><h2>{title}</h2><span>{block.referenceMode ?? "live"} · {block.accessState} · {block.integrityState}{(block.kind === "report.visual.v1" || block.kind === "report.diagram.v1") ? ` · ${formatVisualAdmissionIdentity({ visualId: typeof block.payload.visualId === "string" ? block.payload.visualId : undefined, revision: block.sourceRevision ?? block.payload.visualRevision, receiptDigest: block.sourceDigest })}` : ""}</span>{!sealedBundle ? <><button type="button" aria-label={`Move ${title} up`} disabled={index === 0} onClick={() => void moveBlock(block.blockId, -1)}>↑</button><button type="button" aria-label={`Move ${title} down`} disabled={index === movable.length - 1} onClick={() => void moveBlock(block.blockId, 1)}>↓</button><button type="button" aria-label={`Remove ${title}`} onClick={() => void removeBlock(block.blockId)}>Remove</button></> : null}</header>
 								<ReportEvidence block={block} />
 							</section>
-						))}
+							);
+						})}
 
 						<section id="traces" className="reports-section" data-testid="reports-traces">
 							<h2>{readerRevision.blocks.find((block) => block.kind === "report.trace-v5.v1")?.title || "Trace evidence"}</h2>
@@ -907,7 +1008,18 @@ export function ReportsPage({ onBack, initialReportId }: Props) {
 						</section>
 						<section id="claims" className="reports-section" data-testid="reports-claims">
 								<h2>Claims</h2>
-								<div className="reports-claim-form"><input value={claimStatement} onChange={(event) => setClaimStatement(event.target.value)} placeholder="Hypothesis or claim" disabled={Boolean(sealedBundle)} /><select value={claimStatus} onChange={(event) => setClaimStatus(event.target.value as typeof claimStatus)} disabled={Boolean(sealedBundle)}><option value="true">True</option><option value="false">False</option><option value="needs_more_analysis">Needs more analysis</option><option value="unresolved">Unresolved</option></select><select value={claimConfidence} onChange={(event) => setClaimConfidence(event.target.value as typeof claimConfidence)} disabled={Boolean(sealedBundle)}><option value="low">Low confidence</option><option value="medium">Medium confidence</option><option value="high">High confidence</option><option value="overwhelming">Overwhelming</option></select><select value={claimEvidence} onChange={(event) => setClaimEvidence(event.target.value)} disabled={Boolean(sealedBundle)}><option value="">Select evidence</option>{readerRevision.blocks.filter((block) => block.kind !== "report.prose.v1" && block.kind !== "report.outline.v1").map((block) => <option key={block.blockId} value={block.blockId}>{block.title || block.anchor}</option>)}</select><input value={claimWhy} onChange={(event) => setClaimWhy(event.target.value)} placeholder="Why the evidence supports this verdict" disabled={Boolean(sealedBundle)} /><button type="button" onClick={() => void addClaim()} disabled={Boolean(sealedBundle) || !claimStatement.trim() || !claimWhy.trim() || !claimEvidence}>Add claim</button></div>
+								<div className="reports-claim-form"><input value={claimStatement} onChange={(event) => setClaimStatement(event.target.value)} placeholder="Hypothesis or claim" disabled={Boolean(sealedBundle)} /><select value={claimStatus} onChange={(event) => setClaimStatus(event.target.value as typeof claimStatus)} disabled={Boolean(sealedBundle)}><option value="true">True</option><option value="false">False</option><option value="needs_more_analysis">Needs more analysis</option><option value="unresolved">Unresolved</option></select><select value={claimConfidence} onChange={(event) => setClaimConfidence(event.target.value as typeof claimConfidence)} disabled={Boolean(sealedBundle)}><option value="low">Low confidence</option><option value="medium">Medium confidence</option><option value="high">High confidence</option><option value="overwhelming">Overwhelming</option></select><select value={claimEvidence} onChange={(event) => setClaimEvidence(event.target.value)} disabled={Boolean(sealedBundle)}><option value="">Select evidence</option>{readerRevision.blocks.filter((block) => block.kind !== "report.prose.v1" && block.kind !== "report.outline.v1").map((block) => {
+									const visual = block.kind === "report.visual.v1" || block.kind === "report.diagram.v1";
+									const unresolvedVisual = isUnresolvedVisualEvidence(block);
+									const identity = visual
+										? formatVisualAdmissionIdentity({
+											visualId: typeof block.payload.visualId === "string" ? block.payload.visualId : undefined,
+											revision: block.sourceRevision ?? block.payload.visualRevision,
+											receiptDigest: block.sourceDigest
+										})
+										: (block.title || block.anchor);
+									return <option key={block.blockId} value={block.blockId} disabled={unresolvedVisual}>{identity}{unresolvedVisual ? " · unresolved — not sealable" : ""}</option>;
+								})}</select><input value={claimWhy} onChange={(event) => setClaimWhy(event.target.value)} placeholder="Why the evidence supports this verdict" disabled={Boolean(sealedBundle)} /><button type="button" onClick={() => void addClaim()} disabled={Boolean(sealedBundle) || !claimStatement.trim() || !claimWhy.trim() || !claimEvidence || readerRevision.blocks.some((block) => block.blockId === claimEvidence && isUnresolvedVisualEvidence(block))}>Add claim</button></div>
 								<ul>
 									{readerRevision.claims.map((claim) => (
 										<li key={claim.claimId}>
@@ -949,7 +1061,7 @@ export function ReportsPage({ onBack, initialReportId }: Props) {
 								</nav>
 							</header>
 							<div className="reports-inline-form">
-								<input value={experimentTitle} onChange={(event) => setExperimentTitle(event.target.value)} placeholder="Experiment title" disabled={Boolean(sealedBundle)} />
+								<input value={experimentTitle} onChange={(event) => setExperimentTitle(event.target.value)} placeholder="Experiment title or exp_…" disabled={Boolean(sealedBundle)} />
 								<button type="button" onClick={() => void addExperiment()} disabled={Boolean(sealedBundle)}>Add record</button>
 							</div>
 							{appendixView === "ledger" ? (
@@ -967,7 +1079,12 @@ export function ReportsPage({ onBack, initialReportId }: Props) {
 											const result = Array.isArray(row.results) ? row.results[0] as Record<string, unknown> | undefined : undefined;
 											return (
 												<tr key={row.experimentId} className={selectedExperiment?.experimentId === row.experimentId ? "active" : undefined} onClick={() => { setSelectedExperimentId(row.experimentId); setAppendixView("inspector"); }}>
-													<td>{row.title}</td>
+													<td>
+														{row.title}
+														<div data-testid="report-experiment-group-id">
+															{row.experimentGroupId ?? "appendix · unlinked"}
+														</div>
+													</td>
 													<td>{row.status}</td>
 													<td>{displayMissing(row.protocolDigest)}</td>
 													<td>{displayMissing(result?.reward ?? result?.primaryMetric)}</td>

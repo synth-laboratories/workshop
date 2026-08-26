@@ -6,6 +6,7 @@ import "@xterm/xterm/css/xterm.css";
 import type { TerminalEvent, TerminalInfo } from "../bridge";
 import { bridges } from "../runtime/desktopBridge";
 import { publicError } from "../runtime/publicError";
+import { restoreFocusIfLost } from "../runtime/restoreFocus";
 
 type Props = {
 	open: boolean;
@@ -196,7 +197,10 @@ export function TerminalPanel({
 			<div className="terminal-actions" aria-label="Terminal controls">
 				<button type="button" className="terminal-action" aria-label="New terminal" title="New terminal (⌘⇧T)" onClick={() => void createTerminal()}><span aria-hidden>+</span></button>
 				<button type="button" className="terminal-action terminal-close-action" aria-label="Close terminal" title="Close active terminal" disabled={!activeId} onClick={() => void closeActive()}><span aria-hidden>×</span></button>
-				<button type="button" className="terminal-action terminal-hide-action" aria-label="Hide terminal" title="Hide terminal (⌘J)" onClick={() => onOpenChange(false)}><span aria-hidden>⌄</span></button>
+				<button type="button" className="terminal-action terminal-hide-action" aria-label="Hide terminal" title="Hide terminal (⌘J)" onClick={() => {
+					onOpenChange(false);
+					restoreFocusIfLost('[data-testid="toggle-terminal"]');
+				}}><span aria-hidden>⌄</span></button>
 			</div>
 		</header>
 		{!bridges.terminal.available ? <div className="terminal-empty">Terminal is available in the desktop app.</div> : error ? <div className="terminal-empty" role="alert">{error}</div> : <div className="terminal-viewport" ref={viewport} />}

@@ -520,56 +520,8 @@ mod tests {
     use serde_json::json;
     use std::path::Path;
 
-    /// Serialises the tests that repoint the data root.
-    ///
-    /// `state_root()` reads a process-global variable, so two tests holding
-    /// different roots cannot run at the same time however carefully each one
-    /// cleans up after itself.
-    static ROOT_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-    static ROOT_SEQUENCE: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-
-    /// A private data root for one test, restored when the test ends.
-    ///
-    /// The directory is unique per call: keying it on the process id alone
-    /// gave every test in this module the same path, and each one deletes that
-    /// path on entry and exit, so concurrent tests removed each other's files
-    /// mid-run. Restoration is a `Drop` rather than a call at the end of the
-    /// test, because a panicking test used to leave the variable pointing at a
-    /// directory it had already deleted, failing whatever ran next.
-    struct IsolatedRoot {
-        path: PathBuf,
-        previous: Option<std::ffi::OsString>,
-        _guard: std::sync::MutexGuard<'static, ()>,
-    }
-
-    impl Drop for IsolatedRoot {
-        fn drop(&mut self) {
-            match self.previous.take() {
-                Some(value) => std::env::set_var(crate::instance::DATA_ROOT_ENV, value),
-                None => std::env::remove_var(crate::instance::DATA_ROOT_ENV),
-            }
-            let _ = fs::remove_dir_all(&self.path);
-        }
-    }
-
-    fn isolated_root() -> IsolatedRoot {
-        // A poisoned lock means some earlier test panicked; the root is still
-        // ours to take, so recover rather than cascade the failure.
-        let guard = ROOT_LOCK.lock().unwrap_or_else(|error| error.into_inner());
-        let ordinal = ROOT_SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        let path = std::env::temp_dir().join(format!(
-            "synth-desktop-training-artifacts-{}-{ordinal}",
-            std::process::id()
-        ));
-        let _ = fs::remove_dir_all(&path);
-        fs::create_dir_all(&path).unwrap();
-        let previous = std::env::var_os(crate::instance::DATA_ROOT_ENV);
-        std::env::set_var(crate::instance::DATA_ROOT_ENV, &path);
-        IsolatedRoot {
-            path,
-            previous,
-            _guard: guard,
-        }
+    fn isolated_root() -> crate::instance::IsolatedDataRoot {
+        crate::instance::IsolatedDataRoot::new("training-artifacts")
     }
 
     #[test]

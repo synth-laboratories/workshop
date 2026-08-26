@@ -85,7 +85,7 @@ test("execution targets include Laguna local + OpenRouter Luna/Laguna + Synth Cl
   const bridge = read("runtime/desktopBridge.ts");
   const capabilities = read("runtime/modelCapabilities.ts");
   assert.ok(types.includes("local-laguna") || types.includes("Laguna XS"));
-  assert.ok(types.includes('label: "GPT 5.6 Luna"'));
+  assert.ok(types.includes('label: "GPT-5.6 Luna"'));
   assert.ok(types.includes("laguna-s-2.1") || types.includes("Laguna S"));
   assert.ok(types.includes("synth-cloud-laguna-s"));
   assert.ok(types.includes("Synth Cloud · usage tracked"));
@@ -111,7 +111,7 @@ test("v0.1 exposes remote Muse Spark while excluding local Muse Glimmer, GGUF, a
   ];
   const modelSurface = files.map(read).join("\n");
   assert.match(modelSurface, /Muse Spark 1\.2/);
-  assert.match(modelSurface, /openrouter-muse-spark/);
+  assert.match(modelSurface, /synth-cloud-muse-spark/);
   assert.doesNotMatch(modelSurface, /Muse Glimmer|muse-glimmer|GGUF|DFlash/i);
 });
 
@@ -119,7 +119,7 @@ test("model knobs are registered once and consumed without model-specific UI or 
   const registry = read("runtime/modelCapabilities.ts");
   const composer = read("components/Composer.tsx");
   const controller = read("hooks/useAppController.ts");
-  for (const target of ["local-laguna", "openrouter-luna", "openrouter-laguna-s", "synth-cloud-laguna-s"]) {
+  for (const target of ["local-laguna", "chatgpt-luna", "synth-cloud-laguna-s", "synth-cloud-muse-spark"]) {
     assert.ok(registry.includes(`targetId: "${target}"`), target);
   }
   assert.ok(composer.includes("modelCapabilitiesForTarget(state.selectedTargetId)"));

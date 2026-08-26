@@ -3,6 +3,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { fromGenerated, spectaCommands } from "../bridge";
 import "./DiagnosticsPanel.css";
 import { publicError } from "../runtime/publicError";
+import type { PluginStatus } from "../bridge/types";
+import { CapabilityManifest } from "./CapabilityManifest";
 
 /**
  * The Diagnostics surface.
@@ -102,6 +104,8 @@ function clockTime(timestamp: string): string {
 export type DiagnosticsPanelProps = {
 	sessionId?: string | null;
 	visualId?: string | null;
+	pluginStatuses?: readonly PluginStatus[] | null;
+	lagunaPhase?: string | null;
 	onOpenVisual?: (visualId: string) => void;
 	onOpenOptimizer?: (optimizerRunId: string) => void;
 	onOpenContainer?: (containerId: string) => void;
@@ -111,6 +115,8 @@ export type DiagnosticsPanelProps = {
 export function DiagnosticsPanel({
 	sessionId,
 	visualId,
+	pluginStatuses,
+	lagunaPhase,
 	onOpenVisual,
 	onOpenOptimizer,
 	onOpenContainer,
@@ -218,6 +224,7 @@ export function DiagnosticsPanel({
 
 	return (
 		<section className="diagnostics-panel" data-testid="diagnostics-panel" aria-label="Diagnostics">
+			<CapabilityManifest pluginStatuses={pluginStatuses} lagunaPhase={lagunaPhase} />
 			<header className="diagnostics-status" data-testid="diagnostics-status" data-state={state}>
 				<span className={`diagnostics-state diagnostics-state-${state}`}>{state}</span>
 				{status?.reason ? <span className="diagnostics-reason">{status.reason}</span> : null}

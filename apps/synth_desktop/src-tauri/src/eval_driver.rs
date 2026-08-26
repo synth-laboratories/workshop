@@ -40,7 +40,9 @@ pub const PROTOCOL_VERSION: &str = "synth.eval-driver.v1";
 const OPENROUTER_CHAT_URL: &str = "https://openrouter.ai/api/v1/chat/completions";
 #[allow(dead_code)]
 const DEFAULT_POLICY_ACTIONS: &[&str] = &["do", "left", "do", "up", "do", "right", "do", "down"];
-const LIVE_EVAL_SLOT: &str = "stream";
+const LIVE_EVAL_INPUT: &str = "stream";
+#[allow(dead_code)]
+const LIVE_EVAL_SLOT: &str = LIVE_EVAL_INPUT;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -1515,7 +1517,7 @@ async fn run_policy_rollout(
 
     let seed = seed_from_task_instance(&task_instance_id)?;
     // A1: open the family visual before prepare so the pane exists before any
-    // paid call. After prepare, rebind slot `stream` to the declared SSE URL
+    // paid call. After prepare, rebind input `stream` to the declared SSE URL
     // (never guess `/events`) and wait for `stream.subscribed` before start.
     let supplied_visual_id = body
         .get("visualId")
@@ -2369,16 +2371,17 @@ fn seed_from_task_instance(task_instance_id: &str) -> Result<i64> {
 
 fn require_stream_slot(body: &Value) -> Result<&'static str> {
     let requested = body
-        .get("slot")
+        .get("input")
+        .or_else(|| body.get("slot"))
         .or_else(|| body.get("streamSlot"))
         .or_else(|| body.get("stream_slot"))
         .and_then(Value::as_str)
-        .unwrap_or(LIVE_EVAL_SLOT);
+        .unwrap_or(LIVE_EVAL_INPUT);
     assert_live_eval_slot(requested)?;
-    if requested != LIVE_EVAL_SLOT {
-        bail!("eval driver visual-attached rollouts bind slot \"{LIVE_EVAL_SLOT}\", not \"{requested}\"");
+    if requested != LIVE_EVAL_INPUT {
+        bail!("eval driver visual-attached rollouts bind input \"{LIVE_EVAL_INPUT}\", not \"{requested}\"");
     }
-    Ok(LIVE_EVAL_SLOT)
+    Ok(LIVE_EVAL_INPUT)
 }
 
 /// Pin 10 Craftax lanes (seeds 0–9) for Containers HTTP. Does not call a paid policy.
@@ -2662,10 +2665,11 @@ mod tests {
                 .unwrap();
         assert_eq!(absolute, "http://127.0.0.1:8098/rollouts/r1/stream");
         let bindings = live_sse_bindings(&absolute);
-        assert_eq!(bindings["slots"][0]["kind"], "live_sse");
-        assert_eq!(bindings["slots"][0]["slot"], "stream");
+        assert!(bindings.get("slots").is_none());
+        assert_eq!(bindings["inputs"][0]["kind"], "live_sse");
+        assert_eq!(bindings["inputs"][0]["input"], "stream");
         assert_eq!(
-            bindings["slots"][0]["source"],
+            bindings["inputs"][0]["source"],
             "http://127.0.0.1:8098/rollouts/r1/stream"
         );
         assert!(declared_sse_url(&json!({

@@ -7,12 +7,15 @@ import { getPreferences, updatePreferences } from "../preferences";
 import { PaneResizeHandle } from "./PaneResizeHandle";
 import type { ReportBlock, ReportRecord, VisualSeal, VisualSealBundle } from "../bridge";
 import { publicError } from "../runtime/publicError";
+import { formatVisualAdmissionIdentity } from "../types/landing";
+import { VisualOpsLine } from "./VisualOpsLine";
 
 type Tab = "all" | "recent" | "live" | "sealed" | "templates";
 
 type Props = {
 	onOpenVisual: (visual: VisualRecord) => void;
 	onGoToChat?: (sessionId: string) => void;
+	onOpenReport?: (reportId: string) => void;
 	onBack: () => void;
 	onCreate?: () => void;
 };
@@ -21,13 +24,24 @@ function statusLabel(status: VisualRecord["status"]): string {
 	return status.charAt(0).toUpperCase() + status.slice(1);
 }
 
-export function VisualsPage({ onOpenVisual, onGoToChat, onBack, onCreate }: Props) {
+function payloadVisualId(payload: ReportBlock["payload"]): string | undefined {
+	if (!payload || typeof payload !== "object" || Array.isArray(payload)) return undefined;
+	const visualId = (payload as { visualId?: unknown }).visualId;
+	return typeof visualId === "string" ? visualId : undefined;
+}
+
+function blockReferencesVisual(block: ReportBlock, visualId: string): boolean {
+	return block.anchor === `visual-${visualId}` || payloadVisualId(block.payload) === visualId;
+}
+
+export function VisualsPage({ onOpenVisual, onGoToChat, onOpenReport, onBack, onCreate }: Props) {
 	const [tab, setTab] = useState<Tab>("all");
 	const [search, setSearch] = useState("");
 	const [visuals, setVisuals] = useState<VisualRecord[]>([]);
 	const [selectedId, setSelectedId] = useState<string | null>(null);
 	const [error, setError] = useState<string | null>(null);
 	const [loading, setLoading] = useState(true);
+	const [listEpoch, setListEpoch] = useState(0);
 	const [focusVisualId, setFocusVisualId] = useState<string | null>(null);
 	const [listWidth, setListWidth] = useState(() => getPreferences().layout.last.visualsListWidth);
 	const updateListWidth = (width: number) => {
@@ -43,6 +57,8 @@ export function VisualsPage({ onOpenVisual, onGoToChat, onBack, onCreate }: Prop
 	const [reports, setReports] = useState<ReportRecord[]>([]);
 	const [reportTarget, setReportTarget] = useState("new");
 	const [reportNotice, setReportNotice] = useState<string | null>(null);
+	const [targetBlocks, setTargetBlocks] = useState<ReportBlock[]>([]);
+	const [targetBlocksReady, setTargetBlocksReady] = useState(true);
 
 	useEffect(() => {
 		let cancelled = false;
@@ -80,37 +96,32 @@ export function VisualsPage({ onOpenVisual, onGoToChat, onBack, onCreate }: Prop
 			cancelled = true;
 			unlisten?.();
 		};
-	}, [search]);
+	}, [search, listEpoch]);
 
-	async function addSelectedToReport() {
-		if (!selected || !bridges.reports) return;
-		try {
-			const block: ReportBlock = {
-				blockId: `blk_visual_${crypto.randomUUID().replaceAll("-", "").slice(0, 10)}`,
-				kind: selected.rendererKind === "mermaid" || selected.rendererKind === "systems" ? "report.diagram.v1" : "report.visual.v1",
-				anchor: `visual-${selected.id.slice(0, 12)}`,
-				title: selected.title,
-				payload: { visualId: selected.id, visualRevision: selected.currentRevision },
-				sourceRevision: String(selected.currentRevision),
-				referenceMode: "live",
-				accessState: "available",
-				integrityState: "unresolved"
-			};
-			if (reportTarget === "new") {
-				const created = await bridges.reports.create({ title: `${selected.title} report`, blocks: [block] });
-				setReports((current) => [created, ...current]);
-				setReportTarget(created.id);
-				setReportNotice(`Added to new report “${created.title}”.`);
-			} else {
-				const revision = await bridges.reports.getRevision(reportTarget);
-				await bridges.reports.update(reportTarget, { expectedRevision: revision.revision, blocks: [...revision.blocks, block] });
-				setReportNotice(`Added to “${reports.find((report) => report.id === reportTarget)?.title ?? "report"}”.`);
-			}
-			setError(null);
-		} catch (reason) {
-			setError(publicError(reason));
+	useEffect(() => {
+		if (reportTarget === "new" || !bridges.reports) {
+			setTargetBlocks([]);
+			setTargetBlocksReady(true);
+			return;
 		}
-	}
+		let cancelled = false;
+		setTargetBlocksReady(false);
+		void bridges.reports.getRevision(reportTarget).then((revision) => {
+			if (!cancelled) {
+				setTargetBlocks(revision.blocks ?? []);
+				setTargetBlocksReady(true);
+			}
+		}).catch((reason) => {
+			if (!cancelled) {
+				setTargetBlocks([]);
+				setTargetBlocksReady(true);
+				setError(publicError(reason));
+			}
+		});
+		return () => {
+			cancelled = true;
+		};
+	}, [reportTarget]);
 
 	const filtered = useMemo(() => {
 		const now = Date.now();
@@ -127,11 +138,127 @@ export function VisualsPage({ onOpenVisual, onGoToChat, onBack, onCreate }: Prop
 	}, [tab, visuals, seals]);
 
 	const selected = filtered.find((visual) => visual.id === selectedId) ?? filtered[0] ?? null;
+	const alreadyAdded = Boolean(
+		selected
+		&& reportTarget !== "new"
+		&& targetBlocksReady
+		&& targetBlocks.some((block) => blockReferencesVisual(block, selected.id))
+	);
+	const addDisabled = alreadyAdded || (reportTarget !== "new" && !targetBlocksReady);
+	const filterActive = tab !== "all" || search.trim() !== "";
+	const showFilteredEmpty = !loading && filtered.length === 0 && (visuals.length > 0 || filterActive);
+	const showRegistryEmpty = !loading && filtered.length === 0 && !showFilteredEmpty;
+
 	useEffect(() => {
 		if (selected?.metadata?.presentation === "canvas") setFocusVisualId(selected.id);
 		setSealedBundle(null);
 		setCompareBundle(null);
 	}, [selected?.id, selected?.metadata?.presentation]);
+
+	useEffect(() => {
+		type ReviewRequest = { active?: boolean; visualId?: string };
+		const applyReviewRequest = (request: ReviewRequest | undefined) => {
+			if (!request?.active || typeof request.visualId !== "string") return;
+			setSelectedId(request.visualId);
+			setFocusVisualId(request.visualId);
+		};
+		const onReviewCapture = (event: Event) => {
+			applyReviewRequest((event as CustomEvent<ReviewRequest>).detail);
+		};
+		window.addEventListener("synth:visual-review-capture", onReviewCapture);
+		applyReviewRequest((window as Window & { __synthVisualReviewCapture?: ReviewRequest }).__synthVisualReviewCapture);
+		return () => window.removeEventListener("synth:visual-review-capture", onReviewCapture);
+	}, []);
+
+	useEffect(() => {
+		if (!focusVisualId || selected?.id !== focusVisualId) return;
+		const request = (window as Window & { __synthVisualReviewCapture?: { active?: boolean; visualId?: string } }).__synthVisualReviewCapture;
+		if (!request?.active || request.visualId !== selected.id) return;
+		const frame = requestAnimationFrame(() => {
+			document.documentElement.dataset.synthReviewCaptureReady = selected.id;
+		});
+		return () => cancelAnimationFrame(frame);
+	}, [focusVisualId, selected?.id]);
+
+	function admissionIdentity(visual: VisualRecord): string {
+		return formatVisualAdmissionIdentity({
+			visualId: visual.id,
+			revision: visual.currentRevision,
+			receiptDigest: seals.find((seal) => seal.visualId === visual.id && seal.visualRevision === visual.currentRevision)?.receiptDigest,
+			contentDigest: visual.contentDigest
+		});
+	}
+
+	async function addSelectedToReport() {
+		if (!selected || !bridges.reports || alreadyAdded || addDisabled) return;
+		try {
+			const sealForRevision = seals.find(
+				(seal) => seal.visualId === selected.id && seal.visualRevision === selected.currentRevision
+			);
+			const block: ReportBlock = {
+				blockId: `blk_visual_${crypto.randomUUID().replaceAll("-", "").slice(0, 10)}`,
+				kind: selected.rendererKind === "mermaid" || selected.rendererKind === "systems" ? "report.diagram.v1" : "report.visual.v1",
+				anchor: `visual-${selected.id}`,
+				title: selected.title,
+				payload: { visualId: selected.id, visualRevision: selected.currentRevision },
+				sourceRevision: String(selected.currentRevision),
+				sourceDigest: sealForRevision?.receiptDigest ?? undefined,
+				referenceMode: "live",
+				accessState: "available",
+				integrityState: "unresolved"
+			};
+			if (reportTarget === "new") {
+				const created = await bridges.reports.create({ title: `${selected.title} report`, blocks: [block] });
+				setReports((current) => [created, ...current]);
+				setReportTarget(created.id);
+				setTargetBlocks([block]);
+				setTargetBlocksReady(true);
+				setReportNotice(`Added to new report “${created.title}”.`);
+			} else {
+				const revision = await bridges.reports.getRevision(reportTarget);
+				if ((revision.blocks ?? []).some((existing) => blockReferencesVisual(existing, selected.id))) {
+					setTargetBlocks(revision.blocks ?? []);
+					setTargetBlocksReady(true);
+					setReportNotice("This visual is already on the selected report.");
+					return;
+				}
+				await bridges.reports.update(reportTarget, { expectedRevision: revision.revision, blocks: [...revision.blocks, block] });
+				setTargetBlocks([...(revision.blocks ?? []), block]);
+				setReportNotice(`Added to “${reports.find((report) => report.id === reportTarget)?.title ?? "report"}”.`);
+			}
+			setError(null);
+		} catch (reason) {
+			setError(publicError(reason));
+		}
+	}
+
+	async function renameVisual(visual: VisualRecord) {
+		if (!bridges.visuals) return;
+		const next = window.prompt("Rename visual", visual.title);
+		if (next == null) return;
+		const title = next.trim();
+		if (!title || title === visual.title) return;
+		try {
+			const updated = await bridges.visuals.update(visual.id, { title });
+			setVisuals((current) => current.map((row) => (row.id === updated.id ? updated : row)));
+			setError(null);
+		} catch (reason) {
+			setError(publicError(reason));
+		}
+	}
+
+	async function archiveVisual(visual: VisualRecord) {
+		if (!bridges.visuals) return;
+		if (!window.confirm(`Archive “${visual.title}”?`)) return;
+		try {
+			await bridges.visuals.archive(visual.id);
+			if (selectedId === visual.id) setSelectedId(null);
+			setListEpoch((epoch) => epoch + 1);
+			setError(null);
+		} catch (reason) {
+			setError(publicError(reason));
+		}
+	}
 
 	async function reopenSeal(receiptDigest: string) {
 		try {
@@ -182,7 +309,7 @@ export function VisualsPage({ onOpenVisual, onGoToChat, onBack, onCreate }: Prop
 					["recent", "Recent"],
 					["live", "Live"],
 					["sealed", "Sealed"],
-					["templates", "Templates"]
+					["templates", "Template visuals"]
 				] as const).map(([id, label]) => (
 					<button
 						key={id}
@@ -201,7 +328,13 @@ export function VisualsPage({ onOpenVisual, onGoToChat, onBack, onCreate }: Prop
 
 			<div className={`visuals-layout${focusVisualId ? " focus" : ""}`} style={focusVisualId ? undefined : { "--visuals-list-width": `${listWidth}px` } as CSSProperties}>
 				<div className="visuals-grid" data-testid="visuals-grid" hidden={Boolean(focusVisualId)}>
-					{filtered.length === 0 && !loading ? (
+					{showFilteredEmpty ? (
+						<p className="visuals-empty">
+							No visuals match the active filter.
+							<button type="button" className="ghost-button" data-testid="visuals-clear-filter" onClick={() => { setTab("all"); setSearch(""); }}>Clear filter</button>
+						</p>
+					) : null}
+					{showRegistryEmpty ? (
 						<p className="visuals-empty">No visuals yet. Create one from chat, MCP, or New visual.</p>
 					) : null}
 					{filtered.map((visual) => (
@@ -212,15 +345,25 @@ export function VisualsPage({ onOpenVisual, onGoToChat, onBack, onCreate }: Prop
 						>
 							<button type="button" className="visuals-card-main" onClick={() => setSelectedId(visual.id)}>
 								<strong>{visual.title}</strong>
+								<span data-testid={`visuals-card-identity-${visual.id}`}>{admissionIdentity(visual)}</span>
 								<span>{statusLabel(visual.status)} · rev {visual.currentRevision}</span>
 								<span>{visual.templateId}</span>
 								<span>{new Date(visual.updatedAt).toLocaleString()}</span>
 							</button>
+							<VisualOpsLine
+								sessionId={visual.sessionId}
+								runId={visual.runId}
+								traceId={visual.traceId}
+								testId={`visual-ops-${visual.id}`}
+								compact
+							/>
 							<div className="visuals-card-actions">
 								<button type="button" onClick={() => onOpenVisual(visual)}>Open</button>
 								{visual.sessionId && onGoToChat ? (
 									<button type="button" onClick={() => onGoToChat(visual.sessionId!)}>Go to chat</button>
 								) : null}
+								<button type="button" onClick={() => void renameVisual(visual)}>Rename</button>
+								<button type="button" onClick={() => void archiveVisual(visual)}>Archive</button>
 							</div>
 						</article>
 					))}
@@ -235,14 +378,44 @@ export function VisualsPage({ onOpenVisual, onGoToChat, onBack, onCreate }: Prop
 							</div>
 							<div className="reports-inline-form">
 								<select value={reportTarget} onChange={(event) => setReportTarget(event.target.value)} aria-label="Report destination"><option value="new">New report</option>{reports.map((report) => <option key={report.id} value={report.id}>{report.title}</option>)}</select>
-								<button type="button" data-testid="visual-add-to-report" onClick={() => void addSelectedToReport()}>Add to report</button>
+								<button
+									type="button"
+									data-testid="visual-add-to-report"
+									disabled={addDisabled}
+									title={admissionIdentity(selected)}
+									onClick={() => void addSelectedToReport()}
+								>
+									{alreadyAdded ? "Already added" : "Add to report"}
+								</button>
+								{alreadyAdded && onOpenReport ? (
+									<button type="button" data-testid="visuals-open-in-report" onClick={() => onOpenReport(reportTarget)}>
+										Open in report
+									</button>
+								) : null}
 							</div>
+							<p className="reports-provenance" data-testid="visual-add-to-report-identity">
+								{admissionIdentity(selected)}
+							</p>
+							{alreadyAdded && !onOpenReport ? (
+								<p className="reports-provenance" role="status">This visual is already on the selected report.</p>
+							) : null}
+							<VisualOpsLine
+								sessionId={selected.sessionId}
+								runId={selected.runId}
+								traceId={selected.traceId}
+								testId={`visual-ops-preview-${selected.id}`}
+								compact
+							/>
+							<button type="button" className="ghost-button" onClick={() => void renameVisual(selected)}>Rename</button>
+							<button type="button" className="ghost-button" onClick={() => void archiveVisual(selected)}>Archive</button>
 							<button
 								type="button"
 								className="ghost-button"
+								aria-pressed={Boolean(focusVisualId)}
+								title={focusVisualId ? "Show the visual library" : "Focus this visual and hide the library"}
 								onClick={() => setFocusVisualId(focusVisualId ? null : selected.id)}
 							>
-								{focusVisualId ? "Exit canvas" : "Open canvas"}
+								{focusVisualId ? "Show library" : "Focus visual"}
 							</button>
 						</header>
 						{reportNotice ? <p className="reports-provenance" role="status">{reportNotice}</p> : null}

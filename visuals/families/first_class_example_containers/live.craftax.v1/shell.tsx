@@ -5,6 +5,7 @@ import { formatMissingNumber, formatMissingUsd } from "../../../runtime/liveStre
 import type { LiveTemplateProps } from "../../../runtime/replayClient.ts";
 import { callForSequence, projectAgentTurns, reconcileCallSelection, type EvidenceField } from "../../../runtime/agentTranscript.ts";
 import type { LiveEvalEvent, VisualBinding } from "../../../runtime/types.ts";
+import { bindingInputName } from "../../../runtime/types.ts";
 import {
   craftaxEventLane,
   craftaxEventSequence,
@@ -90,7 +91,7 @@ function asStream(raw: unknown): StreamPayload {
 }
 
 function bundledFixtureStream(bindings: VisualBinding[]): StreamPayload | undefined {
-  const source = bindings.find((binding) => binding.slot === "stream" && binding.kind === "fixture")?.source;
+  const source = bindings.find((binding) => bindingInputName(binding) === "stream" && binding.kind === "fixture")?.source;
   if (!source) return undefined;
   const fileName = source.split("/").pop();
   if (!fileName) return undefined;

@@ -5,7 +5,7 @@ description: Use when creating, updating, inspecting, or opening a Synth Desktop
 
 # Use Synth Visuals
 
-Choose the visual grammar from the evidence. Treat registered templates as optional shortcuts, not mandates. For ad-hoc analysis, prefer `analysis.visual.v1` and author its ordered `spec.blocks` at creation time. Use `blank.canvas.v1` when the composition cannot be expressed cleanly with those blocks. If the artifact is a system, UML, flow picture, or time-aware technical explainer, load `author-synth-diagrams`. It chooses among `diagram.mermaid.v1`, `diagram.systems.v1`, `diagram.systems.dynamic.v1`, or a focused combination; do not dump SVG/HTML/JavaScript into a canvas.
+Choose the visual grammar from the evidence. Treat registered templates as optional shortcuts, not mandates. For ad-hoc analysis, prefer `analysis.visual.v1` and author its ordered `spec.blocks` at creation time. For a live event log plus inspect overlay, prefer `compose.visual.v1` with advertised components; do not hang a `stream` input on `analysis.visual.v1`. For a custom pane that still uses those components and host-owned ingest, author TSX on `sourced.visual.v1`. Use `blank.canvas.v1` when the composition cannot be expressed cleanly with those blocks. If the artifact is a system, UML, flow picture, or time-aware technical explainer, load `author-synth-diagrams`. It chooses among `diagram.mermaid.v1`, `diagram.systems.v1`, `diagram.systems.dynamic.v1`, or a focused combination; do not dump SVG/HTML/JavaScript into a canvas.
 
 Optimizer visuals are a strict exception to the authoring workflow below. The `optimizer.*` family is product-owned and already configured by `use-synth-optimizers`. Report `visualEvidence.state` (`ready` | `reviewed` | `partial` | `failed`); never loop capture/repair. `partial` and `failed` never block task completion. Only call `show` when that workflow asks you to recover a missing subscription receipt. Never call `authoring_context`, `capture_review`, `review`, `update`, or `mark_ready` for an optimizer-owned visual.
 
@@ -32,13 +32,13 @@ or filesystem search to discover this tool.
 
 | Operation | Arguments |
 | --- | --- |
-| `list_templates` | `{ "genre"?: string }` |
+| `list_templates` | `{ "genre"?: string }` — returns `inputs` (and a `slots` copy), `bindingSchema`, and `components[]` (empty when the template does not advertise parts). There is no `list_components` verb. |
 | `list` | `{ "search"?: string, "status"?: string, "session_id"?: string, "scope"?: "session" \| "instance" }` — defaults to this task; `scope: "instance"` is labeled cross-task discovery |
 | `get` | `{ "visual_id": string }` |
-| `create` | `{ "template_id": string, "title"?: string, "content"?: string, "props"?: object, "session_id"?: string, "instance_id"?: string }` |
-| `create_with_bind` | `{ "template_id": string, "title"?: string, "slot": string, "kind": string, "data"?: object, "source"?: string, "schema"?: string }` — atomic create plus the first required slot. Prefer this for `experiment.overview.v1` and `analysis.visual.v1`. |
+| `create` | `{ "template_id": string, "title"?: string, "content"?: string, "props"?: object, "session_id"?: string, "instance_id"?: string }` — `sourced.visual.v1` requires `content` (allowlisted TSX). |
+| `create_with_bind` | `{ "template_id": string, "title"?: string, "input": string, "kind": string, "data"?: object, "source"?: string, "schema"?: string }` — atomic create plus the first required input. Prefer this for `experiment.overview.v1`, `analysis.visual.v1`, and `compose.visual.v1` (`spec`). Bind `stream` (eval) or `optimizer_run` (GEPA/SFT/CISPO) separately. `slot` still binds on stored envelopes; new writers emit `input`. If both names are present and disagree, fail closed. |
 | `update` | `{ "visual_id": string, "title"?: string, "content"?: string, "bindings"?: object, "status"?: string }` — `bindings` must be the canonical envelope; prefer `bind` |
-| `bind` | `{ "instance_id": string, "slot": string, "kind": string, "source"?: string, "data"?: object, "poll_url"?: string, "path"?: string, "schema"?: string, "mode"?: "replace" \| "append", "bindings"?: [{ "kind": string, "source"?: string, "data"?: object, "poll_url"?: string }] }` — inline slots require `data`; other kinds require `source`. Two malformed binds must not block a corrected bind. |
+| `bind` | `{ "instance_id": string, "input": string, "kind": string, "source"?: string, "data"?: object, "poll_url"?: string, "path"?: string, "schema"?: string, "mode"?: "replace" \| "append", "bindings"?: [{ "kind": string, "source"?: string, "data"?: object, "poll_url"?: string }] }` — inline inputs require `data`; other kinds require `source`. `slot` still binds on stored envelopes; new writers emit `input`. Two malformed binds must not block a corrected bind. |
 | `show` | `{ "visual_id": string, "session_id"?: string }` |
 | `fork` | `{ "visual_id": string, "title"?: string }` |
 | `archive` | `{ "visual_id": string }` |
@@ -63,7 +63,7 @@ other clients but are intentionally not advertised to Codex.
 6. Call the `show` operation after creation or update so the result opens in the Desktop pane.
 7. Inspect the rendered visual in Desktop canvas mode. Fix clipped labels, empty sections, misleading encodings, weak hierarchy, and excessive whitespace.
 8. Perform at least two explicit render-and-critique iterations at distinct viewport widths. Call `capture_review` for authored visual families—evals (`analysis.*`, `live.*`, `craftax.*`), UML/Mermaid, static 2D systems maps, and Benjamin Dicken Style dynamic systems visuals. Do **not** capture, review, or `mark_ready` `optimizer.*` product visuals; report `visualEvidence.state` instead and never loop capture/repair. For each viewport inspect the PNG attached to the tool result. Pass its returned `screenshot_path` to `review`; never shell-search for captures, invent a path, or submit checks without looking at the image. Do not reuse a review after the visual revision changes. For systems visuals, resolve every deterministic finding returned by `authoring_context` before readiness.
-9. Call `mark_ready` only when all required landmarks pass. A trusted live template is configured through `visual_config`; saved arbitrary TSX is retained as source evidence but is never executed by Desktop.
+9. Call `mark_ready` only when all required landmarks pass. A trusted live template is configured through `visual_config`. `sourced.visual.v1` compiles allowlisted `content` TSX and mounts it as the pane Shell. `blank.canvas.v1` stays HTML/SVG with no scripts.
 
 ## Composition rules
 
@@ -89,7 +89,7 @@ other clients but are intentionally not advertised to Codex.
 
 ## `analysis.visual.v1`
 
-Required slot: **`spec`**. Author it as `kind: "inline"` with `data` containing a short narrative and ordered `blocks`. Do not bind this template on slot `experiment`. `list_templates` returns `slots` and `bindingSchema`; `example_binding` is the canonical create+bind payload.
+Required input: **`spec`**. Author it as `kind: "inline"` with `data` containing a short narrative and ordered `blocks`. Do not bind this template on input `experiment`. `list_templates` returns `inputs` (and a `slots` copy), `bindingSchema`, and `components[]` (empty when the template does not advertise parts); `example_binding` is the canonical create+bind payload.
 
 Available blocks:
 
@@ -108,7 +108,7 @@ await tools.mcp__synth_visuals__visual_manage({
   arguments: {
     template_id: "analysis.visual.v1",
     title: "HealthBench smoke · policy vs scorer",
-    slot: "spec",
+    input: "spec",
     kind: "inline",
     data: {
       schemaVersion: "synth.visual.analysis_spec.v1",
@@ -119,9 +119,133 @@ await tools.mcp__synth_visuals__visual_manage({
 });
 ```
 
+## `compose.visual.v1`
+
+Required input: **`spec`** (`synth.visual.compose_spec.v1`). Optional inputs: **`stream`** (`live_sse` / `fixture` / `inline`) for container eval envelopes, and **`optimizer_run`** (`optimizer_run` / `fixture` / `inline`) for `optimizer_event.v1` (GEPA, SFT, CISPO). Bind the dialect a placement consumes. Do not mash eval traces into `optimizer_run`. Do not hang a live input on `analysis.visual.v1`. `live.eval_stream.v1` remains a whole-pane shortcut. Product `optimizer.gepa.live.v1` / `optimizer.sft.live.v1` / `optimizer.eval.live.v1` stay product-owned. Hosted RLVR is **CISPO** (`algorithmId: cispo`, `cispo.*` events) — do not invent `rlvr.*`. Unknown `component` ids fail closed. `list_templates` echoes this template's `components[]` (id, kind, protocolId, consumes, emits) next to `inputs`. There is no `list_components` verb.
+
+Advertised components (kind is the render contract; `protocolId` is the bind dialect):
+
+- `event_stream.v1` — consumes `stream` or `optimizer_run` (placement `input` selects one), emits cursor. Optional `config.includeKinds` matches envelope `kind` or `type`.
+- `detail_modal.v1` — consumes cursor via `from` (must name an `event_stream.v1` placement). In-pane overlay, not a second visual.
+
+Create the spec, then bind the declared dialect. Guessed `/events` URLs still fail closed.
+
+```js
+const created = await tools.mcp__synth_visuals__visual_manage({
+  operation: "create_with_bind",
+  arguments: {
+    template_id: "compose.visual.v1",
+    title: "Harbor smoke · live stream",
+    input: "spec",
+    kind: "inline",
+    data: {
+      schemaVersion: "synth.visual.compose_spec.v1",
+      title: "Harbor smoke · live stream",
+      placements: [
+        { id: "log", component: "event_stream.v1", input: "stream" },
+        { id: "inspect", component: "detail_modal.v1", from: "log" }
+      ]
+    }
+  }
+});
+await tools.mcp__synth_visuals__visual_manage({
+  operation: "bind",
+  arguments: {
+    instance_id: created.id,
+    input: "stream",
+    kind: "live_sse",
+    source: declaredSseUrl,
+    poll_url: declaredPollUrl
+  }
+});
+await tools.mcp__synth_visuals__visual_manage({
+  operation: "show",
+  arguments: { visual_id: created.id }
+});
+```
+
+Optimizer event log (same kit; not product `optimizer.*` chrome):
+
+```js
+const created = await tools.mcp__synth_visuals__visual_manage({
+  operation: "create_with_bind",
+  arguments: {
+    template_id: "compose.visual.v1",
+    title: "CISPO clip · optimizer_run",
+    input: "spec",
+    kind: "inline",
+    data: {
+      schemaVersion: "synth.visual.compose_spec.v1",
+      title: "CISPO clip · optimizer_run",
+      placements: [
+        {
+          id: "log",
+          component: "event_stream.v1",
+          input: "optimizer_run",
+          config: { includeKinds: ["candidate.accepted", "sft.training.metrics", "cispo.clip.identity"] }
+        },
+        { id: "inspect", component: "detail_modal.v1", from: "log" }
+      ]
+    }
+  }
+});
+await tools.mcp__synth_visuals__visual_manage({
+  operation: "bind",
+  arguments: {
+    instance_id: created.id,
+    input: "optimizer_run",
+    kind: "optimizer_run",
+    source: optimizerRunId
+  }
+});
+await tools.mcp__synth_visuals__visual_manage({
+  operation: "show",
+  arguments: { visual_id: created.id }
+});
+```
+
+## `sourced.visual.v1`
+
+Kind `sourced_visual`. Protocol `whole_file.v1`. The agent authors a pane; Desktop **runs it**. Register-then-show: pass the module as `content`, bind `stream` if the module consumes host replay, then `show`. Do not recompile per seed.
+
+Allowlisted imports only:
+
+- `react` / `react-dom` / `react/jsx-runtime`
+- `@synth/visuals/chrome`
+- `@synth/visuals/chrome/useLiveEvalStream` — consumes host `ReplayClient`; does not discover URLs
+- `@synth/visuals/components/event_stream.v1`
+- `@synth/visuals/components/detail_modal.v1`
+
+Unknown import, `fetch`, `EventSource`, `eval`, or a guessed `/events` URL fails closed in the pane. Host still builds `ReplayClient` and passes `replay`, `events`, `state`. Layout the advertised parts; do not own ingest. `blank.canvas.v1` is not this path.
+
+```js
+const created = await tools.mcp__synth_visuals__visual_manage({
+  operation: "create",
+  arguments: {
+    template_id: "sourced.visual.v1",
+    title: "Harbor smoke · custom log",
+    content: sourcedTsx
+  }
+});
+await tools.mcp__synth_visuals__visual_manage({
+  operation: "bind",
+  arguments: {
+    instance_id: created.id,
+    input: "stream",
+    kind: "live_sse",
+    source: declaredSseUrl,
+    poll_url: declaredPollUrl
+  }
+});
+await tools.mcp__synth_visuals__visual_manage({
+  operation: "show",
+  arguments: { visual_id: created.id }
+});
+```
+
 ## `experiment.overview.v1`
 
-Required slot: **`experiment`**, not `spec`. Accepts `inline`, `fixture`, or `local_cas`. Inline binds **must include `data`**. A bind without `data` returns `visual_binding_invalid` / `inline visual binding requires data`; correct the same visual — do not abandon it after two malformed binds.
+Required input: **`experiment`**, not `spec`. Accepts `inline`, `fixture`, or `local_cas`. Inline binds **must include `data`**. A bind without `data` returns `visual_binding_invalid` / `inline visual binding requires data`; correct the same visual — do not abandon it after two malformed binds.
 
 Use the experiment overview when several runs or optimizer candidates answer one
 research question. It is the canonical right-pane summary for the experiment;
@@ -172,7 +296,7 @@ await tools.mcp__synth_visuals__visual_manage({
   arguments: {
     template_id: "experiment.overview.v1",
     title: "Banking77 baseline eval",
-    slot: "experiment",
+    input: "experiment",
     kind: "inline",
     data: {
       schemaVersion: "synth.experiment.overview.v1",
@@ -197,23 +321,25 @@ Bindings are always the canonical envelope:
 
 ```json
 {"schemaVersion": "synth.visual-bindings.v1",
- "slots": [{"slot": "stream", "kind": "live_sse", "source": "...", "poll_url": "..."}]}
+ "inputs": [{"input": "stream", "kind": "live_sse", "source": "...", "poll_url": "..."}]}
 ```
+
+Write `input` / `inputs`. `slot` / `slots` still bind on stored envelopes; new writers omit them. If both names are present and disagree, fail closed.
 
 Use the `bind` operation, which writes that envelope for you. A slot-keyed
 object such as `{"stream": [...]}` is a legacy shape: it is upgraded with a
 warning today and will be refused. Do not hand-build binding objects through
 `update` when `bind` can express what you need.
 
-For a slot the template declares `multiple` — such as ten rollout streams on one
-`stream` slot — bind them in one call:
+For an input the template declares `multiple` — such as ten rollout streams on one
+`stream` input — bind them in one call:
 
 ```js
 await tools.mcp__synth_visuals__visual_manage({
   operation: "bind",
   arguments: {
     instance_id: visualId,
-    slot: "stream",
+    input: "stream",
     mode: "append",
     bindings: rolloutIds.map((id) => ({
       kind: "live_sse",
@@ -225,14 +351,14 @@ await tools.mcp__synth_visuals__visual_manage({
 });
 ```
 
-`mode` defaults to `replace`, which drops existing bindings on that slot. Use
-`append` when adding to a `multiple` slot across several calls.
+`mode` defaults to `replace`, which drops existing bindings on that input. Use
+`append` when adding to a `multiple` input across several calls.
 
 ## Live container evals
 
 Use the task-family live template for an eval that is still running:
-`live.craftax.v1`, `live.harbor_eval.v1`, or `live.digbench.v1`. Bind its required
-`stream` slot as `live_sse` with the absolute SSE endpoint and exact poll
+`live.craftax.v1` or `live.harbor_eval.v1`. Bind its required
+`stream` input as `live_sse` with the absolute SSE endpoint and exact poll
 endpoint declared by rollout preparation. Every live binding needs `poll_url`:
 the durable poll authority is what lets a completed run replay, and a stream
 bound without one cannot be reopened after it closes. The stream emits
@@ -244,7 +370,7 @@ Prepare in this order:
 
 1. Discover the provider and inspect capabilities. Do not construct `/events`.
 2. Call `container_prepare_rollout`; it must return the exact descriptor and `visual_binding` without starting execution.
-3. Create the task-family visual with `presentation: "canvas"`, bind the returned `stream` slot, and call `show`. Review at least twice, then `mark_ready`.
+3. Create the task-family visual with `presentation: "canvas"`, bind the returned `stream` input, and call `show`. Review at least twice, then `mark_ready`.
 4. Get `authoring_context`. Use a prior real trace or the template's example only to develop layout; label example evidence and replace it with the declared stream before readiness.
 5. Wait until the control envelope reports `stream.subscribed` with `ready: true`. HTTP 200 and heartbeats are not ready.
 6. Call `container_start_prepared_rollout` with the exact prepared stream descriptor, `visual_id`, `task_instance_id` or `seed`, and `policy_ref` (`harness` + `config`). Desktop refuses a missing pin, a stale visual receipt, and still waits for control-only `stream.subscribed`. The host does not pick `luna_med`.
@@ -256,9 +382,7 @@ Harbor: open `live.harbor_eval.v1` from register `metadata.liveEval` before tria
 VisualsBench keeps that Harbor outer card but grades the separate product
 visual authored by Codex. Its register metadata pins `harbor_fused` + Codex
 with `mcp_bind: synth_visuals`; do not start without that bind, and never use
-the `stream` slot on the product visual.
-
-dig.bench: open `live.digbench.v1` before `start_session`. Basic ReAct and agentic Codex + `digbench-mcp` on the same game. No frames. Token never in bindings or screenshots. `/reward` is `completed` → 1, `game_over` → 0, incomplete → null.
+the `stream` input on the product visual.
 
 ## Iteration rubric
 
@@ -284,7 +408,7 @@ Optimizer visuals are owned by the optimizer service. Start an allowlisted recip
 through `use-synth-optimizers` with `open_visual: true`, or call its `open_visual`
 operation for an existing run. Do not create a parallel `analysis.visual.v1` or
 bind an optimizer feed manually. The host selects the GEPA, GELO, or SFT family,
-binds slot `optimizer_run`, shows the same durable visual ID in the current chat's
+binds input `optimizer_run`, shows the same durable visual ID in the current chat's
 right pane, and keeps reading the optimizer event cursor while the agent continues
 to talk or poll. Reopening after a restart must reuse that ID and replay persisted
 events; unknown score, reward, cost, coverage, or evidence integrity remains missing.

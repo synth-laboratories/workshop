@@ -543,8 +543,8 @@ fn experiment_bindings(
     let heldout_mean = mean_for_pool(records, "heldout");
     json!({
         "schemaVersion": VISUAL_BINDINGS_SCHEMA_VERSION,
-        "slots": [{
-            "slot": "experiment",
+        "inputs": [{
+            "input": "experiment",
             "kind": "inline",
             "schema": EXPERIMENT_SCHEMA,
             "data": {
@@ -2242,7 +2242,7 @@ max_total_rollouts = 4
         let visual = svc.visuals().get(visual_id.to_string()).await.unwrap();
         assert_eq!(visual.status, VisualStatus::Failed);
         assert_eq!(
-            visual.bindings.pointer("/slots/0/data/status"),
+            visual.bindings.pointer("/inputs/0/data/status"),
             Some(&json!("failed"))
         );
         task.abort();

@@ -525,7 +525,6 @@ test("live templates do not import fixture fallbacks", () => {
   for (const template of [
     "live.craftax.v1",
     "live.harbor_eval.v1",
-    "live.digbench.v1",
     "live.eval_stream.v1",
     "live.intern_acceptance.v1",
     "live.container_rollouts.v1",

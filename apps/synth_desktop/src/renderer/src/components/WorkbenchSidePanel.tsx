@@ -1,4 +1,5 @@
 import type { ReactNode } from "react";
+import { restoreFocusIfLost } from "../runtime/restoreFocus";
 
 export type WorkbenchSidePanelTab = {
 	id: string;
@@ -22,7 +23,10 @@ export function WorkbenchSidePanel({ tabs, activeTabId, onTabChange, onClose }: 
 					<span>{tab.label}</span>{tab.badge ? <strong>{tab.badge}</strong> : null}
 				</button>)}
 			</div>
-			<button type="button" className="workbench-side-panel-close" aria-label="Close side panel" onClick={onClose}>×</button>
+			<button type="button" className="workbench-side-panel-close" aria-label="Close side panel" onClick={() => {
+				onClose();
+				restoreFocusIfLost('[data-testid="resource-shelf-trigger"]');
+			}}>×</button>
 		</header>
 		<div className="workbench-side-panel-content" role="tabpanel" id={`workbench-side-tabpanel-${activeTab.id}`} aria-labelledby={`workbench-side-tab-${activeTab.id}`} data-testid={`workbench-side-tabpanel-${activeTab.id}`}>
 			{activeTab.content}
