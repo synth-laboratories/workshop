@@ -262,9 +262,12 @@ export const commands = {
 	members: ExperimentMember[],
 	nodes: ExperimentNode[],
 	edges: ExperimentEdge[],
+	lineage?: ExperimentLineageEdge[],
 } | null, AppError>(__TAURI_INVOKE("experiments_get", { experimentId })),
 	experimentsAttachEvidence: (request: ExperimentEvidenceAttachRequest) => typedError<ExperimentGroup, AppError>(__TAURI_INVOKE("experiments_attach_evidence", { request })),
 	experimentsCreate: (request: ExperimentCreateRequest) => typedError<ExperimentGroup, AppError>(__TAURI_INVOKE("experiments_create", { request })),
+	experimentsCreateChild: (request: ExperimentChildCreateRequest) => typedError<ExperimentGroup, AppError>(__TAURI_INVOKE("experiments_create_child", { request })),
+	experimentsActivate: (sessionId: string, experimentId: string) => typedError<ExperimentGroup, AppError>(__TAURI_INVOKE("experiments_activate", { sessionId, experimentId })),
 	experimentsFinalize: (request: ExperimentFinalizeRequest) => typedError<ExperimentGroup, AppError>(__TAURI_INVOKE("experiments_finalize", { request })),
 	reportsLogList: (reportId: string) => typedError<ResearchLogEntry[], AppError>(__TAURI_INVOKE("reports_log_list", { reportId })),
 	reportsLogAppend: (reportId: string, request: ResearchLogAppend) => typedError<ResearchLogEntry, AppError>(__TAURI_INVOKE("reports_log_append", { reportId, request })),
@@ -1003,6 +1006,16 @@ export type EvalStageCandidatesRequest = {
 
 export type EventSource = "local" | "remote" | "intern" | "codex" | "system" | "mlx" | "visual" | "report";
 
+export type ExperimentChildCreateRequest = {
+	parentExperimentId: string,
+	sessionId: string | null,
+	requestId: string,
+	title: string,
+	task: string | null,
+	model: string | null,
+	createdAt: string,
+};
+
 export type ExperimentCreateRequest = {
 	sessionId: string,
 	requestId: string,
@@ -1060,6 +1073,10 @@ export type ExperimentFinalizeRequest = {
 	finalizedAt: string,
 };
 
+/**
+ *  Composition DTO: experiment row + members + lineage projection.
+ *  Assembled at the command boundary; not a stored graph blob.
+ */
 export type ExperimentGroup = {
 	id: string,
 	sessionId: string,
@@ -1073,6 +1090,15 @@ export type ExperimentGroup = {
 	members: ExperimentMember[],
 	nodes: ExperimentNode[],
 	edges: ExperimentEdge[],
+	lineage?: ExperimentLineageEdge[],
+};
+
+export type ExperimentLineageEdge = {
+	id: string,
+	sourceExperimentId: string,
+	targetExperimentId: string,
+	relation: string,
+	createdAt: string,
 };
 
 export type ExperimentMember = {

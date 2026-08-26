@@ -318,6 +318,29 @@ impl DataStore {
         self.db.clone().run_transaction(move |conn| crate::experiments::create(conn, request)).await
     }
 
+    pub async fn experiment_create_child(
+        &self,
+        request: crate::experiments::ExperimentChildCreateRequest,
+    ) -> Result<crate::experiments::ExperimentGroup> {
+        self.db
+            .clone()
+            .run_transaction(move |conn| crate::experiments::create_child(conn, request))
+            .await
+    }
+
+    pub async fn experiment_activate(
+        &self,
+        session_id: String,
+        experiment_id: String,
+    ) -> Result<crate::experiments::ExperimentGroup> {
+        self.db
+            .clone()
+            .run_transaction(move |conn| {
+                crate::experiments::activate(conn, &session_id, &experiment_id)
+            })
+            .await
+    }
+
     pub async fn experiment_finalize(&self, request: crate::experiments::ExperimentFinalizeRequest) -> Result<crate::experiments::ExperimentGroup> {
         self.db.clone().run_transaction(move |conn| crate::experiments::finalize(conn, request)).await
     }

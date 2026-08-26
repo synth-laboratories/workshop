@@ -1,0 +1,28 @@
+{
+  "schemaVersion": "synth.visual-bindings.v1",
+  "slots": [
+    {
+      "slot": "stream",
+      "kind": "inline",
+      "schema": "synth.visual.live_eval_events.v1",
+      "data": {
+        "events": [
+          {
+            "ts": "2026-08-26T16:00:00.000Z",
+            "run_id": "sourced_fixture_run",
+            "kind": "stream.subscribed",
+            "sequence": null,
+            "payload": { "stream.id": "stream_sourced_fixture", "ready": true }
+          },
+          {
+            "ts": "2026-08-26T16:00:02.000Z",
+            "run_id": "sourced_fixture_run",
+            "kind": "rollout.finished",
+            "sequence": 2,
+            "payload": { "marker": "SOURCED-REWARD-3.1", "reward": 3.1 }
+          }
+        ]
+      }
+    }
+  ]
+}

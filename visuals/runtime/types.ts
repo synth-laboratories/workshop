@@ -45,6 +45,15 @@ export type VisualBindings = {
   slots: VisualBinding[];
 };
 
+export type VisualComponentMeta = {
+  id: string;
+  kind: string;
+  protocolId: string;
+  consumes: string[];
+  emits?: string[];
+  description?: string;
+};
+
 export type VisualTemplateSlot = {
   name: string;
   description: string;
@@ -64,10 +73,15 @@ export type VisualTemplateMeta = {
   version: string;
   description: string;
   accent?: string;
+  rendererKind?: string;
+  kind?: string;
+  protocolId?: string;
   slots: VisualTemplateSlot[];
   /** Relative path to the React shell from the template root. */
   shell: string;
   tags?: string[];
+  /** Advertised compose parts. Kind is the render contract; protocolId the bind dialect. */
+  components?: VisualComponentMeta[];
   observationContract?: {
     schemaVersion: "synth.visual-observation-contract.v1";
     readiness: {

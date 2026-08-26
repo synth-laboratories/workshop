@@ -32,7 +32,7 @@ import { SettingsPage } from "./components/SettingsPage";
 import { VisualPane } from "./components/VisualHost";
 import { VisualsPage } from "./components/VisualsPage";
 import { ReportsPage } from "./components/ReportsPage";
-import { ExperimentsPage } from "./components/ExperimentsPage";
+import { ExperimentsPage } from "./experiments/ExperimentsPage";
 import { WorkbenchSidePanel } from "./components/WorkbenchSidePanel";
 import { ResponsesTracePanel } from "./components/ResponsesTracePanel";
 import { DiagnosticsPanel } from "./components/DiagnosticsPanel";
@@ -232,6 +232,17 @@ export function MainRoutes(props: MainRoutesProps): ReactNode {
 			}
 		})();
 	};
+	// Visuals / Experiments / Optimizers / Data share one workbench so VisualPane
+	// keeps expand and seal state across those routes. Chat still remounts.
+	const inventoryHost =
+		view.kind === "visuals" ||
+		view.kind === "experiments" ||
+		view.kind === "optimizers" ||
+		view.kind === "inventory";
+	const resizeInventoryPane = (width: number) => {
+		setInventoryContainerWidth(width);
+		persistLayoutSnapshot({ outputPaneWidth: width });
+	};
 
 	return (
 		<>
@@ -280,48 +291,102 @@ export function MainRoutes(props: MainRoutesProps): ReactNode {
 				/>
 			) : null}
 
-			{view.kind === "visuals" ? (
-				<div className={`inventory-workbench${openArtifact ? " with-visual" : ""}`} style={{ "--visual-pane-width": `${inventoryContainerWidth}px` } as CSSProperties}>
-					<VisualsPage
-						onOpenVisual={openVisualRecord}
-						onGoToChat={(sessionId) => {
-							const session = sessions.find((item) => item.id === sessionId);
-							if (!session) return;
-							if (sessionIsLocalChat(session)) openChat(sessionId);
-							else if (sessionIsSync(session)) setView({ kind: "sync", sessionId });
-							else setView({ kind: "async", sessionId });
-						}}
-						onBack={() => setView({ kind: "landing" })}
-						onCreate={() => {
-							void (async () => {
-								if (!bridges.visuals) {
-									showToast("Visual registry requires Synth Desktop");
-									return;
-								}
-								try {
-									// The registry's first template is the chart template, whose
-									// content is intentionally mandatory.  A generic “New visual”
-									// action must create an immediately valid draft instead of
-									// presenting that validation error before the user can choose a
-									// template or add content.
-									const templateId = "blank.canvas.v1";
-									await bridges.visuals.getTemplate(templateId);
-									const visual = await bridges.visuals.create({
-										templateId,
-										title: "New visual",
-										bindings: {},
-										sessionId: activeSessionId ?? undefined
-									});
-									openVisualRecord(visual);
-									showToast(`Created visual · ${visual.title}`);
-								} catch (reason) {
-									showToast(publicError(reason));
-								}
-							})();
-						}}
-					/>
+			{inventoryHost ? (
+				<div
+					className={`inventory-workbench${openArtifact ? " with-visual" : ""}${view.kind === "inventory" && openContainer ? " with-container" : ""}${view.kind === "inventory" && containerPaneExpanded ? " container-expanded" : ""}`}
+					style={{ "--visual-pane-width": `${inventoryContainerWidth}px`, "--container-pane-width": `${inventoryContainerWidth}px` } as CSSProperties}
+				>
+					{view.kind === "visuals" ? (
+						<VisualsPage
+							onOpenVisual={openVisualRecord}
+							onGoToChat={(sessionId) => {
+								const session = sessions.find((item) => item.id === sessionId);
+								if (!session) return;
+								if (sessionIsLocalChat(session)) openChat(sessionId);
+								else if (sessionIsSync(session)) setView({ kind: "sync", sessionId });
+								else setView({ kind: "async", sessionId });
+							}}
+							onBack={() => setView({ kind: "landing" })}
+							onCreate={() => {
+								void (async () => {
+									if (!bridges.visuals) {
+										showToast("Visual registry requires Synth Desktop");
+										return;
+									}
+									try {
+										// The registry's first template is the chart template, whose
+										// content is intentionally mandatory.  A generic “New visual”
+										// action must create an immediately valid draft instead of
+										// presenting that validation error before the user can choose a
+										// template or add content.
+										const templateId = "blank.canvas.v1";
+										await bridges.visuals.getTemplate(templateId);
+										const visual = await bridges.visuals.create({
+											templateId,
+											title: "New visual",
+											bindings: {},
+											sessionId: activeSessionId ?? undefined
+										});
+										openVisualRecord(visual);
+										showToast(`Created visual · ${visual.title}`);
+									} catch (reason) {
+										showToast(publicError(reason));
+									}
+								})();
+							}}
+						/>
+					) : null}
+					{view.kind === "experiments" ? (
+						<ExperimentsPage initialId={view.experimentId} onBack={() => setView({ kind: "landing" })} />
+					) : null}
+					{view.kind === "optimizers" ? (
+						<OptimizersPage
+							pluginStatuses={pluginStatuses}
+							selectedContainerId={openContainer?.id ?? null}
+							onRefreshPlugins={refreshPluginStatuses}
+							onStartAgent={(guide) => startOptimizerAgent(`Plan a ${guide.name} optimization`, guide.prompt)}
+							onOpenVisual={(visualId) => {
+								void (async () => {
+									if (!bridges.visuals) {
+										showToast("Visual registry requires Synth Desktop");
+										return;
+									}
+									try {
+										const visual = await bridges.visuals.get(visualId);
+										openVisualRecord(visual);
+									} catch (reason) {
+										showToast(publicError(reason));
+									}
+								})();
+							}}
+							onBack={() => setView({ kind: "landing" })}
+						/>
+					) : null}
+					{view.kind === "inventory" ? (
+						<DataPage
+							onOpenVisual={openVisualRecord}
+							onOpenContainer={(id) => void toggleContainer(id)}
+							openContainerId={openContainer?.id ?? null}
+							onBack={() => setView({ kind: "landing" })}
+						/>
+					) : null}
 					{openArtifact ? (
-						<><PaneResizeHandle value={inventoryContainerWidth} onChange={(width) => { setInventoryContainerWidth(width); persistLayoutSnapshot({ outputPaneWidth: width }); }} ariaLabel="Resize visual pane" /><VisualPane artifact={openArtifact} onClose={() => toggleArtifact(null)} /></>
+						<>
+							<PaneResizeHandle value={inventoryContainerWidth} onChange={resizeInventoryPane} ariaLabel="Resize visual pane" />
+							<VisualPane key="inventory-visual-host" artifact={openArtifact} onClose={() => toggleArtifact(null)} />
+						</>
+					) : null}
+					{view.kind === "inventory" && openContainer ? (
+						<>
+							<PaneResizeHandle value={inventoryContainerWidth} onChange={resizeInventoryPane} />
+							<ContainerPane
+								container={openContainer}
+								expanded={containerPaneExpanded}
+								onExpandedChange={setContainerPaneExpanded}
+								onProbe={() => void probeOpenContainer()}
+								onClose={() => void toggleContainer(null)}
+							/>
+						</>
 					) : null}
 				</div>
 			) : null}
@@ -329,44 +394,6 @@ export function MainRoutes(props: MainRoutesProps): ReactNode {
 			{view.kind === "reports" ? (
 				<div className="inventory-workbench">
 					<ReportsPage initialReportId={view.reportId} onBack={() => setView({ kind: "landing" })} />
-				</div>
-			) : null}
-
-			{view.kind === "experiments" ? (
-				<div className={`inventory-workbench${openArtifact ? " with-visual" : ""}`} style={{ "--visual-pane-width": `${inventoryContainerWidth}px` } as CSSProperties}>
-					<ExperimentsPage initialId={view.experimentId} onBack={() => setView({ kind: "landing" })} />
-					{openArtifact ? (
-						<><PaneResizeHandle value={inventoryContainerWidth} onChange={(width) => { setInventoryContainerWidth(width); persistLayoutSnapshot({ outputPaneWidth: width }); }} ariaLabel="Resize visual pane" /><VisualPane artifact={openArtifact} onClose={() => toggleArtifact(null)} /></>
-					) : null}
-				</div>
-			) : null}
-
-			{view.kind === "optimizers" ? (
-				<div className={`inventory-workbench${openArtifact ? " with-visual" : ""}`} style={{ "--visual-pane-width": `${inventoryContainerWidth}px` } as CSSProperties}>
-					<OptimizersPage
-						pluginStatuses={pluginStatuses}
-						selectedContainerId={openContainer?.id ?? null}
-						onRefreshPlugins={refreshPluginStatuses}
-						onStartAgent={(guide) => startOptimizerAgent(`Plan a ${guide.name} optimization`, guide.prompt)}
-						onOpenVisual={(visualId) => {
-							void (async () => {
-								if (!bridges.visuals) {
-									showToast("Visual registry requires Synth Desktop");
-									return;
-								}
-								try {
-									const visual = await bridges.visuals.get(visualId);
-									openVisualRecord(visual);
-								} catch (reason) {
-									showToast(publicError(reason));
-								}
-							})();
-						}}
-						onBack={() => setView({ kind: "landing" })}
-					/>
-					{openArtifact ? (
-						<><PaneResizeHandle value={inventoryContainerWidth} onChange={(width) => { setInventoryContainerWidth(width); persistLayoutSnapshot({ outputPaneWidth: width }); }} ariaLabel="Resize visual pane" /><VisualPane artifact={openArtifact} onClose={() => toggleArtifact(null)} /></>
-					) : null}
 				</div>
 			) : null}
 
@@ -383,41 +410,6 @@ export function MainRoutes(props: MainRoutesProps): ReactNode {
 						onOpenSettings={onOpenComputerUseSettings}
 						onRevokeApp={onRevokeComputerUseApp}
 					/>
-				</div>
-			) : null}
-
-			{view.kind === "inventory" ? (
-				<div
-					className={`inventory-workbench${openArtifact ? " with-visual" : ""}${openContainer ? " with-container" : ""}${containerPaneExpanded ? " container-expanded" : ""}`}
-					style={{ "--container-pane-width": `${inventoryContainerWidth}px` } as CSSProperties}
-				>
-					<DataPage
-						onOpenVisual={openVisualRecord}
-						onOpenContainer={(id) => void toggleContainer(id)}
-						openContainerId={openContainer?.id ?? null}
-						onBack={() => setView({ kind: "landing" })}
-					/>
-					{openArtifact ? (
-						<><PaneResizeHandle value={inventoryContainerWidth} onChange={(width) => { setInventoryContainerWidth(width); persistLayoutSnapshot({ outputPaneWidth: width }); }} ariaLabel="Resize visual pane" /><VisualPane artifact={openArtifact} onClose={() => toggleArtifact(null)} /></>
-					) : null}
-					{openContainer ? (
-						<>
-							<PaneResizeHandle
-								value={inventoryContainerWidth}
-								onChange={(width) => {
-									setInventoryContainerWidth(width);
-									persistLayoutSnapshot({ outputPaneWidth: width });
-								}}
-							/>
-							<ContainerPane
-								container={openContainer}
-								expanded={containerPaneExpanded}
-								onExpandedChange={setContainerPaneExpanded}
-								onProbe={() => void probeOpenContainer()}
-								onClose={() => void toggleContainer(null)}
-							/>
-						</>
-					) : null}
 				</div>
 			) : null}
 

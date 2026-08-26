@@ -12,7 +12,10 @@ import {
 	replayStreamsFromBindings,
 	resolveTemplate,
 	resolveVisualBindings,
-	selectRenderedProjection
+	selectRenderedProjection,
+	compileSourcedModule,
+	isSourcedTemplate,
+	sourcedInvalidShell
 } from "@synth/visuals";
 import { publicError, toPublicError, type PublicError } from "../runtime/publicError";
 import type { VisualAnnotation, VisualSeal, VisualSealBundle, VisualUpload } from "../bridge";
@@ -265,6 +268,11 @@ function MockFallback({ artifact }: { artifact: ArtifactRef }) {
 	);
 }
 
+function decodeBase64Utf8(base64: string): string {
+	const bytes = Uint8Array.from(atob(base64), (char) => char.charCodeAt(0));
+	return new TextDecoder().decode(bytes);
+}
+
 function TemplateVisualHost({ artifact }: { artifact: ArtifactRef }) {
 	const [Shell, setShell] = useState<ComponentType<ShellProps> | null>(null);
 	const [failed, setFailed] = useState(false);
@@ -395,37 +403,60 @@ function TemplateVisualHost({ artifact }: { artifact: ArtifactRef }) {
 			});
 			return;
 		}
-		void loadVisualShell(templateId)
-			.then((Component) => {
+		const load = async () => {
+			if (isSourcedTemplate(templateId)) {
+				const visualId = artifact.visualId ?? artifact.id;
+				let source = "";
+				try {
+					const asset = await bridges.visuals?.content?.(visualId);
+					if (asset?.base64) source = decodeBase64Utf8(asset.base64);
+				} catch (reason) {
+					if (!cancelled) setShell(() => sourcedInvalidShell(publicError(reason)));
+					return;
+				}
+				const compiled = compileSourcedModule(source);
 				if (cancelled) return;
-				if (!Component) {
-					setFailed(true);
-					reportDiagnostic({
-						...visualIdentity,
-						severity: "error",
-						component: "visual-host",
-						event: "visual.shell.unavailable",
-						code: DIAGNOSTIC_CODES.visualTemplateUnavailable,
-						message: `Template ${templateId} resolved no shell component`,
-						details: { templateId },
-					});
-				} else setShell(() => Component);
-			})
-			.catch((reason) => {
-				if (cancelled) return;
+				if (!compiled.ok) {
+					setShell(() => sourcedInvalidShell(compiled.error));
+					return;
+				}
+				setShell(() => compiled.Shell);
+				return;
+			}
+			const Component = await loadVisualShell(templateId);
+			if (cancelled) return;
+			if (!Component) {
 				setFailed(true);
 				reportDiagnostic({
 					...visualIdentity,
 					severity: "error",
 					component: "visual-host",
-					event: "visual.shell.load_failed",
-					code: DIAGNOSTIC_CODES.visualShellLoadFailed,
-					message: publicError(reason),
+					event: "visual.shell.unavailable",
+					code: DIAGNOSTIC_CODES.visualTemplateUnavailable,
+					message: `Template ${templateId} resolved no shell component`,
 					details: { templateId },
 				});
+			} else setShell(() => Component);
+		};
+		void load().catch((reason) => {
+			if (cancelled) return;
+			if (isSourcedTemplate(templateId)) {
+				setShell(() => sourcedInvalidShell(publicError(reason)));
+				return;
+			}
+			setFailed(true);
+			reportDiagnostic({
+				...visualIdentity,
+				severity: "error",
+				component: "visual-host",
+				event: "visual.shell.load_failed",
+				code: DIAGNOSTIC_CODES.visualShellLoadFailed,
+				message: publicError(reason),
+				details: { templateId },
 			});
+		});
 		return () => { cancelled = true; };
-	}, [artifact.templateId, visualIdentity]);
+	}, [artifact.templateId, artifact.visualId, artifact.id, artifact.contentDigest, artifact.revision, visualIdentity]);
 
 	useEffect(() => {
 		let cancelled = false;

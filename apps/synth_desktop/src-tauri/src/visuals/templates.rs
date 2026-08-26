@@ -309,6 +309,28 @@ mod tests {
                 .as_array()
                 .expect("analysis accepts");
             assert!(accepts.iter().any(|value| value == "inline"));
+            let compose = templates
+                .iter()
+                .find(|template| template.id == "compose.visual.v1")
+                .expect("compose.visual.v1");
+            assert!(compose.example_binding.is_some());
+            let compose_slots: Vec<&str> = compose
+                .slots
+                .iter()
+                .filter_map(|slot| slot.get("name").and_then(Value::as_str))
+                .collect();
+            assert_eq!(compose_slots, ["spec", "stream"]);
+            let sourced = templates
+                .iter()
+                .find(|template| template.id == "sourced.visual.v1")
+                .expect("sourced.visual.v1");
+            assert!(sourced.example_binding.is_some());
+            let sourced_slots: Vec<&str> = sourced
+                .slots
+                .iter()
+                .filter_map(|slot| slot.get("name").and_then(Value::as_str))
+                .collect();
+            assert_eq!(sourced_slots, ["stream"]);
         }
     }
 

@@ -2,6 +2,7 @@ export type {
   VisualBinding,
   VisualBindingKind,
   VisualBindings,
+  VisualComponentMeta,
   VisualInstance,
   VisualTemplate,
   VisualTemplateMeta,
@@ -14,6 +15,13 @@ export type {
 } from "./types.ts";
 
 export { DEFAULT_CHROME } from "./types.ts";
+export {
+  COMPOSE_COMPONENTS,
+  COMPOSE_SPEC_SCHEMA,
+  isComposeComponentId,
+  parseComposeSpec
+} from "./composeSpec.ts";
+export type { ComposeComponentId, ComposePlacement, ComposeSpec, ComposeSpecResult } from "./composeSpec.ts";
 export {
   bindTemplateSlots,
   subscribeLiveSlot,
@@ -83,3 +91,13 @@ export {
   renderInstanceTsx,
   markInstanceSaved
 } from "./save_tsx.ts";
+export {
+  compileSourcedModule,
+  isSourcedTemplate,
+  sourcedInvalidShell,
+  SOURCED_ALLOWED_IMPORTS,
+  SOURCED_KIND,
+  SOURCED_PROTOCOL,
+  SOURCED_TEMPLATE_ID,
+  validateSourcedSource
+} from "./sourcedVisual.ts";

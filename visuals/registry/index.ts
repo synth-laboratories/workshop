@@ -137,3 +137,10 @@ export {
 export type { LiveTemplateProps, ReplayClient, ReplayCursor, ReplayPage, ReplayStream, TransportState } from "../runtime/replayClient.ts";
 export { ingestLiveEnvelopes, assertLiveEvalSlot, LIVE_EVAL_SLOT } from "../runtime/liveStream.ts";
 export { saveVisualInstanceTsx, renderInstanceTsx, markInstanceSaved } from "../runtime/save_tsx.ts";
+export {
+  compileSourcedModule,
+  isSourcedTemplate,
+  sourcedInvalidShell,
+  SOURCED_TEMPLATE_ID,
+  validateSourcedSource
+} from "../runtime/sourcedVisual.ts";

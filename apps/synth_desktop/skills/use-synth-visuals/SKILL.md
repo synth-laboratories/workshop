@@ -5,7 +5,7 @@ description: Use when creating, updating, inspecting, or opening a Synth Desktop
 
 # Use Synth Visuals
 
-Choose the visual grammar from the evidence. Treat registered templates as optional shortcuts, not mandates. For ad-hoc analysis, prefer `analysis.visual.v1` and author its ordered `spec.blocks` at creation time. Use `blank.canvas.v1` when the composition cannot be expressed cleanly with those blocks. If the artifact is a system, UML, flow picture, or time-aware technical explainer, load `author-synth-diagrams`. It chooses among `diagram.mermaid.v1`, `diagram.systems.v1`, `diagram.systems.dynamic.v1`, or a focused combination; do not dump SVG/HTML/JavaScript into a canvas.
+Choose the visual grammar from the evidence. Treat registered templates as optional shortcuts, not mandates. For ad-hoc analysis, prefer `analysis.visual.v1` and author its ordered `spec.blocks` at creation time. For a live event log plus inspect overlay, prefer `compose.visual.v1` with advertised components; do not hang a `stream` slot on `analysis.visual.v1`. For a custom pane that still uses those components and host-owned ingest, author TSX on `sourced.visual.v1`. Use `blank.canvas.v1` when the composition cannot be expressed cleanly with those blocks. If the artifact is a system, UML, flow picture, or time-aware technical explainer, load `author-synth-diagrams`. It chooses among `diagram.mermaid.v1`, `diagram.systems.v1`, `diagram.systems.dynamic.v1`, or a focused combination; do not dump SVG/HTML/JavaScript into a canvas.
 
 Optimizer visuals are a strict exception to the authoring workflow below. The `optimizer.*` family is product-owned and already configured by `use-synth-optimizers`. Report `visualEvidence.state` (`ready` | `reviewed` | `partial` | `failed`); never loop capture/repair. `partial` and `failed` never block task completion. Only call `show` when that workflow asks you to recover a missing subscription receipt. Never call `authoring_context`, `capture_review`, `review`, `update`, or `mark_ready` for an optimizer-owned visual.
 
@@ -35,8 +35,8 @@ or filesystem search to discover this tool.
 | `list_templates` | `{ "genre"?: string }` |
 | `list` | `{ "search"?: string, "status"?: string, "session_id"?: string, "scope"?: "session" \| "instance" }` — defaults to this task; `scope: "instance"` is labeled cross-task discovery |
 | `get` | `{ "visual_id": string }` |
-| `create` | `{ "template_id": string, "title"?: string, "content"?: string, "props"?: object, "session_id"?: string, "instance_id"?: string }` |
-| `create_with_bind` | `{ "template_id": string, "title"?: string, "slot": string, "kind": string, "data"?: object, "source"?: string, "schema"?: string }` — atomic create plus the first required slot. Prefer this for `experiment.overview.v1` and `analysis.visual.v1`. |
+| `create` | `{ "template_id": string, "title"?: string, "content"?: string, "props"?: object, "session_id"?: string, "instance_id"?: string }` — `sourced.visual.v1` requires `content` (allowlisted TSX). |
+| `create_with_bind` | `{ "template_id": string, "title"?: string, "slot": string, "kind": string, "data"?: object, "source"?: string, "schema"?: string }` — atomic create plus the first required slot. Prefer this for `experiment.overview.v1`, `analysis.visual.v1`, and `compose.visual.v1` (`spec`). Bind `stream` separately. |
 | `update` | `{ "visual_id": string, "title"?: string, "content"?: string, "bindings"?: object, "status"?: string }` — `bindings` must be the canonical envelope; prefer `bind` |
 | `bind` | `{ "instance_id": string, "slot": string, "kind": string, "source"?: string, "data"?: object, "poll_url"?: string, "path"?: string, "schema"?: string, "mode"?: "replace" \| "append", "bindings"?: [{ "kind": string, "source"?: string, "data"?: object, "poll_url"?: string }] }` — inline slots require `data`; other kinds require `source`. Two malformed binds must not block a corrected bind. |
 | `show` | `{ "visual_id": string, "session_id"?: string }` |
@@ -63,7 +63,7 @@ other clients but are intentionally not advertised to Codex.
 6. Call the `show` operation after creation or update so the result opens in the Desktop pane.
 7. Inspect the rendered visual in Desktop canvas mode. Fix clipped labels, empty sections, misleading encodings, weak hierarchy, and excessive whitespace.
 8. Perform at least two explicit render-and-critique iterations at distinct viewport widths. Call `capture_review` for authored visual families—evals (`analysis.*`, `live.*`, `craftax.*`), UML/Mermaid, static 2D systems maps, and Benjamin Dicken Style dynamic systems visuals. Do **not** capture, review, or `mark_ready` `optimizer.*` product visuals; report `visualEvidence.state` instead and never loop capture/repair. For each viewport inspect the PNG attached to the tool result. Pass its returned `screenshot_path` to `review`; never shell-search for captures, invent a path, or submit checks without looking at the image. Do not reuse a review after the visual revision changes. For systems visuals, resolve every deterministic finding returned by `authoring_context` before readiness.
-9. Call `mark_ready` only when all required landmarks pass. A trusted live template is configured through `visual_config`; saved arbitrary TSX is retained as source evidence but is never executed by Desktop.
+9. Call `mark_ready` only when all required landmarks pass. A trusted live template is configured through `visual_config`. `sourced.visual.v1` compiles allowlisted `content` TSX and mounts it as the pane Shell. `blank.canvas.v1` stays HTML/SVG with no scripts.
 
 ## Composition rules
 
@@ -116,6 +116,90 @@ await tools.mcp__synth_visuals__visual_manage({
       blocks: [{ type: "metrics", items: [{ label: "Train mean", value: null }] }]
     }
   }
+});
+```
+
+## `compose.visual.v1`
+
+Required slot: **`spec`** (`synth.visual.compose_spec.v1`). Optional slot: **`stream`** (`live_sse` / `fixture` / `inline`). Bind `stream` when a placement consumes it. Do not hang a live slot on `analysis.visual.v1`. `live.eval_stream.v1` remains a whole-pane shortcut. Unknown `component` ids fail closed.
+
+Advertised components (kind is the render contract; `protocolId` is the bind dialect):
+
+- `event_stream.v1` — consumes `stream`, emits cursor. Optional `config.includeKinds`.
+- `detail_modal.v1` — consumes cursor via `from` (must name an `event_stream.v1` placement). In-pane overlay, not a second visual.
+
+Create the spec, then bind the declared stream. Guessed `/events` URLs still fail closed.
+
+```js
+const created = await tools.mcp__synth_visuals__visual_manage({
+  operation: "create_with_bind",
+  arguments: {
+    template_id: "compose.visual.v1",
+    title: "Harbor smoke · live stream",
+    slot: "spec",
+    kind: "inline",
+    data: {
+      schemaVersion: "synth.visual.compose_spec.v1",
+      title: "Harbor smoke · live stream",
+      placements: [
+        { id: "log", component: "event_stream.v1", slot: "stream" },
+        { id: "inspect", component: "detail_modal.v1", from: "log" }
+      ]
+    }
+  }
+});
+await tools.mcp__synth_visuals__visual_manage({
+  operation: "bind",
+  arguments: {
+    instance_id: created.id,
+    slot: "stream",
+    kind: "live_sse",
+    source: declaredSseUrl,
+    poll_url: declaredPollUrl
+  }
+});
+await tools.mcp__synth_visuals__visual_manage({
+  operation: "show",
+  arguments: { visual_id: created.id }
+});
+```
+
+## `sourced.visual.v1`
+
+Kind `sourced_visual`. Protocol `whole_file.v1`. The agent authors a pane; Desktop **runs it**. Register-then-show: pass the module as `content`, bind `stream` if the module consumes host replay, then `show`. Do not recompile per seed.
+
+Allowlisted imports only:
+
+- `react` / `react-dom` / `react/jsx-runtime`
+- `@synth/visuals/chrome`
+- `@synth/visuals/chrome/useLiveEvalStream` — consumes host `ReplayClient`; does not discover URLs
+- `@synth/visuals/components/event_stream.v1`
+- `@synth/visuals/components/detail_modal.v1`
+
+Unknown import, `fetch`, `EventSource`, `eval`, or a guessed `/events` URL fails closed in the pane. Host still builds `ReplayClient` and passes `replay`, `events`, `state`. Layout the advertised parts; do not own ingest. `blank.canvas.v1` is not this path.
+
+```js
+const created = await tools.mcp__synth_visuals__visual_manage({
+  operation: "create",
+  arguments: {
+    template_id: "sourced.visual.v1",
+    title: "Harbor smoke · custom log",
+    content: sourcedTsx
+  }
+});
+await tools.mcp__synth_visuals__visual_manage({
+  operation: "bind",
+  arguments: {
+    instance_id: created.id,
+    slot: "stream",
+    kind: "live_sse",
+    source: declaredSseUrl,
+    poll_url: declaredPollUrl
+  }
+});
+await tools.mcp__synth_visuals__visual_manage({
+  operation: "show",
+  arguments: { visual_id: created.id }
 });
 ```
 

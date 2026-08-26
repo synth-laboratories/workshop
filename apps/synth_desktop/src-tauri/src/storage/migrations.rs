@@ -39,6 +39,8 @@ const MIGRATIONS: &[&str] = &[
     MIGRATION_34,
     MIGRATION_35,
     MIGRATION_36,
+    MIGRATION_37,
+    MIGRATION_38,
 ];
 
 /// Apply every migration the database has not reached yet.
@@ -1761,6 +1763,104 @@ INSERT INTO experiment_group_members SELECT * FROM experiment_group_members_v35;
 DROP TABLE experiment_group_members_v35;
 CREATE INDEX experiment_group_members_kind ON experiment_group_members(member_kind, member_id);
 "#;
+
+/// Member nodes use the member kind (`eval_campaign`, `optimizer_run`,
+/// `direct_evaluation`). Historical `baseline`/`variant`/`result`/`run` rows
+/// stay readable. `follow_up` is a stored experiment-to-experiment relation,
+/// not a canvas layout fact.
+const MIGRATION_37: &str = r#"
+CREATE TABLE experiment_nodes_next (
+    id TEXT PRIMARY KEY,
+    experiment_id TEXT NOT NULL REFERENCES experiment_groups(id) ON DELETE CASCADE,
+    kind TEXT NOT NULL CHECK (kind IN (
+        'baseline','variant','run','result',
+        'eval_campaign','optimizer_run','direct_evaluation'
+    )),
+    title TEXT NOT NULL,
+    status TEXT NOT NULL,
+    config_json TEXT NOT NULL DEFAULT '{}',
+    metrics_json TEXT,
+    cost_usd REAL,
+    artifact_refs_json TEXT NOT NULL DEFAULT '[]',
+    trace_refs_json TEXT NOT NULL DEFAULT '[]',
+    provenance_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    evidence_refs_json TEXT NOT NULL DEFAULT '[]',
+    UNIQUE(experiment_id, id)
+);
+INSERT INTO experiment_nodes_next(
+    id, experiment_id, kind, title, status, config_json, metrics_json, cost_usd,
+    artifact_refs_json, trace_refs_json, provenance_json, created_at, updated_at, evidence_refs_json
+)
+SELECT
+    id, experiment_id, kind, title, status, config_json, metrics_json, cost_usd,
+    artifact_refs_json, trace_refs_json, provenance_json, created_at, updated_at, evidence_refs_json
+FROM experiment_nodes;
+
+CREATE TABLE experiment_edges_next (
+    id TEXT PRIMARY KEY,
+    experiment_id TEXT NOT NULL,
+    source_node_id TEXT NOT NULL,
+    target_node_id TEXT NOT NULL,
+    relation TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+INSERT INTO experiment_edges_next SELECT * FROM experiment_edges;
+
+DROP TABLE experiment_edges;
+DROP TABLE experiment_nodes;
+ALTER TABLE experiment_nodes_next RENAME TO experiment_nodes;
+
+CREATE TABLE experiment_edges (
+    id TEXT PRIMARY KEY,
+    experiment_id TEXT NOT NULL REFERENCES experiment_groups(id) ON DELETE CASCADE,
+    source_node_id TEXT NOT NULL REFERENCES experiment_nodes(id) ON DELETE CASCADE,
+    target_node_id TEXT NOT NULL REFERENCES experiment_nodes(id) ON DELETE CASCADE,
+    relation TEXT NOT NULL CHECK (relation IN (
+        'forked_from','rerun_of','warm_started_from','produced','evaluated',
+        'compared_with','promoted_to','reproduced_on','rolled_back_to','follow_up'
+    )),
+    created_at TEXT NOT NULL,
+    UNIQUE(experiment_id, source_node_id, target_node_id, relation)
+);
+INSERT INTO experiment_edges SELECT * FROM experiment_edges_next;
+DROP TABLE experiment_edges_next;
+
+CREATE INDEX IF NOT EXISTS experiment_nodes_experiment ON experiment_nodes(experiment_id, created_at, id);
+CREATE INDEX IF NOT EXISTS experiment_edges_experiment ON experiment_edges(experiment_id, created_at, id);
+"#;
+
+/// A session may own many experiments. `follow_up` is stored as an
+/// experiment-to-experiment fact, not a member-node edge. Attach targets the
+/// session's active experiment (cursor, then oldest).
+const MIGRATION_38: &str = r#"
+DROP INDEX IF EXISTS experiment_groups_session;
+CREATE INDEX IF NOT EXISTS experiment_groups_session
+ON experiment_groups(session_id, created_at, id);
+
+CREATE TABLE IF NOT EXISTS experiment_lineage (
+    id TEXT PRIMARY KEY,
+    source_experiment_id TEXT NOT NULL REFERENCES experiment_groups(id) ON DELETE CASCADE,
+    target_experiment_id TEXT NOT NULL REFERENCES experiment_groups(id) ON DELETE CASCADE,
+    relation TEXT NOT NULL CHECK (relation IN ('follow_up','forked_from','rerun_of')),
+    created_at TEXT NOT NULL,
+    UNIQUE(source_experiment_id, target_experiment_id, relation)
+);
+
+CREATE INDEX IF NOT EXISTS experiment_lineage_source
+ON experiment_lineage(source_experiment_id, created_at, id);
+CREATE INDEX IF NOT EXISTS experiment_lineage_target
+ON experiment_lineage(target_experiment_id);
+
+CREATE TABLE IF NOT EXISTS experiment_session_cursor (
+    session_id TEXT PRIMARY KEY,
+    active_experiment_id TEXT NOT NULL REFERENCES experiment_groups(id) ON DELETE CASCADE
+);
+
+ALTER TABLE sessions ADD COLUMN active_experiment_id TEXT REFERENCES experiment_groups(id);
+"#;
+
 #[cfg(test)]
 mod tests {
     /// Derived, not pinned: adding a migration should not mean editing
@@ -1806,6 +1906,64 @@ mod tests {
             "the registry must be contiguous from 1 with no gaps or duplicates"
         );
         assert_eq!(MIGRATIONS.len(), registered.len());
+    }
+
+    #[test]
+    fn migration_38_drops_session_uniqueness_and_adds_lineage() {
+        let conn = seed_at_version(37);
+        conn.execute(
+            "INSERT INTO experiment_groups(id, session_id, title, created_at, updated_at)
+             VALUES('exp_a', 'session_shared', 'First', '2026-08-26T00:00:00Z', '2026-08-26T00:00:00Z')",
+            [],
+        )
+        .unwrap();
+        let duplicate = conn.execute(
+            "INSERT INTO experiment_groups(id, session_id, title, created_at, updated_at)
+             VALUES('exp_b', 'session_shared', 'Second', '2026-08-26T00:01:00Z', '2026-08-26T00:01:00Z')",
+            [],
+        );
+        assert!(
+            duplicate.is_err(),
+            "v37 must still refuse two experiments in one session"
+        );
+        assert_eq!(apply_migrations(&conn).unwrap(), LATEST_VERSION);
+        conn.execute(
+            "INSERT INTO experiment_groups(id, session_id, title, created_at, updated_at)
+             VALUES('exp_b', 'session_shared', 'Second', '2026-08-26T00:01:00Z', '2026-08-26T00:01:00Z')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO experiment_lineage(id, source_experiment_id, target_experiment_id, relation, created_at)
+             VALUES('lin:exp_a:follow_up:exp_b', 'exp_a', 'exp_b', 'follow_up', '2026-08-26T00:01:00Z')",
+            [],
+        )
+        .unwrap();
+        let duplicate_follow_up = conn.execute(
+            "INSERT INTO experiment_lineage(id, source_experiment_id, target_experiment_id, relation, created_at)
+             VALUES('lin:dup', 'exp_a', 'exp_b', 'follow_up', '2026-08-26T00:02:00Z')",
+            [],
+        );
+        assert!(
+            duplicate_follow_up.is_err(),
+            "follow_up must be unique per parent/child pair"
+        );
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM experiment_groups WHERE session_id='session_shared'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 2);
+        let present: bool = conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM pragma_table_info('sessions') WHERE name='active_experiment_id')",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(present);
     }
 
     /// A database that already recorded this version number under a different

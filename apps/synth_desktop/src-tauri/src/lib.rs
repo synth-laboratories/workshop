@@ -34,6 +34,7 @@ pub mod error;
 mod eval_driver;
 pub mod experiments;
 mod http;
+pub mod lineage;
 mod instance;
 mod intern_api;
 pub mod ipc;
@@ -78,7 +79,10 @@ use data::{
     TraceRecord, UsageEntry,
 };
 use error::AppError;
-use experiments::{ExperimentCreateRequest, ExperimentEvidenceAttachRequest, ExperimentFinalizeRequest, ExperimentGroup};
+use experiments::{
+    ExperimentChildCreateRequest, ExperimentCreateRequest, ExperimentEvidenceAttachRequest,
+    ExperimentFinalizeRequest, ExperimentGroup,
+};
 use intern_api::{
     InternControlResult, InternSendResult, InternSessionControlRequest, InternSessionCreateRequest,
     InternSessionSendRequest, InternSessionWire,
@@ -3000,6 +3004,33 @@ async fn experiments_attach_evidence(
 #[specta::specta]
 async fn experiments_create(state: State<'_, Arc<CoreRuntime>>, request: ExperimentCreateRequest) -> Result<ExperimentGroup, AppError> {
     state.data().experiment_create(request).await.map_err(AppError::from)
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn experiments_create_child(
+    state: State<'_, Arc<CoreRuntime>>,
+    request: ExperimentChildCreateRequest,
+) -> Result<ExperimentGroup, AppError> {
+    state
+        .data()
+        .experiment_create_child(request)
+        .await
+        .map_err(AppError::from)
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn experiments_activate(
+    state: State<'_, Arc<CoreRuntime>>,
+    session_id: String,
+    experiment_id: String,
+) -> Result<ExperimentGroup, AppError> {
+    state
+        .data()
+        .experiment_activate(session_id, experiment_id)
+        .await
+        .map_err(AppError::from)
 }
 
 #[tauri::command]

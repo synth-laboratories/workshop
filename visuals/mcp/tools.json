@@ -200,7 +200,7 @@
         "openWorldHint": false,
         "readOnlyHint": false
       },
-      "description": "Create a visual from a trusted registered template. Interactive live viewers are configured templates; arbitrary TSX is not executed.",
+      "description": "Create a visual from a registered template. sourced.visual.v1 compiles arguments.content (allowlisted TSX) in the pane. Unconstrained fetch/EventSource modules fail closed.",
       "inputSchema": {
         "additionalProperties": false,
         "properties": {

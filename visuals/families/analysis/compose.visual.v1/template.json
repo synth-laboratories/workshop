@@ -1,0 +1,45 @@
+{
+  "schemaVersion": "synth.visual-template.v1",
+  "id": "compose.visual.v1",
+  "title": "Composed visual",
+  "genre": "compose",
+  "version": "1.0.0",
+  "description": "Ordered placements of shipped visual components over one host-owned stream. Unknown component ids fail closed.",
+  "accent": "#F05F22",
+  "shell": "shell.tsx",
+  "tags": ["compose", "live", "sse", "eval"],
+  "slots": [
+    {
+      "name": "spec",
+      "description": "Ordered placements of advertised compose components.",
+      "accepts": ["inline", "fixture", "local_cas"],
+      "required": true,
+      "schema": "synth.visual.compose_spec.v1"
+    },
+    {
+      "name": "stream",
+      "description": "Live SSE endpoint or fixture event list. Required when a placement consumes stream.",
+      "accepts": ["live_sse", "fixture", "inline"],
+      "required": false,
+      "schema": "synth.visual.live_eval_events.v1"
+    }
+  ],
+  "components": [
+    {
+      "id": "event_stream.v1",
+      "kind": "event_stream",
+      "protocolId": "event_stream.v1",
+      "consumes": ["stream"],
+      "emits": ["cursor"],
+      "description": "Live event log. Filter with includeKinds. Click emits a cursor."
+    },
+    {
+      "id": "detail_modal.v1",
+      "kind": "detail_modal",
+      "protocolId": "detail_modal.v1",
+      "consumes": ["cursor"],
+      "emits": [],
+      "description": "In-pane overlay that inspects the envelope selected by `from`."
+    }
+  ]
+}

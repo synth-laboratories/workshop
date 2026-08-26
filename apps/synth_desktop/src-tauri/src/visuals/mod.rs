@@ -9,6 +9,7 @@ pub mod mermaid;
 mod models;
 mod registry;
 mod renditions;
+pub mod sourced;
 #[cfg(target_os = "macos")]
 pub mod snapshot;
 pub mod systems;
@@ -22,13 +23,14 @@ pub fn templates_root_for_tests() -> std::path::PathBuf {
 }
 
 /// Templates whose canonical source is the visual itself: create and update
-/// refuse them without `content`, and their pixels come from a host renderer
-/// rather than a Desktop pane. Callers that just need "some template" — tests,
-/// pickers — must skip these rather than sniff the id.
+/// refuse them without `content`. Mermaid/systems/chart pixels come from a host
+/// renderer; sourced TSX compiles in the Desktop pane. Callers that just need
+/// "some template" — tests, pickers — must skip these rather than sniff the id.
 pub fn requires_canonical_source(template_id: &str) -> bool {
     mermaid::is_mermaid_template(template_id)
         || systems::template_kind(template_id).is_some()
         || charts::is_chart_template(template_id)
+        || sourced::is_sourced_template(template_id)
 }
 
 pub use backfill::{canonicalize_persisted_bindings, BindingsBackfill};

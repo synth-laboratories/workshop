@@ -30,6 +30,7 @@ const EXPECTED_IDS = [
   "analysis.visual.v1",
   "annotation.overlay.v1",
   "blank.canvas.v1",
+  "compose.visual.v1",
   "craftax.eval_matrix.v1",
   "craftax.rollout_scrub.v1",
   "diagram.mermaid.v1",
@@ -57,6 +58,7 @@ const EXPECTED_IDS = [
   "optimizer.sft.rollouts.v1",
   "posttrain.rollout_viewer.v1",
   "reward.breakdown.v1",
+  "sourced.visual.v1",
   "trace.catalog.v1",
   "trace.rollout_inspector.v1",
 ];
@@ -80,6 +82,24 @@ test("visuals package exposes the registered templates", () => {
       id === "live.digbench.v1"
     ) {
       assert.deepEqual(meta.slots.map((slot) => slot.name), ["stream"]);
+    }
+    if (id === "compose.visual.v1") {
+      assert.deepEqual(meta.slots.map((slot) => slot.name), ["spec", "stream"]);
+      assert.equal(meta.slots[0].required, true);
+      assert.equal(meta.slots[1].required, false);
+      assert.deepEqual(
+        (meta.components ?? []).map((row) => row.id).sort(),
+        ["detail_modal.v1", "event_stream.v1"]
+      );
+    }
+    if (id === "sourced.visual.v1") {
+      assert.deepEqual(meta.slots.map((slot) => slot.name), ["stream"]);
+      assert.equal(meta.slots[0].required, false);
+      assert.equal(meta.rendererKind, "tsx");
+      assert.deepEqual(
+        (meta.components ?? []).map((row) => row.id).sort(),
+        ["detail_modal.v1", "event_stream.v1"]
+      );
     }
     if (id.startsWith("optimizer.")) {
       const slotNames = meta.slots.map((slot) => slot.name);
