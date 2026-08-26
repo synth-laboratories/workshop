@@ -277,27 +277,47 @@ pub fn preflight() -> Result<Value, String> {
     result
 }
 
-pub fn algorithm_entry() -> Value {
-    let (availability, detail) = match preflight() {
-        Ok(report) => {
-            if report.get("ready").and_then(Value::as_bool) == Some(true) {
-                ("available", None)
-            } else {
-                (
-                    "unavailable",
-                    Some("no eval target image is pinned yet".to_string()),
-                )
-            }
-        }
-        Err(error) => ("unavailable", Some(error)),
-    };
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct LocalPinnedTargetPolicy {
+    pub supported: bool,
+    pub enabled: bool,
+    pub source: &'static str,
+}
+
+pub(crate) fn local_pinned_target_policy() -> LocalPinnedTargetPolicy {
+    if !cfg!(debug_assertions) {
+        return LocalPinnedTargetPolicy { supported: false, enabled: false, source: "build_default" };
+    }
+    if let Some(value) = std::env::var_os("SYNTH_EVAL_ALLOW_LOCAL_PINNED_TARGETS") {
+        return LocalPinnedTargetPolicy {
+            supported: true,
+            enabled: value == "1",
+            source: "environment_override",
+        };
+    }
+    let path = crate::instance::data_root().join("eval-admission.toml");
+    let enabled = fs::read_to_string(path)
+        .ok()
+        .and_then(|text| text.parse::<toml::Value>().ok())
+        .and_then(|value| {
+            value
+                .get("target_admission")
+                .and_then(|value| value.get("local_pinned_digest"))
+                .and_then(|value| value.get("enabled"))
+                .and_then(toml::Value::as_bool)
+        })
+        .unwrap_or(false);
+    LocalPinnedTargetPolicy { supported: true, enabled, source: if enabled { "instance_config" } else { "build_default" } }
+}
+
+pub(crate) fn execution_capability_projection() -> Value {
+    let local = local_pinned_target_policy();
     json!({
-        "id": EVAL_ALGORITHM_ID,
-        "title": "Eval",
-        "availability": availability,
-        "availabilityReason": detail,
-        "source": "local",
-        "description": "Score staged policy candidates against a pinned evaluation container, locally"
+        "recipe_evaluation": { "supported": true },
+        "target_admission": {
+            "registry_digest": { "supported": true, "enabled": true },
+            "local_pinned_digest": { "supported": local.supported, "enabled": local.enabled, "source": local.source }
+        }
     })
 }
 
@@ -327,6 +347,7 @@ pub fn recipe_catalog() -> Vec<Value> {
 
 fn normalize_builtin_recipe_contract(mut recipe: Value) -> Value {
     mark_unreproducible_target_unavailable(&mut recipe);
+    project_eval_recipe_state(&mut recipe);
     if recipe.get("id").and_then(Value::as_str) != Some(EVAL_CRAFTAX_SMOKE_RECIPE)
         || recipe.pointer("/limits/trials").is_some()
     {
@@ -349,6 +370,20 @@ fn normalize_builtin_recipe_contract(mut recipe: Value) -> Value {
         );
     }
     recipe
+}
+
+fn project_eval_recipe_state(recipe: &mut Value) {
+    let Some(object) = recipe.as_object_mut() else { return };
+    object.insert("executionKind".into(), json!("evaluation"));
+    object.insert("recipeDiscovered".into(), json!(true));
+    object.insert("executionSupported".into(), json!(true));
+    let available = object.get("availability").and_then(Value::as_str) == Some("available");
+    object.insert("targetAdmitted".into(), json!(available));
+    if let Some(reason) = object.get("availabilityReason").and_then(Value::as_str) {
+        if let Ok(error) = serde_json::from_str::<Value>(reason) {
+            object.insert("admissionError".into(), error);
+        }
+    }
 }
 
 /// A valid digest is not enough when it names only a local daemon image. Mark
@@ -563,8 +598,7 @@ pub(crate) fn bind_provider_routes_into_manifest(path: &Path, routes: Value) -> 
 /// A recipe that declares no image has nothing to pin (the fixture smoke is
 /// deterministic and benchmark-free); a recipe that declares one must pin it.
 fn require_digest_pinned_target(recipe: &Value, recipe_id: &str) -> Result<()> {
-    let allow_local_pinned_target = cfg!(debug_assertions)
-        && std::env::var("SYNTH_EVAL_ALLOW_LOCAL_PINNED_TARGETS").as_deref() == Ok("1");
+    let allow_local_pinned_target = local_pinned_target_policy().enabled;
     require_digest_pinned_target_with_policy(recipe, recipe_id, allow_local_pinned_target)
 }
 
@@ -581,17 +615,20 @@ fn require_digest_pinned_target_with_policy(
     let Some(image) = image else {
         return Ok(());
     };
-    let refuse = |reason: &str| -> anyhow::Error {
+    let refuse = |code: &str, reason: &str| -> anyhow::Error {
         anyhow!(
             "{}",
             json!({
-                "code": "target_not_digest_pinned",
+                "code": code,
                 "contract": "workflow.immutable_target",
                 "owner": recipe_id,
                 "retryable": false,
                 "requestedRecipeId": recipe_id,
                 "substitutionAllowed": false,
                 "image": image,
+                "evaluation_supported": true,
+                "local_pinned_target_supported": cfg!(debug_assertions),
+                "local_pinned_target_enabled": allow_local_pinned_target,
                 "message": reason,
             })
         )
@@ -605,7 +642,7 @@ fn require_digest_pinned_target_with_policy(
         || image.starts_with("oci-archive:")
         || image.starts_with("docker-archive:")
     {
-        return Err(refuse(
+        return Err(refuse("registry_target_required",
             "the eval target resolves to a local checkout; publish the image and pin its digest",
         ));
     }
@@ -622,8 +659,8 @@ fn require_digest_pinned_target_with_policy(
     let has_registry_host = repository.contains('/')
         && (host.contains('.') || host.contains(':') || host == "localhost");
     if !has_registry_host && !allow_local_pinned_target {
-        return Err(refuse(
-            "the eval target names no registry; publish the image under its registry host and pin that digest",
+        return Err(refuse("local_pinned_target_disabled",
+            "Evaluation is supported, but this app process does not admit registry-less local images.",
         ));
     }
 
@@ -638,12 +675,12 @@ fn require_digest_pinned_target_with_policy(
     let inline = image.split_once("@sha256:").map(|(_, hex)| hex);
     let declared = digest.and_then(|digest| digest.strip_prefix("sha256:"));
     let Some(hex) = inline.or(declared) else {
-        return Err(refuse(
+        return Err(refuse("target_digest_missing",
             "the eval target is a mutable tag; publish the image and record its sha256 digest",
         ));
     };
     if hex.len() != 64 || !hex.chars().all(|c| c.is_ascii_hexdigit()) {
-        return Err(refuse(
+        return Err(refuse("target_digest_mismatch",
             "the eval target digest is not a sha256 manifest digest",
         ));
     }
@@ -651,7 +688,7 @@ fn require_digest_pinned_target_with_policy(
     // record one identity and execute another.
     if let (Some(inline), Some(declared)) = (inline, declared) {
         if inline != declared {
-            return Err(refuse(
+            return Err(refuse("target_digest_mismatch",
                 "the eval target reference and its recorded digest disagree",
             ));
         }
@@ -669,6 +706,10 @@ fn offline_catalog(reason: &str) -> Vec<Value> {
                 "availability": "unavailable",
                 "availabilityReason": reason,
                 "title": id,
+                "executionKind": "evaluation",
+                "recipeDiscovered": false,
+                "executionSupported": true,
+                "targetAdmitted": false,
             })
         })
         .collect()
@@ -714,6 +755,9 @@ pub async fn start(
         .find(|entry| entry.get("id").and_then(Value::as_str) == Some(recipe_id.as_str()))
         .ok_or_else(|| anyhow!("eval recipe {recipe_id} is not in the local catalog"))?;
     if recipe.get("availability").and_then(Value::as_str) != Some("available") {
+        if let Some(error) = recipe.get("admissionError") {
+            bail!("{}", error);
+        }
         let reason = recipe
             .get("availabilityReason")
             .and_then(Value::as_str)
@@ -773,14 +817,7 @@ pub async fn start(
     .context("write eval worker manifest")?;
 
     let run_dir = home.join("runs").join(&run_id);
-    let paid_provider = recipe
-        .get("models")
-        .and_then(Value::as_array)
-        .and_then(|models| models.first())
-        .and_then(|model| model.get("route"))
-        .and_then(Value::as_str)
-        .map(|route| if route.contains("openrouter.ai") { "openrouter" } else { "openai" })
-        .map(str::to_string);
+    let paid_provider = paid_provider_for_recipe(&recipe).map(str::to_string);
     let limits = recipe.get("limits").cloned().unwrap_or_else(|| json!({}));
     let candidates = candidate_set
         .get("candidates")
@@ -909,6 +946,24 @@ pub async fn start(
         worker.unregister_local_recipe(&run_id).await;
     });
     Ok((run, event))
+}
+
+/// Select the Workshop provider proxy only for credentials it actually owns.
+/// Local MLX recipes deliberately carry their own app-owned token and route;
+/// treating every HTTP route as OpenAI makes those runs demand an unrelated
+/// provider key before the first trial can be dispatched.
+fn paid_provider_for_recipe(recipe: &Value) -> Option<&'static str> {
+    let secret = recipe
+        .get("models")?
+        .as_array()?
+        .first()?
+        .get("secret")?
+        .as_str()?;
+    match secret {
+        "OPENROUTER_API_KEY" => Some("openrouter"),
+        "OPENAI_API_KEY" => Some("openai"),
+        _ => None,
+    }
 }
 
 async fn run_worker(
@@ -2487,6 +2542,33 @@ mod immutable_target_tests {
         assert_eq!(policy.operations, vec!["chat.completions.create"]);
         assert!((policy.max_cost_usd - 1.20).abs() < f64::EPSILON);
         assert!(policy.max_calls >= 40);
+    }
+
+    #[test]
+    fn local_mlx_route_does_not_request_an_openai_provider_lease() {
+        let recipe = json!({
+            "models": [{
+                "route": "http://host.docker.internal:8787/v1/chat/completions",
+                "secret": "SYNTH_MLX_RL_TOKEN"
+            }]
+        });
+        assert_eq!(paid_provider_for_recipe(&recipe), None);
+    }
+
+    #[test]
+    fn hosted_routes_keep_their_declared_provider_lease() {
+        assert_eq!(
+            paid_provider_for_recipe(&json!({
+                "models": [{"secret": "OPENAI_API_KEY"}]
+            })),
+            Some("openai")
+        );
+        assert_eq!(
+            paid_provider_for_recipe(&json!({
+                "models": [{"secret": "OPENROUTER_API_KEY"}]
+            })),
+            Some("openrouter")
+        );
     }
 
     #[test]
