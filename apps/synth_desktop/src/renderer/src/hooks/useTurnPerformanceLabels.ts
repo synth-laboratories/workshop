@@ -70,7 +70,8 @@ function measurement(event: RuntimeEvent): GenerationSpeedMeasurement | null {
 /** Whether a rate may be shown as this segment's speed. */
 function isPublishable(value: GenerationSpeedMeasurement): boolean {
 	return typeof value.tps === "number" && Number.isFinite(value.tps) && value.tps > 0
-		&& (value.status === "completed" || value.status === "partial");
+		&& (value.status === "completed" || value.status === "partial")
+		&& value.tokenCountSource !== "provider_response_visible_usage";
 }
 
 /**
@@ -94,15 +95,18 @@ function detail(value: GenerationSpeedMeasurement): string {
 		value.unavailableReason ? `reason ${value.unavailableReason}` : null,
 		value.qualityFlags.length ? `flags ${value.qualityFlags.join(", ")}` : null
 	].filter((field): field is string => field !== null);
-	const method = value.tokenCountSource === "provider_response_visible_usage"
-		? "Exact response output minus exact reasoning output over the final-answer delivery interval"
+	const method = value.tokenCountSource === "provider_response_output_usage"
+		? "Exact full response output over the complete model-output interval"
 		: "Client-observed text delivery";
-	return `${method}; excludes TTFT, tools, and reasoning time. ${fields.join(" · ")}`;
+	const exclusions = value.tokenCountSource === "provider_response_output_usage"
+		? "excludes TTFT and tool execution; includes reasoning output and time"
+		: "excludes TTFT and tools";
+	return `${method}; ${exclusions}. ${fields.join(" · ")}`;
 }
 
 function generationLabel(value: GenerationSpeedMeasurement | undefined): string {
 	if (!value || !isPublishable(value)) return GENERATION_TPS_UNAVAILABLE;
-	const prefix = value.tokenCountSource === "provider_response_visible_usage"
+	const prefix = value.tokenCountSource === "provider_response_output_usage"
 		? "Observed generation estimate"
 		: "Observed generation";
 	const rate = `${prefix}: ${formatTps(value.tps!)} tok/s`;
