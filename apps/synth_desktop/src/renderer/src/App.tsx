@@ -16,6 +16,7 @@ import {
 } from "./preferences";
 import { publicError } from "./runtime/publicError";
 import { conversationMarkdown } from "./runtime/chatCopy";
+import { copyText } from "./runtime/clipboard";
 import { eventsToMessages } from "./runtime/sessionView";
 import { MainRoutes } from "./routes";
 import { bridges } from "./runtime/desktopBridge";
@@ -143,7 +144,7 @@ export default function App() {
 						copyItems={tabCopyItems}
 						onCopyItem={async (item) => {
 							try {
-								await navigator.clipboard.writeText(item.value);
+								await copyText(item.value);
 								c.showToast(item.successMessage);
 							} catch (reason) {
 								c.showToast(`Copy failed: ${publicError(reason)}`);

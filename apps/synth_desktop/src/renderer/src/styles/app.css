@@ -1494,6 +1494,9 @@ html.visual-expanded .titlebar {
 }
 
 .tab-menu-trigger {
+	-webkit-app-region: no-drag;
+	position: relative;
+	z-index: 2;
 	display: inline-flex;
 	align-items: center;
 	justify-content: center;
@@ -1532,6 +1535,7 @@ html.visual-expanded .titlebar {
 }
 
 .tab-menu-item {
+	-webkit-app-region: no-drag;
 	display: flex;
 	align-items: center;
 	gap: 9px;

@@ -109,7 +109,7 @@ export function AppTitlebar({
 	return (
 		<header className={`titlebar${reserveNativeControls ? " titlebar-native-inset" : ""}`} data-testid="titlebar" data-tauri-drag-region="">
 			<div className="titlebar-tabs" data-tauri-drag-region="">
-				<div className="tab tab-active" role="tab" aria-selected data-tauri-drag-region="">
+				<div className="tab tab-active" role="group" aria-label={`${tabLabel} chat tab`} data-tauri-drag-region="">
 					{brand === "openai" ? (
 						<ProviderMark kind="openai" className="tab-logo" />
 					) : (
@@ -124,7 +124,12 @@ export function AppTitlebar({
 								aria-label="Chat tab actions"
 								aria-haspopup="menu"
 								aria-expanded={menuOpen}
-								onClick={() => setMenuOpen((open) => !open)}
+								title="Copy chat details"
+								onPointerDown={(event) => event.stopPropagation()}
+								onClick={(event) => {
+									event.stopPropagation();
+									setMenuOpen((open) => !open);
+								}}
 							>
 								<IconEllipsis />
 							</button>
@@ -150,7 +155,7 @@ export function AppTitlebar({
 							) : null}
 						</div>
 					) : null}
-					<button type="button" className="tab-close" aria-label="Close tab" onClick={onCloseTab}>
+					<button type="button" className="tab-close" aria-label="Close tab" onPointerDown={(event) => event.stopPropagation()} onClick={onCloseTab}>
 						×
 					</button>
 				</div>
