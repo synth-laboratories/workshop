@@ -9,6 +9,7 @@ import type { ReportBlock, ReportRecord, VisualSeal, VisualSealBundle } from "..
 import { publicError } from "../runtime/publicError";
 import { formatVisualAdmissionIdentity } from "../types/landing";
 import { VisualOpsLine } from "./VisualOpsLine";
+import { hydrateVisualRecord } from "../runtime/visualHydration";
 
 type Tab = "all" | "recent" | "live" | "sealed" | "templates";
 
@@ -156,6 +157,21 @@ export function VisualsPage({ onOpenVisual, onGoToChat, onOpenReport, onBack, on
 	}, [selected?.id, selected?.metadata?.presentation]);
 
 	useEffect(() => {
+		if (!selected || !bridges.visuals) return;
+		let cancelled = false;
+		void hydrateVisualRecord(selected, bridges.visuals.get).then(
+			(visual) => {
+				if (cancelled) return;
+				setVisuals((current) => current.map((row) => row.id === visual.id ? visual : row));
+			},
+			(reason) => {
+				if (!cancelled) setError(publicError(reason));
+			}
+		);
+		return () => { cancelled = true; };
+	}, [selected?.id]);
+
+	useEffect(() => {
 		type ReviewRequest = { active?: boolean; visualId?: string };
 		const applyReviewRequest = (request: ReviewRequest | undefined) => {
 			if (!request?.active || typeof request.visualId !== "string") return;
@@ -226,6 +242,19 @@ export function VisualsPage({ onOpenVisual, onGoToChat, onOpenReport, onBack, on
 				setTargetBlocks([...(revision.blocks ?? []), block]);
 				setReportNotice(`Added to “${reports.find((report) => report.id === reportTarget)?.title ?? "report"}”.`);
 			}
+			setError(null);
+		} catch (reason) {
+			setError(publicError(reason));
+		}
+	}
+
+	async function openRegisteredVisual(visual: VisualRecord) {
+		if (!bridges.visuals) {
+			setError("Visual registry requires Synth Desktop");
+			return;
+		}
+		try {
+			onOpenVisual(await hydrateVisualRecord(visual, bridges.visuals.get));
 			setError(null);
 		} catch (reason) {
 			setError(publicError(reason));
@@ -358,7 +387,7 @@ export function VisualsPage({ onOpenVisual, onGoToChat, onOpenReport, onBack, on
 								compact
 							/>
 							<div className="visuals-card-actions">
-								<button type="button" onClick={() => onOpenVisual(visual)}>Open</button>
+								<button type="button" onClick={() => void openRegisteredVisual(visual)}>Open</button>
 								{visual.sessionId && onGoToChat ? (
 									<button type="button" onClick={() => onGoToChat(visual.sessionId!)}>Go to chat</button>
 								) : null}
