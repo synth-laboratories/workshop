@@ -272,6 +272,23 @@ export function containerEventsFromSealedTrace(document: Any): ContainerEvent[] 
       text(event?.kind);
     if (!kind) continue;
     const { source_event_type, source_event_digest, ...native } = payload;
+    if (kind === "frame" && !native.media && Array.isArray(native.artifacts)) {
+      const artifact = native.artifacts.find((candidate: Any) =>
+        candidate?.media_type === "image/png" &&
+        typeof candidate?.digest === "string" &&
+        /^sha256:[0-9a-f]{64}$/.test(candidate.digest)
+      );
+      if (artifact) {
+        native.media = {
+          casDigest: artifact.digest.slice("sha256:".length),
+          mediaType: "image/png",
+          width: num(artifact?.metadata?.width),
+          height: num(artifact?.metadata?.height),
+          byteSize: num(artifact.size_bytes),
+          producerDigest: text(source_event_digest)
+        };
+      }
+    }
     rows.push({
       sequence: num(event?.order?.ordinal) ?? num(payload.sequence) ?? index + 1,
       kind,

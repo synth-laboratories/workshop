@@ -261,8 +261,18 @@ test("the registered rollout-inspector projection is accepted as sealed authorit
         occurred_at: "2026-08-26T00:00:00Z",
         detail: {
           ...event.payload,
+          ...(event.kind === "frame" ? { media: undefined } : {}),
           source_event_type: event.kind,
-          source_event_digest: "producer-digest"
+          source_event_digest: "producer-digest",
+          ...(event.kind === "frame" ? {
+            artifacts: [{
+              artifact_id: `frame-${event.sequence}`,
+              digest: `sha256:${CAS(event.sequence)}`,
+              media_type: "image/png",
+              size_bytes: 123,
+              metadata: { width: 768, height: 768 }
+            }]
+          } : {})
         }
       }))
     }
@@ -274,6 +284,7 @@ test("the registered rollout-inspector projection is accepted as sealed authorit
   assert.equal(sealed.integrity.status, "sealed");
   assert.equal(sealed.steps.length, 2);
   assert.equal(sealed.frames.length, 3);
+  assert.equal(sealed.frames[0].media.casDigest, CAS(events[0].sequence + 1));
 });
 
 test("reconciliation prefers the sealed trace but never hides what live already showed", () => {

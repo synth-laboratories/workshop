@@ -1606,7 +1606,7 @@ async fn run_one_example(
     // Import the sealed bundle now, while the container is still running. A
     // replay that only works until the container stops is not a replay, and
     // Workshop already owns the import — the eval worker simply never called it.
-    let sealed = import_sealed_trace(ctx, &rollout_id).await;
+    let sealed = import_sealed_trace(ctx, &rollout_id, &trial_id).await;
     Ok(json!({
         "rolloutId": rollout_id,
         "trialId": trial_id,
@@ -1664,8 +1664,12 @@ async fn start_rollout(
 /// Best-effort and reported either way. A trial whose bundle could not be
 /// imported is still a scored trial; what it loses is offline replay, and the
 /// record says so rather than leaving the workbench to discover it.
-async fn import_sealed_trace(ctx: &TrialContext<'_>, rollout_id: &str) -> Value {
-    match ctx.service.import_container_trace(ctx.container_id, rollout_id).await {
+async fn import_sealed_trace(ctx: &TrialContext<'_>, rollout_id: &str, trial_id: &str) -> Value {
+    match ctx
+        .service
+        .import_container_trace(ctx.container_id, rollout_id, ctx.run_id, trial_id)
+        .await
+    {
         Ok(result) => result,
         Err(error) => json!({
             "imported": false,

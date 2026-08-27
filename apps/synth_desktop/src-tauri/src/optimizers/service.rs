@@ -521,11 +521,40 @@ impl OptimizerService {
         &self,
         container_id: &str,
         rollout_id: &str,
+        run_id: &str,
+        trial_id: &str,
     ) -> Result<Value> {
         let data = crate::data::DataStore::new(self.db.clone(), self.visuals.content().clone());
-        let (result, event) =
+        let (mut result, event, frames) =
             crate::visuals_ipc::import_container_trace_into(&data, container_id, rollout_id)
                 .await?;
+        for frame in &frames {
+            let cas_digest = self
+                .content()
+                .put_bytes("eval_frames", &frame.bytes)
+                .context("store bundled Trace V5 frame in eval CAS")?;
+            let expected = frame.digest.strip_prefix("sha256:").unwrap_or(&frame.digest);
+            if cas_digest != expected {
+                bail!("bundled Trace V5 frame changed digest during CAS import");
+            }
+            self.record_run_media(
+                run_id,
+                &RunMediaRow {
+                    cas_digest,
+                    kind: "eval_frames",
+                    media_type: "image/png",
+                    byte_size: frame.bytes.len() as u64,
+                    width: Some(frame.width),
+                    height: Some(frame.height),
+                    rollout_id: Some(rollout_id.to_string()),
+                    trial_id: Some(trial_id.to_string()),
+                    step: Some(frame.step),
+                    producer_digest: frame.producer_digest.clone(),
+                },
+            )
+            .await?;
+        }
+        result["importedFrameCount"] = json!(frames.len());
         if let Some(event) = event {
             let _ = self.events_tx.send(event);
         }

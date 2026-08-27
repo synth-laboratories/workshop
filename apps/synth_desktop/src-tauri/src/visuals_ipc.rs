@@ -238,9 +238,11 @@ use anyhow::{Context, Result};
 use hyper::StatusCode;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use sha2::Digest;
 use std::{
     collections::BTreeMap,
     fs,
+    io::Read,
     net::SocketAddr,
     path::PathBuf,
     sync::{Arc, Mutex, OnceLock},
@@ -3483,7 +3485,8 @@ pub(crate) async fn import_container_trace(
     container_id: &str,
     rollout_id: &str,
 ) -> Result<Value> {
-    let (result, event) = import_container_trace_into(core.data(), container_id, rollout_id).await?;
+    let (result, event, _) =
+        import_container_trace_into(core.data(), container_id, rollout_id).await?;
     core.broadcast_committed(event);
     Ok(result)
 }
@@ -3498,7 +3501,11 @@ pub(crate) async fn import_container_trace_into(
     data: &crate::data::DataStore,
     container_id: &str,
     rollout_id: &str,
-) -> Result<(Value, Option<crate::storage::AppEvent>)> {
+) -> Result<(
+    Value,
+    Option<crate::storage::AppEvent>,
+    Vec<ImportedTraceFrame>,
+)> {
     let container = data.get_container(container_id.to_string()).await?;
     let base = validated_loopback_rollout_base(
         container
@@ -3564,8 +3571,20 @@ pub(crate) async fn import_container_trace_into(
             source_uri: Some(format!("{base}/rollouts/{rollout_id}")),
         })
         .await;
+    let (result, event) = match result {
+        Ok(result) => result,
+        Err(error) => {
+            let _ = fs::remove_file(&source_path);
+            return Err(error);
+        }
+    };
+    let frames = if source_kind == "container_bundle" && result.trusted {
+        extract_imported_trace_frames(&source_path, rollout_id)
+    } else {
+        Ok(Vec::new())
+    };
     let _ = fs::remove_file(&source_path);
-    let (result, event) = result?;
+    let frames = frames?;
 
     let indexed: Vec<Value> = result
         .traces
@@ -3590,7 +3609,113 @@ pub(crate) async fn import_container_trace_into(
         } else {
             "Sealed Trace V5 is now indexed in Workshop."
         },
-    }), event))
+        "embeddedFrameCount": frames.len(),
+    }), event, frames))
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct ImportedTraceFrame {
+    pub bytes: Vec<u8>,
+    pub digest: String,
+    pub width: u32,
+    pub height: u32,
+    pub step: i64,
+    pub producer_digest: Option<String>,
+}
+
+fn extract_imported_trace_frames(
+    archive_path: &std::path::Path,
+    rollout_id: &str,
+) -> Result<Vec<ImportedTraceFrame>> {
+    let file = fs::File::open(archive_path)
+        .with_context(|| format!("open imported trace archive {}", archive_path.display()))?;
+    let mut archive = zip::ZipArchive::new(file).context("open imported trace ZIP")?;
+    let sealed_names = (0..archive.len())
+        .filter_map(|index| {
+            let entry = archive.by_index(index).ok()?;
+            let name = entry.name().to_string();
+            (name.contains("/sealed/") && name.ends_with(".json")).then_some(name)
+        })
+        .collect::<Vec<_>>();
+    let mut frames = Vec::new();
+    for name in sealed_names {
+        let document = {
+            let mut entry = archive.by_name(&name)?;
+            if entry.size() > limits::MAX_IMPORTED_TRACE_BYTES {
+                anyhow::bail!("sealed trace document exceeded import limit");
+            }
+            let mut bytes = Vec::with_capacity(entry.size() as usize);
+            entry.read_to_end(&mut bytes)?;
+            serde_json::from_slice::<Value>(&bytes).context("decode sealed trace document")?
+        };
+        if document.pointer("/identity/rollout_id").and_then(Value::as_str) != Some(rollout_id) {
+            continue;
+        }
+        let artifacts = document
+            .get("artifacts")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(|artifact| {
+                let id = artifact.get("artifact_id")?.as_str()?.to_string();
+                (artifact.get("media_type").and_then(Value::as_str) == Some("image/png"))
+                    .then_some((id, artifact.clone()))
+            })
+            .collect::<std::collections::HashMap<_, _>>();
+        for event in document
+            .get("events")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter(|event| event.get("event_type").and_then(Value::as_str) == Some("frame"))
+        {
+            let step = event.pointer("/detail/step").and_then(Value::as_i64)
+                .context("sealed frame event omitted step")?;
+            let artifact_id = event
+                .get("artifact_ids")
+                .and_then(Value::as_array)
+                .and_then(|ids| ids.first())
+                .and_then(Value::as_str)
+                .context("sealed frame event omitted its PNG artifact")?;
+            let artifact = artifacts.get(artifact_id)
+                .context("sealed frame event references an unknown PNG artifact")?;
+            let uri = artifact.get("uri").and_then(Value::as_str)
+                .context("sealed frame artifact omitted bundle URI")?;
+            let bytes = {
+                let mut blob = archive.by_name(uri).context("sealed frame blob missing from bundle")?;
+                if blob.size() > 16 * 1024 * 1024 {
+                    anyhow::bail!("sealed frame blob exceeded 16 MiB");
+                }
+                let mut bytes = Vec::with_capacity(blob.size() as usize);
+                blob.read_to_end(&mut bytes)?;
+                bytes
+            };
+            let actual = format!("sha256:{:x}", sha2::Sha256::digest(&bytes));
+            let digest = artifact.get("digest").and_then(Value::as_str)
+                .context("sealed frame artifact omitted digest")?;
+            if actual != digest {
+                anyhow::bail!("sealed frame artifact digest mismatch");
+            }
+            if artifact.get("size_bytes").and_then(Value::as_u64) != Some(bytes.len() as u64) {
+                anyhow::bail!("sealed frame artifact size mismatch");
+            }
+            let decoder = png::Decoder::new(bytes.as_slice());
+            let mut reader = decoder.read_info().context("decode sealed frame PNG")?;
+            let (width, height) = (reader.info().width, reader.info().height);
+            let mut decoded = vec![0; reader.output_buffer_size()];
+            reader.next_frame(&mut decoded).context("fully decode sealed frame PNG")?;
+            frames.push(ImportedTraceFrame {
+                bytes,
+                digest: digest.to_string(),
+                width,
+                height,
+                step,
+                producer_digest: event.pointer("/detail/source_event_digest")
+                    .and_then(Value::as_str).map(str::to_string),
+            });
+        }
+    }
+    Ok(frames)
 }
 
 /// Capture-supervisor bundle first (Lane E `/rollouts/{id}/trace/bundle`),
@@ -5098,5 +5223,48 @@ mod tests {
             None
         )
         .is_err());
+    }
+
+    #[test]
+    fn portable_trace_png_is_extracted_and_verified_for_eval_cas() {
+        use std::io::Write;
+        let png = base64::engine::general_purpose::STANDARD
+            .decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=")
+            .unwrap();
+        let digest = format!("sha256:{:x}", sha2::Sha256::digest(&png));
+        let uri = format!("blobs/sha256/{}/{}", &digest[7..9], &digest[7..]);
+        let document = json!({
+            "identity": {"rollout_id": "roll_portable"},
+            "artifacts": [{
+                "artifact_id": "frame_0",
+                "digest": digest,
+                "media_type": "image/png",
+                "size_bytes": png.len(),
+                "uri": uri,
+            }],
+            "events": [{
+                "event_type": "frame",
+                "artifact_ids": ["frame_0"],
+                "detail": {"step": 0, "source_event_digest": "producer16"},
+            }],
+        });
+        let directory = tempfile::tempdir().unwrap();
+        let archive_path = directory.path().join("portable.zip");
+        let file = fs::File::create(&archive_path).unwrap();
+        let mut archive = zip::ZipWriter::new(file);
+        let options = zip::write::SimpleFileOptions::default();
+        archive.start_file("traces/roll_portable/sealed/trace.json", options).unwrap();
+        archive.write_all(&serde_json::to_vec(&document).unwrap()).unwrap();
+        archive.start_file(&uri, options).unwrap();
+        archive.write_all(&png).unwrap();
+        archive.finish().unwrap();
+
+        let frames = extract_imported_trace_frames(&archive_path, "roll_portable").unwrap();
+        assert_eq!(frames.len(), 1);
+        assert_eq!(frames[0].bytes, png);
+        assert_eq!(frames[0].step, 0);
+        assert_eq!(frames[0].width, 1);
+        assert_eq!(frames[0].height, 1);
+        assert_eq!(frames[0].producer_digest.as_deref(), Some("producer16"));
     }
 }
