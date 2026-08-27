@@ -366,6 +366,12 @@ function TemplateVisualHost({ artifact }: { artifact: ArtifactRef }) {
 	const [connectionState, setConnectionState] = useState<
 		"loading" | "replaying" | "subscribed" | "stale" | "reconnecting" | "terminal" | "failed" | "interrupted"
 	>("loading");
+	const [sealedTraceProjections, setSealedTraceProjections] = useState<Array<{
+		trialId: string;
+		rolloutId: string | null;
+		digest: string;
+		projection: unknown;
+	}>>([]);
 
 	const visualIdentity = useMemo(
 		() => ({
@@ -714,6 +720,63 @@ function TemplateVisualHost({ artifact }: { artifact: ArtifactRef }) {
 		});
 	}, [artifact.id, artifact.templateId, optimizerRunId, templateDigest, visualIdentity]);
 
+	// A container eval imports one sealed Trace V5 bundle per terminal trial.
+	// The digest is recorded inside that trial's durable terminal event rather
+	// than as a static visual binding, because it does not exist when the live
+	// workbench is minted. Resolve those digests here and hand the projections
+	// to the same shell that is already rendering the live fold.
+	useEffect(() => {
+		let cancelled = false;
+		if (artifact.templateId !== "craftax.trace_workbench.v1" || !bridges.inventory) {
+			setSealedTraceProjections([]);
+			return () => { cancelled = true; };
+		}
+		const allEvents = [
+			...(Array.isArray(optimizerPayload?.events) ? optimizerPayload.events : []),
+			...(Array.isArray(optimizerPayload?.enrichmentEvents) ? optimizerPayload.enrichmentEvents : [])
+		] as Array<Record<string, any>>;
+		const refs = allEvents.flatMap((event) => {
+			if ((event.type ?? event.eventType) !== "eval.trial.terminal") return [];
+			const item = event.item ?? {};
+			const record = item.raw ?? item;
+			const sealed = record.sealedTrace ?? record.sealed_trace;
+			if (!sealed?.inspectable || !Array.isArray(sealed.traces)) return [];
+			const trialId = String(event.delta?.trial_id ?? record.trialId ?? item.id ?? "");
+			const rolloutId = typeof record.rolloutId === "string" ? record.rolloutId : null;
+			return sealed.traces.flatMap((trace: Record<string, unknown>) =>
+				typeof trace.digest === "string" && trialId
+					? [{ trialId, rolloutId, digest: trace.digest }]
+					: []
+			);
+		});
+		if (refs.length === 0) {
+			setSealedTraceProjections([]);
+			return () => { cancelled = true; };
+		}
+		void Promise.all(refs.map(async (ref) => {
+			const resolved = await bridges.inventory!.resolveTraceProjection(ref.digest, "rollout-inspector");
+			if (resolved.traceDigest !== ref.digest || resolved.projectionKind !== "rollout-inspector") {
+				throw new Error(`Sealed Craftax trace projection identity changed for ${ref.digest}`);
+			}
+			return { ...ref, projection: resolved.payload };
+		})).then((rows) => {
+			if (!cancelled) setSealedTraceProjections(rows);
+		}).catch((reason) => {
+			if (cancelled) return;
+			setSealedTraceProjections([]);
+			reportDiagnostic({
+				...visualIdentity,
+				optimizerRunId: optimizerRunId ?? null,
+				severity: "error",
+				component: "visual-host",
+				event: "visual.sealed_trace.resolve_failed",
+				code: DIAGNOSTIC_CODES.visualBindingUnresolved,
+				message: publicError(reason, "Sealed Craftax trace projection failed")
+			});
+		});
+		return () => { cancelled = true; };
+	}, [artifact.templateId, optimizerPayload, optimizerRunId, visualIdentity]);
+
 	const boundRun = optimizerPayload?.run as { id?: string; algorithmId?: string } | undefined;
 	const boundRunId = boundRun?.algorithmId === "gepa" ? boundRun.id ?? null : null;
 	useEffect(() => {
@@ -847,6 +910,7 @@ function TemplateVisualHost({ artifact }: { artifact: ArtifactRef }) {
 				comparison={comparisonPayload ?? undefined}
 				replay={replayClient}
 				media={mediaClient}
+				sealedTraceProjections={sealedTraceProjections}
 				replayMissingTransport={replay.missingTransport}
 				visualId={artifact.visualId ?? artifact.id}
 				revision={typeof artifact.revision === "number" ? artifact.revision : null}

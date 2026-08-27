@@ -29,7 +29,9 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { VisualChrome } from "../../../chrome/VisualChrome.tsx";
 import {
   craftaxTrialsFromRun,
+	craftaxTraceFromSealedTrace,
   localMapRows,
+	reconcileCraftaxTrace,
   type EvalTraceView,
   type TraceFrame,
   type TraceStep,
@@ -50,6 +52,12 @@ export type ShellProps = {
   loadError?: string;
   visualId?: string | null;
   revision?: number | null;
+	sealedTraceProjections?: Array<{
+		trialId: string;
+		rolloutId: string | null;
+		digest: string;
+		projection: Any;
+	}>;
 };
 
 const MISSING = "—";
@@ -628,10 +636,29 @@ export function Shell(props: ShellProps) {
   );
   const media = props.media ?? NO_MEDIA;
 
-  const trials = useMemo(
+	const liveTrials = useMemo(
     () => (run ? craftaxTrialsFromRun(run, optimizerEvents) : []),
     [run, optimizerEvents]
   );
+	const trials = useMemo(() => liveTrials.map((row) => {
+		const sealed = props.sealedTraceProjections?.find((candidate) =>
+			candidate.trialId === row.trialId ||
+			(Boolean(row.rolloutId) && candidate.rolloutId === row.rolloutId)
+		);
+		if (!sealed) return row;
+		const sealedView = craftaxTraceFromSealedTrace(sealed.projection, {
+			traceId: row.rolloutId ?? row.trialId,
+			scenario: row.view.task.scenario,
+			seed: row.seed,
+			status: row.state,
+			model: row.view.run.model,
+			provider: row.view.run.provider,
+			effort: row.view.run.effort,
+			totalReward: row.reward,
+			contentDigest: sealed.digest
+		});
+		return { ...row, view: reconcileCraftaxTrace(row.view, sealedView).view ?? row.view };
+	}), [liveTrials, props.sealedTraceProjections]);
 
   // Selection is held by identity, not by object. A trial folded again on the
   // next append is a new object with the same id, and a selection keyed on the

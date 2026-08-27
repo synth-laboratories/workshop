@@ -251,7 +251,17 @@ export function containerEventsFromOptimizerEvents(
  * vocabulary — only this unwrapping.
  */
 export function containerEventsFromSealedTrace(document: Any): ContainerEvent[] {
-  const events = Array.isArray(document?.events) ? document.events : [];
+	const events = Array.isArray(document?.events)
+		? document.events
+		: Array.isArray(document?.visual?.items)
+			? document.visual.items.map((item: Any) => ({
+				...item,
+				event_type: item.kind,
+				occurred_at: item.occurred_at,
+				order: { ordinal: item.sequence },
+				payload: item.detail
+			}))
+			: [];
   const rows: ContainerEvent[] = [];
   for (const [index, event] of events.entries()) {
     const payload = (event?.payload ?? {}) as Any;
@@ -798,7 +808,32 @@ export function reconcileCraftaxTrace(
         "Showing the live projection so nothing observed is hidden."
     };
   }
-  return { view: sealed, source: "sealed", note: null };
+	// The Trace V5 projection is semantic authority, while Workshop's run CAS is
+	// the durable local media authority until Containers embeds PNG objects in
+	// the bundle. Carry only matching live media references onto sealed logical
+	// frames; never carry semantic fields across the authority boundary.
+	const liveMedia = new Map<string, TraceFrame["media"]>();
+	for (const frame of live.frames) {
+		if (frame.media) liveMedia.set(`${frame.sequence}:${frame.step}`, frame.media);
+	}
+	const frames = sealed.frames.map((frame) => ({
+		...frame,
+		media: frame.media ?? liveMedia.get(`${frame.sequence}:${frame.step}`) ?? null
+	}));
+	return {
+		view: {
+			...sealed,
+			frames,
+			coverage: {
+				...sealed.coverage,
+				framesDeclared: Math.max(sealed.coverage.framesDeclared, live.coverage.framesDeclared),
+				framesRetained: frames.filter((frame) => frame.media).length,
+				degradations: live.coverage.degradations
+			}
+		},
+		source: "sealed",
+		note: null
+	};
 }
 
 /**

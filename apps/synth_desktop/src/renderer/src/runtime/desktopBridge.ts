@@ -20,6 +20,39 @@ function bridgeResult<T>(promise: Promise<unknown>): Promise<T> {
 	return promise as Promise<T>;
 }
 
+function visualMediaResponse(value: unknown) {
+	if (!value || typeof value !== "object") throw new Error("visual media response is not an object");
+	const row = value as Record<string, unknown>;
+	for (const key of ["protocol", "casDigest", "mediaType", "optimizerRunId", "dataUrl"] as const) {
+		if (typeof row[key] !== "string") throw new Error(`visual media response omitted ${key}`);
+	}
+	if (typeof row.byteSize !== "number" || !Number.isFinite(row.byteSize) || row.byteSize < 0) {
+		throw new Error("visual media response carries an invalid byteSize");
+	}
+	const nullableNumber = (key: "width" | "height" | "step") => {
+		const candidate = row[key];
+		if (candidate !== null && (typeof candidate !== "number" || !Number.isFinite(candidate))) {
+			throw new Error(`visual media response carries an invalid ${key}`);
+		}
+		return candidate as number | null;
+	};
+	if (row.rolloutId !== null && typeof row.rolloutId !== "string") {
+		throw new Error("visual media response carries an invalid rolloutId");
+	}
+	return {
+		protocol: row.protocol as string,
+		casDigest: row.casDigest as string,
+		mediaType: row.mediaType as string,
+		byteSize: row.byteSize,
+		width: nullableNumber("width"),
+		height: nullableNumber("height"),
+		rolloutId: row.rolloutId as string | null,
+		step: nullableNumber("step"),
+		optimizerRunId: row.optimizerRunId as string,
+		dataUrl: row.dataUrl as string
+	};
+}
+
 /** Wire envelope for `runtime:event` after the dual-channel collapse. */
 type OriginTaggedAppEvent = { origin: EventOrigin; payload: AppEvent };
 
@@ -773,7 +806,7 @@ window.synthWorkspaceScope ??= isTauri
 				)),
 			render: (visualId) => fromGenerated(spectaCommands.visualsRender(visualId)),
 			pollStream: (request) => fromGenerated(spectaCommands.visualStreamPoll(request)),
-			readMedia: (request) => fromGenerated(spectaCommands.visualMediaRead(request)),
+			readMedia: (request) => fromGenerated(spectaCommands.visualMediaRead(request)).then(visualMediaResponse),
 			onEvent(listener, onAttached) {
 				return listenRuntimeAppEvents((payload) => {
 					if (payload.kind.startsWith("visual.")) listener(payload);

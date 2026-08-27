@@ -249,15 +249,46 @@ test("a sealed Trace V5 document folds through the same rules as the live relay"
   assert.equal(sealed.frames.length, live.frames.length);
 });
 
+test("the registered rollout-inspector projection is accepted as sealed authority", () => {
+  const events = craftaxEvents();
+  const projection = {
+    schema_version: "synth.trace-projection.rollout-inspector.v1",
+    trace_id: identity.traceId,
+    visual: {
+      items: events.map((event) => ({
+        kind: event.kind,
+        sequence: event.sequence,
+        occurred_at: "2026-08-26T00:00:00Z",
+        detail: {
+          ...event.payload,
+          source_event_type: event.kind,
+          source_event_digest: "producer-digest"
+        }
+      }))
+    }
+  };
+  const rows = containerEventsFromSealedTrace(projection);
+  assert.equal(rows.length, events.length);
+  assert.deepEqual(rows.map((row) => row.kind), events.map((row) => row.kind));
+  const sealed = foldCraftaxTrace(rows, { ...identity, sealed: true, status: "completed" });
+  assert.equal(sealed.integrity.status, "sealed");
+  assert.equal(sealed.steps.length, 2);
+  assert.equal(sealed.frames.length, 3);
+});
+
 test("reconciliation prefers the sealed trace but never hides what live already showed", () => {
   const live = foldCraftaxTrace(craftaxEvents(), identity);
-  const complete = foldCraftaxTrace(craftaxEvents(), {
+  const sealedEvents = craftaxEvents().map((event) => event.kind === "frame"
+    ? { ...event, payload: { ...event.payload, media: undefined } }
+    : event);
+  const complete = foldCraftaxTrace(sealedEvents, {
     ...identity,
     sealed: true,
     status: "completed"
   });
   assert.equal(reconcileCraftaxTrace(live, complete).source, "sealed");
   assert.equal(reconcileCraftaxTrace(live, complete).note, null);
+	assert.equal(reconcileCraftaxTrace(live, complete).view.frames[0].media.casDigest, CAS(0));
 
   const truncated = foldCraftaxTrace(craftaxEvents().slice(0, 4), {
     ...identity,
