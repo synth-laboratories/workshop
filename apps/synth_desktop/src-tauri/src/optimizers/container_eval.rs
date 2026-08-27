@@ -1983,7 +1983,7 @@ pub(super) async fn reconcile_evidence(
                 format!("terminal record for rollout `{rollout_id}` names no sealed trace")
             })?;
         let imported = match service
-            .indexed_eval_trace(producer_trace_id, &container_id, run_id, &rollout_id)
+            .indexed_eval_trace(producer_trace_id, &container_id, &rollout_id)
             .await?
         {
             Some(indexed) => indexed,

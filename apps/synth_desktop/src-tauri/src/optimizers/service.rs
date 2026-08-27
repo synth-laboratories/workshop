@@ -606,7 +606,6 @@ impl OptimizerService {
         &self,
         trace_id: &str,
         container_id: &str,
-        run_id: &str,
         rollout_id: &str,
     ) -> Result<Option<Value>> {
         let wanted_trace = trace_id.to_string();
@@ -631,29 +630,16 @@ impl OptimizerService {
         let Some((trace_id, trace_digest)) = traces.into_iter().next() else {
             return Ok(None);
         };
-        let owned_run = run_id.to_string();
-        let owned_rollout = rollout_id.to_string();
-        let max_step = self
-            .db
-            .clone()
-            .run(move |conn| {
-                conn.query_row(
-                    "SELECT MAX(step) FROM optimizer_run_media
-                     WHERE optimizer_run_id=?1 AND rollout_id=?2",
-                    params![owned_run, owned_rollout],
-                    |row| row.get::<_, Option<i64>>(0),
-                )
-                .map_err(Into::into)
-            })
-            .await?;
         Ok(Some(json!({
             "sourceKind": "workshop_trace_index",
             "trusted": true,
             "duplicate": true,
             "inspectable": true,
             "traces": [{"traceId": trace_id, "digest": trace_digest}],
-            "note": "The exact producer-named trace was already indexed in Workshop.",
-            "maxStep": max_step,
+            "note": "The trace was already indexed under this exact container-and-rollout import provenance.",
+            // Retained frame steps are not execution-step telemetry. An old
+            // run that reported no execution step count must remain unknown.
+            "maxStep": Value::Null,
         })))
     }
 
