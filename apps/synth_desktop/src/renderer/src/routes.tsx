@@ -37,6 +37,7 @@ import { WorkbenchSidePanel } from "./components/WorkbenchSidePanel";
 import type { SidePanelTab } from "./hooks/useShellLayout";
 import { ResponsesTracePanel } from "./components/ResponsesTracePanel";
 import { DiagnosticsPanel } from "./components/DiagnosticsPanel";
+import { ErrorsLogsPanel } from "./components/ErrorsLogsPanel";
 import { sessionIsLocalChat } from "./runtime/sessionView";
 import { bridges } from "./runtime/desktopBridge";
 import {
@@ -626,6 +627,7 @@ export function MainRoutes(props: MainRoutesProps): ReactNode {
 									|| tabId === "inference"
 									|| tabId === "trace"
 									|| tabId === "diagnostics"
+									|| tabId === "errors"
 								) {
 									setSidePanelTab(tabId);
 								}
@@ -672,6 +674,16 @@ export function MainRoutes(props: MainRoutesProps): ReactNode {
 											onOpenContainer={(id) => void toggleContainer(id)}
 											onOpenOptimizer={() => setView({ kind: "optimizers" })}
 											onOpenTrace={() => setView({ kind: "inventory" })}
+										/>
+									)
+								},
+								{
+									id: "errors",
+									label: "Errors",
+									content: (
+										<ErrorsLogsPanel
+											sessionId={activeChat.id}
+											onOpenContainer={(id) => void toggleContainer(id)}
 										/>
 									)
 								},

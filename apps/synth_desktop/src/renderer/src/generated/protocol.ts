@@ -8,44 +8,44 @@ import { invoke as __TAURI_INVOKE } from "@tauri-apps/api/core";
 export const commands = {
 	/**  Instance diagnostics command included in the generated desktop boundary. */
 	desktopInstanceDiagnostics: () => __TAURI_INVOKE<InstanceDiagnostics>("desktop_instance_diagnostics"),
-	desktopImagePreview: (path: string) => typedError<string, AppError>(__TAURI_INVOKE("desktop_image_preview", { path })),
-	coreDiagnostics: () => typedError<CoreDiagnostics, AppError>(__TAURI_INVOKE("core_diagnostics")),
+	desktopImagePreview: (path: string) => typedError<string, AppError_Serialize>(__TAURI_INVOKE("desktop_image_preview", { path })),
+	coreDiagnostics: () => typedError<CoreDiagnostics, AppError_Serialize>(__TAURI_INVOKE("core_diagnostics")),
 	/**
 	 *  Every runtime version Desktop pins, resolved from the one contract table.
 	 *
 	 *  Settings → About renders exactly this struct. Answering "which runtime is
 	 *  installed, and is it new enough?" used to require reading the source.
 	 */
-	runtimeContracts: () => typedError<RuntimeContractView[], AppError>(__TAURI_INVOKE("runtime_contracts")),
-	coreEventsAfter: (afterSequence: number, limit: number | null) => typedError<AppEvent[], AppError>(__TAURI_INVOKE("core_events_after", { afterSequence, limit })),
-	coreSessionEventsAfter: (sessionId: string, afterSequence: number, limit: number | null) => typedError<AppEvent[], AppError>(__TAURI_INVOKE("core_session_events_after", { sessionId, afterSequence, limit })),
-	coreSessionEventsTail: (sessionId: string, limit: number | null) => typedError<AppEvent[], AppError>(__TAURI_INVOKE("core_session_events_tail", { sessionId, limit })),
-	coreSessionEventsBefore: (sessionId: string, beforeSequence: number, limit: number | null) => typedError<AppEvent[], AppError>(__TAURI_INVOKE("core_session_events_before", { sessionId, beforeSequence, limit })),
-	internSessionsList: () => typedError<InternSessionWire[], AppError>(__TAURI_INVOKE("intern_sessions_list")),
-	internSessionCreate: (request: InternSessionCreateRequest) => typedError<InternSessionWire, AppError>(__TAURI_INVOKE("intern_session_create", { request })),
-	internSessionSend: (request: InternSessionSendRequest) => typedError<InternSendResult, AppError>(__TAURI_INVOKE("intern_session_send", { request })),
-	internSessionControl: (request: InternSessionControlRequest) => typedError<InternControlResult, AppError>(__TAURI_INVOKE("intern_session_control", { request })),
-	internSessionEventsAfter: (sessionId: string, afterSequence: number, limit: number | null) => typedError<AppEvent[], AppError>(__TAURI_INVOKE("intern_session_events_after", { sessionId, afterSequence, limit })),
-	dataContainersList: () => typedError<ContainerDeployment[], AppError>(__TAURI_INVOKE("data_containers_list")),
-	dataContainersGet: (containerId: string) => typedError<ContainerDeployment, AppError>(__TAURI_INVOKE("data_containers_get", { containerId })),
-	dataContainersRegister: (request: ContainerRegisterRequest) => typedError<ContainerDeployment, AppError>(__TAURI_INVOKE("data_containers_register", { request })),
-	dataContainersProbe: (containerId: string) => typedError<ContainerDeployment, AppError>(__TAURI_INVOKE("data_containers_probe", { containerId })),
-	dataContainersReconcile: (containerId: string, sessionId: string) => typedError<ContainerDeployment, AppError>(__TAURI_INVOKE("data_containers_reconcile", { containerId, sessionId })),
-	dataContainersRestart: (containerId: string, sessionId: string) => typedError<ContainerDeployment, AppError>(__TAURI_INVOKE("data_containers_restart", { containerId, sessionId })),
-	dataTracesList: () => typedError<TraceRecord[], AppError>(__TAURI_INVOKE("data_traces_list")),
-	dataTracesGet: (traceId: string) => typedError<TraceRecord, AppError>(__TAURI_INVOKE("data_traces_get", { traceId })),
-	dataTraceMaterialize: (containerId: string, rolloutId: string) => typedError<unknown, AppError>(__TAURI_INVOKE("data_trace_materialize", { containerId, rolloutId })),
-	dataTracesIngest: (request: TraceBundleIngestRequest) => typedError<TraceBundleIngestResult, AppError>(__TAURI_INVOKE("data_traces_ingest", { request })),
-	dataTraceProjectionResolve: (traceDigest: string, projectionKind: string) => typedError<ResolvedTraceProjection, AppError>(__TAURI_INVOKE("data_trace_projection_resolve", { traceDigest, projectionKind })),
-	dataUsageList: (limit: number | null) => typedError<UsageEntry[], AppError>(__TAURI_INVOKE("data_usage_list", { limit })),
-	modelPerformanceSummary: () => typedError<ModelPerformanceSummary[], AppError>(__TAURI_INVOKE("model_performance_summary")),
-	modelPerformanceTurnSamples: (sessionId: string) => typedError<ModelPerformanceTurnSample[], AppError>(__TAURI_INVOKE("model_performance_turn_samples", { sessionId })),
+	runtimeContracts: () => typedError<RuntimeContractView[], AppError_Serialize>(__TAURI_INVOKE("runtime_contracts")),
+	coreEventsAfter: (afterSequence: number, limit: number | null) => typedError<AppEvent[], AppError_Serialize>(__TAURI_INVOKE("core_events_after", { afterSequence, limit })),
+	coreSessionEventsAfter: (sessionId: string, afterSequence: number, limit: number | null) => typedError<AppEvent[], AppError_Serialize>(__TAURI_INVOKE("core_session_events_after", { sessionId, afterSequence, limit })),
+	coreSessionEventsTail: (sessionId: string, limit: number | null) => typedError<AppEvent[], AppError_Serialize>(__TAURI_INVOKE("core_session_events_tail", { sessionId, limit })),
+	coreSessionEventsBefore: (sessionId: string, beforeSequence: number, limit: number | null) => typedError<AppEvent[], AppError_Serialize>(__TAURI_INVOKE("core_session_events_before", { sessionId, beforeSequence, limit })),
+	internSessionsList: () => typedError<InternSessionWire[], AppError_Serialize>(__TAURI_INVOKE("intern_sessions_list")),
+	internSessionCreate: (request: InternSessionCreateRequest) => typedError<InternSessionWire, AppError_Serialize>(__TAURI_INVOKE("intern_session_create", { request })),
+	internSessionSend: (request: InternSessionSendRequest) => typedError<InternSendResult, AppError_Serialize>(__TAURI_INVOKE("intern_session_send", { request })),
+	internSessionControl: (request: InternSessionControlRequest) => typedError<InternControlResult, AppError_Serialize>(__TAURI_INVOKE("intern_session_control", { request })),
+	internSessionEventsAfter: (sessionId: string, afterSequence: number, limit: number | null) => typedError<AppEvent[], AppError_Serialize>(__TAURI_INVOKE("intern_session_events_after", { sessionId, afterSequence, limit })),
+	dataContainersList: () => typedError<ContainerDeployment[], AppError_Serialize>(__TAURI_INVOKE("data_containers_list")),
+	dataContainersGet: (containerId: string) => typedError<ContainerDeployment, AppError_Serialize>(__TAURI_INVOKE("data_containers_get", { containerId })),
+	dataContainersRegister: (request: ContainerRegisterRequest) => typedError<ContainerDeployment, AppError_Serialize>(__TAURI_INVOKE("data_containers_register", { request })),
+	dataContainersProbe: (containerId: string) => typedError<ContainerDeployment, AppError_Serialize>(__TAURI_INVOKE("data_containers_probe", { containerId })),
+	dataContainersReconcile: (containerId: string, sessionId: string) => typedError<ContainerDeployment, AppError_Serialize>(__TAURI_INVOKE("data_containers_reconcile", { containerId, sessionId })),
+	dataContainersRestart: (containerId: string, sessionId: string) => typedError<ContainerDeployment, AppError_Serialize>(__TAURI_INVOKE("data_containers_restart", { containerId, sessionId })),
+	dataTracesList: () => typedError<TraceRecord[], AppError_Serialize>(__TAURI_INVOKE("data_traces_list")),
+	dataTracesGet: (traceId: string) => typedError<TraceRecord, AppError_Serialize>(__TAURI_INVOKE("data_traces_get", { traceId })),
+	dataTraceMaterialize: (containerId: string, rolloutId: string) => typedError<unknown, AppError_Serialize>(__TAURI_INVOKE("data_trace_materialize", { containerId, rolloutId })),
+	dataTracesIngest: (request: TraceBundleIngestRequest) => typedError<TraceBundleIngestResult, AppError_Serialize>(__TAURI_INVOKE("data_traces_ingest", { request })),
+	dataTraceProjectionResolve: (traceDigest: string, projectionKind: string) => typedError<ResolvedTraceProjection, AppError_Serialize>(__TAURI_INVOKE("data_trace_projection_resolve", { traceDigest, projectionKind })),
+	dataUsageList: (limit: number | null) => typedError<UsageEntry[], AppError_Serialize>(__TAURI_INVOKE("data_usage_list", { limit })),
+	modelPerformanceSummary: () => typedError<ModelPerformanceSummary[], AppError_Serialize>(__TAURI_INVOKE("model_performance_summary")),
+	modelPerformanceTurnSamples: (sessionId: string) => typedError<ModelPerformanceTurnSample[], AppError_Serialize>(__TAURI_INVOKE("model_performance_turn_samples", { sessionId })),
 	/**
 	 *  Device-wide usage dashboard for one time window, aggregated in SQLite/Rust
 	 *  over the authoritative per-request `usage_records` ledger — the renderer
 	 *  never reduces raw rows itself.
 	 */
-	usageSummary: (window: string) => typedError<UsageSummary, AppError>(__TAURI_INVOKE("usage_summary", { window })),
+	usageSummary: (window: string) => typedError<UsageSummary, AppError_Serialize>(__TAURI_INVOKE("usage_summary", { window })),
 	/**
 	 *  The provider price cards currently in force. Settings renders these
 	 *  numbers; the renderer never carries its own copy of a rate.
@@ -56,17 +56,17 @@ export const commands = {
 	 *  Always the fixed public download page — the manifest never chooses the
 	 *  destination.
 	 */
-	updateOpenDownload: () => typedError<null, AppError>(__TAURI_INVOKE("update_open_download")),
-	dataCounts: () => typedError<DataCounts, AppError>(__TAURI_INVOKE("data_counts")),
-	optimizersAlgorithmsList: () => typedError<unknown[], AppError>(__TAURI_INVOKE("optimizers_algorithms_list")),
-	optimizersRecipesList: () => typedError<unknown[], AppError>(__TAURI_INVOKE("optimizers_recipes_list")),
-	optimizersRecipeStart: (request: OptimizerRecipeRunRequest) => typedError<OptimizerRunRecord, AppError>(__TAURI_INVOKE("optimizers_recipe_start", { request })),
+	updateOpenDownload: () => typedError<null, AppError_Serialize>(__TAURI_INVOKE("update_open_download")),
+	dataCounts: () => typedError<DataCounts, AppError_Serialize>(__TAURI_INVOKE("data_counts")),
+	optimizersAlgorithmsList: () => typedError<unknown[], AppError_Serialize>(__TAURI_INVOKE("optimizers_algorithms_list")),
+	optimizersRecipesList: () => typedError<unknown[], AppError_Serialize>(__TAURI_INVOKE("optimizers_recipes_list")),
+	optimizersRecipeStart: (request: OptimizerRecipeRunRequest) => typedError<OptimizerRunRecord, AppError_Serialize>(__TAURI_INVOKE("optimizers_recipe_start", { request })),
 	/**
 	 *  Freeze policy files from the session's workspace into one immutable
 	 *  candidate set. Its id is the only policy input `optimizers_recipe_start`
 	 *  accepts for an `eval.*` recipe.
 	 */
-	optimizersStageEvalCandidates: (request: EvalStageCandidatesRequest) => typedError<unknown, AppError>(__TAURI_INVOKE("optimizers_stage_eval_candidates", { request })),
+	optimizersStageEvalCandidates: (request: EvalStageCandidatesRequest) => typedError<unknown, AppError_Serialize>(__TAURI_INVOKE("optimizers_stage_eval_candidates", { request })),
 	optimizersList: (query: {
 	status: string | null,
 	algorithmId: string | null,
@@ -75,24 +75,24 @@ export const commands = {
 	sessionRef: string | null,
 	limit: number,
 	offset: number,
-} | null) => typedError<OptimizerRunRecord[], AppError>(__TAURI_INVOKE("optimizers_list", { query })),
-	optimizersGet: (optimizerRunId: string) => typedError<OptimizerRunRecord, AppError>(__TAURI_INVOKE("optimizers_get", { optimizerRunId })),
-	optimizersCreate: (request: OptimizerCreateRequest) => typedError<OptimizerRunRecord, AppError>(__TAURI_INVOKE("optimizers_create", { request })),
-	optimizersRefresh: (optimizerRunId: string) => typedError<OptimizerRunRecord, AppError>(__TAURI_INVOKE("optimizers_refresh", { optimizerRunId })),
-	optimizersEventsAfter: (optimizerRunId: string, afterSeq: number | null, limit: number | null) => typedError<OptimizerEventEnvelope[], AppError>(__TAURI_INVOKE("optimizers_events_after", { optimizerRunId, afterSeq, limit })),
-	optimizersFramesLatest: (optimizerRunId: string, afterFrameSequence: number | null) => typedError<OptimizerFrameDelta, AppError>(__TAURI_INVOKE("optimizers_frames_latest", { optimizerRunId, afterFrameSequence })),
-	optimizersFramesList: (optimizerRunId: string, seed: number, beforeFrameSequence: number | null, limit: number | null) => typedError<OptimizerFrameRef[], AppError>(__TAURI_INVOKE("optimizers_frames_list", { optimizerRunId, seed, beforeFrameSequence, limit })),
-	optimizersFrameContent: (optimizerRunId: string, seed: number, frameSequence: number) => typedError<OptimizerFrameContent, AppError>(__TAURI_INVOKE("optimizers_frame_content", { optimizerRunId, seed, frameSequence })),
-	optimizersGetState: (optimizerRunId: string, sliceId: string, atSeq: number | null) => typedError<OptimizerStateSlice, AppError>(__TAURI_INVOKE("optimizers_get_state", { optimizerRunId, sliceId, atSeq })),
-	optimizersGetStateBatch: (optimizerRunId: string, slices: string[] | null, atSeq: number | null) => typedError<OptimizerStateSlice[], AppError>(__TAURI_INVOKE("optimizers_get_state_batch", { optimizerRunId, slices, atSeq })),
-	optimizersRelationships: (optimizerRunId: string) => typedError<OptimizerRelationship[], AppError>(__TAURI_INVOKE("optimizers_relationships", { optimizerRunId })),
-	optimizersCancel: (optimizerRunId: string) => typedError<OptimizerRunRecord, AppError>(__TAURI_INVOKE("optimizers_cancel", { optimizerRunId })),
-	optimizersPause: (optimizerRunId: string) => typedError<OptimizerRunRecord, AppError>(__TAURI_INVOKE("optimizers_pause", { optimizerRunId })),
-	optimizersResume: (optimizerRunId: string) => typedError<OptimizerRunRecord, AppError>(__TAURI_INVOKE("optimizers_resume", { optimizerRunId })),
-	optimizersOpenVisual: (optimizerRunId: string) => typedError<OptimizerRunRecord, AppError>(__TAURI_INVOKE("optimizers_open_visual", { optimizerRunId })),
-	optimizersImportLocal: (request: OptimizerImportLocalRequest) => typedError<OptimizerRunRecord, AppError>(__TAURI_INVOKE("optimizers_import_local", { request })),
-	optimizersReconcileCloud: (request: OptimizerReconcileRequest) => typedError<OptimizerRunRecord, AppError>(__TAURI_INVOKE("optimizers_reconcile_cloud", { request })),
-	optimizersListCloud: (algorithm: string | null, status: string | null, limit: number | null) => typedError<unknown[], AppError>(__TAURI_INVOKE("optimizers_list_cloud", { algorithm, status, limit })),
+} | null) => typedError<OptimizerRunRecord[], AppError_Serialize>(__TAURI_INVOKE("optimizers_list", { query })),
+	optimizersGet: (optimizerRunId: string) => typedError<OptimizerRunRecord, AppError_Serialize>(__TAURI_INVOKE("optimizers_get", { optimizerRunId })),
+	optimizersCreate: (request: OptimizerCreateRequest) => typedError<OptimizerRunRecord, AppError_Serialize>(__TAURI_INVOKE("optimizers_create", { request })),
+	optimizersRefresh: (optimizerRunId: string) => typedError<OptimizerRunRecord, AppError_Serialize>(__TAURI_INVOKE("optimizers_refresh", { optimizerRunId })),
+	optimizersEventsAfter: (optimizerRunId: string, afterSeq: number | null, limit: number | null) => typedError<OptimizerEventEnvelope[], AppError_Serialize>(__TAURI_INVOKE("optimizers_events_after", { optimizerRunId, afterSeq, limit })),
+	optimizersFramesLatest: (optimizerRunId: string, afterFrameSequence: number | null) => typedError<OptimizerFrameDelta, AppError_Serialize>(__TAURI_INVOKE("optimizers_frames_latest", { optimizerRunId, afterFrameSequence })),
+	optimizersFramesList: (optimizerRunId: string, seed: number, beforeFrameSequence: number | null, limit: number | null) => typedError<OptimizerFrameRef[], AppError_Serialize>(__TAURI_INVOKE("optimizers_frames_list", { optimizerRunId, seed, beforeFrameSequence, limit })),
+	optimizersFrameContent: (optimizerRunId: string, seed: number, frameSequence: number) => typedError<OptimizerFrameContent, AppError_Serialize>(__TAURI_INVOKE("optimizers_frame_content", { optimizerRunId, seed, frameSequence })),
+	optimizersGetState: (optimizerRunId: string, sliceId: string, atSeq: number | null) => typedError<OptimizerStateSlice, AppError_Serialize>(__TAURI_INVOKE("optimizers_get_state", { optimizerRunId, sliceId, atSeq })),
+	optimizersGetStateBatch: (optimizerRunId: string, slices: string[] | null, atSeq: number | null) => typedError<OptimizerStateSlice[], AppError_Serialize>(__TAURI_INVOKE("optimizers_get_state_batch", { optimizerRunId, slices, atSeq })),
+	optimizersRelationships: (optimizerRunId: string) => typedError<OptimizerRelationship[], AppError_Serialize>(__TAURI_INVOKE("optimizers_relationships", { optimizerRunId })),
+	optimizersCancel: (optimizerRunId: string) => typedError<OptimizerRunRecord, AppError_Serialize>(__TAURI_INVOKE("optimizers_cancel", { optimizerRunId })),
+	optimizersPause: (optimizerRunId: string) => typedError<OptimizerRunRecord, AppError_Serialize>(__TAURI_INVOKE("optimizers_pause", { optimizerRunId })),
+	optimizersResume: (optimizerRunId: string) => typedError<OptimizerRunRecord, AppError_Serialize>(__TAURI_INVOKE("optimizers_resume", { optimizerRunId })),
+	optimizersOpenVisual: (optimizerRunId: string) => typedError<OptimizerRunRecord, AppError_Serialize>(__TAURI_INVOKE("optimizers_open_visual", { optimizerRunId })),
+	optimizersImportLocal: (request: OptimizerImportLocalRequest) => typedError<OptimizerRunRecord, AppError_Serialize>(__TAURI_INVOKE("optimizers_import_local", { request })),
+	optimizersReconcileCloud: (request: OptimizerReconcileRequest) => typedError<OptimizerRunRecord, AppError_Serialize>(__TAURI_INVOKE("optimizers_reconcile_cloud", { request })),
+	optimizersListCloud: (algorithm: string | null, status: string | null, limit: number | null) => typedError<unknown[], AppError_Serialize>(__TAURI_INVOKE("optimizers_list_cloud", { algorithm, status, limit })),
 	optimizersSavedLorasSearch: (query: {
 	search: string | null,
 	scope: string | null,
@@ -108,19 +108,19 @@ export const commands = {
 	tags: string[] | null,
 	limit: number,
 	offset: number,
-} | null) => typedError<SavedLoraCheckpointPage, AppError>(__TAURI_INVOKE("optimizers_saved_loras_search", { query })),
-	optimizersRunCheckpointsList: (optimizerRunId: string) => typedError<SavedLoraRunPage, AppError>(__TAURI_INVOKE("optimizers_run_checkpoints_list", { optimizerRunId })),
-	optimizersRunOutputs: (optimizerRunId: string) => typedError<OptimizerRunOutputs, AppError>(__TAURI_INVOKE("optimizers_run_outputs", { optimizerRunId })),
-	optimizersTrainingModels: () => typedError<HostedTrainingModelCatalog, AppError>(__TAURI_INVOKE("optimizers_training_models")),
-	optimizersSavedLoraArchive: (checkpointId: string) => typedError<SavedLoraCheckpoint, AppError>(__TAURI_INVOKE("optimizers_saved_lora_archive", { checkpointId })),
-	optimizersSavedLoraDownload: (checkpointId: string) => typedError<SavedLoraDownload, AppError>(__TAURI_INVOKE("optimizers_saved_lora_download", { checkpointId })),
-	optimizersSavedLoraImport: (path: string) => typedError<SavedLoraCheckpoint, AppError>(__TAURI_INVOKE("optimizers_saved_lora_import", { path })),
-	optimizersCheckpointInfer: (request: CheckpointInferRequest) => typedError<unknown, AppError>(__TAURI_INVOKE("optimizers_checkpoint_infer", { request })),
-	optimizersSavedLoraPatch: (checkpointId: string, patch: SavedLoraPatchRequest) => typedError<SavedLoraCheckpoint, AppError>(__TAURI_INVOKE("optimizers_saved_lora_patch", { checkpointId, patch })),
-	optimizersSavedLoraPublish: (checkpointId: string) => typedError<SavedLoraCheckpoint, AppError>(__TAURI_INVOKE("optimizers_saved_lora_publish", { checkpointId })),
-	optimizersTrainingReconcile: (optimizerRunId: string) => typedError<unknown, AppError>(__TAURI_INVOKE("optimizers_training_reconcile", { optimizerRunId })),
-	pluginsStatus: (pluginId: string | null) => typedError<PluginStatus, AppError>(__TAURI_INVOKE("plugins_status", { pluginId })),
-	pluginsList: () => typedError<PluginStatus[], AppError>(__TAURI_INVOKE("plugins_list")),
+} | null) => typedError<SavedLoraCheckpointPage, AppError_Serialize>(__TAURI_INVOKE("optimizers_saved_loras_search", { query })),
+	optimizersRunCheckpointsList: (optimizerRunId: string) => typedError<SavedLoraRunPage, AppError_Serialize>(__TAURI_INVOKE("optimizers_run_checkpoints_list", { optimizerRunId })),
+	optimizersRunOutputs: (optimizerRunId: string) => typedError<OptimizerRunOutputs, AppError_Serialize>(__TAURI_INVOKE("optimizers_run_outputs", { optimizerRunId })),
+	optimizersTrainingModels: () => typedError<HostedTrainingModelCatalog, AppError_Serialize>(__TAURI_INVOKE("optimizers_training_models")),
+	optimizersSavedLoraArchive: (checkpointId: string) => typedError<SavedLoraCheckpoint, AppError_Serialize>(__TAURI_INVOKE("optimizers_saved_lora_archive", { checkpointId })),
+	optimizersSavedLoraDownload: (checkpointId: string) => typedError<SavedLoraDownload, AppError_Serialize>(__TAURI_INVOKE("optimizers_saved_lora_download", { checkpointId })),
+	optimizersSavedLoraImport: (path: string) => typedError<SavedLoraCheckpoint, AppError_Serialize>(__TAURI_INVOKE("optimizers_saved_lora_import", { path })),
+	optimizersCheckpointInfer: (request: CheckpointInferRequest) => typedError<unknown, AppError_Serialize>(__TAURI_INVOKE("optimizers_checkpoint_infer", { request })),
+	optimizersSavedLoraPatch: (checkpointId: string, patch: SavedLoraPatchRequest) => typedError<SavedLoraCheckpoint, AppError_Serialize>(__TAURI_INVOKE("optimizers_saved_lora_patch", { checkpointId, patch })),
+	optimizersSavedLoraPublish: (checkpointId: string) => typedError<SavedLoraCheckpoint, AppError_Serialize>(__TAURI_INVOKE("optimizers_saved_lora_publish", { checkpointId })),
+	optimizersTrainingReconcile: (optimizerRunId: string) => typedError<unknown, AppError_Serialize>(__TAURI_INVOKE("optimizers_training_reconcile", { optimizerRunId })),
+	pluginsStatus: (pluginId: string | null) => typedError<PluginStatus, AppError_Serialize>(__TAURI_INVOKE("plugins_status", { pluginId })),
+	pluginsList: () => typedError<PluginStatus[], AppError_Serialize>(__TAURI_INVOKE("plugins_list")),
 	/**
 	 *  Human-triggered plugin lifecycle.
 	 *
@@ -130,9 +130,9 @@ export const commands = {
 	 *  this existed an agent could install, update, disable, and remove the
 	 *  Optimizers plugin while the UI had no way to do any of it.
 	 */
-	pluginsManage: (operation: string, pluginId: string, version: string | null, sessionId: string | null) => typedError<unknown, AppError>(__TAURI_INVOKE("plugins_manage", { operation, pluginId, version, sessionId })),
-	pluginsSetReleaseChannel: (pluginId: string, channel: string) => typedError<PluginStatus, AppError>(__TAURI_INVOKE("plugins_set_release_channel", { pluginId, channel })),
-	computerUseStatus: (sessionId: string | null) => typedError<ComputerUseSnapshot, AppError>(__TAURI_INVOKE("computer_use_status", { sessionId })),
+	pluginsManage: (operation: string, pluginId: string, version: string | null, sessionId: string | null) => typedError<unknown, AppError_Serialize>(__TAURI_INVOKE("plugins_manage", { operation, pluginId, version, sessionId })),
+	pluginsSetReleaseChannel: (pluginId: string, channel: string) => typedError<PluginStatus, AppError_Serialize>(__TAURI_INVOKE("plugins_set_release_channel", { pluginId, channel })),
+	computerUseStatus: (sessionId: string | null) => typedError<ComputerUseSnapshot, AppError_Serialize>(__TAURI_INVOKE("computer_use_status", { sessionId })),
 	/**
 	 *  Install the helper that ships inside this app bundle.
 	 *
@@ -140,46 +140,46 @@ export const commands = {
 	 *  is signed with the same identity as Workshop and shipping it separately
 	 *  would mean a second thing to notarize, host, and keep in version step.
 	 */
-	computerUseInstall: () => typedError<PluginStatus, AppError>(__TAURI_INVOKE("computer_use_install")),
-	computerUseRemove: () => typedError<RemovalReport, AppError>(__TAURI_INVOKE("computer_use_remove")),
+	computerUseInstall: () => typedError<PluginStatus, AppError_Serialize>(__TAURI_INVOKE("computer_use_install")),
+	computerUseRemove: () => typedError<RemovalReport, AppError_Serialize>(__TAURI_INVOKE("computer_use_remove")),
 	/**  Revoke one app's standing permission to be driven. */
-	computerUseRevokeApp: (bundleId: string) => typedError<number, AppError>(__TAURI_INVOKE("computer_use_revoke_app", { bundleId })),
+	computerUseRevokeApp: (bundleId: string) => typedError<number, AppError_Serialize>(__TAURI_INVOKE("computer_use_revoke_app", { bundleId })),
 	/**  Open the exact Privacy & Security pane for one grant. */
-	computerUseOpenSettings: (permissionId: string) => typedError<null, AppError>(__TAURI_INVOKE("computer_use_open_settings", { permissionId })),
+	computerUseOpenSettings: (permissionId: string) => typedError<null, AppError_Serialize>(__TAURI_INVOKE("computer_use_open_settings", { permissionId })),
 	/**  Read-only managed-browser preflight plus the human-owned origin policy. */
-	browserRuntimeStatus: () => typedError<BrowserRuntimeStatus, AppError>(__TAURI_INVOKE("browser_runtime_status")),
+	browserRuntimeStatus: () => typedError<BrowserRuntimeStatus, AppError_Serialize>(__TAURI_INVOKE("browser_runtime_status")),
 	/**  Human-only origin approval. Browser MCP deliberately has no equivalent tool. */
-	browserPolicyAllowOrigin: (origin: string) => typedError<BrowserRuntimeStatus, AppError>(__TAURI_INVOKE("browser_policy_allow_origin", { origin })),
+	browserPolicyAllowOrigin: (origin: string) => typedError<BrowserRuntimeStatus, AppError_Serialize>(__TAURI_INVOKE("browser_policy_allow_origin", { origin })),
 	/**  Revoke a persistent origin approval for future navigations. */
-	browserPolicyRevokeOrigin: (origin: string) => typedError<BrowserRuntimeStatus, AppError>(__TAURI_INVOKE("browser_policy_revoke_origin", { origin })),
-	visualSubscriptionReady: (request: VisualReadyRequest) => typedError<unknown, AppError>(__TAURI_INVOKE("visual_subscription_ready", { request })),
+	browserPolicyRevokeOrigin: (origin: string) => typedError<BrowserRuntimeStatus, AppError_Serialize>(__TAURI_INVOKE("browser_policy_revoke_origin", { origin })),
+	visualSubscriptionReady: (request: VisualReadyRequest) => typedError<unknown, AppError_Serialize>(__TAURI_INVOKE("visual_subscription_ready", { request })),
 	/**
 	 *  Fetch a visual's persisted, declaration-validated poll authority through
 	 *  the native process. WKWebView cannot reliably read loopback HTTP because
 	 *  its CORS/CSP boundary differs from the backend's; this command is narrowly
 	 *  scoped to exact URLs already stored on the named visual.
 	 */
-	visualStreamPoll: (request: VisualStreamPollRequest) => typedError<unknown, AppError>(__TAURI_INVOKE("visual_stream_poll", { request })),
-	visualMediaRead: (request: VisualMediaReadRequest) => typedError<unknown, AppError>(__TAURI_INVOKE("visual_media_read", { request })),
+	visualStreamPoll: (request: VisualStreamPollRequest) => typedError<unknown, AppError_Serialize>(__TAURI_INVOKE("visual_stream_poll", { request })),
+	visualMediaRead: (request: VisualMediaReadRequest) => typedError<unknown, AppError_Serialize>(__TAURI_INVOKE("visual_media_read", { request })),
 	/**  Record a renderer diagnostic. Returns as soon as it is queued. */
-	diagnosticsReport: (request: DiagnosticReportRequest) => typedError<null, AppError>(__TAURI_INVOKE("diagnostics_report", { request })),
-	diagnosticsStatus: () => typedError<unknown, AppError>(__TAURI_INVOKE("diagnostics_status")),
+	diagnosticsReport: (request: DiagnosticReportRequest) => typedError<null, AppError_Serialize>(__TAURI_INVOKE("diagnostics_report", { request })),
+	diagnosticsStatus: () => typedError<unknown, AppError_Serialize>(__TAURI_INVOKE("diagnostics_status")),
 	/**
 	 *  Typed diagnostic query for the Diagnostics pane. The renderer is bounded by
 	 *  the same contract as the agent — there is only one query path.
 	 */
-	diagnosticsQuery: (request: unknown) => typedError<unknown, AppError>(__TAURI_INVOKE("diagnostics_query", { request })),
-	diagnosticsExplain: (request: unknown) => typedError<unknown, AppError>(__TAURI_INVOKE("diagnostics_explain", { request })),
-	diagnosticsBundle: (request: unknown) => typedError<unknown, AppError>(__TAURI_INVOKE("diagnostics_bundle", { request })),
+	diagnosticsQuery: (request: unknown) => typedError<unknown, AppError_Serialize>(__TAURI_INVOKE("diagnostics_query", { request })),
+	diagnosticsExplain: (request: unknown) => typedError<unknown, AppError_Serialize>(__TAURI_INVOKE("diagnostics_explain", { request })),
+	diagnosticsBundle: (request: unknown) => typedError<unknown, AppError_Serialize>(__TAURI_INVOKE("diagnostics_bundle", { request })),
 	/**
 	 *  Drop the disposable index. Traces, run evidence, and the authoritative
 	 *  journal are untouched.
 	 */
-	diagnosticsClearIndex: () => typedError<unknown, AppError>(__TAURI_INVOKE("diagnostics_clear_index")),
-	optimizerSidecarStatus: () => typedError<OptimizerSidecarStatus, AppError>(__TAURI_INVOKE("optimizer_sidecar_status")),
-	optimizerSidecarInstall: (version: string | null) => typedError<OptimizerSidecarVersion, AppError>(__TAURI_INVOKE("optimizer_sidecar_install", { version })),
-	optimizerSidecarStart: () => typedError<OptimizerSidecarStatus, AppError>(__TAURI_INVOKE("optimizer_sidecar_start")),
-	optimizerSidecarStop: () => typedError<OptimizerSidecarStatus, AppError>(__TAURI_INVOKE("optimizer_sidecar_stop")),
+	diagnosticsClearIndex: () => typedError<unknown, AppError_Serialize>(__TAURI_INVOKE("diagnostics_clear_index")),
+	optimizerSidecarStatus: () => typedError<OptimizerSidecarStatus, AppError_Serialize>(__TAURI_INVOKE("optimizer_sidecar_status")),
+	optimizerSidecarInstall: (version: string | null) => typedError<OptimizerSidecarVersion, AppError_Serialize>(__TAURI_INVOKE("optimizer_sidecar_install", { version })),
+	optimizerSidecarStart: () => typedError<OptimizerSidecarStatus, AppError_Serialize>(__TAURI_INVOKE("optimizer_sidecar_start")),
+	optimizerSidecarStop: () => typedError<OptimizerSidecarStatus, AppError_Serialize>(__TAURI_INVOKE("optimizer_sidecar_stop")),
 	optimizerSidecarVersion: () => typedError<{
 	version: string,
 	digest: string,
@@ -189,10 +189,10 @@ export const commands = {
 	recipeSchemaVersion: string,
 	selected: boolean,
 	path: string,
-} | null, AppError>(__TAURI_INVOKE("optimizer_sidecar_version")),
-	optimizerSidecarUninstall: (version: string) => typedError<OptimizerSidecarStatus, AppError>(__TAURI_INVOKE("optimizer_sidecar_uninstall", { version })),
-	visualsTemplatesList: (genre: string | null) => typedError<TemplateMeta[], AppError>(__TAURI_INVOKE("visuals_templates_list", { genre })),
-	visualsTemplatesGet: (templateId: string) => typedError<TemplateMeta, AppError>(__TAURI_INVOKE("visuals_templates_get", { templateId })),
+} | null, AppError_Serialize>(__TAURI_INVOKE("optimizer_sidecar_version")),
+	optimizerSidecarUninstall: (version: string) => typedError<OptimizerSidecarStatus, AppError_Serialize>(__TAURI_INVOKE("optimizer_sidecar_uninstall", { version })),
+	visualsTemplatesList: (genre: string | null) => typedError<TemplateMeta[], AppError_Serialize>(__TAURI_INVOKE("visuals_templates_list", { genre })),
+	visualsTemplatesGet: (templateId: string) => typedError<TemplateMeta, AppError_Serialize>(__TAURI_INVOKE("visuals_templates_get", { templateId })),
 	visualsList: (query: {
 	status: string | null,
 	sessionId: string | null,
@@ -200,15 +200,15 @@ export const commands = {
 	search: string | null,
 	limit: number,
 	offset: number,
-} | null) => typedError<VisualRecord[], AppError>(__TAURI_INVOKE("visuals_list", { query })),
-	visualsGet: (visualId: string) => typedError<VisualRecord, AppError>(__TAURI_INVOKE("visuals_get", { visualId })),
-	visualsObservationReport: (observation: RenderedVisualObservation) => typedError<null, AppError>(__TAURI_INVOKE("visuals_observation_report", { observation })),
-	visualsRevisions: (visualId: string) => typedError<VisualRevision[], AppError>(__TAURI_INVOKE("visuals_revisions", { visualId })),
-	visualsAnnotationsList: (visualId: string) => typedError<VisualAnnotation[], AppError>(__TAURI_INVOKE("visuals_annotations_list", { visualId })),
-	visualsAnnotationCreate: (visualId: string, request: VisualAnnotationCreate) => typedError<VisualAnnotation, AppError>(__TAURI_INVOKE("visuals_annotation_create", { visualId, request })),
-	visualsSealsList: (visualId: string | null) => typedError<VisualSeal[], AppError>(__TAURI_INVOKE("visuals_seals_list", { visualId })),
-	visualsSeal: (visualId: string, revision: number) => typedError<VisualSeal, AppError>(__TAURI_INVOKE("visuals_seal", { visualId, revision })),
-	visualsSealGet: (receiptDigest: string) => typedError<VisualSealBundle, AppError>(__TAURI_INVOKE("visuals_seal_get", { receiptDigest })),
+} | null) => typedError<VisualRecord[], AppError_Serialize>(__TAURI_INVOKE("visuals_list", { query })),
+	visualsGet: (visualId: string) => typedError<VisualRecord, AppError_Serialize>(__TAURI_INVOKE("visuals_get", { visualId })),
+	visualsObservationReport: (observation: RenderedVisualObservation) => typedError<null, AppError_Serialize>(__TAURI_INVOKE("visuals_observation_report", { observation })),
+	visualsRevisions: (visualId: string) => typedError<VisualRevision[], AppError_Serialize>(__TAURI_INVOKE("visuals_revisions", { visualId })),
+	visualsAnnotationsList: (visualId: string) => typedError<VisualAnnotation[], AppError_Serialize>(__TAURI_INVOKE("visuals_annotations_list", { visualId })),
+	visualsAnnotationCreate: (visualId: string, request: VisualAnnotationCreate) => typedError<VisualAnnotation, AppError_Serialize>(__TAURI_INVOKE("visuals_annotation_create", { visualId, request })),
+	visualsSealsList: (visualId: string | null) => typedError<VisualSeal[], AppError_Serialize>(__TAURI_INVOKE("visuals_seals_list", { visualId })),
+	visualsSeal: (visualId: string, revision: number) => typedError<VisualSeal, AppError_Serialize>(__TAURI_INVOKE("visuals_seal", { visualId, revision })),
+	visualsSealGet: (receiptDigest: string) => typedError<VisualSealBundle, AppError_Serialize>(__TAURI_INVOKE("visuals_seal_get", { receiptDigest })),
 	visualsUploadStatus: (receiptDigest: string) => typedError<{
 	receiptDigest: string,
 	collectionId: string | null,
@@ -218,43 +218,43 @@ export const commands = {
 	committedUrl: string | null,
 	error: string | null,
 	updatedAt: string,
-} | null, AppError>(__TAURI_INVOKE("visuals_upload_status", { receiptDigest })),
-	visualsShareSeal: (receiptDigest: string) => typedError<VisualUpload, AppError>(__TAURI_INVOKE("visuals_share_seal", { receiptDigest })),
-	visualsOpenShared: (committedUrl: string) => typedError<VisualSealBundle, AppError>(__TAURI_INVOKE("visuals_open_shared", { committedUrl })),
-	visualsCreate: (request: VisualCreateRequest) => typedError<VisualRecord, AppError>(__TAURI_INVOKE("visuals_create", { request })),
-	visualsUpdate: (visualId: string, request: VisualUpdateRequest) => typedError<VisualRecord, AppError>(__TAURI_INVOKE("visuals_update", { visualId, request })),
-	visualsSave: (visualId: string, tsx: string | null) => typedError<VisualRecord, AppError>(__TAURI_INVOKE("visuals_save", { visualId, tsx })),
-	visualsFork: (visualId: string, title: string | null, sessionId: string | null) => typedError<VisualRecord, AppError>(__TAURI_INVOKE("visuals_fork", { visualId, title, sessionId })),
-	visualsArchive: (visualId: string) => typedError<VisualRecord, AppError>(__TAURI_INVOKE("visuals_archive", { visualId })),
-	visualsShow: (visualId: string, sessionId: string | null) => typedError<VisualRecord, AppError>(__TAURI_INVOKE("visuals_show", { visualId, sessionId })),
-	visualsContent: (visualId: string) => typedError<VisualAsset, AppError>(__TAURI_INVOKE("visuals_content", { visualId })),
-	visualsRenditions: (visualId: string) => typedError<VisualRendition[], AppError>(__TAURI_INVOKE("visuals_renditions", { visualId })),
-	visualsRendition: (visualId: string, format: string | null, theme: string | null, sizeClass: string | null) => typedError<VisualAsset, AppError>(__TAURI_INVOKE("visuals_rendition", { visualId, format, theme, sizeClass })),
-	visualsRender: (visualId: string) => typedError<VisualRecord, AppError>(__TAURI_INVOKE("visuals_render", { visualId })),
+} | null, AppError_Serialize>(__TAURI_INVOKE("visuals_upload_status", { receiptDigest })),
+	visualsShareSeal: (receiptDigest: string) => typedError<VisualUpload, AppError_Serialize>(__TAURI_INVOKE("visuals_share_seal", { receiptDigest })),
+	visualsOpenShared: (committedUrl: string) => typedError<VisualSealBundle, AppError_Serialize>(__TAURI_INVOKE("visuals_open_shared", { committedUrl })),
+	visualsCreate: (request: VisualCreateRequest) => typedError<VisualRecord, AppError_Serialize>(__TAURI_INVOKE("visuals_create", { request })),
+	visualsUpdate: (visualId: string, request: VisualUpdateRequest) => typedError<VisualRecord, AppError_Serialize>(__TAURI_INVOKE("visuals_update", { visualId, request })),
+	visualsSave: (visualId: string, tsx: string | null) => typedError<VisualRecord, AppError_Serialize>(__TAURI_INVOKE("visuals_save", { visualId, tsx })),
+	visualsFork: (visualId: string, title: string | null, sessionId: string | null) => typedError<VisualRecord, AppError_Serialize>(__TAURI_INVOKE("visuals_fork", { visualId, title, sessionId })),
+	visualsArchive: (visualId: string) => typedError<VisualRecord, AppError_Serialize>(__TAURI_INVOKE("visuals_archive", { visualId })),
+	visualsShow: (visualId: string, sessionId: string | null) => typedError<VisualRecord, AppError_Serialize>(__TAURI_INVOKE("visuals_show", { visualId, sessionId })),
+	visualsContent: (visualId: string) => typedError<VisualAsset, AppError_Serialize>(__TAURI_INVOKE("visuals_content", { visualId })),
+	visualsRenditions: (visualId: string) => typedError<VisualRendition[], AppError_Serialize>(__TAURI_INVOKE("visuals_renditions", { visualId })),
+	visualsRendition: (visualId: string, format: string | null, theme: string | null, sizeClass: string | null) => typedError<VisualAsset, AppError_Serialize>(__TAURI_INVOKE("visuals_rendition", { visualId, format, theme, sizeClass })),
+	visualsRender: (visualId: string) => typedError<VisualRecord, AppError_Serialize>(__TAURI_INVOKE("visuals_render", { visualId })),
 	reportsList: (query: {
 	status: string | null,
 	search: string | null,
 	limit: number,
 	includeArchived?: boolean,
-} | null) => typedError<ReportRecord[], AppError>(__TAURI_INVOKE("reports_list", { query })),
-	reportsGet: (reportId: string) => typedError<ReportRecord, AppError>(__TAURI_INVOKE("reports_get", { reportId })),
-	reportsRevisionGet: (reportId: string, revision: number | null) => typedError<ReportRevision, AppError>(__TAURI_INVOKE("reports_revision_get", { reportId, revision })),
-	reportsValidate: (reportId: string, revision: number | null) => typedError<ReportValidationResult, AppError>(__TAURI_INVOKE("reports_validate", { reportId, revision })),
-	reportsPinAll: (reportId: string) => typedError<ReportRecord, AppError>(__TAURI_INVOKE("reports_pin_all", { reportId })),
-	reportsCreate: (request: ReportCreateRequest) => typedError<ReportRecord, AppError>(__TAURI_INVOKE("reports_create", { request })),
-	reportsUpdate: (reportId: string, request: ReportUpdateRequest) => typedError<ReportRecord, AppError>(__TAURI_INVOKE("reports_update", { reportId, request })),
-	reportsArchive: (reportId: string) => typedError<ReportRecord, AppError>(__TAURI_INVOKE("reports_archive", { reportId })),
-	reportsRestore: (reportId: string) => typedError<ReportRecord, AppError>(__TAURI_INVOKE("reports_restore", { reportId })),
-	reportsVisibilityRequests: (reportId: string | null) => typedError<ReportVisibilityRequest[], AppError>(__TAURI_INVOKE("reports_visibility_requests", { reportId })),
-	reportsVisibilityRequest: (reportId: string, request: ReportVisibilityRequestCreate) => typedError<ReportVisibilityRequest, AppError>(__TAURI_INVOKE("reports_visibility_request", { reportId, request })),
-	reportsVisibilityDecide: (requestId: string, approved: boolean) => typedError<ReportVisibilityRequest, AppError>(__TAURI_INVOKE("reports_visibility_decide", { requestId, approved })),
-	reportsSeal: (reportId: string, revision: number) => typedError<ReportSeal, AppError>(__TAURI_INVOKE("reports_seal", { reportId, revision })),
-	reportsSealsList: (reportId: string | null) => typedError<ReportSeal[], AppError>(__TAURI_INVOKE("reports_seals_list", { reportId })),
-	reportsSealGet: (receiptDigest: string) => typedError<ReportSealBundle, AppError>(__TAURI_INVOKE("reports_seal_get", { receiptDigest })),
-	reportsSealsCompare: (leftDigest: string, rightDigest: string) => typedError<ReportRevisionCompare, AppError>(__TAURI_INVOKE("reports_seals_compare", { leftDigest, rightDigest })),
-	reportsExperimentsList: (reportId: string) => typedError<ExperimentRecord[], AppError>(__TAURI_INVOKE("reports_experiments_list", { reportId })),
-	reportsExperimentUpsert: (reportId: string, request: ExperimentRecordUpsert_Deserialize) => typedError<ExperimentRecord, AppError>(__TAURI_INVOKE("reports_experiment_upsert", { reportId, request })),
-	experimentsList: (query: string | null) => typedError<ExperimentGroup[], AppError>(__TAURI_INVOKE("experiments_list", { query })),
+} | null) => typedError<ReportRecord[], AppError_Serialize>(__TAURI_INVOKE("reports_list", { query })),
+	reportsGet: (reportId: string) => typedError<ReportRecord, AppError_Serialize>(__TAURI_INVOKE("reports_get", { reportId })),
+	reportsRevisionGet: (reportId: string, revision: number | null) => typedError<ReportRevision, AppError_Serialize>(__TAURI_INVOKE("reports_revision_get", { reportId, revision })),
+	reportsValidate: (reportId: string, revision: number | null) => typedError<ReportValidationResult, AppError_Serialize>(__TAURI_INVOKE("reports_validate", { reportId, revision })),
+	reportsPinAll: (reportId: string) => typedError<ReportRecord, AppError_Serialize>(__TAURI_INVOKE("reports_pin_all", { reportId })),
+	reportsCreate: (request: ReportCreateRequest) => typedError<ReportRecord, AppError_Serialize>(__TAURI_INVOKE("reports_create", { request })),
+	reportsUpdate: (reportId: string, request: ReportUpdateRequest) => typedError<ReportRecord, AppError_Serialize>(__TAURI_INVOKE("reports_update", { reportId, request })),
+	reportsArchive: (reportId: string) => typedError<ReportRecord, AppError_Serialize>(__TAURI_INVOKE("reports_archive", { reportId })),
+	reportsRestore: (reportId: string) => typedError<ReportRecord, AppError_Serialize>(__TAURI_INVOKE("reports_restore", { reportId })),
+	reportsVisibilityRequests: (reportId: string | null) => typedError<ReportVisibilityRequest[], AppError_Serialize>(__TAURI_INVOKE("reports_visibility_requests", { reportId })),
+	reportsVisibilityRequest: (reportId: string, request: ReportVisibilityRequestCreate) => typedError<ReportVisibilityRequest, AppError_Serialize>(__TAURI_INVOKE("reports_visibility_request", { reportId, request })),
+	reportsVisibilityDecide: (requestId: string, approved: boolean) => typedError<ReportVisibilityRequest, AppError_Serialize>(__TAURI_INVOKE("reports_visibility_decide", { requestId, approved })),
+	reportsSeal: (reportId: string, revision: number) => typedError<ReportSeal, AppError_Serialize>(__TAURI_INVOKE("reports_seal", { reportId, revision })),
+	reportsSealsList: (reportId: string | null) => typedError<ReportSeal[], AppError_Serialize>(__TAURI_INVOKE("reports_seals_list", { reportId })),
+	reportsSealGet: (receiptDigest: string) => typedError<ReportSealBundle, AppError_Serialize>(__TAURI_INVOKE("reports_seal_get", { receiptDigest })),
+	reportsSealsCompare: (leftDigest: string, rightDigest: string) => typedError<ReportRevisionCompare, AppError_Serialize>(__TAURI_INVOKE("reports_seals_compare", { leftDigest, rightDigest })),
+	reportsExperimentsList: (reportId: string) => typedError<ExperimentRecord[], AppError_Serialize>(__TAURI_INVOKE("reports_experiments_list", { reportId })),
+	reportsExperimentUpsert: (reportId: string, request: ExperimentRecordUpsert_Deserialize) => typedError<ExperimentRecord, AppError_Serialize>(__TAURI_INVOKE("reports_experiment_upsert", { reportId, request })),
+	experimentsList: (query: string | null) => typedError<ExperimentGroup[], AppError_Serialize>(__TAURI_INVOKE("experiments_list", { query })),
 	experimentsGet: (experimentId: string) => typedError<{
 	id: string,
 	sessionId: string,
@@ -269,15 +269,15 @@ export const commands = {
 	nodes: ExperimentNode[],
 	edges: ExperimentEdge[],
 	lineage?: ExperimentLineageEdge[],
-} | null, AppError>(__TAURI_INVOKE("experiments_get", { experimentId })),
-	experimentsAttachEvidence: (request: ExperimentEvidenceAttachRequest) => typedError<ExperimentGroup, AppError>(__TAURI_INVOKE("experiments_attach_evidence", { request })),
-	experimentsCreate: (request: ExperimentCreateRequest) => typedError<ExperimentGroup, AppError>(__TAURI_INVOKE("experiments_create", { request })),
-	experimentsCreateChild: (request: ExperimentChildCreateRequest) => typedError<ExperimentGroup, AppError>(__TAURI_INVOKE("experiments_create_child", { request })),
-	experimentsRelate: (request: ExperimentRelateRequest) => typedError<ExperimentGroup, AppError>(__TAURI_INVOKE("experiments_relate", { request })),
-	experimentsActivate: (sessionId: string, experimentId: string) => typedError<ExperimentGroup, AppError>(__TAURI_INVOKE("experiments_activate", { sessionId, experimentId })),
-	experimentsFinalize: (request: ExperimentFinalizeRequest) => typedError<ExperimentGroup, AppError>(__TAURI_INVOKE("experiments_finalize", { request })),
-	reportsLogList: (reportId: string) => typedError<ResearchLogEntry[], AppError>(__TAURI_INVOKE("reports_log_list", { reportId })),
-	reportsLogAppend: (reportId: string, request: ResearchLogAppend) => typedError<ResearchLogEntry, AppError>(__TAURI_INVOKE("reports_log_append", { reportId, request })),
+} | null, AppError_Serialize>(__TAURI_INVOKE("experiments_get", { experimentId })),
+	experimentsAttachEvidence: (request: ExperimentEvidenceAttachRequest) => typedError<ExperimentGroup, AppError_Serialize>(__TAURI_INVOKE("experiments_attach_evidence", { request })),
+	experimentsCreate: (request: ExperimentCreateRequest) => typedError<ExperimentGroup, AppError_Serialize>(__TAURI_INVOKE("experiments_create", { request })),
+	experimentsCreateChild: (request: ExperimentChildCreateRequest) => typedError<ExperimentGroup, AppError_Serialize>(__TAURI_INVOKE("experiments_create_child", { request })),
+	experimentsRelate: (request: ExperimentRelateRequest) => typedError<ExperimentGroup, AppError_Serialize>(__TAURI_INVOKE("experiments_relate", { request })),
+	experimentsActivate: (sessionId: string, experimentId: string) => typedError<ExperimentGroup, AppError_Serialize>(__TAURI_INVOKE("experiments_activate", { sessionId, experimentId })),
+	experimentsFinalize: (request: ExperimentFinalizeRequest) => typedError<ExperimentGroup, AppError_Serialize>(__TAURI_INVOKE("experiments_finalize", { request })),
+	reportsLogList: (reportId: string) => typedError<ResearchLogEntry[], AppError_Serialize>(__TAURI_INVOKE("reports_log_list", { reportId })),
+	reportsLogAppend: (reportId: string, request: ResearchLogAppend) => typedError<ResearchLogEntry, AppError_Serialize>(__TAURI_INVOKE("reports_log_append", { reportId, request })),
 	reportsUploadStatus: (receiptDigest: string) => typedError<{
 	receiptDigest: string,
 	collectionId: string | null,
@@ -287,63 +287,63 @@ export const commands = {
 	committedUrl: string | null,
 	error: string | null,
 	updatedAt: string,
-} | null, AppError>(__TAURI_INVOKE("reports_upload_status", { receiptDigest })),
-	reportsShare: (receiptDigest: string) => typedError<ReportUpload, AppError>(__TAURI_INVOKE("reports_share", { receiptDigest })),
-	reportsAudienceSet: (publicationId: string, request: ReportAudienceRequest) => typedError<ReportAudienceState, AppError>(__TAURI_INVOKE("reports_audience_set", { publicationId, request })),
-	reportsAudienceRevoke: (publicationId: string, receiptDigest: string) => typedError<ReportAudienceState, AppError>(__TAURI_INVOKE("reports_audience_revoke", { publicationId, receiptDigest })),
-	reportsPromote: (publicationId: string, slug: string) => typedError<ReportPromotion, AppError>(__TAURI_INVOKE("reports_promote", { publicationId, slug })),
-	reportsOpenShared: (committedUrl: string) => typedError<ReportSealBundle, AppError>(__TAURI_INVOKE("reports_open_shared", { committedUrl })),
-	reportsCommentsList: (reportId: string, revision: number | null) => typedError<ReportComment[], AppError>(__TAURI_INVOKE("reports_comments_list", { reportId, revision })),
-	reportsCommentCreate: (reportId: string, revision: number, request: ReportCommentCreate) => typedError<ReportComment, AppError>(__TAURI_INVOKE("reports_comment_create", { reportId, revision, request })),
-	synthConfigGet: () => typedError<BackendSettings, AppError>(__TAURI_INVOKE("synth_config_get")),
+} | null, AppError_Serialize>(__TAURI_INVOKE("reports_upload_status", { receiptDigest })),
+	reportsShare: (receiptDigest: string) => typedError<ReportUpload, AppError_Serialize>(__TAURI_INVOKE("reports_share", { receiptDigest })),
+	reportsAudienceSet: (publicationId: string, request: ReportAudienceRequest) => typedError<ReportAudienceState, AppError_Serialize>(__TAURI_INVOKE("reports_audience_set", { publicationId, request })),
+	reportsAudienceRevoke: (publicationId: string, receiptDigest: string) => typedError<ReportAudienceState, AppError_Serialize>(__TAURI_INVOKE("reports_audience_revoke", { publicationId, receiptDigest })),
+	reportsPromote: (publicationId: string, slug: string) => typedError<ReportPromotion, AppError_Serialize>(__TAURI_INVOKE("reports_promote", { publicationId, slug })),
+	reportsOpenShared: (committedUrl: string) => typedError<ReportSealBundle, AppError_Serialize>(__TAURI_INVOKE("reports_open_shared", { committedUrl })),
+	reportsCommentsList: (reportId: string, revision: number | null) => typedError<ReportComment[], AppError_Serialize>(__TAURI_INVOKE("reports_comments_list", { reportId, revision })),
+	reportsCommentCreate: (reportId: string, revision: number, request: ReportCommentCreate) => typedError<ReportComment, AppError_Serialize>(__TAURI_INVOKE("reports_comment_create", { reportId, revision, request })),
+	synthConfigGet: () => typedError<BackendSettings, AppError_Serialize>(__TAURI_INVOKE("synth_config_get")),
 	/**
 	 *  The startup-safe catalog path: configuration plus a persisted public
 	 *  OpenRouter metadata snapshot only. It deliberately never waits for network.
 	 */
-	modelCatalogGet: () => typedError<ModelCatalog, AppError>(__TAURI_INVOKE("model_catalog_get")),
+	modelCatalogGet: () => typedError<ModelCatalog, AppError_Serialize>(__TAURI_INVOKE("model_catalog_get")),
 	/**
 	 *  Explicit background follow-up used after the picker has rendered. OpenRouter
 	 *  metadata is public; no credential is sent to or exposed by this command.
 	 */
-	modelCatalogRefresh: () => typedError<ModelCatalog, AppError>(__TAURI_INVOKE("model_catalog_refresh")),
-	synthConfigUpdate: (request: BackendSettingsUpdate) => typedError<BackendSettings, AppError>(__TAURI_INVOKE("synth_config_update", { request })),
-	modelPerformanceGet: (windowMinutes: number | null) => typedError<ModelPerformanceSnapshot, AppError>(__TAURI_INVOKE("model_performance_get", { windowMinutes })),
+	modelCatalogRefresh: () => typedError<ModelCatalog, AppError_Serialize>(__TAURI_INVOKE("model_catalog_refresh")),
+	synthConfigUpdate: (request: BackendSettingsUpdate) => typedError<BackendSettings, AppError_Serialize>(__TAURI_INVOKE("synth_config_update", { request })),
+	modelPerformanceGet: (windowMinutes: number | null) => typedError<ModelPerformanceSnapshot, AppError_Serialize>(__TAURI_INVOKE("model_performance_get", { windowMinutes })),
 	/**
 	 *  Begin (or resume) browser sign-in via Workshop device pairing and open the
 	 *  system browser. Returns display-safe state only.
 	 */
-	accountBeginSignIn: () => typedError<SignInBegin, AppError>(__TAURI_INVOKE("account_begin_sign_in")),
-	accountGetSummary: () => typedError<AccountSummary, AppError>(__TAURI_INVOKE("account_get_summary")),
+	accountBeginSignIn: () => typedError<SignInBegin, AppError_Serialize>(__TAURI_INVOKE("account_begin_sign_in")),
+	accountGetSummary: () => typedError<AccountSummary, AppError_Serialize>(__TAURI_INVOKE("account_get_summary")),
 	/**
 	 *  Force a snapshot refetch — used after returning from hosted checkout and by
 	 *  the explicit retry in the account menu.
 	 */
-	accountRefresh: () => typedError<AccountSummary, AppError>(__TAURI_INVOKE("account_refresh")),
+	accountRefresh: () => typedError<AccountSummary, AppError_Serialize>(__TAURI_INVOKE("account_refresh")),
 	/**
 	 *  Open a backend-issued hosted billing URL in the system browser. Desktop
 	 *  never renders a payment form and never receives card data.
 	 */
-	accountOpenBilling: (action: BillingAction, tier: string | null) => typedError<string, AppError>(__TAURI_INVOKE("account_open_billing", { action, tier })),
+	accountOpenBilling: (action: BillingAction, tier: string | null) => typedError<string, AppError_Serialize>(__TAURI_INVOKE("account_open_billing", { action, tier })),
 	/**
 	 *  One poll step of the pending sign-in. On success the key is stored through
 	 *  synth_config and the Intern runtime reloads; the key never reaches the
 	 *  renderer.
 	 */
-	accountPollSignIn: () => typedError<SignInPoll, AppError>(__TAURI_INVOKE("account_poll_sign_in")),
-	accountCancelSignIn: () => typedError<null, AppError>(__TAURI_INVOKE("account_cancel_sign_in")),
-	accountSignOut: () => typedError<BackendSettings, AppError>(__TAURI_INVOKE("account_sign_out")),
-	codexOauthBegin: () => typedError<BeginResult, AppError>(__TAURI_INVOKE("codex_oauth_begin")),
-	codexOauthCompleteManual: (redirectUrl: string) => typedError<Status, AppError>(__TAURI_INVOKE("codex_oauth_complete_manual", { redirectUrl })),
-	codexOauthEnsureReady: () => typedError<Status, AppError>(__TAURI_INVOKE("codex_oauth_ensure_ready")),
-	codexOauthStatus: () => typedError<Status, AppError>(__TAURI_INVOKE("codex_oauth_status")),
-	codexOauthDisconnect: () => typedError<Status, AppError>(__TAURI_INVOKE("codex_oauth_disconnect")),
-	codexOauthCancel: () => typedError<null, AppError>(__TAURI_INVOKE("codex_oauth_cancel")),
-	modelMultiAgentList: () => typedError<ModelMultiAgentSetting[], AppError>(__TAURI_INVOKE("model_multi_agent_list")),
-	modelMultiAgentUpdate: (request: ModelMultiAgentUpdate) => typedError<ModelMultiAgentSetting[], AppError>(__TAURI_INVOKE("model_multi_agent_update", { request })),
-	workspaceAccessGet: () => typedError<WorkspaceAccessSettings, AppError>(__TAURI_INVOKE("workspace_access_get")),
-	workspaceAccessUpdate: (request: WorkspaceAccessUpdate) => typedError<WorkspaceAccessSettings, AppError>(__TAURI_INVOKE("workspace_access_update", { request })),
-	desktopPermissionsGet: () => typedError<DesktopPermissionSettings, AppError>(__TAURI_INVOKE("desktop_permissions_get")),
-	desktopPermissionsUpdate: (request: DesktopPermissionUpdate) => typedError<DesktopPermissionSettings, AppError>(__TAURI_INVOKE("desktop_permissions_update", { request })),
+	accountPollSignIn: () => typedError<SignInPoll, AppError_Serialize>(__TAURI_INVOKE("account_poll_sign_in")),
+	accountCancelSignIn: () => typedError<null, AppError_Serialize>(__TAURI_INVOKE("account_cancel_sign_in")),
+	accountSignOut: () => typedError<BackendSettings, AppError_Serialize>(__TAURI_INVOKE("account_sign_out")),
+	codexOauthBegin: () => typedError<BeginResult, AppError_Serialize>(__TAURI_INVOKE("codex_oauth_begin")),
+	codexOauthCompleteManual: (redirectUrl: string) => typedError<Status, AppError_Serialize>(__TAURI_INVOKE("codex_oauth_complete_manual", { redirectUrl })),
+	codexOauthEnsureReady: () => typedError<Status, AppError_Serialize>(__TAURI_INVOKE("codex_oauth_ensure_ready")),
+	codexOauthStatus: () => typedError<Status, AppError_Serialize>(__TAURI_INVOKE("codex_oauth_status")),
+	codexOauthDisconnect: () => typedError<Status, AppError_Serialize>(__TAURI_INVOKE("codex_oauth_disconnect")),
+	codexOauthCancel: () => typedError<null, AppError_Serialize>(__TAURI_INVOKE("codex_oauth_cancel")),
+	modelMultiAgentList: () => typedError<ModelMultiAgentSetting[], AppError_Serialize>(__TAURI_INVOKE("model_multi_agent_list")),
+	modelMultiAgentUpdate: (request: ModelMultiAgentUpdate) => typedError<ModelMultiAgentSetting[], AppError_Serialize>(__TAURI_INVOKE("model_multi_agent_update", { request })),
+	workspaceAccessGet: () => typedError<WorkspaceAccessSettings, AppError_Serialize>(__TAURI_INVOKE("workspace_access_get")),
+	workspaceAccessUpdate: (request: WorkspaceAccessUpdate) => typedError<WorkspaceAccessSettings, AppError_Serialize>(__TAURI_INVOKE("workspace_access_update", { request })),
+	desktopPermissionsGet: () => typedError<DesktopPermissionSettings, AppError_Serialize>(__TAURI_INVOKE("desktop_permissions_get")),
+	desktopPermissionsUpdate: (request: DesktopPermissionUpdate) => typedError<DesktopPermissionSettings, AppError_Serialize>(__TAURI_INVOKE("desktop_permissions_update", { request })),
 	workspaceScopeGet: (sessionId: string) => typedError<{
 	sessionId: string,
 	workspace: string,
@@ -352,7 +352,7 @@ export const commands = {
 	boundRevision: number,
 	bindingStatus: string,
 	bindingError: string | null,
-} | null, AppError>(__TAURI_INVOKE("workspace_scope_get", { sessionId })),
+} | null, AppError_Serialize>(__TAURI_INVOKE("workspace_scope_get", { sessionId })),
 	workspaceScopeChooseAndAttach: (sessionId: string, proposedAccess: WorkspaceAccessMode) => typedError<{
 	sessionId: string,
 	workspace: string,
@@ -361,12 +361,12 @@ export const commands = {
 	boundRevision: number,
 	bindingStatus: string,
 	bindingError: string | null,
-} | null, AppError>(__TAURI_INVOKE("workspace_scope_choose_and_attach", { sessionId, proposedAccess })),
-	workspaceScopeRecentFolders: () => typedError<string[], AppError>(__TAURI_INVOKE("workspace_scope_recent_folders")),
-	workspaceScopeAttachRecent: (sessionId: string, path: string) => typedError<ConversationWorkspaceScope, AppError>(__TAURI_INVOKE("workspace_scope_attach_recent", { sessionId, path })),
-	workspaceScopeRemoveAttachment: (sessionId: string, path: string) => typedError<ConversationWorkspaceScope, AppError>(__TAURI_INVOKE("workspace_scope_remove_attachment", { sessionId, path })),
-	workspaceScopeRequestAgentGrant: (sessionId: string, path: string, access: WorkspaceAccessMode, reason: string) => typedError<WorkspaceGrantRequest, AppError>(__TAURI_INVOKE("workspace_scope_request_agent_grant", { sessionId, path, access, reason })),
-	workspaceScopeGrantsList: (sessionId: string) => typedError<WorkspaceGrantRequest[], AppError>(__TAURI_INVOKE("workspace_scope_grants_list", { sessionId })),
+} | null, AppError_Serialize>(__TAURI_INVOKE("workspace_scope_choose_and_attach", { sessionId, proposedAccess })),
+	workspaceScopeRecentFolders: () => typedError<string[], AppError_Serialize>(__TAURI_INVOKE("workspace_scope_recent_folders")),
+	workspaceScopeAttachRecent: (sessionId: string, path: string) => typedError<ConversationWorkspaceScope, AppError_Serialize>(__TAURI_INVOKE("workspace_scope_attach_recent", { sessionId, path })),
+	workspaceScopeRemoveAttachment: (sessionId: string, path: string) => typedError<ConversationWorkspaceScope, AppError_Serialize>(__TAURI_INVOKE("workspace_scope_remove_attachment", { sessionId, path })),
+	workspaceScopeRequestAgentGrant: (sessionId: string, path: string, access: WorkspaceAccessMode, reason: string) => typedError<WorkspaceGrantRequest, AppError_Serialize>(__TAURI_INVOKE("workspace_scope_request_agent_grant", { sessionId, path, access, reason })),
+	workspaceScopeGrantsList: (sessionId: string) => typedError<WorkspaceGrantRequest[], AppError_Serialize>(__TAURI_INVOKE("workspace_scope_grants_list", { sessionId })),
 	workspaceScopeApproveRequest: (requestId: string) => typedError<{
 	sessionId: string,
 	workspace: string,
@@ -375,21 +375,21 @@ export const commands = {
 	boundRevision: number,
 	bindingStatus: string,
 	bindingError: string | null,
-} | null, AppError>(__TAURI_INVOKE("workspace_scope_approve_request", { requestId })),
-	workspaceScopeDenyRequest: (requestId: string) => typedError<WorkspaceGrantRequest, AppError>(__TAURI_INVOKE("workspace_scope_deny_request", { requestId })),
+} | null, AppError_Serialize>(__TAURI_INVOKE("workspace_scope_approve_request", { requestId })),
+	workspaceScopeDenyRequest: (requestId: string) => typedError<WorkspaceGrantRequest, AppError_Serialize>(__TAURI_INVOKE("workspace_scope_deny_request", { requestId })),
 	migrationScan: () => typedError<LegacyCandidate[], string>(__TAURI_INVOKE("migration_scan")),
 	migrationPrepare: (sourcePath: string) => typedError<MigrationPlan, string>(__TAURI_INVOKE("migration_prepare", { sourcePath })),
 	migrationApply: (request: MigrationApplyRequest) => typedError<MigrationReceipt, string>(__TAURI_INVOKE("migration_apply", { request })),
 	migrationCancel: (confirmationToken: string) => __TAURI_INVOKE<MigrationCancelResult>("migration_cancel", { confirmationToken }),
-	lagunaGetStatus: () => typedError<LagunaStatus, AppError>(__TAURI_INVOKE("laguna_get_status")),
-	lagunaReload: () => typedError<LagunaStatus, AppError>(__TAURI_INVOKE("laguna_reload")),
-	lagunaRegisterPolicy: (checkpointId: string, modelId: string) => typedError<LagunaPolicy, AppError>(__TAURI_INVOKE("laguna_register_policy", { checkpointId, modelId })),
-	lagunaPolicies: () => typedError<LagunaPolicy[], AppError>(__TAURI_INVOKE("laguna_policies")),
-	lagunaAdapterStatus: () => typedError<LagunaAdapterStatus[], AppError>(__TAURI_INVOKE("laguna_adapter_status")),
-	lagunaAdapterDownload: (modelId: string) => typedError<LagunaAdapterStatus, AppError>(__TAURI_INVOKE("laguna_adapter_download", { modelId })),
-	lagunaModelsList: () => typedError<LagunaModelHit[], AppError>(__TAURI_INVOKE("laguna_models_list")),
-	lagunaModelsSetDirectory: (path: string) => typedError<LagunaModelHit, AppError>(__TAURI_INVOKE("laguna_models_set_directory", { path })),
-	lagunaModelsClearDirectory: () => typedError<null, AppError>(__TAURI_INVOKE("laguna_models_clear_directory")),
+	lagunaGetStatus: () => typedError<LagunaStatus, AppError_Serialize>(__TAURI_INVOKE("laguna_get_status")),
+	lagunaReload: () => typedError<LagunaStatus, AppError_Serialize>(__TAURI_INVOKE("laguna_reload")),
+	lagunaRegisterPolicy: (checkpointId: string, modelId: string) => typedError<LagunaPolicy, AppError_Serialize>(__TAURI_INVOKE("laguna_register_policy", { checkpointId, modelId })),
+	lagunaPolicies: () => typedError<LagunaPolicy[], AppError_Serialize>(__TAURI_INVOKE("laguna_policies")),
+	lagunaAdapterStatus: () => typedError<LagunaAdapterStatus[], AppError_Serialize>(__TAURI_INVOKE("laguna_adapter_status")),
+	lagunaAdapterDownload: (modelId: string) => typedError<LagunaAdapterStatus, AppError_Serialize>(__TAURI_INVOKE("laguna_adapter_download", { modelId })),
+	lagunaModelsList: () => typedError<LagunaModelHit[], AppError_Serialize>(__TAURI_INVOKE("laguna_models_list")),
+	lagunaModelsSetDirectory: (path: string) => typedError<LagunaModelHit, AppError_Serialize>(__TAURI_INVOKE("laguna_models_set_directory", { path })),
+	lagunaModelsClearDirectory: () => typedError<null, AppError_Serialize>(__TAURI_INVOKE("laguna_models_clear_directory")),
 	lagunaInferenceSnapshot: () => typedError<LagunaInference, string>(__TAURI_INVOKE("laguna_inference_snapshot")),
 	lagunaInferenceStreamStart: () => typedError<null, string>(__TAURI_INVOKE("laguna_inference_stream_start")),
 	lagunaInferenceStreamStop: () => typedError<null, string>(__TAURI_INVOKE("laguna_inference_stream_stop")),
@@ -407,7 +407,7 @@ export const commands = {
 	trainingArtifactsGet: (id: string) => typedError<TrainingArtifact, string>(__TAURI_INVOKE("training_artifacts_get", { id })),
 	trainingArtifactsExport: (id: string, destination: string, expectedDigest: string | null, confirm: boolean) => typedError<ArtifactMutationReceipt, string>(__TAURI_INVOKE("training_artifacts_export", { id, destination, expectedDigest, confirm })),
 	trainingArtifactsDelete: (id: string, confirm: boolean) => typedError<ArtifactMutationReceipt, string>(__TAURI_INVOKE("training_artifacts_delete", { id, confirm })),
-	trainingArtifactsLaunchInference: (id: string, message: string | null, confirm: boolean) => typedError<unknown, AppError>(__TAURI_INVOKE("training_artifacts_launch_inference", { id, message, confirm })),
+	trainingArtifactsLaunchInference: (id: string, message: string | null, confirm: boolean) => typedError<unknown, AppError_Serialize>(__TAURI_INVOKE("training_artifacts_launch_inference", { id, message, confirm })),
 	whisperModelsList: () => __TAURI_INVOKE<WhisperModelHit[]>("whisper_models_list"),
 	whisperModelDownload: (id: string) => typedError<WhisperModelHit, string>(__TAURI_INVOKE("whisper_model_download", { id })),
 	whisperModelsSetSelected: (id: string) => typedError<WhisperModelHit, string>(__TAURI_INVOKE("whisper_models_set_selected", { id })),
@@ -417,44 +417,44 @@ export const commands = {
 	whisperTranscribe: (audioPath: string) => typedError<WhisperTranscription, string>(__TAURI_INVOKE("whisper_transcribe", { audioPath })),
 	whisperTranscribeBase64: (audioBase64: string, mimeType: string) => typedError<WhisperTranscription, string>(__TAURI_INVOKE("whisper_transcribe_base64", { audioBase64, mimeType })),
 	skillsList: () => __TAURI_INVOKE<SkillHit[]>("skills_list"),
-	contextSnapshot: (workspace: string) => typedError<ContextSnapshot, AppError>(__TAURI_INVOKE("context_snapshot", { workspace })),
-	contextWorkspaceAgentsUpdate: (workspace: string, content: string) => typedError<ContextSnapshot, AppError>(__TAURI_INVOKE("context_workspace_agents_update", { workspace, content })),
-	contextSkillUpdate: (workspace: string, skillId: string, enabled: boolean, content: string | null) => typedError<ContextSnapshot, AppError>(__TAURI_INVOKE("context_skill_update", { workspace, skillId, enabled, content })),
-	contextMcpGroupUpdate: (workspace: string, groupId: string, enabled: boolean) => typedError<ContextSnapshot, AppError>(__TAURI_INVOKE("context_mcp_group_update", { workspace, groupId, enabled })),
-	contextCookbooksInstall: (workspace: string) => typedError<ContextSnapshot, AppError>(__TAURI_INVOKE("context_cookbooks_install", { workspace })),
-	contextCookbooksCancel: (workspace: string) => typedError<ContextSnapshot, AppError>(__TAURI_INVOKE("context_cookbooks_cancel", { workspace })),
-	contextCookbooksSetEnabled: (workspace: string, enabled: boolean) => typedError<ContextSnapshot, AppError>(__TAURI_INVOKE("context_cookbooks_set_enabled", { workspace, enabled })),
-	contextCookbooksUninstall: (workspace: string) => typedError<ContextSnapshot, AppError>(__TAURI_INVOKE("context_cookbooks_uninstall", { workspace })),
-	workspaceChooseDirectory: () => typedError<string | null, AppError>(__TAURI_INVOKE("workspace_choose_directory")),
-	codexSessionStart: (request: CodexSessionStartRequest) => typedError<CodexSessionInfo, AppError>(__TAURI_INVOKE("codex_session_start", { request })),
-	codexTurnStart: (request: CodexTurnStartRequest) => typedError<CodexSessionInfo, AppError>(__TAURI_INVOKE("codex_turn_start", { request })),
+	contextSnapshot: (workspace: string) => typedError<ContextSnapshot, AppError_Serialize>(__TAURI_INVOKE("context_snapshot", { workspace })),
+	contextWorkspaceAgentsUpdate: (workspace: string, content: string) => typedError<ContextSnapshot, AppError_Serialize>(__TAURI_INVOKE("context_workspace_agents_update", { workspace, content })),
+	contextSkillUpdate: (workspace: string, skillId: string, enabled: boolean, content: string | null) => typedError<ContextSnapshot, AppError_Serialize>(__TAURI_INVOKE("context_skill_update", { workspace, skillId, enabled, content })),
+	contextMcpGroupUpdate: (workspace: string, groupId: string, enabled: boolean) => typedError<ContextSnapshot, AppError_Serialize>(__TAURI_INVOKE("context_mcp_group_update", { workspace, groupId, enabled })),
+	contextCookbooksInstall: (workspace: string) => typedError<ContextSnapshot, AppError_Serialize>(__TAURI_INVOKE("context_cookbooks_install", { workspace })),
+	contextCookbooksCancel: (workspace: string) => typedError<ContextSnapshot, AppError_Serialize>(__TAURI_INVOKE("context_cookbooks_cancel", { workspace })),
+	contextCookbooksSetEnabled: (workspace: string, enabled: boolean) => typedError<ContextSnapshot, AppError_Serialize>(__TAURI_INVOKE("context_cookbooks_set_enabled", { workspace, enabled })),
+	contextCookbooksUninstall: (workspace: string) => typedError<ContextSnapshot, AppError_Serialize>(__TAURI_INVOKE("context_cookbooks_uninstall", { workspace })),
+	workspaceChooseDirectory: () => typedError<string | null, AppError_Serialize>(__TAURI_INVOKE("workspace_choose_directory")),
+	codexSessionStart: (request: CodexSessionStartRequest) => typedError<CodexSessionInfo, AppError_Serialize>(__TAURI_INVOKE("codex_session_start", { request })),
+	codexTurnStart: (request: CodexTurnStartRequest) => typedError<CodexSessionInfo, AppError_Serialize>(__TAURI_INVOKE("codex_turn_start", { request })),
 	/**
 	 *  One renderer round trip that ensures the app-server attachment and starts
 	 *  the turn. Splitting these into two commands let the child exit in between,
 	 *  which stranded the UI in `Working` with a live `Stop`.
 	 */
 	codexTurnSend: (request: CodexTurnSendRequest) => typedError<CodexSessionInfo, CodexTurnFailure>(__TAURI_INVOKE("codex_turn_send", { request })),
-	codexTurnInterrupt: (request: CodexSessionRequest) => typedError<null, AppError>(__TAURI_INVOKE("codex_turn_interrupt", { request })),
-	codexThreadCompact: (request: CodexSessionStartRequest) => typedError<null, AppError>(__TAURI_INVOKE("codex_thread_compact", { request })),
-	codexThreadRead: (request: CodexThreadReadRequest) => typedError<unknown, AppError>(__TAURI_INVOKE("codex_thread_read", { request })),
-	codexThreadItemsList: (request: CodexThreadItemsRequest) => typedError<unknown, AppError>(__TAURI_INVOKE("codex_thread_items_list", { request })),
-	codexTurnSteer: (request: CodexSteerRequest) => typedError<null, AppError>(__TAURI_INVOKE("codex_turn_steer", { request })),
-	codexApprovalResolve: (request: CodexApprovalDecisionRequest) => typedError<null, AppError>(__TAURI_INVOKE("codex_approval_resolve", { request })),
-	codexSessionClose: (request: CodexSessionRequest) => typedError<null, AppError>(__TAURI_INVOKE("codex_session_close", { request })),
-	codexSessionsList: () => typedError<CodexSessionRecord[], AppError>(__TAURI_INVOKE("codex_sessions_list")),
-	codexDefaultWorkspace: () => typedError<string, AppError>(__TAURI_INVOKE("codex_default_workspace")),
-	terminalCreate: (request: TerminalCreateRequest) => typedError<TerminalInfo, AppError>(__TAURI_INVOKE("terminal_create", { request })),
+	codexTurnInterrupt: (request: CodexSessionRequest) => typedError<null, AppError_Serialize>(__TAURI_INVOKE("codex_turn_interrupt", { request })),
+	codexThreadCompact: (request: CodexSessionStartRequest) => typedError<null, AppError_Serialize>(__TAURI_INVOKE("codex_thread_compact", { request })),
+	codexThreadRead: (request: CodexThreadReadRequest) => typedError<unknown, AppError_Serialize>(__TAURI_INVOKE("codex_thread_read", { request })),
+	codexThreadItemsList: (request: CodexThreadItemsRequest) => typedError<unknown, AppError_Serialize>(__TAURI_INVOKE("codex_thread_items_list", { request })),
+	codexTurnSteer: (request: CodexSteerRequest) => typedError<null, AppError_Serialize>(__TAURI_INVOKE("codex_turn_steer", { request })),
+	codexApprovalResolve: (request: CodexApprovalDecisionRequest) => typedError<null, AppError_Serialize>(__TAURI_INVOKE("codex_approval_resolve", { request })),
+	codexSessionClose: (request: CodexSessionRequest) => typedError<null, AppError_Serialize>(__TAURI_INVOKE("codex_session_close", { request })),
+	codexSessionsList: () => typedError<CodexSessionRecord[], AppError_Serialize>(__TAURI_INVOKE("codex_sessions_list")),
+	codexDefaultWorkspace: () => typedError<string, AppError_Serialize>(__TAURI_INVOKE("codex_default_workspace")),
+	terminalCreate: (request: TerminalCreateRequest) => typedError<TerminalInfo, AppError_Serialize>(__TAURI_INVOKE("terminal_create", { request })),
 	terminalList: (workspaceId: string | null) => __TAURI_INVOKE<TerminalInfo[]>("terminal_list", { workspaceId }),
-	terminalSnapshot: (terminalId: string, afterSequence: number | null) => typedError<TerminalEvent[], AppError>(__TAURI_INVOKE("terminal_snapshot", { terminalId, afterSequence })),
-	terminalWrite: (terminalId: string, data: string) => typedError<null, AppError>(__TAURI_INVOKE("terminal_write", { terminalId, data })),
-	terminalResize: (terminalId: string, cols: number, rows: number) => typedError<null, AppError>(__TAURI_INVOKE("terminal_resize", { terminalId, cols, rows })),
-	terminalClose: (terminalId: string) => typedError<null, AppError>(__TAURI_INVOKE("terminal_close", { terminalId })),
-	secretsList: (provider: string | null, scope: string | null) => typedError<SecretSummary[], AppError>(__TAURI_INVOKE("secrets_list", { provider, scope })),
-	secretsCreate: (request: SecretCreateRequest) => typedError<SecretSummary, AppError>(__TAURI_INVOKE("secrets_create", { request })),
-	secretsReplace: (secretId: string, value: string) => typedError<SecretSummary, AppError>(__TAURI_INVOKE("secrets_replace", { secretId, value })),
-	secretsDelete: (secretId: string) => typedError<null, AppError>(__TAURI_INVOKE("secrets_delete", { secretId })),
-	secretsTest: (secretId: string) => typedError<SecretSummary, AppError>(__TAURI_INVOKE("secrets_test", { secretId })),
-	secretsRequestUse: (request: SecretUseRequest) => typedError<UseRequestResult, AppError>(__TAURI_INVOKE("secrets_request_use", { request })),
+	terminalSnapshot: (terminalId: string, afterSequence: number | null) => typedError<TerminalEvent[], AppError_Serialize>(__TAURI_INVOKE("terminal_snapshot", { terminalId, afterSequence })),
+	terminalWrite: (terminalId: string, data: string) => typedError<null, AppError_Serialize>(__TAURI_INVOKE("terminal_write", { terminalId, data })),
+	terminalResize: (terminalId: string, cols: number, rows: number) => typedError<null, AppError_Serialize>(__TAURI_INVOKE("terminal_resize", { terminalId, cols, rows })),
+	terminalClose: (terminalId: string) => typedError<null, AppError_Serialize>(__TAURI_INVOKE("terminal_close", { terminalId })),
+	secretsList: (provider: string | null, scope: string | null) => typedError<SecretSummary[], AppError_Serialize>(__TAURI_INVOKE("secrets_list", { provider, scope })),
+	secretsCreate: (request: SecretCreateRequest) => typedError<SecretSummary, AppError_Serialize>(__TAURI_INVOKE("secrets_create", { request })),
+	secretsReplace: (secretId: string, value: string) => typedError<SecretSummary, AppError_Serialize>(__TAURI_INVOKE("secrets_replace", { secretId, value })),
+	secretsDelete: (secretId: string) => typedError<null, AppError_Serialize>(__TAURI_INVOKE("secrets_delete", { secretId })),
+	secretsTest: (secretId: string) => typedError<SecretSummary, AppError_Serialize>(__TAURI_INVOKE("secrets_test", { secretId })),
+	secretsRequestUse: (request: SecretUseRequest) => typedError<UseRequestResult, AppError_Serialize>(__TAURI_INVOKE("secrets_request_use", { request })),
 	secretsGrantUse: (secretId: string, runId: string, recipeId: string, rememberRecipe: boolean, requestedPolicy: {
 	operations: string[],
 	models: string[],
@@ -464,18 +464,37 @@ export const commands = {
 	maxOutputTokens: number,
 	maxCostUsd: number | null,
 	lifetimeSeconds: number,
-} | null, requestId: string | null) => typedError<UseRequestResult, AppError>(__TAURI_INVOKE("secrets_grant_use", { secretId, runId, recipeId, rememberRecipe, requestedPolicy, requestId })),
-	secretsDenyUse: (secretId: string) => typedError<UseRequestResult, AppError>(__TAURI_INVOKE("secrets_deny_use", { secretId })),
-	secretsCapabilitiesList: () => typedError<CapabilitySummary[], AppError>(__TAURI_INVOKE("secrets_capabilities_list")),
-	secretsRevokeCapability: (capabilityId: string) => typedError<null, AppError>(__TAURI_INVOKE("secrets_revoke_capability", { capabilityId })),
-	secretsRequestEnvImport: (request: EnvImportRequest) => typedError<ImportPreview, AppError>(__TAURI_INVOKE("secrets_request_env_import", { request })),
-	secretsCommitEnvImport: (requestId: string, selected: string[], after: AfterImportAction, confirm: boolean | null) => typedError<SecretSummary[], AppError>(__TAURI_INVOKE("secrets_commit_env_import", { requestId, selected, after, confirm })),
-	secretsAuditList: (limit: number | null) => typedError<SecretAuditEvent[], AppError>(__TAURI_INVOKE("secrets_audit_list", { limit })),
-	secretsProxyStatus: () => typedError<SecretsProxyStatus, AppError>(__TAURI_INVOKE("secrets_proxy_status")),
-	secretsPending: () => typedError<SecretsInbox, AppError>(__TAURI_INVOKE("secrets_pending")),
-	secretsDenyEnvImport: (requestId: string) => typedError<null, AppError>(__TAURI_INVOKE("secrets_deny_env_import", { requestId })),
-	productTelemetryGetPolicy: () => typedError<TelemetryPolicy, AppError>(__TAURI_INVOKE("product_telemetry_get_policy")),
-	productTelemetrySetOptOut: (optOut: boolean) => typedError<TelemetryPolicy, AppError>(__TAURI_INVOKE("product_telemetry_set_opt_out", { optOut })),
+} | null, requestId: string | null) => typedError<UseRequestResult, AppError_Serialize>(__TAURI_INVOKE("secrets_grant_use", { secretId, runId, recipeId, rememberRecipe, requestedPolicy, requestId })),
+	secretsDenyUse: (secretId: string) => typedError<UseRequestResult, AppError_Serialize>(__TAURI_INVOKE("secrets_deny_use", { secretId })),
+	secretsCapabilitiesList: () => typedError<CapabilitySummary[], AppError_Serialize>(__TAURI_INVOKE("secrets_capabilities_list")),
+	secretsRevokeCapability: (capabilityId: string) => typedError<null, AppError_Serialize>(__TAURI_INVOKE("secrets_revoke_capability", { capabilityId })),
+	secretsRequestEnvImport: (request: EnvImportRequest) => typedError<ImportPreview, AppError_Serialize>(__TAURI_INVOKE("secrets_request_env_import", { request })),
+	secretsCommitEnvImport: (requestId: string, selected: string[], after: AfterImportAction, confirm: boolean | null) => typedError<SecretSummary[], AppError_Serialize>(__TAURI_INVOKE("secrets_commit_env_import", { requestId, selected, after, confirm })),
+	secretsAuditList: (limit: number | null) => typedError<SecretAuditEvent[], AppError_Serialize>(__TAURI_INVOKE("secrets_audit_list", { limit })),
+	secretsProxyStatus: () => typedError<SecretsProxyStatus, AppError_Serialize>(__TAURI_INVOKE("secrets_proxy_status")),
+	secretsPending: () => typedError<SecretsInbox, AppError_Serialize>(__TAURI_INVOKE("secrets_pending")),
+	secretsDenyEnvImport: (requestId: string) => typedError<null, AppError_Serialize>(__TAURI_INVOKE("secrets_deny_env_import", { requestId })),
+	productTelemetryGetPolicy: () => typedError<TelemetryPolicy, AppError_Serialize>(__TAURI_INVOKE("product_telemetry_get_policy")),
+	productTelemetrySetOptOut: (optOut: boolean) => typedError<TelemetryPolicy, AppError_Serialize>(__TAURI_INVOKE("product_telemetry_set_opt_out", { optOut })),
+	failuresQuery: (request: FailureQuery) => typedError<FailureQueryResult, AppError_Serialize>(__TAURI_INVOKE("failures_query", { request })),
+	failuresGet: (failureId: string) => typedError<{
+	schemaVersion: string,
+	failureId: string,
+	code: string,
+	category: string,
+	disposition: string,
+	lifecycleState: string,
+	operation: string,
+	phase: string,
+	message: string,
+	remediation: FailureRemediationView | null,
+	safeContext: FailureContextView,
+	diagnosticReference: string,
+} | null, AppError_Serialize>(__TAURI_INVOKE("failures_get", { failureId })),
+	failuresTimeline: (failureId: string) => typedError<unknown, AppError_Serialize>(__TAURI_INVOKE("failures_timeline", { failureId })),
+	logsQuery: (request: LogQuery) => typedError<LogQueryResult, AppError_Serialize>(__TAURI_INVOKE("logs_query", { request })),
+	failureExportBundle: (failureId: string) => typedError<unknown, AppError_Serialize>(__TAURI_INVOKE("failure_export_bundle", { failureId })),
+	observabilityStatus: () => __TAURI_INVOKE<ObservabilityStatus>("observability_status"),
 };
 
 /* Types */
@@ -563,11 +582,24 @@ export type AccountUsageWindow = {
 export type AfterImportAction = "keep" | "replace_aliases" | "remove_entries";
 
 /**  Informative error payload serialized across the Tauri boundary. */
-export type AppError = {
+export type AppError = AppError_Serialize | AppError_Deserialize;
+
+/**  Informative error payload serialized across the Tauri boundary. */
+export type AppError_Deserialize = {
 	code: string,
 	message: string,
 	/**  Developer-facing text. Keep out of user toasts. */
 	detail: string,
+	failure: FailureView | null,
+};
+
+/**  Informative error payload serialized across the Tauri boundary. */
+export type AppError_Serialize = {
+	code: string,
+	message: string,
+	/**  Developer-facing text. Keep out of user toasts. */
+	detail: string,
+	failure?: FailureView | null,
 };
 
 export type AppEvent = {
@@ -875,6 +907,7 @@ export type ContainerDeployment = {
 	poolId: string | null,
 	taskFamily: string | null,
 	lastRolloutId: string | null,
+	currentFailureId: string | null,
 	health: unknown,
 	metadata: unknown,
 	createdAt: string,
@@ -1242,6 +1275,60 @@ export type ExperimentRelateRequest = {
 
 export type ExperimentStatus = "planned" | "running" | "completed" | "failed" | "aborted" | "superseded" | "excluded";
 
+export type FailureContextView = {
+	sessionId: string | null,
+	containerId: string | null,
+	evaluationId: string | null,
+	rolloutId: string | null,
+	visualId: string | null,
+	operationId: string | null,
+	facts: unknown,
+};
+
+export type FailureQuery = {
+	code: string | null,
+	domain: string | null,
+	lifecycleState: string | null,
+	sessionId: string | null,
+	containerId: string | null,
+	evaluationId: string | null,
+	rolloutId: string | null,
+	visualId: string | null,
+	since: string | null,
+	until: string | null,
+	limit: number | null,
+};
+
+export type FailureQueryResult = {
+	count: number,
+	failures: FailureView[],
+};
+
+export type FailureRemediationView = {
+	kind: string,
+	label: string,
+	containerId: string | null,
+	sessionId: string | null,
+	resumeToken: string | null,
+	settingsRoute: string | null,
+	resourceRef: string | null,
+};
+
+export type FailureView = {
+	schemaVersion: string,
+	failureId: string,
+	code: string,
+	category: string,
+	disposition: string,
+	lifecycleState: string,
+	operation: string,
+	phase: string,
+	message: string,
+	remediation: FailureRemediationView | null,
+	safeContext: FailureContextView,
+	diagnosticReference: string,
+};
+
 export type HostedTrainingModel = {
 	modelId: string,
 	label: string,
@@ -1492,6 +1579,32 @@ export type LegacyDetection = {
 	warnings: string[],
 };
 
+export type LogQuery = {
+	level: string | null,
+	component: string | null,
+	operationId: string | null,
+	failureId: string | null,
+	since: string | null,
+	until: string | null,
+	limit: number | null,
+};
+
+export type LogQueryResult = {
+	count: number,
+	records: LogView[],
+};
+
+export type LogView = {
+	logId: string,
+	level: string,
+	component: string,
+	event: string,
+	message: string,
+	operationId: string | null,
+	failureId: string | null,
+	at: string,
+};
+
 export type MaskedImportCandidate = {
 	variable: string,
 	provider: string | null,
@@ -1667,6 +1780,11 @@ export type ModelPerformanceTurnSample = {
 };
 
 export type MultiAgentVersion = "none" | "v1" | "v2";
+
+export type ObservabilityStatus = {
+	mode: string,
+	emergency: boolean,
+};
 
 export type OptimizerCapabilities = {
 	cancel?: boolean,
