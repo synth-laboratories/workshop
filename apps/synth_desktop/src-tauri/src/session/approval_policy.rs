@@ -140,6 +140,29 @@ mod tests {
     }
 
     #[test]
+    fn container_replacement_always_uses_a_once_only_native_modal() {
+        let replacement = ApprovalKind::ContainerLifecycle {
+            container_id: "ctr_craftax".into(),
+            declaration_id: "nanohorizon-craftax".into(),
+            action: "force_replace".into(),
+            effect: "replace the declared workload".into(),
+        };
+        for policy in ["never", "on-request", "untrusted"] {
+            assert!(auto_decision(policy, &replacement).unwrap().is_none());
+        }
+        replacement
+            .validate_decision(&ApprovalDecision::Approve {
+                scope: crate::session::approval::ApprovalScope::Once,
+            })
+            .unwrap();
+        assert!(replacement
+            .validate_decision(&ApprovalDecision::Approve {
+                scope: crate::session::approval::ApprovalScope::Session,
+            })
+            .is_err());
+    }
+
+    #[test]
     fn on_request_auto_approves_sidecar_start_and_stop_only() {
         let start = ApprovalKind::SidecarLifecycle {
             sidecar: "optimizers".into(),

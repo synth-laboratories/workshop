@@ -151,6 +151,12 @@ pub(crate) enum ApprovalKind {
         sidecar: String,
         action: String,
     },
+    ContainerLifecycle {
+        container_id: String,
+        declaration_id: String,
+        action: String,
+        effect: String,
+    },
     PluginLifecycle {
         plugin_id: String,
         action: String,
@@ -194,6 +200,7 @@ impl ApprovalKind {
             Self::ShellCommand { .. } => "shell_command",
             Self::PaidCompute { .. } => "paid_compute",
             Self::SidecarLifecycle { .. } => "sidecar_lifecycle",
+            Self::ContainerLifecycle { .. } => "container_lifecycle",
             Self::PluginLifecycle { .. } => "plugin_lifecycle",
             Self::CredentialAccess { .. } => "credential_access",
             Self::ComputerUse { .. } => "computer_use",
@@ -217,6 +224,7 @@ impl ApprovalKind {
             Self::ComputerUse { hazard: true, .. }
                 | Self::PaidCompute { .. }
                 | Self::CredentialAccess { .. }
+                | Self::ContainerLifecycle { .. }
         )
     }
 
@@ -257,6 +265,12 @@ impl ApprovalKind {
             }
             (Self::ShellCommand { .. }, ApprovalDecision::Approve { .. }) => Ok(()),
             (Self::SidecarLifecycle { .. }, ApprovalDecision::Approve { .. }) => Ok(()),
+            (
+                Self::ContainerLifecycle { .. },
+                ApprovalDecision::Approve {
+                    scope: ApprovalScope::Once,
+                },
+            ) => Ok(()),
             (Self::PluginLifecycle { .. }, ApprovalDecision::Approve { .. }) => Ok(()),
             // Remembered scopes on a hazard action were already refused above,
             // so what reaches here is either a once-off hazard approval or an
@@ -335,6 +349,20 @@ impl ApprovalKind {
                 "sidecar": sidecar,
                 "action": action,
                 "alwaysSupported": true,
+            }),
+            Self::ContainerLifecycle {
+                container_id,
+                declaration_id,
+                action,
+                effect,
+            } => json!({
+                "approvalId": approval_id,
+                "kind": self.name(),
+                "containerId": container_id,
+                "declarationId": declaration_id,
+                "action": action,
+                "effect": effect,
+                "alwaysSupported": false,
             }),
             Self::PluginLifecycle {
                 plugin_id,

@@ -29,6 +29,7 @@ pub fn classify(kind: &ApprovalKind, active_runs: u64) -> PluginRisk {
             "start" | "stop" if active_runs == 0 => PluginRisk::Low,
             _ => PluginRisk::High,
         },
+        ApprovalKind::ContainerLifecycle { .. } => PluginRisk::HandOff,
         ApprovalKind::PaidCompute { .. } => PluginRisk::High,
         ApprovalKind::CredentialAccess { .. } => PluginRisk::High,
         ApprovalKind::ShellCommand { .. } => PluginRisk::High,

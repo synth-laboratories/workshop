@@ -653,6 +653,9 @@ async fn dispatch_request(
     if path.starts_with("/v1/secrets") {
         return dispatch_secrets(method, path, json_body, core, app).await;
     }
+    if method == "POST" && path.starts_with("/v1/containers/") && path.ends_with("/restart") {
+        return dispatch_container_restart(path, json_body, core, app).await;
+    }
     dispatch(method, path, json_body, core).await
 }
 
@@ -1768,42 +1771,7 @@ pub async fn dispatch(method: &str, path: &str, body: Value, core: &CoreRuntime)
             }))
         }
         ("POST", path) if path.starts_with("/v1/containers/") && path.ends_with("/restart") => {
-            let id = path
-                .trim_start_matches("/v1/containers/")
-                .trim_end_matches("/restart")
-                .trim_end_matches('/');
-            let session = body
-                .get("sessionRef")
-                .or_else(|| body.get("session_ref"))
-                .and_then(Value::as_str)
-                .ok_or_else(|| anyhow::anyhow!("sessionRef required"))?;
-            let workspace = crate::optimizers::workspace_recipe::require_session_workspace(
-                core.storage().database(),
-                session,
-            )?;
-            let spec_id = crate::optimizers::container_lifecycle::declared_spec_id(
-                core.storage().database(),
-                id,
-            )?;
-            let stopped =
-                crate::optimizers::container_lifecycle::stop(core.storage().database(), id)
-                    .await
-                    .ok();
-            let ensured = crate::optimizers::container_lifecycle::replace_declared(
-                core.storage().database(),
-                &workspace,
-                &spec_id,
-            )
-            .await?;
-            Ok(json!({
-                "containerId": ensured.container_id,
-                "baseUrl": ensured.base_url,
-                "specId": ensured.spec_id,
-                "locality": ensured.locality.as_str(),
-                "replacedPid": stopped.as_ref().map(|value| value.pid),
-                "replacementMode": "declared-command-force",
-                "status": "ready",
-            }))
+            anyhow::bail!("container restart requires the app-bound approval route")
         }
         ("POST", path)
             if path.starts_with("/v1/containers/") && path.ends_with("/rollouts/prepare") =>
@@ -4514,6 +4482,63 @@ async fn dispatch_computer_use(
         }
         _ => anyhow::bail!("unsupported computer-use IPC route {method} {path}"),
     }
+}
+
+async fn dispatch_container_restart(
+    path: &str,
+    body: Value,
+    core: &CoreRuntime,
+    app: &AppHandle,
+) -> Result<Value> {
+    let id = path
+        .trim_start_matches("/v1/containers/")
+        .trim_end_matches("/restart")
+        .trim_end_matches('/');
+    let session = body
+        .get("sessionRef")
+        .or_else(|| body.get("session_ref"))
+        .and_then(Value::as_str)
+        .ok_or_else(|| anyhow::anyhow!("sessionRef required"))?;
+    let workspace = crate::optimizers::workspace_recipe::require_session_workspace(
+        core.storage().database(),
+        session,
+    )?;
+    let spec_id =
+        crate::optimizers::container_lifecycle::declared_spec_id(core.storage().database(), id)?;
+    let broker = app
+        .try_state::<Arc<crate::session::approval::ApprovalBroker>>()
+        .ok_or_else(|| anyhow::anyhow!("approval broker unavailable"))?;
+    let approval_id = broker
+        .authorize_host(
+            app,
+            Some(session),
+            crate::session::approval::ApprovalKind::ContainerLifecycle {
+                container_id: id.to_owned(),
+                declaration_id: spec_id.clone(),
+                action: "force_replace".into(),
+                effect: "Stop the currently registered workload when Workshop owns it, then run the exact approved declaration with replacement enabled".into(),
+            },
+        )
+        .await?;
+    let stopped = crate::optimizers::container_lifecycle::stop(core.storage().database(), id)
+        .await
+        .ok();
+    let ensured = crate::optimizers::container_lifecycle::replace_declared(
+        core.storage().database(),
+        &workspace,
+        &spec_id,
+    )
+    .await?;
+    Ok(json!({
+        "containerId": ensured.container_id,
+        "baseUrl": ensured.base_url,
+        "specId": ensured.spec_id,
+        "locality": ensured.locality.as_str(),
+        "replacedPid": stopped.as_ref().map(|value| value.pid),
+        "replacementMode": "declared-command-force",
+        "approvalId": approval_id,
+        "status": "ready",
+    }))
 }
 
 async fn dispatch_plugins(

@@ -1554,6 +1554,7 @@ export function eventsToLocalActivity(
 		const approvalSubject = approvalKind === "paid_compute" ? "Paid compute"
 			: approvalKind === "credential_access" ? "Credential access"
 				: approvalKind === "sidecar_lifecycle" ? "Sidecar lifecycle"
+					: approvalKind === "container_lifecycle" ? "Container replacement"
 					: approvalKind === "plugin_lifecycle" ? "Plugin lifecycle"
 						: approvalKind === "computer_use" ? "App control"
 							: approvalKind === "project_source" ? "Project source"
@@ -1564,6 +1565,7 @@ export function eventsToLocalActivity(
 				label = approvalKind === "paid_compute" ? "Paid compute approval"
 					: approvalKind === "credential_access" ? "Credential access"
 						: approvalKind === "sidecar_lifecycle" ? "Sidecar lifecycle"
+							: approvalKind === "container_lifecycle" ? "Replace container workload"
 							: approvalKind === "plugin_lifecycle" ? "Plugin lifecycle"
 								: approvalKind === "computer_use"
 									? (payload.hazard === true ? "Confirm this action" : "Allow app control")
@@ -1588,6 +1590,8 @@ export function eventsToLocalActivity(
 			? [payload.provider, payload.purpose].filter((value): value is string => typeof value === "string").join(" · ")
 			: approvalKind === "sidecar_lifecycle"
 				? [payload.sidecar, payload.action].filter((value): value is string => typeof value === "string").join(" · ")
+				: approvalKind === "container_lifecycle"
+					? [payload.containerId, payload.declarationId, payload.action, payload.effect].filter((value): value is string => typeof value === "string").join(" · ")
 				: undefined;
 		// G6: a hazard card must show what the action will actually do —
 		// recipient, text, destination — not just which app it touches.
@@ -1643,7 +1647,7 @@ export function eventsToLocalActivity(
 			approvalId: event.eventKind === "approval.requested"
 				? approvalKey(event) ?? `approval-${event.sequence}`
 				: undefined,
-			approvalKind: approvalKind === "shell_command" || approvalKind === "paid_compute" || approvalKind === "sidecar_lifecycle" || approvalKind === "credential_access" || approvalKind === "plugin_lifecycle" || approvalKind === "computer_use"
+			approvalKind: approvalKind === "shell_command" || approvalKind === "paid_compute" || approvalKind === "sidecar_lifecycle" || approvalKind === "container_lifecycle" || approvalKind === "credential_access" || approvalKind === "plugin_lifecycle" || approvalKind === "computer_use"
 				? approvalKind : "permission",
 			approvalPayload: event.eventKind === "approval.requested" && approvalKind === "paid_compute" ? {
 				operation: typeof payload.operation === "string" ? payload.operation : undefined,
