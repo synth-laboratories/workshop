@@ -1012,7 +1012,7 @@ pub(crate) fn workspace_write_config(allowed_roots: &[String]) -> String {
 /// Codex `sandbox_workspace_write` has no read-denylist field. Document the
 /// policy next to the real schema so we do not invent an ignored TOML key.
 pub(crate) fn credential_read_policy_comment() -> &'static str {
-    "# Codex has no sandbox read-denylist. Do not cat .env, .env.*, or secrets.toml.\n# Import through mcp__synth_secrets__secrets_manage (request_env_import). See AGENTS.md.\n\n"
+    "# Codex has no sandbox read-denylist. Do not cat .env, .env.*, or secrets.toml.\n# Use only the authorized ephemeral secrets proxy; never use a Keychain-backed registry or import flow. See AGENTS.md.\n\n"
 }
 
 pub(crate) fn mcp_enabled_tools(server: &str) -> &'static str {

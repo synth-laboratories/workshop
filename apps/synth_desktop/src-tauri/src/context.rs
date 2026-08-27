@@ -601,7 +601,9 @@ mod tests {
         assert!(WORKSHOP_AGENTS.contains("missing"));
         assert!(WORKSHOP_AGENTS.contains("overlay"));
         assert!(WORKSHOP_AGENTS.contains(".env"));
-        assert!(WORKSHOP_AGENTS.contains("request_env_import"));
+        assert!(WORKSHOP_AGENTS.contains("$run-banking77-gepa"));
+        assert!(WORKSHOP_AGENTS.contains("ephemeral secrets proxy"));
+        assert!(WORKSHOP_AGENTS.contains("never access macOS Keychain"));
         assert!(WORKSHOP_AGENTS.contains("no read-denylist field"));
     }
     #[test]
