@@ -3016,9 +3016,9 @@ max_total_rollouts = 4
             .map(|error| error.to_string())
             .unwrap();
         assert!(
-            error.contains("GEPA v2")
-                && error.contains(crate::container_capabilities::GEPA_V2_CONTRACT),
-            "expected a GEPA v2 admission refusal, got {error}"
+            error.contains("live-eval")
+                && error.contains(crate::container_capabilities::LIVE_EVAL_PROTOCOL_V1),
+            "expected a live-eval admission refusal, got {error}"
         );
         assert!(
             error.contains("protocol=null"),
@@ -3088,7 +3088,7 @@ max_total_rollouts = 4
             .unwrap_err()
             .to_string();
         assert!(
-            error.contains("ambiguous registered banking77 GEPA v2 pools"),
+            error.contains("ambiguous registered banking77 live-eval containers"),
             "expected an ambiguous-pool refusal, got {error}"
         );
         assert!(
@@ -3196,7 +3196,7 @@ max_total_rollouts = 4
             .to_string();
         assert!(
             not_ready.contains(
-                "requested banking77 container `ctr_banking77_offline` is not a ready GEPA v2 pool"
+                "requested banking77 container `ctr_banking77_offline` is not a ready live-eval container"
             ),
             "expected a fail-closed missing-ready-id error, got {not_ready}"
         );
@@ -3291,7 +3291,7 @@ max_total_rollouts = 4
             .unwrap_err()
             .to_string();
         assert!(
-            error.contains("ambiguous registered banking77 GEPA v2 pools"),
+            error.contains("ambiguous registered banking77 live-eval containers"),
             "a newer updated_at must not restore first-match-wins, got {error}"
         );
         assert!(

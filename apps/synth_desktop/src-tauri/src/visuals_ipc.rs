@@ -3727,7 +3727,8 @@ fn extract_imported_trace_frames(
                 width,
                 height,
                 step,
-                producer_digest: event.pointer("/detail/source_event_digest")
+                producer_digest: event.pointer("/payload/source_event_digest")
+                    .or_else(|| event.pointer("/detail/source_event_digest"))
                     .and_then(Value::as_str).map(str::to_string),
             });
         }

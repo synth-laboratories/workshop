@@ -4186,13 +4186,13 @@ mod tests {
         let started = mgr.start().await.unwrap();
         assert_eq!(started.phase, "ready");
         let caps = mgr.advertised_capabilities();
-        assert_eq!(caps["algorithms"][0], "gepa");
-        assert!(caps["algorithms"]
+        assert_eq!(caps["optimization_algorithms"][0], "gepa");
+        assert!(caps["optimization_algorithms"]
             .as_array()
             .unwrap()
             .iter()
             .any(|item| item == "sft"));
-        assert!(caps["algorithms"]
+        assert!(caps["optimization_algorithms"]
             .as_array()
             .unwrap()
             .iter()
