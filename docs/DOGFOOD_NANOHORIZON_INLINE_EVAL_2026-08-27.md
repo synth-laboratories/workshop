@@ -235,3 +235,201 @@ must never manufacture one category to conceal the other.
    terminal record.
 8. Restarting J preserves ChatGPT authentication and can resume the same task
    without creating replacement execution identities.
+
+## CUA follow-up after FailureRuntime integration
+
+This pass reviewed the rebuilt J app at commit `8634ddbfd02a` with Computer
+Use, then corroborated the visible behavior against J's durable SQLite state.
+J remained authenticated through the authorized file-backed ChatGPT route. No
+container launch, credential operation, paid approval, rollout, or synthetic
+data was created.
+
+### P0 — the Errors surface is present but not operable
+
+1. **The outer `Errors` tab is clipped out of the workbench header.** At both
+   the normal J window size and macOS full-screen size, the visible header ends
+   at `Diagnostics` followed by the close button. Accessibility exposes a fourth
+   `Errors` tab, but a user cannot see or click it.
+2. **Accessibility activation does not recover the hidden tab.** Activating the
+   AX `Errors` element closed the side panel. Tabbing from `Diagnostics` moved
+   to the close control, and arrow-key navigation did not select `Errors`.
+   This is both a discoverability defect and a keyboard-access defect.
+3. **The naming is nested and ambiguous.** The hidden outer tab is `Errors`;
+   inside it, the first inner tab is also `Errors` beside `Logs`. The hierarchy
+   should be one visible top-level `Failures` surface with explicit
+   `Occurrences` and `Logs` children, or an equivalently unambiguous structure.
+
+### P0 — selected objects and adjacent evidence can belong to different runs
+
+1. **Experiments selected the current degraded campaign while showing an old
+   failed visual.** The registry selected `NanoHorizon Craftax baseline · seeds
+   780015–780019` with status/result `degraded`, but the adjacent visual was
+   `vis_479e097a401b4876be2ed18e189ec976`, an older failed run for seeds
+   780005–780009 and digest
+   `sha256:253caa5bcfd5dd4b13e101271ad4297f1e4049c24fa36bba1c59ac99f3a8ad6a`.
+   A globally open visual may remain open, but the UI must either bind it to the
+   selection or visibly label it as unrelated. Side-by-side unlabeled identity
+   divergence is unsafe.
+2. **Navigating Back from Optimizers resurrected that stale visual.** The user
+   did not select the old run during the review. Back navigation returned to
+   the chat and opened the historical failed artifact alongside the current
+   task, preserving neither the current selected run nor a clear independent
+   visual context.
+3. **The current experiment inspector said `Evidence —`.** The selected current
+   campaign has five trusted, inspectable Trace V5 identities, yet the node
+   inspector exposed no evidence. This is a registry/projection gap, not a
+   producer gap.
+4. **Registry rows concatenate incompatible state fields without labels.** The
+   same table showed `degraded degraded` for the current campaign and `running
+   failed` for another. If these are experiment state and latest-run result,
+   label both fields; if they describe one lifecycle, the latter combination is
+   invalid and must be reconciled.
+
+### P0 — historical failed visual violates its own lifecycle
+
+The stale seeds-780005–780009 visual simultaneously rendered:
+
+- `EXPERIMENT · FAILED` and terminal ETA;
+- progress `0/5` with **five queued** rollouts;
+- `Traces 5 retained`, while every trace row said no relay receipt existed;
+- five trace buttons that all targeted the same visual ID instead of distinct
+  trace identities; and
+- the sentence `The evaluation failed: 0 of 5 rollouts did not complete
+  successfully`, a double negative that states zero rollouts failed.
+
+A failed parent must settle queued children to a typed terminal reason. Trace
+retention must distinguish trace identity, visual identity, relay receipt, and
+missing evidence. Generated assessment text must be derived from the same typed
+counts as the table and must pass semantic tests, not only snapshot tests.
+
+### P1 — FailureRuntime does not yet account for the active incident
+
+J's durable failure tables contained six occurrences after migration:
+
+- five `historical_failure_unclassified` rows; and
+- one `diagnostics_index_degraded` row.
+
+All six had `session_id = NULL`, all six were immediately `terminalized`, and
+there were zero failure relationships. Consequences:
+
+1. **The panel queries failures by the active chat session, so migrated failures
+   are invisible there.** A reachable Errors panel would appear empty for this
+   task even though Diagnostics shows many related failures.
+2. **The current run has no failure occurrence.** There is no occurrence bound
+   to `opt_eval_craftax_9b4825781ecd`, even though its authoritative evidence
+   state is degraded by `reward_missing` for all five rollouts.
+3. **Typed historical causes were discarded.** One migrated cause still
+   contains `policy_source_unavailable`, while others contain exact failed-
+   rollout counts, but every row is projected as
+   `historical_failure_unclassified`. Migration should preserve any recognized
+   closed code and represent only genuinely unknown shapes as unclassified.
+4. **Repaired incidents have no resolution lineage.** The launcher-path and
+   sealed-frame-step failures are still visible in Diagnostics, while the new
+   store has no `supersedes`, `repair_of`, or resolution transition tying them
+   to their successful repairs.
+
+### P1 — the log store is noisy, misclassified, and disconnected
+
+At review time `log_records` contained 28 rows, all with level `error`, all with
+`failure_id = NULL`, and only three distinct messages.
+
+1. **A persistent condition is emitted every 15 seconds.** Twenty-six rows were
+   identical `diagnostics/index_degraded: binary_missing` messages. The matching
+   failure occurrence was terminalized once at startup even though the ongoing
+   log spam proves the condition remained active. A durable occurrence should
+   stay open and accumulate observations, then resolve once; polling should not
+   create unbounded duplicate error logs.
+2. **Normal service startup is classified as error.** `Visuals IPC listening`
+   and `Eval driver listening` entered the durable store at error severity only
+   because they came through `eprintln`. Stream choice is not severity. These
+   are typed `info/runtime_ready` events.
+3. **Logs are not correlated to failures.** Even the repeated
+   `diagnostics_index_degraded` rows do not reference the corresponding
+   occurrence. `operation_id`, `failure_id`, and safe context must be populated
+   at the emission boundary.
+4. **Failures and logs use different scope.** The Errors query is session-bound;
+   the Logs query is global and has no visible scope label. Switching inner tabs
+   would silently change the population being inspected.
+5. **The UI loses core log facts.** The Logs list omits timestamp, operation ID,
+   failure ID, safe structured fields, truncation status, and pagination. It
+   returns at most 100 records with no indication that additional rows exist.
+
+### P1 — legacy Diagnostics and durable Failures remain split-brain
+
+1. Diagnostics showed 246 journal events and generic
+   `WARN mcp_request_failed` entries for typed launch and Trace V5 failures. The
+   fixed sealed-frame-step incidents remain indistinguishable from live
+   failures; there is no resolved or superseded presentation.
+2. Diagnostics' overall banner remained `DEGRADED binary_missing`, while the
+   durable occurrence for that same condition was already `terminalized`.
+3. Changing the open visual changed the task-filtered Diagnostics population to
+   two `visual_bindings_invalid` entries. The surface does not make the active
+   session/visual scope or the reason for the population change sufficiently
+   explicit.
+4. The new failure detail loader catches timeline-query failures and replaces
+   them with an empty timeline. That is another silent fallback. A timeline
+   retrieval failure must render a typed error distinct from a legitimately
+   empty timeline.
+5. The renderer exposes only approval remediation for a container. Other typed
+   remediation kinds, category, disposition, diagnostic reference, and safe
+   context are stored but not presented, so the UI cannot yet guide most
+   failures to resolution.
+
+### P1 — Optimizers lifecycle language is internally inconsistent
+
+1. The page says plugin `Installed v0.2.19` and `stopped`, while every local eval
+   card says `the local Optimizers runtime is not installed`. Installed,
+   provisioned, stopped, and unavailable must be separate states with one
+   readiness projection.
+2. The current run is terminal `degraded`, but the inspector's `SELECTION` is
+   `failed` even while `WHY` says `baseline-only evaluation; no promotion
+   decision`. Baseline evaluation outcome and candidate-selection outcome are
+   different domains; absence of a selection is not a failed selection.
+3. A `Cancel` button remains enabled for the terminal degraded run. Terminal
+   runs cannot transition to cancelled; the action must be absent or disabled
+   with an exact reason.
+4. The sidebar labels all of Optimizers `Needs attention: stopped`, even though
+   historical evaluation inspection remains available. Capability readiness
+   should identify which operation is blocked instead of degrading the whole
+   surface.
+5. `eval.fixture.policy-smoke.v1` is exposed in the production recipe list.
+   Product runtime catalogs must never publish fixture identities. Tests must
+   construct typed in-memory or temporary data through test-only boundaries,
+   never product-visible fixture recipes or fixture fallbacks.
+
+### P2 — additional persistence and presentation defects
+
+1. After restart, the final historical response changed from `Worked 1m 16s`
+   to `Worked 0s`; other messages retained their durations. Persisted timing
+   must be immutable and hydration must not substitute a zero default.
+2. Restart did not restore the open visual or workbench pane state. If restoring
+   those is intentional, bind the restored visual to its owning run; if not,
+   clearly reopen to a neutral state rather than later resurrecting a stale
+   artifact through Back navigation.
+3. Outputs listed duplicate run and visual names without enough identity or
+   revision information to distinguish them. Revisions of one durable object
+   and separate objects with the same title need different presentation.
+4. Visual headers still render `digest — · run — · trace —` for artifacts that
+   contain specific execution data. Missing binding is a typed visual-quality
+   failure and should explain why `Seal` is disabled; `Pass the E1 visual
+   quality gate` does not provide an actionable route to the failing checks.
+
+## Additional exit criteria from the CUA follow-up
+
+9. The Failures surface is visible and keyboard-operable at every supported
+   workbench width; activating it never closes the pane.
+10. Failure occurrences and logs share explicit scope, correlation IDs, and
+    lifecycle. Ongoing conditions deduplicate; resolved conditions settle once.
+11. Normal startup messages cannot enter the error store solely because they
+    were written to stderr.
+12. The active degraded run has a typed, run-bound evidence failure occurrence,
+    and repaired historical failures retain repair/resolution lineage.
+13. Experiments, Optimizers, Outputs, and visual panes cannot present unrelated
+    object identities as if they were one selection.
+14. A parent terminal state deterministically terminalizes every child; no
+    failed experiment can retain queued rollouts or open calls.
+15. Production catalogs contain no fixture identities or fixture fallback
+    paths.
+16. Terminal run actions, assessment prose, selection semantics, and evidence
+    counts are generated from closed enums and validated against the same
+    aggregate revision.
