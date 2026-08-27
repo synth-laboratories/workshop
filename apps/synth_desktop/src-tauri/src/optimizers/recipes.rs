@@ -87,6 +87,7 @@ async fn start_inner(
     let table = config
         .as_table_mut()
         .ok_or_else(|| anyhow!("workspace recipe must be a TOML table"))?;
+    super::workspace_recipe::compile_gepa_native_config(table, &recipe)?;
     table.insert(
         "run".into(),
         toml::Value::Table(

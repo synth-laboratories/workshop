@@ -72,6 +72,7 @@ pub struct WorkspaceRecipe {
     pub policy_config: String,
     pub policy: serde_json::Map<String, Value>,
     pub policy_source: Option<String>,
+    pub candidate_field: Option<String>,
     pub train_seeds: Vec<i64>,
     pub heldout_seeds: Vec<i64>,
     pub concurrency: usize,
@@ -409,6 +410,8 @@ struct RecipeFile {
     policy: toml::value::Table,
     #[serde(default)]
     policy_source: Option<String>,
+    #[serde(default)]
+    candidate_field: Option<String>,
     #[serde(default)]
     proposer_model: Option<String>,
     #[serde(default)]
@@ -949,6 +952,136 @@ pub fn copy_into_run_dir(recipe: &WorkspaceRecipe, run_dir: &Path) -> Result<Pat
     Ok(destination)
 }
 
+/// Compile the product-level workspace GEPA schema into the pinned sidecar's
+/// native document. Workspace recipes intentionally expose seeds, bounds and
+/// one mutable field rather than making users author sidecar internals. The
+/// paid worker must never be the first component to discover that translation
+/// was omitted.
+pub fn compile_gepa_native_config(
+    config: &mut toml::value::Table,
+    recipe: &WorkspaceRecipe,
+) -> Result<()> {
+    if recipe.algorithm != AlgorithmKind::Gepa {
+        return Ok(());
+    }
+    let candidate_field = recipe
+        .candidate_field
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| anyhow!("GEPA recipe `{}` must declare candidate_field", recipe.id))?;
+    let proposer_model = recipe
+        .proposer_model
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| anyhow!("GEPA recipe `{}` must declare proposer_model", recipe.id))?;
+    if recipe.train_seeds.is_empty() {
+        bail!("GEPA recipe `{}` must declare at least one train seed", recipe.id);
+    }
+
+    let task_ids = |seeds: &[i64]| {
+        toml::Value::Array(
+            seeds
+                .iter()
+                .map(|seed| toml::Value::String(format!("seed:{seed}")))
+                .collect(),
+        )
+    };
+    config.insert(
+        "taskset".into(),
+        toml::Value::Table(toml::map::Map::from_iter([
+            ("train_split".into(), toml::Value::String("train".into())),
+            (
+                "heldout_split".into(),
+                toml::Value::String("heldout".into()),
+            ),
+            ("train_ids".into(), task_ids(&recipe.train_seeds)),
+            ("heldout_ids".into(), task_ids(&recipe.heldout_seeds)),
+        ])),
+    );
+    config.insert(
+        "candidate".into(),
+        toml::Value::Table(toml::map::Map::from_iter([(
+            "target_modules".into(),
+            toml::Value::Array(vec![toml::Value::String(candidate_field.to_string())]),
+        )])),
+    );
+
+    let mut policy = config
+        .remove("policy")
+        .and_then(|value| value.as_table().cloned())
+        .unwrap_or_default();
+    let api_family = policy
+        .remove("api")
+        .and_then(|value| value.as_str().map(str::to_string))
+        .unwrap_or_else(|| "chat_completions".into());
+    let max_tokens = policy.remove("answer_max_tokens");
+    let mut policy_config = toml::map::Map::new();
+    for (key, value) in std::mem::take(&mut policy) {
+        policy_config.insert(key, value);
+    }
+    policy.insert("enabled".into(), toml::Value::Boolean(true));
+    policy.insert("model".into(), toml::Value::String(recipe.model.clone()));
+    policy.insert("api_family".into(), toml::Value::String(api_family.clone()));
+    policy.insert("proxy_mode".into(), toml::Value::String("proxy_only".into()));
+    if let Some(max_tokens) = max_tokens {
+        policy.insert("max_tokens".into(), max_tokens);
+    }
+    policy.insert("config".into(), toml::Value::Table(policy_config));
+    config.insert("policy".into(), toml::Value::Table(policy));
+
+    let mut proposer = config
+        .remove("proposer")
+        .and_then(|value| value.as_table().cloned())
+        .unwrap_or_default();
+    proposer.insert("backend".into(), toml::Value::String("chat_completions".into()));
+    proposer.insert("model".into(), toml::Value::String(proposer_model.into()));
+    proposer.insert("api_family".into(), toml::Value::String(api_family));
+    proposer.insert("auth_mode".into(), toml::Value::String("api_key".into()));
+    config.insert("proposer".into(), toml::Value::Table(proposer));
+
+    let train_ids = task_ids(&recipe.train_seeds);
+    let heldout_ids = task_ids(&recipe.heldout_seeds);
+    let task_pools = toml::Value::Table(toml::map::Map::from_iter([
+        ("pareto".into(), train_ids.clone()),
+        ("minibatch".into(), train_ids.clone()),
+        ("reflection".into(), train_ids),
+        ("heldout".into(), heldout_ids),
+    ]));
+    let workers = toml::Value::Table(toml::map::Map::from_iter([(
+        "rollout".into(),
+        toml::Value::Integer(recipe.concurrency as i64),
+    )]));
+    let pipeline = toml::Value::Table(toml::map::Map::from_iter([(
+        "workers".into(),
+        workers,
+    )]));
+    let mut gepa = toml::map::Map::from_iter([
+        (
+            "max_cost_usd".into(),
+            toml::Value::Float(recipe.bounds.max_cost_usd),
+        ),
+        (
+            "max_total_rollouts".into(),
+            toml::Value::Integer(recipe.bounds.max_total_rollouts),
+        ),
+        ("task_pools".into(), task_pools),
+        ("pipeline".into(), pipeline),
+    ]);
+    for (key, value) in [
+        ("max_train_rollouts", recipe.bounds.max_train_rollouts),
+        ("max_heldout_rollouts", recipe.bounds.max_heldout_rollouts),
+        ("max_generations", recipe.bounds.max_generations),
+    ] {
+        if let Some(value) = value {
+            gepa.insert(key.into(), toml::Value::Integer(value));
+        }
+    }
+    config.insert("gepa".into(), toml::Value::Table(gepa));
+    Ok(())
+}
+
 fn parse_recipe(path: &Path) -> Result<WorkspaceRecipe> {
     let text = fs::read_to_string(path).with_context(|| format!("read {}", path.display()))?;
     let parsed: RecipeFile = toml::from_str(&text)
@@ -1052,6 +1185,9 @@ fn parse_recipe(path: &Path) -> Result<WorkspaceRecipe> {
         policy,
         policy_source: parsed
             .policy_source
+            .filter(|value| !value.trim().is_empty()),
+        candidate_field: parsed
+            .candidate_field
             .filter(|value| !value.trim().is_empty()),
         train_seeds: parsed
             .train_seeds
@@ -1834,9 +1970,15 @@ container = "banking77"
 provider = "openrouter"
 model = "openai/gpt-5.6-luna"
 locality = "host"
+candidate_field = "classification_system_prompt"
+proposer_model = "openai/gpt-5.6-luna"
+train_seeds = [780020, 780021, 780022, 780023, 780024]
+heldout_seeds = []
 [bounds]
 max_cost_usd = 0.10
-max_total_rollouts = 1
+max_total_rollouts = 25
+max_train_rollouts = 25
+max_generations = 1
 [policy]
 max_calls = 4
 [proposer]
@@ -1854,6 +1996,7 @@ model = "openai/gpt-5.6-luna"
         let mut config: toml::Value =
             toml::from_str(&fs::read_to_string(&config_path).unwrap()).unwrap();
         let table = config.as_table_mut().unwrap();
+        compile_gepa_native_config(table, &recipe).unwrap();
         bind_locality_urls(
             table,
             &recipe.provider,
@@ -1880,6 +2023,32 @@ model = "openai/gpt-5.6-luna"
         assert_eq!(
             table["proposer"]["api_key_env"].as_str().unwrap(),
             "OPENROUTER_API_KEY"
+        );
+        assert_eq!(
+            table["taskset"]["train_ids"].as_array().unwrap().len(),
+            5
+        );
+        assert!(table["taskset"]["heldout_ids"]
+            .as_array()
+            .unwrap()
+            .is_empty());
+        assert_eq!(
+            table["gepa"]["task_pools"]["pareto"]
+                .as_array()
+                .unwrap()
+                .len(),
+            5
+        );
+        assert_eq!(
+            table["gepa"]["max_train_rollouts"].as_integer(),
+            Some(25)
+        );
+        assert_eq!(
+            table["candidate"]["target_modules"]
+                .as_array()
+                .unwrap()[0]
+                .as_str(),
+            Some("classification_system_prompt")
         );
     }
 

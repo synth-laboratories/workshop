@@ -92,12 +92,27 @@ pub fn revoke_run_best_effort(run_id: &str) {
     }
 }
 
+/// Revoke a run and seal the public credential-chain receipt. Terminal owners
+/// use this path so the durable projection cannot continue to claim an active
+/// capability after the authoritative capability ledger revoked it.
+pub fn seal_run_best_effort(run_id: &str) {
+    if let Some(secrets) = live() {
+        if let Err(error) = secrets.seal_run_chain(run_id) {
+            crate::platform::logging::report(
+                "secrets",
+                "eprintln",
+                format!("synth-desktop: seal secrets for {run_id}: {error:#}"),
+            );
+        }
+    }
+}
+
 /// Drops by revoking the run's provider capabilities.
 pub struct RevokeRunOnDrop(pub String);
 
 impl Drop for RevokeRunOnDrop {
     fn drop(&mut self) {
-        revoke_run_best_effort(&self.0);
+        seal_run_best_effort(&self.0);
     }
 }
 
@@ -128,7 +143,7 @@ impl RevokeRunOnFailure {
 impl Drop for RevokeRunOnFailure {
     fn drop(&mut self) {
         if self.armed {
-            revoke_run_best_effort(&self.run_id);
+            seal_run_best_effort(&self.run_id);
         }
     }
 }
@@ -1959,6 +1974,11 @@ mod tests {
             0,
             "a failed pre-start path must leave no active capability"
         );
+        let chain = service
+            .chain_for_run("run_guard_armed")
+            .expect("failed run keeps a sealed public chain");
+        assert_eq!(chain["capabilityRevoked"], json!(true));
+        assert!(chain["revokedAt"].as_str().is_some());
 
         service
             .issue_lease(
