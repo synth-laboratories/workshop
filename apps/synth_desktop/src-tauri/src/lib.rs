@@ -15,7 +15,6 @@ pub mod intern_protocol_test_support {
         SyncCreateRequest,
     };
 }
-pub mod campaigns;
 mod codex;
 mod codex_oauth;
 mod computer_use;
@@ -93,10 +92,11 @@ use intern_api::{
 };
 use laguna::{LagunaManager, LagunaModelHit, LagunaStatus};
 use optimizers::{
-    CheckpointInferRequest, HostedTrainingModelCatalog, OptimizerCreateRequest,
-    OptimizerEventEnvelope, OptimizerImportLocalRequest, OptimizerQuery, OptimizerRecipeRunRequest,
-    OptimizerReconcileRequest, OptimizerRelationship, OptimizerRunRecord, OptimizerStateSlice,
-    SavedLoraCheckpoint, SavedLoraCheckpointPage, SavedLoraCheckpointQuery, SavedLoraDownload,
+    kernel::OptimizerRunViewV2, CheckpointInferRequest, HostedTrainingModelCatalog,
+    OptimizerCreateRequest, OptimizerEventEnvelope, OptimizerImportLocalRequest, OptimizerQuery,
+    OptimizerRecipeRunRequest, OptimizerReconcileRequest, OptimizerRelationship,
+    OptimizerRunRecord, OptimizerStateSlice, SavedLoraCheckpoint, SavedLoraCheckpointPage,
+    SavedLoraCheckpointQuery, SavedLoraDownload,
     SavedLoraPatchRequest,
 };
 use plugins::PluginStatus;
@@ -1112,8 +1112,13 @@ pub(crate) async fn authorize_optimizer_recipe_start(
                 app,
                 session_id,
                 session::approval::ApprovalKind::CredentialAccess {
+                    consent: session::approval::CredentialConsent::IssueLease,
                     provider: provider.clone(),
                     purpose: format!("run bounded optimizer recipe {}", request.recipe_id),
+                    locator_id: None,
+                    display_path: None,
+                    variable: None,
+                    switch_from_display: None,
                 },
             )
             .await
@@ -1427,6 +1432,19 @@ async fn optimizers_get(
     state
         .optimizers()
         .get(optimizer_run_id)
+        .await
+        .map_err(AppError::from)
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn optimizers_run_view_v2(
+    state: State<'_, Arc<CoreRuntime>>,
+    optimizer_run_id: String,
+) -> Result<OptimizerRunViewV2, AppError> {
+    state
+        .optimizers()
+        .run_view_v2(optimizer_run_id)
         .await
         .map_err(AppError::from)
 }

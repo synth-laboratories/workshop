@@ -2116,75 +2116,32 @@ mod tests {
         // Terminal orchestration status, mapped onto the shared vocabulary.
         assert_eq!(run.status, "completed");
         assert!(run.finished_at.is_some());
-        // Rollouts accrued from trial usage, exactly like any other algorithm.
-        assert_eq!(run.usage.rollouts, 4);
 
-        let scorecard = svc
-            .get_state(run_id.clone(), "eval.scorecard".into(), None)
-            .await
-            .unwrap();
-        let candidates = scorecard.data["candidates"].as_array().unwrap();
-        assert_eq!(candidates.len(), 2);
-        let labels: Vec<&str> = candidates
-            .iter()
-            .map(|c| c["label"].as_str().unwrap())
-            .collect();
-        assert!(
-            labels.contains(&"luna-low") && labels.contains(&"luna-med"),
-            "{labels:?}"
+        let view = serde_json::to_value(svc.run_view_v2(run_id.clone()).await.unwrap()).unwrap();
+        assert_eq!(view["algorithm"], json!("eval"));
+        assert_eq!(view["header"]["lifecycle"], json!("terminal"));
+        assert_eq!(view["header"]["work"]["planned"], json!(4));
+        assert_eq!(view["header"]["work"]["succeeded"], json!(4));
+        assert_eq!(
+            view["header"]["evidence"]["completeness"],
+            json!("complete")
         );
-        let baseline = candidates
+        assert_eq!(view["result"]["selection"], json!("inconclusive"));
+        let projection = svc
+            .get_state(run_id, "eval.projection".into(), None)
+            .await
+            .unwrap();
+        assert_eq!(projection.data["candidates"].as_array().unwrap().len(), 2);
+
+        // Raw events remain the diagnostic/evidence lane, not product state.
+        let traces = events
             .iter()
-            .find(|c| c["label"] == "luna-low")
-            .unwrap();
-        assert_eq!(baseline["isBaseline"], json!(true));
-        assert_eq!(baseline["trials"]["valid"], json!(2));
-
-        let trials = svc
-            .get_state(run_id.clone(), "eval.trials".into(), None)
-            .await
-            .unwrap();
-        assert_eq!(trials.data["trials"].as_array().unwrap().len(), 4);
-
-        let evidence = svc
-            .get_state(run_id.clone(), "eval.evidence".into(), None)
-            .await
-            .unwrap();
-        assert_eq!(evidence.data["selection"]["status"], json!("inconclusive"));
-        assert!(evidence.data["seedLedger"]["screening"].is_array());
-        assert!(evidence.data["manifestDigest"]
-            .as_str()
-            .unwrap()
-            .starts_with("sha256:"));
-
-        let runtime = svc
-            .get_state(run_id.clone(), "eval.runtime".into(), None)
-            .await
-            .unwrap();
-        assert_eq!(runtime.data["evaluated"], json!(4));
-        assert_eq!(runtime.data["running"], json!(0));
-        assert_eq!(runtime.data["leasesHeld"], json!(0));
-
-        // The generic slices every optimizer has must be populated too, or the
-        // run is a special case rather than a first-class noun.
-        let timeline = svc
-            .get_state(run_id.clone(), "run.timeline".into(), None)
-            .await
-            .unwrap();
-        assert_eq!(timeline.data["events"].as_array().unwrap().len(), 30);
-        let artifacts = svc
-            .get_state(run_id.clone(), "run.artifacts".into(), None)
-            .await
-            .unwrap();
-        let traces = artifacts.data["artifacts"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .filter(|a| a["kind"] == "trace")
+            .flat_map(|event| event.artifact_refs.iter())
+            .filter(|artifact| artifact["kind"] == "trace")
             .count();
         assert_eq!(
             traces, 4,
-            "every trial's trace should reach the artifact slice"
+            "every trial's trace remains available for advanced inspection"
         );
     }
 

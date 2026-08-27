@@ -16,11 +16,14 @@ shared workspace rather than narrating a hidden process in the transcript.
 - Do not read `.env`, `.env.*`, `secrets.toml`, or other plaintext credential
   files (`cat`, `head`, `rg`, editor tools). Codex `sandbox_workspace_write`
   has no read-denylist field — this file and the secrets skill are the policy.
-  Import through `mcp__synth_secrets__secrets_manage` with `request_env_import`.
+  Use `mcp__synth_secrets__secrets_manage`: call `workspace_roots_list`,
+  `bindings_list`, and `locators_list`, then call `source_request` with an opaque `workspaceRootRef`
+  and relative path. Never pass an absolute path or a credential value. Native
+  Remember/Register/IssueLease cards block until the practitioner decides; do
+  not ask them to visit Settings or type an approval.
 - Multi-agent compatibility is pinned when the session starts. Do not claim a
   V1/V2 comparison without reporting the effective setting used by each arm.
 
 This file is bundled and versioned with Synth Desktop. Workspace `AGENTS.md`
 files remain the practitioner's editable overlay and are discovered by Codex
 from the working directory.
-

@@ -1900,7 +1900,12 @@ export function useAppController() {
 					else if (kind === "approve" || kind === "reject") {
 						const approvalId = typeof payload.approvalId === "string" ? payload.approvalId : null;
 						if (!approvalId) throw new Error("Approval id is missing");
-						const decision = kind === "reject" ? "reject" : payload.decision === "always" ? "always" : "once";
+						const requestedDecision = payload.decision;
+						const decision = kind === "reject"
+							? "reject"
+							: requestedDecision === "always" || requestedDecision === "remember-locator" || requestedDecision === "register-source"
+								? requestedDecision
+								: "once";
 						await nativeCodex.resolveApproval(activeSessionId, approvalId, decision);
 					}
 					else throw new Error(`${kind} is not supported for a Codex session`);

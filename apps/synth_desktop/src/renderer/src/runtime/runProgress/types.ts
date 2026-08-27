@@ -22,8 +22,8 @@ import type { OptimizerRunStatus } from "../../generated/protocol";
 
 export const RUN_PROGRESS_SCHEMA_VERSION = "run_progress.v1";
 
-/** Workflows that share the projection. `go-ex` and `dag` runs are not offered in chat. */
-export type RunKind = "eval" | "gepa" | "sft" | "environment";
+/** Workflows that share the projection. DAG remains a diagnostic-only legacy run. */
+export type RunKind = "eval" | "gepa" | "go-ex" | "sft" | "cispo" | "environment";
 
 export type RunProgressStatus =
 	| "queued"
@@ -276,7 +276,14 @@ export type RunProgressTranscriptItem = {
 	createdAt: string;
 };
 
-export const RUN_KINDS: readonly RunKind[] = ["eval", "gepa", "sft", "environment"];
+export const RUN_KINDS: readonly RunKind[] = [
+	"eval",
+	"gepa",
+	"go-ex",
+	"sft",
+	"cispo",
+	"environment"
+];
 
 export function isRunKind(value: unknown): value is RunKind {
 	return typeof value === "string" && (RUN_KINDS as readonly string[]).includes(value);

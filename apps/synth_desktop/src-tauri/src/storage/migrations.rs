@@ -52,6 +52,10 @@ const MIGRATIONS: &[&str] = &[
     MIGRATION_47,
     MIGRATION_48,
     MIGRATION_49,
+    MIGRATION_50,
+    MIGRATION_51,
+    MIGRATION_52,
+    MIGRATION_53,
 ];
 
 /// Apply every migration the database has not reached yet.
@@ -99,9 +103,87 @@ pub fn apply_migrations(conn: &Connection) -> Result<i64> {
 /// forever — `apply_migrations` only runs versions above the recorded maximum.
 /// The DDL is `CREATE TABLE IF NOT EXISTS`, so re-running it costs nothing and
 /// closes that hole regardless of which lane merged first.
+///
+/// This is intentionally CREATE-only. Migration 50 also contains ALTER TABLE
+/// statements; replaying those during repair would fail as soon as one kernel
+/// column already existed.
+const OPTIMIZER_KERNEL_CREATE_ONLY: &str = r#"
+CREATE TABLE IF NOT EXISTS optimizer_run_drafts (
+    id TEXT PRIMARY KEY,
+    algorithm TEXT NOT NULL,
+    spec_json TEXT NOT NULL,
+    spec_digest TEXT NOT NULL,
+    admission_state TEXT NOT NULL CHECK (admission_state IN (
+        'draft','validating','awaiting_approval','approved','not_required','rejected','expired','consumed'
+    )),
+    authorization_ref TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS optimizer_run_specs (
+    optimizer_run_id TEXT PRIMARY KEY REFERENCES optimizer_runs(id) ON DELETE CASCADE,
+    spec_json TEXT NOT NULL,
+    spec_digest TEXT NOT NULL,
+    authorization_json TEXT NOT NULL DEFAULT '{}',
+    admitted_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS optimizer_algorithm_projections (
+    optimizer_run_id TEXT PRIMARY KEY REFERENCES optimizer_runs(id) ON DELETE CASCADE,
+    algorithm TEXT NOT NULL,
+    reducer_version TEXT NOT NULL,
+    as_of_sequence INTEGER NOT NULL,
+    projection_json TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS optimizer_work_items (
+    work_item_id TEXT PRIMARY KEY,
+    optimizer_run_id TEXT NOT NULL REFERENCES optimizer_runs(id) ON DELETE CASCADE,
+    kind TEXT NOT NULL,
+    lifecycle TEXT NOT NULL,
+    terminal TEXT,
+    external_ref TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS optimizer_work_items_run
+ON optimizer_work_items(optimizer_run_id, lifecycle);
+
+CREATE TABLE IF NOT EXISTS optimizer_usage_ledger (
+    optimizer_run_id TEXT NOT NULL REFERENCES optimizer_runs(id) ON DELETE CASCADE,
+    sequence INTEGER NOT NULL,
+    lane TEXT NOT NULL,
+    cost_usd REAL,
+    prompt_tokens INTEGER,
+    completion_tokens INTEGER,
+    recorded_at TEXT NOT NULL,
+    PRIMARY KEY (optimizer_run_id, sequence, lane)
+);
+
+CREATE TABLE IF NOT EXISTS optimizer_evidence_refs (
+    optimizer_run_id TEXT NOT NULL REFERENCES optimizer_runs(id) ON DELETE CASCADE,
+    kind TEXT NOT NULL,
+    ref_id TEXT NOT NULL,
+    digest TEXT,
+    recorded_at TEXT NOT NULL,
+    PRIMARY KEY (optimizer_run_id, kind, ref_id)
+);
+
+CREATE TABLE IF NOT EXISTS optimizer_evidence_amendments (
+    amendment_id TEXT PRIMARY KEY,
+    optimizer_run_id TEXT NOT NULL REFERENCES optimizer_runs(id) ON DELETE CASCADE,
+    terminal_sequence INTEGER NOT NULL,
+    evidence_json TEXT NOT NULL,
+    recorded_at TEXT NOT NULL
+);
+"#;
+
 const REQUIRED_TABLES: &[(&str, &str)] = &[
     ("optimizer_terminal_manifests", MIGRATION_23),
     ("secret_refs", MIGRATION_25),
+    ("credential_locators", CREDENTIAL_LOCATORS_TABLE_DDL),
     ("product_telemetry_events", MIGRATION_26),
     ("local_lora_checkpoints", MIGRATION_28),
     ("hosted_lora_overlays", MIGRATION_29),
@@ -109,9 +191,19 @@ const REQUIRED_TABLES: &[(&str, &str)] = &[
     ("optimizer_run_media", MIGRATION_41),
     ("optimizer_frames", MIGRATION_42),
     ("optimizer_frame_usage", MIGRATION_42),
-    ("evaluation_runs", MIGRATION_43),
-    ("evaluation_rollouts", MIGRATION_43),
-    ("evaluation_run_drafts", MIGRATION_43),
+    ("optimizer_run_drafts", OPTIMIZER_KERNEL_CREATE_ONLY),
+    ("optimizer_run_specs", OPTIMIZER_KERNEL_CREATE_ONLY),
+    (
+        "optimizer_algorithm_projections",
+        OPTIMIZER_KERNEL_CREATE_ONLY,
+    ),
+    ("optimizer_work_items", OPTIMIZER_KERNEL_CREATE_ONLY),
+    ("optimizer_usage_ledger", OPTIMIZER_KERNEL_CREATE_ONLY),
+    ("optimizer_evidence_refs", OPTIMIZER_KERNEL_CREATE_ONLY),
+    (
+        "optimizer_evidence_amendments",
+        OPTIMIZER_KERNEL_CREATE_ONLY,
+    ),
     ("experiment_lineage", MIGRATION_44),
     ("experiment_session_cursor", MIGRATION_44),
 ];
@@ -156,11 +248,10 @@ fn heal_missing_columns(conn: &Connection) -> Result<()> {
     for (table, column) in [
         ("containers", "current_failure_id"),
         ("optimizer_runs", "terminal_failure_id"),
-        ("evaluation_runs", "terminal_failure_id"),
         ("visuals", "current_failure_id"),
         ("runs", "terminal_failure_id"),
         ("experiment_groups", "current_failure_id"),
-        ("evaluation_rollouts", "terminal_failure_id"),
+        ("experiment_groups", "request_id"),
     ] {
         let sql = format!(
             "SELECT EXISTS(SELECT 1 FROM pragma_table_info('{table}') WHERE name='{column}')"
@@ -172,23 +263,67 @@ fn heal_missing_columns(conn: &Connection) -> Result<()> {
                 .with_context(|| format!("heal missing {table}.{column}"))?;
         }
     }
+    for (column, ddl) in [
+        (
+            "locator_id",
+            "ALTER TABLE secret_refs ADD COLUMN locator_id TEXT REFERENCES credential_locators(id)",
+        ),
+        (
+            "preferred",
+            "ALTER TABLE secret_refs ADD COLUMN preferred INTEGER NOT NULL DEFAULT 0",
+        ),
+        (
+            "source_state",
+            "ALTER TABLE secret_refs ADD COLUMN source_state TEXT",
+        ),
+    ] {
+        let sql = format!(
+            "SELECT EXISTS(SELECT 1 FROM pragma_table_info('secret_refs') WHERE name='{column}')"
+        );
+        let present: bool = conn.query_row(&sql, [], |row| row.get(0))?;
+        if !present {
+            conn.execute_batch(ddl)
+                .with_context(|| format!("heal missing secret_refs.{column}"))?;
+        }
+    }
+    for (table, column, sql_type) in [
+        ("optimizer_runs", "lifecycle", "TEXT"),
+        ("optimizer_runs", "phase", "TEXT"),
+        ("optimizer_runs", "condition", "TEXT"),
+        ("optimizer_runs", "placement", "TEXT"),
+        ("optimizer_runs", "aggregate_sequence", "INTEGER"),
+        ("optimizer_runs", "projection_revision", "INTEGER"),
+        ("optimizer_events", "producer_id", "TEXT"),
+        ("optimizer_events", "producer_sequence", "INTEGER"),
+        ("optimizer_events", "payload_digest", "TEXT"),
+        ("optimizer_events", "aggregate_sequence", "INTEGER"),
+        ("optimizer_events", "committed_at", "TEXT"),
+    ] {
+        let sql = format!(
+            "SELECT EXISTS(SELECT 1 FROM pragma_table_info('{table}') WHERE name='{column}')"
+        );
+        let present: bool = conn.query_row(&sql, [], |row| row.get(0))?;
+        if !present {
+            conn.execute_batch(&format!(
+                "ALTER TABLE {table} ADD COLUMN {column} {sql_type}"
+            ))
+            .with_context(|| format!("heal missing {table}.{column}"))?;
+        }
+    }
+    conn.execute_batch(
+        "CREATE INDEX IF NOT EXISTS secret_refs_locator ON secret_refs(locator_id);
+         CREATE INDEX IF NOT EXISTS secret_refs_preferred
+         ON secret_refs(provider, preferred) WHERE preferred = 1;
+         CREATE UNIQUE INDEX IF NOT EXISTS experiment_groups_request
+         ON experiment_groups(request_id) WHERE request_id IS NOT NULL;",
+    )
+    .context("heal credential source indexes")?;
     Ok(())
 }
 
-/// Migration 37 was also assigned on a prerelease sibling lineage. A consumed
-/// version can therefore leave the old node-kind constraint in place: member
-/// rows insert successfully while their graph nodes are silently ignored by
-/// SQLite, and terminal evidence later has nowhere to attach.
+/// Repair the graph projection only from canonical optimizer-run membership.
+/// Request ids and legacy campaign ids are no longer execution members.
 fn heal_experiment_graph_shape(conn: &Connection) -> Result<()> {
-    let node_sql: String = conn.query_row(
-        "SELECT COALESCE(sql, '') FROM sqlite_master WHERE type='table' AND name='experiment_nodes'",
-        [],
-        |row| row.get(0),
-    )?;
-    if !node_sql.contains("optimizer_run") || !node_sql.contains("direct_evaluation") {
-        conn.execute_batch(MIGRATION_37)
-            .context("heal prerelease experiment graph node kinds")?;
-    }
     conn.execute_batch(
         r#"
         INSERT OR IGNORE INTO experiment_nodes(
@@ -204,24 +339,8 @@ fn heal_experiment_graph_shape(conn: &Connection) -> Result<()> {
                 '","memberId":"' || replace(member_id, '"', '\"') || '"}',
             attached_at,
             attached_at
-        FROM experiment_group_members;
-
-        INSERT OR IGNORE INTO experiment_edges(
-            id, experiment_id, source_node_id, target_node_id, relation, created_at
-        )
-        SELECT
-            'edge:' || optimizer.id || ':evaluated:' || campaign.id,
-            optimizer.experiment_id,
-            optimizer.id,
-            campaign.id,
-            'evaluated',
-            CASE WHEN optimizer.created_at > campaign.created_at
-                 THEN optimizer.created_at ELSE campaign.created_at END
-        FROM experiment_nodes optimizer
-        JOIN experiment_nodes campaign
-          ON campaign.experiment_id = optimizer.experiment_id
-        WHERE optimizer.kind = 'optimizer_run'
-          AND campaign.kind = 'eval_campaign';
+        FROM experiment_group_members
+        WHERE member_kind = 'optimizer_run';
         "#,
     )
     .context("backfill experiment member graph projection")?;
@@ -2461,6 +2580,709 @@ DROP TABLE evaluation_rollouts;
 ALTER TABLE evaluation_rollouts_v49 RENAME TO evaluation_rollouts;
 "#;
 
+/// Optimizers run kernel: admission drafts, sealed specs, producer/aggregate
+/// sequences, algorithm projections, work items, usage, and evidence amendments.
+/// Legacy evaluation_runs / eval_campaigns remain until the cutover migration
+/// copies them into optimizer_run(kind=eval) and drops the old tables.
+const MIGRATION_50: &str = r#"
+CREATE TABLE IF NOT EXISTS optimizer_run_drafts (
+    id TEXT PRIMARY KEY,
+    algorithm TEXT NOT NULL,
+    spec_json TEXT NOT NULL,
+    spec_digest TEXT NOT NULL,
+    admission_state TEXT NOT NULL CHECK (admission_state IN (
+        'draft','validating','awaiting_approval','approved','not_required','rejected','expired','consumed'
+    )),
+    authorization_ref TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS optimizer_run_specs (
+    optimizer_run_id TEXT PRIMARY KEY REFERENCES optimizer_runs(id) ON DELETE CASCADE,
+    spec_json TEXT NOT NULL,
+    spec_digest TEXT NOT NULL,
+    authorization_json TEXT NOT NULL DEFAULT '{}',
+    admitted_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS optimizer_algorithm_projections (
+    optimizer_run_id TEXT PRIMARY KEY REFERENCES optimizer_runs(id) ON DELETE CASCADE,
+    algorithm TEXT NOT NULL,
+    reducer_version TEXT NOT NULL,
+    as_of_sequence INTEGER NOT NULL,
+    projection_json TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS optimizer_work_items (
+    work_item_id TEXT PRIMARY KEY,
+    optimizer_run_id TEXT NOT NULL REFERENCES optimizer_runs(id) ON DELETE CASCADE,
+    kind TEXT NOT NULL,
+    lifecycle TEXT NOT NULL,
+    terminal TEXT,
+    external_ref TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS optimizer_work_items_run
+ON optimizer_work_items(optimizer_run_id, lifecycle);
+
+CREATE TABLE IF NOT EXISTS optimizer_usage_ledger (
+    optimizer_run_id TEXT NOT NULL REFERENCES optimizer_runs(id) ON DELETE CASCADE,
+    sequence INTEGER NOT NULL,
+    lane TEXT NOT NULL,
+    cost_usd REAL,
+    prompt_tokens INTEGER,
+    completion_tokens INTEGER,
+    recorded_at TEXT NOT NULL,
+    PRIMARY KEY (optimizer_run_id, sequence, lane)
+);
+
+CREATE TABLE IF NOT EXISTS optimizer_evidence_refs (
+    optimizer_run_id TEXT NOT NULL REFERENCES optimizer_runs(id) ON DELETE CASCADE,
+    kind TEXT NOT NULL,
+    ref_id TEXT NOT NULL,
+    digest TEXT,
+    recorded_at TEXT NOT NULL,
+    PRIMARY KEY (optimizer_run_id, kind, ref_id)
+);
+
+CREATE TABLE IF NOT EXISTS optimizer_evidence_amendments (
+    amendment_id TEXT PRIMARY KEY,
+    optimizer_run_id TEXT NOT NULL REFERENCES optimizer_runs(id) ON DELETE CASCADE,
+    terminal_sequence INTEGER NOT NULL,
+    evidence_json TEXT NOT NULL,
+    recorded_at TEXT NOT NULL
+);
+
+ALTER TABLE optimizer_runs ADD COLUMN lifecycle TEXT;
+ALTER TABLE optimizer_runs ADD COLUMN phase TEXT;
+ALTER TABLE optimizer_runs ADD COLUMN condition TEXT;
+ALTER TABLE optimizer_runs ADD COLUMN placement TEXT;
+ALTER TABLE optimizer_runs ADD COLUMN aggregate_sequence INTEGER;
+ALTER TABLE optimizer_runs ADD COLUMN projection_revision INTEGER;
+
+ALTER TABLE optimizer_events ADD COLUMN producer_id TEXT;
+ALTER TABLE optimizer_events ADD COLUMN producer_sequence INTEGER;
+ALTER TABLE optimizer_events ADD COLUMN payload_digest TEXT;
+ALTER TABLE optimizer_events ADD COLUMN aggregate_sequence INTEGER;
+ALTER TABLE optimizer_events ADD COLUMN committed_at TEXT;
+"#;
+
+/// Credential locator registry. Paths identify source licenses; credential
+/// bytes continue to live only in the process-local EnvSourceStore.
+const CREDENTIAL_LOCATORS_TABLE_DDL: &str = r#"
+CREATE TABLE IF NOT EXISTS credential_locators (
+    id TEXT PRIMARY KEY,
+    kind TEXT NOT NULL CHECK (kind IN (
+        'workspace_env_file','instance_env_file','process_environment','external_env_file'
+    )),
+    workspace_root_ref TEXT,
+    workspace_canonical TEXT,
+    relative_path TEXT,
+    external_canonical TEXT,
+    format TEXT NOT NULL DEFAULT 'dotenv',
+    provider TEXT NOT NULL,
+    variable TEXT NOT NULL,
+    label TEXT NOT NULL,
+    state TEXT NOT NULL,
+    upsert_key TEXT NOT NULL UNIQUE,
+    last_seen_at TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS credential_locators_pair
+ON credential_locators(provider, variable, updated_at);
+"#;
+
+const MIGRATION_51: &str = r#"
+CREATE TABLE IF NOT EXISTS credential_locators (
+    id TEXT PRIMARY KEY,
+    kind TEXT NOT NULL CHECK (kind IN (
+        'workspace_env_file','instance_env_file','process_environment','external_env_file'
+    )),
+    workspace_root_ref TEXT,
+    workspace_canonical TEXT,
+    relative_path TEXT,
+    external_canonical TEXT,
+    format TEXT NOT NULL DEFAULT 'dotenv',
+    provider TEXT NOT NULL,
+    variable TEXT NOT NULL,
+    label TEXT NOT NULL,
+    state TEXT NOT NULL,
+    upsert_key TEXT NOT NULL UNIQUE,
+    last_seen_at TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS credential_locators_pair
+ON credential_locators(provider, variable, updated_at);
+
+ALTER TABLE secret_refs ADD COLUMN locator_id TEXT REFERENCES credential_locators(id);
+ALTER TABLE secret_refs ADD COLUMN preferred INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE secret_refs ADD COLUMN source_state TEXT;
+"#;
+
+/// Convert historical evaluation executions to canonical eval optimizer runs
+/// and make experiment request idempotency independent of execution members.
+/// The legacy campaign tables remain read-only until the final UI/drop cut.
+const MIGRATION_52: &str = r#"
+ALTER TABLE experiment_groups ADD COLUMN request_id TEXT;
+
+UPDATE experiment_groups
+SET request_id = (
+    SELECT member_id
+    FROM experiment_group_members member
+    WHERE member.group_id = experiment_groups.id
+      AND member.member_kind = 'direct_evaluation'
+    ORDER BY attached_at, member_id
+    LIMIT 1
+)
+WHERE request_id IS NULL;
+
+CREATE UNIQUE INDEX IF NOT EXISTS experiment_groups_request
+ON experiment_groups(request_id) WHERE request_id IS NOT NULL;
+
+-- Campaign and optimizer-run identities share the same namespace after this
+-- cutover.  Refuse an existing collision instead of attaching the campaign's
+-- evidence and experiment membership to an unrelated optimizer execution.
+CREATE TEMP TABLE migration_52_identity_guard (
+    collision INTEGER NOT NULL CHECK (collision = 0)
+);
+INSERT INTO migration_52_identity_guard(collision)
+SELECT 1
+FROM eval_campaigns campaign
+JOIN optimizer_runs run ON run.id = campaign.id;
+DROP TABLE migration_52_identity_guard;
+
+INSERT OR IGNORE INTO optimizer_runs(
+    id, algorithm_id, algorithm_version, status, source, objective,
+    project_ref, session_ref, created_at, started_at, finished_at,
+    cursor_seq, capabilities_json, bindings_json, input_refs_json,
+    output_refs_json, visual_refs_json, summary_json, usage_json,
+    error_json, payload_json, updated_at,
+    lifecycle, phase, condition, placement, aggregate_sequence, projection_revision
+)
+SELECT
+    campaign.id,
+    'eval',
+    'legacy-campaign-migration.v1',
+    CASE campaign.status
+        WHEN 'planned' THEN 'queued'
+        WHEN 'running' THEN 'running'
+        WHEN 'complete' THEN 'completed'
+        WHEN 'partial' THEN 'degraded'
+        ELSE 'failed'
+    END,
+    'legacy_campaign_migration',
+    campaign.title,
+    NULL,
+    campaign.session_id,
+    campaign.created_at,
+    campaign.started_at,
+    campaign.settled_at,
+    campaign.expected_rollouts + 2 +
+        CASE WHEN campaign.status IN ('complete','partial','failed') THEN 1 ELSE 0 END,
+    '{"cancel":false,"pause":false,"resume":false,"streamEvents":true,"stateSlices":true,"candidates":false,"checkpoints":false,"checkpointEvaluations":false,"inferenceEndpoint":false,"localSlotBinding":false}',
+    json_array(),
+    json_array(),
+    json_array(),
+    json_array(),
+    json_object(
+        'migratedFrom', 'eval_campaign',
+        'legacyCampaignId', campaign.id,
+        'containerId', campaign.container_id,
+        'expectedRollouts', campaign.expected_rollouts,
+        'maxConcurrency', campaign.max_concurrency,
+        'policyRef', json(campaign.policy_ref_json),
+        'plan', json(campaign.plan_json)
+    ),
+    '{"costUsd":null,"promptTokens":0,"completionTokens":0,"rollouts":0,"wallTimeMs":0,"extra":{}}',
+    NULL,
+    json_object(
+        'schemaVersion', 'optimizer_run.v1',
+        'id', campaign.id,
+        'algorithmId', 'eval',
+        'algorithmVersion', 'legacy-campaign-migration.v1',
+        'status', CASE campaign.status
+            WHEN 'planned' THEN 'queued'
+            WHEN 'running' THEN 'running'
+            WHEN 'complete' THEN 'completed'
+            WHEN 'partial' THEN 'degraded'
+            ELSE 'failed'
+        END,
+        'source', 'legacy_campaign_migration',
+        'objective', campaign.title,
+        'projectRef', NULL,
+        'sessionRef', campaign.session_id,
+        'createdAt', campaign.created_at,
+        'startedAt', campaign.started_at,
+        'finishedAt', campaign.settled_at,
+        'cursorSeq', campaign.expected_rollouts + 2 +
+            CASE WHEN campaign.status IN ('complete','partial','failed') THEN 1 ELSE 0 END,
+        'capabilities', json('{"cancel":false,"pause":false,"resume":false,"streamEvents":true,"stateSlices":true,"candidates":false,"checkpoints":false,"checkpointEvaluations":false,"inferenceEndpoint":false,"localSlotBinding":false}'),
+        'executionBindings', json_array(),
+        'inputRefs', json_array(),
+        'outputRefs', json_array(),
+        'visualRefs', json_array(),
+        'summary', json_object(
+            'migratedFrom', 'eval_campaign',
+            'legacyCampaignId', campaign.id,
+            'containerId', campaign.container_id,
+            'expectedRollouts', campaign.expected_rollouts,
+            'maxConcurrency', campaign.max_concurrency,
+            'policyRef', json(campaign.policy_ref_json),
+            'plan', json(campaign.plan_json)
+        ),
+        'usage', json('{"costUsd":null,"promptTokens":0,"completionTokens":0,"rollouts":0,"wallTimeMs":0,"extra":{}}'),
+        'error', NULL
+    ),
+    COALESCE(campaign.settled_at, campaign.started_at, campaign.created_at),
+    CASE WHEN campaign.status = 'planned' THEN 'queued'
+         WHEN campaign.status = 'running' THEN 'running' ELSE 'terminal' END,
+    NULL,
+    'healthy',
+    'direct_container_evaluation',
+    campaign.expected_rollouts + 2 +
+        CASE WHEN campaign.status IN ('complete','partial','failed') THEN 1 ELSE 0 END,
+    campaign.expected_rollouts + 2 +
+        CASE WHEN campaign.status IN ('complete','partial','failed') THEN 1 ELSE 0 END
+FROM eval_campaigns campaign;
+
+INSERT OR IGNORE INTO optimizer_run_drafts(
+    id, algorithm, spec_json, spec_digest, admission_state,
+    authorization_ref, created_at, updated_at
+)
+SELECT
+    'migration52:' || campaign.id,
+    'eval',
+    json_object(
+        'schemaVersion', 'legacy_eval_campaign_spec.v1',
+        'campaignId', campaign.id,
+        'containerId', campaign.container_id,
+        'expectedRollouts', campaign.expected_rollouts,
+        'maxConcurrency', campaign.max_concurrency,
+        'policyRef', json(campaign.policy_ref_json),
+        'plan', json(campaign.plan_json)
+    ),
+    'legacy-campaign:' || campaign.id,
+    'consumed',
+    'workshop:admission-not-required:legacy-campaign-migration',
+    campaign.created_at,
+    COALESCE(campaign.settled_at, campaign.started_at, campaign.created_at)
+FROM eval_campaigns campaign
+JOIN optimizer_runs run ON run.id = campaign.id
+WHERE run.source = 'legacy_campaign_migration';
+
+INSERT OR IGNORE INTO optimizer_run_specs(
+    optimizer_run_id, spec_json, spec_digest, authorization_json, admitted_at
+)
+SELECT
+    campaign.id,
+    json_object(
+        'schemaVersion', 'legacy_eval_campaign_spec.v1',
+        'campaignId', campaign.id,
+        'containerId', campaign.container_id,
+        'expectedRollouts', campaign.expected_rollouts,
+        'maxConcurrency', campaign.max_concurrency,
+        'policyRef', json(campaign.policy_ref_json),
+        'plan', json(campaign.plan_json)
+    ),
+    'legacy-campaign:' || campaign.id,
+    '{"state":"not_required","reason":"legacy_campaign_migration"}',
+    campaign.created_at
+FROM eval_campaigns campaign
+JOIN optimizer_runs run ON run.id = campaign.id
+WHERE run.source = 'legacy_campaign_migration';
+
+INSERT OR IGNORE INTO optimizer_algorithm_projections(
+    optimizer_run_id, algorithm, reducer_version, as_of_sequence, projection_json, updated_at
+)
+SELECT
+    campaign.id,
+    'eval',
+    'eval.projection.v1',
+    campaign.expected_rollouts + 2 +
+        CASE WHEN campaign.status IN ('complete','partial','failed') THEN 1 ELSE 0 END,
+    json_object(
+        'algorithm', 'eval',
+        'candidates', json_array(),
+        'seeds', json(COALESCE((
+            SELECT json_group_array(seed) FROM (
+                SELECT seed FROM eval_campaign_rollouts
+                WHERE campaign_id = campaign.id ORDER BY ordinal
+            )
+        ), '[]')),
+        'scenarios', json_array(),
+        'workItems', json(COALESCE((
+            SELECT json_group_array(json_object(
+                'workItemId', rollout_id,
+                'kind', 'eval_trial',
+                'lifecycle', CASE status
+                    WHEN 'planned' THEN 'planned'
+                    WHEN 'started' THEN 'running'
+                    ELSE 'terminal'
+                END,
+                'terminal', CASE status
+                    WHEN 'terminal' THEN 'completed'
+                    WHEN 'failed' THEN 'failed'
+                    WHEN 'missing' THEN 'failed'
+                    ELSE NULL
+                END,
+                'externalRef', task_instance_id
+            )) FROM (
+                SELECT * FROM eval_campaign_rollouts
+                WHERE campaign_id = campaign.id ORDER BY ordinal
+            )
+        ), '[]')),
+        'phase', NULL,
+        'usage', json('{"costUsd":null,"promptTokens":null,"completionTokens":null,"steps":null}'),
+        'meanReward', (
+            SELECT AVG(CASE WHEN json_valid(terminal_json)
+                THEN json_extract(terminal_json, '$.reward') END)
+            FROM eval_campaign_rollouts WHERE campaign_id = campaign.id
+        ),
+        'scoredTrials', (
+            SELECT COUNT(*) FROM eval_campaign_rollouts
+            WHERE campaign_id = campaign.id
+              AND json_valid(terminal_json)
+              AND json_extract(terminal_json, '$.reward') IS NOT NULL
+        ),
+        'promotionApplicable', json('false'),
+        'traces', (
+            SELECT COUNT(*) FROM eval_campaign_rollouts
+            WHERE campaign_id = campaign.id AND terminal_json IS NOT NULL
+        )
+    ),
+    COALESCE(campaign.settled_at, campaign.started_at, campaign.created_at)
+FROM eval_campaigns campaign
+JOIN optimizer_runs run ON run.id = campaign.id
+WHERE run.source = 'legacy_campaign_migration';
+
+INSERT OR IGNORE INTO optimizer_work_items(
+    work_item_id, optimizer_run_id, kind, lifecycle, terminal,
+    external_ref, created_at, updated_at
+)
+SELECT
+    rollout.rollout_id,
+    rollout.campaign_id,
+    'eval_trial',
+    CASE rollout.status
+        WHEN 'planned' THEN 'planned'
+        WHEN 'started' THEN 'running'
+        ELSE 'terminal'
+    END,
+    CASE rollout.status
+        WHEN 'terminal' THEN 'completed'
+        WHEN 'failed' THEN 'failed'
+        WHEN 'missing' THEN 'failed'
+        ELSE NULL
+    END,
+    rollout.task_instance_id,
+    campaign.created_at,
+    COALESCE(rollout.settled_at, rollout.started_at, campaign.created_at)
+FROM eval_campaign_rollouts rollout
+JOIN eval_campaigns campaign ON campaign.id = rollout.campaign_id
+JOIN optimizer_runs run ON run.id = campaign.id
+WHERE run.source = 'legacy_campaign_migration';
+
+INSERT OR IGNORE INTO optimizer_events(
+    event_id, optimizer_run_id, sequence_number, event_type, algorithm_id,
+    occurred_at, payload_json, producer_id, producer_sequence,
+    payload_digest, aggregate_sequence, committed_at
+)
+SELECT
+    'migration52:' || campaign.id || ':plan',
+    campaign.id,
+    1,
+    'eval.run.planned',
+    'eval',
+    campaign.created_at,
+    json_object(
+        'schemaVersion', 'optimizer_event.v1',
+        'eventId', 'migration52:' || campaign.id || ':plan',
+        'eventType', 'eval.run.planned',
+        'sequenceNumber', 1,
+        'occurredAt', campaign.created_at,
+        'optimizerRunId', campaign.id,
+        'algorithmId', 'eval',
+        'level', 'info',
+        'item', NULL,
+        'delta', json_object(),
+        'snapshot', json_object(
+            'plannedTrials', campaign.expected_rollouts,
+            'workItemIds', json(COALESCE((
+                SELECT json_group_array(rollout_id) FROM (
+                    SELECT rollout_id FROM eval_campaign_rollouts
+                    WHERE campaign_id = campaign.id ORDER BY ordinal
+                )
+            ), '[]'))
+        ),
+        'usageDelta', NULL,
+        'artifactRefs', json_array(),
+        'error', NULL,
+        'raw', json_object('source', 'migration_52')
+    ),
+    'migration-52', 1, 'migration-52-unavailable', 1, campaign.created_at
+FROM eval_campaigns campaign
+JOIN optimizer_runs run ON run.id = campaign.id
+WHERE run.source = 'legacy_campaign_migration';
+
+INSERT OR IGNORE INTO optimizer_events(
+    event_id, optimizer_run_id, sequence_number, event_type, algorithm_id,
+    occurred_at, payload_json, producer_id, producer_sequence,
+    payload_digest, aggregate_sequence, committed_at
+)
+SELECT
+    'migration52:' || campaign.id || ':lifecycle',
+    campaign.id,
+    2,
+    CASE WHEN campaign.status = 'planned'
+         THEN 'migration.eval.run.planned' ELSE 'optimizer.run.started' END,
+    'eval',
+    COALESCE(campaign.started_at, campaign.created_at),
+    json_object(
+        'schemaVersion', 'optimizer_event.v1',
+        'eventId', 'migration52:' || campaign.id || ':lifecycle',
+        'eventType', CASE WHEN campaign.status = 'planned'
+             THEN 'migration.eval.run.planned' ELSE 'optimizer.run.started' END,
+        'sequenceNumber', 2,
+        'occurredAt', COALESCE(campaign.started_at, campaign.created_at),
+        'optimizerRunId', campaign.id,
+        'algorithmId', 'eval',
+        'level', 'info',
+        'item', NULL,
+        'delta', json_object('status', campaign.status),
+        'snapshot', NULL,
+        'usageDelta', NULL,
+        'artifactRefs', json_array(),
+        'error', NULL,
+        'raw', json_object('source', 'migration_52')
+    ),
+    'migration-52', 2, 'migration-52-unavailable', 2,
+    COALESCE(campaign.started_at, campaign.created_at)
+FROM eval_campaigns campaign
+JOIN optimizer_runs run ON run.id = campaign.id
+WHERE run.source = 'legacy_campaign_migration';
+
+INSERT OR IGNORE INTO optimizer_events(
+    event_id, optimizer_run_id, sequence_number, event_type, algorithm_id,
+    occurred_at, payload_json, producer_id, producer_sequence,
+    payload_digest, aggregate_sequence, committed_at
+)
+SELECT
+    'migration52:' || rollout.campaign_id || ':rollout:' || rollout.ordinal,
+    rollout.campaign_id,
+    rollout.ordinal + 2,
+    CASE rollout.status
+        WHEN 'started' THEN 'eval.trial.started'
+        WHEN 'terminal' THEN 'eval.trial.terminal'
+        WHEN 'failed' THEN 'eval.trial.terminal'
+        WHEN 'missing' THEN 'eval.trial.terminal'
+        ELSE 'migration.eval.trial.planned'
+    END,
+    'eval',
+    COALESCE(rollout.settled_at, rollout.started_at, campaign.created_at),
+    json_object(
+        'schemaVersion', 'optimizer_event.v1',
+        'eventId', 'migration52:' || rollout.campaign_id || ':rollout:' || rollout.ordinal,
+        'eventType', CASE rollout.status
+            WHEN 'started' THEN 'eval.trial.started'
+            WHEN 'terminal' THEN 'eval.trial.terminal'
+            WHEN 'failed' THEN 'eval.trial.terminal'
+            WHEN 'missing' THEN 'eval.trial.terminal'
+            ELSE 'migration.eval.trial.planned'
+        END,
+        'sequenceNumber', rollout.ordinal + 2,
+        'occurredAt', COALESCE(rollout.settled_at, rollout.started_at, campaign.created_at),
+        'optimizerRunId', rollout.campaign_id,
+        'algorithmId', 'eval',
+        'level', CASE WHEN rollout.status IN ('failed','missing') THEN 'warn' ELSE 'info' END,
+        'item', json_object(
+            'kind', 'trial',
+            'id', rollout.rollout_id,
+            'status', rollout.status,
+            'valid', json(CASE WHEN rollout.status = 'terminal' THEN 'true' ELSE 'false' END),
+            'seed', rollout.seed,
+            'taskInstanceId', rollout.task_instance_id,
+            'reward', CASE WHEN json_valid(rollout.terminal_json)
+                THEN json_extract(rollout.terminal_json, '$.reward') END,
+            'raw', CASE WHEN json_valid(rollout.terminal_json)
+                THEN json(rollout.terminal_json) ELSE NULL END
+        ),
+        'delta', json_object(),
+        'snapshot', NULL,
+        'usageDelta', NULL,
+        'artifactRefs', json_array(),
+        'error', NULL,
+        'raw', json_object('source', 'migration_52')
+    ),
+    'migration-52', rollout.ordinal + 2, 'migration-52-unavailable', rollout.ordinal + 2,
+    COALESCE(rollout.settled_at, rollout.started_at, campaign.created_at)
+FROM eval_campaign_rollouts rollout
+JOIN eval_campaigns campaign ON campaign.id = rollout.campaign_id
+JOIN optimizer_runs run ON run.id = campaign.id
+WHERE run.source = 'legacy_campaign_migration';
+
+INSERT OR IGNORE INTO optimizer_events(
+    event_id, optimizer_run_id, sequence_number, event_type, algorithm_id,
+    occurred_at, payload_json, producer_id, producer_sequence,
+    payload_digest, aggregate_sequence, committed_at
+)
+SELECT
+    'migration52:' || campaign.id || ':terminal',
+    campaign.id,
+    campaign.expected_rollouts + 3,
+    CASE campaign.status WHEN 'complete' THEN 'optimizer.run.completed'
+         WHEN 'partial' THEN 'optimizer.run.degraded' ELSE 'optimizer.run.failed' END,
+    'eval',
+    COALESCE(campaign.settled_at, campaign.started_at, campaign.created_at),
+    json_object(
+        'schemaVersion', 'optimizer_event.v1',
+        'eventId', 'migration52:' || campaign.id || ':terminal',
+        'eventType', CASE campaign.status WHEN 'complete' THEN 'optimizer.run.completed'
+             WHEN 'partial' THEN 'optimizer.run.degraded' ELSE 'optimizer.run.failed' END,
+        'sequenceNumber', campaign.expected_rollouts + 3,
+        'occurredAt', COALESCE(campaign.settled_at, campaign.started_at, campaign.created_at),
+        'optimizerRunId', campaign.id,
+        'algorithmId', 'eval',
+        'level', CASE WHEN campaign.status = 'complete' THEN 'info' ELSE 'warn' END,
+        'item', NULL,
+        'delta', json_object('legacyCampaignStatus', campaign.status),
+        'snapshot', NULL,
+        'usageDelta', NULL,
+        'artifactRefs', json_array(),
+        'error', NULL,
+        'raw', json_object('source', 'migration_52')
+    ),
+    'migration-52', campaign.expected_rollouts + 3, 'migration-52-unavailable',
+    campaign.expected_rollouts + 3,
+    COALESCE(campaign.settled_at, campaign.started_at, campaign.created_at)
+FROM eval_campaigns campaign
+JOIN optimizer_runs run ON run.id = campaign.id
+WHERE run.source = 'legacy_campaign_migration'
+  AND campaign.status IN ('complete','partial','failed');
+
+INSERT OR REPLACE INTO optimizer_event_cursors(optimizer_run_id, cursor_seq, updated_at)
+SELECT
+    campaign.id,
+    campaign.expected_rollouts + 2 +
+        CASE WHEN campaign.status IN ('complete','partial','failed') THEN 1 ELSE 0 END,
+    COALESCE(campaign.settled_at, campaign.started_at, campaign.created_at)
+FROM eval_campaigns campaign
+JOIN optimizer_runs run ON run.id = campaign.id
+WHERE run.source = 'legacy_campaign_migration';
+
+CREATE TABLE experiment_group_members_next (
+    group_id TEXT NOT NULL REFERENCES experiment_groups(id) ON DELETE CASCADE,
+    member_kind TEXT NOT NULL CHECK (member_kind = 'optimizer_run'),
+    member_id TEXT NOT NULL,
+    title TEXT NOT NULL,
+    attached_at TEXT NOT NULL,
+    PRIMARY KEY (group_id, member_kind, member_id)
+);
+INSERT OR IGNORE INTO experiment_group_members_next(
+    group_id, member_kind, member_id, title, attached_at
+)
+SELECT
+    member.group_id,
+    'optimizer_run',
+    member.member_id,
+    member.title,
+    member.attached_at
+FROM experiment_group_members member
+JOIN optimizer_runs run ON run.id = member.member_id
+WHERE member.member_kind IN ('optimizer_run','eval_campaign');
+DROP TABLE experiment_group_members;
+ALTER TABLE experiment_group_members_next RENAME TO experiment_group_members;
+CREATE INDEX experiment_group_members_kind
+ON experiment_group_members(member_kind, member_id);
+
+CREATE TABLE experiment_nodes_next_v52 (
+    id TEXT PRIMARY KEY,
+    experiment_id TEXT NOT NULL REFERENCES experiment_groups(id) ON DELETE CASCADE,
+    kind TEXT NOT NULL CHECK (kind IN ('baseline','variant','run','result','optimizer_run')),
+    title TEXT NOT NULL,
+    status TEXT NOT NULL,
+    config_json TEXT NOT NULL DEFAULT '{}',
+    metrics_json TEXT,
+    cost_usd REAL,
+    artifact_refs_json TEXT NOT NULL DEFAULT '[]',
+    trace_refs_json TEXT NOT NULL DEFAULT '[]',
+    provenance_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    evidence_refs_json TEXT NOT NULL DEFAULT '[]',
+    UNIQUE(experiment_id, id)
+);
+INSERT INTO experiment_nodes_next_v52(
+    id, experiment_id, kind, title, status, config_json, metrics_json, cost_usd,
+    artifact_refs_json, trace_refs_json, provenance_json, created_at, updated_at,
+    evidence_refs_json
+)
+SELECT
+    node.id,
+    node.experiment_id,
+    CASE WHEN node.kind = 'eval_campaign' THEN 'optimizer_run' ELSE node.kind END,
+    node.title,
+    node.status,
+    CASE WHEN node.kind = 'eval_campaign' AND json_valid(node.config_json)
+         THEN json_set(node.config_json, '$.memberKind', 'optimizer_run')
+         ELSE node.config_json END,
+    node.metrics_json,
+    node.cost_usd,
+    node.artifact_refs_json,
+    node.trace_refs_json,
+    node.provenance_json,
+    node.created_at,
+    node.updated_at,
+    node.evidence_refs_json
+FROM experiment_nodes node
+WHERE node.kind != 'direct_evaluation';
+
+CREATE TABLE experiment_edges_next_v52 AS
+SELECT edge.* FROM experiment_edges edge
+JOIN experiment_nodes_next_v52 source ON source.id = edge.source_node_id
+JOIN experiment_nodes_next_v52 target ON target.id = edge.target_node_id;
+
+DROP TABLE experiment_edges;
+DROP TABLE experiment_nodes;
+ALTER TABLE experiment_nodes_next_v52 RENAME TO experiment_nodes;
+
+CREATE TABLE experiment_edges (
+    id TEXT PRIMARY KEY,
+    experiment_id TEXT NOT NULL REFERENCES experiment_groups(id) ON DELETE CASCADE,
+    source_node_id TEXT NOT NULL REFERENCES experiment_nodes(id) ON DELETE CASCADE,
+    target_node_id TEXT NOT NULL REFERENCES experiment_nodes(id) ON DELETE CASCADE,
+    relation TEXT NOT NULL CHECK (relation IN (
+        'forked_from','rerun_of','warm_started_from','produced','evaluated',
+        'compared_with','promoted_to','reproduced_on','rolled_back_to','follow_up'
+    )),
+    created_at TEXT NOT NULL,
+    UNIQUE(experiment_id, source_node_id, target_node_id, relation)
+);
+INSERT INTO experiment_edges SELECT * FROM experiment_edges_next_v52;
+DROP TABLE experiment_edges_next_v52;
+
+CREATE INDEX experiment_nodes_experiment
+ON experiment_nodes(experiment_id, created_at, id);
+CREATE INDEX experiment_edges_experiment
+ON experiment_edges(experiment_id, created_at, id);
+"#;
+
+/// Final optimizer-run authority cutover. Migration 52 copied every legacy
+/// execution, work item, event, and experiment membership into the kernel.
+/// These tables are therefore rollback-only duplicates and must not survive as
+/// a second writable aggregate.
+const MIGRATION_53: &str = r#"
+DROP TABLE eval_campaign_rollouts;
+DROP TABLE eval_campaigns;
+DROP TABLE evaluation_rollouts;
+DROP TABLE evaluation_run_drafts;
+DROP TABLE evaluation_runs;
+"#;
+
 #[cfg(test)]
 mod tests {
     /// Derived, not pinned: adding a migration should not mean editing
@@ -3428,5 +4250,193 @@ mod tests {
             [],
         )
         .expect("migration 48 must permit multiple experiments in one session");
+    }
+
+    #[test]
+    fn migration_50_installs_the_run_kernel_tables() {
+        let conn = seed_at_version(49);
+        assert_eq!(apply_migrations(&conn).unwrap(), LATEST_VERSION);
+        for table in [
+            "optimizer_run_drafts",
+            "optimizer_run_specs",
+            "optimizer_algorithm_projections",
+            "optimizer_work_items",
+            "optimizer_usage_ledger",
+            "optimizer_evidence_refs",
+            "optimizer_evidence_amendments",
+        ] {
+            let present: bool = conn
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1)",
+                    [table],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert!(present, "{table} must exist after migration 50");
+        }
+        let lifecycle_present: bool = conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM pragma_table_info('optimizer_runs') WHERE name='lifecycle')",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(lifecycle_present);
+    }
+
+    #[test]
+    fn migration_51_installs_locator_registry_and_source_license_columns() {
+        let conn = seed_at_version(50);
+        assert_eq!(apply_migrations(&conn).unwrap(), LATEST_VERSION);
+        let table_present: bool = conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='credential_locators')",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(table_present);
+        for column in ["locator_id", "preferred", "source_state"] {
+            let sql = format!(
+                "SELECT EXISTS(SELECT 1 FROM pragma_table_info('secret_refs') WHERE name='{column}')"
+            );
+            let present: bool = conn.query_row(&sql, [], |row| row.get(0)).unwrap();
+            assert!(present, "secret_refs.{column} must exist after migration 51");
+        }
+    }
+
+    #[test]
+    fn migration_52_moves_campaign_execution_and_request_identity_to_canonical_owners() {
+        let conn = seed_at_version(51);
+        conn.execute(
+            "INSERT INTO eval_campaigns(
+                id, session_id, container_id, title, expected_rollouts, max_concurrency,
+                policy_ref_json, plan_json, status, created_at, started_at, settled_at
+             ) VALUES(
+                'campaign_1', 'session_1', 'container_1', 'Legacy eval', 2, 1,
+                '{}', '{}', 'complete', '2026-08-27T00:00:00Z',
+                '2026-08-27T00:01:00Z', '2026-08-27T00:02:00Z'
+             )",
+            [],
+        )
+        .unwrap();
+        for (ordinal, reward) in [(1, 0.5), (2, 1.0)] {
+            conn.execute(
+                "INSERT INTO eval_campaign_rollouts(
+                    campaign_id, rollout_id, ordinal, seed, task_instance_id,
+                    status, terminal_json, started_at, settled_at
+                 ) VALUES(
+                    'campaign_1', ?1, ?2, ?2, ?3, 'terminal', ?4,
+                    '2026-08-27T00:01:00Z', '2026-08-27T00:02:00Z'
+                 )",
+                rusqlite::params![
+                    format!("campaign_1_r{ordinal:02}"),
+                    ordinal,
+                    format!("seed:{ordinal}"),
+                    serde_json::json!({"reward": reward}).to_string()
+                ],
+            )
+            .unwrap();
+        }
+        conn.execute(
+            "INSERT INTO experiment_groups(
+                id, session_id, title, created_at, updated_at
+             ) VALUES('exp_1','session_1','Legacy','2026-08-27T00:00:00Z','2026-08-27T00:00:00Z')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO experiment_group_members(
+                group_id, member_kind, member_id, title, attached_at
+             ) VALUES('exp_1','direct_evaluation','request_1','Request','2026-08-27T00:00:00Z')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO experiment_group_members(
+                group_id, member_kind, member_id, title, attached_at
+             ) VALUES('exp_1','eval_campaign','campaign_1','Legacy eval','2026-08-27T00:00:00Z')",
+            [],
+        )
+        .unwrap();
+
+        assert_eq!(apply_migrations(&conn).unwrap(), LATEST_VERSION);
+        let state = crate::optimizers::kernel::persist::load_state(&conn, "campaign_1")
+            .unwrap()
+            .expect("migrated campaign must have a durable kernel projection");
+        assert_eq!(state.algorithm, crate::optimizers::kernel::AlgorithmKind::Eval);
+        assert!(state.lifecycle.is_terminal());
+        assert_eq!(state.work_summary().planned, Some(2));
+        assert_eq!(state.work_summary().succeeded, Some(2));
+        assert_eq!(state.spec_digest, "legacy-campaign:campaign_1");
+
+        let request_id: String = conn
+            .query_row(
+                "SELECT request_id FROM experiment_groups WHERE id='exp_1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(request_id, "request_1");
+        let members: Vec<(String, String)> = conn
+            .prepare(
+                "SELECT member_kind, member_id FROM experiment_group_members
+                 WHERE group_id='exp_1' ORDER BY member_id",
+            )
+            .unwrap()
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(members, vec![("optimizer_run".into(), "campaign_1".into())]);
+        for retired in [
+            "eval_campaigns",
+            "eval_campaign_rollouts",
+            "evaluation_runs",
+            "evaluation_rollouts",
+            "evaluation_run_drafts",
+        ] {
+            let sql = format!(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='{retired}')"
+            );
+            let present: bool = conn.query_row(&sql, [], |row| row.get(0)).unwrap();
+            assert!(!present, "{retired} must be removed after the one-way cutover");
+        }
+    }
+
+    #[test]
+    fn migration_52_refuses_campaign_optimizer_identity_collisions() {
+        let conn = seed_at_version(51);
+        conn.execute(
+            "INSERT INTO optimizer_runs(
+                id, algorithm_id, status, source, created_at, payload_json, updated_at
+             ) VALUES('shared_id','gepa','queued','local','now','{}','now')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO eval_campaigns(
+                id, session_id, container_id, title, expected_rollouts, max_concurrency,
+                policy_ref_json, plan_json, status, created_at
+             ) VALUES('shared_id','session_1','container_1','Legacy eval',1,1,
+                '{}','{}','planned','now')",
+            [],
+        )
+        .unwrap();
+
+        let error = format!("{:#}", apply_migrations(&conn).unwrap_err());
+        assert!(
+            error.contains("migration_52_identity_guard")
+                || error.contains("CHECK constraint failed"),
+            "unexpected collision failure: {error}"
+        );
+        let algorithm: String = conn
+            .query_row(
+                "SELECT algorithm_id FROM optimizer_runs WHERE id='shared_id'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(algorithm, "gepa", "the colliding run must remain untouched");
     }
 }

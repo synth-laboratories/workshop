@@ -253,58 +253,6 @@ impl DataStore {
         self.content.root().join(".trace-staging")
     }
 
-    pub async fn campaign_create(
-        &self,
-        request: crate::campaigns::CampaignCreate,
-    ) -> Result<crate::campaigns::Campaign> {
-        self.db
-            .clone()
-            .run_transaction(move |conn| crate::campaigns::create(conn, request))
-            .await
-    }
-
-    pub async fn campaign_get(&self, id: String) -> Result<crate::campaigns::Campaign> {
-        self.db
-            .clone()
-            .run(move |conn| crate::campaigns::load(conn, &id))
-            .await
-    }
-
-    pub async fn campaign_for_rollout(&self, rollout_id: String) -> Result<Option<String>> {
-        self.db
-            .clone()
-            .run(move |conn| crate::campaigns::campaign_for_rollout(conn, &rollout_id))
-            .await
-    }
-
-    pub async fn campaign_record_started(&self, rollout_id: String, at: String) -> Result<()> {
-        self.db
-            .clone()
-            .run_transaction(move |conn| crate::campaigns::record_started(conn, &rollout_id, &at))
-            .await
-    }
-
-    pub async fn campaign_record_terminal(
-        &self,
-        rollout_id: String,
-        terminal: Value,
-        at: String,
-    ) -> Result<()> {
-        self.db
-            .clone()
-            .run_transaction(move |conn| {
-                crate::campaigns::record_terminal(conn, &rollout_id, &terminal, &at)
-            })
-            .await
-    }
-
-    pub async fn campaign_settle(&self, id: String, at: String) -> Result<Value> {
-        self.db
-            .clone()
-            .run_transaction(move |conn| crate::campaigns::settle(conn, &id, &at))
-            .await
-    }
-
     pub async fn experiment_for_session(
         &self,
         session_id: String,

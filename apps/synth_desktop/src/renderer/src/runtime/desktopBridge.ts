@@ -4,7 +4,7 @@ import { commands as spectaCommands } from "../generated/protocol";
 import { open } from "@tauri-apps/plugin-dialog";
 import desktopPackage from "../../../../package.json";
 import type { AppEvent, InternSessionControlRequest, InternSessionCreateRequest, InternSessionSendRequest, RuntimeEvent, Session } from "@synth/runtime-protocol";
-import type { CodexEvent, ComposerImageAttachment, DesktopInstanceDiagnostics, HostedTrainingModelCatalog, LagunaAdapterStatus, LagunaDownloadProgress, LagunaModelHit, LagunaPolicy, LagunaStatus, ModelPerformanceSummary, ModelPerformanceTurnSample, OptimizerInferDelta, OptimizerRunOutputs, PersistedCodexSession, RequestOptions, RuntimeBridge, SavedLoraCheckpoint, SavedLoraCheckpointPage, SavedLoraDownload, SavedLoraRunPage, SecretsBridge, TerminalEvent, TrainingModelDownloadProgress, WhisperDownloadProgress, WhisperRuntimeStatus } from "../bridge";
+import type { CodexEvent, ComposerImageAttachment, DesktopInstanceDiagnostics, HostedTrainingModelCatalog, LagunaAdapterStatus, LagunaDownloadProgress, LagunaModelHit, LagunaPolicy, LagunaStatus, ModelPerformanceSummary, ModelPerformanceTurnSample, OptimizerInferDelta, OptimizerRunOutputs, OptimizerRunViewV2, PersistedCodexSession, RequestOptions, RuntimeBridge, SavedLoraCheckpoint, SavedLoraCheckpointPage, SavedLoraDownload, SavedLoraRunPage, SecretsBridge, TerminalEvent, TrainingModelDownloadProgress, WhisperDownloadProgress, WhisperRuntimeStatus } from "../bridge";
 import type { CoreDiagnostics } from "@synth/runtime-protocol";
 import type { ContainerDeployment, TraceV5Record, UsageLedgerEntry, UsageWindow } from "@synth/runtime-protocol";
 import { publicError } from "../runtime/publicError";
@@ -493,6 +493,12 @@ window.synthCodexOauth ??= isTauri
 	};
 window.synthSecrets ??= isTauri
 	? {
+		workspaceRoots: () => fromGenerated(spectaCommands.secretsWorkspaceRootsList()),
+		bindings: () => fromGenerated(spectaCommands.secretsBindingsList()),
+		locators: () => fromGenerated(spectaCommands.secretsLocatorsList()),
+		rememberExternal: (pickerPath, provider, variable, label) => fromGenerated(spectaCommands.secretsLocatorRememberExternal(pickerPath, provider, variable, n(label))),
+		registerLocator: (locatorId) => fromGenerated(spectaCommands.secretsLocatorRegister(locatorId)),
+		forgetLocator: (locatorId) => fromGenerated(spectaCommands.secretsLocatorForget(locatorId)),
 		list: (provider, scope) => fromGenerated(spectaCommands.secretsList(n(provider), n(scope))),
 		create: (request) => fromGenerated(spectaCommands.secretsCreate(wire(request))),
 		replace: (secretId, value) => fromGenerated(spectaCommands.secretsReplace(secretId, value)),
@@ -509,6 +515,12 @@ window.synthSecrets ??= isTauri
 		denyUse: (secretId) => fromGenerated(spectaCommands.secretsDenyUse(secretId))
 	}
 	: {
+		workspaceRoots: async () => [],
+		bindings: async () => [],
+		locators: async () => [],
+		rememberExternal: async () => { throw new Error("Secrets require Synth Desktop"); },
+		registerLocator: async () => { throw new Error("Secrets require Synth Desktop"); },
+		forgetLocator: async () => undefined,
 		list: async () => [],
 		create: async () => { throw new Error("Secrets require Synth Desktop"); },
 		replace: async () => { throw new Error("Secrets require Synth Desktop"); },
@@ -922,6 +934,8 @@ window.synthWorkspaceScope ??= isTauri
 				fromGenerated(spectaCommands.optimizersStageEvalCandidates(wire(request))) as Promise<{ id: string; candidates: { id: string; label: string }[] }>,
 			list: (query) => fromGenerated(spectaCommands.optimizersList(wire(query ?? null))),
 			get: (optimizerRunId) => fromGenerated(spectaCommands.optimizersGet(optimizerRunId)),
+			runViewV2: (optimizerRunId) =>
+				fromGenerated(spectaCommands.optimizersRunViewV2(optimizerRunId)) as Promise<OptimizerRunViewV2>,
 			create: (request) => fromGenerated(spectaCommands.optimizersCreate(request)),
 			refresh: (optimizerRunId) => fromGenerated(spectaCommands.optimizersRefresh(optimizerRunId)),
 			eventsAfter: (optimizerRunId, afterSeq = 0, limit) =>

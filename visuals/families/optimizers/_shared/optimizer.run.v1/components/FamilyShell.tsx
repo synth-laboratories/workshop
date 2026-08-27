@@ -11,11 +11,27 @@ import {
   type OptimizerRun,
   type ProjectedState
 } from "./projectEvents.ts";
+import {
+  projectRunViewV2,
+  type OptimizerRunViewV2Like
+} from "./projectRunViewV2.ts";
 import { normalizeOptimizerEvents } from "./normalizeEvents.ts";
 
 type FixturePayload = {
   run?: OptimizerRun;
   events?: OptimizerEvent[];
+  runViewV2?: OptimizerRunViewV2Like;
+  runProgress?: RunProgressAgreementLike;
+};
+
+type RunProgressAgreementLike = {
+  status: string;
+  terminal: boolean;
+  costUsd: number | null;
+  promptTokens: number | null;
+  completionTokens: number | null;
+  resultHeadline?: string;
+  resultAbsentReason?: string;
 };
 
 export type FamilyShellProps = {
@@ -29,6 +45,8 @@ export type FamilyShellProps = {
   bindings?: VisualBinding[] | { inputs?: VisualBinding[]; slots?: VisualBinding[] };
   events?: OptimizerEvent[];
   run?: OptimizerRun;
+  runViewV2?: OptimizerRunViewV2Like;
+  runProgress?: RunProgressAgreementLike;
   loadError?: string;
   showTimeline?: boolean;
   /** "workspace" hides the legacy run header/timeline; children own the chrome. */
@@ -111,6 +129,8 @@ export function OptimizerFamilyShell(props: FamilyShellProps) {
   const events = normalizeOptimizerEvents(
     (props.events ?? payload?.events ?? []) as unknown[]
   );
+  const runViewV2 = props.runViewV2 ?? payload?.runViewV2;
+  const runProgress = props.runProgress ?? payload?.runProgress;
 
   const [followLive, setFollowLive] = useState(true);
   const [cursorIndex, setCursorIndex] = useState(Math.max(0, events.length - 1));
@@ -122,12 +142,15 @@ export function OptimizerFamilyShell(props: FamilyShellProps) {
 
   const atSeq = events[cursorIndex]?.sequenceNumber;
   const projected = useMemo(
-    () => projectAtCursor(run, events, atSeq),
-    [run, events, atSeq]
+    () => (followLive ? null : projectAtCursor(run, events, atSeq)),
+    [followLive, run, events, atSeq]
   );
-  const summary = projected.summary;
-  const nested = (summary.summary as Record<string, unknown> | undefined) ?? {};
-  const bestScore = nested.bestScore ?? summary.bestScore;
+  // The raw reducer is retained only for explicit timeline/time-travel. The
+  // live algorithm workspace formats the backend-owned projection directly.
+  const displayed = useMemo<ProjectedState | null>(() => {
+    if (!followLive) return projected;
+    return runViewV2 ? projectRunViewV2(run, runViewV2) : null;
+  }, [followLive, projected, run, runViewV2]);
   const kicker = run.algorithmId && run.algorithmId !== "unknown"
     ? algorithmLabel(run.algorithmId)
     : props.kicker;
@@ -154,10 +177,33 @@ export function OptimizerFamilyShell(props: FamilyShellProps) {
       </VisualChrome>
     );
   }
+  if (!displayed) {
+    return (
+      <VisualChrome
+        kicker={kicker}
+        live={false}
+        title={props.title ?? run.id}
+        lede={props.lede}
+        testId={props.testId}
+        footer={props.templateId}
+      >
+        <section className="sv-section" role="alert" data-testid="optimizer-run-view-v2-unavailable">
+          <div className="sv-section-head"><h3>Canonical run view unavailable</h3></div>
+          <p className="sv-lede">Live optimizer state requires OptimizerRunViewV2. Raw events are available only after selecting a historical cursor.</p>
+        </section>
+      </VisualChrome>
+    );
+  }
 
-  const terminal = ["completed", "failed", "canceled", "cancelled", "succeeded"].includes(
-    String(summary.status ?? run.status)
-  );
+  const summary = displayed.summary;
+  const nested = (summary.summary as Record<string, unknown> | undefined) ?? {};
+  const bestScore = nested.bestScore ?? summary.bestScore;
+
+  const terminal = followLive && runProgress
+    ? runProgress.terminal
+    : ["completed", "failed", "canceled", "cancelled", "succeeded"].includes(
+        String(summary.status ?? run.status)
+      );
   const cursor = {
     index: cursorIndex,
     followLive,
@@ -187,9 +233,14 @@ export function OptimizerFamilyShell(props: FamilyShellProps) {
           status={String(summary.status ?? run.status)}
           objective={run.objective}
           metrics={[
-            { label: "Cursor", value: String(projected.cursorSeq) },
-            { label: "Best", value: formatMissingNumber(bestScore) },
-            { label: "Cost", value: formatMissingUsd(projected.usage.costUsd) },
+            { label: "Cursor", value: String(displayed.cursorSeq) },
+            followLive && runProgress
+              ? {
+                  label: "Result",
+                  value: runProgress.resultHeadline ?? runProgress.resultAbsentReason ?? "—"
+                }
+              : { label: "Best", value: formatMissingNumber(bestScore) },
+            { label: "Cost", value: formatMissingUsd(displayed.usage.costUsd) },
             { label: "Source", value: String(run.source ?? "—") },
             ...(props.extraMetrics ?? [])
           ]}
@@ -212,7 +263,7 @@ export function OptimizerFamilyShell(props: FamilyShellProps) {
       {props.children({
         run,
         events,
-        projected,
+        projected: displayed,
         selectedCandidate,
         setSelectedCandidate,
         cursor

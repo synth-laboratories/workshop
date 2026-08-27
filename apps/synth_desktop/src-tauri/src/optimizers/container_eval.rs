@@ -428,8 +428,7 @@ pub(super) async fn start_inline(
             spec.policy_code = Some(bytes);
         }
     }
-    let admission = super::admission::EvaluationRunRecord::from_approved("pending", &approved);
-    start_eval(service, session_ref, spec, container, Some(admission)).await
+    start_eval(service, session_ref, spec, container, Some(approved)).await
 }
 
 async fn find_ready_container_by_id(
@@ -460,7 +459,7 @@ async fn start_eval(
     session_ref: Option<String>,
     spec: EvalSpec,
     container: ReadyContainer,
-    admission: Option<super::admission::EvaluationRunRecord>,
+    approved: Option<super::admission::ApprovedExecutionSpec>,
 ) -> Result<(OptimizerRunRecord, Option<crate::storage::AppEvent>)> {
     preflight_container_credentials(&container, &spec).await?;
     let examples = spec.examples();
@@ -486,7 +485,7 @@ async fn start_eval(
             "maximumTokens": Value::Null,
             "hardTotalCostUsd": spec.cost_ceiling_usd,
         },
-        "recipeSourceKind": if admission.is_some() { "inline" } else { "catalog" },
+        "recipeSourceKind": if approved.is_some() { "inline" } else { "catalog" },
         "startedAt": chrono::Utc::now().to_rfc3339(),
         "records": [],
         "progress": { "completed": 0, "total": examples.len(), "failed": 0 },
@@ -534,34 +533,13 @@ async fn start_eval(
         cloud_config: None,
         local_path: None,
     };
-    let (run, event) = service.create(create).await?;
-    if let Some(mut admission) = admission {
-        admission.optimizer_run_id = run.id.clone();
-        let declared_rollouts = examples.len();
-        let optimizer_run_id = run.id.clone();
+    let (run, event) = if let Some(approved) = approved {
         service
-            .database()
-            .clone()
-            .run(move |conn| {
-                super::admission::insert_evaluation_run(conn, &admission)?;
-                let mut progress = super::admission::RunProgress::plan(declared_rollouts);
-                for next in [
-                    super::admission::RunState::Validating,
-                    super::admission::RunState::ReadyForApproval,
-                    super::admission::RunState::AwaitingApproval,
-                    super::admission::RunState::Admitted,
-                    super::admission::RunState::Starting,
-                ] {
-                    progress.transition_run(next)?;
-                }
-                for index in 0..declared_rollouts as u32 {
-                    progress.transition_rollout(index, super::admission::RolloutState::Queued)?;
-                }
-                super::admission::save_run_progress(conn, &optimizer_run_id, &progress)
-            })
-            .await
-            .context("persist approved inline execution specification and initial state")?;
-    }
+            .create_admitted_eval(create, approved, examples.len())
+            .await?
+    } else {
+        service.create(create).await?
+    };
     let visual_id = mint_experiment_visual(service, &run, &spec, examples.len()).await?;
     // Minted with the run, not when the first seed finishes: a workstation that
     // appears only after there is something to see cannot show a rollout
@@ -793,18 +771,6 @@ async fn settle_worker_failure(service: &OptimizerService, run_id: &str, error: 
         // the user can see beats a run stuck at `running` with no explanation.
     }
     let _ = append_terminal(service, run_id, "failed", format!("{error:#}")).await;
-    let run_id = run_id.to_string();
-    let _ = service
-        .database()
-        .clone()
-        .run(move |conn| {
-            let Some(mut progress) = super::admission::load_run_progress(conn, &run_id)? else {
-                return Ok(());
-            };
-            progress.fail_pre_dispatch()?;
-            super::admission::save_run_progress(conn, &run_id, &progress)
-        })
-        .await;
 }
 
 /// The Trace V5 workstation for this run's seeds.
@@ -1313,7 +1279,6 @@ async fn run_eval_worker(
 ) -> Result<()> {
     let _revoke = crate::secrets::RevokeRunOnDrop(run_id.clone());
     let _ownership = service.hold_run_ownership(&run_id)?;
-    transition_inline_run(&service, &run_id, super::admission::RunState::Running).await?;
     evidence(
         "run_started",
         append_status(&service, &run_id, "optimizer.run.started", "running"),
@@ -1392,20 +1357,6 @@ async fn run_eval_worker(
             let Some((index, example)) = remaining.next() else {
                 break;
             };
-            transition_inline_rollout(
-                &service,
-                &run_id,
-                index as u32,
-                super::admission::RolloutState::Starting,
-            )
-            .await?;
-            transition_inline_rollout(
-                &service,
-                &run_id,
-                index as u32,
-                super::admission::RolloutState::Running,
-            )
-            .await?;
             evidence(
                 "dispatch_progress_projection",
                 persist_progress(
@@ -1440,7 +1391,8 @@ async fn run_eval_worker(
                     spec: &spec,
                     policy_pin: &pin,
                 };
-                let result = run_one_example(&trial, example, &mut trial_cancel).await;
+                let result =
+                    run_one_example(&trial, index as u32, example, &mut trial_cancel).await;
                 (index as u32, example, result)
             });
         }
@@ -1457,10 +1409,9 @@ async fn run_eval_worker(
                 return Err(error).context("inline rollout task could not be joined");
             }
         };
-        record_inline_rollout_terminal(&service, &run_id, index, &record).await?;
         evidence(
             "trial_terminal",
-            append_eval_terminal(&service, &run_id, spec, &record),
+            append_eval_terminal(&service, &run_id, spec, index, &record),
         )
         .await?;
         records.push(record);
@@ -1480,7 +1431,7 @@ async fn run_eval_worker(
         .await?;
     }
 
-    for (index, example) in remaining {
+    for (_index, example) in remaining {
         let record = failed_record(
             example,
             spec,
@@ -1488,13 +1439,6 @@ async fn run_eval_worker(
             halt.clone()
                 .unwrap_or_else(|| "required rollout was not dispatched".into()),
         );
-        transition_inline_rollout(
-            &service,
-            &run_id,
-            index as u32,
-            super::admission::RolloutState::Failed,
-        )
-        .await?;
         records.push(record);
     }
 
@@ -1503,14 +1447,11 @@ async fn run_eval_worker(
         .filter(|row| !is_successful_eval_record(row))
         .count();
     let budget_exceeded = over_cost_ceiling(&records, spec.cost_ceiling_usd);
-    let legacy_status = if failed == 0 && records.len() == total && !budget_exceeded {
+    let status = if failed == 0 && records.len() == total && !budget_exceeded {
         "completed"
     } else {
         "failed"
     };
-    let status = settle_inline_progress(&service, &run_id)
-        .await?
-        .unwrap_or(legacy_status);
     evidence(
         "progress_projection",
         persist_progress(
@@ -1552,153 +1493,6 @@ async fn run_eval_worker(
     Ok(())
 }
 
-async fn transition_inline_run(
-    service: &OptimizerService,
-    run_id: &str,
-    next: super::admission::RunState,
-) -> Result<()> {
-    let run_id = run_id.to_string();
-    service
-        .database()
-        .clone()
-        .run(move |conn| {
-            let Some(mut progress) = super::admission::load_run_progress(conn, &run_id)? else {
-                return Ok(());
-            };
-            progress.transition_run(next)?;
-            super::admission::save_run_progress(conn, &run_id, &progress)
-        })
-        .await
-}
-
-async fn transition_inline_rollout(
-    service: &OptimizerService,
-    run_id: &str,
-    index: u32,
-    next: super::admission::RolloutState,
-) -> Result<()> {
-    let run_id = run_id.to_string();
-    service
-        .database()
-        .clone()
-        .run(move |conn| {
-            let Some(mut progress) = super::admission::load_run_progress(conn, &run_id)? else {
-                return Ok(());
-            };
-            progress.transition_rollout(index, next)?;
-            super::admission::save_run_progress(conn, &run_id, &progress)
-        })
-        .await
-}
-
-async fn record_inline_rollout_terminal(
-    service: &OptimizerService,
-    run_id: &str,
-    index: u32,
-    record: &Value,
-) -> Result<()> {
-    let run_id = run_id.to_string();
-    let record = record.clone();
-    service
-        .database()
-        .clone()
-        .run(move |conn| {
-            let Some(mut progress) = super::admission::load_run_progress(conn, &run_id)? else {
-                return Ok(());
-            };
-            let successful = is_successful_eval_record(&record);
-            progress.transition_rollout(
-                index,
-                if successful {
-                    super::admission::RolloutState::Completed
-                } else {
-                    super::admission::RolloutState::Failed
-                },
-            )?;
-            let usage = record.get("usage").unwrap_or(&Value::Null);
-            let prompt = usage.get("prompt_tokens").and_then(Value::as_u64);
-            let completion = usage.get("completion_tokens").and_then(Value::as_u64);
-            let total_tokens = usage
-                .get("total_tokens")
-                .and_then(Value::as_u64)
-                .or_else(|| prompt.zip(completion).map(|(a, b)| a + b));
-            let cost_micros = usage
-                .get("cost_micros")
-                .and_then(Value::as_u64)
-                .or_else(|| {
-                    usage
-                        .get("costUsd")
-                        .and_then(Value::as_f64)
-                        .map(|v| (v * 1_000_000.0).round() as u64)
-                });
-            let rollout_id = record
-                .get("rolloutId")
-                .and_then(Value::as_str)
-                .map(super::admission::RolloutId::new)
-                .transpose()?;
-            progress.record_evidence(
-                index,
-                super::admission::RolloutRecord {
-                    state: None,
-                    rollout_id,
-                    reward: record.get("reward").and_then(Value::as_f64),
-                    trace_ref: record
-                        .pointer("/sealedTrace/traceId")
-                        .or_else(|| record.pointer("/sealedTrace/id"))
-                        .or_else(|| record.pointer("/sealedTrace/traces/0/traceId"))
-                        .or_else(|| record.pointer("/trace/bundle_trace_id"))
-                        .or_else(|| record.pointer("/trace/trace_id"))
-                        .and_then(Value::as_str)
-                        .map(str::to_owned),
-                    cost_micros,
-                    total_tokens,
-                },
-            );
-            super::admission::save_run_progress(conn, &run_id, &progress)
-        })
-        .await
-}
-
-async fn settle_inline_progress<'a>(
-    service: &OptimizerService,
-    run_id: &str,
-) -> Result<Option<&'a str>> {
-    // Revocation is explicit here; the drop guard remains defense in depth.
-    if let Some(secrets) = crate::secrets::live() {
-        secrets
-            .revoke_run(run_id)
-            .context("revoke inline evaluation credential capability")?;
-    }
-    let run_id = run_id.to_string();
-    service
-        .database()
-        .clone()
-        .run(move |conn| {
-            let Some(record) = super::admission::load_evaluation_run(conn, &run_id)? else {
-                return Ok(None);
-            };
-            let Some(mut progress) = super::admission::load_run_progress(conn, &run_id)? else {
-                bail!("inline evaluation `{run_id}` has no persisted rollout state");
-            };
-            progress.credential_revocation_confirmed = true;
-            let contract = &record.execution_spec.recipe.output_contract;
-            let state = progress.settle(super::admission::EvidenceRequirements {
-                requires_reward: contract.requires_reward,
-                requires_trace: contract.requires_trace,
-                requires_usage: contract.requires_usage,
-            })?;
-            super::admission::save_run_progress(conn, &run_id, &progress)?;
-            Ok(Some(match state {
-                super::admission::RunState::Completed => "completed",
-                super::admission::RunState::Failed => "failed",
-                super::admission::RunState::Cancelled => "cancelled",
-                super::admission::RunState::Degraded => "degraded",
-                other => bail!("settlement returned non-terminal state `{other}`"),
-            }))
-        })
-        .await
-}
-
 /// The campaign plan and one queued event per planned trial, appended as one
 /// batch. The service allocates the sequence numbers: this worker never reads
 /// the run's cursor, so it cannot compute numbers a concurrent writer has
@@ -1717,18 +1511,25 @@ async fn append_eval_plan(
                 ("global_capacity".into(), json!(spec.concurrency)),
                 ("planned_trials".into(), json!(examples.len())),
                 (
+                    "workItemIds".into(),
+                    json!((0..examples.len())
+                        .map(|index| format!("eval:trial:{index}"))
+                        .collect::<Vec<_>>()),
+                ),
+                (
                     "candidates".into(),
                     json!([{"id": spec.policy_config, "label": spec.policy_config}]),
                 ),
             ]))
             .raw(json!({ "source": "container_eval" })),
     ];
-    for example in examples {
+    for (index, example) in examples.iter().enumerate() {
         let trial_id = format!("trial:{}:{}", spec.family, example.seed);
         drafts.push(
             OptimizerEventDraft::new("eval.trial.queued", EVAL_ALGORITHM_ID)
                 .idempotency_key(format!("eval:queued:{trial_id}"))
                 .delta(Map::from_iter([
+                    ("workItemId".into(), json!(format!("eval:trial:{index}"))),
                     ("trial_id".into(), json!(trial_id)),
                     ("candidate_id".into(), json!(spec.policy_config)),
                     ("seed".into(), json!(example.seed)),
@@ -1748,10 +1549,11 @@ async fn append_eval_terminal(
     service: &OptimizerService,
     run_id: &str,
     spec: &EvalSpec,
+    index: u32,
     record: &Value,
 ) -> Result<()> {
     let seed = record.get("seed").cloned().unwrap_or(Value::Null);
-    let id = format!("trial:{}:{}", spec.family, seed);
+    let id = format!("eval:trial:{index}");
     let valid = is_successful_eval_record(record);
     let mut draft = OptimizerEventDraft::new("eval.trial.terminal", EVAL_ALGORITHM_ID)
         // One settlement per trial. A retried append of the same trial is the
@@ -1766,6 +1568,7 @@ async fn append_eval_terminal(
             "stage": "screen",
             "seed": seed,
             "scenario": spec.family,
+            "reward": record.get("reward").cloned().unwrap_or(Value::Null),
             "metrics": { "reward": record.get("reward").cloned().unwrap_or(Value::Null) },
             "raw": record,
         }))
@@ -2218,52 +2021,6 @@ fn failed_record(
     })
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum EvaluationProjectionStatus {
-    Running,
-    Completed,
-    Failed,
-    Cancelled,
-    Degraded,
-}
-
-impl EvaluationProjectionStatus {
-    fn parse(value: &str) -> Result<Self> {
-        match value {
-            "running" => Ok(Self::Running),
-            "completed" => Ok(Self::Completed),
-            "failed" => Ok(Self::Failed),
-            "cancelled" => Ok(Self::Cancelled),
-            "degraded" => Ok(Self::Degraded),
-            other => bail!("unknown evaluation projection status `{other}`"),
-        }
-    }
-
-    fn as_str(self) -> &'static str {
-        match self {
-            Self::Running => "running",
-            Self::Completed => "completed",
-            Self::Failed => "failed",
-            Self::Cancelled => "cancelled",
-            Self::Degraded => "degraded",
-        }
-    }
-
-    fn is_terminal(self) -> bool {
-        !matches!(self, Self::Running)
-    }
-
-    fn from_run_state(state: super::admission::RunState) -> Result<Self> {
-        match state {
-            super::admission::RunState::Completed => Ok(Self::Completed),
-            super::admission::RunState::Failed => Ok(Self::Failed),
-            super::admission::RunState::Cancelled => Ok(Self::Cancelled),
-            super::admission::RunState::Degraded => Ok(Self::Degraded),
-            other => bail!("evaluation evidence reconciliation requires a terminal durable state, found `{other}`"),
-        }
-    }
-}
-
 /// Retry only the evidence lane of an existing inline evaluation.
 ///
 /// This never dispatches compute and never mints a credential capability. It
@@ -2283,37 +2040,25 @@ pub(super) async fn reconcile_evidence(
         .summary
         .as_object()
         .context("evaluation run summary is not an object")?;
-    let projected_status = EvaluationProjectionStatus::parse(
-        summary
-            .get("evalStatus")
-            .and_then(Value::as_str)
-            .context("evaluation run has no typed evalStatus")?,
-    )?;
-    if !projected_status.is_terminal() {
-        bail!("evaluation evidence may be reconciled only after a terminal run state");
-    }
 
     let owned_run_id = run_id.to_string();
-    let (admission, mut progress) = service
+    let (execution_spec, kernel_state) = service
         .database()
         .clone()
         .run(move |conn| {
-            let admission = super::admission::load_evaluation_run(conn, &owned_run_id)?
-                .context("evaluation run has no approved execution specification")?;
-            let progress = super::admission::load_run_progress(conn, &owned_run_id)?
-                .context("evaluation run has no durable rollout state")?;
-            Ok((admission, progress))
+            let execution_spec =
+                super::admission::load_admitted_execution_spec(conn, &owned_run_id)?
+                    .context("evaluation run has no approved execution specification")?;
+            let kernel_state = super::kernel::persist::load_state(conn, &owned_run_id)?
+                .context("evaluation run has no durable kernel projection")?;
+            Ok((execution_spec, kernel_state))
         })
         .await?;
-    let status = EvaluationProjectionStatus::from_run_state(progress.state)?;
-    if status != projected_status {
-        bail!(
-            "evaluation projection status `{}` disagrees with durable state `{}`",
-            projected_status.as_str(),
-            status.as_str()
-        );
-    }
-    if admission.recipe_source_kind != super::admission::RecipeSourceKind::Inline {
+    let terminal = kernel_state
+        .terminal
+        .as_ref()
+        .context("evaluation evidence may be reconciled only after a sealed terminal state")?;
+    if execution_spec.source_kind != super::admission::RecipeSourceKind::Inline {
         bail!("evidence reconciliation currently requires an inline evaluation specification");
     }
 
@@ -2321,11 +2066,11 @@ pub(super) async fn reconcile_evidence(
         .get("records")
         .and_then(Value::as_array)
         .context("evaluation run has no terminal records")?;
-    if records_value.len() != admission.execution_spec.recipe.rollout_plan.seeds.len() {
+    if records_value.len() != execution_spec.recipe.rollout_plan.seeds.len() {
         bail!(
             "terminal record count {} does not match approved rollout count {}",
             records_value.len(),
-            admission.execution_spec.recipe.rollout_plan.seeds.len()
+            execution_spec.recipe.rollout_plan.seeds.len()
         );
     }
     let mut records = records_value.clone();
@@ -2340,17 +2085,17 @@ pub(super) async fn reconcile_evidence(
         .and_then(Value::as_str)
         .map(str::to_string)
         .context("evaluation terminal records have no worldRef")?;
-    let spec = EvalSpec::from_execution_spec(&admission.execution_spec, family, world_ref)?;
-    let container_id = admission
-        .execution_spec
+    let spec = EvalSpec::from_execution_spec(&execution_spec, family, world_ref)?;
+    let container_id = execution_spec
         .recipe
         .container
         .container_id
         .as_str()
         .to_string();
 
-    let approved_seeds = &admission.execution_spec.recipe.rollout_plan.seeds;
+    let approved_seeds = &execution_spec.recipe.rollout_plan.seeds;
     let mut reconciled_indices = std::collections::BTreeSet::new();
+    let mut evidence_refs = Vec::new();
     for (record_position, record) in records.iter_mut().enumerate() {
         let seed = record
             .get("seed")
@@ -2404,21 +2149,25 @@ pub(super) async fn reconcile_evidence(
             .as_object_mut()
             .with_context(|| format!("terminal record for seed {seed} is not an object"))?
             .insert("sealedTrace".into(), imported);
-        progress.record_evidence(
-            index as u32,
-            super::admission::RolloutRecord {
-                trace_ref: Some(trace_ref),
-                ..super::admission::RolloutRecord::default()
-            },
-        );
+        evidence_refs.push(json!({ "kind": "trace", "id": trace_ref }));
     }
-    let save_run_id = run_id.to_string();
     service
-        .database()
-        .clone()
-        .run_transaction(move |conn| {
-            super::admission::save_run_progress(conn, &save_run_id, &progress)
-        })
+        .append_event_payloads(
+            run_id.to_string(),
+            vec![
+                OptimizerEventDraft::new("optimizer.evidence.amended", EVAL_ALGORITHM_ID)
+                    .idempotency_key(format!(
+                        "eval:evidence-reconcile:{}",
+                        terminal.final_sequence
+                    ))
+                    .delta(Map::from_iter([
+                        ("terminalSequence".into(), json!(terminal.final_sequence)),
+                        ("reconciledRollouts".into(), json!(evidence_refs.len())),
+                    ]))
+                    .artifact_refs(evidence_refs)
+                    .raw(json!({ "source": "container_eval_reconcile" })),
+            ],
+        )
         .await?;
 
     let visual_id = summary
@@ -2438,7 +2187,7 @@ pub(super) async fn reconcile_evidence(
         workbench_id,
         &records,
         records.len(),
-        status.as_str(),
+        terminal.kind.as_str(),
     )
     .await?;
     service.get(run_id.to_string()).await
@@ -2636,25 +2385,48 @@ async fn inline_progress_projection(
         .database()
         .clone()
         .run(move |conn| {
-            let Some(record) = super::admission::load_evaluation_run(conn, &run_id)? else {
+            let Some(state) = super::kernel::persist::load_state(conn, &run_id)? else {
                 return Ok(None);
             };
-            let Some(progress) = super::admission::load_run_progress(conn, &run_id)? else {
-                bail!("inline evaluation `{run_id}` has no durable rollout state");
+            let super::kernel::AlgorithmProjection::Eval(eval) = &state.projection else {
+                bail!("optimizer run `{run_id}` does not have an eval projection");
             };
-            let contract = &record.execution_spec.recipe.output_contract;
-            let mut projection = progress.project(super::admission::EvidenceRequirements {
-                requires_reward: contract.requires_reward,
-                requires_trace: contract.requires_trace,
-                requires_usage: contract.requires_usage,
-            });
-            if let Some(object) = projection.as_object_mut() {
-                object.insert(
-                    "rollouts".into(),
-                    serde_json::to_value(&progress.rollouts).context("encode rollout states")?,
-                );
-            }
-            Ok(Some(projection))
+            let work = state.work_summary();
+            let rollouts = eval
+                .work_items
+                .iter()
+                .enumerate()
+                .map(|(index, item)| {
+                    let item_state = item
+                        .terminal
+                        .map(|terminal| terminal.as_str())
+                        .unwrap_or_else(|| item.lifecycle.as_str());
+                    (
+                        index.to_string(),
+                        json!({
+                            "state": item_state,
+                            "workItemId": item.work_item_id,
+                            "externalRef": item.external_ref,
+                        }),
+                    )
+                })
+                .collect::<Map<String, Value>>();
+            Ok(Some(json!({
+                "schemaVersion": super::kernel::RUN_VIEW_SCHEMA_VERSION,
+                "asOfSequence": state.aggregate_sequence,
+                "projectionRevision": state.projection_revision,
+                "runState": state.lifecycle.as_str(),
+                "rolloutStateCounts": {
+                    "queued": work.queued,
+                    "running": work.running,
+                    "completed": work.succeeded,
+                    "failed": work.failed,
+                    "cancelled": work.cancelled,
+                },
+                "inFlight": work.running,
+                "evidence": state.evidence_state(),
+                "rollouts": rollouts,
+            })))
         })
         .await
 }
@@ -2843,6 +2615,7 @@ impl RolloutReportedStatus {
 /// asynchronous spelling would buy a live pane and lose the rollout.
 async fn run_one_example(
     ctx: &TrialContext<'_>,
+    work_index: u32,
     example: EvalExample,
     cancel: &mut watch::Receiver<bool>,
 ) -> Result<Value> {
@@ -2875,6 +2648,7 @@ async fn run_one_example(
     );
     let task_instance_id = format!("{}:seed:{}", spec.family, example.seed);
     let trial_id = format!("trial:{}:{}", spec.family, example.seed);
+    let work_item_id = format!("eval:trial:{work_index}");
     let prepare = ctx
         .client
         .post(format!("{}/rollouts/prepare", ctx.base))
@@ -2912,6 +2686,7 @@ async fn run_one_example(
     eval_relay::append_trial_started(
         ctx.service,
         ctx.run_id,
+        &work_item_id,
         &trial_id,
         &rollout_id,
         example.seed,
@@ -3441,9 +3216,8 @@ async fn append_terminal(
         "cancelled" => "optimizer.run.cancelled",
         other => bail!("unsupported terminal eval status `{other}`"),
     };
-    append_status(service, run_id, event_type, status).await?;
     if status != "completed" && !detail.is_empty() {
-        let event_type = if status == "degraded" {
+        let detail_event_type = if status == "degraded" {
             "optimizer.run.warning"
         } else {
             "optimizer.run.error"
@@ -3451,17 +3225,22 @@ async fn append_terminal(
         service
             .append_event_payloads(
                 run_id.to_string(),
-                vec![OptimizerEventDraft::new(event_type, EVAL_ALGORITHM_ID)
-                    .level(if status == "degraded" {
-                        "warn"
-                    } else {
-                        "error"
-                    })
-                    .error(json!({ "message": detail }))
-                    .raw(json!({ "source": "container_eval" }))],
+                vec![
+                    OptimizerEventDraft::new(detail_event_type, EVAL_ALGORITHM_ID)
+                        .level(if status == "degraded" {
+                            "warn"
+                        } else {
+                            "error"
+                        })
+                        .error(json!({ "message": detail }))
+                        .raw(json!({ "source": "container_eval" })),
+                ],
             )
             .await?;
     }
+    // The terminal lifecycle fact is last. Diagnostic detail is evidence for
+    // that ending, never a mutable event appended beyond a sealed sequence.
+    append_status(service, run_id, event_type, status).await?;
     Ok(())
 }
 
@@ -3482,28 +3261,6 @@ mod tests {
         atomic::{AtomicUsize, Ordering},
         Arc, Mutex,
     };
-
-    #[test]
-    fn projection_statuses_are_typed_and_only_known_terminals_reconcile() {
-        assert_eq!(
-            EvaluationProjectionStatus::parse("degraded").unwrap(),
-            EvaluationProjectionStatus::Degraded
-        );
-        assert!(EvaluationProjectionStatus::Degraded.is_terminal());
-        assert!(!EvaluationProjectionStatus::Running.is_terminal());
-        assert_eq!(
-            EvaluationProjectionStatus::from_run_state(
-                super::super::admission::RunState::Completed
-            )
-            .unwrap(),
-            EvaluationProjectionStatus::Completed
-        );
-        assert!(EvaluationProjectionStatus::parse("done").is_err());
-        assert!(EvaluationProjectionStatus::from_run_state(
-            super::super::admission::RunState::Running
-        )
-        .is_err());
-    }
 
     #[derive(Clone)]
     struct MockEvalOptions {
@@ -3968,11 +3725,11 @@ max_total_rollouts = 4
         assert_eq!(finished.cursor_seq, events.len() as u64);
 
         let manifest = wait_manifest(&svc, &run.id).await;
-        assert_eq!(manifest["terminalStatus"], json!("completed"));
+        assert_eq!(manifest["terminal"]["kind"], json!("completed"));
         assert_eq!(manifest["work"]["planned"], json!(10));
         assert_eq!(manifest["work"]["succeeded"], json!(10));
         assert_eq!(manifest["work"]["failed"], json!(0));
-        assert_eq!(manifest["work"]["skipped"], json!(0));
+        assert_eq!(manifest["work"]["cancelled"], json!(0));
         assert_eq!(manifest["terminalCursor"], json!(finished.cursor_seq));
         task.abort();
     }
@@ -4072,15 +3829,17 @@ max_total_rollouts = 4
         wait_manifest(&svc, &run.id).await;
         let result = svc.get_result(run.id.clone()).await.unwrap();
         assert_eq!(result["resultKind"], json!("eval_run_result.v1"));
-        assert_eq!(result["trials"]["succeeded"], json!(10));
-        assert_eq!(result["metrics"]["meanReward"], json!(1.0));
+        assert_eq!(result["trials"]["succeeded"], json!(10), "{result}");
+        assert_eq!(result["meanReward"], json!(1.0));
         assert_eq!(
-            result["metrics"]["selection"]["status"],
-            json!("inconclusive")
+            result["selection"],
+            json!("promotion_not_applicable"),
+            "a baseline-only eval cannot make a promotion claim"
         );
-        assert!(
-            result["evidenceRefs"]["visualId"].is_string(),
-            "an eval result names the artifact that carries its evidence"
+        assert_eq!(
+            result["evidence"]["completeness"],
+            json!("complete"),
+            "settled work must carry an explicit evidence state"
         );
         task.abort();
     }
@@ -4210,9 +3969,17 @@ max_total_rollouts = 4
             Some(1),
             "the successful rollout stays on the record"
         );
-        let manifest = svc.terminal_manifest(run.id).await.unwrap().unwrap();
-        assert_eq!(manifest["terminalStatus"], json!("failed_evidence"));
-        assert_eq!(manifest["degradation"]["retryable"], json!(true));
+        let manifest = svc
+            .terminal_manifest(run.id.clone())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(manifest["terminal"]["kind"], json!("degraded"));
+        let events = svc.events_after(run.id, 0, None).await.unwrap();
+        assert_eq!(
+            events.last().unwrap().delta["degradation"]["retryable"],
+            json!(true)
+        );
     }
     #[tokio::test]
     async fn healthbench_admission_blocks_before_dispatch_when_policy_credential_is_missing() {
@@ -4889,9 +4656,9 @@ max_total_rollouts = 4
         assert_eq!(traces["items"].as_array().unwrap().len(), 0);
         let errors = data["reconciliationErrors"].as_array().unwrap();
         assert!(
-            errors.iter().any(|error| error
-                .as_str()
-                .is_some_and(|text| text.contains("queued"))),
+            errors
+                .iter()
+                .any(|error| error.as_str().is_some_and(|text| text.contains("queued"))),
             "{errors:?}"
         );
         assert!(

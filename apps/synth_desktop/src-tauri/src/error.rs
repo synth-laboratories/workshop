@@ -138,6 +138,17 @@ impl From<anyhow::Error> for AppError {
                 };
             }
         }
+        if let Some(failure) = error
+            .chain()
+            .find_map(|cause| cause.downcast_ref::<crate::secrets::lease::CredentialError>())
+        {
+            return Self {
+                code: failure.code.clone(),
+                message: failure.message.clone(),
+                detail: serde_json::to_string(failure).unwrap_or_else(|_| failure.to_string()),
+                failure: None,
+            };
+        }
         Self::internal(error)
     }
 }

@@ -1659,7 +1659,12 @@ export function eventsToLocalActivity(
 				requestingAgent: typeof payload.requestingAgent === "string" ? payload.requestingAgent : undefined
 			} : event.eventKind === "approval.requested" && approvalKind === "credential_access" ? {
 				provider: typeof payload.provider === "string" ? payload.provider : undefined,
-				purpose: typeof payload.purpose === "string" ? payload.purpose : undefined
+				purpose: typeof payload.purpose === "string" ? payload.purpose : undefined,
+				consent: payload.consent === "remember_locator" || payload.consent === "register_source" || payload.consent === "issue_lease" ? payload.consent : undefined,
+				locatorId: typeof payload.locatorId === "string" ? payload.locatorId : undefined,
+				displayPath: typeof payload.displayPath === "string" ? payload.displayPath : undefined,
+				variable: typeof payload.variable === "string" ? payload.variable : undefined,
+				switchFromDisplay: typeof payload.switchFromDisplay === "string" ? payload.switchFromDisplay : undefined
 			} : undefined,
 			alwaysAllowSupported: event.eventKind === "approval.requested" && payload.alwaysSupported === true,
 			detail,

@@ -285,6 +285,11 @@ export type LocalActivityLine = {
 		requestingAgent?: string;
 		provider?: string;
 		purpose?: string;
+		consent?: "remember_locator" | "register_source" | "issue_lease";
+		locatorId?: string;
+		displayPath?: string;
+		variable?: string;
+		switchFromDisplay?: string;
 	};
 	alwaysAllowSupported?: boolean;
 	/** Expanded raw detail (tool output / thought) when the line is opened. */

@@ -29,7 +29,7 @@ type Props = {
 	onOpenContainer?: (id: string | null) => void;
 	onOpenReport?: (id: string) => void;
 	onOpenRun?: (run: OptimizerRunRecord) => void;
-	onApprove?: (approvalId: string) => void;
+	onApprove?: (approvalId: string, decision?: "remember-locator" | "register-source") => void;
 	onAlwaysAllow?: (approvalId: string) => void;
 	onReject?: (approvalId: string) => void;
 	running?: boolean;
@@ -184,7 +184,7 @@ function ActivityLine({
 	onToggleVisual?: () => void;
 	containerOpen?: boolean;
 	onToggleContainer?: () => void;
-	onApprove?: (approvalId: string) => void;
+	onApprove?: (approvalId: string, decision?: "remember-locator" | "register-source") => void;
 	onAlwaysAllow?: (approvalId: string) => void;
 	onReject?: (approvalId: string) => void;
 	live?: boolean;
@@ -501,9 +501,13 @@ function PaidComputeApprovalModal({ line, onApprove, onReject }: {
 
 function CredentialAccessApprovalModal({ line, onApprove, onReject }: {
 	line: LocalActivityLine;
-	onApprove?: (approvalId: string) => void;
+	onApprove?: (approvalId: string, decision?: "remember-locator" | "register-source") => void;
 	onReject?: (approvalId: string) => void;
 }) {
+	const payload = line.approvalPayload;
+	const consent = payload?.consent ?? "issue_lease";
+	const isRemember = consent === "remember_locator";
+	const isRegister = consent === "register_source";
 	const approveRef = useRef<HTMLButtonElement>(null);
 	useEffect(() => {
 		approveRef.current?.focus();
@@ -518,15 +522,23 @@ function CredentialAccessApprovalModal({ line, onApprove, onReject }: {
 	return <div className="paid-compute-modal-backdrop" data-testid="credential-access-approval-modal">
 		<section className="paid-compute-modal" role="dialog" aria-modal="true" aria-labelledby="credential-access-title">
 			<div className="approval-card-kicker">Credential access</div>
-			<h2 id="credential-access-title">Allow this proxy capability?</h2>
+			<h2 id="credential-access-title">{isRemember ? "Remember this location?" : isRegister ? "Register this credential source?" : "Allow this proxy capability?"}</h2>
 			<dl>
-				<div><dt>Connection</dt><dd><code>{line.approvalPayload?.provider ?? "Missing provider alias"}</code></dd></div>
-				<div><dt>Scope</dt><dd>{line.approvalPayload?.purpose ?? "Missing capability scope"}</dd></div>
+				<div><dt>Connection</dt><dd><code>{payload?.provider ?? "Missing provider alias"}</code></dd></div>
+				{payload?.displayPath ? <div><dt>Location</dt><dd><code>{payload.displayPath}</code></dd></div> : null}
+				{payload?.variable ? <div><dt>Variable</dt><dd><code>{payload.variable}</code></dd></div> : null}
+				<div><dt>Scope</dt><dd>{payload?.purpose ?? "Missing capability scope"}</dd></div>
 			</dl>
-			<p className="paid-compute-consent">The agent receives a bounded Workshop proxy capability, never the credential value. This approval applies once and cannot be remembered.</p>
+			{isRegister && payload?.switchFromDisplay ? <p className="paid-compute-consent">{payload.provider ?? "This provider"} is loaded from <code>{payload.switchFromDisplay}</code>. Register this location instead?</p> : null}
+			<p className="paid-compute-consent">{isRemember
+				? "Workshop remembers the location only. It does not read or load the credential value."
+				: isRegister
+					? "Workshop reads the named variable into process memory and serves it only through the provider proxy."
+					: "The agent receives a bounded Workshop proxy capability, never the credential value. This approval applies once and cannot be remembered."}</p>
 			<div className="paid-compute-modal-actions">
-				<button type="button" className="approval-reject" onClick={() => onReject?.(line.approvalId!)}>Reject</button>
-				<button ref={approveRef} type="button" className="approval-approve" onClick={() => onApprove?.(line.approvalId!)}>Allow once</button>
+				<button type="button" className="approval-reject" onClick={() => onReject?.(line.approvalId!)}>Cancel</button>
+				{isRegister ? <button type="button" className="approval-always" onClick={() => onApprove?.(line.approvalId!, "remember-locator")}>Remember only</button> : null}
+				<button ref={approveRef} type="button" className="approval-approve" onClick={() => onApprove?.(line.approvalId!, isRemember ? "remember-locator" : isRegister ? "register-source" : undefined)}>{isRemember ? "Remember location" : isRegister ? "Register" : "Allow once"}</button>
 			</div>
 		</section>
 	</div>;

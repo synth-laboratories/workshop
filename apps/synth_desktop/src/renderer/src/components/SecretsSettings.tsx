@@ -3,7 +3,7 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { SettingsCard } from "./SettingsCard";
 import { publicError } from "../runtime/publicError";
 import { bridges } from "../runtime/desktopBridge";
-import type { MaskedImportCandidate, PendingGrantSummary, SecretAuditEvent, SecretCapabilitySummary, SecretImportPreview, SecretSummary, SecretsInbox } from "../bridge";
+import type { CredentialLocatorSummary, MaskedImportCandidate, PendingGrantSummary, SecretAuditEvent, SecretCapabilitySummary, SecretImportPreview, SecretSummary, SecretsInbox } from "../bridge";
 
 const PROVIDERS = [
 	{ id: "openai", label: "OpenAI" },
@@ -12,6 +12,14 @@ const PROVIDERS = [
 	{ id: "tinker", label: "Tinker" },
 	{ id: "groq", label: "Groq" }
 ];
+
+const PROVIDER_VARIABLES: Record<string, string> = {
+	openai: "OPENAI_API_KEY",
+	anthropic: "ANTHROPIC_API_KEY",
+	openrouter: "OPENROUTER_API_KEY",
+	tinker: "TINKER_API_KEY",
+	groq: "GROQ_API_KEY"
+};
 
 function backendLabel(backend: string) {
 	if (backend === "os-keychain") return "macOS Keychain";
@@ -29,6 +37,7 @@ function statusLabel(item: SecretSummary) {
 export function SecretsSettings() {
 	const secrets = bridges.secrets;
 	const [items, setItems] = useState<SecretSummary[]>([]);
+	const [locators, setLocators] = useState<CredentialLocatorSummary[]>([]);
 	const [capabilities, setCapabilities] = useState<SecretCapabilitySummary[]>([]);
 	const [audit, setAudit] = useState<SecretAuditEvent[]>([]);
 	const [inbox, setInbox] = useState<SecretsInbox>({ imports: [], grants: [], proxy: { running: false, origin: null } });
@@ -40,17 +49,20 @@ export function SecretsSettings() {
 	const [selectedVars, setSelectedVars] = useState<string[]>([]);
 	const [afterImport, setAfterImport] = useState<"keep" | "replace_aliases" | "remove_entries">("keep");
 	const [confirmCleanup, setConfirmCleanup] = useState(false);
+	const [remembering, setRemembering] = useState<{ path: string; provider: string; variable: string; label: string } | null>(null);
 
 	const refresh = async () => {
 		if (!secrets) return;
 		try {
-			const [nextItems, nextCaps, nextAudit, nextInbox] = await Promise.all([
+			const [nextItems, nextLocators, nextCaps, nextAudit, nextInbox] = await Promise.all([
 				secrets.list(),
+				secrets.locators(),
 				secrets.capabilities(),
 				secrets.audit(40),
 				secrets.pending()
 			]);
 			setItems(nextItems);
+			setLocators(nextLocators);
 			setCapabilities(nextCaps);
 			setAudit(nextAudit);
 			setInbox(nextInbox);
@@ -112,11 +124,16 @@ export function SecretsSettings() {
 		const selection = await open({ multiple: false, filters: [{ name: "Env files", extensions: ["env", ""] }] });
 		const path = typeof selection === "string" ? selection : null;
 		if (!path) return;
+		setRemembering({ path, provider: "openai", variable: PROVIDER_VARIABLES.openai, label: "OpenAI" });
+	};
+
+	const rememberPickedLocation = async () => {
+		if (!secrets || !remembering) return;
 		setBusy(true);
 		try {
-			const preview = await secrets.requestEnvImport(path);
-			setImportPreview(preview);
-			setSelectedVars(preview.candidates.filter((candidate) => candidate.selected).map((candidate) => candidate.variable));
+			await secrets.rememberExternal(remembering.path, remembering.provider, remembering.variable, remembering.label);
+			setRemembering(null);
+			await refresh();
 		} catch (reason) {
 			setError(publicError(reason));
 		} finally {
@@ -182,7 +199,7 @@ export function SecretsSettings() {
 							Add connection
 						</button>
 						<button type="button" className="settings-secondary-btn" data-testid="secrets-import" onClick={() => void pickEnv()}>
-							Import from .env
+							Remember location
 						</button>
 					</div>
 				}
@@ -278,6 +295,53 @@ export function SecretsSettings() {
 						</div>
 					</form>
 				) : null}
+			</SettingsCard>
+
+			<SettingsCard
+				title="Known locations"
+				description="Workshop remembers source locations separately from credential values. Register loads the named variable into memory; Forget never deletes the file."
+				testId="secrets-known-locations"
+			>
+				{remembering ? (
+					<form className="secrets-form" onSubmit={(event) => { event.preventDefault(); void rememberPickedLocation(); }}>
+						<p><code>{remembering.path}</code></p>
+						<label>
+							Provider
+							<select value={remembering.provider} onChange={(event) => {
+								const provider = event.target.value;
+								const title = PROVIDERS.find((item) => item.id === provider)?.label ?? provider;
+								setRemembering({ ...remembering, provider, variable: PROVIDER_VARIABLES[provider] ?? remembering.variable, label: title });
+							}}>
+								{PROVIDERS.map((provider) => <option key={provider.id} value={provider.id}>{provider.label}</option>)}
+							</select>
+						</label>
+						<label>
+							Variable
+							<input value={remembering.variable} onChange={(event) => setRemembering({ ...remembering, variable: event.target.value })} />
+						</label>
+						<label>
+							Label
+							<input value={remembering.label} onChange={(event) => setRemembering({ ...remembering, label: event.target.value })} />
+						</label>
+						<div className="secrets-row-actions">
+							<button type="button" className="settings-secondary-btn" onClick={() => setRemembering(null)}>Cancel</button>
+							<button type="submit" className="settings-secondary-btn" disabled={busy || !remembering.variable}>Remember location</button>
+						</div>
+					</form>
+				) : null}
+				{locators.length === 0 ? <p className="secrets-copy">No credential locations are remembered.</p> : locators.map((locator) => (
+					<div className="secrets-row" key={locator.id} data-testid={`credential-locator-${locator.id}`}>
+						<div>
+							<strong>{locator.label}</strong>
+							<p><code>{locator.displayPath}</code> · <code>{locator.variable}</code> · {locator.state.replaceAll("_", " ")}{locator.preferred ? " · Preferred" : ""}{locator.loaded ? " · Loaded" : ""}</p>
+							{locator.state === "workspace_authority_revoked" ? <p>This folder is allowed again. Forget and remember to restore.</p> : null}
+						</div>
+						<div className="secrets-row-actions">
+							<button type="button" className="settings-secondary-btn" disabled={busy || locator.state !== "observed" || locator.loaded} onClick={() => void secrets?.registerLocator(locator.id).then(refresh).catch((reason) => setError(publicError(reason)))}>Register</button>
+							<button type="button" className="settings-secondary-btn" disabled={busy} title="Forgets this location. The file is not deleted." onClick={() => void secrets?.forgetLocator(locator.id).then(refresh).catch((reason) => setError(publicError(reason)))}>Forget</button>
+						</div>
+					</div>
+				))}
 			</SettingsCard>
 
 			{inbox.grants.length > 0 ? (

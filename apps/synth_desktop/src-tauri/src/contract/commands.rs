@@ -183,6 +183,7 @@ impl Commands {
     pub const OPTIMIZERS_STAGE_EVAL_CANDIDATES: &'static str = "optimizers_stage_eval_candidates";
     pub const OPTIMIZERS_LIST: &'static str = "optimizers_list";
     pub const OPTIMIZERS_GET: &'static str = "optimizers_get";
+    pub const OPTIMIZERS_RUN_VIEW_V2: &'static str = "optimizers_run_view_v2";
     pub const OPTIMIZERS_CREATE: &'static str = "optimizers_create";
     pub const OPTIMIZERS_REFRESH: &'static str = "optimizers_refresh";
     pub const OPTIMIZERS_EVENTS_AFTER: &'static str = "optimizers_events_after";
@@ -246,6 +247,12 @@ impl Commands {
     pub const MIGRATION_APPLY: &'static str = "migration_apply";
     pub const MIGRATION_CANCEL: &'static str = "migration_cancel";
     pub const SECRETS_LIST: &'static str = "secrets_list";
+    pub const SECRETS_WORKSPACE_ROOTS_LIST: &'static str = "secrets_workspace_roots_list";
+    pub const SECRETS_BINDINGS_LIST: &'static str = "secrets_bindings_list";
+    pub const SECRETS_LOCATORS_LIST: &'static str = "secrets_locators_list";
+    pub const SECRETS_LOCATOR_REMEMBER_EXTERNAL: &'static str = "secrets_locator_remember_external";
+    pub const SECRETS_LOCATOR_REGISTER: &'static str = "secrets_locator_register";
+    pub const SECRETS_LOCATOR_FORGET: &'static str = "secrets_locator_forget";
     pub const SECRETS_CREATE: &'static str = "secrets_create";
     pub const SECRETS_REPLACE: &'static str = "secrets_replace";
     pub const SECRETS_DELETE: &'static str = "secrets_delete";

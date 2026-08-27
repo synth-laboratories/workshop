@@ -448,6 +448,7 @@ impl ComputerUseService {
                 id: approval_id,
                 scope: None,
             },
+            ApprovalDecision::Credential { .. } => Authorization::Rejected,
         })
     }
 

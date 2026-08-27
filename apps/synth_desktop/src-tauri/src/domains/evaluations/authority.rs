@@ -175,30 +175,9 @@ pub fn raise(
     )?;
     if let Some(run_id) = evaluation_id {
         conn.execute(
-            "UPDATE evaluation_runs SET terminal_failure_id = ?1 WHERE optimizer_run_id = ?2",
-            params![raised.failure_id.as_str(), run_id],
-        )?;
-        mark_unstarted_children(conn, run_id, raised.failure_id.as_str())?;
-        conn.execute(
             "UPDATE optimizer_runs SET terminal_failure_id = ?1 WHERE id = ?2",
             params![raised.failure_id.as_str(), run_id],
         )?;
     }
     Ok(raised)
-}
-
-pub fn mark_unstarted_children(conn: &Connection, run_id: &str, failure_id: &str) -> Result<()> {
-    conn.execute(
-        "UPDATE evaluation_rollouts
-         SET rollout_state = CASE
-                WHEN rollout_state IN ('planned','queued','starting') THEN 'not_started'
-                ELSE rollout_state
-             END,
-             terminal_failure_id = COALESCE(terminal_failure_id, ?1),
-             updated_at = ?2
-         WHERE optimizer_run_id = ?3
-           AND rollout_state IN ('planned','queued','starting')",
-        params![failure_id, Utc::now().to_rfc3339(), run_id],
-    )?;
-    Ok(())
 }

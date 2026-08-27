@@ -1,4 +1,3 @@
-// @ts-nocheck — P0-1 generated protocol is stricter than prior handwritten DTOs; UI follow-up is out of specta-cutover file ownership.
 import { Component, useEffect, useMemo, useRef, useState, type ComponentType, type ErrorInfo, type MouseEvent, type ReactNode } from "react";
 import { formatVisualAdmissionIdentity, type ArtifactRef } from "../types/landing";
 import { VisualOpsLine } from "./VisualOpsLine";
@@ -44,6 +43,12 @@ type ShellProps = {
 };
 
 export function artifactFromVisualRecord(visual: VisualRecord): ArtifactRef {
+	const bindings = visual.bindings && typeof visual.bindings === "object"
+		? visual.bindings as Record<string, unknown>
+		: undefined;
+	const metadata = visual.metadata && typeof visual.metadata === "object"
+		? visual.metadata as Record<string, unknown>
+		: undefined;
 	return {
 		id: visual.id,
 		kind: "report",
@@ -53,14 +58,14 @@ export function artifactFromVisualRecord(visual: VisualRecord): ArtifactRef {
 		revision: visual.currentRevision,
 		contentDigest: visual.contentDigest ?? undefined,
 		rendererKind: visual.rendererKind,
-		bindings: visual.bindings,
-		metadata: visual.metadata,
+		bindings,
+		metadata,
 		status: visual.status,
 		sessionId: visual.sessionId ?? undefined,
 		ownerSessionId: visual.sessionId ?? undefined,
 		runId: visual.runId ?? undefined,
 		traceId: visual.traceId ?? undefined,
-		summary: typeof visual.metadata?.summary === "string" ? visual.metadata.summary : undefined,
+		summary: typeof metadata?.summary === "string" ? metadata.summary : undefined,
 		preview: {
 			variant:
 				visual.templateId.includes("scrub") || visual.templateId.includes("rollout")
@@ -945,11 +950,14 @@ function TemplateVisualHost({ artifact }: { artifact: ArtifactRef }) {
 		let postedReady = false;
 		return subscribeToRun(optimizerRunId, (snapshot) => {
 			const projection = projectRunProgress(snapshot, Date.now());
-			setProgressView(projection ? progressAgreement(projection) : null);
+			const agreement = projection ? progressAgreement(projection) : null;
+			setProgressView(agreement);
 			const lanes = snapshot.run ? splitSnapshotEvents(snapshot.run, snapshot.events) : null;
 			const payload = snapshot.run && lanes
 				? {
 					run: snapshot.run,
+					runViewV2: snapshot.viewV2,
+					runProgress: agreement,
 					events: lanes.terminalEvents,
 					enrichmentEvents: lanes.enrichmentEvents,
 					terminalCursor: lanes.terminalCursor,
@@ -1086,6 +1094,8 @@ function TemplateVisualHost({ artifact }: { artifact: ArtifactRef }) {
 	useEffect(() => {
 		// Best-effort companion run for the GEPA comparison card (Luna vs Sol):
 		// the most recent sibling GEPA run sharing the recipe prefix of the id.
+		// Comparison state comes from the same backend projection as the primary
+		// run; this surface never reconstructs a sibling from raw events.
 		if (!boundRunId || !bridges.optimizers) {
 			setComparisonPayload(null);
 			return;
@@ -1099,20 +1109,8 @@ function TemplateVisualHost({ artifact }: { artifact: ArtifactRef }) {
 					.filter((item) => item.id !== boundRunId && prefixOf(item.id) === prefixOf(boundRunId))
 					.sort((a, b) => Date.parse(b.createdAt ?? "") - Date.parse(a.createdAt ?? ""))[0];
 				if (!sibling) return;
-				const events: unknown[] = [];
-				let after = 0;
-				for (;;) {
-					const page = await bridges.optimizers!.eventsAfter(sibling.id, after, 500);
-					if (!Array.isArray(page) || page.length === 0) break;
-					events.push(...page);
-					const last = page[page.length - 1] as { sequenceNumber?: number; sequence_number?: number };
-					const next = Number(last.sequenceNumber ?? last.sequence_number ?? 0);
-					if (!next || next <= after || page.length < 500) break;
-					after = next;
-				}
-				if (!cancelled && events.length > 0) {
-					setComparisonPayload({ run: sibling, events });
-				}
+				const runViewV2 = await bridges.optimizers!.runViewV2(sibling.id);
+				if (!cancelled) setComparisonPayload({ run: sibling, runViewV2 });
 			} catch {
 				// The comparison card is optional; the primary run view stands alone.
 			}

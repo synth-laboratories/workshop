@@ -18,8 +18,10 @@ pub use evidence::{attach_evidence, attach_member_evidence, ExperimentEvidenceAt
 pub use models::{
     ExperimentChildCreateRequest, ExperimentCreateRequest, ExperimentFinalizeRequest,
     ExperimentGroup, ExperimentLineageEdge, ExperimentMember, ExperimentRelateRequest,
-    MEMBER_CAMPAIGN, MEMBER_DIRECT, MEMBER_OPTIMIZER,
+    MEMBER_OPTIMIZER,
 };
+#[cfg(test)]
+pub use models::{MEMBER_CAMPAIGN, MEMBER_DIRECT};
 pub use registry::{
     activate, attach, create, create_child, finalize, get, list, load_for_session, relate,
     settle_member,

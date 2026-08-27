@@ -194,6 +194,18 @@ impl CapabilityStore {
         handles
     }
 
+    pub fn revoke_secret(&self, secret_id: &str) -> Vec<String> {
+        let mut store = self.by_handle.lock().expect("capability store");
+        let mut handles = Vec::new();
+        for live in store.values_mut() {
+            if live.secret_id == secret_id && live.status != "revoked" {
+                live.status = "revoked".into();
+                handles.push(live.handle.clone());
+            }
+        }
+        handles
+    }
+
     pub fn list_active(&self) -> Vec<LiveCapability> {
         self.by_handle
             .lock()

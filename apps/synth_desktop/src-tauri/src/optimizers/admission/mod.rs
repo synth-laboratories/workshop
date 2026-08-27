@@ -40,8 +40,8 @@ pub use ids::{
     RolloutCount, RolloutId, Seed, SourceRevision, StepCount,
 };
 pub use persistence::{
-    insert_evaluation_run, load_evaluation_run, load_run_progress, save_run_progress,
-    stage_admissible, EvaluationRunRecord,
+    consume_approved_eval_draft, load_admitted_execution_spec, stage_admissible,
+    stage_approved_eval_draft,
 };
 pub use pipeline::{
     materialize, AdmissibleExecutionSpec, ApprovedExecutionSpec, ContainerCandidate,

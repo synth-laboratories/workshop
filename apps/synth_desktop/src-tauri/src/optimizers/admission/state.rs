@@ -419,6 +419,29 @@ impl RunProgress {
         }
     }
 
+    /// Execution progress after admission has already been consumed.
+    ///
+    /// Admission lives on `optimizer_run_drafts`. Once the optimizer run exists,
+    /// this record starts at `Starting` with rollouts `Queued` — it does not
+    /// replay Draft → Admitted on the execution aggregate.
+    pub fn for_admitted_execution(declared: usize) -> Self {
+        let mut rollouts = BTreeMap::new();
+        for index in 0..declared {
+            rollouts.insert(
+                index as u32,
+                RolloutRecord {
+                    state: Some(RolloutStateHolder(RolloutState::Queued)),
+                    ..RolloutRecord::default()
+                },
+            );
+        }
+        Self {
+            state: RunState::Starting,
+            rollouts,
+            credential_revocation_confirmed: false,
+        }
+    }
+
     pub fn declared_rollouts(&self) -> usize {
         self.rollouts.len()
     }

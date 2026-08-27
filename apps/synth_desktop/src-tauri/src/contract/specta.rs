@@ -80,6 +80,12 @@ pub fn builder() -> Builder<tauri::Wry> {
         // The record field is still a `String` at the storage edge; see
         // `optimizers::OptimizerRunStatus`.
         .typ::<crate::optimizers::OptimizerRunStatus>()
+        .typ::<crate::optimizers::kernel::AlgorithmKind>()
+        .typ::<crate::optimizers::kernel::RunLifecycle>()
+        .typ::<crate::optimizers::kernel::RunPhase>()
+        .typ::<crate::optimizers::kernel::RunCondition>()
+        .typ::<crate::optimizers::kernel::TerminalKind>()
+        .typ::<crate::optimizers::kernel::OptimizerRunViewV2>()
         .typ::<crate::platform::failure::FailureView>()
         .commands(collect_commands![
             desktop_instance_diagnostics,
@@ -120,6 +126,7 @@ pub fn builder() -> Builder<tauri::Wry> {
             crate::optimizers_stage_eval_candidates,
             crate::optimizers_list,
             crate::optimizers_get,
+            crate::optimizers_run_view_v2,
             crate::optimizers_create,
             crate::optimizers_refresh,
             crate::optimizers_events_after,
@@ -334,6 +341,12 @@ pub fn builder() -> Builder<tauri::Wry> {
             crate::terminal_write,
             crate::terminal_resize,
             crate::terminal_close,
+            crate::secrets::secrets_workspace_roots_list,
+            crate::secrets::secrets_bindings_list,
+            crate::secrets::secrets_locators_list,
+            crate::secrets::secrets_locator_remember_external,
+            crate::secrets::secrets_locator_register,
+            crate::secrets::secrets_locator_forget,
             crate::secrets::secrets_list,
             crate::secrets::secrets_create,
             crate::secrets::secrets_replace,
@@ -491,8 +504,11 @@ mod tests {
         // native one-time replacement, bound to the declaring repository.
         // 270 → 276: failure ledger query/get/timeline, logs query, redacted
         // bundle export, and observability mode status.
+        // 276 → 277: `optimizers_run_view_v2` — versioned kernel projection.
+        // 277 → 283: credential roots, bindings, locators, external remember,
+        // register, and forget commands.
         assert_eq!(
-            exported, 276,
+            exported, 283,
             "generated bindings must contain the complete desktop command set"
         );
         assert_eq!(

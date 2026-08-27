@@ -77,6 +77,7 @@ export const commands = {
 	offset: number,
 } | null) => typedError<OptimizerRunRecord[], AppError_Serialize>(__TAURI_INVOKE("optimizers_list", { query })),
 	optimizersGet: (optimizerRunId: string) => typedError<OptimizerRunRecord, AppError_Serialize>(__TAURI_INVOKE("optimizers_get", { optimizerRunId })),
+	optimizersRunViewV2: (optimizerRunId: string) => typedError<OptimizerRunViewV2, AppError_Serialize>(__TAURI_INVOKE("optimizers_run_view_v2", { optimizerRunId })),
 	optimizersCreate: (request: OptimizerCreateRequest) => typedError<OptimizerRunRecord, AppError_Serialize>(__TAURI_INVOKE("optimizers_create", { request })),
 	optimizersRefresh: (optimizerRunId: string) => typedError<OptimizerRunRecord, AppError_Serialize>(__TAURI_INVOKE("optimizers_refresh", { optimizerRunId })),
 	optimizersEventsAfter: (optimizerRunId: string, afterSeq: number | null, limit: number | null) => typedError<OptimizerEventEnvelope[], AppError_Serialize>(__TAURI_INVOKE("optimizers_events_after", { optimizerRunId, afterSeq, limit })),
@@ -449,6 +450,12 @@ export const commands = {
 	terminalWrite: (terminalId: string, data: string) => typedError<null, AppError_Serialize>(__TAURI_INVOKE("terminal_write", { terminalId, data })),
 	terminalResize: (terminalId: string, cols: number, rows: number) => typedError<null, AppError_Serialize>(__TAURI_INVOKE("terminal_resize", { terminalId, cols, rows })),
 	terminalClose: (terminalId: string) => typedError<null, AppError_Serialize>(__TAURI_INVOKE("terminal_close", { terminalId })),
+	secretsWorkspaceRootsList: () => typedError<WorkspaceRootSummary[], AppError_Serialize>(__TAURI_INVOKE("secrets_workspace_roots_list")),
+	secretsBindingsList: () => typedError<CredentialBindingSummary[], AppError_Serialize>(__TAURI_INVOKE("secrets_bindings_list")),
+	secretsLocatorsList: () => typedError<CredentialLocatorSummary[], AppError_Serialize>(__TAURI_INVOKE("secrets_locators_list")),
+	secretsLocatorRememberExternal: (pickerPath: string, provider: string, variable: string, label: string | null) => typedError<CredentialLocatorSummary, AppError_Serialize>(__TAURI_INVOKE("secrets_locator_remember_external", { pickerPath, provider, variable, label })),
+	secretsLocatorRegister: (locatorId: string) => typedError<CredentialLocatorSummary, AppError_Serialize>(__TAURI_INVOKE("secrets_locator_register", { locatorId })),
+	secretsLocatorForget: (locatorId: string) => typedError<null, AppError_Serialize>(__TAURI_INVOKE("secrets_locator_forget", { locatorId })),
 	secretsList: (provider: string | null, scope: string | null) => typedError<SecretSummary[], AppError_Serialize>(__TAURI_INVOKE("secrets_list", { provider, scope })),
 	secretsCreate: (request: SecretCreateRequest) => typedError<SecretSummary, AppError_Serialize>(__TAURI_INVOKE("secrets_create", { request })),
 	secretsReplace: (secretId: string, value: string) => typedError<SecretSummary, AppError_Serialize>(__TAURI_INVOKE("secrets_replace", { secretId, value })),
@@ -580,6 +587,18 @@ export type AccountUsageWindow = {
 };
 
 export type AfterImportAction = "keep" | "replace_aliases" | "remove_entries";
+
+/**
+ *  Closed set of algorithms the kernel will reduce. External producers send
+ *  versioned wire strings that must decode to one of these before they can
+ *  mutate state.
+ */
+export type AlgorithmKind = "eval" | "gepa" |
+/**
+ *  Canonical algorithm id `go-ex`. Display label is GELO. Recipe id is
+ *  [`GELO_HOSTED_RECIPE_ID`]. `gelo` and `hosted_gelo` are not this value.
+ */
+"go-ex" | "sft" | "cispo";
 
 /**  Informative error payload serialized across the Tauri boundary. */
 export type AppError = AppError_Serialize | AppError_Deserialize;
@@ -727,6 +746,35 @@ export type CheckpointInferRequest = {
 	checkpointId: string,
 	family: string,
 	body: unknown,
+};
+
+export type CispoProjection = {
+	workItems: WorkItem[],
+	phase: RunPhase | null,
+	usage: UsageCompleteness,
+	warmStartId: string | null,
+	clipIdentity: string | null,
+	meanAdvantage: number | null,
+	checkpoints: string[],
+	childEvalRunIds: string[],
+	noLearningSignal: boolean,
+	policyCheckpointId: string | null,
+};
+
+export type CispoResult = {
+	warmStartId?: string | null,
+	clipIdentity?: string | null,
+	meanAdvantage?: number | null,
+	noLearningSignal: boolean,
+	policyCheckpointId?: string | null,
+	childEvalRunIds: string[],
+	usage: UsageCompleteness,
+};
+
+export type CispoRunView = {
+	header: OptimizerRunHeader,
+	projection: CispoProjection,
+	result: CispoResult | null,
 };
 
 export type CodexApprovalDecisionRequest = {
@@ -988,6 +1036,40 @@ export type CoreDiagnostics = {
  */
 export type CostSource = "provider_reported" | "synth_cloud" | "tariff_estimate" | "none";
 
+export type CredentialBindingSummary = {
+	sourceId: string,
+	locatorId: string | null,
+	provider: string,
+	variable: string,
+	label: string,
+	preferred: boolean,
+	loaded: boolean,
+	sourceState: string | null,
+};
+
+export type CredentialLocatorKind = "workspace_env_file" | "instance_env_file" | "process_environment" | "external_env_file";
+
+export type CredentialLocatorState = "proposed" | "approval_pending" | "observed" | "missing" | "workspace_authority_revoked" | "superseded" | "removed";
+
+export type CredentialLocatorSummary = {
+	id: string,
+	kind: CredentialLocatorKind,
+	workspaceRootRef: string | null,
+	relativePath: string | null,
+	displayPath: string,
+	format: string,
+	provider: string,
+	variable: string,
+	label: string,
+	state: CredentialLocatorState,
+	lastSeenAt: string | null,
+	sourceId: string | null,
+	registered: boolean,
+	preferred: boolean,
+	loaded: boolean,
+	sourceState: string | null,
+};
+
 export type DataCounts = {
 	containers: number,
 	traces: number,
@@ -1066,12 +1148,57 @@ export type EvalCandidateSource = {
 	baseline?: boolean | null,
 };
 
+export type EvalProjection = {
+	candidates: string[],
+	seeds: number[],
+	scenarios: string[],
+	workItems: WorkItem[],
+	phase: RunPhase | null,
+	usage: UsageCompleteness,
+	meanReward: number | null,
+	scoredTrials: number,
+	promotionApplicable: boolean,
+	traces: number,
+};
+
+export type EvalResult = {
+	trials: WorkSummary,
+	meanReward?: number | null,
+	selection: EvalSelection,
+	usage: UsageCompleteness,
+};
+
+export type EvalRunView = {
+	header: OptimizerRunHeader,
+	projection: EvalProjection,
+	result: EvalResult | null,
+};
+
+export type EvalSelection = "promotion_not_applicable" | "inconclusive";
+
 export type EvalStageCandidatesRequest = {
 	sessionRef: string,
 	candidates: EvalCandidateSource[],
 };
 
 export type EventSource = "local" | "remote" | "intern" | "codex" | "system" | "mlx" | "visual" | "report";
+
+export type EvidenceCompleteness = "absent" | "partial" | "complete" | "unusable";
+
+export type EvidenceRef = {
+	kind: string,
+	id: string,
+	digest?: string | null,
+};
+
+export type EvidenceState = {
+	completeness: EvidenceCompleteness,
+	reason?: string | null,
+	refs?: EvidenceRef[],
+};
+
+/**  Where a run executes. Orthogonal to [`AlgorithmKind`]. */
+export type ExecutionPlacement = "local_python_process" | "direct_container_evaluation" | "local_training_sidecar" | "hosted_optimizers_service" | "remote_training_service";
 
 export type ExperimentChildCreateRequest = {
 	parentExperimentId: string,
@@ -1327,6 +1454,79 @@ export type FailureView = {
 	remediation: FailureRemediationView | null,
 	safeContext: FailureContextView,
 	diagnosticReference: string,
+};
+
+export type GepaCandidate = {
+	id: string,
+	parentId?: string | null,
+	generation?: number,
+	source?: string | null,
+	digest?: string | null,
+	heldoutReward?: number | null,
+	trainReward?: number | null,
+	gateAccepted?: boolean | null,
+};
+
+export type GepaProjection = {
+	workItems: WorkItem[],
+	phase: RunPhase | null,
+	usage: UsageCompleteness,
+	candidates: { [key in string]: GepaCandidate },
+	candidateOrder: string[],
+	seedCandidateId: string | null,
+	selectedCandidateId: string | null,
+	frontierHistory: string[],
+	incumbentId: string | null,
+	rolloutsAllocated: number,
+	rolloutsScored: number,
+	rolloutsFailed: number,
+	proposalsRequested: number,
+	proposalsReturned: number,
+	maxActiveWorkers: number,
+	rolloutBudget: number,
+};
+
+export type GepaResult = {
+	verdict: GepaVerdict,
+	seedCandidateId?: string | null,
+	selectedCandidateId?: string | null,
+	candidates: number,
+	work: WorkSummary,
+	usage: UsageCompleteness,
+};
+
+export type GepaRunView = {
+	header: OptimizerRunHeader,
+	projection: GepaProjection,
+	result: GepaResult | null,
+};
+
+export type GepaVerdict = "measured_improvement" | "no_measured_improvement" | "inconclusive" | "failed";
+
+export type GoExProjection = {
+	workItems: WorkItem[],
+	phase: RunPhase | null,
+	usage: UsageCompleteness,
+	themes: string[],
+	candidateIds: string[],
+	selectedCandidateId: string | null,
+	remoteStatus: string | null,
+	childEvalRunIds: string[],
+};
+
+export type GoExResult = {
+	selectedCandidateId?: string | null,
+	themes: number,
+	candidates: number,
+	childEvalRunIds: string[],
+	remoteStatus?: string | null,
+	usage: UsageCompleteness,
+};
+
+export type GoExRunView = {
+	header: OptimizerRunHeader,
+	projection: GoExProjection,
+	result: GoExResult | null,
 };
 
 export type HostedTrainingModel = {
@@ -1965,6 +2165,31 @@ export type OptimizerResourceRef = {
 	metadata?: unknown,
 };
 
+export type OptimizerRunHeader = {
+	schemaVersion: string,
+	runId: string,
+	algorithm: AlgorithmKind,
+	lifecycle: RunLifecycle,
+	phase?: RunPhase | null,
+	condition: RunCondition,
+	placement: ExecutionPlacement,
+	/**  The admitted spec is one-to-one with the run in the current schema. */
+	specId: string,
+	specDigest: string,
+	executionBindings: OptimizerExecutionBinding[],
+	inputRefs: OptimizerResourceRef[],
+	outputRefs: OptimizerResourceRef[],
+	visualRefs: OptimizerResourceRef[],
+	usage: UsageCompleteness,
+	work: WorkSummary,
+	evidence: EvidenceState,
+	failureRef?: string | null,
+	terminal?: SealedTerminal | null,
+	projectionSchemaVersion: string,
+	asOfSequence: number,
+	projectionRevision: number,
+};
+
 export type OptimizerRunOutputArtifact = {
 	artifactId: string,
 	runId: string,
@@ -2071,6 +2296,18 @@ export type OptimizerRunStatus =
 "interrupted" | "infrastructure_lost" |
 /**  Stopped because a spend or step ceiling was reached. */
 "cap_reached";
+
+export type OptimizerRunViewV2 = {
+	algorithm: "eval",
+} & EvalRunView | {
+	algorithm: "gepa",
+} & GepaRunView | {
+	algorithm: "go-ex",
+} & GoExRunView | {
+	algorithm: "sft",
+} & SftRunView | {
+	algorithm: "cispo",
+} & CispoRunView;
 
 export type OptimizerSearchOverrides = {
 	proposalsPerGeneration?: number,
@@ -2555,6 +2792,21 @@ export type RollbackMetadata = {
 	deleteOrder: string[],
 };
 
+/**  Execution health, stored beside lifecycle rather than as a status. */
+export type RunCondition = "healthy" | "environment_unreachable" | "waiting_for_producer" | "producer_sequence_blocked";
+
+/**
+ *  Common execution lifecycle. Algorithm phase and execution health are not
+ *  peers of these variants.
+ */
+export type RunLifecycle = "queued" | "starting" | "running" | "paused" | "cancelling" | "terminal";
+
+/**
+ *  Algorithm-owned phase while lifecycle is `running` (or `starting`). Not a
+ *  lifecycle peer.
+ */
+export type RunPhase = "validating" | "provisioning" | "waiting_for_viewer" | "training" | "selection" | "checkpoint_evaluation" | "heldout_evaluation" | "materializing";
+
 /**
  *  One About row. Serialised from the same table the code enforces — a
  *  hand-maintained list in the renderer would be another copy, and the drift it
@@ -2696,6 +2948,15 @@ export type SavedLoraStorage = {
 	contentType: string,
 };
 
+export type SealedTerminal = {
+	kind: TerminalKind,
+	reason?: TerminalReason | null,
+	finalSequence: number,
+	evidence: EvidenceState,
+	failureRef?: string | null,
+	sealedAt: string,
+};
+
 export type SecretAuditEvent = {
 	schema: string,
 	eventId: string,
@@ -2749,6 +3010,34 @@ export type SecretsInbox = {
 export type SecretsProxyStatus = {
 	origin: string | null,
 	running: boolean,
+};
+
+export type SftProjection = {
+	workItems: WorkItem[],
+	phase: RunPhase | null,
+	usage: UsageCompleteness,
+	datasetDigest: string | null,
+	configDigest: string | null,
+	checkpoints: string[],
+	selectedCheckpointId: string | null,
+	childEvalRunIds: string[],
+	producedAdapter: string | null,
+	trainLoss: number | null,
+};
+
+export type SftResult = {
+	datasetDigest?: string | null,
+	selectedCheckpointId?: string | null,
+	producedAdapter?: string | null,
+	childEvalRunIds: string[],
+	trainLoss?: number | null,
+	usage: UsageCompleteness,
+};
+
+export type SftRunView = {
+	header: OptimizerRunHeader,
+	projection: SftProjection,
+	result: SftResult | null,
 };
 
 export type SignInBegin = {
@@ -2866,6 +3155,15 @@ export type TerminalInfo = {
 	exitCode: number | null,
 };
 
+/**  Structured terminal outcome. These are not lifecycle peers of `running`. */
+export type TerminalKind = "completed" | "failed" | "cancelled" | "degraded";
+
+/**
+ *  Typed optional reason attached to a terminal outcome. These used to be
+ *  extra `OptimizerRunStatus` variants, which let a phase overwrite lifecycle.
+ */
+export type TerminalReason = "evidence_unusable" | "interrupted" | "infrastructure_lost" | "cap_reached" | "producer_failed" | "operator_cancelled" | "admission_rejected";
+
 export type TraceBundleIngestRequest = {
 	sourcePath: string,
 	sourceKind: string | null,
@@ -2961,6 +3259,14 @@ export type UsageBreakdown = {
 	ttftMsP50: number | null,
 	ttftMsP95: number | null,
 	perfSampleCount: number,
+};
+
+/**  Usage that was never reported stays unavailable. Zero is a measured zero. */
+export type UsageCompleteness = {
+	costUsd?: number | null,
+	promptTokens?: number,
+	completionTokens?: number,
+	steps?: number,
 };
 
 /**
@@ -3225,6 +3531,32 @@ export type WhisperTranscription = {
 	text: string,
 };
 
+export type WorkItem = {
+	workItemId: string,
+	kind: WorkItemKind,
+	lifecycle: WorkItemLifecycle,
+	terminal?: TerminalKind | null,
+	externalRef?: string | null,
+};
+
+export type WorkItemKind = "eval_trial" | "container_rollout" | "proposer_job" | "candidate_evaluation" | "training_step" | "checkpoint_evaluation" | "heldout_evaluation";
+
+/**  Common work-item lifecycle. External task/rollout/job ids are references. */
+export type WorkItemLifecycle = "planned" | "queued" | "starting" | "running" | "terminal";
+
+/**  Counts a projection may report. Missing stays `None`; it is never zero. */
+export type WorkSummary = {
+	planned?: number,
+	queued?: number,
+	running?: number,
+	succeeded?: number,
+	failed?: number,
+	cancelled?: number,
+	unit?: string | null,
+	/**  False when the algorithm's work ceiling is a budget, not a fixed plan. */
+	fixedDenominator?: boolean,
+};
+
 export type WorkspaceAccessMode = "read_only" | "read_write";
 
 export type WorkspaceAccessSettings = {
@@ -3251,6 +3583,11 @@ export type WorkspaceGrantRequest = {
 	status: string,
 	createdAt: string,
 	resolvedAt: string | null,
+};
+
+export type WorkspaceRootSummary = {
+	workspaceRootRef: string,
+	displayName: string,
 };
 
 /* Tauri Specta runtime */

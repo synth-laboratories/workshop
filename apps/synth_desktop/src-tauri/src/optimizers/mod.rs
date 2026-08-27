@@ -20,6 +20,7 @@ mod hosted_client;
 mod hosted_gelo;
 mod hosted_sft;
 mod ingest;
+pub mod kernel;
 mod local;
 mod local_lora;
 pub(crate) mod manager;

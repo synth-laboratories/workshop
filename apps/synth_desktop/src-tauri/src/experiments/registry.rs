@@ -12,7 +12,7 @@ use super::candidates::{self, load_for_experiment};
 use super::models::{
     ExperimentChildCreateRequest, ExperimentCreateRequest, ExperimentFinalizeRequest,
     ExperimentGroup, ExperimentLineageEdge, ExperimentMember, ExperimentRelateRequest,
-    MEMBER_CAMPAIGN, MEMBER_DIRECT, MEMBER_OPTIMIZER,
+    MEMBER_OPTIMIZER,
 };
 
 pub fn create(conn: &Connection, request: ExperimentCreateRequest) -> Result<ExperimentGroup> {
@@ -28,19 +28,23 @@ pub fn create(conn: &Connection, request: ExperimentCreateRequest) -> Result<Exp
     if let Some(existing) = load_by_request_id(conn, &request.request_id)? {
         return Ok(existing);
     }
-    let group = attach(
-        conn,
-        &request.session_id,
-        super::MEMBER_DIRECT,
-        &request.request_id,
-        &request.created_at,
-        &request.title,
-    )?;
+    let id = format!("exp_{}", Uuid::new_v4().simple());
     conn.execute(
-        "UPDATE experiment_groups SET title=?2,task=COALESCE(?3,task),model=COALESCE(?4,model),updated_at=?5 WHERE id=?1",
-        params![group.id, request.title, request.task, request.model, request.created_at],
+        "INSERT INTO experiment_groups(
+            id, session_id, request_id, title, created_at, updated_at, task, model
+         ) VALUES(?1, ?2, ?3, ?4, ?5, ?5, ?6, ?7)",
+        params![
+            id,
+            request.session_id,
+            request.request_id,
+            request.title,
+            request.created_at,
+            request.task,
+            request.model
+        ],
     )?;
-    get(conn, &group.id)?.ok_or_else(|| anyhow::anyhow!("experiment disappeared after create"))
+    set_active(conn, &request.session_id, &id)?;
+    get(conn, &id)?.ok_or_else(|| anyhow::anyhow!("experiment disappeared after create"))
 }
 
 pub fn create_child(
@@ -77,25 +81,18 @@ pub fn create_child(
     let task = request.task.or(parent.task.clone());
     let model = request.model.or(parent.model.clone());
     conn.execute(
-        "INSERT INTO experiment_groups(id, session_id, title, created_at, updated_at, task, model)
-         VALUES(?1, ?2, ?3, ?4, ?4, ?5, ?6)",
+        "INSERT INTO experiment_groups(
+            id, session_id, request_id, title, created_at, updated_at, task, model
+         ) VALUES(?1, ?2, ?3, ?4, ?5, ?5, ?6, ?7)",
         params![
             id,
             parent.session_id,
+            request.request_id,
             request.title,
             request.created_at,
             task,
             model
         ],
-    )?;
-    attach_member_row(
-        conn,
-        &id,
-        MEMBER_DIRECT,
-        &request.request_id,
-        &request.created_at,
-        &request.title,
-        &parent.session_id,
     )?;
     insert_lineage(conn, &parent.id, &id, relation, &request.created_at)?;
     set_active(conn, &parent.session_id, &id)?;
@@ -244,6 +241,10 @@ pub fn settle_member(
     trace_refs: &[String],
     at: &str,
 ) -> Result<()> {
+    anyhow::ensure!(
+        member_kind == MEMBER_OPTIMIZER,
+        "only optimizer_run members can settle experiment execution"
+    );
     let experiment_id: Option<String> = conn
         .query_row(
             "SELECT group_id FROM experiment_group_members WHERE member_kind=?1 AND member_id=?2",
@@ -278,8 +279,7 @@ pub fn settle_member(
     Ok(())
 }
 
-/// Attach a campaign or optimizer run to the session's experiment group,
-/// creating the group on first use. Idempotent on `(kind, id)`.
+/// Attach one executed optimizer run to the session's experiment group.
 pub fn attach(
     conn: &Connection,
     session_id: &str,
@@ -288,6 +288,16 @@ pub fn attach(
     attached_at: &str,
     title: &str,
 ) -> Result<ExperimentGroup> {
+    anyhow::ensure!(
+        member_kind == MEMBER_OPTIMIZER,
+        "executed experiment members must be optimizer_run references, not `{member_kind}`"
+    );
+    let exists: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM optimizer_runs WHERE id=?1)",
+        [member_id],
+        |row| row.get(0),
+    )?;
+    anyhow::ensure!(exists, "optimizer run `{member_id}` does not exist");
     let group = ensure_group(conn, session_id, title, attached_at)?;
     attach_member_row(
         conn,
@@ -409,8 +419,8 @@ fn attach_candidates(conn: &Connection, group: &mut ExperimentGroup) -> Result<(
 fn load_by_request_id(conn: &Connection, request_id: &str) -> Result<Option<ExperimentGroup>> {
     let experiment_id: Option<String> = conn
         .query_row(
-            "SELECT group_id FROM experiment_group_members WHERE member_kind=?1 AND member_id=?2",
-            params![MEMBER_DIRECT, request_id],
+            "SELECT id FROM experiment_groups WHERE request_id=?1",
+            [request_id],
             |row| row.get(0),
         )
         .optional()?;
@@ -492,6 +502,10 @@ fn attach_member_row(
     title: &str,
     session_id: &str,
 ) -> Result<()> {
+    anyhow::ensure!(
+        member_kind == MEMBER_OPTIMIZER,
+        "experiment members must use canonical optimizer_run identity"
+    );
     let inserted = conn.execute(
         "INSERT OR IGNORE INTO experiment_group_members(group_id, member_kind, member_id, title, attached_at)
          VALUES(?1, ?2, ?3, ?4, ?5)",
@@ -519,11 +533,7 @@ fn attach_member_row(
                 "memberKind": member_kind,
                 "memberId": member_id,
                 "title": title,
-                "templateId": match member_kind {
-                    MEMBER_CAMPAIGN => "synth.eval_campaign.v1",
-                    MEMBER_OPTIMIZER => "synth.optimizer_run.v1",
-                    _ => "synth.experiment.v1",
-                },
+                "templateId": "synth.optimizer_run.v1",
             }),
             remote_sequence: None,
             command_id: None,

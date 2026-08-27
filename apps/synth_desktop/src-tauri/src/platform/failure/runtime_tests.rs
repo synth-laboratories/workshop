@@ -156,7 +156,7 @@ fn raise_records_operation_context() {
 }
 
 #[test]
-fn admission_failure_marks_unstarted_children_not_started() {
+fn admission_failure_links_the_canonical_optimizer_run() {
     let dir = tempfile::tempdir().unwrap();
     let storage = Storage::open(dir.path()).unwrap();
     storage
@@ -165,24 +165,6 @@ fn admission_failure_marks_unstarted_children_not_started() {
             conn.execute(
                 "INSERT INTO optimizer_runs(id, algorithm_id, status, source, created_at, payload_json, updated_at)
                  VALUES('run_1', 'eval', 'running', 'local', 'now', '{}', 'now')",
-                [],
-            )?;
-            conn.execute(
-                "INSERT INTO evaluation_runs(
-                    optimizer_run_id, recipe_source_kind, execution_spec_json, execution_spec_digest,
-                    container_declaration_digest, policy_revision, policy_configuration_digest,
-                    approval_receipt_id, created_at)
-                 VALUES('run_1', 'inline', '{}', 'd', 'c', 'p', 'cfg', 'appr', 'now')",
-                [],
-            )?;
-            conn.execute(
-                "INSERT INTO evaluation_rollouts(optimizer_run_id, rollout_index, rollout_state, updated_at)
-                 VALUES('run_1', 0, 'queued', 'now')",
-                [],
-            )?;
-            conn.execute(
-                "INSERT INTO evaluation_rollouts(optimizer_run_id, rollout_index, rollout_state, updated_at)
-                 VALUES('run_1', 1, 'running', 'now')",
                 [],
             )?;
             Ok(())
@@ -194,24 +176,11 @@ fn admission_failure_marks_unstarted_children_not_started() {
         .database()
         .transaction(|conn| crate::domains::evaluations::raise(conn, &error, Some("run_1")))
         .unwrap();
-    let states: Vec<(i64, String)> = storage
-        .database()
-        .with_conn(|conn| {
-            let mut stmt = conn.prepare(
-                "SELECT rollout_index, rollout_state FROM evaluation_rollouts WHERE optimizer_run_id='run_1' ORDER BY rollout_index",
-            )?;
-            let rows = stmt
-                .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
-                .collect::<rusqlite::Result<Vec<_>>>()?;
-            Ok(rows)
-        })
-        .unwrap();
-    assert_eq!(states, vec![(0, "not_started".into()), (1, "running".into())]);
     let terminal: String = storage
         .database()
         .with_conn(|conn| {
             Ok(conn.query_row(
-                "SELECT terminal_failure_id FROM evaluation_rollouts WHERE optimizer_run_id='run_1' AND rollout_index=0",
+                "SELECT terminal_failure_id FROM optimizer_runs WHERE id='run_1'",
                 [],
                 |row| row.get(0),
             )?)

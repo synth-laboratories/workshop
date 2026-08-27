@@ -130,12 +130,23 @@ mod tests {
     #[test]
     fn paid_and_credentials_always_use_native_approval_modals() {
         assert!(auto_decision("on-request", &paid()).unwrap().is_none());
-        let credential = ApprovalKind::CredentialAccess {
-            provider: "openai".into(),
-            purpose: "bounded optimizer recipe".into(),
-        };
-        for policy in ["never", "on-request", "untrusted"] {
-            assert!(auto_decision(policy, &credential).unwrap().is_none());
+        for consent in [
+            crate::session::approval::CredentialConsent::RememberLocator,
+            crate::session::approval::CredentialConsent::RegisterSource,
+            crate::session::approval::CredentialConsent::IssueLease,
+        ] {
+            let credential = ApprovalKind::CredentialAccess {
+                consent,
+                provider: "openai".into(),
+                purpose: "bounded optimizer recipe".into(),
+                locator_id: None,
+                display_path: None,
+                variable: None,
+                switch_from_display: None,
+            };
+            for policy in ["never", "on-request", "untrusted"] {
+                assert!(auto_decision(policy, &credential).unwrap().is_none());
+            }
         }
     }
 
@@ -216,8 +227,13 @@ mod tests {
             always_supported: true,
         };
         let credential = ApprovalKind::CredentialAccess {
+            consent: crate::session::approval::CredentialConsent::IssueLease,
             provider: "openai".into(),
             purpose: "bounded optimizer recipe".into(),
+            locator_id: None,
+            display_path: None,
+            variable: None,
+            switch_from_display: None,
         };
         let kinds = [
             shell,

@@ -1,5 +1,9 @@
-//! Hosted Craftax GELO recipe. optimizers-beta owns algorithm execution and
-//! canonical optimizer events; Containers owns child rollout streams.
+//! Hosted Craftax GELO recipe. Canonical algorithm id is `go-ex`; GELO is the
+//! display label and this recipe id. `gelo` / `hosted_gelo` are not algorithm
+//! ids and must not be folded into `go-ex`.
+//!
+//! optimizers-beta owns algorithm execution and canonical optimizer events;
+//! Containers owns child rollout streams.
 
 use super::events::OptimizerEventDraft;
 use super::{
@@ -95,6 +99,7 @@ pub fn recipe_catalog() -> Value {
         "id": HOSTED_GELO_CRAFTAX_RECIPE,
         "title": "Hosted GELO · Craftax",
         "algorithmId": "go-ex",
+        "algorithmDisplay": "GELO",
         "task": "craftax",
         "availability": availability,
         "limits": {

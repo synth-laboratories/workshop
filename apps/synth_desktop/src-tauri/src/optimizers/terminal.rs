@@ -29,7 +29,6 @@ pub(super) const TERMINAL_MANIFEST_SCHEMA: &str = "optimizer_terminal_manifest.v
 /// Terminal status spellings the manifest may carry. `failed_evidence` is the
 /// one that did not exist before: compute succeeded, its evidence did not, and
 /// calling that "completed" is what hid the Banking77 loss.
-pub(super) const STATUS_FAILED_EVIDENCE: &str = "failed_evidence";
 
 /// Work counts, in the unit the algorithm actually plans in. Every field is
 /// `Option` because a producer that never declared a plan has not declared zero.
@@ -64,124 +63,47 @@ pub(super) fn work_counts(
     run: &OptimizerRunRecord,
     events: &[OptimizerEventEnvelope],
 ) -> WorkCounts {
-    match run.algorithm_id.as_str() {
-        "eval" => eval_counts(events),
-        "gepa" | "go-ex" => rollout_counts(run, events),
-        "sft" => sft_counts(events),
-        _ => WorkCounts::default(),
+    if let Ok(algorithm) = crate::optimizers::kernel::AlgorithmKind::parse_wire(&run.algorithm_id) {
+        let placement =
+            crate::optimizers::kernel::bridge::placement_from_run_source(algorithm, &run.source);
+        if let Ok(state) = crate::optimizers::kernel::bridge::reduce_envelopes(
+            &run.id,
+            algorithm,
+            placement,
+            run.id.as_str(),
+            events,
+        ) {
+            return kernel_work_counts(&state.work_summary());
+        }
     }
+    WorkCounts::default()
 }
 
-fn eval_counts(events: &[OptimizerEventEnvelope]) -> WorkCounts {
-    let planned = events
-        .iter()
-        .filter(|event| event.event_type == "eval.run.planned")
-        .filter_map(|event| {
-            event
-                .snapshot
-                .as_ref()?
-                .get("planned_trials")
-                .or_else(|| event.snapshot.as_ref()?.get("plannedTrials"))
-                .and_then(Value::as_u64)
-        })
-        .next_back();
-    let mut succeeded = 0u64;
-    let mut failed = 0u64;
-    let mut saw_terminal = false;
-    for event in events {
-        if event.event_type != "eval.trial.terminal" {
-            continue;
-        }
-        saw_terminal = true;
-        let valid = event
-            .item
-            .as_ref()
-            .and_then(|item| item.get("valid"))
-            .and_then(Value::as_bool)
-            .unwrap_or(false);
-        if valid {
-            succeeded += 1;
+fn kernel_work_counts(summary: &crate::optimizers::kernel::WorkSummary) -> WorkCounts {
+    let unit = match summary.unit.as_deref() {
+        Some("trials") => Some("trials"),
+        Some("rollouts") => Some("rollouts"),
+        Some("child_evals") => Some("child_evals"),
+        Some("checkpoint_evals") => Some("checkpoint_evals"),
+        Some("rollout_groups") => Some("rollout_groups"),
+        _ => None,
+    };
+    WorkCounts {
+        planned: summary.planned,
+        succeeded: summary.succeeded,
+        failed: summary.failed,
+        skipped: if summary.fixed_denominator {
+            summary.planned.map(|planned| {
+                planned.saturating_sub(
+                    summary.succeeded.unwrap_or(0)
+                        + summary.failed.unwrap_or(0)
+                        + summary.cancelled.unwrap_or(0),
+                )
+            })
         } else {
-            failed += 1;
-        }
-    }
-    if planned.is_none() && !saw_terminal {
-        return WorkCounts {
-            unit: Some("trials"),
-            ..WorkCounts::default()
-        };
-    }
-    let settled = succeeded + failed;
-    WorkCounts {
-        planned,
-        succeeded: Some(succeeded),
-        failed: Some(failed),
-        skipped: planned.map(|planned| planned.saturating_sub(settled)),
-        unit: Some("trials"),
-    }
-}
-
-/// GEPA and GO-Ex rollout counts.
-///
-/// These used to look for `rollout.completed`, `rollout.terminal`, and
-/// `gepa.rollout.completed` — three spellings the GEPA producer has never
-/// emitted. Every GEPA manifest therefore sealed with `succeeded: null`, and a
-/// 140-rollout search settled looking exactly like a search that measured
-/// nothing. The counts now come from the events that do exist, via the same
-/// reduction the typed result and the verdict are built from.
-///
-/// `planned` stays `None` on purpose. GEPA declares a rollout *ceiling*, not a
-/// plan: a run that spends 320 of an 850 budget has not skipped 530 rollouts,
-/// it has finished under budget.
-fn rollout_counts(run: &OptimizerRunRecord, events: &[OptimizerEventEnvelope]) -> WorkCounts {
-    let evidence = gepa_evidence::reduce(run, events);
-    if evidence.rollouts_allocated == 0
-        && evidence.rollouts_scored == 0
-        && evidence.rollouts_failed == 0
-    {
-        return WorkCounts {
-            unit: Some("rollouts"),
-            ..WorkCounts::default()
-        };
-    }
-    WorkCounts {
-        planned: None,
-        succeeded: Some(evidence.rollouts_scored),
-        failed: Some(evidence.rollouts_failed),
-        skipped: None,
-        unit: Some("rollouts"),
-    }
-}
-
-fn sft_counts(events: &[OptimizerEventEnvelope]) -> WorkCounts {
-    let planned = events
-        .iter()
-        .filter_map(|event| {
-            event
-                .snapshot
-                .as_ref()?
-                .get("total_steps")
-                .or_else(|| event.snapshot.as_ref()?.get("totalSteps"))
-                .and_then(Value::as_u64)
-        })
-        .next_back();
-    let completed = events
-        .iter()
-        .filter_map(|event| {
-            event
-                .snapshot
-                .as_ref()?
-                .get("step")
-                .or_else(|| event.delta.get("step"))
-                .and_then(Value::as_u64)
-        })
-        .next_back();
-    WorkCounts {
-        planned,
-        succeeded: completed,
-        failed: None,
-        skipped: None,
-        unit: Some("steps"),
+            None
+        },
+        unit,
     }
 }
 
@@ -433,33 +355,6 @@ pub(crate) fn load(conn: &Connection, run_id: &str) -> Result<Option<Value>> {
         Some(payload) => Some(serde_json::from_str(&payload)?),
         None => None,
     })
-}
-
-/// Record that a sealed run's evidence lane failed after the fact. The manifest
-/// body stays as sealed; only the degradation lane is amended, because a
-/// degradation discovered later is new information about a settled run, not a
-/// different ending.
-pub(super) fn amend_degradation(conn: &Connection, run_id: &str, degradation: Value) -> Result<()> {
-    let Some(mut manifest) = load(conn, run_id)? else {
-        return Ok(());
-    };
-    if let Some(object) = manifest.as_object_mut() {
-        let mut entries = object
-            .get("degradation")
-            .and_then(Value::as_array)
-            .cloned()
-            .unwrap_or_else(|| match object.get("degradation") {
-                Some(Value::Null) | None => Vec::new(),
-                Some(other) => vec![other.clone()],
-            });
-        entries.push(degradation);
-        object.insert("degradation".into(), Value::Array(entries));
-    }
-    conn.execute(
-        "UPDATE optimizer_terminal_manifests SET payload_json = ?2 WHERE optimizer_run_id = ?1",
-        params![run_id, serde_json::to_string(&manifest)?],
-    )?;
-    Ok(())
 }
 
 /// Merge the sealed manifest over a live projection of the same run.

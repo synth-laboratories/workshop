@@ -10,8 +10,9 @@
  *
  * The rules it enforces:
  *
- *   · The run record is terminal-state authority. Events can suggest a run
- *     finished; only `run.status` ends a subscription.
+ *   · The kernel V2 view is terminal-state authority for optimizer runs. The
+ *     old run record is a compatibility fallback only when a transport does
+ *     not implement V2 (environment cards and injected legacy tests).
  *   · Events are consumed by durable sequence cursor. Notifications are
  *     wakeups, not truth — every wakeup re-reads the persisted pages.
  *   · A sequence hole is never patched over. A gap, a shrinking run cursor, or
@@ -25,6 +26,7 @@
 import { publicError } from "../publicError";
 import { mergeOptimizerEventPage, type OptimizerEventCursorState } from "../optimizerEventCursor";
 import { isTerminalRunStatus } from "./types";
+import type { OptimizerRunViewV2 } from "../../generated/protocol";
 
 export type RunProgressConnectionState =
 	| "loading"
@@ -62,6 +64,8 @@ export type RunProgressSnapshot = {
 	runId: string;
 	state: RunProgressConnectionState;
 	run: RunRecord | null;
+	/** Product truth. Raw events below are retained for diagnostics and rich evidence browsing. */
+	viewV2?: OptimizerRunViewV2;
 	events: unknown[];
 	cursor: number;
 	/** History is known-incomplete at this cursor. */
@@ -74,6 +78,8 @@ export type RunProgressSnapshot = {
 /** The transport the store reads through. Injectable so the rules are testable. */
 export type RunProgressTransport = {
 	get(runId: string): Promise<RunRecord>;
+	/** Optional only for legacy/injected tests. The desktop bridge always exposes it. */
+	runViewV2?(runId: string): Promise<OptimizerRunViewV2>;
 	eventsAfter(runId: string, afterSeq?: number, limit?: number): Promise<unknown[]>;
 	refresh(runId: string): Promise<unknown>;
 	onEvent(listener: (event: { payload?: Record<string, unknown> }) => void): () => void;
@@ -174,6 +180,9 @@ function transport(): RunProgressTransport | null {
 	if (!bridge) return null;
 	return {
 		get: (runId) => bridge.get(runId),
+		...(typeof bridge.runViewV2 === "function"
+			? { runViewV2: (runId: string) => bridge.runViewV2!(runId) }
+			: {}),
 		eventsAfter: (runId, afterSeq, limit) => bridge.eventsAfter(runId, afterSeq, limit),
 		refresh: (runId) => bridge.refresh(runId),
 		onEvent: (listener) => bridge.onEvent(listener)
@@ -285,7 +294,10 @@ async function load(entry: Entry, api: RunProgressTransport, requestSnapshot: bo
 					? "reconnecting"
 					: entry.snapshot.state
 		});
-		const run = await api.get(entry.runId);
+		const [run, viewV2] = await Promise.all([
+			api.get(entry.runId),
+			api.runViewV2?.(entry.runId)
+		]);
 		let next = await readPersisted(entry, api, snapshot ? 0 : entry.cursorState.cursor);
 		const runCursor = typeof run.cursorSeq === "number" ? run.cursorSeq : next.cursor;
 		if (!snapshot && (next.gap || runCursor < entry.cursorState.cursor || next.cursor < runCursor)) {
@@ -296,11 +308,13 @@ async function load(entry: Entry, api: RunProgressTransport, requestSnapshot: bo
 		if (entry.disposed) return;
 		disarmStall(entry);
 		entry.cursorState = next;
-		const terminal = isTerminalRunStatus(run.status);
+		const terminal = viewV2
+			? viewV2.header.lifecycle === "terminal"
+			: isTerminalRunStatus(run.status);
 		if (terminal) entry.stopPolling = true;
 		entry.needsSnapshot = next.gap || next.cursor < runCursor;
 
-		if (next.gap || next.cursor < runCursor) {
+		if ((next.gap || next.cursor < runCursor) && !viewV2) {
 			report({
 				runId: entry.runId,
 				severity: "warn",
@@ -312,6 +326,7 @@ async function load(entry: Entry, api: RunProgressTransport, requestSnapshot: bo
 			publish(entry, {
 				state: "stale",
 				run,
+				viewV2,
 				events: next.events,
 				cursor: next.cursor,
 				gap: true,
@@ -323,6 +338,7 @@ async function load(entry: Entry, api: RunProgressTransport, requestSnapshot: bo
 		publish(entry, {
 			state: terminal ? "terminal" : "subscribed",
 			run,
+			viewV2,
 			events: next.events,
 			cursor: next.cursor,
 			gap: false,

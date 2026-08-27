@@ -377,6 +377,11 @@ impl ApprovalResolver for CodexResolver {
                         "Codex cannot resolve a capped paid-compute approval"
                     ))
                 }
+                ApprovalDecision::Credential { .. } => {
+                    return Err(anyhow!(
+                        "Codex RPC cannot resolve a host credential approval"
+                    ))
+                }
             };
             let selected = select_approval_decision(&self.available_decisions, requested)?;
             super::event_pump::write_message(

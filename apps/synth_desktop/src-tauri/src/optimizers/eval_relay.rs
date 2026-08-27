@@ -847,6 +847,7 @@ pub(crate) fn frame_media_client() -> Result<reqwest::Client> {
 pub(crate) async fn append_trial_started(
     service: &OptimizerService,
     run_id: &str,
+    work_item_id: &str,
     trial_id: &str,
     rollout_id: &str,
     seed: i64,
@@ -859,8 +860,9 @@ pub(crate) async fn append_trial_started(
             run_id.to_string(),
             vec![
                 OptimizerEventDraft::new("eval.trial.started", EVAL_ALGORITHM_ID)
-                    .idempotency_key(format!("eval:started:{trial_id}"))
+                    .idempotency_key(format!("eval:started:{work_item_id}"))
                     .delta(Map::from_iter([
+                        ("workItemId".into(), json!(work_item_id)),
                         ("trial_id".into(), json!(trial_id)),
                         ("rollout_id".into(), json!(rollout_id)),
                         ("candidate_id".into(), json!(candidate_id)),

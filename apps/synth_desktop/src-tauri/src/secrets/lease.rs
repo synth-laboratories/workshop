@@ -5,6 +5,7 @@
 //! provider proxy and never contains the real key.
 
 use anyhow::{anyhow, Result};
+use rusqlite::OptionalExtension;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -37,6 +38,16 @@ pub const BACKEND_CONFIGURED_ENV: &str = "configured_env_file";
 pub const CREDENTIAL_SOURCE_UNCONFIGURED: &str = "credential_source_unconfigured";
 pub const CREDENTIAL_VALUE_MISSING: &str = "credential_value_missing";
 pub const CREDENTIAL_VALUE_UNLOADED: &str = "credential_value_unloaded";
+pub const CREDENTIAL_LOCATOR_UNAPPROVED_WORKSPACE: &str = "credential_locator_unapproved_workspace";
+pub const CREDENTIAL_PATH_ESCAPE: &str = "credential_locator_path_escape";
+pub const CREDENTIAL_LOCATOR_NOT_REGULAR_FILE: &str = "credential_locator_not_regular_file";
+pub const CREDENTIAL_LOCATOR_VALUE_SUPPLIED: &str = "credential_locator_value_supplied";
+pub const CREDENTIAL_LOCATOR_PICKER_MISMATCH: &str = "credential_locator_picker_mismatch";
+pub const CREDENTIAL_LOCATOR_BROAD_DISCOVERY: &str = "credential_locator_broad_discovery";
+pub const CREDENTIAL_LOCATOR_COMPAT_IMPORT: &str = "credential_locator_compat_import";
+pub const CREDENTIAL_LOCATOR_LIMIT: &str = "credential_locator_limit";
+pub const CREDENTIAL_DECISION_EXCEEDS_REQUEST: &str = "credential_locator_decision_exceeds_request";
+pub const CREDENTIAL_SOURCE_CONSENT_PENDING: &str = "credential_source_consent_pending";
 pub const PROXY_NOT_RUNNING: &str = "proxy_not_running";
 pub const PROXY_ROUTE_UNBOUND: &str = "proxy_route_unbound";
 pub const PROXY_CONTAINER_UNREACHABLE: &str = "proxy_container_unreachable";
@@ -79,7 +90,7 @@ impl CredentialError {
     }
 
     pub fn anyhow(self) -> anyhow::Error {
-        anyhow!("{}", serde_json::to_string(&self).unwrap_or(self.message))
+        anyhow::Error::new(self)
     }
 }
 
@@ -92,6 +103,8 @@ impl std::fmt::Display for CredentialError {
         )
     }
 }
+
+impl std::error::Error for CredentialError {}
 
 pub fn classify_upstream_status(status: u16) -> &'static str {
     match status {
@@ -383,14 +396,14 @@ impl EnvSourceStore {
         self.values
             .lock()
             .expect("env source store")
-            .insert(backend_ref.to_owned(), value.0.clone());
+            .insert(env_store_ref(backend_ref), value.0.clone());
     }
 
     pub fn get(&self, backend_ref: &str) -> Option<SecretBytes> {
         self.values
             .lock()
             .expect("env source store")
-            .get(backend_ref)
+            .get(&env_store_ref(backend_ref))
             .cloned()
             .map(SecretBytes)
     }
@@ -399,11 +412,41 @@ impl EnvSourceStore {
         self.values
             .lock()
             .expect("env source store")
-            .contains_key(backend_ref)
+            .contains_key(&env_store_ref(backend_ref))
     }
 
     pub fn clear(&self) {
         self.values.lock().expect("env source store").clear();
+    }
+
+    pub fn remove(&self, backend_ref: &str) -> bool {
+        self.values
+            .lock()
+            .expect("env source store")
+            .remove(&env_store_ref(backend_ref))
+            .is_some()
+    }
+
+    pub fn keys(&self) -> Vec<String> {
+        self.values
+            .lock()
+            .expect("env source store")
+            .keys()
+            .cloned()
+            .collect()
+    }
+}
+
+/// Source-license rows have locator-specific opaque refs so more than one
+/// license can exist for a provider slot. RAM occupancy is deliberately one
+/// value per `(provider, variable)` and therefore ignores that final suffix.
+pub fn env_store_ref(backend_ref: &str) -> String {
+    let mut segments = backend_ref.split(':');
+    match (segments.next(), segments.next(), segments.next()) {
+        (Some("envsrc"), Some(provider), Some(variable)) => {
+            format!("envsrc:{provider}:{variable}")
+        }
+        _ => backend_ref.to_owned(),
     }
 }
 
@@ -439,15 +482,9 @@ pub fn provider_variable_from_config(document: &toml::Value, provider: &str) -> 
 
 pub fn read_env_file_value(path: &Path, key: &str) -> Option<String> {
     let text = std::fs::read_to_string(path).ok()?;
-    text.lines()
-        .find_map(|line| {
-            let line = line.trim().strip_prefix("export ").unwrap_or(line.trim());
-            if line.starts_with('#') || line.is_empty() {
-                return None;
-            }
-            let (name, value) = line.split_once('=')?;
-            (name.trim() == key).then(|| value.trim().trim_matches(['\'', '"']).to_owned())
-        })
+    super::importer::parse_dotenv(&text)
+        .ok()?
+        .remove(key)
         .filter(|value| !value.is_empty())
 }
 
@@ -456,14 +493,21 @@ pub fn upsert_env_source_descriptor(
     provider: &str,
     variable: &str,
     env_file: &Path,
+    locator_id: Option<&str>,
     fingerprint: Option<&str>,
     loaded: bool,
 ) -> Result<String> {
     let id = format!(
         "envsrc_{}",
-        hex_short(&format!("{provider}:{variable}:{}", env_file.display()))
+        hex_short(&format!(
+            "{provider}:{variable}:{}:{}",
+            env_file.display(),
+            locator_id.unwrap_or("legacy")
+        ))
     );
-    let backend_ref = env_backend_ref(provider, variable);
+    let backend_ref = locator_id
+        .map(|locator_id| format!("{}:{locator_id}", env_backend_ref(provider, variable)))
+        .unwrap_or_else(|| env_backend_ref(provider, variable));
     let now = chrono::Utc::now().to_rfc3339();
     let alias = format!("config.toml {variable}");
     let status = if loaded { "valid" } else { "invalid" };
@@ -471,12 +515,18 @@ pub fn upsert_env_source_descriptor(
     conn.execute(
         "INSERT INTO secret_refs(
             id, alias, provider, scope, backend, backend_ref, fingerprint,
-            display_suffix, status, created_at, updated_at, last_validated_at
-        ) VALUES (?1,?2,?3,'project/config/env',?4,?5,?6,'',?7,?8,?8,?9)
+            display_suffix, status, created_at, updated_at, last_validated_at,
+            locator_id, source_state
+        ) VALUES (?1,?2,?3,'project/config/env',?4,?5,?6,'',?7,?8,?8,?9,?10,?11)
          ON CONFLICT(backend_ref) DO UPDATE SET
             alias=excluded.alias,
-            fingerprint=excluded.fingerprint,
-            status=excluded.status,
+            fingerprint=CASE WHEN excluded.fingerprint='sha256:unloaded'
+                THEN secret_refs.fingerprint ELSE excluded.fingerprint END,
+            status=CASE WHEN excluded.fingerprint='sha256:unloaded'
+                THEN secret_refs.status ELSE excluded.status END,
+            locator_id=excluded.locator_id,
+            source_state=CASE WHEN excluded.fingerprint='sha256:unloaded'
+                THEN secret_refs.source_state ELSE excluded.source_state END,
             updated_at=excluded.updated_at,
             last_validated_at=excluded.last_validated_at",
         rusqlite::params![
@@ -489,6 +539,8 @@ pub fn upsert_env_source_descriptor(
             status,
             now,
             loaded.then_some(now.clone()),
+            locator_id,
+            if loaded { "loaded" } else { "value_missing" },
         ],
     )?;
     let stored: String = conn.query_row(
@@ -497,7 +549,6 @@ pub fn upsert_env_source_descriptor(
         |row| row.get(0),
     )?;
     let _ = env_file;
-    let _ = variable;
     Ok(stored)
 }
 
@@ -540,13 +591,197 @@ impl SecretsService {
             .and_then(|backend| std::fs::read_to_string(&backend.config_path).ok())
             .and_then(|text| text.parse::<toml::Value>().ok())
             .unwrap_or(toml::Value::Table(toml::map::Map::new()));
-        let mut descriptors = Vec::new();
+        let mut instance_locator_ids = Vec::new();
         for (provider, default_var) in CANONICAL_PROVIDER_VARS {
             let variable = provider_variable_from_config(&document, provider)
                 .unwrap_or_else(|_| (*default_var).to_owned());
-            descriptors.push(self.load_one_env_source(provider, &variable, &env_file)?);
+            let locator_id = self.db.transaction(|conn| {
+                let locator = super::locator::upsert_instance(
+                    conn,
+                    &env_file,
+                    provider,
+                    &variable,
+                    &format!("Workshop instance {provider}"),
+                )?;
+                let source_id = upsert_env_source_descriptor(
+                    conn,
+                    provider,
+                    &variable,
+                    &env_file,
+                    Some(&locator.id),
+                    None,
+                    false,
+                )?;
+                if super::locator::preferred_source(conn, provider, &variable)?.is_none() {
+                    super::locator::mark_preferred(conn, &source_id, provider, &variable)?;
+                }
+                Ok(locator.id)
+            })?;
+            instance_locator_ids.push(locator_id);
         }
+        let preferred = self.db.with_conn(|conn| {
+            let mut stmt = conn.prepare(
+                "SELECT sr.locator_id,l.kind FROM secret_refs sr
+                 JOIN credential_locators l ON l.id=sr.locator_id
+                 WHERE sr.preferred=1 AND sr.locator_id IS NOT NULL
+                 ORDER BY sr.provider",
+            )?;
+            let rows = stmt.query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })?;
+            rows.collect::<rusqlite::Result<Vec<_>>>()
+                .map_err(Into::into)
+        })?;
+        let mut descriptors = Vec::new();
+        for (locator_id, kind) in preferred {
+            match self.load_registered_locator(&locator_id, kind == "instance_env_file") {
+                Ok(descriptor) => descriptors.push(descriptor),
+                Err(error) => crate::platform::logging::report(
+                    "secrets",
+                    "credential_preferred_load_failed",
+                    format!("preferred credential source {locator_id} was not loaded: {error:#}"),
+                ),
+            }
+        }
+        let _ = instance_locator_ids;
+        self.rewrite_locator_export();
         Ok(descriptors)
+    }
+
+    pub(crate) fn load_registered_locator(
+        &self,
+        locator_id: &str,
+        accept_fingerprint_change: bool,
+    ) -> Result<CredentialSourceDescriptor> {
+        let locator = self
+            .db
+            .with_conn(|conn| super::locator::get(conn, locator_id))?
+            .ok_or_else(|| anyhow!("credential locator {locator_id} was not found"))?;
+        let source = self
+            .db
+            .with_conn(|conn| {
+                conn.query_row(
+                    "SELECT id,backend_ref,fingerprint FROM secret_refs
+                     WHERE locator_id=?1 ORDER BY updated_at DESC LIMIT 1",
+                    [locator_id],
+                    |row| {
+                        Ok((
+                            row.get::<_, String>(0)?,
+                            row.get::<_, String>(1)?,
+                            row.get::<_, String>(2)?,
+                        ))
+                    },
+                )
+                .optional()
+                .map_err(Into::into)
+            })?
+            .ok_or_else(|| {
+                CredentialError::new(
+                    CREDENTIAL_SOURCE_UNCONFIGURED,
+                    "locator",
+                    false,
+                    "credential location is remembered but not registered",
+                )
+                .anyhow()
+            })?;
+        let path = match super::locator::resolve_path(&locator, &self.allowed_workspace_paths()) {
+            Ok(path) => path,
+            Err(error) => {
+                self.env_sources.remove(&source.1);
+                let revoked = error
+                    .chain()
+                    .filter_map(|cause| cause.downcast_ref::<CredentialError>())
+                    .any(|failure| failure.code == CREDENTIAL_LOCATOR_UNAPPROVED_WORKSPACE);
+                self.db.with_conn(|conn| {
+                    conn.execute(
+                        "UPDATE secret_refs SET source_state=?1,status='invalid',updated_at=?2 WHERE id=?3",
+                        rusqlite::params![
+                            if revoked { "workspace_authority_revoked" } else { "missing" },
+                            chrono::Utc::now().to_rfc3339(),
+                            source.0
+                        ],
+                    )?;
+                    super::locator::set_observation_state(
+                        conn,
+                        locator_id,
+                        if revoked {
+                            super::locator::CredentialLocatorState::WorkspaceAuthorityRevoked
+                        } else {
+                            super::locator::CredentialLocatorState::Missing
+                        },
+                    )?;
+                    Ok(())
+                })?;
+                return Err(error);
+            }
+        };
+        let Some(value) = read_env_file_value(&path, &locator.variable) else {
+            self.env_sources.remove(&source.1);
+            self.db.with_conn(|conn| {
+                conn.execute(
+                    "UPDATE secret_refs SET source_state='value_missing',status='invalid',updated_at=?1 WHERE id=?2",
+                    rusqlite::params![chrono::Utc::now().to_rfc3339(), source.0],
+                )?;
+                super::locator::set_observation_state(
+                    conn,
+                    locator_id,
+                    super::locator::CredentialLocatorState::Observed,
+                )?;
+                Ok(())
+            })?;
+            return Err(CredentialError::new(
+                CREDENTIAL_VALUE_MISSING,
+                "locator",
+                false,
+                format!("{} is missing or empty", locator.variable),
+            )
+            .anyhow());
+        };
+        let bytes = SecretBytes::from_utf8(&value);
+        let digest = fingerprint::fingerprint(&bytes);
+        if !accept_fingerprint_change && source.2 != "sha256:unloaded" && source.2 != digest {
+            self.env_sources.remove(&source.1);
+            self.db.with_conn(|conn| {
+                conn.execute(
+                    "UPDATE secret_refs SET source_state='fingerprint_changed',status='invalid',updated_at=?1 WHERE id=?2",
+                    rusqlite::params![chrono::Utc::now().to_rfc3339(), source.0],
+                )?;
+                Ok(())
+            })?;
+            return Err(CredentialError::new(
+                CREDENTIAL_VALUE_UNLOADED,
+                "locator",
+                false,
+                "credential file fingerprint changed; register the source again",
+            )
+            .anyhow());
+        }
+        self.env_sources.put(&source.1, &bytes);
+        self.redaction.register(&bytes);
+        self.db.with_conn(|conn| {
+            conn.execute(
+                "UPDATE secret_refs SET fingerprint=?1,source_state='loaded',status='valid',
+                 last_validated_at=?2,updated_at=?2 WHERE id=?3",
+                rusqlite::params![digest, chrono::Utc::now().to_rfc3339(), source.0],
+            )?;
+            super::locator::set_observation_state(
+                conn,
+                locator_id,
+                super::locator::CredentialLocatorState::Observed,
+            )?;
+            Ok(())
+        })?;
+        Ok(CredentialSourceDescriptor {
+            schema_version: SOURCE_SCHEMA.into(),
+            provider: locator.provider,
+            source_kind: locator.kind.as_str().into(),
+            variable: locator.variable,
+            configured: true,
+            loaded: true,
+            validated: true,
+            fingerprint: Some(digest),
+            env_file: path.display().to_string(),
+        })
     }
 
     pub fn load_one_env_source(
@@ -583,6 +818,7 @@ impl SecretsService {
                 provider,
                 variable,
                 env_file,
+                None,
                 fingerprint.as_deref(),
                 loaded,
             )
@@ -607,7 +843,13 @@ impl SecretsService {
         let env_file = crate::synth_config::resolve()
             .map(|backend| backend.env_file)
             .unwrap_or_else(|_| crate::instance::state_root().join(".env"));
-        let backend_ref = env_backend_ref(provider, &variable);
+        let record = self
+            .db
+            .with_conn(|conn| vault::find_configured_source(conn, provider))?;
+        let backend_ref = record
+            .as_ref()
+            .map(|record| record.backend_ref.clone())
+            .unwrap_or_else(|| env_backend_ref(provider, &variable));
         let loaded = self.env_sources.contains(&backend_ref);
         let fingerprint = self
             .env_sources
@@ -621,7 +863,7 @@ impl SecretsService {
             configured: true,
             loaded,
             validated: loaded,
-            fingerprint,
+            fingerprint: fingerprint.or_else(|| record.map(|record| record.fingerprint)),
             env_file: env_file.display().to_string(),
         })
     }
@@ -645,17 +887,18 @@ impl SecretsService {
     ) -> Result<CredentialLease> {
         reject_managed_byok(recipe_id, None)?;
         let variable = self.configured_variable(provider)?;
-        let backend_ref = env_backend_ref(provider, &variable);
+        let configured = self
+            .db
+            .with_conn(|conn| vault::find_configured_source(conn, provider))?;
+        let backend_ref = configured
+            .as_ref()
+            .map(|record| record.backend_ref.clone())
+            .unwrap_or_else(|| env_backend_ref(provider, &variable));
         if !self.env_sources.contains(&backend_ref) {
             let env_file = crate::synth_config::resolve()
                 .map(|backend| backend.env_file.display().to_string())
                 .unwrap_or_else(|_| "<unresolved env_file>".into());
-            let descriptor_exists = self
-                .db
-                .with_conn(|conn| vault::find_configured_source(conn, provider))
-                .ok()
-                .flatten()
-                .is_some();
+            let descriptor_exists = configured.is_some();
             let code = if descriptor_exists {
                 CREDENTIAL_VALUE_UNLOADED
             } else {
@@ -678,19 +921,15 @@ impl SecretsService {
             )
             .anyhow()
         })?;
-        let secret_id = self
-            .db
-            .with_conn(|conn| vault::find_configured_source(conn, provider))?
-            .map(|record| record.id)
-            .ok_or_else(|| {
-                CredentialError::new(
-                    CREDENTIAL_VALUE_UNLOADED,
-                    "source",
-                    false,
-                    format!("configured {provider} descriptor is not loaded in this process"),
-                )
-                .anyhow()
-            })?;
+        let secret_id = configured.map(|record| record.id).ok_or_else(|| {
+            CredentialError::new(
+                CREDENTIAL_VALUE_UNLOADED,
+                "source",
+                false,
+                format!("configured {provider} descriptor is not loaded in this process"),
+            )
+            .anyhow()
+        })?;
         let granted = self
             .grant_use(&secret_id, run_id, recipe_id, policy.clone(), actor, false)
             .map_err(|error| {

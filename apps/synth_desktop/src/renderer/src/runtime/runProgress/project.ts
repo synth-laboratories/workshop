@@ -1,12 +1,11 @@
 /**
- * `RunProgressAdapter` dispatch: durable run record + event history in, one
- * `run_progress.v1` projection out.
+ * `RunProgressAdapter` dispatch: the durable kernel V2 view becomes one
+ * `run_progress.v1` projection. Event reduction remains only for the
+ * non-optimizer environment card and injected legacy tests.
  *
- * The reduction itself is `projectAtCursor` from the shared optimizer family —
- * the same function the full visual uses. Terminal-lane events only: post-
- * terminal enrichment is split off before either surface reduces, so the
- * transcript card and the workspace cannot drift apart on phase, progress,
- * usage, or result.
+ * Raw terminal-lane events are still carried for timeline/evidence diagnostics
+ * and explicit time travel. They do not decide the live optimizer lifecycle,
+ * progress, usage, or result.
  */
 
 import {
@@ -22,6 +21,7 @@ import { projectSft } from "./adapterSft";
 import type { AdapterInput } from "./adapterShared";
 import { splitEventLanes } from "./lanes";
 import type { RunProgressSnapshot, RunRecord } from "./subscription";
+import { projectRunViewV2 } from "./viewV2";
 import {
 	isRunKind,
 	type RunKind,
@@ -34,7 +34,7 @@ export type RunProgressAdapter = (
 	projected: ReturnType<typeof projectAtCursor>
 ) => RunProgressProjection;
 
-const ADAPTERS: Record<RunKind, RunProgressAdapter> = {
+const ADAPTERS: Partial<Record<RunKind, RunProgressAdapter>> = {
 	gepa: projectGepa,
 	eval: projectEval,
 	sft: projectSft,
@@ -42,9 +42,8 @@ const ADAPTERS: Record<RunKind, RunProgressAdapter> = {
 };
 
 /**
- * Which workflows chat offers a card for. `go-ex` and `dag` runs stream through
- * the same transport but have no product card yet; returning null is how the
- * transcript declines rather than rendering an empty shell.
+ * Which workflows chat offers a card for. Registered kernel algorithms all
+ * have a V2 card; environment remains on the legacy diagnostic adapter.
  */
 export function runKindOf(algorithmId: string | null | undefined): RunKind | null {
 	return isRunKind(algorithmId) ? algorithmId : null;
@@ -114,8 +113,16 @@ export function projectRunProgress(
 ): RunProgressProjection | null {
 	const run = snapshot.run;
 	if (!run) return null;
+	if (snapshot.viewV2) {
+		if (snapshot.viewV2.header.runId !== run.id) {
+			throw new Error("optimizer run view identity does not match the subscribed run");
+		}
+		return overlayConnection(projectRunViewV2(snapshot.viewV2, run, now), snapshot);
+	}
 	const kind = runKindOf(run.algorithmId);
 	if (!kind) return null;
+	const adapter = ADAPTERS[kind];
+	if (!adapter) return null;
 	const lanes = splitEventLanes(run, usableEvents(snapshot.events));
 	const input: AdapterInput = {
 		run,
@@ -125,7 +132,7 @@ export function projectRunProgress(
 		now
 	};
 	const projected = projectAtCursor(asOptimizerRun(run), lanes.terminalEvents);
-	const projection = ADAPTERS[kind](input, projected);
+	const projection = adapter(input, projected);
 	return overlayConnection({
 		...projection,
 		cursorSeq: lanes.terminalCursor,

@@ -337,6 +337,13 @@ mod tests {
     #[test]
     fn fold_from_gepa_envelopes_is_idempotent_and_skips_sft() {
         let conn = database();
+        conn.execute(
+            "INSERT INTO optimizer_runs(
+                id,algorithm_id,status,source,created_at,payload_json,updated_at
+             ) VALUES ('opt_gepa','gepa','running','local','2026-08-26T00:00:00Z','{}','2026-08-26T00:00:00Z')",
+            [],
+        )
+        .unwrap();
         attach(
             &conn,
             "session_gepa",
@@ -399,6 +406,13 @@ mod tests {
             0.75
         );
 
+        conn.execute(
+            "INSERT INTO optimizer_runs(
+                id,algorithm_id,status,source,created_at,payload_json,updated_at
+             ) VALUES ('opt_sft','sft','running','local','2026-08-26T00:00:00Z','{}','2026-08-26T00:00:00Z')",
+            [],
+        )
+        .unwrap();
         attach(
             &conn,
             "session_sft",

@@ -80,10 +80,9 @@ impl CloudOptimizerClient {
         project_id: Option<&str>,
         run_id: Option<&str>,
     ) -> Result<Value> {
-        let algorithm = match algorithm {
-            "gelo" | "goex" | "go_ex" => "go-ex",
-            other => other,
-        };
+        let algorithm = super::kernel::AlgorithmKind::parse_wire(algorithm)
+            .map_err(|error| anyhow!("{error}"))?
+            .wire_id();
         let mut body = json!({
             "algorithm": algorithm,
         });

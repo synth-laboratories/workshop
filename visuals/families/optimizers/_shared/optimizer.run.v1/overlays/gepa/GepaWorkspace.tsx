@@ -8,13 +8,11 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { formatMissingUsd } from "../../../../../../runtime/liveStream.ts";
 import type { ReactNode } from "react";
+import type { OptimizerRun, ProjectedState } from "../../components/projectEvents.ts";
 import {
-  projectAtCursor,
-  type OptimizerEvent,
-  type OptimizerRun,
-  type ProjectedState
-} from "../../components/projectEvents.ts";
-import { normalizeOptimizerEvents } from "../../components/normalizeEvents.ts";
+  projectRunViewV2,
+  type OptimizerRunViewV2Like
+} from "../../components/projectRunViewV2.ts";
 import {
   StageTimeline,
   WorkspaceHeader,
@@ -157,7 +155,7 @@ function JobTerminationNotice({
 
 export type GepaComparisonPayload = {
   run: OptimizerRun;
-  events: OptimizerEvent[];
+  runViewV2: OptimizerRunViewV2Like;
   label?: string;
 };
 
@@ -213,10 +211,7 @@ export function GepaWorkspace({
   const comparisonProjection = useMemo(() => {
     if (!comparison) return null;
     try {
-      // The host hands over the sibling run's raw persisted page; normalize
-      // wire aliases exactly like the primary run's shell does.
-      const events = normalizeOptimizerEvents(comparison.events as unknown[]);
-      const other = projectAtCursor(comparison.run, events);
+      const other = projectRunViewV2(comparison.run, comparison.runViewV2);
       return other.gepa ? { runId: comparison.run.id, gepa: other.gepa, label: comparison.label } : null;
     } catch {
       // A malformed sibling page must never take down the primary view.
