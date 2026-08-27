@@ -1997,7 +1997,7 @@ fn advertised_eval_protocol(metadata: &Value) -> Option<String> {
 
 #[cfg(test)]
 mod admission_metadata_tests {
-    use super::advertised_gepa_v2_protocol;
+    use super::advertised_eval_protocol;
     use serde_json::json;
 
     #[test]
@@ -2014,7 +2014,24 @@ mod admission_metadata_tests {
             }
         });
         assert_eq!(
-            advertised_gepa_v2_protocol(&metadata).as_deref(),
+            advertised_eval_protocol(&metadata).as_deref(),
+            Some("synth.container.live-eval.v1")
+        );
+    }
+
+    #[test]
+    fn accepts_nested_gepa_contract_without_a_top_level_live_eval_protocol() {
+        let metadata = json!({
+            "info": {
+                "capabilities": {
+                    "optimizer_contracts": {
+                        "gepa": { "version": "synth_optimizers.gepa.v2" }
+                    }
+                }
+            }
+        });
+        assert_eq!(
+            advertised_eval_protocol(&metadata).as_deref(),
             Some("synth_optimizers.gepa.v2")
         );
     }
