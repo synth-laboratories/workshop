@@ -37,6 +37,16 @@ function IconCopy() {
 	);
 }
 
+function IconEllipsis() {
+	return (
+		<svg width="20" height="20" viewBox="0 0 20 20" fill="none" aria-hidden>
+			<circle cx="4" cy="10" r="1.6" fill="currentColor" />
+			<circle cx="10" cy="10" r="1.6" fill="currentColor" />
+			<circle cx="16" cy="10" r="1.6" fill="currentColor" />
+		</svg>
+	);
+}
+
 export type AppTitlebarProps = {
 	tabLabel: string;
 	appVersion: string;
@@ -116,7 +126,7 @@ export function AppTitlebar({
 								aria-expanded={menuOpen}
 								onClick={() => setMenuOpen((open) => !open)}
 							>
-								<span aria-hidden>•••</span>
+								<IconEllipsis />
 							</button>
 							{menuOpen ? (
 								<div className="tab-menu-popover" role="menu" aria-label="Copy chat details">
