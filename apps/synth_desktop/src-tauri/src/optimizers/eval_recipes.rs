@@ -834,6 +834,11 @@ pub async fn start(
     }
     let suffix = uuid::Uuid::new_v4().simple().to_string();
     let run_id = format!("opt_eval_{}", &suffix[..12]);
+    // Local MLX speaks the OpenAI wire format, whose clients require a
+    // non-empty API key even though this instance-owned loopback service does
+    // not use a provider credential. Mint a per-run sentinel and pass it only
+    // to the worker process; never persist it in the manifest or run record.
+    let local_mlx_token = local_mlx_worker_token(&recipe_id);
     let workers = home.join("workers");
     fs::create_dir_all(&workers).context("create eval worker directory")?;
     let manifest_path = workers.join(format!("{run_id}.json"));
@@ -978,6 +983,7 @@ pub async fn start(
             worker_recipe_id,
             worker_recipe,
             worker_candidate_count,
+            local_mlx_token,
             cancel_rx,
         )
         .await
@@ -1007,6 +1013,14 @@ fn paid_provider_for_recipe(recipe: &Value) -> Option<&'static str> {
     }
 }
 
+fn local_mlx_worker_token(recipe_id: &str) -> Option<String> {
+    matches!(
+        recipe_id,
+        EVAL_MLX_LOCAL_RECIPE | EVAL_CRAFTAX_MLX_LOCAL_RECIPE
+    )
+    .then(|| format!("synth-local-{}", uuid::Uuid::new_v4().simple()))
+}
+
 async fn run_worker(
     service: OptimizerService,
     run_id: String,
@@ -1017,6 +1031,7 @@ async fn run_worker(
     recipe_id: String,
     recipe: Value,
     candidate_count: u64,
+    local_mlx_token: Option<String>,
     mut cancel: watch::Receiver<bool>,
 ) -> Result<()> {
     let _revoke = crate::secrets::RevokeRunOnDrop(run_id.clone());
@@ -1038,6 +1053,9 @@ async fn run_worker(
         // can truthfully report Docker ready and the worker can still fail
         // immediately with `docker is not on PATH`.
         .env("PATH", eval_cli_path(std::env::var_os("PATH").as_deref())?);
+    if let Some(token) = local_mlx_token {
+        command.env("SYNTH_MLX_RL_TOKEN", token);
+    }
     if let Some(provider) = paid_provider.as_deref() {
         let secrets = crate::secrets::live().ok_or_else(|| {
             secrets_proxy_error(
@@ -2605,6 +2623,15 @@ mod immutable_target_tests {
             }]
         });
         assert_eq!(paid_provider_for_recipe(&recipe), None);
+    }
+
+    #[test]
+    fn local_mlx_worker_gets_an_ephemeral_non_provider_token() {
+        let first = local_mlx_worker_token(EVAL_CRAFTAX_MLX_LOCAL_RECIPE).unwrap();
+        let second = local_mlx_worker_token(EVAL_CRAFTAX_MLX_LOCAL_RECIPE).unwrap();
+        assert!(first.starts_with("synth-local-"));
+        assert_ne!(first, second);
+        assert_eq!(local_mlx_worker_token(EVAL_CRAFTAX_LLM_RECIPE), None);
     }
 
     #[test]
