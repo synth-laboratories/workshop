@@ -1978,8 +1978,13 @@ fn advertised_eval_protocol(metadata: &Value) -> Option<String> {
         return Some(protocol.to_string());
     }
     for pointer in [
+        "/capabilities/protocol",
+        "/capabilities/optimizer_contracts/gepa/version",
         "/optimizer_contracts/gepa/version",
         "/metadata/optimizer_contracts/gepa/version",
+        "/info/capabilities/optimizer_contracts/gepa/version",
+        "/info/optimizer_contracts/gepa/version",
+        "/info/metadata/optimizer_contracts/gepa/version",
     ] {
         if let Some(version) = metadata.pointer(pointer).and_then(Value::as_str) {
             if version == crate::container_capabilities::GEPA_V2_CONTRACT {
@@ -1988,6 +1993,31 @@ fn advertised_eval_protocol(metadata: &Value) -> Option<String> {
         }
     }
     None
+}
+
+#[cfg(test)]
+mod admission_metadata_tests {
+    use super::advertised_gepa_v2_protocol;
+    use serde_json::json;
+
+    #[test]
+    fn accepts_gepa_contract_nested_beside_live_eval_protocol() {
+        let metadata = json!({
+            "capabilities": { "protocol": "synth.container.live-eval.v1" },
+            "info": {
+                "capabilities": {
+                    "protocol": "synth.container.live-eval.v1",
+                    "optimizer_contracts": {
+                        "gepa": { "version": "synth_optimizers.gepa.v2" }
+                    }
+                }
+            }
+        });
+        assert_eq!(
+            advertised_gepa_v2_protocol(&metadata).as_deref(),
+            Some("synth_optimizers.gepa.v2")
+        );
+    }
 }
 
 fn container_image_digest(metadata: &Value) -> Option<String> {

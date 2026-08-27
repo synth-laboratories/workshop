@@ -441,11 +441,13 @@ impl OptimizerService {
     /// pixels share it, which is exactly the physical deduplication the content
     /// store already performs.
     pub(super) async fn record_run_media(&self, run_id: &str, row: &RunMediaRow) -> Result<()> {
-        let run_id = run_id.to_string();
-        let row = row.clone();
-        self.db
-            .clone()
-            .run_transaction(move |conn| {
+        const MAX_BUSY_ATTEMPTS: usize = 3;
+        for attempt in 1..=MAX_BUSY_ATTEMPTS {
+            let run_id = run_id.to_string();
+            let row = row.clone();
+            let result = self.db
+                .clone()
+                .run_transaction(move |conn| {
                 conn.execute(
                     "INSERT INTO optimizer_run_media(
                         optimizer_run_id, cas_digest, kind, media_type, byte_size,
@@ -468,7 +470,28 @@ impl OptimizerService {
                 )?;
                 Ok(())
             })
-            .await
+            .await;
+            match result {
+                Ok(()) => return Ok(()),
+                Err(error)
+                    if attempt < MAX_BUSY_ATTEMPTS
+                        && error.to_string().contains("database is locked") =>
+                {
+                    // Five live Craftax relays can finish frames at the same
+                    // instant. SQLite's busy timeout normally serializes them,
+                    // but a long event projection transaction can outlive that
+                    // timeout. A frame is durable in CAS already, so retrying
+                    // this idempotent index insert is safer than drawing a
+                    // permanent hole in the live trace.
+                    tokio::time::sleep(std::time::Duration::from_millis(
+                        25 * attempt as u64,
+                    ))
+                    .await;
+                }
+                Err(error) => return Err(error),
+            }
+        }
+        unreachable!("bounded media-index retry loop always returns")
     }
 
     /// Decide whether `cas_digest` is media this run actually produced.

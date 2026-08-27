@@ -3681,7 +3681,12 @@ fn extract_imported_trace_frames(
             .flatten()
             .filter(|event| event.get("event_type").and_then(Value::as_str) == Some("frame"))
         {
-            let step = event.pointer("/detail/step").and_then(Value::as_i64)
+            // Trace V5 canonical events store producer data in `payload`.
+            // Accept `detail` as a compatibility alias for older importers.
+            let step = event
+                .pointer("/payload/step")
+                .or_else(|| event.pointer("/detail/step"))
+                .and_then(Value::as_i64)
                 .context("sealed frame event omitted step")?;
             let artifact_id = event
                 .get("artifact_ids")
@@ -5257,7 +5262,7 @@ mod tests {
             "events": [{
                 "event_type": "frame",
                 "artifact_ids": ["frame_0"],
-                "detail": {"step": 0, "source_event_digest": "producer16"},
+                "payload": {"step": 0, "source_event_digest": "producer16"},
             }],
         });
         let directory = tempfile::tempdir().unwrap();
