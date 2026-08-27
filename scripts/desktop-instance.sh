@@ -1274,7 +1274,9 @@ dev_instance() {
     # Packaging pins synth-mlx-rl 5d6db143 + lock sha. The sibling working
     # tree is often dirty WIP and will fail closed; prefer the v0.8 pin.
     if [[ -z "${SYNTH_MLX_RL_PROJECT_ROOT:-}" ]]; then
-      if [[ -f "$REPO_SIBLING_ROOT/synth-mlx-rl-v08-pinned/pyproject.toml" ]]; then
+      if [[ -f "$REPO_SIBLING_ROOT/synth-mlx-rl-v08-compat/pyproject.toml" ]]; then
+        SYNTH_MLX_RL_PROJECT_ROOT="$REPO_SIBLING_ROOT/synth-mlx-rl-v08-compat"
+      elif [[ -f "$REPO_SIBLING_ROOT/synth-mlx-rl-v08-pinned/pyproject.toml" ]]; then
         SYNTH_MLX_RL_PROJECT_ROOT="$REPO_SIBLING_ROOT/synth-mlx-rl-v08-pinned"
       else
         SYNTH_MLX_RL_PROJECT_ROOT="$REPO_SIBLING_ROOT/synth-mlx-rl"
