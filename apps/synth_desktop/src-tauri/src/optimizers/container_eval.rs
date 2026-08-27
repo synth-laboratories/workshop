@@ -1841,24 +1841,34 @@ fn container_proxy_policy(spec: &EvalSpec) -> crate::secrets::SecretsUsePolicy {
     let mut policy = crate::secrets::SecretsUsePolicy::default();
     policy.operations = spec.credential_operations.clone();
     policy.lifetime_seconds = spec.credential_lifetime_seconds;
+    let is_openrouter_responses = spec.provider.eq_ignore_ascii_case("openrouter")
+        && spec
+            .credential_operations
+            .iter()
+            .any(|operation| operation.eq_ignore_ascii_case("responses.create"));
     if !spec.model.is_empty() {
         policy.models = vec![spec.model.clone()];
         // Codex's Responses client sends OpenAI model ids without the
         // OpenRouter catalog namespace. Authorize that exact wire alias only
         // for an OpenRouter Responses lease; unrelated providers, operations,
         // and model namespaces keep their existing single-model scope.
-        if spec.provider.eq_ignore_ascii_case("openrouter")
-            && spec
-                .credential_operations
-                .iter()
-                .any(|operation| operation.eq_ignore_ascii_case("responses.create"))
-        {
+        if is_openrouter_responses {
             if let Some(wire_alias) = spec.model.strip_prefix("openai/") {
                 policy.models.push(wire_alias.to_string());
             }
         }
         policy.models.sort();
         policy.models.dedup();
+    }
+    // The exact Codex SWE policy runs Luna with high reasoning. Bind that
+    // workload-owned setting into the same narrow Responses capability; the
+    // generic provider policy keeps its existing medium default.
+    if is_openrouter_responses
+        && spec.harness.eq_ignore_ascii_case("openrouter")
+        && spec.policy_config == "codex-cli-openrouter-swe-proxy-v1"
+        && spec.model == "openai/gpt-5.6-luna"
+    {
+        policy.reasoning_efforts = vec!["high".into()];
     }
     policy.max_cost_usd = spec.cost_ceiling_usd;
     let trials = spec.examples().len() as u64;
@@ -4870,6 +4880,21 @@ max_total_rollouts = 4
     }
 
     #[test]
+    fn container_proxy_policy_authorizes_exact_codex_swe_reasoning_effort() {
+        let mut spec = EvalSpec::classify_fixture();
+        spec.harness = "openrouter".into();
+        spec.policy_config = "codex-cli-openrouter-swe-proxy-v1".into();
+        spec.provider = "openrouter".into();
+        spec.model = "openai/gpt-5.6-luna".into();
+        spec.credential_operations = vec!["responses.create".into()];
+
+        let policy = container_proxy_policy(&spec);
+
+        assert_eq!(policy.reasoning_efforts, vec!["high"]);
+        assert_eq!(policy.models, vec!["gpt-5.6-luna", "openai/gpt-5.6-luna"]);
+    }
+
+    #[test]
     fn workspace_eval_proxy_policy_retains_chat_completions_default() {
         let spec = EvalSpec::classify_fixture();
 
@@ -4877,6 +4902,7 @@ max_total_rollouts = 4
 
         assert_eq!(policy.operations, vec!["chat.completions.create"]);
         assert_eq!(policy.models, vec!["openai/gpt-4.1-nano"]);
+        assert_eq!(policy.reasoning_efforts, vec!["medium"]);
     }
 
     #[test]
