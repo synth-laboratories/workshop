@@ -739,7 +739,8 @@ window.synthWorkspaceScope ??= isTauri
 						prompt,
 						effort,
 						compactBeforeModelSwitch: Boolean(options?.compactBeforeModelSwitch),
-						clientMessageId: options?.clientMessageId ?? null
+						clientMessageId: options?.clientMessageId ?? null,
+						recoveryMode: Boolean(options?.recoveryMode)
 					}))),
 			interrupt: (sessionId) => fromGenerated(spectaCommands.codexTurnInterrupt({ sessionId })),
 			compact: (request) => fromGenerated(spectaCommands.codexThreadCompact(wire(request))),

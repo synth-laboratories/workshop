@@ -9,9 +9,9 @@ pub mod mermaid;
 mod models;
 mod registry;
 mod renditions;
-pub mod sourced;
 #[cfg(target_os = "macos")]
 pub mod snapshot;
+pub mod sourced;
 pub mod systems;
 mod templates;
 
@@ -44,9 +44,8 @@ pub use live_eval::{
     LIVE_EVAL_INPUT, LIVE_EVAL_SLOT, LIVE_HARBOR_TEMPLATE,
 };
 pub use models::{
-    canonicalize_bindings, declared_optimizer_run_ids, declared_poll_urls, descriptor_input_name,
-    binding_descriptors,
-    stamp_binding_input, BindingsForm, CanonicalBindings, RendererKind,
+    binding_descriptors, canonicalize_bindings, declared_optimizer_run_ids, declared_poll_urls,
+    descriptor_input_name, stamp_binding_input, BindingsForm, CanonicalBindings, RendererKind,
     VisualAnnotation, VisualAnnotationCreate, VisualCreateRequest, VisualQuery, VisualRecord,
     VisualRevision, VisualSeal, VisualSealBundle, VisualStatus, VisualUpdateRequest, VisualUpload,
     VISUAL_BINDINGS_SCHEMA_VERSION, VISUAL_BINDING_KINDS, VISUAL_SCHEMA_VERSION,
@@ -54,6 +53,6 @@ pub use models::{
 pub use registry::VisualRegistry;
 pub use renditions::{VisualAsset, VisualRendition};
 pub use templates::{
-    import_managed_template, list_templates, resolve_template, TemplateMeta, TemplateObservationContract,
-    TemplateReadinessContract,
+    import_managed_template, list_templates, resolve_template, TemplateMeta,
+    TemplateObservationContract, TemplateReadinessContract,
 };

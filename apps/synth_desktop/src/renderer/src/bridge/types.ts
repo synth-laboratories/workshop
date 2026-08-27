@@ -456,7 +456,7 @@ export type CodexBridge = {
 		request: CodexSessionStart,
 		prompt: string,
 		effort?: string,
-		options?: { compactBeforeModelSwitch?: boolean; clientMessageId?: string }
+		options?: { compactBeforeModelSwitch?: boolean; clientMessageId?: string; recoveryMode?: boolean }
 	): Promise<CodexSessionInfo>;
 	interrupt(sessionId: string): Promise<void>;
 	/** Atomically attaches/resumes a Codex thread and starts ad-hoc compaction. */

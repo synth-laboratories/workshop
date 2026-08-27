@@ -1085,9 +1085,14 @@ export_instance_env() {
     SYNTH_DESKTOP_DEV_OAUTH_FILE="$HOME/.codex/auth.json"
   fi
   if [[ -n "${SYNTH_DESKTOP_DEV_OAUTH_FILE:-}" ]]; then
+    if [[ ! -s "$SYNTH_DESKTOP_DEV_OAUTH_FILE" ]]; then
+      echo "[desktop:$NAME] ERROR ChatGPT auth is required but missing: $SYNTH_DESKTOP_DEV_OAUTH_FILE" >&2
+      return 1
+    fi
     export SYNTH_DESKTOP_DEV_OAUTH_FILE
   else
-    unset SYNTH_DESKTOP_DEV_OAUTH_FILE
+    echo "[desktop:$NAME] ERROR ChatGPT auth is required for local Workshop launches; expected $HOME/.codex/auth.json" >&2
+    return 1
   fi
   if [[ -z "${SYNTH_DESKTOP_DEV_OAUTH_STATE_FILE:-}" ]]; then
     SYNTH_DESKTOP_DEV_OAUTH_STATE_FILE="$shared_oauth_root/codex.json"

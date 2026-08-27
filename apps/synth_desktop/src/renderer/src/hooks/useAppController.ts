@@ -1652,6 +1652,7 @@ export function useAppController() {
 				messageId?: string;
 				images?: ComposerImageAttachment[];
 				readinessVerified?: boolean;
+				recoveryMode?: boolean;
 			}
 		) => {
 			try {
@@ -1740,7 +1741,8 @@ export function useAppController() {
 								effort,
 								{
 									compactBeforeModelSwitch: sendPlan.kind === "model_switch_then_turn" ? sendPlan.compact : false,
-									clientMessageId: messageId
+									clientMessageId: messageId,
+									recoveryMode: Boolean(options?.recoveryMode)
 								}
 							)
 							: await (async () => {
@@ -1799,18 +1801,18 @@ export function useAppController() {
 	}, [failedSend, sendToSession]);
 
 	/**
-	 * Send the abandoned turn's original prompt again as a new attempt.
+	 * Continue an abandoned turn in its existing Codex thread.
 	 *
-	 * A fresh message id, deliberately: reusing the crashed turn's id would
-	 * merge the retry into the bubble that failed, and the whole point is that
-	 * the interrupted attempt stays visible in history. The host records the
-	 * link (`recoveredFromRunId`) on the new run.
+	 * `sendToSession` first reattaches with app-server `thread/resume`; this new
+	 * turn therefore sees the persisted conversation and workspace state. Never
+	 * replay the original prompt here: doing so can duplicate commands, paid
+	 * requests, or external writes which completed immediately before the host
+	 * disappeared. The host links the continuation through `recoveredFromRunId`.
 	 */
-	const restartRecoveredChat = useCallback((sessionId: string) => {
+	const resumeRecoveredChat = useCallback((sessionId: string) => {
 		const notice = recoveryNotices[sessionId];
-		const prompt = notice?.lastUserMessage?.text;
-		if (!notice || !prompt) {
-			showToast("This chat has no recorded message to restart from.");
+		if (!notice) {
+			showToast("This chat has no interrupted work to resume.");
 			return;
 		}
 		if (!notice.restartable) {
@@ -1821,7 +1823,11 @@ export function useAppController() {
 			);
 			return;
 		}
-		void sendToSession(sessionId, prompt);
+		void sendToSession(
+			sessionId,
+			"Continue the interrupted task from this persisted conversation and the current workspace state. Reconcile completed commands, file changes, approvals, and external objects before acting. Do not repeat completed or externally committed operations. Continue toward the original user goal. If any consequential state cannot be verified, stop and report the specific uncertainty instead of guessing.",
+			{ recoveryMode: true }
+		);
 	}, [recoveryNotices, sendToSession, showToast]);
 
 	const onComposerSend = useCallback(
@@ -2195,7 +2201,7 @@ export function useAppController() {
 		workingChatIds,
 		chatPresence,
 		recoveryNotices,
-		restartRecoveredChat,
+		resumeRecoveredChat,
 		selectedTargetId,
 		onSelectTarget,
 		lagunaAdapters,

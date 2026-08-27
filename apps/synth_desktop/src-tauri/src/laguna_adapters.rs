@@ -253,7 +253,11 @@ mod tests {
 
     fn staged(root: &Path, body: &[u8]) -> AdapterManifest {
         fs::create_dir_all(root).unwrap();
-        fs::write(root.join("adapter_config.json"), br#"{"lora_parameters":{"rank":8}}"#).unwrap();
+        fs::write(
+            root.join("adapter_config.json"),
+            br#"{"lora_parameters":{"rank":8}}"#,
+        )
+        .unwrap();
         fs::File::create(root.join("adapters.safetensors"))
             .unwrap()
             .write_all(body)
@@ -296,7 +300,11 @@ mod tests {
         let spec = ADAPTER_CATALOG[0];
 
         let manifest = parse_manifest(
-            &client.adapter_manifest(spec.digest).await.expect("manifest").to_string(),
+            &client
+                .adapter_manifest(spec.digest)
+                .await
+                .expect("manifest")
+                .to_string(),
         )
         .expect("parse");
         check_pinned(&spec, &manifest).expect("pinned digest");
@@ -304,7 +312,10 @@ mod tests {
 
         let mut fetched = Vec::new();
         for file in &manifest.files {
-            let bytes = client.adapter_file(spec.digest, &file.path).await.expect("file");
+            let bytes = client
+                .adapter_file(spec.digest, &file.path)
+                .await
+                .expect("file");
             println!("fetched {} ({} bytes)", file.path, bytes.len());
             fetched.push((file.path.clone(), bytes));
         }
@@ -323,7 +334,11 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().join("adapter");
         fs::create_dir_all(&root).unwrap();
-        fs::write(root.join("adapter_config.json"), br#"{"lora_parameters":{"rank":8}}"#).unwrap();
+        fs::write(
+            root.join("adapter_config.json"),
+            br#"{"lora_parameters":{"rank":8}}"#,
+        )
+        .unwrap();
         fs::write(root.join("adapters.safetensors"), b"weights").unwrap();
         assert_eq!(
             digest_tree(&root).unwrap(),
@@ -375,9 +390,11 @@ mod tests {
 
     #[test]
     fn an_unknown_manifest_schema_is_refused() {
-        let error = parse_manifest(r#"{"schema_version":"synth-adapter.v9","digest":"sha256:x","base":{},"files":[]}"#)
-            .unwrap_err()
-            .to_string();
+        let error = parse_manifest(
+            r#"{"schema_version":"synth-adapter.v9","digest":"sha256:x","base":{},"files":[]}"#,
+        )
+        .unwrap_err()
+        .to_string();
         assert!(error.contains("cannot install"), "{error}");
     }
 }

@@ -1294,9 +1294,7 @@ fn unresolved_visual_finding(
         block_id,
         claim_id: None,
         message,
-        remediation: Some(
-            "Seal that exact visual revision, then pin this evidence.".into(),
-        ),
+        remediation: Some("Seal that exact visual revision, then pin this evidence.".into()),
         visual_id,
         receipt_digest,
     }
@@ -2418,10 +2416,7 @@ mod tests {
             })
             .await
             .unwrap();
-        let validation = reports
-            .validate(report.id.clone(), Some(1))
-            .await
-            .unwrap();
+        let validation = reports.validate(report.id.clone(), Some(1)).await.unwrap();
         assert!(!validation.sealable, "{:?}", validation.findings);
         assert!(
             validation
@@ -2511,10 +2506,7 @@ mod tests {
             .await
             .unwrap();
         reports.pin_all(report.id.clone()).await.unwrap();
-        let validation = reports
-            .validate(report.id.clone(), Some(1))
-            .await
-            .unwrap();
+        let validation = reports.validate(report.id.clone(), Some(1)).await.unwrap();
         assert!(validation.sealable, "{:?}", validation.findings);
         let revision = reports
             .get_revision(report.id.clone(), Some(1))
@@ -2548,10 +2540,7 @@ mod tests {
             })
             .await
             .unwrap();
-        let validation = reports
-            .validate(created.id.clone(), Some(1))
-            .await
-            .unwrap();
+        let validation = reports.validate(created.id.clone(), Some(1)).await.unwrap();
         assert!(
             !validation.sealable,
             "empty reports must not be sealable: {:?}",
@@ -2591,17 +2580,16 @@ mod tests {
             })
             .await
             .unwrap();
-        let validation = reports
-            .validate(created.id.clone(), Some(1))
-            .await
-            .unwrap();
+        let validation = reports.validate(created.id.clone(), Some(1)).await.unwrap();
         assert!(!validation.sealable, "{:?}", validation.findings);
         assert!(
             validation
                 .findings
                 .iter()
                 .any(|row| row.code == EMPTY_REPORT
-                    && row.message.contains("Add a narrative or sealed evidence before sealing")),
+                    && row
+                        .message
+                        .contains("Add a narrative or sealed evidence before sealing")),
             "{:?}",
             validation.findings
         );
@@ -2654,10 +2642,7 @@ mod tests {
             .await
             .unwrap_err()
             .to_string();
-        assert!(
-            unknown.contains("unknown experimentGroupId"),
-            "{unknown}"
-        );
+        assert!(unknown.contains("unknown experimentGroupId"), "{unknown}");
         let group = storage
             .database()
             .run(|conn| {
@@ -2698,11 +2683,17 @@ mod tests {
             )
             .await
             .unwrap();
-        assert_eq!(stored.experiment_group_id.as_deref(), Some(group.id.as_str()));
+        assert_eq!(
+            stored.experiment_group_id.as_deref(),
+            Some(group.id.as_str())
+        );
         assert_eq!(stored.title, "Gold Craftax study");
         let listed = reports.list_experiments(created.id).await.unwrap();
         assert_eq!(listed.len(), 1);
-        assert_eq!(listed[0].experiment_group_id.as_deref(), Some(group.id.as_str()));
+        assert_eq!(
+            listed[0].experiment_group_id.as_deref(),
+            Some(group.id.as_str())
+        );
         assert_eq!(listed[0].title, "Gold Craftax study");
     }
 
@@ -3140,7 +3131,10 @@ mod tests {
             .seal(created.id, 1)
             .await
             .expect_err("live stream URLs must fail closed at seal");
-        assert!(error.to_string().contains("live stream"), "unexpected error: {error}");
+        assert!(
+            error.to_string().contains("live stream"),
+            "unexpected error: {error}"
+        );
     }
 
     #[tokio::test]

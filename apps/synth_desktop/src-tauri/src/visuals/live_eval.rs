@@ -9,12 +9,7 @@ pub const FORBIDDEN_LIVE_EVAL_SLOTS: &[&str] = &["live", "jobs"];
 pub const LIVE_CRAFTAX_TEMPLATE: &str = "live.craftax.v1";
 pub const LIVE_HARBOR_TEMPLATE: &str = "live.harbor_eval.v1";
 pub const CRAFTAX_TEN_LANE_SEEDS: [i64; 10] = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9];
-const SECRET_BINDING_KEYS: &[&str] = &[
-    "authorization",
-    "api_token",
-    "worker_token",
-    "bearer",
-];
+const SECRET_BINDING_KEYS: &[&str] = &["authorization", "api_token", "worker_token", "bearer"];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LiveEvalFamily {

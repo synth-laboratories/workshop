@@ -83,8 +83,8 @@ pub fn read_descriptor(path: &Path) -> Result<Option<InstanceDescriptor>, String
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(error) => return Err(format!("{}: {error}", path.display())),
     };
-    let descriptor: InstanceDescriptor = serde_json::from_slice(&raw)
-        .map_err(|error| format!("{}: {error}", path.display()))?;
+    let descriptor: InstanceDescriptor =
+        serde_json::from_slice(&raw).map_err(|error| format!("{}: {error}", path.display()))?;
     if descriptor.schema_version != DESCRIPTOR_SCHEMA_VERSION {
         return Err(format!(
             "{}: schemaVersion {:?} is not {DESCRIPTOR_SCHEMA_VERSION:?}",

@@ -283,6 +283,8 @@ export type LocalActivityLine = {
 		estimatedCostUsdMicros?: number;
 		requestedCap?: { maxCostUsdMicros?: number; maxRollouts?: number };
 		requestingAgent?: string;
+		provider?: string;
+		purpose?: string;
 	};
 	alwaysAllowSupported?: boolean;
 	/** Expanded raw detail (tool output / thought) when the line is opened. */

@@ -185,8 +185,8 @@ impl VisualRegistry {
         let systems_kind = systems::template_kind(&template.id);
         let is_chart = charts::is_chart_template(&template.id);
         let is_sourced = sourced::is_sourced_template(&template.id);
-        let is_managed_html = template.source_kind.as_deref() == Some("managed")
-            && template.renderer_path.is_some();
+        let is_managed_html =
+            template.source_kind.as_deref() == Some("managed") && template.renderer_path.is_some();
         // Imported HTML is immutable package source. Accepting caller content
         // here would make a reviewed import indistinguishable from arbitrary
         // HTML authored at create time.
@@ -196,12 +196,20 @@ impl VisualRegistry {
                 .as_deref()
                 .is_some_and(|content| !content.trim().is_empty())
         {
-            bail!("{} is a managed HTML template; create it without content", template.id);
+            bail!(
+                "{} is a managed HTML template; create it without content",
+                template.id
+            );
         }
         let managed_html_content = if is_managed_html {
-            let path = template.renderer_path.as_deref().expect("managed HTML renderer path");
-            Some(std::fs::read_to_string(path)
-                .with_context(|| format!("read managed renderer {path}"))?)
+            let path = template
+                .renderer_path
+                .as_deref()
+                .expect("managed HTML renderer path");
+            Some(
+                std::fs::read_to_string(path)
+                    .with_context(|| format!("read managed renderer {path}"))?,
+            )
         } else {
             None
         };
@@ -242,7 +250,11 @@ impl VisualRegistry {
                 .filter(|value| !value.is_empty())
                 .ok_or_else(|| anyhow!("{} requires content", template.id))?;
             if source.len() > sourced::MAX_SOURCE_BYTES {
-                bail!("{} exceeds {} bytes", template.id, sourced::MAX_SOURCE_BYTES);
+                bail!(
+                    "{} exceeds {} bytes",
+                    template.id,
+                    sourced::MAX_SOURCE_BYTES
+                );
             }
         }
         let status = request.status.unwrap_or(VisualStatus::Draft);
@@ -314,7 +326,9 @@ impl VisualRegistry {
         }
         if is_managed_html {
             if let Some(object) = metadata.as_object_mut() {
-                object.entry("presentation").or_insert_with(|| json!("pane"));
+                object
+                    .entry("presentation")
+                    .or_insert_with(|| json!("pane"));
                 object.insert("mediaType".into(), json!("text/html"));
                 object.insert("managedTemplate".into(), json!(true));
             }

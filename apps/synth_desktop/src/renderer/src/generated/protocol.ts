@@ -823,6 +823,12 @@ export type CodexTurnSendRequest = {
 	compactBeforeModelSwitch?: boolean,
 	/**  Same ownership as [`CodexTurnStartRequest::client_message_id`]. */
 	clientMessageId?: string | null,
+	/**
+	 *  Crash recovery is not an ordinary retry. After attaching, first inspect
+	 *  the resumed thread and rejoin an existing active turn when possible;
+	 *  only start `prompt` as a continuation when no live turn remains.
+	 */
+	recoveryMode?: boolean,
 };
 
 export type CodexTurnStartRequest = {

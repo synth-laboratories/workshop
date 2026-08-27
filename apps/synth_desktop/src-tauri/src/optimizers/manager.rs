@@ -402,9 +402,7 @@ impl OptimizerManager {
     /// for a bounded window instead of terminating the run on the first miss.
     /// Anything else — a cross-run page, a corrupt body, a missing route — is
     /// a contract violation and stays fatal.
-    pub(crate) fn optimizer_event_endpoint_temporarily_unavailable(
-        error: &anyhow::Error,
-    ) -> bool {
+    pub(crate) fn optimizer_event_endpoint_temporarily_unavailable(error: &anyhow::Error) -> bool {
         observer_error_is_transient_gateway(error)
     }
 
@@ -503,9 +501,8 @@ impl OptimizerManager {
                     .unwrap_or(true);
                 if expired {
                     current.phase = "degraded".into();
-                    current.detail = Some(
-                        "Optimizer health probe missed beyond the stale-ready bound".into(),
-                    );
+                    current.detail =
+                        Some("Optimizer health probe missed beyond the stale-ready bound".into());
                 } else {
                     current.detail = Some(
                         "Optimizer health probe was missed; retaining the managed runtime".into(),
@@ -637,7 +634,9 @@ impl OptimizerManager {
             if let Some(algorithms) = object.remove("algorithms") {
                 object.insert("optimization_algorithms".into(), algorithms);
             }
-            object.entry("optimization_algorithms").or_insert_with(|| json!([]));
+            object
+                .entry("optimization_algorithms")
+                .or_insert_with(|| json!([]));
             object.insert(
                 "execution_capabilities".into(),
                 super::eval_recipes::execution_capability_projection(),
@@ -1378,9 +1377,7 @@ impl OptimizerManager {
                             .unwrap_or_else(|| "optimizer sidecar child exited".into()),
                     )
                     .retryable(false);
-                    input
-                        .details
-                        .insert("phase".into(), json!(snapshot.phase));
+                    input.details.insert("phase".into(), json!(snapshot.phase));
                     input
                         .details
                         .insert("previous_phase".into(), json!(previous_phase));
@@ -1987,8 +1984,8 @@ pub(crate) fn set_test_event_endpoint_fault(run_id: &str, fault: Option<TestEven
 }
 
 #[cfg(test)]
-fn test_event_endpoint_faults(
-) -> &'static std::sync::Mutex<HashMap<String, TestEventEndpointFault>> {
+fn test_event_endpoint_faults() -> &'static std::sync::Mutex<HashMap<String, TestEventEndpointFault>>
+{
     static FAULTS: std::sync::OnceLock<std::sync::Mutex<HashMap<String, TestEventEndpointFault>>> =
         std::sync::OnceLock::new();
     FAULTS.get_or_init(|| std::sync::Mutex::new(HashMap::new()))
@@ -3190,8 +3187,7 @@ mod tests {
         let executable = bin.join("synth-optimizers");
         fs::write(&executable, b"installed optimizer runtime").unwrap();
 
-        let command =
-            developer_project_command(home.path(), "0.2.19", project.path()).unwrap();
+        let command = developer_project_command(home.path(), "0.2.19", project.path()).unwrap();
         let expected_pythonpath = project.path().join("src");
         assert_eq!(Path::new(command.as_std().get_program()), executable);
         assert_eq!(
@@ -3399,10 +3395,7 @@ mod tests {
         let started = mgr.start().await.unwrap();
         assert_eq!(started.phase, "ready");
         let lease = home.path().join(RUNTIME_LEASE_FILE);
-        assert!(
-            lease.is_file(),
-            "handshake must write runtime-lease.json"
-        );
+        assert!(lease.is_file(), "handshake must write runtime-lease.json");
         assert!(
             runtime_lease_is_current(home.path()),
             "a live fixture child must make the runtime lease current"
@@ -3413,7 +3406,11 @@ mod tests {
             .expect("fixture sidecar must be a real child");
         let pid = libc::pid_t::try_from(pid).expect("child pid");
         unsafe {
-            assert_eq!(libc::kill(pid, libc::SIGKILL), 0, "kill -9 of spawned child");
+            assert_eq!(
+                libc::kill(pid, libc::SIGKILL),
+                0,
+                "kill -9 of spawned child"
+            );
         }
         let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
         loop {
@@ -3506,7 +3503,9 @@ mod tests {
         assert_eq!(started.phase, "ready");
         let digest = mgr.lease_database_digest();
         assert!(
-            digest.as_deref().is_some_and(|value| value.starts_with("sha256:")),
+            digest
+                .as_deref()
+                .is_some_and(|value| value.starts_with("sha256:")),
             "lease must digest runtime/gepa.sqlite via gepa_db_path, got {digest:?}"
         );
         let _ = mgr.stop().await;

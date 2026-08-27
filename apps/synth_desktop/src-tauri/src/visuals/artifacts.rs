@@ -810,9 +810,9 @@ fn freeze_bindings(mut value: Value) -> Result<Value> {
     walk(&mut value)?;
     if value.get("inputs").is_some() || value.get("slots").is_some() {
         if let Some(object) = value.as_object_mut() {
-            object.entry("schemaVersion").or_insert_with(|| {
-                json!(super::VISUAL_BINDINGS_SCHEMA_VERSION)
-            });
+            object
+                .entry("schemaVersion")
+                .or_insert_with(|| json!(super::VISUAL_BINDINGS_SCHEMA_VERSION));
         }
         return Ok(super::canonicalize_bindings(&value)?.value);
     }

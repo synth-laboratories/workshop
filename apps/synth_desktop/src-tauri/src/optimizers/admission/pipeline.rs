@@ -323,48 +323,49 @@ pub fn draft_inline(
     })?;
 
     // -- evaluator: container declaration or explicit request ----------------
-    let evaluator = match &request.evaluator {
-        Some(requested) => {
-            // An explicitly named evaluator still needs a scoring digest, and
-            // Workshop will not compute one over configuration the container
-            // has not agreed to.
-            let declared = declaration.evaluator.as_ref().ok_or_else(|| {
-                AdmissionError::evaluator_not_declared(&container.container_id)
-            })?;
-            if declared.evaluator_id != requested.evaluator_id {
-                return Err(AdmissionError::scoring_contract_invalid(
-                    &container.container_id,
-                    Some(&requested.evaluator_id),
-                    format!(
-                        "container declares evaluator `{}`, not `{}`",
-                        declared.evaluator_id, requested.evaluator_id
-                    ),
-                ));
+    let evaluator =
+        match &request.evaluator {
+            Some(requested) => {
+                // An explicitly named evaluator still needs a scoring digest, and
+                // Workshop will not compute one over configuration the container
+                // has not agreed to.
+                let declared = declaration.evaluator.as_ref().ok_or_else(|| {
+                    AdmissionError::evaluator_not_declared(&container.container_id)
+                })?;
+                if declared.evaluator_id != requested.evaluator_id {
+                    return Err(AdmissionError::scoring_contract_invalid(
+                        &container.container_id,
+                        Some(&requested.evaluator_id),
+                        format!(
+                            "container declares evaluator `{}`, not `{}`",
+                            declared.evaluator_id, requested.evaluator_id
+                        ),
+                    ));
+                }
+                EvaluatorSpec::Explicit {
+                    evaluator_id: requested.evaluator_id.clone(),
+                    configuration: requested.configuration.clone(),
+                    scoring_digest: declared.scoring_digest.clone(),
+                }
             }
-            EvaluatorSpec::Explicit {
-                evaluator_id: requested.evaluator_id.clone(),
-                configuration: requested.configuration.clone(),
-                scoring_digest: declared.scoring_digest.clone(),
+            None => {
+                let declared = declaration.evaluator.as_ref().ok_or_else(|| {
+                    AdmissionError::evaluator_not_declared(&container.container_id)
+                })?;
+                if declared.evaluator_version.trim().is_empty() {
+                    return Err(AdmissionError::scoring_contract_invalid(
+                        &container.container_id,
+                        Some(&declared.evaluator_id),
+                        "the declared evaluator carries no version",
+                    ));
+                }
+                EvaluatorSpec::ContainerDeclared {
+                    evaluator_id: declared.evaluator_id.clone(),
+                    evaluator_version: declared.evaluator_version.clone(),
+                    scoring_digest: declared.scoring_digest.clone(),
+                }
             }
-        }
-        None => {
-            let declared = declaration.evaluator.as_ref().ok_or_else(|| {
-                AdmissionError::evaluator_not_declared(&container.container_id)
-            })?;
-            if declared.evaluator_version.trim().is_empty() {
-                return Err(AdmissionError::scoring_contract_invalid(
-                    &container.container_id,
-                    Some(&declared.evaluator_id),
-                    "the declared evaluator carries no version",
-                ));
-            }
-            EvaluatorSpec::ContainerDeclared {
-                evaluator_id: declared.evaluator_id.clone(),
-                evaluator_version: declared.evaluator_version.clone(),
-                scoring_digest: declared.scoring_digest.clone(),
-            }
-        }
-    };
+        };
 
     // -- policy: name from the request, revision from the resolved source ----
     let namespace = request
@@ -525,7 +526,10 @@ pub fn draft_inline(
     // -- output contract: container declaration ------------------------------
     let output_contract = OutputContract::new(
         true,
-        declaration.operations.iter().any(|op| op == "trace_v5.capture"),
+        declaration
+            .operations
+            .iter()
+            .any(|op| op == "trace_v5.capture"),
         declaration.operations.iter().any(|op| op == "usage.get"),
         declaration.operations.clone(),
     );

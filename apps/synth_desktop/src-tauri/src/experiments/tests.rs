@@ -921,8 +921,5 @@ fn relate_mixed_member_and_candidate_fails_closed() {
     )
     .unwrap_err()
     .to_string();
-    assert!(
-        error.contains("mixed member/candidate"),
-        "{error}"
-    );
+    assert!(error.contains("mixed member/candidate"), "{error}");
 }

@@ -97,13 +97,7 @@ pub fn create_child(
         &request.title,
         &parent.session_id,
     )?;
-    insert_lineage(
-        conn,
-        &parent.id,
-        &id,
-        relation,
-        &request.created_at,
-    )?;
+    insert_lineage(conn, &parent.id, &id, relation, &request.created_at)?;
     set_active(conn, &parent.session_id, &id)?;
     append_event(
         conn,
@@ -192,8 +186,7 @@ pub fn activate(
     session_id: &str,
     experiment_id: &str,
 ) -> Result<ExperimentGroup> {
-    let group = get(conn, experiment_id)?
-        .ok_or_else(|| anyhow::anyhow!("unknown experiment"))?;
+    let group = get(conn, experiment_id)?.ok_or_else(|| anyhow::anyhow!("unknown experiment"))?;
     anyhow::ensure!(
         group.session_id == session_id,
         "experiment is owned by another session"
@@ -558,7 +551,11 @@ pub(super) fn insert_lineage(
 }
 
 fn lineage_relation(value: Option<&str>) -> Result<&'static str> {
-    match value.map(str::trim).filter(|value| !value.is_empty()).unwrap_or("follow_up") {
+    match value
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("follow_up")
+    {
         "follow_up" => Ok("follow_up"),
         "forked_from" => Ok("forked_from"),
         "rerun_of" => Ok("rerun_of"),
@@ -594,7 +591,8 @@ fn relate_candidates(
     let target = candidates::load_by_id(conn, &request.target_id)?
         .ok_or_else(|| anyhow::anyhow!("unknown candidate {}", request.target_id))?;
     anyhow::ensure!(
-        source.experiment_id == request.experiment_id && target.experiment_id == request.experiment_id,
+        source.experiment_id == request.experiment_id
+            && target.experiment_id == request.experiment_id,
         "candidates must belong to the same experiment"
     );
     match relation {
@@ -628,10 +626,7 @@ fn ensure_node_in_experiment(conn: &Connection, experiment_id: &str, node_id: &s
             |row| row.get(0),
         )
         .optional()?;
-    anyhow::ensure!(
-        exists.is_some(),
-        "unknown experiment member `{node_id}`"
-    );
+    anyhow::ensure!(exists.is_some(), "unknown experiment member `{node_id}`");
     Ok(())
 }
 

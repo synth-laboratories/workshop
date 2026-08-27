@@ -254,7 +254,9 @@ mod tests {
             &store,
             Some("stream_r1"),
             Some("r1"),
-            vec![json!({"kind": "observation", "payload": {"text": "Authorization: Bearer secret"}})],
+            vec![
+                json!({"kind": "observation", "payload": {"text": "Authorization: Bearer secret"}}),
+            ],
         )
         .unwrap_err();
         assert!(err.to_string().contains("token"));

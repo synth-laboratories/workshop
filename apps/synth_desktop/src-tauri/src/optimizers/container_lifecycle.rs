@@ -18,7 +18,6 @@ use std::{
 };
 use uuid::Uuid;
 
-const HEALTH_WAIT: Duration = Duration::from_secs(60);
 const HEALTH_POLL: Duration = Duration::from_millis(200);
 
 fn children() -> &'static Mutex<HashMap<String, Child>> {
@@ -41,6 +40,29 @@ pub struct StoppedContainer {
     pub pid: u32,
 }
 
+pub fn declared_spec_id(db: &Arc<Database>, container_id: &str) -> Result<String> {
+    let id = container_id.to_string();
+    db.with_conn(|conn| {
+        let metadata: String = conn.query_row(
+            "SELECT metadata_json FROM containers WHERE id=?1",
+            [&id],
+            |row| row.get(0),
+        )?;
+        let metadata: serde_json::Value = serde_json::from_str(&metadata)?;
+        metadata
+            .get("workspaceSpecId")
+            .and_then(serde_json::Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_owned)
+            .ok_or_else(|| {
+                anyhow!(
+                    "launch_declaration_missing: container `{id}` has no workspace spec identity"
+                )
+            })
+    })
+}
+
 pub async fn ensure(
     db: &Arc<Database>,
     workspace: &Path,
@@ -59,7 +81,7 @@ pub async fn ensure_spec(
         let base = url.trim_end_matches('/').to_string();
         let process = if spec.command.is_empty() {
             None
-        } else if healthy_now(&base, &spec.health).await {
+        } else if healthy_now(&base, &spec.health, spec).await? {
             None
         } else {
             Some(start_command(workspace, spec)?)
@@ -71,12 +93,42 @@ pub async fn ensure_spec(
             spec.id
         );
     };
-    wait_healthy(&base_url, &spec.health).await?;
+    wait_healthy(&base_url, &spec.health, spec).await?;
     let container_id = upsert_ready(db, spec, &base_url, process).await?;
     Ok(EnsuredContainer {
         container_id,
         base_url,
         spec_id: spec.id.clone(),
+        locality: spec.locality,
+    })
+}
+
+/// Re-run the exact declared launch command even when the endpoint is healthy.
+///
+/// This is the intentionally permissive recovery path. The workload's launch
+/// declaration decides how replacement happens (for example, a container CLI
+/// may remove and recreate its named target). Workshop does not discover a PID
+/// from the port and does not pretend that endpoint identity grants ownership.
+pub async fn replace_declared(
+    db: &Arc<Database>,
+    workspace: &Path,
+    spec_id: &str,
+) -> Result<EnsuredContainer> {
+    let spec = workspace_recipe::find_container_spec(workspace, spec_id)?;
+    let base_url = spec
+        .url
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| value.trim_end_matches('/').to_string())
+        .ok_or_else(|| anyhow!("container `{}` must declare url", spec.id))?;
+    let process = start_command(workspace, &spec)?;
+    wait_healthy(&base_url, &spec.health, &spec).await?;
+    let container_id = upsert_ready(db, &spec, &base_url, Some(process)).await?;
+    Ok(EnsuredContainer {
+        container_id,
+        base_url,
+        spec_id: spec.id,
         locality: spec.locality,
     })
 }
@@ -104,14 +156,15 @@ fn start_command(workspace: &Path, spec: &ContainerSpec) -> Result<(u32, String)
         .ok_or_else(|| anyhow!("container `{}` command is empty", spec.id))?;
     let mut command = Command::new(program);
     command.envs(&spec.environment);
+    // Provider credentials never enter the launched process. The declaration
+    // names which Workshop proxy routes may be minted later for an approved
+    // run; the proxy remains the sole holder of provider secret material.
     for provider in &spec.credential_providers {
-        match provider.as_str() {
-            "openrouter" => {
-                let value = crate::synth_config::openrouter_api_key()?
-                    .ok_or_else(|| anyhow!("container `{}` requires an OpenRouter credential", spec.id))?;
-                command.env("OPENROUTER_API_KEY", value);
-            }
-            other => bail!("container `{}` requests unsupported credential provider `{other}`", spec.id),
+        if provider != "openrouter" {
+            bail!(
+                "container `{}` requests unsupported credential provider `{provider}`",
+                spec.id
+            );
         }
     }
     command
@@ -120,12 +173,9 @@ fn start_command(workspace: &Path, spec: &ContainerSpec) -> Result<(u32, String)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
-    let child = command.spawn().with_context(|| {
-        format!(
-            "start container `{}` command {:?}",
-            spec.id, spec.command
-        )
-    })?;
+    let child = command
+        .spawn()
+        .with_context(|| format!("start container `{}` command {:?}", spec.id, spec.command))?;
     let pid = child.id();
     let start = crate::instance::process_start_identity(pid)
         .ok_or_else(|| anyhow!("container `{}` process identity is unavailable", spec.id))?;
@@ -184,7 +234,8 @@ pub async fn stop(db: &Arc<Database>, container_id: &str) -> Result<StoppedConta
         while Instant::now() < deadline && crate::instance::process_start_identity(pid).is_some() {
             std::thread::sleep(Duration::from_millis(50));
         }
-        if crate::instance::process_start_identity(pid).as_deref() == Some(expected_start.as_str()) {
+        if crate::instance::process_start_identity(pid).as_deref() == Some(expected_start.as_str())
+        {
             unsafe { libc::kill(pid as libc::pid_t, libc::SIGKILL) };
         }
     }
@@ -198,10 +249,14 @@ pub async fn stop(db: &Arc<Database>, container_id: &str) -> Result<StoppedConta
             Ok(())
         })
         .await?;
-    Ok(StoppedContainer { container_id: id, spec_id, pid })
+    Ok(StoppedContainer {
+        container_id: id,
+        spec_id,
+        pid,
+    })
 }
 
-async fn wait_healthy(base_url: &str, health_path: &str) -> Result<()> {
+async fn wait_healthy(base_url: &str, health_path: &str, spec: &ContainerSpec) -> Result<()> {
     let url = format!(
         "{}{}",
         base_url.trim_end_matches('/'),
@@ -214,20 +269,28 @@ async fn wait_healthy(base_url: &str, health_path: &str) -> Result<()> {
     let client = crate::http::http_client_builder()
         .timeout(Duration::from_secs(2))
         .build()?;
-    let deadline = Instant::now() + HEALTH_WAIT;
+    let timeout = Duration::from_secs(spec.launch.readiness_timeout_seconds);
+    let deadline = Instant::now() + timeout;
     let mut last = String::from("not probed");
     while Instant::now() < deadline {
         match client.get(&url).send().await {
-            Ok(response) if response.status().is_success() => return Ok(()),
+            Ok(response) if response.status().is_success() => {
+                let payload = response
+                    .json::<serde_json::Value>()
+                    .await
+                    .context("health_contract_invalid: response is not JSON")?;
+                validate_health_identity(spec, &payload)?;
+                return Ok(());
+            }
             Ok(response) => last = format!("HTTP {}", response.status()),
             Err(error) => last = error.to_string(),
         }
         tokio::time::sleep(HEALTH_POLL).await;
     }
-    bail!("container at {base_url} never became healthy on {url}: {last}")
+    bail!("readiness_timeout: container at {base_url} never became healthy on {url}: {last}")
 }
 
-async fn healthy_now(base_url: &str, health_path: &str) -> bool {
+async fn healthy_now(base_url: &str, health_path: &str, spec: &ContainerSpec) -> Result<bool> {
     let path = if health_path.starts_with('/') {
         health_path.to_string()
     } else {
@@ -237,13 +300,38 @@ async fn healthy_now(base_url: &str, health_path: &str) -> bool {
         .timeout(Duration::from_millis(500))
         .build()
     else {
-        return false;
+        return Ok(false);
     };
-    client
+    let response = match client
         .get(format!("{}{path}", base_url.trim_end_matches('/')))
         .send()
         .await
-        .is_ok_and(|response| response.status().is_success())
+    {
+        Ok(response) if response.status().is_success() => response,
+        _ => return Ok(false),
+    };
+    let payload = response
+        .json::<serde_json::Value>()
+        .await
+        .context("health_contract_invalid: response is not JSON")?;
+    validate_health_identity(spec, &payload)?;
+    Ok(true)
+}
+
+fn validate_health_identity(spec: &ContainerSpec, payload: &serde_json::Value) -> Result<()> {
+    let launch = &spec.launch;
+    let status = payload.get("status").and_then(serde_json::Value::as_str);
+    anyhow::ensure!(
+        status == Some("ok"),
+        "health_contract_invalid: expected status=ok, got {status:?}"
+    );
+    let target = payload.get("target").and_then(serde_json::Value::as_str);
+    anyhow::ensure!(
+        target == Some(launch.health_target.as_str()),
+        "container_identity_mismatch: expected health target {}, got {target:?}",
+        launch.health_target
+    );
+    Ok(())
 }
 
 async fn upsert_ready(
@@ -256,6 +344,10 @@ async fn upsert_ready(
     let family = spec.family.clone();
     let contract = spec.contract.clone();
     let locality = spec.locality.as_str().to_string();
+    let source_path = spec.cwd.display().to_string();
+    let policy_source_path = spec.policy_source.clone();
+    let source_revision = spec.source_revision.clone();
+    let manifest_digest = spec.manifest_digest.clone();
     let base_url = base_url.to_string();
     let (supervised_pid, process_start_identity) = process
         .map(|(pid, start)| (Some(pid), Some(start)))
@@ -295,6 +387,14 @@ async fn upsert_ready(
                 "contract": contract,
                 "locality": locality,
                 "source": "workspace",
+                "sourcePath": source_path,
+                "policySourcePath": policy_source_path,
+                "gitRevision": source_revision,
+                "manifestHash": manifest_digest,
+                "capabilities": {
+                    "protocol": contract,
+                    "revision": source_revision,
+                },
                 "supervisedPid": retained_pid,
                 "processStartIdentity": retained_start,
             }))?;

@@ -326,7 +326,10 @@ impl CloudOptimizerClient {
             bail!(
                 "{name} could not be read ({}): {}",
                 status,
-                String::from_utf8_lossy(&bytes).chars().take(200).collect::<String>()
+                String::from_utf8_lossy(&bytes)
+                    .chars()
+                    .take(200)
+                    .collect::<String>()
             );
         }
         Ok(bytes.to_vec())
@@ -353,7 +356,12 @@ impl CloudOptimizerClient {
             urlencoding_lite(checkpoint_id)
         );
         let mut body = serde_json::Map::new();
-        if let Some(name) = patch.name.as_deref().map(str::trim).filter(|value| !value.is_empty()) {
+        if let Some(name) = patch
+            .name
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
             body.insert("name".into(), json!(name));
         }
         if let Some(description) = patch.description.as_ref() {

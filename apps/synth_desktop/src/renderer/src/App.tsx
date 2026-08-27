@@ -285,7 +285,7 @@ export default function App() {
 						failedSend={c.failedSend}
 						retryFailedSend={c.retryFailedSend}
 						recoveryNotice={c.view.kind === "chat" ? c.recoveryNotices[c.view.chatId] ?? null : null}
-						onRestartRecovered={c.restartRecoveredChat}
+						onResumeRecovered={c.resumeRecoveredChat}
 						defaultWorkspace={c.defaultWorkspace}
 						workspaceScope={c.workspaceScope}
 						setWorkspaceScope={c.setWorkspaceScope}

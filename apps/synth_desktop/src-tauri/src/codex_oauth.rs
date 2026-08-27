@@ -124,26 +124,42 @@ fn set_private_file(_path: &Path) -> Result<()> {
 
 impl CredentialStore for PrivateFileCredentialStore {
     fn load(&self) -> Result<Option<Credential>> {
-        match fs::read_to_string(&self.state) {
-            Ok(value) => {
-                return match serde_json::from_str::<InstanceCredentialState>(&value)
-                    .context("invalid instance-local Codex OAuth state")?
-                {
-                    InstanceCredentialState::Connected { credential } => Ok(Some(credential)),
-                    InstanceCredentialState::Disconnected => Ok(None),
-                };
-            }
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => return Err(error.into()),
-        }
-        match self.seed.as_ref() {
-            Some(seed) => match fs::read_to_string(seed) {
-                Ok(value) => Ok(Some(parse_dev_auth_file(&value)?)),
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
-                Err(error) => Err(error.into()),
+        let seed = self
+            .seed
+            .as_ref()
+            .map(|path| {
+                fs::read_to_string(path)
+                    .with_context(|| {
+                        format!(
+                            "ChatGPT development credential is missing: {}",
+                            path.display()
+                        )
+                    })
+                    .and_then(|value| parse_dev_auth_file(&value))
+            })
+            .transpose()?;
+        let cached = match fs::read_to_string(&self.state) {
+            Ok(value) => match serde_json::from_str::<InstanceCredentialState>(&value)
+                .context("invalid instance-local Codex OAuth state")?
+            {
+                InstanceCredentialState::Connected { credential } => Some(credential),
+                // An explicit development seed is launch authority. A stale
+                // disconnect marker must never turn a newly launched local
+                // Workshop into an unauthenticated app.
+                InstanceCredentialState::Disconnected => None,
             },
-            None => Ok(None),
-        }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+            Err(error) => return Err(error.into()),
+        };
+        Ok(match (seed, cached) {
+            (Some(seed), Some(cached)) => Some(if cached.last_refresh_ms > seed.last_refresh_ms {
+                cached
+            } else {
+                seed
+            }),
+            (Some(seed), None) => Some(seed),
+            (None, cached) => cached,
+        })
     }
 
     fn save(&self, credential: &Credential) -> Result<()> {
@@ -715,11 +731,17 @@ fn canonical_credential_path(state_root: &Path) -> PathBuf {
 }
 
 fn credential_store_mode(
-    named_instance: bool,
+    _named_instance: bool,
     debug_build: bool,
     has_dev_file: bool,
 ) -> CredentialStoreMode {
-    if named_instance && debug_build && has_dev_file {
+    // Undescriptored `tauri dev` binaries deliberately have canonical identity
+    // even when the launcher gives them an isolated data root. Requiring a
+    // named bundle here made every foreground development restart silently
+    // ignore its explicitly supplied ChatGPT credential seed. The seed and
+    // shared private-state paths are development-only, explicit authority;
+    // release builds still cannot enter this mode.
+    if debug_build && has_dev_file {
         CredentialStoreMode::SeededPrivateFile
     } else {
         CredentialStoreMode::PrivateFile
@@ -885,7 +907,7 @@ mod tests {
     fn every_build_uses_a_private_file_and_only_explicit_qa_may_seed_it() {
         assert_eq!(
             credential_store_mode(false, true, true),
-            CredentialStoreMode::PrivateFile
+            CredentialStoreMode::SeededPrivateFile
         );
         assert_eq!(
             credential_store_mode(true, true, false),
@@ -950,7 +972,7 @@ mod tests {
     }
 
     #[test]
-    fn debug_file_store_seeds_then_persists_shared_private_state() {
+    fn debug_file_store_always_has_seed_and_prefers_newer_shared_state() {
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("oauth.json");
         let id_token = format!(
@@ -992,6 +1014,7 @@ mod tests {
         assert_eq!(loaded.expires_ms, 2_100_000_000_000);
         assert_eq!(loaded.account_id, "file-account");
         loaded.access_token = "instance-access".into();
+        loaded.last_refresh_ms += 1;
         store.save(&loaded).unwrap();
         assert_eq!(
             store.load().unwrap().unwrap().access_token,
@@ -1000,7 +1023,10 @@ mod tests {
         assert!(state.is_file());
         assert!(state.with_extension("lock").is_file());
         store.delete().unwrap();
-        assert!(store.load().unwrap().is_none());
+        assert_eq!(
+            store.load().unwrap().unwrap().access_token,
+            body["tokens"]["access_token"].as_str().unwrap()
+        );
         assert_eq!(fs::read(&path).unwrap(), before);
     }
 

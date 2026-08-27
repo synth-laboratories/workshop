@@ -96,6 +96,26 @@ pub struct ContainerSpec {
     pub family: Option<String>,
     pub credential_providers: Vec<String>,
     pub environment: std::collections::BTreeMap<String, String>,
+    pub policy_source: Option<String>,
+    pub source_revision: Option<String>,
+    pub manifest_digest: Option<String>,
+    pub launch: ContainerLaunchDeclarationV1,
+}
+
+#[derive(Clone, Debug)]
+pub struct ContainerLaunchDeclarationV1 {
+    pub working_directory: PathBuf,
+    pub command: Vec<String>,
+    pub readiness_timeout_seconds: u64,
+    pub shutdown_grace_seconds: u64,
+    pub expected_port: u16,
+    pub image_ref: String,
+    pub health_target: String,
+    pub declared_environment: Vec<String>,
+    pub environment: std::collections::BTreeMap<String, String>,
+    pub tracked_revision: String,
+    pub dirty_digest: Option<String>,
+    pub include: Vec<String>,
 }
 
 #[derive(Deserialize)]
@@ -173,10 +193,6 @@ struct ContainersFile {
 struct ContainerFile {
     id: String,
     #[serde(default)]
-    command: Vec<String>,
-    #[serde(default)]
-    cwd: Option<String>,
-    #[serde(default)]
     url: Option<String>,
     #[serde(default = "default_health")]
     health: String,
@@ -188,7 +204,36 @@ struct ContainerFile {
     #[serde(default)]
     credential_providers: Vec<String>,
     #[serde(default)]
+    policy_source: Option<String>,
+    #[serde(default)]
+    launch: Option<ContainerLaunchFile>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ContainerLaunchFile {
+    schema_version: String,
+    working_directory: String,
+    command: Vec<String>,
+    readiness_timeout_seconds: u64,
+    shutdown_grace_seconds: u64,
+    expected_port: u16,
+    image_ref: String,
+    health_target: String,
+    #[serde(default)]
+    declared_environment: Vec<String>,
+    #[serde(default)]
     environment: std::collections::BTreeMap<String, String>,
+    source: ContainerLaunchSourceFile,
+}
+
+#[derive(Deserialize)]
+struct ContainerLaunchSourceFile {
+    revision_policy: String,
+    tracked_revision: String,
+    #[serde(default)]
+    dirty_digest: Option<String>,
+    include: Vec<String>,
 }
 
 fn default_provider() -> String {
@@ -261,7 +306,10 @@ pub fn load_recipes(workspace: &Path) -> Result<Vec<WorkspaceRecipe>> {
     let mut seen = std::collections::HashSet::new();
     for recipe in &recipes {
         if !seen.insert(recipe.id.as_str()) {
-            bail!("workspace declares recipe id `{}` more than once", recipe.id);
+            bail!(
+                "workspace declares recipe id `{}` more than once",
+                recipe.id
+            );
         }
     }
     Ok(recipes)
@@ -285,8 +333,7 @@ pub fn load_container_specs(workspace: &Path) -> Result<Vec<ContainerSpec>> {
     if !path.is_file() {
         return Ok(Vec::new());
     }
-    let text = fs::read_to_string(&path)
-        .with_context(|| format!("read {}", path.display()))?;
+    let text = fs::read_to_string(&path).with_context(|| format!("read {}", path.display()))?;
     parse_containers(workspace, &text)
 }
 
@@ -294,9 +341,7 @@ pub fn find_container_spec(workspace: &Path, spec_id: &str) -> Result<ContainerS
     load_container_specs(workspace)?
         .into_iter()
         .find(|spec| spec.id == spec_id)
-        .ok_or_else(|| {
-            anyhow!("container spec `{spec_id}` is not declared in {CONTAINERS_FILE}")
-        })
+        .ok_or_else(|| anyhow!("container spec `{spec_id}` is not declared in {CONTAINERS_FILE}"))
 }
 
 pub fn catalog_entry(recipe: &WorkspaceRecipe) -> Value {
@@ -377,7 +422,10 @@ fn parse_recipe(path: &Path) -> Result<WorkspaceRecipe> {
         .max_total_rollouts
         .unwrap_or(PRODUCT_MAX_TOTAL_ROLLOUTS);
     if !(max_cost_usd.is_finite() && max_cost_usd > 0.0) {
-        bail!("recipe `{}` bounds.max_cost_usd must be a positive finite number", parsed.id);
+        bail!(
+            "recipe `{}` bounds.max_cost_usd must be a positive finite number",
+            parsed.id
+        );
     }
     if max_cost_usd > PRODUCT_MAX_COST_USD {
         bail!(
@@ -396,15 +444,32 @@ fn parse_recipe(path: &Path) -> Result<WorkspaceRecipe> {
         .filter(|value| !value.trim().is_empty())
         .unwrap_or_else(|| parsed.container.clone());
     const POLICY_KEYS: &[&str] = &[
-        "api", "effort", "temperature", "top_p", "top_k", "max_calls",
-        "max_steps", "context_token_budget", "compact_at", "compact_after_tokens",
-        "max_compactions", "thinking_budget", "answer_max_tokens", "timeout_seconds",
-        "min_request_interval", "sampler_retries", "retry_max_wait", "min_actions",
+        "api",
+        "effort",
+        "temperature",
+        "top_p",
+        "top_k",
+        "max_calls",
+        "max_steps",
+        "context_token_budget",
+        "compact_at",
+        "compact_after_tokens",
+        "max_compactions",
+        "thinking_budget",
+        "answer_max_tokens",
+        "timeout_seconds",
+        "min_request_interval",
+        "sampler_retries",
+        "retry_max_wait",
+        "min_actions",
         "max_actions",
     ];
     for key in parsed.policy.keys() {
         if !POLICY_KEYS.contains(&key.as_str()) {
-            bail!("recipe `{}` policy.{key} is not an admitted policy option", parsed.id);
+            bail!(
+                "recipe `{}` policy.{key} is not an admitted policy option",
+                parsed.id
+            );
         }
     }
     let policy = serde_json::to_value(&parsed.policy)
@@ -435,8 +500,12 @@ fn parse_recipe(path: &Path) -> Result<WorkspaceRecipe> {
         harness: parsed.harness.unwrap_or_else(|| "desktop_eval".into()),
         policy_config: parsed.policy_config.unwrap_or_else(|| "default".into()),
         policy,
-        policy_source: parsed.policy_source.filter(|value| !value.trim().is_empty()),
-        train_seeds: parsed.train_seeds.unwrap_or_else(|| vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9]),
+        policy_source: parsed
+            .policy_source
+            .filter(|value| !value.trim().is_empty()),
+        train_seeds: parsed
+            .train_seeds
+            .unwrap_or_else(|| vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9]),
         heldout_seeds: parsed.heldout_seeds.unwrap_or_default(),
         concurrency: parsed.concurrency.unwrap_or(1).max(1),
         proposer_model: parsed.proposer_model,
@@ -517,18 +586,16 @@ const PRODUCT_MAX_FRAME_BYTES: u64 = 32 * 1024 * 1024;
 const PRODUCT_MAX_TOTAL_FRAME_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 
 fn parse_containers(workspace: &Path, text: &str) -> Result<Vec<ContainerSpec>> {
-    let parsed: ContainersFile =
-        toml::from_str(text).context("parse workshop.containers.toml")?;
+    let parsed: ContainersFile = toml::from_str(text).context("parse workshop.containers.toml")?;
     let mut specs = Vec::new();
     for item in parsed.container {
-        if item.command.is_empty() && item.url.as_deref().map(str::trim).unwrap_or("").is_empty() {
-            bail!(
-                "container `{}` must declare command or url",
-                item.id
-            );
-        }
-        let cwd_rel = item.cwd.unwrap_or_else(|| ".".into());
-        let cwd = resolve_workspace_path(workspace, &cwd_rel)?;
+        let launch_file = item.launch.context(format!(
+            "launch_declaration_missing: container `{}` must declare [container.launch]",
+            item.id
+        ))?;
+        let launch = validate_launch(workspace, &item.id, item.url.as_deref(), launch_file)?;
+        let command = launch.command.clone();
+        let cwd = launch.working_directory.clone();
         for provider in &item.credential_providers {
             if provider != "openrouter" {
                 bail!(
@@ -538,21 +605,26 @@ fn parse_containers(workspace: &Path, text: &str) -> Result<Vec<ContainerSpec>> 
                 );
             }
         }
-        for name in item.environment.keys() {
+        for name in launch.environment.keys() {
             let upper = name.to_ascii_uppercase();
-            if !name.chars().all(|ch| ch == '_' || ch.is_ascii_alphanumeric())
+            if !name
+                .chars()
+                .all(|ch| ch == '_' || ch.is_ascii_alphanumeric())
                 || name.is_empty()
                 || upper.contains("KEY")
                 || upper.contains("SECRET")
                 || upper.contains("TOKEN")
                 || upper.contains("PASSWORD")
             {
-                bail!("container `{}` has unsafe environment name `{name}`", item.id);
+                bail!(
+                    "container `{}` has unsafe environment name `{name}`",
+                    item.id
+                );
             }
         }
         specs.push(ContainerSpec {
             id: item.id,
-            command: item.command,
+            command,
             cwd,
             url: item.url.filter(|value| !value.trim().is_empty()),
             health: item.health,
@@ -560,10 +632,183 @@ fn parse_containers(workspace: &Path, text: &str) -> Result<Vec<ContainerSpec>> 
             locality: item.locality,
             family: item.family,
             credential_providers: item.credential_providers,
-            environment: item.environment,
+            environment: launch.environment.clone(),
+            policy_source: item.policy_source.filter(|value| !value.trim().is_empty()),
+            source_revision: Some(launch.tracked_revision.clone()),
+            manifest_digest: launch.dirty_digest.clone(),
+            launch,
         });
     }
     Ok(specs)
+}
+
+fn validate_launch(
+    workspace: &Path,
+    container_id: &str,
+    container_url: Option<&str>,
+    launch: ContainerLaunchFile,
+) -> Result<ContainerLaunchDeclarationV1> {
+    anyhow::ensure!(
+        launch.schema_version == "synth.container-launch.v1",
+        "launch_declaration_invalid: container `{}` uses unsupported schema `{}`",
+        container_id,
+        launch.schema_version
+    );
+    anyhow::ensure!(
+        !launch.command.is_empty(),
+        "launch_declaration_invalid: command is empty"
+    );
+    anyhow::ensure!(
+        launch.readiness_timeout_seconds > 0,
+        "launch_declaration_invalid: readiness timeout must be positive"
+    );
+    anyhow::ensure!(
+        launch.shutdown_grace_seconds > 0,
+        "launch_declaration_invalid: shutdown grace must be positive"
+    );
+    anyhow::ensure!(
+        !launch.image_ref.trim().is_empty(),
+        "launch_declaration_invalid: image_ref is empty"
+    );
+    anyhow::ensure!(
+        !launch.health_target.trim().is_empty(),
+        "launch_declaration_invalid: health_target is empty"
+    );
+    anyhow::ensure!(
+        launch.source.revision_policy == "exact-or-dirty-digest",
+        "launch_declaration_invalid: unsupported revision_policy `{}`",
+        launch.source.revision_policy
+    );
+    anyhow::ensure!(
+        !launch.source.tracked_revision.trim().is_empty(),
+        "launch_declaration_invalid: tracked_revision is empty"
+    );
+    let expected = container_url
+        .and_then(|value| reqwest::Url::parse(value).ok())
+        .and_then(|value| value.port_or_known_default());
+    anyhow::ensure!(
+        expected == Some(launch.expected_port),
+        "launch_declaration_invalid: expected_port {} does not match container URL",
+        launch.expected_port
+    );
+    for name in &launch.declared_environment {
+        anyhow::ensure!(
+            !name.is_empty()
+                && name
+                    .chars()
+                    .all(|ch| ch == '_' || ch.is_ascii_alphanumeric()),
+            "launch_declaration_invalid: invalid environment name `{name}`"
+        );
+        let upper = name.to_ascii_uppercase();
+        anyhow::ensure!(
+            !upper.contains("KEY")
+                && !upper.contains("SECRET")
+                && !upper.contains("TOKEN")
+                && !upper.contains("PASSWORD"),
+            "launch_declaration_invalid: credential-bearing environment name `{name}` is forbidden"
+        );
+    }
+    let declared = launch
+        .declared_environment
+        .iter()
+        .cloned()
+        .collect::<std::collections::BTreeSet<_>>();
+    let configured = launch
+        .environment
+        .keys()
+        .cloned()
+        .collect::<std::collections::BTreeSet<_>>();
+    anyhow::ensure!(
+        configured.is_subset(&declared),
+        "launch_declaration_invalid: configured environment names must be declared"
+    );
+    let mut includes = launch.source.include;
+    anyhow::ensure!(
+        !includes.is_empty(),
+        "launch_declaration_invalid: source include list is empty"
+    );
+    includes.sort();
+    includes.dedup();
+    for relative in &includes {
+        resolve_workspace_path(workspace, relative)
+            .with_context(|| format!("launch_declaration_invalid: source include `{relative}`"))?;
+    }
+    let actual_digest = launch_source_manifest_digest(workspace, &includes)?;
+    if let Some(declared_digest) = launch.source.dirty_digest.as_deref() {
+        anyhow::ensure!(
+            declared_digest == actual_digest,
+            "launch_source_mismatch: declared {declared_digest}, current {actual_digest}"
+        );
+    }
+    let git_revision = std::process::Command::new("git")
+        .arg("-C")
+        .arg(workspace)
+        .args(["rev-parse", "HEAD"])
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .and_then(|output| String::from_utf8(output.stdout).ok())
+        .map(|value| value.trim().to_string());
+    if let Some(current_revision) = git_revision {
+        anyhow::ensure!(
+            current_revision == launch.source.tracked_revision,
+            "launch_source_mismatch: declaration tracks {}, checkout is {current_revision}",
+            launch.source.tracked_revision
+        );
+        let mut status = std::process::Command::new("git");
+        status
+            .arg("-C")
+            .arg(workspace)
+            .args(["status", "--porcelain", "--"]);
+        status.args(&includes);
+        let dirty = status
+            .output()
+            .context("launch_source_mismatch: inspect declared launch inputs")?;
+        anyhow::ensure!(
+            dirty.status.success(),
+            "launch_source_mismatch: git status failed"
+        );
+        if !dirty.stdout.is_empty() {
+            anyhow::ensure!(
+                launch.source.dirty_digest.is_some(),
+                "launch_source_mismatch: declared launch inputs are dirty but no dirty_digest was provided"
+            );
+        }
+    }
+    Ok(ContainerLaunchDeclarationV1 {
+        working_directory: resolve_workspace_path(workspace, &launch.working_directory)?,
+        command: launch.command,
+        readiness_timeout_seconds: launch.readiness_timeout_seconds,
+        shutdown_grace_seconds: launch.shutdown_grace_seconds,
+        expected_port: launch.expected_port,
+        image_ref: launch.image_ref,
+        health_target: launch.health_target,
+        declared_environment: launch.declared_environment,
+        environment: launch.environment,
+        tracked_revision: launch.source.tracked_revision,
+        dirty_digest: launch
+            .source
+            .dirty_digest
+            .filter(|value| !value.trim().is_empty()),
+        include: includes,
+    })
+}
+
+fn launch_source_manifest_digest(workspace: &Path, includes: &[String]) -> Result<String> {
+    let mut hasher = Sha256::new();
+    for relative in includes {
+        let path = resolve_workspace_path(workspace, relative)?;
+        hasher.update(relative.as_bytes());
+        hasher.update([0]);
+        hasher.update(fs::read(&path).with_context(|| {
+            format!(
+                "launch_source_mismatch: read declared input {}",
+                path.display()
+            )
+        })?);
+        hasher.update([0]);
+    }
+    Ok(format!("sha256:{:x}", hasher.finalize()))
 }
 
 pub fn resolve_workspace_path(workspace: &Path, relative: &str) -> Result<PathBuf> {
@@ -604,19 +849,19 @@ pub fn bind_locality_urls(
 ) -> Result<()> {
     let (base_url, inference_url) = match locality {
         PolicyLocality::Host => {
-            let base = host_base_url.ok_or_else(|| {
-                anyhow!("locality=host requires the host provider proxy URL")
-            })?;
+            let base = host_base_url
+                .ok_or_else(|| anyhow!("locality=host requires the host provider proxy URL"))?;
             (base.to_string(), None)
         }
         PolicyLocality::Container => {
             let base = container_base_url.ok_or_else(|| {
-                anyhow!("locality=container requires container_openai_base_url; refusing host loopback")
+                anyhow!(
+                    "locality=container requires container_openai_base_url; refusing host loopback"
+                )
             })?;
             refuse_loopback(base)?;
-            let inference = container_inference_url.ok_or_else(|| {
-                anyhow!("locality=container requires container_openai_route")
-            })?;
+            let inference = container_inference_url
+                .ok_or_else(|| anyhow!("locality=container requires container_openai_route"))?;
             refuse_loopback(inference)?;
             (base.to_string(), Some(inference.to_string()))
         }
@@ -628,10 +873,7 @@ pub fn bind_locality_urls(
         .ok_or_else(|| anyhow!("recipe [policy] must be a table"))?;
     policy.insert("base_url".into(), toml::Value::String(base_url));
     if let Some(inference_url) = inference_url {
-        policy.insert(
-            "inference_url".into(),
-            toml::Value::String(inference_url),
-        );
+        policy.insert("inference_url".into(), toml::Value::String(inference_url));
     }
     policy.insert(
         "credential_mode".into(),
@@ -659,9 +901,8 @@ pub fn bind_locality_urls(
         })
     {
         let provider = canonical_provider;
-        let proposer_base = host_base_url.ok_or_else(|| {
-            anyhow!("proposer requires the host provider proxy URL")
-        })?;
+        let proposer_base = host_base_url
+            .ok_or_else(|| anyhow!("proposer requires the host provider proxy URL"))?;
         proposer.insert("provider".into(), toml::Value::String(provider.clone()));
         proposer.insert(
             "base_url".into(),
@@ -669,11 +910,14 @@ pub fn bind_locality_urls(
         );
         proposer.insert(
             "api_key_env".into(),
-            toml::Value::String(match provider.as_str() {
-                "openrouter" => "OPENROUTER_API_KEY",
-                "anthropic" => "ANTHROPIC_API_KEY",
-                _ => "OPENAI_API_KEY",
-            }.into()),
+            toml::Value::String(
+                match provider.as_str() {
+                    "openrouter" => "OPENROUTER_API_KEY",
+                    "anthropic" => "ANTHROPIC_API_KEY",
+                    _ => "OPENAI_API_KEY",
+                }
+                .into(),
+            ),
         );
     }
     Ok(())
@@ -681,10 +925,7 @@ pub fn bind_locality_urls(
 
 pub fn refuse_loopback(url: &str) -> Result<()> {
     let lowered = url.to_ascii_lowercase();
-    if lowered.contains("127.0.0.1")
-        || lowered.contains("localhost")
-        || lowered.contains("[::1]")
-    {
+    if lowered.contains("127.0.0.1") || lowered.contains("localhost") || lowered.contains("[::1]") {
         bail!("locality=container cannot bind a loopback URL: {url}");
     }
     Ok(())
@@ -774,7 +1015,9 @@ max_total_rollouts = 10
 "#,
         )
         .unwrap();
-        let error = find_recipe(&workspace, "eval.too-rich.v1").unwrap_err().to_string();
+        let error = find_recipe(&workspace, "eval.too-rich.v1")
+            .unwrap_err()
+            .to_string();
         assert!(error.contains("exceeds product cap"), "{error}");
     }
 
@@ -788,13 +1031,26 @@ max_total_rollouts = 10
             r#"
 [[container]]
 id = "classify"
-command = ["python3", "svc/serve.py"]
-cwd = "svc"
+url = "http://127.0.0.1:8098"
 health = "/health"
 contract = "synth-containers/v1"
 locality = "container"
 credential_providers = ["openrouter"]
+[container.launch]
+schema_version = "synth.container-launch.v1"
+working_directory = "svc"
+command = ["python3", "serve.py"]
+readiness_timeout_seconds = 30
+shutdown_grace_seconds = 5
+expected_port = 8098
+image_ref = "fixture"
+health_target = "fixture"
+declared_environment = ["SYNTH_CRAFTAX_URL"]
 environment = { SYNTH_CRAFTAX_URL = "http://127.0.0.1:8098" }
+[container.launch.source]
+revision_policy = "exact-or-dirty-digest"
+tracked_revision = "fixture-revision"
+include = ["svc/serve.py"]
 "#,
         )
         .unwrap();
@@ -802,7 +1058,68 @@ environment = { SYNTH_CRAFTAX_URL = "http://127.0.0.1:8098" }
         assert!(spec.cwd.starts_with(&workspace.canonicalize().unwrap()));
         assert!(spec.cwd.ends_with("svc"));
         assert_eq!(spec.credential_providers, vec!["openrouter"]);
-        assert_eq!(spec.environment["SYNTH_CRAFTAX_URL"], "http://127.0.0.1:8098");
+        assert_eq!(
+            spec.environment["SYNTH_CRAFTAX_URL"],
+            "http://127.0.0.1:8098"
+        );
+    }
+
+    #[test]
+    fn launch_declaration_rejects_orchestrator_ownership_policy() {
+        let (_dir, workspace) = write_workspace();
+        fs::create_dir_all(workspace.join("svc")).unwrap();
+        fs::write(workspace.join("svc/serve.py"), "print('ok')").unwrap();
+        fs::write(
+            workspace.join(CONTAINERS_FILE),
+            r#"
+[[container]]
+id = "classify"
+url = "http://127.0.0.1:8098"
+locality = "container"
+[container.launch]
+schema_version = "synth.container-launch.v1"
+working_directory = "svc"
+command = ["python3", "serve.py"]
+ownership = "workshop-adoptable"
+readiness_timeout_seconds = 30
+shutdown_grace_seconds = 5
+expected_port = 8098
+image_ref = "fixture"
+health_target = "fixture"
+[container.launch.source]
+revision_policy = "exact-or-dirty-digest"
+tracked_revision = "fixture-revision"
+include = ["svc/serve.py"]
+"#,
+        )
+        .unwrap();
+
+        let error = format!(
+            "{:#}",
+            find_container_spec(&workspace, "classify").unwrap_err()
+        );
+        assert!(error.contains("unknown field `ownership`"), "{error}");
+    }
+
+    #[test]
+    fn legacy_container_command_is_not_launch_authority() {
+        let (_dir, workspace) = write_workspace();
+        fs::write(
+            workspace.join(CONTAINERS_FILE),
+            r#"
+[[container]]
+id = "legacy"
+command = ["scripts/start.sh"]
+cwd = "."
+url = "http://127.0.0.1:8098"
+locality = "container"
+"#,
+        )
+        .unwrap();
+        let error = find_container_spec(&workspace, "legacy")
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("launch_declaration_missing"), "{error}");
     }
 
     #[test]

@@ -6,7 +6,7 @@
 //! A value that is genuinely absent is `Option::None`; a value that is present
 //! is one an authoritative source actually supplied.
 
-use super::canonical::{CanonicalJson, CanonicalError};
+use super::canonical::{CanonicalError, CanonicalJson};
 use super::ids::{
     ApprovalReceiptId, ContainerId, ContainerRegistrationId, CostMicros, DeclarationDigest, Digest,
     EvaluatorId, ModelCallCount, ModelId, PolicyRevision, ProviderId, RecipeDigest, RecipeId,
@@ -161,8 +161,9 @@ pub enum EvaluatorSpec {
 impl EvaluatorSpec {
     pub fn evaluator_id(&self) -> &EvaluatorId {
         match self {
-            Self::ContainerDeclared { evaluator_id, .. }
-            | Self::Explicit { evaluator_id, .. } => evaluator_id,
+            Self::ContainerDeclared { evaluator_id, .. } | Self::Explicit { evaluator_id, .. } => {
+                evaluator_id
+            }
         }
     }
 
@@ -560,7 +561,10 @@ mod tests {
             LiveEvalProtocol::parse(LIVE_EVAL_PROTOCOL_V1),
             Some(LiveEvalProtocol::SynthContainerLiveEvalV1)
         );
-        assert_eq!(LiveEvalProtocol::parse("synth.container.live-eval.v2"), None);
+        assert_eq!(
+            LiveEvalProtocol::parse("synth.container.live-eval.v2"),
+            None
+        );
         assert_eq!(LiveEvalProtocol::parse("live-eval"), None);
     }
 
@@ -573,8 +577,7 @@ mod tests {
             900,
         );
         assert_eq!(scope.operations, vec!["a".to_string(), "b".to_string()]);
-        let contract =
-            OutputContract::new(true, false, true, ["z".to_string(), "a".to_string()]);
+        let contract = OutputContract::new(true, false, true, ["z".to_string(), "a".to_string()]);
         assert_eq!(
             contract.required_operations,
             vec!["a".to_string(), "z".to_string()]

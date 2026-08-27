@@ -172,12 +172,7 @@ impl RolloutState {
             // the container is already stepping it is the state lie that made
             // a run look idle while it was spending.
             Self::Queued => &[Self::Starting, Self::Cancelled, Self::Failed],
-            Self::Starting => &[
-                Self::Running,
-                Self::Failed,
-                Self::Cancelled,
-                Self::Degraded,
-            ],
+            Self::Starting => &[Self::Running, Self::Failed, Self::Cancelled, Self::Degraded],
             Self::Running => &[
                 Self::Completed,
                 Self::Failed,
@@ -553,9 +548,10 @@ impl RunProgress {
         } else {
             RunState::Degraded
         };
-        self.state = self.state.transition_to(target).map_err(|error| {
-            SettlementRefusal::InvalidTransition(Box::new(error))
-        })?;
+        self.state = self
+            .state
+            .transition_to(target)
+            .map_err(|error| SettlementRefusal::InvalidTransition(Box::new(error)))?;
         Ok(self.state)
     }
 
@@ -609,14 +605,14 @@ impl RunProgress {
         let mean_reward = if terminal.len() == self.rollouts.len()
             && terminal.iter().all(|record| record.reward.is_some())
         {
-                let sum: f64 = terminal
-                    .iter()
-                    .map(|record| record.reward.unwrap_or_default())
-                    .sum();
-                Some(sum / terminal.len() as f64)
-            } else {
-                None
-            };
+            let sum: f64 = terminal
+                .iter()
+                .map(|record| record.reward.unwrap_or_default())
+                .sum();
+            Some(sum / terminal.len() as f64)
+        } else {
+            None
+        };
 
         json!({
             "state": self.state.as_str(),

@@ -263,10 +263,7 @@ async fn a_live_peer_is_not_interrupted() {
         .unwrap();
 
     assert!(fixture.reconcile().await.is_empty());
-    assert_eq!(
-        fixture.session("session-live-peer").await.status,
-        "running"
-    );
+    assert_eq!(fixture.session("session-live-peer").await.status, "running");
     assert_eq!(fixture.run("turn-live-peer").await.status, "running");
 }
 

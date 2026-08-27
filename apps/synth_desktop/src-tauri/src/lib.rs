@@ -1215,13 +1215,10 @@ pub(crate) async fn authorize_inline_evaluation_start(
     optimizers::inline_eval::reverify(state.optimizers(), &approved)
         .await
         .map_err(AppError::from)?;
-    let (run, event) = optimizers::inline_eval::execute(
-        state.optimizers(),
-        approved,
-        session_ref.clone(),
-    )
-    .await
-    .map_err(AppError::from)?;
+    let (run, event) =
+        optimizers::inline_eval::execute(state.optimizers(), approved, session_ref.clone())
+            .await
+            .map_err(AppError::from)?;
     publish_optimizer_event(app, state, event).await?;
     let run = state
         .optimizers()

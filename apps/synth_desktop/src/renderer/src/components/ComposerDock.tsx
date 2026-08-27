@@ -54,7 +54,7 @@ export type ComposerDockProps = {
 	retryFailedSend: () => void;
 	/** Set when a previous Workshop process died holding this chat's turn. */
 	recoveryNotice?: RecoveryNotice | null;
-	onRestartRecovered?: (sessionId: string) => void;
+	onResumeRecovered?: (sessionId: string) => void;
 	defaultWorkspace: string | null;
 	workspaceScope: ConversationWorkspaceScope | null;
 	setWorkspaceScope: (scope: ConversationWorkspaceScope | null) => void;
@@ -119,7 +119,7 @@ export function ComposerDock({
 	failedSend,
 	retryFailedSend,
 	recoveryNotice,
-	onRestartRecovered,
+	onResumeRecovered,
 	defaultWorkspace,
 	workspaceScope,
 	setWorkspaceScope,
@@ -220,9 +220,9 @@ export function ComposerDock({
 					: recoveryNotice && activeChat?.id
 						? {
 							message: recoveryMessage(recoveryNotice),
-							actionLabel: "Restart",
-							onRetry: recoveryNotice.restartable && recoveryNotice.lastUserMessage?.text
-								? () => onRestartRecovered?.(activeChat.id)
+							actionLabel: "Resume",
+							onRetry: recoveryNotice.restartable
+								? () => onResumeRecovered?.(activeChat.id)
 								: undefined
 						}
 						: null,

@@ -121,24 +121,22 @@ mod tests {
     }
 
     #[test]
-    fn permissive_policy_auto_approves_with_the_declared_cap() {
-        match auto_decision("never", &paid()).unwrap() {
-            Some(ApprovalDecision::ApproveWithCap { cap }) => {
-                assert_eq!(cap.max_rollouts, Some(8));
-                assert_eq!(cap.max_cost_usd_micros, None);
-            }
-            other => panic!("expected capped decision, got {other:?}"),
+    fn paid_compute_always_uses_the_native_approval_modal() {
+        for policy in ["never", "on-request", "untrusted"] {
+            assert!(auto_decision(policy, &paid()).unwrap().is_none());
         }
     }
 
     #[test]
-    fn paid_and_credentials_are_never_implicitly_remembered() {
+    fn paid_and_credentials_always_use_native_approval_modals() {
         assert!(auto_decision("on-request", &paid()).unwrap().is_none());
         let credential = ApprovalKind::CredentialAccess {
             provider: "openai".into(),
             purpose: "bounded optimizer recipe".into(),
         };
-        assert!(auto_decision("on-request", &credential).unwrap().is_none());
+        for policy in ["never", "on-request", "untrusted"] {
+            assert!(auto_decision(policy, &credential).unwrap().is_none());
+        }
     }
 
     #[test]

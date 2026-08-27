@@ -313,6 +313,9 @@ mod tests {
     #[test]
     fn unicode_keys_sort_by_scalar_value_not_locale() {
         let value = CanonicalJson::new(json!({"z": 1, "\u{e9}": 2, "a": 3})).unwrap();
-        assert_eq!(value.to_canonical_string(), "{\"a\":3,\"z\":1,\"\u{e9}\":2}");
+        assert_eq!(
+            value.to_canonical_string(),
+            "{\"a\":3,\"z\":1,\"\u{e9}\":2}"
+        );
     }
 }

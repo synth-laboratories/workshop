@@ -85,6 +85,8 @@ struct EvalSpec {
     policy_config: String,
     policy: serde_json::Map<String, Value>,
     policy_code: Option<String>,
+    policy_source_revision: String,
+    policy_configuration_digest: String,
     provider: String,
     model: String,
     concurrency: usize,
@@ -108,11 +110,17 @@ impl EvalSpec {
             .as_value()
             .as_object()
             .cloned()
-            .ok_or_else(|| anyhow::anyhow!("approved inline policy configuration is not an object"))?;
+            .ok_or_else(|| {
+                anyhow::anyhow!("approved inline policy configuration is not an object")
+            })?;
         Ok(Self {
             recipe_id: format!("inline:{}", execution.digest()?.as_str()),
             family,
-            title: format!("{} · {}", recipe.policy.qualified_name(), recipe.model.model_id),
+            title: format!(
+                "{} · {}",
+                recipe.policy.qualified_name(),
+                recipe.model.model_id
+            ),
             question: format!(
                 "Score {} with the container-declared evaluator.",
                 recipe.policy.qualified_name()
@@ -123,10 +131,17 @@ impl EvalSpec {
             policy_config: recipe.policy.name.clone(),
             policy,
             policy_code: recipe.policy.source_code.clone(),
+            policy_source_revision: recipe.policy.revision.as_str().to_string(),
+            policy_configuration_digest: recipe.policy.configuration_digest.as_str().to_string(),
             provider: recipe.model.provider.as_str().to_string(),
             model: recipe.model.model_id.as_str().to_string(),
             concurrency: recipe.rollout_plan.maximum_rollouts.0.get() as usize,
-            train: recipe.rollout_plan.seeds.iter().map(|seed| seed.0).collect(),
+            train: recipe
+                .rollout_plan
+                .seeds
+                .iter()
+                .map(|seed| seed.0)
+                .collect(),
             heldout: Vec::new(),
             cost_ceiling_usd: recipe.resource_limits.hard_total_cost_micros.as_micros() as f64
                 / 1_000_000.0,
@@ -140,11 +155,7 @@ impl EvalSpec {
     }
 
     fn blocking_http_timeout(&self) -> Duration {
-        let Some(per_call) = self
-            .policy
-            .get("timeout_seconds")
-            .and_then(Value::as_f64)
-        else {
+        let Some(per_call) = self.policy.get("timeout_seconds").and_then(Value::as_f64) else {
             return DEFAULT_BLOCKING_EVAL_HTTP_TIMEOUT;
         };
         let calls = self
@@ -166,17 +177,27 @@ impl EvalSpec {
                     .with_context(|| format!("read policy source {}", path.display()))
             })
             .transpose()?;
+        let policy_configuration_digest =
+            super::admission::CanonicalJson::new(Value::Object(recipe.policy.clone()))?
+                .digest()
+                .as_str()
+                .to_string();
         Ok(Self {
             recipe_id: recipe.id.clone(),
             family: recipe.family.clone(),
             title: recipe.title.clone(),
-            question: format!("Score the advertised {} policy on the declared eval pool.", recipe.family),
+            question: format!(
+                "Score the advertised {} policy on the declared eval pool.",
+                recipe.family
+            ),
             world_ref: format!("world:{}@eval", recipe.family),
             evaluation_plan_ref: format!("{}_eval.v1", recipe.family),
             harness: recipe.harness.clone(),
             policy_config: recipe.policy_config.clone(),
             policy: recipe.policy.clone(),
             policy_code,
+            policy_source_revision: recipe.source_hash.clone(),
+            policy_configuration_digest,
             provider: recipe.provider.clone(),
             model: recipe.model.clone(),
             concurrency: recipe.concurrency,
@@ -201,6 +222,9 @@ impl EvalSpec {
             policy_config: "banking77_gpt_4_1_nano".into(),
             policy: serde_json::Map::new(),
             policy_code: None,
+            policy_source_revision: "fixture-revision".into(),
+            policy_configuration_digest:
+                "sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a".into(),
             provider: "openrouter".into(),
             model: "openai/gpt-4.1-nano".into(),
             concurrency: 10,
@@ -225,6 +249,9 @@ impl EvalSpec {
             policy_config: "openai_gpt41_mini".into(),
             policy: serde_json::Map::new(),
             policy_code: None,
+            policy_source_revision: "fixture-revision".into(),
+            policy_configuration_digest:
+                "sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a".into(),
             provider: "openai".into(),
             model: "gpt-4.1-mini-2025-04-14".into(),
             concurrency: 2,
@@ -260,8 +287,10 @@ impl EvalSpec {
             ("provider".into(), json!(self.provider)),
             ("model".into(), json!(self.model)),
             ("base_url".into(), json!(base_url)),
-            ("api_key_env".into(), json!("OPENAI_API_KEY")),
         ]));
+        if self.harness != "nanohorizon" {
+            config.insert("api_key_env".into(), json!("OPENAI_API_KEY"));
+        }
         let config = Value::Object(config);
         Some(json!({
             "config_id": self.policy_config,
@@ -313,11 +342,8 @@ pub(super) async fn start_inline(
     session_ref: Option<String>,
 ) -> Result<(OptimizerRunRecord, Option<crate::storage::AppEvent>)> {
     let recipe = approved.recipe();
-    let (container, family) = find_ready_container_by_id(
-        service,
-        recipe.container.container_id.as_str(),
-    )
-    .await?;
+    let (container, family) =
+        find_ready_container_by_id(service, recipe.container.container_id.as_str()).await?;
     let info = crate::http::http_client()
         .get(format!("{}/info", container.base_url))
         .send()
@@ -396,6 +422,13 @@ async fn start_eval(
         "taskPools": { "train": spec.train.len(), "heldout": spec.heldout.len() },
         "concurrency": spec.concurrency,
         "costCeilingUsd": spec.cost_ceiling_usd,
+        "bounds": {
+            "maximumRollouts": examples.len(),
+            "maximumModelCallsPerRollout": spec.policy.get("max_calls").cloned().unwrap_or(Value::Null),
+            "maximumStepsPerRollout": spec.policy.get("max_steps").cloned().unwrap_or(Value::Null),
+            "maximumTokens": Value::Null,
+            "hardTotalCostUsd": spec.cost_ceiling_usd,
+        },
         "recipeSourceKind": if admission.is_some() { "inline" } else { "catalog" },
         "startedAt": chrono::Utc::now().to_rfc3339(),
         "records": [],
@@ -591,7 +624,10 @@ async fn project_worker_failure_visual(
 /// A container that declares no roles is not failed here; there is nothing to
 /// fail it on, and inventing a refusal from absent metadata would block every
 /// family that has not implemented the contract yet.
-async fn preflight_container_credentials(container: &ReadyContainer, spec: &EvalSpec) -> Result<()> {
+async fn preflight_container_credentials(
+    container: &ReadyContainer,
+    spec: &EvalSpec,
+) -> Result<()> {
     let client = crate::http::http_client_with_timeout(Duration::from_secs(15));
     let info = client
         .get(format!("{}/info", container.base_url))
@@ -860,9 +896,8 @@ fn experiment_bindings(
                 format!("unavailable / ${:.2}", spec.cost_ceiling_usd)
             }
         });
-    let mut limitations = vec![
-        "Baseline-only. No candidate generation and no uplift claim.".to_string(),
-    ];
+    let mut limitations =
+        vec!["Baseline-only. No candidate generation and no uplift claim.".to_string()];
     let failed_rollouts = records
         .iter()
         .filter(|record| record.get("status").and_then(Value::as_str) == Some("failed"))
@@ -872,7 +907,12 @@ fn experiment_bindings(
     }
     let trace_import_failures = records
         .iter()
-        .filter(|record| record.pointer("/sealedTrace/imported").and_then(Value::as_bool) == Some(false))
+        .filter(|record| {
+            record
+                .pointer("/sealedTrace/imported")
+                .and_then(Value::as_bool)
+                == Some(false)
+        })
         .count();
     if trace_import_failures > 0 {
         limitations.push(format!(
@@ -894,7 +934,9 @@ fn experiment_bindings(
         ));
     }
     if terminal && usage.cost_usd.is_none() {
-        limitations.push("The producer reported no cost telemetry; cost is unavailable, not zero.".to_string());
+        limitations.push(
+            "The producer reported no cost telemetry; cost is unavailable, not zero.".to_string(),
+        );
     }
     let assessment_summary = match status {
         "running" => format!(
@@ -1068,13 +1110,17 @@ fn total_tokens_from_usage(usage: &Value) -> Option<Value> {
     }
     let prompt = u64_field(usage, &["prompt_tokens", "promptTokens"]);
     let completion = u64_field(usage, &["completion_tokens", "completionTokens"]);
-    prompt.zip(completion).map(|(prompt, completion)| json!(prompt + completion))
+    prompt
+        .zip(completion)
+        .map(|(prompt, completion)| json!(prompt + completion))
 }
 
 fn elapsed_label(started_at: &str) -> String {
     let elapsed = chrono::DateTime::parse_from_rfc3339(started_at)
         .ok()
-        .map(|started| chrono::Utc::now().signed_duration_since(started.with_timezone(&chrono::Utc)))
+        .map(|started| {
+            chrono::Utc::now().signed_duration_since(started.with_timezone(&chrono::Utc))
+        })
         .map(|duration| duration.num_seconds().max(0) as u64)
         .unwrap_or(0);
     if elapsed >= 60 {
@@ -1091,17 +1137,21 @@ fn eta_label(elapsed: &str, completed: usize, total: usize) -> String {
     if completed >= total {
         return "complete".to_string();
     }
-    let seconds = elapsed
-        .split_whitespace()
-        .fold(0_u64, |sum, part| {
-            if let Some(minutes) = part.strip_suffix('m').and_then(|value| value.parse::<u64>().ok()) {
-                sum + minutes * 60
-            } else if let Some(seconds) = part.strip_suffix('s').and_then(|value| value.parse::<u64>().ok()) {
-                sum + seconds
-            } else {
-                sum
-            }
-        });
+    let seconds = elapsed.split_whitespace().fold(0_u64, |sum, part| {
+        if let Some(minutes) = part
+            .strip_suffix('m')
+            .and_then(|value| value.parse::<u64>().ok())
+        {
+            sum + minutes * 60
+        } else if let Some(seconds) = part
+            .strip_suffix('s')
+            .and_then(|value| value.parse::<u64>().ok())
+        {
+            sum + seconds
+        } else {
+            sum
+        }
+    });
     let remaining = seconds.saturating_mul((total - completed) as u64) / completed as u64;
     if remaining >= 60 {
         format!("~{}m {:02}s", remaining / 60, remaining % 60)
@@ -1380,13 +1430,17 @@ async fn transition_inline_run(
     next: super::admission::RunState,
 ) -> Result<()> {
     let run_id = run_id.to_string();
-    service.database().clone().run(move |conn| {
-        let Some(mut progress) = super::admission::load_run_progress(conn, &run_id)? else {
-            return Ok(());
-        };
-        progress.transition_run(next)?;
-        super::admission::save_run_progress(conn, &run_id, &progress)
-    }).await
+    service
+        .database()
+        .clone()
+        .run(move |conn| {
+            let Some(mut progress) = super::admission::load_run_progress(conn, &run_id)? else {
+                return Ok(());
+            };
+            progress.transition_run(next)?;
+            super::admission::save_run_progress(conn, &run_id, &progress)
+        })
+        .await
 }
 
 async fn transition_inline_rollout(
@@ -1396,13 +1450,17 @@ async fn transition_inline_rollout(
     next: super::admission::RolloutState,
 ) -> Result<()> {
     let run_id = run_id.to_string();
-    service.database().clone().run(move |conn| {
-        let Some(mut progress) = super::admission::load_run_progress(conn, &run_id)? else {
-            return Ok(());
-        };
-        progress.transition_rollout(index, next)?;
-        super::admission::save_run_progress(conn, &run_id, &progress)
-    }).await
+    service
+        .database()
+        .clone()
+        .run(move |conn| {
+            let Some(mut progress) = super::admission::load_run_progress(conn, &run_id)? else {
+                return Ok(());
+            };
+            progress.transition_rollout(index, next)?;
+            super::admission::save_run_progress(conn, &run_id, &progress)
+        })
+        .await
 }
 
 async fn record_inline_rollout_terminal(
@@ -1413,52 +1471,64 @@ async fn record_inline_rollout_terminal(
 ) -> Result<()> {
     let run_id = run_id.to_string();
     let record = record.clone();
-    service.database().clone().run(move |conn| {
-        let Some(mut progress) = super::admission::load_run_progress(conn, &run_id)? else {
-            return Ok(());
-        };
-        let successful = is_successful_eval_record(&record);
-        progress.transition_rollout(
-            index,
-            if successful {
-                super::admission::RolloutState::Completed
-            } else {
-                super::admission::RolloutState::Failed
-            },
-        )?;
-        let usage = record.get("usage").unwrap_or(&Value::Null);
-        let prompt = usage.get("prompt_tokens").and_then(Value::as_u64);
-        let completion = usage.get("completion_tokens").and_then(Value::as_u64);
-        let total_tokens = usage
-            .get("total_tokens")
-            .and_then(Value::as_u64)
-            .or_else(|| prompt.zip(completion).map(|(a, b)| a + b));
-        let cost_micros = usage
-            .get("cost_micros")
-            .and_then(Value::as_u64)
-            .or_else(|| usage.get("costUsd").and_then(Value::as_f64).map(|v| (v * 1_000_000.0).round() as u64));
-        let rollout_id = record
-            .get("rolloutId")
-            .and_then(Value::as_str)
-            .map(super::admission::RolloutId::new)
-            .transpose()?;
-        progress.record_evidence(index, super::admission::RolloutRecord {
-            state: None,
-            rollout_id,
-            reward: record.get("reward").and_then(Value::as_f64),
-            trace_ref: record
-                .pointer("/sealedTrace/traceId")
-                .or_else(|| record.pointer("/sealedTrace/id"))
-                .or_else(|| record.pointer("/sealedTrace/traces/0/traceId"))
-                .or_else(|| record.pointer("/trace/bundle_trace_id"))
-                .or_else(|| record.pointer("/trace/trace_id"))
+    service
+        .database()
+        .clone()
+        .run(move |conn| {
+            let Some(mut progress) = super::admission::load_run_progress(conn, &run_id)? else {
+                return Ok(());
+            };
+            let successful = is_successful_eval_record(&record);
+            progress.transition_rollout(
+                index,
+                if successful {
+                    super::admission::RolloutState::Completed
+                } else {
+                    super::admission::RolloutState::Failed
+                },
+            )?;
+            let usage = record.get("usage").unwrap_or(&Value::Null);
+            let prompt = usage.get("prompt_tokens").and_then(Value::as_u64);
+            let completion = usage.get("completion_tokens").and_then(Value::as_u64);
+            let total_tokens = usage
+                .get("total_tokens")
+                .and_then(Value::as_u64)
+                .or_else(|| prompt.zip(completion).map(|(a, b)| a + b));
+            let cost_micros = usage
+                .get("cost_micros")
+                .and_then(Value::as_u64)
+                .or_else(|| {
+                    usage
+                        .get("costUsd")
+                        .and_then(Value::as_f64)
+                        .map(|v| (v * 1_000_000.0).round() as u64)
+                });
+            let rollout_id = record
+                .get("rolloutId")
                 .and_then(Value::as_str)
-                .map(str::to_owned),
-            cost_micros,
-            total_tokens,
-        });
-        super::admission::save_run_progress(conn, &run_id, &progress)
-    }).await
+                .map(super::admission::RolloutId::new)
+                .transpose()?;
+            progress.record_evidence(
+                index,
+                super::admission::RolloutRecord {
+                    state: None,
+                    rollout_id,
+                    reward: record.get("reward").and_then(Value::as_f64),
+                    trace_ref: record
+                        .pointer("/sealedTrace/traceId")
+                        .or_else(|| record.pointer("/sealedTrace/id"))
+                        .or_else(|| record.pointer("/sealedTrace/traces/0/traceId"))
+                        .or_else(|| record.pointer("/trace/bundle_trace_id"))
+                        .or_else(|| record.pointer("/trace/trace_id"))
+                        .and_then(Value::as_str)
+                        .map(str::to_owned),
+                    cost_micros,
+                    total_tokens,
+                },
+            );
+            super::admission::save_run_progress(conn, &run_id, &progress)
+        })
+        .await
 }
 
 async fn settle_inline_progress<'a>(
@@ -1467,32 +1537,38 @@ async fn settle_inline_progress<'a>(
 ) -> Result<Option<&'a str>> {
     // Revocation is explicit here; the drop guard remains defense in depth.
     if let Some(secrets) = crate::secrets::live() {
-        secrets.revoke_run(run_id).context("revoke inline evaluation credential capability")?;
+        secrets
+            .revoke_run(run_id)
+            .context("revoke inline evaluation credential capability")?;
     }
     let run_id = run_id.to_string();
-    service.database().clone().run(move |conn| {
-        let Some(record) = super::admission::load_evaluation_run(conn, &run_id)? else {
-            return Ok(None);
-        };
-        let Some(mut progress) = super::admission::load_run_progress(conn, &run_id)? else {
-            bail!("inline evaluation `{run_id}` has no persisted rollout state");
-        };
-        progress.credential_revocation_confirmed = true;
-        let contract = &record.execution_spec.recipe.output_contract;
-        let state = progress.settle(super::admission::EvidenceRequirements {
-            requires_reward: contract.requires_reward,
-            requires_trace: contract.requires_trace,
-            requires_usage: contract.requires_usage,
-        })?;
-        super::admission::save_run_progress(conn, &run_id, &progress)?;
-        Ok(Some(match state {
-            super::admission::RunState::Completed => "completed",
-            super::admission::RunState::Failed => "failed",
-            super::admission::RunState::Cancelled => "cancelled",
-            super::admission::RunState::Degraded => "degraded",
-            other => bail!("settlement returned non-terminal state `{other}`"),
-        }))
-    }).await
+    service
+        .database()
+        .clone()
+        .run(move |conn| {
+            let Some(record) = super::admission::load_evaluation_run(conn, &run_id)? else {
+                return Ok(None);
+            };
+            let Some(mut progress) = super::admission::load_run_progress(conn, &run_id)? else {
+                bail!("inline evaluation `{run_id}` has no persisted rollout state");
+            };
+            progress.credential_revocation_confirmed = true;
+            let contract = &record.execution_spec.recipe.output_contract;
+            let state = progress.settle(super::admission::EvidenceRequirements {
+                requires_reward: contract.requires_reward,
+                requires_trace: contract.requires_trace,
+                requires_usage: contract.requires_usage,
+            })?;
+            super::admission::save_run_progress(conn, &run_id, &progress)?;
+            Ok(Some(match state {
+                super::admission::RunState::Completed => "completed",
+                super::admission::RunState::Failed => "failed",
+                super::admission::RunState::Cancelled => "cancelled",
+                super::admission::RunState::Degraded => "degraded",
+                other => bail!("settlement returned non-terminal state `{other}`"),
+            }))
+        })
+        .await
 }
 
 /// The campaign plan and one queued event per planned trial, appended as one
@@ -1651,8 +1727,8 @@ fn container_proxy_policy(spec: &EvalSpec) -> crate::secrets::SecretsUsePolicy {
         .and_then(Value::as_u64)
         .unwrap_or(0);
     if answer_tokens > 0 || thinking_tokens > 0 {
-        policy.max_output_tokens = total_calls
-            .saturating_mul(answer_tokens.saturating_add(thinking_tokens));
+        policy.max_output_tokens =
+            total_calls.saturating_mul(answer_tokens.saturating_add(thinking_tokens));
     }
     policy
 }
@@ -1699,6 +1775,9 @@ async fn register_policy_pin(
     container_info: &Value,
     run_id: &str,
 ) -> Result<Value> {
+    if spec.harness == "nanohorizon" {
+        return register_nanohorizon_policy_pin(client, base, spec, run_id).await;
+    }
     let pin = json!({ "harness": spec.harness, "config": spec.policy_config });
     let advertised = container_info
         .pointer("/capabilities/policy_refs")
@@ -1790,6 +1869,197 @@ async fn register_policy_pin(
     }))
 }
 
+#[derive(Debug, serde::Deserialize)]
+struct ContainerPolicyRef {
+    namespace: String,
+    name: String,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct ContainerPolicyState {
+    schema_version: String,
+    status: String,
+    policy_ref: Option<ContainerPolicyRef>,
+    policy_revision_id: Option<String>,
+    source_revision: Option<String>,
+    configuration_digest: Option<String>,
+    model_digest: Option<String>,
+    credential_state: String,
+}
+
+async fn read_container_policy(
+    client: &reqwest::Client,
+    base: &str,
+) -> Result<ContainerPolicyState> {
+    let response = client
+        .get(format!("{base}/policy"))
+        .send()
+        .await
+        .context("GET /policy")?;
+    if !response.status().is_success() {
+        let status = response.status();
+        let text = response.text().await.unwrap_or_default();
+        bail!("policy inspection failed: {status} {text}");
+    }
+    let state = response
+        .json::<ContainerPolicyState>()
+        .await
+        .context("decode synth.container-policy.v1")?;
+    if state.schema_version != "synth.container-policy.v1" {
+        bail!(
+            "unsupported policy schema `{}`; expected synth.container-policy.v1",
+            state.schema_version
+        );
+    }
+    if state.credential_state != "not_exposed" {
+        bail!("container policy endpoint violated credential non-disclosure contract");
+    }
+    Ok(state)
+}
+
+fn expected_model_digest(spec: &EvalSpec) -> Result<String> {
+    Ok(super::admission::CanonicalJson::new(json!({
+        "provider": spec.provider,
+        "model_id": spec.model,
+    }))?
+    .digest()
+    .as_str()
+    .to_string())
+}
+
+fn installed_policy_matches(
+    state: &ContainerPolicyState,
+    spec: &EvalSpec,
+    model_digest: &str,
+) -> bool {
+    state.status == "installed"
+        && state
+            .policy_revision_id
+            .as_deref()
+            .is_some_and(|value| !value.is_empty())
+        && state.policy_ref.as_ref().is_some_and(|policy| {
+            policy.namespace == spec.harness && policy.name == spec.policy_config
+        })
+        && state.source_revision.as_deref() == Some(spec.policy_source_revision.as_str())
+        && state.configuration_digest.as_deref() == Some(spec.policy_configuration_digest.as_str())
+        && state.model_digest.as_deref() == Some(model_digest)
+}
+
+async fn register_nanohorizon_policy_pin(
+    client: &reqwest::Client,
+    base: &str,
+    spec: &EvalSpec,
+    run_id: &str,
+) -> Result<Value> {
+    let catalog = client
+        .get(format!("{base}/task_catalog"))
+        .send()
+        .await
+        .context("GET /task_catalog")?
+        .error_for_status()
+        .context("container task catalog was not successful")?
+        .json::<Value>()
+        .await
+        .context("decode container task catalog")?;
+    if catalog.get("schema_version").and_then(Value::as_str)
+        != Some("synth.container.task-catalog.v1")
+    {
+        bail!("container returned an unsupported task catalog schema");
+    }
+    let task = client
+        .get(format!("{base}/task_info"))
+        .send()
+        .await
+        .context("GET /task_info")?
+        .error_for_status()
+        .context("container task info was not successful")?
+        .json::<Value>()
+        .await
+        .context("decode container task info")?;
+    if task.get("family").and_then(Value::as_str) != Some(spec.family.as_str()) {
+        bail!(
+            "container task family mismatch: requested {}, declared {:?}",
+            spec.family,
+            task.get("family")
+        );
+    }
+
+    // Register only a scoped Workshop proxy route. No provider credential is
+    // serialized into either the sampler configuration or policy lifecycle.
+    let openai_base = container_openai_proxy_base(run_id, spec)?;
+    let body = spec
+        .policy_config_body(Some(&openai_base))
+        .context("NanoHorizon policy config is missing an immutable config id")?;
+    let response = client
+        .post(format!("{base}/policy-configs"))
+        .json(&body)
+        .send()
+        .await
+        .context("POST /policy-configs")?;
+    if !response.status().is_success() {
+        let status = response.status();
+        let text = response.text().await.unwrap_or_default();
+        bail!("policy config registration failed: {status} {text}");
+    }
+    let registered = response
+        .json::<Value>()
+        .await
+        .context("decode /policy-configs")?;
+    if registered
+        .get("config_id")
+        .or_else(|| registered.get("configId"))
+        .and_then(Value::as_str)
+        != Some(spec.policy_config.as_str())
+    {
+        bail!("container registered a different NanoHorizon policy config");
+    }
+
+    let model_digest = expected_model_digest(spec)?;
+    let mut state = read_container_policy(client, base).await?;
+    if !installed_policy_matches(&state, spec, &model_digest) {
+        let code = spec.policy_code.as_deref().context(
+            "policy_source_unavailable: NanoHorizon requires source bytes from the approved immutable revision",
+        )?;
+        let response = client
+            .put(format!("{base}/policy"))
+            .json(&json!({
+                "code": code,
+                "harness": spec.harness,
+                "namespace": spec.harness,
+                "name": spec.policy_config,
+                "configuration": spec.policy,
+                "model": { "provider": spec.provider, "model_id": spec.model },
+                "source_revision": spec.policy_source_revision,
+            }))
+            .send()
+            .await
+            .context("PUT /policy")?;
+        if !response.status().is_success() {
+            let status = response.status();
+            let text = response.text().await.unwrap_or_default();
+            bail!("policy provisioning failed: {status} {text}");
+        }
+        state = read_container_policy(client, base).await?;
+    }
+    if !installed_policy_matches(&state, spec, &model_digest) {
+        bail!("policy_installation_mismatch: container did not report the approved policy pin");
+    }
+    let revision = state
+        .policy_revision_id
+        .context("installed policy omitted policy_revision_id")?;
+    Ok(json!({
+        "harness": spec.harness,
+        "config": spec.policy_config,
+        "configId": spec.policy_config,
+        "policyRevisionId": revision,
+        "sourceRevision": spec.policy_source_revision,
+        "configurationDigest": spec.policy_configuration_digest,
+        "modelDigest": model_digest,
+        "immutable": true,
+        "authority": "synth.container-policy.v1",
+    }))
+}
+
 async fn persist_policy_pin(
     service: &OptimizerService,
     run_id: &str,
@@ -1808,7 +2078,12 @@ async fn persist_policy_pin(
     Ok(())
 }
 
-fn failed_record(example: EvalExample, spec: &EvalSpec, policy_pin: &Value, error: String) -> Value {
+fn failed_record(
+    example: EvalExample,
+    spec: &EvalSpec,
+    policy_pin: &Value,
+    error: String,
+) -> Value {
     json!({
         "pool": example.pool,
         "seed": example.seed,
@@ -1999,7 +2274,9 @@ pub(super) async fn reconcile_evidence(
             .and_then(|trace| trace.get("traceId"))
             .and_then(Value::as_str)
             .map(str::to_string)
-            .with_context(|| format!("sealed bundle for rollout `{rollout_id}` indexed no trace"))?;
+            .with_context(|| {
+                format!("sealed bundle for rollout `{rollout_id}` indexed no trace")
+            })?;
         record
             .as_object_mut()
             .with_context(|| format!("terminal record for seed {seed} is not an object"))?
@@ -2094,7 +2371,12 @@ async fn persist_progress(
         .and_then(|projection| projection.pointer("/rolloutStateCounts/completed"))
         .and_then(Value::as_u64)
         .map(|value| value as usize)
-        .unwrap_or_else(|| records.iter().filter(|record| is_successful_eval_record(record)).count());
+        .unwrap_or_else(|| {
+            records
+                .iter()
+                .filter(|record| is_successful_eval_record(record))
+                .count()
+        });
     let mean = mean_for_pool(records, "train").or_else(|| mean_reward(records));
     let usage = usage_from_records(records, spec.cost_ceiling_usd);
     let failed_count = records
@@ -2442,6 +2724,13 @@ async fn run_one_example(
     cancel: &mut watch::Receiver<bool>,
 ) -> Result<Value> {
     let spec = ctx.spec;
+    let policy_revision_id = ctx
+        .policy_pin
+        .get("policyRevisionId")
+        .and_then(Value::as_str);
+    if spec.harness == "nanohorizon" && policy_revision_id.is_none() {
+        bail!("policy_revision_unbound: refusing NanoHorizon rollout before prepare");
+    }
     let telemetry = {
         let mut telemetry = authoritative_poll_telemetry();
         if let Some(object) = telemetry.as_object_mut() {
@@ -2461,11 +2750,16 @@ async fn run_one_example(
         example.seed,
         &Uuid::new_v4().simple().to_string()[..8]
     );
+    let task_instance_id = format!("{}:seed:{}", spec.family, example.seed);
     let trial_id = format!("trial:{}:{}", spec.family, example.seed);
     let prepare = ctx
         .client
         .post(format!("{}/rollouts/prepare", ctx.base))
-        .json(&json!({ "rollout_id": rollout_id, "telemetry": telemetry }))
+        .json(&json!({
+            "rollout_id": rollout_id,
+            "task_instance_id": task_instance_id,
+            "telemetry": telemetry
+        }))
         .send()
         .await
         .context("POST /rollouts/prepare")?;
@@ -2504,16 +2798,22 @@ async fn run_one_example(
     )
     .await?;
 
-    let start_body = json!({
+    let mut start_body = json!({
         "rollout_id": rollout_id,
         "submission_mode": "sync",
         "slot": "stream",
         "telemetry": telemetry,
-        "task_instance_id": format!("seed:{}", example.seed),
+        "task_instance_id": task_instance_id,
         "world_ref": spec.world_ref,
         "evaluation_plan_ref": spec.evaluation_plan_ref,
         "policy_ref": { "harness": spec.harness, "config": spec.policy_config },
     });
+    if let Some(revision) = policy_revision_id {
+        start_body
+            .as_object_mut()
+            .expect("rollout start body is an object")
+            .insert("policy_revision_id".into(), json!(revision));
+    }
     let relay_ctx = RelayContext {
         service: ctx.service,
         run_id: ctx.run_id,
@@ -3026,12 +3326,14 @@ async fn append_terminal(
         service
             .append_event_payloads(
                 run_id.to_string(),
-                vec![
-                    OptimizerEventDraft::new(event_type, EVAL_ALGORITHM_ID)
-                        .level(if status == "degraded" { "warn" } else { "error" })
-                        .error(json!({ "message": detail }))
-                        .raw(json!({ "source": "container_eval" })),
-                ],
+                vec![OptimizerEventDraft::new(event_type, EVAL_ALGORITHM_ID)
+                    .level(if status == "degraded" {
+                        "warn"
+                    } else {
+                        "error"
+                    })
+                    .error(json!({ "message": detail }))
+                    .raw(json!({ "source": "container_eval" }))],
             )
             .await?;
     }
@@ -3065,8 +3367,10 @@ mod tests {
         assert!(EvaluationProjectionStatus::Degraded.is_terminal());
         assert!(!EvaluationProjectionStatus::Running.is_terminal());
         assert_eq!(
-            EvaluationProjectionStatus::from_run_state(super::super::admission::RunState::Completed)
-                .unwrap(),
+            EvaluationProjectionStatus::from_run_state(
+                super::super::admission::RunState::Completed
+            )
+            .unwrap(),
             EvaluationProjectionStatus::Completed
         );
         assert!(EvaluationProjectionStatus::parse("done").is_err());
@@ -3463,13 +3767,9 @@ max_total_rollouts = 4
         })
         .await
         .unwrap();
-        crate::workspace_scope::provision(
-            svc.database(),
-            session,
-            workspace.to_str().unwrap(),
-        )
-        .await
-        .unwrap();
+        crate::workspace_scope::provision(svc.database(), session, workspace.to_str().unwrap())
+            .await
+            .unwrap();
     }
 
     async fn start_banking77(
@@ -3763,7 +4063,16 @@ max_total_rollouts = 4
         // The visual the campaign was supposed to keep current is gone.
         let failure = evidence(
             "progress_projection",
-            persist_progress(&svc, &run.id, &spec, "vis_missing", "vis_workbench", &records, 1, "completed"),
+            persist_progress(
+                &svc,
+                &run.id,
+                &spec,
+                "vis_missing",
+                "vis_workbench",
+                &records,
+                1,
+                "completed",
+            ),
         )
         .await
         .unwrap_err();
@@ -3957,11 +4266,7 @@ max_total_rollouts = 4
         task.abort();
     }
 
-    async fn recipe(
-        svc: &OptimizerService,
-        id: &str,
-        session: &str,
-    ) -> OptimizerRecipeRunRequest {
+    async fn recipe(svc: &OptimizerService, id: &str, session: &str) -> OptimizerRecipeRunRequest {
         recipe_on(svc, id, session, None).await
     }
 
@@ -4057,12 +4362,15 @@ max_total_rollouts = 4
         )
         .await;
         let (run, _) = svc
-            .start_recipe(recipe_on(
-                &svc,
-                CLASSIFY_EVAL,
-                "sess_explicit_isolated",
-                Some("ctr_banking77_isolated"),
-            ).await)
+            .start_recipe(
+                recipe_on(
+                    &svc,
+                    CLASSIFY_EVAL,
+                    "sess_explicit_isolated",
+                    Some("ctr_banking77_isolated"),
+                )
+                .await,
+            )
             .await
             .unwrap();
         assert_eq!(run.summary["containerId"], json!("ctr_banking77_isolated"));
@@ -4114,12 +4422,15 @@ max_total_rollouts = 4
         .await;
 
         let not_ready = svc
-            .start_recipe(recipe_on(
-                &svc,
-                CLASSIFY_EVAL,
-                "sess_not_ready",
-                Some("ctr_banking77_offline"),
-            ).await)
+            .start_recipe(
+                recipe_on(
+                    &svc,
+                    CLASSIFY_EVAL,
+                    "sess_not_ready",
+                    Some("ctr_banking77_offline"),
+                )
+                .await,
+            )
             .await
             .unwrap_err()
             .to_string();
@@ -4135,12 +4446,15 @@ max_total_rollouts = 4
         );
 
         let wrong_family = svc
-            .start_recipe(recipe_on(
-                &svc,
-                CLASSIFY_EVAL,
-                "sess_wrong_family",
-                Some("ctr_healthbench_ready"),
-            ).await)
+            .start_recipe(
+                recipe_on(
+                    &svc,
+                    CLASSIFY_EVAL,
+                    "sess_wrong_family",
+                    Some("ctr_healthbench_ready"),
+                )
+                .await,
+            )
             .await
             .unwrap_err()
             .to_string();
@@ -4276,11 +4590,7 @@ max_total_rollouts = 4
         let (svc, _dir, _) = service().await;
         insert_container(&svc, "healthbench", &base, "ready").await;
         let (run, _) = svc
-            .start_recipe(recipe(
-                &svc,
-                HEALTH_EVAL,
-                "sess_policy_mismatch",
-            ).await)
+            .start_recipe(recipe(&svc, HEALTH_EVAL, "sess_policy_mismatch").await)
             .await
             .unwrap();
         let finished = wait_terminal(&svc, &run.id).await;
@@ -4389,6 +4699,17 @@ max_total_rollouts = 4
     }
 
     #[test]
+    fn nanohorizon_proxy_config_never_requests_a_container_api_key() {
+        let mut spec = EvalSpec::classify_fixture();
+        spec.harness = "nanohorizon".into();
+        let proxy = "http://host.docker.internal:9/cap/wcap_nanohorizon/v1/providers/openrouter";
+        let body = spec.policy_config_body(Some(proxy)).unwrap();
+        assert_eq!(body["config"]["base_url"], proxy);
+        assert!(body.pointer("/config/api_key_env").is_none());
+        assert!(body.pointer("/config/api_key").is_none());
+    }
+
+    #[test]
     fn retained_rollout_state_uses_the_latest_observation() {
         let page = json!({
             "events": [
@@ -4486,7 +4807,9 @@ max_total_rollouts = 4
             sequence.set(sequence.get() + 1);
             events.push(journal_event(sequence.get(), kind, payload));
         };
-        let emit_step = |events: &mut Vec<Value>, push: &dyn Fn(&mut Vec<Value>, &str, Value), step: i64| {
+        let emit_step = |events: &mut Vec<Value>,
+                         push: &dyn Fn(&mut Vec<Value>, &str, Value),
+                         step: i64| {
             push(
                 events,
                 "observation",
@@ -4517,9 +4840,17 @@ max_total_rollouts = 4
                 json!({ "step": step, "resource": "wood", "before": step, "after": step + 1 }),
             );
         };
-        push(&mut events, "env.episode.opened", json!({"seed": 780_003, "max_steps": 64}));
+        push(
+            &mut events,
+            "env.episode.opened",
+            json!({"seed": 780_003, "max_steps": 64}),
+        );
         emit_step(&mut events, &push, 0);
-        push(&mut events, "policy.session.opened", json!({"harness": "craftax_react"}));
+        push(
+            &mut events,
+            "policy.session.opened",
+            json!({"harness": "craftax_react"}),
+        );
         let mut applied = 0;
         for call in 0..CRAFTAX_POLICY_CALLS {
             push(&mut events, "span.policy.opened", json!({"call": call}));
@@ -4546,7 +4877,11 @@ max_total_rollouts = 4
                     "usage": {"prompt_tokens": 100 + call, "completion_tokens": 20 + call}
                 }),
             );
-            push(&mut events, "span.policy.plan", json!({"actions": ["move_right"], "length": 1}));
+            push(
+                &mut events,
+                "span.policy.plan",
+                json!({"actions": ["move_right"], "length": 1}),
+            );
             push(&mut events, "span.policy.closed", json!({"length": 1}));
             // Two of the ten calls propose an action the environment refuses.
             // The viewer must keep showing the call and must never report the
@@ -4565,7 +4900,11 @@ max_total_rollouts = 4
             let batch = if call < 5 { 2 } else { 1 };
             for _ in 0..batch {
                 let step = applied + 1;
-                push(&mut events, "action_applied", json!({"step": step, "action": "move_right"}));
+                push(
+                    &mut events,
+                    "action_applied",
+                    json!({"step": step, "action": "move_right"}),
+                );
                 push(
                     &mut events,
                     "reward_signal",
@@ -4580,7 +4919,11 @@ max_total_rollouts = 4
                             "achievement": if step == 3 { "collect_wood" } else { "place_table" }
                         }),
                     );
-                    push(&mut events, "reward_delta", json!({"step": step, "delta": 1.0}));
+                    push(
+                        &mut events,
+                        "reward_delta",
+                        json!({"step": step, "delta": 1.0}),
+                    );
                 }
                 push(
                     &mut events,
@@ -4592,10 +4935,26 @@ max_total_rollouts = 4
             }
         }
         assert_eq!(applied as usize, CRAFTAX_APPLIED_ACTIONS);
-        push(&mut events, "policy.session.closed", json!({"calls": CRAFTAX_POLICY_CALLS}));
-        push(&mut events, "env.episode.closed", json!({"status": "completed", "steps": applied}));
-        push(&mut events, "status", json!({"status": "completed", "steps": applied}));
-        push(&mut events, "capture.closed", json!({"high_water": sequence.get()}));
+        push(
+            &mut events,
+            "policy.session.closed",
+            json!({"calls": CRAFTAX_POLICY_CALLS}),
+        );
+        push(
+            &mut events,
+            "env.episode.closed",
+            json!({"status": "completed", "steps": applied}),
+        );
+        push(
+            &mut events,
+            "status",
+            json!({"status": "completed", "steps": applied}),
+        );
+        push(
+            &mut events,
+            "capture.closed",
+            json!({"high_water": sequence.get()}),
+        );
         if let Some(gap) = opts.skip_sequence {
             events.retain(|event| event.get("sequence").and_then(Value::as_u64) != Some(gap));
         }
@@ -4786,11 +5145,18 @@ max_total_rollouts = 4
             })
             .await;
         });
-        CraftaxMock { base: format!("http://{addr}"), task }
+        CraftaxMock {
+            base: format!("http://{addr}"),
+            task,
+        }
     }
 
     async fn declare_craftax_recipe(svc: &OptimizerService, session: &str, extra: &str) {
-        let workspace = tempfile::Builder::new().prefix("ws-craftax-").tempdir().unwrap().into_path();
+        let workspace = tempfile::Builder::new()
+            .prefix("ws-craftax-")
+            .tempdir()
+            .unwrap()
+            .into_path();
         std::fs::create_dir_all(workspace.join("workshop.recipes")).unwrap();
         std::fs::write(
             workspace.join("workshop.recipes/craftax.toml"),
@@ -4890,7 +5256,10 @@ max_total_rollouts = 1
     }
 
     fn count_kind(events: &[Value], kind: &str) -> usize {
-        container_events(events).iter().filter(|event| kind_of(event) == kind).count()
+        container_events(events)
+            .iter()
+            .filter(|event| kind_of(event) == kind)
+            .count()
     }
 
     fn index_of_type(events: &[Value], event_type: &str) -> Option<usize> {
@@ -4910,7 +5279,10 @@ max_total_rollouts = 1
             .iter()
             .position(|event| event.get("type").and_then(Value::as_str) == Some("eval.trial.event"))
             .expect("no relayed container events");
-        assert!(started < first_container, "trial.started must precede its events");
+        assert!(
+            started < first_container,
+            "trial.started must precede its events"
+        );
 
         // 2. Policy and frame events land before the trial settles.
         let terminal = index_of_type(&events, "eval.trial.terminal").expect("no terminal");
@@ -4926,9 +5298,18 @@ max_total_rollouts = 1
 
         // 3. The regression fixture's own counts, which "0 native frames" denied.
         assert_eq!(count_kind(&events, "frame"), CRAFTAX_FRAMES);
-        assert_eq!(count_kind(&events, "span.policy.data"), CRAFTAX_POLICY_CALLS);
-        assert_eq!(count_kind(&events, "action_applied"), CRAFTAX_APPLIED_ACTIONS);
-        assert_eq!(count_kind(&events, "achievement_unlocked"), CRAFTAX_ACHIEVEMENTS);
+        assert_eq!(
+            count_kind(&events, "span.policy.data"),
+            CRAFTAX_POLICY_CALLS
+        );
+        assert_eq!(
+            count_kind(&events, "action_applied"),
+            CRAFTAX_APPLIED_ACTIONS
+        );
+        assert_eq!(
+            count_kind(&events, "achievement_unlocked"),
+            CRAFTAX_ACHIEVEMENTS
+        );
         // A proposed action the environment refused is visible and is not an
         // applied action.
         assert_eq!(count_kind(&events, "action_rejected"), 2);
@@ -4959,7 +5340,10 @@ max_total_rollouts = 1
 
         // 5. No PNG body was ever inlined into the optimizer log.
         let encoded = serde_json::to_string(&events).unwrap();
-        assert!(!encoded.contains("data:image/png;base64"), "a PNG leaked into optimizer_events");
+        assert!(
+            !encoded.contains("data:image/png;base64"),
+            "a PNG leaked into optimizer_events"
+        );
 
         // 6. The record reports the reward and its relay receipt honestly.
         let run = svc.get(run_id.clone()).await.unwrap();
@@ -4985,14 +5369,24 @@ max_total_rollouts = 1
         let mut sequences: Vec<u64> = container_events(&events)
             .into_iter()
             .filter_map(|event| {
-                event.pointer("/delta/containerEvent/sequence").and_then(Value::as_u64)
+                event
+                    .pointer("/delta/containerEvent/sequence")
+                    .and_then(Value::as_u64)
             })
             .collect();
         let relayed = sequences.len();
         sequences.sort_unstable();
         sequences.dedup();
-        assert_eq!(sequences.len(), relayed, "a producer sequence was relayed twice");
-        assert_eq!(sequences, (1..=relayed as u64).collect::<Vec<_>>(), "the relay is not contiguous");
+        assert_eq!(
+            sequences.len(),
+            relayed,
+            "a producer sequence was relayed twice"
+        );
+        assert_eq!(
+            sequences,
+            (1..=relayed as u64).collect::<Vec<_>>(),
+            "the relay is not contiguous"
+        );
         assert!(relayed > 100, "paging lost events: only {relayed} relayed");
         mock.task.abort();
     }
@@ -5000,12 +5394,18 @@ max_total_rollouts = 1
     #[tokio::test]
     async fn a_sequence_gap_fails_the_trial_visibly() {
         let (svc, run_id, mock) = run_craftax(
-            CraftaxMockOptions { skip_sequence: Some(12), ..Default::default() },
+            CraftaxMockOptions {
+                skip_sequence: Some(12),
+                ..Default::default()
+            },
             "",
         )
         .await;
         let run = svc.get(run_id.clone()).await.unwrap();
-        assert_eq!(run.status, "failed", "a gapped journal must not settle completed");
+        assert_eq!(
+            run.status, "failed",
+            "a gapped journal must not settle completed"
+        );
         let record = run.summary.pointer("/records/0").cloned().unwrap();
         let error = record["error"].as_str().unwrap_or_default();
         assert!(error.contains("sequence gap"), "gap was not named: {error}");
@@ -5015,7 +5415,10 @@ max_total_rollouts = 1
     #[tokio::test]
     async fn identical_frames_deduplicate_without_losing_a_step() {
         let (svc, run_id, mock) = run_craftax(
-            CraftaxMockOptions { identical_frames: true, ..Default::default() },
+            CraftaxMockOptions {
+                identical_frames: true,
+                ..Default::default()
+            },
             "",
         )
         .await;
@@ -5033,30 +5436,47 @@ max_total_rollouts = 1
         // Thirteen logical frames in the timeline; one object on disk.
         assert_eq!(digests.len(), CRAFTAX_FRAMES);
         let unique: std::collections::BTreeSet<&String> = digests.iter().collect();
-        assert_eq!(unique.len(), 1, "identical PNGs did not collapse in the store");
+        assert_eq!(
+            unique.len(),
+            1,
+            "identical PNGs did not collapse in the store"
+        );
         mock.task.abort();
     }
 
     #[tokio::test]
     async fn a_corrupt_frame_is_refused_and_reported_rather_than_shown() {
         let (svc, run_id, mock) = run_craftax(
-            CraftaxMockOptions { corrupt_frame_step: Some(3), ..Default::default() },
+            CraftaxMockOptions {
+                corrupt_frame_step: Some(3),
+                ..Default::default()
+            },
             "",
         )
         .await;
         let events = relayed_events(&svc, &run_id).await;
         let refused: Vec<&Value> = container_events(&events)
             .into_iter()
-            .filter(|event| event.pointer("/delta/containerEvent/payload/mediaError").is_some())
+            .filter(|event| {
+                event
+                    .pointer("/delta/containerEvent/payload/mediaError")
+                    .is_some()
+            })
             .collect();
         assert_eq!(refused.len(), 1, "the corrupt frame was not refused");
         // The step is still in the timeline: the environment did render it.
         assert_eq!(count_kind(&events, "frame"), CRAFTAX_FRAMES);
         let degraded: Vec<&Value> = events
             .iter()
-            .filter(|event| event.get("type").and_then(Value::as_str) == Some("eval.trial.degraded"))
+            .filter(|event| {
+                event.get("type").and_then(Value::as_str) == Some("eval.trial.degraded")
+            })
             .collect();
-        assert_eq!(degraded.len(), 1, "a refused frame produced no degradation receipt");
+        assert_eq!(
+            degraded.len(),
+            1,
+            "a refused frame produced no degradation receipt"
+        );
         assert_eq!(degraded[0]["delta"]["dropped"], json!(1));
         let run = svc.get(run_id.clone()).await.unwrap();
         let record = run.summary.pointer("/records/0").cloned().unwrap();
@@ -5068,7 +5488,10 @@ max_total_rollouts = 1
     #[tokio::test]
     async fn a_redirected_frame_is_never_followed() {
         let (svc, run_id, mock) = run_craftax(
-            CraftaxMockOptions { redirect_frame_step: Some(2), ..Default::default() },
+            CraftaxMockOptions {
+                redirect_frame_step: Some(2),
+                ..Default::default()
+            },
             "",
         )
         .await;
@@ -5089,7 +5512,10 @@ max_total_rollouts = 1
     #[tokio::test]
     async fn an_oversized_frame_is_refused_by_the_declared_budget() {
         let (svc, run_id, mock) = run_craftax(
-            CraftaxMockOptions { oversize_frame_step: Some(1), ..Default::default() },
+            CraftaxMockOptions {
+                oversize_frame_step: Some(1),
+                ..Default::default()
+            },
             "[media]\nmax_frame_bytes = 4096\n",
         )
         .await;
@@ -5119,7 +5545,9 @@ max_total_rollouts = 1
         assert_eq!(
             container_events(&events)
                 .into_iter()
-                .filter(|event| event.pointer("/delta/containerEvent/payload/media").is_some())
+                .filter(|event| event
+                    .pointer("/delta/containerEvent/payload/media")
+                    .is_some())
                 .count(),
             0
         );
@@ -5175,7 +5603,10 @@ max_total_rollouts = 1
         assert_eq!(granted.media_type, "image/png");
         assert_eq!(granted.width, Some(8));
         assert_eq!(granted.step.is_some(), true);
-        assert!(svc.read_media_bytes(&granted).unwrap().starts_with(b"\x89PNG\r\n\x1a\n"));
+        assert!(svc
+            .read_media_bytes(&granted)
+            .unwrap()
+            .starts_with(b"\x89PNG\r\n\x1a\n"));
 
         // A different run is not, even though the object is in the same store.
         // This is the whole gate: possession of a digest is not authority.
@@ -5194,15 +5625,24 @@ max_total_rollouts = 1
 
         // Anything that is not a SHA-256 is rejected before it reaches the
         // store, so a producer's 16-character label cannot become a lookup.
-        assert!(svc.granted_run_media(&run_id, "4e27ac3b1f0a9d55").await.is_err());
-        assert!(svc.granted_run_media(&run_id, "../../etc/passwd").await.is_err());
+        assert!(svc
+            .granted_run_media(&run_id, "4e27ac3b1f0a9d55")
+            .await
+            .is_err());
+        assert!(svc
+            .granted_run_media(&run_id, "../../etc/passwd")
+            .await
+            .is_err());
         mock.task.abort();
     }
 
     #[tokio::test]
     async fn identical_frames_share_one_grant_across_every_step_that_rendered_them() {
         let (svc, run_id, mock) = run_craftax(
-            CraftaxMockOptions { identical_frames: true, ..Default::default() },
+            CraftaxMockOptions {
+                identical_frames: true,
+                ..Default::default()
+            },
             "",
         )
         .await;
@@ -5235,7 +5675,11 @@ max_total_rollouts = 1
             .await
             .unwrap();
         assert_eq!(rows, 1);
-        assert!(svc.granted_run_media(&run_id, &digest).await.unwrap().is_some());
+        assert!(svc
+            .granted_run_media(&run_id, &digest)
+            .await
+            .unwrap()
+            .is_some());
         mock.task.abort();
     }
 }

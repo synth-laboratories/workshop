@@ -312,7 +312,11 @@ where
             if let Err(error) = drained {
                 outcome.note("relay_failed", format!("{error:#}"), 0);
             }
-            outcome.note("cancelled", "the run was cancelled while this rollout was open", 0);
+            outcome.note(
+                "cancelled",
+                "the run was cancelled while this rollout was open",
+                0,
+            );
             return (Err(anyhow!("container eval cancelled")), outcome);
         }
 
@@ -323,13 +327,21 @@ where
                 }
                 declares_cursor |= summary.declares_cursor;
                 if settled.is_some() {
-                    idle_drains = if summary.relayed == 0 { idle_drains + 1 } else { 0 };
+                    idle_drains = if summary.relayed == 0 {
+                        idle_drains + 1
+                    } else {
+                        0
+                    };
                 }
             }
             Err(error) => {
                 let integrity = error.downcast_ref::<RelayIntegrityError>().is_some();
                 outcome.note(
-                    if integrity { "relay_integrity" } else { "relay_failed" },
+                    if integrity {
+                        "relay_integrity"
+                    } else {
+                        "relay_failed"
+                    },
                     format!("{error:#}"),
                     0,
                 );
@@ -729,9 +741,7 @@ pub(crate) fn resolve_frame_url(
         || resolved.host_str() != origin.host_str()
         || resolved.port_or_known_default() != origin.port_or_known_default()
     {
-        bail!(
-            "frame URL {resolved} does not resolve to the registered container origin {origin}"
-        );
+        bail!("frame URL {resolved} does not resolve to the registered container origin {origin}");
     }
     if resolved.query().is_some() {
         bail!("frame URL {resolved} carries a query string");

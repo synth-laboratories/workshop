@@ -175,7 +175,10 @@ fn nanohorizon_completes_the_admission_path_without_a_catalog_recipe() {
     assert!(disclosure["catalogRecipeId"].is_null());
 
     // Every fact the approval must display and bind.
-    assert_eq!(disclosure["container"]["containerId"], json!("nanohorizon-craftax"));
+    assert_eq!(
+        disclosure["container"]["containerId"],
+        json!("nanohorizon-craftax")
+    );
     assert_eq!(
         disclosure["container"]["declarationDigest"],
         json!("sha256:declaration-v1")
@@ -217,7 +220,10 @@ fn nanohorizon_completes_the_admission_path_without_a_catalog_recipe() {
 #[test]
 fn the_acceptance_run_starts_exactly_five_rollouts_and_settles_truthfully() {
     let admissible = admit(&request(), &context()).unwrap();
-    let approved = admissible.clone().approve(binding_for(&admissible)).unwrap();
+    let approved = admissible
+        .clone()
+        .approve(binding_for(&admissible))
+        .unwrap();
 
     let mut progress = RunProgress::plan(approved.recipe().rollout_plan.declared_rollouts());
     assert_eq!(progress.declared_rollouts(), 5);
@@ -482,8 +488,7 @@ fn a_policy_the_session_cannot_resolve_is_not_found() {
 fn an_override_of_a_key_the_policy_does_not_declare_is_refused() {
     let mut context = context();
     let mut with_override = request();
-    with_override.policy_overrides =
-        Some(CanonicalJson::new(json!({"temperature": 0.9})).unwrap());
+    with_override.policy_overrides = Some(CanonicalJson::new(json!({"temperature": 0.9})).unwrap());
     let error = draft_inline(&with_override, &context).unwrap_err();
     assert_eq!(error.code, AdmissionErrorCode::PolicyConfigurationInvalid);
     assert!(error.context["detail"]
@@ -544,9 +549,7 @@ fn unsupported_limits_fail_rather_than_clamp() {
             32u64,
         ),
         (
-            Box::new(|request: &mut InlineRequest| {
-                request.maximum_steps_per_rollout = Some(9_000)
-            }),
+            Box::new(|request: &mut InlineRequest| request.maximum_steps_per_rollout = Some(9_000)),
             "maximum_steps_per_rollout",
             9_000,
             4_000,
@@ -710,8 +713,7 @@ fn an_approval_receipt_rejects_a_changed_container_declaration() {
     let context = context();
     let admissible = admit(&request(), &context).unwrap();
     let mut binding = binding_for(&admissible);
-    binding.container_declaration_digest =
-        DeclarationDigest::new("sha256:declaration-v2").unwrap();
+    binding.container_declaration_digest = DeclarationDigest::new("sha256:declaration-v2").unwrap();
     let error = admissible.approve(binding).unwrap_err();
     assert_eq!(error.code, DriftCode::ContainerDeclarationChanged);
 }
@@ -730,7 +732,10 @@ fn an_approval_receipt_rejects_a_changed_policy_revision() {
 fn drift_detected_at_dispatch_demands_a_new_approval_rather_than_a_patch() {
     let context = context();
     let admissible = admit(&request(), &context).unwrap();
-    let approved = admissible.clone().approve(binding_for(&admissible)).unwrap();
+    let approved = admissible
+        .clone()
+        .approve(binding_for(&admissible))
+        .unwrap();
 
     // The declaration moved between approval and dispatch.
     let error = approved

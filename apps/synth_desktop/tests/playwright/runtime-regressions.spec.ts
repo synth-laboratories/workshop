@@ -1434,7 +1434,16 @@ test("native Codex tool use renders safe Poolside-style rows and a compact run s
 			baseUrl: "http://127.0.0.1:8098", taskFamily: "craftax-singleplayer",
 			lastRolloutId: "rollout-latest", health: { payload: { sessions: 2 } },
 			metadata: {
-				info: { lane: "rust", capabilities: ["rollout", "checkpoint", "task_catalog", "task_info"], action_names: ["noop", "left", "right", "do"] },
+				info: {
+					lane: "rust",
+					capabilities: {
+						protocol: "synth.container.live-eval.v1",
+						rollout_modes: ["blocking"],
+						policy_refs: [{ namespace: "nanohorizon", name: "glm-5.3-flash" }],
+						metadata: { retained: true }
+					},
+					action_names: ["noop", "left", "right", "do"]
+				},
 				taskCatalog: {
 					tasks: [{ task_id: "manual", name: "Craftax single-player", description: "Explore and survive.", default: true }],
 					instances: [
@@ -1448,9 +1457,32 @@ test("native Codex tool use renders safe Poolside-style rows and a compact run s
 			},
 			createdAt: "2026-08-09T10:00:00Z", updatedAt: "2026-08-09T10:00:00Z"
 		};
+		let probeCount = 0;
 		testWindow.synthInventory = {
 			getContainer: async () => craftax,
-			probeContainer: async () => craftax
+			probeContainer: async () => {
+				probeCount += 1;
+				if (probeCount === 1) return {
+					...craftax,
+					metadata: {
+						...craftax.metadata,
+						taskCatalog: {
+							...craftax.metadata.taskCatalog,
+							instances: [
+								...craftax.metadata.taskCatalog.instances,
+								{ task_instance_id: "craftax:test:3", task_id: "manual", split: "test", metadata: { output_label: "mine_stone", seed: 3 } }
+							]
+						}
+					}
+				};
+				return {
+					...craftax,
+					metadata: {
+						...craftax.metadata,
+						taskCatalog: { schema_version: "synth.container.task-catalog.v999", tasks: {}, instances: [] }
+					}
+				};
+			}
 		};
 		testWindow.synthCodex = {
 			defaultWorkspace: async () => "/workspaces/default",
@@ -1505,6 +1537,11 @@ test("native Codex tool use renders safe Poolside-style rows and a compact run s
 	await expect(containerPane).toContainText("Craftax Rust");
 	await expect(containerPane).toContainText("craftax-singleplayer");
 	await expect(containerPane).toContainText("2 active sessions");
+	await expect(containerPane.locator(".container-chip-grid")).toContainText("protocol");
+	await expect(containerPane.locator(".container-chip-grid")).toContainText("rollout_modes:blocking");
+	await expect(containerPane.locator(".container-chip-grid")).toContainText("policy_refs:1");
+	await expect(containerPane.locator(".container-chip-grid")).toContainText("metadata");
+	await expect(containerPane).not.toContainText("[object Object]");
 	await expect(containerPane.getByRole("button", { name: /Craftax single-player/ })).toBeVisible();
 	await expect(containerPane).toContainText("Advance through the technology tree.");
 	await expect(containerPane).toContainText("achievements_unlocked");
@@ -1526,6 +1563,12 @@ test("native Codex tool use renders safe Poolside-style rows and a compact run s
 	await expect(containerPane).toContainText("collect_wood");
 	await containerPane.getByTestId("container-pane-expand").click();
 	await expect(page.locator(".workbench")).toHaveClass(/container-expanded/);
+	await containerPane.getByRole("button", { name: "Refresh metadata" }).click();
+	await expect(containerPane).toContainText("1 of 3 instances");
+	await expect(containerPane.locator(".container-facts")).toContainText("Definitions1");
+	await expect(containerPane.locator(".container-facts")).toContainText("Instances3");
+	await containerPane.getByRole("button", { name: "Refresh metadata" }).click();
+	await expect(containerPane.getByRole("alert")).toContainText("Task metadata error: invalid task catalog: unsupported schema_version");
 
 	await page.evaluate(() => {
 		const emit = (window as typeof window & { __emitToolCodex: (event: { sessionId: string; method: string; params: Record<string, unknown> }) => void }).__emitToolCodex;
@@ -1687,6 +1730,32 @@ test("approval modes configure new native sessions and pending requests resolve 
 	expect(await page.evaluate(() => (window as typeof window & { __approvalDecisions: () => unknown[] }).__approvalDecisions())).toEqual([
 		{ sessionId, approvalId: "approval-1", decision: "once" },
 		{ sessionId, approvalId: "approval-paid-1", decision: "once" }
+	]);
+
+	await page.evaluate((id) => {
+		(window as typeof window & { __emitApproval: (event: { sessionId: string; method: string; params: Record<string, unknown> }) => void }).__emitApproval({
+			sessionId: id,
+			method: "approval.requested",
+			params: {
+				approvalId: "approval-credential-1",
+				kind: "credential_access",
+				provider: "openrouter-workshop",
+				purpose: "Issue a run-scoped Workshop proxy capability for recipe inline, run run-1; operations=chat.completions.create; maxCalls=50; maxCostUsd=2.45",
+				alwaysSupported: false
+			}
+		});
+	}, sessionId);
+	const credentialModal = page.getByTestId("credential-access-approval-modal");
+	await expect(credentialModal).toBeVisible();
+	await expect(credentialModal).toContainText("openrouter-workshop");
+	await expect(credentialModal).toContainText("maxCalls=50");
+	await expect(credentialModal).toContainText("never the credential value");
+	await credentialModal.getByRole("button", { name: "Allow once" }).click();
+	await expect(credentialModal).toBeHidden();
+	expect(await page.evaluate(() => (window as typeof window & { __approvalDecisions: () => unknown[] }).__approvalDecisions())).toEqual([
+		{ sessionId, approvalId: "approval-1", decision: "once" },
+		{ sessionId, approvalId: "approval-paid-1", decision: "once" },
+		{ sessionId, approvalId: "approval-credential-1", decision: "once" }
 	]);
 });
 

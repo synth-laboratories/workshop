@@ -1653,6 +1653,9 @@ export function eventsToLocalActivity(
 					? payload.requestedCap as { maxCostUsdMicros?: number; maxRollouts?: number }
 					: undefined,
 				requestingAgent: typeof payload.requestingAgent === "string" ? payload.requestingAgent : undefined
+			} : event.eventKind === "approval.requested" && approvalKind === "credential_access" ? {
+				provider: typeof payload.provider === "string" ? payload.provider : undefined,
+				purpose: typeof payload.purpose === "string" ? payload.purpose : undefined
 			} : undefined,
 			alwaysAllowSupported: event.eventKind === "approval.requested" && payload.alwaysSupported === true,
 			detail,

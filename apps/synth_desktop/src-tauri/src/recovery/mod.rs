@@ -56,8 +56,9 @@ impl RecoveryReason {
     }
 }
 
-/// The operator-facing prompt that produced the abandoned turn, so Restart can
-/// reuse it instead of asking the user to retype what they already sent.
+/// The operator-facing prompt that produced the abandoned turn. It is retained
+/// for diagnosis and display only; recovery must not replay it because work
+/// completed just before the crash could otherwise be duplicated.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub struct RecoveryPrompt {
@@ -91,11 +92,11 @@ pub struct RecoveryNotice {
     pub previous_owner_instance_id: Option<String>,
     #[serde(default)]
     pub last_heartbeat_at: Option<String>,
-    /// Which attempt a restart would be. `u32` rather than `i64`: this crosses
+    /// Which continuation attempt this is. `u32` rather than `i64`: this crosses
     /// the specta boundary, which forbids BigInt-style types, and a retry count
     /// has no business being one.
     pub recovery_attempt: u32,
-    /// Whether replaying the prompt can be offered as a plain retry.
+    /// Whether a reconciliation-first continuation turn may be offered.
     pub restartable: bool,
     /// Whether an external action's outcome is unknown, so a retry could
     /// duplicate consequential work and a human must reconcile first.

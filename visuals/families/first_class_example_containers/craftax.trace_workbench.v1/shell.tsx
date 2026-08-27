@@ -74,6 +74,197 @@ function tokens(value: number | null): string {
   return value >= 1000 ? `${(value / 1000).toFixed(1)}k` : String(value);
 }
 
+type AggregateFilter =
+  | { kind: "achievement"; name: string }
+  | { kind: "reward"; low: number; high: number; inclusiveHigh: boolean }
+  | null;
+
+const finite = (value: unknown): number | null => {
+  const parsed = typeof value === "string" ? Number(value) : value;
+  return typeof parsed === "number" && Number.isFinite(parsed) ? parsed : null;
+};
+
+const totalTokens = (trial: TrialView): number | null => {
+  const input = trial.view.run.usage.input_tokens;
+  const output = trial.view.run.usage.output_tokens;
+  return input === null && output === null ? null : (input ?? 0) + (output ?? 0);
+};
+
+const stepCount = (trial: TrialView): number | null => {
+  const turns = trial.view.steps.flatMap((step) => step.action.applied.map((row) => row.turn));
+  const observed = turns.filter((value): value is number => value !== null);
+  if (observed.length) return Math.max(...observed);
+  const recorded = finite(trial.record?.steps ?? trial.record?.env_steps ?? trial.record?.raw?.steps);
+  return recorded;
+};
+
+function RunAggregateHeader({
+  run,
+  trials,
+  filter,
+  onFilter
+}: {
+  run: Any | null;
+  trials: TrialView[];
+  filter: AggregateFilter;
+  onFilter: (filter: AggregateFilter) => void;
+}) {
+  const terminal = trials.filter((row) => row.state === "done" || row.state === "failed");
+  const startedTrials = trials.filter((row) => row.state !== "queued").length;
+  const running = trials.filter((row) => row.state === "running").length;
+  const queued = trials.filter((row) => row.state === "queued").length;
+  const failed = trials.filter((row) => row.state === "failed").length;
+  const summary = (run?.summary ?? {}) as Any;
+  const bounds = (summary.bounds ?? {}) as Any;
+  const started = Date.parse(String(run?.startedAt ?? run?.started_at ?? summary.startedAt ?? ""));
+  const ended = Date.parse(String(run?.completedAt ?? run?.completed_at ?? ""));
+  const elapsedSeconds = Number.isFinite(started)
+    ? Math.max(0, ((Number.isFinite(ended) ? ended : Date.now()) - started) / 1000)
+    : null;
+
+  const calls = trials.map((row) => row.view.run.usage.calls);
+  const steps = trials.map(stepCount);
+  const tokenRows = trials.map(totalTokens);
+  const costs = trials.map((row) => row.view.run.cost_usd);
+  const sumPresent = (rows: Array<number | null>) => {
+    const present = rows.filter((value): value is number => value !== null);
+    return { value: present.length ? present.reduce((sum, value) => sum + value, 0) : null, present: present.length };
+  };
+  const callUsage = sumPresent(calls);
+  const stepUsage = sumPresent(steps);
+  const tokenUsage = sumPresent(tokenRows);
+  const costUsage = sumPresent(costs);
+  const maxRollouts = finite(bounds.maximumRollouts) ?? (trials.length || null);
+  const callsPerRollout = finite(bounds.maximumModelCallsPerRollout);
+  const stepsPerRollout = finite(bounds.maximumStepsPerRollout);
+  const callLimit = callsPerRollout === null || maxRollouts === null ? null : callsPerRollout * maxRollouts;
+  const stepLimit = stepsPerRollout === null || maxRollouts === null ? null : stepsPerRollout * maxRollouts;
+  const tokenLimit = finite(bounds.maximumTokens);
+  const costLimit = finite(bounds.hardTotalCostUsd ?? summary.costCeilingUsd);
+  const rewards = terminal.map((row) => row.reward).filter((value): value is number => value !== null).sort((a, b) => a - b);
+  const mean = rewards.length ? rewards.reduce((sum, value) => sum + value, 0) / rewards.length : null;
+  const median = rewards.length
+    ? rewards.length % 2
+      ? rewards[(rewards.length - 1) / 2]
+      : (rewards[rewards.length / 2 - 1] + rewards[rewards.length / 2]) / 2
+    : null;
+  const rewardMin = rewards.length ? rewards[0] : null;
+  const rewardMax = rewards.length ? rewards[rewards.length - 1] : null;
+  const bucketCount = Math.min(5, Math.max(1, rewards.length));
+  const span = rewardMin !== null && rewardMax !== null ? rewardMax - rewardMin : 0;
+  const buckets = Array.from({ length: bucketCount }, (_, index) => {
+    const low = rewardMin === null ? 0 : rewardMin + (span * index) / bucketCount;
+    const high = rewardMax === null ? 0 : index === bucketCount - 1 ? rewardMax : rewardMin + (span * (index + 1)) / bucketCount;
+    const inclusiveHigh = index === bucketCount - 1;
+    const count = rewards.filter((value) => value >= low && (inclusiveHigh ? value <= high : value < high)).length;
+    return { low, high, inclusiveHigh, count };
+  });
+
+  const achievementEvents = trials.flatMap((trial) =>
+    trial.view.events
+      .filter((event) => event.kind === "achievement_unlocked")
+      .map((event) => ({
+        trial,
+        name: String(event.payload.achievement ?? event.payload.name ?? ""),
+        sequence: event.sequence
+      }))
+      .filter((event) => event.name)
+  );
+  const names = [...new Set(trials.flatMap((trial) => trial.view.achievements))];
+  const achievements = names.map((name) => {
+    const seedRows = trials.filter((trial) => trial.view.achievements.includes(name));
+    const events = achievementEvents.filter((event) => event.name === name);
+    const best = seedRows.filter((row) => row.reward !== null).sort((a, b) => (b.reward ?? -Infinity) - (a.reward ?? -Infinity))[0];
+    const first = events.sort((a, b) => a.sequence - b.sequence)[0];
+    return {
+      name,
+      seeds: seedRows.length,
+      occurrences: events.length || seedRows.length,
+      firstSeed: first?.trial.seed ?? null,
+      bestSeed: best?.seed ?? null
+    };
+  }).sort((a, b) => b.seeds - a.seeds || a.name.localeCompare(b.name));
+
+  const formatDuration = (seconds: number | null) => seconds === null
+    ? "unavailable"
+    : `${Math.floor(seconds / 60)}m ${Math.floor(seconds % 60)}s`;
+  const usageCard = (label: string, usage: { value: number | null; present: number }, limit: number | null, formatter = tokens) => {
+    const ratio = usage.value !== null && limit !== null && limit > 0 ? usage.value / limit : null;
+    const tone = ratio !== null && ratio >= .95 ? "var(--sv-bad-fg)" : ratio !== null && ratio >= .8 ? "var(--sv-warn-fg)" : "var(--sv-text)";
+    return (
+      <div style={{ minWidth: 0 }}>
+        <div style={{ color: "var(--sv-text-faint)", fontSize: "var(--sv-fs-micro)", textTransform: "uppercase" }}>{label}</div>
+        <strong style={{ ...mono, color: tone, fontSize: "var(--sv-fs-meta)" }}>
+          {usage.value === null ? "unavailable" : formatter(usage.value)} / {limit === null ? "no limit" : formatter(limit)}
+        </strong>
+        <div style={{ color: "var(--sv-text-faint)", fontSize: "var(--sv-fs-micro)" }}>
+          {usage.present}/{trials.length} seeds reported
+        </div>
+        <div style={{ height: 3, marginTop: 4, borderRadius: 3, overflow: "hidden", background: "var(--sv-surface-muted)" }}>
+          <span style={{ display: "block", height: "100%", width: `${Math.min(100, (ratio ?? 0) * 100)}%`, background: tone }} />
+        </div>
+      </div>
+    );
+  };
+
+  return (
+    <section
+      data-testid="craftax-run-aggregates"
+      style={{
+        position: "sticky",
+        top: 0,
+        zIndex: 4,
+        marginBottom: "var(--sv-sp-3)",
+        padding: "var(--sv-sp-3)",
+        border: "1px solid var(--sv-border)",
+        borderRadius: "var(--sv-radius-lg)",
+        background: "color-mix(in srgb, var(--sv-surface) 96%, transparent)",
+        boxShadow: "0 6px 18px rgba(0,0,0,.08)"
+      }}
+    >
+      <div style={{ display: "flex", justifyContent: "space-between", gap: "var(--sv-sp-3)", flexWrap: "wrap", marginBottom: "var(--sv-sp-3)" }}>
+        <strong style={{ ...mono, fontSize: "var(--sv-fs-meta)" }}>
+          {terminal.length}/{trials.length} terminal · {running} running · {queued} queued · {failed} failed
+        </strong>
+        <span style={{ color: "var(--sv-text-faint)", fontSize: "var(--sv-fs-micro)" }}>
+          {formatDuration(elapsedSeconds)} · {finite(summary.concurrency) === null ? "concurrency unavailable" : `${summary.concurrency} parallel`}
+        </span>
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(130px,1fr))", gap: "var(--sv-sp-3)" }}>
+        {usageCard("Rollouts", { value: startedTrials, present: trials.length }, maxRollouts, (value) => String(value))}
+        {usageCard("Model calls", callUsage, callLimit)}
+        {usageCard("Environment steps", stepUsage, stepLimit)}
+        {usageCard("Tokens", tokenUsage, tokenLimit)}
+        {usageCard("Cost", costUsage, costLimit, (value) => `$${value.toFixed(2)}`)}
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(260px,1fr))", gap: "var(--sv-sp-4)", marginTop: "var(--sv-sp-3)", paddingTop: "var(--sv-sp-3)", borderTop: "1px solid var(--sv-border)" }}>
+        <div>
+          <div style={{ color: "var(--sv-text-faint)", fontSize: "var(--sv-fs-micro)", textTransform: "uppercase" }}>Rewards</div>
+          <div style={{ ...mono, marginTop: 3, fontSize: "var(--sv-fs-meta)" }}>
+            {rewards.length}/{terminal.length} terminal rewards · mean {reward(mean)} · median {reward(median)} · range {reward(rewardMin)}–{reward(rewardMax)}
+          </div>
+          <div style={{ display: "flex", alignItems: "end", gap: 4, height: 34, marginTop: 5 }}>
+            {buckets.map((bucket, index) => (
+              <button key={index} type="button" title={`${bucket.low.toFixed(2)} to ${bucket.high.toFixed(2)} · ${bucket.count} seeds`} onClick={() => onFilter(filter?.kind === "reward" && filter.low === bucket.low ? null : { kind: "reward", ...bucket })} style={{ flex: 1, height: `${Math.max(5, bucket.count / Math.max(...buckets.map((row) => row.count), 1) * 100)}%`, border: "1px solid var(--sv-accent)", borderRadius: "3px 3px 0 0", background: filter?.kind === "reward" && filter.low === bucket.low ? "var(--sv-accent)" : "var(--sv-accent-soft)", cursor: "pointer" }} />
+            ))}
+          </div>
+        </div>
+        <div>
+          <div style={{ color: "var(--sv-text-faint)", fontSize: "var(--sv-fs-micro)", textTransform: "uppercase" }}>Achievements · unique seeds / eligible · occurrences · first · best</div>
+          <div style={{ display: "grid", gap: 3, maxHeight: 76, overflowY: "auto", marginTop: 4 }}>
+            {achievements.length ? achievements.map((row) => (
+              <button key={row.name} type="button" onClick={() => onFilter(filter?.kind === "achievement" && filter.name === row.name ? null : { kind: "achievement", name: row.name })} style={{ display: "grid", gridTemplateColumns: "minmax(120px,1fr) auto", gap: 8, padding: "2px 4px", border: "1px solid transparent", borderRadius: 4, background: filter?.kind === "achievement" && filter.name === row.name ? "var(--sv-accent-soft)" : "transparent", color: "var(--sv-text)", cursor: "pointer", textAlign: "left" }}>
+                <span style={{ ...mono, overflow: "hidden", textOverflow: "ellipsis" }}>{row.name}</span>
+                <span style={{ color: "var(--sv-text-faint)", fontSize: "var(--sv-fs-micro)" }}>{row.seeds}/{trials.length} · {row.occurrences}× · first {row.firstSeed ?? MISSING} · best {row.bestSeed ?? MISSING}</span>
+              </button>
+            )) : <span style={{ color: "var(--sv-text-faint)", fontSize: "var(--sv-fs-meta)" }}>No achievements reported yet.</span>}
+          </div>
+        </div>
+      </div>
+    </section>
+  );
+}
+
 /** Vitals a Craftax readout carries. Colours match the published viewer. */
 const VITALS: [string, string][] = [
   ["health", "#c2553f"],
@@ -671,6 +862,7 @@ export function Shell(props: ShellProps) {
   const [playing, setPlaying] = useState(false);
   const [query, setQuery] = useState("");
   const [loaded, setLoaded] = useState<LoadedMedia | undefined>(undefined);
+  const [aggregateFilter, setAggregateFilter] = useState<AggregateFilter>(null);
 
   const trial: TrialView | null =
     trials.find((row) => row.trialId === selectedTrialId) ??
@@ -829,6 +1021,13 @@ export function Shell(props: ShellProps) {
         </p>
       ) : null}
 
+      <RunAggregateHeader
+        run={run}
+        trials={trials}
+        filter={aggregateFilter}
+        onFilter={setAggregateFilter}
+      />
+
       <div
         style={{
           display: "flex",
@@ -851,7 +1050,11 @@ export function Shell(props: ShellProps) {
               ...button,
               borderColor: row.trialId === trial?.trialId ? "var(--sv-accent)" : "var(--sv-border)",
               background:
-                row.trialId === trial?.trialId ? "var(--sv-accent-soft)" : "var(--sv-surface)"
+                row.trialId === trial?.trialId ? "var(--sv-accent-soft)" : "var(--sv-surface)",
+              opacity: aggregateFilter === null ||
+                (aggregateFilter.kind === "achievement" && row.view.achievements.includes(aggregateFilter.name)) ||
+                (aggregateFilter.kind === "reward" && row.reward !== null && row.reward >= aggregateFilter.low && (aggregateFilter.inclusiveHigh ? row.reward <= aggregateFilter.high : row.reward < aggregateFilter.high))
+                ? 1 : .3
             }}
           >
             <span style={mono}>seed {row.seed ?? MISSING}</span>

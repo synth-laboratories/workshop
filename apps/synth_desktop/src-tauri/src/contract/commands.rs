@@ -79,7 +79,8 @@ impl Commands {
     pub const TRAINING_MODELS_DELETE: &'static str = "training_models_delete";
     pub const TRAINING_ARTIFACTS_LIST: &'static str = "training_artifacts_list";
     pub const TRAINING_ARTIFACTS_GET: &'static str = "training_artifacts_get";
-    pub const TRAINING_ARTIFACTS_LAUNCH_INFERENCE: &'static str = "training_artifacts_launch_inference";
+    pub const TRAINING_ARTIFACTS_LAUNCH_INFERENCE: &'static str =
+        "training_artifacts_launch_inference";
     pub const TRAINING_ARTIFACTS_EXPORT: &'static str = "training_artifacts_export";
     pub const TRAINING_ARTIFACTS_DELETE: &'static str = "training_artifacts_delete";
     pub const WHISPER_RUNTIME_STATUS: &'static str = "whisper_runtime_status";

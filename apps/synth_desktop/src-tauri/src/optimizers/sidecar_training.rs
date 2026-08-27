@@ -8,7 +8,6 @@
 
 use super::events::OptimizerEventDraft;
 use super::mlx_runtime::{MlxLoopback, PolicySnapshotMissing};
-use crate::error::error_is;
 use super::models::{
     CheckpointInferRequest, OptimizerCapabilities, OptimizerCreateRequest,
     OptimizerExecutionBinding, OptimizerRecipeRunRequest, OptimizerResourceRef, OptimizerRunRecord,
@@ -17,6 +16,7 @@ use super::models::{
 use super::sft_client::SftOptimizerClient;
 use super::training_adapter::TerminalMapping;
 use super::OptimizerService;
+use crate::error::error_is;
 use crate::ipc::{JsonHttpRequest, JsonHttpResponse};
 use anyhow::{anyhow, bail, Context, Result};
 use hyper::StatusCode;

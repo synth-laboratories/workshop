@@ -31,6 +31,59 @@ use super::proto::{
 };
 use super::telemetry::{PerformanceTrackers, TurnPerformanceTracker, TurnTokenUsage};
 
+fn active_turn_id(snapshot: &Value) -> Option<String> {
+    let thread = snapshot.get("thread").unwrap_or(snapshot);
+    let thread_active = thread
+        .pointer("/status/type")
+        .and_then(Value::as_str)
+        .is_some_and(|status| status.eq_ignore_ascii_case("active"));
+    if !thread_active {
+        return None;
+    }
+    thread
+        .get("turns")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .rev()
+        .find(|turn| {
+            turn.get("status")
+                .and_then(Value::as_str)
+                .is_some_and(|status| {
+                    status.eq_ignore_ascii_case("inProgress")
+                        || status.eq_ignore_ascii_case("in_progress")
+                })
+        })
+        .and_then(|turn| turn.get("id"))
+        .and_then(Value::as_str)
+        .filter(|id| !id.is_empty())
+        .map(str::to_owned)
+}
+
+#[cfg(test)]
+mod recovery_snapshot_tests {
+    use super::active_turn_id;
+    use serde_json::json;
+
+    #[test]
+    fn finds_the_provider_turn_only_when_thread_is_actively_running() {
+        let active = json!({"thread": {
+            "status": {"type": "active", "activeFlags": []},
+            "turns": [
+                {"id": "done", "status": "completed"},
+                {"id": "live", "status": "inProgress"}
+            ]
+        }});
+        assert_eq!(active_turn_id(&active).as_deref(), Some("live"));
+
+        let stale = json!({"thread": {
+            "status": {"type": "notLoaded"},
+            "turns": [{"id": "stale", "status": "inProgress"}]
+        }});
+        assert_eq!(active_turn_id(&stale), None);
+    }
+}
+
 pub struct CodexManager {
     pub(crate) sessions: Arc<RwLock<HashMap<String, Arc<Session>>>>,
     pub(crate) records: Arc<RwLock<HashMap<String, CodexSessionRecord>>>,
@@ -56,6 +109,10 @@ pub struct CodexManager {
     pub(crate) binary: PathBuf,
     pub(crate) persistence: crate::session::SessionPersistence,
     pub(crate) approvals: Arc<ApprovalBroker>,
+    /// Production app-server attachments use a reconnectable Unix socket and
+    /// outlive the Workshop UI process. Tests keep the deterministic stdio
+    /// fixture transport.
+    pub(crate) persistent_app_server: bool,
     /// Injected loopback credential proxy (composition root). Every cloud
     /// session leases through this same Arc.
     pub(crate) broker: Arc<CredentialBroker>,
@@ -75,6 +132,7 @@ impl CodexManager {
             binary,
             broker,
             approvals,
+            true,
         )
     }
 
@@ -85,7 +143,7 @@ impl CodexManager {
         broker: Arc<CredentialBroker>,
     ) -> Self {
         let approvals = Arc::new(ApprovalBroker::new(persistence.clone()));
-        Self::with_paths_and_approvals(persistence, root, binary, broker, approvals)
+        Self::with_paths_and_approvals(persistence, root, binary, broker, approvals, false)
     }
 
     fn with_paths_and_approvals(
@@ -94,6 +152,7 @@ impl CodexManager {
         binary: PathBuf,
         broker: Arc<CredentialBroker>,
         approvals: Arc<ApprovalBroker>,
+        persistent_app_server: bool,
     ) -> Self {
         let state_path = root.join("threads.json");
         let mut records: HashMap<String, CodexSessionRecord> = fs::read_to_string(&state_path)
@@ -152,6 +211,7 @@ impl CodexManager {
             persistence,
             approvals,
             broker,
+            persistent_app_server,
         }
     }
 
@@ -245,6 +305,9 @@ impl CodexManager {
                 session_id: &request.session_id,
                 home: &home,
                 request: &request,
+                persistent: self.persistent_app_server
+                    && super::home::provider_class(request.provider_name.as_deref())
+                        == super::home::ProviderClass::OpenaiCodexOauth,
             },
             EventPumpState {
                 records: self.records.clone(),
@@ -518,13 +581,15 @@ impl CodexManager {
         // still preserves the text the operator typed. Reuse the renderer's
         // optimistic message id when provided so the transcript does not grow
         // a second bubble for the same submission.
-        self.record_user_prompt(
-            &app,
-            &session_id,
-            &request.prompt,
-            request.client_message_id.as_deref(),
-        )
-        .await;
+        if !request.recovery_mode {
+            self.record_user_prompt(
+                &app,
+                &session_id,
+                &request.prompt,
+                request.client_message_id.as_deref(),
+            )
+            .await;
+        }
 
         // Compact-on-send model switch: while the live attachment is still the
         // source model, summarize before start() closes it and resumes as B.
@@ -551,6 +616,27 @@ impl CodexManager {
                     break;
                 }
             };
+            if request.recovery_mode {
+                match self.rejoin_recovered_turn(&app, &session_id).await {
+                    Ok(Some(info)) => return Ok(info),
+                    Ok(None) => {
+                        // The prior app-server is gone or its turn is already
+                        // terminal. Record one explicit continuation request;
+                        // never replay the abandoned operator prompt.
+                        self.record_user_prompt(
+                            &app,
+                            &session_id,
+                            &request.prompt,
+                            request.client_message_id.as_deref(),
+                        )
+                        .await;
+                    }
+                    Err(error) => {
+                        failure = Some(error);
+                        break;
+                    }
+                }
+            }
             let turn = self
                 .start_turn_inner(
                     app.clone(),
@@ -608,6 +694,75 @@ impl CodexManager {
             &session_id,
             format!("{error:?}"),
         ))
+    }
+
+    /// Rejoin a turn that is still owned by a persistent app-server.
+    ///
+    /// `thread/resume` subscribes this connection to the live event stream;
+    /// `thread/read` supplies the active provider turn id. Workshop represents
+    /// the new local ownership epoch with a fresh run row while retaining the
+    /// interrupted row as immutable crash history.
+    async fn rejoin_recovered_turn<R: tauri::Runtime>(
+        &self,
+        app: &AppHandle<R>,
+        session_id: &str,
+    ) -> Result<Option<CodexSessionInfo>> {
+        let session = self.session(session_id).await?;
+        let snapshot = session
+            .server
+            .request(
+                "thread/read",
+                json!({"threadId": session.thread_id, "includeTurns": true}),
+            )
+            .await?;
+        let Some(provider_turn_id) = active_turn_id(&snapshot) else {
+            return Ok(None);
+        };
+        let local_run_id = format!("rejoin-{}", uuid::Uuid::new_v4().simple());
+        let recovery = self.persistence.pending_recovery(session_id).await;
+        let mut metadata = json!({
+            "threadId": session.thread_id,
+            "providerTurnId": provider_turn_id,
+            "rejoinedActiveTurn": true,
+        });
+        if let (Some(recovery), Some(object)) = (&recovery, metadata.as_object_mut()) {
+            object.insert("recoveryAttempt".into(), json!(recovery.recovery_attempt));
+            if let Some(previous) = &recovery.run_id {
+                object.insert("recoveredFromRunId".into(), json!(previous));
+            }
+        }
+        let record = self.records.read().await.get(session_id).cloned();
+        let mutation = self
+            .persistence
+            .start_run(RunCreate {
+                id: local_run_id.clone(),
+                session_id: session_id.to_owned(),
+                mode: "codex_turn_rejoin".into(),
+                model: Some(session.model.clone()),
+                adapter: record.and_then(|record| record.adapter),
+                metadata,
+                source: EventSource::Codex,
+            })
+            .await?;
+        *session.turn_id.write().await = Some(provider_turn_id);
+        self.set_status(session_id, SessionStatus::Running).await?;
+        self.persistence
+            .claim_turn(
+                session_id,
+                &local_run_id,
+                Some(session.attachment_id.to_string()),
+            )
+            .await?;
+        if let Some(record) = self.records.write().await.get_mut(session_id) {
+            record.recovery = None;
+        }
+        self.persist_records().await?;
+        if let Some(mutation) = mutation {
+            if let Some(event) = mutation.event {
+                self.persistence.publish_event(app, event).await?;
+            }
+        }
+        Ok(Some(session_info(session_id, &session).await))
     }
 
     async fn start_turn_inner<R: tauri::Runtime>(
@@ -1070,6 +1225,19 @@ impl CodexManager {
             ),
         )
         .await;
+        if session.server.persistent {
+            // Persistent app-server processes deliberately survive the UI.
+            // Explicit Stop still owns every tool it launched, so ask Codex to
+            // terminate the thread's background terminals before detaching.
+            let _ = tokio::time::timeout(
+                Duration::from_secs(2),
+                session.server.request(
+                    "thread/backgroundTerminals/clean",
+                    json!({"threadId": session.thread_id}),
+                ),
+            )
+            .await;
+        }
         // Persist and publish terminal state before tearing down the transport.
         // This makes Stop deterministic even when the app-server ignores the
         // interrupt request or never emits turn/interrupted.
@@ -1077,9 +1245,9 @@ impl CodexManager {
         self.approvals
             .expire_session(&app, session_id, "origin_interrupted")
             .await?;
-        // The app-server is an attachment, not the durable conversation. Its
-        // owned process group is terminated by ProviderTransport::stop; the
-        // next send attaches a clean process to the same thread.
+        // Stdio attachments are terminated. Persistent ChatGPT attachments
+        // keep their server alive but drop this connection after the bounded
+        // turn interruption and terminal cleanup above.
         self.fence_attachment(session_id).await?;
         Ok(())
     }

@@ -919,6 +919,7 @@ fn send_request(start: CodexSessionStartRequest, prompt: &str) -> CodexTurnSendR
         effort: Some("none".into()),
         compact_before_model_switch: false,
         client_message_id: None,
+        recovery_mode: false,
     }
 }
 
@@ -1484,6 +1485,7 @@ async fn rejected_turn_send_arguments_never_mark_the_session_running() {
                 effort: Some("ultra".into()),
                 compact_before_model_switch: false,
                 client_message_id: None,
+                recovery_mode: false,
             },
         )
         .await
@@ -1536,6 +1538,7 @@ async fn turn_send_compacts_on_source_model_before_rebind() {
                 effort: Some("medium".into()),
                 compact_before_model_switch: true,
                 client_message_id: None,
+                recovery_mode: false,
             },
         )
         .await
@@ -1630,6 +1633,7 @@ async fn turn_send_reuses_client_message_id_in_journalled_user_prompt() {
                 effort: Some("none".into()),
                 compact_before_model_switch: false,
                 client_message_id: Some(client_message_id.into()),
+                recovery_mode: false,
             },
         )
         .await

@@ -556,8 +556,7 @@ async fn route_request_inner(
             let body = error
                 .chain()
                 .find_map(|cause| {
-                    cause
-                        .downcast_ref::<crate::optimizers::admission::AdmissionError>()
+                    cause.downcast_ref::<crate::optimizers::admission::AdmissionError>()
                 })
                 .map(crate::optimizers::admission::AdmissionError::to_json)
                 .unwrap_or_else(|| json!({"code": "admission_failed"}));
@@ -652,7 +651,7 @@ async fn dispatch_request(
         return dispatch_diagnostics(method, path, json_body, core).await;
     }
     if path.starts_with("/v1/secrets") {
-        return dispatch_secrets(method, path, json_body, core);
+        return dispatch_secrets(method, path, json_body, core, app).await;
     }
     dispatch(method, path, json_body, core).await
 }
@@ -752,13 +751,19 @@ async fn wait_for_review_capture_surface(app: &AppHandle, visual_id: &str) -> Re
             .eval_with_callback(
                 "document.documentElement.dataset.synthReviewCaptureReady || ''",
                 move |value| {
-                    if let Some(sender) = callback_sender.lock().ok().and_then(|mut sender| sender.take()) {
+                    if let Some(sender) = callback_sender
+                        .lock()
+                        .ok()
+                        .and_then(|mut sender| sender.take())
+                    {
                         let _ = sender.send(value);
                     }
                 },
             )
             .context("query review capture renderer readiness")?;
-        if let Ok(Ok(value)) = tokio::time::timeout(std::time::Duration::from_millis(250), receiver).await {
+        if let Ok(Ok(value)) =
+            tokio::time::timeout(std::time::Duration::from_millis(250), receiver).await
+        {
             if value.contains(visual_id) {
                 return Ok(());
             }
@@ -847,7 +852,10 @@ async fn capture_review_window(app: &AppHandle, body: &Value) -> Result<Value> {
     let snapshot = match wait_for_review_capture_surface(app, visual_id).await {
         Ok(()) => match reset_review_capture_scroll(app) {
             Ok(()) => match app.get_webview_window("main") {
-                Some(window) => crate::visuals::snapshot::capture_webview_png(&window, REVIEW_CAPTURE_TIMEOUT).await,
+                Some(window) => {
+                    crate::visuals::snapshot::capture_webview_png(&window, REVIEW_CAPTURE_TIMEOUT)
+                        .await
+                }
                 None => Err(anyhow::anyhow!(
                     "review capture requires the main Desktop window"
                 )),
@@ -1750,11 +1758,8 @@ pub async fn dispatch(method: &str, path: &str, body: Value, core: &CoreRuntime)
                 .trim_start_matches("/v1/containers/")
                 .trim_end_matches("/stop")
                 .trim_end_matches('/');
-            let stopped = crate::optimizers::container_lifecycle::stop(
-                core.storage().database(),
-                id,
-            )
-            .await?;
+            let stopped =
+                crate::optimizers::container_lifecycle::stop(core.storage().database(), id).await?;
             Ok(json!({
                 "containerId": stopped.container_id,
                 "specId": stopped.spec_id,
@@ -1776,15 +1781,18 @@ pub async fn dispatch(method: &str, path: &str, body: Value, core: &CoreRuntime)
                 core.storage().database(),
                 session,
             )?;
-            let stopped = crate::optimizers::container_lifecycle::stop(
+            let spec_id = crate::optimizers::container_lifecycle::declared_spec_id(
                 core.storage().database(),
                 id,
-            )
-            .await?;
-            let ensured = crate::optimizers::container_lifecycle::ensure(
+            )?;
+            let stopped =
+                crate::optimizers::container_lifecycle::stop(core.storage().database(), id)
+                    .await
+                    .ok();
+            let ensured = crate::optimizers::container_lifecycle::replace_declared(
                 core.storage().database(),
                 &workspace,
-                &stopped.spec_id,
+                &spec_id,
             )
             .await?;
             Ok(json!({
@@ -1792,7 +1800,8 @@ pub async fn dispatch(method: &str, path: &str, body: Value, core: &CoreRuntime)
                 "baseUrl": ensured.base_url,
                 "specId": ensured.spec_id,
                 "locality": ensured.locality.as_str(),
-                "replacedPid": stopped.pid,
+                "replacedPid": stopped.as_ref().map(|value| value.pid),
+                "replacementMode": "declared-command-force",
                 "status": "ready",
             }))
         }
@@ -2777,8 +2786,8 @@ pub(crate) async fn dispatch_optimizer(
             let request_value = body.get("request").cloned().unwrap_or(body);
             let request: crate::optimizers::admission::InlineRequest =
                 serde_json::from_value(request_value)?;
-            let admissible = crate::optimizers::inline_eval::admit_inline(optimizers, request)
-                .await?;
+            let admissible =
+                crate::optimizers::inline_eval::admit_inline(optimizers, request).await?;
             Ok(json!({
                 "sourceKind": "inline",
                 "executionSpecDigest": admissible.digest().as_str(),
@@ -3395,7 +3404,13 @@ async fn dispatch_diagnostics(
     }
 }
 
-fn dispatch_secrets(method: &str, path: &str, body: Value, core: &CoreRuntime) -> Result<Value> {
+async fn dispatch_secrets(
+    method: &str,
+    path: &str,
+    body: Value,
+    core: &CoreRuntime,
+    app: &AppHandle,
+) -> Result<Value> {
     let lower = path.to_ascii_lowercase();
     if lower.contains("create")
         || lower.contains("replace")
@@ -3476,8 +3491,46 @@ fn dispatch_secrets(method: &str, path: &str, body: Value, core: &CoreRuntime) -
             // operations or spend limits.  Codex is a Responses client, whereas
             // the generic assistant path remains Chat Completions only.
             let policy = agent_use_policy(str_field("workload", "workload").as_deref())?;
-            let result =
+            let mut result =
                 secrets.request_use(&secret_id, &run_id, &recipe_id, policy.clone(), "agent")?;
+            if result.status == "approval_required" {
+                let session_id = str_field("sessionRef", "session_id")
+                    .ok_or_else(|| anyhow::anyhow!(
+                        "credential_access_requires_session: request_use must name its owning session"
+                    ))?;
+                let request_id = result.request_id.clone().ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "credential_access_request_invalid: pending use has no request id"
+                    )
+                })?;
+                let purpose = format!(
+                    "Issue a run-scoped Workshop proxy capability for recipe {recipe_id}, run {run_id}; operations={}; maxCalls={}; maxCostUsd={}",
+                    policy.operations.join(","),
+                    policy.max_calls,
+                    policy.max_cost_usd,
+                );
+                let codex = app.state::<Arc<crate::codex::CodexManager>>();
+                let approval = codex
+                    .approvals
+                    .authorize_host(
+                        app,
+                        Some(&session_id),
+                        crate::session::approval::ApprovalKind::CredentialAccess {
+                            provider: secret_id.clone(),
+                            purpose,
+                        },
+                    )
+                    .await;
+                match approval {
+                    Ok(_) => {
+                        result = secrets.grant_pending(&request_id, "agent", false)?;
+                    }
+                    Err(error) => {
+                        let _ = secrets.deny_pending(&request_id, "agent");
+                        return Err(error.context("credential access was not approved"));
+                    }
+                }
+            }
             Ok(json!({
                 "status": result.status,
                 "requestId": result.request_id,
@@ -3490,11 +3543,7 @@ fn dispatch_secrets(method: &str, path: &str, body: Value, core: &CoreRuntime) -
                     "maxCalls": policy.max_calls,
                     "maxCostUsd": policy.max_cost_usd,
                 },
-                "guidance": if result.status == "approval_required" {
-                    "Ask the user to allow this in Settings → Secrets, then call request_use again."
-                } else {
-                    "Use provider_routes.openai_base unchanged with OPENAI_API_KEY=workshop-proxy. Do not construct a route from proxyOrigin or handle."
-                }
+                "guidance": "The native approval has settled. Use provider_routes.openai_base unchanged with OPENAI_API_KEY=workshop-proxy. Do not construct a route from proxyOrigin or handle."
             }))
         }
         (method, path) => anyhow::bail!("unknown secrets route {method} {path}"),
@@ -3682,27 +3731,31 @@ pub(crate) async fn import_container_trace_into(
         .iter()
         .map(|trace| json!({"traceId": trace.id, "digest": trace.digest}))
         .collect();
-    Ok((json!({
-        "containerId": container_id,
-        "rolloutId": rollout_id,
-        "sourceKind": source_kind,
-        "compatibilityLevel": result.compatibility_level,
-        "trusted": result.trusted,
-        "duplicate": result.duplicate,
-        // Inspectable only when a capture-supervisor Trace V5 bundle indexed
-        // real traces. A lite seal is retained with its provenance but cannot
-        // be projected; saying otherwise is how an agent retries an inspector
-        // that can never render.
-        "inspectable": source_kind == "container_bundle" && !indexed.is_empty(),
-        "traces": indexed,
-        "note": if indexed.is_empty() {
-            "Imported as a provenance record only: this container returned a lite seal, not a self-contained Trace V5 bundle, so it cannot be projected into the inspector."
-        } else {
-            "Sealed Trace V5 is now indexed in Workshop."
-        },
-        "embeddedFrameCount": frames.len(),
-        "maxStep": max_step,
-    }), event, frames))
+    Ok((
+        json!({
+            "containerId": container_id,
+            "rolloutId": rollout_id,
+            "sourceKind": source_kind,
+            "compatibilityLevel": result.compatibility_level,
+            "trusted": result.trusted,
+            "duplicate": result.duplicate,
+            // Inspectable only when a capture-supervisor Trace V5 bundle indexed
+            // real traces. A lite seal is retained with its provenance but cannot
+            // be projected; saying otherwise is how an agent retries an inspector
+            // that can never render.
+            "inspectable": source_kind == "container_bundle" && !indexed.is_empty(),
+            "traces": indexed,
+            "note": if indexed.is_empty() {
+                "Imported as a provenance record only: this container returned a lite seal, not a self-contained Trace V5 bundle, so it cannot be projected into the inspector."
+            } else {
+                "Sealed Trace V5 is now indexed in Workshop."
+            },
+            "embeddedFrameCount": frames.len(),
+            "maxStep": max_step,
+        }),
+        event,
+        frames,
+    ))
 }
 
 #[derive(Clone, Debug)]
@@ -3741,7 +3794,11 @@ fn extract_imported_trace_frames(
             entry.read_to_end(&mut bytes)?;
             serde_json::from_slice::<Value>(&bytes).context("decode sealed trace document")?
         };
-        if document.pointer("/identity/rollout_id").and_then(Value::as_str) != Some(rollout_id) {
+        if document
+            .pointer("/identity/rollout_id")
+            .and_then(Value::as_str)
+            != Some(rollout_id)
+        {
             continue;
         }
         let artifacts = document
@@ -3788,12 +3845,17 @@ fn extract_imported_trace_frames(
                     "sealed frame event omitted step for unique artifact `{artifact_id}`"
                 ),
             };
-            let artifact = artifacts.get(artifact_id)
+            let artifact = artifacts
+                .get(artifact_id)
                 .context("sealed frame event references an unknown PNG artifact")?;
-            let uri = artifact.get("uri").and_then(Value::as_str)
+            let uri = artifact
+                .get("uri")
+                .and_then(Value::as_str)
                 .context("sealed frame artifact omitted bundle URI")?;
             let bytes = {
-                let mut blob = archive.by_name(uri).context("sealed frame blob missing from bundle")?;
+                let mut blob = archive
+                    .by_name(uri)
+                    .context("sealed frame blob missing from bundle")?;
                 if blob.size() > 16 * 1024 * 1024 {
                     anyhow::bail!("sealed frame blob exceeded 16 MiB");
                 }
@@ -3802,7 +3864,9 @@ fn extract_imported_trace_frames(
                 bytes
             };
             let actual = format!("sha256:{:x}", sha2::Sha256::digest(&bytes));
-            let digest = artifact.get("digest").and_then(Value::as_str)
+            let digest = artifact
+                .get("digest")
+                .and_then(Value::as_str)
                 .context("sealed frame artifact omitted digest")?;
             if actual != digest {
                 anyhow::bail!("sealed frame artifact digest mismatch");
@@ -3814,15 +3878,19 @@ fn extract_imported_trace_frames(
             let mut reader = decoder.read_info().context("decode sealed frame PNG")?;
             let (width, height) = (reader.info().width, reader.info().height);
             let mut decoded = vec![0; reader.output_buffer_size()];
-            reader.next_frame(&mut decoded).context("fully decode sealed frame PNG")?;
+            reader
+                .next_frame(&mut decoded)
+                .context("fully decode sealed frame PNG")?;
             frames.push(ImportedTraceFrame {
                 bytes,
                 digest: digest.to_string(),
                 width,
                 height,
                 step,
-                producer_digest: event.pointer("/detail/source_event_digest")
-                    .and_then(Value::as_str).map(str::to_string),
+                producer_digest: event
+                    .pointer("/detail/source_event_digest")
+                    .and_then(Value::as_str)
+                    .map(str::to_string),
             });
             imported_artifacts.insert(artifact_id.to_string());
         }
@@ -4076,9 +4144,7 @@ async fn dispatch_experiments(
                 serde_json::from_value(payload)?;
             Ok(json!({"experiment": core.data().experiment_create(request).await?}))
         }
-        ("POST", path)
-            if path.starts_with("/v1/experiments/") && path.ends_with("/children") =>
-        {
+        ("POST", path) if path.starts_with("/v1/experiments/") && path.ends_with("/children") => {
             let parent_id = path
                 .trim_start_matches("/v1/experiments/")
                 .trim_end_matches("/children")
@@ -4098,9 +4164,7 @@ async fn dispatch_experiments(
                 "experiment": core.data().experiment_create_child(request).await?
             }))
         }
-        ("POST", path)
-            if path.starts_with("/v1/experiments/") && path.ends_with("/relate") =>
-        {
+        ("POST", path) if path.starts_with("/v1/experiments/") && path.ends_with("/relate") => {
             let experiment_id = path
                 .trim_start_matches("/v1/experiments/")
                 .trim_end_matches("/relate")
@@ -4120,9 +4184,7 @@ async fn dispatch_experiments(
                 "experiment": core.data().experiment_relate(request).await?
             }))
         }
-        ("POST", path)
-            if path.starts_with("/v1/experiments/") && path.ends_with("/activate") =>
-        {
+        ("POST", path) if path.starts_with("/v1/experiments/") && path.ends_with("/activate") => {
             let experiment_id = path
                 .trim_start_matches("/v1/experiments/")
                 .trim_end_matches("/activate")
@@ -4186,11 +4248,17 @@ async fn dispatch_experiments(
             Ok(json!({"experiment": core.data().experiment_attach_evidence(request).await?}))
         }
         ("POST", path) if path.starts_with("/v1/experiments/") && path.ends_with("/finalize") => {
-            let experiment_id = path.trim_start_matches("/v1/experiments/").trim_end_matches("/finalize").trim_end_matches('/');
+            let experiment_id = path
+                .trim_start_matches("/v1/experiments/")
+                .trim_end_matches("/finalize")
+                .trim_end_matches('/');
             let mut payload = body;
             payload["experimentId"] = json!(experiment_id);
-            if payload.get("finalizedAt").is_none() { payload["finalizedAt"] = json!(chrono::Utc::now().to_rfc3339()); }
-            let request: crate::experiments::ExperimentFinalizeRequest = serde_json::from_value(payload)?;
+            if payload.get("finalizedAt").is_none() {
+                payload["finalizedAt"] = json!(chrono::Utc::now().to_rfc3339());
+            }
+            let request: crate::experiments::ExperimentFinalizeRequest =
+                serde_json::from_value(payload)?;
             Ok(json!({"experiment": core.data().experiment_finalize(request).await?}))
         }
         _ => anyhow::bail!("unknown experiments route {method} {path}"),
@@ -5365,8 +5433,12 @@ mod tests {
         let file = fs::File::create(&archive_path).unwrap();
         let mut archive = zip::ZipWriter::new(file);
         let options = zip::write::SimpleFileOptions::default();
-        archive.start_file("traces/roll_portable/sealed/trace.json", options).unwrap();
-        archive.write_all(&serde_json::to_vec(&document).unwrap()).unwrap();
+        archive
+            .start_file("traces/roll_portable/sealed/trace.json", options)
+            .unwrap();
+        archive
+            .write_all(&serde_json::to_vec(&document).unwrap())
+            .unwrap();
         archive.start_file(&uri, options).unwrap();
         archive.write_all(&png).unwrap();
         archive.finish().unwrap();

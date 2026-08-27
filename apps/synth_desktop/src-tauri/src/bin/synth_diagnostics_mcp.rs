@@ -54,10 +54,7 @@ const ALLOWED_ARGUMENTS: &[&str] = &[
 ];
 
 fn connection_file() -> PathBuf {
-    instance_paths::ipc_connection_file(
-        &["SYNTH_DESKTOP_IPC_FILE"],
-        "visuals-ipc.json",
-    )
+    instance_paths::ipc_connection_file(&["SYNTH_DESKTOP_IPC_FILE"], "visuals-ipc.json")
 }
 
 fn request(method: &str, path: &str, body: Option<Value>) -> Result<Value, String> {

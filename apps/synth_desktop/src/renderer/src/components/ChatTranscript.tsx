@@ -499,6 +499,39 @@ function PaidComputeApprovalModal({ line, onApprove, onReject }: {
 	</div>;
 }
 
+function CredentialAccessApprovalModal({ line, onApprove, onReject }: {
+	line: LocalActivityLine;
+	onApprove?: (approvalId: string) => void;
+	onReject?: (approvalId: string) => void;
+}) {
+	const approveRef = useRef<HTMLButtonElement>(null);
+	useEffect(() => {
+		approveRef.current?.focus();
+		const onKey = (event: KeyboardEvent) => {
+			if (event.key !== "Escape") return;
+			event.preventDefault();
+			onReject?.(line.approvalId!);
+		};
+		window.addEventListener("keydown", onKey);
+		return () => window.removeEventListener("keydown", onKey);
+	}, [line.approvalId, onReject]);
+	return <div className="paid-compute-modal-backdrop" data-testid="credential-access-approval-modal">
+		<section className="paid-compute-modal" role="dialog" aria-modal="true" aria-labelledby="credential-access-title">
+			<div className="approval-card-kicker">Credential access</div>
+			<h2 id="credential-access-title">Allow this proxy capability?</h2>
+			<dl>
+				<div><dt>Connection</dt><dd><code>{line.approvalPayload?.provider ?? "Missing provider alias"}</code></dd></div>
+				<div><dt>Scope</dt><dd>{line.approvalPayload?.purpose ?? "Missing capability scope"}</dd></div>
+			</dl>
+			<p className="paid-compute-consent">The agent receives a bounded Workshop proxy capability, never the credential value. This approval applies once and cannot be remembered.</p>
+			<div className="paid-compute-modal-actions">
+				<button type="button" className="approval-reject" onClick={() => onReject?.(line.approvalId!)}>Reject</button>
+				<button ref={approveRef} type="button" className="approval-approve" onClick={() => onApprove?.(line.approvalId!)}>Allow once</button>
+			</div>
+		</section>
+	</div>;
+}
+
 function VisualCard({
 	artifact,
 	active,
@@ -784,7 +817,8 @@ export function ChatTranscript({
 		return [...byId.values()];
 	}, [activityByMessageId]);
 	const paidComputeApproval = pendingApprovals.find((line) => line.approvalKind === "paid_compute");
-	const inlineApprovals = pendingApprovals.filter((line) => line.approvalKind !== "paid_compute");
+	const credentialAccessApproval = pendingApprovals.find((line) => line.approvalKind === "credential_access");
+	const inlineApprovals = pendingApprovals.filter((line) => line.approvalKind !== "paid_compute" && line.approvalKind !== "credential_access");
 	const withoutPendingApproval = (line: LocalActivityLine) =>
 		!(line.kind === "approval" && line.approvalId);
 	const presentedActive = useMemo(
@@ -1066,6 +1100,7 @@ export function ChatTranscript({
 					</div>
 			</div>
 			{paidComputeApproval ? <PaidComputeApprovalModal line={paidComputeApproval} onApprove={onApprove} onReject={onReject} /> : null}
+			{!paidComputeApproval && credentialAccessApproval ? <CredentialAccessApprovalModal line={credentialAccessApproval} onApprove={onApprove} onReject={onReject} /> : null}
 		</div>
 	);
 }

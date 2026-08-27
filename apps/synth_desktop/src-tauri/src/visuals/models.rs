@@ -328,16 +328,16 @@ pub struct CanonicalBindings {
 /// Canonical bind-point name. `input` is the wire field; `slot` still binds
 /// on stored envelopes. Both present and unequal fails closed.
 pub fn descriptor_input_name(descriptor: &Value) -> anyhow::Result<String> {
-    let object = descriptor.as_object().ok_or_else(|| {
-        anyhow::anyhow!("visual binding descriptors must be objects")
-    })?;
+    let object = descriptor
+        .as_object()
+        .ok_or_else(|| anyhow::anyhow!("visual binding descriptors must be objects"))?;
     let input = object.get("input").and_then(Value::as_str);
     let slot = object.get("slot").and_then(Value::as_str);
     match (input, slot) {
         (Some(a), Some(b)) if a == b => Ok(a.to_string()),
-        (Some(_), Some(_)) => anyhow::bail!(
-            "visual binding input and slot disagree; send one name"
-        ),
+        (Some(_), Some(_)) => {
+            anyhow::bail!("visual binding input and slot disagree; send one name")
+        }
         (Some(a), None) | (None, Some(a)) => Ok(a.to_string()),
         (None, None) => anyhow::bail!("visual binding requires an input name"),
     }
@@ -528,7 +528,11 @@ fn validate_bindings(slots: &[Value]) -> anyhow::Result<()> {
         if !VISUAL_BINDING_KINDS.contains(&kind) {
             anyhow::bail!("unsupported visual binding kind: {kind}");
         }
-        if kind == "inline" && !slot.as_object().is_some_and(|object| object.contains_key("data")) {
+        if kind == "inline"
+            && !slot
+                .as_object()
+                .is_some_and(|object| object.contains_key("data"))
+        {
             anyhow::bail!(
                 "{}",
                 json!({
@@ -710,13 +714,11 @@ mod tests {
         assert!(canonical.value.get("slots").is_none());
         let inputs = canonical.value["inputs"].as_array().unwrap();
         assert_eq!(inputs.len(), 10);
-        assert!(inputs
-            .iter()
-            .all(|slot| {
-                slot["input"] == json!("stream")
-                    && slot.get("slot").is_none()
-                    && slot["kind"] == json!("live_sse")
-            }));
+        assert!(inputs.iter().all(|slot| {
+            slot["input"] == json!("stream")
+                && slot.get("slot").is_none()
+                && slot["kind"] == json!("live_sse")
+        }));
         assert_eq!(declared_poll_urls(&authored).len(), 10);
     }
 

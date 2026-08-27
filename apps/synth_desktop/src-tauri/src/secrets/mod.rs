@@ -36,7 +36,7 @@ pub use capability::ProviderUsePolicy as SecretsUsePolicy;
 #[allow(unused_imports)]
 pub use lease::{
     CredentialLease, CredentialReadinessReceipt, CredentialSourceDescriptor, OptimizerRuntimeLease,
-    CREDENTIAL_MODE_WORKSHOP_PROXY, CONTRACT as CREDENTIAL_CONTRACT,
+    CONTRACT as CREDENTIAL_CONTRACT, CREDENTIAL_MODE_WORKSHOP_PROXY,
 };
 pub use proxy::API_KEY_SENTINEL;
 
@@ -290,16 +290,14 @@ impl SecretsService {
     }
 
     pub fn test(&self, id: &str, actor: &str) -> Result<SecretSummary> {
-        let secret = self
-            .db
-            .with_conn(|conn| {
-                vault::resolve_for_proxy(
-                    conn,
-                    self.backend.as_ref(),
-                    Some(self.env_sources.as_ref()),
-                    id,
-                )
-            })?;
+        let secret = self.db.with_conn(|conn| {
+            vault::resolve_for_proxy(
+                conn,
+                self.backend.as_ref(),
+                Some(self.env_sources.as_ref()),
+                id,
+            )
+        })?;
         let valid = !secret.as_bytes().is_empty();
         let status = if valid { "valid" } else { "invalid" };
         drop(secret);
@@ -417,6 +415,24 @@ impl SecretsService {
             actor,
             remember_recipe,
         )
+    }
+
+    pub fn deny_pending(&self, request_id: &str, actor: &str) -> Result<()> {
+        let pending = self
+            .pending_grants
+            .lock()
+            .expect("pending grants")
+            .remove(request_id)
+            .ok_or_else(|| anyhow!("grant request {request_id} is not pending"))?;
+        self.db.with_conn(|conn| {
+            let mut event = SecretAuditEvent::new("user", actor, "capability.deny", "denied");
+            event.secret_id = Some(pending.secret_id);
+            event.detail = Some(format!(
+                "run={} recipe={}",
+                pending.run_id, pending.recipe_id
+            ));
+            audit::append(conn, &event)
+        })
     }
 
     fn issued_result(&self, mut issued: IssuedCapability, suffix: &str) -> UseRequestResult {
@@ -643,21 +659,21 @@ impl SecretsService {
                     true,
                 )
             })?;
-            let summary = self
-                .db
-                .with_conn(|conn| vault::get(conn, &id))?
-                .unwrap_or(SecretSummary {
-                    id: id.clone(),
-                    alias: entry.alias.clone(),
-                    provider: entry.provider.clone(),
-                    scope: "project/config/env".into(),
-                    status: "valid".into(),
-                    backend: lease::BACKEND_CONFIGURED_ENV.into(),
-                    display_suffix: Some(fingerprint::mask_suffix(&entry.suffix)),
-                    created_at: chrono::Utc::now().to_rfc3339(),
-                    last_validated_at: Some(chrono::Utc::now().to_rfc3339()),
-                    allowed_recipes: Vec::new(),
-                });
+            let summary =
+                self.db
+                    .with_conn(|conn| vault::get(conn, &id))?
+                    .unwrap_or(SecretSummary {
+                        id: id.clone(),
+                        alias: entry.alias.clone(),
+                        provider: entry.provider.clone(),
+                        scope: "project/config/env".into(),
+                        status: "valid".into(),
+                        backend: lease::BACKEND_CONFIGURED_ENV.into(),
+                        display_suffix: Some(fingerprint::mask_suffix(&entry.suffix)),
+                        created_at: chrono::Utc::now().to_rfc3339(),
+                        last_validated_at: Some(chrono::Utc::now().to_rfc3339()),
+                        allowed_recipes: Vec::new(),
+                    });
             let _ = actor;
             aliases.insert(entry.variable.clone(), summary.id.clone());
             imported.push(summary);
@@ -1377,7 +1393,10 @@ mod tests {
                     &[allowed],
                 )
                 .unwrap_err();
-            assert!(error.to_string().contains("outside") || error.to_string().contains("refusing"), "{error}");
+            assert!(
+                error.to_string().contains("outside") || error.to_string().contains("refusing"),
+                "{error}"
+            );
         }
     }
 
@@ -1420,12 +1439,7 @@ mod tests {
         let (dir, service) = service();
         let env_file = dir.path().join(".env");
         service
-            .load_test_env_source(
-                "openai",
-                "OPENAI_API_KEY",
-                "sk-proj-NEVERINENV",
-                &env_file,
-            )
+            .load_test_env_source("openai", "OPENAI_API_KEY", "sk-proj-NEVERINENV", &env_file)
             .unwrap();
         let env = service
             .workload_env(
@@ -1575,7 +1589,10 @@ mod tests {
             "secrets.toml"
         )));
         let malformed = importer::parse_dotenv("OPENAI_API_KEY=\"unterminated\n");
-        assert!(malformed.unwrap_err().to_string().contains("unterminated"), "malformed quoted values must fail closed");
+        assert!(
+            malformed.unwrap_err().to_string().contains("unterminated"),
+            "malformed quoted values must fail closed"
+        );
     }
 
     #[test]
@@ -1606,7 +1623,10 @@ mod tests {
         store.reserve_call("wcap_ceiling").unwrap();
         store.reserve_call("wcap_ceiling").unwrap();
         let exhausted = store.reserve_call("wcap_ceiling").unwrap_err();
-        assert!(exhausted.to_string().contains("ceiling") || exhausted.to_string().contains("exhausted"));
+        assert!(
+            exhausted.to_string().contains("ceiling")
+                || exhausted.to_string().contains("exhausted")
+        );
         let mut replay = live;
         replay.handle = "wcap_replay".into();
         replay.used_calls = 0;
@@ -1709,7 +1729,12 @@ mod tests {
         let (dir, service) = service();
         let env_file = dir.path().join(".env");
         service
-            .load_test_env_source("openai", "OPENAI_API_KEY", "sk-real-must-not-leak", &env_file)
+            .load_test_env_source(
+                "openai",
+                "OPENAI_API_KEY",
+                "sk-real-must-not-leak",
+                &env_file,
+            )
             .unwrap();
         let lease = service
             .issue_lease(
@@ -1845,6 +1870,9 @@ mod tests {
             .unwrap()
             .expect("sealed chain");
         assert_eq!(sealed["capabilityRevoked"], json!(true));
-        assert!(sealed.get("revokedAt").and_then(|value| value.as_str()).is_some());
+        assert!(sealed
+            .get("revokedAt")
+            .and_then(|value| value.as_str())
+            .is_some());
     }
 }

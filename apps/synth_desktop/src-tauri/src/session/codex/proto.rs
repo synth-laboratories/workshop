@@ -16,9 +16,12 @@ use std::{
     time::Duration,
 };
 use tokio::{
+    io::AsyncWrite,
     process::Child,
     sync::{oneshot, Mutex, RwLock},
 };
+
+pub(crate) type RpcWriter = Arc<Mutex<Box<dyn AsyncWrite + Unpin + Send>>>;
 
 pub(crate) const MIN_AUTO_COMPACT_TOKEN_LIMIT: u64 = 16_000;
 pub(crate) const COMPACT_PROMPT: &str = "You are performing a CONTEXT CHECKPOINT COMPACTION for a coding agent.\nWrite a handoff for another LLM that will continue the same workspace task.\nInclude:\n- Goal and acceptance criteria\n- Files read/changed (paths + one-line why)\n- Commands/tests run and outcomes\n- Decisions and constraints\n- Open bugs / next concrete steps\n- Any secrets-safe identifiers (branch names, ticket ids) needed to continue\nOmit raw file dumps, full command logs, and superseded plans.\nBe concise and structured (bullets).";
@@ -131,6 +134,11 @@ pub struct CodexTurnSendRequest {
     /// Same ownership as [`CodexTurnStartRequest::client_message_id`].
     #[serde(default)]
     pub client_message_id: Option<String>,
+    /// Crash recovery is not an ordinary retry. After attaching, first inspect
+    /// the resumed thread and rejoin an existing active turn when possible;
+    /// only start `prompt` as a continuation when no live turn remains.
+    #[serde(default)]
+    pub recovery_mode: bool,
 }
 
 /// Typed failure so the renderer can react to a lost app-server without
@@ -340,14 +348,15 @@ pub(crate) type Pending = Arc<Mutex<HashMap<u64, oneshot::Sender<Result<Value, S
 /// compaction turn and leave no answer.
 pub(crate) type CompactWaiters = Arc<Mutex<HashMap<String, oneshot::Sender<Result<(), String>>>>>;
 pub(crate) struct AppServer {
-    pub(crate) child: Mutex<Child>,
-    pub(crate) stdin: Arc<Mutex<tokio::process::ChildStdin>>,
+    pub(crate) child: Mutex<Option<Child>>,
+    pub(crate) stdin: RpcWriter,
     pub(crate) pending: Pending,
     pub(crate) next_id: AtomicU64,
+    pub(crate) persistent: bool,
 }
 
 pub(crate) struct CodexResolver {
-    pub(crate) stdin: Arc<Mutex<tokio::process::ChildStdin>>,
+    pub(crate) stdin: RpcWriter,
     pub(crate) rpc_id: Value,
     pub(crate) available_decisions: Vec<String>,
 }
@@ -402,6 +411,7 @@ impl ApprovalResolver for CodexResolver {
 impl Drop for AppServer {
     fn drop(&mut self) {
         if let Ok(mut child) = self.child.try_lock() {
+            let Some(child) = child.as_mut() else { return };
             #[cfg(unix)]
             if let Some(pgid) = owned_process_group(child.id()) {
                 signal_process_group(pgid, libc::SIGTERM);
@@ -455,6 +465,12 @@ impl AppServer {
 
     pub(crate) async fn perform_stop(&self) -> Result<()> {
         let mut child = self.child.lock().await;
+        let Some(child) = child.as_mut() else {
+            // A reconnectable app-server is a conversation service rather than
+            // an attachment process. The manager interrupts the turn and
+            // cleans its background terminals before fencing this connection.
+            return Ok(());
+        };
         #[cfg(unix)]
         {
             let pid = child.id();

@@ -314,8 +314,14 @@ impl DataStore {
             .await
     }
 
-    pub async fn experiment_create(&self, request: crate::experiments::ExperimentCreateRequest) -> Result<crate::experiments::ExperimentGroup> {
-        self.db.clone().run_transaction(move |conn| crate::experiments::create(conn, request)).await
+    pub async fn experiment_create(
+        &self,
+        request: crate::experiments::ExperimentCreateRequest,
+    ) -> Result<crate::experiments::ExperimentGroup> {
+        self.db
+            .clone()
+            .run_transaction(move |conn| crate::experiments::create(conn, request))
+            .await
     }
 
     pub async fn experiment_create_child(
@@ -351,8 +357,14 @@ impl DataStore {
             .await
     }
 
-    pub async fn experiment_finalize(&self, request: crate::experiments::ExperimentFinalizeRequest) -> Result<crate::experiments::ExperimentGroup> {
-        self.db.clone().run_transaction(move |conn| crate::experiments::finalize(conn, request)).await
+    pub async fn experiment_finalize(
+        &self,
+        request: crate::experiments::ExperimentFinalizeRequest,
+    ) -> Result<crate::experiments::ExperimentGroup> {
+        self.db
+            .clone()
+            .run_transaction(move |conn| crate::experiments::finalize(conn, request))
+            .await
     }
 
     pub async fn experiments_list(

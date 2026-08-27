@@ -11,9 +11,7 @@
 //! a receipt is consent for one specification at one moment, and spending it
 //! twice is the thing the whole pipeline exists to prevent.
 
-use super::ids::{
-    ApprovalReceiptId, DeclarationDigest, Digest, PolicyRevision, RecipeId,
-};
+use super::ids::{ApprovalReceiptId, DeclarationDigest, Digest, PolicyRevision, RecipeId};
 use super::pipeline::{AdmissibleExecutionSpec, ApprovedExecutionSpec};
 use super::spec::{ExecutionSpec, RecipeSourceKind};
 use super::state::{RolloutRecord, RolloutState, RolloutStateHolder, RunProgress, RunState};
@@ -38,7 +36,10 @@ pub struct EvaluationRunRecord {
 impl EvaluationRunRecord {
     /// Build the durable record from the approved specification that is about
     /// to execute, so the row and the execution cannot disagree.
-    pub fn from_approved(optimizer_run_id: impl Into<String>, approved: &ApprovedExecutionSpec) -> Self {
+    pub fn from_approved(
+        optimizer_run_id: impl Into<String>,
+        approved: &ApprovedExecutionSpec,
+    ) -> Self {
         let spec = approved.spec();
         let binding = approved.binding();
         Self {
@@ -259,7 +260,10 @@ pub fn load_run_progress(conn: &Connection, optimizer_run_id: &str) -> Result<Op
         rollouts.insert(
             index as u32,
             RolloutRecord {
-                state: state.as_deref().and_then(parse_rollout_state).map(RolloutStateHolder),
+                state: state
+                    .as_deref()
+                    .and_then(parse_rollout_state)
+                    .map(RolloutStateHolder),
                 rollout_id: rollout_id.map(super::ids::RolloutId::new).transpose()?,
                 reward,
                 trace_ref,

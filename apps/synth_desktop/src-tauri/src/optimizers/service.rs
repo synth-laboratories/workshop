@@ -546,7 +546,10 @@ impl OptimizerService {
                 .content()
                 .put_bytes("eval_frames", &frame.bytes)
                 .context("store bundled Trace V5 frame in eval CAS")?;
-            let expected = frame.digest.strip_prefix("sha256:").unwrap_or(&frame.digest);
+            let expected = frame
+                .digest
+                .strip_prefix("sha256:")
+                .unwrap_or(&frame.digest);
             if cas_digest != expected {
                 bail!("bundled Trace V5 frame changed digest during CAS import");
             }
@@ -591,9 +594,8 @@ impl OptimizerService {
             .db
             .clone()
             .run(move |conn| {
-                let mut statement = conn.prepare(
-                    "SELECT id, digest FROM traces WHERE id=?1 OR title=?2 ORDER BY id",
-                )?;
+                let mut statement = conn
+                    .prepare("SELECT id, digest FROM traces WHERE id=?1 OR title=?2 ORDER BY id")?;
                 let rows = statement.query_map(params![wanted_trace, imported_title], |row| {
                     Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
                 })?;
@@ -5832,11 +5834,17 @@ pub(in crate::optimizers) mod tests {
         // Execution is where a capability claim has to hold up.
         let serves_sft_only = json!({ "algorithms": ["sft"] });
         let error = require_advertised_algorithm(&serves_sft_only, "gepa").unwrap_err();
-        assert!(error.to_string().contains("does not advertise algorithm"), "got: {error}");
+        assert!(
+            error.to_string().contains("does not advertise algorithm"),
+            "got: {error}"
+        );
 
         // Absent capabilities refuse rather than waving the run through.
         let absent = require_advertised_algorithm(&json!({}), "gepa").unwrap_err();
-        assert!(absent.to_string().contains("advertise no algorithms"), "got: {absent}");
+        assert!(
+            absent.to_string().contains("advertise no algorithms"),
+            "got: {absent}"
+        );
 
         let serves_gepa = json!({ "algorithms": ["gepa"] });
         require_advertised_algorithm(&serves_gepa, "gepa").unwrap();
@@ -6560,7 +6568,10 @@ pub(in crate::optimizers) mod tests {
             .start_prepared(id, Some("sha256:prepare".into()), Some("approval-1".into()))
             .await
             .unwrap_err();
-        assert!(error.to_string().contains("capabilities are not proven"), "live capabilities absent must refuse, got: {error}");
+        assert!(
+            error.to_string().contains("capabilities are not proven"),
+            "live capabilities absent must refuse, got: {error}"
+        );
 
         // The run was prepared while nothing was proven. This is the fails-open
         // case: no pin was ever recorded, so there was nothing to compare.
@@ -6603,7 +6614,10 @@ pub(in crate::optimizers) mod tests {
             .start_prepared(id, Some("sha256:prepare".into()), Some("approval-1".into()))
             .await
             .unwrap_err();
-        assert!(error.to_string().contains("does not advertise algorithm"), "a runtime that does not serve this algorithm must refuse, got: {error}");
+        assert!(
+            error.to_string().contains("does not advertise algorithm"),
+            "a runtime that does not serve this algorithm must refuse, got: {error}"
+        );
 
         // Both present and equal, and the algorithm is served: the capability
         // gate is satisfied and control reaches the recipe. Whatever fails past

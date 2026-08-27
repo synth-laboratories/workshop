@@ -204,14 +204,20 @@ impl ApprovalKind {
     ///
     /// The permissive `approval_policy = "never"` is honored everywhere else in
     /// Workshop, deliberately: the operator asked for it. It is not honored here.
-    /// A hazard action commits content on the operator's behalf, so the consent
-    /// is about that content — a previous yes was about a different payload, and
-    /// a policy set weeks ago was about no payload at all.
+    /// A hazard action commits content on the operator's behalf, paid compute
+    /// commits a new digest-bound spend, and credential access creates a new
+    /// run-scoped provider capability. Consent is about that exact payload — a
+    /// permissive shell policy is not a substitute for any of these grants.
     ///
     /// This is the single owner of that judgment. Both policy engines and the
     /// remembered-grant path consult it rather than re-deriving it.
     pub(crate) fn requires_human(&self) -> bool {
-        matches!(self, Self::ComputerUse { hazard: true, .. })
+        matches!(
+            self,
+            Self::ComputerUse { hazard: true, .. }
+                | Self::PaidCompute { .. }
+                | Self::CredentialAccess { .. }
+        )
     }
 
     fn source(&self) -> EventSource {

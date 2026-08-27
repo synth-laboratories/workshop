@@ -20,7 +20,7 @@ use std::time::Duration;
 use super::backend::SecretBytes;
 use super::capability::ProviderUsePolicy;
 use super::fingerprint;
-use super::proxy::{self, API_KEY_SENTINEL, WorkloadEnv};
+use super::proxy::{self, WorkloadEnv, API_KEY_SENTINEL};
 use super::vault;
 use super::SecretsService;
 
@@ -165,15 +165,18 @@ impl CredentialLease {
             ),
             (
                 "WORKSHOP_OPENAI_ROUTE".into(),
-                format!("{}/chat/completions", self.container_base_url.trim_end_matches('/')),
+                format!(
+                    "{}/chat/completions",
+                    self.container_base_url.trim_end_matches('/')
+                ),
             ),
             ("WORKSHOP_CAPABILITY".into(), self.capability_handle.clone()),
             ("WORKSHOP_RUN_ID".into(), self.run_id.clone()),
-            ("WORKSHOP_CREDENTIAL_MODE".into(), self.credential_mode.clone()),
             (
-                "WORKSHOP_INFERENCE_URL".into(),
-                self.inference_url.clone(),
+                "WORKSHOP_CREDENTIAL_MODE".into(),
+                self.credential_mode.clone(),
             ),
+            ("WORKSHOP_INFERENCE_URL".into(), self.inference_url.clone()),
         ];
         if self.api_key_env != "OPENAI_API_KEY" {
             env.push((self.api_key_env.clone(), self.api_key_sentinel.clone()));
@@ -191,13 +194,22 @@ impl CredentialLease {
             ),
             (
                 "WORKSHOP_OPENAI_ROUTE".into(),
-                format!("{}/chat/completions", self.container_base_url.trim_end_matches('/')),
+                format!(
+                    "{}/chat/completions",
+                    self.container_base_url.trim_end_matches('/')
+                ),
             ),
-            ("EVAL_LLM_ROUTE".into(), format!(
-                "{}/chat/completions",
-                self.container_base_url.trim_end_matches('/')
-            )),
-            ("WORKSHOP_CREDENTIAL_MODE".into(), self.credential_mode.clone()),
+            (
+                "EVAL_LLM_ROUTE".into(),
+                format!(
+                    "{}/chat/completions",
+                    self.container_base_url.trim_end_matches('/')
+                ),
+            ),
+            (
+                "WORKSHOP_CREDENTIAL_MODE".into(),
+                self.credential_mode.clone(),
+            ),
         ];
         if self.api_key_env != "OPENAI_API_KEY" {
             env.push((self.api_key_env.clone(), self.api_key_sentinel.clone()));
@@ -238,7 +250,11 @@ impl CredentialLease {
         })
     }
 
-    pub fn to_workload_env(&self, capability_file: Option<String>, proxy_socket: Option<String>) -> WorkloadEnv {
+    pub fn to_workload_env(
+        &self,
+        capability_file: Option<String>,
+        proxy_socket: Option<String>,
+    ) -> WorkloadEnv {
         WorkloadEnv {
             openai_base_url: Some(self.host_base_url.clone()),
             anthropic_base_url: None,
@@ -408,28 +424,31 @@ pub fn provider_variable_from_config(document: &toml::Value, provider: &str) -> 
     if let Some(variable) = mapped {
         return Ok(variable);
     }
-    canonical_variable(&provider).map(str::to_owned).ok_or_else(|| {
-        CredentialError::new(
-            CREDENTIAL_SOURCE_UNCONFIGURED,
-            "config",
-            false,
-            format!("no credentials.providers.{provider} variable mapping in config.toml"),
-        )
-        .anyhow()
-    })
+    canonical_variable(&provider)
+        .map(str::to_owned)
+        .ok_or_else(|| {
+            CredentialError::new(
+                CREDENTIAL_SOURCE_UNCONFIGURED,
+                "config",
+                false,
+                format!("no credentials.providers.{provider} variable mapping in config.toml"),
+            )
+            .anyhow()
+        })
 }
 
 pub fn read_env_file_value(path: &Path, key: &str) -> Option<String> {
     let text = std::fs::read_to_string(path).ok()?;
-    text.lines().find_map(|line| {
-        let line = line.trim().strip_prefix("export ").unwrap_or(line.trim());
-        if line.starts_with('#') || line.is_empty() {
-            return None;
-        }
-        let (name, value) = line.split_once('=')?;
-        (name.trim() == key).then(|| value.trim().trim_matches(['\'', '"']).to_owned())
-    })
-    .filter(|value| !value.is_empty())
+    text.lines()
+        .find_map(|line| {
+            let line = line.trim().strip_prefix("export ").unwrap_or(line.trim());
+            if line.starts_with('#') || line.is_empty() {
+                return None;
+            }
+            let (name, value) = line.split_once('=')?;
+            (name.trim() == key).then(|| value.trim().trim_matches(['\'', '"']).to_owned())
+        })
+        .filter(|value| !value.is_empty())
 }
 
 pub fn upsert_env_source_descriptor(
@@ -484,7 +503,11 @@ pub fn upsert_env_source_descriptor(
 
 fn hex_short(input: &str) -> String {
     let digest = Sha256::digest(input.as_bytes());
-    digest.iter().take(8).map(|byte| format!("{byte:02x}")).collect()
+    digest
+        .iter()
+        .take(8)
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
 }
 
 fn looks_like_loopback(url: &str) -> bool {
@@ -535,9 +558,9 @@ impl SecretsService {
         let backend_ref = env_backend_ref(provider, variable);
         let value = read_env_file_value(env_file, variable);
         let loaded = value.is_some();
-        let fingerprint = value.as_ref().map(|secret| {
-            fingerprint::fingerprint(&SecretBytes::from_utf8(secret))
-        });
+        let fingerprint = value
+            .as_ref()
+            .map(|secret| fingerprint::fingerprint(&SecretBytes::from_utf8(secret)));
         if let Some(secret) = value.as_ref() {
             let bytes = SecretBytes::from_utf8(secret);
             self.env_sources.put(&backend_ref, &bytes);
@@ -579,17 +602,17 @@ impl SecretsService {
         self.load_one_env_source(provider, variable, env_file)
     }
 
-    pub fn configured_source(
-        &self,
-        provider: &str,
-    ) -> Result<CredentialSourceDescriptor> {
+    pub fn configured_source(&self, provider: &str) -> Result<CredentialSourceDescriptor> {
         let variable = self.configured_variable(provider)?;
         let env_file = crate::synth_config::resolve()
             .map(|backend| backend.env_file)
             .unwrap_or_else(|_| crate::instance::state_root().join(".env"));
         let backend_ref = env_backend_ref(provider, &variable);
         let loaded = self.env_sources.contains(&backend_ref);
-        let fingerprint = self.env_sources.get(&backend_ref).map(|bytes| fingerprint::fingerprint(&bytes));
+        let fingerprint = self
+            .env_sources
+            .get(&backend_ref)
+            .map(|bytes| fingerprint::fingerprint(&bytes));
         Ok(CredentialSourceDescriptor {
             schema_version: SOURCE_SCHEMA.into(),
             provider: provider.to_ascii_lowercase(),
@@ -690,8 +713,7 @@ impl SecretsService {
         })?;
         let host_base_url = proxy::capability_base_url(&origin, &handle, provider);
         let container_origin = proxy::rewrite_origin_for_containers(&origin);
-        let container_base_url =
-            proxy::capability_base_url(&container_origin, &handle, provider);
+        let container_base_url = proxy::capability_base_url(&container_origin, &handle, provider);
         let lease = CredentialLease {
             schema_version: LEASE_SCHEMA.into(),
             provider: provider.to_ascii_lowercase(),
@@ -709,7 +731,10 @@ impl SecretsService {
             models: policy.models.clone(),
             max_calls: policy.max_calls,
             max_cost_usd: policy.max_cost_usd,
-            expires_at: granted.summary.as_ref().map(|summary| summary.expires_at.clone()),
+            expires_at: granted
+                .summary
+                .as_ref()
+                .map(|summary| summary.expires_at.clone()),
         };
         lease.assert_managed_proxy()?;
         if !run_id.starts_with("preflight_") {
@@ -748,13 +773,8 @@ impl SecretsService {
             .anyhow());
         }
         let preflight_run = format!("preflight_{recipe_id}");
-        let lease = match self.issue_lease(
-            "openai",
-            &preflight_run,
-            recipe_id,
-            policy,
-            "admission",
-        ) {
+        let lease = match self.issue_lease("openai", &preflight_run, recipe_id, policy, "admission")
+        {
             Ok(lease) => lease,
             Err(error) => {
                 let _ = self.revoke_run(&preflight_run);
@@ -874,10 +894,7 @@ impl SecretsService {
             return Ok(None);
         };
         if let Some(object) = chain.as_object_mut() {
-            object.insert(
-                "revokedAt".into(),
-                json!(chrono::Utc::now().to_rfc3339()),
-            );
+            object.insert("revokedAt".into(), json!(chrono::Utc::now().to_rfc3339()));
             object.insert("capabilityRevoked".into(), json!(true));
         }
         chains.insert(run_id.to_string(), chain.clone());
@@ -992,7 +1009,9 @@ fn probe_http_get(base_url: &str, handle: &str) -> bool {
 fn capability_self_url(base_url: &str, handle: &str) -> Option<String> {
     let rest = base_url.strip_prefix("http://")?;
     let (hostport, _) = rest.split_once('/')?;
-    Some(format!("http://{hostport}/cap/{handle}/v1/capabilities/self"))
+    Some(format!(
+        "http://{hostport}/cap/{handle}/v1/capabilities/self"
+    ))
 }
 
 fn probe_container_route(lease: &CredentialLease) -> Result<bool> {
@@ -1032,7 +1051,12 @@ fn probe_container_via_docker(container_base_url: &str, handle: &str) -> Result<
         )
         .anyhow());
     }
-    for image in ["busybox:1.36", "busybox:latest", "alpine:3.20", "alpine:latest"] {
+    for image in [
+        "busybox:1.36",
+        "busybox:latest",
+        "alpine:3.20",
+        "alpine:latest",
+    ] {
         if docker_wget(image, handle, &url, true) {
             return Ok(true);
         }
@@ -1045,7 +1069,11 @@ fn probe_container_via_docker(container_base_url: &str, handle: &str) -> Result<
 
 fn docker_wget(image: &str, handle: &str, url: &str, pull_never: bool) -> bool {
     let mut command = Command::new("docker");
-    command.arg("run").arg("--rm").arg("--add-host").arg("host.docker.internal:host-gateway");
+    command
+        .arg("run")
+        .arg("--rm")
+        .arg("--add-host")
+        .arg("host.docker.internal:host-gateway");
     if pull_never {
         command.arg("--pull").arg("never");
     }
@@ -1062,7 +1090,10 @@ fn docker_wget(image: &str, handle: &str, url: &str, pull_never: bool) -> bool {
         .arg(url)
         .stdout(Stdio::piped())
         .stderr(Stdio::null());
-    command.status().map(|status| status.success()).unwrap_or(false)
+    command
+        .status()
+        .map(|status| status.success())
+        .unwrap_or(false)
 }
 
 pub fn write_runtime_lease(path: &Path, lease: &OptimizerRuntimeLease) -> Result<()> {
@@ -1100,7 +1131,10 @@ pub fn process_start_identity(pid: u32) -> String {
     #[cfg(target_os = "linux")]
     {
         if let Ok(stat) = std::fs::read_to_string(format!("/proc/{pid}/stat")) {
-            return format!("proc-stat:{}", stat.split_whitespace().nth(21).unwrap_or("0"));
+            return format!(
+                "proc-stat:{}",
+                stat.split_whitespace().nth(21).unwrap_or("0")
+            );
         }
     }
     format!("pid-only:{pid}")

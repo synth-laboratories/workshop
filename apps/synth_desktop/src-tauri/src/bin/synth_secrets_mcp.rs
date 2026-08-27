@@ -96,7 +96,7 @@ fn tools() -> Value {
     json!({"tools":[
         {
             "name": "secrets_manage",
-            "description": "Local Workshop secrets vault. List registered provider aliases, ask the host to import a .env (masked preview only), or request bounded use. Never returns plaintext. The user approves imports and use in Settings → Secrets. Load the use-synth-secrets skill. Do not pass values, tokens, or API keys as arguments.",
+            "description": "Local Workshop secrets vault. List registered provider aliases, ask the host to import a .env (masked preview only), or request bounded use. Never returns plaintext. request_use opens a native approval modal and returns only after the operator approves or rejects it; never ask the operator to visit Settings or type approval. Load the use-synth-secrets skill. Do not pass values, tokens, or API keys as arguments.",
             "inputSchema": {
                 "type": "object",
                 "properties": {

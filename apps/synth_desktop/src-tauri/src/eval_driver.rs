@@ -819,7 +819,10 @@ async fn create_session(deps: &EvalDriverDeps, body: Value) -> Result<Value> {
             .to_string(),
         api_key: String::new(),
         model,
-        target_id: body.get("targetId").and_then(Value::as_str).map(str::to_string),
+        target_id: body
+            .get("targetId")
+            .and_then(Value::as_str)
+            .map(str::to_string),
         provider_name: Some(provider_name),
         provider_title: body
             .get("providerTitle")
@@ -957,7 +960,10 @@ async fn send_message(deps: &EvalDriverDeps, session_id: &str, body: Value) -> R
             .to_string(),
         api_key: String::new(),
         model,
-        target_id: body.get("targetId").and_then(Value::as_str).map(str::to_string),
+        target_id: body
+            .get("targetId")
+            .and_then(Value::as_str)
+            .map(str::to_string),
         provider_name: Some(provider_name),
         provider_title: None,
         provider_env_key: None,
@@ -987,6 +993,7 @@ async fn send_message(deps: &EvalDriverDeps, session_id: &str, body: Value) -> R
                 effort,
                 compact_before_model_switch: false,
                 client_message_id: None,
+                recovery_mode: false,
             },
         )
         .await
@@ -2521,10 +2528,7 @@ mod tests {
             .block_on(refuse_overwrite_if_peer_alive(&path))
             .expect_err("a /health with another pid must refuse");
         let message = format!("{error:#}");
-        assert!(
-            message.contains("eval_driver_busy pid=1"),
-            "{message}"
-        );
+        assert!(message.contains("eval_driver_busy pid=1"), "{message}");
     }
 
     #[test]

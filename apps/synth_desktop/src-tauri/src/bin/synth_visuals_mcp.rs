@@ -638,8 +638,14 @@ fn upgrade_bindings_for_write(bindings: &Value) -> Result<Value, String> {
             .as_object()
             .cloned()
             .ok_or_else(|| "binding descriptors must be objects".to_string())?;
-        let input = object.get("input").and_then(Value::as_str).map(str::to_string);
-        let slot = object.get("slot").and_then(Value::as_str).map(str::to_string);
+        let input = object
+            .get("input")
+            .and_then(Value::as_str)
+            .map(str::to_string);
+        let slot = object
+            .get("slot")
+            .and_then(Value::as_str)
+            .map(str::to_string);
         match (input, slot) {
             (Some(a), Some(b)) if a != b => {
                 return Err("input and slot disagree; send one name".into());
@@ -654,10 +660,7 @@ fn upgrade_bindings_for_write(bindings: &Value) -> Result<Value, String> {
     }
     let mut envelope = bindings.clone();
     if let Some(object) = envelope.as_object_mut() {
-        object.insert(
-            "schemaVersion".into(),
-            json!("synth.visual-bindings.v1"),
-        );
+        object.insert("schemaVersion".into(), json!("synth.visual-bindings.v1"));
         object.insert("inputs".into(), json!(upgraded));
         object.remove("slots");
     }
@@ -721,7 +724,11 @@ fn call_tool(name: &str, args: &Value) -> Result<Value, String> {
                 .get("source_path")
                 .and_then(Value::as_str)
                 .ok_or("source_path required")?;
-            request("POST", "/v1/visuals/templates/import", Some(json!({"sourcePath": source_path})))
+            request(
+                "POST",
+                "/v1/visuals/templates/import",
+                Some(json!({"sourcePath": source_path})),
+            )
         }
         "visual_list" => request("GET", "/v1/visuals", Some(args.clone())),
         "visual_get" => {
@@ -997,16 +1004,26 @@ fn call_tool(name: &str, args: &Value) -> Result<Value, String> {
                 .get("experiment_id")
                 .and_then(Value::as_str)
                 .ok_or("experiment_id required")?;
-            request("POST", &format!("/v1/experiments/{experiment_id}/evidence"), Some(json!({
-                "sessionId": session_id, "nodeId": args.get("node_id"), "evidenceId": args.get("evidence_id"), "kind": args.get("kind"),
-                "label": args.get("label"), "digest": args.get("digest"), "containerId": args.get("container_id"),
-                "rolloutId": args.get("rollout_id"), "traceId": args.get("trace_id"), "visualId": args.get("visual_id"),
-                "artifactUri": args.get("artifact_uri"), "metadata": args.get("metadata")
-            })))
+            request(
+                "POST",
+                &format!("/v1/experiments/{experiment_id}/evidence"),
+                Some(json!({
+                    "sessionId": session_id, "nodeId": args.get("node_id"), "evidenceId": args.get("evidence_id"), "kind": args.get("kind"),
+                    "label": args.get("label"), "digest": args.get("digest"), "containerId": args.get("container_id"),
+                    "rolloutId": args.get("rollout_id"), "traceId": args.get("trace_id"), "visualId": args.get("visual_id"),
+                    "artifactUri": args.get("artifact_uri"), "metadata": args.get("metadata")
+                })),
+            )
         }
         "experiment_create" => {
             let session_id = require_session_identity(&session_env, "create an experiment")?;
-            request("POST", "/v1/experiments", Some(json!({"sessionId":session_id,"requestId":args.get("request_id"),"title":args.get("title"),"task":args.get("task"),"model":args.get("model")})))
+            request(
+                "POST",
+                "/v1/experiments",
+                Some(
+                    json!({"sessionId":session_id,"requestId":args.get("request_id"),"title":args.get("title"),"task":args.get("task"),"model":args.get("model")}),
+                ),
+            )
         }
         "experiment_create_child" | "experiment_fork" | "experiment_rerun" => {
             let session_id = require_session_identity(&session_env, "create a child experiment")?;
@@ -1052,8 +1069,17 @@ fn call_tool(name: &str, args: &Value) -> Result<Value, String> {
         }
         "experiment_finalize" => {
             let session_id = require_session_identity(&session_env, "finalize an experiment")?;
-            let id = args.get("experiment_id").and_then(Value::as_str).ok_or("experiment_id required")?;
-            request("POST", &format!("/v1/experiments/{id}/finalize"), Some(json!({"sessionId":session_id,"status":args.get("status"),"result":args.get("result"),"assessment":args.get("assessment")})))
+            let id = args
+                .get("experiment_id")
+                .and_then(Value::as_str)
+                .ok_or("experiment_id required")?;
+            request(
+                "POST",
+                &format!("/v1/experiments/{id}/finalize"),
+                Some(
+                    json!({"sessionId":session_id,"status":args.get("status"),"result":args.get("result"),"assessment":args.get("assessment")}),
+                ),
+            )
         }
         "visual_authoring_context" => {
             let id = args

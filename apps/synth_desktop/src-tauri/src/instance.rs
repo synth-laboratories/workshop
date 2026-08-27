@@ -1009,7 +1009,11 @@ mod tests {
         }
     }
 
-    fn env(instance: Option<&str>, data_root: Option<&str>, bundle_id: Option<&str>) -> EnvIdentity {
+    fn env(
+        instance: Option<&str>,
+        data_root: Option<&str>,
+        bundle_id: Option<&str>,
+    ) -> EnvIdentity {
         EnvIdentity {
             instance: instance.map(str::to_owned),
             data_root: data_root.map(PathBuf::from),
@@ -1078,7 +1082,11 @@ mod tests {
     #[test]
     fn a_descriptor_alone_names_the_instance() {
         let identity = resolve_identity(
-            Some(Ok(descriptor("alpha", "/tmp/instances/alpha/data", DEV_BUNDLE))),
+            Some(Ok(descriptor(
+                "alpha",
+                "/tmp/instances/alpha/data",
+                DEV_BUNDLE,
+            ))),
             &EnvIdentity::default(),
             Some(DEV_BUNDLE),
         )
@@ -1095,7 +1103,11 @@ mod tests {
     #[test]
     fn a_descriptor_for_another_bundle_is_refused() {
         let refusal = resolve_identity(
-            Some(Ok(descriptor("alpha", "/tmp/x", "com.synth.desktop.v07.dev.alpha"))),
+            Some(Ok(descriptor(
+                "alpha",
+                "/tmp/x",
+                "com.synth.desktop.v07.dev.alpha",
+            ))),
             &EnvIdentity::default(),
             Some("com.synth.desktop.v07.dev.beta"),
         )
@@ -1105,13 +1117,14 @@ mod tests {
 
     #[test]
     fn a_dev_bundle_with_neither_descriptor_nor_env_refuses_the_canonical_profile() {
-        let refusal = resolve_identity(None, &EnvIdentity::default(), Some(DEV_BUNDLE)).unwrap_err();
+        let refusal =
+            resolve_identity(None, &EnvIdentity::default(), Some(DEV_BUNDLE)).unwrap_err();
         assert_eq!(refusal.code(), "dev_bundle_without_identity");
         assert!(refusal.to_string().contains("canonical"), "{refusal}");
 
         // An instance name without a data root is still no data root.
-        let refusal = resolve_identity(None, &env(Some("alpha"), None, None), Some(DEV_BUNDLE))
-            .unwrap_err();
+        let refusal =
+            resolve_identity(None, &env(Some("alpha"), None, None), Some(DEV_BUNDLE)).unwrap_err();
         assert_eq!(refusal.code(), "dev_bundle_without_identity");
     }
 
@@ -1245,7 +1258,11 @@ mod tests {
         assert_eq!(read_lock_record_at(&path).unwrap().boot_epoch, "inst_first");
 
         let error = acquire_instance_lock_at(&path, current_record("inst_second")).unwrap_err();
-        let LockError::Held { holder: Some(holder), .. } = &error else {
+        let LockError::Held {
+            holder: Some(holder),
+            ..
+        } = &error
+        else {
             panic!("expected Held, got {error:?}");
         };
         assert_eq!(holder.pid, std::process::id());
@@ -1283,7 +1300,11 @@ mod tests {
         let lock = acquire_instance_lock_at(&path, current_record("inst_live")).unwrap();
         assert_eq!(lock.record.boot_epoch, "inst_live");
         let stale = stale_lock_path(&path, dead_pid);
-        assert!(stale.exists(), "{} should hold the quarantined record", stale.display());
+        assert!(
+            stale.exists(),
+            "{} should hold the quarantined record",
+            stale.display()
+        );
         assert_eq!(read_lock_record_at(&stale).unwrap().boot_epoch, "inst_dead");
         assert_eq!(read_lock_record_at(&path).unwrap().boot_epoch, "inst_live");
     }
@@ -1297,7 +1318,8 @@ mod tests {
         let mut child = Command::new("/usr/bin/true").spawn().unwrap();
         let dead_pid = child.id();
         child.wait().unwrap();
-        let inherited = acquire_instance_lock_at(&path, record(dead_pid, "gone", "inst_orphan")).unwrap();
+        let inherited =
+            acquire_instance_lock_at(&path, record(dead_pid, "gone", "inst_orphan")).unwrap();
 
         let lock = acquire_instance_lock_at(&path, current_record("inst_live")).unwrap();
         assert_eq!(lock.record.boot_epoch, "inst_live");
@@ -1371,6 +1393,11 @@ mod tests {
                 );
             }
         }
-        assert_eq!(adapters, 10, "expected the ten stdio MCP adapters under {}", bin_dir.display());
+        assert_eq!(
+            adapters,
+            10,
+            "expected the ten stdio MCP adapters under {}",
+            bin_dir.display()
+        );
     }
 }

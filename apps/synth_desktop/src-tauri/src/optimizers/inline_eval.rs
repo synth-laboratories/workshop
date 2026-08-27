@@ -6,7 +6,7 @@
 
 use super::admission::{
     self, ApprovalBinding, ApprovalReceiptId, ContainerCandidate, ContainerId,
-    ContainerRegistrationId, DeclaredEvaluator, DeclarationDigest, DiscoveryContext,
+    ContainerRegistrationId, DeclarationDigest, DeclaredEvaluator, DiscoveryContext,
     EvalDeclaration, EvaluatorId, InlineRequest, ModelPin, PolicyResolution, PolicyRevision,
     RecipeSource, RolloutCount, SourceRevision,
 };
@@ -25,8 +25,8 @@ pub async fn admit_inline(
     request: InlineRequest,
 ) -> Result<admission::AdmissibleExecutionSpec> {
     let (context, normalized) = discovery_context(service, request).await?;
-    let recipe = admission::pipeline::draft_inline(&normalized, &context)
-        .map_err(anyhow::Error::new)?;
+    let recipe =
+        admission::pipeline::draft_inline(&normalized, &context).map_err(anyhow::Error::new)?;
     admission::materialize(RecipeSource::Inline(recipe), &context)
         .and_then(|draft| draft.validate())
         .and_then(|validated| validated.admit())
@@ -78,7 +78,11 @@ pub async fn reverify(
         seeds: recipe.rollout_plan.seeds.clone(),
         maximum_rollouts: Some(recipe.rollout_plan.maximum_rollouts.0.get()),
         maximum_model_calls_per_rollout: Some(
-            recipe.resource_limits.maximum_model_calls_per_rollout.0.get(),
+            recipe
+                .resource_limits
+                .maximum_model_calls_per_rollout
+                .0
+                .get(),
         ),
         maximum_steps_per_rollout: Some(recipe.resource_limits.maximum_steps_per_rollout.0.get()),
         hard_total_cost_usd: Some(
@@ -110,14 +114,18 @@ async fn discovery_context(
     service: &OptimizerService,
     mut request: InlineRequest,
 ) -> Result<(DiscoveryContext, InlineRequest)> {
-    let requested_id = request.container_id.as_ref().map(ContainerId::as_str).map(str::to_owned);
+    let requested_id = request
+        .container_id
+        .as_ref()
+        .map(ContainerId::as_str)
+        .map(str::to_owned);
     let family = request.family.clone();
     let rows = service
         .database()
         .clone()
         .run(move |conn| {
             let mut statement = conn.prepare(
-                "SELECT id, status, task_family, metadata_json FROM containers ORDER BY updated_at DESC, id",
+                "SELECT id, status, task_family, metadata_json, base_url FROM containers ORDER BY updated_at DESC, id",
             )?;
             let rows = statement
                 .query_map([], |row| {
@@ -126,6 +134,7 @@ async fn discovery_context(
                         row.get::<_, String>(1)?,
                         row.get::<_, Option<String>>(2)?,
                         row.get::<_, String>(3)?,
+                        row.get::<_, Option<String>>(4)?,
                     ))
                 })?
                 .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -136,7 +145,8 @@ async fn discovery_context(
     let mut candidates = Vec::new();
     let mut policy_revisions = Vec::new();
     let mut policy_source_code = None;
-    for (id, status, task_family, metadata_json) in rows {
+    let mut selected_base_url = None;
+    for (id, status, task_family, metadata_json, base_url) in rows {
         let metadata: Value = serde_json::from_str(&metadata_json)
             .with_context(|| format!("decode container declaration for `{id}`"))?;
         let spec_id = metadata.get("specId").and_then(Value::as_str);
@@ -163,26 +173,49 @@ async fn discovery_context(
             .and_then(Value::as_str)
             .context("container declaration has no immutable source revision")?;
         policy_revisions.push(PolicyRevision::new(policy_revision)?);
-        if let Some(relative) = request.policy_source_path.as_deref() {
+        let declared_policy_source = request.policy_source_path.as_deref().or_else(|| {
+            metadata
+                .get("policySourcePath")
+                .and_then(Value::as_str)
+                .filter(|value| !value.trim().is_empty())
+        });
+        if let Some(relative) = declared_policy_source {
             policy_source_code = Some(read_policy_source_at_revision(
                 &metadata,
                 source_revision,
                 relative,
             )?);
         }
-        candidates.push(container_candidate(&id, &status, task_family, &metadata, &request)?);
+        candidates.push(container_candidate(
+            &id,
+            &status,
+            task_family,
+            &metadata,
+            &request,
+        )?);
+        if selected_base_url.is_none() {
+            selected_base_url = base_url;
+        }
     }
 
-    let selected = candidates.first().context("no matching registered container")?;
+    let selected = candidates
+        .first()
+        .context("no matching registered container")?;
     request.container_id = Some(selected.container_id.clone());
+    materialize_seed_instances(
+        selected_base_url
+            .as_deref()
+            .context("registered container has no base URL")?,
+        &request.seeds,
+    )
+    .await?;
     let revision = policy_revisions
         .into_iter()
         .next()
         .context("matching container has no policy revision")?;
-    let declared_configuration = request
-        .policy_overrides
-        .clone()
-        .unwrap_or_else(|| admission::CanonicalJson::new(json!({})).expect("empty object is canonical"));
+    let declared_configuration = request.policy_overrides.clone().unwrap_or_else(|| {
+        admission::CanonicalJson::new(json!({})).expect("empty object is canonical")
+    });
     // The supplied object is the complete declared configuration for an inline
     // policy pin. It is not applied twice as an override.
     request.policy_overrides = None;
@@ -194,28 +227,92 @@ async fn discovery_context(
         .policy_name
         .clone()
         .context("inline evaluation requires policyName")?;
-    let provider = request.provider.clone().context("inline evaluation requires provider")?;
-    let scope = admission::CredentialCapabilityScope::new(
-        ["provider.request".to_string()],
-        3_600,
+    let provider = request
+        .provider
+        .clone()
+        .context("inline evaluation requires provider")?;
+    let scope = admission::CredentialCapabilityScope::new(["provider.request".to_string()], 3_600);
+    Ok((
+        DiscoveryContext {
+            containers: candidates,
+            policy: Some(PolicyResolution {
+                namespace,
+                name,
+                revision: Some(revision),
+                declared_configuration,
+                source_code: policy_source_code,
+            }),
+            credential_route_available: crate::secrets::live().is_some(),
+            credential_route_detail: Some(format!(
+                "Workshop secrets proxy has no active route for `{}`",
+                provider.as_str()
+            )),
+            credential_capability_scope: Some(scope),
+            catalog: Vec::new(),
+        },
+        request,
+    ))
+}
+
+async fn materialize_seed_instances(base_url: &str, seeds: &[admission::Seed]) -> Result<()> {
+    anyhow::ensure!(
+        !seeds.is_empty(),
+        "inline evaluation requires at least one seed"
     );
-    Ok((DiscoveryContext {
-        containers: candidates,
-        policy: Some(PolicyResolution {
-            namespace,
-            name,
-            revision: Some(revision),
-            declared_configuration,
-            source_code: policy_source_code,
-        }),
-        credential_route_available: crate::secrets::live().is_some(),
-        credential_route_detail: Some(format!(
-            "Workshop secrets proxy has no active route for `{}`",
-            provider.as_str()
-        )),
-        credential_capability_scope: Some(scope),
-        catalog: Vec::new(),
-    }, request))
+    let client = crate::http::http_client_builder().build()?;
+    let task = client
+        .get(format!("{}/task_info", base_url.trim_end_matches('/')))
+        .send()
+        .await
+        .context("GET /task_info before task-instance materialization")?
+        .error_for_status()
+        .context("task_info_unavailable")?
+        .json::<Value>()
+        .await
+        .context("task_info_invalid")?;
+    let task_id = task
+        .get("id")
+        .or_else(|| task.get("task_id"))
+        .and_then(Value::as_str)
+        .context("task_info_invalid: task id missing")?;
+    let requested = seeds.iter().map(|seed| seed.0).collect::<Vec<_>>();
+    let response = client
+        .post(format!(
+            "{}/task_instances/materialize",
+            base_url.trim_end_matches('/')
+        ))
+        .json(&json!({"task_id": task_id, "seeds": requested}))
+        .send()
+        .await
+        .context("POST /task_instances/materialize")?;
+    if !response.status().is_success() {
+        let status = response.status();
+        let detail = response.text().await.unwrap_or_default();
+        anyhow::bail!("task_instance_materialization_failed: {status} {detail}");
+    }
+    let payload = response
+        .json::<Value>()
+        .await
+        .context("task_instance_materialization_invalid")?;
+    let instances = payload
+        .get("instances")
+        .and_then(Value::as_array)
+        .context("task_instance_materialization_invalid: instances missing")?;
+    anyhow::ensure!(
+        instances.len() == seeds.len(),
+        "task_instance_materialization_incomplete: expected {}, received {}",
+        seeds.len(),
+        instances.len()
+    );
+    for (seed, instance) in seeds.iter().zip(instances) {
+        let expected = format!("{task_id}:seed:{}", seed.0);
+        anyhow::ensure!(
+            instance.get("task_instance_id").and_then(Value::as_str) == Some(expected.as_str())
+                && instance.get("seed").and_then(Value::as_i64) == Some(seed.0),
+            "task_instance_identity_mismatch: expected {expected}"
+        );
+    }
+    Ok(())
 }
 
 fn read_policy_source_at_revision(
@@ -227,7 +324,9 @@ fn read_policy_source_at_revision(
     anyhow::ensure!(
         !path.is_absolute()
             && !path.as_os_str().is_empty()
-            && path.components().all(|part| matches!(part, Component::Normal(_))),
+            && path
+                .components()
+                .all(|part| matches!(part, Component::Normal(_))),
         "policySourcePath must be a non-empty repository-relative path without traversal"
     );
     let source_root = metadata
@@ -291,7 +390,9 @@ fn container_candidate(
         .map(|values| {
             values
                 .iter()
-                .filter(|(_, value)| value.as_str() == Some("supported") || value.as_bool() == Some(true))
+                .filter(|(_, value)| {
+                    value.as_str() == Some("supported") || value.as_bool() == Some(true)
+                })
                 .map(|(name, _)| name.clone())
                 .collect::<Vec<_>>()
         })
@@ -343,5 +444,7 @@ fn container_candidate(
 }
 
 pub fn approved_rollouts(value: u32) -> Result<RolloutCount> {
-    Ok(RolloutCount(NonZeroU32::new(value).context("approved rollout cap must be non-zero")?))
+    Ok(RolloutCount(
+        NonZeroU32::new(value).context("approved rollout cap must be non-zero")?,
+    ))
 }
