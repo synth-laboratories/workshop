@@ -95,6 +95,8 @@ struct EvalSpec {
     cost_ceiling_usd: f64,
     maximum_model_calls_per_rollout: u32,
     maximum_steps_per_rollout: u32,
+    credential_operations: Vec<String>,
+    credential_lifetime_seconds: u64,
     requires_credential_advertisement: bool,
     relay: RelaySettings,
 }
@@ -153,6 +155,14 @@ impl EvalSpec {
                 .0
                 .get(),
             maximum_steps_per_rollout: recipe.resource_limits.maximum_steps_per_rollout.0.get(),
+            credential_operations: recipe
+                .credential_route
+                .capability_scope()
+                .operations
+                .clone(),
+            credential_lifetime_seconds: u64::from(
+                recipe.credential_route.capability_scope().lifetime_seconds,
+            ),
             requires_credential_advertisement: false,
             relay: RelaySettings::default(),
         })
@@ -221,6 +231,8 @@ impl EvalSpec {
                 .and_then(|value| u32::try_from(value).ok())
                 .filter(|value| *value > 0)
                 .unwrap_or(1),
+            credential_operations: vec!["chat.completions.create".into()],
+            credential_lifetime_seconds: crate::limits::SECRETS_CAPABILITY_TTL.as_secs(),
             requires_credential_advertisement: recipe.requires_credential_advertisement,
             relay: recipe.relay,
         })
@@ -250,6 +262,8 @@ impl EvalSpec {
             cost_ceiling_usd: 0.50,
             maximum_model_calls_per_rollout: 10,
             maximum_steps_per_rollout: 2_000,
+            credential_operations: vec!["chat.completions.create".into()],
+            credential_lifetime_seconds: crate::limits::SECRETS_CAPABILITY_TTL.as_secs(),
             requires_credential_advertisement: false,
             relay: RelaySettings::default(),
         }
@@ -279,6 +293,8 @@ impl EvalSpec {
             cost_ceiling_usd: 0.50,
             maximum_model_calls_per_rollout: 8,
             maximum_steps_per_rollout: 64,
+            credential_operations: vec!["chat.completions.create".into()],
+            credential_lifetime_seconds: crate::limits::SECRETS_CAPABILITY_TTL.as_secs(),
             requires_credential_advertisement: true,
             relay: RelaySettings::default(),
         }
@@ -1823,7 +1839,8 @@ fn secrets_proxy_error(code: &str, message: &str) -> anyhow::Error {
 
 fn container_proxy_policy(spec: &EvalSpec) -> crate::secrets::SecretsUsePolicy {
     let mut policy = crate::secrets::SecretsUsePolicy::default();
-    policy.operations = vec!["chat.completions.create".into()];
+    policy.operations = spec.credential_operations.clone();
+    policy.lifetime_seconds = spec.credential_lifetime_seconds;
     if !spec.model.is_empty() {
         policy.models = vec![spec.model.clone()];
     }
@@ -4824,6 +4841,28 @@ max_total_rollouts = 4
     }
 
     #[test]
+    fn container_proxy_policy_uses_the_approved_credential_scope() {
+        let mut spec = EvalSpec::classify_fixture();
+        spec.credential_operations = vec!["responses.create".into()];
+        spec.credential_lifetime_seconds = 1_234;
+
+        let policy = container_proxy_policy(&spec);
+
+        assert_eq!(policy.operations, vec!["responses.create"]);
+        assert_eq!(policy.lifetime_seconds, 1_234);
+        assert_eq!(policy.models, vec!["openai/gpt-4.1-nano"]);
+    }
+
+    #[test]
+    fn workspace_eval_proxy_policy_retains_chat_completions_default() {
+        let spec = EvalSpec::classify_fixture();
+
+        let policy = container_proxy_policy(&spec);
+
+        assert_eq!(policy.operations, vec!["chat.completions.create"]);
+    }
+
+    #[test]
     fn nanohorizon_proxy_config_never_requests_a_container_api_key() {
         let mut spec = EvalSpec::classify_fixture();
         spec.harness = "nanohorizon".into();
@@ -4889,9 +4928,9 @@ max_total_rollouts = 4
         assert_eq!(traces["items"].as_array().unwrap().len(), 0);
         let errors = data["reconciliationErrors"].as_array().unwrap();
         assert!(
-            errors.iter().any(|error| error
-                .as_str()
-                .is_some_and(|text| text.contains("queued"))),
+            errors
+                .iter()
+                .any(|error| error.as_str().is_some_and(|text| text.contains("queued"))),
             "{errors:?}"
         );
         assert!(
