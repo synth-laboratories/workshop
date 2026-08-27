@@ -1,5 +1,5 @@
-//! Observed generation TPS: one auditable measurement per uninterrupted
-//! output-text segment.
+//! Observed generation TPS: exact provider response output divided by the
+//! matching model-output window.
 //!
 //! The invariant this module exists to enforce: tokens and elapsed time in a
 //! published rate come from *the same* measured segment. A segment is one
@@ -23,7 +23,8 @@
 //!   1. provider-reported counts scoped exactly to this output item/content part,
 //!   2. exact local tokenization under a verified model→tokenizer mapping,
 //!   3. no TPS.
-//! Response- or turn-level usage is not segment usage. Characters, words,
+//! Response usage may enrich the completed final answer when its denominator
+//! spans that same response's complete model-output window. Characters, words,
 //! bytes, delta counts, and historical ratios are not tokens; none of them may
 //! stand in for one. When no exact source covers the segment, the measurement
 //! is published with `tps: null` and a machine-readable reason.
@@ -108,11 +109,10 @@ pub(crate) enum SegmentStatus {
 pub(crate) enum TokenCountSource {
     /// Provider-reported tokens scoped exactly to this output item/content part.
     ProviderItemUsage,
-    /// Exact response output usage with exact reasoning output removed. Used
-    /// only for a completed final-answer item, and divided only by that item's
-    /// observed text-delivery interval. This is an average segment estimate,
-    /// not turn/request throughput.
-    ProviderResponseVisibleUsage,
+    /// Exact provider output usage for one response, including reasoning,
+    /// divided by that response's observed model-output window. TTFT and tool
+    /// execution are outside the denominator.
+    ProviderResponseOutputUsage,
     /// Exact local tokenization under a verified model→tokenizer mapping, with
     /// the tokenizer's identity recorded. Declared because it is the second
     /// rung of the token-authority ladder; no shipped provider mapping is
@@ -544,10 +544,20 @@ pub(crate) enum ProtocolEvent<'a> {
         item_id: String,
         phase: SegmentPhase,
     },
-    /// A reasoning item, function/tool call, or any other non-text item took
-    /// over the stream. Its tokens are not visible-answer tokens and it ends
-    /// any open text segment.
-    NonTextItem {
+    /// A reasoning item began generating. Its output belongs to the response
+    /// numerator and its lifecycle start anchors the otherwise-hidden output
+    /// interval.
+    ReasoningStarted {
+        item_id: Option<String>,
+    },
+    /// A reasoning item completed. It closes visible text but does not split
+    /// the model response.
+    ReasoningDone {
+        item_id: Option<String>,
+    },
+    /// Tool execution/call material separates model responses. It closes any
+    /// visible segment and resets the output-window anchor.
+    ToolBoundary {
         item_id: Option<String>,
     },
     ResponseTerminal {
@@ -636,6 +646,13 @@ fn is_text_item(item_type: Option<&str>) -> bool {
     )
 }
 
+fn is_reasoning_item(item_type: Option<&str>) -> bool {
+    matches!(
+        item_type.map(str::to_ascii_lowercase).as_deref(),
+        Some("reasoning") | Some("reasoning_summary") | Some("reasoningsummary")
+    )
+}
+
 /// Normalize one transport event into the segmentation vocabulary.
 ///
 /// Two shapes are recognized: the Codex app-server's JSON-RPC notifications and
@@ -685,17 +702,25 @@ pub(crate) fn protocol_event<'a>(method: &str, params: &'a Value) -> Option<Prot
         }));
     }
 
-    // Reasoning summaries and tool-call arguments are generated tokens that are
-    // not visible answer text. They contribute nothing to this metric, and the
-    // item they belong to ends any open answer segment.
-    let is_non_text_delta = normalized.contains("reasoning")
-        || normalized.contains("function_call_arguments")
+    // Reasoning is part of full provider output; tool material is a response
+    // boundary and must never enter the model-generation interval.
+    if normalized.contains("reasoning") && normalized.contains("delta") {
+        return Some(ProtocolEvent::ReasoningStarted {
+            item_id: item_id_of(params),
+        });
+    }
+    if normalized.contains("reasoning") && normalized.contains("done") {
+        return Some(ProtocolEvent::ReasoningDone {
+            item_id: item_id_of(params),
+        });
+    }
+    let is_tool_delta = normalized.contains("function_call_arguments")
         || normalized.contains("custom_tool_call_input")
         || normalized.contains("_call.arguments")
         || normalized.contains("commandexecution/outputdelta")
         || normalized.contains("command_execution/output_delta");
-    if is_non_text_delta && (normalized.contains("delta") || normalized.contains("done")) {
-        return Some(ProtocolEvent::NonTextItem {
+    if is_tool_delta && (normalized.contains("delta") || normalized.contains("done")) {
+        return Some(ProtocolEvent::ToolBoundary {
             item_id: item_id_of(params),
         });
     }
@@ -708,8 +733,12 @@ pub(crate) fn protocol_event<'a>(method: &str, params: &'a Value) -> Option<Prot
         let item_id = item_id_of(params)?;
         return Some(if is_text_item(item_type) {
             ProtocolEvent::TextSegmentDone { item_id, phase }
+        } else if is_reasoning_item(item_type) {
+            ProtocolEvent::ReasoningDone {
+                item_id: Some(item_id),
+            }
         } else {
-            ProtocolEvent::NonTextItem {
+            ProtocolEvent::ToolBoundary {
                 item_id: Some(item_id),
             }
         });
@@ -719,8 +748,12 @@ pub(crate) fn protocol_event<'a>(method: &str, params: &'a Value) -> Option<Prot
         let item_id = item_id_of(params)?;
         return Some(if is_text_item(item_type) {
             ProtocolEvent::TextItemStarted { item_id, phase }
+        } else if is_reasoning_item(item_type) {
+            ProtocolEvent::ReasoningStarted {
+                item_id: Some(item_id),
+            }
         } else {
-            ProtocolEvent::NonTextItem {
+            ProtocolEvent::ToolBoundary {
                 item_id: Some(item_id),
             }
         });
@@ -750,6 +783,7 @@ pub(crate) struct TurnSegmentTracker {
     model_id: Option<String>,
     open: Vec<SegmentRecorder>,
     finished: Vec<GenerationSpeedMeasurement>,
+    response_output_started_at_us: Option<i64>,
 }
 
 impl TurnSegmentTracker {
@@ -766,6 +800,7 @@ impl TurnSegmentTracker {
             model_id,
             open: Vec::new(),
             finished: Vec::new(),
+            response_output_started_at_us: None,
         }
     }
 
@@ -796,6 +831,7 @@ impl TurnSegmentTracker {
                 }
             }
             ProtocolEvent::OutputTextDelta(delta) => {
+                self.response_output_started_at_us.get_or_insert(at_us);
                 self.close_others(Some(&delta.key.item_id), SegmentEnd::Lifecycle);
                 let existing = self
                     .open
@@ -849,8 +885,16 @@ impl TurnSegmentTracker {
                 }
                 self.close_item(&item_id, SegmentEnd::Lifecycle);
             }
-            ProtocolEvent::NonTextItem { item_id } => {
+            ProtocolEvent::ReasoningStarted { item_id } => {
                 self.close_others(item_id.as_deref(), SegmentEnd::Lifecycle);
+                self.response_output_started_at_us.get_or_insert(at_us);
+            }
+            ProtocolEvent::ReasoningDone { item_id } => {
+                self.close_others(item_id.as_deref(), SegmentEnd::Lifecycle);
+            }
+            ProtocolEvent::ToolBoundary { item_id } => {
+                self.close_others(item_id.as_deref(), SegmentEnd::Lifecycle);
+                self.response_output_started_at_us = None;
             }
             ProtocolEvent::ResponseTerminal { interrupted: _ } => {
                 // Anything still open when the response ends never received the
@@ -878,14 +922,15 @@ impl TurnSegmentTracker {
     /// answer. Codex reports `lastUsage` after `item/completed`, so the segment
     /// has already been finalized by the time its exact response totals arrive.
     ///
-    /// `visible_tokens` must be response output minus response reasoning. The
-    /// denominator remains strictly the final answer's first-to-last observed
-    /// text delivery interval; tool time, reasoning time, TTFT, and other model
-    /// calls never enter it.
-    pub(crate) fn apply_final_response_visible_usage(
+    /// `output_tokens` is the provider's complete output count for this
+    /// response, including reasoning. The denominator starts at the first
+    /// observed reasoning/output lifecycle event and ends at the last final
+    /// answer delta. TTFT, tool execution, and other model calls stay out.
+    pub(crate) fn apply_final_response_output_usage(
         &mut self,
-        visible_tokens: i64,
+        output_tokens: i64,
     ) -> Option<GenerationSpeedMeasurement> {
+        let response_started_at_us = self.response_output_started_at_us?;
         let measurement = self.finished.last_mut()?;
         if measurement.phase != SegmentPhase::FinalAnswer
             || measurement.status != SegmentStatus::Unavailable
@@ -896,29 +941,37 @@ impl TurnSegmentTracker {
                     | Some(UnavailableReason::UsageScopeMismatch)
             )
             || measurement.sample_count < MIN_DISTINCT_SAMPLES
-            || measurement.duration_ms * 1_000.0 < MIN_DURATION_US as f64
         {
             return None;
         }
 
+        let response_ended_at_us = measurement.samples.last()?.at_us;
+        let duration_us = response_ended_at_us.checked_sub(response_started_at_us)?;
+        if duration_us < MIN_DURATION_US {
+            return None;
+        }
+
         // The interval begins at the first observed delivery, so conservatively
-        // remove one token from the exact visible-response total. The first
+        // remove one token from the exact response total. The first
         // delivery may contain more, never fewer; the result is explicitly an
         // observed segment estimate rather than a decoder benchmark.
-        let tokens_after_first = visible_tokens.saturating_sub(1);
+        let tokens_after_first = output_tokens.saturating_sub(1);
         if tokens_after_first < MIN_TOKENS_AFTER_FIRST_SAMPLE {
             return None;
         }
-        let rate = tokens_after_first as f64 / (measurement.duration_ms / 1_000.0);
+        let duration_ms = duration_us as f64 / 1_000.0;
+        let rate = tokens_after_first as f64 / (duration_ms / 1_000.0);
         if !rate.is_finite() || rate <= 0.0 {
             return None;
         }
 
         measurement.tps = Some(rate);
+        measurement.duration_ms = duration_ms;
         measurement.status = SegmentStatus::Completed;
         measurement.exact_tokens_after_first_sample = tokens_after_first;
-        measurement.token_count_source = TokenCountSource::ProviderResponseVisibleUsage;
+        measurement.token_count_source = TokenCountSource::ProviderResponseOutputUsage;
         measurement.unavailable_reason = None;
+        self.response_output_started_at_us = None;
         Some(measurement.clone())
     }
 

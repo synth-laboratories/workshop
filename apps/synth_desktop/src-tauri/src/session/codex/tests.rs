@@ -3848,31 +3848,49 @@ fn turn_level_usage_is_never_borrowed_as_segment_usage() {
 }
 
 #[test]
-fn late_response_usage_enriches_only_the_completed_final_answer_interval() {
+fn late_response_usage_measures_full_output_over_the_model_output_window() {
     let item = "msg_late_usage";
     let mut tracker = TurnSegmentTracker::new("sess", "turn-1", Some("synth-cloud".into()), None);
     for (method, params, at_us) in [
-        ("item/started", answer_started(item, "final_answer"), 0),
-        ("item/agentMessage/delta", answer_delta(item, "a", None), 0),
+        (
+            "item/started",
+            json!({"item": {"id": "rs_1", "type": "reasoning"}}),
+            0,
+        ),
+        (
+            "item/completed",
+            json!({"item": {"id": "rs_1", "type": "reasoning"}}),
+            10_000_000,
+        ),
+        (
+            "item/started",
+            answer_started(item, "final_answer"),
+            10_000_000,
+        ),
+        (
+            "item/agentMessage/delta",
+            answer_delta(item, "a", None),
+            10_000_000,
+        ),
         (
             "item/agentMessage/delta",
             answer_delta(item, "b", None),
-            400_000,
+            10_400_000,
         ),
         (
             "item/agentMessage/delta",
             answer_delta(item, "c", None),
-            800_000,
+            10_800_000,
         ),
         (
             "item/agentMessage/delta",
             answer_delta(item, "d", None),
-            1_200_000,
+            11_200_000,
         ),
         (
             "item/completed",
             answer_completed(item, "final_answer", "abcd"),
-            1_200_000,
+            11_200_000,
         ),
     ] {
         if let Some(event) = protocol_event(method, &params) {
@@ -3881,20 +3899,77 @@ fn late_response_usage_enriches_only_the_completed_final_answer_interval() {
     }
     assert_eq!(tracker.measurements()[0].tps, None);
 
-    // 284 visible response tokens, less the first observed token, across the
-    // final answer's 1.2 second delivery interval: 235.833... tok/s.
+    // All 896 response output tokens, including reasoning, less the first
+    // observed token, across the 11.2 second model-output interval.
     let updated = tracker
-        .apply_final_response_visible_usage(284)
+        .apply_final_response_output_usage(896)
         .expect("late exact response usage should enrich the final answer");
-    assert!((updated.tps.unwrap() - (283.0 / 1.2)).abs() < 1e-9);
-    assert_eq!(updated.exact_tokens_after_first_sample, 283);
+    assert!((updated.tps.unwrap() - (895.0 / 11.2)).abs() < 1e-9);
+    assert_eq!(updated.exact_tokens_after_first_sample, 895);
+    assert_eq!(updated.duration_ms, 11_200.0);
     assert_eq!(updated.status, SegmentStatus::Completed);
     assert_eq!(
         updated.token_count_source,
-        TokenCountSource::ProviderResponseVisibleUsage
+        TokenCountSource::ProviderResponseOutputUsage
     );
     assert_eq!(updated.unavailable_reason, None);
-    assert!(tracker.apply_final_response_visible_usage(284).is_none());
+    assert!(tracker.apply_final_response_output_usage(896).is_none());
+}
+
+#[test]
+fn tool_execution_resets_the_full_output_window() {
+    let item = "msg_after_tool";
+    let mut tracker = TurnSegmentTracker::new("sess", "turn-1", None, None);
+    for (method, params, at_us) in [
+        (
+            "item/started",
+            json!({"item": {"id": "rs_old", "type": "reasoning"}}),
+            0,
+        ),
+        ("item/started", tool_started("exec-1"), 8_000_000),
+        (
+            "item/started",
+            json!({"item": {"id": "rs_new", "type": "reasoning"}}),
+            20_000_000,
+        ),
+        (
+            "item/started",
+            answer_started(item, "final_answer"),
+            24_000_000,
+        ),
+        (
+            "item/agentMessage/delta",
+            answer_delta(item, "a", None),
+            24_000_000,
+        ),
+        (
+            "item/agentMessage/delta",
+            answer_delta(item, "b", None),
+            24_400_000,
+        ),
+        (
+            "item/agentMessage/delta",
+            answer_delta(item, "c", None),
+            24_800_000,
+        ),
+        (
+            "item/agentMessage/delta",
+            answer_delta(item, "d", None),
+            25_200_000,
+        ),
+        (
+            "item/completed",
+            answer_completed(item, "final_answer", "abcd"),
+            25_200_000,
+        ),
+    ] {
+        if let Some(event) = protocol_event(method, &params) {
+            tracker.observe(event, at_us);
+        }
+    }
+    let updated = tracker.apply_final_response_output_usage(261).unwrap();
+    assert_eq!(updated.duration_ms, 5_200.0);
+    assert!((updated.tps.unwrap() - 50.0).abs() < 1e-9);
 }
 
 #[test]
@@ -4094,7 +4169,7 @@ fn the_normalizer_maps_lifecycle_events_and_ignores_what_it_cannot_identify() {
     ));
     assert!(matches!(
         protocol_event("item/started", &tool_started("exec-9")),
-        Some(ProtocolEvent::NonTextItem { .. })
+        Some(ProtocolEvent::ToolBoundary { .. })
     ));
     assert!(matches!(
         protocol_event("turn/failed", &json!({})),

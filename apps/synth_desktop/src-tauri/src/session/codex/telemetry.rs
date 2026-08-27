@@ -192,14 +192,11 @@ pub(crate) async fn track_performance_event(
             tracker.last_output_at_ms = Some(now_ms);
         }
         let usage_event = method.to_ascii_lowercase().contains("usage");
-        let response_visible_tokens = if usage_event || terminal {
+        let response_output_tokens = if usage_event || terminal {
             if let Some(usage) = extract_turn_usage(params) {
-                let visible = usage
-                    .output_tokens
-                    .zip(usage.reasoning_tokens)
-                    .map(|(output, reasoning)| output.saturating_sub(reasoning));
+                let output = usage.output_tokens;
                 tracker.usage = usage;
-                visible
+                output
             } else {
                 None
             }
@@ -211,10 +208,10 @@ pub(crate) async fn track_performance_event(
             None => Vec::new(),
         };
         if usage_event {
-            if let Some(visible_tokens) = response_visible_tokens {
+            if let Some(output_tokens) = response_output_tokens {
                 if let Some(updated) = tracker
                     .segments
-                    .apply_final_response_visible_usage(visible_tokens)
+                    .apply_final_response_output_usage(output_tokens)
                 {
                     finalized.push(updated);
                 }
