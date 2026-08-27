@@ -317,6 +317,29 @@ export type EvalTrial = {
   evidenceDir?: string;
 };
 
+export type EvalRollout = {
+  trialId: string;
+  seed?: number;
+  world?: string;
+  status: "starting" | "running" | "finished";
+  ply: number;
+  actions: string[];
+  policyReason?: string;
+  rewardTotal: number | null;
+  rewardDelta: number | null;
+  achievements: string[];
+  resources: Record<string, number>;
+  playerPos?: unknown;
+  frame?: {
+    dataUrl: string;
+    sha256?: string;
+    width?: number;
+    height?: number;
+  };
+  costUsd: number | null;
+  sequence: number;
+};
+
 export type EvalScorecard = {
   candidateId: string;
   label: string;
@@ -356,6 +379,7 @@ export type EvalState = {
   candidates: Array<{ id: string; label: string; isBaseline: boolean }>;
   scorecards: EvalScorecard[];
   trials: EvalTrial[];
+  rollouts: EvalRollout[];
   selection: EvalSelection | null;
   seedLedger: { screening: number[]; confirmation: number[]; scenarios: string[] } | null;
   manifestDigest: string | null;
@@ -759,6 +783,7 @@ export function projectAtCursor(
   const artifacts: unknown[] = [];
   const candidates = new Map<string, Record<string, unknown>>();
   const evalTrials = new Map<string, EvalTrial>();
+  const evalRollouts = new Map<string, EvalRollout>();
   const evalScorecards = new Map<string, EvalScorecard>();
   let evalSelection: EvalSelection | null = null;
   let evalLedger: EvalState["seedLedger"] = null;
@@ -1126,6 +1151,72 @@ export function projectAtCursor(
             seed: optionalNumber(event.delta?.seed) ?? existing?.seed,
             scenario: optionalString(event.delta?.scenario) ?? existing?.scenario,
             status: event.type.endsWith("started") ? "running" : "queued"
+          });
+        }
+      } else if (event.type === "eval.trial.event") {
+        const trialId = String(event.delta?.trial_id ?? "");
+        const container = (event.delta?.containerEvent ?? {}) as Record<string, unknown>;
+        const containerType = String(container.event ?? "");
+        const existing = evalRollouts.get(trialId);
+        if (trialId && containerType === "rollout.started") {
+          evalRollouts.set(trialId, {
+            trialId,
+            seed: optionalNumber(container.seed),
+            world: optionalString(container.world),
+            status: "starting",
+            ply: 0,
+            actions: [],
+            rewardTotal: null,
+            rewardDelta: null,
+            achievements: [],
+            resources: {},
+            costUsd: null,
+            sequence: event.sequenceNumber
+          });
+        } else if (trialId && containerType === "rollout.step") {
+          const frame = (container.frame ?? {}) as Record<string, unknown>;
+          const dataUrl = optionalString(frame.data_url ?? frame.dataUrl);
+          evalRollouts.set(trialId, {
+            ...(existing ?? {
+              trialId,
+              status: "running" as const,
+              ply: 0,
+              actions: [],
+              rewardTotal: null,
+              rewardDelta: null,
+              achievements: [],
+              resources: {},
+              costUsd: null,
+              sequence: event.sequenceNumber
+            }),
+            seed: optionalNumber(container.seed) ?? existing?.seed,
+            status: "running",
+            ply: optionalNumber(container.ply) ?? existing?.ply ?? 0,
+            actions: stringList(container.actions) ?? existing?.actions ?? [],
+            policyReason: optionalString(container.policy_reason) ?? existing?.policyReason,
+            rewardTotal: numberOrNull(container.reward_total),
+            rewardDelta: numberOrNull(container.reward_delta),
+            achievements: stringList(container.achievements) ?? existing?.achievements ?? [],
+            resources: numberRecord(container.resources),
+            playerPos: container.player_pos ?? existing?.playerPos,
+            frame: dataUrl
+              ? {
+                  dataUrl,
+                  sha256: optionalString(frame.sha256),
+                  width: optionalNumber(frame.width),
+                  height: optionalNumber(frame.height)
+                }
+              : existing?.frame,
+            sequence: event.sequenceNumber
+          });
+        } else if (trialId && containerType === "rollout.finished" && existing) {
+          evalRollouts.set(trialId, {
+            ...existing,
+            status: "finished",
+            rewardTotal: numberOrNull(container.reward) ?? existing.rewardTotal,
+            achievements: stringList(container.unique_achievements) ?? existing.achievements,
+            costUsd: numberOrNull(container.cost_usd),
+            sequence: event.sequenceNumber
           });
         }
       } else if (event.type === "eval.trial.terminal" && event.item) {
@@ -2722,6 +2813,7 @@ export function projectAtCursor(
         return a.label.localeCompare(b.label);
       }),
       trials: [...evalTrials.values()].sort((a, b) => a.id.localeCompare(b.id)),
+      rollouts: [...evalRollouts.values()].sort((a, b) => b.sequence - a.sequence),
       selection: evalSelection,
       seedLedger: evalLedger,
       manifestDigest: optionalString(evalPlan.manifest_digest) ?? null,

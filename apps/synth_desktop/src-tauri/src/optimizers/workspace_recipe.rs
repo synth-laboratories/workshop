@@ -69,6 +69,7 @@ pub struct WorkspaceRecipe {
     pub harness: String,
     pub policy_config: String,
     pub policy: serde_json::Map<String, Value>,
+    pub policy_source: Option<String>,
     pub train_seeds: Vec<i64>,
     pub heldout_seeds: Vec<i64>,
     pub concurrency: usize,
@@ -118,6 +119,8 @@ struct RecipeFile {
     policy_config: Option<String>,
     #[serde(default)]
     policy: toml::value::Table,
+    #[serde(default)]
+    policy_source: Option<String>,
     #[serde(default)]
     proposer_model: Option<String>,
     #[serde(default)]
@@ -432,6 +435,7 @@ fn parse_recipe(path: &Path) -> Result<WorkspaceRecipe> {
         harness: parsed.harness.unwrap_or_else(|| "desktop_eval".into()),
         policy_config: parsed.policy_config.unwrap_or_else(|| "default".into()),
         policy,
+        policy_source: parsed.policy_source.filter(|value| !value.trim().is_empty()),
         train_seeds: parsed.train_seeds.unwrap_or_else(|| vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9]),
         heldout_seeds: parsed.heldout_seeds.unwrap_or_default(),
         concurrency: parsed.concurrency.unwrap_or(1).max(1),

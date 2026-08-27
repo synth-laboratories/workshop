@@ -115,7 +115,7 @@ pub async fn start(
     let create = training_create_request(
         &run_id,
         "sft",
-        "qwen35-0.8b-mlx-lora-v1",
+        "qwen35-2b-mlx-lora-v1",
         "Local Qwen 3.5 2B LoRA SFT on Apple Silicon MLX",
         "local",
         QWEN_MLX_SFT_RECIPE,
@@ -348,6 +348,7 @@ mod tests {
             dataset_shard: None,
             candidate_set_id: None,
             container_id: container_id.map(str::to_string),
+            plan_override: None,
             search: None,
         }
     }
@@ -387,6 +388,7 @@ mod tests {
                 dataset_shard: None,
                 candidate_set_id: None,
                 container_id: None,
+                plan_override: None,
                 search: None,
             },
         )

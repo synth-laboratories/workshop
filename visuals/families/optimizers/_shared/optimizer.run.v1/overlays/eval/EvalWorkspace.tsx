@@ -88,6 +88,123 @@ function Panel({
   );
 }
 
+/* ── Live Craftax evidence ─────────────────────────────────────────────── */
+
+function LiveRolloutsPanel({ state }: { state: EvalState }) {
+  if (state.rollouts.length === 0) return null;
+  const hero = state.rollouts.find((rollout) => rollout.status === "running" && rollout.frame)
+    ?? state.rollouts.find((rollout) => rollout.frame)
+    ?? state.rollouts[0];
+  const rewardValues = state.rollouts
+    .map((rollout) => rollout.rewardTotal)
+    .filter((value): value is number => typeof value === "number" && Number.isFinite(value));
+  const rewardMax = Math.max(0.000001, ...rewardValues.map((value) => Math.abs(value)));
+  const achievementCounts = new Map<string, number>();
+  for (const rollout of state.rollouts) {
+    for (const achievement of rollout.achievements) {
+      achievementCounts.set(achievement, (achievementCounts.get(achievement) ?? 0) + 1);
+    }
+  }
+  const resources = Object.entries(hero.resources)
+    .filter(([, value]) => value !== 0)
+    .sort((a, b) => Math.abs(b[1]) - Math.abs(a[1]))
+    .slice(0, 8);
+
+  return (
+    <Panel
+      title="Live Craftax rollouts"
+      aside={`${state.rollouts.filter((rollout) => rollout.status === "running").length} live · ${state.rollouts.length} seen`}
+      testId="eval-craftax-live"
+    >
+      <div className="sv-craftax-live-grid">
+        <figure className="sv-craftax-frame" data-testid="eval-craftax-frame">
+          {hero.frame ? (
+            <img
+              src={hero.frame.dataUrl}
+              alt={`Craftax world for seed ${hero.seed ?? "unknown"} at step ${hero.ply}`}
+            />
+          ) : (
+            <div className="sv-craftax-frame-empty">Waiting for the first rendered engine frame…</div>
+          )}
+          <figcaption>
+            <span className="sv-chip" data-tone={hero.status === "running" ? "live" : "ok"}>
+              {hero.status}
+            </span>
+            <strong>seed {hero.seed ?? "?"}</strong>
+            <span className="sv-mono">step {hero.ply}</span>
+            <span className="sv-mono">reward {fixed(hero.rewardTotal, 4)}</span>
+          </figcaption>
+        </figure>
+
+        <div className="sv-craftax-telemetry">
+          <section>
+            <h5 className="sv-subhead">Latest model decision</h5>
+            <p className="sv-craftax-actions">
+              {hero.actions.length ? hero.actions.join(" → ") : "waiting for actions"}
+            </p>
+            {hero.policyReason ? <p className="sv-note">{hero.policyReason}</p> : null}
+          </section>
+          <section>
+            <h5 className="sv-subhead">Inventory</h5>
+            <div className="sv-craftax-stats">
+              {resources.length
+                ? resources.map(([name, value]) => (
+                    <span key={name}><strong>{value}</strong>{name.replaceAll("_", " ")}</span>
+                  ))
+                : <span className="sv-empty">No collected resources yet</span>}
+            </div>
+          </section>
+          <section>
+            <h5 className="sv-subhead">Achievement frequency</h5>
+            <div className="sv-craftax-achievements" data-testid="eval-achievement-frequency">
+              {[...achievementCounts.entries()].length
+                ? [...achievementCounts.entries()]
+                    .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+                    .map(([name, count]) => (
+                      <span key={name} className="sv-tag" data-tone="ok">
+                        {name.replaceAll("_", " ")} ×{count}
+                      </span>
+                    ))
+                : <span className="sv-empty">No achievements unlocked yet</span>}
+            </div>
+          </section>
+        </div>
+      </div>
+
+      <section className="sv-craftax-distribution" data-testid="eval-reward-distribution">
+        <div className="sv-rail-row">
+          <h5 className="sv-subhead">Reward distribution</h5>
+          <span className="sv-mono">{rewardValues.length} observed rollouts</span>
+        </div>
+        <div className="sv-craftax-bars" role="img" aria-label="Reward distribution across observed rollouts">
+          {rewardValues.length
+            ? rewardValues.map((value, index) => (
+                <span key={index} title={`reward ${value}`}>
+                  <i style={{ height: `${Math.max(4, Math.abs(value) / rewardMax * 100)}%` }} />
+                  <small>{fixed(value, 3)}</small>
+                </span>
+              ))
+            : <span className="sv-empty">Rewards appear as rollouts advance.</span>}
+        </div>
+      </section>
+
+      <div className="sv-craftax-rollout-strip" data-testid="eval-rollout-strip">
+        {state.rollouts.slice(0, 10).map((rollout) => (
+          <article key={rollout.trialId} data-status={rollout.status}>
+            {rollout.frame ? <img src={rollout.frame.dataUrl} alt="" aria-hidden="true" /> : null}
+            <div>
+              <strong>seed {rollout.seed ?? "?"}</strong>
+              <span className="sv-mono">step {rollout.ply}</span>
+              <span className="sv-mono">r {fixed(rollout.rewardTotal, 3)}</span>
+              <small>{rollout.achievements.length} achievements</small>
+            </div>
+          </article>
+        ))}
+      </div>
+    </Panel>
+  );
+}
+
 /* ── Verdict ────────────────────────────────────────────────────────────── */
 
 function VerdictPanel({ state, runStatus }: { state: EvalState; runStatus: string }) {
@@ -412,6 +529,7 @@ export function EvalWorkspace({
       <StageTimeline stages={evalStages(state, status)} testId="eval-stages" />
       {state ? (
         <>
+          <LiveRolloutsPanel state={state} />
           <VerdictPanel state={state} runStatus={status} />
           <ComparisonPanel state={state} />
           <MatrixPanel state={state} />

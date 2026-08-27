@@ -29,9 +29,9 @@ type Run = {
 	evaluations: Evaluation[];
 };
 
-const MODEL_ID = "Qwen/Qwen3.5-0.8B";
-const MODEL_TITLE = "Qwen 3.5 0.8B";
-const MODEL_REVISION = "2fc06364715b967f1860aea9cf38778875588b17";
+const MODEL_ID = "Qwen/Qwen3.5-2B";
+const MODEL_TITLE = "Qwen 3.5 2B";
+const MODEL_REVISION = "15852e8c16360a2fea060d615a32b45270f8a8fc";
 
 function bytes(value?: number | null): string { return value == null ? "—" : value >= 1024 ** 3 ? `${(value / 1024 ** 3).toFixed(2)} GB` : `${(value / 1024 ** 2).toFixed(1)} MB`; }
 function message(error: unknown): string { return publicError(error); }
@@ -44,7 +44,7 @@ function presentTarget(item: ContainerDeployment): TrainingTarget | null {
 function evaluations(events: unknown[]): Evaluation[] { return events.flatMap((raw) => { if (typeof raw !== "object" || raw == null) return []; const event = raw as Record<string, unknown>; const delta = typeof event.delta === "object" && event.delta != null ? event.delta as Record<string, unknown> : {}; return event.type === "training.evaluation.completed" && typeof delta.evaluation === "object" && delta.evaluation != null ? [delta.evaluation as Evaluation] : []; }); }
 function trainingRecipeId(algorithm: "sft" | "cispo", placement: "mlx" | "tinker"): string {
 	if (algorithm === "cispo") return placement === "mlx" ? "cispo.mlx.v1" : "cispo.slime.hosted.v1";
-	return placement === "mlx" ? "sft.qwen35-0.8b.mlx.v1" : "sft.banking77.nemotron-lightning.tinker.v1";
+	return placement === "mlx" ? "sft.qwen35-2b.mlx.v1" : "sft.banking77.nemotron-lightning.tinker.v1";
 }
 
 export function TrainingWorkspace({ onStartAgent }: { onStartAgent?: () => void }) {

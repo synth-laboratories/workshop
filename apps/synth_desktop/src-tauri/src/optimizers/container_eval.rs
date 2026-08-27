@@ -85,6 +85,7 @@ struct EvalSpec {
     harness: String,
     policy_config: String,
     policy: serde_json::Map<String, Value>,
+    policy_code: Option<String>,
     provider: String,
     model: String,
     concurrency: usize,
@@ -117,8 +118,17 @@ impl EvalSpec {
         Duration::from_secs_f64((per_call * calls + 60.0).clamp(60.0, 86_400.0))
     }
 
-    fn from_workspace(recipe: &WorkspaceRecipe) -> Self {
-        Self {
+    fn from_workspace(recipe: &WorkspaceRecipe, workspace: &std::path::Path) -> Result<Self> {
+        let policy_code = recipe
+            .policy_source
+            .as_deref()
+            .map(|relative| {
+                let path = workspace_recipe::resolve_workspace_path(workspace, relative)?;
+                std::fs::read_to_string(&path)
+                    .with_context(|| format!("read policy source {}", path.display()))
+            })
+            .transpose()?;
+        Ok(Self {
             recipe_id: recipe.id.clone(),
             family: recipe.family.clone(),
             title: recipe.title.clone(),
@@ -128,6 +138,7 @@ impl EvalSpec {
             harness: recipe.harness.clone(),
             policy_config: recipe.policy_config.clone(),
             policy: recipe.policy.clone(),
+            policy_code,
             provider: recipe.provider.clone(),
             model: recipe.model.clone(),
             concurrency: recipe.concurrency,
@@ -136,7 +147,7 @@ impl EvalSpec {
             cost_ceiling_usd: recipe.bounds.max_cost_usd,
             requires_credential_advertisement: recipe.requires_credential_advertisement,
             relay: recipe.relay,
-        }
+        })
     }
 
     #[cfg(test)]
@@ -151,6 +162,7 @@ impl EvalSpec {
             harness: "desktop_eval".into(),
             policy_config: "banking77_gpt_4_1_nano".into(),
             policy: serde_json::Map::new(),
+            policy_code: None,
             provider: "openrouter".into(),
             model: "openai/gpt-4.1-nano".into(),
             concurrency: 10,
@@ -174,6 +186,7 @@ impl EvalSpec {
             harness: "chat_completion".into(),
             policy_config: "openai_gpt41_mini".into(),
             policy: serde_json::Map::new(),
+            policy_code: None,
             provider: "openai".into(),
             model: "gpt-4.1-mini-2025-04-14".into(),
             concurrency: 2,
@@ -249,7 +262,7 @@ pub(super) async fn start(
     if recipe.algorithm != workspace_recipe::AlgorithmKind::Eval {
         bail!("recipe `{}` is not an eval recipe", recipe.id);
     }
-    let spec = EvalSpec::from_workspace(&recipe);
+    let spec = EvalSpec::from_workspace(&recipe, &workspace)?;
     let container =
         find_ready_container(service, &spec.family, request.container_id.as_deref()).await?;
     preflight_container_credentials(&container, &spec).await?;
@@ -1136,11 +1149,24 @@ async fn register_policy_pin(
             "authority": "container_advertisement",
         }));
     }
-    let openai_base = if spec.requires_credential_advertisement() {
-        Some(container_openai_proxy_base(run_id, spec)?)
-    } else {
-        None
-    };
+    // Credential advertisement and policy registration are independent.
+    // A container-backed policy may intentionally hold no provider secret of
+    // its own while still requiring Workshop to register a scoped proxy route.
+    // Only an already-advertised immutable config may skip registration.
+    let openai_base = Some(container_openai_proxy_base(run_id, spec)?);
+    if let Some(code) = spec.policy_code.as_deref() {
+        let response = client
+            .put(format!("{base}/policy"))
+            .json(&json!({ "code": code, "harness": spec.harness }))
+            .send()
+            .await
+            .context("PUT /policy")?;
+        if !response.status().is_success() {
+            let status = response.status();
+            let text = response.text().await.unwrap_or_default();
+            bail!("policy source registration failed: {status} {text}");
+        }
+    }
     let Some(body) = spec.policy_config_body(openai_base.as_deref()) else {
         if spec.requires_credential_advertisement() {
             return Err(secrets_proxy_error(
@@ -1174,6 +1200,16 @@ async fn register_policy_pin(
             "policy config identity mismatch: wanted {}, got {returned_id:?}",
             spec.policy_config
         );
+    }
+    if spec.policy_code.is_some() {
+        let response = client
+            .post(format!("{base}/policy/restart"))
+            .send()
+            .await
+            .context("POST /policy/restart")?;
+        if !response.status().is_success() {
+            bail!("policy restart failed: {}", response.status());
+        }
     }
     Ok(json!({
         "harness": spec.harness,
@@ -1879,7 +1915,7 @@ async fn find_ready_container(
         }
         if matches && ready {
             if let Some(base_url) = base_url.filter(|value| !value.trim().is_empty()) {
-                if let Some(protocol) = advertised_gepa_v2_protocol(&metadata) {
+                if let Some(protocol) = advertised_eval_protocol(&metadata) {
                     ready_containers.push(ReadyContainer {
                         id: id.clone(),
                         base_url: base_url.trim_end_matches('/').to_string(),
@@ -1903,7 +1939,7 @@ async fn find_ready_container(
             .find(|container| container.id == requested_id)
             .ok_or_else(|| {
                 anyhow::anyhow!(
-                    "requested {family} container `{requested_id}` is not a ready GEPA v2 pool: {}",
+                    "requested {family} container `{requested_id}` is not a ready live-eval container: {}",
                     seen.join(", ")
                 )
             });
@@ -1913,7 +1949,7 @@ async fn find_ready_container(
     }
     if ready_containers.len() > 1 {
         bail!(
-            "ambiguous registered {family} GEPA v2 pools: {}. Pass the explicit containerId selected in Data; refusing to substitute a container.",
+            "ambiguous registered {family} live-eval containers: {}. Pass the explicit containerId selected in Data; refusing to substitute a container.",
             ready_containers
                 .iter()
                 .map(|container| container.id.as_str())
@@ -1923,19 +1959,25 @@ async fn find_ready_container(
     }
     if seen.is_empty() {
         bail!(
-            "no registered {family} container. Register a healthy {family} GEPA v2 pool before starting this baseline eval."
+            "no registered {family} container. Register a healthy {family} live-eval container before starting this baseline eval."
         );
     }
     bail!(
-        "registered {family} containers are not a ready GEPA v2 pool: {}. Probe until status is ready/healthy and the container advertises {}.",
+        "registered {family} containers are not ready live-eval containers: {}. Probe until status is ready/healthy and the container advertises {}.",
         seen.join(", "),
-        crate::container_capabilities::GEPA_V2_CONTRACT
+        crate::container_capabilities::LIVE_EVAL_PROTOCOL
     )
 }
 
-fn advertised_gepa_v2_protocol(metadata: &Value) -> Option<String> {
+fn advertised_eval_protocol(metadata: &Value) -> Option<String> {
+    if let Some(protocol) = metadata
+        .pointer("/capabilities/protocol")
+        .and_then(Value::as_str)
+        .filter(|protocol| *protocol == crate::container_capabilities::LIVE_EVAL_PROTOCOL)
+    {
+        return Some(protocol.to_string());
+    }
     for pointer in [
-        "/capabilities/protocol",
         "/optimizer_contracts/gepa/version",
         "/metadata/optimizer_contracts/gepa/version",
     ] {
@@ -2472,6 +2514,7 @@ max_total_rollouts = 4
                 candidate_set_id: None,
                 container_id: None,
                 training_artifact_id: None,
+                plan_override: None,
                 search: None,
             })
             .await
@@ -2962,6 +3005,7 @@ max_total_rollouts = 4
             candidate_set_id: None,
             container_id: container_id.map(str::to_string),
             training_artifact_id: None,
+            plan_override: None,
             search: None,
         }
     }
@@ -3832,6 +3876,7 @@ max_total_rollouts = 1
                 container_id: None,
                 training_artifact_id: None,
                 search: None,
+                plan_override: None,
             })
             .await
             .unwrap();

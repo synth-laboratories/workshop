@@ -124,6 +124,25 @@ test("visuals package exposes the registered templates", () => {
         ["detail_modal.v1", "event_stream.v1"]
       );
     }
+    if (id === "compose.visual.v1") {
+      assert.deepEqual(meta.slots.map((slot) => slot.name), ["spec", "stream", "optimizer_run"]);
+      assert.equal(meta.slots[0].required, true);
+      assert.equal(meta.slots[1].required, false);
+      assert.equal(meta.slots[2].required, false);
+      assert.deepEqual(
+        (meta.components ?? []).map((row) => row.id).sort(),
+        ["candidate_inspector.v1", "detail_modal.v1", "event_stream.v1", "metrics.v1", "scrubber.v1"]
+      );
+    }
+    if (id === "sourced.visual.v1") {
+      assert.deepEqual(meta.slots.map((slot) => slot.name), ["stream"]);
+      assert.equal(meta.slots[0].required, false);
+      assert.equal(meta.rendererKind, "tsx");
+      assert.deepEqual(
+        (meta.components ?? []).map((row) => row.id).sort(),
+        ["detail_modal.v1", "event_stream.v1"]
+      );
+    }
     if (id.startsWith("optimizer.")) {
       const slotNames = declaredInputs(meta).map((slot) => slot.name);
       assert.deepEqual(slotNames, ["optimizer_run"]);

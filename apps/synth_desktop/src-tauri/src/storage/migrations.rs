@@ -44,6 +44,8 @@ const MIGRATIONS: &[&str] = &[
     MIGRATION_39,
     MIGRATION_40,
     MIGRATION_41,
+    MIGRATION_42,
+    MIGRATION_43,
 ];
 
 /// Apply every migration the database has not reached yet.
@@ -97,6 +99,11 @@ const REQUIRED_TABLES: &[(&str, &str)] = &[
     ("hosted_lora_overlays", MIGRATION_29),
     ("optimizer_run_ownership", MIGRATION_33),
     ("optimizer_run_media", MIGRATION_41),
+    ("optimizer_frames", MIGRATION_42),
+    ("optimizer_frame_usage", MIGRATION_42),
+    ("evaluation_runs", MIGRATION_43),
+    ("evaluation_rollouts", MIGRATION_43),
+    ("evaluation_run_drafts", MIGRATION_43),
 ];
 
 fn heal_missing_tables(conn: &Connection) -> Result<()> {
@@ -1932,6 +1939,100 @@ CREATE TABLE IF NOT EXISTS optimizer_run_media (
 
 CREATE INDEX IF NOT EXISTS optimizer_run_media_rollout
 ON optimizer_run_media(optimizer_run_id, rollout_id, step);
+"#;
+
+/// Native optimizer frames are durable media, not event-state payload. The
+/// event log retains a small immutable reference while the PNG bytes live once
+/// in the content-addressed store. A run/seed sequence index supports both the
+/// live "latest per seed" cursor and bounded, lazy drill-down history.
+const MIGRATION_42: &str = r#"
+CREATE TABLE IF NOT EXISTS optimizer_frames (
+    optimizer_run_id TEXT NOT NULL REFERENCES optimizer_runs(id) ON DELETE CASCADE,
+    seed INTEGER NOT NULL,
+    frame_sequence INTEGER NOT NULL,
+    event_id TEXT NOT NULL,
+    content_digest TEXT NOT NULL,
+    content_type TEXT NOT NULL CHECK (content_type = 'image/png'),
+    size_bytes INTEGER NOT NULL CHECK (size_bytes > 0),
+    occurred_at TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (optimizer_run_id, seed, frame_sequence),
+    UNIQUE (optimizer_run_id, event_id)
+);
+
+CREATE INDEX IF NOT EXISTS optimizer_frames_run_sequence
+ON optimizer_frames(optimizer_run_id, frame_sequence);
+
+CREATE INDEX IF NOT EXISTS optimizer_frames_run_seed_sequence
+ON optimizer_frames(optimizer_run_id, seed, frame_sequence DESC);
+
+CREATE TABLE IF NOT EXISTS optimizer_frame_usage (
+    optimizer_run_id TEXT PRIMARY KEY REFERENCES optimizer_runs(id) ON DELETE CASCADE,
+    retained_frames INTEGER NOT NULL DEFAULT 0,
+    retained_bytes INTEGER NOT NULL DEFAULT 0,
+    rejected_frames INTEGER NOT NULL DEFAULT 0,
+    updated_at TEXT NOT NULL
+);
+"#;
+
+/// Inline-first evaluation admission.
+///
+/// A run keeps the whole canonical execution specification, not a projection of
+/// it, so reopening a finished run reconstructs exactly what executed and can
+/// serve as the basis of a new one. `execution_spec_digest` is stored beside the
+/// JSON rather than recomputed on read, which is what makes a specification
+/// rewritten in place detectable instead of becoming the new truth.
+///
+/// Every per-rollout evidence column is nullable on purpose. A reward that was
+/// never observed must read back as missing, not as `0.0`; rendering absent
+/// telemetry as a number is the failure this whole lane is built against.
+const MIGRATION_43: &str = r#"
+CREATE TABLE IF NOT EXISTS evaluation_runs (
+    optimizer_run_id TEXT PRIMARY KEY REFERENCES optimizer_runs(id) ON DELETE CASCADE,
+    recipe_source_kind TEXT NOT NULL CHECK (recipe_source_kind IN ('inline','catalog')),
+    catalog_recipe_id TEXT,
+    execution_spec_json TEXT NOT NULL,
+    execution_spec_digest TEXT NOT NULL,
+    container_declaration_digest TEXT NOT NULL,
+    policy_revision TEXT NOT NULL,
+    policy_configuration_digest TEXT NOT NULL,
+    approval_receipt_id TEXT NOT NULL,
+    run_state TEXT,
+    credential_revocation_confirmed INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL,
+    -- A catalog run names its recipe; an inline run must not carry one, so a
+    -- run cannot be relabelled as catalog-derived after the fact.
+    CHECK ((recipe_source_kind = 'catalog') = (catalog_recipe_id IS NOT NULL))
+);
+
+CREATE INDEX IF NOT EXISTS evaluation_runs_spec_digest
+ON evaluation_runs(execution_spec_digest);
+
+CREATE INDEX IF NOT EXISTS evaluation_runs_receipt
+ON evaluation_runs(approval_receipt_id);
+
+CREATE TABLE IF NOT EXISTS evaluation_rollouts (
+    optimizer_run_id TEXT NOT NULL REFERENCES optimizer_runs(id) ON DELETE CASCADE,
+    rollout_index INTEGER NOT NULL,
+    rollout_state TEXT CHECK (rollout_state IN (
+        'planned','queued','starting','running','completed','failed','cancelled','degraded')),
+    rollout_id TEXT,
+    reward REAL,
+    trace_ref TEXT,
+    cost_micros INTEGER,
+    total_tokens INTEGER,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (optimizer_run_id, rollout_index)
+);
+
+CREATE TABLE IF NOT EXISTS evaluation_run_drafts (
+    optimizer_run_id TEXT PRIMARY KEY,
+    recipe_source_kind TEXT NOT NULL CHECK (recipe_source_kind IN ('inline','catalog')),
+    catalog_recipe_id TEXT,
+    execution_spec_json TEXT NOT NULL,
+    execution_spec_digest TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
 "#;
 
 #[cfg(test)]

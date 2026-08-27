@@ -1,0 +1,8 @@
+[[container]]
+id = "nanohorizon-craftax"
+url = "http://127.0.0.1:18091"
+health = "/health"
+contract = "synth-containers/v1"
+locality = "container"
+family = "craftax"
+credential_providers = ["openrouter"]

@@ -921,6 +921,17 @@ window.synthWorkspaceScope ??= isTauri
 			refresh: (optimizerRunId) => fromGenerated(spectaCommands.optimizersRefresh(optimizerRunId)),
 			eventsAfter: (optimizerRunId, afterSeq = 0, limit) =>
 				fromGenerated(spectaCommands.optimizersEventsAfter(optimizerRunId, afterSeq, limit ?? null)),
+			framesLatest: (optimizerRunId, afterFrameSequence = 0) =>
+				fromGenerated(spectaCommands.optimizersFramesLatest(optimizerRunId, afterFrameSequence)),
+			framesList: (optimizerRunId, seed, beforeFrameSequence, limit) =>
+				fromGenerated(spectaCommands.optimizersFramesList(
+					optimizerRunId,
+					seed,
+					beforeFrameSequence ?? null,
+					limit ?? null
+				)),
+			frameContent: (optimizerRunId, seed, frameSequence) =>
+				fromGenerated(spectaCommands.optimizersFrameContent(optimizerRunId, seed, frameSequence)),
 			getState: (optimizerRunId, sliceId, atSeq) =>
 				fromGenerated(spectaCommands.optimizersGetState(optimizerRunId, sliceId, atSeq ?? null)),
 			getStateBatch: (optimizerRunId, slices, atSeq) =>

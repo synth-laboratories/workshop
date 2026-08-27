@@ -862,6 +862,11 @@ exec_isolated_cua_bundle() {
   local oauth_state="${SYNTH_DESKTOP_DEV_OAUTH_STATE_FILE:-}"
   local sft_train_jsonl="${SYNTH_MLX_SFT_TRAIN_JSONL:-}"
   local sft_eval_jsonl="${SYNTH_MLX_SFT_EVAL_JSONL:-}"
+  # stage_gepa_runtime rewrites an explicitly reviewed local optimizer source
+  # into this instance-owned directory. Preserve only that resolved path across
+  # the env -i boundary; passing the caller's source path would defeat packaged
+  # isolation, while dropping it silently falls back to the immutable plugin.
+  local optimizer_project_root="${SYNTH_OPTIMIZER_PROJECT_ROOT:-}"
   local optimizer_wheel_file="${SYNTH_OPTIMIZER_WHEEL_FILE:-}"
   local mlx_rl_url="${SYNTH_MLX_RL_URL:-}"
   local home_dir="${HOME:?HOME must be set to launch a CUA bundle}"
@@ -893,6 +898,7 @@ exec_isolated_cua_bundle() {
     SYNTH_DESKTOP_DEV_OAUTH_STATE_FILE="$oauth_state" \
     SYNTH_MLX_SFT_TRAIN_JSONL="$sft_train_jsonl" \
     SYNTH_MLX_SFT_EVAL_JSONL="$sft_eval_jsonl" \
+    SYNTH_OPTIMIZER_PROJECT_ROOT="$optimizer_project_root" \
     SYNTH_OPTIMIZER_WHEEL_FILE="$optimizer_wheel_file" \
     SYNTH_MLX_RL_URL="$mlx_rl_url" \
     "$CUA_EXE"

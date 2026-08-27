@@ -4,12 +4,12 @@ import { bridges } from "../runtime/desktopBridge";
 import { publicError } from "../runtime/publicError";
 
 const QWEN_TRAINING = {
-	modelId: "Qwen/Qwen3.5-0.8B",
-	id: "qwen-3.5-0.8b-training",
-	title: "Qwen 3.5 0.8B (MLX training)",
+	modelId: "Qwen/Qwen3.5-2B",
+	id: "qwen-3.5-2b-training",
+	title: "Qwen 3.5 2B (MLX training)",
 	description: "Base weights for Optimizers local SFT and CISPO through mlx-rl.",
-	parameters: "0.8B",
-	downloadSize: "1.75 GB",
+	parameters: "2B",
+	downloadSize: "4.50 GB",
 	framework: "mlx-rl"
 };
 
@@ -98,7 +98,7 @@ export function TrainingModelsSettings() {
 					<p>Workshop verifies and stores these weights for local Optimizers recipes. They are not used by chat or the Laguna policy daemon.</p>
 				</div>
 				<ul>
-					<li>Qwen 3.5 0.8B: 1.75 GB download · Apple Silicon MLX training</li>
+					<li>Qwen 3.5 2B: 4.50 GB download · Apple Silicon MLX training</li>
 				</ul>
 				<p className="model-download-guide-status">Live progress appears below. Interrupted downloads resume when you choose Download again.</p>
 			</section>

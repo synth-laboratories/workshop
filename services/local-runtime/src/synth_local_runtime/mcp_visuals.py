@@ -66,8 +66,8 @@ def main() -> int:
                 elif name == "visual_bind_data_source":
                     visual = service.get_visual(args["instance_id"])
                     bindings = dict(visual.get("bindings") or {})
-                    name = args.get("input") or args.get("slot") or "primary"
-                    bindings[name] = args.get("binding") or args
+                    input_name = args.get("input") or args.get("slot") or "primary"
+                    bindings[input_name] = args.get("binding") or args
                     result = service.update_visual(args["instance_id"], {"bindings": bindings})
                 elif name == "visual_save_tsx":
                     result = service.save_visual_tsx(

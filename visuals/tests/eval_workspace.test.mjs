@@ -133,3 +133,55 @@ test("a budget-exhausted candidate says how much of the episode it actually play
   assert.equal(untouched.policyStepFraction, null, "no coverage reported is null, not zero");
   assert.equal(untouched.budgetExhaustedTrials, 0);
 });
+
+test("real Craftax step events retain engine PNGs and rollout telemetry", () => {
+  const live = JSON.parse(JSON.stringify(example));
+  const sequenceNumber = Math.max(...live.events.map((event) => event.sequenceNumber)) + 1;
+  live.events.push({
+    schemaVersion: "optimizer_event.v1",
+    optimizerRunId: live.run.id,
+    algorithmId: "eval",
+    eventId: `${live.run.id}:eval:${sequenceNumber}`,
+    sequenceNumber,
+    occurredAt: "2026-08-26T19:00:00Z",
+    type: "eval.trial.event",
+    level: "debug",
+    delta: {
+      trial_id: "trial_live_deepseek_101",
+      containerEvent: {
+        event: "rollout.step",
+        kind: "environment.step",
+        seed: 101,
+        ply: 40,
+        actions: ["left", "do", "make_wood_pickaxe"],
+        policy_reason: "Collect wood and convert progress into a tool.",
+        reward_total: 1.25,
+        reward_delta: 1,
+        achievements: ["collect_wood"],
+        resources: { wood: 4, stone: 1 },
+        player_pos: [17, 23],
+        frame: {
+          content_type: "image/png",
+          width: 768,
+          height: 768,
+          sha256: "abc123",
+          data_url: "data:image/png;base64,iVBORw0KGgo="
+        }
+      }
+    },
+    snapshot: null,
+    item: null,
+    error: null,
+    usageDelta: null,
+    artifactRefs: []
+  });
+
+  const rollout = projectAtCursor(live.run, live.events).eval.rollouts[0];
+  assert.equal(rollout.seed, 101);
+  assert.equal(rollout.ply, 40);
+  assert.equal(rollout.rewardTotal, 1.25);
+  assert.deepEqual(rollout.achievements, ["collect_wood"]);
+  assert.deepEqual(rollout.resources, { wood: 4, stone: 1 });
+  assert.ok(rollout.frame.dataUrl.startsWith("data:image/png;base64,"));
+  assert.deepEqual(rollout.actions, ["left", "do", "make_wood_pickaxe"]);
+});

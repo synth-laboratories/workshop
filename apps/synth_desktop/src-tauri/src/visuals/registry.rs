@@ -185,6 +185,26 @@ impl VisualRegistry {
         let systems_kind = systems::template_kind(&template.id);
         let is_chart = charts::is_chart_template(&template.id);
         let is_sourced = sourced::is_sourced_template(&template.id);
+        let is_managed_html = template.source_kind.as_deref() == Some("managed")
+            && template.renderer_path.is_some();
+        // Imported HTML is immutable package source. Accepting caller content
+        // here would make a reviewed import indistinguishable from arbitrary
+        // HTML authored at create time.
+        if is_managed_html
+            && request
+                .content
+                .as_deref()
+                .is_some_and(|content| !content.trim().is_empty())
+        {
+            bail!("{} is a managed HTML template; create it without content", template.id);
+        }
+        let managed_html_content = if is_managed_html {
+            let path = template.renderer_path.as_deref().expect("managed HTML renderer path");
+            Some(std::fs::read_to_string(path)
+                .with_context(|| format!("read managed renderer {path}"))?)
+        } else {
+            None
+        };
         if is_mermaid {
             let source = request
                 .content
@@ -236,6 +256,8 @@ impl VisualRegistry {
             RendererKind::Chart
         } else if is_sourced {
             RendererKind::Tsx
+        } else if is_managed_html {
+            RendererKind::Html
         } else {
             request.renderer_kind.unwrap_or(RendererKind::Template)
         };
@@ -290,7 +312,15 @@ impl VisualRegistry {
                 object.insert("protocolId".into(), json!(sourced::PROTOCOL_ID));
             }
         }
-        let content_digest = if let Some(content) = request.content.as_ref() {
+        if is_managed_html {
+            if let Some(object) = metadata.as_object_mut() {
+                object.entry("presentation").or_insert_with(|| json!("pane"));
+                object.insert("mediaType".into(), json!("text/html"));
+                object.insert("managedTemplate".into(), json!(true));
+            }
+        }
+        let canonical_content = managed_html_content.as_ref().or(request.content.as_ref());
+        let content_digest = if let Some(content) = canonical_content {
             Some(self.content.put_bytes("blobs", content.as_bytes())?)
         } else {
             None
@@ -705,6 +735,10 @@ impl VisualRegistry {
         resolve_template(template_id)
     }
 
+    pub fn import_template(&self, source_path: &str) -> Result<TemplateMeta> {
+        super::templates::import_managed_template(source_path)
+    }
+
     pub async fn mermaid_source(&self, id: String) -> Result<VisualAsset> {
         self.visual_source(id).await
     }
@@ -719,6 +753,8 @@ impl VisualRegistry {
             charts::MEDIA_TYPE_SOURCE
         } else if sourced::is_sourced_template(&visual.template_id) {
             sourced::MEDIA_TYPE_SOURCE
+        } else if visual.renderer_kind == RendererKind::Html {
+            "text/html"
         } else {
             bail!(
                 "visual {} does not expose canonical renderer source",

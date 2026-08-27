@@ -18,10 +18,54 @@
 //! replay, or an error. Nothing is silently skipped.
 
 use anyhow::{bail, Result};
-use serde_json::{Map, Value};
+use serde_json::{json, Map, Value};
 use std::collections::HashMap;
 
 use super::models::{OptimizerEventEnvelope, OPTIMIZER_EVENT_SCHEMA_VERSION};
+
+fn strip_frame_body(container: &mut Map<String, Value>) {
+    if let Some(frame) = container.get_mut("frame").and_then(Value::as_object_mut) {
+        frame.remove("data_url");
+        frame.remove("dataUrl");
+    }
+}
+
+fn mutable_container_event(
+    event: &mut OptimizerEventEnvelope,
+    raw: bool,
+) -> Option<&mut Map<String, Value>> {
+    if raw {
+        let object = event.raw.as_object_mut()?;
+        let value = if object.contains_key("container_event") {
+            object.get_mut("container_event")
+        } else {
+            object.get_mut("containerEvent")
+        }?;
+        value.as_object_mut()
+    } else {
+        let value = if event.delta.contains_key("containerEvent") {
+            event.delta.get_mut("containerEvent")
+        } else {
+            event.delta.get_mut("container_event")
+        }?;
+        value.as_object_mut()
+    }
+}
+
+/// Event subscriptions carry telemetry only. Native frame bodies have their
+/// own cursor and content APIs; allowing even one base64 PNG per event page to
+/// enter the shared run store makes memory grow with the number of pages and
+/// surfaces. Legacy rows may still contain inline bodies, so strip them here.
+pub fn strip_frame_bodies_for_ipc(events: &mut [OptimizerEventEnvelope]) {
+    for event in events.iter_mut() {
+        if let Some(container) = mutable_container_event(event, true) {
+            strip_frame_body(container);
+        }
+        if let Some(container) = mutable_container_event(event, false) {
+            strip_frame_body(container);
+        }
+    }
+}
 
 /// Event content, without identity or order.
 ///
@@ -292,7 +336,6 @@ fn validate_shape(run_id: &str, event: &OptimizerEventEnvelope) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::json;
 
     fn envelope(seq: u64, event_type: &str, event_id: Option<&str>) -> OptimizerEventEnvelope {
         OptimizerEventEnvelope {
@@ -458,5 +501,36 @@ mod tests {
         assert_eq!(sealed.event_id.as_deref(), Some("run_1:terminal"));
         assert_eq!(sealed.sequence_number, 12);
         assert_eq!(sealed.occurred_at, "2026-08-17T21:36:57+00:00");
+    }
+
+    #[test]
+    fn ipc_page_never_carries_png_bodies() {
+        fn framed(seq: u64, seed: i64, body: &str) -> OptimizerEventEnvelope {
+            let mut event = envelope(seq, "eval.trial.event", Some(&format!("run_1:{seq}")));
+            event.delta.insert(
+                "containerEvent".into(),
+                json!({
+                    "event": "rollout.step", "seed": seed,
+                    "frame": {"data_url": body, "width": 768}
+                }),
+            );
+            event.raw = json!({"container_event": {
+                "event": "rollout.step", "seed": seed,
+                "frame": {"data_url": body, "sha256": format!("sha-{seq}")}
+            }});
+            event
+        }
+        let prefix = "data:image/png;base64,";
+        let mut page = vec![
+            framed(1, 91001, &format!("{prefix}old")),
+            framed(2, 91002, &format!("{prefix}other")),
+            framed(3, 91001, &format!("{prefix}latest")),
+        ];
+        strip_frame_bodies_for_ipc(&mut page);
+        assert!(serde_json::to_string(&page[0]).unwrap().contains("width"));
+        assert!(page
+            .iter()
+            .all(|event| !serde_json::to_string(event).unwrap().contains(prefix)));
+        assert!(page.iter().all(|event| event.item.is_none()));
     }
 }

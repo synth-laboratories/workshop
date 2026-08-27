@@ -2245,6 +2245,14 @@ pub async fn dispatch(method: &str, path: &str, body: Value, core: &CoreRuntime)
             let genre = body.get("genre").and_then(Value::as_str);
             Ok(json!({"templates": registry.list_templates(genre)?}))
         }
+        ("POST", "/v1/visuals/templates/import") => {
+            let source_path = body
+                .get("sourcePath")
+                .or_else(|| body.get("source_path"))
+                .and_then(Value::as_str)
+                .ok_or_else(|| anyhow::anyhow!("source_path is required"))?;
+            Ok(json!({"template": registry.import_template(source_path)?}))
+        }
         ("GET", path) if path.starts_with("/v1/visuals/templates/") => {
             let id = path.trim_start_matches("/v1/visuals/templates/");
             Ok(json!({"template": registry.get_template(id)?}))
@@ -2718,6 +2726,10 @@ pub async fn dispatch(method: &str, path: &str, body: Value, core: &CoreRuntime)
             let id = path.trim_start_matches("/v1/visuals/");
             let request: VisualUpdateRequest = serde_json::from_value(body)?;
             let (visual, event) = registry.update(id.to_string(), request).await?;
+            // MCP bind/update writes a durable visual.updated event. Publish the
+            // same committed event to the renderer so an already-open pane
+            // reconciles its binding instead of remaining frozen until reload.
+            core.broadcast_committed(Some(serde_json::from_value(event.clone())?));
             Ok(json!({"visual": visual, "event": event}))
         }
         _ => anyhow::bail!("unsupported visuals IPC route {method} {path}"),

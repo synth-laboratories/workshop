@@ -102,15 +102,38 @@ fn config_path() -> PathBuf {
         .join("eval.toml")
 }
 
+fn selected_runtime_python() -> Option<PathBuf> {
+    let optimizers_root = crate::instance::data_root().join("optimizers");
+    let selected = fs::read_to_string(optimizers_root.join("selected_version")).ok()?;
+    let selected = selected.trim();
+    if selected.is_empty()
+        || !selected.chars().all(|character| {
+            character.is_ascii_alphanumeric() || matches!(character, '.' | '-' | '_')
+        })
+    {
+        return None;
+    }
+    ["python3", "python"]
+        .into_iter()
+        .map(|executable| {
+            optimizers_root
+                .join("versions")
+                .join(selected)
+                .join("runtime/bin")
+                .join(executable)
+        })
+        .find(|path| path.is_file())
+}
+
 /// The app owns the Optimizers runtime. There is deliberately no ambient
 /// `SYNTH_PYTHON` fallback: an interpreter that happens to be on the operator's
 /// PATH is not the one this feature was packaged against.
 fn resolve_python() -> Result<PathBuf> {
     // Developer/QA builds stage one reviewed Optimizers checkout. Eval and
-    // GEPA must execute that same runtime authority; falling through to the
-    // previously selected installed version makes the catalog and worker
-    // silently disagree (for example, 2 stale Craftax trials instead of the
-    // staged digest-pinned 10-trial contract).
+    // GEPA must execute that same source authority. A packaged CUA snapshot
+    // intentionally excludes `.venv`, so resolve_developer_python may reuse
+    // the immutable selected interpreter; run_cli overlays the staged source
+    // on that interpreter to keep the catalog and worker in agreement.
     if let Some(project) = super::manager::optimizer_project_root()? {
         return resolve_developer_python(&project);
     }
@@ -139,25 +162,8 @@ fn resolve_python() -> Result<PathBuf> {
     // The plugin installer stores immutable versioned runtimes and records
     // the active selection. Eval must consume the same selected runtime as the
     // sidecar instead of looking only at the obsolete unversioned layout.
-    let optimizers_root = crate::instance::data_root().join("optimizers");
-    if let Ok(selected) = fs::read_to_string(optimizers_root.join("selected_version")) {
-        let selected = selected.trim();
-        if !selected.is_empty()
-            && selected.chars().all(|character| {
-                character.is_ascii_alphanumeric() || matches!(character, '.' | '-' | '_')
-            })
-        {
-            for executable in ["python3", "python"] {
-                let path = optimizers_root
-                    .join("versions")
-                    .join(selected)
-                    .join("runtime/bin")
-                    .join(executable);
-                if path.is_file() {
-                    return Ok(path);
-                }
-            }
-        }
+    if let Some(python) = selected_runtime_python() {
+        return Ok(python);
     }
     let owned = crate::instance::data_root()
         .join("runtime")
@@ -176,6 +182,13 @@ fn resolve_python() -> Result<PathBuf> {
 }
 
 fn resolve_developer_python(project: &Path) -> Result<PathBuf> {
+    resolve_developer_python_with_fallback(project, selected_runtime_python())
+}
+
+fn resolve_developer_python_with_fallback(
+    project: &Path,
+    fallback: Option<PathBuf>,
+) -> Result<PathBuf> {
     for candidate in [
         project.join(".venv/bin/python"),
         project.join(".venv/Scripts/python.exe"),
@@ -184,17 +197,21 @@ fn resolve_developer_python(project: &Path) -> Result<PathBuf> {
             return Ok(candidate);
         }
     }
-    bail!(
-        "developer optimizer project {} has no prepared .venv Python; run uv sync before launching Workshop",
-        project.display()
-    )
+    fallback.ok_or_else(|| {
+        anyhow!(
+            "developer optimizer project {} has no prepared .venv Python and no selected installed runtime",
+            project.display()
+        )
+    })
 }
 
 fn run_cli(python: &Path, args: &[&str]) -> Result<Value> {
-    let output = std::process::Command::new(python)
-        .arg("-m")
-        .arg("synth_optimizers.eval")
-        .args(args)
+    let mut command = std::process::Command::new(python);
+    command.arg("-m").arg("synth_optimizers.eval").args(args);
+    if let Some(project) = super::manager::optimizer_project_root()? {
+        command.env("PYTHONPATH", project.join("src"));
+    }
+    let output = command
         // Finder launches do not inherit the operator's shell PATH. Docker is
         // commonly installed by OrbStack in /usr/local/bin or Homebrew in
         // /opt/homebrew/bin; the eval producer must see that supported runtime.
@@ -286,7 +303,11 @@ pub(crate) struct LocalPinnedTargetPolicy {
 
 pub(crate) fn local_pinned_target_policy() -> LocalPinnedTargetPolicy {
     if !cfg!(debug_assertions) {
-        return LocalPinnedTargetPolicy { supported: false, enabled: false, source: "build_default" };
+        return LocalPinnedTargetPolicy {
+            supported: false,
+            enabled: false,
+            source: "build_default",
+        };
     }
     let path = crate::instance::data_root().join("eval-admission.toml");
     let configured = fs::read_to_string(path)
@@ -298,8 +319,7 @@ pub(crate) fn local_pinned_target_policy() -> LocalPinnedTargetPolicy {
                 .and_then(|value| value.get("local_pinned_digest"))
                 .and_then(|value| value.get("enabled"))
                 .and_then(toml::Value::as_bool)
-        })
-        ;
+        });
     if let Some(value) = std::env::var_os("SYNTH_EVAL_ALLOW_LOCAL_PINNED_TARGETS") {
         let enabled = value == "1";
         if configured != Some(enabled) {
@@ -313,7 +333,11 @@ pub(crate) fn local_pinned_target_policy() -> LocalPinnedTargetPolicy {
     LocalPinnedTargetPolicy {
         supported: true,
         enabled: configured.unwrap_or(false),
-        source: if configured.is_some() { "instance_config" } else { "build_default" },
+        source: if configured.is_some() {
+            "instance_config"
+        } else {
+            "build_default"
+        },
     }
 }
 
@@ -381,7 +405,9 @@ fn normalize_builtin_recipe_contract(mut recipe: Value) -> Value {
 }
 
 fn project_eval_recipe_state(recipe: &mut Value, producer_ready: bool) {
-    let Some(object) = recipe.as_object_mut() else { return };
+    let Some(object) = recipe.as_object_mut() else {
+        return;
+    };
     object.insert("executionKind".into(), json!("evaluation"));
     object.insert("recipeDiscovered".into(), json!(true));
     object.insert("executionSupported".into(), json!(true));
@@ -416,9 +442,7 @@ fn mark_unreproducible_target_unavailable(recipe: &mut Value) {
 /// Resolve the candidate-set id an eval launch will actually score.
 /// A training artifact is staged first so paid-compute approval sees the same
 /// set the worker will run.
-pub(crate) fn resolve_eval_candidate_set(
-    request: &OptimizerRecipeRunRequest,
-) -> Result<String> {
+pub(crate) fn resolve_eval_candidate_set(request: &OptimizerRecipeRunRequest) -> Result<String> {
     if request.training_artifact_id.is_some() && request.candidate_set_id.is_some() {
         bail!("eval recipes take either training_artifact_id or candidate_set_id, not both");
     }
@@ -440,7 +464,9 @@ pub(crate) fn resolve_eval_candidate_set(
         .candidate_set_id
         .clone()
         .filter(|value| !value.trim().is_empty())
-        .ok_or_else(|| anyhow!("eval recipes require a staged candidate_set_id or a training_artifact_id"))
+        .ok_or_else(|| {
+            anyhow!("eval recipes require a staged candidate_set_id or a training_artifact_id")
+        })
 }
 
 /// Convert the eval runtime's per-trial budget into the total product approval
@@ -575,10 +601,7 @@ pub(crate) fn bind_provider_routes_into_manifest(path: &Path, routes: Value) -> 
     object.insert("credential_mode".into(), json!("workshop_proxy"));
     object.insert(
         "inference_url".into(),
-        routes
-            .get("openai_base")
-            .cloned()
-            .unwrap_or(Value::Null),
+        routes.get("openai_base").cloned().unwrap_or(Value::Null),
     );
     let mut bound_routes = routes.clone();
     if let Some(object) = bound_routes.as_object_mut() {
@@ -652,7 +675,8 @@ fn require_digest_pinned_target_with_policy(
         || image.starts_with("oci-archive:")
         || image.starts_with("docker-archive:")
     {
-        return Err(refuse("registry_target_required",
+        return Err(refuse(
+            "registry_target_required",
             "the eval target resolves to a local checkout; publish the image and pin its digest",
         ));
     }
@@ -685,12 +709,14 @@ fn require_digest_pinned_target_with_policy(
     let inline = image.split_once("@sha256:").map(|(_, hex)| hex);
     let declared = digest.and_then(|digest| digest.strip_prefix("sha256:"));
     let Some(hex) = inline.or(declared) else {
-        return Err(refuse("target_digest_missing",
+        return Err(refuse(
+            "target_digest_missing",
             "the eval target is a mutable tag; publish the image and record its sha256 digest",
         ));
     };
     if hex.len() != 64 || !hex.chars().all(|c| c.is_ascii_hexdigit()) {
-        return Err(refuse("target_digest_mismatch",
+        return Err(refuse(
+            "target_digest_mismatch",
             "the eval target digest is not a sha256 manifest digest",
         ));
     }
@@ -698,7 +724,8 @@ fn require_digest_pinned_target_with_policy(
     // record one identity and execute another.
     if let (Some(inline), Some(declared)) = (inline, declared) {
         if inline != declared {
-            return Err(refuse("target_digest_mismatch",
+            return Err(refuse(
+                "target_digest_mismatch",
                 "the eval target reference and its recorded digest disagree",
             ));
         }
@@ -751,10 +778,9 @@ pub async fn start(
         training_artifact = Some(artifact);
         staged_id
     } else {
-        request
-            .candidate_set_id
-            .clone()
-            .ok_or_else(|| anyhow!("eval recipes require a staged candidate_set_id or a training_artifact_id"))?
+        request.candidate_set_id.clone().ok_or_else(|| {
+            anyhow!("eval recipes require a staged candidate_set_id or a training_artifact_id")
+        })?
     };
     let candidate_set_path = super::eval_candidates::manifest_path(&candidate_set_id)?;
     let candidate_set = super::eval_candidates::load(&candidate_set_id)?;
@@ -808,6 +834,11 @@ pub async fn start(
     }
     let suffix = uuid::Uuid::new_v4().simple().to_string();
     let run_id = format!("opt_eval_{}", &suffix[..12]);
+    // Local MLX speaks the OpenAI wire format, whose clients require a
+    // non-empty API key even though this instance-owned loopback service does
+    // not use a provider credential. Mint a per-run sentinel and pass it only
+    // to the worker process; never persist it in the manifest or run record.
+    let local_mlx_token = local_mlx_worker_token(&recipe_id);
     let workers = home.join("workers");
     fs::create_dir_all(&workers).context("create eval worker directory")?;
     let manifest_path = workers.join(format!("{run_id}.json"));
@@ -819,23 +850,15 @@ pub async fn start(
             "recipe_id": recipe_id,
             "home": home,
             "candidate_set_path": candidate_set_path,
-            "session_ref": request.session_ref,
+            "session_ref": request.session_ref.clone(),
             "mlx_inference_url": mlx_inference_url,
+            "plan_override": request.plan_override.clone(),
         }))?,
     )
     .context("write eval worker manifest")?;
 
     let run_dir = home.join("runs").join(&run_id);
-    // Only hosted provider credentials use Workshop's provider proxy. Local
-    // MLX recipes carry an app-owned token and must not be made to resolve an
-    // unrelated OPENAI_API_KEY before their first trial.
-    let requires_openai = recipe
-        .get("models")
-        .and_then(Value::as_array)
-        .and_then(|models| models.first())
-        .and_then(|model| model.get("secret"))
-        .and_then(Value::as_str)
-        .is_some_and(|secret| matches!(secret, "OPENAI_API_KEY" | "OPENROUTER_API_KEY"));
+    let paid_provider = paid_provider_for_recipe(&recipe).map(str::to_string);
     let limits = recipe.get("limits").cloned().unwrap_or_else(|| json!({}));
     let candidates = candidate_set
         .get("candidates")
@@ -849,6 +872,11 @@ pub async fn start(
         "candidateCount": candidates.len(),
         "baselineId": candidate_set.get("baseline_id"),
         "limits": limits,
+        "model": if recipe_id == EVAL_MLX_LOCAL_RECIPE || recipe_id == EVAL_CRAFTAX_MLX_LOCAL_RECIPE {
+            Some(super::mlx_runtime::TRAINING_MODEL_ID)
+        } else {
+            None
+        },
         "image": recipe.get("image"),
         "imageDigest": recipe.get("imageDigest"),
         "targetManifestDigest": recipe.get("targetManifestDigest"),
@@ -887,28 +915,28 @@ pub async fn start(
         }]),
         input_refs: Some({
             let mut refs = vec![
-            OptimizerResourceRef {
-                kind: "candidate_set".into(),
-                id: candidate_set_id.clone(),
-                digest: None,
-                role: Some("candidates".into()),
-                title: Some("Staged policy candidates".into()),
-                metadata: candidate_set.clone(),
-            },
-            OptimizerResourceRef {
-                kind: "recipe".into(),
-                id: recipe_id.clone(),
-                digest: recipe
-                    .get("targetManifestDigest")
-                    .and_then(Value::as_str)
-                    .map(str::to_string),
-                role: Some("configuration".into()),
-                title: recipe
-                    .get("title")
-                    .and_then(Value::as_str)
-                    .map(str::to_string),
-                metadata: recipe.clone(),
-            },
+                OptimizerResourceRef {
+                    kind: "candidate_set".into(),
+                    id: candidate_set_id.clone(),
+                    digest: None,
+                    role: Some("candidates".into()),
+                    title: Some("Staged policy candidates".into()),
+                    metadata: candidate_set.clone(),
+                },
+                OptimizerResourceRef {
+                    kind: "recipe".into(),
+                    id: recipe_id.clone(),
+                    digest: recipe
+                        .get("targetManifestDigest")
+                        .and_then(Value::as_str)
+                        .map(str::to_string),
+                    role: Some("configuration".into()),
+                    title: recipe
+                        .get("title")
+                        .and_then(Value::as_str)
+                        .map(str::to_string),
+                    metadata: recipe.clone(),
+                },
             ];
             if let Some(artifact) = &training_artifact {
                 refs.push(OptimizerResourceRef {
@@ -951,10 +979,11 @@ pub async fn start(
             python,
             manifest_path,
             run_dir,
-            requires_openai,
+            paid_provider,
             worker_recipe_id,
             worker_recipe,
             worker_candidate_count,
+            local_mlx_token,
             cancel_rx,
         )
         .await
@@ -984,16 +1013,25 @@ fn paid_provider_for_recipe(recipe: &Value) -> Option<&'static str> {
     }
 }
 
+fn local_mlx_worker_token(recipe_id: &str) -> Option<String> {
+    matches!(
+        recipe_id,
+        EVAL_MLX_LOCAL_RECIPE | EVAL_CRAFTAX_MLX_LOCAL_RECIPE
+    )
+    .then(|| format!("synth-local-{}", uuid::Uuid::new_v4().simple()))
+}
+
 async fn run_worker(
     service: OptimizerService,
     run_id: String,
     python: PathBuf,
     manifest_path: PathBuf,
     run_dir: PathBuf,
-    requires_openai: bool,
+    paid_provider: Option<String>,
     recipe_id: String,
     recipe: Value,
     candidate_count: u64,
+    local_mlx_token: Option<String>,
     mut cancel: watch::Receiver<bool>,
 ) -> Result<()> {
     let _revoke = crate::secrets::RevokeRunOnDrop(run_id.clone());
@@ -1015,7 +1053,18 @@ async fn run_worker(
         // can truthfully report Docker ready and the worker can still fail
         // immediately with `docker is not on PATH`.
         .env("PATH", eval_cli_path(std::env::var_os("PATH").as_deref())?);
-    if requires_openai {
+    // Catalog discovery and execution must import the same reviewed source.
+    // A packaged CUA snapshot intentionally has no project .venv, so the
+    // selected immutable interpreter needs this overlay just as run_cli does;
+    // otherwise admission can publish a ten-lane recipe while the worker
+    // silently executes an older installed two-lane catalog.
+    if let Some(project) = super::manager::optimizer_project_root()? {
+        command.env("PYTHONPATH", project.join("src"));
+    }
+    if let Some(token) = local_mlx_token {
+        command.env("SYNTH_MLX_RL_TOKEN", token);
+    }
+    if let Some(provider) = paid_provider.as_deref() {
         let secrets = crate::secrets::live().ok_or_else(|| {
             secrets_proxy_error(
                 "secrets_proxy_unavailable",
@@ -1024,7 +1073,7 @@ async fn run_worker(
         })?;
         let policy = policy_from_eval_recipe(&recipe, candidate_count)?;
         let env = secrets
-            .workload_env("openai", &run_id, &recipe_id, policy, "eval")
+            .workload_env(provider, &run_id, &recipe_id, policy, "eval")
             .map_err(|error| secrets_proxy_error("secrets_proxy_denied", &error.to_string()))?;
         let routes = env.provider_routes().map_err(|error| {
             secrets_proxy_error("secrets_proxy_route_unbound", &error.to_string())
@@ -1766,10 +1815,17 @@ mod tests {
     }
 
     #[test]
-    fn developer_eval_without_prepared_python_fails_closed() {
-        let dir = tempfile::tempdir().unwrap();
-        let error = resolve_developer_python(dir.path()).unwrap_err();
-        assert!(error.to_string().contains("uv sync"));
+    fn staged_eval_without_venv_reuses_selected_runtime_python() {
+        let project = tempfile::tempdir().unwrap();
+        let runtime = tempfile::NamedTempFile::new().unwrap();
+        assert_eq!(
+            resolve_developer_python_with_fallback(
+                project.path(),
+                Some(runtime.path().to_path_buf())
+            )
+            .unwrap(),
+            runtime.path()
+        );
     }
 
     async fn probe_run(svc: &OptimizerService, id: &str) {
@@ -2575,6 +2631,15 @@ mod immutable_target_tests {
             }]
         });
         assert_eq!(paid_provider_for_recipe(&recipe), None);
+    }
+
+    #[test]
+    fn local_mlx_worker_gets_an_ephemeral_non_provider_token() {
+        let first = local_mlx_worker_token(EVAL_CRAFTAX_MLX_LOCAL_RECIPE).unwrap();
+        let second = local_mlx_worker_token(EVAL_CRAFTAX_MLX_LOCAL_RECIPE).unwrap();
+        assert!(first.starts_with("synth-local-"));
+        assert_ne!(first, second);
+        assert_eq!(local_mlx_worker_token(EVAL_CRAFTAX_LLM_RECIPE), None);
     }
 
     #[test]

@@ -4,6 +4,42 @@
 **Date:** 2026-08-26  
 **Do not commit unless asked.**
 
+## 2026-08-26 signed-CUA result
+
+The dynamic visual host is proved end to end in the signed debug app, using a
+real local Craftax producer rather than an inline fixture:
+
+| Identity | Value |
+| --- | --- |
+| Bundle | `com.synth.desktop.v08.dev.admission-cua` |
+| App snapshot | `cua/visual-admission-dogfood` at `d908fd59` |
+| Run | `opt_eval_c16be0cd0f85` |
+| Visual | `vis_950d36ad0009423f8c26e5c2a388a60b` |
+| Template | `optimizer.eval.live.v1` |
+| Candidate set | `policy_set_438ee1d0aee244afa97c7f337a48dafc` |
+| Local image | `craftax-eval-target@sha256:ef981d0d88e968dc470358607804d2a6abe218e760b5711a3dee3ea37fdb0195` |
+
+Computer Use observed the same open right-pane visual remain `SUBSCRIBED` and
+advance without reopen or rebind:
+
+```text
+5/20 trials, 5 valid, 2 running, raw event counter 40
+13/20 trials, 13 valid, raw event counter 86
+20/20 trials, 20 valid, 0 failed, TERMINAL / COMPLETED
+```
+
+The terminal manifest records `work.succeeded=20`, `work.failed=0`,
+`rollouts=20`, `$0.00`, and visual subscription receipt
+`synth.visual-subscription-receipt.v1` for that exact run and visual. The final
+pane showed both scored policy rows (10 valid trials each), with no winner
+because this recipe is deliberately report-only.
+
+This is a local CUA proof, not a release benchmark receipt. The local image was
+built from a dirty GameBench checkout and the image-only report-mode outer
+container boundary is weaker than promotion-grade per-policy OS isolation.
+Do not publish or cite the scores as portable benchmark results. No GHCR or
+provider credentials were used.
+
 Noun map (keep current): [`docs/qa/v08-visuals-data-model.md`](./qa/v08-visuals-data-model.md)  
 CUA findings this cut targets: RP-CUA-014 / 053 / 060 (handoff chrome only).  
 Sourced/compose CUA is already passed: [`HANDOFF_SOURCED_VISUALS_CUA_2026-08-26.md`](./HANDOFF_SOURCED_VISUALS_CUA_2026-08-26.md). Do not rebuild it.
@@ -17,6 +53,7 @@ Durable authority is the **local store**. Do not introduce `CoreRuntime` as a pr
 | Path | Branch | Git |
 | --- | --- | --- |
 | `/Users/joshuapurtell/GitHub/workshop-v08-release` | `codex/v08-release-integration` | **Dirty.** Admission sits on top of Candidate + compose `optimizer_run` slot + shared `VisualPane` + `list_templates` components + Laguna-vs-Plugin pin. Do not commit this pile unless asked. |
+| `/Users/joshuapurtell/GitHub/workshop-v08-admission-cua` | `cua/visual-admission-dogfood` | Signed CUA snapshot at `d908fd59`; this handoff update is intentionally uncommitted. |
 
 Leave `containers`, `optimizers`, `optimizers-beta`, `synth-mlx-rl` alone unless a producer field is missing.
 
