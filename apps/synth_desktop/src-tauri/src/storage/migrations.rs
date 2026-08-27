@@ -48,6 +48,7 @@ const MIGRATIONS: &[&str] = &[
     MIGRATION_43,
     MIGRATION_44,
     MIGRATION_45,
+    MIGRATION_46,
 ];
 
 /// Apply every migration the database has not reached yet.
@@ -1392,7 +1393,9 @@ CREATE TABLE IF NOT EXISTS generation_speed_measurements (
     duration_ms REAL NOT NULL,
     sample_count INTEGER NOT NULL,
     token_count_source TEXT NOT NULL
-        CHECK(token_count_source IN ('provider_item_usage','exact_tokenizer','unavailable')),
+        CHECK(token_count_source IN (
+            'provider_item_usage','provider_response_visible_usage','exact_tokenizer','unavailable'
+        )),
     tokenizer_id TEXT,
     clock_source TEXT NOT NULL
         CHECK(clock_source IN ('provider_event_timestamp','workshop_monotonic_receive')),
@@ -2170,6 +2173,62 @@ CREATE TABLE IF NOT EXISTS experiment_session_cursor (
 /// `heal_experiment_graph_shape`. The repair itself cannot be pure SQL because
 /// it must first distinguish the old and current CHECK constraints.
 const MIGRATION_45: &str = "SELECT 1;";
+
+/// Response usage arrives after the final-answer lifecycle event. Generation
+/// speed v1 can bind exact response output minus exact reasoning output to that
+/// answer's observed delivery interval, but SQLite cannot alter the v21 token
+/// source CHECK in place. Rebuild the evidence table without changing any row
+/// identity or measurement data.
+const MIGRATION_46: &str = r#"
+CREATE TABLE generation_speed_measurements_v46 (
+    measurement_id TEXT PRIMARY KEY,
+    schema_version TEXT NOT NULL,
+    measurement_kind TEXT NOT NULL,
+    session_id TEXT NOT NULL,
+    turn_id TEXT NOT NULL,
+    response_id TEXT,
+    item_id TEXT NOT NULL,
+    output_index INTEGER NOT NULL,
+    content_index INTEGER NOT NULL,
+    phase TEXT NOT NULL CHECK(phase IN ('commentary','final_answer','other')),
+    status TEXT NOT NULL CHECK(status IN ('completed','partial','unavailable')),
+    tps REAL,
+    exact_tokens_after_first_sample INTEGER NOT NULL,
+    duration_ms REAL NOT NULL,
+    sample_count INTEGER NOT NULL,
+    token_count_source TEXT NOT NULL CHECK(token_count_source IN (
+        'provider_item_usage','provider_response_visible_usage','exact_tokenizer','unavailable'
+    )),
+    tokenizer_id TEXT,
+    clock_source TEXT NOT NULL
+        CHECK(clock_source IN ('provider_event_timestamp','workshop_monotonic_receive')),
+    unavailable_reason TEXT,
+    quality_flags TEXT NOT NULL DEFAULT '[]',
+    samples_json TEXT NOT NULL DEFAULT '[]',
+    provider TEXT,
+    model_id TEXT,
+    created_at TEXT NOT NULL,
+    CHECK ((tps IS NULL) = (unavailable_reason IS NOT NULL))
+);
+
+INSERT INTO generation_speed_measurements_v46 (
+    measurement_id,schema_version,measurement_kind,session_id,turn_id,response_id,item_id,
+    output_index,content_index,phase,status,tps,exact_tokens_after_first_sample,duration_ms,
+    sample_count,token_count_source,tokenizer_id,clock_source,unavailable_reason,
+    quality_flags,samples_json,provider,model_id,created_at
+)
+SELECT
+    measurement_id,schema_version,measurement_kind,session_id,turn_id,response_id,item_id,
+    output_index,content_index,phase,status,tps,exact_tokens_after_first_sample,duration_ms,
+    sample_count,token_count_source,tokenizer_id,clock_source,unavailable_reason,
+    quality_flags,samples_json,provider,model_id,created_at
+FROM generation_speed_measurements;
+
+DROP TABLE generation_speed_measurements;
+ALTER TABLE generation_speed_measurements_v46 RENAME TO generation_speed_measurements;
+CREATE INDEX generation_speed_measurements_turn
+ON generation_speed_measurements(session_id, turn_id, created_at);
+"#;
 
 #[cfg(test)]
 mod tests {
@@ -3076,5 +3135,43 @@ mod tests {
             insert("m-neither", "NULL", "NULL").is_err(),
             "a row without a rate must say why"
         );
+    }
+
+    #[test]
+    fn migration_46_preserves_measurements_and_accepts_response_visible_usage() {
+        let conn = seed_at_version(45);
+        conn.execute(
+            "INSERT INTO generation_speed_measurements(
+                measurement_id,schema_version,measurement_kind,session_id,turn_id,item_id,
+                output_index,content_index,phase,status,tps,exact_tokens_after_first_sample,
+                duration_ms,sample_count,token_count_source,clock_source,created_at)
+             VALUES ('before','synth.generation-speed.v1','observed_stream_segment','s','t',
+                'msg-before',0,0,'final_answer','completed',50.0,60,1200.0,4,
+                'provider_item_usage','workshop_monotonic_receive','now')",
+            [],
+        )
+        .unwrap();
+
+        assert_eq!(apply_migrations(&conn).unwrap(), LATEST_VERSION);
+        let preserved: f64 = conn
+            .query_row(
+                "SELECT tps FROM generation_speed_measurements WHERE measurement_id='before'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(preserved, 50.0);
+
+        conn.execute(
+            "INSERT INTO generation_speed_measurements(
+                measurement_id,schema_version,measurement_kind,session_id,turn_id,item_id,
+                output_index,content_index,phase,status,tps,exact_tokens_after_first_sample,
+                duration_ms,sample_count,token_count_source,clock_source,created_at)
+             VALUES ('after','synth.generation-speed.v1','observed_stream_segment','s','t',
+                'msg-after',0,0,'final_answer','completed',56.5,318,5620.0,313,
+                'provider_response_visible_usage','workshop_monotonic_receive','now')",
+            [],
+        )
+        .unwrap();
     }
 }
