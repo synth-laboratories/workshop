@@ -156,6 +156,12 @@ export function createReplayClient(
 export type LiveTemplateProps = {
   /** Declared transport. Absent only outside Workshop (browser preview). */
   replay?: ReplayClient;
+  /**
+   * Host-mediated binary media (`synth.visual.media.v1`). Absent outside
+   * Workshop, where a template renders its frame references as unavailable
+   * rather than reaching for the store itself.
+   */
+  media?: import("./mediaClient.ts").MediaClient;
   /** Declared live streams the host could not give a durable poll authority. */
   replayMissingTransport?: string[];
   visualId?: string | null;

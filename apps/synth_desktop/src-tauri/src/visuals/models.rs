@@ -593,6 +593,36 @@ pub fn declared_poll_urls(bindings: &Value) -> Vec<String> {
         .unwrap_or_default()
 }
 
+/// The optimizer runs this visual actually declares, in binding order.
+///
+/// The media bridge needs to know which run a visual may read frames from, and
+/// "the run it happens to be showing" is not something a renderer gets to
+/// assert. This reads the same canonical bindings the rest of the host reads,
+/// so a visual bound to no run is granted nothing rather than defaulting to
+/// whichever run last wrote to it.
+pub fn declared_optimizer_run_ids(bindings: &Value) -> Vec<String> {
+    let Ok(canonical) = canonicalize_bindings(bindings) else {
+        return Vec::new();
+    };
+    canonical
+        .value
+        .get("inputs")
+        .or_else(|| canonical.value.get("slots"))
+        .and_then(Value::as_array)
+        .map(|slots| {
+            slots
+                .iter()
+                .filter(|slot| slot.get("kind").and_then(Value::as_str) == Some("optimizer_run"))
+                .filter_map(|slot| {
+                    slot.get("source")
+                        .and_then(Value::as_str)
+                        .map(str::to_string)
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 impl VisualRecord {
     pub fn to_legacy_instance(&self) -> Value {
         json!({

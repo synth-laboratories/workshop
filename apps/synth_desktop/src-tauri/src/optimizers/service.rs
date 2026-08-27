@@ -227,6 +227,40 @@ pub(super) struct ChatVisualPublication {
     pub role: String,
 }
 
+/// One retained media object, as the run's media index records it.
+///
+/// Written by the relay at the moment the bytes land in the content store, and
+/// read by the media bridge to decide whether a visual bound to this run is
+/// allowed to see them.
+#[derive(Clone, Debug)]
+pub(super) struct RunMediaRow {
+    pub cas_digest: String,
+    pub kind: &'static str,
+    pub media_type: &'static str,
+    pub byte_size: u64,
+    pub width: Option<u32>,
+    pub height: Option<u32>,
+    pub rollout_id: Option<String>,
+    pub trial_id: Option<String>,
+    pub step: Option<i64>,
+    pub producer_digest: Option<String>,
+}
+
+/// A media object the host has agreed to serve, with the identity that made it
+/// serveable. Never carries bytes: the caller reads those from the store.
+#[derive(Clone, Debug)]
+pub struct GrantedRunMedia {
+    pub optimizer_run_id: String,
+    pub cas_digest: String,
+    pub kind: String,
+    pub media_type: String,
+    pub byte_size: u64,
+    pub width: Option<u32>,
+    pub height: Option<u32>,
+    pub rollout_id: Option<String>,
+    pub step: Option<i64>,
+}
+
 #[derive(Clone)]
 pub struct OptimizerService {
     db: Arc<Database>,
@@ -374,8 +408,128 @@ impl OptimizerService {
         OptimizerRunOwnershipGuard::arm(self.db.clone(), run_id.to_string())
     }
 
+    /// The content store behind the visual registry.
+    ///
+    /// One store, not a second one: a relayed frame and a rendered chart must
+    /// be addressable by the same digest from the same place, or the media
+    /// bridge would have to know which of two roots a digest came from.
+    pub(super) fn content(&self) -> &crate::storage::ContentStore {
+        self.visuals.content()
+    }
+
     pub(super) fn visuals(&self) -> &VisualRegistry {
         &self.visuals
+    }
+
+    /// Index one retained media object against the run that produced it.
+    ///
+    /// Idempotent by digest: the same frame relayed twice — a retried page, a
+    /// resumed worker — is one row, and two steps that rendered identical
+    /// pixels share it, which is exactly the physical deduplication the content
+    /// store already performs.
+    pub(super) async fn record_run_media(&self, run_id: &str, row: &RunMediaRow) -> Result<()> {
+        let run_id = run_id.to_string();
+        let row = row.clone();
+        self.db
+            .clone()
+            .run_transaction(move |conn| {
+                conn.execute(
+                    "INSERT INTO optimizer_run_media(
+                        optimizer_run_id, cas_digest, kind, media_type, byte_size,
+                        width, height, rollout_id, trial_id, step, producer_digest, created_at)
+                     VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,datetime('now'))
+                     ON CONFLICT(optimizer_run_id, cas_digest) DO NOTHING",
+                    params![
+                        run_id,
+                        row.cas_digest,
+                        row.kind,
+                        row.media_type,
+                        row.byte_size as i64,
+                        row.width.map(i64::from),
+                        row.height.map(i64::from),
+                        row.rollout_id,
+                        row.trial_id,
+                        row.step,
+                        row.producer_digest,
+                    ],
+                )?;
+                Ok(())
+            })
+            .await
+    }
+
+    /// Decide whether `cas_digest` is media this run actually produced.
+    ///
+    /// The whole authorization for the media bridge lives here, and it is a
+    /// lookup rather than a scan on purpose: a gate that has to re-derive its
+    /// answer from event payloads stops matching the moment the payload shape
+    /// moves, and stops matching *open*.
+    pub async fn granted_run_media(
+        &self,
+        run_id: &str,
+        cas_digest: &str,
+    ) -> Result<Option<GrantedRunMedia>> {
+        let run_id = run_id.to_string();
+        let digest = cas_digest.to_ascii_lowercase();
+        if digest.len() != 64 || !digest.chars().all(|value| value.is_ascii_hexdigit()) {
+            bail!("media digest must be a 64-character SHA-256");
+        }
+        let owned_run = run_id.clone();
+        self.db
+            .clone()
+            .run(move |conn| {
+                conn.query_row(
+                    "SELECT kind, media_type, byte_size, width, height, rollout_id, step
+                     FROM optimizer_run_media
+                     WHERE optimizer_run_id=?1 AND cas_digest=?2",
+                    params![owned_run, digest],
+                    |row| {
+                        Ok(GrantedRunMedia {
+                            optimizer_run_id: run_id.clone(),
+                            cas_digest: digest.clone(),
+                            kind: row.get(0)?,
+                            media_type: row.get(1)?,
+                            byte_size: row.get::<_, i64>(2)?.max(0) as u64,
+                            width: row.get::<_, Option<i64>>(3)?.map(|value| value as u32),
+                            height: row.get::<_, Option<i64>>(4)?.map(|value| value as u32),
+                            rollout_id: row.get(5)?,
+                            step: row.get(6)?,
+                        })
+                    },
+                )
+                .optional()
+                .map_err(Into::into)
+            })
+            .await
+    }
+
+    /// Read granted media bytes out of the content store.
+    pub fn read_media_bytes(&self, granted: &GrantedRunMedia) -> Result<Vec<u8>> {
+        self.visuals
+            .content()
+            .get_bytes(&granted.kind, &granted.cas_digest)
+    }
+
+    /// Import a rollout's sealed Trace V5 bundle by container identity.
+    ///
+    /// The eval worker calls this as each rollout finishes, so replay survives
+    /// the container being stopped and Workshop being restarted. The machinery
+    /// already existed in the visuals IPC lane; nothing on the eval path ever
+    /// invoked it, which is why a finished seed had frames on disk inside a
+    /// container and nothing durable in Workshop.
+    pub(super) async fn import_container_trace(
+        &self,
+        container_id: &str,
+        rollout_id: &str,
+    ) -> Result<Value> {
+        let data = crate::data::DataStore::new(self.db.clone(), self.visuals.content().clone());
+        let (result, event) =
+            crate::visuals_ipc::import_container_trace_into(&data, container_id, rollout_id)
+                .await?;
+        if let Some(event) = event {
+            let _ = self.events_tx.send(event);
+        }
+        Ok(result)
     }
 
     /// Wire diagnostics in after both services exist. Idempotent; a service
@@ -1191,6 +1345,7 @@ impl OptimizerService {
         let template_id = request.template_id.clone();
         let title = request.title.clone();
         let role = request.role.clone();
+        let summary_role = request.role.clone();
         let bind = self
             .patch_run(request.run_id.clone(), move |run| {
                 if !run
@@ -1208,7 +1363,23 @@ impl OptimizerService {
                     });
                 }
                 let mut summary = run.summary.as_object().cloned().unwrap_or_default();
-                summary.insert("visualId".into(), json!(bound_id));
+                // `visualId` names the run's *primary* pane, and only that.
+                // A run may own several chat visuals — an overview and the
+                // workstation a seed row opens — and letting whichever
+                // published last claim this key would silently repoint the
+                // eval result's own evidence reference at a drill-down.
+                if summary_role == "primary" {
+                    summary.insert("visualId".into(), json!(bound_id));
+                }
+                // Secondary panes are addressed by role, so a consumer asks for
+                // the one it means instead of guessing from a list.
+                let mut by_role = summary
+                    .get("visualIds")
+                    .and_then(Value::as_object)
+                    .cloned()
+                    .unwrap_or_default();
+                by_role.insert(summary_role.clone(), json!(bound_id));
+                summary.insert("visualIds".into(), Value::Object(by_role));
                 summary.remove("visualProjectionError");
                 run.summary = Value::Object(summary);
                 Ok(())

@@ -73,16 +73,47 @@ export {
   consumeInjectedRendererCrash,
   resetInjectedRendererCrashes
 } from "./crashInject.ts";
+export {
+  VISUAL_MEDIA_PROTOCOL,
+  MEDIA_CACHE_LIMIT,
+  MEDIA_PRELOAD_AHEAD,
+  MEDIA_PRELOAD_BEHIND,
+  NO_MEDIA,
+  createMediaClient,
+  isCasDigest,
+  mediaRefFrom
+} from "./mediaClient.ts";
+export type { LoadedMedia, MediaClient, MediaRef, MediaTransport } from "./mediaClient.ts";
 export { presentRuntimeError, presentRuntimeErrorMessage } from "./presentError.ts";
+export {
+  EVAL_TRACE_VIEW_SCHEMA,
+  CRAFTAX_PROJECTION_KIND,
+  containerEventsFromOptimizerEvents,
+  containerEventsFromSealedTrace,
+  craftaxTraceFromOptimizerEvents,
+  craftaxTraceFromSealedTrace,
+  craftaxTrialsFromRun,
+  foldCraftaxTrace,
+  localMapRows,
+  reconcileCraftaxTrace
+} from "./craftaxTraceView.ts";
+export type {
+  AppliedAction,
+  ContainerEvent,
+  EvalTraceView,
+  RejectedAction,
+  StateDelta,
+  TraceCoverage,
+  TraceFrame,
+  TraceIdentity,
+  TraceMessage,
+  TraceStep,
+  TraceToolCall,
+  TrialView
+} from "./craftaxTraceView.ts";
 export type { PresentedRuntimeError } from "./presentError.ts";
 export { captureEvidenceKind, CAPTURE_REVIEW_PRODUCT_CLASSES } from "./captureEvidence.ts";
 export type { CaptureEvidenceKind } from "./captureEvidence.ts";
-export {
-  decideVisualEvidence,
-  visualEvidenceBlocksCompletion,
-  VISUAL_EVIDENCE_STATES
-} from "./visualEvidence.ts";
-export type { VisualEvidence, VisualEvidenceState, VisualLifecycleFacets } from "./visualEvidence.ts";
 export {
   createReplayClient,
   parseReplayPage,

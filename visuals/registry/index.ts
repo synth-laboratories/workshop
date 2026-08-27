@@ -125,7 +125,6 @@ export {
 } from "../runtime/crashInject.ts";
 export { presentRuntimeError, presentRuntimeErrorMessage } from "../runtime/presentError.ts";
 export { captureEvidenceKind, CAPTURE_REVIEW_PRODUCT_CLASSES } from "../runtime/captureEvidence.ts";
-export { decideVisualEvidence, visualEvidenceBlocksCompletion } from "../runtime/visualEvidence.ts";
 export type { ResolvedVisualBindings, VisualBindingsStatus } from "../runtime/bind.ts";
 export {
   createReplayClient,
@@ -136,6 +135,43 @@ export {
   REPLAY_PAGE_LIMIT_MAX
 } from "../runtime/replayClient.ts";
 export type { LiveTemplateProps, ReplayClient, ReplayCursor, ReplayPage, ReplayStream, TransportState } from "../runtime/replayClient.ts";
+export {
+  VISUAL_MEDIA_PROTOCOL,
+  MEDIA_CACHE_LIMIT,
+  MEDIA_PRELOAD_AHEAD,
+  MEDIA_PRELOAD_BEHIND,
+  NO_MEDIA,
+  createMediaClient,
+  isCasDigest,
+  mediaRefFrom
+} from "../runtime/mediaClient.ts";
+export type { LoadedMedia, MediaClient, MediaRef, MediaTransport } from "../runtime/mediaClient.ts";
+export {
+  EVAL_TRACE_VIEW_SCHEMA,
+  CRAFTAX_PROJECTION_KIND,
+  containerEventsFromOptimizerEvents,
+  containerEventsFromSealedTrace,
+  craftaxTraceFromOptimizerEvents,
+  craftaxTraceFromSealedTrace,
+  craftaxTrialsFromRun,
+  foldCraftaxTrace,
+  localMapRows,
+  reconcileCraftaxTrace
+} from "../runtime/craftaxTraceView.ts";
+export type {
+  AppliedAction,
+  ContainerEvent,
+  EvalTraceView,
+  RejectedAction,
+  StateDelta,
+  TraceCoverage,
+  TraceFrame,
+  TraceIdentity,
+  TraceMessage,
+  TraceStep,
+  TraceToolCall,
+  TrialView
+} from "../runtime/craftaxTraceView.ts";
 export { ingestLiveEnvelopes, assertLiveEvalSlot, LIVE_EVAL_INPUT, LIVE_EVAL_SLOT } from "../runtime/liveStream.ts";
 export { saveVisualInstanceTsx, renderInstanceTsx, markInstanceSaved } from "../runtime/save_tsx.ts";
 export {

@@ -37,6 +37,7 @@ const EXPECTED_IDS = [
   "compose.visual.v1",
   "craftax.eval_matrix.v1",
   "craftax.rollout_scrub.v1",
+  "craftax.trace_workbench.v1",
   "diagram.mermaid.v1",
   "diagram.systems.dynamic.v1",
   "diagram.systems.v1",
@@ -93,6 +94,14 @@ test("visuals package exposes the registered templates", () => {
         (meta.components ?? []).map((row) => row.id).sort(),
         ["detail_modal.v1", "event_stream.v1", "metrics.v1", "scrubber.v1"]
       );
+    }
+    if (id === "craftax.trace_workbench.v1") {
+      // The workstation replays one container-eval run's relayed trials. It
+      // reads the run, not a stream: the frames it shows are host-stored media
+      // referenced from that run's events, not bodies fetched from a URL.
+      assert.deepEqual(declaredInputs(meta).map((slot) => slot.name), ["optimizer_run"]);
+      assert.deepEqual(declaredInputs(meta)[0].accepts, ["optimizer_run"]);
+      assert.equal(declaredInputs(meta)[0].required, true);
     }
     if (id === "compose.visual.v1") {
       const declared = declaredInputs(meta);

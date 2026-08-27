@@ -155,6 +155,7 @@ pub fn builder() -> Builder<tauri::Wry> {
         crate::browser_policy_revoke_origin,
         crate::visual_subscription_ready,
         crate::visual_stream_poll,
+        crate::visual_media_read,
         crate::diagnostics_report,
         crate::diagnostics_status,
         crate::diagnostics_query,
@@ -470,8 +471,11 @@ mod tests {
         // OpenRouter model catalog read/refresh commands.
         // 261 → 263: experiment create_child + activate (follow_up lineage).
         // 263 → 264: experiment relate (member/candidate compared_with + promoted_to).
+        // 264 → 265: `visual_media_read` — the host-mediated binary media
+        // bridge (`synth.visual.media.v1`), which serves one bounded frame by
+        // digest to a visual bound to the run that produced it.
         assert_eq!(
-            exported, 264,
+            exported, 265,
             "generated bindings must contain the complete desktop command set"
         );
         assert_eq!(

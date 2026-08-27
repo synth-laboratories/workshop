@@ -43,6 +43,7 @@ const MIGRATIONS: &[&str] = &[
     MIGRATION_38,
     MIGRATION_39,
     MIGRATION_40,
+    MIGRATION_41,
 ];
 
 /// Apply every migration the database has not reached yet.
@@ -95,6 +96,7 @@ const REQUIRED_TABLES: &[(&str, &str)] = &[
     ("local_lora_checkpoints", MIGRATION_28),
     ("hosted_lora_overlays", MIGRATION_29),
     ("optimizer_run_ownership", MIGRATION_33),
+    ("optimizer_run_media", MIGRATION_41),
 ];
 
 fn heal_missing_tables(conn: &Connection) -> Result<()> {
@@ -1896,6 +1898,40 @@ ALTER TABLE experiment_candidates ADD COLUMN compared_with_json TEXT NOT NULL DE
 ALTER TABLE experiment_candidates ADD COLUMN promoted_to TEXT;
 
 ALTER TABLE experiment_records ADD COLUMN experiment_group_id TEXT REFERENCES experiment_groups(id);
+"#;
+
+/// The media a run is allowed to hand to its visual.
+///
+/// A visual asks the host for a frame by digest. Deciding whether it may have
+/// it by scanning the run's whole event log is both slow on a 500-step episode
+/// and fragile — one relay shape change and the check silently stops matching,
+/// which is the worst possible failure for an authorization gate. This is the
+/// authoritative index instead: the relay writes a row when it stores the
+/// bytes, and the bridge answers from exactly these rows.
+///
+/// `cas_digest` is Workshop's own SHA-256 of the stored object. `producer_digest`
+/// is whatever the container called it — sixteen hex characters in the field —
+/// and is provenance only. They are separate columns because conflating them
+/// is how a truncated label becomes a content address.
+const MIGRATION_41: &str = r#"
+CREATE TABLE IF NOT EXISTS optimizer_run_media (
+    optimizer_run_id TEXT NOT NULL REFERENCES optimizer_runs(id) ON DELETE CASCADE,
+    cas_digest TEXT NOT NULL,
+    kind TEXT NOT NULL DEFAULT 'eval_frames',
+    media_type TEXT NOT NULL,
+    byte_size INTEGER NOT NULL,
+    width INTEGER,
+    height INTEGER,
+    rollout_id TEXT,
+    trial_id TEXT,
+    step INTEGER,
+    producer_digest TEXT,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (optimizer_run_id, cas_digest)
+);
+
+CREATE INDEX IF NOT EXISTS optimizer_run_media_rollout
+ON optimizer_run_media(optimizer_run_id, rollout_id, step);
 "#;
 
 #[cfg(test)]

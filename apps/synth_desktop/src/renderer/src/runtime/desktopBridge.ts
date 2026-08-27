@@ -773,6 +773,7 @@ window.synthWorkspaceScope ??= isTauri
 				)),
 			render: (visualId) => fromGenerated(spectaCommands.visualsRender(visualId)),
 			pollStream: (request) => fromGenerated(spectaCommands.visualStreamPoll(request)),
+			readMedia: (request) => fromGenerated(spectaCommands.visualMediaRead(request)),
 			onEvent(listener, onAttached) {
 				return listenRuntimeAppEvents((payload) => {
 					if (payload.kind.startsWith("visual.")) listener(payload);

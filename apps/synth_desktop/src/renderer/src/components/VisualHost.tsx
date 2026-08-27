@@ -7,6 +7,7 @@ import {
 	bindTemplateSlots,
 	bindingInputName,
 	consumeInjectedRendererCrash,
+	createMediaClient,
 	createReplayClient,
 	isVisualBindings,
 	rememberLastKnownGood,
@@ -324,6 +325,19 @@ function TemplateVisualHost({ artifact }: { artifact: ArtifactRef }) {
 						bridges.visuals!.pollStream({ visualId: artifact.id, pollUrl, after, limit })
 				: undefined),
 		[artifact.id, replay.streams]
+	);
+	const mediaClient = useMemo(
+		() =>
+			// Same shape as the replay client: the capability is checked rather
+			// than assumed, and a template that gets no transport renders its
+			// frame references as unavailable instead of throwing on first load.
+			createMediaClient(
+				typeof bridges.visuals?.readMedia === "function"
+					? (casDigest) =>
+							bridges.visuals!.readMedia({ visualId: artifact.id, casDigest })
+					: undefined
+			),
+		[artifact.id]
 	);
 	const synchronouslyResolved = useMemo(() => {
 		if (!isVisualBindings(artifact.bindings) || asyncBindings.length === 0) {
@@ -832,6 +846,7 @@ function TemplateVisualHost({ artifact }: { artifact: ArtifactRef }) {
 				data={optimizerPayload ?? resolvedProps.optimizer_run}
 				comparison={comparisonPayload ?? undefined}
 				replay={replayClient}
+				media={mediaClient}
 				replayMissingTransport={replay.missingTransport}
 				visualId={artifact.visualId ?? artifact.id}
 				revision={typeof artifact.revision === "number" ? artifact.revision : null}

@@ -2258,6 +2258,118 @@ async fn visual_stream_poll(
     }
 }
 
+/// `synth.visual.media.v1` — the host-mediated binary bridge.
+///
+/// The `local_cas` binding decodes a CAS object as JSON, which is the right
+/// thing for a chart spec and useless for a PNG. Rather than teach that binding
+/// about binary — and rather than send an entire timeline of base64 frames into
+/// a pane on every update — a visual asks for one digest at a time and the host
+/// answers only for media the bound run actually produced.
+pub const VISUAL_MEDIA_PROTOCOL: &str = "synth.visual.media.v1";
+
+/// Ceiling on one bridged media response.
+///
+/// A frame is a screen-sized image. Anything larger is a producer defect or a
+/// mis-typed digest, and returning it would put tens of megabytes of base64
+/// through the IPC boundary to render one tile.
+const VISUAL_MEDIA_MAX_BYTES: u64 = 16 * 1024 * 1024;
+
+/// Media types a pane is allowed to be handed. An allowlist, not a denylist:
+/// the store also holds trace archives and accessibility trees, and none of
+/// them should ever reach a renderer through an image request.
+const VISUAL_MEDIA_ALLOWED_TYPES: &[&str] = &["image/png"];
+
+#[derive(Clone, Debug, serde::Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+struct VisualMediaReadRequest {
+    visual_id: String,
+    /// Workshop's own SHA-256, as it appears in `containerEvent.payload.media`.
+    cas_digest: String,
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn visual_media_read(
+    state: State<'_, Arc<CoreRuntime>>,
+    request: VisualMediaReadRequest,
+) -> Result<contract::specta::OpaqueJson, AppError> {
+    let visual = state
+        .visuals()
+        .get(request.visual_id.clone())
+        .await
+        .map_err(AppError::from)?;
+    // The runs this visual *declares*, plus the run it was minted for. A pane
+    // does not get to name a run: it gets the ones its bindings already say it
+    // is showing.
+    let mut candidates = visuals::declared_optimizer_run_ids(&visual.bindings);
+    if let Some(run_id) = visual.run_id.clone() {
+        if !candidates.contains(&run_id) {
+            candidates.push(run_id);
+        }
+    }
+    if candidates.is_empty() {
+        return Err(AppError::from(anyhow::anyhow!(
+            "visual {} is bound to no optimizer run, so it can be granted no run media",
+            visual.id
+        )));
+    }
+    let optimizers = state.optimizers();
+    let mut granted = None;
+    for run_id in &candidates {
+        match optimizers
+            .granted_run_media(run_id, &request.cas_digest)
+            .await
+        {
+            Ok(Some(found)) => {
+                granted = Some(found);
+                break;
+            }
+            Ok(None) => {}
+            // A malformed digest is the same answer for every candidate run;
+            // reporting it once is clearer than repeating it per run.
+            Err(error) => return Err(AppError::from(error)),
+        }
+    }
+    let Some(granted) = granted else {
+        return Err(AppError::from(anyhow::anyhow!(
+            "media {} was not produced by any run this visual is bound to",
+            request.cas_digest
+        )));
+    };
+    if !VISUAL_MEDIA_ALLOWED_TYPES.contains(&granted.media_type.as_str()) {
+        return Err(AppError::from(anyhow::anyhow!(
+            "media type {} is not servable to a visual",
+            granted.media_type
+        )));
+    }
+    if granted.byte_size > VISUAL_MEDIA_MAX_BYTES {
+        return Err(AppError::from(anyhow::anyhow!(
+            "media {} is {} bytes, over the {VISUAL_MEDIA_MAX_BYTES}-byte bridge ceiling",
+            granted.cas_digest,
+            granted.byte_size
+        )));
+    }
+    // `get_bytes` re-verifies the stored bytes against the digest, so a
+    // corrupted object fails here rather than rendering as a broken tile.
+    let bytes = optimizers
+        .read_media_bytes(&granted)
+        .map_err(AppError::from)?;
+    use base64::Engine as _;
+    let encoded = base64::engine::general_purpose::STANDARD.encode(&bytes);
+    Ok(contract::specta::OpaqueJson(serde_json::json!({
+        "protocol": VISUAL_MEDIA_PROTOCOL,
+        "casDigest": granted.cas_digest,
+        "mediaType": granted.media_type,
+        "byteSize": granted.byte_size,
+        "width": granted.width,
+        "height": granted.height,
+        "rolloutId": granted.rollout_id,
+        "step": granted.step,
+        "optimizerRunId": granted.optimizer_run_id,
+        "dataUrl": format!("data:{};base64,{encoded}", granted.media_type),
+    })))
+}
+
 async fn publish_visual_event(
     app: &tauri::AppHandle,
     core: &CoreRuntime,

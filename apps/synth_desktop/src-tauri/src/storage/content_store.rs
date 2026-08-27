@@ -80,6 +80,11 @@ fn validate_kind(kind: &str) -> Result<()> {
     match kind {
         "blobs" | "previews" | "traces" | "trace_imports" | "exports" | "artifact_bundles"
         | "report_bundles"
+        // Native environment frames relayed off a running container. Their own
+        // kind so a PNG is never served where a JSON document is expected, and
+        // so frame retention can be dropped without touching any other
+        // evidence a run produced.
+        | "eval_frames"
         // Computer-use captures. Kept in their own kinds so an accessibility
         // tree is never served as an image, and so retention can drop a
         // session's captures without touching anything else.

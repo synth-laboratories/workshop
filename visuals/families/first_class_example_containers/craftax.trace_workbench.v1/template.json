@@ -1,0 +1,44 @@
+{
+  "schemaVersion": "synth.visual-template.v1",
+  "id": "craftax.trace_workbench.v1",
+  "title": "Craftax trace workstation",
+  "genre": "craftax",
+  "version": "1.0.0",
+  "description": "Native PNG replay, the complete policy-call trajectory, and per-call evidence for one Craftax rollout — live while it runs and from its sealed Trace V5 afterwards.",
+  "accent": "#F05F22",
+  "shell": "shell.tsx",
+  "tags": [
+    "craftax",
+    "trace",
+    "replay",
+    "eval",
+    "live"
+  ],
+  "observationContract": {
+    "schemaVersion": "synth.visual-observation-contract.v1",
+    "readiness": {
+      "rejectTransportStates": [
+        "idle",
+        "declared",
+        "error",
+        "connecting",
+        "reconnecting"
+      ],
+      "minimumRolloutCount": 1,
+      "minimumRenderedFrameCount": 1,
+      "minimumSemanticEventCount": 1,
+      "requireTerminal": false
+    }
+  },
+  "inputs": [
+    {
+      "name": "optimizer_run",
+      "description": "The container-eval run whose relayed trials this workstation replays",
+      "accepts": [
+        "optimizer_run"
+      ],
+      "required": true,
+      "schema": "synth.optimizer-run-document.v1"
+    }
+  ]
+}

@@ -68,11 +68,17 @@ pub struct WorkspaceRecipe {
     pub family: String,
     pub harness: String,
     pub policy_config: String,
+    pub policy: serde_json::Map<String, Value>,
     pub train_seeds: Vec<i64>,
     pub heldout_seeds: Vec<i64>,
     pub concurrency: usize,
     pub proposer_model: Option<String>,
     pub requires_credential_advertisement: bool,
+    /// How this recipe wants a running rollout's event journal drained and its
+    /// native frames retained. Declared, never inferred: a 500-step Craftax
+    /// episode and a two-call classifier do not want the same cadence, and the
+    /// difference must not be a code edit.
+    pub relay: super::eval_relay::RelaySettings,
     pub source_path: PathBuf,
     pub source_hash: String,
 }
@@ -111,6 +117,8 @@ struct RecipeFile {
     #[serde(default)]
     policy_config: Option<String>,
     #[serde(default)]
+    policy: toml::value::Table,
+    #[serde(default)]
     proposer_model: Option<String>,
     #[serde(default)]
     requires_credential_advertisement: bool,
@@ -122,6 +130,25 @@ struct RecipeFile {
     train_seeds: Option<Vec<i64>>,
     #[serde(default)]
     heldout_seeds: Option<Vec<i64>>,
+    #[serde(default)]
+    event_stream: Option<EventStreamFile>,
+    #[serde(default)]
+    media: Option<MediaFile>,
+}
+
+#[derive(Deserialize, Default)]
+struct EventStreamFile {
+    poll_interval_ms: Option<u64>,
+    page_limit: Option<u32>,
+    max_events_per_rollout: Option<usize>,
+}
+
+#[derive(Deserialize, Default)]
+struct MediaFile {
+    frame_retention: Option<String>,
+    max_frame_bytes: Option<u64>,
+    max_frames_per_rollout: Option<usize>,
+    max_total_frame_bytes: Option<u64>,
 }
 
 #[derive(Deserialize, Default)]
@@ -365,6 +392,24 @@ fn parse_recipe(path: &Path) -> Result<WorkspaceRecipe> {
         .family
         .filter(|value| !value.trim().is_empty())
         .unwrap_or_else(|| parsed.container.clone());
+    const POLICY_KEYS: &[&str] = &[
+        "api", "effort", "temperature", "top_p", "top_k", "max_calls",
+        "max_steps", "context_token_budget", "compact_at", "compact_after_tokens",
+        "max_compactions", "thinking_budget", "answer_max_tokens", "timeout_seconds",
+        "min_request_interval", "sampler_retries", "retry_max_wait", "min_actions",
+        "max_actions",
+    ];
+    for key in parsed.policy.keys() {
+        if !POLICY_KEYS.contains(&key.as_str()) {
+            bail!("recipe `{}` policy.{key} is not an admitted policy option", parsed.id);
+        }
+    }
+    let policy = serde_json::to_value(&parsed.policy)
+        .context("encode workspace policy options")?
+        .as_object()
+        .cloned()
+        .unwrap_or_default();
+    let relay = parse_relay_settings(&parsed.id, parsed.event_stream, parsed.media)?;
     Ok(WorkspaceRecipe {
         title: parsed
             .title
@@ -386,16 +431,86 @@ fn parse_recipe(path: &Path) -> Result<WorkspaceRecipe> {
         family,
         harness: parsed.harness.unwrap_or_else(|| "desktop_eval".into()),
         policy_config: parsed.policy_config.unwrap_or_else(|| "default".into()),
+        policy,
         train_seeds: parsed.train_seeds.unwrap_or_else(|| vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9]),
         heldout_seeds: parsed.heldout_seeds.unwrap_or_default(),
         concurrency: parsed.concurrency.unwrap_or(1).max(1),
         proposer_model: parsed.proposer_model,
         requires_credential_advertisement: parsed.requires_credential_advertisement,
+        relay,
         source_path: path.to_path_buf(),
         source_hash: content_hash(&text),
         id: parsed.id,
     })
 }
+
+/// Read the declared relay/media policy, or fall back to the shipped defaults.
+///
+/// Every bound is validated where it is read rather than where it is used, so a
+/// recipe that asks for a 4 GiB frame is refused when it is loaded instead of
+/// discovered halfway through a campaign.
+fn parse_relay_settings(
+    recipe_id: &str,
+    event_stream: Option<EventStreamFile>,
+    media: Option<MediaFile>,
+) -> Result<super::eval_relay::RelaySettings> {
+    let mut settings = super::eval_relay::RelaySettings::default();
+    if let Some(declared) = event_stream {
+        if let Some(ms) = declared.poll_interval_ms {
+            if ms == 0 {
+                bail!("recipe `{recipe_id}` event_stream.poll_interval_ms must be positive");
+            }
+            settings.event_stream.poll_interval = std::time::Duration::from_millis(ms);
+        }
+        if let Some(limit) = declared.page_limit {
+            if !(1..=10_000).contains(&limit) {
+                bail!("recipe `{recipe_id}` event_stream.page_limit must be 1..=10000");
+            }
+            settings.event_stream.page_limit = limit;
+        }
+        if let Some(cap) = declared.max_events_per_rollout {
+            if cap == 0 {
+                bail!("recipe `{recipe_id}` event_stream.max_events_per_rollout must be positive");
+            }
+            settings.event_stream.max_events_per_rollout = cap;
+        }
+    }
+    if let Some(declared) = media {
+        if let Some(retention) = declared.frame_retention.as_deref() {
+            settings.media.frame_retention = super::eval_relay::FrameRetention::parse(retention)
+                .with_context(|| format!("recipe `{recipe_id}`"))?;
+        }
+        if let Some(bytes) = declared.max_frame_bytes {
+            if bytes == 0 || bytes > PRODUCT_MAX_FRAME_BYTES {
+                bail!(
+                    "recipe `{recipe_id}` media.max_frame_bytes must be 1..={PRODUCT_MAX_FRAME_BYTES}"
+                );
+            }
+            settings.media.max_frame_bytes = bytes;
+        }
+        if let Some(count) = declared.max_frames_per_rollout {
+            settings.media.max_frames_per_rollout = count;
+        }
+        if let Some(bytes) = declared.max_total_frame_bytes {
+            if bytes > PRODUCT_MAX_TOTAL_FRAME_BYTES {
+                bail!(
+                    "recipe `{recipe_id}` media.max_total_frame_bytes exceeds product cap {PRODUCT_MAX_TOTAL_FRAME_BYTES}"
+                );
+            }
+            settings.media.max_total_frame_bytes = bytes;
+        }
+    }
+    settings.event_stream = settings.event_stream.normalized();
+    Ok(settings)
+}
+
+/// Ceiling on one retained frame. A single environment render that needs more
+/// than 32 MiB is a producer defect, not a recipe choice.
+const PRODUCT_MAX_FRAME_BYTES: u64 = 32 * 1024 * 1024;
+
+/// Ceiling on one rollout's total retained frame bytes. Deduplication happens
+/// physically in the content store, so this bounds what one episode can add.
+const PRODUCT_MAX_TOTAL_FRAME_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 
 fn parse_containers(workspace: &Path, text: &str) -> Result<Vec<ContainerSpec>> {
     let parsed: ContainersFile =

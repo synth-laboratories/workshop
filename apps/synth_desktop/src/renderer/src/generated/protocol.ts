@@ -155,6 +155,7 @@ export const commands = {
 	 *  scoped to exact URLs already stored on the named visual.
 	 */
 	visualStreamPoll: (request: VisualStreamPollRequest) => typedError<unknown, AppError>(__TAURI_INVOKE("visual_stream_poll", { request })),
+	visualMediaRead: (request: VisualMediaReadRequest) => typedError<unknown, AppError>(__TAURI_INVOKE("visual_media_read", { request })),
 	/**  Record a renderer diagnostic. Returns as soon as it is queued. */
 	diagnosticsReport: (request: DiagnosticReportRequest) => typedError<null, AppError>(__TAURI_INVOKE("diagnostics_report", { request })),
 	diagnosticsStatus: () => typedError<unknown, AppError>(__TAURI_INVOKE("diagnostics_status")),
@@ -2890,6 +2891,12 @@ export type VisualCreateRequest = {
 	sourceModel: string | null,
 	content: string | null,
 	metadata: unknown,
+};
+
+export type VisualMediaReadRequest = {
+	visualId: string,
+	/**  Workshop's own SHA-256, as it appears in `containerEvent.payload.media`. */
+	casDigest: string,
 };
 
 export type VisualQuery = {

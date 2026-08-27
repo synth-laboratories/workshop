@@ -6,6 +6,7 @@ mod container_eval;
 pub(crate) mod container_lifecycle;
 mod container_training;
 mod eval_candidates;
+mod eval_relay;
 mod eval_recipes;
 pub(crate) mod eval_runtime;
 mod events;

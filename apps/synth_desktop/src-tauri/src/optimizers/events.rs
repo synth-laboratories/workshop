@@ -110,6 +110,17 @@ impl OptimizerEventDraft {
         self
     }
 
+    /// Producer timestamp when there is one; seal time when there is not.
+    /// Relayed events carry the container's `ts`, which is the moment the
+    /// environment actually observed the fact rather than the moment Workshop
+    /// got around to reading it.
+    pub fn occurred_at_opt(self, occurred_at: Option<&str>) -> Self {
+        match occurred_at.map(str::trim).filter(|value| !value.is_empty()) {
+            Some(value) => self.occurred_at(value),
+            None => self,
+        }
+    }
+
     pub fn idempotency_key(mut self, key: impl Into<String>) -> Self {
         self.idempotency_key = Some(key.into());
         self

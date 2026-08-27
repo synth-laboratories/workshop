@@ -1000,7 +1000,9 @@ fn percent_decode(value: &str) -> String {
     String::from_utf8_lossy(&out).into_owned()
 }
 
-fn validated_loopback_rollout_base(base: &str) -> Result<String> {
+/// The registered container's own origin, proved local before anything is
+/// fetched from it. Frame media resolves against this and nothing else.
+pub(crate) fn validated_loopback_rollout_base(base: &str) -> Result<String> {
     let trimmed = base.trim_end_matches('/');
     let parsed = reqwest::Url::parse(trimmed).context("invalid container base URL")?;
     let local_host = matches!(
@@ -3481,7 +3483,23 @@ pub(crate) async fn import_container_trace(
     container_id: &str,
     rollout_id: &str,
 ) -> Result<Value> {
-    let container = core.data().get_container(container_id.to_string()).await?;
+    let (result, event) = import_container_trace_into(core.data(), container_id, rollout_id).await?;
+    core.broadcast_committed(event);
+    Ok(result)
+}
+
+/// The import itself, over a `DataStore` rather than the whole runtime.
+///
+/// The eval worker needs exactly this and holds no `CoreRuntime`; splitting it
+/// out is what lets a rollout seal its replay at the moment it finishes instead
+/// of waiting for an agent to ask for it later. The committed event is returned
+/// rather than broadcast so each caller places it on its own bus.
+pub(crate) async fn import_container_trace_into(
+    data: &crate::data::DataStore,
+    container_id: &str,
+    rollout_id: &str,
+) -> Result<(Value, Option<crate::storage::AppEvent>)> {
+    let container = data.get_container(container_id.to_string()).await?;
     let base = validated_loopback_rollout_base(
         container
             .base_url
@@ -3496,7 +3514,7 @@ pub(crate) async fn import_container_trace(
         .await?
         .context("unknown rollout")?;
     let reference = state.get("trace").filter(|value| value.is_object());
-    let staging = core.data().staging_root().join("container-seals");
+    let staging = data.staging_root().join("container-seals");
     fs::create_dir_all(&staging)?;
 
     // A bundle archive first: only a self-contained Trace V5 archive can be
@@ -3538,8 +3556,7 @@ pub(crate) async fn import_container_trace(
         (path, "container_seal")
     };
 
-    let result = core
-        .data()
+    let result = data
         .ingest_trace_bundle(crate::trace_ingest::TraceBundleIngestRequest {
             source_path: source_path.display().to_string(),
             source_kind: Some(source_kind.to_owned()),
@@ -3549,14 +3566,13 @@ pub(crate) async fn import_container_trace(
         .await;
     let _ = fs::remove_file(&source_path);
     let (result, event) = result?;
-    core.broadcast_committed(event);
 
     let indexed: Vec<Value> = result
         .traces
         .iter()
         .map(|trace| json!({"traceId": trace.id, "digest": trace.digest}))
         .collect();
-    Ok(json!({
+    Ok((json!({
         "containerId": container_id,
         "rolloutId": rollout_id,
         "sourceKind": source_kind,
@@ -3574,7 +3590,7 @@ pub(crate) async fn import_container_trace(
         } else {
             "Sealed Trace V5 is now indexed in Workshop."
         },
-    }))
+    }), event))
 }
 
 /// Capture-supervisor bundle first (Lane E `/rollouts/{id}/trace/bundle`),

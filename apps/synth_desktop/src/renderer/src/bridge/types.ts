@@ -616,6 +616,24 @@ export type VisualsBridge = {
 	}>;
 	render(visualId: string): Promise<VisualRecord>;
 	pollStream(request: { visualId: string; pollUrl: string; after: number; limit: number }): Promise<unknown>;
+	/**
+	 * `synth.visual.media.v1` — one bounded binary object by CAS digest.
+	 *
+	 * The host answers only for media produced by a run this visual is bound
+	 * to, so a pane cannot read the store by asking for arbitrary digests.
+	 */
+	readMedia(request: { visualId: string; casDigest: string }): Promise<{
+		protocol: string;
+		casDigest: string;
+		mediaType: string;
+		byteSize: number;
+		width: number | null;
+		height: number | null;
+		rolloutId: string | null;
+		step: number | null;
+		optimizerRunId: string;
+		dataUrl: string;
+	}>;
 	onEvent(listener: (event: AppEvent) => void, onAttached?: () => void): () => void;
 	onShow(listener: (event: AppEvent) => void): () => void;
 };

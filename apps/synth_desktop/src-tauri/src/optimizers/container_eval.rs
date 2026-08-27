@@ -4,6 +4,7 @@
 //! `experiment.overview.v1` visual. They do not require the Optimizers sidecar.
 
 use super::{
+    eval_relay::{self, RelayContext, RelaySettings},
     events::OptimizerEventDraft,
     models::{
         OptimizerCapabilities, OptimizerCreateRequest, OptimizerExecutionBinding,
@@ -28,11 +29,15 @@ use uuid::Uuid;
 
 const EXPERIMENT_TEMPLATE: &str = "experiment.overview.v1";
 const EXPERIMENT_SCHEMA: &str = "synth.experiment.overview.v1";
+/// The per-seed drill-down. The overview stays the run-level surface; this is
+/// what a seed row opens, and it is bound to the same run rather than to a
+/// snapshot, so it keeps filling in while the campaign runs.
+const WORKBENCH_TEMPLATE: &str = "craftax.trace_workbench.v1";
 const EVAL_ALGORITHM_ID: &str = "eval";
 const COST_CEILING_USD: f64 = 0.50;
 const POLL_TIMEOUT: Duration = Duration::from_secs(120);
 const POLL_INTERVAL: Duration = Duration::from_millis(80);
-const BLOCKING_EVAL_HTTP_TIMEOUT: Duration = Duration::from_secs(10 * 60);
+const DEFAULT_BLOCKING_EVAL_HTTP_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 
 /// A failure of the evidence lane — durable events, projections, the terminal
 /// manifest, or the chat-owned visual — as opposed to a failure of the compute.
@@ -79,6 +84,7 @@ struct EvalSpec {
     evaluation_plan_ref: String,
     harness: String,
     policy_config: String,
+    policy: serde_json::Map<String, Value>,
     provider: String,
     model: String,
     concurrency: usize,
@@ -86,11 +92,29 @@ struct EvalSpec {
     heldout: Vec<i64>,
     cost_ceiling_usd: f64,
     requires_credential_advertisement: bool,
+    relay: RelaySettings,
 }
 
 impl EvalSpec {
     fn requires_credential_advertisement(&self) -> bool {
         self.requires_credential_advertisement
+    }
+
+    fn blocking_http_timeout(&self) -> Duration {
+        let Some(per_call) = self
+            .policy
+            .get("timeout_seconds")
+            .and_then(Value::as_f64)
+        else {
+            return DEFAULT_BLOCKING_EVAL_HTTP_TIMEOUT;
+        };
+        let calls = self
+            .policy
+            .get("max_calls")
+            .and_then(Value::as_u64)
+            .unwrap_or(1)
+            .max(1) as f64;
+        Duration::from_secs_f64((per_call * calls + 60.0).clamp(60.0, 86_400.0))
     }
 
     fn from_workspace(recipe: &WorkspaceRecipe) -> Self {
@@ -103,6 +127,7 @@ impl EvalSpec {
             evaluation_plan_ref: format!("{}_eval.v1", recipe.family),
             harness: recipe.harness.clone(),
             policy_config: recipe.policy_config.clone(),
+            policy: recipe.policy.clone(),
             provider: recipe.provider.clone(),
             model: recipe.model.clone(),
             concurrency: recipe.concurrency,
@@ -110,6 +135,7 @@ impl EvalSpec {
             heldout: recipe.heldout_seeds.clone(),
             cost_ceiling_usd: recipe.bounds.max_cost_usd,
             requires_credential_advertisement: recipe.requires_credential_advertisement,
+            relay: recipe.relay,
         }
     }
 
@@ -124,6 +150,7 @@ impl EvalSpec {
             evaluation_plan_ref: "banking77_eval.v1".into(),
             harness: "desktop_eval".into(),
             policy_config: "banking77_gpt_4_1_nano".into(),
+            policy: serde_json::Map::new(),
             provider: "openrouter".into(),
             model: "openai/gpt-4.1-nano".into(),
             concurrency: 10,
@@ -131,6 +158,7 @@ impl EvalSpec {
             heldout: Vec::new(),
             cost_ceiling_usd: 0.50,
             requires_credential_advertisement: false,
+            relay: RelaySettings::default(),
         }
     }
 
@@ -145,6 +173,7 @@ impl EvalSpec {
             evaluation_plan_ref: "healthbench_eval.v1".into(),
             harness: "chat_completion".into(),
             policy_config: "openai_gpt41_mini".into(),
+            policy: serde_json::Map::new(),
             provider: "openai".into(),
             model: "gpt-4.1-mini-2025-04-14".into(),
             concurrency: 2,
@@ -152,6 +181,7 @@ impl EvalSpec {
             heldout: vec![100, 101],
             cost_ceiling_usd: 0.50,
             requires_credential_advertisement: true,
+            relay: RelaySettings::default(),
         }
     }
 
@@ -174,13 +204,14 @@ impl EvalSpec {
             return None;
         }
         let base_url = openai_base_url?;
-        let config = json!({
-            "provider": self.provider,
-            "model": self.model,
-            "temperature": 0,
-            "base_url": base_url,
-            "api_key_env": "OPENAI_API_KEY",
-        });
+        let mut config = self.policy.clone();
+        config.extend(serde_json::Map::from_iter([
+            ("provider".into(), json!(self.provider)),
+            ("model".into(), json!(self.model)),
+            ("base_url".into(), json!(base_url)),
+            ("api_key_env".into(), json!("OPENAI_API_KEY")),
+        ]));
+        let config = Value::Object(config);
         Some(json!({
             "config_id": self.policy_config,
             "harness": self.harness,
@@ -286,6 +317,10 @@ pub(super) async fn start(
     };
     let (run, event) = service.create(create).await?;
     let visual_id = mint_experiment_visual(service, &run, &spec, examples.len()).await?;
+    // Minted with the run, not when the first seed finishes: a workstation that
+    // appears only after there is something to see cannot show a rollout
+    // starting, which is the thing it exists to show.
+    let workbench_id = mint_workbench_visual(service, &run, &spec).await?;
     let (cancel_tx, cancel_rx) = watch::channel(false);
     service
         .register_local_recipe(run.id.clone(), cancel_tx)
@@ -294,6 +329,7 @@ pub(super) async fn start(
     let worker_run_id = run.id.clone();
     let planned_trials = examples.len();
     let worker_visual_id = visual_id.clone();
+    let worker_workbench_id = workbench_id.clone();
     let worker_spec = spec.clone();
     tokio::spawn(async move {
         if let Err(error) = run_eval_worker(
@@ -303,6 +339,7 @@ pub(super) async fn start(
             container,
             examples,
             worker_visual_id.clone(),
+            worker_workbench_id.clone(),
             cancel_rx,
         )
         .await
@@ -316,6 +353,7 @@ pub(super) async fn start(
                 &worker_run_id,
                 &worker_spec,
                 &worker_visual_id,
+                &worker_workbench_id,
                 planned_trials,
             )
             .await;
@@ -331,6 +369,7 @@ async fn project_worker_failure_visual(
     run_id: &str,
     spec: &EvalSpec,
     visual_id: &str,
+    workbench_id: &str,
     planned_trials: usize,
 ) -> Result<()> {
     let run = service.get(run_id.to_string()).await?;
@@ -360,6 +399,7 @@ async fn project_worker_failure_visual(
                     total,
                     &records,
                     mean,
+                    workbench_id,
                 )),
                 status: Some(VisualStatus::Failed),
                 renderer_kind: None,
@@ -503,6 +543,42 @@ async fn settle_worker_failure(service: &OptimizerService, run_id: &str, error: 
     let _ = append_terminal(service, run_id, true, format!("{error:#}")).await;
 }
 
+/// The Trace V5 workstation for this run's seeds.
+///
+/// Bound as `optimizer_run` rather than as inline data: the workstation folds
+/// the relayed event log itself, so it stays live without the worker having to
+/// re-project a trajectory into bindings on every append.
+async fn mint_workbench_visual(
+    service: &OptimizerService,
+    run: &OptimizerRunRecord,
+    spec: &EvalSpec,
+) -> Result<String> {
+    let (visual_id, _event) = service
+        .publish_chat_owned_visual(ChatVisualPublication {
+            run_id: run.id.clone(),
+            session_ref: run.session_ref.clone(),
+            template_id: WORKBENCH_TEMPLATE.into(),
+            title: format!("{} · trace workstation", spec.title),
+            bindings: json!({
+                "schemaVersion": VISUAL_BINDINGS_SCHEMA_VERSION,
+                "inputs": [{
+                    "input": "optimizer_run",
+                    "kind": "optimizer_run",
+                    "source": run.id,
+                }]
+            }),
+            metadata: json!({
+                "optimizerRunId": run.id,
+                "recipeId": spec.recipe_id,
+                "semantics": "baseline_eval_trace",
+            }),
+            status: VisualStatus::Live,
+            role: "trace_workbench".into(),
+        })
+        .await?;
+    Ok(visual_id)
+}
+
 async fn mint_experiment_visual(
     service: &OptimizerService,
     run: &OptimizerRunRecord,
@@ -518,7 +594,11 @@ async fn mint_experiment_visual(
             session_ref: run.session_ref.clone(),
             template_id: EXPERIMENT_TEMPLATE.into(),
             title: spec.title.clone(),
-            bindings: experiment_bindings(spec, "running", 0, total, &[], None),
+            // The overview is minted before the workstation exists, so the
+            // first projection carries no drill-down target. `persist_progress`
+            // supplies it from the next update onward; a seed row with no
+            // target simply has no chip, rather than one that goes nowhere.
+            bindings: experiment_bindings(spec, "running", 0, total, &[], None, ""),
             metadata: json!({
                 "optimizerRunId": run.id,
                 "recipeId": spec.recipe_id,
@@ -531,6 +611,7 @@ async fn mint_experiment_visual(
     Ok(visual_id)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn experiment_bindings(
     spec: &EvalSpec,
     status: &str,
@@ -538,9 +619,11 @@ fn experiment_bindings(
     total: usize,
     records: &[Value],
     mean_reward: Option<f64>,
+    workbench_id: &str,
 ) -> Value {
     let train_mean = mean_for_pool(records, "train");
     let heldout_mean = mean_for_pool(records, "heldout");
+    let rollouts = records.iter().map(|record| seed_row(record, workbench_id)).collect::<Vec<_>>();
     json!({
         "schemaVersion": VISUAL_BINDINGS_SCHEMA_VERSION,
         "inputs": [{
@@ -563,6 +646,13 @@ fn experiment_bindings(
                     {"label": "Heldout mean", "value": heldout_mean, "detail": if spec.heldout.is_empty() { "this recipe has no heldout pool" } else if heldout_mean.is_none() { "omitted until the split is complete" } else { "mean of present rewards" }},
                     {"label": "Overall mean", "value": mean_reward, "detail": "missing rewards stay missing"}
                 ],
+                "results": {
+                    "rollouts": rollouts,
+                },
+                // Each seed opens the workstation, which is bound to the run
+                // rather than to this snapshot — so a seed row is a way in, not
+                // a second copy of the evidence that can disagree with it.
+                "traces": { "prominence": "detail", "items": rollouts },
                 "arms": [{
                     "id": "baseline",
                     "label": spec.policy_config,
@@ -576,6 +666,41 @@ fn experiment_bindings(
                 ]
             }
         }]
+    })
+}
+
+/// One seed's row in the overview, and its way into the workstation.
+fn seed_row(record: &Value, workbench_id: &str) -> Value {
+    let seed = record.get("seed").cloned().unwrap_or(Value::Null);
+    let relay = record.get("relay");
+    let frames = relay
+        .and_then(|relay| relay.get("framesRetained"))
+        .and_then(Value::as_u64);
+    let declared = relay
+        .and_then(|relay| relay.get("framesDeclared"))
+        .and_then(Value::as_u64);
+    // The frame count is stated as retained-of-declared. "0 native frames" was
+    // once printed for a rollout that rendered thirteen, and a single number
+    // cannot tell those two situations apart.
+    let summary = match (frames, declared) {
+        (Some(frames), Some(declared)) if declared > 0 => {
+            format!("{frames}/{declared} native frames retained")
+        }
+        _ => "no relay receipt was recorded for this seed".to_string(),
+    };
+    json!({
+        "id": record.get("rolloutId").cloned().unwrap_or(Value::Null),
+        "label": match seed { Value::Null => "seed".to_string(), ref value => format!("Seed {value}") },
+        "seed": seed,
+        "reward": record.get("reward").cloned().unwrap_or(Value::Null),
+        "status": record.get("status").cloned().unwrap_or(Value::Null),
+        "stopReason": record.get("rewardStatus").cloned().unwrap_or(Value::Null),
+        "achievements": record
+            .get("checkpointAchievements")
+            .and_then(Value::as_array)
+            .map(Vec::len),
+        "summary": summary,
+        "visualId": workbench_id,
     })
 }
 
@@ -599,6 +724,7 @@ async fn run_eval_worker(
     container: ReadyContainer,
     examples: Vec<EvalExample>,
     visual_id: String,
+    workbench_id: String,
     cancel: watch::Receiver<bool>,
 ) -> Result<()> {
     let _revoke = crate::secrets::RevokeRunOnDrop(run_id.clone());
@@ -619,7 +745,7 @@ async fn run_eval_worker(
     // These recipes intentionally use the container's blocking rollout mode.
     // HealthBench can make one policy call plus many rubric-grader calls, so
     // the generic UI HTTP timeout is not an honest bound for this endpoint.
-    let client = crate::http::http_client_with_timeout(BLOCKING_EVAL_HTTP_TIMEOUT);
+    let client = crate::http::http_client_with_timeout(spec.blocking_http_timeout());
     let info = match client
         .get(format!("{}/info", container.base_url))
         .send()
@@ -633,6 +759,12 @@ async fn run_eval_worker(
     let policy_pin =
         register_policy_pin(&client, &container.base_url, spec, &info, &run_id).await?;
     persist_policy_pin(&service, &run_id, &policy_pin).await?;
+    // Frame bodies get their own client: it refuses redirects, so a container
+    // event's `url` cannot steer Workshop's fetch off the container's origin.
+    let media_client = eval_relay::frame_media_client()?;
+    // Frame URLs are only ever resolved against this, never against whatever a
+    // payload happens to contain.
+    let media_origin = crate::visuals_ipc::validated_loopback_rollout_base(&container.base_url)?;
     let scale_leases = info
         .get("scale_leases")
         .or_else(|| info.pointer("/metadata/scale_leases"))
@@ -661,11 +793,26 @@ async fn run_eval_worker(
                 break;
             };
             let client = client.clone();
-            let base = container.base_url.clone();
+            let media_client = media_client.clone();
+            let base = media_origin.clone();
             let pin = policy_pin.clone();
             let spec = spec.clone();
+            let service = service.clone();
+            let run_id = run_id.clone();
+            let container_id = container.id.clone();
+            let mut trial_cancel = cancel.clone();
             tasks.spawn(async move {
-                let result = run_one_example(&client, &base, &spec, example, &pin).await;
+                let trial = TrialContext {
+                    service: &service,
+                    run_id: &run_id,
+                    client: &client,
+                    media_client: &media_client,
+                    base: &base,
+                    container_id: &container_id,
+                    spec: &spec,
+                    policy_pin: &pin,
+                };
+                let result = run_one_example(&trial, example, &mut trial_cancel).await;
                 (example, result)
             });
         }
@@ -692,7 +839,14 @@ async fn run_eval_worker(
         evidence(
             "progress_projection",
             persist_progress(
-                &service, &run_id, spec, &visual_id, &records, total, "running",
+                &service,
+                &run_id,
+                spec,
+                &visual_id,
+                &workbench_id,
+                &records,
+                total,
+                "running",
             ),
         )
         .await?;
@@ -720,7 +874,16 @@ async fn run_eval_worker(
     };
     evidence(
         "progress_projection",
-        persist_progress(&service, &run_id, spec, &visual_id, &records, total, status),
+        persist_progress(
+            &service,
+            &run_id,
+            spec,
+            &visual_id,
+            &workbench_id,
+            &records,
+            total,
+            status,
+        ),
     )
     .await?;
     evidence(
@@ -880,7 +1043,35 @@ fn container_proxy_policy(spec: &EvalSpec) -> crate::secrets::SecretsUsePolicy {
     }
     policy.max_cost_usd = spec.cost_ceiling_usd;
     let trials = spec.examples().len() as u64;
-    policy.max_calls = trials.saturating_mul(64).clamp(128, u32::MAX as u64) as u32;
+    let calls_per_trial = spec
+        .policy
+        .get("max_calls")
+        .and_then(Value::as_u64)
+        .unwrap_or(1)
+        .max(1);
+    let total_calls = trials.saturating_mul(calls_per_trial).max(1);
+    policy.max_calls = total_calls.min(u32::MAX as u64) as u32;
+    if let Some(context_tokens) = spec
+        .policy
+        .get("context_token_budget")
+        .and_then(Value::as_u64)
+    {
+        policy.max_input_tokens = total_calls.saturating_mul(context_tokens);
+    }
+    let answer_tokens = spec
+        .policy
+        .get("answer_max_tokens")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let thinking_tokens = spec
+        .policy
+        .get("thinking_budget")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    if answer_tokens > 0 || thinking_tokens > 0 {
+        policy.max_output_tokens = total_calls
+            .saturating_mul(answer_tokens.saturating_add(thinking_tokens));
+    }
     policy
 }
 
@@ -1057,11 +1248,13 @@ fn lane_cost_usd(blob: &Value) -> Option<f64> {
         .filter(|value| value.is_finite() && *value >= 0.0)
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn persist_progress(
     service: &OptimizerService,
     run_id: &str,
     spec: &EvalSpec,
     visual_id: &str,
+    workbench_id: &str,
     records: &[Value],
     total: usize,
     status: &str,
@@ -1125,7 +1318,13 @@ async fn persist_progress(
             VisualUpdateRequest {
                 title: None,
                 bindings: Some(experiment_bindings(
-                    spec, status, completed, total, records, mean,
+                    spec,
+                    status,
+                    completed,
+                    total,
+                    records,
+                    mean,
+                    workbench_id,
                 )),
                 status: Some(visual_status),
                 renderer_kind: None,
@@ -1259,17 +1458,52 @@ fn mean_reward(records: &[Value]) -> Option<f64> {
     }
 }
 
+/// Everything one trial needs that is not the trial itself.
+///
+/// Carried as a struct rather than eight positional arguments because the
+/// worker now hands the rollout its own identity (run, trial, visual clock) as
+/// well as its transport: the relay files events against a run, and a relay
+/// that could not name its run would have nowhere to put them.
+struct TrialContext<'a> {
+    service: &'a OptimizerService,
+    run_id: &'a str,
+    client: &'a reqwest::Client,
+    media_client: &'a reqwest::Client,
+    base: &'a str,
+    container_id: &'a str,
+    spec: &'a EvalSpec,
+    policy_pin: &'a Value,
+}
+
+/// Run one seed, relaying the container's event journal as it happens.
+///
+/// Order matters and is the whole point:
+///
+/// 1. `prepare`, then wait for the declared subscribe ACK (C1-08, unchanged).
+/// 2. `eval.trial.started`, so a trial exists in the log before its events do.
+/// 3. Start the blocking `POST /rollouts` as a *concurrent future*.
+/// 4. Drain the declared poll URL beside it, relaying every semantic event and
+///    fetching every native PNG into the content store.
+/// 5. When both the request has settled and the journal has closed, fetch the
+///    reward, import the sealed Trace V5 bundle, and settle the trial.
+///
+/// Step 3 keeps `submission_mode: "sync"`. Containers admits an async rollout
+/// without running it until the separate completion route is called, so the
+/// asynchronous spelling would buy a live pane and lose the rollout.
 async fn run_one_example(
-    client: &reqwest::Client,
-    base: &str,
-    spec: &EvalSpec,
+    ctx: &TrialContext<'_>,
     example: EvalExample,
-    policy_pin: &Value,
+    cancel: &mut watch::Receiver<bool>,
 ) -> Result<Value> {
+    let spec = ctx.spec;
     let telemetry = {
         let mut telemetry = authoritative_poll_telemetry();
         if let Some(object) = telemetry.as_object_mut() {
             object.insert("retention".into(), json!("run"));
+            // Frames are asked for when the recipe retains them. The eval lane
+            // used to pin `frame.enabled: false` and then report "0 native
+            // frames", which was true and entirely self-inflicted.
+            object.insert("frame".into(), spec.relay.telemetry_frame());
         }
         refuse_auto_transport(&telemetry)?;
         telemetry
@@ -1281,8 +1515,10 @@ async fn run_one_example(
         example.seed,
         &Uuid::new_v4().simple().to_string()[..8]
     );
-    let prepare = client
-        .post(format!("{base}/rollouts/prepare"))
+    let trial_id = format!("trial:{}:{}", spec.family, example.seed);
+    let prepare = ctx
+        .client
+        .post(format!("{}/rollouts/prepare", ctx.base))
         .json(&json!({ "rollout_id": rollout_id, "telemetry": telemetry }))
         .send()
         .await
@@ -1298,12 +1534,27 @@ async fn run_one_example(
     let prepared = prepare.json::<Value>().await?;
     let stream =
         declared_stream_descriptor(&prepared)?.context("prepare omitted stream descriptor")?;
-    let poll_url = resolve_declared_url(base, &declared_poll_url(&stream)?)?;
+    let poll_url = resolve_declared_url(ctx.base, &declared_poll_url(&stream)?)?;
     wait_for_stream_subscribed(
-        client,
+        ctx.client,
         &poll_url,
         SUBSCRIBE_READY_TIMEOUT,
         &StreamDiagnostics::none().with_rollout(&rollout_id),
+    )
+    .await?;
+
+    // The trial exists in the durable log before the first container event
+    // does. Without this, a relayed event would be the first thing a reader
+    // ever heard about the trial, and the pane would have to invent the row.
+    eval_relay::append_trial_started(
+        ctx.service,
+        ctx.run_id,
+        &trial_id,
+        &rollout_id,
+        example.seed,
+        example.pool,
+        &spec.family,
+        &spec.policy_config,
     )
     .await?;
 
@@ -1317,29 +1568,48 @@ async fn run_one_example(
         "evaluation_plan_ref": spec.evaluation_plan_ref,
         "policy_ref": { "harness": spec.harness, "config": spec.policy_config },
     });
-    let started = client
-        .post(format!("{base}/rollouts"))
-        .json(&start_body)
-        .send()
-        .await
-        .context("POST /rollouts")?;
-    if !started.status().is_success() {
-        let status = started.status();
-        let body = started.text().await.unwrap_or_default();
-        bail!(
-            "POST /rollouts failed for {} seed {}: {status} {body}",
-            example.pool,
-            example.seed
-        );
-    }
-    let mut state = started.json::<Value>().await?;
+    let relay_ctx = RelayContext {
+        service: ctx.service,
+        run_id: ctx.run_id,
+        trial_id: &trial_id,
+        rollout_id: &rollout_id,
+        seed: example.seed,
+        pool: example.pool,
+        scenario: &spec.family,
+        base: ctx.base,
+        poll_url: &poll_url,
+        client: ctx.client,
+        media_client: ctx.media_client,
+        settings: spec.relay,
+    };
+    let rollout = start_rollout(ctx.client, ctx.base, &start_body, example);
+    let (started, relay) = eval_relay::relay_while(&relay_ctx, rollout, cancel).await;
+    // Bounds that were hit are recorded before the trial settles, so a
+    // degraded frame budget is visible even if the terminal settlement fails.
+    eval_relay::append_degradations(ctx.service, ctx.run_id, &trial_id, &relay).await?;
+    let mut state = started?;
+
     if !rollout_terminal(&state) {
-        state = poll_until_terminal(client, base, &rollout_id).await?;
+        state = poll_until_terminal(ctx.client, ctx.base, &rollout_id).await?;
     }
-    let reward = fetch_reward(client, base, &rollout_id, spec.evaluation_plan_ref.as_str()).await;
+    let reward = fetch_reward(
+        ctx.client,
+        ctx.base,
+        &rollout_id,
+        spec.evaluation_plan_ref.as_str(),
+    )
+    .await;
     let usage = state.get("usage").cloned().unwrap_or(Value::Null);
+    let retained = fetch_retained_rollout_state(ctx.client, &poll_url)
+        .await
+        .unwrap_or_default();
+    // Import the sealed bundle now, while the container is still running. A
+    // replay that only works until the container stops is not a replay, and
+    // Workshop already owns the import — the eval worker simply never called it.
+    let sealed = import_sealed_trace(ctx, &rollout_id).await;
     Ok(json!({
         "rolloutId": rollout_id,
+        "trialId": trial_id,
         "pool": example.pool,
         "seed": example.seed,
         "taskInstanceId": format!("seed:{}", example.seed),
@@ -1348,14 +1618,111 @@ async fn run_one_example(
         "reward": reward.get("reward").cloned().unwrap_or(Value::Null),
         "rewardStatus": reward.get("status").cloned().unwrap_or(json!("absent")),
         "usage": usage,
-        "policyRef": policy_pin,
+        "policyRef": ctx.policy_pin,
         "worldRef": spec.world_ref,
         "trace": state.get("trace").cloned().unwrap_or(Value::Null),
+        "checkpointObservation": retained.get("observation").cloned().unwrap_or(Value::Null),
+        "checkpointAchievements": retained.get("achievements").cloned().unwrap_or(Value::Null),
+        "relay": relay.to_json(),
+        "sealedTrace": sealed,
         "evidence": {
-            "eventsUrl": format!("{base}/rollouts/{rollout_id}/events"),
-            "rewardUrl": format!("{base}/rollouts/{rollout_id}/reward"),
+            "containerId": ctx.container_id,
+            "eventsUrl": poll_url,
+            "rewardUrl": format!("{}/rollouts/{rollout_id}/reward", ctx.base),
         }
     }))
+}
+
+/// The blocking rollout request, unchanged in behaviour and error semantics.
+/// Split out only so it can be polled as a future beside the relay.
+async fn start_rollout(
+    client: &reqwest::Client,
+    base: &str,
+    body: &Value,
+    example: EvalExample,
+) -> Result<Value> {
+    let started = client
+        .post(format!("{base}/rollouts"))
+        .json(body)
+        .send()
+        .await
+        .context("POST /rollouts")?;
+    if !started.status().is_success() {
+        let status = started.status();
+        let text = started.text().await.unwrap_or_default();
+        bail!(
+            "POST /rollouts failed for {} seed {}: {status} {text}",
+            example.pool,
+            example.seed
+        );
+    }
+    Ok(started.json::<Value>().await?)
+}
+
+/// Pull the sealed Trace V5 bundle into Workshop for this rollout.
+///
+/// Best-effort and reported either way. A trial whose bundle could not be
+/// imported is still a scored trial; what it loses is offline replay, and the
+/// record says so rather than leaving the workbench to discover it.
+async fn import_sealed_trace(ctx: &TrialContext<'_>, rollout_id: &str) -> Value {
+    match ctx.service.import_container_trace(ctx.container_id, rollout_id).await {
+        Ok(result) => result,
+        Err(error) => json!({
+            "imported": false,
+            "containerId": ctx.container_id,
+            "rolloutId": rollout_id,
+            "error": format!("{error:#}"),
+        }),
+    }
+}
+
+async fn fetch_retained_rollout_state(
+    client: &reqwest::Client,
+    poll_url: &str,
+) -> Result<serde_json::Map<String, Value>> {
+    let response = client
+        .get(poll_url)
+        .send()
+        .await
+        .context("GET retained rollout events")?;
+    if !response.status().is_success() {
+        bail!("retained rollout events returned {}", response.status());
+    }
+    let page = response.json::<Value>().await?;
+    Ok(retained_rollout_state(&page))
+}
+
+fn retained_rollout_state(page: &Value) -> serde_json::Map<String, Value> {
+    let events = page
+        .get("events")
+        .and_then(Value::as_array)
+        .map(Vec::as_slice)
+        .unwrap_or_default();
+    for event in events.iter().rev() {
+        if event.get("kind").and_then(Value::as_str) != Some("observation") {
+            continue;
+        }
+        let payload = event.get("payload").unwrap_or(&Value::Null);
+        let readout = payload
+            .get("readout")
+            .or_else(|| payload.pointer("/payload/readout"));
+        let Some(readout) = readout else {
+            continue;
+        };
+        let observation = readout
+            .get("observation_text")
+            .and_then(Value::as_str)
+            .filter(|value| !value.trim().is_empty());
+        if let Some(observation) = observation {
+            let mut retained = serde_json::Map::new();
+            retained.insert("observation".into(), json!(observation));
+            if let Some(achievements) = readout.get("achievements") {
+                retained.insert("achievements".into(), achievements.clone());
+            }
+            return retained;
+        }
+    }
+    serde_json::Map::new()
 }
 
 fn rollout_terminal(state: &Value) -> bool {
@@ -2222,8 +2589,8 @@ max_total_rollouts = 4
         let restored = restarted.get(run.id).await.unwrap();
         assert_eq!(
             restored.visual_refs.len(),
-            1,
-            "the chat-owned artifact is still bound after a restart"
+            2,
+            "the chat-owned artifacts are still bound after a restart"
         );
     }
 
@@ -2235,7 +2602,7 @@ max_total_rollouts = 4
         let visual_id = finished.summary["visualId"].as_str().unwrap();
         let spec = EvalSpec::classify_fixture();
 
-        project_worker_failure_visual(&svc, &run.id, &spec, visual_id, 10)
+        project_worker_failure_visual(&svc, &run.id, &spec, visual_id, "vis_workbench", 10)
             .await
             .unwrap();
 
@@ -2288,7 +2655,26 @@ max_total_rollouts = 4
             "republication must not mint a second visual"
         );
         let refreshed = svc.get(run.id.clone()).await.unwrap();
-        assert_eq!(refreshed.visual_refs.len(), 1);
+        // The overview and the trace workstation, one of each.
+        assert_eq!(refreshed.visual_refs.len(), 2);
+        assert_eq!(
+            refreshed
+                .visual_refs
+                .iter()
+                .filter(|reference| reference.role.as_deref() == Some("primary"))
+                .count(),
+            1
+        );
+        // `visualId` still names the overview: a run's primary pane is not
+        // reassigned by publishing a drill-down beside it.
+        assert_eq!(refreshed.summary["visualId"], json!(visual_id));
+        assert_eq!(
+            refreshed.summary["visualIds"]["trace_workbench"]
+                .as_str()
+                .is_some(),
+            true,
+            "the workstation is addressable by role"
+        );
         assert_eq!(
             svc.visuals()
                 .list(VisualQuery::default())
@@ -2354,7 +2740,7 @@ max_total_rollouts = 4
         // The visual the campaign was supposed to keep current is gone.
         let failure = evidence(
             "progress_projection",
-            persist_progress(&svc, &run.id, &spec, "vis_missing", &records, 1, "completed"),
+            persist_progress(&svc, &run.id, &spec, "vis_missing", "vis_workbench", &records, 1, "completed"),
         )
         .await
         .unwrap_err();
@@ -2976,5 +3362,850 @@ max_total_rollouts = 4
         assert_eq!(body["config"]["base_url"], proxy);
         assert_eq!(body["config"]["api_key_env"], "OPENAI_API_KEY");
         assert!(!body.to_string().contains("openrouter.ai"));
+    }
+
+    #[test]
+    fn retained_rollout_state_uses_the_latest_observation() {
+        let page = json!({
+            "events": [
+                {"kind": "observation", "payload": {"readout": {
+                    "observation_text": "opening", "achievements": []
+                }}},
+                {"kind": "observation", "payload": {"readout": {
+                    "observation_text": "final map", "achievements": ["collect_wood"]
+                }}}
+            ]
+        });
+        let retained = retained_rollout_state(&page);
+        assert_eq!(retained["observation"], json!("final map"));
+        assert_eq!(retained["achievements"], json!(["collect_wood"]));
+    }
+
+    // ── Craftax relay fixture ────────────────────────────────────────────
+    //
+    // The regression this fixture pins is the inspected rollout
+    // `roll_craftax_train_780003_4e27ac3b`: 10 policy calls, 13 logical native
+    // frames, 12 applied actions, 2 achievements, total reward +2.00. Workshop
+    // reported it as "0 native frames" because it never read the journal while
+    // the rollout was open and never asked for frames in the first place.
+    //
+    // The important property of the mock is that its blocking `POST /rollouts`
+    // *stays open* while the journal fills. A relay that only worked against a
+    // container which had already finished would pass a test and change nothing.
+
+    const CRAFTAX_EVAL: &str = "eval.craftax.baseline.v1";
+    const CRAFTAX_POLICY_CALLS: usize = 10;
+    const CRAFTAX_FRAMES: usize = 13;
+    const CRAFTAX_APPLIED_ACTIONS: usize = 12;
+    const CRAFTAX_ACHIEVEMENTS: usize = 2;
+    const CRAFTAX_TOTAL_REWARD: f64 = 2.0;
+
+    /// A deterministic 8×8 PNG whose pixels depend on `tint`.
+    ///
+    /// Two frames with the same tint are byte-identical, which is what makes
+    /// the deduplication assertion meaningful: the content store must collapse
+    /// them physically while the timeline keeps both as separate steps.
+    fn fixture_png(tint: u8) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        {
+            let mut encoder = png::Encoder::new(&mut bytes, 8, 8);
+            encoder.set_color(png::ColorType::Rgba);
+            encoder.set_depth(png::BitDepth::Eight);
+            let mut writer = encoder.write_header().unwrap();
+            writer.write_image_data(&vec![tint; 8 * 8 * 4]).unwrap();
+        }
+        bytes
+    }
+
+    #[derive(Clone, Copy, Default)]
+    struct CraftaxMockOptions {
+        /// Every frame is the same image. Logical frame count must not change.
+        identical_frames: bool,
+        /// Serve a body that is a PNG header followed by garbage.
+        corrupt_frame_step: Option<i64>,
+        /// Serve a 302 to somewhere else instead of the frame.
+        redirect_frame_step: Option<i64>,
+        /// Serve a frame far over `media.max_frame_bytes`.
+        oversize_frame_step: Option<i64>,
+        /// Skip this producer sequence, so the journal has a real gap.
+        skip_sequence: Option<u64>,
+        /// Hold the blocking POST open this long after the journal closes.
+        trailing_hold_ms: u64,
+    }
+
+    /// The producer envelope shape, exactly as `RolloutEventLog` writes it.
+    fn journal_event(sequence: u64, kind: &str, payload: Value) -> Value {
+        json!({
+            "schema": "synth.rollout.stream-event.v1",
+            "kind": kind,
+            "ts": format!("2026-08-26T00:00:{:02}.000000Z", sequence % 60),
+            "control": false,
+            "sequence": sequence,
+            "event_id": sequence.to_string(),
+            // 16 hex characters, like the real producer. Deliberately not a
+            // SHA-256: nothing downstream is allowed to treat it as one.
+            "digest": format!("{:016x}", sequence.wrapping_mul(0x9e37_79b9_7f4a_7c15)),
+            "payload": payload,
+        })
+    }
+
+    /// The whole Craftax episode as a producer journal.
+    fn craftax_journal(opts: CraftaxMockOptions) -> Vec<Value> {
+        let mut events = Vec::new();
+        let sequence = std::cell::Cell::new(0u64);
+        let push = |events: &mut Vec<Value>, kind: &str, payload: Value| {
+            sequence.set(sequence.get() + 1);
+            events.push(journal_event(sequence.get(), kind, payload));
+        };
+        let emit_step = |events: &mut Vec<Value>, push: &dyn Fn(&mut Vec<Value>, &str, Value), step: i64| {
+            push(
+                events,
+                "observation",
+                json!({
+                    "step": step,
+                    "seed": 780_003,
+                    "grid": "....\n.@..\n....",
+                    "readout": {
+                        "observation_text": format!("step {step}\nlocal_map:\n....\n.@..\n....\n\ninventory: wood 1"),
+                        "local_map": ["....", ".@..", "...."],
+                        "achievements": [],
+                    }
+                }),
+            );
+            push(
+                events,
+                "frame",
+                json!({
+                    "step": step,
+                    "format": "png",
+                    "digest": format!("{:016x}", step),
+                    "url": format!("__ROLLOUT__/frames/{step}.png"),
+                }),
+            );
+            push(
+                events,
+                "resource_delta",
+                json!({ "step": step, "resource": "wood", "before": step, "after": step + 1 }),
+            );
+        };
+        push(&mut events, "env.episode.opened", json!({"seed": 780_003, "max_steps": 64}));
+        emit_step(&mut events, &push, 0);
+        push(&mut events, "policy.session.opened", json!({"harness": "craftax_react"}));
+        let mut applied = 0;
+        for call in 0..CRAFTAX_POLICY_CALLS {
+            push(&mut events, "span.policy.opened", json!({"call": call}));
+            push(
+                &mut events,
+                "span.policy.data",
+                json!({
+                    "call": call,
+                    "messages": [
+                        {"role": "system", "content": "You are playing Craftax."},
+                        {"role": "user", "content": format!("observation for call {call}")}
+                    ],
+                    "assistant": {
+                        "reasoning_content": format!("thinking about call {call}"),
+                        "content": format!("I will move for call {call}"),
+                        "tool_calls": [{
+                            "id": format!("call_{call}"),
+                            "function": {
+                                "name": "craftax_act",
+                                "arguments": json!({"actions": ["move_right"]}).to_string()
+                            }
+                        }]
+                    },
+                    "usage": {"prompt_tokens": 100 + call, "completion_tokens": 20 + call}
+                }),
+            );
+            push(&mut events, "span.policy.plan", json!({"actions": ["move_right"], "length": 1}));
+            push(&mut events, "span.policy.closed", json!({"length": 1}));
+            // Two of the ten calls propose an action the environment refuses.
+            // The viewer must keep showing the call and must never report the
+            // proposal as applied.
+            if call == 3 || call == 7 {
+                push(
+                    &mut events,
+                    "action_rejected",
+                    json!({"step": applied, "action": "move_right", "reason": "blocked"}),
+                );
+                continue;
+            }
+            // A committed batch can apply more than one action, so call count
+            // and step count are deliberately different numbers here: a viewer
+            // that assumes one call is one frame gets this trace wrong.
+            let batch = if call < 5 { 2 } else { 1 };
+            for _ in 0..batch {
+                let step = applied + 1;
+                push(&mut events, "action_applied", json!({"step": step, "action": "move_right"}));
+                push(
+                    &mut events,
+                    "reward_signal",
+                    json!({"step": step, "value": 0.0, "authority": "environment"}),
+                );
+                if step == 3 || step == 9 {
+                    push(
+                        &mut events,
+                        "achievement_unlocked",
+                        json!({
+                            "step": step,
+                            "achievement": if step == 3 { "collect_wood" } else { "place_table" }
+                        }),
+                    );
+                    push(&mut events, "reward_delta", json!({"step": step, "delta": 1.0}));
+                }
+                push(
+                    &mut events,
+                    "state_transition",
+                    json!({"step": step, "field": "health", "before": 9, "after": 9}),
+                );
+                emit_step(&mut events, &push, step);
+                applied += 1;
+            }
+        }
+        assert_eq!(applied as usize, CRAFTAX_APPLIED_ACTIONS);
+        push(&mut events, "policy.session.closed", json!({"calls": CRAFTAX_POLICY_CALLS}));
+        push(&mut events, "env.episode.closed", json!({"status": "completed", "steps": applied}));
+        push(&mut events, "status", json!({"status": "completed", "steps": applied}));
+        push(&mut events, "capture.closed", json!({"high_water": sequence.get()}));
+        if let Some(gap) = opts.skip_sequence {
+            events.retain(|event| event.get("sequence").and_then(Value::as_u64) != Some(gap));
+        }
+        events
+    }
+
+    struct CraftaxMock {
+        base: String,
+        task: tokio::task::JoinHandle<()>,
+    }
+
+    /// A Craftax-shaped container whose blocking rollout stays open while its
+    /// journal becomes pollable page by page.
+    async fn spawn_craftax_mock(opts: CraftaxMockOptions) -> CraftaxMock {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let journals: Arc<Mutex<BTreeMap<String, (Vec<Value>, bool)>>> =
+            Arc::new(Mutex::new(BTreeMap::new()));
+        let script = Arc::new(craftax_journal(opts));
+        let task = tokio::spawn(async move {
+            let _ = serve_json(listener, move |request: JsonHttpRequest| {
+                let journals = journals.clone();
+                let script = script.clone();
+                async move {
+                    let path = request.path.split('?').next().unwrap_or(&request.path).to_string();
+                    let query = request.path.split_once('?').map(|(_, q)| q.to_string()).unwrap_or_default();
+                    match (request.method.as_str(), path.as_str()) {
+                        ("GET", "/info") => JsonHttpResponse::ok(json!({
+                            "runtime_family": "craftax",
+                            "scale_leases": 4,
+                            "world_ref": "world:craftax@eval",
+                            "capabilities": {
+                                "policy_refs": [{
+                                    "harness": "craftax_react",
+                                    "config": "craftax_luna_low",
+                                    "model": "openai/gpt-5.6-luna"
+                                }]
+                            }
+                        })),
+                        ("POST", "/rollouts/prepare") => {
+                            let rollout_id = request.body.get("rollout_id").and_then(Value::as_str)
+                                .unwrap_or("roll_unknown").to_string();
+                            journals.lock().unwrap().insert(rollout_id.clone(), (Vec::new(), false));
+                            JsonHttpResponse::ok(json!({
+                                "rollout_id": rollout_id,
+                                "stream": {
+                                    "id": format!("stream:{rollout_id}"),
+                                    "transports": {"poll": {"url": format!("/rollouts/{rollout_id}/events")}}
+                                }
+                            }))
+                        }
+                        ("GET", path) if path.ends_with("/events") => {
+                            let rollout_id = path.trim_start_matches("/rollouts/")
+                                .trim_end_matches("/events").to_string();
+                            let after = query.split('&')
+                                .find_map(|pair| pair.strip_prefix("after="))
+                                .and_then(|value| value.parse::<u64>().ok())
+                                .unwrap_or(0);
+                            let limit = query.split('&')
+                                .find_map(|pair| pair.strip_prefix("limit="))
+                                .and_then(|value| value.parse::<usize>().ok())
+                                .unwrap_or(1000);
+                            let guard = journals.lock().unwrap();
+                            let Some((events, closed)) = guard.get(&rollout_id) else {
+                                return JsonHttpResponse::error(StatusCode::NOT_FOUND, "unknown_rollout");
+                            };
+                            let available: Vec<Value> = events.iter()
+                                .filter(|event| event.get("sequence").and_then(Value::as_u64)
+                                    .is_some_and(|sequence| sequence > after))
+                                .cloned()
+                                .collect();
+                            let page: Vec<Value> = available.iter().take(limit).cloned().collect();
+                            let high_water = events.last()
+                                .and_then(|event| event.get("sequence").and_then(Value::as_u64))
+                                .unwrap_or(0);
+                            let next = page.last()
+                                .and_then(|event| event.get("sequence").and_then(Value::as_u64))
+                                .unwrap_or(after);
+                            let mut rows = vec![json!({
+                                "schema": "synth.rollout.stream-event.v1",
+                                "kind": "stream.subscribed",
+                                "control": true,
+                                "event_id": "stream.subscribed",
+                                "ts": "2026-08-26T00:00:00.000000Z",
+                                "digest": "0000000000000000",
+                                "ready": true,
+                                "payload": {"ready": true}
+                            })];
+                            rows.extend(page.clone());
+                            JsonHttpResponse::ok(json!({
+                                "rollout_id": rollout_id,
+                                "cursor": {
+                                    "kind": "sequence",
+                                    "after": after,
+                                    "high_water": high_water,
+                                    "closed": *closed,
+                                    "next": next,
+                                    "has_more": available.len() > page.len(),
+                                },
+                                "events": rows,
+                            }))
+                        }
+                        ("GET", path) if path.contains("/frames/") => {
+                            let step: i64 = path.rsplit('/').next()
+                                .and_then(|name| name.strip_suffix(".png"))
+                                .and_then(|value| value.parse().ok())
+                                .unwrap_or(-1);
+                            if opts.redirect_frame_step == Some(step) {
+                                let mut response = JsonHttpResponse::with_status(StatusCode::FOUND, json!({}));
+                                response.extra_headers.push(("location", "http://example.com/evil.png".into()));
+                                return response;
+                            }
+                            let body = if opts.corrupt_frame_step == Some(step) {
+                                let mut bytes = b"\x89PNG\r\n\x1a\n".to_vec();
+                                bytes.extend_from_slice(&[0u8; 64]);
+                                bytes
+                            } else if opts.oversize_frame_step == Some(step) {
+                                fixture_png(0).repeat(4096)
+                            } else if opts.identical_frames {
+                                fixture_png(7)
+                            } else {
+                                fixture_png((step % 251) as u8)
+                            };
+                            JsonHttpResponse {
+                                status: StatusCode::OK,
+                                body: json!({}),
+                                extra_headers: Vec::new(),
+                                raw_body: Some(body),
+                                content_type: Some("image/png".into()),
+                            }
+                        }
+                        ("POST", "/rollouts") => {
+                            let rollout_id = request.body.get("rollout_id").and_then(Value::as_str)
+                                .unwrap_or("roll_unknown").to_string();
+                            // The rollout runs here: events become pollable one
+                            // batch at a time while this request is still open.
+                            for chunk in script.chunks(9) {
+                                {
+                                    let mut guard = journals.lock().unwrap();
+                                    if let Some((events, _)) = guard.get_mut(&rollout_id) {
+                                        for event in chunk {
+                                            let mut event = event.clone();
+                                            if let Some(url) = event.pointer("/payload/url").and_then(Value::as_str) {
+                                                let resolved = url.replace(
+                                                    "__ROLLOUT__",
+                                                    &format!("/rollouts/{rollout_id}"),
+                                                );
+                                                event["payload"]["url"] = json!(resolved);
+                                            }
+                                            events.push(event);
+                                        }
+                                    }
+                                }
+                                tokio::time::sleep(Duration::from_millis(15)).await;
+                            }
+                            journals.lock().unwrap().entry(rollout_id.clone())
+                                .and_modify(|entry| entry.1 = true);
+                            if opts.trailing_hold_ms > 0 {
+                                tokio::time::sleep(Duration::from_millis(opts.trailing_hold_ms)).await;
+                            }
+                            JsonHttpResponse::ok(json!({
+                                "rollout_id": rollout_id,
+                                "status": "completed",
+                                "terminated": true,
+                                "usage": {"prompt_tokens": 1000, "completion_tokens": 200, "calls": CRAFTAX_POLICY_CALLS},
+                                "trace": {"url": format!("/rollouts/{rollout_id}/trace"), "closed": true},
+                            }))
+                        }
+                        ("GET", path) if path.ends_with("/reward") => JsonHttpResponse::ok(json!({
+                            "status": "scored",
+                            "reward": CRAFTAX_TOTAL_REWARD,
+                        })),
+                        // No self-contained bundle: this container seals a lite
+                        // trace only, and the record must say so rather than
+                        // claiming an inspectable replay.
+                        ("GET", path) if path.ends_with("/trace/bundle") =>
+                            JsonHttpResponse::error(StatusCode::NOT_FOUND, "no bundle"),
+                        ("GET", path) if path.ends_with("/trace") =>
+                            JsonHttpResponse::error(StatusCode::NOT_FOUND, "no seal"),
+                        ("GET", path) if path.starts_with("/rollouts/") =>
+                            JsonHttpResponse::ok(json!({"status": "completed", "terminated": true})),
+                        _ => JsonHttpResponse::error(
+                            StatusCode::NOT_FOUND,
+                            format!("unexpected {} {path}", request.method),
+                        ),
+                    }
+                }
+            })
+            .await;
+        });
+        CraftaxMock { base: format!("http://{addr}"), task }
+    }
+
+    async fn declare_craftax_recipe(svc: &OptimizerService, session: &str, extra: &str) {
+        let workspace = tempfile::Builder::new().prefix("ws-craftax-").tempdir().unwrap().into_path();
+        std::fs::create_dir_all(workspace.join("workshop.recipes")).unwrap();
+        std::fs::write(
+            workspace.join("workshop.recipes/craftax.toml"),
+            format!(
+                r#"
+id = "{CRAFTAX_EVAL}"
+algorithm = "eval"
+title = "Craftax baseline eval"
+container = "craftax"
+provider = "openai"
+model = "gpt-5.6-luna"
+locality = "host"
+family = "craftax"
+harness = "craftax_react"
+policy_config = "craftax_luna_low"
+concurrency = 1
+train_seeds = [780003]
+[bounds]
+max_cost_usd = 0.50
+max_total_rollouts = 1
+{extra}
+"#
+            ),
+        )
+        .unwrap();
+        let db = svc.database().clone();
+        let session_id = session.to_string();
+        let workspace_path = workspace.to_string_lossy().into_owned();
+        db.run_transaction(move |conn| {
+            conn.execute(
+                "INSERT OR IGNORE INTO sessions(id,title,target_json,status,metadata_json,created_at,updated_at) VALUES(?1,?1,'{}','ready',?2,datetime('now'),datetime('now'))",
+                rusqlite::params![session_id, serde_json::json!({"workspace": workspace_path}).to_string()],
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+        crate::workspace_scope::provision(svc.database(), session, workspace.to_str().unwrap())
+            .await
+            .unwrap();
+    }
+
+    /// Start one Craftax seed and wait for its run to settle.
+    async fn run_craftax(
+        opts: CraftaxMockOptions,
+        extra_recipe: &str,
+    ) -> (OptimizerService, String, CraftaxMock) {
+        let (svc, dir, _events) = service().await;
+        // The store outlives the assertions: a relayed frame must still be
+        // readable after the container is gone, and a dropped temp dir would
+        // hide that by deleting the evidence instead of proving it survived.
+        std::mem::forget(dir);
+        let mock = spawn_craftax_mock(opts).await;
+        insert_container(&svc, "craftax", &mock.base, "ready").await;
+        declare_craftax_recipe(&svc, "sess_craftax", extra_recipe).await;
+        let (run, _) = svc
+            .start_recipe(OptimizerRecipeRunRequest {
+                recipe_id: CRAFTAX_EVAL.into(),
+                session_ref: Some("sess_craftax".into()),
+                open_visual: Some(false),
+                base_model: None,
+                dataset_shard: None,
+                candidate_set_id: None,
+                container_id: None,
+                training_artifact_id: None,
+                search: None,
+            })
+            .await
+            .unwrap();
+        wait_terminal(&svc, &run.id).await;
+        (svc, run.id, mock)
+    }
+
+    /// Every relayed container event, in optimizer-log order.
+    async fn relayed_events(svc: &OptimizerService, run_id: &str) -> Vec<Value> {
+        svc.events_after(run_id.to_string(), 0, Some(20_000))
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|event| serde_json::to_value(event).unwrap())
+            .collect()
+    }
+
+    fn container_events(events: &[Value]) -> Vec<&Value> {
+        events
+            .iter()
+            .filter(|event| event.get("type").and_then(Value::as_str) == Some("eval.trial.event"))
+            .collect()
+    }
+
+    fn kind_of(event: &Value) -> &str {
+        event
+            .pointer("/delta/containerEvent/kind")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+    }
+
+    fn count_kind(events: &[Value], kind: &str) -> usize {
+        container_events(events).iter().filter(|event| kind_of(event) == kind).count()
+    }
+
+    fn index_of_type(events: &[Value], event_type: &str) -> Option<usize> {
+        events
+            .iter()
+            .position(|event| event.get("type").and_then(Value::as_str) == Some(event_type))
+    }
+
+    #[tokio::test]
+    async fn a_running_craftax_rollout_relays_its_whole_journal_before_it_settles() {
+        let (svc, run_id, mock) = run_craftax(CraftaxMockOptions::default(), "").await;
+        let events = relayed_events(&svc, &run_id).await;
+
+        // 1. The trial exists before any of its container events.
+        let started = index_of_type(&events, "eval.trial.started").expect("no eval.trial.started");
+        let first_container = events
+            .iter()
+            .position(|event| event.get("type").and_then(Value::as_str) == Some("eval.trial.event"))
+            .expect("no relayed container events");
+        assert!(started < first_container, "trial.started must precede its events");
+
+        // 2. Policy and frame events land before the trial settles.
+        let terminal = index_of_type(&events, "eval.trial.terminal").expect("no terminal");
+        let last_frame = events
+            .iter()
+            .rposition(|event| kind_of(event) == "frame")
+            .expect("no frame events relayed");
+        let last_call = events
+            .iter()
+            .rposition(|event| kind_of(event) == "span.policy.data")
+            .expect("no policy data relayed");
+        assert!(last_frame < terminal && last_call < terminal);
+
+        // 3. The regression fixture's own counts, which "0 native frames" denied.
+        assert_eq!(count_kind(&events, "frame"), CRAFTAX_FRAMES);
+        assert_eq!(count_kind(&events, "span.policy.data"), CRAFTAX_POLICY_CALLS);
+        assert_eq!(count_kind(&events, "action_applied"), CRAFTAX_APPLIED_ACTIONS);
+        assert_eq!(count_kind(&events, "achievement_unlocked"), CRAFTAX_ACHIEVEMENTS);
+        // A proposed action the environment refused is visible and is not an
+        // applied action.
+        assert_eq!(count_kind(&events, "action_rejected"), 2);
+
+        // 4. Every frame carries a real Workshop SHA-256, and the producer's
+        //    16-character digest travels beside it without being mistaken for one.
+        let frames: Vec<&Value> = container_events(&events)
+            .into_iter()
+            .filter(|event| kind_of(event) == "frame")
+            .collect();
+        for frame in &frames {
+            let media = frame
+                .pointer("/delta/containerEvent/payload/media")
+                .expect("frame kept no media reference");
+            let digest = media.get("casDigest").and_then(Value::as_str).unwrap();
+            assert_eq!(digest.len(), 64, "casDigest must be a full SHA-256");
+            assert_eq!(media["mediaType"], json!("image/png"));
+            assert_eq!(media["width"], json!(8));
+            assert_eq!(media["height"], json!(8));
+            let producer = media.get("producerDigest").and_then(Value::as_str).unwrap();
+            assert_eq!(producer.len(), 16);
+            assert_ne!(producer, digest);
+            assert!(
+                svc.content().exists("eval_frames", digest),
+                "frame bytes are not in the content store"
+            );
+        }
+
+        // 5. No PNG body was ever inlined into the optimizer log.
+        let encoded = serde_json::to_string(&events).unwrap();
+        assert!(!encoded.contains("data:image/png;base64"), "a PNG leaked into optimizer_events");
+
+        // 6. The record reports the reward and its relay receipt honestly.
+        let run = svc.get(run_id.clone()).await.unwrap();
+        let record = run.summary.pointer("/records/0").cloned().unwrap();
+        assert_eq!(record["reward"], json!(CRAFTAX_TOTAL_REWARD));
+        assert_eq!(record["relay"]["framesDeclared"], json!(CRAFTAX_FRAMES));
+        assert_eq!(record["relay"]["framesRetained"], json!(CRAFTAX_FRAMES));
+        assert_eq!(record["relay"]["journalClosed"], json!(true));
+        // The container offers no self-contained bundle, and the record says
+        // exactly that rather than implying an inspectable replay.
+        assert_eq!(record["sealedTrace"]["imported"], json!(false));
+        mock.task.abort();
+    }
+
+    #[tokio::test]
+    async fn small_pages_relay_every_event_exactly_once() {
+        let (svc, run_id, mock) = run_craftax(
+            CraftaxMockOptions::default(),
+            "[event_stream]\npoll_interval_ms = 20\npage_limit = 3\n",
+        )
+        .await;
+        let events = relayed_events(&svc, &run_id).await;
+        let mut sequences: Vec<u64> = container_events(&events)
+            .into_iter()
+            .filter_map(|event| {
+                event.pointer("/delta/containerEvent/sequence").and_then(Value::as_u64)
+            })
+            .collect();
+        let relayed = sequences.len();
+        sequences.sort_unstable();
+        sequences.dedup();
+        assert_eq!(sequences.len(), relayed, "a producer sequence was relayed twice");
+        assert_eq!(sequences, (1..=relayed as u64).collect::<Vec<_>>(), "the relay is not contiguous");
+        assert!(relayed > 100, "paging lost events: only {relayed} relayed");
+        mock.task.abort();
+    }
+
+    #[tokio::test]
+    async fn a_sequence_gap_fails_the_trial_visibly() {
+        let (svc, run_id, mock) = run_craftax(
+            CraftaxMockOptions { skip_sequence: Some(12), ..Default::default() },
+            "",
+        )
+        .await;
+        let run = svc.get(run_id.clone()).await.unwrap();
+        assert_eq!(run.status, "failed", "a gapped journal must not settle completed");
+        let record = run.summary.pointer("/records/0").cloned().unwrap();
+        let error = record["error"].as_str().unwrap_or_default();
+        assert!(error.contains("sequence gap"), "gap was not named: {error}");
+        mock.task.abort();
+    }
+
+    #[tokio::test]
+    async fn identical_frames_deduplicate_without_losing_a_step() {
+        let (svc, run_id, mock) = run_craftax(
+            CraftaxMockOptions { identical_frames: true, ..Default::default() },
+            "",
+        )
+        .await;
+        let events = relayed_events(&svc, &run_id).await;
+        let digests: Vec<String> = container_events(&events)
+            .into_iter()
+            .filter(|event| kind_of(event) == "frame")
+            .filter_map(|event| {
+                event
+                    .pointer("/delta/containerEvent/payload/media/casDigest")
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+            })
+            .collect();
+        // Thirteen logical frames in the timeline; one object on disk.
+        assert_eq!(digests.len(), CRAFTAX_FRAMES);
+        let unique: std::collections::BTreeSet<&String> = digests.iter().collect();
+        assert_eq!(unique.len(), 1, "identical PNGs did not collapse in the store");
+        mock.task.abort();
+    }
+
+    #[tokio::test]
+    async fn a_corrupt_frame_is_refused_and_reported_rather_than_shown() {
+        let (svc, run_id, mock) = run_craftax(
+            CraftaxMockOptions { corrupt_frame_step: Some(3), ..Default::default() },
+            "",
+        )
+        .await;
+        let events = relayed_events(&svc, &run_id).await;
+        let refused: Vec<&Value> = container_events(&events)
+            .into_iter()
+            .filter(|event| event.pointer("/delta/containerEvent/payload/mediaError").is_some())
+            .collect();
+        assert_eq!(refused.len(), 1, "the corrupt frame was not refused");
+        // The step is still in the timeline: the environment did render it.
+        assert_eq!(count_kind(&events, "frame"), CRAFTAX_FRAMES);
+        let degraded: Vec<&Value> = events
+            .iter()
+            .filter(|event| event.get("type").and_then(Value::as_str) == Some("eval.trial.degraded"))
+            .collect();
+        assert_eq!(degraded.len(), 1, "a refused frame produced no degradation receipt");
+        assert_eq!(degraded[0]["delta"]["dropped"], json!(1));
+        let run = svc.get(run_id.clone()).await.unwrap();
+        let record = run.summary.pointer("/records/0").cloned().unwrap();
+        assert_eq!(record["relay"]["framesDeclared"], json!(CRAFTAX_FRAMES));
+        assert_eq!(record["relay"]["framesRetained"], json!(CRAFTAX_FRAMES - 1));
+        mock.task.abort();
+    }
+
+    #[tokio::test]
+    async fn a_redirected_frame_is_never_followed() {
+        let (svc, run_id, mock) = run_craftax(
+            CraftaxMockOptions { redirect_frame_step: Some(2), ..Default::default() },
+            "",
+        )
+        .await;
+        let events = relayed_events(&svc, &run_id).await;
+        let detail = container_events(&events)
+            .into_iter()
+            .find_map(|event| {
+                event
+                    .pointer("/delta/containerEvent/payload/mediaError/detail")
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+            })
+            .expect("the redirect was not refused");
+        assert!(detail.contains("redirect"), "{detail}");
+        mock.task.abort();
+    }
+
+    #[tokio::test]
+    async fn an_oversized_frame_is_refused_by_the_declared_budget() {
+        let (svc, run_id, mock) = run_craftax(
+            CraftaxMockOptions { oversize_frame_step: Some(1), ..Default::default() },
+            "[media]\nmax_frame_bytes = 4096\n",
+        )
+        .await;
+        let events = relayed_events(&svc, &run_id).await;
+        let detail = container_events(&events)
+            .into_iter()
+            .find_map(|event| {
+                event
+                    .pointer("/delta/containerEvent/payload/mediaError/detail")
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+            })
+            .expect("the oversized frame was not refused");
+        assert!(detail.contains("max_frame_bytes"), "{detail}");
+        mock.task.abort();
+    }
+
+    #[tokio::test]
+    async fn frame_retention_none_keeps_the_events_and_says_the_bytes_were_not_kept() {
+        let (svc, run_id, mock) = run_craftax(
+            CraftaxMockOptions::default(),
+            "[media]\nframe_retention = \"none\"\n",
+        )
+        .await;
+        let events = relayed_events(&svc, &run_id).await;
+        assert_eq!(count_kind(&events, "frame"), CRAFTAX_FRAMES);
+        assert_eq!(
+            container_events(&events)
+                .into_iter()
+                .filter(|event| event.pointer("/delta/containerEvent/payload/media").is_some())
+                .count(),
+            0
+        );
+        let run = svc.get(run_id.clone()).await.unwrap();
+        let record = run.summary.pointer("/records/0").cloned().unwrap();
+        assert_eq!(record["relay"]["framesDeclared"], json!(CRAFTAX_FRAMES));
+        assert_eq!(record["relay"]["framesRetained"], json!(0));
+        mock.task.abort();
+    }
+
+    #[tokio::test]
+    async fn a_stopped_container_does_not_take_the_relayed_replay_with_it() {
+        let (svc, run_id, mock) = run_craftax(CraftaxMockOptions::default(), "").await;
+        // The container is gone. Everything below reads only Workshop's own
+        // durable evidence.
+        mock.task.abort();
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        let events = relayed_events(&svc, &run_id).await;
+        assert_eq!(count_kind(&events, "frame"), CRAFTAX_FRAMES);
+        for event in container_events(&events) {
+            let Some(digest) = event
+                .pointer("/delta/containerEvent/payload/media/casDigest")
+                .and_then(Value::as_str)
+            else {
+                continue;
+            };
+            let bytes = svc.content().get_bytes("eval_frames", digest).unwrap();
+            assert!(bytes.starts_with(b"\x89PNG\r\n\x1a\n"));
+        }
+    }
+
+    #[tokio::test]
+    async fn relayed_frames_are_granted_only_to_the_run_that_produced_them() {
+        let (svc, run_id, mock) = run_craftax(CraftaxMockOptions::default(), "").await;
+        let events = relayed_events(&svc, &run_id).await;
+        let digest = container_events(&events)
+            .into_iter()
+            .find_map(|event| {
+                event
+                    .pointer("/delta/containerEvent/payload/media/casDigest")
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+            })
+            .expect("no frame media to grant");
+
+        // The producing run may read its own frame, and the answer carries the
+        // identity that made it readable.
+        let granted = svc
+            .granted_run_media(&run_id, &digest)
+            .await
+            .unwrap()
+            .expect("the producing run was refused its own frame");
+        assert_eq!(granted.media_type, "image/png");
+        assert_eq!(granted.width, Some(8));
+        assert_eq!(granted.step.is_some(), true);
+        assert!(svc.read_media_bytes(&granted).unwrap().starts_with(b"\x89PNG\r\n\x1a\n"));
+
+        // A different run is not, even though the object is in the same store.
+        // This is the whole gate: possession of a digest is not authority.
+        assert!(svc
+            .granted_run_media("opt_eval_someone_else", &digest)
+            .await
+            .unwrap()
+            .is_none());
+
+        // A digest the store does not hold is refused rather than probed for.
+        assert!(svc
+            .granted_run_media(&run_id, &"f".repeat(64))
+            .await
+            .unwrap()
+            .is_none());
+
+        // Anything that is not a SHA-256 is rejected before it reaches the
+        // store, so a producer's 16-character label cannot become a lookup.
+        assert!(svc.granted_run_media(&run_id, "4e27ac3b1f0a9d55").await.is_err());
+        assert!(svc.granted_run_media(&run_id, "../../etc/passwd").await.is_err());
+        mock.task.abort();
+    }
+
+    #[tokio::test]
+    async fn identical_frames_share_one_grant_across_every_step_that_rendered_them() {
+        let (svc, run_id, mock) = run_craftax(
+            CraftaxMockOptions { identical_frames: true, ..Default::default() },
+            "",
+        )
+        .await;
+        let events = relayed_events(&svc, &run_id).await;
+        let digest = container_events(&events)
+            .into_iter()
+            .find_map(|event| {
+                event
+                    .pointer("/delta/containerEvent/payload/media/casDigest")
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+            })
+            .unwrap();
+        // Thirteen logical frames, one indexed grant: the index is keyed by
+        // content, exactly like the store it authorizes.
+        let rows: i64 = svc
+            .database()
+            .clone()
+            .run({
+                let run_id = run_id.clone();
+                move |conn| {
+                    conn.query_row(
+                        "SELECT COUNT(*) FROM optimizer_run_media WHERE optimizer_run_id=?1",
+                        rusqlite::params![run_id],
+                        |row| row.get(0),
+                    )
+                    .map_err(Into::into)
+                }
+            })
+            .await
+            .unwrap();
+        assert_eq!(rows, 1);
+        assert!(svc.granted_run_media(&run_id, &digest).await.unwrap().is_some());
+        mock.task.abort();
     }
 }

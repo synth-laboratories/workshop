@@ -217,6 +217,7 @@ impl Commands {
     pub const PLUGINS_SET_RELEASE_CHANNEL: &'static str = "plugins_set_release_channel";
     pub const VISUAL_SUBSCRIPTION_READY: &'static str = "visual_subscription_ready";
     pub const VISUAL_STREAM_POLL: &'static str = "visual_stream_poll";
+    pub const VISUAL_MEDIA_READ: &'static str = "visual_media_read";
     pub const DIAGNOSTICS_REPORT: &'static str = "diagnostics_report";
     pub const DIAGNOSTICS_STATUS: &'static str = "diagnostics_status";
     pub const DIAGNOSTICS_QUERY: &'static str = "diagnostics_query";

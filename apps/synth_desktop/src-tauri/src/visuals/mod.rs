@@ -44,7 +44,8 @@ pub use live_eval::{
     LIVE_EVAL_INPUT, LIVE_EVAL_SLOT, LIVE_HARBOR_TEMPLATE,
 };
 pub use models::{
-    canonicalize_bindings, declared_poll_urls, descriptor_input_name, binding_descriptors,
+    canonicalize_bindings, declared_optimizer_run_ids, declared_poll_urls, descriptor_input_name,
+    binding_descriptors,
     stamp_binding_input, BindingsForm, CanonicalBindings, RendererKind,
     VisualAnnotation, VisualAnnotationCreate, VisualCreateRequest, VisualQuery, VisualRecord,
     VisualRevision, VisualSeal, VisualSealBundle, VisualStatus, VisualUpdateRequest, VisualUpload,
