@@ -1843,6 +1843,22 @@ fn container_proxy_policy(spec: &EvalSpec) -> crate::secrets::SecretsUsePolicy {
     policy.lifetime_seconds = spec.credential_lifetime_seconds;
     if !spec.model.is_empty() {
         policy.models = vec![spec.model.clone()];
+        // Codex's Responses client sends OpenAI model ids without the
+        // OpenRouter catalog namespace. Authorize that exact wire alias only
+        // for an OpenRouter Responses lease; unrelated providers, operations,
+        // and model namespaces keep their existing single-model scope.
+        if spec.provider.eq_ignore_ascii_case("openrouter")
+            && spec
+                .credential_operations
+                .iter()
+                .any(|operation| operation.eq_ignore_ascii_case("responses.create"))
+        {
+            if let Some(wire_alias) = spec.model.strip_prefix("openai/") {
+                policy.models.push(wire_alias.to_string());
+            }
+        }
+        policy.models.sort();
+        policy.models.dedup();
     }
     policy.max_cost_usd = spec.cost_ceiling_usd;
     let trials = spec.examples().len() as u64;
@@ -4850,7 +4866,7 @@ max_total_rollouts = 4
 
         assert_eq!(policy.operations, vec!["responses.create"]);
         assert_eq!(policy.lifetime_seconds, 1_234);
-        assert_eq!(policy.models, vec!["openai/gpt-4.1-nano"]);
+        assert_eq!(policy.models, vec!["gpt-4.1-nano", "openai/gpt-4.1-nano"]);
     }
 
     #[test]
@@ -4860,6 +4876,7 @@ max_total_rollouts = 4
         let policy = container_proxy_policy(&spec);
 
         assert_eq!(policy.operations, vec!["chat.completions.create"]);
+        assert_eq!(policy.models, vec!["openai/gpt-4.1-nano"]);
     }
 
     #[test]
