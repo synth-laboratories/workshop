@@ -3870,7 +3870,7 @@ fn extract_imported_trace_frames(
             .into_iter()
             .flatten()
         {
-            for pointer in ["/detail/env_steps", "/detail/step", "/detail/step_index"] {
+            for pointer in ["/payload/env_steps", "/payload/step", "/payload/step_index"] {
                 if let Some(step) = event.pointer(pointer).and_then(Value::as_i64) {
                     max_step = Some(max_step.map_or(step, |current| current.max(step)));
                 }
@@ -3890,7 +3890,7 @@ fn extract_imported_trace_frames(
                 .and_then(|ids| ids.first())
                 .and_then(Value::as_str)
                 .context("sealed frame event omitted its PNG artifact")?;
-            let step = match event.pointer("/detail/step").and_then(Value::as_i64) {
+            let step = match event.pointer("/payload/step").and_then(Value::as_i64) {
                 Some(step) => step,
                 None if imported_artifacts.contains(artifact_id) => continue,
                 None => anyhow::bail!(
@@ -3940,7 +3940,7 @@ fn extract_imported_trace_frames(
                 height,
                 step,
                 producer_digest: event
-                    .pointer("/detail/source_event_digest")
+                    .pointer("/payload/source_event_digest")
                     .and_then(Value::as_str)
                     .map(str::to_string),
             });
@@ -5554,7 +5554,7 @@ mod tests {
             "events": [{
                 "event_type": "frame",
                 "artifact_ids": ["frame_0"],
-                "detail": {"step": 0, "source_event_digest": "producer16"},
+                "payload": {"step": 0, "source_event_digest": "producer16"},
             }],
         });
         let directory = tempfile::tempdir().unwrap();
