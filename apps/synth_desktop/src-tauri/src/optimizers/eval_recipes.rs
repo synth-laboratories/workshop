@@ -1053,6 +1053,14 @@ async fn run_worker(
         // can truthfully report Docker ready and the worker can still fail
         // immediately with `docker is not on PATH`.
         .env("PATH", eval_cli_path(std::env::var_os("PATH").as_deref())?);
+    // Catalog discovery and execution must import the same reviewed source.
+    // A packaged CUA snapshot intentionally has no project .venv, so the
+    // selected immutable interpreter needs this overlay just as run_cli does;
+    // otherwise admission can publish a ten-lane recipe while the worker
+    // silently executes an older installed two-lane catalog.
+    if let Some(project) = super::manager::optimizer_project_root()? {
+        command.env("PYTHONPATH", project.join("src"));
+    }
     if let Some(token) = local_mlx_token {
         command.env("SYNTH_MLX_RL_TOKEN", token);
     }
