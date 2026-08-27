@@ -322,6 +322,8 @@ export function OptimizersPage({
 	const [startingLocalSft, setStartingLocalSft] = useState(false);
 	const [startingLocalCispo, setStartingLocalCispo] = useState(false);
 	const [evalRecipes, setEvalRecipes] = useState<OptimizerRecipeInfo[]>([]);
+	const [hostedCispoRecipe, setHostedCispoRecipe] = useState<OptimizerRecipeInfo | null>(null);
+	const [localCispoRecipe, setLocalCispoRecipe] = useState<OptimizerRecipeInfo | null>(null);
 	const [evalState, setEvalState] = useState<EvalState | null>(null);
 	const [trainingProjection, setTrainingProjection] = useState<TrainingProjection | null>(null);
 	const trainingAlgorithm = "cispo" as const;
@@ -408,6 +410,8 @@ export function OptimizersPage({
 		setRuns(nextRuns);
 		setAlgorithms(nextAlgorithms);
 		setEvalRecipes(nextRecipes.filter((recipe) => recipe.algorithmId === "eval"));
+		setHostedCispoRecipe(nextRecipes.find((recipe) => recipe.id === "cispo.slime.hosted.v1") ?? null);
+		setLocalCispoRecipe(nextRecipes.find((recipe) => recipe.id === "cispo.mlx.v1") ?? null);
 		if (!selectedId && nextRuns[0]) setSelectedId(nextRuns[0].id);
 	}, [algorithm, search, selectedId, source, status]);
 
@@ -885,8 +889,11 @@ export function OptimizersPage({
 	const selectedHostedModel = hostedTrainingModels.find((model) => model.modelId === trainingModel);
 	const selectedHostedSupport = selectedHostedModel?.algorithms[trainingAlgorithm];
 	const selectedWarmStart = hostedSftWarmStarts.find((checkpoint) => checkpoint.checkpointId === trainingWarmStartCheckpointId);
+	const hostedCispoAdmitted = hostedCispoRecipe?.availability === "available";
+	const localCispoAvailable = localCispoRecipe?.availability === "available";
 	const warmStartMismatch = trainingAlgorithm === "cispo" && selectedWarmStart?.baseModel !== trainingModel;
-	const hostedLaunchBlocked = !selectedHostedSupport
+	const hostedLaunchBlocked = !hostedCispoAdmitted
+		|| !selectedHostedSupport
 		|| selectedHostedSupport.status === "blocked"
 		|| (trainingAlgorithm === "cispo" && (!selectedWarmStart || warmStartMismatch));
 
@@ -1059,9 +1066,9 @@ export function OptimizersPage({
 
 			<section className="optimizer-training-launch" aria-labelledby="optimizer-training-launch-title" data-testid="optimizer-training-launch">
 				<div className="optimizer-recipes-head">
-					<div><span className="optimizer-eyebrow">Hosted on-policy training</span><h2 id="optimizer-training-launch-title">Configure a bounded launch</h2></div>
+					<div><span className="optimizer-eyebrow">Hosted on-policy training</span><h2 id="optimizer-training-launch-title">{hostedCispoAdmitted ? "Configure a bounded launch" : "Hosted CISPO is not available"}</h2></div>
 				</div>
-				<div className="optimizer-training-form">
+				{hostedCispoAdmitted ? <><div className="optimizer-training-form">
 					<label><span>Algorithm</span><select value={trainingAlgorithm} disabled><option value="cispo">CISPO · slime reference</option></select></label>
 					<label><span>Model</span><select value={trainingModel} onChange={(event) => setTrainingModel(event.target.value)}>{hostedTrainingModels.map((model) => { const support = model.algorithms[trainingAlgorithm]; return <option key={model.modelId} value={model.modelId} disabled={support?.status === "blocked"}>{model.label} · {support?.status ?? "not validated"}</option>; })}</select></label>
 					{trainingAlgorithm === "cispo" ? <label><span>SFT warm start</span><select aria-label="SFT warm-start checkpoint" value={trainingWarmStartCheckpointId} onChange={(event) => setTrainingWarmStartCheckpointId(event.target.value)} data-testid="hosted-cispo-warm-start"><option value="">Select a retained SFT training state…</option>{hostedSftWarmStarts.map((checkpoint) => <option key={checkpoint.checkpointId} value={checkpoint.checkpointId}>{checkpoint.name} · {checkpoint.baseModel} · step {checkpoint.step ?? "—"}</option>)}</select></label> : null}
@@ -1076,7 +1083,18 @@ export function OptimizersPage({
 					<button className="primary-button" type="button" disabled={startingAgent !== null || hostedLaunchBlocked || !trainingModel.trim() || !trainingTask.trim() || !trainingContainerUrl.trim()} onClick={() => void reviewTrainingLaunch()} data-testid="review-hosted-training-launch">Review &amp; launch</button>
 					{hostedLaunchBlocked ? <span className="optimizer-status failed">Unavailable</span> : null}
 					<small>{trainingAlgorithm === "cispo" && !selectedWarmStart ? "Select a ready Tinker SFT training-state checkpoint; hosted CISPO never defaults to latest." : warmStartMismatch ? `Checkpoint/model mismatch: ${selectedWarmStart?.baseModel} ≠ ${trainingModel}.` : hostedLaunchBlocked ? selectedHostedSupport?.block_reason ?? "This model and algorithm combination is not admitted by the hosted catalog." : `Warm-start ${selectedWarmStart?.checkpointId} → CISPO → ${trainingTask}.`}{hostedModelCatalogRevision ? ` Catalog ${hostedModelCatalogRevision}; live provider preflight still required.` : ""}</small>
-				</div>
+				</div></> : (
+					<div className="optimizer-empty" data-testid="hosted-cispo-not-admitted" role="status">
+						<strong>Hosted slime CISPO has not passed runtime admission.</strong>
+						<p>{hostedCispoRecipe?.availabilityReason ?? "The Optimizers runtime does not advertise the hosted CISPO placement in this build."}</p>
+						<p>Adding a model or SFT checkpoint will not unlock hosted CISPO.</p>
+						{localCispoAvailable ? (
+							<button className="primary-button" type="button" disabled={startingLocalCispo || (plugin != null && !presentation.isUsable)} onClick={() => void startBoundedRecipe("cispo.mlx.v1", setStartingLocalCispo)} data-testid="start-cispo-mlx-from-hosted-block">
+								{startingLocalCispo ? "Starting…" : "Run CISPO on this Mac"}
+							</button>
+						) : <p data-testid="local-cispo-not-available">This Mac CISPO is also unavailable: {localCispoRecipe?.availabilityReason ?? "the runtime did not advertise the local recipe"}.</p>}
+					</div>
+				)}
 			</section>
 
 			<section id="optimizer-checkpoint-library" className="optimizer-checkpoint-library" aria-labelledby="optimizer-checkpoint-library-title" data-testid="optimizer-checkpoint-library">
@@ -1116,7 +1134,7 @@ export function OptimizersPage({
 							<label className="optimizer-search"><span>Tags</span><input aria-label="Checkpoint tags" defaultValue={checkpoint.tags.join(", ")} placeholder="comma-separated tags" key={`${checkpoint.checkpointId}-tags-${checkpoint.tags.join(",")}`} onBlur={(event) => { const tags = event.target.value.split(",").map((tag) => tag.trim()).filter(Boolean); if (tags.join(",") !== checkpoint.tags.join(",")) void patchSavedLora(checkpoint, { tags }); }} /></label>
 							<dl><dt>Placement</dt><dd>{checkpoint.placement === "this_mac" ? "This Mac" : "Hosted"}</dd><dt>Base</dt><dd>{checkpoint.baseModel}</dd><dt>Algorithm</dt><dd>{checkpoint.lineage.optimizerAlgorithm ?? checkpoint.optimizerAlgorithm ?? "Imported"}</dd><dt>Run</dt><dd>{checkpoint.lineage.runId ?? checkpoint.runId ?? "—"}</dd><dt>Attempt</dt><dd>{checkpoint.lineage.attemptId ?? checkpoint.attemptId ?? "—"}</dd><dt>Source</dt><dd>{checkpoint.lineage.sourceCheckpointId ?? checkpoint.sourceCheckpointId ?? "—"}</dd><dt>Provider</dt><dd>{checkpoint.provider} · {checkpoint.checkpointKind}</dd><dt>Rank / step</dt><dd>{checkpoint.loraRank ?? "—"} / {checkpoint.step ?? "—"}</dd><dt>Storage</dt><dd>{checkpoint.storage.backend} · {formatBytes(checkpoint.storage.sizeBytes)}</dd><dt>Saved</dt><dd>{checkpoint.updatedAt ? formatWhen(checkpoint.updatedAt) : "—"}</dd></dl>
 							{checkpoint.tags.length > 0 ? <div className="optimizer-checkpoint-tags">{checkpoint.tags.map((tag) => <span key={tag}>{tag}</span>)}</div> : null}
-							<div className="optimizer-checkpoint-actions">{hostedSftWarmStarts.some((candidate) => candidate.checkpointId === checkpoint.checkpointId) ? <button className="primary-button" type="button" onClick={() => { setTrainingAlgorithm("cispo"); setTrainingTask("banking77"); setTrainingModel(checkpoint.baseModel); setTrainingWarmStartCheckpointId(checkpoint.checkpointId); document.querySelector<HTMLElement>("[data-testid='optimizer-training-launch']")?.scrollIntoView({ behavior: "smooth", block: "start" }); }} data-testid={`use-for-cispo-${checkpoint.checkpointId}`}>Use for hosted CISPO</button> : null}{checkpoint.lineage.runId || checkpoint.runId ? <button className="secondary-button" type="button" onClick={() => void openCheckpointRun(checkpoint)}>Open run</button> : null}{checkpoint.inferenceChatCompletions ? <button className="secondary-button" type="button" disabled={inferringId !== null} onClick={() => void inferSavedLora(checkpoint, "chat_completions")}>{inferringId === `${checkpoint.checkpointId}:chat_completions` ? "Sampling…" : "Chat Completions"}</button> : null}{checkpoint.inferenceResponses ? <button className="secondary-button" type="button" disabled={inferringId !== null} onClick={() => void inferSavedLora(checkpoint, "responses")}>{inferringId === `${checkpoint.checkpointId}:responses` ? "Sampling…" : "Responses"}</button> : null}{isLagunaCompatibleAdapter(checkpoint) ? <button className="secondary-button" type="button" disabled={savedLoraBusy} onClick={() => void useInComposer(checkpoint)} data-testid={`use-in-composer-${checkpoint.checkpointId}`}>Use in Composer</button> : null}{checkpoint.placement === "this_mac" ? <button className="secondary-button" type="button" disabled={savedLoraBusy} onClick={() => void publishSavedLora(checkpoint)}>Publish</button> : null}<button className="secondary-button" type="button" disabled={savedLoraBusy} onClick={() => void downloadSavedLora(checkpoint)}>Download</button><button className="secondary-button optimizer-danger-button" type="button" disabled={savedLoraBusy} onClick={() => void archiveSavedLora(checkpoint)}>Archive</button></div>
+							<div className="optimizer-checkpoint-actions">{hostedCispoAdmitted && hostedSftWarmStarts.some((candidate) => candidate.checkpointId === checkpoint.checkpointId) ? <button className="primary-button" type="button" onClick={() => { setTrainingAlgorithm("cispo"); setTrainingTask("banking77"); setTrainingModel(checkpoint.baseModel); setTrainingWarmStartCheckpointId(checkpoint.checkpointId); document.querySelector<HTMLElement>("[data-testid='optimizer-training-launch']")?.scrollIntoView({ behavior: "smooth", block: "start" }); }} data-testid={`use-for-cispo-${checkpoint.checkpointId}`}>Use for hosted CISPO</button> : null}{checkpoint.lineage.runId || checkpoint.runId ? <button className="secondary-button" type="button" onClick={() => void openCheckpointRun(checkpoint)}>Open run</button> : null}{checkpoint.inferenceChatCompletions ? <button className="secondary-button" type="button" disabled={inferringId !== null} onClick={() => void inferSavedLora(checkpoint, "chat_completions")}>{inferringId === `${checkpoint.checkpointId}:chat_completions` ? "Sampling…" : "Chat Completions"}</button> : null}{checkpoint.inferenceResponses ? <button className="secondary-button" type="button" disabled={inferringId !== null} onClick={() => void inferSavedLora(checkpoint, "responses")}>{inferringId === `${checkpoint.checkpointId}:responses` ? "Sampling…" : "Responses"}</button> : null}{isLagunaCompatibleAdapter(checkpoint) ? <button className="secondary-button" type="button" disabled={savedLoraBusy} onClick={() => void useInComposer(checkpoint)} data-testid={`use-in-composer-${checkpoint.checkpointId}`}>Use in Composer</button> : null}{checkpoint.placement === "this_mac" ? <button className="secondary-button" type="button" disabled={savedLoraBusy} onClick={() => void publishSavedLora(checkpoint)}>Publish</button> : null}<button className="secondary-button" type="button" disabled={savedLoraBusy} onClick={() => void downloadSavedLora(checkpoint)}>Download</button><button className="secondary-button optimizer-danger-button" type="button" disabled={savedLoraBusy} onClick={() => void archiveSavedLora(checkpoint)}>Archive</button></div>
 						</article>
 					))}
 					{savedLoras.length === 0 && !savedLoraBusy ? <div className="optimizer-empty"><span className="optimizer-empty-icon" aria-hidden>◇</span><strong>No checkpoints match</strong><p>Local MLX adapters appear when a This Mac recipe emits them, or when you import an mlx-lora.v1 folder. Hosted SFT/CISPO LoRAs appear after object-storage verification.</p></div> : null}

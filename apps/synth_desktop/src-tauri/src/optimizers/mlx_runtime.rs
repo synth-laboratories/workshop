@@ -18,7 +18,7 @@ use tokio::time::sleep;
 use uuid::Uuid;
 
 const MLX_DEFAULT_URL: &str = "http://127.0.0.1:8787";
-const TRAINING_MODEL_ID: &str = "Qwen/Qwen3.5-0.8B";
+const TRAINING_MODEL_ID: &str = "Qwen/Qwen3.5-2B";
 // First launch loads the managed Qwen weights before FastAPI finishes startup.
 // Keep the probe bounded, but allow realistic Apple Silicon cold-start time.
 const HEALTH_TRIES: u32 = 480;
@@ -685,7 +685,7 @@ fn mlx_serve_command_with_model(port: u16, root: &Path, model_path: &Path) -> Re
         .args(["--port", &port.to_string()])
         .args(["--root", &root.display().to_string()])
         .args(["--model", &model_path.display().to_string()])
-        // The managed 0.8B runtime is a local-training service, not a 4K chat
+        // The managed 2B runtime is a local-training service, not a 4K chat
         // server. Keeping its resident render contract at 1024 makes the
         // preflight's memory estimate honest on supported Apple Silicon while
         // leaving ample room for classification and text-trajectory recipes.
@@ -1012,7 +1012,7 @@ mod tests {
     fn managed_model_path_is_the_offline_serve_argument() {
         let previous = std::env::var_os("SYNTH_MLX_RL_BIN");
         std::env::set_var("SYNTH_MLX_RL_BIN", "/usr/bin/true");
-        let model = Path::new("/managed/Qwen/Qwen3.5-0.8B");
+        let model = Path::new("/managed/Qwen/Qwen3.5-2B");
         let command = mlx_serve_command_with_model(57855, Path::new("/jobs"), model).unwrap();
         let args: Vec<_> = command
             .as_std()
@@ -1023,7 +1023,7 @@ mod tests {
             args.windows(2)
                 .find(|pair| pair[0] == "--model")
                 .map(|pair| pair[1].as_str()),
-            Some("/managed/Qwen/Qwen3.5-0.8B")
+            Some("/managed/Qwen/Qwen3.5-2B")
         );
         match previous {
             Some(value) => std::env::set_var("SYNTH_MLX_RL_BIN", value),

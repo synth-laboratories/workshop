@@ -118,7 +118,7 @@ Fold from `optimizer_event.v1` already ingested on the run — `candidate_identi
 
 ### MCP / Tauri
 
-Prefer **no new verb** if `experiments_get` / `experiments_list` can grow the DTO. A new command needs `collect_commands!` + ignored regen + count bump (today **263**). A field on an existing specta type needs regen but **not** a count bump.
+Candidate reads grew the existing DTO without a verb. The later compare/promote cut added `experiments_relate`, so the current command count is **264**. A field on an existing specta type needs regen but **not** a count bump.
 
 `cargo test` takes **one** filter string.
 
@@ -127,7 +127,7 @@ Prefer **no new verb** if `experiments_get` / `experiments_list` can grow the DT
 cargo test -p synth-desktop --lib regenerate_protocol_bindings -- --ignored
 ```
 
-Do not bump 263 unless you added a command.
+Do not bump 264 unless you add another command.
 
 ---
 

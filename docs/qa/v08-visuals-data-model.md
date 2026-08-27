@@ -82,6 +82,14 @@ Plugin was never a boolean. `PluginStatus.phase` has 14 values; `pluginPresentat
 
 Window chrome: Chat, Visuals, Experiments, Optimizers, Data, and Reports share one pane host so `VisualPane` does not remount across those routes. Settings joins that host only while a pane is open. `ArtifactRef.status` is `VisualStatus`. Chat Outputs ownership does not evict the window pane. CloudDesk still mounts its own pane and stays unmounted. Data/Outputs catalogs show `formatVisualAdmissionIdentity` (title stays the human label).
 
+Projection closeout (2026-08-26): Visuals/Reports filtered-empty states no
+longer claim the registry is empty; Data, Chat Outputs, Visuals, the pane, and
+Reports preserve the `id + revision + labeled digest` join key. The Templates
+tab is named **Template visuals** because it is still a VisualRecord projection,
+not the shipped template catalog. The shared pane close path unwinds temporary
+pane modes and restores workbench focus; focus visual is review/presentation,
+not an editor.
+
 - **list_templates components.** `TemplateMeta.inputs` copies `template.json` `inputs`/`slots` (same vec; `slots` is a one-release copy). `TemplateMeta.components` copies `template.json` `components[]`. MCP `visual_list_templates` / GET `/v1/visuals/templates` echo both. Empty `components` when unadvertised. No `list_components` or `list_inputs` verb. Specta field-on-existing-type (no bump at that cut).
 - **Laguna vs Plugin.** Catalog and MCP `plugin_id` remain `optimizers` (catalog) + `computer-use` (human-only, no catalog). `PLUGIN_NAV` has no Laguna row. `require_plugin_ready` is the Optimizers sidecar. `LagunaStatus` stays a parallel object.
 - **Admission (visual/diagram).** `admit_visual_evidence` is the shared predicate: pin and report seal of `report.visual.v1` / `report.diagram.v1` require a `VisualSeal` for that `visualId`+revision. Attach still writes a live pointer (`integrity=unresolved`); if a seal exists it copies `receiptDigest` into `sourceDigest` and stays `referenceMode: live` until pin. `validate_revision` errors `unresolved_visual_evidence` so “Ready to seal” is no longer shape-true for a blank canvas. Experiment-records / research-log appendix stay on auto-limitations. `contentDigest` and `receiptDigest` stay labeled, never merged. No `ArtifactRevision` sqlite class.
@@ -519,7 +527,7 @@ Joins for attach/pin/seal chrome are **`visualId` + revision + labeled digest**.
   when a seal exists     Ready to seal follows sealable
 ```
 
-Pin and report seal of visual/diagram blocks are **receipt-true** (need a VisualSeal). Experiment-records / research-log appendix still freeze via `freeze_blocks` and do not use this gate. `decideVisualEvidence` still does not block completion and Reports still do not call it.
+Pin and report seal of visual/diagram blocks are **receipt-true** (need a VisualSeal). Experiment-records / research-log appendix still freeze via `freeze_blocks` and do not use this gate. The unused `decideVisualEvidence` parallel verdict was removed; Reports use `admit_visual_evidence` rather than a second admission model.
 
 ## Viewer state is another store
 

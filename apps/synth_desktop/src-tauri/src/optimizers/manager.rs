@@ -1450,7 +1450,10 @@ pub(crate) fn resolve_uv() -> Result<PathBuf> {
 }
 
 pub(super) fn optimizer_project_root() -> Result<Option<PathBuf>> {
-    let Some(path) = env::var_os("SYNTH_OPTIMIZER_PROJECT_ROOT").map(PathBuf::from) else {
+    let Some(path) = env::var_os("SYNTH_OPTIMIZER_PROJECT_ROOT")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+    else {
         return Ok(None);
     };
     let path = path

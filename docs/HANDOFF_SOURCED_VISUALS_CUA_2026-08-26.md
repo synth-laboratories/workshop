@@ -237,7 +237,7 @@ Host still builds `ReplayClient`. The module must not discover URLs.
 
 Kind `sourced_visual`, protocol `whole_file.v1`, `rendererKind: tsx`. Template `sourced.visual.v1`. Compiler: `visuals/runtime/sourcedValidate.ts` + `sourcedVisual.ts` (sucrase, allowlist). `VisualHost` loads CAS `content` and mounts the compiled Shell. Create without `content` fails closed. Skill + MCP copy no longer say “TSX is never executed.”
 
-Compose `optimizer_run` (GEPA/SFT/CISPO event log on the same kit) is **landed** on the original tree (template slot, compose spec, EventStream mapping, Playwright). Product `optimizer.*` chrome stays. Candidate compare/promote is leftover on the experiment spine.
+Compose `optimizer_run` (GEPA/SFT/CISPO event log on the same kit) is **landed** on the original tree (template slot, compose spec, EventStream mapping, Playwright). Product `optimizer.*` chrome stays. Candidate compare/promote is also landed on the experiment spine through `experiments_relate`.
 
 ---
 

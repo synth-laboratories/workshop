@@ -37,7 +37,7 @@ fn local_mlx_recipe() -> Value {
             "maxTotalEnvironmentRollouts": 128,
             "costNotice": "Local Apple Silicon MLX compute. Warm-start from a selected SFT artifact id; otherwise the visual reports cispo_no_learning_signal.",
             "resolvedConfig": {
-                "baseModel": "Qwen/Qwen3.5-0.8B",
+                "baseModel": "Qwen/Qwen3.5-2B",
                 "task": "container",
                 "loraDropout": 0.0,
                 "warmStart": "training_artifact_id"
@@ -189,7 +189,7 @@ async fn start_local(
         PLACEMENT_TRAINING_CISPO_LOCAL,
         json!({
             "backend": "cispo",
-            "base_model": "Qwen/Qwen3.5-0.8B",
+            "base_model": "Qwen/Qwen3.5-2B",
             "task": bind.task_id.clone(),
             "implementation": cispo.implementation,
             "rollout": {

@@ -8,7 +8,7 @@ Noun map (keep current): [`docs/qa/v08-visuals-data-model.md`](./qa/v08-visuals-
 CUA findings this cut targets: RP-CUA-014 / 053 / 060 (handoff chrome only).  
 Sourced/compose CUA is already passed: [`HANDOFF_SOURCED_VISUALS_CUA_2026-08-26.md`](./HANDOFF_SOURCED_VISUALS_CUA_2026-08-26.md). Do not rebuild it.
 
-Durable authority is the **local store**. Do not introduce `CoreRuntime` as a product noun. Specta command count stays **263**. Craftax is rust GameBench gold only (`env:craftax_gold`). Do not use intern / research-intern MCP.
+Durable authority is the **local store**. Do not introduce `CoreRuntime` as a product noun. Specta command count is **264** after the landed `experiments_relate` command. Craftax is rust GameBench gold only (`env:craftax_gold`). Do not use intern / research-intern MCP.
 
 ---
 
@@ -46,7 +46,8 @@ Two digest spaces stay labeled, never merged:
 - `contentDigest` — authoring CAS, often null on blank canvas
 - `receiptDigest` — VisualSeal receipt. Pin and report `sourceDigest` use this.
 
-`decideVisualEvidence` (`ready|reviewed|partial|failed`) still has no consumers. Do not drive Reports with it.
+The unused `decideVisualEvidence` (`ready|reviewed|partial|failed`) parallel
+model was removed during closeout. Reports use receipt-true admission only.
 
 Pin is `reports_pin_all` / “Pin all evidence”, not `reports_promote`. Keep promote off agent visuals MCP.
 
@@ -78,7 +79,7 @@ Claims picker labels an unresolved visual block `unresolved — not sealable` (c
 | --- | --- |
 | Predicate + `validate` / `pin_all` | `apps/synth_desktop/src-tauri/src/reports/registry.rs` (`admit_visual_evidence`, `UNRESOLVED_VISUAL_EVIDENCE`) |
 | Finding fields | `apps/synth_desktop/src-tauri/src/reports/models.rs` (`visual_id`, `receipt_digest` on existing `ReportValidationFinding`) |
-| Protocol | `apps/synth_desktop/src/renderer/src/generated/protocol.ts` — regen only, **263 unchanged** |
+| Protocol | `apps/synth_desktop/src/renderer/src/generated/protocol.ts` — admission was regen-only; current tree is **264** after `experiments_relate` |
 | Identity helper | `formatVisualAdmissionIdentity` in `apps/synth_desktop/src/renderer/src/types/landing.ts` |
 | Attach | `VisualsPage.tsx` — full `visual-${id}` anchor, live + unresolved, copy receipt when present |
 | Frozen fallback | `ReportsPage.tsx` + `reports/reader.js` |
@@ -104,7 +105,9 @@ cd /Users/joshuapurtell/GitHub/workshop-v08-release
 6. Open the visual pane → pass E1 quality gate if needed → **Seal** that revision (VisualSeal, not report seal).
 7. Back on Reports → Pin all → preflight **Ready to seal** → Seal report.
 
-A result-only pinned report (no visual block) must still be sealable. An empty report with only auto appendix experiment-records must still be sealable. **RP-CUA-009 is still open:** a brand-new empty report with no visual block can still say Ready to seal. That is not this gate.
+A result-only pinned report (no visual block) remains sealable. A brand-new
+report with no narrative/evidence, including one with only an automatic empty
+appendix, now fails closed with `empty_report`; RP-CUA-009 is landed.
 
 ### Machine checks (already green on this tree)
 
@@ -114,7 +117,7 @@ cd /Users/joshuapurtell/GitHub/workshop-v08-release/apps/synth_desktop
 # JS identity + Frozen-copy invariant
 node --test tests/admission_identity.test.mjs
 
-# Rust admission + specta lockstep (263)
+# Rust admission + specta lockstep (264)
 cargo test --manifest-path src-tauri/Cargo.toml --lib blank_visual_evidence_is_not_sealable -- --nocapture
 cargo test --manifest-path src-tauri/Cargo.toml --lib sealed_visual_can_be_pinned -- --nocapture
 cargo test --manifest-path src-tauri/Cargo.toml --lib appendix_experiment_records_do_not_block -- --nocapture
@@ -123,7 +126,7 @@ cargo test --manifest-path src-tauri/Cargo.toml --lib report_validation_persists
 cargo test --manifest-path src-tauri/Cargo.toml --lib export_specta_protocol_bindings -- --nocapture
 ```
 
-If you add fields to an existing specta type: regen only (`cargo test -p synth-desktop --lib regenerate_protocol_bindings -- --ignored`). If you add a Tauri command: `collect_commands!` + regen + bump 263. This cut must not bump.
+If you add fields to an existing specta type: regen only (`cargo test -p synth-desktop --lib regenerate_protocol_bindings -- --ignored`). If you add a Tauri command: `collect_commands!` + regen + bump the current 264 count. Admission itself did not add a command.
 
 ---
 
@@ -131,7 +134,7 @@ If you add fields to an existing specta type: regen only (`cargo test -p synth-d
 
 - New sqlite `ArtifactRevision` / migration 40
 - New MCP verb or specta command
-- Driving Reports from `decideVisualEvidence` / changing `VisualStatus`
+- Reintroducing a parallel visual-evidence verdict / changing `VisualStatus`
 - Writers for `forked_from` / `rerun_of`
 - Candidate compare/promote
 - `reports_promote` on visuals MCP
@@ -144,17 +147,32 @@ If you add fields to an existing specta type: regen only (`cargo test -p synth-d
 
 ## Remaining visual-oriented work (ranked)
 
-Admission is done. Next visual cuts are **projections and chrome**, not a new class.
+Closeout audit (2026-08-26): the renderer has moved past several items in the
+original handoff. `admission_identity.test.mjs`, `visuals_page.test.mjs`,
+`visual_pane_min_width.test.mjs`, and `visual_pane_shared.test.mjs` cover the
+landed projection/chrome behavior (21 checks). Keep the completed items below
+as invariants; do not rebuild them.
 
-1. **Still leftover on the noun map.** CHECK leftovers `rerun_of` / `forked_from` (writer is `follow_up` only); compare/promote including Candidate. `ArtifactRevision` as a sqlite class is explicitly **not** built — keep using `admit_visual_evidence`.
-2. **RP-CUA-009** — empty report (no visual block) still “Ready to seal”. Separate product decision. Do not “fix” it by gating on `is_evidence_kind()`.
-3. **Identity outside the handoff.** Attach/pin/seal chrome now shows `vis_` + labeled digest. Data catalog and Outputs report rail are still title-first (RP-CUA-060 remainder). Do not invent a fourth registry.
-4. **Filter empty copy** — Visuals Live (RP-CUA-001) and Reports Sealed (RP-CUA-015) still say “no visuals/reports yet” when the registry is non-empty. Templates tab is still `rendererKind === "template"` pretending to be a catalog (RP-CUA-050/051/052).
-5. **Pane chrome leftovers.** Escape closes instead of restoring split (RP-CUA-004). Settings/Reports still unmount the shared `VisualPane` host. “Open canvas” is not an editor (RP-CUA-013).
-6. **`decideVisualEvidence`** — still unused. Leave it or delete it; do not wire it to Reports.
+Admission and the listed projection/chrome closeout are done. Remaining cuts
+must still refine projections, not introduce a new class.
+
+1. **Experiment relations — landed.** Child writers accept `follow_up` / `forked_from` / `rerun_of`; member and Candidate compare/promote use `experiments_relate` and fail closed on mixed kinds. `ArtifactRevision` remains intentionally absent; keep using `admit_visual_evidence`.
+2. **RP-CUA-009 — landed.** Empty reports return `empty_report` and cannot seal. This is a content-presence check, not a gate on `is_evidence_kind()`.
+3. **Identity projection — landed.** Attach/pin/seal chrome, Data catalog, Chat VisualCard, and Outputs show `vis_` + revision + a labeled receipt/content digest. Report rows retain their `rep_` identity. Title remains the human label; there is still one visual registry.
+4. **Filtered-empty copy — landed.** Visuals and Reports distinguish an empty filter from an empty registry and offer a clear-filter action. The Templates tab is deliberately labeled **Template visuals** while it remains a projection of VisualRecords with `rendererKind === "template"`; a shipped template catalog is a separate future cut.
+5. **Pane lifecycle/chrome — landed for this refactor.** Chat, Visuals, Experiments, Optimizers, Data, and Reports share the window pane host. Settings joins it while a pane is open. Escape unwinds labeling/expanded state before closing, close restores focus to the workbench, and the inventory Back path restores its origin. “Open canvas” was removed; focus mode is explicitly review/presentation, not an authoring editor.
+6. **Dead evidence verdict — removed.** `decideVisualEvidence` and its public exports/tests were deleted. Do not recreate it or wire a parallel verdict to Reports.
 7. **Sourced/compose** — CUA proof already passed on packaged `sourced-cua`. Optional: compose `optimizer_run` CUA on that instance. Product `optimizer.*` chrome stays.
 
-If you pick (3)–(5), keep the join key `id + revision + labeled digest`. Title stays the human label.
+### Verification note
+
+The renderer closeout checks above pass on `codex/v08-release-integration`.
+The focused Rust admission, empty-report, experiment-lineage, member/Candidate
+relation, and Specta export checks also pass. Specta remains 264; the
+dead-verdict/projection closeout added no command or protocol shape.
+
+For later projection work, keep the join key `id + revision + labeled digest`.
+Title stays the human label.
 
 ---
 

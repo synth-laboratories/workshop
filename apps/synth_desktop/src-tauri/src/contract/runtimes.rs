@@ -191,7 +191,6 @@ pub const EVAL: RuntimeContract = RuntimeContract {
         "eval.fixture.policy-smoke.v1",
         "eval.craftax.code-policy.smoke.v1",
         "eval.gamebench.craftax-code-policy.confirm.v1",
-        "eval.craftax.llm-policy.smoke.v1",
         "eval.gamebench.llm-policy.confirm.v1",
         "eval.mlx.local-policy.smoke.v1",
     ],
