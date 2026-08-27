@@ -50,6 +50,7 @@ const MIGRATIONS: &[&str] = &[
     MIGRATION_45,
     MIGRATION_46,
     MIGRATION_47,
+    MIGRATION_48,
 ];
 
 /// Apply every migration the database has not reached yet.
@@ -2286,6 +2287,16 @@ CREATE INDEX generation_speed_measurements_turn
 ON generation_speed_measurements(session_id, turn_id, created_at);
 "#;
 
+/// Repair prerelease databases that recorded the experiment-lineage migration
+/// version without replacing the original one-experiment-per-session index.
+/// `CREATE INDEX IF NOT EXISTS` cannot change an existing UNIQUE index, so the
+/// migration must explicitly remove the legacy index before recreating it.
+const MIGRATION_48: &str = r#"
+DROP INDEX IF EXISTS experiment_groups_session;
+CREATE INDEX experiment_groups_session
+ON experiment_groups(session_id, created_at, id);
+"#;
+
 #[cfg(test)]
 mod tests {
     /// Derived, not pinned: adding a migration should not mean editing
@@ -3229,5 +3240,29 @@ mod tests {
             [],
         )
         .unwrap();
+    }
+
+    #[test]
+    fn migration_48_repairs_legacy_unique_experiment_session_index() {
+        let conn = seed_at_version(47);
+        conn.execute_batch(
+            "DROP INDEX IF EXISTS experiment_groups_session;
+             CREATE UNIQUE INDEX experiment_groups_session ON experiment_groups(session_id);",
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO experiment_groups(id, session_id, title, created_at, updated_at)
+             VALUES('exp_a', 'session_shared', 'First', '2026-08-27T00:00:00Z', '2026-08-27T00:00:00Z')",
+            [],
+        )
+        .unwrap();
+
+        assert_eq!(apply_migrations(&conn).unwrap(), LATEST_VERSION);
+        conn.execute(
+            "INSERT INTO experiment_groups(id, session_id, title, created_at, updated_at)
+             VALUES('exp_b', 'session_shared', 'Second', '2026-08-27T00:01:00Z', '2026-08-27T00:01:00Z')",
+            [],
+        )
+        .expect("migration 48 must permit multiple experiments in one session");
     }
 }
