@@ -6,9 +6,9 @@
 //! own row, and a value that cannot be recomputed is a bug rather than a
 //! difference of opinion.
 //!
-//! Writes are idempotent on `measurement_id`. A segment is measured once, when
-//! it ends; a replayed finalize (reconnect, crash recovery) must not mint a
-//! second row for the same segment.
+//! Writes are idempotent on `measurement_id`. Late provider response usage may
+//! enrich the same segment after its lifecycle event, so conflicts update the
+//! evidence row rather than minting a second measurement.
 
 use super::Database;
 use anyhow::Result;
@@ -82,7 +82,21 @@ fn insert(conn: &Connection, row: GenerationSpeedRow) -> Result<()> {
             sample_count,token_count_source,tokenizer_id,clock_source,unavailable_reason,
             quality_flags,samples_json,provider,model_id,created_at)
          VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,?24)
-         ON CONFLICT(measurement_id) DO NOTHING",
+         ON CONFLICT(measurement_id) DO UPDATE SET
+            status=excluded.status,
+            tps=excluded.tps,
+            exact_tokens_after_first_sample=excluded.exact_tokens_after_first_sample,
+            duration_ms=excluded.duration_ms,
+            sample_count=excluded.sample_count,
+            token_count_source=excluded.token_count_source,
+            tokenizer_id=excluded.tokenizer_id,
+            clock_source=excluded.clock_source,
+            unavailable_reason=excluded.unavailable_reason,
+            quality_flags=excluded.quality_flags,
+            samples_json=excluded.samples_json,
+            provider=excluded.provider,
+            model_id=excluded.model_id,
+            created_at=excluded.created_at",
         params![
             row.measurement_id,
             row.schema_version,

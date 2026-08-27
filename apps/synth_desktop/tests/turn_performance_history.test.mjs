@@ -71,6 +71,22 @@ test("a measurement without a rate says so and names nothing else", () => {
 	assert.doesNotMatch(labels.byMessageId.msg_2.generation, /71|tok\/s/);
 });
 
+test("late exact response usage is labelled as a generation estimate, not request throughput", () => {
+	const { chat, events } = fixture();
+	const estimated = events.map((entry) => entry.sequence === 7
+		? measured(7, 10, "msg_2", {
+			tokenCountSource: "provider_response_visible_usage",
+			tps: 71.08,
+			exactTokensAfterFirstSample: 283,
+			durationMs: 3_981.5
+		})
+		: entry);
+	const label = turnPerformanceLabels(chat, estimated).byMessageId.msg_2;
+	assert.equal(label.generation, "Observed generation estimate: 71.1 tok/s");
+	assert.match(label.detail, /Exact response output minus exact reasoning output/);
+	assert.match(label.detail, /excludes TTFT, tools, and reasoning time/);
+});
+
 test("provider token totals never become acceptance-to-completion TPS", () => {
 	const chat = { id: "s", title: "none", messages: [
 		{ id: "u", role: "user", body: "go", at: at(0) },
@@ -168,7 +184,7 @@ test("the advanced detail exposes the audit fields behind a displayed value", ()
 	const { chat, events } = fixture();
 	const detail = turnPerformanceLabels(chat, events).byMessageId.msg_2.detail;
 	for (const field of [
-		/Client-observed text delivery; excludes tools and reasoning/,
+		/Client-observed text delivery; excludes TTFT, tools, and reasoning time/,
 		/kind observed_stream_segment/,
 		/tokens 60/,
 		/duration 1\.20s/,

@@ -94,12 +94,18 @@ function detail(value: GenerationSpeedMeasurement): string {
 		value.unavailableReason ? `reason ${value.unavailableReason}` : null,
 		value.qualityFlags.length ? `flags ${value.qualityFlags.join(", ")}` : null
 	].filter((field): field is string => field !== null);
-	return `Client-observed text delivery; excludes tools and reasoning. ${fields.join(" · ")}`;
+	const method = value.tokenCountSource === "provider_response_visible_usage"
+		? "Exact response output minus exact reasoning output over the final-answer delivery interval"
+		: "Client-observed text delivery";
+	return `${method}; excludes TTFT, tools, and reasoning time. ${fields.join(" · ")}`;
 }
 
 function generationLabel(value: GenerationSpeedMeasurement | undefined): string {
 	if (!value || !isPublishable(value)) return GENERATION_TPS_UNAVAILABLE;
-	const rate = `Observed generation: ${formatTps(value.tps!)} tok/s`;
+	const prefix = value.tokenCountSource === "provider_response_visible_usage"
+		? "Observed generation estimate"
+		: "Observed generation";
+	const rate = `${prefix}: ${formatTps(value.tps!)} tok/s`;
 	return value.status === "partial" ? `${rate} (partial)` : rate;
 }
 
