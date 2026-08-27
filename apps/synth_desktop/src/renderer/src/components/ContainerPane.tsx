@@ -201,18 +201,64 @@ function DataBlock({ label, value }: { label: string; value: unknown }) {
 	return <details className="container-data-block"><summary>{label}</summary><pre>{JSON.stringify(value, null, 2)}</pre></details>;
 }
 
+function freshness(value: unknown): { kind: "live" | "cached" | "unavailable"; observedAt: string | null; reason: string | null } {
+	const entry = object(value);
+	const kind = text(entry.kind);
+	if (kind === "live" || kind === "cached" || kind === "unavailable") {
+		return { kind, observedAt: text(entry.observedAt) ?? text(entry.observed_at), reason: text(entry.reason) };
+	}
+	return { kind: "unavailable", observedAt: null, reason: "not_reported" };
+}
+
+export function countLabel(count: number, reported: boolean, kind: "live" | "cached" | "unavailable"): string {
+	if (!reported || kind === "unavailable") return "Not reported";
+	if (kind === "cached") return `${count} cached`;
+	return `${count} live`;
+}
+
+function shortRevision(value: string): string {
+	return value.length > 12 ? value.slice(0, 8) : value;
+}
+
+function launchProblem(error: JsonObject): { headline: string; path: string | null; next: string | null } | null {
+	const code = text(error.code);
+	const message = text(error.error) ?? text(error.message);
+	const declared = text(error.declared_path) ?? text(error.declaredPath);
+	const resolved = text(error.resolved_path) ?? text(error.resolvedPath);
+	const next = text(error.remediation);
+	if (!code && !message && !declared) return null;
+	const headlines: Record<string, string> = {
+		launch_source_path_not_found: "Couldn't find a declared launch file.",
+		launch_source_path_escapes_root: "A launch file points outside this repository.",
+		launch_absolute_path_rejected: "Absolute launch paths aren't allowed.",
+		launch_source_digest_mismatch: "Launch files changed since they were declared.",
+		launch_checkout_revision_mismatch: "This checkout doesn't match the declared revision.",
+		launch_source_root_not_approved: "This repository isn't attached to the conversation.",
+		launch_manifest_unreadable: "Couldn't read the container launch file."
+	};
+	return {
+		headline: (code && headlines[code]) || message || "Launch files need attention.",
+		path: declared && resolved ? `${declared} → ${resolved}` : declared ?? resolved,
+		next
+	};
+}
+
 export function ContainerPane({
 	container,
 	expanded,
 	onExpandedChange,
 	onClose,
-	onProbe
+	onProbe,
+	onRestart,
+	onRepair
 }: {
 	container: ContainerDeployment;
 	expanded: boolean;
 	onExpandedChange: (expanded: boolean) => void;
 	onClose: () => void;
 	onProbe: () => void;
+	onRestart?: () => void;
+	onRepair?: () => void;
 }) {
 	const metadata = object(container.metadata);
 	const info = object(metadata.info);
@@ -246,6 +292,20 @@ export function ContainerPane({
 	const health = object(container.health);
 	const healthPayload = Object.keys(object(health.payload)).length ? object(health.payload) : health;
 	const sessions = typeof healthPayload.sessions === "number" ? healthPayload.sessions : null;
+	const runtimeLive = container.status === "ready" && health.ok !== false;
+	const instanceFreshness = freshness(metadata.taskCatalogFreshness);
+	const interfaceFreshness = freshness(metadata.interfaceFreshness);
+	const policyFreshness = freshness(metadata.policyFreshness);
+	const launch = object(metadata.launchDeclaration);
+	const launchValid = launch.valid === true;
+	const launchError = object(launch.error);
+	const origin = object(metadata.declarationOrigin);
+	const problem = launchProblem(launchError);
+	const command = Array.isArray(launch.command) ? (launch.command as unknown[]).map(String).join(" ") : null;
+	const sourceRoot = text(origin.sourceRoot);
+	const sourceRevision = text(origin.sourceRevision);
+	const showRestart = !runtimeLive && launchValid && onRestart;
+	const showRepair = (!launchValid || launch.valid === false) && onRepair;
 	const queryRows = useMemo(() => flattenMetadata({ task: metadata.taskInfo, program: metadata.program, dataset: metadata.dataset }), [metadata.taskInfo, metadata.program, metadata.dataset]);
 	const queryParts = metadataQuery.trim().toLowerCase().split(/\s+/).filter(Boolean);
 	const queryMatches = queryParts.length ? queryRows.filter((row) => queryParts.every((part) => {
@@ -277,9 +337,27 @@ export function ContainerPane({
 			<div className="container-pane-body">
 				{catalog.error ? <p className="container-query-error" role="alert">Task metadata error: {catalog.error}</p> : null}
 				<section className="container-overview">
-					<div className="container-status-line"><span className={`container-status-dot status-${container.status}`} aria-hidden /><strong>{container.status}</strong>{sessions !== null ? <span>{sessions} active sessions</span> : null}</div>
-					<code className="container-endpoint">{container.baseUrl ?? container.location}</code>
-					<button type="button" className="container-probe" onClick={onProbe}>Refresh metadata</button>
+					<div className="container-status-line">
+						<span className={`container-status-dot status-${container.status}`} aria-hidden />
+						<strong>{runtimeLive ? "Ready" : "Couldn't reach this container"}</strong>
+						{sessions !== null ? <span>{sessions} {sessions === 1 ? "session" : "sessions"}</span> : null}
+					</div>
+					<code className="container-endpoint" title={container.baseUrl ?? container.location}>{container.baseUrl ?? container.location}</code>
+					<div className="container-overview-actions">
+						<button type="button" className="container-probe" onClick={onProbe}>Refresh</button>
+						{showRestart ? <button type="button" className="container-probe container-probe-primary" onClick={() => onRestart?.()} data-testid="container-restart" title="Workshop will ask before replacing this container" aria-label="Restart this container">Restart…</button> : null}
+						{showRepair ? <button type="button" className="container-probe container-probe-primary" onClick={() => onRepair?.()} data-testid="container-repair">Fix launch files</button> : null}
+					</div>
+					{command || sourceRoot ? <p className="container-launch-identity">
+						{command ? <code title={command}>{command}</code> : null}
+						{sourceRoot ? <code title={sourceRoot}>{sourceRoot}</code> : null}
+						{sourceRevision ? <span title={sourceRevision}>rev {shortRevision(sourceRevision)}</span> : null}
+					</p> : null}
+					{problem ? <div className="ws-note ws-note-danger" role="alert">
+						<strong>{problem.headline}</strong>
+						{problem.path ? <code>{problem.path}</code> : null}
+						{problem.next ? <p>{problem.next}</p> : null}
+					</div> : null}
 				</section>
 
 				<section className="container-pane-section">
@@ -287,8 +365,8 @@ export function ContainerPane({
 					<h3>{container.taskFamily ?? text(info.name) ?? "Synth container"}</h3>
 					<dl className="container-facts">
 						<div><dt>Definitions</dt><dd>{taskDefinitionsReported ? tasks.length : "Not reported"}</dd></div>
-						<div><dt>Instances</dt><dd>{taskCatalogReported ? instances.length : "Not reported"}</dd></div>
-						<div><dt>Interfaces</dt><dd>{info.capabilities == null ? "Not reported" : capabilities.length}</dd></div>
+						<div><dt>Instances</dt><dd>{countLabel(instances.length, taskCatalogReported, instanceFreshness.kind)}</dd></div>
+						<div><dt>Interfaces</dt><dd>{info.capabilities == null ? "Not reported" : countLabel(capabilities.length, true, interfaceFreshness.kind)}</dd></div>
 						{container.lastRolloutId ? <div><dt>Last rollout</dt><dd title={container.lastRolloutId}>{container.lastRolloutId.slice(0, 8)}</dd></div> : null}
 						{text(info.version) ? <div><dt>Version</dt><dd>{text(info.version)}</dd></div> : null}
 					</dl>
@@ -296,7 +374,7 @@ export function ContainerPane({
 
 				<section className="container-pane-section">
 					<p className="container-pane-kicker">Installed policy</p>
-					{!policyReported ? <p>Not reported</p> : !policySchemaValid ? <p role="alert">Invalid response: unsupported policy schema</p> : policyStatus === "not_installed" ? <p>None</p> : policyStatus === "installed" ? <dl className="container-facts">
+					{!runtimeLive ? <p>Policy isn't available while this container is offline. Restart it to inspect the installed policy.</p> : !policyReported || policyFreshness.kind === "unavailable" ? <p>Not reported</p> : !policySchemaValid ? <p role="alert">Invalid response: unsupported policy schema</p> : policyStatus === "not_installed" ? <p>None</p> : policyStatus === "installed" ? <dl className="container-facts">
 						<div><dt>Reference</dt><dd>{text(policyRef.namespace) && text(policyRef.name) ? `${text(policyRef.namespace)}/${text(policyRef.name)}` : "Invalid response"}</dd></div>
 						<div><dt>Revision</dt><dd>{text(policyState.policy_revision_id) ?? "Invalid response"}</dd></div>
 						<div><dt>Source</dt><dd>{text(policyState.source_revision) ?? "Unavailable"}</dd></div>
@@ -322,9 +400,9 @@ export function ContainerPane({
 
 				{instances.length ? <section className="container-pane-section container-instance-browser">
 					<p className="container-pane-kicker">Task instances</p>
-					<p>{filteredInstances.length} of {instances.length} instances</p>
+					<p>{filteredInstances.length} of {instances.length} {instanceFreshness.kind === "cached" ? "instances from the last successful probe" : "instances"}</p>
 					<div className="container-query-builder">
-						<strong>Inferred query</strong><span>{inferredFields.length} fields inferred from cached instances</span>
+						<strong>Filter instances</strong><span>{instanceFreshness.kind === "cached" ? `${inferredFields.length} fields from the last cached catalog` : `${inferredFields.length} fields inferred from the catalog`}</span>
 						<div className="container-query-controls">
 							<select value={builderField} onChange={(event) => { setBuilderField(event.target.value); setBuilderValue(""); }} aria-label="Query field"><option value="">Choose field…</option>{inferredFields.map((field) => <option key={field.path} value={field.path}>{field.path} · {field.type}</option>)}</select>
 							<select value={builderOperator} onChange={(event) => setBuilderOperator(event.target.value)} aria-label="Query operator">{["=", "!=", "LIKE", "IN", ">", ">=", "<", "<="].map((operator) => <option key={operator}>{operator}</option>)}</select>

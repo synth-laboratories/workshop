@@ -105,6 +105,18 @@ impl From<anyhow::Error> for AppError {
             return Self::coded(CODE_DATABASE_LOCKED, error.to_string())
                 .with_detail(format!("{error:?}"));
         }
+        if error_is::<StructuredFailure>(&error) {
+            if let Some(failure) = error
+                .chain()
+                .find_map(|cause| cause.downcast_ref::<StructuredFailure>())
+            {
+                return Self {
+                    code: failure.code.to_string(),
+                    message: failure.message.clone(),
+                    detail: failure.to_json().to_string(),
+                };
+            }
+        }
         Self::internal(error)
     }
 }
@@ -250,6 +262,13 @@ impl StructuredFailure {
             "retryable": self.retryable,
         });
         if !self.details.is_null() {
+            if let Some(fields) = self.details.as_object() {
+                for (key, value) in fields {
+                    if !body.as_object().is_some_and(|object| object.contains_key(key)) {
+                        body[key] = value.clone();
+                    }
+                }
+            }
             body["details"] = self.details.clone();
         }
         body

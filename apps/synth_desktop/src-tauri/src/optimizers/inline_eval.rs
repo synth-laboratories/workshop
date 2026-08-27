@@ -15,7 +15,6 @@ use super::{container_eval, OptimizerService};
 use anyhow::{Context, Result};
 use serde_json::{json, Value};
 use std::num::NonZeroU32;
-use std::path::{Component, Path};
 use std::process::Command;
 
 /// Resolve current authority, construct the default inline recipe, validate it,
@@ -145,6 +144,7 @@ async fn discovery_context(
     let mut candidates = Vec::new();
     let mut policy_revisions = Vec::new();
     let mut policy_source_code = None;
+    let mut policy_material = None;
     let mut selected_base_url = None;
     for (id, status, task_family, metadata_json, base_url) in rows {
         let metadata: Value = serde_json::from_str(&metadata_json)
@@ -180,11 +180,9 @@ async fn discovery_context(
                 .filter(|value| !value.trim().is_empty())
         });
         if let Some(relative) = declared_policy_source {
-            policy_source_code = Some(read_policy_source_at_revision(
-                &metadata,
-                source_revision,
-                relative,
-            )?);
+            let loaded = read_policy_source(&metadata, source_revision, relative)?;
+            policy_source_code = Some(loaded.0);
+            policy_material = Some(loaded.1);
         }
         candidates.push(container_candidate(
             &id,
@@ -241,6 +239,7 @@ async fn discovery_context(
                 revision: Some(revision),
                 declared_configuration,
                 source_code: policy_source_code,
+                material: policy_material,
             }),
             credential_route_available: crate::secrets::live().is_some(),
             credential_route_detail: Some(format!(
@@ -315,37 +314,61 @@ async fn materialize_seed_instances(base_url: &str, seeds: &[admission::Seed]) -
     Ok(())
 }
 
-fn read_policy_source_at_revision(
+fn read_policy_source(
     metadata: &Value,
     revision: &str,
     relative: &str,
-) -> Result<String> {
-    let path = Path::new(relative);
-    anyhow::ensure!(
-        !path.is_absolute()
-            && !path.as_os_str().is_empty()
-            && path
-                .components()
-                .all(|part| matches!(part, Component::Normal(_))),
-        "policySourcePath must be a non-empty repository-relative path without traversal"
-    );
-    let source_root = metadata
-        .get("sourcePath")
+) -> Result<(String, admission::PolicyMaterialRef)> {
+    let spec_id = metadata
+        .get("workspaceSpecId")
+        .or_else(|| metadata.get("specId"))
         .and_then(Value::as_str)
-        .context("container declaration has no sourcePath for policy source resolution")?;
-    let output = Command::new("git")
-        .arg("-C")
-        .arg(source_root)
-        .arg("show")
-        .arg(format!("{revision}:{relative}"))
-        .output()
-        .context("read policy source from declared git revision")?;
-    anyhow::ensure!(
-        output.status.success(),
-        "policySourcePath `{relative}` is absent from declared source revision `{revision}`: {}",
-        String::from_utf8_lossy(&output.stderr).trim()
-    );
-    String::from_utf8(output.stdout).context("policy source is not UTF-8")
+        .unwrap_or("policy");
+    let origin = super::workspace_recipe::origin_from_metadata(metadata, spec_id).ok_or_else(
+        || {
+            anyhow::anyhow!(
+                "policy_source_unavailable: container declaration has no approved source origin"
+            )
+        },
+    )?;
+    let resolved = super::workspace_recipe::resolve_repository_path(&origin, relative)
+        .map_err(super::workspace_recipe::LaunchDeclarationError::into_anyhow)?;
+    let source_code = if origin.source_digest.is_some() {
+        std::fs::read_to_string(&resolved.absolute_path).with_context(|| {
+            format!(
+                "policy_source_unavailable: could not read {} from the approved dirty checkout",
+                resolved.absolute_path.display()
+            )
+        })?
+    } else {
+        let output = Command::new("git")
+            .arg("-C")
+            .arg(&origin.source_root)
+            .arg("show")
+            .arg(format!("{revision}:{relative}"))
+            .output()
+            .context("read policy source from declared git revision")?;
+        if output.status.success() {
+            String::from_utf8(output.stdout).context("policy source is not UTF-8")?
+        } else {
+            std::fs::read_to_string(&resolved.absolute_path).with_context(|| {
+                format!(
+                    "policySourcePath `{relative}` is absent from declared source revision `{revision}` and working tree {}",
+                    resolved.absolute_path.display()
+                )
+            })?
+        }
+    };
+    let content_digest = admission::digest_bytes(source_code.as_bytes());
+    Ok((
+        source_code,
+        admission::PolicyMaterialRef {
+            source_root: origin.source_root.display().to_string(),
+            repository_relative_path: relative.to_string(),
+            tracked_revision: revision.to_string(),
+            content_digest,
+        },
+    ))
 }
 
 fn container_candidate(

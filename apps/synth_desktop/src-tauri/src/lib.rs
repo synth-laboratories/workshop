@@ -624,6 +624,13 @@ async fn hydrate_container(
             }
         }
     }
+    let live = status == crate::container_capabilities::READY_STATUS
+        && health.get("ok").and_then(|value| value.as_bool()) != Some(false);
+    crate::optimizers::container_lifecycle::stamp_metadata_freshness(
+        &mut metadata,
+        live,
+        &chrono::Utc::now().to_rfc3339(),
+    );
     (
         status,
         health,
@@ -682,6 +689,49 @@ async fn data_containers_probe(
         hydrate_container(base_url, container.metadata, true).await;
     state
         .update_container_hydration(container_id, status, health, metadata, task_family)
+        .await
+        .map_err(AppError::from)
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn data_containers_reconcile(
+    state: State<'_, Arc<CoreRuntime>>,
+    container_id: String,
+    session_id: String,
+) -> Result<ContainerDeployment, AppError> {
+    crate::optimizers::container_lifecycle::reconcile_declaration(
+        state.storage().database(),
+        &session_id,
+        &container_id,
+    )
+    .map_err(AppError::from)?;
+    state
+        .data()
+        .get_container(container_id)
+        .await
+        .map_err(AppError::from)
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn data_containers_restart(
+    app: tauri::AppHandle,
+    state: State<'_, Arc<CoreRuntime>>,
+    container_id: String,
+    session_id: String,
+) -> Result<ContainerDeployment, AppError> {
+    crate::visuals_ipc::dispatch_container_restart(
+        &format!("/v1/containers/{container_id}/restart"),
+        serde_json::json!({ "sessionRef": session_id }),
+        state.inner(),
+        &app,
+    )
+    .await
+    .map_err(AppError::from)?;
+    state
+        .data()
+        .get_container(container_id)
         .await
         .map_err(AppError::from)
 }
@@ -1170,7 +1220,12 @@ pub(crate) async fn authorize_inline_evaluation_start(
     let session_id = session_ref
         .as_deref()
         .map(str::trim)
-        .filter(|value| !value.is_empty());
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| {
+            AppError::invalid_argument(
+                "this mutation requires an agent session for approval",
+            )
+        })?;
     let admissible = optimizers::inline_eval::admit_inline(state.optimizers(), request)
         .await
         .map_err(AppError::from)?;
@@ -1182,16 +1237,14 @@ pub(crate) async fn authorize_inline_evaluation_start(
         max_cost_usd_micros: Some(max_cost_usd_micros),
         max_rollouts: Some(max_rollouts),
     };
-    let requesting_agent = session_id
-        .map(|value| format!("Agent session {value}"))
-        .unwrap_or_else(|| "Workshop operator".into());
+    let requesting_agent = format!("Agent session {session_id}");
     let provider = recipe.model.provider.as_str().to_string();
     let model = recipe.model.model_id.as_str().to_string();
     let paid_approval_id = codex
         .approvals
         .authorize_host(
             app,
-            session_id,
+            Some(session_id),
             session::approval::ApprovalKind::PaidCompute {
                 operation: "optimizer.evaluation.inline.start".into(),
                 parameters: disclosure,

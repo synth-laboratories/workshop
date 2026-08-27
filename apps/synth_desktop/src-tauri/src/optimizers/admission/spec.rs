@@ -182,12 +182,28 @@ impl EvaluatorSpec {
     }
 }
 
+/// Where the approved policy bytes came from. Identity (`namespace/name@rev`)
+/// is not enough: dispatch must re-read these bytes from this root and verify
+/// `content_digest` immediately before spend.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PolicyMaterialRef {
+    pub source_root: String,
+    pub repository_relative_path: String,
+    pub tracked_revision: String,
+    pub content_digest: Digest,
+}
+
 /// The policy, pinned to a revision and to the exact configuration bytes.
 ///
 /// `configuration_digest` is stored alongside the configuration rather than
 /// recomputed on read, so that a configuration rewritten in place — by a
 /// migration, a re-serialization, a well-meant normalization — is detectable
 /// instead of silently becoming the new truth.
+///
+/// Source bytes themselves are not part of the canonical digest. They are an
+/// in-memory materialization of `material`; hashing them would make a draft
+/// without bytes and a start with bytes look like two specifications.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PolicyPin {
@@ -197,6 +213,8 @@ pub struct PolicyPin {
     pub configuration: CanonicalJson,
     pub configuration_digest: Digest,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub material: Option<PolicyMaterialRef>,
+    #[serde(default, skip_serializing)]
     pub source_code: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_digest: Option<Digest>,
@@ -217,6 +235,7 @@ impl PolicyPin {
             revision,
             configuration,
             configuration_digest,
+            material: None,
             source_code: None,
             source_digest: None,
         }
@@ -230,17 +249,36 @@ impl PolicyPin {
         self
     }
 
+    pub fn with_material(mut self, material: PolicyMaterialRef, source_code: String) -> Self {
+        let digest = super::canonical::digest_bytes(source_code.as_bytes());
+        self.source_digest = Some(digest.clone());
+        self.material = Some(PolicyMaterialRef {
+            content_digest: digest,
+            ..material
+        });
+        self.source_code = Some(source_code);
+        self
+    }
+
     /// Whether the stored digest still matches the stored configuration.
     /// Checked on read-back rather than assumed.
     pub fn digest_matches(&self) -> bool {
-        self.configuration.digest() == self.configuration_digest
-            && match (&self.source_code, &self.source_digest) {
-                (Some(code), Some(digest)) => {
-                    super::canonical::digest_bytes(code.as_bytes()) == *digest
-                }
-                (None, None) => true,
-                _ => false,
+        if self.configuration.digest() != self.configuration_digest {
+            return false;
+        }
+        match (&self.source_code, &self.source_digest, &self.material) {
+            (Some(code), Some(digest), material) => {
+                let actual = super::canonical::digest_bytes(code.as_bytes());
+                actual == *digest
+                    && material
+                        .as_ref()
+                        .is_none_or(|item| item.content_digest == actual)
             }
+            (None, Some(digest), Some(material)) => material.content_digest == *digest,
+            (None, None, None) => true,
+            (None, Some(_), None) => true,
+            _ => false,
+        }
     }
 
     pub fn qualified_name(&self) -> String {

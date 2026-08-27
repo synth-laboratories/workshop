@@ -96,6 +96,11 @@ type ContextRecord = Record<string, string | number | boolean | null | undefined
 type OptionalCollection<T> = {
   prominence?: "summary" | "detail";
   items?: T[];
+  plannedSlots?: number;
+  streamsOpened?: number;
+  receiptsRetained?: number;
+  sealed?: number;
+  evidenceGaps?: number;
 };
 
 type ExperimentResults = {
@@ -149,6 +154,7 @@ type ExperimentOverview = {
   evidence?: Evidence[];
   lineage?: LineageNode[];
   limitations?: string[];
+  reconciliationErrors?: string[];
 };
 
 export type ShellProps = {
@@ -209,7 +215,12 @@ function normalizeOverview(value: unknown): ExperimentOverview | null {
     const wrapper = record(value);
     return wrapper ? {
       prominence: wrapper.prominence === "summary" ? "summary" : "detail",
-      items: array<T>(wrapper.items)
+      items: array<T>(wrapper.items),
+      plannedSlots: typeof wrapper.plannedSlots === "number" ? wrapper.plannedSlots : undefined,
+      streamsOpened: typeof wrapper.streamsOpened === "number" ? wrapper.streamsOpened : undefined,
+      receiptsRetained: typeof wrapper.receiptsRetained === "number" ? wrapper.receiptsRetained : undefined,
+      sealed: typeof wrapper.sealed === "number" ? wrapper.sealed : undefined,
+      evidenceGaps: typeof wrapper.evidenceGaps === "number" ? wrapper.evidenceGaps : undefined
     } : { items: [] };
   };
   return {
@@ -240,7 +251,8 @@ function normalizeOverview(value: unknown): ExperimentOverview | null {
     comparison: record(raw.comparison) as Comparison | undefined,
     evidence: array<Evidence>(raw.evidence),
     lineage: array<LineageNode>(raw.lineage),
-    limitations: Array.isArray(raw.limitations) ? raw.limitations.map(text).filter((item): item is string => Boolean(item)) : []
+    limitations: Array.isArray(raw.limitations) ? raw.limitations.map(text).filter((item): item is string => Boolean(item)) : [],
+    reconciliationErrors: Array.isArray(raw.reconciliationErrors) ? raw.reconciliationErrors.map(text).filter((item): item is string => Boolean(item)) : []
   };
 }
 
@@ -440,6 +452,10 @@ export function Shell(props: ShellProps) {
   const metrics = [...(experiment.metrics ?? []), ...(experiment.results?.metrics ?? [])];
   const rollouts = experiment.results?.rollouts ?? [];
   const traces = experiment.traces?.items ?? [];
+  const retained = experiment.traces?.receiptsRetained ?? traces.length;
+  const plannedSlots = experiment.traces?.plannedSlots;
+  const evidenceGaps = experiment.traces?.evidenceGaps ?? 0;
+  const reconciliation = (experiment.reconciliationErrors ?? []).filter((item) => item.trim());
   const unavailableTraceIds = new Set(traces.filter((trace) => /lite seal|not self-contained/i.test(trace.summary ?? "")).map((trace) => trace.traceId).filter((id): id is string => Boolean(id)));
   const artifacts = experiment.artifacts?.items ?? [];
   const hasResults = Boolean(experiment.progress || metrics.length || experiment.arms?.length || rollouts.length || experiment.assessment);
@@ -447,6 +463,7 @@ export function Shell(props: ShellProps) {
   const hasContext = contextRecords.some((group) => Object.keys(group.data ?? {}).length);
   const hasMethod = Boolean(experiment.lineage?.length || experiment.limitations?.length);
   return <VisualChrome kicker={`Experiment · ${status}`} title={props.title ?? experiment.title ?? "Experiment overview"} lede={props.lede ?? experiment.question ?? experiment.hypothesis} testId="visual-experiment-overview">
+    {reconciliation.length ? <section className="sv-terminal-receipt" role="alert" aria-label="Experiment record could not be reconciled" data-testid="experiment-reconciliation"><div className="sv-section-head"><h3>Couldn't reconcile this record</h3><span>{reconciliation.length === 1 ? "1 contradiction" : `${reconciliation.length} contradictions`}</span></div><ul>{reconciliation.map((item) => <li key={item}>{item}</li>)}</ul></section> : null}
     <OverviewStrip status={status} arms={experiment.arms ?? []} model={experiment.runtime?.model} progress={experiment.progress} />
     {experiment.hypothesis || experiment.hypotheses?.length ? <Hypotheses legacyHypothesis={experiment.hypothesis} hypotheses={experiment.hypotheses ?? []} /> : null}
     {hasResults ? <Disclosure title="Comparison & results" summary={progressSummary} defaultOpen>
@@ -458,12 +475,12 @@ export function Shell(props: ShellProps) {
       <AssessmentPanel assessment={experiment.assessment} />
     </Disclosure> : null}
     {experiment.evidence?.length ? <Disclosure title="Supporting evidence" summary={`${experiment.evidence.length} items`}><EvidenceList evidence={experiment.evidence} /></Disclosure> : null}
-    {traces.length ? <Disclosure title="Traces" summary={`${traces.length} retained`} defaultOpen><TraceList traces={traces} containerId={typeof experiment.runtime?.containerId === "string" ? experiment.runtime.containerId : undefined} /></Disclosure> : null}
+    {traces.length || plannedSlots ? <Disclosure title="Traces" summary={evidenceGaps > 0 || plannedSlots != null ? `${retained} retained · ${evidenceGaps} gaps${plannedSlots != null ? ` · ${plannedSlots} planned` : ""}` : `${retained} retained`} defaultOpen>{traces.length ? <TraceList traces={traces} containerId={typeof experiment.runtime?.containerId === "string" ? experiment.runtime.containerId : undefined} /> : <p className="sv-lede" style={{ margin: 0 }}>No traces were retained. Planned slots are not evidence.</p>}</Disclosure> : null}
     {hasContext ? <Disclosure title="Run context" summary={[experiment.task?.name, experiment.runtime?.model].filter(Boolean).join(" · ") || "task · runtime · provenance"}><ContextGrid title="Run context" records={contextRecords} /></Disclosure> : null}
     {artifacts.length ? <Disclosure title="Artifacts" summary={`${artifacts.length} files and references`} defaultOpen={experiment.artifacts?.prominence === "summary"}><ArtifactList artifacts={artifacts} /></Disclosure> : null}
     {hasMethod ? <Disclosure title="Method & caveats" summary={experiment.experimentId ?? "details"}>
       <Lineage nodes={experiment.lineage ?? []} />
-      {experiment.limitations?.length ? <section className="sv-section" style={{ background: "#fff7ed", borderRadius: 8, padding: 12 }}><h3 style={{ marginTop: 0 }}>Limitations</h3><ul style={{ marginBottom: 0, paddingLeft: 18, fontSize: 10 }}>{experiment.limitations.map((item) => <li key={item}>{item}</li>)}</ul></section> : null}
+      {experiment.limitations?.length ? <section className="sv-section" style={{ background: "var(--sv-warn-bg)", border: "1px solid var(--sv-warn-edge)", borderRadius: "var(--sv-radius-sm)", padding: "var(--sv-sp-3)", color: "var(--sv-warn-fg)" }}><h3 style={{ marginTop: 0 }}>Limitations</h3><ul style={{ marginBottom: 0, paddingLeft: 18, fontSize: "var(--sv-fs-micro)" }}>{experiment.limitations.map((item) => <li key={item}>{item}</li>)}</ul></section> : null}
     </Disclosure> : null}
   </VisualChrome>;
 }

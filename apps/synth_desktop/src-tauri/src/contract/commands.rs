@@ -101,6 +101,8 @@ impl Commands {
     pub const DATA_CONTAINERS_GET: &'static str = "data_containers_get";
     pub const DATA_CONTAINERS_REGISTER: &'static str = "data_containers_register";
     pub const DATA_CONTAINERS_PROBE: &'static str = "data_containers_probe";
+    pub const DATA_CONTAINERS_RECONCILE: &'static str = "data_containers_reconcile";
+    pub const DATA_CONTAINERS_RESTART: &'static str = "data_containers_restart";
     pub const DATA_TRACES_LIST: &'static str = "data_traces_list";
     pub const DATA_TRACES_GET: &'static str = "data_traces_get";
     pub const DATA_TRACES_INGEST: &'static str = "data_traces_ingest";

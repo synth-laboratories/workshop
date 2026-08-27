@@ -496,6 +496,8 @@ export type InventoryBridge = {
 	getContainer(containerId: string): Promise<ContainerDeployment>;
 	registerContainer(request: { name?: string; baseUrl: string; location?: "local" | string; taskFamily?: string; metadata?: Record<string, unknown> }): Promise<ContainerDeployment>;
 	probeContainer(containerId: string): Promise<ContainerDeployment>;
+	reconcileContainer(containerId: string, sessionId: string): Promise<ContainerDeployment>;
+	restartContainer(containerId: string, sessionId: string): Promise<ContainerDeployment>;
 	listTraces(): Promise<TraceV5Record[]>;
 	getTrace(traceId: string): Promise<TraceV5Record>;
 	materializeContainerTrace(containerId: string, rolloutId: string): Promise<{ inspectable?: boolean; note?: string; traces?: Array<{ traceId?: string }> }>;

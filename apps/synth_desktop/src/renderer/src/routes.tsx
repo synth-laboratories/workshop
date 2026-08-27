@@ -179,6 +179,8 @@ export type MainRoutesProps = {
 	toggleArtifact: (id: string | null) => void;
 	toggleContainer: (id: string | null) => Promise<void>;
 	probeOpenContainer: () => Promise<void>;
+	repairOpenContainer: () => Promise<void>;
+	restartOpenContainer: () => Promise<void>;
 	controlActive: (kind: "approve" | "reject" | "cancel", payload?: Record<string, unknown>) => Promise<void>;
 	onActivityModeChange: (mode: ToolActivityMode) => void;
 };
@@ -252,6 +254,8 @@ export function MainRoutes(props: MainRoutesProps): ReactNode {
 		toggleArtifact,
 		toggleContainer,
 		probeOpenContainer,
+		repairOpenContainer,
+		restartOpenContainer,
 		controlActive,
 		onActivityModeChange,
 		activeSessionId,
@@ -594,6 +598,8 @@ export function MainRoutes(props: MainRoutesProps): ReactNode {
 							expanded={containerPaneExpanded}
 							onExpandedChange={setContainerPaneExpanded}
 							onProbe={() => void probeOpenContainer()}
+							onRestart={() => void restartOpenContainer()}
+							onRepair={() => void repairOpenContainer()}
 							onClose={() => void toggleContainer(null)}
 						/>
 					) : null}
@@ -605,6 +611,8 @@ export function MainRoutes(props: MainRoutesProps): ReactNode {
 								expanded={containerPaneExpanded}
 								onExpandedChange={setContainerPaneExpanded}
 								onProbe={() => void probeOpenContainer()}
+								onRestart={() => void restartOpenContainer()}
+								onRepair={() => void repairOpenContainer()}
 								onClose={() => void toggleContainer(null)}
 							/>
 						</>

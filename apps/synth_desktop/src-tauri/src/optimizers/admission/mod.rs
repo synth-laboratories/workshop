@@ -51,7 +51,8 @@ pub use pipeline::{
 pub use spec::{
     ApprovalBinding, CatalogRecipeRef, ContainerPin, CredentialCapabilityScope, CredentialRoute,
     EvaluatorSpec, ExecutionSpec, InlineRecipe, LiveEvalProtocol, ModelPin, OutputContract,
-    PolicyPin, RecipeSource, RecipeSourceKind, ResourceLimits, RolloutPlan, LIVE_EVAL_PROTOCOL_V1,
+    PolicyMaterialRef, PolicyPin, RecipeSource, RecipeSourceKind, ResourceLimits, RolloutPlan,
+    LIVE_EVAL_PROTOCOL_V1,
 };
 pub use state::{
     EvidenceGap, EvidenceRequirements, RolloutRecord, RolloutState, RolloutStateHolder,

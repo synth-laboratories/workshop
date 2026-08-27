@@ -11,8 +11,10 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::{
     fs,
-    path::{Path, PathBuf},
+    path::{Component, Path, PathBuf},
 };
+
+use crate::error::StructuredFailure;
 
 /// Product ceiling. Workspace `[bounds]` may be stricter, never looser.
 pub const PRODUCT_MAX_COST_USD: f64 = 2.45;
@@ -84,6 +86,271 @@ pub struct WorkspaceRecipe {
     pub source_hash: String,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ContainerDeclarationOrigin {
+    pub manifest_path: PathBuf,
+    pub source_root: PathBuf,
+    pub declaration_id: String,
+    pub source_revision: Option<String>,
+    pub source_digest: Option<String>,
+}
+
+impl ContainerDeclarationOrigin {
+    pub fn to_json(&self) -> Value {
+        json!({
+            "manifestPath": self.manifest_path.display().to_string(),
+            "sourceRoot": self.source_root.display().to_string(),
+            "declarationId": self.declaration_id,
+            "sourceRevision": self.source_revision,
+            "sourceDigest": self.source_digest,
+        })
+    }
+
+    pub fn from_json(value: &Value) -> Option<Self> {
+        let manifest_path = value
+            .get("manifestPath")
+            .or_else(|| value.get("manifest_path"))
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())?;
+        let source_root = value
+            .get("sourceRoot")
+            .or_else(|| value.get("source_root"))
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())?;
+        let declaration_id = value
+            .get("declarationId")
+            .or_else(|| value.get("declaration_id"))
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())?
+            .to_string();
+        Some(Self {
+            manifest_path: PathBuf::from(manifest_path),
+            source_root: PathBuf::from(source_root),
+            declaration_id,
+            source_revision: value
+                .get("sourceRevision")
+                .or_else(|| value.get("source_revision"))
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_owned),
+            source_digest: value
+                .get("sourceDigest")
+                .or_else(|| value.get("source_digest"))
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_owned),
+        })
+    }
+}
+
+/// A relative path that has been bound to a declaring repository exactly once.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ResolvedRepositoryPath {
+    pub source_root: PathBuf,
+    pub absolute_path: PathBuf,
+}
+
+#[derive(Clone, Debug)]
+pub enum LaunchDeclarationError {
+    ManifestUnreadable {
+        manifest_path: PathBuf,
+        cause: String,
+    },
+    UnsupportedSchema {
+        found: String,
+    },
+    SourcePathMissing {
+        manifest_path: PathBuf,
+        source_root: PathBuf,
+        declared_path: String,
+        resolved_path: PathBuf,
+    },
+    SourcePathEscapesRoot {
+        manifest_path: PathBuf,
+        source_root: PathBuf,
+        declared_path: String,
+        resolved_path: PathBuf,
+    },
+    AbsoluteManifestPath {
+        declared_path: String,
+    },
+    SourceDigestMismatch {
+        declared: String,
+        actual: String,
+    },
+    CheckoutRevisionMismatch {
+        declared: String,
+        actual: String,
+    },
+    InvalidEnvironmentName {
+        name: String,
+    },
+    SourceRootNotApproved {
+        source_root: PathBuf,
+        manifest_path: PathBuf,
+    },
+}
+
+impl LaunchDeclarationError {
+    pub fn code(&self) -> &'static str {
+        match self {
+            Self::ManifestUnreadable { .. } => "launch_manifest_unreadable",
+            Self::UnsupportedSchema { .. } => "launch_unsupported_schema",
+            Self::SourcePathMissing { .. } => "launch_source_path_not_found",
+            Self::SourcePathEscapesRoot { .. } => "launch_source_path_escapes_root",
+            Self::AbsoluteManifestPath { .. } => "launch_absolute_path_rejected",
+            Self::SourceDigestMismatch { .. } => "launch_source_digest_mismatch",
+            Self::CheckoutRevisionMismatch { .. } => "launch_checkout_revision_mismatch",
+            Self::InvalidEnvironmentName { .. } => "launch_invalid_environment_name",
+            Self::SourceRootNotApproved { .. } => "launch_source_root_not_approved",
+        }
+    }
+
+    pub fn into_structured(self) -> StructuredFailure {
+        let code = self.code();
+        let details = match &self {
+            Self::ManifestUnreadable {
+                manifest_path,
+                cause,
+            } => json!({
+                "manifest": manifest_path.display().to_string(),
+                "cause": cause,
+            }),
+            Self::UnsupportedSchema { found } => json!({ "found": found }),
+            Self::SourcePathMissing {
+                manifest_path,
+                source_root,
+                declared_path,
+                resolved_path,
+            }
+            | Self::SourcePathEscapesRoot {
+                manifest_path,
+                source_root,
+                declared_path,
+                resolved_path,
+            } => json!({
+                "manifest": manifest_path.display().to_string(),
+                "source_root": source_root.display().to_string(),
+                "declared_path": declared_path,
+                "resolved_path": resolved_path.display().to_string(),
+            }),
+            Self::AbsoluteManifestPath { declared_path } => json!({
+                "declared_path": declared_path,
+            }),
+            Self::SourceDigestMismatch { declared, actual } => json!({
+                "declared": declared,
+                "actual": actual,
+            }),
+            Self::CheckoutRevisionMismatch { declared, actual } => json!({
+                "declared": declared,
+                "actual": actual,
+            }),
+            Self::InvalidEnvironmentName { name } => json!({ "name": name }),
+            Self::SourceRootNotApproved {
+                source_root,
+                manifest_path,
+            } => json!({
+                "source_root": source_root.display().to_string(),
+                "manifest": manifest_path.display().to_string(),
+            }),
+        };
+        let message = self.to_string();
+        let remediation = match code {
+            "launch_source_path_not_found" => {
+                "Workshop looks for launch files in the repository that declared this container, not the chat folder."
+            }
+            "launch_source_path_escapes_root" => {
+                "Keep launch inputs inside that repository, then retry."
+            }
+            "launch_source_root_not_approved" => {
+                "Attach the repository that contains workshop.containers.toml to this conversation, then try again."
+            }
+            "launch_source_digest_mismatch" => {
+                "Update the declared digest, or restore the launch files, then retry."
+            }
+            "launch_checkout_revision_mismatch" => {
+                "Check out the declared revision, or update the declaration to this checkout."
+            }
+            _ => "Fix the launch files, then retry the same operation.",
+        };
+        StructuredFailure::new(code, message, remediation).with_details(details)
+    }
+
+    /// Wrap as `anyhow::Error` via `StructuredFailure`. Do not impl
+    /// `From<LaunchDeclarationError>` — that overlaps anyhow's blanket
+    /// `From<E: StdError>`.
+    pub fn into_anyhow(self) -> anyhow::Error {
+        self.into_structured().into()
+    }
+}
+
+impl std::fmt::Display for LaunchDeclarationError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::ManifestUnreadable {
+                manifest_path,
+                cause,
+            } => write!(
+                formatter,
+                "Couldn't read {}: {cause}",
+                manifest_path.display()
+            ),
+            Self::UnsupportedSchema { found } => {
+                write!(formatter, "Unsupported launch schema `{found}`.")
+            }
+            Self::SourcePathMissing {
+                declared_path,
+                resolved_path,
+                ..
+            } => write!(
+                formatter,
+                "Couldn't find `{declared_path}` at {}.",
+                resolved_path.display()
+            ),
+            Self::SourcePathEscapesRoot {
+                declared_path,
+                source_root,
+                ..
+            } => write!(
+                formatter,
+                "`{declared_path}` is outside {}.",
+                source_root.display()
+            ),
+            Self::AbsoluteManifestPath { declared_path } => {
+                write!(
+                    formatter,
+                    "Absolute launch path `{declared_path}` isn't allowed."
+                )
+            }
+            Self::SourceDigestMismatch { declared, actual } => {
+                write!(
+                    formatter,
+                    "Declared launch digest is {declared}; current files are {actual}."
+                )
+            }
+            Self::CheckoutRevisionMismatch { declared, actual } => {
+                write!(
+                    formatter,
+                    "Declaration tracks {declared}; this checkout is {actual}."
+                )
+            }
+            Self::InvalidEnvironmentName { name } => {
+                write!(formatter, "Environment name `{name}` isn't allowed.")
+            }
+            Self::SourceRootNotApproved { source_root, .. } => write!(
+                formatter,
+                "{} isn't attached to this conversation.",
+                source_root.display()
+            ),
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct ContainerSpec {
     pub id: String,
@@ -99,6 +366,7 @@ pub struct ContainerSpec {
     pub policy_source: Option<String>,
     pub source_revision: Option<String>,
     pub manifest_digest: Option<String>,
+    pub origin: ContainerDeclarationOrigin,
     pub launch: ContainerLaunchDeclarationV1,
 }
 
@@ -329,19 +597,212 @@ pub fn find_recipe(workspace: &Path, recipe_id: &str) -> Result<WorkspaceRecipe>
 }
 
 pub fn load_container_specs(workspace: &Path) -> Result<Vec<ContainerSpec>> {
-    let path = workspace.join(CONTAINERS_FILE);
+    load_container_specs_from_root(workspace)
+}
+
+pub fn load_container_specs_from_root(source_root: &Path) -> Result<Vec<ContainerSpec>> {
+    let path = source_root.join(CONTAINERS_FILE);
     if !path.is_file() {
         return Ok(Vec::new());
     }
-    let text = fs::read_to_string(&path).with_context(|| format!("read {}", path.display()))?;
-    parse_containers(workspace, &text)
+    load_container_specs_from_manifest(&path)
+}
+
+pub fn load_container_specs_from_manifest(manifest_path: &Path) -> Result<Vec<ContainerSpec>> {
+    let source_root = manifest_path
+        .parent()
+        .ok_or_else(|| anyhow!("container manifest {} has no parent", manifest_path.display()))?;
+    let text = fs::read_to_string(manifest_path).map_err(|cause| {
+        LaunchDeclarationError::ManifestUnreadable {
+            manifest_path: manifest_path.to_path_buf(),
+            cause: cause.to_string(),
+        }
+        .into_anyhow()
+    })?;
+    parse_containers(source_root, manifest_path, &text)
 }
 
 pub fn find_container_spec(workspace: &Path, spec_id: &str) -> Result<ContainerSpec> {
-    load_container_specs(workspace)?
+    load_container_specs_from_root(workspace)?
         .into_iter()
         .find(|spec| spec.id == spec_id)
         .ok_or_else(|| anyhow!("container spec `{spec_id}` is not declared in {CONTAINERS_FILE}"))
+}
+
+const MANIFEST_WALK_SKIP: &[&str] = &[
+    "node_modules",
+    "target",
+    "dist",
+    "build",
+    "vendor",
+    "__pycache__",
+];
+
+/// Discover `workshop.containers.toml` files under approved roots.
+///
+/// Each manifest keeps the directory that contains it as `source_root`. A
+/// parent-approved folder may contain nested declaring repositories; those
+/// nested manifests are not reinterpreted against the parent.
+pub fn discover_container_manifests(search_roots: &[PathBuf]) -> Result<Vec<PathBuf>> {
+    let mut manifests = Vec::new();
+    for root in search_roots {
+        let canonical = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+        collect_container_manifests(&canonical, 2, &mut manifests);
+    }
+    manifests.sort();
+    manifests.dedup();
+    Ok(manifests)
+}
+
+fn collect_container_manifests(root: &Path, depth: usize, out: &mut Vec<PathBuf>) {
+    let candidate = root.join(CONTAINERS_FILE);
+    if candidate.is_file() {
+        out.push(
+            candidate
+                .canonicalize()
+                .unwrap_or_else(|_| candidate.clone()),
+        );
+    }
+    if depth == 0 {
+        return;
+    }
+    let Ok(entries) = fs::read_dir(root) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if name.starts_with('.') || MANIFEST_WALK_SKIP.contains(&name.as_ref()) {
+            continue;
+        }
+        collect_container_manifests(&path, depth.saturating_sub(1), out);
+    }
+}
+
+pub fn origin_is_under_approved_roots(
+    origin: &ContainerDeclarationOrigin,
+    search_roots: &[PathBuf],
+) -> bool {
+    search_roots.iter().any(|root| {
+        let root = root.canonicalize().unwrap_or_else(|_| root.clone());
+        paths_related(&origin.source_root, &root) || origin.manifest_path.starts_with(&root)
+    })
+}
+
+fn paths_related(path: &Path, root: &Path) -> bool {
+    let path = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+    path == *root || path.starts_with(root)
+}
+
+/// Recover declaration provenance from registry metadata.
+///
+/// Current records store `declarationOrigin`. Older records stored only
+/// `sourcePath` as the launch working directory; walk up from that path to
+/// the declaring manifest rather than falling back to the chat workspace.
+pub fn origin_from_metadata(metadata: &Value, spec_id: &str) -> Option<ContainerDeclarationOrigin> {
+    if let Some(origin) = metadata
+        .get("declarationOrigin")
+        .and_then(ContainerDeclarationOrigin::from_json)
+    {
+        return Some(origin);
+    }
+    let source_path = metadata
+        .get("sourcePath")
+        .or_else(|| metadata.get("source_path"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())?;
+    recover_origin_from_legacy_source_path(Path::new(source_path), spec_id)
+}
+
+pub fn recover_origin_from_legacy_source_path(
+    source_path: &Path,
+    declaration_id: &str,
+) -> Option<ContainerDeclarationOrigin> {
+    let mut dir = if source_path.is_file() {
+        source_path.parent()?.to_path_buf()
+    } else {
+        source_path.to_path_buf()
+    };
+    for _ in 0..6 {
+        let manifest = dir.join(CONTAINERS_FILE);
+        if manifest.is_file() {
+            let source_root = dir.canonicalize().unwrap_or_else(|_| dir.clone());
+            let manifest_path = manifest.canonicalize().unwrap_or_else(|_| manifest.clone());
+            return Some(ContainerDeclarationOrigin {
+                manifest_path,
+                source_root,
+                declaration_id: declaration_id.to_string(),
+                source_revision: None,
+                source_digest: None,
+            });
+        }
+        dir = dir.parent()?.to_path_buf();
+    }
+    None
+}
+
+pub fn find_container_spec_in_roots(
+    search_roots: &[PathBuf],
+    spec_id: &str,
+) -> Result<ContainerSpec> {
+    let mut matches = Vec::new();
+    for manifest in discover_container_manifests(search_roots)? {
+        for spec in load_container_specs_from_manifest(&manifest)? {
+            if spec.id == spec_id {
+                matches.push(spec);
+            }
+        }
+    }
+    match matches.len() {
+        0 => Err(anyhow!(
+            "container spec `{spec_id}` is not declared in any approved workshop.containers.toml"
+        )),
+        1 => Ok(matches.remove(0)),
+        _ => {
+            if let Some(exact) = matches.iter().find(|spec| {
+                search_roots.iter().any(|root| {
+                    spec.origin.source_root == *root
+                        || spec.origin.source_root
+                            == root.canonicalize().unwrap_or_else(|_| root.clone())
+                })
+            }) {
+                return Ok(exact.clone());
+            }
+            Err(anyhow!(
+                "container spec `{spec_id}` is declared in more than one approved repository"
+            ))
+        }
+    }
+}
+
+pub fn resolve_container_spec(
+    search_roots: &[PathBuf],
+    spec_id: &str,
+    stored_origin: Option<&ContainerDeclarationOrigin>,
+) -> Result<ContainerSpec> {
+    if let Some(origin) = stored_origin {
+        if !origin_is_under_approved_roots(origin, search_roots) {
+            return Err(LaunchDeclarationError::SourceRootNotApproved {
+                source_root: origin.source_root.clone(),
+                manifest_path: origin.manifest_path.clone(),
+            }
+            .into_anyhow());
+        }
+        return find_container_spec(&origin.source_root, spec_id);
+    }
+    find_container_spec_in_roots(search_roots, spec_id)
+}
+
+pub fn session_search_roots(
+    db: &crate::storage::Database,
+    session_id: &str,
+) -> Result<Vec<PathBuf>> {
+    crate::workspace_scope::approved_search_roots(db, session_id)
 }
 
 pub fn catalog_entry(recipe: &WorkspaceRecipe) -> Value {
@@ -585,15 +1046,32 @@ const PRODUCT_MAX_FRAME_BYTES: u64 = 32 * 1024 * 1024;
 /// physically in the content store, so this bounds what one episode can add.
 const PRODUCT_MAX_TOTAL_FRAME_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 
-fn parse_containers(workspace: &Path, text: &str) -> Result<Vec<ContainerSpec>> {
+fn parse_containers(
+    source_root: &Path,
+    manifest_path: &Path,
+    text: &str,
+) -> Result<Vec<ContainerSpec>> {
     let parsed: ContainersFile = toml::from_str(text).context("parse workshop.containers.toml")?;
     let mut specs = Vec::new();
+    let source_root = source_root
+        .canonicalize()
+        .unwrap_or_else(|_| source_root.to_path_buf());
+    let manifest_path = manifest_path
+        .canonicalize()
+        .unwrap_or_else(|_| manifest_path.to_path_buf());
     for item in parsed.container {
         let launch_file = item.launch.context(format!(
             "launch_declaration_missing: container `{}` must declare [container.launch]",
             item.id
         ))?;
-        let launch = validate_launch(workspace, &item.id, item.url.as_deref(), launch_file)?;
+        let origin = ContainerDeclarationOrigin {
+            manifest_path: manifest_path.clone(),
+            source_root: source_root.clone(),
+            declaration_id: item.id.clone(),
+            source_revision: None,
+            source_digest: None,
+        };
+        let launch = validate_launch(&origin, item.url.as_deref(), launch_file)?;
         let command = launch.command.clone();
         let cwd = launch.working_directory.clone();
         for provider in &item.credential_providers {
@@ -622,6 +1100,11 @@ fn parse_containers(workspace: &Path, text: &str) -> Result<Vec<ContainerSpec>> 
                 );
             }
         }
+        let origin = ContainerDeclarationOrigin {
+            source_revision: Some(launch.tracked_revision.clone()),
+            source_digest: launch.dirty_digest.clone(),
+            ..origin
+        };
         specs.push(ContainerSpec {
             id: item.id,
             command,
@@ -636,6 +1119,7 @@ fn parse_containers(workspace: &Path, text: &str) -> Result<Vec<ContainerSpec>> 
             policy_source: item.policy_source.filter(|value| !value.trim().is_empty()),
             source_revision: Some(launch.tracked_revision.clone()),
             manifest_digest: launch.dirty_digest.clone(),
+            origin,
             launch,
         });
     }
@@ -643,17 +1127,16 @@ fn parse_containers(workspace: &Path, text: &str) -> Result<Vec<ContainerSpec>> 
 }
 
 fn validate_launch(
-    workspace: &Path,
-    container_id: &str,
+    origin: &ContainerDeclarationOrigin,
     container_url: Option<&str>,
     launch: ContainerLaunchFile,
 ) -> Result<ContainerLaunchDeclarationV1> {
-    anyhow::ensure!(
-        launch.schema_version == "synth.container-launch.v1",
-        "launch_declaration_invalid: container `{}` uses unsupported schema `{}`",
-        container_id,
-        launch.schema_version
-    );
+    if launch.schema_version != "synth.container-launch.v1" {
+        return Err(LaunchDeclarationError::UnsupportedSchema {
+            found: launch.schema_version,
+        }
+        .into_anyhow());
+    }
     anyhow::ensure!(
         !launch.command.is_empty(),
         "launch_declaration_invalid: command is empty"
@@ -692,13 +1175,15 @@ fn validate_launch(
         launch.expected_port
     );
     for name in &launch.declared_environment {
-        anyhow::ensure!(
-            !name.is_empty()
-                && name
-                    .chars()
-                    .all(|ch| ch == '_' || ch.is_ascii_alphanumeric()),
-            "launch_declaration_invalid: invalid environment name `{name}`"
-        );
+        if name.is_empty()
+            || !name
+                .chars()
+                .all(|ch| ch == '_' || ch.is_ascii_alphanumeric())
+        {
+            return Err(
+                LaunchDeclarationError::InvalidEnvironmentName { name: name.clone() }.into_anyhow(),
+            );
+        }
         let upper = name.to_ascii_uppercase();
         anyhow::ensure!(
             !upper.contains("KEY")
@@ -730,19 +1215,21 @@ fn validate_launch(
     includes.sort();
     includes.dedup();
     for relative in &includes {
-        resolve_workspace_path(workspace, relative)
-            .with_context(|| format!("launch_declaration_invalid: source include `{relative}`"))?;
+        resolve_repository_path(origin, relative).map_err(LaunchDeclarationError::into_anyhow)?;
     }
-    let actual_digest = launch_source_manifest_digest(workspace, &includes)?;
+    let actual_digest = launch_source_manifest_digest(origin, &includes)?;
     if let Some(declared_digest) = launch.source.dirty_digest.as_deref() {
-        anyhow::ensure!(
-            declared_digest == actual_digest,
-            "launch_source_mismatch: declared {declared_digest}, current {actual_digest}"
-        );
+        if declared_digest != actual_digest {
+            return Err(LaunchDeclarationError::SourceDigestMismatch {
+                declared: declared_digest.to_string(),
+                actual: actual_digest,
+            }
+            .into_anyhow());
+        }
     }
     let git_revision = std::process::Command::new("git")
         .arg("-C")
-        .arg(workspace)
+        .arg(&origin.source_root)
         .args(["rev-parse", "HEAD"])
         .output()
         .ok()
@@ -750,15 +1237,17 @@ fn validate_launch(
         .and_then(|output| String::from_utf8(output.stdout).ok())
         .map(|value| value.trim().to_string());
     if let Some(current_revision) = git_revision {
-        anyhow::ensure!(
-            current_revision == launch.source.tracked_revision,
-            "launch_source_mismatch: declaration tracks {}, checkout is {current_revision}",
-            launch.source.tracked_revision
-        );
+        if current_revision != launch.source.tracked_revision {
+            return Err(LaunchDeclarationError::CheckoutRevisionMismatch {
+                declared: launch.source.tracked_revision.clone(),
+                actual: current_revision,
+            }
+            .into_anyhow());
+        }
         let mut status = std::process::Command::new("git");
         status
             .arg("-C")
-            .arg(workspace)
+            .arg(&origin.source_root)
             .args(["status", "--porcelain", "--"]);
         status.args(&includes);
         let dirty = status
@@ -776,7 +1265,9 @@ fn validate_launch(
         }
     }
     Ok(ContainerLaunchDeclarationV1 {
-        working_directory: resolve_workspace_path(workspace, &launch.working_directory)?,
+        working_directory: resolve_repository_path(origin, &launch.working_directory)
+            .map_err(LaunchDeclarationError::into_anyhow)?
+            .absolute_path,
         command: launch.command,
         readiness_timeout_seconds: launch.readiness_timeout_seconds,
         shutdown_grace_seconds: launch.shutdown_grace_seconds,
@@ -794,10 +1285,15 @@ fn validate_launch(
     })
 }
 
-fn launch_source_manifest_digest(workspace: &Path, includes: &[String]) -> Result<String> {
+fn launch_source_manifest_digest(
+    origin: &ContainerDeclarationOrigin,
+    includes: &[String],
+) -> Result<String> {
     let mut hasher = Sha256::new();
     for relative in includes {
-        let path = resolve_workspace_path(workspace, relative)?;
+        let path = resolve_repository_path(origin, relative)
+            .map_err(LaunchDeclarationError::into_anyhow)?
+            .absolute_path;
         hasher.update(relative.as_bytes());
         hasher.update([0]);
         hasher.update(fs::read(&path).with_context(|| {
@@ -811,6 +1307,69 @@ fn launch_source_manifest_digest(workspace: &Path, includes: &[String]) -> Resul
     Ok(format!("sha256:{:x}", hasher.finalize()))
 }
 
+pub fn resolve_repository_path(
+    origin: &ContainerDeclarationOrigin,
+    relative: &str,
+) -> Result<ResolvedRepositoryPath, LaunchDeclarationError> {
+    let declared = relative.trim();
+    if declared.is_empty() {
+        return Err(LaunchDeclarationError::SourcePathMissing {
+            manifest_path: origin.manifest_path.clone(),
+            source_root: origin.source_root.clone(),
+            declared_path: relative.to_string(),
+            resolved_path: origin.source_root.clone(),
+        });
+    }
+    let raw = Path::new(declared);
+    if raw.is_absolute() {
+        return Err(LaunchDeclarationError::AbsoluteManifestPath {
+            declared_path: declared.to_string(),
+        });
+    }
+    if raw
+        .components()
+        .any(|component| matches!(component, Component::ParentDir | Component::Prefix(_)))
+    {
+        let resolved = origin.source_root.join(raw);
+        return Err(LaunchDeclarationError::SourcePathEscapesRoot {
+            manifest_path: origin.manifest_path.clone(),
+            source_root: origin.source_root.clone(),
+            declared_path: declared.to_string(),
+            resolved_path: resolved,
+        });
+    }
+    let source_root = origin
+        .source_root
+        .canonicalize()
+        .unwrap_or_else(|_| origin.source_root.clone());
+    let candidate = source_root.join(raw);
+    let canonical = match candidate.canonicalize() {
+        Ok(path) => path,
+        Err(_) => {
+            return Err(LaunchDeclarationError::SourcePathMissing {
+                manifest_path: origin.manifest_path.clone(),
+                source_root: source_root.clone(),
+                declared_path: declared.to_string(),
+                resolved_path: candidate,
+            });
+        }
+    };
+    if !canonical.starts_with(&source_root) {
+        return Err(LaunchDeclarationError::SourcePathEscapesRoot {
+            manifest_path: origin.manifest_path.clone(),
+            source_root,
+            declared_path: declared.to_string(),
+            resolved_path: canonical,
+        });
+    }
+    Ok(ResolvedRepositoryPath {
+        source_root,
+        absolute_path: canonical,
+    })
+}
+
+/// Recipe policy paths stay bound to the session workspace. Container launch
+/// paths must go through [`resolve_repository_path`].
 pub fn resolve_workspace_path(workspace: &Path, relative: &str) -> Result<PathBuf> {
     let workspace = workspace
         .canonicalize()
@@ -1160,5 +1719,269 @@ locality = "container"
     fn empty_workspace_has_no_recipes() {
         let (_dir, workspace) = write_workspace();
         assert!(load_recipes(&workspace).unwrap().is_empty());
+    }
+
+    fn write_container_manifest(root: &Path, include: &str) {
+        fs::create_dir_all(root.join("scripts")).unwrap();
+        fs::write(root.join(include), "#!/bin/sh\necho ok\n").unwrap();
+        fs::write(
+            root.join(CONTAINERS_FILE),
+            format!(
+                r#"
+[[container]]
+id = "nanohorizon-craftax"
+url = "http://127.0.0.1:18091"
+health = "/health"
+contract = "synth.container.live-eval.v1"
+locality = "container"
+family = "craftax"
+credential_providers = ["openrouter"]
+policy_source = "src/challenge/policy.py"
+[container.launch]
+schema_version = "synth.container-launch.v1"
+working_directory = "."
+command = ["scripts/up_craftax_container.sh"]
+readiness_timeout_seconds = 30
+shutdown_grace_seconds = 5
+expected_port = 18091
+image_ref = "craftax-gamebench-rust"
+health_target = "craftax_nanohorizon"
+declared_environment = ["WORKSHOP_PROXY_ONLY"]
+environment = {{ WORKSHOP_PROXY_ONLY = "1" }}
+[container.launch.source]
+revision_policy = "exact-or-dirty-digest"
+tracked_revision = "fixture-revision"
+include = ["{include}"]
+"#
+            ),
+        )
+        .unwrap();
+        fs::create_dir_all(root.join("src/challenge")).unwrap();
+        fs::write(root.join("src/challenge/policy.py"), "print('policy')").unwrap();
+    }
+
+    #[test]
+    fn discovery_keeps_the_declaring_repository_not_the_session_workspace() {
+        let dir = tempdir().unwrap();
+        let session = dir.path().join("j-workspace");
+        let source = dir.path().join("nanohorizon");
+        fs::create_dir_all(&session).unwrap();
+        write_container_manifest(&source, "scripts/up_craftax_container.sh");
+        let spec = find_container_spec_in_roots(
+            &[session.clone(), source.clone()],
+            "nanohorizon-craftax",
+        )
+        .unwrap();
+        assert_eq!(spec.origin.source_root, source.canonicalize().unwrap());
+        assert!(spec.origin.manifest_path.starts_with(&spec.origin.source_root));
+        assert!(spec.cwd.starts_with(&spec.origin.source_root));
+        assert!(spec.cwd.starts_with(&source.canonicalize().unwrap()));
+        assert!(!spec.cwd.starts_with(&session));
+    }
+
+    #[test]
+    fn nested_manifest_retains_the_nested_declaring_root() {
+        let dir = tempdir().unwrap();
+        let parent = dir.path().join("approved");
+        let nested = parent.join("nanohorizon");
+        fs::create_dir_all(&parent).unwrap();
+        write_container_manifest(&nested, "scripts/up_craftax_container.sh");
+        let spec = find_container_spec_in_roots(&[parent], "nanohorizon-craftax").unwrap();
+        assert_eq!(spec.origin.source_root, nested.canonicalize().unwrap());
+    }
+
+    #[test]
+    fn symlink_escape_from_the_approved_source_root_is_rejected() {
+        let dir = tempdir().unwrap();
+        let source = dir.path().join("nanohorizon");
+        let outside = dir.path().join("outside.sh");
+        fs::write(&outside, "echo leak").unwrap();
+        write_container_manifest(&source, "scripts/up_craftax_container.sh");
+        std::os::unix::fs::symlink(&outside, source.join("scripts/escape.sh")).unwrap();
+        let origin = ContainerDeclarationOrigin {
+            manifest_path: source.join(CONTAINERS_FILE),
+            source_root: source.clone(),
+            declaration_id: "nanohorizon-craftax".into(),
+            source_revision: None,
+            source_digest: None,
+        };
+        let error = resolve_repository_path(&origin, "scripts/escape.sh").unwrap_err();
+        assert_eq!(error.code(), "launch_source_path_escapes_root");
+    }
+
+    #[test]
+    fn dirty_declared_inputs_validate_against_the_exact_digest() {
+        let dir = tempdir().unwrap();
+        let source = dir.path().join("nanohorizon");
+        write_container_manifest(&source, "scripts/up_craftax_container.sh");
+        let origin = ContainerDeclarationOrigin {
+            manifest_path: source.join(CONTAINERS_FILE),
+            source_root: source.clone(),
+            declaration_id: "nanohorizon-craftax".into(),
+            source_revision: Some("fixture-revision".into()),
+            source_digest: None,
+        };
+        let actual = launch_source_manifest_digest(
+            &origin,
+            &["scripts/up_craftax_container.sh".into()],
+        )
+        .unwrap();
+        fs::write(
+            source.join(CONTAINERS_FILE),
+            format!(
+                r#"
+[[container]]
+id = "nanohorizon-craftax"
+url = "http://127.0.0.1:18091"
+locality = "container"
+[container.launch]
+schema_version = "synth.container-launch.v1"
+working_directory = "."
+command = ["scripts/up_craftax_container.sh"]
+readiness_timeout_seconds = 30
+shutdown_grace_seconds = 5
+expected_port = 18091
+image_ref = "craftax-gamebench-rust"
+health_target = "craftax_nanohorizon"
+[container.launch.source]
+revision_policy = "exact-or-dirty-digest"
+tracked_revision = "fixture-revision"
+dirty_digest = "sha256:deadbeef"
+include = ["scripts/up_craftax_container.sh"]
+"#
+            ),
+        )
+        .unwrap();
+        let error = find_container_spec(&source, "nanohorizon-craftax")
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("launch_source_digest_mismatch"), "{error}");
+        assert!(error.contains("sha256:deadbeef"), "{error}");
+        assert!(error.contains(&actual), "{error}");
+    }
+
+    #[test]
+    fn missing_include_reports_declared_and_resolved_paths() {
+        let dir = tempdir().unwrap();
+        let source = dir.path().join("nanohorizon");
+        write_container_manifest(&source, "scripts/up_craftax_container.sh");
+        fs::write(
+            source.join(CONTAINERS_FILE),
+            r#"
+[[container]]
+id = "nanohorizon-craftax"
+url = "http://127.0.0.1:18091"
+locality = "container"
+[container.launch]
+schema_version = "synth.container-launch.v1"
+working_directory = "."
+command = ["scripts/up_craftax_container.sh"]
+readiness_timeout_seconds = 30
+shutdown_grace_seconds = 5
+expected_port = 18091
+image_ref = "craftax-gamebench-rust"
+health_target = "craftax_nanohorizon"
+[container.launch.source]
+revision_policy = "exact-or-dirty-digest"
+tracked_revision = "fixture-revision"
+include = ["scripts/missing.sh"]
+"#,
+        )
+        .unwrap();
+        let error = find_container_spec(&source, "nanohorizon-craftax").unwrap_err();
+        let failure = error
+            .chain()
+            .find_map(|cause| cause.downcast_ref::<StructuredFailure>())
+            .expect("typed launch failure");
+        assert_eq!(failure.code, "launch_source_path_not_found");
+        assert_eq!(failure.details["declared_path"], "scripts/missing.sh");
+        let resolved = failure.details["resolved_path"].as_str().unwrap();
+        assert!(
+            resolved.ends_with("scripts/missing.sh"),
+            "{resolved}"
+        );
+        let json = failure.to_json();
+        assert_eq!(json["code"], "launch_source_path_not_found");
+        assert_eq!(json["declared_path"], "scripts/missing.sh");
+        assert!(!failure.message.contains("launch_declaration_invalid"));
+    }
+
+    #[test]
+    fn matching_dirty_digest_validates() {
+        let dir = tempdir().unwrap();
+        let source = dir.path().join("nanohorizon");
+        write_container_manifest(&source, "scripts/up_craftax_container.sh");
+        let origin = ContainerDeclarationOrigin {
+            manifest_path: source.join(CONTAINERS_FILE),
+            source_root: source.clone(),
+            declaration_id: "nanohorizon-craftax".into(),
+            source_revision: Some("fixture-revision".into()),
+            source_digest: None,
+        };
+        let actual = launch_source_manifest_digest(
+            &origin,
+            &["scripts/up_craftax_container.sh".into()],
+        )
+        .unwrap();
+        fs::write(
+            source.join(CONTAINERS_FILE),
+            format!(
+                r#"
+[[container]]
+id = "nanohorizon-craftax"
+url = "http://127.0.0.1:18091"
+locality = "container"
+[container.launch]
+schema_version = "synth.container-launch.v1"
+working_directory = "."
+command = ["scripts/up_craftax_container.sh"]
+readiness_timeout_seconds = 30
+shutdown_grace_seconds = 5
+expected_port = 18091
+image_ref = "craftax-gamebench-rust"
+health_target = "craftax_nanohorizon"
+[container.launch.source]
+revision_policy = "exact-or-dirty-digest"
+tracked_revision = "fixture-revision"
+dirty_digest = "{actual}"
+include = ["scripts/up_craftax_container.sh"]
+"#
+            ),
+        )
+        .unwrap();
+        let spec = find_container_spec(&source, "nanohorizon-craftax").unwrap();
+        assert_eq!(spec.origin.source_digest.as_deref(), Some(actual.as_str()));
+    }
+
+    #[test]
+    fn absolute_launch_path_is_rejected() {
+        let origin = ContainerDeclarationOrigin {
+            manifest_path: PathBuf::from("/tmp/workshop.containers.toml"),
+            source_root: PathBuf::from("/tmp"),
+            declaration_id: "classify".into(),
+            source_revision: None,
+            source_digest: None,
+        };
+        let error = resolve_repository_path(&origin, "/etc/passwd").unwrap_err();
+        assert_eq!(error.code(), "launch_absolute_path_rejected");
+        let traversal = resolve_repository_path(&origin, "../outside.sh").unwrap_err();
+        assert_eq!(traversal.code(), "launch_source_path_escapes_root");
+    }
+
+    #[test]
+    fn instance_workspace_is_not_used_as_the_launch_root() {
+        let dir = tempdir().unwrap();
+        let instance = dir.path().join("workshop-instance");
+        let session = dir.path().join("chat");
+        let source = dir.path().join("nanohorizon");
+        fs::create_dir_all(&instance).unwrap();
+        fs::create_dir_all(&session).unwrap();
+        write_container_manifest(&source, "scripts/up_craftax_container.sh");
+        let spec = find_container_spec_in_roots(
+            &[session, instance, source.clone()],
+            "nanohorizon-craftax",
+        )
+        .unwrap();
+        assert_eq!(spec.origin.source_root, source.canonicalize().unwrap());
     }
 }

@@ -1385,6 +1385,24 @@ mod tests {
     }
 
     #[test]
+    fn cached_catalog_does_not_satisfy_live_readiness_when_unhealthy() {
+        let mut metadata = hydrated(Some(&normalized_info()), now());
+        metadata["taskCatalog"] = json!({"tasks": [{"id": "a"}, {"id": "b"}]});
+        metadata["taskCatalogFreshness"] = json!({
+            "kind": "cached",
+            "observedAt": NOW,
+            "reason": null
+        });
+        metadata["info"]["capabilities"] = json!({
+            "protocol": LIVE_EVAL_PROTOCOL,
+            "operations": {"rollouts.prepare": true}
+        });
+        let record = container("unhealthy", metadata);
+        let error = preflight_prepare(&record, &prepare_request(), now()).unwrap_err();
+        assert_eq!(error.code, CODE_UNHEALTHY);
+    }
+
+    #[test]
     fn container_raw_gold_fails_preflight_with_prepare_missing() {
         let record = container(READY_STATUS, hydrated(Some(&raw_gold_info()), now()));
         let error = preflight_prepare(&record, &prepare_request(), now()).unwrap_err();

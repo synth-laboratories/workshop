@@ -619,6 +619,8 @@ window.synthWorkspaceScope ??= isTauri
 			getContainer: (containerId) => fromGenerated(spectaCommands.dataContainersGet(containerId)),
 			registerContainer: (request) => fromGenerated(spectaCommands.dataContainersRegister(wire(request))),
 			probeContainer: (containerId) => fromGenerated(spectaCommands.dataContainersProbe(containerId)),
+			reconcileContainer: (containerId, sessionId) => fromGenerated(spectaCommands.dataContainersReconcile(containerId, sessionId)),
+			restartContainer: (containerId, sessionId) => fromGenerated(spectaCommands.dataContainersRestart(containerId, sessionId)),
 			listTraces: () => fromGenerated(spectaCommands.dataTracesList()),
 			getTrace: (traceId) => fromGenerated(spectaCommands.dataTracesGet(traceId)),
 			materializeContainerTrace: (containerId, rolloutId) => fromGenerated(spectaCommands.dataTraceMaterialize(containerId, rolloutId)),
@@ -644,6 +646,8 @@ window.synthWorkspaceScope ??= isTauri
 			getContainer: (containerId) => window.synthRuntime!.request(`/v1/containers/${encodeURIComponent(containerId)}`),
 			registerContainer: (request) => window.synthRuntime!.request("/v1/containers", { method: "POST", body: request }),
 			probeContainer: (containerId) => window.synthRuntime!.request(`/v1/containers/${encodeURIComponent(containerId)}/probe`, { method: "POST" }),
+			reconcileContainer: (containerId, sessionId) => window.synthRuntime!.request(`/v1/containers/${encodeURIComponent(containerId)}/reconcile`, { method: "POST", body: { sessionRef: sessionId } }),
+			restartContainer: (containerId, sessionId) => window.synthRuntime!.request(`/v1/containers/${encodeURIComponent(containerId)}/restart`, { method: "POST", body: { sessionRef: sessionId } }),
 			async listTraces() {
 				return (await window.synthRuntime!.request<{ traces: TraceV5Record[] }>("/v1/traces")).traces;
 			},

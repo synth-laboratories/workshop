@@ -395,6 +395,8 @@ test.describe("design debt (expected fail until fixed)", () => {
 					return row as never;
 				},
 				async probeContainer(id: string) { return this.getContainer(id); },
+				async reconcileContainer(id: string) { return this.getContainer(id); },
+				async restartContainer(id: string) { return this.getContainer(id); },
 				async listTraces() { return []; },
 				async getTrace() { throw new Error("none"); },
 				async chooseTraceInput() { return null; },
@@ -437,6 +439,8 @@ test.describe("design debt (expected fail until fixed)", () => {
 				async getContainer() { throw new Error("none"); },
 				async registerContainer() { throw new Error("none"); },
 				async probeContainer() { throw new Error("none"); },
+				async reconcileContainer() { throw new Error("none"); },
+				async restartContainer() { throw new Error("none"); },
 				async listTraces() {
 					return [{
 						id: "debt-trace",

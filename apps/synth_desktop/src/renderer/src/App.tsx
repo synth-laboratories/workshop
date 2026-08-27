@@ -256,6 +256,8 @@ export default function App() {
 						toggleArtifact={c.toggleArtifact}
 						toggleContainer={c.toggleContainer}
 						probeOpenContainer={c.probeOpenContainer}
+						repairOpenContainer={c.repairOpenContainer}
+						restartOpenContainer={c.restartOpenContainer}
 						controlActive={c.controlActive}
 						onActivityModeChange={(mode) => c.setPreferences(setToolActivityMode(mode))}
 					/>

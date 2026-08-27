@@ -18,8 +18,8 @@ use super::ids::{
 };
 use super::spec::{
     ApprovalBinding, ContainerPin, CredentialCapabilityScope, CredentialRoute, EvaluatorSpec,
-    ExecutionSpec, InlineRecipe, LiveEvalProtocol, ModelPin, OutputContract, PolicyPin,
-    RecipeSource, RecipeSourceKind, ResourceLimits, RolloutPlan,
+    ExecutionSpec, InlineRecipe, LiveEvalProtocol, ModelPin, OutputContract, PolicyMaterialRef,
+    PolicyPin, RecipeSource, RecipeSourceKind, ResourceLimits, RolloutPlan,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -36,7 +36,7 @@ use std::fmt;
 /// between this and a draft: a default would be Workshop choosing a seed, a
 /// model, or a spending limit on the operator's behalf.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct InlineRequest {
     /// Exact container id, when the user named one. Absent means discovery
     /// must resolve to exactly one candidate.
@@ -76,6 +76,27 @@ pub struct InlineRequest {
     /// container's declared one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub evaluator: Option<RequestedEvaluator>,
+}
+
+impl InlineRequest {
+    /// Parse an MCP/IPC body. Host identity fields are stripped so they cannot
+    /// travel as unknown specification fields, and unknown cost/limit names fail
+    /// at this boundary instead of being dropped.
+    pub fn from_tool_arguments(body: Value) -> Result<Self, serde_json::Error> {
+        let mut value = body.get("request").cloned().unwrap_or(body);
+        if let Some(object) = value.as_object_mut() {
+            for field in [
+                "sessionRef",
+                "session_ref",
+                "openVisual",
+                "open_visual",
+                "request",
+            ] {
+                object.remove(field);
+            }
+        }
+        serde_json::from_value(value)
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -169,6 +190,8 @@ pub struct PolicyResolution {
     /// Exact source bytes read from the declared immutable source revision.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_code: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub material: Option<PolicyMaterialRef>,
 }
 
 /// Everything admission is allowed to read. Passing this explicitly, rather
@@ -397,8 +420,16 @@ pub fn draft_inline(
         namespace,
         name,
     )?;
-    let policy = PolicyPin::new(namespace, name, revision, configuration)
+    let mut policy = PolicyPin::new(namespace, name, revision, configuration)
         .with_source_code(resolution.source_code.clone());
+    if let Some(material) = resolution.material.clone() {
+        if let Some(source_code) = resolution.source_code.clone() {
+            policy = policy.with_material(material, source_code);
+        } else {
+            policy.source_digest = Some(material.content_digest.clone());
+            policy.material = Some(material);
+        }
+    }
 
     // -- model: request only, checked against the declaration ----------------
     let provider = request.provider.clone().ok_or_else(|| {

@@ -98,6 +98,8 @@ pub fn builder() -> Builder<tauri::Wry> {
             crate::data_containers_get,
             crate::data_containers_register,
             crate::data_containers_probe,
+            crate::data_containers_reconcile,
+            crate::data_containers_restart,
             crate::data_traces_list,
             crate::data_traces_get,
             crate::data_trace_materialize,
@@ -478,8 +480,10 @@ mod tests {
         // bridge (`synth.visual.media.v1`), which serves one bounded frame by
         // digest to a visual bound to the run that produced it.
         // 265 → 268: bounded native optimizer-frame latest/list/content lane.
+        // 268 → 270: container reconcile + restart — declaration repair and
+        // native one-time replacement, bound to the declaring repository.
         assert_eq!(
-            exported, 268,
+            exported, 270,
             "generated bindings must contain the complete desktop command set"
         );
         assert_eq!(

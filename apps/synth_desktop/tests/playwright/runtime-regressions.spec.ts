@@ -1482,7 +1482,9 @@ test("native Codex tool use renders safe Poolside-style rows and a compact run s
 						taskCatalog: { schema_version: "synth.container.task-catalog.v999", tasks: {}, instances: [] }
 					}
 				};
-			}
+			},
+			reconcileContainer: async () => craftax,
+			restartContainer: async () => craftax
 		};
 		testWindow.synthCodex = {
 			defaultWorkspace: async () => "/workspaces/default",

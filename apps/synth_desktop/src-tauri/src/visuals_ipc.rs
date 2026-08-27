@@ -1628,14 +1628,15 @@ pub async fn dispatch(method: &str, path: &str, body: Value, core: &CoreRuntime)
                 .or_else(|| body.get("session_ref"))
                 .and_then(Value::as_str)
                 .ok_or_else(|| anyhow::anyhow!("sessionRef required"))?;
-            let workspace = crate::optimizers::workspace_recipe::require_session_workspace(
+            let spec = crate::optimizers::container_lifecycle::resolve_spec_for_session(
                 core.storage().database(),
                 session,
-            )?;
-            let ensured = crate::optimizers::container_lifecycle::ensure(
-                core.storage().database(),
-                &workspace,
                 spec_id,
+            )?;
+            let origin = spec.origin.to_json();
+            let ensured = crate::optimizers::container_lifecycle::ensure_spec(
+                core.storage().database(),
+                &spec,
             )
             .await?;
             Ok(json!({
@@ -1643,6 +1644,7 @@ pub async fn dispatch(method: &str, path: &str, body: Value, core: &CoreRuntime)
                 "baseUrl": ensured.base_url,
                 "specId": ensured.spec_id,
                 "locality": ensured.locality.as_str(),
+                "declarationOrigin": origin,
             }))
         }
         ("POST", "/v1/containers") => {
@@ -1655,7 +1657,12 @@ pub async fn dispatch(method: &str, path: &str, body: Value, core: &CoreRuntime)
         }
         ("GET", path)
             if path.starts_with("/v1/containers/")
+                && path != "/v1/containers/ensure"
+                && path != "/v1/containers/resolve_declaration"
                 && !path.ends_with("/probe")
+                && !path.ends_with("/reconcile")
+                && !path.ends_with("/restart")
+                && !path.ends_with("/stop")
                 && !path.contains("/rollouts/") =>
         {
             let id = path.trim_start_matches("/v1/containers/");
@@ -1745,6 +1752,13 @@ pub async fn dispatch(method: &str, path: &str, body: Value, core: &CoreRuntime)
             }
             let family =
                 observed_task_family(info.as_ref(), classified, container.task_family.as_deref());
+            let live = status == crate::container_capabilities::READY_STATUS
+                && health.get("ok").and_then(Value::as_bool) != Some(false);
+            crate::optimizers::container_lifecycle::stamp_metadata_freshness(
+                &mut metadata,
+                live,
+                &chrono::Utc::now().to_rfc3339(),
+            );
             let updated = core
                 .update_container_hydration(
                     id.to_string(),
@@ -1755,6 +1769,75 @@ pub async fn dispatch(method: &str, path: &str, body: Value, core: &CoreRuntime)
                 )
                 .await?;
             Ok(json!({"container":updated}))
+        }
+        ("POST", path) if path.starts_with("/v1/containers/") && path.ends_with("/reconcile") => {
+            let id = path
+                .trim_start_matches("/v1/containers/")
+                .trim_end_matches("/reconcile")
+                .trim_end_matches('/');
+            let session = body
+                .get("sessionRef")
+                .or_else(|| body.get("session_ref"))
+                .and_then(Value::as_str)
+                .ok_or_else(|| anyhow::anyhow!("sessionRef required"))?;
+            let spec = crate::optimizers::container_lifecycle::reconcile_declaration(
+                core.storage().database(),
+                session,
+                id,
+            )?;
+            let container = core.data().get_container(id.to_string()).await?;
+            Ok(json!({
+                "container": container,
+                "declarationOrigin": spec.origin.to_json(),
+                "launchDeclaration": {
+                    "valid": true,
+                    "command": spec.command,
+                    "workingDirectory": spec.cwd.display().to_string(),
+                    "sourceRoot": spec.origin.source_root.display().to_string(),
+                    "manifestPath": spec.origin.manifest_path.display().to_string(),
+                    "sourceRevision": spec.origin.source_revision,
+                    "sourceDigest": spec.origin.source_digest,
+                },
+            }))
+        }
+        ("POST", "/v1/containers/resolve_declaration") => {
+            let session = body
+                .get("sessionRef")
+                .or_else(|| body.get("session_ref"))
+                .and_then(Value::as_str)
+                .ok_or_else(|| anyhow::anyhow!("sessionRef required"))?;
+            let spec = if let Some(container_id) = body
+                .get("containerId")
+                .or_else(|| body.get("container_id"))
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+            {
+                crate::optimizers::container_lifecycle::resolve_declared_spec(
+                    core.storage().database(),
+                    session,
+                    container_id,
+                )?
+            } else {
+                let spec_id = body
+                    .get("specId")
+                    .or_else(|| body.get("spec_id"))
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| anyhow::anyhow!("specId or containerId required"))?;
+                crate::optimizers::container_lifecycle::resolve_spec_for_session(
+                    core.storage().database(),
+                    session,
+                    spec_id,
+                )?
+            };
+            Ok(json!({
+                "specId": spec.id,
+                "sourceRoot": spec.origin.source_root.display().to_string(),
+                "manifestPath": spec.origin.manifest_path.display().to_string(),
+                "declarationDigest": spec.origin.source_digest,
+                "sourceRevision": spec.origin.source_revision,
+                "declarationOrigin": spec.origin.to_json(),
+            }))
         }
         ("POST", path) if path.starts_with("/v1/containers/") && path.ends_with("/stop") => {
             let id = path
@@ -2753,7 +2836,7 @@ pub(crate) async fn dispatch_optimizer(
         | ("POST", "/v1/optimizers/evaluations/spec/admit") => {
             let request_value = body.get("request").cloned().unwrap_or(body);
             let request: crate::optimizers::admission::InlineRequest =
-                serde_json::from_value(request_value)?;
+                crate::optimizers::admission::InlineRequest::from_tool_arguments(request_value)?;
             let admissible =
                 crate::optimizers::inline_eval::admit_inline(optimizers, request).await?;
             Ok(json!({
@@ -2765,9 +2848,10 @@ pub(crate) async fn dispatch_optimizer(
             }))
         }
         ("POST", "/v1/optimizers/evaluations/start") => {
-            let request_value = body.get("request").cloned().unwrap_or_else(|| body.clone());
             let request: crate::optimizers::admission::InlineRequest =
-                serde_json::from_value(request_value)?;
+                crate::optimizers::admission::InlineRequest::from_tool_arguments(
+                    body.get("request").cloned().unwrap_or_else(|| body.clone()),
+                )?;
             let session_ref = body
                 .get("sessionRef")
                 .or_else(|| body.get("session_ref"))
@@ -4484,7 +4568,7 @@ async fn dispatch_computer_use(
     }
 }
 
-async fn dispatch_container_restart(
+pub(crate) async fn dispatch_container_restart(
     path: &str,
     body: Value,
     core: &CoreRuntime,
@@ -4499,12 +4583,20 @@ async fn dispatch_container_restart(
         .or_else(|| body.get("session_ref"))
         .and_then(Value::as_str)
         .ok_or_else(|| anyhow::anyhow!("sessionRef required"))?;
-    let workspace = crate::optimizers::workspace_recipe::require_session_workspace(
+    // Validate and reconcile before the destructive approval. An invalid
+    // declaration must not consume a click.
+    let spec = crate::optimizers::container_lifecycle::reconcile_declaration(
         core.storage().database(),
         session,
+        id,
     )?;
-    let spec_id =
-        crate::optimizers::container_lifecycle::declared_spec_id(core.storage().database(), id)?;
+    let launcher = spec.command.join(" ");
+    let effect = format!(
+        "Stop the currently registered workload when Workshop owns it, then run `{launcher}` from {} (revision {}, digest {}).",
+        spec.origin.source_root.display(),
+        spec.origin.source_revision.as_deref().unwrap_or("unknown"),
+        spec.origin.source_digest.as_deref().unwrap_or("none")
+    );
     let broker = app
         .try_state::<Arc<crate::session::approval::ApprovalBroker>>()
         .ok_or_else(|| anyhow::anyhow!("approval broker unavailable"))?;
@@ -4514,19 +4606,30 @@ async fn dispatch_container_restart(
             Some(session),
             crate::session::approval::ApprovalKind::ContainerLifecycle {
                 container_id: id.to_owned(),
-                declaration_id: spec_id.clone(),
+                declaration_id: spec.id.clone(),
                 action: "force_replace".into(),
-                effect: "Stop the currently registered workload when Workshop owns it, then run the exact approved declaration with replacement enabled".into(),
+                effect,
             },
         )
         .await?;
+    let approved = crate::optimizers::container_lifecycle::resolve_declared_spec(
+        core.storage().database(),
+        session,
+        id,
+    )?;
+    if approved.origin.source_digest != spec.origin.source_digest
+        || approved.origin.source_root != spec.origin.source_root
+    {
+        anyhow::bail!(
+            "launch_declaration_changed: the declaration changed after approval; request replacement again"
+        );
+    }
     let stopped = crate::optimizers::container_lifecycle::stop(core.storage().database(), id)
         .await
         .ok();
     let ensured = crate::optimizers::container_lifecycle::replace_declared(
         core.storage().database(),
-        &workspace,
-        &spec_id,
+        &approved,
     )
     .await?;
     Ok(json!({
@@ -4537,6 +4640,7 @@ async fn dispatch_container_restart(
         "replacedPid": stopped.as_ref().map(|value| value.pid),
         "replacementMode": "declared-command-force",
         "approvalId": approval_id,
+        "declarationOrigin": approved.origin.to_json(),
         "status": "ready",
     }))
 }

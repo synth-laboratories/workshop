@@ -8,7 +8,7 @@ use super::workspace_recipe::{self, ContainerSpec, PolicyLocality};
 use crate::storage::Database;
 use anyhow::{anyhow, bail, Context, Result};
 use rusqlite::{params, OptionalExtension};
-use serde_json::json;
+use serde_json::{json, Value};
 use std::{
     collections::HashMap,
     path::Path,
@@ -41,6 +41,13 @@ pub struct StoppedContainer {
 }
 
 pub fn declared_spec_id(db: &Arc<Database>, container_id: &str) -> Result<String> {
+    Ok(declared_record(db, container_id)?.0)
+}
+
+pub fn declared_record(
+    db: &Arc<Database>,
+    container_id: &str,
+) -> Result<(String, serde_json::Value)> {
     let id = container_id.to_string();
     db.with_conn(|conn| {
         let metadata: String = conn.query_row(
@@ -49,7 +56,7 @@ pub fn declared_spec_id(db: &Arc<Database>, container_id: &str) -> Result<String
             |row| row.get(0),
         )?;
         let metadata: serde_json::Value = serde_json::from_str(&metadata)?;
-        metadata
+        let spec_id = metadata
             .get("workspaceSpecId")
             .and_then(serde_json::Value::as_str)
             .map(str::trim)
@@ -59,8 +66,48 @@ pub fn declared_spec_id(db: &Arc<Database>, container_id: &str) -> Result<String
                 anyhow!(
                     "launch_declaration_missing: container `{id}` has no workspace spec identity"
                 )
-            })
+            })?;
+        Ok((spec_id, metadata))
     })
+}
+
+pub fn resolve_declared_spec(
+    db: &Arc<Database>,
+    session_id: &str,
+    container_id: &str,
+) -> Result<workspace_recipe::ContainerSpec> {
+    let (spec_id, metadata) = declared_record(db, container_id)?;
+    let search_roots = workspace_recipe::session_search_roots(db, session_id)?;
+    let stored = workspace_recipe::origin_from_metadata(&metadata, &spec_id);
+    workspace_recipe::resolve_container_spec(&search_roots, &spec_id, stored.as_ref())
+}
+
+pub fn resolve_spec_for_session(
+    db: &Arc<Database>,
+    session_id: &str,
+    spec_id: &str,
+) -> Result<workspace_recipe::ContainerSpec> {
+    let search_roots = workspace_recipe::session_search_roots(db, session_id)?;
+    workspace_recipe::resolve_container_spec(&search_roots, spec_id, None)
+}
+
+/// Re-read and validate the declaring manifest, then merge provenance into the
+/// registry without requiring a healthy runtime.
+pub fn reconcile_declaration(
+    db: &Arc<Database>,
+    session_id: &str,
+    container_id: &str,
+) -> Result<workspace_recipe::ContainerSpec> {
+    match resolve_declared_spec(db, session_id, container_id) {
+        Ok(spec) => {
+            merge_declaration_metadata(db, container_id, &spec)?;
+            Ok(spec)
+        }
+        Err(error) => {
+            let _ = stamp_invalid_declaration(db, container_id, &error);
+            Err(error)
+        }
+    }
 }
 
 pub async fn ensure(
@@ -69,12 +116,20 @@ pub async fn ensure(
     spec_id: &str,
 ) -> Result<EnsuredContainer> {
     let spec = workspace_recipe::find_container_spec(workspace, spec_id)?;
-    ensure_spec(db, workspace, &spec).await
+    ensure_spec(db, &spec).await
+}
+
+pub async fn ensure_from_session(
+    db: &Arc<Database>,
+    session_id: &str,
+    spec_id: &str,
+) -> Result<EnsuredContainer> {
+    let spec = resolve_spec_for_session(db, session_id, spec_id)?;
+    ensure_spec(db, &spec).await
 }
 
 pub async fn ensure_spec(
     db: &Arc<Database>,
-    workspace: &Path,
     spec: &ContainerSpec,
 ) -> Result<EnsuredContainer> {
     let (base_url, process) = if let Some(url) = spec.url.as_deref() {
@@ -84,7 +139,7 @@ pub async fn ensure_spec(
         } else if healthy_now(&base, &spec.health, spec).await? {
             None
         } else {
-            Some(start_command(workspace, spec)?)
+            Some(start_command(spec)?)
         };
         (base, process)
     } else {
@@ -111,10 +166,8 @@ pub async fn ensure_spec(
 /// from the port and does not pretend that endpoint identity grants ownership.
 pub async fn replace_declared(
     db: &Arc<Database>,
-    workspace: &Path,
-    spec_id: &str,
+    spec: &ContainerSpec,
 ) -> Result<EnsuredContainer> {
-    let spec = workspace_recipe::find_container_spec(workspace, spec_id)?;
     let base_url = spec
         .url
         .as_deref()
@@ -122,32 +175,36 @@ pub async fn replace_declared(
         .filter(|value| !value.is_empty())
         .map(|value| value.trim_end_matches('/').to_string())
         .ok_or_else(|| anyhow!("container `{}` must declare url", spec.id))?;
-    let process = start_command(workspace, &spec)?;
-    wait_healthy(&base_url, &spec.health, &spec).await?;
-    let container_id = upsert_ready(db, &spec, &base_url, Some(process)).await?;
+    let process = start_command(spec)?;
+    wait_healthy(&base_url, &spec.health, spec).await?;
+    let container_id = upsert_ready(db, spec, &base_url, Some(process)).await?;
     Ok(EnsuredContainer {
         container_id,
         base_url,
-        spec_id: spec.id,
+        spec_id: spec.id.clone(),
         locality: spec.locality,
     })
 }
 
-fn start_command(workspace: &Path, spec: &ContainerSpec) -> Result<(u32, String)> {
+fn start_command(spec: &ContainerSpec) -> Result<(u32, String)> {
+    let source_root = spec
+        .origin
+        .source_root
+        .canonicalize()
+        .unwrap_or_else(|_| spec.origin.source_root.clone());
     let cwd = if spec.cwd.exists() {
         spec.cwd.clone()
     } else {
-        workspace_recipe::resolve_workspace_path(workspace, ".")?
+        workspace_recipe::resolve_repository_path(&spec.origin, ".")
+            .map(|path| path.absolute_path)
+            .map_err(workspace_recipe::LaunchDeclarationError::into_anyhow)?
     };
-    if !cwd.starts_with(
-        workspace
-            .canonicalize()
-            .unwrap_or_else(|_| workspace.to_path_buf()),
-    ) {
+    if !cwd.starts_with(&source_root) {
         bail!(
-            "container `{}` cwd {} is not inside the workspace",
+            "container `{}` cwd {} is not inside the declaring repository {}",
             spec.id,
-            cwd.display()
+            cwd.display(),
+            source_root.display()
         );
     }
     let program = spec
@@ -344,7 +401,17 @@ async fn upsert_ready(
     let family = spec.family.clone();
     let contract = spec.contract.clone();
     let locality = spec.locality.as_str().to_string();
-    let source_path = spec.cwd.display().to_string();
+    let source_path = spec.origin.source_root.display().to_string();
+    let origin = spec.origin.to_json();
+    let launch_declaration = json!({
+        "valid": true,
+        "command": spec.command,
+        "workingDirectory": spec.cwd.display().to_string(),
+        "sourceRoot": spec.origin.source_root.display().to_string(),
+        "manifestPath": spec.origin.manifest_path.display().to_string(),
+        "sourceRevision": spec.origin.source_revision,
+        "sourceDigest": spec.origin.source_digest,
+    });
     let policy_source_path = spec.policy_source.clone();
     let source_revision = spec.source_revision.clone();
     let manifest_digest = spec.manifest_digest.clone();
@@ -388,6 +455,8 @@ async fn upsert_ready(
                 "locality": locality,
                 "source": "workspace",
                 "sourcePath": source_path,
+                "declarationOrigin": origin,
+                "launchDeclaration": launch_declaration,
                 "policySourcePath": policy_source_path,
                 "gitRevision": source_revision,
                 "manifestHash": manifest_digest,
@@ -421,4 +490,273 @@ async fn upsert_ready(
             Ok(id)
         })
         .await
+}
+
+fn merge_declaration_metadata(
+    db: &Arc<Database>,
+    container_id: &str,
+    spec: &ContainerSpec,
+) -> Result<()> {
+    let id = container_id.to_string();
+    let origin = spec.origin.to_json();
+    let source_path = spec.origin.source_root.display().to_string();
+    let launch_declaration = json!({
+        "valid": true,
+        "command": spec.command,
+        "workingDirectory": spec.cwd.display().to_string(),
+        "sourceRoot": spec.origin.source_root.display().to_string(),
+        "manifestPath": spec.origin.manifest_path.display().to_string(),
+        "sourceRevision": spec.origin.source_revision,
+        "sourceDigest": spec.origin.source_digest,
+    });
+    let spec_id = spec.id.clone();
+    let source_revision = spec.source_revision.clone();
+    let manifest_digest = spec.manifest_digest.clone();
+    let policy_source_path = spec.policy_source.clone();
+    db.with_conn(move |conn| {
+        let raw: String = conn.query_row(
+            "SELECT metadata_json FROM containers WHERE id=?1",
+            [&id],
+            |row| row.get(0),
+        )?;
+        let mut metadata: serde_json::Value =
+            serde_json::from_str(&raw).unwrap_or_else(|_| json!({}));
+        apply_declaration_to_metadata(
+            &mut metadata,
+            &spec_id,
+            &source_path,
+            origin,
+            launch_declaration,
+            source_revision,
+            manifest_digest,
+            policy_source_path,
+        )?;
+        conn.execute(
+            "UPDATE containers SET metadata_json=?2, updated_at=?3 WHERE id=?1",
+            params![
+                id,
+                serde_json::to_string(&metadata)?,
+                chrono::Utc::now().to_rfc3339()
+            ],
+        )?;
+        Ok(())
+    })
+}
+
+fn apply_declaration_to_metadata(
+    metadata: &mut Value,
+    spec_id: &str,
+    source_path: &str,
+    origin: Value,
+    launch_declaration: Value,
+    source_revision: Option<String>,
+    manifest_digest: Option<String>,
+    policy_source_path: Option<String>,
+) -> Result<()> {
+    let object = metadata
+        .as_object_mut()
+        .ok_or_else(|| anyhow!("container metadata is not an object"))?;
+    object.insert("workspaceSpecId".into(), json!(spec_id));
+    object.insert("sourcePath".into(), json!(source_path));
+    object.insert("declarationOrigin".into(), origin);
+    object.insert("launchDeclaration".into(), launch_declaration);
+    object.insert("gitRevision".into(), json!(source_revision));
+    object.insert("manifestHash".into(), json!(manifest_digest));
+    object.insert("policySourcePath".into(), json!(policy_source_path));
+    Ok(())
+}
+
+fn stamp_invalid_declaration(
+    db: &Arc<Database>,
+    container_id: &str,
+    error: &anyhow::Error,
+) -> Result<()> {
+    let failure = error
+        .chain()
+        .find_map(|cause| cause.downcast_ref::<crate::error::StructuredFailure>())
+        .cloned();
+    let Some(failure) = failure else {
+        return Ok(());
+    };
+    let id = container_id.to_string();
+    db.with_conn(move |conn| {
+        let raw: String = conn.query_row(
+            "SELECT metadata_json FROM containers WHERE id=?1",
+            [&id],
+            |row| row.get(0),
+        )?;
+        let mut metadata: serde_json::Value =
+            serde_json::from_str(&raw).unwrap_or_else(|_| json!({}));
+        apply_invalid_launch_to_metadata(&mut metadata, &failure)?;
+        conn.execute(
+            "UPDATE containers SET metadata_json=?2, updated_at=?3 WHERE id=?1",
+            params![
+                id,
+                serde_json::to_string(&metadata)?,
+                chrono::Utc::now().to_rfc3339()
+            ],
+        )?;
+        Ok(())
+    })
+}
+
+pub(crate) fn apply_invalid_launch_to_metadata(
+    metadata: &mut Value,
+    failure: &crate::error::StructuredFailure,
+) -> Result<()> {
+    let object = metadata
+        .as_object_mut()
+        .ok_or_else(|| anyhow!("container metadata is not an object"))?;
+    object.insert(
+        "launchDeclaration".into(),
+        json!({
+            "valid": false,
+            "error": failure.to_json(),
+        }),
+    );
+    Ok(())
+}
+
+pub fn stamp_metadata_freshness(
+    metadata: &mut serde_json::Map<String, serde_json::Value>,
+    live: bool,
+    observed_at: &str,
+) {
+    let revision = metadata
+        .get("gitRevision")
+        .and_then(Value::as_str)
+        .map(str::to_owned);
+    let previous = metadata
+        .get("hydratedAt")
+        .and_then(Value::as_str)
+        .map(str::to_owned);
+    let freshness = |kind: &str, at: &str, reason: Option<&str>| {
+        let mut value = json!({ "kind": kind, "observedAt": at });
+        if let Some(revision) = &revision {
+            value["sourceRevision"] = json!(revision);
+        }
+        if let Some(reason) = reason {
+            value["reason"] = json!(reason);
+        }
+        value
+    };
+    if live {
+        metadata.insert(
+            "runtimeFreshness".into(),
+            freshness("live", observed_at, None),
+        );
+        metadata.insert(
+            "taskCatalogFreshness".into(),
+            if metadata.contains_key("taskCatalog") {
+                freshness("live", observed_at, None)
+            } else {
+                freshness("unavailable", observed_at, Some("not_reported"))
+            },
+        );
+        metadata.insert(
+            "interfaceFreshness".into(),
+            if metadata
+                .get("info")
+                .and_then(|value| value.get("capabilities"))
+                .is_some()
+            {
+                freshness("live", observed_at, None)
+            } else {
+                freshness("unavailable", observed_at, Some("not_reported"))
+            },
+        );
+        metadata.insert(
+            "policyFreshness".into(),
+            if metadata.contains_key("policyState") {
+                freshness("live", observed_at, None)
+            } else {
+                freshness("unavailable", observed_at, Some("not_reported"))
+            },
+        );
+        return;
+    }
+    let cached_at = previous.as_deref().unwrap_or(observed_at);
+    metadata.insert(
+        "runtimeFreshness".into(),
+        freshness("unavailable", observed_at, Some("unhealthy")),
+    );
+    metadata.insert(
+        "taskCatalogFreshness".into(),
+        if metadata.contains_key("taskCatalog") {
+            freshness("cached", cached_at, None)
+        } else {
+            freshness("unavailable", observed_at, Some("runtime_offline"))
+        },
+    );
+    metadata.insert(
+        "interfaceFreshness".into(),
+        if metadata
+            .get("info")
+            .and_then(|value| value.get("capabilities"))
+            .is_some()
+        {
+            freshness("cached", cached_at, None)
+        } else {
+            freshness("unavailable", observed_at, Some("runtime_offline"))
+        },
+    );
+    metadata.insert(
+        "policyFreshness".into(),
+        freshness("unavailable", observed_at, Some("runtime_offline")),
+    );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn unhealthy_runtime_labels_cached_catalog_and_keeps_policy_unavailable() {
+        let mut metadata = serde_json::Map::from_iter([
+            (
+                "taskCatalog".into(),
+                json!({"tasks": [{"id": "one"}, {"id": "two"}]}),
+            ),
+            (
+                "info".into(),
+                json!({"capabilities": {"rollouts.prepare": true}}),
+            ),
+            ("hydratedAt".into(), json!("2026-08-26T00:00:00Z")),
+        ]);
+        stamp_metadata_freshness(&mut metadata, false, "2026-08-27T12:00:00Z");
+        assert_eq!(metadata["runtimeFreshness"]["kind"], "unavailable");
+        assert_eq!(metadata["taskCatalogFreshness"]["kind"], "cached");
+        assert_eq!(
+            metadata["taskCatalogFreshness"]["observedAt"],
+            "2026-08-26T00:00:00Z"
+        );
+        assert_eq!(metadata["interfaceFreshness"]["kind"], "cached");
+        assert_eq!(metadata["policyFreshness"]["kind"], "unavailable");
+        assert_eq!(metadata["policyFreshness"]["reason"], "runtime_offline");
+    }
+
+    #[test]
+    fn invalid_launch_is_stamped_without_requiring_health() {
+        let mut metadata = json!({"workspaceSpecId": "nanohorizon-craftax"});
+        let failure = crate::error::StructuredFailure::new(
+            "launch_source_path_not_found",
+            "Couldn't find `scripts/up_craftax_container.sh` in the declaring repository.",
+            "Resolve the include against the declaring repository.",
+        )
+        .with_details(json!({
+            "declared_path": "scripts/up_craftax_container.sh",
+            "resolved_path": "/chat/scripts/up_craftax_container.sh"
+        }));
+        apply_invalid_launch_to_metadata(&mut metadata, &failure).unwrap();
+        assert_eq!(metadata["launchDeclaration"]["valid"], false);
+        assert_eq!(
+            metadata["launchDeclaration"]["error"]["code"],
+            "launch_source_path_not_found"
+        );
+        assert_eq!(
+            metadata["launchDeclaration"]["error"]["declared_path"],
+            "scripts/up_craftax_container.sh"
+        );
+    }
 }

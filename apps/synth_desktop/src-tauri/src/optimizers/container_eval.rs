@@ -93,6 +93,8 @@ struct EvalSpec {
     train: Vec<i64>,
     heldout: Vec<i64>,
     cost_ceiling_usd: f64,
+    maximum_model_calls_per_rollout: u32,
+    maximum_steps_per_rollout: u32,
     requires_credential_advertisement: bool,
     relay: RelaySettings,
 }
@@ -145,6 +147,12 @@ impl EvalSpec {
             heldout: Vec::new(),
             cost_ceiling_usd: recipe.resource_limits.hard_total_cost_micros.as_micros() as f64
                 / 1_000_000.0,
+            maximum_model_calls_per_rollout: recipe
+                .resource_limits
+                .maximum_model_calls_per_rollout
+                .0
+                .get(),
+            maximum_steps_per_rollout: recipe.resource_limits.maximum_steps_per_rollout.0.get(),
             requires_credential_advertisement: false,
             relay: RelaySettings::default(),
         })
@@ -158,12 +166,7 @@ impl EvalSpec {
         let Some(per_call) = self.policy.get("timeout_seconds").and_then(Value::as_f64) else {
             return DEFAULT_BLOCKING_EVAL_HTTP_TIMEOUT;
         };
-        let calls = self
-            .policy
-            .get("max_calls")
-            .and_then(Value::as_u64)
-            .unwrap_or(1)
-            .max(1) as f64;
+        let calls = self.maximum_model_calls_per_rollout.max(1) as f64;
         Duration::from_secs_f64((per_call * calls + 60.0).clamp(60.0, 86_400.0))
     }
 
@@ -204,6 +207,20 @@ impl EvalSpec {
             train: recipe.train_seeds.clone(),
             heldout: recipe.heldout_seeds.clone(),
             cost_ceiling_usd: recipe.bounds.max_cost_usd,
+            maximum_model_calls_per_rollout: recipe
+                .policy
+                .get("max_calls")
+                .and_then(Value::as_u64)
+                .and_then(|value| u32::try_from(value).ok())
+                .filter(|value| *value > 0)
+                .unwrap_or(1),
+            maximum_steps_per_rollout: recipe
+                .policy
+                .get("max_steps")
+                .and_then(Value::as_u64)
+                .and_then(|value| u32::try_from(value).ok())
+                .filter(|value| *value > 0)
+                .unwrap_or(1),
             requires_credential_advertisement: recipe.requires_credential_advertisement,
             relay: recipe.relay,
         })
@@ -231,6 +248,8 @@ impl EvalSpec {
             train: (0..10).collect(),
             heldout: Vec::new(),
             cost_ceiling_usd: 0.50,
+            maximum_model_calls_per_rollout: 10,
+            maximum_steps_per_rollout: 2_000,
             requires_credential_advertisement: false,
             relay: RelaySettings::default(),
         }
@@ -258,6 +277,8 @@ impl EvalSpec {
             train: vec![0, 1],
             heldout: vec![100, 101],
             cost_ceiling_usd: 0.50,
+            maximum_model_calls_per_rollout: 8,
+            maximum_steps_per_rollout: 64,
             requires_credential_advertisement: true,
             relay: RelaySettings::default(),
         }
@@ -370,7 +391,43 @@ pub(super) async fn start_inline(
         .and_then(Value::as_str)
         .context("container /info does not declare a world identity")?
         .to_string();
-    let spec = EvalSpec::from_execution_spec(approved.spec(), family, world_ref)?;
+    let mut spec = EvalSpec::from_execution_spec(approved.spec(), family, world_ref)?;
+    if spec.policy_code.is_none() {
+        if let Some(material) = &recipe.policy.material {
+            let origin = super::workspace_recipe::ContainerDeclarationOrigin {
+                manifest_path: std::path::PathBuf::from(&material.source_root)
+                    .join("workshop.containers.toml"),
+                source_root: std::path::PathBuf::from(&material.source_root),
+                declaration_id: recipe.container.container_id.as_str().to_string(),
+                source_revision: Some(material.tracked_revision.clone()),
+                source_digest: Some(material.content_digest.as_str().to_string()),
+            };
+            let resolved = super::workspace_recipe::resolve_repository_path(
+                &origin,
+                &material.repository_relative_path,
+            )
+            .map_err(super::workspace_recipe::LaunchDeclarationError::into_anyhow)?;
+            let bytes = std::fs::read_to_string(&resolved.absolute_path).with_context(|| {
+                format!(
+                    "policy_source_unavailable: could not re-read {} from {}",
+                    material.repository_relative_path, material.source_root
+                )
+            })?;
+            let digest = super::admission::digest_bytes(bytes.as_bytes());
+            anyhow::ensure!(
+                digest == material.content_digest
+                    && recipe
+                        .policy
+                        .source_digest
+                        .as_ref()
+                        .is_none_or(|expected| *expected == digest),
+                "policy_source_drift: approved digest {}, current {}",
+                material.content_digest,
+                digest
+            );
+            spec.policy_code = Some(bytes);
+        }
+    }
     let admission = super::admission::EvaluationRunRecord::from_approved("pending", &approved);
     start_eval(service, session_ref, spec, container, Some(admission)).await
 }
@@ -424,8 +481,8 @@ async fn start_eval(
         "costCeilingUsd": spec.cost_ceiling_usd,
         "bounds": {
             "maximumRollouts": examples.len(),
-            "maximumModelCallsPerRollout": spec.policy.get("max_calls").cloned().unwrap_or(Value::Null),
-            "maximumStepsPerRollout": spec.policy.get("max_steps").cloned().unwrap_or(Value::Null),
+            "maximumModelCallsPerRollout": spec.maximum_model_calls_per_rollout,
+            "maximumStepsPerRollout": spec.maximum_steps_per_rollout,
             "maximumTokens": Value::Null,
             "hardTotalCostUsd": spec.cost_ceiling_usd,
         },
@@ -736,6 +793,18 @@ async fn settle_worker_failure(service: &OptimizerService, run_id: &str, error: 
         // the user can see beats a run stuck at `running` with no explanation.
     }
     let _ = append_terminal(service, run_id, "failed", format!("{error:#}")).await;
+    let run_id = run_id.to_string();
+    let _ = service
+        .database()
+        .clone()
+        .run(move |conn| {
+            let Some(mut progress) = super::admission::load_run_progress(conn, &run_id)? else {
+                return Ok(());
+            };
+            progress.fail_pre_dispatch()?;
+            super::admission::save_run_progress(conn, &run_id, &progress)
+        })
+        .await;
 }
 
 /// The Trace V5 workstation for this run's seeds.
@@ -854,11 +923,22 @@ fn experiment_bindings(
     let state_counts = progress_projection
         .and_then(|projection| projection.get("rolloutStateCounts"))
         .cloned()
-        .unwrap_or_else(|| json!({
-            "completed": records.iter().filter(|record| is_successful_eval_record(record)).count(),
-            "failed": records.iter().filter(|record| !is_successful_eval_record(record)).count(),
-            "queued": total.saturating_sub(records.len()),
-        }));
+        .unwrap_or_else(|| {
+            if matches!(status, "completed" | "failed" | "cancelled" | "degraded") {
+                json!({
+                    "completed": records.iter().filter(|record| is_successful_eval_record(record)).count(),
+                    "failed": records.iter().filter(|record| !is_successful_eval_record(record)).count(),
+                    "cancelled": total.saturating_sub(records.len()),
+                    "queued": 0,
+                })
+            } else {
+                json!({
+                    "completed": records.iter().filter(|record| is_successful_eval_record(record)).count(),
+                    "failed": records.iter().filter(|record| !is_successful_eval_record(record)).count(),
+                    "queued": total.saturating_sub(records.len()),
+                })
+            }
+        });
     let active = progress_projection
         .and_then(|projection| projection.get("inFlight"))
         .and_then(Value::as_u64)
@@ -970,6 +1050,45 @@ fn experiment_bindings(
         "completed" => "Use the retained per-seed traces to inspect behavior behind the aggregate.",
         _ => "Inspect the terminal evidence.",
     };
+    let retained_traces = rollouts
+        .iter()
+        .filter(|row| {
+            row.get("traceId").is_some_and(|value| !value.is_null())
+                && row.get("summary").and_then(Value::as_str)
+                    != Some("no relay receipt was recorded for this seed")
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    let streams_opened = records
+        .iter()
+        .filter(|record| record.get("relay").is_some())
+        .count();
+    let sealed_traces = records
+        .iter()
+        .filter(|record| {
+            record.pointer("/sealedTrace/traces/0/traceId").is_some()
+                || record.pointer("/trace/bundle_trace_id").is_some()
+        })
+        .count();
+    let queued = state_counts
+        .get("queued")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let mut reconciliation_errors = progress_projection
+        .and_then(|projection| projection.get("reconciliationErrors"))
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    if terminal && queued > 0 {
+        reconciliation_errors.push(json!(
+            "The campaign finished, but queued rollouts were never started."
+        ));
+    }
+    if spec.maximum_model_calls_per_rollout == 0 || spec.maximum_steps_per_rollout == 0 {
+        reconciliation_errors.push(json!(
+            "Approved call and step limits are missing from the run receipt."
+        ));
+    }
     json!({
         "schemaVersion": VISUAL_BINDINGS_SCHEMA_VERSION,
         "inputs": [{
@@ -1004,8 +1123,8 @@ fn experiment_bindings(
                     "provider": spec.provider,
                     "policy": format!("{} / {}", spec.harness, spec.policy_config),
                     "parallelism": spec.concurrency,
-                    "maximumModelCallsPerRollout": spec.policy.get("max_calls").cloned().unwrap_or(Value::Null),
-                    "maximumStepsPerRollout": spec.policy.get("max_steps").cloned().unwrap_or(Value::Null),
+                    "maximumModelCallsPerRollout": spec.maximum_model_calls_per_rollout,
+                    "maximumStepsPerRollout": spec.maximum_steps_per_rollout,
                 },
                 "provenance": {
                     "source": if spec.recipe_id.starts_with("inline:") { "inline" } else { "catalog" },
@@ -1026,7 +1145,16 @@ fn experiment_bindings(
                 // Each seed opens the workstation, which is bound to the run
                 // rather than to this snapshot — so a seed row is a way in, not
                 // a second copy of the evidence that can disagree with it.
-                "traces": { "prominence": "detail", "items": rollouts },
+                "traces": {
+                    "prominence": "detail",
+                    "plannedSlots": total,
+                    "streamsOpened": streams_opened,
+                    "receiptsRetained": retained_traces.len(),
+                    "sealed": sealed_traces,
+                    "evidenceGaps": total.saturating_sub(retained_traces.len()),
+                    "items": retained_traces
+                },
+                "reconciliationErrors": reconciliation_errors,
                 "arms": [{
                     "id": "baseline",
                     "label": spec.policy_config,
@@ -1701,12 +1829,7 @@ fn container_proxy_policy(spec: &EvalSpec) -> crate::secrets::SecretsUsePolicy {
     }
     policy.max_cost_usd = spec.cost_ceiling_usd;
     let trials = spec.examples().len() as u64;
-    let calls_per_trial = spec
-        .policy
-        .get("max_calls")
-        .and_then(Value::as_u64)
-        .unwrap_or(1)
-        .max(1);
+    let calls_per_trial = spec.maximum_model_calls_per_rollout.max(1) as u64;
     let total_calls = trials.saturating_mul(calls_per_trial).max(1);
     policy.max_calls = total_calls.min(u32::MAX as u64) as u32;
     if let Some(context_tokens) = spec
@@ -2807,6 +2930,8 @@ async fn run_one_example(
         "world_ref": spec.world_ref,
         "evaluation_plan_ref": spec.evaluation_plan_ref,
         "policy_ref": { "harness": spec.harness, "config": spec.policy_config },
+        "max_steps": spec.maximum_steps_per_rollout,
+        "max_calls": spec.maximum_model_calls_per_rollout,
     });
     if let Some(revision) = policy_revision_id {
         start_body
@@ -4729,6 +4854,52 @@ max_total_rollouts = 4
     #[test]
     fn retained_rollout_state_rejects_a_missing_event_collection() {
         assert!(retained_rollout_state(&json!({})).is_err());
+    }
+
+    #[test]
+    fn trace_placeholders_are_not_counted_as_retained_receipts() {
+        let mut spec = EvalSpec::classify_fixture();
+        spec.train = vec![780005, 780006, 780007, 780008, 780009];
+        spec.heldout.clear();
+        spec.maximum_model_calls_per_rollout = 0;
+        spec.maximum_steps_per_rollout = 0;
+        let bindings = experiment_bindings(
+            &spec,
+            "failed",
+            0,
+            5,
+            &[],
+            None,
+            "vis_workbench",
+            Some(&json!({
+                "reconciliationErrors": [
+                    "This run is failed, but 5 rollouts are still queued or running."
+                ],
+                "rolloutStateCounts": { "queued": 5 }
+            })),
+            "2026-08-27T12:00:00Z",
+        );
+        let data = &bindings["inputs"][0]["data"];
+        let traces = &data["traces"];
+        assert_eq!(traces["plannedSlots"], json!(5));
+        assert_eq!(traces["streamsOpened"], json!(0));
+        assert_eq!(traces["receiptsRetained"], json!(0));
+        assert_eq!(traces["sealed"], json!(0));
+        assert_eq!(traces["evidenceGaps"], json!(5));
+        assert_eq!(traces["items"].as_array().unwrap().len(), 0);
+        let errors = data["reconciliationErrors"].as_array().unwrap();
+        assert!(
+            errors.iter().any(|error| error
+                .as_str()
+                .is_some_and(|text| text.contains("queued"))),
+            "{errors:?}"
+        );
+        assert!(
+            errors.iter().any(|error| error
+                .as_str()
+                .is_some_and(|text| text.contains("Approved call and step limits"))),
+            "{errors:?}"
+        );
     }
 
     // ── Craftax relay fixture ────────────────────────────────────────────

@@ -284,12 +284,12 @@
 }
 
 .sv-terminal-receipt {
-  margin-top: 8px;
+  margin-top: var(--sv-sp-2);
   padding: 8px 10px;
-  border: 1px solid #d7a39f;
-  border-left: 4px solid #b23830;
-  border-radius: 9px;
-  background: #fff8f7;
+  border: 1px solid var(--sv-bad-edge);
+  border-left: 4px solid var(--sv-bad-fg);
+  border-radius: var(--sv-radius-sm);
+  background: var(--sv-bad-bg);
 }
 
 .sv-terminal-receipt-provenance {
@@ -300,6 +300,17 @@
   line-height: 1.4;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.sv-terminal-receipt .sv-section-head {
+  margin-bottom: var(--sv-sp-2);
+}
+
+.sv-terminal-receipt ul {
+  margin: 0;
+  padding-left: 18px;
+  color: var(--sv-bad-fg);
+  font-size: var(--sv-fs-micro);
 }
 
 @media (max-width: 520px) {

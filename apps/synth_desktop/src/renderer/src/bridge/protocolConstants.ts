@@ -125,6 +125,8 @@ export const COMMANDS = {
 	DATA_CONTAINERS_GET: "data_containers_get",
 	DATA_CONTAINERS_REGISTER: "data_containers_register",
 	DATA_CONTAINERS_PROBE: "data_containers_probe",
+	DATA_CONTAINERS_RECONCILE: "data_containers_reconcile",
+	DATA_CONTAINERS_RESTART: "data_containers_restart",
 	DATA_TRACES_LIST: "data_traces_list",
 	DATA_TRACES_GET: "data_traces_get",
 	DATA_TRACES_INGEST: "data_traces_ingest",

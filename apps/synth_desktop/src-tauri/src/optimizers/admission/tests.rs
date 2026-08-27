@@ -1,13 +1,12 @@
 //! Admission pipeline behaviour, driven by the NanoHorizon acceptance request.
 //!
-//! The fixtures below describe exactly the request in the engineering handoff:
-//! container `nanohorizon-craftax` speaking `synth.container.live-eval.v1`,
-//! model `z-ai/glm-5.3-flash` through OpenRouter, policy
-//! `nanohorizon/glm-5.3-flash`, seeds 780000–780004, five rollouts, ten model
-//! calls and two thousand steps per rollout, and a $2.45 hard ceiling routed
-//! through the Workshop secrets proxy. Each test then removes exactly one fact
-//! and asserts the specific refusal, so a regression cannot pass by failing for
-//! a different reason.
+//! The fixtures describe the NanoHorizon acceptance request: container
+//! `nanohorizon-craftax` speaking `synth.container.live-eval.v1`, model
+//! `z-ai/glm-5.3-flash` through OpenRouter, policy `nanohorizon/glm-5.3-flash`,
+//! seeds 780000–780004, five rollouts, ten model calls and two thousand steps
+//! per rollout, and a $2.45 hard ceiling routed through the Workshop secrets
+//! proxy. Each test then removes exactly one fact and asserts the specific
+//! refusal, so a regression cannot pass by failing for a different reason.
 
 use super::canonical::{digest_bytes, CanonicalJson};
 use super::error::AdmissionErrorCode;
@@ -95,6 +94,7 @@ fn policy_resolution() -> PolicyResolution {
         }))
         .unwrap(),
         source_code: None,
+        material: None,
     }
 }
 
@@ -798,4 +798,88 @@ fn a_persisted_specification_reopens_and_readmits_without_its_old_receipt() {
         .admit()
         .unwrap();
     assert_eq!(readmitted.digest(), admissible.digest());
+}
+
+#[test]
+fn unknown_cost_fields_fail_at_schema_validation() {
+    let error = serde_json::from_value::<InlineRequest>(json!({
+        "policyNamespace": "nanohorizon",
+        "policyName": "glm-5.3-flash",
+        "provider": "openrouter",
+        "modelId": "z-ai/glm-5.3-flash",
+        "seeds": [780005],
+        "maximumRollouts": 1,
+        "maximumModelCallsPerRollout": 10,
+        "maximumStepsPerRollout": 2000,
+        "costCeilingUsd": 2.45
+    }))
+    .unwrap_err()
+    .to_string();
+    assert!(error.contains("unknown field `costCeilingUsd`"), "{error}");
+}
+
+#[test]
+fn host_session_fields_are_stripped_before_inline_request_parse() {
+    let request = InlineRequest::from_tool_arguments(json!({
+        "policyNamespace": "nanohorizon",
+        "policyName": "glm-5.3-flash",
+        "provider": "openrouter",
+        "modelId": "z-ai/glm-5.3-flash",
+        "seeds": [780005],
+        "maximumRollouts": 1,
+        "maximumModelCallsPerRollout": 10,
+        "maximumStepsPerRollout": 2000,
+        "hardTotalCostUsd": 2.45,
+        "sessionRef": "330175fd-not-a-spec-field",
+        "openVisual": true
+    }))
+    .unwrap();
+    assert_eq!(request.hard_total_cost_usd, Some(2.45));
+    assert_eq!(request.maximum_model_calls_per_rollout, Some(10));
+    assert_eq!(request.maximum_steps_per_rollout, Some(2_000));
+}
+
+#[test]
+fn policy_source_bytes_do_not_fork_the_canonical_digest() {
+    let bytes = "fn act(): pass";
+    let material = PolicyMaterialRef {
+        source_root: "/GitHub/nanohorizon".into(),
+        repository_relative_path: "src/challenge/policy.py".into(),
+        tracked_revision: "rev-2026-08-26-a1".into(),
+        content_digest: digest_bytes(bytes.as_bytes()),
+    };
+    let mut with_bytes = context();
+    with_bytes.policy.as_mut().unwrap().source_code = Some(bytes.into());
+    with_bytes.policy.as_mut().unwrap().material = Some(material.clone());
+    let mut without_bytes = context();
+    without_bytes.policy.as_mut().unwrap().material = Some(material);
+    let without = admit(&request(), &without_bytes).unwrap();
+    let with = admit(&request(), &with_bytes).unwrap();
+    assert_eq!(
+        without.digest(),
+        with.digest(),
+        "in-memory policy bytes must not change the approved digest"
+    );
+    assert_eq!(
+        with.spec().recipe.policy.material.as_ref().unwrap().content_digest,
+        digest_bytes(bytes.as_bytes())
+    );
+}
+
+#[test]
+fn approved_limits_remain_non_null_through_admission() {
+    let admissible = admit(&request(), &context()).unwrap();
+    let limits = &admissible.spec().recipe.resource_limits;
+    assert_eq!(limits.maximum_model_calls_per_rollout.0.get(), 10);
+    assert_eq!(limits.maximum_steps_per_rollout.0.get(), 2_000);
+    assert_eq!(limits.hard_total_cost_micros.as_micros(), 2_450_000);
+    let approved = admissible
+        .clone()
+        .approve(binding_for(&admissible))
+        .unwrap();
+    assert_eq!(
+        approved.recipe().resource_limits.maximum_model_calls_per_rollout.0.get(),
+        10
+    );
+    assert_eq!(approved.digest(), admissible.digest());
 }

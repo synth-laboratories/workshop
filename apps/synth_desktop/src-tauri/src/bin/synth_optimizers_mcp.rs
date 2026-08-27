@@ -152,6 +152,79 @@ fn tools() -> Value {
     manifest
 }
 
+const INLINE_EVAL_ARGUMENT_FIELDS: &[&str] = &[
+    "containerId",
+    "container_id",
+    "family",
+    "policyNamespace",
+    "policy_namespace",
+    "policyName",
+    "policy_name",
+    "policySourcePath",
+    "policy_source_path",
+    "policyOverrides",
+    "policy_overrides",
+    "provider",
+    "modelId",
+    "model_id",
+    "seeds",
+    "maximumRollouts",
+    "maximum_rollouts",
+    "maximumModelCallsPerRollout",
+    "maximum_model_calls_per_rollout",
+    "maximumStepsPerRollout",
+    "maximum_steps_per_rollout",
+    "hardTotalCostUsd",
+    "hard_total_cost_usd",
+    "evaluator",
+    "sessionRef",
+    "session_ref",
+    "openVisual",
+    "open_visual",
+];
+
+fn reject_unknown_inline_fields(args: &Value) -> Result<(), String> {
+    let Some(object) = args.as_object() else {
+        return Ok(());
+    };
+    for key in object.keys() {
+        if !INLINE_EVAL_ARGUMENT_FIELDS.contains(&key.as_str()) {
+            return Err(format!(
+                "unknown inline evaluation field `{key}`; use hardTotalCostUsd, maximumModelCallsPerRollout, and maximumStepsPerRollout"
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn bind_caller_session(args: &Value) -> Result<Value, String> {
+    let mut payload = args.clone();
+    let current = env::var("SYNTH_SESSION_ID")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
+    let supplied = payload
+        .get("sessionRef")
+        .or_else(|| payload.get("session_ref"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned);
+    if let (Some(supplied), Some(current)) = (supplied.as_deref(), current.as_deref()) {
+        if supplied != current {
+            return Err(
+                "sessionRef does not match the authenticated MCP caller session".into(),
+            );
+        }
+    }
+    if let Some(session) = current.or(supplied) {
+        if let Some(object) = payload.as_object_mut() {
+            object.insert("sessionRef".into(), json!(session));
+        }
+    }
+    Ok(payload)
+}
+
 fn reject_secret_keys(args: &Value, allow_path: bool) -> Result<(), String> {
     let Some(object) = args.as_object() else {
         return Ok(());
@@ -182,6 +255,9 @@ fn call_tool(name: &str, args: &Value) -> Result<Value, String> {
             "import_local" | "create_run" | "import_checkpoint"
         );
         reject_secret_keys(&nested, allow_path)?;
+        if operation.starts_with("evaluation_") {
+            reject_unknown_inline_fields(&nested)?;
+        }
         let tool = match operation {
             "evaluation_spec_draft" => "optimizer_evaluation_spec_draft",
             "evaluation_spec_validate" => "optimizer_evaluation_spec_validate",
@@ -236,26 +312,38 @@ fn call_tool(name: &str, args: &Value) -> Result<Value, String> {
     let current_session = env::var("SYNTH_SESSION_ID").ok();
     let session_ref = || resolved_session_ref(args, current_session.as_deref());
     match name {
-        "optimizer_evaluation_spec_draft" => request(
-            "POST",
-            "/v1/optimizers/evaluations/spec/draft",
-            Some(args.clone()),
-        ),
-        "optimizer_evaluation_spec_validate" => request(
-            "POST",
-            "/v1/optimizers/evaluations/spec/validate",
-            Some(args.clone()),
-        ),
-        "optimizer_evaluation_spec_admit" => request(
-            "POST",
-            "/v1/optimizers/evaluations/spec/admit",
-            Some(args.clone()),
-        ),
-        "optimizer_evaluation_start" => request(
-            "POST",
-            "/v1/optimizers/evaluations/start",
-            Some(args.clone()),
-        ),
+        "optimizer_evaluation_spec_draft" => {
+            reject_unknown_inline_fields(args)?;
+            request(
+                "POST",
+                "/v1/optimizers/evaluations/spec/draft",
+                Some(bind_caller_session(args)?),
+            )
+        }
+        "optimizer_evaluation_spec_validate" => {
+            reject_unknown_inline_fields(args)?;
+            request(
+                "POST",
+                "/v1/optimizers/evaluations/spec/validate",
+                Some(bind_caller_session(args)?),
+            )
+        }
+        "optimizer_evaluation_spec_admit" => {
+            reject_unknown_inline_fields(args)?;
+            request(
+                "POST",
+                "/v1/optimizers/evaluations/spec/admit",
+                Some(bind_caller_session(args)?),
+            )
+        }
+        "optimizer_evaluation_start" => {
+            reject_unknown_inline_fields(args)?;
+            request(
+                "POST",
+                "/v1/optimizers/evaluations/start",
+                Some(bind_caller_session(args)?),
+            )
+        }
         "optimizer_list_algorithms" => request("GET", "/v1/optimizers/algorithms", None),
         "optimizer_list_recipes" => request("GET", "/v1/optimizers/recipes", None),
         "optimizer_inspect_local_mlx" => request("GET", "/v1/mlx/inspect", None),
@@ -672,5 +760,42 @@ mod tests {
         )
         .unwrap_err();
         assert!(err.contains("reject"));
+    }
+
+    #[test]
+    fn generic_evaluation_start_rejects_unknown_cost_fields() {
+        let err = call_tool(
+            "optimizer_manage",
+            &json!({
+                "operation": "evaluation_start",
+                "arguments": {
+                    "policyNamespace": "nanohorizon",
+                    "policyName": "glm-5.3-flash",
+                    "provider": "openrouter",
+                    "modelId": "z-ai/glm-5.3-flash",
+                    "seeds": [780005],
+                    "maximumRollouts": 1,
+                    "maximumModelCallsPerRollout": 10,
+                    "maximumStepsPerRollout": 2000,
+                    "costCeilingUsd": 2.45
+                }
+            }),
+        )
+        .unwrap_err();
+        assert!(err.contains("unknown inline evaluation field"), "{err}");
+        assert!(err.contains("hardTotalCostUsd"), "{err}");
+    }
+
+    #[test]
+    fn evaluation_start_binds_the_authenticated_caller_session() {
+        let payload = bind_caller_session(&json!({
+            "policyNamespace": "nanohorizon",
+            "hardTotalCostUsd": 2.45
+        }))
+        .unwrap();
+        assert!(
+            payload.get("sessionRef").is_none()
+                || payload["sessionRef"].as_str().is_some_and(|value| !value.is_empty())
+        );
     }
 }

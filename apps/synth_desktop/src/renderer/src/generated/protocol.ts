@@ -30,6 +30,8 @@ export const commands = {
 	dataContainersGet: (containerId: string) => typedError<ContainerDeployment, AppError>(__TAURI_INVOKE("data_containers_get", { containerId })),
 	dataContainersRegister: (request: ContainerRegisterRequest) => typedError<ContainerDeployment, AppError>(__TAURI_INVOKE("data_containers_register", { request })),
 	dataContainersProbe: (containerId: string) => typedError<ContainerDeployment, AppError>(__TAURI_INVOKE("data_containers_probe", { containerId })),
+	dataContainersReconcile: (containerId: string, sessionId: string) => typedError<ContainerDeployment, AppError>(__TAURI_INVOKE("data_containers_reconcile", { containerId, sessionId })),
+	dataContainersRestart: (containerId: string, sessionId: string) => typedError<ContainerDeployment, AppError>(__TAURI_INVOKE("data_containers_restart", { containerId, sessionId })),
 	dataTracesList: () => typedError<TraceRecord[], AppError>(__TAURI_INVOKE("data_traces_list")),
 	dataTracesGet: (traceId: string) => typedError<TraceRecord, AppError>(__TAURI_INVOKE("data_traces_get", { traceId })),
 	dataTraceMaterialize: (containerId: string, rolloutId: string) => typedError<unknown, AppError>(__TAURI_INVOKE("data_trace_materialize", { containerId, rolloutId })),
@@ -2095,12 +2097,12 @@ export type RecoveryNotice = {
 	previousOwnerInstanceId?: string | null,
 	lastHeartbeatAt?: string | null,
 	/**
-	 *  Which attempt a restart would be. `u32` rather than `i64`: this crosses
+	 *  Which continuation attempt this is. `u32` rather than `i64`: this crosses
 	 *  the specta boundary, which forbids BigInt-style types, and a retry count
 	 *  has no business being one.
 	 */
 	recoveryAttempt: number,
-	/**  Whether replaying the prompt can be offered as a plain retry. */
+	/**  Whether a reconciliation-first continuation turn may be offered. */
 	restartable: boolean,
 	/**
 	 *  Whether an external action's outcome is unknown, so a retry could
@@ -2114,8 +2116,9 @@ export type RecoveryNotice = {
 };
 
 /**
- *  The operator-facing prompt that produced the abandoned turn, so Restart can
- *  reuse it instead of asking the user to retype what they already sent.
+ *  The operator-facing prompt that produced the abandoned turn. It is retained
+ *  for diagnosis and display only; recovery must not replay it because work
+ *  completed just before the crash could otherwise be duplicated.
  */
 export type RecoveryPrompt = {
 	text: string,

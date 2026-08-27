@@ -555,6 +555,55 @@ impl RunProgress {
         Ok(self.state)
     }
 
+    /// Pre-dispatch or worker abort: every nonterminal child becomes terminal
+    /// before the parent does. A failed campaign cannot keep queued rows.
+    pub fn fail_pre_dispatch(&mut self) -> Result<(), StateTransitionError> {
+        let indexes: Vec<u32> = self.rollouts.keys().copied().collect();
+        for index in indexes {
+            let Some(RolloutStateHolder(state)) = self.rollouts[&index].state else {
+                continue;
+            };
+            if state.is_terminal() {
+                continue;
+            }
+            let next = if state.may_transition_to(RolloutState::Cancelled) {
+                RolloutState::Cancelled
+            } else {
+                RolloutState::Failed
+            };
+            self.transition_rollout(index, next)?;
+        }
+        if !self.state.is_terminal() {
+            self.transition_run(RunState::Failed)?;
+        }
+        Ok(())
+    }
+
+    pub fn reconciliation_errors(&self) -> Vec<String> {
+        let mut errors = Vec::new();
+        let nonterminal = self
+            .rollouts
+            .values()
+            .filter(|record| {
+                record
+                    .state
+                    .is_none_or(|RolloutStateHolder(state)| !state.is_terminal())
+            })
+            .count();
+        if self.state.is_terminal() && nonterminal > 0 {
+            errors.push(format!(
+                "This run is {}, but {nonterminal} {} still queued or running.",
+                self.state.as_str(),
+                if nonterminal == 1 { "rollout is" } else { "rollouts are" }
+            ));
+        }
+        let counted = self.rollouts.len();
+        if counted == 0 {
+            errors.push("This run has no rollout plan.".into());
+        }
+        errors
+    }
+
     /// A truthful projection for the UI. Counts are per state, and every
     /// unavailable aggregate is `null` rather than `0`.
     pub fn project(&self, requirements: EvidenceRequirements) -> Value {
@@ -635,6 +684,7 @@ impl RunProgress {
                     )
                 })
                 .collect::<BTreeMap<_, _>>(),
+            "reconciliationErrors": self.reconciliation_errors(),
         })
     }
 }
@@ -917,5 +967,47 @@ mod tests {
             assert_eq!(state.as_str(), expected);
             assert_eq!(serde_json::to_value(state).unwrap(), json!(expected));
         }
+    }
+
+    #[test]
+    fn pre_dispatch_failure_terminalizes_all_five_children() {
+        let mut progress = RunProgress::plan(5);
+        drive_to_running(&mut progress);
+        for index in 0..5 {
+            progress
+                .transition_rollout(index, RolloutState::Queued)
+                .unwrap();
+        }
+        progress.fail_pre_dispatch().unwrap();
+        assert_eq!(progress.state, RunState::Failed);
+        assert_eq!(progress.declared_rollouts(), 5);
+        assert_eq!(progress.in_flight(), 0);
+        assert!(progress.reconciliation_errors().is_empty());
+        let counts = progress.project(ALL)["rolloutStateCounts"].clone();
+        assert_eq!(counts["cancelled"], json!(5));
+        let total: u64 = counts
+            .as_object()
+            .unwrap()
+            .values()
+            .filter_map(Value::as_u64)
+            .sum();
+        assert_eq!(total, 5);
+    }
+
+    #[test]
+    fn parent_terminal_with_queued_children_is_an_explicit_reconciliation_error() {
+        let mut progress = RunProgress::plan(5);
+        drive_to_running(&mut progress);
+        for index in 0..5 {
+            progress
+                .transition_rollout(index, RolloutState::Queued)
+                .unwrap();
+        }
+        progress.state = RunState::Failed;
+        let errors = progress.reconciliation_errors();
+        assert!(
+            errors.iter().any(|error| error.contains("still queued or running")),
+            "{errors:?}"
+        );
     }
 }

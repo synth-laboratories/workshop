@@ -1390,7 +1390,39 @@ export function useAppController() {
 		try {
 			const container = await bridges.inventory.probeContainer(openContainer.id);
 			setOpenContainer(container);
-			showToast(`${container.name} · ${container.status}`);
+			showToast(container.status === "ready" ? `${container.name} is ready.` : `Couldn't reach ${container.name}.`);
+		} catch (reason) {
+			showToast(publicError(reason));
+		}
+	}, [openContainer, showToast]);
+
+	const repairOpenContainer = useCallback(async () => {
+		if (!openContainer || !bridges.inventory) return;
+		const sessionId = activeChatIdRef.current;
+		if (!sessionId) {
+			showToast("Open a conversation with this repository attached, then try again.");
+			return;
+		}
+		try {
+			const container = await bridges.inventory.reconcileContainer(openContainer.id, sessionId);
+			setOpenContainer(container);
+			showToast(`${container.name} launch files re-read.`);
+		} catch (reason) {
+			showToast(publicError(reason));
+		}
+	}, [openContainer, showToast]);
+
+	const restartOpenContainer = useCallback(async () => {
+		if (!openContainer || !bridges.inventory) return;
+		const sessionId = activeChatIdRef.current;
+		if (!sessionId) {
+			showToast("Open a conversation with this repository attached, then try again.");
+			return;
+		}
+		try {
+			const container = await bridges.inventory.restartContainer(openContainer.id, sessionId);
+			setOpenContainer(container);
+			showToast(container.status === "ready" ? `${container.name} is ready.` : `Couldn't reach ${container.name}.`);
 		} catch (reason) {
 			showToast(publicError(reason));
 		}
@@ -2216,6 +2248,8 @@ export function useAppController() {
 		toggleArtifact,
 		toggleContainer,
 		probeOpenContainer,
+		repairOpenContainer,
+		restartOpenContainer,
 		openVisualRecord,
 		state,
 		activeSessionId,
