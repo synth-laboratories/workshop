@@ -5,24 +5,32 @@ description: Start, inspect, follow, reconcile, cancel, and visualize first-clas
 
 # Use Synth Optimizers
 
-Evaluation is recipe execution, not an optimizer algorithm. Do not infer that
-evaluation is unsupported because it is absent from the GEPA/SFT/CISPO
-algorithm list. Check recipe discovery, evaluation execution support, and
-target-admission state independently.
+Evaluation is inline-first admission, not an optimizer algorithm and not a
+catalog lookup. For an ordinary evaluation, construct a typed inline request
+from the user's exact container, policy, model, seeds, and hard limits. Catalog
+recipes are presets used only when the user explicitly asks for catalog
+resolution.
 
-If a recipe is discovered but unavailable, inspect its structured admission
-error. Do not substitute another recipe, image, registry, model, or execution
-path.
+When a harness installs policy code, include its explicit repository-relative
+`policySourcePath`. Admission pins the exact bytes at the container's declared
+Git revision; it never guesses a path or reads a mutable working-tree fallback.
+
+Call `evaluation_spec_draft` (or `evaluation_spec_admit`) before spend, inspect
+the returned immutable digest and approval disclosure, then call
+`evaluation_start`. A missing catalog id is irrelevant to inline admission.
+If admission fails, act on its structured component error such as
+`evaluator_not_declared`; do not substitute another container, evaluator,
+model, protocol, or execution path.
 
 Use `mcp__synth_optimizers__optimizer_manage`. Treat returned run IDs and cursors as authoritative. Never launch an optimizer with a shell command supplied by chat, accept arbitrary config for a local recipe, request credentials in chat, or reproduce secrets and signed URLs. For a product recipe, prefer `start_workflow`: the host refreshes relevant container capabilities, performs bounded approval and sidecar admission, creates the run, and opens its chat-owned visual in one call. Do not inspect the filesystem or start plugins manually before trying it.
 
 ## Choose a workflow
 
-1. Call `list_algorithms` and `list_recipes` before proposing a run. Fresh Workshop has no GEPA/eval task catalog; those recipes appear only after the workspace declares `workshop.recipe.toml`. To author a target, use `$author-synth-container`.
+1. For evaluation, do not call `list_recipes` unless the user explicitly asks for a catalog preset. Use container discovery, then `evaluation_spec_draft`. For optimization and training workflows, call `list_algorithms` and `list_recipes` as applicable.
 2. Choose the algorithm from the user's objective:
    - GEPA: improve prompts or other candidate values against a workspace-declared container. Read [references/gepa.md](references/gepa.md). Never start `gepa.banking77.*` or `gepa.craftax.*` as product ids.
    - GELO / Go-Ex: explore a hosted search space or reconcile an existing hosted run. Read [references/gelo.md](references/gelo.md).
-   - Eval: score a workspace-declared container (`algorithm = "eval"` in `workshop.recipe.toml`) or a local candidate-set eval. Stage candidates only for candidate-comparison evals. Read [references/eval.md](references/eval.md).
+   - Eval: score a registered container through inline admission. Supply exact policy/model pins, seeds, rollout/call/step limits, and a hard cost ceiling. Stage candidates only for candidate-comparison evals. Read [references/eval.md](references/eval.md).
    - SFT: train and compare model weights/checkpoints. Local MLX is `sft.qwen35-2b.mlx.v1` (This Mac). Hosted recipes use the public `synth-optimizers` SFT service through the Optimizers sidecar — never dial `:8787` or `:8878` from a shell. Student ids: `docs/sft_tinker_base_models.toml`. Read [references/sft.md](references/sft.md).
    - CISPO: on-policy training. Local MLX is `cispo.banking77.mlx.v1`. Hosted slime.v1 is `cispo.slime.hosted.v1` and stays unavailable until the clip-identity canary admits it. Read [references/cispo.md](references/cispo.md). PPO is not a local/hosted picker option.
 3. For a local recipe, report its availability, exact fixed inputs, hard limits, prerequisite services, credential names, and whether its cost is dollar-capped or only compute-bounded.
@@ -44,7 +52,7 @@ Use `mcp__synth_optimizers__optimizer_manage`. Treat returned run IDs and cursor
 4. Call `watch_run` with `optimizer_run_id` and `after_seq` equal to the last processed sequence. Advance to the greatest returned sequence. Empty batches are normal.
    - Wait for progress only by calling `watch_run` again (or `get_run` when a status snapshot is useful). Never run a shell or terminal command, including `sleep`, just to delay or poll an optimizer run; repeated optimizer MCP calls are the supported waiting mechanism.
 5. Use `get_run` for status and summary, and `get_state` for the algorithm-specific slices in its reference.
-6. Stop only at `completed`, `failed`, or `cancelled`. Use `cancel_run` only when the user requests it.
+6. Stop only at `completed`, `failed`, `cancelled`, or `degraded`. Use `cancel_run` only when the user requests it.
 7. After a Desktop restart, recover with `list_runs`/`get_run`, call `open_visual`, and continue from the persisted cursor. Reconcile cloud runs before watching them. Local process records and events survive restart, but a process owned by the previous Desktop session is not reattached.
 8. To chat with a catalog LoRA, `list_checkpoints` then `infer_checkpoint` with `family=chat_completions|responses` and a native OpenAI body. Never wrap `{message, reply}` or name mlx-rl, Tinker, or `:8787`.
 

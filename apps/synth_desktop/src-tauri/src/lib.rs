@@ -1155,6 +1155,109 @@ pub(crate) async fn authorize_optimizer_recipe_start(
     Ok(run)
 }
 
+/// Inline-first evaluation admission. The catalog is intentionally absent:
+/// conversational evaluations arrive as typed constraints, are materialized
+/// from current container authority, and execute only after their immutable
+/// digest is approved.
+pub(crate) async fn authorize_inline_evaluation_start(
+    app: &tauri::AppHandle,
+    state: &CoreRuntime,
+    codex: &CodexManager,
+    request: optimizers::admission::InlineRequest,
+    session_ref: Option<String>,
+    open_visual: bool,
+) -> Result<OptimizerRunRecord, AppError> {
+    let session_id = session_ref
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let admissible = optimizers::inline_eval::admit_inline(state.optimizers(), request)
+        .await
+        .map_err(AppError::from)?;
+    let disclosure = admissible.approval_disclosure();
+    let recipe = &admissible.spec().recipe;
+    let max_cost_usd_micros = recipe.resource_limits.hard_total_cost_micros.as_micros();
+    let max_rollouts = recipe.rollout_plan.maximum_rollouts.0.get() as u64;
+    let paid_cap = session::approval::PaidComputeCap {
+        max_cost_usd_micros: Some(max_cost_usd_micros),
+        max_rollouts: Some(max_rollouts),
+    };
+    let requesting_agent = session_id
+        .map(|value| format!("Agent session {value}"))
+        .unwrap_or_else(|| "Workshop operator".into());
+    let provider = recipe.model.provider.as_str().to_string();
+    let model = recipe.model.model_id.as_str().to_string();
+    let paid_approval_id = codex
+        .approvals
+        .authorize_host(
+            app,
+            session_id,
+            session::approval::ApprovalKind::PaidCompute {
+                operation: "optimizer.evaluation.inline.start".into(),
+                parameters: disclosure,
+                estimated_cost_usd_micros: None,
+                requested_cap: paid_cap.clone(),
+                requesting_agent,
+                recipe_id: None,
+                dataset: None,
+                proposer_model: Some(model),
+                evaluator_model: None,
+                timeout_seconds: None,
+                credential_names: vec![format!("{provider}:workshop_secrets_proxy")],
+                preparation_digest: Some(admissible.digest().as_str().to_string()),
+            },
+        )
+        .await
+        .map_err(AppError::from)?;
+
+    let approved = optimizers::inline_eval::bind_approval(admissible, &paid_approval_id)
+        .map_err(AppError::from)?;
+    optimizers::inline_eval::reverify(state.optimizers(), &approved)
+        .await
+        .map_err(AppError::from)?;
+    let (run, event) = optimizers::inline_eval::execute(
+        state.optimizers(),
+        approved,
+        session_ref.clone(),
+    )
+    .await
+    .map_err(AppError::from)?;
+    publish_optimizer_event(app, state, event).await?;
+    let run = state
+        .optimizers()
+        .attach_paid_compute_approval(
+            run.id,
+            &paid_approval_id,
+            paid_cap.max_cost_usd_micros,
+            paid_cap.max_rollouts,
+        )
+        .await
+        .map_err(AppError::from)?;
+    if open_visual {
+        if let Some(visual_id) = run
+            .visual_refs
+            .iter()
+            .find(|reference| reference.kind == "visual")
+            .map(|reference| reference.id.clone())
+        {
+            let (_, event) = state
+                .visuals()
+                .show(visual_id.clone(), session_ref)
+                .await
+                .map_err(AppError::from)?;
+            publish_visual_event(app, state, event).await?;
+            let _ = app.emit(
+                crate::core_runtime::VISUAL_SHOW_CHANNEL,
+                serde_json::json!({
+                    "kind": "visual.show",
+                    "payload": { "visualId": visual_id }
+                }),
+            );
+        }
+    }
+    Ok(run)
+}
+
 /// Re-observe the target contract at workflow admission. A cached healthy bit
 /// is liveness evidence, not permission to reuse an older capability revision.
 /// Only container-backed product recipes need this lane; optimizer campaigns

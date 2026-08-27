@@ -573,21 +573,20 @@ impl RunProgress {
         // An aggregate is only reported when every rollout that should have
         // contributed actually did. A partial sum presented as a total is the
         // estimate-as-actual failure in a different costume.
-        let completed: Vec<&RolloutRecord> = self
+        let terminal: Vec<&RolloutRecord> = self
             .rollouts
             .values()
             .filter(|record| {
-                matches!(
-                    record.state,
-                    Some(RolloutStateHolder(RolloutState::Completed))
-                )
+                record
+                    .state
+                    .is_some_and(|RolloutStateHolder(state)| state.is_terminal())
             })
             .collect();
-        let total_cost_micros = if !completed.is_empty()
-            && completed.iter().all(|record| record.cost_micros.is_some())
+        let total_cost_micros = if terminal.len() == self.rollouts.len()
+            && terminal.iter().all(|record| record.cost_micros.is_some())
         {
             Some(
-                completed
+                terminal
                     .iter()
                     .map(|record| record.cost_micros.unwrap_or_default())
                     .sum::<u64>(),
@@ -595,11 +594,11 @@ impl RunProgress {
         } else {
             None
         };
-        let total_tokens = if !completed.is_empty()
-            && completed.iter().all(|record| record.total_tokens.is_some())
+        let total_tokens = if terminal.len() == self.rollouts.len()
+            && terminal.iter().all(|record| record.total_tokens.is_some())
         {
             Some(
-                completed
+                terminal
                     .iter()
                     .map(|record| record.total_tokens.unwrap_or_default())
                     .sum::<u64>(),
@@ -607,13 +606,14 @@ impl RunProgress {
         } else {
             None
         };
-        let mean_reward =
-            if !completed.is_empty() && completed.iter().all(|record| record.reward.is_some()) {
-                let sum: f64 = completed
+        let mean_reward = if terminal.len() == self.rollouts.len()
+            && terminal.iter().all(|record| record.reward.is_some())
+        {
+                let sum: f64 = terminal
                     .iter()
                     .map(|record| record.reward.unwrap_or_default())
                     .sum();
-                Some(sum / completed.len() as f64)
+                Some(sum / terminal.len() as f64)
             } else {
                 None
             };

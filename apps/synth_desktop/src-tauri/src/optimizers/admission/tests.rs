@@ -94,6 +94,7 @@ fn policy_resolution() -> PolicyResolution {
             "thinking_budget": 2048,
         }))
         .unwrap(),
+        source_code: None,
     }
 }
 
@@ -118,6 +119,7 @@ fn request() -> InlineRequest {
         family: Some("craftax".into()),
         policy_namespace: Some("nanohorizon".into()),
         policy_name: Some("glm-5.3-flash".into()),
+        policy_source_path: None,
         policy_overrides: None,
         provider: Some(provider()),
         model_id: Some(model_id()),

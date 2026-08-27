@@ -439,6 +439,18 @@ function PaidComputeApprovalModal({ line, onApprove, onReject }: {
 	const payload = line.approvalPayload;
 	const cap = payload?.requestedCap;
 	const estimated = payload?.estimatedCostUsdMicros;
+	const inline = payload?.operation === "optimizer.evaluation.inline.start" ? payload.parameters : undefined;
+	const inlineContainer = inline?.container && typeof inline.container === "object" && !Array.isArray(inline.container)
+		? inline.container as Record<string, unknown> : undefined;
+	const inlineEvaluator = inline?.evaluator && typeof inline.evaluator === "object" && !Array.isArray(inline.evaluator)
+		? inline.evaluator as Record<string, unknown> : undefined;
+	const inlinePolicy = inline?.policy && typeof inline.policy === "object" && !Array.isArray(inline.policy)
+		? inline.policy as Record<string, unknown> : undefined;
+	const inlineModel = inline?.model && typeof inline.model === "object" && !Array.isArray(inline.model)
+		? inline.model as Record<string, unknown> : undefined;
+	const inlineCredential = inline?.credentialRoute && typeof inline.credentialRoute === "object" && !Array.isArray(inline.credentialRoute)
+		? inline.credentialRoute as Record<string, unknown> : undefined;
+	const text = (value: unknown) => typeof value === "string" ? value : undefined;
 	const formatUsd = (micros: number) => `$${(micros / 1_000_000).toFixed(2)}`;
 	const approveRef = useRef<HTMLButtonElement>(null);
 	useEffect(() => {
@@ -454,7 +466,7 @@ function PaidComputeApprovalModal({ line, onApprove, onReject }: {
 	}, [line.approvalId, onReject]);
 	return <div className="paid-compute-modal-backdrop" data-testid="paid-compute-approval-modal">
 		<section className="paid-compute-modal" role="dialog" aria-modal="true" aria-labelledby="paid-compute-title">
-			<div className="approval-card-kicker">Paid compute</div>
+			<div className="approval-card-kicker">{inline ? "Inline evaluation · paid compute" : "Paid compute"}</div>
 			<h2 id="paid-compute-title">Approve this bounded run?</h2>
 			<dl>
 				<div><dt>Requesting agent</dt><dd>{payload?.requestingAgent ?? "Unknown agent"}</dd></div>
@@ -462,6 +474,20 @@ function PaidComputeApprovalModal({ line, onApprove, onReject }: {
 				{estimated != null ? <div><dt>Predicted spend</dt><dd>{formatUsd(estimated)}</dd></div> : <div><dt>Predicted spend</dt><dd>Not available</dd></div>}
 				{cap?.maxCostUsdMicros != null ? <div><dt>Cost cap</dt><dd>{formatUsd(cap.maxCostUsdMicros)}</dd></div> : null}
 				{cap?.maxRollouts != null ? <div><dt>Rollout cap</dt><dd>{cap.maxRollouts.toLocaleString()}</dd></div> : null}
+				{inline ? <>
+					<div><dt>Specification</dt><dd><code>{text(inline.executionSpecDigest) ?? "Missing digest"}</code></dd></div>
+					<div><dt>Source</dt><dd>Inline evaluation</dd></div>
+					<div><dt>Container</dt><dd><code>{text(inlineContainer?.containerId) ?? "Missing"}</code></dd></div>
+					<div><dt>Declaration</dt><dd><code>{text(inlineContainer?.declarationDigest) ?? "Missing"}</code></dd></div>
+					<div><dt>Evaluator</dt><dd><code>{text(inlineEvaluator?.evaluatorId) ?? "Missing"}</code></dd></div>
+					<div><dt>Scoring contract</dt><dd><code>{text(inlineEvaluator?.scoringDigest) ?? "Missing"}</code></dd></div>
+					<div><dt>Policy</dt><dd><code>{`${text(inlinePolicy?.namespace) ?? "?"}/${text(inlinePolicy?.name) ?? "?"}@${text(inlinePolicy?.revision) ?? "?"}`}</code></dd></div>
+					<div><dt>Model</dt><dd><code>{`${text(inlineModel?.provider) ?? "?"}/${text(inlineModel?.modelId) ?? "?"}`}</code></dd></div>
+					<div><dt>Seeds</dt><dd>{Array.isArray(inline.seeds) ? inline.seeds.join(", ") : "Missing"}</dd></div>
+					<div><dt>Calls / rollout</dt><dd>{typeof inline.maximumModelCallsPerRollout === "number" ? inline.maximumModelCallsPerRollout : "Missing"}</dd></div>
+					<div><dt>Steps / rollout</dt><dd>{typeof inline.maximumStepsPerRollout === "number" ? inline.maximumStepsPerRollout.toLocaleString() : "Missing"}</dd></div>
+					<div><dt>Credentials</dt><dd>{text(inlineCredential?.kind) ?? "Missing"} · {text(inlineCredential?.provider) ?? "Missing"}</dd></div>
+				</> : null}
 			</dl>
 			{payload?.parameters ? <details><summary>Run parameters</summary><pre>{JSON.stringify(payload.parameters, null, 2)}</pre></details> : null}
 			<p className="paid-compute-consent">I approve this run only within the cap shown above.</p>

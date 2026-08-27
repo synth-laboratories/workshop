@@ -574,6 +574,66 @@ impl OptimizerService {
         Ok(result)
     }
 
+    /// Resolve a trace by exact producer identity or exact import provenance.
+    ///
+    /// Import is intentionally idempotent across app and container restarts:
+    /// once the immutable trace identity is in Workshop's index, the container
+    /// is no longer required merely to bind that same evidence to its run.
+    pub(super) async fn indexed_eval_trace(
+        &self,
+        trace_id: &str,
+        container_id: &str,
+        run_id: &str,
+        rollout_id: &str,
+    ) -> Result<Option<Value>> {
+        let wanted_trace = trace_id.to_string();
+        let imported_title = format!("{rollout_id} · {container_id}");
+        let traces = self
+            .db
+            .clone()
+            .run(move |conn| {
+                let mut statement = conn.prepare(
+                    "SELECT id, digest FROM traces WHERE id=?1 OR title=?2 ORDER BY id",
+                )?;
+                let rows = statement.query_map(params![wanted_trace, imported_title], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                })?;
+                rows.collect::<rusqlite::Result<Vec<_>>>()
+                    .map_err(Into::into)
+            })
+            .await?;
+        if traces.len() > 1 {
+            bail!("multiple indexed traces claim rollout `{rollout_id}`");
+        }
+        let Some((trace_id, trace_digest)) = traces.into_iter().next() else {
+            return Ok(None);
+        };
+        let owned_run = run_id.to_string();
+        let owned_rollout = rollout_id.to_string();
+        let max_step = self
+            .db
+            .clone()
+            .run(move |conn| {
+                conn.query_row(
+                    "SELECT MAX(step) FROM optimizer_run_media
+                     WHERE optimizer_run_id=?1 AND rollout_id=?2",
+                    params![owned_run, owned_rollout],
+                    |row| row.get::<_, Option<i64>>(0),
+                )
+                .map_err(Into::into)
+            })
+            .await?;
+        Ok(Some(json!({
+            "sourceKind": "workshop_trace_index",
+            "trusted": true,
+            "duplicate": true,
+            "inspectable": true,
+            "traces": [{"traceId": trace_id, "digest": trace_digest}],
+            "note": "The exact producer-named trace was already indexed in Workshop.",
+            "maxStep": max_step,
+        })))
+    }
+
     /// Wire diagnostics in after both services exist. Idempotent; a service
     /// that is never attached simply emits nothing.
     pub fn attach_diagnostics(&self, service: Arc<crate::diagnostics::DiagnosticsService>) {
@@ -1182,6 +1242,16 @@ impl OptimizerService {
         })
         .await?;
         self.get(optimizer_run_id).await
+    }
+
+    /// Re-ingest already-sealed evidence for a terminal inline evaluation and
+    /// rebuild its authoritative projections. This operation never starts a
+    /// rollout and never accesses provider credentials.
+    pub async fn reconcile_evaluation_evidence(
+        &self,
+        optimizer_run_id: String,
+    ) -> Result<OptimizerRunRecord> {
+        super::container_eval::reconcile_evidence(self, &optimizer_run_id).await
     }
 
     /// After a process restart, locally persisted `running`/`queued`/`paused`
@@ -3446,6 +3516,8 @@ fn apply_event_to_run(run: &mut OptimizerRunRecord, event: &OptimizerEventEnvelo
             run.status = "failed".into();
         } else if terminal_status == "cancelled" {
             run.status = "cancelled".into();
+        } else if terminal_status == "degraded" {
+            run.status = "degraded".into();
         } else if run.status != "cancelled" {
             run.status = "completed".into();
         }
@@ -3570,6 +3642,7 @@ fn optimizer_terminal_status(event_type: &str) -> Option<&'static str> {
             Some("completed")
         }
         "optimizer.run.failed" | "run.failed" => Some("failed"),
+        "optimizer.run.degraded" | "run.degraded" => Some("degraded"),
         "optimizer.run.cancelled" | "run.cancelled" => Some("cancelled"),
         _ => None,
     }
@@ -3592,6 +3665,7 @@ fn authoritative_run_lifecycle(event: &OptimizerEventEnvelope) -> Option<Optimiz
             Some(OptimizerRunStatus::Completed)
         }
         "optimizer.run.failed" | "run.failed" => Some(OptimizerRunStatus::Failed),
+        "optimizer.run.degraded" | "run.degraded" => Some(OptimizerRunStatus::Degraded),
         "optimizer.run.cancelled" | "run.cancelled" => Some(OptimizerRunStatus::Cancelled),
         _ => None,
     }

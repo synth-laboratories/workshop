@@ -34,7 +34,6 @@ const EXPERIMENT_SCHEMA: &str = "synth.experiment.overview.v1";
 /// snapshot, so it keeps filling in while the campaign runs.
 const WORKBENCH_TEMPLATE: &str = "craftax.trace_workbench.v1";
 const EVAL_ALGORITHM_ID: &str = "eval";
-const COST_CEILING_USD: f64 = 0.50;
 const POLL_TIMEOUT: Duration = Duration::from_secs(120);
 const POLL_INTERVAL: Duration = Duration::from_millis(80);
 const DEFAULT_BLOCKING_EVAL_HTTP_TIMEOUT: Duration = Duration::from_secs(10 * 60);
@@ -97,6 +96,45 @@ struct EvalSpec {
 }
 
 impl EvalSpec {
+    fn from_execution_spec(
+        execution: &super::admission::ExecutionSpec,
+        family: String,
+        world_ref: String,
+    ) -> Result<Self> {
+        let recipe = &execution.recipe;
+        let policy = recipe
+            .policy
+            .configuration
+            .as_value()
+            .as_object()
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("approved inline policy configuration is not an object"))?;
+        Ok(Self {
+            recipe_id: format!("inline:{}", execution.digest()?.as_str()),
+            family,
+            title: format!("{} · {}", recipe.policy.qualified_name(), recipe.model.model_id),
+            question: format!(
+                "Score {} with the container-declared evaluator.",
+                recipe.policy.qualified_name()
+            ),
+            world_ref,
+            evaluation_plan_ref: recipe.evaluator.evaluator_id().as_str().to_string(),
+            harness: recipe.policy.namespace.clone(),
+            policy_config: recipe.policy.name.clone(),
+            policy,
+            policy_code: recipe.policy.source_code.clone(),
+            provider: recipe.model.provider.as_str().to_string(),
+            model: recipe.model.model_id.as_str().to_string(),
+            concurrency: recipe.rollout_plan.maximum_rollouts.0.get() as usize,
+            train: recipe.rollout_plan.seeds.iter().map(|seed| seed.0).collect(),
+            heldout: Vec::new(),
+            cost_ceiling_usd: recipe.resource_limits.hard_total_cost_micros.as_micros() as f64
+                / 1_000_000.0,
+            requires_credential_advertisement: false,
+            relay: RelaySettings::default(),
+        })
+    }
+
     fn requires_credential_advertisement(&self) -> bool {
         self.requires_credential_advertisement
     }
@@ -265,6 +303,82 @@ pub(super) async fn start(
     let spec = EvalSpec::from_workspace(&recipe, &workspace)?;
     let container =
         find_ready_container(service, &spec.family, request.container_id.as_deref()).await?;
+    start_eval(service, request.session_ref.clone(), spec, container, None).await
+}
+
+/// The inline executor accepts only the final, approval-bound stage.
+pub(super) async fn start_inline(
+    service: &OptimizerService,
+    approved: super::admission::ApprovedExecutionSpec,
+    session_ref: Option<String>,
+) -> Result<(OptimizerRunRecord, Option<crate::storage::AppEvent>)> {
+    let recipe = approved.recipe();
+    let (container, family) = find_ready_container_by_id(
+        service,
+        recipe.container.container_id.as_str(),
+    )
+    .await?;
+    let info = crate::http::http_client()
+        .get(format!("{}/info", container.base_url))
+        .send()
+        .await
+        .context("refresh inline container declaration")?
+        .error_for_status()
+        .context("inline container /info was not successful")?
+        .json::<Value>()
+        .await
+        .context("decode inline container /info")?;
+    let evaluator_ref = info
+        .pointer("/logical_service_ids/evaluator")
+        .and_then(Value::as_str)
+        .context("container /info no longer declares an evaluator")?;
+    if evaluator_ref != recipe.evaluator.evaluator_id().as_str() {
+        bail!(
+            "container evaluator changed after approval: approved {}, current {}",
+            recipe.evaluator.evaluator_id(),
+            evaluator_ref
+        );
+    }
+    let world_ref = info
+        .pointer("/logical_service_ids/world")
+        .and_then(Value::as_str)
+        .context("container /info does not declare a world identity")?
+        .to_string();
+    let spec = EvalSpec::from_execution_spec(approved.spec(), family, world_ref)?;
+    let admission = super::admission::EvaluationRunRecord::from_approved("pending", &approved);
+    start_eval(service, session_ref, spec, container, Some(admission)).await
+}
+
+async fn find_ready_container_by_id(
+    service: &OptimizerService,
+    container_id: &str,
+) -> Result<(ReadyContainer, String)> {
+    let wanted = container_id.to_string();
+    let family = service
+        .database()
+        .clone()
+        .run(move |conn| {
+            conn.query_row(
+                "SELECT task_family FROM containers WHERE id = ?1",
+                [&wanted],
+                |row| row.get::<_, Option<String>>(0),
+            )
+            .map_err(anyhow::Error::from)
+        })
+        .await?
+        .filter(|value| !value.trim().is_empty())
+        .context("approved container has no task family")?;
+    let container = find_ready_container(service, &family, Some(container_id)).await?;
+    Ok((container, family))
+}
+
+async fn start_eval(
+    service: &OptimizerService,
+    session_ref: Option<String>,
+    spec: EvalSpec,
+    container: ReadyContainer,
+    admission: Option<super::admission::EvaluationRunRecord>,
+) -> Result<(OptimizerRunRecord, Option<crate::storage::AppEvent>)> {
     preflight_container_credentials(&container, &spec).await?;
     let examples = spec.examples();
     let suffix = Uuid::new_v4().simple().to_string();
@@ -281,7 +395,9 @@ pub(super) async fn start(
         "policyRef": { "harness": spec.harness, "config": spec.policy_config },
         "taskPools": { "train": spec.train.len(), "heldout": spec.heldout.len() },
         "concurrency": spec.concurrency,
-        "costCeilingUsd": COST_CEILING_USD,
+        "costCeilingUsd": spec.cost_ceiling_usd,
+        "recipeSourceKind": if admission.is_some() { "inline" } else { "catalog" },
+        "startedAt": chrono::Utc::now().to_rfc3339(),
         "records": [],
         "progress": { "completed": 0, "total": examples.len(), "failed": 0 },
     });
@@ -291,7 +407,7 @@ pub(super) async fn start(
         objective: Some(spec.title.clone()),
         source: Some("local".into()),
         project_ref: Some(format!("{}@eval", spec.family)),
-        session_ref: request.session_ref.clone(),
+        session_ref,
         id: Some(run_id.clone()),
         execution_bindings: Some(vec![OptimizerExecutionBinding {
             kind: "container_http".into(),
@@ -329,6 +445,33 @@ pub(super) async fn start(
         local_path: None,
     };
     let (run, event) = service.create(create).await?;
+    if let Some(mut admission) = admission {
+        admission.optimizer_run_id = run.id.clone();
+        let declared_rollouts = examples.len();
+        let optimizer_run_id = run.id.clone();
+        service
+            .database()
+            .clone()
+            .run(move |conn| {
+                super::admission::insert_evaluation_run(conn, &admission)?;
+                let mut progress = super::admission::RunProgress::plan(declared_rollouts);
+                for next in [
+                    super::admission::RunState::Validating,
+                    super::admission::RunState::ReadyForApproval,
+                    super::admission::RunState::AwaitingApproval,
+                    super::admission::RunState::Admitted,
+                    super::admission::RunState::Starting,
+                ] {
+                    progress.transition_run(next)?;
+                }
+                for index in 0..declared_rollouts as u32 {
+                    progress.transition_rollout(index, super::admission::RolloutState::Queued)?;
+                }
+                super::admission::save_run_progress(conn, &optimizer_run_id, &progress)
+            })
+            .await
+            .context("persist approved inline execution specification and initial state")?;
+    }
     let visual_id = mint_experiment_visual(service, &run, &spec, examples.len()).await?;
     // Minted with the run, not when the first seed finishes: a workstation that
     // appears only after there is something to see cannot show a rollout
@@ -399,6 +542,7 @@ async fn project_worker_failure_visual(
         .map(|value| value as usize)
         .unwrap_or(planned_trials);
     let mean = mean_for_pool(&records, "train").or_else(|| mean_reward(&records));
+    let progress = inline_progress_projection(service, run_id).await?;
     let (updated, event) = service
         .visuals()
         .update(
@@ -413,6 +557,8 @@ async fn project_worker_failure_visual(
                     &records,
                     mean,
                     workbench_id,
+                    progress.as_ref(),
+                    run.started_at.as_deref().unwrap_or(&run.created_at),
                 )),
                 status: Some(VisualStatus::Failed),
                 renderer_kind: None,
@@ -553,7 +699,7 @@ async fn settle_worker_failure(service: &OptimizerService, run_id: &str, error: 
         // The degraded settlement itself failed. Fall through: a terminal event
         // the user can see beats a run stuck at `running` with no explanation.
     }
-    let _ = append_terminal(service, run_id, true, format!("{error:#}")).await;
+    let _ = append_terminal(service, run_id, "failed", format!("{error:#}")).await;
 }
 
 /// The Trace V5 workstation for this run's seeds.
@@ -598,6 +744,7 @@ async fn mint_experiment_visual(
     spec: &EvalSpec,
     total: usize,
 ) -> Result<String> {
+    let progress = inline_progress_projection(service, &run.id).await?;
     // One publication, not five calls: mint-or-reuse, bind to the run, publish
     // the durable show, select it for the owning chat, and shelve it in that
     // chat's Outputs. Repeating it returns the same visual.
@@ -611,7 +758,17 @@ async fn mint_experiment_visual(
             // first projection carries no drill-down target. `persist_progress`
             // supplies it from the next update onward; a seed row with no
             // target simply has no chip, rather than one that goes nowhere.
-            bindings: experiment_bindings(spec, "running", 0, total, &[], None, ""),
+            bindings: experiment_bindings(
+                spec,
+                "running",
+                0,
+                total,
+                &[],
+                None,
+                "",
+                progress.as_ref(),
+                &run.created_at,
+            ),
             metadata: json!({
                 "optimizerRunId": run.id,
                 "recipeId": spec.recipe_id,
@@ -633,10 +790,144 @@ fn experiment_bindings(
     records: &[Value],
     mean_reward: Option<f64>,
     workbench_id: &str,
+    progress_projection: Option<&Value>,
+    started_at: &str,
 ) -> Value {
     let train_mean = mean_for_pool(records, "train");
     let heldout_mean = mean_for_pool(records, "heldout");
-    let rollouts = records.iter().map(|record| seed_row(record, workbench_id)).collect::<Vec<_>>();
+    let rollouts = spec
+        .examples()
+        .iter()
+        .enumerate()
+        .map(|(index, example)| {
+            let record = records
+                .iter()
+                .find(|record| record.get("seed").and_then(Value::as_i64) == Some(example.seed));
+            seed_row(
+                record,
+                example,
+                progress_projection
+                    .and_then(|projection| projection.get("rollouts"))
+                    .and_then(|rollouts| rollouts.get(index.to_string()))
+                    .and_then(|rollout| rollout.get("state"))
+                    .and_then(Value::as_str),
+                workbench_id,
+            )
+        })
+        .collect::<Vec<_>>();
+    let state_counts = progress_projection
+        .and_then(|projection| projection.get("rolloutStateCounts"))
+        .cloned()
+        .unwrap_or_else(|| json!({
+            "completed": records.iter().filter(|record| is_successful_eval_record(record)).count(),
+            "failed": records.iter().filter(|record| !is_successful_eval_record(record)).count(),
+            "queued": total.saturating_sub(records.len()),
+        }));
+    let active = progress_projection
+        .and_then(|projection| projection.get("inFlight"))
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let elapsed = elapsed_label(started_at);
+    let usage = usage_from_records(records, spec.cost_ceiling_usd);
+    let total_tokens = usage.prompt_tokens + usage.completion_tokens;
+    let phase = if matches!(status, "completed" | "failed" | "cancelled" | "degraded") {
+        status.to_string()
+    } else if active > 0 {
+        format!("running · {active} active")
+    } else {
+        "queued".to_string()
+    };
+    let terminal = matches!(status, "completed" | "failed" | "cancelled" | "degraded");
+    let eta = if terminal {
+        "terminal".to_string()
+    } else {
+        eta_label(&elapsed, completed, total)
+    };
+    let usage_label = if total_tokens > 0 {
+        format!("{total_tokens} tokens")
+    } else if status == "running" {
+        "awaiting telemetry".to_string()
+    } else {
+        "unavailable".to_string()
+    };
+    let cost_label = usage
+        .cost_usd
+        .map(|cost| format!("${cost:.4} / ${:.2}", spec.cost_ceiling_usd))
+        .unwrap_or_else(|| {
+            if status == "running" {
+                format!("awaiting telemetry / ${:.2}", spec.cost_ceiling_usd)
+            } else {
+                format!("unavailable / ${:.2}", spec.cost_ceiling_usd)
+            }
+        });
+    let mut limitations = vec![
+        "Baseline-only. No candidate generation and no uplift claim.".to_string(),
+    ];
+    let failed_rollouts = records
+        .iter()
+        .filter(|record| record.get("status").and_then(Value::as_str) == Some("failed"))
+        .count();
+    if failed_rollouts > 0 {
+        limitations.push(format!("{failed_rollouts} of {total} rollouts failed."));
+    }
+    let trace_import_failures = records
+        .iter()
+        .filter(|record| record.pointer("/sealedTrace/imported").and_then(Value::as_bool) == Some(false))
+        .count();
+    if trace_import_failures > 0 {
+        limitations.push(format!(
+            "Workshop could not import {trace_import_failures} sealed trace bundles; producer trace identities remain available."
+        ));
+    }
+    let relay_degradations = records
+        .iter()
+        .filter(|record| {
+            record
+                .pointer("/relay/degradations")
+                .and_then(Value::as_array)
+                .is_some_and(|items| !items.is_empty())
+        })
+        .count();
+    if relay_degradations > 0 {
+        limitations.push(format!(
+            "Live relay degraded for {relay_degradations} rollouts; terminal container evidence was still collected."
+        ));
+    }
+    if terminal && usage.cost_usd.is_none() {
+        limitations.push("The producer reported no cost telemetry; cost is unavailable, not zero.".to_string());
+    }
+    let assessment_summary = match status {
+        "running" => format!(
+            "The exact baseline is active: {completed} of {total} rollouts have reached terminal evidence."
+        ),
+        "completed" => format!(
+            "All {total} approved rollouts completed{}.",
+            mean_reward
+                .map(|value| format!(" with mean reward {value:.3}"))
+                .unwrap_or_default()
+        ),
+        "degraded" => format!(
+            "The run is terminal but partial: {completed} of {total} rollouts completed and {failed_rollouts} failed."
+        ),
+        "failed" => format!(
+            "The evaluation failed: {failed_rollouts} of {total} rollouts did not complete successfully."
+        ),
+        "cancelled" => format!(
+            "The evaluation was cancelled after {completed} of {total} rollouts completed."
+        ),
+        other => format!("The evaluation reported unsupported status `{other}`."),
+    };
+    let next_step = match status {
+        "running" => "Continue following this authoritative run to a terminal state.",
+        "degraded" if trace_import_failures > 0 => {
+            "Reconcile the already-sealed trace evidence; do not rerun paid compute."
+        }
+        "degraded" => "Inspect the failed rollout and retained traces before drawing a conclusion.",
+        "failed" => "Inspect the per-seed failure reasons before deciding whether to run again.",
+        "cancelled" => "Start a new approved run only if the cancelled work is still required.",
+        "completed" => "Use the retained per-seed traces to inspect behavior behind the aggregate.",
+        _ => "Inspect the terminal evidence.",
+    };
     json!({
         "schemaVersion": VISUAL_BINDINGS_SCHEMA_VERSION,
         "inputs": [{
@@ -650,9 +941,33 @@ fn experiment_bindings(
                 "question": spec.question,
                 "status": status,
                 "progress": {
-                    "phase": if status == "completed" { "done" } else { "scoring" },
+                    "phase": phase,
                     "completed": completed,
                     "total": total,
+                    "active": active,
+                    "stateCounts": state_counts,
+                    "elapsed": elapsed,
+                    "eta": eta,
+                    "usage": usage_label,
+                    "cost": cost_label,
+                },
+                "task": {
+                    "name": spec.family,
+                    "evaluator": spec.evaluation_plan_ref,
+                    "world": spec.world_ref,
+                    "seeds": spec.train.len() + spec.heldout.len(),
+                },
+                "runtime": {
+                    "model": spec.model,
+                    "provider": spec.provider,
+                    "policy": format!("{} / {}", spec.harness, spec.policy_config),
+                    "parallelism": spec.concurrency,
+                    "maximumModelCallsPerRollout": spec.policy.get("max_calls").cloned().unwrap_or(Value::Null),
+                    "maximumStepsPerRollout": spec.policy.get("max_steps").cloned().unwrap_or(Value::Null),
+                },
+                "provenance": {
+                    "source": if spec.recipe_id.starts_with("inline:") { "inline" } else { "catalog" },
+                    "executionSpecDigest": spec.recipe_id.strip_prefix("inline:").unwrap_or("catalog recipe"),
                 },
                 "metrics": [
                     {"label": "Train mean", "value": train_mean, "detail": if train_mean.is_none() { "omitted until the split is complete" } else { "mean of present rewards" }},
@@ -661,6 +976,10 @@ fn experiment_bindings(
                 ],
                 "results": {
                     "rollouts": rollouts,
+                },
+                "assessment": {
+                    "summary": assessment_summary,
+                    "nextStep": next_step,
                 },
                 // Each seed opens the workstation, which is bound to the run
                 // rather than to this snapshot — so a seed row is a way in, not
@@ -674,18 +993,21 @@ fn experiment_bindings(
                     "score": mean_reward
                 }],
                 "records": records,
-                "limitations": [
-                    "Baseline-only. No candidate generation and no uplift claim."
-                ]
+                "limitations": limitations
             }
         }]
     })
 }
 
 /// One seed's row in the overview, and its way into the workstation.
-fn seed_row(record: &Value, workbench_id: &str) -> Value {
-    let seed = record.get("seed").cloned().unwrap_or(Value::Null);
-    let relay = record.get("relay");
+fn seed_row(
+    record: Option<&Value>,
+    example: &EvalExample,
+    state: Option<&str>,
+    workbench_id: &str,
+) -> Value {
+    let seed = json!(example.seed);
+    let relay = record.and_then(|record| record.get("relay"));
     let frames = relay
         .and_then(|relay| relay.get("framesRetained"))
         .and_then(Value::as_u64);
@@ -702,19 +1024,90 @@ fn seed_row(record: &Value, workbench_id: &str) -> Value {
         _ => "no relay receipt was recorded for this seed".to_string(),
     };
     json!({
-        "id": record.get("rolloutId").cloned().unwrap_or(Value::Null),
+        "id": record.and_then(|record| record.get("rolloutId")).cloned().unwrap_or_else(|| json!(format!("planned:{}", example.seed))),
         "label": match seed { Value::Null => "seed".to_string(), ref value => format!("Seed {value}") },
         "seed": seed,
-        "reward": record.get("reward").cloned().unwrap_or(Value::Null),
-        "status": record.get("status").cloned().unwrap_or(Value::Null),
-        "stopReason": record.get("rewardStatus").cloned().unwrap_or(Value::Null),
+        "reward": record.and_then(|record| record.get("reward")).cloned().unwrap_or(Value::Null),
+        "status": state.map(|value| json!(value)).or_else(|| record.and_then(|record| record.get("status")).cloned()).unwrap_or_else(|| json!("planned")),
+        "stopReason": record.and_then(rollout_stop_reason).unwrap_or(Value::Null),
+        "steps": record.and_then(|record| record.get("steps").filter(|value| !value.is_null()).or_else(|| record.pointer("/sealedTrace/maxStep"))).cloned().unwrap_or(Value::Null),
+        "modelCalls": record.and_then(|record| record.pointer("/usage/calls")).cloned().unwrap_or(Value::Null),
+        "tokens": record.and_then(|record| record.get("usage")).map(total_tokens_from_usage).flatten(),
+        "costUsd": record.and_then(|record| record.get("usage")).and_then(lane_cost_usd),
+        "traceId": record.and_then(|record| {
+            record
+                .pointer("/sealedTrace/traces/0/traceId")
+                .or_else(|| record.pointer("/trace/bundle_trace_id"))
+                .or_else(|| record.pointer("/trace/trace_id"))
+        }).cloned().unwrap_or(Value::Null),
         "achievements": record
+            .and_then(|record| record
             .get("checkpointAchievements")
-            .and_then(Value::as_array)
+            .and_then(Value::as_array))
             .map(Vec::len),
         "summary": summary,
         "visualId": workbench_id,
     })
+}
+
+fn rollout_stop_reason(record: &Value) -> Option<Value> {
+    if record.get("status").and_then(Value::as_str) == Some("failed") {
+        return Some(
+            record
+                .get("error")
+                .cloned()
+                .unwrap_or_else(|| json!("producer reported failed without a reason")),
+        );
+    }
+    record.get("rewardStatus").cloned()
+}
+
+fn total_tokens_from_usage(usage: &Value) -> Option<Value> {
+    if let Some(total) = u64_field(usage, &["total_tokens", "totalTokens"]) {
+        return Some(json!(total));
+    }
+    let prompt = u64_field(usage, &["prompt_tokens", "promptTokens"]);
+    let completion = u64_field(usage, &["completion_tokens", "completionTokens"]);
+    prompt.zip(completion).map(|(prompt, completion)| json!(prompt + completion))
+}
+
+fn elapsed_label(started_at: &str) -> String {
+    let elapsed = chrono::DateTime::parse_from_rfc3339(started_at)
+        .ok()
+        .map(|started| chrono::Utc::now().signed_duration_since(started.with_timezone(&chrono::Utc)))
+        .map(|duration| duration.num_seconds().max(0) as u64)
+        .unwrap_or(0);
+    if elapsed >= 60 {
+        format!("{}m {:02}s", elapsed / 60, elapsed % 60)
+    } else {
+        format!("{elapsed}s")
+    }
+}
+
+fn eta_label(elapsed: &str, completed: usize, total: usize) -> String {
+    if completed == 0 {
+        return "estimating after first completion".to_string();
+    }
+    if completed >= total {
+        return "complete".to_string();
+    }
+    let seconds = elapsed
+        .split_whitespace()
+        .fold(0_u64, |sum, part| {
+            if let Some(minutes) = part.strip_suffix('m').and_then(|value| value.parse::<u64>().ok()) {
+                sum + minutes * 60
+            } else if let Some(seconds) = part.strip_suffix('s').and_then(|value| value.parse::<u64>().ok()) {
+                sum + seconds
+            } else {
+                sum
+            }
+        });
+    let remaining = seconds.saturating_mul((total - completed) as u64) / completed as u64;
+    if remaining >= 60 {
+        format!("~{}m {:02}s", remaining / 60, remaining % 60)
+    } else {
+        format!("~{remaining}s")
+    }
 }
 
 fn mean_for_pool(records: &[Value], pool: &str) -> Option<f64> {
@@ -742,6 +1135,7 @@ async fn run_eval_worker(
 ) -> Result<()> {
     let _revoke = crate::secrets::RevokeRunOnDrop(run_id.clone());
     let _ownership = service.hold_run_ownership(&run_id)?;
+    transition_inline_run(&service, &run_id, super::admission::RunState::Running).await?;
     evidence(
         "run_started",
         append_status(&service, &run_id, "optimizer.run.started", "running"),
@@ -755,20 +1149,34 @@ async fn run_eval_worker(
         append_eval_plan(&service, &run_id, spec, &examples),
     )
     .await?;
+    evidence(
+        "initial_progress_projection",
+        persist_progress(
+            &service,
+            &run_id,
+            spec,
+            &visual_id,
+            &workbench_id,
+            &[],
+            examples.len(),
+            "running",
+        ),
+    )
+    .await?;
     // These recipes intentionally use the container's blocking rollout mode.
     // HealthBench can make one policy call plus many rubric-grader calls, so
     // the generic UI HTTP timeout is not an honest bound for this endpoint.
     let client = crate::http::http_client_with_timeout(spec.blocking_http_timeout());
-    let info = match client
+    let info = client
         .get(format!("{}/info", container.base_url))
         .send()
         .await
-    {
-        Ok(response) if response.status().is_success() => {
-            response.json::<Value>().await.unwrap_or(json!({}))
-        }
-        _ => json!({}),
-    };
+        .context("refresh container declaration before rollout dispatch")?
+        .error_for_status()
+        .context("container declaration refresh was not successful")?
+        .json::<Value>()
+        .await
+        .context("decode refreshed container declaration")?;
     let policy_pin =
         register_policy_pin(&client, &container.base_url, spec, &info, &run_id).await?;
     persist_policy_pin(&service, &run_id, &policy_pin).await?;
@@ -786,8 +1194,8 @@ async fn run_eval_worker(
         .max(1) as usize;
     let permits = spec.concurrency.min(scale_leases).max(1);
     let total = examples.len();
-    let mut remaining = examples.into_iter();
-    let mut tasks: JoinSet<(EvalExample, Result<Value>)> = JoinSet::new();
+    let mut remaining = examples.into_iter().enumerate();
+    let mut tasks: JoinSet<(u32, EvalExample, Result<Value>)> = JoinSet::new();
     let mut records = Vec::new();
     let mut halt = None::<String>;
 
@@ -796,15 +1204,44 @@ async fn run_eval_worker(
             bail!("container eval cancelled");
         }
         while tasks.len() < permits && halt.is_none() {
-            if over_cost_ceiling(&records) {
+            if over_cost_ceiling(&records, spec.cost_ceiling_usd) {
                 halt = Some(format!(
-                    "cost ceiling ${COST_CEILING_USD:.2} reached; remaining rollouts were not dispatched"
+                    "cost ceiling ${:.2} reached; remaining rollouts were not dispatched",
+                    spec.cost_ceiling_usd
                 ));
                 break;
             }
-            let Some(example) = remaining.next() else {
+            let Some((index, example)) = remaining.next() else {
                 break;
             };
+            transition_inline_rollout(
+                &service,
+                &run_id,
+                index as u32,
+                super::admission::RolloutState::Starting,
+            )
+            .await?;
+            transition_inline_rollout(
+                &service,
+                &run_id,
+                index as u32,
+                super::admission::RolloutState::Running,
+            )
+            .await?;
+            evidence(
+                "dispatch_progress_projection",
+                persist_progress(
+                    &service,
+                    &run_id,
+                    spec,
+                    &visual_id,
+                    &workbench_id,
+                    &records,
+                    total,
+                    "running",
+                ),
+            )
+            .await?;
             let client = client.clone();
             let media_client = media_client.clone();
             let base = media_origin.clone();
@@ -826,23 +1263,23 @@ async fn run_eval_worker(
                     policy_pin: &pin,
                 };
                 let result = run_one_example(&trial, example, &mut trial_cancel).await;
-                (example, result)
+                (index as u32, example, result)
             });
         }
         let Some(joined) = tasks.join_next().await else {
             break;
         };
-        let record = match joined {
-            Ok((_example, Ok(record))) => record,
-            Ok((example, Err(error))) => {
-                failed_record(example, spec, &policy_pin, format!("{error:#}"))
+        let (index, record) = match joined {
+            Ok((index, _example, Ok(record))) => (index, record),
+            Ok((index, example, Err(error))) => (
+                index,
+                failed_record(example, spec, &policy_pin, format!("{error:#}")),
+            ),
+            Err(error) => {
+                return Err(error).context("inline rollout task could not be joined");
             }
-            Err(error) => json!({
-                "status": "failed",
-                "error": error.to_string(),
-                "policyRef": policy_pin,
-            }),
         };
+        record_inline_rollout_terminal(&service, &run_id, index, &record).await?;
         evidence(
             "trial_terminal",
             append_eval_terminal(&service, &run_id, spec, &record),
@@ -865,26 +1302,37 @@ async fn run_eval_worker(
         .await?;
     }
 
-    for example in remaining {
-        records.push(failed_record(
+    for (index, example) in remaining {
+        let record = failed_record(
             example,
             spec,
             &policy_pin,
             halt.clone()
                 .unwrap_or_else(|| "required rollout was not dispatched".into()),
-        ));
+        );
+        transition_inline_rollout(
+            &service,
+            &run_id,
+            index as u32,
+            super::admission::RolloutState::Failed,
+        )
+        .await?;
+        records.push(record);
     }
 
     let failed = records
         .iter()
         .filter(|row| !is_successful_eval_record(row))
         .count();
-    let budget_exceeded = over_cost_ceiling(&records);
-    let status = if failed == 0 && records.len() == total && !budget_exceeded {
+    let budget_exceeded = over_cost_ceiling(&records, spec.cost_ceiling_usd);
+    let legacy_status = if failed == 0 && records.len() == total && !budget_exceeded {
         "completed"
     } else {
         "failed"
     };
+    let status = settle_inline_progress(&service, &run_id)
+        .await?
+        .unwrap_or(legacy_status);
     evidence(
         "progress_projection",
         persist_progress(
@@ -905,13 +1353,13 @@ async fn run_eval_worker(
     )
     .await?;
     let mut detail = String::new();
-    if status == "failed" {
+    if status != "completed" {
         let mut parts = Vec::new();
         if failed != 0 || records.len() != total {
             parts.push(format!("{failed} of {total} required rollouts failed"));
         }
         if budget_exceeded {
-            parts.push(format!("cost exceeded ${COST_CEILING_USD:.2}"));
+            parts.push(format!("cost exceeded ${:.2}", spec.cost_ceiling_usd));
         }
         if let Some(halt) = halt {
             parts.push(halt);
@@ -920,10 +1368,131 @@ async fn run_eval_worker(
     }
     evidence(
         "run_terminal",
-        append_terminal(&service, &run_id, status == "failed", detail),
+        append_terminal(&service, &run_id, status, detail),
     )
     .await?;
     Ok(())
+}
+
+async fn transition_inline_run(
+    service: &OptimizerService,
+    run_id: &str,
+    next: super::admission::RunState,
+) -> Result<()> {
+    let run_id = run_id.to_string();
+    service.database().clone().run(move |conn| {
+        let Some(mut progress) = super::admission::load_run_progress(conn, &run_id)? else {
+            return Ok(());
+        };
+        progress.transition_run(next)?;
+        super::admission::save_run_progress(conn, &run_id, &progress)
+    }).await
+}
+
+async fn transition_inline_rollout(
+    service: &OptimizerService,
+    run_id: &str,
+    index: u32,
+    next: super::admission::RolloutState,
+) -> Result<()> {
+    let run_id = run_id.to_string();
+    service.database().clone().run(move |conn| {
+        let Some(mut progress) = super::admission::load_run_progress(conn, &run_id)? else {
+            return Ok(());
+        };
+        progress.transition_rollout(index, next)?;
+        super::admission::save_run_progress(conn, &run_id, &progress)
+    }).await
+}
+
+async fn record_inline_rollout_terminal(
+    service: &OptimizerService,
+    run_id: &str,
+    index: u32,
+    record: &Value,
+) -> Result<()> {
+    let run_id = run_id.to_string();
+    let record = record.clone();
+    service.database().clone().run(move |conn| {
+        let Some(mut progress) = super::admission::load_run_progress(conn, &run_id)? else {
+            return Ok(());
+        };
+        let successful = is_successful_eval_record(&record);
+        progress.transition_rollout(
+            index,
+            if successful {
+                super::admission::RolloutState::Completed
+            } else {
+                super::admission::RolloutState::Failed
+            },
+        )?;
+        let usage = record.get("usage").unwrap_or(&Value::Null);
+        let prompt = usage.get("prompt_tokens").and_then(Value::as_u64);
+        let completion = usage.get("completion_tokens").and_then(Value::as_u64);
+        let total_tokens = usage
+            .get("total_tokens")
+            .and_then(Value::as_u64)
+            .or_else(|| prompt.zip(completion).map(|(a, b)| a + b));
+        let cost_micros = usage
+            .get("cost_micros")
+            .and_then(Value::as_u64)
+            .or_else(|| usage.get("costUsd").and_then(Value::as_f64).map(|v| (v * 1_000_000.0).round() as u64));
+        let rollout_id = record
+            .get("rolloutId")
+            .and_then(Value::as_str)
+            .map(super::admission::RolloutId::new)
+            .transpose()?;
+        progress.record_evidence(index, super::admission::RolloutRecord {
+            state: None,
+            rollout_id,
+            reward: record.get("reward").and_then(Value::as_f64),
+            trace_ref: record
+                .pointer("/sealedTrace/traceId")
+                .or_else(|| record.pointer("/sealedTrace/id"))
+                .or_else(|| record.pointer("/sealedTrace/traces/0/traceId"))
+                .or_else(|| record.pointer("/trace/bundle_trace_id"))
+                .or_else(|| record.pointer("/trace/trace_id"))
+                .and_then(Value::as_str)
+                .map(str::to_owned),
+            cost_micros,
+            total_tokens,
+        });
+        super::admission::save_run_progress(conn, &run_id, &progress)
+    }).await
+}
+
+async fn settle_inline_progress<'a>(
+    service: &OptimizerService,
+    run_id: &str,
+) -> Result<Option<&'a str>> {
+    // Revocation is explicit here; the drop guard remains defense in depth.
+    if let Some(secrets) = crate::secrets::live() {
+        secrets.revoke_run(run_id).context("revoke inline evaluation credential capability")?;
+    }
+    let run_id = run_id.to_string();
+    service.database().clone().run(move |conn| {
+        let Some(record) = super::admission::load_evaluation_run(conn, &run_id)? else {
+            return Ok(None);
+        };
+        let Some(mut progress) = super::admission::load_run_progress(conn, &run_id)? else {
+            bail!("inline evaluation `{run_id}` has no persisted rollout state");
+        };
+        progress.credential_revocation_confirmed = true;
+        let contract = &record.execution_spec.recipe.output_contract;
+        let state = progress.settle(super::admission::EvidenceRequirements {
+            requires_reward: contract.requires_reward,
+            requires_trace: contract.requires_trace,
+            requires_usage: contract.requires_usage,
+        })?;
+        super::admission::save_run_progress(conn, &run_id, &progress)?;
+        Ok(Some(match state {
+            super::admission::RunState::Completed => "completed",
+            super::admission::RunState::Failed => "failed",
+            super::admission::RunState::Cancelled => "cancelled",
+            super::admission::RunState::Degraded => "degraded",
+            other => bail!("settlement returned non-terminal state `{other}`"),
+        }))
+    }).await
 }
 
 /// The campaign plan and one queued event per planned trial, appended as one
@@ -1140,7 +1709,7 @@ async fn register_policy_pin(
             entry.get("harness").and_then(Value::as_str) == Some(spec.harness.as_str())
                 && entry.get("config").and_then(Value::as_str) == Some(spec.policy_config.as_str())
         });
-    if !spec.requires_credential_advertisement() && advertised {
+    if spec.policy_code.is_none() && !spec.requires_credential_advertisement() && advertised {
         return Ok(json!({
             "harness": spec.harness,
             "config": spec.policy_config,
@@ -1251,12 +1820,236 @@ fn failed_record(example: EvalExample, spec: &EvalSpec, policy_pin: &Value, erro
     })
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum EvaluationProjectionStatus {
+    Running,
+    Completed,
+    Failed,
+    Cancelled,
+    Degraded,
+}
+
+impl EvaluationProjectionStatus {
+    fn parse(value: &str) -> Result<Self> {
+        match value {
+            "running" => Ok(Self::Running),
+            "completed" => Ok(Self::Completed),
+            "failed" => Ok(Self::Failed),
+            "cancelled" => Ok(Self::Cancelled),
+            "degraded" => Ok(Self::Degraded),
+            other => bail!("unknown evaluation projection status `{other}`"),
+        }
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Running => "running",
+            Self::Completed => "completed",
+            Self::Failed => "failed",
+            Self::Cancelled => "cancelled",
+            Self::Degraded => "degraded",
+        }
+    }
+
+    fn is_terminal(self) -> bool {
+        !matches!(self, Self::Running)
+    }
+
+    fn from_run_state(state: super::admission::RunState) -> Result<Self> {
+        match state {
+            super::admission::RunState::Completed => Ok(Self::Completed),
+            super::admission::RunState::Failed => Ok(Self::Failed),
+            super::admission::RunState::Cancelled => Ok(Self::Cancelled),
+            super::admission::RunState::Degraded => Ok(Self::Degraded),
+            other => bail!("evaluation evidence reconciliation requires a terminal durable state, found `{other}`"),
+        }
+    }
+}
+
+/// Retry only the evidence lane of an existing inline evaluation.
+///
+/// This never dispatches compute and never mints a credential capability. It
+/// re-imports the container's already-sealed Trace V5 bundles, binds their
+/// identities into the durable rollout state, and rebuilds both Workshop
+/// visuals from the authoritative run record. Every required identity is read
+/// from the approved specification or terminal record; none is guessed.
+pub(super) async fn reconcile_evidence(
+    service: &OptimizerService,
+    run_id: &str,
+) -> Result<OptimizerRunRecord> {
+    let run = service.get(run_id.to_string()).await?;
+    if run.algorithm_id != EVAL_ALGORITHM_ID {
+        bail!("optimizer run `{run_id}` is not an evaluation run");
+    }
+    let summary = run
+        .summary
+        .as_object()
+        .context("evaluation run summary is not an object")?;
+    let projected_status = EvaluationProjectionStatus::parse(
+        summary
+            .get("evalStatus")
+            .and_then(Value::as_str)
+            .context("evaluation run has no typed evalStatus")?,
+    )?;
+    if !projected_status.is_terminal() {
+        bail!("evaluation evidence may be reconciled only after a terminal run state");
+    }
+
+    let owned_run_id = run_id.to_string();
+    let (admission, mut progress) = service
+        .database()
+        .clone()
+        .run(move |conn| {
+            let admission = super::admission::load_evaluation_run(conn, &owned_run_id)?
+                .context("evaluation run has no approved execution specification")?;
+            let progress = super::admission::load_run_progress(conn, &owned_run_id)?
+                .context("evaluation run has no durable rollout state")?;
+            Ok((admission, progress))
+        })
+        .await?;
+    let status = EvaluationProjectionStatus::from_run_state(progress.state)?;
+    if status != projected_status {
+        bail!(
+            "evaluation projection status `{}` disagrees with durable state `{}`",
+            projected_status.as_str(),
+            status.as_str()
+        );
+    }
+    if admission.recipe_source_kind != super::admission::RecipeSourceKind::Inline {
+        bail!("evidence reconciliation currently requires an inline evaluation specification");
+    }
+
+    let records_value = summary
+        .get("records")
+        .and_then(Value::as_array)
+        .context("evaluation run has no terminal records")?;
+    if records_value.len() != admission.execution_spec.recipe.rollout_plan.seeds.len() {
+        bail!(
+            "terminal record count {} does not match approved rollout count {}",
+            records_value.len(),
+            admission.execution_spec.recipe.rollout_plan.seeds.len()
+        );
+    }
+    let mut records = records_value.clone();
+    let family = summary
+        .get("task")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .context("evaluation run summary has no task family")?;
+    let world_ref = records
+        .first()
+        .and_then(|record| record.get("worldRef"))
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .context("evaluation terminal records have no worldRef")?;
+    let spec = EvalSpec::from_execution_spec(&admission.execution_spec, family, world_ref)?;
+    let container_id = admission
+        .execution_spec
+        .recipe
+        .container
+        .container_id
+        .as_str()
+        .to_string();
+
+    let approved_seeds = &admission.execution_spec.recipe.rollout_plan.seeds;
+    let mut reconciled_indices = std::collections::BTreeSet::new();
+    for (record_position, record) in records.iter_mut().enumerate() {
+        let seed = record
+            .get("seed")
+            .and_then(Value::as_i64)
+            .with_context(|| format!("terminal record {record_position} has no seed"))?;
+        let index = approved_seeds
+            .iter()
+            .position(|approved| approved.0 == seed)
+            .with_context(|| format!("terminal record seed {seed} was not in the approved plan"))?;
+        if !reconciled_indices.insert(index) {
+            bail!("terminal records contain duplicate seed {seed}");
+        }
+        let rollout_id = record
+            .get("rolloutId")
+            .and_then(Value::as_str)
+            .with_context(|| format!("terminal record for seed {seed} has no rolloutId"))?
+            .to_string();
+        let trial_id = record
+            .get("trialId")
+            .and_then(Value::as_str)
+            .with_context(|| format!("terminal record for seed {seed} has no trialId"))?
+            .to_string();
+        let producer_trace_id = record
+            .pointer("/trace/bundle_trace_id")
+            .or_else(|| record.pointer("/trace/trace_id"))
+            .and_then(Value::as_str)
+            .with_context(|| {
+                format!("terminal record for rollout `{rollout_id}` names no sealed trace")
+            })?;
+        let imported = match service
+            .indexed_eval_trace(producer_trace_id, &container_id, run_id, &rollout_id)
+            .await?
+        {
+            Some(indexed) => indexed,
+            None => service
+                .import_container_trace(&container_id, &rollout_id, run_id, &trial_id)
+                .await
+                .with_context(|| format!("reconcile sealed trace for rollout `{rollout_id}`"))?,
+        };
+        let trace_ref = imported
+            .get("traces")
+            .and_then(Value::as_array)
+            .and_then(|traces| traces.first())
+            .and_then(|trace| trace.get("traceId"))
+            .and_then(Value::as_str)
+            .map(str::to_string)
+            .with_context(|| format!("sealed bundle for rollout `{rollout_id}` indexed no trace"))?;
+        record
+            .as_object_mut()
+            .with_context(|| format!("terminal record for seed {seed} is not an object"))?
+            .insert("sealedTrace".into(), imported);
+        progress.record_evidence(
+            index as u32,
+            super::admission::RolloutRecord {
+                trace_ref: Some(trace_ref),
+                ..super::admission::RolloutRecord::default()
+            },
+        );
+    }
+    let save_run_id = run_id.to_string();
+    service
+        .database()
+        .clone()
+        .run_transaction(move |conn| {
+            super::admission::save_run_progress(conn, &save_run_id, &progress)
+        })
+        .await?;
+
+    let visual_id = summary
+        .get("visualId")
+        .and_then(Value::as_str)
+        .context("evaluation run has no primary visualId")?;
+    let workbench_id = summary
+        .get("visualIds")
+        .and_then(|visuals| visuals.get("trace_workbench"))
+        .and_then(Value::as_str)
+        .context("evaluation run has no trace workbench visualId")?;
+    persist_progress(
+        service,
+        run_id,
+        &spec,
+        visual_id,
+        workbench_id,
+        &records,
+        records.len(),
+        status.as_str(),
+    )
+    .await?;
+    service.get(run_id.to_string()).await
+}
+
 fn is_successful_eval_record(row: &Value) -> bool {
     row.get("status").and_then(Value::as_str) == Some("completed")
 }
 
-fn over_cost_ceiling(records: &[Value]) -> bool {
-    recorded_cost_usd(records).is_some_and(|cost| cost >= COST_CEILING_USD)
+fn over_cost_ceiling(records: &[Value], cost_ceiling_usd: f64) -> bool {
+    recorded_cost_usd(records).is_some_and(|cost| cost >= cost_ceiling_usd)
 }
 
 fn recorded_cost_usd(records: &[Value]) -> Option<f64> {
@@ -1295,15 +2088,29 @@ async fn persist_progress(
     total: usize,
     status: &str,
 ) -> Result<()> {
-    let completed = records.len();
+    let progress_projection = inline_progress_projection(service, run_id).await?;
+    let completed = progress_projection
+        .as_ref()
+        .and_then(|projection| projection.pointer("/rolloutStateCounts/completed"))
+        .and_then(Value::as_u64)
+        .map(|value| value as usize)
+        .unwrap_or_else(|| records.iter().filter(|record| is_successful_eval_record(record)).count());
     let mean = mean_for_pool(records, "train").or_else(|| mean_reward(records));
-    let usage = usage_from_records(records);
+    let usage = usage_from_records(records, spec.cost_ceiling_usd);
     let failed_count = records
         .iter()
         .filter(|row| !is_successful_eval_record(row))
         .count();
     let records_value = json!(records);
     let status_value = status.to_string();
+    let cost_ceiling_usd = spec.cost_ceiling_usd;
+    let run_before_patch = service.get(run_id.to_string()).await?;
+    let started_at = run_before_patch
+        .started_at
+        .as_deref()
+        .unwrap_or(&run_before_patch.created_at)
+        .to_string();
+    let progress_for_summary = progress_projection.clone();
     // Patched under the durable record rather than written from a snapshot: a
     // worker that read the run before its own `started` event must not restore
     // that reading over the events it has since appended.
@@ -1316,14 +2123,15 @@ async fn persist_progress(
                 json!({
                     "completed": completed,
                     "total": total,
-                    "failed": failed_count
+                    "failed": failed_count,
+                    "authoritative": progress_for_summary,
                 }),
             );
             if let Some(mean) = mean {
                 summary.insert("meanReward".into(), json!(mean));
             }
             summary.insert("evalStatus".into(), json!(status_value));
-            summary.insert("costCeilingUsd".into(), json!(COST_CEILING_USD));
+            summary.insert("costCeilingUsd".into(), json!(cost_ceiling_usd));
             if let Some(cost) = usage.cost_usd {
                 summary.insert("costUsd".into(), json!(cost));
             }
@@ -1340,12 +2148,10 @@ async fn persist_progress(
         })
         .await?;
 
-    let visual_status = if status == "failed" {
-        VisualStatus::Failed
-    } else if status == "completed" {
-        VisualStatus::Saved
-    } else {
-        VisualStatus::Live
+    let visual_status = match status {
+        "failed" => VisualStatus::Failed,
+        "completed" | "cancelled" | "degraded" => VisualStatus::Saved,
+        _ => VisualStatus::Live,
     };
     let visual_update = service
         .visuals()
@@ -1361,8 +2167,10 @@ async fn persist_progress(
                     records,
                     mean,
                     workbench_id,
+                    progress_projection.as_ref(),
+                    &started_at,
                 )),
-                status: Some(visual_status),
+                status: Some(visual_status.clone()),
                 renderer_kind: None,
                 message_id: None,
                 run_id: None,
@@ -1390,10 +2198,66 @@ async fn persist_progress(
             }
         }
     }
+    if !workbench_id.is_empty() {
+        let (_, event) = service
+            .visuals()
+            .update(
+                workbench_id.to_string(),
+                VisualUpdateRequest {
+                    title: None,
+                    bindings: None,
+                    status: Some(visual_status),
+                    renderer_kind: None,
+                    message_id: None,
+                    run_id: None,
+                    trace_id: None,
+                    content: None,
+                    metadata: None,
+                    bump_revision: Some(true),
+                },
+            )
+            .await?;
+        service.publish_visual_event(event)?;
+    }
     Ok(())
 }
 
-fn usage_from_records(records: &[Value]) -> super::models::OptimizerUsageSummary {
+async fn inline_progress_projection(
+    service: &OptimizerService,
+    run_id: &str,
+) -> Result<Option<Value>> {
+    let run_id = run_id.to_string();
+    service
+        .database()
+        .clone()
+        .run(move |conn| {
+            let Some(record) = super::admission::load_evaluation_run(conn, &run_id)? else {
+                return Ok(None);
+            };
+            let Some(progress) = super::admission::load_run_progress(conn, &run_id)? else {
+                bail!("inline evaluation `{run_id}` has no durable rollout state");
+            };
+            let contract = &record.execution_spec.recipe.output_contract;
+            let mut projection = progress.project(super::admission::EvidenceRequirements {
+                requires_reward: contract.requires_reward,
+                requires_trace: contract.requires_trace,
+                requires_usage: contract.requires_usage,
+            });
+            if let Some(object) = projection.as_object_mut() {
+                object.insert(
+                    "rollouts".into(),
+                    serde_json::to_value(&progress.rollouts).context("encode rollout states")?,
+                );
+            }
+            Ok(Some(projection))
+        })
+        .await
+}
+
+fn usage_from_records(
+    records: &[Value],
+    cost_ceiling_usd: f64,
+) -> super::models::OptimizerUsageSummary {
     let mut usage = super::models::OptimizerUsageSummary::default();
     usage.rollouts = records.len() as u64;
     let mut policy = LaneUsage::default();
@@ -1436,7 +2300,7 @@ fn usage_from_records(records: &[Value]) -> super::models::OptimizerUsageSummary
     }
     usage
         .extra
-        .insert("costCeilingUsd".into(), json!(COST_CEILING_USD));
+        .insert("costCeilingUsd".into(), json!(cost_ceiling_usd));
     usage.extra.insert("policyUsage".into(), policy.to_json());
     usage.extra.insert("graderUsage".into(), grader.to_json());
     usage
@@ -1509,6 +2373,52 @@ struct TrialContext<'a> {
     container_id: &'a str,
     spec: &'a EvalSpec,
     policy_pin: &'a Value,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RolloutReportedStatus {
+    Queued,
+    Starting,
+    Running,
+    Completed,
+    Failed,
+    Cancelled,
+    Truncated,
+}
+
+impl RolloutReportedStatus {
+    fn parse(state: &Value) -> Result<Self> {
+        match state.get("status").and_then(Value::as_str) {
+            Some("queued") => Ok(Self::Queued),
+            Some("starting") => Ok(Self::Starting),
+            Some("running") => Ok(Self::Running),
+            Some("completed") => Ok(Self::Completed),
+            Some("failed") => Ok(Self::Failed),
+            Some("cancelled") => Ok(Self::Cancelled),
+            Some("truncated") => Ok(Self::Truncated),
+            Some(other) => bail!("container reported unknown rollout status `{other}`"),
+            None => bail!("container rollout state omitted required status"),
+        }
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Queued => "queued",
+            Self::Starting => "starting",
+            Self::Running => "running",
+            Self::Completed => "completed",
+            Self::Failed => "failed",
+            Self::Cancelled => "cancelled",
+            Self::Truncated => "truncated",
+        }
+    }
+
+    fn is_terminal(self) -> bool {
+        matches!(
+            self,
+            Self::Completed | Self::Failed | Self::Cancelled | Self::Truncated
+        )
+    }
 }
 
 /// Run one seed, relaying the container's event journal as it happens.
@@ -1625,20 +2535,44 @@ async fn run_one_example(
     eval_relay::append_degradations(ctx.service, ctx.run_id, &trial_id, &relay).await?;
     let mut state = started?;
 
-    if !rollout_terminal(&state) {
+    if !rollout_terminal(&state)? {
         state = poll_until_terminal(ctx.client, ctx.base, &rollout_id).await?;
     }
+    let reported_status = RolloutReportedStatus::parse(&state)?;
+    if !reported_status.is_terminal() {
+        bail!(
+            "container returned non-terminal rollout status `{}` after terminal polling",
+            reported_status.as_str()
+        );
+    }
+    let terminal_error = if matches!(
+        reported_status,
+        RolloutReportedStatus::Failed | RolloutReportedStatus::Truncated
+    ) {
+        Some(
+            state
+                .get("error")
+                .or_else(|| state.get("reason"))
+                .or_else(|| state.get("detail"))
+                .and_then(Value::as_str)
+                .map(str::to_string)
+                .unwrap_or_else(|| {
+                    "producer_terminal_failure_missing_reason: container reported a failed terminal state without error, reason, or detail"
+                        .to_string()
+                }),
+        )
+    } else {
+        None
+    };
     let reward = fetch_reward(
         ctx.client,
         ctx.base,
         &rollout_id,
         spec.evaluation_plan_ref.as_str(),
     )
-    .await;
+    .await?;
     let usage = state.get("usage").cloned().unwrap_or(Value::Null);
-    let retained = fetch_retained_rollout_state(ctx.client, &poll_url)
-        .await
-        .unwrap_or_default();
+    let retained = fetch_retained_rollout_state(ctx.client, &poll_url).await?;
     // Import the sealed bundle now, while the container is still running. A
     // replay that only works until the container stops is not a replay, and
     // Workshop already owns the import — the eval worker simply never called it.
@@ -1649,11 +2583,18 @@ async fn run_one_example(
         "pool": example.pool,
         "seed": example.seed,
         "taskInstanceId": format!("seed:{}", example.seed),
-        "status": state.get("status").cloned().unwrap_or(json!("completed")),
-        "terminated": rollout_terminal(&state),
+        "status": reported_status.as_str(),
+        "error": terminal_error,
+        "terminated": true,
         "reward": reward.get("reward").cloned().unwrap_or(Value::Null),
         "rewardStatus": reward.get("status").cloned().unwrap_or(json!("absent")),
         "usage": usage,
+        "steps": state
+            .get("steps")
+            .or_else(|| state.get("step_count"))
+            .or_else(|| state.get("stepCount"))
+            .cloned()
+            .unwrap_or(Value::Null),
         "policyRef": ctx.policy_pin,
         "worldRef": spec.world_ref,
         "trace": state.get("trace").cloned().unwrap_or(Value::Null),
@@ -1729,15 +2670,15 @@ async fn fetch_retained_rollout_state(
         bail!("retained rollout events returned {}", response.status());
     }
     let page = response.json::<Value>().await?;
-    Ok(retained_rollout_state(&page))
+    retained_rollout_state(&page)
 }
 
-fn retained_rollout_state(page: &Value) -> serde_json::Map<String, Value> {
+fn retained_rollout_state(page: &Value) -> Result<serde_json::Map<String, Value>> {
     let events = page
         .get("events")
         .and_then(Value::as_array)
         .map(Vec::as_slice)
-        .unwrap_or_default();
+        .context("retained rollout event page omitted events")?;
     for event in events.iter().rev() {
         if event.get("kind").and_then(Value::as_str) != Some("observation") {
             continue;
@@ -1759,18 +2700,28 @@ fn retained_rollout_state(page: &Value) -> serde_json::Map<String, Value> {
             if let Some(achievements) = readout.get("achievements") {
                 retained.insert("achievements".into(), achievements.clone());
             }
-            return retained;
+            return Ok(retained);
         }
     }
-    serde_json::Map::new()
+    Ok(serde_json::Map::new())
 }
 
-fn rollout_terminal(state: &Value) -> bool {
-    state.get("terminated").and_then(Value::as_bool) == Some(true)
-        || matches!(
-            state.get("status").and_then(Value::as_str),
-            Some("completed" | "failed" | "cancelled" | "truncated")
-        )
+fn rollout_terminal(state: &Value) -> Result<bool> {
+    let status = RolloutReportedStatus::parse(state)?;
+    let terminated = state.get("terminated").and_then(Value::as_bool);
+    if terminated == Some(true) && !status.is_terminal() {
+        bail!(
+            "container marked rollout terminated while status remained `{}`",
+            status.as_str()
+        );
+    }
+    if terminated == Some(false) && status.is_terminal() {
+        bail!(
+            "container reported terminal rollout status `{}` with terminated=false",
+            status.as_str()
+        );
+    }
+    Ok(status.is_terminal())
 }
 
 async fn poll_until_terminal(
@@ -1791,7 +2742,7 @@ async fn poll_until_terminal(
             Ok(response) if response.status().is_success() => {
                 event_endpoint_outage_started = None;
                 let state = response.json::<Value>().await?;
-                if rollout_terminal(&state) {
+                if rollout_terminal(&state)? {
                     return Ok(state);
                 }
             }
@@ -1838,38 +2789,41 @@ async fn fetch_reward(
     client: &reqwest::Client,
     base: &str,
     rollout_id: &str,
-    plan_ref: &str,
-) -> Value {
-    if let Ok(response) = client
+    _plan_ref: &str,
+) -> Result<Value> {
+    let response = client
         .get(format!("{base}/rollouts/{rollout_id}/reward"))
         .send()
         .await
-    {
-        if response.status().is_success() {
-            if let Ok(body) = response.json::<Value>().await {
-                if body.get("reward").and_then(Value::as_f64).is_some()
-                    || body.get("status").and_then(Value::as_str) == Some("scored")
-                {
-                    return body;
-                }
+        .with_context(|| format!("GET reward for rollout `{rollout_id}`"))?
+        .error_for_status()
+        .with_context(|| format!("reward endpoint failed for rollout `{rollout_id}`"))?;
+    let body = response
+        .json::<Value>()
+        .await
+        .with_context(|| format!("decode reward for rollout `{rollout_id}`"))?;
+    let status = body
+        .get("status")
+        .and_then(Value::as_str)
+        .with_context(|| format!("reward for rollout `{rollout_id}` omitted status"))?;
+    match status {
+        "scored" => {
+            let reward = body
+                .get("reward")
+                .and_then(Value::as_f64)
+                .with_context(|| format!("scored reward for rollout `{rollout_id}` is missing"))?;
+            if !reward.is_finite() {
+                bail!("scored reward for rollout `{rollout_id}` is not finite");
             }
         }
-    }
-    if let Ok(response) = client
-        .post(format!("{base}/reward"))
-        .json(&json!({
-            "rollout_id": rollout_id,
-            "mode": "terminal",
-            "evaluation_plan_ref": plan_ref,
-        }))
-        .send()
-        .await
-    {
-        if let Ok(body) = response.json::<Value>().await {
-            return body;
+        "absent" | "unavailable" => {
+            if body.get("reward").is_some_and(|value| !value.is_null()) {
+                bail!("unavailable reward for rollout `{rollout_id}` carried a value");
+            }
         }
+        other => bail!("reward for rollout `{rollout_id}` reported unknown status `{other}`"),
     }
-    json!({ "status": "absent", "reward": null, "rollout_id": rollout_id })
+    Ok(body)
 }
 
 async fn find_ready_container(
@@ -2041,7 +2995,7 @@ async fn append_status(
 async fn append_terminal(
     service: &OptimizerService,
     run_id: &str,
-    failed: bool,
+    status: &str,
     detail: String,
 ) -> Result<()> {
     // Settled is settled *when there is a manifest*. Testing `run.status` alone
@@ -2055,24 +3009,26 @@ async fn append_terminal(
         return Ok(());
     }
     let _ = service.seal_credential_chain(run_id).await;
-    append_status(
-        service,
-        run_id,
-        if failed {
-            "optimizer.run.failed"
+    let event_type = match status {
+        "completed" => "optimizer.run.completed",
+        "degraded" => "optimizer.run.degraded",
+        "failed" => "optimizer.run.failed",
+        "cancelled" => "optimizer.run.cancelled",
+        other => bail!("unsupported terminal eval status `{other}`"),
+    };
+    append_status(service, run_id, event_type, status).await?;
+    if status != "completed" && !detail.is_empty() {
+        let event_type = if status == "degraded" {
+            "optimizer.run.warning"
         } else {
-            "optimizer.run.completed"
-        },
-        if failed { "failed" } else { "completed" },
-    )
-    .await?;
-    if failed && !detail.is_empty() {
+            "optimizer.run.error"
+        };
         service
             .append_event_payloads(
                 run_id.to_string(),
                 vec![
-                    OptimizerEventDraft::new("optimizer.run.error", EVAL_ALGORITHM_ID)
-                        .level("error")
+                    OptimizerEventDraft::new(event_type, EVAL_ALGORITHM_ID)
+                        .level(if status == "degraded" { "warn" } else { "error" })
                         .error(json!({ "message": detail }))
                         .raw(json!({ "source": "container_eval" })),
                 ],
@@ -2099,6 +3055,26 @@ mod tests {
         atomic::{AtomicUsize, Ordering},
         Arc, Mutex,
     };
+
+    #[test]
+    fn projection_statuses_are_typed_and_only_known_terminals_reconcile() {
+        assert_eq!(
+            EvaluationProjectionStatus::parse("degraded").unwrap(),
+            EvaluationProjectionStatus::Degraded
+        );
+        assert!(EvaluationProjectionStatus::Degraded.is_terminal());
+        assert!(!EvaluationProjectionStatus::Running.is_terminal());
+        assert_eq!(
+            EvaluationProjectionStatus::from_run_state(super::super::admission::RunState::Completed)
+                .unwrap(),
+            EvaluationProjectionStatus::Completed
+        );
+        assert!(EvaluationProjectionStatus::parse("done").is_err());
+        assert!(EvaluationProjectionStatus::from_run_state(
+            super::super::admission::RunState::Running
+        )
+        .is_err());
+    }
 
     #[derive(Clone)]
     struct MockEvalOptions {
@@ -2378,7 +3354,7 @@ mod tests {
                         json!({
                             "runtime_family": family,
                             "capabilities": {
-                                "protocol": crate::container_capabilities::GEPA_V2_CONTRACT,
+                                "protocol": crate::container_capabilities::LIVE_EVAL_PROTOCOL,
                                 "operations": {
                                     "rollouts.prepare": true,
                                     "rollouts.start": true,
@@ -2535,7 +3511,7 @@ max_total_rollouts = 4
         assert_eq!(finished.status, "completed");
         assert_eq!(
             finished.summary["containerProtocol"],
-            json!(crate::container_capabilities::GEPA_V2_CONTRACT)
+            json!(crate::container_capabilities::LIVE_EVAL_PROTOCOL)
         );
         assert_eq!(
             finished.summary["containerImageDigest"],
@@ -2934,7 +3910,7 @@ max_total_rollouts = 4
         task.abort();
     }
     #[tokio::test]
-    async fn container_eval_refuses_a_ready_pool_that_does_not_advertise_gepa_v2() {
+    async fn container_eval_refuses_a_ready_pool_that_does_not_advertise_live_eval() {
         let (svc, _dir, _) = service().await;
         let (base, task, starts) = spawn_eval_mock("healthbench", BTreeMap::new()).await;
         let family = "healthbench".to_string();
@@ -2969,9 +3945,9 @@ max_total_rollouts = 4
             .map(|error| error.to_string())
             .unwrap();
         assert!(
-            error.contains("GEPA v2")
-                && error.contains(crate::container_capabilities::GEPA_V2_CONTRACT),
-            "expected a GEPA v2 admission refusal, got {error}"
+            error.contains("live-eval")
+                && error.contains(crate::container_capabilities::LIVE_EVAL_PROTOCOL),
+            "expected a live-eval admission refusal, got {error}"
         );
         assert!(
             error.contains("protocol=null"),
@@ -3041,7 +4017,7 @@ max_total_rollouts = 4
             .unwrap_err()
             .to_string();
         assert!(
-            error.contains("ambiguous registered banking77 GEPA v2 pools"),
+            error.contains("ambiguous registered banking77 live-eval containers"),
             "expected an ambiguous-pool refusal, got {error}"
         );
         assert!(
@@ -3149,7 +4125,7 @@ max_total_rollouts = 4
             .to_string();
         assert!(
             not_ready.contains(
-                "requested banking77 container `ctr_banking77_offline` is not a ready GEPA v2 pool"
+                "requested banking77 container `ctr_banking77_offline` is not a ready live-eval container"
             ),
             "expected a fail-closed missing-ready-id error, got {not_ready}"
         );
@@ -3170,7 +4146,7 @@ max_total_rollouts = 4
             .to_string();
         assert!(
             wrong_family.contains(
-                "requested banking77 container `ctr_healthbench_ready` is not a ready GEPA v2 pool"
+                "requested banking77 container `ctr_healthbench_ready` is not a ready live-eval container"
             ),
             "expected a fail-closed wrong-family error, got {wrong_family}"
         );
@@ -3244,7 +4220,7 @@ max_total_rollouts = 4
             .unwrap_err()
             .to_string();
         assert!(
-            error.contains("ambiguous registered banking77 GEPA v2 pools"),
+            error.contains("ambiguous registered banking77 live-eval containers"),
             "a newer updated_at must not restore first-match-wins, got {error}"
         );
         assert!(
@@ -3424,9 +4400,14 @@ max_total_rollouts = 4
                 }}}
             ]
         });
-        let retained = retained_rollout_state(&page);
+        let retained = retained_rollout_state(&page).unwrap();
         assert_eq!(retained["observation"], json!("final map"));
         assert_eq!(retained["achievements"], json!(["collect_wood"]));
+    }
+
+    #[test]
+    fn retained_rollout_state_rejects_a_missing_event_collection() {
+        assert!(retained_rollout_state(&json!({})).is_err());
     }
 
     // ── Craftax relay fixture ────────────────────────────────────────────

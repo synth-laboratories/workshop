@@ -546,6 +546,23 @@ async fn route_request_inner(
                 .unwrap_or_else(|| json!({"code": "internal", "error": error.to_string()}));
             JsonHttpResponse::with_status(StatusCode::BAD_REQUEST, body)
         }
+        Err(error)
+            if error.chain().any(|cause| {
+                cause
+                    .downcast_ref::<crate::optimizers::admission::AdmissionError>()
+                    .is_some()
+            }) =>
+        {
+            let body = error
+                .chain()
+                .find_map(|cause| {
+                    cause
+                        .downcast_ref::<crate::optimizers::admission::AdmissionError>()
+                })
+                .map(crate::optimizers::admission::AdmissionError::to_json)
+                .unwrap_or_else(|| json!({"code": "admission_failed"}));
+            JsonHttpResponse::with_status(StatusCode::BAD_REQUEST, body)
+        }
         Err(error) if crate::error::error_is::<crate::plugins::PluginNotReady>(&error) => {
             let body = error
                 .downcast_ref::<crate::plugins::PluginNotReady>()
@@ -2754,6 +2771,57 @@ pub(crate) async fn dispatch_optimizer(
                 "recipes": optimizers.list_recipes_for_session(session.as_deref())
             }))
         }
+        ("POST", "/v1/optimizers/evaluations/spec/draft")
+        | ("POST", "/v1/optimizers/evaluations/spec/validate")
+        | ("POST", "/v1/optimizers/evaluations/spec/admit") => {
+            let request_value = body.get("request").cloned().unwrap_or(body);
+            let request: crate::optimizers::admission::InlineRequest =
+                serde_json::from_value(request_value)?;
+            let admissible = crate::optimizers::inline_eval::admit_inline(optimizers, request)
+                .await?;
+            Ok(json!({
+                "sourceKind": "inline",
+                "executionSpecDigest": admissible.digest().as_str(),
+                "executionSpec": admissible.canonical().as_value(),
+                "approvalDisclosure": admissible.approval_disclosure(),
+                "status": "ready_for_approval"
+            }))
+        }
+        ("POST", "/v1/optimizers/evaluations/start") => {
+            let request_value = body.get("request").cloned().unwrap_or_else(|| body.clone());
+            let request: crate::optimizers::admission::InlineRequest =
+                serde_json::from_value(request_value)?;
+            let session_ref = body
+                .get("sessionRef")
+                .or_else(|| body.get("session_ref"))
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+                .or_else(|| std::env::var("SYNTH_SESSION_ID").ok());
+            let open_visual = body
+                .get("openVisual")
+                .or_else(|| body.get("open_visual"))
+                .and_then(Value::as_bool)
+                .unwrap_or(true);
+            let codex = app.state::<Arc<crate::codex::CodexManager>>();
+            let run = crate::authorize_inline_evaluation_start(
+                app,
+                core,
+                &codex,
+                request,
+                session_ref,
+                open_visual,
+            )
+            .await
+            .map_err(|error| anyhow::anyhow!(error.to_string()))?;
+            Ok(json!({
+                "run": run,
+                "sourceKind": "inline",
+                "status": run.status,
+                "optimizerRunId": run.id,
+                "visualRefs": run.visual_refs,
+                "eventCursor": run.cursor_seq
+            }))
+        }
         ("POST", "/v1/optimizers/eval/candidates") => {
             let request: crate::optimizers::EvalStageCandidatesRequest =
                 serde_json::from_value(body)?;
@@ -3114,6 +3182,18 @@ pub(crate) async fn dispatch_optimizer(
                 .trim_start_matches("/v1/optimizers/runs/")
                 .trim_end_matches("/refresh");
             let run = optimizers.refresh(id.to_string()).await?;
+            Ok(json!({ "run": run }))
+        }
+        ("POST", path)
+            if path.starts_with("/v1/optimizers/runs/")
+                && path.ends_with("/reconcile_evidence") =>
+        {
+            let id = path
+                .trim_start_matches("/v1/optimizers/runs/")
+                .trim_end_matches("/reconcile_evidence");
+            let run = optimizers
+                .reconcile_evaluation_evidence(id.to_string())
+                .await?;
             Ok(json!({ "run": run }))
         }
         ("POST", path) if path.starts_with("/v1/optimizers/runs/") && path.ends_with("/pause") => {
@@ -3590,13 +3670,12 @@ pub(crate) async fn import_container_trace_into(
             return Err(error);
         }
     };
-    let frames = if source_kind == "container_bundle" && result.trusted {
+    let (frames, max_step) = (if source_kind == "container_bundle" && result.trusted {
         extract_imported_trace_frames(&source_path, rollout_id)
     } else {
-        Ok(Vec::new())
-    };
+        Ok((Vec::new(), None))
+    })?;
     let _ = fs::remove_file(&source_path);
-    let frames = frames?;
 
     let indexed: Vec<Value> = result
         .traces
@@ -3622,6 +3701,7 @@ pub(crate) async fn import_container_trace_into(
             "Sealed Trace V5 is now indexed in Workshop."
         },
         "embeddedFrameCount": frames.len(),
+        "maxStep": max_step,
     }), event, frames))
 }
 
@@ -3638,7 +3718,7 @@ pub(crate) struct ImportedTraceFrame {
 fn extract_imported_trace_frames(
     archive_path: &std::path::Path,
     rollout_id: &str,
-) -> Result<Vec<ImportedTraceFrame>> {
+) -> Result<(Vec<ImportedTraceFrame>, Option<i64>)> {
     let file = fs::File::open(archive_path)
         .with_context(|| format!("open imported trace archive {}", archive_path.display()))?;
     let mut archive = zip::ZipArchive::new(file).context("open imported trace ZIP")?;
@@ -3650,6 +3730,7 @@ fn extract_imported_trace_frames(
         })
         .collect::<Vec<_>>();
     let mut frames = Vec::new();
+    let mut max_step = None::<i64>;
     for name in sealed_names {
         let document = {
             let mut entry = archive.by_name(&name)?;
@@ -3679,16 +3760,34 @@ fn extract_imported_trace_frames(
             .and_then(Value::as_array)
             .into_iter()
             .flatten()
+        {
+            for pointer in ["/detail/env_steps", "/detail/step", "/detail/step_index"] {
+                if let Some(step) = event.pointer(pointer).and_then(Value::as_i64) {
+                    max_step = Some(max_step.map_or(step, |current| current.max(step)));
+                }
+            }
+        }
+        let mut imported_artifacts = std::collections::HashSet::new();
+        for event in document
+            .get("events")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
             .filter(|event| event.get("event_type").and_then(Value::as_str) == Some("frame"))
         {
-            let step = event.pointer("/detail/step").and_then(Value::as_i64)
-                .context("sealed frame event omitted step")?;
             let artifact_id = event
                 .get("artifact_ids")
                 .and_then(Value::as_array)
                 .and_then(|ids| ids.first())
                 .and_then(Value::as_str)
                 .context("sealed frame event omitted its PNG artifact")?;
+            let step = match event.pointer("/detail/step").and_then(Value::as_i64) {
+                Some(step) => step,
+                None if imported_artifacts.contains(artifact_id) => continue,
+                None => anyhow::bail!(
+                    "sealed frame event omitted step for unique artifact `{artifact_id}`"
+                ),
+            };
             let artifact = artifacts.get(artifact_id)
                 .context("sealed frame event references an unknown PNG artifact")?;
             let uri = artifact.get("uri").and_then(Value::as_str)
@@ -3725,9 +3824,10 @@ fn extract_imported_trace_frames(
                 producer_digest: event.pointer("/detail/source_event_digest")
                     .and_then(Value::as_str).map(str::to_string),
             });
+            imported_artifacts.insert(artifact_id.to_string());
         }
     }
-    Ok(frames)
+    Ok((frames, max_step))
 }
 
 /// Capture-supervisor bundle first (Lane E `/rollouts/{id}/trace/bundle`),
@@ -5271,8 +5371,10 @@ mod tests {
         archive.write_all(&png).unwrap();
         archive.finish().unwrap();
 
-        let frames = extract_imported_trace_frames(&archive_path, "roll_portable").unwrap();
+        let (frames, max_step) =
+            extract_imported_trace_frames(&archive_path, "roll_portable").unwrap();
         assert_eq!(frames.len(), 1);
+        assert_eq!(max_step, Some(0));
         assert_eq!(frames[0].bytes, png);
         assert_eq!(frames[0].step, 0);
         assert_eq!(frames[0].width, 1);

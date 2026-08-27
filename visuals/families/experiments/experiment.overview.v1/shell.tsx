@@ -10,6 +10,8 @@ type Progress = {
   eta?: string;
   usage?: string;
   cost?: string;
+  active?: number;
+  stateCounts?: Record<string, number>;
 };
 
 type Metric = {
@@ -61,6 +63,9 @@ type Rollout = {
   stopReason?: string;
   status?: string;
   traceId?: string;
+  modelCalls?: number | null;
+  tokens?: number | null;
+  costUsd?: number | null;
 };
 
 type TraceReference = {
@@ -180,7 +185,9 @@ function normalizeProgress(value: unknown): Progress | undefined {
     elapsed: text(raw.elapsed),
     eta: text(raw.eta),
     usage: text(raw.usage),
-    cost: text(raw.cost)
+    cost: text(raw.cost),
+    active: finiteNumber(raw.active),
+    stateCounts: record(raw.stateCounts) as Record<string, number> | undefined
   };
 }
 
@@ -293,7 +300,7 @@ function statusTone(status?: string): string {
   const normalized = status?.toLowerCase();
   if (normalized === "completed" || normalized === "selected" || normalized === "passed") return "#18794e";
   if (normalized === "failed" || normalized === "aborted" || normalized === "excluded") return "#b42318";
-  if (normalized === "running" || normalized === "evaluating") return "#c2410c";
+  if (normalized === "running" || normalized === "evaluating" || normalized === "degraded") return "#c2410c";
   return "#697386";
 }
 
@@ -364,6 +371,9 @@ function ProgressPanel({ progress, status }: { progress?: Progress; status?: str
     <div role="progressbar" aria-valuemin={0} aria-valuemax={determinate ? total : undefined} aria-valuenow={determinate ? completed : undefined} aria-label="Experiment completion" style={{ height: 8, borderRadius: 99, overflow: "hidden", background: "#e8ebef", marginTop: 12 }}>
       <span style={{ display: "block", height: "100%", width: `${percent}%`, background: "#f05f22", transition: "width 180ms ease" }} />
     </div>
+    {progress?.stateCounts ? <div aria-label="Rollout states" style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 9 }}>
+      {Object.entries(progress.stateCounts).filter(([, count]) => Number(count) > 0).map(([state, count]) => <span key={state} style={{ padding: "3px 7px", border: "1px solid var(--sv-border)", borderRadius: 99, background: state === "running" ? "#fff7ed" : state === "failed" || state === "degraded" ? "#fff1f0" : "var(--sv-surface-muted)", color: statusTone(state), fontFamily: "var(--sv-mono)", fontSize: 9, textTransform: "capitalize" }}>{count} {state}</span>)}
+    </div> : null}
     <dl style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(90px,1fr))", gap: 10, margin: "13px 0 0" }}>
       {[["Elapsed", progress?.elapsed], ["ETA", progress?.eta], ["Usage", progress?.usage], ["Cost", progress?.cost]].map(([label, value]) => <div key={label}><dt style={{ fontSize: 9, color: "var(--sv-text-faint)", textTransform: "uppercase" }}>{label}</dt><dd style={{ margin: "3px 0 0", fontFamily: "var(--sv-mono)", fontSize: 11 }}>{value ?? MISSING}</dd></div>)}
     </dl>
@@ -395,7 +405,8 @@ function ReferenceChip({ label, kind, value, containerId }: { label: string; kin
 
 function RolloutTable({ rollouts, containerId, unavailableTraceIds }: { rollouts: Rollout[]; containerId?: string; unavailableTraceIds?: Set<string> }) {
   if (!rollouts.length) return null;
-  return <section className="sv-section" style={{ padding: 0, overflow: "hidden" }} aria-label="Rollout results"><table style={{ width: "100%", borderCollapse: "collapse", fontSize: 9 }}><thead><tr>{["Rollout", "Reward", "Steps", "Achievements", "Stop reason", "Trace"].map((label) => <th key={label} style={{ padding: "4px 6px", borderBottom: "1px solid var(--sv-border)", color: "var(--sv-text-faint)", textAlign: label === "Rollout" || label === "Stop reason" || label === "Trace" ? "left" : "right", fontSize: 8 }}>{label}</th>)}</tr></thead><tbody>{rollouts.map((rollout, index) => <tr key={rollout.id ?? index}><th scope="row" style={{ padding: "5px 6px", borderBottom: "1px solid var(--sv-border)", textAlign: "left" }}>{rollout.label ?? (rollout.seed != null ? `Seed ${rollout.seed}` : rollout.id)}</th><td style={{ padding: "5px 6px", textAlign: "right" }}>{rollout.reward ?? MISSING}</td><td style={{ padding: "5px 6px", textAlign: "right" }}>{rollout.steps ?? MISSING}</td><td style={{ padding: "5px 6px", textAlign: "right" }}>{rollout.achievements ?? MISSING}</td><td style={{ padding: "5px 6px", color: "var(--sv-text-faint)" }}>{rollout.stopReason ?? rollout.status ?? MISSING}</td><td style={{ padding: "5px 6px" }}>{rollout.traceId ? unavailableTraceIds?.has(rollout.traceId) ? <span title="A lite seal retains provenance but cannot be opened in the Trace V5 inspector." style={{ color: "var(--sv-text-faint)" }}>Unavailable</span> : <ReferenceChip label="Open trace" kind="trace" value={rollout.traceId} containerId={containerId} /> : MISSING}</td></tr>)}</tbody></table></section>;
+  const columns = ["Rollout", "State", "Reward", "Steps", "Calls", "Tokens", "Cost", "Achievements", "Trace"];
+  return <section className="sv-section" style={{ padding: 0, overflowX: "auto" }} aria-label="Rollout results"><table style={{ width: "100%", minWidth: 720, borderCollapse: "collapse", fontSize: 9 }}><thead><tr>{columns.map((label) => <th key={label} style={{ padding: "4px 6px", borderBottom: "1px solid var(--sv-border)", color: "var(--sv-text-faint)", textAlign: label === "Rollout" || label === "State" || label === "Trace" ? "left" : "right", fontSize: 8 }}>{label}</th>)}</tr></thead><tbody>{rollouts.map((rollout, index) => <tr key={rollout.id ?? index}><th scope="row" style={{ padding: 6, borderBottom: "1px solid var(--sv-border)", textAlign: "left" }}>{rollout.label ?? (rollout.seed != null ? `Seed ${rollout.seed}` : rollout.id)}</th><td style={{ maxWidth: 220, padding: 6, color: statusTone(rollout.status), textTransform: "capitalize" }}><strong>{rollout.status ?? MISSING}</strong>{rollout.stopReason ? <small title={rollout.stopReason} style={{ display: "block", marginTop: 2, overflow: "hidden", color: rollout.status === "failed" ? "#b42318" : "var(--sv-text-faint)", fontWeight: 400, textOverflow: "ellipsis", textTransform: "none", whiteSpace: "nowrap" }}>{rollout.stopReason}</small> : null}</td><td style={{ padding: 6, textAlign: "right" }}>{rollout.reward ?? MISSING}</td><td style={{ padding: 6, textAlign: "right" }}>{rollout.steps ?? MISSING}</td><td style={{ padding: 6, textAlign: "right" }}>{rollout.modelCalls ?? MISSING}</td><td style={{ padding: 6, textAlign: "right" }}>{rollout.tokens ?? MISSING}</td><td style={{ padding: 6, textAlign: "right" }}>{rollout.costUsd == null ? MISSING : `$${rollout.costUsd.toFixed(4)}`}</td><td style={{ padding: 6, textAlign: "right" }}>{rollout.achievements ?? MISSING}</td><td style={{ padding: 6 }}>{rollout.traceId ? unavailableTraceIds?.has(rollout.traceId) ? <span title="A lite seal retains provenance but cannot be opened in the Trace V5 inspector." style={{ color: "var(--sv-text-faint)" }}>Unavailable</span> : <ReferenceChip label="Open trace" kind="trace" value={rollout.traceId} containerId={containerId} /> : MISSING}</td></tr>)}</tbody></table></section>;
 }
 
 function TraceList({ traces, containerId }: { traces: TraceReference[]; containerId?: string }) {
@@ -437,7 +448,7 @@ export function Shell(props: ShellProps) {
   const hasMethod = Boolean(experiment.lineage?.length || experiment.limitations?.length);
   return <VisualChrome kicker={`Experiment · ${status}`} title={props.title ?? experiment.title ?? "Experiment overview"} lede={props.lede ?? experiment.question ?? experiment.hypothesis} testId="visual-experiment-overview">
     <OverviewStrip status={status} arms={experiment.arms ?? []} model={experiment.runtime?.model} progress={experiment.progress} />
-    <Hypotheses legacyHypothesis={experiment.hypothesis} hypotheses={experiment.hypotheses ?? []} />
+    {experiment.hypothesis || experiment.hypotheses?.length ? <Hypotheses legacyHypothesis={experiment.hypothesis} hypotheses={experiment.hypotheses ?? []} /> : null}
     {hasResults ? <Disclosure title="Comparison & results" summary={progressSummary} defaultOpen>
       {experiment.progress ? <ProgressPanel progress={experiment.progress} status={status} /> : null}
       <Metrics metrics={metrics} />
