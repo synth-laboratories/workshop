@@ -556,7 +556,7 @@ async fn spawn_hosted_worker(
         )
         .await
         {
-            eprintln!("hosted SFT worker {run_id} failed: {error:#}");
+            crate::platform::logging::report("optimizers", "eprintln", format!("hosted SFT worker {run_id} failed: {error:#}"));
             // A failure the viewer cannot read is not evidence. Carry the
             // reason onto the terminal event instead of dropping it on stderr.
             let _ = append_failure(&worker, &run_id, &format!("{error:#}")).await;

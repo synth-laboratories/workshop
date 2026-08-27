@@ -29,6 +29,7 @@ pub mod data;
 mod device_auth;
 pub mod diagnostics;
 mod domain;
+mod domains;
 pub mod error;
 #[cfg(feature = "eval-driver")]
 mod eval_driver;
@@ -43,6 +44,7 @@ mod limits;
 pub mod lineage;
 mod model_catalog;
 mod optimizers;
+mod platform;
 mod plugins;
 pub mod presentation;
 pub mod recovery;
@@ -54,6 +56,8 @@ mod session;
 mod skills;
 pub mod storage;
 mod synth_config;
+mod composition;
+mod adapters;
 mod tariffs;
 mod telemetry;
 mod terminal;
@@ -186,18 +190,18 @@ fn desktop_image_preview(path: String) -> Result<String, AppError> {
         .extension()
         .and_then(|value| value.to_str())
         .map(str::to_ascii_lowercase)
-        .ok_or_else(|| AppError::message("Screenshot has no supported format"))?;
+        .ok_or_else(|| AppError::untyped("Screenshot has no supported format"))?;
     let mime = match extension.as_str() {
         "png" => "image/png",
         "jpg" | "jpeg" => "image/jpeg",
         "webp" => "image/webp",
         "gif" => "image/gif",
-        _ => return Err("Screenshot format is unsupported".into()),
+        _ => return Err(AppError::invalid_argument("Screenshot format is unsupported")),
     };
     let metadata =
         std::fs::metadata(&path).map_err(|_| AppError::io("Screenshot is unavailable"))?;
     if !metadata.is_file() || metadata.len() > limits::IMAGE_PREVIEW_MAX_BYTES {
-        return Err("Screenshot must be a file smaller than 20 MB".into());
+        return Err(AppError::invalid_argument("Screenshot must be a file smaller than 20 MB"));
     }
     let bytes = std::fs::read(path).map_err(|_| AppError::io("Screenshot could not be read"))?;
     Ok(format!(
@@ -646,7 +650,9 @@ async fn data_containers_register(
     request: ContainerRegisterRequest,
 ) -> Result<ContainerDeployment, AppError> {
     if !(request.base_url.starts_with("http://") || request.base_url.starts_with("https://")) {
-        return Err("container baseUrl must start with http:// or https://".into());
+        return Err(AppError::invalid_argument(
+            "container baseUrl must start with http:// or https://",
+        ));
     }
     let (status, health, metadata, hydrated_family) = hydrate_container(
         &request.base_url,
@@ -663,7 +669,7 @@ async fn data_containers_register(
         .and_then(|value| value.as_str())
         .filter(|error| error.contains("live_frames"))
     {
-        return Err(error.into());
+        return Err(AppError::invalid_argument(error));
     }
     state
         .register_container(request, status, health, metadata, task_family)
@@ -3445,7 +3451,7 @@ async fn reports_share(
     _state: State<'_, Arc<CoreRuntime>>,
     _receipt_digest: String,
 ) -> Result<ReportUpload, AppError> {
-    Err(AppError::message(
+    Err(AppError::untyped(
         "Direct Report sharing is disabled; create and approve a revision-bound visibility request",
     ))
 }
@@ -3460,7 +3466,7 @@ async fn reports_audience_set(
     let backend = synth_config::resolve().map_err(AppError::from)?;
     let api_key = backend
         .api_key
-        .ok_or_else(|| AppError::message("sharing a Report requires a signed-in Synth account"))?;
+        .ok_or_else(|| AppError::untyped("sharing a Report requires a signed-in Synth account"))?;
     state
         .reports()
         .set_audience(publication_id, request, backend.backend_url, api_key)
@@ -3477,7 +3483,7 @@ async fn reports_audience_revoke(
 ) -> Result<ReportAudienceState, AppError> {
     let backend = synth_config::resolve().map_err(AppError::from)?;
     let api_key = backend.api_key.ok_or_else(|| {
-        AppError::message("revoking Report access requires a signed-in Synth account")
+        AppError::untyped("revoking Report access requires a signed-in Synth account")
     })?;
     state
         .reports()
@@ -3493,7 +3499,7 @@ async fn reports_promote(
     _publication_id: String,
     _slug: String,
 ) -> Result<reports::ReportPromotion, AppError> {
-    Err(AppError::message(
+    Err(AppError::untyped(
         "Direct Report promotion is disabled; create and approve a revision-bound public visibility request",
     ))
 }
@@ -3607,7 +3613,7 @@ async fn model_performance_get(
     let backend = synth_config::resolve().map_err(AppError::from)?;
     let api_key = backend
         .api_key
-        .ok_or_else(|| AppError::message("Sign in to read Synth Cloud model telemetry"))?;
+        .ok_or_else(|| AppError::untyped("Sign in to read Synth Cloud model telemetry"))?;
     let window_minutes = window_minutes.unwrap_or(60).clamp(1, 1_440);
     let url = format!(
         "{}/api/v1/usage/model-performance?window_minutes={window_minutes}",
@@ -3631,17 +3637,17 @@ async fn model_performance_get(
                 || detail.contains("timed out")
                 || detail.contains("error sending request")
             {
-                AppError::message(
+                AppError::untyped(
                     "Synth Cloud telemetry could not be reached. Check Account → Synth backend URL.",
                 )
             } else {
-                AppError::message(format!("Synth Cloud telemetry request failed: {error}"))
+                AppError::untyped(format!("Synth Cloud telemetry request failed: {error}"))
             }
         })?;
     let status = response.status();
     if !status.is_success() {
         let detail = response.text().await.unwrap_or_default();
-        return Err(AppError::message(format!(
+        return Err(AppError::untyped(format!(
             "Synth Cloud telemetry returned {status}: {}",
             detail.chars().take(240).collect::<String>()
         )));
@@ -3650,7 +3656,7 @@ async fn model_performance_get(
         .json::<ModelPerformanceSnapshot>()
         .await
         .map_err(|error| {
-            AppError::message(format!("Invalid Synth Cloud telemetry response: {error}"))
+            AppError::untyped(format!("Invalid Synth Cloud telemetry response: {error}"))
         })
 }
 
@@ -3905,7 +3911,7 @@ async fn account_sign_out(
     cloud.clear_cache();
     if let Some(telemetry) = crate::telemetry::live() {
         if let Err(error) = telemetry.on_sign_out() {
-            eprintln!("synth-desktop: sign-out telemetry wipe failed: {error}");
+            crate::platform::logging::report("lib", "eprintln", format!("synth-desktop: sign-out telemetry wipe failed: {error}"));
         }
     }
     core.reload_intern_config().await.map_err(AppError::from)?;
@@ -4201,7 +4207,7 @@ async fn workspace_scope_choose_and_attach(
     proposed_access: WorkspaceAccessMode,
 ) -> Result<Option<ConversationWorkspaceScope>, AppError> {
     if proposed_access == WorkspaceAccessMode::ReadOnly {
-        return Err("Read-only attachments are not yet supported by the macOS Codex sandbox; no access was granted".into());
+        return Err(AppError::untyped("Read-only attachments are not yet supported by the macOS Codex sandbox; no access was granted"));
     }
     let (sender, receiver) = tokio::sync::oneshot::channel();
     app.dialog()
@@ -4366,9 +4372,9 @@ async fn prepare_codex_start(
             let requested =
                 workspace_scope::canonical_directory(&request.workspace).map_err(AppError::from)?;
             if requested.to_string_lossy() != scope.workspace {
-                return Err(
-                    "requested workspace does not match the conversation's persisted scope".into(),
-                );
+                return Err(AppError::untyped(
+                    "requested workspace does not match the conversation's persisted scope",
+                ));
             }
             scope
         }
@@ -4418,12 +4424,12 @@ async fn prepare_codex_provider(
                 .ensure_for_turn(&root)
                 .await
                 .map_err(AppError::from)?
-                .ok_or_else(|| AppError::message("Laguna Responses server is unavailable"))?;
+                .ok_or_else(|| AppError::untyped("Laguna Responses server is unavailable"))?;
             // The Laguna key is this process's loopback service token, not a
             // user credential: the child talks to the local daemon directly
             // and no broker lease is involved.
             request.api_key = laguna.api_key().ok_or_else(|| {
-                AppError::message("Laguna daemon credential is unavailable after ensure")
+                AppError::untyped("Laguna daemon credential is unavailable after ensure")
             })?;
             let catalog = laguna
                 .codex_model_catalog(&request.base_url, &request.api_key)
@@ -4438,7 +4444,8 @@ async fn prepare_codex_provider(
             // the same way the Synth key did; it goes into native custody too.
             // Its origin is also native-owned: renderer input must never decide
             // where that credential is forwarded.
-            codex::apply_openrouter_provider(&mut request, key.as_deref())?;
+            codex::apply_openrouter_provider(&mut request, key.as_deref())
+                .map_err(AppError::untyped)?;
         }
         codex::ProviderClass::SynthCloud => {
             let resolved = synth_config::resolve().map_err(AppError::from)?;
@@ -4447,12 +4454,14 @@ async fn prepare_codex_provider(
             // keep reading `resolved.backend_url` directly. A
             // profile with no configured gateway fails closed here rather
             // than silently reusing the backend URL.
-            let gateway_url = synth_config::require_responses_gateway_url(&resolved)?;
+            let gateway_url = synth_config::require_responses_gateway_url(&resolved)
+                .map_err(AppError::untyped)?;
             codex::apply_synth_cloud_provider(
                 &mut request,
                 &gateway_url,
                 resolved.api_key.as_deref(),
-            )?;
+            )
+            .map_err(AppError::untyped)?;
         }
         codex::ProviderClass::OpenaiCodexOauth => {
             let credential = oauth
@@ -4460,14 +4469,14 @@ async fn prepare_codex_provider(
                 .await
                 .map_err(AppError::from)?
                 .ok_or_else(|| {
-                    AppError::message("Reconnect ChatGPT subscription in Settings → Models")
+                    AppError::untyped("Reconnect ChatGPT subscription in Settings → Models")
                 })?;
             const ALLOWED: &[&str] = &["gpt-5.6-luna", "gpt-5.6-sol", "gpt-5.6-terra"];
             if !ALLOWED
                 .iter()
                 .any(|model| request.model.eq_ignore_ascii_case(model))
             {
-                return Err(AppError::message(
+                return Err(AppError::untyped(
                     "This model is not available through the ChatGPT subscription target",
                 ));
             }
@@ -4682,6 +4691,7 @@ async fn codex_approval_resolve(
             message: "This task's local agent is no longer running. Start a new turn to reconnect."
                 .into(),
             detail: format!("{error:?}"),
+            failure: None,
         }),
         Err(error) => Err(AppError::from(error)),
     }
@@ -4720,10 +4730,10 @@ async fn codex_sessions_list(
 #[specta::specta]
 fn codex_default_workspace() -> Result<String, AppError> {
     let configured = synth_config::allowed_workspace_roots().map_err(|error| {
-        AppError::message(format!("Cannot read workspace access settings: {error}"))
+        AppError::untyped(format!("Cannot read workspace access settings: {error}"))
     })?;
     let permissions = synth_config::desktop_permission_settings().map_err(|error| {
-        AppError::message(format!("Cannot read desktop permission settings: {error}"))
+        AppError::untyped(format!("Cannot read desktop permission settings: {error}"))
     })?;
     // Finder and LaunchServices do not reliably preserve launcher environment.
     // A named bundle's descriptor is the durable authority for its isolated
@@ -4752,7 +4762,7 @@ fn codex_default_workspace() -> Result<String, AppError> {
         .canonicalize()
         .map_err(|error| AppError::io(format!("Default workspace is unavailable: {error}")))?;
     if !path.is_dir() {
-        return Err("Default workspace must be a directory".into());
+        return Err(AppError::invalid_argument("Default workspace must be a directory"));
     }
     Ok(path.to_string_lossy().into_owned())
 }
@@ -4870,7 +4880,7 @@ pub fn run() {
             match credential_broker::redact_managed_shell_snapshots(&codex::codex_root()) {
                 Ok(0) => {}
                 Ok(count) => {
-                    eprintln!("redacted provider secrets from {count} Codex shell snapshot(s)")
+                    crate::platform::logging::report("lib", "eprintln", format!("redacted provider secrets from {count} Codex shell snapshot(s)"))
                 }
                 Err(error) => {
                     return Err(std::io::Error::other(format!(
@@ -4899,7 +4909,7 @@ pub fn run() {
                 })?,
             );
             if let Err(error) = core.secrets().start_proxy() {
-                eprintln!("synth-desktop: provider proxy failed to start: {error:#}");
+                crate::platform::logging::report("lib", "eprintln", format!("synth-desktop: provider proxy failed to start: {error:#}"));
             }
             crate::secrets::install_live(core.secrets().clone());
             let telemetry = Arc::new(crate::telemetry::ProductTelemetry::new(
@@ -4973,13 +4983,13 @@ pub fn run() {
             let bootstrap_approvals = approvals.clone();
             tauri::async_runtime::spawn(async move {
                 if let Err(error) = bootstrap_core.bootstrap(&bootstrap_handle).await {
-                    eprintln!("CoreRuntime bootstrap failed: {error}");
+                    crate::platform::logging::report("lib", "eprintln", format!("CoreRuntime bootstrap failed: {error}"));
                 }
                 if let Err(error) = bootstrap_approvals.expire_restored(&bootstrap_handle).await {
-                    eprintln!("approval restore failed: {error}");
+                    crate::platform::logging::report("lib", "eprintln", format!("approval restore failed: {error}"));
                 }
                 if let Err(error) = bootstrap_core.resume_intern_providers().await {
-                    eprintln!("Intern restart reconciliation failed: {error}");
+                    crate::platform::logging::report("lib", "eprintln", format!("Intern restart reconciliation failed: {error}"));
                 }
                 // Fallback arm: if the main window never finished loading, the
                 // renderer's own failure still has somewhere to be recorded.
@@ -4992,12 +5002,12 @@ pub fn run() {
             tauri::async_runtime::spawn(async move {
                 match visuals_ipc::spawn(ipc_core, ipc_app, ipc_root).await {
                     Ok(connection) => {
-                        eprintln!(
+                        crate::platform::logging::report("lib", "eprintln", format!(
                             "Visuals IPC listening at {} (token written to {})",
                             connection.url, connection.path
-                        );
+                        ));
                     }
-                    Err(error) => eprintln!("Visuals IPC failed to start: {error}"),
+                    Err(error) => crate::platform::logging::report("lib", "eprintln", format!("Visuals IPC failed to start: {error}")),
                 }
             });
 
@@ -5021,14 +5031,14 @@ pub fn run() {
                     .await
                     {
                         Ok(connection) => {
-                            eprintln!(
+                            crate::platform::logging::report("lib", "eprintln", format!(
                                 "Eval driver ({}) listening at {} (descriptor {})",
                                 eval_driver::PROTOCOL_VERSION,
                                 connection.url,
                                 connection.path
-                            );
+                            ));
                         }
-                        Err(error) => eprintln!("Eval driver failed to start: {error}"),
+                        Err(error) => crate::platform::logging::report("lib", "eprintln", format!("Eval driver failed to start: {error}")),
                     }
                 });
             }

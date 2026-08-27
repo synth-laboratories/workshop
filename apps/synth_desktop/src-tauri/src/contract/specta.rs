@@ -80,6 +80,7 @@ pub fn builder() -> Builder<tauri::Wry> {
         // The record field is still a `String` at the storage edge; see
         // `optimizers::OptimizerRunStatus`.
         .typ::<crate::optimizers::OptimizerRunStatus>()
+        .typ::<crate::platform::failure::FailureView>()
         .commands(collect_commands![
             desktop_instance_diagnostics,
             crate::desktop_image_preview,
@@ -351,6 +352,12 @@ pub fn builder() -> Builder<tauri::Wry> {
             crate::secrets::secrets_deny_env_import,
             crate::telemetry::product_telemetry_get_policy,
             crate::telemetry::product_telemetry_set_opt_out,
+            crate::adapters::tauri::failures_query,
+            crate::adapters::tauri::failures_get,
+            crate::adapters::tauri::failures_timeline,
+            crate::adapters::tauri::logs_query,
+            crate::adapters::tauri::failure_export_bundle,
+            crate::adapters::tauri::observability_status,
         ])
 }
 
@@ -482,8 +489,10 @@ mod tests {
         // 265 → 268: bounded native optimizer-frame latest/list/content lane.
         // 268 → 270: container reconcile + restart — declaration repair and
         // native one-time replacement, bound to the declaring repository.
+        // 270 → 276: failure ledger query/get/timeline, logs query, redacted
+        // bundle export, and observability mode status.
         assert_eq!(
-            exported, 270,
+            exported, 276,
             "generated bindings must contain the complete desktop command set"
         );
         assert_eq!(

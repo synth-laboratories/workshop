@@ -1133,6 +1133,7 @@ mod tests {
             pool_id: None,
             task_family: Some("craftax".into()),
             last_rollout_id: None,
+            current_failure_id: None,
             health: json!({"ok": status == READY_STATUS}),
             metadata,
             created_at: NOW.into(),

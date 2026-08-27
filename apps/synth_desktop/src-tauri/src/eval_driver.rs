@@ -163,7 +163,7 @@ pub async fn spawn(deps: EvalDriverDeps, root: PathBuf) -> Result<EvalDriverConn
         )
         .await;
         if let Err(error) = result {
-            eprintln!("synth-desktop: eval driver stopped: {error:#}");
+            crate::platform::logging::report("eval_driver", "eprintln", format!("synth-desktop: eval driver stopped: {error:#}"));
         }
     });
     Ok(connection)

@@ -36,6 +36,7 @@ pub struct ContainerDeployment {
     pub pool_id: Option<String>,
     pub task_family: Option<String>,
     pub last_rollout_id: Option<String>,
+    pub current_failure_id: Option<String>,
     #[specta(type = specta_typescript::Unknown)]
     pub health: Value,
     #[specta(type = specta_typescript::Unknown)]
@@ -453,12 +454,34 @@ impl DataStore {
         task_family: Option<String>,
     ) -> Result<(ContainerDeployment, AppEvent)> {
         self.db.clone().run_transaction(move |conn| {
+            let previous = load_container(conn, &id).ok();
             let now = Utc::now().to_rfc3339();
             let changed = conn.execute(
                 "UPDATE containers SET status=?1,health_json=?2,metadata_json=?3,task_family=COALESCE(?4,task_family),updated_at=?5 WHERE id=?6",
                 params![&status, serde_json::to_string(&health)?, serde_json::to_string(&metadata)?, &task_family, &now, &id],
             )?;
             if changed == 0 { return Err(anyhow!("container not found: {id}")); }
+            if let Some(previous) = previous {
+                let registry = crate::domains::containers::registry_observation(&previous.status, &previous.health);
+                let live = crate::domains::containers::live_observation(&status, &health);
+                let stopped = previous.status == "stopped" || status == "stopped";
+                if let Some(kind) = crate::domains::containers::classify_probe(&id, registry, live, stopped) {
+                    if crate::platform::failure::repository::FailureRepository::open_for_container(conn, &id)?.is_none() {
+                        crate::domains::containers::raise_probe_failure(conn, kind, &id, None)?;
+                    }
+                } else if status == crate::container_capabilities::READY_STATUS {
+                    if let Some(open) = crate::platform::failure::repository::FailureRepository::open_for_container(conn, &id)? {
+                        let _ = crate::platform::failure::FailureAuthority::transition(
+                            conn,
+                            open.failure_id.as_str(),
+                            crate::platform::failure::FailureLifecycleState::Resolved,
+                            crate::platform::failure::TransitionReason::Resolved,
+                            "container_probe",
+                        );
+                        crate::domains::containers::clear_current(conn, &id)?;
+                    }
+                }
+            }
             let container = load_container(conn, &id)?;
             let event = crate::storage::append_event(conn, EventAppend {
                 event_id: None, session_id: None, run_id: None, source: EventSource::Local,
@@ -1082,6 +1105,7 @@ fn container_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ContainerDepl
         pool_id: row.get(5)?,
         task_family: row.get(6)?,
         last_rollout_id: row.get(7)?,
+        current_failure_id: row.get(12).ok(),
         health: parse_json(row.get(8)?)?,
         metadata: parse_json(row.get(9)?)?,
         created_at: row.get(10)?,
@@ -1091,14 +1115,14 @@ fn container_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ContainerDepl
 
 fn load_container(conn: &Connection, id: &str) -> Result<ContainerDeployment> {
     conn.query_row(
-        "SELECT id,name,location,status,base_url,pool_id,task_family,last_rollout_id,health_json,metadata_json,created_at,updated_at FROM containers WHERE id=?1",
+        "SELECT id,name,location,status,base_url,pool_id,task_family,last_rollout_id,health_json,metadata_json,created_at,updated_at,current_failure_id FROM containers WHERE id=?1",
         params![id], container_from_row,
     ).optional()?.ok_or_else(|| anyhow!("container not found: {id}"))
 }
 
 fn list_containers(conn: &Connection) -> Result<Vec<ContainerDeployment>> {
     let mut statement = conn.prepare(
-        "SELECT id,name,location,status,base_url,pool_id,task_family,last_rollout_id,health_json,metadata_json,created_at,updated_at FROM containers ORDER BY updated_at DESC, id",
+        "SELECT id,name,location,status,base_url,pool_id,task_family,last_rollout_id,health_json,metadata_json,created_at,updated_at,current_failure_id FROM containers ORDER BY updated_at DESC, id",
     )?;
     let rows = statement
         .query_map([], container_from_row)?

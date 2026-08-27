@@ -84,7 +84,7 @@ fn request_inner(
         response
             .split("\r\n\r\n")
             .nth(1)
-            .ok_or_else(|| synth_desktop_lib::error::AppError::message("empty IPC response"))?,
+            .ok_or_else(|| synth_desktop_lib::error::AppError::untyped("empty IPC response"))?,
     )
     .map_err(synth_desktop_lib::error::AppError::from)
 }

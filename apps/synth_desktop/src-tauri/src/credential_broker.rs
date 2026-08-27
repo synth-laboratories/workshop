@@ -177,7 +177,7 @@ impl CredentialBroker {
             if let Err(error) = served {
                 // Nothing can await this task, so the failure is reported here
                 // rather than swallowed. Cloud sessions fail closed after it.
-                eprintln!("synth-desktop: credential proxy stopped serving: {error:#}");
+                crate::platform::logging::report("credential_broker", "eprintln", format!("synth-desktop: credential proxy stopped serving: {error:#}"));
             }
         });
         Ok(broker)
@@ -370,10 +370,10 @@ impl ReceiptStore {
         let dropped = self.inner.lock().unwrap().remove(session_id);
         if let Some(dropped) = dropped {
             if !dropped.is_empty() {
-                eprintln!(
+                crate::platform::logging::report("credential_broker", "eprintln", format!(
                     "synth-desktop: dropped {} settled receipt(s) undrained at close of session {session_id}",
                     dropped.len()
-                );
+                ));
             }
         }
     }

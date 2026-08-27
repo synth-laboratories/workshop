@@ -102,7 +102,7 @@ fn spawn_tcp_proxy(listener: std::net::TcpListener, state: Arc<ProxyState>) {
         let listener = match tokio::net::TcpListener::from_std(listener) {
             Ok(listener) => listener,
             Err(error) => {
-                eprintln!("synth-desktop: adopt provider proxy listener: {error:#}");
+                crate::platform::logging::report("secrets", "eprintln", format!("synth-desktop: adopt provider proxy listener: {error:#}"));
                 return;
             }
         };
@@ -116,7 +116,7 @@ fn spawn_tcp_proxy(listener: std::net::TcpListener, state: Arc<ProxyState>) {
         )
         .await
         {
-            eprintln!("synth-desktop: provider proxy stopped serving: {error:#}");
+            crate::platform::logging::report("secrets", "eprintln", format!("synth-desktop: provider proxy stopped serving: {error:#}"));
         }
     });
 }
@@ -127,7 +127,7 @@ fn spawn_unix_proxy(listener: std::os::unix::net::UnixListener, state: Arc<Proxy
         let listener = match tokio::net::UnixListener::from_std(listener) {
             Ok(listener) => listener,
             Err(error) => {
-                eprintln!("synth-desktop: adopt provider proxy unix listener: {error:#}");
+                crate::platform::logging::report("secrets", "eprintln", format!("synth-desktop: adopt provider proxy unix listener: {error:#}"));
                 return;
             }
         };
@@ -137,7 +137,7 @@ fn spawn_unix_proxy(listener: std::os::unix::net::UnixListener, state: Arc<Proxy
         })
         .await
         {
-            eprintln!("synth-desktop: provider proxy unix socket stopped serving: {error:#}");
+            crate::platform::logging::report("secrets", "eprintln", format!("synth-desktop: provider proxy unix socket stopped serving: {error:#}"));
         }
     });
 }

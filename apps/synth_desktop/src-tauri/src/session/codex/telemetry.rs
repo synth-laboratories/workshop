@@ -224,7 +224,7 @@ pub(crate) async fn track_performance_event(
             .record_generation_speed(generation_speed_row(measurement))
             .await
         {
-            eprintln!("generation speed measurement could not be persisted: {error:#}");
+            crate::platform::logging::report("session", "eprintln", format!("generation speed measurement could not be persisted: {error:#}"));
         }
     }
     let mut finalized = finalized;
@@ -342,7 +342,7 @@ pub(crate) async fn finalize_performance_tracker(
             .record_generation_speed(generation_speed_row(measurement))
             .await
         {
-            eprintln!("generation speed measurement could not be persisted: {error:#}");
+            crate::platform::logging::report("session", "eprintln", format!("generation speed measurement could not be persisted: {error:#}"));
         }
     }
     let output_tokens = tracker.usage.output_tokens.filter(|tokens| *tokens > 0);
@@ -422,7 +422,7 @@ pub(crate) async fn finalize_performance_tracker(
         source: "codex_app_server".into(),
     };
     if let Err(error) = persistence.record_usage(record).await {
-        eprintln!("usage record could not be persisted: {error:#}");
+        crate::platform::logging::report("session", "eprintln", format!("usage record could not be persisted: {error:#}"));
     }
     finalized
 }

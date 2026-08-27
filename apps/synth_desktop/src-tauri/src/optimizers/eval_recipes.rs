@@ -1134,13 +1134,13 @@ async fn run_worker(
                                          was live (last error: {error})"
                                     );
                                 }
-                                eprintln!("eval event ingest failed: {error}");
+                                crate::platform::logging::report("optimizers", "eprintln", format!("eval event ingest failed: {error}"));
                             }
                             Err(error) => {
                                 // Durable-log write misses stay on the log;
                                 // the producer is still running. Restart
                                 // reconcile rereads worker.stdout.log.
-                                eprintln!("eval event ingest failed: {error}");
+                                crate::platform::logging::report("optimizers", "eprintln", format!("eval event ingest failed: {error}"));
                             }
                         }
                     }

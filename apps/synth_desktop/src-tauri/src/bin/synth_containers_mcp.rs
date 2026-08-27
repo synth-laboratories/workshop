@@ -82,9 +82,9 @@ fn request_inner(
         .map_err(synth_desktop_lib::error::AppError::from)?;
     let (head, payload) = response
         .split_once("\r\n\r\n")
-        .ok_or_else(|| synth_desktop_lib::error::AppError::message("empty IPC response"))?;
+        .ok_or_else(|| synth_desktop_lib::error::AppError::untyped("empty IPC response"))?;
     let status = parse_status_code(head)
-        .ok_or_else(|| synth_desktop_lib::error::AppError::message("malformed IPC status line"))?;
+        .ok_or_else(|| synth_desktop_lib::error::AppError::untyped("malformed IPC status line"))?;
     match serde_json::from_str::<Value>(payload) {
         Ok(value) => Ok((status, value)),
         // A non-2xx response with an unparseable body is still a failure; do

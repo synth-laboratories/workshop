@@ -51,6 +51,7 @@ const MIGRATIONS: &[&str] = &[
     MIGRATION_46,
     MIGRATION_47,
     MIGRATION_48,
+    MIGRATION_49,
 ];
 
 /// Apply every migration the database has not reached yet.
@@ -151,6 +152,25 @@ fn heal_missing_columns(conn: &Connection) -> Result<()> {
              REFERENCES experiment_groups(id);",
         )
         .context("heal missing sessions.active_experiment_id")?;
+    }
+    for (table, column) in [
+        ("containers", "current_failure_id"),
+        ("optimizer_runs", "terminal_failure_id"),
+        ("evaluation_runs", "terminal_failure_id"),
+        ("visuals", "current_failure_id"),
+        ("runs", "terminal_failure_id"),
+        ("experiment_groups", "current_failure_id"),
+        ("evaluation_rollouts", "terminal_failure_id"),
+    ] {
+        let sql = format!(
+            "SELECT EXISTS(SELECT 1 FROM pragma_table_info('{table}') WHERE name='{column}')"
+        );
+        let present: bool = conn.query_row(&sql, [], |row| row.get(0))?;
+        if !present {
+            let ddl = format!("ALTER TABLE {table} ADD COLUMN {column} TEXT");
+            conn.execute_batch(&ddl)
+                .with_context(|| format!("heal missing {table}.{column}"))?;
+        }
     }
     Ok(())
 }
@@ -2295,6 +2315,150 @@ const MIGRATION_48: &str = r#"
 DROP INDEX IF EXISTS experiment_groups_session;
 CREATE INDEX experiment_groups_session
 ON experiment_groups(session_id, created_at, id);
+"#;
+
+/// Failure ledger, structured logs, recovery plans, and canonical failure FKs.
+/// Historical error prose is copied into `historical_failure_unclassified`
+/// rows by `migrate_historical_failures` after this DDL lands.
+const MIGRATION_49: &str = r#"
+CREATE TABLE IF NOT EXISTS operation_records (
+    operation_id TEXT PRIMARY KEY,
+    kind TEXT NOT NULL,
+    phase TEXT NOT NULL,
+    parent_operation_id TEXT,
+    session_id TEXT,
+    turn_id TEXT,
+    tool_call_id TEXT,
+    container_id TEXT,
+    evaluation_id TEXT,
+    rollout_id TEXT,
+    visual_id TEXT,
+    approval_id TEXT,
+    context_json TEXT NOT NULL DEFAULT '{}',
+    started_at TEXT NOT NULL,
+    completed_at TEXT
+);
+CREATE INDEX IF NOT EXISTS operation_records_session ON operation_records(session_id, started_at);
+CREATE INDEX IF NOT EXISTS operation_records_container ON operation_records(container_id, started_at);
+
+CREATE TABLE IF NOT EXISTS failure_occurrences (
+    failure_id TEXT PRIMARY KEY,
+    schema_version TEXT NOT NULL,
+    code TEXT NOT NULL,
+    domain TEXT NOT NULL,
+    category TEXT NOT NULL,
+    disposition TEXT NOT NULL CHECK(disposition IN (
+        'approval_required','repair_required','retryable','terminal','cancelled','programmer_error'
+    )),
+    lifecycle_state TEXT NOT NULL CHECK(lifecycle_state IN (
+        'open','awaiting_approval','repairing','retry_scheduled','retrying','resolved','terminalized','superseded'
+    )),
+    operation_kind TEXT NOT NULL,
+    operation_phase TEXT NOT NULL,
+    operation_id TEXT,
+    session_id TEXT,
+    turn_id TEXT,
+    container_id TEXT,
+    evaluation_id TEXT,
+    rollout_id TEXT,
+    visual_id TEXT,
+    kind_json TEXT NOT NULL,
+    facts_json TEXT NOT NULL DEFAULT '{}',
+    cause_json TEXT NOT NULL DEFAULT 'null',
+    raised_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS failure_occurrences_lifecycle ON failure_occurrences(lifecycle_state, raised_at);
+CREATE INDEX IF NOT EXISTS failure_occurrences_code ON failure_occurrences(code, raised_at);
+CREATE INDEX IF NOT EXISTS failure_occurrences_container ON failure_occurrences(container_id, raised_at);
+CREATE INDEX IF NOT EXISTS failure_occurrences_session ON failure_occurrences(session_id, raised_at);
+CREATE INDEX IF NOT EXISTS failure_occurrences_evaluation ON failure_occurrences(evaluation_id, raised_at);
+
+CREATE TABLE IF NOT EXISTS failure_transitions (
+    failure_id TEXT NOT NULL REFERENCES failure_occurrences(failure_id) ON DELETE CASCADE,
+    sequence INTEGER NOT NULL,
+    from_state TEXT,
+    to_state TEXT NOT NULL,
+    reason TEXT NOT NULL,
+    actor TEXT NOT NULL,
+    at TEXT NOT NULL,
+    PRIMARY KEY (failure_id, sequence)
+);
+
+CREATE TABLE IF NOT EXISTS failure_relationships (
+    from_failure_id TEXT NOT NULL REFERENCES failure_occurrences(failure_id) ON DELETE CASCADE,
+    to_failure_id TEXT NOT NULL REFERENCES failure_occurrences(failure_id) ON DELETE CASCADE,
+    kind TEXT NOT NULL CHECK(kind IN (
+        'caused_by','consequence_of','supersedes','repair_of','retry_of'
+    )),
+    PRIMARY KEY (from_failure_id, to_failure_id, kind)
+);
+
+CREATE TABLE IF NOT EXISTS log_records (
+    log_id TEXT PRIMARY KEY,
+    level TEXT NOT NULL CHECK(level IN ('debug','info','warn','error')),
+    component TEXT NOT NULL,
+    event TEXT NOT NULL,
+    message TEXT NOT NULL,
+    operation_id TEXT,
+    failure_id TEXT,
+    fields_json TEXT NOT NULL DEFAULT '{}',
+    at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS log_records_operation ON log_records(operation_id, at);
+CREATE INDEX IF NOT EXISTS log_records_failure ON log_records(failure_id, at);
+CREATE INDEX IF NOT EXISTS log_records_component ON log_records(component, at);
+
+CREATE TABLE IF NOT EXISTS recovery_plans (
+    recovery_id TEXT PRIMARY KEY,
+    failure_id TEXT NOT NULL REFERENCES failure_occurrences(failure_id) ON DELETE CASCADE,
+    action_json TEXT NOT NULL,
+    approval_requirement_json TEXT NOT NULL,
+    idempotency_key TEXT NOT NULL UNIQUE,
+    bounds_json TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS recovery_receipts (
+    recovery_id TEXT NOT NULL,
+    failure_id TEXT NOT NULL,
+    status TEXT NOT NULL,
+    approval_id TEXT,
+    detail_json TEXT NOT NULL DEFAULT '{}',
+    completed_at TEXT NOT NULL,
+    PRIMARY KEY (recovery_id, completed_at)
+);
+
+ALTER TABLE containers ADD COLUMN current_failure_id TEXT REFERENCES failure_occurrences(failure_id);
+ALTER TABLE optimizer_runs ADD COLUMN terminal_failure_id TEXT REFERENCES failure_occurrences(failure_id);
+ALTER TABLE evaluation_runs ADD COLUMN terminal_failure_id TEXT REFERENCES failure_occurrences(failure_id);
+ALTER TABLE visuals ADD COLUMN current_failure_id TEXT REFERENCES failure_occurrences(failure_id);
+ALTER TABLE runs ADD COLUMN terminal_failure_id TEXT REFERENCES failure_occurrences(failure_id);
+ALTER TABLE experiment_groups ADD COLUMN current_failure_id TEXT REFERENCES failure_occurrences(failure_id);
+
+CREATE TABLE evaluation_rollouts_v49 (
+    optimizer_run_id TEXT NOT NULL REFERENCES optimizer_runs(id) ON DELETE CASCADE,
+    rollout_index INTEGER NOT NULL,
+    rollout_state TEXT CHECK (rollout_state IN (
+        'not_started','planned','queued','starting','running','completed','failed','cancelled','degraded')),
+    rollout_id TEXT,
+    reward REAL,
+    trace_ref TEXT,
+    cost_micros INTEGER,
+    total_tokens INTEGER,
+    updated_at TEXT NOT NULL,
+    terminal_failure_id TEXT REFERENCES failure_occurrences(failure_id),
+    PRIMARY KEY (optimizer_run_id, rollout_index)
+);
+INSERT INTO evaluation_rollouts_v49(
+    optimizer_run_id, rollout_index, rollout_state, rollout_id, reward, trace_ref,
+    cost_micros, total_tokens, updated_at, terminal_failure_id
+)
+SELECT optimizer_run_id, rollout_index, rollout_state, rollout_id, reward, trace_ref,
+       cost_micros, total_tokens, updated_at, NULL
+FROM evaluation_rollouts;
+DROP TABLE evaluation_rollouts;
+ALTER TABLE evaluation_rollouts_v49 RENAME TO evaluation_rollouts;
 "#;
 
 #[cfg(test)]

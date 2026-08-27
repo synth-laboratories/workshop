@@ -73,10 +73,10 @@ impl ServiceSupervisor {
             .clone();
         for service in services {
             if let Err(error) = service.stop().await {
-                eprintln!(
+                crate::platform::logging::report("services", "eprintln", format!(
                     "synth-desktop: managed service '{}' failed to stop on exit: {error:#}",
                     service.name()
-                );
+                ));
             }
         }
     }

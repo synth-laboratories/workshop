@@ -620,7 +620,7 @@ async fn run_recipe_worker(
                 // have to wait for terminal state. Deterministic event ids make
                 // repeated polls and reconnects idempotent.
                 if let Err(error) = append_proposer_transcripts(&service, &run_id, &run_dir).await {
-                    eprintln!("transient proposer transcript reconciliation failure: {error:#}");
+                    crate::platform::logging::report("optimizers", "eprintln", format!("transient proposer transcript reconciliation failure: {error:#}"));
                 }
             }
         }

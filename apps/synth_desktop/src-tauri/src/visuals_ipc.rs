@@ -354,7 +354,7 @@ pub async fn spawn(
         })
         .await;
         if let Err(error) = result {
-            eprintln!("synth-desktop: visuals IPC stopped: {error:#}");
+            crate::platform::logging::report("visuals_ipc", "eprintln", format!("synth-desktop: visuals IPC stopped: {error:#}"));
         }
     });
     Ok(connection)
@@ -533,10 +533,27 @@ async fn route_request_inner(
                 &error,
             ) =>
         {
-            JsonHttpResponse::with_status(
-                StatusCode::CONFLICT,
-                crate::container_capabilities::preflight_error_body(&error),
-            )
+            let body = error
+                .chain()
+                .find_map(|cause| {
+                    cause.downcast_ref::<crate::container_capabilities::ContainerPreflightError>()
+                })
+                .and_then(|preflight| {
+                    core.storage()
+                        .database()
+                        .transaction(|conn| {
+                            crate::domains::containers::raise_probe_failure(
+                                conn,
+                                crate::domains::containers::from_preflight(preflight),
+                                &preflight.container_id,
+                                None,
+                            )
+                        })
+                        .ok()
+                        .map(|raised| crate::adapters::mcp::tool_error_body(&raised))
+                })
+                .unwrap_or_else(|| crate::container_capabilities::preflight_error_body(&error));
+            JsonHttpResponse::with_status(StatusCode::CONFLICT, body)
         }
         Err(error) if crate::error::error_is::<crate::error::StructuredFailure>(&error) => {
             let body = error
@@ -558,7 +575,15 @@ async fn route_request_inner(
                 .find_map(|cause| {
                     cause.downcast_ref::<crate::optimizers::admission::AdmissionError>()
                 })
-                .map(crate::optimizers::admission::AdmissionError::to_json)
+                .and_then(|admission| {
+                    core.storage()
+                        .database()
+                        .transaction(|conn| {
+                            crate::domains::evaluations::raise(conn, admission, None)
+                        })
+                        .ok()
+                        .map(|raised| crate::adapters::mcp::tool_error_body(&raised))
+                })
                 .unwrap_or_else(|| json!({"code": "admission_failed"}));
             JsonHttpResponse::with_status(StatusCode::BAD_REQUEST, body)
         }
@@ -4611,7 +4636,22 @@ pub(crate) async fn dispatch_container_restart(
                 effect,
             },
         )
-        .await?;
+        .await
+        .map_err(|error| {
+            let _ = core.storage().database().transaction(|conn| {
+                if let Some(open) = crate::platform::failure::repository::FailureRepository::open_for_container(conn, id)? {
+                    crate::platform::failure::FailureAuthority::transition(
+                        conn,
+                        open.failure_id.as_str(),
+                        crate::platform::failure::FailureLifecycleState::Terminalized,
+                        crate::platform::failure::TransitionReason::ApprovalDenied,
+                        "operator",
+                    )?;
+                }
+                Ok(())
+            });
+            error
+        })?;
     let approved = crate::optimizers::container_lifecycle::resolve_declared_spec(
         core.storage().database(),
         session,
@@ -4632,6 +4672,36 @@ pub(crate) async fn dispatch_container_restart(
         &approved,
     )
     .await?;
+    let _ = core.storage().database().transaction(|conn| {
+        if let Some(open) = crate::platform::failure::repository::FailureRepository::open_for_container(conn, id)? {
+            let plan = crate::platform::failure::RecoveryPlan::restart_container(
+                open.failure_id.clone(),
+                id.to_owned(),
+                spec.id.clone(),
+            );
+            crate::platform::failure::recovery::insert_plan(conn, &plan)?;
+            crate::platform::failure::recovery::insert_receipt(
+                conn,
+                &crate::platform::failure::RecoveryReceipt {
+                    recovery_id: plan.recovery_id.clone(),
+                    failure_id: open.failure_id.clone(),
+                    status: "completed".into(),
+                    approval_id: Some(approval_id.clone()),
+                    completed_at: chrono::Utc::now(),
+                    detail: serde_json::json!({"containerId": ensured.container_id}),
+                },
+            )?;
+            crate::platform::failure::FailureAuthority::transition(
+                conn,
+                open.failure_id.as_str(),
+                crate::platform::failure::FailureLifecycleState::Resolved,
+                crate::platform::failure::TransitionReason::Resolved,
+                "container_restart",
+            )?;
+            crate::domains::containers::clear_current(conn, id)?;
+        }
+        Ok(())
+    });
     Ok(json!({
         "containerId": ensured.container_id,
         "baseUrl": ensured.base_url,

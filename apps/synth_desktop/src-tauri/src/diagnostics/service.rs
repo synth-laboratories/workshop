@@ -22,6 +22,8 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
+use crate::platform::failure::{FailureKind, TelemetryFailure};
+use crate::platform::operations::{OperationContext, OperationKind, OperationPhase};
 
 /// Longest a queued diagnostic waits before being written even if the batch
 /// never fills. Short enough that a failure is queryable while the user is
@@ -68,6 +70,7 @@ pub struct DiagnosticsService {
     root: PathBuf,
     instance_id: Option<String>,
     started: AtomicBool,
+    index_degraded: AtomicBool,
     stats: Stats,
 }
 
@@ -83,6 +86,7 @@ impl DiagnosticsService {
             root,
             instance_id: crate::instance::name(),
             started: AtomicBool::new(false),
+            index_degraded: AtomicBool::new(false),
             stats: Stats::default(),
         })
     }
@@ -177,8 +181,33 @@ impl DiagnosticsService {
     async fn flush_before_read(&self) {
         if let Err(error) = self.flush().await {
             self.stats.write_failures.fetch_add(1, Ordering::Relaxed);
-            eprintln!("synth-desktop: diagnostics could not be persisted: {error:#}");
+            crate::platform::logging::report(
+                "diagnostics",
+                "persist_failed",
+                format!("diagnostics could not be persisted: {error:#}"),
+            );
         }
+    }
+
+    fn note_index_degraded(&self, reason: &str) {
+        crate::platform::logging::report("diagnostics", "index_degraded", reason);
+        if self.index_degraded.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        let _ = self.store.database().transaction(|conn| {
+            crate::platform::failure::FailureRuntime::raise_in_tx(
+                conn,
+                FailureKind::Telemetry(TelemetryFailure::IndexDegraded {
+                    reason: reason.to_owned(),
+                }),
+                OperationContext::bootstrap("diagnostics"),
+                OperationKind::Query,
+                OperationPhase::Recover,
+                None,
+                "diagnostics",
+            )?;
+            Ok(())
+        });
     }
 
     /// Start the background writer, then lazily the index.
@@ -198,7 +227,11 @@ impl DiagnosticsService {
                     _ = tokio::time::sleep(FLUSH_INTERVAL) => {}
                 }
                 if let Err(error) = writer.flush().await {
-                    eprintln!("synth-desktop: diagnostics writer failed: {error:#}");
+                    crate::platform::logging::report(
+                        "diagnostics",
+                        "writer_failed",
+                        format!("diagnostics writer failed: {error:#}"),
+                    );
                     tokio::time::sleep(INDEX_RETRY).await;
                 }
             }
@@ -218,10 +251,16 @@ impl DiagnosticsService {
                 last_trim = std::time::Instant::now();
                 match self.store.trim(JOURNAL_RETENTION, JOURNAL_MAX_ROWS).await {
                     Ok(0) => {}
-                    Ok(removed) => eprintln!("synth-desktop: trimmed {removed} stale diagnostics"),
-                    Err(error) => {
-                        eprintln!("synth-desktop: diagnostics trim failed: {error:#}")
-                    }
+                    Ok(removed) => crate::platform::logging::report_info(
+                        "diagnostics",
+                        "trimmed",
+                        format!("trimmed {removed} stale diagnostics"),
+                    ),
+                    Err(error) => crate::platform::logging::report(
+                        "diagnostics",
+                        "trim_failed",
+                        format!("diagnostics trim failed: {error:#}"),
+                    ),
                 }
             }
             let state = self.sidecar.state().await;
@@ -237,6 +276,9 @@ impl DiagnosticsService {
             if ready != SidecarState::Ready {
                 // Degraded is a status, not an outage: queries keep answering
                 // from the journal until the next attempt.
+                if let SidecarState::Degraded(reason) = &ready {
+                    self.note_index_degraded(reason);
+                }
                 tokio::time::sleep(INDEX_RETRY).await;
                 continue;
             }
@@ -259,7 +301,7 @@ impl DiagnosticsService {
                 }
                 Err(error) => {
                     self.stats.index_failures.fetch_add(1, Ordering::Relaxed);
-                    eprintln!("synth-desktop: diagnostics indexing failed: {error:#}");
+                    self.note_index_degraded(&format!("{error:#}"));
                     tokio::time::sleep(INDEX_RETRY).await;
                 }
             }
@@ -335,7 +377,7 @@ impl DiagnosticsService {
                     Err(error) => {
                         // The index is an optimization. Falling back is the
                         // designed behavior, not an error the caller handles.
-                        eprintln!("synth-desktop: diagnostics index query failed: {error:#}");
+                        self.note_index_degraded(&format!("{error:#}"));
                     }
                 }
             }

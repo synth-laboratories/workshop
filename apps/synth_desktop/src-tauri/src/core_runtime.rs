@@ -42,11 +42,21 @@ pub struct CoreRuntime {
     runs: RunService,
     events_tx: broadcast::Sender<AppEvent>,
     secrets: Arc<crate::secrets::SecretsService>,
+    observability: crate::composition::ObservabilityRuntime,
 }
 
 impl CoreRuntime {
     pub fn open(root: impl Into<std::path::PathBuf>) -> Result<Self> {
         let storage = Storage::open(root)?;
+        let data_root = storage
+            .content_root()
+            .parent()
+            .unwrap_or_else(|| storage.content_root())
+            .to_path_buf();
+        let observability = crate::composition::ObservabilityRuntime::open(
+            storage.database().clone(),
+            data_root,
+        )?;
         // Bindings written before the canonical envelope was enforced still
         // render an empty pane, so bring them forward at open. Storage cannot
         // do this itself: deciding what a legacy shape meant is domain logic.
@@ -55,9 +65,13 @@ impl CoreRuntime {
             .with_conn(crate::visuals::canonicalize_persisted_bindings)
             .context("canonicalize persisted visual bindings")?;
         if backfill.changed() {
-            eprintln!(
-                "synth-desktop: visual bindings backfill scanned {}, upgraded {}, refused {}",
-                backfill.scanned, backfill.upgraded, backfill.refused
+            observability.logs.info(
+                "visuals",
+                "bindings.backfill",
+                format!(
+                    "visual bindings backfill scanned {}, upgraded {}, refused {}",
+                    backfill.scanned, backfill.upgraded, backfill.refused
+                ),
             );
         }
         // Reconcile before returning, not in a spawned task. Everything that can
@@ -76,14 +90,19 @@ impl CoreRuntime {
             })
             .context("reconcile abandoned turns at startup")?;
         if !recovered.is_empty() {
-            eprintln!(
-                "synth-desktop: recovered {} abandoned turn(s) from a previous run ({})",
-                recovered.len(),
-                recovered
-                    .iter()
-                    .map(|notice| notice.session_id.as_str())
-                    .collect::<Vec<_>>()
-                    .join(", ")
+            let _ = storage.database().transaction(|conn| {
+                for notice in &recovered {
+                    crate::domains::sessions::raise_from_notice(conn, notice)?;
+                }
+                Ok(())
+            });
+            observability.logs.info(
+                "recovery",
+                "session.reconciled",
+                format!(
+                    "recovered {} abandoned turn(s) from a previous run",
+                    recovered.len()
+                ),
             );
         }
         let recovered_runs = storage
@@ -97,14 +116,13 @@ impl CoreRuntime {
             })
             .context("reconcile abandoned optimizer runs at startup")?;
         if !recovered_runs.is_empty() {
-            eprintln!(
-                "synth-desktop: recovered {} abandoned optimizer run(s) from a previous boot ({})",
-                recovered_runs.len(),
-                recovered_runs
-                    .iter()
-                    .map(|run| run.id.as_str())
-                    .collect::<Vec<_>>()
-                    .join(", ")
+            observability.logs.info(
+                "recovery",
+                "optimizer.reconciled",
+                format!(
+                    "recovered {} abandoned optimizer run(s) from a previous boot",
+                    recovered_runs.len()
+                ),
             );
         }
         let backend = crate::synth_config::resolve().context("resolve Synth backend")?;
@@ -117,10 +135,14 @@ impl CoreRuntime {
             .context("configure Rust Intern runtime")?,
             None => InternRuntime::unconfigured(),
         });
-        Ok(Self::from_parts(storage, intern))
+        Ok(Self::from_parts(storage, intern, observability))
     }
 
-    fn from_parts(storage: Storage, intern: Arc<InternRuntime>) -> Self {
+    fn from_parts(
+        storage: Storage,
+        intern: Arc<InternRuntime>,
+        observability: crate::composition::ObservabilityRuntime,
+    ) -> Self {
         let journal = EventJournal::new(storage.database().clone());
         let content = ContentStore::new(storage.content_root());
         let visuals =
@@ -203,6 +225,7 @@ impl CoreRuntime {
             runs,
             events_tx,
             secrets,
+            observability,
         }
     }
 
@@ -211,7 +234,13 @@ impl CoreRuntime {
         root: impl Into<std::path::PathBuf>,
         intern: InternRuntime,
     ) -> Result<Self> {
-        Ok(Self::from_parts(Storage::open(root)?, Arc::new(intern)))
+        let root = root.into();
+        let storage = Storage::open(&root)?;
+        let observability = crate::composition::ObservabilityRuntime::open(
+            storage.database().clone(),
+            root,
+        )?;
+        Ok(Self::from_parts(storage, Arc::new(intern), observability))
     }
 
     pub fn open_default() -> Result<Self> {
@@ -274,6 +303,10 @@ impl CoreRuntime {
 
     pub fn secrets(&self) -> &Arc<crate::secrets::SecretsService> {
         &self.secrets
+    }
+
+    pub fn observability(&self) -> &crate::composition::ObservabilityRuntime {
+        &self.observability
     }
 
     pub fn broadcast_committed(&self, event: Option<AppEvent>) {
@@ -378,14 +411,23 @@ impl CoreRuntime {
             .storage
             .database()
             .run_transaction(move |conn| {
-                crate::recovery::reconcile_orphaned_turns(conn, &instance_id, Utc::now())
+                let notices =
+                    crate::recovery::reconcile_orphaned_turns(conn, &instance_id, Utc::now())?;
+                for notice in &notices {
+                    crate::domains::sessions::raise_from_notice(conn, notice)?;
+                }
+                Ok(notices)
             })
             .await?;
         let recovered = notices.len();
         for notice in notices {
-            eprintln!(
-                "synth-desktop: lease expired for session {} ({})",
-                notice.session_id, notice.reason
+            self.observability.logs.info(
+                "recovery",
+                "session.lease_expired",
+                format!(
+                    "lease expired for session {} ({})",
+                    notice.session_id, notice.reason
+                ),
             );
             let _ = self
                 .append_and_broadcast(EventAppend {
@@ -419,7 +461,7 @@ impl CoreRuntime {
             loop {
                 tokio::time::sleep(interval).await;
                 if let Err(error) = core.sweep_expired_leases().await {
-                    eprintln!("lease watchdog sweep failed: {error}");
+                    crate::platform::logging::report("core_runtime", "eprintln", format!("lease watchdog sweep failed: {error}"));
                 }
             }
         });
