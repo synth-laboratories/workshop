@@ -2728,6 +2728,176 @@ async fn a_provider_name_change_alone_respawns_the_child() {
     );
 }
 
+/// Cold-resume provider reconciliation. A reconstructed manager has an empty
+/// session map, so the live reuse comparison never runs; only `threads.json`
+/// remembers the thread — and the provider it was created under. Requesting
+/// the same session under a different provider must not silently resume and
+/// relabel the remembered thread.
+#[tokio::test]
+async fn a_reconstructed_manager_does_not_resume_a_thread_across_providers() {
+    let _machine =
+        crate::synth_config::test_machine_permissions::install("never", "workspace-write");
+    let temp = tempdir().unwrap();
+    let codex_root = temp.path().join("codex");
+    let manager = CodexManager::with_paths(
+        SessionPersistence::Null,
+        codex_root.clone(),
+        fixture_binary(),
+        CodexManager::test_broker(),
+    );
+    let app = tauri::test::mock_app();
+    let app_handle = app.handle().clone();
+    let mut request = test_request(temp.path(), "cold-provider-identity");
+    apply_synth_cloud_provider(
+        &mut request,
+        "http://127.0.0.1:41209",
+        Some("sk_dev_shared"),
+    )
+    .unwrap();
+    manager
+        .start(app_handle.clone(), request.clone())
+        .await
+        .unwrap();
+    manager.close("cold-provider-identity").await.unwrap();
+    drop(manager);
+
+    let manager = CodexManager::with_paths(
+        SessionPersistence::Null,
+        codex_root.clone(),
+        fixture_binary(),
+        CodexManager::test_broker(),
+    );
+    let mut switched = request.clone();
+    switched.provider_name = Some("openrouter".into());
+    manager
+        .start(app_handle.clone(), switched)
+        .await
+        .unwrap();
+    let thread_methods: Vec<String> = fixture_requests(&codex_root, "cold-provider-identity")
+        .iter()
+        .filter_map(|message| message["method"].as_str())
+        .filter(|method| *method == "thread/resume" || *method == "thread/start")
+        .map(str::to_string)
+        .collect();
+    assert_eq!(
+        thread_methods,
+        vec!["thread/start".to_string(), "thread/start".to_string()],
+        "a remembered thread from another provider must start fresh, never resume-and-relabel"
+    );
+    let record = manager
+        .records
+        .read()
+        .await
+        .get("cold-provider-identity")
+        .cloned()
+        .expect("reconstructed session record");
+    assert_eq!(
+        record.provider_name, "openrouter",
+        "the persisted record must carry the provider that actually created the live thread"
+    );
+    manager.close("cold-provider-identity").await.unwrap();
+}
+
+/// The inverse control: a same-provider cold reconstruction still resumes the
+/// remembered thread, so reconciliation costs no conversation continuity when
+/// nothing actually changed.
+#[tokio::test]
+async fn a_reconstructed_manager_resumes_a_same_provider_thread() {
+    let _machine =
+        crate::synth_config::test_machine_permissions::install("never", "workspace-write");
+    let temp = tempdir().unwrap();
+    let codex_root = temp.path().join("codex");
+    let manager = CodexManager::with_paths(
+        SessionPersistence::Null,
+        codex_root.clone(),
+        fixture_binary(),
+        CodexManager::test_broker(),
+    );
+    let app = tauri::test::mock_app();
+    let app_handle = app.handle().clone();
+    let mut request = test_request(temp.path(), "cold-same-provider");
+    apply_synth_cloud_provider(
+        &mut request,
+        "http://127.0.0.1:41209",
+        Some("sk_dev_shared"),
+    )
+    .unwrap();
+    manager
+        .start(app_handle.clone(), request.clone())
+        .await
+        .unwrap();
+    manager.close("cold-same-provider").await.unwrap();
+    drop(manager);
+
+    let manager = CodexManager::with_paths(
+        SessionPersistence::Null,
+        codex_root.clone(),
+        fixture_binary(),
+        CodexManager::test_broker(),
+    );
+    manager.start(app_handle, request).await.unwrap();
+    let thread_methods: Vec<String> = fixture_requests(&codex_root, "cold-same-provider")
+        .iter()
+        .filter_map(|message| message["method"].as_str())
+        .filter(|method| *method == "thread/resume" || *method == "thread/start")
+        .map(str::to_string)
+        .collect();
+    assert_eq!(
+        thread_methods,
+        vec!["thread/start".to_string(), "thread/resume".to_string()],
+        "an unchanged provider must keep the conversation by resuming its remembered thread"
+    );
+    manager.close("cold-same-provider").await.unwrap();
+}
+
+/// An explicitly requested thread id under a contradicting provider fails
+/// closed instead of being started over or relabeled: the caller named a
+/// specific thread, so silently giving them a different one would lie.
+#[tokio::test]
+async fn an_explicit_thread_id_with_a_contradicting_provider_fails_closed() {
+    let _machine =
+        crate::synth_config::test_machine_permissions::install("never", "workspace-write");
+    let temp = tempdir().unwrap();
+    let codex_root = temp.path().join("codex");
+    let manager = CodexManager::with_paths(
+        SessionPersistence::Null,
+        codex_root.clone(),
+        fixture_binary(),
+        CodexManager::test_broker(),
+    );
+    let app = tauri::test::mock_app();
+    let app_handle = app.handle().clone();
+    let mut request = test_request(temp.path(), "explicit-thread-contradiction");
+    apply_synth_cloud_provider(
+        &mut request,
+        "http://127.0.0.1:41209",
+        Some("sk_dev_shared"),
+    )
+    .unwrap();
+    let info = manager
+        .start(app_handle.clone(), request.clone())
+        .await
+        .unwrap();
+    manager.close("explicit-thread-contradiction").await.unwrap();
+    drop(manager);
+
+    let manager = CodexManager::with_paths(
+        SessionPersistence::Null,
+        codex_root,
+        fixture_binary(),
+        CodexManager::test_broker(),
+    );
+    let mut switched = request;
+    switched.provider_name = Some("openrouter".into());
+    switched.thread_id = Some(info.thread_id);
+    let error = manager
+        .start(app_handle, switched)
+        .await
+        .expect_err("resuming a named thread under another provider must fail closed")
+        .to_string();
+    assert!(error.contains("provider identity contradiction"), "{error}");
+}
+
 /// A changed credential or endpoint is part of the reuse comparison: the
 /// old child was spawned against the old binding, so rotation must respawn
 /// it rather than leave it talking through the stale credential.

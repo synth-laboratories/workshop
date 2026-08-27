@@ -966,17 +966,48 @@ pub(crate) async fn authorize_optimizer_recipe_start(
 ) -> Result<OptimizerRunRecord, AppError> {
     let should_open_visual = request.open_visual.unwrap_or(false);
     let visual_session_ref = request.session_ref.clone();
-    let recipe = state
+    let catalog = state
         .optimizers()
-        .list_recipes_for_session(request.session_ref.as_deref())
-        .into_iter()
+        .list_recipes_for_session(request.session_ref.as_deref());
+    let recipe = catalog
+        .iter()
         .find(|recipe| recipe.get("id").and_then(Value::as_str) == Some(request.recipe_id.as_str()))
+        .cloned()
         .ok_or_else(|| {
-            AppError::from(anyhow::anyhow!(
-                "unknown optimizer recipe: {}",
-                request.recipe_id
-            ))
+            // Distinguish "the id was never declared" from "the workspace
+            // catalog itself could not be produced" — the latter is not the
+            // caller's typo.
+            let workspace_blocker = catalog
+                .iter()
+                .filter(|entry| {
+                    entry.get("source").and_then(Value::as_str) == Some("workspace")
+                        && entry.get("availability").and_then(Value::as_str)
+                            == Some("unavailable")
+                })
+                .find_map(|entry| entry.get("availabilityReason").and_then(Value::as_str));
+            match workspace_blocker {
+                Some(reason) => AppError::from(anyhow::anyhow!(
+                    "unknown optimizer recipe: {}; {reason}",
+                    request.recipe_id
+                )),
+                None => AppError::from(anyhow::anyhow!(
+                    "unknown optimizer recipe: {}",
+                    request.recipe_id
+                )),
+            }
         })?;
+    // A declared-but-invalid workspace recipe is addressable by id and must
+    // return its validation error, never start.
+    if recipe.get("availability").and_then(Value::as_str) == Some("invalid") {
+        let reason = recipe
+            .get("availabilityReason")
+            .and_then(Value::as_str)
+            .unwrap_or("the workspace recipe failed validation");
+        return Err(AppError::from(anyhow::anyhow!(
+            "optimizer recipe `{}` is declared but invalid: {reason}",
+            request.recipe_id
+        )));
+    }
     // Local MLX recipes and the pinned local eval smoke do not incur provider
     // charges. The click itself is the operator's explicit instruction.
     if matches!(

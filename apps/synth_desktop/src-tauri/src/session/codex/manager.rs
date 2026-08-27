@@ -1,5 +1,5 @@
 //! CodexManager — SessionKind::Codex transport authority over app-server attachments.
-use anyhow::{anyhow, Context, Result};
+use anyhow::{anyhow, bail, Context, Result};
 use serde_json::{json, Value};
 use std::{
     collections::HashMap, env, fs, future::Future, path::PathBuf, sync::Arc, time::Duration,
@@ -291,6 +291,32 @@ impl CodexManager {
             apply_brokered_credential(&mut request, &self.broker)
                 .map_err(|message| anyhow!(message))?;
         }
+        let remembered = self.records.read().await.get(&request.session_id).cloned();
+        // Provider identity reconciliation. A remembered thread was created
+        // under the provider its record names; after a restart the in-memory
+        // reuse comparison above never ran, so this is the only gate that
+        // stops a cold-reconstructed manager from resuming (for example) an
+        // openai-codex-oauth thread under a requested openrouter attachment
+        // and then persisting the requested identity over the live thread's
+        // actual provider. A differing provider starts a fresh thread; only an
+        // explicitly requested thread id fails closed instead — before the
+        // session home is rewritten for an attachment that will be refused.
+        let remembered_provider_matches = remembered
+            .as_ref()
+            .is_none_or(|record| record.provider_name == requested_provider);
+        if let (Some(explicit), Some(record)) = (request.thread_id.as_deref(), remembered.as_ref())
+        {
+            if record.thread_id == explicit && !remembered_provider_matches {
+                bail!(
+                    "provider identity contradiction: thread `{explicit}` for session `{}` was \
+                     created under provider `{}` but the attachment requests provider `{}`; \
+                     refusing to resume and relabel it",
+                    request.session_id,
+                    record.provider_name,
+                    requested_provider
+                );
+            }
+        }
         let home = self
             .root
             .join("homes")
@@ -346,11 +372,12 @@ impl CodexManager {
             }
         }
         server.notify("initialized").await?;
-        let remembered = self.records.read().await.get(&request.session_id).cloned();
-        let requested_thread = request
-            .thread_id
-            .clone()
-            .or_else(|| remembered.as_ref().map(|record| record.thread_id.clone()));
+        let requested_thread = request.thread_id.clone().or_else(|| {
+            remembered
+                .as_ref()
+                .filter(|_| remembered_provider_matches)
+                .map(|record| record.thread_id.clone())
+        });
         let mut method = if requested_thread.is_some() {
             "thread/resume"
         } else {
@@ -396,6 +423,29 @@ impl CodexManager {
         };
         let thread_id = nested_id(&result, "threadId")
             .ok_or_else(|| anyhow!("Codex {method} response missing thread id: {result}"))?;
+        // The app-server is the authority on which provider actually serves
+        // the thread. When it reports one, a disagreement with the requested
+        // attachment fails closed instead of persisting a plausible-looking
+        // requested identity over the live thread (older servers and fixtures
+        // that omit it are not penalized).
+        if let Some(effective) = result
+            .get("thread")
+            .and_then(|thread| thread.get("modelProvider"))
+            .or_else(|| result.get("modelProvider"))
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            if !effective.eq_ignore_ascii_case(&requested_provider) {
+                bail!(
+                    "provider identity contradiction: Codex {method} for session `{}` reports \
+                     modelProvider `{effective}` but the attachment requested provider `{}`; \
+                     refusing to publish the requested identity",
+                    request.session_id,
+                    requested_provider
+                );
+            }
+        }
         let session = Arc::new(Session {
             attachment_id,
             server,

@@ -648,12 +648,46 @@ impl OptimizerService {
     pub fn list_recipes_for_session(&self, session_ref: Option<&str>) -> Vec<Value> {
         let mut recipes = Vec::new();
         if let Some(session) = session_ref.map(str::trim).filter(|value| !value.is_empty()) {
-            if let Ok(Some(workspace)) =
-                super::workspace_recipe::session_workspace(&self.db, session)
-            {
-                if let Ok(declared) = super::workspace_recipe::load_recipes(&workspace) {
-                    recipes.extend(declared.iter().map(super::workspace_recipe::catalog_entry));
+            // Diagnostics are catalog entries, never discarded: a declared
+            // recipe that fails validation must not silently disappear and be
+            // reported later as `unknown optimizer recipe`.
+            match super::workspace_recipe::session_workspace(&self.db, session) {
+                Ok(Some(workspace)) => {
+                    match super::workspace_recipe::load_recipes_with_diagnostics(&workspace) {
+                        Ok(outcome) => {
+                            recipes.extend(
+                                outcome
+                                    .recipes
+                                    .iter()
+                                    .map(super::workspace_recipe::catalog_entry),
+                            );
+                            recipes.extend(
+                                outcome
+                                    .diagnostics
+                                    .iter()
+                                    .map(super::workspace_recipe::invalid_catalog_entry),
+                            );
+                        }
+                        Err(error) => recipes.push(json!({
+                            "source": "workspace",
+                            "availability": "unavailable",
+                            "availabilityReason": format!(
+                                "workspace recipe catalog could not be read: {error:#}"
+                            ),
+                            "diagnosticCode": "workspace_recipes_unreadable",
+                        })),
+                    }
                 }
+                Ok(None) => {}
+                Err(error) => recipes.push(json!({
+                    "source": "workspace",
+                    "availability": "unavailable",
+                    "availabilityReason": format!(
+                        "workspace recipe catalog is unavailable: the session workspace could \
+                         not be resolved: {error:#}"
+                    ),
+                    "diagnosticCode": "workspace_unavailable",
+                })),
             }
         }
         recipes.push(super::hosted_gelo::recipe_catalog());
