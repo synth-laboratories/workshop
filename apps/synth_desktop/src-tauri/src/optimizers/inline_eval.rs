@@ -17,6 +17,60 @@ use serde_json::{json, Value};
 use std::num::NonZeroU32;
 use std::process::Command;
 
+const OPENROUTER_CODEX_SWE_NAMESPACE: &str = "openrouter";
+const OPENROUTER_CODEX_SWE_POLICY: &str = "codex-cli-openrouter-swe-proxy-v1";
+const OPENROUTER_CODEX_SWE_MODEL: &str = "openai/gpt-5.6-luna";
+const RESPONSES_CREATE: &str = "responses.create";
+const GENERIC_PROVIDER_OPERATION: &str = "provider.request";
+
+/// Select the least-privileged provider operation for a validated inline
+/// policy. Only the exact OpenRouter Codex SWE policy/model pin may use the
+/// Responses route; every unrelated pin keeps the generic compatibility
+/// operation.
+pub(super) fn credential_capability_scope_for_policy(
+    namespace: &str,
+    name: &str,
+    provider: &str,
+    model: &str,
+    configuration: &Value,
+) -> admission::CredentialCapabilityScope {
+    let exact_codex_swe_pin = namespace.eq_ignore_ascii_case(OPENROUTER_CODEX_SWE_NAMESPACE)
+        && name == OPENROUTER_CODEX_SWE_POLICY
+        && provider.eq_ignore_ascii_case(OPENROUTER_CODEX_SWE_NAMESPACE)
+        && model == OPENROUTER_CODEX_SWE_MODEL;
+    let empty_configuration = configuration
+        .as_object()
+        .is_some_and(serde_json::Map::is_empty);
+    let responses_declared = configuration
+        .get("api")
+        .and_then(Value::as_str)
+        .is_some_and(|value| value.eq_ignore_ascii_case("responses"))
+        || configuration
+            .get("workload")
+            .and_then(Value::as_str)
+            .is_some_and(|value| value.eq_ignore_ascii_case("codex_responses"))
+        || configuration
+            .get("operation")
+            .and_then(Value::as_str)
+            .is_some_and(|value| value.eq_ignore_ascii_case(RESPONSES_CREATE))
+        || configuration
+            .get("operations")
+            .and_then(Value::as_array)
+            .is_some_and(|values| {
+                values.iter().any(|value| {
+                    value
+                        .as_str()
+                        .is_some_and(|operation| operation.eq_ignore_ascii_case(RESPONSES_CREATE))
+                })
+            });
+    let operation = if exact_codex_swe_pin && (empty_configuration || responses_declared) {
+        RESPONSES_CREATE
+    } else {
+        GENERIC_PROVIDER_OPERATION
+    };
+    admission::CredentialCapabilityScope::new([operation.to_string()], 3_600)
+}
+
 /// Resolve current authority, construct the default inline recipe, validate it,
 /// and assign its immutable digest. No recipe catalog is consulted here.
 pub async fn admit_inline(
@@ -229,7 +283,17 @@ async fn discovery_context(
         .provider
         .clone()
         .context("inline evaluation requires provider")?;
-    let scope = admission::CredentialCapabilityScope::new(["provider.request".to_string()], 3_600);
+    let scope = credential_capability_scope_for_policy(
+        &namespace,
+        &name,
+        provider.as_str(),
+        request
+            .model_id
+            .as_ref()
+            .map(|model| model.as_str())
+            .unwrap_or_default(),
+        declared_configuration.as_value(),
+    );
     Ok((
         DiscoveryContext {
             containers: candidates,
@@ -324,13 +388,12 @@ fn read_policy_source(
         .or_else(|| metadata.get("specId"))
         .and_then(Value::as_str)
         .unwrap_or("policy");
-    let origin = super::workspace_recipe::origin_from_metadata(metadata, spec_id).ok_or_else(
-        || {
+    let origin =
+        super::workspace_recipe::origin_from_metadata(metadata, spec_id).ok_or_else(|| {
             anyhow::anyhow!(
                 "policy_source_unavailable: container declaration has no approved source origin"
             )
-        },
-    )?;
+        })?;
     let resolved = super::workspace_recipe::resolve_repository_path(&origin, relative)
         .map_err(super::workspace_recipe::LaunchDeclarationError::into_anyhow)?;
     let source_code = if origin.source_digest.is_some() {
@@ -470,4 +533,76 @@ pub fn approved_rollouts(value: u32) -> Result<RolloutCount> {
     Ok(RolloutCount(
         NonZeroU32::new(value).context("approved rollout cap must be non-zero")?,
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    const TARGET_NAMESPACE: &str = "openrouter";
+    const TARGET_POLICY: &str = "codex-cli-openrouter-swe-proxy-v1";
+    const TARGET_PROVIDER: &str = "openrouter";
+    const TARGET_MODEL: &str = "openai/gpt-5.6-luna";
+
+    #[test]
+    fn unrelated_policy_keeps_the_generic_provider_operation() {
+        let scope = credential_capability_scope_for_policy(
+            "openrouter",
+            "ordinary-chat-policy",
+            TARGET_PROVIDER,
+            TARGET_MODEL,
+            &json!({"api": "chat_completions"}),
+        );
+        assert_eq!(scope.operations, ["provider.request"]);
+    }
+
+    #[test]
+    fn the_openrouter_codex_swe_policy_selects_responses_create() {
+        let scope = credential_capability_scope_for_policy(
+            TARGET_NAMESPACE,
+            TARGET_POLICY,
+            TARGET_PROVIDER,
+            TARGET_MODEL,
+            &json!({
+                "api": "responses",
+                "workload": "codex_responses",
+                "operation": "responses.create"
+            }),
+        );
+        assert_eq!(scope.operations, ["responses.create"]);
+    }
+
+    #[test]
+    fn responses_config_does_not_widen_an_unrelated_policy() {
+        let scope = credential_capability_scope_for_policy(
+            TARGET_NAMESPACE,
+            "another-policy",
+            TARGET_PROVIDER,
+            TARGET_MODEL,
+            &json!({"api": "responses", "operation": "responses.create"}),
+        );
+        assert_eq!(scope.operations, ["provider.request"]);
+    }
+
+    #[test]
+    fn empty_config_is_only_accepted_for_the_exact_registered_codex_swe_pin() {
+        let scope = credential_capability_scope_for_policy(
+            TARGET_NAMESPACE,
+            TARGET_POLICY,
+            TARGET_PROVIDER,
+            TARGET_MODEL,
+            &json!({}),
+        );
+        assert_eq!(scope.operations, ["responses.create"]);
+
+        let wrong_model = credential_capability_scope_for_policy(
+            TARGET_NAMESPACE,
+            TARGET_POLICY,
+            TARGET_PROVIDER,
+            "openai/another-model",
+            &json!({}),
+        );
+        assert_eq!(wrong_model.operations, ["provider.request"]);
+    }
 }
