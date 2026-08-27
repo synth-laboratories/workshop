@@ -459,7 +459,7 @@ impl MlxLoopback {
     /// always starts the verified, instance-scoped runtime on a free port;
     /// probing a conventional default port could capture another instance.
     pub async fn ensure() -> Result<Self> {
-        if let Ok(configured) = std::env::var("SYNTH_MLX_RL_URL") {
+        if let Some(configured) = configured_mlx_url_override() {
             if let Some(url) = probe_url(&configured).await {
                 remember_url(&url);
                 return Self::client(url);
@@ -652,8 +652,19 @@ impl MlxLoopback {
     }
 }
 
+fn nonempty_mlx_url(value: Option<String>) -> Option<String> {
+    value.and_then(|raw| {
+        let trimmed = raw.trim();
+        (!trimmed.is_empty()).then(|| trimmed.to_string())
+    })
+}
+
+fn configured_mlx_url_override() -> Option<String> {
+    nonempty_mlx_url(std::env::var("SYNTH_MLX_RL_URL").ok())
+}
+
 pub fn configured_mlx_url() -> String {
-    std::env::var("SYNTH_MLX_RL_URL").unwrap_or_else(|_| MLX_DEFAULT_URL.into())
+    configured_mlx_url_override().unwrap_or_else(|| MLX_DEFAULT_URL.into())
 }
 
 pub fn mlx_serve_command(port: u16, root: &Path) -> Result<Command> {
@@ -851,6 +862,17 @@ pub fn reset_supervisor_for_tests() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn empty_mlx_url_is_not_an_operator_override() {
+        assert_eq!(nonempty_mlx_url(None), None);
+        assert_eq!(nonempty_mlx_url(Some(String::new())), None);
+        assert_eq!(nonempty_mlx_url(Some("  \n".into())), None);
+        assert_eq!(
+            nonempty_mlx_url(Some("  http://127.0.0.1:8791/  ".into())),
+            Some("http://127.0.0.1:8791/".into())
+        );
+    }
 
     #[test]
     fn serve_command_uses_the_pinned_bin_and_loopback_port() {
