@@ -56,6 +56,7 @@ const MIGRATIONS: &[&str] = &[
     MIGRATION_51,
     MIGRATION_52,
     MIGRATION_53,
+    MIGRATION_54,
 ];
 
 /// Apply every migration the database has not reached yet.
@@ -139,14 +140,15 @@ CREATE TABLE IF NOT EXISTS optimizer_algorithm_projections (
 );
 
 CREATE TABLE IF NOT EXISTS optimizer_work_items (
-    work_item_id TEXT PRIMARY KEY,
     optimizer_run_id TEXT NOT NULL REFERENCES optimizer_runs(id) ON DELETE CASCADE,
+    work_item_id TEXT NOT NULL,
     kind TEXT NOT NULL,
     lifecycle TEXT NOT NULL,
     terminal TEXT,
     external_ref TEXT,
     created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (optimizer_run_id, work_item_id)
 );
 CREATE INDEX IF NOT EXISTS optimizer_work_items_run
 ON optimizer_work_items(optimizer_run_id, lifecycle);
@@ -2616,14 +2618,15 @@ CREATE TABLE IF NOT EXISTS optimizer_algorithm_projections (
 );
 
 CREATE TABLE IF NOT EXISTS optimizer_work_items (
-    work_item_id TEXT PRIMARY KEY,
     optimizer_run_id TEXT NOT NULL REFERENCES optimizer_runs(id) ON DELETE CASCADE,
+    work_item_id TEXT NOT NULL,
     kind TEXT NOT NULL,
     lifecycle TEXT NOT NULL,
     terminal TEXT,
     external_ref TEXT,
     created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (optimizer_run_id, work_item_id)
 );
 CREATE INDEX IF NOT EXISTS optimizer_work_items_run
 ON optimizer_work_items(optimizer_run_id, lifecycle);
@@ -3281,6 +3284,40 @@ DROP TABLE eval_campaigns;
 DROP TABLE evaluation_rollouts;
 DROP TABLE evaluation_run_drafts;
 DROP TABLE evaluation_runs;
+"#;
+
+/// Work-item identity is local to an optimizer run. Algorithm producers use
+/// stable logical identities such as `eval:trial:0`; a global primary key made
+/// the second run of the same algorithm collide with the first during plan
+/// projection. Preserve those producer identities and scope uniqueness to the
+/// aggregate that owns them.
+const MIGRATION_54: &str = r#"
+ALTER TABLE optimizer_work_items RENAME TO optimizer_work_items_v53;
+
+CREATE TABLE optimizer_work_items (
+    optimizer_run_id TEXT NOT NULL REFERENCES optimizer_runs(id) ON DELETE CASCADE,
+    work_item_id TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    lifecycle TEXT NOT NULL,
+    terminal TEXT,
+    external_ref TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (optimizer_run_id, work_item_id)
+);
+
+INSERT INTO optimizer_work_items(
+    optimizer_run_id, work_item_id, kind, lifecycle, terminal,
+    external_ref, created_at, updated_at
+)
+SELECT optimizer_run_id, work_item_id, kind, lifecycle, terminal,
+       external_ref, created_at, updated_at
+FROM optimizer_work_items_v53;
+
+DROP TABLE optimizer_work_items_v53;
+
+CREATE INDEX optimizer_work_items_run
+ON optimizer_work_items(optimizer_run_id, lifecycle);
 "#;
 
 #[cfg(test)]
@@ -4438,5 +4475,51 @@ mod tests {
             )
             .unwrap();
         assert_eq!(algorithm, "gepa", "the colliding run must remain untouched");
+    }
+
+    #[test]
+    fn migration_54_scopes_work_item_identity_to_its_optimizer_run() {
+        let conn = seed_at_version(53);
+        let insert_run = "INSERT INTO optimizer_runs(
+                id, algorithm_id, status, source, created_at, payload_json, updated_at
+             ) VALUES (?1, 'eval', 'queued', 'local', 'now', '{}', 'now')";
+        conn.execute(insert_run, ["run-a"]).unwrap();
+        conn.execute(insert_run, ["run-b"]).unwrap();
+        conn.execute(
+            "INSERT INTO optimizer_work_items(
+                work_item_id, optimizer_run_id, kind, lifecycle, created_at, updated_at
+             ) VALUES('eval:trial:0', 'run-a', 'eval_trial', 'planned', 'now', 'now')",
+            [],
+        )
+        .unwrap();
+
+        assert_eq!(apply_migrations(&conn).unwrap(), LATEST_VERSION);
+        conn.execute(
+            "INSERT INTO optimizer_work_items(
+                optimizer_run_id, work_item_id, kind, lifecycle, created_at, updated_at
+             ) VALUES('run-b', 'eval:trial:0', 'eval_trial', 'planned', 'now', 'now')",
+            [],
+        )
+        .expect("two runs may use the same algorithm-local work-item identity");
+
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM optimizer_work_items WHERE work_item_id='eval:trial:0'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 2);
+
+        let duplicate_in_one_run = conn.execute(
+            "INSERT INTO optimizer_work_items(
+                optimizer_run_id, work_item_id, kind, lifecycle, created_at, updated_at
+             ) VALUES('run-b', 'eval:trial:0', 'eval_trial', 'planned', 'now', 'now')",
+            [],
+        );
+        assert!(
+            duplicate_in_one_run.is_err(),
+            "one run must not contain duplicate work-item identities"
+        );
     }
 }
