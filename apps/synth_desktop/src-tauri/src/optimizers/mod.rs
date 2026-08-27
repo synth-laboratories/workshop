@@ -1,6 +1,7 @@
 //! First-class Optimizer noun: durable local mirror, cursor, relationships, and projection.
 
 pub mod admission;
+pub mod inline_eval;
 mod cispo;
 pub(crate) mod cloud;
 mod container_eval;

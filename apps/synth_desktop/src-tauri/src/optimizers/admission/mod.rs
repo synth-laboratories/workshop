@@ -45,7 +45,8 @@ pub use persistence::{
 };
 pub use pipeline::{
     materialize, AdmissibleExecutionSpec, ApprovedExecutionSpec, ContainerCandidate,
-    DiscoveryContext, ExecutionSpecDraft, InlineRequest, PolicyResolution, ValidatedExecutionSpec,
+    DeclaredEvaluator, DiscoveryContext, EvalDeclaration, ExecutionSpecDraft, InlineRequest,
+    PolicyResolution, ValidatedExecutionSpec,
 };
 pub use spec::{
     ApprovalBinding, CatalogRecipeRef, ContainerPin, CredentialCapabilityScope, CredentialRoute,

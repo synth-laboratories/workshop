@@ -1,3 +1,4 @@
+#![recursion_limit = "512"]
 //! Stdio MCP adapter for Synth optimizers. Forwards tools through Desktop visuals IPC.
 
 #[path = "../ipc/mcp_stdio.rs"]
@@ -89,10 +90,15 @@ fn request_inner(
 }
 
 fn tools() -> Value {
-    json!({"tools":[
-        {"name":"optimizer_manage","description":"Operate Synth optimizer runs and the checkpoint catalog. Prefer start_workflow for a bounded product recipe: it performs fresh admission, approval, run creation, and visual opening in one call. Advanced callers may still use prepare, open_visual, await_ready, start. Catalog LoRAs use list_checkpoints then infer_checkpoint. Never install the plugin from this tool.","inputSchema":{"type":"object","properties":{"operation":{"type":"string","enum":["list_algorithms","list_recipes","start_workflow","prepare","open_visual","await_ready","start","start_recipe","stage_eval_candidates","launch_artifact_inference","inspect_local_mlx","inspect_training_runtime","install_training_runtime","plan_model_install","install_model_or_runtime","create_training_plan","list_training_artifacts","inspect_training_artifact","launch_artifact_eval","export_or_delete_artifact","list_runs","get_run","watch_run","get_state","get_result","reconcile_cloud","cancel_run","cancel","pause_run","resume_run","finalize","list_checkpoints","archive_checkpoint","import_checkpoint","infer_checkpoint","update_checkpoint","publish_checkpoint"]},"arguments":{"type":"object","additionalProperties":true}},"required":["operation","arguments"],"additionalProperties":false}},
+    let mut manifest = json!({"tools":[
+        {"name":"optimizer_manage","description":"Operate Synth optimizer runs and the checkpoint catalog. Inline evaluation is the default: draft and inspect the immutable spec, then start it with bounded approval. Catalog recipes are only for an explicit catalog request.","inputSchema":{"type":"object","properties":{"operation":{"type":"string","enum":["evaluation_spec_draft","evaluation_spec_validate","evaluation_spec_admit","evaluation_start","reconcile_evaluation_evidence","list_algorithms","list_recipes","start_workflow","prepare","open_visual","await_ready","start","start_recipe","stage_eval_candidates","launch_artifact_inference","inspect_local_mlx","inspect_training_runtime","install_training_runtime","plan_model_install","install_model_or_runtime","create_training_plan","list_training_artifacts","inspect_training_artifact","launch_artifact_eval","export_or_delete_artifact","list_runs","get_run","watch_run","get_state","get_result","reconcile_cloud","cancel_run","cancel","pause_run","resume_run","finalize","list_checkpoints","archive_checkpoint","import_checkpoint","infer_checkpoint","update_checkpoint","publish_checkpoint"]},"arguments":{"type":"object","additionalProperties":true}},"required":["operation","arguments"],"additionalProperties":false}},
         {"name":"optimizer_list_algorithms","description":"List optimizer algorithms and availability","inputSchema":{"type":"object","properties":{},"additionalProperties":false}},
         {"name":"optimizer_list_recipes","description":"List workspace-declared recipes for this session plus remaining product training recipes. Task GEPA/eval ids come from workshop.recipe.toml, never a shipped catalog.","inputSchema":{"type":"object","properties":{"session_ref":{"type":"string"}},"additionalProperties":false}},
+        {"name":"optimizer_evaluation_spec_draft","description":"Default evaluation path. Construct, validate, pin, and hash an inline execution specification from the requested container, policy, model, seeds, and hard limits. Does not request approval or spend.","inputSchema":{"type":"object","properties":{"containerId":{"type":"string"},"family":{"type":"string"},"policyNamespace":{"type":"string"},"policyName":{"type":"string"},"policyOverrides":{"type":"object"},"provider":{"type":"string"},"modelId":{"type":"string"},"seeds":{"type":"array","items":{"type":"integer"},"minItems":1},"maximumRollouts":{"type":"integer","minimum":1},"maximumModelCallsPerRollout":{"type":"integer","minimum":1},"maximumStepsPerRollout":{"type":"integer","minimum":1},"hardTotalCostUsd":{"type":"number","exclusiveMinimum":0}},"required":["policyNamespace","policyName","provider","modelId","seeds","maximumRollouts","maximumModelCallsPerRollout","maximumStepsPerRollout","hardTotalCostUsd"],"additionalProperties":false}},
+        {"name":"optimizer_evaluation_spec_validate","description":"Re-resolve authority and validate an inline evaluation specification. Does not request approval or spend.","inputSchema":{"type":"object","properties":{"containerId":{"type":"string"},"family":{"type":"string"},"policyNamespace":{"type":"string"},"policyName":{"type":"string"},"policyOverrides":{"type":"object"},"provider":{"type":"string"},"modelId":{"type":"string"},"seeds":{"type":"array","items":{"type":"integer"},"minItems":1},"maximumRollouts":{"type":"integer","minimum":1},"maximumModelCallsPerRollout":{"type":"integer","minimum":1},"maximumStepsPerRollout":{"type":"integer","minimum":1},"hardTotalCostUsd":{"type":"number","exclusiveMinimum":0}},"required":["policyNamespace","policyName","provider","modelId","seeds","maximumRollouts","maximumModelCallsPerRollout","maximumStepsPerRollout","hardTotalCostUsd"],"additionalProperties":false}},
+        {"name":"optimizer_evaluation_spec_admit","description":"Return the immutable inline execution specification, digest, and exact approval disclosure. Does not spend.","inputSchema":{"type":"object","properties":{"containerId":{"type":"string"},"family":{"type":"string"},"policyNamespace":{"type":"string"},"policyName":{"type":"string"},"policyOverrides":{"type":"object"},"provider":{"type":"string"},"modelId":{"type":"string"},"seeds":{"type":"array","items":{"type":"integer"},"minItems":1},"maximumRollouts":{"type":"integer","minimum":1},"maximumModelCallsPerRollout":{"type":"integer","minimum":1},"maximumStepsPerRollout":{"type":"integer","minimum":1},"hardTotalCostUsd":{"type":"number","exclusiveMinimum":0}},"required":["policyNamespace","policyName","provider","modelId","seeds","maximumRollouts","maximumModelCallsPerRollout","maximumStepsPerRollout","hardTotalCostUsd"],"additionalProperties":false}},
+        {"name":"optimizer_evaluation_start","description":"Rebuild and revalidate the inline specification, request digest-bound paid-compute approval, reverify drift, start the exact run, and attach its Workshop visual.","inputSchema":{"type":"object","properties":{"containerId":{"type":"string"},"family":{"type":"string"},"policyNamespace":{"type":"string"},"policyName":{"type":"string"},"policyOverrides":{"type":"object"},"provider":{"type":"string"},"modelId":{"type":"string"},"seeds":{"type":"array","items":{"type":"integer"},"minItems":1},"maximumRollouts":{"type":"integer","minimum":1},"maximumModelCallsPerRollout":{"type":"integer","minimum":1},"maximumStepsPerRollout":{"type":"integer","minimum":1},"hardTotalCostUsd":{"type":"number","exclusiveMinimum":0},"sessionRef":{"type":"string"},"openVisual":{"type":"boolean"}},"required":["policyNamespace","policyName","provider","modelId","seeds","maximumRollouts","maximumModelCallsPerRollout","maximumStepsPerRollout","hardTotalCostUsd"],"additionalProperties":false}},
+        {"name":"optimizer_reconcile_evaluation_evidence","description":"For a terminal inline evaluation, re-import its already-sealed Trace V5 bundles and rebuild the authoritative rollout and visual projections. Never starts compute or accesses credentials.","inputSchema":{"type":"object","properties":{"optimizer_run_id":{"type":"string"}},"required":["optimizer_run_id"],"additionalProperties":false}},
         {"name":"optimizer_start_recipe","description":"Start a workspace-declared or remaining product recipe. Workspace GEPA/eval ids are whatever workshop.recipe.toml declared. Local candidate-comparison eval.* still takes candidate_set_id. Workspace baseline evals take container_id from container_ensure.","inputSchema":{"type":"object","properties":{"recipe_id":{"type":"string"},"session_ref":{"type":"string"},"open_visual":{"type":"boolean"},"base_model":{"type":"string"},"dataset_shard":{"type":"string","enum":["train_a","train_b"]},"candidate_set_id":{"type":"string","description":"Required by pinned local candidate-comparison eval.* recipes. An id returned by optimizer_stage_eval_candidates, never a path."},"training_artifact_id":{"type":"string","description":"Verified local training artifact used as the CISPO warm start."},"container_id":{"type":"string","description":"Registered-container identity from container_ensure. Required when multiple healthy pools advertise the same family."}},"required":["recipe_id"],"additionalProperties":false}},
         {"name":"optimizer_start_workflow","description":"Start one bounded workflow in one call. Workspace task recipes are declared in workshop.recipe.toml. Freshens registered-container capabilities, performs host approval and sidecar admission, creates the run, and opens its chat-owned visual.","inputSchema":{"type":"object","properties":{"recipe_id":{"type":"string"},"session_ref":{"type":"string"},"open_visual":{"type":"boolean"},"base_model":{"type":"string"},"dataset_shard":{"type":"string","enum":["train_a","train_b"]},"candidate_set_id":{"type":"string"},"training_artifact_id":{"type":"string","description":"Verified local training artifact used as the CISPO warm start."},"container_id":{"type":"string"},"plan_override":{"type":"object","description":"Optional trusted narrowing only: candidate_ids, seeds/screening_seeds/confirmation_seeds, and model_efforts."}},"required":["recipe_id"],"additionalProperties":false}},
         {"name":"optimizer_stage_eval_candidates","description":"Freeze policy files from the session workspace into one immutable content-addressed candidate set and return its id. Paths are workspace-relative; absolute paths and traversal are refused.","inputSchema":{"type":"object","properties":{"session_ref":{"type":"string","description":"Optional. Defaults to the calling session; an agent has no way to know its own id, so do not guess one."},"candidates":{"type":"array","minItems":1,"maxItems":16,"items":{"type":"object","properties":{"label":{"type":"string"},"path":{"type":"string"},"entrypoint":{"type":"string"},"kind":{"type":"string"},"baseline":{"type":"boolean"}},"required":["label","path"],"additionalProperties":false}}},"required":["candidates"],"additionalProperties":false}},
@@ -114,7 +120,36 @@ fn tools() -> Value {
         {"name":"optimizer_infer_checkpoint","description":"Sample an inference-kind catalog LoRA with a native OpenAI family body. family is chat_completions or responses. Never wrap a {message, reply} helper and never name mlx-rl, Tinker, or loopback ports.","inputSchema":{"type":"object","properties":{"checkpoint_id":{"type":"string"},"family":{"type":"string","enum":["chat_completions","responses"]},"body":{"type":"object","additionalProperties":true}},"required":["checkpoint_id","family","body"],"additionalProperties":false}},
         {"name":"optimizer_update_checkpoint","description":"Rename, tag, or add notes on a catalog LoRA. Bytes stay immutable.","inputSchema":{"type":"object","properties":{"checkpoint_id":{"type":"string"},"name":{"type":"string"},"description":{"type":"string"},"tags":{"type":"array","items":{"type":"string"}}},"required":["checkpoint_id"],"additionalProperties":false}},
         {"name":"optimizer_publish_checkpoint","description":"Explicitly publish a This Mac MLX adapter into the hosted catalog. Never auto-upload.","inputSchema":{"type":"object","properties":{"checkpoint_id":{"type":"string"}},"required":["checkpoint_id"],"additionalProperties":false}}
-    ]})
+    ]});
+    let inline_tools = [
+        "optimizer_evaluation_spec_draft",
+        "optimizer_evaluation_spec_validate",
+        "optimizer_evaluation_spec_admit",
+        "optimizer_evaluation_start",
+    ];
+    for tool in manifest["tools"]
+        .as_array_mut()
+        .expect("optimizer tool manifest is an array")
+    {
+        if !tool
+            .get("name")
+            .and_then(Value::as_str)
+            .is_some_and(|name| inline_tools.contains(&name))
+        {
+            continue;
+        }
+        tool.pointer_mut("/inputSchema/properties")
+            .and_then(Value::as_object_mut)
+            .expect("inline optimizer tool has a property schema")
+            .insert(
+                "policySourcePath".into(),
+                json!({
+                    "type": "string",
+                    "description": "Repository-relative policy source read from the container's declared immutable source revision. Workshop never guesses this path."
+                }),
+            );
+    }
+    manifest
 }
 
 fn reject_secret_keys(args: &Value, allow_path: bool) -> Result<(), String> {
@@ -148,6 +183,11 @@ fn call_tool(name: &str, args: &Value) -> Result<Value, String> {
         );
         reject_secret_keys(&nested, allow_path)?;
         let tool = match operation {
+            "evaluation_spec_draft" => "optimizer_evaluation_spec_draft",
+            "evaluation_spec_validate" => "optimizer_evaluation_spec_validate",
+            "evaluation_spec_admit" => "optimizer_evaluation_spec_admit",
+            "evaluation_start" => "optimizer_evaluation_start",
+            "reconcile_evaluation_evidence" => "optimizer_reconcile_evaluation_evidence",
             "list_algorithms" => "optimizer_list_algorithms",
             "list_recipes" => "optimizer_list_recipes",
             "start_workflow" => "optimizer_start_workflow",
@@ -196,6 +236,26 @@ fn call_tool(name: &str, args: &Value) -> Result<Value, String> {
     let current_session = env::var("SYNTH_SESSION_ID").ok();
     let session_ref = || resolved_session_ref(args, current_session.as_deref());
     match name {
+        "optimizer_evaluation_spec_draft" => request(
+            "POST",
+            "/v1/optimizers/evaluations/spec/draft",
+            Some(args.clone()),
+        ),
+        "optimizer_evaluation_spec_validate" => request(
+            "POST",
+            "/v1/optimizers/evaluations/spec/validate",
+            Some(args.clone()),
+        ),
+        "optimizer_evaluation_spec_admit" => request(
+            "POST",
+            "/v1/optimizers/evaluations/spec/admit",
+            Some(args.clone()),
+        ),
+        "optimizer_evaluation_start" => request(
+            "POST",
+            "/v1/optimizers/evaluations/start",
+            Some(args.clone()),
+        ),
         "optimizer_list_algorithms" => request("GET", "/v1/optimizers/algorithms", None),
         "optimizer_list_recipes" => request("GET", "/v1/optimizers/recipes", None),
         "optimizer_inspect_local_mlx" => request("GET", "/v1/mlx/inspect", None),
@@ -413,6 +473,14 @@ fn call_tool(name: &str, args: &Value) -> Result<Value, String> {
                 "afterSeq": args.get("after_seq"),
                 "openVisual": args.get("open_visual")
             })),
+        ),
+        "optimizer_reconcile_evaluation_evidence" => request(
+            "POST",
+            &format!(
+                "/v1/optimizers/runs/{}/reconcile_evidence",
+                id()?
+            ),
+            Some(json!({})),
         ),
         "optimizer_get_state" => {
             if let Some(slice) = args.get("slice_id").and_then(Value::as_str) {

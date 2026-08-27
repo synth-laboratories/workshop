@@ -46,6 +46,8 @@ const MIGRATIONS: &[&str] = &[
     MIGRATION_41,
     MIGRATION_42,
     MIGRATION_43,
+    MIGRATION_44,
+    MIGRATION_45,
 ];
 
 /// Apply every migration the database has not reached yet.
@@ -80,6 +82,8 @@ pub fn apply_migrations(conn: &Connection) -> Result<i64> {
         fold_rollback_usage_rows(conn)?;
     }
     heal_missing_tables(conn)?;
+    heal_missing_columns(conn)?;
+    heal_experiment_graph_shape(conn)?;
     Ok(version)
 }
 
@@ -104,6 +108,8 @@ const REQUIRED_TABLES: &[(&str, &str)] = &[
     ("evaluation_runs", MIGRATION_43),
     ("evaluation_rollouts", MIGRATION_43),
     ("evaluation_run_drafts", MIGRATION_43),
+    ("experiment_lineage", MIGRATION_44),
+    ("experiment_session_cursor", MIGRATION_44),
 ];
 
 fn heal_missing_tables(conn: &Connection) -> Result<()> {
@@ -118,6 +124,84 @@ fn heal_missing_tables(conn: &Connection) -> Result<()> {
                 .with_context(|| format!("heal missing table {table}"))?;
         }
     }
+    Ok(())
+}
+
+/// Repair columns consumed by prerelease migration-number collisions.
+///
+/// SQLite has no `ADD COLUMN IF NOT EXISTS`, so this repair must inspect the
+/// authoritative table shape before applying the one missing alteration. A
+/// missing cursor column is not optional: experiment attachment otherwise
+/// fails later with an unrelated lookup error.
+fn heal_missing_columns(conn: &Connection) -> Result<()> {
+    let active_experiment_id_present: bool = conn.query_row(
+        "SELECT EXISTS(
+            SELECT 1 FROM pragma_table_info('sessions')
+            WHERE name='active_experiment_id'
+        )",
+        [],
+        |row| row.get(0),
+    )?;
+    if !active_experiment_id_present {
+        conn.execute_batch(
+            "ALTER TABLE sessions ADD COLUMN active_experiment_id TEXT \
+             REFERENCES experiment_groups(id);",
+        )
+        .context("heal missing sessions.active_experiment_id")?;
+    }
+    Ok(())
+}
+
+/// Migration 37 was also assigned on a prerelease sibling lineage. A consumed
+/// version can therefore leave the old node-kind constraint in place: member
+/// rows insert successfully while their graph nodes are silently ignored by
+/// SQLite, and terminal evidence later has nowhere to attach.
+fn heal_experiment_graph_shape(conn: &Connection) -> Result<()> {
+    let node_sql: String = conn.query_row(
+        "SELECT COALESCE(sql, '') FROM sqlite_master WHERE type='table' AND name='experiment_nodes'",
+        [],
+        |row| row.get(0),
+    )?;
+    if !node_sql.contains("optimizer_run") || !node_sql.contains("direct_evaluation") {
+        conn.execute_batch(MIGRATION_37)
+            .context("heal prerelease experiment graph node kinds")?;
+    }
+    conn.execute_batch(
+        r#"
+        INSERT OR IGNORE INTO experiment_nodes(
+            id, experiment_id, kind, title, status, config_json, created_at, updated_at
+        )
+        SELECT
+            group_id || ':' || member_kind || ':' || member_id,
+            group_id,
+            member_kind,
+            title,
+            'running',
+            '{"memberKind":"' || replace(member_kind, '"', '\"') ||
+                '","memberId":"' || replace(member_id, '"', '\"') || '"}',
+            attached_at,
+            attached_at
+        FROM experiment_group_members;
+
+        INSERT OR IGNORE INTO experiment_edges(
+            id, experiment_id, source_node_id, target_node_id, relation, created_at
+        )
+        SELECT
+            'edge:' || optimizer.id || ':evaluated:' || campaign.id,
+            optimizer.experiment_id,
+            optimizer.id,
+            campaign.id,
+            'evaluated',
+            CASE WHEN optimizer.created_at > campaign.created_at
+                 THEN optimizer.created_at ELSE campaign.created_at END
+        FROM experiment_nodes optimizer
+        JOIN experiment_nodes campaign
+          ON campaign.experiment_id = optimizer.experiment_id
+        WHERE optimizer.kind = 'optimizer_run'
+          AND campaign.kind = 'eval_campaign';
+        "#,
+    )
+    .context("backfill experiment member graph projection")?;
     Ok(())
 }
 
@@ -1901,6 +1985,25 @@ ON experiment_candidates(optimizer_run_id, created_at, id);
 /// Candidate compare/promote stay on the candidate row, not `experiment_edges`.
 /// `experiment_records.experiment_group_id` is a pointer at ExperimentGroup.
 const MIGRATION_40: &str = r#"
+-- Some prerelease databases recorded version 39 from a parallel migration
+-- lineage that did not create this table. Re-declare the prerequisite here:
+-- a version stamp is not proof that the expected schema exists.
+CREATE TABLE IF NOT EXISTS experiment_candidates (
+    id TEXT PRIMARY KEY,
+    experiment_id TEXT NOT NULL REFERENCES experiment_groups(id) ON DELETE CASCADE,
+    optimizer_run_id TEXT NOT NULL,
+    producer_candidate_id TEXT NOT NULL,
+    kind TEXT,
+    protocol_id TEXT,
+    status TEXT,
+    parent_ids_json TEXT NOT NULL DEFAULT '[]',
+    metrics_json TEXT,
+    content_digest TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE(optimizer_run_id, producer_candidate_id)
+);
+
 ALTER TABLE experiment_candidates ADD COLUMN compared_with_json TEXT NOT NULL DEFAULT '[]';
 ALTER TABLE experiment_candidates ADD COLUMN promoted_to TEXT;
 
@@ -2034,6 +2137,39 @@ CREATE TABLE IF NOT EXISTS evaluation_run_drafts (
     created_at TEXT NOT NULL
 );
 "#;
+
+/// Repair the experiment cursor authority on lineages where another
+/// prerelease consumed migration 38 without installing its experiment DDL.
+/// The companion `sessions.active_experiment_id` column is shape-healed in
+/// Rust because SQLite cannot express `ADD COLUMN IF NOT EXISTS`.
+const MIGRATION_44: &str = r#"
+CREATE INDEX IF NOT EXISTS experiment_groups_session
+ON experiment_groups(session_id, created_at, id);
+
+CREATE TABLE IF NOT EXISTS experiment_lineage (
+    id TEXT PRIMARY KEY,
+    source_experiment_id TEXT NOT NULL REFERENCES experiment_groups(id) ON DELETE CASCADE,
+    target_experiment_id TEXT NOT NULL REFERENCES experiment_groups(id) ON DELETE CASCADE,
+    relation TEXT NOT NULL CHECK (relation IN ('follow_up','forked_from','rerun_of')),
+    created_at TEXT NOT NULL,
+    UNIQUE(source_experiment_id, target_experiment_id, relation)
+);
+
+CREATE INDEX IF NOT EXISTS experiment_lineage_source
+ON experiment_lineage(source_experiment_id, created_at, id);
+CREATE INDEX IF NOT EXISTS experiment_lineage_target
+ON experiment_lineage(target_experiment_id);
+
+CREATE TABLE IF NOT EXISTS experiment_session_cursor (
+    session_id TEXT PRIMARY KEY,
+    active_experiment_id TEXT NOT NULL REFERENCES experiment_groups(id) ON DELETE CASCADE
+);
+"#;
+
+/// Version marker for the shape-aware experiment graph repair performed by
+/// `heal_experiment_graph_shape`. The repair itself cannot be pure SQL because
+/// it must first distinguish the old and current CHECK constraints.
+const MIGRATION_45: &str = "SELECT 1;";
 
 #[cfg(test)]
 mod tests {
@@ -2295,6 +2431,20 @@ mod tests {
                 "{table} must exist even when its version was consumed elsewhere"
             );
         }
+        let active_experiment_id_present: bool = conn
+            .query_row(
+                "SELECT EXISTS(
+                    SELECT 1 FROM pragma_table_info('sessions')
+                    WHERE name='active_experiment_id'
+                )",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(
+            active_experiment_id_present,
+            "sessions.active_experiment_id must survive a consumed migration version"
+        );
     }
 
     /// A database stamped `version` with migrations 1..=version applied, as a

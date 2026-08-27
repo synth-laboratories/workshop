@@ -1,5 +1,45 @@
 # Eval
 
+## Baseline evaluation: inline first
+
+For an ordinary bounded baseline evaluation, construct the execution
+specification from the user's exact container, evaluator declaration, policy,
+model, seeds, and limits. Use `evaluation_spec_draft`,
+`evaluation_spec_validate`, and `evaluation_spec_admit`, then
+`evaluation_start`. Do not call `list_recipes` and do not require a catalog
+recipe unless the user explicitly requested one by id. A catalog recipe is a
+reusable preset, not execution authority.
+
+If the selected harness requires policy code installation, supply
+`policySourcePath` as the explicit repository-relative source path declared by
+the project or identified during source inspection. Workshop reads the bytes
+with `git show` from the container's declared immutable source revision and
+includes their digest in admission. Never read the mutable working-tree copy,
+guess a conventional filename, or omit the path and hope the container picks a
+policy.
+
+The admitted digest and its approval disclosure are the authority. Ask for
+paid-compute approval against that exact digest, then start it without changing
+any field. If discovery, declaration, policy revision, model support,
+credential routing, or an explicit limit is invalid, return the structured
+error and stop. Never substitute, clamp, infer a zero, or fall back to a recipe.
+
+Follow the run through `completed`, `failed`, `cancelled`, or `degraded`.
+Rollouts must move independently through `planned`, `queued`, `starting`,
+`running`, and a terminal state; a completed count is only a projection. Cost
+or usage that the producer did not report remains unavailable.
+
+If a terminal inline run reports that sealed Trace V5 evidence could not be
+imported, call `reconcile_evaluation_evidence` with that exact
+`optimizer_run_id`. This first binds a trace already in Workshop's index by
+exact producer identity or exact container-and-rollout import provenance; only
+a genuinely absent trace is imported from the exact approved container and
+rollout. It then writes those indexed identities into
+the durable per-rollout state and rebuilds both Workshop visuals. It never
+starts replacement rollouts, spends money, or accesses credentials. A missing,
+ambiguous, or malformed terminal identity is an error; do not guess a
+container, rollout, trial, seed, or trace ID.
+
 Use `eval` when the user has several **policy variants** and wants to know which
 one is better, measured against a pinned evaluation container. It scores an
 immutable candidate set on a fair `candidate x seed x scenario` matrix and

@@ -195,6 +195,10 @@ pub struct PolicyPin {
     pub revision: PolicyRevision,
     pub configuration: CanonicalJson,
     pub configuration_digest: Digest,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_code: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_digest: Option<Digest>,
 }
 
 impl PolicyPin {
@@ -212,13 +216,30 @@ impl PolicyPin {
             revision,
             configuration,
             configuration_digest,
+            source_code: None,
+            source_digest: None,
         }
+    }
+
+    pub fn with_source_code(mut self, source_code: Option<String>) -> Self {
+        self.source_digest = source_code
+            .as_deref()
+            .map(|code| super::canonical::digest_bytes(code.as_bytes()));
+        self.source_code = source_code;
+        self
     }
 
     /// Whether the stored digest still matches the stored configuration.
     /// Checked on read-back rather than assumed.
     pub fn digest_matches(&self) -> bool {
         self.configuration.digest() == self.configuration_digest
+            && match (&self.source_code, &self.source_digest) {
+                (Some(code), Some(digest)) => {
+                    super::canonical::digest_bytes(code.as_bytes()) == *digest
+                }
+                (None, None) => true,
+                _ => false,
+            }
     }
 
     pub fn qualified_name(&self) -> String {

@@ -49,6 +49,10 @@ pub struct InlineRequest {
     pub policy_namespace: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub policy_name: Option<String>,
+    /// Repository-relative policy source to pin from the container's declared
+    /// source revision. The path is explicit; Workshop never guesses one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub policy_source_path: Option<String>,
     /// Explicit overrides layered onto the policy declaration's own values.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub policy_overrides: Option<CanonicalJson>,
@@ -162,6 +166,9 @@ pub struct PolicyResolution {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub revision: Option<PolicyRevision>,
     pub declared_configuration: CanonicalJson,
+    /// Exact source bytes read from the declared immutable source revision.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_code: Option<String>,
 }
 
 /// Everything admission is allowed to read. Passing this explicitly, rather
@@ -389,7 +396,8 @@ pub fn draft_inline(
         namespace,
         name,
     )?;
-    let policy = PolicyPin::new(namespace, name, revision, configuration);
+    let policy = PolicyPin::new(namespace, name, revision, configuration)
+        .with_source_code(resolution.source_code.clone());
 
     // -- model: request only, checked against the declaration ----------------
     let provider = request.provider.clone().ok_or_else(|| {
@@ -811,6 +819,7 @@ impl AdmissibleExecutionSpec {
                 "name": recipe.policy.name,
                 "revision": recipe.policy.revision.as_str(),
                 "configurationDigest": recipe.policy.configuration_digest.as_str(),
+                "sourceDigest": recipe.policy.source_digest.as_ref().map(Digest::as_str),
             },
             "model": {
                 "provider": recipe.model.provider.as_str(),
