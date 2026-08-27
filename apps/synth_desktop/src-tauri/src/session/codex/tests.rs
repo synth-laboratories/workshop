@@ -3072,6 +3072,16 @@ fn extracts_only_authoritative_per_turn_usage_shapes() {
     assert_eq!(camel_case.input_tokens, Some(50));
     assert_eq!(camel_case.output_tokens, Some(8));
     assert_eq!(camel_case.cached_input_tokens, Some(20));
+    let codex_last_usage = extract_turn_usage(&json!({
+        "tokenUsage": {"lastUsage": {
+            "inputTokens": 50,
+            "outputTokens": 698,
+            "reasoningOutputTokens": 516
+        }}
+    }))
+    .unwrap();
+    assert_eq!(codex_last_usage.output_tokens, Some(698));
+    assert_eq!(codex_last_usage.reasoning_tokens, Some(516));
     assert!(extract_turn_usage(&json!({
         "tokenUsage": {"totalUsage": {"inputTokens": 9999, "outputTokens": 9999}}
     }))
@@ -3831,6 +3841,56 @@ fn turn_level_usage_is_never_borrowed_as_segment_usage() {
         measurements[0].token_count_source,
         TokenCountSource::Unavailable
     );
+}
+
+#[test]
+fn late_response_usage_enriches_only_the_completed_final_answer_interval() {
+    let item = "msg_late_usage";
+    let mut tracker = TurnSegmentTracker::new("sess", "turn-1", Some("synth-cloud".into()), None);
+    for (method, params, at_us) in [
+        ("item/started", answer_started(item, "final_answer"), 0),
+        ("item/agentMessage/delta", answer_delta(item, "a", None), 0),
+        (
+            "item/agentMessage/delta",
+            answer_delta(item, "b", None),
+            400_000,
+        ),
+        (
+            "item/agentMessage/delta",
+            answer_delta(item, "c", None),
+            800_000,
+        ),
+        (
+            "item/agentMessage/delta",
+            answer_delta(item, "d", None),
+            1_200_000,
+        ),
+        (
+            "item/completed",
+            answer_completed(item, "final_answer", "abcd"),
+            1_200_000,
+        ),
+    ] {
+        if let Some(event) = protocol_event(method, &params) {
+            tracker.observe(event, at_us);
+        }
+    }
+    assert_eq!(tracker.measurements()[0].tps, None);
+
+    // 284 visible response tokens, less the first observed token, across the
+    // final answer's 1.2 second delivery interval: 235.833... tok/s.
+    let updated = tracker
+        .apply_final_response_visible_usage(284)
+        .expect("late exact response usage should enrich the final answer");
+    assert!((updated.tps.unwrap() - (283.0 / 1.2)).abs() < 1e-9);
+    assert_eq!(updated.exact_tokens_after_first_sample, 283);
+    assert_eq!(updated.status, SegmentStatus::Completed);
+    assert_eq!(
+        updated.token_count_source,
+        TokenCountSource::ProviderResponseVisibleUsage
+    );
+    assert_eq!(updated.unavailable_reason, None);
+    assert!(tracker.apply_final_response_visible_usage(284).is_none());
 }
 
 #[test]

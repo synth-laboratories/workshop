@@ -108,6 +108,11 @@ pub(crate) enum SegmentStatus {
 pub(crate) enum TokenCountSource {
     /// Provider-reported tokens scoped exactly to this output item/content part.
     ProviderItemUsage,
+    /// Exact response output usage with exact reasoning output removed. Used
+    /// only for a completed final-answer item, and divided only by that item's
+    /// observed text-delivery interval. This is an average segment estimate,
+    /// not turn/request throughput.
+    ProviderResponseVisibleUsage,
     /// Exact local tokenization under a verified model→tokenizer mapping, with
     /// the tokenizer's identity recorded. Declared because it is the second
     /// rung of the token-authority ladder; no shipped provider mapping is
@@ -867,6 +872,54 @@ impl TurnSegmentTracker {
     /// Every measurement this turn produced, including those already returned.
     pub(crate) fn measurements(&self) -> &[GenerationSpeedMeasurement] {
         &self.finished
+    }
+
+    /// Bind late-arriving provider usage to the immediately preceding final
+    /// answer. Codex reports `lastUsage` after `item/completed`, so the segment
+    /// has already been finalized by the time its exact response totals arrive.
+    ///
+    /// `visible_tokens` must be response output minus response reasoning. The
+    /// denominator remains strictly the final answer's first-to-last observed
+    /// text delivery interval; tool time, reasoning time, TTFT, and other model
+    /// calls never enter it.
+    pub(crate) fn apply_final_response_visible_usage(
+        &mut self,
+        visible_tokens: i64,
+    ) -> Option<GenerationSpeedMeasurement> {
+        let measurement = self.finished.last_mut()?;
+        if measurement.phase != SegmentPhase::FinalAnswer
+            || measurement.status != SegmentStatus::Unavailable
+            || measurement.token_count_source != TokenCountSource::Unavailable
+            || !matches!(
+                measurement.unavailable_reason,
+                Some(UnavailableReason::MissingExactTokenSource)
+                    | Some(UnavailableReason::UsageScopeMismatch)
+            )
+            || measurement.sample_count < MIN_DISTINCT_SAMPLES
+            || measurement.duration_ms * 1_000.0 < MIN_DURATION_US as f64
+        {
+            return None;
+        }
+
+        // The interval begins at the first observed delivery, so conservatively
+        // remove one token from the exact visible-response total. The first
+        // delivery may contain more, never fewer; the result is explicitly an
+        // observed segment estimate rather than a decoder benchmark.
+        let tokens_after_first = visible_tokens.saturating_sub(1);
+        if tokens_after_first < MIN_TOKENS_AFTER_FIRST_SAMPLE {
+            return None;
+        }
+        let rate = tokens_after_first as f64 / (measurement.duration_ms / 1_000.0);
+        if !rate.is_finite() || rate <= 0.0 {
+            return None;
+        }
+
+        measurement.tps = Some(rate);
+        measurement.status = SegmentStatus::Completed;
+        measurement.exact_tokens_after_first_sample = tokens_after_first;
+        measurement.token_count_source = TokenCountSource::ProviderResponseVisibleUsage;
+        measurement.unavailable_reason = None;
+        Some(measurement.clone())
     }
 
     fn close_others(&mut self, keep_item_id: Option<&str>, ended: SegmentEnd) {

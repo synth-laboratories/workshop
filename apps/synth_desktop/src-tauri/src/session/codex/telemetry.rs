@@ -106,11 +106,17 @@ pub(crate) fn usage_from_object(value: &Value) -> Option<TurnTokenUsage> {
                 "cacheCreationInputTokens",
             ],
         )),
-        reasoning_tokens: details.and_then(|details| {
-            positive_i64(integer_field(
-                details,
-                &["reasoning_tokens", "reasoningTokens"],
-            ))
+        reasoning_tokens: positive_i64(integer_field(
+            value,
+            &["reasoning_output_tokens", "reasoningOutputTokens"],
+        ))
+        .or_else(|| {
+            details.and_then(|details| {
+                positive_i64(integer_field(
+                    details,
+                    &["reasoning_tokens", "reasoningTokens"],
+                ))
+            })
         }),
         output_tokens,
     })
@@ -185,15 +191,36 @@ pub(crate) async fn track_performance_event(
             tracker.first_output_at_ms.get_or_insert(now_ms);
             tracker.last_output_at_ms = Some(now_ms);
         }
-        if method.to_ascii_lowercase().contains("usage") || terminal {
+        let usage_event = method.to_ascii_lowercase().contains("usage");
+        let response_visible_tokens = if usage_event || terminal {
             if let Some(usage) = extract_turn_usage(params) {
+                let visible = usage
+                    .output_tokens
+                    .zip(usage.reasoning_tokens)
+                    .map(|(output, reasoning)| output.saturating_sub(reasoning));
                 tracker.usage = usage;
+                visible
+            } else {
+                None
             }
-        }
-        match protocol_event(method, params) {
+        } else {
+            None
+        };
+        let mut finalized = match protocol_event(method, params) {
             Some(event) => tracker.segments.observe(event, received_at_us),
             None => Vec::new(),
+        };
+        if usage_event {
+            if let Some(visible_tokens) = response_visible_tokens {
+                if let Some(updated) = tracker
+                    .segments
+                    .apply_final_response_visible_usage(visible_tokens)
+                {
+                    finalized.push(updated);
+                }
+            }
         }
+        finalized
     };
     for measurement in &finalized {
         if let Err(error) = persistence
