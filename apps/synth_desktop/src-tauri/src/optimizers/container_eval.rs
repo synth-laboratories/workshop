@@ -545,7 +545,7 @@ async fn start_eval(
     // appears only after there is something to see cannot show a rollout
     // starting, which is the thing it exists to show.
     let workbench_id = mint_workbench_visual(service, &run, &spec).await?;
-    let (cancel_tx, cancel_rx) = watch::channel(false);
+    let (cancel_tx, cancel_rx) = watch::channel(None);
     service
         .register_local_recipe(run.id.clone(), cancel_tx)
         .await;
@@ -758,6 +758,13 @@ async fn preflight_container_credentials(
 /// stay in the summary. Either way the run reaches a terminal state — a worker
 /// that dies silently leaves a card spinning forever.
 async fn settle_worker_failure(service: &OptimizerService, run_id: &str, error: anyhow::Error) {
+    // Cancellation is not a generic application error. A typed cancellation
+    // settles `cancelled` with its request as the terminal event's payload,
+    // instead of laundering the interruption into `failed/producer_failed`.
+    if let Some(cancelled) = error.downcast_ref::<super::kernel::CancelledError>() {
+        let _ = append_cancelled_terminal(service, run_id, &cancelled.request).await;
+        return;
+    }
     if let Some(failure) = error.downcast_ref::<EvidenceLaneFailure>() {
         let stage = failure.stage;
         let detail = failure.detail.clone();
@@ -1310,7 +1317,7 @@ async fn run_eval_worker(
     examples: Vec<EvalExample>,
     visual_id: String,
     workbench_id: String,
-    cancel: watch::Receiver<bool>,
+    cancel: super::CancelObserver,
 ) -> Result<()> {
     let _revoke = crate::secrets::RevokeRunOnDrop(run_id.clone());
     let _ownership = service.hold_run_ownership(&run_id)?;
@@ -1378,8 +1385,34 @@ async fn run_eval_worker(
     let mut halt = None::<String>;
 
     loop {
-        if *cancel.borrow() {
-            bail!("container eval cancelled");
+        let cancel_request = cancel.borrow().clone();
+        if let Some(request) = cancel_request {
+            // Stop dispatching and drain every in-flight trial to quiescence
+            // instead of dropping the JoinSet. The children observe the same
+            // typed signal, settle their relays, and each gets an explicit
+            // `cancelled` trial terminal — never `failed`; interrupted work
+            // did not fail. Trials that never dispatched are closed by the
+            // kernel's terminal seal.
+            while let Some(joined) = tasks.join_next().await {
+                let (index, record) = match joined {
+                    Ok((index, _example, Ok(record))) => (index, record),
+                    Ok((index, example, Err(error))) => (
+                        index,
+                        cancelled_record(example, spec, &policy_pin, &request, format!("{error:#}")),
+                    ),
+                    Err(error) => {
+                        return Err(error)
+                            .context("inline rollout task could not be joined during cancellation");
+                    }
+                };
+                evidence(
+                    "trial_terminal",
+                    append_eval_terminal(&service, &run_id, spec, index, &record),
+                )
+                .await?;
+                records.push(record);
+            }
+            return Err(super::kernel::CancelledError { request }.into());
         }
         while tasks.len() < permits && halt.is_none() {
             if over_cost_ceiling(&records, spec.cost_ceiling_usd) {
@@ -1606,6 +1639,7 @@ async fn append_eval_terminal(
 ) -> Result<()> {
     let seed = record.get("seed").cloned().unwrap_or(Value::Null);
     let id = format!("eval:trial:{index}");
+    let cancelled = record.get("status").and_then(Value::as_str) == Some("cancelled");
     let valid = is_successful_eval_record(record);
     let evidence_refs = eval_terminal_evidence_refs(spec, record)?;
     let measured_usage = usage_from_records(std::slice::from_ref(record), spec.cost_ceiling_usd);
@@ -1627,7 +1661,15 @@ async fn append_eval_terminal(
         .item(json!({
             "kind": "trial",
             "id": id,
-            "status": if valid { "evaluated" } else { "failed" },
+            "status": if cancelled {
+                "cancelled"
+            } else if valid {
+                "evaluated"
+            } else {
+                "failed"
+            },
+            "cancelled": cancelled,
+            "cancellation": record.get("cancellation").cloned().unwrap_or(Value::Null),
             "valid": valid,
             "candidateId": spec.policy_config,
             "stage": "screen",
@@ -2124,6 +2166,28 @@ fn failed_record(
         "taskInstanceId": format!("seed:{}", example.seed),
         "status": "failed",
         "error": error,
+        "policyRef": policy_pin,
+        "worldRef": spec.world_ref,
+    })
+}
+
+/// A trial that was interrupted, with the request that interrupted it. Not a
+/// [`failed_record`]: cancellation is not an application error and must not
+/// settle as one.
+fn cancelled_record(
+    example: EvalExample,
+    spec: &EvalSpec,
+    policy_pin: &Value,
+    request: &std::sync::Arc<super::kernel::CancellationRequest>,
+    detail: String,
+) -> Value {
+    json!({
+        "pool": example.pool,
+        "seed": example.seed,
+        "taskInstanceId": format!("seed:{}", example.seed),
+        "status": "cancelled",
+        "cancellation": request.as_ref(),
+        "detail": detail,
         "policyRef": policy_pin,
         "worldRef": spec.world_ref,
     })
@@ -2786,7 +2850,7 @@ async fn run_one_example(
     ctx: &TrialContext<'_>,
     work_index: u32,
     example: EvalExample,
-    cancel: &mut watch::Receiver<bool>,
+    cancel: &mut super::CancelObserver,
 ) -> Result<Value> {
     let spec = ctx.spec;
     let policy_revision_id = ctx
@@ -3410,6 +3474,39 @@ async fn append_terminal(
     // The terminal lifecycle fact is last. Diagnostic detail is evidence for
     // that ending, never a mutable event appended beyond a sealed sequence.
     append_status(service, run_id, event_type, status).await?;
+    Ok(())
+}
+
+/// Seal a cancelled run with the typed request as the terminal event's own
+/// payload. The receipt row/table is deferred; the durable journal fact
+/// carries request id, cause, requester, time, and scope.
+async fn append_cancelled_terminal(
+    service: &OptimizerService,
+    run_id: &str,
+    request: &super::kernel::CancellationRequest,
+) -> Result<()> {
+    if service
+        .terminal_manifest(run_id.to_string())
+        .await?
+        .is_some()
+    {
+        return Ok(());
+    }
+    let _ = service.seal_credential_chain(run_id).await;
+    service
+        .append_event_payloads(
+            run_id.to_string(),
+            vec![
+                OptimizerEventDraft::new("optimizer.run.cancelled", EVAL_ALGORITHM_ID)
+                    .idempotency_key("eval:lifecycle:optimizer.run.cancelled")
+                    .delta(Map::from_iter([
+                        ("status".into(), json!("cancelled")),
+                        ("cancellation".into(), json!(request)),
+                    ]))
+                    .raw(json!({ "source": "container_eval" })),
+            ],
+        )
+        .await?;
     Ok(())
 }
 

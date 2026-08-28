@@ -30,7 +30,6 @@ use crate::container_stream::{poll_event_list, STREAM_SUBSCRIBED_KIND};
 use anyhow::{anyhow, bail, Context, Result};
 use serde_json::{json, Map, Value};
 use std::time::{Duration, Instant};
-use tokio::sync::watch;
 
 /// Algorithm id every relayed event is filed under. Same lane as the rest of
 /// the container-eval evidence, so one cursor reads the whole run.
@@ -293,7 +292,7 @@ pub(crate) struct RelayContext<'a> {
 pub(crate) async fn relay_while<F>(
     ctx: &RelayContext<'_>,
     rollout: F,
-    cancel: &mut watch::Receiver<bool>,
+    cancel: &mut super::CancelObserver,
 ) -> (Result<Value>, RelayOutcome)
 where
     F: std::future::Future<Output = Result<Value>>,
@@ -308,7 +307,12 @@ where
     let poll_interval = ctx.settings.event_stream.poll_interval;
 
     loop {
-        if *cancel.borrow() && settled.is_none() {
+        let cancel_request = if settled.is_none() {
+            cancel.borrow().clone()
+        } else {
+            None
+        };
+        if let Some(request) = cancel_request {
             // Dropping the in-flight request is how a blocking rollout is
             // terminated: there is no abort route, and the container ends the
             // episode when its client goes away. The journal it already wrote
@@ -320,10 +324,17 @@ where
             }
             outcome.note(
                 "cancelled",
-                "the run was cancelled while this rollout was open",
+                format!(
+                    "cancellation request {} ({}) arrived while this rollout was open",
+                    request.request_id,
+                    request.cause.as_str()
+                ),
                 0,
             );
-            return (Err(anyhow!("container eval cancelled")), outcome);
+            return (
+                Err(crate::optimizers::kernel::CancelledError { request }.into()),
+                outcome,
+            );
         }
 
         match drain(ctx, &mut cursor, &mut outcome).await {

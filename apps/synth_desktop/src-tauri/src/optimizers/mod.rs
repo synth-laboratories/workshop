@@ -42,6 +42,14 @@ mod training_adapter;
 pub(crate) mod typed_capabilities;
 pub(crate) mod workspace_recipe;
 
+/// The cancel signal for a local run worker. `None` until a typed
+/// [`kernel::CancellationRequest`] arrives; observers read what cancelled
+/// them, not a bare boolean.
+pub(crate) type CancelSignal =
+    tokio::sync::watch::Sender<Option<std::sync::Arc<kernel::CancellationRequest>>>;
+pub(crate) type CancelObserver =
+    tokio::sync::watch::Receiver<Option<std::sync::Arc<kernel::CancellationRequest>>>;
+
 pub use eval_candidates::EvalStageCandidatesRequest;
 pub(crate) use eval_recipes::{paid_compute_bounds, resolve_eval_candidate_set};
 pub use frames::{OptimizerFrameContent, OptimizerFrameDelta, OptimizerFrameRef};

@@ -136,7 +136,7 @@ pub async fn start(
         local_path: None,
     };
     let (run, event) = service.create(create).await?;
-    let (cancel_tx, cancel_rx) = watch::channel(false);
+    let (cancel_tx, cancel_rx) = watch::channel(None);
     service
         .register_local_recipe(run_id.clone(), cancel_tx)
         .await;
@@ -171,7 +171,7 @@ async fn run_worker(
     run_dir: PathBuf,
     groq: String,
     tinker: String,
-    mut cancel: watch::Receiver<bool>,
+    mut cancel: super::CancelObserver,
 ) -> Result<()> {
     append_status(&service, &run_id, "optimizer.run.started", "running").await?;
     let mut owned_craftax = if craftax_ready() {
@@ -247,7 +247,7 @@ async fn run_worker(
                 return Ok(());
             }
             changed = cancel.changed() => {
-                if changed.is_ok() && *cancel.borrow() {
+                if changed.is_ok() && cancel.borrow().is_some() {
                     child.kill().await.context("cancel Craftax SFT process")?;
                     if let Some(craftax) = owned_craftax.as_mut() { let _ = craftax.kill().await; }
                     append_status(&service, &run_id, "optimizer.run.cancelled", "cancelled").await?;

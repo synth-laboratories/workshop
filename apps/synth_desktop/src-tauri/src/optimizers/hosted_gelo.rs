@@ -245,7 +245,7 @@ async fn spawn_worker(
     run_id: String,
     config: Value,
 ) {
-    let (cancel_tx, cancel_rx) = watch::channel(false);
+    let (cancel_tx, cancel_rx) = watch::channel(None);
     service
         .register_local_recipe(run_id.clone(), cancel_tx)
         .await;
@@ -266,7 +266,7 @@ async fn run_worker(
     client: HostedOptimizerClient,
     run_id: String,
     config: Value,
-    mut cancel: watch::Receiver<bool>,
+    mut cancel: super::CancelObserver,
 ) -> Result<()> {
     client.submit_json("go-ex", &run_id, config).await?;
     let mut upstream_cursor = 0u64;
@@ -290,7 +290,7 @@ async fn run_worker(
         }
         tokio::select! {
             changed = cancel.changed() => {
-                if changed.is_ok() && *cancel.borrow() {
+                if changed.is_ok() && cancel.borrow().is_some() {
                     let _ = client.cancel(&run_id).await;
                     append_terminal(&service, &run_id, "cancelled", None).await?;
                     return Ok(());

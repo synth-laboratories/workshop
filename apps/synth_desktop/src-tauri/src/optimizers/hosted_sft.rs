@@ -539,7 +539,7 @@ async fn spawn_hosted_worker(
     config_toml: Option<String>,
     start_cursor: u64,
 ) {
-    let (cancel_tx, cancel_rx) = watch::channel(false);
+    let (cancel_tx, cancel_rx) = watch::channel(None);
     service
         .register_local_recipe(run_id.clone(), cancel_tx)
         .await;
@@ -646,7 +646,7 @@ async fn run_hosted_worker(
     run_id: String,
     config_toml: Option<String>,
     start_cursor: u64,
-    mut cancel: watch::Receiver<bool>,
+    mut cancel: super::CancelObserver,
 ) -> Result<()> {
     if let Some(toml) = config_toml.as_deref() {
         client.submit_toml(&run_id, toml).await?;
@@ -687,7 +687,7 @@ async fn run_hosted_worker(
             .unwrap_or("running");
         tokio::select! {
             changed = cancel.changed() => {
-                if changed.is_ok() && *cancel.borrow() {
+                if changed.is_ok() && cancel.borrow().is_some() {
                     let _ = client.cancel(&run_id).await;
                     append_status(&service, &run_id, "optimizer.run.cancelled", "cancelled").await?;
                     return Ok(());

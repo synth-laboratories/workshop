@@ -245,10 +245,21 @@ fn apply_lifecycle(
                 "optimizer.run.failed" | "run.failed" => {
                     (TerminalKind::Failed, Some(TerminalReason::ProducerFailed))
                 }
-                "optimizer.run.cancelled" | "run.cancelled" => (
-                    TerminalKind::Cancelled,
-                    Some(TerminalReason::OperatorCancelled),
-                ),
+                "optimizer.run.cancelled" | "run.cancelled" => {
+                    // A typed request on the event names its cause; user and
+                    // agent causes settle operator_cancelled, systemic causes
+                    // settle interrupted. Absent provenance (legacy events)
+                    // keeps the operator reading.
+                    let reason = event
+                        .producer
+                        .payload
+                        .pointer("/cancellation/cause")
+                        .and_then(serde_json::Value::as_str)
+                        .and_then(super::types::CancellationCause::parse)
+                        .map(super::types::CancellationCause::terminal_reason)
+                        .unwrap_or(TerminalReason::OperatorCancelled);
+                    (TerminalKind::Cancelled, Some(reason))
+                }
                 "optimizer.run.degraded" | "run.degraded" => (TerminalKind::Degraded, None),
                 _ => (TerminalKind::Completed, None),
             });

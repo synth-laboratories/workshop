@@ -20,7 +20,7 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::{broadcast, watch, Mutex};
+use tokio::sync::{broadcast, Mutex};
 use uuid::Uuid;
 
 #[cfg(test)]
@@ -276,7 +276,7 @@ pub struct OptimizerService {
     #[allow(dead_code)]
     journal: EventJournal,
     visuals: VisualRegistry,
-    local_recipes: Arc<Mutex<HashMap<String, watch::Sender<bool>>>>,
+    local_recipes: Arc<Mutex<HashMap<String, super::CancelSignal>>>,
     events_tx: broadcast::Sender<AppEvent>,
     manager: Arc<super::OptimizerManager>,
     /// Attached once by the composition root. Optimizer lifecycle failures are
@@ -801,7 +801,7 @@ impl OptimizerService {
         results::from_kernel(&run, &state, settled, manifest.as_ref())
     }
 
-    pub(super) async fn register_local_recipe(&self, run_id: String, cancel: watch::Sender<bool>) {
+    pub(super) async fn register_local_recipe(&self, run_id: String, cancel: super::CancelSignal) {
         self.local_recipes.lock().await.insert(run_id, cancel);
     }
 
@@ -814,7 +814,7 @@ impl OptimizerService {
     pub(super) async fn try_register_local_recipe(
         &self,
         run_id: String,
-        cancel: watch::Sender<bool>,
+        cancel: super::CancelSignal,
     ) -> bool {
         let mut recipes = self.local_recipes.lock().await;
         if recipes.contains_key(&run_id) {
@@ -1699,10 +1699,15 @@ impl OptimizerService {
         .await
     }
 
-    pub async fn cancel(&self, id: String) -> Result<(OptimizerRunRecord, Option<AppEvent>)> {
+    pub async fn cancel(
+        &self,
+        id: String,
+        request: super::kernel::CancellationRequest,
+    ) -> Result<(OptimizerRunRecord, Option<AppEvent>)> {
+        let request = std::sync::Arc::new(request);
         if let Some(cancel) = self.local_recipes.lock().await.get(&id).cloned() {
             cancel
-                .send(true)
+                .send(Some(request.clone()))
                 .map_err(|_| anyhow!("local optimizer recipe is no longer running"))?;
             return self.command(id, "cancel", "cancelled").await;
         }
@@ -5313,6 +5318,7 @@ pub(in crate::optimizers) mod tests {
     use super::*;
     use crate::storage::{ContentStore, Storage};
     use tempfile::tempdir;
+    use tokio::sync::watch;
 
     /// Reopen a service over an existing instance directory: an application
     /// restart, as far as the durable record is concerned.
@@ -5338,8 +5344,8 @@ pub(in crate::optimizers) mod tests {
     async fn local_recipe_watchers_have_one_owner() {
         let dir = tempdir().unwrap();
         let service = reopen(&dir).await;
-        let (first, _) = watch::channel(false);
-        let (duplicate, _) = watch::channel(false);
+        let (first, _) = watch::channel(None);
+        let (duplicate, _) = watch::channel(None);
 
         assert!(
             service
@@ -5353,7 +5359,7 @@ pub(in crate::optimizers) mod tests {
         );
 
         service.unregister_local_recipe("local-training-run").await;
-        let (replacement, _) = watch::channel(false);
+        let (replacement, _) = watch::channel(None);
         assert!(
             service
                 .try_register_local_recipe("local-training-run".into(), replacement)

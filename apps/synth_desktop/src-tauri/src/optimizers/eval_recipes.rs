@@ -964,7 +964,7 @@ pub async fn start(
         local_path: None,
     };
     let (run, event) = service.create(create).await?;
-    let (cancel_tx, cancel_rx) = watch::channel(false);
+    let (cancel_tx, cancel_rx) = watch::channel(None);
     service
         .register_local_recipe(run_id.clone(), cancel_tx)
         .await;
@@ -1032,7 +1032,7 @@ async fn run_worker(
     recipe: Value,
     candidate_count: u64,
     local_mlx_token: Option<String>,
-    mut cancel: watch::Receiver<bool>,
+    mut cancel: super::CancelObserver,
 ) -> Result<()> {
     let _revoke = crate::secrets::RevokeRunOnDrop(run_id.clone());
     let _ownership = service.hold_run_ownership(&run_id)?;
@@ -1172,7 +1172,7 @@ async fn run_worker(
                 return Ok(());
             }
             changed = cancel.changed() => {
-                if changed.is_ok() && *cancel.borrow() && cancelled_at.is_none() {
+                if changed.is_ok() && cancel.borrow().is_some() && cancelled_at.is_none() {
                     // Ask first: the worker still has containers to stop, leases
                     // to release, and evidence to seal.
                     fs::write(run_dir.join("CANCEL"), chrono::Utc::now().to_rfc3339()).ok();

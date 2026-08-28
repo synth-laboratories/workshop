@@ -1600,9 +1600,16 @@ async fn optimizers_cancel(
     state: State<'_, Arc<CoreRuntime>>,
     optimizer_run_id: String,
 ) -> Result<OptimizerRunRecord, AppError> {
+    // Provenance is attached at the boundary that knows it: this command is
+    // the user's own UI gesture.
+    let request = optimizers::kernel::CancellationRequest::new(
+        optimizers::kernel::CancellationCause::UserRequested,
+        "user:ui",
+        format!("run:{optimizer_run_id}"),
+    );
     let (run, event) = state
         .optimizers()
-        .cancel(optimizer_run_id)
+        .cancel(optimizer_run_id, request)
         .await
         .map_err(AppError::from)?;
     publish_optimizer_event(&app, &state, event).await?;

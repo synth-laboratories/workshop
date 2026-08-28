@@ -3243,7 +3243,21 @@ pub(crate) async fn dispatch_optimizer(
             let id = path
                 .trim_start_matches("/v1/optimizers/runs/")
                 .trim_end_matches("/cancel");
-            let (run, event) = optimizers.cancel(id.to_string()).await?;
+            // This route is the agent surface (MCP relays through it). The
+            // caller may name itself in the body; without that, the route
+            // itself is the most specific identity available.
+            let requested_by = body
+                .get("requestedBy")
+                .or_else(|| body.get("requested_by"))
+                .and_then(Value::as_str)
+                .filter(|value| !value.trim().is_empty())
+                .unwrap_or("agent:optimizers_ipc");
+            let request = crate::optimizers::kernel::CancellationRequest::new(
+                crate::optimizers::kernel::CancellationCause::AgentRequested,
+                requested_by,
+                format!("run:{id}"),
+            );
+            let (run, event) = optimizers.cancel(id.to_string(), request).await?;
             Ok(json!({ "run": run, "event": event }))
         }
         ("GET", path) if path.starts_with("/v1/optimizers/runs/") && path.ends_with("/result") => {

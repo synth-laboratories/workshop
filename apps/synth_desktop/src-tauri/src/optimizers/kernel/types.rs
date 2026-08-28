@@ -297,6 +297,113 @@ impl TerminalReason {
     }
 }
 
+/// Why a cancellation was requested. Machine-stable: these cross process and
+/// persistence boundaries, so free-form strings are not an alternative.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, specta::Type)]
+#[serde(rename_all = "snake_case")]
+pub enum CancellationCause {
+    UserRequested,
+    AgentRequested,
+    ParentOperationEnded,
+    CredentialRevoked,
+    DeadlineExceeded,
+    ContainerRequested,
+    HostShutdown,
+    InternalInvariantViolation,
+}
+
+impl CancellationCause {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::UserRequested => "user_requested",
+            Self::AgentRequested => "agent_requested",
+            Self::ParentOperationEnded => "parent_operation_ended",
+            Self::CredentialRevoked => "credential_revoked",
+            Self::DeadlineExceeded => "deadline_exceeded",
+            Self::ContainerRequested => "container_requested",
+            Self::HostShutdown => "host_shutdown",
+            Self::InternalInvariantViolation => "internal_invariant_violation",
+        }
+    }
+
+    /// User- and agent-initiated cancellations settle as operator decisions.
+    pub const fn terminal_reason(self) -> TerminalReason {
+        match self {
+            Self::UserRequested | Self::AgentRequested => TerminalReason::OperatorCancelled,
+            _ => TerminalReason::Interrupted,
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "user_requested" => Some(Self::UserRequested),
+            "agent_requested" => Some(Self::AgentRequested),
+            "parent_operation_ended" => Some(Self::ParentOperationEnded),
+            "credential_revoked" => Some(Self::CredentialRevoked),
+            "deadline_exceeded" => Some(Self::DeadlineExceeded),
+            "container_requested" => Some(Self::ContainerRequested),
+            "host_shutdown" => Some(Self::HostShutdown),
+            "internal_invariant_violation" => Some(Self::InternalInvariantViolation),
+            _ => None,
+        }
+    }
+}
+
+/// One cancellation intent, with the provenance the shared boolean destroyed:
+/// who asked, when, for what scope, and why. Observers of the cancel signal
+/// read *what* cancelled them instead of a bare flag.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct CancellationRequest {
+    pub request_id: String,
+    pub cause: CancellationCause,
+    pub requested_by: String,
+    pub requested_at: String,
+    /// What the request covers, e.g. `run:<id>`.
+    pub scope: String,
+    #[serde(default)]
+    pub reason_code: Option<String>,
+}
+
+impl CancellationRequest {
+    pub fn new(
+        cause: CancellationCause,
+        requested_by: impl Into<String>,
+        scope: impl Into<String>,
+    ) -> Self {
+        Self {
+            request_id: format!("cancel_{}", uuid::Uuid::new_v4().simple()),
+            cause,
+            requested_by: requested_by.into(),
+            requested_at: chrono::Utc::now().to_rfc3339(),
+            scope: scope.into(),
+            reason_code: None,
+        }
+    }
+}
+
+/// Typed cancellation outcome. Cancellation is not a generic application
+/// error: consumers downcast this to settle `cancelled` instead of laundering
+/// the interruption into `failed/producer_failed`.
+#[derive(Clone, Debug)]
+pub struct CancelledError {
+    pub request: std::sync::Arc<CancellationRequest>,
+}
+
+impl std::fmt::Display for CancelledError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "cancelled by {} ({}, request {})",
+            self.request.requested_by,
+            self.request.cause.as_str(),
+            self.request.request_id
+        )
+    }
+}
+
+impl std::error::Error for CancelledError {}
+
 /// Algorithm-owned phase while lifecycle is `running` (or `starting`). Not a
 /// lifecycle peer.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, specta::Type)]

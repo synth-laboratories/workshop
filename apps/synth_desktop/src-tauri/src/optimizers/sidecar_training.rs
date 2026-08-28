@@ -678,7 +678,7 @@ pub async fn spawn_watch_worker(
     run_id: String,
     cursor: u64,
 ) {
-    let (cancel_tx, cancel_rx) = watch::channel(false);
+    let (cancel_tx, cancel_rx) = watch::channel(None);
     if !service
         .try_register_local_recipe(run_id.clone(), cancel_tx)
         .await
@@ -701,13 +701,13 @@ async fn watch_job(
     client: SidecarTrainingClient,
     run_id: String,
     mut cursor: u64,
-    mut cancel: watch::Receiver<bool>,
+    mut cancel: super::CancelObserver,
 ) -> Result<()> {
     let mut errors = 0;
     let mut gap_errors = 0;
     let mut cancel_sent = false;
     loop {
-        if *cancel.borrow() && !cancel_sent {
+        if cancel.borrow().is_some() && !cancel_sent {
             client
                 .cancel(&run_id)
                 .await

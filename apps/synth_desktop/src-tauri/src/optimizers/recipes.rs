@@ -181,7 +181,7 @@ async fn start_inner(
         return Ok((run, event));
     }
     append_status_event(service, &run_id, "optimizer.run.queued", "queued").await?;
-    let (cancel_tx, cancel_rx) = watch::channel(false);
+    let (cancel_tx, cancel_rx) = watch::channel(None);
     service
         .register_local_recipe(run_id.clone(), cancel_tx)
         .await;
@@ -278,7 +278,7 @@ pub(super) async fn start_prepared(
     }
     let manager = service.manager().clone();
     append_status_event(service, run_id, "optimizer.run.queued", "queued").await?;
-    let (cancel_tx, cancel_rx) = watch::channel(false);
+    let (cancel_tx, cancel_rx) = watch::channel(None);
     service
         .register_local_recipe(run_id.to_string(), cancel_tx)
         .await;
@@ -479,7 +479,7 @@ async fn run_recipe_worker(
     config_path: PathBuf,
     run_dir: PathBuf,
     manager: Arc<super::OptimizerManager>,
-    mut cancel_rx: watch::Receiver<bool>,
+    mut cancel_rx: super::CancelObserver,
 ) -> Result<()> {
     let _revoke = crate::secrets::RevokeRunOnDrop(run_id.clone());
     let _ownership = service.hold_run_ownership(&run_id)?;
@@ -604,7 +604,7 @@ async fn run_recipe_worker(
                 return Ok(());
             }
             changed = cancel_rx.changed() => {
-                if changed.is_ok() && *cancel_rx.borrow() {
+                if changed.is_ok() && cancel_rx.borrow().is_some() {
                     manager.terminate_gepa_recipe(&run_id).await;
                     if child.try_wait()?.is_none() {
                         child.kill().await.context("cancel product-owned GEPA process")?;
