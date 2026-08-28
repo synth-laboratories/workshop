@@ -1458,11 +1458,9 @@ async fn run_eval_worker(
                 .await?;
                 records.push(record);
             }
-            evidence(
-                "provider_usage_reconciliation",
-                append_provider_usage_reconciliation(&service, &run_id),
-            )
-            .await?;
+            append_provider_usage_reconciliation(&service, &run_id)
+                .await
+                .context("reconcile authoritative provider usage after cancellation")?;
             return Err(super::kernel::CancelledError { request }.into());
         }
         while tasks.len() < permits && halt.is_none() {
@@ -1567,11 +1565,16 @@ async fn run_eval_worker(
     // Every child has settled and no provider call can still debit this run's
     // capabilities. Reconcile the durable proxy receipt before the final
     // mutable projection and before the terminal manifest freezes usage.
-    evidence(
-        "provider_usage_reconciliation",
-        append_provider_usage_reconciliation(&service, &run_id),
-    )
-    .await?;
+    // A receipt contradiction is a usage-contract failure, not a missing
+    // evidence attachment. Retain it through the final summary projection so
+    // every planned rollout (including undispatched cost-ceiling rows) remains
+    // visible, then settle the run failed with the contradiction in its detail.
+    // Returning here used to lose those rows; wrapping it as EvidenceLaneFailure
+    // incorrectly settled the same cost-ceiling run as retryable `degraded`.
+    let provider_usage_failure = append_provider_usage_reconciliation(&service, &run_id)
+        .await
+        .err()
+        .map(|error| format!("provider usage reconciliation failed: {error:#}"));
 
     let failed = records
         .iter()
@@ -1586,7 +1589,11 @@ async fn run_eval_worker(
         })
         .count();
     let budget_exceeded = over_cost_ceiling(&records, spec.cost_ceiling_usd);
-    let status = if failed == 0 && records.len() == total && !budget_exceeded {
+    let status = if failed == 0
+        && records.len() == total
+        && !budget_exceeded
+        && provider_usage_failure.is_none()
+    {
         "completed"
     } else {
         "failed"
@@ -1631,6 +1638,9 @@ async fn run_eval_worker(
         }
         if let Some(halt) = halt {
             parts.push(halt);
+        }
+        if let Some(provider_usage_failure) = provider_usage_failure {
+            parts.push(provider_usage_failure);
         }
         detail = parts.join("; ");
     }
