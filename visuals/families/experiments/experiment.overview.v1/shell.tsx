@@ -466,20 +466,20 @@ function liveOverlay(props: ShellProps): { status?: string; progress?: Progress 
   const agreement = record(props.runProgress);
   if (!run && !agreement) return null;
   const work = record(record(record(props.runViewV2)?.header)?.work);
-  const stateCounts = work
-    ? Object.fromEntries(
-        (["running", "queued", "succeeded", "failed", "cancelled"] as const)
-          .map((state) => [state, finiteNumber(work[state])] as const)
-          .filter((entry): entry is [string, number] => entry[1] != null && entry[1] > 0)
-      )
-    : undefined;
+  const stateCounts: Record<string, number> = {};
+  if (work) {
+    for (const state of ["running", "queued", "succeeded", "failed", "cancelled"]) {
+      const count = finiteNumber(work[state]);
+      if (count != null && count > 0) stateCounts[state] = count;
+    }
+  }
   const costUsd = finiteNumber(agreement?.costUsd);
   const progress: Progress = {
     phase: text(agreement?.phaseLabel),
     completed: finiteNumber(agreement?.completed),
     total: finiteNumber(agreement?.total),
     cost: costUsd != null ? `$${costUsd.toFixed(2)}` : undefined,
-    ...(stateCounts && Object.keys(stateCounts).length ? { stateCounts } : {})
+    ...(Object.keys(stateCounts).length ? { stateCounts } : {})
   };
   const hasProgress = Object.values(progress).some((value) => value != null);
   return {
