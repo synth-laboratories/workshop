@@ -20,8 +20,8 @@ test("an injected renderer crash remounts the same identity and revision", () =>
 });
 
 test("a structured Tauri rejection is presented with code and message, never [object Object]", () => {
-	assert.match(publicError, /\[object Object\]/);
-	assert.match(publicError, /String\(reason\)/);
+	assert.match(publicError, /fromCompatibilityEnvelope/);
+	assert.equal(publicError.includes("String(reason)"), false);
 	assert.match(host, /publicError\(reason/);
 	assert.match(host, /toPublicError\(reason/);
 	assert.equal(host.includes("String(reason)"), false);
