@@ -5006,6 +5006,20 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("error while building Synth Desktop")
         .run(|app, event| {
+            #[cfg(feature = "eval-driver")]
+            if let RunEvent::ExitRequested { api, .. } = &event {
+                // Long-running QA evals own short-lived capability proxies.
+                // When explicitly requested by the launcher, keep the debug
+                // host alive even if macOS closes its last window or emits a
+                // normal application-exit request while a driver is attached.
+                // Release builds do not compile this branch.
+                if std::env::var("SYNTH_DESKTOP_EVAL_DRIVER_KEEPALIVE")
+                    .is_ok_and(|value| value == "1")
+                {
+                    api.prevent_exit();
+                    return;
+                }
+            }
             // macOS may advance from Command-Q to the terminal `Exit` event
             // without giving every plugin observer an `ExitRequested` callback.
             // Draining is idempotent, so cover both phases: a clean request
