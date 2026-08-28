@@ -173,6 +173,7 @@ pub fn builder() -> Builder<tauri::Wry> {
             crate::optimizers::manager::optimizer_sidecar_uninstall,
             crate::visuals_templates_list,
             crate::visuals_templates_get,
+            crate::visuals_template_shell_source,
             crate::visuals_list,
             crate::visuals_get,
             crate::visuals_observation_report,
@@ -488,8 +489,12 @@ mod tests {
         // 271 → 272: `release_tier_get` — the compiled maturity envelope
         // (contracts/release-tiers-v1.toml) for renderer display and the
         // bundle/host tier-mismatch check.
+        // 272 → 273: `visuals_template_shell_source`, which reads one
+        // user-authored template's `shell.tsx` for the pane to compile. Read
+        // only, it refuses non-user templates and paths outside the user
+        // template root.
         assert_eq!(
-            exported, 272,
+            exported, 273,
             "generated bindings must contain the complete desktop command set"
         );
         assert_eq!(

@@ -739,6 +739,14 @@ impl VisualRegistry {
         super::templates::import_managed_template(source_path)
     }
 
+    /// TSX source of a user-authored template's `shell.tsx`, for the pane to
+    /// compile through `compileSourcedModule`. Refuses every other tier: a
+    /// bundled family resolves its shell through Vite's static graph, and a
+    /// `managed` package is `renderer.html` behind an iframe CSP.
+    pub fn template_shell_source(&self, template_id: &str) -> Result<String> {
+        super::user_templates::shell_source(template_id)
+    }
+
     pub async fn mermaid_source(&self, id: String) -> Result<VisualAsset> {
         self.visual_source(id).await
     }

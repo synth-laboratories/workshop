@@ -91,15 +91,25 @@ function moduleShell(exports: Record<string, unknown>): ComponentType<ShellProps
   return typeof candidate === "function" ? (candidate as ComponentType<ShellProps>) : null;
 }
 
-export function compileSourcedModule(source: string): SourcedCompileResult {
-  const validated = validateSourcedSource(source);
+/**
+ * Compile one pane-sourced module. `templateId` is the template the source
+ * belongs to — `sourced.visual.v1` for a one-off carried on the visual record,
+ * or a user template id whose `shell.tsx` was read from the instance state
+ * root. It travels into the validator message and into sucrase's `filePath`,
+ * so a syntax error names the file the author is editing.
+ */
+export function compileSourcedModule(
+  source: string,
+  templateId: string = SOURCED_TEMPLATE_ID
+): SourcedCompileResult {
+  const validated = validateSourcedSource(source, templateId);
   if (!validated.ok) return validated;
   try {
     const transformed = transform(source, {
       transforms: ["typescript", "jsx", "imports"],
       jsxRuntime: "automatic",
       production: true,
-      filePath: `${SOURCED_TEMPLATE_ID}.tsx`
+      filePath: `${templateId}.tsx`
     });
     const module = { exports: {} as Record<string, unknown> };
     const loader = new Function(

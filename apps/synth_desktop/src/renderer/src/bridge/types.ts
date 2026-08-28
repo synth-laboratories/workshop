@@ -542,6 +542,11 @@ export type VisualTemplateMeta = TemplateMeta;
 export type VisualsBridge = {
 	listTemplates(genre?: string | null): Promise<VisualTemplateMeta[]>;
 	getTemplate(templateId: string): Promise<VisualTemplateMeta>;
+	/**
+	 * `shell.tsx` of a user-authored template, for the pane to compile. Refused
+	 * for every other tier, so this is not a general file read.
+	 */
+	templateShellSource(templateId: string): Promise<string>;
 	list(query?: {
 		status?: string;
 		sessionId?: string;

@@ -162,6 +162,33 @@ test("TypeScript registry is recursive and fails duplicate IDs closed", () => {
   assert.match(source, /entry\.manifestPath/);
 });
 
+test("catalog is bundled tiers union runtime user templates, and runtime never shadows", () => {
+  const source = readFileSync(join(root, "registry/index.ts"), "utf8");
+  // The union itself: list and resolve both read the runtime map.
+  assert.match(source, /\[\.\.\.ORDERED_ENTRIES, \.\.\.RUNTIME_BY_ID\.values\(\)\]/);
+  // Bundled first on resolve, so a runtime id can add but never redefine.
+  assert.match(source, /BY_ID\.get\(id\) \?\? RUNTIME_BY_ID\.get\(id\)/);
+  // No-shadow on the way in: a bundled id is refused and reported, not applied.
+  assert.match(source, /if \(BY_ID\.has\(id\) \|\| next\.has\(id\)\) \{\n      shadowed\.push\(id\);/);
+  // Only user-authored rows join the runtime tier; a bundled row served by the
+  // host must not be re-registered without its static shell importer.
+  assert.match(source, /record\.sourceKind !== USER_TEMPLATE_SOURCE_KIND\) continue;/);
+  // getShellImporter stays bundled-only.
+  assert.match(source, /export function getShellImporter\(id: string\) \{\n  return shellImporters\[id\];\n\}/);
+});
+
+test("the pane branches on source kind, not on one template id", () => {
+  const host = readFileSync(
+    join(root, "..", "apps", "synth_desktop", "src", "renderer", "src", "components", "VisualHost.tsx"),
+    "utf8",
+  );
+  assert.match(host, /const userAuthored = isUserTemplate\(templateId\);/);
+  assert.match(host, /if \(isSourcedTemplate\(templateId\) \|\| userAuthored\) \{/);
+  assert.match(host, /visuals\.templateShellSource\(templateId\)/);
+  // Every failure on this path renders in the pane with the validator's words.
+  assert.match(host, /setShell\(\(\) => sourcedInvalidShell\(compiled\.error\)\)/);
+});
+
 test("eval catalog declares the initial versioned family", () => {
   const catalog = JSON.parse(readFileSync(join(root, "catalog", "evals.v1.json"), "utf8"));
   assert.equal(catalog.schemaVersion, "synth.visual-template-catalog.v1");

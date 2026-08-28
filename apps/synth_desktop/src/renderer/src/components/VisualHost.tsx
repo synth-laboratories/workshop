@@ -17,7 +17,12 @@ import {
 	resolveVisualBindings,
 	selectRenderedProjection,
 	compileSourcedModule,
+	ensureRuntimeTemplates,
 	isSourcedTemplate,
+	isUserTemplate,
+	onRuntimeTemplatesChanged,
+	runtimeTemplates,
+	runtimeTemplatesVersion,
 	sourcedInvalidShell
 } from "@synth/visuals";
 import { publicError, toPublicError, type PublicError } from "../runtime/publicError";
@@ -562,7 +567,32 @@ function ManagedHtmlFrame({ source, payload, title }: { source: string; payload:
 	/>;
 }
 
+/**
+ * Runtime user templates, loaded once and re-read whenever the set changes.
+ *
+ * The bundled catalog is frozen at build time; a user template arrives from the
+ * host afterwards. Every `resolveTemplate` read below is synchronous, so this
+ * hook is what turns "the host answered" into a re-render — without it a user
+ * template would resolve to `undefined` on first paint and stay there, and the
+ * pane would report a template that exists on disk as unavailable.
+ */
+function useRuntimeTemplates(): number {
+	const [version, setVersion] = useState(() => runtimeTemplatesVersion());
+	useEffect(() => {
+		let cancelled = false;
+		const unsubscribe = onRuntimeTemplatesChanged(() => {
+			if (!cancelled) setVersion(runtimeTemplatesVersion());
+		});
+		void ensureRuntimeTemplates().then(() => {
+			if (!cancelled) setVersion(runtimeTemplatesVersion());
+		});
+		return () => { cancelled = true; unsubscribe(); };
+	}, []);
+	return version;
+}
+
 function TemplateVisualHost({ artifact }: { artifact: ArtifactRef }) {
+	const runtimeTemplateVersion = useRuntimeTemplates();
 	const [Shell, setShell] = useState<ComponentType<ShellProps> | null>(null);
 	const [failed, setFailed] = useState(false);
 	const [optimizerPayload, setOptimizerPayload] = useState<Record<string, unknown> | null>(null);
@@ -738,17 +768,41 @@ function TemplateVisualHost({ artifact }: { artifact: ArtifactRef }) {
 				}
 				return;
 			}
-			if (isSourcedTemplate(templateId)) {
+			// The host owns the runtime half of the catalog, so ask it before
+			// deciding what this template is. A template written after this
+			// renderer was built is not in `import.meta.glob`, and treating a
+			// missing glob entry as "unknown template" is exactly the blank
+			// pane this branch exists to prevent.
+			await ensureRuntimeTemplates();
+			if (cancelled) return;
+			// "Compiles in the pane" is a property of a template, not the name
+			// of one. `sourced.visual.v1` carries its TSX on the visual record;
+			// a user-authored template carries it in `shell.tsx` under the
+			// instance state root. Both run through the same validator, the
+			// same allowlist, and the same in-pane failure surface.
+			const userAuthored = isUserTemplate(templateId);
+			if (isSourcedTemplate(templateId) || userAuthored) {
 				const visualId = artifact.visualId ?? artifact.id;
 				let source = "";
 				try {
-					const asset = await bridges.visuals?.content?.(visualId);
-					if (asset?.base64) source = decodeBase64Utf8(asset.base64);
+					if (userAuthored) {
+						const visuals = bridges.visuals;
+						if (!visuals?.templateShellSource) {
+							throw new Error(`Template ${templateId} source is unavailable: no visuals host`);
+						}
+						source = await visuals.templateShellSource(templateId);
+					} else {
+						const asset = await bridges.visuals?.content?.(visualId);
+						if (asset?.base64) source = decodeBase64Utf8(asset.base64);
+					}
 				} catch (reason) {
+					// Missing file, oversized file, symlink, path outside the
+					// state root: the host refused and said why. Show its words
+					// where the author is looking rather than a failed pane.
 					if (!cancelled) setShell(() => sourcedInvalidShell(publicError(reason)));
 					return;
 				}
-				const compiled = compileSourcedModule(source);
+				const compiled = compileSourcedModule(source, templateId);
 				if (cancelled) return;
 				if (!compiled.ok) {
 					setShell(() => sourcedInvalidShell(compiled.error));
@@ -774,7 +828,7 @@ function TemplateVisualHost({ artifact }: { artifact: ArtifactRef }) {
 		};
 		void load().catch((reason) => {
 			if (cancelled) return;
-			if (isSourcedTemplate(templateId)) {
+			if (isSourcedTemplate(templateId) || isUserTemplate(templateId)) {
 				setShell(() => sourcedInvalidShell(publicError(reason)));
 				return;
 			}
@@ -790,7 +844,7 @@ function TemplateVisualHost({ artifact }: { artifact: ArtifactRef }) {
 			});
 		});
 		return () => { cancelled = true; };
-	}, [artifact.templateId, artifact.visualId, artifact.id, artifact.contentDigest, artifact.revision, visualIdentity]);
+	}, [artifact.templateId, artifact.visualId, artifact.id, artifact.contentDigest, artifact.revision, runtimeTemplateVersion, visualIdentity]);
 
 	useEffect(() => {
 		let cancelled = false;
@@ -801,15 +855,27 @@ function TemplateVisualHost({ artifact }: { artifact: ArtifactRef }) {
 		const bindings = artifact.bindings;
 		const template = artifact.templateId ? resolveTemplate(artifact.templateId) : undefined;
 		if (!template) {
-			setTraceResolution({ status: "error", props: {}, error: `Template ${artifact.templateId ?? "unknown"} is unavailable` });
+			// "Unavailable" has two causes now, and they need different fixes:
+			// the id is genuinely unknown, or the host could not be asked for
+			// the user tier at all. Say which.
+			const runtime = runtimeTemplates();
+			const unavailable = runtime.error
+				? `Template ${artifact.templateId ?? "unknown"} is unavailable: user templates could not be listed (${runtime.error})`
+				: `Template ${artifact.templateId ?? "unknown"} is unavailable`;
+			setTraceResolution({ status: "error", props: {}, error: unavailable });
 			reportDiagnostic({
 				...visualIdentity,
 				severity: "error",
 				component: "visual-host",
 				event: "visual.template.unavailable",
 				code: DIAGNOSTIC_CODES.visualTemplateUnavailable,
-				message: `Template ${artifact.templateId ?? "unknown"} is unavailable`,
-				details: { templateId: artifact.templateId ?? null },
+				message: unavailable,
+				details: {
+					templateId: artifact.templateId ?? null,
+					runtimeTemplateIds: runtime.accepted,
+					runtimeTemplatesShadowed: runtime.shadowed,
+					runtimeTemplateError: runtime.error ?? null,
+				},
 			});
 			return () => { cancelled = true; };
 		}
@@ -923,7 +989,7 @@ function TemplateVisualHost({ artifact }: { artifact: ArtifactRef }) {
 				});
 			});
 		return () => { cancelled = true; };
-	}, [artifact.id, artifact.revision, artifact.templateId, artifact.bindings, asyncBindings.length, traceBindings.length, visualIdentity]);
+	}, [artifact.id, artifact.revision, artifact.templateId, artifact.bindings, asyncBindings.length, traceBindings.length, runtimeTemplateVersion, visualIdentity]);
 
 	/*
 	 * The optimizer stream is read through the shared `RunProgressSubscription`
@@ -1234,6 +1300,11 @@ function numericAttribute(element: Element, name: string): number {
 function VisualObservationBoundary({ artifact, children }: { artifact: ArtifactRef; children: ReactNode }) {
 	const root = useRef<HTMLDivElement>(null);
 	const [bindingsDigest, setBindingsDigest] = useState<string | null>(null);
+	// Same catalog, same read. Review, readiness and sealing are driven by the
+	// observation contract on the manifest, so a user template earns them by
+	// resolving here exactly as a family does — never by a branch that skips
+	// observation for templates that came from disk.
+	useRuntimeTemplates();
 	const template = artifact.templateId ? resolveTemplate(artifact.templateId) : undefined;
 	const contract = template?.observationContract;
 
