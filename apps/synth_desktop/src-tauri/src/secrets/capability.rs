@@ -5,11 +5,53 @@ use anyhow::{anyhow, Result};
 use chrono::{Duration as ChronoDuration, Utc};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use uuid::Uuid;
 
 use super::audit::{self, SecretAuditEvent};
+
+pub(crate) const PROVIDER_USAGE_RECEIPT_SCHEMA: &str = "workshop.provider-usage-receipt.v1";
+
+/// Non-secret identity retained for every capability included in a run receipt.
+/// Handles and secret ids are deliberately excluded from this optimizer-facing
+/// surface.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ProviderUsageCapability {
+    pub capability_id: String,
+    pub provider: String,
+    pub status: String,
+}
+
+/// Durable provider usage aggregated across every capability issued to a run.
+/// A missing receipt means no capability rows exist. `cost_usd: None` means at
+/// least one included capability has an unknown charge, never a measured zero.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ProviderUsageReceipt {
+    pub schema_version: String,
+    pub run_id: String,
+    pub capabilities: Vec<ProviderUsageCapability>,
+    pub calls: u64,
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub cost_usd: Option<f64>,
+    pub digest: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CanonicalProviderUsageReceipt<'a> {
+    schema_version: &'a str,
+    run_id: &'a str,
+    capabilities: &'a [ProviderUsageCapability],
+    calls: u64,
+    input_tokens: u64,
+    output_tokens: u64,
+    cost_usd_micros: Option<u64>,
+}
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -475,6 +517,97 @@ pub fn run_id_for_capability(conn: &Connection, capability_id: &str) -> Result<O
     )
     .optional()
     .map_err(Into::into)
+}
+
+/// Read the durable provider usage for `run_id` without consulting the live
+/// capability store. Exhausted, expired, and revoked rows remain evidence and
+/// are included alongside active rows. No secret-bearing columns are selected.
+pub(crate) fn provider_usage_receipt(
+    conn: &Connection,
+    run_id: &str,
+) -> Result<Option<ProviderUsageReceipt>> {
+    let mut statement = conn.prepare(
+        "SELECT id, provider, status, used_calls, used_input_tokens,
+                used_output_tokens, used_cost_usd_micros, used_cost_known
+         FROM secret_capabilities
+         WHERE run_id=?1
+         ORDER BY id ASC",
+    )?;
+    let rows = statement
+        .query_map([run_id], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, i64>(3)?,
+                row.get::<_, i64>(4)?,
+                row.get::<_, i64>(5)?,
+                row.get::<_, i64>(6)?,
+                row.get::<_, i64>(7)?,
+            ))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    if rows.is_empty() {
+        return Ok(None);
+    }
+
+    let mut capabilities = Vec::with_capacity(rows.len());
+    let mut calls = 0u64;
+    let mut input_tokens = 0u64;
+    let mut output_tokens = 0u64;
+    let mut cost_usd_micros = 0u64;
+    let mut cost_known = true;
+    for (id, provider, status, row_calls, input, output, cost, known) in rows {
+        CapabilityStatus::try_from(status.as_str())?;
+        let row_calls = u64::try_from(row_calls)
+            .map_err(|_| anyhow!("capability {id} has negative used_calls"))?;
+        let input = u64::try_from(input)
+            .map_err(|_| anyhow!("capability {id} has negative used_input_tokens"))?;
+        let output = u64::try_from(output)
+            .map_err(|_| anyhow!("capability {id} has negative used_output_tokens"))?;
+        let cost = u64::try_from(cost)
+            .map_err(|_| anyhow!("capability {id} has negative used_cost_usd_micros"))?;
+        calls = calls
+            .checked_add(row_calls)
+            .ok_or_else(|| anyhow!("capability usage calls overflow for run {run_id}"))?;
+        input_tokens = input_tokens
+            .checked_add(input)
+            .ok_or_else(|| anyhow!("capability input tokens overflow for run {run_id}"))?;
+        output_tokens = output_tokens
+            .checked_add(output)
+            .ok_or_else(|| anyhow!("capability output tokens overflow for run {run_id}"))?;
+        cost_usd_micros = cost_usd_micros
+            .checked_add(cost)
+            .ok_or_else(|| anyhow!("capability cost overflow for run {run_id}"))?;
+        cost_known &= known == 1;
+        capabilities.push(ProviderUsageCapability {
+            capability_id: id,
+            provider,
+            status,
+        });
+    }
+    let cost_usd_micros = cost_known.then_some(cost_usd_micros);
+    let canonical = CanonicalProviderUsageReceipt {
+        schema_version: PROVIDER_USAGE_RECEIPT_SCHEMA,
+        run_id,
+        capabilities: &capabilities,
+        calls,
+        input_tokens,
+        output_tokens,
+        cost_usd_micros,
+    };
+    let canonical = serde_json::to_vec(&canonical)?;
+    let digest = format!("sha256:{:x}", Sha256::digest(canonical));
+    Ok(Some(ProviderUsageReceipt {
+        schema_version: PROVIDER_USAGE_RECEIPT_SCHEMA.into(),
+        run_id: run_id.into(),
+        capabilities,
+        calls,
+        input_tokens,
+        output_tokens,
+        cost_usd: cost_usd_micros.map(|micros| micros as f64 / 1_000_000.0),
+        digest,
+    }))
 }
 
 /// Revoke every live capability for `run_id`, returning the revoked

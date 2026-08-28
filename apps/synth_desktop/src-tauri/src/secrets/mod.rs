@@ -35,6 +35,7 @@ use importer::{AfterImportAction, ImportPreview, PendingImport};
 use proxy::{ProviderProxy, ProxyState, WorkloadEnv};
 use vault::SecretSummary;
 
+pub(crate) use capability::ProviderUsageReceipt;
 pub use capability::ProviderUsePolicy as SecretsUsePolicy;
 #[allow(unused_imports)]
 pub use lease::{
@@ -1102,6 +1103,16 @@ impl SecretsService {
             .with_conn(|conn| capability::run_id_for_capability(conn, capability_id))
     }
 
+    /// Durable, non-secret provider usage for internal optimizer settlement.
+    /// Unlike the settings list, this includes exhausted and revoked rows.
+    pub(crate) fn provider_usage_receipt(
+        &self,
+        run_id: &str,
+    ) -> Result<Option<ProviderUsageReceipt>> {
+        self.db
+            .with_conn(|conn| capability::provider_usage_receipt(conn, run_id))
+    }
+
     /// Revoke every live capability for `run_id`, returning the revoked
     /// capability ids so the caller can journal them.
     pub fn revoke_run(&self, run_id: &str) -> Result<Vec<String>> {
@@ -1595,6 +1606,145 @@ mod tests {
             Arc::new(backend::MemoryBackend::new()),
         );
         (dir, service)
+    }
+
+    fn capability_source(service: &SecretsService, path: &Path) -> String {
+        service
+            .db
+            .transaction(|conn| {
+                lease::upsert_env_source_descriptor(
+                    conn,
+                    "openrouter",
+                    "OPENROUTER_API_KEY",
+                    path,
+                    None,
+                    None,
+                    false,
+                )
+            })
+            .unwrap()
+    }
+
+    fn issue_test_capability(
+        service: &SecretsService,
+        source_id: &str,
+        run_id: &str,
+        max_calls: u32,
+    ) -> capability::IssuedCapability {
+        let policy = ProviderUsePolicy {
+            max_calls,
+            ..ProviderUsePolicy::default()
+        };
+        service
+            .db
+            .transaction(|conn| {
+                capability::issue(
+                    conn,
+                    &service.capabilities,
+                    source_id,
+                    run_id,
+                    "nanohorizon.craftax.eval.v1",
+                    "openrouter",
+                    &policy,
+                    "test",
+                )
+            })
+            .unwrap()
+    }
+
+    fn debit_test_capability(
+        service: &SecretsService,
+        issued: &capability::IssuedCapability,
+        input_tokens: u64,
+        output_tokens: u64,
+        cost_usd: Option<f64>,
+    ) -> capability::LiveCapability {
+        service.capabilities.reserve_call(&issued.handle).unwrap();
+        let live = service
+            .capabilities
+            .debit_usage(
+                &issued.handle,
+                &capability::MeasuredUsage {
+                    calls: 1,
+                    input_tokens,
+                    output_tokens,
+                    cost_usd,
+                },
+            )
+            .unwrap();
+        service
+            .db
+            .with_conn(|conn| capability::persist_usage(conn, &live))
+            .unwrap();
+        live
+    }
+
+    #[test]
+    fn provider_usage_receipt_includes_active_exhausted_and_revoked_rows() {
+        let (dir, service) = service();
+        let source_id = capability_source(&service, &dir.path().join("not-read.env"));
+        let run_id = "run_all_capability_statuses";
+
+        let active = issue_test_capability(&service, &source_id, run_id, 5);
+        let active_live = debit_test_capability(&service, &active, 10, 1, Some(0.001234));
+        assert_eq!(active_live.status, "active");
+
+        let exhausted = issue_test_capability(&service, &source_id, run_id, 1);
+        let exhausted_live =
+            debit_test_capability(&service, &exhausted, 20, 2, Some(0.002));
+        assert_eq!(exhausted_live.status, "exhausted");
+
+        let revoked = issue_test_capability(&service, &source_id, run_id, 5);
+        debit_test_capability(&service, &revoked, 30, 3, Some(0.003));
+        service
+            .revoke_capability(&revoked.id, "test")
+            .expect("revoke active capability");
+
+        let receipt = service
+            .provider_usage_receipt(run_id)
+            .unwrap()
+            .expect("provider usage receipt");
+        assert_eq!(receipt.calls, 3);
+        assert_eq!(receipt.input_tokens, 60);
+        assert_eq!(receipt.output_tokens, 6);
+        assert_eq!(receipt.cost_usd, Some(0.006234));
+        let statuses = receipt
+            .capabilities
+            .iter()
+            .map(|capability| capability.status.as_str())
+            .collect::<HashSet<_>>();
+        assert_eq!(statuses, HashSet::from(["active", "exhausted", "revoked"]));
+        assert!(receipt.digest.starts_with("sha256:"));
+        assert_eq!(receipt.digest.len(), 71);
+        assert_eq!(
+            receipt,
+            service.provider_usage_receipt(run_id).unwrap().unwrap(),
+            "the canonical receipt is stable across reads"
+        );
+        let encoded = serde_json::to_string(&receipt).unwrap();
+        assert!(!encoded.contains(&source_id));
+        assert!(!encoded.contains("wcap_"));
+    }
+
+    #[test]
+    fn provider_usage_receipt_poisoned_cost_stays_unknown() {
+        let (dir, service) = service();
+        let source_id = capability_source(&service, &dir.path().join("not-read.env"));
+        let run_id = "run_unknown_capability_cost";
+        let known = issue_test_capability(&service, &source_id, run_id, 5);
+        let unknown = issue_test_capability(&service, &source_id, run_id, 5);
+        debit_test_capability(&service, &known, 40, 4, Some(0.004));
+        debit_test_capability(&service, &unknown, 50, 5, None);
+
+        let receipt = service
+            .provider_usage_receipt(run_id)
+            .unwrap()
+            .expect("provider usage receipt");
+        assert_eq!(receipt.calls, 2);
+        assert_eq!(receipt.input_tokens, 90);
+        assert_eq!(receipt.output_tokens, 9);
+        assert_eq!(receipt.cost_usd, None);
+        assert_eq!(receipt.capabilities.len(), 2);
     }
 
     fn locator_service(label: &str) -> (crate::instance::IsolatedDataRoot, SecretsService) {
