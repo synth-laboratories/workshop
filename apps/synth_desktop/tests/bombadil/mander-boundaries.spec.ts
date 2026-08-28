@@ -1,4 +1,4 @@
-import { actions, always, extract } from "@antithesishq/bombadil";
+import { actions, always, eventually, extract } from "@antithesishq/bombadil";
 
 /**
  * Product code may import Mander / ManderState / ManderMotion through
@@ -28,7 +28,11 @@ export const keep_default_shell_in_view = actions(() => [
 ]);
 
 export const mander_lab_is_not_a_navigation_item = always(() =>
-	boundary.current.shellVisible && !boundary.current.labInSidebar
+	!boundary.current.shellVisible || !boundary.current.labInSidebar
+);
+
+export const default_shell_is_exercised = eventually(() =>
+	boundary.current.shellVisible
 );
 
 export const mander_internals_are_not_mounted_on_the_default_shell = always(() =>

@@ -272,6 +272,6 @@ test("an unresolved live optimizer binding is honest and never renders GEPA demo
 	});
 	await page.getByTestId("optimizers-search").fill("Offline");
 	await page.getByTestId("open-optimizer-visual").click();
-	await expect(page.getByTestId("optimizer-run-unavailable")).toContainText("run is offline");
+	await expect(page.getByText("run is offline", { exact: true })).toBeVisible();
 	await expect(page.getByTestId("optimizer-candidate-cand_seed")).toHaveCount(0);
 });

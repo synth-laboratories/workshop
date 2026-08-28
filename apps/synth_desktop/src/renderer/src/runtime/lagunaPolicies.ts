@@ -2,6 +2,8 @@ import type { LagunaPolicy, SavedLoraCheckpoint } from "../bridge/types";
 
 /** The daemon's base policy: Laguna XS with nothing attached. */
 export const LOCAL_BASE_POLICY = "poolside/Laguna-XS-2.1-NVFP4-mlx";
+/** Stable human-facing name for the daemon base policy. */
+export const LOCAL_BASE_DISPLAY_NAME = "Laguna XS 2.1";
 /** The model id a registered Laguna finetune is served under. */
 export const LOCAL_FT_POLICY = "synth/Laguna-XS-2.1-ft";
 

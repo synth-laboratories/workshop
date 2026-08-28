@@ -26,8 +26,9 @@ async function expectLegacyAccountChromeAbsent(page: Page): Promise<void> {
 				testId: element.getAttribute("data-testid")
 			}))
 			.filter(({ testId }) =>
-				testId !== "toggle-terminal" &&
+				 testId !== "toggle-terminal" &&
 				testId !== "toggle-inference-rail" &&
+				testId !== "titlebar-tier-badge" &&
 				testId !== "app-version"
 			)
 	);

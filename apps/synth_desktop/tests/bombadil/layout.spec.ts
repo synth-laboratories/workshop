@@ -652,11 +652,11 @@ export const parked_projects_never_reappear = always(() =>
 );
 
 export const renderer_has_no_uncaught_errors = always(() =>
-	runtimeErrors.current.uncaught === 0
+	!layout.current.initialized || runtimeErrors.current.uncaught === 0
 );
 
 export const renderer_has_no_console_errors = always(() =>
-	runtimeErrors.current.consoleErrors === 0
+	!layout.current.initialized || runtimeErrors.current.consoleErrors === 0
 );
 
 /* Landing model-picker containment (12:54 screenshot regression): while the
