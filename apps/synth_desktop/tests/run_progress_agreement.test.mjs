@@ -27,8 +27,14 @@ function bundle(relative, outName) {
 	return pathToFileURL(outfile).href;
 }
 
-const { projectRunProgress, progressAgreement, visualProgressFacts, splitSnapshotEvents } = await import(
+const { projectRunProgress, progressAgreement, splitSnapshotEvents } = await import(
 	bundle("src/renderer/src/runtime/runProgress/project.ts", "runProgressProjectAgree.mjs")
+);
+const { canonicalEvalState, evalAggregateFromSurface } = await import(
+	bundle("src/renderer/src/runtime/evalAggregate.ts", "evalAggregateDesktop.mjs")
+);
+const { evalAggregateV1 } = await import(
+	bundle("../../visuals/runtime/evalAggregate.ts", "evalAggregateVisual.mjs")
 );
 const { projectAtCursor } = await import(
 	bundle(
@@ -75,7 +81,7 @@ function gepaEvents() {
 	return events;
 }
 
-test("card and right-pane agreement views are identical for a live GEPA run", () => {
+test("card and right-pane reducers agree on real live GEPA facts", () => {
 	const run = {
 		id: "agree-gepa",
 		algorithmId: "gepa",
@@ -96,11 +102,79 @@ test("card and right-pane agreement views are identical for a live GEPA run", ()
 		cursorSeq: run.cursorSeq,
 		usage: run.usage
 	}, lanes.terminalEvents);
-	assert.deepEqual(visualProgressFacts("gepa", visual, card), progressAgreement(card));
+	assert.equal(visual.summary.status, card.status);
+	assert.equal(visual.gepa.rolloutsCompleted, card.work.completed);
+	assert.equal(visual.gepa.limits[0].max, card.work.total);
+	assert.equal(visual.usage.costUsd, card.usage.costUsd.value);
 	assert.equal(progressAgreement(card).completed, 4);
 	assert.equal(progressAgreement(card).total, 20);
 	assert.equal(progressAgreement(card).costUsd, 0.2);
 	assert.equal(lanes.enrichmentEvents.length, 0);
+});
+
+test("chat, experiment, inspector, and workbench consume one eval aggregate revision", () => {
+	const aggregate = {
+		schemaVersion: "eval.aggregate.v1",
+		runId: "agree-eval",
+		asOfSequence: 41,
+		projectionRevision: 41,
+		lifecycle: "terminal",
+		work: { planned: 2, succeeded: 1, failed: 1, cancelled: 0, unit: "trials", fixedDenominator: true },
+		evidence: { completeness: "partial", reason: "one evaluator measurement missing", refs: [] },
+		selection: "promotion_not_applicable",
+		meanReward: 0.75,
+		scoredTrials: 1,
+		evaluatorEvidence: 1,
+		traceCount: 1,
+		evidenceRefCount: 2
+	};
+	const runViewV2 = {
+		algorithm: "eval",
+		header: { runId: "agree-eval", asOfSequence: 41, projectionRevision: 41 },
+		projection: {},
+		aggregate,
+		result: null
+	};
+	const experimentBinding = {
+		aggregate: structuredClone(aggregate),
+		// A failed raw row deliberately carries a large number. Surfaces must
+		// never recalculate the aggregate from it.
+		rollouts: [{ status: "failed", reward: 999 }]
+	};
+
+	const chat = canonicalEvalState(runViewV2, "agree-eval").aggregate;
+	const inspector = evalAggregateFromSurface(runViewV2, "agree-eval");
+	const experiment = evalAggregateFromSurface(experimentBinding, "agree-eval");
+	const workbench = evalAggregateV1(runViewV2.aggregate, "agree-eval");
+
+	assert.deepEqual(inspector, chat);
+	assert.deepEqual(experiment, chat);
+	assert.deepEqual(workbench, chat);
+	assert.equal(experiment.meanReward, 0.75);
+	assert.equal(experiment.scoredTrials, 1);
+});
+
+test("eval surfaces fail closed on identity or revision disagreement", () => {
+	const mismatched = {
+		algorithm: "eval",
+		header: { runId: "agree-eval", asOfSequence: 12, projectionRevision: 12 },
+		projection: {},
+		aggregate: {
+			schemaVersion: "eval.aggregate.v1",
+			runId: "agree-eval",
+			asOfSequence: 13,
+			projectionRevision: 13
+		},
+		result: null
+	};
+	assert.throws(
+		() => canonicalEvalState(mismatched, "agree-eval"),
+		/eval aggregate revision does not match/
+	);
+	assert.throws(
+		() => evalAggregateFromSurface(mismatched.aggregate, "another-run"),
+		/does not carry a revisioned aggregate/
+	);
 });
 
 test("a disconnect overlays Interrupted on both surfaces without dropping counts", () => {

@@ -11,8 +11,7 @@
 import {
 	projectAtCursor,
 	type OptimizerEvent,
-	type OptimizerRun,
-	type ProjectedState
+	type OptimizerRun
 } from "@synth/visual-templates/optimizers/_shared/optimizer.run.v1/components/projectEvents.ts";
 import { projectEnvironment } from "./adapterEnvironment";
 import { projectEval } from "./adapterEval";
@@ -176,23 +175,6 @@ export function progressAgreement(projection: RunProgressProjection): ProgressAg
 		...(projection.result?.headline ? { resultHeadline: projection.result.headline } : {}),
 		...(projection.result?.absentReason ? { resultAbsentReason: projection.result.absentReason } : {})
 	};
-}
-
-/**
- * Right-pane visual slice, reduced through the same terminal-lane events as
- * the card. Callers pass `projectAtCursor` output so the workspace and the
- * card are comparing one reduction, not two.
- */
-export function visualProgressFacts(
-	kind: RunKind,
-	projected: ProjectedState,
-	projection: RunProgressProjection
-): ProgressAgreement {
-	void kind;
-	void projected;
-	// The visual workspace is richer than the card, but phase/progress/usage/
-	// result are the card's projection — the pane must not re-derive them.
-	return progressAgreement(projection);
 }
 
 export function splitSnapshotEvents(run: RunRecord, events: unknown[]) {

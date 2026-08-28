@@ -3,6 +3,7 @@ import { open } from "@tauri-apps/plugin-dialog";
 import type { OptimizerAlgorithmInfo, OptimizerRunRecord } from "@synth/runtime-protocol";
 import type { HostedTrainingModel, OptimizerRecipeInfo, OptimizerRunOutputs, PluginActionReceipt, PluginLifecycleOperation, PluginStatus, SavedLoraCheckpoint, TrainingProjection } from "../bridge/types";
 import { bridges } from "../runtime/desktopBridge";
+import { canonicalEvalState, type CanonicalEvalState } from "../runtime/evalAggregate";
 import { isLagunaCompatibleAdapter, LOCAL_FT_POLICY } from "../runtime/lagunaPolicies";
 import { findPluginStatus, pluginPresentation, type PluginPresentation } from "../runtime/pluginPresentation";
 import { isTerminalRunStatus } from "../runtime/runProgress/types";
@@ -108,47 +109,15 @@ function hostedAlgorithmSupport(
 	return entry && typeof entry === "object" ? entry as HostedAlgorithmSupport : undefined;
 }
 
-type EvalScorecard = {
-	id: string;
-	label: string;
-	stage: string;
-	isBaseline: boolean;
-	trials?: { total: number; valid: number; failed: number };
-	metrics?: Array<{ metric: string; mean: number | null; count: number }>;
-	pairedLift?: number | null;
-	pairedTrials?: number;
-	eliminationReason?: string | null;
-};
-
-type EvalSelection = {
-	status: string;
-	winner_id: string | null;
-	primary_metric: string;
-	lift: number | null;
-	min_lift: number;
-	reason: string;
-};
-
-type EvalState = {
-	scorecards: EvalScorecard[];
-	selection: EvalSelection | null;
-	runtime: Record<string, unknown>;
-	evidenceDir: string | null;
-};
-
-function sliceData(slice: unknown): Record<string, unknown> {
-	const data = (slice as { data?: unknown })?.data;
-	return (data && typeof data === "object" ? data : {}) as Record<string, unknown>;
+function evalSelectionReason(selection: CanonicalEvalState["aggregate"]["selection"]): string {
+	return selection === "promotion_not_applicable"
+		? "Baseline-only evaluation; no promotion decision applies."
+		: "Promotion was applicable, but the evidence did not establish a winner.";
 }
 
 function formatMetric(value: number | null | undefined): string {
 	// A metric no valid trial produced is unknown, not zero.
 	return value == null ? "—" : value.toFixed(3);
-}
-
-function formatLift(value: number | null | undefined): string {
-	if (value == null) return "—";
-	return `${value > 0 ? "+" : ""}${value.toFixed(3)}`;
 }
 
 function objectValue(value: unknown): Record<string, unknown> {
@@ -292,7 +261,7 @@ export function OptimizersPage({
 	const [evalRecipes, setEvalRecipes] = useState<OptimizerRecipeInfo[]>([]);
 	const [hostedCispoRecipe, setHostedCispoRecipe] = useState<OptimizerRecipeInfo | null>(null);
 	const [localCispoRecipe, setLocalCispoRecipe] = useState<OptimizerRecipeInfo | null>(null);
-	const [evalState, setEvalState] = useState<EvalState | null>(null);
+	const [evalState, setEvalState] = useState<CanonicalEvalState | null>(null);
 	const [trainingProjection, setTrainingProjection] = useState<TrainingProjection | null>(null);
 	const trainingAlgorithm = "cispo" as const;
 	const [trainingModel, setTrainingModel] = useState("openai/gpt-oss-20b");
@@ -689,26 +658,19 @@ export function OptimizersPage({
 			return;
 		}
 		let live = true;
-		void bridges.optimizers
-			.getStateBatch(selected.id, ["eval.scorecard", "eval.evidence", "eval.runtime"])
-			.then((slices) => {
-				if (!live) return;
-				const byId = new Map(
-					(slices as Array<{ sliceId?: string }>).map((slice) => [slice?.sliceId, slice])
-				);
-				const evidence = sliceData(byId.get("eval.evidence"));
-				setEvalState({
-					scorecards: (sliceData(byId.get("eval.scorecard")).candidates ?? []) as EvalScorecard[],
-					selection: (evidence.selection ?? null) as EvalSelection | null,
-					runtime: sliceData(byId.get("eval.runtime")),
-					evidenceDir: (evidence.evidenceDir ?? null) as string | null
-				});
+		void bridges.optimizers.runViewV2(selected.id)
+			.then((view) => {
+				if (live) setEvalState(canonicalEvalState(view, selected.id));
 			})
-			.catch(() => undefined);
+			.catch((reason) => {
+				if (!live) return;
+				setEvalState(null);
+				setError(presentError(reason).message);
+			});
 		return () => {
 			live = false;
 		};
-	}, [selected]);
+	}, [selected?.algorithmId, selected?.cursorSeq, selected?.id, selected?.status]);
 
 	useEffect(() => {
 		if (!selected || selected.source !== "cloud" || !["sft", "cispo", "ppo"].includes(selected.algorithmId) || !bridges.optimizers) {
@@ -1447,38 +1409,30 @@ export function OptimizersPage({
 							) : null}
 							{evalState ? (
 								<section className="optimizer-eval-scorecard" data-testid="optimizer-eval-scorecard">
-									<span className="optimizer-eyebrow">Scorecard</span>
+									<span className="optimizer-eyebrow">Canonical aggregate</span>
 									<table>
 										<thead>
-											<tr><th>Candidate</th><th>Stage</th><th>Valid</th><th>Failed</th><th>Primary</th><th>Lift</th></tr>
+											<tr><th>Run</th><th>Revision</th><th>Scored</th><th>Failed</th><th>Mean reward</th><th>Evidence</th></tr>
 										</thead>
 										<tbody>
-											{evalState.scorecards.map((card) => {
-												const primary = evalState.selection?.primary_metric;
-												const metric = card.metrics?.find((entry) => entry.metric === primary);
-												return (
-													<tr key={`${card.stage}:${card.id}`} data-testid={`eval-scorecard-row-${card.id}-${card.stage}`}>
-														<td>{card.label}{card.isBaseline ? " · baseline" : ""}</td>
-														<td>{card.stage}</td>
-														<td>{card.trials?.valid ?? 0}</td>
-														<td>{card.trials?.failed ?? 0}</td>
-														<td>{formatMetric(metric?.mean)}</td>
-														<td>{formatLift(card.pairedLift)}</td>
-													</tr>
-												);
-											})}
+											<tr data-testid="eval-scorecard-row-aggregate">
+												<td>{evalState.aggregate.runId}</td>
+												<td>{evalState.aggregate.projectionRevision}</td>
+												<td>{evalState.aggregate.scoredTrials}</td>
+												<td>{evalState.aggregate.work.failed ?? "—"}</td>
+												<td>{formatMetric(evalState.aggregate.meanReward)}</td>
+												<td>{evalState.aggregate.evidence.completeness}</td>
+											</tr>
 										</tbody>
 									</table>
-									{evalState.selection ? (
-										<dl className="optimizer-eval-selection" data-testid="optimizer-eval-selection">
-											<dt>Selection</dt><dd>{evalState.selection.status}</dd>
-											<dt>Lift</dt><dd>{formatLift(evalState.selection.lift)} / {evalState.selection.min_lift}</dd>
-											<dt>Why</dt><dd>{evalState.selection.reason}</dd>
-										</dl>
-									) : null}
-									{evalState.evidenceDir ? (
-										<code className="optimizer-eval-evidence" data-testid="optimizer-eval-evidence">{evalState.evidenceDir}</code>
-									) : null}
+									<dl className="optimizer-eval-selection" data-testid="optimizer-eval-selection">
+										<dt>Selection</dt><dd>{evalState.aggregate.selection}</dd>
+										<dt>Sequence</dt><dd>{evalState.aggregate.asOfSequence}</dd>
+										<dt>Why</dt><dd>{evalSelectionReason(evalState.aggregate.selection)}</dd>
+									</dl>
+									<code className="optimizer-eval-evidence" data-testid="optimizer-eval-evidence">
+										{evalState.aggregate.evidence.reason ?? `${evalState.aggregate.evidenceRefCount} immutable references`}
+									</code>
 								</section>
 							) : null}
 							<div className="optimizer-inspector-actions">
