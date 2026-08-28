@@ -1,8 +1,9 @@
 //! Isolated failure-runtime invariants: lifecycle, atomic settlement, emergency import.
 
 use crate::platform::failure::{
-    definition::FailureDefinition, ContainerFailure, FailureKind, FailureLifecycleState,
-    FailureQuery, FailureRuntime, HealthObservation, HealthSource, HealthStatus, TransitionReason,
+    definition::FailureDefinition, ContainerFailure, FailureDisposition, FailureKind,
+    FailureLifecycleState, FailureQuery, FailureRuntime, HealthObservation, HealthSource,
+    HealthStatus, TransitionReason,
 };
 use crate::platform::logging::{emergency_sink, LogRecord, LogRuntime};
 use crate::platform::operations::{OperationContext, OperationKind, OperationPhase};
@@ -231,4 +232,5 @@ fn diagnostics_index_degraded_has_stable_code() {
         reason: "sidecar unavailable".into(),
     });
     assert_eq!(kind.code(), "diagnostics_index_degraded");
+    assert_eq!(kind.disposition(), FailureDisposition::RepairRequired);
 }

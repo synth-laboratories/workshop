@@ -15,15 +15,18 @@ use super::query::{self, DiagnosticQuery};
 use super::sidecar::{SidecarConfig, SidecarState, VictoriaLogsSidecar};
 use super::store::{group_by_code, DiagnosticRecord, DiagnosticStore};
 use super::victorialogs::VictoriaLogsClient;
+use crate::platform::failure::{
+    FailureId, FailureKind, FailureLifecycleState, TelemetryFailure, TransitionReason,
+};
+use crate::platform::operations::{OperationContext, OperationKind, OperationPhase};
 use crate::storage::{Database, EventJournal};
 use anyhow::{Context, Result};
+use rusqlite::OptionalExtension;
 use serde_json::{json, Value};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use crate::platform::failure::{FailureKind, TelemetryFailure};
-use crate::platform::operations::{OperationContext, OperationKind, OperationPhase};
 
 /// Longest a queued diagnostic waits before being written even if the batch
 /// never fills. Short enough that a failure is queryable while the user is
@@ -70,7 +73,7 @@ pub struct DiagnosticsService {
     root: PathBuf,
     instance_id: Option<String>,
     started: AtomicBool,
-    index_degraded: AtomicBool,
+    active_index_failure: Mutex<Option<String>>,
     stats: Stats,
 }
 
@@ -86,7 +89,7 @@ impl DiagnosticsService {
             root,
             instance_id: crate::instance::name(),
             started: AtomicBool::new(false),
-            index_degraded: AtomicBool::new(false),
+            active_index_failure: Mutex::new(None),
             stats: Stats::default(),
         })
     }
@@ -190,12 +193,28 @@ impl DiagnosticsService {
     }
 
     fn note_index_degraded(&self, reason: &str) {
-        crate::platform::logging::report("diagnostics", "index_degraded", reason);
-        if self.index_degraded.swap(true, Ordering::SeqCst) {
+        let mut active = self
+            .active_index_failure
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if active.is_some() {
             return;
         }
-        let _ = self.store.database().transaction(|conn| {
-            crate::platform::failure::FailureRuntime::raise_in_tx(
+        let failure_id = self.store.database().transaction(|conn| {
+            if let Some(existing) = conn
+                .query_row(
+                    "SELECT failure_id FROM failure_occurrences
+                     WHERE code='diagnostics_index_degraded'
+                       AND lifecycle_state NOT IN ('resolved','terminalized','superseded')
+                     ORDER BY raised_at DESC LIMIT 1",
+                    [],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()?
+            {
+                return Ok(FailureId(existing));
+            }
+            let raised = crate::platform::failure::FailureRuntime::raise_in_tx(
                 conn,
                 FailureKind::Telemetry(TelemetryFailure::IndexDegraded {
                     reason: reason.to_owned(),
@@ -206,8 +225,53 @@ impl DiagnosticsService {
                 None,
                 "diagnostics",
             )?;
-            Ok(())
+            Ok(raised.failure_id)
         });
+        if let Ok(failure_id) = failure_id {
+            crate::platform::logging::report_failure(
+                "diagnostics",
+                "index_degraded",
+                reason,
+                failure_id.clone(),
+            );
+            *active = Some(failure_id.to_string());
+        }
+    }
+
+    fn note_index_ready(&self) {
+        let failure_id = self
+            .active_index_failure
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .take();
+        let Some(failure_id) = failure_id else {
+            return;
+        };
+        let runtime = crate::platform::failure::FailureRuntime::new(self.store.database().clone());
+        if runtime
+            .transition(
+                &failure_id,
+                FailureLifecycleState::Resolved,
+                TransitionReason::Resolved,
+                "diagnostics",
+            )
+            .is_ok()
+        {
+            crate::platform::logging::report_info_for_failure(
+                "diagnostics",
+                "index_recovered",
+                "diagnostics index recovered",
+                FailureId(failure_id),
+            );
+        } else {
+            let mut active = self
+                .active_index_failure
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if active.is_none() {
+                *active = Some(failure_id);
+            }
+        }
     }
 
     /// Start the background writer, then lazily the index.
@@ -292,6 +356,7 @@ impl DiagnosticsService {
             };
             match self.indexer.index_once(&client).await {
                 Ok(progress) => {
+                    self.note_index_ready();
                     self.stats
                         .indexed
                         .fetch_add(progress.indexed as u64, Ordering::Relaxed);
@@ -585,6 +650,86 @@ mod tests {
         let result = service.query(DiagnosticQuery::default()).await.unwrap();
         assert_eq!(result["source"], json!("journal"));
         assert_eq!(result["count"], json!(1));
+    }
+
+    #[test]
+    fn index_degradation_is_one_open_occurrence_until_recovery() {
+        let dir = tempdir().unwrap();
+        let service = service(dir.path());
+
+        service.note_index_degraded("binary_missing");
+        service.note_index_degraded("binary_missing");
+
+        let (failure_id, lifecycle, count): (String, String, i64) = service
+            .store
+            .database()
+            .with_conn(|conn| {
+                Ok((
+                    conn.query_row(
+                        "SELECT failure_id FROM failure_occurrences WHERE code='diagnostics_index_degraded'",
+                        [],
+                        |row| row.get(0),
+                    )?,
+                    conn.query_row(
+                        "SELECT lifecycle_state FROM failure_occurrences WHERE code='diagnostics_index_degraded'",
+                        [],
+                        |row| row.get(0),
+                    )?,
+                    conn.query_row(
+                        "SELECT COUNT(*) FROM failure_occurrences WHERE code='diagnostics_index_degraded'",
+                        [],
+                        |row| row.get(0),
+                    )?,
+                ))
+            })
+            .unwrap();
+        assert_eq!(count, 1);
+        assert_eq!(lifecycle, "open");
+
+        // A process restart reattaches to the durable open occurrence instead
+        // of raising another one for the same still-degraded condition.
+        let restarted = self::service(dir.path());
+        restarted.note_index_degraded("binary_missing");
+        let after_restart: i64 = restarted
+            .store
+            .database()
+            .with_conn(|conn| {
+                Ok(conn.query_row(
+                    "SELECT COUNT(*) FROM failure_occurrences WHERE code='diagnostics_index_degraded'",
+                    [],
+                    |row| row.get(0),
+                )?)
+            })
+            .unwrap();
+        assert_eq!(after_restart, 1);
+
+        service.note_index_ready();
+        let resolved: String = service
+            .store
+            .database()
+            .with_conn(|conn| {
+                Ok(conn.query_row(
+                    "SELECT lifecycle_state FROM failure_occurrences WHERE failure_id=?1",
+                    [failure_id],
+                    |row| row.get(0),
+                )?)
+            })
+            .unwrap();
+        assert_eq!(resolved, "resolved");
+
+        service.note_index_degraded("connection_refused");
+        let reopened: i64 = service
+            .store
+            .database()
+            .with_conn(|conn| {
+                Ok(conn.query_row(
+                    "SELECT COUNT(*) FROM failure_occurrences WHERE code='diagnostics_index_degraded'",
+                    [],
+                    |row| row.get(0),
+                )?)
+            })
+            .unwrap();
+        assert_eq!(reopened, 2);
     }
 
     #[tokio::test]

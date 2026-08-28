@@ -962,7 +962,14 @@ impl FailureDefinition for TelemetryFailure {
         FailureCategory::Telemetry
     }
     fn disposition(&self) -> FailureDisposition {
-        FailureDisposition::Terminal
+        match self {
+            // The journal remains authoritative while the optional index is
+            // unavailable. Keep one live occurrence open until a successful
+            // indexing pass proves recovery; a persistent degraded condition
+            // is not a terminal historical fact.
+            Self::IndexDegraded { .. } => FailureDisposition::RepairRequired,
+            Self::CostUnavailable { .. } => FailureDisposition::Terminal,
+        }
     }
     fn remediation(&self) -> Option<FailureRemediation> {
         match self {
