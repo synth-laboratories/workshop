@@ -968,7 +968,7 @@ impl OptimizerService {
             .run(move |conn| {
                 super::kernel::persist::load_state(conn, &optimizer_run_id)?.ok_or_else(|| {
                     anyhow!(
-                        "optimizer run {} has no durable kernel projection",
+                        "optimizer run {} has no saved kernel projection",
                         optimizer_run_id
                     )
                 })
@@ -1279,7 +1279,7 @@ impl OptimizerService {
             let state =
                 super::kernel::persist::load_state(conn, &optimizer_run_id)?.ok_or_else(|| {
                     anyhow!(
-                        "optimizer run {} did not produce a durable kernel projection",
+                        "optimizer run {} did not produce a saved kernel projection",
                         optimizer_run_id
                     )
                 })?;
@@ -2032,7 +2032,7 @@ impl OptimizerService {
                 move |conn| super::kernel::persist::load_state(conn, &optimizer_run_id)
             })
             .await?
-            .context("evidence degradation requires a durable kernel projection")?;
+            .context("evidence degradation requires a saved kernel projection")?;
         let observed_at = Utc::now().to_rfc3339();
         let degradation = json!({
             "stage": stage,
@@ -3252,7 +3252,7 @@ impl OptimizerService {
         db.run(move |conn| {
             let run = load_run(conn, &run_id)?;
             let state = super::kernel::persist::load_state(conn, &run_id)?.ok_or_else(|| {
-                anyhow!("optimizer run {run_id} has no durable kernel projection")
+                anyhow!("optimizer run {run_id} has no saved kernel projection")
             })?;
             if state.aggregate_sequence != at_seq {
                 bail!(

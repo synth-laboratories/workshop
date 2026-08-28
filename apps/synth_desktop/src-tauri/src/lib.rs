@@ -5016,7 +5016,7 @@ pub fn run() {
                 if let Some(window) = watchdog_app.get_webview_window("main") {
                     if !window.is_visible().unwrap_or(false) {
                         if let Err(error) = window.eval(
-                            "document.body.innerHTML='<main style=\"font:15px system-ui;padding:32px;color:#1f2937\"><h1>Workshop could not finish loading</h1><p>The renderer did not become ready within 15 seconds. Restart this instance; your runs and artifacts remain durable.</p></main>'"
+                            "document.body.innerHTML='<main style=\"font:15px system-ui;padding:32px;color:#1f2937\"><h1>Workshop could not finish loading</h1><p>The renderer did not become ready within 15 seconds. Restart this instance; your runs and artifacts remain saved locally.</p></main>'"
                         ) {
                             crate::platform::logging::report(
                                 "lib",

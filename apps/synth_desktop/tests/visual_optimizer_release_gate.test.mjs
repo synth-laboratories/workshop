@@ -23,8 +23,10 @@ test("product-owned primary optimizer visuals use terminal evidence instead of E
 test("reopened optimizer visuals show journal hydration instead of zero-like data", () => {
 	assert.match(host, /optimizerRunId && !optimizerPayload/);
 	assert.match(host, /data-testid="visual-optimizer-hydrating"/);
-	assert.match(host, /Restoring durable run evidence/);
+	assert.match(host, /Restoring run evidence/);
 	assert.match(host, /Metrics and rollouts will appear together after the journal is hydrated/);
+	assert.doesNotMatch(host, /Seal unavailable — durable run evidence/);
+	assert.doesNotMatch(host, /Restoring durable run evidence/);
 	assert.match(css, /\.visual-optimizer-hydrating\s*\{/);
 	assert.match(css, /\.visual-optimizer-skeleton\s*\{/);
 });

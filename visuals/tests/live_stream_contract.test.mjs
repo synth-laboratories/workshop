@@ -297,12 +297,13 @@ test("live Craftax renders a subscribed optimizer journal immediately instead of
   assert.match(shell, /optimizerEvents \|\| declaredStreamCount > 0 \? undefined : stream\.events/);
 });
 
-test("live Craftax names durable-journal hydration and exposes responsive run-wide distributions", () => {
+test("live Craftax uses plain-language journal hydration and exposes responsive run-wide distributions", () => {
   const shell = readFileSync(join(root, "families/first_class_example_containers/live.craftax.v1/shell.tsx"), "utf8");
   const css = readFileSync(join(root, "families/first_class_example_containers/live.craftax.v1/viewer.css"), "utf8");
   assert.match(shell, /optimizerJournalBound && optimizerEvents === undefined/);
   assert.match(shell, /Loading retained rollout journals/);
   assert.match(shell, /Counts and replay controls will appear only after the journal is available/);
+  assert.doesNotMatch(shell, /Durable replay|loading durable journal|Awaiting durable evidence|durable envelopes/);
   assert.match(shell, /Overall · all rollouts/);
   assert.match(shell, /Combined evaluation distributions/);
   assert.match(shell, /Outcome distribution/);

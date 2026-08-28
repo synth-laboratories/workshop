@@ -221,7 +221,7 @@ pub(crate) struct RunNotPersisted;
 
 impl std::fmt::Display for RunNotPersisted {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str("the turn has no durable run anchor")
+        formatter.write_str("the turn has no recorded run anchor")
     }
 }
 

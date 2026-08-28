@@ -187,8 +187,8 @@ test("V5: actual Craftax viewer sustains 10 lanes and 100k envelopes with bounde
     await viewer.getByRole("button", { name: "Raw trace", exact: true }).click();
     const traceMode = viewer.getByRole("button", { name: "Full trace" });
     await traceMode.click();
-    await expect(viewer.locator(".cv-trace-summary")).toContainText("durable envelopes");
-    const rawForSelectedLane = Number((await viewer.locator(".cv-trace-summary").innerText()).match(/from ([\d,]+) durable/)?.[1].replaceAll(",", ""));
+    await expect(viewer.locator(".cv-trace-summary")).toContainText("recorded envelopes");
+    const rawForSelectedLane = Number((await viewer.locator(".cv-trace-summary").innerText()).match(/from ([\d,]+) recorded/)?.[1].replaceAll(",", ""));
     expect(rawForSelectedLane).toBeGreaterThanOrEqual(9_999);
 
     const scrubMs = await viewer.getByLabel("Replay selected rollout by raw event").evaluate(async (input: HTMLInputElement) => {

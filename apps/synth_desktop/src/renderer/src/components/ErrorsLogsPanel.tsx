@@ -116,7 +116,7 @@ export function ErrorsLogsPanel({
 					<button type="button" role="tab" id="failure-evidence-tab-occurrences" aria-controls="failure-evidence-panel-occurrences" aria-selected={tab === "errors"} tabIndex={tab === "errors" ? 0 : -1} onKeyDown={moveTabFocus} onClick={() => setTab("errors")}>Occurrences</button>
 					<button type="button" role="tab" id="failure-evidence-tab-logs" aria-controls="failure-evidence-panel-logs" aria-selected={tab === "logs"} tabIndex={tab === "logs" ? 0 : -1} onKeyDown={moveTabFocus} onClick={() => setTab("logs")}>Logs</button>
 				</div>
-				<p className="errors-logs-mode" data-testid="observability-mode">{mode}</p>
+				<p className="errors-logs-mode" data-testid="observability-mode">{mode === "durable" ? "stored locally" : mode.replaceAll("_", " ")}</p>
 			</header>
 			{error ? <p className="errors-logs-error">{error}</p> : null}
 			{tab === "errors" ? (

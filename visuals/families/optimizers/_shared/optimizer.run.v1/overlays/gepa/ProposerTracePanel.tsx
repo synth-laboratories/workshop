@@ -77,7 +77,7 @@ function traceItems(trace: GepaProposerTrace): TraceV5Item[] {
       title: trace.status === "running" ? "Proposer is reflecting" : "Structured reflection unavailable",
       occurredAt: trace.startedAt,
       body: trace.status === "running"
-        ? "Reasoning is streaming into the durable trace. The structured summary replaces raw token deltas when the call seals."
+        ? "Reasoning is streaming into the recorded trace. The structured summary replaces raw token deltas when the call seals."
         : "The call completed without a structured reflection projection. Raw transport text is intentionally not dumped into this view."
     });
   }

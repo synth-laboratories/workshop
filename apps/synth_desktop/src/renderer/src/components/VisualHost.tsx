@@ -1151,13 +1151,13 @@ function TemplateVisualHost({ artifact }: { artifact: ArtifactRef }) {
 			return <VisualInvalidState
 				title="Run evidence unavailable"
 				detail={optimizerLoadError}
-				remediation="Retry after Workshop reconnects to the durable optimizer journal."
+				remediation="Retry after Workshop reconnects to the optimizer journal."
 			/>;
 		}
 		return (
 			<div className="visual-optimizer-hydrating" role="status" aria-live="polite" data-testid="visual-optimizer-hydrating">
 				<div className="visual-optimizer-hydrating-copy">
-					<strong>Restoring durable run evidence…</strong>
+					<strong>Restoring run evidence…</strong>
 					<span>Metrics and rollouts will appear together after the journal is hydrated.</span>
 				</div>
 				<div className="visual-optimizer-skeleton" aria-hidden="true">
@@ -1493,7 +1493,7 @@ function optimizerSealGateFromPane(host: HTMLElement): OptimizerSealGate {
 	const shell = host.querySelector<HTMLElement>('[data-testid="visual-template-shell"]');
 	const evidence = host.querySelector<HTMLElement>("[data-run-evidence-state]");
 	if (!shell || !evidence) {
-		return { ready: false, reason: "Seal available after durable run evidence finishes loading." };
+		return { ready: false, reason: "Seal available after run evidence finishes loading." };
 	}
 	const state = evidence.dataset.runEvidenceState;
 	if (state === "rejected") {
@@ -1504,10 +1504,10 @@ function optimizerSealGateFromPane(host: HTMLElement): OptimizerSealGate {
 		};
 	}
 	if (shell.dataset.visualTerminal !== "true") {
-		return { ready: false, reason: "Seal available after the optimizer run reaches a durable terminal state." };
+		return { ready: false, reason: "Seal available after the optimizer run finishes." };
 	}
 	if (state !== "accepted") {
-		return { ready: false, reason: `Seal unavailable — durable run evidence is ${state ?? "still loading"}, not complete.` };
+		return { ready: false, reason: `Seal unavailable — run evidence is ${state ?? "still loading"}, not complete.` };
 	}
 	return { ready: true, reason: null };
 }
@@ -1517,7 +1517,7 @@ export function VisualPane({ artifact, onClose }: { artifact: ArtifactRef; onClo
 	const primaryOptimizerRunId = productOwnedPrimaryOptimizerRunId(artifact);
 	const [optimizerSealGate, setOptimizerSealGate] = useState<OptimizerSealGate>(() => ({
 		ready: false,
-		reason: primaryOptimizerRunId ? "Seal available after durable run evidence finishes loading." : null
+		reason: primaryOptimizerRunId ? "Seal available after run evidence finishes loading." : null
 	}));
 	const [expanded, setExpanded] = useState(false);
 	const [annotations, setAnnotations] = useState<VisualAnnotation[]>([]);
@@ -1783,7 +1783,7 @@ export function VisualPane({ artifact, onClose }: { artifact: ArtifactRef; onClo
 						className="visual-expand"
 						onClick={() => { setLabeling(true); setLabelPoint(null); }}
 						disabled={!visualId || !revision || busy}
-						title="Place a durable label on this exact revision"
+						title="Place a label on this exact revision"
 					>
 						Label{annotations.length ? ` · ${annotations.length}` : ""}
 					</button>

@@ -105,7 +105,7 @@ fn validate_readiness_observation(
         );
     }
     if observation.bindings_digest != bindings_digest {
-        anyhow::bail!("captured bindings do not match the current durable revision");
+        anyhow::bail!("captured bindings do not match the current saved revision");
     }
     let readiness = &contract.readiness;
     // Readiness is decided by an allowlist, not a denylist. A denylist accepts

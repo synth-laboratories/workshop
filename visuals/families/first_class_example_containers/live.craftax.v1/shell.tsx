@@ -231,7 +231,7 @@ function traceText(value: unknown): string {
 
 const EVIDENCE_LABELS: Record<EvidenceField["state"], string> = {
   visible: "Recorded and visible", redacted: "Recorded but redacted", not_emitted: "Not emitted by provider",
-  not_applicable: "Not applicable to this call", contract_defect: "Missing: producer-contract defect", pending: "Awaiting durable evidence"
+  not_applicable: "Not applicable to this call", contract_defect: "Missing: producer-contract defect", pending: "Awaiting recorded evidence"
 };
 
 function Evidence({ label, field }: { label: string; field: EvidenceField }) {
@@ -671,7 +671,7 @@ export function Shell(props: ShellProps) {
   // absence of a state.
   const transportState = bindingError ? "error" : state;
   const connectionState = journalHydrating
-    ? "loading durable journal"
+    ? "loading run history"
     : lifecycleTerminal
     ? lifecycleFailed
       ? `failed${props.runLifecycle?.reason ? ` · ${props.runLifecycle.reason}` : ""}`
@@ -679,7 +679,7 @@ export function Shell(props: ShellProps) {
     : bindingError
     ? "binding error"
     : transportState === "error"
-      ? `transport error · last durable seq ${lastDurableSequence >= 0 ? lastDurableSequence : "—"}`
+      ? `transport error · last recorded seq ${lastDurableSequence >= 0 ? lastDurableSequence : "—"}`
       : transportState === "idle"
         ? "no stream declared"
         : transportState === "declared"
@@ -794,7 +794,7 @@ export function Shell(props: ShellProps) {
 
       {journalHydrating ? <section className="cv-hydrating" role="status" aria-live="polite" data-testid="craftax-journal-hydrating">
         <span className="cv-hydrating-mark" aria-hidden="true" />
-        <div><p className="cv-eyebrow">Durable replay</p><h3>Loading retained rollout journals…</h3><p>Workshop is rebuilding the visual from persisted optimizer evidence. Counts and replay controls will appear only after the journal is available.</p></div>
+        <div><p className="cv-eyebrow">Run replay</p><h3>Loading retained rollout journals…</h3><p>Workshop is rebuilding the visual from persisted optimizer evidence. Counts and replay controls will appear only after the journal is available.</p></div>
       </section> : <>
       {aggregateTimelinePanel}
 
@@ -895,7 +895,7 @@ export function Shell(props: ShellProps) {
 
       {config.showTraceInspector ? <section className="cv-panel cv-trace cv-surface-raw" data-visual-landmark="trace-inspector">
         <div className="cv-heading"><div><p className="cv-eyebrow">Same temporal cutoff</p><h3>Trace V5 viewer</h3></div><div className="cv-trace-mode"><button type="button" aria-pressed={traceMode === "focus"} onClick={() => setTraceMode("focus")}>Policy focus</button><button type="button" aria-pressed={traceMode === "full"} onClick={() => setTraceMode("full")}>Full trace</button><button type="button" onClick={() => setSelectedTraceId(inspectedItems.at(-1)?.id ?? null)} disabled={!inspectedItems.length}>Jump to latest</button><span>{integrityAccepted ? "sealed · accepted" : viewer.terminal ? "terminal trace" : "live · unsealed"}</span></div></div>
-        <p className="cv-trace-summary">{traceMode === "full" ? `${semanticTrace.length} semantic events folded from ${visibleEvents.length} durable envelopes, grouped by environment step.` : `${inspectedItems.length} policy calls and trace-authority events; ${traceEvents.length} raw policy partials are folded.`}</p>
+        <p className="cv-trace-summary">{traceMode === "full" ? `${semanticTrace.length} semantic events folded from ${visibleEvents.length} recorded envelopes, grouped by environment step.` : `${inspectedItems.length} policy calls and trace-authority events; ${traceEvents.length} raw policy partials are folded.`}</p>
         <div className="cv-trace-grid">
           <div className="cv-trace-list">
             {hiddenGroupCount > 0 ? (
