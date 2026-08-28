@@ -17,6 +17,7 @@ import {
 import { SettingsCard, SettingsRow } from "./SettingsCard";
 import { bridges } from "../runtime/desktopBridge";
 import type { ProductTelemetryPolicy } from "../bridge";
+import { PaidComputePermissionSettings } from "./PaidComputePermissionSettings";
 
 type Props = {
 	preferences: DesktopPreferences;
@@ -259,6 +260,8 @@ export function GeneralPreferencesSettings({ preferences, onPreferencesChange }:
 			</SettingsCard>
 
 			<PrivacyTelemetrySettings />
+
+			<PaidComputePermissionSettings />
 
 			<SettingsCard
 				title="Prompt submission"

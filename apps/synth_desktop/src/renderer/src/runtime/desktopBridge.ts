@@ -593,7 +593,12 @@ window.synthConfig ??= isTauri
 			updateModelMultiAgent: async () => { throw new Error("Model settings require Synth Desktop"); },
 			getWorkspaceAccess: async () => ({ allowedRoots: [] }),
 			updateWorkspaceAccess: async () => { throw new Error("Workspace access settings require Synth Desktop"); },
-			getDesktopPermissions: async () => ({ configPath: "~/.synth-desktop/config.toml", approvalPolicy: "untrusted", sandboxMode: "workspace-write" }),
+			getDesktopPermissions: async () => ({
+				configPath: "~/.synth-desktop/config.toml",
+				approvalPolicy: "untrusted",
+				sandboxMode: "workspace-write",
+				paidCompute: { enabled: false, maxRequestUsd: "0.10", maxConversationUsd: "1.00", providers: [] }
+			}),
 			updateDesktopPermissions: async () => { throw new Error("Desktop permission settings require Synth Desktop"); }
 		};
 window.synthWorkspaceScope ??= isTauri

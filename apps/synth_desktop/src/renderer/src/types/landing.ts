@@ -290,6 +290,11 @@ export type LocalActivityLine = {
 		displayPath?: string;
 		variable?: string;
 		switchFromDisplay?: string;
+		policyAuto?: boolean;
+		reservedUsdMicros?: number;
+		settledSpendUsdMicros?: number;
+		remainingUsdMicros?: number;
+		conversationCapUsdMicros?: number;
 	};
 	alwaysAllowSupported?: boolean;
 	/** Expanded raw detail (tool output / thought) when the line is opened. */
