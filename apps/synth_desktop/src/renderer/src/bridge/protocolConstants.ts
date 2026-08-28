@@ -12,6 +12,8 @@ export const EVENT_CHANNELS = {
 	 */
 	CODEX: "codex:event",
 	VISUAL_SHOW: "visual:show",
+	/** The instance-local user visual template root changed on disk. */
+	VISUAL_TEMPLATES: "visual:templates",
 	TERMINAL: "terminal:event",
 	LAGUNA_STATUS: "laguna:status",
 	LAGUNA_DOWNLOAD: "laguna:download",
@@ -150,6 +152,9 @@ export const COMMANDS = {
 	VISUALS_TEMPLATES_LIST: "visuals_templates_list",
 	VISUALS_TEMPLATES_GET: "visuals_templates_get",
 	VISUALS_TEMPLATE_SHELL_SOURCE: "visuals_template_shell_source",
+	VISUALS_TEMPLATE_SAVE: "visuals_template_save",
+	VISUALS_TEMPLATE_CREATE: "visuals_template_create",
+	VISUALS_TEMPLATE_VALIDATE: "visuals_template_validate",
 	VISUALS_LIST: "visuals_list",
 	VISUALS_GET: "visuals_get",
 	VISUALS_OBSERVATION_REPORT: "visuals_observation_report",

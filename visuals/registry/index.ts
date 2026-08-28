@@ -161,6 +161,17 @@ export type RuntimeTemplateSnapshot = {
 export type RuntimeTemplateLoader = () => Promise<RuntimeTemplateRecord[]>;
 
 const RUNTIME_BY_ID = new Map<string, RegistryEntry>();
+/**
+ * Ids the runtime tier has served at least once in this session.
+ *
+ * Never pruned, on purpose. A user template can leave the catalog while a pane
+ * is still showing it — the file was deleted, renamed, or edited into a state
+ * the registry refuses — and `RUNTIME_BY_ID` alone cannot tell that apart from
+ * an id that was never real. Without this the pane would fall through to the
+ * bundled loader, find no shell, and blank; with it the pane can say which of
+ * the two happened, in the pane, where the author is looking.
+ */
+const RUNTIME_EVER = new Set<string>();
 const runtimeListeners = new Set<() => void>();
 let runtimeSnapshot: RuntimeTemplateSnapshot = { accepted: [], shadowed: [] };
 let runtimeGeneration = 0;
@@ -219,7 +230,10 @@ function runtimeMeta(record: RuntimeTemplateRecord, id: string): VisualTemplateM
  * importer. A row whose id a bundled template already owns is refused and
  * reported: no silent override in either direction.
  */
-export function registerRuntimeTemplates(records: RuntimeTemplateRecord[]): RuntimeTemplateSnapshot {
+export function registerRuntimeTemplates(
+  records: RuntimeTemplateRecord[],
+  options: { quiet?: boolean } = {},
+): RuntimeTemplateSnapshot {
   const next = new Map<string, RegistryEntry>();
   const shadowed: string[] = [];
   for (const record of Array.isArray(records) ? records : []) {
@@ -243,11 +257,32 @@ export function registerRuntimeTemplates(records: RuntimeTemplateRecord[]): Runt
     });
   }
   RUNTIME_BY_ID.clear();
-  for (const [id, entry] of next) RUNTIME_BY_ID.set(id, entry);
-  return announceRuntimeTemplates({
+  for (const [id, entry] of next) {
+    RUNTIME_BY_ID.set(id, entry);
+    RUNTIME_EVER.add(id);
+  }
+  const snapshot: RuntimeTemplateSnapshot = {
     accepted: [...next.keys()].sort((left, right) => left.localeCompare(right)),
     shadowed: shadowed.sort((left, right) => left.localeCompare(right)),
-  });
+  };
+  // A quiet round updates the map without waking anyone. It exists because
+  // announcing is not free: every listener re-reads, and `VisualHost` answers
+  // by re-reading and recompiling the source it is showing, which throws away
+  // whatever state the mounted shell was holding. A caller that cannot tell
+  // whether anything changed — the focus rescan — must not pay that on every
+  // focus, so it asks quietly and only wakes the pane when the catalog moved.
+  // The watcher is the opposite case: it already knows the bytes changed, and
+  // an unchanged id list is exactly what a content edit looks like.
+  if (options.quiet && sameSnapshot(snapshot, runtimeSnapshot)) {
+    runtimeSnapshot = snapshot;
+    return snapshot;
+  }
+  return announceRuntimeTemplates(snapshot);
+}
+
+function sameSnapshot(left: RuntimeTemplateSnapshot, right: RuntimeTemplateSnapshot): boolean {
+  const sameIds = (a: string[], b: string[]) => a.length === b.length && a.every((id, index) => id === b[index]);
+  return left.error === right.error && sameIds(left.accepted, right.accepted) && sameIds(left.shadowed, right.shadowed);
 }
 
 /** Install the host's runtime template source. Desktop does this at bridge install. */
@@ -256,33 +291,56 @@ export function setRuntimeTemplateLoader(loader: RuntimeTemplateLoader | null): 
   runtimePending = null;
 }
 
-async function loadRuntimeTemplates(): Promise<RuntimeTemplateSnapshot> {
+async function loadRuntimeTemplates(quiet: boolean): Promise<RuntimeTemplateSnapshot> {
   const loader = runtimeLoader;
   if (!loader) return runtimeSnapshot;
   try {
-    return registerRuntimeTemplates(await loader());
+    return registerRuntimeTemplates(await loader(), { quiet });
   } catch (reason) {
     // Never reject: a host that cannot be asked must not blank a pane. The
     // previously accepted ids stand and the reason travels in the snapshot, so
     // the pane can say why the template it wants is unavailable.
-    return announceRuntimeTemplates({
+    const failed = {
       ...runtimeSnapshot,
       error: reason instanceof Error ? reason.message : String(reason),
-    });
+    };
+    if (quiet && sameSnapshot(failed, runtimeSnapshot)) {
+      runtimeSnapshot = failed;
+      return failed;
+    }
+    return announceRuntimeTemplates(failed);
   }
 }
 
 /** Load the runtime tier once. Repeat calls share the first load. */
 export function ensureRuntimeTemplates(): Promise<RuntimeTemplateSnapshot> {
   if (!runtimeLoader) return Promise.resolve(runtimeSnapshot);
-  runtimePending ??= loadRuntimeTemplates();
+  runtimePending ??= loadRuntimeTemplates(false);
   return runtimePending;
 }
 
-/** Re-ask the host — a template was saved, or the window regained focus. */
+/**
+ * Re-ask the host and wake every listener — the caller knows something changed.
+ *
+ * The file watcher's callback: it fires only after the bytes under the user
+ * template root actually moved, and a content edit that leaves the id list
+ * identical still has to reach the pane, so this announces unconditionally.
+ */
 export function refreshRuntimeTemplates(): Promise<RuntimeTemplateSnapshot> {
   runtimePending = null;
   return ensureRuntimeTemplates();
+}
+
+/**
+ * Re-ask the host and wake listeners only if the catalog moved.
+ *
+ * For callers that poll on a hunch — window focus — where announcing every
+ * time would remount every open pane for nothing.
+ */
+export function rescanRuntimeTemplates(): Promise<RuntimeTemplateSnapshot> {
+  if (!runtimeLoader) return Promise.resolve(runtimeSnapshot);
+  runtimePending = loadRuntimeTemplates(true);
+  return runtimePending;
 }
 
 /** Bumped whenever the runtime tier changes, so a view can re-read. */
@@ -306,6 +364,18 @@ export function onRuntimeTemplatesChanged(listener: () => void): () => void {
  */
 export function isUserTemplate(id: string): boolean {
   return !BY_ID.has(id) && RUNTIME_BY_ID.has(id);
+}
+
+/**
+ * True when this id was a user template in this session but is not one now.
+ *
+ * The answer to "why did my pane stop working", and the difference between a
+ * message the author can act on and a blank rectangle. `runtimeTemplates()`
+ * carries the reason when there is one — a host that could not be asked — and
+ * its absence means the directory simply left the root.
+ */
+export function wasUserTemplate(id: string): boolean {
+  return !BY_ID.has(id) && !RUNTIME_BY_ID.has(id) && RUNTIME_EVER.has(id);
 }
 
 export function listTemplates(): VisualTemplate[] {

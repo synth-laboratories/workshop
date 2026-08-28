@@ -23,7 +23,8 @@ import {
 	onRuntimeTemplatesChanged,
 	runtimeTemplates,
 	runtimeTemplatesVersion,
-	sourcedInvalidShell
+	sourcedInvalidShell,
+	wasUserTemplate
 } from "@synth/visuals";
 import { publicError, toPublicError, type PublicError } from "../runtime/publicError";
 import type { VisualAnnotation, VisualSeal, VisualSealBundle, VisualUpload } from "../bridge";
@@ -814,6 +815,20 @@ function TemplateVisualHost({ artifact }: { artifact: ArtifactRef }) {
 			const Component = await loadVisualShell(templateId);
 			if (cancelled) return;
 			if (!Component) {
+				// A user template that was here a moment ago and is not now:
+				// deleted, renamed, or edited into something the registry
+				// refuses. That is an authoring mistake with a fix, so it says
+				// so in the pane through the same surface every other
+				// user-template failure uses — never a blank rectangle.
+				if (wasUserTemplate(templateId)) {
+					const runtime = runtimeTemplates();
+					setShell(() => sourcedInvalidShell(
+						runtime.error
+							? `Template ${templateId} is no longer available: ${runtime.error}`
+							: `Template ${templateId} is no longer available: its directory left the user template root`
+					));
+					return;
+				}
 				setFailed(true);
 				reportDiagnostic({
 					...visualIdentity,
@@ -828,7 +843,7 @@ function TemplateVisualHost({ artifact }: { artifact: ArtifactRef }) {
 		};
 		void load().catch((reason) => {
 			if (cancelled) return;
-			if (isSourcedTemplate(templateId) || isUserTemplate(templateId)) {
+			if (isSourcedTemplate(templateId) || isUserTemplate(templateId) || wasUserTemplate(templateId)) {
 				setShell(() => sourcedInvalidShell(publicError(reason)));
 				return;
 			}

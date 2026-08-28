@@ -192,6 +192,38 @@ export const commands = {
 	visualsTemplatesList: (genre: string | null) => typedError<TemplateMeta[], AppError>(__TAURI_INVOKE("visuals_templates_list", { genre })),
 	visualsTemplatesGet: (templateId: string) => typedError<TemplateMeta, AppError>(__TAURI_INVOKE("visuals_templates_get", { templateId })),
 	visualsTemplateShellSource: (templateId: string) => typedError<string, AppError>(__TAURI_INVOKE("visuals_template_shell_source", { templateId })),
+	/**
+	 *  Persist authored TSX as a reusable template under the instance state root.
+	 *
+	 *  `manifest` is `template.json`'s text, not a typed struct: the manifest
+	 *  schema belongs to the template package, and a typed argument would silently
+	 *  drop every key the host does not happen to know about.
+	 *
+	 *  **This writes code the app compiles at every launch**, which is a different
+	 *  act from rendering in the pane. Today the only caller is this window, so the
+	 *  person's own action is the confirmation. The seam that lets an agent reach
+	 *  it — an HTTP route in `visuals_ipc.rs`, which does not exist — must land
+	 *  together with item 29's `ApprovalKind` variant; `PersistConsent` in
+	 *  `visuals/user_templates.rs` is where that decision has to be made.
+	 */
+	visualsTemplateSave: (templateId: string, manifest: string, source: string) => typedError<TemplateMeta, AppError>(__TAURI_INVOKE("visuals_template_save", { templateId, manifest, source })),
+	/**
+	 *  Scaffold a new user template by forking an existing one under a new id.
+	 *
+	 *  Fork rather than shadow, so a shipped id keeps meaning exactly one thing.
+	 */
+	visualsTemplateCreate: (templateId: string, fromTemplateId: string, title: string | null) => typedError<TemplateMeta, AppError>(__TAURI_INVOKE("visuals_template_create", { templateId, fromTemplateId, title })),
+	/**
+	 *  Structural verdict on one user template directory.
+	 *
+	 *  Never `Err` for a template that simply is not finished yet: "manifest is
+	 *  fine, no shell.tsx" is the normal mid-authoring state and belongs in the
+	 *  report, not in an error. The import allowlist is deliberately not checked
+	 *  here — `visuals/runtime/sourcedValidate.ts` owns it, the pane runs it, and
+	 *  the report says so in `sourceScan` rather than letting silence read as
+	 *  approval.
+	 */
+	visualsTemplateValidate: (templateId: string) => typedError<UserTemplateValidation, AppError>(__TAURI_INVOKE("visuals_template_validate", { templateId })),
 	visualsList: (query: {
 	status: string | null,
 	sessionId: string | null,
@@ -2777,11 +2809,41 @@ export type TemplateObservationContract = {
 	readiness: TemplateReadinessContract,
 };
 
+/**
+ *  What a template requires before its current revision can be called ready.
+ *
+ *  Two different observers answer these. `minimum_rollout_count`,
+ *  `minimum_rendered_frame_count`, `minimum_semantic_event_count` and
+ *  `require_terminal` are read from the *rendered* observation the pane
+ *  publishes: claims about what the projector folded and the DOM then drew.
+ *  `minimum_transport_envelope_count` is read from the host's own stream
+ *  receipt at the poll seam: a claim about what arrived, before any fold has an
+ *  opinion about it. Keeping them separate is the whole point — see that
+ *  field's note.
+ */
 export type TemplateReadinessContract = {
 	rejectTransportStates?: string[],
 	minimumRolloutCount?: number,
 	minimumRenderedFrameCount?: number,
 	minimumSemanticEventCount?: number,
+	/**
+	 *  Non-control envelopes the transport must have delivered, counted by the
+	 *  host's stream receipt rather than by the pane.
+	 *
+	 *  Deliberately *not* `minimum_semantic_event_count`. That number is a
+	 *  claim about what the projector produced, and only the fold can answer
+	 *  it; the receipt counts at the transport level, where a heartbeat and a
+	 *  verifier result are told apart by envelope kind and nothing more. A
+	 *  template that renders one summary line out of a hundred envelopes, and a
+	 *  template that fans one envelope into a hundred rows, both exist — so
+	 *  satisfying a projector claim with a transport count would certify a fold
+	 *  nobody ran, and satisfying a transport claim with a projector count
+	 *  would veto a stream that did arrive. Two observers, two knobs.
+	 *
+	 *  Defaults to 0, so a template that says nothing here keeps exactly the
+	 *  behaviour it had before the receipt gate existed.
+	 */
+	minimumTransportEnvelopeCount?: number,
 	requireTerminal?: boolean,
 };
 
@@ -2959,6 +3021,39 @@ export type UseRequestResult = {
 	handle: string | null,
 	summary: CapabilitySummary | null,
 	providerRoutes: unknown,
+};
+
+/**  One reason a directory is not, or not yet, a user template. */
+export type UserTemplateFinding = {
+	/**  Stable machine tag. `message` is what a person reads. */
+	code: string,
+	/**
+	 *  Verbatim from `templates.rs` wherever it came from there, so an author
+	 *  reads the same sentence the registry used to refuse the file.
+	 */
+	message: string,
+};
+
+/**
+ *  Structural verdict on one user template directory. A verdict rather than a
+ *  `Result` because "manifest is fine, no shell.tsx yet" is the normal
+ *  mid-authoring state, not an error.
+ */
+export type UserTemplateValidation = {
+	schemaVersion: string,
+	id: string,
+	/**  Absolute directory this id names, even when nothing is there yet. */
+	path: string,
+	/**  True when the registry would index this directory as a user template. */
+	ok: boolean,
+	/**  `templates.rs`'s tag, present only once the directory indexes. */
+	sourceKind: string | null,
+	findings: UserTemplateFinding[],
+	/**
+	 *  Where the import allowlist and forbidden-token scan actually run, said
+	 *  out loud so silence here cannot read as approval.
+	 */
+	sourceScan: string,
 };
 
 export type VisualAnnotation = {

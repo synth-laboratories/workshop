@@ -103,6 +103,7 @@ import type {
 	TrainingArtifact,
 	TrainingModelHit,
 	UpdateStatus,
+	UserTemplateValidation,
 	VisualAnnotation,
 	VisualSeal,
 	VisualSealBundle,
@@ -184,6 +185,7 @@ export type {
 	TrainingArtifact,
 	TrainingModelHit,
 	UpdateStatus,
+	UserTemplateValidation,
 	VisualAnnotation,
 	VisualSeal,
 	VisualSealBundle,
@@ -547,6 +549,34 @@ export type VisualsBridge = {
 	 * for every other tier, so this is not a general file read.
 	 */
 	templateShellSource(templateId: string): Promise<string>;
+	/**
+	 * Persist authored TSX as a reusable template under the instance state
+	 * root. `manifest` is `template.json`'s text; the host stamps `id` into it
+	 * and rebuilds the registry over the bytes it wrote, rolling back anything
+	 * the registry refuses.
+	 *
+	 * This writes code the app compiles at every launch, not a pane render.
+	 * Call it from a place where the person asked for it.
+	 */
+	saveTemplate(templateId: string, manifest: string, source: string): Promise<VisualTemplateMeta>;
+	/**
+	 * Scaffold a new user template by forking an existing one under a new id.
+	 * Fork, never shadow: a shipped id keeps meaning exactly one thing.
+	 */
+	createTemplate(templateId: string, fromTemplateId: string, title?: string | null): Promise<VisualTemplateMeta>;
+	/**
+	 * Structural verdict on one user template directory. Never rejects for a
+	 * template that is merely unfinished. The import allowlist is not checked
+	 * here — `visuals/runtime/sourcedValidate.ts` owns it and the pane runs it;
+	 * `sourceScan` on the result says so.
+	 */
+	validateTemplate(templateId: string): Promise<UserTemplateValidation>;
+	/**
+	 * The user template root changed on disk. The listener re-asks the host
+	 * rather than trusting the event payload, so a hand edit and an in-app save
+	 * take the same path.
+	 */
+	onTemplatesChanged(listener: () => void): () => void;
 	list(query?: {
 		status?: string;
 		sessionId?: string;

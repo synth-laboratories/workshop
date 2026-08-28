@@ -120,9 +120,9 @@ use tauri_plugin_opener::OpenerExt;
 use terminal::{TerminalCreateRequest, TerminalEvent, TerminalInfo, TerminalManager};
 use trace_ingest::{TraceBundleIngestRequest, TraceBundleIngestResult};
 use visuals::{
-    TemplateMeta, VisualAnnotation, VisualAnnotationCreate, VisualAsset, VisualCreateRequest,
-    VisualQuery, VisualRecord, VisualRendition, VisualRevision, VisualSeal, VisualSealBundle,
-    VisualUpdateRequest, VisualUpload,
+    TemplateMeta, UserTemplateValidation, VisualAnnotation, VisualAnnotationCreate, VisualAsset,
+    VisualCreateRequest, VisualQuery, VisualRecord, VisualRendition, VisualRevision, VisualSeal,
+    VisualSealBundle, VisualUpdateRequest, VisualUpload,
 };
 use workspace_scope::WorkspaceGrantRequest;
 use workspace_scope::{ConversationWorkspaceScope, WorkspaceAccessMode};
@@ -2655,6 +2655,66 @@ fn visuals_template_shell_source(
         .map_err(AppError::from)
 }
 
+/// Persist authored TSX as a reusable template under the instance state root.
+///
+/// `manifest` is `template.json`'s text, not a typed struct: the manifest
+/// schema belongs to the template package, and a typed argument would silently
+/// drop every key the host does not happen to know about.
+///
+/// **This writes code the app compiles at every launch**, which is a different
+/// act from rendering in the pane. Today the only caller is this window, so the
+/// person's own action is the confirmation. The seam that lets an agent reach
+/// it — an HTTP route in `visuals_ipc.rs`, which does not exist — must land
+/// together with item 29's `ApprovalKind` variant; `PersistConsent` in
+/// `visuals/user_templates.rs` is where that decision has to be made.
+#[tauri::command]
+#[specta::specta]
+fn visuals_template_save(
+    state: State<'_, Arc<CoreRuntime>>,
+    template_id: String,
+    manifest: String,
+    source: String,
+) -> Result<TemplateMeta, AppError> {
+    state
+        .visuals()
+        .save_template(&template_id, &manifest, &source)
+        .map_err(AppError::from)
+}
+
+/// Scaffold a new user template by forking an existing one under a new id.
+///
+/// Fork rather than shadow, so a shipped id keeps meaning exactly one thing.
+#[tauri::command]
+#[specta::specta]
+fn visuals_template_create(
+    state: State<'_, Arc<CoreRuntime>>,
+    template_id: String,
+    from_template_id: String,
+    title: Option<String>,
+) -> Result<TemplateMeta, AppError> {
+    state
+        .visuals()
+        .create_template(&template_id, &from_template_id, title.as_deref())
+        .map_err(AppError::from)
+}
+
+/// Structural verdict on one user template directory.
+///
+/// Never `Err` for a template that simply is not finished yet: "manifest is
+/// fine, no shell.tsx" is the normal mid-authoring state and belongs in the
+/// report, not in an error. The import allowlist is deliberately not checked
+/// here — `visuals/runtime/sourcedValidate.ts` owns it, the pane runs it, and
+/// the report says so in `sourceScan` rather than letting silence read as
+/// approval.
+#[tauri::command]
+#[specta::specta]
+fn visuals_template_validate(
+    state: State<'_, Arc<CoreRuntime>>,
+    template_id: String,
+) -> Result<UserTemplateValidation, AppError> {
+    Ok(state.visuals().validate_template(&template_id))
+}
+
 #[tauri::command]
 #[specta::specta]
 async fn visuals_list(
@@ -5055,6 +5115,16 @@ pub fn run() {
                     }
                 }
             });
+
+            // User visual templates are ordinary files under the instance
+            // state root, so they change without the app being told: an author
+            // saves `shell.tsx` in their editor, or another tool writes one.
+            // Watching the root is what turns that into a remount — the
+            // renderer answers this event with `refreshRuntimeTemplates()`,
+            // which bumps the registry generation, which re-reads and
+            // recompiles the source. A template that becomes invalid renders
+            // its validator message in the pane rather than blanking it.
+            visuals::spawn_watcher(app.handle().clone());
 
             let ipc_core = core.clone();
             let ipc_app = app.handle().clone();

@@ -15,6 +15,10 @@ impl EventChannel {
     /// listen during transition; remove once compat listen is deleted.
     pub const CODEX: &'static str = "codex:event";
     pub const VISUAL_SHOW: &'static str = "visual:show";
+    /// The instance-local user visual template root changed on disk. Payload is
+    /// `synth.visual-templates-changed.v1`; the renderer answers by re-asking
+    /// the host for the runtime tier, never by trusting the payload's contents.
+    pub const VISUAL_TEMPLATES: &'static str = "visual:templates";
     pub const TERMINAL: &'static str = "terminal:event";
     pub const LAGUNA_STATUS: &'static str = "laguna:status";
     pub const LAGUNA_DOWNLOAD: &'static str = "laguna:download";
@@ -31,6 +35,7 @@ pub const EVENT_CHANNELS: &[&str] = &[
     EventChannel::RUNTIME,
     EventChannel::CODEX,
     EventChannel::VISUAL_SHOW,
+    EventChannel::VISUAL_TEMPLATES,
     EventChannel::TERMINAL,
     EventChannel::LAGUNA_STATUS,
     EventChannel::LAGUNA_DOWNLOAD,

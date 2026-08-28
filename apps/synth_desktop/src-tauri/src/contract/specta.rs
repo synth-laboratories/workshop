@@ -174,6 +174,9 @@ pub fn builder() -> Builder<tauri::Wry> {
             crate::visuals_templates_list,
             crate::visuals_templates_get,
             crate::visuals_template_shell_source,
+            crate::visuals_template_save,
+            crate::visuals_template_create,
+            crate::visuals_template_validate,
             crate::visuals_list,
             crate::visuals_get,
             crate::visuals_observation_report,
@@ -493,8 +496,15 @@ mod tests {
         // user-authored template's `shell.tsx` for the pane to compile. Read
         // only, it refuses non-user templates and paths outside the user
         // template root.
+        // 273 → 276: user visual template authoring — `visuals_template_save`
+        // and `visuals_template_create` write `template.json` + `shell.tsx`
+        // under the instance state root and are verified by rebuilding the
+        // registry index over the bytes they just wrote, rolling back whatever
+        // it refuses; `visuals_template_validate` reports that same verdict
+        // without writing. The import allowlist is not among them on purpose:
+        // it lives once, in `visuals/runtime/sourcedValidate.ts`.
         assert_eq!(
-            exported, 273,
+            exported, 276,
             "generated bindings must contain the complete desktop command set"
         );
         assert_eq!(

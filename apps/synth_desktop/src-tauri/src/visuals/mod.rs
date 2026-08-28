@@ -59,3 +59,7 @@ pub use templates::{
     import_managed_template, list_templates, resolve_template, TemplateMeta, TemplateObservationContract,
     TemplateReadinessContract,
 };
+/// The user tier's writer, its verdict type, and its watcher. `templates.rs`
+/// still owns what a user template *is*; these are the three things that
+/// create one, judge one, and notice one changing on disk.
+pub use user_templates::{spawn_watcher, UserTemplateFinding, UserTemplateValidation};
