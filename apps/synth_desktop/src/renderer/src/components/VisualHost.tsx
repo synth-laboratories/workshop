@@ -34,6 +34,7 @@ import { SystemsDynamicVisual } from "./SystemsDynamicVisual";
 import type { SubagentState } from "../runtime/sessionView";
 import { bindingAuthorityKey } from "../runtime/visualRevisionState";
 import { openTraceReference, VISUAL_REFERENCE_ERROR_EVENT, VISUAL_REFERENCE_OPENED_EVENT } from "../runtime/visualReferences";
+import { optimizerRunIdFromBindings } from "../runtime/visualBindings";
 
 type ShellProps = {
 	title?: string;
@@ -63,7 +64,7 @@ export function artifactFromVisualRecord(visual: VisualRecord): ArtifactRef {
 		status: visual.status,
 		sessionId: visual.sessionId ?? undefined,
 		ownerSessionId: visual.sessionId ?? undefined,
-		runId: visual.runId ?? undefined,
+		runId: optimizerRunIdFromBindings(visual.bindings) ?? visual.runId ?? undefined,
 		traceId: visual.traceId ?? undefined,
 		summary: typeof metadata?.summary === "string" ? metadata.summary : undefined,
 		preview: {

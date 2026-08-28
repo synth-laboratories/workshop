@@ -1157,8 +1157,15 @@ export type EvalProjection = {
 	usage: UsageCompleteness,
 	meanReward: number | null,
 	scoredTrials: number,
+	/**
+	 *  Terminal trials carrying an evaluator-produced measurement. This is
+	 *  separate from terminal work: a process can finish without producing a
+	 *  score, and that must not make evidence complete.
+	 */
+	evaluatorEvidence: number,
 	promotionApplicable: boolean,
 	traces: number,
+	evidenceRefs?: EvidenceRef[],
 };
 
 export type EvalResult = {

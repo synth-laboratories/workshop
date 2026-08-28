@@ -22,9 +22,10 @@ use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::{json, Map, Value};
 
 use super::gepa_evidence;
-use super::models::{OptimizerEventEnvelope, OptimizerRunRecord};
+use super::models::{OptimizerEventEnvelope, OptimizerRunRecord, OptimizerUsageSummary};
 
 pub(super) const TERMINAL_MANIFEST_SCHEMA: &str = "optimizer_terminal_manifest.v1";
+const TERMINAL_MANIFEST_SCHEMA_V2: &str = "optimizer_terminal_manifest.v2";
 
 /// Terminal status spellings the manifest may carry. `failed_evidence` is the
 /// one that did not exist before: compute succeeded, its evidence did not, and
@@ -108,72 +109,20 @@ fn kernel_work_counts(summary: &crate::optimizers::kernel::WorkSummary) -> WorkC
 }
 
 /// Usage as the manifest records it: lanes preserved, unknowns preserved.
-fn usage_value(run: &OptimizerRunRecord, events: &[OptimizerEventEnvelope]) -> Value {
-    // The terminal manifest is answerable to the durable event log, just like
-    // work counts. Re-fold deltas at the frozen cursor instead of trusting the
-    // mutable run projection: concurrent terminal events can otherwise leave
-    // the cached total one rollout behind even though every event is present.
-    let deltas = events
-        .iter()
-        .filter_map(|event| event.usage_delta.as_ref())
-        .collect::<Vec<_>>();
-    let prompt_tokens = if deltas.is_empty() {
-        run.usage.prompt_tokens
-    } else {
-        deltas
-            .iter()
-            .filter_map(|usage| usage.get("prompt_tokens").and_then(Value::as_u64))
-            .sum()
-    };
-    let completion_tokens = if deltas.is_empty() {
-        run.usage.completion_tokens
-    } else {
-        deltas
-            .iter()
-            .filter_map(|usage| usage.get("completion_tokens").and_then(Value::as_u64))
-            .sum()
-    };
-    let rollouts = if deltas.is_empty() {
-        run.usage.rollouts
-    } else {
-        deltas
-            .iter()
-            .filter_map(|usage| usage.get("rollouts").and_then(Value::as_u64))
-            .sum()
-    };
-    let wall_time_ms = if deltas.is_empty() {
-        run.usage.wall_time_ms
-    } else {
-        deltas
-            .iter()
-            .filter_map(|usage| usage.get("wall_time_ms").and_then(Value::as_u64))
-            .sum()
-    };
-    let reported_costs = deltas
-        .iter()
-        .filter_map(|usage| {
-            usage
-                .get("cost_usd")
-                .or_else(|| usage.get("costUsd"))
-                .and_then(Value::as_f64)
-        })
-        .collect::<Vec<_>>();
-    let cost_usd = if reported_costs.is_empty() {
-        run.usage.cost_usd
-    } else {
-        Some(reported_costs.iter().sum::<f64>())
-    };
+fn usage_value(run: &OptimizerRunRecord) -> Value {
+    // The durable run row is the canonical usage accumulator. Event deltas
+    // feed it; they are not a second terminal authority to re-sum here.
     let lanes = run
         .summary
         .get("usageLanes")
         .cloned()
         .unwrap_or(Value::Null);
     json!({
-        "costUsd": cost_usd,
-        "promptTokens": prompt_tokens,
-        "completionTokens": completion_tokens,
-        "rollouts": rollouts,
-        "wallTimeMs": wall_time_ms,
+        "costUsd": run.usage.cost_usd,
+        "promptTokens": run.usage.prompt_tokens,
+        "completionTokens": run.usage.completion_tokens,
+        "rollouts": run.usage.rollouts,
+        "wallTimeMs": run.usage.wall_time_ms,
         // Policy and grader/scorer telemetry are different money and different
         // tokens. Collapsing them into one total is how a grader-heavy recipe
         // starts reading as a cheap policy.
@@ -241,7 +190,7 @@ pub(super) fn derive(
     // second opinion.
     let gepa = matches!(run.algorithm_id.as_str(), "gepa" | "go-ex")
         .then(|| gepa_evidence::reduce(run, events));
-    let mut usage = usage_value(run, events);
+    let mut usage = usage_value(run);
     // The producer's own per-lane roll-up is the only place proposer spend is
     // separated from policy spend. Without it a search that burned a frontier
     // model on ten proposals reads as a cheap nano-model run.
@@ -282,6 +231,7 @@ pub(super) fn derive(
         "terminalCursor": run.cursor_seq,
         "work": counts.to_value(),
         "usage": usage,
+        "paidComputeApproval": run.usage.extra.get("paidComputeApproval").cloned().unwrap_or(Value::Null),
         "selection": match gepa.as_ref() {
             Some(gepa) => gepa_selection(gepa, terminal_status),
             None => selection_value(run, events),
@@ -312,14 +262,9 @@ pub(super) fn seal(conn: &Connection, run_id: &str, manifest: &Value) -> Result<
     if let Some(existing) = load(conn, run_id)? {
         return Ok(existing);
     }
-    let terminal_status = manifest
-        .get("terminalStatus")
-        .and_then(Value::as_str)
-        .unwrap_or("completed");
-    let terminal_cursor = manifest
-        .get("terminalCursor")
-        .and_then(Value::as_u64)
-        .unwrap_or_default();
+    let mut manifest = manifest.clone();
+    populate_canonical_usage(conn, run_id, &mut manifest)?;
+    let envelope = validate_manifest(run_id, &manifest)?;
     conn.execute(
         "INSERT INTO optimizer_terminal_manifests(
             optimizer_run_id, schema_version, algorithm_id, terminal_status,
@@ -328,15 +273,13 @@ pub(super) fn seal(conn: &Connection, run_id: &str, manifest: &Value) -> Result<
          ON CONFLICT(optimizer_run_id) DO NOTHING",
         params![
             run_id,
-            TERMINAL_MANIFEST_SCHEMA,
-            manifest
-                .get("algorithmId")
-                .and_then(Value::as_str)
-                .unwrap_or_default(),
-            terminal_status,
-            terminal_cursor as i64,
+            envelope.schema_version,
+            envelope.algorithm_id,
+            envelope.terminal_status,
+            i64::try_from(envelope.terminal_cursor)
+                .context("optimizer terminal cursor exceeds SQLite integer range")?,
             chrono::Utc::now().to_rfc3339(),
-            serde_json::to_string(manifest)?,
+            serde_json::to_string(&manifest)?,
         ],
     )
     .context("seal optimizer terminal manifest")?;
@@ -344,17 +287,154 @@ pub(super) fn seal(conn: &Connection, run_id: &str, manifest: &Value) -> Result<
 }
 
 pub(crate) fn load(conn: &Connection, run_id: &str) -> Result<Option<Value>> {
-    let payload: Option<String> = conn
+    let row: Option<(String, String, String, i64, String)> = conn
         .query_row(
-            "SELECT payload_json FROM optimizer_terminal_manifests WHERE optimizer_run_id = ?1",
+            "SELECT schema_version, algorithm_id, terminal_status, terminal_cursor, payload_json
+             FROM optimizer_terminal_manifests WHERE optimizer_run_id = ?1",
+            params![run_id],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                ))
+            },
+        )
+        .optional()?;
+    let Some((schema_version, algorithm_id, terminal_status, terminal_cursor, payload)) = row
+    else {
+        return Ok(None);
+    };
+    let payload: Value =
+        serde_json::from_str(&payload).context("decode optimizer terminal manifest payload")?;
+    let envelope = validate_manifest(run_id, &payload)?;
+    let terminal_cursor = u64::try_from(terminal_cursor)
+        .context("optimizer terminal manifest has a negative cursor")?;
+    if schema_version != envelope.schema_version
+        || algorithm_id != envelope.algorithm_id
+        || terminal_status != envelope.terminal_status
+        || terminal_cursor != envelope.terminal_cursor
+    {
+        anyhow::bail!("optimizer terminal manifest {run_id} envelope disagrees with its payload");
+    }
+    Ok(Some(payload))
+}
+
+struct ManifestEnvelope<'a> {
+    schema_version: &'a str,
+    algorithm_id: &'a str,
+    terminal_status: &'a str,
+    terminal_cursor: u64,
+}
+
+fn validate_manifest<'a>(run_id: &str, manifest: &'a Value) -> Result<ManifestEnvelope<'a>> {
+    let object = manifest
+        .as_object()
+        .context("optimizer terminal manifest must be an object")?;
+    let required_string = |key: &str| -> Result<&'a str> {
+        object
+            .get(key)
+            .and_then(Value::as_str)
+            .filter(|value| !value.trim().is_empty())
+            .with_context(|| format!("optimizer terminal manifest is missing typed {key}"))
+    };
+    let schema_version = required_string("schemaVersion")?;
+    if !matches!(
+        schema_version,
+        TERMINAL_MANIFEST_SCHEMA | TERMINAL_MANIFEST_SCHEMA_V2
+    ) {
+        anyhow::bail!("unsupported optimizer terminal manifest schema {schema_version:?}");
+    }
+    let payload_run_id = required_string("optimizerRunId")?;
+    if payload_run_id != run_id {
+        anyhow::bail!("optimizer terminal manifest belongs to {payload_run_id}, not {run_id}");
+    }
+    let algorithm_id = required_string("algorithmId")?;
+    let terminal_cursor = object
+        .get("terminalCursor")
+        .and_then(Value::as_u64)
+        .context("optimizer terminal manifest is missing typed terminalCursor")?;
+    let terminal_status = match schema_version {
+        TERMINAL_MANIFEST_SCHEMA => required_string("terminalStatus")?,
+        TERMINAL_MANIFEST_SCHEMA_V2 => object
+            .get("terminal")
+            .and_then(Value::as_object)
+            .and_then(|terminal| terminal.get("kind"))
+            .and_then(Value::as_str)
+            .filter(|kind| matches!(*kind, "completed" | "failed" | "cancelled" | "degraded"))
+            .context("optimizer terminal manifest v2 is missing typed terminal.kind")?,
+        _ => unreachable!("schema checked above"),
+    };
+    Ok(ManifestEnvelope {
+        schema_version,
+        algorithm_id,
+        terminal_status,
+        terminal_cursor,
+    })
+}
+
+fn populate_canonical_usage(conn: &Connection, run_id: &str, manifest: &mut Value) -> Result<()> {
+    let usage_json: String = conn
+        .query_row(
+            "SELECT usage_json FROM optimizer_runs WHERE id = ?1",
             params![run_id],
             |row| row.get(0),
         )
-        .optional()?;
-    Ok(match payload {
-        Some(payload) => Some(serde_json::from_str(&payload)?),
-        None => None,
-    })
+        .optional()?
+        .with_context(|| format!("optimizer run {run_id} disappeared before terminal sealing"))?;
+    let usage: OptimizerUsageSummary = serde_json::from_str(&usage_json)
+        .with_context(|| format!("decode canonical usage for optimizer run {run_id}"))?;
+    let object = manifest
+        .as_object_mut()
+        .context("optimizer terminal manifest must be an object")?;
+    let terminal_usage = object
+        .get_mut("usage")
+        .and_then(Value::as_object_mut)
+        .context("optimizer terminal manifest is missing typed usage")?;
+    terminal_usage.insert("costUsd".into(), json!(usage.cost_usd));
+    terminal_usage.insert("promptTokens".into(), json!(usage.prompt_tokens));
+    terminal_usage.insert("completionTokens".into(), json!(usage.completion_tokens));
+    terminal_usage.insert("rollouts".into(), json!(usage.rollouts));
+    terminal_usage.insert("wallTimeMs".into(), json!(usage.wall_time_ms));
+    let approval = usage.extra.get("paidComputeApproval").cloned();
+    if let Some(approval) = approval.as_ref() {
+        validate_paid_compute_approval(approval)?;
+    }
+    object.insert(
+        "paidComputeApproval".into(),
+        approval.unwrap_or(Value::Null),
+    );
+    Ok(())
+}
+
+fn validate_paid_compute_approval(approval: &Value) -> Result<()> {
+    let object = approval
+        .as_object()
+        .context("paidComputeApproval must be an object")?;
+    object
+        .get("approvalId")
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .context("paidComputeApproval is missing typed approvalId")?;
+    let cap = object
+        .get("cap")
+        .and_then(Value::as_object)
+        .context("paidComputeApproval is missing typed cap")?;
+    for key in ["maxCostUsdMicros", "maxRollouts"] {
+        if !cap
+            .get(key)
+            .is_some_and(|value| value.is_null() || value.as_u64().is_some())
+        {
+            anyhow::bail!("paidComputeApproval cap is missing typed {key}");
+        }
+    }
+    object
+        .get("receiptViolation")
+        .and_then(Value::as_bool)
+        .context("paidComputeApproval is missing typed receiptViolation")?;
+    Ok(())
 }
 
 /// Merge the sealed manifest over a live projection of the same run.
@@ -370,6 +450,7 @@ pub(super) fn reconcile(
         "terminalCursor",
         "work",
         "usage",
+        "paidComputeApproval",
         "selection",
         "gepaEvidence",
         "degradation",
@@ -464,9 +545,10 @@ mod tests {
     }
 
     #[test]
-    fn terminal_usage_comes_from_the_frozen_event_log() {
-        let mut stale = run("eval");
-        stale.usage.rollouts = 3;
+    fn terminal_usage_comes_from_the_canonical_run_accumulator() {
+        let mut canonical = run("eval");
+        canonical.usage.rollouts = 3;
+        canonical.usage.wall_time_ms = 75;
         let events = (1..=4)
             .map(|seq| {
                 let mut entry = event(
@@ -485,10 +567,10 @@ mod tests {
                 entry
             })
             .collect::<Vec<_>>();
-        let manifest = derive(&stale, &events, "completed", None);
-        assert_eq!(manifest.pointer("/usage/rollouts"), Some(&json!(4)));
-        assert_eq!(manifest.pointer("/usage/wallTimeMs"), Some(&json!(100)));
-        assert_eq!(manifest.pointer("/usage/costUsd"), Some(&json!(0.0)));
+        let manifest = derive(&canonical, &events, "completed", None);
+        assert_eq!(manifest.pointer("/usage/rollouts"), Some(&json!(3)));
+        assert_eq!(manifest.pointer("/usage/wallTimeMs"), Some(&json!(75)));
+        assert_eq!(manifest.pointer("/usage/costUsd"), Some(&Value::Null));
     }
 
     /// The failure this whole file is a response to: no evidence must read as
@@ -556,6 +638,86 @@ mod tests {
             manifest.pointer("/credentialChain/capabilityRevoked"),
             Some(&json!(true))
         );
+    }
+
+    fn manifest_tables(conn: &Connection, include_runs: bool) {
+        if include_runs {
+            conn.execute_batch(
+                "CREATE TABLE optimizer_runs(id TEXT PRIMARY KEY, usage_json TEXT NOT NULL);",
+            )
+            .unwrap();
+        }
+        conn.execute_batch(
+            "CREATE TABLE optimizer_terminal_manifests(
+                optimizer_run_id TEXT PRIMARY KEY, schema_version TEXT NOT NULL,
+                algorithm_id TEXT NOT NULL, terminal_status TEXT NOT NULL,
+                terminal_cursor INTEGER NOT NULL, sealed_at TEXT NOT NULL,
+                payload_json TEXT NOT NULL);",
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn sealing_freezes_canonical_usage_and_paid_compute_approval() {
+        let conn = Connection::open_in_memory().unwrap();
+        manifest_tables(&conn, true);
+        let usage = json!({
+            "costUsd": 1.25, "promptTokens": 90, "completionTokens": 10,
+            "rollouts": 4, "wallTimeMs": 200,
+            "extra": { "paidComputeApproval": {
+                "approvalId": "approval-1",
+                "cap": { "maxCostUsdMicros": 2_000_000, "maxRollouts": 5 },
+                "receiptViolation": false
+            }}
+        });
+        conn.execute(
+            "INSERT INTO optimizer_runs(id, usage_json) VALUES (?1, ?2)",
+            params!["run_1", usage.to_string()],
+        )
+        .unwrap();
+        let manifest = json!({
+            "schemaVersion": TERMINAL_MANIFEST_SCHEMA_V2,
+            "optimizerRunId": "run_1", "algorithmId": "eval", "terminalCursor": 8,
+            "terminal": { "kind": "completed" }, "usage": {}
+        });
+        let sealed = seal(&conn, "run_1", &manifest).unwrap();
+        assert_eq!(sealed.pointer("/usage/costUsd"), Some(&json!(1.25)));
+        assert_eq!(sealed.pointer("/usage/rollouts"), Some(&json!(4)));
+        assert_eq!(
+            sealed.pointer("/paidComputeApproval/approvalId"),
+            Some(&json!("approval-1"))
+        );
+        let row_schema: String = conn.query_row(
+            "SELECT schema_version FROM optimizer_terminal_manifests WHERE optimizer_run_id='run_1'",
+            [], |row| row.get(0),
+        ).unwrap();
+        assert_eq!(row_schema, TERMINAL_MANIFEST_SCHEMA_V2);
+    }
+
+    #[test]
+    fn load_rejects_a_manifest_whose_envelope_schema_disagrees() {
+        let conn = Connection::open_in_memory().unwrap();
+        manifest_tables(&conn, false);
+        let payload = json!({
+            "schemaVersion": TERMINAL_MANIFEST_SCHEMA_V2,
+            "optimizerRunId": "run_1", "algorithmId": "eval", "terminalCursor": 8,
+            "terminal": { "kind": "completed" }, "usage": {}
+        });
+        conn.execute(
+            "INSERT INTO optimizer_terminal_manifests VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![
+                "run_1",
+                TERMINAL_MANIFEST_SCHEMA,
+                "eval",
+                "completed",
+                8,
+                "now",
+                payload.to_string()
+            ],
+        )
+        .unwrap();
+        let error = load(&conn, "run_1").unwrap_err().to_string();
+        assert!(error.contains("envelope disagrees"), "{error}");
     }
 
     #[test]

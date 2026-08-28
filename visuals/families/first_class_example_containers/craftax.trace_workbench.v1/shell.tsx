@@ -30,7 +30,6 @@ import { VisualChrome } from "../../../chrome/VisualChrome.tsx";
 import {
   craftaxTrialsFromRun,
 	craftaxTraceFromSealedTrace,
-  localMapRows,
 	reconcileCraftaxTrace,
   type EvalTraceView,
   type TraceFrame,
@@ -338,19 +337,16 @@ function Disclosure({
 /**
  * The environment picture.
  *
- * A native PNG when the relay retained one. When it did not, the *map rows* —
- * never the whole textual observation, which is what the previous ASCII
- * fallback was handed and painted as a wall of tiles. When there is no map
- * either, the observation is shown as what it is: text.
+ * A canonical native PNG when the relay retained one. Missing native media is
+ * reported as unavailable; symbolic observations are evidence of a different
+ * type and are never substituted for the frame in the default workstation.
  */
 function FrameCanvas({
   frame,
-  step,
   media,
   loaded
 }: {
   frame: TraceFrame | null;
-  step: TraceStep | null;
   media: MediaClient;
   loaded: LoadedMedia | undefined;
 }) {
@@ -383,30 +379,9 @@ function FrameCanvas({
       </div>
     );
   }
-  const rows = localMapRows(step);
-  if (rows) {
-    return (
-      <div style={surface}>
-        <pre
-          role="img"
-          aria-label={`${label} (symbolic map)`}
-          style={{
-            ...mono,
-            margin: 0,
-            padding: "var(--sv-sp-4)",
-            color: "#dbe9d5",
-            fontSize: 15,
-            lineHeight: 1.15,
-            letterSpacing: 2
-          }}
-        >
-          {rows.join("\n")}
-        </pre>
-      </div>
-    );
-  }
   return (
     <div
+      data-testid="craftax-native-frame-unavailable"
       style={{
         ...surface,
         padding: "var(--sv-sp-4)",
@@ -415,7 +390,7 @@ function FrameCanvas({
         textAlign: "center"
       }}
     >
-      {frame?.unavailable ?? "This call recorded no environment frame."}
+      Native PNG unavailable: {frame?.unavailable ?? "this call recorded no environment frame."}
     </div>
   );
 }
@@ -583,6 +558,7 @@ function TrajectoryRail({
                 </span>
                 <span style={{ display: "flex", gap: 3, flexWrap: "wrap" }}>
                   {step.status === "running" ? <Chip label="running" tone="accent" /> : null}
+                  {step.status === "incomplete" ? <Chip label="incomplete" tone="bad" /> : null}
                   {step.achievements.map((name) => (
                     <Chip key={name} label={name} tone="warn" />
                   ))}
@@ -689,6 +665,8 @@ function CallDetail({ view, step }: { view: EvalTraceView; step: TraceStep | nul
           <p style={{ ...body, color: "var(--sv-text-faint)" }}>
             {step.status === "running"
               ? "This call is still open; the model has not answered yet."
+              : step.status === "incomplete"
+                ? "This call never closed before the trace became terminal."
               : "No reasoning or message was recorded for this call."}
           </p>
         ) : null}
@@ -1005,7 +983,7 @@ export function Shell(props: ShellProps) {
         <span style={{ ...mono, fontSize: "var(--sv-fs-micro)" }}>
           {sealed ? "Sealed Trace V5" : "Live relay"}
           {view?.integrity.content_digest ? ` · ${view.integrity.content_digest.slice(0, 20)}` : ""}
-          {view ? ` · ${view.coverage.framesRetained}/${view.coverage.framesDeclared} frames retained` : ""}
+          {view ? ` · ${view.coverage.framesRetained}/${view.coverage.framesDeclared} frame observations retained · ${view.coverage.uniqueCasBlobs} unique CAS blob${view.coverage.uniqueCasBlobs === 1 ? "" : "s"}` : ""}
         </span>
       }
     >
@@ -1080,7 +1058,7 @@ export function Shell(props: ShellProps) {
           }}
         >
           <section style={{ display: "grid", gridTemplateRows: "1fr auto auto", minHeight: 0 }}>
-            <FrameCanvas frame={frame} step={step} media={media} loaded={loaded} />
+            <FrameCanvas frame={frame} media={media} loaded={loaded} />
             <div
               style={{
                 display: "flex",

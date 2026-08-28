@@ -102,8 +102,8 @@ export type TraceStep = {
   /** One-based, stable across appends. */
   index: number;
   title: string;
-  /** `complete` once the call closed; `running` while it is still open. */
-  status: "complete" | "running";
+  /** Open live calls run; an open call on a closed trace is incomplete. */
+  status: "complete" | "running" | "incomplete";
   turn_start: number | null;
   turn_end: number | null;
   tokens: { input: number | null; output: number | null };
@@ -144,6 +144,8 @@ export type TraceCoverage = {
   closed: boolean;
   framesDeclared: number;
   framesRetained: number;
+  /** Physical content objects after CAS deduplication. */
+  uniqueCasBlobs: number;
   /** Bounds the relay hit, verbatim. Never summarized away. */
   degradations: Array<{ reason: string; detail: string; dropped: number }>;
 };
@@ -605,7 +607,10 @@ export function foldCraftaxTrace(
     }
   }
 
+  const relay = (identity.relay ?? {}) as Any;
+  const traceClosed = identity.sealed === true || relay.journalClosed === true;
   for (const target of steps) {
+    if (traceClosed && target.status === "running") target.status = "incomplete";
     if (target.turn_start === null && target.frames.length) {
       const first = frames[target.frames[0]];
       const last = frames[target.frames[target.frames.length - 1]];
@@ -614,9 +619,12 @@ export function foldCraftaxTrace(
     }
   }
 
-  const relay = (identity.relay ?? {}) as Any;
-  const declaredFrames = num(relay.framesDeclared);
-  const retainedFrames = num(relay.framesRetained);
+  const declaredFrames = num(relay.frameObservationsDeclared ?? relay.framesDeclared);
+  const retainedFrames = num(relay.frameObservationsRetained ?? relay.framesRetained);
+  const retainedMedia = frames.filter((frame) => frame.media);
+  const uniqueCasBlobs = num(relay.uniqueFrameBlobs) ?? new Set(
+    retainedMedia.map((frame) => frame.media?.casDigest).filter(Boolean)
+  ).size;
   return {
     schema: EVAL_TRACE_VIEW_SCHEMA,
     source_schema: identity.sealed ? "trace_v5" : "optimizer_events",
@@ -648,9 +656,10 @@ export function foldCraftaxTrace(
     achievements,
     coverage: {
       highWater: events.length ? events[events.length - 1].sequence : 0,
-      closed: relay.journalClosed === true,
+      closed: traceClosed,
       framesDeclared: declaredFrames ?? frames.length,
-      framesRetained: retainedFrames ?? frames.filter((frame) => frame.media).length,
+      framesRetained: retainedFrames ?? retainedMedia.length,
+      uniqueCasBlobs,
       degradations: Array.isArray(relay.degradations) ? relay.degradations : []
     },
     events: [...events]
@@ -845,6 +854,9 @@ export function reconcileCraftaxTrace(
 				...sealed.coverage,
 				framesDeclared: Math.max(sealed.coverage.framesDeclared, live.coverage.framesDeclared),
 				framesRetained: frames.filter((frame) => frame.media).length,
+				uniqueCasBlobs: new Set(
+					frames.map((frame) => frame.media?.casDigest).filter(Boolean)
+				).size,
 				degradations: live.coverage.degradations
 			}
 		},

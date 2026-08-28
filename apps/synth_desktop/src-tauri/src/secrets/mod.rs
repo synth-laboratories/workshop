@@ -2697,15 +2697,113 @@ mod tests {
         assert!(!dump.contains("sk-chain-secret"));
         assert!(!dump.contains(&lease.capability_handle));
         assert_eq!(chain["leaseDigest"], json!(lease.digest()));
+        assert_eq!(chain["capabilityStatus"], json!("granted"));
         assert_eq!(chain["capabilityRevoked"], json!(false));
         let sealed = service
             .seal_run_chain("run_chain")
             .unwrap()
             .expect("sealed chain");
         assert_eq!(sealed["capabilityRevoked"], json!(true));
+        assert_eq!(sealed["capabilityStatus"], json!("revoked"));
         assert!(sealed
             .get("revokedAt")
             .and_then(|value| value.as_str())
             .is_some());
+    }
+
+    #[test]
+    fn exhausted_capability_remains_authoritative_when_run_chain_is_sealed() {
+        let (dir, service) = service();
+        let source_id = service
+            .db
+            .transaction(|conn| {
+                lease::upsert_env_source_descriptor(
+                    conn,
+                    "openai",
+                    "OPENAI_API_KEY",
+                    &dir.path().join("not-loaded.env"),
+                    None,
+                    None,
+                    false,
+                )
+            })
+            .unwrap();
+        let policy = ProviderUsePolicy {
+            max_calls: 1,
+            ..ProviderUsePolicy::default()
+        };
+        let issued = service
+            .db
+            .transaction(|conn| {
+                capability::issue(
+                    conn,
+                    &service.capabilities,
+                    &source_id,
+                    "run_exhausted_chain",
+                    "eval.craftax.llm-policy.smoke.v1",
+                    "openai",
+                    &policy,
+                    "test",
+                )
+            })
+            .unwrap();
+        let reserved = service
+            .capabilities
+            .reserve_call(&issued.handle)
+            .expect("reserve the only allowed call");
+        let exhausted = service
+            .capabilities
+            .debit_usage(
+                &issued.handle,
+                &capability::MeasuredUsage {
+                    calls: 1,
+                    input_tokens: 0,
+                    output_tokens: 0,
+                    cost_usd: None,
+                },
+            )
+            .unwrap();
+        assert_eq!(reserved.used_calls, 1);
+        assert_eq!(exhausted.status, "exhausted");
+        service
+            .db
+            .with_conn(|conn| capability::persist_usage(conn, &exhausted))
+            .unwrap();
+        let mut stale_revoked_copy = exhausted.clone();
+        stale_revoked_copy.status = capability::CapabilityStatus::Revoked.as_str().into();
+        service
+            .db
+            .with_conn(|conn| capability::persist_usage(conn, &stale_revoked_copy))
+            .unwrap();
+        service.chains.lock().unwrap().insert(
+            "run_exhausted_chain".into(),
+            json!({
+                "schemaVersion": lease::CHAIN_SCHEMA,
+                "capabilityId": issued.id,
+                "capabilityStatus": "granted",
+                "revokedAt": null,
+                "capabilityRevoked": false,
+            }),
+        );
+
+        let sealed = service
+            .seal_run_chain("run_exhausted_chain")
+            .unwrap()
+            .expect("sealed chain");
+        let lifecycle = service
+            .durable_capability_lifecycle(&issued.id)
+            .unwrap()
+            .expect("durable lifecycle");
+
+        assert_eq!(lifecycle.status, capability::CapabilityStatus::Exhausted);
+        assert_eq!(lifecycle.revoked_at, None);
+        assert_eq!(sealed["capabilityStatus"], json!("exhausted"));
+        assert_eq!(sealed["capabilityRevoked"], json!(false));
+        assert_eq!(sealed["revokedAt"], json!(null));
+        assert_eq!(
+            service.capabilities.lookup(&issued.handle).unwrap().status,
+            "exhausted",
+            "run sealing must not copy revoked over an exhausted live capability"
+        );
     }
 }

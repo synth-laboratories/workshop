@@ -3320,6 +3320,39 @@ fn commit_validated_events(
         return Ok((run, None));
     }
     let history = load_events_upto(conn, &run.id, run.cursor_seq)?;
+    // The append-only event log owns measured usage. Rebuild its accumulator
+    // at the same cursor that will be terminal-sealed, while preserving only
+    // non-measurement admission metadata (notably the paid-compute receipt).
+    // Persist before terminal::seal so the run row and manifest freeze the
+    // same numbers in one transaction.
+    let mut canonical_usage = OptimizerUsageSummary {
+        extra: run.usage.extra.clone(),
+        ..OptimizerUsageSummary::default()
+    };
+    for event in &history {
+        if let Some(delta) = &event.usage_delta {
+            apply_reported_cost(&mut canonical_usage, delta);
+            canonical_usage.prompt_tokens += delta
+                .get("prompt_tokens")
+                .or_else(|| delta.get("promptTokens"))
+                .and_then(Value::as_u64)
+                .unwrap_or(0);
+            canonical_usage.completion_tokens += delta
+                .get("completion_tokens")
+                .or_else(|| delta.get("completionTokens"))
+                .and_then(Value::as_u64)
+                .unwrap_or(0);
+            canonical_usage.rollouts += delta.get("rollouts").and_then(Value::as_u64).unwrap_or(0);
+            canonical_usage.wall_time_ms += delta
+                .get("wall_time_ms")
+                .or_else(|| delta.get("wallTimeMs"))
+                .and_then(Value::as_u64)
+                .unwrap_or(0);
+        }
+    }
+    run.usage = canonical_usage;
+    update_paid_compute_violation(&mut run);
+    upsert_run(conn, &run)?;
     let mut state = persist_kernel_projection(conn, &run, &history)?;
     for amendment in &evidence_amendments {
         persist_evidence_amendment(conn, &state, amendment)?;
@@ -3336,6 +3369,44 @@ fn commit_validated_events(
         .terminal
         .as_ref()
         .map(|terminal| terminal.sealed_at.clone());
+    if state.terminal.as_ref().is_some_and(|terminal| {
+        terminal.kind == super::kernel::TerminalKind::Failed
+            && terminal.reason == Some(super::kernel::TerminalReason::EvidenceUnusable)
+    }) && state.failure_ref.is_none()
+    {
+        let reason = state
+            .terminal
+            .as_ref()
+            .and_then(|terminal| terminal.evidence.reason.clone())
+            .unwrap_or_else(|| "required evaluation evidence is unavailable".into());
+        let mut context =
+            crate::platform::operations::OperationContext::bootstrap(crate::instance::boot_epoch());
+        context.session_id = run.session_ref.clone();
+        context.evaluation_id = Some(run.id.clone());
+        let failure = crate::platform::failure::FailureRuntime::raise_in_tx(
+            conn,
+            crate::platform::failure::FailureKind::Evaluation(
+                crate::platform::failure::EvaluationFailure::FailedEvidence {
+                    run_id: run.id.clone(),
+                    reason,
+                },
+            ),
+            context,
+            crate::platform::operations::OperationKind::EvaluationExecute,
+            crate::platform::operations::OperationPhase::Settle,
+            None,
+            "optimizer_run_kernel",
+        )?;
+        state.failure_ref = Some(failure.failure_id.to_string());
+        if let Some(terminal) = state.terminal.as_mut() {
+            terminal.failure_ref = Some(failure.failure_id.to_string());
+        }
+        conn.execute(
+            "UPDATE optimizer_runs SET terminal_failure_id=?1 WHERE id=?2",
+            params![failure.failure_id.as_str(), run.id.as_str()],
+        )?;
+        super::kernel::persist::upsert_projection(conn, &state)?;
+    }
     if let Some(terminal_state) = state.terminal.as_ref() {
         let manifest = json!({
             "schemaVersion": "optimizer_terminal_manifest.v2",
@@ -3534,18 +3605,23 @@ fn persist_kernel_projection(
 }
 
 fn kernel_compatibility_status(state: &super::kernel::RunKernelState) -> &'static str {
-    use super::kernel::RunLifecycle;
+    use super::kernel::{RunLifecycle, TerminalKind, TerminalReason};
     match state.lifecycle {
         RunLifecycle::Queued => "queued",
         RunLifecycle::Starting => "starting",
         RunLifecycle::Running => "running",
         RunLifecycle::Paused => "paused",
         RunLifecycle::Cancelling => "cancelling",
-        RunLifecycle::Terminal => state
-            .terminal
-            .as_ref()
-            .map(|terminal| terminal.kind.as_str())
-            .unwrap_or("failed"),
+        RunLifecycle::Terminal => match state.terminal.as_ref() {
+            Some(terminal)
+                if terminal.kind == TerminalKind::Failed
+                    && terminal.reason == Some(TerminalReason::EvidenceUnusable) =>
+            {
+                "failed_evidence"
+            }
+            Some(terminal) => terminal.kind.as_str(),
+            None => "failed",
+        },
     }
 }
 
@@ -3887,7 +3963,6 @@ fn apply_event_to_run(run: &mut OptimizerRunRecord, event: &OptimizerEventEnvelo
     }
 }
 
-#[cfg(test)]
 fn update_paid_compute_violation(run: &mut OptimizerRunRecord) {
     let Some(approval) = run.usage.extra.get("paidComputeApproval").cloned() else {
         return;
@@ -3928,7 +4003,6 @@ fn update_paid_compute_violation(run: &mut OptimizerRunRecord) {
 /// `extra.costTelemetryComplete` retains the poisoned state across reloads so
 /// a later known receipt cannot turn an earlier unknown charge into a partial
 /// confident sum.
-#[cfg(test)]
 fn apply_reported_cost(usage: &mut OptimizerUsageSummary, delta: &Map<String, Value>) {
     let raw = delta.get("cost_usd").or_else(|| delta.get("costUsd"));
     let reports_tokens = [
@@ -5436,7 +5510,7 @@ pub(in crate::optimizers) mod tests {
                 draft("optimizer.run.started"),
                 draft("eval.run.planned")
                     .snapshot(Map::from_iter([("planned_trials".into(), json!(1))])),
-                draft("eval.trial.terminal").item(json!({ "id": "eval:trial:0", "valid": true })),
+                measured_eval_trial("eval:trial:0", 1.0),
                 draft("optimizer.run.completed"),
             ],
         )
@@ -5472,6 +5546,15 @@ pub(in crate::optimizers) mod tests {
 
     fn draft(event_type: &str) -> OptimizerEventDraft {
         OptimizerEventDraft::new(event_type, "eval").raw(json!({ "source": "test" }))
+    }
+
+    fn measured_eval_trial(id: &str, reward: f64) -> OptimizerEventDraft {
+        draft("eval.trial.terminal")
+            .item(json!({ "id": id, "valid": true, "reward": reward }))
+            .artifact_refs(vec![json!({
+                "kind": "evaluator_result",
+                "id": format!("evidence:{id}")
+            })])
     }
 
     fn gepa_draft(event_type: &str, delta: Value) -> OptimizerEventDraft {
@@ -5543,16 +5626,21 @@ pub(in crate::optimizers) mod tests {
             ("gepa_seed", "heldout", vec![1.0, 0.0]),
         ] {
             for (index, reward) in rewards.into_iter().enumerate() {
+                let evaluation_id = format!("{candidate}:{stage}:{index}");
                 events.push(gepa_draft(
                     "optimizer.candidate_evaluation.allocated",
-                    json!({ "candidate_id": candidate, "stage": stage }),
+                    json!({
+                        "candidate_id": candidate,
+                        "stage": stage,
+                        "evaluation_id": evaluation_id
+                    }),
                 ));
                 events.push(gepa_draft(
                     "optimizer.evaluation_result.received",
                     json!({
                         "candidate_id": candidate,
                         "stage": stage,
-                        "evaluation_id": format!("{candidate}:{stage}:{index}"),
+                        "evaluation_id": evaluation_id,
                         "reward": reward,
                         "active_workers": 8
                     }),
@@ -5678,8 +5766,8 @@ pub(in crate::optimizers) mod tests {
                     .delta(Map::from_iter([("status".into(), json!("running"))])),
                 draft("eval.run.planned")
                     .snapshot(Map::from_iter([("planned_trials".into(), json!(2))])),
-                draft("eval.trial.terminal").item(json!({ "id": "eval:trial:0", "valid": true })),
-                draft("eval.trial.terminal").item(json!({ "id": "eval:trial:1", "valid": true })),
+                measured_eval_trial("eval:trial:0", 1.0),
+                measured_eval_trial("eval:trial:1", 1.0),
                 draft("optimizer.run.completed")
                     .delta(Map::from_iter([("status".into(), json!("completed"))])),
             ],
@@ -5843,9 +5931,9 @@ pub(in crate::optimizers) mod tests {
                 draft("optimizer.run.started"),
                 draft("eval.run.planned")
                     .snapshot(Map::from_iter([("planned_trials".into(), json!(3))])),
-                draft("eval.trial.terminal").item(json!({ "id": "t1", "valid": true })),
-                draft("eval.trial.terminal").item(json!({ "id": "t2", "valid": true })),
-                draft("eval.trial.terminal").item(json!({ "id": "t3", "valid": true })),
+                measured_eval_trial("t1", 1.0),
+                measured_eval_trial("t2", 1.0),
+                measured_eval_trial("t3", 1.0),
                 draft("optimizer.run.completed"),
             ],
         )
@@ -5892,7 +5980,7 @@ pub(in crate::optimizers) mod tests {
         );
 
         let view = serde_json::to_value(svc.run_view_v2(run.id).await.unwrap()).unwrap();
-        assert_eq!(view["header"]["asOfSequence"], json!(7));
+        assert_eq!(view["header"]["asOfSequence"], json!(6));
         assert_eq!(
             view["header"]["evidence"]["completeness"],
             json!("unusable"),
@@ -5918,7 +6006,7 @@ pub(in crate::optimizers) mod tests {
                 draft("optimizer.run.started"),
                 draft("eval.run.planned")
                     .snapshot(Map::from_iter([("planned_trials".into(), json!(1))])),
-                draft("eval.trial.terminal").item(json!({ "id": "t1", "valid": true })),
+                measured_eval_trial("t1", 1.0),
                 draft("optimizer.run.completed"),
             ],
         )
@@ -5952,8 +6040,8 @@ pub(in crate::optimizers) mod tests {
                 draft("optimizer.run.started"),
                 draft("eval.run.planned")
                     .snapshot(Map::from_iter([("planned_trials".into(), json!(2))])),
-                draft("eval.trial.terminal").item(json!({ "id": "eval:trial:0", "valid": true })),
-                draft("eval.trial.terminal").item(json!({ "id": "eval:trial:1", "valid": true })),
+                measured_eval_trial("eval:trial:0", 1.0),
+                measured_eval_trial("eval:trial:1", 1.0),
                 draft("optimizer.run.completed"),
             ],
         )
@@ -6458,6 +6546,82 @@ pub(in crate::optimizers) mod tests {
             stored.usage.extra["paidComputeApproval"]["violationReason"],
             "rollout_cap_exceeded"
         );
+    }
+
+    #[tokio::test]
+    async fn terminal_seal_uses_post_batch_usage_and_freezes_paid_compute_approval() {
+        let (svc, _dir, _) = service().await;
+        let run = eval_run(&svc, "opt_eval_terminal_usage", "chat_terminal_usage").await;
+        svc.attach_paid_compute_approval(
+            run.id.clone(),
+            "approval-terminal",
+            Some(2_000_000),
+            Some(5),
+        )
+        .await
+        .unwrap();
+        svc.append_event_payloads(
+            run.id.clone(),
+            vec![
+                draft("optimizer.run.started"),
+                draft("eval.run.planned")
+                    .snapshot(Map::from_iter([("planned_trials".into(), json!(1))])),
+                draft("eval.trial.terminal")
+                    .item(json!({ "id": "trial:1", "valid": true }))
+                    .usage_delta(Map::from_iter([
+                        ("cost_usd".into(), json!(1.25)),
+                        ("prompt_tokens".into(), json!(90)),
+                        ("completion_tokens".into(), json!(10)),
+                        ("rollouts".into(), json!(4)),
+                        ("wall_time_ms".into(), json!(200)),
+                    ])),
+                // Missing evaluator measurement evidence intentionally makes
+                // this a typed failed_evidence settlement; it must still seal
+                // the canonical usage spent reaching that outcome.
+                draft("optimizer.run.completed"),
+            ],
+        )
+        .await
+        .unwrap();
+
+        let stored = svc.get(run.id.clone()).await.unwrap();
+        assert_eq!(stored.status, "failed_evidence");
+        assert_eq!(stored.usage.cost_usd, Some(1.25));
+        assert_eq!(stored.usage.rollouts, 4);
+        let run_id = run.id.clone();
+        let manifest = svc
+            .terminal_manifest(run.id)
+            .await
+            .unwrap()
+            .expect("failed-evidence run seals a terminal manifest");
+        assert_eq!(manifest["schemaVersion"], "optimizer_terminal_manifest.v2");
+        assert_eq!(manifest["usage"]["costUsd"], json!(1.25));
+        assert_eq!(manifest["usage"]["promptTokens"], json!(90));
+        assert_eq!(manifest["usage"]["completionTokens"], json!(10));
+        assert_eq!(manifest["usage"]["rollouts"], json!(4));
+        assert_eq!(manifest["usage"]["wallTimeMs"], json!(200));
+        assert_eq!(
+            manifest["paidComputeApproval"]["approvalId"],
+            "approval-terminal"
+        );
+        let (failure_id, failure_code): (String, String) = svc
+            .database()
+            .clone()
+            .run(move |conn| {
+                conn.query_row(
+                    "SELECT r.terminal_failure_id, f.code
+                     FROM optimizer_runs r
+                     JOIN failure_occurrences f ON f.failure_id=r.terminal_failure_id
+                     WHERE r.id=?1",
+                    [run_id],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .map_err(Into::into)
+            })
+            .await
+            .unwrap();
+        assert!(failure_id.starts_with("fail_"));
+        assert_eq!(failure_code, "failed_evidence");
     }
 
     #[test]
@@ -7167,7 +7331,7 @@ pub(in crate::optimizers) mod tests {
             )
             .await
             .unwrap();
-        let error = svc
+        let (settled, _) = svc
             .append_event_payloads(
                 run.id.clone(),
                 vec![
@@ -7176,10 +7340,15 @@ pub(in crate::optimizers) mod tests {
                 ],
             )
             .await
-            .unwrap_err();
-        assert!(
-            format!("{error:#}").contains("GEPA cannot settle without candidates"),
-            "{error:#}"
+            .unwrap();
+        assert_eq!(settled.status, "failed_evidence");
+        assert_eq!(
+            settled.summary["terminalManifest"]["terminal"]["kind"],
+            json!("failed")
+        );
+        assert_eq!(
+            settled.summary["terminalManifest"]["terminal"]["reason"],
+            json!("evidence_unusable")
         );
         assert_ne!(svc.get(run.id).await.unwrap().status, "completed");
     }

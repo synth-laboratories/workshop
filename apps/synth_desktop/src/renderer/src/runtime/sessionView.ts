@@ -7,6 +7,7 @@ import type {
 	VisualInstanceRecord
 } from "@synth/runtime-protocol";
 import { LOCAL_BASE_POLICY } from "./lagunaPolicies";
+import { optimizerRunIdFromBindings } from "./visualBindings";
 import {
 	CHATGPT_LUNA_MODEL,
 	CHATGPT_SOL_MODEL,
@@ -1767,6 +1768,7 @@ function toolResultToArtifact(event: RuntimeEvent): ArtifactRef | undefined {
 		templateId,
 		visualId: id,
 		bindings: objectValue(visual.bindings),
+		runId: optimizerRunIdFromBindings(visual.bindings) ?? stringField(visual, "runId", "run_id"),
 		metadata,
 		status: parseArtifactRefStatus(stringField(visual, "status")),
 		preview: {
@@ -1814,6 +1816,11 @@ export function eventsToArtifacts(events: RuntimeEvent[]): ArtifactRef[] {
 				? payload.templateId
 				: artifacts.get(id)?.templateId;
 		const prior = artifacts.get(id);
+		const ownerSessionId = stringField(payload, "ownerSessionId", "owner_session_id") ?? prior?.ownerSessionId;
+		const runId = optimizerRunIdFromBindings(payload.bindings ?? prior?.bindings)
+			?? stringField(payload, "runId", "run_id")
+			?? event.runId
+			?? prior?.runId;
 		artifacts.set(id, {
 			id,
 			kind: "report",
@@ -1825,6 +1832,14 @@ export function eventsToArtifacts(events: RuntimeEvent[]): ArtifactRef[] {
 			shownByAgent: true,
 			templateId,
 			visualId: id,
+			revision: typeof payload.revision === "number" && Number.isFinite(payload.revision)
+				? payload.revision
+				: prior?.revision,
+			metadata: objectValue(payload.metadata) ?? prior?.metadata,
+			ownerSessionId,
+			sessionId: ownerSessionId ?? prior?.sessionId,
+			runId: runId ?? undefined,
+			traceId: stringField(payload, "traceId", "trace_id") ?? prior?.traceId,
 			bindings:
 				payload.bindings && typeof payload.bindings === "object"
 					? (payload.bindings as Record<string, unknown>)

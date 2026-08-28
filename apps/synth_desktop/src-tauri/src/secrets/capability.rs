@@ -11,6 +11,47 @@ use uuid::Uuid;
 
 use super::audit::{self, SecretAuditEvent};
 
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CapabilityStatus {
+    Granted,
+    Active,
+    Exhausted,
+    Expired,
+    Revoked,
+}
+
+impl CapabilityStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Granted => "granted",
+            Self::Active => "active",
+            Self::Exhausted => "exhausted",
+            Self::Expired => "expired",
+            Self::Revoked => "revoked",
+        }
+    }
+
+    fn can_be_revoked(self) -> bool {
+        matches!(self, Self::Granted | Self::Active)
+    }
+}
+
+impl TryFrom<&str> for CapabilityStatus {
+    type Error = anyhow::Error;
+
+    fn try_from(value: &str) -> Result<Self> {
+        match value {
+            "granted" => Ok(Self::Granted),
+            "active" => Ok(Self::Active),
+            "exhausted" => Ok(Self::Exhausted),
+            "expired" => Ok(Self::Expired),
+            "revoked" => Ok(Self::Revoked),
+            other => Err(anyhow!("unknown capability status {other}")),
+        }
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub struct ProviderUsePolicy {
@@ -178,7 +219,10 @@ impl CapabilityStore {
             .expect("capability store")
             .get_mut(handle)
         {
-            live.status = "revoked".into();
+            let status = CapabilityStatus::try_from(live.status.as_str());
+            if status.is_ok_and(CapabilityStatus::can_be_revoked) {
+                live.status = CapabilityStatus::Revoked.as_str().into();
+            }
         }
     }
 
@@ -186,8 +230,9 @@ impl CapabilityStore {
         let mut store = self.by_handle.lock().expect("capability store");
         let mut handles = Vec::new();
         for live in store.values_mut() {
-            if live.run_id == run_id && live.status != "revoked" {
-                live.status = "revoked".into();
+            let status = CapabilityStatus::try_from(live.status.as_str());
+            if live.run_id == run_id && status.is_ok_and(CapabilityStatus::can_be_revoked) {
+                live.status = CapabilityStatus::Revoked.as_str().into();
                 handles.push(live.handle.clone());
             }
         }
@@ -198,8 +243,9 @@ impl CapabilityStore {
         let mut store = self.by_handle.lock().expect("capability store");
         let mut handles = Vec::new();
         for live in store.values_mut() {
-            if live.secret_id == secret_id && live.status != "revoked" {
-                live.status = "revoked".into();
+            let status = CapabilityStatus::try_from(live.status.as_str());
+            if live.secret_id == secret_id && status.is_ok_and(CapabilityStatus::can_be_revoked) {
+                live.status = CapabilityStatus::Revoked.as_str().into();
                 handles.push(live.handle.clone());
             }
         }
@@ -359,7 +405,10 @@ pub fn issue(
 pub fn persist_usage(conn: &Connection, live: &LiveCapability) -> Result<()> {
     conn.execute(
         "UPDATE secret_capabilities SET used_calls=?1, used_input_tokens=?2,
-         used_output_tokens=?3, used_cost_usd_micros=?4, status=?5 WHERE id=?6",
+         used_output_tokens=?3, used_cost_usd_micros=?4,
+         revoked_at=CASE WHEN status='revoked' THEN revoked_at ELSE NULL END,
+         status=CASE WHEN status IN ('exhausted','expired','revoked') THEN status ELSE ?5 END
+         WHERE id=?6",
         params![
             live.used_calls as i64,
             live.used_input_tokens as i64,
@@ -385,26 +434,46 @@ pub fn revoke(
             |row| row.get(0),
         )
         .optional()?;
-    if let Some(handle) = handle {
-        store.revoke_handle(&handle);
-    }
-    conn.execute(
-        "UPDATE secret_capabilities SET status='revoked', revoked_at=?1 WHERE id=?2",
+    let revoked = conn.execute(
+        "UPDATE secret_capabilities SET status='revoked', revoked_at=?1
+         WHERE id=?2 AND status IN ('granted','active')",
         params![Utc::now().to_rfc3339(), capability_id],
     )?;
-    let mut event = SecretAuditEvent::new("user", actor, "capability.revoke", "revoked");
-    event.capability_id = Some(capability_id.into());
-    audit::append(conn, &event)?;
+    if revoked > 0 {
+        if let Some(handle) = handle {
+            store.revoke_handle(&handle);
+        }
+        let mut event = SecretAuditEvent::new("user", actor, "capability.revoke", "revoked");
+        event.capability_id = Some(capability_id.into());
+        audit::append(conn, &event)?;
+    }
     Ok(())
 }
 
 pub fn revoke_run(conn: &Connection, store: &CapabilityStore, run_id: &str) -> Result<()> {
-    let handles = store.revoke_run(run_id);
+    let handles = {
+        let mut stmt = conn.prepare(
+            "SELECT handle FROM secret_capabilities
+             WHERE run_id=?1 AND status IN ('granted','active')",
+        )?;
+        let rows = stmt
+            .query_map([run_id], |row| row.get::<_, String>(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        rows
+    };
     conn.execute(
         "UPDATE secret_capabilities SET status='revoked', revoked_at=?1
          WHERE run_id=?2 AND status IN ('granted','active')",
         params![Utc::now().to_rfc3339(), run_id],
     )?;
+    conn.execute(
+        "UPDATE secret_capabilities SET revoked_at=NULL
+         WHERE run_id=?1 AND status IN ('exhausted','expired')",
+        [run_id],
+    )?;
+    for handle in &handles {
+        store.revoke_handle(handle);
+    }
     if !handles.is_empty() {
         let mut event = SecretAuditEvent::new("run", run_id, "capability.revoke", "revoked");
         event.detail = Some("run ended".into());

@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import {
@@ -185,6 +186,37 @@ test("a policy call still in flight stays in the trajectory, marked running", ()
   assert.equal(open.reward, null);
   assert.equal(view.run.usage.calls, 2);
   assert.equal(view.run.usage.input_tokens, 240);
+});
+
+test("an unclosed policy call on terminal evidence is incomplete, never running", () => {
+  const closed = foldCraftaxTrace(craftaxEvents(), {
+    ...identity,
+    status: "completed",
+    relay: { ...identity.relay, journalClosed: true }
+  });
+  assert.equal(closed.coverage.closed, true);
+  assert.equal(closed.steps[0].status, "complete");
+  assert.equal(closed.steps[1].status, "incomplete");
+  assert.deepEqual(closed.steps[1].action.applied, []);
+
+  const sealed = foldCraftaxTrace(craftaxEvents(), {
+    ...identity,
+    status: "completed",
+    sealed: true
+  });
+  assert.equal(sealed.coverage.closed, true);
+  assert.equal(sealed.steps[1].status, "incomplete");
+});
+
+test("the default workstation never substitutes a symbolic map for native PNG evidence", () => {
+  const shell = readFileSync(new URL(
+    "../families/first_class_example_containers/craftax.trace_workbench.v1/shell.tsx",
+    import.meta.url
+  ), "utf8");
+  assert.doesNotMatch(shell, /localMapRows/);
+  assert.doesNotMatch(shell, /symbolic map/);
+  assert.match(shell, /craftax-native-frame-unavailable/);
+  assert.match(shell, /Native PNG unavailable/);
 });
 
 test("a run with no reward evidence reports nothing rather than zero", () => {

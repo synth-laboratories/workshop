@@ -276,18 +276,21 @@ fn seal_terminal(
         ));
     }
     let evidence = state.projection.evidence_state();
-    if kind == TerminalKind::Completed {
+    let (kind, reason) = if kind == TerminalKind::Completed {
         match state.projection.settle() {
-            Ok(_) => {}
+            Ok(_) => (kind, reason),
+            // The producer's terminal fact is authoritative for execution
+            // lifecycle. Missing evaluation evidence must therefore seal as a
+            // typed failed-evidence outcome instead of rolling back the whole
+            // batch and leaving a durable run looking live forever.
             Err(error) if error.code == KernelErrorCode::EvidenceMissing => {
-                return Err(KernelError::new(
-                    KernelErrorCode::TerminalPrerequisitesUnmet,
-                    error.message,
-                ));
+                (TerminalKind::Failed, Some(TerminalReason::EvidenceUnusable))
             }
             Err(error) => return Err(error),
         }
-    }
+    } else {
+        (kind, reason)
+    };
     state.terminal = Some(SealedTerminal {
         kind,
         reason,
@@ -333,6 +336,23 @@ mod tests {
         RunKernelState::from_admission(&commit)
     }
 
+    fn admit_eval() -> RunKernelState {
+        let mut draft = RunDraft::new("draft-e", AlgorithmKind::Eval, "sha256:spec", "{}", "now");
+        draft.transition(AdmissionState::Validating, "now").unwrap();
+        draft
+            .transition(AdmissionState::AwaitingApproval, "now")
+            .unwrap();
+        draft.transition(AdmissionState::Approved, "now").unwrap();
+        let commit = AdmissionCommit::from_approved_draft(
+            &draft,
+            "run-e",
+            ExecutionPlacement::DirectContainerEvaluation,
+            "now",
+        )
+        .unwrap();
+        RunKernelState::from_admission(&commit)
+    }
+
     fn event(seq: u64, event_type: &str, payload: serde_json::Value) -> ProducerEvent {
         ProducerEvent {
             producer_id: "gepa-local".into(),
@@ -346,6 +366,12 @@ mod tests {
             payload,
         }
         .with_computed_digest()
+    }
+
+    fn eval_event(seq: u64, event_type: &str, payload: serde_json::Value) -> ProducerEvent {
+        let mut event = event(seq, event_type, payload);
+        event.algorithm_id = "eval".into();
+        event.with_computed_digest()
     }
 
     #[test]
@@ -435,6 +461,35 @@ mod tests {
         let extra = event(4, "candidate.registered", json!({"candidate_id": "late"}));
         let error = commit(first.state, &log, &[extra], "later").unwrap_err();
         assert_eq!(error.code, KernelErrorCode::TerminalAlreadySealed);
+    }
+
+    #[test]
+    fn completed_eval_with_missing_measurements_seals_failed_evidence() {
+        let plan = commit(
+            admit_eval(),
+            &DurableProducerLog::default(),
+            &[
+                eval_event(1, "optimizer.run.started", json!({})),
+                eval_event(2, "eval.run.planned", json!({"plannedTrials": 1})),
+                eval_event(
+                    3,
+                    "eval.trial.terminal",
+                    json!({"workItemId": "eval:trial:0", "valid": true}),
+                ),
+                eval_event(4, "optimizer.run.completed", json!({})),
+            ],
+            "now",
+        )
+        .unwrap();
+
+        let terminal = plan.state.terminal.expect("terminal must seal");
+        assert_eq!(terminal.kind, TerminalKind::Failed);
+        assert_eq!(terminal.reason, Some(TerminalReason::EvidenceUnusable));
+        assert_eq!(terminal.final_sequence, 4);
+        assert_eq!(
+            terminal.evidence.completeness,
+            crate::optimizers::kernel::types::EvidenceCompleteness::Partial
+        );
     }
 
     #[test]

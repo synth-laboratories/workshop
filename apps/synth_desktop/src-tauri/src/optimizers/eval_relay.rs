@@ -232,6 +232,9 @@ pub(crate) struct RelayOutcome {
     pub journal_closed: bool,
     pub frames_declared: usize,
     pub frames_retained: usize,
+    /// Distinct content objects behind retained frame observations. Multiple
+    /// steps may render byte-identical PNGs and therefore share one CAS blob.
+    pub unique_frame_blobs: std::collections::BTreeSet<String>,
     pub frame_bytes: u64,
     pub degradations: Vec<Degradation>,
 }
@@ -244,6 +247,9 @@ impl RelayOutcome {
             "journalClosed": self.journal_closed,
             "framesDeclared": self.frames_declared,
             "framesRetained": self.frames_retained,
+            "frameObservationsDeclared": self.frames_declared,
+            "frameObservationsRetained": self.frames_retained,
+            "uniqueFrameBlobs": self.unique_frame_blobs.len(),
             "frameBytes": self.frame_bytes,
             "degradations": self.degradations.iter().map(Degradation::to_json).collect::<Vec<_>>(),
         })
@@ -573,6 +579,7 @@ async fn relay_event(
                     object.insert("media".into(), media.to_json());
                 }
                 outcome.frames_retained += 1;
+                outcome.unique_frame_blobs.insert(media.cas_digest.clone());
                 outcome.frame_bytes += media.byte_size;
             }
             Ok(None) => {}

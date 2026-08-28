@@ -9,10 +9,11 @@ use super::commit::RunKernelState;
 use super::evidence::{EvidenceRef, EvidenceState, SealedTerminal};
 use super::types::{
     classify_legacy_status, AdmissionState, AlgorithmKind, EvidenceCompleteness,
-    ExecutionPlacement, RunCondition, RunLifecycle, RunPhase,
+    ExecutionPlacement, RunCondition, RunLifecycle, RunPhase, WorkItemLifecycle,
 };
 use super::work::WorkItem;
 use super::KERNEL_SCHEMA_VERSION;
+use crate::optimizers::models::OptimizerEventEnvelope;
 
 pub fn upsert_run_columns(conn: &Connection, state: &RunKernelState) -> Result<()> {
     conn.execute(
@@ -168,7 +169,7 @@ pub fn load_state(conn: &Connection, run_id: &str) -> Result<Option<RunKernelSta
         aggregate_sequence,
         projection_revision,
         finished_at,
-        updated_at,
+        _updated_at,
         terminal_sequence,
         terminal_sealed_at,
         failure_ref,
@@ -192,7 +193,7 @@ pub fn load_state(conn: &Connection, run_id: &str) -> Result<Option<RunKernelSta
             projected_algorithm.wire_id()
         );
     }
-    let projection: AlgorithmProjection = serde_json::from_str(&projection_json)
+    let mut projection: AlgorithmProjection = serde_json::from_str(&projection_json)
         .with_context(|| format!("decode kernel projection for {run_id}"))?;
     if projection.kind() != algorithm {
         anyhow::bail!(
@@ -210,7 +211,7 @@ pub fn load_state(conn: &Connection, run_id: &str) -> Result<Option<RunKernelSta
         .transpose()
         .map_err(|error| anyhow::anyhow!("{error}"))?
         .unwrap_or(legacy.0);
-    let phase = phase
+    let mut phase = phase
         .as_deref()
         .map(RunPhase::parse)
         .transpose()
@@ -230,7 +231,7 @@ pub fn load_state(conn: &Connection, run_id: &str) -> Result<Option<RunKernelSta
         .ok_or_else(|| anyhow::anyhow!("optimizer run {run_id} is missing execution placement"))?;
     let aggregate_sequence = aggregate_sequence
         .ok_or_else(|| anyhow::anyhow!("optimizer run {run_id} is missing aggregate sequence"))?;
-    if aggregate_sequence != projection_sequence {
+    if !lifecycle.is_terminal() && aggregate_sequence != projection_sequence {
         anyhow::bail!(
             "optimizer run {run_id} cursor {aggregate_sequence} disagrees with projection {projection_sequence}"
         );
@@ -240,7 +241,43 @@ pub fn load_state(conn: &Connection, run_id: &str) -> Result<Option<RunKernelSta
     let spec_digest = spec_digest
         .filter(|value| !value.trim().is_empty())
         .ok_or_else(|| anyhow::anyhow!("optimizer run {run_id} is missing its admitted spec"))?;
-    let sealed_evidence = projection.evidence_state();
+    let mut frozen_sequence =
+        u64::try_from(aggregate_sequence).context("optimizer aggregate sequence is negative")?;
+    let mut frozen_revision =
+        u64::try_from(projection_revision).context("optimizer projection revision is negative")?;
+    let rebuilt_terminal = if lifecycle.is_terminal() {
+        let terminal_sequence = terminal_sequence.ok_or_else(|| {
+            anyhow::anyhow!("optimizer run {run_id} is terminal without a manifest cursor")
+        })?;
+        let terminal_sequence =
+            u64::try_from(terminal_sequence).context("optimizer terminal sequence is negative")?;
+        let rebuilt = rebuild_at_terminal_sequence(
+            conn,
+            run_id,
+            algorithm,
+            placement,
+            &spec_digest,
+            terminal_sequence,
+        )?;
+        if !rebuilt.lifecycle.is_terminal() {
+            anyhow::bail!(
+                "optimizer run {run_id} terminal manifest points to sequence {terminal_sequence}, but replay is {}",
+                rebuilt.lifecycle.as_str()
+            );
+        }
+        reject_active_terminal_work(run_id, rebuilt.projection.work_items())?;
+        phase = rebuilt.phase;
+        projection = rebuilt.projection;
+        frozen_sequence = rebuilt.aggregate_sequence;
+        frozen_revision = rebuilt.projection_revision;
+        rebuilt.terminal
+    } else {
+        None
+    };
+    let sealed_evidence = rebuilt_terminal
+        .as_ref()
+        .map(|terminal| terminal.evidence.clone())
+        .unwrap_or_else(|| projection.evidence_state());
     let current_evidence = load_current_evidence(conn, run_id, &sealed_evidence)?;
     let terminal = if lifecycle.is_terminal() {
         let (kind, reason) = legacy.3.ok_or_else(|| {
@@ -248,13 +285,24 @@ pub fn load_state(conn: &Connection, run_id: &str) -> Result<Option<RunKernelSta
                 "optimizer run {run_id} is terminal but status {legacy_status:?} has no terminal outcome"
             )
         })?;
+        let rebuilt = rebuilt_terminal.context("terminal replay lost its sealed outcome")?;
+        if rebuilt.kind != kind {
+            anyhow::bail!(
+                "optimizer run {run_id} stored terminal outcome {} disagrees with replayed {}",
+                kind.as_str(),
+                rebuilt.kind.as_str()
+            );
+        }
+        let reason = rebuilt.reason.or(reason);
         Some(SealedTerminal {
             kind,
             reason,
-            final_sequence: terminal_sequence.unwrap_or(aggregate_sequence) as u64,
+            final_sequence: rebuilt.final_sequence,
             evidence: sealed_evidence,
-            failure_ref: failure_ref.clone(),
-            sealed_at: terminal_sealed_at.or(finished_at).unwrap_or(updated_at),
+            failure_ref: failure_ref.clone().or(rebuilt.failure_ref),
+            sealed_at: terminal_sealed_at
+                .or(finished_at)
+                .unwrap_or(rebuilt.sealed_at),
         })
     } else {
         None
@@ -267,16 +315,75 @@ pub fn load_state(conn: &Connection, run_id: &str) -> Result<Option<RunKernelSta
         phase,
         condition,
         placement,
-        aggregate_sequence: u64::try_from(aggregate_sequence)
-            .context("optimizer aggregate sequence is negative")?,
-        projection_revision: u64::try_from(projection_revision)
-            .context("optimizer projection revision is negative")?,
+        aggregate_sequence: frozen_sequence,
+        projection_revision: frozen_revision,
         spec_digest,
         terminal,
         failure_ref,
         current_evidence,
         projection,
     }))
+}
+
+fn rebuild_at_terminal_sequence(
+    conn: &Connection,
+    run_id: &str,
+    algorithm: AlgorithmKind,
+    placement: ExecutionPlacement,
+    spec_digest: &str,
+    terminal_sequence: u64,
+) -> Result<RunKernelState> {
+    let terminal_limit = i64::try_from(terminal_sequence)
+        .context("optimizer terminal sequence exceeds SQLite integer range")?;
+    let mut statement = conn.prepare(
+        "SELECT payload_json
+         FROM optimizer_events
+         WHERE optimizer_run_id = ?1
+         ORDER BY sequence_number
+         LIMIT ?2",
+    )?;
+    let rows = statement.query_map(params![run_id, terminal_limit], |row| {
+        row.get::<_, String>(0)
+    })?;
+    let mut events = Vec::new();
+    for row in rows {
+        let event: OptimizerEventEnvelope = serde_json::from_str(&row?)
+            .with_context(|| format!("decode terminal event history for {run_id}"))?;
+        events.push(event);
+    }
+    if events.len() != terminal_sequence as usize {
+        anyhow::bail!(
+            "optimizer run {run_id} terminal sequence {terminal_sequence} exceeds its durable event log"
+        );
+    }
+    let rebuilt =
+        super::bridge::reduce_envelopes(run_id, algorithm, placement, spec_digest, &events)
+            .map_err(|error| {
+                anyhow::anyhow!("rebuild terminal projection for {run_id}: {error}")
+            })?;
+    if rebuilt.aggregate_sequence != terminal_sequence {
+        anyhow::bail!(
+            "optimizer run {run_id} replay ended at {}, not terminal sequence {terminal_sequence}",
+            rebuilt.aggregate_sequence
+        );
+    }
+    Ok(rebuilt)
+}
+
+fn reject_active_terminal_work(run_id: &str, items: &[WorkItem]) -> Result<()> {
+    if let Some(item) = items.iter().find(|item| {
+        matches!(
+            item.lifecycle,
+            WorkItemLifecycle::Queued | WorkItemLifecycle::Starting | WorkItemLifecycle::Running
+        )
+    }) {
+        anyhow::bail!(
+            "optimizer run {run_id} is terminal but work item {} is still {}",
+            item.work_item_id,
+            item.lifecycle.as_str()
+        );
+    }
+    Ok(())
 }
 
 fn load_current_evidence(
@@ -445,4 +552,34 @@ pub fn insert_spec(conn: &Connection, commit: &AdmissionCommit) -> Result<()> {
     )
     .context("upsert optimizer run spec")?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::optimizers::kernel::types::WorkItemKind;
+
+    #[test]
+    fn terminal_projection_rejects_nested_running_work() {
+        let mut item = WorkItem::planned("eval:trial:1", WorkItemKind::EvalTrial).unwrap();
+        item.transition(WorkItemLifecycle::Queued).unwrap();
+        item.transition(WorkItemLifecycle::Starting).unwrap();
+        item.transition(WorkItemLifecycle::Running).unwrap();
+
+        let error = reject_active_terminal_work("run-1", &[item])
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("still running"), "{error}");
+    }
+
+    #[test]
+    fn terminal_projection_allows_settled_and_never_started_work() {
+        let mut completed = WorkItem::planned("eval:trial:1", WorkItemKind::EvalTrial).unwrap();
+        completed
+            .seal_terminal(super::super::types::TerminalKind::Completed)
+            .unwrap();
+        let skipped = WorkItem::planned("eval:trial:2", WorkItemKind::EvalTrial).unwrap();
+
+        reject_active_terminal_work("run-1", &[completed, skipped]).unwrap();
+    }
 }

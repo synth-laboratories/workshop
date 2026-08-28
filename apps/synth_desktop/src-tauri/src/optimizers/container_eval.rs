@@ -619,6 +619,7 @@ async fn project_worker_failure_visual(
                 title: None,
                 bindings: Some(experiment_bindings(
                     spec,
+                    run_id,
                     "failed",
                     records.len(),
                     total,
@@ -831,6 +832,7 @@ async fn mint_experiment_visual(
             // target simply has no chip, rather than one that goes nowhere.
             bindings: experiment_bindings(
                 spec,
+                &run.id,
                 "running",
                 0,
                 total,
@@ -855,6 +857,7 @@ async fn mint_experiment_visual(
 #[allow(clippy::too_many_arguments)]
 fn experiment_bindings(
     spec: &EvalSpec,
+    optimizer_run_id: &str,
     status: &str,
     completed: usize,
     total: usize,
@@ -912,14 +915,20 @@ fn experiment_bindings(
     let elapsed = elapsed_label(started_at);
     let usage = usage_from_records(records, spec.cost_ceiling_usd);
     let total_tokens = usage.prompt_tokens + usage.completion_tokens;
-    let phase = if matches!(status, "completed" | "failed" | "cancelled" | "degraded") {
+    let phase = if matches!(
+        status,
+        "completed" | "failed" | "failed_evidence" | "cancelled" | "degraded"
+    ) {
         status.to_string()
     } else if active > 0 {
         format!("running · {active} active")
     } else {
         "queued".to_string()
     };
-    let terminal = matches!(status, "completed" | "failed" | "cancelled" | "degraded");
+    let terminal = matches!(
+        status,
+        "completed" | "failed" | "failed_evidence" | "cancelled" | "degraded"
+    );
     let eta = if terminal {
         "terminal".to_string()
     } else {
@@ -1000,6 +1009,10 @@ fn experiment_bindings(
         "failed" => format!(
             "The evaluation failed: {failed_rollouts} of {total} rollouts did not complete successfully."
         ),
+        "failed_evidence" => {
+            "The rollouts stopped, but required evaluator evidence is missing or unusable."
+                .to_string()
+        }
         "cancelled" => format!(
             "The evaluation was cancelled after {completed} of {total} rollouts completed."
         ),
@@ -1012,6 +1025,9 @@ fn experiment_bindings(
         }
         "degraded" => "Inspect the failed rollout and retained traces before drawing a conclusion.",
         "failed" => "Inspect the per-seed failure reasons before deciding whether to run again.",
+        "failed_evidence" => {
+            "Inspect the typed evidence failure and retained receipts; do not treat this as a successful evaluation."
+        }
         "cancelled" => "Start a new approved run only if the cancelled work is still required.",
         "completed" => "Use the retained per-seed traces to inspect behavior behind the aggregate.",
         _ => "Inspect the terminal evidence.",
@@ -1131,6 +1147,10 @@ fn experiment_bindings(
                 "records": records,
                 "limitations": limitations
             }
+        }, {
+            "input": "optimizer_run",
+            "kind": "optimizer_run",
+            "source": optimizer_run_id,
         }]
     })
 }
@@ -1145,17 +1165,28 @@ fn seed_row(
     let seed = json!(example.seed);
     let relay = record.and_then(|record| record.get("relay"));
     let frames = relay
-        .and_then(|relay| relay.get("framesRetained"))
+        .and_then(|relay| relay.get("frameObservationsRetained"))
         .and_then(Value::as_u64);
     let declared = relay
-        .and_then(|relay| relay.get("framesDeclared"))
+        .and_then(|relay| relay.get("frameObservationsDeclared"))
+        .and_then(Value::as_u64);
+    let blobs = relay
+        .and_then(|relay| relay.get("uniqueFrameBlobs"))
         .and_then(Value::as_u64);
     // The frame count is stated as retained-of-declared. "0 native frames" was
     // once printed for a rollout that rendered thirteen, and a single number
     // cannot tell those two situations apart.
     let summary = match (frames, declared) {
         (Some(frames), Some(declared)) if declared > 0 => {
-            format!("{frames}/{declared} native frames retained")
+            let blob_detail = blobs
+                .map(|value| {
+                    format!(
+                        " · {value} unique CAS blob{}",
+                        if value == 1 { "" } else { "s" }
+                    )
+                })
+                .unwrap_or_default();
+            format!("{frames}/{declared} native frame observations retained{blob_detail}")
         }
         _ => "no relay receipt was recorded for this seed".to_string(),
     };
@@ -1166,7 +1197,11 @@ fn seed_row(
         "reward": record.and_then(|record| record.get("reward")).cloned().unwrap_or(Value::Null),
         "status": state.map(|value| json!(value)).or_else(|| record.and_then(|record| record.get("status")).cloned()).unwrap_or_else(|| json!("planned")),
         "stopReason": record.and_then(rollout_stop_reason).unwrap_or(Value::Null),
-        "steps": record.and_then(|record| record.get("steps").filter(|value| !value.is_null()).or_else(|| record.pointer("/sealedTrace/maxStep"))).cloned().unwrap_or(Value::Null),
+        // `sealedTrace.maxStep` is an archive/frame high-water mark, not the
+        // environment's reported execution-step count. If the rollout omitted
+        // `steps`, the honest value is unavailable even when its trace happens
+        // to contain a maximum frame step.
+        "steps": record.and_then(|record| record.get("steps").filter(|value| !value.is_null())).cloned().unwrap_or(Value::Null),
         "modelCalls": record.and_then(|record| record.pointer("/usage/calls")).cloned().unwrap_or(Value::Null),
         "tokens": record.and_then(|record| record.get("usage")).map(total_tokens_from_usage).flatten(),
         "costUsd": record.and_then(|record| record.get("usage")).and_then(lane_cost_usd),
@@ -1490,6 +1525,23 @@ async fn run_eval_worker(
         append_terminal(&service, &run_id, status, detail),
     )
     .await?;
+    let terminal_run = service.get(run_id.clone()).await?;
+    if terminal_run.status != status {
+        evidence(
+            "terminal_progress_projection",
+            persist_progress(
+                &service,
+                &run_id,
+                spec,
+                &visual_id,
+                &workbench_id,
+                &records,
+                total,
+                &terminal_run.status,
+            ),
+        )
+        .await?;
+    }
     Ok(())
 }
 
@@ -1555,6 +1607,19 @@ async fn append_eval_terminal(
     let seed = record.get("seed").cloned().unwrap_or(Value::Null);
     let id = format!("eval:trial:{index}");
     let valid = is_successful_eval_record(record);
+    let evidence_refs = eval_terminal_evidence_refs(spec, record)?;
+    let measured_usage = usage_from_records(std::slice::from_ref(record), spec.cost_ceiling_usd);
+    let mut usage_delta = Map::from_iter([
+        ("prompt_tokens".into(), json!(measured_usage.prompt_tokens)),
+        (
+            "completion_tokens".into(),
+            json!(measured_usage.completion_tokens),
+        ),
+        ("rollouts".into(), json!(1)),
+    ]);
+    if let Some(cost_usd) = measured_usage.cost_usd {
+        usage_delta.insert("cost_usd".into(), json!(cost_usd));
+    }
     let mut draft = OptimizerEventDraft::new("eval.trial.terminal", EVAL_ALGORITHM_ID)
         // One settlement per trial. A retried append of the same trial is the
         // same fact, not a second completion.
@@ -1572,6 +1637,8 @@ async fn append_eval_terminal(
             "metrics": { "reward": record.get("reward").cloned().unwrap_or(Value::Null) },
             "raw": record,
         }))
+        .artifact_refs(evidence_refs)
+        .usage_delta(usage_delta)
         .raw(json!({ "source": "container_eval" }));
     if !valid {
         draft = draft.level("warn");
@@ -1580,6 +1647,47 @@ async fn append_eval_terminal(
         .append_event_payloads(run_id.to_string(), vec![draft])
         .await?;
     Ok(())
+}
+
+/// Immutable resources that make one terminal trial evaluable after the
+/// container has gone away.
+///
+/// The evaluator receipt is the exact scored payload retained in the terminal
+/// event, addressed by rollout identity and canonical digest. Imported traces
+/// are additional evidence when the container actually supplied them; a
+/// missing trace is never replaced by a guessed reference.
+fn eval_terminal_evidence_refs(spec: &EvalSpec, record: &Value) -> Result<Vec<Value>> {
+    let mut refs = Vec::new();
+    if let (Some(rollout_id), Some(reward)) = (
+        record.get("rolloutId").and_then(Value::as_str),
+        record.get("reward").filter(|value| !value.is_null()),
+    ) {
+        let receipt = json!({
+            "evaluationPlanRef": spec.evaluation_plan_ref,
+            "rolloutId": rollout_id,
+            "reward": reward,
+            "rewardStatus": record.get("rewardStatus").cloned().unwrap_or(Value::Null),
+        });
+        refs.push(json!({
+            "kind": "evaluator_result",
+            "id": format!("eval:{rollout_id}"),
+            "digest": super::admission::digest_of(&receipt)?.to_string(),
+        }));
+    }
+    if let Some(traces) = record
+        .pointer("/sealedTrace/traces")
+        .and_then(Value::as_array)
+    {
+        refs.extend(traces.iter().filter_map(|trace| {
+            let id = trace.get("traceId").and_then(Value::as_str)?;
+            Some(json!({
+                "kind": "trace_v5",
+                "id": id,
+                "digest": trace.get("digest").cloned().unwrap_or(Value::Null),
+            }))
+        }));
+    }
+    Ok(refs)
 }
 
 async fn append_eval_selection(
@@ -2297,13 +2405,17 @@ async fn persist_progress(
                 }),
             );
             run.summary = Value::Object(summary);
-            run.usage = usage;
+            let mut merged_usage = usage;
+            for (key, value) in run.usage.extra.clone() {
+                merged_usage.extra.entry(key).or_insert(value);
+            }
+            run.usage = merged_usage;
             Ok(())
         })
         .await?;
 
     let visual_status = match status {
-        "failed" => VisualStatus::Failed,
+        "failed" | "failed_evidence" => VisualStatus::Failed,
         "completed" | "cancelled" | "degraded" => VisualStatus::Saved,
         _ => VisualStatus::Live,
     };
@@ -2315,6 +2427,7 @@ async fn persist_progress(
                 title: None,
                 bindings: Some(experiment_bindings(
                     spec,
+                    run_id,
                     status,
                     completed,
                     total,
@@ -3262,6 +3375,26 @@ mod tests {
         Arc, Mutex,
     };
 
+    #[test]
+    fn sealed_trace_high_water_does_not_invent_environment_steps() {
+        let record = json!({
+            "rolloutId": "roll_1",
+            "status": "completed",
+            "steps": null,
+            "sealedTrace": { "maxStep": 47 },
+        });
+        let row = seed_row(
+            Some(&record),
+            &EvalExample {
+                pool: "train",
+                seed: 1,
+            },
+            Some("completed"),
+            "vis_workbench",
+        );
+        assert_eq!(row["steps"], Value::Null);
+    }
+
     #[derive(Clone)]
     struct MockEvalOptions {
         family: &'static str,
@@ -3892,6 +4025,30 @@ max_total_rollouts = 4
                 .count(),
             1
         );
+        let owned_visuals = svc
+            .visuals()
+            .list(VisualQuery {
+                session_id: Some("sess_owner".into()),
+                ..VisualQuery::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            owned_visuals.len(),
+            2,
+            "overview and workstation are Outputs"
+        );
+        for visual in &owned_visuals {
+            assert_eq!(
+                visual.run_id, None,
+                "optimizer identity must not overload visuals.run_id's runs-table FK"
+            );
+            assert_eq!(
+                crate::visuals::declared_optimizer_run_ids(&visual.bindings),
+                vec![run.id.clone()],
+                "both Outputs visuals durably bind the optimizer identity"
+            );
+        }
 
         // Ownership is the run's session, not whoever asks.
         assert_eq!(
@@ -4632,6 +4789,7 @@ max_total_rollouts = 4
         spec.maximum_steps_per_rollout = 0;
         let bindings = experiment_bindings(
             &spec,
+            "opt_eval_test",
             "failed",
             0,
             5,
@@ -5378,6 +5536,18 @@ max_total_rollouts = 1
             unique.len(),
             1,
             "identical PNGs did not collapse in the store"
+        );
+        let run = svc.get(run_id).await.unwrap();
+        let relay = &run.summary["records"][0]["relay"];
+        assert_eq!(
+            relay["frameObservationsRetained"],
+            json!(CRAFTAX_FRAMES),
+            "logical frame observations remain on the timeline"
+        );
+        assert_eq!(
+            relay["uniqueFrameBlobs"],
+            json!(1),
+            "physical CAS objects are reported separately"
         );
         mock.task.abort();
     }

@@ -181,6 +181,7 @@ impl VisualRegistry {
         let bindings_form = canonical.form.clone();
         let upgraded_slots = canonical.upgraded_slots.clone();
         let bindings = canonical.value;
+        validate_optimizer_run_bindings(&bindings)?;
         let is_mermaid = mermaid::is_mermaid_template(&template.id);
         let systems_kind = systems::template_kind(&template.id);
         let is_chart = charts::is_chart_template(&template.id);
@@ -440,10 +441,10 @@ impl VisualRegistry {
         request: VisualUpdateRequest,
     ) -> Result<(VisualRecord, Value)> {
         validate_visual_id(&id)?;
+        let existing = self.get(id.clone()).await?;
         let content_changed = request.content.is_some();
         let bindings_changed = request.bindings.is_some();
         if let Some(source) = request.content.as_deref() {
-            let existing = self.get(id.clone()).await?;
             if mermaid::is_mermaid_template(&existing.template_id) {
                 mermaid::validate_source(source)?;
             }
@@ -480,7 +481,6 @@ impl VisualRegistry {
             request.bindings = Some(canonical.value);
         }
         if let Some(bindings) = request.bindings.as_ref() {
-            let existing = self.get(id.clone()).await?;
             if mermaid::is_mermaid_template(&existing.template_id) {
                 refuse_mermaid_stream_slot(bindings)?;
             }
@@ -488,6 +488,8 @@ impl VisualRegistry {
                 refuse_mermaid_stream_slot(bindings)?;
             }
         }
+        let effective_bindings = request.bindings.as_ref().unwrap_or(&existing.bindings);
+        validate_optimizer_run_bindings(effective_bindings)?;
         let db = self.db.clone();
         let content = self.content.clone();
         let (updated, event) = db
@@ -717,6 +719,12 @@ impl VisualRegistry {
                     "revision": record.current_revision,
                     "title": record.title,
                     "templateId": record.template_id,
+                    "bindings": record.bindings,
+                    "metadata": record.metadata,
+                    "status": record.status.as_str(),
+                    "runId": record.run_id,
+                    "traceId": record.trace_id,
+                    "messageId": record.message_id,
                     // Who *owns* this visual, which is not who opened it. The
                     // registry is instance-global: without this, a chat that
                     // displayed another chat's visual could not be told apart
@@ -1561,6 +1569,22 @@ impl VisualRegistry {
     }
 }
 
+/// One visual may declare at most one optimizer authority. The generic
+/// `VisualRecord.run_id` belongs to the separate `runs` domain, so optimizer
+/// identity remains in this typed binding and is never copied into that FK.
+fn validate_optimizer_run_bindings(bindings: &Value) -> Result<()> {
+    let declared = super::models::declared_optimizer_run_ids(bindings)
+        .into_iter()
+        .collect::<std::collections::BTreeSet<_>>();
+    if declared.len() > 1 {
+        bail!(
+            "visual declares conflicting optimizer_run bindings: {}",
+            declared.into_iter().collect::<Vec<_>>().join(", ")
+        );
+    }
+    Ok(())
+}
+
 fn refuse_mermaid_stream_slot(bindings: &Value) -> Result<()> {
     let Ok(slots) = binding_descriptors(bindings) else {
         return Ok(());
@@ -2074,6 +2098,23 @@ mod tests {
                 .find(|template| !crate::visuals::requires_canonical_source(&template.id))
                 .map(|template| template.id)
         })
+    }
+
+    #[test]
+    fn conflicting_optimizer_bindings_are_refused_without_overloading_run_id() {
+        let bindings = json!({
+            "schemaVersion": crate::visuals::VISUAL_BINDINGS_SCHEMA_VERSION,
+            "inputs": [{
+                "input": "optimizer_run",
+                "kind": "optimizer_run",
+                "source": "opt_eval_1",
+            }, {
+                "input": "comparison_run",
+                "kind": "optimizer_run",
+                "source": "opt_eval_2",
+            }]
+        });
+        assert!(validate_optimizer_run_bindings(&bindings).is_err());
     }
 
     #[tokio::test]

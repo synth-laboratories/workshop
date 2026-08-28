@@ -19,7 +19,7 @@ use std::sync::Mutex;
 use std::time::Duration;
 
 use super::backend::SecretBytes;
-use super::capability::ProviderUsePolicy;
+use super::capability::{CapabilityStatus, ProviderUsePolicy};
 use super::fingerprint;
 use super::proxy::{self, WorkloadEnv, API_KEY_SENTINEL};
 use super::vault;
@@ -378,6 +378,12 @@ pub struct OptimizerRuntimeLease {
     #[serde(default)]
     pub runtime_epoch: String,
     pub started_at: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct DurableCapabilityLifecycle {
+    pub status: CapabilityStatus,
+    pub revoked_at: Option<String>,
 }
 
 /// Live `.env` values keyed by deterministic `envsrc:{provider}:{variable}`.
@@ -1116,6 +1122,7 @@ impl SecretsService {
             "workloadManifestDigest": format!("sha256:{:x}", Sha256::digest(serde_json::to_vec(&lease.compile_eval_manifest_patch()).unwrap_or_default())),
             "routeKind": "container_proxy",
             "issuedAt": chrono::Utc::now().to_rfc3339(),
+            "capabilityStatus": CapabilityStatus::Granted,
             "revokedAt": Value::Null,
             "capabilityRevoked": false,
         });
@@ -1128,16 +1135,59 @@ impl SecretsService {
 
     pub fn seal_run_chain(&self, run_id: &str) -> Result<Option<Value>> {
         let _ = self.revoke_run(run_id);
-        let mut chains = self.chains.lock().expect("credential chains");
-        let Some(mut chain) = chains.get(run_id).cloned() else {
-            return Ok(None);
+        let mut chain = {
+            let chains = self.chains.lock().expect("credential chains");
+            let Some(chain) = chains.get(run_id).cloned() else {
+                return Ok(None);
+            };
+            chain
         };
+        let capability_id = chain
+            .get("capabilityId")
+            .and_then(Value::as_str)
+            .ok_or_else(|| anyhow!("credential chain for {run_id} has no capability id"))?;
+        let lifecycle = self
+            .durable_capability_lifecycle(capability_id)?
+            .ok_or_else(|| anyhow!("credential capability {capability_id} is missing"))?;
         if let Some(object) = chain.as_object_mut() {
-            object.insert("revokedAt".into(), json!(chrono::Utc::now().to_rfc3339()));
-            object.insert("capabilityRevoked".into(), json!(true));
+            object.insert("capabilityStatus".into(), json!(lifecycle.status));
+            object.insert("revokedAt".into(), json!(lifecycle.revoked_at));
+            object.insert(
+                "capabilityRevoked".into(),
+                json!(lifecycle.status == CapabilityStatus::Revoked),
+            );
         }
-        chains.insert(run_id.to_string(), chain.clone());
+        self.chains
+            .lock()
+            .expect("credential chains")
+            .insert(run_id.to_string(), chain.clone());
         Ok(Some(chain))
+    }
+
+    pub(crate) fn durable_capability_lifecycle(
+        &self,
+        capability_id: &str,
+    ) -> Result<Option<DurableCapabilityLifecycle>> {
+        self.db.with_conn(|conn| {
+            conn.query_row(
+                "SELECT status, revoked_at
+                 FROM secret_capabilities WHERE id=?1",
+                [capability_id],
+                |row| {
+                    let status: String = row.get(0)?;
+                    let revoked_at = row.get(1)?;
+                    Ok((status, revoked_at))
+                },
+            )
+            .optional()?
+            .map(|(status, revoked_at)| {
+                Ok(DurableCapabilityLifecycle {
+                    status: CapabilityStatus::try_from(status.as_str())?,
+                    revoked_at,
+                })
+            })
+            .transpose()
+        })
     }
 }
 
