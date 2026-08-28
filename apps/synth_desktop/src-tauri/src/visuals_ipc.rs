@@ -1794,22 +1794,97 @@ pub async fn dispatch(method: &str, path: &str, body: Value, core: &CoreRuntime)
         ("GET", "/v1/containers") => {
             Ok(json!({"containers": core.data().list_containers().await?}))
         }
+        ("POST", "/v1/container-sources/discover") => {
+            let sources =
+                crate::optimizers::container_catalog::discover(core.storage().database()).await?;
+            let rows: Vec<Value> = sources
+                .iter()
+                .map(|source| {
+                    json!({
+                        "sourceId": source.id,
+                        "manifestHash": source.manifest_hash,
+                        "gitRevision": source.git_revision,
+                        "specs": source.specs.iter().map(|spec| json!({
+                            "id": spec.id,
+                            "contract": spec.contract,
+                            "family": spec.family,
+                            "locality": spec.locality.as_str(),
+                        })).collect::<Vec<_>>(),
+                    })
+                })
+                .collect();
+            Ok(json!({
+                "readiness": crate::project_sources::readiness(
+                    core.storage().database(),
+                    crate::project_sources::Capability::Containers,
+                    rows.len(),
+                ),
+                "sources": rows,
+            }))
+        }
+        ("POST", "/v1/project-sources/request") => {
+            let path = body
+                .get("path")
+                .and_then(Value::as_str)
+                .context("project source request requires path")?;
+            let reason = body
+                .get("reason")
+                .and_then(Value::as_str)
+                .context("project source request requires reason")?;
+            let capabilities = body
+                .get("capabilities")
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_else(|| vec![json!("containers")]);
+            let containers = capabilities.iter().any(|value| value == "containers");
+            let recipes = capabilities.iter().any(|value| value == "recipes");
+            let session_id = body.get("sessionId").and_then(Value::as_str);
+            let attach = body
+                .get("attachToConversation")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            let request = crate::project_sources::request(
+                core.storage().database(),
+                session_id,
+                path,
+                reason,
+                containers,
+                recipes,
+                attach,
+            )
+            .await?;
+            Ok(json!({"request": request}))
+        }
         ("POST", "/v1/containers/ensure") => {
             let spec_id = body
                 .get("specId")
                 .or_else(|| body.get("spec_id"))
                 .and_then(Value::as_str)
                 .ok_or_else(|| anyhow::anyhow!("specId required"))?;
-            let session = body
-                .get("sessionRef")
-                .or_else(|| body.get("session_ref"))
+            let spec = if let Some(source_id) = body
+                .get("sourceId")
+                .or_else(|| body.get("source_id"))
                 .and_then(Value::as_str)
-                .ok_or_else(|| anyhow::anyhow!("sessionRef required"))?;
-            let spec = crate::optimizers::container_lifecycle::resolve_spec_for_session(
-                core.storage().database(),
-                session,
-                spec_id,
-            )?;
+            {
+                crate::optimizers::container_catalog::resolve(
+                    core.storage().database(),
+                    source_id,
+                    spec_id,
+                )
+                .await?
+                .1
+            } else {
+                let session = body
+                    .get("sessionRef")
+                    .or_else(|| body.get("session_ref"))
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| anyhow::anyhow!("sourceId or sessionRef required"))?;
+                crate::optimizers::container_lifecycle::resolve_spec_for_session(
+                    core.storage().database(),
+                    session,
+                    spec_id,
+                )?
+            };
             let origin = spec.origin.to_json();
             let ensured = crate::optimizers::container_lifecycle::ensure_spec(
                 core.storage().database(),
