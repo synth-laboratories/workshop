@@ -558,7 +558,7 @@
       "artifactRefs": [],
       "delta": {
         "container_event": {
-          "at": 1786811512.2103975,
+          "at": 1786811512.2103977,
           "event": "trial.started",
           "scenario": "craftax-default-48x48",
           "seed": 101,
@@ -575,7 +575,7 @@
       "optimizerRunId": "opt_eval_example",
       "raw": {
         "container_event": {
-          "at": 1786811512.2103975,
+          "at": 1786811512.2103977,
           "event": "trial.started",
           "scenario": "craftax-default-48x48",
           "seed": 101,
@@ -681,7 +681,7 @@
       "artifactRefs": [],
       "delta": {
         "container_event": {
-          "at": 1786811512.2258265,
+          "at": 1786811512.2258263,
           "event": "rollout.started",
           "max_steps": 500,
           "seed": 102,
@@ -698,7 +698,7 @@
       "optimizerRunId": "opt_eval_example",
       "raw": {
         "container_event": {
-          "at": 1786811512.2258265,
+          "at": 1786811512.2258263,
           "event": "rollout.started",
           "max_steps": 500,
           "seed": 102,
@@ -1953,7 +1953,7 @@
       "delta": {
         "container_event": {
           "achievements": 0.0,
-          "at": 1786811637.5470097,
+          "at": 1786811637.5470095,
           "cost_usd": 0.016233,
           "event": "rollout.finished",
           "reward": -0.9
@@ -1970,7 +1970,7 @@
       "raw": {
         "container_event": {
           "achievements": 0.0,
-          "at": 1786811637.5470097,
+          "at": 1786811637.5470095,
           "cost_usd": 0.016233,
           "event": "rollout.finished",
           "reward": -0.9
@@ -2495,7 +2495,7 @@
       "eventId": "opt_eval_example:eval:28",
       "item": {
         "budgetExhaustedTrials": null,
-        "costUsd": 0.030177,
+        "costUsd": 0.030177000000000002,
         "eliminatedAt": null,
         "eliminationReason": null,
         "gateFailures": {},
@@ -2524,7 +2524,7 @@
         "policyStepFraction": null,
         "raw": {
           "candidate_id": "policy_30d2c7e911d3",
-          "cost_usd": 0.030177,
+          "cost_usd": 0.030177000000000002,
           "eliminated_at": null,
           "elimination_reason": null,
           "gate_failures": {},
@@ -2573,7 +2573,7 @@
         "schema_version": "eval.worker-event.v1",
         "scorecard": {
           "candidate_id": "policy_30d2c7e911d3",
-          "cost_usd": 0.030177,
+          "cost_usd": 0.030177000000000002,
           "eliminated_at": null,
           "elimination_reason": null,
           "gate_failures": {},
