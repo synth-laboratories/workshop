@@ -356,3 +356,78 @@ test("A11 out-of-order backfill closes a temporary gap without duplicating evide
   assert.deepEqual(state.gaps, []);
   assert.equal(state.lastSequenceByScope.get("r1"), 4);
 });
+
+test("a sequenced control envelope holds the numbering contiguous instead of forging a gap", () => {
+  // A producer that numbers its heartbeats out of the same counter as its
+  // evidence leaves 1, 2, 3 on the wire with 2 spent on a heartbeat. Skipping
+  // the heartbeat before recording its sequence made that a permanent gap.
+  const sequencedHeartbeat = ingestLiveEnvelopes([
+    { kind: "observation", sequence: 1, rollout_id: "r1", payload: {} },
+    { kind: "heartbeat", sequence: 2, rollout_id: "r1", payload: {} },
+    { kind: "observation", sequence: 3, rollout_id: "r1", payload: {} },
+  ]);
+  assert.deepEqual(sequencedHeartbeat.gaps, []);
+  assert.equal(sequencedHeartbeat.events.length, 2, "the heartbeat is still not evidence");
+  assert.deepEqual(sequencedHeartbeat.events.map((event) => event.kind), ["observation", "observation"]);
+  assert.equal(sequencedHeartbeat.lastSequenceByScope.get("r1"), 3);
+
+  // The same across batches: the heartbeat that closes the hole arrives late.
+  const pending = ingestLiveEnvelopes([
+    { kind: "observation", sequence: 1, rollout_id: "r2", payload: {} },
+    { kind: "observation", sequence: 3, rollout_id: "r2", payload: {} },
+  ]);
+  assert.deepEqual(pending.gaps, [{ scope: "r2", after: 1, before: 3 }]);
+  const healed = ingestLiveEnvelopeBatch(pending, [
+    { kind: "stream.heartbeat", sequence: 2, rollout_id: "r2", payload: {} },
+  ]);
+  assert.deepEqual(healed.gaps, []);
+  assert.equal(healed.events.length, 2);
+});
+
+test("a genuinely missing sequence still reports a gap, control envelopes or not", () => {
+  const missing = ingestLiveEnvelopes([
+    { kind: "stream.subscribed", event_id: "sub", rollout_id: "r1", control: true, payload: { ready: true } },
+    { kind: "observation", sequence: 1, rollout_id: "r1", payload: {} },
+    { kind: "heartbeat", sequence: 2, rollout_id: "r1", payload: {} },
+    // sequence 3 never arrives.
+    { kind: "observation", sequence: 4, rollout_id: "r1", payload: {} },
+  ]);
+  assert.deepEqual(missing.gaps, [{ scope: "r1", after: 2, before: 4 }]);
+  assert.equal(missing.ready, true);
+  assert.equal(missing.events.length, 2);
+
+  // An unsequenced control envelope never contributes a sequence at all, so it
+  // cannot invent sequence 0 in front of the first real envelope.
+  const unsequenced = ingestLiveEnvelopes([
+    { kind: "heartbeat", event_id: "hb", rollout_id: "r3", payload: {} },
+    { kind: "observation", sequence: 1, rollout_id: "r3", payload: {} },
+    { kind: "observation", sequence: 2, rollout_id: "r3", payload: {} },
+  ]);
+  assert.deepEqual(unsequenced.gaps, []);
+});
+
+test("control: true under an ordinary kind is control to the fold and the projector alike", async () => {
+  const { isControlEnvelope } = await import("../runtime/liveStream.ts");
+  const { projectLiveEval } = await import("../runtime/liveEvalReducer.ts");
+  const flagged = { kind: "observation", sequence: 2, rollout_id: "r1", control: true, payload: { step: 1 } };
+  const rows = [
+    { kind: "observation", sequence: 1, rollout_id: "r1", payload: { step: 0 } },
+    flagged,
+    { kind: "observation", sequence: 3, rollout_id: "r1", payload: { step: 2 } },
+  ];
+  assert.equal(isControlEnvelope(flagged), true);
+
+  const state = ingestLiveEnvelopes(rows);
+  // Not a row, not counted as evidence — but its sequence still closes 1→3.
+  assert.equal(state.events.length, 2);
+  assert.deepEqual(state.gaps, []);
+
+  // The projector reaches the same verdict from the raw batch, so the fold and
+  // the projection never disagree about what counts as evidence.
+  assert.deepEqual(
+    projectLiveEval(rows).events.map((event) => event.payload.step),
+    state.events.map((event) => event.payload.step),
+  );
+  assert.equal(projectLiveEval(rows).events.length, 2);
+  assert.equal(projectLiveEval(state.events).events.length, 2);
+});
