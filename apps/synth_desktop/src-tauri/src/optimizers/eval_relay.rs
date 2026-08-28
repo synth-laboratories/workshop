@@ -437,6 +437,16 @@ where
                             "the rollout settled and its journal went quiet without reporting closed",
                             0,
                         );
+                    } else {
+                        // No page ever carried a cursor block: this producer
+                        // has no closure contract at all. A silent
+                        // `journalClosed: false` is indistinguishable from a
+                        // stall; the gap gets a name instead.
+                        outcome.note(
+                            "closure_contract_missing",
+                            "producer declares no closure contract: its event pages carry no cursor block, so journal closure can never be reported",
+                            0,
+                        );
                     }
                     break;
                 }
