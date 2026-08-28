@@ -32,7 +32,7 @@ local = "http://127.0.0.1:8000"
 # folders are available to Codex sessions using workspace-write.
 # Configure these from Settings → Runtime → Agent workspace access.
 [workspace]
-allowed_roots = ["/Users/you/Documents/GitHub"]
+allowed_roots = ["/path/to/your/projects"]
 
 # Project sources: folders Workshop may read `workshop.containers.toml`,
 # `workshop.recipe.toml`, and `workshop.recipes/*.toml` from. Container commands
@@ -49,13 +49,13 @@ allowed_roots = ["/Users/you/Documents/GitHub"]
 # SYNTH_RECIPE_SOURCE_ROOTS override and with roots already discovered. Only
 # when all three are empty does it fall back to scanning ~/GitHub.
 # [[desktop.project_sources.entries]]
-# path = "/Users/you/GitHub/nanohorizon"
+# path = "/path/to/nanohorizon"
 # containers = true
 # recipes = true
 #
 # Short form, granting both capabilities:
 # [desktop.project_sources]
-# roots = ["/Users/you/GitHub/nanohorizon"]
+# roots = ["/path/to/nanohorizon"]
 
 # Optional overrides for the provider-independent model presets shown in
 # Desktop Settings. Omit an entry to use its built-in preset.
