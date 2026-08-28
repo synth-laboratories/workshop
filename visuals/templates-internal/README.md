@@ -1,8 +1,8 @@
 # templates-internal/ — private visual templates
 
-Staged, never authored here. Source of truth is `~/.synth/visuals/templates/`.
+Staged, never authored here. Source of truth is `~/.synth-desktop/visuals/templates/`.
 
-    ./scripts/stage-internal-visuals.sh          # symlink ~/.synth templates in
+    ./scripts/stage-internal-visuals.sh          # symlink ~/.synth-desktop templates in
     ./scripts/stage-internal-visuals.sh --clean  # remove them again
 
 Everything except this README and `.gitkeep` is gitignored and excluded from

@@ -172,7 +172,7 @@ fn build_template_index(visuals_root: &Path) -> anyhow::Result<BTreeMap<String, 
             templates.insert(meta.id.clone(), meta);
         }
     }
-    let managed_root = managed_templates_root();
+    let managed_root = user_templates_root();
     if managed_root.exists() {
         let mut entries: Vec<_> = fs::read_dir(&managed_root)?
             .filter_map(|entry| entry.ok())
@@ -202,12 +202,26 @@ fn build_template_index(visuals_root: &Path) -> anyhow::Result<BTreeMap<String, 
     Ok(templates)
 }
 
-fn managed_templates_root() -> PathBuf {
-    std::env::var("SYNTH_DESKTOP_DATA_ROOT")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| visuals_root())
-        .join("visuals")
-        .join("templates")
+/// User-authored visual templates for this instance, beside `config.toml` and
+/// `.env`: `<state root>/visuals/templates`.
+///
+/// This resolved the data root itself, and a local copy of that rule drifted
+/// exactly the way `instance_paths.rs` says local copies do. It read
+/// `SYNTH_DESKTOP_DATA_ROOT` directly and fell back to `visuals_root()`, which
+/// already ends in `visuals`, then joined `visuals/templates` onto it. Unset
+/// environment therefore produced `<root>/visuals/visuals/templates`, a path
+/// that cannot exist: every install that is not the dev launcher — canonical
+/// installs and descriptor-launched bundles, which is to say production — ran
+/// with the whole registry silently dead. In a packaged app it was worse than
+/// dead. `visuals_root()` there is `<App>.app/Contents/Resources/visuals`, so
+/// `import_managed_template` wrote into the signed application bundle and
+/// invalidated its signature.
+///
+/// `instance::state_root()` is the one rule: the instance data root when a
+/// descriptor or `SYNTH_DESKTOP_DATA_ROOT` names one, `~/.synth-desktop`
+/// otherwise. Resolve from there, never from where the shipped visuals live.
+fn user_templates_root() -> PathBuf {
+    crate::instance::state_root().join("visuals").join("templates")
 }
 
 /// Copy one reviewed, networkless HTML visual package into this instance's
@@ -240,7 +254,7 @@ pub fn import_managed_template(source_path: &str) -> anyhow::Result<TemplateMeta
     let mut meta = load_template_meta(&source)?;
     let renderer_bytes = fs::read(&renderer)?;
     validate_managed_renderer(&renderer_bytes)?;
-    let destination = managed_templates_root().join(&meta.id);
+    let destination = user_templates_root().join(&meta.id);
     fs::create_dir_all(&destination)?;
     fs::write(destination.join("template.json"), fs::read(&manifest)?)?;
     fs::write(destination.join("renderer.html"), renderer_bytes)?;
@@ -573,6 +587,22 @@ mod tests {
         assert!(error.contains("duplicate visual template id"));
         assert!(error.contains("families/one/duplicate.v1"));
         assert!(error.contains("families/two/duplicate.v1"));
+    }
+
+    #[test]
+    fn user_templates_root_is_not_doubled_under_state_root() {
+        let isolated = crate::instance::IsolatedDataRoot::new("visual-templates-root");
+        let root = user_templates_root();
+        assert_eq!(root, isolated.path.join("visuals").join("templates"));
+        assert!(root.ends_with("visuals/templates"));
+        assert_eq!(
+            root.components()
+                .filter(|component| component.as_os_str() == "visuals")
+                .count(),
+            1,
+            "state root must not gain a second visuals segment: {}",
+            root.display()
+        );
     }
 
     #[cfg(unix)]

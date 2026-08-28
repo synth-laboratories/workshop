@@ -1,21 +1,21 @@
 #!/usr/bin/env bash
-# Stage private visual templates from ~/.synth into the build tree.
+# Stage private visual templates from ~/.synth-desktop into the build tree.
 #
 #   ./scripts/stage-internal-visuals.sh          stage
 #   ./scripts/stage-internal-visuals.sh --clean  unstage
 #   ./scripts/stage-internal-visuals.sh --check  exit 1 if anything is staged
 #
 # Source of truth is $SYNTH_INTERNAL_VISUALS_ROOT (default
-# ~/.synth/visuals/templates).
+# ~/.synth-desktop/visuals/templates).
 #
 # Templates are COPIED, not symlinked. A shell imports its chrome by relative
 # path (`../../runtime/liveStream.ts`), and bundlers resolve a symlinked file
 # from its real path by default (esbuild always, Vite unless
 # resolve.preserveSymlinks). Through a symlink those imports resolve inside
-# ~/.synth, where no chrome exists, and the build fails. Copying keeps the
+# ~/.synth-desktop, where no chrome exists, and the build fails. Copying keeps the
 # template inside the workspace where its relative imports are valid.
 #
-# The cost is that editing in ~/.synth needs a re-stage; run this again.
+# The cost is that editing in ~/.synth-desktop needs a re-stage; run this again.
 #
 # A public release must run --check, not --clean: failing loudly beats silently
 # deleting whatever a developer had staged.
@@ -23,7 +23,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 DEST="$ROOT/visuals/templates-internal"
-SRC="${SYNTH_INTERNAL_VISUALS_ROOT:-$HOME/.synth/visuals/templates}"
+SRC="${SYNTH_INTERNAL_VISUALS_ROOT:-$HOME/.synth-desktop/visuals/templates}"
 MODE="${1:-stage}"
 
 staged_entries() {
