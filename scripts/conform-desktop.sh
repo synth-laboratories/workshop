@@ -126,24 +126,34 @@ data_root_env_outside="$(count_rg_prod 'env::var(_os)?\("SYNTH_DESKTOP_DATA_ROOT
 
 # Boundary: one envelope fold. `sequenceNumber` is the durable identity
 # (runProgress/protocol.ts), and dedupe/replay/gap handling belongs in that
-# fold plus runtime/optimizerEventCursor.ts -- not re-implemented per consumer.
+# fold -- not re-implemented per consumer. The canonical home is now
+# src-tauri/src/stream_fold.rs, which owns both journal shapes: envelope
+# streams (identity, dedupe, conflict, gap scan, projection) and dense cursor
+# journals (sequence_step / accept_if_ahead / cursor_reconciles). On the
+# renderer side runtime/optimizerEventCursor.ts stays the one cursor home, and
+# visuals/runtime/ keeps a test-pinned mirror of identity, dedupe and the
+# projection for hosts with no Rust underneath -- pinned by
+# visuals/fixtures/live_fold_golden.json, asserted from both languages.
 # The pattern is deliberately narrow: a sequence compared against a cursor in
 # an `if`/`while`, or a `seen` set keyed on a sequence. Bare reads, emissions,
 # sorts, SQL columns and prose all stay out, which is why this counts real
 # folds instead of every mention of the word.
 sequence_fold_pattern='(if|while)\s*\(?\s*[a-z_.]*sequence(_number)?\s*(<=|>=|!=|==|>|<)\s*[*&]?[a-z_.]*(cursor|last_sequence|lastSequence)|\bseen[A-Za-z_]*(\.current)?\.(has|add|contains|insert|get|set)\([^)]*[sS]equence'
-sequence_fold_outside="$(count_rg_prod "$sequence_fold_pattern" src-tauri/src src/renderer/src --glob '!visuals/runtime/**' --glob '!visuals/chrome/**' --glob '!visuals/tests/**' --glob '!**/runProgress/**' --glob '!**/optimizerEventCursor.ts' --glob '!**/generated/**' --glob '!**/*tests*.rs' --glob '!**/tests.rs' --glob '!**/tests/**')"
+sequence_fold_outside="$(count_rg_prod "$sequence_fold_pattern" src-tauri/src src/renderer/src --glob '!**/stream_fold.rs' --glob '!**/stream_fold/**' --glob '!visuals/runtime/**' --glob '!visuals/chrome/**' --glob '!visuals/tests/**' --glob '!**/runProgress/**' --glob '!**/optimizerEventCursor.ts' --glob '!**/generated/**' --glob '!**/*tests*.rs' --glob '!**/tests.rs' --glob '!**/tests/**')"
 
 # Boundary: a sequence gap is a claim about a producer's sequence space, and
 # exactly one implementation may make it. The idiom check above (sequence_fold_
 # outside) matches the two shapes that existed when it was written; it misses a
 # fold written in a new idiom, which is how src-tauri/src/visuals/stream_receipt.rs
 # arrived without moving the count. This one matches the concept instead: the
-# construction of a gap record. `visuals/runtime/` is today's canonical home and
-# is excluded; when the fold moves to Rust (item 1) the exclusion moves with it
-# and the TypeScript side must go to zero.
+# construction of a gap record. The fold has moved to Rust (item 1), so the
+# exclusion moved with it: src-tauri/src/stream_fold.rs is the one home, and
+# the TypeScript side is at zero -- the mirror in visuals/runtime/ folds and
+# projects for Rust-less hosts but makes no gap claim at all, because a gap is
+# read by the readiness gate rather than drawn, and the host already observes
+# it at the poll seam (STREAM_REPLAY_GAP, lib.rs).
 sequence_gap_pattern='(StreamGap|SequenceGap)\s*\{|gaps\.push\(\{\s*scope'
-sequence_gap_outside="$(count_rg_prod "$sequence_gap_pattern" src-tauri/src src/renderer/src "$ROOT/visuals" --glob '!**/visuals/runtime/**' --glob '!**/tests/**' --glob '!**/*tests*.rs' --glob '!**/tests.rs')"
+sequence_gap_outside="$(count_rg_prod "$sequence_gap_pattern" src-tauri/src src/renderer/src "$ROOT/visuals" --glob '!**/stream_fold.rs' --glob '!**/stream_fold/**' --glob '!**/tests/**' --glob '!**/*tests*.rs' --glob '!**/tests.rs')"
 
 # Boundary: schema DDL lives in storage/migrations.rs, which is the only file
 # allowed to say what a table looks like. A DDL const anywhere else is a second
@@ -184,8 +194,8 @@ cat <<EOF
 [conform] use_state_app              ${use_state_app}    # W3 → <10  rg useState App.tsx
 [conform] invoke_string              ${invoke_string}    # W2 → 0   rg invoke(" (excl. generated/)
 [conform] data_root_env_outside      ${data_root_env_outside}    # 31 → 0   rg env::var(_os)("SYNTH_DESKTOP_DATA_ROOT") (excl. instance_paths.rs, instance.rs)
-[conform] sequence_fold_outside      ${sequence_fold_outside}    # 31 → 0   rg sequence-vs-cursor / seen-set dedupe (excl. visuals/, runProgress/, optimizerEventCursor.ts)
-[conform] sequence_gap_outside       ${sequence_gap_outside}    # 31 → 0   rg gap-record construction (excl. visuals/runtime = today's canonical fold)
+[conform] sequence_fold_outside      ${sequence_fold_outside}    # 31 → 0   rg sequence-vs-cursor / seen-set dedupe (excl. stream_fold.rs, visuals/, runProgress/, optimizerEventCursor.ts)
+[conform] sequence_gap_outside       ${sequence_gap_outside}    # 31 → 0   rg gap-record construction (excl. stream_fold.rs = the canonical fold)
 [conform] create_table_outside       ${create_table_outside}    # 31 → 0   rg CREATE TABLE (excl. storage/migrations.rs)
 [conform] import_meta_glob           ${import_meta_glob}    # 31 → 0   rg import.meta.glob( renderer + visuals/
 [conform] template_root_join         ${template_root_join}    # 31 → 0   rg .join("visuals") | "visuals/templates" (excl. visuals/templates.rs)

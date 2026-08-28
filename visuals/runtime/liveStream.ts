@@ -1,9 +1,32 @@
 /**
- * W0 live-eval bind + reducer contract.
+ * W0 live-eval bind + reducer contract — the TypeScript mirror of the fold.
  *
  * Input `stream` only (not `live` or `jobs`). Bind a declared stream URL.
  * Missing reward / usage / cost stay missing. Heartbeats and
  * `stream.subscribed` do not become evidence.
+ *
+ * # This is a mirror, not the fold
+ *
+ * The authoritative fold is `src-tauri/src/stream_fold.rs`. It owns identity,
+ * scope, dedupe, conflict detection, gap scanning and the projection, and it
+ * is what the receipt, the readiness gate, the spool and the seal read.
+ *
+ * What survives here is what a host with no Rust underneath it cannot render
+ * without — browser preview, fixture replay, and the two shipped shells still
+ * have to draw a pane. So: identity, dedupe, the control predicate, the
+ * evidence high-water mark, and the projection next door.
+ *
+ * What does **not** survive here is the sequence-gap scan. A gap is a claim
+ * about a producer's sequence space, it is read by the readiness gate and by
+ * agents rather than drawn, and the host already observes it at the poll seam
+ * and emits `STREAM_REPLAY_GAP` from there — server-side, correlated to the
+ * visual and its revision, and not reported by the thing under test. Two
+ * implementations of that claim is two answers to a question that must have
+ * one. See `stream_fold.rs` for the gap rules and their tests.
+ *
+ * The two sides are pinned together by `visuals/fixtures/live_fold_golden.json`
+ * over every checked-in fixture, asserted from both languages. A mirror is
+ * honest exactly as long as something checks it; do not edit one side alone.
  */
 
 export const LIVE_EVAL_INPUT = "stream";
@@ -49,10 +72,17 @@ export type LiveIngestState = {
   ready: boolean;
   ids: Set<string>;
   digests: Map<string, string>;
+  /**
+   * Highest sequence *evidence* reached per scope. Control envelopes hold
+   * their place in the producer's numbering for the host's gap scan, but they
+   * never advance this: a stream carrying nothing but sequenced heartbeats has
+   * not made progress, and a reader of this number must not be told it has.
+   */
   lastSequenceByScope: Map<string, number>;
-  receivedSequencesByScope: Map<string, Set<number>>;
-  gaps: Array<{ scope: string; after: number; before: number }>;
   conflicts: string[];
+  /** Envelopes handed over, duplicates included. Names an envelope that carries
+   * no identity of its own; see `envelopeIdentity`. */
+  delivered: number;
 };
 
 export function isLiveEvalTemplate(templateId: string): boolean {
@@ -177,6 +207,20 @@ export function envelopeScope(event: LiveEnvelope): string {
     || "run";
 }
 
+/**
+ * The stream an envelope was delivered on, for a cutoff cursor vector.
+ *
+ * The declared stream when the producer names one, the lane otherwise. A
+ * cutoff addresses arrival order *within a stream*, which is the one total
+ * order that exists whatever a producer does with its sequence numbers.
+ */
+export function envelopeStream(event: LiveEnvelope): string {
+  const streamId = typeof event.stream_id === "string" && event.stream_id.length > 0
+    ? event.stream_id
+    : payloadString(event, "stream_id", "stream.id");
+  return streamId || envelopeScope(event);
+}
+
 function normalizeEnvelopeIdentity(event: LiveEnvelope): LiveEnvelope {
   const rolloutId = event.rollout_id || payloadString(event, "rollout_id");
   const lane = event.lane || payloadString(event, "lane") || rolloutId;
@@ -194,7 +238,7 @@ function normalizeEnvelopeIdentity(event: LiveEnvelope): LiveEnvelope {
   };
 }
 
-export function envelopeIdentity(event: LiveEnvelope, index: number): string {
+export function envelopeIdentity(event: LiveEnvelope, ordinal: number): string {
   // Sequence/event_id is monotonic only within a rollout. A multiplexed run
   // legitimately contains ten `event_id: "1"` records, so identity must keep
   // the producer lane. Treating event_id as globally unique silently drops
@@ -213,21 +257,39 @@ export function envelopeIdentity(event: LiveEnvelope, index: number): string {
   if (sequence != null && String(sequence).length > 0) {
     return `${scope}:${sequence}`;
   }
-  return `${scope}:${event.kind ?? event.type ?? "event"}:${event.occurred_at ?? event.ts ?? index}`;
+  return `${scope}:${event.kind ?? event.type ?? "event"}:${event.occurred_at ?? event.ts ?? ordinal}`;
+}
+
+/**
+ * A body digest that does not depend on key order.
+ *
+ * Only equality matters here: this decides whether one identity arrived twice
+ * with two different bodies. `JSON.stringify` preserves insertion order, so
+ * two byte-equivalent envelopes whose producer emitted their keys in a
+ * different order read as a conflict — and the Rust fold, whose map is sorted,
+ * reads them as the same record. Sorting is the answer both sides can give;
+ * porting the accident is not.
+ */
+function canonicalJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+  if (value && typeof value === "object") {
+    const record = value as Record<string, unknown>;
+    return `{${Object.keys(record).sort().map((key) => `${JSON.stringify(key)}:${canonicalJson(record[key])}`).join(",")}}`;
+  }
+  return JSON.stringify(value) ?? "null";
 }
 
 export function emptyLiveIngest(): LiveIngestState {
   return {
     events: [], ready: false, ids: new Set(), digests: new Map(),
-    lastSequenceByScope: new Map(), receivedSequencesByScope: new Map(), gaps: [], conflicts: []
+    lastSequenceByScope: new Map(), conflicts: [], delivered: 0
   };
 }
 
 /**
  * Append a batch while cloning each collection only once. Live transports can
  * deliver thousands of messages in one browser task; applying the single-row
- * reducer for each message made 100k-envelope runs quadratic in both array
- * copies and sequence-gap scans.
+ * reducer for each message made 100k-envelope runs quadratic in array copies.
  */
 export function ingestLiveEnvelopeBatch(
   state: LiveIngestState,
@@ -238,15 +300,14 @@ export function ingestLiveEnvelopeBatch(
   const digests = new Map(state.digests);
   const events = [...state.events];
   const lastSequenceByScope = new Map(state.lastSequenceByScope);
-  const receivedSequencesByScope = new Map(state.receivedSequencesByScope);
-  const clonedSequenceScopes = new Set<string>();
-  const touchedSequenceScopes = new Set<string>();
   const conflicts = [...state.conflicts];
+  let delivered = state.delivered;
   let ready = state.ready;
 
   for (const event of incoming) {
-    const id = envelopeIdentity(event, events.length);
-    const digest = typeof event.digest === "string" ? event.digest : JSON.stringify(event);
+    delivered += 1;
+    const id = envelopeIdentity(event, delivered);
+    const digest = typeof event.digest === "string" ? event.digest : canonicalJson(event);
     if (ids.has(id)) {
       const previous = digests.get(id);
       if (previous !== digest) conflicts.push(`Conflicting duplicate envelope ${id}`);
@@ -257,44 +318,25 @@ export function ingestLiveEnvelopeBatch(
     const control = isControlEnvelope(event);
     if (control) {
       ready ||= String(event.kind ?? event.type ?? "") === "stream.subscribed";
-    } else {
-      // Only non-control envelopes are evidence: they alone become rows, and
-      // they alone advance the per-scope evidence high-water mark.
-      events.push(normalizeEnvelopeIdentity(event));
+      // A control envelope holds its place in the producer's numbering — the
+      // host's gap scan needs that — but it is never evidence, so it becomes
+      // no row and advances no high-water mark.
+      continue;
     }
+    events.push(normalizeEnvelopeIdentity(event));
     const scope = envelopeScope(event);
     const rawSequence = event.sequence_number ?? event.sequence;
-    // `Number(null)` is 0 and `Number("")` is 0; an absent sequence must read as
-    // absent, not as sequence zero, or it manufactures a gap before sequence 1.
+    // `Number(null)` is 0 and `Number("")` is 0; an absent sequence must read
+    // as absent, not as sequence zero.
     const sequence = typeof rawSequence === "number"
       ? rawSequence
       : rawSequence != null && String(rawSequence).length > 0
         ? Number(rawSequence)
         : Number.NaN;
     if (!Number.isFinite(sequence)) continue;
-    if (!clonedSequenceScopes.has(scope)) {
-      receivedSequencesByScope.set(scope, new Set(receivedSequencesByScope.get(scope) ?? []));
-      clonedSequenceScopes.add(scope);
-    }
-    // A control envelope that carries a sequence consumed a number in the
-    // producer's stream. Recording it keeps the scope's numbering contiguous;
-    // omitting it made every sequenced heartbeat a permanent phantom gap.
-    receivedSequencesByScope.get(scope)!.add(sequence);
-    touchedSequenceScopes.add(scope);
-    if (control) continue;
     lastSequenceByScope.set(scope, Math.max(lastSequenceByScope.get(scope) ?? sequence, sequence));
   }
-
-  let gaps = state.gaps.filter((gap) => !touchedSequenceScopes.has(gap.scope));
-  for (const scope of touchedSequenceScopes) {
-    const ordered = [...(receivedSequencesByScope.get(scope) ?? [])].sort((a, b) => a - b);
-    for (let index = 1; index < ordered.length; index++) {
-      if (ordered[index] > ordered[index - 1] + 1) {
-        gaps.push({ scope, after: ordered[index - 1], before: ordered[index] });
-      }
-    }
-  }
-  return { events, ids, digests, lastSequenceByScope, receivedSequencesByScope, gaps, conflicts, ready };
+  return { events, ids, digests, lastSequenceByScope, conflicts, delivered, ready };
 }
 
 /** Append one envelope. Control records can set ready; they are not evidence. */

@@ -2,6 +2,7 @@ use super::{
     InternRuntime, NormalizedInternEvent, PollUpdate, PollerConfig, RuntimeKind, RuntimeProjection,
 };
 use crate::storage::{append_event, AppEvent, Database, EventAppend, EventSource};
+use crate::stream_fold::SequenceStep;
 use anyhow::{bail, Context, Result};
 use chrono::Utc;
 use rusqlite::{params, Connection, OptionalExtension};
@@ -385,12 +386,16 @@ fn apply_events(
         if event.runtime_id != state.runtime_id.as_deref().unwrap_or_default() {
             bail!("Intern event runtime identity drifted");
         }
-        if event.remote_sequence <= cursor {
-            verify_replay(conn, &state.session_id, &event)?;
-            continue;
-        }
-        if event.remote_sequence != cursor.saturating_add(1) {
-            bail!("Intern event sequence gap after {cursor}");
+        match crate::stream_fold::sequence_step(cursor, event.remote_sequence) {
+            // A record the journal already holds. It is verified rather than
+            // skipped: a replay whose body changed is a runtime rewriting
+            // history, not a retransmission.
+            SequenceStep::Duplicate | SequenceStep::Replay => {
+                verify_replay(conn, &state.session_id, &event)?;
+                continue;
+            }
+            SequenceStep::Gap { .. } => bail!("Intern event sequence gap after {cursor}"),
+            SequenceStep::Next => {}
         }
         let remote_sequence = i64::try_from(event.remote_sequence)
             .context("Intern remote sequence exceeds SQLite range")?;
@@ -424,7 +429,7 @@ fn apply_events(
         cursor = event.remote_sequence;
         committed.push(appended);
     }
-    if next_sequence != cursor {
+    if !crate::stream_fold::cursor_reconciles(cursor, next_sequence) {
         bail!("Intern poll cursor does not match the committed event page");
     }
     conn.execute(

@@ -18,59 +18,61 @@
 //! fold subsumes this bookkeeping; until then this seam is the only server-side
 //! observation there is.
 //!
-//! # Agreement with `visuals/runtime/liveStream.ts`, and one divergence
+//! # Where the rules live now
+//!
+//! Identity, scope, the control predicate, dedupe, conflict detection and the
+//! sequence-gap scan are [`crate::stream_fold`]. This module keeps only what
+//! the *poll seam* can observe that a fold cannot: which declared stream a
+//! page came back on, how long it took to answer, whether it closed, and what
+//! failed. Everything else here is that fold, read.
 //!
 //! Two rules were written here and in the TypeScript ingest independently, in
-//! the same afternoon, and arrived at the same answer. Both hold on both sides:
+//! the same afternoon, and arrived at the same answer; both now have one home:
 //!
 //! 1. **Control envelopes keep their sequence numbers.** A gap is a claim about
-//!    the producer's sequence space and control records occupy that space, so
-//!    skipping one before recording its sequence manufactures a permanent
-//!    phantom gap for any producer that sequences its heartbeats. They count
-//!    for the gap scan and are excluded only from the evidence counts.
-//! 2. **`control: true` is honored** alongside control kinds, so the ingest and
-//!    the projector cannot disagree about what is evidence.
+//!    the producer's sequence space and control records occupy that space.
+//! 2. **`control: true` is honored** alongside control kinds.
 //!
-//! The one real divergence: `last_sequence` here is per *declared stream* and
-//! is advanced by control envelopes, where the TypeScript side keeps
-//! `lastSequenceByScope` and advances it only on evidence. Neither is wrong —
-//! they answer different questions — but a reader porting one to the other will
-//! trip on it, and the golden-fixture suite must expect the difference.
-//!
-//! When the fold moves to Rust (item 1), these rules move with it; both sides
-//! must not be edited independently again.
+//! The one real divergence — `last_sequence` per *declared stream* and
+//! advanced by control here, `lastSequenceByScope` and evidence-only in
+//! TypeScript — is **resolved in favour of evidence-only**. A stream carrying
+//! nothing but sequenced heartbeats has not advanced its evidence, and this
+//! receipt exists precisely so that a gate cannot be told otherwise. The gap
+//! scan still counts those heartbeats; the high-water mark does not. See
+//! `stream_fold.rs` rule 4.
 
 use super::models::canonicalize_bindings;
+use crate::stream_fold::{self, FoldLimits, LiveFold};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::BTreeMap;
 use std::sync::{Mutex, OnceLock, PoisonError};
 use std::time::Instant;
+
+/// One identity delivered twice with two different bodies. As above.
+pub use crate::stream_fold::EnvelopeConflict as StreamConflict;
+/// A hole in a producer's sequence space. Defined by the fold; re-exported so
+/// a reader of the receipt does not have to know where the scan lives.
+pub use crate::stream_fold::SequenceGap as StreamGap;
 
 /// Receipt envelope version. A reader that does not know this string should
 /// refuse the receipt rather than guess at its fields.
 pub const VISUAL_STREAM_RECEIPT_SCHEMA: &str = "synth.visual-stream-receipt.v1";
 
-/// Envelope identities tracked per visual before dedupe stops being exact.
+/// Bookkeeping bounds for one visual's fold.
 ///
 /// The receipt is a live, unbounded-lifetime observation of a stream that may
 /// carry hundreds of thousands of envelopes, so the bookkeeping is bounded and
 /// says when it stopped being complete. A truncated receipt reports lower
 /// bounds; it never reports a smaller number as if it were the whole count.
-const MAX_TRACKED_IDENTITIES: usize = 50_000;
-
-/// Sequence numbers tracked per scope for the gap scan. Same reasoning.
-const MAX_TRACKED_SEQUENCES: usize = 50_000;
-
-/// Retained gaps and conflicts. Both are defects; a run that produces more than
-/// this many has been answered long before the list is exhausted.
-const MAX_RETAINED_DEFECTS: usize = 64;
-
-/// Control envelope kinds, mirroring `isControlEnvelope` in `liveStream.ts`.
-const CONTROL_KINDS: &[&str] = &["stream.subscribed", "heartbeat", "stream.heartbeat", "ping"];
-
-/// The control kind that declares a subscription established.
-const SUBSCRIBED_KIND: &str = "stream.subscribed";
+/// Envelope bodies are never retained: they carry model output and rollout
+/// payloads, and a receipt is identifiers and counts.
+const RECEIPT_FOLD_LIMITS: FoldLimits = FoldLimits {
+    max_identities: 50_000,
+    max_sequences_per_scope: 50_000,
+    max_defects: 64,
+    retain_events: false,
+};
 
 /// The transport lifecycle, as the host observed it.
 ///
@@ -116,32 +118,6 @@ impl StreamTransportState {
             Self::Error => "error",
         }
     }
-}
-
-/// A hole in one scope's sequence space, reported as the two envelopes that
-/// bracket it rather than as a rendered sentence.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
-#[serde(rename_all = "camelCase")]
-pub struct StreamGap {
-    /// Producer lane, as `envelopeScope` derives it: stream, rollout, or run.
-    pub scope: String,
-    #[specta(type = specta_typescript::Number)]
-    pub after: i64,
-    #[specta(type = specta_typescript::Number)]
-    pub before: i64,
-}
-
-/// One envelope identity delivered twice with two different bodies.
-///
-/// Structured rather than the TypeScript ingest's `string[]`: the identity and
-/// the lane are the parts a caller acts on, and a message that has already been
-/// formatted for a human cannot be grouped, counted or matched.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
-#[serde(rename_all = "camelCase")]
-pub struct StreamConflict {
-    pub identity: String,
-    pub scope: String,
-    pub message: String,
 }
 
 /// Why the last poll of one stream failed, kept whole.
@@ -425,19 +401,11 @@ struct VisualState {
     first_observed_at: String,
     last_observed_at: String,
     streams: BTreeMap<String, StreamState>,
-    identities: HashMap<String, u64>,
-    sequences: BTreeMap<String, BTreeSet<i64>>,
-    gaps: Vec<StreamGap>,
-    conflicts: Vec<StreamConflict>,
-    kinds: BTreeMap<String, (u64, bool)>,
-    envelope_count: u64,
-    non_control_envelope_count: u64,
-    recovered: u64,
-    ready: bool,
-    tracking_truncated: bool,
-    /// Delivered-envelope ordinal, used only to name an envelope that carries
-    /// no identity of its own — the same last resort `envelopeIdentity` takes.
-    ordinal: u64,
+    /// The envelope accounting, in its one home. Everything this module used
+    /// to keep by hand — identities, per-scope sequence spaces, gaps,
+    /// conflicts, kind counts, `ready`, the truncation flag and the delivered
+    /// ordinal — is this.
+    fold: LiveFold,
     observed: bool,
     failed_last: bool,
 }
@@ -462,17 +430,7 @@ impl VisualState {
             first_observed_at: now.clone(),
             last_observed_at: now,
             streams: BTreeMap::new(),
-            identities: HashMap::new(),
-            sequences: BTreeMap::new(),
-            gaps: Vec::new(),
-            conflicts: Vec::new(),
-            kinds: BTreeMap::new(),
-            envelope_count: 0,
-            non_control_envelope_count: 0,
-            recovered: 0,
-            ready: false,
-            tracking_truncated: false,
-            ordinal: 0,
+            fold: LiveFold::new(RECEIPT_FOLD_LIMITS),
             observed: false,
             failed_last: false,
         }
@@ -659,120 +617,50 @@ pub fn record_poll_page(
         }
     }
 
-    let mut outcome = PollOutcome::default();
-    let mut touched_scopes: BTreeSet<String> = BTreeSet::new();
-    for event in events {
-        state.envelope_count += 1;
-        state.ordinal += 1;
-        let ordinal = state.ordinal;
+    // One fold decides what these envelopes are; this loop only writes down
+    // which declared stream they came back on. Every rule the loop used to
+    // re-implement — identity, scope, control, dedupe, conflict, the gap scan
+    // — is `stream_fold`, and the seam cannot drift from the renderer's fold
+    // because there is no second implementation to drift from.
+    let batch = state.fold.accept_batch(events.iter());
+    for step in &batch.steps {
         {
             let entry = state.stream_mut(&stream);
             entry.envelope_count += 1;
-        }
-
-        let kind = envelope_kind(event);
-        let control = is_control(event, &kind);
-        {
-            let counted = state.kinds.entry(kind.clone()).or_insert((0, control));
-            counted.0 += 1;
-            counted.1 = control;
-        }
-        if !control {
-            state.non_control_envelope_count += 1;
-        }
-        if kind == SUBSCRIBED_KIND {
-            state.ready = true;
-        }
-
-        let scope = envelope_scope(event);
-        let identity = envelope_identity(event, &scope, ordinal);
-        let digest = digest_hash(event);
-        let known = state.identities.get(&identity).copied();
-        match known {
-            Some(previous) => {
-                if previous != digest && state.conflicts.len() < MAX_RETAINED_DEFECTS {
-                    let conflict = StreamConflict {
-                        identity: identity.clone(),
-                        scope: scope.clone(),
-                        message: format!("Conflicting duplicate envelope {identity}"),
-                    };
-                    state.conflicts.push(conflict.clone());
-                    outcome.new_conflicts.push(conflict);
-                }
-                // A duplicate is delivered, not accepted: it never becomes
-                // evidence and it never re-opens a closed sequence gap.
-                continue;
-            }
-            None => {
-                if state.identities.len() >= MAX_TRACKED_IDENTITIES {
-                    state.tracking_truncated = true;
-                } else {
-                    state.identities.insert(identity, digest);
-                }
-                {
-                    let entry = state.stream_mut(&stream);
-                    entry.distinct_envelope_count += 1;
-                }
-                if !control {
-                    state.recovered += 1;
-                }
+            if step.verdict.accepted() {
+                entry.distinct_envelope_count += 1;
             }
         }
-
-        // Control envelopes keep their sequence: see the module note. Their
-        // sequence belongs to the producer's space whether or not the record
-        // is evidence, and dropping it invents a gap that never happened.
-        let Some(sequence) = numeric_sequence(event) else {
-            continue;
-        };
-        {
-            let entry = state.stream_mut(&stream);
-            entry.last_sequence = Some(
-                entry
-                    .last_sequence
-                    .map_or(sequence, |last| last.max(sequence)),
-            );
-        }
-        let full = state
-            .sequences
-            .get(&scope)
-            .is_some_and(|observed| observed.len() >= MAX_TRACKED_SEQUENCES);
-        if full {
-            state.tracking_truncated = true;
-            continue;
-        }
-        state
-            .sequences
-            .entry(scope.clone())
-            .or_default()
-            .insert(sequence);
-        touched_scopes.insert(scope);
-    }
-
-    for scope in touched_scopes {
-        let rescanned = scan_gaps(&scope, state.sequences.get(&scope));
-        let previously: BTreeSet<(i64, i64)> = state
-            .gaps
-            .iter()
-            .filter(|gap| gap.scope == scope)
-            .map(|gap| (gap.after, gap.before))
-            .collect();
-        for gap in &rescanned {
-            if !previously.contains(&(gap.after, gap.before)) {
-                outcome.new_gaps.push(gap.clone());
+        // Rule 4: the evidence high-water mark is evidence-only. A duplicate
+        // was never accepted and a control record is not evidence, so neither
+        // advances it — a stream carrying nothing but sequenced heartbeats has
+        // made no progress and this number must not say it has.
+        if step.verdict == stream_fold::FoldVerdict::Evidence {
+            if let Some(sequence) = step.sequence {
+                let entry = state.stream_mut(&stream);
+                entry.last_sequence = Some(
+                    entry
+                        .last_sequence
+                        .map_or(sequence, |last| last.max(sequence)),
+                );
             }
-        }
-        state.gaps.retain(|gap| gap.scope != scope);
-        state.gaps.extend(rescanned);
-        if state.gaps.len() > MAX_RETAINED_DEFECTS {
-            state.gaps.truncate(MAX_RETAINED_DEFECTS);
-            state.tracking_truncated = true;
         }
     }
 
     state.recompute(declared);
-    outcome.state = state.state;
-    outcome
+    // The receipt still keeps no envelope bodies — it is identifiers and
+    // counts, and that has not changed. The bodies go next door, to the
+    // live-evidence store the seal reads: this is the only seam every polled
+    // envelope passes through, so it is the only place a live-eval seal can
+    // get replayable evidence without a caller being asked to remember to
+    // attach it. A required key nobody wrote is how sealing came to be dead
+    // for every live visual; nothing here has to be remembered.
+    super::live_eval::record_live_evidence(visual_id, revision, &stream.stream_id, events);
+    PollOutcome {
+        new_gaps: batch.new_gaps,
+        new_conflicts: batch.new_conflicts,
+        state: state.state,
+    }
 }
 
 /// Record a poll the host could not complete, or refused to issue.
@@ -838,47 +726,25 @@ pub fn receipt(visual_id: &str, revision: i64, declared: &DeclaredStreams) -> St
         closed_stream_count: streams.iter().filter(|stream| stream.closed).count() as u64,
         streams_missing_transport: declared.missing_transport.clone(),
         streams,
-        gaps: state.gaps.clone(),
-        conflicts: state.conflicts.clone(),
-        ready: state.ready,
-        recovered: state.recovered,
-        envelope_count: state.envelope_count,
-        non_control_envelope_count: state.non_control_envelope_count,
+        gaps: state.fold.gaps().to_vec(),
+        conflicts: state.fold.conflicts().to_vec(),
+        ready: state.fold.ready(),
+        recovered: state.fold.evidence_count(),
+        envelope_count: state.fold.delivered(),
+        non_control_envelope_count: state.fold.delivered_non_control(),
         envelopes_by_kind: state
-            .kinds
-            .iter()
-            .map(|(kind, (count, control))| StreamKindCount {
-                kind: kind.clone(),
-                count: *count,
-                control: *control,
+            .fold
+            .kinds()
+            .map(|(kind, count, control)| StreamKindCount {
+                kind: kind.to_string(),
+                count,
+                control,
             })
             .collect(),
-        tracking_truncated: state.tracking_truncated,
+        tracking_truncated: state.fold.truncated(),
         first_observed_at: state.observed.then(|| state.first_observed_at.clone()),
         last_observed_at: state.observed.then(|| state.last_observed_at.clone()),
     }
-}
-
-/// Scan one scope's observed sequences for holes.
-fn scan_gaps(scope: &str, observed: Option<&BTreeSet<i64>>) -> Vec<StreamGap> {
-    let Some(observed) = observed else {
-        return Vec::new();
-    };
-    let mut gaps = Vec::new();
-    let mut previous: Option<i64> = None;
-    for sequence in observed {
-        if let Some(last) = previous {
-            if *sequence > last.saturating_add(1) {
-                gaps.push(StreamGap {
-                    scope: scope.to_string(),
-                    after: last,
-                    before: *sequence,
-                });
-            }
-        }
-        previous = Some(*sequence);
-    }
-    gaps
 }
 
 /// The three page shapes producers emit, read the way `parseReplayPage` reads
@@ -904,152 +770,23 @@ fn page_closed(page: &Value) -> bool {
         .unwrap_or(false)
 }
 
-fn page_cursor_next(page: &Value) -> Option<i64> {
-    page.pointer("/cursor/next").and_then(as_integer)
-}
-
-fn envelope_kind(event: &Value) -> String {
-    non_empty(event.get("kind"))
-        .or_else(|| non_empty(event.get("type")))
-        .unwrap_or_default()
-}
-
-fn is_control(event: &Value, kind: &str) -> bool {
-    if event.get("control").and_then(Value::as_bool) == Some(true) {
-        return true;
-    }
-    CONTROL_KINDS.contains(&kind)
-}
-
-/// Producers may carry transport identity in the envelope payload, so the
-/// declared identity is promoted here exactly as `envelopeScope` promotes it.
-fn envelope_scope(event: &Value) -> String {
-    stream_id(event)
-        .or_else(|| non_empty(event.get("rollout_id")))
-        .or_else(|| payload_string(event, &["rollout_id"]))
-        .or_else(|| non_empty(event.get("lane")))
-        .or_else(|| payload_string(event, &["lane"]))
-        .or_else(|| non_empty(event.get("run_id")))
-        .or_else(|| payload_string(event, &["run_id"]))
-        .unwrap_or_else(|| "run".to_string())
-}
-
-/// Sequence and `event_id` are monotonic only within a rollout. A multiplexed
-/// run legitimately contains ten `event_id: "1"` records, so identity keeps the
-/// producer lane: treating `event_id` as globally unique drops all but one lane
-/// while still making the aggregate lane count look valid.
-fn envelope_identity(event: &Value, scope: &str, ordinal: u64) -> String {
-    let sequence = sequence_label(event);
-    if let (Some(stream), Some(sequence)) = (stream_id(event), sequence.as_deref()) {
-        if !sequence.is_empty() {
-            return format!("{stream}:{sequence}");
-        }
-    }
-    if let Some(event_id) = non_empty(event.get("event_id")) {
-        return format!("{scope}:{event_id}");
-    }
-    if let Some(sequence) = sequence.as_deref().filter(|value| !value.is_empty()) {
-        return format!("{scope}:{sequence}");
-    }
-    let kind = non_empty(event.get("kind"))
-        .or_else(|| non_empty(event.get("type")))
-        .unwrap_or_else(|| "event".to_string());
-    let stamp = non_empty(event.get("occurred_at"))
-        .or_else(|| non_empty(event.get("ts")))
-        .unwrap_or_else(|| ordinal.to_string());
-    format!("{scope}:{kind}:{stamp}")
-}
-
-fn stream_id(event: &Value) -> Option<String> {
-    non_empty(event.get("stream_id")).or_else(|| payload_string(event, &["stream_id", "stream.id"]))
-}
-
-/// `sequence_number ?? sequence`, with an explicit JSON `null` treated as
-/// absent the way the renderer's nullish coalescing treats it.
-fn raw_sequence(event: &Value) -> Option<&Value> {
-    for key in ["sequence_number", "sequence"] {
-        match event.get(key) {
-            Some(value) if !value.is_null() => return Some(value),
-            _ => {}
-        }
-    }
-    None
-}
-
-fn sequence_label(event: &Value) -> Option<String> {
-    raw_sequence(event).map(|value| match value {
-        Value::String(text) => text.clone(),
-        other => other.to_string(),
-    })
-}
-
-/// The sequence as a number, or nothing.
+/// The producer's own cursor, passed through rather than recomputed.
 ///
-/// A producer may sequence with opaque strings — the multiplexed Craftax
-/// fixture does — and those lanes are simply not gap-scannable. Coercing them
-/// to an ordinal would invent a sequence space and then report holes in it.
-fn numeric_sequence(event: &Value) -> Option<i64> {
-    raw_sequence(event).and_then(as_integer)
-}
-
-fn as_integer(value: &Value) -> Option<i64> {
-    match value {
-        Value::Number(number) => number.as_i64().or_else(|| {
-            number
-                .as_f64()
-                .filter(|f| f.fract() == 0.0)
-                .map(|f| f as i64)
-        }),
+/// A cursor is never derived from a sequence number: the multiplexed Craftax
+/// fixture sequences with opaque strings, and a recomputed cursor there walks
+/// a stream that does not exist.
+fn page_cursor_next(page: &Value) -> Option<i64> {
+    match page.pointer("/cursor/next")? {
+        Value::Number(number) => number.as_i64(),
         Value::String(text) => text.trim().parse::<i64>().ok(),
         _ => None,
     }
-}
-
-fn payload_string(event: &Value, keys: &[&str]) -> Option<String> {
-    let payload = event.get("payload")?;
-    keys.iter().find_map(|key| non_empty(payload.get(*key)))
-}
-
-fn non_empty(value: Option<&Value>) -> Option<String> {
-    value
-        .and_then(Value::as_str)
-        .filter(|text| !text.is_empty())
-        .map(str::to_string)
-}
-
-/// The producer's own digest when it declares one, the body otherwise.
-///
-/// Only equality matters: this decides whether the same identity arrived twice
-/// with two different bodies. Envelope bodies carry model output and rollout
-/// payloads, so the receipt keeps the hash and never the body.
-fn digest_hash(event: &Value) -> u64 {
-    use std::hash::{Hash, Hasher};
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    match event.get("digest").and_then(Value::as_str) {
-        Some(digest) => digest.hash(&mut hasher),
-        None => serde_json::to_string(event)
-            .unwrap_or_default()
-            .hash(&mut hasher),
-    }
-    hasher.finish()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
-
-    fn observed_sequences(values: &[i64]) -> BTreeSet<i64> {
-        values.iter().copied().collect()
-    }
-
-    fn gap(scope: &str, after: i64, before: i64) -> StreamGap {
-        StreamGap {
-            scope: scope.to_string(),
-            after,
-            before,
-        }
-    }
 
     /// One declared stream and a visual id nothing else in this file uses.
     ///
@@ -1093,313 +830,19 @@ mod tests {
             .map(|row| (row.count, row.control))
     }
 
-    // ---------------------------------------------------------------- gaps
-
-    #[test]
-    fn an_unscanned_scope_has_no_gaps() {
-        assert!(scan_gaps("roll_a", None).is_empty());
-        assert!(scan_gaps("roll_a", Some(&observed_sequences(&[]))).is_empty());
-        assert!(scan_gaps("roll_a", Some(&observed_sequences(&[7]))).is_empty());
+    fn gap(scope: &str, after: i64, before: i64) -> StreamGap {
+        StreamGap {
+            scope: scope.to_string(),
+            after,
+            before,
+        }
     }
 
-    #[test]
-    fn a_contiguous_run_has_no_gaps() {
-        assert!(scan_gaps("roll_a", Some(&observed_sequences(&[1, 2, 3, 4]))).is_empty());
-        // Sequence spaces do not have to start at one.
-        assert!(scan_gaps("roll_a", Some(&observed_sequences(&[9, 10, 11]))).is_empty());
-    }
-
-    #[test]
-    fn one_missing_sequence_is_one_gap_bracketed_by_its_neighbours() {
-        assert_eq!(
-            scan_gaps("roll_a", Some(&observed_sequences(&[1, 2, 4, 5]))),
-            vec![gap("roll_a", 2, 4)]
-        );
-        // A wide hole is still one gap: `after`/`before` bracket it, they do
-        // not enumerate it.
-        assert_eq!(
-            scan_gaps("roll_a", Some(&observed_sequences(&[1, 1000]))),
-            vec![gap("roll_a", 1, 1000)]
-        );
-    }
-
-    #[test]
-    fn every_hole_is_reported_separately_and_in_order() {
-        assert_eq!(
-            scan_gaps("roll_a", Some(&observed_sequences(&[1, 4, 5, 9]))),
-            vec![gap("roll_a", 1, 4), gap("roll_a", 5, 9)]
-        );
-    }
-
-    #[test]
-    fn gap_bounds_are_signed_and_saturate_at_the_edges() {
-        assert_eq!(
-            scan_gaps("roll_a", Some(&observed_sequences(&[-3, -2, 0]))),
-            vec![gap("roll_a", -2, 0)]
-        );
-        assert!(scan_gaps("roll_a", Some(&observed_sequences(&[-1, 0, 1]))).is_empty());
-        // `saturating_add` keeps the far edge from wrapping into a phantom
-        // "no gap" answer.
-        assert_eq!(
-            scan_gaps("roll_a", Some(&observed_sequences(&[i64::MIN, i64::MAX]))),
-            vec![gap("roll_a", i64::MIN, i64::MAX)]
-        );
-        assert!(scan_gaps(
-            "roll_a",
-            Some(&observed_sequences(&[i64::MAX - 1, i64::MAX]))
-        )
-        .is_empty());
-    }
-
-    #[test]
-    fn a_gap_names_the_scope_it_was_scanned_for() {
-        let gaps = scan_gaps("craftax:3", Some(&observed_sequences(&[1, 3])));
-        assert_eq!(gaps.len(), 1);
-        assert_eq!(gaps[0].scope, "craftax:3");
-    }
-
-    // ------------------------------------------------------------ sequence
-
-    #[test]
-    fn an_absent_sequence_is_absent_and_never_zero() {
-        // `Number(null)` and `Number("")` are both 0 in JavaScript, which
-        // manufactured a phantom gap before sequence 1 in the TypeScript twin.
-        assert_eq!(numeric_sequence(&json!({"kind": "rollout.step"})), None);
-        assert_eq!(numeric_sequence(&json!({"sequence": Value::Null})), None);
-        assert_eq!(numeric_sequence(&json!({"sequence": ""})), None);
-        assert_eq!(
-            numeric_sequence(&json!({"sequence_number": Value::Null})),
-            None
-        );
-    }
-
-    #[test]
-    fn sequence_number_wins_over_sequence_and_null_falls_through() {
-        assert_eq!(
-            numeric_sequence(&json!({"sequence_number": 4, "sequence": 9})),
-            Some(4)
-        );
-        assert_eq!(
-            numeric_sequence(&json!({"sequence_number": Value::Null, "sequence": 9})),
-            Some(9)
-        );
-        // An empty string is present, not null, so it stops the search the way
-        // `??` stops on a non-nullish value. Pins current behaviour: `sequence`
-        // is not consulted behind an empty `sequence_number`.
-        assert_eq!(
-            numeric_sequence(&json!({"sequence_number": "", "sequence": 9})),
-            None
-        );
-    }
-
-    #[test]
-    fn numeric_strings_are_read_and_opaque_strings_are_not() {
-        assert_eq!(numeric_sequence(&json!({"sequence": "12"})), Some(12));
-        assert_eq!(numeric_sequence(&json!({"sequence": " 7 "})), Some(7));
-        assert_eq!(numeric_sequence(&json!({"sequence": "-4"})), Some(-4));
-        // The multiplexed Craftax fixture sequences with opaque strings. Those
-        // lanes are simply not gap-scannable; coercing them to an ordinal
-        // would invent a sequence space and then report holes in it.
-        assert_eq!(numeric_sequence(&json!({"sequence": "evt_3"})), None);
-        assert_eq!(numeric_sequence(&json!({"sequence": "3a"})), None);
-        // Pins current behaviour: a fractional sequence is not an integer
-        // sequence, in either wire shape. The TypeScript twin keeps `1.5`.
-        assert_eq!(numeric_sequence(&json!({"sequence": "1.5"})), None);
-        assert_eq!(numeric_sequence(&json!({"sequence": 1.5})), None);
-        assert_eq!(numeric_sequence(&json!({"sequence": 3.0})), Some(3));
-    }
-
-    #[test]
-    fn a_non_scalar_sequence_is_not_a_sequence() {
-        assert_eq!(numeric_sequence(&json!({"sequence": true})), None);
-        assert_eq!(numeric_sequence(&json!({"sequence": [1]})), None);
-        assert_eq!(numeric_sequence(&json!({"sequence": {"n": 1}})), None);
-        assert_eq!(numeric_sequence(&json!({"sequence": -9})), Some(-9));
-    }
-
-    // --------------------------------------------------------------- scope
-
-    #[test]
-    fn scope_prefers_the_declared_stream_then_the_rollout_lane() {
-        // Pins current behaviour, matching `envelopeScope`: a declared
-        // `stream_id` outranks `rollout_id`, so a producer that multiplexes
-        // several rollouts under one stream id shares one sequence space.
-        assert_eq!(
-            envelope_scope(&json!({"stream_id": "craftax:0", "rollout_id": "roll_a"})),
-            "craftax:0"
-        );
-        assert_eq!(envelope_scope(&json!({"rollout_id": "roll_a"})), "roll_a");
-        assert_eq!(
-            envelope_scope(&json!({"lane": "lane_a", "run_id": "run_a"})),
-            "lane_a"
-        );
-        assert_eq!(envelope_scope(&json!({"run_id": "run_a"})), "run_a");
-    }
-
-    #[test]
-    fn scope_promotes_identity_carried_in_the_payload() {
-        assert_eq!(
-            envelope_scope(&json!({"payload": {"stream_id": "craftax:1"}})),
-            "craftax:1"
-        );
-        assert_eq!(
-            envelope_scope(&json!({"payload": {"stream.id": "craftax:2"}})),
-            "craftax:2"
-        );
-        assert_eq!(
-            envelope_scope(&json!({"payload": {"rollout_id": "roll_b"}})),
-            "roll_b"
-        );
-        assert_eq!(
-            envelope_scope(&json!({"payload": {"lane": "lane_b"}})),
-            "lane_b"
-        );
-        assert_eq!(
-            envelope_scope(&json!({"payload": {"run_id": "run_b"}})),
-            "run_b"
-        );
-        // A top-level lane still outranks a payload-carried run id.
-        assert_eq!(
-            envelope_scope(&json!({"lane": "lane_c", "payload": {"run_id": "run_c"}})),
-            "lane_c"
-        );
-    }
-
-    #[test]
-    fn an_unidentified_envelope_falls_back_to_the_run_scope() {
-        assert_eq!(envelope_scope(&json!({})), "run");
-        assert_eq!(envelope_scope(&json!({"kind": "rollout.step"})), "run");
-        // Empty strings are absent, not identities.
-        assert_eq!(
-            envelope_scope(&json!({"stream_id": "", "rollout_id": ""})),
-            "run"
-        );
-        // Pins current behaviour: identity fields must be strings. A numeric
-        // `rollout_id` is ignored rather than stringified.
-        assert_eq!(envelope_scope(&json!({"rollout_id": 7})), "run");
-        assert_eq!(
-            envelope_scope(&json!({"rollout_id": 7, "run_id": "run_d"})),
-            "run_d"
-        );
-    }
-
-    // ------------------------------------------------------------ identity
-
-    #[test]
-    fn a_stream_and_a_sequence_name_an_envelope_outright() {
-        assert_eq!(
-            envelope_identity(
-                &json!({"stream_id": "craftax:0", "sequence": 7}),
-                "craftax:0",
-                1
-            ),
-            "craftax:0:7"
-        );
-        // A string sequence is kept verbatim, so a producer that writes "7"
-        // and one that writes 7 name the same record. Pins current behaviour.
-        assert_eq!(
-            envelope_identity(
-                &json!({"stream_id": "craftax:0", "sequence": "7"}),
-                "craftax:0",
-                1
-            ),
-            "craftax:0:7"
-        );
-        assert_eq!(
-            envelope_identity(
-                &json!({"stream_id": "craftax:0", "sequence": "a1"}),
-                "craftax:0",
-                1
-            ),
-            "craftax:0:a1"
-        );
-        // `sequence_number` is preferred here too.
-        assert_eq!(
-            envelope_identity(
-                &json!({"stream_id": "s", "sequence_number": 2, "sequence": 9}),
-                "s",
-                1
-            ),
-            "s:2"
-        );
-    }
-
-    #[test]
-    fn identity_keeps_the_producer_lane_so_a_multiplexed_run_does_not_collapse() {
-        // Sequence and `event_id` are monotonic only within a rollout: ten
-        // lanes legitimately carry ten `event_id: "1"` records, and treating
-        // that id as globally unique drops nine of them.
-        let one = json!({"rollout_id": "roll_a", "event_id": "1"});
-        let two = json!({"rollout_id": "roll_b", "event_id": "1"});
-        assert_eq!(
-            envelope_identity(&one, &envelope_scope(&one), 1),
-            "roll_a:1"
-        );
-        assert_eq!(
-            envelope_identity(&two, &envelope_scope(&two), 2),
-            "roll_b:1"
-        );
-        assert_ne!(
-            envelope_identity(&one, &envelope_scope(&one), 1),
-            envelope_identity(&two, &envelope_scope(&two), 2)
-        );
-    }
-
-    #[test]
-    fn identity_falls_from_event_id_to_sequence_to_kind_and_stamp() {
-        assert_eq!(
-            envelope_identity(&json!({"event_id": "e1", "sequence": 3}), "roll_a", 1),
-            "roll_a:e1",
-            "an event id outranks a sequence once no stream id is declared"
-        );
-        assert_eq!(
-            envelope_identity(&json!({"sequence": 3}), "roll_a", 1),
-            "roll_a:3"
-        );
-        assert_eq!(
-            envelope_identity(&json!({"kind": "tick", "occurred_at": "T0"}), "roll_a", 4),
-            "roll_a:tick:T0"
-        );
-        assert_eq!(
-            envelope_identity(&json!({"type": "tick", "ts": "T1"}), "roll_a", 4),
-            "roll_a:tick:T1",
-            "`type` stands in for `kind`, and `ts` for `occurred_at`"
-        );
-        assert_eq!(
-            envelope_identity(&json!({"kind": "tick"}), "roll_a", 4),
-            "roll_a:tick:4",
-            "with no stamp of its own an envelope is named by its delivery ordinal"
-        );
-        assert_eq!(envelope_identity(&json!({}), "run", 9), "run:event:9");
-    }
-
-    #[test]
-    fn an_empty_sequence_does_not_name_an_envelope() {
-        // A declared stream plus an empty sequence is not an identity; the
-        // scan falls through rather than minting `stream:`.
-        assert_eq!(
-            envelope_identity(
-                &json!({"stream_id": "s", "sequence": "", "event_id": "e1"}),
-                "s",
-                1
-            ),
-            "s:e1"
-        );
-        assert_eq!(
-            envelope_identity(
-                &json!({"stream_id": "s", "sequence": "", "kind": "tick"}),
-                "s",
-                2
-            ),
-            "s:tick:2"
-        );
-        // Pins current behaviour: a numeric `ts` is not a stamp, so the
-        // ordinal is used instead.
-        assert_eq!(
-            envelope_identity(&json!({"kind": "tick", "ts": 1700}), "run", 5),
-            "run:tick:5"
-        );
-    }
+    // Identity, scope, the control predicate, the sequence reading and the gap
+    // scan are `crate::stream_fold`, and are tested there — including against
+    // every checked-in fixture through the golden suite. What is tested here is
+    // what only this seam can be wrong about: which declared stream a page came
+    // back on, and what the receipt then says out loud.
 
     // ------------------------------------------------------- the poll seam
 
@@ -1437,9 +880,9 @@ mod tests {
         assert_eq!(kind_row(&card, "rollout.step"), Some((2, false)));
         assert_eq!(card.streams[0].envelope_count, 3);
         assert_eq!(card.streams[0].distinct_envelope_count, 3);
-        // Pins current behaviour, and a divergence from the TypeScript fold:
-        // `last_sequence` is the highest sequence delivered on the stream,
-        // control records included, rather than an evidence high-water mark.
+        // The resolved rule (`stream_fold` rule 4): `last_sequence` is an
+        // evidence high-water mark. The heartbeat at sequence 2 holds the
+        // producer's numbering contiguous for the gap scan and stops there.
         assert_eq!(card.streams[0].last_sequence, Some(3));
         assert_eq!(card.state, StreamTransportState::Live);
         assert!(card.observed);
@@ -1793,13 +1236,13 @@ mod tests {
     fn tracking_stops_at_its_bound_and_the_receipt_says_so() {
         let (visual, url, declared) = seam("tracking-bound");
         assert_eq!(
-            MAX_TRACKED_IDENTITIES, MAX_TRACKED_SEQUENCES,
+            RECEIPT_FOLD_LIMITS.max_identities, RECEIPT_FOLD_LIMITS.max_sequences_per_scope,
             "this test fills both bounds with a single run"
         );
         // A contiguous run exactly to the bound. Both the identity map and the
         // scope's sequence set are now full, but nothing has been dropped, so
         // the receipt is still complete.
-        let full_run: Vec<Value> = (1..=MAX_TRACKED_SEQUENCES as i64)
+        let full_run: Vec<Value> = (1..=RECEIPT_FOLD_LIMITS.max_sequences_per_scope as i64)
             .map(|sequence| {
                 json!({
                     "kind": "rollout.step",
@@ -1816,14 +1259,17 @@ mod tests {
             "the bound itself is still complete"
         );
         assert!(card.gaps.is_empty());
-        assert_eq!(card.envelope_count, MAX_TRACKED_SEQUENCES as u64);
+        assert_eq!(
+            card.envelope_count,
+            RECEIPT_FOLD_LIMITS.max_sequences_per_scope as u64
+        );
         assert_eq!(
             card.streams[0].distinct_envelope_count,
-            MAX_TRACKED_SEQUENCES as u64
+            RECEIPT_FOLD_LIMITS.max_sequences_per_scope as u64
         );
         assert_eq!(
             card.streams[0].last_sequence,
-            Some(MAX_TRACKED_SEQUENCES as i64)
+            Some(RECEIPT_FOLD_LIMITS.max_sequences_per_scope as i64)
         );
 
         // One real hole, past the bound, delivered twice. Neither the identity
@@ -1840,13 +1286,13 @@ mod tests {
                     "kind": "rollout.step",
                     "rollout_id": "roll_a",
                     "event_id": "overflow",
-                    "sequence": MAX_TRACKED_SEQUENCES as i64 + 2,
+                    "sequence": RECEIPT_FOLD_LIMITS.max_sequences_per_scope as i64 + 2,
                 },
                 {
                     "kind": "rollout.step",
                     "rollout_id": "roll_a",
                     "event_id": "overflow",
-                    "sequence": MAX_TRACKED_SEQUENCES as i64 + 2,
+                    "sequence": RECEIPT_FOLD_LIMITS.max_sequences_per_scope as i64 + 2,
                 },
             ])),
         );
@@ -1857,17 +1303,20 @@ mod tests {
             "the hole past the bound is real but unscannable, so it is not claimed"
         );
         assert!(card.conflicts.is_empty());
-        assert_eq!(card.envelope_count, MAX_TRACKED_SEQUENCES as u64 + 2);
+        assert_eq!(
+            card.envelope_count,
+            RECEIPT_FOLD_LIMITS.max_sequences_per_scope as u64 + 2
+        );
         assert_eq!(
             card.streams[0].distinct_envelope_count,
-            MAX_TRACKED_SEQUENCES as u64 + 2,
+            RECEIPT_FOLD_LIMITS.max_sequences_per_scope as u64 + 2,
             "past the bound an unrecognised duplicate counts as distinct"
         );
         // The high-water mark is read before the bound check, so it still
         // advances. Pins current behaviour.
         assert_eq!(
             card.streams[0].last_sequence,
-            Some(MAX_TRACKED_SEQUENCES as i64 + 2)
+            Some(RECEIPT_FOLD_LIMITS.max_sequences_per_scope as i64 + 2)
         );
     }
 
