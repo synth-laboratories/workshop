@@ -207,28 +207,32 @@ impl CapabilityStore {
         handles
     }
 
-    /// Reserve the next provider request start for a capability. Reserving a
-    /// slot is separate from `reserve_call`: retries of one logical request
-    /// must be paced, but must not consume additional model-call budget.
+    /// Claim the provider request-start boundary only when it is currently
+    /// eligible. Waiters observe the same boundary without pushing later
+    /// requests into speculative future slots.
     fn request_start_delay_at(&self, handle: &str, now: Instant, interval: Duration) -> Duration {
         let mut next = self
             .next_request_at
             .lock()
             .expect("capability request pacer");
-        let start = next.get(handle).copied().unwrap_or(now);
-        let delay = start.saturating_duration_since(now);
-        let scheduled = if delay.is_zero() { now } else { start };
-        next.insert(handle.to_owned(), scheduled + interval);
+        let eligible_at = next.get(handle).copied().unwrap_or(now);
+        let delay = eligible_at.saturating_duration_since(now);
+        if delay.is_zero() {
+            next.insert(handle.to_owned(), now + interval);
+        }
         delay
     }
 
     pub async fn pace_request_start(&self, handle: &str) {
-        let delay = self.request_start_delay_at(
-            handle,
-            Instant::now(),
-            crate::limits::CREDENTIAL_UPSTREAM_MIN_INTERVAL,
-        );
-        if !delay.is_zero() {
+        loop {
+            let delay = self.request_start_delay_at(
+                handle,
+                Instant::now(),
+                crate::limits::CREDENTIAL_UPSTREAM_MIN_INTERVAL,
+            );
+            if delay.is_zero() {
+                return;
+            }
             tokio::time::sleep(delay).await;
         }
     }
@@ -513,7 +517,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn request_pacer_schedules_starts_at_the_configured_interval() {
+    fn request_pacer_does_not_stack_waiters_into_future_windows() {
         let store = CapabilityStore::new();
         let now = Instant::now();
         let interval = Duration::from_secs(6);
@@ -528,7 +532,7 @@ mod tests {
         );
         assert_eq!(
             store.request_start_delay_at("wcap_test", now + interval, interval),
-            interval
+            Duration::ZERO
         );
         assert_eq!(
             store.request_start_delay_at("wcap_other", now, interval),
