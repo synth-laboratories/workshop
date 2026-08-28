@@ -7935,6 +7935,30 @@ html.visual-expanded .sidebar {
 .optimizer-inspector dt { color: var(--color-text-faint); }
 .optimizer-inspector dd { text-align: right; color: var(--color-text); overflow-wrap: anywhere; }
 .optimizer-inspector-actions { display: flex; flex-wrap: wrap; gap: 7px; }
+/* Run identity: the id is the primary handle for support and cross-tool work,
+   so it is mono, wrappable, and one click from the clipboard. */
+.optimizer-run-id-row { display: flex; align-items: center; gap: 7px; margin: 0 0 14px; }
+.optimizer-run-id { flex: 1; min-width: 0; padding: 5px 8px; overflow-wrap: anywhere; border: 1px solid var(--color-border); border-radius:var(--radius-sm); background: var(--color-bg-subtle); color: var(--color-text); font: var(--fs-micro)/var(--lh-tight) var(--code-font-family); }
+.optimizer-run-id-row button { min-height: 27px; padding: 0 8px; white-space: nowrap; }
+.optimizer-inspector-digest { overflow-wrap: anywhere; font: var(--fs-micro)/var(--lh-tight) var(--code-font-family); }
+.optimizer-inspector-view-error { color: var(--tone-warn-fg); font-size:var(--fs-micro); }
+.optimizer-phase-strip { display: flex; flex-wrap: wrap; gap: 4px 6px; margin: 0 0 8px; padding: 0; list-style: none; }
+.optimizer-phase-strip li { display: inline-flex; align-items: baseline; gap: 5px; color: var(--color-text-faint); font-size:var(--fs-micro); font-weight: var(--fw-semi); }
+.optimizer-phase-strip li:not(:last-child)::after { content: "→"; color: var(--color-border-dashed); }
+.optimizer-phase-strip li small { color: var(--color-text-faint); font-weight: var(--fw-regular); }
+.optimizer-phase-strip li[data-phase-status="active"] { color: var(--color-selection); }
+.optimizer-phase-strip li[data-phase-status="completed"] { color: var(--tone-success-fg); }
+.optimizer-phase-strip li[data-phase-status="failed"] { color: var(--tone-danger-fg); }
+.optimizer-phase-strip li[data-phase-status="skipped"] { text-decoration: line-through; }
+.optimizer-run-progress .run-progress-metrics { display: flex; flex-wrap: wrap; gap: 4px 10px; margin: 6px 0 0; font-size:var(--fs-micro); }
+/* The per-seed trial table scrolls inside its own container; the page never
+   scrolls horizontally for it. */
+.optimizer-trials { margin: 0 0 16px; padding: 11px 12px; border: 1px solid var(--color-border); background: var(--color-bg-subtle); }
+.optimizer-trials .optimizer-training-title small { color: var(--color-text-muted); }
+.optimizer-trials-scroll { overflow-x: auto; }
+.optimizer-trials table { width: 100%; border-collapse: collapse; }
+.optimizer-trials th { padding: 4px 6px; border-bottom: 1px solid var(--color-border); color: var(--color-text-faint); font-size:var(--fs-micro); font-weight: var(--fw-semi); letter-spacing: .055em; text-align: left; text-transform: uppercase; white-space: nowrap; }
+.optimizer-trials td { padding: 4px 6px; border-bottom: 1px solid var(--color-border); color: var(--color-text); font: var(--fs-micro)/var(--lh-tight) var(--code-font-family); }
 .optimizer-training-progress { margin: 0 0 16px; padding: 11px 12px; border: 1px solid var(--color-border); background: var(--color-bg-subtle); }
 .optimizer-training-title { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 8px; }
 .optimizer-training-progress dl { margin-bottom: 10px; }

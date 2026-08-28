@@ -9,6 +9,8 @@ import { findPluginStatus, pluginPresentation, type PluginPresentation } from ".
 import { publicError } from "../runtime/publicError";
 import { TrainingWorkspace } from "./TrainingWorkspace";
 import { TrainingEvaluationCurve } from "./TrainingEvaluationCurve";
+import { RunInspector } from "./optimizers/RunInspector";
+import { algorithmLabel, formatWhen, runTitle, statusChipClass, statusText } from "./optimizers/runPresentation";
 
 type OptimizerGuide = {
 	id: "gepa" | "go-ex" | "sft" | "cispo" | "ppo" | "eval";
@@ -69,29 +71,12 @@ function isWorkspaceBaselineEval(recipe: OptimizerRecipeInfo): boolean {
 	return recipe.algorithmId === "eval" && recipe.source === "workspace" && recipe.semantics === "baseline_eval";
 }
 
-function formatWhen(iso: string): string {
-	try {
-		return new Date(iso).toLocaleString();
-	} catch {
-		return iso;
-	}
-}
-
 function formatBytes(value: number | null | undefined): string {
 	if (value == null) return "—";
 	if (value < 1024) return `${value} B`;
 	if (value < 1024 ** 2) return `${(value / 1024).toFixed(1)} KB`;
 	if (value < 1024 ** 3) return `${(value / 1024 ** 2).toFixed(1)} MB`;
 	return `${(value / 1024 ** 3).toFixed(1)} GB`;
-}
-
-function algorithmLabel(id: string): string {
-	if (id === "gepa") return "GEPA";
-	if (id === "go-ex") return "GELO";
-	if (id === "sft") return "SFT";
-	if (id === "cispo") return "CISPO · slime";
-	if (id === "eval") return "Eval";
-	return id;
 }
 
 type EvalScorecard = {
@@ -146,14 +131,6 @@ function checkpointValue(value: unknown): Record<string, unknown> {
 	return objectValue(payload.checkpoint ?? payload);
 }
 
-type OptimizerDiagnostic = {
-	title: string;
-	message: string;
-	field?: string;
-	raw?: string;
-	logPath?: string;
-};
-
 type ErrorPresentation = {
 	message: string;
 	details?: string;
@@ -185,36 +162,6 @@ function presentError(reason: unknown): ErrorPresentation {
 		return { message, details };
 	}
 	return { message: "The optimizer operation failed." };
-}
-
-function optimizerDiagnostic(error: unknown): OptimizerDiagnostic | null {
-	if (!error) return null;
-	const value = typeof error === "object" ? error as Record<string, unknown> : {};
-	const message = typeof error === "string"
-		? error
-		: typeof value.message === "string" ? value.message : publicError(error);
-	const raw = typeof value.stderrTail === "string" ? value.stderrTail : message;
-	const missingField = raw.match(/configuration error:\s*([a-z0-9_.]+)\s+is required and must be positive/i)?.[1];
-	if (missingField) {
-		const estimate = missingField.includes("rollout") ? "rollout" : missingField.includes("proposer") ? "proposer" : "optimizer";
-		return {
-			title: `Missing ${estimate} cost estimate`,
-			message: "The safety budget rejected this recipe before compute started.",
-			field: missingField,
-			raw,
-			logPath: typeof value.logPath === "string" ? value.logPath : undefined
-		};
-	}
-	return {
-		title: "Optimizer run failed",
-		message,
-		raw: raw !== message ? raw : undefined,
-		logPath: typeof value.logPath === "string" ? value.logPath : undefined
-	};
-}
-
-function fileName(path: string): string {
-	return path.split(/[\\/]/).filter(Boolean).at(-1) ?? path;
 }
 
 /**
@@ -280,25 +227,6 @@ const LIFECYCLE_ACTIONS: readonly LifecycleAction[] = [
 		available: (status) => status.installedVersion != null
 	}
 ];
-
-function runTitle(run: OptimizerRunRecord): string {
-	const objective = run.objective ?? run.id;
-	const importedPath = objective.startsWith("imported from ")
-		? objective.slice("imported from ".length)
-		: null;
-	if (!importedPath) return objective;
-	const parts = importedPath.split(/[\\/]/).filter(Boolean);
-	let artifactName = parts.at(-1)?.includes("events.") ? parts.at(-2) : parts.at(-1);
-	if (artifactName === "artifacts") artifactName = parts.at(-3);
-	const algorithmTokens = new Set([run.algorithmId, algorithmLabel(run.algorithmId), "goex"]
-		.map((token) => token.toLowerCase().replace(/[^a-z0-9]/g, "")));
-	return (artifactName ?? run.id)
-		.split(/[_-]+/g)
-		.filter((token) => !algorithmTokens.has(token.toLowerCase().replace(/[^a-z0-9]/g, "")))
-		.join(" ")
-		.replace(/\bmed\b/gi, "medium")
-		.replace(/\b\w/g, (character) => character.toUpperCase());
-}
 
 export function OptimizersPage({
 	onOpenVisual,
@@ -879,10 +807,6 @@ export function OptimizersPage({
 					? "Cloud managed"
 					: "Local process"
 		: null;
-	const selectedDiagnostic = optimizerDiagnostic(selected?.error);
-	const selectedRunDirectory = selected && typeof selected.summary?.runDirectory === "string"
-		? selected.summary.runDirectory
-		: null;
 	const selectedTrainingUsage = trainingProjection?.provider_usage ?? null;
 	const selectedTrainingCheckpoints = trainingProjection?.checkpoints.map(checkpointValue) ?? [];
 	const selectedTrainingEvaluations = trainingProjection?.evaluations ?? [];
@@ -1269,7 +1193,7 @@ export function OptimizersPage({
 									onClick={() => setSelectedId(run.id)}
 								>
 									<span className="optimizer-run-main"><span className="optimizer-algorithm">{algorithmLabel(run.algorithmId)}</span><strong>{runTitle(run)}</strong><small>{formatWhen(run.finishedAt ?? run.startedAt ?? run.createdAt)}</small></span>
-									<span className="optimizer-run-meta"><span className={`optimizer-status ${run.status}`}>{run.status}</span><small>{run.source} · {run.usage.costUsd == null ? "—" : `$${run.usage.costUsd.toFixed(2)}`}</small></span>
+									<span className="optimizer-run-meta"><span className={statusChipClass(run.status)}>{statusText(run.status)}</span><small>{run.source} · {run.usage.costUsd == null ? "—" : `$${run.usage.costUsd.toFixed(2)}`}</small></span>
 								</button>
 							</li>
 						))}
@@ -1279,44 +1203,12 @@ export function OptimizersPage({
 
 				<section id="optimizer-run-inspector" className="optimizer-inspector" aria-label="Optimizer inspector">
 					{selected ? (
-						<div data-testid="optimizer-inspector">
-							<span className="optimizer-eyebrow">Run details</span><h2>{algorithmLabel(selected.algorithmId)}</h2><p>{runTitle(selected)}</p>
-							<dl>
-								<dt>Status</dt><dd>{selected.status}</dd>
-								<dt>Source</dt><dd>{selected.source}</dd>
-								<dt>Execution</dt><dd data-testid="optimizer-execution-mode">{selectedExecution}</dd>
-								<dt>Live events</dt><dd>{selected.capabilities.streamEvents ? "Available" : "Replay / refresh"}</dd>
-								<dt>Cursor</dt><dd>{selected.cursorSeq}</dd>
-								<dt>Cost</dt><dd>{selected.usage.costUsd == null ? "—" : `$${selected.usage.costUsd.toFixed(2)}`}</dd>
-								<dt>Created</dt><dd>{formatWhen(selected.createdAt)}</dd>
-							</dl>
-							{selectedDiagnostic ? (
-								<section className="optimizer-diagnostic" role="alert" data-testid="optimizer-diagnostic">
-									<span className="optimizer-diagnostic-kicker">Why it stopped</span>
-									<strong>{selectedDiagnostic.title}</strong>
-									<p>{selectedDiagnostic.message}</p>
-									{selectedDiagnostic.field ? <code className="optimizer-diagnostic-field">{selectedDiagnostic.field}</code> : null}
-									{selectedDiagnostic.raw ? (
-										<details className="optimizer-diagnostic-details">
-											<summary>Show technical details</summary>
-											<pre data-testid="optimizer-stderr-tail">{selectedDiagnostic.raw}</pre>
-										</details>
-									) : null}
-									{selectedDiagnostic.logPath ? <small>Log · {fileName(selectedDiagnostic.logPath)}</small> : null}
-								</section>
-							) : null}
-							{selectedRunDirectory ? (
-								<details className="optimizer-run-files" data-testid="optimizer-run-files">
-									<summary>Logs &amp; artifacts</summary>
-									<code>{selectedRunDirectory}</code>
-									<ul><li>workshop.stdout.log</li><li>workshop.stderr.log</li><li>events.jsonl</li><li>result_manifest.json</li></ul>
-								</details>
-							) : null}
+						<RunInspector run={selected} executionLabel={selectedExecution}>
 							{trainingProjection ? (
 								<section className="optimizer-training-progress" data-testid="optimizer-training-progress">
 									<div className="optimizer-training-title">
 										<span className="optimizer-eyebrow">Hosted training</span>
-										<span className={`optimizer-status ${trainingProjection.lifecycle}`}>{trainingProjection.lifecycle.replaceAll("_", " ")}</span>
+										<span className={statusChipClass(trainingProjection.lifecycle)}>{statusText(trainingProjection.lifecycle)}</span>
 									</div>
 									<dl>
 										<dt>Phase</dt><dd>{trainingProjection.phase ?? "—"}</dd>
@@ -1406,7 +1298,7 @@ export function OptimizersPage({
 								{selected.capabilities.resume && selected.status === "paused" ? <button className="secondary-button" type="button" disabled={busy} onClick={() => void controlSelected("resume")} data-testid="resume-optimizer-run">Resume</button> : null}
 								{selected.capabilities.cancel && !["completed", "failed", "cancelled"].includes(selected.status) ? <button className="secondary-button optimizer-danger-button" type="button" disabled={busy} onClick={() => void controlSelected("cancel")} data-testid="cancel-optimizer-run">Cancel</button> : null}
 							</div>
-						</div>
+						</RunInspector>
 					) : (
 						<div className="optimizer-empty optimizer-empty-inspector"><span className="optimizer-empty-icon" aria-hidden>◎</span><strong>Select a run</strong><p>Run details, usage, and linked visuals appear here.</p></div>
 					)}
