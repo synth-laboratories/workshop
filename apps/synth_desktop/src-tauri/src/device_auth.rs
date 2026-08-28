@@ -46,7 +46,11 @@ pub struct SignInBegin {
 }
 
 #[derive(Serialize, Clone, Debug, PartialEq, specta::Type)]
-#[serde(rename_all = "camelCase", rename_all_fields = "camelCase", tag = "status")]
+#[serde(
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase",
+    tag = "status"
+)]
 pub enum SignInPoll {
     /// Browser approval not observed yet; poll again after `retry_in_s`.
     Pending {
@@ -262,7 +266,7 @@ impl DeviceAuthManager {
             .send()
             .await
             .context("reach the Workshop sign-in service")?;
-        if !response.status().is_success() {
+        if response.status() != reqwest::StatusCode::NO_CONTENT {
             return Err(anyhow!(
                 "sign-in service refused key revocation ({})",
                 response.status()
@@ -421,8 +425,7 @@ mod tests {
 
     #[tokio::test]
     async fn revoke_key_sends_bearer_and_accepts_success() {
-        let (origin, handle) =
-            spawn_fake_workshop(vec![(200, r#"{"success":true}"#.into())]);
+        let (origin, handle) = spawn_fake_workshop(vec![(204, String::new())]);
         let manager = DeviceAuthManager::new();
         manager
             .revoke_key(&origin, "sk_synth_user_deadbeef")
@@ -431,6 +434,20 @@ mod tests {
         let seen = handle.join().unwrap();
         assert!(seen[0].contains("/api/auth/device/revoke"));
         assert!(seen[0].contains("Bearer sk_synth_user_deadbeef"));
+    }
+
+    #[tokio::test]
+    async fn revoke_key_rejects_redirect_or_html_success() {
+        for status in [200, 307] {
+            let (origin, handle) = spawn_fake_workshop(vec![(status, String::new())]);
+            let manager = DeviceAuthManager::new();
+            let error = manager
+                .revoke_key(&origin, "sk_synth_user_deadbeef")
+                .await
+                .unwrap_err();
+            assert!(error.to_string().contains("refused key revocation"));
+            handle.join().unwrap();
+        }
     }
 
     #[tokio::test]

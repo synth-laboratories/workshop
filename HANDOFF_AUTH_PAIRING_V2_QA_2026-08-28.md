@@ -13,8 +13,8 @@ Two branches, one in each repo. **Nothing is pushed.**
 
 | Repo | Branch / commit | Contents |
 |---|---|---|
-| workshop (worktree `~/GitHub/workshop-v08-auth-pairing`) | `auth/device-pairing-v2` @ `db2473ca` | Desktop: pairing code in the sign-in UI, origin-guarded verification link, host-paced polling with 429 slow-down, sign-out revocation |
-| frontend (`~/GitHub/frontend-v08-release`) | `auth/device-pairing-v2` @ `fa53e0fb` | Web: per-device key minting with atomic single consumption, `user_code` on init + `/device`, `POST /api/auth/device/revoke` |
+| workshop (worktree `~/GitHub/workshop-v08-auth-pairing`) | `auth/device-pairing-v2` @ `db2473ca` + this QA follow-up commit | Desktop: pairing code in the sign-in UI, origin-guarded verification link, host-paced polling with 429 slow-down, sign-out revocation |
+| frontend (`~/GitHub/frontend-v08-release`) | `auth/device-pairing-v2` @ `6ddc28ae` | Web: per-device key minting with atomic single consumption, `user_code` on init + `/device`, public `POST /api/auth/device/revoke` with selective-revocation E2E coverage |
 
 The workshop branch was cut from `eval/inline-first-admission` @ `1f443583` in a
 **separate worktree** because another agent has in-flight edits (including
@@ -151,7 +151,7 @@ assertions for the driver, using the stable test ids:
 
 Existing per-PR gates already pass on the branch: renderer Playwright
 `account-sign-in.spec.ts` (5/5, now covering the code display and host-paced
-polling), Rust `device_auth` (6/6, incl. origin-guard, 429 backoff, revoke
+polling), Rust `device_auth` (7/7, incl. origin-guard, 429 backoff, strict revoke
 bearer), `regenerate_protocol_bindings` committed, frontend `tsc` + eslint +
 vitest (`userCode.vitest.ts`; the two `nanohorizon.vitest.ts` failures
 pre-exist on the base branch — verified at clean HEAD).
@@ -172,3 +172,29 @@ pre-exist on the base branch — verified at clean HEAD).
   out of the URL entirely is the V1 OAuth loopback promotion, which should
   extract the shared core from `codex_oauth.rs` rather than add a third
   stack (see the review that produced this change).
+
+## 8. Completed QA and revoke fix
+
+The live disposable-fixture lane was run against the local frontend and
+`api-dev.usesynth.ai`. It now proves pairing-code equality, server-provided
+polling metadata, single consumption (`409`), two pairings producing distinct
+keys, selective revocation, the revoked key eventually receiving `401` after
+the backend auth-cache TTL, and the second key remaining usable. The Clerk
+development user and organization are deleted by the fixture teardown.
+
+That run found and fixed a release-blocking proxy bug: the revoke route was not
+listed as public, so a signed-out desktop received a Clerk redirect instead of
+revoking its bearer key. The route is now public at the proxy boundary and
+returns exactly `204 No Content`. The Rust client rejects redirects and HTML
+`200` responses, with regression coverage for both.
+
+Native-app CUA also verified the visible pairing code, live-pairing Reopen
+idempotence (same code), Cancel recovery, and expired-pairing recovery after a
+test handshake's expiry was advanced. Final automated results:
+
+- frontend device/proxy Vitest: 9/9
+- frontend TypeScript: clean
+- frontend live Clerk signup/pairing/revocation Playwright: 1/1
+- desktop renderer account sign-in Playwright: 5/5
+- Rust `device_auth`: 7/7
+- packaged `authv2` CUA app: built, signed, launched, and inspected

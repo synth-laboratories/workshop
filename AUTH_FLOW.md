@@ -44,7 +44,10 @@ origin the pairing started against.
 Sign out removes the desktop-managed key from the private env file, reloads
 the runtime fail-closed, and then best-effort revokes that key server-side via
 `POST /api/auth/device/revoke` (bearer-authenticated by the key itself; local
-deletion never waits on the network). A process-level `SYNTH_API_KEY` override
+deletion never waits on the network). The route is public at the Clerk proxy
+boundary because the bearer key is its authority, and success is exactly
+`204 No Content`; redirects or HTML `200` responses are treated as failures.
+A process-level `SYNTH_API_KEY` override
 is intentionally outside the app's custody, is never revoked by the app, and
 must be removed by the launching environment.
 
