@@ -292,6 +292,29 @@ jq -e '
 ' "$TEST_ROOT/instances/v08/alpha/instance.json" >/dev/null
 rg -q 'write_bundle_descriptor "\$app_bundle"' "$ROOT/scripts/desktop-instance.sh"
 
+# Only the running binary knows what it was compiled from, so the app writes
+# `runtime.buildRevision` and the launcher merges around it. A rebuild must not
+# leave the previous build's value beside a fresh `sourceRevision`.
+alpha_manifest="$TEST_ROOT/instances/v08/alpha/instance.json"
+alpha_revision="$(jq -r .runtime.sourceRevision "$alpha_manifest")"
+[[ -n "$alpha_revision" && "$alpha_revision" != "null" ]] || {
+  echo "runtime block carries no source revision" >&2; exit 1; }
+carried="$(mktemp)"
+jq --arg revision "$alpha_revision" \
+  '.runtime.buildRevision = "stalebuild0000" | .runtime.buildTimestamp = "1970-01-01T00:00:00Z"
+   | .runtime.sourceRevision = $revision' "$alpha_manifest" >"$carried"
+cp "$carried" "$alpha_manifest"
+SYNTH_DESKTOP_OPERATION_DRY_RUN=1 "$ROOT/scripts/desktop-instance.sh" cua-build alpha >/dev/null
+jq -e '.runtime.buildRevision == "stalebuild0000"' "$alpha_manifest" >/dev/null || {
+  echo "an unchanged source revision must keep the app-written build revision" >&2; exit 1; }
+jq '.runtime.sourceRevision = "0000000000000000000000000000000000000000"' "$alpha_manifest" >"$carried"
+cp "$carried" "$alpha_manifest"
+SYNTH_DESKTOP_OPERATION_DRY_RUN=1 "$ROOT/scripts/desktop-instance.sh" cua-build alpha >/dev/null
+jq -e '(.runtime.buildRevision // null) == null and (.runtime.buildTimestamp // null) == null' \
+  "$alpha_manifest" >/dev/null || {
+  echo "a moved source revision must not carry the previous build revision forward" >&2; exit 1; }
+rm -f "$carried"
+
 # ID-R-05: task scripts source RELEASE_SLUG from the launcher print contract.
 if rg -q 'RELEASE_SLUG="v05"|/v05/\$NAME|== "0\.5\.0"' "$ROOT/scripts/workshop-qa" "$ROOT/scripts/crash-recovery-drill.sh"; then
   echo "workshop-qa or crash-recovery-drill still hard-codes v05/0.5.0" >&2
