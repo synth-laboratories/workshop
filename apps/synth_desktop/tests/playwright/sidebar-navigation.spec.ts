@@ -16,6 +16,12 @@ test("Search and the Command-K shortcut find and open conversations", async ({ p
 			latestCursor: 0,
 			metadata: {}
 		};
+		const remoteSession = {
+			...session,
+			id: "remote-failure-chat",
+			title: "Remote failure review",
+			target: { kind: "remote", provider: "openrouter", model: "openai/gpt-5.6" }
+		};
 		(window as typeof window & { synthRuntime?: unknown }).synthRuntime = {
 			async request(path: string) {
 				if (path === "/v1/health") return {
@@ -23,7 +29,7 @@ test("Search and the Command-K shortcut find and open conversations", async ({ p
 					intern: { mode: "demo" }, openrouter: { mode: "unconfigured" },
 					inventory: { containers: 0, traces: 0, visuals: 0 }
 				};
-				if (path === "/v1/sessions") return { sessions: [session] };
+				if (path === "/v1/sessions") return { sessions: [session, remoteSession] };
 				if (path === "/v1/projects") return { projects: [] };
 				if (path.includes("/events")) return { events: [], nextCursor: 0, hasMore: false };
 				throw new Error(`Unexpected renderer test request: ${path}`);
@@ -111,6 +117,21 @@ test("Search and the Command-K shortcut find and open conversations", async ({ p
 	await expect(page.getByTestId("conversation-search")).toBeVisible();
 	await page.getByRole("button", { name: "Close search" }).click();
 	await expect(page.getByTestId("conversation-search")).toHaveCount(0);
+
+	// Failures is not a local-inference-only tab. A remote chat used to update
+	// the selected tab and immediately fail the showSidePanel predicate, making
+	// both click and keyboard activation look like a close action in the app.
+	await page.keyboard.press("Meta+k");
+	const remoteSearch = page.getByTestId("conversation-search");
+	await remoteSearch.getByRole("searchbox", { name: "Search conversations" }).fill("Remote failure");
+	await remoteSearch.getByRole("option", { name: /Remote failure review/ }).click();
+	const remoteOutputsTrigger = page.getByTestId("resource-shelf-trigger");
+	await remoteOutputsTrigger.click();
+	const remoteSidePanel = page.getByTestId("workbench-side-panel");
+	await remoteSidePanel.getByRole("tab", { name: "Diagnostics" }).focus();
+	await page.keyboard.press("ArrowRight");
+	await expect(remoteSidePanel).toBeVisible();
+	await expect(remoteSidePanel.getByRole("tab", { name: "Failures" })).toHaveAttribute("aria-selected", "true");
 });
 
 test("dense search results scroll inside the dialog instead of clipping its last row", async ({ page }) => {

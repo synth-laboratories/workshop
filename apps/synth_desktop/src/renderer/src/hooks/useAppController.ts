@@ -1208,6 +1208,7 @@ export function useAppController() {
 		sidePanelTab === "outputs"
 		|| sidePanelTab === "trace"
 		|| sidePanelTab === "diagnostics"
+		|| sidePanelTab === "errors"
 		|| activeLocalModel
 	);
 	const activeSync =
