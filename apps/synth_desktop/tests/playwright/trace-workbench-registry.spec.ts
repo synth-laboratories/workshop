@@ -32,4 +32,18 @@ test("persisted trace.workbench.v1 resolves through the bundled registry and Vis
 	await expect(pane.getByTestId("trace-workbench")).toBeVisible();
 	await expect(pane).not.toContainText("Template unavailable");
 	await expect(pane).not.toContainText("No bundled shell is registered");
+	const paneBody = pane.locator(".visual-pane-body");
+	await paneBody.evaluate((element) => {
+		Object.assign((element as HTMLElement).style, {
+			alignSelf: "flex-end",
+			flex: "0 0 340px",
+			width: "340px",
+			maxWidth: "340px"
+		});
+	});
+	await expect(pane.getByTestId("trace-run-aggregates")).toHaveCSS("position", "static");
+	const usageColumns = await pane.locator(".trace-workbench-usage").evaluate((element) =>
+		getComputedStyle(element).gridTemplateColumns.split(" ").filter(Boolean).length
+	);
+	expect(usageColumns).toBe(1);
 });

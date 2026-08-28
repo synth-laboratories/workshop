@@ -4506,6 +4506,8 @@ html.visual-expanded .titlebar {
 	min-height: 0;
 	overflow: auto;
 	padding: 16px;
+	container-type: inline-size;
+	container-name: visual-pane;
 }
 
 .visual-label-pin {

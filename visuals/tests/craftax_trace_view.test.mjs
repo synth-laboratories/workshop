@@ -12,7 +12,7 @@ import {
   localMapRows,
   reconcileCraftaxTrace
 } from "../runtime/craftaxTraceView.ts";
-import { evalAggregateV1, evalAggregateWorkFacts } from "../runtime/evalAggregate.ts";
+import { evalAggregateV1, evalAggregateWorkFacts, evalTerminalFacts } from "../runtime/evalAggregate.ts";
 
 const CAS = (seed) => `ab${String(seed).padStart(62, "c")}`;
 
@@ -453,6 +453,24 @@ test("trace workbench consumes the V2 aggregate and the canonical finished times
   assert.match(shared, /evalAggregateV1\(aggregateCandidate/);
   assert.match(shared, /run\?\.finishedAt/);
   assert.doesNotMatch(shared, /run\?\.completedAt/);
+});
+
+test("terminal facts keep runtime usage and distributions separate from the provider receipt", () => {
+  const terminal = evalTerminalFacts([
+    { seed: 780005, reward: 4, tokens: 20737, achievements: ["wood", "food", "cow", "sapling"] },
+    { seed: 780006, reward: 3, tokens: 20900, achievements: ["wood", "sapling", "table"] },
+    { seed: 780007, reward: 4, tokens: 19578, achievements: ["wood", "pickaxe", "table", "stone"] },
+    { seed: 780008, reward: 2, tokens: 21371, achievements: ["wood", "sapling"] },
+    { seed: 780009, reward: 3, tokens: 21402, achievements: ["wood", "pickaxe", "table"] }
+  ]);
+  assert.deepEqual(
+    [terminal.rewardMean, terminal.rewardMedian, terminal.rewardMin, terminal.rewardMax],
+    [3.2, 3, 2, 4]
+  );
+  assert.equal(terminal.runtimeTokens, 103988);
+  assert.equal(terminal.reportedTokenRollouts, 5);
+  assert.equal(terminal.achievementOccurrences.wood, 5);
+  assert.equal(Object.values(terminal.achievementOccurrences).reduce((sum, value) => sum + value, 0), 16);
 });
 
 test("a sealed Trace V5 document folds through the same rules as the live relay", () => {

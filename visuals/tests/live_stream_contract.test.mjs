@@ -309,14 +309,31 @@ test("live Craftax names durable-journal hydration and exposes responsive run-wi
   assert.match(shell, /Work and usage distribution/);
   assert.match(shell, /exact total unavailable/);
   assert.match(shell, /onSelect=\{\(lane\) => \{ setChosenLane\(lane\)/);
-  assert.match(shell, /Mean terminal reward/);
+  assert.match(shell, /label="Terminal reward"/);
   assert.match(shell, /Workshop receipt covers/);
   assert.match(css, /\.cv-overview-grid\{display:grid/);
   assert.match(css, /@media\(max-width:760px\).*\.cv-overview-grid\{grid-template-columns:1fr 1fr\}/s);
   assert.match(css, /\.cv-overview-grid\{display:grid;grid-template-columns:repeat\(3,minmax\(180px,1fr\)\)/);
   assert.match(css, /\.cv-cost-line>small\{color:var\(--cv-faint\).*overflow-wrap:anywhere/);
   assert.match(css, /@media\(max-width:520px\)\{\.cv-overview-grid\{grid-template-columns:1fr\}/);
+  assert.match(css, /@container visual-pane \(max-width:700px\).*\.cv-trace-grid\{[^}]*grid-template-columns:1fr/s);
+  assert.match(css, /@container visual-pane \(max-width:700px\).*\.cv-transcript-grid\{grid-template-columns:1fr/s);
+  assert.match(css, /@container visual-pane \(max-width:420px\).*\.cv-surfaces\{[^}]*grid-template-columns:repeat\(2,minmax\(0,1fr\)\)/s);
+  assert.match(css, /@container visual-pane \(max-width:420px\).*\.cv-overview-grid\{grid-template-columns:1fr\}/s);
   assert.doesNotMatch(css, /\.cv-comparison/);
+});
+
+test("shared trace workbench responds to the visual pane rather than the desktop viewport", () => {
+  const shell = readFileSync(join(root, "families/first_class_example_containers/_shared/traceWorkbench.tsx"), "utf8");
+  const css = readFileSync(join(root, "families/first_class_example_containers/_shared/traceWorkbench.css"), "utf8");
+  assert.match(shell, /import "\.\/traceWorkbench\.css"/);
+  assert.match(shell, /className="trace-workbench-layout"/);
+  assert.match(shell, /--tw-main-columns/);
+  assert.match(css, /@container visual-pane \(max-width:\s*700px\)/);
+  assert.match(css, /--tw-main-columns:\s*minmax\(0, 1fr\)/);
+  assert.match(css, /@container visual-pane \(max-width:\s*420px\)/);
+  assert.match(css, /--tw-usage-columns:\s*minmax\(0, 1fr\)/);
+  assert.match(css, /--tw-achievement-columns:\s*minmax\(0, 1fr\)/);
 });
 
 test("live Craftax loads retained frame CAS through the host and never guesses a relative rollout URL", () => {

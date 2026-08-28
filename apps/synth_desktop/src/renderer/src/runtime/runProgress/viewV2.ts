@@ -4,6 +4,7 @@ import type {
 	UsageCompleteness
 } from "../../generated/protocol";
 import type { RunRecord } from "./subscription";
+import { primaryVisualRef } from "./adapterShared";
 import {
 	RUN_PROGRESS_SCHEMA_VERSION,
 	type CoveredMetric,
@@ -229,6 +230,7 @@ export function projectRunViewV2(
 			sequence: header.terminal.finalSequence
 		}
 		: undefined;
+	const fullVisualRef = primaryVisualRef(run, header.visualRefs);
 	return {
 		schemaVersion: RUN_PROGRESS_SCHEMA_VERSION,
 		runId: header.runId,
@@ -276,6 +278,7 @@ export function projectRunViewV2(
 			{ label: "Projection", value: `${header.projectionSchemaVersion} · revision ${header.projectionRevision}` }
 		],
 		...(resultOf(view) ? { result: resultOf(view) } : {}),
+		...(fullVisualRef ? { fullVisualRef } : {}),
 		cursorSeq: header.asOfSequence,
 		terminalCursor: header.terminal?.finalSequence ?? header.asOfSequence,
 		stale: false

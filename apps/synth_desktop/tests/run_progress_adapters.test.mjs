@@ -413,6 +413,26 @@ test("eval: Open visual targets the explicitly linked primary visual", () => {
 	assert.equal(projection.fullVisualRef, "visual-primary");
 });
 
+test("eval: production V2 progress preserves the linked primary visual", () => {
+	const run = evalRun({
+		status: "completed",
+		summary: { visualIds: { primary: "visual-primary", trace_workbench: "visual-trace" } },
+		visualRefs: [
+			{ kind: "visual", id: "visual-trace", role: "trace_workbench" },
+			{ kind: "visual", id: "visual-primary", role: "primary" }
+		]
+	});
+	const viewV2 = v2View("eval", run.id, {
+		header: {
+			visualRefs: run.visualRefs,
+			lifecycle: "terminal",
+			terminal: { kind: "completed", sealedAt: at(4), finalSequence: 12 }
+		}
+	});
+	const projection = projectRunProgress(snapshot(run, [], { viewV2 }), NOW);
+	assert.equal(projection.fullVisualRef, "visual-primary");
+});
+
 test("eval: a retried trial is counted as a retry, not as extra completed work", () => {
 	const clean = projectRunProgress(snapshot(evalRun(), evalEvents({ completed: 6 })), NOW);
 	const retried = projectRunProgress(snapshot(evalRun(), evalEvents({ completed: 6, retries: 2 })), NOW);

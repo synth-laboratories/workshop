@@ -9,7 +9,8 @@ import type { ReportBlock, ReportRecord, VisualSeal, VisualSealBundle } from "..
 import { publicError } from "../runtime/publicError";
 import { formatVisualAdmissionIdentity } from "../types/landing";
 import { VisualOpsLine } from "./VisualOpsLine";
-import { optimizerRunIdFromBindings, traceIdFromBindings } from "../runtime/visualBindings";
+import { optimizerRunIdFromBindings, traceIdFromBindings, traceSetCountFromBindings } from "../runtime/visualBindings";
+import { SEALED_TRACE_WORKBENCH_TEMPLATES } from "../runtime/templatePresentation";
 
 type Tab = "all" | "recent" | "live" | "sealed" | "templates";
 
@@ -198,6 +199,15 @@ export function VisualsPage({ onOpenVisual, onGoToChat, onOpenReport, onBack, on
 		return traceIdFromBindings(visual.bindings) ?? visual.traceId ?? undefined;
 	}
 
+	function visualTraceSetCount(visual: VisualRecord): number | null | undefined {
+		if (visualTraceId(visual)) return undefined;
+		const count = traceSetCountFromBindings(visual.bindings);
+		if (count != null) return count;
+		return visualRunId(visual) && SEALED_TRACE_WORKBENCH_TEMPLATES.has(visual.templateId)
+			? null
+			: undefined;
+	}
+
 	async function addSelectedToReport() {
 		if (!selected || !bridges.reports || alreadyAdded || addDisabled) return;
 		try {
@@ -363,6 +373,7 @@ export function VisualsPage({ onOpenVisual, onGoToChat, onOpenReport, onBack, on
 								sessionId={visual.sessionId}
 								runId={visualRunId(visual)}
 								traceId={visualTraceId(visual)}
+								traceSetCount={visualTraceSetCount(visual)}
 								testId={`visual-ops-${visual.id}`}
 								compact
 							/>
@@ -412,6 +423,7 @@ export function VisualsPage({ onOpenVisual, onGoToChat, onOpenReport, onBack, on
 								sessionId={selected.sessionId}
 								runId={visualRunId(selected)}
 								traceId={visualTraceId(selected)}
+								traceSetCount={visualTraceSetCount(selected)}
 								testId={`visual-ops-preview-${selected.id}`}
 								compact
 							/>

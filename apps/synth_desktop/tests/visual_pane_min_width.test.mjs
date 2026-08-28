@@ -25,6 +25,10 @@ test("the visual pane keeps the 320px certification floor", () => {
     /\.workbench\.with-side-panel\.with-visual\s*\{[^}]*minmax\(260px/s
   );
   assert.match(css, /\.inventory-workbench\.with-visual \.visual-pane\s*\{[^}]*min-width:\s*320px/s);
+  assert.match(
+    css,
+    /\.visual-pane-body\s*\{[^}]*container-type:\s*inline-size;[^}]*container-name:\s*visual-pane;/s
+  );
 });
 
 test("narrow windows cap the visual pane at min(40vw, persisted) then overlay via compact-workbench", () => {

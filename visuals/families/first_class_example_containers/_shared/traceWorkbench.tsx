@@ -30,6 +30,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { VisualChrome } from "../../../chrome/VisualChrome.tsx";
+import "./traceWorkbench.css";
 import {
   craftaxTrialsFromRun,
 	craftaxTraceFromSealedTrace,
@@ -43,6 +44,7 @@ import { NO_MEDIA, type LoadedMedia, type MediaClient } from "../../../runtime/m
 import {
   evalAggregateV1,
   evalAggregateWorkFacts,
+  evalTerminalFacts,
   type EvalAggregateV1
 } from "../../../runtime/evalAggregate.ts";
 import {
@@ -82,6 +84,24 @@ export type TraceWorkbenchProps = {
   loadError?: string;
   visualId?: string | null;
   revision?: number | null;
+	runLifecycle?: {
+		usage: {
+			calls?: number;
+			costUsd?: number;
+			costCapUsd?: number;
+			costSource?: string;
+			promptTokens?: number;
+			completionTokens?: number;
+		};
+		rollouts: Array<{
+			lane: string;
+			seed?: number;
+			status: string;
+			reward?: number;
+			tokens?: number;
+			achievements?: string[];
+		}>;
+	};
 	sealedTraceProjections?: Array<{
 		trialId: string;
 		rolloutId: string | null;
@@ -146,6 +166,7 @@ function FactMetadata({ summary }: { summary: ReportedFactSummary<unknown> }) {
 
 function RunAggregateHeader({
   run,
+  runLifecycle,
   aggregate,
   trials,
   filter,
@@ -153,6 +174,7 @@ function RunAggregateHeader({
   testId
 }: {
   run: Any | null;
+  runLifecycle?: TraceWorkbenchProps["runLifecycle"];
   aggregate: EvalAggregateV1 | null;
   trials: TrialView[];
   filter: AggregateFilter;
@@ -181,6 +203,14 @@ function RunAggregateHeader({
   const tokenUsage = summarizeNumericReportedFact(factRecords, "tokens", trials.map(totalTokens));
   const costUsage = summarizeNumericReportedFact(factRecords, "costUsd", trials.map((row) => row.view.run.cost_usd));
   const frameUsage = summarizeNumericReportedFact(factRecords, "frames", trials.map((row) => row.view.coverage.framesRetained));
+  const terminalFacts = evalTerminalFacts(runLifecycle?.rollouts ?? []);
+  const providerCalls = finite(runLifecycle?.usage.calls);
+  const providerPromptTokens = finite(runLifecycle?.usage.promptTokens);
+  const providerCompletionTokens = finite(runLifecycle?.usage.completionTokens);
+  const providerTokens = providerPromptTokens === null || providerCompletionTokens === null
+    ? null
+    : providerPromptTokens + providerCompletionTokens;
+  const providerCost = finite(runLifecycle?.usage.costUsd);
   const maxRollouts = finite(bounds.maximumRollouts) ?? (rolloutCount || null);
   const callsPerRollout = finite(bounds.maximumModelCallsPerRollout);
   const stepsPerRollout = finite(bounds.maximumStepsPerRollout);
@@ -191,18 +221,20 @@ function RunAggregateHeader({
   // Once V2 supplies the revision-addressed aggregate, raw rows remain drill-
   // down evidence only. Recomputing counts/reward here would create a second
   // aggregate with different validity and terminal rules.
-  const rewards = aggregate
-    ? []
-    : terminalTrials.map((row) => row.reward).filter((value): value is number => value !== null).sort((a, b) => a - b);
-  const mean = aggregate ? finite(aggregate.meanReward) : rewards.length ? rewards.reduce((sum, value) => sum + value, 0) / rewards.length : null;
-  const scoredTrials = aggregate ? aggregate.scoredTrials : rewards.length;
-  const median = rewards.length
+  const rewards = terminalFacts.scoredRollouts > 0
+    ? (runLifecycle?.rollouts ?? []).flatMap((row) => row.reward == null ? [] : [row.reward]).sort((a, b) => a - b)
+    : aggregate
+      ? []
+      : terminalTrials.map((row) => row.reward).filter((value): value is number => value !== null).sort((a, b) => a - b);
+  const mean = terminalFacts.rewardMean ?? (aggregate ? finite(aggregate.meanReward) : rewards.length ? rewards.reduce((sum, value) => sum + value, 0) / rewards.length : null);
+  const scoredTrials = terminalFacts.scoredRollouts || (aggregate ? aggregate.scoredTrials : rewards.length);
+  const median = terminalFacts.rewardMedian ?? (rewards.length
     ? rewards.length % 2
       ? rewards[(rewards.length - 1) / 2]
       : (rewards[rewards.length / 2 - 1] + rewards[rewards.length / 2]) / 2
-    : null;
-  const rewardMin = rewards.length ? rewards[0] : null;
-  const rewardMax = rewards.length ? rewards[rewards.length - 1] : null;
+    : null);
+  const rewardMin = terminalFacts.rewardMin ?? (rewards.length ? rewards[0] : null);
+  const rewardMax = terminalFacts.rewardMax ?? (rewards.length ? rewards[rewards.length - 1] : null);
   const bucketCount = Math.min(5, Math.max(1, rewards.length));
   const span = rewardMin !== null && rewardMax !== null ? rewardMax - rewardMin : 0;
   const buckets = rewards.length ? Array.from({ length: bucketCount }, (_, index) => {
@@ -227,8 +259,11 @@ function RunAggregateHeader({
       }))
       .filter((event) => event.name)
   );
-  const names = achievementFacts.value ?? [];
+  const terminalAchievementRows = (runLifecycle?.rollouts ?? []).filter((rollout) => Array.isArray(rollout.achievements));
+  const terminalAchievementNames = Object.keys(terminalFacts.achievementOccurrences);
+  const names = terminalAchievementRows.length > 0 ? terminalAchievementNames : achievementFacts.value ?? [];
   const achievements = names.map((name) => {
+    const terminalRows = terminalAchievementRows.filter((rollout) => rollout.achievements?.includes(name));
     const seedRows = trials.filter((trial, index) => (
       achievementFacts.authoritative
         ? achievementFacts.byRecord[index]?.includes(name) === true
@@ -239,29 +274,52 @@ function RunAggregateHeader({
     const first = events.sort((a, b) => a.sequence - b.sequence)[0];
     return {
       name,
-      seeds: seedRows.length,
-      occurrences: achievementFacts.authoritative ? null : events.length || seedRows.length,
-      firstSeed: achievementFacts.authoritative ? null : first?.trial.seed ?? null,
-      bestSeed: achievementFacts.authoritative ? null : best?.seed ?? null
+      seeds: terminalAchievementRows.length > 0 ? terminalRows.length : seedRows.length,
+      occurrences: terminalAchievementRows.length > 0
+        ? terminalFacts.achievementOccurrences[name] ?? 0
+        : achievementFacts.authoritative ? null : events.length || seedRows.length,
+      firstSeed: terminalAchievementRows.length > 0
+        ? terminalRows[0]?.seed ?? null
+        : achievementFacts.authoritative ? null : first?.trial.seed ?? null,
+      bestSeed: terminalAchievementRows.length > 0
+        ? terminalRows.filter((row) => row.reward != null).sort((left, right) => (right.reward ?? -Infinity) - (left.reward ?? -Infinity))[0]?.seed ?? null
+        : achievementFacts.authoritative ? null : best?.seed ?? null
     };
   }).sort((a, b) => b.seeds - a.seeds || a.name.localeCompare(b.name));
 
   const formatDuration = (seconds: number | null) => seconds === null
     ? "unavailable"
     : `${Math.floor(seconds / 60)}m ${Math.floor(seconds % 60)}s`;
-  const usageCard = (label: string, usage: ReportedFactSummary<number>, limit: number | null, formatter = tokens) => {
+  const exactCount = (value: number) => value.toLocaleString("en-US", { maximumFractionDigits: 0 });
+  const exactUsd = (value: number) => `$${value.toFixed(6).replace(/0+$/, "").replace(/\.$/, "")}`;
+  const providerSummary = (value: number | null): ReportedFactSummary<number> => ({
+    authoritative: true,
+    value,
+    present: value === null ? 0 : 1,
+    total: 1,
+    sources: ["workshop.secrets_proxy"],
+    unavailableReasons: value === null ? ["not_reported"] : [],
+    contractErrors: []
+  });
+  const usageCard = (
+    label: string,
+    usage: ReportedFactSummary<number>,
+    limit: number | null,
+    formatter = tokens,
+    options?: { valueSuffix?: string; coverage?: string; source?: string }
+  ) => {
     const ratio = usage.value !== null && limit !== null && limit > 0 ? usage.value / limit : null;
     const tone = ratio !== null && ratio >= .95 ? "var(--sv-bad-fg)" : ratio !== null && ratio >= .8 ? "var(--sv-warn-fg)" : "var(--sv-text)";
     return (
       <div style={{ minWidth: 0 }}>
         <div style={{ color: "var(--sv-text-faint)", fontSize: "var(--sv-fs-micro)", textTransform: "uppercase" }}>{label}</div>
         <strong style={{ ...mono, color: tone, fontSize: "var(--sv-fs-meta)" }}>
-          {usage.value === null ? "unavailable" : formatter(usage.value)} / {limit === null ? "no limit" : formatter(limit)}
+          {usage.value === null ? "unavailable" : `${formatter(usage.value)}${options?.valueSuffix ?? ""}`} / {limit === null ? "no limit" : formatter(limit)}
         </strong>
         <div style={{ color: "var(--sv-text-faint)", fontSize: "var(--sv-fs-micro)" }}>
-          {usage.present}/{usage.total || rolloutCount} seeds reported
+          {options?.coverage ?? `${usage.present}/${usage.total || rolloutCount} seeds reported`}
         </div>
-        <FactMetadata summary={usage} />
+        {options?.source ? <div style={{ color: "var(--sv-text-faint)", fontSize: "var(--sv-fs-micro)" }}>source: {options.source}</div> : <FactMetadata summary={usage} />}
         <div style={{ height: 3, marginTop: 4, borderRadius: 3, overflow: "hidden", background: "var(--sv-surface-muted)" }}>
           <span style={{ display: "block", height: "100%", width: `${Math.min(100, (ratio ?? 0) * 100)}%`, background: tone }} />
         </div>
@@ -271,6 +329,7 @@ function RunAggregateHeader({
 
   return (
     <section
+      className="trace-workbench-aggregate"
       data-testid={testId}
       data-aggregate-schema={aggregate?.schemaVersion}
       data-projection-revision={aggregate?.projectionRevision}
@@ -294,15 +353,20 @@ function RunAggregateHeader({
           {formatDuration(elapsedSeconds)} · {finite(summary.concurrency) === null ? "concurrency unavailable" : `${summary.concurrency} parallel`}
         </span>
       </div>
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(130px,1fr))", gap: "var(--sv-sp-3)" }}>
+      <div className="trace-workbench-usage" style={{ display: "grid", gridTemplateColumns: "var(--tw-usage-columns, repeat(auto-fit,minmax(130px,1fr)))", gap: "var(--sv-sp-3)" }}>
         {usageCard("Rollouts", { authoritative: false, value: startedTrials, present: rolloutCount, total: rolloutCount, sources: [], unavailableReasons: [], contractErrors: [] }, maxRollouts, (value) => String(value))}
-        {usageCard("Model calls", callUsage, callLimit)}
+        {providerCalls === null
+          ? usageCard("Model calls", callUsage, callLimit)
+          : usageCard("Provider calls", providerSummary(providerCalls), callLimit, exactCount, { valueSuffix: " billed", coverage: "run-level receipt", source: "Workshop proxy" })}
         {usageCard("Environment steps", stepUsage, stepLimit)}
-        {usageCard("Tokens", tokenUsage, tokenLimit)}
-        {usageCard("Cost", costUsage, costLimit, (value) => `$${value.toFixed(2)}`)}
+        {usageCard("Runtime tokens", terminalFacts.runtimeTokens === null ? tokenUsage : { ...tokenUsage, value: terminalFacts.runtimeTokens }, tokenLimit, exactCount, { coverage: `${terminalFacts.reportedTokenRollouts || tokenUsage.present}/${rolloutCount} terminal records`, source: "container runtime" })}
+        {providerTokens === null ? null : usageCard("Provider tokens", providerSummary(providerTokens), tokenLimit, exactCount, { valueSuffix: " billed", coverage: `${exactCount(providerPromptTokens ?? 0)} prompt + ${exactCount(providerCompletionTokens ?? 0)} completion`, source: "Workshop proxy" })}
+        {runLifecycle?.usage.costSource === "workshop_proxy"
+          ? usageCard("Provider cost", providerSummary(providerCost), costLimit, exactUsd, { coverage: "run-level receipt", source: "Workshop proxy" })
+          : usageCard("Cost", costUsage, costLimit, exactUsd)}
         {usageCard("Frames", frameUsage, null)}
       </div>
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(260px,1fr))", gap: "var(--sv-sp-4)", marginTop: "var(--sv-sp-3)", paddingTop: "var(--sv-sp-3)", borderTop: "1px solid var(--sv-border)" }}>
+      <div className="trace-workbench-distributions" style={{ display: "grid", gridTemplateColumns: "var(--tw-distribution-columns, repeat(auto-fit,minmax(260px,1fr)))", gap: "var(--sv-sp-4)", marginTop: "var(--sv-sp-3)", paddingTop: "var(--sv-sp-3)", borderTop: "1px solid var(--sv-border)" }}>
         <div>
           <div style={{ color: "var(--sv-text-faint)", fontSize: "var(--sv-fs-micro)", textTransform: "uppercase" }}>Rewards</div>
           <div style={{ ...mono, marginTop: 3, fontSize: "var(--sv-fs-meta)" }}>
@@ -321,7 +385,7 @@ function RunAggregateHeader({
             {achievementFacts.authoritative && achievementFacts.value === null ? (
               <span style={{ color: "var(--sv-text-faint)", fontSize: "var(--sv-fs-meta)" }}>Achievements unavailable.</span>
             ) : achievements.length ? achievements.map((row) => (
-              <button key={row.name} type="button" onClick={() => onFilter(filter?.kind === "achievement" && filter.name === row.name ? null : { kind: "achievement", name: row.name })} style={{ display: "grid", gridTemplateColumns: "minmax(120px,1fr) auto", gap: 8, padding: "2px 4px", border: "1px solid transparent", borderRadius: 4, background: filter?.kind === "achievement" && filter.name === row.name ? "var(--sv-accent-soft)" : "transparent", color: "var(--sv-text)", cursor: "pointer", textAlign: "left" }}>
+              <button className="trace-workbench-achievement" key={row.name} type="button" onClick={() => onFilter(filter?.kind === "achievement" && filter.name === row.name ? null : { kind: "achievement", name: row.name })} style={{ display: "grid", gridTemplateColumns: "var(--tw-achievement-columns, minmax(120px,1fr) auto)", gap: 8, padding: "2px 4px", border: "1px solid transparent", borderRadius: 4, background: filter?.kind === "achievement" && filter.name === row.name ? "var(--sv-accent-soft)" : "transparent", color: "var(--sv-text)", cursor: "pointer", textAlign: "left" }}>
                 <span style={{ ...mono, overflow: "hidden", textOverflow: "ellipsis" }}>{row.name}</span>
                 <span style={{ color: "var(--sv-text-faint)", fontSize: "var(--sv-fs-micro)" }}>{row.seeds}/{trials.length} · {row.occurrences === null ? "occurrences unavailable" : `${row.occurrences}×`} · first {row.firstSeed ?? MISSING} · best {row.bestSeed ?? MISSING}</span>
               </button>
@@ -1115,6 +1179,7 @@ export function TraceWorkbench({ branding, ...props }: TraceWorkbenchProps & { b
 
       <RunAggregateHeader
         run={run}
+        runLifecycle={props.runLifecycle}
         aggregate={aggregate}
         trials={trials}
         filter={aggregateFilter}
@@ -1169,15 +1234,16 @@ export function TraceWorkbench({ branding, ...props }: TraceWorkbenchProps & { b
         </p>
       ) : (
         <div
+          className="trace-workbench-layout"
           style={{
             display: "grid",
-            gridTemplateColumns: "minmax(320px, 3fr) minmax(240px, 2fr)",
+            gridTemplateColumns: "var(--tw-main-columns, minmax(320px, 3fr) minmax(240px, 2fr))",
             gap: "var(--sv-sp-4)",
-            height: 720,
+            height: "var(--tw-main-height, 720px)",
             minHeight: 0
           }}
         >
-          <section style={{ display: "grid", gridTemplateRows: "1fr auto auto", minHeight: 0 }}>
+          <section className="trace-workbench-frame-column" style={{ display: "grid", gridTemplateRows: "1fr auto auto", minHeight: 0 }}>
             {streamOnly ? (
               <div
                 data-testid={`${branding.testId}-stream-only`}
@@ -1272,9 +1338,10 @@ export function TraceWorkbench({ branding, ...props }: TraceWorkbenchProps & { b
           </section>
 
           <section
+            className="trace-workbench-call-column"
             style={{
               display: "grid",
-              gridTemplateRows: "minmax(140px, 40%) 1fr",
+              gridTemplateRows: "var(--tw-call-rows, minmax(140px, 40%) 1fr)",
               gap: "var(--sv-sp-3)",
               minHeight: 0
             }}

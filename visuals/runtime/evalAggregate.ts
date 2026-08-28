@@ -25,6 +25,25 @@ export type EvalAggregateWorkFacts = {
   started: number;
 };
 
+export type EvalTerminalRolloutFact = {
+  seed?: number;
+  reward?: number;
+  tokens?: number;
+  achievements?: string[];
+};
+
+export type EvalTerminalFacts = {
+  rewardMean: number | null;
+  rewardMedian: number | null;
+  rewardMin: number | null;
+  rewardMax: number | null;
+  scoredRollouts: number;
+  runtimeTokens: number | null;
+  reportedTokenRollouts: number;
+  achievementOccurrences: Record<string, number>;
+  reportedAchievementRollouts: number;
+};
+
 function object(value: unknown): Json | null {
   return value && typeof value === "object" && !Array.isArray(value) ? value as Json : null;
 }
@@ -65,5 +84,45 @@ export function evalAggregateWorkFacts(aggregate: EvalAggregateV1): EvalAggregat
     queued,
     failed,
     started: terminalCount + running
+  };
+}
+
+/**
+ * Aggregate only terminal record facts. Provider receipts deliberately do not
+ * enter this projection: their token and cost totals describe billing, while
+ * these values describe what the container runtime retained per rollout.
+ */
+export function evalTerminalFacts(rollouts: readonly EvalTerminalRolloutFact[]): EvalTerminalFacts {
+  const rewards = rollouts
+    .flatMap((rollout) => typeof rollout.reward === "number" && Number.isFinite(rollout.reward) ? [rollout.reward] : [])
+    .sort((left, right) => left - right);
+  const tokenValues = rollouts.flatMap((rollout) => (
+    typeof rollout.tokens === "number" && Number.isFinite(rollout.tokens) ? [rollout.tokens] : []
+  ));
+  const achievementRows = rollouts.filter((rollout) => Array.isArray(rollout.achievements));
+  const achievementOccurrences = achievementRows.reduce<Record<string, number>>((counts, rollout) => {
+    for (const name of rollout.achievements ?? []) {
+      counts[name] = (counts[name] ?? 0) + 1;
+    }
+    return counts;
+  }, {});
+  const midpoint = Math.floor(rewards.length / 2);
+  const rewardMedian = rewards.length === 0
+    ? null
+    : rewards.length % 2
+      ? rewards[midpoint]
+      : (rewards[midpoint - 1] + rewards[midpoint]) / 2;
+  return {
+    rewardMean: rewards.length ? rewards.reduce((sum, value) => sum + value, 0) / rewards.length : null,
+    rewardMedian,
+    rewardMin: rewards[0] ?? null,
+    rewardMax: rewards.at(-1) ?? null,
+    scoredRollouts: rewards.length,
+    runtimeTokens: rollouts.length > 0 && tokenValues.length === rollouts.length
+      ? tokenValues.reduce((sum, value) => sum + value, 0)
+      : null,
+    reportedTokenRollouts: tokenValues.length,
+    achievementOccurrences,
+    reportedAchievementRollouts: achievementRows.length
   };
 }
