@@ -352,6 +352,7 @@ pub fn builder() -> Builder<tauri::Wry> {
             crate::telemetry::product_telemetry_set_consent,
             crate::telemetry::product_telemetry_recent,
             crate::telemetry::product_telemetry_flush_now,
+            crate::release_tier::release_tier_get,
         ])
 }
 
@@ -484,8 +485,11 @@ mod tests {
         // 268 → 271: telemetry consent answer, transparency view of recent
         // events, and the manual flush — all display-safe; event creation
         // remains host-owned.
+        // 271 → 272: `release_tier_get` — the compiled maturity envelope
+        // (contracts/release-tiers-v1.toml) for renderer display and the
+        // bundle/host tier-mismatch check.
         assert_eq!(
-            exported, 271,
+            exported, 272,
             "generated bindings must contain the complete desktop command set"
         );
         assert_eq!(

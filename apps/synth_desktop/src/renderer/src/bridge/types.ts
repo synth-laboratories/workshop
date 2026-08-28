@@ -1153,6 +1153,35 @@ export type ProductTelemetryBridge = {
 	flushNow(): Promise<number>;
 };
 
+export type ReleaseTier = "core" | "stable" | "beta" | "alpha" | "dev";
+
+export type ReleaseTierFeature = {
+	name: string;
+	summary: string;
+	owner: string;
+	minTier: ReleaseTier;
+	/** How the envelope is structural for this feature: cargo-gated host code,
+	 * define-gated renderer code, or a declared (pre-envelope) classification. */
+	enforcement: "compiled" | "bundled" | "declared";
+	/** Classified inside this build's envelope (minTier ≤ build tier). */
+	included: boolean;
+	/** Actually in the binary: included, or grandfathered pre-envelope code. */
+	present: boolean;
+	enabled: boolean;
+	runtimeFlag: string | null;
+};
+
+export type ReleaseTierReport = {
+	tier: ReleaseTier;
+	contractVersion: string;
+	features: ReleaseTierFeature[];
+};
+
+export type ReleaseTierBridge = {
+	/** The host binary's compiled maturity envelope (contracts/release-tiers-v1.toml). */
+	get(): Promise<ReleaseTierReport>;
+};
+
 export type CodexOauthBegin = BeginResult;
 
 export type CodexOauthStatus = Status;

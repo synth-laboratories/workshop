@@ -1813,10 +1813,10 @@ html.visual-expanded .titlebar {
 	margin-top: 14px;
 	padding: 10px 12px;
 	border: 1px solid var(--border, rgba(127, 127, 127, 0.25));
-	border-radius: 8px;
+	border-radius:var(--radius-sm);
 	background: var(--color-bg-subtle);
 	color: var(--color-text-faint);
-	font-size: 11.5px;
+	font-size:var(--font-size-sm);
 	text-align: left;
 }
 
@@ -1829,7 +1829,7 @@ html.visual-expanded .titlebar {
 	max-height: 220px;
 	overflow-y: auto;
 	border: 1px solid var(--color-border);
-	border-radius: 7px;
+	border-radius:var(--radius-sm);
 	padding: 6px 10px;
 }
 
@@ -1838,10 +1838,19 @@ html.visual-expanded .titlebar {
 	justify-content: space-between;
 	gap: 10px;
 	padding: 3px 0;
-	font-size: 11.5px;
+	font-size:var(--font-size-xs);
 }
 
 .telemetry-event-row small { color: var(--color-text-faint); }
+
+.tier-badge {
+	margin-left: 8px;
+	padding: 1px 7px;
+	border: 1px solid var(--color-border);
+	letter-spacing: 0.04em;
+	text-transform: uppercase;
+	color: var(--color-text-faint);
+}
 
 .quick-card {
 	display: grid;

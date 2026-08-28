@@ -16,7 +16,8 @@ import {
 } from "../preferences";
 import { SettingsCard, SettingsRow } from "./SettingsCard";
 import { bridges } from "../runtime/desktopBridge";
-import type { ProductTelemetryEvent, ProductTelemetryPolicy } from "../bridge";
+import type { ProductTelemetryEvent, ProductTelemetryPolicy, ReleaseTierReport } from "../bridge";
+import { BUILD_TIER } from "../flags/tier";
 
 type Props = {
 	preferences: DesktopPreferences;
@@ -181,6 +182,39 @@ function PrivacyTelemetrySettings() {
 	);
 }
 
+function BuildEnvelopeSettings() {
+	const [report, setReport] = useState<ReleaseTierReport | null>(null);
+	useEffect(() => {
+		void bridges.releaseTier?.get().then(setReport).catch(() => undefined);
+	}, []);
+	const absent = report?.features.filter((feature) => !feature.present) ?? [];
+	return (
+		<SettingsCard
+			title="Build"
+			description="The maturity envelope this Workshop build was compiled with. Features above the envelope are not in the binary; runtime settings can only narrow it, never widen it."
+			testId="settings-build-tier"
+		>
+			<p className="settings-item-subhead" data-testid="build-tier-status">
+				{report
+					? `${report.tier} envelope · ${report.contractVersion}`
+					: `${BUILD_TIER} bundle · resolving host envelope…`}
+				{/* Statically eliminated from stable/core bundles: the pre-release
+				    badge itself is a beta-tier feature (prerelease_build_badge). */}
+				{__TIER_HAS_BETA__ ? (
+					<span className="tier-badge" data-testid="build-tier-badge">
+						pre-release · {BUILD_TIER}
+					</span>
+				) : null}
+			</p>
+			{absent.length > 0 ? (
+				<p className="settings-item-subhead" data-testid="build-tier-excluded">
+					Not in this build: {absent.map((feature) => feature.name).join(", ")}
+				</p>
+			) : null}
+		</SettingsCard>
+	);
+}
+
 function NumericInput({
 	label,
 	value,
@@ -320,6 +354,8 @@ export function GeneralPreferencesSettings({ preferences, onPreferencesChange }:
 			</SettingsCard>
 
 			<PrivacyTelemetrySettings />
+
+			<BuildEnvelopeSettings />
 
 			<SettingsCard
 				title="Prompt submission"
