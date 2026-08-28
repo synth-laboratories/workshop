@@ -349,6 +349,30 @@ test("current eval terminal work-item ids reconcile into five rollout trials and
   assert.ok(trials.every((trial) => !trial.trialId.startsWith("eval:trial:")));
 });
 
+test("terminal rollout rows retain the backend reportedFacts envelope", () => {
+  const facts = {
+    calls: { value: 1, source: "container_runtime", unavailableReason: null },
+    steps: { value: null, source: "container_runtime", unavailableReason: "steps_not_reported" },
+    tokens: { value: 3, source: "container_runtime", unavailableReason: null },
+    costUsd: { value: null, source: "container_runtime", unavailableReason: "cost_not_reported" },
+    achievements: { value: [], source: "retained_event_log", unavailableReason: null },
+    frames: { value: 0, source: "trusted_trace_v5", unavailableReason: null }
+  };
+  const trials = craftaxTrialsFromRun({ summary: { task: "craftax" } }, [{
+    type: "eval.trial.terminal",
+    sequenceNumber: 1,
+    item: {
+      id: "eval:trial:0",
+      workItemId: "eval:trial:0",
+      trialId: "trial:reported",
+      valid: true,
+      raw: { trialId: "trial:reported", error: null, reportedFacts: facts }
+    }
+  }]);
+  assert.equal(trials.length, 1);
+  assert.deepEqual(trials[0].reportedFacts, facts);
+});
+
 test("terminal V2 work truth closes queued/running trials and their open calls", () => {
   const events = [
     {

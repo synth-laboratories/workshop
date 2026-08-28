@@ -730,6 +730,8 @@ export type TrialView = {
   view: EvalTraceView;
   /** The terminal record, for the fields the event stream does not carry. */
   record: Any | null;
+  /** Backend-owned per-seed fact envelope, retained even when nested beside raw. */
+  reportedFacts?: unknown;
 };
 
 /**
@@ -757,6 +759,7 @@ export function craftaxTrialsFromRun(
     workItemId: string | null;
     authoritativeLifecycle: string | null;
     authoritativeTerminal: string | null;
+    reportedFacts?: unknown;
   };
   const order: string[] = [];
   const pending = new Map<string, Pending>();
@@ -798,6 +801,10 @@ export function craftaxTrialsFromRun(
     ) ?? (legacyItemId !== workItemId ? legacyItemId : null);
     if (!trialId) continue;
     const row = claim(trialId);
+    const reportedFacts = delta.reportedFacts ?? delta.reported_facts
+      ?? item.reportedFacts ?? item.reported_facts
+      ?? record.reportedFacts ?? record.reported_facts;
+    if (reportedFacts !== undefined) row.reportedFacts = reportedFacts;
     row.workItemId ??= workItemId;
     row.seed ??= num(delta.seed ?? item.seed ?? item.raw?.seed);
     row.pool ??= text(delta.pool ?? item.raw?.pool);
@@ -884,7 +891,8 @@ export function craftaxTrialsFromRun(
       state,
       reward: num(record?.reward),
       view,
-      record
+      record,
+      reportedFacts: row.reportedFacts
     };
   });
 }

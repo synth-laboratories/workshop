@@ -45,6 +45,12 @@ import {
   evalAggregateWorkFacts,
   type EvalAggregateV1
 } from "../../../runtime/evalAggregate.ts";
+import {
+  readReportedFacts,
+  summarizeAchievementReportedFacts,
+  summarizeNumericReportedFact,
+  type ReportedFactSummary
+} from "../../../runtime/reportedFacts.ts";
 
 type Any = Record<string, any>;
 
@@ -115,12 +121,28 @@ const totalTokens = (trial: TrialView): number | null => {
 };
 
 const stepCount = (trial: TrialView): number | null => {
-  const turns = trial.view.steps.flatMap((step) => step.action.applied.map((row) => row.turn));
-  const observed = turns.filter((value): value is number => value !== null);
-  if (observed.length) return Math.max(...observed);
-  const recorded = finite(trial.record?.steps ?? trial.record?.env_steps ?? trial.record?.raw?.steps);
-  return recorded;
+  // Legacy fallback reads an explicitly recorded count only. Frame indices,
+  // applied-action turns, and trace length are not step facts.
+  return finite(trial.record?.steps ?? trial.record?.env_steps ?? trial.record?.raw?.steps);
 };
+
+const reportedFactRecord = (trial: TrialView): unknown => trial.reportedFacts !== undefined
+  ? { reportedFacts: trial.reportedFacts }
+  : trial.record;
+
+function FactMetadata({ summary }: { summary: ReportedFactSummary<unknown> }) {
+  if (!summary.authoritative) return null;
+  return (
+    <div
+      data-reported-fact-metadata=""
+      style={{ display: "grid", gap: 1, color: "var(--sv-text-faint)", fontSize: "var(--sv-fs-micro)" }}
+    >
+      <span>source: {summary.sources.length ? summary.sources.join(", ") : "not_reported"}</span>
+      <span>unavailable reason: {summary.unavailableReasons.length ? summary.unavailableReasons.join(", ") : "none"}</span>
+      {summary.contractErrors.length ? <span>contract: {summary.contractErrors.join("; ")}</span> : null}
+    </div>
+  );
+}
 
 function RunAggregateHeader({
   run,
@@ -153,18 +175,12 @@ function RunAggregateHeader({
     ? Math.max(0, ((Number.isFinite(ended) ? ended : Date.now()) - started) / 1000)
     : null;
 
-  const calls = trials.map((row) => row.view.run.usage.calls);
-  const steps = trials.map(stepCount);
-  const tokenRows = trials.map(totalTokens);
-  const costs = trials.map((row) => row.view.run.cost_usd);
-  const sumPresent = (rows: Array<number | null>) => {
-    const present = rows.filter((value): value is number => value !== null);
-    return { value: present.length ? present.reduce((sum, value) => sum + value, 0) : null, present: present.length };
-  };
-  const callUsage = sumPresent(calls);
-  const stepUsage = sumPresent(steps);
-  const tokenUsage = sumPresent(tokenRows);
-  const costUsage = sumPresent(costs);
+  const factRecords = trials.map(reportedFactRecord);
+  const callUsage = summarizeNumericReportedFact(factRecords, "calls", trials.map((row) => row.view.run.usage.calls));
+  const stepUsage = summarizeNumericReportedFact(factRecords, "steps", trials.map(stepCount));
+  const tokenUsage = summarizeNumericReportedFact(factRecords, "tokens", trials.map(totalTokens));
+  const costUsage = summarizeNumericReportedFact(factRecords, "costUsd", trials.map((row) => row.view.run.cost_usd));
+  const frameUsage = summarizeNumericReportedFact(factRecords, "frames", trials.map((row) => row.view.coverage.framesRetained));
   const maxRollouts = finite(bounds.maximumRollouts) ?? (rolloutCount || null);
   const callsPerRollout = finite(bounds.maximumModelCallsPerRollout);
   const stepsPerRollout = finite(bounds.maximumStepsPerRollout);
@@ -197,7 +213,11 @@ function RunAggregateHeader({
     return { low, high, inclusiveHigh, count };
   }) : [];
 
-  const achievementEvents = trials.flatMap((trial) =>
+  const achievementFacts = summarizeAchievementReportedFacts(
+    factRecords,
+    trials.map((trial) => trial.view.achievements)
+  );
+  const achievementEvents = achievementFacts.authoritative ? [] : trials.flatMap((trial) =>
     trial.view.events
       .filter((event) => event.kind === "achievement_unlocked")
       .map((event) => ({
@@ -207,25 +227,29 @@ function RunAggregateHeader({
       }))
       .filter((event) => event.name)
   );
-  const names = [...new Set(trials.flatMap((trial) => trial.view.achievements))];
+  const names = achievementFacts.value ?? [];
   const achievements = names.map((name) => {
-    const seedRows = trials.filter((trial) => trial.view.achievements.includes(name));
+    const seedRows = trials.filter((trial, index) => (
+      achievementFacts.authoritative
+        ? achievementFacts.byRecord[index]?.includes(name) === true
+        : trial.view.achievements.includes(name)
+    ));
     const events = achievementEvents.filter((event) => event.name === name);
     const best = seedRows.filter((row) => row.reward !== null).sort((a, b) => (b.reward ?? -Infinity) - (a.reward ?? -Infinity))[0];
     const first = events.sort((a, b) => a.sequence - b.sequence)[0];
     return {
       name,
       seeds: seedRows.length,
-      occurrences: events.length || seedRows.length,
-      firstSeed: first?.trial.seed ?? null,
-      bestSeed: best?.seed ?? null
+      occurrences: achievementFacts.authoritative ? null : events.length || seedRows.length,
+      firstSeed: achievementFacts.authoritative ? null : first?.trial.seed ?? null,
+      bestSeed: achievementFacts.authoritative ? null : best?.seed ?? null
     };
   }).sort((a, b) => b.seeds - a.seeds || a.name.localeCompare(b.name));
 
   const formatDuration = (seconds: number | null) => seconds === null
     ? "unavailable"
     : `${Math.floor(seconds / 60)}m ${Math.floor(seconds % 60)}s`;
-  const usageCard = (label: string, usage: { value: number | null; present: number }, limit: number | null, formatter = tokens) => {
+  const usageCard = (label: string, usage: ReportedFactSummary<number>, limit: number | null, formatter = tokens) => {
     const ratio = usage.value !== null && limit !== null && limit > 0 ? usage.value / limit : null;
     const tone = ratio !== null && ratio >= .95 ? "var(--sv-bad-fg)" : ratio !== null && ratio >= .8 ? "var(--sv-warn-fg)" : "var(--sv-text)";
     return (
@@ -235,8 +259,9 @@ function RunAggregateHeader({
           {usage.value === null ? "unavailable" : formatter(usage.value)} / {limit === null ? "no limit" : formatter(limit)}
         </strong>
         <div style={{ color: "var(--sv-text-faint)", fontSize: "var(--sv-fs-micro)" }}>
-          {usage.present}/{rolloutCount} seeds reported
+          {usage.present}/{usage.total || rolloutCount} seeds reported
         </div>
+        <FactMetadata summary={usage} />
         <div style={{ height: 3, marginTop: 4, borderRadius: 3, overflow: "hidden", background: "var(--sv-surface-muted)" }}>
           <span style={{ display: "block", height: "100%", width: `${Math.min(100, (ratio ?? 0) * 100)}%`, background: tone }} />
         </div>
@@ -270,11 +295,12 @@ function RunAggregateHeader({
         </span>
       </div>
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(130px,1fr))", gap: "var(--sv-sp-3)" }}>
-        {usageCard("Rollouts", { value: startedTrials, present: rolloutCount }, maxRollouts, (value) => String(value))}
+        {usageCard("Rollouts", { authoritative: false, value: startedTrials, present: rolloutCount, total: rolloutCount, sources: [], unavailableReasons: [], contractErrors: [] }, maxRollouts, (value) => String(value))}
         {usageCard("Model calls", callUsage, callLimit)}
         {usageCard("Environment steps", stepUsage, stepLimit)}
         {usageCard("Tokens", tokenUsage, tokenLimit)}
         {usageCard("Cost", costUsage, costLimit, (value) => `$${value.toFixed(2)}`)}
+        {usageCard("Frames", frameUsage, null)}
       </div>
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(260px,1fr))", gap: "var(--sv-sp-4)", marginTop: "var(--sv-sp-3)", paddingTop: "var(--sv-sp-3)", borderTop: "1px solid var(--sv-border)" }}>
         <div>
@@ -292,12 +318,15 @@ function RunAggregateHeader({
         <div>
           <div style={{ color: "var(--sv-text-faint)", fontSize: "var(--sv-fs-micro)", textTransform: "uppercase" }}>Achievements · unique seeds / eligible · occurrences · first · best</div>
           <div style={{ display: "grid", gap: 3, maxHeight: 76, overflowY: "auto", marginTop: 4 }}>
-            {achievements.length ? achievements.map((row) => (
+            {achievementFacts.authoritative && achievementFacts.value === null ? (
+              <span style={{ color: "var(--sv-text-faint)", fontSize: "var(--sv-fs-meta)" }}>Achievements unavailable.</span>
+            ) : achievements.length ? achievements.map((row) => (
               <button key={row.name} type="button" onClick={() => onFilter(filter?.kind === "achievement" && filter.name === row.name ? null : { kind: "achievement", name: row.name })} style={{ display: "grid", gridTemplateColumns: "minmax(120px,1fr) auto", gap: 8, padding: "2px 4px", border: "1px solid transparent", borderRadius: 4, background: filter?.kind === "achievement" && filter.name === row.name ? "var(--sv-accent-soft)" : "transparent", color: "var(--sv-text)", cursor: "pointer", textAlign: "left" }}>
                 <span style={{ ...mono, overflow: "hidden", textOverflow: "ellipsis" }}>{row.name}</span>
-                <span style={{ color: "var(--sv-text-faint)", fontSize: "var(--sv-fs-micro)" }}>{row.seeds}/{trials.length} · {row.occurrences}× · first {row.firstSeed ?? MISSING} · best {row.bestSeed ?? MISSING}</span>
+                <span style={{ color: "var(--sv-text-faint)", fontSize: "var(--sv-fs-micro)" }}>{row.seeds}/{trials.length} · {row.occurrences === null ? "occurrences unavailable" : `${row.occurrences}×`} · first {row.firstSeed ?? MISSING} · best {row.bestSeed ?? MISSING}</span>
               </button>
-            )) : <span style={{ color: "var(--sv-text-faint)", fontSize: "var(--sv-fs-meta)" }}>No achievements reported yet.</span>}
+            )) : <span style={{ color: "var(--sv-text-faint)", fontSize: "var(--sv-fs-meta)" }}>{achievementFacts.authoritative ? "No achievements achieved." : "No achievements reported yet."}</span>}
+            <FactMetadata summary={achievementFacts} />
           </div>
         </div>
       </div>
@@ -880,6 +909,11 @@ export function TraceWorkbench({ branding, ...props }: TraceWorkbenchProps & { b
 		});
 		return { ...row, view: reconcileCraftaxTrace(row.view, sealedView).view ?? row.view };
 	}), [liveTrials, props.sealedTraceProjections]);
+  const trialFactReads = useMemo(
+    () => trials.map((row) => readReportedFacts(reportedFactRecord(row))),
+    [trials]
+  );
+  const achievementFactsAuthoritative = trialFactReads.some((read) => read.status !== "absent");
 
   // Selection is held by identity, not by object. A trial folded again on the
   // next append is a new object with the same id, and a selection keyed on the
@@ -900,6 +934,11 @@ export function TraceWorkbench({ branding, ...props }: TraceWorkbenchProps & { b
     trials[0] ??
     null;
   const view = trial?.view ?? null;
+  const selectedFrameFact = summarizeNumericReportedFact(
+    trial ? [reportedFactRecord(trial)] : [],
+    "frames",
+    trial ? [trial.view.coverage.framesRetained] : []
+  );
 
   const frameDigests = useMemo(
     () => (view?.frames ?? []).map((frame) => frame.media?.casDigest ?? ""),
@@ -1018,6 +1057,17 @@ export function TraceWorkbench({ branding, ...props }: TraceWorkbenchProps & { b
   const importedSeal = typeof run?.objective === "string" && String(run.objective).startsWith("imported from");
   const framesAbsent = view !== null && view.frames.length === 0 && view.coverage.framesRetained === 0;
   const streamOnly = importedSeal || (!branding.frameCentric && framesAbsent);
+  const frameFactSource = selectedFrameFact.sources.length ? selectedFrameFact.sources.join(", ") : "not_reported";
+  const frameFactReason = selectedFrameFact.unavailableReasons.length
+    ? selectedFrameFact.unavailableReasons.join(", ")
+    : "none";
+  const terminalFrameCopy = selectedFrameFact.authoritative
+    ? selectedFrameFact.value === null
+      ? `Frames unavailable · source: ${frameFactSource} · unavailable reason: ${frameFactReason}`
+      : `${selectedFrameFact.value} frames · source: ${frameFactSource} · unavailable reason: ${frameFactReason}`
+    : view
+      ? `${view.coverage.framesRetained}/${view.coverage.framesDeclared} frame observations retained · ${view.coverage.uniqueCasBlobs} unique CAS blob${view.coverage.uniqueCasBlobs === 1 ? "" : "s"}`
+      : "";
   const button: React.CSSProperties = {
     padding: "var(--sv-sp-1) var(--sv-sp-3)",
     border: "1px solid var(--sv-border-strong)",
@@ -1047,7 +1097,7 @@ export function TraceWorkbench({ branding, ...props }: TraceWorkbenchProps & { b
         <span style={{ ...mono, fontSize: "var(--sv-fs-micro)" }}>
           {sealed ? "Sealed Trace V5" : "Live relay"}
           {view?.integrity.content_digest ? ` · ${view.integrity.content_digest.slice(0, 20)}` : ""}
-          {view ? ` · ${view.coverage.framesRetained}/${view.coverage.framesDeclared} frame observations retained · ${view.coverage.uniqueCasBlobs} unique CAS blob${view.coverage.uniqueCasBlobs === 1 ? "" : "s"}` : ""}
+          {terminalFrameCopy ? ` · ${terminalFrameCopy}` : ""}
         </span>
       }
     >
@@ -1080,7 +1130,7 @@ export function TraceWorkbench({ branding, ...props }: TraceWorkbenchProps & { b
           marginBottom: "var(--sv-sp-3)"
         }}
       >
-        {trials.map((row) => (
+        {trials.map((row, index) => (
           <button
             key={row.trialId}
             type="button"
@@ -1096,7 +1146,11 @@ export function TraceWorkbench({ branding, ...props }: TraceWorkbenchProps & { b
               background:
                 row.trialId === trial?.trialId ? "var(--sv-accent-soft)" : "var(--sv-surface)",
               opacity: aggregateFilter === null ||
-                (aggregateFilter.kind === "achievement" && row.view.achievements.includes(aggregateFilter.name)) ||
+                (aggregateFilter.kind === "achievement" && (
+                  achievementFactsAuthoritative
+                    ? trialFactReads[index]?.status === "present" && trialFactReads[index].facts.achievements.value?.includes(aggregateFilter.name) === true
+                    : row.view.achievements.includes(aggregateFilter.name)
+                )) ||
                 (aggregateFilter.kind === "reward" && row.reward !== null && row.reward >= aggregateFilter.low && (aggregateFilter.inclusiveHigh ? row.reward <= aggregateFilter.high : row.reward < aggregateFilter.high))
                 ? 1 : .3
             }}
@@ -1141,9 +1195,11 @@ export function TraceWorkbench({ branding, ...props }: TraceWorkbenchProps & { b
                   textAlign: "center"
                 }}
               >
-                {importedSeal
-                  ? "Imported seal has no native step/frame identity; showing stream events only."
-                  : "This run recorded no environment frames; showing stream events only."}
+                {selectedFrameFact.authoritative
+                  ? `${terminalFrameCopy}; showing stream events only.`
+                  : importedSeal
+                    ? "Imported seal has no native step/frame identity; showing stream events only."
+                    : "This run recorded no environment frames; showing stream events only."}
               </div>
             ) : (
               <FrameCanvas frame={frame} media={media} loaded={loaded} branding={branding} />
