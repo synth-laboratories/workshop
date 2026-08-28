@@ -30,6 +30,11 @@ pub fn classify(kind: &ApprovalKind, active_runs: u64) -> PluginRisk {
             _ => PluginRisk::High,
         },
         ApprovalKind::ContainerLifecycle { .. } => PluginRisk::HandOff,
+        // Unreachable: `requires_human` above already returned `HandOff`.
+        // Spelled out anyway because the match is exhaustive on purpose — a
+        // kind added later must not be able to acquire a risk class by
+        // falling into somebody else's arm.
+        ApprovalKind::VisualTemplatePersist { .. } => PluginRisk::HandOff,
         ApprovalKind::PaidCompute { .. } => PluginRisk::High,
         ApprovalKind::CredentialAccess { .. } => PluginRisk::High,
         ApprovalKind::ShellCommand { .. } => PluginRisk::High,

@@ -117,12 +117,16 @@ impl VisualRegistry {
         if !form.is_upgrade() {
             return;
         }
-        crate::platform::logging::report("visuals", "eprintln", format!(
-            "synth-desktop: upgraded {} visual bindings for {visual_id} rev {revision} \
+        crate::platform::logging::report(
+            "visuals",
+            "eprintln",
+            format!(
+                "synth-desktop: upgraded {} visual bindings for {visual_id} rev {revision} \
              (template {template_id}, slots {upgraded_slots:?}); writers must send {}",
-            form.as_str(),
-            super::models::VISUAL_BINDINGS_SCHEMA_VERSION
-        ));
+                form.as_str(),
+                super::models::VISUAL_BINDINGS_SCHEMA_VERSION
+            ),
+        );
         let Some(service) = self.diagnostics.get() else {
             return;
         };
@@ -749,7 +753,51 @@ impl VisualRegistry {
         resolve_template(template_id)
     }
 
+    /// **Ungated seam. Always refuses.**
+    ///
+    /// This is the route `visual_import_template` reaches over the agent HTTP
+    /// seam, and until now it wrote a `renderer.html` package into the instance
+    /// state root with no confirmation of any kind — an agent could leave
+    /// renderer code that runs at every launch, unprompted. That is the same act
+    /// `visual_save_template` performs, so gating only the new writers would
+    /// have gated nothing.
+    ///
+    /// It keeps its signature so the IPC dispatcher still compiles while the
+    /// route is moved to [`Self::import_template_approved`]; it cannot keep its
+    /// behaviour, because this signature has nowhere to put a session id and no
+    /// way to await a person. Refusing is the only honest thing a synchronous
+    /// entry point can do about a decision that requires one.
     pub fn import_template(&self, source_path: &str) -> Result<TemplateMeta> {
+        Err(crate::session::template_persist::unapproved(
+            "import",
+            source_path,
+        ))
+    }
+
+    /// Import one reviewed, networkless `renderer.html` package, once a person
+    /// has allowed it.
+    ///
+    /// The manifest is read before the card so the card can name the id and the
+    /// bytes, and `import_managed_template` still performs every structural and
+    /// networkless check afterwards — this reads two files to describe the
+    /// decision, it does not decide anything.
+    pub async fn import_template_approved<R: tauri::Runtime>(
+        &self,
+        app: &tauri::AppHandle<R>,
+        session_id: Option<&str>,
+        source_path: &str,
+    ) -> Result<TemplateMeta> {
+        let request = managed_import_request(source_path)?;
+        let consent =
+            crate::session::template_persist::authorize(app, session_id, &request).await?;
+        // Re-describe the package after the decision. An approval names a
+        // digest, and a card can be open for a long time; if the bytes moved
+        // while it was, the grant does not cover what is now on disk. The
+        // remaining window — between this read and the import's own — is the one
+        // that cannot be closed without reimplementing the import, and it is
+        // microseconds against a human's seconds.
+        let confirmed = managed_import_request(source_path)?;
+        consent.bind(&confirmed)?;
         super::templates::import_managed_template(source_path)
     }
 
@@ -761,40 +809,76 @@ impl VisualRegistry {
         super::user_templates::shell_source(template_id)
     }
 
-    /// Promote authored TSX into a durable, reusable template under the
-    /// instance state root.
+    /// **Ungated seam. Always refuses.** See [`Self::import_template`].
     ///
-    /// The registry is a pass-through here on purpose: what a user template
-    /// *is* belongs to `templates.rs`, and writing one is `user_templates.rs`
-    /// asking `templates.rs` to confirm the bytes it just wrote. A copy of the
-    /// manifest rules on this side is the drift the plan exists to remove.
+    /// The pane's own Save button reaches this through a synchronous Tauri
+    /// command, which can neither name a session nor wait for a card without
+    /// blocking the thread the card would have to be drawn on. So this refuses
+    /// and [`Self::save_template_approved`] is the route; making the command
+    /// async and giving it a session id is the change that reconnects it.
     pub fn save_template(
         &self,
+        template_id: &str,
+        _manifest_json: &str,
+        _source: &str,
+    ) -> Result<TemplateMeta> {
+        Err(crate::session::template_persist::unapproved(
+            "save",
+            template_id,
+        ))
+    }
+
+    /// Promote authored TSX into a durable, reusable template under the
+    /// instance state root, once a person has allowed it.
+    ///
+    /// The registry is a pass-through for everything except the gate: what a
+    /// user template *is* belongs to `templates.rs`, and writing one is
+    /// `user_templates.rs` asking `templates.rs` to confirm the bytes it just
+    /// wrote. A copy of the manifest rules on this side is the drift the plan
+    /// exists to remove.
+    pub async fn save_template_approved<R: tauri::Runtime>(
+        &self,
+        app: &tauri::AppHandle<R>,
+        session_id: Option<&str>,
         template_id: &str,
         manifest_json: &str,
         source: &str,
     ) -> Result<TemplateMeta> {
-        super::user_templates::save(
-            template_id,
-            manifest_json,
-            source,
-            super::user_templates::PersistConsent::HumanInPane,
-        )
+        let prepared = super::user_templates::prepare_save(template_id, manifest_json, source)?;
+        let consent =
+            crate::session::template_persist::authorize(app, session_id, prepared.request())
+                .await?;
+        super::user_templates::commit(prepared, &consent)
     }
 
-    /// Scaffold a new user template by forking an existing one under a new id.
+    /// **Ungated seam. Always refuses.** See [`Self::save_template`].
     pub fn create_template(
         &self,
+        template_id: &str,
+        _from_template_id: &str,
+        _title: Option<&str>,
+    ) -> Result<TemplateMeta> {
+        Err(crate::session::template_persist::unapproved(
+            "fork",
+            template_id,
+        ))
+    }
+
+    /// Scaffold a new user template by forking an existing one under a new id,
+    /// once a person has allowed it.
+    pub async fn create_template_approved<R: tauri::Runtime>(
+        &self,
+        app: &tauri::AppHandle<R>,
+        session_id: Option<&str>,
         template_id: &str,
         from_template_id: &str,
         title: Option<&str>,
     ) -> Result<TemplateMeta> {
-        super::user_templates::create_from(
-            template_id,
-            from_template_id,
-            title,
-            super::user_templates::PersistConsent::HumanInPane,
-        )
+        let prepared = super::user_templates::prepare_fork(template_id, from_template_id, title)?;
+        let consent =
+            crate::session::template_persist::authorize(app, session_id, prepared.request())
+                .await?;
+        super::user_templates::commit(prepared, &consent)
     }
 
     /// Structural verdict on one user template directory. The import allowlist
@@ -1612,6 +1696,52 @@ impl VisualRegistry {
         );
         self.get(visual.id).await
     }
+}
+
+/// Describe a `renderer.html` package well enough for a person to decide.
+///
+/// Deliberately not a validator. `import_managed_template` owns every rule
+/// about what a managed package may be — absolute real directory, two regular
+/// non-symlink files, the size cap, the manifest schema, the networkless scan —
+/// and runs all of them after the approval. This reads the two facts a card
+/// cannot be written without: which id the package claims, and how many bytes of
+/// renderer code it is. Anything it cannot read is an error here rather than a
+/// card, because a package that will be refused must not cost a click.
+fn managed_import_request(
+    source_path: &str,
+) -> Result<crate::session::template_persist::PersistRequest> {
+    use crate::session::template_persist::{PersistDisposition, PersistRequest};
+    let source = std::path::Path::new(source_path);
+    if !source.is_absolute() {
+        bail!("source_path must be an absolute directory");
+    }
+    let manifest = std::fs::read_to_string(source.join("template.json"))
+        .map_err(|_| anyhow!("managed template requires template.json and renderer.html"))?;
+    let manifest: Value = serde_json::from_str(&manifest)
+        .with_context(|| format!("managed template manifest is not JSON: {source_path}"))?;
+    let template_id = manifest
+        .get("id")
+        .and_then(Value::as_str)
+        .ok_or_else(|| anyhow!("managed template manifest declares no id"))?;
+    let renderer = std::fs::read(source.join("renderer.html"))
+        .map_err(|_| anyhow!("managed template requires template.json and renderer.html"))?;
+    let destination = super::templates::user_templates_root().join(template_id);
+    // "Something already indexes under this id" is the fact the card needs, and
+    // the registry is the only thing that can answer it. A directory that exists
+    // but does not index (a scaffold, a refused shape) is not an overwrite of
+    // anything a person has seen.
+    let overwrites = resolve_template(template_id).is_ok();
+    Ok(PersistRequest::new(
+        template_id,
+        "managed",
+        "import",
+        &renderer,
+        PersistDisposition {
+            overwrites,
+            forked_from: None,
+        },
+        &destination,
+    ))
 }
 
 fn refuse_mermaid_stream_slot(bindings: &Value) -> Result<()> {

@@ -174,6 +174,43 @@ pub(crate) enum ApprovalKind {
         provider: String,
         purpose: String,
     },
+    /// Persist renderer code the app will compile at every launch.
+    ///
+    /// A visual template under `<state root>/visuals/templates/` is not a
+    /// rendered view that dies with the pane: the registry scans that directory
+    /// on every start, for every future session, until someone deletes it.
+    /// `internal_readme.md` fixes the precedent for that class — entering an API
+    /// key "creates persistent access and must follow the Computer Use
+    /// confirmation policy" — so this is `requires_human`, and no policy,
+    /// `never` included, may settle it.
+    ///
+    /// The fields are chosen to answer the question a person actually has in
+    /// front of this card: *which* id, in *which* capability model, how much
+    /// code, and does it replace something that is already there.
+    VisualTemplatePersist {
+        /// Template id, which is also the directory name under the root.
+        template_id: String,
+        /// `user` — `shell.tsx` compiled in the pane under the sourced
+        /// allowlist — or `managed` — `renderer.html` in a sandboxed iframe
+        /// under a CSP. Two different capability models, so the card must say
+        /// which one is being granted, not just "a template".
+        source_kind: String,
+        /// `save`, `fork`, or `import`.
+        action: String,
+        /// Bytes of code this write persists.
+        byte_size: u64,
+        /// True when an indexed template already owns this id and its source is
+        /// being replaced. "Add a template" and "silently replace the template
+        /// you already reviewed" are not the same decision.
+        overwrites: bool,
+        /// Template this one was copied from, when it is a fork.
+        forked_from: Option<String>,
+        /// Directory that will be written.
+        destination: String,
+        /// SHA-256 of the source bytes, so the card and the receipt name the
+        /// same code.
+        source_digest: String,
+    },
     /// One computer-use action against one native app. See `docs/COMPUTER_USE.md`.
     ///
     /// `hazard` marks an action whose effect leaves the machine or cannot be
@@ -203,6 +240,7 @@ impl ApprovalKind {
             Self::ContainerLifecycle { .. } => "container_lifecycle",
             Self::PluginLifecycle { .. } => "plugin_lifecycle",
             Self::CredentialAccess { .. } => "credential_access",
+            Self::VisualTemplatePersist { .. } => "visual_template_persist",
             Self::ComputerUse { .. } => "computer_use",
         }
     }
@@ -212,9 +250,11 @@ impl ApprovalKind {
     /// The permissive `approval_policy = "never"` is honored everywhere else in
     /// Workshop, deliberately: the operator asked for it. It is not honored here.
     /// A hazard action commits content on the operator's behalf, paid compute
-    /// commits a new digest-bound spend, and credential access creates a new
-    /// run-scoped provider capability. Consent is about that exact payload — a
-    /// permissive shell policy is not a substitute for any of these grants.
+    /// commits a new digest-bound spend, credential access creates a new
+    /// run-scoped provider capability, and persisting a visual template leaves
+    /// code behind that the app compiles at every launch. Consent is about that
+    /// exact payload — a permissive shell policy is not a substitute for any of
+    /// these grants.
     ///
     /// This is the single owner of that judgment. Both policy engines and the
     /// remembered-grant path consult it rather than re-deriving it.
@@ -225,6 +265,7 @@ impl ApprovalKind {
                 | Self::PaidCompute { .. }
                 | Self::CredentialAccess { .. }
                 | Self::ContainerLifecycle { .. }
+                | Self::VisualTemplatePersist { .. }
         )
     }
 
@@ -282,6 +323,16 @@ impl ApprovalKind {
                     scope: ApprovalScope::Once,
                 },
             ) => Ok(()),
+            // Once only, and the remembered scopes were already refused above.
+            // "Let this agent write templates for the rest of the session" is a
+            // standing grant to persist arbitrary renderer code; approving one
+            // named id with one named digest is the whole decision.
+            (
+                Self::VisualTemplatePersist { .. },
+                ApprovalDecision::Approve {
+                    scope: ApprovalScope::Once,
+                },
+            ) => Ok(()),
             (Self::PaidCompute { .. }, ApprovalDecision::ApproveWithCap { cap })
                 if cap.is_bounded() =>
             {
@@ -296,6 +347,36 @@ impl ApprovalKind {
                 decision.event_value()
             )),
         }
+    }
+
+    /// One sentence naming every fact the decision turns on.
+    ///
+    /// Built here rather than at the producer so the card, the durable
+    /// `approval.requested` receipt, and any later reader all read the same
+    /// words. Nothing in it can carry a secret: every input is an id, a tier
+    /// name, a byte count, or a path under the instance state root.
+    fn visual_template_detail(
+        action: &str,
+        template_id: &str,
+        source_kind: &str,
+        byte_size: u64,
+        overwrites: bool,
+        forked_from: Option<&str>,
+    ) -> String {
+        let disposition = if overwrites {
+            "replacing the template already installed under that id"
+        } else {
+            "adding a new template id"
+        };
+        let origin = match forked_from {
+            Some(origin) => format!(", forked from {origin}"),
+            None => String::new(),
+        };
+        format!(
+            "{action} visual template {template_id} ({source_kind}, {byte_size} bytes{origin}) — \
+             {disposition}. This code is compiled every time the app starts, in every future \
+             session, until the directory is deleted."
+        )
     }
 
     pub(crate) fn safe_payload(&self, approval_id: &str) -> Value {
@@ -396,6 +477,45 @@ impl ApprovalKind {
                 "kind": self.name(),
                 "provider": provider,
                 "purpose": purpose,
+                "alwaysSupported": false,
+            }),
+            Self::VisualTemplatePersist {
+                template_id,
+                source_kind,
+                action,
+                byte_size,
+                overwrites,
+                forked_from,
+                destination,
+                source_digest,
+            } => json!({
+                "approvalId": approval_id,
+                "kind": self.name(),
+                "templateId": template_id,
+                "sourceKind": source_kind,
+                "action": action,
+                "byteSizeBytes": byte_size,
+                "overwrites": overwrites,
+                "forkedFrom": forked_from,
+                "destination": destination,
+                "sourceDigest": source_digest,
+                // A renderer that predates this variant falls through
+                // `sessionView.ts`'s typed branches to `payload.path`, and
+                // drops `payload.detail` because its `safeKind` list does not
+                // name this kind. So `path` is what a person actually sees
+                // today — the directory about to be written, which is at least
+                // the truth — and `detail` is the sentence the typed branch
+                // should show once it exists. Both are written now so that
+                // adding the branch is a renderer-only change.
+                "detail": Self::visual_template_detail(
+                    action,
+                    template_id,
+                    source_kind,
+                    *byte_size,
+                    *overwrites,
+                    forked_from.as_deref(),
+                ),
+                "path": destination,
                 "alwaysSupported": false,
             }),
             Self::ComputerUse {
@@ -1039,6 +1159,64 @@ mod tests {
             computer_use(false).safe_payload("approval-2")["alwaysSupported"],
             true
         );
+    }
+
+    fn persist_template(overwrites: bool) -> ApprovalKind {
+        ApprovalKind::VisualTemplatePersist {
+            template_id: "user.reward.v1".into(),
+            source_kind: "user".into(),
+            action: "save".into(),
+            byte_size: 4_096,
+            overwrites,
+            forked_from: None,
+            destination: "/root/visuals/templates/user.reward.v1".into(),
+            source_digest: "sha256:abc".into(),
+        }
+    }
+
+    /// Persisting renderer code is the same class as a hazard action: the
+    /// grant is for *this* source, so a remembered scope would answer a
+    /// question nobody asked, and no remembered key may satisfy it.
+    #[test]
+    fn persisting_a_template_cannot_be_remembered_or_keyed() {
+        for scope in [ApprovalScope::Session, ApprovalScope::Workspace] {
+            let error = persist_template(false)
+                .validate_decision(&ApprovalDecision::Approve { scope })
+                .unwrap_err();
+            assert!(error.to_string().contains("cannot be remembered"));
+        }
+        persist_template(false)
+            .validate_decision(&ApprovalDecision::Approve {
+                scope: ApprovalScope::Once,
+            })
+            .unwrap();
+        assert!(remembered_key(&persist_template(false)).is_none());
+        assert!(persist_template(false).requires_human());
+    }
+
+    /// The card has to say which id, which capability model, how much code,
+    /// and whether something already there is being replaced. "A template was
+    /// written" is not a decision anyone can make.
+    #[test]
+    fn persist_payload_carries_what_the_decision_turns_on() {
+        let payload = persist_template(true).safe_payload("approval-template");
+        assert_eq!(payload["kind"], "visual_template_persist");
+        assert_eq!(payload["templateId"], "user.reward.v1");
+        assert_eq!(payload["sourceKind"], "user");
+        assert_eq!(payload["action"], "save");
+        assert_eq!(payload["byteSizeBytes"], 4_096);
+        assert_eq!(payload["overwrites"], true);
+        assert_eq!(payload["alwaysSupported"], false);
+        let detail = payload["detail"].as_str().unwrap();
+        assert!(detail.contains("user.reward.v1"), "{detail}");
+        assert!(detail.contains("4096 bytes"), "{detail}");
+        assert!(detail.contains("replacing"), "{detail}");
+        // Until `sessionView.ts` grows a typed branch, `path` is the only
+        // field a stock card renders — so it must be present and be the
+        // destination, not a paraphrase.
+        assert_eq!(payload["path"], payload["destination"]);
+        let fresh = persist_template(false).safe_payload("approval-template");
+        assert!(fresh["detail"].as_str().unwrap().contains("adding a new"));
     }
 
     struct RecordingResolver {
