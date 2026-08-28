@@ -1241,16 +1241,16 @@ mod tests {
     }
 
     #[test]
-    fn retry_after_seconds_override_the_exponential_floor() {
+    fn retry_after_seconds_and_exponential_floor_use_the_larger_delay() {
         let mut headers = reqwest::header::HeaderMap::new();
-        headers.insert(reqwest::header::RETRY_AFTER, "17".parse().unwrap());
+        headers.insert(reqwest::header::RETRY_AFTER, "47".parse().unwrap());
         assert_eq!(
             rate_limit_retry_delay(&headers, 0),
-            std::time::Duration::from_secs(17)
+            std::time::Duration::from_secs(47)
         );
         assert_eq!(
             rate_limit_retry_delay(&headers, 1),
-            std::time::Duration::from_secs(17)
+            std::time::Duration::from_secs(60)
         );
     }
 
