@@ -40,6 +40,11 @@ pub fn upsert_run_columns(conn: &Connection, state: &RunKernelState) -> Result<(
 }
 
 pub fn upsert_projection(conn: &Connection, state: &RunKernelState) -> Result<()> {
+    // Write-side twin of the read guard below: a terminal projection with
+    // open work must never become durable in the first place.
+    if state.lifecycle.is_terminal() || state.terminal.is_some() {
+        reject_active_terminal_work(&state.run_id, state.projection.work_items())?;
+    }
     let payload =
         serde_json::to_string(&state.projection).context("serialize algorithm projection")?;
     conn.execute(
@@ -559,7 +564,42 @@ pub fn insert_spec(conn: &Connection, commit: &AdmissionCommit) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::optimizers::kernel::types::WorkItemKind;
+    use crate::optimizers::kernel::types::{TerminalKind, WorkItemKind};
+
+    #[test]
+    fn upsert_rejects_an_open_world_terminal_projection() {
+        let mut state = RunKernelState::new(
+            "run-open",
+            AlgorithmKind::Eval,
+            ExecutionPlacement::DirectContainerEvaluation,
+            "sha256:spec",
+        );
+        state.lifecycle = RunLifecycle::Terminal;
+        let mut running = WorkItem::planned("eval:trial:0", WorkItemKind::EvalTrial).unwrap();
+        running.transition(WorkItemLifecycle::Queued).unwrap();
+        running.transition(WorkItemLifecycle::Starting).unwrap();
+        running.transition(WorkItemLifecycle::Running).unwrap();
+        match &mut state.projection {
+            AlgorithmProjection::Eval(projection) => projection.work_items.push(running),
+            _ => unreachable!("eval admission produces an eval projection"),
+        }
+
+        // The closed-world guard refuses before any SQL executes, so an empty
+        // connection proves the write path itself is the gate.
+        let conn = Connection::open_in_memory().unwrap();
+        let error = upsert_projection(&conn, &state).unwrap_err().to_string();
+        assert!(error.contains("still running"), "{error}");
+
+        match &mut state.projection {
+            AlgorithmProjection::Eval(projection) => projection.work_items[0]
+                .seal_terminal(TerminalKind::Cancelled)
+                .unwrap(),
+            _ => unreachable!(),
+        }
+        // Closed work passes the guard and fails only on the absent tables.
+        let error = upsert_projection(&conn, &state).unwrap_err().to_string();
+        assert!(!error.contains("still running"), "{error}");
+    }
 
     #[test]
     fn terminal_projection_rejects_nested_running_work() {
