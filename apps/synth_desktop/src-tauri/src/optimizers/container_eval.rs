@@ -550,6 +550,7 @@ async fn project_worker_failure_visual(
             VisualUpdateRequest {
                 title: None,
                 bindings: Some(experiment_bindings(
+                    run_id,
                     spec,
                     "failed",
                     records.len(),
@@ -759,6 +760,7 @@ async fn mint_experiment_visual(
             // supplies it from the next update onward; a seed row with no
             // target simply has no chip, rather than one that goes nowhere.
             bindings: experiment_bindings(
+                &run.id,
                 spec,
                 "running",
                 0,
@@ -783,6 +785,7 @@ async fn mint_experiment_visual(
 
 #[allow(clippy::too_many_arguments)]
 fn experiment_bindings(
+    optimizer_run_id: &str,
     spec: &EvalSpec,
     status: &str,
     completed: usize,
@@ -995,6 +998,10 @@ fn experiment_bindings(
                 "records": records,
                 "limitations": limitations
             }
+        }, {
+            "input": "optimizer_run",
+            "kind": "optimizer_run",
+            "source": optimizer_run_id
         }]
     })
 }
@@ -1619,7 +1626,13 @@ fn secrets_proxy_error(code: &str, message: &str) -> anyhow::Error {
 
 fn container_proxy_policy(spec: &EvalSpec) -> crate::secrets::SecretsUsePolicy {
     let mut policy = crate::secrets::SecretsUsePolicy::default();
-    policy.operations = vec!["chat.completions.create".into()];
+    // Harbor's Codex adapter uses the Responses API, while other supported
+    // eval clients still use Chat Completions. Keep the bounded lease usable
+    // by either approved client without granting arbitrary proxy routes.
+    policy.operations = vec![
+        "chat.completions.create".into(),
+        "responses.create".into(),
+    ];
     if !spec.model.is_empty() {
         policy.models = vec![spec.model.clone()];
     }
@@ -2160,6 +2173,7 @@ async fn persist_progress(
             VisualUpdateRequest {
                 title: None,
                 bindings: Some(experiment_bindings(
+                    run_id,
                     spec,
                     status,
                     completed,
@@ -2552,10 +2566,18 @@ async fn run_one_example(
         Some(
             state
                 .get("error")
-                .or_else(|| state.get("reason"))
-                .or_else(|| state.get("detail"))
-                .and_then(Value::as_str)
-                .map(str::to_string)
+                .and_then(|error| {
+                    error.as_str().map(str::to_string).or_else(|| {
+                        error
+                            .get("detail")
+                            .or_else(|| error.get("reason"))
+                            .or_else(|| error.get("message"))
+                            .and_then(Value::as_str)
+                            .map(str::to_string)
+                    })
+                })
+                .or_else(|| state.get("reason").and_then(Value::as_str).map(str::to_string))
+                .or_else(|| state.get("detail").and_then(Value::as_str).map(str::to_string))
                 .unwrap_or_else(|| {
                     "producer_terminal_failure_missing_reason: container reported a failed terminal state without error, reason, or detail"
                         .to_string()
@@ -3723,6 +3745,15 @@ max_total_rollouts = 4
         assert_eq!(
             again, visual_id,
             "republication must not mint a second visual"
+        );
+        let overview = svc.visuals().get(visual_id.clone()).await.unwrap();
+        assert_eq!(
+            overview.bindings.pointer("/inputs/1/input"),
+            Some(&json!("optimizer_run"))
+        );
+        assert_eq!(
+            overview.bindings.pointer("/inputs/1/source"),
+            Some(&json!(run.id))
         );
         let refreshed = svc.get(run.id.clone()).await.unwrap();
         // The overview and the trace workstation, one of each.

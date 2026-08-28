@@ -577,7 +577,10 @@ fn policy_from_eval_recipe(
     let (max_usd, max_trials) =
         paid_compute_bounds_for_candidate_count(recipe, candidate_count.max(1))?;
     let mut policy = crate::secrets::SecretsUsePolicy::default();
-    policy.operations = vec!["chat.completions.create".into()];
+    policy.operations = vec![
+        "chat.completions.create".into(),
+        "responses.create".into(),
+    ];
     policy.models = models;
     policy.max_cost_usd = max_usd.max(0.01);
     policy.max_calls = max_trials.saturating_mul(16).clamp(40, u32::MAX as u64) as u32;
@@ -2617,7 +2620,10 @@ mod immutable_target_tests {
         )
         .unwrap();
         assert_eq!(policy.models, vec!["gpt-5.6-luna"]);
-        assert_eq!(policy.operations, vec!["chat.completions.create"]);
+        assert_eq!(
+            policy.operations,
+            vec!["chat.completions.create", "responses.create"]
+        );
         assert!((policy.max_cost_usd - 1.20).abs() < f64::EPSILON);
         assert!(policy.max_calls >= 40);
     }
