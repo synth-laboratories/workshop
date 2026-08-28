@@ -809,8 +809,9 @@ status_instance() {
 stage_gepa_runtime() {
   local runtime_root="$INSTANCE_ROOT/runtime/gepa"
   local optimizer_target="$runtime_root/optimizer-project"
+  local optimizer_selection="$runtime_root/optimizer-selection"
   local optimizer_source="${SYNTH_OPTIMIZER_PROJECT_SOURCE:-$REPO_SIBLING_ROOT/optimizers-g1}"
-  local use_local_optimizer="${SYNTH_OPTIMIZER_USE_LOCAL_SOURCE:-0}"
+  local use_local_optimizer="${SYNTH_OPTIMIZER_USE_LOCAL_SOURCE:-}"
   local secret_target="$DATA_ROOT/gepa-secret.env"
   local secret_source="${SYNTH_GEPA_SECRET_ENV_SOURCE:-$REPO_SIBLING_ROOT/synth-ai/.env}"
 
@@ -832,9 +833,22 @@ stage_gepa_runtime() {
       --exclude '.ruff_cache' \
       --exclude '__pycache__' \
       "$optimizer_source/" "$optimizer_target/"
+    printf '%s\n' 'local-staged-v1' >"$optimizer_selection.tmp"
+    chmod 600 "$optimizer_selection.tmp"
+    mv "$optimizer_selection.tmp" "$optimizer_selection"
     export SYNTH_OPTIMIZER_PROJECT_ROOT="$optimizer_target"
   elif [[ -n "${SYNTH_OPTIMIZER_PROJECT_ROOT:-}" ]]; then
     echo "[desktop:$NAME] using caller-provided optimizer project root: $SYNTH_OPTIMIZER_PROJECT_ROOT"
+  elif [[ "$use_local_optimizer" == "0" ]]; then
+    rm -f "$optimizer_selection"
+    echo "[desktop:$NAME] optimizer runtime=immutable installed plugin"
+  elif [[ -f "$optimizer_selection" ]]; then
+    if [[ "$(<"$optimizer_selection")" != "local-staged-v1" || ! -f "$optimizer_target/pyproject.toml" || ! -f "$optimizer_target/rust/crates/synth_gepa/Cargo.toml" ]]; then
+      echo "[desktop:$NAME] ERROR persisted local optimizer selection is invalid; restage it explicitly or set SYNTH_OPTIMIZER_USE_LOCAL_SOURCE=0" >&2
+      exit 1
+    fi
+    export SYNTH_OPTIMIZER_PROJECT_ROOT="$optimizer_target"
+    echo "[desktop:$NAME] optimizer runtime=persisted instance-local source"
   else
     echo "[desktop:$NAME] optimizer runtime=immutable installed plugin"
   fi

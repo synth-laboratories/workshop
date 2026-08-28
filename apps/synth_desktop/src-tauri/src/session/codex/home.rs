@@ -498,6 +498,12 @@ pub(crate) fn ensure_home(home: &Path, request: &CodexSessionStartRequest) -> Re
         secrets_skill.join("SKILL.md"),
         include_str!("../../../../skills/use-synth-secrets/SKILL.md"),
     )?;
+    let banking77_skill = home.join("skills/run-banking77-gepa");
+    fs::create_dir_all(&banking77_skill)?;
+    fs::write(
+        banking77_skill.join("SKILL.md"),
+        include_str!("../../../../skills/run-banking77-gepa/SKILL.md"),
+    )?;
     // Apply the durable Context settings after bundled materialization. This
     // keeps the existing reference-file setup intact while making disabled
     // skills and edited SKILL.md copies authoritative for new sessions.
@@ -512,6 +518,7 @@ pub(crate) fn ensure_home(home: &Path, request: &CodexSessionStartRequest) -> Re
         "use-synth-session",
         "use-synth-secrets",
         "run-live-container-evals",
+        "run-banking77-gepa",
     ] {
         let directory = home.join("skills").join(id);
         if !crate::context::skill_enabled(id) {
@@ -1012,7 +1019,7 @@ pub(crate) fn workspace_write_config(allowed_roots: &[String]) -> String {
 /// Codex `sandbox_workspace_write` has no read-denylist field. Document the
 /// policy next to the real schema so we do not invent an ignored TOML key.
 pub(crate) fn credential_read_policy_comment() -> &'static str {
-    "# Codex has no sandbox read-denylist. Do not cat .env, .env.*, or secrets.toml.\n# Import through mcp__synth_secrets__secrets_manage (request_env_import). See AGENTS.md.\n\n"
+    "# Codex has no sandbox read-denylist. Do not cat .env, .env.*, or secrets.toml.\n# Use only the authorized ephemeral secrets proxy; never use a Keychain-backed registry or import flow. See AGENTS.md.\n\n"
 }
 
 pub(crate) fn mcp_enabled_tools(server: &str) -> &'static str {

@@ -604,6 +604,9 @@ mod tests {
         assert!(WORKSHOP_AGENTS.contains("workspace_roots_list"));
         assert!(WORKSHOP_AGENTS.contains("source_request"));
         assert!(!WORKSHOP_AGENTS.contains("request_env_import"));
+        assert!(WORKSHOP_AGENTS.contains("$run-banking77-gepa"));
+        assert!(WORKSHOP_AGENTS.contains("Never use the Keychain-backed"));
+        assert!(WORKSHOP_AGENTS.contains("macOS Keychain"));
         assert!(WORKSHOP_AGENTS.contains("no read-denylist field"));
     }
     #[test]

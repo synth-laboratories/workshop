@@ -72,6 +72,7 @@ pub struct WorkspaceRecipe {
     pub policy_config: String,
     pub policy: serde_json::Map<String, Value>,
     pub policy_source: Option<String>,
+    pub candidate_field: Option<String>,
     pub train_seeds: Vec<i64>,
     pub heldout_seeds: Vec<i64>,
     pub concurrency: usize,
@@ -410,6 +411,8 @@ struct RecipeFile {
     #[serde(default)]
     policy_source: Option<String>,
     #[serde(default)]
+    candidate_field: Option<String>,
+    #[serde(default)]
     proposer_model: Option<String>,
     #[serde(default)]
     requires_credential_advertisement: bool,
@@ -549,11 +552,43 @@ pub fn require_session_workspace(
     })
 }
 
-pub fn load_recipes(workspace: &Path) -> Result<Vec<WorkspaceRecipe>> {
-    let mut recipes = Vec::new();
+/// A declared recipe file that failed validation. The id is recovered from a
+/// lenient parse so callers can still address the declaration, and the message
+/// is the actual validation error rather than a generic "unknown recipe".
+#[derive(Clone, Debug)]
+pub struct RecipeDiagnostic {
+    pub recipe_id: Option<String>,
+    pub source_path: PathBuf,
+    pub message: String,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct RecipeLoadOutcome {
+    pub recipes: Vec<WorkspaceRecipe>,
+    pub diagnostics: Vec<RecipeDiagnostic>,
+}
+
+/// Recover just the declared `id` from a recipe file that failed full
+/// validation, so the failure stays addressable by the id the user typed.
+fn recover_recipe_id(path: &Path) -> Option<String> {
+    let text = fs::read_to_string(path).ok()?;
+    text.parse::<toml::Value>()
+        .ok()?
+        .get("id")
+        .and_then(toml::Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+}
+
+/// Load every declared recipe, keeping per-file validation failures as
+/// diagnostics instead of hiding the whole catalog behind the first error.
+pub fn load_recipes_with_diagnostics(workspace: &Path) -> Result<RecipeLoadOutcome> {
+    let mut outcome = RecipeLoadOutcome::default();
+    let mut candidates = Vec::new();
     let root_file = workspace.join(RECIPE_FILE);
     if root_file.is_file() {
-        recipes.push(parse_recipe(&root_file)?);
+        candidates.push(root_file);
     }
     let recipes_dir = workspace.join(RECIPES_DIR);
     if recipes_dir.is_dir() {
@@ -567,33 +602,71 @@ pub fn load_recipes(workspace: &Path) -> Result<Vec<WorkspaceRecipe>> {
             })
             .collect();
         entries.sort();
-        for path in entries {
-            recipes.push(parse_recipe(&path)?);
+        candidates.extend(entries);
+    }
+    for path in candidates {
+        match parse_recipe(&path) {
+            Ok(recipe) => outcome.recipes.push(recipe),
+            Err(error) => outcome.diagnostics.push(RecipeDiagnostic {
+                recipe_id: recover_recipe_id(&path),
+                source_path: path,
+                message: format!("workspace recipe is declared but invalid: {error:#}"),
+            }),
         }
     }
     let mut seen = std::collections::HashSet::new();
-    for recipe in &recipes {
-        if !seen.insert(recipe.id.as_str()) {
-            bail!(
-                "workspace declares recipe id `{}` more than once",
-                recipe.id
-            );
+    let mut duplicates = Vec::new();
+    outcome.recipes.retain(|recipe| {
+        if seen.insert(recipe.id.clone()) {
+            true
+        } else {
+            duplicates.push(RecipeDiagnostic {
+                recipe_id: Some(recipe.id.clone()),
+                source_path: recipe.source_path.clone(),
+                message: format!(
+                    "workspace recipe is declared but invalid: workspace declares recipe id `{}` \
+                     more than once",
+                    recipe.id
+                ),
+            });
+            false
         }
+    });
+    outcome.diagnostics.extend(duplicates);
+    Ok(outcome)
+}
+
+pub fn load_recipes(workspace: &Path) -> Result<Vec<WorkspaceRecipe>> {
+    let outcome = load_recipes_with_diagnostics(workspace)?;
+    if let Some(diagnostic) = outcome.diagnostics.first() {
+        bail!("{}", diagnostic.message);
     }
-    Ok(recipes)
+    Ok(outcome.recipes)
 }
 
 pub fn find_recipe(workspace: &Path, recipe_id: &str) -> Result<WorkspaceRecipe> {
-    load_recipes(workspace)?
+    let outcome = load_recipes_with_diagnostics(workspace)?;
+    if let Some(recipe) = outcome
+        .recipes
         .into_iter()
         .find(|recipe| recipe.id == recipe_id)
-        .ok_or_else(|| {
-            anyhow!(
-                "workspace recipe `{recipe_id}` is not declared in {} or {}/",
-                RECIPE_FILE,
-                RECIPES_DIR
-            )
-        })
+    {
+        return Ok(recipe);
+    }
+    // A declared-but-invalid file must surface its actual validation error;
+    // reporting it as absent erases the actionable message.
+    if let Some(diagnostic) = outcome
+        .diagnostics
+        .iter()
+        .find(|diagnostic| diagnostic.recipe_id.as_deref() == Some(recipe_id))
+    {
+        bail!("workspace recipe `{recipe_id}`: {}", diagnostic.message);
+    }
+    bail!(
+        "workspace recipe `{recipe_id}` is not declared in {} or {}/",
+        RECIPE_FILE,
+        RECIPES_DIR
+    )
 }
 
 pub fn load_container_specs(workspace: &Path) -> Result<Vec<ContainerSpec>> {
@@ -754,17 +827,51 @@ pub fn find_container_spec_in_roots(
     spec_id: &str,
 ) -> Result<ContainerSpec> {
     let mut matches = Vec::new();
+    let mut opaque_diagnostics = Vec::new();
     for manifest in discover_container_manifests(search_roots)? {
-        for spec in load_container_specs_from_manifest(&manifest)? {
-            if spec.id == spec_id {
-                matches.push(spec);
+        match load_container_specs_from_manifest(&manifest) {
+            Ok(specs) => {
+                for spec in specs {
+                    if spec.id == spec_id {
+                        matches.push(spec);
+                    }
+                }
+            }
+            Err(error) => {
+                // An approved parent may contain several independent task
+                // repositories. One stale sibling declaration must not hide a
+                // valid target in another repository, but an invalid
+                // declaration of the requested id must retain its actionable
+                // validation error.
+                let declared_ids = recover_container_ids(&manifest);
+                if declared_ids.iter().any(|id| id == spec_id) {
+                    return Err(error).with_context(|| {
+                        format!(
+                            "container spec `{spec_id}` is declared but invalid in {}",
+                            manifest.display()
+                        )
+                    });
+                }
+                if declared_ids.is_empty() {
+                    opaque_diagnostics.push((manifest, error));
+                }
             }
         }
     }
     match matches.len() {
-        0 => Err(anyhow!(
-            "container spec `{spec_id}` is not declared in any approved workshop.containers.toml"
-        )),
+        0 => {
+            if let Some((manifest, error)) = opaque_diagnostics.into_iter().next() {
+                return Err(error).with_context(|| {
+                    format!(
+                        "could not determine whether container spec `{spec_id}` is declared in {}",
+                        manifest.display()
+                    )
+                });
+            }
+            Err(anyhow!(
+                "container spec `{spec_id}` is not declared in any approved workshop.containers.toml"
+            ))
+        }
         1 => Ok(matches.remove(0)),
         _ => {
             if let Some(exact) = matches.iter().find(|spec| {
@@ -781,6 +888,23 @@ pub fn find_container_spec_in_roots(
             ))
         }
     }
+}
+
+fn recover_container_ids(manifest_path: &Path) -> Vec<String> {
+    let Ok(text) = fs::read_to_string(manifest_path) else {
+        return Vec::new();
+    };
+    let Ok(document) = toml::from_str::<toml::Value>(&text) else {
+        return Vec::new();
+    };
+    document
+        .get("container")
+        .and_then(toml::Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|entry| entry.get("id").and_then(toml::Value::as_str))
+        .map(str::to_owned)
+        .collect()
 }
 
 pub fn resolve_container_spec(
@@ -850,6 +974,25 @@ pub fn catalog_entry(recipe: &WorkspaceRecipe) -> Value {
     })
 }
 
+/// Catalog projection of a declared-but-invalid recipe. It stays visible and
+/// addressable by id so callers receive the validation error instead of
+/// `unknown optimizer recipe`; `project_recipe_readiness` turns the reason
+/// into a blocker because availability is not `available`.
+pub fn invalid_catalog_entry(diagnostic: &RecipeDiagnostic) -> Value {
+    json!({
+        "id": diagnostic.recipe_id,
+        "title": diagnostic
+            .recipe_id
+            .clone()
+            .unwrap_or_else(|| diagnostic.source_path.display().to_string()),
+        "source": "workspace",
+        "availability": "invalid",
+        "availabilityReason": diagnostic.message,
+        "diagnosticCode": "workspace_recipe_invalid",
+        "sourcePath": diagnostic.source_path.display().to_string(),
+    })
+}
+
 pub fn copy_into_run_dir(recipe: &WorkspaceRecipe, run_dir: &Path) -> Result<PathBuf> {
     fs::create_dir_all(run_dir).context("create run-owned recipe directory")?;
     let destination = run_dir.join(RECIPE_FILE);
@@ -861,6 +1004,136 @@ pub fn copy_into_run_dir(recipe: &WorkspaceRecipe, run_dir: &Path) -> Result<Pat
         )
     })?;
     Ok(destination)
+}
+
+/// Compile the product-level workspace GEPA schema into the pinned sidecar's
+/// native document. Workspace recipes intentionally expose seeds, bounds and
+/// one mutable field rather than making users author sidecar internals. The
+/// paid worker must never be the first component to discover that translation
+/// was omitted.
+pub fn compile_gepa_native_config(
+    config: &mut toml::value::Table,
+    recipe: &WorkspaceRecipe,
+) -> Result<()> {
+    if recipe.algorithm != AlgorithmKind::Gepa {
+        return Ok(());
+    }
+    let candidate_field = recipe
+        .candidate_field
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| anyhow!("GEPA recipe `{}` must declare candidate_field", recipe.id))?;
+    let proposer_model = recipe
+        .proposer_model
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| anyhow!("GEPA recipe `{}` must declare proposer_model", recipe.id))?;
+    if recipe.train_seeds.is_empty() {
+        bail!("GEPA recipe `{}` must declare at least one train seed", recipe.id);
+    }
+
+    let task_ids = |seeds: &[i64]| {
+        toml::Value::Array(
+            seeds
+                .iter()
+                .map(|seed| toml::Value::String(format!("seed:{seed}")))
+                .collect(),
+        )
+    };
+    config.insert(
+        "taskset".into(),
+        toml::Value::Table(toml::map::Map::from_iter([
+            ("train_split".into(), toml::Value::String("train".into())),
+            (
+                "heldout_split".into(),
+                toml::Value::String("heldout".into()),
+            ),
+            ("train_ids".into(), task_ids(&recipe.train_seeds)),
+            ("heldout_ids".into(), task_ids(&recipe.heldout_seeds)),
+        ])),
+    );
+    config.insert(
+        "candidate".into(),
+        toml::Value::Table(toml::map::Map::from_iter([(
+            "target_modules".into(),
+            toml::Value::Array(vec![toml::Value::String(candidate_field.to_string())]),
+        )])),
+    );
+
+    let mut policy = config
+        .remove("policy")
+        .and_then(|value| value.as_table().cloned())
+        .unwrap_or_default();
+    let api_family = policy
+        .remove("api")
+        .and_then(|value| value.as_str().map(str::to_string))
+        .unwrap_or_else(|| "chat_completions".into());
+    let max_tokens = policy.remove("answer_max_tokens");
+    let mut policy_config = toml::map::Map::new();
+    for (key, value) in std::mem::take(&mut policy) {
+        policy_config.insert(key, value);
+    }
+    policy.insert("enabled".into(), toml::Value::Boolean(true));
+    policy.insert("model".into(), toml::Value::String(recipe.model.clone()));
+    policy.insert("api_family".into(), toml::Value::String(api_family.clone()));
+    policy.insert("proxy_mode".into(), toml::Value::String("proxy_only".into()));
+    if let Some(max_tokens) = max_tokens {
+        policy.insert("max_tokens".into(), max_tokens);
+    }
+    policy.insert("config".into(), toml::Value::Table(policy_config));
+    config.insert("policy".into(), toml::Value::Table(policy));
+
+    let mut proposer = config
+        .remove("proposer")
+        .and_then(|value| value.as_table().cloned())
+        .unwrap_or_default();
+    proposer.insert("backend".into(), toml::Value::String("chat_completions".into()));
+    proposer.insert("model".into(), toml::Value::String(proposer_model.into()));
+    proposer.insert("api_family".into(), toml::Value::String(api_family));
+    proposer.insert("auth_mode".into(), toml::Value::String("api_key".into()));
+    config.insert("proposer".into(), toml::Value::Table(proposer));
+
+    let train_ids = task_ids(&recipe.train_seeds);
+    let heldout_ids = task_ids(&recipe.heldout_seeds);
+    let task_pools = toml::Value::Table(toml::map::Map::from_iter([
+        ("pareto".into(), train_ids.clone()),
+        ("minibatch".into(), train_ids.clone()),
+        ("reflection".into(), train_ids),
+        ("heldout".into(), heldout_ids),
+    ]));
+    let workers = toml::Value::Table(toml::map::Map::from_iter([(
+        "rollout".into(),
+        toml::Value::Integer(recipe.concurrency as i64),
+    )]));
+    let pipeline = toml::Value::Table(toml::map::Map::from_iter([(
+        "workers".into(),
+        workers,
+    )]));
+    let mut gepa = toml::map::Map::from_iter([
+        (
+            "max_cost_usd".into(),
+            toml::Value::Float(recipe.bounds.max_cost_usd),
+        ),
+        (
+            "max_total_rollouts".into(),
+            toml::Value::Integer(recipe.bounds.max_total_rollouts),
+        ),
+        ("task_pools".into(), task_pools),
+        ("pipeline".into(), pipeline),
+    ]);
+    for (key, value) in [
+        ("max_train_rollouts", recipe.bounds.max_train_rollouts),
+        ("max_heldout_rollouts", recipe.bounds.max_heldout_rollouts),
+        ("max_generations", recipe.bounds.max_generations),
+    ] {
+        if let Some(value) = value {
+            gepa.insert(key.into(), toml::Value::Integer(value));
+        }
+    }
+    config.insert("gepa".into(), toml::Value::Table(gepa));
+    Ok(())
 }
 
 fn parse_recipe(path: &Path) -> Result<WorkspaceRecipe> {
@@ -966,6 +1239,9 @@ fn parse_recipe(path: &Path) -> Result<WorkspaceRecipe> {
         policy,
         policy_source: parsed
             .policy_source
+            .filter(|value| !value.trim().is_empty()),
+        candidate_field: parsed
+            .candidate_field
             .filter(|value| !value.trim().is_empty()),
         train_seeds: parsed
             .train_seeds
@@ -1451,13 +1727,25 @@ fn content_hash(text: &str) -> String {
 }
 
 /// Bind policy URLs from locality. Container locality cannot yield loopback.
+///
+/// `canonical_provider` is the recipe's top-level `provider` — the single
+/// user-authored source of truth. Admission rejects `[policy].provider`, so
+/// the binder must never require it from the recipe text; it injects the
+/// canonical value into the generated `[policy]` and proposer sections. A
+/// pre-existing nested value (a run-dir copy produced by an older binder) is
+/// admitted only when it exactly equals the canonical provider.
 pub fn bind_locality_urls(
     config: &mut toml::value::Table,
+    canonical_provider: &str,
     locality: PolicyLocality,
     host_base_url: Option<&str>,
     container_base_url: Option<&str>,
     container_inference_url: Option<&str>,
 ) -> Result<()> {
+    let canonical_provider = canonical_provider.trim();
+    if canonical_provider.is_empty() {
+        bail!("recipe top-level `provider` is required to bind locality URLs");
+    }
     let (base_url, inference_url) = match locality {
         PolicyLocality::Host => {
             let base = host_base_url
@@ -1490,12 +1778,19 @@ pub fn bind_locality_urls(
         "credential_mode".into(),
         toml::Value::String("proxy".into()),
     );
-    let canonical_provider = policy
-        .get("provider")
-        .and_then(toml::Value::as_str)
-        .ok_or_else(|| anyhow!("recipe [policy].provider is required"))?
-        .to_string();
-    let _ = policy;
+    if let Some(existing) = policy.get("provider").and_then(toml::Value::as_str) {
+        if existing != canonical_provider {
+            bail!(
+                "recipe [policy].provider `{existing}` contradicts the top-level provider \
+                 `{canonical_provider}`; the top-level field is the only authored declaration"
+            );
+        }
+    }
+    policy.insert(
+        "provider".into(),
+        toml::Value::String(canonical_provider.to_string()),
+    );
+    let canonical_provider = canonical_provider.to_string();
 
     // A local proposer is another consumer of the same recipe-owned
     // provider capability. Bind it from the canonical policy/provider route
@@ -1738,15 +2033,9 @@ locality = "container"
         refuse_loopback("http://127.0.0.1:9/providers/openai").unwrap_err();
         refuse_loopback("http://host.docker.internal:9/providers/openai").unwrap();
         let mut table = toml::map::Map::new();
-        table.insert(
-            "policy".into(),
-            toml::Value::Table(toml::map::Map::from_iter([(
-                "provider".into(),
-                toml::Value::String("openai".into()),
-            )])),
-        );
         bind_locality_urls(
             &mut table,
+            "openai",
             PolicyLocality::Container,
             Some("http://127.0.0.1:9/providers/openai"),
             Some("http://host.docker.internal:9/providers/openai"),
@@ -1759,6 +2048,7 @@ locality = "container"
         );
         bind_locality_urls(
             &mut table,
+            "openai",
             PolicyLocality::Container,
             Some("http://127.0.0.1:9/providers/openai"),
             Some("http://127.0.0.1:9/providers/openai"),
@@ -1767,10 +2057,238 @@ locality = "container"
         .unwrap_err();
     }
 
+    /// Regression for the Banking77 contradiction: an admitted recipe declares
+    /// its provider only at top level (admission rejects `[policy].provider`),
+    /// and the binder must still succeed by injecting the canonical value into
+    /// the generated `[policy]` and proposer sections.
+    #[test]
+    fn parse_to_bind_uses_the_top_level_provider() {
+        let (_dir, workspace) = write_workspace();
+        fs::write(
+            workspace.join(RECIPE_FILE),
+            r#"
+id = "gepa.banking77.local.l.v1"
+algorithm = "gepa"
+container = "banking77"
+provider = "openrouter"
+model = "openai/gpt-5.6-luna"
+locality = "host"
+candidate_field = "classification_system_prompt"
+proposer_model = "openai/gpt-5.6-luna"
+train_seeds = [780020, 780021, 780022, 780023, 780024]
+heldout_seeds = []
+[bounds]
+max_cost_usd = 0.10
+max_total_rollouts = 25
+max_train_rollouts = 25
+max_generations = 1
+[policy]
+max_calls = 4
+[proposer]
+backend = "chat_completions"
+model = "openai/gpt-5.6-luna"
+"#,
+        )
+        .unwrap();
+        let recipe = find_recipe(&workspace, "gepa.banking77.local.l.v1").unwrap();
+        assert_eq!(recipe.provider, "openrouter");
+        assert!(!recipe.policy.contains_key("provider"));
+
+        let run_dir = workspace.join("run");
+        let config_path = copy_into_run_dir(&recipe, &run_dir).unwrap();
+        let mut config: toml::Value =
+            toml::from_str(&fs::read_to_string(&config_path).unwrap()).unwrap();
+        let table = config.as_table_mut().unwrap();
+        compile_gepa_native_config(table, &recipe).unwrap();
+        bind_locality_urls(
+            table,
+            &recipe.provider,
+            recipe.locality,
+            Some("http://127.0.0.1:9/providers/openrouter"),
+            None,
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            table["policy"]["provider"].as_str().unwrap(),
+            "openrouter",
+            "the binder must inject the canonical provider into generated [policy]"
+        );
+        assert_eq!(
+            table["policy"]["base_url"].as_str().unwrap(),
+            "http://127.0.0.1:9/providers/openrouter"
+        );
+        assert_eq!(table["proposer"]["provider"].as_str().unwrap(), "openrouter");
+        assert_eq!(
+            table["proposer"]["base_url"].as_str().unwrap(),
+            "http://127.0.0.1:9/providers/openrouter"
+        );
+        assert_eq!(
+            table["proposer"]["api_key_env"].as_str().unwrap(),
+            "OPENROUTER_API_KEY"
+        );
+        assert_eq!(
+            table["taskset"]["train_ids"].as_array().unwrap().len(),
+            5
+        );
+        assert!(table["taskset"]["heldout_ids"]
+            .as_array()
+            .unwrap()
+            .is_empty());
+        assert_eq!(
+            table["gepa"]["task_pools"]["pareto"]
+                .as_array()
+                .unwrap()
+                .len(),
+            5
+        );
+        assert_eq!(
+            table["gepa"]["max_train_rollouts"].as_integer(),
+            Some(25)
+        );
+        assert_eq!(
+            table["candidate"]["target_modules"]
+                .as_array()
+                .unwrap()[0]
+                .as_str(),
+            Some("classification_system_prompt")
+        );
+    }
+
+    #[test]
+    fn admission_still_rejects_a_nested_policy_provider() {
+        let (_dir, workspace) = write_workspace();
+        fs::write(
+            workspace.join(RECIPE_FILE),
+            r#"
+id = "gepa.nested-provider.v1"
+algorithm = "gepa"
+container = "fixture"
+provider = "openrouter"
+model = "openai/gpt-5.6-luna"
+locality = "host"
+[bounds]
+max_cost_usd = 0.10
+max_total_rollouts = 1
+[policy]
+provider = "openrouter"
+"#,
+        )
+        .unwrap();
+        let error = find_recipe(&workspace, "gepa.nested-provider.v1")
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("policy.provider is not an admitted policy option"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn binder_rejects_a_contradictory_nested_provider() {
+        let mut table = toml::map::Map::new();
+        table.insert(
+            "policy".into(),
+            toml::Value::Table(toml::map::Map::from_iter([(
+                "provider".into(),
+                toml::Value::String("openai".into()),
+            )])),
+        );
+        let error = bind_locality_urls(
+            &mut table,
+            "openrouter",
+            PolicyLocality::Host,
+            Some("http://127.0.0.1:9/providers/openrouter"),
+            None,
+            None,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("contradicts the top-level provider"), "{error}");
+    }
+
     #[test]
     fn empty_workspace_has_no_recipes() {
         let (_dir, workspace) = write_workspace();
         assert!(load_recipes(&workspace).unwrap().is_empty());
+    }
+
+    /// A declared recipe with an invalid policy key stays identifiable as
+    /// declared-but-invalid, keeping its id and the actual validation error —
+    /// it must never collapse into `unknown optimizer recipe`.
+    #[test]
+    fn an_invalid_recipe_stays_identifiable_with_its_diagnostic() {
+        let (_dir, workspace) = write_workspace();
+        fs::write(
+            workspace.join(RECIPE_FILE),
+            r#"
+id = "gepa.invalid-policy.v1"
+algorithm = "gepa"
+container = "fixture"
+provider = "openrouter"
+model = "openai/gpt-5.6-luna"
+locality = "host"
+[bounds]
+max_cost_usd = 0.10
+max_total_rollouts = 1
+[policy]
+provider = "openrouter"
+"#,
+        )
+        .unwrap();
+        let outcome = load_recipes_with_diagnostics(&workspace).unwrap();
+        assert!(outcome.recipes.is_empty());
+        let [diagnostic] = outcome.diagnostics.as_slice() else {
+            panic!("expected exactly one diagnostic");
+        };
+        assert_eq!(diagnostic.recipe_id.as_deref(), Some("gepa.invalid-policy.v1"));
+        assert!(
+            diagnostic.message.contains("policy.provider is not an admitted policy option"),
+            "{}",
+            diagnostic.message
+        );
+        let entry = invalid_catalog_entry(diagnostic);
+        assert_eq!(entry["id"], "gepa.invalid-policy.v1");
+        assert_eq!(entry["availability"], "invalid");
+        assert_eq!(entry["diagnosticCode"], "workspace_recipe_invalid");
+    }
+
+    /// One broken sibling must not hide the rest of the catalog or block a
+    /// valid recipe from starting.
+    #[test]
+    fn a_broken_sibling_does_not_hide_a_valid_recipe() {
+        let (_dir, workspace) = write_workspace();
+        fs::write(
+            workspace.join(RECIPE_FILE),
+            r#"
+id = "gepa.valid.v1"
+algorithm = "gepa"
+container = "fixture"
+provider = "openrouter"
+model = "openai/gpt-5.6-luna"
+locality = "host"
+[bounds]
+max_cost_usd = 0.10
+max_total_rollouts = 1
+"#,
+        )
+        .unwrap();
+        fs::create_dir_all(workspace.join(RECIPES_DIR)).unwrap();
+        // Parseable TOML that fails recipe validation, so the id stays
+        // recoverable for the diagnostic.
+        fs::write(
+            workspace.join(RECIPES_DIR).join("broken.toml"),
+            "id = \"gepa.broken.v1\"\nalgorithm = \"gepa\"\nprovider = \"openrouter\"\n",
+        )
+        .unwrap();
+        let outcome = load_recipes_with_diagnostics(&workspace).unwrap();
+        assert_eq!(outcome.recipes.len(), 1);
+        assert_eq!(outcome.diagnostics.len(), 1);
+        find_recipe(&workspace, "gepa.valid.v1").unwrap();
+        let error = find_recipe(&workspace, "gepa.broken.v1")
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("declared but invalid"), "{error}");
     }
 
     fn write_container_manifest(root: &Path, include: &str) {
@@ -2023,6 +2541,57 @@ tracked_revision = "{tracked_revision}"
         write_container_manifest(&nested, "scripts/up_craftax_container.sh");
         let spec = find_container_spec_in_roots(&[parent], "nanohorizon-craftax").unwrap();
         assert_eq!(spec.origin.source_root, nested.canonicalize().unwrap());
+    }
+
+    #[test]
+    fn invalid_sibling_manifest_does_not_hide_valid_container() {
+        let dir = tempdir().unwrap();
+        let parent = dir.path().join("approved");
+        let target = parent.join("banking77");
+        let stale_sibling = parent.join("stale-sibling");
+        fs::create_dir_all(&parent).unwrap();
+        write_container_manifest(&target, "scripts/up_craftax_container.sh");
+        fs::create_dir_all(&stale_sibling).unwrap();
+        fs::write(
+            stale_sibling.join(CONTAINERS_FILE),
+            r#"[[container]]
+id = "old-container"
+locality = "container"
+[container.launch]
+schema_version = "synth.container-launch.v1"
+working_directory = "."
+command = ["scripts/up.sh"]
+"#,
+        )
+        .unwrap();
+
+        let spec = find_container_spec_in_roots(&[parent], "nanohorizon-craftax").unwrap();
+        assert_eq!(spec.origin.source_root, target.canonicalize().unwrap());
+    }
+
+    #[test]
+    fn invalid_requested_container_surfaces_its_validation_error() {
+        let dir = tempdir().unwrap();
+        let parent = dir.path().join("approved");
+        let target = parent.join("banking77");
+        fs::create_dir_all(&target).unwrap();
+        fs::write(
+            target.join(CONTAINERS_FILE),
+            r#"[[container]]
+id = "banking77"
+locality = "host"
+[container.launch]
+schema_version = "synth.container-launch.v1"
+working_directory = "."
+command = ["python3", "serve.py"]
+"#,
+        )
+        .unwrap();
+
+        let error = find_container_spec_in_roots(&[parent], "banking77").unwrap_err();
+        let message = format!("{error:#}");
+        assert!(message.contains("declared but invalid"), "{message}");
+        assert!(message.contains("parse workshop.containers.toml"), "{message}");
     }
 
     #[test]

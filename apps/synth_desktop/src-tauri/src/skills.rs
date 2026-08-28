@@ -64,6 +64,10 @@ const BUNDLED_SKILLS: &[BundledSkill] = &[
         content: include_str!("../../skills/run-live-container-evals/SKILL.md"),
     },
     BundledSkill {
+        id: "run-banking77-gepa",
+        content: include_str!("../../skills/run-banking77-gepa/SKILL.md"),
+    },
+    BundledSkill {
         id: "author-synth-diagrams",
         content: include_str!("../../skills/author-synth-diagrams/SKILL.md"),
     },

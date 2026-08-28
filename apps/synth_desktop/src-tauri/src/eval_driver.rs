@@ -785,6 +785,26 @@ fn hex_sha256(bytes: &[u8]) -> String {
     format!("{:x}", Sha256::digest(bytes))
 }
 
+/// The driver never picks a provider on the caller's behalf. A defaulted
+/// OpenRouter lane silently violated tasks whose contract required the
+/// ChatGPT subscription (or any other specific provider); the caller must
+/// state the lane it means.
+fn require_explicit_provider(body: &Value, route: &str) -> Result<String> {
+    body.get("provider")
+        .or_else(|| body.get("providerName"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .ok_or_else(|| {
+            anyhow!(
+                "{route} requires an explicit `provider`; the eval driver never defaults to an \
+                 API provider. ChatGPT subscription (openai-codex-oauth) tasks are not served by \
+                 this driver — use the authenticated Workshop task path"
+            )
+        })
+}
+
 async fn create_session(deps: &EvalDriverDeps, body: Value) -> Result<Value> {
     let session_id = body
         .get("sessionId")
@@ -807,12 +827,7 @@ async fn create_session(deps: &EvalDriverDeps, body: Value) -> Result<Value> {
         .and_then(Value::as_str)
         .unwrap_or("openai/gpt-5.6-luna")
         .to_string();
-    let provider_name = body
-        .get("provider")
-        .or_else(|| body.get("providerName"))
-        .and_then(Value::as_str)
-        .unwrap_or("openrouter")
-        .to_string();
+    let provider_name = require_explicit_provider(&body, "create_session")?;
     let mut start = CodexSessionStartRequest {
         session_id: session_id.clone(),
         workspace,
@@ -912,7 +927,18 @@ async fn prepare_start(
             .map_err(|message| anyhow!(message))?;
         }
         crate::codex::ProviderClass::OpenaiCodexOauth => {
-            bail!("ChatGPT subscription sessions are not available through the eval driver")
+            // Prohibited by contract, never substituted: a ChatGPT-required
+            // task must be created through the ordinary authenticated Workshop
+            // task path, which uses the session's existing app-server OAuth.
+            // Falling back to an API provider here would silently violate the
+            // task's provider requirement.
+            bail!(
+                "provider_contract: ChatGPT subscription sessions \
+                 (openai-codex-oauth) are not available through the eval \
+                 driver; create the task through the authenticated Workshop \
+                 task path instead — the driver never substitutes an API \
+                 provider for a required ChatGPT session"
+            )
         }
         crate::codex::ProviderClass::Direct => {}
     }
@@ -948,12 +974,7 @@ async fn send_message(deps: &EvalDriverDeps, session_id: &str, body: Value) -> R
         .and_then(Value::as_str)
         .unwrap_or("openai/gpt-5.6-luna")
         .to_string();
-    let provider_name = body
-        .get("provider")
-        .or_else(|| body.get("providerName"))
-        .and_then(Value::as_str)
-        .unwrap_or("openrouter")
-        .to_string();
+    let provider_name = require_explicit_provider(&body, "send_message")?;
     let mut start = CodexSessionStartRequest {
         session_id: session_id.to_string(),
         workspace,
@@ -2454,6 +2475,29 @@ mod tests {
     #[test]
     fn protocol_version_is_stable() {
         assert_eq!(PROTOCOL_VERSION, "synth.eval-driver.v1");
+    }
+
+    /// The driver never picks a provider lane for the caller: a defaulted
+    /// OpenRouter session silently violated ChatGPT-only task contracts.
+    #[test]
+    fn session_routes_require_an_explicit_provider() {
+        let error = require_explicit_provider(&json!({"model": "openai/gpt-5.6-luna"}), "create_session")
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("requires an explicit `provider`"), "{error}");
+        assert!(error.contains("never defaults"), "{error}");
+        assert_eq!(
+            require_explicit_provider(&json!({"provider": "openrouter"}), "create_session")
+                .unwrap(),
+            "openrouter"
+        );
+        assert_eq!(
+            require_explicit_provider(&json!({"providerName": " synth-cloud "}), "send_message")
+                .unwrap(),
+            "synth-cloud"
+        );
+        let blank = require_explicit_provider(&json!({"provider": "  "}), "send_message");
+        assert!(blank.is_err(), "a blank provider is not an explicit choice");
     }
 
     #[test]

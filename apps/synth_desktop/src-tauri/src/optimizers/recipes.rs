@@ -29,7 +29,12 @@ pub(super) async fn start(
     super::models::OptimizerRunRecord,
     Option<crate::storage::AppEvent>,
 )> {
-    start_inner(service, request, true).await
+    let (run, event, guard) = start_inner(service, request, true).await?;
+    debug_assert!(
+        guard.is_none(),
+        "a spawned start transfers capability ownership to the worker"
+    );
+    Ok((run, event))
 }
 
 async fn start_inner(
@@ -39,6 +44,7 @@ async fn start_inner(
 ) -> Result<(
     super::models::OptimizerRunRecord,
     Option<crate::storage::AppEvent>,
+    Option<crate::secrets::RevokeRunOnFailure>,
 )> {
     let session = request
         .session_ref
@@ -51,7 +57,8 @@ async fn start_inner(
     let recipe = super::workspace_recipe::find_recipe(&workspace, &request.recipe_id)?;
     match recipe.algorithm {
         super::workspace_recipe::AlgorithmKind::Eval => {
-            return super::container_eval::start(service, request).await;
+            let (run, event) = super::container_eval::start(service, request).await?;
+            return Ok((run, event, None));
         }
         super::workspace_recipe::AlgorithmKind::Gepa => {}
     }
@@ -80,6 +87,7 @@ async fn start_inner(
     let table = config
         .as_table_mut()
         .ok_or_else(|| anyhow!("workspace recipe must be a TOML table"))?;
+    super::workspace_recipe::compile_gepa_native_config(table, &recipe)?;
     table.insert(
         "run".into(),
         toml::Value::Table(
@@ -104,8 +112,14 @@ async fn start_inner(
     );
     let openai =
         resolve_provider_workload(&recipe.provider, &run_id, &recipe.id, Some(&config_path))?;
+    // The capability just issued has no durable owner yet. Any failure from
+    // here to the point ownership transfers (the prepared run record, or the
+    // spawned worker's own RevokeRunOnDrop) must revoke it, or a failed
+    // startup leaves a zero-use capability granted.
+    let capability_guard = crate::secrets::RevokeRunOnFailure::new(run_id.clone());
     super::workspace_recipe::bind_locality_urls(
         table,
+        &recipe.provider,
         recipe.locality,
         openai.base_url.as_deref(),
         openai.config_base_url.as_deref(),
@@ -178,7 +192,9 @@ async fn start_inner(
     let (run, event) = service.create(create).await?;
     let (run, _) = manager.pin_run(service, &run.id, &recipe.id).await?;
     if !spawn {
-        return Ok((run, event));
+        // The prepare path still has fallible persistence ahead of it; the
+        // caller disarms once the prepared record durably owns the capability.
+        return Ok((run, event, Some(capability_guard)));
     }
     append_status_event(service, &run_id, "optimizer.run.queued", "queued").await?;
     let (cancel_tx, cancel_rx) = watch::channel(None);
@@ -188,6 +204,8 @@ async fn start_inner(
     let worker_service = service.clone();
     let worker_manager = manager.clone();
     let work_dir = run_dir.clone();
+    // From here the worker's own RevokeRunOnDrop owns terminal revocation.
+    capability_guard.disarm();
     tokio::spawn(async move {
         if let Err(error) = run_recipe_worker(
             worker_service.clone(),
@@ -206,7 +224,7 @@ async fn start_inner(
         worker_manager.release_gepa_recipe(&run_id).await;
         worker_service.unregister_local_recipe(&run_id).await;
     });
-    Ok((run, event))
+    Ok((run, event, None))
 }
 
 pub(super) async fn prepare(
@@ -218,7 +236,7 @@ pub(super) async fn prepare(
 )> {
     let manager = service.manager().clone();
     require_plugin_ready(&manager).await?;
-    let (mut run, event) = start_inner(service, request, false).await?;
+    let (mut run, event, capability_guard) = start_inner(service, request, false).await?;
     let digest = preparation_digest(&run);
     let mut summary = run.summary.as_object().cloned().unwrap_or_default();
     summary.insert("preparationDigest".into(), json!(digest));
@@ -241,6 +259,11 @@ pub(super) async fn prepare(
     run.summary = serde_json::Value::Object(summary);
     run.status = "waiting_for_viewer".into();
     let run = service.persist_run(run).await?;
+    // The prepared record is durable: it owns the capability from here until
+    // `start_prepared` hands it to the worker's revoke-and-rotate transition.
+    if let Some(guard) = capability_guard {
+        guard.disarm();
+    }
     Ok((run, event))
 }
 
@@ -498,6 +521,11 @@ async fn run_recipe_worker(
         .filter(|value| !value.is_empty())
         .ok_or_else(|| anyhow!("run-owned recipe is missing provider"))?
         .to_string();
+    // Explicit revoke-and-rotate: preparation (start_inner) issued a
+    // capability that the prepared/created record owned until now. The worker
+    // retires that lease and issues its own so the run has exactly one active
+    // capability owner, guarded by `_revoke` above on every terminal path.
+    crate::secrets::revoke_run_best_effort(&run_id);
     let openai = resolve_provider_workload(
         &provider,
         &run_id,

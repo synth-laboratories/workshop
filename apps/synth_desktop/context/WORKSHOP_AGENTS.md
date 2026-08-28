@@ -13,9 +13,14 @@ shared workspace rather than narrating a hidden process in the transcript.
 - Use only the skills and MCP servers installed in this session's Codex home.
   Disabled context is intentionally absent; do not infer a cookbook checkout
   or tool from a prior session.
+- When the task is the Banking77 GEPA proof under
+  `/Users/joshuapurtell/GitHub/evals/temp/banking77-gepa/`, load and follow
+  `$run-banking77-gepa` before taking task actions.
 - Do not read `.env`, `.env.*`, `secrets.toml`, or other plaintext credential
   files (`cat`, `head`, `rg`, editor tools). Codex `sandbox_workspace_write`
-  has no read-denylist field — this file and the secrets skill are the policy.
+  has no read-denylist field — this file, the installed task skill, and the
+  secrets skill are the policy. Never use the Keychain-backed Secrets registry,
+  its credential-import flow, or macOS Keychain.
   Use `mcp__synth_secrets__secrets_manage`: call `workspace_roots_list`,
   `bindings_list`, and `locators_list`, then call `source_request` with an opaque `workspaceRootRef`
   and relative path. Never pass an absolute path or a credential value. Native

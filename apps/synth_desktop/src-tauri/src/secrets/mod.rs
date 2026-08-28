@@ -103,12 +103,59 @@ pub fn revoke_run_best_effort(run_id: &str) {
     }
 }
 
+/// Revoke a run and seal the public credential-chain receipt. Terminal owners
+/// use this path so the durable projection cannot continue to claim an active
+/// capability after the authoritative capability ledger revoked it.
+pub fn seal_run_best_effort(run_id: &str) {
+    if let Some(secrets) = live() {
+        if let Err(error) = secrets.seal_run_chain(run_id) {
+            crate::platform::logging::report(
+                "secrets",
+                "eprintln",
+                format!("synth-desktop: seal secrets for {run_id}: {error:#}"),
+            );
+        }
+    }
+}
+
 /// Drops by revoking the run's provider capabilities.
 pub struct RevokeRunOnDrop(pub String);
 
 impl Drop for RevokeRunOnDrop {
     fn drop(&mut self) {
-        revoke_run_best_effort(&self.0);
+        seal_run_best_effort(&self.0);
+    }
+}
+
+/// Failure-scoped capability guard for run preparation. Armed at issue time so
+/// any error path between issuing a provider capability and handing ownership
+/// to a durable run record (or the run worker) revokes it; `disarm` transfers
+/// ownership and makes the drop a no-op.
+pub struct RevokeRunOnFailure {
+    run_id: String,
+    armed: bool,
+}
+
+impl RevokeRunOnFailure {
+    pub fn new(run_id: impl Into<String>) -> Self {
+        Self {
+            run_id: run_id.into(),
+            armed: true,
+        }
+    }
+
+    /// Ownership of the capability has been transferred to a durable owner
+    /// (a prepared run record, or the spawned run worker's own guard).
+    pub fn disarm(mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for RevokeRunOnFailure {
+    fn drop(&mut self) {
+        if self.armed {
+            seal_run_best_effort(&self.run_id);
+        }
     }
 }
 
@@ -3256,5 +3303,80 @@ mod tests {
             "exhausted",
             "run sealing must not copy revoked over an exhausted live capability"
         );
+    }
+
+    /// Failure-scoped preparation guard: an armed drop revokes every
+    /// capability issued for the failed run; a disarmed drop leaves the
+    /// prepared run's capability owned. Uses the process-global live service
+    /// (whichever test installed it first) with unique run ids, since the
+    /// guard revokes through `live()` exactly as production failure paths do.
+    #[test]
+    fn a_failure_guard_revokes_on_drop_unless_ownership_was_transferred() {
+        let (dir, service) = service();
+        let env_file = dir.path().join(".env");
+        service
+            .load_test_env_source("openai", "OPENAI_API_KEY", "sk-guard-secret", &env_file)
+            .unwrap();
+        install_live(Arc::new(service));
+        let service = live().expect("live secrets service");
+        if service
+            .list(Some("openai"), None)
+            .map(|secrets| secrets.is_empty())
+            .unwrap_or(true)
+        {
+            let _ = service.load_test_env_source(
+                "openai",
+                "OPENAI_API_KEY",
+                "sk-guard-secret",
+                &env_file,
+            );
+        }
+        let active_for = |run: &str| {
+            service
+                .active_capabilities()
+                .unwrap()
+                .into_iter()
+                .filter(|capability| capability.run_id == run)
+                .count()
+        };
+
+        service
+            .issue_lease(
+                "openai",
+                "run_guard_armed",
+                "gepa.banking77.local.l.v1",
+                ProviderUsePolicy::default(),
+                "test",
+            )
+            .unwrap();
+        assert_eq!(active_for("run_guard_armed"), 1);
+        drop(RevokeRunOnFailure::new("run_guard_armed"));
+        assert_eq!(
+            active_for("run_guard_armed"),
+            0,
+            "a failed pre-start path must leave no active capability"
+        );
+        let chain = service
+            .chain_for_run("run_guard_armed")
+            .expect("failed run keeps a sealed public chain");
+        assert_eq!(chain["capabilityRevoked"], json!(true));
+        assert!(chain["revokedAt"].as_str().is_some());
+
+        service
+            .issue_lease(
+                "openai",
+                "run_guard_disarmed",
+                "gepa.banking77.local.l.v1",
+                ProviderUsePolicy::default(),
+                "test",
+            )
+            .unwrap();
+        RevokeRunOnFailure::new("run_guard_disarmed").disarm();
+        assert_eq!(
+            active_for("run_guard_disarmed"),
+            1,
+            "a successful prepare keeps exactly one owned capability"
+        );
+        service.revoke_run("run_guard_disarmed").unwrap();
     }
 }
