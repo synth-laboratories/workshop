@@ -522,6 +522,7 @@ fn container_candidate(
     }))?;
     let operations = metadata
         .pointer("/capabilities/operations")
+        .or_else(|| metadata.pointer("/info/capabilities/operations"))
         .and_then(Value::as_object)
         .map(|values| {
             values
