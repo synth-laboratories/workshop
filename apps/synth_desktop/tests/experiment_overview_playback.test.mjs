@@ -35,13 +35,13 @@ const bundle = buildSync({
 
 const pixel = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=";
 
-function frame(sequence, index, elapsedMs) {
+function frame(sequence, index, elapsedMs, trialId = "trial-live", rolloutId = "rollout-live") {
 	return {
 		sequenceNumber: sequence,
 		type: "eval.trial.event",
-		delta: { trial_id: "trial-live", containerEvent: {
+		delta: { trial_id: trialId, containerEvent: {
 			kind: "frame",
-			rollout_id: "rollout-live",
+			rollout_id: rolloutId,
 			payload: {
 				frame_index: index,
 				elapsed_ms: elapsedMs,
@@ -108,6 +108,41 @@ test("RuneBench playback follows incoming frames and supports live-edge controls
 			events
 		}), [frame(1, 0, 1000), frame(2, 1, 2000), action, frame(4, 2, 3000)]);
 		await page.getByRole("button", { name: "Jump to latest" }).waitFor();
+	} finally {
+		await browser.close();
+	}
+});
+
+test("RuneBench playback switches rollout cameras and compares synchronized frames", async () => {
+	const browser = await chromium.launch({ headless: true });
+	try {
+		const page = await browser.newPage();
+		await page.setContent("<main id='root'></main>");
+		await page.addScriptTag({ content: bundle });
+		await page.evaluate((events) => window.evalHarness.render({
+			experiment: { title: "RuneBench", status: "running" },
+			run: { status: "running" },
+			events
+		}), [
+			frame(1, 0, 1000, "trial-a", "rollout-a"),
+			frame(2, 0, 1200, "trial-b", "rollout-b"),
+			frame(3, 1, 2000, "trial-a", "rollout-a"),
+			frame(4, 1, 2200, "trial-b", "rollout-b")
+		]);
+
+		const camera = page.getByLabel("Rollout camera");
+		await camera.waitFor();
+		assert.deepEqual(await camera.locator("option").allTextContents(), ["trial-a", "trial-b"]);
+		await camera.selectOption("trial-b");
+		assert.equal(await camera.inputValue(), "trial-b");
+		await page.getByText(/frame 1\/2/).waitFor();
+		await page.getByRole("button", { name: "Next frame" }).click();
+		await page.getByText(/frame 2\/2/).waitFor();
+
+		await page.getByLabel("side-by-side").check();
+		await page.getByAltText("Comparison rollout at 0:02").waitFor();
+		assert.equal(await page.getByRole("img").count(), 2);
+		await page.getByText("trial-a · 0:02").waitFor();
 	} finally {
 		await browser.close();
 	}

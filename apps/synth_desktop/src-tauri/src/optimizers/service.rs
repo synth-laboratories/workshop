@@ -1077,9 +1077,22 @@ impl OptimizerService {
             return Ok(());
         };
         let chain = chain.clone();
+        let provider_usage = chain.get("providerUsage").cloned();
         self.patch_run(run_id.to_string(), move |run| {
             if let Some(object) = run.summary.as_object_mut() {
                 object.insert("credentialChain".into(), chain);
+                if let Some(provider_usage) = provider_usage.clone() {
+                    object.insert("providerUsage".into(), provider_usage.clone());
+                    let usage_lanes = object
+                        .entry("usageLanes")
+                        .or_insert_with(|| serde_json::json!({}));
+                    if let Some(lanes) = usage_lanes.as_object_mut() {
+                        lanes.insert("provider".into(), provider_usage.clone());
+                    }
+                    run.usage
+                        .extra
+                        .insert("providerUsage".into(), provider_usage);
+                }
             }
             Ok(())
         })

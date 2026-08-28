@@ -580,6 +580,49 @@ impl SecretsService {
             .transaction(|conn| capability::revoke_run(conn, &self.capabilities, run_id))
     }
 
+    /// Aggregate the provider proxy's run-level meter. Request attempts are
+    /// reserved before forwarding, so this count includes failed provider
+    /// requests and is more authoritative than agent-message heuristics.
+    pub fn provider_usage_for_run(&self, run_id: &str) -> Option<serde_json::Value> {
+        let capabilities = self.capabilities.list_for_run(run_id);
+        if capabilities.is_empty() {
+            return None;
+        }
+        let request_attempts = capabilities
+            .iter()
+            .map(|live| u64::from(live.used_calls))
+            .sum::<u64>();
+        let input_tokens = capabilities
+            .iter()
+            .map(|live| live.used_input_tokens)
+            .sum::<u64>();
+        let output_tokens = capabilities
+            .iter()
+            .map(|live| live.used_output_tokens)
+            .sum::<u64>();
+        let cost_usd_micros = capabilities
+            .iter()
+            .map(|live| live.used_cost_usd_micros)
+            .sum::<u64>();
+        let mut providers = capabilities
+            .iter()
+            .map(|live| live.provider.clone())
+            .collect::<Vec<_>>();
+        providers.sort();
+        providers.dedup();
+        Some(serde_json::json!({
+            "requestAttempts": request_attempts,
+            "inputTokens": input_tokens,
+            "outputTokens": output_tokens,
+            "totalTokens": input_tokens.saturating_add(output_tokens),
+            "costUsd": cost_usd_micros as f64 / 1_000_000.0,
+            "capabilityCount": capabilities.len(),
+            "providers": providers,
+            "basis": "workshop_provider_proxy_reserved_requests",
+            "requestCountComplete": true,
+        }))
+    }
+
     pub fn audit(&self, limit: i64) -> Result<Vec<SecretAuditEvent>> {
         self.db.with_conn(|conn| audit::list(conn, limit))
     }
@@ -1840,11 +1883,40 @@ mod tests {
         assert!(!dump.contains(&lease.capability_handle));
         assert_eq!(chain["leaseDigest"], json!(lease.digest()));
         assert_eq!(chain["capabilityRevoked"], json!(false));
+        service
+            .capabilities
+            .reserve_call(&lease.capability_handle)
+            .unwrap();
+        service
+            .capabilities
+            .debit_usage(
+                &lease.capability_handle,
+                &capability::MeasuredUsage {
+                    calls: 1,
+                    input_tokens: 123,
+                    output_tokens: 45,
+                    cost_usd: Some(0.012345),
+                },
+            )
+            .unwrap();
         let sealed = service
             .seal_run_chain("run_chain")
             .unwrap()
             .expect("sealed chain");
         assert_eq!(sealed["capabilityRevoked"], json!(true));
+        assert_eq!(sealed["providerUsage"]["requestAttempts"], json!(1));
+        assert_eq!(sealed["providerUsage"]["inputTokens"], json!(123));
+        assert_eq!(sealed["providerUsage"]["outputTokens"], json!(45));
+        assert_eq!(sealed["providerUsage"]["totalTokens"], json!(168));
+        assert_eq!(sealed["providerUsage"]["costUsd"], json!(0.012345));
+        assert_eq!(
+            sealed["providerUsage"]["basis"],
+            json!("workshop_provider_proxy_reserved_requests")
+        );
+        assert_eq!(
+            sealed["providerUsage"]["requestCountComplete"],
+            json!(true)
+        );
         assert!(sealed.get("revokedAt").and_then(|value| value.as_str()).is_some());
     }
 }

@@ -73,7 +73,10 @@ const FRAME_FETCH_TIMEOUT: Duration = Duration::from_secs(10);
 pub(crate) struct EventStreamSettings {
     pub poll_interval: Duration,
     pub page_limit: u32,
-    pub max_events_per_rollout: usize,
+    /// Optional explicit producer-safety cap. `None` is the product default:
+    /// pages are folded directly into the durable optimizer journal, so long
+    /// runs do not need an artificial in-memory history ceiling.
+    pub max_events_per_rollout: Option<usize>,
 }
 
 impl Default for EventStreamSettings {
@@ -81,9 +84,7 @@ impl Default for EventStreamSettings {
         Self {
             poll_interval: Duration::from_millis(150),
             page_limit: 1000,
-            // Durable cursor paging, not an in-memory UI window. This covers
-            // long visual rollouts without silently truncating their history.
-            max_events_per_rollout: 100_000,
+            max_events_per_rollout: None,
         }
     }
 }
@@ -97,8 +98,13 @@ impl EventStreamSettings {
         self.poll_interval = self
             .poll_interval
             .clamp(Duration::from_millis(20), Duration::from_secs(10));
-        self.max_events_per_rollout = self.max_events_per_rollout.max(1);
+        self.max_events_per_rollout = self.max_events_per_rollout.map(|cap| cap.max(1));
         self
+    }
+
+    fn cap_reached(&self, relayed_events: usize) -> bool {
+        self.max_events_per_rollout
+            .is_some_and(|cap| relayed_events >= cap)
     }
 }
 
@@ -356,12 +362,17 @@ where
         if outcome.journal_closed && settled.is_some() {
             break;
         }
-        if outcome.relayed_events >= ctx.settings.event_stream.max_events_per_rollout {
+        if ctx
+            .settings
+            .event_stream
+            .cap_reached(outcome.relayed_events)
+        {
+            let cap = ctx.settings.event_stream.max_events_per_rollout.unwrap();
             outcome.note(
                 "event_cap_reached",
                 format!(
                     "stopped relaying at event_stream.max_events_per_rollout = {}",
-                    ctx.settings.event_stream.max_events_per_rollout
+                    cap
                 ),
                 0,
             );
@@ -480,7 +491,11 @@ async fn drain(
             *cursor = sequence;
             outcome.relayed_events += 1;
             summary.relayed += 1;
-            if outcome.relayed_events >= ctx.settings.event_stream.max_events_per_rollout {
+            if ctx
+                .settings
+                .event_stream
+                .cap_reached(outcome.relayed_events)
+            {
                 break;
             }
         }
@@ -509,7 +524,12 @@ async fn drain(
             .and_then(|value| value.get("has_more"))
             .and_then(Value::as_bool)
             == Some(true);
-        if !has_more || outcome.relayed_events >= ctx.settings.event_stream.max_events_per_rollout {
+        if !has_more
+            || ctx
+                .settings
+                .event_stream
+                .cap_reached(outcome.relayed_events)
+        {
             return Ok(summary);
         }
     }
@@ -1016,5 +1036,12 @@ mod tests {
         }
         .normalized();
         assert_eq!(settings.page_limit, 10_000);
+    }
+
+    #[test]
+    fn durable_cursor_paging_is_uncapped_by_default() {
+        let settings = EventStreamSettings::default().normalized();
+        assert_eq!(settings.max_events_per_rollout, None);
+        assert!(!settings.cap_reached(usize::MAX));
     }
 }

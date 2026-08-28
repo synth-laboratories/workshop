@@ -476,7 +476,7 @@ fn parse_relay_settings(
             if cap == 0 {
                 bail!("recipe `{recipe_id}` event_stream.max_events_per_rollout must be positive");
             }
-            settings.event_stream.max_events_per_rollout = cap;
+            settings.event_stream.max_events_per_rollout = Some(cap);
         }
     }
     if let Some(declared) = media {
