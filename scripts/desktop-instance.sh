@@ -994,6 +994,7 @@ sign_cua_bundle() {
     ${keychain_args[@]+"${keychain_args[@]}"} \
     --identifier "$BUNDLE_ID" "$app_bundle"
   if [[ "$identity" == "-" ]]; then
+    record_bundle_signing "$app_bundle"
     echo "[desktop:$NAME] WARNING ad-hoc signature: TCC/Keychain grants will not survive a rebuild" >&2
   else
     assert_bundle_identity "$app_bundle" "$identity"
@@ -1016,13 +1017,36 @@ signing_identifier() {
   codesign -dv "$1" 2>&1 | sed -n 's/^Identifier=//p'
 }
 
+# A signing operation is authoritative even when it intentionally uses an
+# ad-hoc identity. Without overwriting this object, an ad-hoc rebuild can leave
+# a prior certificate-backed requirement in the manifest while provenance and
+# CDHash correctly describe the new bundle.
+record_bundle_signing() {
+  local app_bundle="$1" host_requirement host_authority manifest_tmp="$MANIFEST.signing.tmp"
+  host_requirement="$(signing_requirement "$app_bundle")"
+  host_authority="$(signing_authority "$app_bundle")"
+  if [[ -z "$host_requirement" ]]; then
+    echo "[desktop:$NAME] ERROR signed bundle has no designated requirement" >&2
+    return 1
+  fi
+  [[ -f "$MANIFEST" ]] || write_contract
+  jq \
+    --arg identity "${host_authority:-adhoc}" \
+    --arg requirement "$host_requirement" \
+    --arg verifiedAt "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" \
+    '.signing = {identity: $identity, designatedRequirement: $requirement, verifiedAt: $verifiedAt}' \
+    "$MANIFEST" >"$manifest_tmp"
+  mv "$manifest_tmp" "$MANIFEST"
+  echo "[desktop:$NAME] signing identity=${host_authority:-adhoc}"
+  echo "[desktop:$NAME] signing requirement=$host_requirement"
+}
+
 # TCC and Keychain key permissions off the designated requirement. A stable
 # identity means expected explicit identifiers, one shared Authority, and a
 # requirement anchored to the certificate rather than a per-build cdhash.
 assert_bundle_identity() {
   local app_bundle="$1" expected_authority="${2:-}"
   local host_requirement host_authority nested name expected failures=0
-  local manifest_tmp="$MANIFEST.signing.tmp"
   host_requirement="$(signing_requirement "$app_bundle")"
   host_authority="$(signing_authority "$app_bundle")"
   if [[ -z "$host_requirement" || "$host_requirement" == *cdhash* ]]; then
@@ -1055,16 +1079,7 @@ assert_bundle_identity() {
     fi
   done < <(find "$app_bundle/Contents/MacOS" -maxdepth 1 -type f -perm -111 | LC_ALL=C sort)
   [[ "$failures" -eq 0 ]] || exit 1
-  [[ -f "$MANIFEST" ]] || write_contract
-  jq \
-    --arg identity "${host_authority:-adhoc}" \
-    --arg requirement "$host_requirement" \
-    --arg verifiedAt "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" \
-    '.signing = {identity: $identity, designatedRequirement: $requirement, verifiedAt: $verifiedAt}' \
-    "$MANIFEST" >"$manifest_tmp"
-  mv "$manifest_tmp" "$MANIFEST"
-  echo "[desktop:$NAME] signing identity=${host_authority:-adhoc}"
-  echo "[desktop:$NAME] signing requirement=$host_requirement"
+  record_bundle_signing "$app_bundle"
 }
 
 # Non-identity runtime paths for development launches. Instance name and bundle

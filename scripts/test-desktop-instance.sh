@@ -150,6 +150,10 @@ rg -q 'SYNTH_DESKTOP_USE_DEV_SIGNER:-1' "$ROOT/scripts/desktop-instance.sh"
 ! rg -q -- 'codesign --force --deep' "$ROOT/scripts/desktop-instance.sh"
 rg -q -- '--identifier "\$BUNDLE_ID" "\$app_bundle"' "$ROOT/scripts/desktop-instance.sh"
 rg -q 'assert_bundle_identity' "$ROOT/scripts/desktop-instance.sh"
+# An explicit ad-hoc rebuild must replace any certificate-backed signing
+# record retained by write_contract instead of leaving stale manifest truth.
+rg -q 'record_bundle_signing "\$app_bundle"' "$ROOT/scripts/desktop-instance.sh"
+rg -Fq -- '--arg identity "${host_authority:-adhoc}"' "$ROOT/scripts/desktop-instance.sh"
 rg -q 'SYNTH_DESKTOP_REBUILD_ADAPTERS:-0' "$ROOT/scripts/desktop-instance.sh"
 rg -q 'SYNTH_OPTIMIZER_USE_LOCAL_SOURCE:-0' "$ROOT/scripts/desktop-instance.sh"
 rg -q 'SYNTH_COMPUTER_USE_PARENT_REQUIREMENT=' "$ROOT/scripts/desktop-instance.sh"
