@@ -13,42 +13,6 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-#[allow(dead_code)]
-pub const LOCAL_LORA_DDL: &str = r#"
-CREATE TABLE IF NOT EXISTS local_lora_checkpoints (
-    checkpoint_id TEXT PRIMARY KEY,
-    name TEXT NOT NULL,
-    description TEXT NOT NULL DEFAULT '',
-    base_model TEXT NOT NULL,
-    optimizer_algorithm TEXT,
-    checkpoint_kind TEXT NOT NULL,
-    step INTEGER,
-    lora_rank INTEGER,
-    status TEXT NOT NULL,
-    adapter_path TEXT NOT NULL,
-    sha256 TEXT NOT NULL,
-    size_bytes INTEGER,
-    run_id TEXT,
-    source_checkpoint_id TEXT,
-    tags_json TEXT NOT NULL DEFAULT '[]',
-    metadata_json TEXT NOT NULL DEFAULT '{}',
-    created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL,
-    archived_at TEXT
-);
-"#;
-
-#[allow(dead_code)]
-pub const HOSTED_LORA_OVERLAY_DDL: &str = r#"
-CREATE TABLE IF NOT EXISTS hosted_lora_overlays (
-    checkpoint_id TEXT PRIMARY KEY,
-    name TEXT,
-    description TEXT,
-    tags_json TEXT,
-    updated_at TEXT NOT NULL
-);
-"#;
-
 #[derive(Clone, Debug, Default)]
 pub struct HostedLoraOverlay {
     pub name: Option<String>,
@@ -693,7 +657,7 @@ mod tests {
     fn import_requires_mlx_lora_files() {
         let dir = tempfile::tempdir().unwrap();
         let conn = Connection::open_in_memory().unwrap();
-        conn.execute_batch(LOCAL_LORA_DDL).unwrap();
+        crate::storage::migrations::apply_migrations(&conn).unwrap();
         let err = import_local_lora_dir(&conn, dir.path()).unwrap_err();
         assert!(err.to_string().contains("mlx-lora.v1"), "{err}");
     }
@@ -713,7 +677,7 @@ mod tests {
             .write_all(&[1, 2, 3, 4])
             .unwrap();
         let conn = Connection::open_in_memory().unwrap();
-        conn.execute_batch(LOCAL_LORA_DDL).unwrap();
+        crate::storage::migrations::apply_migrations(&conn).unwrap();
         let imported = import_local_lora_dir(&conn, dir.path()).unwrap();
         assert_eq!(imported.base_model, "poolside/Laguna-XS-2.1-NVFP4-mlx");
         // The whole point of reading the declared base: an imported Laguna
@@ -732,7 +696,7 @@ mod tests {
             .write_all(&[5, 6, 7, 8])
             .unwrap();
         let conn = Connection::open_in_memory().unwrap();
-        conn.execute_batch(LOCAL_LORA_DDL).unwrap();
+        crate::storage::migrations::apply_migrations(&conn).unwrap();
         let imported = import_local_lora_dir(&conn, dir.path()).unwrap();
         assert_eq!(imported.base_model, "Qwen/Qwen3.5-2B");
         assert!(!is_laguna_compatible(&imported));
@@ -747,7 +711,7 @@ mod tests {
         let mut adapters = fs::File::create(dir.path().join("adapters.safetensors")).unwrap();
         adapters.write_all(&[1, 2, 3, 4]).unwrap();
         let conn = Connection::open_in_memory().unwrap();
-        conn.execute_batch(LOCAL_LORA_DDL).unwrap();
+        crate::storage::migrations::apply_migrations(&conn).unwrap();
         let imported = import_local_lora_dir(&conn, dir.path()).unwrap();
         assert_eq!(imported.placement, "this_mac");
         assert!(imported.inference_chat_completions);
@@ -775,7 +739,7 @@ mod tests {
     #[test]
     fn hosted_overlay_survives_cloud_patch_failure() {
         let conn = Connection::open_in_memory().unwrap();
-        conn.execute_batch(HOSTED_LORA_OVERLAY_DDL).unwrap();
+        crate::storage::migrations::apply_migrations(&conn).unwrap();
         let base = hosted_checkpoint("Cloud name", "cloud notes", vec!["prod".into()]);
         let patched = overlay_hosted_lora(
             &conn,

@@ -103,8 +103,8 @@ const REQUIRED_TABLES: &[(&str, &str)] = &[
     ("optimizer_terminal_manifests", MIGRATION_23),
     ("secret_refs", MIGRATION_25),
     ("product_telemetry_events", MIGRATION_26),
-    ("local_lora_checkpoints", MIGRATION_28),
-    ("hosted_lora_overlays", MIGRATION_29),
+    ("local_lora_checkpoints", MIGRATION_29),
+    ("hosted_lora_overlays", MIGRATION_30),
     ("optimizer_run_ownership", MIGRATION_33),
     ("optimizer_run_media", MIGRATION_41),
     ("optimizer_frames", MIGRATION_42),
@@ -2463,6 +2463,27 @@ ALTER TABLE evaluation_rollouts_v49 RENAME TO evaluation_rollouts;
 
 #[cfg(test)]
 mod tests {
+    /// Every `REQUIRED_TABLES` row must name the DDL that actually creates it.
+    ///
+    /// `heal_missing_tables` runs the paired const when a table is absent, so a
+    /// mismatched row makes the heal silently inert — or worse, creates the
+    /// wrong table. Two rows were wrong: `local_lora_checkpoints` was paired
+    /// with MIGRATION_28, which creates no table at all, and
+    /// `hosted_lora_overlays` with MIGRATION_29, which creates
+    /// `local_lora_checkpoints`. This is the repair path that exists to survive
+    /// a version collision, so it fails exactly when it is needed.
+    #[test]
+    fn required_tables_are_paired_with_the_ddl_that_creates_them() {
+        for (table, ddl) in REQUIRED_TABLES {
+            let needle = format!("CREATE TABLE IF NOT EXISTS {table} ");
+            let alt = format!("CREATE TABLE IF NOT EXISTS {table}(");
+            assert!(
+                ddl.contains(&needle) || ddl.contains(&alt),
+                "REQUIRED_TABLES pairs {table} with DDL that does not create it"
+            );
+        }
+    }
+
     /// Derived, not pinned: adding a migration should not mean editing
     /// every test that asserts the database reached the newest version.
     const LATEST_VERSION: i64 = super::MIGRATIONS.len() as i64;
