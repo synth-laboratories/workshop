@@ -21,6 +21,25 @@ export function craftaxEventKind(event: LiveEvalEvent): string {
 }
 
 function normalizedCraftaxEvent(event: LiveEvalEvent): LiveEvalEvent {
+  const host = object(event);
+  const delta = object(host.delta);
+  const raw = object(host.raw);
+  const containerEvent = object(delta.container_event ?? delta.containerEvent ?? raw.container_event ?? raw.containerEvent);
+  const containerKind = craftaxEventKind(containerEvent as LiveEvalEvent);
+  if (containerKind !== "unknown") {
+    const rolloutId = containerEvent.rollout_id ?? containerEvent.rolloutId ?? delta.trial_id ?? delta.trialId;
+    const occurredAt = containerEvent.occurred_at ?? containerEvent.occurredAt;
+    const sequence = containerEvent.sequence ?? containerEvent.sequence_number ?? containerEvent.sequenceNumber;
+    return {
+      ...event,
+      kind: containerKind,
+      payload: object(containerEvent.payload),
+      lane: typeof rolloutId === "string" ? rolloutId : event.lane,
+      run_id: typeof rolloutId === "string" ? rolloutId : event.run_id,
+      occurred_at: typeof occurredAt === "string" ? occurredAt : event.occurred_at,
+      sequence: typeof sequence === "number" || typeof sequence === "string" ? sequence : event.sequence,
+    };
+  }
   const kind = craftaxEventKind(event);
   return event.kind === kind ? event : { ...event, kind };
 }
@@ -100,7 +119,14 @@ function observationGrid(event: LiveEvalEvent | undefined): string | null {
 
 function payloadUsage(payload: Json): Json {
   const own = object(payload.usage);
-  return Object.keys(own).length ? own : object(object(payload.policy).usage);
+  if (Object.keys(own).length) return own;
+  const nested = object(object(payload.policy).usage);
+  if (Object.keys(nested).length) return nested;
+  return Object.fromEntries(
+    ["prompt_tokens", "completion_tokens", "total_tokens", "cost_usd"]
+      .filter((key) => finite(payload[key]) != null)
+      .map((key) => [key, payload[key]])
+  );
 }
 
 function aggregateTraceUsage(traceEvents: LiveEvalEvent[]): Json {
@@ -232,19 +258,20 @@ function policyCallItem(
     .map(eventPayload)
     .filter((payload) => payload.delta !== true && payload.channel !== "compact");
   const snapshot = snapshots.at(-1) ?? {};
+  const assistantMessage = object(snapshot.assistant);
   const channelText = (channel: string) => rawEvents
     .filter((event) => event.kind === "span.policy.data")
     .map(eventPayload)
     .filter((payload) => payload.delta === true && payload.channel === channel)
     .map((payload) => typeof payload.text === "string" ? payload.text : "")
     .join("");
-  const reasoning = snapshot.reasoning ?? snapshot.thinking ?? (channelText("reasoning") || undefined);
-  const textOutput = snapshot.assistant ?? snapshot.output ?? snapshot.response ?? (channelText("content") || undefined);
-  const tools = snapshot.tool_calls ?? snapshot.tool_arguments ?? (channelText("tool") || undefined);
+  const reasoning = snapshot.reasoning ?? snapshot.thinking ?? assistantMessage.reasoning_content ?? assistantMessage.reasoning ?? (channelText("reasoning") || undefined);
+  const textOutput = (Object.keys(assistantMessage).length ? assistantMessage.content : snapshot.assistant) ?? snapshot.output ?? snapshot.response ?? (channelText("content") || undefined);
+  const tools = snapshot.tool_calls ?? snapshot.tool_arguments ?? assistantMessage.tool_calls ?? (channelText("tool") || undefined);
   const plan = rawEvents.map(eventPayload).find((payload, index) => rawEvents[index]?.kind === "span.policy.plan");
   const actions = Array.isArray(plan?.actions) ? plan.actions.map(String) : Array.isArray(snapshot.actions) ? snapshot.actions.map(String) : [];
-  const call = finite(snapshot.call) ?? ordinal;
-  const model = String(snapshot.model ?? object(snapshot.policy).model ?? callConfig.model ?? "model");
+  const call = finite(snapshot.call) ?? (finite(snapshot.call_index) != null ? finite(snapshot.call_index)! + 1 : ordinal);
+  const model = String(snapshot.model ?? snapshot["gen_ai.request.model"] ?? object(snapshot.policy).model ?? callConfig.model ?? "model");
   const hasText = textOutput != null && textOutput !== "";
   const hasTools = tools != null && tools !== "";
   const responseType: CraftaxTraceInteraction["responseType"] = hasText && hasTools
@@ -296,6 +323,17 @@ export function projectCraftaxSemanticTrace(events: LiveEvalEvent[]): CraftaxSem
       continue;
     }
     if (event.kind.startsWith("span.policy.")) {
+      const payload = eventPayload(event);
+      if (
+        event.kind === "span.policy.data"
+        && payload.phase === "sample"
+        && currentPolicy?.events.some((prior) => {
+          const priorPayload = eventPayload(prior);
+          return prior.kind === "span.policy.data" && priorPayload.phase === "sample" && priorPayload.delta !== true;
+        })
+      ) {
+        flushPolicy();
+      }
       if (!currentPolicy) currentPolicy = { events: [], openedIndex: index, ordinal: ++policyOrdinal };
       currentPolicy.events.push(event);
       if (event.kind === "span.policy.closed") flushPolicy();

@@ -300,3 +300,100 @@ test("host-envelope events without kind cannot crash the Craftax projection", ()
   assert.equal(projection.ordered[0].kind, "optimizer.run.failed");
   assert.doesNotThrow(() => projectCraftaxSemanticTrace(projection.ordered));
 });
+
+test("optimizer trial envelopes unwrap NanoHorizon policy spans into transcript calls", () => {
+  const projection = projectCraftaxViewer([
+    {
+      type: "eval.trial.event",
+      sequenceNumber: 11,
+      occurredAt: "2026-08-28T05:39:51Z",
+      optimizerRunId: "run:craftax",
+      delta: {
+        trial_id: "trial:craftax:780005",
+        container_event: {
+          kind: "span.policy.opened",
+          sequence: 9,
+          occurred_at: "2026-08-28T05:39:51Z",
+          rollout_id: "roll:780005",
+          payload: { call: { provider: "openrouter", model: "z-ai/glm-5.3-flash" } },
+        },
+      },
+    },
+    {
+      type: "eval.trial.event",
+      sequenceNumber: 12,
+      occurredAt: "2026-08-28T05:39:52Z",
+      optimizerRunId: "run:craftax",
+      delta: {
+        trial_id: "trial:craftax:780005",
+        container_event: {
+          kind: "span.policy.data",
+          sequence: 10,
+          occurred_at: "2026-08-28T05:39:52Z",
+          rollout_id: "roll:780005",
+          payload: {
+            assistant: { content: null, reasoning_content: "Choose up, then do." },
+            completion_tokens: 384,
+            prompt_tokens: 1462,
+            phase: "sample",
+          },
+        },
+      },
+    },
+    {
+      type: "eval.trial.event",
+      sequenceNumber: 13,
+      occurredAt: "2026-08-28T05:39:53Z",
+      optimizerRunId: "run:craftax",
+      delta: {
+        trial_id: "trial:craftax:780005",
+        container_event: {
+          kind: "span.policy.data",
+          sequence: 11,
+          occurred_at: "2026-08-28T05:39:53Z",
+          rollout_id: "roll:780005",
+          payload: {
+            assistant: { content: null, reasoning_content: "Try a shorter plan." },
+            completion_tokens: 384,
+            prompt_tokens: 1500,
+            phase: "sample",
+          },
+        },
+      },
+    },
+    {
+      type: "eval.trial.event",
+      sequenceNumber: 14,
+      occurredAt: "2026-08-28T05:39:54Z",
+      optimizerRunId: "run:craftax",
+      delta: {
+        trial_id: "trial:craftax:780005",
+        container_event: {
+          kind: "span.policy.closed",
+          sequence: 12,
+          occurred_at: "2026-08-28T05:39:54Z",
+          rollout_id: "roll:780005",
+          payload: {},
+        },
+      },
+    },
+  ]);
+
+  assert.equal(projection.selectedLane, "roll:780005");
+  assert.deepEqual(projection.traceEvents.map((row) => row.kind), [
+    "span.policy.opened",
+    "span.policy.data",
+    "span.policy.data",
+    "span.policy.closed",
+  ]);
+  assert.equal(projection.semanticTrace.length, 2);
+  assert.equal(projection.semanticTrace[0].kind, "policy.call");
+  assert.match(projection.semanticTrace[0].label, /z-ai\/glm-5.3-flash/);
+  assert.equal(projection.semanticTrace[0].interaction?.thinking, "Choose up, then do.");
+  assert.equal(projection.semanticTrace[0].interaction?.responseType, "pending");
+  assert.equal(projection.semanticTrace[1].interaction?.thinking, "Try a shorter plan.");
+  assert.deepEqual(projection.policy.usage, {
+    prompt_tokens: 2962,
+    completion_tokens: 768,
+  });
+});
