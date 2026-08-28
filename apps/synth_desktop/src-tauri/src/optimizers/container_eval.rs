@@ -1563,6 +1563,14 @@ async fn run_eval_worker(
         .iter()
         .filter(|row| !is_successful_eval_record(row))
         .count();
+    let missing_measurements = records
+        .iter()
+        .filter(|row| {
+            row.get("error")
+                .and_then(Value::as_str)
+                .is_some_and(|error| error.starts_with("evaluator_measurement_missing:"))
+        })
+        .count();
     let budget_exceeded = over_cost_ceiling(&records, spec.cost_ceiling_usd);
     let status = if failed == 0 && records.len() == total && !budget_exceeded {
         "completed"
@@ -1583,6 +1591,11 @@ async fn run_eval_worker(
         ),
     )
     .await?;
+    // This is the final mutable summary/visual projection. `append_terminal`
+    // seals the terminal manifest, after which `patch_run` correctly refuses
+    // summary rewrites. Projecting once more after the seal used to turn a
+    // successful worker return into a failure path (and repaint its saved
+    // visual as failed).
     evidence(
         "selection",
         append_eval_selection(&service, &run_id, status, mean_reward(&records)),
@@ -1593,6 +1606,11 @@ async fn run_eval_worker(
         let mut parts = Vec::new();
         if failed != 0 || records.len() != total {
             parts.push(format!("{failed} of {total} required rollouts failed"));
+        }
+        if missing_measurements != 0 {
+            parts.push(format!(
+                "evaluator_measurement_missing: {missing_measurements} container-completed rollouts supplied no evaluator measurement (reward or non-null metric)"
+            ));
         }
         if budget_exceeded {
             parts.push(format!("cost exceeded ${:.2}", spec.cost_ceiling_usd));
@@ -1605,21 +1623,6 @@ async fn run_eval_worker(
     evidence(
         "run_terminal",
         append_terminal(&service, &run_id, status, detail),
-    )
-    .await?;
-    let terminal_run = service.get(run_id.clone()).await?;
-    evidence(
-        "terminal_progress_projection",
-        persist_progress(
-            &service,
-            &run_id,
-            spec,
-            &visual_id,
-            &workbench_id,
-            &records,
-            total,
-            &terminal_run.status,
-        ),
     )
     .await?;
     Ok(())
@@ -1688,6 +1691,13 @@ async fn append_eval_terminal(
     let id = format!("eval:trial:{index}");
     let cancelled = record.get("status").and_then(Value::as_str) == Some("cancelled");
     let valid = is_successful_eval_record(record);
+    let metrics = record
+        .get("metrics")
+        .filter(|value| value.is_object())
+        .cloned()
+        .unwrap_or_else(
+            || json!({ "reward": record.get("reward").cloned().unwrap_or(Value::Null) }),
+        );
     let evidence_refs = eval_terminal_evidence_refs(spec, record)?;
     let usage_delta = terminal_usage_reconciliation(record, cancelled, spec.cost_ceiling_usd);
     let evidence_state = record
@@ -1735,7 +1745,7 @@ async fn append_eval_terminal(
             "seed": seed,
             "scenario": spec.family,
             "reward": record.get("reward").cloned().unwrap_or(Value::Null),
-            "metrics": { "reward": record.get("reward").cloned().unwrap_or(Value::Null) },
+            "metrics": metrics,
             "raw": record,
         }))
         .artifact_refs(evidence_refs)
@@ -2641,7 +2651,15 @@ fn verify_complete_native_frame_trace(
 }
 
 fn is_successful_eval_record(row: &Value) -> bool {
-    row.get("status").and_then(Value::as_str) == Some("completed")
+    row.get("status").and_then(Value::as_str) == Some("completed") && has_evaluator_measurement(row)
+}
+
+fn has_evaluator_measurement(row: &Value) -> bool {
+    row.get("reward").is_some_and(|value| !value.is_null())
+        || row
+            .get("metrics")
+            .and_then(Value::as_object)
+            .is_some_and(|metrics| metrics.values().any(|value| !value.is_null()))
 }
 
 fn over_cost_ceiling(records: &[Value], cost_ceiling_usd: f64) -> bool {
@@ -3241,7 +3259,7 @@ async fn run_one_example(
             reported_status.as_str()
         );
     }
-    let terminal_error = if matches!(
+    let mut terminal_error = if matches!(
         reported_status,
         RolloutReportedStatus::Failed | RolloutReportedStatus::Truncated
     ) {
@@ -3267,6 +3285,31 @@ async fn run_one_example(
         spec.evaluation_plan_ref.as_str(),
     )
     .await?;
+    let reward_value = reward.get("reward").cloned().unwrap_or(Value::Null);
+    let metrics = reward
+        .get("metrics")
+        .or_else(|| reward.get("reward_details"))
+        .cloned()
+        .unwrap_or(Value::Null);
+    let reward_status = reward
+        .get("status")
+        .cloned()
+        .unwrap_or_else(|| json!("absent"));
+    let measurement = json!({
+        "reward": reward_value,
+        "metrics": metrics,
+    });
+    let record_status = if reported_status == RolloutReportedStatus::Completed
+        && !has_evaluator_measurement(&measurement)
+    {
+        terminal_error = Some(format!(
+            "evaluator_measurement_missing: container reported the rollout completed, but the evaluator returned no reward or non-null metric (reward status `{}`)",
+            reward_status.as_str().unwrap_or("unknown")
+        ));
+        "failed"
+    } else {
+        reported_status.as_str()
+    };
     let usage = state.get("usage").cloned().unwrap_or(Value::Null);
     let retained = fetch_retained_rollout_state(ctx.client, &poll_url).await?;
     // Import the sealed bundle now, while the container is still running. A
@@ -3279,11 +3322,13 @@ async fn run_one_example(
         "pool": example.pool,
         "seed": example.seed,
         "taskInstanceId": format!("seed:{}", example.seed),
-        "status": reported_status.as_str(),
+        "status": record_status,
+        "reportedStatus": reported_status.as_str(),
         "error": terminal_error,
         "terminated": true,
-        "reward": reward.get("reward").cloned().unwrap_or(Value::Null),
-        "rewardStatus": reward.get("status").cloned().unwrap_or(json!("absent")),
+        "reward": measurement["reward"],
+        "rewardStatus": reward_status,
+        "metrics": measurement["metrics"],
         "usage": usage,
         "steps": state
             .get("steps")
@@ -3793,6 +3838,28 @@ mod tests {
         assert_eq!(row["steps"], Value::Null);
     }
 
+    #[test]
+    fn completed_lifecycle_requires_an_evaluator_measurement() {
+        assert!(!is_successful_eval_record(&json!({
+            "status": "completed",
+            "reward": null,
+            "rewardStatus": "absent",
+        })));
+        assert!(is_successful_eval_record(&json!({
+            "status": "completed",
+            "reward": 0.0,
+        })));
+        assert!(is_successful_eval_record(&json!({
+            "status": "completed",
+            "reward": null,
+            "metrics": { "accuracy": 0.0 },
+        })));
+        assert!(!is_successful_eval_record(&json!({
+            "status": "failed",
+            "reward": 1.0,
+        })));
+    }
+
     #[derive(Clone)]
     struct MockEvalOptions {
         family: &'static str,
@@ -4010,12 +4077,19 @@ mod tests {
                             } else {
                                 "train".into()
                             };
-                            let reward = opts.rewards.get(&(pool, seed)).copied().unwrap_or(1.0);
-                            JsonHttpResponse::ok(json!({
-                                "status": "scored",
-                                "reward": reward,
-                                "rollout_id": rollout_id
-                            }))
+                            match opts.rewards.get(&(pool, seed)).copied() {
+                                Some(reward) => JsonHttpResponse::ok(json!({
+                                    "status": "scored",
+                                    "reward": reward,
+                                    "rollout_id": rollout_id
+                                })),
+                                None => JsonHttpResponse::ok(json!({
+                                    "status": "absent",
+                                    "reward": null,
+                                    "reason": "fixture evaluator produced no measurement",
+                                    "rollout_id": rollout_id
+                                })),
+                            }
                         }
                         ("GET", path) if path.starts_with("/rollouts/") => {
                             JsonHttpResponse::ok(json!({
@@ -4272,6 +4346,100 @@ max_total_rollouts = 4
         assert_eq!(manifest["work"]["failed"], json!(0));
         assert_eq!(manifest["work"]["cancelled"], json!(0));
         assert_eq!(manifest["terminalCursor"], json!(finished.cursor_seq));
+        task.abort();
+    }
+
+    /// A completed manifest is immutable. The worker must finish after sealing
+    /// instead of attempting one more summary patch, treating that refusal as
+    /// a worker failure, and repainting the already-saved primary visual red.
+    #[tokio::test]
+    async fn a_successful_eval_worker_does_not_project_progress_after_the_terminal_seal() {
+        let (svc, _dir, _) = service().await;
+        let (run, task) = start_banking77(&svc, "sess_no_post_seal_projection").await;
+        let manifest = wait_manifest(&svc, &run.id).await;
+        assert_eq!(manifest["terminal"]["kind"], json!("completed"));
+
+        for _ in 0..200 {
+            if !svc.registered_local_recipes().await.contains(&run.id) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        assert!(
+            !svc.registered_local_recipes().await.contains(&run.id),
+            "the successful worker must return and release its local owner"
+        );
+
+        let finished = svc.get(run.id.clone()).await.unwrap();
+        assert_eq!(finished.status, "completed");
+        assert_eq!(finished.summary["evalStatus"], json!("completed"));
+        let visual_id = finished.summary["visualId"].as_str().unwrap();
+        let visual = svc.visuals().get(visual_id.to_string()).await.unwrap();
+        assert_eq!(visual.status, VisualStatus::Saved);
+        assert_eq!(
+            visual.bindings.pointer("/inputs/0/data/status"),
+            Some(&json!("completed")),
+            "a post-seal patch refusal must not enter the worker-failure visual path"
+        );
+        task.abort();
+    }
+
+    /// Container lifecycle completion is not evaluator success. If the reward
+    /// endpoint says `absent`, every affected trial and the run settle failed
+    /// with a measurement-specific reason instead of first counting as
+    /// succeeded and then degrading at the evidence gate.
+    #[tokio::test]
+    async fn container_completed_rollouts_without_measurements_settle_as_normal_failures() {
+        let (svc, _dir, _) = service().await;
+        let session = "sess_missing_evaluator_measurement";
+        let (base, task, starts) = spawn_eval_mock("banking77", BTreeMap::new()).await;
+        insert_container(&svc, "banking77", &base, "ready").await;
+        declare_eval_recipes(&svc, session).await;
+        let (run, _) = svc
+            .start_recipe(OptimizerRecipeRunRequest {
+                recipe_id: CLASSIFY_EVAL.into(),
+                session_ref: Some(session.into()),
+                open_visual: Some(false),
+                base_model: None,
+                dataset_shard: None,
+                candidate_set_id: None,
+                container_id: None,
+                training_artifact_id: None,
+                plan_override: None,
+                search: None,
+            })
+            .await
+            .unwrap();
+
+        let finished = wait_terminal(&svc, &run.id).await;
+        let manifest = wait_manifest(&svc, &run.id).await;
+        assert_eq!(starts.load(Ordering::SeqCst), 10);
+        assert_eq!(finished.status, "failed");
+        assert_eq!(finished.summary["progress"]["completed"], json!(0));
+        assert_eq!(finished.summary["progress"]["failed"], json!(10));
+        assert_eq!(manifest["terminal"]["kind"], json!("failed"));
+        assert_eq!(manifest["work"]["succeeded"], json!(0));
+        assert_eq!(manifest["work"]["failed"], json!(10));
+        let error = finished.error.unwrap_or(Value::Null).to_string();
+        assert!(error.contains("evaluator_measurement_missing"), "{error}");
+        assert!(error.contains("no evaluator measurement"), "{error}");
+
+        let events = svc.events_after(run.id, 0, Some(500)).await.unwrap();
+        let terminals = events
+            .iter()
+            .filter(|event| event.event_type == "eval.trial.terminal")
+            .collect::<Vec<_>>();
+        assert_eq!(terminals.len(), 10);
+        assert!(terminals.iter().all(|event| {
+            event.item.as_ref().is_some_and(|item| {
+                item["valid"] == json!(false)
+                    && item["status"] == json!("failed")
+                    && item["raw"]["reportedStatus"] == json!("completed")
+                    && item["raw"]["error"]
+                        .as_str()
+                        .is_some_and(|error| error.starts_with("evaluator_measurement_missing:"))
+            })
+        }));
         task.abort();
     }
 
