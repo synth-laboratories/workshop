@@ -589,6 +589,13 @@ fn policy_from_eval_recipe(
         "responses.create".into(),
     ];
     policy.models = models;
+    if let Some(effort) = recipe
+        .pointer("/policy/reasoning_effort")
+        .or_else(|| recipe.pointer("/policy/effort"))
+        .and_then(Value::as_str)
+    {
+        policy.reasoning_efforts = vec![effort.to_string()];
+    }
     policy.max_cost_usd = max_usd.max(0.01);
     policy.max_calls = max_trials.saturating_mul(16).clamp(40, u32::MAX as u64) as u32;
     Ok(policy)

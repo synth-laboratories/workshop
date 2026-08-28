@@ -1639,6 +1639,14 @@ fn container_proxy_policy(spec: &EvalSpec) -> crate::secrets::SecretsUsePolicy {
             policy.models.push(model.to_string());
         }
     }
+    if let Some(effort) = spec
+        .policy
+        .get("reasoning_effort")
+        .or_else(|| spec.policy.get("effort"))
+        .and_then(Value::as_str)
+    {
+        policy.reasoning_efforts = vec![effort.to_string()];
+    }
     policy.max_cost_usd = spec.cost_ceiling_usd;
     let trials = spec.examples().len() as u64;
     let calls_per_trial = spec
