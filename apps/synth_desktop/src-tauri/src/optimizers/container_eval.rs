@@ -1366,6 +1366,7 @@ fn mean_for_pool(records: &[Value], pool: &str) -> Option<f64> {
     let values = records
         .iter()
         .filter(|row| row.get("pool").and_then(Value::as_str) == Some(pool))
+        .filter(|row| is_successful_eval_record(row))
         .filter_map(|row| row.get("reward").and_then(Value::as_f64))
         .collect::<Vec<_>>();
     if values.is_empty() {
@@ -1599,12 +1600,22 @@ async fn run_eval_worker(
         .iter()
         .filter(|row| !is_successful_eval_record(row))
         .count();
+    let evaluator_failures = records
+        .iter()
+        .filter(|row| {
+            row.pointer("/evaluatorOutcome/status")
+                .and_then(Value::as_str)
+                == Some("failed")
+        })
+        .count();
     let missing_measurements = records
         .iter()
         .filter(|row| {
-            row.get("error")
-                .and_then(Value::as_str)
-                .is_some_and(|error| error.starts_with("evaluator_measurement_missing:"))
+            matches!(
+                row.pointer("/evaluatorOutcome/reason")
+                    .and_then(Value::as_str),
+                Some("evaluator_measurement_missing" | "evaluator_numeric_reward_missing")
+            )
         })
         .count();
     let budget_exceeded = over_cost_ceiling(&records, spec.cost_ceiling_usd);
@@ -1649,7 +1660,13 @@ async fn run_eval_worker(
         }
         if missing_measurements != 0 {
             parts.push(format!(
-                "evaluator_measurement_missing: {missing_measurements} container-completed rollouts supplied no evaluator measurement (reward or non-null metric)"
+                "evaluator_measurement_missing: {missing_measurements} container-completed rollouts supplied no evaluator measurement required by the recipe"
+            ));
+        }
+        if evaluator_failures > missing_measurements {
+            parts.push(format!(
+                "evaluator_failure: {} rollouts could not obtain a valid evaluator result",
+                evaluator_failures - missing_measurements
             ));
         }
         if budget_exceeded {
@@ -2504,6 +2521,19 @@ fn failed_record(
         "taskInstanceId": format!("seed:{}", example.seed),
         "status": "failed",
         "error": error,
+        "evaluatorOutcome": {
+            "status": "failed",
+            "reason": "evaluator_not_reached",
+            "detail": error,
+            "source": "container_evaluator",
+        },
+        "evidenceState": "missing",
+        "evidenceOutcome": {
+            "status": "failed",
+            "reason": "trace_not_reached",
+            "detail": error,
+            "source": "trusted_trace_v5",
+        },
         "policyRef": policy_pin,
         "worldRef": spec.world_ref,
     })
@@ -2548,6 +2578,17 @@ fn cancelled_record(
         "cancellationReceipt": request.as_ref(),
         "detail": detail,
         "evidenceState": "missing",
+        "evaluatorOutcome": {
+            "status": "failed",
+            "reason": "evaluation_cancelled",
+            "detail": detail,
+            "source": "container_evaluator",
+        },
+        "evidenceOutcome": {
+            "status": "aborted",
+            "reason": "evaluation_cancelled",
+            "source": "trusted_trace_v5",
+        },
         "policyRef": policy_pin,
         "worldRef": spec.world_ref,
     })
@@ -2826,8 +2867,95 @@ fn verify_complete_native_frame_trace(
     Ok(())
 }
 
+fn verify_required_sealed_trace(
+    terminal_record: &Value,
+    imported: &Value,
+    rollout_id: &str,
+) -> Result<()> {
+    anyhow::ensure!(
+        imported.get("imported").and_then(Value::as_bool) == Some(true),
+        "required_trace_import_failed: rollout `{rollout_id}` did not import a trusted Trace V5 bundle"
+    );
+    anyhow::ensure!(
+        imported.get("sourceKind").and_then(Value::as_str) == Some("container_bundle")
+            && imported.get("trusted").and_then(Value::as_bool) == Some(true)
+            && imported.get("inspectable").and_then(Value::as_bool) == Some(true),
+        "required_trace_not_trusted: rollout `{rollout_id}` did not import an inspectable trusted container bundle"
+    );
+    imported
+        .get("bundleDigest")
+        .and_then(Value::as_str)
+        .filter(|digest| valid_sha256_digest(digest))
+        .with_context(|| {
+            format!("required_trace_bundle_digest_missing: rollout `{rollout_id}` omitted its immutable bundle digest")
+        })?;
+    let trace = imported
+        .get("traces")
+        .and_then(Value::as_array)
+        .and_then(|traces| traces.first())
+        .with_context(|| {
+            format!("required_trace_identity_missing: rollout `{rollout_id}` indexed no trace")
+        })?;
+    trace
+        .get("traceId")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|trace_id| !trace_id.is_empty())
+        .with_context(|| {
+            format!("required_trace_identity_missing: rollout `{rollout_id}` indexed no trace id")
+        })?;
+    trace
+        .get("digest")
+        .and_then(Value::as_str)
+        .filter(|digest| valid_sha256_digest(digest))
+        .with_context(|| {
+            format!("required_trace_digest_missing: rollout `{rollout_id}` omitted its immutable trace digest")
+        })?;
+    let binding = imported
+        .get("provenanceBinding")
+        .and_then(Value::as_object)
+        .with_context(|| {
+            format!("required_trace_provenance_missing: rollout `{rollout_id}` has no admitted-runtime binding")
+        })?;
+    for digest_key in ["imageDigest", "traceDigest", "bundleDigest"] {
+        binding
+            .get(digest_key)
+            .and_then(Value::as_str)
+            .filter(|digest| valid_sha256_digest(digest))
+            .with_context(|| {
+                format!("required_trace_provenance_missing: rollout `{rollout_id}` has no valid `{digest_key}` binding")
+            })?;
+    }
+    binding
+        .get("producerSourceRevision")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|revision| !revision.is_empty())
+        .with_context(|| {
+            format!("required_trace_provenance_missing: rollout `{rollout_id}` has no producer revision binding")
+        })?;
+    verify_complete_native_frame_trace(
+        terminal_record,
+        imported,
+        rollout_id,
+        FrameTraceMode::SealedComplete,
+    )
+}
+
 fn is_successful_eval_record(row: &Value) -> bool {
-    row.get("status").and_then(Value::as_str) == Some("completed") && has_evaluator_measurement(row)
+    row.get("status").and_then(Value::as_str) == Some("completed")
+        && match row
+            .pointer("/evaluatorOutcome/status")
+            .and_then(Value::as_str)
+        {
+            Some("scored") => row
+                .pointer("/evaluatorOutcome/reward")
+                .and_then(Value::as_f64)
+                .is_some_and(f64::is_finite)
+                || has_evaluator_measurement(row),
+            Some(_) => false,
+            None => has_evaluator_measurement(row),
+        }
 }
 
 fn has_evaluator_measurement(row: &Value) -> bool {
@@ -3172,6 +3300,7 @@ fn u64_field(blob: &Value, keys: &[&str]) -> Option<u64> {
 fn mean_reward(records: &[Value]) -> Option<f64> {
     let values = records
         .iter()
+        .filter(|row| is_successful_eval_record(row))
         .filter_map(|row| row.get("reward").and_then(Value::as_f64))
         .collect::<Vec<_>>();
     if values.is_empty() {
@@ -3207,6 +3336,23 @@ enum RolloutReportedStatus {
     Failed,
     Cancelled,
     Truncated,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum EvaluatorFailureReason {
+    RewardEndpointFailed,
+    MeasurementMissing,
+    NumericRewardMissing,
+}
+
+impl EvaluatorFailureReason {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::RewardEndpointFailed => "evaluator_reward_endpoint_failed",
+            Self::MeasurementMissing => "evaluator_measurement_missing",
+            Self::NumericRewardMissing => "evaluator_numeric_reward_missing",
+        }
+    }
 }
 
 impl RolloutReportedStatus {
@@ -3416,6 +3562,17 @@ async fn run_one_example(
                 "partialSeal": partial_seal.clone(),
                 "sealedTrace": partial_seal,
                 "evidenceState": evidence_state,
+                "evaluatorOutcome": {
+                    "status": "failed",
+                    "reason": "evaluation_cancelled",
+                    "detail": "rollout was cancelled before evaluator settlement",
+                    "source": "container_evaluator",
+                },
+                "evidenceOutcome": {
+                    "status": evidence_state,
+                    "reason": if evidence_state == "sealed_partial" { "evaluation_cancelled" } else { "trace_not_sealed" },
+                    "source": "trusted_trace_v5",
+                },
                 "evidence": {
                     "containerId": ctx.container_id,
                     "eventsUrl": poll_url,
@@ -3454,13 +3611,27 @@ async fn run_one_example(
     } else {
         None
     };
-    let reward = fetch_reward(
+    let (reward, mut evaluator_failure) = match fetch_reward(
         ctx.client,
         ctx.base,
         &rollout_id,
         spec.evaluation_plan_ref.as_str(),
     )
-    .await?;
+    .await
+    {
+        Ok(reward) => (reward, None),
+        Err(error) => (
+            json!({
+                "status": "unavailable",
+                "reward": Value::Null,
+                "metrics": Value::Null,
+            }),
+            Some((
+                EvaluatorFailureReason::RewardEndpointFailed,
+                format!("{error:#}"),
+            )),
+        ),
+    };
     let reward_value = reward.get("reward").cloned().unwrap_or(Value::Null);
     let metrics = reward
         .get("metrics")
@@ -3475,24 +3646,58 @@ async fn run_one_example(
         "reward": reward_value,
         "metrics": metrics,
     });
-    let record_status = if reported_status == RolloutReportedStatus::Completed
-        && !has_evaluator_measurement(&measurement)
-    {
-        terminal_error = Some(format!(
-            "evaluator_measurement_missing: container reported the rollout completed, but the evaluator returned no reward or non-null metric (reward status `{}`)",
-            reward_status.as_str().unwrap_or("unknown")
-        ));
-        "failed"
+    if evaluator_failure.is_none() {
+        evaluator_failure = if spec.harness == "nanohorizon" && reward_value.as_f64().is_none() {
+            Some((
+                EvaluatorFailureReason::NumericRewardMissing,
+                format!(
+                    "container reported the rollout completed, but NanoHorizon returned no numeric reward (reward status `{}`)",
+                    reward_status.as_str().unwrap_or("unknown")
+                ),
+            ))
+        } else if !has_evaluator_measurement(&measurement) {
+            Some((
+                EvaluatorFailureReason::MeasurementMissing,
+                format!(
+                    "container reported the rollout completed, but the evaluator returned no reward or non-null metric (reward status `{}`)",
+                    reward_status.as_str().unwrap_or("unknown")
+                ),
+            ))
+        } else {
+            None
+        };
+    }
+    let evaluator_outcome = if let Some((reason, detail)) = &evaluator_failure {
+        if reported_status == RolloutReportedStatus::Completed {
+            terminal_error = Some(format!("{}: {detail}", reason.as_str()));
+        }
+        json!({
+            "status": "failed",
+            "reason": reason.as_str(),
+            "detail": detail,
+            "source": "container_evaluator",
+        })
     } else {
-        reported_status.as_str()
+        json!({
+            "status": "scored",
+            "reward": reward_value,
+            "metrics": metrics,
+            "source": "container_evaluator",
+        })
     };
+    let record_status =
+        if reported_status == RolloutReportedStatus::Completed && evaluator_failure.is_some() {
+            "failed"
+        } else {
+            reported_status.as_str()
+        };
     let usage = state.get("usage").cloned().unwrap_or(Value::Null);
     let retained = fetch_retained_rollout_state(ctx.client, &poll_url).await?;
     // Import the sealed bundle now, while the container is still running. A
     // replay that only works until the container stops is not a replay, and
     // Workshop already owns the import — the eval worker simply never called it.
     let sealed = import_sealed_trace(ctx, &rollout_id, &trial_id).await;
-    Ok(json!({
+    let mut record = json!({
         "rolloutId": rollout_id,
         "trialId": trial_id,
         "pool": example.pool,
@@ -3504,6 +3709,7 @@ async fn run_one_example(
         "terminated": true,
         "reward": measurement["reward"],
         "rewardStatus": reward_status,
+        "evaluatorOutcome": evaluator_outcome,
         "metrics": measurement["metrics"],
         "usage": usage,
         "steps": state
@@ -3524,7 +3730,45 @@ async fn run_one_example(
             "eventsUrl": poll_url,
             "rewardUrl": format!("{}/rollouts/{rollout_id}/reward", ctx.base),
         }
-    }))
+    });
+    if spec.harness == "nanohorizon" {
+        match verify_required_sealed_trace(&record, &sealed, &rollout_id) {
+            Ok(()) => {
+                record["evidenceState"] = json!("sealed_complete");
+                record["evidenceOutcome"] = json!({
+                    "status": "sealed_complete",
+                    "source": "trusted_trace_v5",
+                });
+            }
+            Err(error) => {
+                let detail = format!("{error:#}");
+                let prior = record
+                    .get("error")
+                    .and_then(Value::as_str)
+                    .filter(|value| !value.is_empty())
+                    .map(str::to_string);
+                record["status"] = json!("failed");
+                record["error"] = json!(match prior {
+                    Some(prior) => format!("{prior}; required_trace_evidence_failed: {detail}"),
+                    None => format!("required_trace_evidence_failed: {detail}"),
+                });
+                record["evidenceState"] = json!("missing");
+                record["evidenceOutcome"] = json!({
+                    "status": "failed",
+                    "reason": "required_trace_evidence_failed",
+                    "detail": detail,
+                    "source": "trusted_trace_v5",
+                });
+            }
+        }
+    } else {
+        let imported = sealed.get("imported").and_then(Value::as_bool) == Some(true);
+        record["evidenceOutcome"] = json!({
+            "status": if imported { "sealed" } else { "unavailable" },
+            "source": "optional_trace_import",
+        });
+    }
+    Ok(record)
 }
 
 /// The blocking rollout request, unchanged in behaviour and error semantics.
@@ -5058,6 +5302,9 @@ max_total_rollouts = 4
                 item["valid"] == json!(false)
                     && item["status"] == json!("failed")
                     && item["raw"]["reportedStatus"] == json!("completed")
+                    && item["raw"]["evaluatorOutcome"]["status"] == json!("failed")
+                    && item["raw"]["evaluatorOutcome"]["reason"]
+                        == json!("evaluator_measurement_missing")
                     && item["raw"]["error"]
                         .as_str()
                         .is_some_and(|error| error.starts_with("evaluator_measurement_missing:"))
@@ -7399,5 +7646,58 @@ max_total_rollouts = 1
             },
         )
         .unwrap();
+    }
+
+    #[test]
+    fn required_trace_gate_rejects_best_effort_import_failures() {
+        let terminal = json!({"steps": 2});
+        let unavailable = json!({
+            "imported": false,
+            "error": "container was stopped before import",
+        });
+        let error = verify_required_sealed_trace(&terminal, &unavailable, "roll_missing")
+            .unwrap_err();
+        assert!(format!("{error:#}").contains("required_trace_import_failed"));
+
+        let complete = json!({
+            "imported": true,
+            "sourceKind": "container_bundle",
+            "trusted": true,
+            "inspectable": true,
+            "bundleDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "traces": [{
+                "traceId": "trace_complete",
+                "digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            }],
+            "provenanceBinding": {
+                "imageDigest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+                "producerSourceRevision": "containers@abc123",
+                "traceDigest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                "bundleDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            },
+            "importedFrameSteps": [0, 1, 2],
+        });
+        verify_required_sealed_trace(&terminal, &complete, "roll_complete").unwrap();
+    }
+
+    #[test]
+    fn aggregates_exclude_scores_without_a_valid_terminal_outcome() {
+        let records = vec![
+            json!({
+                "pool": "train",
+                "status": "completed",
+                "reward": 1.0,
+                "evaluatorOutcome": {"status": "scored", "reward": 1.0},
+            }),
+            json!({
+                "pool": "train",
+                "status": "failed",
+                "reward": 99.0,
+                "evaluatorOutcome": {"status": "scored", "reward": 99.0},
+                "evidenceOutcome": {"status": "failed"},
+            }),
+        ];
+        assert_eq!(mean_for_pool(&records, "train"), Some(1.0));
+        assert_eq!(mean_reward(&records), Some(1.0));
     }
 }

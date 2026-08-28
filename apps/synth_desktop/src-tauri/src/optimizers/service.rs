@@ -750,6 +750,7 @@ impl OptimizerService {
             json!(frames.iter().map(|frame| frame.step).collect::<Vec<_>>());
         let run = self.get(run_id.to_string()).await?;
         super::container_eval::bind_imported_trace_provenance(&mut result, &run.summary)?;
+        result["imported"] = json!(true);
         if let Some(event) = event.filter(|_| self.events_tx.receiver_count() > 0) {
             self.events_tx
                 .send(event)

@@ -245,15 +245,17 @@ impl EvalProjection {
                 } else {
                     TerminalKind::Failed
                 })?;
-                if let Some(reward) = reward {
-                    self.mean_reward = Some(match (self.mean_reward, self.scored_trials) {
-                        (Some(mean), n) => (mean * n as f64 + reward) / (n as f64 + 1.0),
-                        (None, _) => reward,
-                    });
-                    self.scored_trials += 1;
-                }
-                if evaluator_measurement(&event.producer.payload) {
-                    self.evaluator_evidence += 1;
+                if valid {
+                    if let Some(reward) = reward {
+                        self.mean_reward = Some(match (self.mean_reward, self.scored_trials) {
+                            (Some(mean), n) => (mean * n as f64 + reward) / (n as f64 + 1.0),
+                            (None, _) => reward,
+                        });
+                        self.scored_trials += 1;
+                    }
+                    if evaluator_measurement(&event.producer.payload) {
+                        self.evaluator_evidence += 1;
+                    }
                 }
                 let terminal_refs = evidence_refs(&event.producer.payload);
                 for reference in &terminal_refs {
@@ -793,6 +795,32 @@ mod tests {
             ))
             .unwrap_err();
         assert_eq!(error.code, KernelErrorCode::EventSchemaMismatch);
+    }
+
+    #[test]
+    fn failed_trial_measurements_do_not_enter_the_authoritative_aggregate() {
+        let mut projection = EvalProjection::default();
+        projection
+            .plan_trials(vec!["a".into()], vec![1], vec!["s".into()])
+            .unwrap();
+        let id = projection.work_items[0].work_item_id.clone();
+        projection
+            .apply(&committed(
+                "eval.trial.terminal",
+                json!({
+                    "workItemId": id,
+                    "valid": false,
+                    "reward": 99.0,
+                    "metrics": {"reward": 99.0},
+                    "artifactRefs": [{"kind": "evaluator_result", "id": "eval:failed"}],
+                }),
+                2,
+            ))
+            .unwrap();
+        assert_eq!(projection.mean_reward, None);
+        assert_eq!(projection.scored_trials, 0);
+        assert_eq!(projection.evaluator_evidence, 0);
+        assert_eq!(projection.work_summary().failed, Some(1));
     }
 
     #[test]
