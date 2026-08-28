@@ -2067,6 +2067,8 @@ fn materializes_diagram_skill_with_direct_tool_first_contract() {
 
     let visual_skill = fs::read_to_string(home.join("skills/use-synth-visuals/SKILL.md")).unwrap();
     assert!(visual_skill.contains("tools.mcp__synth_visuals__visual_manage"));
+    assert!(visual_skill.contains("operation `chart`"));
+    assert!(visual_skill.contains("`analysis.chart.v1`"));
     assert!(visual_skill.contains("diagram.systems.v1"));
     assert!(visual_skill.contains("diagram.systems.dynamic.v1"));
     assert!(visual_skill.contains("There is\n**no** top-level `method` field"));

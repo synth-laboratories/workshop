@@ -472,7 +472,7 @@ fn managed_tool_name(operation: &str) -> Result<&'static str, String> {
 fn tools() -> Value {
     let mut result = json!({
         "tools": [
-            {"name":"visual_manage","description":"Synth visuals and durable experiment records. Use author-synth-diagrams for visuals; do not call MCP resources. Create/show, review PNGs wide and compact, revise defects, then mark_ready. Create an experiment with operation experiment_create; attach durable evidence with experiment_attach_evidence; finalize with experiment_finalize. Mermaid source goes in arguments.content. Data charts: use visual_chart.","inputSchema":{"type":"object","properties":{"operation":{"type":"string","description":"Visual or experiment lifecycle operation."},"arguments":{"type":"object","description":"Operation arguments. capture_review returns a PNG and screenshot_path; review and mark_ready use the current revision.","additionalProperties":true}},"required":["operation","arguments"],"additionalProperties":false}},
+            {"name":"visual_manage","description":"Synth visuals. Use author-synth-diagrams; do not call MCP resources. Chart: operation chart, arguments.spec. Mermaid: arguments.content. Then show/review/revise/mark_ready. Experiments: experiment_create/experiment_attach_evidence/experiment_finalize.","inputSchema":{"type":"object","properties":{"operation":{"type":"string","description":"Visual operation."},"arguments":{"type":"object","description":"Operation arguments.","additionalProperties":true}},"required":["operation","arguments"],"additionalProperties":false}},
             {"name":"visual_list_templates","description":"List Synth visual templates","inputSchema":{"type":"object","properties":{"genre":{"type":"string"}},"additionalProperties":false}},
             {"name":"visual_import_template","description":"Import one networkless template.json + renderer.html package into this Desktop instance's managed visual registry","inputSchema":{"type":"object","properties":{"source_path":{"type":"string","description":"Absolute package directory containing template.json and renderer.html"}},"required":["source_path"],"additionalProperties":false}},
             {"name":"visual_list","description":"List visuals in the local registry","inputSchema":{"type":"object","properties":{"search":{"type":"string"},"status":{"type":"string"},"session_id":{"type":"string"}},"additionalProperties":false}},
@@ -1006,7 +1006,7 @@ fn call_tool(name: &str, args: &Value) -> Result<Value, String> {
                     "visual_id": id,
                     "error": reason,
                     "retryable": true,
-                    "remediation": "Fix the named field in the spec and call visual_chart again with this visual_id."
+                    "remediation": "Fix the named field, then call visual_manage with operation chart and this visual_id."
                 })
                 .to_string());
             }
@@ -1032,7 +1032,7 @@ fn call_tool(name: &str, args: &Value) -> Result<Value, String> {
                     object.insert("data_provenance".into(), provenance);
                     object.insert(
                         "instruction".into(),
-                        json!("Inspect the attached PNG before continuing. Revise the spec and call visual_chart again with this visual_id until the chart reads correctly; findings list defects the renderer already detected."),
+                        json!("Inspect the attached PNG. Revise through visual_manage operation chart with this visual_id until the chart reads correctly; findings list detected defects."),
                     );
                 }
                 return Ok(capture);
