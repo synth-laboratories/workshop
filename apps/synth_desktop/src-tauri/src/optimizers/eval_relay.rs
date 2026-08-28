@@ -365,6 +365,7 @@ where
     let mut settled_at: Option<Instant> = None;
     let mut idle_drains: u32 = 0;
     let mut declares_cursor = false;
+    let mut last_provider_usage: Option<Value> = None;
     let poll_interval = ctx.settings.event_stream.poll_interval;
 
     loop {
@@ -478,6 +479,40 @@ where
                 }
                 let result = (&mut rollout).await;
                 return (result, outcome);
+            }
+        }
+
+        // Provider accounting advances independently of the container event
+        // journal. Project a changed trusted capability ledger even while a
+        // long-running agent is otherwise quiet.
+        if let Some(provider_usage) = crate::secrets::live()
+            .and_then(|secrets| secrets.provider_usage_for_run(ctx.run_id))
+            .filter(|usage| last_provider_usage.as_ref() != Some(usage))
+        {
+            let usage_for_patch = provider_usage.clone();
+            if let Err(error) = ctx
+                .service
+                .patch_run(ctx.run_id.to_string(), move |run| {
+                    let mut summary = run.summary.as_object().cloned().unwrap_or_default();
+                    summary.insert("providerUsage".into(), usage_for_patch.clone());
+                    let mut lanes = summary
+                        .get("usageLanes")
+                        .and_then(Value::as_object)
+                        .cloned()
+                        .unwrap_or_default();
+                    lanes.insert("provider".into(), usage_for_patch.clone());
+                    summary.insert("usageLanes".into(), Value::Object(lanes));
+                    run.summary = Value::Object(summary);
+                    run.usage
+                        .extra
+                        .insert("providerUsage".into(), usage_for_patch);
+                    Ok(())
+                })
+                .await
+            {
+                outcome.note("provider_usage_projection_failed", format!("{error:#}"), 0);
+            } else {
+                last_provider_usage = Some(provider_usage);
             }
         }
 

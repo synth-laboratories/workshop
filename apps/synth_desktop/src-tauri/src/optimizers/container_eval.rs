@@ -3993,6 +3993,10 @@ async fn run_one_example(
         .json(&json!({
             "rollout_id": rollout_id,
             "task_instance_id": task_instance_id,
+            "seed": example.seed,
+            "policy_ref": { "harness": spec.harness, "config": spec.policy_config },
+            "max_steps": spec.maximum_steps_per_rollout,
+            "require_trace_v5": true,
             "telemetry": telemetry
         }))
         .send()
@@ -7289,7 +7293,7 @@ max_total_rollouts = 4
 
         assert_eq!(policy.operations, vec!["chat.completions.create"]);
         assert_eq!(policy.models, vec!["gpt-4.1-nano", "openai/gpt-4.1-nano"]);
-        assert_eq!(policy.reasoning_efforts, vec!["medium"]);
+        assert!(policy.reasoning_efforts.is_empty());
     }
 
     #[test]
