@@ -446,8 +446,23 @@ pub struct FoldLimits {
     pub max_identities: usize,
     pub max_sequences_per_scope: usize,
     pub max_defects: usize,
-    /// Whether accepted evidence bodies are retained for projection. The
-    /// receipt keeps none; a projecting caller keeps all of them.
+    /// Whether accepted evidence bodies are retained for projection.
+    ///
+    /// Off for every live caller, deliberately, and the decision is not
+    /// "projections are not worth the memory" — it is that this retention has
+    /// no byte bound and no ceiling on `events`, so a hundred-thousand-envelope
+    /// run would hold every body in a process-global for as long as the process
+    /// lives. The live seam needs a projection and does not need this: the host
+    /// already retains a *bounded* evidence prefix per stream so a live-eval
+    /// visual can be sealed at all, and a projection folded from that prefix
+    /// costs a read of memory that is spent either way. See
+    /// `visuals/stream_receipt.rs`, which owns that bound and reports when it
+    /// is reached.
+    ///
+    /// So this stays what it is: the affordance for a caller folding a
+    /// *finite* log it already holds — a fixture, a closed rollout, a test.
+    /// Turning it on for a live stream would be a second, unbounded copy of
+    /// evidence the host is already keeping under a bound.
     pub retain_events: bool,
 }
 

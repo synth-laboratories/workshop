@@ -36,10 +36,55 @@ export type ReplayCursor = {
   closed: boolean;
 };
 
+/**
+ * The host's fold of everything it has observed for this visual, in the shape
+ * a seal freezes (`synth.live-eval-projection.v1`).
+ *
+ * Derived values only: `event_count` stands in for the envelopes, which travel
+ * beside it as `ReplayPage.events` rather than being sent twice. A host
+ * without Rust supplies none of this and the template folds locally, which is
+ * what browser preview and fixture replay do.
+ */
+export type HostLiveEvalProjection = {
+  schema_version: string;
+  kinds: string[];
+  has_live_frames: boolean;
+  has_reward_txt: boolean;
+  reward: number | null;
+  usage: {
+    prompt_tokens: number | null;
+    completion_tokens: number | null;
+    total_tokens: number | null;
+    cost_usd: number | null;
+  } | null;
+  event_count: number;
+};
+
 export type ReplayPage = {
   events: LiveEnvelope[];
   cursor: ReplayCursor;
+  /**
+   * What the host folded, when the host is Workshop. Absent in browser
+   * preview and fixture replay, where the template folds for itself — so a
+   * reader treats this as the authoritative answer when it is there and as
+   * nothing at all when it is not.
+   */
+  projection?: HostLiveEvalProjection;
+  /** The host's own account of the transport, when the host keeps one. */
+  receipt?: unknown;
+  /**
+   * The host's retained evidence stopped short of the run, so `projection` is
+   * a lower bound rather than the whole eval.
+   */
+  evidenceTruncated?: boolean;
 };
+
+/**
+ * Envelope version of a Workshop poll answer. A body carrying this string
+ * brings the host's fold with it; anything else is a producer page and is
+ * folded by the reader.
+ */
+export const HOST_POLL_SCHEMA = "synth.visual-stream-poll.v1";
 
 export type ReplayClient = {
   /** Declared streams, in binding order. Never inferred from a prop bag. */
@@ -78,13 +123,23 @@ export const REPLAY_PAGE_LIMIT_MAX = 1_000;
 type RawPage =
   | LiveEnvelope[]
   | {
+      schemaVersion?: string;
       events?: LiveEnvelope[];
       page?: { events?: LiveEnvelope[] };
       cursor?: { next?: number; high_water?: number; has_more?: boolean; closed?: boolean };
+      projection?: HostLiveEvalProjection | null;
+      receipt?: unknown;
+      evidenceTruncated?: boolean;
     };
 
 /**
- * Normalize the three page shapes producers emit today.
+ * Normalize the page shapes this client can be handed.
+ *
+ * Four, and only one of them is new: Workshop's own answer, which wraps the
+ * producer's envelopes and cursor beside the fold the host already performed.
+ * It is read by the same two fields as a producer page on purpose — the host
+ * passes the producer's cursor through rather than recomputing it — so the
+ * only thing the wrapper adds here is the projection and the receipt.
  *
  * COMPAT: a bare array has no cursor, so it is treated as one closed page —
  * that is the only reading which cannot silently drop rows. Remove the array
@@ -114,7 +169,17 @@ export function parseReplayPage(body: unknown, after: number): ReplayPage {
       highWater,
       hasMore: page.cursor?.has_more ?? (highWater != null && next < highWater),
       closed: page.cursor?.closed ?? false
-    }
+    },
+    // Carried only when the host actually folded. `projection: null` is the
+    // host saying it observed nothing for this visual, which is not the same
+    // claim as a host that folds nothing at all, and neither is an empty fold.
+    ...(page.schemaVersion === HOST_POLL_SCHEMA
+      ? {
+          ...(page.projection ? { projection: page.projection } : {}),
+          ...(page.receipt !== undefined ? { receipt: page.receipt } : {}),
+          evidenceTruncated: page.evidenceTruncated === true
+        }
+      : {})
   };
 }
 

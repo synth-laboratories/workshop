@@ -417,7 +417,7 @@ use std::{
     io::Read,
     net::SocketAddr,
     path::PathBuf,
-    sync::{Arc, Mutex, OnceLock},
+    sync::{Arc, OnceLock},
 };
 use tauri::{AppHandle, LogicalSize, Manager, Size};
 use uuid::Uuid;
@@ -450,9 +450,6 @@ pub struct RenderedVisualObservation {
     pub observed_at: String,
 }
 
-static RENDERED_OBSERVATIONS: OnceLock<Mutex<BTreeMap<String, RenderedVisualObservation>>> =
-    OnceLock::new();
-
 /// The data root this server was spawned with. Review capture writes PNGs to
 /// caller-named paths, and this is the boundary those paths must stay inside.
 static VISUALS_DATA_ROOT: OnceLock<PathBuf> = OnceLock::new();
@@ -469,21 +466,18 @@ pub fn record_rendered_observation(observation: RenderedVisualObservation) -> Re
     {
         anyhow::bail!("rendered visual observation requires bindings and transport authority");
     }
-    RENDERED_OBSERVATIONS
-        .get_or_init(|| Mutex::new(BTreeMap::new()))
-        .lock()
-        .map_err(|_| anyhow::anyhow!("rendered observation store is unavailable"))?
-        .insert(observation.visual_id.clone(), observation);
+    // One store holds everything this host observed about a visual: what the
+    // pane reported, what the poll seam saw, and the envelope bodies the seal
+    // replays. Three responsibilities, one home — see
+    // `visuals::stream_receipt`. This is the one of the three the host cannot
+    // observe for itself, which is why it is still reported here and kept
+    // distinguishable there.
+    crate::visuals::stream_receipt::record_rendered(observation);
     Ok(())
 }
 
 fn rendered_observation(visual_id: &str) -> Result<RenderedVisualObservation> {
-    RENDERED_OBSERVATIONS
-        .get_or_init(|| Mutex::new(BTreeMap::new()))
-        .lock()
-        .map_err(|_| anyhow::anyhow!("rendered observation store is unavailable"))?
-        .get(visual_id)
-        .cloned()
+    crate::visuals::stream_receipt::rendered(visual_id)
         .with_context(|| format!("no rendered observation is available for visual {visual_id}"))
 }
 
