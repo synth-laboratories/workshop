@@ -275,7 +275,8 @@ test.describe("design debt (expected fail until fixed)", () => {
 				status: "draft",
 				rendererKind: "template",
 				bindings: {
-					spec: {
+					schemaVersion: "synth.visual-bindings.v1",
+					inputs: [{ input: "spec", kind: "inline", data: {
 						title: "Laguna Prompt Trim Preinstall",
 						blocks: [
 							{ type: "metrics", items: [
@@ -284,7 +285,7 @@ test.describe("design debt (expected fail until fixed)", () => {
 							] },
 							{ type: "note", text: "Compact visual operations load only when needed." }
 						]
-					}
+					} }]
 				},
 				sessionId: null,
 				messageId: null,
@@ -329,13 +330,14 @@ test.describe("design debt (expected fail until fixed)", () => {
 				status: "draft",
 				rendererKind: "template",
 				bindings: {
-					spec: {
+					schemaVersion: "synth.visual-bindings.v1",
+					inputs: [{ input: "spec", kind: "inline", data: {
 						title: "Malformed ranked bars",
 						blocks: [
 							{ type: "ranked-bars", title: "Broken" },
 							{ type: "note", text: "Still visible after skipping the bad block." }
 						]
-					}
+					} }]
 				},
 				sessionId: null,
 				messageId: null,

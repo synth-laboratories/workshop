@@ -90,7 +90,7 @@ function foldTrials(events: LiveEvalEvent[]): TrialView[] {
 }
 
 export function Shell(props: ShellProps) {
-  const stream = asStream(props.data ?? props.stream ?? props.jobs);
+  const stream = asStream(props.stream ?? props.jobs ?? props.data);
   const declaredStreamCount = props.replay?.streams.length ?? 0;
   const fixtureEvents = useMemo(
     () => (declaredStreamCount > 0 ? undefined : stream.events),

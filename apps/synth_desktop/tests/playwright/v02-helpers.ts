@@ -7,7 +7,7 @@ export function liveVisual(overrides: Partial<VisualRecord> & Pick<VisualRecord,
 		currentRevision: 1,
 		status: "saved",
 		rendererKind: "template",
-		bindings: { schemaVersion: "synth.visual-bindings.v1", slots: [] },
+		bindings: { schemaVersion: "synth.visual-bindings.v1", inputs: [] },
 		sessionId: null,
 		messageId: null,
 		runId: null,
@@ -27,8 +27,8 @@ export function liveVisual(overrides: Partial<VisualRecord> & Pick<VisualRecord,
 export function streamBinding(events: unknown[], extra: Record<string, unknown> = {}) {
 	return {
 		schemaVersion: "synth.visual-bindings.v1" as const,
-		slots: [{
-			slot: "stream",
+		inputs: [{
+			input: "stream",
 			kind: "inline" as const,
 			data: { events, ...extra }
 		}]

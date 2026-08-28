@@ -248,7 +248,7 @@ export function OptimizerFamilyShell(props: FamilyShellProps) {
       ) : null}
       {props.chrome !== "workspace" && props.showTimeline !== false ? (
         <GlobalTimeline
-          events={projected.timeline.map((e) => ({
+          events={displayed.timeline.map((e) => ({
             sequence: Number(e.sequence),
             type: String(e.type),
             occurredAt: String(e.occurredAt)

@@ -214,15 +214,36 @@ const GEPA_STAGE_LABELS: Record<string, string> = {
 
 function gepaProjection(base: ProjectedState, view: OptimizerRunViewV2Like): void {
   const projection = view.projection;
+  if (typeof projection.rolloutsScored === "number") {
+    base.usage.rollouts = projection.rolloutsScored;
+  }
   const candidateMap = projection.candidates && typeof projection.candidates === "object"
     ? projection.candidates as Record<string, Record<string, unknown>>
     : {};
   const order = strings(projection.candidateOrder);
-  const candidates = (order.length ? order : Object.keys(candidateMap)).map((id) => ({
-    candidateId: id,
-    id,
-    ...(candidateMap[id] ?? {})
-  }));
+  const candidates = (order.length ? order : Object.keys(candidateMap)).map((id) => {
+    const candidate = candidateMap[id] ?? {};
+    const trainReward = numberOrNull(candidate.trainReward);
+    const heldoutReward = numberOrNull(candidate.heldoutReward);
+    const gateAccepted = typeof candidate.gateAccepted === "boolean" ? candidate.gateAccepted : undefined;
+    return {
+      candidateId: id,
+      id,
+      ...candidate,
+      // The workspace predates the V2 wire shape. Normalize the canonical
+      // camel-case fields at this one boundary instead of teaching every view
+      // to read both the event-reducer and run-view spellings.
+      train_reward: trainReward ?? undefined,
+      heldout_reward: heldoutReward ?? undefined,
+      status: gateAccepted === true
+        ? "accepted"
+        : gateAccepted === false
+          ? "rejected_full_train"
+          : trainReward != null
+            ? "full_train_evaluated"
+            : "registered"
+    };
+  });
   const phase = typeof projection.phase === "string" ? projection.phase : "selection";
   const terminal = view.header.lifecycle === "terminal";
   const stages = Object.entries(GEPA_STAGE_LABELS).map(([id, label]) => ({

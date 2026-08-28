@@ -75,7 +75,7 @@ test("[v0.2] guessed /events bindings fail closed instead of rendering a live vi
 		title: "Guessed stream",
 		bindings: {
 			schemaVersion: "synth.visual-bindings.v1",
-			slots: [{ slot: "stream", kind: "live_sse", source: "http://127.0.0.1:8298/events" }]
+			inputs: [{ input: "stream", kind: "live_sse", source: "http://127.0.0.1:8298/events" }]
 		}
 	})]);
 	const pane = await openVisual(page, "vis_v02_guessed");

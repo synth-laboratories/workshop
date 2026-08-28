@@ -227,7 +227,9 @@ function truthNumber(value: number | undefined, terminal: boolean, format: (valu
 
 export function Shell(props: ShellProps) {
   const bindingList = Array.isArray(props.bindings) ? props.bindings : props.bindings?.slots ?? [];
-  const stream = asStream(props.data ?? props.stream ?? bundledFixtureStream(bindingList));
+  // `stream` is the declared input. `data` remains a compatibility fallback
+  // for direct previews that pass one anonymous fixture payload.
+  const stream = asStream(props.stream ?? props.data ?? bundledFixtureStream(bindingList));
   const declaredStreamCount = props.replay?.streams.length ?? 0;
   const scope = stream.scope;
   // A fixture is authoring evidence. It never stands in for a declared stream,

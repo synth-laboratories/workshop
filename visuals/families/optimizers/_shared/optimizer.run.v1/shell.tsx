@@ -239,7 +239,7 @@ export function Shell(props: ShellProps) {
       />
 
       <GlobalTimeline
-        events={projected.timeline.map((e) => ({
+        events={displayed.timeline.map((e) => ({
           sequence: Number(e.sequence),
           type: String(e.type),
           occurredAt: String(e.occurredAt)

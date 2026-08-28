@@ -4,6 +4,7 @@ test.beforeEach(async ({ page }) => {
 	await page.addInitScript(() => {
 		const now = "2026-08-09T16:00:00.000Z";
 		let runs: any[] = [];
+		const runViews = new Map<string, any>();
 		const makeRun = (id: string, algorithmId = "gepa") => ({
 			schemaVersion: "optimizer_run.v1",
 			id,
@@ -28,11 +29,29 @@ test.beforeEach(async ({ page }) => {
 		(window as any).__optimizerAgentCalls = [];
 		(window as any).__visualAnnotations = [];
 		(window as any).__setOptimizerRuns = (next: any[]) => { runs = next; };
+		(window as any).__setOptimizerRunView = (id: string, view: any) => { runViews.set(id, view); };
 		(window as any).prompt = () => { throw new Error("window.prompt must not be used"); };
 		(window as any).synthOptimizers = {
 			listAlgorithms: async () => [{ id: "gepa", title: "GEPA", availability: "available" }],
 			list: async () => runs,
 			get: async (id: string) => runs.find((run) => run.id === id) ?? makeRun(id),
+			runViewV2: async (id: string) => runViews.get(id) ?? {
+				algorithm: "gepa",
+				header: {
+					runId: id, algorithm: "gepa", lifecycle: "queued", phase: null, condition: "healthy",
+					placement: "local_python_process", specId: `spec-${id}`, specDigest: "sha256:test",
+					executionBindings: [], inputRefs: [], outputRefs: [], visualRefs: [], artifacts: [],
+					usage: {}, work: {}, evidence: { completeness: "absent", refs: [] }, terminal: null,
+					projectionSchemaVersion: "optimizer.gepa.projection.v2", asOfSequence: 0, projectionRevision: 1
+				},
+				projection: {
+					workItems: [], phase: null, usage: {}, candidates: {}, candidateOrder: [], seedCandidateId: null,
+					selectedCandidateId: null, frontierHistory: [], incumbentId: null, rolloutsAllocated: 0,
+					rolloutsScored: 0, rolloutsFailed: 0, proposalsRequested: 0, proposalsReturned: 0,
+					maxActiveWorkers: 0, rolloutBudget: 0
+				},
+				result: null
+			},
 			create: async (request: any) => {
 				const run = makeRun(request.id ?? "banking77-smoke"); runs = [run]; return run;
 			},
@@ -76,7 +95,7 @@ test.beforeEach(async ({ page }) => {
 				return {
 					schemaVersion: "synth.desktop-visual.v1", id: visualId, currentRevision: 3, contentDigest: "sha256:banking77-rich", templateId: "optimizer.run.v1",
 					title: "Banking77 GEPA smoke", status: "saved", createdAt: now, updatedAt: now,
-					bindings: { schemaVersion: "synth.visual-bindings.v1", slots: [{ slot: "optimizer_run", kind: "optimizer_run", source: runId }] },
+					bindings: { schemaVersion: "synth.visual-bindings.v1", inputs: [{ input: "optimizer_run", kind: "optimizer_run", source: runId }] },
 					metadata: {}
 				};
 			},
@@ -144,6 +163,32 @@ test("native GEPA candidates, frontier, usage, and artifacts render in the visua
 			usage: { promptTokens: 100, completionTokens: 5, rollouts: 4 }
 		};
 		(window as any).__setOptimizerRuns([run]);
+		(window as any).__setOptimizerRunView(run.id, {
+			algorithm: "gepa",
+			header: {
+				runId: run.id, algorithm: "gepa", lifecycle: "terminal", phase: "selection", condition: "healthy",
+				placement: "local_python_process", specId: "spec-banking77-rich", specDigest: "sha256:banking77-rich-spec",
+				executionBindings: [], inputRefs: [],
+				outputRefs: [{ kind: "manifest", id: "/tmp/result_manifest.json", title: "Result manifest" }],
+				visualRefs: [], artifacts: [], usage: { promptTokens: 100, completionTokens: 5, steps: 4 },
+				work: { succeeded: 4, unit: "rollouts", fixedDenominator: false },
+				evidence: { completeness: "complete", refs: [] }, failureRef: null,
+				terminal: { kind: "completed", finalSequence: 4, evidence: { completeness: "complete", refs: [] }, sealedAt: "2026-08-09T16:00:04Z" },
+				projectionSchemaVersion: "optimizer.gepa.projection.v2", asOfSequence: 4, projectionRevision: 1
+			},
+			projection: {
+				workItems: [], phase: "selection", usage: { promptTokens: 100, completionTokens: 5, steps: 4 },
+				candidates: { cand_seed: { id: "cand_seed", source: "seed", trainReward: 0.5, gateAccepted: true } },
+				candidateOrder: ["cand_seed"], seedCandidateId: "cand_seed", selectedCandidateId: "cand_seed",
+				frontierHistory: ["cand_seed"], incumbentId: "cand_seed", rolloutsAllocated: 4, rolloutsScored: 4,
+				rolloutsFailed: 0, proposalsRequested: 0, proposalsReturned: 0, maxActiveWorkers: 1, rolloutBudget: 4
+			},
+			result: {
+				verdict: "no_measured_improvement", seedCandidateId: "cand_seed", selectedCandidateId: "cand_seed",
+				candidates: 1, work: { succeeded: 4, unit: "rollouts", fixedDenominator: false },
+				usage: { promptTokens: 100, completionTokens: 5, steps: 4 }
+			}
+		});
 		(window as any).synthOptimizers.eventsAfter = async () => [
 			{ type: "candidate.evaluated", sequenceNumber: 1, occurredAt: "2026-08-09T16:00:01Z", optimizerRunId: run.id, algorithmId: "gepa", item: { id: "cand_seed", status: "evaluated", raw: { values: { stage2_system: "Return exactly one Banking77 intent label." } } }, delta: { train_reward: 0.5, message: "Seed evaluated" } },
 			{ type: "frontier.updated", sequenceNumber: 2, occurredAt: "2026-08-09T16:00:02Z", optimizerRunId: run.id, algorithmId: "gepa", snapshot: { bestScore: 0.5, cells: [{ candidateId: "cand_seed", quality: 0.5, costUsd: 0, accent: true }] }, delta: { message: "Frontier updated" } },
@@ -170,14 +215,12 @@ test("native GEPA candidates, frontier, usage, and artifacts render in the visua
 	await page.getByTestId("copy-artifact-path-0").click();
 	await expect(page.getByTestId("copy-artifact-path-0")).toHaveText("Copied");
 	await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe("/tmp/result_manifest.json");
-	await expect(page.getByTestId("gepa-candidate-content")).toContainText("Return exactly one Banking77 intent label.");
-	await page.getByTestId("copy-gepa-candidate").click();
-	await expect(page.getByTestId("copy-gepa-candidate")).toHaveText("Copied");
-	await expect.poll(() => page.evaluate(() => navigator.clipboard.readText())).toBe("Return exactly one Banking77 intent label.");
-	const downloadPromise = page.waitForEvent("download");
-	await page.getByTestId("download-gepa-candidate").click();
-	const download = await downloadPromise;
-	expect(download.suggestedFilename()).toBe("cand_seed.json");
+	// OptimizerRunViewV2 owns live product truth and deliberately does not carry
+	// prompt bodies; the visual must say that instead of resurrecting raw-event
+	// content as a live claim.
+	await expect(page.getByTestId("gepa-candidate-content")).toContainText("Candidate content was not persisted");
+	await expect(page.getByTestId("copy-gepa-candidate")).toBeDisabled();
+	await expect(page.getByTestId("download-gepa-candidate")).toBeDisabled();
 	await page.getByRole("button", { name: /^Label/ }).click();
 	await page.getByTestId("optimizer-candidate-cand_seed").click();
 	await page.getByLabel("Label note").fill("Review the accepted seed prompt");
