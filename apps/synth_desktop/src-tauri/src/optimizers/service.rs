@@ -3266,7 +3266,11 @@ pub(in crate::optimizers) fn primary_visual_template(algorithm_id: &str) -> &'st
 /// algorithm list is a fact the runtime owns, so comparing against it is real.
 fn require_advertised_algorithm(advertised: &Value, algorithm_id: &str) -> Result<()> {
     let algorithms = advertised
-        .get("algorithms")
+        // Manager projections separate optimizer algorithms from eval
+        // execution capabilities. Accept the raw handshake spelling as a
+        // compatibility input, but never synthesize a claim from host data.
+        .get("optimization_algorithms")
+        .or_else(|| advertised.get("algorithms"))
         .and_then(Value::as_array)
         .filter(|items| !items.is_empty())
         .ok_or_else(|| {
