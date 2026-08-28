@@ -617,16 +617,45 @@ function CispoIdentityPanel({
         <dd>{cispo.objective}</dd>
         <dt>Clip bounds</dt>
         <dd className="sv-mono">{clip}</dd>
-        <dt>Group size</dt>
-        <dd className="sv-mono">{formatMissingNumber(cispo.groupSize, 0)}</dd>
-        <dt>Reward variance</dt>
-        <dd className="sv-mono">{formatMissingNumber(cispo.rewardVariance)}</dd>
-        <dt>Advantage mean</dt>
-        <dd className="sv-mono">{formatMissingNumber(cispo.advantageMean)}</dd>
-        <dt>Advantage std</dt>
-        <dd className="sv-mono">{formatMissingNumber(cispo.advantageStd)}</dd>
-        <dt>Optimizer steps</dt>
-        <dd className="sv-mono">{String(cispo.optimizerSteps)}</dd>
+        {cispo.aggregatesReported ? (
+          <>
+            <dt>Group size</dt>
+            <dd className="sv-mono">{formatMissingNumber(cispo.groupSize, 0)}</dd>
+            <dt>Reward variance</dt>
+            <dd className="sv-mono">{formatMissingNumber(cispo.rewardVariance)}</dd>
+            <dt>Advantage mean</dt>
+            <dd className="sv-mono">{formatMissingNumber(cispo.advantageMean)}</dd>
+            <dt>Advantage std</dt>
+            <dd className="sv-mono">{formatMissingNumber(cispo.advantageStd)}</dd>
+          </>
+        ) : (
+          <>
+            {/* Four em dashes would read as four failed measurements. Nothing
+                measured them: no runtime reports group aggregates yet. */}
+            <dt>Group statistics</dt>
+            <dd data-testid="cispo-aggregates-unreported">
+              Not reported by this runtime — no step event on this run carried group size,
+              reward variance or advantage mean±std.
+            </dd>
+          </>
+        )}
+        {cispo.optimizerSteps != null ? (
+          <>
+            <dt>Optimizer steps</dt>
+            <dd className="sv-mono">{formatMissingNumber(cispo.optimizerSteps, 0)}</dd>
+          </>
+        ) : (
+          <>
+            <dt>Steps observed</dt>
+            <dd
+              className="sv-mono"
+              data-testid="cispo-steps-observed"
+              title="Training-metric events that carried a step. This runtime reports no optimizer-step counter, so this is not a count of optimizer updates."
+            >
+              {cispo.metricSteps}
+            </dd>
+          </>
+        )}
         <dt>Warm-start artifact</dt>
         <dd>{cispo.warmStartArtifactId ? <Identifier value={cispo.warmStartArtifactId} max={28} /> : "—"}</dd>
         <dt>Checkpoint lineage</dt>
@@ -734,13 +763,25 @@ export function SftWorkspace({
                 ? `${formatMissingNumber(cispo.clipLow)} … ${formatMissingNumber(cispo.clipHigh)}`
                 : "—"
           },
-          { label: "Group size", value: formatMissingNumber(cispo.groupSize, 0) },
-          { label: "Reward var", value: formatMissingNumber(cispo.rewardVariance) },
-          {
-            label: "Advantage",
-            value: `${formatMissingNumber(cispo.advantageMean)} ± ${formatMissingNumber(cispo.advantageStd)}`
-          },
-          { label: "Opt. steps", value: String(cispo.optimizerSteps) },
+          // Omitted, not dashed: a headline chip for a quantity no runtime
+          // reports reads as a broken measurement rather than an absent one.
+          ...(cispo.aggregatesReported
+            ? [
+                { label: "Group size", value: formatMissingNumber(cispo.groupSize, 0) },
+                { label: "Reward var", value: formatMissingNumber(cispo.rewardVariance) },
+                {
+                  label: "Advantage",
+                  value: `${formatMissingNumber(cispo.advantageMean)} ± ${formatMissingNumber(cispo.advantageStd)}`
+                }
+              ]
+            : []),
+          cispo.optimizerSteps != null
+            ? { label: "Opt. steps", value: formatMissingNumber(cispo.optimizerSteps, 0) }
+            : {
+                label: "Steps observed",
+                value: String(cispo.metricSteps),
+                title: "Training-metric events that carried a step. This runtime reports no optimizer-step counter."
+              },
           { label: "Warm start", value: cispo.warmStartArtifactId ?? "none" }
         ]
       : []),

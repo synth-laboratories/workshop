@@ -81,6 +81,8 @@ test("CISPO runs project onto the shared training workspace with CISPO identity"
   assert.equal(projected.cispo.advantageMean, 0.08);
   assert.equal(projected.cispo.advantageStd, 0.31);
   assert.equal(projected.cispo.optimizerSteps, 1);
+  assert.equal(projected.cispo.metricSteps, 1);
+  assert.equal(projected.cispo.aggregatesReported, true);
   assert.equal(projected.cispo.warmStartArtifactId, "sft-adapter-7");
   assert.deepEqual(projected.cispo.checkpointIds, ["cispo-ckpt-1"]);
   assert.equal(projected.cispo.noLearningSignal, false);
@@ -114,4 +116,110 @@ test("uniform CISPO groups surface a truthful no-learning-signal stop", () => {
     }
   ]);
   assert.equal(projected.cispo.noLearningSignal, true);
+});
+
+/*
+ * The delta the Rust mapping arms actually produce for the payload the MLX
+ * wheel emits today. Both arms build it from
+ * `training_adapter::TRAINING_METRIC_FIELDS`, and two Rust tests pin that the
+ * CISPO aggregates are absent from it rather than zeroed:
+ * `training_adapter::a_field_the_runtime_never_reported_stays_absent_not_zero`
+ * and `sidecar_training::real_mlx_metric_payload_leaves_the_cispo_aggregates_absent`.
+ * Keep this literal in step with them: it is the seam between the two halves.
+ */
+function mlxStepDelta(step) {
+  return { step, epoch: 1, train_loss: 1.4 - step * 0.1, learning_rate: 0.00005, throughput: 64.0 };
+}
+
+function mlxCispoEvents() {
+  let seq = 0;
+  const next = () => ++seq;
+  return [
+    { ...base, sequenceNumber: next(), type: "cispo.clip.identity", delta: { clip: { eps_low: 1.0, eps_high: 4.0 } } },
+    { ...base, sequenceNumber: next(), type: "training.metrics", delta: mlxStepDelta(1) },
+    { ...base, sequenceNumber: next(), type: "training.metrics", delta: mlxStepDelta(2) },
+    { ...base, sequenceNumber: next(), type: "training.metrics", delta: mlxStepDelta(3) }
+  ];
+}
+
+test("a field no runtime reports stays null the whole way to the renderer", () => {
+  const projected = projectAtCursor(RUN, mlxCispoEvents());
+  assert.equal(projected.cispo.groupSize, null);
+  assert.equal(projected.cispo.rewardVariance, null);
+  assert.equal(projected.cispo.advantageMean, null);
+  assert.equal(projected.cispo.advantageStd, null);
+  assert.equal(projected.cispo.aggregatesReported, false, "nothing measured them, so nothing may claim them");
+  // Clip identity is forwarded wholesale and does reach the panel today.
+  assert.equal(projected.cispo.clipLow, 1.0);
+  assert.equal(projected.cispo.clipHigh, 4.0);
+});
+
+test("an unreported optimizer step is null, never a hardcoded one", () => {
+  const projected = projectAtCursor(RUN, mlxCispoEvents());
+  assert.equal(projected.cispo.optimizerSteps, null, "no optimizer_step was reported");
+  assert.notEqual(projected.cispo.optimizerSteps, 1, "the old fallback pinned every live run at one step");
+  // What was observed is a count of step-bearing metric events, and it is a
+  // weaker claim than the runtime's own optimizer-step counter.
+  assert.equal(projected.cispo.metricSteps, 3);
+});
+
+test("an explicit null in the delta is absence, not a measured zero", () => {
+  const projected = projectAtCursor(RUN, [
+    {
+      ...base,
+      sequenceNumber: 1,
+      type: "training.metrics",
+      delta: {
+        step: 1,
+        train_loss: 1.4,
+        group_size: null,
+        reward_variance: null,
+        advantage_mean: null,
+        advantage_std: null,
+        optimizer_step: null
+      }
+    }
+  ]);
+  assert.equal(projected.cispo.groupSize, null);
+  assert.equal(projected.cispo.rewardVariance, null);
+  assert.equal(projected.cispo.advantageMean, null);
+  assert.equal(projected.cispo.advantageStd, null);
+  assert.equal(projected.cispo.optimizerSteps, null);
+  assert.equal(projected.cispo.aggregatesReported, false);
+});
+
+test("a partially reporting runtime keeps the aggregates and dashes only what it omitted", () => {
+  const projected = projectAtCursor(RUN, [
+    {
+      ...base,
+      sequenceNumber: 1,
+      type: "training.metrics",
+      delta: { step: 1, train_loss: 1.4, group_size: 8, optimizer_step: 4 }
+    },
+    {
+      ...base,
+      sequenceNumber: 2,
+      type: "training.metrics",
+      delta: { step: 2, train_loss: 1.2, group_size: 8, optimizer_step: 9 }
+    }
+  ]);
+  assert.equal(projected.cispo.aggregatesReported, true);
+  assert.equal(projected.cispo.groupSize, 8);
+  assert.equal(projected.cispo.rewardVariance, null);
+  assert.equal(projected.cispo.advantageMean, null);
+  assert.equal(projected.cispo.optimizerSteps, 9, "high-water mark of the reported counter");
+});
+
+test("a reported zero is a value, not absence", () => {
+  const projected = projectAtCursor(RUN, [
+    {
+      ...base,
+      sequenceNumber: 1,
+      type: "training.metrics",
+      delta: { step: 1, reward_variance: 0, advantage_mean: 0, advantage_std: 0, group_size: 2 }
+    }
+  ]);
+  assert.equal(projected.cispo.rewardVariance, 0);
+  assert.equal(projected.cispo.advantageMean, 0);
+  assert.equal(projected.cispo.aggregatesReported, true, "a measured zero variance is the no-signal case, reported");
 });
