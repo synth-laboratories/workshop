@@ -151,4 +151,45 @@ mod tests {
             .iter()
             .all(|event| event.owner.starts_with("workshop-")));
     }
+
+    /// The backend registry (backend repo, app/api/v1/routes_product.py,
+    /// PRODUCT_REGISTRY["workshop"]) mirrors exactly this set. Editing the
+    /// contract's sync-eligible events must update the registry in the same
+    /// change — this pin is the workshop-side half of that drift gate; the
+    /// backend's test_product_usage_events_registry.py is the other half.
+    #[test]
+    fn sync_eligible_events_match_the_backend_registry_mirror() {
+        let mut eligible: Vec<&str> = contract()
+            .events
+            .iter()
+            .filter(|event| event.sync == SyncClass::Eligible)
+            .map(|event| event.name.as_str())
+            .collect();
+        eligible.sort_unstable();
+        let mut expected = vec![
+            "app_first_launch",
+            "artifact_created",
+            "download_initiated",
+            "download_served",
+            "first_experiment_visual",
+            "first_report_shared",
+            "first_run_succeeded",
+            "first_workspace_opened",
+            "hosted_activation_completed",
+            "hosted_job_completed",
+            "hosted_job_failed",
+            "hosted_job_started",
+            "local_activation_completed",
+            "recipe_saved",
+            "report_created",
+            "report_published",
+            "signin_completed",
+            "signout_completed",
+            "signup_completed",
+            "workflow_started",
+            "workflow_terminal",
+        ];
+        expected.sort_unstable();
+        assert_eq!(eligible, expected);
+    }
 }
