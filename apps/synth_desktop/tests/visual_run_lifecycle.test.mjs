@@ -286,8 +286,8 @@ test("sealed replay remains trustworthy when evaluator reward and declared termi
 
 test("the host disables sealing from the rendered rejected-evidence state and exposes the reason", () => {
 	const host = readFileSync(join(appRoot, "src/renderer/src/components/VisualHost.tsx"), "utf8");
-	assert.match(host, /data-run-evidence-state="rejected"/);
-	assert.match(host, /runtimeSealBlockReason/);
+	assert.match(host, /\[data-run-evidence-state\]/);
+	assert.match(host, /state === "rejected"/);
 	assert.match(host, /Seal unavailable — run failed with/);
-	assert.match(host, /qualityGate\.revision === revision && !runtimeSealBlockReason/);
+	assert.match(host, /primaryOptimizerRunId \? optimizerSealGate\.ready : authoringGateReady/);
 });
