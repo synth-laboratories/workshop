@@ -2143,7 +2143,12 @@ impl OptimizerService {
         let cursor = self
             .resolve_projection_cursor(&optimizer_run_id, at_seq, run.cursor_seq)
             .await?;
-        if at_seq.is_none() {
+        // A post-terminal amendment advances the run record while the sealed
+        // kernel projection intentionally keeps its terminal sequence. A
+        // cached slice at that terminal cursor may predate the amendment, so
+        // only use the fast path when both cursors still describe the same
+        // revision.
+        if at_seq.is_none() && run.cursor_seq == cursor {
             let db = self.db.clone();
             let sid = slice_id.clone();
             let rid = optimizer_run_id.clone();
@@ -8908,6 +8913,29 @@ pub(in crate::optimizers) mod tests {
             .unwrap();
         let terminal_cursor = sealed["terminalCursor"].as_u64().unwrap();
 
+        svc.database()
+            .with_conn(|conn| {
+                let raw: String = conn.query_row(
+                    "SELECT payload_json FROM optimizer_cached_slices
+                     WHERE optimizer_run_id=?1 AND slice_id='run.evidence'",
+                    [run.id.as_str()],
+                    |row| row.get(0),
+                )?;
+                let mut cached: Value = serde_json::from_str(&raw)?;
+                cached["data"]["refs"] = json!([{
+                    "kind": "trace",
+                    "id": "legacy_cached_trace",
+                    "digest": "sha256:legacy_cached_trace",
+                }]);
+                conn.execute(
+                    "UPDATE optimizer_cached_slices SET payload_json=?2
+                     WHERE optimizer_run_id=?1 AND slice_id='run.evidence'",
+                    params![run.id, serde_json::to_string(&cached)?],
+                )?;
+                Ok(())
+            })
+            .unwrap();
+
         let patch_error = svc
             .patch_run(run.id.clone(), |run| {
                 run.summary["evalStatus"] = json!("running");
@@ -8933,6 +8961,12 @@ pub(in crate::optimizers) mod tests {
             .await
             .unwrap();
         assert_eq!(current.cursor_seq, terminal_cursor);
+        assert!(
+            current.data["refs"]
+                .as_array()
+                .is_some_and(|refs| refs.is_empty()),
+            "post-terminal reads must bypass a stale same-cursor cache"
+        );
         let batch = svc
             .get_state_batch(run.id.clone(), None, None)
             .await
