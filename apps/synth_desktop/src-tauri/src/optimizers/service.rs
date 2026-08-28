@@ -7059,7 +7059,9 @@ pub(in crate::optimizers) mod tests {
         let (svc, dir, _) = service().await;
         let run = eval_run(&svc, "opt_eval_artifacts", "session_eval_artifacts").await;
         let artifact_path = dir.path().join("trial-result.json");
+        let video_path = dir.path().join("trial-video.mp4");
         std::fs::write(&artifact_path, br#"{"score":1}"#).unwrap();
+        std::fs::write(&video_path, [0_u8, 1, 2, 3]).unwrap();
         let planned = evt(
             "eval.run.planned",
             1,
@@ -7080,24 +7082,44 @@ pub(in crate::optimizers) mod tests {
             Some(item("trial", "eval:trial:0", "completed", json!({}))),
             None,
         );
-        terminal.artifact_refs = vec![json!({
-            "artifactId": "trial-result",
-            "kind": "evaluator_result",
-            "path": artifact_path,
-            "mediaType": "application/json",
-            "rolloutId": "rollout-1"
-        })];
+        terminal.artifact_refs = vec![
+            json!({
+                "artifactId": "trial-result",
+                "kind": "evaluator_result",
+                "path": artifact_path,
+                "mediaType": "application/json",
+                "rolloutId": "rollout-1"
+            }),
+            json!({
+                "artifactId": "trial-video",
+                "kind": "rollout_video",
+                "path": video_path,
+                "mediaType": "video/mp4",
+                "rolloutId": "rollout-1"
+            }),
+        ];
         svc.append_events(run.id.clone(), vec![planned, terminal])
             .await
             .unwrap();
 
         let page = svc
-            .artifacts_list(run.id.clone(), 0, Some(10))
+            .artifacts_list(run.id.clone(), 0, Some(1))
             .await
             .unwrap();
-        assert_eq!(page.artifacts.len(), 1);
-        assert_eq!(page.artifacts[0].work_item_id.as_deref(), Some("eval:trial:0"));
-        assert_eq!(page.artifacts[0].media_type.as_deref(), Some("application/json"));
+        assert_eq!(
+            page.artifacts.len(),
+            2,
+            "a page must not split artifacts declared by the same event sequence"
+        );
+        assert_eq!(
+            page.artifacts[0].work_item_id.as_deref(),
+            Some("eval:trial:0")
+        );
+        assert_eq!(
+            page.artifacts[0].media_type.as_deref(),
+            Some("application/json")
+        );
+        assert_eq!(page.artifacts[1].media_type.as_deref(), Some("video/mp4"));
 
         let range = svc
             .artifact_read_range(run.id.clone(), "trial-result".into(), 0, 4)
@@ -7144,11 +7166,11 @@ pub(in crate::optimizers) mod tests {
                 .unwrap()
                 .artifacts
                 .len(),
-            1
+            2
         );
 
         let view = serde_json::to_value(svc.run_view_v2(run.id).await.unwrap()).unwrap();
-        assert_eq!(view["header"]["artifacts"].as_array().unwrap().len(), 1);
+        assert_eq!(view["header"]["artifacts"].as_array().unwrap().len(), 2);
         assert_eq!(
             view["projection"]["workItems"][0]["artifactRefs"][0]["artifactId"],
             "trial-result"

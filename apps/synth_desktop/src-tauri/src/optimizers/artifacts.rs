@@ -71,9 +71,27 @@ fn event_work_item_id(event: &OptimizerEventEnvelope) -> Option<String> {
 fn event_rollout_id(event: &OptimizerEventEnvelope, reference: &Value) -> Option<String> {
     string_field(reference, &["rolloutId", "rollout_id"])
         .or_else(|| {
+            event
+                .item
+                .as_ref()
+                .and_then(|item| string_field(item, &["rolloutId", "rollout_id"]))
+        })
+        .or_else(|| {
             ["rolloutId", "rollout_id"]
                 .iter()
                 .find_map(|key| event.delta.get(*key).and_then(Value::as_str))
+        })
+        .or_else(|| {
+            event
+                .delta
+                .get("container_event")
+                .and_then(|carrier| string_field(carrier, &["rollout_id", "rolloutId"]))
+        })
+        .or_else(|| {
+            event
+                .delta
+                .get("containerEvent")
+                .and_then(|carrier| string_field(carrier, &["rolloutId", "rollout_id"]))
         })
         .map(str::to_string)
 }
@@ -194,8 +212,15 @@ pub(super) fn list(
         "SELECT optimizer_run_id, artifact_id, sequence, work_item_id, rollout_id,
                 kind, locator, digest, media_type, byte_size, metadata_json, declared_at
          FROM optimizer_run_artifacts
-         WHERE optimizer_run_id=?1 AND sequence>?2
-         ORDER BY sequence, artifact_id LIMIT ?3",
+         WHERE optimizer_run_id=?1 AND sequence IN (
+             SELECT sequence
+             FROM optimizer_run_artifacts
+             WHERE optimizer_run_id=?1 AND sequence>?2
+             GROUP BY sequence
+             ORDER BY sequence
+             LIMIT ?3
+         )
+         ORDER BY sequence, artifact_id",
     )?;
     let artifacts = statement
         .query_map(

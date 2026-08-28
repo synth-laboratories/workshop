@@ -1199,6 +1199,11 @@ export type EvalProjection = {
 	promotionApplicable: boolean,
 	traces: number,
 	evidenceRefs?: EvidenceRef[],
+	/**
+	 *  Per-rollout evidence truth. Added with a default so persisted v1/v2
+	 *  projections replay forward instead of becoming unreadable.
+	 */
+	evidenceLedger?: RolloutEvidenceEntry[],
 };
 
 export type EvalResult = {
@@ -2874,6 +2879,25 @@ export type RollbackMetadata = {
 	importedIds: { [key in string]: string[] },
 	deleteOrder: string[],
 };
+
+export type RolloutEvidenceEntry = {
+	workItemId: string,
+	rolloutId?: string | null,
+	trialId?: string | null,
+	state: RolloutEvidenceState,
+	lastObservedStep?: number | null,
+	cancellationRequestId?: string | null,
+	refs?: EvidenceRef[],
+};
+
+/**
+ *  Durable evidence state for one admitted rollout/work item.
+ *
+ *  This is deliberately separate from the run-level `kernel::evidence::EvidenceState`:
+ *  the run receipt is a fold of this ledger, while these entries retain which
+ *  rollout was open, partially sealed, aborted, or never produced evidence.
+ */
+export type RolloutEvidenceState = "open" | "sealed_complete" | "sealed_partial" | "aborted" | "missing";
 
 /**  Execution health, stored beside lifecycle rather than as a status. */
 export type RunCondition = "healthy" | "environment_unreachable" | "waiting_for_producer" | "producer_sequence_blocked";

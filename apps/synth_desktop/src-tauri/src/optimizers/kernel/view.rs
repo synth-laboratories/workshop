@@ -245,12 +245,21 @@ fn eval_projection_with_artifacts(
 ) -> super::algorithms::eval::EvalProjection {
     let mut projection = projection.clone();
     for item in &mut projection.work_items {
+        let evidence_identity = projection
+            .evidence_ledger
+            .iter()
+            .find(|entry| entry.work_item_id == item.work_item_id);
         item.artifact_refs = artifacts
             .iter()
             .filter(|artifact| {
                 artifact.work_item_id.as_deref() == Some(item.work_item_id.as_str())
-                    || item.external_ref.as_deref().is_some_and(|external| {
-                        artifact.rollout_id.as_deref() == Some(external)
+                    || item
+                        .external_ref
+                        .as_deref()
+                        .is_some_and(|external| artifact.rollout_id.as_deref() == Some(external))
+                    || evidence_identity.is_some_and(|entry| {
+                        artifact.rollout_id.as_deref() == entry.rollout_id.as_deref()
+                            || artifact.rollout_id.as_deref() == entry.trial_id.as_deref()
                     })
             })
             .cloned()
@@ -308,5 +317,43 @@ mod tests {
             }
             other => panic!("expected eval view, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn rollout_ledger_identity_joins_declared_artifacts_to_trial_rows() {
+        use crate::optimizers::kernel::algorithms::eval::{
+            EvalProjection, RolloutEvidenceEntry, RolloutEvidenceState,
+        };
+        use crate::optimizers::kernel::{WorkItem, WorkItemKind};
+
+        let projection = EvalProjection {
+            work_items: vec![WorkItem::planned("trial-1", WorkItemKind::EvalTrial).unwrap()],
+            evidence_ledger: vec![RolloutEvidenceEntry {
+                work_item_id: "trial-1".into(),
+                rollout_id: Some("rollout-1".into()),
+                state: RolloutEvidenceState::Open,
+                ..RolloutEvidenceEntry::default()
+            }],
+            ..EvalProjection::default()
+        };
+        let artifact = OptimizerRunArtifact {
+            schema_version: "optimizer_run_artifact.v1".into(),
+            optimizer_run_id: "run-1".into(),
+            artifact_id: "video-1".into(),
+            sequence: 3,
+            work_item_id: None,
+            rollout_id: Some("rollout-1".into()),
+            kind: "rollout_video".into(),
+            locator: "/tmp/video-1.mp4".into(),
+            digest: None,
+            media_type: Some("video/mp4".into()),
+            byte_size: None,
+            metadata: json!({}),
+            declared_at: "2026-08-27T18:00:00Z".into(),
+        };
+
+        let joined = eval_projection_with_artifacts(&projection, &[artifact]);
+        assert_eq!(joined.work_items[0].artifact_refs.len(), 1);
+        assert_eq!(joined.work_items[0].artifact_refs[0].artifact_id, "video-1");
     }
 }
