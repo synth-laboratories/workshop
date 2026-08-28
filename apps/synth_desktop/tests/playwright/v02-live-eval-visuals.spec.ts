@@ -68,6 +68,41 @@ test("[v0.2] Harbor live visual fails closed when reward.txt is missing", async 
 	await expect(viewer).not.toContainText("$0.00");
 });
 
+test("Harbor DeepSWE visual projects package release, verifier phase, and native zero", async ({ page }) => {
+	const events = [
+		envelope("env.episode.opened", 1, {
+			trial_image_id: "deepswe/anko-default-function-arguments",
+			environment_release: {
+				environment_release_id: "harbor:anko-default-function-arguments:cf581da7b586a18d",
+				status: "certified",
+				prewarm: { state: "required" },
+				runnable: false
+			}
+		}),
+		envelope("nested.workspace.extracted", 2),
+		envelope("span.policy.opened", 3),
+		envelope("nested.collected", 4, { step: 0, exit_code: 0 }),
+		envelope("span.verifier.opened", 5),
+		envelope("nested.verified", 6, { exit_code: 0 }),
+		envelope("reward_signal", 7, { value: 0, authority: "verifier" }),
+		envelope("status", 8, { status: "completed" })
+	];
+	await installVisuals(page, [liveVisual({
+		id: "vis_deepswe_anko",
+		templateId: "live.harbor_eval.v1",
+		title: "DeepSWE · anko-default-function-arguments",
+		bindings: streamBinding(events)
+	})]);
+	const pane = await openVisual(page, "vis_deepswe_anko");
+	const viewer = pane.getByTestId("visual-live-harbor-eval");
+	await expect(viewer).toBeVisible();
+	await expect(viewer.getByTestId("harbor-trials")).toContainText("harbor:anko-default-function-arguments:cf581da7b586a18d");
+	await expect(viewer.getByTestId("harbor-trials")).toContainText("prewarm required");
+	await expect(viewer.getByTestId("harbor-trials")).toContainText("scored");
+	await expect(viewer.getByTestId("harbor-trials")).toContainText("reward 0.00");
+	expect(await metricValue(viewer, "Reward")).toBe("0.00");
+});
+
 test("[v0.2] dig.bench live visual is text-only and keeps incomplete reward null", async ({ page }) => {
 	const events = loadEvents("templates/live.digbench.v1/examples/events.json");
 	await installVisuals(page, [liveVisual({

@@ -198,10 +198,13 @@ function mapAsyncPhase(status: Session["status"], events: RuntimeEvent[] = []): 
 	}
 }
 
-export function eventsToMessages(events: RuntimeEvent[]): ChatMessage[] {
+export function eventsToMessages(
+	events: RuntimeEvent[],
+	options: { excludedThreadIds?: ReadonlySet<string> } = {}
+): ChatMessage[] {
 	const byId = new Map<string, ChatMessage>();
 	const order: string[] = [];
-	const subagentIds = new Set(eventsToSubagents(events).map((agent) => agent.id));
+	const subagentIds = options.excludedThreadIds ?? new Set(eventsToSubagents(events).map((agent) => agent.id));
 	let activeAssistantId: string | null = null;
 	let producedAssistantForTurn = false;
 	let compactedDuringTurn = false;
@@ -480,7 +483,7 @@ function activityKind(eventKind: string): LocalActivityLine["kind"] {
 	return "working";
 }
 
-type SafeToolActivity = Pick<LocalActivityLine, "label" | "detail" | "path" | "kind" | "toolStatus" | "artifactId" | "containerId"> & { key: string };
+type SafeToolActivity = Pick<LocalActivityLine, "label" | "detail" | "path" | "kind" | "toolStatus" | "artifactId" | "containerId" | "inspectable"> & { key: string };
 
 const VISUAL_MUTATION_TOOLS = new Set([
 	"visual_manage",
@@ -510,6 +513,74 @@ function redactCommand(command: string): string {
 		.replace(/\bBearer\s+[A-Za-z0-9._~+\/-]+/gi, "Bearer [redacted]")
 		.replace(/\b(?:sk|sess|key)-[A-Za-z0-9_-]{12,}\b/g, "[redacted]")
 		.slice(0, 800);
+}
+
+const MAX_INSPECTABLE_CHARS = 24_000;
+
+/**
+ * Convert unknown wire payloads into bounded text before rendering them.
+ * Runtime events come from several protocol versions, so this is deliberately
+ * defensive: circular values, bigint values, and malformed JSON all remain
+ * inspectable without leaking a browser coercion such as `[object Object]`.
+ */
+function inspectablePayload(
+	label: string,
+	value: unknown,
+	format: "json" | "text" = "json"
+): NonNullable<LocalActivityLine["inspectable"]>[number] | undefined {
+	if (value === undefined || value === null) return undefined;
+	let rendered: string;
+	let resolvedFormat = format;
+	if (typeof value === "string") {
+		const trimmed = value.trim();
+		if (format === "json" && trimmed) {
+			try {
+				rendered = JSON.stringify(JSON.parse(trimmed), null, 2);
+			} catch {
+				rendered = value;
+				resolvedFormat = "text";
+			}
+		} else {
+			rendered = value;
+		}
+	} else {
+		const seen = new WeakSet<object>();
+		try {
+			rendered = JSON.stringify(value, (_key, candidate) => {
+				if (typeof candidate === "bigint") return candidate.toString();
+				if (typeof candidate === "object" && candidate !== null) {
+					if (seen.has(candidate)) return "[Circular]";
+					seen.add(candidate);
+				}
+				if (typeof candidate === "function" || typeof candidate === "symbol") return String(candidate);
+				return candidate;
+			}, 2) ?? "—";
+		} catch {
+			rendered = "Not exposed";
+			resolvedFormat = "text";
+		}
+	}
+	const truncated = rendered.length > MAX_INSPECTABLE_CHARS;
+	return {
+		label,
+		value: truncated ? `${rendered.slice(0, MAX_INSPECTABLE_CHARS)}\n… truncated` : rendered,
+		format: resolvedFormat,
+		truncated,
+		unavailable: rendered === "Not exposed"
+	};
+}
+
+function inspectableToolPayloads(item: Record<string, unknown>, args: Record<string, unknown>): LocalActivityLine["inspectable"] {
+	const values: NonNullable<LocalActivityLine["inspectable"]> = [];
+	const argumentPayload = Object.keys(args).length ? inspectablePayload("Arguments", args) : undefined;
+	if (argumentPayload) values.push(argumentPayload);
+	const result = item.result ?? item.output ?? item.response;
+	const error = item.error ?? (objectValue(result)?.error);
+	const resultPayload = result === undefined ? undefined : inspectablePayload(error ? "Result" : "Result", result);
+	if (resultPayload) values.push(resultPayload);
+	const errorPayload = error === undefined ? undefined : inspectablePayload("Error", error);
+	if (errorPayload && !values.some((entry) => entry.label === "Error" && entry.value === errorPayload.value)) values.push(errorPayload);
+	return values.length ? values : undefined;
 }
 
 function safeToolStatus(item: Record<string, unknown>): LocalActivityLine["toolStatus"] {
@@ -665,6 +736,7 @@ function mcpToolActivity(
 		kind: artifactId ? "visual" : "working",
 		artifactId,
 		containerId,
+		inspectable: inspectableToolPayloads(item, args),
 		toolStatus: safeToolStatus(item)
 	};
 }
@@ -681,7 +753,19 @@ function safeToolActivity(event: RuntimeEvent): SafeToolActivity | undefined {
 	if (event.eventKind === "command.execution" || itemType === "commandexecution") {
 		const raw = stringField(item, "command", "cmd") ?? stringField(payload, "command", "cmd");
 		if (!raw) return undefined;
-		return { key: `command:${id}`, label: "Run Shell Command", detail: redactCommand(raw), kind: "command" };
+		const output = item.output ?? item.result ?? payload.output ?? payload.result;
+		const error = item.error ?? payload.error;
+		return {
+			key: `command:${id}`,
+			label: "Run Shell Command",
+			detail: redactCommand(raw),
+			kind: "command",
+			inspectable: [
+				inspectablePayload("Command", redactCommand(raw), "text"),
+				...(output === undefined ? [] : [inspectablePayload("Output", output)]),
+				...(error === undefined ? [] : [inspectablePayload("Error", error)])
+			].filter((entry): entry is NonNullable<LocalActivityLine["inspectable"]>[number] => Boolean(entry))
+		};
 	}
 
 	if (event.eventKind === "file.change" || itemType === "filechange") {
@@ -736,6 +820,12 @@ export type SubagentState = {
 	id: string;
 	title: string;
 	summary?: string;
+	/** The explicit parent thread identity reported by the collaboration event. */
+	parentThreadId?: string;
+	/** Ordered journal position of the parent delegation event. */
+	delegationSequence: number;
+	/** Delegation prompt, when the provider intentionally exposes it. */
+	prompt?: string;
 	status: SubagentLifecycle;
 	protocol: SubagentProtocol;
 	agentPath?: string;
@@ -858,6 +948,9 @@ function upsertSubagent(
 			id,
 			title: next.title,
 			summary: next.summary,
+			parentThreadId: next.parentThreadId,
+			delegationSequence: next.delegationSequence,
+			prompt: next.prompt,
 			status: next.status,
 			protocol: next.protocol,
 			agentPath: next.agentPath,
@@ -880,6 +973,9 @@ function upsertSubagent(
 		status,
 		title: next.title || existing.title,
 		summary: next.summary ?? existing.summary,
+		parentThreadId: next.parentThreadId ?? existing.parentThreadId,
+		delegationSequence: Math.min(existing.delegationSequence, next.delegationSequence),
+		prompt: next.prompt ?? existing.prompt,
 		agentPath: next.agentPath ?? existing.agentPath,
 		lastAction: next.lastAction ?? existing.lastAction,
 		startedAt: existing.startedAt,
@@ -887,7 +983,10 @@ function upsertSubagent(
 	});
 }
 
-export function eventsToSubagents(events: RuntimeEvent[]): SubagentState[] {
+export function eventsToSubagents(
+	events: RuntimeEvent[],
+	options: { rootThreadId?: string } = {}
+): SubagentState[] {
 	const agents = new Map<string, SubagentState>();
 	for (const event of events) {
 		const payload = event.payload ?? {};
@@ -897,11 +996,15 @@ export function eventsToSubagents(events: RuntimeEvent[]): SubagentState[] {
 			const id = stringField(item, "agentThreadId", "agent_thread_id");
 			if (!id) continue;
 			const agentPath = stringField(item, "agentPath", "agent_path");
+			const parentThreadId = eventThreadId(payload, item) ?? options.rootThreadId;
 			const previous = agents.get(id);
 			const status = activityKind === "interrupted" ? "interrupted" : previous?.status ?? "starting";
 			upsertSubagent(agents, id, {
 				title: previous?.title && previous.title !== "Subagent" ? previous.title : subagentTitleFromPath(agentPath),
 				summary: activityKind === "interrupted" ? "Interrupted" : previous?.summary,
+				parentThreadId,
+				delegationSequence: previous?.delegationSequence ?? event.sequence,
+				prompt: previous?.prompt,
 				status,
 				protocol: "v2",
 				agentPath,
@@ -915,6 +1018,7 @@ export function eventsToSubagents(events: RuntimeEvent[]): SubagentState[] {
 			const callId = stringField(item, "id") ?? `subagent-${event.sequence}`;
 			const ids = stringArrayField(item, "receiverThreadIds", "receiver_thread_ids");
 			const prompt = stringField(item, "prompt") ?? "Subagent task";
+			const parentThreadId = eventThreadId(payload, item) ?? options.rootThreadId;
 			const provisional = agents.get(callId);
 			if (ids.length && provisional && !ids.includes(callId)) agents.delete(callId);
 			for (const id of ids.length ? ids : [callId]) {
@@ -922,6 +1026,9 @@ export function eventsToSubagents(events: RuntimeEvent[]): SubagentState[] {
 				upsertSubagent(agents, id, {
 					title: subagentTitle(prompt),
 					summary: existing?.summary ?? prompt,
+					parentThreadId: existing?.parentThreadId ?? provisional?.parentThreadId ?? parentThreadId,
+					delegationSequence: existing?.delegationSequence ?? provisional?.delegationSequence ?? event.sequence,
+					prompt: existing?.prompt ?? provisional?.prompt ?? prompt,
 					status: existing?.status ?? "starting",
 					protocol: "v1",
 					startedAt: existing?.startedAt ?? provisional?.startedAt ?? event.createdAt
@@ -943,6 +1050,9 @@ export function eventsToSubagents(events: RuntimeEvent[]): SubagentState[] {
 				upsertSubagent(agents, id, {
 					title: agent.title,
 					summary: agent.summary,
+					parentThreadId: agent.parentThreadId,
+					delegationSequence: agent.delegationSequence,
+					prompt: agent.prompt,
 					status: "completed",
 					protocol: "v2",
 					agentPath: agent.agentPath,
@@ -961,6 +1071,9 @@ export function eventsToSubagents(events: RuntimeEvent[]): SubagentState[] {
 				upsertSubagent(agents, id, {
 					title: existing?.title ?? "Subagent",
 					summary: stateMessage(value) ?? existing?.summary,
+					parentThreadId: existing?.parentThreadId,
+					delegationSequence: existing?.delegationSequence ?? event.sequence,
+					prompt: existing?.prompt,
 					status,
 					protocol: existing?.protocol ?? "v1",
 					agentPath: existing?.agentPath,
@@ -979,13 +1092,102 @@ export function eventsToSubagents(events: RuntimeEvent[]): SubagentState[] {
 		upsertSubagent(agents, threadId, {
 			title: agent.title,
 			summary: content && (isChildMessage || lifecycle === "completed" || lifecycle === "failed") ? content : agent.summary,
+			parentThreadId: agent.parentThreadId,
+			delegationSequence: agent.delegationSequence,
+			prompt: agent.prompt,
 			status: lifecycle ?? agent.status,
 			protocol: agent.protocol,
 			agentPath: agent.agentPath,
 			lastAction: agent.lastAction
 		}, event.createdAt, { allowReactivation: agent.protocol === "v2" && lifecycle === "working" });
 	}
-	return [...agents.values()];
+	return [...agents.values()].sort((left, right) =>
+		left.delegationSequence - right.delegationSequence || left.id.localeCompare(right.id)
+	);
+}
+
+/** Stable root-thread identity persisted with every Codex-backed session. */
+export function sessionThreadId(session: Pick<Session, "id" | "remoteId" | "metadata">): string | undefined {
+	return typeof session.metadata.threadId === "string"
+		? session.metadata.threadId
+		: typeof session.remoteId === "string" ? session.remoteId : undefined;
+}
+
+export type SubagentConversation = {
+	chat: LocalChat;
+	agent: SubagentState;
+	parentTitle: string;
+	model: string | null;
+	reasoningDisplay: "none" | "summary" | "full";
+};
+
+function eventsForThread(events: RuntimeEvent[], threadId: string): RuntimeEvent[] {
+	return events.filter((event) => eventThreadId(event.payload ?? {}, eventItem(event)) === threadId);
+}
+
+/** Parent transcript projection excludes every explicitly identified child thread. */
+export function parentConversationEvents(events: RuntimeEvent[], options: { rootThreadId?: string } = {}): RuntimeEvent[] {
+	const childThreadIds = new Set(eventsToSubagents(events).map((agent) => agent.id));
+	return events.filter((event) => {
+		const sourceThreadId = eventThreadId(event.payload ?? {}, eventItem(event));
+		if (sourceThreadId && options.rootThreadId) return sourceThreadId === options.rootThreadId;
+		return !sourceThreadId || !childThreadIds.has(sourceThreadId);
+	});
+}
+
+/**
+ * Build a normal conversation input for a child thread. The delegation prompt
+ * is represented as a synthetic user event at the *actual delegation
+ * sequence*, then every child event is selected by its explicit thread id.
+ * No title or timestamp matching is used to assign ownership.
+ */
+export function buildSubagentConversation(
+	session: Session,
+	events: RuntimeEvent[],
+	agentId: string
+): SubagentConversation | null {
+	const rootThreadId = sessionThreadId(session);
+	const agent = eventsToSubagents(events, { rootThreadId }).find((candidate) => candidate.id === agentId);
+	if (!agent) return null;
+	const childEvents = eventsForThread(events, agent.id);
+	const delegatedPrompt = agent.prompt
+		? {
+			...childEvents.find((event) => event.sequence === agent.delegationSequence),
+			schemaVersion: "synth.desktop-runtime-event.v1" as const,
+			sessionId: session.id,
+			sequence: agent.delegationSequence,
+			eventKind: "message.created",
+			payload: {
+				messageId: `delegation-${agent.id}-${agent.delegationSequence}`,
+				role: "user",
+				content: agent.prompt,
+				threadId: agent.id,
+				delegation: true
+			},
+			createdAt: childEvents.find((event) => event.sequence === agent.delegationSequence)?.createdAt ?? agent.startedAt,
+			source: "system" as const
+		} satisfies RuntimeEvent
+		: null;
+	const conversationEvents = [
+		...(delegatedPrompt ? [delegatedPrompt] : []),
+		...childEvents
+	].sort((left, right) => left.sequence - right.sequence);
+	const messages = eventsToMessages(conversationEvents);
+	const reasoningDisplay = modelCapabilitiesForExecutionTarget(session.target)?.reasoningDisplay ?? "none";
+	const model = session.target.kind === "intern" ? null : session.target.model;
+	return {
+		chat: {
+			id: `${session.id}:subagent:${agent.id}`,
+			title: agent.title,
+			messages,
+			artifacts: eventsToArtifacts(conversationEvents),
+			activityByMessageId: eventsToLocalActivity(conversationEvents, messages, reasoningDisplay)
+		},
+		agent,
+		parentTitle: session.title,
+		model,
+		reasoningDisplay
+	};
 }
 
 export function eventsToLocalActivity(
@@ -1026,6 +1228,13 @@ export function eventsToLocalActivity(
 	// assistant message. Until the new assistant item has a stable id it stays
 	// in the active tail directly after the latest user bubble.
 	let current = "__active__";
+	const knownSubagents = eventsToSubagents(events);
+	const subagentByDelegationSequence = new Map<number, SubagentState[]>();
+	for (const agent of knownSubagents) {
+		const currentAgents = subagentByDelegationSequence.get(agent.delegationSequence) ?? [];
+		currentAgents.push(agent);
+		subagentByDelegationSequence.set(agent.delegationSequence, currentAgents);
+	}
 	const subagentTitles = new Map<string, string>();
 	const shownSubagentStarts = new Set<string>();
 	const shownSubagentEnds = new Set<string>();
@@ -1072,7 +1281,7 @@ export function eventsToLocalActivity(
 					id: `activity-${event.sequence}`,
 					label: `${title} started`,
 					detail: path,
-					artifactId: "codex-subagents",
+					subagentId: id,
 					kind: "subagent"
 				});
 			}
@@ -1080,7 +1289,7 @@ export function eventsToLocalActivity(
 				(byMessage[current] ??= []).push({
 					id: `activity-${event.sequence}`,
 					label: `${title} contacted`,
-					artifactId: "codex-subagents",
+					subagentId: id,
 					kind: "subagent"
 				});
 			}
@@ -1091,7 +1300,7 @@ export function eventsToLocalActivity(
 					(byMessage[current] ??= []).push({
 						id: `activity-${event.sequence}`,
 						label: `${title} interrupted`,
-						artifactId: "codex-subagents",
+						subagentId: id,
 						kind: "subagent"
 					});
 				}
@@ -1105,13 +1314,14 @@ export function eventsToLocalActivity(
 			const title = subagentTitle(prompt);
 			const ids = stringArrayField(item, "receiverThreadIds", "receiver_thread_ids");
 			for (const id of ids.length ? ids : [callId]) subagentTitles.set(id, title);
+			const linkedAgentId = ids[0] ?? subagentByDelegationSequence.get(event.sequence)?.[0]?.id;
 			if (!shownSubagentStarts.has(callId)) {
 				shownSubagentStarts.add(callId);
 				(byMessage[current] ??= []).push({
 					id: `activity-${event.sequence}`,
 					label: `${title} started`,
 					detail: prompt,
-					artifactId: "codex-subagents",
+					subagentId: linkedAgentId,
 					kind: "subagent"
 				});
 			}
@@ -1129,7 +1339,7 @@ export function eventsToLocalActivity(
 				(byMessage[current] ??= []).push({
 					id: `activity-${event.sequence}-${id}`,
 					label: `${subagentTitles.get(id)} ${status === "failed" ? "failed" : status === "interrupted" ? "interrupted" : "finished"}`,
-					artifactId: "codex-subagents",
+					subagentId: id,
 					kind: "subagent"
 				});
 			}
@@ -1143,7 +1353,7 @@ export function eventsToLocalActivity(
 				(byMessage[current] ??= []).push({
 					id: `activity-${event.sequence}`,
 					label: `${subagentTitles.get(threadId)} ${status === "failed" ? "failed" : status === "interrupted" ? "interrupted" : "finished"}`,
-					artifactId: "codex-subagents",
+					subagentId: threadId,
 					kind: "subagent"
 				});
 			}
@@ -1273,6 +1483,7 @@ export function eventsToLocalActivity(
 				existing.toolStatus = safeTool.toolStatus;
 				existing.artifactId = safeTool.artifactId;
 				existing.containerId = safeTool.containerId;
+				existing.inspectable = safeTool.inspectable;
 			} else {
 				if (safeTool.kind === "command") runActions.commands += 1;
 				if (safeTool.kind === "file_read") runActions.reads += 1;
@@ -1289,6 +1500,7 @@ export function eventsToLocalActivity(
 					kind: safeTool.kind,
 					artifactId: safeTool.artifactId,
 					containerId: safeTool.containerId,
+					inspectable: safeTool.inspectable,
 					toolStatus: safeTool.toolStatus
 				};
 				shownToolLines.set(safeTool.key, line);
@@ -1422,23 +1634,7 @@ export function eventsToArtifacts(events: RuntimeEvent[]): ArtifactRef[] {
 			}
 		});
 	}
-	const agents = eventsToSubagents(events);
-	if (agents.length) {
-		artifacts.set("codex-subagents", {
-			id: "codex-subagents",
-			kind: "report",
-			title: "Subagents",
-			summary: `${agents.filter((agent) => agent.status === "starting" || agent.status === "working").length} working · ${agents.filter((agent) => agent.status === "interrupted" || agent.status === "failed" || agent.status === "stopped" || agent.status === "unavailable").length} need attention · ${agents.filter((agent) => agent.status === "completed").length} completed`,
-			shownByAgent: true,
-			templateId: "synth.subagents.v1",
-			bindings: { agents },
-			preview: { variant: "generic" }
-		});
-	}
-	const result = [...artifacts.values()];
-	const subagents = result.findIndex((artifact) => artifact.id === "codex-subagents");
-	if (subagents > 0) result.unshift(result.splice(subagents, 1)[0]);
-	return result;
+	return [...artifacts.values()];
 }
 
 export function visualRecordToArtifact(visual: VisualInstanceRecord): ArtifactRef {
@@ -1617,8 +1813,12 @@ export function buildSessionViewSlice(
 		return cached.value;
 	}
 
-	const messages = eventsToMessages(events);
-	const artifacts = eventsToArtifacts(artifactEventsForSession(events, codexActivity));
+	// The durable journal contains parent and child thread records.  Main chat
+	// projections retain only parent-owned entries; opening a child uses
+	// `buildSubagentConversation` below against the same journal.
+	const conversationEvents = parentConversationEvents(events, { rootThreadId: sessionThreadId(session) });
+	const messages = eventsToMessages(conversationEvents);
+	const artifacts = eventsToArtifacts(artifactEventsForSession(conversationEvents, codexActivity));
 	let value: SessionViewSlice | null = null;
 
 	if (sessionIsLocalChat(session)) {
@@ -1629,7 +1829,7 @@ export function buildSessionViewSlice(
 				title: session.title,
 				messages,
 				artifacts,
-				activityByMessageId: eventsToLocalActivity(events, messages, reasoningDisplay)
+				activityByMessageId: eventsToLocalActivity(conversationEvents, messages, reasoningDisplay)
 			}
 		};
 	} else if (sessionIsSync(session)) {
@@ -1642,13 +1842,13 @@ export function buildSessionViewSlice(
 				remoteId: session.remoteId ?? session.id,
 				cursor: session.latestCursor,
 				messages,
-				activity: eventsToActivity(events, codexActivity),
+				activity: eventsToActivity(conversationEvents, codexActivity),
 				artifacts
 			}
 		};
 	} else if (sessionIsAsync(session)) {
-		const activity = eventsToActivity(events, codexActivity);
-		const phase = mapAsyncPhase(session.status, events);
+		const activity = eventsToActivity(conversationEvents, codexActivity);
+		const phase = mapAsyncPhase(session.status, conversationEvents);
 		value = {
 			kind: "async",
 			isRustIntern: session.metadata.runtime === "rust-intern",

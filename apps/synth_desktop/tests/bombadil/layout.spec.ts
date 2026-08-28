@@ -19,9 +19,7 @@ const layout = extract((state: any) => {
 		: null;
 	const visualRect = visual?.getBoundingClientRect();
 	const runtimeStatusRect = runtimeStatus?.getBoundingClientRect();
-	const subagents = document.querySelector<HTMLElement>('[data-testid="visual-subagents"]');
-	const subagentGroups = subagents?.querySelectorAll(".subagents-group") ?? [];
-	const subagentRows = subagents?.querySelectorAll<HTMLElement>(".subagent-row") ?? [];
+	const subagentConversation = document.querySelector<HTMLElement>('[data-testid="subagent-conversation"]');
 	const chatRows = document.querySelectorAll<HTMLElement>('[data-testid^="local-chat-"]');
 	return {
 		initialized: Boolean(document.querySelector(".app-shell")),
@@ -59,10 +57,10 @@ const layout = extract((state: any) => {
 			runtimeStatusRect && runtimeStatusRect.width <= 90 &&
 			!/(Laguna·|\bOR\b|Intern|\d+\/\d+)/.test(runtimeStatus.textContent ?? "")
 		),
-		subagentsValid: !subagents || (
-			subagentGroups.length === 2 &&
-			[...subagentRows].every((row) => ["active", "done", "failed"].includes(row.dataset.status ?? ""))
-		),
+		subagentsValid: !document.querySelector('[data-testid="visual-subagents"]') && (!subagentConversation || Boolean(
+			subagentConversation.querySelector('[data-testid="subagent-conversation-header"]') &&
+			subagentConversation.querySelector('[data-testid="chat-transcript"]')
+		)),
 		chatIndicatorsValid: [...chatRows].every((row) =>
 			row.querySelectorAll(".chat-working-indicator, .chat-unread-indicator").length <= 1
 		),
@@ -519,7 +517,7 @@ export const primary_connector_and_search_controls_remain_usable = always(() =>
 	!primaryNavigation.current.initialized || primaryNavigation.current.controlsUsable
 );
 
-export const subagent_visual_preserves_lifecycle_groups = always(() =>
+export const subagent_conversation_uses_the_shared_transcript = always(() =>
 	layout.current.subagentsValid
 );
 

@@ -159,26 +159,27 @@ pub fn assert_digbench_live_frames(info: &Value) -> Result<()> {
     Ok(())
 }
 
-pub fn harbor_policy_pins(requested: Option<&Value>) -> Result<Vec<Value>> {
-    let pins = if let Some(value) = requested {
+/// Harbor policies are a property of the inspected environment. A caller may
+/// preserve its already-bound refs, but Desktop must never substitute legacy
+/// policies for a newly discovered package such as DeepSWE.
+pub fn harbor_policy_pins(info: &Value, requested: Option<&Value>) -> Result<Vec<Value>> {
+    let source = requested.or_else(|| info.get("policy_refs"));
+    let pins = if let Some(value) = source {
         if let Some(arr) = value.as_array() {
             arr.clone()
         } else {
             bail!("Harbor policyRefs must be an array of policy_ref objects");
         }
     } else {
-        vec![
-            json!({"harness": "harbor_fused", "config": "luna_med"}),
-            json!({"harness": "harbor_fused", "config": "sol_med"}),
-        ]
+        bail!("Harbor requires policy_refs advertised by the inspected environment");
     };
     require_harbor_policy_pins(&pins)?;
     Ok(pins)
 }
 
 pub fn require_harbor_policy_pins(pins: &[Value]) -> Result<()> {
-    if pins.len() < 2 {
-        bail!("C5-02: Harbor requires two policy_refs registered before start");
+    if pins.is_empty() {
+        bail!("Harbor requires at least one advertised policy_ref before start");
     }
     for pin in pins {
         let harness = pin.get("harness").and_then(Value::as_str).unwrap_or("");
@@ -402,7 +403,10 @@ pub fn live_eval_bind_metadata(
     }
     match family {
         LiveEvalFamily::Harbor => {
-            bind.insert("policyRefs".into(), json!(harbor_policy_pins(policy_refs)?));
+            bind.insert(
+                "policyRefs".into(),
+                json!(harbor_policy_pins(info, policy_refs)?),
+            );
         }
         LiveEvalFamily::Digbench => {
             bind.insert(
@@ -499,7 +503,7 @@ mod tests {
     }
 
     #[test]
-    fn harbor_template_and_two_policies_before_start() {
+    fn harbor_template_binds_advertised_policies_before_start() {
         assert_eq!(LiveEvalFamily::Harbor.template_id(), LIVE_HARBOR_TEMPLATE);
         assert!(assert_template_matches_family(
             "live.container_rollouts.v1",
@@ -511,19 +515,18 @@ mod tests {
         );
         assert!(assert_harbor_live_frames(&json!({"live_frames": "native"})).is_err());
         assert!(assert_harbor_live_frames(&json!({"live_frames": "unsupported"})).is_ok());
-        let pins = harbor_policy_pins(None).unwrap();
-        assert_eq!(pins.len(), 2);
+        let info = json!({
+            "live_frames": "unsupported",
+            "policy_refs": [{"harness": "codex_agentic", "config": "agentic_codex"}]
+        });
+        let pins = harbor_policy_pins(&info, None).unwrap();
+        assert_eq!(pins.len(), 1);
         assert!(require_harbor_policy_pins(&[]).is_err());
         assert!(require_harbor_policy_pins(&[json!({"harness": "harbor_fused"})]).is_err());
-        let bind = live_eval_bind_metadata(
-            LiveEvalFamily::Harbor,
-            &json!({"live_frames": "unsupported"}),
-            None,
-        )
-        .unwrap();
+        let bind = live_eval_bind_metadata(LiveEvalFamily::Harbor, &info, None).unwrap();
         assert_eq!(bind["templateId"], LIVE_HARBOR_TEMPLATE);
         assert_eq!(bind["slot"], "stream");
-        assert_eq!(bind["policyRefs"].as_array().map(Vec::len), Some(2));
+        assert_eq!(bind["policyRefs"].as_array().map(Vec::len), Some(1));
         assert_eq!(
             resolve_live_eval_template(None, Some(LiveEvalFamily::Harbor)).unwrap(),
             LIVE_HARBOR_TEMPLATE
@@ -538,7 +541,12 @@ mod tests {
 
     #[test]
     fn harbor_register_writes_exact_live_eval_metadata() {
-        let bind = live_eval_bind_metadata(LiveEvalFamily::Harbor, &json!({}), None).unwrap();
+        let bind = live_eval_bind_metadata(
+            LiveEvalFamily::Harbor,
+            &json!({"policy_refs": [{"harness": "codex_agentic", "config": "agentic_codex"}]}),
+            None,
+        )
+        .unwrap();
         assert_eq!(
             bind,
             json!({
@@ -547,17 +555,17 @@ mod tests {
                 "slot": "stream",
                 "liveFrames": "unsupported",
                 "policyRefs": [
-                    {"harness": "harbor_fused", "config": "luna_med"},
-                    {"harness": "harbor_fused", "config": "sol_med"}
+                    {"harness": "codex_agentic", "config": "agentic_codex"}
                 ]
             })
         );
         assert!(live_eval_bind_metadata(
             LiveEvalFamily::Harbor,
-            &json!({"live_frames": "native"}),
+            &json!({"live_frames": "native", "policy_refs": [{"harness": "codex_agentic", "config": "agentic_codex"}]}),
             None
         )
         .is_err());
+        assert!(live_eval_bind_metadata(LiveEvalFamily::Harbor, &json!({}), None).is_err());
         assert!(assert_live_eval_slot(bind["slot"].as_str().unwrap()).is_ok());
     }
 

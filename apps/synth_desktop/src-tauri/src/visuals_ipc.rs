@@ -1835,16 +1835,19 @@ mod tests {
 
     #[test]
     fn harbor_and_digbench_register_metadata_is_visual_first() {
-        let harbor =
-            live_eval_bind_metadata(crate::visuals::LiveEvalFamily::Harbor, &json!({}), None)
-                .unwrap();
+        let harbor = live_eval_bind_metadata(
+            crate::visuals::LiveEvalFamily::Harbor,
+            &json!({"policy_refs": [{"harness": "codex_agentic", "config": "agentic_codex"}]}),
+            None,
+        )
+        .unwrap();
         assert_eq!(harbor["templateId"], "live.harbor_eval.v1");
         assert_eq!(harbor["slot"], "stream");
         assert_eq!(harbor["liveFrames"], "unsupported");
-        assert_eq!(harbor["policyRefs"].as_array().map(Vec::len), Some(2));
+        assert_eq!(harbor["policyRefs"].as_array().map(Vec::len), Some(1));
         assert!(live_eval_bind_metadata(
             crate::visuals::LiveEvalFamily::Harbor,
-            &json!({"live_frames": "native"}),
+            &json!({"live_frames": "native", "policy_refs": [{"harness": "codex_agentic", "config": "agentic_codex"}]}),
             None
         )
         .is_err());

@@ -98,6 +98,18 @@ export type LocalActivityLine = {
 	alwaysAllowSupported?: boolean;
 	/** Expanded raw detail (tool output / thought) when the line is opened. */
 	detail?: string;
+	/**
+	 * Bounded, inspectable payloads associated with an activity.  These are
+	 * normalized before they reach React so nested runtime values can never
+	 * accidentally stringify to `[object Object]` in a transcript.
+	 */
+	inspectable?: Array<{
+		label: string;
+		value: string;
+		format: "json" | "text";
+		truncated?: boolean;
+		unavailable?: boolean;
+	}>;
 	/** Whether the disclosure contains local thought text or a provider summary. */
 	reasoningDisplay?: "full" | "summary";
 	/** Opens the first-class runtime artifact associated with this activity. */
@@ -115,6 +127,8 @@ export type LocalActivityLine = {
 	placement?: "before" | "after";
 	/** Source event sequence — used by the placement chronology invariant. */
 	sequence?: number;
+	/** Child thread opened by this delegation activity. */
+	subagentId?: string;
 	/** Token totals surrounding a context compaction (for the disclosure). */
 	tokensBefore?: number;
 	tokensAfter?: number;

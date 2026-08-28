@@ -13,7 +13,7 @@ import { applyPreferencesToDocument } from "./preferences";
 import type { LagunaStatus, ModelPerformanceSummary, SynthAccountSummary, SynthBackendSettings } from "./bridge";
 import type { InferenceMonitor } from "./components/InferencePanel";
 import type { ApprovalMode, ApprovalPolicy, SandboxMode } from "./runtime/nativeCodex";
-import { ChatTranscript, OutputsPanel, outputContainerIds } from "./components/ChatTranscript";
+import { ChatTranscript, OutputsPanel, outputContainerIds, SubagentConversationHeader } from "./components/ChatTranscript";
 import { ContainerPane } from "./components/ContainerPane";
 import { ConnectorsPage } from "./components/ConnectorsPage";
 import { InferencePanel } from "./components/InferencePanel";
@@ -25,12 +25,13 @@ import { SettingsPage } from "./components/SettingsPage";
 import { VisualPane } from "./components/VisualHost";
 import { VisualsPage } from "./components/VisualsPage";
 import { WorkbenchSidePanel } from "./components/WorkbenchSidePanel";
-import { sessionIsLocalChat, sessionIsSync } from "./runtime/sessionView";
+import { sessionIsLocalChat, sessionIsSync, type SubagentConversation } from "./runtime/sessionView";
 import { bridges } from "./runtime/desktopBridge";
 
 export type MainView =
 	| { kind: "landing" }
-	| { kind: "chat"; chatId: string }
+	| { kind: "chat"; chatId: string; focusEventSequence?: number }
+	| { kind: "subagent"; chatId: string; agentId: string; parentAgentId?: string; focusEventSequence?: number }
 	| { kind: "sync"; sessionId: string }
 	| { kind: "async"; sessionId: string }
 	| { kind: "settings"; section?: "general" | "models" | "inference" | "voice" | "account" | "about" }
@@ -47,6 +48,7 @@ export type MainRoutesProps = {
 	selectedTargetId: string;
 	onSelectTarget: (id: string) => void;
 	activeChat: LocalChat | null;
+	activeSubagent: SubagentConversation | null;
 	activeChatSession: Session | undefined;
 	activeChatRunning: boolean;
 	activeChatWarmingUp: boolean;
@@ -110,6 +112,7 @@ export function MainRoutes(props: MainRoutesProps): ReactNode {
 		selectedTargetId,
 		onSelectTarget,
 		activeChat,
+		activeSubagent,
 		activeChatSession,
 		activeChatRunning,
 		activeChatWarmingUp,
@@ -345,6 +348,8 @@ export function MainRoutes(props: MainRoutesProps): ReactNode {
 						onActivityModeChange={onActivityModeChange}
 						medianTpsLabel={selectedModelMedianTpsLabel}
 						outputsOpen={showSidePanel && sidePanelTab === "outputs"}
+						focusActivitySequence={view.focusEventSequence ?? null}
+						onOpenSubagent={(agentId) => setView({ kind: "subagent", chatId: view.chatId, agentId })}
 						onToggleOutputs={() => {
 							const next = !(showSidePanel && sidePanelTab === "outputs");
 							setSidePanelTab("outputs");
@@ -409,6 +414,69 @@ export function MainRoutes(props: MainRoutesProps): ReactNode {
 										]
 									: [])
 							]}
+						/>
+					) : null}
+				</div>
+			) : null}
+
+			{view.kind === "subagent" && activeSubagent ? (
+				<div className={`workbench${openArtifact ? " with-visual" : ""}${openContainer ? " with-container" : ""}${containerPaneExpanded ? " container-expanded" : ""}${showSidePanel ? " with-side-panel" : ""}`} data-testid="subagent-conversation">
+					<div className="subagent-conversation">
+						<SubagentConversationHeader
+							title={activeSubagent.agent.title}
+							status={activeSubagent.agent.status}
+							parentTitle={activeSubagent.parentTitle}
+							model={activeSubagent.model}
+							reasoningDisplay={activeSubagent.reasoningDisplay}
+							onBack={() => {
+								if (view.parentAgentId) {
+									setView({
+										kind: "subagent",
+										chatId: view.chatId,
+										agentId: view.parentAgentId,
+										focusEventSequence: activeSubagent.agent.delegationSequence
+									});
+									return;
+								}
+								setView({ kind: "chat", chatId: view.chatId, focusEventSequence: activeSubagent.agent.delegationSequence });
+							}}
+						/>
+						<ChatTranscript
+							chat={activeSubagent.chat}
+							openArtifactId={openArtifactId}
+							onOpenArtifact={toggleArtifact}
+							openContainerId={openContainer?.id ?? null}
+							onOpenContainer={(id) => void toggleContainer(id)}
+							onApprove={(approvalId) => void controlActive("approve", { approvalId })}
+							onAlwaysAllow={(approvalId) => void controlActive("approve", { approvalId, decision: "always" })}
+							onReject={(approvalId) => void controlActive("reject", { approvalId })}
+							running={activeSubagent.agent.status === "starting" || activeSubagent.agent.status === "working"}
+							activityMode={preferences.toolActivity.mode}
+							onActivityModeChange={onActivityModeChange}
+							medianTpsLabel={selectedModelMedianTpsLabel}
+							outputsOpen={showSidePanel && sidePanelTab === "outputs"}
+							focusActivitySequence={view.focusEventSequence ?? null}
+							onOpenSubagent={(agentId) => setView({ kind: "subagent", chatId: view.chatId, agentId, parentAgentId: view.agentId })}
+							onToggleOutputs={() => {
+								const next = !(showSidePanel && sidePanelTab === "outputs");
+								setSidePanelTab("outputs");
+								setSidePanelOpen(next);
+							}}
+						/>
+					</div>
+					{openArtifact ? <VisualPane artifact={openArtifact} onClose={() => toggleArtifact(null)} /> : null}
+					{openContainer ? <ContainerPane container={openContainer} expanded={containerPaneExpanded} onExpandedChange={setContainerPaneExpanded} onProbe={() => void probeOpenContainer()} onClose={() => void toggleContainer(null)} /> : null}
+					{showSidePanel ? (
+						<WorkbenchSidePanel
+							activeTabId="outputs"
+							onTabChange={() => setSidePanelTab("outputs")}
+							onClose={() => setSidePanelOpen(false)}
+							tabs={[{
+								id: "outputs",
+								label: "Outputs",
+								badge: outputContainerIds(activeSubagent.chat).length + (activeSubagent.chat.artifacts?.length ?? 0),
+								content: <OutputsPanel chat={activeSubagent.chat} openArtifactId={openArtifactId} onOpenArtifact={toggleArtifact} openContainerId={openContainer?.id ?? null} onOpenContainer={(id) => void toggleContainer(id)} />
+							}]}
 						/>
 					) : null}
 				</div>

@@ -142,6 +142,7 @@ export default function App() {
 						selectedTargetId={c.selectedTargetId}
 						onSelectTarget={c.onSelectTarget}
 						activeChat={c.activeChat}
+						activeSubagent={c.activeSubagent}
 						activeChatSession={c.activeChatSession}
 						activeChatRunning={c.activeChatRunning}
 						activeChatWarmingUp={c.activeChatWarmingUp}

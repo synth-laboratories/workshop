@@ -227,39 +227,40 @@ sandbox_mode = "danger-full-access"
 
 ## Subagents
 
-Synth Workshop treats delegated work as a first-class session surface rather
-than parent-chat noise. It normalizes both Codex app-server collaboration
-protocols before rendering:
+Synth Workshop treats delegated work as a first-class conversation, rendered
+through the same transcript component and event journal as the parent chat. It
+normalizes both Codex app-server collaboration protocols before rendering:
 
 - **V1** binds a provisional `collabAgentToolCall` spawn to its child thread
   and uses the authoritative `agentsStates` snapshot for lifecycle state.
 - **V2** creates a child from `subAgentActivity` and uses that child's own turn
   lifecycle for result state.
 
-The visual has three lifecycle groups:
+The parent transcript retains a concise, timestamped delegation activity row;
+selecting it opens the child conversation. The child header provides the parent
+breadcrumb, task title, lifecycle status, model, and only the reasoning
+exposure actually supplied by the runtime. Back returns to the delegation that
+opened it. Child messages, tool calls, artifacts, and structured tool payloads
+are scoped to that child thread, so sibling work never appears in the selected
+conversation.
 
-- **Working** — starting or actively running children, with task, latest
-  summary, and elapsed time.
-- **Needs attention** — interrupted, failed, stopped, or unavailable children.
-- **Completed** — successfully finished children, retaining their final summary
-  and completion time for review.
-
-### Screenshot flow
+### Manual verification flow
 
 1. In **Settings → Models**, select a model with **Multi-agent
    compatibility** set to V1 or V2. This applies to new Codex sessions.
 2. Start a new Codex chat with that model.
 3. Ask the parent to delegate two independent tasks—for example, “Delegate one
    subagent to review the API boundary and another to inspect the tests.”
-4. The first child spawn automatically opens the Subagents pane. Capture the
-   **Working** state while both tasks are running.
-5. Let the parent synthesize the results, then capture the **Completed** state
-   with each child’s final summary.
+4. Select a parent delegation activity and verify that it opens a normal child
+   transcript with the child header.
+5. Expand a tool call's details to verify arguments and results remain
+   structured and bounded, then use the parent breadcrumb to return to the
+   original delegation.
+6. Let the parent synthesize the results and verify the child header reflects
+   the final lifecycle state.
 
-Child-agent output stays in this pane; the parent transcript records concise
-start/finish events instead of duplicating the child conversation. Compatibility
-is model-scoped: a provider that does not support the selected V1/V2 protocol
-can reject delegation or fail to read delegated tasks.
+Compatibility is model-scoped: a provider that does not support the selected
+V1/V2 protocol can reject delegation or fail to read delegated tasks.
 
 The surface is driven by V1 `collabAgentToolCall` state and V2
 `subAgentActivity` plus child-turn lifecycle events, without polling or

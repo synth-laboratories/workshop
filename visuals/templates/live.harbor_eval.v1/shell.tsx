@@ -10,6 +10,7 @@ import { Identifier } from "../../chrome/Identifier.tsx";
 import { VisualChrome, MetricStrip } from "../../chrome/VisualChrome.tsx";
 import { useLiveEvalStream } from "../../chrome/useLiveEvalStream.ts";
 import { formatMissingNumber } from "../../runtime/liveStream.ts";
+import { projectHarborAttempts } from "../../runtime/harborEval.ts";
 import { projectLiveEval } from "../../runtime/liveEvalReducer.ts";
 import { bindingSlots } from "../../runtime/bind.ts";
 import type { LiveEvalEvent, VisualBinding } from "../../runtime/types.ts";
@@ -31,57 +32,6 @@ const STREAM_WINDOW = 30;
 function asStream(raw: unknown): StreamPayload {
   if (raw && typeof raw === "object") return raw as StreamPayload;
   return {};
-}
-
-type TrialView = {
-  key: string;
-  instruction?: string;
-  sandbox?: string;
-  trialId?: string;
-  status: "planned" | "launched" | "verified" | "failed";
-  reward?: number | null;
-  verifierScript?: string;
-};
-
-/** Fold trial.planned / trial.launched / verifier / status into trial cards. */
-function foldTrials(events: LiveEvalEvent[]): TrialView[] {
-  const trials = new Map<string, TrialView>();
-  let anonymous = 0;
-  const keyOf = (payload: Record<string, unknown>) =>
-    String(payload.trial_id ?? payload.trialId ?? payload.attempt_id ?? `trial_${anonymous}`);
-  for (const event of events) {
-    const payload = (event.payload ?? {}) as Record<string, unknown>;
-    if (event.kind === "trial.planned") {
-      anonymous += 1;
-      const key = keyOf(payload);
-      trials.set(key, {
-        key,
-        instruction: typeof payload.instruction === "string" ? payload.instruction : undefined,
-        sandbox: typeof payload.sandbox === "string" ? payload.sandbox : undefined,
-        trialId: typeof payload.trial_id === "string" ? payload.trial_id : undefined,
-        status: "planned"
-      });
-    } else if (event.kind === "trial.launched") {
-      const key = keyOf(payload);
-      const existing = trials.get(key) ?? { key, status: "planned" as const };
-      trials.set(key, {
-        ...existing,
-        sandbox: typeof payload.sandbox === "string" ? payload.sandbox : existing.sandbox,
-        status: "launched"
-      });
-    } else if (event.kind === "verifier") {
-      const key = payload.trial_id != null ? String(payload.trial_id) : [...trials.keys()].at(-1) ?? keyOf(payload);
-      const existing = trials.get(key) ?? { key, status: "launched" as const };
-      const rewardTxt = payload["reward.txt"];
-      trials.set(key, {
-        ...existing,
-        status: "verified",
-        verifierScript: typeof payload.script === "string" ? payload.script : existing.verifierScript,
-        reward: typeof rewardTxt === "number" && Number.isFinite(rewardTxt) ? rewardTxt : null
-      });
-    }
-  }
-  return [...trials.values()];
 }
 
 export function Shell(props: ShellProps) {
@@ -110,13 +60,13 @@ export function Shell(props: ShellProps) {
       ? visibleEvents[selectedEventIndex]
       : visibleEvents.at(-1);
   const projection = projectLiveEval(visibleEvents);
-  const trials = useMemo(() => foldTrials(visibleEvents), [visibleEvents]);
+  const trials = useMemo(() => projectHarborAttempts(visibleEvents), [visibleEvents]);
   const status = [...visibleEvents].reverse().find((event) => event.kind === "status");
   const statusText = String(status?.payload.status ?? "");
   const terminal = ["completed", "finished", "failed", "cancelled"].includes(statusText.toLowerCase());
   const tools = visibleEvents.filter((event) => event.kind === "tools" || event.kind === "stdout" || event.kind === "stderr");
   const visibleTools = showFullStream ? tools : tools.slice(-STREAM_WINDOW);
-  const verifiedCount = trials.filter((trial) => trial.status === "verified").length;
+  const verifiedCount = trials.filter((trial) => trial.phase === "scored").length;
 
   return (
     <VisualChrome
@@ -186,18 +136,25 @@ export function Shell(props: ShellProps) {
                   {trial.sandbox ? <Identifier value={trial.sandbox} label="sandbox" max={20} copy={false} /> : null}
                   <span
                     className="sv-chip"
-                    data-tone={trial.status === "verified" ? (trial.reward != null && trial.reward > 0 ? "ok" : "warn") : trial.status === "failed" ? "bad" : undefined}
+                    data-tone={trial.phase === "scored" ? (trial.reward != null && trial.reward > 0 ? "ok" : "warn") : ["failed", "unavailable"].includes(trial.phase) ? "bad" : undefined}
                     style={{ marginLeft: "auto" }}
                   >
-                    {trial.status}
+                    {trial.phase.replaceAll("_", " ")}
                   </span>
                 </div>
+                {trial.environmentReleaseId ? (
+                  <p className="sv-mono" style={{ margin: "6px 0 0", fontSize: 11, color: "var(--sv-text-muted)" }}>
+                    release · {trial.environmentReleaseId}
+                    {trial.environmentStatus ? ` · ${trial.environmentStatus}` : ""}
+                    {trial.prewarmState ? ` · prewarm ${trial.prewarmState}` : ""}
+                  </p>
+                ) : null}
                 {trial.instruction ? (
                   <p style={{ margin: "6px 0 0", fontSize: 12.5 }}>{trial.instruction}</p>
                 ) : null}
-                {trial.status === "verified" ? (
+                {["scored", "unscored", "failed", "unavailable"].includes(trial.phase) ? (
                   <p className="sv-mono" style={{ margin: "6px 0 0", fontSize: 11, color: "var(--sv-text-muted)" }}>
-                    {trial.verifierScript ?? "verifier"} · reward.txt {trial.reward == null ? "missing (fails closed — never defaulted to 0)" : formatMissingNumber(trial.reward)}
+                    {trial.verifierScript ?? "verifier"} · reward {trial.reward == null ? "missing (fails closed — never defaulted to 0)" : formatMissingNumber(trial.reward)}{trial.reason ? ` · ${trial.reason}` : ""}
                   </p>
                 ) : null}
               </article>

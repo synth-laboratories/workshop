@@ -127,6 +127,38 @@ test("C7-W04 same reducer: craftax frames, harbor reward.txt, digbench neither",
   assert.ok(d.kinds.includes("stats"));
 });
 
+test("Harbor sibling-container events retain a single DeepSWE attempt and native reward", async () => {
+  const { projectHarborAttempts } = await import("../runtime/harborEval.ts");
+  const attempts = projectHarborAttempts([
+    {
+      kind: "env.episode.opened",
+      sequence: 1,
+      payload: {
+        trial_image_id: "deepswe/anko-default-function-arguments",
+        environment_release: {
+          environment_release_id: "harbor:anko-default-function-arguments:abc123",
+          status: "certified",
+          prewarm: { state: "required" },
+          runnable: false,
+        },
+      },
+    },
+    { kind: "nested.workspace.extracted", sequence: 2, payload: {} },
+    { kind: "span.policy.opened", sequence: 3, payload: {} },
+    { kind: "nested.collected", sequence: 4, payload: { step: 0, exit_code: 0 } },
+    { kind: "span.verifier.opened", sequence: 5, payload: {} },
+    { kind: "nested.verified", sequence: 6, payload: { exit_code: 0 } },
+    { kind: "reward_signal", sequence: 7, payload: { value: 0 } },
+    { kind: "status", sequence: 8, payload: { status: "completed" } },
+  ]);
+  assert.equal(attempts.length, 1);
+  assert.equal(attempts[0].environmentReleaseId, "harbor:anko-default-function-arguments:abc123");
+  assert.equal(attempts[0].prewarmState, "required");
+  assert.equal(attempts[0].runnable, false);
+  assert.equal(attempts[0].phase, "scored");
+  assert.equal(attempts[0].reward, 0);
+});
+
 test("C7-W01 forbidden slots live/jobs fail", () => {
   assert.match(assertLiveEvalSlot("live"), /Forbidden live-eval slot "live"/);
   assert.match(assertLiveEvalSlot("jobs"), /Forbidden live-eval slot "jobs"/);

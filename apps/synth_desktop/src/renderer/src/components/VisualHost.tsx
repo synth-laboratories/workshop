@@ -8,7 +8,6 @@ import { mergeOptimizerEventPage, type OptimizerEventCursorState } from "../runt
 import { MermaidVisual } from "./MermaidVisual";
 import { SystemsMapVisual } from "./SystemsMapVisual";
 import { SystemsDynamicVisual } from "./SystemsDynamicVisual";
-import type { SubagentState } from "../runtime/sessionView";
 
 type ShellProps = {
 	title?: string;
@@ -37,66 +36,6 @@ export function artifactFromVisualRecord(visual: VisualRecord): ArtifactRef {
 						: "generic"
 		}
 	};
-}
-
-function elapsedLabel(value: string, now: number): string {
-	const seconds = Math.max(0, Math.floor((now - Date.parse(value)) / 1000));
-	if (seconds < 60) return `${seconds}s`;
-	if (seconds < 3600) return `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
-	return `${Math.floor(seconds / 3600)}h`;
-}
-
-function subagentStatusLabel(status: SubagentState["status"]): string {
-	return ({
-		starting: "Starting",
-		working: "Working",
-		completed: "Completed",
-		interrupted: "Interrupted",
-		failed: "Failed",
-		stopped: "Stopped",
-		unavailable: "Unavailable"
-	})[status];
-}
-
-function subagentMarker(id: string): string {
-	let value = 0;
-	for (let index = 0; index < id.length; index += 1) value = (value + id.charCodeAt(index)) % 2;
-	return value ? "✣" : "✺";
-}
-
-function SubagentsVisual({ artifact }: { artifact: ArtifactRef }) {
-	const resolved = propsFromBindings(artifact.bindings);
-	const agents = Array.isArray(resolved.props.agents) ? resolved.props.agents as SubagentState[] : [];
-	const [now, setNow] = useState(Date.now());
-	useEffect(() => {
-		const timer = window.setInterval(() => setNow(Date.now()), 1_000);
-		return () => window.clearInterval(timer);
-	}, []);
-	const groups = [
-		{ label: "Working", agents: agents.filter((agent) => agent.status === "starting" || agent.status === "working") },
-		{ label: "Needs attention", agents: agents.filter((agent) => agent.status === "interrupted" || agent.status === "failed" || agent.status === "stopped" || agent.status === "unavailable") },
-		{ label: "Completed", agents: agents.filter((agent) => agent.status === "completed") }
-	];
-	return (
-		<div className="subagents-visual" data-testid="visual-subagents">
-			{groups.map((group) => (
-				<section key={group.label} className="subagents-group">
-					<h3>{group.label} · {group.agents.length}</h3>
-					{group.agents.length === 0 ? <p className="subagents-empty">No {group.label.toLowerCase()} subagents</p> : null}
-					{group.agents.map((agent) => (
-						<div className="subagent-row" key={agent.id} data-status={agent.status}>
-							<span className={`subagent-mark mark-${agent.status}`} aria-hidden>{subagentMarker(agent.id)}</span>
-							<div className="subagent-copy">
-								<div className="subagent-title-row"><strong>{agent.title}</strong><span className={`subagent-state state-${agent.status}`}>{subagentStatusLabel(agent.status)}</span></div>
-								{agent.summary ? <p>{agent.summary}</p> : null}
-							</div>
-							<time dateTime={agent.updatedAt}>{agent.status === "starting" || agent.status === "working" ? elapsedLabel(agent.startedAt, now) : elapsedLabel(agent.updatedAt, now) + " ago"}</time>
-						</div>
-					))}
-				</section>
-			))}
-		</div>
-	);
 }
 
 function CraftaxEvalVisual({ artifact }: { artifact: ArtifactRef }) {
@@ -385,13 +324,6 @@ export function VisualHost({ artifact }: { artifact: ArtifactRef }) {
 			</VisualErrorBoundary>
 		);
 	}
-	if (artifact.templateId === "synth.subagents.v1") {
-		return (
-			<VisualErrorBoundary key={`${artifact.id}:${artifact.templateId ?? "subagents"}`}>
-				<SubagentsVisual artifact={artifact} />
-			</VisualErrorBoundary>
-		);
-	}
 	if (artifact.preview?.variant && artifact.preview.variant !== "generic" && !artifact.templateId) {
 		return (
 			<VisualErrorBoundary key={`${artifact.id}:preview`}>
@@ -408,16 +340,15 @@ export function VisualHost({ artifact }: { artifact: ArtifactRef }) {
 
 export function VisualPane({ artifact, onClose }: { artifact: ArtifactRef; onClose: () => void }) {
 	const [expanded, setExpanded] = useState(false);
-	const isSubagents = artifact.templateId === "synth.subagents.v1";
 	const isMermaid = artifact.templateId === "diagram.mermaid.v1" || artifact.rendererKind === "mermaid";
 	const isSystemsDynamic = artifact.templateId === "diagram.systems.dynamic.v1" || artifact.rendererKind === "systems-dynamic";
 	const isSystems = artifact.templateId === "diagram.systems.v1" || artifact.rendererKind === "systems";
-	const kindLabel = isSubagents ? "Agents" : isSystemsDynamic ? "Benjamin Dicken Style" : isSystems ? "Systems map · 2D" : isMermaid ? "Diagram" : "Visual";
+	const kindLabel = isSystemsDynamic ? "Benjamin Dicken Style" : isSystems ? "Systems map · 2D" : isMermaid ? "Diagram" : "Visual";
 	return (
 		<aside
 			className={`visual-pane${expanded ? " visual-pane-expanded" : ""}`}
 			data-testid="visual-pane"
-			aria-label={isSubagents ? "Subagents" : "Visual artifact"}
+			aria-label="Visual artifact"
 		>
 			<header className="visual-pane-head">
 				<div className="visual-pane-head-text">

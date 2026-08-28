@@ -29,6 +29,10 @@ type Props = {
 	medianTpsLabel?: string | null;
 	outputsOpen?: boolean;
 	onToggleOutputs?: () => void;
+	/** Opens a child conversation from an explicitly-linked delegation event. */
+	onOpenSubagent?: (agentId: string) => void;
+	/** Parent activity sequence to reveal after returning from a child conversation. */
+	focusActivitySequence?: number | null;
 };
 
 export function outputContainerIds(chat: LocalChat): string[] {
@@ -54,7 +58,7 @@ export function OutputsPanel({ chat, openArtifactId, onOpenArtifact, openContain
 		{artifacts.length > 0 ? <section className="visuals-rail" data-testid="visuals-rail"><h3>Visuals</h3>{artifacts.map((artifact) => {
 			const active = openArtifactId === artifact.id;
 			return <button key={artifact.id} type="button" className={`resource-shelf-row${active ? " active" : ""}`} onClick={() => onOpenArtifact(artifact.id)} title={active ? `Hide ${artifact.title}` : `Show ${artifact.title}`} aria-pressed={active} aria-label={active ? `Hide visual ${artifact.title}` : `Show visual ${artifact.title}`} data-testid={`visuals-icon-${artifact.id}`}>
-				<span className="resource-shelf-icon">{artifact.templateId === "synth.subagents.v1" ? <IconSubagents /> : <IconVisual />}</span><span><strong>{artifact.title}</strong><code>{artifact.templateId ?? artifact.kind}</code></span><span aria-hidden>›</span>
+				<span className="resource-shelf-icon"><IconVisual /></span><span><strong>{artifact.title}</strong><code>{artifact.templateId ?? artifact.kind}</code></span><span aria-hidden>›</span>
 			</button>;
 		})}</section> : null}
 	</div>;
@@ -75,16 +79,6 @@ function IconVisual() {
 	);
 }
 
-function IconSubagents() {
-	return (
-		<svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden>
-			<circle cx="8" cy="5" r="2.25" stroke="currentColor" strokeWidth="1.25" />
-			<path d="M3.5 13c.3-2.35 1.8-3.55 4.5-3.55s4.2 1.2 4.5 3.55" stroke="currentColor" strokeWidth="1.25" strokeLinecap="round" />
-			<path d="M2.2 4.25h1.55M12.25 4.25h1.55M3 7.2l1.35-.65M13 7.2l-1.35-.65" stroke="currentColor" strokeWidth="1.1" strokeLinecap="round" />
-		</svg>
-	);
-}
-
 /** Exact context-compaction glyph used by the installed Codex app. */
 function IconContextCompaction() {
 	return (
@@ -97,6 +91,23 @@ function IconContextCompaction() {
 	);
 }
 
+function ActivityDetails({ line }: { line: LocalActivityLine }) {
+	return (
+		<div className="activity-details">
+			{line.detail ? <pre className="local-activity-detail-copy">{line.detail}</pre> : null}
+			{line.inspectable?.map((entry, index) => (
+				<section className="activity-inspectable" key={`${entry.label}-${index}`}>
+					<div className="activity-inspectable-head">
+						<strong>{entry.label}</strong>
+						<span>{entry.unavailable ? "Not exposed" : entry.truncated ? "Truncated" : entry.format.toUpperCase()}</span>
+					</div>
+					<pre className={`activity-inspectable-value format-${entry.format}`}>{entry.value}</pre>
+				</section>
+			))}
+		</div>
+	);
+}
+
 function ActivityLine({
 	line,
 	visualOpen,
@@ -106,6 +117,7 @@ function ActivityLine({
 	onApprove,
 	onAlwaysAllow,
 	onReject,
+	onOpenSubagent,
 	live: _live = false
 }: {
 	line: LocalActivityLine;
@@ -116,13 +128,28 @@ function ActivityLine({
 	onApprove?: (approvalId: string) => void;
 	onAlwaysAllow?: (approvalId: string) => void;
 	onReject?: (approvalId: string) => void;
+	onOpenSubagent?: (agentId: string) => void;
 	live?: boolean;
 }) {
 	const [open, setOpen] = useState(false);
 	const isVisualCue = Boolean(onToggleVisual) || line.kind === "visual";
 	const isFile =
 		Boolean(line.path) || line.kind === "file_read" || line.kind === "file_write";
-	const expandable = Boolean(line.detail) && !isVisualCue && !isFile;
+	const expandable = Boolean(line.detail || line.inspectable?.length) && !isFile;
+	if (line.subagentId && onOpenSubagent) {
+		return (
+			<button
+				type="button"
+				className="local-activity subagent-activity"
+				onClick={() => onOpenSubagent(line.subagentId!)}
+				data-testid={`activity-${line.id}`}
+				data-activity-sequence={line.sequence}
+			>
+				<span className="local-activity-label">{line.label}</span>
+				<span className="local-activity-hint">Open</span>
+			</button>
+		);
+	}
 	if (line.kind === "approval" && line.approvalId) {
 		const approvalId = line.approvalId ?? line.id;
 		return (
@@ -209,6 +236,8 @@ function ActivityLine({
 					<span className="tool-activity-label">{line.label}</span>
 					{line.detail ? <code title={line.detail}>{line.detail}</code> : null}
 				</span>
+				{expandable ? <button type="button" className="tool-activity-detail-toggle" onClick={() => setOpen((value) => !value)} aria-expanded={open}>Details</button> : null}
+				{open ? <ActivityDetails line={line} /> : null}
 			</div>
 		);
 	}
@@ -234,6 +263,7 @@ function ActivityLine({
 					{line.detail ? <span className="tool-activity-detail">{line.detail}</span> : null}
 					<span className={`tool-status tool-status-${line.toolStatus}`}>{line.toolStatus === "running" ? "Running" : line.toolStatus === "completed" ? "Completed" : "Failed"}</span>
 				</span>
+				{expandable ? <button type="button" className="tool-activity-detail-toggle" onClick={() => setOpen((value) => !value)} aria-expanded={open}>Details</button> : null}
 				{onToggleVisual ? (
 					<button
 						type="button"
@@ -260,6 +290,7 @@ function ActivityLine({
 						<ContainerIcon />
 					</button>
 				) : null}
+				{open ? <ActivityDetails line={line} /> : null}
 			</div>
 		);
 	}
@@ -289,7 +320,7 @@ function ActivityLine({
 
 	const isReasoning = line.kind === "thought";
 	return (
-		<div className={`local-activity expandable${isReasoning ? " reasoning-disclosure" : ""}${open ? " open" : ""}`}>
+		<div className={`local-activity expandable${isReasoning ? " reasoning-disclosure" : ""}${open ? " open" : ""}`} data-activity-sequence={line.sequence}>
 			<button
 				type="button"
 				className="local-activity-toggle"
@@ -307,9 +338,9 @@ function ActivityLine({
 				) : <span className="local-activity-hint">{open ? "Hide" : "Show"}</span>}
 			</button>
 			{open ? (
-				<pre id={`activity-detail-${line.id}`} className="local-activity-detail" data-testid={`activity-detail-${line.id}`}>
-					{line.detail}
-				</pre>
+				<div id={`activity-detail-${line.id}`} className="local-activity-detail" data-testid={`activity-detail-${line.id}`}>
+					<ActivityDetails line={line} />
+				</div>
 			) : !isReasoning ? (
 				<div className="local-activity-wave" aria-hidden />
 			) : null}
@@ -340,7 +371,7 @@ function VisualCard({
 			data-testid={`artifact-chip-${artifact.id}`}
 		>
 			<span className="visual-card-icon">
-				{artifact.templateId === "synth.subagents.v1" ? <IconSubagents /> : <IconVisual />}
+				<IconVisual />
 			</span>
 			<span className="visual-card-body">
 				<span className="visual-card-title">{artifact.title}</span>
@@ -504,6 +535,45 @@ function UserMessage({ id, body, images, onExpansionChange }: { id: string; body
 	);
 }
 
+export function SubagentConversationHeader({
+	title,
+	status,
+	parentTitle,
+	model,
+	reasoningDisplay,
+	onBack
+}: {
+	title: string;
+	status: "starting" | "working" | "completed" | "interrupted" | "failed" | "stopped" | "unavailable";
+	parentTitle: string;
+	model: string | null;
+	reasoningDisplay: "none" | "summary" | "full";
+	onBack: () => void;
+}) {
+	const label = ({
+		starting: "Starting",
+		working: "Working",
+		completed: "Completed",
+		interrupted: "Interrupted",
+		failed: "Failed",
+		stopped: "Stopped",
+		unavailable: "Unavailable"
+	})[status];
+	const reasoning = reasoningDisplay === "none" ? "Reasoning · Not exposed" : `Reasoning · ${reasoningDisplay === "summary" ? "Summary" : "Full"}`;
+	return (
+		<header className="subagent-conversation-header" data-testid="subagent-conversation-header">
+			<button type="button" className="subagent-back" onClick={onBack} aria-label={`Back to ${parentTitle}`} data-testid="subagent-back">←</button>
+			<div className="subagent-conversation-title">
+				<span className="subagent-conversation-breadcrumb">{parentTitle}</span>
+				<strong>{title}</strong>
+			</div>
+			<span className={`subagent-conversation-status status-${status}`} data-testid="subagent-status">{label}</span>
+			{model ? <span className="subagent-conversation-meta">{model}</span> : null}
+			<span className="subagent-conversation-meta">{reasoning}</span>
+		</header>
+	);
+}
+
 export function ChatTranscript({
 	chat,
 	openArtifactId,
@@ -520,7 +590,9 @@ export function ChatTranscript({
 	onActivityModeChange,
 	medianTpsLabel = null,
 	outputsOpen = false,
-	onToggleOutputs
+	onToggleOutputs,
+	onOpenSubagent,
+	focusActivitySequence = null
 }: Props) {
 	const [expandedGroupIds, setExpandedGroupIds] = useState<Set<string>>(() => new Set());
 	const [modeMenuOpen, setModeMenuOpen] = useState(false);
@@ -587,6 +659,16 @@ export function ChatTranscript({
 		return () => cancelAnimationFrame(frame);
 	}, [transcriptContentKey]);
 
+	useLayoutEffect(() => {
+		if (focusActivitySequence == null) return;
+		const scroller = scrollRef.current;
+		const target = scroller?.querySelector<HTMLElement>(`[data-activity-sequence="${focusActivitySequence}"]`);
+		if (!target) return;
+		followsTailRef.current = false;
+		target.scrollIntoView({ block: "center" });
+		target.focus?.({ preventScroll: true });
+	}, [chat.id, focusActivitySequence]);
+
 	useEffect(() => {
 		const announcement = activityStatusAnnouncement(previousActiveRef.current, activeLines, running);
 		previousActiveRef.current = activeLines;
@@ -636,6 +718,7 @@ export function ChatTranscript({
 				onApprove={onApprove}
 				onAlwaysAllow={onAlwaysAllow}
 				onReject={onReject}
+				onOpenSubagent={onOpenSubagent}
 				live={live && line.kind === "thought"}
 			/>
 		);
@@ -763,7 +846,7 @@ export function ChatTranscript({
 								<span className="model-working-dots" aria-hidden><i /><i /><i /></span>
 								<span>{warmingUp ? "Warming up…" : "Working…"}</span>
 								{transcriptMedianTpsLabel ? <span className="model-working-throughput" data-testid="model-working-median-tps">{transcriptMedianTpsLabel}</span> : null}
-								<button type="button" onClick={onStop} aria-label="Stop generating">Stop</button>
+								{onStop ? <button type="button" onClick={onStop} aria-label="Stop generating">Stop</button> : null}
 							</div>
 						) : null}
 					</div>

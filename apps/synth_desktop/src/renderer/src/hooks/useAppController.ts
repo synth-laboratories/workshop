@@ -44,6 +44,7 @@ import { useForeignSessionEventBridge } from "./useForeignSessionEventBridge";
 import { useModelPerformanceLabels } from "./useModelPerformanceLabels";
 import {
 	buildLandingState,
+	buildSubagentConversation,
 	executionTargetToUiId,
 	sessionIsAsync,
 	sessionIsLocalChat,
@@ -180,7 +181,6 @@ export function useAppController() {
 	const [workspaceScope, setWorkspaceScope] = useState<ConversationWorkspaceScope | null>(null);
 	const eventsBySessionRef = useRef(eventsBySession);
 	const nativeSequencesRef = useRef(new Map<string, number>());
-	const autoOpenedSubagentsRef = useRef(new Set<string>());
 	const [failedSend, setFailedSend] = useState<FailedSend | null>(null);
 	const [codexOauthConfigured, setCodexOauthConfigured] = useState(false);
 	const [codexOauthStatus, setCodexOauthStatus] = useState<CodexOauthStatus | undefined>();
@@ -498,6 +498,7 @@ export function useAppController() {
 
 	const activeSessionId = useMemo(() => {
 		if (view.kind === "chat") return view.chatId;
+		if (view.kind === "subagent") return view.chatId;
 		if (view.kind === "sync") return view.sessionId;
 		if (view.kind === "async") return view.sessionId;
 		return null;
@@ -669,8 +670,16 @@ export function useAppController() {
 
 	const activeChat =
 		view.kind === "chat" ? (state.chats.find((c) => c.id === view.chatId) ?? null) : null;
+	const activeSubagent = useMemo(() => {
+		if (view.kind !== "subagent") return null;
+		const session = sessions.find((candidate) => candidate.id === view.chatId);
+		if (!session) return null;
+		return buildSubagentConversation(session, eventsBySession[session.id] ?? [], view.agentId);
+	}, [eventsBySession, sessions, view]);
 	const activeChatSession = activeChat
 		? sessions.find((candidate) => candidate.id === activeChat.id)
+		: activeSubagent && view.kind === "subagent"
+			? sessions.find((candidate) => candidate.id === view.chatId)
 		: undefined;
 	// Session status + event arbitration — single selector, not an App.tsx IIFE.
 	const activeChatRunning = activeChat
@@ -684,7 +693,9 @@ export function useAppController() {
 	const activeLocalModel = activeChatSession?.target.kind === "local";
 	const workbenchWidth = viewportWidth - (sidebarVisible ? sidebarWidth : 0);
 	const sidePanelFits = workbenchWidth >= 368 + 300;
-	const showSidePanel = sidePanelOpen && sidePanelFits && (sidePanelTab === "outputs" || activeLocalModel);
+	const showSidePanel = sidePanelOpen && sidePanelFits && (
+		view.kind === "subagent" ? sidePanelTab === "outputs" : sidePanelTab === "outputs" || activeLocalModel
+	);
 	const activeSync =
 		view.kind === "sync"
 			? (state.syncSessions.find((s) => s.id === view.sessionId) ?? null)
@@ -695,13 +706,17 @@ export function useAppController() {
 			? standaloneVisual
 			: view.kind === "chat" && activeChat
 				? (activeChat.artifacts?.find((a) => a.id === openArtifactId) ?? null)
-				: view.kind === "sync" && activeSync
-					? (activeSync.artifacts?.find((a) => a.id === openArtifactId) ?? null)
-					: null;
+				: view.kind === "subagent" && activeSubagent
+					? (activeSubagent.chat.artifacts?.find((a) => a.id === openArtifactId) ?? null)
+					: view.kind === "sync" && activeSync
+						? (activeSync.artifacts?.find((a) => a.id === openArtifactId) ?? null)
+						: null;
 
 	const viewKey =
 		view.kind === "chat"
 			? `chat:${view.chatId}`
+			: view.kind === "subagent"
+				? `subagent:${view.chatId}:${view.agentId}`
 			: view.kind === "sync"
 				? `sync:${view.sessionId}`
 				: view.kind === "async"
@@ -714,16 +729,6 @@ export function useAppController() {
 		setOpenContainer(null);
 		setContainerPaneExpanded(false);
 	}, [viewKey]);
-
-	useEffect(() => {
-		if (openArtifactId || openContainer) return;
-		const surface = activeChat ?? activeSync;
-		const subagents = surface?.artifacts?.find((artifact) => artifact.templateId === "synth.subagents.v1");
-		if (!surface || !subagents || autoOpenedSubagentsRef.current.has(surface.id)) return;
-		autoOpenedSubagentsRef.current.add(surface.id);
-		setStandaloneVisual(null);
-		setOpenArtifactId(subagents.id);
-	}, [activeChat, activeSync, openArtifactId, openContainer]);
 
 	useEffect(() => {
 		if (!openArtifactId && !openContainer) return;
@@ -1251,8 +1256,10 @@ export function useAppController() {
 				? "Data"
 				: view.kind === "async"
 					? "Intern · Background"
-					: view.kind === "sync"
-						? (activeSync?.title ?? "Intern · Live")
+			: view.kind === "sync"
+					? (activeSync?.title ?? "Intern · Live")
+					: view.kind === "subagent"
+						? (activeSubagent?.agent.title ?? "Subagent")
 						: view.kind === "chat"
 							? (activeChat?.title ?? "Chat")
 							: (EXECUTION_TARGETS.find((t) => t.id === selectedTargetId)?.label ?? "Synth");
@@ -1383,6 +1390,7 @@ export function useAppController() {
 		state,
 		activeSessionId,
 		activeChat,
+		activeSubagent,
 		activeChatSession,
 		activeChatRunning,
 		activeChatWarmingUp,

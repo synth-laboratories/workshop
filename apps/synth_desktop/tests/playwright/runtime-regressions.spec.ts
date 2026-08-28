@@ -301,7 +301,7 @@ test("Settings can force and reset a model multi-agent preset", async ({ page })
 	]);
 });
 
-test("V1 collaboration events drive the first-class Subagents visual without treating idle as done", async ({ page }) => {
+test("V1 child events open the shared conversation transcript without treating idle as done", async ({ page }) => {
 	await page.addInitScript(() => {
 		type Event = { sessionId: string; method: string; params: Record<string, unknown> };
 		let listener: ((event: Event) => void) | undefined;
@@ -340,21 +340,31 @@ test("V1 collaboration events drive the first-class Subagents visual without tre
 		send("thread/status/changed", { threadId: "child-thread", status: { type: "active" } });
 	});
 
-	const visual = page.getByTestId("visual-subagents");
-	await expect(visual).toBeVisible();
-	await expect(visual).toContainText("Working · 1");
-	await expect(visual).toContainText("Review migration safety");
-	await expect(page.getByText("Review migration safety started")).toBeVisible();
+	const delegation = page.getByText("Review migration safety started");
+	await expect(delegation).toBeVisible();
+	await delegation.click();
+	const child = page.getByTestId("subagent-conversation");
+	await expect(child).toBeVisible();
+	await expect(child.getByTestId("chat-transcript")).toBeVisible();
+	await expect(child.getByTestId("subagent-status")).toHaveText("Working");
+	await expect(child).toContainText("Review migration safety. Check the runtime boundary.");
 
 	await page.evaluate(() => {
 		const emit = (window as typeof window & { __emitCodexEvent: (event: { sessionId: string; method: string; params: Record<string, unknown> }) => void }).__emitCodexEvent;
 		emit({ sessionId: "subagent-session", method: "agentMessage/completed", params: { threadId: "child-thread", messageId: "child-message", content: "Migration boundary is safe." } });
+		emit({ sessionId: "subagent-session", method: "item/completed", params: { threadId: "child-thread", item: {
+			id: "child-tool", type: "mcpToolCall", server: "synth_visuals", tool: "visual_manage", status: "completed",
+			arguments: { operation: "create", arguments: { count: 0, nested: { safe: true } } },
+			result: { structuredContent: { visual: { id: "child-visual", templateId: "diagram.mermaid.v1", title: "Child map" } } }
+		} } });
 		emit({ sessionId: "subagent-session", method: "thread/status/changed", params: { threadId: "child-thread", status: { type: "idle" } } });
 	});
 
-	await expect(visual).toContainText("Working · 1");
-	await expect(visual).toContainText("Completed · 0");
-	await expect(page.getByTestId("chat-transcript")).not.toContainText("Migration boundary is safe.");
+	await expect(child).toContainText("Migration boundary is safe.");
+	await expect(child.getByTestId("subagent-status")).toHaveText("Working");
+	await child.getByRole("button", { name: "Details" }).click();
+	await expect(child).toContainText('"count": 0');
+	await expect(child).not.toContainText("[object Object]");
 
 	await page.evaluate(() => {
 		const emit = (window as typeof window & { __emitCodexEvent: (event: { sessionId: string; method: string; params: Record<string, unknown> }) => void }).__emitCodexEvent;
@@ -364,13 +374,13 @@ test("V1 collaboration events drive the first-class Subagents visual without tre
 		} } });
 	});
 
-	await expect(visual).toContainText("Working · 0");
-	await expect(visual).toContainText("Completed · 1");
-	await expect(visual).toContainText("Migration boundary is safe.");
-	await expect(page.getByTestId("chat-transcript")).not.toContainText("Migration boundary is safe.");
+	await expect(child.getByTestId("subagent-status")).toHaveText("Completed");
+	await child.getByTestId("subagent-back").click();
+	await expect(page.getByTestId("subagent-conversation")).toHaveCount(0);
+	await expect(page.getByTestId("chat-transcript")).toContainText("Review migration safety started");
 });
 
-test("V2 subAgentActivity and child turn lifecycle drive the same first-class Subagents visual", async ({ page }) => {
+test("V2 child lifecycle uses the same transcript route and isolates sibling output", async ({ page }) => {
 	await page.addInitScript(() => {
 		type Event = { sessionId: string; method: string; params: Record<string, unknown> };
 		let listener: ((event: Event) => void) | undefined;
@@ -402,30 +412,26 @@ test("V2 subAgentActivity and child turn lifecycle drive the same first-class Su
 		send("turn/started", { threadId: "child-v2-thread", turn: { id: "child-v2-turn-1" } });
 	});
 
-	const visual = page.getByTestId("visual-subagents");
-	await expect(visual).toBeVisible();
-	await expect(visual).toContainText("Working · 1");
-	await expect(visual).toContainText("Readme Location");
-	await expect(visual.getByText("Working", { exact: true })).toBeVisible();
-	await expect(page.getByText("Readme Location started")).toBeVisible();
+	await page.getByText("Readme Location started").click();
+	const child = page.getByTestId("subagent-conversation");
+	await expect(child).toBeVisible();
+	await expect(child.getByTestId("chat-transcript")).toBeVisible();
+	await expect(child.getByTestId("subagent-status")).toHaveText("Working");
 
 	await page.evaluate(() => {
 		const emit = (window as typeof window & { __emitCodexV2Event: (event: { sessionId: string; method: string; params: Record<string, unknown> }) => void }).__emitCodexV2Event;
 		emit({ sessionId: "subagent-v2-session", method: "agentMessage/completed", params: { threadId: "child-v2-thread", messageId: "child-v2-message", content: "README location confirmed." } });
 		emit({ sessionId: "subagent-v2-session", method: "thread/status/changed", params: { threadId: "child-v2-thread", status: { type: "idle" } } });
 	});
-	await expect(visual).toContainText("Working · 1");
-	await expect(visual).toContainText("Completed · 0");
-	await expect(page.getByTestId("chat-transcript")).not.toContainText("README location confirmed.");
+	await expect(child).toContainText("README location confirmed.");
+	await expect(child.getByTestId("subagent-status")).toHaveText("Working");
 
 	await page.evaluate(() => {
 		const emit = (window as typeof window & { __emitCodexV2Event: (event: { sessionId: string; method: string; params: Record<string, unknown> }) => void }).__emitCodexV2Event;
 		emit({ sessionId: "subagent-v2-session", method: "turn/completed", params: { threadId: "child-v2-thread", turn: { status: "completed", lastAgentMessage: "README location confirmed." } } });
 	});
-	await expect(visual).toContainText("Working · 0");
-	await expect(visual).toContainText("Completed · 1");
-	await expect(visual).toContainText("README location confirmed.");
-	await expect(page.getByTestId("chat-transcript")).not.toContainText("The provider ended the turn without a response");
+	await expect(child.getByTestId("subagent-status")).toHaveText("Completed");
+	await expect(child).not.toContainText("The provider ended the turn without a response");
 
 	await page.evaluate(() => {
 		const emit = (window as typeof window & { __emitCodexV2Event: (event: { sessionId: string; method: string; params: Record<string, unknown> }) => void }).__emitCodexV2Event;
@@ -440,17 +446,15 @@ test("V2 subAgentActivity and child turn lifecycle drive the same first-class Su
 			id: "wait-v2", type: "collabAgentToolCall", tool: "wait", status: "completed", receiverThreadIds: [], agentsStates: {}
 		} } });
 	});
-	await expect(visual).toContainText("Completed · 2");
-	await expect(visual).toContainText("Runtime audit complete.");
+	await expect(child).not.toContainText("Runtime audit complete.");
 
 	await page.evaluate(() => {
 		const emit = (window as typeof window & { __emitCodexV2Event: (event: { sessionId: string; method: string; params: Record<string, unknown> }) => void }).__emitCodexV2Event;
 		emit({ sessionId: "subagent-v2-session", method: "turn/started", params: { threadId: "child-v2-thread", turn: { id: "child-v2-turn-2" } } });
 		emit({ sessionId: "subagent-v2-session", method: "turn/failed", params: { threadId: "child-v2-thread", error: { message: "Agent exceeded its task budget." } } });
 	});
-	await expect(visual).toContainText("Needs attention · 1");
-	await expect(visual).toContainText("Agent exceeded its task budget.");
-	await expect(page.getByTestId("chat-transcript")).not.toContainText("The provider could not produce a response");
+	await expect(child.getByTestId("subagent-status")).toHaveText("Failed");
+	await expect(child).toContainText("Agent exceeded its task budget.");
 });
 
 test("Codex thread name updates rename the durable sidebar session", async ({ page }) => {
