@@ -444,7 +444,7 @@ pass.
 ### Exact sources under test
 
 - Workshop product code: `codex/finish-inline-eval-refactor` at
-  `112719b235da` (readiness tooling and this log follow it on the same branch)
+  `1fba6c507e37` (readiness documentation follows it on the same branch)
 - Containers: `codex/nanohorizon-e2e-preflight-fixes` at
   `04e0a94aa3336fee6dfbaab4942dc1352ab86584`
 - NanoHorizon: `codex/nanohorizon-e2e-preflight-fixes` at
@@ -505,13 +505,25 @@ runs passed before the full browser gate.
 
 ### Packaged desktop verification
 
-Instance `refactor-e2e` was rebuilt from `c4d2ce97eb60` against the clean
-Containers worktree. Its runtime reported executable digest
-`sha256:f96a5aaf21e972e85d4ad3cfc1f2ff4a9d890a23a13cdc026c7dd06945cd03fc`.
-The existing authenticated account state survived the rebuild. On the remote
-historical Craftax chat, both pointer activation and Diagnostics → Right Arrow
-kept the workbench open and selected Failures; Occurrences and Logs were both
-operable.
+Instance `j` was rebuilt from the final clean branch tip against the exact
+Containers worktree above and launched through the recorded packaged-bundle
+path. Its health endpoint reported instance `j`, app version `0.8.0`, and the
+same source revision, executable, and executable digest recorded in
+`instance.json`. The foreground chat, Optimizers index, and Launch surface all
+rendered and remained operable.
+
+The rebuild deliberately used the launcher's supported ad-hoc signing mode so
+the verification touched no Keychain. A final provenance audit found and fixed
+one packaging defect: an ad-hoc rebuild previously retained an older
+certificate-backed `signing` object. Commit `1fba6c507e37` makes the signing
+operation authoritative, records `identity: adhoc` plus the current
+CDHash-anchored designated requirement, and preserves the stricter stable
+identity checks for certificate-backed builds. The desktop instance contract
+test and a second packaged rebuild passed with the corrected manifest.
+
+The fixed Craftax cards remain fail-closed until the Docker build replaces the
+mutable launch tag with the observed immutable OCI image digest. That is the
+expected live-authorization boundary; it is not a source-pin or UI failure.
 
 The log history still truthfully exposes missing optional API-key locators and
 the known degraded diagnostics index. Those entries are not evidence from a
