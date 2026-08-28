@@ -249,6 +249,25 @@ test("a sealed Trace V5 document folds through the same rules as the live relay"
   assert.equal(sealed.frames.length, live.frames.length);
 });
 
+test("RuneBench Trace V5 timelines retain agent messages and actions as inspectable items", () => {
+  const rows = containerEventsFromSealedTrace({
+    schema: "synth.trace.v5",
+    version: 5,
+    timeline: [
+      { sequence: 1, kind: "frame", payload: { step: 0, format: "png" } },
+      { sequence: 2, kind: "agent.message", payload: { frame_index: 0, text: "I will chop oak." } },
+      { sequence: 3, kind: "agent.action", payload: { frame_index: 0, item_id: "item_1", tool: "execute_code", status: "completed", arguments_preview: '{"code":"chop"}' } }
+    ]
+  });
+  assert.deepEqual(rows.map((row) => row.kind), ["frame", "agent.message", "agent.action"]);
+  const view = foldCraftaxTrace(rows, { ...identity, sealed: true, status: "completed" });
+  assert.equal(view.steps.length, 2);
+  assert.equal(view.steps[0].content.message, "I will chop oak.");
+  assert.equal(view.steps[1].tool_calls[0].name, "execute_code");
+  assert.deepEqual(view.steps[1].tool_calls[0].arguments, { code: "chop" });
+  assert.deepEqual(view.steps[1].action.applied, [{ turn: 0, name: "execute_code" }]);
+});
+
 test("the registered rollout-inspector projection is accepted as sealed authority", () => {
   const events = craftaxEvents();
   const projection = {

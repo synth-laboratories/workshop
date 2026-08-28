@@ -329,7 +329,7 @@ function TrajectoryRail({
       <input
         value={query}
         onChange={(event) => onQuery(event.target.value)}
-        placeholder="Search calls, actions, achievements"
+        placeholder="Search timeline, actions, achievements"
         aria-label="Search the trajectory"
         style={{
           padding: "var(--sv-sp-2)",
@@ -343,7 +343,7 @@ function TrajectoryRail({
       <div
         ref={railRef}
         role="listbox"
-        aria-label="Policy calls"
+        aria-label="Policy and agent timeline"
         style={{ overflowY: "auto", minHeight: 0, display: "grid", gap: 3, alignContent: "start" }}
       >
         {view.steps.map((step, index) => {
@@ -420,7 +420,7 @@ function CallDetail({ view, step }: { view: EvalTraceView; step: TraceStep | nul
   if (!step) {
     return (
       <p style={{ margin: 0, color: "var(--sv-text-faint)", fontSize: "var(--sv-fs-meta)" }}>
-        This rollout has recorded no policy call yet.
+        This rollout has recorded no policy or agent timeline item yet.
       </p>
     );
   }
@@ -913,7 +913,7 @@ export function Shell(props: ShellProps) {
                 style={{ flex: 1, minWidth: 120 }}
               />
               <span style={{ ...mono, fontSize: "var(--sv-fs-micro)", color: "var(--sv-text-faint)" }}>
-                frame {view.frames.length ? (frameIndex ?? 0) + 1 : 0}/{view.frames.length} · call{" "}
+                frame {view.frames.length ? (frameIndex ?? 0) + 1 : 0}/{view.frames.length} · item{" "}
                 {view.steps.length ? selectedCall + 1 : 0}/{view.steps.length}
                 {frame ? ` · t${frame.step}` : ""}
               </span>

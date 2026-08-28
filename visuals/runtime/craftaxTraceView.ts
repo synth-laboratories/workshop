@@ -253,6 +253,8 @@ export function containerEventsFromOptimizerEvents(
 export function containerEventsFromSealedTrace(document: Any): ContainerEvent[] {
 	const events = Array.isArray(document?.events)
 		? document.events
+		: Array.isArray(document?.timeline)
+			? document.timeline
 		: Array.isArray(document?.visual?.items)
 			? document.visual.items.map((item: Any) => ({
 				...item,
@@ -482,6 +484,45 @@ export function foldCraftaxTrace(
           current.status = "complete";
           current.raw.push(event.sequence);
         }
+        break;
+      }
+      case "agent.message": {
+        current = emptyStep(steps.length + 1, event.sequence);
+        current.title = `Agent message ${steps.length + 1}`;
+        current.status = "complete";
+        current.content.message = text(payload.text);
+        current.frames.push(...pendingFrames);
+        pendingFrames = [];
+        current.turn_start = num(payload.frame_index ?? payload.frameIndex);
+        current.turn_end = current.turn_start;
+        steps.push(current);
+        break;
+      }
+      case "agent.action": {
+        current = emptyStep(steps.length + 1, event.sequence);
+        current.title = `Agent action ${steps.length + 1}`;
+        current.status = text(payload.status) === "running" ? "running" : "complete";
+        current.frames.push(...pendingFrames);
+        pendingFrames = [];
+        const turn = num(payload.frame_index ?? payload.frameIndex);
+        const name = text(payload.tool) ?? text(payload.action_type ?? payload.actionType) ?? "agent action";
+        const argumentsText = text(payload.arguments_preview ?? payload.argumentsPreview) ?? "";
+        let parsedArguments: unknown = argumentsText;
+        try {
+          parsedArguments = JSON.parse(argumentsText);
+        } catch {
+          // Keep a producer's preview as text when it is intentionally truncated.
+        }
+        current.tool_calls.push({
+          id: text(payload.item_id ?? payload.itemId),
+          name,
+          arguments: parsedArguments,
+          argumentsText
+        });
+        current.action.applied.push({ turn, name });
+        current.turn_start = turn;
+        current.turn_end = turn;
+        steps.push(current);
         break;
       }
       case "action_applied":

@@ -554,6 +554,20 @@ function clipLinks(events: OptimizerEvent[] | undefined): ClipLinks {
   return {};
 }
 
+function terminalStreamHealth(events: OptimizerEvent[] | undefined, trialId: string): StreamHealth | undefined {
+  if (!Array.isArray(events)) return undefined;
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const event = events[index];
+    if (event.type !== "eval.trial.event") continue;
+    if ((text(event.delta?.trial_id ?? event.delta?.trialId) ?? "trial") !== trialId) continue;
+    const container = record(event.delta?.containerEvent ?? event.delta?.container_event);
+    if (!["trial.completed", "trial.failed"].includes(text(container?.kind ?? container?.event) ?? "")) continue;
+    const payload = record(container?.payload) ?? container;
+    return normalizeStreamHealth(payload?.stream_health ?? payload?.streamHealth);
+  }
+  return undefined;
+}
+
 function durationLabel(milliseconds: number): string {
   const seconds = Math.max(0, Math.floor(milliseconds / 1000));
   const minutes = Math.floor(seconds / 60);
@@ -657,7 +671,7 @@ async function exportFramesAsWebm(frames: LiveFrame[], media: MediaClient | unde
   window.setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
-function LiveGameClip({ frames, actions, status, media, clips }: { frames: LiveFrame[]; actions: AgentAction[]; status?: string; media?: MediaClient; clips: ClipLinks }) {
+function LiveGameClip({ frames, actions, status, media, clips, events }: { frames: LiveFrame[]; actions: AgentAction[]; status?: string; media?: MediaClient; clips: ClipLinks; events?: OptimizerEvent[] }) {
   const live = !["completed", "failed", "cancelled", "canceled"].includes(status ?? "running");
   const trialIds = [...new Set(frames.map((frame) => frame.trialId))];
   const [selectedTrial, setSelectedTrial] = useState(trialIds[0] ?? "trial");
@@ -700,7 +714,9 @@ function LiveGameClip({ frames, actions, status, media, clips }: { frames: LiveF
   const secondFrame = secondFrames.reduce<LiveFrame | undefined>((closest, candidate) =>
     Math.abs(candidate.elapsedMs - frame.elapsedMs) < Math.abs((closest?.elapsedMs ?? Number.MAX_SAFE_INTEGER) - frame.elapsedMs) ? candidate : closest, undefined);
   const visibleActions = actions.filter((action) => action.trialId === activeTrial && action.elapsedMs <= frame.elapsedMs).slice(-5);
+  const terminalHealth = terminalStreamHealth(events, activeTrial);
   const health = frame.health;
+  const droppedFrames = Math.max(health?.framesDropped ?? 0, terminalHealth?.framesDropped ?? 0);
   const elapsedSeconds = Math.max(1, frame.elapsedMs / 1000);
   const bandwidth = health?.bytesCaptured == null ? undefined : health.bytesCaptured / elapsedSeconds / 1024;
   const bufferLoaded = selectedFrames.filter((candidate) => candidate.dataUrl || (candidate.casDigest && media?.peek(candidate.casDigest))).length;
@@ -752,7 +768,7 @@ function LiveGameClip({ frames, actions, status, media, clips }: { frames: LiveF
     </div>
     <div style={{ display: "flex", gap: 8, alignItems: "center", justifyContent: "space-between", marginTop: 6, color: "var(--sv-text-faint)", fontFamily: "var(--sv-mono)", fontSize: 8 }}><span>{durationLabel(selectedFrames[0].elapsedMs)}</span><label>Speed <select aria-label="Playback speed" value={fps} onChange={(event) => setFps(Number(event.currentTarget.value))}>{[.5, 1, 2, 4].map((value) => <option key={value} value={value}>{value} fps</option>)}</select></label><span>{selectedFrames.length} retained · {bufferLoaded} buffered</span><span>{durationLabel(selectedFrames[lastIndex].elapsedMs)}</span></div>
     <div aria-label="Stream health" style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(100px,1fr))", gap: 6, marginTop: 9 }}>
-      {[['Dropped', health?.framesDropped ?? 0], ['Latency', health?.averageCaptureLatencyMs == null ? MISSING : `${health.averageCaptureLatencyMs} ms`], ['Bandwidth', bandwidth == null ? MISSING : `${bandwidth.toFixed(1)} KiB/s`], ['Source cadence', health?.sourceIntervalMs == null ? MISSING : `${(health.sourceIntervalMs / 1000).toFixed(2)} s`]].map(([label, value]) => <div key={String(label)} className="sv-metric"><span>{label}</span><strong>{value}</strong></div>)}
+      {[['Dropped', droppedFrames], ['Latency', health?.averageCaptureLatencyMs == null ? MISSING : `${health.averageCaptureLatencyMs} ms`], ['Bandwidth', bandwidth == null ? MISSING : `${bandwidth.toFixed(1)} KiB/s`], ['Source cadence', health?.sourceIntervalMs == null ? MISSING : `${(health.sourceIntervalMs / 1000).toFixed(2)} s`]].map(([label, value]) => <div key={String(label)} className="sv-metric"><span>{label}</span><strong>{value}</strong></div>)}
     </div>
     {visibleActions.length ? <div style={{ marginTop: 10 }}><strong style={{ fontSize: 9 }}>Synchronized actions</strong><ol style={{ maxHeight: 150, margin: "6px 0 0", paddingLeft: 20, overflow: "auto", fontSize: 9 }}>{visibleActions.map((action) => <li key={action.sequence} style={{ marginBottom: 5 }}><code>{durationLabel(action.elapsedMs)}</code> · <strong>{action.label}</strong>{action.status ? ` · ${action.status}` : ""}{action.detail ? <small title={action.detail} style={{ display: "block", overflow: "hidden", color: "var(--sv-text-faint)", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{action.detail}</small> : null}</li>)}</ol></div> : null}
     <div style={{ display: "flex", gap: 7, marginTop: 10 }}>
@@ -845,7 +861,7 @@ export function Shell(props: ShellProps) {
   const clips = clipLinks(props.events);
   return <VisualChrome kicker={`Experiment · ${status}`} title={props.title ?? experiment.title ?? "Experiment overview"} lede={props.lede ?? experiment.question ?? experiment.hypothesis} testId="visual-experiment-overview">
     <OverviewStrip status={status} arms={experiment.arms ?? []} model={experiment.runtime?.model} progress={progress} />
-    <LiveGameClip frames={frames} actions={actions} status={props.run?.status ?? status} media={props.media} clips={clips} />
+    <LiveGameClip frames={frames} actions={actions} status={props.run?.status ?? status} media={props.media} clips={clips} events={props.events} />
     <LiveSkillTrajectory samples={skillSamples} status={props.run?.status ?? status} />
     {experiment.hypothesis || experiment.hypotheses?.length ? <Hypotheses legacyHypothesis={experiment.hypothesis} hypotheses={experiment.hypotheses ?? []} /> : null}
     {hasResults ? <Disclosure title="Comparison & results" summary={progressSummary} defaultOpen>

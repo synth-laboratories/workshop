@@ -165,7 +165,10 @@ test("RuneBench clip renders CAS frames, synchronized actions, health, terminal 
 			kind: "agent.action", rollout_id: "rollout-a", payload: { elapsed_ms: 900, frame_index: 0, tool: "execute_code", status: "completed", arguments_preview: "await bot.chopTree()" }
 		} } },
 		{ sequenceNumber: 3, type: "eval.trial.event", delta: { trial_id: "trial-a", containerEvent: {
-			kind: "trial.completed", rollout_id: "rollout-a", payload: { clip: { mp4: "http://127.0.0.1:8104/rollouts/rollout-a/clip.mp4" } }
+			kind: "trial.completed", rollout_id: "rollout-a", payload: {
+				clip: { mp4: "http://127.0.0.1:8104/rollouts/rollout-a/clip.mp4" },
+				stream_health: { frames_captured: 1, frames_dropped: 1, bytes_captured: 2048, average_capture_latency_ms: 42, source_interval_ms: 1000 }
+			}
 		} } }
 	];
 	const html = renderToStaticMarkup(createElement(Shell, {
@@ -180,6 +183,7 @@ test("RuneBench clip renders CAS frames, synchronized actions, health, terminal 
 	assert.match(html, /Synchronized actions/);
 	assert.match(html, /execute_code/);
 	assert.match(html, /42 ms/);
+	assert.match(html, /Dropped<\/span><strong>1<\/strong>/);
 	assert.match(html, /2\.0 KiB\/s/);
 	assert.match(html, /Download MP4/);
 	assert.match(html, /Export WebM/);
