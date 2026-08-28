@@ -3,14 +3,17 @@
 
 use anyhow::{anyhow, bail, Context, Result};
 use bytes::Bytes;
-use http_body_util::{combinators::BoxBody, BodyExt, Full};
-use hyper::body::Incoming;
+use futures_util::Stream;
+use http_body_util::{combinators::BoxBody, BodyExt, Full, StreamBody};
+use hyper::body::{Frame, Incoming};
 use hyper::{Request, Response, StatusCode};
 use serde_json::Value;
 use std::convert::Infallible;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::{Path, PathBuf};
+use std::pin::Pin;
 use std::sync::Arc;
+use std::task::{Context as TaskContext, Poll};
 
 /// Syntactic stand-in for SDKs that require `OPENAI_API_KEY`. Not a credential.
 pub const API_KEY_SENTINEL: &str = "workshop-proxy";
@@ -102,7 +105,11 @@ fn spawn_tcp_proxy(listener: std::net::TcpListener, state: Arc<ProxyState>) {
         let listener = match tokio::net::TcpListener::from_std(listener) {
             Ok(listener) => listener,
             Err(error) => {
-                crate::platform::logging::report("secrets", "eprintln", format!("synth-desktop: adopt provider proxy listener: {error:#}"));
+                crate::platform::logging::report(
+                    "secrets",
+                    "eprintln",
+                    format!("synth-desktop: adopt provider proxy listener: {error:#}"),
+                );
                 return;
             }
         };
@@ -116,7 +123,11 @@ fn spawn_tcp_proxy(listener: std::net::TcpListener, state: Arc<ProxyState>) {
         )
         .await
         {
-            crate::platform::logging::report("secrets", "eprintln", format!("synth-desktop: provider proxy stopped serving: {error:#}"));
+            crate::platform::logging::report(
+                "secrets",
+                "eprintln",
+                format!("synth-desktop: provider proxy stopped serving: {error:#}"),
+            );
         }
     });
 }
@@ -127,7 +138,11 @@ fn spawn_unix_proxy(listener: std::os::unix::net::UnixListener, state: Arc<Proxy
         let listener = match tokio::net::UnixListener::from_std(listener) {
             Ok(listener) => listener,
             Err(error) => {
-                crate::platform::logging::report("secrets", "eprintln", format!("synth-desktop: adopt provider proxy unix listener: {error:#}"));
+                crate::platform::logging::report(
+                    "secrets",
+                    "eprintln",
+                    format!("synth-desktop: adopt provider proxy unix listener: {error:#}"),
+                );
                 return;
             }
         };
@@ -137,7 +152,11 @@ fn spawn_unix_proxy(listener: std::os::unix::net::UnixListener, state: Arc<Proxy
         })
         .await
         {
-            crate::platform::logging::report("secrets", "eprintln", format!("synth-desktop: provider proxy unix socket stopped serving: {error:#}"));
+            crate::platform::logging::report(
+                "secrets",
+                "eprintln",
+                format!("synth-desktop: provider proxy unix socket stopped serving: {error:#}"),
+            );
         }
     });
 }
@@ -334,6 +353,173 @@ fn sanitize_upstream_body(status: reqwest::StatusCode, bytes: Bytes) -> Bytes {
     Bytes::from(providers::sanitize_error_message(&String::from_utf8_lossy(
         &bytes,
     )))
+}
+
+/// A Responses stream may split both lines and events across arbitrary HTTP
+/// chunks. Keep only the small SSE framing state needed to find the terminal
+/// usage object; response bytes themselves are never buffered or rewritten.
+#[derive(Default)]
+struct SseUsageScanner {
+    partial_line: Vec<u8>,
+    event_data: Vec<u8>,
+    last: Option<MeasuredUsage>,
+}
+
+impl SseUsageScanner {
+    fn observe(&mut self, chunk: &[u8]) {
+        for byte in chunk {
+            if *byte == b'\n' {
+                let line = std::mem::take(&mut self.partial_line);
+                self.take_line(&line);
+            } else {
+                self.partial_line.push(*byte);
+            }
+        }
+    }
+
+    fn take_line(&mut self, line: &[u8]) {
+        let line = line.strip_suffix(b"\r").unwrap_or(line);
+        if line.is_empty() {
+            self.complete_event();
+            return;
+        }
+        if let Some(data) = line.strip_prefix(b"data:") {
+            let data = data.strip_prefix(b" ").unwrap_or(data);
+            if !self.event_data.is_empty() {
+                self.event_data.push(b'\n');
+            }
+            self.event_data.extend_from_slice(data);
+        }
+    }
+
+    fn complete_event(&mut self) {
+        let data = std::mem::take(&mut self.event_data);
+        if data.is_empty() || data.as_slice() == b"[DONE]" {
+            return;
+        }
+        let Ok(value) = serde_json::from_slice::<Value>(&data) else {
+            return;
+        };
+        let payload = value
+            .get("usage")
+            .filter(|usage| usage.is_object())
+            .map(|_| &value)
+            .or_else(|| {
+                value
+                    .get("response")
+                    .filter(|response| response.get("usage").is_some_and(Value::is_object))
+            });
+        if let Some(payload) = payload {
+            self.last = Some(parse_usage(payload));
+        }
+    }
+
+    fn finish(mut self) -> Option<MeasuredUsage> {
+        let line = std::mem::take(&mut self.partial_line);
+        if !line.is_empty() {
+            self.take_line(&line);
+        }
+        self.complete_event();
+        self.last
+    }
+}
+
+type UpstreamBytes = Pin<Box<dyn Stream<Item = reqwest::Result<Bytes>> + Send + Sync>>;
+
+/// Pass successful SSE bytes straight through while accounting for the
+/// terminal provider usage event. A transport error is surfaced as a generic
+/// body error and never exposes the upstream URL, capability, or credential.
+struct StreamingRelay {
+    inner: UpstreamBytes,
+    scanner: SseUsageScanner,
+    state: Arc<ProxyState>,
+    handle: String,
+    reserved: capability::LiveCapability,
+    operation: &'static str,
+    model: Option<String>,
+    upstream_status: u16,
+    settled: bool,
+}
+
+impl StreamingRelay {
+    fn settle(&mut self) {
+        if self.settled {
+            return;
+        }
+        self.settled = true;
+        let usage = std::mem::take(&mut self.scanner)
+            .finish()
+            .unwrap_or(MeasuredUsage {
+                calls: 1,
+                input_tokens: 0,
+                output_tokens: 0,
+                cost_usd: None,
+            });
+        if let Ok(live) = self.state.capabilities.debit_usage(&self.handle, &usage) {
+            let _ = self.state.db.with_conn(|conn| {
+                capability::persist_usage(conn, &live)?;
+                let mut event =
+                    SecretAuditEvent::new("run", &live.run_id, "provider.use", "allowed");
+                event.secret_id = Some(live.secret_id.clone());
+                event.provider = Some(live.provider.clone());
+                event.operation = Some(self.operation.into());
+                event.model = self.model.clone();
+                event.capability_id = Some(live.id.clone());
+                event.usage = Some(serde_json::json!({
+                    "calls": usage.calls,
+                    "input_tokens": usage.input_tokens,
+                    "output_tokens": usage.output_tokens,
+                    "cost_usd": usage.cost_usd,
+                }));
+                audit::append(conn, &event)
+            });
+        }
+    }
+}
+
+impl Stream for StreamingRelay {
+    type Item = std::result::Result<Frame<Bytes>, std::io::Error>;
+
+    fn poll_next(self: Pin<&mut Self>, cx: &mut TaskContext<'_>) -> Poll<Option<Self::Item>> {
+        let this = self.get_mut();
+        match this.inner.as_mut().poll_next(cx) {
+            Poll::Ready(Some(Ok(bytes))) => {
+                this.scanner.observe(&bytes);
+                Poll::Ready(Some(Ok(Frame::data(bytes))))
+            }
+            Poll::Ready(Some(Err(error))) => {
+                let (_, code, _) = classify_transport_error(&error);
+                audit_provider_failure(
+                    &this.state,
+                    &this.reserved,
+                    this.operation,
+                    this.model.as_deref(),
+                    code,
+                    Some(this.upstream_status),
+                );
+                this.settled = true;
+                Poll::Ready(Some(Err(std::io::Error::other(
+                    "provider response stream ended early",
+                ))))
+            }
+            Poll::Ready(None) => {
+                this.settle();
+                Poll::Ready(None)
+            }
+            Poll::Pending => Poll::Pending,
+        }
+    }
+}
+
+impl Drop for StreamingRelay {
+    fn drop(&mut self) {
+        // An abandoned or interrupted stream has not proved completion. The
+        // reserved call remains visible in the capability ledger, but token
+        // and cost usage are never invented from a partial response.
+        if !self.settled {
+            self.settled = true;
+        }
+    }
 }
 
 fn bearer(request: &Request<Incoming>) -> Option<String> {
@@ -621,6 +807,33 @@ async fn handle(
             continue;
         }
         builder = builder.header(name.as_str(), value.as_bytes());
+    }
+
+    if status.is_success()
+        && content_type
+            .to_ascii_lowercase()
+            .starts_with("text/event-stream")
+    {
+        let relay = StreamingRelay {
+            inner: Box::pin(upstream.bytes_stream()),
+            scanner: SseUsageScanner::default(),
+            state,
+            handle,
+            reserved,
+            operation: route.operation,
+            model,
+            upstream_status: status.as_u16(),
+            settled: false,
+        };
+        return Ok(builder
+            .body(StreamBody::new(relay).boxed())
+            .unwrap_or_else(|_| {
+                json_error(
+                    StatusCode::BAD_GATEWAY,
+                    "relay_failed",
+                    "could not relay the provider response",
+                )
+            }));
     }
 
     let bytes = match upstream.bytes().await {
@@ -924,5 +1137,33 @@ mod tests {
         ] {
             assert_eq!(providers::sanitize_error_message(code), code);
         }
+    }
+
+    #[test]
+    fn sse_usage_scanner_handles_split_nested_terminal_event() {
+        let chunks = [
+            b"event: response.completed\r\ndata: {\"response\":{\"id\":\"resp_".as_slice(),
+            b"123\",\"usage\":{\"input_tokens\":17,\"output_tokens\":29,".as_slice(),
+            b"\"cost\":0.031}}}\r\n\r\ndata: [DONE]\r\n\r\n".as_slice(),
+        ];
+        let mut scanner = SseUsageScanner::default();
+        for chunk in chunks {
+            scanner.observe(chunk);
+        }
+
+        let usage = scanner.finish().expect("terminal SSE usage");
+        assert_eq!(usage.calls, 1);
+        assert_eq!(usage.input_tokens, 17);
+        assert_eq!(usage.output_tokens, 29);
+        assert_eq!(usage.cost_usd, Some(0.031));
+    }
+
+    #[test]
+    fn sse_usage_scanner_keeps_relay_bytes_out_of_accounting_buffer() {
+        let mut scanner = SseUsageScanner::default();
+        let payload =
+            b"data: {\"type\":\"response.output_text.delta\",\"delta\":\"tool-call-data\"}\n\n";
+        scanner.observe(payload);
+        assert!(scanner.finish().is_none());
     }
 }
