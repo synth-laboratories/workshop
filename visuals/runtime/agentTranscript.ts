@@ -56,6 +56,7 @@ export function projectAgentTurns(events: LiveEvalEvent[]): AgentTurnProjection 
     const raw = open.events; const opened = object(raw[0]?.payload); const config = object(opened.call);
     const snapshots = raw.filter((event) => event.kind === "span.policy.data").map((event) => object(event.payload)).filter((payload) => payload.delta !== true && payload.channel !== "compact");
     const snapshot = snapshots.at(-1) ?? {};
+    const assistant = object(snapshot.assistant);
     const closedEvent = raw.find((event) => event.kind === "span.policy.closed");
     const closure = closedEvent
       ? producerPolicyCallClosure(object(closedEvent.payload), sequence(closedEvent, open.index))
@@ -67,11 +68,13 @@ export function projectAgentTurns(events: LiveEvalEvent[]): AgentTurnProjection 
     const startStep = step(precedingObservation); const endStep = step(followingClosedStep) ?? startStep;
     const callNumber = finite(snapshot.call) ?? finite(opened.call_number) ?? open.ordinal;
     const provider = String(snapshot.provider ?? object(snapshot.policy).provider ?? config.provider ?? "") || undefined;
-    const model = String(snapshot.model ?? object(snapshot.policy).model ?? config.model ?? "") || undefined;
+    const model = String(snapshot.model ?? snapshot["gen_ai.request.model"] ?? object(snapshot.policy).model ?? config.model ?? "") || undefined;
     const authority = String(snapshot.authority ?? snapshot.action_authority ?? object(snapshot.policy).authority ?? config.authority ?? "") || undefined;
-    const reasoning = snapshot.reasoning ?? snapshot.thinking ?? channelText(raw, "reasoning");
-    const output = snapshot.assistant ?? snapshot.output ?? snapshot.response ?? channelText(raw, "content");
-    const tools = snapshot.tool_calls ?? snapshot.tool_arguments ?? channelText(raw, "tool"); const results = snapshot.tool_results ?? snapshot.tool_outputs;
+    const reasoning = snapshot.reasoning ?? snapshot.thinking ?? assistant.reasoning_content ?? channelText(raw, "reasoning");
+    const output = Object.keys(assistant).length
+      ? assistant.content
+      : snapshot.assistant ?? snapshot.output ?? snapshot.response ?? channelText(raw, "content");
+    const tools = snapshot.tool_calls ?? assistant.tool_calls ?? snapshot.tool_arguments ?? channelText(raw, "tool"); const results = snapshot.tool_results ?? snapshot.tool_outputs;
     const usage = object(snapshot.usage ?? object(snapshot.policy).usage); const first = sequence(raw[0], open.index); const last = sequence(raw.at(-1) ?? raw[0], first);
     const malformed = !raw.some((event) => event.kind === "span.policy.opened"); const id = `model-call:${callNumber}:${first}`;
     calls.push({ id, callNumber, sourceSequenceStart: first, sourceSequenceEnd: last, environmentStepStart: startStep, environmentStepEnd: endStep,

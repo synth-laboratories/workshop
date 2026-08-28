@@ -71,3 +71,27 @@ test("non-Craftax Trace V5 evidence projects without environment-specific behavi
   const projection = projectAgentTurns([event("observation", 1, { readout: { observation_text: "SQL schema" } }), event("span.policy.opened", 2, { call: { provider: "anthropic", model: "claude" } }), event("span.policy.data", 3, { channel: "summary", assistant: "SELECT 1" }), event("span.policy.closed", 4)]);
   assert.equal(projection.calls[0].input.value, "SQL schema"); assert.equal(projection.calls[0].output.value, "SELECT 1");
 });
+
+test("NanoHorizon OpenTelemetry fields preserve model, reasoning, and tool calls separately", () => {
+  const projection = projectAgentTurns([
+    event("observation", 1, { step: 65, readout: { observation_text: "near a tree" } }),
+    event("span.policy.opened", 2, { call: 10, harness: "nanohorizon" }),
+    event("span.policy.data", 3, {
+      "gen_ai.request.model": "z-ai/glm-5.3-flash",
+      assistant: {
+        content: null,
+        reasoning_content: "Gather one more wood.",
+        tool_calls: [{ function: { name: "craftax_interact", arguments: '{"actions":["do"]}' } }]
+      },
+      usage: { total_tokens: 42 }
+    }),
+    event("span.policy.closed", 4),
+    event("span.step.closed", 5, { step: 65 })
+  ]);
+  const call = projection.calls[0];
+  assert.equal(call.model, "z-ai/glm-5.3-flash");
+  assert.deepEqual(call.reasoning, { state: "visible", value: "Gather one more wood." });
+  assert.equal(call.output.state, "not_emitted");
+  assert.equal(call.toolCalls.state, "visible");
+  assert.equal(call.toolCalls.value[0].function.name, "craftax_interact");
+});

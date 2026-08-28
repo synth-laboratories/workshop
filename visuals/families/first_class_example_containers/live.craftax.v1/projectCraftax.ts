@@ -603,7 +603,7 @@ export function projectCraftaxViewer(
   const usage = aggregateTraceUsage(traceEvents);
   const text = (value: unknown) => typeof value === "string" && value.length > 0 ? value : undefined;
   const provider = text(policyData.provider) ?? text(nestedPolicy.provider) ?? text(openedCall.provider);
-  const model = text(policyData.model) ?? text(nestedPolicy.model) ?? text(openedCall.model);
+  const model = text(policyData.model) ?? text(policyData["gen_ai.request.model"]) ?? text(nestedPolicy.model) ?? text(openedCall.model);
   const terminal = visibleEvents.some((event) => {
     if (event.kind === "trace.reconciled" || event.kind === "eval.run.terminal") return true;
     if (event.kind !== "status") return false;

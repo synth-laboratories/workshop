@@ -157,10 +157,10 @@ function timeLabel(event: LiveEvalEvent | undefined, precise = false): string {
     : { hour: "2-digit", minute: "2-digit", second: "2-digit" });
 }
 
-function eventStep(event: LiveEvalEvent, fallback: number): number {
+function eventStep(event: LiveEvalEvent): number | undefined {
   const payload = object(event.payload);
   const readout = object(payload.readout);
-  return finite(payload.step) ?? finite(payload.env_steps) ?? finite(readout.env_steps) ?? fallback;
+  return finite(payload.step) ?? finite(payload.step_index) ?? finite(payload.env_steps) ?? finite(readout.env_steps);
 }
 
 function latestObservation(events: LiveEvalEvent[]): Record<string, unknown> {
@@ -354,6 +354,10 @@ export function Shell(props: ShellProps) {
   const { lanes, selectedLane, laneEvents, visibleEvents, visibleIndex, rewardSignals, achievements, traceEvents, semanticTrace, frameEvents, policy } = viewer;
   const laneSummaries = useMemo(() => summarizeLanes(evaluationEvents), [evaluationEvents]);
   const latest = visibleEvents.at(-1);
+  const selectedEnvironmentStep = useMemo(
+    () => [...visibleEvents].reverse().map(eventStep).find((step) => step != null),
+    [visibleEvents]
+  );
   const observation = latestObservation(visibleEvents);
   const inventory = inventoryFrom(observation);
   const terminalLanes = [...laneSummaries.values()].filter((summary) => summary.terminal).length;
@@ -500,7 +504,7 @@ export function Shell(props: ShellProps) {
       <section className="cv-summary cv-surface-replay" aria-label="Run summary">
         <Metric label="Rollouts" value={String(lanes.length || "—")} />
         <Metric label="Model calls" value={props.runLifecycle?.usage.calls == null ? "not emitted" : String(props.runLifecycle.usage.calls)} />
-        <Metric label="Selected step" value={latest ? String(eventStep(latest, visibleIndex)) : "—"} />
+        <Metric label="Selected step" value={selectedEnvironmentStep == null ? "—" : String(selectedEnvironmentStep)} />
         <Metric label="Reward" value={truthNumber(viewer.reward, viewer.terminal, (value) => formatMissingNumber(value))} />
         <Metric label="Achievements" value={String(achievements.length)} />
         <Metric label="Run cost" value={runCostLabel(props.runLifecycle, finite(policy.usage.cost_usd))} />
@@ -532,7 +536,7 @@ export function Shell(props: ShellProps) {
           <div className="cv-heading"><div><p className="cv-eyebrow">Selected rollout</p><h3>{selectedLane ? <Identifier value={selectedLane} max={30} style={{ font: "inherit" }} /> : "Waiting for events"}</h3></div><span>{lifecycleFailed ? "failed" : viewer.terminal ? "finished" : visualLive ? "live" : "waiting"}</span></div>
           <div className="cv-frame">
             {frameUrl ? <img src={frameUrl} alt="Craftax gameplay frame" onError={() => setFailedFrameUrl(viewer.frameUrl ?? null)} /> : (failedFrameUrl || viewer.frameUnavailable) ? <p>Gameplay PNG is unavailable. Reopen uses the live spool digest — this view does not substitute ASCII for a missing image.</p> : viewer.ascii ? <pre aria-label="Craftax symbolic gameplay frame">{viewer.ascii}</pre> : <p>No renderable gameplay frame was emitted at this point in the trace.</p>}
-            <div className="cv-frame-caption"><span>step {latest ? eventStep(latest, visibleIndex) : "—"}</span><span>{timeLabel(latest, true)}</span></div>
+            <div className="cv-frame-caption"><span>step {selectedEnvironmentStep ?? "—"}</span><span>{timeLabel(latest, true)}</span></div>
           </div>
           <div className="cv-video-controls" data-visual-landmark="image-replay">
             <div><strong>Image replay</strong><span>{frameEvents.length} PNG frames from Containers</span></div>
@@ -544,7 +548,7 @@ export function Shell(props: ShellProps) {
 
         <aside className="cv-panel cv-details">
           <section><p className="cv-eyebrow">Policy</p><h3>{policy.model ?? "Unavailable"}</h3><dl>
-            <div><dt>Provider</dt><dd>{policy.provider ?? "—"}</dd></div>
+            <div><dt>Provider</dt><dd>{policy.provider ?? props.runLifecycle?.usage.provider ?? "—"}</dd></div>
             <div><dt>Actions</dt><dd>{policy.actions.length}</dd></div>
             <div><dt>Tokens</dt><dd>{truthNumber(finite(policy.usage.total_tokens), viewer.terminal, (value) => formatMissingNumber(value, 0))}</dd></div>
             <div><dt>Authority</dt><dd>{policy.actionAuthority ?? "—"}</dd></div>
@@ -579,7 +583,7 @@ export function Shell(props: ShellProps) {
         <div className="cv-heading"><div><p className="cv-eyebrow">Chronological model calls</p><h3>Agent transcript</h3></div><div className="cv-trace-mode"><button type="button" aria-pressed={transcriptMode === "focus"} onClick={() => setTranscriptMode("focus")}>Focus</button><button type="button" aria-pressed={transcriptMode === "full"} onClick={() => setTranscriptMode("full")}>Full</button><span>{turns.calls.length} calls · selected rollout · cutoff seq {craftaxEventSequence(visibleEvents.at(-1) ?? ({} as LiveEvalEvent), 0)}</span></div></div>
         <div className="cv-step-links" role="navigation" aria-label="Environment step to policy navigation">{semanticTrace.filter((item) => item.kind === "environment.step").slice(-40).map((item) => { const callId = item.step == null ? callForSequence(turns.calls, item.sequenceStart)?.id : turns.callIdByEnvironmentStep.get(item.step); return <button type="button" key={item.id} disabled={!callId} onClick={() => { if (callId) setSelectedCallId(callId); }}>step {item.step ?? "—"}</button>; })}</div>
         <div className="cv-transcript-grid"><ol className="cv-call-list" aria-label="Model calls">{turns.calls.length > renderedCalls.length ? <li className="cv-call-window">Showing {renderedCalls.length} of {turns.calls.length} calls at this cutoff</li> : null}{renderedCalls.map((call) => <li key={call.id}><button type="button" aria-current={call.id === selectedCall?.id} onClick={() => setSelectedCallId(call.id)}><span>Call {call.callNumber}</span><strong>{call.model ?? "Model not recorded"}</strong><small>steps {call.environmentStepStart ?? "—"}{call.environmentStepEnd !== call.environmentStepStart ? `–${call.environmentStepEnd ?? "—"}` : ""} · seq {call.sourceSequenceStart}–{call.sourceSequenceEnd}</small></button></li>)}</ol>
-          <article className="cv-call-card" aria-live="polite">{selectedCall ? <><header><div><p className="cv-eyebrow">Call {selectedCall.callNumber} · environment steps {selectedCall.environmentStepStart ?? "—"}–{selectedCall.environmentStepEnd ?? "—"}</p><h4>{selectedCall.model ?? "Model identity not recorded"}</h4></div><span>{selectedCall.outcome?.replaceAll("_", " ") ?? "streaming"}</span></header><dl><div><dt>Provider</dt><dd>{selectedCall.provider ?? "not emitted"}</dd></div><div><dt>Authority</dt><dd>{selectedCall.authority ?? "not emitted"}</dd></div><div><dt>Source</dt><dd>seq {selectedCall.sourceSequenceStart}–{selectedCall.sourceSequenceEnd}</dd></div><div><dt>Closure</dt><dd>{selectedCall.closure ? `${selectedCall.closure.reason.replaceAll("_", " ")} · ${selectedCall.closure.source}` : "pending"}</dd></div><div><dt>Envelopes</dt><dd>{selectedCall.rawEvents.length}</dd></div></dl>
+          <article className="cv-call-card" aria-live="polite">{selectedCall ? <><header><div><p className="cv-eyebrow">Call {selectedCall.callNumber} · environment steps {selectedCall.environmentStepStart ?? "—"}–{selectedCall.environmentStepEnd ?? "—"}</p><h4>{selectedCall.model ?? "Model identity not recorded"}</h4></div><span>{selectedCall.outcome?.replaceAll("_", " ") ?? "streaming"}</span></header><dl><div><dt>Provider</dt><dd>{selectedCall.provider ?? props.runLifecycle?.usage.provider ?? "not emitted"}</dd></div><div><dt>Authority</dt><dd>{selectedCall.authority ?? "not emitted"}</dd></div><div><dt>Source</dt><dd>seq {selectedCall.sourceSequenceStart}–{selectedCall.sourceSequenceEnd}</dd></div><div><dt>Closure</dt><dd>{selectedCall.closure ? `${selectedCall.closure.reason.replaceAll("_", " ")} · ${selectedCall.closure.source}` : "pending"}</dd></div><div><dt>Envelopes</dt><dd>{selectedCall.rawEvents.length}</dd></div></dl>
             <Evidence label="Input / observation" field={selectedCall.input}/><Evidence label="Reasoning" field={selectedCall.reasoning}/><Evidence label="Output / actions" field={selectedCall.output}/><Evidence label="Tool calls" field={selectedCall.toolCalls}/><Evidence label="Tool results" field={selectedCall.toolResults}/>
             <details><summary>Raw Trace V5 evidence ({selectedCall.rawEvents.length} envelopes)</summary><pre>{JSON.stringify(selectedCall.rawEvents, null, 2)}</pre></details></> : props.runLifecycle?.evidence.state === "rejected" ? <p>{props.runLifecycle.usage.calls ?? "Provider"} calls occurred, but their journal evidence failed integrity verification and cannot be displayed as a trusted transcript.</p> : <p>No policy.call has been emitted at this temporal cutoff.</p>}</article></div>
       </section>
