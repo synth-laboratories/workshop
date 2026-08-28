@@ -51,6 +51,35 @@ test("Search and the Command-K shortcut find and open conversations", async ({ p
 	await expect(sidePanel.getByRole("tab", { name: "Inference" })).toHaveAttribute("aria-selected", "false");
 	await expect(outputsPanel).toBeVisible();
 	await expect(outputsPanel.getByTestId("resource-shelf-empty")).toContainText("No outputs yet");
+	await sidePanel.evaluate((panel) => {
+		const workbench = panel.parentElement;
+		if (workbench) workbench.style.gridTemplateColumns = "minmax(0, 1fr) 228px";
+	});
+	const outerTabs = sidePanel.locator(".workbench-side-panel-tabs [role=tab]");
+	expect(await outerTabs.count()).toBe(5);
+	const tabGeometry = await outerTabs.evaluateAll((elements) => {
+		const header = elements[0]?.closest(".workbench-side-panel-header")?.getBoundingClientRect();
+		return elements.map((element) => {
+			const rect = element.getBoundingClientRect();
+			return Boolean(header)
+				&& rect.width > 0
+				&& rect.height > 0
+				&& rect.left >= header!.left
+				&& rect.right <= header!.right;
+		});
+	});
+	expect(tabGeometry).toEqual([true, true, true, true, true]);
+	await sidePanel.getByRole("tab", { name: "Diagnostics" }).focus();
+	await page.keyboard.press("ArrowRight");
+	await expect(sidePanel).toBeVisible();
+	await expect(sidePanel.getByRole("tab", { name: "Failures" })).toBeFocused();
+	await expect(sidePanel.getByRole("tab", { name: "Failures" })).toHaveAttribute("aria-selected", "true");
+	await expect(sidePanel.getByRole("tab", { name: "Occurrences" })).toHaveAttribute("aria-selected", "true");
+	await sidePanel.getByRole("tab", { name: "Occurrences" }).focus();
+	await page.keyboard.press("ArrowRight");
+	await expect(sidePanel.getByRole("tab", { name: "Logs" })).toBeFocused();
+	await expect(sidePanel.getByRole("tab", { name: "Logs" })).toHaveAttribute("aria-selected", "true");
+	await sidePanel.getByRole("tab", { name: "Outputs" }).click();
 	await sidePanel.getByRole("button", { name: "Close side panel" }).click();
 	await expect(outputsPanel).toHaveCount(0);
 	await expect(outputsTrigger).toHaveAttribute("aria-expanded", "false");

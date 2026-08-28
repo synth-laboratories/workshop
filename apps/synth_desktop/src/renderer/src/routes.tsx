@@ -708,7 +708,7 @@ export function MainRoutes(props: MainRoutesProps): ReactNode {
 								},
 								{
 									id: "errors",
-									label: "Errors",
+									label: "Failures",
 									content: (
 										<ErrorsLogsPanel
 											sessionId={activeChat.id}

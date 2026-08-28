@@ -33,7 +33,12 @@ test.beforeEach(async ({ page }) => {
 			counts: async () => ({ containers: 1, traces: 0, usage: 0 })
 		};
 		(window as any).synthOptimizers = {
-			listAlgorithms: async () => [], list: async () => [], listRecipes: async () => [], listCloud: async () => [],
+			listAlgorithms: async () => [], list: async () => [], listRecipes: async () => [{
+				id: "sft.banking77.nemotron-lightning.tinker.v1",
+				title: "Banking77 Tinker SFT",
+				availability: "available",
+				limits: { trainingSteps: 30 }
+			}], listCloud: async () => [],
 			hostedTrainingModels: async () => ({ revision: "unavailable", models: [] }), searchSavedLoras: async () => ({ items: [], total: 0 }),
 			startRecipe: async () => { throw new Error("native optimizer runtime unavailable"); },
 			refresh: async () => ({ status: "idle" }), eventsAfter: async () => [],

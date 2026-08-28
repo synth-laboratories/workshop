@@ -28,7 +28,7 @@ export function clampPaneWidth(value: number, min: number, max: number): number 
 /** CSS-pixel width after min/max. Prefer the layout box when it has been measured. */
 export function realizedPaneWidth(requested: number, min: number, max: number, cssWidth?: number | null): number {
 	if (typeof cssWidth === "number" && Number.isFinite(cssWidth)) {
-		return Math.round(cssWidth);
+		return clampPaneWidth(cssWidth, min, max);
 	}
 	return clampPaneWidth(requested, min, max);
 }

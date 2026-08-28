@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useState, type KeyboardEvent } from "react";
 import { fromGenerated, spectaCommands } from "../bridge";
 import { publicError } from "../runtime/publicError";
 import "./ErrorsLogsPanel.css";
@@ -95,18 +95,32 @@ export function ErrorsLogsPanel({
 		await navigator.clipboard.writeText(JSON.stringify(bundle, null, 2));
 	}
 
+	function moveTabFocus(event: KeyboardEvent<HTMLButtonElement>) {
+		let nextTab: "errors" | "logs" | null = null;
+		if (event.key === "ArrowLeft" || event.key === "ArrowRight" || event.key === "ArrowUp" || event.key === "ArrowDown") {
+			nextTab = tab === "errors" ? "logs" : "errors";
+		}
+		if (event.key === "Home") nextTab = "errors";
+		if (event.key === "End") nextTab = "logs";
+		if (!nextTab) return;
+		event.preventDefault();
+		setTab(nextTab);
+		const buttons = event.currentTarget.parentElement?.querySelectorAll<HTMLButtonElement>('[role="tab"]');
+		buttons?.[nextTab === "errors" ? 0 : 1]?.focus();
+	}
+
 	return (
 		<section className="errors-logs-panel" data-testid="errors-logs-panel">
 			<header className="errors-logs-header">
-				<div className="errors-logs-tabs" role="tablist">
-					<button type="button" role="tab" aria-selected={tab === "errors"} onClick={() => setTab("errors")}>Errors</button>
-					<button type="button" role="tab" aria-selected={tab === "logs"} onClick={() => setTab("logs")}>Logs</button>
+				<div className="errors-logs-tabs" role="tablist" aria-label="Failure evidence">
+					<button type="button" role="tab" id="failure-evidence-tab-occurrences" aria-controls="failure-evidence-panel-occurrences" aria-selected={tab === "errors"} tabIndex={tab === "errors" ? 0 : -1} onKeyDown={moveTabFocus} onClick={() => setTab("errors")}>Occurrences</button>
+					<button type="button" role="tab" id="failure-evidence-tab-logs" aria-controls="failure-evidence-panel-logs" aria-selected={tab === "logs"} tabIndex={tab === "logs" ? 0 : -1} onKeyDown={moveTabFocus} onClick={() => setTab("logs")}>Logs</button>
 				</div>
 				<p className="errors-logs-mode" data-testid="observability-mode">{mode}</p>
 			</header>
 			{error ? <p className="errors-logs-error">{error}</p> : null}
 			{tab === "errors" ? (
-				<div className="errors-logs-body">
+				<div className="errors-logs-body" role="tabpanel" id="failure-evidence-panel-occurrences" aria-labelledby="failure-evidence-tab-occurrences">
 					<label>
 						Lifecycle
 						<select value={lifecycle} onChange={(event) => setLifecycle(event.target.value)}>
@@ -147,7 +161,7 @@ export function ErrorsLogsPanel({
 					) : null}
 				</div>
 			) : (
-				<ul className="errors-logs-list">
+				<ul className="errors-logs-list" role="tabpanel" id="failure-evidence-panel-logs" aria-labelledby="failure-evidence-tab-logs">
 					{logs.map((row) => (
 						<li key={row.logId}>
 							<strong>{row.level}</strong> {row.component}/{row.event}: {row.message}
