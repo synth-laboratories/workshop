@@ -339,6 +339,7 @@ struct ReadyContainer {
     base_url: String,
     protocol: String,
     image_digest: Option<String>,
+    producer_source_revision: Option<String>,
     metadata: Value,
 }
 
@@ -370,7 +371,7 @@ pub(super) async fn start_inline(
     session_ref: Option<String>,
 ) -> Result<(OptimizerRunRecord, Option<crate::storage::AppEvent>)> {
     let recipe = approved.recipe();
-    let (container, family) =
+    let (mut container, family) =
         find_ready_container_by_id(service, recipe.container.container_id.as_str()).await?;
     let info = crate::http::http_client()
         .get(format!("{}/info", container.base_url))
@@ -382,6 +383,7 @@ pub(super) async fn start_inline(
         .json::<Value>()
         .await
         .context("decode inline container /info")?;
+    refresh_inline_container_provenance(&mut container, &info)?;
     let evaluator_ref = info
         .pointer("/logical_service_ids/evaluator")
         .and_then(Value::as_str)
@@ -465,10 +467,16 @@ async fn start_eval(
     service: &OptimizerService,
     session_ref: Option<String>,
     spec: EvalSpec,
-    container: ReadyContainer,
+    mut container: ReadyContainer,
     approved: Option<super::admission::ApprovedExecutionSpec>,
 ) -> Result<(OptimizerRunRecord, Option<crate::storage::AppEvent>)> {
-    preflight_container_credentials(&container, &spec).await?;
+    let preflight_info = preflight_container_credentials(&container, &spec).await?;
+    if approved.is_some() {
+        // Credential preflight is the last producer read before durable run
+        // creation. Recheck the same immutable facts here to close the gap
+        // between the post-approval identity refresh and dispatch.
+        refresh_inline_container_provenance(&mut container, &preflight_info)?;
+    }
     let examples = spec.examples();
     let suffix = Uuid::new_v4().simple().to_string();
     let run_id = format!("opt_eval_{}_{}", spec.family, &suffix[..12]);
@@ -486,6 +494,7 @@ async fn start_eval(
         "containerId": container.id,
         "containerBaseUrl": container.base_url,
         "containerImageDigest": container.image_digest,
+        "containerProducerSourceRevision": container.producer_source_revision,
         "expectedVisual": effective_contract.primary_visual.template_id.clone(),
         "effectiveContract": effective_contract,
         "policyRef": { "harness": spec.harness, "config": spec.policy_config },
@@ -520,13 +529,19 @@ async fn start_eval(
             metadata: json!({
                 "recipeId": spec.recipe_id,
                 "baseUrl": container.base_url,
+                "imageDigest": container.image_digest,
+                "producerSourceRevision": container.producer_source_revision,
             }),
         }]),
         input_refs: Some(vec![
             OptimizerResourceRef {
                 kind: "recipe".into(),
                 id: spec.recipe_id.clone(),
-                digest: None,
+                digest: spec
+                    .recipe_id
+                    .strip_prefix("inline:")
+                    .filter(|digest| valid_sha256_digest(digest))
+                    .map(str::to_string),
                 role: Some("configuration".into()),
                 title: Some(spec.title.clone()),
                 metadata: json!({ "semantics": "baseline_eval" }),
@@ -534,10 +549,14 @@ async fn start_eval(
             OptimizerResourceRef {
                 kind: "container".into(),
                 id: container.id.clone(),
-                digest: None,
+                digest: container.image_digest.clone(),
                 role: Some("runtime".into()),
                 title: Some(format!("Registered {} container", spec.family)),
-                metadata: json!({ "baseUrl": container.base_url }),
+                metadata: json!({
+                    "baseUrl": container.base_url,
+                    "imageDigest": container.image_digest,
+                    "producerSourceRevision": container.producer_source_revision,
+                }),
             },
         ]),
         capabilities: Some(OptimizerCapabilities::for_algorithm(EVAL_ALGORITHM_ID)),
@@ -697,7 +716,7 @@ async fn project_worker_failure_visual(
 async fn preflight_container_credentials(
     container: &ReadyContainer,
     spec: &EvalSpec,
-) -> Result<()> {
+) -> Result<Value> {
     let client = crate::http::http_client_with_timeout(Duration::from_secs(15));
     let info = client
         .get(format!("{}/info", container.base_url))
@@ -743,7 +762,7 @@ async fn preflight_container_credentials(
                 })
             );
         }
-        return Ok(());
+        return Ok(info);
     };
     // Sorted so the refusal names the same lane every time for a container
     // missing more than one credential.
@@ -781,7 +800,7 @@ async fn preflight_container_credentials(
             })
         );
     }
-    Ok(())
+    Ok(info)
 }
 
 /// Settle a worker that did not reach its own terminal event.
@@ -2026,14 +2045,22 @@ fn eval_terminal_evidence_refs(spec: &EvalSpec, record: &Value) -> Result<Vec<Va
         } else {
             "trace_v5"
         };
-        refs.extend(traces.iter().filter_map(|trace| {
-            let id = trace.get("traceId").and_then(Value::as_str)?;
-            Some(json!({
+        for trace in traces {
+            let Some(id) = trace.get("traceId").and_then(Value::as_str) else {
+                continue;
+            };
+            let digest = trace
+                .get("digest")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|digest| valid_sha256_digest(digest))
+                .with_context(|| format!("sealed Trace V5 `{id}` omitted its immutable digest"))?;
+            refs.push(json!({
                 "kind": trace_kind,
                 "id": id,
-                "digest": trace.get("digest").cloned().unwrap_or(Value::Null),
-            }))
-        }));
+                "digest": digest,
+            }));
+        }
     }
     Ok(refs)
 }
@@ -2653,16 +2680,27 @@ pub(super) async fn reconcile_evidence(
             FrameTraceMode::SealedComplete
         };
         verify_complete_native_frame_trace(record, &imported, &rollout_id, frame_mode)?;
-        let trace_ref = imported
+        let imported_trace = imported
             .get("traces")
             .and_then(Value::as_array)
             .and_then(|traces| traces.first())
-            .and_then(|trace| trace.get("traceId"))
+            .context("sealed bundle indexed no trace")?;
+        let trace_ref = imported_trace
+            .get("traceId")
             .and_then(Value::as_str)
             .map(str::to_string)
             .with_context(|| {
                 format!("sealed bundle for rollout `{rollout_id}` indexed no trace")
             })?;
+        let trace_digest = imported_trace
+            .get("digest")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|digest| valid_sha256_digest(digest))
+            .with_context(|| {
+                format!("sealed bundle for rollout `{rollout_id}` indexed a trace without an immutable digest")
+            })?
+            .to_string();
         if trace_ref != producer_trace_id {
             bail!(
                 "trace_identity_mismatch: rollout `{rollout_id}` declared `{producer_trace_id}` but the immutable bundle indexed `{trace_ref}`"
@@ -2672,7 +2710,11 @@ pub(super) async fn reconcile_evidence(
             .as_object_mut()
             .with_context(|| format!("terminal record for seed {seed} is not an object"))?
             .insert("sealedTrace".into(), imported);
-        evidence_refs.push(json!({ "kind": "trace", "id": trace_ref }));
+        evidence_refs.push(json!({
+            "kind": "trace",
+            "id": trace_ref,
+            "digest": trace_digest,
+        }));
     }
     service
         .append_event_payloads(
@@ -3750,6 +3792,7 @@ async fn find_ready_container(
                         base_url: base_url.trim_end_matches('/').to_string(),
                         protocol,
                         image_digest: container_image_digest(&metadata),
+                        producer_source_revision: container_producer_source_revision(&metadata),
                         metadata: metadata.clone(),
                     });
                 }
@@ -3821,15 +3864,162 @@ fn advertised_eval_protocol(metadata: &Value) -> Option<String> {
 }
 
 fn container_image_digest(metadata: &Value) -> Option<String> {
-    for pointer in ["/imageDigest", "/image_digest", "/digest", "/image/digest"] {
+    // Registry hydration puts the producer's `/info` document below `info`.
+    // Prefer that trusted probe result over registry-root compatibility fields,
+    // which may have been supplied by the caller at registration time.
+    for pointer in [
+        "/info/imageDigest",
+        "/info/image_digest",
+        "/imageDigest",
+        "/image_digest",
+        "/digest",
+        "/image/digest",
+    ] {
         if let Some(digest) = metadata.pointer(pointer).and_then(Value::as_str) {
             let digest = digest.trim();
-            if digest.starts_with("sha256:") && digest.len() == 71 {
+            if valid_sha256_digest(digest) {
                 return Some(digest.to_string());
             }
         }
     }
     None
+}
+
+fn container_producer_source_revision(metadata: &Value) -> Option<String> {
+    for pointer in [
+        "/info/producerSourceRevision",
+        "/info/producer_source_revision",
+        "/producerSourceRevision",
+        "/producer_source_revision",
+    ] {
+        if let Some(revision) = metadata
+            .pointer(pointer)
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|revision| !revision.is_empty())
+        {
+            return Some(revision.to_string());
+        }
+    }
+    None
+}
+
+fn valid_sha256_digest(digest: &str) -> bool {
+    digest
+        .strip_prefix("sha256:")
+        .is_some_and(|hex| hex.len() == 64 && hex.bytes().all(|byte| byte.is_ascii_hexdigit()))
+}
+
+/// Bind the producer facts from the same fresh `/info` response used for the
+/// post-approval identity check. An approved eval is the paid path, so missing,
+/// malformed, or drifting provenance is refused before the run is created.
+fn refresh_inline_container_provenance(container: &mut ReadyContainer, info: &Value) -> Result<()> {
+    let image_digest = info
+        .get("imageDigest")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|digest| valid_sha256_digest(digest))
+        .context("container_image_digest_missing: fresh /info must advertise imageDigest as sha256:<64 lowercase-or-uppercase hex characters>")?
+        .to_string();
+    let producer_source_revision = info
+        .get("producerSourceRevision")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|revision| !revision.is_empty())
+        .context("container_producer_source_revision_missing: fresh /info must advertise producerSourceRevision")?
+        .to_string();
+
+    if let Some(registered) = container
+        .metadata
+        .pointer("/info/imageDigest")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|digest| valid_sha256_digest(digest))
+    {
+        anyhow::ensure!(
+            registered == image_digest,
+            "container_image_digest_mismatch: registered {registered}, current {image_digest}"
+        );
+    }
+    if let Some(registered) = container
+        .metadata
+        .pointer("/info/producerSourceRevision")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|revision| !revision.is_empty())
+    {
+        anyhow::ensure!(
+            registered == producer_source_revision,
+            "container_producer_source_revision_mismatch: registered {registered}, current {producer_source_revision}"
+        );
+    }
+
+    container.image_digest = Some(image_digest);
+    container.producer_source_revision = Some(producer_source_revision);
+    Ok(())
+}
+
+/// Verify that a trusted Trace V5 bundle preserved the exact producer facts
+/// admitted for the run, then record the immutable cross-boundary binding next
+/// to the imported trace reference. The trace bytes stay immutable; Workshop
+/// records and verifies their relationship to the approved runtime.
+pub(super) fn bind_imported_trace_provenance(
+    result: &mut Value,
+    run_summary: &Value,
+) -> Result<()> {
+    if run_summary.get("recipeSourceKind").and_then(Value::as_str) != Some("inline") {
+        return Ok(());
+    }
+    let expected_image = run_summary
+        .get("containerImageDigest")
+        .and_then(Value::as_str)
+        .filter(|digest| valid_sha256_digest(digest))
+        .context("inline run omitted its admitted container image digest")?;
+    let expected_revision = run_summary
+        .get("containerProducerSourceRevision")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|revision| !revision.is_empty())
+        .context("inline run omitted its admitted container producer revision")?;
+    let provenance = result
+        .get("traceProvenance")
+        .and_then(Value::as_object)
+        .context("trusted Trace V5 bundle omitted producer provenance")?;
+    let actual_image = provenance
+        .get("container_image_digest")
+        .or_else(|| provenance.get("containerImageDigest"))
+        .and_then(Value::as_str)
+        .context("trusted Trace V5 provenance omitted container_image_digest")?;
+    let actual_revision = provenance
+        .get("producer_commit")
+        .or_else(|| provenance.get("producerSourceRevision"))
+        .and_then(Value::as_str)
+        .context("trusted Trace V5 provenance omitted producer_commit")?;
+    anyhow::ensure!(
+        actual_image == expected_image,
+        "trace_container_image_digest_mismatch: admitted {expected_image}, trace {actual_image}"
+    );
+    anyhow::ensure!(
+        actual_revision == expected_revision,
+        "trace_producer_source_revision_mismatch: admitted {expected_revision}, trace {actual_revision}"
+    );
+    let trace_digest = result
+        .pointer("/traces/0/digest")
+        .and_then(Value::as_str)
+        .filter(|digest| valid_sha256_digest(digest))
+        .context("trusted Trace V5 import omitted its immutable trace digest")?;
+    let bundle_digest = result
+        .get("bundleDigest")
+        .and_then(Value::as_str)
+        .filter(|digest| valid_sha256_digest(digest))
+        .context("trusted Trace V5 import omitted its immutable bundle digest")?;
+    result["provenanceBinding"] = json!({
+        "imageDigest": expected_image,
+        "producerSourceRevision": expected_revision,
+        "traceDigest": trace_digest,
+        "bundleDigest": bundle_digest,
+    });
+    Ok(())
 }
 
 fn container_matches_family(task_family: Option<&str>, metadata: &Value, family: &str) -> bool {
@@ -3951,6 +4141,126 @@ mod tests {
         atomic::{AtomicUsize, Ordering},
         Arc, Mutex,
     };
+
+    fn ready_container_with_metadata(metadata: Value) -> ReadyContainer {
+        ReadyContainer {
+            id: "ctr_craftax_test".into(),
+            base_url: "http://127.0.0.1:1".into(),
+            protocol: crate::container_capabilities::LIVE_EVAL_PROTOCOL.into(),
+            image_digest: container_image_digest(&metadata),
+            producer_source_revision: container_producer_source_revision(&metadata),
+            metadata,
+        }
+    }
+
+    #[test]
+    fn hydrated_info_provenance_wins_over_untrusted_registry_root_fields() {
+        let metadata = json!({
+            "imageDigest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "producerSourceRevision": "caller-supplied",
+            "info": {
+                "imageDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "producerSourceRevision": "containers@abc123"
+            }
+        });
+        assert_eq!(
+            container_image_digest(&metadata).as_deref(),
+            Some("sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+        );
+        assert_eq!(
+            container_producer_source_revision(&metadata).as_deref(),
+            Some("containers@abc123")
+        );
+    }
+
+    #[test]
+    fn approved_eval_provenance_is_fresh_complete_and_drift_checked() {
+        let metadata = json!({"info": {
+            "imageDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "producerSourceRevision": "containers@abc123"
+        }});
+        let mut container = ready_container_with_metadata(metadata);
+        refresh_inline_container_provenance(&mut container, &json!({
+            "imageDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "producerSourceRevision": "containers@abc123"
+        }))
+        .unwrap();
+        assert_eq!(container.producer_source_revision.as_deref(), Some("containers@abc123"));
+
+        let missing = refresh_inline_container_provenance(
+            &mut container.clone(),
+            &json!({"producerSourceRevision": "containers@abc123"}),
+        )
+        .unwrap_err();
+        assert!(format!("{missing:#}").contains("container_image_digest_missing"));
+
+        let drift = refresh_inline_container_provenance(&mut container, &json!({
+            "imageDigest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+            "producerSourceRevision": "containers@abc123"
+        }))
+        .unwrap_err();
+        assert!(format!("{drift:#}").contains("container_image_digest_mismatch"));
+    }
+
+    #[test]
+    fn trace_evidence_never_records_a_null_digest() {
+        let spec = EvalSpec::classify_fixture();
+        let missing = eval_terminal_evidence_refs(
+            &spec,
+            &json!({"sealedTrace": {"traces": [{"traceId": "trace_1"}]}}),
+        )
+        .unwrap_err();
+        assert!(format!("{missing:#}").contains("omitted its immutable digest"));
+
+        let refs = eval_terminal_evidence_refs(
+            &spec,
+            &json!({"sealedTrace": {"traces": [{
+                "traceId": "trace_1",
+                "digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+            }]}}),
+        )
+        .unwrap();
+        assert_eq!(
+            refs[0]["digest"],
+            json!("sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd")
+        );
+    }
+
+    #[test]
+    fn imported_trace_provenance_must_match_the_admitted_runtime() {
+        let summary = json!({
+            "recipeSourceKind": "inline",
+            "containerImageDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "containerProducerSourceRevision": "containers@abc123"
+        });
+        let mut imported = json!({
+            "bundleDigest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "traces": [{
+                "traceId": "trace_1",
+                "digest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+            }],
+            "traceProvenance": {
+                "container_image_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "producer_commit": "containers@abc123"
+            }
+        });
+        bind_imported_trace_provenance(&mut imported, &summary).unwrap();
+        assert_eq!(
+            imported["provenanceBinding"]["bundleDigest"],
+            json!("sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
+        );
+        assert!(imported["provenanceBinding"]
+            .as_object()
+            .unwrap()
+            .values()
+            .all(|value| !value.is_null()));
+
+        imported["traceProvenance"]["container_image_digest"] = json!(
+            "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+        );
+        let mismatch = bind_imported_trace_provenance(&mut imported, &summary).unwrap_err();
+        assert!(format!("{mismatch:#}").contains("trace_container_image_digest_mismatch"));
+    }
 
     #[test]
     fn sealed_trace_high_water_does_not_invent_environment_steps() {
@@ -4454,7 +4764,11 @@ mod tests {
                                     "rollouts.events": true
                                 }
                             },
-                            "imageDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                            "imageDigest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                            "info": {
+                                "imageDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                                "producerSourceRevision": "containers@fixture"
+                            }
                         })
                         .to_string(),
                         updated_at
@@ -4605,6 +4919,23 @@ max_total_rollouts = 4
         assert_eq!(
             finished.summary["containerImageDigest"],
             json!("sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+        );
+        assert_eq!(
+            finished.summary["containerProducerSourceRevision"],
+            json!("containers@fixture")
+        );
+        let runtime_ref = finished
+            .input_refs
+            .iter()
+            .find(|reference| reference.kind == "container")
+            .unwrap();
+        assert_eq!(
+            runtime_ref.digest.as_deref(),
+            Some("sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+        );
+        assert_eq!(
+            runtime_ref.metadata["producerSourceRevision"],
+            json!("containers@fixture")
         );
 
         let events = svc

@@ -748,6 +748,8 @@ impl OptimizerService {
         result["importedFrameCount"] = json!(frames.len());
         result["importedFrameSteps"] =
             json!(frames.iter().map(|frame| frame.step).collect::<Vec<_>>());
+        let run = self.get(run_id.to_string()).await?;
+        super::container_eval::bind_imported_trace_provenance(&mut result, &run.summary)?;
         if let Some(event) = event.filter(|_| self.events_tx.receiver_count() > 0) {
             self.events_tx
                 .send(event)

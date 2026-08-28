@@ -4163,11 +4163,12 @@ pub(crate) async fn import_container_trace_into(
             return Err(error);
         }
     };
-    let (frames, max_step) = (if source_kind == "container_bundle" && result.trusted {
-        extract_imported_trace_frames(&source_path, rollout_id)
-    } else {
-        Ok((Vec::new(), None))
-    })?;
+    let (frames, max_step, trace_provenance) =
+        (if source_kind == "container_bundle" && result.trusted {
+            extract_imported_trace_frames(&source_path, rollout_id)
+        } else {
+            Ok((Vec::new(), None, None))
+        })?;
     let _ = fs::remove_file(&source_path);
 
     let indexed: Vec<Value> = result
@@ -4183,6 +4184,10 @@ pub(crate) async fn import_container_trace_into(
             "compatibilityLevel": result.compatibility_level,
             "trusted": result.trusted,
             "duplicate": result.duplicate,
+            "inputDigest": result.input_digest,
+            "bundleDigest": result.bundle_digest,
+            "archiveDigest": result.archive_digest,
+            "traceProvenance": trace_provenance,
             // Inspectable only when a capture-supervisor Trace V5 bundle indexed
             // real traces. A lite seal is retained with its provenance but cannot
             // be projected; saying otherwise is how an agent retries an inspector
@@ -4215,7 +4220,7 @@ pub(crate) struct ImportedTraceFrame {
 fn extract_imported_trace_frames(
     archive_path: &std::path::Path,
     rollout_id: &str,
-) -> Result<(Vec<ImportedTraceFrame>, Option<i64>)> {
+) -> Result<(Vec<ImportedTraceFrame>, Option<i64>, Option<Value>)> {
     let file = fs::File::open(archive_path)
         .with_context(|| format!("open imported trace archive {}", archive_path.display()))?;
     let mut archive = zip::ZipArchive::new(file).context("open imported trace ZIP")?;
@@ -4228,6 +4233,7 @@ fn extract_imported_trace_frames(
         .collect::<Vec<_>>();
     let mut frames = Vec::new();
     let mut max_step = None::<i64>;
+    let mut trace_provenance = None::<Value>;
     for name in sealed_names {
         let document = {
             let mut entry = archive.by_name(&name)?;
@@ -4244,6 +4250,16 @@ fn extract_imported_trace_frames(
             != Some(rollout_id)
         {
             continue;
+        }
+        if let Some(provenance) = document.get("provenance").filter(|value| value.is_object()) {
+            if let Some(previous) = &trace_provenance {
+                anyhow::ensure!(
+                    previous == provenance,
+                    "sealed traces for rollout `{rollout_id}` disagree on provenance"
+                );
+            } else {
+                trace_provenance = Some(provenance.clone());
+            }
         }
         let artifacts = document
             .get("artifacts")
@@ -4339,7 +4355,7 @@ fn extract_imported_trace_frames(
             imported_artifacts.insert(artifact_id.to_string());
         }
     }
-    Ok((frames, max_step))
+    Ok((frames, max_step, trace_provenance))
 }
 
 /// Capture-supervisor bundle first (Lane E `/rollouts/{id}/trace/bundle`),
@@ -5764,6 +5780,10 @@ mod tests {
         let uri = format!("blobs/sha256/{}/{}", &digest[7..9], &digest[7..]);
         let document = json!({
             "identity": {"rollout_id": "roll_portable"},
+            "provenance": {
+                "producer_commit": "containers@abc123",
+                "container_image_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            },
             "artifacts": [{
                 "artifact_id": "frame_0",
                 "digest": digest,
@@ -5792,7 +5812,7 @@ mod tests {
         archive.write_all(&png).unwrap();
         archive.finish().unwrap();
 
-        let (frames, max_step) =
+        let (frames, max_step, provenance) =
             extract_imported_trace_frames(&archive_path, "roll_portable").unwrap();
         assert_eq!(frames.len(), 1);
         assert_eq!(max_step, Some(0));
@@ -5801,5 +5821,6 @@ mod tests {
         assert_eq!(frames[0].width, 1);
         assert_eq!(frames[0].height, 1);
         assert_eq!(frames[0].producer_digest.as_deref(), Some("producer16"));
+        assert_eq!(provenance.unwrap()["producer_commit"], "containers@abc123");
     }
 }
