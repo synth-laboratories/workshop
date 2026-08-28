@@ -824,17 +824,51 @@ pub fn find_container_spec_in_roots(
     spec_id: &str,
 ) -> Result<ContainerSpec> {
     let mut matches = Vec::new();
+    let mut opaque_diagnostics = Vec::new();
     for manifest in discover_container_manifests(search_roots)? {
-        for spec in load_container_specs_from_manifest(&manifest)? {
-            if spec.id == spec_id {
-                matches.push(spec);
+        match load_container_specs_from_manifest(&manifest) {
+            Ok(specs) => {
+                for spec in specs {
+                    if spec.id == spec_id {
+                        matches.push(spec);
+                    }
+                }
+            }
+            Err(error) => {
+                // An approved parent may contain several independent task
+                // repositories. One stale sibling declaration must not hide a
+                // valid target in another repository, but an invalid
+                // declaration of the requested id must retain its actionable
+                // validation error.
+                let declared_ids = recover_container_ids(&manifest);
+                if declared_ids.iter().any(|id| id == spec_id) {
+                    return Err(error).with_context(|| {
+                        format!(
+                            "container spec `{spec_id}` is declared but invalid in {}",
+                            manifest.display()
+                        )
+                    });
+                }
+                if declared_ids.is_empty() {
+                    opaque_diagnostics.push((manifest, error));
+                }
             }
         }
     }
     match matches.len() {
-        0 => Err(anyhow!(
-            "container spec `{spec_id}` is not declared in any approved workshop.containers.toml"
-        )),
+        0 => {
+            if let Some((manifest, error)) = opaque_diagnostics.into_iter().next() {
+                return Err(error).with_context(|| {
+                    format!(
+                        "could not determine whether container spec `{spec_id}` is declared in {}",
+                        manifest.display()
+                    )
+                });
+            }
+            Err(anyhow!(
+                "container spec `{spec_id}` is not declared in any approved workshop.containers.toml"
+            ))
+        }
         1 => Ok(matches.remove(0)),
         _ => {
             if let Some(exact) = matches.iter().find(|spec| {
@@ -851,6 +885,23 @@ pub fn find_container_spec_in_roots(
             ))
         }
     }
+}
+
+fn recover_container_ids(manifest_path: &Path) -> Vec<String> {
+    let Ok(text) = fs::read_to_string(manifest_path) else {
+        return Vec::new();
+    };
+    let Ok(document) = toml::from_str::<toml::Value>(&text) else {
+        return Vec::new();
+    };
+    document
+        .get("container")
+        .and_then(toml::Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|entry| entry.get("id").and_then(toml::Value::as_str))
+        .map(str::to_owned)
+        .collect()
 }
 
 pub fn resolve_container_spec(
@@ -2255,6 +2306,57 @@ include = ["{include}"]
         write_container_manifest(&nested, "scripts/up_craftax_container.sh");
         let spec = find_container_spec_in_roots(&[parent], "nanohorizon-craftax").unwrap();
         assert_eq!(spec.origin.source_root, nested.canonicalize().unwrap());
+    }
+
+    #[test]
+    fn invalid_sibling_manifest_does_not_hide_valid_container() {
+        let dir = tempdir().unwrap();
+        let parent = dir.path().join("approved");
+        let target = parent.join("banking77");
+        let stale_sibling = parent.join("stale-sibling");
+        fs::create_dir_all(&parent).unwrap();
+        write_container_manifest(&target, "scripts/up_craftax_container.sh");
+        fs::create_dir_all(&stale_sibling).unwrap();
+        fs::write(
+            stale_sibling.join(CONTAINERS_FILE),
+            r#"[[container]]
+id = "old-container"
+locality = "container"
+[container.launch]
+schema_version = "synth.container-launch.v1"
+working_directory = "."
+command = ["scripts/up.sh"]
+"#,
+        )
+        .unwrap();
+
+        let spec = find_container_spec_in_roots(&[parent], "nanohorizon-craftax").unwrap();
+        assert_eq!(spec.origin.source_root, target.canonicalize().unwrap());
+    }
+
+    #[test]
+    fn invalid_requested_container_surfaces_its_validation_error() {
+        let dir = tempdir().unwrap();
+        let parent = dir.path().join("approved");
+        let target = parent.join("banking77");
+        fs::create_dir_all(&target).unwrap();
+        fs::write(
+            target.join(CONTAINERS_FILE),
+            r#"[[container]]
+id = "banking77"
+locality = "host"
+[container.launch]
+schema_version = "synth.container-launch.v1"
+working_directory = "."
+command = ["python3", "serve.py"]
+"#,
+        )
+        .unwrap();
+
+        let error = find_container_spec_in_roots(&[parent], "banking77").unwrap_err();
+        let message = format!("{error:#}");
+        assert!(message.contains("declared but invalid"), "{message}");
+        assert!(message.contains("parse workshop.containers.toml"), "{message}");
     }
 
     #[test]
