@@ -969,7 +969,7 @@ function TemplateVisualHost({ artifact }: { artifact: ArtifactRef }) {
 			if (snapshot.state === "interrupted" || snapshot.state === "failed") {
 				if (payload) setOptimizerPayload(payload);
 				setOptimizerLoadError(snapshot.error ?? "Optimizer stream interrupted");
-				setConnectionState("interrupted");
+				setConnectionState(snapshot.state);
 				reportDiagnostic({
 					...visualIdentity,
 					optimizerRunId,

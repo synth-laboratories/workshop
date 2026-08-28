@@ -32,6 +32,7 @@ const {
 	resolveOwnedRun,
 	runSubscriberCount,
 	setRunProgressPollInterval,
+	setRunProgressRetryBase,
 	setRunProgressStallTimeout,
 	setRunProgressTransport,
 	subscribeToRun
@@ -40,8 +41,8 @@ const {
 setRunProgressPollInterval(3_600_000);
 
 /** A fake durable store: a run record plus persisted event pages by sequence. */
-function fakeTransport({ runs, pages, onEventsAfter } = {}) {
-	const calls = { get: 0, eventsAfter: 0, refresh: 0, listeners: 0 };
+function fakeTransport({ runs, pages, views, onEventsAfter, onRunViewV2 } = {}) {
+	const calls = { get: 0, runViewV2: 0, eventsAfter: 0, refresh: 0, listeners: 0 };
 	// The real bridge broadcasts every optimizer notification to every listener;
 	// a fake that keeps only the newest one would hide cross-run misrouting.
 	const listeners = new Set();
@@ -51,6 +52,7 @@ function fakeTransport({ runs, pages, onEventsAfter } = {}) {
 			for (const listener of [...listeners]) listener({ payload: { optimizerRunId: runId } });
 		},
 		setRun: (runId, next) => { runs[runId] = next; },
+		setView: (runId, next) => { views[runId] = next; },
 		setPages: (runId, next) => { pages[runId] = next; },
 		async get(runId) {
 			calls.get += 1;
@@ -73,6 +75,13 @@ function fakeTransport({ runs, pages, onEventsAfter } = {}) {
 			return () => { calls.listeners -= 1; listeners.delete(listener); };
 		}
 	};
+	if (views) {
+		transport.runViewV2 = async (runId) => {
+			calls.runViewV2 += 1;
+			onRunViewV2?.(runId);
+			return views[runId];
+		};
+	}
 	return transport;
 }
 
@@ -101,6 +110,10 @@ function runRecord(overrides = {}) {
 	};
 }
 
+function runView(projectionRevision, lifecycle = "running") {
+	return { header: { projectionRevision, lifecycle } };
+}
+
 /** Resolve after the store's internal promise chain drains. */
 const settle = () => new Promise((resolve) => setTimeout(resolve, 5));
 
@@ -113,6 +126,7 @@ test.after(() => {
 	resetRunProgressStore();
 	setRunProgressTransport(null);
 	setRunProgressStallTimeout(15_000);
+	setRunProgressRetryBase(250);
 });
 
 /**
@@ -431,6 +445,112 @@ test("a hung read stalls into a recoverable interrupted state, not endless Runni
 	setRunProgressStallTimeout(15_000);
 });
 
+test("the watchdog abandons a hung promise chain and a late result cannot overwrite recovery", async () => {
+	setRunProgressStallTimeout(20);
+	let resolveHung;
+	let reads = 0;
+	const transport = {
+		get() {
+			reads += 1;
+			if (reads === 1) return new Promise((resolve) => { resolveHung = resolve; });
+			return Promise.resolve(runRecord({ status: "running", objective: "recovered" }));
+		},
+		async eventsAfter() { return [event(1), event(2), event(3)]; },
+		async refresh() { return undefined; },
+		onEvent(listener) { transport.notify = listener; return () => undefined; }
+	};
+	setRunProgressTransport(transport);
+	const seen = [];
+	subscribeToRun("run-a", (snapshot) => seen.push(snapshot));
+	await new Promise((resolve) => setTimeout(resolve, 25));
+	transport.notify({ payload: { optimizerRunId: "run-a" } });
+	await settle();
+	assert.equal(seen.at(-1).state, "subscribed");
+	assert.equal(seen.at(-1).run.objective, "recovered");
+	resolveHung(runRecord({ status: "failed", objective: "stale" }));
+	await new Promise((resolve) => setTimeout(resolve, 30));
+	assert.equal(seen.at(-1).run.objective, "recovered", "the abandoned invoke cannot win after recovery");
+	setRunProgressStallTimeout(15_000);
+});
+
+test("five consecutive failures stop automatic retries but a producer notification can recover", async () => {
+	setRunProgressRetryBase(5);
+	let failing = true;
+	let reads = 0;
+	const transport = {
+		async get() {
+			reads += 1;
+			if (failing) throw new Error("producer unavailable");
+			return runRecord();
+		},
+		async eventsAfter() { return [event(1), event(2), event(3)]; },
+		async refresh() { return undefined; },
+		onEvent(listener) { transport.notify = listener; return () => undefined; }
+	};
+	setRunProgressTransport(transport);
+	const seen = [];
+	subscribeToRun("run-a", (snapshot) => seen.push(snapshot));
+	await new Promise((resolve) => setTimeout(resolve, 130));
+	assert.equal(seen.at(-1).state, "failed");
+	assert.equal(reads, 5, "automatic transport reads are capped at five consecutive failures");
+	failing = false;
+	transport.notify({ payload: { optimizerRunId: "run-a" } });
+	await settle();
+	assert.equal(seen.at(-1).state, "subscribed", "producer wakeups remain live after retry exhaustion");
+	assert.equal(reads, 6);
+	setRunProgressRetryBase(250);
+});
+
+test("projection revision regression and gaps force snapshot replay from zero", async () => {
+	const reads = [];
+	const views = { "run-a": runView(5) };
+	const transport = fakeTransport({
+		runs: { "run-a": runRecord({ cursorSeq: 3 }) },
+		pages: { "run-a": [event(1), event(2), event(3)] },
+		views,
+		onEventsAfter: (_runId, afterSeq) => reads.push(afterSeq)
+	});
+	setRunProgressTransport(transport);
+	const seen = [];
+	subscribeToRun("run-a", (snapshot) => seen.push(snapshot));
+	await settle();
+	reads.length = 0;
+	transport.setView("run-a", runView(3));
+	transport.emit("run-a");
+	await settle();
+	assert.ok(reads.includes(0), `a regressed projection must replay from zero (saw ${reads})`);
+	reads.length = 0;
+	transport.setView("run-a", runView(7));
+	transport.setRun("run-a", runRecord({ cursorSeq: 4 }));
+	transport.setPages("run-a", [event(1), event(2), event(3), event(4)]);
+	transport.emit("run-a");
+	await settle();
+	assert.ok(reads.includes(0), `a projection revision gap must replay from zero (saw ${reads})`);
+	assert.equal(seen.at(-1).viewV2.header.projectionRevision, 7);
+});
+
+test("polling compares durable projection revision and closes a missed-wakeup hole", async () => {
+	setRunProgressPollInterval(10);
+	const views = { "run-a": runView(1) };
+	const transport = fakeTransport({
+		runs: { "run-a": runRecord({ cursorSeq: 1 }) },
+		pages: { "run-a": [event(1)] },
+		views
+	});
+	setRunProgressTransport(transport);
+	const seen = [];
+	subscribeToRun("run-a", (snapshot) => seen.push(snapshot));
+	await settle();
+	transport.setView("run-a", runView(2));
+	transport.setRun("run-a", runRecord({ cursorSeq: 2 }));
+	transport.setPages("run-a", [event(1), event(2)]);
+	await new Promise((resolve) => setTimeout(resolve, 35));
+	assert.equal(seen.at(-1).viewV2.header.projectionRevision, 2);
+	assert.equal(seen.at(-1).cursor, 2);
+	assert.equal(transport.calls.refresh, 0, "V2 polling reads durable revision instead of fire-and-forget refresh");
+	setRunProgressPollInterval(3_600_000);
+});
+
 test("an interrupted subscription recovers to subscribed on the next successful read", async () => {
 	const runs = { "run-a": runRecord() };
 	const pages = { "run-a": [event(1), event(2), event(3)] };
@@ -457,6 +577,7 @@ test("an interrupted subscription recovers to subscribed on the next successful 
 	failNext = false;
 	transport.notify({ payload: { optimizerRunId: "run-a" } });
 	await settle();
+	assert.ok(seen.some((snapshot) => snapshot.state === "replaying"), "recovery visibly replays durable state");
 	assert.equal(seen.at(-1).state, "subscribed");
 	assert.equal(seen.at(-1).events.length, 3);
 	assert.equal(seen.at(-1).error, undefined);

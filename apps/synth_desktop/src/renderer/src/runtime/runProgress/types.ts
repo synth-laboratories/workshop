@@ -233,8 +233,9 @@ export type RunProgressProjection = {
 		suffix?: string;
 		usedCalls: number;
 		maxCalls: number;
-		usedCostUsd: number;
-		maxCostUsd: number;
+		/** Null means the capability has no authoritative cost telemetry. */
+		usedCostUsd: number | null;
+		maxCostUsd: number | null;
 		note?: string;
 	};
 	result?: RunProgressResult;

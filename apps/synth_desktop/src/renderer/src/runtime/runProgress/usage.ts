@@ -54,6 +54,11 @@ export function formatUsd(value: number): string {
 	return `$${value.toFixed(2)}`;
 }
 
+/** Missing cost is unavailable, while a reported zero remains a real $0.00. */
+export function formatMissingUsd(value: number | null | undefined): string {
+	return value == null || !Number.isFinite(value) ? "unavailable" : formatUsd(value);
+}
+
 export function formatCount(value: number): string {
 	return value.toLocaleString("en-US", { maximumFractionDigits: 0 });
 }

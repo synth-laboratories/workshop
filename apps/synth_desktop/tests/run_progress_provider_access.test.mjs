@@ -59,3 +59,28 @@ test("a live capability remains observable as Workshop-proxied provider access",
 		note: "Via Workshop proxy"
 	});
 });
+
+test("unknown capability cost stays null while a pending grant has genuinely spent zero", () => {
+	const capability = providerAccessFromSecrets({
+		terminal: false,
+		proxyRunning: true,
+		capability: {
+			provider: "openrouter",
+			status: "active",
+			usedCalls: 0,
+			maxCalls: 10,
+			usedCostUsd: null,
+			maxCostUsd: 2.45
+		}
+	});
+	assert.equal(capability.usedCostUsd, null);
+	assert.equal(capability.maxCostUsd, 2.45);
+
+	const grant = providerAccessFromSecrets({
+		terminal: false,
+		proxyRunning: true,
+		grant: { provider: "openrouter", maxCalls: 10, maxCostUsd: 0 }
+	});
+	assert.equal(grant.usedCostUsd, 0, "a not-yet-approved grant has genuinely spent zero");
+	assert.equal(grant.maxCostUsd, 0, "a real zero-dollar ceiling is not missing telemetry");
+});
