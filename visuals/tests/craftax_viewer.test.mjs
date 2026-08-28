@@ -14,6 +14,7 @@ import {
   environmentStepCount,
   mergeCraftaxOptimizerJournalEvents,
 } from "../families/first_class_example_containers/live.craftax.v1/projectCraftax.ts";
+import { summarizeCraftaxRun } from "../families/first_class_example_containers/live.craftax.v1/aggregateCraftax.ts";
 
 function event(lane, kind, sequence, payload = {}, second = sequence) {
   return {
@@ -117,6 +118,41 @@ test("terminal and enrichment optimizer lanes rejoin into 50 calls and 303 compl
 
   const duplicated = mergeCraftaxOptimizerJournalEvents(terminalEvents, [...enrichmentEvents, enrichmentEvents[0]]);
   assert.equal(duplicated.length, merged.length, "replayed optimizer envelopes are de-duplicated by durable identity");
+});
+
+test("run overview aggregates rollout distributions without inventing partial token totals", () => {
+  const rows = [
+    event("rollout-a", "span.policy.opened", 1, { call: { provider: "openrouter", model: "z-ai/glm-5.3-flash" } }),
+    event("rollout-a", "span.policy.data", 2, { usage: { total_tokens: 120 } }),
+    event("rollout-a", "span.policy.closed", 3),
+    event("rollout-a", "span.step.closed", 4, { step: 0 }),
+    event("rollout-a", "span.step.closed", 5, { step: 1 }),
+    event("rollout-a", "reward_signal", 6, { value: 4 }),
+    event("rollout-a", "achievement_unlocked", 7, { achievement: "collect_wood" }),
+    event("rollout-b", "span.policy.opened", 1, { call: { provider: "openrouter", model: "z-ai/glm-5.3-flash" } }),
+    event("rollout-b", "span.policy.data", 2, { usage: { total_tokens: 80 } }),
+    event("rollout-b", "span.policy.closed", 3),
+    event("rollout-b", "span.step.closed", 4, { step: 0 }),
+    event("rollout-b", "reward_signal", 5, { value: 2 }),
+    event("rollout-b", "achievement_unlocked", 6, { achievement: "collect_stone" }),
+  ];
+  const aggregate = summarizeCraftaxRun(rows);
+  assert.equal(aggregate.rollouts.length, 2);
+  assert.equal(aggregate.rewardMean, 3);
+  assert.deepEqual([aggregate.rewardMin, aggregate.rewardMax], [2, 4]);
+  assert.deepEqual([aggregate.totalSteps, aggregate.minSteps, aggregate.maxSteps], [3, 1, 2]);
+  assert.deepEqual([aggregate.totalCalls, aggregate.minCalls, aggregate.maxCalls], [2, 1, 1]);
+  assert.equal(aggregate.totalTokens, 200);
+  assert.deepEqual(aggregate.achievementNames, ["collect_stone", "collect_wood"]);
+  assert.equal(aggregate.achievementRollouts, 2);
+
+  const partial = summarizeCraftaxRun([
+    ...rows,
+    event("rollout-c", "span.policy.opened", 1, { call: { provider: "openrouter", model: "z-ai/glm-5.3-flash" } }),
+    event("rollout-c", "span.policy.closed", 2),
+  ]);
+  assert.equal(partial.totalCalls, 3);
+  assert.equal(partial.totalTokens, undefined, "one call without usage makes the run token total unavailable");
 });
 
 test("native GameBench reward_signal reward alias remains visible during replay", () => {

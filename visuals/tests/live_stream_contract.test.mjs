@@ -297,6 +297,19 @@ test("live Craftax renders a subscribed optimizer journal immediately instead of
   assert.match(shell, /optimizerEvents \|\| declaredStreamCount > 0 \? undefined : stream\.events/);
 });
 
+test("live Craftax names durable-journal hydration and exposes a run-wide comparison", () => {
+  const shell = readFileSync(join(root, "families/first_class_example_containers/live.craftax.v1/shell.tsx"), "utf8");
+  const css = readFileSync(join(root, "families/first_class_example_containers/live.craftax.v1/viewer.css"), "utf8");
+  assert.match(shell, /optimizerJournalBound && optimizerEvents === undefined/);
+  assert.match(shell, /Loading retained rollout journals/);
+  assert.match(shell, /Counts and replay controls will appear only after the journal is available/);
+  assert.match(shell, /Overall · all rollouts/);
+  assert.match(shell, /Achievement coverage/);
+  assert.match(shell, /role="table" aria-label="Reward, environment steps, and model calls by rollout"/);
+  assert.match(css, /\.cv-overview-grid\{display:grid/);
+  assert.match(css, /@media\(max-width:760px\).*\.cv-overview-grid\{grid-template-columns:1fr 1fr\}/s);
+});
+
 test("live Craftax loads retained frame CAS through the host and never guesses a relative rollout URL", () => {
   const shell = readFileSync(join(root, "families/first_class_example_containers/live.craftax.v1/shell.tsx"), "utf8");
   assert.match(shell, /props\.media\.warm\(retainedFrameDigests, selectedIndex\)/);

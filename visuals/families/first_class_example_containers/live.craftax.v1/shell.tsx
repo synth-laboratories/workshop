@@ -22,6 +22,7 @@ import {
   replayMomentIndexes,
   type CraftaxSemanticTraceItem
 } from "./projectCraftax.ts";
+import { summarizeCraftaxRun, type CraftaxRolloutAggregate } from "./aggregateCraftax.ts";
 import "./viewer.css";
 
 // Vite turns these template-local fixtures into packaged assets. Persisted
@@ -265,8 +266,49 @@ function summarizeLanes(events: LiveEvalEvent[]): Map<string, LaneSummary> {
   return summaries;
 }
 
-function Metric({ label, value }: { label: string; value: string }) {
-  return <div><span>{label}</span><strong>{value}</strong></div>;
+function OverviewStat({ label, value, detail }: { label: string; value: string; detail: string }) {
+  return <div className="cv-stat"><span>{label}</span><strong>{value}</strong><small>{detail}</small></div>;
+}
+
+function rangeLabel(min: number, max: number, suffix: string): string {
+  return min === max ? `${min} ${suffix} each` : `${min}–${max} ${suffix} per rollout`;
+}
+
+function runCostSummary(lifecycle: RunLifecycle | undefined, producerCost: number | undefined): { value: string; detail: string } {
+  const label = runCostLabel(lifecycle, producerCost);
+  if (label.startsWith("unavailable")) {
+    const calls = lifecycle?.usage.calls;
+    return {
+      value: "Unavailable",
+      detail: calls == null ? "Workshop proxy omitted an amount" : `${calls} proxy calls counted · amount omitted`
+    };
+  }
+  if (label === "not emitted") return { value: "Not emitted", detail: "No authoritative cost amount" };
+  const [value, detail] = label.split(" · ", 2);
+  return { value, detail: detail ?? "Authoritative run telemetry" };
+}
+
+function comparisonWidth(value: number | undefined, maximum: number): string {
+  if (value == null || maximum <= 0) return "0%";
+  return `${Math.max(4, Math.min(100, Math.abs(value) / maximum * 100)).toFixed(1)}%`;
+}
+
+function RolloutComparison({ rollouts }: { rollouts: CraftaxRolloutAggregate[] }) {
+  const maxReward = Math.max(0, ...rollouts.flatMap((rollout) => rollout.reward == null ? [] : [Math.abs(rollout.reward)]));
+  const maxSteps = Math.max(0, ...rollouts.map((rollout) => rollout.steps));
+  const maxCalls = Math.max(0, ...rollouts.map((rollout) => rollout.calls));
+  return <figure className="cv-comparison" aria-label="Rollout comparison">
+    <figcaption><strong>Rollout comparison</strong><span>Reward · environment steps · model calls</span></figcaption>
+    <div className="cv-comparison-table" role="table" aria-label="Reward, environment steps, and model calls by rollout">
+      <div className="cv-comparison-head" role="row"><span role="columnheader">Rollout</span><span role="columnheader">Reward</span><span role="columnheader">Steps</span><span role="columnheader">Calls</span></div>
+      {rollouts.map((rollout) => <div className="cv-comparison-row" role="row" key={rollout.lane} aria-label={`${rollout.lane}: reward ${formatMissingNumber(rollout.reward)}, ${rollout.steps} environment steps, ${rollout.calls} model calls`}>
+        <span role="cell"><Identifier value={rollout.lane} max={16} copy={false} /></span>
+        <span role="cell"><i aria-hidden="true" className={rollout.reward != null && rollout.reward < 0 ? "negative" : ""} style={{ width: comparisonWidth(rollout.reward, maxReward) }} /><b>{formatMissingNumber(rollout.reward)}</b></span>
+        <span role="cell"><i aria-hidden="true" style={{ width: comparisonWidth(rollout.steps, maxSteps) }} /><b>{rollout.steps}</b></span>
+        <span role="cell"><i aria-hidden="true" style={{ width: comparisonWidth(rollout.calls, maxCalls) }} /><b>{rollout.calls}</b></span>
+      </div>)}
+    </div>
+  </figure>;
 }
 
 function truthNumber(value: number | undefined, terminal: boolean, format: (value: number) => string): string {
@@ -285,6 +327,7 @@ export function Shell(props: ShellProps) {
     () => mergeCraftaxOptimizerJournalEvents(props.events, props.enrichmentEvents),
     [props.events, props.enrichmentEvents]
   );
+  const optimizerJournalBound = bindingList.some((binding) => bindingInputName(binding) === "optimizer_run");
   // A fixture is authoring evidence. It never stands in for a declared stream,
   // and a declared stream is never inferred from the fixture's own fields.
   const fixtureEvents = useMemo(
@@ -328,7 +371,7 @@ export function Shell(props: ShellProps) {
   const [speed, setSpeed] = useState(1);
   const [selectedTraceId, setSelectedTraceId] = useState<string | null>(null);
   const [traceMode, setTraceMode] = useState<"focus" | "full">("full");
-  const [surface, setSurface] = useState<"replay" | "transcript" | "raw" | "metrics" | "integrity">("transcript");
+  const [surface, setSurface] = useState<"replay" | "transcript" | "raw" | "metrics" | "integrity">("replay");
   const [selectedCallId, setSelectedCallId] = useState<string | null>(null);
   const [transcriptMode, setTranscriptMode] = useState<"focus" | "full">("full");
   const [showEarlierGroups, setShowEarlierGroups] = useState(false);
@@ -356,6 +399,7 @@ export function Shell(props: ShellProps) {
   const viewer = useMemo(() => projectCraftaxViewer(evaluationEvents, chosenLane, laneCutoff), [evaluationEvents, chosenLane, laneCutoff]);
   const { lanes, selectedLane, laneEvents, visibleEvents, visibleIndex, rewardSignals, achievements, traceEvents, semanticTrace, frameEvents, policy } = viewer;
   const laneSummaries = useMemo(() => summarizeLanes(evaluationEvents), [evaluationEvents]);
+  const runAggregate = useMemo(() => summarizeCraftaxRun(evaluationEvents), [evaluationEvents]);
   const latest = visibleEvents.at(-1);
   const selectedEnvironmentStep = useMemo(
     () => [...visibleEvents].reverse().map(eventStep).find((step) => step != null),
@@ -363,6 +407,7 @@ export function Shell(props: ShellProps) {
   );
   const observation = latestObservation(visibleEvents);
   const inventory = inventoryFrom(observation);
+  const runCost = runCostSummary(props.runLifecycle, finite(policy.usage.cost_usd));
   const terminalLanes = [...laneSummaries.values()].filter((summary) => summary.terminal).length;
   const allLanesTerminal = lanes.length > 0 && terminalLanes === lanes.length;
   const lifecycleTerminal = props.runLifecycle?.terminal === true;
@@ -464,11 +509,14 @@ export function Shell(props: ShellProps) {
     return series;
   }, []);
   const lastDurableSequence = craftaxEventSequence(fullProjection.ordered.at(-1) ?? ({} as LiveEvalEvent), -1);
+  const journalHydrating = optimizerJournalBound && optimizerEvents === undefined && !bindingError && !error;
   // The transport state is the hook's; this only names it for a reader. Every
   // state here is reached deliberately, including the ones that used to be the
   // absence of a state.
   const transportState = bindingError ? "error" : state;
-  const connectionState = lifecycleTerminal
+  const connectionState = journalHydrating
+    ? "loading durable journal"
+    : lifecycleTerminal
     ? lifecycleFailed
       ? `failed${props.runLifecycle?.reason ? ` · ${props.runLifecycle.reason}` : ""}`
       : props.runLifecycle?.status.replaceAll("_", " ") ?? "finished"
@@ -537,6 +585,7 @@ export function Shell(props: ShellProps) {
 		data-run-sealed-traces={props.runLifecycle?.evidence.sealedTraces}
 		data-visual-error={bindingError ?? error ?? ""}
 		data-active-surface={surface}
+		data-journal-hydrating={journalHydrating ? "true" : "false"}
 	>
       <header className="cv-topbar">
         <div><p className="cv-eyebrow">Live eval · Craftax{scope?.campaign_id ? <> · <Identifier value={scope.campaign_id} label="campaign" max={18} copy={false} /></> : null}</p><h2>{props.title ?? "Policy through time"}</h2>{props.lede ? <p className="cv-lede">{props.lede}</p> : null}</div>
@@ -548,14 +597,23 @@ export function Shell(props: ShellProps) {
           <button key={id} type="button" aria-current={surface === id ? "page" : undefined} onClick={() => setSurface(id)}>{label}</button>)}
       </nav>
 
-      <section className="cv-summary cv-surface-replay" aria-label="Run summary">
-        <Metric label="Rollouts" value={String(lanes.length || "—")} />
-        <Metric label="Model calls" value={props.runLifecycle?.usage.calls == null ? "not emitted" : String(props.runLifecycle.usage.calls)} />
-        <Metric label="Selected step" value={selectedEnvironmentStep == null ? "—" : String(selectedEnvironmentStep)} />
-        <Metric label="Reward" value={truthNumber(viewer.reward, viewer.terminal, (value) => formatMissingNumber(value))} />
-        <Metric label="Achievements" value={String(achievements.length)} />
-        <Metric label="Run cost" value={runCostLabel(props.runLifecycle, finite(policy.usage.cost_usd))} />
-        <Metric label="Trace" value={`${semanticTrace.length} semantic events`} />
+      {journalHydrating ? <section className="cv-hydrating" role="status" aria-live="polite" data-testid="craftax-journal-hydrating">
+        <span className="cv-hydrating-mark" aria-hidden="true" />
+        <div><p className="cv-eyebrow">Durable replay</p><h3>Loading retained rollout journals…</h3><p>Workshop is rebuilding the visual from persisted optimizer evidence. Counts and replay controls will appear only after the journal is available.</p></div>
+      </section> : <>
+      <section className="cv-overview cv-surface-replay" aria-label="Overall run summary" data-visual-landmark="run-overview">
+        <div className="cv-overview-heading"><div><p className="cv-eyebrow">Overall · all rollouts</p><h3>Run overview</h3></div><span>At the current evaluation cutoff</span></div>
+        <div className="cv-overview-grid">
+          <OverviewStat label="Rollouts" value={String(runAggregate.rollouts.length || "—")} detail={`${terminalLanes} terminal`} />
+          <OverviewStat label="Mean reward" value={formatMissingNumber(runAggregate.rewardMean)} detail={runAggregate.reportedRewards ? `${formatMissingNumber(runAggregate.rewardMin)}–${formatMissingNumber(runAggregate.rewardMax)} · ${runAggregate.reportedRewards}/${runAggregate.rollouts.length} reported` : "No numeric rewards emitted"} />
+          <OverviewStat label="Environment steps" value={formatMissingNumber(runAggregate.totalSteps, 0)} detail={rangeLabel(runAggregate.minSteps, runAggregate.maxSteps, "steps")} />
+          <OverviewStat label="Model calls" value={formatMissingNumber(runAggregate.totalCalls, 0)} detail={rangeLabel(runAggregate.minCalls, runAggregate.maxCalls, "calls")} />
+          <OverviewStat label="Total tokens" value={runAggregate.totalTokens == null ? "Not emitted" : formatMissingNumber(runAggregate.totalTokens, 0)} detail={runAggregate.totalTokens == null ? "One or more calls omitted usage" : "Complete across counted calls"} />
+          <OverviewStat label="Achievement coverage" value={`${runAggregate.achievementNames.length} unique`} detail={`${runAggregate.achievementRollouts}/${runAggregate.rollouts.length} rollouts unlocked ≥1`} />
+        </div>
+        <div className="cv-cost-line"><span>Run cost</span><strong>{runCost.value}</strong><small>{runCost.detail}</small></div>
+        {runAggregate.achievementNames.length ? <div className="cv-coverage" aria-label="Achievements unlocked across all rollouts"><span>Across run</span>{runAggregate.achievementNames.map((name) => <i key={name}>{name}</i>)}</div> : null}
+        <RolloutComparison rollouts={runAggregate.rollouts} />
       </section>
 
       {bindingError || error ? <p role="alert" className="cv-error">{bindingError ?? error}</p> : null}
@@ -687,6 +745,7 @@ export function Shell(props: ShellProps) {
 
       <section className="cv-panel cv-surface-metrics cv-facts"><div className="cv-heading"><div><p className="cv-eyebrow">At current cutoff</p><h3>Metrics</h3></div></div><dl><div><dt>Model calls</dt><dd>{turns.calls.length}</dd></div><div><dt>Total tokens</dt><dd>{totalTokens === undefined ? "not emitted" : formatMissingNumber(totalTokens, 0)}</dd></div><div><dt>Latency</dt><dd>{totalLatencyMs === undefined ? "not emitted" : `${formatMissingNumber(totalLatencyMs, 0)} ms`}</dd></div><div><dt>Run cost</dt><dd>{runCostLabel(props.runLifecycle, totalCostUsd)}</dd></div><div><dt>Reward</dt><dd>{truthNumber(viewer.reward, viewer.terminal, formatMissingNumber)}</dd></div><div><dt>Authority</dt><dd>{[...new Set(turns.calls.map((call) => call.authority).filter(Boolean))].join(", ") || "not emitted"}</dd></div></dl></section>
       <section className="cv-panel cv-surface-integrity cv-integrity"><div className="cv-heading"><div><p className="cv-eyebrow">Evidence health</p><h3>Integrity</h3></div><span>{props.runLifecycle?.evidence.state === "rejected" ? "rejected" : lifecycleGaps.length > 0 ? "trace sealed · facts incomplete" : viewer.terminal ? "sealed/reconciled" : "live · unsealed"}</span></div><ul><li><strong>Reconciliation</strong><span>{props.runLifecycle?.evidence.state === "rejected" ? `${props.runLifecycle.evidence.rejected} rejected · ${props.runLifecycle.evidence.sealedTraces} sealed` : lifecycleGaps.length > 0 && props.runLifecycle ? `${props.runLifecycle.evidence.sealedTraces} sealed trace${props.runLifecycle.evidence.sealedTraces === 1 ? "" : "s"} retained · evaluation facts incomplete` : semanticTrace.some((item) => item.kind === "trace.reconciled") ? "recorded and visible" : viewer.terminal ? "missing due to producer-contract defect" : "pending"}</span></li><li><strong>Model identity</strong><span>{turns.calls.every((call) => call.model && call.provider) ? "recorded and visible" : "missing on one or more calls"}</span></li><li><strong>Repairs / fallbacks</strong><span>{policy.fallback ? "recorded fallback" : "none recorded"}</span></li><li><strong>Malformed calls</strong><span>{turns.missingPolicyEnvelopeCount || "none"}</span></li><li><strong>Reasoning disclosure</strong><span>{turns.calls.some((call) => call.reasoning.state === "visible") ? "provider emitted visible reasoning evidence" : "Thinking not emitted"}</span></li></ul>{props.runLifecycle?.evidence.state === "rejected" ? <p className="cv-control-reason" data-testid="craftax-seal-disabled-reason">Seal unavailable — run failed because {props.runLifecycle.evidence.rejected} rollout journal{props.runLifecycle.evidence.rejected === 1 ? " was" : "s were"} rejected.</p> : lifecycleFailed && props.runLifecycle && props.runLifecycle.evidence.sealedTraces > 0 ? <p className="cv-control-reason" data-testid="craftax-trace-retained-status">Trace replay remains available from {props.runLifecycle.evidence.sealedTraces} sealed trace{props.runLifecycle.evidence.sealedTraces === 1 ? "" : "s"}; the evaluation failure does not reject them.</p> : null}</section>
+      </>}
 
       <footer>live.craftax.v1 · synth.trace-stream-event.v1 · {props.visualMetadata?.qualityGate?.ready ? `ready rev ${props.visualMetadata.qualityGate.revision ?? "—"}` : "draft visual"}</footer>
     </div>
