@@ -6,7 +6,7 @@ use crate::optimizers::kernel::error::{KernelError, KernelErrorCode, KernelResul
 use crate::optimizers::kernel::evidence::{EvidenceRef, EvidenceState, UsageCompleteness};
 use crate::optimizers::kernel::sequences::CommittedEvent;
 use crate::optimizers::kernel::types::{
-    EvidenceCompleteness, RunPhase, TerminalKind, WorkItemKind, WorkItemLifecycle,
+    EvidenceCompleteness, RunLifecycle, RunPhase, TerminalKind, WorkItemKind, WorkItemLifecycle,
 };
 use crate::optimizers::kernel::work::{close_open_items, WorkItem, WorkSummary};
 
@@ -74,7 +74,45 @@ pub struct EvalProjection {
     pub evidence_ledger: Vec<RolloutEvidenceEntry>,
 }
 
+pub const EVAL_AGGREGATE_SCHEMA_VERSION: &str = "eval.aggregate.v1";
+
+/// The immutable, revision-addressed evaluation aggregate shared verbatim by
+/// chat, experiment, and workbench surfaces. Consumers may format this value;
+/// they must not independently recalculate it from raw rollout records.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct EvalAggregate {
+    pub schema_version: String,
+    pub run_id: String,
+    #[specta(type = specta_typescript::Number)]
+    pub as_of_sequence: u64,
+    #[specta(type = specta_typescript::Number)]
+    pub projection_revision: u64,
+    pub lifecycle: RunLifecycle,
+    pub work: WorkSummary,
+    pub evidence: EvidenceState,
+    pub selection: EvalSelection,
+    #[serde(default)]
+    pub mean_reward: Option<f64>,
+    #[specta(type = specta_typescript::Number)]
+    pub scored_trials: u64,
+    #[specta(type = specta_typescript::Number)]
+    pub evaluator_evidence: u64,
+    #[specta(type = specta_typescript::Number)]
+    pub trace_count: usize,
+    #[specta(type = specta_typescript::Number)]
+    pub evidence_ref_count: usize,
+}
+
 impl EvalProjection {
+    pub fn selection_outcome(&self) -> EvalSelection {
+        if self.promotion_applicable {
+            EvalSelection::Inconclusive
+        } else {
+            EvalSelection::PromotionNotApplicable
+        }
+    }
+
     pub fn plan_trials(
         &mut self,
         candidates: Vec<String>,
@@ -531,15 +569,10 @@ impl EvalProjection {
                 "eval cannot complete without immutable evidence references",
             ));
         }
-        let selection = if self.promotion_applicable {
-            EvalSelection::Inconclusive
-        } else {
-            EvalSelection::PromotionNotApplicable
-        };
         Ok(EvalResult {
             trials: self.work_summary(),
             mean_reward: self.mean_reward,
-            selection,
+            selection: self.selection_outcome(),
             usage: self.usage.clone(),
         })
     }

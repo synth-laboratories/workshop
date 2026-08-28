@@ -1210,6 +1210,10 @@ fn experiment_bindings(
                     "items": retained_traces
                 },
                 "reconciliationErrors": reconciliation_errors,
+                "aggregate": progress_projection
+                    .and_then(|projection| projection.get("aggregate"))
+                    .cloned()
+                    .unwrap_or(Value::Null),
                 "arms": [{
                     "id": "baseline",
                     "label": spec.policy_config,
@@ -1685,6 +1689,20 @@ async fn run_eval_worker(
         append_terminal(&service, &run_id, status, detail),
     )
     .await?;
+    evidence(
+        "terminal_visual_projection",
+        publish_terminal_visual_projection(
+            &service,
+            &run_id,
+            spec,
+            &visual_id,
+            &workbench_id,
+            &records,
+            total,
+            status,
+        ),
+    )
+    .await?;
     Ok(())
 }
 
@@ -2085,12 +2103,15 @@ fn eval_terminal_evidence_refs(spec: &EvalSpec, record: &Value) -> Result<Vec<Va
 async fn append_eval_selection(
     service: &OptimizerService,
     run_id: &str,
-    status: &str,
+    _status: &str,
     mean: Option<f64>,
 ) -> Result<()> {
     let run = service.get(run_id.to_string()).await?;
+    let selection_status = serde_json::to_value(
+        super::kernel::algorithms::eval::EvalSelection::PromotionNotApplicable,
+    )?;
     let selection = json!({
-        "status": if status == "completed" { "inconclusive" } else { "failed" },
+        "status": selection_status,
         "winnerId": null,
         "baselineId": run.summary.pointer("/policyRef/config").cloned().unwrap_or(Value::Null),
         "primaryMetric": "mean_reward",
@@ -3150,6 +3171,92 @@ async fn persist_progress(
     Ok(())
 }
 
+/// Publish the terminal kernel aggregate after its seal without rewriting the
+/// immutable optimizer record. This second visual revision is intentional:
+/// the pre-seal projection cannot carry the terminal sequence/revision that
+/// chat and the workbench read from V2.
+#[allow(clippy::too_many_arguments)]
+async fn publish_terminal_visual_projection(
+    service: &OptimizerService,
+    run_id: &str,
+    spec: &EvalSpec,
+    visual_id: &str,
+    workbench_id: &str,
+    records: &[Value],
+    total: usize,
+    status: &str,
+) -> Result<()> {
+    let progress_projection = inline_progress_projection(service, run_id)
+        .await?
+        .context("terminal eval projection is unavailable after seal")?;
+    let completed = progress_projection
+        .pointer("/rolloutStateCounts/completed")
+        .and_then(Value::as_u64)
+        .unwrap_or(0) as usize;
+    let mean = progress_projection
+        .pointer("/aggregate/meanReward")
+        .and_then(Value::as_f64);
+    let run = service.get(run_id.to_string()).await?;
+    let started_at = run.started_at.as_deref().unwrap_or(&run.created_at);
+    let visual_status = match status {
+        "failed" | "failed_evidence" => VisualStatus::Failed,
+        "completed" | "cancelled" | "degraded" => VisualStatus::Saved,
+        other => bail!("terminal visual projection received non-terminal status `{other}`"),
+    };
+    let (_, event) = service
+        .visuals()
+        .update(
+            visual_id.to_string(),
+            VisualUpdateRequest {
+                title: None,
+                bindings: Some(experiment_bindings(
+                    spec,
+                    run_id,
+                    status,
+                    completed,
+                    total,
+                    records,
+                    mean,
+                    workbench_id,
+                    Some(&progress_projection),
+                    started_at,
+                )),
+                status: Some(visual_status.clone()),
+                renderer_kind: None,
+                message_id: None,
+                run_id: None,
+                trace_id: None,
+                content: None,
+                metadata: None,
+                bump_revision: Some(true),
+            },
+        )
+        .await?;
+    service.publish_visual_event(event)?;
+    if !workbench_id.is_empty() {
+        let (_, event) = service
+            .visuals()
+            .update(
+                workbench_id.to_string(),
+                VisualUpdateRequest {
+                    title: None,
+                    bindings: None,
+                    status: Some(visual_status),
+                    renderer_kind: None,
+                    message_id: None,
+                    run_id: None,
+                    trace_id: None,
+                    content: None,
+                    metadata: None,
+                    bump_revision: Some(true),
+                },
+            )
+            .await?;
+        service.publish_visual_event(event)?;
+    }
+    Ok(())
+}
+
 async fn inline_progress_projection(
     service: &OptimizerService,
     run_id: &str,
@@ -3166,6 +3273,12 @@ async fn inline_progress_projection(
                 bail!("optimizer run `{run_id}` does not have an eval projection");
             };
             let work = state.work_summary();
+            let aggregate = match super::kernel::project_view(&state) {
+                super::kernel::OptimizerRunViewV2::Eval(view) => {
+                    serde_json::to_value(view.aggregate)?
+                }
+                _ => bail!("optimizer run `{run_id}` did not project an eval view"),
+            };
             let rollouts = eval
                 .work_items
                 .iter()
@@ -3199,6 +3312,7 @@ async fn inline_progress_projection(
                 },
                 "inFlight": work.running,
                 "evidence": state.evidence_state(),
+                "aggregate": aggregate,
                 "rollouts": rollouts,
             })))
         })
@@ -5242,11 +5356,25 @@ max_total_rollouts = 4
         assert_eq!(finished.summary["evalStatus"], json!("completed"));
         let visual_id = finished.summary["visualId"].as_str().unwrap();
         let visual = svc.visuals().get(visual_id.to_string()).await.unwrap();
+        let view = serde_json::to_value(svc.run_view_v2(run.id.clone()).await.unwrap()).unwrap();
         assert_eq!(visual.status, VisualStatus::Saved);
         assert_eq!(
             visual.bindings.pointer("/inputs/0/data/status"),
             Some(&json!("completed")),
             "a post-seal patch refusal must not enter the worker-failure visual path"
+        );
+        assert_eq!(
+            visual.bindings.pointer("/inputs/0/data/aggregate"),
+            Some(&view["aggregate"]),
+            "experiment and V2/chat consumers must receive the same revisioned aggregate bytes"
+        );
+        assert_eq!(
+            view["aggregate"]["projectionRevision"],
+            view["header"]["projectionRevision"]
+        );
+        assert_eq!(
+            view["aggregate"]["asOfSequence"],
+            view["header"]["asOfSequence"]
         );
         task.abort();
     }
@@ -5291,7 +5419,10 @@ max_total_rollouts = 4
         assert!(error.contains("evaluator_measurement_missing"), "{error}");
         assert!(error.contains("no evaluator measurement"), "{error}");
 
-        let events = svc.events_after(run.id, 0, Some(500)).await.unwrap();
+        let events = svc
+            .events_after(run.id.clone(), 0, Some(500))
+            .await
+            .unwrap();
         let terminals = events
             .iter()
             .filter(|event| event.event_type == "eval.trial.terminal")
@@ -5310,6 +5441,37 @@ max_total_rollouts = 4
                         .is_some_and(|error| error.starts_with("evaluator_measurement_missing:"))
             })
         }));
+        let selection = events
+            .iter()
+            .find(|event| event.event_type == "eval.selection.completed")
+            .and_then(|event| event.snapshot.as_ref())
+            .and_then(|snapshot| snapshot.get("selection"))
+            .expect("a baseline evaluation must publish one typed selection outcome");
+        assert_eq!(selection["status"], json!("promotion_not_applicable"));
+        assert_eq!(selection["score"], Value::Null);
+
+        let view = serde_json::to_value(svc.run_view_v2(run.id.clone()).await.unwrap()).unwrap();
+        assert_eq!(
+            view["aggregate"]["schemaVersion"],
+            json!("eval.aggregate.v1")
+        );
+        assert_eq!(view["aggregate"]["lifecycle"], json!("terminal"));
+        assert_eq!(
+            view["aggregate"]["selection"],
+            json!("promotion_not_applicable")
+        );
+        assert_eq!(view["aggregate"]["meanReward"], Value::Null);
+        assert_eq!(view["aggregate"]["scoredTrials"], json!(0));
+        assert_eq!(view["aggregate"]["evaluatorEvidence"], json!(0));
+        assert_eq!(view["aggregate"]["work"]["failed"], json!(10));
+        assert_eq!(
+            view["aggregate"]["projectionRevision"],
+            view["header"]["projectionRevision"]
+        );
+        assert_eq!(
+            view["aggregate"]["asOfSequence"],
+            view["header"]["asOfSequence"]
+        );
         task.abort();
     }
 

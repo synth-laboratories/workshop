@@ -91,6 +91,7 @@ pub enum OptimizerRunViewV2 {
 pub struct EvalRunView {
     pub header: OptimizerRunHeader,
     pub projection: super::algorithms::eval::EvalProjection,
+    pub aggregate: super::algorithms::eval::EvalAggregate,
     pub result: Option<super::algorithms::eval::EvalResult>,
 }
 
@@ -164,17 +165,17 @@ pub fn project_view_with_context(
         (
             super::algorithm::AlgorithmProjection::Eval(projection),
             Some(AlgorithmResult::Eval(result)),
-        ) => OptimizerRunViewV2::Eval(EvalRunView {
+        ) => OptimizerRunViewV2::Eval(eval_run_view(
             header,
-            projection: eval_projection_with_artifacts(projection, &context.artifacts),
-            result: Some(result),
-        }),
+            eval_projection_with_artifacts(projection, &context.artifacts),
+            Some(result),
+        )),
         (super::algorithm::AlgorithmProjection::Eval(projection), _) => {
-            OptimizerRunViewV2::Eval(EvalRunView {
+            OptimizerRunViewV2::Eval(eval_run_view(
                 header,
-                projection: eval_projection_with_artifacts(projection, &context.artifacts),
-                result: None,
-            })
+                eval_projection_with_artifacts(projection, &context.artifacts),
+                None,
+            ))
         }
         (
             super::algorithm::AlgorithmProjection::Gepa(projection),
@@ -236,6 +237,34 @@ pub fn project_view_with_context(
                 result: None,
             })
         }
+    }
+}
+
+fn eval_run_view(
+    header: OptimizerRunHeader,
+    projection: super::algorithms::eval::EvalProjection,
+    result: Option<super::algorithms::eval::EvalResult>,
+) -> EvalRunView {
+    let aggregate = super::algorithms::eval::EvalAggregate {
+        schema_version: super::algorithms::eval::EVAL_AGGREGATE_SCHEMA_VERSION.into(),
+        run_id: header.run_id.clone(),
+        as_of_sequence: header.as_of_sequence,
+        projection_revision: header.projection_revision,
+        lifecycle: header.lifecycle,
+        work: header.work.clone(),
+        evidence: header.evidence.clone(),
+        selection: projection.selection_outcome(),
+        mean_reward: projection.mean_reward,
+        scored_trials: projection.scored_trials,
+        evaluator_evidence: projection.evaluator_evidence,
+        trace_count: projection.traces,
+        evidence_ref_count: projection.evidence_refs.len(),
+    };
+    EvalRunView {
+        header,
+        projection,
+        aggregate,
+        result,
     }
 }
 

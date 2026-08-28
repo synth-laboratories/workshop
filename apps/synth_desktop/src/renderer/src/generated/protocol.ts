@@ -1171,6 +1171,27 @@ export type EnvImportRequest = {
 };
 
 /**
+ *  The immutable, revision-addressed evaluation aggregate shared verbatim by
+ *  chat, experiment, and workbench surfaces. Consumers may format this value;
+ *  they must not independently recalculate it from raw rollout records.
+ */
+export type EvalAggregate = {
+	schemaVersion: string,
+	runId: string,
+	asOfSequence: number,
+	projectionRevision: number,
+	lifecycle: RunLifecycle,
+	work: WorkSummary,
+	evidence: EvidenceState,
+	selection: EvalSelection,
+	meanReward?: number | null,
+	scoredTrials: number,
+	evaluatorEvidence: number,
+	traceCount: number,
+	evidenceRefCount: number,
+};
+
+/**
  *  One staged policy. `path` is relative to the session's workspace: absolute
  *  paths and parent traversal are refused rather than sanitized.
  */
@@ -1217,6 +1238,7 @@ export type EvalResult = {
 export type EvalRunView = {
 	header: OptimizerRunHeader,
 	projection: EvalProjection,
+	aggregate: EvalAggregate,
 	result: EvalResult | null,
 };
 
@@ -2320,7 +2342,7 @@ export type OptimizerRunRecord = {
 	id: string,
 	algorithmId: string,
 	algorithmVersion?: string | null,
-	status: string,
+	status: OptimizerRunStatus,
 	source: string,
 	objective?: string | null,
 	projectRef?: string | null,

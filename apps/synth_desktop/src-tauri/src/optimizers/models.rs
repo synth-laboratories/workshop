@@ -719,6 +719,7 @@ pub struct OptimizerRunRecord {
     pub algorithm_id: String,
     #[serde(default)]
     pub algorithm_version: Option<String>,
+    #[specta(type = OptimizerRunStatus)]
     pub status: String,
     pub source: String,
     #[serde(default)]
