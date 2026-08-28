@@ -433,3 +433,79 @@ At review time `log_records` contained 28 rows, all with level `error`, all with
 16. Terminal run actions, assessment prose, selection semantics, and evidence
     counts are generated from closed enums and validated against the same
     aggregate revision.
+
+## Refactor acceptance state — 2026-08-28
+
+The implementation refactor is consolidated and test-clean. This section is a
+readiness record, not evidence of a new provider-backed evaluation. No Docker
+image was rebuilt and no provider call or paid approval was issued during this
+pass.
+
+### Exact sources under test
+
+- Workshop: `codex/finish-inline-eval-refactor` at `c4d2ce97eb60`
+- Containers: `codex/nanohorizon-e2e-ready` at
+  `efe95a0ea76bf9fac60d7da333cde192e12ab637`
+- NanoHorizon: `codex/nanohorizon-e2e-ready` at
+  `eee43119eb7c0cb4879fa68ab686452bc8101221`
+- NanoHorizon source manifest:
+  `sha256:0df2f16d751980246882273e55a73ec4588444f21268836136ce10ec92afe9fd`
+- Credential route: existing file-backed ChatGPT authentication plus the
+  Workshop secrets proxy. Keychain remained prohibited and unused.
+
+Containers now resolves the immutable Docker image ID at launch and binds that
+identity, with the exact producer source revision, through `/info` and sealed
+Trace V5 provenance. Spoofable environment values cannot replace the observed
+image identity. NanoHorizon refuses dirty Containers source and requires the
+exact 40-character Containers revision.
+
+### Verification completed without Docker or provider calls
+
+- Workshop Rust library: 1,417 passed, 14 ignored, 0 failed.
+- Workshop browser suite, eight workers: 268 passed, 2 skipped. The permanent
+  console gate observed no React maximum-update-depth error.
+- Workshop visual suite: 224 passed.
+- Workshop accessibility suite: 540 passed.
+- Desktop instance script, TypeScript typecheck, CSS lint, and production
+  frontend build: passed.
+- Containers non-Docker suite: 409 passed, 8 skipped.
+- Containers provenance, journal, conformance, metadata, and GEPA contracts:
+  56 passed.
+- NanoHorizon sampler and lifecycle contracts: 15 passed.
+
+The final Craftax recurrence was a replay-driven passive selection effect: 200
+rapid 500-envelope pages could cause 200 selected-call state updates. Commit
+`c4d2ce97` keeps automatic selection render-derived and reserves selection
+state for explicit user interaction. Six concurrent 100,000-envelope stress
+runs passed before the full browser gate.
+
+### Packaged desktop verification
+
+Instance `refactor-e2e` was rebuilt from `c4d2ce97eb60` against the clean
+Containers worktree. Its runtime reported executable digest
+`sha256:f96a5aaf21e972e85d4ad3cfc1f2ff4a9d890a23a13cdc026c7dd06945cd03fc`.
+The existing authenticated account state survived the rebuild. On the remote
+historical Craftax chat, both pointer activation and Diagnostics → Right Arrow
+kept the workbench open and selected Failures; Occurrences and Logs were both
+operable.
+
+The log history still truthfully exposes missing optional API-key locators and
+the known degraded diagnostics index. Those entries are not evidence from a
+fresh evaluation and must not be treated as a failed ChatGPT-authenticated
+route. They also must not be hidden or rewritten as success.
+
+### Remaining live acceptance gate
+
+One clean-room acceptance run remains. It requires explicit authorization to:
+
+1. rebuild and launch the Docker image from the exact clean Containers and
+   NanoHorizon revisions above; and
+2. execute one provider-backed Craftax evaluation, with a paid approval cap no
+   greater than `$2.45`.
+
+The run passes only if every rollout settles, every evaluator emits a numeric
+reward or typed evaluator failure, all required usage and evidence states are
+honest, sealed Trace V5 provenance matches the observed image and producer
+revision, and the chat card, experiment view, Failures surface, and Craftax
+viewer agree on the same terminal aggregate. A completed rollout set without
+required evaluator evidence remains `failed_evidence`, not a successful eval.
