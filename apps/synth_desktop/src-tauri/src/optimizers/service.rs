@@ -1193,7 +1193,16 @@ impl OptimizerService {
 
     pub async fn get(&self, optimizer_run_id: String) -> Result<OptimizerRunRecord> {
         let db = self.db.clone();
-        db.run(move |conn| load_run(conn, &optimizer_run_id)).await
+        db.run(move |conn| {
+            let mut run = load_run(conn, &optimizer_run_id)?;
+            if OptimizerRunStatus::str_is_terminal(&run.status) {
+                if let Some(state) = super::kernel::persist::load_state(conn, &optimizer_run_id)? {
+                    rewrite_terminal_summary_progress(&mut run, &state);
+                }
+            }
+            Ok(run)
+        })
+        .await
     }
 
     pub(super) fn negotiate_effective_contract(
@@ -1465,7 +1474,10 @@ impl OptimizerService {
         }
         let mut run = self.get(optimizer_run_id.clone()).await?;
         run = reconcile_via_driver(self, run).await?;
-        let slices = self.project_slices(&run.id, run.cursor_seq, None).await?;
+        let cursor = self
+            .resolve_projection_cursor(&run.id, None, run.cursor_seq)
+            .await?;
+        let slices = self.project_slices(&run.id, cursor, None).await?;
         let db = self.db.clone();
         db.run(move |conn| {
             for slice in &slices {
@@ -2077,7 +2089,9 @@ impl OptimizerService {
         at_seq: Option<u64>,
     ) -> Result<OptimizerStateSlice> {
         let run = self.get(optimizer_run_id.clone()).await?;
-        let cursor = at_seq.unwrap_or(run.cursor_seq);
+        let cursor = self
+            .resolve_projection_cursor(&optimizer_run_id, at_seq, run.cursor_seq)
+            .await?;
         if at_seq.is_none() {
             let db = self.db.clone();
             let sid = slice_id.clone();
@@ -2109,12 +2123,34 @@ impl OptimizerService {
         at_seq: Option<u64>,
     ) -> Result<Vec<OptimizerStateSlice>> {
         let run = self.get(optimizer_run_id.clone()).await?;
-        let cursor = at_seq.unwrap_or(run.cursor_seq);
+        let cursor = self
+            .resolve_projection_cursor(&optimizer_run_id, at_seq, run.cursor_seq)
+            .await?;
         let mut slices = self.project_slices(&optimizer_run_id, cursor, None).await?;
         if let Some(ids) = slice_ids {
             slices.retain(|slice| ids.iter().any(|id| id == &slice.slice_id));
         }
         Ok(slices)
+    }
+
+    async fn resolve_projection_cursor(
+        &self,
+        optimizer_run_id: &str,
+        requested: Option<u64>,
+        run_cursor: u64,
+    ) -> Result<u64> {
+        if let Some(requested) = requested {
+            return Ok(requested);
+        }
+        let run_id = optimizer_run_id.to_string();
+        let state = self
+            .db
+            .clone()
+            .run(move |conn| super::kernel::persist::load_state(conn, &run_id))
+            .await?;
+        Ok(state
+            .map(|state| state.aggregate_sequence)
+            .unwrap_or(run_cursor))
     }
 
     pub async fn relationships(
@@ -8767,8 +8803,88 @@ pub(in crate::optimizers) mod tests {
             .await
             .unwrap();
         assert_eq!(amended.cursor_seq, terminal_cursor + 1);
+        let current = svc
+            .get_state(run.id.clone(), "run.evidence".into(), None)
+            .await
+            .unwrap();
+        assert_eq!(current.cursor_seq, terminal_cursor);
+        let batch = svc
+            .get_state_batch(run.id.clone(), None, None)
+            .await
+            .unwrap();
+        assert!(
+            batch
+                .iter()
+                .all(|slice| slice.cursor_seq == terminal_cursor),
+            "default reads resolve the sealed projection, not the amendment event cursor"
+        );
         let still_sealed = svc.terminal_manifest(run.id).await.unwrap().unwrap();
         assert_eq!(still_sealed["terminalCursor"], json!(terminal_cursor));
+    }
+
+    #[tokio::test]
+    async fn get_run_reprojects_a_historical_terminal_summary_from_canonical_evidence() {
+        let (svc, _dir, _) = service().await;
+        let run = eval_run(&svc, "terminal_summary_evidence", "summary_evidence_session").await;
+        let trace_id = "tracev5_summary_evidence";
+        let trace_digest = "sha256:summary_evidence";
+        svc.append_event_payloads(
+            run.id.clone(),
+            vec![
+                draft("optimizer.run.started"),
+                draft("eval.run.planned")
+                    .snapshot(Map::from_iter([("planned_trials".into(), json!(1))])),
+                draft("eval.trial.terminal")
+                    .item(json!({"id": "eval:trial:0", "valid": true, "reward": 1.0}))
+                    .artifact_refs(vec![
+                        json!({"kind": "evaluator_result", "id": "evaluator:summary"}),
+                        json!({"kind": "trace_v5", "id": trace_id, "digest": trace_digest}),
+                    ]),
+                draft("optimizer.run.completed"),
+            ],
+        )
+        .await
+        .unwrap();
+
+        svc.database()
+            .with_conn(|conn| {
+                let raw: String = conn.query_row(
+                    "SELECT summary_json FROM optimizer_runs WHERE id=?1",
+                    [run.id.as_str()],
+                    |row| row.get(0),
+                )?;
+                let mut summary: Value = serde_json::from_str(&raw)?;
+                summary
+                    .pointer_mut("/progress/authoritative/evidence/refs")
+                    .and_then(Value::as_array_mut)
+                    .expect("terminal summary evidence refs")
+                    .push(json!({
+                        "kind": "trace",
+                        "id": trace_id,
+                        "digest": trace_digest,
+                    }));
+                conn.execute(
+                    "UPDATE optimizer_runs SET summary_json=?2 WHERE id=?1",
+                    params![run.id, serde_json::to_string(&summary)?],
+                )?;
+                Ok(())
+            })
+            .unwrap();
+
+        let projected = svc.get(run.id).await.unwrap();
+        let refs = projected
+            .summary
+            .pointer("/progress/authoritative/evidence/refs")
+            .and_then(Value::as_array)
+            .unwrap();
+        assert_eq!(refs.len(), 2);
+        assert_eq!(
+            refs.iter()
+                .filter(|reference| reference["id"] == json!(trace_id))
+                .count(),
+            1
+        );
+        assert_eq!(refs[1]["kind"], json!("trace_v5"));
     }
 
     #[tokio::test]
