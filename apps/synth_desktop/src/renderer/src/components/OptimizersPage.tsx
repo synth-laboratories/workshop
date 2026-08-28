@@ -1081,7 +1081,7 @@ export function OptimizersPage({
 				</div>
 				<div className="optimizer-training-launch-actions">
 					<button className="primary-button" type="button" disabled={startingAgent !== null || hostedLaunchBlocked || !trainingModel.trim() || !trainingTask.trim() || !trainingContainerUrl.trim()} onClick={() => void reviewTrainingLaunch()} data-testid="review-hosted-training-launch">Review &amp; launch</button>
-					{hostedLaunchBlocked ? <span className="optimizer-status failed">Unavailable</span> : null}
+					{hostedLaunchBlocked ? <span className="optimizer-availability" data-available={false}>Unavailable</span> : null}
 					<small>{trainingAlgorithm === "cispo" && !selectedWarmStart ? "Select a ready Tinker SFT training-state checkpoint; hosted CISPO never defaults to latest." : warmStartMismatch ? `Checkpoint/model mismatch: ${selectedWarmStart?.baseModel} ≠ ${trainingModel}.` : hostedLaunchBlocked ? selectedHostedSupport?.block_reason ?? "This model and algorithm combination is not admitted by the hosted catalog." : `Warm-start ${selectedWarmStart?.checkpointId} → CISPO → ${trainingTask}.`}{hostedModelCatalogRevision ? ` Catalog ${hostedModelCatalogRevision}; live provider preflight still required.` : ""}</small>
 				</div></> : (
 					<div className="optimizer-empty" data-testid="hosted-cispo-not-admitted" role="status">
@@ -1149,27 +1149,63 @@ export function OptimizersPage({
 					</div>
 					<div className="optimizer-recipe-grid">
 						{evalRecipes.map((recipe) => {
+							// Only fields a producer actually writes: `limits.trials`,
+							// `budget.max_usd`, `models`, task/source/semantics, and the
+							// admission booleans projected by eval_recipes.rs. The old
+							// screening/confirmation/selection keys were never produced.
 							const limits = (recipe.limits ?? {}) as Record<string, unknown>;
-							const screening = (limits.screeningSeeds as number[] | undefined) ?? [];
-							const confirmation = (limits.confirmationSeeds as number[] | undefined) ?? [];
-							const selection = (limits.selection as Record<string, unknown> | undefined) ?? {};
+							const budget = (recipe.budget ?? {}) as Record<string, unknown>;
+							const models = (recipe.models ?? [])
+								.map((model) => (typeof model.id === "string" ? model.id : null))
+								.filter((id): id is string => id != null);
 							const available = recipe.availability === "available";
+							const admissionError = recipe.admissionError && typeof recipe.admissionError === "object"
+								? recipe.admissionError as Record<string, unknown>
+								: null;
+							const admissionReason = [admissionError?.message, admissionError?.error, admissionError?.detail]
+								.find((candidate): candidate is string => typeof candidate === "string" && candidate.trim().length > 0)
+								?? recipe.availabilityReason
+								?? null;
+							const admissionFlags = [
+								{ id: "recipe-discovered", label: "Recipe", ok: recipe.recipeDiscovered },
+								{ id: "execution-supported", label: "Execution", ok: recipe.executionSupported },
+								{ id: "target-present", label: "Target", ok: recipe.targetPresent },
+								{ id: "target-digest", label: "Digest", ok: recipe.targetDigestMatches },
+								{ id: "target-admitted", label: "Admitted", ok: recipe.targetAdmitted }
+							].filter((flag): flag is { id: string; label: string; ok: boolean } => typeof flag.ok === "boolean");
 							return (
 								<article className="optimizer-recipe-card" aria-labelledby={`optimizer-eval-${recipe.id}`} data-testid={`optimizer-eval-recipe-${recipe.id}`} key={recipe.id}>
 									<div className="optimizer-recipe-top">
 										<span className="optimizer-recipe-mark">EV</span>
-										<span className={`optimizer-status ${available ? "completed" : "failed"}`}>{recipe.availability}</span>
+										<span className="optimizer-availability" data-available={available} data-testid={`optimizer-eval-availability-${recipe.id}`}>{recipe.availability}</span>
 									</div>
 									<h3 id={`optimizer-eval-${recipe.id}`}>{recipe.title}</h3>
 									<code className="optimizer-eval-id">{recipe.id}</code>
 									<dl className="optimizer-eval-limits">
-										<dt>Screen</dt><dd>{screening.join(", ") || "—"}</dd>
-										<dt>Confirm</dt><dd>{confirmation.join(", ") || "—"}</dd>
-										<dt>Primary</dt><dd>{String(selection.primary_metric ?? "—")}</dd>
-										<dt>Decision</dt><dd>{String(selection.decision_mode ?? "—")}</dd>
-										<dt>Parallel</dt><dd>{String(limits.max_parallel_trials ?? "—")}</dd>
+										<dt>Trials</dt><dd>{limits.trials != null ? String(limits.trials) : "—"}</dd>
+										<dt>Budget</dt><dd>{typeof budget.max_usd === "number" ? `$${budget.max_usd.toFixed(2)}` : "—"}</dd>
+										<dt>Models</dt><dd>{models.join(", ") || "—"}</dd>
+										<dt>Task</dt><dd>{recipe.task ?? "—"}</dd>
+										<dt>Source</dt><dd>{[recipe.source, recipe.semantics].filter(Boolean).join(" · ") || "—"}</dd>
 									</dl>
-									{recipe.availabilityReason ? <small data-testid={`optimizer-eval-blocked-${recipe.id}`}>{recipe.availabilityReason}</small> : null}
+									{admissionFlags.length > 0 ? (
+										<ul className="optimizer-admission" aria-label={`${recipe.title} admission checks`} data-testid={`optimizer-eval-admission-${recipe.id}`}>
+											{admissionFlags.map((flag) => (
+												<li
+													key={flag.id}
+													className="optimizer-admission-flag"
+													data-ok={flag.ok}
+													data-testid={`optimizer-eval-admission-${recipe.id}-${flag.id}`}
+													title={flag.ok ? undefined : admissionReason ?? undefined}
+												>
+													<span aria-hidden>{flag.ok ? "✓" : "✕"}</span>
+													{flag.label}
+													<span className="sr-only">{flag.ok ? " passed" : admissionReason ? `: ${admissionReason}` : " failed"}</span>
+												</li>
+											))}
+										</ul>
+									) : null}
+									{!available && admissionReason ? <small data-testid={`optimizer-eval-blocked-${recipe.id}`}>{admissionReason}</small> : null}
 									<button
 										className="secondary-button"
 										type="button"
