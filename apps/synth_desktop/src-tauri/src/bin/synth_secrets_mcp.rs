@@ -96,11 +96,11 @@ fn tools() -> Value {
     json!({"tools":[
         {
             "name": "secrets_manage",
-            "description": "Workshop credential locator registry. List approved workspace root references, bindings, and remembered locations; request registration; or request bounded use. Never returns plaintext, canonical paths, or masked suffixes. Native approvals block until the operator decides. Load the use-synth-secrets skill. Do not pass values, tokens, API keys, or absolute paths.",
+            "description": "Workshop credential locator registry. List approved workspace root references, bindings, and remembered locations; request registration or bounded use; and revoke run capabilities without unregistering their reusable source. Never returns plaintext, canonical paths, or masked suffixes. Native approvals block until the operator decides. Load the use-synth-secrets skill. Do not pass values, tokens, API keys, or absolute paths.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "operation": {"type": "string", "enum": ["workspace_roots_list", "bindings_list", "locators_list", "locator_request", "locator_status", "locator_remove", "source_request", "source_status", "source_remove", "request_use", "list", "request_env_import"]},
+                    "operation": {"type": "string", "enum": ["workspace_roots_list", "bindings_list", "locators_list", "locator_request", "locator_status", "locator_remove", "source_request", "source_status", "source_remove", "request_use", "use_revoke", "list", "request_env_import"]},
                     "provider": {"type": "string", "description": "Provider id such as openai, anthropic, or openrouter."},
                     "scope": {"type": "string"},
                     "workspaceRootRef": {"type": "string", "description": "Opaque reference returned by workspace_roots_list."},
@@ -112,7 +112,8 @@ fn tools() -> Value {
                     "label": {"type": "string"},
                     "runId": {"type": "string"},
                     "recipeId": {"type": "string"},
-                    "workload": {"type": "string", "enum": ["chat_completions", "codex_responses"], "description": "Fixed provider-wire contract. The agent cannot set operations, models, cost, or lifetime."}
+                    "capabilityId": {"type": "string"},
+                    "workload": {"type": "string", "enum": ["chat_completions", "codex_responses"], "description": "Fixed provider-wire contract. Inline evaluations issue their capability directly from the approved execution envelope; this session-use operation cannot widen it."}
                 },
                 "required": ["operation"],
                 "additionalProperties": false
@@ -160,6 +161,20 @@ fn call_tool(name: &str, args: &Value) -> Result<Value, String> {
         "source_request" => request("POST", "/v1/secrets/source_request", Some(args.clone())),
         "source_status" => request("POST", "/v1/secrets/source_status", Some(args.clone())),
         "source_remove" => request("POST", "/v1/secrets/source_remove", Some(args.clone())),
+        "use_revoke" => {
+            let targets = ["capabilityId", "runId"]
+                .into_iter()
+                .filter(|key| {
+                    args.get(*key)
+                        .and_then(Value::as_str)
+                        .is_some_and(|value| !value.trim().is_empty())
+                })
+                .count();
+            if targets != 1 {
+                return Err("use_revoke requires exactly one capabilityId or runId".into());
+            }
+            request("POST", "/v1/secrets/use_revoke", Some(args.clone()))
+        }
         "list" => request("POST", "/v1/secrets/list", Some(args.clone())),
         "request_env_import" => request("POST", "/v1/secrets/import", Some(args.clone())),
         "request_use" => {
@@ -205,6 +220,7 @@ mod tests {
         assert!(encoded.contains("source_request"));
         assert!(encoded.contains("request_env_import"));
         assert!(encoded.contains("request_use"));
+        assert!(encoded.contains("use_revoke"));
         assert!(encoded.contains("codex_responses"));
         for forbidden in [
             "secrets_create",

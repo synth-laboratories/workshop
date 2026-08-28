@@ -19,6 +19,7 @@ mod vault;
 use anyhow::{anyhow, bail, Result};
 use rusqlite::OptionalExtension;
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -824,6 +825,7 @@ impl SecretsService {
         actor: &str,
     ) -> Result<UseRequestResult> {
         if let Some(live) = self.capabilities.find_active(secret_id, run_id) {
+            ensure_capability_covers(&live, &policy)?;
             return self.live_result(live);
         }
         let always = self
@@ -834,10 +836,11 @@ impl SecretsService {
         }
         {
             let pending = self.pending_grants.lock().expect("pending grants");
-            if let Some((request_id, _)) = pending
+            if let Some((request_id, pending_grant)) = pending
                 .iter()
                 .find(|(_, grant)| grant.secret_id == secret_id && grant.run_id == run_id)
             {
+                ensure_policy_covers(&pending_grant.policy, &policy, None)?;
                 return Ok(UseRequestResult {
                     status: "approval_required".into(),
                     request_id: Some(request_id.clone()),
@@ -879,6 +882,10 @@ impl SecretsService {
         actor: &str,
         remember_recipe: bool,
     ) -> Result<UseRequestResult> {
+        if let Some(live) = self.capabilities.find_active(secret_id, run_id) {
+            ensure_capability_covers(&live, &policy)?;
+            return self.live_result(live);
+        }
         let _ = self.start_proxy();
         let record = self
             .db
@@ -1236,6 +1243,82 @@ impl SecretsService {
         }
         Ok(env)
     }
+}
+
+fn ensure_capability_covers(
+    live: &capability::LiveCapability,
+    requested: &ProviderUsePolicy,
+) -> Result<()> {
+    if live.covers(requested) {
+        return Ok(());
+    }
+    ensure_policy_covers(
+        &ProviderUsePolicy {
+            operations: live.operations.clone(),
+            models: live.models.clone(),
+            reasoning_efforts: live.reasoning_efforts.clone(),
+            max_calls: live.max_calls,
+            max_input_tokens: live.max_input_tokens,
+            max_output_tokens: live.max_output_tokens,
+            max_cost_usd: live.max_cost_usd_micros as f64 / 1_000_000.0,
+            lifetime_seconds: 0,
+        },
+        requested,
+        Some(&live.id),
+    )
+}
+
+fn ensure_policy_covers(
+    granted: &ProviderUsePolicy,
+    requested: &ProviderUsePolicy,
+    capability_id: Option<&str>,
+) -> Result<()> {
+    let list_covers = |available: &[String], needed: &[String]| {
+        available.is_empty()
+            || needed.iter().all(|item| {
+                available
+                    .iter()
+                    .any(|candidate| candidate.eq_ignore_ascii_case(item))
+            })
+    };
+    if list_covers(&granted.operations, &requested.operations)
+        && list_covers(&granted.models, &requested.models)
+        && list_covers(&granted.reasoning_efforts, &requested.reasoning_efforts)
+        && granted.max_calls >= requested.max_calls
+        && granted.max_input_tokens >= requested.max_input_tokens
+        && granted.max_output_tokens >= requested.max_output_tokens
+        && granted.max_cost_usd + f64::EPSILON >= requested.max_cost_usd
+    {
+        return Ok(());
+    }
+    bail!(
+        "{}",
+        json!({
+            "code": "capability_underscoped",
+            "contract": "workshop.secrets_proxy",
+            "retryable": false,
+            "message": "an existing run capability does not cover the admitted execution envelope",
+            "capabilityId": capability_id,
+            "granted": {
+                "operations": granted.operations,
+                "models": granted.models,
+                "reasoningEfforts": granted.reasoning_efforts,
+                "maxCalls": granted.max_calls,
+                "maxInputTokens": granted.max_input_tokens,
+                "maxOutputTokens": granted.max_output_tokens,
+                "maxCostUsd": granted.max_cost_usd,
+            },
+            "required": {
+                "operations": requested.operations,
+                "models": requested.models,
+                "reasoningEfforts": requested.reasoning_efforts,
+                "maxCalls": requested.max_calls,
+                "maxInputTokens": requested.max_input_tokens,
+                "maxOutputTokens": requested.max_output_tokens,
+                "maxCostUsd": requested.max_cost_usd,
+            },
+        })
+    )
 }
 
 fn service(state: &State<'_, Arc<SecretsService>>) -> Result<Arc<SecretsService>, AppError> {
@@ -2200,6 +2283,110 @@ mod tests {
         assert_eq!(again.handle, granted.handle);
         let inbox = service.inbox().unwrap();
         assert!(inbox.grants.is_empty());
+    }
+
+    #[test]
+    fn active_capability_reuse_rejects_an_underscoped_grant() {
+        let (_dir, service) = service();
+        let created = service
+            .create(
+                "Project OpenRouter",
+                "openrouter",
+                "project/config/env",
+                "sk-not-real-underscope",
+                "test",
+            )
+            .unwrap();
+        let narrow = ProviderUsePolicy {
+            max_calls: 40,
+            max_cost_usd: 0.60,
+            ..ProviderUsePolicy::default()
+        };
+        service
+            .grant_use(&created.id, "run-envelope", "recipe", narrow, "test", false)
+            .unwrap();
+        let required = ProviderUsePolicy {
+            max_calls: 50,
+            max_cost_usd: 2.45,
+            models: vec!["z-ai/glm-5.3-flash".into()],
+            ..ProviderUsePolicy::default()
+        };
+        let error = service
+            .request_use(
+                &created.id,
+                "run-envelope",
+                "recipe",
+                required,
+                "agent",
+            )
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("capability_underscoped"), "{error}");
+        assert!(error.contains("\"maxCalls\":40"), "{error}");
+        assert!(error.contains("\"maxCalls\":50"), "{error}");
+        assert!(error.contains("2.45"), "{error}");
+    }
+
+    #[test]
+    fn revoking_a_run_capability_preserves_the_file_backed_source() {
+        let (root, service) = locator_service("locator-capability-revoke");
+        let env_file = root.path.join("provider.env");
+        std::fs::write(&env_file, "OPENROUTER_API_KEY=sk-revoke-not-real\n").unwrap();
+        let locator = service
+            .remember_external_locator(
+                &env_file,
+                "openrouter",
+                "OPENROUTER_API_KEY",
+                "Project OpenRouter",
+            )
+            .unwrap();
+        service.register_locator(&locator.id).unwrap();
+        let source_id = service.source_for_locator(&locator.id).unwrap();
+        let granted = service
+            .grant_use(
+                &source_id,
+                "run-revoke-only",
+                "recipe",
+                ProviderUsePolicy::default(),
+                "test",
+                false,
+            )
+            .unwrap();
+        let revoked_handle = granted.handle.clone().unwrap();
+        service
+            .revoke_capability(granted.capability_id.as_deref().unwrap(), "test")
+            .unwrap();
+
+        let denied = service
+            .capabilities
+            .reserve_call(&revoked_handle)
+            .unwrap_err()
+            .to_string();
+        assert!(denied.contains("revoked"), "{denied}");
+        assert!(service
+            .capabilities
+            .find_active(&source_id, "run-revoke-only")
+            .is_none());
+        let source = service
+            .locators(true)
+            .unwrap()
+            .into_iter()
+            .find(|row| row.id == locator.id)
+            .unwrap();
+        assert!(source.registered, "capability revoke must not unregister source");
+        assert!(source.loaded, "capability revoke must not unload source material");
+
+        let fresh = service
+            .grant_use(
+                &source_id,
+                "run-after-revoke",
+                "recipe",
+                ProviderUsePolicy::default(),
+                "test",
+                false,
+            )
+            .unwrap();
+        assert_eq!(fresh.status, "granted");
     }
 
     #[tokio::test]

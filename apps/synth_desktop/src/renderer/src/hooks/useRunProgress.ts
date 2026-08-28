@@ -32,6 +32,7 @@ import {
 	recordSubscribed
 } from "../runtime/runProgress/telemetry";
 import type { RunControlIntent, RunProgressProjection } from "../runtime/runProgress/types";
+import { coveredMetric } from "../runtime/runProgress/usage";
 
 const CLOCK_INTERVAL_MS = 1_000;
 
@@ -120,7 +121,10 @@ export function useRunProgress(runId: string, sessionRef?: string): RunProgressS
 	const projection = useMemo(() => {
 		const next = snapshot ? projectRunProgress(snapshot, clock) : null;
 		if (!next || !providerAccess) return next;
-		return { ...next, providerAccess };
+		const proxyCost = next.usage.costUsd.value == null && providerAccess.usedCostUsd != null
+			? coveredMetric(providerAccess.usedCostUsd, "proxy", 1, 1)
+			: next.usage.costUsd;
+		return { ...next, usage: { ...next.usage, costUsd: proxyCost }, providerAccess };
 	}, [snapshot, clock, providerAccess]);
 
 	// One measurement per published snapshot, not per clock tick: a 1s elapsed

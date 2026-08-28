@@ -36,6 +36,7 @@ import { bindingAuthorityKey } from "../runtime/visualRevisionState";
 import { openTraceReference, VISUAL_REFERENCE_ERROR_EVENT, VISUAL_REFERENCE_OPENED_EVENT } from "../runtime/visualReferences";
 import { previewVariantForTemplate, SEALED_TRACE_WORKBENCH_TEMPLATES } from "../runtime/templatePresentation";
 import { optimizerRunIdFromBindings } from "../runtime/visualBindings";
+import { projectVisualRunLifecycle } from "../runtime/visualRunLifecycle";
 
 type ShellProps = {
 	title?: string;
@@ -1158,10 +1159,16 @@ function TemplateVisualHost({ artifact }: { artifact: ArtifactRef }) {
 	const resolvedProps = selected.projection ?? { ...synchronouslyResolved.props, ...traceResolution.props };
 	const showConnection = Boolean(optimizerPayload || optimizerLoadError || connectionState !== "loading");
 	const boundEvents = Array.isArray(optimizerPayload?.events) ? optimizerPayload.events as unknown[] : [];
+	const runLifecycle = projectVisualRunLifecycle(
+		optimizerPayload?.run as Parameters<typeof projectVisualRunLifecycle>[0],
+		progressView
+	);
 	const boundStatus = typeof (optimizerPayload?.run as { status?: string } | undefined)?.status === "string"
 		? (optimizerPayload?.run as { status?: string }).status ?? ""
 		: "";
-	const transportTerminal = connectionState === "terminal" || ["completed", "failed", "cancelled", "succeeded"].includes(boundStatus);
+	const transportTerminal = runLifecycle?.terminal === true
+		|| connectionState === "terminal"
+		|| ["completed", "failed", "cancelled", "succeeded"].includes(boundStatus);
 	return (
 		<div
 			data-testid="visual-template-shell"
@@ -1210,6 +1217,7 @@ function TemplateVisualHost({ artifact }: { artifact: ArtifactRef }) {
 				replay={replayClient}
 				media={mediaClient}
 				sealedTraceProjections={sealedTraceProjections}
+				runLifecycle={runLifecycle}
 				replayMissingTransport={replay.missingTransport}
 				visualId={artifact.visualId ?? artifact.id}
 				revision={typeof artifact.revision === "number" ? artifact.revision : null}
@@ -1443,6 +1451,8 @@ function restoreFocusAfterVisualPaneClose() {
 }
 
 export function VisualPane({ artifact, onClose }: { artifact: ArtifactRef; onClose: () => void }) {
+	const paneRef = useRef<HTMLElement>(null);
+	const [runtimeSealBlockReason, setRuntimeSealBlockReason] = useState<string | null>(null);
 	const [expanded, setExpanded] = useState(false);
 	const [annotations, setAnnotations] = useState<VisualAnnotation[]>([]);
 	const [seals, setSeals] = useState<VisualSeal[]>([]);
@@ -1491,7 +1501,25 @@ export function VisualPane({ artifact, onClose }: { artifact: ArtifactRef; onClo
 	const visualId = artifact.visualId;
 	const revision = artifact.revision;
 	const qualityGate = artifact.metadata?.qualityGate as { ready?: boolean; revision?: number } | undefined;
-	const sealEligible = Boolean(visualId && revision && qualityGate?.ready && qualityGate.revision === revision);
+	const sealEligible = Boolean(visualId && revision && qualityGate?.ready && qualityGate.revision === revision && !runtimeSealBlockReason);
+
+	useEffect(() => {
+		const host = paneRef.current;
+		if (!host) return;
+		const read = () => {
+			const rejected = host.querySelector<HTMLElement>('[data-run-evidence-state="rejected"]');
+			if (!rejected) {
+				setRuntimeSealBlockReason(null);
+				return;
+			}
+			const sealed = Number(rejected.dataset.runSealedTraces ?? 0);
+			setRuntimeSealBlockReason(`Seal unavailable — run failed with ${Number.isFinite(sealed) ? sealed : 0} sealed traces (evidence rejected).`);
+		};
+		const observer = new MutationObserver(read);
+		observer.observe(host, { subtree: true, childList: true, attributes: true, attributeFilter: ["data-run-evidence-state", "data-run-sealed-traces"] });
+		read();
+		return () => observer.disconnect();
+	}, [artifact.revision]);
 
 	useEffect(() => {
 		let cancelled = false;
@@ -1640,6 +1668,7 @@ export function VisualPane({ artifact, onClose }: { artifact: ArtifactRef; onClo
 	const paneAlert = sharedUrlError ?? artifactError ?? (revisionSync?.error ? `Visual refresh failed · ${revisionSync.error}` : null);
 	return (
 		<aside
+			ref={paneRef}
 			className={`visual-pane${expanded ? " visual-pane-expanded" : ""}`}
 			data-testid="visual-pane"
 			aria-label={isSubagents ? "Subagents" : "Visual artifact"}
@@ -1689,13 +1718,14 @@ export function VisualPane({ artifact, onClose }: { artifact: ArtifactRef; onClo
 						Label{annotations.length ? ` · ${annotations.length}` : ""}
 					</button>
 					)}
+					{isSubagents || !runtimeSealBlockReason ? null : <span className="visual-seal-disabled-reason" role="status">{runtimeSealBlockReason}</span>}
 					{isSubagents ? null : (
 					<button
 						type="button"
 						className="visual-expand"
 						onClick={() => void sealCurrentRevision()}
 						disabled={!sealEligible || busy}
-						title={sealEligible ? "Seal this exact revision for offline use" : "Pass the E1 visual quality gate before sealing"}
+						title={sealEligible ? "Seal this exact revision for offline use" : runtimeSealBlockReason ?? "Pass the E1 visual quality gate before sealing"}
 					>
 						{busy ? "Working…" : "Seal"}
 					</button>

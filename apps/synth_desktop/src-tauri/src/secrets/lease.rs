@@ -939,6 +939,9 @@ impl SecretsService {
         let granted = self
             .grant_use(&secret_id, run_id, recipe_id, policy.clone(), actor, false)
             .map_err(|error| {
+                if error.to_string().contains("capability_underscoped") {
+                    return error;
+                }
                 CredentialError::new(
                     CAPABILITY_DENIED,
                     "capability",

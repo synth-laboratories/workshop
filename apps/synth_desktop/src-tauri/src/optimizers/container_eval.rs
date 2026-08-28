@@ -574,6 +574,18 @@ async fn start_eval(
     } else {
         service.create(create).await?
     };
+    if spec.admitted_use_policy.is_some() {
+        // Inline runs derive their provider grant only from the immutable,
+        // operator-approved execution envelope. Do this before visuals or the
+        // worker are started so an existing narrower capability for this run
+        // is refused pre-dispatch rather than failing on call 41. The worker's
+        // later route lookup reuses this exact capability.
+        if let Err(error) = container_openai_proxy_base(&run.id, &spec) {
+            let detail = format!("provider capability preflight failed: {error:#}");
+            append_terminal(service, &run.id, "failed", detail).await?;
+            return Err(error);
+        }
+    }
     let visual_id = mint_experiment_visual(service, &run, &spec, examples.len()).await?;
     // Minted with the run, not when the first seed finishes: a workstation that
     // appears only after there is something to see cannot show a rollout
@@ -816,6 +828,23 @@ async fn settle_worker_failure(
     run_id: &str,
     error: anyhow::Error,
 ) -> Result<()> {
+    // Provider usage is durable in the secrets proxy independently of worker
+    // control flow. Fold it into the optimizer journal before every terminal
+    // path, including setup and evidence failures that bypass normal campaign
+    // settlement. This is idempotent if cancellation already appended it.
+    let usage_error = append_provider_usage_reconciliation(service, run_id)
+        .await
+        .err()
+        .map(|failure| format!("provider usage reconciliation failed: {failure:#}"));
+    if let Some(usage_error) = usage_error {
+        return append_terminal(
+            service,
+            run_id,
+            "failed",
+            format!("{error:#}; {usage_error}"),
+        )
+        .await;
+    }
     // Cancellation is not a generic application error. A typed cancellation
     // settles `cancelled` with its request as the terminal event's payload,
     // instead of laundering the interruption into `failed/producer_failed`.
@@ -2179,7 +2208,13 @@ fn container_openai_proxy_base(run_id: &str, spec: &EvalSpec) -> Result<String> 
             container_proxy_policy(spec),
             "eval",
         )
-        .map_err(|error| secrets_proxy_error("secrets_proxy_denied", &error.to_string()))?;
+        .map_err(|error| {
+            if error.to_string().contains("capability_underscoped") {
+                error
+            } else {
+                secrets_proxy_error("secrets_proxy_denied", &error.to_string())
+            }
+        })?;
     let base = env.container_openai_base_url.clone().ok_or_else(|| {
         secrets_proxy_error(
             "secrets_proxy_route_unbound",
@@ -2541,6 +2576,65 @@ fn failed_record(
     record
 }
 
+/// A rollout that was dispatched has durable identity even when its journal
+/// fails integrity validation before evaluator/trace settlement. Keep that
+/// identity on the terminal record instead of rebuilding a pre-dispatch-shaped
+/// failure in the parent task.
+fn dispatched_failure_record(
+    example: EvalExample,
+    spec: &EvalSpec,
+    policy_pin: &Value,
+    rollout_id: &str,
+    trial_id: &str,
+    task_instance_id: &str,
+    container_id: &str,
+    poll_url: &str,
+    relay: &eval_relay::RelayOutcome,
+    error: &anyhow::Error,
+) -> Value {
+    let detail = format!("{error:#}");
+    let integrity = error
+        .downcast_ref::<eval_relay::RelayIntegrityError>()
+        .is_some();
+    let evidence_state = if integrity { "rejected" } else { "missing" };
+    let mut record = json!({
+        "rolloutId": rollout_id,
+        "trialId": trial_id,
+        "pool": example.pool,
+        "seed": example.seed,
+        "taskInstanceId": task_instance_id,
+        "status": "failed",
+        "terminated": true,
+        "error": detail,
+        "steps": relay.last_relayed_step,
+        "lastObservedStep": relay.last_relayed_step,
+        "usage": relay.to_json()["observedUsage"].clone(),
+        "relay": relay.to_json(),
+        "evaluatorOutcome": {
+            "status": "failed",
+            "reason": "evaluator_not_reached",
+            "detail": detail,
+            "source": "container_evaluator",
+        },
+        "evidenceState": evidence_state,
+        "evidenceOutcome": {
+            "status": "failed",
+            "reason": if integrity { "journal_integrity_rejected" } else { "trace_not_reached" },
+            "detail": detail,
+            "source": "trusted_trace_v5",
+        },
+        "evidence": {
+            "containerId": container_id,
+            "eventsUrl": poll_url,
+            "journalRejected": integrity,
+        },
+        "policyRef": policy_pin,
+        "worldRef": spec.world_ref,
+    });
+    attach_reported_facts(&mut record);
+    record
+}
+
 /// Settle one child's error into its trial record: a typed cancellation
 /// becomes a cancelled record carrying its request; anything else failed.
 fn settled_child_error_record(
@@ -2685,16 +2779,35 @@ pub(super) async fn reconcile_evidence(
         if !reconciled_indices.insert(index) {
             bail!("terminal records contain duplicate seed {seed}");
         }
+        let work_item_id = format!("eval:trial:{index}");
+        let ledger_identity = kernel_state
+            .projection
+            .eval_evidence_ledger()
+            .and_then(|ledger| ledger.iter().find(|entry| entry.work_item_id == work_item_id));
         let rollout_id = record
             .get("rolloutId")
             .and_then(Value::as_str)
-            .with_context(|| format!("terminal record for seed {seed} has no rolloutId"))?
-            .to_string();
+            .map(str::to_string)
+            .or_else(|| ledger_identity.and_then(|entry| entry.rollout_id.clone()))
+            .with_context(|| {
+                format!(
+                    "terminal record and durable trial ledger for seed {seed} have no rolloutId"
+                )
+            })?;
         let trial_id = record
             .get("trialId")
             .and_then(Value::as_str)
-            .with_context(|| format!("terminal record for seed {seed} has no trialId"))?
-            .to_string();
+            .map(str::to_string)
+            .or_else(|| ledger_identity.and_then(|entry| entry.trial_id.clone()))
+            .with_context(|| {
+                format!(
+                    "terminal record and durable trial ledger for seed {seed} have no trialId"
+                )
+            })?;
+        // Repair the weaker summary copy from the append-only kernel ledger so
+        // a successful evidence retry also leaves future readers consistent.
+        record["rolloutId"] = json!(rollout_id);
+        record["trialId"] = json!(trial_id);
         let producer_trace_id = record
             .pointer("/trace/bundle_trace_id")
             .or_else(|| record.pointer("/trace/trace_id"))
@@ -3794,7 +3907,18 @@ async fn run_one_example(
         Ok(state) => state,
         Err(error) => {
             let Some(cancelled) = error.downcast_ref::<super::kernel::CancelledError>() else {
-                return Err(error);
+                return Ok(dispatched_failure_record(
+                    example,
+                    spec,
+                    ctx.policy_pin,
+                    &rollout_id,
+                    &trial_id,
+                    &task_instance_id,
+                    ctx.container_id,
+                    &poll_url,
+                    &relay,
+                    &error,
+                ));
             };
             // Dropping the blocking request asks the container to seal. Import
             // immediately while that container still exists; failure remains
@@ -7642,6 +7766,26 @@ max_total_rollouts = 1
         let record = run.summary.pointer("/records/0").cloned().unwrap();
         let error = record["error"].as_str().unwrap_or_default();
         assert!(error.contains("sequence gap"), "gap was not named: {error}");
+        assert_eq!(record["evidenceState"], json!("rejected"));
+        let rollout_id = record["rolloutId"]
+            .as_str()
+            .expect("a dispatched integrity failure keeps rolloutId");
+        let trial_id = record["trialId"]
+            .as_str()
+            .expect("a dispatched integrity failure keeps trialId");
+        let events = relayed_events(&svc, &run_id).await;
+        let started = events
+            .iter()
+            .find(|event| event.get("type").and_then(Value::as_str) == Some("eval.trial.started"))
+            .expect("trial start identity");
+        let terminal = events
+            .iter()
+            .find(|event| event.get("type").and_then(Value::as_str) == Some("eval.trial.terminal"))
+            .expect("trial terminal identity");
+        assert_eq!(started["delta"]["rollout_id"], json!(rollout_id));
+        assert_eq!(started["delta"]["trial_id"], json!(trial_id));
+        assert_eq!(terminal["item"]["rolloutId"], json!(rollout_id));
+        assert_eq!(terminal["item"]["trialId"], json!(trial_id));
         mock.task.abort();
     }
 

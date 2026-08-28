@@ -58,12 +58,33 @@ function metric(value: number | null | undefined, source: CoveredMetric["source"
 
 function usageOf(
 	usage: UsageCompleteness,
-	reportedTerminalWork: number | undefined
+	reportedTerminalWork: number | undefined,
+	run: RunRecord
 ): RunProgressProjection["usage"] {
+	const extra = run.usage?.extra && typeof run.usage.extra === "object"
+		? run.usage.extra as Record<string, unknown>
+		: {};
+	const summary = run.summary ?? {};
+	const manifest = summary.terminalManifest && typeof summary.terminalManifest === "object"
+		? summary.terminalManifest as Record<string, unknown>
+		: {};
+	const manifestUsage = manifest.usage && typeof manifest.usage === "object"
+		? manifest.usage as Record<string, unknown>
+		: {};
+	const receipt = manifestUsage.providerReceipt ?? extra.providerUsageReceipt;
+	const receiptRecord = receipt && typeof receipt === "object" ? receipt as Record<string, unknown> : undefined;
+	const receiptAuthority = receiptRecord
+		? receiptRecord.authority
+		: undefined;
+	const usageSource: CoveredMetric["source"] = receiptAuthority === "workshop.secrets_proxy" ? "proxy" : "provider";
+	const costUsd = metric(usage.costUsd, usageSource);
+	const receiptCalls = typeof receiptRecord?.calls === "number" && Number.isFinite(receiptRecord.calls)
+		? receiptRecord.calls
+		: undefined;
 	return {
-		costUsd: metric(usage.costUsd, "provider"),
-		promptTokens: metric(usage.promptTokens, "provider"),
-		completionTokens: metric(usage.completionTokens, "provider"),
+		costUsd: usageSource === "proxy" && receiptCalls != null ? { ...costUsd, receiptCalls } : costUsd,
+		promptTokens: metric(usage.promptTokens, usageSource),
+		completionTokens: metric(usage.completionTokens, usageSource),
 		rollouts: metric(reportedTerminalWork, "derived")
 	};
 }
@@ -218,7 +239,7 @@ export function projectRunViewV2(
 			startedAt: run.startedAt ?? run.createdAt,
 			elapsedMs: elapsedMs(run, header, now)
 		},
-		usage: usageOf(header.usage, terminalWork),
+		usage: usageOf(header.usage, terminalWork, run),
 		capabilities: {
 			pause: run.capabilities?.pause === true,
 			resume: run.capabilities?.resume === true,

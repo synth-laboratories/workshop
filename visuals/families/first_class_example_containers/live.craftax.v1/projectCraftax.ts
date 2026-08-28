@@ -475,6 +475,22 @@ export function replayMomentIndexes(ordered: LiveEvalEvent[]): number[] {
   return indexes;
 }
 
+/** Honest replay availability for lifecycle-only or rejected traces. */
+export function craftaxReplayAvailability(
+  ordered: LiveEvalEvent[],
+  evidenceState?: "pending" | "accepted" | "partial" | "missing" | "rejected"
+): { markers: number; environmentSteps: number; replayable: boolean; reason?: string } {
+  const markers = replayMomentIndexes(ordered).length;
+  const steps = environmentStepCount(ordered);
+  if (evidenceState === "rejected") {
+    return { markers, environmentSteps: steps, replayable: false, reason: "evidence rejected" };
+  }
+  if (steps === 0) {
+    return { markers, environmentSteps: 0, replayable: false, reason: "0 trustworthy environment steps" };
+  }
+  return { markers, environmentSteps: steps, replayable: true };
+}
+
 /** Project only persisted evidence visible for one lane at one replay cursor. */
 export function projectCraftaxViewer(
   events: LiveEvalEvent[],

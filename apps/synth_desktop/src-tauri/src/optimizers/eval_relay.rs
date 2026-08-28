@@ -65,6 +65,11 @@ const SETTLED_IDLE_DRAINS: u32 = 2;
 /// slow one is a degraded frame, not a reason to stall the trial.
 const FRAME_FETCH_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// Cross-language semantic encoding used for journal envelope digests. The
+/// producer places this marker on every newly-written envelope; unmarked rows
+/// retain the legacy JSON reserialization check for backwards compatibility.
+const ENVELOPE_DIGEST_V2: &str = "synth.envelope-digest.v2";
+
 /// How the recipe asks for the event stream to be drained.
 ///
 /// Recipe-driven rather than constant: a 500-step environment and a two-call
@@ -744,6 +749,75 @@ fn journal_chain_extend(head: &str, digest: &str) -> String {
     format!("{:x}", Sha256::digest(format!("{head}{digest}").as_bytes()))
 }
 
+fn encode_digest_v2_value(value: &Value, out: &mut Vec<u8>) -> Result<()> {
+    match value {
+        Value::Null => out.push(b'n'),
+        Value::Bool(false) => out.push(b'f'),
+        Value::Bool(true) => out.push(b't'),
+        Value::Number(number) => {
+            if let Some(value) = number.as_i64() {
+                out.push(b'i');
+                out.extend_from_slice(value.to_string().as_bytes());
+                out.push(b';');
+            } else if let Some(value) = number.as_u64() {
+                out.push(b'i');
+                out.extend_from_slice(value.to_string().as_bytes());
+                out.push(b';');
+            } else if let Some(value) = number.as_f64() {
+                if !value.is_finite() {
+                    bail!("journal-v2 float must be finite");
+                }
+                out.push(b'd');
+                out.extend_from_slice(format!("{:016x}", value.to_bits()).as_bytes());
+                out.push(b';');
+            } else {
+                bail!("journal-v2 number is outside the canonical numeric domain");
+            }
+        }
+        Value::String(value) => {
+            out.push(b's');
+            out.extend_from_slice(value.len().to_string().as_bytes());
+            out.push(b':');
+            out.extend_from_slice(value.as_bytes());
+        }
+        Value::Array(values) => {
+            out.push(b'a');
+            out.extend_from_slice(values.len().to_string().as_bytes());
+            out.push(b'[');
+            for value in values {
+                encode_digest_v2_value(value, out)?;
+            }
+            out.push(b']');
+        }
+        Value::Object(values) => {
+            let mut keys = values.keys().collect::<Vec<_>>();
+            keys.sort_unstable_by(|left, right| left.as_bytes().cmp(right.as_bytes()));
+            out.push(b'o');
+            out.extend_from_slice(keys.len().to_string().as_bytes());
+            out.push(b'{');
+            for key in keys {
+                encode_digest_v2_value(&Value::String(key.clone()), out)?;
+                encode_digest_v2_value(&values[key], out)?;
+            }
+            out.push(b'}');
+        }
+    }
+    Ok(())
+}
+
+fn canonical_envelope_v2(kind: &str, sequence: u64, payload: &Value) -> Result<Vec<u8>> {
+    let mut canonical = b"synth.envelope-digest.v2\0".to_vec();
+    encode_digest_v2_value(
+        &json!({
+            "kind": kind,
+            "sequence": sequence,
+            "payload": payload,
+        }),
+        &mut canonical,
+    )?;
+    Ok(canonical)
+}
+
 fn verify_envelope_digest(event: &Value, sequence: u64) -> Result<&str> {
     let kind = event
         .get("kind")
@@ -764,12 +838,22 @@ fn verify_envelope_digest(event: &Value, sequence: u64) -> Result<&str> {
     {
         bail!("journal-v2 event digest must be 16 lowercase hex characters");
     }
-    let canonical = serde_json::to_vec(&json!({
-        "kind": kind,
-        "sequence": sequence,
-        "payload": payload,
-    }))
-    .context("encode canonical journal-v2 envelope")?;
+    let canonical = match event.get("digest_schema") {
+        Some(Value::String(schema)) if schema == ENVELOPE_DIGEST_V2 => {
+            canonical_envelope_v2(kind, sequence, payload)
+                .context("encode synth.envelope-digest.v2 envelope")?
+        }
+        None => serde_json::to_vec(&json!({
+            "kind": kind,
+            "sequence": sequence,
+            "payload": payload,
+        }))
+        .context("encode legacy unversioned journal-v2 envelope")?,
+        Some(Value::String(schema)) => {
+            bail!("unsupported journal envelope digest schema {schema}")
+        }
+        Some(_) => bail!("journal envelope digest_schema must be a string"),
+    };
     let computed = format!("{:x}", Sha256::digest(canonical));
     if declared != &computed[..16] {
         return Err(anyhow::Error::new(RelayIntegrityError {
@@ -949,17 +1033,17 @@ async fn relay_event(
     ]);
 
     let mut draft = OptimizerEventDraft::new("eval.trial.event", EVAL_ALGORITHM_ID)
-            // One relay of one producer sequence. A retried page, a resumed
-            // worker, and a restarted Workshop all re-offer the same fact.
-            .idempotency_key(format!("eval:event:{}:{sequence}", ctx.rollout_id))
-            .level("debug")
-            .occurred_at_opt(event.get("ts").and_then(Value::as_str))
-            .delta(delta)
-            .raw(json!({
-                "source": "container_eval",
-                "trial_id": ctx.trial_id,
-                "container_event": container_event,
-            }));
+        // One relay of one producer sequence. A retried page, a resumed
+        // worker, and a restarted Workshop all re-offer the same fact.
+        .idempotency_key(format!("eval:event:{}:{sequence}", ctx.rollout_id))
+        .level("debug")
+        .occurred_at_opt(event.get("ts").and_then(Value::as_str))
+        .delta(delta)
+        .raw(json!({
+            "source": "container_eval",
+            "trial_id": ctx.trial_id,
+            "container_event": container_event,
+        }));
     if let Some(usage_delta) = usage_delta {
         draft = draft.usage_delta(usage_delta);
     }
@@ -1406,6 +1490,47 @@ mod tests {
             journal_chain_extend(&journal_chain_genesis("rollout-a"), digest),
             "257568cd0eaf518bf39a455a1f09d901647a61645796d9322e783867bd31ef4e"
         );
+    }
+
+    #[test]
+    fn envelope_digest_v2_matches_cross_language_golden_vectors() {
+        let corpus: Value =
+            serde_json::from_str(include_str!("fixtures/envelope_digest_v2.json")).unwrap();
+        assert_eq!(corpus["digest_schema"].as_str(), Some(ENVELOPE_DIGEST_V2));
+        for vector in corpus["vectors"].as_array().unwrap() {
+            let name = vector["name"].as_str().unwrap();
+            let kind = vector["kind"].as_str().unwrap();
+            let sequence = vector["sequence"].as_u64().unwrap();
+            let payload = &vector["payload"];
+            let expected = vector["digest"].as_str().unwrap();
+            let canonical = canonical_envelope_v2(kind, sequence, payload).unwrap();
+            assert!(canonical.starts_with(b"synth.envelope-digest.v2\0"));
+            let computed = format!("{:x}", Sha256::digest(canonical));
+            assert_eq!(&computed[..16], expected, "{name}");
+            let event = json!({
+                "kind": kind,
+                "sequence": sequence,
+                "payload": payload,
+                "digest_schema": ENVELOPE_DIGEST_V2,
+                "digest": expected,
+            });
+            assert_eq!(verify_envelope_digest(&event, sequence).unwrap(), expected);
+        }
+    }
+
+    #[test]
+    fn journal_v2_refuses_unknown_digest_contracts() {
+        let event = json!({
+            "kind": "observation",
+            "sequence": 1,
+            "payload": {},
+            "digest_schema": "synth.envelope-digest.v999",
+            "digest": "0000000000000000",
+        });
+        assert!(verify_envelope_digest(&event, 1)
+            .unwrap_err()
+            .to_string()
+            .contains("unsupported journal envelope digest schema"));
     }
 
     #[test]

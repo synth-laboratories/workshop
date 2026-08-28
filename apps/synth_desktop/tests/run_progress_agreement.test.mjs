@@ -202,3 +202,57 @@ test("a disconnect overlays Interrupted on both surfaces without dropping counts
 		{ ...progressAgreement(live), status: "running" }
 	);
 });
+
+test("terminal provider receipts are labeled as Workshop-proxy metering", () => {
+	const run = {
+		id: "proxy-terminal-eval",
+		algorithmId: "eval",
+		status: "failed",
+		objective: "Craftax",
+		createdAt: at(0),
+		finishedAt: at(2),
+		capabilities: {},
+		summary: {
+			terminalManifest: {
+				usage: { providerReceipt: { authority: "workshop.secrets_proxy", costUsd: 0.018659, calls: 37 } }
+			}
+		},
+		usage: { extra: { providerUsageReceipt: { authority: "workshop.secrets_proxy" } } }
+	};
+	const viewV2 = {
+		algorithm: "eval",
+		header: {
+			runId: run.id,
+			algorithm: "eval",
+			lifecycle: "terminal",
+			phase: "settled",
+			condition: "healthy",
+			placement: "local_container",
+			specId: "spec",
+			specDigest: "sha256:test",
+			executionBindings: [], inputRefs: [], outputRefs: [], visualRefs: [], artifacts: [],
+			usage: { costUsd: 0.018659, promptTokens: 134077, completionTokens: 8460, completeness: "reconciled" },
+			work: { planned: 5, failed: 5, succeeded: 0, cancelled: 0, running: 0, queued: 0, fixedDenominator: true, unit: "trials" },
+			evidence: { completeness: "partial", reason: "evidence rejected", refs: [] },
+			terminal: { kind: "failed", reason: "producer_failed", sealedAt: at(2), finalSequence: 70 },
+			projectionSchemaVersion: "eval.projection.v2",
+			asOfSequence: 70,
+			projectionRevision: 70
+		},
+		projection: {},
+		result: null
+	};
+	const projection = projectRunProgress({
+		runId: run.id,
+		state: "terminal",
+		run,
+		viewV2,
+		events: [],
+		cursor: 70,
+		gap: false,
+		revision: 1
+	}, NOW);
+	assert.equal(projection.usage.costUsd.value, 0.018659);
+	assert.equal(projection.usage.costUsd.source, "proxy");
+	assert.equal(projection.usage.costUsd.receiptCalls, 37);
+});

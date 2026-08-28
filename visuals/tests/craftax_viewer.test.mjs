@@ -10,6 +10,7 @@ import {
   projectCraftaxViewer,
   scopeCraftaxEvents,
   replayMomentIndexes,
+  craftaxReplayAvailability,
 } from "../families/first_class_example_containers/live.craftax.v1/projectCraftax.ts";
 
 function event(lane, kind, sequence, payload = {}, second = sequence) {
@@ -268,6 +269,19 @@ test("V2 replay moments skip token deltas and observations", () => {
   const moments = replayMomentIndexes(rows);
   assert.deepEqual(moments, [0, 2, 1003, 1004]);
   assert.ok(moments.length < rows.length / 100);
+});
+
+test("lifecycle-only rejected evidence reports markers without inventing environment steps", () => {
+  const rows = Array.from({ length: 5 }, (_, index) =>
+    event(`seed:${index}`, "status", index + 1, { status: "failed" })
+  );
+  const availability = craftaxReplayAvailability(rows, "rejected");
+  assert.deepEqual(availability, {
+    markers: 5,
+    environmentSteps: 0,
+    replayable: false,
+    reason: "evidence rejected"
+  });
 });
 
 test("missing PNG stays unavailable and does not fall back to ASCII", () => {

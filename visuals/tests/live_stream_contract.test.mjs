@@ -296,6 +296,18 @@ test("live Craftax keeps replay-driven call fallback out of passive state effect
   assert.doesNotMatch(shell, /setSelectedCallId\(\(current\) => reconcileCallSelection/);
 });
 
+test("live Craftax declares optimizer lifecycle authority and makes failure senior to transport", () => {
+  const template = JSON.parse(readFileSync(join(root, "families/first_class_example_containers/live.craftax.v1/template.json"), "utf8"));
+  const lifecycle = template.inputs.find((input) => input.name === "optimizer_run");
+  assert.deepEqual(lifecycle?.accepts, ["optimizer_run"]);
+  assert.equal(lifecycle?.required, false);
+  const shell = readFileSync(join(root, "families/first_class_example_containers/live.craftax.v1/shell.tsx"), "utf8");
+  assert.match(shell, /const visualLive = !lifecycleTerminal && state === "live"/);
+  assert.match(shell, /Trace evidence was rejected, not missing/);
+  assert.match(shell, /run marker/);
+  assert.match(shell, /Seal unavailable/);
+});
+
 test("multiplexed rollout-local event ids never collapse across lanes", () => {
   const state = ingestLiveEnvelopes([
     { kind: "observation", event_id: "1", sequence: 1, rollout_id: "seed-0", lane: "seed-0", payload: { step: 0 } },

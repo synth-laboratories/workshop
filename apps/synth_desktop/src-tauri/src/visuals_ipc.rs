@@ -3483,6 +3483,15 @@ struct SecretsIdRequest {
 
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct SecretsRevokeUseRequest {
+    #[serde(default)]
+    capability_id: Option<String>,
+    #[serde(default)]
+    run_id: Option<String>,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct SecretsUseRequest {
     #[serde(default)]
     locator_id: Option<String>,
@@ -3893,7 +3902,40 @@ async fn dispatch_secrets(
             secrets
                 .remove_locator_source(&input.locator_id)
                 .map_err(structured_credential_error)?;
-            Ok(json!({ "status": "unloaded" }))
+            Ok(json!({
+                "status": "unregistered",
+                "sourceRegistered": false,
+                "guidance": "This removes the reusable source registration. Use use_revoke to revoke only a run capability."
+            }))
+        }
+        ("POST", "/v1/secrets/use_revoke") => {
+            let input: SecretsRevokeUseRequest = parse_secrets_request(request)?;
+            match (input.capability_id.as_deref(), input.run_id.as_deref()) {
+                (Some(capability_id), None) => {
+                    secrets
+                        .revoke_capability(capability_id, "agent")
+                        .map_err(structured_credential_error)?;
+                    Ok(json!({
+                        "status": "revoked",
+                        "capabilityId": capability_id,
+                        "sourceRegistered": true,
+                    }))
+                }
+                (None, Some(run_id)) => {
+                    let revoked = secrets
+                        .revoke_run(run_id)
+                        .map_err(structured_credential_error)?;
+                    Ok(json!({
+                        "status": "revoked",
+                        "runId": run_id,
+                        "capabilityIds": revoked,
+                        "sourceRegistered": true,
+                    }))
+                }
+                _ => anyhow::bail!(
+                    "use_revoke requires exactly one of capabilityId or runId"
+                ),
+            }
         }
         ("POST", "/v1/secrets/import") => {
             Err(anyhow::Error::new(crate::error::StructuredFailure::new(

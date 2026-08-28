@@ -4339,6 +4339,13 @@ html.visual-expanded .titlebar {
 	flex-shrink: 0;
 }
 
+.visual-seal-disabled-reason {
+	max-width: 260px;
+	color: var(--color-warning-text);
+	line-height: 1.25;
+	text-align: right;
+}
+
 .visual-expand {
 	height: 26px;
 	padding: 0 10px;

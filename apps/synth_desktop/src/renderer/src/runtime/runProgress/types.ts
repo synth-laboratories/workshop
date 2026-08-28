@@ -99,7 +99,7 @@ export type RunEtaProjection = {
 	unavailableReason?: string;
 };
 
-export type CoveredMetricSource = "provider" | "container" | "derived" | "unavailable";
+export type CoveredMetricSource = "provider" | "proxy" | "container" | "derived" | "unavailable";
 
 /**
  * A number plus who vouches for it and how much of the run it covers. A
@@ -114,6 +114,8 @@ export type CoveredMetric = {
 	/** observed / expected, 0–1. Absent without a denominator. */
 	coverage?: number;
 	source: CoveredMetricSource;
+	/** Calls covered by a durable provider receipt, when this metric came from one. */
+	receiptCalls?: number;
 };
 
 export type RunUsageProjection = {

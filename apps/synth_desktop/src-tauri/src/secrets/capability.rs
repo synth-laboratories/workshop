@@ -220,6 +220,28 @@ impl LiveCapability {
     fn max_cost_usd(&self) -> f64 {
         self.max_cost_usd_micros as f64 / 1_000_000.0
     }
+
+    /// Whether this already-issued grant is at least as broad as the admitted
+    /// workload envelope asking to reuse it. Empty model/reasoning lists mean
+    /// unrestricted in the proxy contract; operations are always explicit.
+    pub(crate) fn covers(&self, requested: &ProviderUsePolicy) -> bool {
+        list_covers(&self.operations, &requested.operations)
+            && list_covers(&self.models, &requested.models)
+            && list_covers(&self.reasoning_efforts, &requested.reasoning_efforts)
+            && self.max_calls >= requested.max_calls
+            && self.max_input_tokens >= requested.max_input_tokens
+            && self.max_output_tokens >= requested.max_output_tokens
+            && self.max_cost_usd() + f64::EPSILON >= requested.max_cost_usd
+    }
+}
+
+fn list_covers(granted: &[String], requested: &[String]) -> bool {
+    granted.is_empty()
+        || requested.iter().all(|requested_item| {
+            granted
+                .iter()
+                .any(|granted_item| granted_item.eq_ignore_ascii_case(requested_item))
+        })
 }
 
 #[derive(Clone, Debug)]

@@ -46,6 +46,15 @@
       "required": true,
       "multiple": true,
       "schema": "synth.trace-stream-event.v1"
+    },
+    {
+      "name": "optimizer_run",
+      "description": "Authoritative optimizer lifecycle, evidence disposition, and proxy usage for this live evaluation",
+      "accepts": [
+        "optimizer_run"
+      ],
+      "required": false,
+      "schema": "synth.optimizer-run-document.v1"
     }
   ]
 }
