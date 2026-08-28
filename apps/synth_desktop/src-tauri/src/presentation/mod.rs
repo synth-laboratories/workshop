@@ -9,11 +9,16 @@
 //! This module is the panel *host*: it owns the vocabulary every pane answers
 //! in — whether a record can be shown, why not when it cannot, and the
 //! deterministic identity that makes reuse possible. A *pane* answers only for
-//! its own domain, in [`trace`] today. The host decides whether a record is
-//! ready to present; a pane declares only what it would present.
+//! its own domain — [`trace`] and [`document`] today. The host decides whether
+//! a record is ready to present; a pane declares only what it would present.
 
+mod document;
 mod trace;
 
+pub use document::{
+    document_path_binding, ensure_document_viewer, DOCUMENT_PROJECTION_SCHEMA,
+    DOCUMENT_VIEWER_TEMPLATE, WORKSPACE_FILE_BINDING_KIND,
+};
 pub use trace::{
     ensure_query_catalog, ensure_trace_inspector, trace_digest_binding, trace_inspectability,
     trace_inspector_visual_id, TRACE_CATALOG_TEMPLATE, TRACE_INSPECTOR_TEMPLATE,
@@ -21,6 +26,7 @@ pub use trace::{
 };
 
 use crate::data::TraceRecord;
+use crate::documents::DocumentRecord;
 
 /// Whether a domain record can be presented in the right panel, and when it
 /// cannot, why. The catalog shows every record and names the reason rather than
@@ -35,11 +41,29 @@ pub enum Presentability {
 /// distinct thing the catalog says out loud, so reasons are never merged: a
 /// quarantined record and an incomplete archive are different problems with
 /// different fixes.
+///
+/// Reasons are host vocabulary, not per-pane vocabulary: `Missing` means the
+/// same thing whichever pane raised it, and a pane that needed a private reason
+/// would be telling the catalog something the catalog cannot render.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum UnavailableReason {
     Quarantined,
     ArchiveIncomplete,
     Unsupported,
+    /// The record names a place that is not there. Distinct from `Unsupported`:
+    /// nothing about the request was wrong, the thing is simply gone.
+    Missing,
+    /// Bytes the pane would render as mojibake — a binary, or a file in an
+    /// encoding this build does not decode.
+    NotText,
+    /// A folder where a document was asked for. The folder is fine; it is not
+    /// a thing the document pane can typeset, and the listing view is.
+    NotADocument,
+    /// A document where a folder was asked for.
+    NotADirectory,
+    /// Metadata read, bytes refused — a permissions or I/O failure that is a
+    /// property of this machine rather than of the record.
+    Unreadable,
 }
 
 impl Presentability {
@@ -68,6 +92,27 @@ impl UnavailableReason {
             Self::Quarantined => "Quarantined",
             Self::ArchiveIncomplete => "Archive incomplete",
             Self::Unsupported => "Unsupported",
+            Self::Missing => "Missing",
+            Self::NotText => "Not text",
+            Self::NotADocument => "Not a document",
+            Self::NotADirectory => "Not a folder",
+            Self::Unreadable => "Unreadable",
+        }
+    }
+
+    /// What the reader can do next. A named reason with no next step is still a
+    /// dead end; §6 of the style guide asks for the recovery action beside the
+    /// state, and the panel is where the reader is standing when they read it.
+    pub fn remediation(self) -> &'static str {
+        match self {
+            Self::Quarantined => "Re-import the archive from a trusted source.",
+            Self::ArchiveIncomplete => "Re-seal the trace so its archive is self-contained.",
+            Self::Unsupported => "Open it with an application that understands this format.",
+            Self::Missing => "Check the path, or reopen it from the folder listing.",
+            Self::NotText => "Open it externally with the Open menu.",
+            Self::NotADocument => "Open it as a folder to see what is inside.",
+            Self::NotADirectory => "Open the containing folder instead.",
+            Self::Unreadable => "Check the file's permissions, then try again.",
         }
     }
 }
@@ -83,9 +128,24 @@ impl UnavailableReason {
 /// method and each `match` becomes a dynamic call. Pairing the pane with its
 /// record in one value also means the pane and the record it answers for can
 /// never disagree.
+///
+/// Two providers now, and the enum still earns its keep. [`Document`] is the
+/// one that tested it: it is not trace-shaped — no digest identity, no sealed
+/// archive, a mutable subject — and adding it needed exactly one new arm per
+/// method plus two host reasons, with the compiler naming every place that had
+/// to answer. Lifting to a `trait PanelProvider` buys dynamic dispatch nothing
+/// asks for here and loses that exhaustiveness. The rule for the next person:
+/// a third provider that is again a variation on "a record with an identity and
+/// an eligibility test" still belongs in the enum; the trait becomes right when
+/// providers arrive from *outside* this crate — a plugin supplying a pane —
+/// because at that point the set is no longer closed and there is nothing left
+/// for the compiler to be exhaustive over.
+///
+/// [`Document`]: Pane::Document
 #[derive(Clone, Copy, Debug)]
 pub enum Pane<'a> {
     Trace(&'a TraceRecord),
+    Document(&'a DocumentRecord),
 }
 
 impl<'a> Pane<'a> {
@@ -94,6 +154,7 @@ impl<'a> Pane<'a> {
     pub fn provider_id(self) -> &'static str {
         match self {
             Self::Trace(_) => trace::PROVIDER_ID,
+            Self::Document(_) => document::PROVIDER_ID,
         }
     }
 
@@ -102,6 +163,7 @@ impl<'a> Pane<'a> {
     pub fn template_id(self) -> &'static str {
         match self {
             Self::Trace(_) => TRACE_INSPECTOR_TEMPLATE,
+            Self::Document(_) => DOCUMENT_VIEWER_TEMPLATE,
         }
     }
 
@@ -109,6 +171,7 @@ impl<'a> Pane<'a> {
     pub fn projection_schema(self) -> &'static str {
         match self {
             Self::Trace(_) => TRACE_PROJECTION_SCHEMA,
+            Self::Document(_) => DOCUMENT_PROJECTION_SCHEMA,
         }
     }
 
@@ -116,6 +179,7 @@ impl<'a> Pane<'a> {
     pub fn presentable(self) -> Presentability {
         match self {
             Self::Trace(record) => trace::presentable(record),
+            Self::Document(record) => document::presentable(record),
         }
     }
 
@@ -124,6 +188,7 @@ impl<'a> Pane<'a> {
     pub fn visual_id(self) -> String {
         match self {
             Self::Trace(record) => trace::visual_id(record),
+            Self::Document(record) => document::visual_id(record),
         }
     }
 }
