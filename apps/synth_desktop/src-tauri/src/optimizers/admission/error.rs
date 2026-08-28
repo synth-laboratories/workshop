@@ -28,6 +28,7 @@ pub enum AdmissionErrorCode {
     ContainerSelectionAmbiguous,
     ContainerUnhealthy,
     ContainerProtocolUnsupported,
+    ContainerRuntimeStale,
     EvaluatorNotDeclared,
     ScoringContractInvalid,
     PolicyNotFound,
@@ -51,6 +52,7 @@ impl AdmissionErrorCode {
             Self::ContainerSelectionAmbiguous => "container_selection_ambiguous",
             Self::ContainerUnhealthy => "container_unhealthy",
             Self::ContainerProtocolUnsupported => "container_protocol_unsupported",
+            Self::ContainerRuntimeStale => "container_runtime_stale",
             Self::EvaluatorNotDeclared => "evaluator_not_declared",
             Self::ScoringContractInvalid => "scoring_contract_invalid",
             Self::PolicyNotFound => "policy_not_found",
@@ -75,7 +77,8 @@ impl AdmissionErrorCode {
             Self::ContainerNotFound
             | Self::ContainerSelectionAmbiguous
             | Self::ContainerUnhealthy
-            | Self::ContainerProtocolUnsupported => AdmissionSubject::Container,
+            | Self::ContainerProtocolUnsupported
+            | Self::ContainerRuntimeStale => AdmissionSubject::Container,
             Self::EvaluatorNotDeclared | Self::ScoringContractInvalid => {
                 AdmissionSubject::Evaluator
             }
@@ -230,6 +233,33 @@ impl AdmissionError {
              specification pins a healthy registration.",
         )
         .with_context(json!({ "containerId": container, "observedHealth": observed }))
+    }
+
+    /// The running container loaded a build the declaration did not name.
+    ///
+    /// Raised even when the declaration digest is unchanged: the digest covers
+    /// what was declared, not what is loaded, and treating an unchanged digest
+    /// as evidence of freshness is how a rebuilt harness ran under an old
+    /// managed container.
+    pub fn container_runtime_stale(
+        container: &ContainerId,
+        declared: &str,
+        observed: &str,
+    ) -> Self {
+        Self::new(
+            AdmissionErrorCode::ContainerRuntimeStale,
+            format!(
+                "container `{container}` is running revision `{observed}` while its declaration \
+                 names `{declared}`"
+            ),
+            "Replace the managed container so it loads the declared revision, then re-run \
+             discovery; the declaration digest alone does not prove the runtime was replaced.",
+        )
+        .with_context(json!({
+            "containerId": container,
+            "declaredSourceRevision": declared,
+            "loadedRuntimeRevision": observed,
+        }))
     }
 
     pub fn container_protocol_unsupported(

@@ -19,6 +19,13 @@ pub struct AppError {
     pub detail: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub failure: Option<crate::platform::failure::FailureView>,
+    /// The typed failure this error was classified from, kept so a loopback
+    /// boundary can re-raise it instead of flattening a machine code back to
+    /// prose. Never serialized: the renderer reads `code`, and `detail`
+    /// already carries the rendered payload.
+    #[serde(skip)]
+    #[specta(skip)]
+    pub structured: Option<StructuredFailure>,
 }
 
 pub const CODE_INTERNAL: &str = "internal";
@@ -40,6 +47,7 @@ impl AppError {
             message: message.clone(),
             detail: message,
             failure: None,
+            structured: None,
         }
     }
 
@@ -49,6 +57,7 @@ impl AppError {
             message: error.to_string(),
             detail: format!("{error:?}"),
             failure: None,
+            structured: None,
         }
     }
 
@@ -58,6 +67,7 @@ impl AppError {
             message: view.message.clone(),
             detail: view.diagnostic_reference.clone(),
             failure: Some(view),
+            structured: None,
         }
     }
 
@@ -102,6 +112,18 @@ impl AppError {
         Self::coded(CODE_CANCELLED, message)
     }
 
+    /// Re-raise across an `anyhow` boundary without losing the machine code.
+    ///
+    /// A loopback hop that rebuilds the error from `to_string()` turns
+    /// `approval_expired` into a sentence, and the agent on the far side can
+    /// then only guess at what happened.
+    pub fn into_anyhow(self) -> anyhow::Error {
+        match self.structured.clone() {
+            Some(failure) => anyhow::Error::new(failure),
+            None => anyhow::anyhow!(self.message.clone()),
+        }
+    }
+
     pub fn with_detail(mut self, detail: impl Into<String>) -> Self {
         self.detail = detail.into();
         self
@@ -142,6 +164,7 @@ impl From<anyhow::Error> for AppError {
                     message: failure.message.clone(),
                     detail: failure.to_json().to_string(),
                     failure: None,
+                    structured: Some(failure.clone()),
                 };
             }
         }

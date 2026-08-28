@@ -489,6 +489,23 @@ fn container_candidate(
         .or_else(|| metadata.pointer("/capabilities/revision"))
         .and_then(Value::as_str)
         .context("container declaration has no source revision")?;
+    // What the running container says it loaded, as distinct from what the
+    // declaration recorded. The declaration digest cannot answer this: the v9
+    // harness source moved while the declaration stayed byte-identical.
+    //
+    // Only `/info/...` counts: `metadata.gitRevision` and
+    // `metadata.capabilities.revision` are both copied from the launch
+    // declaration, so reading either back would compare the declaration to
+    // itself and report every container fresh.
+    let runtime_revision = metadata
+        .pointer("/info/source_revision")
+        .or_else(|| metadata.pointer("/info/runtime_revision"))
+        .or_else(|| metadata.pointer("/info/capabilities/runtime/source_revision"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(SourceRevision::new)
+        .transpose()?;
     let evaluator_id = metadata
         .pointer("/info/logical_service_ids/evaluator")
         .and_then(Value::as_str)
@@ -542,6 +559,7 @@ fn container_candidate(
         container_id: ContainerId::new(id)?,
         registration_id: ContainerRegistrationId::new(id)?,
         source_revision: SourceRevision::new(source_revision)?,
+        runtime_revision,
         health: status.to_owned(),
         family,
         declaration: EvalDeclaration {

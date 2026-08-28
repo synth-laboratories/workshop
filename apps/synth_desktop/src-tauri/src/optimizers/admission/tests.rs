@@ -74,6 +74,7 @@ fn candidate() -> ContainerCandidate {
         container_id: container_id(),
         registration_id: ContainerRegistrationId::new("registration-7").unwrap(),
         source_revision: SourceRevision::new("sha256:image-91af").unwrap(),
+        runtime_revision: Some(SourceRevision::new("sha256:image-91af").unwrap()),
         health: "ready".into(),
         family: Some("craftax".into()),
         declaration: declaration(),
@@ -989,4 +990,88 @@ fn approved_limits_remain_non_null_through_admission() {
         10
     );
     assert_eq!(approved.digest(), admissible.digest());
+}
+
+/// The shape the cancelled v9 rollout approved: a call ceiling larger than the
+/// approved lifetime can ever admit at the pacing floor. The sheet must not be
+/// able to advertise a number the run can never spend.
+#[test]
+fn a_call_ceiling_the_lifetime_cannot_reach_is_refused() {
+    let mut context = context();
+    // Ten seconds of lifetime at the six-second floor admits two sends.
+    context.credential_capability_scope = Some(CredentialCapabilityScope::new(
+        ["chat.completions".to_string()],
+        10,
+    ));
+    let mut over = request();
+    over.maximum_rollouts = Some(1);
+    over.seeds = vec![Seed(780_019)];
+    over.maximum_model_calls_per_rollout = Some(8);
+
+    let error = admit(&over, &context).unwrap_err();
+    assert_eq!(error.code, AdmissionErrorCode::RequestedLimitUnsupported);
+    assert_eq!(error.context["declaredTotalCalls"], json!(8));
+    assert_eq!(error.context["realizableTotalCalls"], json!(2));
+    assert_eq!(error.context["capabilityLifetimeSeconds"], json!(10));
+    // The remediation the operator needs is the lifetime, not a smaller number
+    // pulled out of the air.
+    assert_eq!(error.context["requiredLifetimeSeconds"], json!(42));
+}
+
+/// The disclosure states the same two numbers the pacer and the capability
+/// enforce, so the sheet cannot claim a reach the run does not have.
+#[test]
+fn the_disclosure_states_what_the_lifetime_actually_admits() {
+    let context = context();
+    let admissible = admit(&request(), &context).expect("admissible");
+    let disclosure = admissible.approval_disclosure();
+    assert_eq!(disclosure["pacing"]["capabilityLifetimeSeconds"], json!(900));
+    assert_eq!(
+        disclosure["pacing"]["minimumRequestIntervalSeconds"],
+        json!(crate::limits::CREDENTIAL_UPSTREAM_MIN_INTERVAL.as_secs())
+    );
+    assert_eq!(disclosure["pacing"]["declaredTotalCalls"], json!(50));
+    let realizable = disclosure["pacing"]["realizableTotalCalls"]
+        .as_u64()
+        .expect("a realizable count");
+    assert!(realizable >= 50, "the approved ceiling must be reachable");
+}
+
+/// The v9 shape: the harness source moved while the launch declaration stayed
+/// byte-identical, so the declaration digest could not tell anyone the managed
+/// container was still running the old build.
+#[test]
+fn a_runtime_running_an_older_build_is_refused_despite_an_unchanged_declaration() {
+    let mut context = context();
+    context.containers[0].runtime_revision =
+        Some(SourceRevision::new("sha256:image-stale").unwrap());
+
+    let error = admit(&request(), &context).unwrap_err();
+    assert_eq!(error.code, AdmissionErrorCode::ContainerRuntimeStale);
+    assert_eq!(
+        error.context["declaredSourceRevision"],
+        json!("sha256:image-91af")
+    );
+    assert_eq!(
+        error.context["loadedRuntimeRevision"],
+        json!("sha256:image-stale")
+    );
+}
+
+/// A runtime that reports nothing is an unanswered question, not a claim of
+/// freshness — and the disclosure says exactly that rather than guessing.
+#[test]
+fn a_silent_runtime_reports_unknown_freshness_rather_than_fresh() {
+    let mut silent = context();
+    silent.containers[0].runtime_revision = None;
+    let admissible = admit(&request(), &silent).expect("admissible");
+    let container = &admissible.approval_disclosure()["container"];
+    assert!(container["runtimeRevision"].is_null());
+    assert!(container["runtimeFresh"].is_null());
+
+    let fresh = admit(&request(), &context()).expect("admissible");
+    let container = &fresh.approval_disclosure()["container"];
+    assert_eq!(container["runtimeRevision"], json!("sha256:image-91af"));
+    assert_eq!(container["runtimeFresh"], json!(true));
+    assert_eq!(container["sourceRevision"], json!("sha256:image-91af"));
 }

@@ -45,6 +45,29 @@ pub const DEEPSWE_HARBOR_CAPABILITY_TTL_SECONDS: u32 = 5_400;
 pub const DEEPSWE_HARBOR_CAPABILITY_TTL: Duration =
     Duration::from_secs(DEEPSWE_HARBOR_CAPABILITY_TTL_SECONDS as u64);
 
+/// Lifetime of a Workshop-owned (host) approval sheet that requires a human.
+///
+/// Paid compute, credential access, and container lifecycle sheets are not
+/// bound to the agent turn that requested them: the waiter is a Workshop task,
+/// not the provider's JSON-RPC peer. Tying them to `turn/completed` gave the
+/// operator only the seconds between the model finishing its sentence and the
+/// turn closing, which is not enough time to read a digest-bound disclosure.
+/// The sheet now lives on its own clock, and `evaluation_start` reports
+/// `approval_expired` when that clock runs out.
+pub const HOST_APPROVAL_LIFETIME: Duration = Duration::from_secs(900);
+
+/// Contractual floor for [`HOST_APPROVAL_LIFETIME`]. An approval window shorter
+/// than this cannot be clicked reliably through an accessibility refresh.
+pub const HOST_APPROVAL_LIFETIME_FLOOR: Duration = Duration::from_secs(60);
+
+/// Environment variable carrying the declared source revision into a launched
+/// workspace container.
+///
+/// The container echoes it back on `/info` as its loaded runtime revision.
+/// That is what makes staleness detectable: a process from an earlier launch
+/// still carries the earlier declaration's value.
+pub const CONTAINER_SOURCE_REVISION_ENV: &str = "SYNTH_CONTAINER_SOURCE_REVISION";
+
 /// Account snapshot HTTP budget.
 pub const ACCOUNT_CLOUD_TIMEOUT: Duration = Duration::from_secs(12);
 
@@ -55,22 +78,65 @@ pub const ACCOUNT_CLOUD_TIMEOUT: Duration = Duration::from_secs(12);
 /// rather than the short default HTTP timeout.
 pub const CREDENTIAL_UPSTREAM_TIMEOUT: Duration = DEEPSWE_HARBOR_CAPABILITY_TTL;
 
-/// Minimum interval between provider request starts for one capability. Luna
-/// carries the growing Codex transcript on every tool turn, so token-per-minute
-/// pressure becomes the binding limit well before request-per-minute pressure.
-/// The OpenRouter SWE route admitted useful completions 351--367 seconds apart
-/// in the observed DeepSWE trace. A 370-second floor avoids burning capability
-/// reservations on attempts that the provider cannot yet admit.
-pub const CREDENTIAL_UPSTREAM_MIN_INTERVAL: Duration = Duration::from_secs(370);
+/// Floor between provider request starts for one capability.
+///
+/// This is where a capability's pacer *starts*, not where it stays. A fixed
+/// 370-second floor — the cadence one observed DeepSWE trace happened to
+/// achieve under token-per-minute pressure — is not a property of the route;
+/// it is a property of that transcript at that size. Charging every capability
+/// that cadence from its first call makes an approved 80-call ceiling
+/// unreachable inside any lifetime an operator would approve, because
+/// `1 + 5400/370` is fifteen.
+///
+/// So the floor is small and the provider sets the real cadence: a 429 raises
+/// this capability's interval to whatever `Retry-After` / `X-RateLimit-Reset`
+/// actually says, and a clean completion decays it back toward the floor. See
+/// [`CREDENTIAL_UPSTREAM_MAX_INTERVAL`].
+pub const CREDENTIAL_UPSTREAM_MIN_INTERVAL: Duration = Duration::from_secs(6);
+
+/// Ceiling for one capability's adaptively-raised request interval.
+///
+/// Bounded so a provider that reports an absurd reset cannot park a run for
+/// longer than its own lifetime, which would spend the whole window waiting.
+pub const CREDENTIAL_UPSTREAM_MAX_INTERVAL: Duration = Duration::from_secs(600);
+
+/// How much of the raised interval survives one clean completion.
+///
+/// Decay rather than reset: a single admitted request is evidence the pressure
+/// eased, not evidence it is gone. Three quarters walks 370 seconds back to the
+/// floor over roughly fifteen successes.
+pub const CREDENTIAL_UPSTREAM_INTERVAL_DECAY_NUMERATOR: u32 = 3;
+pub const CREDENTIAL_UPSTREAM_INTERVAL_DECAY_DENOMINATOR: u32 = 4;
+
+/// Provider calls a capability can actually send within `lifetime` when every
+/// request start is separated by `interval`.
+///
+/// The first call is free — it starts at t=0 — and each later one costs one
+/// full pacing interval. A declared call ceiling above this number is not a
+/// ceiling anyone can reach, so admission refuses the pair rather than letting
+/// a run discover the shortfall at call sixteen.
+pub const fn realizable_provider_calls(lifetime: Duration, interval: Duration) -> u32 {
+    let interval_secs = interval.as_secs();
+    if interval_secs == 0 {
+        return u32::MAX;
+    }
+    let sends = 1 + (lifetime.as_secs() / interval_secs);
+    if sends > u32::MAX as u64 {
+        u32::MAX
+    } else {
+        sends as u32
+    }
+}
 
 /// Number of additional upstream attempts the proxy makes for a 429 response.
 /// The logical capability call is reserved once and remains one call across
 /// these provider-level retries.
 pub const CREDENTIAL_UPSTREAM_MAX_RATE_LIMIT_RETRIES: u32 = 4;
 
-/// Deterministic floor for rate-limit retry backoff. The per-capability pacer
-/// independently enforces the request-start cadence.
-pub const CREDENTIAL_UPSTREAM_RATE_LIMIT_BACKOFF: Duration = Duration::from_secs(370);
+/// Deterministic floor for rate-limit retry backoff when the provider gives no
+/// usable reset hint. The per-capability pacer independently enforces the
+/// request-start cadence, and a provider-supplied hint always wins over this.
+pub const CREDENTIAL_UPSTREAM_RATE_LIMIT_BACKOFF: Duration = Duration::from_secs(30);
 
 /// A paid-compute approval is consent for the exact proposal currently shown,
 /// not an indefinitely reusable prompt left open in a restored transcript.
@@ -163,10 +229,60 @@ mod tests {
         assert_eq!(CREDENTIAL_UPSTREAM_TIMEOUT.as_secs(), 5_400);
     }
 
+    /// The container reads this exact name. A rename on one side only would
+    /// leave every container reporting an unanswered freshness question, which
+    /// is quiet rather than loud.
+    #[test]
+    fn the_source_revision_stamp_name_is_the_one_containers_read() {
+        assert_eq!(
+            CONTAINER_SOURCE_REVISION_ENV,
+            "SYNTH_CONTAINER_SOURCE_REVISION"
+        );
+    }
+
+    #[test]
+    fn host_approval_window_is_clickable() {
+        assert!(HOST_APPROVAL_LIFETIME >= HOST_APPROVAL_LIFETIME_FLOOR);
+        assert!(HOST_APPROVAL_LIFETIME_FLOOR >= Duration::from_secs(60));
+    }
+
+    #[test]
+    fn realizable_calls_counts_the_free_first_send() {
+        // The shape the prior rollout tripped over: 5400 seconds paced at 370
+        // admits fifteen sends, not the eighty its sheet declared.
+        assert_eq!(
+            realizable_provider_calls(Duration::from_secs(5_400), Duration::from_secs(370)),
+            15
+        );
+        assert_eq!(
+            realizable_provider_calls(Duration::ZERO, Duration::ZERO),
+            u32::MAX
+        );
+    }
+
     #[test]
     fn credential_proxy_rate_limit_guard_is_conservative_and_bounded() {
         assert!(CREDENTIAL_UPSTREAM_MIN_INTERVAL >= Duration::from_secs(6));
         assert!(CREDENTIAL_UPSTREAM_MAX_RATE_LIMIT_RETRIES > 0);
         assert!(CREDENTIAL_UPSTREAM_RATE_LIMIT_BACKOFF >= CREDENTIAL_UPSTREAM_MIN_INTERVAL);
+        assert!(CREDENTIAL_UPSTREAM_MAX_INTERVAL > CREDENTIAL_UPSTREAM_MIN_INTERVAL);
+        assert!(CREDENTIAL_UPSTREAM_MAX_INTERVAL <= DEEPSWE_HARBOR_CAPABILITY_TTL);
+        assert!(
+            CREDENTIAL_UPSTREAM_INTERVAL_DECAY_NUMERATOR
+                < CREDENTIAL_UPSTREAM_INTERVAL_DECAY_DENOMINATOR
+        );
+    }
+
+    /// The approved ceiling has to be a number the run can reach. The prior
+    /// rollout approved eighty calls against a window that admitted fifteen.
+    #[test]
+    fn the_deepswe_ceiling_is_reachable_inside_its_own_lifetime() {
+        assert!(
+            realizable_provider_calls(
+                DEEPSWE_HARBOR_CAPABILITY_TTL,
+                CREDENTIAL_UPSTREAM_MIN_INTERVAL
+            ) >= 80,
+            "the approved 80-call ceiling must be realizable at the pacing floor"
+        );
     }
 }

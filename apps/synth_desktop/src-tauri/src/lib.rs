@@ -5286,9 +5286,60 @@ async fn codex_approval_resolve(
                 .into(),
             detail: format!("{error:?}"),
             failure: None,
+            structured: None,
         }),
         Err(error) => Err(AppError::from(error)),
     }
+}
+
+/// Every approval sheet currently open, with the clock each one is on.
+///
+/// The operator surface, and any accessibility client driving it, read this
+/// instead of inferring liveness from chat text: a sentence written when the
+/// gate opened is not evidence that the gate is still open.
+#[tauri::command]
+#[specta::specta]
+async fn approvals_pending(
+    approvals: State<'_, Arc<crate::session::approval::ApprovalBroker>>,
+) -> Result<Vec<crate::session::approval::PendingApprovalView>, AppError> {
+    Ok(approvals.pending_snapshot().await)
+}
+
+/// Approve the open sheet bound to exactly this specification digest.
+///
+/// Bound to the digest rather than to a per-request id, and idempotent: a
+/// second send for a digest that already settled reports the standing outcome
+/// instead of granting twice. `alreadySettled` distinguishes the two.
+#[tauri::command]
+#[specta::specta]
+async fn approvals_approve_digest(
+    app: tauri::AppHandle,
+    approvals: State<'_, Arc<crate::session::approval::ApprovalBroker>>,
+    request: ApproveDigestRequest,
+) -> Result<ApproveDigestOutcome, AppError> {
+    let (approval_id, already_settled) = approvals
+        .approve_digest(&app, &request.execution_spec_digest)
+        .await
+        .map_err(AppError::from)?;
+    Ok(ApproveDigestOutcome {
+        approval_id,
+        already_settled,
+        execution_spec_digest: request.execution_spec_digest,
+    })
+}
+
+#[derive(Debug, Clone, serde::Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct ApproveDigestRequest {
+    pub execution_spec_digest: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct ApproveDigestOutcome {
+    pub approval_id: String,
+    pub already_settled: bool,
+    pub execution_spec_digest: String,
 }
 
 #[tauri::command]

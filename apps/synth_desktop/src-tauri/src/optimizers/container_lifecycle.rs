@@ -360,6 +360,21 @@ fn start_command(spec: &ContainerSpec) -> Result<LaunchedCommand> {
         .ok_or_else(|| anyhow!("container `{}` command is empty", spec.id))?;
     let mut command = Command::new(program);
     command.envs(&spec.environment);
+    // Stamp the launch with the revision this declaration named, so the
+    // running process can answer what it loaded. Freshness cannot be read off
+    // the declaration alone: the v9 harness source moved while the launch
+    // declaration stayed byte-identical, so its digest went on matching and
+    // nothing could say the managed container had not been replaced. A
+    // container left over from an earlier launch echoes that earlier
+    // revision, and admission refuses it.
+    if let Some(revision) = spec
+        .source_revision
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        command.env(crate::limits::CONTAINER_SOURCE_REVISION_ENV, revision);
+    }
     // Provider credentials never enter the launched process. The declaration
     // names which Workshop proxy routes may be minted later for an approved
     // run; the proxy remains the sole holder of provider secret material.

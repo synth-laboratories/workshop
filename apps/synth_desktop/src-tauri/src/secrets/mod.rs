@@ -36,6 +36,7 @@ use importer::{AfterImportAction, ImportPreview, PendingImport};
 use proxy::{ProviderProxy, ProxyState, WorkloadEnv};
 use vault::SecretSummary;
 
+pub use capability::CapabilityLedger;
 pub use capability::ProviderUsePolicy as SecretsUsePolicy;
 pub(crate) use capability::{ProviderUsageCapability, ProviderUsageReceipt};
 #[allow(unused_imports)]
@@ -1115,6 +1116,16 @@ impl SecretsService {
             summary: None,
             provider_routes: None,
         })
+    }
+
+    /// The trusted provider accounting for one run.
+    ///
+    /// Read while the run is live and again at terminal. It is host-owned
+    /// evidence, so it answers even when the evaluator has reported nothing —
+    /// which is the whole reason a run must never render "cost unavailable"
+    /// over a ledger that already holds a billed figure.
+    pub fn run_ledger(&self, run_id: &str) -> capability::CapabilityLedger {
+        capability::CapabilityLedger::from_capabilities(&self.capabilities.list_for_run(run_id))
     }
 
     pub fn active_capabilities(&self) -> Result<Vec<CapabilitySummary>> {

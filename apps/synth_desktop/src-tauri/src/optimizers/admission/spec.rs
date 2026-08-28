@@ -103,7 +103,32 @@ pub struct ContainerPin {
     pub container_id: ContainerId,
     pub registration_id: ContainerRegistrationId,
     pub source_revision: SourceRevision,
+    /// The revision the *running* container reports about itself, when it
+    /// reports one.
+    ///
+    /// Separate from `source_revision`, which is what the launch declaration
+    /// recorded. A declaration digest that did not change is not evidence that
+    /// the managed container was replaced: the v9 harness source moved while
+    /// the declaration stayed byte-identical, so freshness could only be
+    /// established by asking the runtime what it had actually loaded. Pinning
+    /// it here puts that answer inside the approved digest, so a stale runtime
+    /// is caught by the same drift check that catches a changed declaration.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime_revision: Option<SourceRevision>,
     pub declaration_digest: DeclarationDigest,
+}
+
+impl ContainerPin {
+    /// Whether the running container is the build the declaration named.
+    ///
+    /// `None` means the runtime reported no revision at all: that is not
+    /// freshness, and it is not staleness either — it is an unanswered
+    /// question, and the disclosure says so rather than guessing.
+    pub fn runtime_is_fresh(&self) -> Option<bool> {
+        self.runtime_revision
+            .as_ref()
+            .map(|runtime| runtime == &self.source_revision)
+    }
 }
 
 /// The normalized live-eval protocol, as a closed set rather than a string.
@@ -556,6 +581,7 @@ mod tests {
                 container_id: ContainerId::new("nanohorizon-craftax").unwrap(),
                 registration_id: ContainerRegistrationId::new("reg-1").unwrap(),
                 source_revision: SourceRevision::new("sha256-image-abc").unwrap(),
+                runtime_revision: None,
                 declaration_digest: DeclarationDigest::new("sha256:decl").unwrap(),
             },
             protocol: LiveEvalProtocol::SynthContainerLiveEvalV1,

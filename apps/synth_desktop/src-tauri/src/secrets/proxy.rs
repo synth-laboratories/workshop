@@ -339,6 +339,51 @@ fn retry_after_hint_at(value: &str, now: DateTime<Utc>) -> Option<std::time::Dur
         .and_then(|date| (date.with_timezone(&Utc) - now).to_std().ok())
 }
 
+/// The provider's own statement of when this route opens again.
+///
+/// OpenRouter answers a 429 with `X-RateLimit-Reset` — epoch milliseconds, or
+/// seconds on some routes — and standard `Retry-After` elsewhere. Reading the
+/// reset is what lets a capability pace itself to the route instead of to a
+/// constant guessed from one transcript. Header *values* only; nothing here
+/// carries a key, a prompt, or a response.
+fn provider_reset_hint_at(
+    headers: &reqwest::header::HeaderMap,
+    now: DateTime<Utc>,
+) -> Option<std::time::Duration> {
+    if let Some(hint) = headers
+        .get(reqwest::header::RETRY_AFTER)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| retry_after_hint_at(value, now))
+    {
+        return Some(hint);
+    }
+    for name in ["x-ratelimit-reset", "x-ratelimit-reset-requests"] {
+        let Some(raw) = headers
+            .get(name)
+            .and_then(|value| value.to_str().ok())
+            .map(str::trim)
+        else {
+            continue;
+        };
+        let Ok(number) = raw.parse::<i64>() else {
+            continue;
+        };
+        // A stamp large enough to be epoch time is a deadline; anything else
+        // is a duration the route is asking us to wait.
+        let millis = if number > 1_000_000_000_000 {
+            number - now.timestamp_millis()
+        } else if number > 1_000_000_000 {
+            number * 1_000 - now.timestamp_millis()
+        } else {
+            number.saturating_mul(1_000)
+        };
+        if millis > 0 {
+            return Some(std::time::Duration::from_millis(millis as u64));
+        }
+    }
+    None
+}
+
 fn rate_limit_retry_delay(
     headers: &reqwest::header::HeaderMap,
     retry_number: u32,
@@ -347,11 +392,7 @@ fn rate_limit_retry_delay(
     for _ in 0..retry_number {
         backoff = backoff.saturating_add(backoff);
     }
-    let retry_after = headers
-        .get(reqwest::header::RETRY_AFTER)
-        .and_then(|value| value.to_str().ok())
-        .and_then(|value| retry_after_hint_at(value, Utc::now()));
-    retry_after.map_or(backoff, |hint| hint.max(backoff))
+    provider_reset_hint_at(headers, Utc::now()).map_or(backoff, |hint| hint.max(backoff))
 }
 
 enum UpstreamSendError {
@@ -389,9 +430,18 @@ async fn send_with_rate_limit_retry(
             .try_clone()
             .ok_or(UpstreamSendError::RequestNotReusable)?;
         let response = request.send().await.map_err(UpstreamSendError::Request)?;
-        if response.status() != StatusCode::TOO_MANY_REQUESTS
-            || retry_number == crate::limits::CREDENTIAL_UPSTREAM_MAX_RATE_LIMIT_RETRIES
-        {
+        if response.status() != StatusCode::TOO_MANY_REQUESTS {
+            // An admitted request is the only evidence that the pressure this
+            // capability was paced for has actually eased.
+            state.capabilities.observe_admitted(handle);
+            return Ok(response);
+        }
+        // Teach the pacer what the route just said, whether or not another
+        // attempt remains: the next logical call is paced by this too.
+        state
+            .capabilities
+            .observe_rate_limit(handle, provider_reset_hint_at(response.headers(), Utc::now()));
+        if retry_number == crate::limits::CREDENTIAL_UPSTREAM_MAX_RATE_LIMIT_RETRIES {
             return Ok(response);
         }
         let delay = rate_limit_retry_delay(response.headers(), retry_number);
@@ -1306,14 +1356,66 @@ mod tests {
     fn retry_after_seconds_and_exponential_floor_use_the_larger_delay() {
         let mut headers = reqwest::header::HeaderMap::new();
         headers.insert(reqwest::header::RETRY_AFTER, "470".parse().unwrap());
+        // The provider's own number wins while the exponential floor is below
+        // it, and the floor takes over once it climbs past.
         assert_eq!(
             rate_limit_retry_delay(&headers, 0),
             std::time::Duration::from_secs(470)
         );
+        let doubled = crate::limits::CREDENTIAL_UPSTREAM_RATE_LIMIT_BACKOFF.saturating_mul(2);
         assert_eq!(
             rate_limit_retry_delay(&headers, 1),
-            std::time::Duration::from_secs(740)
+            doubled.max(std::time::Duration::from_secs(470))
         );
+        assert_eq!(
+            rate_limit_retry_delay(&headers, 8),
+            crate::limits::CREDENTIAL_UPSTREAM_RATE_LIMIT_BACKOFF.saturating_mul(256)
+        );
+    }
+
+    /// OpenRouter reports the reset on its rate-limit headers rather than as a
+    /// `Retry-After`, in epoch milliseconds. Reading it is what lets a
+    /// capability pace itself to the route instead of to a guessed constant.
+    #[test]
+    fn openrouter_rate_limit_reset_is_read_as_a_wait() {
+        let now = DateTime::parse_from_rfc3339("2026-08-28T12:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let mut headers = reqwest::header::HeaderMap::new();
+        headers.insert(
+            "x-ratelimit-reset",
+            (now.timestamp_millis() + 42_000).to_string().parse().unwrap(),
+        );
+        assert_eq!(
+            provider_reset_hint_at(&headers, now),
+            Some(std::time::Duration::from_secs(42))
+        );
+
+        // Epoch seconds and a plain delta are both accepted.
+        let mut headers = reqwest::header::HeaderMap::new();
+        headers.insert(
+            "x-ratelimit-reset",
+            (now.timestamp() + 17).to_string().parse().unwrap(),
+        );
+        assert_eq!(
+            provider_reset_hint_at(&headers, now),
+            Some(std::time::Duration::from_secs(17))
+        );
+
+        let mut headers = reqwest::header::HeaderMap::new();
+        headers.insert("x-ratelimit-reset", "9".parse().unwrap());
+        assert_eq!(
+            provider_reset_hint_at(&headers, now),
+            Some(std::time::Duration::from_secs(9))
+        );
+
+        // A reset already in the past is not a wait.
+        let mut headers = reqwest::header::HeaderMap::new();
+        headers.insert(
+            "x-ratelimit-reset",
+            (now.timestamp_millis() - 5_000).to_string().parse().unwrap(),
+        );
+        assert_eq!(provider_reset_hint_at(&headers, now), None);
     }
 
     #[test]
