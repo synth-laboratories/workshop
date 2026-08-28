@@ -86,6 +86,9 @@ import type {
 	ResearchLogEntry,
 	OptimizerRunOutputs,
 	OptimizerRunViewV2,
+	OptimizerFrameContent,
+	OptimizerFrameDelta,
+	OptimizerFrameRef,
 	SavedLoraCheckpoint,
 	SavedLoraCheckpointPage,
 	SavedLoraDownload,
@@ -170,6 +173,9 @@ export type {
 	ResearchLogEntry,
 	OptimizerRunOutputs,
 	OptimizerRunViewV2,
+	OptimizerFrameContent,
+	OptimizerFrameDelta,
+	OptimizerFrameRef,
 	SavedLoraCheckpoint,
 	SavedLoraCheckpointPage,
 	SavedLoraDownload,
@@ -858,33 +864,6 @@ export type OptimizerInferDelta = {
 	family: string;
 	delta: string;
 	done: boolean;
-};
-
-export type OptimizerFrameRef = {
-	schemaVersion: "optimizer_frame_ref.v1" | string;
-	optimizerRunId: string;
-	seed: number;
-	frameSequence: number;
-	eventId: string;
-	contentDigest: string;
-	contentType: "image/png" | string;
-	sizeBytes: number;
-	occurredAt: string;
-};
-
-export type OptimizerFrameDelta = {
-	schemaVersion: "optimizer_frame_delta.v1" | string;
-	optimizerRunId: string;
-	afterFrameSequence: number;
-	frameCursor: number;
-	observedFrames: number;
-	coalescedFrames: number;
-	frames: OptimizerFrameRef[];
-};
-
-export type OptimizerFrameContent = {
-	frame: OptimizerFrameRef;
-	base64: string;
 };
 
 export type OptimizersBridge = {

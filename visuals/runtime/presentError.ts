@@ -13,6 +13,9 @@ const FALLBACK = "Visual runtime failed";
 const SCHEMA = "synth.failure-view.v1";
 
 export function presentRuntimeError(reason: unknown, fallback = FALLBACK): PresentedRuntimeError {
+  if (reason instanceof Error) {
+    return { message: reason.message.trim() || fallback };
+  }
   if (reason && typeof reason === "object") {
     const value = reason as Record<string, unknown>;
     const envelope = value.failure && typeof value.failure === "object"
@@ -34,7 +37,7 @@ export function presentRuntimeError(reason: unknown, fallback = FALLBACK): Prese
     return { code: "failure_contract_invalid", message: fallback };
   }
   if (typeof reason === "string" && reason.trim() && reason !== "[object Object]") {
-    return { code: "failure_contract_invalid", message: reason.trim() };
+    return { message: reason.trim() };
   }
   return { code: "failure_contract_invalid", message: fallback };
 }
