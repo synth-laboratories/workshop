@@ -252,3 +252,59 @@ test("MCP tools schema lists agent entrypoints", () => {
   assert.ok(!names.includes("list_components"));
   assert.ok(!names.includes("reports_promote"));
 });
+
+test("an edit on disk reaches the pane without a rebuild", () => {
+  const bridge = readFileSync(
+    join(root, "..", "apps", "synth_desktop", "src", "renderer", "src", "runtime", "desktopBridge.ts"),
+    "utf8",
+  );
+  // The host says the root moved; the renderer answers by re-asking, never by
+  // reading the event payload.
+  assert.match(bridge, /onTemplatesChanged\?\.\(\(\) => \{ void refreshRuntimeTemplates\(\); \}\)/);
+  assert.match(bridge, /listen\(EVENT_CHANNELS\.VISUAL_TEMPLATES/);
+  // Whatever the watcher missed while the window was in the background --
+  // quietly, so an alt-tab does not remount every open pane.
+  assert.match(bridge, /addEventListener\("focus", \(\) => \{ void rescanRuntimeTemplates\(\); \}\)/);
+  const source = readFileSync(join(root, "registry/index.ts"), "utf8");
+  assert.match(source, /export function rescanRuntimeTemplates\(\)/);
+  assert.match(source, /if \(options\.quiet && sameSnapshot\(snapshot, runtimeSnapshot\)\)/);
+
+  const watcher = readFileSync(
+    join(root, "..", "apps", "synth_desktop", "src-tauri", "src", "visuals", "user_templates.rs"),
+    "utf8",
+  );
+  // Fingerprint the root rather than trusting mtime on the directory alone,
+  // and stat without following links so a swap registers as a change.
+  assert.match(watcher, /fn root_fingerprint\(\) -> String/);
+  assert.match(watcher, /symlink_metadata\(&path\)/);
+  assert.match(watcher, /EventChannel::VISUAL_TEMPLATES/);
+});
+
+test("a user template that disappears explains itself in the pane", () => {
+  const source = readFileSync(join(root, "registry/index.ts"), "utf8");
+  assert.match(source, /export function wasUserTemplate\(id: string\): boolean/);
+  const host = readFileSync(
+    join(root, "..", "apps", "synth_desktop", "src", "renderer", "src", "components", "VisualHost.tsx"),
+    "utf8",
+  );
+  // Not `setFailed`, which blanks: the same in-pane surface every other
+  // user-template failure uses.
+  assert.match(host, /if \(wasUserTemplate\(templateId\)\) \{[\s\S]*?sourcedInvalidShell\(/);
+});
+
+test("authoring writes are verified by the registry, not by a second copy of its rules", () => {
+  const writer = readFileSync(
+    join(root, "..", "apps", "synth_desktop", "src-tauri", "src", "visuals", "user_templates.rs"),
+    "utf8",
+  );
+  // Write, then ask the reader whether what was written is a template.
+  assert.match(writer, /fn write_verified\(/);
+  assert.match(writer, /super::templates::resolve_template\(id\)/);
+  assert.match(writer, /restore\.restore\(\);/);
+  // The root is never re-derived; that is item 23's bug and conform counts it.
+  assert.match(writer, /super::templates::user_templates_root\(\)/);
+  assert.doesNotMatch(writer.replace(/#\[cfg\(test\)\][\s\S]*$/, ""), /\.join\("visuals"\)/);
+  // And the import allowlist is not reimplemented here.
+  assert.doesNotMatch(writer, /SOURCED_ALLOWED_IMPORTS|"react\/jsx-runtime"/);
+  assert.match(writer, /sourcedValidate\.ts/);
+});

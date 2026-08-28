@@ -761,6 +761,51 @@ impl VisualRegistry {
         super::user_templates::shell_source(template_id)
     }
 
+    /// Promote authored TSX into a durable, reusable template under the
+    /// instance state root.
+    ///
+    /// The registry is a pass-through here on purpose: what a user template
+    /// *is* belongs to `templates.rs`, and writing one is `user_templates.rs`
+    /// asking `templates.rs` to confirm the bytes it just wrote. A copy of the
+    /// manifest rules on this side is the drift the plan exists to remove.
+    pub fn save_template(
+        &self,
+        template_id: &str,
+        manifest_json: &str,
+        source: &str,
+    ) -> Result<TemplateMeta> {
+        super::user_templates::save(
+            template_id,
+            manifest_json,
+            source,
+            super::user_templates::PersistConsent::HumanInPane,
+        )
+    }
+
+    /// Scaffold a new user template by forking an existing one under a new id.
+    pub fn create_template(
+        &self,
+        template_id: &str,
+        from_template_id: &str,
+        title: Option<&str>,
+    ) -> Result<TemplateMeta> {
+        super::user_templates::create_from(
+            template_id,
+            from_template_id,
+            title,
+            super::user_templates::PersistConsent::HumanInPane,
+        )
+    }
+
+    /// Structural verdict on one user template directory. The import allowlist
+    /// is not checked here; `sourcedValidate.ts` owns it and the report says so.
+    pub fn validate_template(
+        &self,
+        template_id: &str,
+    ) -> super::user_templates::UserTemplateValidation {
+        super::user_templates::validate(template_id)
+    }
+
     pub async fn mermaid_source(&self, id: String) -> Result<VisualAsset> {
         self.visual_source(id).await
     }

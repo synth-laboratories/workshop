@@ -8,7 +8,7 @@ import type { CodexEvent, ComposerImageAttachment, DesktopInstanceDiagnostics, H
 import type { CoreDiagnostics } from "@synth/runtime-protocol";
 import type { ContainerDeployment, TraceV5Record, UsageLedgerEntry, UsageWindow } from "@synth/runtime-protocol";
 import { publicError } from "../runtime/publicError";
-import { setRuntimeTemplateLoader } from "@synth/visuals";
+import { refreshRuntimeTemplates, rescanRuntimeTemplates, setRuntimeTemplateLoader } from "@synth/visuals";
 import { BROWSER_MODEL_CATALOG } from "./modelCatalog";
 
 // The packaged WebKit view is always served from the `tauri:` protocol.  The
@@ -782,6 +782,20 @@ window.synthWorkspaceScope ??= isTauri
 			listTemplates: (genre) => fromGenerated(spectaCommands.visualsTemplatesList(genre ?? null)),
 			getTemplate: (templateId) => fromGenerated(spectaCommands.visualsTemplatesGet(templateId)),
 			templateShellSource: (templateId) => fromGenerated(spectaCommands.visualsTemplateShellSource(templateId)),
+			saveTemplate: (templateId, manifest, source) =>
+				fromGenerated(spectaCommands.visualsTemplateSave(templateId, manifest, source)),
+			createTemplate: (templateId, fromTemplateId, title) =>
+				fromGenerated(spectaCommands.visualsTemplateCreate(templateId, fromTemplateId, title ?? null)),
+			validateTemplate: (templateId) => fromGenerated(spectaCommands.visualsTemplateValidate(templateId)),
+			onTemplatesChanged(listener) {
+				let disposed = false;
+				let unlisten: (() => void) | undefined;
+				void listen(EVENT_CHANNELS.VISUAL_TEMPLATES, () => listener()).then((next) => {
+					if (disposed) next();
+					else unlisten = next;
+				});
+				return () => { disposed = true; unlisten?.(); };
+			},
 			list: (query) => fromGenerated(spectaCommands.visualsList(wire(query ?? null))),
 			get: (visualId) => fromGenerated(spectaCommands.visualsGet(visualId)),
 			reportObservation: (observation) => fromGenerated(spectaCommands.visualsObservationReport(wire(observation))),
@@ -1004,6 +1018,22 @@ window.synthWorkspaceScope ??= isTauri
 	// rows and refuses any that would shadow a bundled id. Read through `bridges`
 	// at call time so the loader survives a host installed after this line.
 	setRuntimeTemplateLoader(async () => (await bridges.visuals?.listTemplates?.()) ?? []);
+	// Hot reload. A user template is an ordinary file, so it changes without
+	// the app doing anything: an author saves `shell.tsx` in their editor, or
+	// a tool writes one. The host watches the root and says when it moved;
+	// this re-asks for the catalog, which bumps the registry generation, which
+	// makes `VisualHost` re-read and recompile the source it is showing.
+	//
+	// The event is a nudge, never data: nothing here reads its payload. Two
+	// nudges for one save cost one extra list, and a missed one is picked up
+	// by the focus rescan below.
+	bridges.visuals?.onTemplatesChanged?.(() => { void refreshRuntimeTemplates(); });
+	// The window was in the background while someone edited a file: whatever
+	// the watcher missed, refocusing catches. Cheap, and the only recovery a
+	// user would think to try. Quiet, because a focus is a guess: it wakes the
+	// pane only when the catalog actually moved, or every alt-tab would remount
+	// every open visual and throw away its state.
+	window.addEventListener("focus", () => { void rescanRuntimeTemplates(); });
 }
 
 
