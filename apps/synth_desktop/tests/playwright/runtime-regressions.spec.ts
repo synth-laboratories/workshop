@@ -1236,7 +1236,11 @@ test("native Codex deltas form one readable message with working and stop state"
 	await expect(page.getByTestId("workbench-side-panel")).toBeHidden();
 	await page.getByTestId("toggle-inference-rail").click();
 	await expect(page.getByTestId("workbench-side-panel")).toBeVisible();
-	const inferenceGeometry = await page.getByTestId("inference-panel").evaluate((panel) => {
+	// Composer clearance is deliberately published by a coalesced animation
+	// frame after the workbench grid mutates. Visibility can become true before
+	// that frame, so assert the settled geometry rather than sampling the one
+	// transient frame in which the reopened rail and old dock offsets coexist.
+	await expect.poll(() => page.getByTestId("inference-panel").evaluate((panel) => {
 		const rail = panel.parentElement!.getBoundingClientRect();
 		const panelRect = panel.getBoundingClientRect();
 		const composer = document.querySelector<HTMLElement>("[data-testid=composer]")!.getBoundingClientRect();
@@ -1246,8 +1250,7 @@ test("native Codex deltas form one readable message with working and stop state"
 			composerClearsRail: composer.right <= rail.left + 1,
 			overflow: document.documentElement.scrollWidth > window.innerWidth + 1
 		};
-	});
-	expect(inferenceGeometry).toEqual({ contained: true, hasInset: true, composerClearsRail: true, overflow: false });
+	})).toEqual({ contained: true, hasInset: true, composerClearsRail: true, overflow: false });
 });
 
 test("closed-model reasoning renders only a provider summary disclosure", async ({ page }) => {
