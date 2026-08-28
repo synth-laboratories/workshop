@@ -717,6 +717,7 @@ async fn project_worker_failure_visual(
                     workbench_id,
                     progress.as_ref(),
                     run.started_at.as_deref().unwrap_or(&run.created_at),
+                    Some(&run.usage),
                 )),
                 status: Some(VisualStatus::Failed),
                 renderer_kind: None,
@@ -967,6 +968,7 @@ async fn mint_experiment_visual(
                 "",
                 progress.as_ref(),
                 &run.created_at,
+                Some(&run.usage),
             ),
             metadata: json!({
                 "optimizerRunId": run.id,
@@ -992,6 +994,7 @@ fn experiment_bindings(
     workbench_id: &str,
     progress_projection: Option<&Value>,
     started_at: &str,
+    authoritative_usage: Option<&super::models::OptimizerUsageSummary>,
 ) -> Value {
     let train_mean = mean_for_pool(records, "train");
     let heldout_mean = mean_for_pool(records, "heldout");
@@ -1039,7 +1042,10 @@ fn experiment_bindings(
         .and_then(Value::as_u64)
         .unwrap_or(0);
     let elapsed = elapsed_label(started_at);
-    let usage = usage_from_records(records, spec.cost_ceiling_usd);
+    let measured_usage = usage_from_records(records, spec.cost_ceiling_usd);
+    let usage = authoritative_usage
+        .map(|current| usage_with_authoritative_provider_receipt(measured_usage.clone(), current))
+        .unwrap_or(measured_usage);
     let total_tokens = usage.prompt_tokens + usage.completion_tokens;
     let phase = if matches!(
         status,
@@ -1069,7 +1075,7 @@ fn experiment_bindings(
     };
     let cost_label = usage
         .cost_usd
-        .map(|cost| format!("${cost:.4} / ${:.2}", spec.cost_ceiling_usd))
+        .map(|cost| format!("${cost:.6} / ${:.2}", spec.cost_ceiling_usd))
         .unwrap_or_else(|| {
             if status == "running" {
                 format!("awaiting telemetry / ${:.2}", spec.cost_ceiling_usd)
@@ -3221,6 +3227,7 @@ async fn persist_progress(
             Ok(())
         })
         .await?;
+    let run_after_patch = service.get(run_id.to_string()).await?;
 
     let visual_status = match status {
         "failed" | "failed_evidence" => VisualStatus::Failed,
@@ -3244,6 +3251,7 @@ async fn persist_progress(
                     workbench_id,
                     progress_projection.as_ref(),
                     &started_at,
+                    Some(&run_after_patch.usage),
                 )),
                 status: Some(visual_status.clone()),
                 renderer_kind: None,
@@ -3346,6 +3354,7 @@ async fn publish_terminal_visual_projection(
                     workbench_id,
                     Some(&progress_projection),
                     started_at,
+                    Some(&run.usage),
                 )),
                 status: Some(visual_status.clone()),
                 renderer_kind: None,
@@ -5227,6 +5236,59 @@ mod tests {
             &unknown_cost,
         );
         assert_eq!(merged.cost_usd, None, "an unpriced provider receipt is not a producer subtotal");
+    }
+
+    #[test]
+    fn experiment_visual_uses_authoritative_provider_receipt_cost() {
+        let spec = EvalSpec::classify_fixture();
+        let records = vec![json!({
+            "seed": spec.train[0],
+            "status": "completed",
+            "reward": 1.0,
+            "usage": {
+                "calls": 10,
+                "prompt_tokens": 1000,
+                "completion_tokens": 100
+            }
+        })];
+        let mut authoritative = crate::optimizers::models::OptimizerUsageSummary {
+            calls: 10,
+            prompt_tokens: 1100,
+            completion_tokens: 120,
+            cost_usd: Some(0.012345),
+            ..Default::default()
+        };
+        authoritative.extra.insert(
+            "providerUsageReceipt".into(),
+            json!({
+                "authority": "workshop.secrets_proxy",
+                "calls": 10,
+                "promptTokens": 1100,
+                "completionTokens": 120,
+                "costUsd": 0.012345
+            }),
+        );
+
+        let bindings = experiment_bindings(
+            &spec,
+            "opt_eval_provider_visual",
+            "completed",
+            1,
+            1,
+            &records,
+            Some(1.0),
+            "vis_workbench",
+            None,
+            "2026-08-28T20:00:00Z",
+            Some(&authoritative),
+        );
+        let data = &bindings["inputs"][0]["data"];
+        assert_eq!(data["progress"]["cost"], json!("$0.012345 / $0.50"));
+        assert!(data["limitations"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|item| !item.as_str().unwrap_or_default().contains("cost telemetry")));
     }
 
     #[tokio::test]
@@ -7124,6 +7186,7 @@ max_total_rollouts = 4
                 "rolloutStateCounts": { "queued": 5 }
             })),
             "2026-08-27T12:00:00Z",
+            None,
         );
         let data = &bindings["inputs"][0]["data"];
         let traces = &data["traces"];
