@@ -2452,11 +2452,26 @@ pub async fn dispatch(method: &str, path: &str, body: Value, core: &CoreRuntime)
             let overlay_digest = registry
                 .overlay_digest(id.to_string(), visual.current_revision)
                 .await?;
+            // What the host itself saw of this visual's declared live streams,
+            // merged into the context the agent already reads every iteration
+            // rather than parked behind a tool it would have to think to call.
+            // Recorded at the poll seam, so it is neither renderer-reported nor
+            // author-forgeable: a visual that was never rendered in Desktop
+            // reports `observed: false`, which is the honest answer rather than
+            // an absent field the caller can read as consent.
+            let declared_streams =
+                crate::visuals::stream_receipt::declared_streams(&visual.bindings);
+            let stream_receipt = crate::visuals::stream_receipt::receipt(
+                id,
+                visual.current_revision,
+                &declared_streams,
+            );
             Ok(json!({
                 "visual": visual,
                 "template": template,
                 "annotations": annotations,
                 "overlayDigest": overlay_digest,
+                "streamReceipt": stream_receipt,
                 "authoring": {
                     "rendererContract": "trusted_template_configuration",
                     "arbitraryTsxExecuted": false,
@@ -2464,7 +2479,7 @@ pub async fn dispatch(method: &str, path: &str, body: Value, core: &CoreRuntime)
                     "reviewCount": reviews.len(),
                     "requiredChecks": required_checks,
                     "automatedFindings": automated_findings,
-                    "instruction": "Render and show in Desktop, capture and inspect screenshots at wide and compact viewports, revise until automated findings and visible collisions are resolved, then record two screenshot-backed passing reviews before mark_ready."
+                    "instruction": "Render and show in Desktop, capture and inspect screenshots at wide and compact viewports, revise until automated findings and visible collisions are resolved, then record two screenshot-backed passing reviews before mark_ready. For a visual with declared live streams, read streamReceipt: it is the host's own record of the transport, and a receipt resting in declared, or reporting nonControlEnvelopeCount 0, gaps or conflicts, describes a pane that looks plausible and carries no evidence."
                 }
             }))
         }
