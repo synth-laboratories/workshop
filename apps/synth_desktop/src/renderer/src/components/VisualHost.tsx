@@ -1146,6 +1146,28 @@ function TemplateVisualHost({ artifact }: { artifact: ArtifactRef }) {
 			traceId={typeof traceBindings[0]?.source === "string" ? traceBindings[0].source : undefined}
 		/>;
 	}
+	if (optimizerRunId && !optimizerPayload) {
+		if (optimizerLoadError) {
+			return <VisualInvalidState
+				title="Run evidence unavailable"
+				detail={optimizerLoadError}
+				remediation="Retry after Workshop reconnects to the durable optimizer journal."
+			/>;
+		}
+		return (
+			<div className="visual-optimizer-hydrating" role="status" aria-live="polite" data-testid="visual-optimizer-hydrating">
+				<div className="visual-optimizer-hydrating-copy">
+					<strong>Restoring durable run evidence…</strong>
+					<span>Metrics and rollouts will appear together after the journal is hydrated.</span>
+				</div>
+				<div className="visual-optimizer-skeleton" aria-hidden="true">
+					<span />
+					<span />
+					<span />
+				</div>
+			</div>
+		);
+	}
 	if (!Shell) return <p className="visual-loading">Loading visual shell…</p>;
 	if (
 		consumeInjectedRendererCrash(
@@ -1450,9 +1472,53 @@ function restoreFocusAfterVisualPaneClose() {
 	next.focus();
 }
 
+function productOwnedPrimaryOptimizerRunId(artifact: ArtifactRef): string | null {
+	const runId = optimizerRunIdFromBindings(artifact.bindings);
+	if (!runId || artifact.metadata?.optimizerRunId !== runId) return null;
+	const role = typeof artifact.metadata?.optimizerVisualRole === "string"
+		? artifact.metadata.optimizerVisualRole
+		: null;
+	const semantics = typeof artifact.metadata?.semantics === "string"
+		? artifact.metadata.semantics
+		: null;
+	if (role === "trace_workbench" || semantics === "baseline_eval_trace") return null;
+	return role === "primary" || semantics === "baseline_eval" || typeof artifact.metadata?.algorithmId === "string"
+		? runId
+		: null;
+}
+
+type OptimizerSealGate = { ready: boolean; reason: string | null };
+
+function optimizerSealGateFromPane(host: HTMLElement): OptimizerSealGate {
+	const shell = host.querySelector<HTMLElement>('[data-testid="visual-template-shell"]');
+	const evidence = host.querySelector<HTMLElement>("[data-run-evidence-state]");
+	if (!shell || !evidence) {
+		return { ready: false, reason: "Seal available after durable run evidence finishes loading." };
+	}
+	const state = evidence.dataset.runEvidenceState;
+	if (state === "rejected") {
+		const sealed = Number(evidence.dataset.runSealedTraces ?? 0);
+		return {
+			ready: false,
+			reason: `Seal unavailable — run failed with ${Number.isFinite(sealed) ? sealed : 0} sealed traces (evidence rejected).`
+		};
+	}
+	if (shell.dataset.visualTerminal !== "true") {
+		return { ready: false, reason: "Seal available after the optimizer run reaches a durable terminal state." };
+	}
+	if (state !== "accepted") {
+		return { ready: false, reason: `Seal unavailable — durable run evidence is ${state ?? "still loading"}, not complete.` };
+	}
+	return { ready: true, reason: null };
+}
+
 export function VisualPane({ artifact, onClose }: { artifact: ArtifactRef; onClose: () => void }) {
 	const paneRef = useRef<HTMLElement>(null);
-	const [runtimeSealBlockReason, setRuntimeSealBlockReason] = useState<string | null>(null);
+	const primaryOptimizerRunId = productOwnedPrimaryOptimizerRunId(artifact);
+	const [optimizerSealGate, setOptimizerSealGate] = useState<OptimizerSealGate>(() => ({
+		ready: false,
+		reason: primaryOptimizerRunId ? "Seal available after durable run evidence finishes loading." : null
+	}));
 	const [expanded, setExpanded] = useState(false);
 	const [annotations, setAnnotations] = useState<VisualAnnotation[]>([]);
 	const [seals, setSeals] = useState<VisualSeal[]>([]);
@@ -1501,25 +1567,29 @@ export function VisualPane({ artifact, onClose }: { artifact: ArtifactRef; onClo
 	const visualId = artifact.visualId;
 	const revision = artifact.revision;
 	const qualityGate = artifact.metadata?.qualityGate as { ready?: boolean; revision?: number } | undefined;
-	const sealEligible = Boolean(visualId && revision && qualityGate?.ready && qualityGate.revision === revision && !runtimeSealBlockReason);
+	const authoringGateReady = Boolean(qualityGate?.ready && qualityGate.revision === revision);
+	const sealEligible = Boolean(visualId && revision && (
+		authoringGateReady || (primaryOptimizerRunId && optimizerSealGate.ready)
+	));
+	const sealDisabledReason = primaryOptimizerRunId
+		? optimizerSealGate.reason
+		: authoringGateReady
+			? null
+			: "Seal requires the E1 visual quality gate for this exact revision.";
 
 	useEffect(() => {
+		if (!primaryOptimizerRunId) {
+			setOptimizerSealGate({ ready: false, reason: null });
+			return;
+		}
 		const host = paneRef.current;
 		if (!host) return;
-		const read = () => {
-			const rejected = host.querySelector<HTMLElement>('[data-run-evidence-state="rejected"]');
-			if (!rejected) {
-				setRuntimeSealBlockReason(null);
-				return;
-			}
-			const sealed = Number(rejected.dataset.runSealedTraces ?? 0);
-			setRuntimeSealBlockReason(`Seal unavailable — run failed with ${Number.isFinite(sealed) ? sealed : 0} sealed traces (evidence rejected).`);
-		};
+		const read = () => setOptimizerSealGate(optimizerSealGateFromPane(host));
 		const observer = new MutationObserver(read);
-		observer.observe(host, { subtree: true, childList: true, attributes: true, attributeFilter: ["data-run-evidence-state", "data-run-sealed-traces"] });
+		observer.observe(host, { subtree: true, childList: true, attributes: true, attributeFilter: ["data-run-evidence-state", "data-run-sealed-traces", "data-visual-terminal"] });
 		read();
 		return () => observer.disconnect();
-	}, [artifact.revision]);
+	}, [artifact.revision, primaryOptimizerRunId]);
 
 	useEffect(() => {
 		let cancelled = false;
@@ -1718,14 +1788,14 @@ export function VisualPane({ artifact, onClose }: { artifact: ArtifactRef; onClo
 						Label{annotations.length ? ` · ${annotations.length}` : ""}
 					</button>
 					)}
-					{isSubagents || !runtimeSealBlockReason ? null : <span className="visual-seal-disabled-reason" role="status">{runtimeSealBlockReason}</span>}
+					{isSubagents || !sealDisabledReason ? null : <span className="visual-seal-disabled-reason" role="status">{sealDisabledReason}</span>}
 					{isSubagents ? null : (
 					<button
 						type="button"
 						className="visual-expand"
 						onClick={() => void sealCurrentRevision()}
 						disabled={!sealEligible || busy}
-						title={sealEligible ? "Seal this exact revision for offline use" : runtimeSealBlockReason ?? "Pass the E1 visual quality gate before sealing"}
+						title={sealEligible ? "Seal this exact revision for offline use" : sealDisabledReason ?? "Seal is unavailable"}
 					>
 						{busy ? "Working…" : "Seal"}
 					</button>

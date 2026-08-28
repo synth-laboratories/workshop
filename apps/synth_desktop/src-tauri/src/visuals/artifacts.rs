@@ -129,13 +129,6 @@ impl VisualRegistry {
 
     pub async fn seal(&self, visual_id: String, revision: i64) -> Result<(VisualSeal, Value)> {
         let visual = self.get(visual_id.clone()).await?;
-        let gate = visual
-            .metadata
-            .get("qualityGate")
-            .filter(|gate| gate.get("ready").and_then(Value::as_bool) == Some(true))
-            .filter(|gate| gate.get("revision").and_then(Value::as_i64) == Some(revision))
-            .ok_or_else(|| anyhow!("visual revision has not passed the E1 quality gate"))?;
-        let _ = gate;
         let source = self
             .revisions(visual_id.clone())
             .await?
@@ -146,6 +139,16 @@ impl VisualRegistry {
             .bindings
             .clone()
             .unwrap_or_else(|| visual.bindings.clone());
+        let authoring_gate_ready = visual
+            .metadata
+            .get("qualityGate")
+            .filter(|gate| gate.get("ready").and_then(Value::as_bool) == Some(true))
+            .filter(|gate| gate.get("revision").and_then(Value::as_i64) == Some(revision))
+            .is_some();
+        if !authoring_gate_ready {
+            self.require_terminal_primary_optimizer_evidence(&visual, &bindings)
+                .await?;
+        }
         let frozen_bindings = freeze_bindings(bindings)?;
         let annotations = self
             .annotations(visual_id.clone())
@@ -260,6 +263,30 @@ impl VisualRegistry {
             Ok((stored, serde_json::to_value(event)?))
         }).await?;
         Ok((stored, event))
+    }
+
+    /// Product-owned optimizer visuals are projections of an already admitted
+    /// run, not author-created artwork. Their release gate is the run's durable
+    /// terminal evidence, so asking an operator to manufacture two E1 authoring
+    /// reviews adds no evidence. Secondary/workbench visuals and every ordinary
+    /// visual continue to use the E1 gate above.
+    async fn require_terminal_primary_optimizer_evidence(
+        &self,
+        visual: &super::VisualRecord,
+        bindings: &Value,
+    ) -> Result<()> {
+        let run_ids = super::declared_optimizer_run_ids(bindings);
+        let [run_id] = run_ids.as_slice() else {
+            bail!("visual revision has not passed the E1 quality gate");
+        };
+        let service = self.optimizer_runs.get().ok_or_else(|| {
+            anyhow!(
+                "optimizer visual cannot be sealed because its run evidence service is unavailable"
+            )
+        })?;
+        let run = service.get(run_id.clone()).await?;
+        let view = serde_json::to_value(service.run_view_v2(run_id.clone()).await?)?;
+        require_primary_optimizer_seal_evidence(&visual.id, run_id, &run.summary, &view)
     }
 
     pub async fn list_seals(&self, visual_id: Option<String>) -> Result<Vec<VisualSeal>> {
@@ -780,6 +807,111 @@ fn validate_annotation_request(request: &VisualAnnotationCreate) -> Result<()> {
     Ok(())
 }
 
+fn require_primary_optimizer_seal_evidence(
+    visual_id: &str,
+    run_id: &str,
+    run_summary: &Value,
+    run_view: &Value,
+) -> Result<()> {
+    let header = run_view.get("header").ok_or_else(|| {
+        anyhow!("optimizer visual cannot be sealed because its durable run view has no header")
+    })?;
+    if header.get("runId").and_then(Value::as_str) != Some(run_id) {
+        bail!("optimizer visual cannot be sealed because its durable run identity changed");
+    }
+    let is_primary = header
+        .get("visualRefs")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .any(|reference| {
+            reference.get("kind").and_then(Value::as_str) == Some("visual")
+                && reference.get("id").and_then(Value::as_str) == Some(visual_id)
+                && reference.get("role").and_then(Value::as_str) == Some("primary")
+        });
+    if !is_primary {
+        bail!("visual revision has not passed the E1 quality gate");
+    }
+    if header.get("lifecycle").and_then(Value::as_str) != Some("terminal")
+        || header.get("terminal").is_none_or(Value::is_null)
+    {
+        bail!("optimizer visual can be sealed only after its run reaches a durable terminal state");
+    }
+    let projected_complete = header
+        .pointer("/evidence/completeness")
+        .and_then(Value::as_str)
+        == Some("complete");
+    let terminal_complete = header
+        .pointer("/terminal/evidence/completeness")
+        .and_then(Value::as_str)
+        == Some("complete");
+    if !projected_complete || !terminal_complete {
+        let completeness = header
+            .pointer("/terminal/evidence/completeness")
+            .and_then(Value::as_str)
+            .or_else(|| {
+                header
+                    .pointer("/evidence/completeness")
+                    .and_then(Value::as_str)
+            })
+            .unwrap_or("missing");
+        bail!(
+            "optimizer visual cannot be sealed because durable run evidence is {completeness}, not complete"
+        );
+    }
+    if optimizer_runtime_evidence_rejected(run_summary) {
+        bail!("optimizer visual cannot be sealed because runtime evidence was rejected");
+    }
+    Ok(())
+}
+
+fn optimizer_runtime_evidence_rejected(summary: &Value) -> bool {
+    let authoritative = summary
+        .pointer("/progress/authoritative/evidence/completeness")
+        .and_then(Value::as_str);
+    if matches!(authoritative, Some("rejected" | "unusable")) {
+        return true;
+    }
+    summary
+        .get("records")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .any(|record| {
+            if record
+                .get("evidenceState")
+                .or_else(|| record.get("evidence_state"))
+                .and_then(Value::as_str)
+                == Some("rejected")
+            {
+                return true;
+            }
+            let detail = record
+                .get("error")
+                .and_then(Value::as_str)
+                .or_else(|| {
+                    record
+                        .pointer("/evidenceOutcome/detail")
+                        .and_then(Value::as_str)
+                })
+                .or_else(|| {
+                    record
+                        .pointer("/evidenceOutcome/reason")
+                        .and_then(Value::as_str)
+                })
+                .unwrap_or_default()
+                .to_ascii_lowercase();
+            [
+                "digest mismatch",
+                "integrity validation",
+                "evidence rejected",
+                "unusable evidence",
+            ]
+            .iter()
+            .any(|marker| detail.contains(marker))
+        })
+}
+
 fn freeze_bindings(mut value: Value) -> Result<Value> {
     fn walk(value: &mut Value) -> Result<()> {
         match value {
@@ -1077,6 +1209,78 @@ mod tests {
     fn redaction_and_network_policy_fail_closed() {
         assert!(scan_forbidden(&json!({"api_key":"nope"}), "$").is_err());
         assert!(refuse_network_html("<script>fetch('/x')</script>").is_err());
+    }
+
+    fn optimizer_view(visual_id: &str, lifecycle: &str, completeness: &str, role: &str) -> Value {
+        json!({
+            "algorithm": "eval",
+            "header": {
+                "runId": "run-1",
+                "lifecycle": lifecycle,
+                "visualRefs": [{"kind":"visual","id":visual_id,"role":role}],
+                "evidence": {"completeness":completeness,"refs":[]},
+                "terminal": (lifecycle == "terminal").then(|| json!({
+                    "kind":"completed",
+                    "evidence":{"completeness":completeness,"refs":[]},
+                    "finalSequence":10,
+                    "sealedAt":"2026-08-28T12:00:00Z"
+                }))
+            }
+        })
+    }
+
+    #[test]
+    fn product_owned_primary_optimizer_visual_uses_terminal_evidence_gate() {
+        require_primary_optimizer_seal_evidence(
+            "vis-primary",
+            "run-1",
+            &json!({"records":[{"evidenceState":"sealed_complete"}]}),
+            &optimizer_view("vis-primary", "terminal", "complete", "primary"),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn optimizer_seal_gate_rejects_live_incomplete_secondary_and_rejected_evidence() {
+        let live = require_primary_optimizer_seal_evidence(
+            "vis-primary",
+            "run-1",
+            &json!({}),
+            &optimizer_view("vis-primary", "running", "complete", "primary"),
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(live.contains("terminal"));
+
+        let partial = require_primary_optimizer_seal_evidence(
+            "vis-primary",
+            "run-1",
+            &json!({}),
+            &optimizer_view("vis-primary", "terminal", "partial", "primary"),
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(partial.contains("partial, not complete"));
+
+        let secondary = require_primary_optimizer_seal_evidence(
+            "vis-workbench",
+            "run-1",
+            &json!({}),
+            &optimizer_view("vis-workbench", "terminal", "complete", "trace_workbench"),
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(secondary.contains("E1 quality gate"));
+
+        let rejected = require_primary_optimizer_seal_evidence(
+            "vis-primary",
+            "run-1",
+            &json!({"records":[{"error":"journal event digest mismatch at sequence 10"}]}),
+            &optimizer_view("vis-primary", "terminal", "complete", "primary"),
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(rejected.contains("runtime evidence was rejected"));
     }
 
     #[tokio::test]

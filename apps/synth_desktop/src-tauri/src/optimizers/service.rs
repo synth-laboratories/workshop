@@ -1716,6 +1716,11 @@ impl OptimizerService {
                     && reference.role.as_deref() == Some(request.role.as_str())
             })
             .map(|reference| reference.id.clone());
+        let mut publication_metadata = request.metadata.as_object().cloned().unwrap_or_default();
+        publication_metadata.insert(
+            "optimizerVisualRole".into(),
+            Value::String(request.role.clone()),
+        );
 
         let visual_id = match existing {
             Some(visual_id) => visual_id,
@@ -1737,7 +1742,7 @@ impl OptimizerService {
                         source_agent_id: None,
                         source_model: None,
                         content: None,
-                        metadata: Some(request.metadata.clone()),
+                        metadata: Some(Value::Object(publication_metadata)),
                     })
                     .await
                     .context("create chat-owned optimizer visual")?;
@@ -2375,7 +2380,8 @@ impl OptimizerService {
                     metadata: Some(json!({
                         "optimizerRunId": run.id,
                         "algorithmId": run.algorithm_id,
-                        "templateDigest": template_digest
+                        "templateDigest": template_digest,
+                        "optimizerVisualRole": "primary"
                     })),
                 })
                 .await?;
