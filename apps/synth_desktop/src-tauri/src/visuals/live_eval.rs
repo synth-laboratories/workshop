@@ -23,11 +23,18 @@
 //! observation of a running process, and a restart must not let it claim
 //! evidence this process never saw. The durable copy is the CAS blob the seal
 //! writes, which is why the seal writes one.
+//!
+//! That store is [`crate::visuals::stream_receipt`]'s, and there is one of it.
+//! The evidence and the receipt were written a week apart into two
+//! process-globals keyed the same way, fed from the same poll seam, reset on
+//! the same revision — so the poll path took two locks in a fixed order to
+//! record one delivery twice, and the two could answer differently about what
+//! a duplicate was. What lives here is the *responsibility*: what a seal is
+//! owed, what the retention bound is for, and the projection a frozen runtime
+//! renders. Where the bytes sit is not a second design.
 
 use anyhow::{bail, Result};
 use serde_json::{json, Value};
-use std::collections::BTreeMap;
-use std::sync::{Mutex, MutexGuard, OnceLock, PoisonError};
 
 pub const LIVE_EVAL_INPUT: &str = "stream";
 pub const LIVE_EVAL_SLOT: &str = LIVE_EVAL_INPUT;
@@ -431,115 +438,24 @@ pub fn live_eval_bind_metadata(
 /// The projection schema a sealed live-eval view carries.
 pub const LIVE_EVAL_PROJECTION_SCHEMA: &str = "synth.live-eval-projection.v1";
 
-/// Evidence bodies retained per stream before the fold reports lower bounds.
-///
-/// A live stream has an unbounded lifetime and frame envelopes are not small,
-/// so retention is bounded and says when it stopped being complete. A seal
-/// over a truncated prefix is still a seal over real, replayable evidence —
-/// it just says so, rather than presenting a prefix as the whole run.
-const MAX_RETAINED_EVIDENCE: usize = 20_000;
-
-/// Bytes of evidence retained per stream.
-///
-/// A sealed bundle carries its evidence twice — once in `data.json` and once
-/// inlined into `index.html` — against a 64 MiB hosted-viewer limit, and a
-/// Craftax frame envelope is not small. A prefix that seals is worth more than
-/// a whole run that cannot be shared, so retention stops here and says so.
-const MAX_RETAINED_BYTES: usize = 8 * 1024 * 1024;
-
 /// The evidence prefix the host holds for one declared stream.
 #[derive(Clone, Debug)]
 pub struct ObservedEvidence {
     /// Distinct non-control envelopes, in arrival order.
     pub events: Vec<Value>,
-    /// Retention hit [`MAX_RETAINED_EVIDENCE`] or [`MAX_RETAINED_BYTES`]; the
-    /// prefix is a lower bound on the run, not the run.
+    /// Retention stopped short of the run — see the bound in
+    /// `stream_receipt`; the prefix is a lower bound, not the run.
     pub truncated: bool,
-}
-
-#[derive(Debug)]
-struct StreamEvidence {
-    /// Identity, dedupe and the control predicate, from the one fold. This
-    /// module decides nothing about what an envelope is.
-    fold: crate::stream_fold::LiveFold,
-    events: Vec<Value>,
-    bytes: usize,
-    truncated: bool,
-}
-
-#[derive(Debug)]
-struct VisualEvidence {
-    revision: i64,
-    streams: BTreeMap<String, StreamEvidence>,
-}
-
-static LIVE_EVIDENCE: OnceLock<Mutex<BTreeMap<String, VisualEvidence>>> = OnceLock::new();
-
-/// Take the store lock, recovering the map if some other caller panicked while
-/// holding it — the same policy the stream receipt's store next door uses, for
-/// the same reason: refusing to record evidence because of an unrelated panic
-/// would turn the store into a second failure report about itself.
-fn evidence_store() -> MutexGuard<'static, BTreeMap<String, VisualEvidence>> {
-    LIVE_EVIDENCE
-        .get_or_init(|| Mutex::new(BTreeMap::new()))
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
 }
 
 /// Record the envelopes one poll of one declared stream delivered.
 ///
-/// `stream_id` is the renderer's stream identity — the declared `source`,
-/// falling back to the poll URL — which is exactly what
-/// `stream_receipt::declared_streams` computes and what the seal resolves from
-/// the same binding. The two agree by construction rather than by convention.
-///
-/// Duplicates, replays and control envelopes are the fold's business and are
-/// dropped here; only accepted evidence is retained.
+/// The poll seam does not come through here — it retains from the fold
+/// verdicts it already holds, in the lock it already holds. This is the door
+/// for a caller that has envelopes and no poll, and it lands in the same store
+/// with the same fold, so the two cannot disagree.
 pub fn record_live_evidence(visual_id: &str, revision: i64, stream_id: &str, envelopes: &[Value]) {
-    if envelopes.is_empty() {
-        return;
-    }
-    let mut store = evidence_store();
-    let visual = store
-        .entry(visual_id.to_string())
-        .or_insert_with(|| VisualEvidence {
-            revision,
-            streams: BTreeMap::new(),
-        });
-    if visual.revision != revision {
-        // A revision replaces the evidence set. Carrying the previous
-        // revision's envelopes forward would let them answer for this one.
-        *visual = VisualEvidence {
-            revision,
-            streams: BTreeMap::new(),
-        };
-    }
-    let stream = visual
-        .streams
-        .entry(stream_id.to_string())
-        .or_insert_with(|| StreamEvidence {
-            fold: crate::stream_fold::LiveFold::default(),
-            events: Vec::new(),
-            bytes: 0,
-            truncated: false,
-        });
-    let batch = stream.fold.accept_batch(envelopes.iter());
-    for (step, envelope) in batch.steps.iter().zip(envelopes.iter()) {
-        if step.verdict != crate::stream_fold::FoldVerdict::Evidence {
-            continue;
-        }
-        let size = serde_json::to_string(envelope)
-            .map(|text| text.len())
-            .unwrap_or(0);
-        if stream.events.len() >= MAX_RETAINED_EVIDENCE
-            || stream.bytes.saturating_add(size) > MAX_RETAINED_BYTES
-        {
-            stream.truncated = true;
-            break;
-        }
-        stream.bytes += size;
-        stream.events.push(envelope.clone());
-    }
+    super::stream_receipt::record_evidence(visual_id, revision, stream_id, envelopes);
 }
 
 /// The evidence prefix the host observed for one declared stream, if any.
@@ -552,19 +468,27 @@ pub fn observed_stream_evidence(
     revision: i64,
     stream_id: &str,
 ) -> Option<ObservedEvidence> {
-    let store = evidence_store();
-    let visual = store.get(visual_id)?;
-    if visual.revision != revision {
-        return None;
-    }
-    let stream = visual.streams.get(stream_id)?;
-    if stream.events.is_empty() {
-        return None;
-    }
-    Some(ObservedEvidence {
-        events: stream.events.clone(),
-        truncated: stream.truncated,
-    })
+    let (events, truncated) =
+        super::stream_receipt::observed_evidence(visual_id, revision, stream_id)?;
+    Some(ObservedEvidence { events, truncated })
+}
+
+/// The live-eval projection over everything this host has observed, folded at
+/// an optional cutoff.
+///
+/// The seam that serves this is the poll seam, and it serves it from evidence
+/// that was already being retained for the seal. Nothing new is held to answer
+/// it: the projection is a read of the prefix, not a second copy of it.
+///
+/// `None` means this process observed nothing for that visual and revision,
+/// which is the honest answer for a pane no reviewer ever rendered.
+pub fn observed_projection(
+    visual_id: &str,
+    revision: i64,
+    cutoff: Option<&crate::stream_fold::CursorVector>,
+) -> Option<Result<crate::stream_fold::LiveEvalProjection>> {
+    let (events, _) = super::stream_receipt::observed_evidence_log(visual_id, revision)?;
+    Some(crate::stream_fold::project_live_eval(&events, cutoff))
 }
 
 /// Drop everything recorded for a visual.
@@ -575,7 +499,7 @@ pub fn observed_stream_evidence(
 /// `VisualRegistry::delete`; gate it out again when that exists.
 #[cfg(test)]
 pub fn forget_live_evidence(visual_id: &str) {
-    evidence_store().remove(visual_id);
+    super::stream_receipt::forget_visual(visual_id);
 }
 
 /// The sealed projection over one stream's evidence.
@@ -586,8 +510,18 @@ pub fn forget_live_evidence(visual_id: &str) {
 /// is twice the upload for nothing. The frozen runtime renders these literal
 /// values and folds nothing.
 pub fn seal_projection(events: &[Value]) -> Result<Value> {
-    let projection = crate::stream_fold::project_live_eval(events, None)?;
-    let mut value = serde_json::to_value(&projection)?;
+    projection_view(&crate::stream_fold::project_live_eval(events, None)?)
+}
+
+/// The derived view of a folded projection: the shape a seal freezes and the
+/// shape the poll seam serves.
+///
+/// One shape for both on purpose. The pane, the review capture and the sealed
+/// bundle read the same object, so a number that appears in a review cannot
+/// differ from the number the seal carries — which is the whole premise the
+/// system rests on, and was previously guaranteed by nothing.
+pub fn projection_view(projection: &crate::stream_fold::LiveEvalProjection) -> Result<Value> {
+    let mut value = serde_json::to_value(projection)?;
     let object = value
         .as_object_mut()
         .ok_or_else(|| anyhow::anyhow!("live eval projection must serialize to an object"))?;

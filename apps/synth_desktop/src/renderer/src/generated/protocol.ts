@@ -153,11 +153,15 @@ export const commands = {
 	visualSubscriptionReady: (request: VisualReadyRequest) => typedError<unknown, AppError>(__TAURI_INVOKE("visual_subscription_ready", { request })),
 	/**
 	 *  Fetch a visual's persisted, declaration-validated poll authority through
-	 *  the native process. WKWebView cannot reliably read loopback HTTP because
-	 *  its CORS/CSP boundary differs from the backend's; this command is narrowly
-	 *  scoped to exact URLs already stored on the named visual.
+	 *  the native process, and answer with what the host made of it.
+	 *
+	 *  WKWebView cannot reliably read loopback HTTP because its CORS/CSP boundary
+	 *  differs from the backend's; this command is narrowly scoped to exact URLs
+	 *  already stored on the named visual. Since every envelope already passes
+	 *  through here, this is also where the fold, the receipt and the projection
+	 *  happen — see [`VisualStreamPollResult`].
 	 */
-	visualStreamPoll: (request: VisualStreamPollRequest) => typedError<unknown, AppError>(__TAURI_INVOKE("visual_stream_poll", { request })),
+	visualStreamPoll: (request: VisualStreamPollRequest) => typedError<VisualStreamPollResult_Serialize, AppError>(__TAURI_INVOKE("visual_stream_poll", { request })),
 	visualMediaRead: (request: VisualMediaReadRequest) => typedError<unknown, AppError>(__TAURI_INVOKE("visual_media_read", { request })),
 	/**  Record a renderer diagnostic. Returns as soon as it is queued. */
 	diagnosticsReport: (request: DiagnosticReportRequest) => typedError<null, AppError>(__TAURI_INVOKE("diagnostics_report", { request })),
@@ -1076,6 +1080,19 @@ export type EnvImportRequest = {
 	sourcePath: string,
 	variableNames: string[] | null,
 	destinationScope: string | null,
+};
+
+/**
+ *  One envelope identity delivered twice with two different bodies.
+ *
+ *  Structured rather than a formatted string: the identity and the lane are
+ *  the parts a caller acts on, and a message already formatted for a human
+ *  cannot be grouped, counted or matched.
+ */
+export type EnvelopeConflict = {
+	identity: string,
+	scope: string,
+	message: string,
 };
 
 /**
@@ -2076,6 +2093,60 @@ export type OptimizerUsageSummary = {
 	extra?: unknown,
 };
 
+/**
+ *  The producer's own cursor, passed through rather than recomputed.
+ *
+ *  Every field is optional because a producer may omit it, and an omitted
+ *  field must reach the renderer as omitted: a cursor is never derived from a
+ *  sequence number here, because the multiplexed Craftax fixture sequences
+ *  with opaque strings and a recomputed cursor there walks a stream that does
+ *  not exist. The renderer's `parseReplayPage` owns the fallbacks, in one
+ *  place, and this hands it the same three page shapes it already reads.
+ */
+export type PageCursor = PageCursor_Serialize | PageCursor_Deserialize;
+
+/**
+ *  The producer's own cursor, passed through rather than recomputed.
+ *
+ *  Every field is optional because a producer may omit it, and an omitted
+ *  field must reach the renderer as omitted: a cursor is never derived from a
+ *  sequence number here, because the multiplexed Craftax fixture sequences
+ *  with opaque strings and a recomputed cursor there walks a stream that does
+ *  not exist. The renderer's `parseReplayPage` owns the fallbacks, in one
+ *  place, and this hands it the same three page shapes it already reads.
+ */
+export type PageCursor_Deserialize = {
+	next: number | null,
+	high_water: number | null,
+	has_more: boolean | null,
+	/**
+	 *  A bare array is one closed page: the only reading that cannot silently
+	 *  drop rows, and the one field this reader does decide.
+	 */
+	closed: boolean,
+};
+
+/**
+ *  The producer's own cursor, passed through rather than recomputed.
+ *
+ *  Every field is optional because a producer may omit it, and an omitted
+ *  field must reach the renderer as omitted: a cursor is never derived from a
+ *  sequence number here, because the multiplexed Craftax fixture sequences
+ *  with opaque strings and a recomputed cursor there walks a stream that does
+ *  not exist. The renderer's `parseReplayPage` owns the fallbacks, in one
+ *  place, and this hands it the same three page shapes it already reads.
+ */
+export type PageCursor_Serialize = {
+	next?: number | null,
+	high_water?: number | null,
+	has_more?: boolean | null,
+	/**
+	 *  A bare array is one closed page: the only reading that cannot silently
+	 *  drop rows, and the one field this reader does decide.
+	 */
+	closed: boolean,
+};
+
 export type PendingGrantSummary = {
 	requestId: string,
 	secretId: string,
@@ -2709,6 +2780,17 @@ export type SecretsProxyStatus = {
 	running: boolean,
 };
 
+/**
+ *  A hole in one scope's sequence space, reported as the two envelopes that
+ *  bracket it rather than as a rendered sentence.
+ */
+export type SequenceGap = {
+	/**  Producer lane, as [`envelope_scope`] derives it. */
+	scope: string,
+	after: number,
+	before: number,
+};
+
 export type SignInBegin = {
 	verificationUri: string,
 	expiresAtEpochS: number,
@@ -2738,6 +2820,151 @@ export type Status = {
 	lastRefresh: string | null,
 	expiresAt: string | null,
 };
+
+/**  Envelopes delivered under one `kind`, so an all-heartbeat stream is legible. */
+export type StreamKindCount = {
+	kind: string,
+	count: number,
+	control: boolean,
+};
+
+/**  Why the last poll of one stream failed, kept whole. */
+export type StreamPollFailure = {
+	/**  A `diagnostics::codes` constant, so the failure joins its remediation. */
+	code: string,
+	message: string,
+	status: number | null,
+	retryable: boolean,
+	observedAt: string,
+};
+
+/**  What the host observed of one visual's declared streams. */
+export type StreamReceipt = {
+	schemaVersion: string,
+	visualId: string,
+	revision: number,
+	state: StreamTransportState,
+	/**
+	 *  Milliseconds the host has held the reported state. A visual resting in
+	 *  `declared` for a minute is the failure this number exists to name.
+	 */
+	timeInStateMs: number,
+	/**
+	 *  False when the host has recorded no poll at all for this visual and
+	 *  revision. A browser preview polls with raw `fetch` and never reaches
+	 *  this seam, so `observed: false` reads as "not shown in Desktop" — which
+	 *  is the right answer for a pane no reviewer ever rendered.
+	 */
+	observed: boolean,
+	/**
+	 *  Whether the host ever saw this visual advance past `declared`. Distinct
+	 *  from `state`: a stream that answered once and then failed has left
+	 *  `declared`, and one that never answered has not.
+	 */
+	everLeftDeclared: boolean,
+	declaredStreamCount: number,
+	/**  Declared streams that returned at least one page. */
+	respondingStreamCount: number,
+	closedStreamCount: number,
+	/**
+	 *  Declared `live_sse` bindings carrying no `poll_url`. The renderer cannot
+	 *  replay these at all, so they are declared and unreachable rather than
+	 *  declared and quiet.
+	 */
+	streamsMissingTransport: string[],
+	streams: StreamReceiptStream[],
+	gaps: SequenceGap[],
+	conflicts: EnvelopeConflict[],
+	/**
+	 *  A `stream.subscribed` control envelope was delivered. The same signal
+	 *  the renderer's ingest folds into `ready`.
+	 */
+	ready: boolean,
+	/**
+	 *  Distinct non-control envelopes accepted across every declared stream:
+	 *  the evidence a fold would have to work with.
+	 */
+	recovered: number,
+	envelopeCount: number,
+	/**
+	 *  Envelopes that are not heartbeats, pings or subscription notices.
+	 *  A stream can be perfectly healthy on every other field and still have
+	 *  carried no evidence at all; this is the field that says so.
+	 */
+	nonControlEnvelopeCount: number,
+	envelopesByKind: StreamKindCount[],
+	/**
+	 *  Set once bookkeeping hit its bound. Dedupe, gaps and conflicts become
+	 *  lower bounds from that point; the counts of delivered envelopes do not.
+	 */
+	trackingTruncated: boolean,
+	firstObservedAt: string | null,
+	lastObservedAt: string | null,
+};
+
+/**  One declared stream, as the host saw it behave. */
+export type StreamReceiptStream = {
+	/**
+	 *  The renderer's `streamId`: the declared `source`, or the poll URL when
+	 *  the binding declares no source. Derived from the same bindings the
+	 *  renderer reads, so the two agree by construction.
+	 */
+	streamId: string,
+	/**  The declared durable poll authority. Replay works from this alone. */
+	declaredSource: string,
+	/**  The declared incremental transport, when the binding names one. */
+	sseSource: string | null,
+	pollAttempts: number,
+	pollResponses: number,
+	pollFailures: number,
+	/**
+	 *  Milliseconds from the first poll issued to the first page returned.
+	 *  `null` while a declared stream has never answered.
+	 */
+	firstResponseLatencyMs: number | null,
+	/**
+	 *  Highest numeric sequence delivered on this stream. `null` when the
+	 *  producer sequences with non-numeric strings, which is legitimate — the
+	 *  multiplexed Craftax fixture does exactly that — and is not a defect.
+	 */
+	lastSequence: number | null,
+	/**  The producer's own cursor, passed through rather than recomputed. */
+	cursorNext: number | null,
+	/**
+	 *  Envelopes handed to the renderer, duplicates included: what the
+	 *  transport delivered, before any fold has an opinion about it.
+	 */
+	envelopeCount: number,
+	/**  Envelopes with a distinct identity: what a fold would keep. */
+	distinctEnvelopeCount: number,
+	closed: boolean,
+	lastFailure: StreamPollFailure | null,
+};
+
+/**
+ *  The transport lifecycle, as the host observed it.
+ *
+ *  The same six states the renderer's `TransportState` names, read from the
+ *  poll seam rather than from renderer state. The mapping is exact for `idle`,
+ *  `declared` and `terminal`; `replaying` here means "a poll was issued and has
+ *  not answered yet", and `error` is the last observation rather than a resting
+ *  state — a poll that fails and then succeeds reports `live` with a non-zero
+ *  `pollFailures`, because the transport did in fact recover and a gate that
+ *  blocked on the memory of a recovered failure would block honest runs.
+ */
+export type StreamTransportState =
+/**  No stream is declared. Nothing is pending and nothing is wrong. */
+"idle" |
+/**  Streams are declared and the host has issued no poll for them. */
+"declared" |
+/**  A poll is outstanding and no page has come back yet. */
+"replaying" |
+/**  At least one page arrived and some declared stream is still open. */
+"live" |
+/**  Every declared stream reported a closed cursor. */
+"terminal" |
+/**  The most recent observation was a refusal or a transport failure. */
+"error";
 
 /**
  *  One catalog entry as the renderer receives it — the same numbers the
@@ -3219,6 +3446,124 @@ export type VisualStreamPollRequest = {
 	pollUrl: string,
 	after: number,
 	limit: number,
+};
+
+/**
+ *  What one poll of a declared live stream answers with.
+ *
+ *  The seam used to hand back the producer's page verbatim, which made the
+ *  renderer the only thing in the system that knew what a live eval showed —
+ *  so a review capture, a seal and the pane each had to be trusted to fold the
+ *  same way, and the spool already proved they did not. The projection and the
+ *  receipt are computed here, from bytes this process saw, and travel together
+ *  so the pane, the capture and the seal read one answer.
+ *
+ *  `events` is the page's envelopes, verbatim and unfolded, and stays. A
+ *  sourced visual may aggregate an eval in a way nobody anticipated, and
+ *  making a novel aggregation require a Rust change would spend expressiveness
+ *  — already this system's weakest axis against general codegen — to buy
+ *  tidiness. The projection is authoritative for the built-in templates and
+ *  for the readiness gate; it is not a ceiling on what a visual may compute.
+ *
+ *  The projection carries no envelope bodies of its own: it is the same
+ *  derived object `visuals::live_eval::seal_projection` freezes into a sealed
+ *  bundle, so the pane and the seal cannot render different numbers, and one
+ *  poll's answer stays bounded by the page rather than by the run.
+ */
+export type VisualStreamPollResult = VisualStreamPollResult_Serialize | VisualStreamPollResult_Deserialize;
+
+/**
+ *  What one poll of a declared live stream answers with.
+ *
+ *  The seam used to hand back the producer's page verbatim, which made the
+ *  renderer the only thing in the system that knew what a live eval showed —
+ *  so a review capture, a seal and the pane each had to be trusted to fold the
+ *  same way, and the spool already proved they did not. The projection and the
+ *  receipt are computed here, from bytes this process saw, and travel together
+ *  so the pane, the capture and the seal read one answer.
+ *
+ *  `events` is the page's envelopes, verbatim and unfolded, and stays. A
+ *  sourced visual may aggregate an eval in a way nobody anticipated, and
+ *  making a novel aggregation require a Rust change would spend expressiveness
+ *  — already this system's weakest axis against general codegen — to buy
+ *  tidiness. The projection is authoritative for the built-in templates and
+ *  for the readiness gate; it is not a ceiling on what a visual may compute.
+ *
+ *  The projection carries no envelope bodies of its own: it is the same
+ *  derived object `visuals::live_eval::seal_projection` freezes into a sealed
+ *  bundle, so the pane and the seal cannot render different numbers, and one
+ *  poll's answer stays bounded by the page rather than by the run.
+ */
+export type VisualStreamPollResult_Deserialize = {
+	schemaVersion: string,
+	/**  The producer's envelopes for this page, exactly as they arrived. */
+	events: unknown,
+	/**  The producer's own cursor, passed through rather than recomputed. */
+	cursor: PageCursor_Deserialize,
+	/**
+	 *  `synth.live-eval-projection.v1` over everything this host has observed
+	 *  for the visual at this revision, or `null` when it has observed
+	 *  nothing — which is the honest answer for a stream that has only ever
+	 *  carried control envelopes.
+	 */
+	projection: unknown | null,
+	/**
+	 *  The retained evidence prefix stopped short of the run, so the
+	 *  projection is a lower bound rather than the whole eval.
+	 */
+	evidenceTruncated: boolean,
+	/**
+	 *  The host's own account of the transport. Not renderer-reported and not
+	 *  agent-authored: an agent reading this is reading the transport.
+	 */
+	receipt: StreamReceipt,
+};
+
+/**
+ *  What one poll of a declared live stream answers with.
+ *
+ *  The seam used to hand back the producer's page verbatim, which made the
+ *  renderer the only thing in the system that knew what a live eval showed —
+ *  so a review capture, a seal and the pane each had to be trusted to fold the
+ *  same way, and the spool already proved they did not. The projection and the
+ *  receipt are computed here, from bytes this process saw, and travel together
+ *  so the pane, the capture and the seal read one answer.
+ *
+ *  `events` is the page's envelopes, verbatim and unfolded, and stays. A
+ *  sourced visual may aggregate an eval in a way nobody anticipated, and
+ *  making a novel aggregation require a Rust change would spend expressiveness
+ *  — already this system's weakest axis against general codegen — to buy
+ *  tidiness. The projection is authoritative for the built-in templates and
+ *  for the readiness gate; it is not a ceiling on what a visual may compute.
+ *
+ *  The projection carries no envelope bodies of its own: it is the same
+ *  derived object `visuals::live_eval::seal_projection` freezes into a sealed
+ *  bundle, so the pane and the seal cannot render different numbers, and one
+ *  poll's answer stays bounded by the page rather than by the run.
+ */
+export type VisualStreamPollResult_Serialize = {
+	schemaVersion: string,
+	/**  The producer's envelopes for this page, exactly as they arrived. */
+	events: unknown,
+	/**  The producer's own cursor, passed through rather than recomputed. */
+	cursor: PageCursor_Serialize,
+	/**
+	 *  `synth.live-eval-projection.v1` over everything this host has observed
+	 *  for the visual at this revision, or `null` when it has observed
+	 *  nothing — which is the honest answer for a stream that has only ever
+	 *  carried control envelopes.
+	 */
+	projection: unknown | null,
+	/**
+	 *  The retained evidence prefix stopped short of the run, so the
+	 *  projection is a lower bound rather than the whole eval.
+	 */
+	evidenceTruncated: boolean,
+	/**
+	 *  The host's own account of the transport. Not renderer-reported and not
+	 *  agent-authored: an agent reading this is reading the transport.
+	 */
+	receipt: StreamReceipt,
 };
 
 export type VisualUpdateRequest = {

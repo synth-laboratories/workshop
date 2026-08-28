@@ -2267,16 +2267,65 @@ struct VisualStreamPollRequest {
     limit: u16,
 }
 
+/// Envelope version for a poll answer. A renderer that does not know this
+/// string should read the page and fold it itself rather than guess at fields.
+const VISUAL_STREAM_POLL_SCHEMA: &str = "synth.visual-stream-poll.v1";
+
+/// What one poll of a declared live stream answers with.
+///
+/// The seam used to hand back the producer's page verbatim, which made the
+/// renderer the only thing in the system that knew what a live eval showed —
+/// so a review capture, a seal and the pane each had to be trusted to fold the
+/// same way, and the spool already proved they did not. The projection and the
+/// receipt are computed here, from bytes this process saw, and travel together
+/// so the pane, the capture and the seal read one answer.
+///
+/// `events` is the page's envelopes, verbatim and unfolded, and stays. A
+/// sourced visual may aggregate an eval in a way nobody anticipated, and
+/// making a novel aggregation require a Rust change would spend expressiveness
+/// — already this system's weakest axis against general codegen — to buy
+/// tidiness. The projection is authoritative for the built-in templates and
+/// for the readiness gate; it is not a ceiling on what a visual may compute.
+///
+/// The projection carries no envelope bodies of its own: it is the same
+/// derived object `visuals::live_eval::seal_projection` freezes into a sealed
+/// bundle, so the pane and the seal cannot render different numbers, and one
+/// poll's answer stays bounded by the page rather than by the run.
+#[derive(Clone, Debug, serde::Serialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+struct VisualStreamPollResult {
+    schema_version: String,
+    /// The producer's envelopes for this page, exactly as they arrived.
+    events: contract::specta::OpaqueJson,
+    /// The producer's own cursor, passed through rather than recomputed.
+    cursor: visuals::stream_receipt::PageCursor,
+    /// `synth.live-eval-projection.v1` over everything this host has observed
+    /// for the visual at this revision, or `null` when it has observed
+    /// nothing — which is the honest answer for a stream that has only ever
+    /// carried control envelopes.
+    projection: Option<contract::specta::OpaqueJson>,
+    /// The retained evidence prefix stopped short of the run, so the
+    /// projection is a lower bound rather than the whole eval.
+    evidence_truncated: bool,
+    /// The host's own account of the transport. Not renderer-reported and not
+    /// agent-authored: an agent reading this is reading the transport.
+    receipt: visuals::stream_receipt::StreamReceipt,
+}
+
 /// Fetch a visual's persisted, declaration-validated poll authority through
-/// the native process. WKWebView cannot reliably read loopback HTTP because
-/// its CORS/CSP boundary differs from the backend's; this command is narrowly
-/// scoped to exact URLs already stored on the named visual.
+/// the native process, and answer with what the host made of it.
+///
+/// WKWebView cannot reliably read loopback HTTP because its CORS/CSP boundary
+/// differs from the backend's; this command is narrowly scoped to exact URLs
+/// already stored on the named visual. Since every envelope already passes
+/// through here, this is also where the fold, the receipt and the projection
+/// happen — see [`VisualStreamPollResult`].
 #[tauri::command]
 #[specta::specta]
 async fn visual_stream_poll(
     state: State<'_, Arc<CoreRuntime>>,
     request: VisualStreamPollRequest,
-) -> Result<contract::specta::OpaqueJson, AppError> {
+) -> Result<VisualStreamPollResult, AppError> {
     let visual = state
         .visuals()
         .get(request.visual_id)
@@ -2460,7 +2509,38 @@ async fn visual_stream_poll(
                     "transport_state": outcome.state_str(),
                 }),
             );
-            Ok(contract::specta::OpaqueJson(page))
+            // The projection is folded from the evidence prefix this host was
+            // already retaining for the seal, so serving it costs a read of
+            // memory that is spent either way — not a second copy of the run.
+            // It is recomputed per poll rather than folded incrementally,
+            // which is the same O(page history) the renderer's own ingest
+            // already pays on every batch; if that bites, the fix is an
+            // incremental fold inside `stream_fold`, not a second projector.
+            let projection = visuals::live_eval::observed_projection(
+                &visual.id,
+                visual.current_revision,
+                None,
+            )
+            .transpose()
+            .map_err(AppError::from)?
+            .map(|projection| visuals::live_eval::projection_view(&projection))
+            .transpose()
+            .map_err(AppError::from)?
+            .map(contract::specta::OpaqueJson);
+            Ok(VisualStreamPollResult {
+                schema_version: VISUAL_STREAM_POLL_SCHEMA.to_string(),
+                events: contract::specta::OpaqueJson(serde_json::Value::Array(
+                    visuals::stream_receipt::page_events(&page).to_vec(),
+                )),
+                cursor: visuals::stream_receipt::page_cursor(&page),
+                projection,
+                evidence_truncated: outcome.evidence_truncated,
+                receipt: visuals::stream_receipt::receipt(
+                    &visual.id,
+                    visual.current_revision,
+                    &receipt_streams,
+                ),
+            })
         }
         Err(error) => {
             let status = error.status().map(|status| status.as_u16());

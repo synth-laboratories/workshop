@@ -4,7 +4,7 @@ mod artifacts;
 mod backfill;
 pub mod chart_data;
 pub mod charts;
-mod live_eval;
+pub mod live_eval;
 pub mod mermaid;
 mod models;
 mod registry;
@@ -56,8 +56,8 @@ pub use models::{
 pub use registry::VisualRegistry;
 pub use renditions::{VisualAsset, VisualRendition};
 pub use templates::{
-    import_managed_template, list_templates, resolve_template, TemplateMeta, TemplateObservationContract,
-    TemplateReadinessContract,
+    list_skipped_templates, list_templates, resolve_template, SkippedUserTemplate, TemplateMeta,
+    TemplateObservationContract, TemplateReadinessContract,
 };
 /// The user tier's writer, its verdict type, and its watcher. `templates.rs`
 /// still owns what a user template *is*; these are the three things that
