@@ -130,7 +130,7 @@ pub fn visuals_root() -> PathBuf {
 
 pub fn list_templates(genre: Option<&str>) -> anyhow::Result<Vec<TemplateMeta>> {
     let mut out = Vec::new();
-    for (_, meta) in build_template_index(&visuals_root())? {
+    for (_, meta) in build_template_index(&visuals_root())?.templates {
         if let Some(filter) = genre {
             let matches = meta
                 .genre
@@ -152,9 +152,57 @@ pub fn resolve_template(template_id: &str) -> anyhow::Result<TemplateMeta> {
     if id.is_empty() || id.contains('/') || id.contains('\\') || id.contains("..") {
         anyhow::bail!("invalid template id");
     }
-    build_template_index(&visuals_root())?
-        .remove(id)
-        .ok_or_else(|| anyhow::anyhow!("unknown visual template: {id}"))
+    let mut index = build_template_index(&visuals_root())?;
+    if let Some(meta) = index.templates.remove(id) {
+        return Ok(meta);
+    }
+    // Not in the registry. If the user tier had to skip a directory of that
+    // name, *why it skipped* is the answer to the question actually asked, and
+    // this is where the existing callers already look: `validate_user_template`
+    // quotes this error verbatim as its `refused` finding, and `write_verified`
+    // rolls a bad save back on it. Saying "unknown" here is precisely what
+    // would make a skip invisible.
+    if let Some(skipped) = index
+        .skipped
+        .iter()
+        .find(|entry| entry.id.as_deref() == Some(id))
+    {
+        anyhow::bail!("visual template {id} was skipped: {}", skipped.reason);
+    }
+    anyhow::bail!("unknown visual template: {id}")
+}
+
+/// The registry, plus the user-tier directories it had to leave out of it.
+///
+/// The skip list is not a diagnostic nobody reads. `resolve_template` turns an
+/// entry back into the error for that exact id, so the author who just broke a
+/// template is told what is wrong with it instead of being told it does not
+/// exist.
+#[derive(Debug)]
+struct TemplateIndex {
+    templates: BTreeMap<String, TemplateMeta>,
+    skipped: Vec<SkippedUserTemplate>,
+}
+
+/// One user-tier directory that claimed to be a template and was not a usable
+/// one, kept beside the index instead of thrown away.
+///
+/// A silently skipped template is its own failure mode — nothing renders and
+/// there is nothing to read — so every skip lands in three places with three
+/// different audiences: the operational log at the moment of the skip (the
+/// operator, who never asked for this template by name), this list (the index
+/// itself), and the `resolve_template` error for the id (the author, through
+/// the authoring tools they are already holding).
+#[derive(Clone, Debug)]
+struct SkippedUserTemplate {
+    /// The id the directory claims by its name. A user template's manifest id
+    /// must equal its directory name, so the name is the id to look up even
+    /// when the manifest is the broken thing — which is the case that most
+    /// needs an answer. `None` only for a non-UTF-8 directory name.
+    id: Option<String>,
+    /// Why it was skipped, verbatim from the refusal that produced it. The
+    /// directory is `<user template root>/<id>`, so this does not repeat it.
+    reason: String,
 }
 
 /// Every template tier this instance can render, lowest precedence first:
@@ -167,7 +215,20 @@ pub fn resolve_template(template_id: &str) -> anyhow::Result<TemplateMeta> {
 /// in: a build whose bundled families root had not been staged silently had no
 /// user templates at all — the same dead-registry shape as the doubled
 /// `visuals/visuals/templates` path that once killed the managed tier.
-fn build_template_index(visuals_root: &Path) -> anyhow::Result<BTreeMap<String, TemplateMeta>> {
+///
+/// **The tiers do not share a failure policy, deliberately.** A duplicate or
+/// malformed template under `families/` — or under the `templates` /
+/// `templates-internal` overlays staged beside it — is a defect in what we
+/// shipped: nobody on this machine can fix it, and building past it would hide
+/// it, so it still fails the whole index loudly. A malformed directory under
+/// the *instance-local user root* is a document somebody is in the middle of
+/// writing. Failing the index there took every other template down with it,
+/// bundled families included; and because `visual_template_save` and
+/// `visual_template_validate` rebuild this index on every call, one bad
+/// directory locked the author out of the only tools that could have fixed it.
+/// So the user tier skips the directory and records why. One bad template
+/// breaks only itself, visibly.
+fn build_template_index(visuals_root: &Path) -> anyhow::Result<TemplateIndex> {
     let mut templates: BTreeMap<String, TemplateMeta> = BTreeMap::new();
     let families_root = visuals_root.join("families");
     if families_root.exists() {
@@ -212,8 +273,8 @@ fn build_template_index(visuals_root: &Path) -> anyhow::Result<BTreeMap<String, 
             templates.insert(meta.id.clone(), meta);
         }
     }
-    scan_user_template_root(&user_templates_root(), &mut templates)?;
-    Ok(templates)
+    let skipped = scan_user_template_root(&user_templates_root(), &mut templates);
+    Ok(TemplateIndex { templates, skipped })
 }
 
 /// One directory under the user template root is exactly one of two shapes.
@@ -251,76 +312,152 @@ impl UserTemplateShape {
 /// fails closed and renders `sourcedInvalidShell` with an exact message. A
 /// second copy of that rule here would be a second implementation to drift, and
 /// removing exactly that class of duplicate is the point of this work.
+///
+/// Returns the directories it could not index, and why — never an error. This
+/// tier cannot fail the index; see `build_template_index` for why the two tiers
+/// are trusted differently.
 fn scan_user_template_root(
     root: &Path,
     templates: &mut BTreeMap<String, TemplateMeta>,
-) -> anyhow::Result<()> {
+) -> Vec<SkippedUserTemplate> {
+    let mut skipped = Vec::new();
     if !root.exists() {
-        return Ok(());
+        return skipped;
     }
-    let mut entries: Vec<_> = fs::read_dir(root)?
-        .filter_map(|entry| entry.ok())
-        .collect();
+    let entries = match fs::read_dir(root) {
+        Ok(entries) => entries,
+        // The root itself is unreadable. That is one directory failing, not a
+        // reason for the bundled families to stop resolving, so it is recorded
+        // like any other user-tier skip — but with no id, because the root is
+        // not a template and must never answer a `resolve_template` lookup for
+        // one named after it.
+        Err(error) => {
+            record_skip(
+                &mut skipped,
+                root,
+                None,
+                anyhow::Error::new(error).context(format!("reading {}", root.display())),
+            );
+            return skipped;
+        }
+    };
+    let mut entries: Vec<_> = entries.filter_map(|entry| entry.ok()).collect();
     entries.sort_by_key(|entry| entry.file_name());
     for entry in entries {
         let path = entry.path();
-        // This root is agent-writable, so the scan refuses symlinks the way the
-        // families recursion and `import_managed_template` always have, rather
-        // than following one out of the instance state root.
-        if entry.file_type()?.is_symlink() {
-            anyhow::bail!(
-                "user visual template registry refuses symlink: {}",
-                path.display()
-            );
-        }
-        if !path.is_dir() {
-            continue;
-        }
-        if checked_template_file(&path.join("template.json"))?.is_none() {
-            continue;
-        }
-        let renderer = path.join("renderer.html");
-        let shell = path.join("shell.tsx");
-        let has_renderer = checked_template_file(&renderer)?.is_some();
-        let has_shell = checked_template_file(&shell)?.is_some();
-        let shape = match (has_renderer, has_shell) {
-            // Ambiguous, so fail closed rather than pick. The two shapes render
-            // through different machinery under different capability models;
-            // silently preferring one would mean the file the author edits is
-            // not the file that runs, and would let whoever can write only the
-            // other file flip which model applies to an existing template.
-            (true, true) => anyhow::bail!(
-                "user visual template declares both renderer.html and shell.tsx: {}",
-                path.display()
-            ),
-            (true, false) => UserTemplateShape::Managed,
-            (false, true) => UserTemplateShape::User,
-            // A manifest with neither source is a scaffold, not a template yet.
-            // Skipped as it always has been, never an error.
-            (false, false) => continue,
-        };
-        let mut meta = load_template_meta(&path)?;
-        if templates.contains_key(&meta.id) {
-            anyhow::bail!(
-                "managed visual template id collides with bundled template: {}",
-                meta.id
-            );
-        }
-        meta.path = Some(path.display().to_string());
-        match shape {
-            UserTemplateShape::Managed => {
-                meta.renderer_path = Some(renderer.display().to_string());
-                meta.shell_path = None;
+        match index_user_template(&path, templates) {
+            Ok(Some(meta)) => {
+                templates.insert(meta.id.clone(), meta);
             }
-            UserTemplateShape::User => {
-                meta.shell_path = Some(shell.display().to_string());
-                meta.renderer_path = None;
+            Ok(None) => {}
+            Err(error) => {
+                let id = path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .map(str::to_string);
+                record_skip(&mut skipped, &path, id, error)
             }
         }
-        meta.source_kind = Some(shape.source_kind().into());
-        templates.insert(meta.id.clone(), meta);
     }
-    Ok(())
+    skipped
+}
+
+/// Index one directory under the user template root.
+///
+/// `Ok(None)` means there is nothing here to index and nothing wrong: a stray
+/// file, a directory with no manifest, a manifest with no source yet. Those
+/// were never errors and are not skips either — recording them would bury the
+/// real ones.
+///
+/// `Err` means this directory claims to be a template and is not a valid one.
+/// Every refusal below used to abort the whole index; the caller now turns it
+/// into a recorded skip. Note that none of them get *weaker* by being scoped:
+/// the symlink refusals still refuse — a symlinked user template is still never
+/// followed, still never read, still never indexed. What changed is only the
+/// blast radius, from "no template on this machine resolves" to "this one does
+/// not".
+fn index_user_template(
+    path: &Path,
+    indexed: &BTreeMap<String, TemplateMeta>,
+) -> anyhow::Result<Option<TemplateMeta>> {
+    // This root is agent-writable, so the scan refuses symlinks the way the
+    // families recursion and `import_managed_template` always have, rather than
+    // following one out of the instance state root.
+    let metadata =
+        fs::symlink_metadata(path).with_context(|| format!("reading {}", path.display()))?;
+    if metadata.file_type().is_symlink() {
+        anyhow::bail!(
+            "user visual template registry refuses symlink: {}",
+            path.display()
+        );
+    }
+    if !metadata.is_dir() {
+        return Ok(None);
+    }
+    if checked_template_file(&path.join("template.json"))?.is_none() {
+        return Ok(None);
+    }
+    let renderer = path.join("renderer.html");
+    let shell = path.join("shell.tsx");
+    let has_renderer = checked_template_file(&renderer)?.is_some();
+    let has_shell = checked_template_file(&shell)?.is_some();
+    let shape = match (has_renderer, has_shell) {
+        // Ambiguous, so fail closed rather than pick. The two shapes render
+        // through different machinery under different capability models;
+        // silently preferring one would mean the file the author edits is
+        // not the file that runs, and would let whoever can write only the
+        // other file flip which model applies to an existing template.
+        (true, true) => anyhow::bail!(
+            "user visual template declares both renderer.html and shell.tsx: {}",
+            path.display()
+        ),
+        (true, false) => UserTemplateShape::Managed,
+        (false, true) => UserTemplateShape::User,
+        // A manifest with neither source is a scaffold, not a template yet.
+        // Skipped as it always has been, never an error.
+        (false, false) => return Ok(None),
+    };
+    let mut meta = load_template_meta(path)?;
+    if indexed.contains_key(&meta.id) {
+        anyhow::bail!(
+            "managed visual template id collides with bundled template: {}",
+            meta.id
+        );
+    }
+    meta.path = Some(path.display().to_string());
+    match shape {
+        UserTemplateShape::Managed => {
+            meta.renderer_path = Some(renderer.display().to_string());
+            meta.shell_path = None;
+        }
+        UserTemplateShape::User => {
+            meta.shell_path = Some(shell.display().to_string());
+            meta.renderer_path = None;
+        }
+    }
+    meta.source_kind = Some(shape.source_kind().into());
+    Ok(Some(meta))
+}
+
+/// Record one skipped user-tier directory, and say so out loud.
+///
+/// The log line is the surface for the case `resolve_template` cannot cover:
+/// nobody asks a broken template for its id when they do not know it broke.
+/// `report` is a no-op until the log runtime is installed, so this is silent in
+/// tests and in bootstrap, where the emergency NDJSON sink already covers.
+fn record_skip(
+    skipped: &mut Vec<SkippedUserTemplate>,
+    path: &Path,
+    id: Option<String>,
+    error: anyhow::Error,
+) {
+    let reason = format!("{error:#}");
+    crate::platform::logging::report(
+        "visuals::templates",
+        "user_template_skipped",
+        format!("skipped user visual template {}: {reason}", path.display()),
+    );
+    skipped.push(SkippedUserTemplate { id, reason });
 }
 
 /// Structural check for one file in a user template directory: absent is
@@ -380,7 +517,9 @@ fn checked_template_file(path: &Path) -> anyhow::Result<Option<u64>> {
 /// descriptor or `SYNTH_DESKTOP_DATA_ROOT` names one, `~/.synth-desktop`
 /// otherwise. Resolve from there, never from where the shipped visuals live.
 pub(super) fn user_templates_root() -> PathBuf {
-    crate::instance::state_root().join("visuals").join("templates")
+    crate::instance::state_root()
+        .join("visuals")
+        .join("templates")
 }
 
 /// Copy one reviewed, networkless HTML visual package into this instance's
@@ -721,7 +860,7 @@ mod tests {
             &temp.path().join("families/analysis/example.v1"),
             "example.v1",
         );
-        let indexed = build_template_index(temp.path()).unwrap();
+        let indexed = build_template_index(temp.path()).unwrap().templates;
         assert_eq!(indexed.keys().collect::<Vec<_>>(), vec!["example.v1"]);
         assert!(indexed["example.v1"]
             .path
@@ -804,7 +943,7 @@ mod tests {
         let managed_dir = write_user_template("user.managed.v1");
         fs::write(managed_dir.join("renderer.html"), "<main></main>").unwrap();
 
-        let indexed = build_template_index(temp.path()).unwrap();
+        let indexed = build_template_index(temp.path()).unwrap().templates;
 
         let shell = indexed.get("user.shell.v1").expect("user template indexed");
         assert_eq!(shell.source_kind.as_deref(), Some("user"));
@@ -830,8 +969,12 @@ mod tests {
         let _isolated = crate::instance::IsolatedDataRoot::new("visual-user-scaffold");
         let temp = empty_visuals_root();
         write_user_template("user.scaffold.v1");
-        let indexed = build_template_index(temp.path()).unwrap();
-        assert!(!indexed.contains_key("user.scaffold.v1"));
+        let index = build_template_index(temp.path()).unwrap();
+        assert!(!index.templates.contains_key("user.scaffold.v1"));
+        // A scaffold is not a failure, so it must not be recorded as one —
+        // burying real skips under every half-written directory would undo the
+        // point of recording them.
+        assert!(index.skipped.is_empty());
     }
 
     /// A bundled root with no `families/` directory must not disable the user
@@ -852,7 +995,7 @@ mod tests {
         )
         .unwrap();
 
-        let indexed = build_template_index(temp.path()).unwrap();
+        let indexed = build_template_index(temp.path()).unwrap().templates;
 
         let shell = indexed
             .get("user.orphan.v1")
@@ -862,8 +1005,20 @@ mod tests {
         assert_eq!(shell.shell_path.as_deref(), Some(expected_shell.as_str()));
     }
 
+    /// The reason recorded for one user-tier id, or `None` if it indexed.
+    fn skip_reason(index: &TemplateIndex, id: &str) -> Option<String> {
+        index
+            .skipped
+            .iter()
+            .find(|entry| entry.id.as_deref() == Some(id))
+            .map(|entry| entry.reason.clone())
+    }
+
+    /// Every refusal below is still a refusal — the directory is not indexed,
+    /// the symlink is not followed, the oversized file is not read. What the
+    /// user tier no longer does is take the rest of the registry down with it.
     #[test]
-    fn user_template_id_colliding_with_bundled_family_fails() {
+    fn user_template_id_colliding_with_bundled_family_is_skipped_not_fatal() {
         let _isolated = crate::instance::IsolatedDataRoot::new("visual-user-collision");
         let temp = tempfile::tempdir().unwrap();
         write_template(
@@ -872,26 +1027,40 @@ mod tests {
         );
         let user_dir = write_user_template("example.v1");
         fs::write(user_dir.join("shell.tsx"), "export default () => null;\n").unwrap();
-        let error = build_template_index(temp.path()).unwrap_err().to_string();
-        assert!(error.contains("collides with bundled template"));
-        assert!(error.contains("example.v1"));
+
+        let index = build_template_index(temp.path()).unwrap();
+
+        // The bundled family keeps the id, exactly as before.
+        let kept = index.templates.get("example.v1").expect("bundled example");
+        assert!(kept.source_kind.is_none());
+        let reason = skip_reason(&index, "example.v1").expect("collision recorded");
+        assert!(
+            reason.contains("collides with bundled template"),
+            "{reason}"
+        );
     }
 
     #[test]
-    fn user_template_declaring_both_shapes_fails_closed() {
+    fn user_template_declaring_both_shapes_is_skipped_not_fatal() {
         let _isolated = crate::instance::IsolatedDataRoot::new("visual-user-ambiguous");
         let temp = empty_visuals_root();
         let path = write_user_template("user.ambiguous.v1");
         fs::write(path.join("shell.tsx"), "export default () => null;\n").unwrap();
         fs::write(path.join("renderer.html"), "<main></main>").unwrap();
-        let error = build_template_index(temp.path()).unwrap_err().to_string();
-        assert!(error.contains("both renderer.html and shell.tsx"));
-        assert!(error.contains("user.ambiguous.v1"));
+
+        let index = build_template_index(temp.path()).unwrap();
+
+        assert!(!index.templates.contains_key("user.ambiguous.v1"));
+        let reason = skip_reason(&index, "user.ambiguous.v1").expect("ambiguity recorded");
+        assert!(
+            reason.contains("both renderer.html and shell.tsx"),
+            "{reason}"
+        );
     }
 
     #[cfg(unix)]
     #[test]
-    fn symlinked_user_shell_fails_closed() {
+    fn symlinked_user_shell_is_skipped_not_fatal() {
         use std::os::unix::fs::symlink;
         let _isolated = crate::instance::IsolatedDataRoot::new("visual-user-symlink");
         let temp = empty_visuals_root();
@@ -900,13 +1069,18 @@ mod tests {
         fs::write(&planted, "export default () => null;\n").unwrap();
         let path = write_user_template("user.linked.v1");
         symlink(&planted, path.join("shell.tsx")).unwrap();
-        let error = build_template_index(temp.path()).unwrap_err().to_string();
-        assert!(error.contains("refuses symlink"));
-        assert!(error.contains("shell.tsx"));
+
+        let index = build_template_index(temp.path()).unwrap();
+
+        // Still refused: the planted file is never read and never indexed.
+        assert!(!index.templates.contains_key("user.linked.v1"));
+        let reason = skip_reason(&index, "user.linked.v1").expect("symlink recorded");
+        assert!(reason.contains("refuses symlink"), "{reason}");
+        assert!(reason.contains("shell.tsx"), "{reason}");
     }
 
     #[test]
-    fn oversized_user_shell_fails_closed() {
+    fn oversized_user_shell_is_skipped_not_fatal() {
         let _isolated = crate::instance::IsolatedDataRoot::new("visual-user-oversized");
         let temp = empty_visuals_root();
         let path = write_user_template("user.oversized.v1");
@@ -915,8 +1089,126 @@ mod tests {
             vec![b'/'; (MANAGED_TEMPLATE_MAX_BYTES + 1) as usize],
         )
         .unwrap();
+
+        let index = build_template_index(temp.path()).unwrap();
+
+        assert!(!index.templates.contains_key("user.oversized.v1"));
+        let reason = skip_reason(&index, "user.oversized.v1").expect("size cap recorded");
+        assert!(reason.contains("exceeds"), "{reason}");
+        assert!(reason.contains("shell.tsx"), "{reason}");
+    }
+
+    /// The whole point: one unusable directory beside a good one leaves the
+    /// good one — and the bundled tier — usable. This is what
+    /// `visual_template_save` and `visual_template_validate` lost when a single
+    /// bad directory aborted the index they rebuild on every call.
+    #[test]
+    fn one_broken_user_template_does_not_poison_the_registry() {
+        let _isolated = crate::instance::IsolatedDataRoot::new("visual-user-poison");
+        let temp = tempfile::tempdir().unwrap();
+        write_template(
+            &temp.path().join("families/analysis/bundled.v1"),
+            "bundled.v1",
+        );
+
+        let good = write_user_template("user.good.v1");
+        fs::write(good.join("shell.tsx"), "export default () => null;\n").unwrap();
+
+        // Malformed manifest: `load_template_meta` refuses an unsupported
+        // schemaVersion, which used to abort the entire index.
+        let broken = user_templates_root().join("user.broken.v1");
+        fs::create_dir_all(&broken).unwrap();
+        fs::write(
+            broken.join("template.json"),
+            r#"{"schemaVersion":"synth.visual-template.v0","id":"user.broken.v1","version":"1.0.0"}"#,
+        )
+        .unwrap();
+        fs::write(broken.join("shell.tsx"), "export default () => null;\n").unwrap();
+
+        let index = build_template_index(temp.path()).unwrap();
+
+        assert!(
+            index.templates.contains_key("bundled.v1"),
+            "bundled tier survives"
+        );
+        let kept = index
+            .templates
+            .get("user.good.v1")
+            .expect("good user template survives");
+        assert_eq!(kept.source_kind.as_deref(), Some("user"));
+        assert!(!index.templates.contains_key("user.broken.v1"));
+        let reason = skip_reason(&index, "user.broken.v1").expect("reason recorded");
+        assert!(reason.contains("unsupported schemaVersion"), "{reason}");
+    }
+
+    /// The reason has to reach the author, not just the index. `resolve_template`
+    /// is the seam every authoring tool already goes through, so a skipped id
+    /// answers with why it was skipped rather than "unknown visual template".
+    #[test]
+    fn skipped_user_template_reason_is_retrievable_by_id() {
+        let _isolated = crate::instance::IsolatedDataRoot::new("visual-user-skip-reason");
+        let good = write_user_template("user.reason.good.v1");
+        fs::write(good.join("shell.tsx"), "export default () => null;\n").unwrap();
+        let broken = user_templates_root().join("user.reason.broken.v1");
+        fs::create_dir_all(&broken).unwrap();
+        fs::write(
+            broken.join("template.json"),
+            r#"{"schemaVersion":"synth.visual-template.v1","id":"user.reason.broken.v1"}"#,
+        )
+        .unwrap();
+        fs::write(broken.join("shell.tsx"), "export default () => null;\n").unwrap();
+
+        // The good one beside it still resolves and still lists.
+        assert!(resolve_template("user.reason.good.v1").is_ok());
+        assert!(list_templates(None)
+            .unwrap()
+            .iter()
+            .any(|template| template.id == "user.reason.good.v1"));
+
+        let error = resolve_template("user.reason.broken.v1")
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("was skipped"), "{error}");
+        assert!(error.contains("requires a semantic version"), "{error}");
+        assert!(!error.contains("unknown visual template"), "{error}");
+
+        // An id nobody wrote is still simply unknown.
+        let absent = resolve_template("user.reason.absent.v1")
+            .unwrap_err()
+            .to_string();
+        assert!(absent.contains("unknown visual template"), "{absent}");
+    }
+
+    /// The bundled tier keeps the opposite policy. A malformed shipped template
+    /// is a build defect nobody on this machine can fix, so it still fails the
+    /// whole index rather than quietly disappearing from the catalog.
+    #[test]
+    fn malformed_bundled_family_still_fails_loudly() {
+        let temp = tempfile::tempdir().unwrap();
+        let family = temp.path().join("families/analysis/bad.v1");
+        fs::create_dir_all(&family).unwrap();
+        fs::write(
+            family.join("template.json"),
+            r#"{"schemaVersion":"synth.visual-template.v0","id":"bad.v1","version":"1.0.0"}"#,
+        )
+        .unwrap();
         let error = build_template_index(temp.path()).unwrap_err().to_string();
-        assert!(error.contains("exceeds"));
-        assert!(error.contains("shell.tsx"));
+        assert!(error.contains("unsupported schemaVersion"), "{error}");
+    }
+
+    /// Same policy for the staged overlays: `templates-internal` is staged from
+    /// a developer machine, but it is still shipped code, not a user document.
+    #[test]
+    fn malformed_staged_overlay_still_fails_loudly() {
+        let temp = empty_visuals_root();
+        let staged = temp.path().join("templates-internal/internal.bad.v1");
+        fs::create_dir_all(&staged).unwrap();
+        fs::write(
+            staged.join("template.json"),
+            r#"{"schemaVersion":"synth.visual-template.v1","id":"internal.bad.v1"}"#,
+        )
+        .unwrap();
+        let error = build_template_index(temp.path()).unwrap_err().to_string();
+        assert!(error.contains("requires a semantic version"), "{error}");
     }
 }
