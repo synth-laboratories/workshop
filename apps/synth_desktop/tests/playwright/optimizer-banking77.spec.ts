@@ -190,6 +190,7 @@ test("native GEPA candidates, frontier, usage, and artifacts render in the visua
 });
 
 test("optimizer entry points describe algorithms without binding them to environments", async ({ page }) => {
+	await page.getByTestId("optimizer-tab-launch").click();
 	await expect(page.getByTestId("optimizer-guide-gepa")).toContainText("Propose");
 	await expect(page.getByTestId("optimizer-guide-go-ex")).toContainText("Explore");
 	await expect(page.getByTestId("optimizer-guide-sft")).toContainText("Collect");
@@ -203,6 +204,7 @@ test("optimizer entry points describe algorithms without binding them to environ
 });
 
 test("starting GELO opens an agent session that discovers the target before compute", async ({ page }) => {
+	await page.getByTestId("optimizer-tab-launch").click();
 	await page.getByTestId("start-go-ex-agent").click();
 	await expect(page.getByTestId("chat-transcript")).toBeVisible();
 	await expect.poll(() => page.evaluate(() => (window as any).__optimizerAgentCalls.length)).toBe(1);

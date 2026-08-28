@@ -43,6 +43,7 @@ test.beforeEach(async ({ page }) => {
 	await page.reload();
 	await page.getByTestId("titlebar").waitFor();
 	await page.getByRole("button", { name: "Optimizers" }).click();
+	await page.getByTestId("optimizer-tab-launch").click();
 	await expect(page.getByTestId("training-workspace")).toBeVisible();
 });
 
@@ -101,6 +102,7 @@ test("a run cannot start until an exact training workload is advertised", async 
 	await page.reload();
 	await page.getByTestId("titlebar").waitFor();
 	await page.getByRole("button", { name: "Optimizers" }).click();
+	await page.getByTestId("optimizer-tab-launch").click();
 	await page.getByTestId("training-tab-train").click();
 	await expect(
 		page.getByRole("alert").filter({ hasText: "No training workload" })

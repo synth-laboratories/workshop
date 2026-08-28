@@ -7818,6 +7818,13 @@ html.visual-expanded .sidebar {
 @media (max-width: 760px) { .optimizer-plugin-status { grid-template-columns: 1fr; } .optimizer-release-channel { min-width: 0; } }
 .visual-connection-state { margin: 0 0 8px; color: var(--color-text-faint); font-size: 10px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; }
 
+/* Page tabs, following the training-workspace tab pattern. */
+.optimizer-tabs { display: flex; gap: var(--sp-2); margin: 0 0 14px; overflow-x: auto; border-bottom: 1px solid var(--color-border); }
+.optimizer-tabs button { display: inline-flex; align-items: center; gap: var(--sp-2); padding: var(--sp-3) var(--sp-4); border: 0; border-bottom: 2px solid transparent; background: transparent; color: var(--color-text-muted); font-size:var(--fs-meta); font-weight: var(--fw-semi); white-space: nowrap; }
+.optimizer-tabs button[aria-current="page"] { color: var(--color-text); border-color: var(--color-selection); }
+.optimizer-tab-flag { padding: 1px 6px; border-radius:var(--radius-pill); background: var(--tone-warn-bg); color: var(--tone-warn-fg); font-size:var(--fs-micro); font-weight: var(--fw-semi); }
+.optimizer-tab-flag[data-tone="danger"] { background: var(--tone-danger-bg); color: var(--tone-danger-fg); }
+
 .optimizer-recipes { margin-bottom: 14px; padding: 14px; border: 1px solid var(--color-border); border-radius: 14px; background: #fff; box-shadow: 0 1px 2px rgba(24, 27, 33, .025); }
 .optimizer-recipes-head { display: flex; align-items: flex-end; justify-content: space-between; gap: 16px; margin-bottom: 11px; }
 .optimizer-recipes-head h2 { margin: 3px 0 0; font-size: 16px; letter-spacing: -.015em; }

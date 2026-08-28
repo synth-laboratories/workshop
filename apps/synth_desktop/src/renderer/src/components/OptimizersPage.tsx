@@ -54,6 +54,21 @@ const OPTIMIZER_GUIDES: OptimizerGuide[] = [
 	},
 ];
 
+/**
+ * The page's four surfaces. `runs` is the landing tab: the page's primary job
+ * is inspecting work that exists, not launching more of it. No URL router
+ * exists in this app, so the tab is component state; cross-surface links
+ * (checkpoint → run, checkpoint → hosted launch) switch tabs explicitly
+ * instead of scrolling a single long page.
+ */
+const OPTIMIZER_TABS = [
+	{ id: "runs", label: "Runs" },
+	{ id: "launch", label: "Launch" },
+	{ id: "checkpoints", label: "Checkpoints" },
+	{ id: "plugin", label: "Plugin" }
+] as const;
+type OptimizersTab = (typeof OPTIMIZER_TABS)[number]["id"];
+
 type Props = {
 	onOpenVisual: (visualId: string) => void;
 	onStartAgent: (guide: OptimizerGuide) => Promise<void>;
@@ -247,6 +262,7 @@ export function OptimizersPage({
 	pluginStatuses = null,
 	onRefreshPlugins
 }: Props) {
+	const [tab, setTab] = useState<OptimizersTab>("runs");
 	const [runs, setRuns] = useState<OptimizerRunRecord[]>([]);
 	const [algorithms, setAlgorithms] = useState<OptimizerAlgorithmInfo[]>([]);
 	const [search, setSearch] = useState("");
@@ -306,6 +322,19 @@ export function OptimizersPage({
 		setPluginOverride(null);
 		await onRefreshPlugins?.();
 	}, [onRefreshPlugins]);
+
+	/**
+	 * Switch tabs, then bring one section into view and hand it focus. The
+	 * timeout matters: the target section only exists after the tab renders.
+	 */
+	const revealSection = useCallback((nextTab: OptimizersTab, selector: string) => {
+		setTab(nextTab);
+		window.setTimeout(() => {
+			const element = document.querySelector<HTMLElement>(selector);
+			element?.scrollIntoView({ behavior: "smooth", block: "start" });
+			element?.focus({ preventScroll: true });
+		}, 0);
+	}, []);
 
 	const runLifecycle = async (action: LifecycleAction) => {
 		if (!bridges.plugins?.manage || !plugin) return;
@@ -556,7 +585,7 @@ export function OptimizersPage({
 				setRuns((current) => [run, ...current.filter((item) => item.id !== run.id)]);
 			}
 			setSelectedId(runId);
-			window.setTimeout(() => document.getElementById("optimizer-run-inspector")?.scrollIntoView({ behavior: "smooth", block: "start" }), 0);
+			revealSection("runs", "#optimizer-run-inspector");
 		} catch (reason) {
 			setError(presentError(reason).message);
 		}
@@ -564,7 +593,7 @@ export function OptimizersPage({
 
 	const showCheckpointInCatalog = (checkpoint: SavedLoraCheckpoint) => {
 		setSavedLoraSearch(checkpoint.name);
-		window.setTimeout(() => document.getElementById("optimizer-checkpoint-library")?.scrollIntoView({ behavior: "smooth", block: "start" }), 0);
+		revealSection("checkpoints", "#optimizer-checkpoint-library");
 	};
 
 	const selected = useMemo(
@@ -893,7 +922,25 @@ export function OptimizersPage({
 					) : null}
 				</section>
 			) : null}
-			{plugin ? (
+
+			<nav className="optimizer-tabs" aria-label="Optimizer sections" data-testid="optimizer-tabs">
+				{OPTIMIZER_TABS.map((item) => (
+					<button
+						key={item.id}
+						type="button"
+						aria-current={tab === item.id ? "page" : undefined}
+						onClick={() => setTab(item.id)}
+						data-testid={`optimizer-tab-${item.id}`}
+					>
+						{item.label}
+						{item.id === "plugin" && presentation.label && (presentation.tone === "warning" || presentation.tone === "danger") ? (
+							<span className="optimizer-tab-flag" data-tone={presentation.tone}>{presentation.label}</span>
+						) : null}
+					</button>
+				))}
+			</nav>
+
+			{tab === "plugin" ? (plugin ? (
 				<section className="optimizer-plugin-status" data-testid="optimizer-plugin-status" data-phase={plugin.phase}>
 					<div className="optimizer-plugin-summary">
 						<span className="optimizer-eyebrow">Plugin</span>
@@ -948,8 +995,15 @@ export function OptimizersPage({
 						</p>
 					) : null}
 				</section>
-			) : null}
+			) : (
+				<div className="optimizer-empty" role="status" data-testid="optimizer-plugin-missing">
+					<span className="optimizer-empty-icon" aria-hidden>◌</span>
+					<strong>No plugin status reported</strong>
+					<p>The plugin registry has not reported the Optimizers plugin in this session. Lifecycle controls appear when it does.</p>
+				</div>
+			)) : null}
 
+			{tab === "launch" ? (<>
 			<TrainingWorkspace onStartAgent={() => { const guide = OPTIMIZER_GUIDES.find((item) => item.id === "sft"); if (guide) void startAgent(guide); }} />
 
 			<section className="optimizer-recipes" aria-labelledby="optimizer-recipes-title">
@@ -1031,8 +1085,10 @@ export function OptimizersPage({
 					</div>
 				)}
 			</section>
+			</>) : null}
 
-			<section id="optimizer-checkpoint-library" className="optimizer-checkpoint-library" aria-labelledby="optimizer-checkpoint-library-title" data-testid="optimizer-checkpoint-library">
+			{tab === "checkpoints" ? (
+			<section id="optimizer-checkpoint-library" className="optimizer-checkpoint-library" aria-labelledby="optimizer-checkpoint-library-title" data-testid="optimizer-checkpoint-library" tabIndex={-1}>
 				<div className="optimizer-recipes-head">
 					<div><span className="optimizer-eyebrow">This Mac MLX · hosted Tinker SFT/CISPO</span><h2 id="optimizer-checkpoint-library-title">Checkpoint catalog</h2></div>
 					<p>{savedLoraTotal} visible. Inference LoRAs can be called with Chat Completions or Responses.</p>
@@ -1069,14 +1125,15 @@ export function OptimizersPage({
 							<label className="optimizer-search"><span>Tags</span><input aria-label="Checkpoint tags" defaultValue={checkpoint.tags.join(", ")} placeholder="comma-separated tags" key={`${checkpoint.checkpointId}-tags-${checkpoint.tags.join(",")}`} onBlur={(event) => { const tags = event.target.value.split(",").map((tag) => tag.trim()).filter(Boolean); if (tags.join(",") !== checkpoint.tags.join(",")) void patchSavedLora(checkpoint, { tags }); }} /></label>
 							<dl><dt>Placement</dt><dd>{checkpoint.placement === "this_mac" ? "This Mac" : "Hosted"}</dd><dt>Base</dt><dd>{checkpoint.baseModel}</dd><dt>Algorithm</dt><dd>{checkpoint.lineage?.optimizerAlgorithm ?? checkpoint.optimizerAlgorithm ?? "Imported"}</dd><dt>Run</dt><dd>{checkpoint.lineage?.runId ?? checkpoint.runId ?? "—"}</dd><dt>Attempt</dt><dd>{checkpoint.lineage?.attemptId ?? checkpoint.attemptId ?? "—"}</dd><dt>Source</dt><dd>{checkpoint.lineage?.sourceCheckpointId ?? checkpoint.sourceCheckpointId ?? "—"}</dd><dt>Provider</dt><dd>{checkpoint.provider} · {checkpoint.checkpointKind}</dd><dt>Rank / step</dt><dd>{checkpoint.loraRank ?? "—"} / {checkpoint.step ?? "—"}</dd><dt>Storage</dt><dd>{checkpoint.storage.backend} · {formatBytes(checkpoint.storage.sizeBytes)}</dd><dt>Saved</dt><dd>{checkpoint.updatedAt ? formatWhen(checkpoint.updatedAt) : "—"}</dd></dl>
 							{checkpoint.tags.length > 0 ? <div className="optimizer-checkpoint-tags">{checkpoint.tags.map((tag) => <span key={tag}>{tag}</span>)}</div> : null}
-							<div className="optimizer-checkpoint-actions">{hostedCispoAdmitted && hostedSftWarmStarts.some((candidate) => candidate.checkpointId === checkpoint.checkpointId) ? <button className="primary-button" type="button" onClick={() => { setTrainingTask("banking77"); setTrainingModel(checkpoint.baseModel); setTrainingWarmStartCheckpointId(checkpoint.checkpointId); document.querySelector<HTMLElement>("[data-testid='optimizer-training-launch']")?.scrollIntoView({ behavior: "smooth", block: "start" }); }} data-testid={`use-for-cispo-${checkpoint.checkpointId}`}>Use for hosted CISPO</button> : null}{checkpoint.lineage?.runId || checkpoint.runId ? <button className="secondary-button" type="button" onClick={() => void openCheckpointRun(checkpoint)}>Open run</button> : null}{checkpoint.inferenceChatCompletions ? <button className="secondary-button" type="button" disabled={inferringId !== null} onClick={() => void inferSavedLora(checkpoint, "chat_completions")}>{inferringId === `${checkpoint.checkpointId}:chat_completions` ? "Sampling…" : "Chat Completions"}</button> : null}{checkpoint.inferenceResponses ? <button className="secondary-button" type="button" disabled={inferringId !== null} onClick={() => void inferSavedLora(checkpoint, "responses")}>{inferringId === `${checkpoint.checkpointId}:responses` ? "Sampling…" : "Responses"}</button> : null}{isLagunaCompatibleAdapter(checkpoint) ? <button className="secondary-button" type="button" disabled={savedLoraBusy} onClick={() => void useInComposer(checkpoint)} data-testid={`use-in-composer-${checkpoint.checkpointId}`}>Use in Composer</button> : null}{checkpoint.placement === "this_mac" ? <button className="secondary-button" type="button" disabled={savedLoraBusy} onClick={() => void publishSavedLora(checkpoint)}>Publish</button> : null}<button className="secondary-button" type="button" disabled={savedLoraBusy} onClick={() => void downloadSavedLora(checkpoint)}>Download</button><button className="secondary-button optimizer-danger-button" type="button" disabled={savedLoraBusy} onClick={() => void archiveSavedLora(checkpoint)}>Archive</button></div>
+							<div className="optimizer-checkpoint-actions">{hostedCispoAdmitted && hostedSftWarmStarts.some((candidate) => candidate.checkpointId === checkpoint.checkpointId) ? <button className="primary-button" type="button" onClick={() => { setTrainingTask("banking77"); setTrainingModel(checkpoint.baseModel); setTrainingWarmStartCheckpointId(checkpoint.checkpointId); revealSection("launch", "[data-testid='optimizer-training-launch']"); }} data-testid={`use-for-cispo-${checkpoint.checkpointId}`}>Use for hosted CISPO</button> : null}{checkpoint.lineage?.runId || checkpoint.runId ? <button className="secondary-button" type="button" onClick={() => void openCheckpointRun(checkpoint)}>Open run</button> : null}{checkpoint.inferenceChatCompletions ? <button className="secondary-button" type="button" disabled={inferringId !== null} onClick={() => void inferSavedLora(checkpoint, "chat_completions")}>{inferringId === `${checkpoint.checkpointId}:chat_completions` ? "Sampling…" : "Chat Completions"}</button> : null}{checkpoint.inferenceResponses ? <button className="secondary-button" type="button" disabled={inferringId !== null} onClick={() => void inferSavedLora(checkpoint, "responses")}>{inferringId === `${checkpoint.checkpointId}:responses` ? "Sampling…" : "Responses"}</button> : null}{isLagunaCompatibleAdapter(checkpoint) ? <button className="secondary-button" type="button" disabled={savedLoraBusy} onClick={() => void useInComposer(checkpoint)} data-testid={`use-in-composer-${checkpoint.checkpointId}`}>Use in Composer</button> : null}{checkpoint.placement === "this_mac" ? <button className="secondary-button" type="button" disabled={savedLoraBusy} onClick={() => void publishSavedLora(checkpoint)}>Publish</button> : null}<button className="secondary-button" type="button" disabled={savedLoraBusy} onClick={() => void downloadSavedLora(checkpoint)}>Download</button><button className="secondary-button optimizer-danger-button" type="button" disabled={savedLoraBusy} onClick={() => void archiveSavedLora(checkpoint)}>Archive</button></div>
 						</article>
 					))}
 					{savedLoras.length === 0 && !savedLoraBusy ? <div className="optimizer-empty"><span className="optimizer-empty-icon" aria-hidden>◇</span><strong>No checkpoints match</strong><p>Local MLX adapters appear when a This Mac recipe emits them, or when you import an mlx-lora.v1 folder. Hosted SFT/CISPO LoRAs appear after object-storage verification.</p></div> : null}
 				</div>
 			</section>
+			) : null}
 
-			{evalRecipes.length > 0 ? (
+			{tab === "launch" && evalRecipes.length > 0 ? (
 				<section className="optimizer-recipes optimizer-eval-catalog" aria-labelledby="optimizer-eval-title">
 					<div className="optimizer-recipes-head">
 						<div><span className="optimizer-eyebrow">Eval · local</span><h2 id="optimizer-eval-title">Score staged policies</h2></div>
@@ -1172,6 +1229,7 @@ export function OptimizersPage({
 				</section>
 			) : null}
 
+			{tab === "runs" ? (<>
 			<div className="optimizer-toolbar" data-testid="optimizer-toolbar">
 				<div className="optimizer-filters">
 					<label className="optimizer-search">
@@ -1208,11 +1266,18 @@ export function OptimizersPage({
 								</button>
 							</li>
 						))}
-						{runs.length === 0 ? <li className="optimizer-empty"><span className="optimizer-empty-icon" aria-hidden>↗</span><strong>No optimizer runs yet</strong><p>Plan one with an agent above, import an existing run, or sync cloud history.</p></li> : null}
+						{runs.length === 0 ? (
+							<li className="optimizer-empty" data-testid="optimizer-runs-empty">
+								<span className="optimizer-empty-icon" aria-hidden>↗</span>
+								<strong>No optimizer runs yet</strong>
+								<p>Plan one on the Launch tab, import an existing run, or sync cloud history.</p>
+								<button className="secondary-button" type="button" onClick={() => setTab("launch")} data-testid="optimizer-runs-empty-launch">Open Launch</button>
+							</li>
+						) : null}
 					</ul>
 				</section>
 
-				<section id="optimizer-run-inspector" className="optimizer-inspector" aria-label="Optimizer inspector">
+				<section id="optimizer-run-inspector" className="optimizer-inspector" aria-label="Optimizer inspector" tabIndex={-1}>
 					{selected ? (
 						<RunInspector run={selected} executionLabel={selectedExecution}>
 							{trainingProjection ? (
@@ -1315,6 +1380,7 @@ export function OptimizersPage({
 					)}
 				</section>
 			</div>
+			</>) : null}
 		</div>
 	);
 }
