@@ -1736,7 +1736,7 @@ test("approval modes configure new native sessions and pending requests resolve 
 	await expect(modal).toContainText("$2.45");
 	await expect(modal).toContainText("240");
 	await expect(page.locator(".approval-card")).toHaveCount(0);
-	await modal.getByRole("button", { name: "Approve with cap" }).click();
+	await modal.getByRole("button", { name: "Approve", exact: true }).click();
 	await expect(modal).toBeHidden();
 	expect(await page.evaluate(() => (window as typeof window & { __approvalDecisions: () => unknown[] }).__approvalDecisions())).toEqual([
 		{ sessionId, approvalId: "approval-1", decision: "once" },
@@ -1750,7 +1750,7 @@ test("approval modes configure new native sessions and pending requests resolve 
 			params: {
 				approvalId: "approval-credential-1",
 				kind: "credential_access",
-				provider: "openrouter-workshop",
+				provider: "openrouter",
 				purpose: "Issue a run-scoped Workshop proxy capability for recipe inline, run run-1; operations=chat.completions.create; maxCalls=50; maxCostUsd=2.45",
 				alwaysSupported: false
 			}
@@ -1758,8 +1758,10 @@ test("approval modes configure new native sessions and pending requests resolve 
 	}, sessionId);
 	const credentialModal = page.getByTestId("credential-access-approval-modal");
 	await expect(credentialModal).toBeVisible();
-	await expect(credentialModal).toContainText("openrouter-workshop");
-	await expect(credentialModal).toContainText("maxCalls=50");
+	await expect(credentialModal).toContainText("openrouter");
+	await expect(credentialModal).toContainText("Call cap50");
+	await expect(credentialModal).toContainText("Cost cap$2.45");
+	await expect(credentialModal.locator("dd").first()).toHaveCSS("color", "rgb(244, 246, 248)");
 	await expect(credentialModal).toContainText("never the credential value");
 	await credentialModal.getByRole("button", { name: "Allow once" }).click();
 	await expect(credentialModal).toBeHidden();

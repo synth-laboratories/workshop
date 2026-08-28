@@ -3931,6 +3931,12 @@ async fn dispatch_secrets(
             let mut result =
                 secrets.request_use(&secret_id, &run_id, &recipe_id, policy.clone(), "agent")?;
             if result.status == "approval_required" {
+                let provider_display = secrets
+                    .list(None, None)?
+                    .into_iter()
+                    .find(|entry| entry.id == secret_id)
+                    .map(|entry| entry.provider)
+                    .unwrap_or_else(|| "Unknown provider".into());
                 let session_id = session_id.as_deref()
                     .ok_or_else(|| anyhow::anyhow!(
                         "credential_access_requires_session: request_use must name its owning session"
@@ -3954,7 +3960,7 @@ async fn dispatch_secrets(
                         Some(&session_id),
                         crate::session::approval::ApprovalKind::CredentialAccess {
                             consent: crate::session::approval::CredentialConsent::IssueLease,
-                            provider: secret_id.clone(),
+                            provider: provider_display,
                             purpose,
                             locator_id: input.locator_id.clone(),
                             display_path: None,
