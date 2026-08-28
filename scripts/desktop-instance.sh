@@ -719,7 +719,16 @@ mark_runtime() {
     --arg bootEpoch "$BOOT_EPOCH" \
     --arg processStartIdentity "$PROCESS_START_TIME" \
     --arg checkedAt "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" \
-    '.runtime = ((.runtime // {}) + {
+    # The app owns `buildRevision`/`buildTimestamp`: only the running binary
+    # knows what it was compiled from. The launcher merges into the retained
+    # block so those survive a status change — but a retained block belonging
+    # to a *different* source revision describes the previous build, and
+    # carrying it forward is how a rebuilt instance came to report a fresh
+    # `sourceRevision` beside a stale `runtime.buildRevision`. Drop the whole
+    # retained block when the source revision moves; the app restamps it.
+    '.runtime = ((if ((.runtime.sourceRevision // "") == $sourceRevision)
+                  then (.runtime // {})
+                  else {} end) + {
       status: $status,
       pid: (if $pid == "" then null else ($pid | tonumber) end),
       executable: $executable,
