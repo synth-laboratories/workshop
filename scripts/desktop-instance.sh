@@ -915,6 +915,8 @@ exec_isolated_cua_bundle() {
     LOGNAME="$logname" \
     TMPDIR="$temp_dir" \
     PWD="$INSTANCE_ROOT" \
+    SYNTH_DESKTOP_INSTANCE="$NAME" \
+    SYNTH_DESKTOP_INSTANCE_MANIFEST="$MANIFEST" \
     SYNTH_DESKTOP_DATA_ROOT="$DATA_ROOT" \
     SYNTH_DESKTOP_CONFIG="$DATA_ROOT/config.toml" \
     SYNTH_CODEX_HOME="$DATA_ROOT/codex" \
@@ -1113,6 +1115,8 @@ assert_bundle_identity() {
 # Non-identity runtime paths for development launches. Instance name and bundle
 # identity come only from the embedded descriptor and Info.plist.
 export_instance_env() {
+  export SYNTH_DESKTOP_INSTANCE="$NAME"
+  export SYNTH_DESKTOP_INSTANCE_MANIFEST="$MANIFEST"
   export SYNTH_DESKTOP_DATA_ROOT="$DATA_ROOT"
   export SYNTH_DESKTOP_CONFIG="$DATA_ROOT/config.toml"
   export SYNTH_CODEX_HOME="$DATA_ROOT/codex"

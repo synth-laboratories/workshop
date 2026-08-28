@@ -27,7 +27,7 @@ const DECISION_COLOR: Record<string, string> = {
 };
 
 export function Shell(props: ShellProps) {
-  const stream = asStream(props.data ?? props.acceptance);
+  const stream = asStream(props.acceptance ?? props.data);
   const declaredStreamCount = props.replay?.streams.length ?? 0;
   const fixtureEvents = useMemo(
     () => (declaredStreamCount > 0 ? undefined : stream.events),
