@@ -155,6 +155,11 @@ mod tests {
         let replacement = ApprovalKind::ContainerLifecycle {
             container_id: "ctr_craftax".into(),
             declaration_id: "nanohorizon-craftax".into(),
+            declaration_digest: "sha256:declaration".into(),
+            manifest_path: "/approved/workshop.containers.toml".into(),
+            source_root: "/approved".into(),
+            source_revision: Some("revision".into()),
+            source_digest: Some("sha256:source".into()),
             action: "force_replace".into(),
             effect: "replace the declared workload".into(),
         };

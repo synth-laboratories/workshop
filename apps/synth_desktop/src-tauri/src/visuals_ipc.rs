@@ -4747,6 +4747,8 @@ pub(crate) async fn dispatch_container_restart(
         id,
     )?;
     let launcher = spec.command.join(" ");
+    let declaration_digest =
+        crate::optimizers::container_lifecycle::approval_declaration_digest(&spec)?;
     let effect = format!(
         "Stop the currently registered workload when Workshop owns it, then run `{launcher}` from {} (revision {}, digest {}).",
         spec.origin.source_root.display(),
@@ -4756,13 +4758,18 @@ pub(crate) async fn dispatch_container_restart(
     let broker = app
         .try_state::<Arc<crate::session::approval::ApprovalBroker>>()
         .ok_or_else(|| anyhow::anyhow!("approval broker unavailable"))?;
-    let approval_id = broker
+    let authorization = broker
         .authorize_host(
             app,
             Some(session),
             crate::session::approval::ApprovalKind::ContainerLifecycle {
                 container_id: id.to_owned(),
                 declaration_id: spec.id.clone(),
+                declaration_digest: declaration_digest.clone(),
+                manifest_path: spec.origin.manifest_path.display().to_string(),
+                source_root: spec.origin.source_root.display().to_string(),
+                source_revision: spec.origin.source_revision.clone(),
+                source_digest: spec.origin.source_digest.clone(),
                 action: "force_replace".into(),
                 effect,
             },
@@ -4770,7 +4777,11 @@ pub(crate) async fn dispatch_container_restart(
         .await
         .map_err(|error| {
             let _ = core.storage().database().transaction(|conn| {
-                if let Some(open) = crate::platform::failure::repository::FailureRepository::open_for_container(conn, id)? {
+                if let Some(open) =
+                    crate::platform::failure::repository::FailureRepository::open_for_container(
+                        conn, id,
+                    )?
+                {
                     crate::platform::failure::FailureAuthority::transition(
                         conn,
                         open.failure_id.as_str(),
@@ -4782,29 +4793,23 @@ pub(crate) async fn dispatch_container_restart(
                 Ok(())
             });
             error
-        })?;
-    let approved = crate::optimizers::container_lifecycle::resolve_declared_spec(
-        core.storage().database(),
-        session,
-        id,
-    )?;
-    if approved.origin.source_digest != spec.origin.source_digest
-        || approved.origin.source_root != spec.origin.source_root
-    {
-        anyhow::bail!(
-            "launch_declaration_changed: the declaration changed after approval; request replacement again"
+        });
+    let mut continuation =
+        crate::optimizers::container_lifecycle::ContainerReplacementContinuation::new(
+            authorization,
+            declaration_digest,
         );
-    }
-    let stopped = crate::optimizers::container_lifecycle::stop(core.storage().database(), id)
-        .await
-        .ok();
-    let ensured = crate::optimizers::container_lifecycle::replace_declared(
-        core.storage().database(),
-        &approved,
-    )
-    .await?;
+    let outcome = continuation
+        .consume(core.storage().database(), session, id, &spec)
+        .await?;
+    let approval_id = outcome.approval_id;
+    let approved = outcome.declaration;
+    let stopped = outcome.stopped;
+    let ensured = outcome.ensured;
     let _ = core.storage().database().transaction(|conn| {
-        if let Some(open) = crate::platform::failure::repository::FailureRepository::open_for_container(conn, id)? {
+        if let Some(open) =
+            crate::platform::failure::repository::FailureRepository::open_for_container(conn, id)?
+        {
             let plan = crate::platform::failure::RecoveryPlan::restart_container(
                 open.failure_id.clone(),
                 id.to_owned(),

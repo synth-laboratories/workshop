@@ -192,6 +192,11 @@ pub(crate) enum ApprovalKind {
     ContainerLifecycle {
         container_id: String,
         declaration_id: String,
+        declaration_digest: String,
+        manifest_path: String,
+        source_root: String,
+        source_revision: Option<String>,
+        source_digest: Option<String>,
         action: String,
         effect: String,
     },
@@ -425,6 +430,11 @@ impl ApprovalKind {
             Self::ContainerLifecycle {
                 container_id,
                 declaration_id,
+                declaration_digest,
+                manifest_path,
+                source_root,
+                source_revision,
+                source_digest,
                 action,
                 effect,
             } => json!({
@@ -432,6 +442,11 @@ impl ApprovalKind {
                 "kind": self.name(),
                 "containerId": container_id,
                 "declarationId": declaration_id,
+                "declarationDigest": declaration_digest,
+                "manifestPath": manifest_path,
+                "sourceRoot": source_root,
+                "sourceRevision": source_revision,
+                "sourceDigest": source_digest,
                 "action": action,
                 "effect": effect,
                 "alwaysSupported": false,
@@ -1179,6 +1194,20 @@ mod tests {
         }
     }
 
+    fn container_lifecycle() -> ApprovalKind {
+        ApprovalKind::ContainerLifecycle {
+            container_id: "ctr_fixture".into(),
+            declaration_id: "fixture-container".into(),
+            declaration_digest: "sha256:validated-declaration".into(),
+            manifest_path: "/approved/workshop.containers.toml".into(),
+            source_root: "/approved".into(),
+            source_revision: Some("revision-1".into()),
+            source_digest: Some("sha256:declared-inputs".into()),
+            action: "force_replace".into(),
+            effect: "replace the exact validated declaration".into(),
+        }
+    }
+
     /// Consent for a hazard action is consent for *that payload*. A remembered
     /// grant would answer a question nobody asked.
     #[test]
@@ -1210,6 +1239,23 @@ mod tests {
             computer_use(false).safe_payload("approval-2")["alwaysSupported"],
             true
         );
+    }
+
+    #[test]
+    fn container_lifecycle_card_binds_the_exact_declaration_and_origin() {
+        let kind = container_lifecycle();
+        let payload = kind.safe_payload("approval-lifecycle");
+        assert_eq!(payload["kind"], "container_lifecycle");
+        assert_eq!(payload["declarationId"], "fixture-container");
+        assert_eq!(payload["declarationDigest"], "sha256:validated-declaration");
+        assert_eq!(
+            payload["manifestPath"],
+            "/approved/workshop.containers.toml"
+        );
+        assert_eq!(payload["sourceRoot"], "/approved");
+        assert_eq!(payload["sourceRevision"], "revision-1");
+        assert_eq!(payload["sourceDigest"], "sha256:declared-inputs");
+        assert!(remembered_key(&kind).is_none());
     }
 
     struct RecordingResolver {

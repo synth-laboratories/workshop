@@ -9,6 +9,7 @@ use crate::storage::Database;
 use anyhow::{anyhow, bail, Context, Result};
 use rusqlite::{params, OptionalExtension};
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 use std::{
     collections::HashMap,
     path::Path,
@@ -38,6 +39,117 @@ pub struct StoppedContainer {
     pub container_id: String,
     pub spec_id: String,
     pub pid: u32,
+}
+
+/// Canonical identity of every field that can change what a validated
+/// declaration launches or how Workshop decides that launch is ready.
+///
+/// The repository dirty digest covers the declaration's source inputs, not
+/// necessarily the manifest itself. Binding approval to this projection keeps
+/// a click from authorizing a command, endpoint, environment, or health target
+/// that appeared while the approval card was open.
+pub(crate) fn approval_declaration_digest(spec: &ContainerSpec) -> Result<String> {
+    let projection = json!({
+        "id": spec.id,
+        "command": spec.command,
+        "cwd": spec.cwd.display().to_string(),
+        "url": spec.url,
+        "health": spec.health,
+        "contract": spec.contract,
+        "locality": spec.locality.as_str(),
+        "family": spec.family,
+        "credentialProviders": spec.credential_providers,
+        "environment": spec.environment,
+        "policySource": spec.policy_source,
+        "sourceRevision": spec.source_revision,
+        "manifestDigest": spec.manifest_digest,
+        "origin": spec.origin.to_json(),
+        "launch": {
+            "workingDirectory": spec.launch.working_directory.display().to_string(),
+            "command": spec.launch.command,
+            "readinessTimeoutSeconds": spec.launch.readiness_timeout_seconds,
+            "shutdownGraceSeconds": spec.launch.shutdown_grace_seconds,
+            "expectedPort": spec.launch.expected_port,
+            "imageRef": spec.launch.image_ref,
+            "healthTarget": spec.launch.health_target,
+            "declaredEnvironment": spec.launch.declared_environment,
+            "environment": spec.launch.environment,
+            "trackedRevision": spec.launch.tracked_revision,
+            "dirtyDigest": spec.launch.dirty_digest,
+            "include": spec.launch.include,
+        },
+    });
+    let encoded = serde_json::to_vec(&projection).context("encode launch approval identity")?;
+    let mut hasher = Sha256::new();
+    hasher.update(encoded);
+    Ok(format!("sha256:{:x}", hasher.finalize()))
+}
+
+pub(crate) fn require_approved_declaration(
+    validated: &ContainerSpec,
+    current: &ContainerSpec,
+    approved_digest: &str,
+) -> Result<()> {
+    let current_digest = approval_declaration_digest(current)?;
+    if current.origin != validated.origin
+        || current.id != validated.id
+        || current_digest != approved_digest
+    {
+        bail!(
+            "launch_declaration_changed: the declaration changed after approval; request replacement again"
+        );
+    }
+    Ok(())
+}
+
+#[derive(Debug)]
+pub(crate) struct ContainerReplacementOutcome {
+    pub approval_id: String,
+    pub declaration: ContainerSpec,
+    pub stopped: Option<StoppedContainer>,
+    pub ensured: EnsuredContainer,
+}
+
+/// The approval-gated destructive continuation. It owns the authorization
+/// result and consumes it before touching reconciliation, process state, or
+/// the registry. A rejection therefore cannot reach mutation, while a granted
+/// approval cannot be replayed even by accidentally calling the continuation
+/// twice in one request handler.
+pub(crate) struct ContainerReplacementContinuation {
+    authorization: Option<Result<String>>,
+    declaration_digest: String,
+}
+
+impl ContainerReplacementContinuation {
+    pub(crate) fn new(authorization: Result<String>, declaration_digest: String) -> Self {
+        Self {
+            authorization: Some(authorization),
+            declaration_digest,
+        }
+    }
+
+    pub(crate) async fn consume(
+        &mut self,
+        db: &Arc<Database>,
+        session_id: &str,
+        container_id: &str,
+        validated: &ContainerSpec,
+    ) -> Result<ContainerReplacementOutcome> {
+        let authorization = self.authorization.take().ok_or_else(|| {
+            anyhow!("container_lifecycle_approval_consumed: approval already consumed")
+        })?;
+        let approval_id = authorization?;
+        let declaration = resolve_declared_spec(db, session_id, container_id)?;
+        require_approved_declaration(validated, &declaration, &self.declaration_digest)?;
+        let stopped = stop(db, container_id).await.ok();
+        let ensured = replace_declared(db, &declaration).await?;
+        Ok(ContainerReplacementOutcome {
+            approval_id,
+            declaration,
+            stopped,
+            ensured,
+        })
+    }
 }
 
 pub fn declared_spec_id(db: &Arc<Database>, container_id: &str) -> Result<String> {
@@ -710,6 +822,118 @@ pub fn stamp_metadata_freshness(
 mod tests {
     use super::*;
     use serde_json::json;
+    use std::{
+        fs,
+        io::{Read, Write},
+        net::{TcpListener, TcpStream},
+        os::unix::fs::PermissionsExt,
+        sync::atomic::{AtomicBool, Ordering},
+        thread,
+    };
+    use tempfile::tempdir;
+
+    fn write_manifest(root: &Path, command: &str, port: u16, target: &str) {
+        fs::write(
+            root.join("workshop.containers.toml"),
+            format!(
+                r#"
+[[container]]
+id = "fixture-container"
+url = "http://127.0.0.1:{port}"
+locality = "container"
+[container.launch]
+schema_version = "synth.container-launch.v1"
+working_directory = "."
+command = ["./{command}", "validated", "launch-marker"]
+readiness_timeout_seconds = 2
+shutdown_grace_seconds = 1
+expected_port = {port}
+image_ref = "fixture-image"
+health_target = "{target}"
+[container.launch.source]
+revision_policy = "exact-or-dirty-digest"
+tracked_revision = "fixture-revision"
+include = ["launch-a.sh", "launch-b.sh"]
+"#
+            ),
+        )
+        .unwrap();
+    }
+
+    fn write_launcher(path: &Path) {
+        fs::write(
+            path,
+            "#!/bin/sh\nprintf '%s\\n' \"$1\" >> \"$2\"\nexec sleep 30\n",
+        )
+        .unwrap();
+        let mut permissions = fs::metadata(path).unwrap().permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(path, permissions).unwrap();
+    }
+
+    fn register_declared(db: &Arc<Database>, root: &Path, spec: &ContainerSpec, status: &str) {
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO sessions(id,title,target_json,status,metadata_json,created_at,updated_at) VALUES('session','Session','{}','ready','{}','now','now')",
+                [],
+            )?;
+            conn.execute(
+                "INSERT INTO conversation_workspace_scopes(session_id,workspace,created_at,updated_at) VALUES('session',?1,'now','now')",
+                [root.display().to_string()],
+            )?;
+            conn.execute(
+                "INSERT INTO containers(id,name,location,status,base_url,health_json,metadata_json,created_at,updated_at) VALUES('ctr_fixture','fixture','local',?1,?2,'{\"ok\":false}',?3,'now','now')",
+                params![status, spec.url, json!({
+                    "workspaceSpecId": spec.id,
+                    "declarationOrigin": spec.origin.to_json(),
+                }).to_string()],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+    }
+
+    fn serve_health(
+        listener: TcpListener,
+        target: String,
+        live: Arc<AtomicBool>,
+    ) -> thread::JoinHandle<()> {
+        listener.set_nonblocking(true).unwrap();
+        thread::spawn(move || {
+            while live.load(Ordering::Acquire) {
+                match listener.accept() {
+                    Ok((mut stream, _)) => {
+                        let mut request = [0_u8; 1024];
+                        let _ = stream.read(&mut request);
+                        let body = format!(r#"{{"status":"ok","target":"{target}"}}"#);
+                        let response = format!(
+                            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                            body.len(), body
+                        );
+                        let _ = stream.write_all(response.as_bytes());
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        thread::sleep(Duration::from_millis(5));
+                    }
+                    Err(_) => break,
+                }
+            }
+        })
+    }
+
+    fn probe_health(port: u16) -> bool {
+        let Ok(mut stream) = TcpStream::connect(("127.0.0.1", port)) else {
+            return false;
+        };
+        if stream
+            .write_all(b"GET /health HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+            .is_err()
+        {
+            return false;
+        }
+        let mut response = String::new();
+        stream.read_to_string(&mut response).is_ok() && response.contains("200 OK")
+    }
 
     #[test]
     fn unhealthy_runtime_labels_cached_catalog_and_keeps_policy_unavailable() {
@@ -758,5 +982,151 @@ mod tests {
             metadata["launchDeclaration"]["error"]["declared_path"],
             "scripts/up_craftax_container.sh"
         );
+    }
+
+    #[test]
+    fn reconciliation_refuses_a_manifest_changed_after_approval() {
+        let dir = tempdir().unwrap();
+        let root = dir.path().join("source");
+        fs::create_dir_all(&root).unwrap();
+        write_launcher(&root.join("launch-a.sh"));
+        write_launcher(&root.join("launch-b.sh"));
+        write_manifest(&root, "launch-a.sh", 31001, "fixture-target");
+        let initial = workspace_recipe::find_container_spec(&root, "fixture-container").unwrap();
+        let approved_digest = approval_declaration_digest(&initial).unwrap();
+        let db = Arc::new(Database::open(dir.path().join("state.sqlite3")).unwrap());
+        register_declared(&db, &root, &initial, "unhealthy");
+
+        let validated = reconcile_declaration(&db, "session", "ctr_fixture").unwrap();
+        assert_eq!(
+            approval_declaration_digest(&validated).unwrap(),
+            approved_digest
+        );
+        write_manifest(&root, "launch-b.sh", 31001, "fixture-target");
+        let current = reconcile_declaration(&db, "session", "ctr_fixture").unwrap();
+        let error = require_approved_declaration(&validated, &current, &approved_digest)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("launch_declaration_changed"), "{error}");
+        assert_ne!(
+            approval_declaration_digest(&current).unwrap(),
+            approved_digest,
+            "the complete validated declaration, not only its optional source digest, is approval-bound"
+        );
+    }
+
+    #[tokio::test]
+    async fn rejected_continuation_changes_no_registry_process_or_launch_state() {
+        let dir = tempdir().unwrap();
+        let root = dir.path().join("source");
+        fs::create_dir_all(&root).unwrap();
+        write_launcher(&root.join("launch-a.sh"));
+        write_launcher(&root.join("launch-b.sh"));
+        write_manifest(&root, "launch-a.sh", 31002, "fixture-target");
+        let spec = workspace_recipe::find_container_spec(&root, "fixture-container").unwrap();
+        let digest = approval_declaration_digest(&spec).unwrap();
+        let db = Arc::new(Database::open(dir.path().join("state.sqlite3")).unwrap());
+        register_declared(&db, &root, &spec, "unhealthy");
+        let before: (String, String) = db
+            .with_conn(|conn| {
+                Ok(conn.query_row(
+                    "SELECT status,metadata_json FROM containers WHERE id='ctr_fixture'",
+                    [],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )?)
+            })
+            .unwrap();
+        let mut unrelated = Command::new("sleep").arg("30").spawn().unwrap();
+        let unrelated_pid = unrelated.id();
+        let unrelated_start = crate::instance::process_start_identity(unrelated_pid).unwrap();
+        let mut continuation =
+            ContainerReplacementContinuation::new(Err(anyhow!("approval rejected")), digest);
+
+        let error = continuation
+            .consume(&db, "session", "ctr_fixture", &spec)
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("approval rejected"), "{error}");
+        let after: (String, String) = db
+            .with_conn(|conn| {
+                Ok(conn.query_row(
+                    "SELECT status,metadata_json FROM containers WHERE id='ctr_fixture'",
+                    [],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )?)
+            })
+            .unwrap();
+        assert_eq!(
+            after, before,
+            "reject must not reconcile or mutate the registry"
+        );
+        assert!(
+            !root.join("launch-marker").exists(),
+            "reject must not launch"
+        );
+        assert_eq!(
+            crate::instance::process_start_identity(unrelated_pid).as_deref(),
+            Some(unrelated_start.as_str()),
+            "reject must not change process state"
+        );
+        assert!(unrelated.try_wait().unwrap().is_none());
+        unrelated.kill().unwrap();
+        let _ = unrelated.wait();
+    }
+
+    #[tokio::test]
+    async fn declared_replacement_never_kills_the_unrelated_listener_on_its_expected_port() {
+        let dir = tempdir().unwrap();
+        let root = dir.path().join("source");
+        fs::create_dir_all(&root).unwrap();
+        write_launcher(&root.join("launch-a.sh"));
+        write_launcher(&root.join("launch-b.sh"));
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let live = Arc::new(AtomicBool::new(true));
+        let server = serve_health(listener, "fixture-target".into(), live.clone());
+        write_manifest(&root, "launch-a.sh", port, "fixture-target");
+        let spec = workspace_recipe::find_container_spec(&root, "fixture-container").unwrap();
+        let digest = approval_declaration_digest(&spec).unwrap();
+        let db = Arc::new(Database::open(dir.path().join("state.sqlite3")).unwrap());
+        register_declared(&db, &root, &spec, "unhealthy");
+
+        let mut continuation =
+            ContainerReplacementContinuation::new(Ok("approval-once".into()), digest);
+        let outcome = continuation
+            .consume(&db, "session", "ctr_fixture", &spec)
+            .await
+            .unwrap();
+        let marker = root.join("launch-marker");
+        let deadline = Instant::now() + Duration::from_secs(1);
+        while !marker.exists() && Instant::now() < deadline {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert_eq!(fs::read_to_string(&marker).unwrap(), "validated\n");
+        assert!(
+            probe_health(port),
+            "the pre-existing listener must remain alive"
+        );
+
+        let replay = continuation
+            .consume(&db, "session", "ctr_fixture", &spec)
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(replay.contains("approval already consumed"), "{replay}");
+        assert_eq!(
+            fs::read_to_string(&marker).unwrap(),
+            "validated\n",
+            "approve once must invoke the declaration exactly once"
+        );
+
+        stop(&db, &outcome.ensured.container_id).await.unwrap();
+        assert!(
+            probe_health(port),
+            "stopping the supervised launcher must not signal a process selected by port"
+        );
+        live.store(false, Ordering::Release);
+        server.join().unwrap();
     }
 }
