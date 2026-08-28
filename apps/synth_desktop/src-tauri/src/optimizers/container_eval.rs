@@ -3023,6 +3023,95 @@ pub(super) async fn reconcile_evidence(
     service.get(run_id.to_string()).await
 }
 
+/// Refresh a completed inline evaluation's visual from its authoritative run
+/// projection when a newer Workshop build can present previously omitted
+/// provider-receipt fields. Reopening a visual must not require replaying or
+/// mutating its immutable Trace V5 evidence.
+pub(super) async fn refresh_terminal_visual_projection_if_stale(
+    service: &OptimizerService,
+    run: &OptimizerRunRecord,
+) -> Result<bool> {
+    if run.algorithm_id != EVAL_ALGORITHM_ID
+        || run.summary.pointer("/recipeSourceKind").and_then(Value::as_str) != Some("inline")
+        || !matches!(
+            run.status.as_str(),
+            "completed" | "failed" | "failed_evidence" | "cancelled" | "degraded"
+        )
+    {
+        return Ok(false);
+    }
+    let Some(cost) = run.usage.cost_usd else {
+        return Ok(false);
+    };
+    let summary = run
+        .summary
+        .as_object()
+        .context("evaluation run summary is not an object")?;
+    let visual_id = summary
+        .get("visualId")
+        .and_then(Value::as_str)
+        .context("evaluation run has no primary visualId")?;
+    let expected_cost = format!(
+        "${cost:.6} / ${:.2}",
+        summary
+            .get("costCeilingUsd")
+            .and_then(Value::as_f64)
+            .context("evaluation run has no cost ceiling")?
+    );
+    let visual = service.visuals().get(visual_id.to_string()).await?;
+    if visual
+        .bindings
+        .pointer("/inputs/0/data/progress/cost")
+        .and_then(Value::as_str)
+        == Some(expected_cost.as_str())
+    {
+        return Ok(false);
+    }
+
+    let owned_run_id = run.id.clone();
+    let execution_spec = service
+        .database()
+        .clone()
+        .run(move |conn| {
+            super::admission::load_admitted_execution_spec(conn, &owned_run_id)?
+                .context("evaluation run has no approved execution specification")
+        })
+        .await?;
+    let records = summary
+        .get("records")
+        .and_then(Value::as_array)
+        .context("evaluation run has no terminal records")?;
+    let family = summary
+        .get("task")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .context("evaluation run summary has no task family")?;
+    let world_ref = records
+        .first()
+        .and_then(|record| record.get("worldRef"))
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .context("evaluation terminal records have no worldRef")?;
+    let spec = EvalSpec::from_execution_spec(&execution_spec, family, world_ref)?;
+    let workbench_id = summary
+        .get("visualIds")
+        .and_then(|visuals| visuals.get("trace_workbench"))
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    publish_terminal_visual_projection(
+        service,
+        &run.id,
+        &spec,
+        visual_id,
+        workbench_id,
+        records,
+        execution_spec.recipe.rollout_plan.seeds.len(),
+        &run.status,
+    )
+    .await?;
+    Ok(true)
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum FrameTraceMode {
     SealedComplete,
