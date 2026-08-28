@@ -327,10 +327,10 @@ fn capability_is_available(capabilities: &capability::CapabilityStore, handle: &
     })
 }
 
-/// Pace each attempt and retry only provider rate-limit responses. A retry is
-/// still one logical capability call: the reservation and eventual usage
-/// debit stay outside this function. Re-checking the live capability before
-/// every attempt prevents a delayed retry from crossing revocation/expiry.
+/// Retry only provider rate-limit responses. The caller paces and reserves the
+/// first attempt; later attempts are paced here but remain part of that same
+/// logical capability call. Re-checking the live capability before every
+/// attempt prevents a delayed retry from crossing revocation/expiry.
 async fn send_with_rate_limit_retry(
     state: &ProxyState,
     handle: &str,
@@ -340,7 +340,9 @@ async fn send_with_rate_limit_retry(
         if !capability_is_available(&state.capabilities, handle) {
             return Err(UpstreamSendError::CapabilityUnavailable);
         }
-        state.capabilities.pace_request_start(handle).await;
+        if retry_number > 0 {
+            state.capabilities.pace_request_start(handle).await;
+        }
         if !capability_is_available(&state.capabilities, handle) {
             return Err(UpstreamSendError::CapabilityUnavailable);
         }
@@ -757,23 +759,6 @@ async fn handle(
             &error.to_string(),
         ));
     }
-    let reserved = match state.capabilities.reserve_call(&handle) {
-        Ok(live) => live,
-        Err(error) => {
-            let text = error.to_string();
-            let (status, code) = if text.contains("expired") {
-                (StatusCode::UNAUTHORIZED, "capability_expired")
-            } else if text.contains("revoked") {
-                (StatusCode::UNAUTHORIZED, "unauthorized")
-            } else if text.contains("exhausted") || text.contains("ceiling") {
-                (StatusCode::TOO_MANY_REQUESTS, "budget_exhausted")
-            } else {
-                (StatusCode::UNAUTHORIZED, "unauthorized")
-            };
-            return Ok(json_error(status, code, &text));
-        }
-    };
-
     let (parts, body) = request.into_parts();
     let collected = match body.collect().await {
         Ok(collected) => collected.to_bytes(),
@@ -796,7 +781,7 @@ async fn handle(
     let model = request_model(&parsed).map(str::to_owned);
     let effort = request_effort(&parsed).map(str::to_owned);
     if let Err(error) = capability::authorize_request(
-        &reserved,
+        &live,
         route.operation,
         model.as_deref(),
         effort.as_deref(),
@@ -813,7 +798,7 @@ async fn handle(
             conn,
             state.backend.as_ref(),
             Some(state.env_sources.as_ref()),
-            &reserved.secret_id,
+            &live.secret_id,
         )
     }) {
         Ok(secret) => secret,
@@ -849,6 +834,28 @@ async fn handle(
         }
     };
     drop(secret);
+
+    // Do not charge a capability call while this request is merely queued
+    // behind the provider admission window. Codex may enqueue SDK retries
+    // immediately after a rate-limit event; pacing before reservation makes
+    // only the request that is actually ready to send consume the call cap.
+    state.capabilities.pace_request_start(&handle).await;
+    let reserved = match state.capabilities.reserve_call(&handle) {
+        Ok(live) => live,
+        Err(error) => {
+            let text = error.to_string();
+            let (status, code) = if text.contains("expired") {
+                (StatusCode::UNAUTHORIZED, "capability_expired")
+            } else if text.contains("revoked") {
+                (StatusCode::UNAUTHORIZED, "unauthorized")
+            } else if text.contains("exhausted") || text.contains("ceiling") {
+                (StatusCode::TOO_MANY_REQUESTS, "budget_exhausted")
+            } else {
+                (StatusCode::UNAUTHORIZED, "unauthorized")
+            };
+            return Ok(json_error(status, code, &text));
+        }
+    };
 
     let upstream = match send_with_rate_limit_retry(&state, &handle, &outbound).await {
         Ok(response) => response,
