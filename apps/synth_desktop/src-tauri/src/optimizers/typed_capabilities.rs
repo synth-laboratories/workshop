@@ -101,7 +101,11 @@ pub fn inspect_training_artifact(id: &str) -> Result<Value> {
     }))
 }
 
-pub fn launch_artifact_eval_request(artifact_id: &str, recipe_id: Option<&str>, confirm: bool) -> Result<Value> {
+pub fn launch_artifact_eval_request(
+    artifact_id: &str,
+    recipe_id: Option<&str>,
+    confirm: bool,
+) -> Result<Value> {
     require_confirm(confirm, "launch_artifact_eval")?;
     let recipe = recipe_id
         .map(str::trim)
@@ -139,7 +143,9 @@ pub fn export_or_delete_artifact(
             let receipt = crate::training_artifacts::delete(id)?;
             Ok(serde_json::to_value(receipt)?)
         }
-        other => bail!("export_or_delete_artifact operation must be export or delete, not `{other}`"),
+        other => {
+            bail!("export_or_delete_artifact operation must be export or delete, not `{other}`")
+        }
     }
 }
 

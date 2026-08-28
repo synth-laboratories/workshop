@@ -46,6 +46,7 @@ const {
 	costSummary,
 	coverageLabel,
 	coveredMetric,
+	formatMissingUsd,
 	formatUsd,
 	metricExplanation,
 	metricSummary,
@@ -138,6 +139,22 @@ test("unreported cost is unavailable and names the gap; $0.00 is never printed f
 test("a reported zero is a value and reads as one", () => {
 	const free = coveredMetric(0, "provider", 12, 12);
 	assert.equal(metricSummary(free, formatUsd, "rollout"), "$0.00 reported · 100% rollout coverage");
+});
+
+test("proxy-metered cost names Workshop as the source", () => {
+	const metered = coveredMetric(0.018659, "proxy", 1, 1);
+	assert.equal(costSummary(metered), "$0.018659 · metered by Workshop proxy");
+	assert.match(metricExplanation(metered), /metered by Workshop proxy/);
+	assert.equal(
+		costSummary({ ...metered, receiptCalls: 37 }),
+		"$0.018659 · provider receipt (37 calls) via Workshop proxy"
+	);
+});
+
+test("nullable capability cost formats missing separately from a genuine zero", () => {
+	assert.equal(formatMissingUsd(null), "unavailable");
+	assert.equal(formatMissingUsd(0), "$0.00");
+	assert.equal(formatMissingUsd(2.45), "$2.45");
 });
 
 test("a partially covered total says how much of the run has reported", () => {

@@ -84,7 +84,7 @@ fn request_inner(
         response
             .split("\r\n\r\n")
             .nth(1)
-            .ok_or_else(|| synth_desktop_lib::error::AppError::message("empty IPC response"))?,
+            .ok_or_else(|| synth_desktop_lib::error::AppError::untyped("empty IPC response"))?,
     )
     .map_err(synth_desktop_lib::error::AppError::from)
 }
@@ -96,8 +96,8 @@ fn tools() -> Value {
         {"name":"optimizer_list_recipes","description":"List workspace-declared recipes for this session plus remaining product training recipes. Task GEPA/eval ids come from workshop.recipe.toml, never a shipped catalog.","inputSchema":{"type":"object","properties":{"session_ref":{"type":"string"}},"additionalProperties":false}},
         {"name":"optimizer_evaluation_spec_draft","description":"Default evaluation path. Construct, validate, pin, and hash an inline execution specification from the requested container, policy, model, seeds, and hard limits. Does not request approval or spend.","inputSchema":{"type":"object","properties":{"containerId":{"type":"string"},"family":{"type":"string"},"policyNamespace":{"type":"string"},"policyName":{"type":"string"},"policyOverrides":{"type":"object"},"provider":{"type":"string"},"modelId":{"type":"string"},"seeds":{"type":"array","items":{"type":"integer"},"minItems":1},"maximumRollouts":{"type":"integer","minimum":1},"maximumModelCallsPerRollout":{"type":"integer","minimum":1},"maximumStepsPerRollout":{"type":"integer","minimum":1},"hardTotalCostUsd":{"type":"number","exclusiveMinimum":0}},"required":["policyNamespace","policyName","provider","modelId","seeds","maximumRollouts","maximumModelCallsPerRollout","maximumStepsPerRollout","hardTotalCostUsd"],"additionalProperties":false}},
         {"name":"optimizer_evaluation_spec_validate","description":"Re-resolve authority and validate an inline evaluation specification. Does not request approval or spend.","inputSchema":{"type":"object","properties":{"containerId":{"type":"string"},"family":{"type":"string"},"policyNamespace":{"type":"string"},"policyName":{"type":"string"},"policyOverrides":{"type":"object"},"provider":{"type":"string"},"modelId":{"type":"string"},"seeds":{"type":"array","items":{"type":"integer"},"minItems":1},"maximumRollouts":{"type":"integer","minimum":1},"maximumModelCallsPerRollout":{"type":"integer","minimum":1},"maximumStepsPerRollout":{"type":"integer","minimum":1},"hardTotalCostUsd":{"type":"number","exclusiveMinimum":0}},"required":["policyNamespace","policyName","provider","modelId","seeds","maximumRollouts","maximumModelCallsPerRollout","maximumStepsPerRollout","hardTotalCostUsd"],"additionalProperties":false}},
-        {"name":"optimizer_evaluation_spec_admit","description":"Return the immutable inline execution specification, digest, and exact approval disclosure. Does not spend.","inputSchema":{"type":"object","properties":{"containerId":{"type":"string"},"family":{"type":"string"},"policyNamespace":{"type":"string"},"policyName":{"type":"string"},"policyOverrides":{"type":"object"},"provider":{"type":"string"},"modelId":{"type":"string"},"seeds":{"type":"array","items":{"type":"integer"},"minItems":1},"maximumRollouts":{"type":"integer","minimum":1},"maximumModelCallsPerRollout":{"type":"integer","minimum":1},"maximumStepsPerRollout":{"type":"integer","minimum":1},"hardTotalCostUsd":{"type":"number","exclusiveMinimum":0}},"required":["policyNamespace","policyName","provider","modelId","seeds","maximumRollouts","maximumModelCallsPerRollout","maximumStepsPerRollout","hardTotalCostUsd"],"additionalProperties":false}},
-        {"name":"optimizer_evaluation_start","description":"Rebuild and revalidate the inline specification, request digest-bound paid-compute approval, reverify drift, start the exact run, and attach its Workshop visual.","inputSchema":{"type":"object","properties":{"containerId":{"type":"string"},"family":{"type":"string"},"policyNamespace":{"type":"string"},"policyName":{"type":"string"},"policyOverrides":{"type":"object"},"provider":{"type":"string"},"modelId":{"type":"string"},"seeds":{"type":"array","items":{"type":"integer"},"minItems":1},"maximumRollouts":{"type":"integer","minimum":1},"maximumModelCallsPerRollout":{"type":"integer","minimum":1},"maximumStepsPerRollout":{"type":"integer","minimum":1},"hardTotalCostUsd":{"type":"number","exclusiveMinimum":0},"sessionRef":{"type":"string"},"openVisual":{"type":"boolean"}},"required":["policyNamespace","policyName","provider","modelId","seeds","maximumRollouts","maximumModelCallsPerRollout","maximumStepsPerRollout","hardTotalCostUsd"],"additionalProperties":false}},
+        {"name":"optimizer_evaluation_spec_admit","description":"Return the immutable inline execution specification, digest, and exact approval disclosure. Does not spend and does not request approval. Never ask the user to type an approval reply after this tool; when execution was requested, proceed to optimizer_evaluation_start so Workshop presents its native clickable bounded-approval modal.","inputSchema":{"type":"object","properties":{"containerId":{"type":"string"},"family":{"type":"string"},"policyNamespace":{"type":"string"},"policyName":{"type":"string"},"policyOverrides":{"type":"object"},"provider":{"type":"string"},"modelId":{"type":"string"},"seeds":{"type":"array","items":{"type":"integer"},"minItems":1},"maximumRollouts":{"type":"integer","minimum":1},"maximumModelCallsPerRollout":{"type":"integer","minimum":1},"maximumStepsPerRollout":{"type":"integer","minimum":1},"hardTotalCostUsd":{"type":"number","exclusiveMinimum":0}},"required":["policyNamespace","policyName","provider","modelId","seeds","maximumRollouts","maximumModelCallsPerRollout","maximumStepsPerRollout","hardTotalCostUsd"],"additionalProperties":false}},
+        {"name":"optimizer_evaluation_start","description":"The only approval path for executing an inline evaluation. Rebuild and revalidate the inline specification, emit Workshop's native clickable digest-bound paid-compute modal, wait for Approve with cap or Deny, reverify drift, start only the approved run, and attach its Workshop visual. Do not replace this tool with prose asking the user to reply with approval.","inputSchema":{"type":"object","properties":{"containerId":{"type":"string"},"family":{"type":"string"},"policyNamespace":{"type":"string"},"policyName":{"type":"string"},"policyOverrides":{"type":"object"},"provider":{"type":"string"},"modelId":{"type":"string"},"seeds":{"type":"array","items":{"type":"integer"},"minItems":1},"maximumRollouts":{"type":"integer","minimum":1},"maximumModelCallsPerRollout":{"type":"integer","minimum":1},"maximumStepsPerRollout":{"type":"integer","minimum":1},"hardTotalCostUsd":{"type":"number","exclusiveMinimum":0},"sessionRef":{"type":"string"},"openVisual":{"type":"boolean"}},"required":["policyNamespace","policyName","provider","modelId","seeds","maximumRollouts","maximumModelCallsPerRollout","maximumStepsPerRollout","hardTotalCostUsd"],"additionalProperties":false}},
         {"name":"optimizer_reconcile_evaluation_evidence","description":"For a terminal inline evaluation, re-import its already-sealed Trace V5 bundles and rebuild the authoritative rollout and visual projections. Never starts compute or accesses credentials.","inputSchema":{"type":"object","properties":{"optimizer_run_id":{"type":"string"}},"required":["optimizer_run_id"],"additionalProperties":false}},
         {"name":"optimizer_start_recipe","description":"Start a workspace-declared or remaining product recipe. Workspace GEPA/eval ids are whatever workshop.recipe.toml declared. Local candidate-comparison eval.* still takes candidate_set_id. Workspace baseline evals take container_id from container_ensure.","inputSchema":{"type":"object","properties":{"recipe_id":{"type":"string"},"session_ref":{"type":"string"},"open_visual":{"type":"boolean"},"base_model":{"type":"string"},"dataset_shard":{"type":"string","enum":["train_a","train_b"]},"candidate_set_id":{"type":"string","description":"Required by pinned local candidate-comparison eval.* recipes. An id returned by optimizer_stage_eval_candidates, never a path."},"training_artifact_id":{"type":"string","description":"Verified local training artifact used as the CISPO warm start."},"container_id":{"type":"string","description":"Registered-container identity from container_ensure. Required when multiple healthy pools advertise the same family."}},"required":["recipe_id"],"additionalProperties":false}},
         {"name":"optimizer_start_workflow","description":"Start one bounded workflow in one call. Workspace task recipes are declared in workshop.recipe.toml. Freshens registered-container capabilities, performs host approval and sidecar admission, creates the run, and opens its chat-owned visual.","inputSchema":{"type":"object","properties":{"recipe_id":{"type":"string"},"session_ref":{"type":"string"},"open_visual":{"type":"boolean"},"base_model":{"type":"string"},"dataset_shard":{"type":"string","enum":["train_a","train_b"]},"candidate_set_id":{"type":"string"},"training_artifact_id":{"type":"string","description":"Verified local training artifact used as the CISPO warm start."},"container_id":{"type":"string"},"plan_override":{"type":"object","description":"Optional trusted narrowing only: candidate_ids, seeds/screening_seeds/confirmation_seeds, and model_efforts."}},"required":["recipe_id"],"additionalProperties":false}},
@@ -152,6 +152,79 @@ fn tools() -> Value {
     manifest
 }
 
+const INLINE_EVAL_ARGUMENT_FIELDS: &[&str] = &[
+    "containerId",
+    "container_id",
+    "family",
+    "policyNamespace",
+    "policy_namespace",
+    "policyName",
+    "policy_name",
+    "policySourcePath",
+    "policy_source_path",
+    "policyOverrides",
+    "policy_overrides",
+    "provider",
+    "modelId",
+    "model_id",
+    "seeds",
+    "maximumRollouts",
+    "maximum_rollouts",
+    "maximumModelCallsPerRollout",
+    "maximum_model_calls_per_rollout",
+    "maximumStepsPerRollout",
+    "maximum_steps_per_rollout",
+    "hardTotalCostUsd",
+    "hard_total_cost_usd",
+    "evaluator",
+    "sessionRef",
+    "session_ref",
+    "openVisual",
+    "open_visual",
+];
+
+fn reject_unknown_inline_fields(args: &Value) -> Result<(), String> {
+    let Some(object) = args.as_object() else {
+        return Ok(());
+    };
+    for key in object.keys() {
+        if !INLINE_EVAL_ARGUMENT_FIELDS.contains(&key.as_str()) {
+            return Err(format!(
+                "unknown inline evaluation field `{key}`; use hardTotalCostUsd, maximumModelCallsPerRollout, and maximumStepsPerRollout"
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn bind_caller_session(args: &Value) -> Result<Value, String> {
+    let mut payload = args.clone();
+    let current = env::var("SYNTH_SESSION_ID")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
+    let supplied = payload
+        .get("sessionRef")
+        .or_else(|| payload.get("session_ref"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned);
+    if let (Some(supplied), Some(current)) = (supplied.as_deref(), current.as_deref()) {
+        if supplied != current {
+            return Err(
+                "sessionRef does not match the authenticated MCP caller session".into(),
+            );
+        }
+    }
+    if let Some(session) = current.or(supplied) {
+        if let Some(object) = payload.as_object_mut() {
+            object.insert("sessionRef".into(), json!(session));
+        }
+    }
+    Ok(payload)
+}
+
 fn reject_secret_keys(args: &Value, allow_path: bool) -> Result<(), String> {
     let Some(object) = args.as_object() else {
         return Ok(());
@@ -182,6 +255,9 @@ fn call_tool(name: &str, args: &Value) -> Result<Value, String> {
             "import_local" | "create_run" | "import_checkpoint"
         );
         reject_secret_keys(&nested, allow_path)?;
+        if operation.starts_with("evaluation_") {
+            reject_unknown_inline_fields(&nested)?;
+        }
         let tool = match operation {
             "evaluation_spec_draft" => "optimizer_evaluation_spec_draft",
             "evaluation_spec_validate" => "optimizer_evaluation_spec_validate",
@@ -236,26 +312,38 @@ fn call_tool(name: &str, args: &Value) -> Result<Value, String> {
     let current_session = env::var("SYNTH_SESSION_ID").ok();
     let session_ref = || resolved_session_ref(args, current_session.as_deref());
     match name {
-        "optimizer_evaluation_spec_draft" => request(
-            "POST",
-            "/v1/optimizers/evaluations/spec/draft",
-            Some(args.clone()),
-        ),
-        "optimizer_evaluation_spec_validate" => request(
-            "POST",
-            "/v1/optimizers/evaluations/spec/validate",
-            Some(args.clone()),
-        ),
-        "optimizer_evaluation_spec_admit" => request(
-            "POST",
-            "/v1/optimizers/evaluations/spec/admit",
-            Some(args.clone()),
-        ),
-        "optimizer_evaluation_start" => request(
-            "POST",
-            "/v1/optimizers/evaluations/start",
-            Some(args.clone()),
-        ),
+        "optimizer_evaluation_spec_draft" => {
+            reject_unknown_inline_fields(args)?;
+            request(
+                "POST",
+                "/v1/optimizers/evaluations/spec/draft",
+                Some(bind_caller_session(args)?),
+            )
+        }
+        "optimizer_evaluation_spec_validate" => {
+            reject_unknown_inline_fields(args)?;
+            request(
+                "POST",
+                "/v1/optimizers/evaluations/spec/validate",
+                Some(bind_caller_session(args)?),
+            )
+        }
+        "optimizer_evaluation_spec_admit" => {
+            reject_unknown_inline_fields(args)?;
+            request(
+                "POST",
+                "/v1/optimizers/evaluations/spec/admit",
+                Some(bind_caller_session(args)?),
+            )
+        }
+        "optimizer_evaluation_start" => {
+            reject_unknown_inline_fields(args)?;
+            request(
+                "POST",
+                "/v1/optimizers/evaluations/start",
+                Some(bind_caller_session(args)?),
+            )
+        }
         "optimizer_list_algorithms" => request("GET", "/v1/optimizers/algorithms", None),
         "optimizer_list_recipes" => request("GET", "/v1/optimizers/recipes", None),
         "optimizer_inspect_local_mlx" => request("GET", "/v1/mlx/inspect", None),
@@ -476,10 +564,7 @@ fn call_tool(name: &str, args: &Value) -> Result<Value, String> {
         ),
         "optimizer_reconcile_evaluation_evidence" => request(
             "POST",
-            &format!(
-                "/v1/optimizers/runs/{}/reconcile_evidence",
-                id()?
-            ),
+            &format!("/v1/optimizers/runs/{}/reconcile_evidence", id()?),
             Some(json!({})),
         ),
         "optimizer_get_state" => {
@@ -675,5 +760,42 @@ mod tests {
         )
         .unwrap_err();
         assert!(err.contains("reject"));
+    }
+
+    #[test]
+    fn generic_evaluation_start_rejects_unknown_cost_fields() {
+        let err = call_tool(
+            "optimizer_manage",
+            &json!({
+                "operation": "evaluation_start",
+                "arguments": {
+                    "policyNamespace": "nanohorizon",
+                    "policyName": "glm-5.3-flash",
+                    "provider": "openrouter",
+                    "modelId": "z-ai/glm-5.3-flash",
+                    "seeds": [780005],
+                    "maximumRollouts": 1,
+                    "maximumModelCallsPerRollout": 10,
+                    "maximumStepsPerRollout": 2000,
+                    "costCeilingUsd": 2.45
+                }
+            }),
+        )
+        .unwrap_err();
+        assert!(err.contains("unknown inline evaluation field"), "{err}");
+        assert!(err.contains("hardTotalCostUsd"), "{err}");
+    }
+
+    #[test]
+    fn evaluation_start_binds_the_authenticated_caller_session() {
+        let payload = bind_caller_session(&json!({
+            "policyNamespace": "nanohorizon",
+            "hardTotalCostUsd": 2.45
+        }))
+        .unwrap();
+        assert!(
+            payload.get("sessionRef").is_none()
+                || payload["sessionRef"].as_str().is_some_and(|value| !value.is_empty())
+        );
     }
 }

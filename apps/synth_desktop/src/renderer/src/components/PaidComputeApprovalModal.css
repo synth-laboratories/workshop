@@ -1,32 +1,55 @@
 .paid-compute-modal-backdrop {
-	position: absolute;
+	position: fixed;
 	inset: 0;
 	z-index: 80;
 	display: grid;
 	place-items: center;
-	padding: 32px;
+	padding: 12px;
 	background: color-mix(in srgb, var(--bg, #07090d) 68%, transparent);
 	backdrop-filter: blur(5px);
 	pointer-events: auto;
 }
 
 .paid-compute-modal {
-	width: min(520px, 100%);
-	max-height: min(720px, calc(100vh - 64px));
+	width: min(520px, calc(100vw - 24px));
+	max-height: min(720px, calc(100dvh - 24px));
 	overflow: auto;
-	padding: 28px;
+	padding: 20px;
 	border: 1px solid color-mix(in srgb, var(--border, #40444d) 78%, white);
 	border-radius: 16px;
 	background: var(--panel, #17191e);
+	color: #f4f6f8;
 	box-shadow: 0 24px 80px rgb(0 0 0 / 48%);
 }
 
-.paid-compute-modal h2 { margin: 8px 0 22px; font-size: 22px; }
+.paid-compute-modal h2 { margin: 6px 0 14px; color: #f4f6f8; font-size: 22px; }
 .paid-compute-modal dl { display: grid; gap: 1px; margin: 0; border-radius: 10px; overflow: hidden; }
-.paid-compute-modal dl > div { display: grid; grid-template-columns: 150px 1fr; gap: 18px; padding: 11px 13px; background: color-mix(in srgb, var(--panel, #17191e) 80%, white 5%); }
+.paid-compute-modal dl > div { display: grid; grid-template-columns: 150px 1fr; gap: 18px; padding: 8px 10px; background: color-mix(in srgb, var(--panel, #17191e) 80%, white 5%); }
 .paid-compute-modal dt { color: var(--muted, #a4a8b2); }
-.paid-compute-modal dd { margin: 0; text-align: right; overflow-wrap: anywhere; }
+.paid-compute-modal dd { margin: 0; color: #f4f6f8; text-align: right; overflow-wrap: anywhere; }
+.paid-compute-modal code { color: inherit; }
 .paid-compute-modal details { margin-top: 16px; }
+.paid-compute-modal details > summary { color: var(--muted, #a4a8b2); cursor: pointer; }
+.paid-compute-modal details > dl { margin-top: 10px; }
+.paid-compute-summary dd { font-weight: 650; }
 .paid-compute-modal pre { max-height: 180px; overflow: auto; white-space: pre-wrap; font-size: 11px; }
-.paid-compute-consent { margin: 20px 0 0; color: var(--muted, #a4a8b2); }
-.paid-compute-modal-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 24px; }
+.paid-compute-consent { margin: 14px 0 0; color: var(--muted, #a4a8b2); }
+.paid-compute-modal-actions {
+	position: sticky;
+	bottom: -20px;
+	display: flex;
+	justify-content: flex-end;
+	gap: 10px;
+	margin: 14px -20px -20px;
+	padding: 12px 20px 20px;
+	background: var(--panel, #17191e);
+}
+
+@media (max-width: 560px), (max-height: 640px) {
+	.paid-compute-modal { max-height: calc(100vh - 24px); }
+	.paid-compute-modal-actions {
+		bottom: -20px;
+		margin-top: 12px;
+	}
+	.paid-compute-modal-actions button { min-width: 0; }
+}

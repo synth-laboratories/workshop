@@ -4,7 +4,7 @@ import { commands as spectaCommands } from "../generated/protocol";
 import { open } from "@tauri-apps/plugin-dialog";
 import desktopPackage from "../../../../package.json";
 import type { AppEvent, InternSessionControlRequest, InternSessionCreateRequest, InternSessionSendRequest, RuntimeEvent, Session } from "@synth/runtime-protocol";
-import type { CodexEvent, ComposerImageAttachment, DesktopInstanceDiagnostics, HostedTrainingModelCatalog, LagunaAdapterStatus, LagunaDownloadProgress, LagunaModelHit, LagunaPolicy, LagunaStatus, ModelPerformanceSummary, ModelPerformanceTurnSample, OptimizerInferDelta, OptimizerRunOutputs, PersistedCodexSession, RequestOptions, RuntimeBridge, SavedLoraCheckpoint, SavedLoraCheckpointPage, SavedLoraDownload, SavedLoraRunPage, SecretsBridge, TerminalEvent, TrainingModelDownloadProgress, WhisperDownloadProgress, WhisperRuntimeStatus } from "../bridge";
+import type { CodexEvent, ComposerImageAttachment, DesktopInstanceDiagnostics, HostedTrainingModelCatalog, LagunaAdapterStatus, LagunaDownloadProgress, LagunaModelHit, LagunaPolicy, LagunaStatus, ModelPerformanceSummary, ModelPerformanceTurnSample, OptimizerInferDelta, OptimizerRunOutputs, OptimizerRunViewV2, PersistedCodexSession, RegisteredInstance, RequestOptions, RuntimeBridge, SavedLoraCheckpoint, SavedLoraCheckpointPage, SavedLoraDownload, SavedLoraRunPage, SecretsBridge, TerminalEvent, TrainingModelDownloadProgress, WhisperDownloadProgress, WhisperRuntimeStatus } from "../bridge";
 import type { CoreDiagnostics } from "@synth/runtime-protocol";
 import type { ContainerDeployment, TraceV5Record, UsageLedgerEntry, UsageWindow } from "@synth/runtime-protocol";
 import { publicError } from "../runtime/publicError";
@@ -104,6 +104,7 @@ function listenRuntimeAppEvents(listener: (event: AppEvent) => void, onAttached?
 }
 
 function browserRuntimeBridge(): RuntimeBridge {
+	const maxConsecutiveFailures = 10;
 	return {
 		async request<T>(path: string, options: RequestOptions = {}): Promise<T> {
 			const response = await fetch(`/__runtime${path}`, {
@@ -117,6 +118,7 @@ function browserRuntimeBridge(): RuntimeBridge {
 		async subscribe(sessionId, afterSequence, onEvent, onStatus, _onActivity) {
 			let closed = false;
 			let cursor = afterSequence;
+			let consecutiveFailures = 0;
 			onStatus?.({ state: "connected" });
 			const poll = async () => {
 				if (closed) return;
@@ -128,8 +130,22 @@ function browserRuntimeBridge(): RuntimeBridge {
 						cursor = Math.max(cursor, event.sequence);
 						onEvent(event);
 					}
+					if (consecutiveFailures > 0) onStatus?.({ state: "connected" });
+					consecutiveFailures = 0;
 				} catch (reason) {
-					onStatus?.({ state: "reconnecting", detail: publicError(reason) });
+					consecutiveFailures += 1;
+					const detail = publicError(reason);
+					if (consecutiveFailures >= maxConsecutiveFailures) {
+						onStatus?.({
+							state: "failed",
+							detail: `${detail} · browser subscription stopped after ${maxConsecutiveFailures} attempts`
+						});
+						return;
+					}
+					onStatus?.({
+						state: "reconnecting",
+						detail: `${detail} · attempt ${consecutiveFailures}/${maxConsecutiveFailures}`
+					});
 				}
 				if (!closed) window.setTimeout(poll, 100);
 			};
@@ -246,6 +262,9 @@ export function installDesktopBridge(): void {
 				buildTimestamp: "0", executableDigest: null, processId: 0, executable: "browser",
 				dataRoot: "browser-memory://", viteUrl: window.location.origin, manifest: null
 			}),
+		getInstances: () => isTauri
+			? fromGenerated(spectaCommands.desktopInstancesList()) as Promise<RegisteredInstance[]>
+			: Promise.resolve([]),
 		chooseWorkspaceDirectory: async () => {
 			if (!isTauri) return null;
 			const selection = await fromGenerated(spectaCommands.workspaceChooseDirectory()).catch(() =>
@@ -527,6 +546,12 @@ window.synthCodexOauth ??= isTauri
 	};
 window.synthSecrets ??= isTauri
 	? {
+		workspaceRoots: () => fromGenerated(spectaCommands.secretsWorkspaceRootsList()),
+		bindings: () => fromGenerated(spectaCommands.secretsBindingsList()),
+		locators: () => fromGenerated(spectaCommands.secretsLocatorsList()),
+		rememberExternal: (pickerPath, provider, variable, label) => fromGenerated(spectaCommands.secretsLocatorRememberExternal(pickerPath, provider, variable, n(label))),
+		registerLocator: (locatorId) => fromGenerated(spectaCommands.secretsLocatorRegister(locatorId)),
+		forgetLocator: (locatorId) => fromGenerated(spectaCommands.secretsLocatorForget(locatorId)),
 		list: (provider, scope) => fromGenerated(spectaCommands.secretsList(n(provider), n(scope))),
 		create: (request) => fromGenerated(spectaCommands.secretsCreate(wire(request))),
 		replace: (secretId, value) => fromGenerated(spectaCommands.secretsReplace(secretId, value)),
@@ -543,6 +568,12 @@ window.synthSecrets ??= isTauri
 		denyUse: (secretId) => fromGenerated(spectaCommands.secretsDenyUse(secretId))
 	}
 	: {
+		workspaceRoots: async () => [],
+		bindings: async () => [],
+		locators: async () => [],
+		rememberExternal: async () => { throw new Error("Secrets require Synth Desktop"); },
+		registerLocator: async () => { throw new Error("Secrets require Synth Desktop"); },
+		forgetLocator: async () => undefined,
 		list: async () => [],
 		create: async () => { throw new Error("Secrets require Synth Desktop"); },
 		replace: async () => { throw new Error("Secrets require Synth Desktop"); },
@@ -653,6 +684,8 @@ window.synthWorkspaceScope ??= isTauri
 			getContainer: (containerId) => fromGenerated(spectaCommands.dataContainersGet(containerId)),
 			registerContainer: (request) => fromGenerated(spectaCommands.dataContainersRegister(wire(request))),
 			probeContainer: (containerId) => fromGenerated(spectaCommands.dataContainersProbe(containerId)),
+			reconcileContainer: (containerId, sessionId) => fromGenerated(spectaCommands.dataContainersReconcile(containerId, sessionId)),
+			restartContainer: (containerId, sessionId) => fromGenerated(spectaCommands.dataContainersRestart(containerId, sessionId)),
 			listTraces: () => fromGenerated(spectaCommands.dataTracesList()),
 			getTrace: (traceId) => fromGenerated(spectaCommands.dataTracesGet(traceId)),
 			materializeContainerTrace: (containerId, rolloutId) => fromGenerated(spectaCommands.dataTraceMaterialize(containerId, rolloutId)),
@@ -678,6 +711,8 @@ window.synthWorkspaceScope ??= isTauri
 			getContainer: (containerId) => window.synthRuntime!.request(`/v1/containers/${encodeURIComponent(containerId)}`),
 			registerContainer: (request) => window.synthRuntime!.request("/v1/containers", { method: "POST", body: request }),
 			probeContainer: (containerId) => window.synthRuntime!.request(`/v1/containers/${encodeURIComponent(containerId)}/probe`, { method: "POST" }),
+			reconcileContainer: (containerId, sessionId) => window.synthRuntime!.request(`/v1/containers/${encodeURIComponent(containerId)}/reconcile`, { method: "POST", body: { sessionRef: sessionId } }),
+			restartContainer: (containerId, sessionId) => window.synthRuntime!.request(`/v1/containers/${encodeURIComponent(containerId)}/restart`, { method: "POST", body: { sessionRef: sessionId } }),
 			async listTraces() {
 				return (await window.synthRuntime!.request<{ traces: TraceV5Record[] }>("/v1/traces")).traces;
 			},
@@ -773,7 +808,8 @@ window.synthWorkspaceScope ??= isTauri
 						prompt,
 						effort,
 						compactBeforeModelSwitch: Boolean(options?.compactBeforeModelSwitch),
-						clientMessageId: options?.clientMessageId ?? null
+						clientMessageId: options?.clientMessageId ?? null,
+						recoveryMode: Boolean(options?.recoveryMode)
 					}))),
 			interrupt: (sessionId) => fromGenerated(spectaCommands.codexTurnInterrupt({ sessionId })),
 			compact: (request) => fromGenerated(spectaCommands.codexThreadCompact(wire(request))),
@@ -966,6 +1002,8 @@ window.synthWorkspaceScope ??= isTauri
 				fromGenerated(spectaCommands.optimizersStageEvalCandidates(wire(request))) as Promise<{ id: string; candidates: { id: string; label: string }[] }>,
 			list: (query) => fromGenerated(spectaCommands.optimizersList(wire(query ?? null))),
 			get: (optimizerRunId) => fromGenerated(spectaCommands.optimizersGet(optimizerRunId)),
+			runViewV2: (optimizerRunId) =>
+				fromGenerated(spectaCommands.optimizersRunViewV2(optimizerRunId)) as Promise<OptimizerRunViewV2>,
 			create: (request) => fromGenerated(spectaCommands.optimizersCreate(request)),
 			refresh: (optimizerRunId) => fromGenerated(spectaCommands.optimizersRefresh(optimizerRunId)),
 			eventsAfter: (optimizerRunId, afterSeq = 0, limit) =>

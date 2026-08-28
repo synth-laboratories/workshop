@@ -919,6 +919,7 @@ fn send_request(start: CodexSessionStartRequest, prompt: &str) -> CodexTurnSendR
         effort: Some("none".into()),
         compact_before_model_switch: false,
         client_message_id: None,
+        recovery_mode: false,
     }
 }
 
@@ -1484,6 +1485,7 @@ async fn rejected_turn_send_arguments_never_mark_the_session_running() {
                 effort: Some("ultra".into()),
                 compact_before_model_switch: false,
                 client_message_id: None,
+                recovery_mode: false,
             },
         )
         .await
@@ -1536,6 +1538,7 @@ async fn turn_send_compacts_on_source_model_before_rebind() {
                 effort: Some("medium".into()),
                 compact_before_model_switch: true,
                 client_message_id: None,
+                recovery_mode: false,
             },
         )
         .await
@@ -1630,6 +1633,7 @@ async fn turn_send_reuses_client_message_id_in_journalled_user_prompt() {
                 effort: Some("none".into()),
                 compact_before_model_switch: false,
                 client_message_id: Some(client_message_id.into()),
+                recovery_mode: false,
             },
         )
         .await
@@ -2089,7 +2093,9 @@ fn materializes_diagram_skill_with_direct_tool_first_contract() {
     );
     assert!(secrets_skill.contains("tools.mcp__synth_secrets__secrets_manage"));
     assert!(secrets_skill.contains("request_env_import"));
-    assert!(secrets_skill.contains("Codex sandbox cannot deny those reads"));
+    assert!(secrets_skill.contains("workspace_roots_list"));
+    assert!(secrets_skill.contains("source_request"));
+    assert!(secrets_skill.contains("Pass an absolute path"));
     assert!(!secrets_skill.contains("secrets_create"));
     let agents = fs::read_to_string(home.join("AGENTS.md")).unwrap();
     assert!(agents.contains(".env"));

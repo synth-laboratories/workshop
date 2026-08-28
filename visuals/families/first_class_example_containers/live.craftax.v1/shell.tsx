@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Identifier } from "../../../chrome/Identifier.tsx";
 import { useLiveEvalStream } from "../../../chrome/useLiveEvalStream.ts";
 import { formatMissingNumber, formatMissingUsd } from "../../../runtime/liveStream.ts";
+import { mediaRefFrom } from "../../../runtime/mediaClient.ts";
 import type { LiveTemplateProps } from "../../../runtime/replayClient.ts";
 import { callForSequence, projectAgentTurns, reconcileCallSelection, type EvidenceField } from "../../../runtime/agentTranscript.ts";
 import type { LiveEvalEvent, VisualBinding } from "../../../runtime/types.ts";
@@ -13,12 +14,16 @@ import {
   craftaxTruthLabel,
   craftaxTruthState,
   groupTraceByStep,
+  craftaxReplayAvailability,
+  mergeCraftaxOptimizerJournalEvents,
   projectCraftaxViewer,
   scopeCraftaxEvents,
   environmentStepCount,
   replayMomentIndexes,
   type CraftaxSemanticTraceItem
 } from "./projectCraftax.ts";
+import { summarizeCraftaxRun, type CraftaxRolloutAggregate, type CraftaxRunAggregate } from "./aggregateCraftax.ts";
+import { craftaxStepPath, projectCraftaxAggregateTimeline } from "./aggregateTimeline.ts";
 import "./viewer.css";
 
 // Vite turns these template-local fixtures into packaged assets. Persisted
@@ -44,6 +49,43 @@ type StreamPayload = {
   scope?: StreamScope;
 };
 type VisualMetadata = { visualConfig?: Partial<ViewerConfig>; qualityGate?: { ready?: boolean; revision?: number } };
+type RunLifecycle = {
+  status: string;
+  terminal: boolean;
+  failed: boolean;
+  reason?: string;
+  rollouts: Array<{
+    lane: string;
+    seed?: number;
+    status: string;
+    reward?: number;
+    steps?: number;
+    calls?: number;
+    tokens?: number;
+    costUsd?: number;
+    achievements?: string[];
+    authority?: string;
+  }>;
+  evidence: {
+    state: "pending" | "accepted" | "partial" | "missing" | "rejected";
+    valid: number;
+    rejected: number;
+    missing: number;
+    sealedTraces: number;
+    failures: Array<{ seed?: number; rolloutId?: string; trialId?: string; code: string; sequence?: number; detail: string }>;
+    gaps: Array<{ seed?: number; rolloutId?: string; trialId?: string; code: string; detail: string }>;
+  };
+  usage: {
+    calls?: number;
+    costUsd?: number;
+    costCapUsd?: number;
+    costSource: "workshop_proxy" | "provider" | "container" | "unavailable";
+    provider?: string;
+    promptTokens?: number;
+    completionTokens?: number;
+  };
+  modelIdentity?: { provider?: string; model?: string; authority?: string };
+};
 type ViewerConfig = {
   density: "comfortable" | "compact";
   theme: "ember" | "light";
@@ -59,6 +101,12 @@ export type ShellProps = LiveTemplateProps & {
   data?: StreamPayload;
   bindings?: VisualBinding[] | { slots?: VisualBinding[] };
   visualMetadata?: VisualMetadata;
+  runLifecycle?: RunLifecycle;
+  experiment?: Record<string, unknown>;
+  /** Durable optimizer journal envelopes supplied by VisualHost. */
+  events?: LiveEvalEvent[];
+  /** Post-terminal retained trial evidence; not authoritative for run status. */
+  enrichmentEvents?: LiveEvalEvent[];
 };
 
 const DEFAULT_CONFIG: ViewerConfig = {
@@ -86,6 +134,25 @@ function completeSum(values: Array<number | undefined>): number | undefined {
   return values.reduce<number>((sum, value) => sum + (value as number), 0);
 }
 
+function runCostLabel(lifecycle: RunLifecycle | undefined, producerCost: number | undefined): string {
+  const cost = lifecycle?.usage.costUsd ?? producerCost;
+  if (cost == null) {
+    if (lifecycle?.usage.costSource === "workshop_proxy") {
+      const calls = lifecycle.usage.calls;
+      return calls == null
+        ? "unavailable · Workshop proxy receipt omitted cost"
+        : `unavailable · Workshop proxy receipt counted ${calls} calls but omitted cost`;
+    }
+    return "not emitted";
+  }
+  const amount = cost < 0.1 ? `$${cost.toFixed(6).replace(/0+$/, "").replace(/\.$/, "")}` : formatMissingUsd(cost);
+  const source = lifecycle?.usage.costSource === "workshop_proxy" ? "Workshop proxy"
+    : lifecycle?.usage.costSource === "provider" ? "provider receipt"
+      : lifecycle?.usage.costSource === "container" ? "container telemetry"
+        : producerCost != null ? "trace telemetry" : undefined;
+  return source ? `${amount} · ${source}` : amount;
+}
+
 function asStream(raw: unknown): StreamPayload {
   return object(raw) as StreamPayload;
 }
@@ -109,10 +176,10 @@ function timeLabel(event: LiveEvalEvent | undefined, precise = false): string {
     : { hour: "2-digit", minute: "2-digit", second: "2-digit" });
 }
 
-function eventStep(event: LiveEvalEvent, fallback: number): number {
+function eventStep(event: LiveEvalEvent): number | undefined {
   const payload = object(event.payload);
   const readout = object(payload.readout);
-  return finite(payload.step) ?? finite(payload.env_steps) ?? finite(readout.env_steps) ?? fallback;
+  return finite(payload.step) ?? finite(payload.step_index) ?? finite(payload.env_steps) ?? finite(readout.env_steps);
 }
 
 function latestObservation(events: LiveEvalEvent[]): Record<string, unknown> {
@@ -216,8 +283,124 @@ function summarizeLanes(events: LiveEvalEvent[]): Map<string, LaneSummary> {
   return summaries;
 }
 
-function Metric({ label, value }: { label: string; value: string }) {
-  return <div><span>{label}</span><strong>{value}</strong></div>;
+function OverviewStat({ label, value, detail }: { label: string; value: string; detail: string }) {
+  return <div className="cv-stat"><span>{label}</span><strong>{value}</strong><small>{detail}</small></div>;
+}
+
+function rangeLabel(min: number | undefined, max: number | undefined, suffix: string): string {
+  if (min == null || max == null) return `No ${suffix} reported`;
+  return min === max ? `${min} ${suffix} each` : `${min}–${max} ${suffix} per rollout`;
+}
+
+function compactUsd(value: number): string {
+  return value < 0.1
+    ? `$${value.toFixed(6).replace(/0+$/, "").replace(/\.$/, "")}`
+    : formatMissingUsd(value);
+}
+
+function runCostSummary(
+  lifecycle: RunLifecycle | undefined,
+  producerCost: number | undefined,
+  aggregate: CraftaxRunAggregate
+): { value: string; detail: string } {
+  const label = runCostLabel(lifecycle, producerCost);
+  if (label.startsWith("unavailable") || label === "not emitted") {
+    const calls = lifecycle?.usage.calls;
+    if (aggregate.totalCostUsd != null) {
+      return {
+        value: compactUsd(aggregate.totalCostUsd),
+        detail: lifecycle?.usage.costSource === "workshop_proxy"
+          ? `Complete across ${aggregate.reportedCosts} rollout records · proxy aggregate omitted`
+          : `Complete across ${aggregate.reportedCosts} rollout records · per-rollout telemetry`
+      };
+    }
+    if (aggregate.knownCostUsd != null) {
+      return {
+        value: `Known ${compactUsd(aggregate.knownCostUsd)}`,
+        detail: `${aggregate.reportedCosts}/${aggregate.rollouts.length} rollouts priced · exact total unavailable`
+      };
+    }
+    if (label === "not emitted") return { value: "Not emitted", detail: "No authoritative cost amount" };
+    return {
+      value: "Unavailable",
+      detail: calls == null ? "Workshop proxy omitted an amount" : `${calls} proxy calls counted · amount omitted`
+    };
+  }
+  const [value, detail] = label.split(" · ", 2);
+  return { value, detail: detail ?? "Authoritative run telemetry" };
+}
+
+function distributionHeight(value: number | undefined, maximum: number): string {
+  if (value == null || maximum <= 0) return "0%";
+  return `${Math.max(3, Math.min(100, Math.abs(value) / maximum * 100)).toFixed(1)}%`;
+}
+
+type DistributionMetric = {
+  key: "reward" | "achievements" | "steps" | "calls" | "tokens" | "cost";
+  label: string;
+  className: string;
+  value: (rollout: CraftaxRolloutAggregate) => number | undefined;
+  format: (value: number | undefined) => string;
+};
+
+function AggregateDistribution({
+  title,
+  detail,
+  rollouts,
+  metrics,
+  selectedLane,
+  onSelect
+}: {
+  title: string;
+  detail: string;
+  rollouts: CraftaxRolloutAggregate[];
+  metrics: DistributionMetric[];
+  selectedLane?: string;
+  onSelect: (lane: string) => void;
+}) {
+  const maxima = new Map(metrics.map((metric) => [
+    metric.key,
+    Math.max(0, ...rollouts.flatMap((rollout) => {
+      const value = metric.value(rollout);
+      return value == null ? [] : [Math.abs(value)];
+    }))
+  ]));
+  return <figure className="cv-distribution">
+    <figcaption><div><strong>{title}</strong><span>{detail}</span></div><div className="cv-distribution-legend" aria-label={`${title} legend`}>{metrics.map((metric) => <i className={metric.className} key={metric.key}>{metric.label}</i>)}</div></figcaption>
+    <ol className="cv-distribution-chart" aria-label={`${title} across all evaluation rollouts`}>
+      {rollouts.map((rollout) => {
+        const values = metrics.map((metric) => metric.value(rollout));
+        const label = `${rollout.seed != null ? `seed ${rollout.seed}` : rollout.lane}: ${metrics.map((metric, index) => `${metric.label} ${metric.format(values[index])}`).join(", ")}`;
+        return <li key={rollout.lane} data-rollout-status={rollout.status}>
+          <button type="button" title={label} aria-label={`${label}. Inspect rollout.`} aria-current={rollout.lane === selectedLane} onClick={() => onSelect(rollout.lane)}>
+            <span className="cv-distribution-bars" aria-hidden="true">{metrics.map((metric, index) => <span className={`cv-distribution-bar ${metric.className}${values[index] == null ? " missing" : values[index]! < 0 ? " negative" : ""}`} key={metric.key}><i style={{ height: distributionHeight(values[index], maxima.get(metric.key) ?? 0) }} /><b>{metric.format(values[index])}</b></span>)}</span>
+            <span className="cv-distribution-id">{rollout.seed != null ? `seed ${rollout.seed}` : <Identifier value={rollout.lane} max={11} copy={false} />}</span>
+            <em>{rollout.status ?? "in progress"}</em>
+          </button>
+        </li>;
+      })}
+    </ol>
+  </figure>;
+}
+
+function RunDistributions({ rollouts, selectedLane, onSelect }: { rollouts: CraftaxRolloutAggregate[]; selectedLane?: string; onSelect: (lane: string) => void }) {
+  const outcomeMetrics: DistributionMetric[] = [
+    { key: "reward", label: "Reward", className: "reward", value: (rollout) => rollout.reward, format: (value) => formatMissingNumber(value) },
+    { key: "achievements", label: "Achievements", className: "achievements", value: (rollout) => rollout.achievementsReported ? rollout.achievements.length : undefined, format: (value) => formatMissingNumber(value, 0) }
+  ];
+  const usageMetrics: DistributionMetric[] = [
+    { key: "steps", label: "Steps", className: "steps", value: (rollout) => rollout.steps, format: (value) => formatMissingNumber(value, 0) },
+    { key: "calls", label: "Retained calls", className: "calls", value: (rollout) => rollout.calls, format: (value) => formatMissingNumber(value, 0) },
+    { key: "tokens", label: "Tokens", className: "tokens", value: (rollout) => rollout.tokens, format: (value) => formatMissingNumber(value, 0) },
+    { key: "cost", label: "Cost", className: "cost", value: (rollout) => rollout.costUsd, format: (value) => value == null ? "—" : compactUsd(value) }
+  ];
+  const outcomeCoverage = `${rollouts.filter((rollout) => rollout.reward != null).length}/${rollouts.length} rewards · ${rollouts.filter((rollout) => rollout.achievementsReported).length}/${rollouts.length} achievement sets`;
+  const usageCoverage = `${rollouts.filter((rollout) => rollout.steps != null).length}/${rollouts.length} steps · ${rollouts.filter((rollout) => rollout.tokens != null).length}/${rollouts.length} tokens · ${rollouts.filter((rollout) => rollout.costUsd != null).length}/${rollouts.length} costs`;
+  return <section className="cv-run-distributions" aria-label="Combined evaluation distributions">
+    <AggregateDistribution title="Outcome distribution" detail={outcomeCoverage} rollouts={rollouts} metrics={outcomeMetrics} selectedLane={selectedLane} onSelect={onSelect} />
+    <AggregateDistribution title="Work and usage distribution" detail={usageCoverage} rollouts={rollouts} metrics={usageMetrics} selectedLane={selectedLane} onSelect={onSelect} />
+    <p className="cv-distribution-note">Each metric is normalized to its own maximum within this evaluation. Hover or focus for exact values; select a rollout to inspect its trace.</p>
+  </section>;
 }
 
 function truthNumber(value: number | undefined, terminal: boolean, format: (value: number) => string): string {
@@ -227,28 +410,47 @@ function truthNumber(value: number | undefined, terminal: boolean, format: (valu
 
 export function Shell(props: ShellProps) {
   const bindingList = Array.isArray(props.bindings) ? props.bindings : props.bindings?.slots ?? [];
-  const stream = asStream(props.data ?? props.stream ?? bundledFixtureStream(bindingList));
+  // `stream` is the declared input. `data` remains a compatibility fallback
+  // for direct previews that pass one anonymous fixture payload.
+  const stream = asStream(props.stream ?? props.data ?? bundledFixtureStream(bindingList));
   const declaredStreamCount = props.replay?.streams.length ?? 0;
   const scope = stream.scope;
+  const optimizerEvents = useMemo(
+    () => mergeCraftaxOptimizerJournalEvents(props.events, props.enrichmentEvents),
+    [props.events, props.enrichmentEvents]
+  );
+  const optimizerJournalBound = bindingList.some((binding) => bindingInputName(binding) === "optimizer_run");
   // A fixture is authoring evidence. It never stands in for a declared stream,
   // and a declared stream is never inferred from the fixture's own fields.
   const fixtureEvents = useMemo(
-    () => (declaredStreamCount > 0 ? undefined : stream.events),
-    [declaredStreamCount, stream.events]
+    () => (optimizerEvents || declaredStreamCount > 0 ? undefined : stream.events),
+    [optimizerEvents, declaredStreamCount, stream.events]
   );
-  const { events, state, error, ready, recovered } = useLiveEvalStream({
+  const liveStream = useLiveEvalStream({
     replay: props.replay,
     fixtureEvents,
     replayMs: stream.replay_ms,
     visualId: props.visualId,
     revision: props.revision
   });
+  // Optimizer-run subscriptions are a durable journal, not an authoring
+  // fixture. Rendering them directly is both immediate and reopen-safe. The
+  // old fixture path replayed one of 3,354 envelopes every 800 ms, making a
+  // completed run look nearly empty for roughly 45 minutes.
+  const events = optimizerEvents ?? liveStream.events;
+  const state = optimizerEvents
+    ? props.runLifecycle?.terminal ? "terminal" : "live"
+    : liveStream.state;
+  const error = liveStream.error;
+  const ready = optimizerEvents ? true : liveStream.ready;
+  const recovered = liveStream.recovered;
   const frameBaseUrl = props.replay?.streams[0]?.sseUrl ?? props.replay?.streams[0]?.pollUrl;
   const missingTransportCount = props.replayMissingTransport?.length ?? 0;
   const bindingError = missingTransportCount > 0
     ? `${missingTransportCount} live stream${missingTransportCount === 1 ? " is" : "s are"} missing required poll transport`
     : null;
   const config = { ...DEFAULT_CONFIG, ...props.visualMetadata?.visualConfig };
+  const experimentRuntime = object(object(props.experiment).runtime);
   const scopedEvents = useMemo(() => {
     // A visual bound to specific rollouts must never silently import every
     // run sharing the producer's storage root.
@@ -262,31 +464,78 @@ export function Shell(props: ShellProps) {
   const [speed, setSpeed] = useState(1);
   const [selectedTraceId, setSelectedTraceId] = useState<string | null>(null);
   const [traceMode, setTraceMode] = useState<"focus" | "full">("full");
-  const [surface, setSurface] = useState<"replay" | "transcript" | "raw" | "metrics" | "integrity">("transcript");
+  const [surface, setSurface] = useState<"replay" | "transcript" | "raw" | "metrics" | "integrity">("replay");
   const [selectedCallId, setSelectedCallId] = useState<string | null>(null);
   const [transcriptMode, setTranscriptMode] = useState<"focus" | "full">("full");
   const [showEarlierGroups, setShowEarlierGroups] = useState(false);
   const [framePlaying, setFramePlaying] = useState(false);
   const [frameFps, setFrameFps] = useState(4);
   const [failedFrameUrl, setFailedFrameUrl] = useState<string | null>(null);
+  const [loadedFrame, setLoadedFrame] = useState<{ digest: string; dataUrl: string } | null>(null);
+  const [failedMediaDigest, setFailedMediaDigest] = useState<string | null>(null);
   const moments = useMemo(() => replayMomentIndexes(fullProjection.ordered), [fullProjection.ordered]);
   const environmentSteps = useMemo(() => environmentStepCount(fullProjection.ordered), [fullProjection.ordered]);
+  const replayAvailability = useMemo(
+    () => craftaxReplayAvailability(fullProjection.ordered, props.runLifecycle?.evidence.state),
+    [fullProjection.ordered, props.runLifecycle?.evidence.state]
+  );
   const evaluationIndex = fullProjection.ordered.length
     ? evaluationCutoff == null ? fullProjection.ordered.length - 1 : Math.min(evaluationCutoff, fullProjection.ordered.length - 1)
     : -1;
   const momentPosition = moments.length
     ? Math.max(0, moments.findLastIndex((index) => index <= evaluationIndex))
     : -1;
-  const evaluationEvents = evaluationIndex < 0 ? [] : fullProjection.ordered.slice(0, evaluationIndex + 1);
+  const evaluationEvents = useMemo(
+    () => evaluationIndex < 0 ? [] : fullProjection.ordered.slice(0, evaluationIndex + 1),
+    [evaluationIndex, fullProjection.ordered]
+  );
+  const lifecycleTerminal = props.runLifecycle?.terminal === true;
+  const lifecycleFailed = props.runLifecycle?.failed === true;
   const viewer = useMemo(() => projectCraftaxViewer(evaluationEvents, chosenLane, laneCutoff), [evaluationEvents, chosenLane, laneCutoff]);
   const { lanes, selectedLane, laneEvents, visibleEvents, visibleIndex, rewardSignals, achievements, traceEvents, semanticTrace, frameEvents, policy } = viewer;
   const laneSummaries = useMemo(() => summarizeLanes(evaluationEvents), [evaluationEvents]);
+  const terminalRollouts = lifecycleTerminal && props.runLifecycle?.rollouts?.length
+    ? props.runLifecycle.rollouts
+    : undefined;
+  const runAggregate = useMemo(
+    () => summarizeCraftaxRun(evaluationEvents, terminalRollouts),
+    [evaluationEvents, terminalRollouts]
+  );
   const latest = visibleEvents.at(-1);
+  const selectedEnvironmentStep = useMemo(
+    () => [...visibleEvents].reverse().map(eventStep).find((step) => step != null),
+    [visibleEvents]
+  );
   const observation = latestObservation(visibleEvents);
   const inventory = inventoryFrom(observation);
-  const terminalLanes = [...laneSummaries.values()].filter((summary) => summary.terminal).length;
+  const runCost = runCostSummary(props.runLifecycle, finite(policy.usage.cost_usd), runAggregate);
+  const receiptCalls = props.runLifecycle?.usage.calls;
+  const retainedCalls = runAggregate.totalCalls;
+  const callValue = receiptCalls == null ? formatMissingNumber(retainedCalls, 0) : `${formatMissingNumber(receiptCalls, 0)} billed`;
+  const callDetail = receiptCalls == null
+    ? `${runAggregate.reportedCalls}/${runAggregate.rollouts.length} rollout journals reported calls`
+    : retainedCalls == null
+      ? `Workshop proxy receipt · retained call starts unavailable`
+      : `${formatMissingNumber(retainedCalls, 0)} retained call starts · Workshop receipt covers ${formatMissingNumber(receiptCalls, 0)}`;
+  const promptTokens = props.runLifecycle?.usage.promptTokens;
+  const completionTokens = props.runLifecycle?.usage.completionTokens;
+  const receiptTokens = promptTokens != null && completionTokens != null ? promptTokens + completionTokens : undefined;
+  const tokenValue = receiptTokens ?? runAggregate.totalTokens;
+  const tokenDetail = receiptTokens != null
+    ? `${formatMissingNumber(promptTokens, 0)} prompt + ${formatMissingNumber(completionTokens, 0)} completion · Workshop receipt${runAggregate.totalTokens == null ? "" : ` · ${formatMissingNumber(runAggregate.totalTokens, 0)} runtime across terminal records`}`
+    : tokenValue == null
+      ? `${runAggregate.reportedTokens}/${runAggregate.rollouts.length} rollouts reported complete token usage`
+      : `Complete across ${runAggregate.reportedTokens} rollout records`;
+  const terminalByLane = new Map((terminalRollouts ?? []).map((rollout) => [rollout.lane, rollout]));
+  const selectedTerminal = selectedLane ? terminalByLane.get(selectedLane) : undefined;
+  const terminalLanes = terminalRollouts?.length ?? [...laneSummaries.values()].filter((summary) => summary.terminal).length;
   const allLanesTerminal = lanes.length > 0 && terminalLanes === lanes.length;
-  const visualLive = state === "live" && terminalLanes < lanes.length;
+  const lifecycleGaps = props.runLifecycle?.evidence.gaps ?? [];
+  const missingRewardFacts = lifecycleGaps.filter((gap) => gap.code === "evaluator_numeric_reward_missing").length;
+  const missingStepFacts = lifecycleGaps.filter((gap) => gap.code === "full_trace_step_count_missing").length;
+  const visualTerminal = lifecycleTerminal || allLanesTerminal;
+  const visualLive = !lifecycleTerminal && state === "live" && terminalLanes < lanes.length;
+  const trustworthyReplay = replayAvailability.replayable;
   const inspectedItems = traceMode === "focus"
     ? semanticTrace.filter((item) => item.category === "policy" || item.category === "evidence")
     : semanticTrace;
@@ -295,7 +544,36 @@ export function Shell(props: ShellProps) {
   const totalTokens = completeSum(turns.calls.map((call) => finite(call.usage.total_tokens)));
   const totalLatencyMs = completeSum(turns.calls.map((call) => call.latencyMs));
   const totalCostUsd = completeSum(turns.calls.map((call) => call.costUsd));
-  const selectedCall = turns.calls.find((call) => call.id === selectedCallId) ?? turns.calls.find((call) => call.id === reconcileCallSelection(turns.calls, selectedCallId, transcriptMode === "focus"));
+  const selectedRolloutTokens = selectedTerminal?.tokens ?? totalTokens;
+  const selectedRolloutAuthority = selectedTerminal?.authority
+    ?? props.runLifecycle?.modelIdentity?.authority
+    ?? [...new Set(turns.calls.map((call) => call.authority).filter(Boolean))].join(", ")
+    ?? undefined;
+  const pinnedProvider = props.runLifecycle?.modelIdentity?.provider
+    ?? (typeof experimentRuntime.provider === "string" ? experimentRuntime.provider : undefined)
+    ?? props.runLifecycle?.usage.provider;
+  const pinnedModel = props.runLifecycle?.modelIdentity?.model
+    ?? (typeof experimentRuntime.model === "string" ? experimentRuntime.model : undefined);
+  const integrityAccepted = props.runLifecycle?.evidence.state === "accepted";
+  const reconciliationLabel = props.runLifecycle?.evidence.state === "rejected"
+    ? `${props.runLifecycle.evidence.rejected} rejected · ${props.runLifecycle.evidence.sealedTraces} sealed`
+    : integrityAccepted
+      ? `${props.runLifecycle?.evidence.valid ?? 0} terminal records accepted · ${props.runLifecycle?.evidence.sealedTraces ?? 0} sealed traces retained`
+      : lifecycleGaps.length > 0 && props.runLifecycle
+        ? `${props.runLifecycle.evidence.sealedTraces} sealed trace${props.runLifecycle.evidence.sealedTraces === 1 ? "" : "s"} retained · evaluation facts incomplete`
+        : semanticTrace.some((item) => item.kind === "trace.reconciled")
+          ? "recorded and visible"
+          : viewer.terminal ? "terminal trace retained; no reconciliation event emitted" : "pending";
+  const modelIdentityLabel = pinnedModel || pinnedProvider
+    ? `${pinnedProvider ?? "provider unavailable"}${pinnedModel ? ` · ${pinnedModel}` : ""} · pinned run identity`
+    : turns.calls.every((call) => call.model && call.provider)
+      ? "recorded on every retained call"
+      : "not recorded by the run or retained calls";
+  // Keep the fallback render-derived. Persisting it in an effect adds a passive
+  // state update for every replay page even when the selected call did not
+  // change; an explicit click is the only reason to pin a call in state.
+  const selectedCall = turns.calls.find((call) => call.id === selectedCallId)
+    ?? turns.calls.find((call) => call.id === reconcileCallSelection(turns.calls, selectedCallId, transcriptMode === "focus"));
   const renderedCalls = turns.calls.length <= TRANSCRIPT_CALL_WINDOW ? turns.calls : (() => {
     const recent = turns.calls.slice(-TRANSCRIPT_CALL_WINDOW);
     return selectedCall && !recent.some((call) => call.id === selectedCall.id) ? [selectedCall, ...recent.slice(1)] : recent;
@@ -305,15 +583,59 @@ export function Shell(props: ShellProps) {
     ? traceGroups
     : traceGroups.slice(-TRACE_GROUP_WINDOW);
   const hiddenGroupCount = traceGroups.length - visibleGroups.length;
-  const frameUrl = useMemo(() => {
+  const retainedFrameDigests = useMemo(
+    () => frameEvents.flatMap((event) => {
+      const reference = mediaRefFrom(event.payload);
+      return reference ? [reference.casDigest] : [];
+    }),
+    [frameEvents]
+  );
+  const selectedMediaDigest = viewer.frameMedia?.casDigest;
+  useEffect(() => {
+    if (!selectedMediaDigest || !props.media) {
+      setLoadedFrame(null);
+      return;
+    }
+    const cached = props.media.peek(selectedMediaDigest);
+    if (cached) {
+      setLoadedFrame({ digest: selectedMediaDigest, dataUrl: cached.dataUrl });
+      setFailedMediaDigest(null);
+      return;
+    }
+    let cancelled = false;
+    const selectedIndex = Math.max(0, retainedFrameDigests.indexOf(selectedMediaDigest));
+    void props.media.warm(retainedFrameDigests, selectedIndex).then((loaded) => {
+      if (cancelled) return;
+      if (!loaded) {
+        setFailedMediaDigest(selectedMediaDigest);
+        return;
+      }
+      setLoadedFrame({ digest: loaded.casDigest, dataUrl: loaded.dataUrl });
+      setFailedMediaDigest(null);
+    }).catch(() => {
+      if (!cancelled) setFailedMediaDigest(selectedMediaDigest);
+    });
+    return () => { cancelled = true; };
+  }, [props.media, retainedFrameDigests, selectedMediaDigest]);
+  const directFrameUrl = useMemo(() => {
     if (!viewer.frameUrl || viewer.frameUrl === failedFrameUrl) return undefined;
     try {
       // Frame paths are relative to the stream that emitted them.
-      return new URL(viewer.frameUrl, frameBaseUrl ?? window.location.href).toString();
+      // Without a declared stream base, a relative rollout URL is not an
+      // authority: resolving it against tauri://localhost only creates a 404.
+      if (!frameBaseUrl && !/^https?:|^data:/i.test(viewer.frameUrl)) return undefined;
+      return frameBaseUrl
+        ? new URL(viewer.frameUrl, frameBaseUrl).toString()
+        : new URL(viewer.frameUrl).toString();
     } catch {
       return undefined;
     }
   }, [viewer.frameUrl, failedFrameUrl, frameBaseUrl]);
+  const retainedFrameUrl = loadedFrame?.digest === selectedMediaDigest && selectedMediaDigest != null && failedMediaDigest !== selectedMediaDigest
+    ? loadedFrame?.dataUrl
+    : undefined;
+  const frameUrl = retainedFrameUrl ?? directFrameUrl;
+  const retainedFrameLoading = Boolean(selectedMediaDigest && props.media && !retainedFrameUrl && failedMediaDigest !== selectedMediaDigest);
   const rewardSeries = rewardSignals.length
     ? rewardSignals.reduce<number[]>((series, event) => {
         series.push((series.at(-1) ?? 0) + (craftaxRewardValue(event.payload) ?? 0));
@@ -329,12 +651,32 @@ export function Shell(props: ShellProps) {
     else if (event.kind === "reward_signal") series.push(series.at(-1) ?? 0);
     return series;
   }, []);
+  const aggregateTimeline = useMemo(
+    () => projectCraftaxAggregateTimeline(
+      evaluationEvents,
+      lanes,
+      evaluationCutoff == null ? terminalRollouts : undefined
+    ),
+    [evaluationEvents, evaluationCutoff, lanes, terminalRollouts]
+  );
+  const aggregateMaxStep = Math.max(1, ...aggregateTimeline.map((timeline) => timeline.terminalStep));
+  const aggregateMinReward = Math.min(0, ...aggregateTimeline.flatMap((timeline) => timeline.points.map((point) => point.reward)));
+  const aggregateMaxReward = Math.max(1, ...aggregateTimeline.flatMap((timeline) => timeline.points.map((point) => point.reward)));
+  const aggregateX = (step: number) => 42 + (Math.max(0, step) / aggregateMaxStep) * 700;
+  const aggregateY = (reward: number) => 216 - ((reward - aggregateMinReward) / Math.max(1, aggregateMaxReward - aggregateMinReward)) * 194;
   const lastDurableSequence = craftaxEventSequence(fullProjection.ordered.at(-1) ?? ({} as LiveEvalEvent), -1);
+  const journalHydrating = optimizerJournalBound && optimizerEvents === undefined && !bindingError && !error;
   // The transport state is the hook's; this only names it for a reader. Every
   // state here is reached deliberately, including the ones that used to be the
   // absence of a state.
   const transportState = bindingError ? "error" : state;
-  const connectionState = bindingError
+  const connectionState = journalHydrating
+    ? "loading durable journal"
+    : lifecycleTerminal
+    ? lifecycleFailed
+      ? `failed${props.runLifecycle?.reason ? ` · ${props.runLifecycle.reason}` : ""}`
+      : props.runLifecycle?.status.replaceAll("_", " ") ?? "finished"
+    : bindingError
     ? "binding error"
     : transportState === "error"
       ? `transport error · last durable seq ${lastDurableSequence >= 0 ? lastDurableSequence : "—"}`
@@ -373,10 +715,6 @@ export function Shell(props: ShellProps) {
   }, [traceMode, selectedLane]);
 
   useEffect(() => {
-    setSelectedCallId((current) => reconcileCallSelection(turns.calls, current, transcriptMode === "focus"));
-  }, [turns.calls, transcriptMode, props.visualMetadata?.qualityGate?.revision]);
-
-  useEffect(() => {
     if (!framePlaying || !frameEvents.length) return;
     const timer = window.setInterval(() => {
       const currentSequence = craftaxEventSequence(visibleEvents.at(-1) ?? frameEvents[0], -1);
@@ -394,16 +732,20 @@ export function Shell(props: ShellProps) {
 		data-testid="visual-live-craftax"
 		data-visual-landmark="gameplay-dashboard"
 		data-visual-transport-state={transportState}
+		data-visual-event-source={optimizerEvents ? "optimizer-journal" : declaredStreamCount > 0 ? "declared-stream" : "fixture"}
 		data-visual-rollout-count={lanes.length}
 		data-visual-rendered-frame-count={frameUrl ? frameEvents.length : 0}
 		data-visual-semantic-event-count={semanticTrace.length}
-		data-visual-terminal={allLanesTerminal ? "true" : "false"}
+		data-visual-terminal={visualTerminal ? "true" : "false"}
+		data-run-evidence-state={props.runLifecycle?.evidence.state}
+		data-run-sealed-traces={props.runLifecycle?.evidence.sealedTraces}
 		data-visual-error={bindingError ?? error ?? ""}
 		data-active-surface={surface}
+		data-journal-hydrating={journalHydrating ? "true" : "false"}
 	>
       <header className="cv-topbar">
         <div><p className="cv-eyebrow">Live eval · Craftax{scope?.campaign_id ? <> · <Identifier value={scope.campaign_id} label="campaign" max={18} copy={false} /></> : null}</p><h2>{props.title ?? "Policy through time"}</h2>{props.lede ? <p className="cv-lede">{props.lede}</p> : null}</div>
-        <div className="cv-connection" role="status"><span className={visualLive ? "live" : ready ? "ready" : ""} />{connectionState}</div>
+        <div className="cv-connection" role="status"><span className={visualLive ? "live" : !lifecycleFailed && ready ? "ready" : lifecycleFailed ? "failed" : ""} />{connectionState}</div>
       </header>
 
       <nav className="cv-surfaces" aria-label="Trace viewer surfaces">
@@ -411,32 +753,52 @@ export function Shell(props: ShellProps) {
           <button key={id} type="button" aria-current={surface === id ? "page" : undefined} onClick={() => setSurface(id)}>{label}</button>)}
       </nav>
 
-      <section className="cv-summary cv-surface-replay" aria-label="Run summary">
-        <Metric label="Rollouts" value={String(lanes.length || "—")} />
-        <Metric label="Selected step" value={latest ? String(eventStep(latest, visibleIndex)) : "—"} />
-        <Metric label="Reward" value={truthNumber(viewer.reward, viewer.terminal, (value) => formatMissingNumber(value))} />
-        <Metric label="Achievements" value={String(achievements.length)} />
-        <Metric label="Policy cost" value={truthNumber(finite(policy.usage.cost_usd), viewer.terminal, formatMissingUsd)} />
-        <Metric label="Trace" value={`${semanticTrace.length} semantic events`} />
+      {journalHydrating ? <section className="cv-hydrating" role="status" aria-live="polite" data-testid="craftax-journal-hydrating">
+        <span className="cv-hydrating-mark" aria-hidden="true" />
+        <div><p className="cv-eyebrow">Durable replay</p><h3>Loading retained rollout journals…</h3><p>Workshop is rebuilding the visual from persisted optimizer evidence. Counts and replay controls will appear only after the journal is available.</p></div>
+      </section> : <>
+      <section className="cv-overview cv-surface-replay" aria-label="Overall run summary" data-visual-landmark="run-overview">
+        <div className="cv-overview-heading"><div><p className="cv-eyebrow">Overall · all rollouts</p><h3>Evaluation overview</h3></div><span>Combined at the current evaluation cutoff</span></div>
+        <div className="cv-overview-grid">
+          <OverviewStat label="Rollouts" value={String(runAggregate.rollouts.length || "—")} detail={`${terminalLanes} terminal`} />
+          <OverviewStat label="Terminal reward" value={formatMissingNumber(runAggregate.rewardMean)} detail={runAggregate.reportedRewards ? `mean · median ${formatMissingNumber(runAggregate.rewardMedian)} · range ${formatMissingNumber(runAggregate.rewardMin)}–${formatMissingNumber(runAggregate.rewardMax)} · ${runAggregate.reportedRewards}/${runAggregate.rollouts.length} scored` : "No terminal numeric rewards reported"} />
+          <OverviewStat label="Environment steps" value={formatMissingNumber(runAggregate.totalSteps, 0)} detail={`${rangeLabel(runAggregate.minSteps, runAggregate.maxSteps, "steps")} · ${runAggregate.reportedSteps}/${runAggregate.rollouts.length} reported`} />
+          <OverviewStat label="Provider calls" value={callValue} detail={callDetail} />
+          <OverviewStat label="Provider tokens" value={tokenValue == null ? "Not emitted" : `${formatMissingNumber(tokenValue, 0)}${receiptTokens == null ? "" : " billed"}`} detail={tokenDetail} />
+          <OverviewStat label="Achievements" value={runAggregate.totalAchievements == null ? "Not emitted" : `${runAggregate.totalAchievements} unlocks`} detail={runAggregate.totalAchievements == null ? `${runAggregate.reportedAchievements}/${runAggregate.rollouts.length} terminal records reported` : `median ${formatMissingNumber(runAggregate.achievementMedian)} · range ${formatMissingNumber(runAggregate.minAchievements, 0)}–${formatMissingNumber(runAggregate.maxAchievements, 0)} · ${runAggregate.achievementNames.length} unique · ${runAggregate.reportedAchievements}/${runAggregate.rollouts.length} reported`} />
+        </div>
+        <div className="cv-cost-line" data-cost-authority={props.runLifecycle?.usage.costSource}><span>Run cost</span><strong>{runCost.value}</strong><small>{runCost.detail}</small></div>
+        {runAggregate.achievementNames.length ? <div className="cv-coverage" aria-label="Achievements unlocked across all rollouts"><span>Across run</span>{runAggregate.achievementNames.map((name) => <i key={name}>{name}</i>)}</div> : null}
+        <RunDistributions rollouts={runAggregate.rollouts} selectedLane={selectedLane} onSelect={(lane) => { setChosenLane(lane); setLaneCutoff(null); setSurface("replay"); }} />
       </section>
 
       {bindingError || error ? <p role="alert" className="cv-error">{bindingError ?? error}</p> : null}
+      {props.runLifecycle?.evidence.state === "rejected" ? <section className="cv-evidence-rejected" role="alert" data-testid="craftax-rejected-evidence">
+        <strong>Trace evidence was rejected, not missing.</strong>
+        <p>{props.runLifecycle.usage.calls == null ? "Provider call count unavailable" : `${props.runLifecycle.usage.calls} provider calls occurred`}; {props.runLifecycle.evidence.rejected} rollout journal{props.runLifecycle.evidence.rejected === 1 ? "" : "s"} failed integrity verification. No rejected event is used for replay or sealing.</p>
+        <ul>{props.runLifecycle.evidence.failures.map((failure, index) => <li key={`${failure.rolloutId ?? failure.seed ?? "failure"}:${index}`}><code>{failure.code}</code>{failure.sequence != null ? ` at sequence ${failure.sequence}` : ""}{failure.seed != null ? ` · seed ${failure.seed}` : ""}</li>)}</ul>
+      </section> : null}
+      {props.runLifecycle && props.runLifecycle.evidence.state !== "rejected" && props.runLifecycle.evidence.sealedTraces > 0 && lifecycleGaps.length > 0 ? <section className="cv-evidence-incomplete" role="status" data-testid="craftax-evaluation-gaps">
+        <strong>Trace replay retained; evaluation result incomplete.</strong>
+        <p>{props.runLifecycle.evidence.sealedTraces} sealed trace{props.runLifecycle.evidence.sealedTraces === 1 ? " is" : "s are"} available and replayable. {missingRewardFacts || "Some"} rollout{missingRewardFacts === 1 ? " is" : "s are"} missing a numeric reward; {missingStepFacts || "some"} {missingStepFacts === 1 ? "is" : "are"} missing the terminal environment-step fact required by the evaluation contract. These missing facts do not invalidate the sealed replay.</p>
+      </section> : null}
       <nav className="cv-lanes cv-surface-replay" aria-label="Rollout lanes">
         {lanes.map((lane) => {
           const summary = laneSummaries.get(lane);
+          const terminal = terminalByLane.get(lane);
           return <button key={lane} type="button" aria-current={lane === selectedLane} aria-label={`Select rollout ${lane}`} onClick={() => { setChosenLane(lane); setLaneCutoff(null); }}>
-            <span><Identifier value={lane} max={20} copy={false} style={{ fontWeight: 700 }} /><em>{summary?.terminal ? "done" : "live"}</em></span>
-            <small>reward {formatMissingNumber(summary?.reward)} · {summary?.achievements ?? 0} achievements</small>
+            <span><Identifier value={lane} max={20} copy={false} style={{ fontWeight: 700 }} /><em>{terminal?.status ?? (summary?.terminal ? "done" : lifecycleFailed ? "failed" : "live")}</em></span>
+            <small>terminal reward {formatMissingNumber(terminalRollouts ? terminal?.reward : summary?.reward)} · {terminalRollouts ? terminal?.achievements?.length ?? "—" : summary?.achievements ?? 0} achievements</small>
           </button>;
         })}
       </nav>
 
       <section className="cv-workspace cv-surface-replay" data-visual-landmark="primary-surface">
         <article className="cv-panel cv-game">
-          <div className="cv-heading"><div><p className="cv-eyebrow">Selected rollout</p><h3>{selectedLane ? <Identifier value={selectedLane} max={30} style={{ font: "inherit" }} /> : "Waiting for events"}</h3></div><span>{viewer.terminal ? "finished" : visualLive ? "live" : "waiting"}</span></div>
+          <div className="cv-heading"><div><p className="cv-eyebrow">Selected rollout</p><h3>{selectedLane ? <Identifier value={selectedLane} max={30} style={{ font: "inherit" }} /> : "Waiting for events"}</h3></div><span>{lifecycleFailed ? "failed" : viewer.terminal ? "finished" : visualLive ? "live" : "waiting"}</span></div>
           <div className="cv-frame">
-            {frameUrl ? <img src={frameUrl} alt="Craftax gameplay frame" onError={() => setFailedFrameUrl(viewer.frameUrl ?? null)} /> : (failedFrameUrl || viewer.frameUnavailable) ? <p>Gameplay PNG is unavailable. Reopen uses the live spool digest — this view does not substitute ASCII for a missing image.</p> : viewer.ascii ? <pre aria-label="Craftax symbolic gameplay frame">{viewer.ascii}</pre> : <p>No renderable gameplay frame was emitted at this point in the trace.</p>}
-            <div className="cv-frame-caption"><span>step {latest ? eventStep(latest, visibleIndex) : "—"}</span><span>{timeLabel(latest, true)}</span></div>
+            {frameUrl ? <img src={frameUrl} alt="Craftax gameplay frame" onError={() => retainedFrameUrl ? setFailedMediaDigest(selectedMediaDigest ?? null) : setFailedFrameUrl(viewer.frameUrl ?? null)} /> : retainedFrameLoading ? <p>Loading retained gameplay PNG…</p> : failedMediaDigest === selectedMediaDigest ? <p>Retained gameplay PNG failed integrity-checked media loading. No symbolic frame is substituted.</p> : (failedFrameUrl || viewer.frameUnavailable) ? <p>Gameplay PNG is unavailable. No symbolic frame is substituted for missing image evidence.</p> : viewer.ascii ? <pre aria-label="Craftax symbolic gameplay frame">{viewer.ascii}</pre> : <p>No renderable gameplay frame was emitted at this point in the trace.</p>}
+            <div className="cv-frame-caption"><span>step {selectedEnvironmentStep ?? "—"}</span><span>{timeLabel(latest, true)}</span></div>
           </div>
           <div className="cv-video-controls" data-visual-landmark="image-replay">
             <div><strong>Image replay</strong><span>{frameEvents.length} PNG frames from Containers</span></div>
@@ -448,7 +810,7 @@ export function Shell(props: ShellProps) {
 
         <aside className="cv-panel cv-details">
           <section><p className="cv-eyebrow">Policy</p><h3>{policy.model ?? "Unavailable"}</h3><dl>
-            <div><dt>Provider</dt><dd>{policy.provider ?? "—"}</dd></div>
+            <div><dt>Provider</dt><dd>{policy.provider ?? props.runLifecycle?.usage.provider ?? "—"}</dd></div>
             <div><dt>Actions</dt><dd>{policy.actions.length}</dd></div>
             <div><dt>Tokens</dt><dd>{truthNumber(finite(policy.usage.total_tokens), viewer.terminal, (value) => formatMissingNumber(value, 0))}</dd></div>
             <div><dt>Authority</dt><dd>{policy.actionAuthority ?? "—"}</dd></div>
@@ -461,7 +823,8 @@ export function Shell(props: ShellProps) {
       </section>
 
       <section className="cv-panel cv-timeline cv-shared-cursor" data-visual-landmark="temporal-controls">
-        <div className="cv-heading"><div><p className="cv-eyebrow">Evaluation time</p><h3>{Math.max(0, momentPosition) + 1} / {moments.length || 0} moments · {timeLabel(fullProjection.ordered[evaluationIndex], true)}</h3></div><div className="cv-replay"><button onClick={() => setPlaying(!playing)} disabled={!moments.length}>{playing ? "Pause" : "Play"}</button><select aria-label="Replay speed" value={speed} onChange={(event) => setSpeed(Number(event.currentTarget.value))}><option value={0.5}>0.5×</option><option value={1}>1×</option><option value={2}>2×</option><option value={4}>4×</option></select><button onClick={() => { setEvaluationCutoff(null); setLaneCutoff(null); setPlaying(false); }}>{visualLive ? "Follow live" : "Jump to end"}</button></div></div>
+        <div className="cv-heading"><div><p className="cv-eyebrow">Evaluation time</p><h3>{moments.length} {environmentSteps === 0 && lifecycleTerminal ? "run marker" : "replay moment"}{moments.length === 1 ? "" : "s"} · {environmentSteps} environment step{environmentSteps === 1 ? "" : "s"} · {timeLabel(fullProjection.ordered[evaluationIndex], true)}</h3></div><div className="cv-replay"><button onClick={() => setPlaying(!playing)} disabled={!trustworthyReplay}>{playing ? "Pause" : "Play"}</button><select aria-label="Replay speed" value={speed} onChange={(event) => setSpeed(Number(event.currentTarget.value))} disabled={!trustworthyReplay}><option value={0.5}>0.5×</option><option value={1}>1×</option><option value={2}>2×</option><option value={4}>4×</option></select><button onClick={() => { setEvaluationCutoff(null); setLaneCutoff(null); setPlaying(false); }} disabled={lifecycleTerminal && !trustworthyReplay}>{visualLive ? "Follow live" : "Jump to end"}</button></div></div>
+        {!trustworthyReplay && lifecycleTerminal ? <p className="cv-control-reason" data-testid="craftax-replay-disabled-reason">Replay unavailable — this run produced 0 trustworthy environment steps{props.runLifecycle?.evidence.state === "rejected" ? " because its evidence was rejected" : ""}.</p> : null}
         <input
           aria-label="Replay evaluation through replay moments"
           type="range"
@@ -474,23 +837,57 @@ export function Shell(props: ShellProps) {
       </section>
 
       {config.showPlots ? <section className="cv-plots cv-surface-replay" data-visual-landmark="outcome-plots">
+        <article className="cv-panel cv-aggregate-timeline" data-testid="craftax-aggregate-timeline">
+          <div className="cv-heading"><div><p className="cv-eyebrow">Overall · all rollouts</p><h3>Cumulative reward and achievement unlocks</h3></div><strong>{aggregateTimeline.length} rollout{aggregateTimeline.length === 1 ? "" : "s"}</strong></div>
+          <div className="cv-aggregate-legend" aria-label="Aggregate rollout lines">
+            {aggregateTimeline.map((timeline, index) => {
+              const terminal = terminalByLane.get(timeline.lane);
+              return <button className={`series-${index % 6}`} key={timeline.lane} type="button" aria-current={timeline.lane === selectedLane} onClick={() => { setChosenLane(timeline.lane); setLaneCutoff(null); }}>
+                <i aria-hidden="true" /><span>{terminal?.seed != null ? `seed ${terminal.seed}` : <Identifier value={timeline.lane} max={18} copy={false} />}</span><strong>{formatMissingNumber(timeline.terminalReward)}</strong>
+              </button>;
+            })}
+          </div>
+          <svg viewBox="0 0 760 250" role="img" aria-label={`Cumulative reward by environment step for ${aggregateTimeline.length} rollouts, with achievement unlock icons`}>
+            <line className="cv-grid-line" x1="42" y1="216" x2="742" y2="216" />
+            <line className="cv-grid-line" x1="42" y1="22" x2="42" y2="216" />
+            <text className="cv-axis-label" x="42" y="240">step 0</text>
+            <text className="cv-axis-label" x="742" y="240" textAnchor="end">step {aggregateMaxStep}</text>
+            <text className="cv-axis-label" x="35" y="27" textAnchor="end">{formatMissingNumber(aggregateMaxReward)}</text>
+            {aggregateTimeline.map((timeline, index) => <g className={`cv-rollout-series series-${index % 6}${timeline.lane === selectedLane ? " selected" : ""}`} key={timeline.lane}>
+              <title>{timeline.lane} · terminal reward {timeline.terminalReward} · {timeline.terminalStep} steps</title>
+              <path className="cv-rollout-line" d={craftaxStepPath(timeline.points, aggregateMaxStep, aggregateMinReward, aggregateMaxReward)} />
+              {timeline.achievements.map((achievement, achievementIndex) => {
+                const markerX = aggregateX(achievement.step);
+                const markerY = aggregateY(achievement.reward);
+                const offset = 11 + ((index + achievementIndex) % 2) * 12;
+                return <g className="cv-achievement-marker" key={`${achievement.name}:${achievement.step}`} transform={`translate(${markerX.toFixed(1)} ${(markerY - offset).toFixed(1)})`} role="img" tabIndex={0} aria-label={`${achievement.name.replaceAll("_", " ")} · ${timeline.lane} · step ${achievement.step}`}>
+                  <title>{achievement.name.replaceAll("_", " ")} · {timeline.lane} · step {achievement.step}</title>
+                  <line x1="0" y1={String(offset - 8)} x2="0" y2={String(offset)} />
+                  <circle r="11" />
+                  <text textAnchor="middle" dominantBaseline="central">{achievement.icon}</text>
+                </g>;
+              })}
+            </g>)}
+          </svg>
+          <p className="cv-aggregate-note">Shared environment-step scale. Icons mark the first retained evidence for each achievement; select a line above to open that rollout.</p>
+        </article>
         <article className="cv-panel"><div className="cv-heading"><div><p className="cv-eyebrow">Selected rollout</p><h3>Cumulative reward</h3></div><strong>{formatMissingNumber(viewer.cumulativeReward)}</strong></div><svg viewBox="0 0 640 190" role="img" aria-label="Cumulative reward by step"><line x1="28" y1="166" x2="612" y2="166"/><polyline points={sparkline(rewardSeries)} /></svg></article>
         <article className="cv-panel"><div className="cv-heading"><div><p className="cv-eyebrow">Selected rollout</p><h3>Achievements through time</h3></div><strong>{achievements.length}</strong></div><svg viewBox="0 0 640 190" role="img" aria-label="Cumulative achievements by step"><line x1="28" y1="166" x2="612" y2="166"/><polyline className="secondary" points={sparkline(achievementSeries)} /></svg></article>
       </section> : null}
 
       <section className="cv-panel cv-transcript cv-surface-transcript" data-visual-landmark="agent-transcript">
-        <div className="cv-heading"><div><p className="cv-eyebrow">Chronological model calls</p><h3>Agent transcript</h3></div><div className="cv-trace-mode"><button type="button" aria-pressed={transcriptMode === "focus"} onClick={() => setTranscriptMode("focus")}>Focus</button><button type="button" aria-pressed={transcriptMode === "full"} onClick={() => setTranscriptMode("full")}>Full</button><span>{turns.calls.length} calls · cutoff seq {craftaxEventSequence(visibleEvents.at(-1) ?? ({} as LiveEvalEvent), 0)}</span></div></div>
+        <div className="cv-heading"><div><p className="cv-eyebrow">Chronological model calls</p><h3>Agent transcript</h3></div><div className="cv-trace-mode"><button type="button" aria-pressed={transcriptMode === "focus"} onClick={() => setTranscriptMode("focus")}>Focus</button><button type="button" aria-pressed={transcriptMode === "full"} onClick={() => setTranscriptMode("full")}>Full</button><span>{turns.calls.length} calls · selected rollout · cutoff seq {craftaxEventSequence(visibleEvents.at(-1) ?? ({} as LiveEvalEvent), 0)}</span></div></div>
         <div className="cv-step-links" role="navigation" aria-label="Environment step to policy navigation">{semanticTrace.filter((item) => item.kind === "environment.step").slice(-40).map((item) => { const callId = item.step == null ? callForSequence(turns.calls, item.sequenceStart)?.id : turns.callIdByEnvironmentStep.get(item.step); return <button type="button" key={item.id} disabled={!callId} onClick={() => { if (callId) setSelectedCallId(callId); }}>step {item.step ?? "—"}</button>; })}</div>
         <div className="cv-transcript-grid"><ol className="cv-call-list" aria-label="Model calls">{turns.calls.length > renderedCalls.length ? <li className="cv-call-window">Showing {renderedCalls.length} of {turns.calls.length} calls at this cutoff</li> : null}{renderedCalls.map((call) => <li key={call.id}><button type="button" aria-current={call.id === selectedCall?.id} onClick={() => setSelectedCallId(call.id)}><span>Call {call.callNumber}</span><strong>{call.model ?? "Model not recorded"}</strong><small>steps {call.environmentStepStart ?? "—"}{call.environmentStepEnd !== call.environmentStepStart ? `–${call.environmentStepEnd ?? "—"}` : ""} · seq {call.sourceSequenceStart}–{call.sourceSequenceEnd}</small></button></li>)}</ol>
-          <article className="cv-call-card" aria-live="polite">{selectedCall ? <><header><div><p className="cv-eyebrow">Call {selectedCall.callNumber} · environment steps {selectedCall.environmentStepStart ?? "—"}–{selectedCall.environmentStepEnd ?? "—"}</p><h4>{selectedCall.model ?? "Model identity not recorded"}</h4></div><span>{selectedCall.complete ? "complete" : "streaming"}</span></header><dl><div><dt>Provider</dt><dd>{selectedCall.provider ?? "not emitted"}</dd></div><div><dt>Authority</dt><dd>{selectedCall.authority ?? "not emitted"}</dd></div><div><dt>Source</dt><dd>seq {selectedCall.sourceSequenceStart}–{selectedCall.sourceSequenceEnd}</dd></div><div><dt>Envelopes</dt><dd>{selectedCall.rawEvents.length}</dd></div></dl>
+          <article className="cv-call-card" aria-live="polite">{selectedCall ? <><header><div><p className="cv-eyebrow">Call {selectedCall.callNumber} · environment steps {selectedCall.environmentStepStart ?? "—"}–{selectedCall.environmentStepEnd ?? "—"}</p><h4>{selectedCall.model ?? "Model identity not recorded"}</h4></div><span>{selectedCall.outcome?.replaceAll("_", " ") ?? "streaming"}</span></header><dl><div><dt>Provider</dt><dd>{selectedCall.provider ?? props.runLifecycle?.usage.provider ?? "not emitted"}</dd></div><div><dt>Authority</dt><dd>{selectedCall.authority ?? "not emitted"}</dd></div><div><dt>Source</dt><dd>seq {selectedCall.sourceSequenceStart}–{selectedCall.sourceSequenceEnd}</dd></div><div><dt>Closure</dt><dd>{selectedCall.closure ? `${selectedCall.closure.reason.replaceAll("_", " ")} · ${selectedCall.closure.source}` : "pending"}</dd></div><div><dt>Envelopes</dt><dd>{selectedCall.rawEvents.length}</dd></div></dl>
             <Evidence label="Input / observation" field={selectedCall.input}/><Evidence label="Reasoning" field={selectedCall.reasoning}/><Evidence label="Output / actions" field={selectedCall.output}/><Evidence label="Tool calls" field={selectedCall.toolCalls}/><Evidence label="Tool results" field={selectedCall.toolResults}/>
-            <details><summary>Raw Trace V5 evidence ({selectedCall.rawEvents.length} envelopes)</summary><pre>{JSON.stringify(selectedCall.rawEvents, null, 2)}</pre></details></> : <p>No policy.call has been emitted at this temporal cutoff.</p>}</article></div>
+            <details><summary>Raw Trace V5 evidence ({selectedCall.rawEvents.length} envelopes)</summary><pre>{JSON.stringify(selectedCall.rawEvents, null, 2)}</pre></details></> : props.runLifecycle?.evidence.state === "rejected" ? <p>{props.runLifecycle.usage.calls ?? "Provider"} calls occurred, but their journal evidence failed integrity verification and cannot be displayed as a trusted transcript.</p> : <p>No policy.call has been emitted at this temporal cutoff.</p>}</article></div>
       </section>
 
       {config.showActivity ? <section className="cv-panel cv-activity cv-surface-raw" data-visual-landmark="ordered-activity"><div className="cv-heading"><div><p className="cv-eyebrow">Semantic activity</p><h3>Recent activity</h3></div><span>{semanticTrace.length} events · {visibleEvents.length} raw</span></div><ol>{semanticTrace.slice(-12).reverse().map((item) => <li key={item.id}><time>seq {item.sequenceEnd}</time><strong>{item.category}</strong><span>{item.kind}</span><p>{item.label}</p></li>)}</ol></section> : null}
 
       {config.showTraceInspector ? <section className="cv-panel cv-trace cv-surface-raw" data-visual-landmark="trace-inspector">
-        <div className="cv-heading"><div><p className="cv-eyebrow">Same temporal cutoff</p><h3>Trace V5 viewer</h3></div><div className="cv-trace-mode"><button type="button" aria-pressed={traceMode === "focus"} onClick={() => setTraceMode("focus")}>Policy focus</button><button type="button" aria-pressed={traceMode === "full"} onClick={() => setTraceMode("full")}>Full trace</button><button type="button" onClick={() => setSelectedTraceId(inspectedItems.at(-1)?.id ?? null)} disabled={!inspectedItems.length}>Jump to latest</button><span>{viewer.terminal ? "sealed/reconciled" : "live · unsealed"}</span></div></div>
+        <div className="cv-heading"><div><p className="cv-eyebrow">Same temporal cutoff</p><h3>Trace V5 viewer</h3></div><div className="cv-trace-mode"><button type="button" aria-pressed={traceMode === "focus"} onClick={() => setTraceMode("focus")}>Policy focus</button><button type="button" aria-pressed={traceMode === "full"} onClick={() => setTraceMode("full")}>Full trace</button><button type="button" onClick={() => setSelectedTraceId(inspectedItems.at(-1)?.id ?? null)} disabled={!inspectedItems.length}>Jump to latest</button><span>{integrityAccepted ? "sealed · accepted" : viewer.terminal ? "terminal trace" : "live · unsealed"}</span></div></div>
         <p className="cv-trace-summary">{traceMode === "full" ? `${semanticTrace.length} semantic events folded from ${visibleEvents.length} durable envelopes, grouped by environment step.` : `${inspectedItems.length} policy calls and trace-authority events; ${traceEvents.length} raw policy partials are folded.`}</p>
         <div className="cv-trace-grid">
           <div className="cv-trace-list">
@@ -537,8 +934,9 @@ export function Shell(props: ShellProps) {
         </div>
       </section> : null}
 
-      <section className="cv-panel cv-surface-metrics cv-facts"><div className="cv-heading"><div><p className="cv-eyebrow">At current cutoff</p><h3>Metrics</h3></div></div><dl><div><dt>Model calls</dt><dd>{turns.calls.length}</dd></div><div><dt>Total tokens</dt><dd>{totalTokens === undefined ? "not emitted" : formatMissingNumber(totalTokens, 0)}</dd></div><div><dt>Latency</dt><dd>{totalLatencyMs === undefined ? "not emitted" : `${formatMissingNumber(totalLatencyMs, 0)} ms`}</dd></div><div><dt>Cost</dt><dd>{totalCostUsd === undefined ? "not emitted" : formatMissingUsd(totalCostUsd)}</dd></div><div><dt>Reward</dt><dd>{truthNumber(viewer.reward, viewer.terminal, formatMissingNumber)}</dd></div><div><dt>Authority</dt><dd>{[...new Set(turns.calls.map((call) => call.authority).filter(Boolean))].join(", ") || "not emitted"}</dd></div></dl></section>
-      <section className="cv-panel cv-surface-integrity cv-integrity"><div className="cv-heading"><div><p className="cv-eyebrow">Evidence health</p><h3>Integrity</h3></div><span>{viewer.terminal ? "sealed/reconciled" : "live · unsealed"}</span></div><ul><li><strong>Reconciliation</strong><span>{semanticTrace.some((item) => item.kind === "trace.reconciled") ? "recorded and visible" : viewer.terminal ? "missing due to producer-contract defect" : "pending"}</span></li><li><strong>Model identity</strong><span>{turns.calls.every((call) => call.model && call.provider) ? "recorded and visible" : "missing on one or more calls"}</span></li><li><strong>Repairs / fallbacks</strong><span>{policy.fallback ? "recorded fallback" : "none recorded"}</span></li><li><strong>Malformed calls</strong><span>{turns.missingPolicyEnvelopeCount || "none"}</span></li><li><strong>Reasoning disclosure</strong><span>{turns.calls.some((call) => call.reasoning.state === "visible") ? "provider emitted visible reasoning evidence" : "Thinking not emitted"}</span></li></ul></section>
+      <section className="cv-panel cv-surface-metrics cv-facts"><div className="cv-heading"><div><p className="cv-eyebrow">Terminal record + current cutoff</p><h3>Metrics</h3></div></div><dl><div><dt>Selected retained calls</dt><dd>{turns.calls.length}</dd></div><div><dt>Run provider calls</dt><dd>{receiptCalls == null ? "not emitted" : `${formatMissingNumber(receiptCalls, 0)} billed · Workshop receipt`}</dd></div><div><dt>Selected rollout tokens</dt><dd>{selectedRolloutTokens === undefined ? "not emitted" : `${formatMissingNumber(selectedRolloutTokens, 0)}${selectedTerminal?.tokens != null ? " · terminal runtime record" : " · retained calls"}`}</dd></div><div><dt>Run runtime tokens</dt><dd>{runAggregate.totalTokens == null ? "not emitted" : `${formatMissingNumber(runAggregate.totalTokens, 0)} · terminal records`}</dd></div><div><dt>Run provider tokens</dt><dd>{receiptTokens == null ? "not emitted" : `${formatMissingNumber(receiptTokens, 0)} billed · Workshop receipt`}</dd></div><div><dt>Latency</dt><dd>{totalLatencyMs === undefined ? "not emitted" : `${formatMissingNumber(totalLatencyMs, 0)} ms`}</dd></div><div><dt>Run cost</dt><dd>{runCostLabel(props.runLifecycle, totalCostUsd)}</dd></div><div><dt>Terminal reward</dt><dd>{selectedTerminal?.reward == null ? truthNumber(viewer.reward, viewer.terminal, formatMissingNumber) : formatMissingNumber(selectedTerminal.reward)}</dd></div><div><dt>Selected authority</dt><dd>{selectedRolloutAuthority || "not emitted"}</dd></div></dl></section>
+      <section className="cv-panel cv-surface-integrity cv-integrity"><div className="cv-heading"><div><p className="cv-eyebrow">Evidence health</p><h3>Integrity</h3></div><span>{props.runLifecycle?.evidence.state === "rejected" ? "rejected" : lifecycleGaps.length > 0 ? "trace sealed · facts incomplete" : integrityAccepted ? "sealed · accepted" : viewer.terminal ? "terminal" : "live · unsealed"}</span></div><ul><li><strong>Reconciliation</strong><span>{reconciliationLabel}</span></li><li><strong>Model identity</strong><span>{modelIdentityLabel}</span></li><li><strong>Repairs / fallbacks</strong><span>{policy.fallback ? "recorded fallback" : "none recorded"}</span></li><li><strong>Malformed calls</strong><span>{turns.missingPolicyEnvelopeCount || "none"}</span></li><li><strong>Reasoning disclosure</strong><span>{turns.calls.some((call) => call.reasoning.state === "visible") ? "provider emitted visible reasoning evidence" : "Thinking not emitted"}</span></li></ul>{props.runLifecycle?.evidence.state === "rejected" ? <p className="cv-control-reason" data-testid="craftax-seal-disabled-reason">Seal unavailable — run failed because {props.runLifecycle.evidence.rejected} rollout journal{props.runLifecycle.evidence.rejected === 1 ? " was" : "s were"} rejected.</p> : lifecycleFailed && props.runLifecycle && props.runLifecycle.evidence.sealedTraces > 0 ? <p className="cv-control-reason" data-testid="craftax-trace-retained-status">Trace replay remains available from {props.runLifecycle.evidence.sealedTraces} sealed trace{props.runLifecycle.evidence.sealedTraces === 1 ? "" : "s"}; the evaluation failure does not reject them.</p> : null}</section>
+      </>}
 
       <footer>live.craftax.v1 · synth.trace-stream-event.v1 · {props.visualMetadata?.qualityGate?.ready ? `ready rev ${props.visualMetadata.qualityGate.revision ?? "—"}` : "draft visual"}</footer>
     </div>

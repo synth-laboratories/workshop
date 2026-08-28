@@ -53,6 +53,7 @@ use super::{
 };
 
 pub const EVAL_ALGORITHM_ID: &str = "eval";
+#[cfg(test)]
 pub const EVAL_FIXTURE_SMOKE_RECIPE: &str = "eval.fixture.policy-smoke.v1";
 pub const EVAL_CRAFTAX_SMOKE_RECIPE: &str = "eval.craftax.code-policy.smoke.v1";
 pub const EVAL_GAMEBENCH_CONFIRM_RECIPE: &str = "eval.gamebench.craftax-code-policy.confirm.v1";
@@ -71,8 +72,7 @@ const CRAFTAX_CODE_SMOKE_TRIALS_PER_CANDIDATE: u64 = 10;
 
 /// The allowlist the MCP schema publishes. A recipe id outside it never
 /// reaches the worker.
-pub const EVAL_RECIPE_IDS: [&str; 6] = [
-    EVAL_FIXTURE_SMOKE_RECIPE,
+pub const EVAL_RECIPE_IDS: [&str; 5] = [
     EVAL_CRAFTAX_SMOKE_RECIPE,
     EVAL_GAMEBENCH_CONFIRM_RECIPE,
     EVAL_CRAFTAX_MLX_LOCAL_RECIPE,
@@ -583,22 +583,27 @@ fn policy_from_eval_recipe(
     }
     let (max_usd, max_trials) =
         paid_compute_bounds_for_candidate_count(recipe, candidate_count.max(1))?;
-    let mut policy = crate::secrets::SecretsUsePolicy::default();
-    policy.operations = vec![
-        "chat.completions.create".into(),
-        "responses.create".into(),
-    ];
-    policy.models = models;
+    let mut reasoning_efforts = Vec::new();
     if let Some(effort) = recipe
         .pointer("/policy/reasoning_effort")
         .or_else(|| recipe.pointer("/policy/effort"))
         .and_then(Value::as_str)
     {
-        policy.reasoning_efforts = vec![effort.to_string()];
+        reasoning_efforts.push(effort.to_string());
     }
-    policy.max_cost_usd = max_usd.max(0.01);
-    policy.max_calls = max_trials.saturating_mul(16).clamp(40, u32::MAX as u64) as u32;
-    Ok(policy)
+    Ok(super::admission::provider_use_policy_from_bounds(
+        vec![
+            "chat.completions.create".into(),
+            "responses.create".into(),
+        ],
+        models,
+        reasoning_efforts,
+        max_trials.saturating_mul(16).clamp(40, u32::MAX as u64) as u32,
+        (max_usd.max(0.01) * 1_000_000.0).round().max(0.0) as u64,
+        crate::limits::SECRETS_CAPABILITY_TTL.as_secs(),
+        None,
+        None,
+    ))
 }
 
 /// Trusted route binding. `synth-optimizers` must copy `provider_routes.openai`
@@ -981,7 +986,7 @@ pub async fn start(
         local_path: None,
     };
     let (run, event) = service.create(create).await?;
-    let (cancel_tx, cancel_rx) = watch::channel(false);
+    let (cancel_tx, cancel_rx) = watch::channel(None);
     service
         .register_local_recipe(run_id.clone(), cancel_tx)
         .await;
@@ -1049,9 +1054,8 @@ async fn run_worker(
     recipe: Value,
     candidate_count: u64,
     local_mlx_token: Option<String>,
-    mut cancel: watch::Receiver<bool>,
+    mut cancel: super::CancelObserver,
 ) -> Result<()> {
-    let _revoke = crate::secrets::RevokeRunOnDrop(run_id.clone());
     let _ownership = service.hold_run_ownership(&run_id)?;
     append_status(&service, &run_id, "optimizer.run.started", "running").await?;
     fs::create_dir_all(&run_dir).context("create eval run directory")?;
@@ -1151,13 +1155,13 @@ async fn run_worker(
                                          was live (last error: {error})"
                                     );
                                 }
-                                eprintln!("eval event ingest failed: {error}");
+                                crate::platform::logging::report("optimizers", "eprintln", format!("eval event ingest failed: {error}"));
                             }
                             Err(error) => {
                                 // Durable-log write misses stay on the log;
                                 // the producer is still running. Restart
                                 // reconcile rereads worker.stdout.log.
-                                eprintln!("eval event ingest failed: {error}");
+                                crate::platform::logging::report("optimizers", "eprintln", format!("eval event ingest failed: {error}"));
                             }
                         }
                     }
@@ -1189,7 +1193,7 @@ async fn run_worker(
                 return Ok(());
             }
             changed = cancel.changed() => {
-                if changed.is_ok() && *cancel.borrow() && cancelled_at.is_none() {
+                if changed.is_ok() && cancel.borrow().is_some() && cancelled_at.is_none() {
                     // Ask first: the worker still has containers to stop, leases
                     // to release, and evidence to seal.
                     fs::write(run_dir.join("CANCEL"), chrono::Utc::now().to_rfc3339()).ok();
@@ -1481,7 +1485,7 @@ fn canonicalize(raw: &Value) -> Option<Canonical> {
             );
             delta.insert("trial_id".into(), raw.get("trial_id").cloned()?);
             delta.insert(
-                "containerEvent".into(),
+                "container_event".into(),
                 raw.get("container_event").cloned().unwrap_or(json!({})),
             );
             level = "debug";
@@ -1763,14 +1767,7 @@ async fn append_terminal(
     {
         return Ok(());
     }
-    let _ = service.seal_credential_chain(run_id).await;
-    let event_type = match status {
-        "failed" => "optimizer.run.failed",
-        "cancelled" => "optimizer.run.cancelled",
-        _ => "optimizer.run.completed",
-    };
-    append_status(service, run_id, event_type, status).await?;
-    if status == "failed" {
+    let error = if status == "failed" {
         let stderr = run
             .summary
             .get("runDirectory")
@@ -1778,23 +1775,29 @@ async fn append_terminal(
             .map(PathBuf::from)
             .map(|dir| dir.join("worker.stderr.log"));
         let tail = stderr.as_ref().and_then(|path| tail_text(path));
-        service
-            .append_event_payloads(
-                run_id.to_string(),
-                vec![
-                    OptimizerEventDraft::new("optimizer.recipe.diagnostic", EVAL_ALGORITHM_ID)
-                        .idempotency_key("diagnostic")
-                        .level("error")
-                        .delta(map_of("status", json!("failed")))
-                        .error(json!({
-                            "message": tail.as_deref().unwrap_or(&detail),
-                            "stderrTail": tail,
-                            "logPath": stderr
-                        })),
-                ],
-            )
-            .await?;
-    }
+        Some(json!({
+            "message": tail.as_deref().unwrap_or(&detail),
+            "supervisorDetail": detail,
+            "stderrTail": tail,
+            "logPath": stderr
+        }))
+    } else {
+        None
+    };
+    let cause = match status {
+        "failed" => super::kernel::SettleCause::Failed {
+            detail: detail.clone(),
+        },
+        "cancelled" => super::kernel::SettleCause::Cancelled {
+            request: std::sync::Arc::new(super::kernel::CancellationRequest::new(
+                super::kernel::CancellationCause::ContainerRequested,
+                "eval:worker",
+                format!("run:{run_id}"),
+            )),
+        },
+        _ => super::kernel::SettleCause::Completed,
+    };
+    service.settle_run(run_id.to_string(), cause, error).await?;
     Ok(())
 }
 
@@ -1957,6 +1960,7 @@ mod tests {
     fn only_allowlisted_recipe_ids_are_eval() {
         assert!(is_eval_recipe(EVAL_CRAFTAX_SMOKE_RECIPE));
         assert!(is_eval_recipe(EVAL_MLX_LOCAL_RECIPE));
+        assert!(!is_eval_recipe(EVAL_FIXTURE_SMOKE_RECIPE));
         assert!(!is_eval_recipe("eval.anything.else.v1"));
         assert!(!is_eval_recipe("sft.craftax.gpt-oss.smoke.v1"));
     }
@@ -2133,75 +2137,32 @@ mod tests {
         // Terminal orchestration status, mapped onto the shared vocabulary.
         assert_eq!(run.status, "completed");
         assert!(run.finished_at.is_some());
-        // Rollouts accrued from trial usage, exactly like any other algorithm.
-        assert_eq!(run.usage.rollouts, 4);
 
-        let scorecard = svc
-            .get_state(run_id.clone(), "eval.scorecard".into(), None)
-            .await
-            .unwrap();
-        let candidates = scorecard.data["candidates"].as_array().unwrap();
-        assert_eq!(candidates.len(), 2);
-        let labels: Vec<&str> = candidates
-            .iter()
-            .map(|c| c["label"].as_str().unwrap())
-            .collect();
-        assert!(
-            labels.contains(&"luna-low") && labels.contains(&"luna-med"),
-            "{labels:?}"
+        let view = serde_json::to_value(svc.run_view_v2(run_id.clone()).await.unwrap()).unwrap();
+        assert_eq!(view["algorithm"], json!("eval"));
+        assert_eq!(view["header"]["lifecycle"], json!("terminal"));
+        assert_eq!(view["header"]["work"]["planned"], json!(4));
+        assert_eq!(view["header"]["work"]["succeeded"], json!(4));
+        assert_eq!(
+            view["header"]["evidence"]["completeness"],
+            json!("complete")
         );
-        let baseline = candidates
+        assert_eq!(view["result"]["selection"], json!("inconclusive"));
+        let projection = svc
+            .get_state(run_id, "eval.projection".into(), None)
+            .await
+            .unwrap();
+        assert_eq!(projection.data["candidates"].as_array().unwrap().len(), 2);
+
+        // Raw events remain the diagnostic/evidence lane, not product state.
+        let traces = events
             .iter()
-            .find(|c| c["label"] == "luna-low")
-            .unwrap();
-        assert_eq!(baseline["isBaseline"], json!(true));
-        assert_eq!(baseline["trials"]["valid"], json!(2));
-
-        let trials = svc
-            .get_state(run_id.clone(), "eval.trials".into(), None)
-            .await
-            .unwrap();
-        assert_eq!(trials.data["trials"].as_array().unwrap().len(), 4);
-
-        let evidence = svc
-            .get_state(run_id.clone(), "eval.evidence".into(), None)
-            .await
-            .unwrap();
-        assert_eq!(evidence.data["selection"]["status"], json!("inconclusive"));
-        assert!(evidence.data["seedLedger"]["screening"].is_array());
-        assert!(evidence.data["manifestDigest"]
-            .as_str()
-            .unwrap()
-            .starts_with("sha256:"));
-
-        let runtime = svc
-            .get_state(run_id.clone(), "eval.runtime".into(), None)
-            .await
-            .unwrap();
-        assert_eq!(runtime.data["evaluated"], json!(4));
-        assert_eq!(runtime.data["running"], json!(0));
-        assert_eq!(runtime.data["leasesHeld"], json!(0));
-
-        // The generic slices every optimizer has must be populated too, or the
-        // run is a special case rather than a first-class noun.
-        let timeline = svc
-            .get_state(run_id.clone(), "run.timeline".into(), None)
-            .await
-            .unwrap();
-        assert_eq!(timeline.data["events"].as_array().unwrap().len(), 30);
-        let artifacts = svc
-            .get_state(run_id.clone(), "run.artifacts".into(), None)
-            .await
-            .unwrap();
-        let traces = artifacts.data["artifacts"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .filter(|a| a["kind"] == "trace")
+            .flat_map(|event| event.artifact_refs.iter())
+            .filter(|artifact| artifact["kind"] == "trace")
             .count();
         assert_eq!(
             traces, 4,
-            "every trial's trace should reach the artifact slice"
+            "every trial's trace remains available for advanced inspection"
         );
     }
 
@@ -2507,7 +2468,10 @@ mod immutable_target_tests {
     #[test]
     fn a_mutable_tag_is_refused_before_the_run_is_created() {
         let error = refusal(&recipe(Some("ghcr.io/synth/craftax-eval:latest"), None));
-        assert!(error.contains("target_digest_missing"), "{error}");
+        assert!(
+            error.contains("\"code\":\"target_digest_missing\""),
+            "{error}"
+        );
         assert!(error.contains("mutable tag"), "{error}");
         assert!(error.contains("\"substitutionAllowed\":false"), "{error}");
     }

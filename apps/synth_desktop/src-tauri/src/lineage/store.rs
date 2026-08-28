@@ -100,8 +100,8 @@ pub fn resolve_member_node_id(
     latest_node_id(conn, experiment_id)
 }
 
-/// One node per attached member. When an optimizer and an eval share the
-/// experiment, write `evaluated` (optimizer → eval). No synthetic kinds.
+/// One node per attached optimizer run. Evaluation is an algorithm kind on
+/// that run, not a second member or node kind.
 pub fn project_member(
     conn: &Connection,
     experiment_id: &str,
@@ -110,54 +110,17 @@ pub fn project_member(
     title: &str,
     at: &str,
 ) -> Result<()> {
+    anyhow::ensure!(
+        member_kind == "optimizer_run",
+        "experiment lineage accepts only optimizer_run members"
+    );
     let id = member_node_id(experiment_id, member_kind, member_id);
     let config = serde_json::json!({"memberKind":member_kind,"memberId":member_id});
     conn.execute(
         "INSERT OR IGNORE INTO experiment_nodes(id,experiment_id,kind,title,status,config_json,created_at,updated_at) VALUES(?1,?2,?3,?4,'running',?5,?6,?6)",
         params![id, experiment_id, member_kind, title, config.to_string(), at],
     )?;
-    link_eval_to_optimizers(conn, experiment_id, member_kind, &id, at)?;
     Ok(())
-}
-
-fn link_eval_to_optimizers(
-    conn: &Connection,
-    experiment_id: &str,
-    member_kind: &str,
-    node_id: &str,
-    at: &str,
-) -> Result<()> {
-    let (source_kind, target_kind, source_is_new) = match member_kind {
-        "eval_campaign" => ("optimizer_run", "eval_campaign", false),
-        "optimizer_run" => ("optimizer_run", "eval_campaign", true),
-        _ => return Ok(()),
-    };
-    let counterparts = if source_is_new {
-        load_ids_of_kind(conn, experiment_id, target_kind)?
-    } else {
-        load_ids_of_kind(conn, experiment_id, source_kind)?
-    };
-    for counterpart in counterparts {
-        if counterpart == node_id {
-            continue;
-        }
-        let (source, target) = if source_is_new {
-            (node_id, counterpart.as_str())
-        } else {
-            (counterpart.as_str(), node_id)
-        };
-        insert_edge(conn, experiment_id, source, target, "evaluated", at)?;
-    }
-    Ok(())
-}
-
-fn load_ids_of_kind(conn: &Connection, experiment_id: &str, kind: &str) -> Result<Vec<String>> {
-    let mut stmt =
-        conn.prepare("SELECT id FROM experiment_nodes WHERE experiment_id=?1 AND kind=?2")?;
-    let rows = stmt
-        .query_map(params![experiment_id, kind], |row| row.get(0))?
-        .collect::<rusqlite::Result<_>>()?;
-    Ok(rows)
 }
 
 pub fn insert_edge(

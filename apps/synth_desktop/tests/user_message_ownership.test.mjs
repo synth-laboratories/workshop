@@ -79,6 +79,40 @@ test("divergent messageIds for the same prompt still yield two bubbles (ownershi
 	assert.equal(user.length, 2);
 });
 
+test("approval policy state and unknown approval events stay out of conversation activity", () => {
+	const activity = eventsToLocalActivity([
+		event({
+			sequence: 1,
+			eventKind: "approval.policy.effective",
+			payload: { approvalPolicy: "never", sandbox: "danger-full-access" }
+		}),
+		event({
+			sequence: 2,
+			eventKind: "approval.future-state",
+			payload: { detail: "new backend state" }
+		})
+	], []);
+
+	assert.deepEqual(activity, {});
+});
+
+test("recognized approval lifecycle events retain explicit Synth labels", () => {
+	const activity = eventsToLocalActivity([
+		event({
+			sequence: 1,
+			eventKind: "approval.granted",
+			payload: { approvalId: "approval-1" }
+		})
+	], []);
+
+	assert.equal(activity.__active__?.[0]?.label, "Permission granted");
+
+	const paid = eventsToLocalActivity([
+		event({ sequence: 2, eventKind: "approval.granted", payload: { approvalId: "approval-2", kind: "paid_compute" } })
+	], []);
+	assert.equal(paid.__active__?.[0]?.label, "Paid compute granted");
+});
+
 test("duplicate provider failures render once and hide raw provider payloads", () => {
 	const rawFailure = JSON.stringify({
 		error: {

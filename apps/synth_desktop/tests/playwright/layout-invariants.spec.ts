@@ -157,11 +157,11 @@ test("the window has generous drag surfaces without swallowing titlebar controls
 	const dragRegions = page.locator("[data-tauri-drag-region]");
 	await expect(dragRegions).toHaveCount(4);
 	await expect(page.getByTestId("titlebar")).toHaveAttribute("data-tauri-drag-region", "");
-	await expect(page.getByRole("tab")).toHaveAttribute("data-tauri-drag-region", "");
+	await expect(page.getByRole("group", { name: /chat tab$/ })).toHaveAttribute("data-tauri-drag-region", "");
 
 	const regions = await page.evaluate(() => ({
 		titlebar: getComputedStyle(document.querySelector<HTMLElement>('[data-testid="titlebar"]')!).getPropertyValue("-webkit-app-region"),
-		tab: getComputedStyle(document.querySelector<HTMLElement>('[role="tab"]')!).getPropertyValue("-webkit-app-region"),
+		tab: getComputedStyle(document.querySelector<HTMLElement>('.titlebar [role="group"]')!).getPropertyValue("-webkit-app-region"),
 		close: getComputedStyle(document.querySelector<HTMLElement>('.tab-close')!).getPropertyValue("-webkit-app-region"),
 		terminal: getComputedStyle(document.querySelector<HTMLElement>('[aria-label="Show terminal"]')!).getPropertyValue("-webkit-app-region")
 	}));
@@ -172,7 +172,7 @@ test("the window has generous drag surfaces without swallowing titlebar controls
 
 	const visibleSidebarInset = await page.evaluate(() => {
 		const titlebar = document.querySelector<HTMLElement>('[data-testid="titlebar"]')!.getBoundingClientRect();
-		const tab = document.querySelector<HTMLElement>('[role="tab"]')!.getBoundingClientRect();
+		const tab = document.querySelector<HTMLElement>('.titlebar [role="group"]')!.getBoundingClientRect();
 		return tab.left - titlebar.left;
 	});
 	expect(visibleSidebarInset).toBeLessThanOrEqual(12);
@@ -180,7 +180,7 @@ test("the window has generous drag surfaces without swallowing titlebar controls
 	const hiddenSidebarInset = await page.evaluate(() => {
 		document.documentElement.classList.add("sidebar-hidden");
 		const titlebar = document.querySelector<HTMLElement>('[data-testid="titlebar"]')!.getBoundingClientRect();
-		const tab = document.querySelector<HTMLElement>('[role="tab"]')!.getBoundingClientRect();
+		const tab = document.querySelector<HTMLElement>('.titlebar [role="group"]')!.getBoundingClientRect();
 		const inset = tab.left - titlebar.left;
 		document.documentElement.classList.remove("sidebar-hidden");
 		return inset;

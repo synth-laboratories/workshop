@@ -172,12 +172,7 @@ impl RolloutState {
             // the container is already stepping it is the state lie that made
             // a run look idle while it was spending.
             Self::Queued => &[Self::Starting, Self::Cancelled, Self::Failed],
-            Self::Starting => &[
-                Self::Running,
-                Self::Failed,
-                Self::Cancelled,
-                Self::Degraded,
-            ],
+            Self::Starting => &[Self::Running, Self::Failed, Self::Cancelled, Self::Degraded],
             Self::Running => &[
                 Self::Completed,
                 Self::Failed,
@@ -424,6 +419,29 @@ impl RunProgress {
         }
     }
 
+    /// Execution progress after admission has already been consumed.
+    ///
+    /// Admission lives on `optimizer_run_drafts`. Once the optimizer run exists,
+    /// this record starts at `Starting` with rollouts `Queued` — it does not
+    /// replay Draft → Admitted on the execution aggregate.
+    pub fn for_admitted_execution(declared: usize) -> Self {
+        let mut rollouts = BTreeMap::new();
+        for index in 0..declared {
+            rollouts.insert(
+                index as u32,
+                RolloutRecord {
+                    state: Some(RolloutStateHolder(RolloutState::Queued)),
+                    ..RolloutRecord::default()
+                },
+            );
+        }
+        Self {
+            state: RunState::Starting,
+            rollouts,
+            credential_revocation_confirmed: false,
+        }
+    }
+
     pub fn declared_rollouts(&self) -> usize {
         self.rollouts.len()
     }
@@ -553,10 +571,60 @@ impl RunProgress {
         } else {
             RunState::Degraded
         };
-        self.state = self.state.transition_to(target).map_err(|error| {
-            SettlementRefusal::InvalidTransition(Box::new(error))
-        })?;
+        self.state = self
+            .state
+            .transition_to(target)
+            .map_err(|error| SettlementRefusal::InvalidTransition(Box::new(error)))?;
         Ok(self.state)
+    }
+
+    /// Pre-dispatch or worker abort: every nonterminal child becomes terminal
+    /// before the parent does. A failed campaign cannot keep queued rows.
+    pub fn fail_pre_dispatch(&mut self) -> Result<(), StateTransitionError> {
+        let indexes: Vec<u32> = self.rollouts.keys().copied().collect();
+        for index in indexes {
+            let Some(RolloutStateHolder(state)) = self.rollouts[&index].state else {
+                continue;
+            };
+            if state.is_terminal() {
+                continue;
+            }
+            let next = if state.may_transition_to(RolloutState::Cancelled) {
+                RolloutState::Cancelled
+            } else {
+                RolloutState::Failed
+            };
+            self.transition_rollout(index, next)?;
+        }
+        if !self.state.is_terminal() {
+            self.transition_run(RunState::Failed)?;
+        }
+        Ok(())
+    }
+
+    pub fn reconciliation_errors(&self) -> Vec<String> {
+        let mut errors = Vec::new();
+        let nonterminal = self
+            .rollouts
+            .values()
+            .filter(|record| {
+                record
+                    .state
+                    .is_none_or(|RolloutStateHolder(state)| !state.is_terminal())
+            })
+            .count();
+        if self.state.is_terminal() && nonterminal > 0 {
+            errors.push(format!(
+                "This run is {}, but {nonterminal} {} still queued or running.",
+                self.state.as_str(),
+                if nonterminal == 1 { "rollout is" } else { "rollouts are" }
+            ));
+        }
+        let counted = self.rollouts.len();
+        if counted == 0 {
+            errors.push("This run has no rollout plan.".into());
+        }
+        errors
     }
 
     /// A truthful projection for the UI. Counts are per state, and every
@@ -609,14 +677,14 @@ impl RunProgress {
         let mean_reward = if terminal.len() == self.rollouts.len()
             && terminal.iter().all(|record| record.reward.is_some())
         {
-                let sum: f64 = terminal
-                    .iter()
-                    .map(|record| record.reward.unwrap_or_default())
-                    .sum();
-                Some(sum / terminal.len() as f64)
-            } else {
-                None
-            };
+            let sum: f64 = terminal
+                .iter()
+                .map(|record| record.reward.unwrap_or_default())
+                .sum();
+            Some(sum / terminal.len() as f64)
+        } else {
+            None
+        };
 
         json!({
             "state": self.state.as_str(),
@@ -639,6 +707,7 @@ impl RunProgress {
                     )
                 })
                 .collect::<BTreeMap<_, _>>(),
+            "reconciliationErrors": self.reconciliation_errors(),
         })
     }
 }
@@ -921,5 +990,47 @@ mod tests {
             assert_eq!(state.as_str(), expected);
             assert_eq!(serde_json::to_value(state).unwrap(), json!(expected));
         }
+    }
+
+    #[test]
+    fn pre_dispatch_failure_terminalizes_all_five_children() {
+        let mut progress = RunProgress::plan(5);
+        drive_to_running(&mut progress);
+        for index in 0..5 {
+            progress
+                .transition_rollout(index, RolloutState::Queued)
+                .unwrap();
+        }
+        progress.fail_pre_dispatch().unwrap();
+        assert_eq!(progress.state, RunState::Failed);
+        assert_eq!(progress.declared_rollouts(), 5);
+        assert_eq!(progress.in_flight(), 0);
+        assert!(progress.reconciliation_errors().is_empty());
+        let counts = progress.project(ALL)["rolloutStateCounts"].clone();
+        assert_eq!(counts["cancelled"], json!(5));
+        let total: u64 = counts
+            .as_object()
+            .unwrap()
+            .values()
+            .filter_map(Value::as_u64)
+            .sum();
+        assert_eq!(total, 5);
+    }
+
+    #[test]
+    fn parent_terminal_with_queued_children_is_an_explicit_reconciliation_error() {
+        let mut progress = RunProgress::plan(5);
+        drive_to_running(&mut progress);
+        for index in 0..5 {
+            progress
+                .transition_rollout(index, RolloutState::Queued)
+                .unwrap();
+        }
+        progress.state = RunState::Failed;
+        let errors = progress.reconciliation_errors();
+        assert!(
+            errors.iter().any(|error| error.contains("still queued or running")),
+            "{errors:?}"
+        );
     }
 }

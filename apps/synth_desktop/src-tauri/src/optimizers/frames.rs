@@ -73,8 +73,10 @@ fn container_event(event: &OptimizerEventEnvelope, raw: bool) -> Option<&Map<Str
     } else {
         event
             .delta
-            .get("containerEvent")
-            .or_else(|| event.delta.get("container_event"))?
+            .get("container_event")
+            // COMPAT_CONTAINER_EVENT_CAMEL_CASE_THROUGH: remove after the
+            // release following 2026-08, in lockstep with Optimizers.
+            .or_else(|| event.delta.get("containerEvent"))?
             .as_object()
     }
 }
@@ -92,10 +94,11 @@ fn mutable_container_event(
         }?;
         value.as_object_mut()
     } else {
-        let value = if event.delta.contains_key("containerEvent") {
-            event.delta.get_mut("containerEvent")
-        } else {
+        let value = if event.delta.contains_key("container_event") {
             event.delta.get_mut("container_event")
+        } else {
+            // COMPAT_CONTAINER_EVENT_CAMEL_CASE_THROUGH: legacy read only.
+            event.delta.get_mut("containerEvent")
         }?;
         value.as_object_mut()
     }
@@ -231,7 +234,8 @@ pub(super) fn persist_event_frame(
         }
     };
     let retained: i64 = conn.query_row(
-        "SELECT COALESCE((SELECT retained_bytes FROM optimizer_frame_usage WHERE optimizer_run_id=?1), 0)",
+        "SELECT COALESCE(SUM(byte_size), 0) FROM optimizer_run_media
+         WHERE optimizer_run_id=?1 AND media_type='image/png'",
         [&event.optimizer_run_id],
         |row| row.get(0),
     )?;
@@ -261,38 +265,25 @@ pub(super) fn persist_event_frame(
         size_bytes: bytes.len() as u64,
         occurred_at: event.occurred_at.clone(),
     };
+    // `optimizer_run_media` is the one durable retention authority. The
+    // event row supplies observation identity (seed/sequence); this row says
+    // which immutable bytes the run is allowed to retain and serve.
     conn.execute(
-        "INSERT INTO optimizer_frames(
-            optimizer_run_id,seed,frame_sequence,event_id,content_digest,
-            content_type,size_bytes,occurred_at,created_at
-         ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)",
+        "INSERT INTO optimizer_run_media(
+            optimizer_run_id,cas_digest,kind,media_type,byte_size,
+            rollout_id,trial_id,step,created_at
+         ) VALUES (?1,?2,'blobs',?3,?4,NULL,NULL,?5,?6)
+         ON CONFLICT(optimizer_run_id,cas_digest) DO NOTHING",
         params![
             frame.optimizer_run_id,
-            frame.seed,
-            frame.frame_sequence as i64,
-            frame.event_id,
             frame.content_digest,
             frame.content_type,
             frame.size_bytes as i64,
-            frame.occurred_at,
+            frame.frame_sequence as i64,
             Utc::now().to_rfc3339(),
         ],
     )
     .with_context(|| format!("catalog optimizer frame {event_id}"))?;
-    conn.execute(
-        "INSERT INTO optimizer_frame_usage(
-            optimizer_run_id,retained_frames,retained_bytes,rejected_frames,updated_at
-         ) VALUES (?1,1,?2,0,?3)
-         ON CONFLICT(optimizer_run_id) DO UPDATE SET
-            retained_frames=retained_frames+1,
-            retained_bytes=retained_bytes+excluded.retained_bytes,
-            updated_at=excluded.updated_at",
-        params![
-            event.optimizer_run_id,
-            bytes.len() as i64,
-            Utc::now().to_rfc3339()
-        ],
-    )?;
     rewrite_frame_metadata(
         event,
         &json!({
@@ -315,19 +306,44 @@ pub(super) fn latest(
     after_frame_sequence: u64,
 ) -> Result<OptimizerFrameDelta> {
     let (cursor, observed): (i64, i64) = conn.query_row(
-        "SELECT COALESCE(MAX(frame_sequence), ?2), COUNT(*)
-         FROM optimizer_frames
-         WHERE optimizer_run_id=?1 AND frame_sequence>?2",
+        "SELECT COALESCE(MAX(e.sequence_number), ?2), COUNT(*)
+         FROM optimizer_events e
+         JOIN optimizer_run_media m
+           ON m.optimizer_run_id=e.optimizer_run_id
+          AND m.cas_digest=COALESCE(
+             json_extract(e.payload_json,'$.delta.container_event.payload.media.casDigest'),
+             json_extract(e.payload_json,'$.delta.containerEvent.frame.ref.contentDigest'),
+             json_extract(e.payload_json,'$.raw.container_event.frame.ref.contentDigest'))
+         WHERE e.optimizer_run_id=?1 AND e.sequence_number>?2
+           AND m.media_type='image/png'",
         params![optimizer_run_id, after_frame_sequence as i64],
         |row| Ok((row.get(0)?, row.get(1)?)),
     )?;
     let mut statement = conn.prepare(
         "WITH ranked AS (
-           SELECT optimizer_run_id,seed,frame_sequence,event_id,content_digest,
-                  content_type,size_bytes,occurred_at,
-                  ROW_NUMBER() OVER (PARTITION BY seed ORDER BY frame_sequence DESC) AS rank
-           FROM optimizer_frames
-           WHERE optimizer_run_id=?1 AND frame_sequence>?2
+           SELECT e.optimizer_run_id,
+                  CAST(COALESCE(
+                    json_extract(e.payload_json,'$.delta.seed'),
+                    json_extract(e.payload_json,'$.delta.containerEvent.seed'),
+                    json_extract(e.payload_json,'$.raw.container_event.seed')) AS INTEGER) AS seed,
+                  e.sequence_number AS frame_sequence,e.event_id,
+                  m.cas_digest AS content_digest,m.media_type AS content_type,
+                  m.byte_size AS size_bytes,e.occurred_at,
+                  ROW_NUMBER() OVER (
+                    PARTITION BY CAST(COALESCE(
+                      json_extract(e.payload_json,'$.delta.seed'),
+                      json_extract(e.payload_json,'$.delta.containerEvent.seed'),
+                      json_extract(e.payload_json,'$.raw.container_event.seed')) AS INTEGER)
+                    ORDER BY e.sequence_number DESC) AS rank
+           FROM optimizer_events e
+           JOIN optimizer_run_media m
+             ON m.optimizer_run_id=e.optimizer_run_id
+            AND m.cas_digest=COALESCE(
+               json_extract(e.payload_json,'$.delta.container_event.payload.media.casDigest'),
+               json_extract(e.payload_json,'$.delta.containerEvent.frame.ref.contentDigest'),
+               json_extract(e.payload_json,'$.raw.container_event.frame.ref.contentDigest'))
+           WHERE e.optimizer_run_id=?1 AND e.sequence_number>?2
+             AND m.media_type='image/png'
          )
          SELECT optimizer_run_id,seed,frame_sequence,event_id,content_digest,
                 content_type,size_bytes,occurred_at
@@ -360,11 +376,26 @@ pub(super) fn list(
         .unwrap_or(i64::MAX as u64)
         .min(i64::MAX as u64) as i64;
     let mut statement = conn.prepare(
-        "SELECT optimizer_run_id,seed,frame_sequence,event_id,content_digest,
-                content_type,size_bytes,occurred_at
-         FROM optimizer_frames
-         WHERE optimizer_run_id=?1 AND seed=?2 AND frame_sequence<?3
-         ORDER BY frame_sequence DESC LIMIT ?4",
+        "SELECT e.optimizer_run_id,
+                CAST(COALESCE(
+                  json_extract(e.payload_json,'$.delta.seed'),
+                  json_extract(e.payload_json,'$.delta.containerEvent.seed'),
+                  json_extract(e.payload_json,'$.raw.container_event.seed')) AS INTEGER) AS seed,
+                e.sequence_number,e.event_id,m.cas_digest,m.media_type,m.byte_size,e.occurred_at
+         FROM optimizer_events e
+         JOIN optimizer_run_media m
+           ON m.optimizer_run_id=e.optimizer_run_id
+          AND m.cas_digest=COALESCE(
+             json_extract(e.payload_json,'$.delta.container_event.payload.media.casDigest'),
+             json_extract(e.payload_json,'$.delta.containerEvent.frame.ref.contentDigest'),
+             json_extract(e.payload_json,'$.raw.container_event.frame.ref.contentDigest'))
+         WHERE e.optimizer_run_id=?1
+           AND CAST(COALESCE(
+             json_extract(e.payload_json,'$.delta.seed'),
+             json_extract(e.payload_json,'$.delta.containerEvent.seed'),
+             json_extract(e.payload_json,'$.raw.container_event.seed')) AS INTEGER)=?2
+           AND e.sequence_number<?3 AND m.media_type='image/png'
+         ORDER BY e.sequence_number DESC LIMIT ?4",
     )?;
     let rows = statement.query_map(
         params![optimizer_run_id, seed, before, limit.clamp(1, 500)],
@@ -380,18 +411,34 @@ pub(super) fn content(
     seed: i64,
     frame_sequence: u64,
 ) -> Result<OptimizerFrameContent> {
-    let frame = conn
+    let (frame, kind): (OptimizerFrameRef, String) = conn
         .query_row(
-            "SELECT optimizer_run_id,seed,frame_sequence,event_id,content_digest,
-                    content_type,size_bytes,occurred_at
-             FROM optimizer_frames
-             WHERE optimizer_run_id=?1 AND seed=?2 AND frame_sequence=?3",
+            "SELECT e.optimizer_run_id,
+                    CAST(COALESCE(
+                      json_extract(e.payload_json,'$.delta.seed'),
+                      json_extract(e.payload_json,'$.delta.containerEvent.seed'),
+                      json_extract(e.payload_json,'$.raw.container_event.seed')) AS INTEGER) AS seed,
+                    e.sequence_number,e.event_id,m.cas_digest,m.media_type,m.byte_size,e.occurred_at,
+                    m.kind
+             FROM optimizer_events e
+             JOIN optimizer_run_media m
+               ON m.optimizer_run_id=e.optimizer_run_id
+              AND m.cas_digest=COALESCE(
+                 json_extract(e.payload_json,'$.delta.container_event.payload.media.casDigest'),
+                 json_extract(e.payload_json,'$.delta.containerEvent.frame.ref.contentDigest'),
+                 json_extract(e.payload_json,'$.raw.container_event.frame.ref.contentDigest'))
+             WHERE e.optimizer_run_id=?1
+               AND CAST(COALESCE(
+                 json_extract(e.payload_json,'$.delta.seed'),
+                 json_extract(e.payload_json,'$.delta.containerEvent.seed'),
+                 json_extract(e.payload_json,'$.raw.container_event.seed')) AS INTEGER)=?2
+               AND e.sequence_number=?3 AND m.media_type='image/png'",
             params![optimizer_run_id, seed, frame_sequence as i64],
-            frame_ref_from_row,
+            |row| Ok((frame_ref_from_row(row)?, row.get(8)?)),
         )
         .optional()?
         .ok_or_else(|| anyhow!("optimizer frame was not found"))?;
-    let bytes = store.get_bytes("blobs", &frame.content_digest)?;
+    let bytes = store.get_bytes(&kind, &frame.content_digest)?;
     if bytes.len() as u64 != frame.size_bytes {
         bail!("optimizer frame size does not match its catalog entry");
     }
@@ -424,6 +471,25 @@ mod tests {
         Ok(())
     }
 
+    fn insert_frame_event(conn: &Connection, event: &OptimizerEventEnvelope) -> Result<()> {
+        conn.execute(
+            "INSERT INTO optimizer_events(
+                event_id,optimizer_run_id,sequence_number,event_type,
+                algorithm_id,occurred_at,payload_json
+             ) VALUES (?1,?2,?3,?4,?5,?6,?7)",
+            params![
+                event.event_id.as_deref(),
+                event.optimizer_run_id,
+                event.sequence_number as i64,
+                event.event_type,
+                event.algorithm_id,
+                event.occurred_at,
+                serde_json::to_string(event)?,
+            ],
+        )?;
+        Ok(())
+    }
+
     #[test]
     fn frame_lane_coalesces_latest_and_reads_history_lazily() {
         let dir = tempdir().unwrap();
@@ -451,6 +517,7 @@ mod tests {
                     raw: json!({"container_event":{"seed":seed,"frame":{"data_url":data_url(&body)}}}),
                 };
                 persist_event_frame(conn, &store, &mut event)?;
+                insert_frame_event(conn, &event)?;
                 assert!(event.raw.pointer("/container_event/frame/data_url").is_none());
                 assert_eq!(event.raw.pointer("/container_event/frame/ref/admission"), Some(&json!("retained")));
             }
@@ -463,6 +530,18 @@ mod tests {
             assert_eq!(history.iter().map(|frame| frame.frame_sequence).collect::<Vec<_>>(), vec![2, 1]);
             let loaded = content(conn, &store, "run-1", 91001, 1)?;
             assert!(STANDARD.decode(loaded.base64).unwrap().starts_with(b"\x89PNG"));
+            let retired_rows: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM optimizer_frames WHERE optimizer_run_id='run-1'",
+                [],
+                |row| row.get(0),
+            )?;
+            let authoritative_rows: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM optimizer_run_media WHERE optimizer_run_id='run-1'",
+                [],
+                |row| row.get(0),
+            )?;
+            assert_eq!(retired_rows, 0, "the retired frame catalog must stay unwritten");
+            assert_eq!(authoritative_rows, 3);
             Ok(())
         }).unwrap();
     }
@@ -496,6 +575,7 @@ mod tests {
                     raw: json!({"container_event":{"seed":seed,"frame":{"data_url":data_url(&body)}}}),
                 };
                 persist_event_frame(conn, &store, &mut event)?;
+                insert_frame_event(conn, &event)?;
             }
 
             let delta = latest(conn, "run-burst", 0)?;

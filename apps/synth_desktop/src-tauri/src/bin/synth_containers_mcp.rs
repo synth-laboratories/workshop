@@ -6,7 +6,7 @@ mod mcp_stdio;
 #[path = "../instance_paths.rs"]
 mod instance_paths;
 
-use mcp_stdio::{run_stdio_server, McpServerInfo};
+use mcp_stdio::{run_stdio_server_enriched, McpServerInfo};
 use serde_json::{json, Value};
 use std::{env, fs, io, io::Write, path::PathBuf};
 
@@ -82,9 +82,9 @@ fn request_inner(
         .map_err(synth_desktop_lib::error::AppError::from)?;
     let (head, payload) = response
         .split_once("\r\n\r\n")
-        .ok_or_else(|| synth_desktop_lib::error::AppError::message("empty IPC response"))?;
+        .ok_or_else(|| synth_desktop_lib::error::AppError::untyped("empty IPC response"))?;
     let status = parse_status_code(head)
-        .ok_or_else(|| synth_desktop_lib::error::AppError::message("malformed IPC status line"))?;
+        .ok_or_else(|| synth_desktop_lib::error::AppError::untyped("malformed IPC status line"))?;
     match serde_json::from_str::<Value>(payload) {
         Ok(value) => Ok((status, value)),
         // A non-2xx response with an unparseable body is still a failure; do
@@ -108,37 +108,18 @@ fn parse_status_code(head: &str) -> Option<u16> {
 fn tools() -> Value {
     json!({"tools":[
         {"name":"container_list","description":"List registered local containers with cached readiness, task family, and the typed live-eval capability projection (operations, advertised policy_refs, capability source, observation time)","inputSchema":{"type":"object","properties":{},"additionalProperties":false},"annotations":{"readOnlyHint":true,"destructiveHint":false,"idempotentHint":true,"openWorldHint":false}},
-        {"name":"container_ensure","description":"Start or attach the workspace-declared container spec (workshop.containers.toml), wait until /health succeeds, and return the registered handle. Does not scan ports. cwd must stay inside the session workspace. v1 is a supervised child process, not Docker.","inputSchema":{"type":"object","properties":{"spec_id":{"type":"string","description":"id from workshop.containers.toml"},"session_ref":{"type":"string","description":"Optional. Defaults to the calling session."}},"required":["spec_id"],"additionalProperties":false},"annotations":{"readOnlyHint":false,"destructiveHint":false,"idempotentHint":true,"openWorldHint":true}},
+        {"name":"container_ensure","description":"Start or attach the container spec declared in workshop.containers.toml. Relative launch paths resolve against that declaring repository, not the chat or instance workspace. Waits until /health succeeds and returns the registered handle. Does not scan ports. v1 is a supervised child process, not Docker.","inputSchema":{"type":"object","properties":{"spec_id":{"type":"string","description":"id from workshop.containers.toml"},"session_ref":{"type":"string","description":"Optional. Defaults to the calling session."}},"required":["spec_id"],"additionalProperties":false},"annotations":{"readOnlyHint":false,"destructiveHint":false,"idempotentHint":true,"openWorldHint":true}},
         {"name":"container_get","description":"Get a container including cached health, hydrated /info metadata, and metadata.capabilities: the typed live-eval capability state. Health proves liveness only; read capabilities.operations before planning a prepared-rollout workflow.","inputSchema":{"type":"object","properties":{"container_id":{"type":"string"}},"required":["container_id"],"additionalProperties":false},"annotations":{"readOnlyHint":true,"destructiveHint":false,"idempotentHint":true,"openWorldHint":false}},
         {"name":"container_probe","description":"Probe one registered container and refresh /health, /info, and the typed capability projection. Read-only against the container; never scans ports and never issues a rollout to discover support.","inputSchema":{"type":"object","properties":{"container_id":{"type":"string"}},"required":["container_id"],"additionalProperties":false},"annotations":{"readOnlyHint":true,"destructiveHint":false,"idempotentHint":true,"openWorldHint":false}}
         ,{"name":"container_stop","description":"Stop one Workshop-owned supervised container by its registered identity. Verifies the durable PID start identity before signaling and refuses external or stale processes.","inputSchema":{"type":"object","properties":{"container_id":{"type":"string"}},"required":["container_id"],"additionalProperties":false},"annotations":{"readOnlyHint":false,"destructiveHint":true,"idempotentHint":true,"openWorldHint":false}}
-        ,{"name":"container_restart","description":"Stop and restart one Workshop-owned supervised container from its original workspace declaration, then wait for health and return the refreshed registered handle.","inputSchema":{"type":"object","properties":{"container_id":{"type":"string"},"session_ref":{"type":"string","description":"Optional. Defaults to the calling session."}},"required":["container_id"],"additionalProperties":false},"annotations":{"readOnlyHint":false,"destructiveHint":true,"idempotentHint":false,"openWorldHint":true}}
+        ,{"name":"container_restart","description":"Request Workshop's native clickable approval modal, wait for the operator, then force replacement by re-running the exact versioned launch declaration. Call this tool when replacement is needed; never describe the approval gate in prose or ask the user to type approval. If Workshop has a valid supervised-process receipt it stops that process first; otherwise the declared command is responsible for replacing its named workload. Never discovers or kills a process from a port.","inputSchema":{"type":"object","properties":{"container_id":{"type":"string"},"session_ref":{"type":"string","description":"Optional. Defaults to the calling session."}},"required":["container_id"],"additionalProperties":false},"annotations":{"readOnlyHint":false,"destructiveHint":true,"idempotentHint":false,"openWorldHint":true}}
+        ,{"name":"container_reconcile","description":"Re-read the declaring workshop.containers.toml relative to that repository, validate launch paths, and refresh the registry declaration without stopping or starting the workload. Use this to repair stale metadata before requesting replacement.","inputSchema":{"type":"object","properties":{"container_id":{"type":"string"},"session_ref":{"type":"string","description":"Optional. Defaults to the calling session."}},"required":["container_id"],"additionalProperties":false},"annotations":{"readOnlyHint":false,"destructiveHint":false,"idempotentHint":true,"openWorldHint":false}}
         ,{"name":"container_prepare_rollout","description":"Idempotently prepare one caller-stable rollout identity and return its declared stream descriptor. Fails locally before any request when the record is unhealthy (container_unhealthy), its capability observation is stale (container_capabilities_stale), or it does not advertise the prepared-rollout workflow or the requested policy_ref (container_capability_mismatch). Repeating the same rollout_id restores the same preparation; changed transport, retention, or max_steps conflicts.","inputSchema":{"type":"object","properties":{"container_id":{"type":"string"},"rollout_id":{"type":"string"},"task_instance_id":{"type":"string"},"seed":{"type":"integer"},"max_steps":{"type":"integer","minimum":1,"description":"Immutable environment-step cap enforced by the container runtime."},"policy_ref":{"type":"object","properties":{"harness":{"type":"string"},"config":{"type":"string"},"code":{}},"additionalProperties":true},"require_trace_v5":{"type":"boolean","default":false,"description":"Set true when this workflow promises sealed Trace V5 evidence; preflight then also requires an explicitly advertised trace_v5.capture."},"telemetry":{"type":"object"}},"required":["container_id"],"additionalProperties":false},"annotations":{"readOnlyHint":false,"destructiveHint":false,"idempotentHint":true,"openWorldHint":true}}
         ,{"name":"container_start_prepared_rollout","description":"Idempotently start the exact prepared rollout after stream.subscribed and a current draft visual subscription. A reconnect replays the same immutable rollout identity; changed task, policy, or the max_steps pin embedded by prepare conflicts. The host does not pick a policy.","inputSchema":{"type":"object","properties":{"container_id":{"type":"string"},"rollout_id":{"type":"string"},"stream":{"type":"object","description":"Pass the exact descriptor returned by prepare; it carries immutable execution pins including max_steps."},"visual_id":{"type":"string"},"seed":{"type":"integer"},"task_instance_id":{"type":"string"},"policy_ref":{"type":"object","properties":{"harness":{"type":"string"},"config":{"type":"string"},"code":{}},"required":["harness"],"additionalProperties":true},"telemetry":{"type":"object"}},"required":["container_id","rollout_id","stream","visual_id","policy_ref"],"additionalProperties":false},"annotations":{"readOnlyHint":false,"destructiveHint":false,"idempotentHint":true,"openWorldHint":true}}
         ,{"name":"container_get_rollout","description":"Restore authoritative rollout lifecycle state after a timeout or reconnect without starting work.","inputSchema":{"type":"object","properties":{"container_id":{"type":"string"},"rollout_id":{"type":"string"}},"required":["container_id","rollout_id"],"additionalProperties":false},"annotations":{"readOnlyHint":true,"destructiveHint":false,"idempotentHint":true,"openWorldHint":false}}
         ,{"name":"container_poll_rollout","description":"Resume the exact declared poll stream after a sequence cursor. Returns events plus authoritative high_water and closed cursor state; it never re-executes the rollout.","inputSchema":{"type":"object","properties":{"container_id":{"type":"string"},"rollout_id":{"type":"string"},"stream":{"type":"object"},"after":{"type":"integer","minimum":0}},"required":["container_id","rollout_id","stream"],"additionalProperties":false},"annotations":{"readOnlyHint":true,"destructiveHint":false,"idempotentHint":true,"openWorldHint":false}}
-        ,{"name":"campaign_create","description":"Plan one evaluation campaign: a fixed number of rollouts with stable ids, non-overlapping seeds, and one policy. An evaluation is this, not a rollout. The plan is fixed before anything runs; every returned rollout must be started with its own rollout_id, seed, and task_instance_id.","inputSchema":{"type":"object","properties":{"container_id":{"type":"string"},"title":{"type":"string"},"expected_rollouts":{"type":"integer","minimum":1,"maximum":100,"description":"How many terminal rollouts this campaign owes. It cannot settle complete with fewer."},"seeds":{"type":"array","items":{"type":"integer"},"description":"Explicit seeds, one per rollout, all distinct. Omit to allocate a contiguous block from seed_start."},"seed_start":{"type":"integer","description":"First seed of a contiguous block. Seeds may not overlap another open campaign."},"task_instance_template":{"type":"string","description":"Task instance id per rollout; {seed} is substituted. Defaults to seed:{seed}."},"max_concurrency":{"type":"integer","minimum":1},"policy_ref":{"type":"object","properties":{"harness":{"type":"string"},"config":{"type":"string"},"code":{}},"required":["harness"],"additionalProperties":true}},"required":["container_id","expected_rollouts","policy_ref"],"additionalProperties":false},"annotations":{"readOnlyHint":false,"destructiveHint":false,"idempotentHint":false,"openWorldHint":false}}
-        ,{"name":"campaign_status","description":"The campaign plan with each rollout's current state, reconciled against the container's authoritative records rather than any report of them.","inputSchema":{"type":"object","properties":{"campaign_id":{"type":"string"}},"required":["campaign_id"],"additionalProperties":false},"annotations":{"readOnlyHint":true,"destructiveHint":false,"idempotentHint":true,"openWorldHint":false}}
-        ,{"name":"campaign_result","description":"Reconcile, then settle: the campaign's own aggregate over its terminal rollouts — reward distribution, achievement rates, termination reasons, latency, calls, and usage coverage. Returns status complete only when every planned rollout has a terminal record; otherwise partial, naming the missing ones. Do not recompute this yourself.","inputSchema":{"type":"object","properties":{"campaign_id":{"type":"string"}},"required":["campaign_id"],"additionalProperties":false},"annotations":{"readOnlyHint":false,"destructiveHint":false,"idempotentHint":true,"openWorldHint":false}}
         ,{"name":"container_run_rollouts","description":"Scripted engine-acceptance only: 1-10 bounded rollouts with an explicit action list. Not a ReAct or model evaluation. Live policy evals use container_prepare_rollout then container_start_prepared_rollout with policy_ref.","inputSchema":{"type":"object","properties":{"container_id":{"type":"string"},"count":{"type":"integer","minimum":1,"maximum":10},"seeds":{"type":"array","items":{"type":"integer"},"maxItems":10},"actions":{"type":"array","items":{"type":"string"},"minItems":1,"maxItems":64}},"required":["container_id","count","actions"],"additionalProperties":false},"annotations":{"readOnlyHint":false,"destructiveHint":false,"idempotentHint":false,"openWorldHint":true}}
     ]})
-}
-
-/// A campaign id is a path segment, so it may not smuggle one.
-fn campaign_id(args: &Value) -> Result<String, String> {
-    let id = args
-        .get("campaign_id")
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .ok_or_else(|| "campaign_id required".to_string())?;
-    if !id
-        .chars()
-        .all(|character| character.is_ascii_alphanumeric() || character == '_' || character == '-')
-    {
-        return Err("campaign_id must be an identifier".to_string());
-    }
-    Ok(id.to_owned())
 }
 
 fn call_tool(name: &str, args: &Value) -> Result<Value, String> {
@@ -211,13 +192,39 @@ fn call_tool(name: &str, args: &Value) -> Result<Value, String> {
                 .map(str::trim)
                 .filter(|value| !value.is_empty())
                 .map(str::to_owned)
-                .or_else(|| std::env::var("SYNTH_SESSION_ID").ok().filter(|value| !value.trim().is_empty()))
+                .or_else(|| {
+                    std::env::var("SYNTH_SESSION_ID")
+                        .ok()
+                        .filter(|value| !value.trim().is_empty())
+                })
             {
                 payload["sessionRef"] = json!(session);
             }
             request(
                 "POST",
                 &format!("/v1/containers/{}/restart", id()?),
+                Some(payload),
+            )
+        }
+        "container_reconcile" => {
+            let mut payload = json!({});
+            if let Some(session) = args
+                .get("session_ref")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_owned)
+                .or_else(|| {
+                    std::env::var("SYNTH_SESSION_ID")
+                        .ok()
+                        .filter(|value| !value.trim().is_empty())
+                })
+            {
+                payload["sessionRef"] = json!(session);
+            }
+            request(
+                "POST",
+                &format!("/v1/containers/{}/reconcile", id()?),
                 Some(payload),
             )
         }
@@ -265,29 +272,81 @@ fn call_tool(name: &str, args: &Value) -> Result<Value, String> {
             &format!("/v1/containers/{}/rollouts", id()?),
             Some(args.clone()),
         ),
-        "campaign_create" => request("POST", "/v1/campaigns", Some(args.clone())),
-        "campaign_status" => request(
-            "POST",
-            &format!("/v1/campaigns/{}/reconcile", campaign_id(args)?),
-            Some(json!({})),
-        ),
-        "campaign_result" => request(
-            "POST",
-            &format!("/v1/campaigns/{}/result", campaign_id(args)?),
-            Some(json!({})),
-        ),
         _ => Err(format!("unknown tool {name}")),
     }
 }
 
+fn enrich_container_breaker_args(name: &str, args: &Value) -> Value {
+    if !matches!(
+        name,
+        "container_ensure" | "container_restart" | "container_reconcile"
+    ) {
+        return args.clone();
+    }
+    let mut body = json!({});
+    if let Some(session) = args
+        .get("session_ref")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned)
+        .or_else(|| {
+            env::var("SYNTH_SESSION_ID")
+                .ok()
+                .map(|value| value.trim().to_string())
+                .filter(|value| !value.is_empty())
+        })
+    {
+        body["sessionRef"] = json!(session);
+    }
+    if let Some(container_id) = args.get("container_id").and_then(Value::as_str) {
+        body["containerId"] = json!(container_id);
+    }
+    if let Some(spec_id) = args.get("spec_id").and_then(Value::as_str) {
+        body["specId"] = json!(spec_id);
+    }
+    let resolved = match request(
+        "POST",
+        "/v1/containers/resolve_declaration",
+        Some(body),
+    ) {
+        Ok(value) => value,
+        Err(error) => serde_json::from_str(&error).unwrap_or_else(|_| json!({})),
+    };
+    let mut enriched = args.clone();
+    let Some(object) = enriched.as_object_mut() else {
+        return args.clone();
+    };
+    for (from, to) in [
+        ("sourceRoot", "source_root"),
+        ("manifestPath", "manifest_path"),
+        ("declarationDigest", "declaration_digest"),
+        ("source_root", "source_root"),
+        ("manifest", "manifest_path"),
+        ("source_digest", "declaration_digest"),
+        ("specId", "spec_id"),
+    ] {
+        if let Some(value) = resolved
+            .get(from)
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            object.entry(to.to_string()).or_insert_with(|| json!(value));
+        }
+    }
+    enriched
+}
+
 fn main() {
-    run_stdio_server(
+    run_stdio_server_enriched(
         McpServerInfo {
             name: "synth-containers-mcp",
             version: env!("CARGO_PKG_VERSION"),
         },
         tools,
         |name, args| call_tool(name, args),
+        enrich_container_breaker_args,
     );
 }
 
@@ -362,7 +421,7 @@ mod tests {
             prepare["inputSchema"]["properties"]["max_steps"]["minimum"],
             1
         );
-        for name in ["container_ensure", "container_stop", "container_restart"] {
+        for name in ["container_ensure", "container_stop", "container_restart", "container_reconcile"] {
             assert!(catalog["tools"]
                 .as_array()
                 .unwrap()
@@ -381,32 +440,11 @@ mod tests {
                 "{name} must surface the typed capability projection"
             );
         }
-        // A campaign is the noun that makes "an evaluation" a count. Five chats
-        // each read "one evaluation" as one rollout, and none of them was wrong.
-        let campaign = catalog["tools"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|tool| tool["name"] == "campaign_create")
-            .expect("the eval surface must offer a campaign primitive");
-        assert_eq!(
-            campaign["inputSchema"]["properties"]["expected_rollouts"]["type"],
-            "integer"
-        );
-        assert!(campaign["inputSchema"]["required"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|value| value == "expected_rollouts"));
-        let result = catalog["tools"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|tool| tool["name"] == "campaign_result")
-            .unwrap();
-        let description = result["description"].as_str().unwrap();
-        assert!(description.contains("partial"), "{description}");
-        assert!(description.contains("Do not recompute"), "{description}");
+        assert!(catalog["tools"].as_array().unwrap().iter().all(|tool| {
+            !tool["name"]
+                .as_str()
+                .is_some_and(|name| name.starts_with("campaign_"))
+        }));
 
         for name in ["container_get_rollout", "container_poll_rollout"] {
             let tool = catalog["tools"]

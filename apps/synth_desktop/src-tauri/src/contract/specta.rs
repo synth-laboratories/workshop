@@ -23,7 +23,7 @@
 //!    (or debug-assert export in [`export_typescript_bindings`]).
 //! 5. Prefer generated types from `generated/protocol.ts` at the bridge edge.
 
-use crate::instance::{self, InstanceDiagnostics};
+use crate::instance::{self, InstanceDiagnostics, RegisteredInstance};
 use serde::{Deserialize, Serialize};
 use specta_typescript::Typescript;
 use tauri_specta::{collect_commands, Builder};
@@ -71,6 +71,12 @@ pub fn desktop_instance_diagnostics() -> InstanceDiagnostics {
     instance::diagnostics()
 }
 
+#[tauri::command]
+#[specta::specta]
+pub fn desktop_instances_list() -> Result<Vec<RegisteredInstance>, String> {
+    instance::registered_instances().map_err(|error| error.to_string())
+}
+
 /// Specta builder for the complete desktop command boundary.
 pub fn builder() -> Builder<tauri::Wry> {
     Builder::<tauri::Wry>::new()
@@ -80,8 +86,16 @@ pub fn builder() -> Builder<tauri::Wry> {
         // The record field is still a `String` at the storage edge; see
         // `optimizers::OptimizerRunStatus`.
         .typ::<crate::optimizers::OptimizerRunStatus>()
+        .typ::<crate::optimizers::kernel::AlgorithmKind>()
+        .typ::<crate::optimizers::kernel::RunLifecycle>()
+        .typ::<crate::optimizers::kernel::RunPhase>()
+        .typ::<crate::optimizers::kernel::RunCondition>()
+        .typ::<crate::optimizers::kernel::TerminalKind>()
+        .typ::<crate::optimizers::kernel::OptimizerRunViewV2>()
+        .typ::<crate::platform::failure::FailureView>()
         .commands(collect_commands![
             desktop_instance_diagnostics,
+            desktop_instances_list,
             crate::desktop_image_preview,
             crate::core_diagnostics,
             crate::runtime_contracts,
@@ -98,6 +112,8 @@ pub fn builder() -> Builder<tauri::Wry> {
             crate::data_containers_get,
             crate::data_containers_register,
             crate::data_containers_probe,
+            crate::data_containers_reconcile,
+            crate::data_containers_restart,
             crate::data_traces_list,
             crate::data_traces_get,
             crate::data_trace_materialize,
@@ -117,9 +133,12 @@ pub fn builder() -> Builder<tauri::Wry> {
             crate::optimizers_stage_eval_candidates,
             crate::optimizers_list,
             crate::optimizers_get,
+            crate::optimizers_run_view_v2,
             crate::optimizers_create,
             crate::optimizers_refresh,
             crate::optimizers_events_after,
+            crate::optimizers_artifacts_list,
+            crate::optimizers_artifact_read_range,
             crate::optimizers_frames_latest,
             crate::optimizers_frames_list,
             crate::optimizers_frame_content,
@@ -335,6 +354,12 @@ pub fn builder() -> Builder<tauri::Wry> {
             crate::terminal_write,
             crate::terminal_resize,
             crate::terminal_close,
+            crate::secrets::secrets_workspace_roots_list,
+            crate::secrets::secrets_bindings_list,
+            crate::secrets::secrets_locators_list,
+            crate::secrets::secrets_locator_remember_external,
+            crate::secrets::secrets_locator_register,
+            crate::secrets::secrets_locator_forget,
             crate::secrets::secrets_list,
             crate::secrets::secrets_create,
             crate::secrets::secrets_replace,
@@ -357,6 +382,12 @@ pub fn builder() -> Builder<tauri::Wry> {
             crate::telemetry::product_telemetry_recent,
             crate::telemetry::product_telemetry_flush_now,
             crate::release_tier::release_tier_get,
+            crate::adapters::tauri::failures_query,
+            crate::adapters::tauri::failures_get,
+            crate::adapters::tauri::failures_timeline,
+            crate::adapters::tauri::logs_query,
+            crate::adapters::tauri::failure_export_bundle,
+            crate::adapters::tauri::observability_status,
         ])
 }
 
@@ -486,25 +517,31 @@ mod tests {
         // bridge (`synth.visual.media.v1`), which serves one bounded frame by
         // digest to a visual bound to the run that produced it.
         // 265 → 268: bounded native optimizer-frame latest/list/content lane.
-        // 268 → 271: telemetry consent answer, transparency view of recent
-        // events, and the manual flush — all display-safe; event creation
-        // remains host-owned.
-        // 271 → 272: `release_tier_get` — the compiled maturity envelope
-        // (contracts/release-tiers-v1.toml) for renderer display and the
-        // bundle/host tier-mismatch check.
-        // 272 → 273: `visuals_template_shell_source`, which reads one
-        // user-authored template's `shell.tsx` for the pane to compile. Read
-        // only, it refuses non-user templates and paths outside the user
-        // template root.
-        // 273 → 276: user visual template authoring — `visuals_template_save`
-        // and `visuals_template_create` write `template.json` + `shell.tsx`
-        // under the instance state root and are verified by rebuilding the
-        // registry index over the bytes they just wrote, rolling back whatever
-        // it refuses; `visuals_template_validate` reports that same verdict
+        // 268 → 276 (v0.8 stream-fold lane): telemetry consent answer,
+        // transparency view of recent events, and the manual flush — all
+        // display-safe; event creation remains host-owned. `release_tier_get`
+        // — the compiled maturity envelope (contracts/release-tiers-v1.toml)
+        // for renderer display and the bundle/host tier-mismatch check.
+        // `visuals_template_shell_source`, which reads one user-authored
+        // template's `shell.tsx` for the pane to compile — read only, it
+        // refuses non-user templates and paths outside the user template
+        // root. User visual template authoring — `visuals_template_save` and
+        // `visuals_template_create` write `template.json` + `shell.tsx` under
+        // the instance state root and are verified by rebuilding the registry
+        // index over the bytes they just wrote, rolling back whatever it
+        // refuses; `visuals_template_validate` reports that same verdict
         // without writing. The import allowlist is not among them on purpose:
         // it lives once, in `visuals/runtime/sourcedValidate.ts`.
+        // 276 → 292 (inline-eval refactor lane): container reconcile +
+        // restart — declaration repair and native one-time replacement, bound
+        // to the declaring repository; failure ledger query/get/timeline,
+        // logs query, redacted bundle export, and observability mode status;
+        // `optimizers_run_view_v2` — versioned kernel projection; credential
+        // roots, bindings, locators, external remember, register, and forget
+        // commands; durable optimizer artifact list and bounded range read;
+        // safe sibling instance registry projection.
         assert_eq!(
-            exported, 276,
+            exported, 292,
             "generated bindings must contain the complete desktop command set"
         );
         assert_eq!(

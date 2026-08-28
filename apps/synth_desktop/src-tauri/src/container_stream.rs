@@ -618,7 +618,10 @@ mod tests {
         )
         .await
         .unwrap_err();
-        assert!(err.to_string().contains("503"), "expected 503 refuse, got {err}");
+        assert!(
+            err.to_string().contains("503"),
+            "expected 503 refuse, got {err}"
+        );
         task.abort();
     }
 

@@ -1122,6 +1122,73 @@ fn write_toml(path: &Path, document: &toml::Value) -> Result<()> {
     Ok(())
 }
 
+/// Rewrite the non-authoritative, human-readable credential locator export.
+/// SQLite remains the only input to boot and runtime lookup.
+pub(crate) fn rewrite_credential_locator_export(
+    locators: &[crate::secrets::CredentialLocatorSummary],
+) -> Result<()> {
+    let path = config_path();
+    let mut document = read_toml(&path)?;
+    let root = document
+        .as_table_mut()
+        .ok_or_else(|| anyhow!("Synth config root must be a TOML table"))?;
+    let desktop = root
+        .entry("desktop")
+        .or_insert_with(|| toml::Value::Table(Default::default()))
+        .as_table_mut()
+        .ok_or_else(|| anyhow!("[desktop] must be a TOML table"))?;
+    let entries = locators
+        .iter()
+        .map(|locator| {
+            let mut entry = toml::map::Map::new();
+            entry.insert("id".into(), toml::Value::String(locator.id.clone()));
+            entry.insert(
+                "kind".into(),
+                toml::Value::String(locator.kind.as_str().into()),
+            );
+            if let Some(reference) = locator.workspace_root_ref.as_ref() {
+                entry.insert(
+                    "workspace_root_ref".into(),
+                    toml::Value::String(reference.clone()),
+                );
+            }
+            if let Some(relative) = locator.relative_path.as_ref() {
+                entry.insert(
+                    "relative_path".into(),
+                    toml::Value::String(relative.clone()),
+                );
+            }
+            if matches!(
+                locator.kind,
+                crate::secrets::CredentialLocatorKind::ExternalEnvFile
+            ) && locator.display_path.starts_with("~/")
+            {
+                entry.insert(
+                    "external_path".into(),
+                    toml::Value::String(locator.display_path.clone()),
+                );
+            }
+            entry.insert("format".into(), toml::Value::String(locator.format.clone()));
+            entry.insert(
+                "provider".into(),
+                toml::Value::String(locator.provider.clone()),
+            );
+            entry.insert(
+                "variable".into(),
+                toml::Value::String(locator.variable.clone()),
+            );
+            entry.insert("label".into(), toml::Value::String(locator.label.clone()));
+            entry.insert(
+                "state".into(),
+                toml::Value::String(locator.state.as_str().into()),
+            );
+            toml::Value::Table(entry)
+        })
+        .collect::<Vec<_>>();
+    desktop.insert("credential_locators".into(), toml::Value::Array(entries));
+    write_toml(&path, &document)
+}
+
 fn resolve_secret(key: &str, env_file: &Path) -> (Option<String>, Option<String>) {
     if let Ok(value) = env::var(key) {
         if !value.trim().is_empty() {

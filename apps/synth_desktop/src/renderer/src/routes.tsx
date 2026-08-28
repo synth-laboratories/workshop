@@ -1,4 +1,5 @@
 import { useEffect, useRef, type CSSProperties, type ReactNode } from "react";
+import { listen } from "@tauri-apps/api/event";
 import type {
 	ContainerDeployment,
 	OptimizerRunRecord,
@@ -37,8 +38,9 @@ import { WorkbenchSidePanel } from "./components/WorkbenchSidePanel";
 import type { SidePanelTab } from "./hooks/useShellLayout";
 import { ResponsesTracePanel } from "./components/ResponsesTracePanel";
 import { DiagnosticsPanel } from "./components/DiagnosticsPanel";
+import { ErrorsLogsPanel } from "./components/ErrorsLogsPanel";
 import { sessionIsLocalChat } from "./runtime/sessionView";
-import { bridges } from "./runtime/desktopBridge";
+import { bridges, isDesktopApp } from "./runtime/desktopBridge";
 import {
 	openTraceReference,
 	VISUAL_OPS_FOLLOW_EVENT,
@@ -179,6 +181,8 @@ export type MainRoutesProps = {
 	toggleArtifact: (id: string | null) => void;
 	toggleContainer: (id: string | null) => Promise<void>;
 	probeOpenContainer: () => Promise<void>;
+	repairOpenContainer: () => Promise<void>;
+	restartOpenContainer: () => Promise<void>;
 	controlActive: (kind: "approve" | "reject" | "cancel", payload?: Record<string, unknown>) => Promise<void>;
 	onActivityModeChange: (mode: ToolActivityMode) => void;
 };
@@ -252,12 +256,41 @@ export function MainRoutes(props: MainRoutesProps): ReactNode {
 		toggleArtifact,
 		toggleContainer,
 		probeOpenContainer,
+		repairOpenContainer,
+		restartOpenContainer,
 		controlActive,
 		onActivityModeChange,
 		activeSessionId,
 		transcriptHistoryBySession,
 		loadOlderTranscript
 	} = props;
+	useEffect(() => {
+		if (!isDesktopApp()) return;
+		let disposed = false;
+		let unlisten: (() => void) | undefined;
+		void listen<{ instance?: string | null; view: string; runId?: string | null }>(
+			"desktop:deep-link",
+			(event) => {
+				const route = event.payload;
+				if (route.instance && route.instance !== document.documentElement.dataset.desktopInstance) {
+					showToast(`This link targets Workshop instance ${route.instance}. Open it from the instance switcher.`);
+					return;
+				}
+				if (route.runId) persistLayoutSnapshot({ optimizers: { selectedRunId: route.runId } });
+				if (route.view === "optimizers" || route.runId) setView({ kind: "optimizers" });
+				else if (route.view === "experiments") setView({ kind: "experiments" });
+				else if (route.view === "visuals") setView({ kind: "visuals" });
+				else setView({ kind: "landing" });
+			}
+		).then((stop) => {
+			if (disposed) stop();
+			else unlisten = stop;
+		}).catch((reason) => showToast(publicError(reason)));
+		return () => {
+			disposed = true;
+			unlisten?.();
+		};
+	}, [persistLayoutSnapshot, setView, showToast]);
 	useEffect(() => {
 		const opened = (event: Event) => openVisualRecord((event as CustomEvent<VisualRecord>).detail);
 		const failed = (event: Event) => showToast((event as CustomEvent<string>).detail);
@@ -474,7 +507,7 @@ export function MainRoutes(props: MainRoutesProps): ReactNode {
 						}}
 						openContainerId={openContainer?.id ?? null}
 						onOpenContainer={(id) => void toggleContainer(id)}
-						onApprove={(approvalId) => void controlActive("approve", { approvalId })}
+						onApprove={(approvalId, decision) => void controlActive("approve", { approvalId, decision })}
 						onAlwaysAllow={(approvalId) =>
 							void controlActive("approve", { approvalId, decision: "always" })
 						}
@@ -544,6 +577,8 @@ export function MainRoutes(props: MainRoutesProps): ReactNode {
 					{view.kind === "optimizers" ? (
 						<OptimizersPage
 							pluginStatuses={pluginStatuses}
+							initialRunId={preferences.layout.last.optimizers.selectedRunId}
+							onSelectedRunIdChange={(selectedRunId) => persistLayoutSnapshot({ optimizers: { selectedRunId } })}
 							selectedContainerId={openContainer?.id ?? null}
 							onRefreshPlugins={refreshPluginStatuses}
 							onStartAgent={(guide) => startOptimizerAgent(`Plan a ${guide.name} optimization`, guide.prompt)}
@@ -594,6 +629,8 @@ export function MainRoutes(props: MainRoutesProps): ReactNode {
 							expanded={containerPaneExpanded}
 							onExpandedChange={setContainerPaneExpanded}
 							onProbe={() => void probeOpenContainer()}
+							onRestart={() => void restartOpenContainer()}
+							onRepair={() => void repairOpenContainer()}
 							onClose={() => void toggleContainer(null)}
 						/>
 					) : null}
@@ -605,6 +642,8 @@ export function MainRoutes(props: MainRoutesProps): ReactNode {
 								expanded={containerPaneExpanded}
 								onExpandedChange={setContainerPaneExpanded}
 								onProbe={() => void probeOpenContainer()}
+								onRestart={() => void restartOpenContainer()}
+								onRepair={() => void repairOpenContainer()}
 								onClose={() => void toggleContainer(null)}
 							/>
 						</>
@@ -618,6 +657,7 @@ export function MainRoutes(props: MainRoutesProps): ReactNode {
 									|| tabId === "inference"
 									|| tabId === "trace"
 									|| tabId === "diagnostics"
+									|| tabId === "errors"
 								) {
 									setSidePanelTab(tabId);
 								}
@@ -664,6 +704,16 @@ export function MainRoutes(props: MainRoutesProps): ReactNode {
 											onOpenContainer={(id) => void toggleContainer(id)}
 											onOpenOptimizer={() => setView({ kind: "optimizers" })}
 											onOpenTrace={() => setView({ kind: "inventory" })}
+										/>
+									)
+								},
+								{
+									id: "errors",
+									label: "Failures",
+									content: (
+										<ErrorsLogsPanel
+											sessionId={activeChat.id}
+											onOpenContainer={(id) => void toggleContainer(id)}
 										/>
 									)
 								},

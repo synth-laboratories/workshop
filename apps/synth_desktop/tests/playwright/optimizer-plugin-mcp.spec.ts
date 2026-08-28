@@ -53,6 +53,7 @@ test("plugin phases stay visible as the install progresses", async ({ page }) =>
 	await page.reload();
 	await page.getByTestId("titlebar").waitFor();
 	await page.getByTestId("open-optimizers").click();
+	await page.getByTestId("optimizer-tab-plugin").click();
 	await expect(page.getByTestId("optimizer-plugin-phase")).toHaveText("Downloading");
 	await page.evaluate(() => (window as any).__setPluginPhase("verifying"));
 	await expect(page.getByTestId("optimizer-plugin-phase")).toHaveText("Verifying");
@@ -93,6 +94,7 @@ test("plugin lifecycle errors preserve the structured response body", async ({ p
 	await page.reload();
 	await page.getByTestId("titlebar").waitFor();
 	await page.getByTestId("open-optimizers").click();
+	await page.getByTestId("optimizer-tab-plugin").click();
 	await page.getByTestId("plugin-start").click();
 	await expect(page.getByTestId("optimizer-error")).toContainText("Capability check failed — HTTP 502");
 	await expect(page.getByTestId("optimizer-error")).not.toContainText("[object Object]");

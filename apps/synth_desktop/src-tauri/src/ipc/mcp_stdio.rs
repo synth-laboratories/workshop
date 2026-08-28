@@ -21,12 +21,13 @@ const BREAKER_FAILURE_LIMIT: usize = 2;
 /// The key is tool + operation + target id, and the failure signature prefers a
 /// structured error `code`, so a different root cause on the same target also
 /// gets a fresh recovery budget.
-const BREAKER_TARGET_FIELDS: [&str; 7] = [
+const BREAKER_TARGET_FIELDS: [&str; 8] = [
     "visual_id",
     "visualId",
     "trace_id",
     "traceId",
     "container_id",
+    "spec_id",
     "report_id",
     "id",
 ];
@@ -86,6 +87,23 @@ fn breaker_key(tool: &str, args: &Value) -> String {
     {
         key.push_str("~cap:");
         key.push_str(revision);
+    }
+    if let Some(root) = arg_str(args, "source_root").or_else(|| arg_str(args, "sourceRoot")) {
+        key.push_str("~root:");
+        key.push_str(root);
+    }
+    if let Some(manifest) = arg_str(args, "manifest_path").or_else(|| arg_str(args, "manifestPath"))
+    {
+        key.push_str("~manifest:");
+        key.push_str(manifest);
+    }
+    if let Some(digest) = arg_str(args, "declaration_digest")
+        .or_else(|| arg_str(args, "declarationDigest"))
+        .or_else(|| arg_str(args, "source_digest"))
+        .or_else(|| arg_str(args, "sourceDigest"))
+    {
+        key.push_str("~digest:");
+        key.push_str(digest);
     }
     if let Some(token) = breaker_payload_token(tool, args) {
         key.push_str("~req:");
@@ -193,12 +211,28 @@ fn failure_signature(error: &str) -> String {
                 .or_else(|| value.get("capabilityRevision"))
                 .or_else(|| value.get("observed_at"))
                 .or_else(|| value.get("observedAt"))
+                .or_else(|| value.get("source_digest"))
+                .or_else(|| value.get("sourceDigest"))
+                .or_else(|| value.get("declaration_digest"))
+                .or_else(|| value.get("declarationDigest"))
+                .or_else(|| value.pointer("/details/source_digest"))
                 .and_then(Value::as_str)
                 .map(str::trim)
                 .filter(|value| !value.is_empty())
             {
                 signature.push('@');
                 signature.push_str(revision);
+            }
+            if let Some(root) = value
+                .get("source_root")
+                .or_else(|| value.get("sourceRoot"))
+                .or_else(|| value.pointer("/details/source_root"))
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+            {
+                signature.push_str("~root:");
+                signature.push_str(root);
             }
             Some(signature)
         })
@@ -335,6 +369,15 @@ pub fn run_stdio_server(
     tools: impl Fn() -> Value,
     call_tool: impl Fn(&str, &Value) -> Result<Value, String>,
 ) {
+    run_stdio_server_enriched(info, tools, call_tool, |_, args| args.clone())
+}
+
+pub fn run_stdio_server_enriched(
+    info: McpServerInfo,
+    tools: impl Fn() -> Value,
+    call_tool: impl Fn(&str, &Value) -> Result<Value, String>,
+    enrich_breaker_args: impl Fn(&str, &Value) -> Value,
+) {
     let stdin = io::stdin();
     let mut stdout = io::stdout();
     let mut breaker = ToolLoopBreaker::default();
@@ -370,12 +413,13 @@ pub fn run_stdio_server(
                 let params = req.get("params").cloned().unwrap_or(json!({}));
                 let name = params.get("name").and_then(Value::as_str).unwrap_or("");
                 let args = params.get("arguments").cloned().unwrap_or(json!({}));
-                if let Some(error) = breaker.terminal_error(name, &args) {
+                let breaker_args = enrich_breaker_args(name, &args);
+                if let Some(error) = breaker.terminal_error(name, &breaker_args) {
                     json!({"jsonrpc":"2.0","id":id,"result":tool_error_result(error, true)})
                 } else {
                     match call_tool(name, &args) {
                         Ok(mut result) => {
-                            breaker.record_success(name, &args);
+                            breaker.record_success(name, &breaker_args);
                             let image = result
                                 .as_object_mut()
                                 .and_then(|object| object.remove("_mcpImage"));
@@ -405,7 +449,7 @@ pub fn run_stdio_server(
                             })
                         }
                         Err(error) => {
-                            breaker.record_failure(name, &args, &error);
+                            breaker.record_failure(name, &breaker_args, &error);
                             json!({"jsonrpc":"2.0","id":id,"result":tool_error_result(error, false)})
                         }
                     }
@@ -423,7 +467,6 @@ pub fn run_stdio_server(
         let _ = stdout.flush();
     }
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -602,6 +645,69 @@ mod tests {
             breaker_key("visual_manage", &bind),
             breaker_key("visual_manage", &show)
         );
+    }
+
+    #[test]
+    fn repaired_declaration_digest_is_a_new_breaker_attempt() {
+        let first = json!({
+            "spec_id": "nanohorizon-craftax",
+            "sourceDigest": "sha256:aaa",
+            "sourceRoot": "/GitHub/nanohorizon"
+        });
+        let repaired = json!({
+            "spec_id": "nanohorizon-craftax",
+            "sourceDigest": "sha256:bbb",
+            "sourceRoot": "/GitHub/nanohorizon"
+        });
+        assert_ne!(
+            breaker_key("container_ensure", &first),
+            breaker_key("container_ensure", &repaired)
+        );
+        let mut breaker = ToolLoopBreaker::default();
+        let error = json!({"code": "launch_source_path_escapes_root"}).to_string();
+        breaker.record_failure("container_ensure", &first, &error);
+        breaker.record_failure("container_ensure", &first, &error);
+        assert!(breaker.terminal_error("container_ensure", &first).is_some());
+        assert!(breaker
+            .terminal_error("container_ensure", &repaired)
+            .is_none());
+    }
+
+    #[test]
+    fn source_root_and_failure_digest_are_breaker_identity() {
+        let root_a = json!({
+            "container_id": "ctr_1",
+            "source_root": "/GitHub/nanohorizon",
+            "declaration_digest": "sha256:aaa"
+        });
+        let root_b = json!({
+            "container_id": "ctr_1",
+            "source_root": "/tmp/other",
+            "declaration_digest": "sha256:aaa"
+        });
+        assert_ne!(
+            breaker_key("container_restart", &root_a),
+            breaker_key("container_restart", &root_b)
+        );
+        let mut breaker = ToolLoopBreaker::default();
+        let first = json!({
+            "code": "launch_source_digest_mismatch",
+            "source_digest": "sha256:aaa",
+            "source_root": "/GitHub/nanohorizon"
+        })
+        .to_string();
+        let repaired = json!({
+            "code": "launch_source_digest_mismatch",
+            "source_digest": "sha256:bbb",
+            "source_root": "/GitHub/nanohorizon"
+        })
+        .to_string();
+        let args = json!({"container_id": "ctr_1", "source_root": "/GitHub/nanohorizon"});
+        breaker.record_failure("container_restart", &args, &first);
+        breaker.record_failure("container_restart", &args, &first);
+        assert!(breaker.terminal_error("container_restart", &args).is_some());
+        breaker.record_failure("container_restart", &args, &repaired);
+        assert!(breaker.terminal_error("container_restart", &args).is_none());
     }
 
     #[test]

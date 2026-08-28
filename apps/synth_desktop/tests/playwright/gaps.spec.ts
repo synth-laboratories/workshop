@@ -181,6 +181,8 @@ test.describe("coverage gaps", () => {
 				},
 				async getContainer() { return (await this.listContainers())[0]; },
 				async probeContainer() { return (await this.listContainers())[0]; },
+				async reconcileContainer() { return (await this.listContainers())[0]; },
+				async restartContainer() { return (await this.listContainers())[0]; },
 				async listTraces() {
 					return [{ id: "rust-trace", digest: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef", title: "Rust trace", source: "local", metrics: [], metadata: {}, createdAt: timestamp }];
 				},

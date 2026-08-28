@@ -27,10 +27,10 @@
 
 use super::{events::OptimizerEventDraft, service::OptimizerService};
 use crate::container_stream::{poll_event_list, STREAM_SUBSCRIBED_KIND};
-use anyhow::{anyhow, bail, Context, Result};
+use anyhow::{bail, Context, Result};
 use serde_json::{json, Map, Value};
+use sha2::{Digest, Sha256};
 use std::time::{Duration, Instant};
-use tokio::sync::watch;
 
 /// Algorithm id every relayed event is filed under. Same lane as the rest of
 /// the container-eval evidence, so one cursor reads the whole run.
@@ -64,6 +64,11 @@ const SETTLED_IDLE_DRAINS: u32 = 2;
 /// Per-request timeout for one frame fetch. A frame is a small local file; a
 /// slow one is a degraded frame, not a reason to stall the trial.
 const FRAME_FETCH_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Cross-language semantic encoding used for journal envelope digests. The
+/// producer places this marker on every newly-written envelope; unmarked rows
+/// retain the legacy JSON reserialization check for backwards compatibility.
+const ENVELOPE_DIGEST_V2: &str = "synth.envelope-digest.v2";
 
 /// How the recipe asks for the event stream to be drained.
 ///
@@ -238,21 +243,70 @@ pub(crate) struct RelayOutcome {
     pub relayed_events: usize,
     pub high_water: u64,
     pub journal_closed: bool,
+    /// Verified `synth.rollout.event-chain.v1` head. Present only when the
+    /// producer declares journal-v2 chain metadata and Workshop drains through
+    /// that exact high water.
+    pub journal_chain_head: Option<String>,
+    /// Highest producer sequence Workshop has durably acknowledged.
+    pub journal_acked: u64,
+    /// Producer-declared retention policy. Legacy journals leave this absent.
+    pub journal_retention: Option<Value>,
     pub frames_declared: usize,
     pub frames_retained: usize,
+    /// Distinct content objects behind retained frame observations. Multiple
+    /// steps may render byte-identical PNGs and therefore share one CAS blob.
+    pub unique_frame_blobs: std::collections::BTreeSet<String>,
     pub frame_bytes: u64,
+    /// Last environment step present in the durable producer journal.
+    pub last_relayed_step: Option<u64>,
+    /// Terminal environment-step count declared by the producer lifecycle.
+    /// This is usable by consumers only through [`Self::verified_terminal_steps`],
+    /// after the v2 chain, closure, and durable acknowledgement all agree.
+    terminal_steps: Option<u64>,
+    /// Cancellation closes the evidence lane as partial/aborted, never as a
+    /// producer failure.
+    pub aborted_by_cancellation: bool,
+    pub span_usage_events: u64,
+    pub span_prompt_tokens: u64,
+    pub span_completion_tokens: u64,
+    pub span_cost_usd: Option<f64>,
+    pub span_cost_complete: bool,
     pub degradations: Vec<Degradation>,
 }
 
 impl RelayOutcome {
+    pub(crate) fn verified_terminal_steps(&self) -> Option<u64> {
+        (self.journal_closed
+            && self.journal_chain_head.is_some()
+            && self.journal_acked >= self.high_water)
+            .then_some(self.terminal_steps)
+            .flatten()
+    }
+
     pub(crate) fn to_json(&self) -> Value {
         json!({
             "relayedEvents": self.relayed_events,
             "highWater": self.high_water,
             "journalClosed": self.journal_closed,
+            "journalChainHead": self.journal_chain_head,
+            "journalAcked": self.journal_acked,
+            "journalRetention": self.journal_retention,
             "framesDeclared": self.frames_declared,
             "framesRetained": self.frames_retained,
+            "frameObservationsDeclared": self.frames_declared,
+            "frameObservationsRetained": self.frames_retained,
+            "uniqueFrameBlobs": self.unique_frame_blobs.len(),
             "frameBytes": self.frame_bytes,
+            "lastRelayedStep": self.last_relayed_step,
+            "terminalEnvironmentSteps": self.verified_terminal_steps(),
+            "abortedByCancellation": self.aborted_by_cancellation,
+            "observedUsage": {
+                "events": self.span_usage_events,
+                "prompt_tokens": self.span_prompt_tokens,
+                "completion_tokens": self.span_completion_tokens,
+                "cost_usd": if self.span_cost_complete { json!(self.span_cost_usd) } else { Value::Null },
+                "cost_complete": self.span_cost_complete,
+            },
             "degradations": self.degradations.iter().map(Degradation::to_json).collect::<Vec<_>>(),
         })
     }
@@ -295,13 +349,16 @@ pub(crate) struct RelayContext<'a> {
 pub(crate) async fn relay_while<F>(
     ctx: &RelayContext<'_>,
     rollout: F,
-    cancel: &mut watch::Receiver<bool>,
+    cancel: &mut super::CancelObserver,
 ) -> (Result<Value>, RelayOutcome)
 where
     F: std::future::Future<Output = Result<Value>>,
 {
     let mut outcome = RelayOutcome::default();
     let mut cursor: u64 = 0;
+    let mut acked: u64 = 0;
+    let mut chain_head = journal_chain_genesis(ctx.rollout_id);
+    let mut journal_v2: Option<bool> = None;
     let mut rollout = Box::pin(rollout);
     let mut settled: Option<Result<Value>> = None;
     let mut settled_at: Option<Instant> = None;
@@ -310,34 +367,98 @@ where
     let poll_interval = ctx.settings.event_stream.poll_interval;
 
     loop {
-        if *cancel.borrow() && settled.is_none() {
+        let cancel_request = if settled.is_none() {
+            cancel.borrow().clone()
+        } else {
+            None
+        };
+        if let Some(request) = cancel_request {
             // Dropping the in-flight request is how a blocking rollout is
             // terminated: there is no abort route, and the container ends the
             // episode when its client goes away. The journal it already wrote
             // is still drained below, so a cancelled trial keeps its evidence.
             drop(rollout);
-            let drained = drain(ctx, &mut cursor, &mut outcome).await;
-            if let Err(error) = drained {
-                outcome.note("relay_failed", format!("{error:#}"), 0);
+            outcome.aborted_by_cancellation = true;
+            let drain_started = Instant::now();
+            let mut cancellation_idle_drains = 0u32;
+            loop {
+                match drain(
+                    ctx,
+                    &mut cursor,
+                    &mut acked,
+                    &mut chain_head,
+                    &mut journal_v2,
+                    &mut outcome,
+                )
+                .await
+                {
+                    Ok(summary) => {
+                        outcome.journal_closed |= summary.closed;
+                        cancellation_idle_drains = if summary.relayed == 0 {
+                            cancellation_idle_drains.saturating_add(1)
+                        } else {
+                            0
+                        };
+                        if summary.closed
+                            || cancellation_idle_drains >= SETTLED_IDLE_DRAINS
+                            || drain_started.elapsed() >= JOURNAL_DRAIN_GRACE
+                        {
+                            break;
+                        }
+                    }
+                    Err(error) => {
+                        outcome.note("relay_failed", format!("{error:#}"), 0);
+                        break;
+                    }
+                }
+                tokio::time::sleep(poll_interval).await;
             }
-            outcome.note("cancelled", "the run was cancelled while this rollout was open", 0);
-            return (Err(anyhow!("container eval cancelled")), outcome);
+            outcome.note(
+                "cancelled",
+                format!(
+                    "cancellation request {} ({}) arrived while this rollout was open",
+                    request.request_id,
+                    request.cause.as_str()
+                ),
+                0,
+            );
+            return (
+                Err(crate::optimizers::kernel::CancelledError { request }.into()),
+                outcome,
+            );
         }
 
-        match drain(ctx, &mut cursor, &mut outcome).await {
+        match drain(
+            ctx,
+            &mut cursor,
+            &mut acked,
+            &mut chain_head,
+            &mut journal_v2,
+            &mut outcome,
+        )
+        .await
+        {
             Ok(summary) => {
                 if summary.closed {
                     outcome.journal_closed = true;
                 }
                 declares_cursor |= summary.declares_cursor;
                 if settled.is_some() {
-                    idle_drains = if summary.relayed == 0 { idle_drains + 1 } else { 0 };
+                    idle_drains = if summary.relayed == 0 {
+                        idle_drains + 1
+                    } else {
+                        0
+                    };
                 }
             }
             Err(error) => {
                 let integrity = error.downcast_ref::<RelayIntegrityError>().is_some();
                 outcome.note(
-                    if integrity { "relay_integrity" } else { "relay_failed" },
+                    if integrity {
+                        "relay_integrity"
+                    } else {
+                        "relay_failed"
+                    },
                     format!("{error:#}"),
                     0,
                 );
@@ -421,6 +542,16 @@ where
                             "the rollout settled and its journal went quiet without reporting closed",
                             0,
                         );
+                    } else {
+                        // No page ever carried a cursor block: this producer
+                        // has no closure contract at all. A silent
+                        // `journalClosed: false` is indistinguishable from a
+                        // stall; the gap gets a name instead.
+                        outcome.note(
+                            "closure_contract_missing",
+                            "producer declares no closure contract: its event pages carry no cursor block, so journal closure can never be reported",
+                            0,
+                        );
                     }
                     break;
                 }
@@ -446,17 +577,34 @@ struct DrainSummary {
     /// The page carried a `cursor` block at all. A producer without one cannot
     /// report closure, so its silence is a contract gap rather than a stall.
     declares_cursor: bool,
+    /// The page declared journal-v2 integrity or retention fields.
+    declares_v2: bool,
 }
 
 /// Read every page available at `cursor`, relaying each semantic event.
 async fn drain(
     ctx: &RelayContext<'_>,
     cursor: &mut u64,
+    acked: &mut u64,
+    chain_head: &mut String,
+    journal_v2: &mut Option<bool>,
     outcome: &mut RelayOutcome,
 ) -> Result<DrainSummary> {
     let mut summary = DrainSummary::default();
     loop {
-        let page = fetch_page(ctx, *cursor).await?;
+        let requested_ack = *cursor;
+        let page = fetch_page(ctx, *cursor, requested_ack).await?;
+        let page_v2 = page_declares_journal_v2(&page);
+        match *journal_v2 {
+            Some(expected) if expected != page_v2 => {
+                return Err(relay_integrity(format!(
+                    "journal contract version changed mid-rollout on {}",
+                    ctx.rollout_id
+                )));
+            }
+            None => *journal_v2 = Some(page_v2),
+            _ => {}
+        }
         let events = poll_event_list(&page);
         let mut drafts = Vec::new();
         for event in events {
@@ -486,6 +634,11 @@ async fn drain(
                     ),
                 }));
             }
+            if page_v2 {
+                let digest = verify_envelope_digest(event, sequence)
+                    .map_err(|error| relay_integrity(format!("{error:#}")))?;
+                *chain_head = journal_chain_extend(chain_head, digest);
+            }
             let draft = relay_event(ctx, event, sequence, outcome).await?;
             drafts.push(draft);
             *cursor = sequence;
@@ -507,11 +660,45 @@ async fn drain(
         }
         let cursor_block = page.get("cursor").filter(|value| value.is_object());
         summary.declares_cursor |= cursor_block.is_some();
+        summary.declares_v2 |= page_v2;
+        if page_v2 {
+            let echoed_ack = cursor_block
+                .and_then(|value| value.get("acked"))
+                .and_then(Value::as_u64)
+                .ok_or_else(|| relay_integrity("journal-v2 cursor omitted integer acked"))?;
+            if echoed_ack < requested_ack {
+                return Err(anyhow::Error::new(RelayIntegrityError {
+                    detail: format!(
+                        "journal ack regressed on {}: sent {}, producer reported {}",
+                        ctx.rollout_id, requested_ack, echoed_ack
+                    ),
+                }));
+            }
+            *acked = (*acked).max(echoed_ack);
+            outcome.journal_acked = outcome.journal_acked.max(echoed_ack);
+        }
         if let Some(high) = cursor_block
             .and_then(|value| value.get("high_water"))
             .and_then(Value::as_u64)
         {
             outcome.high_water = outcome.high_water.max(high);
+            if page_v2 && *cursor == high {
+                let declared_head = cursor_block
+                    .and_then(|value| value.get("chain_head"))
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| relay_integrity("journal-v2 cursor omitted chain_head"))?;
+                validate_chain_head(declared_head)
+                    .map_err(|error| relay_integrity(format!("{error:#}")))?;
+                if declared_head != chain_head {
+                    return Err(anyhow::Error::new(RelayIntegrityError {
+                        detail: format!(
+                            "journal chain head mismatch on {} at {}: computed {}, producer reported {}",
+                            ctx.rollout_id, high, chain_head, declared_head
+                        ),
+                    }));
+                }
+                outcome.journal_chain_head = Some(chain_head.clone());
+            }
         }
         if cursor_block
             .and_then(|value| value.get("closed"))
@@ -520,11 +707,22 @@ async fn drain(
         {
             summary.closed = true;
         }
+        if page_v2 {
+            outcome.journal_retention = Some(
+                validate_retention(&page, cursor_block)
+                    .map_err(|error| relay_integrity(format!("{error:#}")))?,
+            );
+        }
         let has_more = cursor_block
             .and_then(|value| value.get("has_more"))
             .and_then(Value::as_bool)
             == Some(true);
-        if !has_more
+        // A v2 producer may release the journal only after it observes an ack
+        // for Workshop's durably appended high water. The extra empty request
+        // is intentional: it carries that ack, verifies the final chain head,
+        // and closes the producer/consumer retention handshake.
+        let ack_pending = page_v2 && *acked < *cursor;
+        if (!has_more && !ack_pending)
             || ctx
                 .settings
                 .event_stream
@@ -535,13 +733,21 @@ async fn drain(
     }
 }
 
-async fn fetch_page(ctx: &RelayContext<'_>, after: u64) -> Result<Value> {
+async fn fetch_page(ctx: &RelayContext<'_>, after: u64, ack: u64) -> Result<Value> {
+    let wait_ms = ctx
+        .settings
+        .event_stream
+        .poll_interval
+        .as_millis()
+        .min(10_000) as u64;
     let response = ctx
         .client
         .get(ctx.poll_url)
         .query(&[
             ("after", after.to_string()),
             ("limit", ctx.settings.event_stream.page_limit.to_string()),
+            ("ack", ack.to_string()),
+            ("wait_ms", wait_ms.to_string()),
         ])
         .send()
         .await
@@ -554,6 +760,213 @@ async fn fetch_page(ctx: &RelayContext<'_>, after: u64) -> Result<Value> {
         .json::<Value>()
         .await
         .context("decode rollout event page")
+}
+
+fn page_declares_journal_v2(page: &Value) -> bool {
+    page.pointer("/cursor/chain_head").is_some()
+        || page.pointer("/cursor/acked").is_some()
+        || page.get("retention").is_some()
+}
+
+fn relay_integrity(detail: impl Into<String>) -> anyhow::Error {
+    anyhow::Error::new(RelayIntegrityError {
+        detail: detail.into(),
+    })
+}
+
+fn journal_chain_genesis(rollout_id: &str) -> String {
+    format!("{:x}", Sha256::digest(rollout_id.as_bytes()))
+}
+
+fn journal_chain_extend(head: &str, digest: &str) -> String {
+    format!("{:x}", Sha256::digest(format!("{head}{digest}").as_bytes()))
+}
+
+fn encode_digest_v2_value(value: &Value, out: &mut Vec<u8>) -> Result<()> {
+    match value {
+        Value::Null => out.push(b'n'),
+        Value::Bool(false) => out.push(b'f'),
+        Value::Bool(true) => out.push(b't'),
+        Value::Number(number) => {
+            if let Some(value) = number.as_i64() {
+                out.push(b'i');
+                out.extend_from_slice(value.to_string().as_bytes());
+                out.push(b';');
+            } else if let Some(value) = number.as_u64() {
+                out.push(b'i');
+                out.extend_from_slice(value.to_string().as_bytes());
+                out.push(b';');
+            } else if let Some(value) = number.as_f64() {
+                if !value.is_finite() {
+                    bail!("journal-v2 float must be finite");
+                }
+                out.push(b'd');
+                out.extend_from_slice(format!("{:016x}", value.to_bits()).as_bytes());
+                out.push(b';');
+            } else {
+                bail!("journal-v2 number is outside the canonical numeric domain");
+            }
+        }
+        Value::String(value) => {
+            out.push(b's');
+            out.extend_from_slice(value.len().to_string().as_bytes());
+            out.push(b':');
+            out.extend_from_slice(value.as_bytes());
+        }
+        Value::Array(values) => {
+            out.push(b'a');
+            out.extend_from_slice(values.len().to_string().as_bytes());
+            out.push(b'[');
+            for value in values {
+                encode_digest_v2_value(value, out)?;
+            }
+            out.push(b']');
+        }
+        Value::Object(values) => {
+            let mut keys = values.keys().collect::<Vec<_>>();
+            keys.sort_unstable_by(|left, right| left.as_bytes().cmp(right.as_bytes()));
+            out.push(b'o');
+            out.extend_from_slice(keys.len().to_string().as_bytes());
+            out.push(b'{');
+            for key in keys {
+                encode_digest_v2_value(&Value::String(key.clone()), out)?;
+                encode_digest_v2_value(&values[key], out)?;
+            }
+            out.push(b'}');
+        }
+    }
+    Ok(())
+}
+
+fn canonical_envelope_v2(kind: &str, sequence: u64, payload: &Value) -> Result<Vec<u8>> {
+    let mut canonical = b"synth.envelope-digest.v2\0".to_vec();
+    encode_digest_v2_value(
+        &json!({
+            "kind": kind,
+            "sequence": sequence,
+            "payload": payload,
+        }),
+        &mut canonical,
+    )?;
+    Ok(canonical)
+}
+
+fn verify_envelope_digest(event: &Value, sequence: u64) -> Result<&str> {
+    let kind = event
+        .get("kind")
+        .and_then(Value::as_str)
+        .context("journal-v2 event omitted kind")?;
+    let payload = event
+        .get("payload")
+        .filter(|value| value.is_object())
+        .context("journal-v2 event payload must be an object")?;
+    let declared = event
+        .get("digest")
+        .and_then(Value::as_str)
+        .context("journal-v2 event omitted digest")?;
+    if declared.len() != 16
+        || !declared
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
+        bail!("journal-v2 event digest must be 16 lowercase hex characters");
+    }
+    let canonical = match event.get("digest_schema") {
+        Some(Value::String(schema)) if schema == ENVELOPE_DIGEST_V2 => {
+            canonical_envelope_v2(kind, sequence, payload)
+                .context("encode synth.envelope-digest.v2 envelope")?
+        }
+        None => serde_json::to_vec(&json!({
+            "kind": kind,
+            "sequence": sequence,
+            "payload": payload,
+        }))
+        .context("encode legacy unversioned journal-v2 envelope")?,
+        Some(Value::String(schema)) => {
+            bail!("unsupported journal envelope digest schema {schema}")
+        }
+        Some(_) => bail!("journal envelope digest_schema must be a string"),
+    };
+    let computed = format!("{:x}", Sha256::digest(canonical));
+    if declared != &computed[..16] {
+        return Err(anyhow::Error::new(RelayIntegrityError {
+            detail: format!(
+                "journal event digest mismatch at sequence {sequence}: computed {}, producer reported {declared}",
+                &computed[..16]
+            ),
+        }));
+    }
+    Ok(declared)
+}
+
+fn validate_chain_head(value: &str) -> Result<()> {
+    if value.len() != 64
+        || !value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
+        bail!("journal-v2 chain_head must be 64 lowercase hex characters");
+    }
+    Ok(())
+}
+
+fn validate_retention(page: &Value, cursor: Option<&Value>) -> Result<Value> {
+    let retention = page
+        .get("retention")
+        .filter(|value| value.is_object())
+        .context("journal-v2 page omitted retention contract")?;
+    if retention.get("policy").and_then(Value::as_str) != Some("until-acked-or-ttl") {
+        bail!("journal-v2 retention policy must be until-acked-or-ttl");
+    }
+    let ttl = retention
+        .get("ttl_seconds")
+        .and_then(Value::as_u64)
+        .context("journal-v2 retention omitted ttl_seconds")?;
+    if ttl == 0 {
+        bail!("journal-v2 retention ttl_seconds must be positive");
+    }
+    let retention_acked = retention
+        .get("acked")
+        .and_then(Value::as_u64)
+        .context("journal-v2 retention omitted acked")?;
+    let retention_high = retention
+        .get("high_water")
+        .and_then(Value::as_u64)
+        .context("journal-v2 retention omitted high_water")?;
+    let retention_closed = retention
+        .get("closed")
+        .and_then(Value::as_bool)
+        .context("journal-v2 retention omitted closed")?;
+    let cursor_acked = cursor
+        .and_then(|value| value.get("acked"))
+        .and_then(Value::as_u64)
+        .context("journal-v2 cursor omitted acked")?;
+    let cursor_high = cursor
+        .and_then(|value| value.get("high_water"))
+        .and_then(Value::as_u64)
+        .context("journal-v2 cursor omitted high_water")?;
+    let cursor_closed = cursor
+        .and_then(|value| value.get("closed"))
+        .and_then(Value::as_bool)
+        .context("journal-v2 cursor omitted closed")?;
+    if (retention_acked, retention_high, retention_closed)
+        != (cursor_acked, cursor_high, cursor_closed)
+    {
+        bail!("journal-v2 retention state contradicts cursor state");
+    }
+    if retention.get("released").and_then(Value::as_bool) == Some(true) {
+        let reason = retention
+            .get("released_reason")
+            .and_then(Value::as_str)
+            .context("released journal-v2 retention omitted released_reason")?;
+        if !retention_closed
+            || !matches!(reason, "acked" | "ttl_expired")
+            || (reason == "acked" && retention_acked < retention_high)
+        {
+            bail!("journal-v2 retention reported an invalid release state");
+        }
+    }
+    Ok(retention.clone())
 }
 
 /// Turn one producer envelope into one optimizer event.
@@ -587,6 +1000,40 @@ async fn relay_event(
         }
     }
 
+    note_terminal_steps(&kind, &payload, outcome)?;
+
+    if let Some(step) = payload.get("step").and_then(Value::as_u64) {
+        outcome.last_relayed_step = Some(outcome.last_relayed_step.unwrap_or(0).max(step));
+    }
+
+    let usage_delta = (kind == "span.policy.data")
+        .then(|| payload.get("usage").and_then(policy_usage_delta))
+        .flatten();
+    if let Some(usage) = usage_delta.as_ref() {
+        outcome.span_usage_events = outcome.span_usage_events.saturating_add(1);
+        outcome.span_prompt_tokens = outcome.span_prompt_tokens.saturating_add(
+            usage
+                .get("prompt_tokens")
+                .and_then(Value::as_u64)
+                .unwrap_or(0),
+        );
+        outcome.span_completion_tokens = outcome.span_completion_tokens.saturating_add(
+            usage
+                .get("completion_tokens")
+                .and_then(Value::as_u64)
+                .unwrap_or(0),
+        );
+        if outcome.span_usage_events == 1 {
+            outcome.span_cost_complete = true;
+        }
+        match usage.get("cost_usd").and_then(Value::as_f64) {
+            Some(cost) if cost.is_finite() && cost >= 0.0 => {
+                outcome.span_cost_usd = Some(outcome.span_cost_usd.unwrap_or(0.0) + cost);
+            }
+            _ => outcome.span_cost_complete = false,
+        }
+    }
+
     if kind == "frame" {
         if let Some(object) = payload.as_object_mut() {
             if let Some(path) = object
@@ -607,6 +1054,7 @@ async fn relay_event(
                     object.insert("media".into(), media.to_json());
                 }
                 outcome.frames_retained += 1;
+                outcome.unique_frame_blobs.insert(media.cas_digest.clone());
                 outcome.frame_bytes += media.byte_size;
             }
             Ok(None) => {}
@@ -640,23 +1088,89 @@ async fn relay_event(
         ("pool".into(), json!(ctx.pool)),
         ("scenario".into(), json!(ctx.scenario)),
         ("message".into(), json!(kind)),
-        ("containerEvent".into(), container_event.clone()),
+        ("container_event".into(), container_event.clone()),
     ]);
 
-    Ok(
-        OptimizerEventDraft::new("eval.trial.event", EVAL_ALGORITHM_ID)
-            // One relay of one producer sequence. A retried page, a resumed
-            // worker, and a restarted Workshop all re-offer the same fact.
-            .idempotency_key(format!("eval:event:{}:{sequence}", ctx.rollout_id))
-            .level("debug")
-            .occurred_at_opt(event.get("ts").and_then(Value::as_str))
-            .delta(delta)
-            .raw(json!({
-                "source": "container_eval",
-                "trial_id": ctx.trial_id,
-                "container_event": container_event,
-            })),
-    )
+    let mut draft = OptimizerEventDraft::new("eval.trial.event", EVAL_ALGORITHM_ID)
+        // One relay of one producer sequence. A retried page, a resumed
+        // worker, and a restarted Workshop all re-offer the same fact.
+        .idempotency_key(format!("eval:event:{}:{sequence}", ctx.rollout_id))
+        .level("debug")
+        .occurred_at_opt(event.get("ts").and_then(Value::as_str))
+        .delta(delta)
+        .raw(json!({
+            "source": "container_eval",
+            "trial_id": ctx.trial_id,
+            "container_event": container_event,
+        }));
+    if let Some(usage_delta) = usage_delta {
+        draft = draft.usage_delta(usage_delta);
+    }
+    Ok(draft)
+}
+
+/// Retain an explicit producer lifecycle fact, never a frame-derived guess.
+/// Multiple terminal markers are expected; disagreement between them is a
+/// semantic integrity failure even when each individual envelope hashes.
+fn note_terminal_steps(kind: &str, payload: &Value, outcome: &mut RelayOutcome) -> Result<()> {
+    if !matches!(kind, "env.episode.closed" | "status") {
+        return Ok(());
+    }
+    let terminal = matches!(
+        payload.get("status").and_then(Value::as_str),
+        Some("completed" | "failed" | "cancelled" | "truncated")
+    );
+    if !terminal {
+        return Ok(());
+    }
+    let Some(steps) = payload.get("steps").and_then(Value::as_u64) else {
+        return Ok(());
+    };
+    if let Some(previous) = outcome.terminal_steps {
+        if previous != steps {
+            return Err(anyhow::Error::new(RelayIntegrityError {
+                detail: format!(
+                    "terminal environment-step contradiction: retained lifecycle declared both {previous} and {steps} steps"
+                ),
+            }));
+        }
+    }
+    outcome.terminal_steps = Some(steps);
+    Ok(())
+}
+
+fn policy_usage_delta(usage: &Value) -> Option<Map<String, Value>> {
+    let prompt = usage
+        .get("prompt_tokens")
+        .or_else(|| usage.get("promptTokens"))
+        .or_else(|| usage.get("input_tokens"))
+        .or_else(|| usage.get("inputTokens"))
+        .and_then(Value::as_u64);
+    let completion = usage
+        .get("completion_tokens")
+        .or_else(|| usage.get("completionTokens"))
+        .or_else(|| usage.get("output_tokens"))
+        .or_else(|| usage.get("outputTokens"))
+        .and_then(Value::as_u64);
+    let cost = usage
+        .get("cost_usd")
+        .or_else(|| usage.get("costUsd"))
+        .and_then(Value::as_f64)
+        .filter(|value| value.is_finite() && *value >= 0.0);
+    if prompt.is_none() && completion.is_none() && cost.is_none() {
+        return None;
+    }
+    let mut delta = Map::new();
+    if let Some(prompt) = prompt {
+        delta.insert("prompt_tokens".into(), json!(prompt));
+    }
+    if let Some(completion) = completion {
+        delta.insert("completion_tokens".into(), json!(completion));
+    }
+    if let Some(cost) = cost {
+        delta.insert("cost_usd".into(), json!(cost));
+    }
+    Some(delta)
 }
 
 /// Fetch, validate, and store one native frame.
@@ -775,9 +1289,7 @@ pub(crate) fn resolve_frame_url(
         || resolved.host_str() != origin.host_str()
         || resolved.port_or_known_default() != origin.port_or_known_default()
     {
-        bail!(
-            "frame URL {resolved} does not resolve to the registered container origin {origin}"
-        );
+        bail!("frame URL {resolved} does not resolve to the registered container origin {origin}");
     }
     if resolved.query().is_some() {
         bail!("frame URL {resolved} carries a query string");
@@ -883,6 +1395,7 @@ pub(crate) fn frame_media_client() -> Result<reqwest::Client> {
 pub(crate) async fn append_trial_started(
     service: &OptimizerService,
     run_id: &str,
+    work_item_id: &str,
     trial_id: &str,
     rollout_id: &str,
     seed: i64,
@@ -895,8 +1408,9 @@ pub(crate) async fn append_trial_started(
             run_id.to_string(),
             vec![
                 OptimizerEventDraft::new("eval.trial.started", EVAL_ALGORITHM_ID)
-                    .idempotency_key(format!("eval:started:{trial_id}"))
+                    .idempotency_key(format!("eval:started:{work_item_id}"))
                     .delta(Map::from_iter([
+                        ("workItemId".into(), json!(work_item_id)),
                         ("trial_id".into(), json!(trial_id)),
                         ("rollout_id".into(), json!(rollout_id)),
                         ("candidate_id".into(), json!(candidate_id)),
@@ -922,7 +1436,15 @@ pub(crate) async fn append_degradations(
     if outcome.degradations.is_empty() {
         return Ok(());
     }
+    let (durable_frames, durable_bytes) = service.run_media_totals(run_id, trial_id).await?;
     let dropped: usize = outcome.degradations.iter().map(|item| item.dropped).sum();
+    let mut relay_receipt = outcome.to_json();
+    if let Some(object) = relay_receipt.as_object_mut() {
+        object.insert("framesRetained".into(), json!(durable_frames));
+        object.insert("frameObservationsRetained".into(), json!(durable_frames));
+        object.insert("frameBytes".into(), json!(durable_bytes));
+        object.insert("retentionAuthority".into(), json!("optimizer_run_media"));
+    }
     service
         .append_event_payloads(
             run_id.to_string(),
@@ -937,12 +1459,12 @@ pub(crate) async fn append_degradations(
                             "message".into(),
                             json!(format!(
                                 "{} of {} native frames retained; {} bound(s) reached",
-                                outcome.frames_retained,
+                                durable_frames,
                                 outcome.frames_declared,
                                 outcome.degradations.len()
                             )),
                         ),
-                        ("relay".into(), outcome.to_json()),
+                        ("relay".into(), relay_receipt),
                     ]))
                     .raw(json!({ "source": "container_eval" })),
             ],
@@ -1043,5 +1565,149 @@ mod tests {
         let settings = EventStreamSettings::default().normalized();
         assert_eq!(settings.max_events_per_rollout, None);
         assert!(!settings.cap_reached(usize::MAX));
+    }
+
+    #[test]
+    fn journal_v2_digest_and_chain_match_the_wire_contract() {
+        let event = json!({
+            "schema": "synth.trace-stream-event.v1",
+            "kind": "observation",
+            "sequence": 1,
+            "control": false,
+            "payload": {"x": 1},
+            "digest": "45cacf54f242eb54",
+        });
+        let digest = verify_envelope_digest(&event, 1).unwrap();
+        assert_eq!(
+            journal_chain_genesis("rollout-a"),
+            "4f2f400ce2fed9cfc505eea86b351792708ed8c26d08bc47ae97c6faeac4f5ae"
+        );
+        assert_eq!(
+            journal_chain_extend(&journal_chain_genesis("rollout-a"), digest),
+            "257568cd0eaf518bf39a455a1f09d901647a61645796d9322e783867bd31ef4e"
+        );
+    }
+
+    #[test]
+    fn envelope_digest_v2_matches_cross_language_golden_vectors() {
+        let corpus: Value =
+            serde_json::from_str(include_str!("fixtures/envelope_digest_v2.json")).unwrap();
+        assert_eq!(corpus["digest_schema"].as_str(), Some(ENVELOPE_DIGEST_V2));
+        for vector in corpus["vectors"].as_array().unwrap() {
+            let name = vector["name"].as_str().unwrap();
+            let kind = vector["kind"].as_str().unwrap();
+            let sequence = vector["sequence"].as_u64().unwrap();
+            let payload = &vector["payload"];
+            let expected = vector["digest"].as_str().unwrap();
+            let canonical = canonical_envelope_v2(kind, sequence, payload).unwrap();
+            assert!(canonical.starts_with(b"synth.envelope-digest.v2\0"));
+            let computed = format!("{:x}", Sha256::digest(canonical));
+            assert_eq!(&computed[..16], expected, "{name}");
+            let event = json!({
+                "kind": kind,
+                "sequence": sequence,
+                "payload": payload,
+                "digest_schema": ENVELOPE_DIGEST_V2,
+                "digest": expected,
+            });
+            assert_eq!(verify_envelope_digest(&event, sequence).unwrap(), expected);
+        }
+    }
+
+    #[test]
+    fn journal_v2_refuses_unknown_digest_contracts() {
+        let event = json!({
+            "kind": "observation",
+            "sequence": 1,
+            "payload": {},
+            "digest_schema": "synth.envelope-digest.v999",
+            "digest": "0000000000000000",
+        });
+        assert!(verify_envelope_digest(&event, 1)
+            .unwrap_err()
+            .to_string()
+            .contains("unsupported journal envelope digest schema"));
+    }
+
+    #[test]
+    fn journal_v2_refuses_payload_tampering_and_cursor_retention_contradictions() {
+        let tampered = json!({
+            "kind": "observation",
+            "sequence": 1,
+            "payload": {"x": 2},
+            "digest": "45cacf54f242eb54",
+        });
+        assert!(verify_envelope_digest(&tampered, 1)
+            .unwrap_err()
+            .to_string()
+            .contains("digest mismatch"));
+
+        let contradictory = json!({
+            "cursor": {
+                "kind": "sequence",
+                "after": 1,
+                "high_water": 1,
+                "closed": true,
+                "next": 1,
+                "has_more": false,
+                "chain_head": "257568cd0eaf518bf39a455a1f09d901647a61645796d9322e783867bd31ef4e",
+                "acked": 1,
+            },
+            "retention": {
+                "policy": "until-acked-or-ttl",
+                "ttl_seconds": 604800,
+                "acked": 0,
+                "high_water": 1,
+                "closed": true,
+                "released": false,
+                "released_reason": null,
+                "expires_at": null,
+            },
+            "events": [],
+        });
+        assert!(
+            validate_retention(&contradictory, contradictory.get("cursor"))
+                .unwrap_err()
+                .to_string()
+                .contains("contradicts")
+        );
+    }
+
+    #[test]
+    fn terminal_steps_require_verified_closed_and_acked_lifecycle_evidence() {
+        let mut outcome = RelayOutcome::default();
+        note_terminal_steps(
+            "env.episode.closed",
+            &json!({"status": "completed", "steps": 71}),
+            &mut outcome,
+        )
+        .unwrap();
+        assert_eq!(outcome.verified_terminal_steps(), None);
+        outcome.journal_closed = true;
+        outcome.high_water = 9;
+        outcome.journal_acked = 9;
+        outcome.journal_chain_head = Some("a".repeat(64));
+        assert_eq!(outcome.verified_terminal_steps(), Some(71));
+    }
+
+    #[test]
+    fn contradictory_terminal_step_facts_fail_closed() {
+        let mut outcome = RelayOutcome::default();
+        note_terminal_steps(
+            "env.episode.closed",
+            &json!({"status": "completed", "steps": 71}),
+            &mut outcome,
+        )
+        .unwrap();
+        let error = note_terminal_steps(
+            "status",
+            &json!({"status": "completed", "steps": 70}),
+            &mut outcome,
+        )
+        .unwrap_err();
+        assert!(
+            error.downcast_ref::<RelayIntegrityError>().is_some(),
+            "{error:#}"
+        );
     }
 }

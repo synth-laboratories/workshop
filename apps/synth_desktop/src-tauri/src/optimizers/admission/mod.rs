@@ -40,8 +40,8 @@ pub use ids::{
     RolloutCount, RolloutId, Seed, SourceRevision, StepCount,
 };
 pub use persistence::{
-    insert_evaluation_run, load_evaluation_run, load_run_progress, save_run_progress,
-    stage_admissible, EvaluationRunRecord,
+    consume_approved_eval_draft, load_admitted_execution_spec, stage_admissible,
+    stage_approved_eval_draft,
 };
 pub use pipeline::{
     materialize, AdmissibleExecutionSpec, ApprovedExecutionSpec, ContainerCandidate,
@@ -51,10 +51,11 @@ pub use pipeline::{
 pub use spec::{
     ApprovalBinding, CatalogRecipeRef, ContainerPin, CredentialCapabilityScope, CredentialRoute,
     EvaluatorSpec, ExecutionSpec, InlineRecipe, LiveEvalProtocol, ModelPin, OutputContract,
-    PolicyPin, RecipeSource, RecipeSourceKind, ResourceLimits, RolloutPlan,
+    PolicyMaterialRef, PolicyPin, RecipeSource, RecipeSourceKind, ResourceLimits, RolloutPlan,
     LIVE_EVAL_PROTOCOL_V1,
 };
+pub(crate) use spec::provider_use_policy_from_bounds;
 pub use state::{
-    EvidenceGap, EvidenceRequirements, RolloutRecord, RolloutState, RolloutStateHolder, RunProgress,
-    RunState, SettlementRefusal, StateTransitionError, TransitionKind,
+    EvidenceGap, EvidenceRequirements, RolloutRecord, RolloutState, RolloutStateHolder,
+    RunProgress, RunState, SettlementRefusal, StateTransitionError, TransitionKind,
 };

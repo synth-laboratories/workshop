@@ -442,7 +442,9 @@ mod tests {
             TrainingFailureClass::DiskSpace
         );
         assert_eq!(
-            classify_training_failure("provider checksum mismatch for training weight: model.safetensors"),
+            classify_training_failure(
+                "provider checksum mismatch for training weight: model.safetensors"
+            ),
             TrainingFailureClass::ChecksumMismatch
         );
         assert_eq!(
@@ -450,7 +452,9 @@ mod tests {
             TrainingFailureClass::IncompleteModel
         );
         assert_eq!(
-            classify_training_failure("Training weights cannot be deleted while a training process has them open."),
+            classify_training_failure(
+                "Training weights cannot be deleted while a training process has them open."
+            ),
             TrainingFailureClass::WeightsInUse
         );
         assert_eq!(
@@ -486,9 +490,6 @@ mod tests {
         let root = training_models_root();
         assert_eq!(root, isolated.path.join("models/training"));
         let expected = root.join(QWEN_TRAINING_MODEL_ID);
-        assert_eq!(
-            training_model_dir(QWEN_TRAINING_MODEL_ID),
-            Some(expected)
-        );
+        assert_eq!(training_model_dir(QWEN_TRAINING_MODEL_ID), Some(expected));
     }
 }

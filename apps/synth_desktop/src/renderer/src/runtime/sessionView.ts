@@ -7,6 +7,8 @@ import type {
 	VisualInstanceRecord
 } from "@synth/runtime-protocol";
 import { LOCAL_BASE_POLICY } from "./lagunaPolicies";
+import { optimizerRunIdFromBindings } from "./visualBindings";
+import { previewVariantForTemplate } from "./templatePresentation";
 import {
 	CHATGPT_LUNA_MODEL,
 	CHATGPT_SOL_MODEL,
@@ -1545,23 +1547,53 @@ export function eventsToLocalActivity(
 			continue;
 		}
 		if (!event.eventKind.startsWith("approval.")) continue;
+		// Policy-effective is durable configuration state, not conversation
+		// activity. Keep it in the journal/Advanced view and let the composer’s
+		// permissions control present the active policy.
+		if (event.eventKind === "approval.policy.effective") continue;
 		const path = typeof payload.path === "string" ? payload.path : undefined;
 		const approvalKind = typeof payload.kind === "string" ? payload.kind : "permission";
-		const label = event.eventKind === "approval.requested" && approvalKind === "paid_compute" ? "Paid compute approval"
-			: event.eventKind === "approval.requested" && approvalKind === "credential_access" ? "Credential access"
-				: event.eventKind === "approval.requested" && approvalKind === "sidecar_lifecycle" ? "Sidecar lifecycle"
-			: event.eventKind === "approval.requested" && approvalKind === "plugin_lifecycle" ? "Plugin lifecycle"
-			: event.eventKind === "approval.requested" && approvalKind === "computer_use"
-				? (payload.hazard === true ? "Confirm this action" : "Allow app control")
-			: event.eventKind === "approval.requested" ? "Approval requested"
-			: event.eventKind === "approval.granted" ? "Approval granted"
-				: event.eventKind === "approval.rejected" ? "Approval rejected"
-					: event.eventKind === "approval.expired" ? "Approval expired" : "Approval updated";
+		const approvalSubject = approvalKind === "paid_compute" ? "Paid compute"
+			: approvalKind === "credential_access" ? "Credential access"
+				: approvalKind === "sidecar_lifecycle" ? "Sidecar lifecycle"
+					: approvalKind === "container_lifecycle" ? "Container replacement"
+					: approvalKind === "plugin_lifecycle" ? "Plugin lifecycle"
+						: approvalKind === "computer_use" ? "App control"
+							: approvalKind === "project_source" ? "Project source"
+								: "Permission";
+		let label: string | undefined;
+		switch (event.eventKind) {
+			case "approval.requested":
+				label = approvalKind === "paid_compute" ? "Paid compute approval"
+					: approvalKind === "credential_access" ? "Credential access"
+						: approvalKind === "sidecar_lifecycle" ? "Sidecar lifecycle"
+							: approvalKind === "container_lifecycle" ? "Replace container workload"
+							: approvalKind === "plugin_lifecycle" ? "Plugin lifecycle"
+								: approvalKind === "computer_use"
+									? (payload.hazard === true ? "Confirm this action" : "Allow app control")
+									: "Approval requested";
+				break;
+			case "approval.granted":
+				label = `${approvalSubject} granted`;
+				break;
+			case "approval.rejected":
+				label = `${approvalSubject} rejected`;
+				break;
+			case "approval.expired":
+				label = `${approvalSubject} expired`;
+				break;
+			default:
+				// Unknown approval events stay inspectable in Advanced without
+				// being mislabeled as user-visible approval activity.
+				continue;
+		}
 		const command = typeof payload.command === "string" ? payload.command : undefined;
 		const typedDetail = approvalKind === "credential_access"
 			? [payload.provider, payload.purpose].filter((value): value is string => typeof value === "string").join(" · ")
 			: approvalKind === "sidecar_lifecycle"
 				? [payload.sidecar, payload.action].filter((value): value is string => typeof value === "string").join(" · ")
+				: approvalKind === "container_lifecycle"
+					? [payload.containerId, payload.declarationId, payload.action, payload.effect].filter((value): value is string => typeof value === "string").join(" · ")
 				: undefined;
 		// G6: a hazard card must show what the action will actually do —
 		// recipient, text, destination — not just which app it touches.
@@ -1617,7 +1649,7 @@ export function eventsToLocalActivity(
 			approvalId: event.eventKind === "approval.requested"
 				? approvalKey(event) ?? `approval-${event.sequence}`
 				: undefined,
-			approvalKind: approvalKind === "shell_command" || approvalKind === "paid_compute" || approvalKind === "sidecar_lifecycle" || approvalKind === "credential_access" || approvalKind === "plugin_lifecycle" || approvalKind === "computer_use"
+			approvalKind: approvalKind === "shell_command" || approvalKind === "paid_compute" || approvalKind === "sidecar_lifecycle" || approvalKind === "container_lifecycle" || approvalKind === "credential_access" || approvalKind === "plugin_lifecycle" || approvalKind === "computer_use"
 				? approvalKind : "permission",
 			approvalPayload: event.eventKind === "approval.requested" && approvalKind === "paid_compute" ? {
 				operation: typeof payload.operation === "string" ? payload.operation : undefined,
@@ -1627,6 +1659,14 @@ export function eventsToLocalActivity(
 					? payload.requestedCap as { maxCostUsdMicros?: number; maxRollouts?: number }
 					: undefined,
 				requestingAgent: typeof payload.requestingAgent === "string" ? payload.requestingAgent : undefined
+			} : event.eventKind === "approval.requested" && approvalKind === "credential_access" ? {
+				provider: typeof payload.provider === "string" ? payload.provider : undefined,
+				purpose: typeof payload.purpose === "string" ? payload.purpose : undefined,
+				consent: payload.consent === "remember_locator" || payload.consent === "register_source" || payload.consent === "issue_lease" ? payload.consent : undefined,
+				locatorId: typeof payload.locatorId === "string" ? payload.locatorId : undefined,
+				displayPath: typeof payload.displayPath === "string" ? payload.displayPath : undefined,
+				variable: typeof payload.variable === "string" ? payload.variable : undefined,
+				switchFromDisplay: typeof payload.switchFromDisplay === "string" ? payload.switchFromDisplay : undefined
 			} : undefined,
 			alwaysAllowSupported: event.eventKind === "approval.requested" && payload.alwaysSupported === true,
 			detail,
@@ -1729,15 +1769,10 @@ function toolResultToArtifact(event: RuntimeEvent): ArtifactRef | undefined {
 		templateId,
 		visualId: id,
 		bindings: objectValue(visual.bindings),
+		runId: optimizerRunIdFromBindings(visual.bindings) ?? stringField(visual, "runId", "run_id"),
 		metadata,
 		status: parseArtifactRefStatus(stringField(visual, "status")),
-		preview: {
-			variant: templateId.includes("scrub") || templateId.includes("rollout")
-				? "craftax_frame"
-				: templateId.includes("craftax") || templateId.includes("eval_matrix")
-					? "craftax_pareto"
-					: "generic"
-		}
+		preview: { variant: previewVariantForTemplate(templateId) }
 	};
 }
 
@@ -1776,6 +1811,11 @@ export function eventsToArtifacts(events: RuntimeEvent[]): ArtifactRef[] {
 				? payload.templateId
 				: artifacts.get(id)?.templateId;
 		const prior = artifacts.get(id);
+		const ownerSessionId = stringField(payload, "ownerSessionId", "owner_session_id") ?? prior?.ownerSessionId;
+		const runId = optimizerRunIdFromBindings(payload.bindings ?? prior?.bindings)
+			?? stringField(payload, "runId", "run_id")
+			?? event.runId
+			?? prior?.runId;
 		artifacts.set(id, {
 			id,
 			kind: "report",
@@ -1787,6 +1827,14 @@ export function eventsToArtifacts(events: RuntimeEvent[]): ArtifactRef[] {
 			shownByAgent: true,
 			templateId,
 			visualId: id,
+			revision: typeof payload.revision === "number" && Number.isFinite(payload.revision)
+				? payload.revision
+				: prior?.revision,
+			metadata: objectValue(payload.metadata) ?? prior?.metadata,
+			ownerSessionId,
+			sessionId: ownerSessionId ?? prior?.sessionId,
+			runId: runId ?? undefined,
+			traceId: stringField(payload, "traceId", "trace_id") ?? prior?.traceId,
 			bindings:
 				payload.bindings && typeof payload.bindings === "object"
 					? (payload.bindings as Record<string, unknown>)
@@ -1845,13 +1893,7 @@ export function visualRecordToArtifact(visual: VisualInstanceRecord): ArtifactRe
 		bindings: visual.bindings,
 		status: parseArtifactRefStatus(visual.metadata?.status),
 		preview: {
-			variant:
-				visual.templateId.includes("scrub") || visual.templateId.includes("rollout")
-					? "craftax_frame"
-					: visual.templateId.includes("craftax") ||
-						  visual.templateId.includes("eval_matrix")
-						? "craftax_pareto"
-						: "generic"
+			variant: previewVariantForTemplate(visual.templateId)
 		}
 	};
 }

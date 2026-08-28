@@ -184,6 +184,37 @@ pub fn writable_roots(scope: &ConversationWorkspaceScope) -> Vec<String> {
         .collect()
 }
 
+/// Conversation workspace plus every attached folder. Nested declaring
+/// repositories under these roots keep their own `workshop.containers.toml`.
+pub fn approved_search_roots(
+    db: &Database,
+    session_id: &str,
+) -> Result<Vec<PathBuf>> {
+    let id = session_id.to_string();
+    let scope = db.with_conn(move |conn| {
+        if load(conn, &id)?.is_none() {
+            let _ = initialize_from_session(conn, &id)?;
+        }
+        load(conn, &id)
+    })?;
+    let Some(scope) = scope else {
+        return Err(anyhow!(
+            "session `{session_id}` has no workspace; declare workshop.containers.toml there"
+        ));
+    };
+    let mut roots = Vec::new();
+    let workspace = canonical_directory(&scope.workspace)?;
+    roots.push(workspace);
+    for attachment in &scope.attachments {
+        if let Ok(path) = canonical_directory(&attachment.path) {
+            if !roots.iter().any(|root| root == &path) {
+                roots.push(path);
+            }
+        }
+    }
+    Ok(roots)
+}
+
 fn load(
     conn: &rusqlite::Connection,
     session_id: &str,

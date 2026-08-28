@@ -1,6 +1,6 @@
-import { useEffect } from "react";
+import { useEffect, useMemo } from "react";
 import { formatTps } from "./components/InferencePanel";
-import { AppTitlebar } from "./components/AppTitlebar";
+import { AppTitlebar, type TabCopyItem } from "./components/AppTitlebar";
 import { AppOverlays } from "./components/AppOverlays";
 import { ComposerDock } from "./components/ComposerDock";
 import { ManderLabGate } from "./components/mander";
@@ -15,12 +15,28 @@ import {
 	setToolActivityMode
 } from "./preferences";
 import { publicError } from "./runtime/publicError";
+import { conversationMarkdown } from "./runtime/chatCopy";
+import { copyText } from "./runtime/clipboard";
+import { eventsToMessages } from "./runtime/sessionView";
 import { MainRoutes } from "./routes";
 import { bridges } from "./runtime/desktopBridge";
 
 /** Shell + wiring only — orchestration lives in useAppController / ComposerDock. */
 export default function App() {
 	const c = useAppController();
+	const tabCopyItems = useMemo<TabCopyItem[]>(() => {
+		if (c.view.kind !== "chat" || !c.activeSessionId) return [];
+		const messages = eventsToMessages(c.eventsBySession[c.activeSessionId] ?? []);
+		const items: TabCopyItem[] = [];
+		if (c.terminalWorkspaceRoot?.trim()) {
+			items.push({ id: "working-directory", label: "Copy working directory", successMessage: "Working directory copied", value: c.terminalWorkspaceRoot });
+		}
+		items.push(
+			{ id: "session-id", label: "Copy session ID", successMessage: "Session ID copied", value: c.activeSessionId },
+			{ id: "markdown", label: "Copy as Markdown", successMessage: "Markdown copied", value: conversationMarkdown(c.tabLabel, messages) }
+		);
+		return items;
+	}, [c.activeSessionId, c.eventsBySession, c.tabLabel, c.terminalWorkspaceRoot, c.view.kind]);
 
 	useEffect(() => {
 		const openReviewSurface = () => c.setView({ kind: "visuals" });
@@ -125,6 +141,15 @@ export default function App() {
 						activeLocalModel={Boolean(c.activeLocalModel)}
 						reserveNativeControls={c.view.kind === "settings" || !c.sidebarVisible}
 						brand={c.view.kind === "settings" && c.view.section === "models" ? "openai" : "synth"}
+						copyItems={tabCopyItems}
+						onCopyItem={async (item) => {
+							try {
+								await copyText(item.value);
+								c.showToast(item.successMessage);
+							} catch (reason) {
+								c.showToast(`Copy failed: ${publicError(reason)}`);
+							}
+						}}
 						terminalOpen={c.terminalOpen}
 						sidePanelOpen={c.sidePanelOpen}
 						sidePanelTab={c.sidePanelTab}
@@ -231,6 +256,8 @@ export default function App() {
 						toggleArtifact={c.toggleArtifact}
 						toggleContainer={c.toggleContainer}
 						probeOpenContainer={c.probeOpenContainer}
+						repairOpenContainer={c.repairOpenContainer}
+						restartOpenContainer={c.restartOpenContainer}
 						controlActive={c.controlActive}
 						onActivityModeChange={(mode) => c.setPreferences(setToolActivityMode(mode))}
 					/>
@@ -260,7 +287,7 @@ export default function App() {
 						failedSend={c.failedSend}
 						retryFailedSend={c.retryFailedSend}
 						recoveryNotice={c.view.kind === "chat" ? c.recoveryNotices[c.view.chatId] ?? null : null}
-						onRestartRecovered={c.restartRecoveredChat}
+						onResumeRecovered={c.resumeRecoveredChat}
 						defaultWorkspace={c.defaultWorkspace}
 						workspaceScope={c.workspaceScope}
 						setWorkspaceScope={c.setWorkspaceScope}

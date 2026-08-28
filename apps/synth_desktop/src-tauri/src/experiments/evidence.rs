@@ -35,6 +35,10 @@ pub fn attach_member_evidence(
     member_id: &str,
     mut request: ExperimentEvidenceAttachRequest,
 ) -> Result<()> {
+    anyhow::ensure!(
+        member_kind == super::MEMBER_OPTIMIZER,
+        "execution evidence attaches only to optimizer_run members"
+    );
     let experiment_id: Option<String> = conn
         .query_row(
             "SELECT group_id FROM experiment_group_members WHERE member_kind=?1 AND member_id=?2",

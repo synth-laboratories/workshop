@@ -10,6 +10,8 @@ import { publicError } from "../runtime/publicError";
 import { formatVisualAdmissionIdentity } from "../types/landing";
 import { VisualOpsLine } from "./VisualOpsLine";
 import { hydrateVisualRecord } from "../runtime/visualHydration";
+import { optimizerRunIdFromBindings, traceIdFromBindings, traceSetCountFromBindings } from "../runtime/visualBindings";
+import { SEALED_TRACE_WORKBENCH_TEMPLATES } from "../runtime/templatePresentation";
 
 type Tab = "all" | "recent" | "live" | "sealed" | "templates";
 
@@ -205,6 +207,23 @@ export function VisualsPage({ onOpenVisual, onGoToChat, onOpenReport, onBack, on
 		});
 	}
 
+	function visualRunId(visual: VisualRecord): string | undefined {
+		return optimizerRunIdFromBindings(visual.bindings) ?? visual.runId ?? undefined;
+	}
+
+	function visualTraceId(visual: VisualRecord): string | undefined {
+		return traceIdFromBindings(visual.bindings) ?? visual.traceId ?? undefined;
+	}
+
+	function visualTraceSetCount(visual: VisualRecord): number | null | undefined {
+		if (visualTraceId(visual)) return undefined;
+		const count = traceSetCountFromBindings(visual.bindings);
+		if (count != null) return count;
+		return visualRunId(visual) && SEALED_TRACE_WORKBENCH_TEMPLATES.has(visual.templateId)
+			? null
+			: undefined;
+	}
+
 	async function addSelectedToReport() {
 		if (!selected || !bridges.reports || alreadyAdded || addDisabled) return;
 		try {
@@ -381,8 +400,9 @@ export function VisualsPage({ onOpenVisual, onGoToChat, onOpenReport, onBack, on
 							</button>
 							<VisualOpsLine
 								sessionId={visual.sessionId}
-								runId={visual.runId}
-								traceId={visual.traceId}
+								runId={visualRunId(visual)}
+								traceId={visualTraceId(visual)}
+								traceSetCount={visualTraceSetCount(visual)}
 								testId={`visual-ops-${visual.id}`}
 								compact
 							/>
@@ -430,8 +450,9 @@ export function VisualsPage({ onOpenVisual, onGoToChat, onOpenReport, onBack, on
 							) : null}
 							<VisualOpsLine
 								sessionId={selected.sessionId}
-								runId={selected.runId}
-								traceId={selected.traceId}
+								runId={visualRunId(selected)}
+								traceId={visualTraceId(selected)}
+								traceSetCount={visualTraceSetCount(selected)}
 								testId={`visual-ops-preview-${selected.id}`}
 								compact
 							/>

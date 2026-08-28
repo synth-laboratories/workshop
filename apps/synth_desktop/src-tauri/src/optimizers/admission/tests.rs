@@ -1,13 +1,12 @@
 //! Admission pipeline behaviour, driven by the NanoHorizon acceptance request.
 //!
-//! The fixtures below describe exactly the request in the engineering handoff:
-//! container `nanohorizon-craftax` speaking `synth.container.live-eval.v1`,
-//! model `z-ai/glm-5.3-flash` through OpenRouter, policy
-//! `nanohorizon/glm-5.3-flash`, seeds 780000–780004, five rollouts, ten model
-//! calls and two thousand steps per rollout, and a $2.45 hard ceiling routed
-//! through the Workshop secrets proxy. Each test then removes exactly one fact
-//! and asserts the specific refusal, so a regression cannot pass by failing for
-//! a different reason.
+//! The fixtures describe the NanoHorizon acceptance request: container
+//! `nanohorizon-craftax` speaking `synth.container.live-eval.v1`, model
+//! `z-ai/glm-5.3-flash` through OpenRouter, policy `nanohorizon/glm-5.3-flash`,
+//! seeds 780000–780004, five rollouts, ten model calls and two thousand steps
+//! per rollout, and a $2.45 hard ceiling routed through the Workshop secrets
+//! proxy. Each test then removes exactly one fact and asserts the specific
+//! refusal, so a regression cannot pass by failing for a different reason.
 
 use super::canonical::{digest_bytes, CanonicalJson};
 use super::error::AdmissionErrorCode;
@@ -95,6 +94,7 @@ fn policy_resolution() -> PolicyResolution {
         }))
         .unwrap(),
         source_code: None,
+        material: None,
     }
 }
 
@@ -175,7 +175,10 @@ fn nanohorizon_completes_the_admission_path_without_a_catalog_recipe() {
     assert!(disclosure["catalogRecipeId"].is_null());
 
     // Every fact the approval must display and bind.
-    assert_eq!(disclosure["container"]["containerId"], json!("nanohorizon-craftax"));
+    assert_eq!(
+        disclosure["container"]["containerId"],
+        json!("nanohorizon-craftax")
+    );
     assert_eq!(
         disclosure["container"]["declarationDigest"],
         json!("sha256:declaration-v1")
@@ -214,10 +217,85 @@ fn nanohorizon_completes_the_admission_path_without_a_catalog_recipe() {
     assert_eq!(approved.recipe().rollout_plan.declared_rollouts(), 5);
 }
 
+#[tokio::test]
+async fn paid_approval_receipt_survives_creation_settlement_and_reload() {
+    let admissible = admit(&request(), &context()).expect("NanoHorizon must be admissible inline");
+    let binding = binding_for(&admissible);
+    let receipt_id = binding.receipt_id.as_str().to_string();
+    let approved = admissible
+        .approve(binding)
+        .expect("the exact admitted specification must accept its receipt");
+    let (service, _dir, _) = crate::optimizers::service::tests::service().await;
+    let create = serde_json::from_value(json!({
+        "algorithmId": "eval",
+        "id": "approval_receipt_terminal",
+        "openVisual": false
+    }))
+    .unwrap();
+    let (run, _) = service
+        .create_admitted_eval(create, approved, 5)
+        .await
+        .unwrap();
+
+    assert_eq!(
+        run.usage.extra["paidComputeApproval"]["approvalId"],
+        json!(receipt_id)
+    );
+    assert_eq!(
+        run.usage.extra["paidComputeApproval"]["cap"],
+        json!({"maxCostUsdMicros": 2_450_000, "maxRollouts": 5})
+    );
+
+    service
+        .settle_run(
+            run.id.clone(),
+            crate::optimizers::kernel::SettleCause::Failed {
+                detail: "typed pre-dispatch refusal".into(),
+            },
+            Some(json!({"message": "typed pre-dispatch refusal"})),
+        )
+        .await
+        .unwrap();
+
+    let reloaded = service.get(run.id.clone()).await.unwrap();
+    assert_eq!(
+        reloaded.usage.extra["paidComputeApproval"]["approvalId"],
+        json!(receipt_id)
+    );
+    let manifest = service
+        .terminal_manifest(run.id.clone())
+        .await
+        .unwrap()
+        .expect("settlement must seal a terminal manifest");
+    assert_eq!(
+        manifest["paidComputeApproval"]["approvalId"],
+        json!(receipt_id)
+    );
+
+    let authorization_json: String = service
+        .database()
+        .clone()
+        .run(move |conn| {
+            conn.query_row(
+                "SELECT authorization_json FROM optimizer_run_specs WHERE optimizer_run_id=?1",
+                [run.id],
+                |row| row.get(0),
+            )
+            .map_err(Into::into)
+        })
+        .await
+        .unwrap();
+    let authorization: serde_json::Value = serde_json::from_str(&authorization_json).unwrap();
+    assert_eq!(authorization["authorizationRef"], json!(receipt_id));
+}
+
 #[test]
 fn the_acceptance_run_starts_exactly_five_rollouts_and_settles_truthfully() {
     let admissible = admit(&request(), &context()).unwrap();
-    let approved = admissible.clone().approve(binding_for(&admissible)).unwrap();
+    let approved = admissible
+        .clone()
+        .approve(binding_for(&admissible))
+        .unwrap();
 
     let mut progress = RunProgress::plan(approved.recipe().rollout_plan.declared_rollouts());
     assert_eq!(progress.declared_rollouts(), 5);
@@ -482,8 +560,7 @@ fn a_policy_the_session_cannot_resolve_is_not_found() {
 fn an_override_of_a_key_the_policy_does_not_declare_is_refused() {
     let mut context = context();
     let mut with_override = request();
-    with_override.policy_overrides =
-        Some(CanonicalJson::new(json!({"temperature": 0.9})).unwrap());
+    with_override.policy_overrides = Some(CanonicalJson::new(json!({"temperature": 0.9})).unwrap());
     let error = draft_inline(&with_override, &context).unwrap_err();
     assert_eq!(error.code, AdmissionErrorCode::PolicyConfigurationInvalid);
     assert!(error.context["detail"]
@@ -544,9 +621,7 @@ fn unsupported_limits_fail_rather_than_clamp() {
             32u64,
         ),
         (
-            Box::new(|request: &mut InlineRequest| {
-                request.maximum_steps_per_rollout = Some(9_000)
-            }),
+            Box::new(|request: &mut InlineRequest| request.maximum_steps_per_rollout = Some(9_000)),
             "maximum_steps_per_rollout",
             9_000,
             4_000,
@@ -710,8 +785,7 @@ fn an_approval_receipt_rejects_a_changed_container_declaration() {
     let context = context();
     let admissible = admit(&request(), &context).unwrap();
     let mut binding = binding_for(&admissible);
-    binding.container_declaration_digest =
-        DeclarationDigest::new("sha256:declaration-v2").unwrap();
+    binding.container_declaration_digest = DeclarationDigest::new("sha256:declaration-v2").unwrap();
     let error = admissible.approve(binding).unwrap_err();
     assert_eq!(error.code, DriftCode::ContainerDeclarationChanged);
 }
@@ -730,7 +804,10 @@ fn an_approval_receipt_rejects_a_changed_policy_revision() {
 fn drift_detected_at_dispatch_demands_a_new_approval_rather_than_a_patch() {
     let context = context();
     let admissible = admit(&request(), &context).unwrap();
-    let approved = admissible.clone().approve(binding_for(&admissible)).unwrap();
+    let approved = admissible
+        .clone()
+        .approve(binding_for(&admissible))
+        .unwrap();
 
     // The declaration moved between approval and dispatch.
     let error = approved
@@ -793,4 +870,88 @@ fn a_persisted_specification_reopens_and_readmits_without_its_old_receipt() {
         .admit()
         .unwrap();
     assert_eq!(readmitted.digest(), admissible.digest());
+}
+
+#[test]
+fn unknown_cost_fields_fail_at_schema_validation() {
+    let error = serde_json::from_value::<InlineRequest>(json!({
+        "policyNamespace": "nanohorizon",
+        "policyName": "glm-5.3-flash",
+        "provider": "openrouter",
+        "modelId": "z-ai/glm-5.3-flash",
+        "seeds": [780005],
+        "maximumRollouts": 1,
+        "maximumModelCallsPerRollout": 10,
+        "maximumStepsPerRollout": 2000,
+        "costCeilingUsd": 2.45
+    }))
+    .unwrap_err()
+    .to_string();
+    assert!(error.contains("unknown field `costCeilingUsd`"), "{error}");
+}
+
+#[test]
+fn host_session_fields_are_stripped_before_inline_request_parse() {
+    let request = InlineRequest::from_tool_arguments(json!({
+        "policyNamespace": "nanohorizon",
+        "policyName": "glm-5.3-flash",
+        "provider": "openrouter",
+        "modelId": "z-ai/glm-5.3-flash",
+        "seeds": [780005],
+        "maximumRollouts": 1,
+        "maximumModelCallsPerRollout": 10,
+        "maximumStepsPerRollout": 2000,
+        "hardTotalCostUsd": 2.45,
+        "sessionRef": "330175fd-not-a-spec-field",
+        "openVisual": true
+    }))
+    .unwrap();
+    assert_eq!(request.hard_total_cost_usd, Some(2.45));
+    assert_eq!(request.maximum_model_calls_per_rollout, Some(10));
+    assert_eq!(request.maximum_steps_per_rollout, Some(2_000));
+}
+
+#[test]
+fn policy_source_bytes_do_not_fork_the_canonical_digest() {
+    let bytes = "fn act(): pass";
+    let material = PolicyMaterialRef {
+        source_root: "/GitHub/nanohorizon".into(),
+        repository_relative_path: "src/challenge/policy.py".into(),
+        tracked_revision: "rev-2026-08-26-a1".into(),
+        content_digest: digest_bytes(bytes.as_bytes()),
+    };
+    let mut with_bytes = context();
+    with_bytes.policy.as_mut().unwrap().source_code = Some(bytes.into());
+    with_bytes.policy.as_mut().unwrap().material = Some(material.clone());
+    let mut without_bytes = context();
+    without_bytes.policy.as_mut().unwrap().material = Some(material);
+    let without = admit(&request(), &without_bytes).unwrap();
+    let with = admit(&request(), &with_bytes).unwrap();
+    assert_eq!(
+        without.digest(),
+        with.digest(),
+        "in-memory policy bytes must not change the approved digest"
+    );
+    assert_eq!(
+        with.spec().recipe.policy.material.as_ref().unwrap().content_digest,
+        digest_bytes(bytes.as_bytes())
+    );
+}
+
+#[test]
+fn approved_limits_remain_non_null_through_admission() {
+    let admissible = admit(&request(), &context()).unwrap();
+    let limits = &admissible.spec().recipe.resource_limits;
+    assert_eq!(limits.maximum_model_calls_per_rollout.0.get(), 10);
+    assert_eq!(limits.maximum_steps_per_rollout.0.get(), 2_000);
+    assert_eq!(limits.hard_total_cost_micros.as_micros(), 2_450_000);
+    let approved = admissible
+        .clone()
+        .approve(binding_for(&admissible))
+        .unwrap();
+    assert_eq!(
+        approved.recipe().resource_limits.maximum_model_calls_per_rollout.0.get(),
+        10
+    );
+    assert_eq!(approved.digest(), admissible.digest());
 }

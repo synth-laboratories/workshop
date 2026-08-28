@@ -177,11 +177,34 @@ export function milestoneFromEvents(events: OptimizerEvent[]): RunProgressMilest
 	return undefined;
 }
 
-/** The visual instance the run published, for "Open full run". */
-function visualRef(run: RunRecord): string | undefined {
-	for (const ref of run.visualRefs ?? []) {
-		const id = ref.id;
-		if (typeof id === "string" && id.length > 0) return id;
+type VisualLink = { id?: unknown; kind?: unknown; role?: unknown };
+
+/** The primary visual instance the run published, for "Open visual". */
+export function primaryVisualRef(
+	run: RunRecord,
+	authoritativeRefs: readonly VisualLink[] = run.visualRefs ?? []
+): string | undefined {
+	const summary = run.summary ?? {};
+	const visualIds = summary.visualIds && typeof summary.visualIds === "object" && !Array.isArray(summary.visualIds)
+		? summary.visualIds as Record<string, unknown>
+		: {};
+	for (const candidate of [visualIds.primary, summary.visualId]) {
+		if (typeof candidate === "string" && candidate.trim()) return candidate.trim();
+	}
+	const refGroups = [authoritativeRefs, run.visualRefs ?? []];
+	for (const refs of refGroups) {
+		for (const ref of refs) {
+			if (ref.kind !== "visual" || ref.role !== "primary") continue;
+			const id = ref.id;
+			if (typeof id === "string" && id.trim()) return id.trim();
+		}
+	}
+	for (const refs of refGroups) {
+		for (const ref of refs) {
+			if (ref.kind !== "visual") continue;
+			const id = ref.id;
+			if (typeof id === "string" && id.trim()) return id.trim();
+		}
 	}
 	return undefined;
 }
@@ -336,7 +359,7 @@ export function baseProjection(input: AdapterInput, kind: RunKind): RunProgressP
 		warning: warnings[0],
 		warnings,
 		details: [],
-		fullVisualRef: visualRef(input.run),
+		fullVisualRef: primaryVisualRef(input.run),
 		cursorSeq: input.cursorSeq,
 		terminalCursor: input.cursorSeq,
 		stale: input.stale

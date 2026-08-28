@@ -28,7 +28,7 @@ export function clampPaneWidth(value: number, min: number, max: number): number 
 /** CSS-pixel width after min/max. Prefer the layout box when it has been measured. */
 export function realizedPaneWidth(requested: number, min: number, max: number, cssWidth?: number | null): number {
 	if (typeof cssWidth === "number" && Number.isFinite(cssWidth)) {
-		return Math.round(cssWidth);
+		return clampPaneWidth(cssWidth, min, max);
 	}
 	return clampPaneWidth(requested, min, max);
 }
@@ -101,6 +101,7 @@ export function PaneResizeHandle({
 	}, [direction, minPrimary, minSecondary]);
 
 	const persistRealized = useCallback((target: HTMLElement) => {
+		if (target.getClientRects().length === 0 || getComputedStyle(target).display === "none") return;
 		const named = namedPaneElement(target, direction);
 		if (!named) return;
 		const cssWidth = Math.round(named.getBoundingClientRect().width);
@@ -145,6 +146,10 @@ export function PaneResizeHandle({
 		const named = namedPaneElement(target, direction);
 		const parentObserved = direction === "sidebar" ? target.parentElement?.parentElement : target.parentElement;
 		const measure = () => {
+			// A stacked responsive layout hides the separator and lets the named
+			// pane fill the row. That temporary width is not a user resize and must
+			// never overwrite the persisted split-view preference.
+			if (target.getClientRects().length === 0 || getComputedStyle(target).display === "none") return;
 			setMaximum(Math.round(measureMaximum(target)));
 			if (!named) return;
 			const cssWidth = Math.round(named.getBoundingClientRect().width);

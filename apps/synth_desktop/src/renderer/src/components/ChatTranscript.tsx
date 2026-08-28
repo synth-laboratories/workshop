@@ -29,7 +29,7 @@ type Props = {
 	onOpenContainer?: (id: string | null) => void;
 	onOpenReport?: (id: string) => void;
 	onOpenRun?: (run: OptimizerRunRecord) => void;
-	onApprove?: (approvalId: string) => void;
+	onApprove?: (approvalId: string, decision?: "remember-locator" | "register-source") => void;
 	onAlwaysAllow?: (approvalId: string) => void;
 	onReject?: (approvalId: string) => void;
 	running?: boolean;
@@ -184,7 +184,7 @@ function ActivityLine({
 	onToggleVisual?: () => void;
 	containerOpen?: boolean;
 	onToggleContainer?: () => void;
-	onApprove?: (approvalId: string) => void;
+	onApprove?: (approvalId: string, decision?: "remember-locator" | "register-source") => void;
 	onAlwaysAllow?: (approvalId: string) => void;
 	onReject?: (approvalId: string) => void;
 	live?: boolean;
@@ -452,6 +452,9 @@ function PaidComputeApprovalModal({ line, onApprove, onReject }: {
 		? inline.credentialRoute as Record<string, unknown> : undefined;
 	const text = (value: unknown) => typeof value === "string" ? value : undefined;
 	const formatUsd = (micros: number) => `$${(micros / 1_000_000).toFixed(2)}`;
+	const rolloutLimit = cap?.maxRollouts;
+	const callLimit = typeof inline?.maximumModelCallsPerRollout === "number" ? inline.maximumModelCallsPerRollout : undefined;
+	const stepLimit = typeof inline?.maximumStepsPerRollout === "number" ? inline.maximumStepsPerRollout : undefined;
 	const approveRef = useRef<HTMLButtonElement>(null);
 	useEffect(() => {
 		approveRef.current?.focus();
@@ -466,34 +469,94 @@ function PaidComputeApprovalModal({ line, onApprove, onReject }: {
 	}, [line.approvalId, onReject]);
 	return <div className="paid-compute-modal-backdrop" data-testid="paid-compute-approval-modal">
 		<section className="paid-compute-modal" role="dialog" aria-modal="true" aria-labelledby="paid-compute-title">
-			<div className="approval-card-kicker">{inline ? "Inline evaluation · paid compute" : "Paid compute"}</div>
-			<h2 id="paid-compute-title">Approve this bounded run?</h2>
-			<dl>
-				<div><dt>Requesting agent</dt><dd>{payload?.requestingAgent ?? "Unknown agent"}</dd></div>
-				<div><dt>Operation</dt><dd><code>{payload?.operation ?? "optimizer recipe"}</code></dd></div>
-				{estimated != null ? <div><dt>Predicted spend</dt><dd>{formatUsd(estimated)}</dd></div> : <div><dt>Predicted spend</dt><dd>Not available</dd></div>}
-				{cap?.maxCostUsdMicros != null ? <div><dt>Cost cap</dt><dd>{formatUsd(cap.maxCostUsdMicros)}</dd></div> : null}
-				{cap?.maxRollouts != null ? <div><dt>Rollout cap</dt><dd>{cap.maxRollouts.toLocaleString()}</dd></div> : null}
-				{inline ? <>
+			<div className="approval-card-kicker">Paid compute</div>
+			<h2 id="paid-compute-title">{inline && rolloutLimit != null ? `Run ${rolloutLimit.toLocaleString()} evaluation rollouts?` : "Approve this bounded run?"}</h2>
+			<dl className="paid-compute-summary">
+				{inline ? <div><dt>Model</dt><dd><code>{`${text(inlineModel?.provider) ?? "?"}/${text(inlineModel?.modelId) ?? "?"}`}</code></dd></div> : <>
+					<div><dt>Requesting agent</dt><dd>{payload?.requestingAgent ?? "Unknown agent"}</dd></div>
+					<div><dt>Operation</dt><dd><code>{payload?.operation ?? "optimizer recipe"}</code></dd></div>
+					{estimated != null ? <div><dt>Predicted spend</dt><dd>{formatUsd(estimated)}</dd></div> : null}
+				</>}
+				{cap?.maxCostUsdMicros != null ? <div><dt>Maximum charge</dt><dd>{formatUsd(cap.maxCostUsdMicros)}</dd></div> : null}
+				{!inline && rolloutLimit != null ? <div><dt>Rollout cap</dt><dd>{rolloutLimit.toLocaleString()}</dd></div> : null}
+				{inline ? <div><dt>Limits</dt><dd>{[
+					rolloutLimit != null ? `${rolloutLimit.toLocaleString()} rollouts` : null,
+					callLimit != null ? `${callLimit.toLocaleString()} calls each` : null,
+					stepLimit != null ? `${stepLimit.toLocaleString()} steps each` : null,
+				].filter(Boolean).join(" · ")}</dd></div> : null}
+			</dl>
+			{inline ? <details className="paid-compute-technical-details">
+				<summary>Technical details</summary>
+				<dl>
+					<div><dt>Requesting agent</dt><dd>{payload?.requestingAgent ?? "Unknown agent"}</dd></div>
+					<div><dt>Operation</dt><dd><code>{payload?.operation ?? "optimizer recipe"}</code></dd></div>
+					{estimated != null ? <div><dt>Predicted spend</dt><dd>{formatUsd(estimated)}</dd></div> : null}
 					<div><dt>Specification</dt><dd><code>{text(inline.executionSpecDigest) ?? "Missing digest"}</code></dd></div>
-					<div><dt>Source</dt><dd>Inline evaluation</dd></div>
 					<div><dt>Container</dt><dd><code>{text(inlineContainer?.containerId) ?? "Missing"}</code></dd></div>
 					<div><dt>Declaration</dt><dd><code>{text(inlineContainer?.declarationDigest) ?? "Missing"}</code></dd></div>
 					<div><dt>Evaluator</dt><dd><code>{text(inlineEvaluator?.evaluatorId) ?? "Missing"}</code></dd></div>
 					<div><dt>Scoring contract</dt><dd><code>{text(inlineEvaluator?.scoringDigest) ?? "Missing"}</code></dd></div>
 					<div><dt>Policy</dt><dd><code>{`${text(inlinePolicy?.namespace) ?? "?"}/${text(inlinePolicy?.name) ?? "?"}@${text(inlinePolicy?.revision) ?? "?"}`}</code></dd></div>
-					<div><dt>Model</dt><dd><code>{`${text(inlineModel?.provider) ?? "?"}/${text(inlineModel?.modelId) ?? "?"}`}</code></dd></div>
 					<div><dt>Seeds</dt><dd>{Array.isArray(inline.seeds) ? inline.seeds.join(", ") : "Missing"}</dd></div>
-					<div><dt>Calls / rollout</dt><dd>{typeof inline.maximumModelCallsPerRollout === "number" ? inline.maximumModelCallsPerRollout : "Missing"}</dd></div>
-					<div><dt>Steps / rollout</dt><dd>{typeof inline.maximumStepsPerRollout === "number" ? inline.maximumStepsPerRollout.toLocaleString() : "Missing"}</dd></div>
 					<div><dt>Credentials</dt><dd>{text(inlineCredential?.kind) ?? "Missing"} · {text(inlineCredential?.provider) ?? "Missing"}</dd></div>
-				</> : null}
-			</dl>
-			{payload?.parameters ? <details><summary>Run parameters</summary><pre>{JSON.stringify(payload.parameters, null, 2)}</pre></details> : null}
-			<p className="paid-compute-consent">I approve this run only within the cap shown above.</p>
+				</dl>
+			</details> : null}
 			<div className="paid-compute-modal-actions">
 				<button type="button" className="approval-reject" onClick={() => onReject?.(line.approvalId!)}>Reject</button>
-				<button ref={approveRef} type="button" className="approval-approve" onClick={() => onApprove?.(line.approvalId!)}>Approve with cap</button>
+				<button ref={approveRef} type="button" className="approval-approve" onClick={() => onApprove?.(line.approvalId!)}>Approve</button>
+			</div>
+		</section>
+	</div>;
+}
+
+function CredentialAccessApprovalModal({ line, onApprove, onReject }: {
+	line: LocalActivityLine;
+	onApprove?: (approvalId: string, decision?: "remember-locator" | "register-source") => void;
+	onReject?: (approvalId: string) => void;
+}) {
+	const payload = line.approvalPayload;
+	const consent = payload?.consent ?? "issue_lease";
+	const isRemember = consent === "remember_locator";
+	const isRegister = consent === "register_source";
+	const capability = !isRemember && !isRegister
+		? /^Issue a run-scoped Workshop proxy capability for recipe (.*), run (.*); operations=([^;]+); maxCalls=(\d+); maxCostUsd=([^;]+)$/.exec(payload?.purpose ?? "")
+		: null;
+	const approveRef = useRef<HTMLButtonElement>(null);
+	useEffect(() => {
+		approveRef.current?.focus();
+		const onKey = (event: KeyboardEvent) => {
+			if (event.key !== "Escape") return;
+			event.preventDefault();
+			onReject?.(line.approvalId!);
+		};
+		window.addEventListener("keydown", onKey);
+		return () => window.removeEventListener("keydown", onKey);
+	}, [line.approvalId, onReject]);
+	return <div className="paid-compute-modal-backdrop" data-testid="credential-access-approval-modal">
+		<section className="paid-compute-modal" role="dialog" aria-modal="true" aria-labelledby="credential-access-title">
+			<div className="approval-card-kicker">Credential access</div>
+			<h2 id="credential-access-title">{isRemember ? "Remember this location?" : isRegister ? "Register this credential source?" : "Allow this proxy capability?"}</h2>
+			<dl>
+				<div><dt>Connection</dt><dd><code>{payload?.provider ?? "Missing provider alias"}</code></dd></div>
+				{payload?.displayPath ? <div><dt>Location</dt><dd><code>{payload.displayPath}</code></dd></div> : null}
+				{payload?.variable ? <div><dt>Variable</dt><dd><code>{payload.variable}</code></dd></div> : null}
+				{capability ? <>
+					<div><dt>Operation</dt><dd><code>{capability[3]}</code></dd></div>
+					<div><dt>Call cap</dt><dd>{Number(capability[4]).toLocaleString()}</dd></div>
+					<div><dt>Cost cap</dt><dd>${Number(capability[5]).toFixed(2)}</dd></div>
+					<div><dt>Run</dt><dd><code>{capability[2]}</code></dd></div>
+				</> : <div><dt>Scope</dt><dd>{payload?.purpose ?? "Missing capability scope"}</dd></div>}
+			</dl>
+			{isRegister && payload?.switchFromDisplay ? <p className="paid-compute-consent">{payload.provider ?? "This provider"} is loaded from <code>{payload.switchFromDisplay}</code>. Register this location instead?</p> : null}
+			<p className="paid-compute-consent">{isRemember
+				? "Workshop remembers the location only. It does not read or load the credential value."
+				: isRegister
+					? "Workshop reads the named variable into process memory and serves it only through the provider proxy."
+					: "The agent receives a bounded Workshop proxy capability, never the credential value. This approval applies once and cannot be remembered."}</p>
+			<div className="paid-compute-modal-actions">
+				<button type="button" className="approval-reject" onClick={() => onReject?.(line.approvalId!)}>Cancel</button>
+				{isRegister ? <button type="button" className="approval-always" onClick={() => onApprove?.(line.approvalId!, "remember-locator")}>Remember only</button> : null}
+				<button ref={approveRef} type="button" className="approval-approve" onClick={() => onApprove?.(line.approvalId!, isRemember ? "remember-locator" : isRegister ? "register-source" : undefined)}>{isRemember ? "Remember location" : isRegister ? "Register" : "Allow once"}</button>
 			</div>
 		</section>
 	</div>;
@@ -784,7 +847,8 @@ export function ChatTranscript({
 		return [...byId.values()];
 	}, [activityByMessageId]);
 	const paidComputeApproval = pendingApprovals.find((line) => line.approvalKind === "paid_compute");
-	const inlineApprovals = pendingApprovals.filter((line) => line.approvalKind !== "paid_compute");
+	const credentialAccessApproval = pendingApprovals.find((line) => line.approvalKind === "credential_access");
+	const inlineApprovals = pendingApprovals.filter((line) => line.approvalKind !== "paid_compute" && line.approvalKind !== "credential_access");
 	const withoutPendingApproval = (line: LocalActivityLine) =>
 		!(line.kind === "approval" && line.approvalId);
 	const presentedActive = useMemo(
@@ -1066,6 +1130,7 @@ export function ChatTranscript({
 					</div>
 			</div>
 			{paidComputeApproval ? <PaidComputeApprovalModal line={paidComputeApproval} onApprove={onApprove} onReject={onReject} /> : null}
+			{!paidComputeApproval && credentialAccessApproval ? <CredentialAccessApprovalModal line={credentialAccessApproval} onApprove={onApprove} onReject={onReject} /> : null}
 		</div>
 	);
 }

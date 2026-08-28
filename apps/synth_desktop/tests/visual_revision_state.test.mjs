@@ -5,6 +5,7 @@ import {
 	EMPTY_VISUAL_REVISION_STATE,
 	bindingAuthorityKey,
 	newestVisualArtifact,
+	visualRevisionRefreshRequired,
 	visualRevisionReducer
 } from "../src/renderer/src/runtime/visualRevisionState.ts";
 
@@ -53,6 +54,22 @@ test("chat and standalone records share one newest-revision selection", () => {
 		14
 	);
 	assert.equal(newestVisualArtifact("vis_1", artifact("vis_other", 99), artifact("vis_1", 14))?.revision, 14);
+});
+
+test("a chat Outputs snapshot forces one registry refresh after restart", () => {
+	assert.equal(visualRevisionRefreshRequired({
+		acceptedRevision: 1,
+		minimumRevision: 1,
+		open: false,
+		wasOpen: true,
+		authoritativeRefresh: true
+	}), true);
+	assert.equal(visualRevisionRefreshRequired({
+		acceptedRevision: 14,
+		minimumRevision: 14,
+		open: false,
+		wasOpen: true
+	}), false);
 });
 
 test("switching IDs invalidates old work and unrelated IDs cannot commit", () => {

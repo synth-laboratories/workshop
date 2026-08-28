@@ -399,9 +399,18 @@ impl LagunaManager {
                 .and_then(Value::as_str)
                 .unwrap_or(model_id)
                 .to_string(),
-            title: policy.get("title").and_then(Value::as_str).map(str::to_string),
-            is_base: policy.get("is_base").and_then(Value::as_bool).unwrap_or(false),
-            digest: policy.get("digest").and_then(Value::as_str).map(str::to_string),
+            title: policy
+                .get("title")
+                .and_then(Value::as_str)
+                .map(str::to_string),
+            is_base: policy
+                .get("is_base")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
+            digest: policy
+                .get("digest")
+                .and_then(Value::as_str)
+                .map(str::to_string),
             tokens_per_second_p10: None,
             delta_vs_base_pct: None,
             delta_is_resolvable: false,
@@ -445,7 +454,10 @@ impl LagunaManager {
             Ok(response) => response.json().await.unwrap_or_else(|_| json!({})),
             Err(_) => json!({}),
         };
-        let rows = measured.pointer("/policies/policies").cloned().unwrap_or_else(|| json!({}));
+        let rows = measured
+            .pointer("/policies/policies")
+            .cloned()
+            .unwrap_or_else(|| json!({}));
         let mut policies = Vec::new();
         for entry in listed
             .get("policies")
@@ -460,12 +472,19 @@ impl LagunaManager {
                 .to_string();
             let stats = rows.get(&model_id).cloned().unwrap_or_else(|| json!({}));
             policies.push(LagunaPolicy {
-                title: entry.get("title").and_then(Value::as_str).map(str::to_string),
-                is_base: entry.get("is_base").and_then(Value::as_bool).unwrap_or(false),
-                digest: entry.get("digest").and_then(Value::as_str).map(str::to_string),
-                tokens_per_second_p10: stats
-                    .get("tokensPerSecondP10")
-                    .and_then(Value::as_f64),
+                title: entry
+                    .get("title")
+                    .and_then(Value::as_str)
+                    .map(str::to_string),
+                is_base: entry
+                    .get("is_base")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false),
+                digest: entry
+                    .get("digest")
+                    .and_then(Value::as_str)
+                    .map(str::to_string),
+                tokens_per_second_p10: stats.get("tokensPerSecondP10").and_then(Value::as_f64),
                 delta_vs_base_pct: stats.get("deltaVsBasePct").and_then(Value::as_f64),
                 delta_is_resolvable: stats
                     .get("deltaIsResolvable")

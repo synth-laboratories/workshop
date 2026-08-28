@@ -71,6 +71,201 @@ pub struct InstanceDiagnostics {
     pub manifest: Option<String>,
 }
 
+#[derive(Clone, Debug, Serialize, Type, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct RegisteredInstance {
+    pub name: String,
+    pub display_name: String,
+    pub release_line: Option<String>,
+    pub bundle_id: String,
+    pub app_bundle: String,
+    pub status: String,
+    pub current: bool,
+    pub deep_link: String,
+}
+
+#[derive(Clone, Debug, Serialize, Type, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkshopDeepLink {
+    pub instance: Option<String>,
+    pub view: String,
+    pub run_id: Option<String>,
+}
+
+fn safe_registry_component(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 96
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
+}
+
+/// Read launcher-owned manifests without trusting them as executable input.
+/// Only a minimal, validated switcher projection crosses the UI boundary.
+pub fn registered_instances_from(root: &Path) -> io::Result<Vec<RegisteredInstance>> {
+    let mut instances = Vec::new();
+    let current_name = name();
+    let current_bundle = bundle_id();
+    let Ok(releases) = fs::read_dir(root) else {
+        return Ok(instances);
+    };
+    for release in releases.flatten().filter(|entry| entry.path().is_dir()) {
+        let Ok(entries) = fs::read_dir(release.path()) else {
+            continue;
+        };
+        for entry in entries.flatten().filter(|entry| entry.path().is_dir()) {
+            let manifest_path = entry.path().join("instance.json");
+            let Ok(bytes) = fs::read(&manifest_path) else {
+                continue;
+            };
+            let Ok(value) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
+                continue;
+            };
+            if value
+                .get("schemaVersion")
+                .and_then(serde_json::Value::as_str)
+                != Some("synth.desktop-instance.v1")
+            {
+                continue;
+            }
+            let Some(instance_name) = value.get("name").and_then(serde_json::Value::as_str) else {
+                continue;
+            };
+            let Some(bundle_id) = value.get("bundleId").and_then(serde_json::Value::as_str) else {
+                continue;
+            };
+            if !safe_registry_component(instance_name) || !safe_registry_component(bundle_id) {
+                continue;
+            }
+            let instance_root = value
+                .get("instanceRoot")
+                .and_then(serde_json::Value::as_str)
+                .map(PathBuf::from)
+                .unwrap_or_else(|| entry.path());
+            if instance_root != entry.path() {
+                continue;
+            }
+            let Some(app_bundle) = value
+                .get("appBundle")
+                .and_then(serde_json::Value::as_str)
+                .map(PathBuf::from)
+            else {
+                continue;
+            };
+            if !app_bundle.starts_with(&instance_root)
+                || app_bundle.extension().and_then(|ext| ext.to_str()) != Some("app")
+            {
+                continue;
+            }
+            let status = value
+                .pointer("/runtime/status")
+                .and_then(serde_json::Value::as_str)
+                .filter(|status| matches!(*status, "running" | "stopped" | "starting" | "failed"))
+                .unwrap_or("unknown")
+                .to_string();
+            let current = current_name.as_deref() == Some(instance_name)
+                || current_bundle.as_deref() == Some(bundle_id);
+            instances.push(RegisteredInstance {
+                name: instance_name.to_string(),
+                display_name: value
+                    .get("displayName")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or(instance_name)
+                    .chars()
+                    .take(160)
+                    .collect(),
+                release_line: value
+                    .get("releaseLine")
+                    .and_then(serde_json::Value::as_str)
+                    .map(|value| value.chars().take(32).collect()),
+                bundle_id: bundle_id.to_string(),
+                app_bundle: app_bundle.display().to_string(),
+                status,
+                current,
+                deep_link: format!("synth-workshop://open?instance={instance_name}"),
+            });
+        }
+    }
+    instances.sort_by(|left, right| {
+        right
+            .current
+            .cmp(&left.current)
+            .then_with(|| left.display_name.cmp(&right.display_name))
+    });
+    Ok(instances)
+}
+
+pub fn registered_instances() -> io::Result<Vec<RegisteredInstance>> {
+    let root = dirs::home_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join(".synth-desktop/instances");
+    registered_instances_from(&root)
+}
+
+fn decode_deep_link_component(value: &str) -> Option<String> {
+    let mut bytes = Vec::with_capacity(value.len());
+    let raw = value.as_bytes();
+    let mut index = 0;
+    while index < raw.len() {
+        match raw[index] {
+            b'%' if index + 2 < raw.len() => {
+                let hex = std::str::from_utf8(&raw[index + 1..index + 3]).ok()?;
+                bytes.push(u8::from_str_radix(hex, 16).ok()?);
+                index += 3;
+            }
+            b'+' => {
+                bytes.push(b' ');
+                index += 1;
+            }
+            byte => {
+                bytes.push(byte);
+                index += 1;
+            }
+        }
+    }
+    String::from_utf8(bytes).ok()
+}
+
+pub fn parse_workshop_deep_link(raw: &str) -> Result<WorkshopDeepLink, String> {
+    let query = raw
+        .strip_prefix("synth-workshop://open")
+        .ok_or_else(|| "unsupported Workshop deep link".to_string())?
+        .strip_prefix('?')
+        .unwrap_or_default();
+    let mut instance = None;
+    let mut view = "landing".to_string();
+    let mut run_id = None;
+    for pair in query.split('&').filter(|pair| !pair.is_empty()) {
+        let (key, value) = pair.split_once('=').unwrap_or((pair, ""));
+        let value = decode_deep_link_component(value)
+            .ok_or_else(|| "invalid percent encoding in Workshop deep link".to_string())?;
+        match key {
+            "instance" if safe_registry_component(&value) => instance = Some(value),
+            "view"
+                if matches!(
+                    value.as_str(),
+                    "landing" | "optimizers" | "experiments" | "visuals"
+                ) =>
+            {
+                view = value
+            }
+            "runId" if safe_registry_component(&value) => run_id = Some(value),
+            "instance" | "view" | "runId" => {
+                return Err(format!("invalid {key} in Workshop deep link"))
+            }
+            _ => {}
+        }
+    }
+    if run_id.is_some() {
+        view = "optimizers".into();
+    }
+    Ok(WorkshopDeepLink {
+        instance,
+        view,
+        run_id,
+    })
+}
+
 /// Identity of *this run of the backend*, not of the installation.
 ///
 /// A durable row that says a turn is `running` proves only what was true when
@@ -156,6 +351,8 @@ pub enum IdentityRefusal {
     DevBundleWithoutIdentity { bundle_id: String },
     /// A descriptor exists and cannot be used.
     UnusableDescriptor { detail: String },
+    /// The bundle descriptor and compiled binary name different source trees.
+    BuildRevisionMismatch { descriptor: String, binary: String },
 }
 
 impl IdentityRefusal {
@@ -166,6 +363,7 @@ impl IdentityRefusal {
             Self::EnvBundleMismatch { .. } => "bundle_id_mismatch",
             Self::DevBundleWithoutIdentity { .. } => "dev_bundle_without_identity",
             Self::UnusableDescriptor { .. } => "descriptor_unusable",
+            Self::BuildRevisionMismatch { .. } => "build_revision_mismatch",
         }
     }
 }
@@ -204,6 +402,10 @@ impl Display for IdentityRefusal {
             Self::UnusableDescriptor { detail } => {
                 write!(f, "the bundle descriptor cannot be used: {detail}")
             }
+            Self::BuildRevisionMismatch { descriptor, binary } => write!(
+                f,
+                "the bundle descriptor names source revision {descriptor:?}, but the compiled binary names {binary:?}; rebuild the instance before launching it"
+            ),
         }
     }
 }
@@ -362,9 +564,9 @@ pub fn instance_id() -> String {
 /// dialog so a double-clicked bundle explains itself instead of silently
 /// opening the wrong profile. The caller exits; this never returns a default.
 pub fn assert_boot_identity() -> Result<Identity, IdentityRefusal> {
-    match identity() {
+    match identity().and_then(|identity| verify_build_provenance(identity, compiled_revision())) {
         Ok(identity) => {
-            eprintln!(
+            crate::platform::logging::report("instance", "eprintln", format!(
                 "synth-desktop: instance identity source={:?} instance={} data_root={} bundle_id={}",
                 identity.source,
                 identity.instance.as_deref().unwrap_or("canonical"),
@@ -374,18 +576,45 @@ pub fn assert_boot_identity() -> Result<Identity, IdentityRefusal> {
                     .unwrap_or(&paths::canonical_data_root())
                     .display(),
                 identity.bundle_id.as_deref().unwrap_or("-"),
-            );
+            ));
             Ok(identity)
         }
         Err(refusal) => {
-            eprintln!(
+            crate::platform::logging::report("instance", "eprintln", format!(
                 "synth-desktop: identity_refused code={} {refusal}",
                 refusal.code()
-            );
+            ));
             show_refusal_dialog("Synth Workshop cannot start", &refusal.to_string());
             Err(refusal)
         }
     }
+}
+
+fn compiled_revision() -> &'static str {
+    option_env!("SYNTH_BUILD_REVISION").unwrap_or("unknown")
+}
+
+/// A packaged instance carries the launcher's source revision in its bundle.
+/// Compare that immutable receipt to the value compiled into the executable so
+/// a cached or copied binary cannot start under a newer manifest.
+fn verify_build_provenance(
+    identity: Identity,
+    build_revision: &str,
+) -> Result<Identity, IdentityRefusal> {
+    let descriptor_revision = identity
+        .descriptor
+        .as_ref()
+        .and_then(|descriptor| descriptor.source_revision.as_deref())
+        .filter(|revision| !revision.trim().is_empty());
+    if let Some(descriptor_revision) = descriptor_revision {
+        if descriptor_revision != build_revision {
+            return Err(IdentityRefusal::BuildRevisionMismatch {
+                descriptor: descriptor_revision.to_owned(),
+                binary: build_revision.to_owned(),
+            });
+        }
+    }
+    Ok(identity)
 }
 
 /// Best-effort native alert before any Tauri window exists. Detached: the
@@ -478,7 +707,7 @@ pub fn diagnostics() -> InstanceDiagnostics {
     // Integration tests include this module directly, outside the package
     // target that receives build.rs values. Keep those builds diagnostic-only
     // instead of making compile-time metadata a hard requirement.
-    let build_revision = option_env!("SYNTH_BUILD_REVISION").unwrap_or("unknown");
+    let build_revision = compiled_revision();
     let build_timestamp = option_env!("SYNTH_BUILD_TIMESTAMP").unwrap_or("unknown");
     InstanceDiagnostics {
         mode: if instance_name.is_some() {
@@ -902,7 +1131,7 @@ pub fn install_boot_identity_and_lock() {
     match acquire_instance_lock() {
         Ok(lock) => hold_instance_lock(lock),
         Err(error) => {
-            eprintln!("synth-desktop: {error}");
+            crate::platform::logging::report("instance", "eprintln", format!("synth-desktop: {error}"));
             let identifier = bundle_id().unwrap_or_else(|| "com.synth.desktop".into());
             let _ = focus_existing_instance(&identifier);
             std::process::exit(EXIT_INSTANCE_LOCKED);
@@ -1009,7 +1238,11 @@ mod tests {
         }
     }
 
-    fn env(instance: Option<&str>, data_root: Option<&str>, bundle_id: Option<&str>) -> EnvIdentity {
+    fn env(
+        instance: Option<&str>,
+        data_root: Option<&str>,
+        bundle_id: Option<&str>,
+    ) -> EnvIdentity {
         EnvIdentity {
             instance: instance.map(str::to_owned),
             data_root: data_root.map(PathBuf::from),
@@ -1078,7 +1311,11 @@ mod tests {
     #[test]
     fn a_descriptor_alone_names_the_instance() {
         let identity = resolve_identity(
-            Some(Ok(descriptor("alpha", "/tmp/instances/alpha/data", DEV_BUNDLE))),
+            Some(Ok(descriptor(
+                "alpha",
+                "/tmp/instances/alpha/data",
+                DEV_BUNDLE,
+            ))),
             &EnvIdentity::default(),
             Some(DEV_BUNDLE),
         )
@@ -1093,9 +1330,62 @@ mod tests {
     }
 
     #[test]
+    fn packaged_instance_requires_its_compiled_revision_to_match_the_descriptor() {
+        let identity = resolve_identity(
+            Some(Ok(descriptor(
+                "alpha",
+                "/tmp/instances/alpha/data",
+                DEV_BUNDLE,
+            ))),
+            &EnvIdentity::default(),
+            Some(DEV_BUNDLE),
+        )
+        .unwrap();
+        assert!(verify_build_provenance(identity.clone(), "abc").is_ok());
+
+        let refusal = verify_build_provenance(identity, "older").unwrap_err();
+        assert_eq!(refusal.code(), "build_revision_mismatch");
+        assert!(refusal.to_string().contains("abc"), "{refusal}");
+        assert!(refusal.to_string().contains("older"), "{refusal}");
+
+        let identity = resolve_identity(
+            Some(Ok(descriptor(
+                "alpha",
+                "/tmp/instances/alpha/data",
+                DEV_BUNDLE,
+            ))),
+            &EnvIdentity::default(),
+            Some(DEV_BUNDLE),
+        )
+        .unwrap();
+        assert_eq!(
+            verify_build_provenance(identity, "unknown")
+                .unwrap_err()
+                .code(),
+            "build_revision_mismatch"
+        );
+    }
+
+    #[test]
+    fn canonical_and_legacy_bundles_without_revision_receipts_remain_launchable() {
+        let canonical = resolve_identity(None, &EnvIdentity::default(), None).unwrap();
+        assert!(verify_build_provenance(canonical, "abc").is_ok());
+
+        let mut legacy = descriptor("alpha", "/tmp/instances/alpha/data", DEV_BUNDLE);
+        legacy.source_revision = None;
+        let legacy =
+            resolve_identity(Some(Ok(legacy)), &EnvIdentity::default(), Some(DEV_BUNDLE)).unwrap();
+        assert!(verify_build_provenance(legacy, "abc").is_ok());
+    }
+
+    #[test]
     fn a_descriptor_for_another_bundle_is_refused() {
         let refusal = resolve_identity(
-            Some(Ok(descriptor("alpha", "/tmp/x", "com.synth.desktop.v07.dev.alpha"))),
+            Some(Ok(descriptor(
+                "alpha",
+                "/tmp/x",
+                "com.synth.desktop.v07.dev.alpha",
+            ))),
             &EnvIdentity::default(),
             Some("com.synth.desktop.v07.dev.beta"),
         )
@@ -1105,13 +1395,14 @@ mod tests {
 
     #[test]
     fn a_dev_bundle_with_neither_descriptor_nor_env_refuses_the_canonical_profile() {
-        let refusal = resolve_identity(None, &EnvIdentity::default(), Some(DEV_BUNDLE)).unwrap_err();
+        let refusal =
+            resolve_identity(None, &EnvIdentity::default(), Some(DEV_BUNDLE)).unwrap_err();
         assert_eq!(refusal.code(), "dev_bundle_without_identity");
         assert!(refusal.to_string().contains("canonical"), "{refusal}");
 
         // An instance name without a data root is still no data root.
-        let refusal = resolve_identity(None, &env(Some("alpha"), None, None), Some(DEV_BUNDLE))
-            .unwrap_err();
+        let refusal =
+            resolve_identity(None, &env(Some("alpha"), None, None), Some(DEV_BUNDLE)).unwrap_err();
         assert_eq!(refusal.code(), "dev_bundle_without_identity");
     }
 
@@ -1245,7 +1536,11 @@ mod tests {
         assert_eq!(read_lock_record_at(&path).unwrap().boot_epoch, "inst_first");
 
         let error = acquire_instance_lock_at(&path, current_record("inst_second")).unwrap_err();
-        let LockError::Held { holder: Some(holder), .. } = &error else {
+        let LockError::Held {
+            holder: Some(holder),
+            ..
+        } = &error
+        else {
             panic!("expected Held, got {error:?}");
         };
         assert_eq!(holder.pid, std::process::id());
@@ -1283,7 +1578,11 @@ mod tests {
         let lock = acquire_instance_lock_at(&path, current_record("inst_live")).unwrap();
         assert_eq!(lock.record.boot_epoch, "inst_live");
         let stale = stale_lock_path(&path, dead_pid);
-        assert!(stale.exists(), "{} should hold the quarantined record", stale.display());
+        assert!(
+            stale.exists(),
+            "{} should hold the quarantined record",
+            stale.display()
+        );
         assert_eq!(read_lock_record_at(&stale).unwrap().boot_epoch, "inst_dead");
         assert_eq!(read_lock_record_at(&path).unwrap().boot_epoch, "inst_live");
     }
@@ -1297,7 +1596,8 @@ mod tests {
         let mut child = Command::new("/usr/bin/true").spawn().unwrap();
         let dead_pid = child.id();
         child.wait().unwrap();
-        let inherited = acquire_instance_lock_at(&path, record(dead_pid, "gone", "inst_orphan")).unwrap();
+        let inherited =
+            acquire_instance_lock_at(&path, record(dead_pid, "gone", "inst_orphan")).unwrap();
 
         let lock = acquire_instance_lock_at(&path, current_record("inst_live")).unwrap();
         assert_eq!(lock.record.boot_epoch, "inst_live");
@@ -1371,6 +1671,62 @@ mod tests {
                 );
             }
         }
-        assert_eq!(adapters, 10, "expected the ten stdio MCP adapters under {}", bin_dir.display());
+        assert_eq!(
+            adapters,
+            10,
+            "expected the ten stdio MCP adapters under {}",
+            bin_dir.display()
+        );
+    }
+
+    #[test]
+    fn sibling_registry_exposes_only_safe_switcher_data() {
+        let temp = tempfile::tempdir().unwrap();
+        let instance_root = temp.path().join("v08").join("alpha");
+        let app_bundle = instance_root.join("build/Synth Workshop alpha.app");
+        fs::create_dir_all(&instance_root).unwrap();
+        fs::write(
+            instance_root.join("instance.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "schemaVersion": "synth.desktop-instance.v1",
+                "name": "alpha",
+                "displayName": "Synth Workshop · alpha",
+                "releaseLine": "v0.8",
+                "bundleId": "com.synth.desktop.v08.dev.alpha",
+                "instanceRoot": instance_root,
+                "appBundle": app_bundle,
+                "runtime": {"status": "running"},
+                "credential": "must-not-cross-boundary"
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let listed = registered_instances_from(temp.path()).unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].name, "alpha");
+        assert_eq!(listed[0].status, "running");
+        assert_eq!(listed[0].deep_link, "synth-workshop://open?instance=alpha");
+
+        let encoded = serde_json::to_string(&listed).unwrap();
+        assert!(!encoded.contains("credential"));
+    }
+
+    #[test]
+    fn workshop_deep_links_are_bounded_and_route_runs_to_optimizers() {
+        assert_eq!(
+            parse_workshop_deep_link(
+                "synth-workshop://open?instance=alpha&view=visuals&runId=opt_123"
+            )
+            .unwrap(),
+            WorkshopDeepLink {
+                instance: Some("alpha".into()),
+                view: "optimizers".into(),
+                run_id: Some("opt_123".into()),
+            }
+        );
+        assert!(
+            parse_workshop_deep_link("synth-workshop://open?instance=../../canonical").is_err()
+        );
+        assert!(parse_workshop_deep_link("https://example.com").is_err());
     }
 }

@@ -722,6 +722,8 @@ ${includeTraceCatalogLayout ? `window.synthInventory = {
   getContainer: async () => { throw new Error("fixture has no containers"); },
   registerContainer: async () => { throw new Error("not used"); },
   probeContainer: async () => { throw new Error("not used"); },
+  reconcileContainer: async () => { throw new Error("not used"); },
+  restartContainer: async () => { throw new Error("not used"); },
   listTraces: async () => [{
     id: "trace-bombadil-containment", digest: "sha256:bombadil-containment-fixture",
     title: "Bombadil Trace V5 viewport containment fixture", source: "import",

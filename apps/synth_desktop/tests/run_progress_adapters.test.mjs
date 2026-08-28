@@ -63,6 +63,51 @@ function snapshot(run, events, overrides = {}) {
 	};
 }
 
+function v2View(algorithm, runId, overrides = {}) {
+	const base = {
+		algorithm,
+		header: {
+			runId,
+			algorithm,
+			lifecycle: "running",
+			phase: null,
+			condition: "healthy",
+			placement: algorithm === "go-ex" ? "hosted_optimizers_service" : "local_python_process",
+			specId: runId,
+			specDigest: "sha256:test-spec",
+			executionBindings: [],
+			inputRefs: [],
+			outputRefs: [],
+			visualRefs: [],
+			work: {
+				unit: null,
+				planned: null,
+				queued: null,
+				running: null,
+				succeeded: null,
+				failed: null,
+				cancelled: null,
+				fixedDenominator: false
+			},
+			usage: {
+				costUsd: null,
+				promptTokens: null,
+				completionTokens: null,
+				steps: null
+			},
+			evidence: { completeness: "partial", reason: null, refs: [] },
+			failureRef: null,
+			terminal: null,
+			projectionSchemaVersion: "optimizer.run.view.v2",
+			asOfSequence: 7,
+			projectionRevision: 3
+		},
+		projection: {},
+		result: null
+	};
+	return { ...base, ...overrides, header: { ...base.header, ...(overrides.header ?? {}) } };
+}
+
 /* ── GEPA ─────────────────────────────────────────────────────────────── */
 
 function gepaRun(overrides = {}) {
@@ -358,6 +403,34 @@ test("eval: the frozen plan is the denominator and the bar is campaign completio
 	assert.equal(projection.progress.semantics, "campaign completion");
 	assert.equal(formatWork(projection), "6 / 10 trials");
 	assert.equal(projection.details.find((detail) => detail.label === "Candidate set").value, "cs_7ab21");
+});
+
+test("eval: Open visual targets the explicitly linked primary visual", () => {
+	const projection = projectRunProgress(snapshot(evalRun({
+		summary: { visualId: "visual-primary", visualIds: { primary: "visual-primary", trace_workbench: "visual-trace" } },
+		visualRefs: [{ kind: "visual", id: "visual-trace", role: "trace_workbench" }, { kind: "visual", id: "visual-primary", role: "primary" }]
+	}), evalEvents()), NOW);
+	assert.equal(projection.fullVisualRef, "visual-primary");
+});
+
+test("eval: production V2 progress preserves the linked primary visual", () => {
+	const run = evalRun({
+		status: "completed",
+		summary: { visualIds: { primary: "visual-primary", trace_workbench: "visual-trace" } },
+		visualRefs: [
+			{ kind: "visual", id: "visual-trace", role: "trace_workbench" },
+			{ kind: "visual", id: "visual-primary", role: "primary" }
+		]
+	});
+	const viewV2 = v2View("eval", run.id, {
+		header: {
+			visualRefs: run.visualRefs,
+			lifecycle: "terminal",
+			terminal: { kind: "completed", sealedAt: at(4), finalSequence: 12 }
+		}
+	});
+	const projection = projectRunProgress(snapshot(run, [], { viewV2 }), NOW);
+	assert.equal(projection.fullVisualRef, "visual-primary");
 });
 
 test("eval: a retried trial is counted as a retry, not as extra completed work", () => {
@@ -678,16 +751,123 @@ test("environment: a sealed episode reports reward as a result, not as progress"
 
 /* ── Shared contract ──────────────────────────────────────────────────── */
 
-test("only the four carded workflows are offered a card", () => {
+test("all kernel workflows are recognized, while legacy projection stays explicit", () => {
 	assert.equal(runKindOf("gepa"), "gepa");
 	assert.equal(runKindOf("eval"), "eval");
 	assert.equal(runKindOf("sft"), "sft");
 	assert.equal(runKindOf("environment"), "environment");
-	assert.equal(runKindOf("go-ex"), null);
+	assert.equal(runKindOf("go-ex"), "go-ex");
+	assert.equal(runKindOf("cispo"), "cispo");
 	assert.equal(runKindOf("dag.behavior"), null);
 	assert.equal(
 		projectRunProgress(snapshot({ id: "goex_1", algorithmId: "go-ex", status: "running" }, []), NOW),
 		null
+	);
+});
+
+test("a production V2 view drives GO-EX without raw events", () => {
+	const run = {
+		id: "goex_v2",
+		algorithmId: "go-ex",
+		status: "running",
+		source: "cloud",
+		objective: "Craftax",
+		createdAt: at(0),
+		startedAt: at(0),
+		capabilities: { cancel: true }
+	};
+	const projection = projectRunProgress(
+		snapshot(run, [], { viewV2: v2View("go-ex", run.id) }),
+		NOW
+	);
+	assert.equal(projection.runKind, "go-ex");
+	assert.equal(projection.cursorSeq, 7);
+	assert.equal(projection.progress, undefined);
+	assert.equal(projection.usage.costUsd.source, "unavailable");
+});
+
+test("a partial V2 page cannot erase a durable proxy subtotal or describe it as one trial", () => {
+	const run = {
+		id: "eval_proxy_partial",
+		algorithmId: "eval",
+		status: "running",
+		objective: "Craftax",
+		createdAt: at(0),
+		startedAt: at(0),
+		usage: {
+			costUsd: 0.0111,
+			promptTokens: 80000,
+			completionTokens: 5000,
+			extra: {
+				providerUsageReceipt: {
+					authority: "workshop.secrets_proxy",
+					calls: 31,
+					costUsd: 0.0111,
+					promptTokens: 80000,
+					completionTokens: 5000
+				}
+			}
+		}
+	};
+	const projection = projectRunProgress(
+		snapshot(run, [], { viewV2: v2View("eval", run.id) }),
+		NOW
+	);
+	assert.equal(projection.usage.costUsd.value, 0.0111);
+	assert.equal(projection.usage.costUsd.source, "proxy");
+	assert.equal(projection.usage.costUsd.receiptCalls, 31);
+	assert.equal(projection.usage.promptTokens.value, 80000);
+	assert.match(costSummary(projection.usage.costUsd), /\$0\.0111 · provider receipt \(31 calls\)/);
+	assert.match(metricExplanation(projection.usage.costUsd, "trial"), /across 31 provider calls · run-level receipt/);
+	assert.doesNotMatch(metricExplanation(projection.usage.costUsd, "trial"), /1 trial/);
+});
+
+test("V2 progress is determinate only from an explicit fixed plan", () => {
+	const run = {
+		id: "eval_v2",
+		algorithmId: "eval",
+		status: "running",
+		source: "local",
+		objective: "Evaluation",
+		createdAt: at(0),
+		startedAt: at(0),
+		capabilities: {}
+	};
+	const viewV2 = v2View("eval", run.id, {
+		header: {
+			work: {
+				unit: "trial",
+				planned: 5,
+				queued: 3,
+				running: 0,
+				succeeded: 2,
+				failed: 0,
+				cancelled: 0,
+				fixedDenominator: true
+			}
+		}
+	});
+	const projection = projectRunProgress(snapshot(run, [], { viewV2 }), NOW);
+	assert.equal(projection.progress.determinate, true);
+	assert.equal(projection.progress.fraction, 0.4);
+	assert.equal(projection.work.total, 5);
+});
+
+test("V2 identity disagreement fails closed", () => {
+	const run = {
+		id: "eval_bound",
+		algorithmId: "eval",
+		status: "running",
+		source: "local",
+		createdAt: at(0),
+		capabilities: {}
+	};
+	assert.throws(
+		() => projectRunProgress(
+			snapshot(run, [], { viewV2: v2View("gepa", run.id) }),
+			NOW
+		),
+		/identity/
 	);
 });
 

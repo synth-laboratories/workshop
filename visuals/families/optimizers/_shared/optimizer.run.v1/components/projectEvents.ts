@@ -1,4 +1,3 @@
-// @ts-nocheck — P0-1 generated protocol is stricter than prior handwritten DTOs; UI follow-up is out of specta-cutover file ownership.
 /** Project optimizer_event.v1 fixtures into shared + algorithm slices at a cursor. */
 
 import { formatMissingNumber, formatMissingUsd, missingNumber } from "../../../../../runtime/liveStream.ts";

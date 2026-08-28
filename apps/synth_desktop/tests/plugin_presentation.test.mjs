@@ -73,17 +73,37 @@ test("a plain disabled plugin is neutral, not an error", () => {
 });
 
 test("unhealthy phases are distinguishable and never colour-only", () => {
-	for (const phase of ["degraded", "stopped"]) {
-		const view = pluginPresentation(status({ phase }));
-		assert.equal(view.label, "Needs attention");
-		assert.equal(view.tone, "warning");
-		assert.ok(view.a11yLabel.includes(phase));
-	}
+	const degraded = pluginPresentation(status({ phase: "degraded" }));
+	assert.equal(degraded.label, "Needs attention");
+	assert.equal(degraded.tone, "warning");
+	assert.ok(degraded.a11yLabel.includes("degraded"));
 	const error = pluginPresentation(status({ phase: "error", detail: "boom" }));
 	assert.equal(error.label, "Error");
 	assert.equal(error.tone, "danger");
 	assert.equal(error.a11yLabel, "Error");
 	assert.equal(error.detail, "boom");
+});
+
+test("an idle stopped sidecar is neutral, not a warning", () => {
+	// Stopped-and-idle is the resting state of an on-demand service; launching
+	// work starts it natively. Presenting it as "Needs attention" taught
+	// operators to ignore the warning tone.
+	const view = pluginPresentation(status({ phase: "stopped" }));
+	assert.equal(view.label, "Idle — starts on demand");
+	assert.equal(view.tone, "neutral");
+	assert.equal(view.isUsable, true);
+	assert.match(view.a11yLabel, /starts on demand/);
+});
+
+test("a stopped sidecar that still holds runs warns instead of saying idle", () => {
+	const view = pluginPresentation(status({
+		phase: "stopped",
+		service: { phase: "stopped", activeRuns: 2 }
+	}));
+	assert.equal(view.label, "Stopped · 2 running");
+	assert.equal(view.tone, "warning");
+	assert.equal(view.isUsable, false);
+	assert.match(view.a11yLabel, /2 runs still active/);
 });
 
 test("not installed is stated, not hidden", () => {

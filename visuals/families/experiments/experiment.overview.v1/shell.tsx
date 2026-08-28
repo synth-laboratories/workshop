@@ -97,6 +97,11 @@ type ContextRecord = Record<string, string | number | boolean | null | undefined
 type OptionalCollection<T> = {
   prominence?: "summary" | "detail";
   items?: T[];
+  plannedSlots?: number;
+  streamsOpened?: number;
+  receiptsRetained?: number;
+  sealed?: number;
+  evidenceGaps?: number;
 };
 
 type ExperimentResults = {
@@ -150,6 +155,7 @@ type ExperimentOverview = {
   evidence?: Evidence[];
   lineage?: LineageNode[];
   limitations?: string[];
+  reconciliationErrors?: string[];
 };
 
 type OptimizerEvent = {
@@ -210,11 +216,16 @@ export type ShellProps = {
   title?: string;
   lede?: string;
   experiment?: ExperimentOverview;
-  data?: ExperimentOverview;
+  data?: ExperimentOverview | Record<string, unknown>;
   bindings?: VisualBinding[];
   events?: OptimizerEvent[];
-  run?: { status?: string };
   media?: MediaClient;
+  /** Durable run record, spread in by VisualHost when a live run is bound. */
+  run?: { status?: string } & Record<string, unknown>;
+  /** `run_progress.v1` agreement (phase/completed/total/cost), same source. */
+  runProgress?: Record<string, unknown>;
+  /** Kernel V2 view; `header.work` carries live state counts. */
+  runViewV2?: Record<string, unknown>;
 };
 
 const MISSING = "—";
@@ -267,7 +278,12 @@ function normalizeOverview(value: unknown): ExperimentOverview | null {
     const wrapper = record(value);
     return wrapper ? {
       prominence: wrapper.prominence === "summary" ? "summary" : "detail",
-      items: array<T>(wrapper.items)
+      items: array<T>(wrapper.items),
+      plannedSlots: typeof wrapper.plannedSlots === "number" ? wrapper.plannedSlots : undefined,
+      streamsOpened: typeof wrapper.streamsOpened === "number" ? wrapper.streamsOpened : undefined,
+      receiptsRetained: typeof wrapper.receiptsRetained === "number" ? wrapper.receiptsRetained : undefined,
+      sealed: typeof wrapper.sealed === "number" ? wrapper.sealed : undefined,
+      evidenceGaps: typeof wrapper.evidenceGaps === "number" ? wrapper.evidenceGaps : undefined
     } : { items: [] };
   };
   return {
@@ -298,7 +314,8 @@ function normalizeOverview(value: unknown): ExperimentOverview | null {
     comparison: record(raw.comparison) as Comparison | undefined,
     evidence: array<Evidence>(raw.evidence),
     lineage: array<LineageNode>(raw.lineage),
-    limitations: Array.isArray(raw.limitations) ? raw.limitations.map(text).filter((item): item is string => Boolean(item)) : []
+    limitations: Array.isArray(raw.limitations) ? raw.limitations.map(text).filter((item): item is string => Boolean(item)) : [],
+    reconciliationErrors: Array.isArray(raw.reconciliationErrors) ? raw.reconciliationErrors.map(text).filter((item): item is string => Boolean(item)) : []
   };
 }
 
@@ -832,26 +849,83 @@ function Lineage({ nodes }: { nodes: LineageNode[] }) {
   return <section className="sv-section"><div className="sv-section-head"><h3>Lineage</h3><span>ordered</span></div><ol aria-label="Experiment lineage" style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 6, padding: 0, margin: 0, listStyle: "none" }}>{nodes.map((node, index) => <li key={node.id} style={{ display: "flex", alignItems: "center", gap: 6 }}><span style={{ border: "1px solid var(--sv-border)", borderRadius: 99, padding: "6px 9px", fontSize: 10, background: "#fff" }}>{node.label}<small style={{ marginLeft: 5, color: statusTone(node.status) }}>{node.kind ?? ""}</small></span>{index < nodes.length - 1 ? <span aria-hidden style={{ color: "var(--sv-text-faint)" }}>→</span> : null}</li>)}</ol></section>;
 }
 
+/**
+ * What the live optimizer binding asserts about the run *now*.
+ *
+ * The inline `experiment` snapshot is baked at mint time and goes stale the
+ * moment the run moves — the incident run's overview showed its minting-time
+ * status forever. When VisualHost spreads a live payload in (`run`,
+ * `runProgress`, `runViewV2`), those override lifecycle/status/progress/state
+ * counts; the snapshot remains authoritative for immutable context (task,
+ * runtime, provenance, hypothesis) and for historical views with no binding —
+ * where this returns null and nothing changes.
+ */
+function liveOverlay(props: ShellProps): { status?: string; progress?: Progress } | null {
+  const run = record(props.run);
+  const agreement = record(props.runProgress);
+  if (!run && !agreement) return null;
+  const work = record(record(record(props.runViewV2)?.header)?.work);
+  const stateCounts: Record<string, number> = {};
+  if (work) {
+    for (const state of ["running", "queued", "succeeded", "failed", "cancelled"]) {
+      const count = finiteNumber(work[state]);
+      if (count != null && count > 0) stateCounts[state] = count;
+    }
+  }
+  const costUsd = finiteNumber(agreement?.costUsd);
+  const progress: Progress = {
+    phase: text(agreement?.phaseLabel),
+    completed: finiteNumber(agreement?.completed),
+    total: finiteNumber(agreement?.total),
+    cost: costUsd != null ? `$${costUsd.toFixed(2)}` : undefined,
+    ...(Object.keys(stateCounts).length ? { stateCounts } : {})
+  };
+  const hasProgress = Object.values(progress).some((value) => value != null);
+  return {
+    status: text(agreement?.status) ?? text(run?.status),
+    ...(hasProgress ? { progress } : {})
+  };
+}
+
+/** True when `data` is the live optimizer payload, not an overview document. */
+function isOptimizerPayload(value: unknown): boolean {
+  const raw = record(value);
+  return Boolean(raw && (raw.run != null || Array.isArray(raw.events)));
+}
+
 export function Shell(props: ShellProps) {
-  const experiment = normalizeOverview(props.experiment ?? props.data);
-  if (!experiment) return <VisualChrome title={props.title ?? "Experiment overview"} lede="No experiment projection was provided." testId="visual-experiment-overview"><></></VisualChrome>;
-  const status = props.run?.status ?? experiment.status ?? "planned";
+  const live = liveOverlay(props);
+  const snapshot = normalizeOverview(
+    props.experiment ?? (isOptimizerPayload(props.data) ? null : props.data)
+  );
+  // No snapshot and no live binding: exactly the historical empty state.
+  if (!snapshot && !live) return <VisualChrome title={props.title ?? "Experiment overview"} lede="No experiment projection was provided." testId="visual-experiment-overview"><></></VisualChrome>;
+  const experiment: ExperimentOverview = snapshot ?? {};
+  const status = live?.status ?? props.run?.status ?? experiment.status ?? "planned";
   const heartbeatElapsed = latestHeartbeatElapsed(props.events);
   const running = !["completed", "failed", "cancelled", "canceled"].includes(status);
-  const progress = experiment.progress ? {
+  // Live kernel progress replaces the baked one wholesale: a stale ETA or
+  // elapsed string beside a live completed/total would misattribute
+  // freshness. Without a kernel binding, enrich the baked snapshot with the
+  // heartbeat-derived elapsed time so a moving run does not look frozen.
+  const progress = live?.progress ?? (experiment.progress ? {
     ...experiment.progress,
     phase: status,
     elapsed: heartbeatElapsed == null ? experiment.progress.elapsed : durationLabel(heartbeatElapsed),
     active: running ? 1 : 0,
     stateCounts: running ? { running: 1 } : experiment.progress.stateCounts
-  } : undefined;
+  } : undefined);
   const progressSummary = progress?.completed != null && progress?.total != null ? `${progress.completed}/${progress.total} · ${progress.phase ?? status}` : status;
   const metrics = [...(experiment.metrics ?? []), ...(experiment.results?.metrics ?? [])];
   const rollouts = experiment.results?.rollouts ?? [];
   const traces = experiment.traces?.items ?? [];
+  const retained = experiment.traces?.receiptsRetained ?? traces.length;
+  const plannedSlots = experiment.traces?.plannedSlots;
+  const evidenceGaps = experiment.traces?.evidenceGaps ?? 0;
+  const reconciliation = (experiment.reconciliationErrors ?? []).filter((item) => item.trim());
   const unavailableTraceIds = new Set(traces.filter((trace) => /lite seal|not self-contained/i.test(trace.summary ?? "")).map((trace) => trace.traceId).filter((id): id is string => Boolean(id)));
   const artifacts = experiment.artifacts?.items ?? [];
-  const hasResults = Boolean(experiment.progress || metrics.length || experiment.arms?.length || rollouts.length || experiment.assessment);
+  const hasResults = Boolean(progress || metrics.length || experiment.arms?.length || rollouts.length || experiment.assessment);
   const contextRecords = [{ label: "Task", data: experiment.task }, { label: "Runtime", data: experiment.runtime }, { label: "Provenance", data: experiment.provenance }];
   const hasContext = contextRecords.some((group) => Object.keys(group.data ?? {}).length);
   const hasMethod = Boolean(experiment.lineage?.length || experiment.limitations?.length);
@@ -860,6 +934,7 @@ export function Shell(props: ShellProps) {
   const actions = liveAgentActions(props.events);
   const clips = clipLinks(props.events);
   return <VisualChrome kicker={`Experiment · ${status}`} title={props.title ?? experiment.title ?? "Experiment overview"} lede={props.lede ?? experiment.question ?? experiment.hypothesis} testId="visual-experiment-overview">
+    {reconciliation.length ? <section className="sv-terminal-receipt" role="alert" aria-label="Experiment record could not be reconciled" data-testid="experiment-reconciliation"><div className="sv-section-head"><h3>Couldn't reconcile this record</h3><span>{reconciliation.length === 1 ? "1 contradiction" : `${reconciliation.length} contradictions`}</span></div><ul>{reconciliation.map((item) => <li key={item}>{item}</li>)}</ul></section> : null}
     <OverviewStrip status={status} arms={experiment.arms ?? []} model={experiment.runtime?.model} progress={progress} />
     <LiveGameClip frames={frames} actions={actions} status={props.run?.status ?? status} media={props.media} clips={clips} events={props.events} />
     <LiveSkillTrajectory samples={skillSamples} status={props.run?.status ?? status} />
@@ -873,12 +948,12 @@ export function Shell(props: ShellProps) {
       <AssessmentPanel assessment={experiment.assessment} />
     </Disclosure> : null}
     {experiment.evidence?.length ? <Disclosure title="Supporting evidence" summary={`${experiment.evidence.length} items`}><EvidenceList evidence={experiment.evidence} /></Disclosure> : null}
-    {traces.length ? <Disclosure title="Traces" summary={`${traces.length} retained`} defaultOpen><TraceList traces={traces} containerId={typeof experiment.runtime?.containerId === "string" ? experiment.runtime.containerId : undefined} /></Disclosure> : null}
+    {traces.length || plannedSlots ? <Disclosure title="Traces" summary={evidenceGaps > 0 || plannedSlots != null ? `${retained} retained · ${evidenceGaps} gaps${plannedSlots != null ? ` · ${plannedSlots} planned` : ""}` : `${retained} retained`} defaultOpen>{traces.length ? <TraceList traces={traces} containerId={typeof experiment.runtime?.containerId === "string" ? experiment.runtime.containerId : undefined} /> : <p className="sv-lede" style={{ margin: 0 }}>No traces were retained. Planned slots are not evidence.</p>}</Disclosure> : null}
     {hasContext ? <Disclosure title="Run context" summary={[experiment.task?.name, experiment.runtime?.model].filter(Boolean).join(" · ") || "task · runtime · provenance"}><ContextGrid title="Run context" records={contextRecords} /></Disclosure> : null}
     {artifacts.length ? <Disclosure title="Artifacts" summary={`${artifacts.length} files and references`} defaultOpen={experiment.artifacts?.prominence === "summary"}><ArtifactList artifacts={artifacts} /></Disclosure> : null}
     {hasMethod ? <Disclosure title="Method & caveats" summary={experiment.experimentId ?? "details"}>
       <Lineage nodes={experiment.lineage ?? []} />
-      {experiment.limitations?.length ? <section className="sv-section" style={{ background: "#fff7ed", borderRadius: 8, padding: 12 }}><h3 style={{ marginTop: 0 }}>Limitations</h3><ul style={{ marginBottom: 0, paddingLeft: 18, fontSize: 10 }}>{experiment.limitations.map((item) => <li key={item}>{item}</li>)}</ul></section> : null}
+      {experiment.limitations?.length ? <section className="sv-section" style={{ background: "var(--sv-warn-bg)", border: "1px solid var(--sv-warn-edge)", borderRadius: "var(--sv-radius-sm)", padding: "var(--sv-sp-3)", color: "var(--sv-warn-fg)" }}><h3 style={{ marginTop: 0 }}>Limitations</h3><ul style={{ marginBottom: 0, paddingLeft: 18, fontSize: "var(--sv-fs-micro)" }}>{experiment.limitations.map((item) => <li key={item}>{item}</li>)}</ul></section> : null}
     </Disclosure> : null}
   </VisualChrome>;
 }

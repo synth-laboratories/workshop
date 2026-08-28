@@ -560,6 +560,9 @@ pub struct OptimizerUsageSummary {
     pub cost_usd: Option<f64>,
     #[serde(default)]
     #[specta(type = specta_typescript::Number)]
+    pub calls: u64,
+    #[serde(default)]
+    #[specta(type = specta_typescript::Number)]
     pub prompt_tokens: u64,
     #[serde(default)]
     #[specta(type = specta_typescript::Number)]
@@ -591,6 +594,109 @@ pub struct OptimizerResourceRef {
     pub metadata: Value,
 }
 
+pub const EFFECTIVE_CONTRACT_SCHEMA_VERSION: &str = "optimizer_effective_contract.v1";
+pub const OPTIMIZER_ARTIFACT_SCHEMA_VERSION: &str = "optimizer_run_artifact.v1";
+
+/// Why a visual attachment exists (or honestly does not). Template ids are
+/// resolved from the registered template table, never inferred in a renderer.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq, specta::Type)]
+#[serde(rename_all = "snake_case")]
+pub enum EffectiveVisualState {
+    Declared,
+    FamilyMatched,
+    Fallback,
+    Empty,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct EffectiveVisualAttachment {
+    pub role: String,
+    pub state: EffectiveVisualState,
+    #[serde(default)]
+    pub template_id: Option<String>,
+    pub reason: String,
+}
+
+/// Persisted result of `producer declaration ∧ Workshop policy ∧ consumer
+/// needs`. The inputs remain present so a refusal or later audit can explain
+/// the result without reconstructing mutable container metadata.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct EffectiveContract {
+    pub schema_version: String,
+    pub optimizer_run_id: String,
+    pub container_id: String,
+    #[serde(default)]
+    pub family: Option<String>,
+    pub primary_visual: EffectiveVisualAttachment,
+    pub trace_visual: EffectiveVisualAttachment,
+    pub artifact_media_types: Vec<String>,
+    #[specta(type = specta_typescript::Unknown)]
+    pub declared: Value,
+    #[specta(type = specta_typescript::Unknown)]
+    pub consumer_needs: Value,
+    pub negotiated_at: String,
+}
+
+/// One durable artifact declaration from an optimizer event. `locator` is an
+/// opaque producer locator on list surfaces; byte reads are separately granted
+/// and bounded by the host.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct OptimizerRunArtifact {
+    pub schema_version: String,
+    pub optimizer_run_id: String,
+    pub artifact_id: String,
+    #[specta(type = specta_typescript::Number)]
+    pub sequence: u64,
+    #[serde(default)]
+    pub work_item_id: Option<String>,
+    #[serde(default)]
+    pub rollout_id: Option<String>,
+    pub kind: String,
+    pub locator: String,
+    #[serde(default)]
+    pub digest: Option<String>,
+    #[serde(default)]
+    pub media_type: Option<String>,
+    #[serde(default)]
+    #[specta(type = specta_typescript::Number)]
+    pub byte_size: Option<u64>,
+    #[specta(type = specta_typescript::Unknown)]
+    pub metadata: Value,
+    pub declared_at: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct OptimizerArtifactPage {
+    pub schema_version: String,
+    pub optimizer_run_id: String,
+    #[specta(type = specta_typescript::Number)]
+    pub after_sequence: u64,
+    pub artifacts: Vec<OptimizerRunArtifact>,
+    #[specta(type = specta_typescript::Number)]
+    pub next_sequence: u64,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct OptimizerArtifactRange {
+    pub schema_version: String,
+    pub optimizer_run_id: String,
+    pub artifact_id: String,
+    pub media_type: String,
+    #[specta(type = specta_typescript::Number)]
+    pub offset: u64,
+    #[specta(type = specta_typescript::Number)]
+    pub byte_length: u64,
+    #[specta(type = specta_typescript::Number)]
+    pub total_bytes: u64,
+    pub eof: bool,
+    pub data_base64: String,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub struct OptimizerExecutionBinding {
@@ -613,6 +719,7 @@ pub struct OptimizerRunRecord {
     pub algorithm_id: String,
     #[serde(default)]
     pub algorithm_version: Option<String>,
+    #[specta(type = OptimizerRunStatus)]
     pub status: String,
     pub source: String,
     #[serde(default)]

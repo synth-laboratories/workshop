@@ -41,6 +41,8 @@ import type {
 	ContextSkill,
 	ContextSnapshot,
 	ConversationWorkspaceScope,
+	CredentialBindingSummary,
+	CredentialLocatorSummary,
 	CookbookContext,
 	DesktopPermissionSettings,
 	ExperimentRecord,
@@ -63,6 +65,7 @@ import type {
 	PendingGrantSummary,
 	PluginPermission,
 	PluginStatus,
+	RegisteredInstance,
 	ReportAudience,
 	ReportAudienceState,
 	ReportBlock,
@@ -83,6 +86,7 @@ import type {
 	ReportVisibilityRequest,
 	ResearchLogEntry,
 	OptimizerRunOutputs,
+	OptimizerRunViewV2,
 	OptimizerFrameContent,
 	OptimizerFrameDelta,
 	OptimizerFrameRef,
@@ -113,8 +117,10 @@ import type {
 	WorkspaceAccessMode,
 	WorkspaceAccessSettings,
 	WorkspaceAttachment,
-	WorkspaceGrantRequest
+	WorkspaceGrantRequest,
+	WorkspaceRootSummary
 } from "../generated/protocol";
+export type { RegisteredInstance };
 
 export type {
 	ArtifactMutationReceipt,
@@ -126,6 +132,8 @@ export type {
 	ContextSkill,
 	ContextSnapshot,
 	ConversationWorkspaceScope,
+	CredentialBindingSummary,
+	CredentialLocatorSummary,
 	CookbookContext,
 	DesktopPermissionSettings,
 	ExperimentRecord,
@@ -167,6 +175,7 @@ export type {
 	ReportVisibilityRequest,
 	ResearchLogEntry,
 	OptimizerRunOutputs,
+	OptimizerRunViewV2,
 	OptimizerFrameContent,
 	OptimizerFrameDelta,
 	OptimizerFrameRef,
@@ -195,7 +204,8 @@ export type {
 	WorkspaceAccessMode,
 	WorkspaceAccessSettings,
 	WorkspaceAttachment,
-	WorkspaceGrantRequest
+	WorkspaceGrantRequest,
+	WorkspaceRootSummary
 };
 
 
@@ -464,7 +474,7 @@ export type CodexBridge = {
 		request: CodexSessionStart,
 		prompt: string,
 		effort?: string,
-		options?: { compactBeforeModelSwitch?: boolean; clientMessageId?: string }
+		options?: { compactBeforeModelSwitch?: boolean; clientMessageId?: string; recoveryMode?: boolean }
 	): Promise<CodexSessionInfo>;
 	interrupt(sessionId: string): Promise<void>;
 	/** Atomically attaches/resumes a Codex thread and starts ad-hoc compaction. */
@@ -475,7 +485,7 @@ export type CodexBridge = {
 	listThreadItems?(sessionId: string, threadId: string, cursor?: string, limit?: number): Promise<unknown>;
 	/** Mid-turn user input via Codex `turn/steer`. Optional on browser fixtures without a native runtime. */
 	steerTurn?(sessionId: string, text: string): Promise<void>;
-	resolveApproval(sessionId: string, approvalId: string, decision: "once" | "always" | "reject"): Promise<void>;
+	resolveApproval(sessionId: string, approvalId: string, decision: "once" | "always" | "reject" | "remember-locator" | "register-source"): Promise<void>;
 	close(sessionId: string): Promise<void>;
 	onEvent(listener: (event: CodexEvent) => void): () => void;
 };
@@ -504,6 +514,8 @@ export type InventoryBridge = {
 	getContainer(containerId: string): Promise<ContainerDeployment>;
 	registerContainer(request: { name?: string; baseUrl: string; location?: "local" | string; taskFamily?: string; metadata?: Record<string, unknown> }): Promise<ContainerDeployment>;
 	probeContainer(containerId: string): Promise<ContainerDeployment>;
+	reconcileContainer(containerId: string, sessionId: string): Promise<ContainerDeployment>;
+	restartContainer(containerId: string, sessionId: string): Promise<ContainerDeployment>;
 	listTraces(): Promise<TraceV5Record[]>;
 	getTrace(traceId: string): Promise<TraceV5Record>;
 	materializeContainerTrace(containerId: string, rolloutId: string): Promise<{ inspectable?: boolean; note?: string; traces?: Array<{ traceId?: string }> }>;
@@ -863,8 +875,25 @@ export type OptimizerRecipeInfo = {
 	availability: string;
 	availabilityReason?: string | null;
 	description?: string;
+	/** Producer-declared caps. Real keys are e.g. `trials`; nothing writes
+	 * screening/confirmation seed lists here. */
 	limits?: Record<string, unknown>;
+	/** Producer-declared spend ceiling, e.g. `{ max_usd: 0.30 }`. */
+	budget?: Record<string, unknown>;
+	/** Pinned model list, e.g. `[{ id: "gpt-5.6-luna" }]`. */
+	models?: Array<Record<string, unknown>>;
 	prerequisites?: string[];
+	/** Admission facts projected by `eval_recipes.rs::project_eval_recipe_state`.
+	 * Absent (not false) when a producer predates the projection. */
+	recipeDiscovered?: boolean;
+	executionSupported?: boolean;
+	targetPresent?: boolean;
+	targetDigestMatches?: boolean;
+	targetAdmitted?: boolean;
+	/** Structured admission failure, parsed from `availabilityReason` when that
+	 * string carries JSON. */
+	admissionError?: unknown;
+	executionKind?: string;
 };
 
 export type OptimizerInferDelta = {
@@ -910,6 +939,7 @@ export type OptimizersBridge = {
 		offset?: number;
 	}): Promise<OptimizerRunRecord[]>;
 	get(optimizerRunId: string): Promise<OptimizerRunRecord>;
+	runViewV2(optimizerRunId: string): Promise<OptimizerRunViewV2>;
 	create(request: {
 		algorithmId: string;
 		algorithmVersion?: string;
@@ -1243,6 +1273,12 @@ export type SecretImportPreview = {
 };
 
 export type SecretsBridge = {
+	workspaceRoots(): Promise<WorkspaceRootSummary[]>;
+	bindings(): Promise<CredentialBindingSummary[]>;
+	locators(): Promise<CredentialLocatorSummary[]>;
+	rememberExternal(pickerPath: string, provider: string, variable: string, label?: string): Promise<CredentialLocatorSummary>;
+	registerLocator(locatorId: string): Promise<CredentialLocatorSummary>;
+	forgetLocator(locatorId: string): Promise<void>;
 	list(provider?: string, scope?: string): Promise<SecretSummary[]>;
 	create(request: { alias: string; provider: string; scope?: string; value: string }): Promise<SecretSummary>;
 	replace(secretId: string, value: string): Promise<SecretSummary>;

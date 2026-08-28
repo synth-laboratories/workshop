@@ -6,13 +6,14 @@
 //! A value that is genuinely absent is `Option::None`; a value that is present
 //! is one an authoritative source actually supplied.
 
-use super::canonical::{CanonicalJson, CanonicalError};
+use super::canonical::{CanonicalError, CanonicalJson};
 use super::ids::{
     ApprovalReceiptId, ContainerId, ContainerRegistrationId, CostMicros, DeclarationDigest, Digest,
     EvaluatorId, ModelCallCount, ModelId, PolicyRevision, ProviderId, RecipeDigest, RecipeId,
     RolloutCount, Seed, SourceRevision, StepCount,
 };
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use std::fmt;
 
 /// The one live-eval protocol this pipeline admits. A container advertising
@@ -161,8 +162,9 @@ pub enum EvaluatorSpec {
 impl EvaluatorSpec {
     pub fn evaluator_id(&self) -> &EvaluatorId {
         match self {
-            Self::ContainerDeclared { evaluator_id, .. }
-            | Self::Explicit { evaluator_id, .. } => evaluator_id,
+            Self::ContainerDeclared { evaluator_id, .. } | Self::Explicit { evaluator_id, .. } => {
+                evaluator_id
+            }
         }
     }
 
@@ -181,12 +183,28 @@ impl EvaluatorSpec {
     }
 }
 
+/// Where the approved policy bytes came from. Identity (`namespace/name@rev`)
+/// is not enough: dispatch must re-read these bytes from this root and verify
+/// `content_digest` immediately before spend.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PolicyMaterialRef {
+    pub source_root: String,
+    pub repository_relative_path: String,
+    pub tracked_revision: String,
+    pub content_digest: Digest,
+}
+
 /// The policy, pinned to a revision and to the exact configuration bytes.
 ///
 /// `configuration_digest` is stored alongside the configuration rather than
 /// recomputed on read, so that a configuration rewritten in place — by a
 /// migration, a re-serialization, a well-meant normalization — is detectable
 /// instead of silently becoming the new truth.
+///
+/// Source bytes themselves are not part of the canonical digest. They are an
+/// in-memory materialization of `material`; hashing them would make a draft
+/// without bytes and a start with bytes look like two specifications.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PolicyPin {
@@ -196,6 +214,8 @@ pub struct PolicyPin {
     pub configuration: CanonicalJson,
     pub configuration_digest: Digest,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub material: Option<PolicyMaterialRef>,
+    #[serde(default, skip_serializing)]
     pub source_code: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_digest: Option<Digest>,
@@ -216,6 +236,7 @@ impl PolicyPin {
             revision,
             configuration,
             configuration_digest,
+            material: None,
             source_code: None,
             source_digest: None,
         }
@@ -229,17 +250,36 @@ impl PolicyPin {
         self
     }
 
+    pub fn with_material(mut self, material: PolicyMaterialRef, source_code: String) -> Self {
+        let digest = super::canonical::digest_bytes(source_code.as_bytes());
+        self.source_digest = Some(digest.clone());
+        self.material = Some(PolicyMaterialRef {
+            content_digest: digest,
+            ..material
+        });
+        self.source_code = Some(source_code);
+        self
+    }
+
     /// Whether the stored digest still matches the stored configuration.
     /// Checked on read-back rather than assumed.
     pub fn digest_matches(&self) -> bool {
-        self.configuration.digest() == self.configuration_digest
-            && match (&self.source_code, &self.source_digest) {
-                (Some(code), Some(digest)) => {
-                    super::canonical::digest_bytes(code.as_bytes()) == *digest
-                }
-                (None, None) => true,
-                _ => false,
+        if self.configuration.digest() != self.configuration_digest {
+            return false;
+        }
+        match (&self.source_code, &self.source_digest, &self.material) {
+            (Some(code), Some(digest), material) => {
+                let actual = super::canonical::digest_bytes(code.as_bytes());
+                actual == *digest
+                    && material
+                        .as_ref()
+                        .is_none_or(|item| item.content_digest == actual)
             }
+            (None, Some(digest), Some(material)) => material.content_digest == *digest,
+            (None, None, None) => true,
+            (None, Some(_), None) => true,
+            _ => false,
+        }
     }
 
     pub fn qualified_name(&self) -> String {
@@ -406,6 +446,77 @@ impl ExecutionSpec {
     pub fn digest(&self) -> Result<Digest, CanonicalError> {
         Ok(self.canonical()?.digest())
     }
+
+    /// The only run-lease policy derived from an admitted execution spec.
+    /// Calls and cost come directly from the approved resource envelope;
+    /// operation/lifetime from its credential scope; model from its pin.
+    pub fn provider_use_policy(&self) -> crate::secrets::SecretsUsePolicy {
+        let recipe = &self.recipe;
+        let total_calls = u64::from(
+            recipe
+                .resource_limits
+                .maximum_model_calls_per_rollout
+                .0
+                .get(),
+        )
+        .saturating_mul(u64::from(recipe.rollout_plan.maximum_rollouts.0.get()))
+        .min(u64::from(u32::MAX)) as u32;
+        let configuration = recipe.policy.configuration.as_value();
+        let reasoning_efforts = configuration
+            .get("reasoning_effort")
+            .and_then(Value::as_str)
+            .map(|value| vec![value.to_string()])
+            .unwrap_or_default();
+        let input_per_call = configuration
+            .get("context_token_budget")
+            .and_then(Value::as_u64);
+        let output_per_call = configuration
+            .get("answer_max_tokens")
+            .and_then(Value::as_u64)
+            .unwrap_or(0)
+            .saturating_add(
+                configuration
+                    .get("thinking_budget")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0),
+            );
+        provider_use_policy_from_bounds(
+            recipe.credential_route.capability_scope().operations.clone(),
+            vec![recipe.model.model_id.as_str().to_string()],
+            reasoning_efforts,
+            total_calls,
+            recipe.resource_limits.hard_total_cost_micros.as_micros(),
+            u64::from(recipe.credential_route.capability_scope().lifetime_seconds),
+            input_per_call.map(|value| value.saturating_mul(u64::from(total_calls))),
+            (output_per_call > 0)
+                .then(|| output_per_call.saturating_mul(u64::from(total_calls))),
+        )
+    }
+}
+
+/// Explicit bounded-policy constructor for legacy catalog lanes while they
+/// converge on `ExecutionSpec`. It intentionally has no 40-call/$0.60
+/// fallback: every limit is supplied by admission data at the caller.
+pub(crate) fn provider_use_policy_from_bounds(
+    operations: Vec<String>,
+    models: Vec<String>,
+    reasoning_efforts: Vec<String>,
+    max_calls: u32,
+    max_cost_usd_micros: u64,
+    lifetime_seconds: u64,
+    max_input_tokens: Option<u64>,
+    max_output_tokens: Option<u64>,
+) -> crate::secrets::SecretsUsePolicy {
+    crate::secrets::SecretsUsePolicy {
+        operations,
+        models,
+        reasoning_efforts,
+        max_calls,
+        max_input_tokens: max_input_tokens.unwrap_or(u64::MAX),
+        max_output_tokens: max_output_tokens.unwrap_or(u64::MAX),
+        max_cost_usd: max_cost_usd_micros as f64 / 1_000_000.0,
+        lifetime_seconds,
+    }
 }
 
 /// The approval receipt, bound to a specification digest and to the exact
@@ -560,7 +671,10 @@ mod tests {
             LiveEvalProtocol::parse(LIVE_EVAL_PROTOCOL_V1),
             Some(LiveEvalProtocol::SynthContainerLiveEvalV1)
         );
-        assert_eq!(LiveEvalProtocol::parse("synth.container.live-eval.v2"), None);
+        assert_eq!(
+            LiveEvalProtocol::parse("synth.container.live-eval.v2"),
+            None
+        );
         assert_eq!(LiveEvalProtocol::parse("live-eval"), None);
     }
 
@@ -573,8 +687,7 @@ mod tests {
             900,
         );
         assert_eq!(scope.operations, vec!["a".to_string(), "b".to_string()]);
-        let contract =
-            OutputContract::new(true, false, true, ["z".to_string(), "a".to_string()]);
+        let contract = OutputContract::new(true, false, true, ["z".to_string(), "a".to_string()]);
         assert_eq!(
             contract.required_operations,
             vec!["a".to_string(), "z".to_string()]

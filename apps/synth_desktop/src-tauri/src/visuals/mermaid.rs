@@ -119,7 +119,7 @@ pub fn run_hidden_mode() -> i32 {
     match run_hidden_mode_inner() {
         Ok(()) => 0,
         Err(error) => {
-            eprintln!("mermaid render failed: {error:#}");
+            crate::platform::logging::report("visuals", "eprintln", format!("mermaid render failed: {error:#}"));
             1
         }
     }

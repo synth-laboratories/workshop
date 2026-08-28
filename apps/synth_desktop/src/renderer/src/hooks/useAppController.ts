@@ -25,6 +25,7 @@ import {
 	dispatchRuntimeEvent,
 	dispatchTurnAccepted,
 	evictSessionEvents,
+	getEventsBySession,
 	mergeInternSessions,
 	mergeSessionReplay,
 	patchSessionMetadata,
@@ -125,6 +126,7 @@ import { responseTraceStore } from "../runtime/responseTraceStore";
 import {
 	EMPTY_VISUAL_REVISION_STATE,
 	newestVisualArtifact,
+	visualRevisionRefreshRequired,
 	visualRevisionReducer
 } from "../runtime/visualRevisionState";
 import type { MainView } from "../routes";
@@ -155,6 +157,10 @@ type TranscriptHydrationEntry = {
 };
 
 type TranscriptHistoryState = Pick<TranscriptHydrationEntry, "state" | "hasMore" | "error">;
+
+function approvalAlreadySettled(reason: unknown): boolean {
+	return /approval is no longer pending|approval (?:was )?already (?:resolved|settled)/i.test(publicError(reason));
+}
 
 export function useAppController() {
 	const isDesktop = window.location.protocol === "tauri:" || "__TAURI_INTERNALS__" in window;
@@ -273,6 +279,7 @@ export function useAppController() {
 	const sendToSessionRef = useRef<(sessionId: string, text: string, options?: { messageId?: string }) => Promise<boolean>>(async () => false);
 	const queueDrainStatusesRef = useRef(new Map<string, Session["status"]>());
 	const queueDrainingRef = useRef(new Set<string>());
+	const settlingApprovalIdsRef = useRef(new Set<string>());
 	eventsBySessionRef.current = eventsBySession;
 	const allocateNativeSequence = useCallback((sessionId: string) => {
 		const rendered = eventsBySessionRef.current[sessionId]?.at(-1)?.sequence ?? 0;
@@ -1208,6 +1215,7 @@ export function useAppController() {
 		sidePanelTab === "outputs"
 		|| sidePanelTab === "trace"
 		|| sidePanelTab === "diagnostics"
+		|| sidePanelTab === "errors"
 		|| activeLocalModel
 	);
 	const activeSync =
@@ -1390,7 +1398,39 @@ export function useAppController() {
 		try {
 			const container = await bridges.inventory.probeContainer(openContainer.id);
 			setOpenContainer(container);
-			showToast(`${container.name} · ${container.status}`);
+			showToast(container.status === "ready" ? `${container.name} is ready.` : `Couldn't reach ${container.name}.`);
+		} catch (reason) {
+			showToast(publicError(reason));
+		}
+	}, [openContainer, showToast]);
+
+	const repairOpenContainer = useCallback(async () => {
+		if (!openContainer || !bridges.inventory) return;
+		const sessionId = activeChatIdRef.current;
+		if (!sessionId) {
+			showToast("Open a conversation with this repository attached, then try again.");
+			return;
+		}
+		try {
+			const container = await bridges.inventory.reconcileContainer(openContainer.id, sessionId);
+			setOpenContainer(container);
+			showToast(`${container.name} launch files re-read.`);
+		} catch (reason) {
+			showToast(publicError(reason));
+		}
+	}, [openContainer, showToast]);
+
+	const restartOpenContainer = useCallback(async () => {
+		if (!openContainer || !bridges.inventory) return;
+		const sessionId = activeChatIdRef.current;
+		if (!sessionId) {
+			showToast("Open a conversation with this repository attached, then try again.");
+			return;
+		}
+		try {
+			const container = await bridges.inventory.restartContainer(openContainer.id, sessionId);
+			setOpenContainer(container);
+			showToast(container.status === "ready" ? `${container.name} is ready.` : `Couldn't reach ${container.name}.`);
 		} catch (reason) {
 			showToast(publicError(reason));
 		}
@@ -1412,7 +1452,12 @@ export function useAppController() {
 		// traces stay beside their catalog and chat-created visuals stay beside chat.
 	}, [viewKey]);
 
-	const reconcileOpenVisual = useCallback((visualId: string, minimumRevision = -1, open = false) => {
+	const reconcileOpenVisual = useCallback((
+		visualId: string,
+		minimumRevision = -1,
+		open = false,
+		authoritativeRefresh = false
+	) => {
 		if (!bridges.visuals) return;
 		const wasOpen = openArtifactIdRef.current === visualId;
 		if (open) {
@@ -1427,10 +1472,14 @@ export function useAppController() {
 			return;
 		}
 		if (
-			minimumRevision >= 0 &&
 			acceptedVisualRevisionRef.current.id === visualId &&
-			acceptedVisualRevisionRef.current.revision >= minimumRevision &&
-			(!open || wasOpen)
+			!visualRevisionRefreshRequired({
+				acceptedRevision: acceptedVisualRevisionRef.current.revision,
+				minimumRevision,
+				open,
+				wasOpen,
+				authoritativeRefresh
+			})
 		) return;
 		const pending = pendingVisualRefreshRef.current;
 		if (pending?.id === visualId && pending.minimumRevision >= minimumRevision) return;
@@ -1455,7 +1504,10 @@ export function useAppController() {
 
 	useEffect(() => {
 		if (openArtifactId && contextualArtifact?.visualId === openArtifactId) {
-			reconcileOpenVisual(openArtifactId, contextualArtifact.revision ?? -1);
+			// A transcript/Outputs artifact is the revision published into the chat,
+			// not proof that the durable visual is still at that revision. This one
+			// forced read is what makes reopen-after-restart converge to the registry.
+			reconcileOpenVisual(openArtifactId, contextualArtifact.revision ?? -1, false, true);
 		}
 	}, [contextualArtifact?.visualId, openArtifactId, reconcileOpenVisual]);
 
@@ -1652,6 +1704,7 @@ export function useAppController() {
 				messageId?: string;
 				images?: ComposerImageAttachment[];
 				readinessVerified?: boolean;
+				recoveryMode?: boolean;
 			}
 		) => {
 			try {
@@ -1740,7 +1793,8 @@ export function useAppController() {
 								effort,
 								{
 									compactBeforeModelSwitch: sendPlan.kind === "model_switch_then_turn" ? sendPlan.compact : false,
-									clientMessageId: messageId
+									clientMessageId: messageId,
+									recoveryMode: Boolean(options?.recoveryMode)
 								}
 							)
 							: await (async () => {
@@ -1799,18 +1853,18 @@ export function useAppController() {
 	}, [failedSend, sendToSession]);
 
 	/**
-	 * Send the abandoned turn's original prompt again as a new attempt.
+	 * Continue an abandoned turn in its existing Codex thread.
 	 *
-	 * A fresh message id, deliberately: reusing the crashed turn's id would
-	 * merge the retry into the bubble that failed, and the whole point is that
-	 * the interrupted attempt stays visible in history. The host records the
-	 * link (`recoveredFromRunId`) on the new run.
+	 * `sendToSession` first reattaches with app-server `thread/resume`; this new
+	 * turn therefore sees the persisted conversation and workspace state. Never
+	 * replay the original prompt here: doing so can duplicate commands, paid
+	 * requests, or external writes which completed immediately before the host
+	 * disappeared. The host links the continuation through `recoveredFromRunId`.
 	 */
-	const restartRecoveredChat = useCallback((sessionId: string) => {
+	const resumeRecoveredChat = useCallback((sessionId: string) => {
 		const notice = recoveryNotices[sessionId];
-		const prompt = notice?.lastUserMessage?.text;
-		if (!notice || !prompt) {
-			showToast("This chat has no recorded message to restart from.");
+		if (!notice) {
+			showToast("This chat has no interrupted work to resume.");
 			return;
 		}
 		if (!notice.restartable) {
@@ -1821,7 +1875,11 @@ export function useAppController() {
 			);
 			return;
 		}
-		void sendToSession(sessionId, prompt);
+		void sendToSession(
+			sessionId,
+			"Continue the interrupted task from this persisted conversation and the current workspace state. Reconcile completed commands, file changes, approvals, and external objects before acting. Do not repeat completed or externally committed operations. Continue toward the original user goal. If any consequential state cannot be verified, stop and report the specific uncertainty instead of guessing.",
+			{ recoveryMode: true }
+		);
 	}, [recoveryNotices, sendToSession, showToast]);
 
 	const onComposerSend = useCallback(
@@ -1862,8 +1920,48 @@ export function useAppController() {
 					else if (kind === "approve" || kind === "reject") {
 						const approvalId = typeof payload.approvalId === "string" ? payload.approvalId : null;
 						if (!approvalId) throw new Error("Approval id is missing");
-						const decision = kind === "reject" ? "reject" : payload.decision === "always" ? "always" : "once";
-						await nativeCodex.resolveApproval(activeSessionId, approvalId, decision);
+						if (settlingApprovalIdsRef.current.has(approvalId)) return;
+						const requestedDecision = payload.decision;
+						const decision = kind === "reject"
+							? "reject"
+							: requestedDecision === "always" || requestedDecision === "remember-locator" || requestedDecision === "register-source"
+								? requestedDecision
+								: "once";
+						const publishSettlement = () => {
+							const alreadyProjected = (getEventsBySession()[activeSessionId] ?? []).some((event) =>
+								(event.eventKind === "approval.granted"
+									|| event.eventKind === "approval.rejected"
+									|| event.eventKind === "approval.expired")
+								&& event.payload?.approvalId === approvalId
+							);
+							if (alreadyProjected) return;
+							const sequence = allocateNativeSequence(activeSessionId);
+							dispatchRuntimeEvent({
+								schemaVersion: "synth.desktop-runtime-event.v1",
+								sessionId: activeSessionId,
+								sequence,
+								eventKind: kind === "reject" ? "approval.rejected" : "approval.granted",
+								payload: { approvalId, decision },
+								createdAt: new Date().toISOString(),
+								source: "local"
+							}, { updateStatus: false });
+						};
+						settlingApprovalIdsRef.current.add(approvalId);
+						try {
+							await nativeCodex.resolveApproval(activeSessionId, approvalId, decision);
+							// The durable native settlement event is authoritative, but the RPC
+							// reply is also a settlement receipt. Publish a local equivalent so a
+							// dropped/reordered event cannot leave a live approval modal behind.
+							publishSettlement();
+						} catch (reason) {
+							// A second resolver (or the same RPC whose event won the race) may
+							// settle first. That is successful/idempotent from the UI's point of
+							// view, not a reason to resurrect the already-settled prompt.
+							if (approvalAlreadySettled(reason)) publishSettlement();
+							else throw reason;
+						} finally {
+							settlingApprovalIdsRef.current.delete(approvalId);
+						}
 					}
 					else throw new Error(`${kind} is not supported for a Codex session`);
 					if (kind === "close" || kind === "cancel" || kind === "pause") {
@@ -1905,7 +2003,7 @@ export function useAppController() {
 				setBusy(false);
 			}
 		},
-		[activeSessionId, nativeCodex, nativeIntern, refreshSessions, sessions, showToast]
+		[activeSessionId, allocateNativeSequence, nativeCodex, nativeIntern, refreshSessions, sessions, showToast]
 	);
 
 	const onSelectTarget = useCallback((id: string) => {
@@ -2195,7 +2293,7 @@ export function useAppController() {
 		workingChatIds,
 		chatPresence,
 		recoveryNotices,
-		restartRecoveredChat,
+		resumeRecoveredChat,
 		selectedTargetId,
 		onSelectTarget,
 		lagunaAdapters,
@@ -2210,6 +2308,8 @@ export function useAppController() {
 		toggleArtifact,
 		toggleContainer,
 		probeOpenContainer,
+		repairOpenContainer,
+		restartOpenContainer,
 		openVisualRecord,
 		state,
 		activeSessionId,

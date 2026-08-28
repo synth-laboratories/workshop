@@ -117,12 +117,12 @@ impl VisualRegistry {
         if !form.is_upgrade() {
             return;
         }
-        eprintln!(
+        crate::platform::logging::report("visuals", "eprintln", format!(
             "synth-desktop: upgraded {} visual bindings for {visual_id} rev {revision} \
              (template {template_id}, slots {upgraded_slots:?}); writers must send {}",
             form.as_str(),
             super::models::VISUAL_BINDINGS_SCHEMA_VERSION
-        );
+        ));
         let Some(service) = self.diagnostics.get() else {
             return;
         };
@@ -181,12 +181,13 @@ impl VisualRegistry {
         let bindings_form = canonical.form.clone();
         let upgraded_slots = canonical.upgraded_slots.clone();
         let bindings = canonical.value;
+        validate_optimizer_run_bindings(&bindings)?;
         let is_mermaid = mermaid::is_mermaid_template(&template.id);
         let systems_kind = systems::template_kind(&template.id);
         let is_chart = charts::is_chart_template(&template.id);
         let is_sourced = sourced::is_sourced_template(&template.id);
-        let is_managed_html = template.source_kind.as_deref() == Some("managed")
-            && template.renderer_path.is_some();
+        let is_managed_html =
+            template.source_kind.as_deref() == Some("managed") && template.renderer_path.is_some();
         // Imported HTML is immutable package source. Accepting caller content
         // here would make a reviewed import indistinguishable from arbitrary
         // HTML authored at create time.
@@ -196,12 +197,20 @@ impl VisualRegistry {
                 .as_deref()
                 .is_some_and(|content| !content.trim().is_empty())
         {
-            bail!("{} is a managed HTML template; create it without content", template.id);
+            bail!(
+                "{} is a managed HTML template; create it without content",
+                template.id
+            );
         }
         let managed_html_content = if is_managed_html {
-            let path = template.renderer_path.as_deref().expect("managed HTML renderer path");
-            Some(std::fs::read_to_string(path)
-                .with_context(|| format!("read managed renderer {path}"))?)
+            let path = template
+                .renderer_path
+                .as_deref()
+                .expect("managed HTML renderer path");
+            Some(
+                std::fs::read_to_string(path)
+                    .with_context(|| format!("read managed renderer {path}"))?,
+            )
         } else {
             None
         };
@@ -242,7 +251,11 @@ impl VisualRegistry {
                 .filter(|value| !value.is_empty())
                 .ok_or_else(|| anyhow!("{} requires content", template.id))?;
             if source.len() > sourced::MAX_SOURCE_BYTES {
-                bail!("{} exceeds {} bytes", template.id, sourced::MAX_SOURCE_BYTES);
+                bail!(
+                    "{} exceeds {} bytes",
+                    template.id,
+                    sourced::MAX_SOURCE_BYTES
+                );
             }
         }
         let status = request.status.unwrap_or(VisualStatus::Draft);
@@ -314,7 +327,9 @@ impl VisualRegistry {
         }
         if is_managed_html {
             if let Some(object) = metadata.as_object_mut() {
-                object.entry("presentation").or_insert_with(|| json!("pane"));
+                object
+                    .entry("presentation")
+                    .or_insert_with(|| json!("pane"));
                 object.insert("mediaType".into(), json!("text/html"));
                 object.insert("managedTemplate".into(), json!(true));
             }
@@ -426,10 +441,10 @@ impl VisualRegistry {
         request: VisualUpdateRequest,
     ) -> Result<(VisualRecord, Value)> {
         validate_visual_id(&id)?;
+        let existing = self.get(id.clone()).await?;
         let content_changed = request.content.is_some();
         let bindings_changed = request.bindings.is_some();
         if let Some(source) = request.content.as_deref() {
-            let existing = self.get(id.clone()).await?;
             if mermaid::is_mermaid_template(&existing.template_id) {
                 mermaid::validate_source(source)?;
             }
@@ -466,7 +481,6 @@ impl VisualRegistry {
             request.bindings = Some(canonical.value);
         }
         if let Some(bindings) = request.bindings.as_ref() {
-            let existing = self.get(id.clone()).await?;
             if mermaid::is_mermaid_template(&existing.template_id) {
                 refuse_mermaid_stream_slot(bindings)?;
             }
@@ -474,6 +488,8 @@ impl VisualRegistry {
                 refuse_mermaid_stream_slot(bindings)?;
             }
         }
+        let effective_bindings = request.bindings.as_ref().unwrap_or(&existing.bindings);
+        validate_optimizer_run_bindings(effective_bindings)?;
         let db = self.db.clone();
         let content = self.content.clone();
         let (updated, event) = db
@@ -703,6 +719,12 @@ impl VisualRegistry {
                     "revision": record.current_revision,
                     "title": record.title,
                     "templateId": record.template_id,
+                    "bindings": record.bindings,
+                    "metadata": record.metadata,
+                    "status": record.status.as_str(),
+                    "runId": record.run_id,
+                    "traceId": record.trace_id,
+                    "messageId": record.message_id,
                     // Who *owns* this visual, which is not who opened it. The
                     // registry is instance-global: without this, a chat that
                     // displayed another chat's visual could not be told apart
@@ -1726,6 +1748,22 @@ fn managed_import_request(
     ))
 }
 
+/// One visual may declare at most one optimizer authority. The generic
+/// `VisualRecord.run_id` belongs to the separate `runs` domain, so optimizer
+/// identity remains in this typed binding and is never copied into that FK.
+fn validate_optimizer_run_bindings(bindings: &Value) -> Result<()> {
+    let declared = super::models::declared_optimizer_run_ids(bindings)
+        .into_iter()
+        .collect::<std::collections::BTreeSet<_>>();
+    if declared.len() > 1 {
+        bail!(
+            "visual declares conflicting optimizer_run bindings: {}",
+            declared.into_iter().collect::<Vec<_>>().join(", ")
+        );
+    }
+    Ok(())
+}
+
 fn refuse_mermaid_stream_slot(bindings: &Value) -> Result<()> {
     let Ok(slots) = binding_descriptors(bindings) else {
         return Ok(());
@@ -2244,6 +2282,23 @@ mod tests {
                 .find(|template| !crate::visuals::requires_canonical_source(&template.id))
                 .map(|template| template.id)
         })
+    }
+
+    #[test]
+    fn conflicting_optimizer_bindings_are_refused_without_overloading_run_id() {
+        let bindings = json!({
+            "schemaVersion": crate::visuals::VISUAL_BINDINGS_SCHEMA_VERSION,
+            "inputs": [{
+                "input": "optimizer_run",
+                "kind": "optimizer_run",
+                "source": "opt_eval_1",
+            }, {
+                "input": "comparison_run",
+                "kind": "optimizer_run",
+                "source": "opt_eval_2",
+            }]
+        });
+        assert!(validate_optimizer_run_bindings(&bindings).is_err());
     }
 
     #[tokio::test]

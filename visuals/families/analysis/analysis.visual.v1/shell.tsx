@@ -133,7 +133,9 @@ function renderBlock(block: Block, index: number) {
 }
 
 export function Shell(props: ShellProps) {
-  const raw = props.data ?? props.spec;
+  // Named declarative inputs are authoritative. `data` is retained only for
+  // direct shell previews and older hosts that supplied one anonymous payload.
+  const raw = props.spec ?? props.data;
   const blocks = (raw?.blocks ?? []).map(normalizeBlock).filter((block): block is Block => block != null);
   if (!blocks.length) return <VisualChrome title={props.title ?? "Analysis visual"} lede="No visual specification was provided." testId="visual-analysis-spec"><></></VisualChrome>;
   return <VisualChrome kicker={raw?.kicker ?? "Agent-authored analysis"} title={props.title ?? raw?.title ?? "Analysis visual"} lede={props.lede ?? raw?.lede} footer={raw?.footer} testId="visual-analysis-spec">{blocks.map(renderBlock)}</VisualChrome>;

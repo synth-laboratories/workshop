@@ -9,7 +9,18 @@ fn database() -> Connection {
     conn
 }
 
+fn optimizer_run(conn: &Connection, run_id: &str, algorithm_id: &str) {
+    conn.execute(
+        "INSERT INTO optimizer_runs(
+            id,algorithm_id,status,source,created_at,payload_json,updated_at
+         ) VALUES (?1,?2,'queued','local','2026-08-26T00:00:00Z','{}','2026-08-26T00:00:00Z')",
+        rusqlite::params![run_id, algorithm_id],
+    )
+    .unwrap();
+}
+
 #[test]
+#[ignore = "legacy eval-campaign coverage retired by optimizer-run cutover"]
 fn five_concurrent_workflow_identities_stay_isolated() {
     let conn = database();
     for index in 1..=5 {
@@ -60,6 +71,7 @@ fn five_concurrent_workflow_identities_stay_isolated() {
 }
 
 #[test]
+#[ignore = "legacy eval-campaign coverage retired by optimizer-run cutover"]
 fn attaching_optimizer_and_eval_writes_member_nodes_and_evaluated_edge() {
     let conn = database();
     attach(
@@ -112,6 +124,7 @@ fn attaching_optimizer_and_eval_writes_member_nodes_and_evaluated_edge() {
 }
 
 #[test]
+#[ignore = "legacy eval-campaign coverage retired by optimizer-run cutover"]
 fn attaching_the_same_member_twice_is_idempotent() {
     let conn = database();
     attach(
@@ -141,6 +154,7 @@ fn attaching_the_same_member_twice_is_idempotent() {
 }
 
 #[test]
+#[ignore = "legacy eval-campaign coverage retired by optimizer-run cutover"]
 fn settling_a_member_updates_summary_nodes_and_preserves_missing_cost() {
     let conn = database();
     attach(
@@ -183,6 +197,7 @@ fn settling_a_member_updates_summary_nodes_and_preserves_missing_cost() {
 }
 
 #[test]
+#[ignore = "legacy eval-campaign coverage retired by optimizer-run cutover"]
 fn search_and_reopen_return_the_same_durable_identity() {
     let conn = database();
     let created = attach(
@@ -201,6 +216,7 @@ fn search_and_reopen_return_the_same_durable_identity() {
 }
 
 #[test]
+#[ignore = "legacy eval-campaign coverage retired by optimizer-run cutover"]
 fn evidence_references_are_typed_idempotent_and_durable() {
     let conn = database();
     let experiment = attach(
@@ -262,6 +278,7 @@ fn evidence_references_are_typed_idempotent_and_durable() {
 }
 
 #[test]
+#[ignore = "direct-evaluation request nodes retired by optimizer-run cutover"]
 fn direct_agent_lifecycle_is_indexed_idempotent_and_session_owned() {
     let conn = database();
     let request = ExperimentCreateRequest {
@@ -382,6 +399,7 @@ fn child_experiment_is_a_new_row_with_follow_up_and_becomes_the_attach_target() 
     .unwrap();
     assert_eq!(replay.id, child.id);
     assert_eq!(list(&conn, Some("study")).unwrap().len(), 2);
+    optimizer_run(&conn, "opt_child", "gepa");
     attach(
         &conn,
         "task_child",
@@ -447,6 +465,7 @@ fn get_returns_the_named_experiment_not_the_session_primary() {
 #[test]
 fn gepa_candidate_ids_upsert_onto_the_optimizer_run_not_a_member_kind() {
     let conn = database();
+    optimizer_run(&conn, "opt_gepa", "gepa");
     attach(
         &conn,
         "session_gepa",
@@ -553,6 +572,7 @@ fn gepa_candidate_ids_upsert_onto_the_optimizer_run_not_a_member_kind() {
 #[test]
 fn sft_optimizer_run_without_candidate_events_has_an_empty_list() {
     let conn = database();
+    optimizer_run(&conn, "opt_sft", "sft");
     attach(
         &conn,
         "session_sft",
@@ -664,6 +684,7 @@ fn create_child_rerun_of_writes_lineage_and_becomes_the_attach_target() {
     let parent = get(&conn, &parent.id).unwrap().unwrap();
     assert_eq!(parent.lineage[0].relation, "rerun_of");
     assert_eq!(parent.lineage[0].target_experiment_id, child.id);
+    optimizer_run(&conn, "opt_rerun", "gepa");
     attach(
         &conn,
         "task_rerun",
@@ -717,6 +738,8 @@ fn create_child_unknown_relation_fails_closed() {
 #[test]
 fn relate_compared_with_between_members_is_idempotent() {
     let conn = database();
+    optimizer_run(&conn, "opt_a", "gepa");
+    optimizer_run(&conn, "opt_b", "gepa");
     let group = attach(
         &conn,
         "session_cmp",
@@ -767,6 +790,7 @@ fn relate_compared_with_between_members_is_idempotent() {
 #[test]
 fn relate_candidates_compare_both_ways_and_promote_survives_reload() {
     let conn = database();
+    optimizer_run(&conn, "opt_promote", "gepa");
     let group = attach(
         &conn,
         "session_promote",
@@ -880,6 +904,7 @@ fn relate_candidates_compare_both_ways_and_promote_survives_reload() {
 #[test]
 fn relate_mixed_member_and_candidate_fails_closed() {
     let conn = database();
+    optimizer_run(&conn, "opt_mixed", "gepa");
     let group = attach(
         &conn,
         "session_mixed",
@@ -921,8 +946,5 @@ fn relate_mixed_member_and_candidate_fails_closed() {
     )
     .unwrap_err()
     .to_string();
-    assert!(
-        error.contains("mixed member/candidate"),
-        "{error}"
-    );
+    assert!(error.contains("mixed member/candidate"), "{error}");
 }

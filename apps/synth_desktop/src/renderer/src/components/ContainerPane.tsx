@@ -24,14 +24,33 @@ function strings(value: unknown): string[] {
 	return Array.isArray(value) ? value.filter((entry): entry is string => typeof entry === "string") : [];
 }
 
-function interfaces(value: unknown): string[] {
-	if (Array.isArray(value)) return strings(value);
-	const record = object(value);
-	return Object.entries(record).flatMap(([key, entry]) => {
-		if (Array.isArray(entry)) return entry.map((item) => `${key}:${String(item)}`);
-		if (entry && typeof entry === "object") return [key];
-		return entry === false || entry == null ? [] : [key];
-	});
+type InterfaceMetadata = { chips: string[]; invalid: boolean };
+
+function scalar(value: unknown): value is string | number | boolean {
+	return typeof value === "string" || typeof value === "number" || typeof value === "boolean";
+}
+
+export function interfaces(value: unknown): InterfaceMetadata {
+	if (value == null) return { chips: [], invalid: false };
+	if (scalar(value)) return { chips: typeof value === "string" && value.trim() ? [value] : [], invalid: typeof value !== "string" };
+	if (Array.isArray(value)) {
+		if (!value.every(scalar)) return { chips: [], invalid: true };
+		return { chips: value.map((entry) => String(entry)), invalid: false };
+	}
+	if (typeof value !== "object") return { chips: [], invalid: true };
+	const chips: string[] = [];
+	let invalid = false;
+	for (const [key, entry] of Object.entries(value as JsonObject)) {
+		if (Array.isArray(entry)) {
+			if (!entry.length) chips.push(`${key}:0`);
+			else if (entry.every(scalar)) chips.push(...entry.map((item) => `${key}:${String(item)}`));
+			else if (entry.every((item) => Object.keys(object(item)).length > 0)) chips.push(`${key}:${entry.length}`);
+			else invalid = true;
+		} else if (entry && typeof entry === "object") chips.push(key);
+		else if (entry === true || (typeof entry === "string" && entry.trim()) || typeof entry === "number") chips.push(key);
+		else if (entry !== false && entry != null) invalid = true;
+	}
+	return { chips: [...new Set(chips)], invalid };
 }
 
 type MetadataRow = { path: string; value: string };
@@ -121,21 +140,49 @@ function queryInstance(instance: JsonObject, query: string): { match: boolean; e
 	return { match: true };
 }
 
-function taskEntries(catalog: unknown, fallback: unknown): JsonObject[] {
-	const catalogObject = object(catalog);
-	const candidates = Array.isArray(catalog)
-		? catalog
-		: [catalogObject.tasks, catalogObject.items, catalogObject.task_instances].find(Array.isArray) ?? [];
-	const tasks = (candidates as unknown[]).map(object).filter((task) => Object.keys(task).length > 0);
-	if (tasks.length) return tasks;
-	const fallbackTask = object(object(fallback).task);
-	return Object.keys(fallbackTask).length ? [fallbackTask] : [];
+type TaskMetadata = { tasks: JsonObject[]; instances: JsonObject[]; error: string | null };
+
+function objectRows(value: unknown): JsonObject[] | null {
+	if (!Array.isArray(value)) return null;
+	const rows = value.map(object);
+	return rows.every((row) => Object.keys(row).length > 0) ? rows : null;
 }
 
-function taskInstances(catalog: unknown): JsonObject[] {
-	const catalogObject = object(catalog);
-	const candidates = [catalogObject.instances, catalogObject.task_instances, catalogObject.items].find(Array.isArray) ?? [];
-	return (candidates as unknown[]).map(object).filter((instance) => Object.keys(instance).length > 0);
+export function taskMetadata(catalog: unknown, fallback: unknown): TaskMetadata {
+	if (catalog != null) {
+		const catalogObject = object(catalog);
+		if (!Object.keys(catalogObject).length) return { tasks: [], instances: [], error: "invalid task catalog: expected an object" };
+		if (catalogObject.schema_version != null && catalogObject.schema_version !== "synth.container.task-catalog.v1") {
+			return { tasks: [], instances: [], error: "invalid task catalog: unsupported schema_version" };
+		}
+		const strict = catalogObject.schema_version === "synth.container.task-catalog.v1";
+		const taskValue = catalogObject.tasks ?? catalogObject.items;
+		const instanceValue = catalogObject.instances ?? catalogObject.task_instances ?? (strict ? undefined : catalogObject.items);
+		const tasks = objectRows(taskValue);
+		const instances = objectRows(instanceValue);
+		if (tasks === null || instances === null) {
+			return { tasks: [], instances: [], error: "invalid task catalog: tasks and instances must be arrays of objects" };
+		}
+		if (strict && tasks.some((task) => !text(task.id) && !text(task.task_id))) {
+			return { tasks: [], instances: [], error: "invalid task catalog: task id is required" };
+		}
+		if (strict && instances.some((instance) => !text(instance.id) || !text(instance.task_id) || !text(instance.task_instance_id))) {
+			return { tasks: [], instances: [], error: "invalid task catalog: instance identity is required" };
+		}
+		return { tasks, instances, error: null };
+	}
+	const fallbackObject = object(fallback);
+	if (fallback != null && !Object.keys(fallbackObject).length) {
+		return { tasks: [], instances: [], error: "invalid task info: expected an object" };
+	}
+	const nested = object(fallbackObject.task);
+	const fallbackTask = Object.keys(nested).length ? nested : fallbackObject;
+	if (Object.keys(fallbackTask).length && !text(fallbackTask.id) && !text(fallbackTask.task_id)) {
+		return { tasks: [], instances: [], error: "invalid task info: task id is required" };
+	}
+	return Object.keys(fallbackTask).length
+		? { tasks: [fallbackTask], instances: [], error: null }
+		: { tasks: [], instances: [], error: null };
 }
 
 function text(value: unknown): string | null {
@@ -154,26 +201,81 @@ function DataBlock({ label, value }: { label: string; value: unknown }) {
 	return <details className="container-data-block"><summary>{label}</summary><pre>{JSON.stringify(value, null, 2)}</pre></details>;
 }
 
+function freshness(value: unknown): { kind: "live" | "cached" | "unavailable"; observedAt: string | null; reason: string | null } {
+	const entry = object(value);
+	const kind = text(entry.kind);
+	if (kind === "live" || kind === "cached" || kind === "unavailable") {
+		return { kind, observedAt: text(entry.observedAt) ?? text(entry.observed_at), reason: text(entry.reason) };
+	}
+	return { kind: "unavailable", observedAt: null, reason: "not_reported" };
+}
+
+export function countLabel(count: number, reported: boolean, kind: "live" | "cached" | "unavailable"): string {
+	if (!reported || kind === "unavailable") return "Not reported";
+	if (kind === "cached") return `${count} cached`;
+	return `${count} live`;
+}
+
+function shortRevision(value: string): string {
+	return value.length > 12 ? value.slice(0, 8) : value;
+}
+
+function launchProblem(error: JsonObject): { headline: string; path: string | null; next: string | null } | null {
+	const code = text(error.code);
+	const message = text(error.error) ?? text(error.message);
+	const declared = text(error.declared_path) ?? text(error.declaredPath);
+	const resolved = text(error.resolved_path) ?? text(error.resolvedPath);
+	const next = text(error.remediation);
+	if (!code && !message && !declared) return null;
+	const headlines: Record<string, string> = {
+		launch_source_path_not_found: "Couldn't find a declared launch file.",
+		launch_source_path_escapes_root: "A launch file points outside this repository.",
+		launch_absolute_path_rejected: "Absolute launch paths aren't allowed.",
+		launch_source_digest_mismatch: "Launch files changed since they were declared.",
+		launch_checkout_revision_mismatch: "This checkout doesn't match the declared revision.",
+		launch_source_root_not_approved: "This repository isn't attached to the conversation.",
+		launch_manifest_unreadable: "Couldn't read the container launch file."
+	};
+	return {
+		headline: (code && headlines[code]) || message || "Launch files need attention.",
+		path: declared && resolved ? `${declared} → ${resolved}` : declared ?? resolved,
+		next
+	};
+}
+
 export function ContainerPane({
 	container,
 	expanded,
 	onExpandedChange,
 	onClose,
-	onProbe
+	onProbe,
+	onRestart,
+	onRepair
 }: {
 	container: ContainerDeployment;
 	expanded: boolean;
 	onExpandedChange: (expanded: boolean) => void;
 	onClose: () => void;
 	onProbe: () => void;
+	onRestart?: () => void;
+	onRepair?: () => void;
 }) {
 	const metadata = object(container.metadata);
 	const info = object(metadata.info);
-	const capabilities = interfaces(info.capabilities);
+	const capabilityMetadata = interfaces(info.capabilities);
+	const capabilities = capabilityMetadata.chips;
 	const actions = strings(info.action_names);
 	const taskInfo = object(metadata.taskInfo);
-	const tasks = useMemo(() => taskEntries(metadata.taskCatalog, taskInfo), [metadata.taskCatalog, metadata.taskInfo]);
-	const instances = useMemo(() => taskInstances(metadata.taskCatalog), [metadata.taskCatalog]);
+	const taskCatalogReported = metadata.taskCatalog != null;
+	const taskDefinitionsReported = taskCatalogReported || metadata.taskInfo != null;
+	const catalog = useMemo(() => taskMetadata(metadata.taskCatalog, taskInfo), [metadata.taskCatalog, metadata.taskInfo]);
+	const tasks = catalog.tasks;
+	const instances = catalog.instances;
+	const policyState = object(metadata.policyState);
+	const policyReported = metadata.policyState != null;
+	const policySchemaValid = !policyReported || policyState.schema_version === "synth.container-policy.v1";
+	const policyStatus = text(policyState.status);
+	const policyRef = object(policyState.policy_ref);
 	const [selectedTask, setSelectedTask] = useState<string | null>(null);
 	const [metadataQuery, setMetadataQuery] = useState("");
 	const [instanceQuery, setInstanceQuery] = useState("");
@@ -183,11 +285,27 @@ export function ContainerPane({
 	const [builderValue, setBuilderValue] = useState("");
 	const selectedIndex = Math.max(0, tasks.findIndex((task, index) => taskId(task, index) === selectedTask));
 	const selected = tasks[selectedIndex];
-	const detailedTask = object(taskInfo.task);
+	const nestedDetailedTask = object(taskInfo.task);
+	const detailedTask = Object.keys(nestedDetailedTask).length ? nestedDetailedTask : taskInfo;
+	const detailPayload = Object.keys(nestedDetailedTask).length ? taskInfo : detailedTask;
 	const selectedHasDetail = selected && taskId(selected, selectedIndex) === (text(detailedTask.task_id) ?? text(detailedTask.id));
 	const health = object(container.health);
 	const healthPayload = Object.keys(object(health.payload)).length ? object(health.payload) : health;
 	const sessions = typeof healthPayload.sessions === "number" ? healthPayload.sessions : null;
+	const runtimeLive = container.status === "ready" && health.ok !== false;
+	const instanceFreshness = freshness(metadata.taskCatalogFreshness);
+	const interfaceFreshness = freshness(metadata.interfaceFreshness);
+	const policyFreshness = freshness(metadata.policyFreshness);
+	const launch = object(metadata.launchDeclaration);
+	const launchValid = launch.valid === true;
+	const launchError = object(launch.error);
+	const origin = object(metadata.declarationOrigin);
+	const problem = launchProblem(launchError);
+	const command = Array.isArray(launch.command) ? (launch.command as unknown[]).map(String).join(" ") : null;
+	const sourceRoot = text(origin.sourceRoot);
+	const sourceRevision = text(origin.sourceRevision);
+	const showRestart = !runtimeLive && launchValid && onRestart;
+	const showRepair = (!launchValid || launch.valid === false) && onRepair;
 	const queryRows = useMemo(() => flattenMetadata({ task: metadata.taskInfo, program: metadata.program, dataset: metadata.dataset }), [metadata.taskInfo, metadata.program, metadata.dataset]);
 	const queryParts = metadataQuery.trim().toLowerCase().split(/\s+/).filter(Boolean);
 	const queryMatches = queryParts.length ? queryRows.filter((row) => queryParts.every((part) => {
@@ -217,22 +335,51 @@ export function ContainerPane({
 				<button type="button" className="container-pane-control" onClick={onClose} aria-label="Close container inspector">×</button>
 			</header>
 			<div className="container-pane-body">
+				{catalog.error ? <p className="container-query-error" role="alert">Task metadata error: {catalog.error}</p> : null}
 				<section className="container-overview">
-					<div className="container-status-line"><span className={`container-status-dot status-${container.status}`} aria-hidden /><strong>{container.status}</strong>{sessions !== null ? <span>{sessions} active sessions</span> : null}</div>
-					<code className="container-endpoint">{container.baseUrl ?? container.location}</code>
-					<button type="button" className="container-probe" onClick={onProbe}>Refresh metadata</button>
+					<div className="container-status-line">
+						<span className={`container-status-dot status-${container.status}`} aria-hidden />
+						<strong>{runtimeLive ? "Ready" : "Couldn't reach this container"}</strong>
+						{sessions !== null ? <span>{sessions} {sessions === 1 ? "session" : "sessions"}</span> : null}
+					</div>
+					<code className="container-endpoint" title={container.baseUrl ?? container.location}>{container.baseUrl ?? container.location}</code>
+					<div className="container-overview-actions">
+						<button type="button" className="container-probe" onClick={onProbe}>Refresh</button>
+						{showRestart ? <button type="button" className="container-probe container-probe-primary" onClick={() => onRestart?.()} data-testid="container-restart" title="Workshop will ask before replacing this container" aria-label="Restart this container">Restart…</button> : null}
+						{showRepair ? <button type="button" className="container-probe container-probe-primary" onClick={() => onRepair?.()} data-testid="container-repair">Fix launch files</button> : null}
+					</div>
+					{command || sourceRoot ? <p className="container-launch-identity">
+						{command ? <code title={command}>{command}</code> : null}
+						{sourceRoot ? <code title={sourceRoot}>{sourceRoot}</code> : null}
+						{sourceRevision ? <span title={sourceRevision}>rev {shortRevision(sourceRevision)}</span> : null}
+					</p> : null}
+					{problem ? <div className="ws-note ws-note-danger" role="alert">
+						<strong>{problem.headline}</strong>
+						{problem.path ? <code>{problem.path}</code> : null}
+						{problem.next ? <p>{problem.next}</p> : null}
+					</div> : null}
 				</section>
 
 				<section className="container-pane-section">
 					<p className="container-pane-kicker">Overview</p>
 					<h3>{container.taskFamily ?? text(info.name) ?? "Synth container"}</h3>
 					<dl className="container-facts">
-						<div><dt>Definitions</dt><dd>{tasks.length || "Not reported"}</dd></div>
-						<div><dt>Instances</dt><dd>{instances.length || "Not reported"}</dd></div>
-						<div><dt>Interfaces</dt><dd>{capabilities.length || "Not reported"}</dd></div>
+						<div><dt>Definitions</dt><dd>{taskDefinitionsReported ? tasks.length : "Not reported"}</dd></div>
+						<div><dt>Instances</dt><dd>{countLabel(instances.length, taskCatalogReported, instanceFreshness.kind)}</dd></div>
+						<div><dt>Interfaces</dt><dd>{info.capabilities == null ? "Not reported" : countLabel(capabilities.length, true, interfaceFreshness.kind)}</dd></div>
 						{container.lastRolloutId ? <div><dt>Last rollout</dt><dd title={container.lastRolloutId}>{container.lastRolloutId.slice(0, 8)}</dd></div> : null}
 						{text(info.version) ? <div><dt>Version</dt><dd>{text(info.version)}</dd></div> : null}
 					</dl>
+				</section>
+
+				<section className="container-pane-section">
+					<p className="container-pane-kicker">Installed policy</p>
+					{!runtimeLive ? <p>Policy isn't available while this container is offline. Restart it to inspect the installed policy.</p> : !policyReported || policyFreshness.kind === "unavailable" ? <p>Not reported</p> : !policySchemaValid ? <p role="alert">Invalid response: unsupported policy schema</p> : policyStatus === "not_installed" ? <p>None</p> : policyStatus === "installed" ? <dl className="container-facts">
+						<div><dt>Reference</dt><dd>{text(policyRef.namespace) && text(policyRef.name) ? `${text(policyRef.namespace)}/${text(policyRef.name)}` : "Invalid response"}</dd></div>
+						<div><dt>Revision</dt><dd>{text(policyState.policy_revision_id) ?? "Invalid response"}</dd></div>
+						<div><dt>Source</dt><dd>{text(policyState.source_revision) ?? "Unavailable"}</dd></div>
+						<div><dt>Configuration</dt><dd>{text(policyState.configuration_digest) ?? "Unavailable"}</dd></div>
+					</dl> : <p role="alert">{policyStatus === "installing" || policyStatus === "failed" ? policyStatus : "Invalid response"}</p>}
 				</section>
 
 				<section className="container-pane-section">
@@ -242,20 +389,20 @@ export function ContainerPane({
 						return <button type="button" className={index === selectedIndex ? "selected" : ""} key={id} onClick={() => setSelectedTask(id)}><strong>{text(task.name) ?? text(task.task_name) ?? text(task.title) ?? id}</strong><code>{id}</code>{text(task.description) ? <span>{text(task.description)}</span> : null}</button>;
 					})}</div> : <p>No task catalog reported. This container can still expose non-task interfaces.</p>}
 					{selected ? <div className="container-task-detail">
-						<DataBlock label="Objective" value={selectedHasDetail ? taskInfo.objective : selected.objective} />
-						<DataBlock label="Output contract" value={selectedHasDetail ? taskInfo.output_space : selected.output_space} />
-						<DataBlock label="Dataset" value={selectedHasDetail ? taskInfo.dataset : selected.dataset} />
-						<DataBlock label="Metrics" value={selectedHasDetail ? taskInfo.metrics : selected.metrics} />
-						<DataBlock label="Constraints" value={selectedHasDetail ? taskInfo.constraints : selected.constraints} />
-						<DataBlock label="Task metadata" value={selectedHasDetail ? taskInfo.metadata : selected.metadata} />
+						<DataBlock label="Objective" value={selectedHasDetail ? detailPayload.objective : selected.objective} />
+						<DataBlock label="Output contract" value={selectedHasDetail ? detailPayload.output_space : selected.output_space} />
+						<DataBlock label="Dataset" value={selectedHasDetail ? detailPayload.dataset : selected.dataset} />
+						<DataBlock label="Metrics" value={selectedHasDetail ? detailPayload.metrics : selected.metrics} />
+						<DataBlock label="Constraints" value={selectedHasDetail ? detailPayload.constraints : selected.constraints} />
+						<DataBlock label="Task metadata" value={selectedHasDetail ? detailPayload.metadata : selected.metadata} />
 					</div> : null}
 				</section>
 
 				{instances.length ? <section className="container-pane-section container-instance-browser">
 					<p className="container-pane-kicker">Task instances</p>
-					<p>{filteredInstances.length} of {instances.length} instances</p>
+					<p>{filteredInstances.length} of {instances.length} {instanceFreshness.kind === "cached" ? "instances from the last successful probe" : "instances"}</p>
 					<div className="container-query-builder">
-						<strong>Inferred query</strong><span>{inferredFields.length} fields inferred from cached instances</span>
+						<strong>Filter instances</strong><span>{instanceFreshness.kind === "cached" ? `${inferredFields.length} fields from the last cached catalog` : `${inferredFields.length} fields inferred from the catalog`}</span>
 						<div className="container-query-controls">
 							<select value={builderField} onChange={(event) => { setBuilderField(event.target.value); setBuilderValue(""); }} aria-label="Query field"><option value="">Choose field…</option>{inferredFields.map((field) => <option key={field.path} value={field.path}>{field.path} · {field.type}</option>)}</select>
 							<select value={builderOperator} onChange={(event) => setBuilderOperator(event.target.value)} aria-label="Query operator">{["=", "!=", "LIKE", "IN", ">", ">=", "<", "<="].map((operator) => <option key={operator}>{operator}</option>)}</select>
@@ -276,7 +423,7 @@ export function ContainerPane({
 					{filteredInstances.length > 100 ? <p>Showing the first 100 matching instances.</p> : null}
 				</section> : null}
 
-				<section className="container-pane-section"><p className="container-pane-kicker">Interfaces</p><div className="container-chip-grid">{capabilities.length ? capabilities.map((capability) => <code key={capability}>{capability}</code>) : <span>None reported</span>}</div></section>
+				<section className="container-pane-section"><p className="container-pane-kicker">Interfaces</p><div className="container-chip-grid">{capabilities.map((capability) => <code key={capability}>{capability}</code>)}{capabilityMetadata.invalid ? <span role="alert">invalid interface metadata</span> : !capabilities.length ? <span>None reported</span> : null}</div><DataBlock label="Policy references" value={object(info.capabilities).policy_refs} /></section>
 
 				{Object.keys(object(metadata.program)).length ? <details className="container-pane-section"><summary>Program contract</summary><pre>{JSON.stringify(metadata.program, null, 2)}</pre></details> : null}
 				{Object.keys(object(metadata.dataset)).length ? <details className="container-pane-section"><summary>Dataset contract</summary><pre>{JSON.stringify(metadata.dataset, null, 2)}</pre></details> : null}

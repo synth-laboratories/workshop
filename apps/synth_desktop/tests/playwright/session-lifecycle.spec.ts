@@ -1,5 +1,50 @@
 import { expect, test } from "./browser.fixture";
 
+test("crash recovery resumes the thread without replaying the abandoned prompt", async ({ page }) => {
+	await page.addInitScript(() => {
+		const sessionId = "recover-thread";
+		(window as typeof window & { synthLaguna?: unknown }).synthLaguna = {
+			getStatus: async () => ({ phase: "ready", baseUrl: "http://127.0.0.1:7333", backend: "mlx_lm", loadedModel: "poolside/Laguna-XS-2.1-NVFP4-mlx", detail: "Laguna XS ready", memoryBytes: null, updatedAt: Date.now() }),
+			onStatus: () => () => undefined,
+			listModels: async () => []
+		};
+		(window as typeof window & { __recoverySend?: { prompt: string; recoveryMode?: boolean } }).__recoverySend = undefined;
+		(window as typeof window & { synthCodex?: unknown }).synthCodex = {
+			defaultWorkspace: async () => "/workspaces/default",
+			list: async () => [{
+				sessionId, threadId: "persisted-thread", workspace: "/workspaces/default",
+				model: "poolside/Laguna-XS-2.1-NVFP4-mlx", providerName: "local-laguna",
+				providerTitle: "Laguna XS Responses", baseUrl: "http://127.0.0.1:7333/v1",
+				status: "interrupted",
+				recovery: {
+					sessionId, runId: "abandoned-run", reason: "workshop_restarted",
+					recoveryAttempt: 1, restartable: true, needsAttention: false,
+					lastUserMessage: { text: "DANGEROUS ORIGINAL PROMPT" },
+					recoveredAt: "2026-08-27T10:00:00Z"
+				}
+			}],
+			start: async () => ({ sessionId, threadId: "persisted-thread" }),
+			startTurn: async () => ({ sessionId, threadId: "persisted-thread", turnId: "continued-turn" }),
+			sendTurn: async (_start: unknown, prompt: string, _effort: unknown, options: { recoveryMode?: boolean }) => {
+				(window as typeof window & { __recoverySend?: { prompt: string; recoveryMode?: boolean } }).__recoverySend = { prompt, recoveryMode: options?.recoveryMode };
+				return { sessionId, threadId: "persisted-thread", turnId: "continued-turn" };
+			},
+			interrupt: async () => undefined,
+			close: async () => undefined,
+			onEvent: () => () => undefined
+		};
+	});
+	await page.reload();
+	await page.getByTestId("local-chat-recover-thread").click();
+	const resume = page.getByTestId("send-retry-button");
+	await expect(resume).toHaveText("Resume");
+	await resume.click();
+	const sent = await page.evaluate(() => (window as typeof window & { __recoverySend?: { prompt: string; recoveryMode?: boolean } }).__recoverySend);
+	expect(sent?.recoveryMode).toBe(true);
+	expect(sent?.prompt).toContain("Continue the interrupted task");
+	expect(sent?.prompt).not.toContain("DANGEROUS ORIGINAL PROMPT");
+});
+
 test("a local session process exit clears stale Working and Stop state", async ({ page }) => {
 	await page.addInitScript(() => {
 		type Event = { sessionId: string; method: string; params: Record<string, unknown> };

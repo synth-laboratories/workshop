@@ -16,6 +16,12 @@ test("Search and the Command-K shortcut find and open conversations", async ({ p
 			latestCursor: 0,
 			metadata: {}
 		};
+		const remoteSession = {
+			...session,
+			id: "remote-failure-chat",
+			title: "Remote failure review",
+			target: { kind: "remote", provider: "openrouter", model: "openai/gpt-5.6" }
+		};
 		(window as typeof window & { synthRuntime?: unknown }).synthRuntime = {
 			async request(path: string) {
 				if (path === "/v1/health") return {
@@ -23,7 +29,7 @@ test("Search and the Command-K shortcut find and open conversations", async ({ p
 					intern: { mode: "demo" }, openrouter: { mode: "unconfigured" },
 					inventory: { containers: 0, traces: 0, visuals: 0 }
 				};
-				if (path === "/v1/sessions") return { sessions: [session] };
+				if (path === "/v1/sessions") return { sessions: [session, remoteSession] };
 				if (path === "/v1/projects") return { projects: [] };
 				if (path.includes("/events")) return { events: [], nextCursor: 0, hasMore: false };
 				throw new Error(`Unexpected renderer test request: ${path}`);
@@ -51,6 +57,35 @@ test("Search and the Command-K shortcut find and open conversations", async ({ p
 	await expect(sidePanel.getByRole("tab", { name: "Inference" })).toHaveAttribute("aria-selected", "false");
 	await expect(outputsPanel).toBeVisible();
 	await expect(outputsPanel.getByTestId("resource-shelf-empty")).toContainText("No outputs yet");
+	await sidePanel.evaluate((panel) => {
+		const workbench = panel.parentElement;
+		if (workbench) workbench.style.gridTemplateColumns = "minmax(0, 1fr) 228px";
+	});
+	const outerTabs = sidePanel.locator(".workbench-side-panel-tabs [role=tab]");
+	expect(await outerTabs.count()).toBe(5);
+	const tabGeometry = await outerTabs.evaluateAll((elements) => {
+		const header = elements[0]?.closest(".workbench-side-panel-header")?.getBoundingClientRect();
+		return elements.map((element) => {
+			const rect = element.getBoundingClientRect();
+			return Boolean(header)
+				&& rect.width > 0
+				&& rect.height > 0
+				&& rect.left >= header!.left
+				&& rect.right <= header!.right;
+		});
+	});
+	expect(tabGeometry).toEqual([true, true, true, true, true]);
+	await sidePanel.getByRole("tab", { name: "Diagnostics" }).focus();
+	await page.keyboard.press("ArrowRight");
+	await expect(sidePanel).toBeVisible();
+	await expect(sidePanel.getByRole("tab", { name: "Failures" })).toBeFocused();
+	await expect(sidePanel.getByRole("tab", { name: "Failures" })).toHaveAttribute("aria-selected", "true");
+	await expect(sidePanel.getByRole("tab", { name: "Occurrences" })).toHaveAttribute("aria-selected", "true");
+	await sidePanel.getByRole("tab", { name: "Occurrences" }).focus();
+	await page.keyboard.press("ArrowRight");
+	await expect(sidePanel.getByRole("tab", { name: "Logs" })).toBeFocused();
+	await expect(sidePanel.getByRole("tab", { name: "Logs" })).toHaveAttribute("aria-selected", "true");
+	await sidePanel.getByRole("tab", { name: "Outputs" }).click();
 	await sidePanel.getByRole("button", { name: "Close side panel" }).click();
 	await expect(outputsPanel).toHaveCount(0);
 	await expect(outputsTrigger).toHaveAttribute("aria-expanded", "false");
@@ -82,6 +117,21 @@ test("Search and the Command-K shortcut find and open conversations", async ({ p
 	await expect(page.getByTestId("conversation-search")).toBeVisible();
 	await page.getByRole("button", { name: "Close search" }).click();
 	await expect(page.getByTestId("conversation-search")).toHaveCount(0);
+
+	// Failures is not a local-inference-only tab. A remote chat used to update
+	// the selected tab and immediately fail the showSidePanel predicate, making
+	// both click and keyboard activation look like a close action in the app.
+	await page.keyboard.press("Meta+k");
+	const remoteSearch = page.getByTestId("conversation-search");
+	await remoteSearch.getByRole("searchbox", { name: "Search conversations" }).fill("Remote failure");
+	await remoteSearch.getByRole("option", { name: /Remote failure review/ }).click();
+	const remoteOutputsTrigger = page.getByTestId("resource-shelf-trigger");
+	await remoteOutputsTrigger.click();
+	const remoteSidePanel = page.getByTestId("workbench-side-panel");
+	await remoteSidePanel.getByRole("tab", { name: "Diagnostics" }).focus();
+	await page.keyboard.press("ArrowRight");
+	await expect(remoteSidePanel).toBeVisible();
+	await expect(remoteSidePanel.getByRole("tab", { name: "Failures" })).toHaveAttribute("aria-selected", "true");
 });
 
 test("dense search results scroll inside the dialog instead of clipping its last row", async ({ page }) => {

@@ -284,7 +284,7 @@ pub fn find_configured_source(conn: &Connection, provider: &str) -> Result<Optio
         "SELECT id, alias, provider, scope, backend, backend_ref, fingerprint,
                 display_suffix, status, created_at, last_validated_at
          FROM secret_refs WHERE provider=?1 AND backend='configured_env_file'
-         ORDER BY updated_at DESC LIMIT 1",
+         ORDER BY preferred DESC, updated_at DESC LIMIT 1",
         [provider],
         |row| {
             Ok(SecretRecord {

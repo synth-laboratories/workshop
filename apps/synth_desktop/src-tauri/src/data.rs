@@ -36,12 +36,50 @@ pub struct ContainerDeployment {
     pub pool_id: Option<String>,
     pub task_family: Option<String>,
     pub last_rollout_id: Option<String>,
+    pub current_failure_id: Option<String>,
     #[specta(type = specta_typescript::Unknown)]
     pub health: Value,
     #[specta(type = specta_typescript::Unknown)]
     pub metadata: Value,
     pub created_at: String,
     pub updated_at: String,
+}
+
+/// Fields bound to the approved workspace declaration, rather than observed
+/// from a live container. Catalog registration and probing refresh runtime
+/// facts, but must not detach the durable record from the source revision that
+/// admission is authorized to read.
+const DURABLE_CONTAINER_DECLARATION_KEYS: &[&str] = &[
+    "workspaceSpecId",
+    "sourcePath",
+    "declarationOrigin",
+    "launchDeclaration",
+    "policySourcePath",
+    "gitRevision",
+    "manifestHash",
+];
+
+fn merge_container_hydration_metadata(previous: Option<&Value>, mut observed: Value) -> Value {
+    let Some(previous) = previous.and_then(Value::as_object) else {
+        return observed;
+    };
+    let Some(observed) = observed.as_object_mut() else {
+        return Value::Object(previous.clone());
+    };
+    let has_workspace_declaration = previous
+        .get("workspaceSpecId")
+        .and_then(Value::as_str)
+        .is_some_and(|value| !value.trim().is_empty())
+        && (previous.get("declarationOrigin").is_some() || previous.get("sourcePath").is_some());
+    if !has_workspace_declaration {
+        return Value::Object(observed.clone());
+    }
+    for key in DURABLE_CONTAINER_DECLARATION_KEYS {
+        if let Some(value) = previous.get(*key) {
+            observed.insert((*key).to_string(), value.clone());
+        }
+    }
+    Value::Object(observed.clone())
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, specta::Type)]
@@ -252,58 +290,6 @@ impl DataStore {
         self.content.root().join(".trace-staging")
     }
 
-    pub async fn campaign_create(
-        &self,
-        request: crate::campaigns::CampaignCreate,
-    ) -> Result<crate::campaigns::Campaign> {
-        self.db
-            .clone()
-            .run_transaction(move |conn| crate::campaigns::create(conn, request))
-            .await
-    }
-
-    pub async fn campaign_get(&self, id: String) -> Result<crate::campaigns::Campaign> {
-        self.db
-            .clone()
-            .run(move |conn| crate::campaigns::load(conn, &id))
-            .await
-    }
-
-    pub async fn campaign_for_rollout(&self, rollout_id: String) -> Result<Option<String>> {
-        self.db
-            .clone()
-            .run(move |conn| crate::campaigns::campaign_for_rollout(conn, &rollout_id))
-            .await
-    }
-
-    pub async fn campaign_record_started(&self, rollout_id: String, at: String) -> Result<()> {
-        self.db
-            .clone()
-            .run_transaction(move |conn| crate::campaigns::record_started(conn, &rollout_id, &at))
-            .await
-    }
-
-    pub async fn campaign_record_terminal(
-        &self,
-        rollout_id: String,
-        terminal: Value,
-        at: String,
-    ) -> Result<()> {
-        self.db
-            .clone()
-            .run_transaction(move |conn| {
-                crate::campaigns::record_terminal(conn, &rollout_id, &terminal, &at)
-            })
-            .await
-    }
-
-    pub async fn campaign_settle(&self, id: String, at: String) -> Result<Value> {
-        self.db
-            .clone()
-            .run_transaction(move |conn| crate::campaigns::settle(conn, &id, &at))
-            .await
-    }
-
     pub async fn experiment_for_session(
         &self,
         session_id: String,
@@ -314,8 +300,14 @@ impl DataStore {
             .await
     }
 
-    pub async fn experiment_create(&self, request: crate::experiments::ExperimentCreateRequest) -> Result<crate::experiments::ExperimentGroup> {
-        self.db.clone().run_transaction(move |conn| crate::experiments::create(conn, request)).await
+    pub async fn experiment_create(
+        &self,
+        request: crate::experiments::ExperimentCreateRequest,
+    ) -> Result<crate::experiments::ExperimentGroup> {
+        self.db
+            .clone()
+            .run_transaction(move |conn| crate::experiments::create(conn, request))
+            .await
     }
 
     pub async fn experiment_create_child(
@@ -351,8 +343,14 @@ impl DataStore {
             .await
     }
 
-    pub async fn experiment_finalize(&self, request: crate::experiments::ExperimentFinalizeRequest) -> Result<crate::experiments::ExperimentGroup> {
-        self.db.clone().run_transaction(move |conn| crate::experiments::finalize(conn, request)).await
+    pub async fn experiment_finalize(
+        &self,
+        request: crate::experiments::ExperimentFinalizeRequest,
+    ) -> Result<crate::experiments::ExperimentGroup> {
+        self.db
+            .clone()
+            .run_transaction(move |conn| crate::experiments::finalize(conn, request))
+            .await
     }
 
     pub async fn experiments_list(
@@ -407,15 +405,21 @@ impl DataStore {
         self.db.clone().run_transaction(move |conn| {
             let now = Utc::now().to_rfc3339();
             let base_url = request.base_url.trim_end_matches('/').to_string();
-            let existing_id: Option<String> = conn.query_row(
-                "SELECT id FROM containers WHERE base_url = ?1 LIMIT 1",
+            let existing: Option<(String, String)> = conn.query_row(
+                "SELECT id, metadata_json FROM containers WHERE base_url = ?1 LIMIT 1",
                 params![&base_url],
-                |row| row.get(0),
+                |row| Ok((row.get(0)?, row.get(1)?)),
             ).optional()?;
-            let id = existing_id.unwrap_or_else(|| format!("ctr_{}", Uuid::new_v4().simple()));
+            let previous_metadata = existing
+                .as_ref()
+                .and_then(|(_, raw)| serde_json::from_str::<Value>(raw).ok());
+            let id = existing
+                .map(|(id, _)| id)
+                .unwrap_or_else(|| format!("ctr_{}", Uuid::new_v4().simple()));
             let name = request.name.filter(|value| !value.trim().is_empty()).unwrap_or_else(|| "Attached container".into());
             let location = request.location.unwrap_or_else(|| "local".into());
             let health_json = serde_json::to_string(&health)?;
+            let metadata = merge_container_hydration_metadata(previous_metadata.as_ref(), metadata);
             let metadata_json = serde_json::to_string(&metadata)?;
             conn.execute(
                 "INSERT INTO containers(id,name,location,status,base_url,task_family,health_json,metadata_json,created_at,updated_at) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?9) ON CONFLICT(id) DO UPDATE SET name=excluded.name,location=excluded.location,status=excluded.status,base_url=excluded.base_url,task_family=excluded.task_family,health_json=excluded.health_json,metadata_json=excluded.metadata_json,updated_at=excluded.updated_at",
@@ -441,12 +445,38 @@ impl DataStore {
         task_family: Option<String>,
     ) -> Result<(ContainerDeployment, AppEvent)> {
         self.db.clone().run_transaction(move |conn| {
+            let previous = load_container(conn, &id).ok();
             let now = Utc::now().to_rfc3339();
+            let metadata = merge_container_hydration_metadata(
+                previous.as_ref().map(|container| &container.metadata),
+                metadata,
+            );
             let changed = conn.execute(
                 "UPDATE containers SET status=?1,health_json=?2,metadata_json=?3,task_family=COALESCE(?4,task_family),updated_at=?5 WHERE id=?6",
                 params![&status, serde_json::to_string(&health)?, serde_json::to_string(&metadata)?, &task_family, &now, &id],
             )?;
             if changed == 0 { return Err(anyhow!("container not found: {id}")); }
+            if let Some(previous) = previous {
+                let registry = crate::domains::containers::registry_observation(&previous.status, &previous.health);
+                let live = crate::domains::containers::live_observation(&status, &health);
+                let stopped = previous.status == "stopped" || status == "stopped";
+                if let Some(kind) = crate::domains::containers::classify_probe(&id, registry, live, stopped) {
+                    if crate::platform::failure::repository::FailureRepository::open_for_container(conn, &id)?.is_none() {
+                        crate::domains::containers::raise_probe_failure(conn, kind, &id, None)?;
+                    }
+                } else if status == crate::container_capabilities::READY_STATUS {
+                    if let Some(open) = crate::platform::failure::repository::FailureRepository::open_for_container(conn, &id)? {
+                        let _ = crate::platform::failure::FailureAuthority::transition(
+                            conn,
+                            open.failure_id.as_str(),
+                            crate::platform::failure::FailureLifecycleState::Resolved,
+                            crate::platform::failure::TransitionReason::Resolved,
+                            "container_probe",
+                        );
+                        crate::domains::containers::clear_current(conn, &id)?;
+                    }
+                }
+            }
             let container = load_container(conn, &id)?;
             let event = crate::storage::append_event(conn, EventAppend {
                 event_id: None, session_id: None, run_id: None, source: EventSource::Local,
@@ -1070,6 +1100,7 @@ fn container_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ContainerDepl
         pool_id: row.get(5)?,
         task_family: row.get(6)?,
         last_rollout_id: row.get(7)?,
+        current_failure_id: row.get(12).ok(),
         health: parse_json(row.get(8)?)?,
         metadata: parse_json(row.get(9)?)?,
         created_at: row.get(10)?,
@@ -1079,14 +1110,14 @@ fn container_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ContainerDepl
 
 fn load_container(conn: &Connection, id: &str) -> Result<ContainerDeployment> {
     conn.query_row(
-        "SELECT id,name,location,status,base_url,pool_id,task_family,last_rollout_id,health_json,metadata_json,created_at,updated_at FROM containers WHERE id=?1",
+        "SELECT id,name,location,status,base_url,pool_id,task_family,last_rollout_id,health_json,metadata_json,created_at,updated_at,current_failure_id FROM containers WHERE id=?1",
         params![id], container_from_row,
     ).optional()?.ok_or_else(|| anyhow!("container not found: {id}"))
 }
 
 fn list_containers(conn: &Connection) -> Result<Vec<ContainerDeployment>> {
     let mut statement = conn.prepare(
-        "SELECT id,name,location,status,base_url,pool_id,task_family,last_rollout_id,health_json,metadata_json,created_at,updated_at FROM containers ORDER BY updated_at DESC, id",
+        "SELECT id,name,location,status,base_url,pool_id,task_family,last_rollout_id,health_json,metadata_json,created_at,updated_at,current_failure_id FROM containers ORDER BY updated_at DESC, id",
     )?;
     let rows = statement
         .query_map([], container_from_row)?

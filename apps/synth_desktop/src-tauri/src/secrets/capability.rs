@@ -5,11 +5,94 @@ use anyhow::{anyhow, Result};
 use chrono::{Duration as ChronoDuration, Utc};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use uuid::Uuid;
 
 use super::audit::{self, SecretAuditEvent};
+
+pub(crate) const PROVIDER_USAGE_RECEIPT_SCHEMA: &str = "workshop.provider-usage-receipt.v1";
+
+/// Non-secret identity retained for every capability included in a run receipt.
+/// Handles and secret ids are deliberately excluded from this optimizer-facing
+/// surface.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ProviderUsageCapability {
+    pub capability_id: String,
+    pub provider: String,
+    pub status: String,
+}
+
+/// Durable provider usage aggregated across every capability issued to a run.
+/// A missing receipt means no capability rows exist. `cost_usd: None` means at
+/// least one included capability has an unknown charge, never a measured zero.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ProviderUsageReceipt {
+    pub schema_version: String,
+    pub run_id: String,
+    pub capabilities: Vec<ProviderUsageCapability>,
+    pub calls: u64,
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub cost_usd: Option<f64>,
+    pub digest: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CanonicalProviderUsageReceipt<'a> {
+    schema_version: &'a str,
+    run_id: &'a str,
+    capabilities: &'a [ProviderUsageCapability],
+    calls: u64,
+    input_tokens: u64,
+    output_tokens: u64,
+    cost_usd_micros: Option<u64>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CapabilityStatus {
+    Granted,
+    Active,
+    Exhausted,
+    Expired,
+    Revoked,
+}
+
+impl CapabilityStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Granted => "granted",
+            Self::Active => "active",
+            Self::Exhausted => "exhausted",
+            Self::Expired => "expired",
+            Self::Revoked => "revoked",
+        }
+    }
+
+    fn can_be_revoked(self) -> bool {
+        matches!(self, Self::Granted | Self::Active)
+    }
+}
+
+impl TryFrom<&str> for CapabilityStatus {
+    type Error = anyhow::Error;
+
+    fn try_from(value: &str) -> Result<Self> {
+        match value {
+            "granted" => Ok(Self::Granted),
+            "active" => Ok(Self::Active),
+            "exhausted" => Ok(Self::Exhausted),
+            "expired" => Ok(Self::Expired),
+            "revoked" => Ok(Self::Revoked),
+            other => Err(anyhow!("unknown capability status {other}")),
+        }
+    }
+}
 
 #[derive(Clone, Debug, Serialize, Deserialize, specta::Type)]
 #[serde(rename_all = "camelCase")]
@@ -82,7 +165,7 @@ pub struct CapabilitySummary {
     pub max_calls: u32,
     pub used_calls: u32,
     pub max_cost_usd: f64,
-    pub used_cost_usd: f64,
+    pub used_cost_usd: Option<f64>,
     #[specta(type = specta_typescript::Number)]
     pub used_input_tokens: u64,
     #[specta(type = specta_typescript::Number)]
@@ -117,7 +200,9 @@ pub struct LiveCapability {
     pub used_calls: u32,
     pub used_input_tokens: u64,
     pub used_output_tokens: u64,
-    pub used_cost_usd_micros: u64,
+    /// `Some(0)` is a genuine measured zero. `None` means at least one
+    /// completed provider call did not report a settled charge.
+    pub used_cost_usd_micros: Option<u64>,
     pub status: String,
     pub expires_at_ms: i64,
 }
@@ -127,13 +212,36 @@ impl LiveCapability {
         self.max_calls.saturating_sub(self.used_calls)
     }
 
-    fn cost_usd(&self) -> f64 {
-        self.used_cost_usd_micros as f64 / 1_000_000.0
+    fn cost_usd(&self) -> Option<f64> {
+        self.used_cost_usd_micros
+            .map(|micros| micros as f64 / 1_000_000.0)
     }
 
     fn max_cost_usd(&self) -> f64 {
         self.max_cost_usd_micros as f64 / 1_000_000.0
     }
+
+    /// Whether this already-issued grant is at least as broad as the admitted
+    /// workload envelope asking to reuse it. Empty model/reasoning lists mean
+    /// unrestricted in the proxy contract; operations are always explicit.
+    pub(crate) fn covers(&self, requested: &ProviderUsePolicy) -> bool {
+        list_covers(&self.operations, &requested.operations)
+            && list_covers(&self.models, &requested.models)
+            && list_covers(&self.reasoning_efforts, &requested.reasoning_efforts)
+            && self.max_calls >= requested.max_calls
+            && self.max_input_tokens >= requested.max_input_tokens
+            && self.max_output_tokens >= requested.max_output_tokens
+            && self.max_cost_usd() + f64::EPSILON >= requested.max_cost_usd
+    }
+}
+
+fn list_covers(granted: &[String], requested: &[String]) -> bool {
+    granted.is_empty()
+        || requested.iter().all(|requested_item| {
+            granted
+                .iter()
+                .any(|granted_item| granted_item.eq_ignore_ascii_case(requested_item))
+        })
 }
 
 #[derive(Clone, Debug)]
@@ -178,7 +286,10 @@ impl CapabilityStore {
             .expect("capability store")
             .get_mut(handle)
         {
-            live.status = "revoked".into();
+            let status = CapabilityStatus::try_from(live.status.as_str());
+            if status.is_ok_and(CapabilityStatus::can_be_revoked) {
+                live.status = CapabilityStatus::Revoked.as_str().into();
+            }
         }
     }
 
@@ -186,8 +297,22 @@ impl CapabilityStore {
         let mut store = self.by_handle.lock().expect("capability store");
         let mut handles = Vec::new();
         for live in store.values_mut() {
-            if live.run_id == run_id && live.status != "revoked" {
-                live.status = "revoked".into();
+            let status = CapabilityStatus::try_from(live.status.as_str());
+            if live.run_id == run_id && status.is_ok_and(CapabilityStatus::can_be_revoked) {
+                live.status = CapabilityStatus::Revoked.as_str().into();
+                handles.push(live.handle.clone());
+            }
+        }
+        handles
+    }
+
+    pub fn revoke_secret(&self, secret_id: &str) -> Vec<String> {
+        let mut store = self.by_handle.lock().expect("capability store");
+        let mut handles = Vec::new();
+        for live in store.values_mut() {
+            let status = CapabilityStatus::try_from(live.status.as_str());
+            if live.secret_id == secret_id && status.is_ok_and(CapabilityStatus::can_be_revoked) {
+                live.status = CapabilityStatus::Revoked.as_str().into();
                 handles.push(live.handle.clone());
             }
         }
@@ -244,7 +369,11 @@ impl CapabilityStore {
             live.status = "exhausted".into();
             anyhow::bail!("capability call ceiling reached");
         }
-        if live.used_cost_usd_micros >= live.max_cost_usd_micros && live.max_cost_usd_micros > 0 {
+        if live
+            .used_cost_usd_micros
+            .is_some_and(|used| used >= live.max_cost_usd_micros)
+            && live.max_cost_usd_micros > 0
+        {
             live.status = "exhausted".into();
             anyhow::bail!("capability spend ceiling reached");
         }
@@ -267,12 +396,20 @@ impl CapabilityStore {
             .filter(|cost| cost.is_finite() && *cost >= 0.0)
         {
             let micros = (cost_usd * 1_000_000.0).round() as u64;
-            live.used_cost_usd_micros = live.used_cost_usd_micros.saturating_add(micros);
+            if let Some(used) = live.used_cost_usd_micros.as_mut() {
+                *used = used.saturating_add(micros);
+            }
+        } else {
+            // Once any billed call is missing cost the aggregate is unknown;
+            // later reported charges cannot make that missing amount vanish.
+            live.used_cost_usd_micros = None;
         }
         if live.used_input_tokens > live.max_input_tokens
             || live.used_output_tokens > live.max_output_tokens
             || (live.max_cost_usd_micros > 0
-                && live.used_cost_usd_micros > live.max_cost_usd_micros)
+                && live
+                    .used_cost_usd_micros
+                    .is_some_and(|used| used > live.max_cost_usd_micros))
             || live.used_calls >= live.max_calls
         {
             live.status = "exhausted".into();
@@ -302,8 +439,9 @@ pub fn issue(
             id, handle, secret_id, run_id, recipe_id, provider, operations_json, models_json,
             reasoning_efforts_json, max_calls, max_input_tokens, max_output_tokens,
             max_cost_usd_micros, used_calls, used_input_tokens, used_output_tokens,
-            used_cost_usd_micros, status, created_at, expires_at, revoked_at
-        ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,0,0,0,0,'granted',?14,?15,NULL)",
+            used_cost_usd_micros, status, created_at, expires_at, revoked_at,
+            used_cost_known
+        ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,0,0,0,0,'granted',?14,?15,NULL,1)",
         params![
             id,
             handle,
@@ -339,7 +477,7 @@ pub fn issue(
         used_calls: 0,
         used_input_tokens: 0,
         used_output_tokens: 0,
-        used_cost_usd_micros: 0,
+        used_cost_usd_micros: Some(0),
         status: "granted".into(),
         expires_at_ms: expires.timestamp_millis(),
     };
@@ -360,12 +498,16 @@ pub fn issue(
 pub fn persist_usage(conn: &Connection, live: &LiveCapability) -> Result<()> {
     conn.execute(
         "UPDATE secret_capabilities SET used_calls=?1, used_input_tokens=?2,
-         used_output_tokens=?3, used_cost_usd_micros=?4, status=?5 WHERE id=?6",
+         used_output_tokens=?3, used_cost_usd_micros=?4, used_cost_known=?5,
+         revoked_at=CASE WHEN status='revoked' THEN revoked_at ELSE NULL END,
+         status=CASE WHEN status IN ('exhausted','expired','revoked') THEN status ELSE ?6 END
+         WHERE id=?7",
         params![
             live.used_calls as i64,
             live.used_input_tokens as i64,
             live.used_output_tokens as i64,
-            live.used_cost_usd_micros as i64,
+            live.used_cost_usd_micros.unwrap_or(0) as i64,
+            i64::from(live.used_cost_usd_micros.is_some()),
             live.status,
             live.id
         ],
@@ -386,32 +528,158 @@ pub fn revoke(
             |row| row.get(0),
         )
         .optional()?;
-    if let Some(handle) = handle {
-        store.revoke_handle(&handle);
-    }
-    conn.execute(
-        "UPDATE secret_capabilities SET status='revoked', revoked_at=?1 WHERE id=?2",
+    let revoked = conn.execute(
+        "UPDATE secret_capabilities SET status='revoked', revoked_at=?1
+         WHERE id=?2 AND status IN ('granted','active')",
         params![Utc::now().to_rfc3339(), capability_id],
     )?;
-    let mut event = SecretAuditEvent::new("user", actor, "capability.revoke", "revoked");
-    event.capability_id = Some(capability_id.into());
-    audit::append(conn, &event)?;
+    if revoked > 0 {
+        if let Some(handle) = handle {
+            store.revoke_handle(&handle);
+        }
+        let mut event = SecretAuditEvent::new("user", actor, "capability.revoke", "revoked");
+        event.capability_id = Some(capability_id.into());
+        audit::append(conn, &event)?;
+    }
     Ok(())
 }
 
-pub fn revoke_run(conn: &Connection, store: &CapabilityStore, run_id: &str) -> Result<()> {
-    let handles = store.revoke_run(run_id);
+pub fn run_id_for_capability(conn: &Connection, capability_id: &str) -> Result<Option<String>> {
+    conn.query_row(
+        "SELECT run_id FROM secret_capabilities WHERE id=?1",
+        [capability_id],
+        |row| row.get(0),
+    )
+    .optional()
+    .map_err(Into::into)
+}
+
+/// Read the durable provider usage for `run_id` without consulting the live
+/// capability store. Exhausted, expired, and revoked rows remain evidence and
+/// are included alongside active rows. No secret-bearing columns are selected.
+pub(crate) fn provider_usage_receipt(
+    conn: &Connection,
+    run_id: &str,
+) -> Result<Option<ProviderUsageReceipt>> {
+    let mut statement = conn.prepare(
+        "SELECT id, provider, status, used_calls, used_input_tokens,
+                used_output_tokens, used_cost_usd_micros, used_cost_known
+         FROM secret_capabilities
+         WHERE run_id=?1
+         ORDER BY id ASC",
+    )?;
+    let rows = statement
+        .query_map([run_id], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, i64>(3)?,
+                row.get::<_, i64>(4)?,
+                row.get::<_, i64>(5)?,
+                row.get::<_, i64>(6)?,
+                row.get::<_, i64>(7)?,
+            ))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    if rows.is_empty() {
+        return Ok(None);
+    }
+
+    let mut capabilities = Vec::with_capacity(rows.len());
+    let mut calls = 0u64;
+    let mut input_tokens = 0u64;
+    let mut output_tokens = 0u64;
+    let mut cost_usd_micros = 0u64;
+    let mut cost_known = true;
+    for (id, provider, status, row_calls, input, output, cost, known) in rows {
+        CapabilityStatus::try_from(status.as_str())?;
+        let row_calls = u64::try_from(row_calls)
+            .map_err(|_| anyhow!("capability {id} has negative used_calls"))?;
+        let input = u64::try_from(input)
+            .map_err(|_| anyhow!("capability {id} has negative used_input_tokens"))?;
+        let output = u64::try_from(output)
+            .map_err(|_| anyhow!("capability {id} has negative used_output_tokens"))?;
+        let cost = u64::try_from(cost)
+            .map_err(|_| anyhow!("capability {id} has negative used_cost_usd_micros"))?;
+        calls = calls
+            .checked_add(row_calls)
+            .ok_or_else(|| anyhow!("capability usage calls overflow for run {run_id}"))?;
+        input_tokens = input_tokens
+            .checked_add(input)
+            .ok_or_else(|| anyhow!("capability input tokens overflow for run {run_id}"))?;
+        output_tokens = output_tokens
+            .checked_add(output)
+            .ok_or_else(|| anyhow!("capability output tokens overflow for run {run_id}"))?;
+        cost_usd_micros = cost_usd_micros
+            .checked_add(cost)
+            .ok_or_else(|| anyhow!("capability cost overflow for run {run_id}"))?;
+        cost_known &= known == 1;
+        capabilities.push(ProviderUsageCapability {
+            capability_id: id,
+            provider,
+            status,
+        });
+    }
+    let cost_usd_micros = cost_known.then_some(cost_usd_micros);
+    let canonical = CanonicalProviderUsageReceipt {
+        schema_version: PROVIDER_USAGE_RECEIPT_SCHEMA,
+        run_id,
+        capabilities: &capabilities,
+        calls,
+        input_tokens,
+        output_tokens,
+        cost_usd_micros,
+    };
+    let canonical = serde_json::to_vec(&canonical)?;
+    let digest = format!("sha256:{:x}", Sha256::digest(canonical));
+    Ok(Some(ProviderUsageReceipt {
+        schema_version: PROVIDER_USAGE_RECEIPT_SCHEMA.into(),
+        run_id: run_id.into(),
+        capabilities,
+        calls,
+        input_tokens,
+        output_tokens,
+        cost_usd: cost_usd_micros.map(|micros| micros as f64 / 1_000_000.0),
+        digest,
+    }))
+}
+
+/// Revoke every live capability for `run_id`, returning the revoked
+/// capability ids so settlement can journal exactly what it revoked.
+pub fn revoke_run(conn: &Connection, store: &CapabilityStore, run_id: &str) -> Result<Vec<String>> {
+    let rows = {
+        let mut stmt = conn.prepare(
+            "SELECT id, handle FROM secret_capabilities
+             WHERE run_id=?1 AND status IN ('granted','active')",
+        )?;
+        let rows = stmt
+            .query_map([run_id], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        rows
+    };
+    let (ids, handles): (Vec<String>, Vec<String>) = rows.into_iter().unzip();
     conn.execute(
         "UPDATE secret_capabilities SET status='revoked', revoked_at=?1
          WHERE run_id=?2 AND status IN ('granted','active')",
         params![Utc::now().to_rfc3339(), run_id],
     )?;
+    conn.execute(
+        "UPDATE secret_capabilities SET revoked_at=NULL
+         WHERE run_id=?1 AND status IN ('exhausted','expired')",
+        [run_id],
+    )?;
+    for handle in &handles {
+        store.revoke_handle(handle);
+    }
     if !handles.is_empty() {
         let mut event = SecretAuditEvent::new("run", run_id, "capability.revoke", "revoked");
         event.detail = Some("run ended".into());
         audit::append(conn, &event)?;
     }
-    Ok(())
+    Ok(ids)
 }
 
 pub fn summary_from_live(
@@ -481,3 +749,67 @@ pub fn persist_status(conn: &Connection, live: &LiveCapability) -> Result<()> {
 
 /// Shared store used by the proxy and the issuer.
 pub type SharedCapabilityStore = Arc<CapabilityStore>;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn live() -> LiveCapability {
+        LiveCapability {
+            id: "cap-1".into(),
+            handle: "handle-1".into(),
+            secret_id: "secret-1".into(),
+            run_id: "run-1".into(),
+            recipe_id: "recipe-1".into(),
+            provider: "provider-1".into(),
+            operations: Vec::new(),
+            models: Vec::new(),
+            reasoning_efforts: Vec::new(),
+            max_calls: 5,
+            max_input_tokens: 1_000,
+            max_output_tokens: 1_000,
+            max_cost_usd_micros: 1_000_000,
+            used_calls: 0,
+            used_input_tokens: 0,
+            used_output_tokens: 0,
+            used_cost_usd_micros: Some(0),
+            status: "granted".into(),
+            expires_at_ms: Utc::now().timestamp_millis() + 60_000,
+        }
+    }
+
+    #[test]
+    fn reported_zero_and_unknown_cost_are_never_interchangeable() {
+        let store = CapabilityStore::new();
+        store.insert(live());
+        assert_eq!(
+            summary_from_live(&store.lookup("handle-1").unwrap(), None).used_cost_usd,
+            Some(0.0),
+            "a newly granted capability has a genuine known zero"
+        );
+        let unknown = store
+            .debit_usage(
+                "handle-1",
+                &MeasuredUsage {
+                    calls: 1,
+                    input_tokens: 10,
+                    output_tokens: 2,
+                    cost_usd: None,
+                },
+            )
+            .unwrap();
+        assert_eq!(summary_from_live(&unknown, None).used_cost_usd, None);
+        let still_unknown = store
+            .debit_usage(
+                "handle-1",
+                &MeasuredUsage {
+                    calls: 1,
+                    input_tokens: 10,
+                    output_tokens: 2,
+                    cost_usd: Some(0.25),
+                },
+            )
+            .unwrap();
+        assert_eq!(summary_from_live(&still_unknown, None).used_cost_usd, None);
+    }
+}

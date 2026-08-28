@@ -149,6 +149,39 @@ pub fn parse_usage(body: &Value) -> MeasuredUsage {
     }
 }
 
+/// Stable provider response identity retained for asynchronous accounting.
+/// OpenRouter returns the generation id on the top-level chat response; the
+/// Responses API carries the same identity inside `response`.
+pub(crate) fn response_id(body: &Value) -> Option<&str> {
+    body.get("id")
+        .and_then(Value::as_str)
+        .or_else(|| body.get("response")?.get("id")?.as_str())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+}
+
+/// Parse OpenRouter's authoritative `/generation` accounting response. This
+/// endpoint is the documented fallback when the generation id is available
+/// but the inline response has not yet populated its `usage` object.
+pub(crate) fn parse_openrouter_generation_usage(body: &Value) -> MeasuredUsage {
+    let data = body.get("data").unwrap_or(body);
+    let integer = |keys: &[&str]| {
+        keys.iter()
+            .find_map(|key| data.get(*key).and_then(Value::as_u64))
+            .unwrap_or(0)
+    };
+    let cost_usd = ["total_cost", "usage"]
+        .iter()
+        .find_map(|key| data.get(*key).and_then(Value::as_f64))
+        .filter(|cost| cost.is_finite() && *cost >= 0.0);
+    MeasuredUsage {
+        calls: 1,
+        input_tokens: integer(&["tokens_prompt", "native_tokens_prompt"]),
+        output_tokens: integer(&["tokens_completion", "native_tokens_completion"]),
+        cost_usd,
+    }
+}
+
 pub fn inject_auth(
     builder: reqwest::RequestBuilder,
     route: &ProviderRoute,
@@ -249,5 +282,35 @@ mod tests {
             "usage": {"input_tokens": 12, "output_tokens": 8, "cost": 0.0042}
         }));
         assert_eq!(usage.cost_usd, Some(0.0042));
+    }
+
+    #[test]
+    fn response_identity_survives_both_openai_compatible_shapes() {
+        assert_eq!(
+            response_id(&serde_json::json!({"id": "gen-top"})),
+            Some("gen-top")
+        );
+        assert_eq!(
+            response_id(&serde_json::json!({"response": {"id": "resp-nested"}})),
+            Some("resp-nested")
+        );
+        assert_eq!(response_id(&serde_json::json!({"id": "  "})), None);
+    }
+
+    #[test]
+    fn openrouter_generation_metadata_recovers_exact_cost_and_tokens() {
+        let usage = parse_openrouter_generation_usage(&serde_json::json!({
+            "data": {
+                "tokens_prompt": 1479,
+                "tokens_completion": 83,
+                "native_tokens_prompt": 1400,
+                "native_tokens_completion": 80,
+                "total_cost": 0.0003107,
+                "usage": 0.9
+            }
+        }));
+        assert_eq!(usage.input_tokens, 1479);
+        assert_eq!(usage.output_tokens, 83);
+        assert_eq!(usage.cost_usd, Some(0.0003107));
     }
 }

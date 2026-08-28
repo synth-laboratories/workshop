@@ -1,4 +1,4 @@
-//! Normalize local OSS (GEPA) and hosted optimizers-beta (GELO/go-ex) payloads
+//! Normalize local OSS (GEPA) and hosted optimizers-beta (GO-EX) payloads
 //! into the shared `optimizer_event.v1` envelope.
 
 use super::models::{OptimizerEventEnvelope, OptimizerRunStatus, OPTIMIZER_EVENT_SCHEMA_VERSION};
@@ -306,9 +306,11 @@ fn normalize_hosted_or_goex(
 
 pub fn normalize_algorithm_id(value: &str) -> String {
     match value.trim().to_ascii_lowercase().as_str() {
-        "gelo" | "goex" | "go_ex" | "go-ex" => "go-ex".into(),
+        "go-ex" => "go-ex".into(),
         "gepa" => "gepa".into(),
+        "eval" => "eval".into(),
         "sft" => "sft".into(),
+        "cispo" => "cispo".into(),
         other if !other.is_empty() => other.to_string(),
         _ => "unknown".into(),
     }
@@ -658,9 +660,10 @@ mod tests {
     }
 
     #[test]
-    fn maps_gelo_alias_to_go_ex() {
-        assert_eq!(normalize_algorithm_id("GELO"), "go-ex");
-        assert_eq!(normalize_algorithm_id("goex"), "go-ex");
+    fn preserves_noncanonical_algorithm_names_for_fail_closed_validation() {
+        assert_eq!(normalize_algorithm_id("GELO"), "gelo");
+        assert_eq!(normalize_algorithm_id("goex"), "goex");
+        assert_eq!(normalize_algorithm_id("go-ex"), "go-ex");
     }
 
     #[test]

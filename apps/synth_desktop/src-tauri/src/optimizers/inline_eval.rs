@@ -6,7 +6,7 @@
 
 use super::admission::{
     self, ApprovalBinding, ApprovalReceiptId, ContainerCandidate, ContainerId,
-    ContainerRegistrationId, DeclaredEvaluator, DeclarationDigest, DiscoveryContext,
+    ContainerRegistrationId, DeclarationDigest, DeclaredEvaluator, DiscoveryContext,
     EvalDeclaration, EvaluatorId, InlineRequest, ModelPin, PolicyResolution, PolicyRevision,
     RecipeSource, RolloutCount, SourceRevision,
 };
@@ -15,8 +15,9 @@ use super::{container_eval, OptimizerService};
 use anyhow::{Context, Result};
 use serde_json::{json, Value};
 use std::num::NonZeroU32;
-use std::path::{Component, Path};
 use std::process::Command;
+
+const INLINE_PROVIDER_OPERATION: &str = "chat.completions.create";
 
 /// Resolve current authority, construct the default inline recipe, validate it,
 /// and assign its immutable digest. No recipe catalog is consulted here.
@@ -25,8 +26,8 @@ pub async fn admit_inline(
     request: InlineRequest,
 ) -> Result<admission::AdmissibleExecutionSpec> {
     let (context, normalized) = discovery_context(service, request).await?;
-    let recipe = admission::pipeline::draft_inline(&normalized, &context)
-        .map_err(anyhow::Error::new)?;
+    let recipe =
+        admission::pipeline::draft_inline(&normalized, &context).map_err(anyhow::Error::new)?;
     admission::materialize(RecipeSource::Inline(recipe), &context)
         .and_then(|draft| draft.validate())
         .and_then(|validated| validated.admit())
@@ -78,7 +79,11 @@ pub async fn reverify(
         seeds: recipe.rollout_plan.seeds.clone(),
         maximum_rollouts: Some(recipe.rollout_plan.maximum_rollouts.0.get()),
         maximum_model_calls_per_rollout: Some(
-            recipe.resource_limits.maximum_model_calls_per_rollout.0.get(),
+            recipe
+                .resource_limits
+                .maximum_model_calls_per_rollout
+                .0
+                .get(),
         ),
         maximum_steps_per_rollout: Some(recipe.resource_limits.maximum_steps_per_rollout.0.get()),
         hard_total_cost_usd: Some(
@@ -110,14 +115,18 @@ async fn discovery_context(
     service: &OptimizerService,
     mut request: InlineRequest,
 ) -> Result<(DiscoveryContext, InlineRequest)> {
-    let requested_id = request.container_id.as_ref().map(ContainerId::as_str).map(str::to_owned);
+    let requested_id = request
+        .container_id
+        .as_ref()
+        .map(ContainerId::as_str)
+        .map(str::to_owned);
     let family = request.family.clone();
     let rows = service
         .database()
         .clone()
         .run(move |conn| {
             let mut statement = conn.prepare(
-                "SELECT id, status, task_family, metadata_json FROM containers ORDER BY updated_at DESC, id",
+                "SELECT id, status, task_family, metadata_json, base_url FROM containers ORDER BY updated_at DESC, id",
             )?;
             let rows = statement
                 .query_map([], |row| {
@@ -126,6 +135,7 @@ async fn discovery_context(
                         row.get::<_, String>(1)?,
                         row.get::<_, Option<String>>(2)?,
                         row.get::<_, String>(3)?,
+                        row.get::<_, Option<String>>(4)?,
                     ))
                 })?
                 .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -136,7 +146,9 @@ async fn discovery_context(
     let mut candidates = Vec::new();
     let mut policy_revisions = Vec::new();
     let mut policy_source_code = None;
-    for (id, status, task_family, metadata_json) in rows {
+    let mut policy_material = None;
+    let mut selected_base_url = None;
+    for (id, status, task_family, metadata_json, base_url) in rows {
         let metadata: Value = serde_json::from_str(&metadata_json)
             .with_context(|| format!("decode container declaration for `{id}`"))?;
         let spec_id = metadata.get("specId").and_then(Value::as_str);
@@ -163,26 +175,47 @@ async fn discovery_context(
             .and_then(Value::as_str)
             .context("container declaration has no immutable source revision")?;
         policy_revisions.push(PolicyRevision::new(policy_revision)?);
-        if let Some(relative) = request.policy_source_path.as_deref() {
-            policy_source_code = Some(read_policy_source_at_revision(
-                &metadata,
-                source_revision,
-                relative,
-            )?);
+        let declared_policy_source = request.policy_source_path.as_deref().or_else(|| {
+            metadata
+                .get("policySourcePath")
+                .and_then(Value::as_str)
+                .filter(|value| !value.trim().is_empty())
+        });
+        if let Some(relative) = declared_policy_source {
+            let loaded = read_policy_source(&metadata, source_revision, relative)?;
+            policy_source_code = Some(loaded.0);
+            policy_material = Some(loaded.1);
         }
-        candidates.push(container_candidate(&id, &status, task_family, &metadata, &request)?);
+        candidates.push(container_candidate(
+            &id,
+            &status,
+            task_family,
+            &metadata,
+            &request,
+        )?);
+        if selected_base_url.is_none() {
+            selected_base_url = base_url;
+        }
     }
 
-    let selected = candidates.first().context("no matching registered container")?;
+    let selected = candidates
+        .first()
+        .context("no matching registered container")?;
     request.container_id = Some(selected.container_id.clone());
+    materialize_seed_instances(
+        selected_base_url
+            .as_deref()
+            .context("registered container has no base URL")?,
+        &request.seeds,
+    )
+    .await?;
     let revision = policy_revisions
         .into_iter()
         .next()
         .context("matching container has no policy revision")?;
-    let declared_configuration = request
-        .policy_overrides
-        .clone()
-        .unwrap_or_else(|| admission::CanonicalJson::new(json!({})).expect("empty object is canonical"));
+    let declared_configuration = request.policy_overrides.clone().unwrap_or_else(|| {
+        admission::CanonicalJson::new(json!({})).expect("empty object is canonical")
+    });
     // The supplied object is the complete declared configuration for an inline
     // policy pin. It is not applied twice as an override.
     request.policy_overrides = None;
@@ -194,59 +227,153 @@ async fn discovery_context(
         .policy_name
         .clone()
         .context("inline evaluation requires policyName")?;
-    let provider = request.provider.clone().context("inline evaluation requires provider")?;
-    let scope = admission::CredentialCapabilityScope::new(
-        ["provider.request".to_string()],
-        3_600,
-    );
-    Ok((DiscoveryContext {
-        containers: candidates,
-        policy: Some(PolicyResolution {
-            namespace,
-            name,
-            revision: Some(revision),
-            declared_configuration,
-            source_code: policy_source_code,
-        }),
-        credential_route_available: crate::secrets::live().is_some(),
-        credential_route_detail: Some(format!(
-            "Workshop secrets proxy has no active route for `{}`",
-            provider.as_str()
-        )),
-        credential_capability_scope: Some(scope),
-        catalog: Vec::new(),
-    }, request))
+    let provider = request
+        .provider
+        .clone()
+        .context("inline evaluation requires provider")?;
+    // Capabilities name concrete proxy wire operations. `provider.request`
+    // was never routed, so valid inline runs reached the container and then
+    // failed every first model call with operation_denied.
+    let scope =
+        admission::CredentialCapabilityScope::new([INLINE_PROVIDER_OPERATION.to_string()], 3_600);
+    Ok((
+        DiscoveryContext {
+            containers: candidates,
+            policy: Some(PolicyResolution {
+                namespace,
+                name,
+                revision: Some(revision),
+                declared_configuration,
+                source_code: policy_source_code,
+                material: policy_material,
+            }),
+            credential_route_available: crate::secrets::live().is_some(),
+            credential_route_detail: Some(format!(
+                "Workshop secrets proxy has no active route for `{}`",
+                provider.as_str()
+            )),
+            credential_capability_scope: Some(scope),
+            catalog: Vec::new(),
+        },
+        request,
+    ))
 }
 
-fn read_policy_source_at_revision(
+async fn materialize_seed_instances(base_url: &str, seeds: &[admission::Seed]) -> Result<()> {
+    anyhow::ensure!(
+        !seeds.is_empty(),
+        "inline evaluation requires at least one seed"
+    );
+    let client = crate::http::http_client_builder().build()?;
+    let task = client
+        .get(format!("{}/task_info", base_url.trim_end_matches('/')))
+        .send()
+        .await
+        .context("GET /task_info before task-instance materialization")?
+        .error_for_status()
+        .context("task_info_unavailable")?
+        .json::<Value>()
+        .await
+        .context("task_info_invalid")?;
+    let task_id = task
+        .get("id")
+        .or_else(|| task.get("task_id"))
+        .and_then(Value::as_str)
+        .context("task_info_invalid: task id missing")?;
+    let requested = seeds.iter().map(|seed| seed.0).collect::<Vec<_>>();
+    let response = client
+        .post(format!(
+            "{}/task_instances/materialize",
+            base_url.trim_end_matches('/')
+        ))
+        .json(&json!({"task_id": task_id, "seeds": requested}))
+        .send()
+        .await
+        .context("POST /task_instances/materialize")?;
+    if !response.status().is_success() {
+        let status = response.status();
+        let detail = response.text().await.unwrap_or_default();
+        anyhow::bail!("task_instance_materialization_failed: {status} {detail}");
+    }
+    let payload = response
+        .json::<Value>()
+        .await
+        .context("task_instance_materialization_invalid")?;
+    let instances = payload
+        .get("instances")
+        .and_then(Value::as_array)
+        .context("task_instance_materialization_invalid: instances missing")?;
+    anyhow::ensure!(
+        instances.len() == seeds.len(),
+        "task_instance_materialization_incomplete: expected {}, received {}",
+        seeds.len(),
+        instances.len()
+    );
+    for (seed, instance) in seeds.iter().zip(instances) {
+        let expected = format!("{task_id}:seed:{}", seed.0);
+        anyhow::ensure!(
+            instance.get("task_instance_id").and_then(Value::as_str) == Some(expected.as_str())
+                && instance.get("seed").and_then(Value::as_i64) == Some(seed.0),
+            "task_instance_identity_mismatch: expected {expected}"
+        );
+    }
+    Ok(())
+}
+
+fn read_policy_source(
     metadata: &Value,
     revision: &str,
     relative: &str,
-) -> Result<String> {
-    let path = Path::new(relative);
-    anyhow::ensure!(
-        !path.is_absolute()
-            && !path.as_os_str().is_empty()
-            && path.components().all(|part| matches!(part, Component::Normal(_))),
-        "policySourcePath must be a non-empty repository-relative path without traversal"
-    );
-    let source_root = metadata
-        .get("sourcePath")
+) -> Result<(String, admission::PolicyMaterialRef)> {
+    let spec_id = metadata
+        .get("workspaceSpecId")
+        .or_else(|| metadata.get("specId"))
         .and_then(Value::as_str)
-        .context("container declaration has no sourcePath for policy source resolution")?;
-    let output = Command::new("git")
-        .arg("-C")
-        .arg(source_root)
-        .arg("show")
-        .arg(format!("{revision}:{relative}"))
-        .output()
-        .context("read policy source from declared git revision")?;
-    anyhow::ensure!(
-        output.status.success(),
-        "policySourcePath `{relative}` is absent from declared source revision `{revision}`: {}",
-        String::from_utf8_lossy(&output.stderr).trim()
-    );
-    String::from_utf8(output.stdout).context("policy source is not UTF-8")
+        .unwrap_or("policy");
+    let origin =
+        super::workspace_recipe::origin_from_metadata(metadata, spec_id).ok_or_else(|| {
+            anyhow::anyhow!(
+                "policy_source_unavailable: container declaration has no approved source origin"
+            )
+        })?;
+    let resolved = super::workspace_recipe::resolve_repository_path(&origin, relative)
+        .map_err(super::workspace_recipe::LaunchDeclarationError::into_anyhow)?;
+    let source_code = if origin.source_digest.is_some() {
+        std::fs::read_to_string(&resolved.absolute_path).with_context(|| {
+            format!(
+                "policy_source_unavailable: could not read {} from the approved dirty checkout",
+                resolved.absolute_path.display()
+            )
+        })?
+    } else {
+        let output = Command::new("git")
+            .arg("-C")
+            .arg(&origin.source_root)
+            .arg("show")
+            .arg(format!("{revision}:{relative}"))
+            .output()
+            .context("read policy source from declared git revision")?;
+        if output.status.success() {
+            String::from_utf8(output.stdout).context("policy source is not UTF-8")?
+        } else {
+            std::fs::read_to_string(&resolved.absolute_path).with_context(|| {
+                format!(
+                    "policySourcePath `{relative}` is absent from declared source revision `{revision}` and working tree {}",
+                    resolved.absolute_path.display()
+                )
+            })?
+        }
+    };
+    let content_digest = admission::digest_bytes(source_code.as_bytes());
+    Ok((
+        source_code,
+        admission::PolicyMaterialRef {
+            source_root: origin.source_root.display().to_string(),
+            repository_relative_path: relative.to_string(),
+            tracked_revision: revision.to_string(),
+            content_digest,
+        },
+    ))
 }
 
 fn container_candidate(
@@ -291,7 +418,9 @@ fn container_candidate(
         .map(|values| {
             values
                 .iter()
-                .filter(|(_, value)| value.as_str() == Some("supported") || value.as_bool() == Some(true))
+                .filter(|(_, value)| {
+                    value.as_str() == Some("supported") || value.as_bool() == Some(true)
+                })
                 .map(|(name, _)| name.clone())
                 .collect::<Vec<_>>()
         })
@@ -343,5 +472,144 @@ fn container_candidate(
 }
 
 pub fn approved_rollouts(value: u32) -> Result<RolloutCount> {
-    Ok(RolloutCount(NonZeroU32::new(value).context("approved rollout cap must be non-zero")?))
+    Ok(RolloutCount(
+        NonZeroU32::new(value).context("approved rollout cap must be non-zero")?,
+    ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::data::{ContainerRegisterRequest, DataStore};
+    use crate::storage::{ContentStore, Storage};
+    use tempfile::tempdir;
+
+    #[test]
+    fn inline_provider_scope_uses_the_routed_chat_operation() {
+        let scope = admission::CredentialCapabilityScope::new(
+            [INLINE_PROVIDER_OPERATION.to_string()],
+            3_600,
+        );
+        assert_eq!(scope.operations, ["chat.completions.create"]);
+        assert_ne!(scope.operations, ["provider.request"]);
+    }
+
+    #[tokio::test]
+    async fn catalog_probe_preserves_workspace_origin_for_policy_material_resolution() {
+        let dir = tempdir().unwrap();
+        let source_root = dir.path().join("workspace");
+        std::fs::create_dir_all(source_root.join("policies")).unwrap();
+        std::fs::write(
+            source_root.join("workshop.containers.toml"),
+            "version = 1\n",
+        )
+        .unwrap();
+        let policy_source = "def policy(observation):\n    return 0\n";
+        std::fs::write(source_root.join("policies/nanohorizon.py"), policy_source).unwrap();
+
+        let storage = Storage::open(dir.path().join("core")).unwrap();
+        let data = DataStore::new(
+            storage.database().clone(),
+            ContentStore::new(storage.content_root()),
+        );
+        let register = || ContainerRegisterRequest {
+            name: Some("NanoHorizon".into()),
+            base_url: "http://127.0.0.1:9010".into(),
+            location: Some("local".into()),
+            task_family: Some("craftax".into()),
+            metadata: None,
+        };
+        let declaration_origin = json!({
+            "manifestPath": source_root.join("workshop.containers.toml"),
+            "sourceRoot": source_root,
+            "declarationId": "nanohorizon-craftax",
+            "sourceRevision": "approved-revision",
+            "sourceDigest": "sha256:dirty-approved-source"
+        });
+        let (registered, _) = data
+            .upsert_container(
+                register(),
+                "ready".into(),
+                json!({"ok": true}),
+                json!({
+                    "workspaceSpecId": "nanohorizon-craftax",
+                    "sourcePath": source_root,
+                    "declarationOrigin": declaration_origin,
+                    "launchDeclaration": {"sourceRevision": "approved-revision"},
+                    "policySourcePath": "policies/nanohorizon.py",
+                    "gitRevision": "approved-revision",
+                    "manifestHash": "sha256:approved-manifest",
+                    "source": "workspace",
+                    "capabilities": {"revision": "stale-live-revision"},
+                    "info": {"imageDigest": "sha256:stale-image"}
+                }),
+                Some("craftax".into()),
+            )
+            .await
+            .unwrap();
+
+        // A catalog refresh is the destructive path that previously replaced
+        // metadata wholesale before the subsequent probe could clone it.
+        let (catalogued, _) = data
+            .upsert_container(
+                register(),
+                "ready".into(),
+                json!({"ok": true}),
+                json!({
+                    "source": "container_catalog",
+                    "capabilities": {"revision": "live-revision-1"},
+                    "info": {
+                        "imageDigest": "sha256:live-image-1",
+                        "producerSourceRevision": "producer@1"
+                    }
+                }),
+                Some("craftax".into()),
+            )
+            .await
+            .unwrap();
+        assert_eq!(catalogued.id, registered.id);
+
+        let (probed, _) = data
+            .update_container_hydration(
+                registered.id,
+                "ready".into(),
+                json!({"ok": true}),
+                json!({
+                    "source": "container_catalog",
+                    "capabilities": {"revision": "live-revision-2"},
+                    "info": {
+                        "imageDigest": "sha256:live-image-2",
+                        "producerSourceRevision": "producer@2"
+                    }
+                }),
+                Some("craftax".into()),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(probed.metadata["source"], "container_catalog");
+        assert_eq!(
+            probed.metadata["capabilities"]["revision"],
+            "live-revision-2"
+        );
+        assert_eq!(
+            probed.metadata["info"]["imageDigest"],
+            "sha256:live-image-2"
+        );
+        assert_eq!(probed.metadata["gitRevision"], "approved-revision");
+        assert_eq!(probed.metadata["declarationOrigin"], declaration_origin);
+
+        let (resolved_source, material) = read_policy_source(
+            &probed.metadata,
+            probed.metadata["gitRevision"].as_str().unwrap(),
+            probed.metadata["policySourcePath"].as_str().unwrap(),
+        )
+        .unwrap();
+        assert_eq!(resolved_source, policy_source);
+        assert_eq!(material.tracked_revision, "approved-revision");
+        assert_eq!(
+            material.content_digest,
+            admission::digest_bytes(policy_source.as_bytes())
+        );
+    }
 }

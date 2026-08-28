@@ -73,7 +73,7 @@ test("attach/pin/seal chrome show vis_ identity and do not call live pointers Fr
   assert.match(visualHost, /visual-pane-identity/);
   assert.match(visualHost, /visual-pane-ops/);
   assert.match(visualHost, /sessionId: visual\.sessionId/);
-  assert.match(visualHost, /runId: visual\.runId/);
+  assert.match(visualHost, /runId: optimizerRunIdFromBindings\(visual\.bindings\) \?\? visual\.runId \?\? undefined/);
   assert.match(visualHost, /traceId: visual\.traceId/);
 
   const chat = readFileSync(

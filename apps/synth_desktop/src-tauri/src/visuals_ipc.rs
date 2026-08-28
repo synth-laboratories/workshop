@@ -520,7 +520,7 @@ pub async fn spawn(
         })
         .await;
         if let Err(error) = result {
-            eprintln!("synth-desktop: visuals IPC stopped: {error:#}");
+            crate::platform::logging::report("visuals_ipc", "eprintln", format!("synth-desktop: visuals IPC stopped: {error:#}"));
         }
     });
     Ok(connection)
@@ -699,10 +699,27 @@ async fn route_request_inner(
                 &error,
             ) =>
         {
-            JsonHttpResponse::with_status(
-                StatusCode::CONFLICT,
-                crate::container_capabilities::preflight_error_body(&error),
-            )
+            let body = error
+                .chain()
+                .find_map(|cause| {
+                    cause.downcast_ref::<crate::container_capabilities::ContainerPreflightError>()
+                })
+                .and_then(|preflight| {
+                    core.storage()
+                        .database()
+                        .transaction(|conn| {
+                            crate::domains::containers::raise_probe_failure(
+                                conn,
+                                crate::domains::containers::from_preflight(preflight),
+                                &preflight.container_id,
+                                None,
+                            )
+                        })
+                        .ok()
+                        .map(|raised| crate::adapters::mcp::tool_error_body(&raised))
+                })
+                .unwrap_or_else(|| crate::container_capabilities::preflight_error_body(&error));
+            JsonHttpResponse::with_status(StatusCode::CONFLICT, body)
         }
         Err(error) if crate::error::error_is::<crate::error::StructuredFailure>(&error) => {
             let body = error
@@ -722,10 +739,17 @@ async fn route_request_inner(
             let body = error
                 .chain()
                 .find_map(|cause| {
-                    cause
-                        .downcast_ref::<crate::optimizers::admission::AdmissionError>()
+                    cause.downcast_ref::<crate::optimizers::admission::AdmissionError>()
                 })
-                .map(crate::optimizers::admission::AdmissionError::to_json)
+                .and_then(|admission| {
+                    core.storage()
+                        .database()
+                        .transaction(|conn| {
+                            crate::domains::evaluations::raise(conn, admission, None)
+                        })
+                        .ok()
+                        .map(|raised| crate::adapters::mcp::tool_error_body(&raised))
+                })
                 .unwrap_or_else(|| json!({"code": "admission_failed"}));
             JsonHttpResponse::with_status(StatusCode::BAD_REQUEST, body)
         }
@@ -805,9 +829,6 @@ async fn dispatch_request(
     {
         return dispatch_optimizer(method, path, json_body, core, app).await;
     }
-    if path.starts_with("/v1/campaigns") {
-        return dispatch_campaigns(method, path, json_body, core).await;
-    }
     if path.starts_with("/v1/experiments") {
         return dispatch_experiments(method, path, json_body, core).await;
     }
@@ -818,7 +839,10 @@ async fn dispatch_request(
         return dispatch_diagnostics(method, path, json_body, core).await;
     }
     if path.starts_with("/v1/secrets") {
-        return dispatch_secrets(method, path, json_body, core);
+        return dispatch_secrets(method, path, json_body, core, app).await;
+    }
+    if method == "POST" && path.starts_with("/v1/containers/") && path.ends_with("/restart") {
+        return dispatch_container_restart(path, json_body, core, app).await;
     }
     dispatch(method, path, json_body, core).await
 }
@@ -918,13 +942,19 @@ async fn wait_for_review_capture_surface(app: &AppHandle, visual_id: &str) -> Re
             .eval_with_callback(
                 "document.documentElement.dataset.synthReviewCaptureReady || ''",
                 move |value| {
-                    if let Some(sender) = callback_sender.lock().ok().and_then(|mut sender| sender.take()) {
+                    if let Some(sender) = callback_sender
+                        .lock()
+                        .ok()
+                        .and_then(|mut sender| sender.take())
+                    {
                         let _ = sender.send(value);
                     }
                 },
             )
             .context("query review capture renderer readiness")?;
-        if let Ok(Ok(value)) = tokio::time::timeout(std::time::Duration::from_millis(250), receiver).await {
+        if let Ok(Ok(value)) =
+            tokio::time::timeout(std::time::Duration::from_millis(250), receiver).await
+        {
             if value.contains(visual_id) {
                 return Ok(());
             }
@@ -1013,7 +1043,10 @@ async fn capture_review_window(app: &AppHandle, body: &Value) -> Result<Value> {
     let snapshot = match wait_for_review_capture_surface(app, visual_id).await {
         Ok(()) => match reset_review_capture_scroll(app) {
             Ok(()) => match app.get_webview_window("main") {
-                Some(window) => crate::visuals::snapshot::capture_webview_png(&window, REVIEW_CAPTURE_TIMEOUT).await,
+                Some(window) => {
+                    crate::visuals::snapshot::capture_webview_png(&window, REVIEW_CAPTURE_TIMEOUT)
+                        .await
+                }
                 None => Err(anyhow::anyhow!(
                     "review capture requires the main Desktop window"
                 )),
@@ -1214,27 +1247,6 @@ pub(crate) async fn get_rollout_status(
         return Ok(None);
     }
     Ok(Some(response.error_for_status()?.json::<Value>().await?))
-}
-
-async fn enrich_terminal_evidence(
-    client: &reqwest::Client,
-    base: &str,
-    rollout_id: &str,
-    mut state: Value,
-) -> Result<Value> {
-    let response = client
-        .get(format!("{base}/rollouts/{rollout_id}/reward"))
-        .send()
-        .await
-        .context("GET authoritative rollout reward")?;
-    if response.status() != reqwest::StatusCode::NOT_FOUND {
-        let reward = response.error_for_status()?.json::<Value>().await?;
-        if let Some(value) = reward.get("reward").and_then(Value::as_f64) {
-            state["reward"] = json!(value);
-        }
-        state["reward_receipt"] = reward;
-    }
-    Ok(state)
 }
 
 /// Open a durable receipt for a rollout launch, returning its id.
@@ -1783,14 +1795,15 @@ pub async fn dispatch(method: &str, path: &str, body: Value, core: &CoreRuntime)
                 .or_else(|| body.get("session_ref"))
                 .and_then(Value::as_str)
                 .ok_or_else(|| anyhow::anyhow!("sessionRef required"))?;
-            let workspace = crate::optimizers::workspace_recipe::require_session_workspace(
+            let spec = crate::optimizers::container_lifecycle::resolve_spec_for_session(
                 core.storage().database(),
                 session,
-            )?;
-            let ensured = crate::optimizers::container_lifecycle::ensure(
-                core.storage().database(),
-                &workspace,
                 spec_id,
+            )?;
+            let origin = spec.origin.to_json();
+            let ensured = crate::optimizers::container_lifecycle::ensure_spec(
+                core.storage().database(),
+                &spec,
             )
             .await?;
             Ok(json!({
@@ -1798,6 +1811,7 @@ pub async fn dispatch(method: &str, path: &str, body: Value, core: &CoreRuntime)
                 "baseUrl": ensured.base_url,
                 "specId": ensured.spec_id,
                 "locality": ensured.locality.as_str(),
+                "declarationOrigin": origin,
             }))
         }
         ("POST", "/v1/containers") => {
@@ -1810,7 +1824,12 @@ pub async fn dispatch(method: &str, path: &str, body: Value, core: &CoreRuntime)
         }
         ("GET", path)
             if path.starts_with("/v1/containers/")
+                && path != "/v1/containers/ensure"
+                && path != "/v1/containers/resolve_declaration"
                 && !path.ends_with("/probe")
+                && !path.ends_with("/reconcile")
+                && !path.ends_with("/restart")
+                && !path.ends_with("/stop")
                 && !path.contains("/rollouts/") =>
         {
             let id = path.trim_start_matches("/v1/containers/");
@@ -1900,6 +1919,13 @@ pub async fn dispatch(method: &str, path: &str, body: Value, core: &CoreRuntime)
             }
             let family =
                 observed_task_family(info.as_ref(), classified, container.task_family.as_deref());
+            let live = status == crate::container_capabilities::READY_STATUS
+                && health.get("ok").and_then(Value::as_bool) != Some(false);
+            crate::optimizers::container_lifecycle::stamp_metadata_freshness(
+                &mut metadata,
+                live,
+                &chrono::Utc::now().to_rfc3339(),
+            );
             let updated = core
                 .update_container_hydration(
                     id.to_string(),
@@ -1911,16 +1937,82 @@ pub async fn dispatch(method: &str, path: &str, body: Value, core: &CoreRuntime)
                 .await?;
             Ok(json!({"container":updated}))
         }
+        ("POST", path) if path.starts_with("/v1/containers/") && path.ends_with("/reconcile") => {
+            let id = path
+                .trim_start_matches("/v1/containers/")
+                .trim_end_matches("/reconcile")
+                .trim_end_matches('/');
+            let session = body
+                .get("sessionRef")
+                .or_else(|| body.get("session_ref"))
+                .and_then(Value::as_str)
+                .ok_or_else(|| anyhow::anyhow!("sessionRef required"))?;
+            let spec = crate::optimizers::container_lifecycle::reconcile_declaration(
+                core.storage().database(),
+                session,
+                id,
+            )?;
+            let container = core.data().get_container(id.to_string()).await?;
+            Ok(json!({
+                "container": container,
+                "declarationOrigin": spec.origin.to_json(),
+                "launchDeclaration": {
+                    "valid": true,
+                    "command": spec.command,
+                    "workingDirectory": spec.cwd.display().to_string(),
+                    "sourceRoot": spec.origin.source_root.display().to_string(),
+                    "manifestPath": spec.origin.manifest_path.display().to_string(),
+                    "sourceRevision": spec.origin.source_revision,
+                    "sourceDigest": spec.origin.source_digest,
+                },
+            }))
+        }
+        ("POST", "/v1/containers/resolve_declaration") => {
+            let session = body
+                .get("sessionRef")
+                .or_else(|| body.get("session_ref"))
+                .and_then(Value::as_str)
+                .ok_or_else(|| anyhow::anyhow!("sessionRef required"))?;
+            let spec = if let Some(container_id) = body
+                .get("containerId")
+                .or_else(|| body.get("container_id"))
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+            {
+                crate::optimizers::container_lifecycle::resolve_declared_spec(
+                    core.storage().database(),
+                    session,
+                    container_id,
+                )?
+            } else {
+                let spec_id = body
+                    .get("specId")
+                    .or_else(|| body.get("spec_id"))
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| anyhow::anyhow!("specId or containerId required"))?;
+                crate::optimizers::container_lifecycle::resolve_spec_for_session(
+                    core.storage().database(),
+                    session,
+                    spec_id,
+                )?
+            };
+            Ok(json!({
+                "specId": spec.id,
+                "sourceRoot": spec.origin.source_root.display().to_string(),
+                "manifestPath": spec.origin.manifest_path.display().to_string(),
+                "declarationDigest": spec.origin.source_digest,
+                "sourceRevision": spec.origin.source_revision,
+                "declarationOrigin": spec.origin.to_json(),
+            }))
+        }
         ("POST", path) if path.starts_with("/v1/containers/") && path.ends_with("/stop") => {
             let id = path
                 .trim_start_matches("/v1/containers/")
                 .trim_end_matches("/stop")
                 .trim_end_matches('/');
-            let stopped = crate::optimizers::container_lifecycle::stop(
-                core.storage().database(),
-                id,
-            )
-            .await?;
+            let stopped =
+                crate::optimizers::container_lifecycle::stop(core.storage().database(), id).await?;
             Ok(json!({
                 "containerId": stopped.container_id,
                 "specId": stopped.spec_id,
@@ -1929,38 +2021,7 @@ pub async fn dispatch(method: &str, path: &str, body: Value, core: &CoreRuntime)
             }))
         }
         ("POST", path) if path.starts_with("/v1/containers/") && path.ends_with("/restart") => {
-            let id = path
-                .trim_start_matches("/v1/containers/")
-                .trim_end_matches("/restart")
-                .trim_end_matches('/');
-            let session = body
-                .get("sessionRef")
-                .or_else(|| body.get("session_ref"))
-                .and_then(Value::as_str)
-                .ok_or_else(|| anyhow::anyhow!("sessionRef required"))?;
-            let workspace = crate::optimizers::workspace_recipe::require_session_workspace(
-                core.storage().database(),
-                session,
-            )?;
-            let stopped = crate::optimizers::container_lifecycle::stop(
-                core.storage().database(),
-                id,
-            )
-            .await?;
-            let ensured = crate::optimizers::container_lifecycle::ensure(
-                core.storage().database(),
-                &workspace,
-                &stopped.spec_id,
-            )
-            .await?;
-            Ok(json!({
-                "containerId": ensured.container_id,
-                "baseUrl": ensured.base_url,
-                "specId": ensured.spec_id,
-                "locality": ensured.locality.as_str(),
-                "replacedPid": stopped.pid,
-                "status": "ready",
-            }))
+            anyhow::bail!("container restart requires the app-bound approval route")
         }
         ("POST", path)
             if path.starts_with("/v1/containers/") && path.ends_with("/rollouts/prepare") =>
@@ -2077,23 +2138,6 @@ pub async fn dispatch(method: &str, path: &str, body: Value, core: &CoreRuntime)
             // Workshop's index stayed empty, so the inspector could not resolve
             // a trace that demonstrably existed.
             let import = if state.get("terminated").and_then(Value::as_bool) == Some(true) {
-                // A campaign's terminal count comes from the container's own
-                // record, captured on the reconciliation the agent already
-                // performs — not from a later retelling of it.
-                if core
-                    .data()
-                    .campaign_for_rollout(rollout_id.to_string())
-                    .await?
-                    .is_some()
-                {
-                    core.data()
-                        .campaign_record_terminal(
-                            rollout_id.to_string(),
-                            state.clone(),
-                            chrono::Utc::now().to_rfc3339(),
-                        )
-                        .await?;
-                }
                 match import_terminal_trace(core, id, rollout_id, &state).await {
                     Ok(value) => value,
                     // Import is reconciliation, not the answer to this call.
@@ -2211,10 +2255,6 @@ pub async fn dispatch(method: &str, path: &str, body: Value, core: &CoreRuntime)
                 )?;
             }
             let task_instance_id = require_task_instance(&body)?;
-            // A planned rollout runs the plan. Silently starting campaign
-            // rollout 7 against a different seed would produce a distribution
-            // whose points do not mean what the plan says they mean.
-            require_campaign_plan_match(core, rollout_id, &body, &task_instance_id).await?;
             let poll_url = resolve_declared_url(&base, &declared_poll_url(stream)?)?;
             let telemetry = normalized_rollout_telemetry(body.get("telemetry"))?;
             let client = crate::http::http_client_builder()
@@ -2308,20 +2348,8 @@ pub async fn dispatch(method: &str, path: &str, body: Value, core: &CoreRuntime)
             crate::recovery::crash_checkpoint(crate::recovery::checkpoints::AFTER_TOOL_RECEIPT);
             core.update_container_last_rollout(id.to_string(), rollout_id.to_string())
                 .await?;
-            let campaign_id = core
-                .data()
-                .campaign_for_rollout(rollout_id.to_string())
-                .await?;
-            if campaign_id.is_some() {
-                core.data()
-                    .campaign_record_started(
-                        rollout_id.to_string(),
-                        chrono::Utc::now().to_rfc3339(),
-                    )
-                    .await?;
-            }
             Ok(
-                json!({"container_id":id,"rollout_id":rollout_id,"visual_id":visual_id,"visual_revision":visual.current_revision,"state":state,"subscription":subscription,"started":true,"recovered":recovered,"campaign_id":campaign_id}),
+                json!({"container_id":id,"rollout_id":rollout_id,"visual_id":visual_id,"visual_revision":visual.current_revision,"state":state,"subscription":subscription,"started":true,"recovered":recovered}),
             )
         }
         ("POST", path) if path.starts_with("/v1/containers/") && path.ends_with("/rollouts") => {
@@ -2978,9 +3006,9 @@ pub(crate) async fn dispatch_optimizer(
         | ("POST", "/v1/optimizers/evaluations/spec/admit") => {
             let request_value = body.get("request").cloned().unwrap_or(body);
             let request: crate::optimizers::admission::InlineRequest =
-                serde_json::from_value(request_value)?;
-            let admissible = crate::optimizers::inline_eval::admit_inline(optimizers, request)
-                .await?;
+                crate::optimizers::admission::InlineRequest::from_tool_arguments(request_value)?;
+            let admissible =
+                crate::optimizers::inline_eval::admit_inline(optimizers, request).await?;
             Ok(json!({
                 "sourceKind": "inline",
                 "executionSpecDigest": admissible.digest().as_str(),
@@ -2990,9 +3018,10 @@ pub(crate) async fn dispatch_optimizer(
             }))
         }
         ("POST", "/v1/optimizers/evaluations/start") => {
-            let request_value = body.get("request").cloned().unwrap_or_else(|| body.clone());
             let request: crate::optimizers::admission::InlineRequest =
-                serde_json::from_value(request_value)?;
+                crate::optimizers::admission::InlineRequest::from_tool_arguments(
+                    body.get("request").cloned().unwrap_or_else(|| body.clone()),
+                )?;
             let session_ref = body
                 .get("sessionRef")
                 .or_else(|| body.get("session_ref"))
@@ -3416,7 +3445,21 @@ pub(crate) async fn dispatch_optimizer(
             let id = path
                 .trim_start_matches("/v1/optimizers/runs/")
                 .trim_end_matches("/cancel");
-            let (run, event) = optimizers.cancel(id.to_string()).await?;
+            // This route is the agent surface (MCP relays through it). The
+            // caller may name itself in the body; without that, the route
+            // itself is the most specific identity available.
+            let requested_by = body
+                .get("requestedBy")
+                .or_else(|| body.get("requested_by"))
+                .and_then(Value::as_str)
+                .filter(|value| !value.trim().is_empty())
+                .unwrap_or("agent:optimizers_ipc");
+            let request = crate::optimizers::kernel::CancellationRequest::new(
+                crate::optimizers::kernel::CancellationCause::AgentRequested,
+                requested_by,
+                format!("run:{id}"),
+            );
+            let (run, event) = optimizers.cancel(id.to_string(), request).await?;
             Ok(json!({ "run": run, "event": event }))
         }
         ("GET", path) if path.starts_with("/v1/optimizers/runs/") && path.ends_with("/result") => {
@@ -3597,7 +3640,171 @@ async fn dispatch_diagnostics(
     }
 }
 
-fn dispatch_secrets(method: &str, path: &str, body: Value, core: &CoreRuntime) -> Result<Value> {
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct SecretsEmptyRequest {}
+
+#[derive(serde::Deserialize, Default)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct SecretsListRequest {
+    provider: Option<String>,
+    scope: Option<String>,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct SecretsLocatorRequest {
+    workspace_root_ref: String,
+    relative_path: String,
+    provider: String,
+    variable: String,
+    #[serde(default)]
+    label: Option<String>,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct SecretsSourceRequest {
+    #[serde(default)]
+    locator_id: Option<String>,
+    #[serde(default)]
+    workspace_root_ref: Option<String>,
+    #[serde(default)]
+    relative_path: Option<String>,
+    provider: String,
+    variable: String,
+    #[serde(default)]
+    label: Option<String>,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct SecretsIdRequest {
+    locator_id: String,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct SecretsRevokeUseRequest {
+    #[serde(default)]
+    capability_id: Option<String>,
+    #[serde(default)]
+    run_id: Option<String>,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct SecretsUseRequest {
+    #[serde(default)]
+    locator_id: Option<String>,
+    #[serde(default)]
+    source_id: Option<String>,
+    #[serde(default)]
+    secret_id: Option<String>,
+    #[serde(default)]
+    run_id: Option<String>,
+    #[serde(default)]
+    recipe_id: Option<String>,
+    #[serde(default)]
+    workload: Option<String>,
+}
+
+fn parse_secrets_request<T: serde::de::DeserializeOwned>(body: Value) -> Result<T> {
+    if body.as_object().is_some_and(|object| {
+        object.keys().any(|key| {
+            matches!(
+                key.to_ascii_lowercase().as_str(),
+                "value"
+                    | "secret"
+                    | "apikey"
+                    | "api_key"
+                    | "token"
+                    | "password"
+                    | "credential"
+            )
+        })
+    }) {
+        return Err(anyhow::Error::new(crate::error::StructuredFailure::new(
+            crate::secrets::lease::CREDENTIAL_LOCATOR_VALUE_SUPPLIED,
+            "credential values are not accepted by the locator registry",
+            "Pass an opaque workspaceRootRef, a relative path, and the environment variable name only.",
+        )));
+    }
+    serde_json::from_value(body).map_err(|error| {
+        anyhow::Error::new(crate::error::StructuredFailure::new(
+            "credential_locator_invalid_request",
+            format!("invalid secrets request: {error}"),
+            "Use only the documented operation fields; absolute paths and credential values are never accepted.",
+        ))
+    })
+}
+
+fn structured_credential_error(error: anyhow::Error) -> anyhow::Error {
+    let Some(failure) = error
+        .chain()
+        .find_map(|cause| cause.downcast_ref::<crate::secrets::lease::CredentialError>())
+    else {
+        return error;
+    };
+    let code = match failure.code.as_str() {
+        crate::secrets::lease::CREDENTIAL_SOURCE_UNCONFIGURED => {
+            crate::secrets::lease::CREDENTIAL_SOURCE_UNCONFIGURED
+        }
+        crate::secrets::lease::CREDENTIAL_VALUE_MISSING => {
+            crate::secrets::lease::CREDENTIAL_VALUE_MISSING
+        }
+        crate::secrets::lease::CREDENTIAL_VALUE_UNLOADED => {
+            crate::secrets::lease::CREDENTIAL_VALUE_UNLOADED
+        }
+        crate::secrets::lease::CREDENTIAL_LOCATOR_UNAPPROVED_WORKSPACE => {
+            crate::secrets::lease::CREDENTIAL_LOCATOR_UNAPPROVED_WORKSPACE
+        }
+        crate::secrets::lease::CREDENTIAL_PATH_ESCAPE => {
+            crate::secrets::lease::CREDENTIAL_PATH_ESCAPE
+        }
+        crate::secrets::lease::CREDENTIAL_LOCATOR_NOT_REGULAR_FILE => {
+            crate::secrets::lease::CREDENTIAL_LOCATOR_NOT_REGULAR_FILE
+        }
+        crate::secrets::lease::CREDENTIAL_LOCATOR_VALUE_SUPPLIED => {
+            crate::secrets::lease::CREDENTIAL_LOCATOR_VALUE_SUPPLIED
+        }
+        crate::secrets::lease::CREDENTIAL_LOCATOR_PICKER_MISMATCH => {
+            crate::secrets::lease::CREDENTIAL_LOCATOR_PICKER_MISMATCH
+        }
+        crate::secrets::lease::CREDENTIAL_LOCATOR_BROAD_DISCOVERY => {
+            crate::secrets::lease::CREDENTIAL_LOCATOR_BROAD_DISCOVERY
+        }
+        crate::secrets::lease::CREDENTIAL_LOCATOR_COMPAT_IMPORT => {
+            crate::secrets::lease::CREDENTIAL_LOCATOR_COMPAT_IMPORT
+        }
+        crate::secrets::lease::CREDENTIAL_LOCATOR_LIMIT => {
+            crate::secrets::lease::CREDENTIAL_LOCATOR_LIMIT
+        }
+        crate::secrets::lease::CREDENTIAL_DECISION_EXCEEDS_REQUEST => {
+            crate::secrets::lease::CREDENTIAL_DECISION_EXCEEDS_REQUEST
+        }
+        crate::secrets::lease::CREDENTIAL_SOURCE_CONSENT_PENDING => {
+            crate::secrets::lease::CREDENTIAL_SOURCE_CONSENT_PENDING
+        }
+        _ => return error,
+    };
+    anyhow::Error::new(
+        crate::error::StructuredFailure::new(
+            code,
+            failure.message.clone(),
+            "Inspect workspace_roots, bindings, locators, and source status before retrying.",
+        )
+        .retryable(failure.retryable),
+    )
+}
+
+async fn dispatch_secrets(
+    method: &str,
+    path: &str,
+    body: Value,
+    core: &CoreRuntime,
+    app: &AppHandle,
+) -> Result<Value> {
     let lower = path.to_ascii_lowercase();
     if lower.contains("create")
         || lower.contains("replace")
@@ -3612,74 +3819,412 @@ fn dispatch_secrets(method: &str, path: &str, body: Value, core: &CoreRuntime) -
     {
         anyhow::bail!(
             "secrets MCP cannot create, reveal, export, commit, or test credentials; \
-             list registered aliases, request a host-mediated .env import, or request use. \
-             The user approves in Settings → Secrets."
+             list credential locations, request registration, or request bounded use. \
+             Native approval cards settle agent requests."
         );
     }
     let secrets = core.secrets();
-    let mut request = body.clone();
+    let session_id = body
+        .get("sessionRef")
+        .or_else(|| body.get("session_id"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned);
+    let mut request = body;
     if let Some(object) = request.as_object_mut() {
         object.remove("sessionRef");
+        object.remove("session_id");
+        object.remove("operation");
     }
-    let str_field = |key: &str, alt: &str| {
-        request
-            .get(key)
-            .or_else(|| request.get(alt))
-            .and_then(Value::as_str)
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .map(str::to_owned)
-    };
     match (method, path) {
-        ("GET", "/v1/secrets") | ("POST", "/v1/secrets") | ("POST", "/v1/secrets/list") => {
-            let provider = str_field("provider", "provider");
-            let scope = str_field("scope", "scope");
-            let listed = secrets.list(provider.as_deref(), scope.as_deref())?;
+        ("POST", "/v1/secrets/workspace_roots") => {
+            let _: SecretsEmptyRequest = parse_secrets_request(request)?;
             Ok(json!({
-                "secrets": listed,
-                "guidance": "Registered connections are aliases only. To add one, call request_env_import with an absolute .env path, or ask the user to add it in Settings → Secrets."
+                "workspaceRoots": secrets.workspace_roots(),
             }))
+        }
+        ("POST", "/v1/secrets/bindings")
+        | ("GET", "/v1/secrets")
+        | ("POST", "/v1/secrets")
+        | ("POST", "/v1/secrets/list") => {
+            let filters: SecretsListRequest = parse_secrets_request(request)?;
+            let mut bindings = secrets.bindings().map_err(structured_credential_error)?;
+            if let Some(provider) = filters.provider.as_deref() {
+                bindings.retain(|binding| binding.provider == provider);
+            }
+            let _ = filters.scope;
+            Ok(json!({
+                "bindings": bindings,
+                "guidance": "Bindings contain source licenses and load state only. They never contain values or masked suffixes."
+            }))
+        }
+        ("POST", "/v1/secrets/locators") => {
+            let filters: SecretsListRequest = parse_secrets_request(request)?;
+            let mut locators = secrets.locators(false).map_err(structured_credential_error)?;
+            if let Some(provider) = filters.provider.as_deref() {
+                locators.retain(|locator| locator.provider == provider);
+            }
+            let _ = filters.scope;
+            Ok(json!({ "locators": locators }))
+        }
+        ("POST", "/v1/secrets/locator_request") => {
+            let session_id = session_id.ok_or_else(|| anyhow::Error::new(
+                crate::error::StructuredFailure::new(
+                    "credential_access_requires_session",
+                    "remembering a credential location requires an owning session",
+                    "Retry from the active agent session.",
+                )
+            ))?;
+            let input: SecretsLocatorRequest = parse_secrets_request(request)?;
+            let label = input.label.unwrap_or_else(|| input.provider.clone());
+            let locator = secrets
+                .remember_workspace_locator_pending(
+                    &input.workspace_root_ref,
+                    &input.relative_path,
+                    &input.provider,
+                    &input.variable,
+                    &label,
+                )
+                .map_err(structured_credential_error)?;
+            match locator.state {
+                crate::secrets::CredentialLocatorState::Observed => {
+                    return Ok(json!({ "status": "remembered", "locator": locator }));
+                }
+                crate::secrets::CredentialLocatorState::WorkspaceAuthorityRevoked => {
+                    return Err(structured_credential_error(
+                        crate::secrets::lease::CredentialError::new(
+                            crate::secrets::lease::CREDENTIAL_LOCATOR_UNAPPROVED_WORKSPACE,
+                            "locator",
+                            false,
+                            "This folder is allowed again. Forget and remember to restore.",
+                        )
+                        .anyhow(),
+                    ));
+                }
+                crate::secrets::CredentialLocatorState::ApprovalPending => {}
+                _ => {
+                    return Err(anyhow::anyhow!(
+                        "credential locator is not available to remember"
+                    ));
+                }
+            }
+            let codex = app.state::<Arc<crate::codex::CodexManager>>();
+            let outcome = codex
+                .approvals
+                .authorize_host_outcome(
+                    app,
+                    Some(&session_id),
+                    crate::session::approval::ApprovalKind::CredentialAccess {
+                        consent: crate::session::approval::CredentialConsent::RememberLocator,
+                        provider: input.provider,
+                        purpose: "Remember this credential location without loading its value".into(),
+                        locator_id: Some(locator.id.clone()),
+                        display_path: Some(locator.display_path.clone()),
+                        variable: Some(input.variable),
+                        switch_from_display: None,
+                    },
+                )
+                .await;
+            match outcome {
+                Ok((_, crate::session::approval::ApprovalDecision::Credential {
+                    outcome: crate::session::approval::CredentialDecision::RememberLocator,
+                })) => secrets
+                    .settle_remembered_locator(&locator.id)
+                    .map_err(structured_credential_error)?,
+                Ok(_) => unreachable!("credential decision validation refused this outcome"),
+                Err(error) => {
+                    let _ = secrets.deny_pending_locator(&locator.id);
+                    return Err(structured_credential_error(error));
+                }
+            }
+            let remembered = secrets
+                .locators(false)
+                .map_err(structured_credential_error)?
+                .into_iter()
+                .find(|row| row.id == locator.id);
+            Ok(json!({ "status": "remembered", "locator": remembered }))
+        }
+        ("POST", "/v1/secrets/source_request") => {
+            let session_id = session_id.ok_or_else(|| anyhow::Error::new(
+                crate::error::StructuredFailure::new(
+                    "credential_access_requires_session",
+                    "registering a credential source requires an owning session",
+                    "Retry from the active agent session.",
+                )
+            ))?;
+            let input: SecretsSourceRequest = parse_secrets_request(request)?;
+            if input.locator_id.is_some()
+                && (input.workspace_root_ref.is_some() || input.relative_path.is_some())
+            {
+                anyhow::bail!(
+                    "source_request accepts locatorId or workspaceRootRef plus relativePath, not both"
+                );
+            }
+            let label = input.label.clone().unwrap_or_else(|| input.provider.clone());
+            let locator = if let Some(locator_id) = input.locator_id.as_deref() {
+                secrets
+                    .locators(false)
+                    .map_err(structured_credential_error)?
+                    .into_iter()
+                    .find(|row| row.id == locator_id)
+                    .ok_or_else(|| anyhow::anyhow!("credential locator {locator_id} was not found"))?
+            } else {
+                let workspace_root_ref = input.workspace_root_ref.as_deref().ok_or_else(|| {
+                    anyhow::anyhow!("workspaceRootRef is required when locatorId is omitted")
+                })?;
+                let relative_path = input.relative_path.as_deref().ok_or_else(|| {
+                    anyhow::anyhow!("relativePath is required when locatorId is omitted")
+                })?;
+                secrets
+                    .remember_workspace_locator_pending(
+                        workspace_root_ref,
+                        relative_path,
+                        &input.provider,
+                        &input.variable,
+                        &label,
+                    )
+                    .map_err(structured_credential_error)?
+            };
+            if locator.provider != input.provider.trim().to_ascii_lowercase()
+                || locator.variable != input.variable.trim()
+            {
+                anyhow::bail!(
+                    "source_request provider and variable must match the selected locator"
+                );
+            }
+            if locator.loaded {
+                return Ok(json!({ "status": "registered", "locator": locator }));
+            }
+            secrets
+                .begin_source_consent(&input.provider, &input.variable)
+                .map_err(structured_credential_error)?;
+            let was_existing = match secrets.prepare_register_approval(&locator.id) {
+                Ok(value) => value,
+                Err(error) => {
+                    secrets.end_source_consent(&input.provider, &input.variable);
+                    return Err(structured_credential_error(error));
+                }
+            };
+            let switch_from_display = match secrets.locators(false) {
+                Ok(rows) => rows
+                    .into_iter()
+                    .find(|row| {
+                        row.preferred
+                            && row.id != locator.id
+                            && row.provider == locator.provider
+                            && row.variable == locator.variable
+                    })
+                    .map(|row| row.display_path),
+                Err(error) => {
+                    if was_existing {
+                        let _ = secrets.settle_remembered_locator(&locator.id);
+                    } else {
+                        let _ = secrets.deny_pending_locator(&locator.id);
+                    }
+                    secrets.end_source_consent(&input.provider, &input.variable);
+                    return Err(structured_credential_error(error));
+                }
+            };
+            let codex = app.state::<Arc<crate::codex::CodexManager>>();
+            let outcome = codex
+                .approvals
+                .authorize_host_outcome(
+                    app,
+                    Some(&session_id),
+                    crate::session::approval::ApprovalKind::CredentialAccess {
+                        consent: crate::session::approval::CredentialConsent::RegisterSource,
+                        provider: input.provider.clone(),
+                        purpose: "Register this location as the provider source".into(),
+                        locator_id: Some(locator.id.clone()),
+                        display_path: Some(locator.display_path.clone()),
+                        variable: Some(input.variable.clone()),
+                        switch_from_display,
+                    },
+                )
+                .await;
+            let result: Result<Value> = match outcome {
+                Ok((_, crate::session::approval::ApprovalDecision::Credential {
+                    outcome: crate::session::approval::CredentialDecision::RememberLocator,
+                })) => secrets
+                    .settle_remembered_locator(&locator.id)
+                    .map(|_| json!({ "status": "remembered" }))
+                    .map_err(structured_credential_error),
+                Ok((_, crate::session::approval::ApprovalDecision::Credential {
+                    outcome: crate::session::approval::CredentialDecision::RegisterSource,
+                })) => secrets
+                    .register_locator(&locator.id)
+                    .map(|registered| {
+                        json!({ "status": "registered", "locator": registered })
+                    })
+                    .map_err(structured_credential_error),
+                Ok(_) => unreachable!("credential decision validation refused this outcome"),
+                Err(error) => Err(structured_credential_error(error)),
+            };
+            if result.is_err() {
+                if was_existing {
+                    let _ = secrets.settle_remembered_locator(&locator.id);
+                } else {
+                    let _ = secrets.deny_pending_locator(&locator.id);
+                }
+            }
+            secrets.end_source_consent(&input.provider, &input.variable);
+            result
+        }
+        ("POST", "/v1/secrets/locator_status")
+        | ("POST", "/v1/secrets/source_status") => {
+            let input: SecretsIdRequest = parse_secrets_request(request)?;
+            let locator = secrets
+                .locators(false)
+                .map_err(structured_credential_error)?
+                .into_iter()
+                .find(|row| row.id == input.locator_id)
+                .ok_or_else(|| anyhow::anyhow!("credential locator was not found"))?;
+            Ok(json!({ "locator": locator }))
+        }
+        ("POST", "/v1/secrets/locator_remove") => {
+            let input: SecretsIdRequest = parse_secrets_request(request)?;
+            let codex = app.state::<Arc<crate::codex::CodexManager>>();
+            let _ = codex
+                .approvals
+                .expire_credential_locator(app, &input.locator_id, "credential_locator_forgotten")
+                .await;
+            secrets
+                .forget_locator(&input.locator_id)
+                .map_err(structured_credential_error)?;
+            Ok(json!({ "status": "forgotten" }))
+        }
+        ("POST", "/v1/secrets/source_remove") => {
+            let input: SecretsIdRequest = parse_secrets_request(request)?;
+            let codex = app.state::<Arc<crate::codex::CodexManager>>();
+            let _ = codex
+                .approvals
+                .expire_credential_locator(app, &input.locator_id, "credential_source_removed")
+                .await;
+            secrets
+                .remove_locator_source(&input.locator_id)
+                .map_err(structured_credential_error)?;
+            Ok(json!({
+                "status": "unregistered",
+                "sourceRegistered": false,
+                "guidance": "This removes the reusable source registration. Use use_revoke to revoke only a run capability."
+            }))
+        }
+        ("POST", "/v1/secrets/use_revoke") => {
+            let input: SecretsRevokeUseRequest = parse_secrets_request(request)?;
+            match (input.capability_id.as_deref(), input.run_id.as_deref()) {
+                (Some(capability_id), None) => {
+                    secrets
+                        .revoke_capability(capability_id, "agent")
+                        .map_err(structured_credential_error)?;
+                    Ok(json!({
+                        "status": "revoked",
+                        "capabilityId": capability_id,
+                        "sourceRegistered": true,
+                    }))
+                }
+                (None, Some(run_id)) => {
+                    let revoked = secrets
+                        .revoke_run(run_id)
+                        .map_err(structured_credential_error)?;
+                    Ok(json!({
+                        "status": "revoked",
+                        "runId": run_id,
+                        "capabilityIds": revoked,
+                        "sourceRegistered": true,
+                    }))
+                }
+                _ => anyhow::bail!(
+                    "use_revoke requires exactly one of capabilityId or runId"
+                ),
+            }
         }
         ("POST", "/v1/secrets/import") => {
-            let source = str_field("sourcePath", "source_path")
-                .ok_or_else(|| anyhow::anyhow!("sourcePath is required"))?;
-            let names = request
-                .get("variableNames")
-                .or_else(|| request.get("variable_names"))
-                .and_then(Value::as_array)
-                .map(|items| {
-                    items
-                        .iter()
-                        .filter_map(Value::as_str)
-                        .map(str::to_owned)
-                        .collect::<Vec<_>>()
-                })
-                .unwrap_or_default();
-            let preview = secrets.request_env_import(
-                &source,
-                &names,
-                "personal/development/providers",
-                &crate::secrets::import_roots(),
-            )?;
-            Ok(json!({
-                "status": preview.status,
-                "requestId": preview.request_id,
-                "sourcePath": preview.source_path,
-                "candidates": preview.candidates,
-                "guidance": "Approve or deny this import in Settings → Secrets. This result contains masked suffixes only."
-            }))
+            Err(anyhow::Error::new(crate::error::StructuredFailure::new(
+                crate::secrets::lease::CREDENTIAL_LOCATOR_COMPAT_IMPORT,
+                "request_env_import has been replaced by the credential locator registry",
+                "Call workspace_roots_list, locators_list, source_request, then request_use. Absolute source paths are not accepted.",
+            )))
         }
         ("POST", "/v1/secrets/use") => {
-            let secret_id = str_field("secretId", "secret_id")
-                .ok_or_else(|| anyhow::anyhow!("secretId is required"))?;
-            let run_id = str_field("runId", "run_id").unwrap_or_else(|| "session".into());
-            let recipe_id = str_field("recipeId", "recipe_id").unwrap_or_else(|| "session".into());
+            let input: SecretsUseRequest = parse_secrets_request(request)?;
+            let target_count = [
+                input.locator_id.is_some(),
+                input.source_id.is_some(),
+                input.secret_id.is_some(),
+            ]
+            .into_iter()
+            .filter(|present| *present)
+            .count();
+            if target_count != 1 {
+                anyhow::bail!("request_use requires exactly one of locatorId, sourceId, or secretId");
+            }
+            let secret_id = if let Some(locator_id) = input.locator_id.as_deref() {
+                secrets
+                    .source_for_locator(locator_id)
+                    .map_err(structured_credential_error)?
+            } else {
+                input.source_id.or(input.secret_id).expect("one target was checked")
+            };
+            let run_id = input.run_id.unwrap_or_else(|| "session".into());
+            let recipe_id = input.recipe_id.unwrap_or_else(|| "session".into());
             // An MCP client may select a known workload contract, never arbitrary
             // operations or spend limits.  Codex is a Responses client, whereas
             // the generic assistant path remains Chat Completions only.
-            let policy = agent_use_policy(str_field("workload", "workload").as_deref())?;
-            let result =
+            let policy = agent_use_policy(input.workload.as_deref())?;
+            let mut result =
                 secrets.request_use(&secret_id, &run_id, &recipe_id, policy.clone(), "agent")?;
+            if result.status == "approval_required" {
+                let provider_display = secrets
+                    .list(None, None)?
+                    .into_iter()
+                    .find(|entry| entry.id == secret_id)
+                    .map(|entry| entry.provider)
+                    .unwrap_or_else(|| "Unknown provider".into());
+                let session_id = session_id.as_deref()
+                    .ok_or_else(|| anyhow::anyhow!(
+                        "credential_access_requires_session: request_use must name its owning session"
+                    ))?;
+                let request_id = result.request_id.clone().ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "credential_access_request_invalid: pending use has no request id"
+                    )
+                })?;
+                let purpose = format!(
+                    "Issue a run-scoped Workshop proxy capability for recipe {recipe_id}, run {run_id}; operations={}; maxCalls={}; maxCostUsd={}",
+                    policy.operations.join(","),
+                    policy.max_calls,
+                    policy.max_cost_usd,
+                );
+                let codex = app.state::<Arc<crate::codex::CodexManager>>();
+                let approval = codex
+                    .approvals
+                    .authorize_host(
+                        app,
+                        Some(&session_id),
+                        crate::session::approval::ApprovalKind::CredentialAccess {
+                            consent: crate::session::approval::CredentialConsent::IssueLease,
+                            provider: provider_display,
+                            purpose,
+                            locator_id: input.locator_id.clone(),
+                            display_path: None,
+                            variable: None,
+                            switch_from_display: None,
+                        },
+                    )
+                    .await;
+                match approval {
+                    Ok(_) => {
+                        result = secrets.grant_pending(&request_id, "agent", false)?;
+                    }
+                    Err(error) => {
+                        let _ = secrets.deny_pending(&request_id, "agent");
+                        return Err(structured_credential_error(
+                            error.context("credential access was not approved"),
+                        ));
+                    }
+                }
+            }
             Ok(json!({
                 "status": result.status,
                 "requestId": result.request_id,
@@ -3692,11 +4237,7 @@ fn dispatch_secrets(method: &str, path: &str, body: Value, core: &CoreRuntime) -
                     "maxCalls": policy.max_calls,
                     "maxCostUsd": policy.max_cost_usd,
                 },
-                "guidance": if result.status == "approval_required" {
-                    "Ask the user to allow this in Settings → Secrets, then call request_use again."
-                } else {
-                    "Use provider_routes.openai_base unchanged with OPENAI_API_KEY=workshop-proxy. Do not construct a route from proxyOrigin or handle."
-                }
+                "guidance": "The native approval has settled. Use provider_routes.openai_base unchanged with OPENAI_API_KEY=workshop-proxy. Do not construct a route from proxyOrigin or handle."
             }))
         }
         (method, path) => anyhow::bail!("unknown secrets route {method} {path}"),
@@ -3872,11 +4413,12 @@ pub(crate) async fn import_container_trace_into(
             return Err(error);
         }
     };
-    let (frames, max_step) = (if source_kind == "container_bundle" && result.trusted {
-        extract_imported_trace_frames(&source_path, rollout_id)
-    } else {
-        Ok((Vec::new(), None))
-    })?;
+    let (frames, max_step, trace_provenance) =
+        (if source_kind == "container_bundle" && result.trusted {
+            extract_imported_trace_frames(&source_path, rollout_id)
+        } else {
+            Ok((Vec::new(), None, None))
+        })?;
     let _ = fs::remove_file(&source_path);
 
     let indexed: Vec<Value> = result
@@ -3884,27 +4426,35 @@ pub(crate) async fn import_container_trace_into(
         .iter()
         .map(|trace| json!({"traceId": trace.id, "digest": trace.digest}))
         .collect();
-    Ok((json!({
-        "containerId": container_id,
-        "rolloutId": rollout_id,
-        "sourceKind": source_kind,
-        "compatibilityLevel": result.compatibility_level,
-        "trusted": result.trusted,
-        "duplicate": result.duplicate,
-        // Inspectable only when a capture-supervisor Trace V5 bundle indexed
-        // real traces. A lite seal is retained with its provenance but cannot
-        // be projected; saying otherwise is how an agent retries an inspector
-        // that can never render.
-        "inspectable": source_kind == "container_bundle" && !indexed.is_empty(),
-        "traces": indexed,
-        "note": if indexed.is_empty() {
-            "Imported as a provenance record only: this container returned a lite seal, not a self-contained Trace V5 bundle, so it cannot be projected into the inspector."
-        } else {
-            "Sealed Trace V5 is now indexed in Workshop."
-        },
-        "embeddedFrameCount": frames.len(),
-        "maxStep": max_step,
-    }), event, frames))
+    Ok((
+        json!({
+            "containerId": container_id,
+            "rolloutId": rollout_id,
+            "sourceKind": source_kind,
+            "compatibilityLevel": result.compatibility_level,
+            "trusted": result.trusted,
+            "duplicate": result.duplicate,
+            "inputDigest": result.input_digest,
+            "bundleDigest": result.bundle_digest,
+            "archiveDigest": result.archive_digest,
+            "traceProvenance": trace_provenance,
+            // Inspectable only when a capture-supervisor Trace V5 bundle indexed
+            // real traces. A lite seal is retained with its provenance but cannot
+            // be projected; saying otherwise is how an agent retries an inspector
+            // that can never render.
+            "inspectable": source_kind == "container_bundle" && !indexed.is_empty(),
+            "traces": indexed,
+            "note": if indexed.is_empty() {
+                "Imported as a provenance record only: this container returned a lite seal, not a self-contained Trace V5 bundle, so it cannot be projected into the inspector."
+            } else {
+                "Sealed Trace V5 is now indexed in Workshop."
+            },
+            "embeddedFrameCount": frames.len(),
+            "maxStep": max_step,
+        }),
+        event,
+        frames,
+    ))
 }
 
 #[derive(Clone, Debug)]
@@ -3920,7 +4470,7 @@ pub(crate) struct ImportedTraceFrame {
 fn extract_imported_trace_frames(
     archive_path: &std::path::Path,
     rollout_id: &str,
-) -> Result<(Vec<ImportedTraceFrame>, Option<i64>)> {
+) -> Result<(Vec<ImportedTraceFrame>, Option<i64>, Option<Value>)> {
     let file = fs::File::open(archive_path)
         .with_context(|| format!("open imported trace archive {}", archive_path.display()))?;
     let mut archive = zip::ZipArchive::new(file).context("open imported trace ZIP")?;
@@ -3933,6 +4483,7 @@ fn extract_imported_trace_frames(
         .collect::<Vec<_>>();
     let mut frames = Vec::new();
     let mut max_step = None::<i64>;
+    let mut trace_provenance = None::<Value>;
     for name in sealed_names {
         let document = {
             let mut entry = archive.by_name(&name)?;
@@ -3943,8 +4494,22 @@ fn extract_imported_trace_frames(
             entry.read_to_end(&mut bytes)?;
             serde_json::from_slice::<Value>(&bytes).context("decode sealed trace document")?
         };
-        if document.pointer("/identity/rollout_id").and_then(Value::as_str) != Some(rollout_id) {
+        if document
+            .pointer("/identity/rollout_id")
+            .and_then(Value::as_str)
+            != Some(rollout_id)
+        {
             continue;
+        }
+        if let Some(provenance) = document.get("provenance").filter(|value| value.is_object()) {
+            if let Some(previous) = &trace_provenance {
+                anyhow::ensure!(
+                    previous == provenance,
+                    "sealed traces for rollout `{rollout_id}` disagree on provenance"
+                );
+            } else {
+                trace_provenance = Some(provenance.clone());
+            }
         }
         let artifacts = document
             .get("artifacts")
@@ -4003,12 +4568,17 @@ fn extract_imported_trace_frames(
                     "sealed frame event omitted step for unique artifact `{artifact_id}`"
                 ),
             };
-            let artifact = artifacts.get(artifact_id)
+            let artifact = artifacts
+                .get(artifact_id)
                 .context("sealed frame event references an unknown PNG artifact")?;
-            let uri = artifact.get("uri").and_then(Value::as_str)
+            let uri = artifact
+                .get("uri")
+                .and_then(Value::as_str)
                 .context("sealed frame artifact omitted bundle URI")?;
             let bytes = {
-                let mut blob = archive.by_name(uri).context("sealed frame blob missing from bundle")?;
+                let mut blob = archive
+                    .by_name(uri)
+                    .context("sealed frame blob missing from bundle")?;
                 if blob.size() > 16 * 1024 * 1024 {
                     anyhow::bail!("sealed frame blob exceeded 16 MiB");
                 }
@@ -4017,7 +4587,9 @@ fn extract_imported_trace_frames(
                 bytes
             };
             let actual = format!("sha256:{:x}", sha2::Sha256::digest(&bytes));
-            let digest = artifact.get("digest").and_then(Value::as_str)
+            let digest = artifact
+                .get("digest")
+                .and_then(Value::as_str)
                 .context("sealed frame artifact omitted digest")?;
             if actual != digest {
                 anyhow::bail!("sealed frame artifact digest mismatch");
@@ -4029,7 +4601,9 @@ fn extract_imported_trace_frames(
             let mut reader = decoder.read_info().context("decode sealed frame PNG")?;
             let (width, height) = (reader.info().width, reader.info().height);
             let mut decoded = vec![0; reader.output_buffer_size()];
-            reader.next_frame(&mut decoded).context("fully decode sealed frame PNG")?;
+            reader
+                .next_frame(&mut decoded)
+                .context("fully decode sealed frame PNG")?;
             frames.push(ImportedTraceFrame {
                 bytes,
                 digest: digest.to_string(),
@@ -4043,7 +4617,7 @@ fn extract_imported_trace_frames(
             imported_artifacts.insert(artifact_id.to_string());
         }
     }
-    Ok((frames, max_step))
+    Ok((frames, max_step, trace_provenance))
 }
 
 /// Capture-supervisor bundle first (Lane E `/rollouts/{id}/trace/bundle`),
@@ -4113,169 +4687,6 @@ async fn fetch_trace_artifact(
     Ok(Some(bytes.to_vec()))
 }
 
-/// The campaign surface: plan, reconcile, settle.
-///
-/// Reconcile and settle both read the container's authoritative rollout records
-/// rather than anything an agent reports, because the failure this contract
-/// exists for is an agent's own summary of work it did not do.
-async fn dispatch_campaigns(
-    method: &str,
-    path: &str,
-    body: Value,
-    core: &CoreRuntime,
-) -> Result<Value> {
-    match (method, path) {
-        ("POST", "/v1/campaigns") => {
-            let container_id = json_field(&body, "containerId", "container_id")
-                .and_then(Value::as_str)
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-                .context("campaign requires container_id")?
-                .to_owned();
-            // Resolve the container now: a plan that names a container this
-            // instance does not have is not a plan.
-            core.data().get_container(container_id.clone()).await?;
-            let expected = json_field(&body, "expectedRollouts", "expected_rollouts")
-                .and_then(Value::as_i64)
-                .context("campaign requires expected_rollouts")?;
-            let seeds = json_field(&body, "seeds", "seeds").and_then(Value::as_array);
-            let seed_start = json_field(&body, "seedStart", "seed_start").and_then(Value::as_i64);
-            let seeds = crate::campaigns::resolve_seeds(seeds, seed_start, expected)?;
-            let id = json_field(&body, "campaignId", "campaign_id")
-                .and_then(Value::as_str)
-                .map(str::to_owned)
-                .unwrap_or_else(|| format!("camp_{}", Uuid::new_v4().simple()));
-            let request = crate::campaigns::CampaignCreate {
-                id,
-                session_id: json_field(&body, "sessionRef", "session_id")
-                    .and_then(Value::as_str)
-                    .map(str::to_owned)
-                    .or_else(|| std::env::var("SYNTH_SESSION_ID").ok()),
-                container_id,
-                title: json_field(&body, "title", "title")
-                    .and_then(Value::as_str)
-                    .unwrap_or("Evaluation campaign")
-                    .to_owned(),
-                expected_rollouts: expected,
-                max_concurrency: json_field(&body, "maxConcurrency", "max_concurrency")
-                    .and_then(Value::as_i64)
-                    .unwrap_or(4),
-                policy_ref: require_caller_policy_ref(&body)?,
-                seeds,
-                task_instance_template: json_field(&body, "taskInstance", "task_instance_template")
-                    .and_then(Value::as_str)
-                    .unwrap_or("seed:{seed}")
-                    .to_owned(),
-                created_at: chrono::Utc::now().to_rfc3339(),
-            };
-            let campaign = core.data().campaign_create(request).await?;
-            Ok(json!({
-                "campaign": campaign,
-                "instruction": "Start every planned rollout with its own rollout_id, seed, and task_instance_id, then reconcile. A campaign settles complete only when every planned rollout has a terminal record.",
-            }))
-        }
-        ("GET", path) if path.starts_with("/v1/campaigns/") && !path.contains('/') => {
-            let id = path.trim_start_matches("/v1/campaigns/");
-            Ok(json!({"campaign": core.data().campaign_get(id.to_string()).await?}))
-        }
-        ("POST", path) if path.ends_with("/reconcile") => {
-            let id = path
-                .trim_start_matches("/v1/campaigns/")
-                .trim_end_matches("/reconcile")
-                .trim_end_matches('/');
-            Ok(json!({"campaign": reconcile_campaign(core, id).await?}))
-        }
-        ("POST", path) if path.ends_with("/result") => {
-            let id = path
-                .trim_start_matches("/v1/campaigns/")
-                .trim_end_matches("/result")
-                .trim_end_matches('/');
-            // Reconcile first, always. A result computed from stale local state
-            // is the same failure as an agent's own summary.
-            reconcile_campaign(core, id).await?;
-            core.data()
-                .campaign_settle(id.to_string(), chrono::Utc::now().to_rfc3339())
-                .await
-        }
-        ("GET", path) if path.starts_with("/v1/campaigns/") => {
-            let id = path
-                .trim_start_matches("/v1/campaigns/")
-                .trim_end_matches('/');
-            Ok(json!({"campaign": core.data().campaign_get(id.to_string()).await?}))
-        }
-        _ => anyhow::bail!("unsupported campaign IPC route {method} {path}"),
-    }
-}
-
-/// Hold a campaign rollout to the plan it was allocated.
-///
-/// A rollout id that belongs to a campaign carries that campaign's seed and task
-/// instance. Starting it with different ones would leave a ten-point
-/// distribution whose points are not the ten the plan named, and nothing
-/// downstream could tell.
-async fn require_campaign_plan_match(
-    core: &CoreRuntime,
-    rollout_id: &str,
-    body: &Value,
-    task_instance_id: &str,
-) -> Result<()> {
-    let Some(campaign_id) = core
-        .data()
-        .campaign_for_rollout(rollout_id.to_string())
-        .await?
-    else {
-        return Ok(());
-    };
-    let campaign = core.data().campaign_get(campaign_id.clone()).await?;
-    let Some(plan) = campaign
-        .rollouts
-        .iter()
-        .find(|rollout| rollout.rollout_id == rollout_id)
-    else {
-        return Ok(());
-    };
-    let seed = body.get("seed").and_then(Value::as_i64);
-    if let Some(seed) = seed {
-        if seed != plan.seed {
-            return Err(anyhow::Error::new(
-                crate::error::StructuredFailure::new(
-                    "campaign_rollout_plan_mismatch",
-                    format!(
-                        "{rollout_id} is planned for seed {} in campaign {campaign_id}, not seed {seed}",
-                        plan.seed
-                    ),
-                    "Start each campaign rollout with the seed and task instance its plan allocated, or create a new campaign.",
-                )
-                .with_details(json!({
-                    "campaignId": campaign_id,
-                    "rolloutId": rollout_id,
-                    "plannedSeed": plan.seed,
-                    "requestedSeed": seed,
-                })),
-            ));
-        }
-    }
-    if task_instance_id != plan.task_instance_id {
-        return Err(anyhow::Error::new(
-            crate::error::StructuredFailure::new(
-                "campaign_rollout_plan_mismatch",
-                format!(
-                    "{rollout_id} is planned for task instance {} in campaign {campaign_id}, not {task_instance_id}",
-                    plan.task_instance_id
-                ),
-                "Start each campaign rollout with the seed and task instance its plan allocated, or create a new campaign.",
-            )
-            .with_details(json!({
-                "campaignId": campaign_id,
-                "rolloutId": rollout_id,
-                "plannedTaskInstanceId": plan.task_instance_id,
-                "requestedTaskInstanceId": task_instance_id,
-            })),
-        ));
-    }
-    Ok(())
-}
-
 async fn dispatch_experiments(
     method: &str,
     path: &str,
@@ -4292,9 +4703,7 @@ async fn dispatch_experiments(
                 serde_json::from_value(payload)?;
             Ok(json!({"experiment": core.data().experiment_create(request).await?}))
         }
-        ("POST", path)
-            if path.starts_with("/v1/experiments/") && path.ends_with("/children") =>
-        {
+        ("POST", path) if path.starts_with("/v1/experiments/") && path.ends_with("/children") => {
             let parent_id = path
                 .trim_start_matches("/v1/experiments/")
                 .trim_end_matches("/children")
@@ -4314,9 +4723,7 @@ async fn dispatch_experiments(
                 "experiment": core.data().experiment_create_child(request).await?
             }))
         }
-        ("POST", path)
-            if path.starts_with("/v1/experiments/") && path.ends_with("/relate") =>
-        {
+        ("POST", path) if path.starts_with("/v1/experiments/") && path.ends_with("/relate") => {
             let experiment_id = path
                 .trim_start_matches("/v1/experiments/")
                 .trim_end_matches("/relate")
@@ -4336,9 +4743,7 @@ async fn dispatch_experiments(
                 "experiment": core.data().experiment_relate(request).await?
             }))
         }
-        ("POST", path)
-            if path.starts_with("/v1/experiments/") && path.ends_with("/activate") =>
-        {
+        ("POST", path) if path.starts_with("/v1/experiments/") && path.ends_with("/activate") => {
             let experiment_id = path
                 .trim_start_matches("/v1/experiments/")
                 .trim_end_matches("/activate")
@@ -4402,74 +4807,21 @@ async fn dispatch_experiments(
             Ok(json!({"experiment": core.data().experiment_attach_evidence(request).await?}))
         }
         ("POST", path) if path.starts_with("/v1/experiments/") && path.ends_with("/finalize") => {
-            let experiment_id = path.trim_start_matches("/v1/experiments/").trim_end_matches("/finalize").trim_end_matches('/');
+            let experiment_id = path
+                .trim_start_matches("/v1/experiments/")
+                .trim_end_matches("/finalize")
+                .trim_end_matches('/');
             let mut payload = body;
             payload["experimentId"] = json!(experiment_id);
-            if payload.get("finalizedAt").is_none() { payload["finalizedAt"] = json!(chrono::Utc::now().to_rfc3339()); }
-            let request: crate::experiments::ExperimentFinalizeRequest = serde_json::from_value(payload)?;
+            if payload.get("finalizedAt").is_none() {
+                payload["finalizedAt"] = json!(chrono::Utc::now().to_rfc3339());
+            }
+            let request: crate::experiments::ExperimentFinalizeRequest =
+                serde_json::from_value(payload)?;
             Ok(json!({"experiment": core.data().experiment_finalize(request).await?}))
         }
         _ => anyhow::bail!("unknown experiments route {method} {path}"),
     }
-}
-
-/// Ask the container about every planned rollout and record what it says.
-async fn reconcile_campaign(core: &CoreRuntime, id: &str) -> Result<crate::campaigns::Campaign> {
-    let campaign = core.data().campaign_get(id.to_string()).await?;
-    let container = core
-        .data()
-        .get_container(campaign.container_id.clone())
-        .await?;
-    let base = validated_loopback_rollout_base(
-        container
-            .base_url
-            .as_deref()
-            .context("container has no base URL")?,
-    )?;
-    let client = crate::http::http_client_builder()
-        .redirect(reqwest::redirect::Policy::none())
-        .timeout(limits::VISUALS_IPC_ROLL_TIMEOUT)
-        .build()?;
-    for rollout in &campaign.rollouts {
-        let Some(state) = get_rollout_status(&client, &base, &rollout.rollout_id).await? else {
-            continue;
-        };
-        let state = if state.get("terminated").and_then(Value::as_bool) == Some(true) {
-            enrich_terminal_evidence(&client, &base, &rollout.rollout_id, state).await?
-        } else {
-            state
-        };
-        let now = chrono::Utc::now().to_rfc3339();
-        let already_settled = matches!(rollout.status.as_str(), "terminal" | "failed");
-        if state.get("terminated").and_then(Value::as_bool) == Some(true) {
-            // Always refresh the terminal JSON. Reward receipts or a canonical
-            // trace bundle may become available after the first terminal poll.
-            core.data()
-                .campaign_record_terminal(rollout.rollout_id.clone(), state.clone(), now)
-                .await?;
-        } else if !already_settled {
-            if state.get("started").and_then(Value::as_bool) == Some(true) {
-                core.data()
-                    .campaign_record_started(rollout.rollout_id.clone(), now)
-                    .await?;
-            }
-        }
-        // Consume the sealed-trace announcement even after local terminal
-        // settlement: a capture-supervisor bundle can appear after the
-        // rollout record itself went terminal.
-        if state
-            .get("trace")
-            .filter(|value| value.is_object())
-            .is_some()
-            || state.get("terminated").and_then(Value::as_bool) == Some(true)
-            || already_settled
-        {
-            let _ =
-                import_terminal_trace(core, &campaign.container_id, &rollout.rollout_id, &state)
-                    .await;
-        }
-    }
-    core.data().campaign_get(id.to_string()).await
 }
 
 async fn dispatch_traces(
@@ -4662,6 +5014,133 @@ async fn dispatch_computer_use(
         }
         _ => anyhow::bail!("unsupported computer-use IPC route {method} {path}"),
     }
+}
+
+pub(crate) async fn dispatch_container_restart(
+    path: &str,
+    body: Value,
+    core: &CoreRuntime,
+    app: &AppHandle,
+) -> Result<Value> {
+    let id = path
+        .trim_start_matches("/v1/containers/")
+        .trim_end_matches("/restart")
+        .trim_end_matches('/');
+    let session = body
+        .get("sessionRef")
+        .or_else(|| body.get("session_ref"))
+        .and_then(Value::as_str)
+        .ok_or_else(|| anyhow::anyhow!("sessionRef required"))?;
+    // Validate and reconcile before the destructive approval. An invalid
+    // declaration must not consume a click.
+    let spec = crate::optimizers::container_lifecycle::reconcile_declaration(
+        core.storage().database(),
+        session,
+        id,
+    )?;
+    let launcher = spec.command.join(" ");
+    let declaration_digest =
+        crate::optimizers::container_lifecycle::approval_declaration_digest(&spec)?;
+    let effect = format!(
+        "Stop the currently registered workload when Workshop owns it, then run `{launcher}` from {} (revision {}, digest {}).",
+        spec.origin.source_root.display(),
+        spec.origin.source_revision.as_deref().unwrap_or("unknown"),
+        spec.origin.source_digest.as_deref().unwrap_or("none")
+    );
+    let broker = app
+        .try_state::<Arc<crate::session::approval::ApprovalBroker>>()
+        .ok_or_else(|| anyhow::anyhow!("approval broker unavailable"))?;
+    let authorization = broker
+        .authorize_host(
+            app,
+            Some(session),
+            crate::session::approval::ApprovalKind::ContainerLifecycle {
+                container_id: id.to_owned(),
+                declaration_id: spec.id.clone(),
+                declaration_digest: declaration_digest.clone(),
+                manifest_path: spec.origin.manifest_path.display().to_string(),
+                source_root: spec.origin.source_root.display().to_string(),
+                source_revision: spec.origin.source_revision.clone(),
+                source_digest: spec.origin.source_digest.clone(),
+                action: "force_replace".into(),
+                effect,
+            },
+        )
+        .await
+        .map_err(|error| {
+            let _ = core.storage().database().transaction(|conn| {
+                if let Some(open) =
+                    crate::platform::failure::repository::FailureRepository::open_for_container(
+                        conn, id,
+                    )?
+                {
+                    crate::platform::failure::FailureAuthority::transition(
+                        conn,
+                        open.failure_id.as_str(),
+                        crate::platform::failure::FailureLifecycleState::Terminalized,
+                        crate::platform::failure::TransitionReason::ApprovalDenied,
+                        "operator",
+                    )?;
+                }
+                Ok(())
+            });
+            error
+        });
+    let mut continuation =
+        crate::optimizers::container_lifecycle::ContainerReplacementContinuation::new(
+            authorization,
+            declaration_digest,
+        );
+    let outcome = continuation
+        .consume(core.storage().database(), session, id, &spec)
+        .await?;
+    let approval_id = outcome.approval_id;
+    let approved = outcome.declaration;
+    let stopped = outcome.stopped;
+    let ensured = outcome.ensured;
+    let _ = core.storage().database().transaction(|conn| {
+        if let Some(open) =
+            crate::platform::failure::repository::FailureRepository::open_for_container(conn, id)?
+        {
+            let plan = crate::platform::failure::RecoveryPlan::restart_container(
+                open.failure_id.clone(),
+                id.to_owned(),
+                spec.id.clone(),
+            );
+            crate::platform::failure::recovery::insert_plan(conn, &plan)?;
+            crate::platform::failure::recovery::insert_receipt(
+                conn,
+                &crate::platform::failure::RecoveryReceipt {
+                    recovery_id: plan.recovery_id.clone(),
+                    failure_id: open.failure_id.clone(),
+                    status: "completed".into(),
+                    approval_id: Some(approval_id.clone()),
+                    completed_at: chrono::Utc::now(),
+                    detail: serde_json::json!({"containerId": ensured.container_id}),
+                },
+            )?;
+            crate::platform::failure::FailureAuthority::transition(
+                conn,
+                open.failure_id.as_str(),
+                crate::platform::failure::FailureLifecycleState::Resolved,
+                crate::platform::failure::TransitionReason::Resolved,
+                "container_restart",
+            )?;
+            crate::domains::containers::clear_current(conn, id)?;
+        }
+        Ok(())
+    });
+    Ok(json!({
+        "containerId": ensured.container_id,
+        "baseUrl": ensured.base_url,
+        "specId": ensured.spec_id,
+        "locality": ensured.locality.as_str(),
+        "replacedPid": stopped.as_ref().map(|value| value.pid),
+        "replacementMode": "declared-command-force",
+        "approvalId": approval_id,
+        "declarationOrigin": approved.origin.to_json(),
+        "status": "ready",
+    }))
 }
 
 async fn dispatch_plugins(
@@ -5788,6 +6267,10 @@ mod tests {
         let uri = format!("blobs/sha256/{}/{}", &digest[7..9], &digest[7..]);
         let document = json!({
             "identity": {"rollout_id": "roll_portable"},
+            "provenance": {
+                "producer_commit": "containers@abc123",
+                "container_image_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            },
             "artifacts": [{
                 "artifact_id": "frame_0",
                 "digest": digest,
@@ -5806,13 +6289,17 @@ mod tests {
         let file = fs::File::create(&archive_path).unwrap();
         let mut archive = zip::ZipWriter::new(file);
         let options = zip::write::SimpleFileOptions::default();
-        archive.start_file("traces/roll_portable/sealed/trace.json", options).unwrap();
-        archive.write_all(&serde_json::to_vec(&document).unwrap()).unwrap();
+        archive
+            .start_file("traces/roll_portable/sealed/trace.json", options)
+            .unwrap();
+        archive
+            .write_all(&serde_json::to_vec(&document).unwrap())
+            .unwrap();
         archive.start_file(&uri, options).unwrap();
         archive.write_all(&png).unwrap();
         archive.finish().unwrap();
 
-        let (frames, max_step) =
+        let (frames, max_step, provenance) =
             extract_imported_trace_frames(&archive_path, "roll_portable").unwrap();
         assert_eq!(frames.len(), 1);
         assert_eq!(max_step, Some(0));
@@ -5821,5 +6308,6 @@ mod tests {
         assert_eq!(frames[0].width, 1);
         assert_eq!(frames[0].height, 1);
         assert_eq!(frames[0].producer_digest.as_deref(), Some("producer16"));
+        assert_eq!(provenance.unwrap()["producer_commit"], "containers@abc123");
     }
 }

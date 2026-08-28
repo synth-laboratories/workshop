@@ -84,9 +84,7 @@ impl AdmissionErrorCode {
             | Self::PolicyConfigurationInvalid => AdmissionSubject::Policy,
             Self::ModelUnsupported => AdmissionSubject::Model,
             Self::SeedControlUnsupported => AdmissionSubject::Seeds,
-            Self::RequestedLimitUnsupported | Self::CostCeilingRequired => {
-                AdmissionSubject::Limits
-            }
+            Self::RequestedLimitUnsupported | Self::CostCeilingRequired => AdmissionSubject::Limits,
             Self::CredentialRouteUnavailable => AdmissionSubject::Credentials,
             Self::OutputContractUnsupported => AdmissionSubject::OutputContract,
             Self::ExecutionSpecInvalid | Self::ExecutionSpecDigestMismatch => {

@@ -33,7 +33,7 @@ type Cursor = {
 };
 
 export function Shell(props: ShellProps) {
-  const stream = asStream(props.data ?? props.stream);
+  const stream = asStream(props.stream ?? props.data);
   const declaredStreamCount = props.replay?.streams.length ?? 0;
 
   const fixtureEvents = useMemo(

@@ -50,8 +50,13 @@ export function emptyUsage(): RunUsageProjection {
 
 export function formatUsd(value: number): string {
 	const absolute = Math.abs(value);
-	if (absolute > 0 && absolute < 0.01) return `$${value.toFixed(4)}`;
+	if (absolute > 0 && absolute < 0.1) return `$${value.toFixed(6).replace(/0+$/, "").replace(/\.$/, "")}`;
 	return `$${value.toFixed(2)}`;
+}
+
+/** Missing cost is unavailable, while a reported zero remains a real $0.00. */
+export function formatMissingUsd(value: number | null | undefined): string {
+	return value == null || !Number.isFinite(value) ? "unavailable" : formatUsd(value);
 }
 
 export function formatCount(value: number): string {
@@ -67,6 +72,7 @@ export function coverageLabel(metric: CoveredMetric): string | null {
 
 const SOURCE_WORDS: Record<CoveredMetricSource, string> = {
 	provider: "provider reported",
+	proxy: "metered by Workshop proxy",
 	container: "container reported",
 	derived: "derived from events",
 	unavailable: "not reported"
@@ -90,6 +96,9 @@ export function metricSummary(
 /** The dialog's fuller line: adds the observed/expected counts behind the share. */
 export function metricExplanation(metric: CoveredMetric, unit = "unit"): string {
 	const source = SOURCE_WORDS[metric.source];
+	if (metric.receiptCalls != null && (metric.source === "proxy" || metric.source === "provider")) {
+		return `${source} across ${formatCount(metric.receiptCalls)} provider call${metric.receiptCalls === 1 ? "" : "s"} · run-level receipt`;
+	}
 	if (metric.expectedUnits == null) {
 		return metric.observedUnits > 0
 			? `${source} by ${formatCount(metric.observedUnits)} ${unit}${metric.observedUnits === 1 ? "" : "s"}; no denominator declared`
@@ -107,6 +116,11 @@ export function metricExplanation(metric: CoveredMetric, unit = "unit"): string 
 export function costSummary(metric: CoveredMetric, unit = "rollout"): string {
 	if (metric.value == null) {
 		return `Cost unavailable · ${metric.source === "unavailable" ? "producer emitted no cost telemetry" : SOURCE_WORDS[metric.source]}`;
+	}
+	if (metric.source === "proxy") {
+		return metric.receiptCalls != null
+			? `${formatUsd(metric.value)} · provider receipt (${formatCount(metric.receiptCalls)} calls) via Workshop proxy`
+			: `${formatUsd(metric.value)} · ${SOURCE_WORDS.proxy}`;
 	}
 	return metricSummary(metric, formatUsd, unit);
 }

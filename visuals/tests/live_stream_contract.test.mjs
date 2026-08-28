@@ -278,13 +278,94 @@ test("finite fixture replay is ready without a live subscription control", () =>
 test("live Craftax resolves persisted fixture references from packaged template assets", () => {
   const shell = readFileSync(join(root, "families/first_class_example_containers/live.craftax.v1/shell.tsx"), "utf8");
   assert.match(shell, /import\.meta\.glob\("\.\/examples\/\*\.json"/);
-  assert.match(shell, /props\.data \?\? props\.stream \?\? bundledFixtureStream\(bindingList\)/);
+  // The declared `stream` input is authoritative. Anonymous `data` remains a
+  // direct-preview compatibility fallback, followed by the packaged fixture.
+  assert.match(shell, /props\.stream \?\? props\.data \?\? bundledFixtureStream\(bindingList\)/);
   const fixture = JSON.parse(
     readFileSync(join(root, "families/first_class_example_containers/live.craftax.v1/examples/cua-luna-low-10.json"), "utf8"),
   );
   assert.equal(fixture.events.length, 284);
   assert.equal(fixture.events.filter((event) => event.kind === "snapshot").length, 274);
   assert.equal(fixture.events.filter((event) => event.kind === "eval.run.terminal").length, 10);
+});
+
+test("live Craftax renders a subscribed optimizer journal immediately instead of fixture-throttling it", () => {
+  const shell = readFileSync(join(root, "families/first_class_example_containers/live.craftax.v1/shell.tsx"), "utf8");
+  assert.match(shell, /mergeCraftaxOptimizerJournalEvents\(props\.events, props\.enrichmentEvents\)/);
+  assert.match(shell, /const events = optimizerEvents \?\? liveStream\.events/);
+  assert.match(shell, /data-visual-event-source=\{optimizerEvents \? "optimizer-journal"/);
+  assert.match(shell, /optimizerEvents \|\| declaredStreamCount > 0 \? undefined : stream\.events/);
+});
+
+test("live Craftax names durable-journal hydration and exposes responsive run-wide distributions", () => {
+  const shell = readFileSync(join(root, "families/first_class_example_containers/live.craftax.v1/shell.tsx"), "utf8");
+  const css = readFileSync(join(root, "families/first_class_example_containers/live.craftax.v1/viewer.css"), "utf8");
+  assert.match(shell, /optimizerJournalBound && optimizerEvents === undefined/);
+  assert.match(shell, /Loading retained rollout journals/);
+  assert.match(shell, /Counts and replay controls will appear only after the journal is available/);
+  assert.match(shell, /Overall · all rollouts/);
+  assert.match(shell, /Combined evaluation distributions/);
+  assert.match(shell, /Outcome distribution/);
+  assert.match(shell, /Work and usage distribution/);
+  assert.match(shell, /exact total unavailable/);
+  assert.match(shell, /onSelect=\{\(lane\) => \{ setChosenLane\(lane\)/);
+  assert.match(shell, /label="Terminal reward"/);
+  assert.match(shell, /Workshop receipt covers/);
+  assert.match(css, /\.cv-overview-grid\{display:grid/);
+  assert.match(css, /@media\(max-width:760px\).*\.cv-overview-grid\{grid-template-columns:1fr 1fr\}/s);
+  assert.match(css, /\.cv-overview-grid\{display:grid;grid-template-columns:repeat\(3,minmax\(180px,1fr\)\)/);
+  assert.match(css, /\.cv-cost-line>small\{color:var\(--cv-faint\).*overflow-wrap:anywhere/);
+  assert.match(css, /@media\(max-width:520px\)\{\.cv-overview-grid\{grid-template-columns:1fr\}/);
+  assert.match(css, /@container visual-pane \(max-width:700px\).*\.cv-trace-grid\{[^}]*grid-template-columns:1fr/s);
+  assert.match(css, /@container visual-pane \(max-width:700px\).*\.cv-transcript-grid\{grid-template-columns:1fr/s);
+  assert.match(css, /@container visual-pane \(max-width:420px\).*\.cv-surfaces\{[^}]*grid-template-columns:repeat\(2,minmax\(0,1fr\)\)/s);
+  assert.match(css, /@container visual-pane \(max-width:420px\).*\.cv-overview-grid\{grid-template-columns:1fr\}/s);
+  assert.doesNotMatch(css, /\.cv-comparison/);
+});
+
+test("shared trace workbench responds to the visual pane rather than the desktop viewport", () => {
+  const shell = readFileSync(join(root, "families/first_class_example_containers/_shared/traceWorkbench.tsx"), "utf8");
+  const css = readFileSync(join(root, "families/first_class_example_containers/_shared/traceWorkbench.css"), "utf8");
+  assert.match(shell, /import "\.\/traceWorkbench\.css"/);
+  assert.match(shell, /className="trace-workbench-layout"/);
+  assert.match(shell, /--tw-main-columns/);
+  assert.match(css, /@container visual-pane \(max-width:\s*700px\)/);
+  assert.match(css, /--tw-main-columns:\s*minmax\(0, 1fr\)/);
+  assert.match(css, /@container visual-pane \(max-width:\s*420px\)/);
+  assert.match(css, /--tw-usage-columns:\s*minmax\(0, 1fr\)/);
+  assert.match(css, /--tw-achievement-columns:\s*minmax\(0, 1fr\)/);
+});
+
+test("live Craftax loads retained frame CAS through the host and never guesses a relative rollout URL", () => {
+  const shell = readFileSync(join(root, "families/first_class_example_containers/live.craftax.v1/shell.tsx"), "utf8");
+  assert.match(shell, /props\.media\.warm\(retainedFrameDigests, selectedIndex\)/);
+  assert.match(shell, /\? loadedFrame\?\.dataUrl/, "an absent selected frame must remain safe after production minification");
+  assert.match(shell, /loadedFrame\?\.digest === selectedMediaDigest && selectedMediaDigest != null/);
+  assert.match(shell, /if \(!frameBaseUrl && !\/\^https\?:\|\^data:\/i\.test\(viewer\.frameUrl\)\) return undefined/);
+  assert.doesNotMatch(shell, /frameBaseUrl \?\? window\.location\.href/);
+  assert.match(shell, /Loading retained gameplay PNG/);
+});
+
+test("live Craftax keeps replay-driven call fallback out of passive state effects", () => {
+  const shell = readFileSync(join(root, "families/first_class_example_containers/live.craftax.v1/shell.tsx"), "utf8");
+  assert.match(shell, /const selectedCall = turns\.calls\.find/);
+  assert.match(shell, /reconcileCallSelection\(turns\.calls, selectedCallId, transcriptMode === "focus"\)/);
+  assert.doesNotMatch(shell, /setSelectedCallId\(\(current\) => reconcileCallSelection/);
+});
+
+test("live Craftax declares optimizer lifecycle authority and makes failure senior to transport", () => {
+  const template = JSON.parse(readFileSync(join(root, "families/first_class_example_containers/live.craftax.v1/template.json"), "utf8"));
+  const lifecycle = template.inputs.find((input) => input.name === "optimizer_run");
+  assert.deepEqual(lifecycle?.accepts, ["optimizer_run"]);
+  assert.equal(lifecycle?.required, false);
+  const shell = readFileSync(join(root, "families/first_class_example_containers/live.craftax.v1/shell.tsx"), "utf8");
+  assert.match(shell, /const visualLive = !lifecycleTerminal && state === "live"/);
+  assert.match(shell, /Trace evidence was rejected, not missing/);
+  assert.match(shell, /Trace replay retained; evaluation result incomplete/);
+  assert.match(shell, /evaluation failure does not reject them/);
+  assert.match(shell, /Run cost/);
+  assert.match(shell, /run marker/);
+  assert.match(shell, /Seal unavailable/);
 });
 
 test("multiplexed rollout-local event ids never collapse across lanes", () => {

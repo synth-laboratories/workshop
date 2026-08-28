@@ -1,0 +1,95 @@
+#!/usr/bin/env bash
+# Credential-safe, non-Docker readiness gate for the NanoHorizon Craftax E2E.
+set -euo pipefail
+
+WORKSHOP_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
+GITHUB_ROOT="$(cd "$WORKSHOP_ROOT/.." && pwd -P)"
+
+CONTAINERS_ROOT="${SYNTH_E2E_CONTAINERS_ROOT:-$GITHUB_ROOT/containers-nanohorizon-e2e-final}"
+NANOHORIZON_ROOT="${SYNTH_E2E_NANOHORIZON_ROOT:-$GITHUB_ROOT/nanohorizon-e2e-final}"
+EVALS_ROOT="${SYNTH_E2E_EVALS_ROOT:-$GITHUB_ROOT/evals-craftax-live-context}"
+GAMEBENCH_ROOT="${SYNTH_E2E_GAMEBENCH_ROOT:-$GITHUB_ROOT/gamebench-craftax-live-context}"
+
+CONTAINERS_REVISION="04e0a94aa3336fee6dfbaab4942dc1352ab86584"
+NANOHORIZON_REVISION="574ace4b5161c6c3f03d737160375f2e4b4dd56a"
+EVALS_REVISION="4726e2bd332b853731dd3b05f49c33935c5c3c0f"
+GAMEBENCH_REVISION="3d35f379a6d3f951720bfcc04d0f05518d9b8034"
+SOURCE_MANIFEST_DIGEST="sha256:6481652f3b3fc67af1303e6c8900965e6504e682ce67afbfca386a970db643e9"
+
+fail() {
+  echo "nanohorizon_e2e_not_ready:$1" >&2
+  exit 2
+}
+
+require_exact_clean_repo() {
+  local label="$1"
+  local root="$2"
+  local expected="$3"
+  [[ -d "$root" ]] || fail "$label:root_missing"
+  local actual
+  actual="$(git -C "$root" rev-parse --verify HEAD 2>/dev/null)" || fail "$label:not_git"
+  [[ "$actual" == "$expected" ]] || fail "$label:revision_mismatch:$actual"
+  [[ -z "$(git -C "$root" status --porcelain)" ]] || fail "$label:dirty"
+}
+
+[[ "$(git -C "$WORKSHOP_ROOT" branch --show-current)" == "codex/finish-inline-eval-refactor" ]] \
+  || fail "workshop:wrong_branch"
+[[ -z "$(git -C "$WORKSHOP_ROOT" status --porcelain)" ]] || fail "workshop:dirty"
+
+require_exact_clean_repo "containers" "$CONTAINERS_ROOT" "$CONTAINERS_REVISION"
+require_exact_clean_repo "nanohorizon" "$NANOHORIZON_ROOT" "$NANOHORIZON_REVISION"
+require_exact_clean_repo "evals" "$EVALS_ROOT" "$EVALS_REVISION"
+require_exact_clean_repo "gamebench" "$GAMEBENCH_ROOT" "$GAMEBENCH_REVISION"
+
+python3 - "$NANOHORIZON_ROOT/workshop.containers.toml" \
+  "$CONTAINERS_REVISION" "$EVALS_REVISION" "$GAMEBENCH_REVISION" \
+  "$SOURCE_MANIFEST_DIGEST" <<'PY'
+import sys
+import tomllib
+from pathlib import Path
+
+manifest_path = Path(sys.argv[1])
+expected = {
+    "SYNTH_CONTAINERS_SOURCE_REVISION": sys.argv[2],
+    "SYNTH_EVALS_SOURCE_REVISION": sys.argv[3],
+    "SYNTH_GAMEBENCH_SOURCE_REVISION": sys.argv[4],
+}
+payload = tomllib.loads(manifest_path.read_text(encoding="utf-8"))
+rows = payload.get("container") or []
+if len(rows) != 1:
+    raise SystemExit("nanohorizon_e2e_not_ready:manifest:container_count")
+launch = rows[0].get("launch") or {}
+if launch.get("environment") != {**expected, "WORKSHOP_PROXY_ONLY": "1", "REPLACE": "1"}:
+    raise SystemExit("nanohorizon_e2e_not_ready:manifest:launch_environment")
+if (launch.get("source") or {}).get("dirty_digest") != sys.argv[5]:
+    raise SystemExit("nanohorizon_e2e_not_ready:manifest:source_digest")
+if launch.get("expected_port") != 18091:
+    raise SystemExit("nanohorizon_e2e_not_ready:manifest:expected_port")
+PY
+
+CONTAINERS_ROOT="$CONTAINERS_ROOT" \
+EVALS_ROOT="$EVALS_ROOT" \
+GAMEBENCH_CRAFTAX_ROOT="$GAMEBENCH_ROOT" \
+python3 "$NANOHORIZON_ROOT/scripts/validate_craftax_sources.py" \
+  --catalog "$EVALS_ROOT/containers/images/craftax-gamebench-rust" \
+  --containers-root "$CONTAINERS_ROOT" \
+  --evals-root "$EVALS_ROOT" \
+  --gamebench-root "$GAMEBENCH_ROOT" \
+  --containers-revision "$CONTAINERS_REVISION" \
+  --evals-revision "$EVALS_REVISION" \
+  --gamebench-revision "$GAMEBENCH_REVISION"
+
+oauth_seed="${SYNTH_DESKTOP_DEV_OAUTH_FILE:-${HOME:?}/.codex/auth.json}"
+[[ -s "$oauth_seed" ]] || fail "chatgpt_auth:file_unavailable"
+command -v docker >/dev/null 2>&1 || fail "docker:command_unavailable"
+
+workshop_revision="$(git -C "$WORKSHOP_ROOT" rev-parse --verify HEAD)"
+echo "NanoHorizon E2E preflight: ready"
+echo "Workshop: $workshop_revision"
+echo "Containers: $CONTAINERS_REVISION"
+echo "NanoHorizon: $NANOHORIZON_REVISION"
+echo "Evals: $EVALS_REVISION"
+echo "GameBench: $GAMEBENCH_REVISION"
+echo "Source manifest: $SOURCE_MANIFEST_DIGEST"
+echo "Run contract: seeds 780005..780009; rollouts 5; calls/rollout 10; steps/rollout 2000; hard cap USD 2.45"
+echo "Docker/provider execution remains authorization-required."

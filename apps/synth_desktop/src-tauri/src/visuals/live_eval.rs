@@ -42,12 +42,7 @@ pub const FORBIDDEN_LIVE_EVAL_SLOTS: &[&str] = &["live", "jobs"];
 pub const LIVE_CRAFTAX_TEMPLATE: &str = "live.craftax.v1";
 pub const LIVE_HARBOR_TEMPLATE: &str = "live.harbor_eval.v1";
 pub const CRAFTAX_TEN_LANE_SEEDS: [i64; 10] = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9];
-const SECRET_BINDING_KEYS: &[&str] = &[
-    "authorization",
-    "api_token",
-    "worker_token",
-    "bearer",
-];
+const SECRET_BINDING_KEYS: &[&str] = &["authorization", "api_token", "worker_token", "bearer"];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LiveEvalFamily {
@@ -161,17 +156,39 @@ pub fn assert_template_matches_family(template_id: &str, family: LiveEvalFamily)
     )
 }
 
-fn advertised_live_frames(info: &Value) -> &str {
-    info.get("live_frames")
-        .and_then(Value::as_str)
-        .unwrap_or("unsupported")
+/// The container's frame advertisement, wherever and however it spells it.
+///
+/// Type- and nesting-aware on purpose: the Harbor facade nests its claim under
+/// `capabilities` and spells it as a boolean, and the old top-level
+/// `as_str()` read silently defaulted that to "unsupported" — a contradictory
+/// advertisement passed registration instead of being refused. Absence is
+/// `None`, not a claim.
+fn advertised_live_frames(info: &Value) -> Option<String> {
+    [
+        "/live_frames",
+        "/capabilities/live_frames",
+        "/metadata/live_frames",
+        "/metadata/capabilities/live_frames",
+    ]
+    .iter()
+    .find_map(|path| info.pointer(path))
+    .and_then(|value| match value {
+        Value::Bool(claimed) => Some(if *claimed { "true" } else { "false" }.to_string()),
+        Value::String(text) => Some(text.clone()),
+        _ => None,
+    })
 }
 
 /// Harbor must not advertise map frames. Desktop refuses rather than invent a Craftax view.
 pub fn assert_harbor_live_frames(info: &Value) -> Result<()> {
-    let frames = advertised_live_frames(info);
+    let Some(frames) = advertised_live_frames(info) else {
+        return Ok(());
+    };
     if frames.eq_ignore_ascii_case("native") || frames.eq_ignore_ascii_case("true") {
-        bail!("Harbor must not advertise live_frames={frames}");
+        bail!(
+            "Harbor must not advertise live_frames={frames}; refusing registration of a \
+             contradictory capability declaration"
+        );
     }
     Ok(())
 }
@@ -625,6 +642,22 @@ mod tests {
         );
         assert!(assert_harbor_live_frames(&json!({"live_frames": "native"})).is_err());
         assert!(assert_harbor_live_frames(&json!({"live_frames": "unsupported"})).is_ok());
+        // A contradictory advertisement must be refused however it is spelled:
+        // boolean rather than string, and nested under capabilities/metadata.
+        assert!(assert_harbor_live_frames(&json!({"live_frames": true})).is_err());
+        assert!(
+            assert_harbor_live_frames(&json!({"capabilities": {"live_frames": true}})).is_err()
+        );
+        assert!(
+            assert_harbor_live_frames(&json!({"capabilities": {"live_frames": "native"}}))
+                .is_err()
+        );
+        assert!(assert_harbor_live_frames(
+            &json!({"metadata": {"capabilities": {"live_frames": true}}})
+        )
+        .is_err());
+        assert!(assert_harbor_live_frames(&json!({"live_frames": false})).is_ok());
+        assert!(assert_harbor_live_frames(&json!({})).is_ok());
         let pins = harbor_policy_pins(None).unwrap();
         assert_eq!(pins.len(), 2);
         assert!(require_harbor_policy_pins(&[]).is_err());

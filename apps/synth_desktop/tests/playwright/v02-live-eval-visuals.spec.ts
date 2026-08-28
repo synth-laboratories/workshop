@@ -42,6 +42,20 @@ test("[v0.2] Craftax live visual replays fixture evidence and keeps missing usag
 	await expect(viewer).toContainText("not emitted", { timeout: 15_000 });
 	await expect(viewer).not.toContainText("$0.00");
 	await expect(viewer).not.toContainText("stream.subscribed");
+	const paneBody = pane.locator(".visual-pane-body");
+	await paneBody.evaluate((element) => {
+		Object.assign((element as HTMLElement).style, {
+			alignSelf: "flex-end",
+			flex: "0 0 340px",
+			width: "340px",
+			maxWidth: "340px"
+		});
+	});
+	await expect(viewer.locator(".cv-surfaces")).toHaveCSS("display", "grid");
+	const overviewColumns = await viewer.locator(".cv-overview-grid").evaluate((element) =>
+		getComputedStyle(element).gridTemplateColumns.split(" ").filter(Boolean).length
+	);
+	expect(overviewColumns).toBe(1);
 });
 
 test("[v0.2] Harbor live visual fails closed when reward.txt is missing", async ({ page }) => {
@@ -75,7 +89,7 @@ test("[v0.2] guessed /events bindings fail closed instead of rendering a live vi
 		title: "Guessed stream",
 		bindings: {
 			schemaVersion: "synth.visual-bindings.v1",
-			slots: [{ slot: "stream", kind: "live_sse", source: "http://127.0.0.1:8298/events" }]
+			inputs: [{ input: "stream", kind: "live_sse", source: "http://127.0.0.1:8298/events" }]
 		}
 	})]);
 	const pane = await openVisual(page, "vis_v02_guessed");

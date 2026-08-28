@@ -297,10 +297,7 @@ pub fn release_optimizer_run(conn: &Connection, run_id: &str) -> Result<()> {
     Ok(())
 }
 
-pub fn load_optimizer_run(
-    conn: &Connection,
-    run_id: &str,
-) -> Result<Option<OptimizerRunClaim>> {
+pub fn load_optimizer_run(conn: &Connection, run_id: &str) -> Result<Option<OptimizerRunClaim>> {
     let claim = conn
         .query_row(
             "SELECT run_id, owner_instance_id, boot_epoch, pid, process_start_identity,

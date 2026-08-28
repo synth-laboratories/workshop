@@ -1,7 +1,6 @@
 /**
- * One structured projection from a visual-runtime rejection to text a person
- * or agent can act on. `String({code, message})` is `[object Object]`; that is
- * the failure this helper exists to make impossible.
+ * Visual runtime projection of FailureView. Unknown envelopes are
+ * failure_contract_invalid — never raw transport prose.
  */
 
 export type PresentedRuntimeError = {
@@ -11,37 +10,36 @@ export type PresentedRuntimeError = {
 };
 
 const FALLBACK = "Visual runtime failed";
-
-function stringField(value: Record<string, unknown>, ...names: string[]): string | undefined {
-  for (const name of names) {
-    const candidate = value[name];
-    if (typeof candidate === "string" && candidate.trim() && candidate !== "[object Object]") {
-      return candidate.trim();
-    }
-  }
-  return undefined;
-}
+const SCHEMA = "synth.failure-view.v1";
 
 export function presentRuntimeError(reason: unknown, fallback = FALLBACK): PresentedRuntimeError {
   if (reason instanceof Error) {
-    const message = reason.message.trim();
-    if (message && message !== "[object Object]") return { message };
-    return { message: fallback };
-  }
-  if (typeof reason === "string") {
-    const message = reason.trim();
-    if (message && message !== "[object Object]") return { message };
-    return { message: fallback };
+    return { message: reason.message.trim() || fallback };
   }
   if (reason && typeof reason === "object") {
     const value = reason as Record<string, unknown>;
-    const code = stringField(value, "code");
-    const message = stringField(value, "safeMessage", "safe_message", "message", "error", "reason");
-    const remediation = stringField(value, "remediation");
-    if (message) return { code, message, remediation };
-    if (code) return { code, message: `${fallback} (${code})`, remediation };
+    const envelope = value.failure && typeof value.failure === "object"
+      ? value.failure as Record<string, unknown>
+      : value;
+    const schema = envelope.schemaVersion ?? envelope.schema_version;
+    const code = typeof envelope.code === "string" ? envelope.code : undefined;
+    const message = typeof envelope.message === "string" ? envelope.message : undefined;
+    const remediation = envelope.remediation && typeof envelope.remediation === "object"
+      ? String((envelope.remediation as { label?: string }).label ?? "")
+      : typeof envelope.remediation === "string" ? envelope.remediation : undefined;
+    if (schema === SCHEMA || code) {
+      return {
+        code,
+        message: message || `${fallback}${code ? ` (${code})` : ""}`,
+        remediation: remediation || undefined
+      };
+    }
+    return { code: "failure_contract_invalid", message: fallback };
   }
-  return { message: fallback };
+  if (typeof reason === "string" && reason.trim() && reason !== "[object Object]") {
+    return { message: reason.trim() };
+  }
+  return { code: "failure_contract_invalid", message: fallback };
 }
 
 export function presentRuntimeErrorMessage(reason: unknown, fallback = FALLBACK): string {

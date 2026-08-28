@@ -78,6 +78,43 @@ pub(crate) enum ApprovalDecision {
     Reject,
     Approve { scope: ApprovalScope },
     ApproveWithCap { cap: PaidComputeCap },
+    Credential { outcome: CredentialDecision },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum CredentialConsent {
+    RememberLocator,
+    RegisterSource,
+    IssueLease,
+}
+
+impl CredentialConsent {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::RememberLocator => "remember_locator",
+            Self::RegisterSource => "register_source",
+            Self::IssueLease => "issue_lease",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum CredentialDecision {
+    RememberLocator,
+    RegisterSource,
+    IssueLease,
+}
+
+impl CredentialDecision {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::RememberLocator => "remember-locator",
+            Self::RegisterSource => "register-source",
+            Self::IssueLease => "issue-lease",
+        }
+    }
 }
 
 impl ApprovalDecision {
@@ -110,6 +147,7 @@ impl ApprovalDecision {
                 scope: ApprovalScope::Workspace,
             } => "always-this-workspace",
             Self::ApproveWithCap { .. } => "approve-with-cap",
+            Self::Credential { outcome } => outcome.as_str(),
         }
     }
 
@@ -151,6 +189,17 @@ pub(crate) enum ApprovalKind {
         sidecar: String,
         action: String,
     },
+    ContainerLifecycle {
+        container_id: String,
+        declaration_id: String,
+        declaration_digest: String,
+        manifest_path: String,
+        source_root: String,
+        source_revision: Option<String>,
+        source_digest: Option<String>,
+        action: String,
+        effect: String,
+    },
     PluginLifecycle {
         plugin_id: String,
         action: String,
@@ -165,8 +214,13 @@ pub(crate) enum ApprovalKind {
         always_supported: bool,
     },
     CredentialAccess {
+        consent: CredentialConsent,
         provider: String,
         purpose: String,
+        locator_id: Option<String>,
+        display_path: Option<String>,
+        variable: Option<String>,
+        switch_from_display: Option<String>,
     },
     /// Persist renderer code the app will compile at every launch.
     ///
@@ -231,6 +285,7 @@ impl ApprovalKind {
             Self::ShellCommand { .. } => "shell_command",
             Self::PaidCompute { .. } => "paid_compute",
             Self::SidecarLifecycle { .. } => "sidecar_lifecycle",
+            Self::ContainerLifecycle { .. } => "container_lifecycle",
             Self::PluginLifecycle { .. } => "plugin_lifecycle",
             Self::CredentialAccess { .. } => "credential_access",
             Self::VisualTemplatePersist { .. } => "visual_template_persist",
@@ -242,10 +297,12 @@ impl ApprovalKind {
     ///
     /// The permissive `approval_policy = "never"` is honored everywhere else in
     /// Workshop, deliberately: the operator asked for it. It is not honored here.
-    /// A hazard action commits content on the operator's behalf, while
-    /// persisting a visual template leaves code behind that the app compiles at
-    /// every launch. Consent is about that exact payload — a previous yes or a
-    /// permissive shell policy is not a substitute for either grant.
+    /// A hazard action commits content on the operator's behalf, paid compute
+    /// commits a new digest-bound spend, credential access creates a new
+    /// run-scoped provider capability, and persisting a visual template leaves
+    /// code behind that the app compiles at every launch. Consent is about
+    /// that exact payload — a previous yes or a permissive shell policy is not
+    /// a substitute for any of these grants.
     ///
     /// This is the single owner of that judgment. Both policy engines and the
     /// remembered-grant path consult it rather than re-deriving it.
@@ -253,6 +310,9 @@ impl ApprovalKind {
         matches!(
             self,
             Self::ComputerUse { hazard: true, .. }
+                | Self::PaidCompute { .. }
+                | Self::CredentialAccess { .. }
+                | Self::ContainerLifecycle { .. }
                 | Self::VisualTemplatePersist { .. }
         )
     }
@@ -294,15 +354,43 @@ impl ApprovalKind {
             }
             (Self::ShellCommand { .. }, ApprovalDecision::Approve { .. }) => Ok(()),
             (Self::SidecarLifecycle { .. }, ApprovalDecision::Approve { .. }) => Ok(()),
+            (
+                Self::ContainerLifecycle { .. },
+                ApprovalDecision::Approve {
+                    scope: ApprovalScope::Once,
+                },
+            ) => Ok(()),
             (Self::PluginLifecycle { .. }, ApprovalDecision::Approve { .. }) => Ok(()),
             // Remembered scopes on a hazard action were already refused above,
             // so what reaches here is either a once-off hazard approval or an
             // app-scope grant, and both are valid.
             (Self::ComputerUse { .. }, ApprovalDecision::Approve { .. }) => Ok(()),
             (
-                Self::CredentialAccess { .. },
-                ApprovalDecision::Approve {
-                    scope: ApprovalScope::Once,
+                Self::CredentialAccess {
+                    consent: CredentialConsent::RememberLocator,
+                    ..
+                },
+                ApprovalDecision::Credential {
+                    outcome: CredentialDecision::RememberLocator,
+                },
+            )
+            | (
+                Self::CredentialAccess {
+                    consent: CredentialConsent::RegisterSource,
+                    ..
+                },
+                ApprovalDecision::Credential {
+                    outcome:
+                        CredentialDecision::RememberLocator | CredentialDecision::RegisterSource,
+                },
+            )
+            | (
+                Self::CredentialAccess {
+                    consent: CredentialConsent::IssueLease,
+                    ..
+                },
+                ApprovalDecision::Credential {
+                    outcome: CredentialDecision::IssueLease,
                 },
             ) => Ok(()),
             // Once only, and the remembered scopes were already refused above.
@@ -323,6 +411,13 @@ impl ApprovalKind {
             (Self::PaidCompute { .. }, ApprovalDecision::ApproveWithCap { .. }) => {
                 Err(anyhow!("paid_compute approval requires a non-zero cap"))
             }
+            (Self::CredentialAccess { .. }, _) => Err(crate::secrets::lease::CredentialError::new(
+                crate::secrets::lease::CREDENTIAL_DECISION_EXCEEDS_REQUEST,
+                "approval",
+                false,
+                "credential decision exceeds the requested consent",
+            )
+            .anyhow()),
             _ => Err(anyhow!(
                 "{} does not support decision {}",
                 self.name(),
@@ -413,6 +508,30 @@ impl ApprovalKind {
                 "action": action,
                 "alwaysSupported": true,
             }),
+            Self::ContainerLifecycle {
+                container_id,
+                declaration_id,
+                declaration_digest,
+                manifest_path,
+                source_root,
+                source_revision,
+                source_digest,
+                action,
+                effect,
+            } => json!({
+                "approvalId": approval_id,
+                "kind": self.name(),
+                "containerId": container_id,
+                "declarationId": declaration_id,
+                "declarationDigest": declaration_digest,
+                "manifestPath": manifest_path,
+                "sourceRoot": source_root,
+                "sourceRevision": source_revision,
+                "sourceDigest": source_digest,
+                "action": action,
+                "effect": effect,
+                "alwaysSupported": false,
+            }),
             Self::PluginLifecycle {
                 plugin_id,
                 action,
@@ -440,11 +559,24 @@ impl ApprovalKind {
                 "retention": retention,
                 "alwaysSupported": always_supported,
             }),
-            Self::CredentialAccess { provider, purpose } => json!({
+            Self::CredentialAccess {
+                consent,
+                provider,
+                purpose,
+                locator_id,
+                display_path,
+                variable,
+                switch_from_display,
+            } => json!({
                 "approvalId": approval_id,
                 "kind": self.name(),
+                "consent": consent.as_str(),
                 "provider": provider,
                 "purpose": purpose,
+                "locatorId": locator_id,
+                "displayPath": display_path,
+                "variable": variable,
+                "switchFromDisplay": switch_from_display,
                 "alwaysSupported": false,
             }),
             Self::VisualTemplatePersist {
@@ -778,6 +910,59 @@ impl ApprovalBroker {
         Ok(count)
     }
 
+    pub(crate) async fn expire_credential_locator<R: tauri::Runtime>(
+        &self,
+        app: &AppHandle<R>,
+        locator_id: &str,
+        reason: &str,
+    ) -> Result<usize> {
+        let expired = {
+            let mut pending = self.pending.lock().await;
+            let ids = pending
+                .iter()
+                .filter_map(|(id, value)| {
+                    matches!(
+                        &value.kind,
+                        ApprovalKind::CredentialAccess {
+                            locator_id: Some(pending_locator),
+                            ..
+                        } if pending_locator == locator_id
+                    )
+                    .then_some(id.clone())
+                })
+                .collect::<Vec<_>>();
+            ids.into_iter()
+                .filter_map(|id| pending.remove(&id).map(|value| (id, value)))
+                .collect::<Vec<_>>()
+        };
+        let mut count = 0;
+        for (approval_id, pending) in expired {
+            let mut settled = pending.settle.lock().await;
+            if *settled {
+                continue;
+            }
+            *settled = true;
+            drop(settled);
+            count += 1;
+            let _ = pending.resolver.expire(reason).await;
+            self.persistence
+                .append_boundary_event(
+                    app,
+                    pending.origin.session_id.clone(),
+                    pending.kind.source(),
+                    "approval.expired",
+                    json!({
+                        "approvalId": approval_id,
+                        "kind": pending.kind.name(),
+                        "decision": "expired",
+                        "reason": reason,
+                    }),
+                )
+                .await?;
+        }
+        Ok(count)
+    }
+
     /// Drain every origin attached to a session. Interrupt and terminal turn
     /// events use this so Workshop-owned waiters cannot outlive the agent turn
     /// merely because their origin generation is not the Codex attachment id.
@@ -900,6 +1085,17 @@ impl ApprovalBroker {
         session_id: Option<&str>,
         kind: ApprovalKind,
     ) -> Result<String> {
+        self.authorize_host_outcome(app, session_id, kind)
+            .await
+            .map(|(approval_id, _)| approval_id)
+    }
+
+    pub(crate) async fn authorize_host_outcome<R: tauri::Runtime>(
+        &self,
+        app: &AppHandle<R>,
+        session_id: Option<&str>,
+        kind: ApprovalKind,
+    ) -> Result<(String, ApprovalDecision)> {
         // The session's sealed profile is the authority. Machine config is
         // consulted only for host approvals arriving with no session context
         // (operator-driven mutations) or for sessions started before the
@@ -914,13 +1110,14 @@ impl ApprovalBroker {
         };
         if let Some(session_id) = session_id {
             if let Some(decision) = self.session_decision(session_id, &kind).await {
-                return self
+                let approval_id = self
                     .record_auto(app, session_id, &kind, &decision, "remembered-session")
-                    .await;
+                    .await?;
+                return Ok((approval_id, decision));
             }
         }
         if let Some(decision) = super::approval_policy::auto_decision(&policy, &kind)? {
-            return self
+            let approval_id = self
                 .record_auto(
                     app,
                     session_id.unwrap_or("policy-auto"),
@@ -928,7 +1125,8 @@ impl ApprovalBroker {
                     &decision,
                     &policy,
                 )
-                .await;
+                .await?;
+            return Ok((approval_id, decision));
         }
         if let Some(session_id) = session_id {
             let (resolver, receiver) = HostDecisionResolver::pair();
@@ -950,13 +1148,14 @@ impl ApprovalBroker {
             if matches!(decision, ApprovalDecision::Reject) {
                 return Err(anyhow!("approval rejected"));
             }
-            return Ok(approval_id);
+            return Ok((approval_id, decision));
         }
         if matches!(kind, ApprovalKind::SidecarLifecycle { .. }) {
             let decision = super::approval_policy::operator_decision(&kind);
-            return self
+            let approval_id = self
                 .record_auto(app, "operator", &kind, &decision, "operator-command")
-                .await;
+                .await?;
+            return Ok((approval_id, decision));
         }
         Err(anyhow!(
             "this mutation requires an agent session for approval"
@@ -1007,6 +1206,25 @@ impl ApprovalBroker {
             }
             (ApprovalKind::PaidCompute { .. }, "always") => {
                 Err(anyhow!("paid_compute approvals cannot be remembered"))
+            }
+            (ApprovalKind::CredentialAccess { consent, .. }, "once") => {
+                Ok(ApprovalDecision::Credential {
+                    outcome: match consent {
+                        CredentialConsent::RememberLocator => CredentialDecision::RememberLocator,
+                        CredentialConsent::RegisterSource => CredentialDecision::RegisterSource,
+                        CredentialConsent::IssueLease => CredentialDecision::IssueLease,
+                    },
+                })
+            }
+            (ApprovalKind::CredentialAccess { .. }, "remember-locator") => {
+                Ok(ApprovalDecision::Credential {
+                    outcome: CredentialDecision::RememberLocator,
+                })
+            }
+            (ApprovalKind::CredentialAccess { .. }, "register-source") => {
+                Ok(ApprovalDecision::Credential {
+                    outcome: CredentialDecision::RegisterSource,
+                })
             }
             _ => ApprovalDecision::from_shell_wire(requested),
         }
@@ -1093,6 +1311,20 @@ mod tests {
             payload: json!({ "recipient": "board@example.com" }),
             hazard,
             element_index: Some(7),
+        }
+    }
+
+    fn container_lifecycle() -> ApprovalKind {
+        ApprovalKind::ContainerLifecycle {
+            container_id: "ctr_fixture".into(),
+            declaration_id: "fixture-container".into(),
+            declaration_digest: "sha256:validated-declaration".into(),
+            manifest_path: "/approved/workshop.containers.toml".into(),
+            source_root: "/approved".into(),
+            source_revision: Some("revision-1".into()),
+            source_digest: Some("sha256:declared-inputs".into()),
+            action: "force_replace".into(),
+            effect: "replace the exact validated declaration".into(),
         }
     }
 
@@ -1185,6 +1417,23 @@ mod tests {
         assert_eq!(payload["path"], payload["destination"]);
         let fresh = persist_template(false).safe_payload("approval-template");
         assert!(fresh["detail"].as_str().unwrap().contains("adding a new"));
+    }
+
+    #[test]
+    fn container_lifecycle_card_binds_the_exact_declaration_and_origin() {
+        let kind = container_lifecycle();
+        let payload = kind.safe_payload("approval-lifecycle");
+        assert_eq!(payload["kind"], "container_lifecycle");
+        assert_eq!(payload["declarationId"], "fixture-container");
+        assert_eq!(payload["declarationDigest"], "sha256:validated-declaration");
+        assert_eq!(
+            payload["manifestPath"],
+            "/approved/workshop.containers.toml"
+        );
+        assert_eq!(payload["sourceRoot"], "/approved");
+        assert_eq!(payload["sourceRevision"], "revision-1");
+        assert_eq!(payload["sourceDigest"], "sha256:declared-inputs");
+        assert!(remembered_key(&kind).is_none());
     }
 
     struct RecordingResolver {
@@ -1405,8 +1654,13 @@ mod tests {
     #[test]
     fn credential_payload_has_no_field_capable_of_carrying_a_secret() {
         let payload = ApprovalKind::CredentialAccess {
+            consent: CredentialConsent::IssueLease,
             provider: "openrouter".into(),
             purpose: "start a session".into(),
+            locator_id: None,
+            display_path: None,
+            variable: None,
+            switch_from_display: None,
         }
         .safe_payload("approval-credential");
         assert_eq!(payload["kind"], "credential_access");
@@ -1414,6 +1668,59 @@ mod tests {
         assert!(!encoded.contains("credential\":"));
         assert!(!encoded.contains("token\":"));
         assert!(!encoded.contains("secret\":"));
+    }
+
+    #[test]
+    fn credential_consent_matrix_never_settles_above_the_requested_ceiling() {
+        let kind = |consent| ApprovalKind::CredentialAccess {
+            consent,
+            provider: "openrouter".into(),
+            purpose: "test consent ceiling".into(),
+            locator_id: Some("locator_test".into()),
+            display_path: Some("project/.env".into()),
+            variable: Some("OPENROUTER_API_KEY".into()),
+            switch_from_display: None,
+        };
+        let decision = |outcome| ApprovalDecision::Credential { outcome };
+
+        kind(CredentialConsent::RememberLocator)
+            .validate_decision(&decision(CredentialDecision::RememberLocator))
+            .unwrap();
+        assert!(kind(CredentialConsent::RememberLocator)
+            .validate_decision(&decision(CredentialDecision::RegisterSource))
+            .is_err());
+        assert!(kind(CredentialConsent::RememberLocator)
+            .validate_decision(&decision(CredentialDecision::IssueLease))
+            .is_err());
+
+        kind(CredentialConsent::RegisterSource)
+            .validate_decision(&decision(CredentialDecision::RememberLocator))
+            .unwrap();
+        kind(CredentialConsent::RegisterSource)
+            .validate_decision(&decision(CredentialDecision::RegisterSource))
+            .unwrap();
+        assert!(kind(CredentialConsent::RegisterSource)
+            .validate_decision(&decision(CredentialDecision::IssueLease))
+            .is_err());
+
+        kind(CredentialConsent::IssueLease)
+            .validate_decision(&decision(CredentialDecision::IssueLease))
+            .unwrap();
+        assert!(kind(CredentialConsent::IssueLease)
+            .validate_decision(&decision(CredentialDecision::RememberLocator))
+            .is_err());
+        assert!(kind(CredentialConsent::IssueLease)
+            .validate_decision(&decision(CredentialDecision::RegisterSource))
+            .is_err());
+        for consent in [
+            CredentialConsent::RememberLocator,
+            CredentialConsent::RegisterSource,
+            CredentialConsent::IssueLease,
+        ] {
+            kind(consent)
+                .validate_decision(&ApprovalDecision::Reject)
+                .unwrap();
+        }
     }
 
     #[tokio::test]

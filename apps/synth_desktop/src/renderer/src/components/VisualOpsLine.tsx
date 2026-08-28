@@ -15,6 +15,8 @@ type Props = {
 	sessionId?: string | null;
 	runId?: string | null;
 	traceId?: string | null;
+	/** Undefined means no set binding; null means a run-scoped set of unknown size. */
+	traceSetCount?: number | null;
 	testId: string;
 	compact?: boolean;
 	/** Pane header probes local disk so "not a Workshop route" is visible without a click. */
@@ -76,7 +78,7 @@ function OpsPart({
 	);
 }
 
-export function VisualOpsLine({ sessionId, runId, traceId, testId, compact, probe }: Props) {
+export function VisualOpsLine({ sessionId, runId, traceId, traceSetCount, testId, compact, probe }: Props) {
 	const [openable, setOpenable] = useState<Openable>(unknownOpenable);
 
 	useEffect(() => {
@@ -139,7 +141,13 @@ export function VisualOpsLine({ sessionId, runId, traceId, testId, compact, prob
 			{" · "}
 			<OpsPart kind="run" id={runId} openable={openable.run} />
 			{" · "}
-			<OpsPart kind="trace" id={traceId} openable={openable.trace} />
+			{traceId?.trim() ? (
+				<OpsPart kind="trace" id={traceId} openable={openable.trace} />
+			) : traceSetCount !== undefined ? (
+				<span>{traceSetCount == null ? "trace set · optimizer run" : `${traceSetCount} retained traces`}</span>
+			) : (
+				<OpsPart kind="trace" id={traceId} openable={openable.trace} />
+			)}
 		</span>
 	);
 }

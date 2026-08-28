@@ -23,7 +23,7 @@ import {
 	statusBadgeClass,
 	statusLabel
 } from "../../runtime/runProgress/format";
-import { costSummary } from "../../runtime/runProgress/usage";
+import { costSummary, formatMissingUsd } from "../../runtime/runProgress/usage";
 import type { RunProgressProjection } from "../../runtime/runProgress/types";
 import { RunProgressDialog } from "./RunProgressDialog";
 
@@ -147,8 +147,8 @@ export function RunProgressCard({ runId, sessionRef, onOpenFullRun }: Props) {
 						{projection.providerAccess.maxCalls > 0
 							? ` · ${projection.providerAccess.usedCalls} / ${projection.providerAccess.maxCalls} calls`
 							: ""}
-						{projection.providerAccess.maxCostUsd > 0
-							? ` · $${projection.providerAccess.usedCostUsd.toFixed(2)} / $${projection.providerAccess.maxCostUsd.toFixed(2)}`
+						{projection.providerAccess.maxCostUsd != null
+							? ` · ${formatMissingUsd(projection.providerAccess.usedCostUsd)} / ${formatMissingUsd(projection.providerAccess.maxCostUsd)}`
 							: ""}
 					</span>
 				</div>
@@ -237,7 +237,7 @@ export function RunProgressCard({ runId, sessionRef, onOpenFullRun }: Props) {
 						onClick={() => onOpenFullRun(projection.fullVisualRef!)}
 						data-testid={`run-progress-open-full-${runId}`}
 					>
-						Open full run
+						Open visual
 					</button>
 				) : null}
 				{canControl && projection.capabilities.cancel ? (

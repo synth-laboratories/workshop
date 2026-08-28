@@ -5,8 +5,10 @@ use serde::{Deserialize, Serialize};
 use crate::contract::specta::OpaqueJson;
 use crate::lineage::{ExperimentEdge, ExperimentNode};
 
+#[cfg(test)]
 pub const MEMBER_CAMPAIGN: &str = "eval_campaign";
 pub const MEMBER_OPTIMIZER: &str = "optimizer_run";
+#[cfg(test)]
 pub const MEMBER_DIRECT: &str = "direct_evaluation";
 
 #[derive(Clone, Debug, Serialize, Deserialize, specta::Type)]

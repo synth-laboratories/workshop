@@ -231,7 +231,12 @@ fn metrics_from_event(event: &OptimizerEventEnvelope) -> Option<Value> {
         if let Some(value) = event
             .delta
             .get(key)
-            .or_else(|| event.snapshot.as_ref().and_then(|snapshot| snapshot.get(key)))
+            .or_else(|| {
+                event
+                    .snapshot
+                    .as_ref()
+                    .and_then(|snapshot| snapshot.get(key))
+            })
             .or_else(|| event.item.as_ref().and_then(|item| item.get(key)))
         {
             if !value.is_null() {
@@ -300,8 +305,8 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    use crate::experiments::{attach, get, MEMBER_OPTIMIZER};
     use super::super::models::OPTIMIZER_EVENT_SCHEMA_VERSION;
+    use crate::experiments::{attach, get, MEMBER_OPTIMIZER};
 
     fn database() -> rusqlite::Connection {
         let conn = rusqlite::Connection::open_in_memory().unwrap();
@@ -332,6 +337,13 @@ mod tests {
     #[test]
     fn fold_from_gepa_envelopes_is_idempotent_and_skips_sft() {
         let conn = database();
+        conn.execute(
+            "INSERT INTO optimizer_runs(
+                id,algorithm_id,status,source,created_at,payload_json,updated_at
+             ) VALUES ('opt_gepa','gepa','running','local','2026-08-26T00:00:00Z','{}','2026-08-26T00:00:00Z')",
+            [],
+        )
+        .unwrap();
         attach(
             &conn,
             "session_gepa",
@@ -394,6 +406,13 @@ mod tests {
             0.75
         );
 
+        conn.execute(
+            "INSERT INTO optimizer_runs(
+                id,algorithm_id,status,source,created_at,payload_json,updated_at
+             ) VALUES ('opt_sft','sft','running','local','2026-08-26T00:00:00Z','{}','2026-08-26T00:00:00Z')",
+            [],
+        )
+        .unwrap();
         attach(
             &conn,
             "session_sft",

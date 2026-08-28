@@ -84,7 +84,7 @@ pub struct MlxRuntimeService;
 impl MlxRuntimeService {
     pub fn new() -> Self {
         if let Err(error) = reconcile_process_lease() {
-            eprintln!("synth-desktop: failed to reconcile MLX runtime lease: {error:#}");
+            crate::platform::logging::report("optimizers", "eprintln", format!("synth-desktop: failed to reconcile MLX runtime lease: {error:#}"));
         }
         Self
     }
@@ -885,7 +885,10 @@ fn policy_snapshot_missing_from_body(body: &str) -> bool {
         .or_else(|| value.get("error_code"))
         .and_then(Value::as_str)
         .unwrap_or("");
-    matches!(code, "policy_snapshot_not_found" | "policy_snapshot_evicted")
+    matches!(
+        code,
+        "policy_snapshot_not_found" | "policy_snapshot_evicted"
+    )
 }
 
 #[cfg(test)]
@@ -975,7 +978,9 @@ mod tests {
             r#"{"detail":{"error_code":"policy_snapshot_not_found","message":"gone"}}"#,
         );
         assert!(crate::error::error_is::<PolicySnapshotMissing>(&error));
-        assert!(error.to_string().contains("MLX service /v1/chat/completions failed"));
+        assert!(error
+            .to_string()
+            .contains("MLX service /v1/chat/completions failed"));
     }
 
     #[test]

@@ -79,7 +79,8 @@ impl Commands {
     pub const TRAINING_MODELS_DELETE: &'static str = "training_models_delete";
     pub const TRAINING_ARTIFACTS_LIST: &'static str = "training_artifacts_list";
     pub const TRAINING_ARTIFACTS_GET: &'static str = "training_artifacts_get";
-    pub const TRAINING_ARTIFACTS_LAUNCH_INFERENCE: &'static str = "training_artifacts_launch_inference";
+    pub const TRAINING_ARTIFACTS_LAUNCH_INFERENCE: &'static str =
+        "training_artifacts_launch_inference";
     pub const TRAINING_ARTIFACTS_EXPORT: &'static str = "training_artifacts_export";
     pub const TRAINING_ARTIFACTS_DELETE: &'static str = "training_artifacts_delete";
     pub const WHISPER_RUNTIME_STATUS: &'static str = "whisper_runtime_status";
@@ -100,6 +101,8 @@ impl Commands {
     pub const DATA_CONTAINERS_GET: &'static str = "data_containers_get";
     pub const DATA_CONTAINERS_REGISTER: &'static str = "data_containers_register";
     pub const DATA_CONTAINERS_PROBE: &'static str = "data_containers_probe";
+    pub const DATA_CONTAINERS_RECONCILE: &'static str = "data_containers_reconcile";
+    pub const DATA_CONTAINERS_RESTART: &'static str = "data_containers_restart";
     pub const DATA_TRACES_LIST: &'static str = "data_traces_list";
     pub const DATA_TRACES_GET: &'static str = "data_traces_get";
     pub const DATA_TRACES_INGEST: &'static str = "data_traces_ingest";
@@ -184,9 +187,12 @@ impl Commands {
     pub const OPTIMIZERS_STAGE_EVAL_CANDIDATES: &'static str = "optimizers_stage_eval_candidates";
     pub const OPTIMIZERS_LIST: &'static str = "optimizers_list";
     pub const OPTIMIZERS_GET: &'static str = "optimizers_get";
+    pub const OPTIMIZERS_RUN_VIEW_V2: &'static str = "optimizers_run_view_v2";
     pub const OPTIMIZERS_CREATE: &'static str = "optimizers_create";
     pub const OPTIMIZERS_REFRESH: &'static str = "optimizers_refresh";
     pub const OPTIMIZERS_EVENTS_AFTER: &'static str = "optimizers_events_after";
+    pub const OPTIMIZERS_ARTIFACTS_LIST: &'static str = "optimizers_artifacts_list";
+    pub const OPTIMIZERS_ARTIFACT_READ_RANGE: &'static str = "optimizers_artifact_read_range";
     pub const OPTIMIZERS_GET_STATE: &'static str = "optimizers_get_state";
     pub const OPTIMIZERS_GET_STATE_BATCH: &'static str = "optimizers_get_state_batch";
     pub const OPTIMIZERS_CANCEL: &'static str = "optimizers_cancel";
@@ -247,6 +253,12 @@ impl Commands {
     pub const MIGRATION_APPLY: &'static str = "migration_apply";
     pub const MIGRATION_CANCEL: &'static str = "migration_cancel";
     pub const SECRETS_LIST: &'static str = "secrets_list";
+    pub const SECRETS_WORKSPACE_ROOTS_LIST: &'static str = "secrets_workspace_roots_list";
+    pub const SECRETS_BINDINGS_LIST: &'static str = "secrets_bindings_list";
+    pub const SECRETS_LOCATORS_LIST: &'static str = "secrets_locators_list";
+    pub const SECRETS_LOCATOR_REMEMBER_EXTERNAL: &'static str = "secrets_locator_remember_external";
+    pub const SECRETS_LOCATOR_REGISTER: &'static str = "secrets_locator_register";
+    pub const SECRETS_LOCATOR_FORGET: &'static str = "secrets_locator_forget";
     pub const SECRETS_CREATE: &'static str = "secrets_create";
     pub const SECRETS_REPLACE: &'static str = "secrets_replace";
     pub const SECRETS_DELETE: &'static str = "secrets_delete";

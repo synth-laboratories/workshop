@@ -276,13 +276,20 @@ export type LocalActivityLine = {
 	/** Correlates a pending approval with its durable grant/rejection event. */
 	approvalId?: string;
 	// Mirrors `ApprovalKind::as_str` in src-tauri/src/session/approval.rs.
-	approvalKind?: "shell_command" | "paid_compute" | "sidecar_lifecycle" | "credential_access" | "plugin_lifecycle" | "computer_use" | "permission";
+	approvalKind?: "shell_command" | "paid_compute" | "sidecar_lifecycle" | "container_lifecycle" | "credential_access" | "plugin_lifecycle" | "computer_use" | "permission";
 	approvalPayload?: {
 		operation?: string;
 		parameters?: Record<string, unknown>;
 		estimatedCostUsdMicros?: number;
 		requestedCap?: { maxCostUsdMicros?: number; maxRollouts?: number };
 		requestingAgent?: string;
+		provider?: string;
+		purpose?: string;
+		consent?: "remember_locator" | "register_source" | "issue_lease";
+		locatorId?: string;
+		displayPath?: string;
+		variable?: string;
+		switchFromDisplay?: string;
 	};
 	alwaysAllowSupported?: boolean;
 	/** Expanded raw detail (tool output / thought) when the line is opened. */

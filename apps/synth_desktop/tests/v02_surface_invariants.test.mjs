@@ -72,7 +72,7 @@ test("paid-compute approval is a cap-scoped modal, not a transcript card", () =>
 	const transcript = read("components/ChatTranscript.tsx");
 	assert.match(transcript, /data-testid="paid-compute-approval-modal"/);
 	assert.match(transcript, /role="dialog" aria-modal="true"/);
-	assert.match(transcript, /Approve with cap/);
+	assert.match(transcript, />Approve</);
 	assert.match(transcript, /Predicted spend/);
 	assert.match(transcript, /requestingAgent/);
 	assert.match(transcript, /line\.approvalKind !== "paid_compute"/);
@@ -113,8 +113,11 @@ test("hosted SFT uses only the public synth-optimizers control plane", () => {
 	// function bodies so a stray mention elsewhere cannot satisfy them, and keep
 	// refusing any path that dials :8787 / Optimizers-beta directly.
 	const sidecarTraining = readTauri("optimizers/sidecar_training.rs");
-	const cancelStart = service.indexOf("pub async fn cancel(&self, id: String)");
-	const cancelEnd = service.indexOf("pub async fn pause(&self, id: String)", cancelStart);
+	// Cancellation now also receives the typed, durable cancellation request;
+	// locate the body by function boundary rather than pinning its full signature.
+	const cancelStart = service.search(/pub async fn cancel\s*\(/);
+	const pauseOffset = service.slice(cancelStart).search(/pub async fn pause\s*\(\s*&self,\s*id:\s*String\s*\)/);
+	const cancelEnd = pauseOffset === -1 ? -1 : cancelStart + pauseOffset;
 	assert.ok(cancelStart !== -1 && cancelEnd > cancelStart, "OptimizerService::cancel body not found");
 	const cancelBody = service.slice(cancelStart, cancelEnd);
 	assert.match(

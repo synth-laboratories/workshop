@@ -12,7 +12,7 @@
  *
  * The output model is the one the published Craftax viewer already reads
  * (`CraftaxTracePayload` in the frontend), extended with the things a *live*
- * view needs and a published archive does not: an incomplete call, a frame the
+ * view needs and a published archive does not: an aborted call, a frame the
  * relay refused, and a coverage block saying how much of the episode this view
  * is actually based on.
  *
@@ -21,9 +21,8 @@
  * These are the contract, and each exists because the alternative reading is
  * wrong rather than merely different:
  *
- * - `span.policy.opened` begins a call attempt. A call that never closes stays
- *   in the trajectory marked `running`. Dropping it would make the rail jump
- *   backwards when it finally lands.
+ * - `span.policy.opened` begins a call attempt. A call stays `running` only
+ *   while its parent is live; terminal parent truth closes it as `aborted`.
  * - `span.policy.data.messages` supplies the policy-visible messages. The first
  *   `system` message is the system prompt.
  * - `assistant.reasoning_content` is thinking; `assistant.content` is the final
@@ -44,6 +43,14 @@
  */
 
 import { mediaRefFrom, type MediaRef } from "./mediaClient.ts";
+import {
+  closedTracePolicyCallClosure,
+  parentTerminalEventKind,
+  parentTerminalPolicyCallClosure,
+  producerPolicyCallClosure,
+  type PolicyCallClosure,
+  type PolicyCallOutcome
+} from "./policyCallOutcome.ts";
 
 export const EVAL_TRACE_VIEW_SCHEMA = "eval_trace_view_v1";
 export const CRAFTAX_PROJECTION_KIND = "craftax-replay";
@@ -102,8 +109,9 @@ export type TraceStep = {
   /** One-based, stable across appends. */
   index: number;
   title: string;
-  /** `complete` once the call closed; `running` while it is still open. */
-  status: "complete" | "running";
+  /** `running` is live only; every closed call uses the shared outcome enum. */
+  status: "running" | PolicyCallOutcome;
+  closure: PolicyCallClosure | null;
   turn_start: number | null;
   turn_end: number | null;
   tokens: { input: number | null; output: number | null };
@@ -144,6 +152,8 @@ export type TraceCoverage = {
   closed: boolean;
   framesDeclared: number;
   framesRetained: number;
+  /** Physical content objects after CAS deduplication. */
+  uniqueCasBlobs: number;
   /** Bounds the relay hit, verbatim. Never summarized away. */
   degradations: Array<{ reason: string; detail: string; dropped: number }>;
 };
@@ -200,6 +210,8 @@ export type TraceIdentity = {
   totalReward?: number | null;
   contentDigest?: string | null;
   sealed?: boolean;
+  /** Backend-owned terminal truth, when the caller has OptimizerRunViewV2. */
+  parentTerminal?: boolean;
   /** Relay receipt from the trial record, when there is one. */
   relay?: Any | null;
 };
@@ -368,6 +380,7 @@ function emptyStep(index: number, sequence: number): TraceStep {
     index,
     title: `Policy call ${index}`,
     status: "running",
+    closure: null,
     turn_start: null,
     turn_end: null,
     tokens: { input: null, output: null },
@@ -481,7 +494,8 @@ export function foldCraftaxTrace(
       }
       case "span.policy.closed": {
         if (current) {
-          current.status = "complete";
+          current.closure = producerPolicyCallClosure(payload, event.sequence);
+          current.status = current.closure.outcome;
           current.raw.push(event.sequence);
         }
         break;
@@ -523,6 +537,18 @@ export function foldCraftaxTrace(
         current.turn_start = turn;
         current.turn_end = turn;
         steps.push(current);
+        break;
+      }
+      case "eval.run.terminal":
+      case "optimizer.run.terminal":
+      case "run.terminal": {
+        if (current?.status === "running") {
+          const source = parentTerminalEventKind(event.kind);
+          if (source) {
+            current.closure = parentTerminalPolicyCallClosure(source, event.sequence);
+            current.status = current.closure.outcome;
+          }
+        }
         break;
       }
       case "action_applied":
@@ -646,7 +672,15 @@ export function foldCraftaxTrace(
     }
   }
 
+  const relay = (identity.relay ?? {}) as Any;
+  const traceClosed = identity.parentTerminal === true || identity.sealed === true || relay.journalClosed === true;
   for (const target of steps) {
+    if (traceClosed && target.status === "running") {
+      target.closure = identity.parentTerminal === true
+        ? parentTerminalPolicyCallClosure("run.view.v2", null)
+        : closedTracePolicyCallClosure(identity.sealed === true ? "trace.sealed" : "relay.journal.closed");
+      target.status = target.closure.outcome;
+    }
     if (target.turn_start === null && target.frames.length) {
       const first = frames[target.frames[0]];
       const last = frames[target.frames[target.frames.length - 1]];
@@ -655,9 +689,12 @@ export function foldCraftaxTrace(
     }
   }
 
-  const relay = (identity.relay ?? {}) as Any;
-  const declaredFrames = num(relay.framesDeclared);
-  const retainedFrames = num(relay.framesRetained);
+  const declaredFrames = num(relay.frameObservationsDeclared ?? relay.framesDeclared);
+  const retainedFrames = num(relay.frameObservationsRetained ?? relay.framesRetained);
+  const retainedMedia = frames.filter((frame) => frame.media);
+  const uniqueCasBlobs = num(relay.uniqueFrameBlobs) ?? new Set(
+    retainedMedia.map((frame) => frame.media?.casDigest).filter(Boolean)
+  ).size;
   return {
     schema: EVAL_TRACE_VIEW_SCHEMA,
     source_schema: identity.sealed ? "trace_v5" : "optimizer_events",
@@ -689,9 +726,10 @@ export function foldCraftaxTrace(
     achievements,
     coverage: {
       highWater: events.length ? events[events.length - 1].sequence : 0,
-      closed: relay.journalClosed === true,
+      closed: traceClosed,
       framesDeclared: declaredFrames ?? frames.length,
-      framesRetained: retainedFrames ?? frames.filter((frame) => frame.media).length,
+      framesRetained: retainedFrames ?? retainedMedia.length,
+      uniqueCasBlobs,
       degradations: Array.isArray(relay.degradations) ? relay.degradations : []
     },
     events: [...events]
@@ -733,6 +771,8 @@ export type TrialView = {
   view: EvalTraceView;
   /** The terminal record, for the fields the event stream does not carry. */
   record: Any | null;
+  /** Backend-owned per-seed fact envelope, retained even when nested beside raw. */
+  reportedFacts?: unknown;
 };
 
 /**
@@ -746,6 +786,7 @@ export type TrialView = {
 export function craftaxTrialsFromRun(
   run: Any,
   optimizerEvents: readonly Any[],
+  runViewV2: Any | null = null,
   scenarioFallback = "craftax"
 ): TrialView[] {
   type Pending = {
@@ -756,6 +797,10 @@ export function craftaxTrialsFromRun(
     started: boolean;
     record: Any | null;
     failed: boolean;
+    workItemId: string | null;
+    authoritativeLifecycle: string | null;
+    authoritativeTerminal: string | null;
+    reportedFacts?: unknown;
   };
   const order: string[] = [];
   const pending = new Map<string, Pending>();
@@ -769,7 +814,10 @@ export function craftaxTrialsFromRun(
         pool: null,
         started: false,
         record: null,
-        failed: false
+        failed: false,
+        workItemId: null,
+        authoritativeLifecycle: null,
+        authoritativeTerminal: null
       };
       pending.set(trialId, row);
       order.push(trialId);
@@ -781,9 +829,24 @@ export function craftaxTrialsFromRun(
     const type = event?.type ?? event?.eventType;
     const delta = (event?.delta ?? {}) as Any;
     const item = (event?.item ?? {}) as Any;
-    const trialId = text(delta.trial_id ?? event?.raw?.trial_id ?? item.id);
+    const record = (item.raw ?? item) as Any;
+    const workItemId = text(
+      delta.workItemId ?? delta.work_item_id ?? item.workItemId ?? item.work_item_id
+    );
+    const legacyItemId = text(item.id);
+    const trialId = text(
+      delta.trial_id ?? delta.trialId
+        ?? event?.raw?.trial_id ?? event?.raw?.trialId
+        ?? item.trial_id ?? item.trialId
+        ?? record.trial_id ?? record.trialId
+    ) ?? (legacyItemId !== workItemId ? legacyItemId : null);
     if (!trialId) continue;
     const row = claim(trialId);
+    const reportedFacts = delta.reportedFacts ?? delta.reported_facts
+      ?? item.reportedFacts ?? item.reported_facts
+      ?? record.reportedFacts ?? record.reported_facts;
+    if (reportedFacts !== undefined) row.reportedFacts = reportedFacts;
+    row.workItemId ??= workItemId;
     row.seed ??= num(delta.seed ?? item.seed ?? item.raw?.seed);
     row.pool ??= text(delta.pool ?? item.raw?.pool);
     if (type === "eval.trial.started") {
@@ -792,23 +855,61 @@ export function craftaxTrialsFromRun(
     }
     if (type === "eval.trial.event") row.started = true;
     if (type === "eval.trial.terminal") {
-      row.record = (item.raw ?? item) as Any;
+      row.record = record;
       row.rolloutId ??= text(row.record?.rolloutId);
       row.failed = item.valid === false || text(row.record?.error) !== null;
     }
   }
 
+  // Raw trial events provide the trajectory, but OptimizerRunViewV2 owns child
+  // lifecycle. In particular, the kernel deterministically terminalizes every
+  // work item when the parent seals, even if a producer never emitted a final
+  // per-trial envelope. Reconcile by stable work-item/trial identity so the
+  // workstation cannot retain queued/running rows behind a terminal parent.
+  const projection = (runViewV2?.projection ?? {}) as Any;
+  const workItems = Array.isArray(projection.workItems)
+    ? projection.workItems as Any[]
+    : Array.isArray(projection.work_items)
+      ? projection.work_items as Any[]
+      : [];
+  const evidenceLedger = Array.isArray(projection.evidenceLedger)
+    ? projection.evidenceLedger as Any[]
+    : Array.isArray(projection.evidence_ledger)
+      ? projection.evidence_ledger as Any[]
+      : [];
+  for (const item of workItems) {
+    const workItemId = text(item?.workItemId ?? item?.work_item_id);
+    if (!workItemId) continue;
+    const evidence = evidenceLedger.find((entry) =>
+      text(entry?.workItemId ?? entry?.work_item_id) === workItemId
+    ) as Any | undefined;
+    const evidenceTrialId = text(evidence?.trialId ?? evidence?.trial_id);
+    const existing = [...pending.values()].find((row) =>
+      row.workItemId === workItemId || (evidenceTrialId !== null && row.trialId === evidenceTrialId)
+    );
+    const row = existing ?? claim(evidenceTrialId ?? workItemId);
+    row.workItemId = workItemId;
+    row.rolloutId ??= text(evidence?.rolloutId ?? evidence?.rollout_id ?? item?.externalRef ?? item?.external_ref);
+    row.authoritativeLifecycle = text(item?.lifecycle);
+    row.authoritativeTerminal = text(item?.terminal);
+  }
+
   const scenario = text(run?.summary?.task) ?? scenarioFallback;
+  const parentTerminal = text(runViewV2?.header?.lifecycle) === "terminal";
   return order.map((trialId) => {
     const row = pending.get(trialId)!;
     const record = row.record;
-    const state: TrialView["state"] = record
-      ? row.failed
-        ? "failed"
-        : "done"
-      : row.started
-        ? "running"
-        : "queued";
+    const state: TrialView["state"] = row.authoritativeLifecycle === "terminal"
+      ? row.authoritativeTerminal === "completed" ? "done" : "failed"
+      : parentTerminal
+        ? record && !row.failed ? "done" : "failed"
+        : row.authoritativeLifecycle === "planned" || row.authoritativeLifecycle === "queued"
+          ? "queued"
+          : row.authoritativeLifecycle === "starting" || row.authoritativeLifecycle === "running"
+            ? "running"
+            : record
+              ? row.failed ? "failed" : "done"
+              : row.started ? "running" : "queued";
     const view = craftaxTraceFromOptimizerEvents(optimizerEvents, {
       trialId,
       traceId: row.rolloutId ?? trialId,
@@ -820,6 +921,7 @@ export function craftaxTrialsFromRun(
       effort: text(run?.summary?.policy?.effort),
       totalReward: num(record?.reward),
       costUsd: num(record?.usage?.cost_usd),
+      parentTerminal,
       relay: (record?.relay ?? null) as Any
     });
     return {
@@ -830,7 +932,8 @@ export function craftaxTrialsFromRun(
       state,
       reward: num(record?.reward),
       view,
-      record
+      record,
+      reportedFacts: row.reportedFacts
     };
   });
 }
@@ -886,6 +989,9 @@ export function reconcileCraftaxTrace(
 				...sealed.coverage,
 				framesDeclared: Math.max(sealed.coverage.framesDeclared, live.coverage.framesDeclared),
 				framesRetained: frames.filter((frame) => frame.media).length,
+				uniqueCasBlobs: new Set(
+					frames.map((frame) => frame.media?.casDigest).filter(Boolean)
+				).size,
 				degradations: live.coverage.degradations
 			}
 		},

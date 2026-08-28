@@ -1,4 +1,5 @@
 import { projectLiveEval } from "../../../runtime/liveEvalReducer.ts";
+import { mediaRefFrom, type MediaRef } from "../../../runtime/mediaClient.ts";
 import type { LiveEvalEvent } from "../../../runtime/types.ts";
 
 type Json = Record<string, unknown>;
@@ -9,6 +10,73 @@ function object(value: unknown): Json {
 
 function finite(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+/** Rejoin the optimizer's frozen terminal lane with visual-only enrichment.
+ *
+ * Progress reducers intentionally keep these lanes separate so late evidence
+ * cannot rewrite a terminal result. A trace viewer has the opposite need: it
+ * must render both the frozen lifecycle and every retained trial envelope.
+ */
+export function mergeCraftaxOptimizerJournalEvents(
+  terminalEvents: LiveEvalEvent[] | undefined,
+  enrichmentEvents: LiveEvalEvent[] | undefined
+): LiveEvalEvent[] | undefined {
+  const combined = [...(terminalEvents ?? []), ...(enrichmentEvents ?? [])];
+  if (combined.length === 0) return undefined;
+  const seen = new Set<string>();
+  return combined.filter((event) => {
+    const raw = object(event);
+    const eventId = raw.eventId ?? raw.event_id;
+    const sequence = raw.sequenceNumber ?? raw.sequence_number;
+    const optimizerRunId = raw.optimizerRunId ?? raw.optimizer_run_id;
+    const identity = typeof eventId === "string" && eventId.length > 0
+      ? `event:${eventId}`
+      : (typeof sequence === "number" || typeof sequence === "string") && typeof optimizerRunId === "string"
+        ? `sequence:${optimizerRunId}:${sequence}`
+        : undefined;
+    if (!identity) return true;
+    if (seen.has(identity)) return false;
+    seen.add(identity);
+    return true;
+  }).sort((left, right) => {
+    const leftSequence = finite(object(left).sequenceNumber);
+    const rightSequence = finite(object(right).sequenceNumber);
+    return leftSequence != null && rightSequence != null ? leftSequence - rightSequence : 0;
+  });
+}
+
+/** Normalize host envelopes before semantic reducers call string methods. */
+export function craftaxEventKind(event: LiveEvalEvent): string {
+  const record = object(event);
+  for (const candidate of [record.kind, record.event_kind, record.eventKind, record.event_type, record.type]) {
+    if (typeof candidate === "string" && candidate.length > 0) return candidate;
+  }
+  return "unknown";
+}
+
+function normalizedCraftaxEvent(event: LiveEvalEvent): LiveEvalEvent {
+  const host = object(event);
+  const delta = object(host.delta);
+  const raw = object(host.raw);
+  const containerEvent = object(delta.container_event ?? delta.containerEvent ?? raw.container_event ?? raw.containerEvent);
+  const containerKind = craftaxEventKind(containerEvent as LiveEvalEvent);
+  if (containerKind !== "unknown") {
+    const rolloutId = containerEvent.rollout_id ?? containerEvent.rolloutId ?? delta.trial_id ?? delta.trialId;
+    const occurredAt = containerEvent.occurred_at ?? containerEvent.occurredAt;
+    const sequence = containerEvent.sequence ?? containerEvent.sequence_number ?? containerEvent.sequenceNumber;
+    return {
+      ...event,
+      kind: containerKind,
+      payload: object(containerEvent.payload),
+      lane: typeof rolloutId === "string" ? rolloutId : event.lane,
+      run_id: typeof rolloutId === "string" ? rolloutId : event.run_id,
+      occurred_at: typeof occurredAt === "string" ? occurredAt : event.occurred_at,
+      sequence: typeof sequence === "number" || typeof sequence === "string" ? sequence : event.sequence,
+    };
+  }
+  const kind = craftaxEventKind(event);
+  return event.kind === kind ? event : { ...event, kind };
 }
 
 /** Canonical streams use `value`; native GameBench history used `reward`. */
@@ -86,7 +154,14 @@ function observationGrid(event: LiveEvalEvent | undefined): string | null {
 
 function payloadUsage(payload: Json): Json {
   const own = object(payload.usage);
-  return Object.keys(own).length ? own : object(object(payload.policy).usage);
+  if (Object.keys(own).length) return own;
+  const nested = object(object(payload.policy).usage);
+  if (Object.keys(nested).length) return nested;
+  return Object.fromEntries(
+    ["prompt_tokens", "completion_tokens", "total_tokens", "cost_usd"]
+      .filter((key) => finite(payload[key]) != null)
+      .map((key) => [key, payload[key]])
+  );
 }
 
 function aggregateTraceUsage(traceEvents: LiveEvalEvent[]): Json {
@@ -158,6 +233,7 @@ export type CraftaxViewerProjection = {
   reward?: number;
   ascii: string | null;
   frameUrl: string | null;
+  frameMedia: MediaRef | null;
   frameUnavailable: boolean;
   frameEvents: LiveEvalEvent[];
   achievements: string[];
@@ -218,19 +294,20 @@ function policyCallItem(
     .map(eventPayload)
     .filter((payload) => payload.delta !== true && payload.channel !== "compact");
   const snapshot = snapshots.at(-1) ?? {};
+  const assistantMessage = object(snapshot.assistant);
   const channelText = (channel: string) => rawEvents
     .filter((event) => event.kind === "span.policy.data")
     .map(eventPayload)
     .filter((payload) => payload.delta === true && payload.channel === channel)
     .map((payload) => typeof payload.text === "string" ? payload.text : "")
     .join("");
-  const reasoning = snapshot.reasoning ?? snapshot.thinking ?? (channelText("reasoning") || undefined);
-  const textOutput = snapshot.assistant ?? snapshot.output ?? snapshot.response ?? (channelText("content") || undefined);
-  const tools = snapshot.tool_calls ?? snapshot.tool_arguments ?? (channelText("tool") || undefined);
+  const reasoning = snapshot.reasoning ?? snapshot.thinking ?? assistantMessage.reasoning_content ?? assistantMessage.reasoning ?? (channelText("reasoning") || undefined);
+  const textOutput = (Object.keys(assistantMessage).length ? assistantMessage.content : snapshot.assistant) ?? snapshot.output ?? snapshot.response ?? (channelText("content") || undefined);
+  const tools = snapshot.tool_calls ?? snapshot.tool_arguments ?? assistantMessage.tool_calls ?? (channelText("tool") || undefined);
   const plan = rawEvents.map(eventPayload).find((payload, index) => rawEvents[index]?.kind === "span.policy.plan");
   const actions = Array.isArray(plan?.actions) ? plan.actions.map(String) : Array.isArray(snapshot.actions) ? snapshot.actions.map(String) : [];
-  const call = finite(snapshot.call) ?? ordinal;
-  const model = String(snapshot.model ?? object(snapshot.policy).model ?? callConfig.model ?? "model");
+  const call = finite(snapshot.call) ?? (finite(snapshot.call_index) != null ? finite(snapshot.call_index)! + 1 : ordinal);
+  const model = String(snapshot.model ?? snapshot["gen_ai.request.model"] ?? object(snapshot.policy).model ?? callConfig.model ?? "model");
   const hasText = textOutput != null && textOutput !== "";
   const hasTools = tools != null && tools !== "";
   const responseType: CraftaxTraceInteraction["responseType"] = hasText && hasTools
@@ -265,6 +342,7 @@ function policyCallItem(
 
 /** Collapse transport partials into user-facing policy calls and environment steps. */
 export function projectCraftaxSemanticTrace(events: LiveEvalEvent[]): CraftaxSemanticTraceItem[] {
+  events = events.map(normalizedCraftaxEvent);
   const items: CraftaxSemanticTraceItem[] = [];
   let currentPolicy: { events: LiveEvalEvent[]; openedIndex: number; ordinal: number } | null = null;
   let policyOrdinal = 0;
@@ -281,6 +359,17 @@ export function projectCraftaxSemanticTrace(events: LiveEvalEvent[]): CraftaxSem
       continue;
     }
     if (event.kind.startsWith("span.policy.")) {
+      const payload = eventPayload(event);
+      if (
+        event.kind === "span.policy.data"
+        && payload.phase === "sample"
+        && currentPolicy?.events.some((prior) => {
+          const priorPayload = eventPayload(prior);
+          return prior.kind === "span.policy.data" && priorPayload.phase === "sample" && priorPayload.delta !== true;
+        })
+      ) {
+        flushPolicy();
+      }
       if (!currentPolicy) currentPolicy = { events: [], openedIndex: index, ordinal: ++policyOrdinal };
       currentPolicy.events.push(event);
       if (event.kind === "span.policy.closed") flushPolicy();
@@ -408,6 +497,7 @@ export function groupTraceByStep(items: CraftaxSemanticTraceItem[]): CraftaxTrac
  * Environment steps are reported separately by `environmentStepCount`.
  */
 export function replayMomentIndexes(ordered: LiveEvalEvent[]): number[] {
+  ordered = ordered.map(normalizedCraftaxEvent);
   const indexes: number[] = [];
   for (let index = 0; index < ordered.length; index += 1) {
     const kind = ordered[index].kind;
@@ -421,6 +511,22 @@ export function replayMomentIndexes(ordered: LiveEvalEvent[]): number[] {
   return indexes;
 }
 
+/** Honest replay availability for lifecycle-only or rejected traces. */
+export function craftaxReplayAvailability(
+  ordered: LiveEvalEvent[],
+  evidenceState?: "pending" | "accepted" | "partial" | "missing" | "rejected"
+): { markers: number; environmentSteps: number; replayable: boolean; reason?: string } {
+  const markers = replayMomentIndexes(ordered).length;
+  const steps = environmentStepCount(ordered);
+  if (evidenceState === "rejected") {
+    return { markers, environmentSteps: steps, replayable: false, reason: "evidence rejected" };
+  }
+  if (steps === 0) {
+    return { markers, environmentSteps: 0, replayable: false, reason: "0 trustworthy environment steps" };
+  }
+  return { markers, environmentSteps: steps, replayable: true };
+}
+
 /** Project only persisted evidence visible for one lane at one replay cursor. */
 export function projectCraftaxViewer(
   events: LiveEvalEvent[],
@@ -428,6 +534,7 @@ export function projectCraftaxViewer(
   cutoffIndex?: number | null
 ): CraftaxViewerProjection {
   const ordered = events
+    .map(normalizedCraftaxEvent)
     .map((event, arrival) => ({ event, arrival }))
     .sort((left, right) =>
       eventTime(left.event) - eventTime(right.event) ||
@@ -436,7 +543,14 @@ export function projectCraftaxViewer(
       left.arrival - right.arrival
     )
     .map(({ event }) => event);
-  const lanes = [...new Set(ordered.map(craftaxEventLane))];
+  const observedLanes = [...new Set(ordered.map(craftaxEventLane))];
+  // Optimizer journals include run-level lifecycle envelopes on a synthetic
+  // `eval` lane. It is useful durable evidence, but it is not a rollout and
+  // contains no gameplay or policy calls. Prefer actual rollout lanes whenever
+  // at least one exists so a completed evaluation never opens on an empty
+  // transcript merely because `eval` sorts first.
+  const rolloutLanes = observedLanes.filter((lane) => lane !== "eval");
+  const lanes = rolloutLanes.length > 0 ? rolloutLanes : observedLanes;
   const selectedLane = chosenLane && lanes.includes(chosenLane) ? chosenLane : lanes[0];
   const laneEvents = selectedLane
     ? ordered.filter((event) => craftaxEventLane(event) === selectedLane)
@@ -456,12 +570,16 @@ export function projectCraftaxViewer(
   }, undefined);
   const frame = lastKind(visibleEvents, "frame");
   const frameEvents = laneEvents.filter((event) =>
-    event.kind === "frame" && typeof event.payload.url === "string" && event.payload.url.length > 0
+    event.kind === "frame" && (
+      (typeof event.payload.url === "string" && event.payload.url.length > 0)
+      || mediaRefFrom(event.payload) !== null
+    )
   );
   const observation = lastKind(visibleEvents, "observation") ?? lastKind(visibleEvents, "snapshot");
   const frameUrl = typeof frame?.payload.url === "string" && frame.payload.url.length > 0
     ? frame.payload.url
     : null;
+  const frameMedia = mediaRefFrom(frame?.payload);
   const frameFormat = typeof frame?.payload.format === "string" ? frame.payload.format.toLowerCase() : "";
   const pngAdvertised = frameFormat === "png"
     || (typeof frameUrl === "string" && (frameUrl.includes(".png") || frameUrl.startsWith("data:image/png")));
@@ -470,7 +588,7 @@ export function projectCraftaxViewer(
     : typeof frame?.payload.text === "string"
       ? frame.payload.text
       : observationGrid(observation);
-  const frameUnavailable = Boolean(frame) && pngAdvertised && !frameUrl;
+  const frameUnavailable = Boolean(frame) && pngAdvertised && !frameUrl && !frameMedia;
   const achievements = [...new Set(visibleEvents.flatMap((event) => {
     if (event.kind === "achievement_unlocked") {
       const payload = object(event.payload);
@@ -491,7 +609,7 @@ export function projectCraftaxViewer(
   const usage = aggregateTraceUsage(traceEvents);
   const text = (value: unknown) => typeof value === "string" && value.length > 0 ? value : undefined;
   const provider = text(policyData.provider) ?? text(nestedPolicy.provider) ?? text(openedCall.provider);
-  const model = text(policyData.model) ?? text(nestedPolicy.model) ?? text(openedCall.model);
+  const model = text(policyData.model) ?? text(policyData["gen_ai.request.model"]) ?? text(nestedPolicy.model) ?? text(openedCall.model);
   const terminal = visibleEvents.some((event) => {
     if (event.kind === "trace.reconciled" || event.kind === "eval.run.terminal") return true;
     if (event.kind !== "status") return false;
@@ -511,6 +629,7 @@ export function projectCraftaxViewer(
     reward: cumulativeReward ?? (shared.reward ?? undefined),
     ascii,
     frameUrl,
+    frameMedia,
     frameUnavailable,
     frameEvents,
     achievements,
@@ -560,11 +679,20 @@ export function policyPartialDetail(event: LiveEvalEvent): string {
   return "—";
 }
 
-/** How many environment steps this rollout actually took.
+/** How many environment steps the retained evidence proves were completed.
  *
- * The count a reader means by "steps". Derived from the highest step the
- * environment reported, so it stays honest when events are still arriving. */
+ * Canonical producer journals emit one `span.step.closed` per completed step;
+ * count those across rollout lanes. Older native fixtures only expose indexed
+ * snapshots, so they retain the previous highest-index fallback. */
 export function environmentStepCount(ordered: LiveEvalEvent[]): number {
+  const closedSteps = new Set<string>();
+  for (const event of ordered) {
+    if (event.kind !== "span.step.closed") continue;
+    const step = eventStep(event);
+    if (step != null) closedSteps.add(`${craftaxEventLane(event)}:${step}`);
+  }
+  if (closedSteps.size > 0) return closedSteps.size;
+
   let highest = -1;
   for (const event of ordered) {
     const step = eventStep(event);

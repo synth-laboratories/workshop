@@ -22,8 +22,8 @@ import type { OptimizerRunStatus } from "../../generated/protocol";
 
 export const RUN_PROGRESS_SCHEMA_VERSION = "run_progress.v1";
 
-/** Workflows that share the projection. `go-ex` and `dag` runs are not offered in chat. */
-export type RunKind = "eval" | "gepa" | "sft" | "environment";
+/** Workflows that share the projection. DAG remains a diagnostic-only legacy run. */
+export type RunKind = "eval" | "gepa" | "go-ex" | "sft" | "cispo" | "environment";
 
 export type RunProgressStatus =
 	| "queued"
@@ -99,7 +99,7 @@ export type RunEtaProjection = {
 	unavailableReason?: string;
 };
 
-export type CoveredMetricSource = "provider" | "container" | "derived" | "unavailable";
+export type CoveredMetricSource = "provider" | "proxy" | "container" | "derived" | "unavailable";
 
 /**
  * A number plus who vouches for it and how much of the run it covers. A
@@ -114,6 +114,8 @@ export type CoveredMetric = {
 	/** observed / expected, 0–1. Absent without a denominator. */
 	coverage?: number;
 	source: CoveredMetricSource;
+	/** Calls covered by a durable provider receipt, when this metric came from one. */
+	receiptCalls?: number;
 };
 
 export type RunUsageProjection = {
@@ -233,12 +235,13 @@ export type RunProgressProjection = {
 		suffix?: string;
 		usedCalls: number;
 		maxCalls: number;
-		usedCostUsd: number;
-		maxCostUsd: number;
+		/** Null means the capability has no authoritative cost telemetry. */
+		usedCostUsd: number | null;
+		maxCostUsd: number | null;
 		note?: string;
 	};
 	result?: RunProgressResult;
-	/** Visual instance id for "Open full run", when the run published one. */
+	/** Primary visual instance id for "Open visual", when the run published one. */
 	fullVisualRef?: string;
 	/** Durable event sequence this projection was computed at. */
 	cursorSeq: number;
@@ -276,7 +279,14 @@ export type RunProgressTranscriptItem = {
 	createdAt: string;
 };
 
-export const RUN_KINDS: readonly RunKind[] = ["eval", "gepa", "sft", "environment"];
+export const RUN_KINDS: readonly RunKind[] = [
+	"eval",
+	"gepa",
+	"go-ex",
+	"sft",
+	"cispo",
+	"environment"
+];
 
 export function isRunKind(value: unknown): value is RunKind {
 	return typeof value === "string" && (RUN_KINDS as readonly string[]).includes(value);

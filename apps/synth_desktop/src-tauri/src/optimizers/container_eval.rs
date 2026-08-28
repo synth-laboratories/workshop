@@ -21,6 +21,7 @@ use crate::container_stream::{
 };
 use crate::visuals::{VisualStatus, VisualUpdateRequest, VISUAL_BINDINGS_SCHEMA_VERSION};
 use anyhow::{bail, Context, Result};
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 use std::time::{Duration, Instant};
 use tokio::sync::watch;
@@ -32,11 +33,11 @@ const EXPERIMENT_SCHEMA: &str = "synth.experiment.overview.v1";
 /// The per-seed drill-down. The overview stays the run-level surface; this is
 /// what a seed row opens, and it is bound to the same run rather than to a
 /// snapshot, so it keeps filling in while the campaign runs.
-const WORKBENCH_TEMPLATE: &str = "craftax.trace_workbench.v1";
+const WORKBENCH_TEMPLATE: &str = "trace.workbench.v1";
 const EVAL_ALGORITHM_ID: &str = "eval";
 const POLL_TIMEOUT: Duration = Duration::from_secs(120);
 const POLL_INTERVAL: Duration = Duration::from_millis(80);
-const DEFAULT_BLOCKING_EVAL_HTTP_TIMEOUT: Duration = Duration::from_secs(10 * 60);
+const DEFAULT_BLOCKING_EVAL_HTTP_TIMEOUT: Duration = crate::limits::CONTAINER_POLICY_ROLLOUT_TIMEOUT;
 
 /// A failure of the evidence lane — durable events, projections, the terminal
 /// manifest, or the chat-owned visual — as opposed to a failure of the compute.
@@ -85,12 +86,17 @@ struct EvalSpec {
     policy_config: String,
     policy: serde_json::Map<String, Value>,
     policy_code: Option<String>,
+    policy_source_revision: String,
+    policy_configuration_digest: String,
     provider: String,
     model: String,
     concurrency: usize,
     train: Vec<i64>,
     heldout: Vec<i64>,
     cost_ceiling_usd: f64,
+    maximum_model_calls_per_rollout: u32,
+    maximum_steps_per_rollout: u32,
+    admitted_use_policy: Option<crate::secrets::SecretsUsePolicy>,
     requires_credential_advertisement: bool,
     relay: RelaySettings,
 }
@@ -108,11 +114,18 @@ impl EvalSpec {
             .as_value()
             .as_object()
             .cloned()
-            .ok_or_else(|| anyhow::anyhow!("approved inline policy configuration is not an object"))?;
+            .ok_or_else(|| {
+                anyhow::anyhow!("approved inline policy configuration is not an object")
+            })?;
+        let admitted_use_policy = execution.provider_use_policy();
         Ok(Self {
             recipe_id: format!("inline:{}", execution.digest()?.as_str()),
             family,
-            title: format!("{} · {}", recipe.policy.qualified_name(), recipe.model.model_id),
+            title: format!(
+                "{} · {}",
+                recipe.policy.qualified_name(),
+                recipe.model.model_id
+            ),
             question: format!(
                 "Score {} with the container-declared evaluator.",
                 recipe.policy.qualified_name()
@@ -123,13 +136,27 @@ impl EvalSpec {
             policy_config: recipe.policy.name.clone(),
             policy,
             policy_code: recipe.policy.source_code.clone(),
+            policy_source_revision: recipe.policy.revision.as_str().to_string(),
+            policy_configuration_digest: recipe.policy.configuration_digest.as_str().to_string(),
             provider: recipe.model.provider.as_str().to_string(),
             model: recipe.model.model_id.as_str().to_string(),
             concurrency: recipe.rollout_plan.maximum_rollouts.0.get() as usize,
-            train: recipe.rollout_plan.seeds.iter().map(|seed| seed.0).collect(),
+            train: recipe
+                .rollout_plan
+                .seeds
+                .iter()
+                .map(|seed| seed.0)
+                .collect(),
             heldout: Vec::new(),
             cost_ceiling_usd: recipe.resource_limits.hard_total_cost_micros.as_micros() as f64
                 / 1_000_000.0,
+            maximum_model_calls_per_rollout: recipe
+                .resource_limits
+                .maximum_model_calls_per_rollout
+                .0
+                .get(),
+            maximum_steps_per_rollout: recipe.resource_limits.maximum_steps_per_rollout.0.get(),
+            admitted_use_policy: Some(admitted_use_policy),
             requires_credential_advertisement: false,
             relay: RelaySettings::default(),
         })
@@ -140,20 +167,34 @@ impl EvalSpec {
     }
 
     fn blocking_http_timeout(&self) -> Duration {
-        let Some(per_call) = self
+        let per_call_timeout = self
             .policy
             .get("timeout_seconds")
             .and_then(Value::as_f64)
-        else {
-            return DEFAULT_BLOCKING_EVAL_HTTP_TIMEOUT;
-        };
-        let calls = self
-            .policy
-            .get("max_calls")
-            .and_then(Value::as_u64)
-            .unwrap_or(1)
-            .max(1) as f64;
-        Duration::from_secs_f64((per_call * calls + 60.0).clamp(60.0, 86_400.0))
+            .filter(|seconds| seconds.is_finite() && *seconds > 0.0);
+        let configured = per_call_timeout
+            .map(|per_call| {
+                let calls = self.maximum_model_calls_per_rollout.max(1) as f64;
+                Duration::from_secs_f64((per_call * calls + 60.0).clamp(60.0, 86_400.0))
+            })
+            .unwrap_or(DEFAULT_BLOCKING_EVAL_HTTP_TIMEOUT);
+        // Inline capabilities are the authoritative time bound on provider
+        // work. Waiting less than their lifetime converts a still-authorized
+        // producer retry sequence into a host transport failure. One final
+        // request may already be in flight when authority expires, so retain
+        // its declared timeout plus terminal-settlement grace. This grants no
+        // additional calls or spend.
+        let capability_bound = self.admitted_use_policy.as_ref().map(|policy| {
+            let terminal_grace = per_call_timeout.unwrap_or(60.0).ceil() as u64;
+            Duration::from_secs(
+                policy
+                    .lifetime_seconds
+                    .saturating_add(terminal_grace)
+                    .saturating_add(60)
+                    .min(86_400),
+            )
+        });
+        capability_bound.map_or(configured, |bound| configured.max(bound))
     }
 
     fn from_workspace(recipe: &WorkspaceRecipe, workspace: &std::path::Path) -> Result<Self> {
@@ -166,23 +207,48 @@ impl EvalSpec {
                     .with_context(|| format!("read policy source {}", path.display()))
             })
             .transpose()?;
+        let policy_configuration_digest =
+            super::admission::CanonicalJson::new(Value::Object(recipe.policy.clone()))?
+                .digest()
+                .as_str()
+                .to_string();
         Ok(Self {
             recipe_id: recipe.id.clone(),
             family: recipe.family.clone(),
             title: recipe.title.clone(),
-            question: format!("Score the advertised {} policy on the declared eval pool.", recipe.family),
+            question: format!(
+                "Score the advertised {} policy on the declared eval pool.",
+                recipe.family
+            ),
             world_ref: format!("world:{}@eval", recipe.family),
             evaluation_plan_ref: format!("{}_eval.v1", recipe.family),
             harness: recipe.harness.clone(),
             policy_config: recipe.policy_config.clone(),
             policy: recipe.policy.clone(),
             policy_code,
+            policy_source_revision: recipe.source_hash.clone(),
+            policy_configuration_digest,
             provider: recipe.provider.clone(),
             model: recipe.model.clone(),
             concurrency: recipe.concurrency,
             train: recipe.train_seeds.clone(),
             heldout: recipe.heldout_seeds.clone(),
             cost_ceiling_usd: recipe.bounds.max_cost_usd,
+            maximum_model_calls_per_rollout: recipe
+                .policy
+                .get("max_calls")
+                .and_then(Value::as_u64)
+                .and_then(|value| u32::try_from(value).ok())
+                .filter(|value| *value > 0)
+                .unwrap_or(1),
+            maximum_steps_per_rollout: recipe
+                .policy
+                .get("max_steps")
+                .and_then(Value::as_u64)
+                .and_then(|value| u32::try_from(value).ok())
+                .filter(|value| *value > 0)
+                .unwrap_or(1),
+            admitted_use_policy: None,
             requires_credential_advertisement: recipe.requires_credential_advertisement,
             relay: recipe.relay,
         })
@@ -201,12 +267,18 @@ impl EvalSpec {
             policy_config: "banking77_gpt_4_1_nano".into(),
             policy: serde_json::Map::new(),
             policy_code: None,
+            policy_source_revision: "fixture-revision".into(),
+            policy_configuration_digest:
+                "sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a".into(),
             provider: "openrouter".into(),
             model: "openai/gpt-4.1-nano".into(),
             concurrency: 10,
             train: (0..10).collect(),
             heldout: Vec::new(),
             cost_ceiling_usd: 0.50,
+            maximum_model_calls_per_rollout: 10,
+            maximum_steps_per_rollout: 2_000,
+            admitted_use_policy: None,
             requires_credential_advertisement: false,
             relay: RelaySettings::default(),
         }
@@ -225,12 +297,18 @@ impl EvalSpec {
             policy_config: "openai_gpt41_mini".into(),
             policy: serde_json::Map::new(),
             policy_code: None,
+            policy_source_revision: "fixture-revision".into(),
+            policy_configuration_digest:
+                "sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a".into(),
             provider: "openai".into(),
             model: "gpt-4.1-mini-2025-04-14".into(),
             concurrency: 2,
             train: vec![0, 1],
             heldout: vec![100, 101],
             cost_ceiling_usd: 0.50,
+            maximum_model_calls_per_rollout: 8,
+            maximum_steps_per_rollout: 64,
+            admitted_use_policy: None,
             requires_credential_advertisement: true,
             relay: RelaySettings::default(),
         }
@@ -260,8 +338,10 @@ impl EvalSpec {
             ("provider".into(), json!(self.provider)),
             ("model".into(), json!(self.model)),
             ("base_url".into(), json!(base_url)),
-            ("api_key_env".into(), json!("OPENAI_API_KEY")),
         ]));
+        if self.harness != "nanohorizon" {
+            config.insert("api_key_env".into(), json!("OPENAI_API_KEY"));
+        }
         let config = Value::Object(config);
         Some(json!({
             "config_id": self.policy_config,
@@ -283,6 +363,8 @@ struct ReadyContainer {
     base_url: String,
     protocol: String,
     image_digest: Option<String>,
+    producer_source_revision: Option<String>,
+    metadata: Value,
 }
 
 pub(super) async fn start(
@@ -313,11 +395,8 @@ pub(super) async fn start_inline(
     session_ref: Option<String>,
 ) -> Result<(OptimizerRunRecord, Option<crate::storage::AppEvent>)> {
     let recipe = approved.recipe();
-    let (container, family) = find_ready_container_by_id(
-        service,
-        recipe.container.container_id.as_str(),
-    )
-    .await?;
+    let (mut container, family) =
+        find_ready_container_by_id(service, recipe.container.container_id.as_str()).await?;
     let info = crate::http::http_client()
         .get(format!("{}/info", container.base_url))
         .send()
@@ -328,6 +407,7 @@ pub(super) async fn start_inline(
         .json::<Value>()
         .await
         .context("decode inline container /info")?;
+    refresh_inline_container_provenance(&mut container, &info)?;
     let evaluator_ref = info
         .pointer("/logical_service_ids/evaluator")
         .and_then(Value::as_str)
@@ -344,9 +424,44 @@ pub(super) async fn start_inline(
         .and_then(Value::as_str)
         .context("container /info does not declare a world identity")?
         .to_string();
-    let spec = EvalSpec::from_execution_spec(approved.spec(), family, world_ref)?;
-    let admission = super::admission::EvaluationRunRecord::from_approved("pending", &approved);
-    start_eval(service, session_ref, spec, container, Some(admission)).await
+    let mut spec = EvalSpec::from_execution_spec(approved.spec(), family, world_ref)?;
+    if spec.policy_code.is_none() {
+        if let Some(material) = &recipe.policy.material {
+            let origin = super::workspace_recipe::ContainerDeclarationOrigin {
+                manifest_path: std::path::PathBuf::from(&material.source_root)
+                    .join("workshop.containers.toml"),
+                source_root: std::path::PathBuf::from(&material.source_root),
+                declaration_id: recipe.container.container_id.as_str().to_string(),
+                source_revision: Some(material.tracked_revision.clone()),
+                source_digest: Some(material.content_digest.as_str().to_string()),
+            };
+            let resolved = super::workspace_recipe::resolve_repository_path(
+                &origin,
+                &material.repository_relative_path,
+            )
+            .map_err(super::workspace_recipe::LaunchDeclarationError::into_anyhow)?;
+            let bytes = std::fs::read_to_string(&resolved.absolute_path).with_context(|| {
+                format!(
+                    "policy_source_unavailable: could not re-read {} from {}",
+                    material.repository_relative_path, material.source_root
+                )
+            })?;
+            let digest = super::admission::digest_bytes(bytes.as_bytes());
+            anyhow::ensure!(
+                digest == material.content_digest
+                    && recipe
+                        .policy
+                        .source_digest
+                        .as_ref()
+                        .is_none_or(|expected| *expected == digest),
+                "policy_source_drift: approved digest {}, current {}",
+                material.content_digest,
+                digest
+            );
+            spec.policy_code = Some(bytes);
+        }
+    }
+    start_eval(service, session_ref, spec, container, Some(approved)).await
 }
 
 async fn find_ready_container_by_id(
@@ -376,13 +491,25 @@ async fn start_eval(
     service: &OptimizerService,
     session_ref: Option<String>,
     spec: EvalSpec,
-    container: ReadyContainer,
-    admission: Option<super::admission::EvaluationRunRecord>,
+    mut container: ReadyContainer,
+    approved: Option<super::admission::ApprovedExecutionSpec>,
 ) -> Result<(OptimizerRunRecord, Option<crate::storage::AppEvent>)> {
-    preflight_container_credentials(&container, &spec).await?;
+    let preflight_info = preflight_container_credentials(&container, &spec).await?;
+    if approved.is_some() {
+        // Credential preflight is the last producer read before durable run
+        // creation. Recheck the same immutable facts here to close the gap
+        // between the post-approval identity refresh and dispatch.
+        refresh_inline_container_provenance(&mut container, &preflight_info)?;
+    }
     let examples = spec.examples();
     let suffix = Uuid::new_v4().simple().to_string();
     let run_id = format!("opt_eval_{}_{}", spec.family, &suffix[..12]);
+    let effective_contract = service.negotiate_effective_contract(
+        &run_id,
+        &container.id,
+        Some(&spec.family),
+        &container.metadata,
+    )?;
     let summary = json!({
         "recipeId": spec.recipe_id,
         "task": spec.family,
@@ -391,12 +518,21 @@ async fn start_eval(
         "containerId": container.id,
         "containerBaseUrl": container.base_url,
         "containerImageDigest": container.image_digest,
-        "expectedVisual": EXPERIMENT_TEMPLATE,
+        "containerProducerSourceRevision": container.producer_source_revision,
+        "expectedVisual": effective_contract.primary_visual.template_id.clone(),
+        "effectiveContract": effective_contract,
         "policyRef": { "harness": spec.harness, "config": spec.policy_config },
         "taskPools": { "train": spec.train.len(), "heldout": spec.heldout.len() },
         "concurrency": spec.concurrency,
         "costCeilingUsd": spec.cost_ceiling_usd,
-        "recipeSourceKind": if admission.is_some() { "inline" } else { "catalog" },
+        "bounds": {
+            "maximumRollouts": examples.len(),
+            "maximumModelCallsPerRollout": spec.maximum_model_calls_per_rollout,
+            "maximumStepsPerRollout": spec.maximum_steps_per_rollout,
+            "maximumTokens": Value::Null,
+            "hardTotalCostUsd": spec.cost_ceiling_usd,
+        },
+        "recipeSourceKind": if approved.is_some() { "inline" } else { "catalog" },
         "startedAt": chrono::Utc::now().to_rfc3339(),
         "records": [],
         "progress": { "completed": 0, "total": examples.len(), "failed": 0 },
@@ -417,13 +553,19 @@ async fn start_eval(
             metadata: json!({
                 "recipeId": spec.recipe_id,
                 "baseUrl": container.base_url,
+                "imageDigest": container.image_digest,
+                "producerSourceRevision": container.producer_source_revision,
             }),
         }]),
         input_refs: Some(vec![
             OptimizerResourceRef {
                 kind: "recipe".into(),
                 id: spec.recipe_id.clone(),
-                digest: None,
+                digest: spec
+                    .recipe_id
+                    .strip_prefix("inline:")
+                    .filter(|digest| valid_sha256_digest(digest))
+                    .map(str::to_string),
                 role: Some("configuration".into()),
                 title: Some(spec.title.clone()),
                 metadata: json!({ "semantics": "baseline_eval" }),
@@ -431,10 +573,14 @@ async fn start_eval(
             OptimizerResourceRef {
                 kind: "container".into(),
                 id: container.id.clone(),
-                digest: None,
+                digest: container.image_digest.clone(),
                 role: Some("runtime".into()),
                 title: Some(format!("Registered {} container", spec.family)),
-                metadata: json!({ "baseUrl": container.base_url }),
+                metadata: json!({
+                    "baseUrl": container.base_url,
+                    "imageDigest": container.image_digest,
+                    "producerSourceRevision": container.producer_source_revision,
+                }),
             },
         ]),
         capabilities: Some(OptimizerCapabilities::for_algorithm(EVAL_ALGORITHM_ID)),
@@ -444,40 +590,31 @@ async fn start_eval(
         cloud_config: None,
         local_path: None,
     };
-    let (run, event) = service.create(create).await?;
-    if let Some(mut admission) = admission {
-        admission.optimizer_run_id = run.id.clone();
-        let declared_rollouts = examples.len();
-        let optimizer_run_id = run.id.clone();
+    let (run, event) = if let Some(approved) = approved {
         service
-            .database()
-            .clone()
-            .run(move |conn| {
-                super::admission::insert_evaluation_run(conn, &admission)?;
-                let mut progress = super::admission::RunProgress::plan(declared_rollouts);
-                for next in [
-                    super::admission::RunState::Validating,
-                    super::admission::RunState::ReadyForApproval,
-                    super::admission::RunState::AwaitingApproval,
-                    super::admission::RunState::Admitted,
-                    super::admission::RunState::Starting,
-                ] {
-                    progress.transition_run(next)?;
-                }
-                for index in 0..declared_rollouts as u32 {
-                    progress.transition_rollout(index, super::admission::RolloutState::Queued)?;
-                }
-                super::admission::save_run_progress(conn, &optimizer_run_id, &progress)
-            })
-            .await
-            .context("persist approved inline execution specification and initial state")?;
+            .create_admitted_eval(create, approved, examples.len())
+            .await?
+    } else {
+        service.create(create).await?
+    };
+    if spec.admitted_use_policy.is_some() {
+        // Inline runs derive their provider grant only from the immutable,
+        // operator-approved execution envelope. Do this before visuals or the
+        // worker are started so an existing narrower capability for this run
+        // is refused pre-dispatch rather than failing on call 41. The worker's
+        // later route lookup reuses this exact capability.
+        if let Err(error) = container_openai_proxy_base(&run.id, &spec) {
+            let detail = format!("provider capability preflight failed: {error:#}");
+            append_terminal(service, &run.id, "failed", detail).await?;
+            return Err(error);
+        }
     }
     let visual_id = mint_experiment_visual(service, &run, &spec, examples.len()).await?;
     // Minted with the run, not when the first seed finishes: a workstation that
     // appears only after there is something to see cannot show a rollout
     // starting, which is the thing it exists to show.
     let workbench_id = mint_workbench_visual(service, &run, &spec).await?;
-    let (cancel_tx, cancel_rx) = watch::channel(false);
+    let (cancel_tx, cancel_rx) = watch::channel(None);
     service
         .register_local_recipe(run.id.clone(), cancel_tx)
         .await;
@@ -504,7 +641,17 @@ async fn start_eval(
             // example when Workshop refuses to mint a secrets proxy).  Its
             // durable run is terminal in that case, so its chat-owned visual
             // must not survive as a false live/running artifact.
-            let _ = project_worker_failure_visual(
+            if let Err(settlement_error) = settle_worker_failure(&worker, &worker_run_id, error).await {
+                if let Err(record_error) = worker
+                    .record_visual_projection_delivery_failure(&worker_run_id, &settlement_error)
+                    .await
+                {
+                    crate::platform::logging::report(
+                        "container_eval", "projection_outbox",
+                        format!("could not record settlement delivery failure for {worker_run_id}: {record_error:#}"),
+                    );
+                }
+            } else if let Err(projection_error) = project_worker_failure_visual(
                 &worker,
                 &worker_run_id,
                 &worker_spec,
@@ -512,8 +659,18 @@ async fn start_eval(
                 &worker_workbench_id,
                 planned_trials,
             )
-            .await;
-            settle_worker_failure(&worker, &worker_run_id, error).await;
+            .await
+            {
+                if let Err(record_error) = worker
+                    .record_visual_projection_delivery_failure(&worker_run_id, &projection_error)
+                    .await
+                {
+                    crate::platform::logging::report(
+                        "container_eval", "projection_outbox",
+                        format!("could not record visual delivery failure for {worker_run_id}: {record_error:#}"),
+                    );
+                }
+            }
         }
         worker.unregister_local_recipe(&worker_run_id).await;
     });
@@ -550,8 +707,8 @@ async fn project_worker_failure_visual(
             VisualUpdateRequest {
                 title: None,
                 bindings: Some(experiment_bindings(
-                    run_id,
                     spec,
+                    run_id,
                     "failed",
                     records.len(),
                     total,
@@ -593,7 +750,10 @@ async fn project_worker_failure_visual(
 /// A container that declares no roles is not failed here; there is nothing to
 /// fail it on, and inventing a refusal from absent metadata would block every
 /// family that has not implemented the contract yet.
-async fn preflight_container_credentials(container: &ReadyContainer, spec: &EvalSpec) -> Result<()> {
+async fn preflight_container_credentials(
+    container: &ReadyContainer,
+    spec: &EvalSpec,
+) -> Result<Value> {
     let client = crate::http::http_client_with_timeout(Duration::from_secs(15));
     let info = client
         .get(format!("{}/info", container.base_url))
@@ -639,7 +799,7 @@ async fn preflight_container_credentials(container: &ReadyContainer, spec: &Eval
                 })
             );
         }
-        return Ok(());
+        return Ok(info);
     };
     // Sorted so the refusal names the same lane every time for a container
     // missing more than one credential.
@@ -677,7 +837,7 @@ async fn preflight_container_credentials(container: &ReadyContainer, spec: &Eval
             })
         );
     }
-    Ok(())
+    Ok(info)
 }
 
 /// Settle a worker that did not reach its own terminal event.
@@ -687,7 +847,34 @@ async fn preflight_container_credentials(container: &ReadyContainer, spec: &Eval
 /// `degraded` with a named, retryable diagnostic, and the records it did gather
 /// stay in the summary. Either way the run reaches a terminal state — a worker
 /// that dies silently leaves a card spinning forever.
-async fn settle_worker_failure(service: &OptimizerService, run_id: &str, error: anyhow::Error) {
+async fn settle_worker_failure(
+    service: &OptimizerService,
+    run_id: &str,
+    error: anyhow::Error,
+) -> Result<()> {
+    // Provider usage is durable in the secrets proxy independently of worker
+    // control flow. Fold it into the optimizer journal before every terminal
+    // path, including setup and evidence failures that bypass normal campaign
+    // settlement. This is idempotent if cancellation already appended it.
+    let usage_error = append_provider_usage_reconciliation(service, run_id)
+        .await
+        .err()
+        .map(|failure| format!("provider usage reconciliation failed: {failure:#}"));
+    if let Some(usage_error) = usage_error {
+        return append_terminal(
+            service,
+            run_id,
+            "failed",
+            format!("{error:#}; {usage_error}"),
+        )
+        .await;
+    }
+    // Cancellation is not a generic application error. A typed cancellation
+    // settles `cancelled` with its request as the terminal event's payload,
+    // instead of laundering the interruption into `failed/producer_failed`.
+    if let Some(cancelled) = error.downcast_ref::<super::kernel::CancelledError>() {
+        return append_cancelled_terminal(service, run_id, &cancelled.request).await;
+    }
     if let Some(failure) = error.downcast_ref::<EvidenceLaneFailure>() {
         let stage = failure.stage;
         let detail = failure.detail.clone();
@@ -696,12 +883,12 @@ async fn settle_worker_failure(service: &OptimizerService, run_id: &str, error: 
             .await
             .is_ok()
         {
-            return;
+            return Ok(());
         }
         // The degraded settlement itself failed. Fall through: a terminal event
         // the user can see beats a run stuck at `running` with no explanation.
     }
-    let _ = append_terminal(service, run_id, "failed", format!("{error:#}")).await;
+    append_terminal(service, run_id, "failed", format!("{error:#}")).await
 }
 
 /// The Trace V5 workstation for this run's seeds.
@@ -714,11 +901,16 @@ async fn mint_workbench_visual(
     run: &OptimizerRunRecord,
     spec: &EvalSpec,
 ) -> Result<String> {
+    let template_id = run
+        .summary
+        .pointer("/effectiveContract/traceVisual/templateId")
+        .and_then(Value::as_str)
+        .unwrap_or(WORKBENCH_TEMPLATE);
     let (visual_id, _event) = service
         .publish_chat_owned_visual(ChatVisualPublication {
             run_id: run.id.clone(),
             session_ref: run.session_ref.clone(),
-            template_id: WORKBENCH_TEMPLATE.into(),
+            template_id: template_id.into(),
             title: format!("{} · trace workstation", spec.title),
             bindings: json!({
                 "schemaVersion": VISUAL_BINDINGS_SCHEMA_VERSION,
@@ -746,6 +938,11 @@ async fn mint_experiment_visual(
     spec: &EvalSpec,
     total: usize,
 ) -> Result<String> {
+    let template_id = run
+        .summary
+        .pointer("/effectiveContract/primaryVisual/templateId")
+        .and_then(Value::as_str)
+        .unwrap_or(EXPERIMENT_TEMPLATE);
     let progress = inline_progress_projection(service, &run.id).await?;
     // One publication, not five calls: mint-or-reuse, bind to the run, publish
     // the durable show, select it for the owning chat, and shelve it in that
@@ -754,15 +951,15 @@ async fn mint_experiment_visual(
         .publish_chat_owned_visual(ChatVisualPublication {
             run_id: run.id.clone(),
             session_ref: run.session_ref.clone(),
-            template_id: EXPERIMENT_TEMPLATE.into(),
+            template_id: template_id.into(),
             title: spec.title.clone(),
             // The overview is minted before the workstation exists, so the
             // first projection carries no drill-down target. `persist_progress`
             // supplies it from the next update onward; a seed row with no
             // target simply has no chip, rather than one that goes nowhere.
             bindings: experiment_bindings(
-                &run.id,
                 spec,
+                &run.id,
                 "running",
                 0,
                 total,
@@ -787,8 +984,8 @@ async fn mint_experiment_visual(
 
 #[allow(clippy::too_many_arguments)]
 fn experiment_bindings(
-    optimizer_run_id: &str,
     spec: &EvalSpec,
+    optimizer_run_id: &str,
     status: &str,
     completed: usize,
     total: usize,
@@ -824,11 +1021,22 @@ fn experiment_bindings(
     let state_counts = progress_projection
         .and_then(|projection| projection.get("rolloutStateCounts"))
         .cloned()
-        .unwrap_or_else(|| json!({
-            "completed": records.iter().filter(|record| is_successful_eval_record(record)).count(),
-            "failed": records.iter().filter(|record| !is_successful_eval_record(record)).count(),
-            "queued": total.saturating_sub(records.len()),
-        }));
+        .unwrap_or_else(|| {
+            if matches!(status, "completed" | "failed" | "cancelled" | "degraded") {
+                json!({
+                    "completed": records.iter().filter(|record| is_successful_eval_record(record)).count(),
+                    "failed": records.iter().filter(|record| !is_successful_eval_record(record)).count(),
+                    "cancelled": total.saturating_sub(records.len()),
+                    "queued": 0,
+                })
+            } else {
+                json!({
+                    "completed": records.iter().filter(|record| is_successful_eval_record(record)).count(),
+                    "failed": records.iter().filter(|record| !is_successful_eval_record(record)).count(),
+                    "queued": total.saturating_sub(records.len()),
+                })
+            }
+        });
     let active = progress_projection
         .and_then(|projection| projection.get("inFlight"))
         .and_then(Value::as_u64)
@@ -836,14 +1044,20 @@ fn experiment_bindings(
     let elapsed = elapsed_label(started_at);
     let usage = usage_from_records(records, spec.cost_ceiling_usd);
     let total_tokens = usage.prompt_tokens + usage.completion_tokens;
-    let phase = if matches!(status, "completed" | "failed" | "cancelled" | "degraded") {
+    let phase = if matches!(
+        status,
+        "completed" | "failed" | "failed_evidence" | "cancelled" | "degraded"
+    ) {
         status.to_string()
     } else if active > 0 {
         format!("running · {active} active")
     } else {
         "queued".to_string()
     };
-    let terminal = matches!(status, "completed" | "failed" | "cancelled" | "degraded");
+    let terminal = matches!(
+        status,
+        "completed" | "failed" | "failed_evidence" | "cancelled" | "degraded"
+    );
     let eta = if terminal {
         "terminal".to_string()
     } else {
@@ -876,9 +1090,8 @@ fn experiment_bindings(
                 format!("unavailable / ${:.2}", spec.cost_ceiling_usd)
             }
         });
-    let mut limitations = vec![
-        "Baseline-only. No candidate generation and no uplift claim.".to_string(),
-    ];
+    let mut limitations =
+        vec!["Baseline-only. No candidate generation and no uplift claim.".to_string()];
     let failed_rollouts = records
         .iter()
         .filter(|record| record.get("status").and_then(Value::as_str) == Some("failed"))
@@ -888,7 +1101,12 @@ fn experiment_bindings(
     }
     let trace_import_failures = records
         .iter()
-        .filter(|record| record.pointer("/sealedTrace/imported").and_then(Value::as_bool) == Some(false))
+        .filter(|record| {
+            record
+                .pointer("/sealedTrace/imported")
+                .and_then(Value::as_bool)
+                == Some(false)
+        })
         .count();
     if trace_import_failures > 0 {
         limitations.push(format!(
@@ -910,7 +1128,9 @@ fn experiment_bindings(
         ));
     }
     if terminal && usage.cost_usd.is_none() {
-        limitations.push("The producer reported no cost telemetry; cost is unavailable, not zero.".to_string());
+        limitations.push(
+            "The producer reported no cost telemetry; cost is unavailable, not zero.".to_string(),
+        );
     }
     let assessment_summary = match status {
         "running" => format!(
@@ -928,6 +1148,10 @@ fn experiment_bindings(
         "failed" => format!(
             "The evaluation failed: {failed_rollouts} of {total} rollouts did not complete successfully."
         ),
+        "failed_evidence" => {
+            "The rollouts stopped, but required evaluator evidence is missing or unusable."
+                .to_string()
+        }
         "cancelled" => format!(
             "The evaluation was cancelled after {completed} of {total} rollouts completed."
         ),
@@ -940,10 +1164,52 @@ fn experiment_bindings(
         }
         "degraded" => "Inspect the failed rollout and retained traces before drawing a conclusion.",
         "failed" => "Inspect the per-seed failure reasons before deciding whether to run again.",
+        "failed_evidence" => {
+            "Inspect the typed evidence failure and retained receipts; do not treat this as a successful evaluation."
+        }
         "cancelled" => "Start a new approved run only if the cancelled work is still required.",
         "completed" => "Use the retained per-seed traces to inspect behavior behind the aggregate.",
         _ => "Inspect the terminal evidence.",
     };
+    let retained_traces = rollouts
+        .iter()
+        .filter(|row| {
+            row.get("traceId").is_some_and(|value| !value.is_null())
+                && row.get("summary").and_then(Value::as_str)
+                    != Some("no relay receipt was recorded for this seed")
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    let streams_opened = records
+        .iter()
+        .filter(|record| record.get("relay").is_some())
+        .count();
+    let sealed_traces = records
+        .iter()
+        .filter(|record| {
+            record.pointer("/sealedTrace/traces/0/traceId").is_some()
+                || record.pointer("/trace/bundle_trace_id").is_some()
+        })
+        .count();
+    let queued = state_counts
+        .get("queued")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let mut reconciliation_errors = progress_projection
+        .and_then(|projection| projection.get("reconciliationErrors"))
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    if terminal && queued > 0 {
+        reconciliation_errors.push(json!(
+            "The campaign finished, but queued rollouts were never started."
+        ));
+    }
+    if spec.maximum_model_calls_per_rollout == 0 || spec.maximum_steps_per_rollout == 0 {
+        reconciliation_errors.push(json!(
+            "Approved call and step limits are missing from the run receipt."
+        ));
+    }
     json!({
         "schemaVersion": VISUAL_BINDINGS_SCHEMA_VERSION,
         "inputs": [{
@@ -978,8 +1244,8 @@ fn experiment_bindings(
                     "provider": spec.provider,
                     "policy": format!("{} / {}", spec.harness, spec.policy_config),
                     "parallelism": spec.concurrency,
-                    "maximumModelCallsPerRollout": spec.policy.get("max_calls").cloned().unwrap_or(Value::Null),
-                    "maximumStepsPerRollout": spec.policy.get("max_steps").cloned().unwrap_or(Value::Null),
+                    "maximumModelCallsPerRollout": spec.maximum_model_calls_per_rollout,
+                    "maximumStepsPerRollout": spec.maximum_steps_per_rollout,
                 },
                 "provenance": {
                     "source": if spec.recipe_id.starts_with("inline:") { "inline" } else { "catalog" },
@@ -1002,7 +1268,20 @@ fn experiment_bindings(
                 // Each seed opens the workstation, which is bound to the run
                 // rather than to this snapshot — so a seed row is a way in, not
                 // a second copy of the evidence that can disagree with it.
-                "traces": { "prominence": "detail", "items": rollouts },
+                "traces": {
+                    "prominence": "detail",
+                    "plannedSlots": total,
+                    "streamsOpened": streams_opened,
+                    "receiptsRetained": retained_traces.len(),
+                    "sealed": sealed_traces,
+                    "evidenceGaps": total.saturating_sub(retained_traces.len()),
+                    "items": retained_traces
+                },
+                "reconciliationErrors": reconciliation_errors,
+                "aggregate": progress_projection
+                    .and_then(|projection| projection.get("aggregate"))
+                    .cloned()
+                    .unwrap_or(Value::Null),
                 "arms": [{
                     "id": "baseline",
                     "label": spec.policy_config,
@@ -1016,7 +1295,7 @@ fn experiment_bindings(
         }, {
             "input": "optimizer_run",
             "kind": "optimizer_run",
-            "source": optimizer_run_id
+            "source": optimizer_run_id,
         }]
     })
 }
@@ -1029,21 +1308,21 @@ fn seed_row(
     workbench_id: &str,
 ) -> Value {
     let seed = json!(example.seed);
-    let relay = record.and_then(|record| record.get("relay"));
-    let frames = relay
-        .and_then(|relay| relay.get("framesRetained"))
+    let reported_facts = record
+        .and_then(|record| record.get("reportedFacts"))
+        .cloned()
+        .unwrap_or(Value::Null);
+    let frames = reported_facts
+        .pointer("/frames/value")
         .and_then(Value::as_u64);
-    let declared = relay
-        .and_then(|relay| relay.get("framesDeclared"))
-        .and_then(Value::as_u64);
-    // The frame count is stated as retained-of-declared. "0 native frames" was
-    // once printed for a rollout that rendered thirteen, and a single number
-    // cannot tell those two situations apart.
-    let summary = match (frames, declared) {
-        (Some(frames), Some(declared)) if declared > 0 => {
-            format!("{frames}/{declared} native frames retained")
-        }
-        _ => "no relay receipt was recorded for this seed".to_string(),
+    let frame_reason = reported_facts
+        .pointer("/frames/unavailableReason")
+        .and_then(Value::as_str);
+    let summary = match frames {
+        Some(frames) => format!("{frames} trusted native frame observations retained"),
+        None => frame_reason
+            .map(|reason| format!("frames unavailable · {reason}"))
+            .unwrap_or_else(|| "rollout telemetry has not settled".to_string()),
     };
     json!({
         "id": record.and_then(|record| record.get("rolloutId")).cloned().unwrap_or_else(|| json!(format!("planned:{}", example.seed))),
@@ -1052,21 +1331,25 @@ fn seed_row(
         "reward": record.and_then(|record| record.get("reward")).cloned().unwrap_or(Value::Null),
         "status": state.map(|value| json!(value)).or_else(|| record.and_then(|record| record.get("status")).cloned()).unwrap_or_else(|| json!("planned")),
         "stopReason": record.and_then(rollout_stop_reason).unwrap_or(Value::Null),
-        "steps": record.and_then(|record| record.get("steps").filter(|value| !value.is_null()).or_else(|| record.pointer("/sealedTrace/maxStep"))).cloned().unwrap_or(Value::Null),
-        "modelCalls": record.and_then(|record| record.pointer("/usage/calls")).cloned().unwrap_or(Value::Null),
-        "tokens": record.and_then(|record| record.get("usage")).map(total_tokens_from_usage).flatten(),
-        "costUsd": record.and_then(|record| record.get("usage")).and_then(lane_cost_usd),
+        // `sealedTrace.maxStep` is an archive/frame high-water mark, not the
+        // environment's reported execution-step count. If the rollout omitted
+        // `steps`, the honest value is unavailable even when its trace happens
+        // to contain a maximum frame step.
+        "steps": reported_facts.pointer("/steps/value").cloned().unwrap_or(Value::Null),
+        "modelCalls": reported_facts.pointer("/calls/value").cloned().unwrap_or(Value::Null),
+        "tokens": reported_facts.pointer("/tokens/value").cloned().unwrap_or(Value::Null),
+        "costUsd": reported_facts.pointer("/costUsd/value").cloned().unwrap_or(Value::Null),
         "traceId": record.and_then(|record| {
             record
                 .pointer("/sealedTrace/traces/0/traceId")
                 .or_else(|| record.pointer("/trace/bundle_trace_id"))
                 .or_else(|| record.pointer("/trace/trace_id"))
         }).cloned().unwrap_or(Value::Null),
-        "achievements": record
-            .and_then(|record| record
-            .get("checkpointAchievements")
-            .and_then(Value::as_array))
+        "achievements": reported_facts
+            .pointer("/achievements/value")
+            .and_then(Value::as_array)
             .map(Vec::len),
+        "reportedFacts": reported_facts,
         "summary": summary,
         "visualId": workbench_id,
     })
@@ -1084,19 +1367,12 @@ fn rollout_stop_reason(record: &Value) -> Option<Value> {
     record.get("rewardStatus").cloned()
 }
 
-fn total_tokens_from_usage(usage: &Value) -> Option<Value> {
-    if let Some(total) = u64_field(usage, &["total_tokens", "totalTokens"]) {
-        return Some(json!(total));
-    }
-    let prompt = u64_field(usage, &["prompt_tokens", "promptTokens"]);
-    let completion = u64_field(usage, &["completion_tokens", "completionTokens"]);
-    prompt.zip(completion).map(|(prompt, completion)| json!(prompt + completion))
-}
-
 fn elapsed_label(started_at: &str) -> String {
     let elapsed = chrono::DateTime::parse_from_rfc3339(started_at)
         .ok()
-        .map(|started| chrono::Utc::now().signed_duration_since(started.with_timezone(&chrono::Utc)))
+        .map(|started| {
+            chrono::Utc::now().signed_duration_since(started.with_timezone(&chrono::Utc))
+        })
         .map(|duration| duration.num_seconds().max(0) as u64)
         .unwrap_or(0);
     if elapsed >= 60 {
@@ -1113,17 +1389,21 @@ fn eta_label(elapsed: &str, completed: usize, total: usize) -> String {
     if completed >= total {
         return "complete".to_string();
     }
-    let seconds = elapsed
-        .split_whitespace()
-        .fold(0_u64, |sum, part| {
-            if let Some(minutes) = part.strip_suffix('m').and_then(|value| value.parse::<u64>().ok()) {
-                sum + minutes * 60
-            } else if let Some(seconds) = part.strip_suffix('s').and_then(|value| value.parse::<u64>().ok()) {
-                sum + seconds
-            } else {
-                sum
-            }
-        });
+    let seconds = elapsed.split_whitespace().fold(0_u64, |sum, part| {
+        if let Some(minutes) = part
+            .strip_suffix('m')
+            .and_then(|value| value.parse::<u64>().ok())
+        {
+            sum + minutes * 60
+        } else if let Some(seconds) = part
+            .strip_suffix('s')
+            .and_then(|value| value.parse::<u64>().ok())
+        {
+            sum + seconds
+        } else {
+            sum
+        }
+    });
     let remaining = seconds.saturating_mul((total - completed) as u64) / completed as u64;
     if remaining >= 60 {
         format!("~{}m {:02}s", remaining / 60, remaining % 60)
@@ -1136,6 +1416,7 @@ fn mean_for_pool(records: &[Value], pool: &str) -> Option<f64> {
     let values = records
         .iter()
         .filter(|row| row.get("pool").and_then(Value::as_str) == Some(pool))
+        .filter(|row| is_successful_eval_record(row))
         .filter_map(|row| row.get("reward").and_then(Value::as_f64))
         .collect::<Vec<_>>();
     if values.is_empty() {
@@ -1153,11 +1434,9 @@ async fn run_eval_worker(
     examples: Vec<EvalExample>,
     visual_id: String,
     workbench_id: String,
-    cancel: watch::Receiver<bool>,
+    cancel: super::CancelObserver,
 ) -> Result<()> {
-    let _revoke = crate::secrets::RevokeRunOnDrop(run_id.clone());
     let _ownership = service.hold_run_ownership(&run_id)?;
-    transition_inline_run(&service, &run_id, super::admission::RunState::Running).await?;
     evidence(
         "run_started",
         append_status(&service, &run_id, "optimizer.run.started", "running"),
@@ -1222,8 +1501,37 @@ async fn run_eval_worker(
     let mut halt = None::<String>;
 
     loop {
-        if *cancel.borrow() {
-            bail!("container eval cancelled");
+        let cancel_request = cancel.borrow().clone();
+        if let Some(request) = cancel_request {
+            // Stop dispatching and drain every in-flight trial to quiescence
+            // instead of dropping the JoinSet. The children observe the same
+            // typed signal, settle their relays, and each gets an explicit
+            // `cancelled` trial terminal — never `failed`; interrupted work
+            // did not fail. Trials that never dispatched are closed by the
+            // kernel's terminal seal.
+            while let Some(joined) = tasks.join_next().await {
+                let (index, record) = match joined {
+                    Ok((index, _example, Ok(record))) => (index, record),
+                    Ok((index, example, Err(error))) => (
+                        index,
+                        settled_child_error_record(example, spec, &policy_pin, error),
+                    ),
+                    Err(error) => {
+                        return Err(error)
+                            .context("inline rollout task could not be joined during cancellation");
+                    }
+                };
+                evidence(
+                    "trial_terminal",
+                    append_eval_terminal(&service, &run_id, spec, index, &record),
+                )
+                .await?;
+                records.push(record);
+            }
+            append_provider_usage_reconciliation(&service, &run_id)
+                .await
+                .context("reconcile authoritative provider usage after cancellation")?;
+            return Err(super::kernel::CancelledError { request }.into());
         }
         while tasks.len() < permits && halt.is_none() {
             if over_cost_ceiling(&records, spec.cost_ceiling_usd) {
@@ -1236,20 +1544,6 @@ async fn run_eval_worker(
             let Some((index, example)) = remaining.next() else {
                 break;
             };
-            transition_inline_rollout(
-                &service,
-                &run_id,
-                index as u32,
-                super::admission::RolloutState::Starting,
-            )
-            .await?;
-            transition_inline_rollout(
-                &service,
-                &run_id,
-                index as u32,
-                super::admission::RolloutState::Running,
-            )
-            .await?;
             evidence(
                 "dispatch_progress_projection",
                 persist_progress(
@@ -1284,7 +1578,8 @@ async fn run_eval_worker(
                     spec: &spec,
                     policy_pin: &pin,
                 };
-                let result = run_one_example(&trial, example, &mut trial_cancel).await;
+                let result =
+                    run_one_example(&trial, index as u32, example, &mut trial_cancel).await;
                 (index as u32, example, result)
             });
         }
@@ -1293,18 +1588,20 @@ async fn run_eval_worker(
         };
         let (index, record) = match joined {
             Ok((index, _example, Ok(record))) => (index, record),
+            // The loop can be parked in join_next when the cancel arrives, so
+            // an interrupted child can surface here before the loop-top check
+            // runs. The downcast keeps its settlement `cancelled`.
             Ok((index, example, Err(error))) => (
                 index,
-                failed_record(example, spec, &policy_pin, format!("{error:#}")),
+                settled_child_error_record(example, spec, &policy_pin, error),
             ),
             Err(error) => {
                 return Err(error).context("inline rollout task could not be joined");
             }
         };
-        record_inline_rollout_terminal(&service, &run_id, index, &record).await?;
         evidence(
             "trial_terminal",
-            append_eval_terminal(&service, &run_id, spec, &record),
+            append_eval_terminal(&service, &run_id, spec, index, &record),
         )
         .await?;
         records.push(record);
@@ -1324,7 +1621,7 @@ async fn run_eval_worker(
         .await?;
     }
 
-    for (index, example) in remaining {
+    for (_index, example) in remaining {
         let record = failed_record(
             example,
             spec,
@@ -1332,29 +1629,55 @@ async fn run_eval_worker(
             halt.clone()
                 .unwrap_or_else(|| "required rollout was not dispatched".into()),
         );
-        transition_inline_rollout(
-            &service,
-            &run_id,
-            index as u32,
-            super::admission::RolloutState::Failed,
-        )
-        .await?;
         records.push(record);
     }
+
+    // Every child has settled and no provider call can still debit this run's
+    // capabilities. Reconcile the durable proxy receipt before the final
+    // mutable projection and before the terminal manifest freezes usage.
+    // A receipt contradiction is a usage-contract failure, not a missing
+    // evidence attachment. Retain it through the final summary projection so
+    // every planned rollout (including undispatched cost-ceiling rows) remains
+    // visible, then settle the run failed with the contradiction in its detail.
+    // Returning here used to lose those rows; wrapping it as EvidenceLaneFailure
+    // incorrectly settled the same cost-ceiling run as retryable `degraded`.
+    let provider_usage_failure = append_provider_usage_reconciliation(&service, &run_id)
+        .await
+        .err()
+        .map(|error| format!("provider usage reconciliation failed: {error:#}"));
 
     let failed = records
         .iter()
         .filter(|row| !is_successful_eval_record(row))
         .count();
+    let evaluator_failures = records
+        .iter()
+        .filter(|row| {
+            row.pointer("/evaluatorOutcome/status")
+                .and_then(Value::as_str)
+                == Some("failed")
+        })
+        .count();
+    let missing_measurements = records
+        .iter()
+        .filter(|row| {
+            matches!(
+                row.pointer("/evaluatorOutcome/reason")
+                    .and_then(Value::as_str),
+                Some("evaluator_measurement_missing" | "evaluator_numeric_reward_missing")
+            )
+        })
+        .count();
     let budget_exceeded = over_cost_ceiling(&records, spec.cost_ceiling_usd);
-    let legacy_status = if failed == 0 && records.len() == total && !budget_exceeded {
+    let status = if failed == 0
+        && records.len() == total
+        && !budget_exceeded
+        && provider_usage_failure.is_none()
+    {
         "completed"
     } else {
         "failed"
     };
-    let status = settle_inline_progress(&service, &run_id)
-        .await?
-        .unwrap_or(legacy_status);
     evidence(
         "progress_projection",
         persist_progress(
@@ -1369,6 +1692,11 @@ async fn run_eval_worker(
         ),
     )
     .await?;
+    // This is the final mutable summary/visual projection. `append_terminal`
+    // seals the terminal manifest, after which `patch_run` correctly refuses
+    // summary rewrites. Projecting once more after the seal used to turn a
+    // successful worker return into a failure path (and repaint its saved
+    // visual as failed).
     evidence(
         "selection",
         append_eval_selection(&service, &run_id, status, mean_reward(&records)),
@@ -1380,11 +1708,25 @@ async fn run_eval_worker(
         if failed != 0 || records.len() != total {
             parts.push(format!("{failed} of {total} required rollouts failed"));
         }
+        if missing_measurements != 0 {
+            parts.push(format!(
+                "evaluator_measurement_missing: {missing_measurements} container-completed rollouts supplied no evaluator measurement required by the recipe"
+            ));
+        }
+        if evaluator_failures > missing_measurements {
+            parts.push(format!(
+                "evaluator_failure: {} rollouts could not obtain a valid evaluator result",
+                evaluator_failures - missing_measurements
+            ));
+        }
         if budget_exceeded {
             parts.push(format!("cost exceeded ${:.2}", spec.cost_ceiling_usd));
         }
         if let Some(halt) = halt {
             parts.push(halt);
+        }
+        if let Some(provider_usage_failure) = provider_usage_failure {
+            parts.push(provider_usage_failure);
         }
         detail = parts.join("; ");
     }
@@ -1393,128 +1735,131 @@ async fn run_eval_worker(
         append_terminal(&service, &run_id, status, detail),
     )
     .await?;
+    evidence(
+        "terminal_visual_projection",
+        publish_terminal_visual_projection(
+            &service,
+            &run_id,
+            spec,
+            &visual_id,
+            &workbench_id,
+            &records,
+            total,
+            status,
+        ),
+    )
+    .await?;
     Ok(())
 }
 
-async fn transition_inline_run(
+async fn append_provider_usage_reconciliation(
     service: &OptimizerService,
     run_id: &str,
-    next: super::admission::RunState,
 ) -> Result<()> {
-    let run_id = run_id.to_string();
-    service.database().clone().run(move |conn| {
-        let Some(mut progress) = super::admission::load_run_progress(conn, &run_id)? else {
-            return Ok(());
-        };
-        progress.transition_run(next)?;
-        super::admission::save_run_progress(conn, &run_id, &progress)
-    }).await
+    let Some(secrets) = crate::secrets::live() else {
+        return Ok(());
+    };
+    let Some(receipt) = secrets.provider_usage_receipt(run_id)? else {
+        return Ok(());
+    };
+    append_provider_usage_receipt(service, run_id, receipt).await
 }
 
-async fn transition_inline_rollout(
+async fn append_provider_usage_receipt(
     service: &OptimizerService,
     run_id: &str,
-    index: u32,
-    next: super::admission::RolloutState,
+    receipt: crate::secrets::ProviderUsageReceipt,
 ) -> Result<()> {
-    let run_id = run_id.to_string();
-    service.database().clone().run(move |conn| {
-        let Some(mut progress) = super::admission::load_run_progress(conn, &run_id)? else {
-            return Ok(());
-        };
-        progress.transition_rollout(index, next)?;
-        super::admission::save_run_progress(conn, &run_id, &progress)
-    }).await
-}
-
-async fn record_inline_rollout_terminal(
-    service: &OptimizerService,
-    run_id: &str,
-    index: u32,
-    record: &Value,
-) -> Result<()> {
-    let run_id = run_id.to_string();
-    let record = record.clone();
-    service.database().clone().run(move |conn| {
-        let Some(mut progress) = super::admission::load_run_progress(conn, &run_id)? else {
-            return Ok(());
-        };
-        let successful = is_successful_eval_record(&record);
-        progress.transition_rollout(
-            index,
-            if successful {
-                super::admission::RolloutState::Completed
-            } else {
-                super::admission::RolloutState::Failed
-            },
-        )?;
-        let usage = record.get("usage").unwrap_or(&Value::Null);
-        let prompt = usage.get("prompt_tokens").and_then(Value::as_u64);
-        let completion = usage.get("completion_tokens").and_then(Value::as_u64);
-        let total_tokens = usage
-            .get("total_tokens")
-            .and_then(Value::as_u64)
-            .or_else(|| prompt.zip(completion).map(|(a, b)| a + b));
-        let cost_micros = usage
-            .get("cost_micros")
-            .and_then(Value::as_u64)
-            .or_else(|| usage.get("costUsd").and_then(Value::as_f64).map(|v| (v * 1_000_000.0).round() as u64));
-        let rollout_id = record
-            .get("rolloutId")
-            .and_then(Value::as_str)
-            .map(super::admission::RolloutId::new)
-            .transpose()?;
-        progress.record_evidence(index, super::admission::RolloutRecord {
-            state: None,
-            rollout_id,
-            reward: record.get("reward").and_then(Value::as_f64),
-            trace_ref: record
-                .pointer("/sealedTrace/traceId")
-                .or_else(|| record.pointer("/sealedTrace/id"))
-                .or_else(|| record.pointer("/sealedTrace/traces/0/traceId"))
-                .or_else(|| record.pointer("/trace/bundle_trace_id"))
-                .or_else(|| record.pointer("/trace/trace_id"))
-                .and_then(Value::as_str)
-                .map(str::to_owned),
-            cost_micros,
-            total_tokens,
-        });
-        super::admission::save_run_progress(conn, &run_id, &progress)
-    }).await
-}
-
-async fn settle_inline_progress<'a>(
-    service: &OptimizerService,
-    run_id: &str,
-) -> Result<Option<&'a str>> {
-    // Revocation is explicit here; the drop guard remains defense in depth.
-    if let Some(secrets) = crate::secrets::live() {
-        secrets.revoke_run(run_id).context("revoke inline evaluation credential capability")?;
+    if receipt.run_id != run_id {
+        bail!(
+            "provider_usage_reconciliation_conflict: receipt run {} does not match {run_id}",
+            receipt.run_id,
+        );
     }
-    let run_id = run_id.to_string();
-    service.database().clone().run(move |conn| {
-        let Some(record) = super::admission::load_evaluation_run(conn, &run_id)? else {
-            return Ok(None);
-        };
-        let Some(mut progress) = super::admission::load_run_progress(conn, &run_id)? else {
-            bail!("inline evaluation `{run_id}` has no persisted rollout state");
-        };
-        progress.credential_revocation_confirmed = true;
-        let contract = &record.execution_spec.recipe.output_contract;
-        let state = progress.settle(super::admission::EvidenceRequirements {
-            requires_reward: contract.requires_reward,
-            requires_trace: contract.requires_trace,
-            requires_usage: contract.requires_usage,
-        })?;
-        super::admission::save_run_progress(conn, &run_id, &progress)?;
-        Ok(Some(match state {
-            super::admission::RunState::Completed => "completed",
-            super::admission::RunState::Failed => "failed",
-            super::admission::RunState::Cancelled => "cancelled",
-            super::admission::RunState::Degraded => "degraded",
-            other => bail!("settlement returned non-terminal state `{other}`"),
-        }))
-    }).await
+    if let Some(existing) = service
+        .events_after(run_id.to_string(), 0, Some(5_000))
+        .await?
+        .into_iter()
+        .find(|event| event.event_type == "optimizer.usage.reconciled")
+    {
+        let existing_digest = existing
+            .item
+            .as_ref()
+            .and_then(|item| item.get("receiptDigest"))
+            .and_then(Value::as_str);
+        if existing_digest == Some(receipt.digest.as_str()) {
+            return Ok(());
+        }
+        bail!(
+            "provider_usage_reconciliation_conflict: run {run_id} already has receipt {existing_digest:?}, refusing {}",
+            receipt.digest,
+        );
+    }
+    let current = service.get(run_id.to_string()).await?.usage;
+    if current.calls > receipt.calls
+        || current.prompt_tokens > receipt.input_tokens
+        || current.completion_tokens > receipt.output_tokens
+    {
+        bail!(
+            "provider_usage_reconciliation_conflict: receipt totals for {run_id} are below committed provider usage (calls {} < {}, prompt {} < {}, completion {} < {})",
+            receipt.calls,
+            current.calls,
+            receipt.input_tokens,
+            current.prompt_tokens,
+            receipt.output_tokens,
+            current.completion_tokens,
+        );
+    }
+    if let (Some(receipt_cost), Some(committed_cost)) = (receipt.cost_usd, current.cost_usd) {
+        if receipt_cost + f64::EPSILON < committed_cost {
+            bail!(
+                "provider_usage_reconciliation_conflict: receipt cost ${receipt_cost:.6} is below committed cost ${committed_cost:.6}"
+            );
+        }
+    }
+
+    let cost_delta = match (receipt.cost_usd, current.cost_usd) {
+        (Some(receipt_cost), Some(committed_cost)) => json!(receipt_cost - committed_cost),
+        (Some(receipt_cost), None) => json!(receipt_cost),
+        (None, _) => Value::Null,
+    };
+    let item = json!({
+        "schemaVersion": receipt.schema_version,
+        "receiptDigest": receipt.digest,
+        "authority": "workshop.secrets_proxy",
+        "calls": receipt.calls,
+        "promptTokens": receipt.input_tokens,
+        "completionTokens": receipt.output_tokens,
+        "costUsd": receipt.cost_usd,
+        "capabilities": receipt.capabilities,
+    });
+    let usage_delta = Map::from_iter([
+        ("calls".into(), json!(receipt.calls.saturating_sub(current.calls))),
+        (
+            "prompt_tokens".into(),
+            json!(receipt.input_tokens - current.prompt_tokens),
+        ),
+        (
+            "completion_tokens".into(),
+            json!(receipt.output_tokens - current.completion_tokens),
+        ),
+        ("cost_usd".into(), cost_delta),
+        ("usage_completeness".into(), json!("reconciled")),
+    ]);
+    service
+        .append_event_payloads(
+            run_id.to_string(),
+            vec![OptimizerEventDraft::new("optimizer.usage.reconciled", EVAL_ALGORITHM_ID)
+                .idempotency_key("eval:usage:provider:reconciled")
+                .item(item.clone())
+                .usage_delta(usage_delta)
+                .raw(json!({
+                    "source": "workshop_secrets_proxy",
+                    "receiptDigest": item["receiptDigest"],
+                }))],
+        )
+        .await?;
+    Ok(())
 }
 
 /// The campaign plan and one queued event per planned trial, appended as one
@@ -1535,18 +1880,25 @@ async fn append_eval_plan(
                 ("global_capacity".into(), json!(spec.concurrency)),
                 ("planned_trials".into(), json!(examples.len())),
                 (
+                    "workItemIds".into(),
+                    json!((0..examples.len())
+                        .map(|index| format!("eval:trial:{index}"))
+                        .collect::<Vec<_>>()),
+                ),
+                (
                     "candidates".into(),
                     json!([{"id": spec.policy_config, "label": spec.policy_config}]),
                 ),
             ]))
             .raw(json!({ "source": "container_eval" })),
     ];
-    for example in examples {
+    for (index, example) in examples.iter().enumerate() {
         let trial_id = format!("trial:{}:{}", spec.family, example.seed);
         drafts.push(
             OptimizerEventDraft::new("eval.trial.queued", EVAL_ALGORITHM_ID)
                 .idempotency_key(format!("eval:queued:{trial_id}"))
                 .delta(Map::from_iter([
+                    ("workItemId".into(), json!(format!("eval:trial:{index}"))),
                     ("trial_id".into(), json!(trial_id)),
                     ("candidate_id".into(), json!(spec.policy_config)),
                     ("seed".into(), json!(example.seed)),
@@ -1566,11 +1918,38 @@ async fn append_eval_terminal(
     service: &OptimizerService,
     run_id: &str,
     spec: &EvalSpec,
+    index: u32,
     record: &Value,
 ) -> Result<()> {
     let seed = record.get("seed").cloned().unwrap_or(Value::Null);
-    let id = format!("trial:{}:{}", spec.family, seed);
+    let id = format!("eval:trial:{index}");
+    let cancelled = record.get("status").and_then(Value::as_str) == Some("cancelled");
     let valid = is_successful_eval_record(record);
+    let metrics = record
+        .get("metrics")
+        .filter(|value| value.is_object())
+        .cloned()
+        .unwrap_or_else(
+            || json!({ "reward": record.get("reward").cloned().unwrap_or(Value::Null) }),
+        );
+    let evidence_refs = eval_terminal_evidence_refs(spec, record)?;
+    let usage_delta = terminal_usage_reconciliation(record, cancelled, spec.cost_ceiling_usd);
+    let evidence_state = record
+        .get("evidenceState")
+        .and_then(Value::as_str)
+        .unwrap_or_else(|| {
+            if cancelled && record.get("lastObservedStep").is_some() {
+                "sealed_partial"
+            } else if cancelled {
+                "aborted"
+            } else if valid && !evidence_refs.is_empty() {
+                "sealed_complete"
+            } else if !evidence_refs.is_empty() {
+                "sealed_partial"
+            } else {
+                "missing"
+            }
+        });
     let mut draft = OptimizerEventDraft::new("eval.trial.terminal", EVAL_ALGORITHM_ID)
         // One settlement per trial. A retried append of the same trial is the
         // same fact, not a second completion.
@@ -1578,15 +1957,33 @@ async fn append_eval_terminal(
         .item(json!({
             "kind": "trial",
             "id": id,
-            "status": if valid { "evaluated" } else { "failed" },
+            "workItemId": id,
+            "status": if cancelled {
+                "cancelled"
+            } else if valid {
+                "evaluated"
+            } else {
+                "failed"
+            },
+            "cancelled": cancelled,
+            "cancellation": record.get("cancellation").cloned().unwrap_or(Value::Null),
+            "cancellationReceipt": record.get("cancellationReceipt").cloned().unwrap_or(Value::Null),
+            "rolloutId": record.get("rolloutId").cloned().unwrap_or(Value::Null),
+            "trialId": record.get("trialId").cloned().unwrap_or(Value::Null),
+            "lastObservedStep": record.get("lastObservedStep").or_else(|| record.get("steps")).cloned().unwrap_or(Value::Null),
+            "partialSeal": record.get("partialSeal").cloned().unwrap_or(Value::Null),
+            "evidenceState": evidence_state,
             "valid": valid,
             "candidateId": spec.policy_config,
             "stage": "screen",
             "seed": seed,
             "scenario": spec.family,
-            "metrics": { "reward": record.get("reward").cloned().unwrap_or(Value::Null) },
+            "reward": record.get("reward").cloned().unwrap_or(Value::Null),
+            "metrics": metrics,
             "raw": record,
         }))
+        .artifact_refs(evidence_refs)
+        .usage_delta(usage_delta)
         .raw(json!({ "source": "container_eval" }));
     if !valid {
         draft = draft.level("warn");
@@ -1597,15 +1994,170 @@ async fn append_eval_terminal(
     Ok(())
 }
 
+/// The stream owns per-call token facts. The terminal owns only the positive
+/// reconciliation from the container's aggregate receipt, plus the rollout
+/// count. A producer aggregate below already-committed span usage is marked
+/// partial rather than subtracting durable usage.
+fn terminal_usage_reconciliation(
+    record: &Value,
+    cancelled: bool,
+    cost_ceiling_usd: f64,
+) -> Map<String, Value> {
+    let measured = usage_from_records(std::slice::from_ref(record), cost_ceiling_usd);
+    let reported_blob = record.get("usage").unwrap_or(&Value::Null);
+    let reported_tokens = usage_token_pair(reported_blob);
+    let relay = record.get("relay").unwrap_or(&Value::Null);
+    let span_events = relay
+        .pointer("/observedUsage/events")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let span_prompt = relay
+        .pointer("/observedUsage/prompt_tokens")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let span_completion = relay
+        .pointer("/observedUsage/completion_tokens")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let span_cost_complete = relay
+        .pointer("/observedUsage/cost_complete")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let span_cost = relay
+        .pointer("/observedUsage/cost_usd")
+        .and_then(Value::as_f64);
+
+    let (prompt_delta, completion_delta, completeness) = if cancelled {
+        (0, 0, "partial")
+    } else if span_events > 0 {
+        match reported_tokens {
+            Some((prompt, completion)) if prompt >= span_prompt && completion >= span_completion => (
+                prompt - span_prompt,
+                completion - span_completion,
+                "reconciled",
+            ),
+            _ => (0, 0, "partial"),
+        }
+    } else if let Some((prompt, completion)) = reported_tokens {
+        (prompt, completion, "container_reported")
+    } else {
+        (0, 0, "partial")
+    };
+
+    let mut delta = Map::from_iter([
+        ("prompt_tokens".into(), json!(prompt_delta)),
+        ("completion_tokens".into(), json!(completion_delta)),
+        ("rollouts".into(), json!(1)),
+        ("usage_completeness".into(), json!(completeness)),
+    ]);
+    if span_events == 0 {
+        if let Some(cost) = measured.cost_usd {
+            delta.insert("cost_usd".into(), json!(cost));
+        }
+    } else if span_cost_complete {
+        if let (Some(reported), Some(committed)) = (measured.cost_usd, span_cost) {
+            if reported >= committed {
+                delta.insert("cost_usd".into(), json!(reported - committed));
+            }
+        }
+    }
+    delta
+}
+
+fn usage_token_pair(usage: &Value) -> Option<(u64, u64)> {
+    if usage.get("policy").is_some() || usage.get("grader").is_some() {
+        let mut prompt = 0u64;
+        let mut completion = 0u64;
+        let mut saw = false;
+        for lane in [usage.get("policy"), usage.get("grader")]
+            .into_iter()
+            .flatten()
+        {
+            if let Some(value) = u64_field(lane, &["prompt_tokens", "promptTokens"]) {
+                prompt = prompt.saturating_add(value);
+                saw = true;
+            }
+            if let Some(value) = u64_field(lane, &["completion_tokens", "completionTokens"]) {
+                completion = completion.saturating_add(value);
+                saw = true;
+            }
+        }
+        return saw.then_some((prompt, completion));
+    }
+    let prompt = u64_field(usage, &["prompt_tokens", "promptTokens"]);
+    let completion = u64_field(usage, &["completion_tokens", "completionTokens"]);
+    (prompt.is_some() || completion.is_some())
+        .then_some((prompt.unwrap_or(0), completion.unwrap_or(0)))
+}
+
+/// Immutable resources that make one terminal trial evaluable after the
+/// container has gone away.
+///
+/// The evaluator receipt is the exact scored payload retained in the terminal
+/// event, addressed by rollout identity and canonical digest. Imported traces
+/// are additional evidence when the container actually supplied them; a
+/// missing trace is never replaced by a guessed reference.
+fn eval_terminal_evidence_refs(spec: &EvalSpec, record: &Value) -> Result<Vec<Value>> {
+    let mut refs = Vec::new();
+    if let (Some(rollout_id), Some(reward)) = (
+        record.get("rolloutId").and_then(Value::as_str),
+        record.get("reward").filter(|value| !value.is_null()),
+    ) {
+        let receipt = json!({
+            "evaluationPlanRef": spec.evaluation_plan_ref,
+            "rolloutId": rollout_id,
+            "reward": reward,
+            "rewardStatus": record.get("rewardStatus").cloned().unwrap_or(Value::Null),
+        });
+        refs.push(json!({
+            "kind": "evaluator_result",
+            "id": format!("eval:{rollout_id}"),
+            "digest": super::admission::digest_of(&receipt)?.to_string(),
+        }));
+    }
+    if let Some(traces) = record
+        .pointer("/sealedTrace/traces")
+        .and_then(Value::as_array)
+    {
+        let trace_kind = if record.get("evidenceState").and_then(Value::as_str)
+            == Some("sealed_partial")
+        {
+            "trace_v5_partial"
+        } else {
+            "trace_v5"
+        };
+        for trace in traces {
+            let Some(id) = trace.get("traceId").and_then(Value::as_str) else {
+                continue;
+            };
+            let digest = trace
+                .get("digest")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|digest| valid_sha256_digest(digest))
+                .with_context(|| format!("sealed Trace V5 `{id}` omitted its immutable digest"))?;
+            refs.push(json!({
+                "kind": trace_kind,
+                "id": id,
+                "digest": digest,
+            }));
+        }
+    }
+    Ok(refs)
+}
+
 async fn append_eval_selection(
     service: &OptimizerService,
     run_id: &str,
-    status: &str,
+    _status: &str,
     mean: Option<f64>,
 ) -> Result<()> {
     let run = service.get(run_id.to_string()).await?;
+    let selection_status = serde_json::to_value(
+        super::kernel::algorithms::eval::EvalSelection::PromotionNotApplicable,
+    )?;
     let selection = json!({
-        "status": if status == "completed" { "inconclusive" } else { "failed" },
+        "status": selection_status,
         "winnerId": null,
         "baselineId": run.summary.pointer("/policyRef/config").cloned().unwrap_or(Value::Null),
         "primaryMetric": "mean_reward",
@@ -1640,45 +2192,17 @@ fn secrets_proxy_error(code: &str, message: &str) -> anyhow::Error {
 }
 
 fn container_proxy_policy(spec: &EvalSpec) -> crate::secrets::SecretsUsePolicy {
-    let mut policy = crate::secrets::SecretsUsePolicy::default();
-    // Harbor's Codex adapter uses the Responses API, while other supported
-    // eval clients still use Chat Completions. Keep the bounded lease usable
-    // by either approved client without granting arbitrary proxy routes.
-    policy.operations = vec![
-        "chat.completions.create".into(),
-        "responses.create".into(),
-    ];
-    if !spec.model.is_empty() {
-        policy.models = vec![spec.model.clone()];
-        if let Some(model) = spec.model.strip_prefix("openai/") {
-            policy.models.push(model.to_string());
-        }
+    if let Some(policy) = &spec.admitted_use_policy {
+        return policy.clone();
     }
-    if let Some(effort) = spec
-        .policy
-        .get("reasoning_effort")
-        .or_else(|| spec.policy.get("effort"))
-        .and_then(Value::as_str)
-    {
-        policy.reasoning_efforts = vec![effort.to_string()];
-    }
-    policy.max_cost_usd = spec.cost_ceiling_usd;
     let trials = spec.examples().len() as u64;
-    let calls_per_trial = spec
-        .policy
-        .get("max_calls")
-        .and_then(Value::as_u64)
-        .unwrap_or(1)
-        .max(1);
+    let calls_per_trial = spec.maximum_model_calls_per_rollout.max(1) as u64;
     let total_calls = trials.saturating_mul(calls_per_trial).max(1);
-    policy.max_calls = total_calls.min(u32::MAX as u64) as u32;
-    if let Some(context_tokens) = spec
+    let input_tokens = spec
         .policy
         .get("context_token_budget")
         .and_then(Value::as_u64)
-    {
-        policy.max_input_tokens = total_calls.saturating_mul(context_tokens);
-    }
+        .map(|context_tokens| total_calls.saturating_mul(context_tokens));
     let answer_tokens = spec
         .policy
         .get("answer_max_tokens")
@@ -1689,11 +2213,36 @@ fn container_proxy_policy(spec: &EvalSpec) -> crate::secrets::SecretsUsePolicy {
         .get("thinking_budget")
         .and_then(Value::as_u64)
         .unwrap_or(0);
-    if answer_tokens > 0 || thinking_tokens > 0 {
-        policy.max_output_tokens = total_calls
-            .saturating_mul(answer_tokens.saturating_add(thinking_tokens));
+    let output_per_call = answer_tokens.saturating_add(thinking_tokens);
+    // Harbor's Codex adapter uses the Responses API, while other supported
+    // eval clients still use Chat Completions. Keep the bounded lease usable
+    // by either approved client without granting arbitrary proxy routes.
+    let mut models = Vec::new();
+    if !spec.model.is_empty() {
+        models.push(spec.model.clone());
+        if let Some(model) = spec.model.strip_prefix("openai/") {
+            models.push(model.to_string());
+        }
     }
-    policy
+    super::admission::provider_use_policy_from_bounds(
+        vec![
+            "chat.completions.create".into(),
+            "responses.create".into(),
+        ],
+        models,
+        spec.policy
+            .get("reasoning_effort")
+            .or_else(|| spec.policy.get("effort"))
+            .and_then(Value::as_str)
+            .map(|value| vec![value.to_string()])
+            .unwrap_or_default(),
+        total_calls.min(u32::MAX as u64) as u32,
+        (spec.cost_ceiling_usd * 1_000_000.0).round().max(0.0) as u64,
+        crate::limits::SECRETS_CAPABILITY_TTL.as_secs(),
+        input_tokens,
+        (output_per_call > 0)
+            .then(|| total_calls.saturating_mul(output_per_call)),
+    )
 }
 
 fn container_openai_proxy_base(run_id: &str, spec: &EvalSpec) -> Result<String> {
@@ -1711,7 +2260,13 @@ fn container_openai_proxy_base(run_id: &str, spec: &EvalSpec) -> Result<String> 
             container_proxy_policy(spec),
             "eval",
         )
-        .map_err(|error| secrets_proxy_error("secrets_proxy_denied", &error.to_string()))?;
+        .map_err(|error| {
+            if error.to_string().contains("capability_underscoped") {
+                error
+            } else {
+                secrets_proxy_error("secrets_proxy_denied", &error.to_string())
+            }
+        })?;
     let base = env.container_openai_base_url.clone().ok_or_else(|| {
         secrets_proxy_error(
             "secrets_proxy_route_unbound",
@@ -1738,6 +2293,9 @@ async fn register_policy_pin(
     container_info: &Value,
     run_id: &str,
 ) -> Result<Value> {
+    if spec.harness == "nanohorizon" {
+        return register_nanohorizon_policy_pin(client, base, spec, run_id).await;
+    }
     let pin = json!({ "harness": spec.harness, "config": spec.policy_config });
     let advertised = container_info
         .pointer("/capabilities/policy_refs")
@@ -1829,6 +2387,197 @@ async fn register_policy_pin(
     }))
 }
 
+#[derive(Debug, serde::Deserialize)]
+struct ContainerPolicyRef {
+    namespace: String,
+    name: String,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct ContainerPolicyState {
+    schema_version: String,
+    status: String,
+    policy_ref: Option<ContainerPolicyRef>,
+    policy_revision_id: Option<String>,
+    source_revision: Option<String>,
+    configuration_digest: Option<String>,
+    model_digest: Option<String>,
+    credential_state: String,
+}
+
+async fn read_container_policy(
+    client: &reqwest::Client,
+    base: &str,
+) -> Result<ContainerPolicyState> {
+    let response = client
+        .get(format!("{base}/policy"))
+        .send()
+        .await
+        .context("GET /policy")?;
+    if !response.status().is_success() {
+        let status = response.status();
+        let text = response.text().await.unwrap_or_default();
+        bail!("policy inspection failed: {status} {text}");
+    }
+    let state = response
+        .json::<ContainerPolicyState>()
+        .await
+        .context("decode synth.container-policy.v1")?;
+    if state.schema_version != "synth.container-policy.v1" {
+        bail!(
+            "unsupported policy schema `{}`; expected synth.container-policy.v1",
+            state.schema_version
+        );
+    }
+    if state.credential_state != "not_exposed" {
+        bail!("container policy endpoint violated credential non-disclosure contract");
+    }
+    Ok(state)
+}
+
+fn expected_model_digest(spec: &EvalSpec) -> Result<String> {
+    Ok(super::admission::CanonicalJson::new(json!({
+        "provider": spec.provider,
+        "model_id": spec.model,
+    }))?
+    .digest()
+    .as_str()
+    .to_string())
+}
+
+fn installed_policy_matches(
+    state: &ContainerPolicyState,
+    spec: &EvalSpec,
+    model_digest: &str,
+) -> bool {
+    state.status == "installed"
+        && state
+            .policy_revision_id
+            .as_deref()
+            .is_some_and(|value| !value.is_empty())
+        && state.policy_ref.as_ref().is_some_and(|policy| {
+            policy.namespace == spec.harness && policy.name == spec.policy_config
+        })
+        && state.source_revision.as_deref() == Some(spec.policy_source_revision.as_str())
+        && state.configuration_digest.as_deref() == Some(spec.policy_configuration_digest.as_str())
+        && state.model_digest.as_deref() == Some(model_digest)
+}
+
+async fn register_nanohorizon_policy_pin(
+    client: &reqwest::Client,
+    base: &str,
+    spec: &EvalSpec,
+    run_id: &str,
+) -> Result<Value> {
+    let catalog = client
+        .get(format!("{base}/task_catalog"))
+        .send()
+        .await
+        .context("GET /task_catalog")?
+        .error_for_status()
+        .context("container task catalog was not successful")?
+        .json::<Value>()
+        .await
+        .context("decode container task catalog")?;
+    if catalog.get("schema_version").and_then(Value::as_str)
+        != Some("synth.container.task-catalog.v1")
+    {
+        bail!("container returned an unsupported task catalog schema");
+    }
+    let task = client
+        .get(format!("{base}/task_info"))
+        .send()
+        .await
+        .context("GET /task_info")?
+        .error_for_status()
+        .context("container task info was not successful")?
+        .json::<Value>()
+        .await
+        .context("decode container task info")?;
+    if task.get("family").and_then(Value::as_str) != Some(spec.family.as_str()) {
+        bail!(
+            "container task family mismatch: requested {}, declared {:?}",
+            spec.family,
+            task.get("family")
+        );
+    }
+
+    // Register only a scoped Workshop proxy route. No provider credential is
+    // serialized into either the sampler configuration or policy lifecycle.
+    let openai_base = container_openai_proxy_base(run_id, spec)?;
+    let body = spec
+        .policy_config_body(Some(&openai_base))
+        .context("NanoHorizon policy config is missing an immutable config id")?;
+    let response = client
+        .post(format!("{base}/policy-configs"))
+        .json(&body)
+        .send()
+        .await
+        .context("POST /policy-configs")?;
+    if !response.status().is_success() {
+        let status = response.status();
+        let text = response.text().await.unwrap_or_default();
+        bail!("policy config registration failed: {status} {text}");
+    }
+    let registered = response
+        .json::<Value>()
+        .await
+        .context("decode /policy-configs")?;
+    if registered
+        .get("config_id")
+        .or_else(|| registered.get("configId"))
+        .and_then(Value::as_str)
+        != Some(spec.policy_config.as_str())
+    {
+        bail!("container registered a different NanoHorizon policy config");
+    }
+
+    let model_digest = expected_model_digest(spec)?;
+    let mut state = read_container_policy(client, base).await?;
+    if !installed_policy_matches(&state, spec, &model_digest) {
+        let code = spec.policy_code.as_deref().context(
+            "policy_source_unavailable: NanoHorizon requires source bytes from the approved immutable revision",
+        )?;
+        let response = client
+            .put(format!("{base}/policy"))
+            .json(&json!({
+                "code": code,
+                "harness": spec.harness,
+                "namespace": spec.harness,
+                "name": spec.policy_config,
+                "configuration": spec.policy,
+                "model": { "provider": spec.provider, "model_id": spec.model },
+                "source_revision": spec.policy_source_revision,
+            }))
+            .send()
+            .await
+            .context("PUT /policy")?;
+        if !response.status().is_success() {
+            let status = response.status();
+            let text = response.text().await.unwrap_or_default();
+            bail!("policy provisioning failed: {status} {text}");
+        }
+        state = read_container_policy(client, base).await?;
+    }
+    if !installed_policy_matches(&state, spec, &model_digest) {
+        bail!("policy_installation_mismatch: container did not report the approved policy pin");
+    }
+    let revision = state
+        .policy_revision_id
+        .context("installed policy omitted policy_revision_id")?;
+    Ok(json!({
+        "harness": spec.harness,
+        "config": spec.policy_config,
+        "configId": spec.policy_config,
+        "policyRevisionId": revision,
+        "sourceRevision": spec.policy_source_revision,
+        "configurationDigest": spec.policy_configuration_digest,
+        "modelDigest": model_digest,
+        "immutable": true,
+        "authority": "synth.container-policy.v1",
+    }))
+}
+
 async fn persist_policy_pin(
     service: &OptimizerService,
     run_id: &str,
@@ -1847,62 +2596,152 @@ async fn persist_policy_pin(
     Ok(())
 }
 
-fn failed_record(example: EvalExample, spec: &EvalSpec, policy_pin: &Value, error: String) -> Value {
-    json!({
+fn failed_record(
+    example: EvalExample,
+    spec: &EvalSpec,
+    policy_pin: &Value,
+    error: String,
+) -> Value {
+    let mut record = json!({
         "pool": example.pool,
         "seed": example.seed,
         "taskInstanceId": format!("seed:{}", example.seed),
         "status": "failed",
         "error": error,
+        "evaluatorOutcome": {
+            "status": "failed",
+            "reason": "evaluator_not_reached",
+            "detail": error,
+            "source": "container_evaluator",
+        },
+        "evidenceState": "missing",
+        "evidenceOutcome": {
+            "status": "failed",
+            "reason": "trace_not_reached",
+            "detail": error,
+            "source": "trusted_trace_v5",
+        },
         "policyRef": policy_pin,
         "worldRef": spec.world_ref,
-    })
+    });
+    attach_reported_facts(&mut record);
+    record
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum EvaluationProjectionStatus {
-    Running,
-    Completed,
-    Failed,
-    Cancelled,
-    Degraded,
+/// A rollout that was dispatched has durable identity even when its journal
+/// fails integrity validation before evaluator/trace settlement. Keep that
+/// identity on the terminal record instead of rebuilding a pre-dispatch-shaped
+/// failure in the parent task.
+fn dispatched_failure_record(
+    example: EvalExample,
+    spec: &EvalSpec,
+    policy_pin: &Value,
+    rollout_id: &str,
+    trial_id: &str,
+    task_instance_id: &str,
+    container_id: &str,
+    poll_url: &str,
+    relay: &eval_relay::RelayOutcome,
+    error: &anyhow::Error,
+) -> Value {
+    let detail = format!("{error:#}");
+    let integrity = error
+        .downcast_ref::<eval_relay::RelayIntegrityError>()
+        .is_some();
+    let evidence_state = if integrity { "rejected" } else { "missing" };
+    let mut record = json!({
+        "rolloutId": rollout_id,
+        "trialId": trial_id,
+        "pool": example.pool,
+        "seed": example.seed,
+        "taskInstanceId": task_instance_id,
+        "status": "failed",
+        "terminated": true,
+        "error": detail,
+        "steps": relay.last_relayed_step,
+        "lastObservedStep": relay.last_relayed_step,
+        "usage": relay.to_json()["observedUsage"].clone(),
+        "relay": relay.to_json(),
+        "evaluatorOutcome": {
+            "status": "failed",
+            "reason": "evaluator_not_reached",
+            "detail": detail,
+            "source": "container_evaluator",
+        },
+        "evidenceState": evidence_state,
+        "evidenceOutcome": {
+            "status": "failed",
+            "reason": if integrity { "journal_integrity_rejected" } else { "trace_not_reached" },
+            "detail": detail,
+            "source": "trusted_trace_v5",
+        },
+        "evidence": {
+            "containerId": container_id,
+            "eventsUrl": poll_url,
+            "journalRejected": integrity,
+        },
+        "policyRef": policy_pin,
+        "worldRef": spec.world_ref,
+    });
+    attach_reported_facts(&mut record);
+    record
 }
 
-impl EvaluationProjectionStatus {
-    fn parse(value: &str) -> Result<Self> {
-        match value {
-            "running" => Ok(Self::Running),
-            "completed" => Ok(Self::Completed),
-            "failed" => Ok(Self::Failed),
-            "cancelled" => Ok(Self::Cancelled),
-            "degraded" => Ok(Self::Degraded),
-            other => bail!("unknown evaluation projection status `{other}`"),
-        }
+/// Settle one child's error into its trial record: a typed cancellation
+/// becomes a cancelled record carrying its request; anything else failed.
+fn settled_child_error_record(
+    example: EvalExample,
+    spec: &EvalSpec,
+    policy_pin: &Value,
+    error: anyhow::Error,
+) -> Value {
+    match error.downcast_ref::<super::kernel::CancelledError>() {
+        Some(cancelled) => cancelled_record(
+            example,
+            spec,
+            policy_pin,
+            &cancelled.request,
+            format!("{error:#}"),
+        ),
+        None => failed_record(example, spec, policy_pin, format!("{error:#}")),
     }
+}
 
-    fn as_str(self) -> &'static str {
-        match self {
-            Self::Running => "running",
-            Self::Completed => "completed",
-            Self::Failed => "failed",
-            Self::Cancelled => "cancelled",
-            Self::Degraded => "degraded",
-        }
-    }
-
-    fn is_terminal(self) -> bool {
-        !matches!(self, Self::Running)
-    }
-
-    fn from_run_state(state: super::admission::RunState) -> Result<Self> {
-        match state {
-            super::admission::RunState::Completed => Ok(Self::Completed),
-            super::admission::RunState::Failed => Ok(Self::Failed),
-            super::admission::RunState::Cancelled => Ok(Self::Cancelled),
-            super::admission::RunState::Degraded => Ok(Self::Degraded),
-            other => bail!("evaluation evidence reconciliation requires a terminal durable state, found `{other}`"),
-        }
-    }
+/// A trial that was interrupted, with the request that interrupted it. Not a
+/// [`failed_record`]: cancellation is not an application error and must not
+/// settle as one.
+fn cancelled_record(
+    example: EvalExample,
+    spec: &EvalSpec,
+    policy_pin: &Value,
+    request: &std::sync::Arc<super::kernel::CancellationRequest>,
+    detail: String,
+) -> Value {
+    let mut record = json!({
+        "pool": example.pool,
+        "seed": example.seed,
+        "taskInstanceId": format!("seed:{}", example.seed),
+        "status": "cancelled",
+        "cancellation": request.as_ref(),
+        "cancellationReceipt": request.as_ref(),
+        "detail": detail,
+        "evidenceState": "missing",
+        "evaluatorOutcome": {
+            "status": "failed",
+            "reason": "evaluation_cancelled",
+            "detail": detail,
+            "source": "container_evaluator",
+        },
+        "evidenceOutcome": {
+            "status": "aborted",
+            "reason": "evaluation_cancelled",
+            "source": "trusted_trace_v5",
+        },
+        "policyRef": policy_pin,
+        "worldRef": spec.world_ref,
+    });
+    attach_reported_facts(&mut record);
+    record
 }
 
 /// Retry only the evidence lane of an existing inline evaluation.
@@ -1924,37 +2763,25 @@ pub(super) async fn reconcile_evidence(
         .summary
         .as_object()
         .context("evaluation run summary is not an object")?;
-    let projected_status = EvaluationProjectionStatus::parse(
-        summary
-            .get("evalStatus")
-            .and_then(Value::as_str)
-            .context("evaluation run has no typed evalStatus")?,
-    )?;
-    if !projected_status.is_terminal() {
-        bail!("evaluation evidence may be reconciled only after a terminal run state");
-    }
 
     let owned_run_id = run_id.to_string();
-    let (admission, mut progress) = service
+    let (execution_spec, kernel_state) = service
         .database()
         .clone()
         .run(move |conn| {
-            let admission = super::admission::load_evaluation_run(conn, &owned_run_id)?
-                .context("evaluation run has no approved execution specification")?;
-            let progress = super::admission::load_run_progress(conn, &owned_run_id)?
-                .context("evaluation run has no durable rollout state")?;
-            Ok((admission, progress))
+            let execution_spec =
+                super::admission::load_admitted_execution_spec(conn, &owned_run_id)?
+                    .context("evaluation run has no approved execution specification")?;
+            let kernel_state = super::kernel::persist::load_state(conn, &owned_run_id)?
+                .context("evaluation run has no durable kernel projection")?;
+            Ok((execution_spec, kernel_state))
         })
         .await?;
-    let status = EvaluationProjectionStatus::from_run_state(progress.state)?;
-    if status != projected_status {
-        bail!(
-            "evaluation projection status `{}` disagrees with durable state `{}`",
-            projected_status.as_str(),
-            status.as_str()
-        );
-    }
-    if admission.recipe_source_kind != super::admission::RecipeSourceKind::Inline {
+    let terminal = kernel_state
+        .terminal
+        .as_ref()
+        .context("evaluation evidence may be reconciled only after a sealed terminal state")?;
+    if execution_spec.source_kind != super::admission::RecipeSourceKind::Inline {
         bail!("evidence reconciliation currently requires an inline evaluation specification");
     }
 
@@ -1962,11 +2789,11 @@ pub(super) async fn reconcile_evidence(
         .get("records")
         .and_then(Value::as_array)
         .context("evaluation run has no terminal records")?;
-    if records_value.len() != admission.execution_spec.recipe.rollout_plan.seeds.len() {
+    if records_value.len() != execution_spec.recipe.rollout_plan.seeds.len() {
         bail!(
             "terminal record count {} does not match approved rollout count {}",
             records_value.len(),
-            admission.execution_spec.recipe.rollout_plan.seeds.len()
+            execution_spec.recipe.rollout_plan.seeds.len()
         );
     }
     let mut records = records_value.clone();
@@ -1981,17 +2808,17 @@ pub(super) async fn reconcile_evidence(
         .and_then(Value::as_str)
         .map(str::to_string)
         .context("evaluation terminal records have no worldRef")?;
-    let spec = EvalSpec::from_execution_spec(&admission.execution_spec, family, world_ref)?;
-    let container_id = admission
-        .execution_spec
+    let spec = EvalSpec::from_execution_spec(&execution_spec, family, world_ref)?;
+    let container_id = execution_spec
         .recipe
         .container
         .container_id
         .as_str()
         .to_string();
 
-    let approved_seeds = &admission.execution_spec.recipe.rollout_plan.seeds;
+    let approved_seeds = &execution_spec.recipe.rollout_plan.seeds;
     let mut reconciled_indices = std::collections::BTreeSet::new();
+    let mut evidence_refs = Vec::new();
     for (record_position, record) in records.iter_mut().enumerate() {
         let seed = record
             .get("seed")
@@ -2004,16 +2831,35 @@ pub(super) async fn reconcile_evidence(
         if !reconciled_indices.insert(index) {
             bail!("terminal records contain duplicate seed {seed}");
         }
+        let work_item_id = format!("eval:trial:{index}");
+        let ledger_identity = kernel_state
+            .projection
+            .eval_evidence_ledger()
+            .and_then(|ledger| ledger.iter().find(|entry| entry.work_item_id == work_item_id));
         let rollout_id = record
             .get("rolloutId")
             .and_then(Value::as_str)
-            .with_context(|| format!("terminal record for seed {seed} has no rolloutId"))?
-            .to_string();
+            .map(str::to_string)
+            .or_else(|| ledger_identity.and_then(|entry| entry.rollout_id.clone()))
+            .with_context(|| {
+                format!(
+                    "terminal record and durable trial ledger for seed {seed} have no rolloutId"
+                )
+            })?;
         let trial_id = record
             .get("trialId")
             .and_then(Value::as_str)
-            .with_context(|| format!("terminal record for seed {seed} has no trialId"))?
-            .to_string();
+            .map(str::to_string)
+            .or_else(|| ledger_identity.and_then(|entry| entry.trial_id.clone()))
+            .with_context(|| {
+                format!(
+                    "terminal record and durable trial ledger for seed {seed} have no trialId"
+                )
+            })?;
+        // Repair the weaker summary copy from the append-only kernel ledger so
+        // a successful evidence retry also leaves future readers consistent.
+        record["rolloutId"] = json!(rollout_id);
+        record["trialId"] = json!(trial_id);
         let producer_trace_id = record
             .pointer("/trace/bundle_trace_id")
             .or_else(|| record.pointer("/trace/trace_id"))
@@ -2021,43 +2867,83 @@ pub(super) async fn reconcile_evidence(
             .with_context(|| {
                 format!("terminal record for rollout `{rollout_id}` names no sealed trace")
             })?;
-        let imported = match service
-            .indexed_eval_trace(producer_trace_id, &container_id, &rollout_id)
-            .await?
+        // Always reopen the immutable container bundle, even when its trace
+        // identity is already indexed. Trace identity and optimizer-run media
+        // authority are separate bindings: the old index shortcut returned a
+        // trace id without replaying its frame artifacts into this run, which
+        // left a completed Craftax trace with only the live step-0 frame.
+        let imported = service
+            .import_container_trace(&container_id, &rollout_id, run_id, &trial_id)
+            .await
+            .with_context(|| format!("reconcile sealed trace for rollout `{rollout_id}`"))?;
+        let frame_mode = if record.get("evidenceState").and_then(Value::as_str)
+            == Some("sealed_partial")
         {
-            Some(indexed) => indexed,
-            None => service
-                .import_container_trace(&container_id, &rollout_id, run_id, &trial_id)
-                .await
-                .with_context(|| format!("reconcile sealed trace for rollout `{rollout_id}`"))?,
+            FrameTraceMode::SealedPartial {
+                last_pre_cancellation_step: record
+                    .get("lastObservedStep")
+                    .or_else(|| record.get("steps"))
+                    .and_then(Value::as_u64)
+                    .context("partial trace record omitted lastObservedStep")?,
+            }
+        } else {
+            FrameTraceMode::SealedComplete
         };
-        let trace_ref = imported
+        verify_complete_native_frame_trace(record, &imported, &rollout_id, frame_mode)?;
+        let imported_trace = imported
             .get("traces")
             .and_then(Value::as_array)
             .and_then(|traces| traces.first())
-            .and_then(|trace| trace.get("traceId"))
+            .context("sealed bundle indexed no trace")?;
+        let trace_ref = imported_trace
+            .get("traceId")
             .and_then(Value::as_str)
             .map(str::to_string)
-            .with_context(|| format!("sealed bundle for rollout `{rollout_id}` indexed no trace"))?;
+            .with_context(|| {
+                format!("sealed bundle for rollout `{rollout_id}` indexed no trace")
+            })?;
+        let trace_digest = imported_trace
+            .get("digest")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|digest| valid_sha256_digest(digest))
+            .with_context(|| {
+                format!("sealed bundle for rollout `{rollout_id}` indexed a trace without an immutable digest")
+            })?
+            .to_string();
+        if trace_ref != producer_trace_id {
+            bail!(
+                "trace_identity_mismatch: rollout `{rollout_id}` declared `{producer_trace_id}` but the immutable bundle indexed `{trace_ref}`"
+            );
+        }
         record
             .as_object_mut()
             .with_context(|| format!("terminal record for seed {seed} is not an object"))?
             .insert("sealedTrace".into(), imported);
-        progress.record_evidence(
-            index as u32,
-            super::admission::RolloutRecord {
-                trace_ref: Some(trace_ref),
-                ..super::admission::RolloutRecord::default()
-            },
-        );
+        attach_reported_facts(record);
+        evidence_refs.push(json!({
+            "kind": "trace",
+            "id": trace_ref,
+            "digest": trace_digest,
+        }));
     }
-    let save_run_id = run_id.to_string();
     service
-        .database()
-        .clone()
-        .run_transaction(move |conn| {
-            super::admission::save_run_progress(conn, &save_run_id, &progress)
-        })
+        .append_event_payloads(
+            run_id.to_string(),
+            vec![
+                OptimizerEventDraft::new("optimizer.evidence.amended", EVAL_ALGORITHM_ID)
+                    .idempotency_key(format!(
+                        "eval:evidence-reconcile:{}",
+                        terminal.final_sequence
+                    ))
+                    .delta(Map::from_iter([
+                        ("terminalSequence".into(), json!(terminal.final_sequence)),
+                        ("reconciledRollouts".into(), json!(evidence_refs.len())),
+                    ]))
+                    .artifact_refs(evidence_refs)
+                    .raw(json!({ "source": "container_eval_reconcile" })),
+            ],
+        )
         .await?;
 
     let visual_id = summary
@@ -2077,14 +2963,177 @@ pub(super) async fn reconcile_evidence(
         workbench_id,
         &records,
         records.len(),
-        status.as_str(),
+        terminal.kind.as_str(),
     )
     .await?;
     service.get(run_id.to_string()).await
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum FrameTraceMode {
+    SealedComplete,
+    SealedPartial { last_pre_cancellation_step: u64 },
+}
+
+fn verify_complete_native_frame_trace(
+    terminal_record: &Value,
+    imported: &Value,
+    rollout_id: &str,
+    mode: FrameTraceMode,
+) -> Result<()> {
+    let steps = match mode {
+        FrameTraceMode::SealedComplete => terminal_record
+            .get("steps")
+            .and_then(Value::as_u64)
+            .with_context(|| {
+                format!(
+                    "full_trace_step_count_missing: rollout `{rollout_id}` has no terminal environment-step count"
+                )
+            })?,
+        FrameTraceMode::SealedPartial {
+            last_pre_cancellation_step,
+        } => last_pre_cancellation_step,
+    };
+    let observed = imported
+        .get("importedFrameSteps")
+        .and_then(Value::as_array)
+        .context(
+            "full_trace_frame_steps_missing: imported Trace V5 bundle omitted frame-step coverage",
+        )?
+        .iter()
+        .map(|value| {
+            value
+                .as_u64()
+                .context("full_trace_frame_step_invalid: frame step is not an unsigned integer")
+        })
+        .collect::<Result<std::collections::BTreeSet<_>>>()?;
+    let expected = (0..=steps).collect::<std::collections::BTreeSet<_>>();
+    if observed != expected {
+        let missing = expected.difference(&observed).copied().collect::<Vec<_>>();
+        return Err(anyhow::Error::new(
+            crate::error::StructuredFailure::new(
+                "full_trace_frame_coverage_incomplete",
+                format!(
+                    "rollout `{rollout_id}` retained {} of {} required native frame steps ({})",
+                    observed.len(),
+                    expected.len(),
+                    if matches!(mode, FrameTraceMode::SealedPartial { .. }) {
+                        "pre-cancellation"
+                    } else {
+                        "complete"
+                    }
+                ),
+                "Re-import the immutable Trace V5 bundle after confirming the container sealed one native PNG for every environment step, including step 0.",
+            )
+            .retryable(true)
+            .with_details(json!({
+                "rolloutId": rollout_id,
+                "terminalSteps": steps,
+                "observedFrameSteps": observed,
+                "missingFrameSteps": missing,
+            })),
+        ));
+    }
+    Ok(())
+}
+
+fn verify_required_sealed_trace(
+    terminal_record: &Value,
+    imported: &Value,
+    rollout_id: &str,
+) -> Result<()> {
+    anyhow::ensure!(
+        imported.get("imported").and_then(Value::as_bool) == Some(true),
+        "required_trace_import_failed: rollout `{rollout_id}` did not import a trusted Trace V5 bundle"
+    );
+    anyhow::ensure!(
+        imported.get("sourceKind").and_then(Value::as_str) == Some("container_bundle")
+            && imported.get("trusted").and_then(Value::as_bool) == Some(true)
+            && imported.get("inspectable").and_then(Value::as_bool) == Some(true),
+        "required_trace_not_trusted: rollout `{rollout_id}` did not import an inspectable trusted container bundle"
+    );
+    imported
+        .get("bundleDigest")
+        .and_then(Value::as_str)
+        .filter(|digest| valid_sha256_digest(digest))
+        .with_context(|| {
+            format!("required_trace_bundle_digest_missing: rollout `{rollout_id}` omitted its immutable bundle digest")
+        })?;
+    let trace = imported
+        .get("traces")
+        .and_then(Value::as_array)
+        .and_then(|traces| traces.first())
+        .with_context(|| {
+            format!("required_trace_identity_missing: rollout `{rollout_id}` indexed no trace")
+        })?;
+    trace
+        .get("traceId")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|trace_id| !trace_id.is_empty())
+        .with_context(|| {
+            format!("required_trace_identity_missing: rollout `{rollout_id}` indexed no trace id")
+        })?;
+    trace
+        .get("digest")
+        .and_then(Value::as_str)
+        .filter(|digest| valid_sha256_digest(digest))
+        .with_context(|| {
+            format!("required_trace_digest_missing: rollout `{rollout_id}` omitted its immutable trace digest")
+        })?;
+    let binding = imported
+        .get("provenanceBinding")
+        .and_then(Value::as_object)
+        .with_context(|| {
+            format!("required_trace_provenance_missing: rollout `{rollout_id}` has no admitted-runtime binding")
+        })?;
+    for digest_key in ["imageDigest", "traceDigest", "bundleDigest"] {
+        binding
+            .get(digest_key)
+            .and_then(Value::as_str)
+            .filter(|digest| valid_sha256_digest(digest))
+            .with_context(|| {
+                format!("required_trace_provenance_missing: rollout `{rollout_id}` has no valid `{digest_key}` binding")
+            })?;
+    }
+    binding
+        .get("producerSourceRevision")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|revision| !revision.is_empty())
+        .with_context(|| {
+            format!("required_trace_provenance_missing: rollout `{rollout_id}` has no producer revision binding")
+        })?;
+    verify_complete_native_frame_trace(
+        terminal_record,
+        imported,
+        rollout_id,
+        FrameTraceMode::SealedComplete,
+    )
+}
+
 fn is_successful_eval_record(row: &Value) -> bool {
     row.get("status").and_then(Value::as_str) == Some("completed")
+        && match row
+            .pointer("/evaluatorOutcome/status")
+            .and_then(Value::as_str)
+        {
+            Some("scored") => row
+                .pointer("/evaluatorOutcome/reward")
+                .and_then(Value::as_f64)
+                .is_some_and(f64::is_finite)
+                || has_evaluator_measurement(row),
+            Some(_) => false,
+            None => has_evaluator_measurement(row),
+        }
+}
+
+fn has_evaluator_measurement(row: &Value) -> bool {
+    row.get("reward").is_some_and(|value| !value.is_null())
+        || row
+            .get("metrics")
+            .and_then(Value::as_object)
+            .is_some_and(|metrics| metrics.values().any(|value| !value.is_null()))
 }
 
 fn over_cost_ceiling(records: &[Value], cost_ceiling_usd: f64) -> bool {
@@ -2133,7 +3182,12 @@ async fn persist_progress(
         .and_then(|projection| projection.pointer("/rolloutStateCounts/completed"))
         .and_then(Value::as_u64)
         .map(|value| value as usize)
-        .unwrap_or_else(|| records.iter().filter(|record| is_successful_eval_record(record)).count());
+        .unwrap_or_else(|| {
+            records
+                .iter()
+                .filter(|record| is_successful_eval_record(record))
+                .count()
+        });
     let mean = mean_for_pool(records, "train").or_else(|| mean_reward(records));
     let usage = usage_from_records(records, spec.cost_ceiling_usd);
     let provider_usage = crate::secrets::live()
@@ -2145,6 +3199,8 @@ async fn persist_progress(
     let records_value = json!(records);
     let status_value = status.to_string();
     let cost_ceiling_usd = spec.cost_ceiling_usd;
+    let provider = spec.provider.clone();
+    let model = spec.model.clone();
     let run_before_patch = service.get(run_id.to_string()).await?;
     let started_at = run_before_patch
         .started_at
@@ -2177,6 +3233,14 @@ async fn persist_progress(
             if let Some(provider_usage) = provider_usage_for_summary.clone() {
                 summary.insert("providerUsage".into(), provider_usage);
             }
+            summary.insert(
+                "modelIdentity".into(),
+                json!({
+                    "provider": provider,
+                    "model": model,
+                    "authority": "approved_evaluation_spec",
+                }),
+            );
             if let Some(cost) = usage.cost_usd {
                 summary.insert("costUsd".into(), json!(cost));
             }
@@ -2189,13 +3253,13 @@ async fn persist_progress(
                 }),
             );
             run.summary = Value::Object(summary);
-            run.usage = usage;
+            run.usage = usage_with_authoritative_provider_receipt(usage, &run.usage);
             Ok(())
         })
         .await?;
 
     let visual_status = match status {
-        "failed" => VisualStatus::Failed,
+        "failed" | "failed_evidence" => VisualStatus::Failed,
         "completed" | "cancelled" | "degraded" => VisualStatus::Saved,
         _ => VisualStatus::Live,
     };
@@ -2206,8 +3270,8 @@ async fn persist_progress(
             VisualUpdateRequest {
                 title: None,
                 bindings: Some(experiment_bindings(
-                    run_id,
                     spec,
+                    run_id,
                     status,
                     completed,
                     total,
@@ -2270,6 +3334,93 @@ async fn persist_progress(
     Ok(())
 }
 
+/// Publish the terminal kernel aggregate after its seal without rewriting the
+/// immutable optimizer record. This second visual revision is intentional:
+/// the pre-seal projection cannot carry the terminal sequence/revision that
+/// chat and the workbench read from V2.
+#[allow(clippy::too_many_arguments)]
+async fn publish_terminal_visual_projection(
+    service: &OptimizerService,
+    run_id: &str,
+    spec: &EvalSpec,
+    visual_id: &str,
+    workbench_id: &str,
+    records: &[Value],
+    total: usize,
+    status: &str,
+) -> Result<()> {
+    let progress_projection = inline_progress_projection(service, run_id)
+        .await?
+        .context("terminal eval projection is unavailable after seal")?;
+    let completed = progress_projection
+        .pointer("/rolloutStateCounts/completed")
+        .and_then(Value::as_u64)
+        .unwrap_or(0) as usize;
+    let mean = progress_projection
+        .pointer("/aggregate/meanReward")
+        .and_then(Value::as_f64);
+    let run = service.get(run_id.to_string()).await?;
+    let started_at = run.started_at.as_deref().unwrap_or(&run.created_at);
+    let visual_status = match status {
+        "failed" | "failed_evidence" => VisualStatus::Failed,
+        "completed" | "cancelled" | "degraded" => VisualStatus::Saved,
+        other => bail!("terminal visual projection received non-terminal status `{other}`"),
+    };
+    let (_, event) = service
+        .visuals()
+        .update(
+            visual_id.to_string(),
+            VisualUpdateRequest {
+                title: None,
+                bindings: Some(experiment_bindings(
+                    spec,
+                    run_id,
+                    status,
+                    completed,
+                    total,
+                    records,
+                    mean,
+                    workbench_id,
+                    Some(&progress_projection),
+                    started_at,
+                    None,
+                )),
+                status: Some(visual_status.clone()),
+                renderer_kind: None,
+                message_id: None,
+                run_id: None,
+                trace_id: None,
+                content: None,
+                metadata: None,
+                bump_revision: Some(true),
+            },
+        )
+        .await?;
+    service.publish_visual_event(event)?;
+    if !workbench_id.is_empty() {
+        let (_, event) = service
+            .visuals()
+            .update(
+                workbench_id.to_string(),
+                VisualUpdateRequest {
+                    title: None,
+                    bindings: None,
+                    status: Some(visual_status),
+                    renderer_kind: None,
+                    message_id: None,
+                    run_id: None,
+                    trace_id: None,
+                    content: None,
+                    metadata: None,
+                    bump_revision: Some(true),
+                },
+            )
+            .await?;
+        service.publish_visual_event(event)?;
+    }
+    Ok(())
+}
+
 async fn inline_progress_projection(
     service: &OptimizerService,
     run_id: &str,
@@ -2279,25 +3430,55 @@ async fn inline_progress_projection(
         .database()
         .clone()
         .run(move |conn| {
-            let Some(record) = super::admission::load_evaluation_run(conn, &run_id)? else {
+            let Some(state) = super::kernel::persist::load_state(conn, &run_id)? else {
                 return Ok(None);
             };
-            let Some(progress) = super::admission::load_run_progress(conn, &run_id)? else {
-                bail!("inline evaluation `{run_id}` has no durable rollout state");
+            let super::kernel::AlgorithmProjection::Eval(eval) = &state.projection else {
+                bail!("optimizer run `{run_id}` does not have an eval projection");
             };
-            let contract = &record.execution_spec.recipe.output_contract;
-            let mut projection = progress.project(super::admission::EvidenceRequirements {
-                requires_reward: contract.requires_reward,
-                requires_trace: contract.requires_trace,
-                requires_usage: contract.requires_usage,
-            });
-            if let Some(object) = projection.as_object_mut() {
-                object.insert(
-                    "rollouts".into(),
-                    serde_json::to_value(&progress.rollouts).context("encode rollout states")?,
-                );
-            }
-            Ok(Some(projection))
+            let work = state.work_summary();
+            let aggregate = match super::kernel::project_view(&state) {
+                super::kernel::OptimizerRunViewV2::Eval(view) => {
+                    serde_json::to_value(view.aggregate)?
+                }
+                _ => bail!("optimizer run `{run_id}` did not project an eval view"),
+            };
+            let rollouts = eval
+                .work_items
+                .iter()
+                .enumerate()
+                .map(|(index, item)| {
+                    let item_state = item
+                        .terminal
+                        .map(|terminal| terminal.as_str())
+                        .unwrap_or_else(|| item.lifecycle.as_str());
+                    (
+                        index.to_string(),
+                        json!({
+                            "state": item_state,
+                            "workItemId": item.work_item_id,
+                            "externalRef": item.external_ref,
+                        }),
+                    )
+                })
+                .collect::<Map<String, Value>>();
+            Ok(Some(json!({
+                "schemaVersion": super::kernel::RUN_VIEW_SCHEMA_VERSION,
+                "asOfSequence": state.aggregate_sequence,
+                "projectionRevision": state.projection_revision,
+                "runState": state.lifecycle.as_str(),
+                "rolloutStateCounts": {
+                    "queued": work.queued,
+                    "running": work.running,
+                    "completed": work.succeeded,
+                    "failed": work.failed,
+                    "cancelled": work.cancelled,
+                },
+                "inFlight": work.running,
+                "evidence": state.evidence_state(),
+                "aggregate": aggregate,
+                "rollouts": rollouts,
+            })))
         })
         .await
 }
@@ -2354,6 +3535,55 @@ fn usage_from_records(
     usage
 }
 
+/// Keep the proxy's settled provider receipt canonical across later mutable
+/// projections. Per-rollout records describe producer/runtime telemetry and
+/// may legitimately have fewer tokens or no cost; they must not overwrite the
+/// provider authority that was reconciled immediately before settlement.
+fn usage_with_authoritative_provider_receipt(
+    mut measured: super::models::OptimizerUsageSummary,
+    current: &super::models::OptimizerUsageSummary,
+) -> super::models::OptimizerUsageSummary {
+    for (key, value) in &current.extra {
+        measured
+            .extra
+            .entry(key.clone())
+            .or_insert_with(|| value.clone());
+    }
+    let receipt = current
+        .extra
+        .get("providerUsageReceipt")
+        .and_then(Value::as_object);
+    if receipt
+        .and_then(|receipt| receipt.get("authority"))
+        .and_then(Value::as_str)
+        != Some("workshop.secrets_proxy")
+    {
+        return measured;
+    }
+    if let Some(calls) = receipt
+        .and_then(|receipt| receipt.get("calls"))
+        .and_then(Value::as_u64)
+    {
+        measured.calls = calls;
+    }
+    if let Some(tokens) = receipt
+        .and_then(|receipt| receipt.get("promptTokens"))
+        .and_then(Value::as_u64)
+    {
+        measured.prompt_tokens = tokens;
+    }
+    if let Some(tokens) = receipt
+        .and_then(|receipt| receipt.get("completionTokens"))
+        .and_then(Value::as_u64)
+    {
+        measured.completion_tokens = tokens;
+    }
+    measured.cost_usd = receipt
+        .and_then(|receipt| receipt.get("costUsd"))
+        .and_then(Value::as_f64);
+    measured
+}
+
 #[derive(Default)]
 struct LaneUsage {
     prompt_tokens: u64,
@@ -2397,6 +3627,7 @@ fn u64_field(blob: &Value, keys: &[&str]) -> Option<u64> {
 fn mean_reward(records: &[Value]) -> Option<f64> {
     let values = records
         .iter()
+        .filter(|row| is_successful_eval_record(row))
         .filter_map(|row| row.get("reward").and_then(Value::as_f64))
         .collect::<Vec<_>>();
     if values.is_empty() {
@@ -2432,6 +3663,197 @@ enum RolloutReportedStatus {
     Failed,
     Cancelled,
     Truncated,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum EvaluatorFailureReason {
+    RewardEndpointFailed,
+    MeasurementMissing,
+    NumericRewardMissing,
+}
+
+/// Authority for one independently reported rollout fact. An unavailable fact
+/// still names the authority that was asked; absence is not a synthetic zero.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum ReportedFactSource {
+    ContainerRuntime,
+    RetainedEventLog,
+    TrustedTraceV5,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum ReportedFactUnavailableReason {
+    CallsNotReported,
+    StepsNotReported,
+    TokensNotReported,
+    CostNotReported,
+    AchievementsNotReported,
+    FramesNotRetained,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ReportedFact {
+    value: Value,
+    source: ReportedFactSource,
+    unavailable_reason: Option<ReportedFactUnavailableReason>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RolloutReportedFacts {
+    calls: ReportedFact,
+    steps: ReportedFact,
+    tokens: ReportedFact,
+    cost_usd: ReportedFact,
+    achievements: ReportedFact,
+    frames: ReportedFact,
+}
+
+fn reported_fact(
+    value: Option<Value>,
+    source: ReportedFactSource,
+    unavailable_reason: ReportedFactUnavailableReason,
+) -> ReportedFact {
+    let value = value.filter(|value| !value.is_null());
+    ReportedFact {
+        unavailable_reason: value.is_none().then_some(unavailable_reason),
+        value: value.unwrap_or(Value::Null),
+        source,
+    }
+}
+
+fn usage_lanes(usage: &Value) -> Option<Vec<&Value>> {
+    if usage.get("policy").is_some() || usage.get("grader").is_some() {
+        Some(
+            [usage.get("policy"), usage.get("grader")]
+                .into_iter()
+                .flatten()
+                .filter(|lane| lane.is_object())
+                .collect(),
+        )
+    } else {
+        usage.is_object().then(|| vec![usage])
+    }
+}
+
+fn lane_calls(lane: &Value) -> Option<u64> {
+    u64_field(lane, &["calls", "model_calls", "modelCalls"])
+}
+
+fn lane_tokens(lane: &Value) -> Option<u64> {
+    if let Some(total) = u64_field(lane, &["total_tokens", "totalTokens"]) {
+        return Some(total);
+    }
+    let prompt = u64_field(lane, &["prompt_tokens", "promptTokens"])?;
+    let completion = u64_field(lane, &["completion_tokens", "completionTokens"])?;
+    Some(prompt.saturating_add(completion))
+}
+
+fn complete_usage_u64_sum(
+    usage: &Value,
+    read: impl Fn(&Value) -> Option<u64>,
+) -> Option<u64> {
+    let lanes = usage_lanes(usage)?;
+    if lanes.is_empty() {
+        return None;
+    }
+    lanes
+        .into_iter()
+        .try_fold(0_u64, |sum, lane| read(lane).and_then(|value| sum.checked_add(value)))
+}
+
+fn complete_usage_cost_sum(usage: &Value) -> Option<f64> {
+    let lanes = usage_lanes(usage)?;
+    if lanes.is_empty() {
+        return None;
+    }
+    lanes.into_iter().try_fold(0.0, |sum, lane| {
+        lane_cost_usd(lane).map(|value| sum + value)
+    })
+}
+
+fn rollout_reported_facts(record: &Value) -> RolloutReportedFacts {
+    let usage = record.get("usage").unwrap_or(&Value::Null);
+    let calls = complete_usage_u64_sum(usage, lane_calls).map(|value| json!(value));
+    let tokens = complete_usage_u64_sum(usage, lane_tokens).map(|value| json!(value));
+    let cost = complete_usage_cost_sum(usage)
+        .filter(|value| value.is_finite() && *value >= 0.0)
+        .map(|value| json!(value));
+    let steps = record
+        .get("steps")
+        .and_then(Value::as_u64)
+        .map(|value| json!(value));
+    let steps_source = if record.get("stepsSource").and_then(Value::as_str)
+        == Some("retained_event_log")
+    {
+        ReportedFactSource::RetainedEventLog
+    } else {
+        ReportedFactSource::ContainerRuntime
+    };
+    let achievements = record
+        .get("checkpointAchievements")
+        .filter(|value| value.is_array())
+        .cloned();
+    let frames = record
+        .pointer("/sealedTrace/importedFrameSteps")
+        .and_then(Value::as_array)
+        .and_then(|steps| {
+            steps
+                .iter()
+                .map(Value::as_u64)
+                .collect::<Option<std::collections::BTreeSet<_>>>()
+        })
+        .map(|steps| json!(steps.len()));
+    RolloutReportedFacts {
+        calls: reported_fact(
+            calls,
+            ReportedFactSource::ContainerRuntime,
+            ReportedFactUnavailableReason::CallsNotReported,
+        ),
+        steps: reported_fact(
+            steps,
+            steps_source,
+            ReportedFactUnavailableReason::StepsNotReported,
+        ),
+        tokens: reported_fact(
+            tokens,
+            ReportedFactSource::ContainerRuntime,
+            ReportedFactUnavailableReason::TokensNotReported,
+        ),
+        cost_usd: reported_fact(
+            cost,
+            ReportedFactSource::ContainerRuntime,
+            ReportedFactUnavailableReason::CostNotReported,
+        ),
+        achievements: reported_fact(
+            achievements,
+            ReportedFactSource::RetainedEventLog,
+            ReportedFactUnavailableReason::AchievementsNotReported,
+        ),
+        frames: reported_fact(
+            frames,
+            ReportedFactSource::TrustedTraceV5,
+            ReportedFactUnavailableReason::FramesNotRetained,
+        ),
+    }
+}
+
+fn attach_reported_facts(record: &mut Value) {
+    record["reportedFacts"] = serde_json::to_value(rollout_reported_facts(record))
+        .expect("rollout reported facts serialize");
+}
+
+impl EvaluatorFailureReason {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::RewardEndpointFailed => "evaluator_reward_endpoint_failed",
+            Self::MeasurementMissing => "evaluator_measurement_missing",
+            Self::NumericRewardMissing => "evaluator_numeric_reward_missing",
+        }
+    }
 }
 
 impl RolloutReportedStatus {
@@ -2486,10 +3908,18 @@ impl RolloutReportedStatus {
 /// asynchronous spelling would buy a live pane and lose the rollout.
 async fn run_one_example(
     ctx: &TrialContext<'_>,
+    work_index: u32,
     example: EvalExample,
-    cancel: &mut watch::Receiver<bool>,
+    cancel: &mut super::CancelObserver,
 ) -> Result<Value> {
     let spec = ctx.spec;
+    let policy_revision_id = ctx
+        .policy_pin
+        .get("policyRevisionId")
+        .and_then(Value::as_str);
+    if spec.harness == "nanohorizon" && policy_revision_id.is_none() {
+        bail!("policy_revision_unbound: refusing NanoHorizon rollout before prepare");
+    }
     let telemetry = {
         let mut telemetry = authoritative_poll_telemetry();
         if let Some(object) = telemetry.as_object_mut() {
@@ -2509,11 +3939,17 @@ async fn run_one_example(
         example.seed,
         &Uuid::new_v4().simple().to_string()[..8]
     );
+    let task_instance_id = format!("{}:seed:{}", spec.family, example.seed);
     let trial_id = format!("trial:{}:{}", spec.family, example.seed);
+    let work_item_id = format!("eval:trial:{work_index}");
     let prepare = ctx
         .client
         .post(format!("{}/rollouts/prepare", ctx.base))
-        .json(&json!({ "rollout_id": rollout_id, "telemetry": telemetry }))
+        .json(&json!({
+            "rollout_id": rollout_id,
+            "task_instance_id": task_instance_id,
+            "telemetry": telemetry
+        }))
         .send()
         .await
         .context("POST /rollouts/prepare")?;
@@ -2543,6 +3979,7 @@ async fn run_one_example(
     eval_relay::append_trial_started(
         ctx.service,
         ctx.run_id,
+        &work_item_id,
         &trial_id,
         &rollout_id,
         example.seed,
@@ -2552,16 +3989,24 @@ async fn run_one_example(
     )
     .await?;
 
-    let start_body = json!({
+    let mut start_body = json!({
         "rollout_id": rollout_id,
         "submission_mode": "sync",
         "slot": "stream",
         "telemetry": telemetry,
-        "task_instance_id": format!("seed:{}", example.seed),
+        "task_instance_id": task_instance_id,
         "world_ref": spec.world_ref,
         "evaluation_plan_ref": spec.evaluation_plan_ref,
         "policy_ref": { "harness": spec.harness, "config": spec.policy_config },
+        "max_steps": spec.maximum_steps_per_rollout,
+        "max_calls": spec.maximum_model_calls_per_rollout,
     });
+    if let Some(revision) = policy_revision_id {
+        start_body
+            .as_object_mut()
+            .expect("rollout start body is an object")
+            .insert("policy_revision_id".into(), json!(revision));
+    }
     let relay_ctx = RelayContext {
         service: ctx.service,
         run_id: ctx.run_id,
@@ -2581,7 +4026,75 @@ async fn run_one_example(
     // Bounds that were hit are recorded before the trial settles, so a
     // degraded frame budget is visible even if the terminal settlement fails.
     eval_relay::append_degradations(ctx.service, ctx.run_id, &trial_id, &relay).await?;
-    let mut state = started?;
+    let mut state = match started {
+        Ok(state) => state,
+        Err(error) => {
+            let Some(cancelled) = error.downcast_ref::<super::kernel::CancelledError>() else {
+                return Ok(dispatched_failure_record(
+                    example,
+                    spec,
+                    ctx.policy_pin,
+                    &rollout_id,
+                    &trial_id,
+                    &task_instance_id,
+                    ctx.container_id,
+                    &poll_url,
+                    &relay,
+                    &error,
+                ));
+            };
+            // Dropping the blocking request asks the container to seal. Import
+            // immediately while that container still exists; failure remains
+            // explicit partial evidence rather than erasing rollout identity.
+            let partial_seal = import_sealed_trace(ctx, &rollout_id, &trial_id).await;
+            let evidence_state = if relay.last_relayed_step.is_some()
+                || partial_seal.get("imported").and_then(Value::as_bool) == Some(true)
+                || partial_seal.get("traces").is_some()
+            {
+                "sealed_partial"
+            } else {
+                "aborted"
+            };
+            let mut record = json!({
+                "rolloutId": rollout_id,
+                "trialId": trial_id,
+                "pool": example.pool,
+                "seed": example.seed,
+                "taskInstanceId": task_instance_id,
+                "status": "cancelled",
+                "terminated": true,
+                "cancellation": cancelled.request.as_ref(),
+                "cancellationReceipt": cancelled.request.as_ref(),
+                "steps": relay.last_relayed_step,
+                "lastObservedStep": relay.last_relayed_step,
+                "usage": relay.to_json()["observedUsage"].clone(),
+                "policyRef": ctx.policy_pin,
+                "worldRef": spec.world_ref,
+                "relay": relay.to_json(),
+                "partialSeal": partial_seal.clone(),
+                "sealedTrace": partial_seal,
+                "evidenceState": evidence_state,
+                "evaluatorOutcome": {
+                    "status": "failed",
+                    "reason": "evaluation_cancelled",
+                    "detail": "rollout was cancelled before evaluator settlement",
+                    "source": "container_evaluator",
+                },
+                "evidenceOutcome": {
+                    "status": evidence_state,
+                    "reason": if evidence_state == "sealed_partial" { "evaluation_cancelled" } else { "trace_not_sealed" },
+                    "source": "trusted_trace_v5",
+                },
+                "evidence": {
+                    "containerId": ctx.container_id,
+                    "eventsUrl": poll_url,
+                    "abortedByCancellation": true,
+                }
+            });
+            attach_reported_facts(&mut record);
+            return Ok(record);
+        }
+    };
 
     if !rollout_terminal(&state)? {
         state = poll_until_terminal(ctx.client, ctx.base, &rollout_id).await?;
@@ -2593,7 +4106,7 @@ async fn run_one_example(
             reported_status.as_str()
         );
     }
-    let terminal_error = if matches!(
+    let mut terminal_error = if matches!(
         reported_status,
         RolloutReportedStatus::Failed | RolloutReportedStatus::Truncated
     ) {
@@ -2620,37 +4133,110 @@ async fn run_one_example(
     } else {
         None
     };
-    let reward = fetch_reward(
+    let (reward, mut evaluator_failure) = match fetch_reward(
         ctx.client,
         ctx.base,
         &rollout_id,
         spec.evaluation_plan_ref.as_str(),
     )
-    .await?;
+    .await
+    {
+        Ok(reward) => (reward, None),
+        Err(error) => (
+            json!({
+                "status": "unavailable",
+                "reward": Value::Null,
+                "metrics": Value::Null,
+            }),
+            Some((
+                EvaluatorFailureReason::RewardEndpointFailed,
+                format!("{error:#}"),
+            )),
+        ),
+    };
+    let (terminal_steps, terminal_steps_source) = terminal_step_count(&state, &relay, &rollout_id)?;
+    let reward_value = reward.get("reward").cloned().unwrap_or(Value::Null);
+    let metrics = reward
+        .get("metrics")
+        .or_else(|| reward.get("reward_details"))
+        .cloned()
+        .unwrap_or(Value::Null);
+    let reward_status = reward
+        .get("status")
+        .cloned()
+        .unwrap_or_else(|| json!("absent"));
+    let measurement = json!({
+        "reward": reward_value,
+        "metrics": metrics,
+    });
+    if evaluator_failure.is_none() {
+        evaluator_failure = if spec.harness == "nanohorizon" && reward_value.as_f64().is_none() {
+            Some((
+                EvaluatorFailureReason::NumericRewardMissing,
+                format!(
+                    "container reported the rollout completed, but NanoHorizon returned no numeric reward (reward status `{}`)",
+                    reward_status.as_str().unwrap_or("unknown")
+                ),
+            ))
+        } else if !has_evaluator_measurement(&measurement) {
+            Some((
+                EvaluatorFailureReason::MeasurementMissing,
+                format!(
+                    "container reported the rollout completed, but the evaluator returned no reward or non-null metric (reward status `{}`)",
+                    reward_status.as_str().unwrap_or("unknown")
+                ),
+            ))
+        } else {
+            None
+        };
+    }
+    let evaluator_outcome = if let Some((reason, detail)) = &evaluator_failure {
+        if reported_status == RolloutReportedStatus::Completed {
+            terminal_error = Some(format!("{}: {detail}", reason.as_str()));
+        }
+        json!({
+            "status": "failed",
+            "reason": reason.as_str(),
+            "detail": detail,
+            "source": "container_evaluator",
+        })
+    } else {
+        json!({
+            "status": "scored",
+            "reward": reward_value,
+            "metrics": metrics,
+            "source": "container_evaluator",
+        })
+    };
+    let record_status =
+        if reported_status == RolloutReportedStatus::Completed && evaluator_failure.is_some() {
+            "failed"
+        } else {
+            reported_status.as_str()
+        };
     let usage = state.get("usage").cloned().unwrap_or(Value::Null);
     let retained = fetch_retained_rollout_state(ctx.client, &poll_url).await?;
     // Import the sealed bundle now, while the container is still running. A
     // replay that only works until the container stops is not a replay, and
     // Workshop already owns the import — the eval worker simply never called it.
     let sealed = import_sealed_trace(ctx, &rollout_id, &trial_id).await;
-    Ok(json!({
+    let mut record = json!({
         "rolloutId": rollout_id,
         "trialId": trial_id,
         "pool": example.pool,
         "seed": example.seed,
         "taskInstanceId": format!("seed:{}", example.seed),
-        "status": reported_status.as_str(),
+        "status": record_status,
+        "reportedStatus": reported_status.as_str(),
         "error": terminal_error,
         "terminated": true,
-        "reward": reward.get("reward").cloned().unwrap_or(Value::Null),
-        "rewardStatus": reward.get("status").cloned().unwrap_or(json!("absent")),
+        "reward": measurement["reward"],
+        "rewardStatus": reward_status,
+        "evaluatorOutcome": evaluator_outcome,
+        "metrics": measurement["metrics"],
         "usage": usage,
-        "steps": state
-            .get("steps")
-            .or_else(|| state.get("step_count"))
-            .or_else(|| state.get("stepCount"))
-            .cloned()
-            .unwrap_or(Value::Null),
+        "steps": terminal_steps,
+        "stepsSource": terminal_steps_source,
         "policyRef": ctx.policy_pin,
         "worldRef": spec.world_ref,
         "trace": state.get("trace").cloned().unwrap_or(Value::Null),
@@ -2663,7 +4249,46 @@ async fn run_one_example(
             "eventsUrl": poll_url,
             "rewardUrl": format!("{}/rollouts/{rollout_id}/reward", ctx.base),
         }
-    }))
+    });
+    if spec.harness == "nanohorizon" {
+        match verify_required_sealed_trace(&record, &sealed, &rollout_id) {
+            Ok(()) => {
+                record["evidenceState"] = json!("sealed_complete");
+                record["evidenceOutcome"] = json!({
+                    "status": "sealed_complete",
+                    "source": "trusted_trace_v5",
+                });
+            }
+            Err(error) => {
+                let detail = format!("{error:#}");
+                let prior = record
+                    .get("error")
+                    .and_then(Value::as_str)
+                    .filter(|value| !value.is_empty())
+                    .map(str::to_string);
+                record["status"] = json!("failed");
+                record["error"] = json!(match prior {
+                    Some(prior) => format!("{prior}; required_trace_evidence_failed: {detail}"),
+                    None => format!("required_trace_evidence_failed: {detail}"),
+                });
+                record["evidenceState"] = json!("missing");
+                record["evidenceOutcome"] = json!({
+                    "status": "failed",
+                    "reason": "required_trace_evidence_failed",
+                    "detail": detail,
+                    "source": "trusted_trace_v5",
+                });
+            }
+        }
+    } else {
+        let imported = sealed.get("imported").and_then(Value::as_bool) == Some(true);
+        record["evidenceOutcome"] = json!({
+            "status": if imported { "sealed" } else { "unavailable" },
+            "source": "optional_trace_import",
+        });
+    }
+    attach_reported_facts(&mut record);
+    Ok(record)
 }
 
 /// The blocking rollout request, unchanged in behaviour and error semantics.
@@ -2845,7 +4470,7 @@ async fn fetch_reward(
     client: &reqwest::Client,
     base: &str,
     rollout_id: &str,
-    _plan_ref: &str,
+    plan_ref: &str,
 ) -> Result<Value> {
     let response = client
         .get(format!("{base}/rollouts/{rollout_id}/reward"))
@@ -2854,10 +4479,38 @@ async fn fetch_reward(
         .with_context(|| format!("GET reward for rollout `{rollout_id}`"))?
         .error_for_status()
         .with_context(|| format!("reward endpoint failed for rollout `{rollout_id}`"))?;
-    let body = response
+    let mut body = response
         .json::<Value>()
         .await
         .with_context(|| format!("decode reward for rollout `{rollout_id}`"))?;
+    // GET observes an already-materialized evaluator receipt. Terminal
+    // scoring is an explicit, idempotent producer operation; NanoHorizon can
+    // close its trusted episode journal before that receipt exists. Ask the
+    // named evaluation plan to score the closed rollout instead of borrowing
+    // policy.session.closed.reward, which is not evaluator authority.
+    if body.get("status").and_then(Value::as_str) == Some("absent") {
+        body = client
+            .post(format!("{base}/reward"))
+            .json(&json!({
+                "rollout_id": rollout_id,
+                "mode": "terminal",
+                "rescore": false,
+                "evaluation_plan_ref": plan_ref,
+            }))
+            .send()
+            .await
+            .with_context(|| format!("POST terminal reward for rollout `{rollout_id}`"))?
+            .error_for_status()
+            .with_context(|| format!("terminal reward evaluation failed for rollout `{rollout_id}`"))?
+            .json::<Value>()
+            .await
+            .with_context(|| format!("decode terminal reward for rollout `{rollout_id}`"))?;
+    }
+    validate_reward_record(&body, rollout_id)?;
+    Ok(body)
+}
+
+fn validate_reward_record(body: &Value, rollout_id: &str) -> Result<()> {
     let status = body
         .get("status")
         .and_then(Value::as_str)
@@ -2879,7 +4532,32 @@ async fn fetch_reward(
         }
         other => bail!("reward for rollout `{rollout_id}` reported unknown status `{other}`"),
     }
-    Ok(body)
+    Ok(())
+}
+
+fn terminal_step_count(
+    state: &Value,
+    relay: &eval_relay::RelayOutcome,
+    rollout_id: &str,
+) -> Result<(Value, &'static str)> {
+    let state_steps = state
+        .get("steps")
+        .or_else(|| state.get("step_count"))
+        .or_else(|| state.get("stepCount"))
+        .and_then(Value::as_u64);
+    let retained_steps = relay.verified_terminal_steps();
+    if let (Some(state_steps), Some(retained_steps)) = (state_steps, retained_steps) {
+        if state_steps != retained_steps {
+            bail!(
+                "terminal_step_count_conflict: rollout `{rollout_id}` reported {state_steps} steps in its terminal response but {retained_steps} in its verified retained lifecycle"
+            );
+        }
+    }
+    match (state_steps, retained_steps) {
+        (Some(steps), _) => Ok((json!(steps), "container_runtime")),
+        (None, Some(steps)) => Ok((json!(steps), "retained_event_log")),
+        (None, None) => Ok((Value::Null, "container_runtime")),
+    }
 }
 
 async fn find_ready_container(
@@ -2931,6 +4609,8 @@ async fn find_ready_container(
                         base_url: base_url.trim_end_matches('/').to_string(),
                         protocol,
                         image_digest: container_image_digest(&metadata),
+                        producer_source_revision: container_producer_source_revision(&metadata),
+                        metadata: metadata.clone(),
                     });
                 }
                 seen.push(format!(
@@ -3048,15 +4728,162 @@ mod admission_metadata_tests {
 }
 
 fn container_image_digest(metadata: &Value) -> Option<String> {
-    for pointer in ["/imageDigest", "/image_digest", "/digest", "/image/digest"] {
+    // Registry hydration puts the producer's `/info` document below `info`.
+    // Prefer that trusted probe result over registry-root compatibility fields,
+    // which may have been supplied by the caller at registration time.
+    for pointer in [
+        "/info/imageDigest",
+        "/info/image_digest",
+        "/imageDigest",
+        "/image_digest",
+        "/digest",
+        "/image/digest",
+    ] {
         if let Some(digest) = metadata.pointer(pointer).and_then(Value::as_str) {
             let digest = digest.trim();
-            if digest.starts_with("sha256:") && digest.len() == 71 {
+            if valid_sha256_digest(digest) {
                 return Some(digest.to_string());
             }
         }
     }
     None
+}
+
+fn container_producer_source_revision(metadata: &Value) -> Option<String> {
+    for pointer in [
+        "/info/producerSourceRevision",
+        "/info/producer_source_revision",
+        "/producerSourceRevision",
+        "/producer_source_revision",
+    ] {
+        if let Some(revision) = metadata
+            .pointer(pointer)
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|revision| !revision.is_empty())
+        {
+            return Some(revision.to_string());
+        }
+    }
+    None
+}
+
+fn valid_sha256_digest(digest: &str) -> bool {
+    digest
+        .strip_prefix("sha256:")
+        .is_some_and(|hex| hex.len() == 64 && hex.bytes().all(|byte| byte.is_ascii_hexdigit()))
+}
+
+/// Bind the producer facts from the same fresh `/info` response used for the
+/// post-approval identity check. An approved eval is the paid path, so missing,
+/// malformed, or drifting provenance is refused before the run is created.
+fn refresh_inline_container_provenance(container: &mut ReadyContainer, info: &Value) -> Result<()> {
+    let image_digest = info
+        .get("imageDigest")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|digest| valid_sha256_digest(digest))
+        .context("container_image_digest_missing: fresh /info must advertise imageDigest as sha256:<64 lowercase-or-uppercase hex characters>")?
+        .to_string();
+    let producer_source_revision = info
+        .get("producerSourceRevision")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|revision| !revision.is_empty())
+        .context("container_producer_source_revision_missing: fresh /info must advertise producerSourceRevision")?
+        .to_string();
+
+    if let Some(registered) = container
+        .metadata
+        .pointer("/info/imageDigest")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|digest| valid_sha256_digest(digest))
+    {
+        anyhow::ensure!(
+            registered == image_digest,
+            "container_image_digest_mismatch: registered {registered}, current {image_digest}"
+        );
+    }
+    if let Some(registered) = container
+        .metadata
+        .pointer("/info/producerSourceRevision")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|revision| !revision.is_empty())
+    {
+        anyhow::ensure!(
+            registered == producer_source_revision,
+            "container_producer_source_revision_mismatch: registered {registered}, current {producer_source_revision}"
+        );
+    }
+
+    container.image_digest = Some(image_digest);
+    container.producer_source_revision = Some(producer_source_revision);
+    Ok(())
+}
+
+/// Verify that a trusted Trace V5 bundle preserved the exact producer facts
+/// admitted for the run, then record the immutable cross-boundary binding next
+/// to the imported trace reference. The trace bytes stay immutable; Workshop
+/// records and verifies their relationship to the approved runtime.
+pub(super) fn bind_imported_trace_provenance(
+    result: &mut Value,
+    run_summary: &Value,
+) -> Result<()> {
+    if run_summary.get("recipeSourceKind").and_then(Value::as_str) != Some("inline") {
+        return Ok(());
+    }
+    let expected_image = run_summary
+        .get("containerImageDigest")
+        .and_then(Value::as_str)
+        .filter(|digest| valid_sha256_digest(digest))
+        .context("inline run omitted its admitted container image digest")?;
+    let expected_revision = run_summary
+        .get("containerProducerSourceRevision")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|revision| !revision.is_empty())
+        .context("inline run omitted its admitted container producer revision")?;
+    let provenance = result
+        .get("traceProvenance")
+        .and_then(Value::as_object)
+        .context("trusted Trace V5 bundle omitted producer provenance")?;
+    let actual_image = provenance
+        .get("container_image_digest")
+        .or_else(|| provenance.get("containerImageDigest"))
+        .and_then(Value::as_str)
+        .context("trusted Trace V5 provenance omitted container_image_digest")?;
+    let actual_revision = provenance
+        .get("producer_commit")
+        .or_else(|| provenance.get("producerSourceRevision"))
+        .and_then(Value::as_str)
+        .context("trusted Trace V5 provenance omitted producer_commit")?;
+    anyhow::ensure!(
+        actual_image == expected_image,
+        "trace_container_image_digest_mismatch: admitted {expected_image}, trace {actual_image}"
+    );
+    anyhow::ensure!(
+        actual_revision == expected_revision,
+        "trace_producer_source_revision_mismatch: admitted {expected_revision}, trace {actual_revision}"
+    );
+    let trace_digest = result
+        .pointer("/traces/0/digest")
+        .and_then(Value::as_str)
+        .filter(|digest| valid_sha256_digest(digest))
+        .context("trusted Trace V5 import omitted its immutable trace digest")?;
+    let bundle_digest = result
+        .get("bundleDigest")
+        .and_then(Value::as_str)
+        .filter(|digest| valid_sha256_digest(digest))
+        .context("trusted Trace V5 import omitted its immutable bundle digest")?;
+    result["provenanceBinding"] = json!({
+        "imageDigest": expected_image,
+        "producerSourceRevision": expected_revision,
+        "traceDigest": trace_digest,
+        "bundleDigest": bundle_digest,
+    });
+    Ok(())
 }
 
 fn container_matches_family(task_family: Option<&str>, metadata: &Value, family: &str) -> bool {
@@ -3111,33 +4938,52 @@ async fn append_terminal(
     {
         return Ok(());
     }
-    let _ = service.seal_credential_chain(run_id).await;
-    let event_type = match status {
-        "completed" => "optimizer.run.completed",
-        "degraded" => "optimizer.run.degraded",
-        "failed" => "optimizer.run.failed",
-        "cancelled" => "optimizer.run.cancelled",
+    let cause = match status {
+        "completed" => super::kernel::SettleCause::Completed,
+        "degraded" => super::kernel::SettleCause::Degraded {
+            detail: detail.clone(),
+        },
+        "failed" => super::kernel::SettleCause::Failed {
+            detail: detail.clone(),
+        },
+        "cancelled" => super::kernel::SettleCause::Cancelled {
+            request: std::sync::Arc::new(super::kernel::CancellationRequest::new(
+                super::kernel::CancellationCause::ContainerRequested,
+                "container:terminal",
+                format!("run:{run_id}"),
+            )),
+        },
         other => bail!("unsupported terminal eval status `{other}`"),
     };
-    append_status(service, run_id, event_type, status).await?;
-    if status != "completed" && !detail.is_empty() {
-        let event_type = if status == "degraded" {
-            "optimizer.run.warning"
-        } else {
-            "optimizer.run.error"
-        };
-        service
-            .append_event_payloads(
-                run_id.to_string(),
-                vec![
-                    OptimizerEventDraft::new(event_type, EVAL_ALGORITHM_ID)
-                        .level(if status == "degraded" { "warn" } else { "error" })
-                        .error(json!({ "message": detail }))
-                        .raw(json!({ "source": "container_eval" })),
-                ],
-            )
-            .await?;
+    let error = (!detail.trim().is_empty()).then(|| json!({ "message": detail }));
+    service.settle_run(run_id.to_string(), cause, error).await?;
+    Ok(())
+}
+
+/// Seal a cancelled run with the typed request as the terminal event's own
+/// payload. The receipt row/table is deferred; the durable journal fact
+/// carries request id, cause, requester, time, and scope.
+async fn append_cancelled_terminal(
+    service: &OptimizerService,
+    run_id: &str,
+    request: &super::kernel::CancellationRequest,
+) -> Result<()> {
+    if service
+        .terminal_manifest(run_id.to_string())
+        .await?
+        .is_some()
+    {
+        return Ok(());
     }
+    service
+        .settle_run(
+            run_id.to_string(),
+            super::kernel::SettleCause::Cancelled {
+                request: std::sync::Arc::new(request.clone()),
+            },
+            None,
+        )
+        .await?;
     Ok(())
 }
 
@@ -3153,30 +4999,378 @@ mod tests {
     use hyper::StatusCode;
     use rusqlite::params;
     use serde_json::json;
+    use sha2::Digest;
     use std::collections::{BTreeMap, BTreeSet};
     use std::sync::{
         atomic::{AtomicUsize, Ordering},
         Arc, Mutex,
     };
 
+    fn ready_container_with_metadata(metadata: Value) -> ReadyContainer {
+        ReadyContainer {
+            id: "ctr_craftax_test".into(),
+            base_url: "http://127.0.0.1:1".into(),
+            protocol: crate::container_capabilities::LIVE_EVAL_PROTOCOL.into(),
+            image_digest: container_image_digest(&metadata),
+            producer_source_revision: container_producer_source_revision(&metadata),
+            metadata,
+        }
+    }
+
     #[test]
-    fn projection_statuses_are_typed_and_only_known_terminals_reconcile() {
+    fn hydrated_info_provenance_wins_over_untrusted_registry_root_fields() {
+        let metadata = json!({
+            "imageDigest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "producerSourceRevision": "caller-supplied",
+            "info": {
+                "imageDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "producerSourceRevision": "containers@abc123"
+            }
+        });
         assert_eq!(
-            EvaluationProjectionStatus::parse("degraded").unwrap(),
-            EvaluationProjectionStatus::Degraded
+            container_image_digest(&metadata).as_deref(),
+            Some("sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
         );
-        assert!(EvaluationProjectionStatus::Degraded.is_terminal());
-        assert!(!EvaluationProjectionStatus::Running.is_terminal());
         assert_eq!(
-            EvaluationProjectionStatus::from_run_state(super::super::admission::RunState::Completed)
-                .unwrap(),
-            EvaluationProjectionStatus::Completed
+            container_producer_source_revision(&metadata).as_deref(),
+            Some("containers@abc123")
         );
-        assert!(EvaluationProjectionStatus::parse("done").is_err());
-        assert!(EvaluationProjectionStatus::from_run_state(
-            super::super::admission::RunState::Running
+    }
+
+    #[test]
+    fn approved_eval_provenance_is_fresh_complete_and_drift_checked() {
+        let metadata = json!({"info": {
+            "imageDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "producerSourceRevision": "containers@abc123"
+        }});
+        let mut container = ready_container_with_metadata(metadata);
+        refresh_inline_container_provenance(&mut container, &json!({
+            "imageDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "producerSourceRevision": "containers@abc123"
+        }))
+        .unwrap();
+        assert_eq!(container.producer_source_revision.as_deref(), Some("containers@abc123"));
+
+        let missing = refresh_inline_container_provenance(
+            &mut container.clone(),
+            &json!({"producerSourceRevision": "containers@abc123"}),
         )
-        .is_err());
+        .unwrap_err();
+        assert!(format!("{missing:#}").contains("container_image_digest_missing"));
+
+        let drift = refresh_inline_container_provenance(&mut container, &json!({
+            "imageDigest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+            "producerSourceRevision": "containers@abc123"
+        }))
+        .unwrap_err();
+        assert!(format!("{drift:#}").contains("container_image_digest_mismatch"));
+    }
+
+    #[test]
+    fn trace_evidence_never_records_a_null_digest() {
+        let spec = EvalSpec::classify_fixture();
+        let missing = eval_terminal_evidence_refs(
+            &spec,
+            &json!({"sealedTrace": {"traces": [{"traceId": "trace_1"}]}}),
+        )
+        .unwrap_err();
+        assert!(format!("{missing:#}").contains("omitted its immutable digest"));
+
+        let refs = eval_terminal_evidence_refs(
+            &spec,
+            &json!({"sealedTrace": {"traces": [{
+                "traceId": "trace_1",
+                "digest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+            }]}}),
+        )
+        .unwrap();
+        assert_eq!(
+            refs[0]["digest"],
+            json!("sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd")
+        );
+    }
+
+    #[test]
+    fn imported_trace_provenance_must_match_the_admitted_runtime() {
+        let summary = json!({
+            "recipeSourceKind": "inline",
+            "containerImageDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "containerProducerSourceRevision": "containers@abc123"
+        });
+        let mut imported = json!({
+            "bundleDigest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "traces": [{
+                "traceId": "trace_1",
+                "digest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+            }],
+            "traceProvenance": {
+                "container_image_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "producer_commit": "containers@abc123"
+            }
+        });
+        bind_imported_trace_provenance(&mut imported, &summary).unwrap();
+        assert_eq!(
+            imported["provenanceBinding"]["bundleDigest"],
+            json!("sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
+        );
+        assert!(imported["provenanceBinding"]
+            .as_object()
+            .unwrap()
+            .values()
+            .all(|value| !value.is_null()));
+
+        imported["traceProvenance"]["container_image_digest"] = json!(
+            "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+        );
+        let mismatch = bind_imported_trace_provenance(&mut imported, &summary).unwrap_err();
+        assert!(format!("{mismatch:#}").contains("trace_container_image_digest_mismatch"));
+    }
+
+    #[test]
+    fn sealed_trace_high_water_does_not_invent_environment_steps() {
+        let record = json!({
+            "rolloutId": "roll_1",
+            "status": "completed",
+            "steps": null,
+            "sealedTrace": { "maxStep": 47 },
+        });
+        let row = seed_row(
+            Some(&record),
+            &EvalExample {
+                pool: "train",
+                seed: 1,
+            },
+            Some("completed"),
+            "vis_workbench",
+        );
+        assert_eq!(row["steps"], Value::Null);
+    }
+
+    #[test]
+    fn completed_lifecycle_requires_an_evaluator_measurement() {
+        assert!(!is_successful_eval_record(&json!({
+            "status": "completed",
+            "reward": null,
+            "rewardStatus": "absent",
+        })));
+        assert!(is_successful_eval_record(&json!({
+            "status": "completed",
+            "reward": 0.0,
+        })));
+        assert!(is_successful_eval_record(&json!({
+            "status": "completed",
+            "reward": null,
+            "metrics": { "accuracy": 0.0 },
+        })));
+        assert!(!is_successful_eval_record(&json!({
+            "status": "failed",
+            "reward": 1.0,
+        })));
+    }
+
+    fn provider_usage_receipt(
+        run_id: &str,
+        calls: u64,
+        prompt_tokens: u64,
+        completion_tokens: u64,
+        cost_usd: Option<f64>,
+        digest_byte: char,
+    ) -> crate::secrets::ProviderUsageReceipt {
+        crate::secrets::ProviderUsageReceipt {
+            schema_version: "workshop.provider-usage-receipt.v1".into(),
+            run_id: run_id.into(),
+            capabilities: vec![crate::secrets::ProviderUsageCapability {
+                capability_id: format!("cap_{run_id}"),
+                provider: "openai".into(),
+                status: "active".into(),
+            }],
+            calls,
+            input_tokens: prompt_tokens,
+            output_tokens: completion_tokens,
+            cost_usd,
+            digest: format!("sha256:{}", digest_byte.to_string().repeat(64)),
+        }
+    }
+
+    async fn empty_eval_run(service: &OptimizerService, run_id: &str) -> OptimizerRunRecord {
+        service
+            .create(
+                serde_json::from_value(json!({
+                    "algorithmId": "eval",
+                    "id": run_id,
+                    "openVisual": false,
+                }))
+                .unwrap(),
+            )
+            .await
+            .unwrap()
+            .0
+    }
+
+    #[tokio::test]
+    async fn known_provider_usage_is_authoritative_idempotent_and_pre_terminal() {
+        let (svc, _dir, _) = service().await;
+        let run = empty_eval_run(&svc, "opt_eval_provider_usage_known").await;
+        append_status(&svc, &run.id, "optimizer.run.started", "running")
+            .await
+            .unwrap();
+        let receipt = provider_usage_receipt(&run.id, 3, 90, 12, Some(0.012345), 'a');
+        append_provider_usage_receipt(&svc, &run.id, receipt.clone())
+            .await
+            .unwrap();
+        append_provider_usage_receipt(&svc, &run.id, receipt)
+            .await
+            .unwrap();
+
+        let projected = svc.get(run.id.clone()).await.unwrap();
+        assert_eq!(projected.usage.calls, 3);
+        assert_eq!(projected.usage.prompt_tokens, 90);
+        assert_eq!(projected.usage.completion_tokens, 12);
+        assert_eq!(projected.usage.cost_usd, Some(0.012345));
+        let view = serde_json::to_value(svc.run_view_v2(run.id.clone()).await.unwrap()).unwrap();
+        assert_eq!(view["header"]["usage"]["calls"], json!(3));
+        assert_eq!(view["header"]["usage"]["promptTokens"], json!(90));
+        assert_eq!(view["header"]["usage"]["completionTokens"], json!(12));
+        assert_eq!(view["header"]["usage"]["costUsd"], json!(0.012345));
+
+        append_terminal(&svc, &run.id, "failed", "fixture settlement".into())
+            .await
+            .unwrap();
+        let events = svc.events_after(run.id.clone(), 0, Some(100)).await.unwrap();
+        let reconciliations = events
+            .iter()
+            .filter(|event| event.event_type == "optimizer.usage.reconciled")
+            .collect::<Vec<_>>();
+        assert_eq!(reconciliations.len(), 1, "receipt replay is idempotent");
+        let reconciliation = reconciliations[0];
+        let terminal = events
+            .iter()
+            .find(|event| event.event_type == "optimizer.run.failed")
+            .expect("failed terminal event");
+        assert!(reconciliation.sequence_number < terminal.sequence_number);
+        assert_eq!(reconciliation.item.as_ref().unwrap()["calls"], json!(3));
+        assert_eq!(
+            reconciliation.item.as_ref().unwrap()["receiptDigest"],
+            json!(format!("sha256:{}", "a".repeat(64)))
+        );
+        assert_eq!(reconciliation.usage_delta.as_ref().unwrap()["calls"], json!(3));
+        assert!(reconciliation
+            .raw
+            .get("requestId")
+            .is_none(), "the aggregate receipt must not fabricate request identity");
+
+        let manifest = svc
+            .terminal_manifest(run.id)
+            .await
+            .unwrap()
+            .expect("failed run seals a manifest");
+        assert_eq!(manifest["usage"]["calls"], json!(3));
+        assert_eq!(manifest["usage"]["promptTokens"], json!(90));
+        assert_eq!(manifest["usage"]["completionTokens"], json!(12));
+        assert_eq!(manifest["usage"]["costUsd"], json!(0.012345));
+        assert_eq!(manifest["usage"]["completeness"], json!("reconciled"));
+        assert_eq!(
+            manifest["usage"]["providerReceipt"]["receiptDigest"],
+            json!(format!("sha256:{}", "a".repeat(64)))
+        );
+    }
+
+    #[test]
+    fn final_record_projection_preserves_authoritative_provider_receipt() {
+        let measured = usage_from_records(
+            &[json!({
+                "usage": {"calls": 10, "prompt_tokens": 100_471, "completion_tokens": 3_517}
+            })],
+            2.45,
+        );
+        let mut current = crate::optimizers::models::OptimizerUsageSummary {
+            calls: 50,
+            prompt_tokens: 116_385,
+            completion_tokens: 6_217,
+            cost_usd: Some(0.016353),
+            ..Default::default()
+        };
+        current.extra.insert(
+            "providerUsageReceipt".into(),
+            json!({
+                "authority": "workshop.secrets_proxy",
+                "calls": 50,
+                "promptTokens": 116385,
+                "completionTokens": 6217,
+                "costUsd": 0.016353,
+            }),
+        );
+
+        let merged = usage_with_authoritative_provider_receipt(measured, &current);
+        assert_eq!(merged.calls, 50);
+        assert_eq!(merged.prompt_tokens, 116_385);
+        assert_eq!(merged.completion_tokens, 6_217);
+        assert_eq!(merged.cost_usd, Some(0.016353));
+        assert_eq!(merged.rollouts, 1, "runtime rollout count stays distinct");
+        assert_eq!(
+            merged.extra["policyUsage"]["promptTokens"],
+            json!(100_471),
+            "producer/runtime telemetry remains available as a separate lane"
+        );
+
+        let mut unknown_cost = current;
+        unknown_cost.extra.get_mut("providerUsageReceipt").unwrap()["costUsd"] = Value::Null;
+        let merged = usage_with_authoritative_provider_receipt(
+            usage_from_records(&[json!({"usage": {"cost_usd": 0.004}})], 2.45),
+            &unknown_cost,
+        );
+        assert_eq!(merged.cost_usd, None, "an unpriced provider receipt is not a producer subtotal");
+    }
+
+    #[tokio::test]
+    async fn unknown_provider_cost_stays_null_while_tokens_and_calls_reconcile() {
+        let (svc, _dir, _) = service().await;
+        let run = empty_eval_run(&svc, "opt_eval_provider_usage_unknown").await;
+        append_status(&svc, &run.id, "optimizer.run.started", "running")
+            .await
+            .unwrap();
+        svc.append_event_payloads(
+            run.id.clone(),
+            vec![OptimizerEventDraft::new("optimizer.usage", EVAL_ALGORITHM_ID)
+                .usage_delta(Map::from_iter([
+                    ("cost_usd".into(), json!(0.001)),
+                    ("prompt_tokens".into(), json!(10)),
+                    ("completion_tokens".into(), json!(2)),
+                ]))],
+        )
+        .await
+        .unwrap();
+        append_provider_usage_receipt(
+            &svc,
+            &run.id,
+            provider_usage_receipt(&run.id, 2, 40, 7, None, 'b'),
+        )
+        .await
+        .unwrap();
+
+        let projected = svc.get(run.id.clone()).await.unwrap();
+        assert_eq!(projected.usage.calls, 2);
+        assert_eq!(projected.usage.prompt_tokens, 40);
+        assert_eq!(projected.usage.completion_tokens, 7);
+        assert_eq!(projected.usage.cost_usd, None);
+        let view = serde_json::to_value(svc.run_view_v2(run.id.clone()).await.unwrap()).unwrap();
+        assert_eq!(view["header"]["usage"]["calls"], json!(2));
+        assert_eq!(view["header"]["usage"]["promptTokens"], json!(40));
+        assert_eq!(view["header"]["usage"]["completionTokens"], json!(7));
+        assert_eq!(view["header"]["usage"]["costUsd"], Value::Null);
+
+        append_terminal(&svc, &run.id, "failed", "fixture settlement".into())
+            .await
+            .unwrap();
+        let manifest = svc
+            .terminal_manifest(run.id)
+            .await
+            .unwrap()
+            .expect("failed run seals a manifest");
+        assert_eq!(manifest["usage"]["calls"], json!(2));
+        assert_eq!(manifest["usage"]["promptTokens"], json!(40));
+        assert_eq!(manifest["usage"]["completionTokens"], json!(7));
+        assert_eq!(manifest["usage"]["costUsd"], Value::Null);
     }
 
     #[derive(Clone)]
@@ -3192,6 +5386,9 @@ mod tests {
         /// False models the pinned Containers dev build (ac43172), which emits
         /// no `metadata.model_roles` at all.
         advertises_model_roles: bool,
+        /// Rollouts block until the client goes away: the shape of a long
+        /// in-flight trial, used to hold work open across a cancellation.
+        stall_rollouts: bool,
     }
 
     async fn spawn_eval_mock(
@@ -3212,6 +5409,7 @@ mod tests {
             policy_credential_present: true,
             grader_credential_present: true,
             advertises_model_roles: true,
+            stall_rollouts: false,
         })
         .await
     }
@@ -3325,6 +5523,12 @@ mod tests {
                                 );
                             }
                             starts.fetch_add(1, Ordering::SeqCst);
+                            if opts.stall_rollouts {
+                                // Hold the blocking rollout open. Cancellation
+                                // drops the client request, which is how a real
+                                // container observes the episode ending.
+                                tokio::time::sleep(std::time::Duration::from_secs(300)).await;
+                            }
                             let rollout_id = request
                                 .body
                                 .get("rollout_id")
@@ -3386,12 +5590,19 @@ mod tests {
                             } else {
                                 "train".into()
                             };
-                            let reward = opts.rewards.get(&(pool, seed)).copied().unwrap_or(1.0);
-                            JsonHttpResponse::ok(json!({
-                                "status": "scored",
-                                "reward": reward,
-                                "rollout_id": rollout_id
-                            }))
+                            match opts.rewards.get(&(pool, seed)).copied() {
+                                Some(reward) => JsonHttpResponse::ok(json!({
+                                    "status": "scored",
+                                    "reward": reward,
+                                    "rollout_id": rollout_id
+                                })),
+                                None => JsonHttpResponse::ok(json!({
+                                    "status": "absent",
+                                    "reward": null,
+                                    "reason": "fixture evaluator produced no measurement",
+                                    "rollout_id": rollout_id
+                                })),
+                            }
                         }
                         ("GET", path) if path.starts_with("/rollouts/") => {
                             JsonHttpResponse::ok(json!({
@@ -3464,7 +5675,11 @@ mod tests {
                                     "rollouts.events": true
                                 }
                             },
-                            "imageDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                            "imageDigest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                            "info": {
+                                "imageDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                                "producerSourceRevision": "containers@fixture"
+                            }
                         })
                         .to_string(),
                         updated_at
@@ -3566,13 +5781,9 @@ max_total_rollouts = 4
         })
         .await
         .unwrap();
-        crate::workspace_scope::provision(
-            svc.database(),
-            session,
-            workspace.to_str().unwrap(),
-        )
-        .await
-        .unwrap();
+        crate::workspace_scope::provision(svc.database(), session, workspace.to_str().unwrap())
+            .await
+            .unwrap();
     }
 
     async fn start_banking77(
@@ -3620,6 +5831,23 @@ max_total_rollouts = 4
             finished.summary["containerImageDigest"],
             json!("sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
         );
+        assert_eq!(
+            finished.summary["containerProducerSourceRevision"],
+            json!("containers@fixture")
+        );
+        let runtime_ref = finished
+            .input_refs
+            .iter()
+            .find(|reference| reference.kind == "container")
+            .unwrap();
+        assert_eq!(
+            runtime_ref.digest.as_deref(),
+            Some("sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+        );
+        assert_eq!(
+            runtime_ref.metadata["producerSourceRevision"],
+            json!("containers@fixture")
+        );
 
         let events = svc
             .events_after(run.id.clone(), 0, Some(500))
@@ -3646,12 +5874,377 @@ max_total_rollouts = 4
         assert_eq!(finished.cursor_seq, events.len() as u64);
 
         let manifest = wait_manifest(&svc, &run.id).await;
-        assert_eq!(manifest["terminalStatus"], json!("completed"));
+        assert_eq!(manifest["terminal"]["kind"], json!("completed"));
         assert_eq!(manifest["work"]["planned"], json!(10));
         assert_eq!(manifest["work"]["succeeded"], json!(10));
         assert_eq!(manifest["work"]["failed"], json!(0));
-        assert_eq!(manifest["work"]["skipped"], json!(0));
+        assert_eq!(manifest["work"]["cancelled"], json!(0));
         assert_eq!(manifest["terminalCursor"], json!(finished.cursor_seq));
+        task.abort();
+    }
+
+    /// A completed manifest is immutable. The worker must finish after sealing
+    /// instead of attempting one more summary patch, treating that refusal as
+    /// a worker failure, and repainting the already-saved primary visual red.
+    #[tokio::test]
+    async fn a_successful_eval_worker_does_not_project_progress_after_the_terminal_seal() {
+        let (svc, _dir, _) = service().await;
+        let (run, task) = start_banking77(&svc, "sess_no_post_seal_projection").await;
+        let manifest = wait_manifest(&svc, &run.id).await;
+        assert_eq!(manifest["terminal"]["kind"], json!("completed"));
+
+        for _ in 0..200 {
+            if !svc.registered_local_recipes().await.contains(&run.id) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        assert!(
+            !svc.registered_local_recipes().await.contains(&run.id),
+            "the successful worker must return and release its local owner"
+        );
+
+        let finished = svc.get(run.id.clone()).await.unwrap();
+        assert_eq!(finished.status, "completed");
+        assert_eq!(finished.summary["evalStatus"], json!("completed"));
+        let visual_id = finished.summary["visualId"].as_str().unwrap();
+        let visual = svc.visuals().get(visual_id.to_string()).await.unwrap();
+        let view = serde_json::to_value(svc.run_view_v2(run.id.clone()).await.unwrap()).unwrap();
+        assert_eq!(visual.status, VisualStatus::Saved);
+        assert_eq!(
+            visual.bindings.pointer("/inputs/0/data/status"),
+            Some(&json!("completed")),
+            "a post-seal patch refusal must not enter the worker-failure visual path"
+        );
+        assert_eq!(
+            visual.bindings.pointer("/inputs/0/data/aggregate"),
+            Some(&view["aggregate"]),
+            "experiment and V2/chat consumers must receive the same revisioned aggregate bytes"
+        );
+        assert_eq!(
+            view["aggregate"]["projectionRevision"],
+            view["header"]["projectionRevision"]
+        );
+        assert_eq!(
+            view["aggregate"]["asOfSequence"],
+            view["header"]["asOfSequence"]
+        );
+        task.abort();
+    }
+
+    /// Container lifecycle completion is not evaluator success. If the reward
+    /// endpoint says `absent`, every affected trial and the run settle failed
+    /// with a measurement-specific reason instead of first counting as
+    /// succeeded and then degrading at the evidence gate.
+    #[tokio::test]
+    async fn container_completed_rollouts_without_measurements_settle_as_normal_failures() {
+        let (svc, _dir, _) = service().await;
+        let session = "sess_missing_evaluator_measurement";
+        let (base, task, starts) = spawn_eval_mock("banking77", BTreeMap::new()).await;
+        insert_container(&svc, "banking77", &base, "ready").await;
+        declare_eval_recipes(&svc, session).await;
+        let (run, _) = svc
+            .start_recipe(OptimizerRecipeRunRequest {
+                recipe_id: CLASSIFY_EVAL.into(),
+                session_ref: Some(session.into()),
+                open_visual: Some(false),
+                base_model: None,
+                dataset_shard: None,
+                candidate_set_id: None,
+                container_id: None,
+                training_artifact_id: None,
+                plan_override: None,
+                search: None,
+            })
+            .await
+            .unwrap();
+
+        let finished = wait_terminal(&svc, &run.id).await;
+        let manifest = wait_manifest(&svc, &run.id).await;
+        assert_eq!(starts.load(Ordering::SeqCst), 10);
+        assert_eq!(finished.status, "failed");
+        assert_eq!(finished.summary["progress"]["completed"], json!(0));
+        assert_eq!(finished.summary["progress"]["failed"], json!(10));
+        assert_eq!(manifest["terminal"]["kind"], json!("failed"));
+        assert_eq!(manifest["work"]["succeeded"], json!(0));
+        assert_eq!(manifest["work"]["failed"], json!(10));
+        let error = finished.error.unwrap_or(Value::Null).to_string();
+        assert!(error.contains("evaluator_measurement_missing"), "{error}");
+        assert!(error.contains("no evaluator measurement"), "{error}");
+
+        let events = svc
+            .events_after(run.id.clone(), 0, Some(500))
+            .await
+            .unwrap();
+        let terminals = events
+            .iter()
+            .filter(|event| event.event_type == "eval.trial.terminal")
+            .collect::<Vec<_>>();
+        assert_eq!(terminals.len(), 10);
+        assert!(terminals.iter().all(|event| {
+            event.item.as_ref().is_some_and(|item| {
+                item["valid"] == json!(false)
+                    && item["status"] == json!("failed")
+                    && item["raw"]["reportedStatus"] == json!("completed")
+                    && item["raw"]["evaluatorOutcome"]["status"] == json!("failed")
+                    && item["raw"]["evaluatorOutcome"]["reason"]
+                        == json!("evaluator_measurement_missing")
+                    && item["raw"]["error"]
+                        .as_str()
+                        .is_some_and(|error| error.starts_with("evaluator_measurement_missing:"))
+            })
+        }));
+        assert!(terminals.iter().all(|event| {
+            event.item.as_ref().is_some_and(|item| {
+                ["calls", "steps", "tokens", "costUsd", "achievements", "frames"]
+                    .iter()
+                    .all(|name| {
+                        let fact = &item["raw"]["reportedFacts"][name];
+                        fact.is_object()
+                            && fact.get("value").is_some()
+                            && fact.get("source").and_then(Value::as_str).is_some()
+                            && fact.get("unavailableReason").is_some()
+                    })
+            })
+        }));
+        let selection = events
+            .iter()
+            .find(|event| event.event_type == "eval.selection.completed")
+            .and_then(|event| event.snapshot.as_ref())
+            .and_then(|snapshot| snapshot.get("selection"))
+            .expect("a baseline evaluation must publish one typed selection outcome");
+        assert_eq!(selection["status"], json!("promotion_not_applicable"));
+        assert_eq!(selection["score"], Value::Null);
+
+        let view = serde_json::to_value(svc.run_view_v2(run.id.clone()).await.unwrap()).unwrap();
+        assert_eq!(
+            view["aggregate"]["schemaVersion"],
+            json!("eval.aggregate.v1")
+        );
+        assert_eq!(view["aggregate"]["lifecycle"], json!("terminal"));
+        assert_eq!(
+            view["aggregate"]["selection"],
+            json!("promotion_not_applicable")
+        );
+        assert_eq!(view["aggregate"]["meanReward"], Value::Null);
+        assert_eq!(view["aggregate"]["scoredTrials"], json!(0));
+        assert_eq!(view["aggregate"]["evaluatorEvidence"], json!(0));
+        assert_eq!(view["aggregate"]["work"]["failed"], json!(10));
+        assert_eq!(
+            view["aggregate"]["projectionRevision"],
+            view["header"]["projectionRevision"]
+        );
+        assert_eq!(
+            view["aggregate"]["asOfSequence"],
+            view["header"]["asOfSequence"]
+        );
+        task.abort();
+    }
+
+    /// A cancel while trials are in flight settles every dispatched trial
+    /// with an explicit `cancelled` terminal — never `failed` — and seals the
+    /// run `cancelled` with a closed-world manifest, through the real
+    /// dispatch, relay, reducer, and persistence paths. A step toward
+    /// acceptance criterion 16; the drain runs against a mock container whose
+    /// blocking rollouts stall until the client disconnects, not the fixture
+    /// Craftax journal.
+    #[tokio::test]
+    async fn cancelling_in_flight_trials_settles_each_as_cancelled() {
+        let (svc, _dir, _) = service().await;
+        let session = "sess_cancel_inflight";
+        let rewards = (0..10).map(|seed| (("train".into(), seed), 1.0)).collect();
+        let (base, task, starts) = spawn_eval_mock_opts(MockEvalOptions {
+            family: "banking77",
+            rewards,
+            policy_status: 200,
+            policy_config_id: "banking77_gpt_4_1_nano".into(),
+            fail_seeds: BTreeSet::new(),
+            extra_cost_usd: None,
+            policy_credential_present: true,
+            grader_credential_present: true,
+            advertises_model_roles: true,
+            stall_rollouts: true,
+        })
+        .await;
+        insert_container(&svc, "banking77", &base, "ready").await;
+        declare_eval_recipes(&svc, session).await;
+        let (run, _) = svc
+            .start_recipe(OptimizerRecipeRunRequest {
+                recipe_id: CLASSIFY_EVAL.into(),
+                session_ref: Some(session.into()),
+                open_visual: Some(false),
+                base_model: None,
+                dataset_shard: None,
+                candidate_set_id: None,
+                container_id: None,
+                training_artifact_id: None,
+                plan_override: None,
+                search: None,
+            })
+            .await
+            .unwrap();
+
+        for _ in 0..400 {
+            if starts.load(Ordering::SeqCst) >= 5 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        assert!(
+            starts.load(Ordering::SeqCst) >= 5,
+            "five trials must be in flight before the cancel"
+        );
+
+        let request = crate::optimizers::kernel::CancellationRequest::new(
+            crate::optimizers::kernel::CancellationCause::UserRequested,
+            "user:test",
+            format!("run:{}", run.id),
+        );
+        let request_id = request.request_id.clone();
+        svc.cancel(run.id.clone(), request).await.unwrap();
+
+        let finished = wait_terminal(&svc, &run.id).await;
+        assert_eq!(finished.status, "cancelled");
+        let manifest = wait_manifest(&svc, &run.id).await;
+        assert_eq!(manifest["terminal"]["kind"], json!("cancelled"));
+        assert_eq!(
+            manifest["terminal"]["reason"],
+            json!("operator_cancelled"),
+            "a user-requested cancel settles as an operator decision"
+        );
+        // Closed world: nothing survives the seal as running or queued, and
+        // interrupted work is cancelled, not failed.
+        assert_eq!(manifest["work"]["planned"], json!(10));
+        assert_eq!(manifest["work"]["running"], json!(0));
+        assert_eq!(manifest["work"]["queued"], json!(0));
+        assert_eq!(manifest["work"]["succeeded"], json!(0));
+        assert_eq!(manifest["work"]["failed"], json!(0));
+        assert_eq!(manifest["work"]["cancelled"], json!(10));
+
+        let dispatched = starts.load(Ordering::SeqCst);
+        let events = svc
+            .events_after(run.id.clone(), 0, Some(500))
+            .await
+            .unwrap();
+        let cancelled_trials = events
+            .iter()
+            .filter(|event| {
+                event.event_type == "eval.trial.terminal"
+                    && event
+                        .item
+                        .as_ref()
+                        .and_then(|item| item.get("status"))
+                        .and_then(Value::as_str)
+                        == Some("cancelled")
+            })
+            .count();
+        // Every spawned worker settles with its own explicit cancelled
+        // terminal (a trial still in prepare when the cancel lands is also
+        // interrupted work); at minimum that covers the five rollouts that
+        // were in flight at the container.
+        assert!(
+            cancelled_trials >= dispatched && dispatched >= 5,
+            "expected explicit cancelled terminals ({cancelled_trials}) to cover the \
+             {dispatched} in-flight rollouts"
+        );
+        let cancelled_with_receipts = events
+            .iter()
+            .filter(|event| {
+                event.event_type == "eval.trial.terminal"
+                    && event
+                        .item
+                        .as_ref()
+                        .and_then(|item| item.get("status"))
+                        .and_then(Value::as_str)
+                        == Some("cancelled")
+                    && event
+                        .item
+                        .as_ref()
+                        .and_then(|item| item.get("rolloutId"))
+                        .is_some_and(|value| !value.is_null())
+                    && event
+                        .item
+                        .as_ref()
+                        .and_then(|item| item.pointer("/cancellationReceipt/requestId"))
+                        .and_then(Value::as_str)
+                        == Some(request_id.as_str())
+                    && event
+                        .usage_delta
+                        .as_ref()
+                        .and_then(|usage| usage.get("usage_completeness"))
+                        .and_then(Value::as_str)
+                        == Some("partial")
+            })
+            .count();
+        assert!(
+            cancelled_with_receipts >= dispatched,
+            "each dispatched rollout must retain identity, cancellation receipt, and partial usage ({cancelled_with_receipts}/{dispatched})"
+        );
+        let failed_trials = events
+            .iter()
+            .filter(|event| {
+                event.event_type == "eval.trial.terminal"
+                    && event
+                        .item
+                        .as_ref()
+                        .and_then(|item| item.get("status"))
+                        .and_then(Value::as_str)
+                        == Some("failed")
+            })
+            .count();
+        assert_eq!(failed_trials, 0, "interrupted trials never settle failed");
+        let ledger = manifest["evidenceLedger"]
+            .as_array()
+            .expect("cancelled eval manifest carries its per-rollout evidence ledger");
+        assert_eq!(ledger.len(), 10);
+        assert!(ledger.iter().all(|entry| entry["state"] != json!("open")));
+        assert!(ledger.iter().filter(|entry| !entry["rolloutId"].is_null()).count() >= dispatched);
+        assert_eq!(manifest["usage"]["completeness"], json!("partial"));
+        let terminal_event = events
+            .iter()
+            .find(|event| event.event_type == "optimizer.run.cancelled")
+            .expect("the durable log carries the cancelled terminal fact");
+        assert_eq!(
+            terminal_event
+                .delta
+                .get("cancellation")
+                .and_then(|cancellation| cancellation.get("requestId"))
+                .and_then(Value::as_str),
+            Some(request_id.as_str()),
+            "the terminal event carries the typed request"
+        );
+        assert_eq!(
+            terminal_event
+                .delta
+                .get("cancellation")
+                .and_then(|cancellation| cancellation.get("requestedBy"))
+                .and_then(Value::as_str),
+            Some("user:test")
+        );
+
+        // The sealed run must load back through terminal replay: closure is a
+        // pure function of the terminal event, so the rebuilt projection is
+        // closed-world too.
+        let run_id = run.id.clone();
+        let state = svc
+            .database()
+            .clone()
+            .run(move |conn| {
+                crate::optimizers::kernel::persist::load_state(conn, &run_id)?
+                    .ok_or_else(|| anyhow::anyhow!("cancelled run lost its kernel projection"))
+            })
+            .await
+            .unwrap();
+        assert!(state
+            .projection
+            .work_items()
+            .iter()
+            .all(|item| item.lifecycle
+                == crate::optimizers::kernel::WorkItemLifecycle::Terminal));
+        assert_eq!(
+            state.terminal.as_ref().map(|terminal| terminal.kind),
+            Some(crate::optimizers::kernel::TerminalKind::Cancelled)
+        );
         task.abort();
     }
 
@@ -3750,15 +6343,17 @@ max_total_rollouts = 4
         wait_manifest(&svc, &run.id).await;
         let result = svc.get_result(run.id.clone()).await.unwrap();
         assert_eq!(result["resultKind"], json!("eval_run_result.v1"));
-        assert_eq!(result["trials"]["succeeded"], json!(10));
-        assert_eq!(result["metrics"]["meanReward"], json!(1.0));
+        assert_eq!(result["trials"]["succeeded"], json!(10), "{result}");
+        assert_eq!(result["meanReward"], json!(1.0));
         assert_eq!(
-            result["metrics"]["selection"]["status"],
-            json!("inconclusive")
+            result["selection"],
+            json!("promotion_not_applicable"),
+            "a baseline-only eval cannot make a promotion claim"
         );
-        assert!(
-            result["evidenceRefs"]["visualId"].is_string(),
-            "an eval result names the artifact that carries its evidence"
+        assert_eq!(
+            result["evidence"]["completeness"],
+            json!("complete"),
+            "settled work must carry an explicit evidence state"
         );
         task.abort();
     }
@@ -3820,6 +6415,30 @@ max_total_rollouts = 4
                 .count(),
             1
         );
+        let owned_visuals = svc
+            .visuals()
+            .list(VisualQuery {
+                session_id: Some("sess_owner".into()),
+                ..VisualQuery::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            owned_visuals.len(),
+            2,
+            "overview and workstation are Outputs"
+        );
+        for visual in &owned_visuals {
+            assert_eq!(
+                visual.run_id, None,
+                "optimizer identity must not overload visuals.run_id's runs-table FK"
+            );
+            assert_eq!(
+                crate::visuals::declared_optimizer_run_ids(&visual.bindings),
+                vec![run.id.clone()],
+                "both Outputs visuals durably bind the optimizer identity"
+            );
+        }
 
         // Ownership is the run's session, not whoever asks.
         assert_eq!(
@@ -3875,11 +6494,20 @@ max_total_rollouts = 4
         // The visual the campaign was supposed to keep current is gone.
         let failure = evidence(
             "progress_projection",
-            persist_progress(&svc, &run.id, &spec, "vis_missing", "vis_workbench", &records, 1, "completed"),
+            persist_progress(
+                &svc,
+                &run.id,
+                &spec,
+                "vis_missing",
+                "vis_workbench",
+                &records,
+                1,
+                "completed",
+            ),
         )
         .await
         .unwrap_err();
-        settle_worker_failure(&svc, &run.id, failure).await;
+        settle_worker_failure(&svc, &run.id, failure).await.unwrap();
 
         let settled = svc.get(run.id.clone()).await.unwrap();
         assert_eq!(settled.status, "degraded");
@@ -3888,9 +6516,17 @@ max_total_rollouts = 4
             Some(1),
             "the successful rollout stays on the record"
         );
-        let manifest = svc.terminal_manifest(run.id).await.unwrap().unwrap();
-        assert_eq!(manifest["terminalStatus"], json!("failed_evidence"));
-        assert_eq!(manifest["degradation"]["retryable"], json!(true));
+        let manifest = svc
+            .terminal_manifest(run.id.clone())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(manifest["terminal"]["kind"], json!("degraded"));
+        let events = svc.events_after(run.id, 0, None).await.unwrap();
+        assert_eq!(
+            events.last().unwrap().delta["degradation"]["retryable"],
+            json!(true)
+        );
     }
     #[tokio::test]
     async fn healthbench_admission_blocks_before_dispatch_when_policy_credential_is_missing() {
@@ -3904,6 +6540,7 @@ max_total_rollouts = 4
             policy_credential_present: false,
             grader_credential_present: true,
             advertises_model_roles: true,
+            stall_rollouts: false,
         })
         .await;
         let (svc, _dir, _) = service().await;
@@ -3939,6 +6576,7 @@ max_total_rollouts = 4
             policy_credential_present: true,
             grader_credential_present: true,
             advertises_model_roles: false,
+            stall_rollouts: false,
         })
         .await;
         let (svc, _dir, _) = service().await;
@@ -3980,6 +6618,7 @@ max_total_rollouts = 4
             policy_credential_present: true,
             grader_credential_present: true,
             advertises_model_roles: false,
+            stall_rollouts: false,
         })
         .await;
         let (svc, _dir, _) = service().await;
@@ -4007,6 +6646,7 @@ max_total_rollouts = 4
             policy_credential_present: true,
             grader_credential_present: false,
             advertises_model_roles: true,
+            stall_rollouts: false,
         })
         .await;
         let (svc, _dir, _) = service().await;
@@ -4069,11 +6709,7 @@ max_total_rollouts = 4
         task.abort();
     }
 
-    async fn recipe(
-        svc: &OptimizerService,
-        id: &str,
-        session: &str,
-    ) -> OptimizerRecipeRunRequest {
+    async fn recipe(svc: &OptimizerService, id: &str, session: &str) -> OptimizerRecipeRunRequest {
         recipe_on(svc, id, session, None).await
     }
 
@@ -4169,12 +6805,15 @@ max_total_rollouts = 4
         )
         .await;
         let (run, _) = svc
-            .start_recipe(recipe_on(
-                &svc,
-                CLASSIFY_EVAL,
-                "sess_explicit_isolated",
-                Some("ctr_banking77_isolated"),
-            ).await)
+            .start_recipe(
+                recipe_on(
+                    &svc,
+                    CLASSIFY_EVAL,
+                    "sess_explicit_isolated",
+                    Some("ctr_banking77_isolated"),
+                )
+                .await,
+            )
             .await
             .unwrap();
         assert_eq!(run.summary["containerId"], json!("ctr_banking77_isolated"));
@@ -4226,12 +6865,15 @@ max_total_rollouts = 4
         .await;
 
         let not_ready = svc
-            .start_recipe(recipe_on(
-                &svc,
-                CLASSIFY_EVAL,
-                "sess_not_ready",
-                Some("ctr_banking77_offline"),
-            ).await)
+            .start_recipe(
+                recipe_on(
+                    &svc,
+                    CLASSIFY_EVAL,
+                    "sess_not_ready",
+                    Some("ctr_banking77_offline"),
+                )
+                .await,
+            )
             .await
             .unwrap_err()
             .to_string();
@@ -4247,12 +6889,15 @@ max_total_rollouts = 4
         );
 
         let wrong_family = svc
-            .start_recipe(recipe_on(
-                &svc,
-                CLASSIFY_EVAL,
-                "sess_wrong_family",
-                Some("ctr_healthbench_ready"),
-            ).await)
+            .start_recipe(
+                recipe_on(
+                    &svc,
+                    CLASSIFY_EVAL,
+                    "sess_wrong_family",
+                    Some("ctr_healthbench_ready"),
+                )
+                .await,
+            )
             .await
             .unwrap_err()
             .to_string();
@@ -4357,6 +7002,7 @@ max_total_rollouts = 4
             policy_credential_present: true,
             grader_credential_present: true,
             advertises_model_roles: true,
+            stall_rollouts: false,
         })
         .await;
         let (svc, _dir, _) = service().await;
@@ -4383,16 +7029,13 @@ max_total_rollouts = 4
             policy_credential_present: true,
             grader_credential_present: true,
             advertises_model_roles: true,
+            stall_rollouts: false,
         })
         .await;
         let (svc, _dir, _) = service().await;
         insert_container(&svc, "healthbench", &base, "ready").await;
         let (run, _) = svc
-            .start_recipe(recipe(
-                &svc,
-                HEALTH_EVAL,
-                "sess_policy_mismatch",
-            ).await)
+            .start_recipe(recipe(&svc, HEALTH_EVAL, "sess_policy_mismatch").await)
             .await
             .unwrap();
         let finished = wait_terminal(&svc, &run.id).await;
@@ -4414,6 +7057,7 @@ max_total_rollouts = 4
             policy_credential_present: true,
             grader_credential_present: true,
             advertises_model_roles: true,
+            stall_rollouts: false,
         })
         .await;
         let (svc, _dir, _) = service().await;
@@ -4447,6 +7091,7 @@ max_total_rollouts = 4
             policy_credential_present: true,
             grader_credential_present: true,
             advertises_model_roles: true,
+            stall_rollouts: false,
         })
         .await;
         let (svc, _dir, _) = service().await;
@@ -4501,6 +7146,42 @@ max_total_rollouts = 4
     }
 
     #[test]
+    fn nanohorizon_proxy_config_never_requests_a_container_api_key() {
+        let mut spec = EvalSpec::classify_fixture();
+        spec.harness = "nanohorizon".into();
+        let proxy = "http://host.docker.internal:9/cap/wcap_nanohorizon/v1/providers/openrouter";
+        let body = spec.policy_config_body(Some(proxy)).unwrap();
+        assert_eq!(body["config"]["base_url"], proxy);
+        assert!(body.pointer("/config/api_key_env").is_none());
+        assert!(body.pointer("/config/api_key").is_none());
+    }
+
+    #[test]
+    fn inline_rollout_wait_covers_the_authorized_capability_lifetime() {
+        let mut spec = EvalSpec::classify_fixture();
+        spec.policy.insert("timeout_seconds".into(), json!(180.0));
+        spec.maximum_model_calls_per_rollout = 10;
+        spec.admitted_use_policy = Some(crate::secrets::SecretsUsePolicy {
+            lifetime_seconds: 3_600,
+            ..crate::secrets::SecretsUsePolicy::default()
+        });
+
+        assert_eq!(spec.blocking_http_timeout(), Duration::from_secs(3_840));
+    }
+
+    #[test]
+    fn rollout_wait_without_declared_call_timeout_uses_long_running_default() {
+        let mut spec = EvalSpec::classify_fixture();
+        spec.policy.remove("timeout_seconds");
+        spec.admitted_use_policy = None;
+
+        assert_eq!(
+            spec.blocking_http_timeout(),
+            DEFAULT_BLOCKING_EVAL_HTTP_TIMEOUT
+        );
+    }
+
+    #[test]
     fn retained_rollout_state_uses_the_latest_observation() {
         let page = json!({
             "events": [
@@ -4520,6 +7201,54 @@ max_total_rollouts = 4
     #[test]
     fn retained_rollout_state_rejects_a_missing_event_collection() {
         assert!(retained_rollout_state(&json!({})).is_err());
+    }
+
+    #[test]
+    fn trace_placeholders_are_not_counted_as_retained_receipts() {
+        let mut spec = EvalSpec::classify_fixture();
+        spec.train = vec![780005, 780006, 780007, 780008, 780009];
+        spec.heldout.clear();
+        spec.maximum_model_calls_per_rollout = 0;
+        spec.maximum_steps_per_rollout = 0;
+        let bindings = experiment_bindings(
+            &spec,
+            "opt_eval_test",
+            "failed",
+            0,
+            5,
+            &[],
+            None,
+            "vis_workbench",
+            Some(&json!({
+                "reconciliationErrors": [
+                    "This run is failed, but 5 rollouts are still queued or running."
+                ],
+                "rolloutStateCounts": { "queued": 5 }
+            })),
+            "2026-08-27T12:00:00Z",
+            None,
+        );
+        let data = &bindings["inputs"][0]["data"];
+        let traces = &data["traces"];
+        assert_eq!(traces["plannedSlots"], json!(5));
+        assert_eq!(traces["streamsOpened"], json!(0));
+        assert_eq!(traces["receiptsRetained"], json!(0));
+        assert_eq!(traces["sealed"], json!(0));
+        assert_eq!(traces["evidenceGaps"], json!(5));
+        assert_eq!(traces["items"].as_array().unwrap().len(), 0);
+        let errors = data["reconciliationErrors"].as_array().unwrap();
+        assert!(
+            errors
+                .iter()
+                .any(|error| error.as_str().is_some_and(|text| text.contains("queued"))),
+            "{errors:?}"
+        );
+        assert!(
+            errors.iter().any(|error| error
+                .as_str()
+                .is_some_and(|text| text.contains("Approved call and step limits"))),
+            "{errors:?}"
+        );
     }
 
     // ── Craftax relay fixture ────────────────────────────────────────────
@@ -4560,6 +7289,8 @@ max_total_rollouts = 4
 
     #[derive(Clone, Copy, Default)]
     struct CraftaxMockOptions {
+        /// Serve the additive journal-v2 chain/ack/retention contract.
+        journal_v2: bool,
         /// Every frame is the same image. Logical frame count must not change.
         identical_frames: bool,
         /// Serve a body that is a PNG header followed by garbage.
@@ -4572,6 +7303,9 @@ max_total_rollouts = 4
         skip_sequence: Option<u64>,
         /// Hold the blocking POST open this long after the journal closes.
         trailing_hold_ms: u64,
+        /// GET observes no evaluator receipt until Workshop explicitly asks
+        /// the producer to materialize terminal scoring with POST /reward.
+        reward_materializes_on_post: bool,
     }
 
     /// The producer envelope shape, exactly as `RolloutEventLog` writes it.
@@ -4598,7 +7332,9 @@ max_total_rollouts = 4
             sequence.set(sequence.get() + 1);
             events.push(journal_event(sequence.get(), kind, payload));
         };
-        let emit_step = |events: &mut Vec<Value>, push: &dyn Fn(&mut Vec<Value>, &str, Value), step: i64| {
+        let emit_step = |events: &mut Vec<Value>,
+                         push: &dyn Fn(&mut Vec<Value>, &str, Value),
+                         step: i64| {
             push(
                 events,
                 "observation",
@@ -4629,9 +7365,17 @@ max_total_rollouts = 4
                 json!({ "step": step, "resource": "wood", "before": step, "after": step + 1 }),
             );
         };
-        push(&mut events, "env.episode.opened", json!({"seed": 780_003, "max_steps": 64}));
+        push(
+            &mut events,
+            "env.episode.opened",
+            json!({"seed": 780_003, "max_steps": 64}),
+        );
         emit_step(&mut events, &push, 0);
-        push(&mut events, "policy.session.opened", json!({"harness": "craftax_react"}));
+        push(
+            &mut events,
+            "policy.session.opened",
+            json!({"harness": "craftax_react"}),
+        );
         let mut applied = 0;
         for call in 0..CRAFTAX_POLICY_CALLS {
             push(&mut events, "span.policy.opened", json!({"call": call}));
@@ -4658,7 +7402,11 @@ max_total_rollouts = 4
                     "usage": {"prompt_tokens": 100 + call, "completion_tokens": 20 + call}
                 }),
             );
-            push(&mut events, "span.policy.plan", json!({"actions": ["move_right"], "length": 1}));
+            push(
+                &mut events,
+                "span.policy.plan",
+                json!({"actions": ["move_right"], "length": 1}),
+            );
             push(&mut events, "span.policy.closed", json!({"length": 1}));
             // Two of the ten calls propose an action the environment refuses.
             // The viewer must keep showing the call and must never report the
@@ -4677,7 +7425,11 @@ max_total_rollouts = 4
             let batch = if call < 5 { 2 } else { 1 };
             for _ in 0..batch {
                 let step = applied + 1;
-                push(&mut events, "action_applied", json!({"step": step, "action": "move_right"}));
+                push(
+                    &mut events,
+                    "action_applied",
+                    json!({"step": step, "action": "move_right"}),
+                );
                 push(
                     &mut events,
                     "reward_signal",
@@ -4692,7 +7444,11 @@ max_total_rollouts = 4
                             "achievement": if step == 3 { "collect_wood" } else { "place_table" }
                         }),
                     );
-                    push(&mut events, "reward_delta", json!({"step": step, "delta": 1.0}));
+                    push(
+                        &mut events,
+                        "reward_delta",
+                        json!({"step": step, "delta": 1.0}),
+                    );
                 }
                 push(
                     &mut events,
@@ -4704,18 +7460,50 @@ max_total_rollouts = 4
             }
         }
         assert_eq!(applied as usize, CRAFTAX_APPLIED_ACTIONS);
-        push(&mut events, "policy.session.closed", json!({"calls": CRAFTAX_POLICY_CALLS}));
-        push(&mut events, "env.episode.closed", json!({"status": "completed", "steps": applied}));
-        push(&mut events, "status", json!({"status": "completed", "steps": applied}));
-        push(&mut events, "capture.closed", json!({"high_water": sequence.get()}));
+        push(
+            &mut events,
+            "policy.session.closed",
+            json!({"calls": CRAFTAX_POLICY_CALLS}),
+        );
+        push(
+            &mut events,
+            "env.episode.closed",
+            json!({"status": "completed", "steps": applied}),
+        );
+        push(
+            &mut events,
+            "status",
+            json!({"status": "completed", "steps": applied}),
+        );
+        push(
+            &mut events,
+            "capture.closed",
+            json!({"high_water": sequence.get()}),
+        );
         if let Some(gap) = opts.skip_sequence {
             events.retain(|event| event.get("sequence").and_then(Value::as_u64) != Some(gap));
+        }
+        if opts.journal_v2 {
+            for event in &mut events {
+                let kind = event.get("kind").and_then(Value::as_str).unwrap();
+                let sequence = event.get("sequence").and_then(Value::as_u64).unwrap();
+                let payload = event.get("payload").cloned().unwrap();
+                let canonical = serde_json::to_vec(&json!({
+                    "kind": kind,
+                    "sequence": sequence,
+                    "payload": payload,
+                }))
+                .unwrap();
+                event["digest"] =
+                    json!(format!("{:x}", sha2::Sha256::digest(canonical))[..16].to_string());
+            }
         }
         events
     }
 
     struct CraftaxMock {
         base: String,
+        acks: Arc<Mutex<BTreeMap<String, u64>>>,
         task: tokio::task::JoinHandle<()>,
     }
 
@@ -4726,10 +7514,13 @@ max_total_rollouts = 4
         let addr = listener.local_addr().unwrap();
         let journals: Arc<Mutex<BTreeMap<String, (Vec<Value>, bool)>>> =
             Arc::new(Mutex::new(BTreeMap::new()));
+        let acks: Arc<Mutex<BTreeMap<String, u64>>> = Arc::new(Mutex::new(BTreeMap::new()));
+        let exposed_acks = acks.clone();
         let script = Arc::new(craftax_journal(opts));
         let task = tokio::spawn(async move {
             let _ = serve_json(listener, move |request: JsonHttpRequest| {
                 let journals = journals.clone();
+                let acks = acks.clone();
                 let script = script.clone();
                 async move {
                     let path = request.path.split('?').next().unwrap_or(&request.path).to_string();
@@ -4751,6 +7542,7 @@ max_total_rollouts = 4
                             let rollout_id = request.body.get("rollout_id").and_then(Value::as_str)
                                 .unwrap_or("roll_unknown").to_string();
                             journals.lock().unwrap().insert(rollout_id.clone(), (Vec::new(), false));
+                            acks.lock().unwrap().insert(rollout_id.clone(), 0);
                             JsonHttpResponse::ok(json!({
                                 "rollout_id": rollout_id,
                                 "stream": {
@@ -4783,6 +7575,17 @@ max_total_rollouts = 4
                             let high_water = events.last()
                                 .and_then(|event| event.get("sequence").and_then(Value::as_u64))
                                 .unwrap_or(0);
+                            let requested_ack = query.split('&')
+                                .find_map(|pair| pair.strip_prefix("ack="))
+                                .and_then(|value| value.parse::<u64>().ok())
+                                .unwrap_or(0)
+                                .min(high_water);
+                            let acked = {
+                                let mut guard = acks.lock().unwrap();
+                                let value = guard.entry(rollout_id.clone()).or_default();
+                                *value = (*value).max(requested_ack);
+                                *value
+                            };
                             let next = page.last()
                                 .and_then(|event| event.get("sequence").and_then(Value::as_u64))
                                 .unwrap_or(after);
@@ -4797,7 +7600,7 @@ max_total_rollouts = 4
                                 "payload": {"ready": true}
                             })];
                             rows.extend(page.clone());
-                            JsonHttpResponse::ok(json!({
+                            let mut response = json!({
                                 "rollout_id": rollout_id,
                                 "cursor": {
                                     "kind": "sequence",
@@ -4808,7 +7611,39 @@ max_total_rollouts = 4
                                     "has_more": available.len() > page.len(),
                                 },
                                 "events": rows,
-                            }))
+                            });
+                            if opts.journal_v2 {
+                                let mut chain_head = format!(
+                                    "{:x}",
+                                    sha2::Sha256::digest(rollout_id.as_bytes())
+                                );
+                                for event in events {
+                                    let digest = event.get("digest").and_then(Value::as_str).unwrap();
+                                    chain_head = format!(
+                                        "{:x}",
+                                        sha2::Sha256::digest(
+                                            format!("{chain_head}{digest}").as_bytes()
+                                        )
+                                    );
+                                }
+                                response["cursor"]["chain_head"] = json!(chain_head);
+                                response["cursor"]["acked"] = json!(acked);
+                                response["retention"] = json!({
+                                    "policy": "until-acked-or-ttl",
+                                    "ttl_seconds": 604800,
+                                    "acked": acked,
+                                    "high_water": high_water,
+                                    "closed": *closed,
+                                    "released": *closed && acked >= high_water,
+                                    "released_reason": if *closed && acked >= high_water {
+                                        Value::String("acked".into())
+                                    } else {
+                                        Value::Null
+                                    },
+                                    "expires_at": Value::Null,
+                                });
+                            }
+                            JsonHttpResponse::ok(response)
                         }
                         ("GET", path) if path.contains("/frames/") => {
                             let step: i64 = path.rsplit('/').next()
@@ -4857,6 +7692,19 @@ max_total_rollouts = 4
                                                 );
                                                 event["payload"]["url"] = json!(resolved);
                                             }
+                                            if opts.journal_v2 {
+                                                let canonical = serde_json::to_vec(&json!({
+                                                    "kind": event["kind"],
+                                                    "sequence": event["sequence"],
+                                                    "payload": event["payload"],
+                                                }))
+                                                .unwrap();
+                                                event["digest"] = json!(format!(
+                                                    "{:x}",
+                                                    sha2::Sha256::digest(canonical)
+                                                )[..16]
+                                                    .to_string());
+                                            }
                                             events.push(event);
                                         }
                                     }
@@ -4876,10 +7724,28 @@ max_total_rollouts = 4
                                 "trace": {"url": format!("/rollouts/{rollout_id}/trace"), "closed": true},
                             }))
                         }
-                        ("GET", path) if path.ends_with("/reward") => JsonHttpResponse::ok(json!({
-                            "status": "scored",
-                            "reward": CRAFTAX_TOTAL_REWARD,
-                        })),
+                        ("GET", path) if path.ends_with("/reward") => JsonHttpResponse::ok(if opts.reward_materializes_on_post {
+                            json!({"status": "absent", "reward": null})
+                        } else {
+                            json!({"status": "scored", "reward": CRAFTAX_TOTAL_REWARD})
+                        }),
+                        ("POST", "/reward") if opts.reward_materializes_on_post => {
+                            if request.body.get("mode") != Some(&json!("terminal"))
+                                || request.body.get("rescore") != Some(&json!(false))
+                                || request.body.get("rollout_id").and_then(Value::as_str).is_none()
+                                || request.body.get("evaluation_plan_ref").and_then(Value::as_str).is_none()
+                            {
+                                return JsonHttpResponse::error(
+                                    StatusCode::UNPROCESSABLE_ENTITY,
+                                    "terminal reward request omitted its authority binding",
+                                );
+                            }
+                            JsonHttpResponse::ok(json!({
+                                "status": "scored",
+                                "reward": CRAFTAX_TOTAL_REWARD,
+                                "evaluation_plan_ref": request.body["evaluation_plan_ref"],
+                            }))
+                        }
                         // No self-contained bundle: this container seals a lite
                         // trace only, and the record must say so rather than
                         // claiming an inspectable replay.
@@ -4898,11 +7764,19 @@ max_total_rollouts = 4
             })
             .await;
         });
-        CraftaxMock { base: format!("http://{addr}"), task }
+        CraftaxMock {
+            base: format!("http://{addr}"),
+            acks: exposed_acks,
+            task,
+        }
     }
 
     async fn declare_craftax_recipe(svc: &OptimizerService, session: &str, extra: &str) {
-        let workspace = tempfile::Builder::new().prefix("ws-craftax-").tempdir().unwrap().into_path();
+        let workspace = tempfile::Builder::new()
+            .prefix("ws-craftax-")
+            .tempdir()
+            .unwrap()
+            .into_path();
         std::fs::create_dir_all(workspace.join("workshop.recipes")).unwrap();
         std::fs::write(
             workspace.join("workshop.recipes/craftax.toml"),
@@ -4996,13 +7870,16 @@ max_total_rollouts = 1
 
     fn kind_of(event: &Value) -> &str {
         event
-            .pointer("/delta/containerEvent/kind")
+            .pointer("/delta/container_event/kind")
             .and_then(Value::as_str)
             .unwrap_or("")
     }
 
     fn count_kind(events: &[Value], kind: &str) -> usize {
-        container_events(events).iter().filter(|event| kind_of(event) == kind).count()
+        container_events(events)
+            .iter()
+            .filter(|event| kind_of(event) == kind)
+            .count()
     }
 
     fn index_of_type(events: &[Value], event_type: &str) -> Option<usize> {
@@ -5022,10 +7899,19 @@ max_total_rollouts = 1
             .iter()
             .position(|event| event.get("type").and_then(Value::as_str) == Some("eval.trial.event"))
             .expect("no relayed container events");
-        assert!(started < first_container, "trial.started must precede its events");
+        assert!(
+            started < first_container,
+            "trial.started must precede its events"
+        );
 
         // 2. Policy and frame events land before the trial settles.
-        let terminal = index_of_type(&events, "eval.trial.terminal").expect("no terminal");
+        let terminal = match index_of_type(&events, "eval.trial.terminal") {
+            Some(terminal) => terminal,
+            None => panic!(
+                "no terminal; run={:?}",
+                svc.get(run_id.clone()).await.unwrap()
+            ),
+        };
         let last_frame = events
             .iter()
             .rposition(|event| kind_of(event) == "frame")
@@ -5038,9 +7924,18 @@ max_total_rollouts = 1
 
         // 3. The regression fixture's own counts, which "0 native frames" denied.
         assert_eq!(count_kind(&events, "frame"), CRAFTAX_FRAMES);
-        assert_eq!(count_kind(&events, "span.policy.data"), CRAFTAX_POLICY_CALLS);
-        assert_eq!(count_kind(&events, "action_applied"), CRAFTAX_APPLIED_ACTIONS);
-        assert_eq!(count_kind(&events, "achievement_unlocked"), CRAFTAX_ACHIEVEMENTS);
+        assert_eq!(
+            count_kind(&events, "span.policy.data"),
+            CRAFTAX_POLICY_CALLS
+        );
+        assert_eq!(
+            count_kind(&events, "action_applied"),
+            CRAFTAX_APPLIED_ACTIONS
+        );
+        assert_eq!(
+            count_kind(&events, "achievement_unlocked"),
+            CRAFTAX_ACHIEVEMENTS
+        );
         // A proposed action the environment refused is visible and is not an
         // applied action.
         assert_eq!(count_kind(&events, "action_rejected"), 2);
@@ -5053,7 +7948,7 @@ max_total_rollouts = 1
             .collect();
         for frame in &frames {
             let media = frame
-                .pointer("/delta/containerEvent/payload/media")
+                .pointer("/delta/container_event/payload/media")
                 .expect("frame kept no media reference");
             let digest = media.get("casDigest").and_then(Value::as_str).unwrap();
             assert_eq!(digest.len(), 64, "casDigest must be a full SHA-256");
@@ -5071,18 +7966,117 @@ max_total_rollouts = 1
 
         // 5. No PNG body was ever inlined into the optimizer log.
         let encoded = serde_json::to_string(&events).unwrap();
-        assert!(!encoded.contains("data:image/png;base64"), "a PNG leaked into optimizer_events");
+        assert!(
+            !encoded.contains("data:image/png;base64"),
+            "a PNG leaked into optimizer_events"
+        );
 
         // 6. The record reports the reward and its relay receipt honestly.
         let run = svc.get(run_id.clone()).await.unwrap();
         let record = run.summary.pointer("/records/0").cloned().unwrap();
         assert_eq!(record["reward"], json!(CRAFTAX_TOTAL_REWARD));
+        assert_eq!(
+            record["steps"],
+            Value::Null,
+            "an unverified legacy journal must not become terminal step authority"
+        );
         assert_eq!(record["relay"]["framesDeclared"], json!(CRAFTAX_FRAMES));
         assert_eq!(record["relay"]["framesRetained"], json!(CRAFTAX_FRAMES));
         assert_eq!(record["relay"]["journalClosed"], json!(true));
+        let policy_spans = container_events(&events)
+            .into_iter()
+            .filter(|event| kind_of(event) == "span.policy.data")
+            .collect::<Vec<_>>();
+        assert!(policy_spans.iter().all(|event| {
+            event
+                .pointer("/usageDelta/prompt_tokens")
+                .and_then(Value::as_u64)
+                .is_some()
+                && event
+                    .pointer("/usageDelta/completion_tokens")
+                    .and_then(Value::as_u64)
+                    .is_some()
+        }));
+        let trial_terminal = events
+            .iter()
+            .find(|event| event.get("type").and_then(Value::as_str) == Some("eval.trial.terminal"))
+            .expect("no trial terminal usage reconciliation");
+        // The container aggregate (1000/200) is below already-committed span
+        // usage (1045/245), so it cannot subtract or duplicate durable usage.
+        assert_eq!(trial_terminal["usageDelta"]["prompt_tokens"], json!(0));
+        assert_eq!(trial_terminal["usageDelta"]["completion_tokens"], json!(0));
+        assert_eq!(trial_terminal["usageDelta"]["usage_completeness"], json!("partial"));
+        let manifest = wait_manifest(&svc, &run_id).await;
+        assert_eq!(manifest["usage"]["promptTokens"], json!(1045));
+        assert_eq!(manifest["usage"]["completionTokens"], json!(245));
+        assert_eq!(manifest["usage"]["completeness"], json!("partial"));
+        assert_eq!(manifest["usage"]["costUsd"], Value::Null);
         // The container offers no self-contained bundle, and the record says
         // exactly that rather than implying an inspectable replay.
         assert_eq!(record["sealedTrace"]["imported"], json!(false));
+        mock.task.abort();
+    }
+
+    #[tokio::test]
+    async fn journal_v2_is_chain_verified_and_acked_after_durable_relay() {
+        let (svc, run_id, mock) = run_craftax(
+            CraftaxMockOptions {
+                journal_v2: true,
+                ..CraftaxMockOptions::default()
+            },
+            "",
+        )
+        .await;
+        let run = svc.get(run_id).await.unwrap();
+        let record = run.summary.pointer("/records/0").unwrap();
+        let rollout_id = record["rolloutId"]
+            .as_str()
+            .unwrap_or_else(|| panic!("journal-v2 rollout failed before receipt: {record}"));
+        let high_water = record["relay"]["highWater"].as_u64().unwrap();
+        assert!(high_water > 0);
+        assert_eq!(record["relay"]["journalAcked"], json!(high_water));
+        assert_eq!(
+            record["relay"]["journalChainHead"].as_str().unwrap().len(),
+            64
+        );
+        assert_eq!(
+            record["relay"]["journalRetention"]["policy"],
+            json!("until-acked-or-ttl")
+        );
+        assert_eq!(
+            mock.acks.lock().unwrap().get(rollout_id).copied(),
+            Some(high_water),
+            "producer never observed Workshop's durable high-water ack"
+        );
+        mock.task.abort();
+    }
+
+    #[tokio::test]
+    async fn verified_terminal_lifecycle_supplies_steps_and_scoring_stays_evaluator_owned() {
+        let (svc, run_id, mock) = run_craftax(
+            CraftaxMockOptions {
+                journal_v2: true,
+                reward_materializes_on_post: true,
+                ..CraftaxMockOptions::default()
+            },
+            "",
+        )
+        .await;
+        let run = svc.get(run_id).await.unwrap();
+        let record = run.summary.pointer("/records/0").unwrap();
+        assert_eq!(record["status"], json!("completed"), "{record}");
+        assert_eq!(record["steps"], json!(CRAFTAX_APPLIED_ACTIONS));
+        assert_eq!(record["stepsSource"], json!("retained_event_log"));
+        assert_eq!(
+            record["reportedFacts"]["steps"]["source"],
+            json!("retained_event_log")
+        );
+        assert_eq!(record["reward"], json!(CRAFTAX_TOTAL_REWARD));
+        assert_eq!(record["rewardStatus"], json!("scored"));
+        assert_eq!(
+            record["relay"]["terminalEnvironmentSteps"],
+            json!(CRAFTAX_APPLIED_ACTIONS)
+        );
         mock.task.abort();
     }
 
@@ -5097,14 +8091,24 @@ max_total_rollouts = 1
         let mut sequences: Vec<u64> = container_events(&events)
             .into_iter()
             .filter_map(|event| {
-                event.pointer("/delta/containerEvent/sequence").and_then(Value::as_u64)
+                event
+                    .pointer("/delta/container_event/sequence")
+                    .and_then(Value::as_u64)
             })
             .collect();
         let relayed = sequences.len();
         sequences.sort_unstable();
         sequences.dedup();
-        assert_eq!(sequences.len(), relayed, "a producer sequence was relayed twice");
-        assert_eq!(sequences, (1..=relayed as u64).collect::<Vec<_>>(), "the relay is not contiguous");
+        assert_eq!(
+            sequences.len(),
+            relayed,
+            "a producer sequence was relayed twice"
+        );
+        assert_eq!(
+            sequences,
+            (1..=relayed as u64).collect::<Vec<_>>(),
+            "the relay is not contiguous"
+        );
         assert!(relayed > 100, "paging lost events: only {relayed} relayed");
         mock.task.abort();
     }
@@ -5112,22 +8116,51 @@ max_total_rollouts = 1
     #[tokio::test]
     async fn a_sequence_gap_fails_the_trial_visibly() {
         let (svc, run_id, mock) = run_craftax(
-            CraftaxMockOptions { skip_sequence: Some(12), ..Default::default() },
+            CraftaxMockOptions {
+                skip_sequence: Some(12),
+                ..Default::default()
+            },
             "",
         )
         .await;
         let run = svc.get(run_id.clone()).await.unwrap();
-        assert_eq!(run.status, "failed", "a gapped journal must not settle completed");
+        assert_eq!(
+            run.status, "failed",
+            "a gapped journal must not settle completed"
+        );
         let record = run.summary.pointer("/records/0").cloned().unwrap();
         let error = record["error"].as_str().unwrap_or_default();
         assert!(error.contains("sequence gap"), "gap was not named: {error}");
+        assert_eq!(record["evidenceState"], json!("rejected"));
+        let rollout_id = record["rolloutId"]
+            .as_str()
+            .expect("a dispatched integrity failure keeps rolloutId");
+        let trial_id = record["trialId"]
+            .as_str()
+            .expect("a dispatched integrity failure keeps trialId");
+        let events = relayed_events(&svc, &run_id).await;
+        let started = events
+            .iter()
+            .find(|event| event.get("type").and_then(Value::as_str) == Some("eval.trial.started"))
+            .expect("trial start identity");
+        let terminal = events
+            .iter()
+            .find(|event| event.get("type").and_then(Value::as_str) == Some("eval.trial.terminal"))
+            .expect("trial terminal identity");
+        assert_eq!(started["delta"]["rollout_id"], json!(rollout_id));
+        assert_eq!(started["delta"]["trial_id"], json!(trial_id));
+        assert_eq!(terminal["item"]["rolloutId"], json!(rollout_id));
+        assert_eq!(terminal["item"]["trialId"], json!(trial_id));
         mock.task.abort();
     }
 
     #[tokio::test]
     async fn identical_frames_deduplicate_without_losing_a_step() {
         let (svc, run_id, mock) = run_craftax(
-            CraftaxMockOptions { identical_frames: true, ..Default::default() },
+            CraftaxMockOptions {
+                identical_frames: true,
+                ..Default::default()
+            },
             "",
         )
         .await;
@@ -5137,7 +8170,7 @@ max_total_rollouts = 1
             .filter(|event| kind_of(event) == "frame")
             .filter_map(|event| {
                 event
-                    .pointer("/delta/containerEvent/payload/media/casDigest")
+                    .pointer("/delta/container_event/payload/media/casDigest")
                     .and_then(Value::as_str)
                     .map(str::to_string)
             })
@@ -5145,30 +8178,59 @@ max_total_rollouts = 1
         // Thirteen logical frames in the timeline; one object on disk.
         assert_eq!(digests.len(), CRAFTAX_FRAMES);
         let unique: std::collections::BTreeSet<&String> = digests.iter().collect();
-        assert_eq!(unique.len(), 1, "identical PNGs did not collapse in the store");
+        assert_eq!(
+            unique.len(),
+            1,
+            "identical PNGs did not collapse in the store"
+        );
+        let run = svc.get(run_id).await.unwrap();
+        let relay = &run.summary["records"][0]["relay"];
+        assert_eq!(
+            relay["frameObservationsRetained"],
+            json!(CRAFTAX_FRAMES),
+            "logical frame observations remain on the timeline"
+        );
+        assert_eq!(
+            relay["uniqueFrameBlobs"],
+            json!(1),
+            "physical CAS objects are reported separately"
+        );
         mock.task.abort();
     }
 
     #[tokio::test]
     async fn a_corrupt_frame_is_refused_and_reported_rather_than_shown() {
         let (svc, run_id, mock) = run_craftax(
-            CraftaxMockOptions { corrupt_frame_step: Some(3), ..Default::default() },
+            CraftaxMockOptions {
+                corrupt_frame_step: Some(3),
+                ..Default::default()
+            },
             "",
         )
         .await;
         let events = relayed_events(&svc, &run_id).await;
         let refused: Vec<&Value> = container_events(&events)
             .into_iter()
-            .filter(|event| event.pointer("/delta/containerEvent/payload/mediaError").is_some())
+            .filter(|event| {
+                event
+                    .pointer("/delta/container_event/payload/mediaError")
+                    .is_some()
+            })
             .collect();
         assert_eq!(refused.len(), 1, "the corrupt frame was not refused");
         // The step is still in the timeline: the environment did render it.
         assert_eq!(count_kind(&events, "frame"), CRAFTAX_FRAMES);
         let degraded: Vec<&Value> = events
             .iter()
-            .filter(|event| event.get("type").and_then(Value::as_str) == Some("eval.trial.degraded"))
+            .filter(|event| {
+                event.get("type").and_then(Value::as_str) == Some("eval.trial.degraded")
+            })
             .collect();
-        assert_eq!(degraded.len(), 1, "a refused frame produced no degradation receipt");
+        assert_eq!(
+            degraded.len(),
+            1,
+            "a refused frame produced no degradation receipt"
+        );
         assert_eq!(degraded[0]["delta"]["dropped"], json!(1));
         let run = svc.get(run_id.clone()).await.unwrap();
         let record = run.summary.pointer("/records/0").cloned().unwrap();
@@ -5180,7 +8242,10 @@ max_total_rollouts = 1
     #[tokio::test]
     async fn a_redirected_frame_is_never_followed() {
         let (svc, run_id, mock) = run_craftax(
-            CraftaxMockOptions { redirect_frame_step: Some(2), ..Default::default() },
+            CraftaxMockOptions {
+                redirect_frame_step: Some(2),
+                ..Default::default()
+            },
             "",
         )
         .await;
@@ -5189,7 +8254,7 @@ max_total_rollouts = 1
             .into_iter()
             .find_map(|event| {
                 event
-                    .pointer("/delta/containerEvent/payload/mediaError/detail")
+                    .pointer("/delta/container_event/payload/mediaError/detail")
                     .and_then(Value::as_str)
                     .map(str::to_string)
             })
@@ -5201,7 +8266,10 @@ max_total_rollouts = 1
     #[tokio::test]
     async fn an_oversized_frame_is_refused_by_the_declared_budget() {
         let (svc, run_id, mock) = run_craftax(
-            CraftaxMockOptions { oversize_frame_step: Some(1), ..Default::default() },
+            CraftaxMockOptions {
+                oversize_frame_step: Some(1),
+                ..Default::default()
+            },
             "[media]\nmax_frame_bytes = 4096\n",
         )
         .await;
@@ -5210,7 +8278,7 @@ max_total_rollouts = 1
             .into_iter()
             .find_map(|event| {
                 event
-                    .pointer("/delta/containerEvent/payload/mediaError/detail")
+                    .pointer("/delta/container_event/payload/mediaError/detail")
                     .and_then(Value::as_str)
                     .map(str::to_string)
             })
@@ -5231,7 +8299,9 @@ max_total_rollouts = 1
         assert_eq!(
             container_events(&events)
                 .into_iter()
-                .filter(|event| event.pointer("/delta/containerEvent/payload/media").is_some())
+                .filter(|event| event
+                    .pointer("/delta/container_event/payload/media")
+                    .is_some())
                 .count(),
             0
         );
@@ -5253,7 +8323,7 @@ max_total_rollouts = 1
         assert_eq!(count_kind(&events, "frame"), CRAFTAX_FRAMES);
         for event in container_events(&events) {
             let Some(digest) = event
-                .pointer("/delta/containerEvent/payload/media/casDigest")
+                .pointer("/delta/container_event/payload/media/casDigest")
                 .and_then(Value::as_str)
             else {
                 continue;
@@ -5271,7 +8341,7 @@ max_total_rollouts = 1
             .into_iter()
             .find_map(|event| {
                 event
-                    .pointer("/delta/containerEvent/payload/media/casDigest")
+                    .pointer("/delta/container_event/payload/media/casDigest")
                     .and_then(Value::as_str)
                     .map(str::to_string)
             })
@@ -5287,7 +8357,10 @@ max_total_rollouts = 1
         assert_eq!(granted.media_type, "image/png");
         assert_eq!(granted.width, Some(8));
         assert_eq!(granted.step.is_some(), true);
-        assert!(svc.read_media_bytes(&granted).unwrap().starts_with(b"\x89PNG\r\n\x1a\n"));
+        assert!(svc
+            .read_media_bytes(&granted)
+            .unwrap()
+            .starts_with(b"\x89PNG\r\n\x1a\n"));
 
         // A different run is not, even though the object is in the same store.
         // This is the whole gate: possession of a digest is not authority.
@@ -5306,15 +8379,24 @@ max_total_rollouts = 1
 
         // Anything that is not a SHA-256 is rejected before it reaches the
         // store, so a producer's 16-character label cannot become a lookup.
-        assert!(svc.granted_run_media(&run_id, "4e27ac3b1f0a9d55").await.is_err());
-        assert!(svc.granted_run_media(&run_id, "../../etc/passwd").await.is_err());
+        assert!(svc
+            .granted_run_media(&run_id, "4e27ac3b1f0a9d55")
+            .await
+            .is_err());
+        assert!(svc
+            .granted_run_media(&run_id, "../../etc/passwd")
+            .await
+            .is_err());
         mock.task.abort();
     }
 
     #[tokio::test]
     async fn identical_frames_share_one_grant_across_every_step_that_rendered_them() {
         let (svc, run_id, mock) = run_craftax(
-            CraftaxMockOptions { identical_frames: true, ..Default::default() },
+            CraftaxMockOptions {
+                identical_frames: true,
+                ..Default::default()
+            },
             "",
         )
         .await;
@@ -5323,7 +8405,7 @@ max_total_rollouts = 1
             .into_iter()
             .find_map(|event| {
                 event
-                    .pointer("/delta/containerEvent/payload/media/casDigest")
+                    .pointer("/delta/container_event/payload/media/casDigest")
                     .and_then(Value::as_str)
                     .map(str::to_string)
             })
@@ -5347,7 +8429,167 @@ max_total_rollouts = 1
             .await
             .unwrap();
         assert_eq!(rows, 1);
-        assert!(svc.granted_run_media(&run_id, &digest).await.unwrap().is_some());
+        assert!(svc
+            .granted_run_media(&run_id, &digest)
+            .await
+            .unwrap()
+            .is_some());
         mock.task.abort();
+    }
+
+    #[test]
+    fn terminal_trace_requires_every_native_frame_step() {
+        let terminal = json!({"steps": 3});
+        let complete = json!({"importedFrameSteps": [0, 1, 2, 3]});
+        verify_complete_native_frame_trace(
+            &terminal,
+            &complete,
+            "roll_complete",
+            FrameTraceMode::SealedComplete,
+        )
+        .unwrap();
+
+        let incomplete = json!({"importedFrameSteps": [0]});
+        let error =
+            verify_complete_native_frame_trace(
+                &terminal,
+                &incomplete,
+                "roll_sparse",
+                FrameTraceMode::SealedComplete,
+            )
+            .unwrap_err();
+        assert!(format!("{error:#}").contains("full_trace_frame_coverage_incomplete"));
+        assert!(format!("{error:#}").contains("1 of 4 required native frame steps"));
+    }
+
+    #[test]
+    fn terminal_trace_deduplicates_identical_frame_steps_not_observations() {
+        let terminal = json!({"steps": 2});
+        let imported = json!({"importedFrameSteps": [0, 1, 1, 2]});
+        verify_complete_native_frame_trace(
+            &terminal,
+            &imported,
+            "roll_duplicate_blob",
+            FrameTraceMode::SealedComplete,
+        )
+        .unwrap();
+
+        let partial = json!({"importedFrameSteps": [0, 1, 2]});
+        verify_complete_native_frame_trace(
+            &json!({"steps": 20, "lastObservedStep": 2}),
+            &partial,
+            "roll_partial",
+            FrameTraceMode::SealedPartial {
+                last_pre_cancellation_step: 2,
+            },
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn required_trace_gate_rejects_best_effort_import_failures() {
+        let terminal = json!({"steps": 2});
+        let unavailable = json!({
+            "imported": false,
+            "error": "container was stopped before import",
+        });
+        let error = verify_required_sealed_trace(&terminal, &unavailable, "roll_missing")
+            .unwrap_err();
+        assert!(format!("{error:#}").contains("required_trace_import_failed"));
+
+        let complete = json!({
+            "imported": true,
+            "sourceKind": "container_bundle",
+            "trusted": true,
+            "inspectable": true,
+            "bundleDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "traces": [{
+                "traceId": "trace_complete",
+                "digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            }],
+            "provenanceBinding": {
+                "imageDigest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+                "producerSourceRevision": "containers@abc123",
+                "traceDigest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                "bundleDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            },
+            "importedFrameSteps": [0, 1, 2],
+        });
+        verify_required_sealed_trace(&terminal, &complete, "roll_complete").unwrap();
+    }
+
+    #[test]
+    fn aggregates_exclude_scores_without_a_valid_terminal_outcome() {
+        let records = vec![
+            json!({
+                "pool": "train",
+                "status": "completed",
+                "reward": 1.0,
+                "evaluatorOutcome": {"status": "scored", "reward": 1.0},
+            }),
+            json!({
+                "pool": "train",
+                "status": "failed",
+                "reward": 99.0,
+                "evaluatorOutcome": {"status": "scored", "reward": 99.0},
+                "evidenceOutcome": {"status": "failed"},
+            }),
+        ];
+        assert_eq!(mean_for_pool(&records, "train"), Some(1.0));
+        assert_eq!(mean_reward(&records), Some(1.0));
+    }
+
+    #[test]
+    fn rollout_facts_distinguish_authoritative_empty_values_from_unavailable() {
+        let mut reported = json!({
+            "usage": {
+                "calls": 3,
+                "prompt_tokens": 10,
+                "completion_tokens": 2,
+                "cost_usd": 0.25,
+            },
+            "steps": 4,
+            "checkpointAchievements": [],
+            "sealedTrace": {"importedFrameSteps": [0, 1, 2, 3, 4]},
+        });
+        attach_reported_facts(&mut reported);
+        assert_eq!(reported["reportedFacts"]["calls"]["value"], json!(3));
+        assert_eq!(reported["reportedFacts"]["steps"]["value"], json!(4));
+        assert_eq!(reported["reportedFacts"]["tokens"]["value"], json!(12));
+        assert_eq!(reported["reportedFacts"]["costUsd"]["value"], json!(0.25));
+        assert_eq!(
+            reported["reportedFacts"]["achievements"]["value"],
+            json!([])
+        );
+        assert_eq!(reported["reportedFacts"]["frames"]["value"], json!(5));
+        assert_eq!(
+            reported["reportedFacts"]["achievements"]["source"],
+            json!("retained_event_log")
+        );
+        assert_eq!(
+            reported["reportedFacts"]["frames"]["source"],
+            json!("trusted_trace_v5")
+        );
+        assert!(
+            ["calls", "steps", "tokens", "costUsd", "achievements", "frames"]
+                .iter()
+                .all(|name| reported["reportedFacts"][name]["unavailableReason"].is_null())
+        );
+
+        let mut missing = json!({});
+        attach_reported_facts(&mut missing);
+        assert_eq!(missing["reportedFacts"]["calls"]["value"], Value::Null);
+        assert_eq!(
+            missing["reportedFacts"]["calls"]["unavailableReason"],
+            json!("calls_not_reported")
+        );
+        assert_eq!(
+            missing["reportedFacts"]["achievements"]["unavailableReason"],
+            json!("achievements_not_reported")
+        );
+        assert_eq!(
+            missing["reportedFacts"]["frames"]["unavailableReason"],
+            json!("frames_not_retained")
+        );
     }
 }

@@ -17,6 +17,8 @@ pub struct AppError {
     pub message: String,
     /// Developer-facing text. Keep out of user toasts.
     pub detail: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub failure: Option<crate::platform::failure::FailureView>,
 }
 
 pub const CODE_INTERNAL: &str = "internal";
@@ -36,6 +38,7 @@ impl AppError {
             code: code.into(),
             message: message.clone(),
             detail: message,
+            failure: None,
         }
     }
 
@@ -44,10 +47,27 @@ impl AppError {
             code: CODE_INTERNAL.into(),
             message: error.to_string(),
             detail: format!("{error:?}"),
+            failure: None,
         }
     }
 
-    pub fn message(message: impl Into<String>) -> Self {
+    pub fn from_view(view: crate::platform::failure::FailureView) -> Self {
+        Self {
+            code: view.code.clone(),
+            message: view.message.clone(),
+            detail: view.diagnostic_reference.clone(),
+            failure: Some(view),
+        }
+    }
+
+    pub fn from_occurrence(failure: &crate::platform::failure::OperationalFailure) -> Self {
+        Self::from_view(crate::platform::failure::FailureView::from_occurrence(failure))
+    }
+
+    /// Boundary helper for remaining untyped command edges. New code must raise
+    /// a `FailureKind` instead; `scripts/check-failure-runtime.sh` rejects new
+    /// call sites outside `error.rs`.
+    pub fn untyped(message: impl Into<String>) -> Self {
         Self::coded(CODE_INTERNAL, message)
     }
 
@@ -105,6 +125,30 @@ impl From<anyhow::Error> for AppError {
             return Self::coded(CODE_DATABASE_LOCKED, error.to_string())
                 .with_detail(format!("{error:?}"));
         }
+        if error_is::<StructuredFailure>(&error) {
+            if let Some(failure) = error
+                .chain()
+                .find_map(|cause| cause.downcast_ref::<StructuredFailure>())
+            {
+                return Self {
+                    code: failure.code.to_string(),
+                    message: failure.message.clone(),
+                    detail: failure.to_json().to_string(),
+                    failure: None,
+                };
+            }
+        }
+        if let Some(failure) = error
+            .chain()
+            .find_map(|cause| cause.downcast_ref::<crate::secrets::lease::CredentialError>())
+        {
+            return Self {
+                code: failure.code.clone(),
+                message: failure.message.clone(),
+                detail: serde_json::to_string(failure).unwrap_or_else(|_| failure.to_string()),
+                failure: None,
+            };
+        }
         Self::internal(error)
     }
 }
@@ -142,18 +186,6 @@ impl From<tauri_plugin_opener::Error> for AppError {
 impl From<std::net::AddrParseError> for AppError {
     fn from(error: std::net::AddrParseError) -> Self {
         Self::invalid_argument(error.to_string()).with_detail(format!("{error:?}"))
-    }
-}
-
-impl From<String> for AppError {
-    fn from(message: String) -> Self {
-        Self::message(message)
-    }
-}
-
-impl From<&str> for AppError {
-    fn from(message: &str) -> Self {
-        Self::message(message)
     }
 }
 
@@ -250,6 +282,13 @@ impl StructuredFailure {
             "retryable": self.retryable,
         });
         if !self.details.is_null() {
+            if let Some(fields) = self.details.as_object() {
+                for (key, value) in fields {
+                    if !body.as_object().is_some_and(|object| object.contains_key(key)) {
+                        body[key] = value.clone();
+                    }
+                }
+            }
             body["details"] = self.details.clone();
         }
         body

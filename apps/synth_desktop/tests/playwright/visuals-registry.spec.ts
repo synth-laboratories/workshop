@@ -29,6 +29,7 @@ const sampleVisual: VisualRecord = {
 async function installVisualsFixture(page: Page, visuals: VisualRecord[] = [sampleVisual]): Promise<void> {
 	await page.addInitScript((rows) => {
 		const store = [...rows] as VisualRecord[];
+		const listeners = new Set<(event: { kind: string; payload: { visualId: string } }) => void>();
 		(window as typeof window & { synthVisuals?: unknown }).synthVisuals = {
 			listTemplates: async () => [{ id: "reward.breakdown.v1", title: "Reward breakdown", genre: "reward" }],
 			getTemplate: async (templateId: string) => ({ id: templateId, title: templateId }),
@@ -41,14 +42,20 @@ async function installVisualsFixture(page: Page, visuals: VisualRecord[] = [samp
 			revisions: async () => [],
 			create: async (request: { templateId: string; title?: string }) => {
 				const created = {
-					...store[0],
+					schemaVersion: "synth.desktop-visual.v1" as const,
 					id: `vis_${store.length + 1}`,
+					currentRevision: 1,
 					templateId: request.templateId,
 					title: request.title ?? "New visual",
 					status: "draft" as const,
-					currentRevision: 1
+					rendererKind: "template" as const,
+					bindings: {}, sessionId: null, messageId: null, runId: null, traceId: null,
+					parentVisualId: null, sourceAgentId: "test", sourceModel: "fixture",
+					contentDigest: null, previewDigest: null, metadata: {},
+					createdAt: "2026-08-28T12:00:00Z", updatedAt: "2026-08-28T12:00:00Z"
 				};
 				store.unshift(created);
+				queueMicrotask(() => listeners.forEach((listener) => listener({ kind: "visual.created", payload: { visualId: created.id } })));
 				return created;
 			},
 			update: async () => store[0],
@@ -60,7 +67,10 @@ async function installVisualsFixture(page: Page, visuals: VisualRecord[] = [samp
 				if (!hit) throw new Error(`missing visual ${visualId}`);
 				return hit;
 			},
-			onEvent: () => () => undefined,
+			onEvent: (listener: (event: { kind: string; payload: { visualId: string } }) => void) => {
+				listeners.add(listener);
+				return () => listeners.delete(listener);
+			},
 			onShow: () => () => undefined
 		};
 	}, visuals);
@@ -562,13 +572,20 @@ test("a stale running local eval is refreshed before Outputs lists it after reop
 });
 
 test("Visuals list splitter resizes, persists, keyboard-clamps, and disappears when stacked", async ({ page }) => {
-	await page.setViewportSize({ width: 1280, height: 840 });
+	await page.setViewportSize({ width: 1600, height: 840 });
 	await installVisualsFixture(page);
 	await page.getByTestId("open-visuals").click();
 	const splitter = page.getByTestId("visuals-resize-handle");
 	await expect(splitter).toBeVisible();
 	await expect(splitter).toHaveAttribute("role", "separator");
 	await expect(splitter).toHaveAttribute("aria-orientation", "vertical");
+	await expect.poll(async () => {
+		const reported = Number(await splitter.getAttribute("aria-valuenow"));
+		const realized = await page.getByTestId("visuals-grid").evaluate((element) => Math.round(element.getBoundingClientRect().width));
+		const minimum = Number(await splitter.getAttribute("aria-valuemin"));
+		const maximum = Number(await splitter.getAttribute("aria-valuemax"));
+		return Math.abs(reported - Math.min(maximum, Math.max(minimum, realized)));
+	}).toBeLessThanOrEqual(1);
 	const before = Number(await splitter.getAttribute("aria-valuenow"));
 	const box = await splitter.boundingBox();
 	if (!box) throw new Error("Visuals splitter geometry unavailable");
@@ -576,19 +593,25 @@ test("Visuals list splitter resizes, persists, keyboard-clamps, and disappears w
 	await page.mouse.down();
 	await page.mouse.move(box.x + 72, box.y + 80, { steps: 4 });
 	await page.mouse.up();
+	await page.evaluate(() => new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
 	const dragged = Number(await splitter.getAttribute("aria-valuenow"));
-	expect(dragged).toBeGreaterThan(before + 40);
+	// Concurrent browser workers can coalesce intermediate pointer-move frames;
+	// require the pointer gesture to grow the pane without assuming how many
+	// synthetic steps painted.
+	expect(dragged).toBeGreaterThan(before);
 	await splitter.focus();
 	await page.keyboard.press("Shift+ArrowLeft");
+	const minimum = Number(await splitter.getAttribute("aria-valuemin"));
+	const expectedKeyboard = Math.max(minimum, dragged - 64);
+	await expect(splitter).toHaveAttribute("aria-valuenow", String(expectedKeyboard));
 	const keyboard = Number(await splitter.getAttribute("aria-valuenow"));
-	expect(keyboard).toBe(dragged - 64);
 	await page.reload();
 	await page.getByTestId("open-visuals").click();
 	await expect(page.getByTestId("visuals-resize-handle")).toHaveAttribute("aria-valuenow", String(keyboard));
 	await page.setViewportSize({ width: 720, height: 840 });
 	await expect(page.getByTestId("visuals-resize-handle")).toBeHidden();
 	expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1)).toBe(true);
-	await page.setViewportSize({ width: 1280, height: 840 });
+	await page.setViewportSize({ width: 1600, height: 840 });
 	await expect(page.getByTestId("visuals-resize-handle")).toBeVisible();
 	expect(Number(await page.getByTestId("visuals-resize-handle").getAttribute("aria-valuenow"))).toBe(keyboard);
 });

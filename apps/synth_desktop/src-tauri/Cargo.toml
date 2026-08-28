@@ -21,6 +21,7 @@ bytes = "1"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std", "serde"] }
 dirs = "6"
 futures-util = "0.3"
+tokio-tungstenite = "0.30"
 fs2 = "0.4"
 # The credential proxy: a loopback Responses endpoint that holds the Synth key
 # so `codex app-server` never receives it. All three already build as reqwest

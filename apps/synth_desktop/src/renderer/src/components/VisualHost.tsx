@@ -1,4 +1,3 @@
-// @ts-nocheck — P0-1 generated protocol is stricter than prior handwritten DTOs; UI follow-up is out of specta-cutover file ownership.
 import { Component, useEffect, useMemo, useRef, useState, type ComponentType, type ErrorInfo, type MouseEvent, type ReactNode } from "react";
 import { formatVisualAdmissionIdentity, type ArtifactRef } from "../types/landing";
 import { VisualOpsLine } from "./VisualOpsLine";
@@ -41,6 +40,9 @@ import { SystemsDynamicVisual } from "./SystemsDynamicVisual";
 import type { SubagentState } from "../runtime/sessionView";
 import { bindingAuthorityKey } from "../runtime/visualRevisionState";
 import { openTraceReference, VISUAL_REFERENCE_ERROR_EVENT, VISUAL_REFERENCE_OPENED_EVENT } from "../runtime/visualReferences";
+import { previewVariantForTemplate, SEALED_TRACE_WORKBENCH_TEMPLATES } from "../runtime/templatePresentation";
+import { optimizerRunIdFromBindings } from "../runtime/visualBindings";
+import { projectVisualRunLifecycle } from "../runtime/visualRunLifecycle";
 
 type ShellProps = {
 	title?: string;
@@ -50,6 +52,12 @@ type ShellProps = {
 };
 
 export function artifactFromVisualRecord(visual: VisualRecord): ArtifactRef {
+	const bindings = visual.bindings && typeof visual.bindings === "object"
+		? visual.bindings as Record<string, unknown>
+		: undefined;
+	const metadata = visual.metadata && typeof visual.metadata === "object"
+		? visual.metadata as Record<string, unknown>
+		: undefined;
 	return {
 		id: visual.id,
 		kind: "report",
@@ -59,22 +67,15 @@ export function artifactFromVisualRecord(visual: VisualRecord): ArtifactRef {
 		revision: visual.currentRevision,
 		contentDigest: visual.contentDigest ?? undefined,
 		rendererKind: visual.rendererKind,
-		bindings: visual.bindings,
-		metadata: visual.metadata,
+		bindings,
+		metadata,
 		status: visual.status,
 		sessionId: visual.sessionId ?? undefined,
 		ownerSessionId: visual.sessionId ?? undefined,
-		runId: visual.runId ?? undefined,
+		runId: optimizerRunIdFromBindings(visual.bindings) ?? visual.runId ?? undefined,
 		traceId: visual.traceId ?? undefined,
-		summary: typeof visual.metadata?.summary === "string" ? visual.metadata.summary : undefined,
-		preview: {
-			variant:
-				visual.templateId.includes("scrub") || visual.templateId.includes("rollout")
-					? "craftax_frame"
-					: visual.templateId.includes("craftax") || visual.templateId.includes("eval_matrix")
-						? "craftax_pareto"
-						: "generic"
-		}
+		summary: typeof metadata?.summary === "string" ? metadata.summary : undefined,
+		preview: { variant: previewVariantForTemplate(visual.templateId) }
 	};
 }
 
@@ -1026,11 +1027,14 @@ function TemplateVisualHost({ artifact }: { artifact: ArtifactRef }) {
 		let postedReady = false;
 		return subscribeToRun(optimizerRunId, (snapshot) => {
 			const projection = projectRunProgress(snapshot, Date.now());
-			setProgressView(projection ? progressAgreement(projection) : null);
+			const agreement = projection ? progressAgreement(projection) : null;
+			setProgressView(agreement);
 			const lanes = snapshot.run ? splitSnapshotEvents(snapshot.run, snapshot.events) : null;
 			const payload = snapshot.run && lanes
 				? {
 					run: snapshot.run,
+					runViewV2: snapshot.viewV2,
+					runProgress: agreement,
 					events: lanes.terminalEvents,
 					enrichmentEvents: lanes.enrichmentEvents,
 					terminalCursor: lanes.terminalCursor,
@@ -1047,7 +1051,7 @@ function TemplateVisualHost({ artifact }: { artifact: ArtifactRef }) {
 			if (snapshot.state === "interrupted" || snapshot.state === "failed") {
 				if (payload) setOptimizerPayload(payload);
 				setOptimizerLoadError(snapshot.error ?? "Optimizer stream interrupted");
-				setConnectionState("interrupted");
+				setConnectionState(snapshot.state);
 				reportDiagnostic({
 					...visualIdentity,
 					optimizerRunId,
@@ -1112,7 +1116,9 @@ function TemplateVisualHost({ artifact }: { artifact: ArtifactRef }) {
 	// to the same shell that is already rendering the live fold.
 	useEffect(() => {
 		let cancelled = false;
-		if (artifact.templateId !== "craftax.trace_workbench.v1" || !bridges.inventory) {
+		// Keyed off the trace-workbench template set, not one hardcoded id, so
+		// the family-agnostic workstation resolves its sealed trials the same way.
+		if (!artifact.templateId || !SEALED_TRACE_WORKBENCH_TEMPLATES.has(artifact.templateId) || !bridges.inventory) {
 			setSealedTraceProjections([]);
 			return () => { cancelled = true; };
 		}
@@ -1141,7 +1147,7 @@ function TemplateVisualHost({ artifact }: { artifact: ArtifactRef }) {
 		void Promise.all(refs.map(async (ref) => {
 			const resolved = await bridges.inventory!.resolveTraceProjection(ref.digest, "rollout-inspector");
 			if (resolved.traceDigest !== ref.digest || resolved.projectionKind !== "rollout-inspector") {
-				throw new Error(`Sealed Craftax trace projection identity changed for ${ref.digest}`);
+				throw new Error(`Sealed trace projection identity changed for ${ref.digest}`);
 			}
 			return { ...ref, projection: resolved.payload };
 		})).then((rows) => {
@@ -1156,7 +1162,7 @@ function TemplateVisualHost({ artifact }: { artifact: ArtifactRef }) {
 				component: "visual-host",
 				event: "visual.sealed_trace.resolve_failed",
 				code: DIAGNOSTIC_CODES.visualBindingUnresolved,
-				message: publicError(reason, "Sealed Craftax trace projection failed")
+				message: publicError(reason, "Sealed trace projection failed")
 			});
 		});
 		return () => { cancelled = true; };
@@ -1167,6 +1173,8 @@ function TemplateVisualHost({ artifact }: { artifact: ArtifactRef }) {
 	useEffect(() => {
 		// Best-effort companion run for the GEPA comparison card (Luna vs Sol):
 		// the most recent sibling GEPA run sharing the recipe prefix of the id.
+		// Comparison state comes from the same backend projection as the primary
+		// run; this surface never reconstructs a sibling from raw events.
 		if (!boundRunId || !bridges.optimizers) {
 			setComparisonPayload(null);
 			return;
@@ -1180,20 +1188,8 @@ function TemplateVisualHost({ artifact }: { artifact: ArtifactRef }) {
 					.filter((item) => item.id !== boundRunId && prefixOf(item.id) === prefixOf(boundRunId))
 					.sort((a, b) => Date.parse(b.createdAt ?? "") - Date.parse(a.createdAt ?? ""))[0];
 				if (!sibling) return;
-				const events: unknown[] = [];
-				let after = 0;
-				for (;;) {
-					const page = await bridges.optimizers!.eventsAfter(sibling.id, after, 500);
-					if (!Array.isArray(page) || page.length === 0) break;
-					events.push(...page);
-					const last = page[page.length - 1] as { sequenceNumber?: number; sequence_number?: number };
-					const next = Number(last.sequenceNumber ?? last.sequence_number ?? 0);
-					if (!next || next <= after || page.length < 500) break;
-					after = next;
-				}
-				if (!cancelled && events.length > 0) {
-					setComparisonPayload({ run: sibling, events });
-				}
+				const runViewV2 = await bridges.optimizers!.runViewV2(sibling.id);
+				if (!cancelled) setComparisonPayload({ run: sibling, runViewV2 });
 			} catch {
 				// The comparison card is optional; the primary run view stands alone.
 			}
@@ -1231,6 +1227,28 @@ function TemplateVisualHost({ artifact }: { artifact: ArtifactRef }) {
 			traceId={typeof traceBindings[0]?.source === "string" ? traceBindings[0].source : undefined}
 		/>;
 	}
+	if (optimizerRunId && !optimizerPayload) {
+		if (optimizerLoadError) {
+			return <VisualInvalidState
+				title="Run evidence unavailable"
+				detail={optimizerLoadError}
+				remediation="Retry after Workshop reconnects to the durable optimizer journal."
+			/>;
+		}
+		return (
+			<div className="visual-optimizer-hydrating" role="status" aria-live="polite" data-testid="visual-optimizer-hydrating">
+				<div className="visual-optimizer-hydrating-copy">
+					<strong>Restoring durable run evidence…</strong>
+					<span>Metrics and rollouts will appear together after the journal is hydrated.</span>
+				</div>
+				<div className="visual-optimizer-skeleton" aria-hidden="true">
+					<span />
+					<span />
+					<span />
+				</div>
+			</div>
+		);
+	}
 	if (!Shell) return <p className="visual-loading">Loading visual shell…</p>;
 	if (
 		consumeInjectedRendererCrash(
@@ -1244,10 +1262,16 @@ function TemplateVisualHost({ artifact }: { artifact: ArtifactRef }) {
 	const resolvedProps = selected.projection ?? { ...synchronouslyResolved.props, ...traceResolution.props };
 	const showConnection = Boolean(optimizerPayload || optimizerLoadError || connectionState !== "loading");
 	const boundEvents = Array.isArray(optimizerPayload?.events) ? optimizerPayload.events as unknown[] : [];
+	const runLifecycle = projectVisualRunLifecycle(
+		optimizerPayload?.run as Parameters<typeof projectVisualRunLifecycle>[0],
+		progressView
+	);
 	const boundStatus = typeof (optimizerPayload?.run as { status?: string } | undefined)?.status === "string"
 		? (optimizerPayload?.run as { status?: string }).status ?? ""
 		: "";
-	const transportTerminal = connectionState === "terminal" || ["completed", "failed", "cancelled", "succeeded"].includes(boundStatus);
+	const transportTerminal = runLifecycle?.terminal === true
+		|| connectionState === "terminal"
+		|| ["completed", "failed", "cancelled", "succeeded"].includes(boundStatus);
 	return (
 		<div
 			data-testid="visual-template-shell"
@@ -1296,6 +1320,7 @@ function TemplateVisualHost({ artifact }: { artifact: ArtifactRef }) {
 				replay={replayClient}
 				media={mediaClient}
 				sealedTraceProjections={sealedTraceProjections}
+				runLifecycle={runLifecycle}
 				replayMissingTransport={replay.missingTransport}
 				visualId={artifact.visualId ?? artifact.id}
 				revision={typeof artifact.revision === "number" ? artifact.revision : null}
@@ -1533,7 +1558,53 @@ function restoreFocusAfterVisualPaneClose() {
 	next.focus();
 }
 
+function productOwnedPrimaryOptimizerRunId(artifact: ArtifactRef): string | null {
+	const runId = optimizerRunIdFromBindings(artifact.bindings);
+	if (!runId || artifact.metadata?.optimizerRunId !== runId) return null;
+	const role = typeof artifact.metadata?.optimizerVisualRole === "string"
+		? artifact.metadata.optimizerVisualRole
+		: null;
+	const semantics = typeof artifact.metadata?.semantics === "string"
+		? artifact.metadata.semantics
+		: null;
+	if (role === "trace_workbench" || semantics === "baseline_eval_trace") return null;
+	return role === "primary" || semantics === "baseline_eval" || typeof artifact.metadata?.algorithmId === "string"
+		? runId
+		: null;
+}
+
+type OptimizerSealGate = { ready: boolean; reason: string | null };
+
+function optimizerSealGateFromPane(host: HTMLElement): OptimizerSealGate {
+	const shell = host.querySelector<HTMLElement>('[data-testid="visual-template-shell"]');
+	const evidence = host.querySelector<HTMLElement>("[data-run-evidence-state]");
+	if (!shell || !evidence) {
+		return { ready: false, reason: "Seal available after durable run evidence finishes loading." };
+	}
+	const state = evidence.dataset.runEvidenceState;
+	if (state === "rejected") {
+		const sealed = Number(evidence.dataset.runSealedTraces ?? 0);
+		return {
+			ready: false,
+			reason: `Seal unavailable — run failed with ${Number.isFinite(sealed) ? sealed : 0} sealed traces (evidence rejected).`
+		};
+	}
+	if (shell.dataset.visualTerminal !== "true") {
+		return { ready: false, reason: "Seal available after the optimizer run reaches a durable terminal state." };
+	}
+	if (state !== "accepted") {
+		return { ready: false, reason: `Seal unavailable — durable run evidence is ${state ?? "still loading"}, not complete.` };
+	}
+	return { ready: true, reason: null };
+}
+
 export function VisualPane({ artifact, onClose }: { artifact: ArtifactRef; onClose: () => void }) {
+	const paneRef = useRef<HTMLElement>(null);
+	const primaryOptimizerRunId = productOwnedPrimaryOptimizerRunId(artifact);
+	const [optimizerSealGate, setOptimizerSealGate] = useState<OptimizerSealGate>(() => ({
+		ready: false,
+		reason: primaryOptimizerRunId ? "Seal available after durable run evidence finishes loading." : null
+	}));
 	const [expanded, setExpanded] = useState(false);
 	const [annotations, setAnnotations] = useState<VisualAnnotation[]>([]);
 	const [seals, setSeals] = useState<VisualSeal[]>([]);
@@ -1582,7 +1653,29 @@ export function VisualPane({ artifact, onClose }: { artifact: ArtifactRef; onClo
 	const visualId = artifact.visualId;
 	const revision = artifact.revision;
 	const qualityGate = artifact.metadata?.qualityGate as { ready?: boolean; revision?: number } | undefined;
-	const sealEligible = Boolean(visualId && revision && qualityGate?.ready && qualityGate.revision === revision);
+	const authoringGateReady = Boolean(qualityGate?.ready && qualityGate.revision === revision);
+	const sealEligible = Boolean(visualId && revision && (
+		primaryOptimizerRunId ? optimizerSealGate.ready : authoringGateReady
+	));
+	const sealDisabledReason = primaryOptimizerRunId
+		? optimizerSealGate.reason
+		: authoringGateReady
+			? null
+			: "Seal requires the E1 visual quality gate for this exact revision.";
+
+	useEffect(() => {
+		if (!primaryOptimizerRunId) {
+			setOptimizerSealGate({ ready: false, reason: null });
+			return;
+		}
+		const host = paneRef.current;
+		if (!host) return;
+		const read = () => setOptimizerSealGate(optimizerSealGateFromPane(host));
+		const observer = new MutationObserver(read);
+		observer.observe(host, { subtree: true, childList: true, attributes: true, attributeFilter: ["data-run-evidence-state", "data-run-sealed-traces", "data-visual-terminal"] });
+		read();
+		return () => observer.disconnect();
+	}, [artifact.revision, primaryOptimizerRunId]);
 
 	useEffect(() => {
 		let cancelled = false;
@@ -1731,6 +1824,7 @@ export function VisualPane({ artifact, onClose }: { artifact: ArtifactRef; onClo
 	const paneAlert = sharedUrlError ?? artifactError ?? (revisionSync?.error ? `Visual refresh failed · ${revisionSync.error}` : null);
 	return (
 		<aside
+			ref={paneRef}
 			className={`visual-pane${expanded ? " visual-pane-expanded" : ""}`}
 			data-testid="visual-pane"
 			aria-label={isSubagents ? "Subagents" : "Visual artifact"}
@@ -1780,13 +1874,14 @@ export function VisualPane({ artifact, onClose }: { artifact: ArtifactRef; onClo
 						Label{annotations.length ? ` · ${annotations.length}` : ""}
 					</button>
 					)}
+					{isSubagents || !sealDisabledReason ? null : <span className="visual-seal-disabled-reason" role="status">{sealDisabledReason}</span>}
 					{isSubagents ? null : (
 					<button
 						type="button"
 						className="visual-expand"
 						onClick={() => void sealCurrentRevision()}
 						disabled={!sealEligible || busy}
-						title={sealEligible ? "Seal this exact revision for offline use" : "Pass the E1 visual quality gate before sealing"}
+						title={sealEligible ? "Seal this exact revision for offline use" : sealDisabledReason ?? "Seal is unavailable"}
 					>
 						{busy ? "Working…" : "Seal"}
 					</button>

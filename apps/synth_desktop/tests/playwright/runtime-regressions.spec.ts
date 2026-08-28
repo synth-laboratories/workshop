@@ -1,5 +1,6 @@
 import type { Page } from "@playwright/test";
 import { expect, test } from "./browser.fixture";
+import { BROWSER_MODEL_CATALOG } from "../../src/renderer/src/runtime/modelCatalog";
 
 async function openSettings(page: Page) {
 	await page.getByTestId("account-menu-trigger").click();
@@ -44,7 +45,7 @@ async function installLagunaFixture(page: Page, phase: LagunaPhase): Promise<voi
 }
 
 async function installConfiguredOpenRouter(page: Page): Promise<void> {
-	await page.addInitScript(() => {
+	await page.addInitScript((catalog) => {
 		window.synthConfig = {
 			get: async () => ({
 				configPath: "/tmp/config.toml", envFile: "/tmp/.env", profile: "prod",
@@ -52,12 +53,14 @@ async function installConfiguredOpenRouter(page: Page): Promise<void> {
 				apiKeyConfigured: false, workerKeyConfigured: false,
 				openrouterApiKeyConfigured: true
 			}),
+			modelCatalog: async () => catalog,
+			refreshModelCatalog: async () => catalog,
 			update: async () => { throw new Error("unused"); },
 			listModelMultiAgent: async () => [], updateModelMultiAgent: async () => [],
 			getWorkspaceAccess: async () => ({ allowedRoots: [] }),
 			updateWorkspaceAccess: async () => ({ allowedRoots: [] })
 		};
-	});
+	}, BROWSER_MODEL_CATALOG);
 }
 
 test("native Laguna readiness overrides missing legacy runtime health", async ({ page }) => {
@@ -320,9 +323,10 @@ test("Settings identifies the exact running desktop build", async ({ page }) => 
 });
 
 test("Models lists only credentialed remote providers with pricing", async ({ page }) => {
-	await page.addInitScript(() => {
+	await page.addInitScript((catalog) => {
 		window.synthConfig = {
 			get: async () => ({ configPath: "/tmp/config.toml", envFile: "/tmp/.env", profile: "prod", backendUrl: "https://api.usesynth.ai", apiKeyEnv: "SYNTH_API_KEY", apiKeyConfigured: true, workerKeyConfigured: false, openrouterApiKeyConfigured: true }),
+			modelCatalog: async () => catalog, refreshModelCatalog: async () => catalog,
 			update: async () => { throw new Error("unused"); }, listModelMultiAgent: async () => [], updateModelMultiAgent: async () => [],
 			getWorkspaceAccess: async () => ({ allowedRoots: [] }), updateWorkspaceAccess: async () => ({ allowedRoots: [] })
 		};
@@ -334,7 +338,7 @@ test("Models lists only credentialed remote providers with pricing", async ({ pa
 				{ provider: "openrouter", modelId: "google/gemini-3.7-flash", inputUsdPerM: 0.375, outputUsdPerM: 1.875, cachedInputUsdPerM: 0.0375, cacheWriteUsdPerM: 0.02085 }
 			]
 		};
-	});
+	}, BROWSER_MODEL_CATALOG);
 	await page.reload();
 	await openSettings(page);
 	await page.getByRole("button", { name: "Models" }).click();
@@ -349,7 +353,7 @@ test("Models lists only credentialed remote providers with pricing", async ({ pa
 	await expect(models.getByTestId("authorized-model-openrouter-gemini-flash")).toContainText("$1.875");
 	await expect(models.getByTestId("authorized-model-synth-cloud-laguna-s")).toContainText("Plan");
 	const marks = models.locator(".authorized-model-mark");
-	await expect(marks).toHaveCount(6);
+	await expect(marks).toHaveCount(8);
 	const markBoxes = await marks.evaluateAll((elements) => elements.map((element) => {
 		const box = element.getBoundingClientRect();
 		return { width: box.width, height: box.height, centerX: box.left + box.width / 2 };
@@ -365,7 +369,7 @@ test("Models lists only credentialed remote providers with pricing", async ({ pa
 			return { fontSize: Number.parseFloat(style.fontSize), family: style.fontFamily };
 		})
 	);
-	expect(slugStyles).toHaveLength(6);
+	expect(slugStyles).toHaveLength(8);
 	for (const style of slugStyles) {
 		expect(style.fontSize, "model slugs stay subordinate to provider labels").toBeLessThanOrEqual(10);
 		expect(style.family).toMatch(/SFMono|Menlo|Monaco|Consolas|monospace/i);
@@ -863,7 +867,7 @@ test("changing providers mid-chat stays in the thread and switches on send", asy
 		threadId: "local-thread"
 	});
 	await expect.poll(() => page.evaluate(() => (window as typeof window & { __providerTurns: Array<{ sessionId: string; prompt: string; effort?: string }> }).__providerTurns.at(-1))).toMatchObject({ sessionId: "bound-local", prompt: "hello Luna", effort: "high" });
-	await expect.poll(() => page.evaluate(() => localStorage.getItem("synth.reasoningEffort"))).toBe("high");
+	await expect.poll(() => page.evaluate(() => localStorage.getItem("synth.models.openrouter-luna.reasoning"))).toBe("high");
 
 	await page.getByTestId("composer-model").click();
 	await page.getByTestId("composer-model-access-api").click();
@@ -1232,7 +1236,11 @@ test("native Codex deltas form one readable message with working and stop state"
 	await expect(page.getByTestId("workbench-side-panel")).toBeHidden();
 	await page.getByTestId("toggle-inference-rail").click();
 	await expect(page.getByTestId("workbench-side-panel")).toBeVisible();
-	const inferenceGeometry = await page.getByTestId("inference-panel").evaluate((panel) => {
+	// Composer clearance is deliberately published by a coalesced animation
+	// frame after the workbench grid mutates. Visibility can become true before
+	// that frame, so assert the settled geometry rather than sampling the one
+	// transient frame in which the reopened rail and old dock offsets coexist.
+	await expect.poll(() => page.getByTestId("inference-panel").evaluate((panel) => {
 		const rail = panel.parentElement!.getBoundingClientRect();
 		const panelRect = panel.getBoundingClientRect();
 		const composer = document.querySelector<HTMLElement>("[data-testid=composer]")!.getBoundingClientRect();
@@ -1242,8 +1250,7 @@ test("native Codex deltas form one readable message with working and stop state"
 			composerClearsRail: composer.right <= rail.left + 1,
 			overflow: document.documentElement.scrollWidth > window.innerWidth + 1
 		};
-	});
-	expect(inferenceGeometry).toEqual({ contained: true, hasInset: true, composerClearsRail: true, overflow: false });
+	})).toEqual({ contained: true, hasInset: true, composerClearsRail: true, overflow: false });
 });
 
 test("closed-model reasoning renders only a provider summary disclosure", async ({ page }) => {
@@ -1434,7 +1441,18 @@ test("native Codex tool use renders safe Poolside-style rows and a compact run s
 			baseUrl: "http://127.0.0.1:8098", taskFamily: "craftax-singleplayer",
 			lastRolloutId: "rollout-latest", health: { payload: { sessions: 2 } },
 			metadata: {
-				info: { lane: "rust", capabilities: ["rollout", "checkpoint", "task_catalog", "task_info"], action_names: ["noop", "left", "right", "do"] },
+				taskCatalogFreshness: { kind: "live", observedAt: "2026-08-09T10:00:00Z" },
+				interfaceFreshness: { kind: "live", observedAt: "2026-08-09T10:00:00Z" },
+				info: {
+					lane: "rust",
+					capabilities: {
+						protocol: "synth.container.live-eval.v1",
+						rollout_modes: ["blocking"],
+						policy_refs: [{ namespace: "nanohorizon", name: "glm-5.3-flash" }],
+						metadata: { retained: true }
+					},
+					action_names: ["noop", "left", "right", "do"]
+				},
 				taskCatalog: {
 					tasks: [{ task_id: "manual", name: "Craftax single-player", description: "Explore and survive.", default: true }],
 					instances: [
@@ -1448,9 +1466,34 @@ test("native Codex tool use renders safe Poolside-style rows and a compact run s
 			},
 			createdAt: "2026-08-09T10:00:00Z", updatedAt: "2026-08-09T10:00:00Z"
 		};
+		let probeCount = 0;
 		testWindow.synthInventory = {
 			getContainer: async () => craftax,
-			probeContainer: async () => craftax
+			probeContainer: async () => {
+				probeCount += 1;
+				if (probeCount === 1) return {
+					...craftax,
+					metadata: {
+						...craftax.metadata,
+						taskCatalog: {
+							...craftax.metadata.taskCatalog,
+							instances: [
+								...craftax.metadata.taskCatalog.instances,
+								{ task_instance_id: "craftax:test:3", task_id: "manual", split: "test", metadata: { output_label: "mine_stone", seed: 3 } }
+							]
+						}
+					}
+				};
+				return {
+					...craftax,
+					metadata: {
+						...craftax.metadata,
+						taskCatalog: { schema_version: "synth.container.task-catalog.v999", tasks: {}, instances: [] }
+					}
+				};
+			},
+			reconcileContainer: async () => craftax,
+			restartContainer: async () => craftax
 		};
 		testWindow.synthCodex = {
 			defaultWorkspace: async () => "/workspaces/default",
@@ -1504,7 +1547,12 @@ test("native Codex tool use renders safe Poolside-style rows and a compact run s
 	await expect(containerPane).toBeVisible();
 	await expect(containerPane).toContainText("Craftax Rust");
 	await expect(containerPane).toContainText("craftax-singleplayer");
-	await expect(containerPane).toContainText("2 active sessions");
+	await expect(containerPane).toContainText("2 sessions");
+	await expect(containerPane.locator(".container-chip-grid")).toContainText("protocol");
+	await expect(containerPane.locator(".container-chip-grid")).toContainText("rollout_modes:blocking");
+	await expect(containerPane.locator(".container-chip-grid")).toContainText("policy_refs:1");
+	await expect(containerPane.locator(".container-chip-grid")).toContainText("metadata");
+	await expect(containerPane).not.toContainText("[object Object]");
 	await expect(containerPane.getByRole("button", { name: /Craftax single-player/ })).toBeVisible();
 	await expect(containerPane).toContainText("Advance through the technology tree.");
 	await expect(containerPane).toContainText("achievements_unlocked");
@@ -1526,6 +1574,12 @@ test("native Codex tool use renders safe Poolside-style rows and a compact run s
 	await expect(containerPane).toContainText("collect_wood");
 	await containerPane.getByTestId("container-pane-expand").click();
 	await expect(page.locator(".workbench")).toHaveClass(/container-expanded/);
+	await containerPane.getByRole("button", { name: "Refresh", exact: true }).click();
+	await expect(containerPane).toContainText("1 of 3 instances");
+	await expect(containerPane.locator(".container-facts")).toContainText("Definitions1");
+	await expect(containerPane.locator(".container-facts")).toContainText("Instances3 live");
+	await containerPane.getByRole("button", { name: "Refresh", exact: true }).click();
+	await expect(containerPane.getByRole("alert")).toContainText("Task metadata error: invalid task catalog: unsupported schema_version");
 
 	await page.evaluate(() => {
 		const emit = (window as typeof window & { __emitToolCodex: (event: { sessionId: string; method: string; params: Record<string, unknown> }) => void }).__emitToolCodex;
@@ -1615,7 +1669,9 @@ test("approval modes configure new native sessions and pending requests resolve 
 			startTurn: async (sessionId: string) => ({ sessionId, threadId: "thread-approval", turnId: "turn-approval" }),
 			interrupt: async () => undefined,
 			resolveApproval: async (sessionId: string, approvalId: string, decision: string) => {
+				if (approvalId === "approval-paid-already") throw new Error(`approval is no longer pending: ${approvalId}`);
 				decisions.push({ sessionId, approvalId, decision });
+				if (approvalId === "approval-paid-1") return;
 				listener?.({ sessionId, method: decision === "reject" ? "approval.rejected" : "approval.granted", params: { approvalId, decision } });
 			},
 			close: async () => undefined,
@@ -1682,12 +1738,59 @@ test("approval modes configure new native sessions and pending requests resolve 
 	await expect(modal).toContainText("$2.45");
 	await expect(modal).toContainText("240");
 	await expect(page.locator(".approval-card")).toHaveCount(0);
-	await modal.getByRole("button", { name: "Approve with cap" }).click();
+	await modal.getByRole("button", { name: "Approve", exact: true }).click();
 	await expect(modal).toBeHidden();
 	expect(await page.evaluate(() => (window as typeof window & { __approvalDecisions: () => unknown[] }).__approvalDecisions())).toEqual([
 		{ sessionId, approvalId: "approval-1", decision: "once" },
 		{ sessionId, approvalId: "approval-paid-1", decision: "once" }
 	]);
+
+	await page.evaluate((id) => {
+		(window as typeof window & { __emitApproval: (event: { sessionId: string; method: string; params: Record<string, unknown> }) => void }).__emitApproval({
+			sessionId: id,
+			method: "approval.requested",
+			params: {
+				approvalId: "approval-credential-1",
+				kind: "credential_access",
+				provider: "openrouter",
+				purpose: "Issue a run-scoped Workshop proxy capability for recipe inline, run run-1; operations=chat.completions.create; maxCalls=50; maxCostUsd=2.45",
+				alwaysSupported: false
+			}
+		});
+	}, sessionId);
+	const credentialModal = page.getByTestId("credential-access-approval-modal");
+	await expect(credentialModal).toBeVisible();
+	await expect(credentialModal).toContainText("openrouter");
+	await expect(credentialModal).toContainText("Call cap50");
+	await expect(credentialModal).toContainText("Cost cap$2.45");
+	await expect(credentialModal.locator("dd").first()).toHaveCSS("color", "rgb(244, 246, 248)");
+	await expect(credentialModal).toContainText("never the credential value");
+	await credentialModal.getByRole("button", { name: "Allow once" }).click();
+	await expect(credentialModal).toBeHidden();
+	expect(await page.evaluate(() => (window as typeof window & { __approvalDecisions: () => unknown[] }).__approvalDecisions())).toEqual([
+		{ sessionId, approvalId: "approval-1", decision: "once" },
+		{ sessionId, approvalId: "approval-paid-1", decision: "once" },
+		{ sessionId, approvalId: "approval-credential-1", decision: "once" }
+	]);
+
+	await page.evaluate((id) => {
+		(window as typeof window & { __emitApproval: (event: { sessionId: string; method: string; params: Record<string, unknown> }) => void }).__emitApproval({
+			sessionId: id,
+			method: "approval.requested",
+			params: {
+				approvalId: "approval-paid-already",
+				kind: "paid_compute",
+				operation: "optimizer.evaluation.inline.start",
+				requestedCap: { maxCostUsdMicros: 2450000, maxRollouts: 5 },
+				parameters: { rolloutCount: 5 },
+				alwaysSupported: false
+			}
+		});
+	}, sessionId);
+	await expect(modal).toBeVisible();
+	await modal.getByRole("button", { name: "Approve", exact: true }).click();
+	await expect(modal).toBeHidden();
+	await expect(page.getByText(/approval is no longer pending/i)).toHaveCount(0);
 });
 
 test("paid compute Reject writes a durable decision and restart expiry closes the modal", async ({ page }) => {

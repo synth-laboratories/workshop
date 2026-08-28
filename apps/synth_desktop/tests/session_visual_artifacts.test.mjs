@@ -67,6 +67,30 @@ test("showing an already-created visual preserves its durable bindings", () => {
 	});
 });
 
+test("a current optimizer workstation keeps bindings and run identity in Outputs", () => {
+	const [artifact] = eventsToArtifacts([{
+		...runtimeEvent(1, "visual.show", {
+			visualId: "visual_trace_workstation",
+			title: "Craftax · trace workstation",
+			templateId: "craftax.trace_workbench.v1",
+			ownerSessionId: "session_current",
+			revision: 3,
+			status: "live",
+			bindings: {
+				schemaVersion: "synth.visual-bindings.v1",
+				inputs: [{ input: "optimizer_run", kind: "optimizer_run", source: "opt_eval_1" }]
+			}
+		}),
+		runId: "generic_run_that_must_not_win"
+	}]);
+
+	assert.equal(artifact.id, "visual_trace_workstation");
+	assert.equal(artifact.runId, "opt_eval_1");
+	assert.equal(artifact.revision, 3);
+	assert.equal(artifact.status, "live");
+	assert.equal(artifact.bindings.inputs[0].source, "opt_eval_1");
+});
+
 const toolEvent = (sequence, tool, args, visual, sessionId = "session_current") => ({
 	schemaVersion: "synth.desktop-runtime-event.v1",
 	sessionId,

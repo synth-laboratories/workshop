@@ -8,7 +8,7 @@ import {
 } from "../preferences";
 import { restoreFocusIfLost } from "../runtime/restoreFocus";
 
-export type SidePanelTab = "outputs" | "inference" | "trace" | "diagnostics";
+export type SidePanelTab = "outputs" | "inference" | "trace" | "diagnostics" | "errors";
 
 export type ShellLayoutState = {
 	sidebarVisible: boolean;
@@ -93,7 +93,8 @@ export function useShellLayout(
 				next.bottomPanelVisible === current.bottomPanelVisible &&
 				next.bottomPanelHeight === current.bottomPanelHeight &&
 				next.selectedConversationId === current.selectedConversationId &&
-				next.selectedOutputTab === current.selectedOutputTab;
+				next.selectedOutputTab === current.selectedOutputTab &&
+				next.optimizers.selectedRunId === current.optimizers.selectedRunId;
 			if ("sidebarVisible" in patch) setSidebarVisible(next.sidebarVisible);
 			if ("sidebarWidth" in patch) setSidebarWidth(next.sidebarWidth);
 			if ("outputPaneWidth" in patch) setInventoryContainerWidth(next.outputPaneWidth);

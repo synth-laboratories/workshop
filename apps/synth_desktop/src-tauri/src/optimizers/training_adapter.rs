@@ -89,8 +89,8 @@ pub fn ingest_ordered_events(
     let mut cursor = cursor;
     let mut accepted = Vec::new();
     for event in events {
-        let sequence = source_sequence(&event)
-            .ok_or_else(|| anyhow!("training event omitted sequence"))?;
+        let sequence =
+            source_sequence(&event).ok_or_else(|| anyhow!("training event omitted sequence"))?;
         if sequence == 0 {
             bail!("training event sequence must be >= 1");
         }
@@ -122,18 +122,21 @@ pub fn adapt_source_fact(algorithm: &str, event: &Value) -> Result<AdaptedTraini
 }
 
 pub fn mapped_event_type(algorithm: &str, kind: &str) -> String {
-    mapped_event_draft(algorithm, &CoercedFact {
-        schema_version: TRAINING_EVENT_SCHEMA_VERSION.into(),
-        event_id: "probe".into(),
-        job_id: "probe".into(),
-        attempt_id: "attempt-1".into(),
-        sequence: 1,
-        occurred_at: "1970-01-01T00:00:00Z".into(),
-        kind: kind.into(),
-        payload: json!({}),
-        producer: json!({}),
-        native: json!({}),
-    })
+    mapped_event_draft(
+        algorithm,
+        &CoercedFact {
+            schema_version: TRAINING_EVENT_SCHEMA_VERSION.into(),
+            event_id: "probe".into(),
+            job_id: "probe".into(),
+            attempt_id: "attempt-1".into(),
+            sequence: 1,
+            occurred_at: "1970-01-01T00:00:00Z".into(),
+            kind: kind.into(),
+            payload: json!({}),
+            producer: json!({}),
+            native: json!({}),
+        },
+    )
     .event_type
 }
 
@@ -152,21 +155,14 @@ struct CoercedFact {
 
 fn coerce_training_fact(event: &Value) -> Result<CoercedFact> {
     if let Some(schema) = event.get("schema_version").and_then(Value::as_str) {
-        if schema.starts_with("training.event.") && schema != TRAINING_EVENT_SCHEMA_VERSION
-        {
+        if schema.starts_with("training.event.") && schema != TRAINING_EVENT_SCHEMA_VERSION {
             bail!("unsupported training event schema {schema:?}");
         }
     }
-    if event
-        .get("schema_version")
-        .and_then(Value::as_str)
-        == Some(TRAINING_EVENT_SCHEMA_VERSION)
-    {
+    if event.get("schema_version").and_then(Value::as_str) == Some(TRAINING_EVENT_SCHEMA_VERSION) {
         let parsed: TrainingEvent = serde_json::from_value(event.clone())
             .map_err(|error| anyhow!("invalid training.event.v1: {error}"))?;
-        parsed
-            .validate()
-            .map_err(|error| anyhow!("{error}"))?;
+        parsed.validate().map_err(|error| anyhow!("{error}"))?;
         return Ok(CoercedFact {
             schema_version: parsed.schema_version,
             event_id: parsed.event_id,
@@ -181,8 +177,8 @@ fn coerce_training_fact(event: &Value) -> Result<CoercedFact> {
         });
     }
 
-    let sequence = source_sequence(event)
-        .ok_or_else(|| anyhow!("training event omitted sequence"))?;
+    let sequence =
+        source_sequence(event).ok_or_else(|| anyhow!("training event omitted sequence"))?;
     if sequence == 0 {
         bail!("training event sequence must be >= 1");
     }
@@ -192,10 +188,7 @@ fn coerce_training_fact(event: &Value) -> Result<CoercedFact> {
         .and_then(Value::as_str)
         .unwrap_or("job.event")
         .to_string();
-    let payload = event
-        .get("payload")
-        .cloned()
-        .unwrap_or_else(|| json!({}));
+    let payload = event.get("payload").cloned().unwrap_or_else(|| json!({}));
     let job_id = event
         .get("job_id")
         .or_else(|| payload.get("job_id"))
@@ -253,7 +246,11 @@ fn source_sequence(event: &Value) -> Option<u64> {
         .or_else(|| {
             event
                 .get("payload")
-                .and_then(|payload| payload.get("sequence").or_else(|| payload.get("sequence_number")))
+                .and_then(|payload| {
+                    payload
+                        .get("sequence")
+                        .or_else(|| payload.get("sequence_number"))
+                })
                 .and_then(Value::as_u64)
         })
 }
@@ -264,7 +261,10 @@ fn attach_identity(draft: OptimizerEventDraft, fact: &CoercedFact) -> OptimizerE
     delta.insert("sourceEventId".into(), json!(fact.event_id));
     delta.insert("sourceSequence".into(), json!(fact.sequence));
     delta.insert("sourceSchema".into(), json!(fact.schema_version));
-    delta.insert("trainingEventType".into(), json!(training_vocabulary(&fact.kind)));
+    delta.insert(
+        "trainingEventType".into(),
+        json!(training_vocabulary(&fact.kind)),
+    );
     draft
         .delta(delta)
         .occurred_at(fact.occurred_at.clone())
@@ -427,15 +427,11 @@ fn mapped_event_draft(algorithm: &str, fact: &CoercedFact) -> OptimizerEventDraf
 }
 
 pub fn promote_hosted_fact(event: Value) -> Result<Value> {
-    if event
-        .get("schema_version")
-        .and_then(Value::as_str)
-        == Some(TRAINING_EVENT_SCHEMA_VERSION)
-    {
+    if event.get("schema_version").and_then(Value::as_str) == Some(TRAINING_EVENT_SCHEMA_VERSION) {
         return Ok(event);
     }
-    let sequence = source_sequence(&event)
-        .ok_or_else(|| anyhow!("hosted training event omitted sequence"))?;
+    let sequence =
+        source_sequence(&event).ok_or_else(|| anyhow!("hosted training event omitted sequence"))?;
     let event_id = event.get("event_id").cloned();
     let attempt_id = event.get("attempt_id").cloned();
     let kind = event
@@ -506,7 +502,8 @@ mod tests {
 
     #[test]
     fn job_succeeded_is_not_optimizer_run_completed() {
-        let adapted = adapt_source_fact("sft", &native_event(8, "job.succeeded", json!({}))).unwrap();
+        let adapted =
+            adapt_source_fact("sft", &native_event(8, "job.succeeded", json!({}))).unwrap();
         assert_eq!(adapted.draft.event_type, TRAINING_JOB_COMPLETED);
         assert_ne!(adapted.draft.event_type, "optimizer.run.completed");
     }
@@ -688,6 +685,9 @@ mod tests {
         let mut event = native_event(1, "job.started", json!({}));
         event["schema_version"] = json!("training.event.v0");
         let error = adapt_source_fact("sft", &event).unwrap_err().to_string();
-        assert!(error.contains("unsupported training event schema"), "{error}");
+        assert!(
+            error.contains("unsupported training event schema"),
+            "{error}"
+        );
     }
 }

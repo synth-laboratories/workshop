@@ -6,6 +6,4 @@
 mod models;
 pub mod store;
 
-pub use models::{
-    CandidateRecord, DagView, ExperimentEdge, ExperimentEvidenceRef, ExperimentNode,
-};
+pub use models::{CandidateRecord, DagView, ExperimentEdge, ExperimentEvidenceRef, ExperimentNode};

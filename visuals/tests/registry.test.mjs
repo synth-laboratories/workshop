@@ -65,6 +65,7 @@ const EXPECTED_IDS = [
   "sourced.visual.v1",
   "trace.catalog.v1",
   "trace.rollout_inspector.v1",
+  "trace.workbench.v1",
 ];
 
 test("visuals package exposes the registered templates", () => {
@@ -78,12 +79,13 @@ test("visuals package exposes the registered templates", () => {
     if (!id.startsWith("diagram.") && meta.rendererKind !== "chart") {
       assert.ok(existsSync(join(path, "shell.tsx")));
     }
-    if (
-      id === "live.harbor_eval.v1" ||
-      id === "live.container_rollouts.v1" ||
-      id === "live.craftax.v1"
-    ) {
+    if (id === "live.harbor_eval.v1" || id === "live.container_rollouts.v1") {
       assert.deepEqual(declaredInputs(meta).map((slot) => slot.name), ["stream"]);
+    }
+    if (id === "live.craftax.v1") {
+      assert.deepEqual(declaredInputs(meta).map((slot) => slot.name), ["stream", "optimizer_run"]);
+      assert.equal(meta.inputs[0].required, true);
+      assert.equal(meta.inputs[1].required, false);
     }
     if (id === "live.eval_stream.v1") {
       assert.equal(meta.slots, undefined);
@@ -94,6 +96,14 @@ test("visuals package exposes the registered templates", () => {
         (meta.components ?? []).map((row) => row.id).sort(),
         ["detail_modal.v1", "event_stream.v1", "metrics.v1", "scrubber.v1"]
       );
+    }
+    if (id === "trace.workbench.v1") {
+      // The family-agnostic workstation reads a run like the Craftax one, but
+      // must not demand rendered frames: liveFrames-unsupported and post_hoc
+      // families can never satisfy a minimum-frame readiness requirement.
+      assert.deepEqual(declaredInputs(meta).map((slot) => slot.name), ["optimizer_run"]);
+      assert.equal(meta.observationContract.readiness.minimumRenderedFrameCount, undefined);
+      assert.equal(meta.observationContract.readiness.minimumRolloutCount, 1);
     }
     if (id === "craftax.trace_workbench.v1") {
       // The workstation replays one container-eval run's relayed trials. It

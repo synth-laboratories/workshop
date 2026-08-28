@@ -15,6 +15,10 @@ import {
   type OptimizerEvent,
   type OptimizerRun
 } from "./components/projectEvents.ts";
+import {
+  projectRunViewV2,
+  type OptimizerRunViewV2Like
+} from "./components/projectRunViewV2.ts";
 import { DagOverlay } from "./overlays/dag.tsx";
 import { GepaOverlay } from "./overlays/gepa.tsx";
 import { GoExOverlay } from "./overlays/go-ex.tsx";
@@ -23,6 +27,18 @@ import { SftOverlay } from "./overlays/sft.tsx";
 type FixturePayload = {
   run?: OptimizerRun;
   events?: OptimizerEvent[];
+  runViewV2?: OptimizerRunViewV2Like;
+  runProgress?: RunProgressAgreementLike;
+};
+
+type RunProgressAgreementLike = {
+  status: string;
+  terminal: boolean;
+  costUsd: number | null;
+  promptTokens: number | null;
+  completionTokens: number | null;
+  resultHeadline?: string;
+  resultAbsentReason?: string;
 };
 
 export type ShellProps = {
@@ -34,6 +50,8 @@ export type ShellProps = {
   /** Desktop can inject live/reconciled events for an optimizer_run binding. */
   events?: OptimizerEvent[];
   run?: OptimizerRun;
+  runViewV2?: OptimizerRunViewV2Like;
+  runProgress?: RunProgressAgreementLike;
   loadError?: string;
   visualId?: string;
   revision?: number;
@@ -124,6 +142,8 @@ export function Shell(props: ShellProps) {
   const events = normalizeEvents(
     (props.events ?? payload?.events ?? []) as unknown[]
   );
+  const runViewV2 = props.runViewV2 ?? payload?.runViewV2;
+  const runProgress = props.runProgress ?? payload?.runProgress;
 
   const [followLive, setFollowLive] = useState(true);
   const [cursorIndex, setCursorIndex] = useState(Math.max(0, events.length - 1));
@@ -135,12 +155,16 @@ export function Shell(props: ShellProps) {
 
   const atSeq = events[cursorIndex]?.sequenceNumber;
   const projected = useMemo(
-    () => projectAtCursor(run, events, atSeq),
-    [run, events, atSeq]
+    () => (followLive ? null : projectAtCursor(run, events, atSeq)),
+    [followLive, run, events, atSeq]
   );
 
-  const summary = projected.summary;
-  const bestScore = (summary.summary as Record<string, unknown> | undefined)?.bestScore;
+  // Raw events are reduced only for an explicit historical cursor. The live
+  // workspace formats the backend-owned algorithm projection directly.
+  const displayed = useMemo(() => {
+    if (!followLive) return projected;
+    return runViewV2 ? projectRunViewV2(run, runViewV2) : null;
+  }, [followLive, projected, run, runViewV2]);
 
   if (!payload && !props.run) {
     return (
@@ -164,6 +188,26 @@ export function Shell(props: ShellProps) {
       </VisualChrome>
     );
   }
+  if (!displayed) {
+    return (
+      <VisualChrome
+        kicker="Optimizer run"
+        live={false}
+        title={props.title ?? run.id}
+        lede={props.lede}
+        testId="visual-optimizer-run"
+        footer="optimizer.run.v1"
+      >
+        <section className="sv-section" role="alert" data-testid="optimizer-run-view-v2-unavailable">
+          <div className="sv-section-head"><h3>Canonical run view unavailable</h3></div>
+          <p className="sv-lede">Live optimizer state requires OptimizerRunViewV2. Raw events are available only after selecting a historical cursor.</p>
+        </section>
+      </VisualChrome>
+    );
+  }
+
+  const summary = displayed.summary;
+  const bestScore = (summary.summary as Record<string, unknown> | undefined)?.bestScore;
 
   return (
     <VisualChrome
@@ -179,18 +223,23 @@ export function Shell(props: ShellProps) {
         status={String(summary.status ?? run.status)}
         objective={run.objective}
         metrics={[
-          { label: "Cursor", value: String(projected.cursorSeq) },
-          {
-            label: "Best",
-            value: typeof bestScore === "number" ? bestScore.toFixed(2) : "—"
-          },
-          { label: "Cost", value: projected.usage.costUsd == null ? "—" : `$${projected.usage.costUsd.toFixed(2)}` },
+          { label: "Cursor", value: String(displayed.cursorSeq) },
+          runProgress && followLive
+            ? {
+                label: "Result",
+                value: runProgress.resultHeadline ?? runProgress.resultAbsentReason ?? "—"
+              }
+            : {
+                label: "Best",
+                value: typeof bestScore === "number" ? bestScore.toFixed(2) : "—"
+              },
+          { label: "Cost", value: displayed.usage.costUsd == null ? "—" : `$${displayed.usage.costUsd.toFixed(2)}` },
           { label: "Source", value: String(run.source ?? "—") }
         ]}
       />
 
       <GlobalTimeline
-        events={projected.timeline.map((e) => ({
+        events={displayed.timeline.map((e) => ({
           sequence: Number(e.sequence),
           type: String(e.type),
           occurredAt: String(e.occurredAt)
@@ -209,21 +258,21 @@ export function Shell(props: ShellProps) {
 
       {run.algorithmId === "gepa" ? (
         <GepaOverlay
-          state={projected}
+          state={displayed}
           selectedId={selectedCandidate}
           onSelect={setSelectedCandidate}
           visualId={props.visualId}
           visualRevision={props.revision}
         />
       ) : null}
-      {run.algorithmId === "go-ex" ? <GoExOverlay state={projected} /> : null}
-      {run.algorithmId === "sft" ? <SftOverlay state={projected} /> : null}
-      {run.algorithmId === "dag" || run.algorithmId.startsWith("dag.") ? <DagOverlay state={projected} /> : null}
+      {run.algorithmId === "go-ex" ? <GoExOverlay state={displayed} /> : null}
+      {run.algorithmId === "sft" ? <SftOverlay state={displayed} /> : null}
+      {run.algorithmId === "dag" || run.algorithmId.startsWith("dag.") ? <DagOverlay state={displayed} /> : null}
 
-      <ExecutionBindings bindings={projected.execution.bindings} />
-      <UsageCards usage={projected.usage} />
-      <EventLog entries={projected.logs} />
-      <ArtifactList artifacts={projected.artifacts} />
+      <ExecutionBindings bindings={displayed.execution.bindings} />
+      <UsageCards usage={displayed.usage} />
+      <EventLog entries={displayed.logs} />
+      <ArtifactList artifacts={displayed.artifacts} />
     </VisualChrome>
   );
 }

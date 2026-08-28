@@ -104,7 +104,9 @@ pub fn trace_digest_binding(visual: &VisualRecord) -> Option<String> {
             if descriptor_input_name(&slot).ok().as_deref() == Some("projection")
                 && slot.get("kind").and_then(Value::as_str) == Some("trace_v5")
             {
-                slot.get("source").and_then(Value::as_str).map(str::to_owned)
+                slot.get("source")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned)
             } else {
                 None
             }

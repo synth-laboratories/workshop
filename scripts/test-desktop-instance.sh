@@ -82,12 +82,12 @@ rg -q '^OPENROUTER_API_KEY=.openrouter-fixture.$' "$alpha_env"
 
 # Packaged apps must run exclusively from their isolated instance. A cwd or
 # runtime fallback under ~/Documents causes macOS Files & Folders prompts.
+dev_instance_body="$(sed -n '/^dev_instance()/,/^}/p' "$ROOT/scripts/desktop-instance.sh")"
 awk '
-  /if \[\[ "\$COMMAND" == "cua"/{in_cua=1}
-  in_cua && /cd "\$INSTANCE_ROOT"/ && !safe_cwd {safe_cwd=NR}
-  in_cua && /exec_isolated_cua_bundle/ && !launch_line {launch_line=NR}
+  /cd "\$INSTANCE_ROOT"/ && !safe_cwd {safe_cwd=NR}
+  /exec_isolated_cua_bundle/ && !launch_line {launch_line=NR}
   END { exit !(safe_cwd && launch_line && safe_cwd < launch_line) }
-' "$ROOT/scripts/desktop-instance.sh"
+' <<<"$dev_instance_body"
 # The helper itself must end in an environment-scrubbed exec of the recorded
 # bundle executable; checking a removed inline exec made this gate stale while
 # missing the stronger isolation contract.
@@ -95,6 +95,7 @@ isolated_exec="$(sed -n '/^exec_isolated_cua_bundle()/,/^}/p' "$ROOT/scripts/des
 grep -q 'exec env -i' <<<"$isolated_exec"
 grep -q 'PWD="\$INSTANCE_ROOT"' <<<"$isolated_exec"
 grep -q 'SYNTH_OPTIMIZER_PROJECT_ROOT="\$optimizer_project_root"' <<<"$isolated_exec"
+grep -q 'CONTAINERS_ROOT="\$containers_root"' <<<"$isolated_exec"
 grep -q '"\$CUA_EXE"' <<<"$isolated_exec"
 rg -q 'if \(\$0 == exe \|\| \$0 == cua_exe\)' "$ROOT/scripts/desktop-instance.sh"
 rg -q 'SYNTH_DESKTOP_DEV_OAUTH_FILE' "$ROOT/scripts/desktop-instance.sh"
@@ -149,7 +150,13 @@ rg -q 'SYNTH_DESKTOP_USE_DEV_SIGNER:-1' "$ROOT/scripts/desktop-instance.sh"
 ! rg -q -- 'codesign --force --deep' "$ROOT/scripts/desktop-instance.sh"
 rg -q -- '--identifier "\$BUNDLE_ID" "\$app_bundle"' "$ROOT/scripts/desktop-instance.sh"
 rg -q 'assert_bundle_identity' "$ROOT/scripts/desktop-instance.sh"
+# An explicit ad-hoc rebuild must replace any certificate-backed signing
+# record retained by write_contract instead of leaving stale manifest truth.
+rg -q 'record_bundle_signing "\$app_bundle"' "$ROOT/scripts/desktop-instance.sh"
+rg -Fq -- '--arg identity "${host_authority:-adhoc}"' "$ROOT/scripts/desktop-instance.sh"
 rg -q 'SYNTH_DESKTOP_REBUILD_ADAPTERS:-0' "$ROOT/scripts/desktop-instance.sh"
+rg -q 'cargo:rerun-if-changed=' "$ROOT/apps/synth_desktop/src-tauri/build.rs"
+rg -q 'symbolic-ref.*HEAD' "$ROOT/apps/synth_desktop/src-tauri/build.rs"
 rg -q 'SYNTH_OPTIMIZER_USE_LOCAL_SOURCE:-0' "$ROOT/scripts/desktop-instance.sh"
 rg -q 'SYNTH_COMPUTER_USE_PARENT_REQUIREMENT=' "$ROOT/scripts/desktop-instance.sh"
 rg -q 'optimizer runtime=immutable installed plugin' "$ROOT/scripts/desktop-instance.sh"
@@ -176,9 +183,10 @@ env_names_for() {
 }
 build_names="$(env_names_for cua-build)"
 run_names="$(env_names_for cua-run)"
-[[ -n "$build_names" && "$build_names" == "$run_names" ]]
-for required in SYNTH_DESKTOP_INSTANCE SYNTH_DESKTOP_DATA_ROOT SYNTH_DESKTOP_CONFIG SYNTH_CODEX_HOME \
-  SYNTH_DESKTOP_INSTANCE_MANIFEST SYNTH_DESKTOP_SOURCE_REVISION \
+rebuild_names="$(env_names_for rebuild-run)"
+[[ -n "$build_names" && "$build_names" == "$run_names" && "$run_names" == "$rebuild_names" ]]
+for required in SYNTH_DESKTOP_DATA_ROOT SYNTH_DESKTOP_CONFIG SYNTH_CODEX_HOME \
+  SYNTH_DESKTOP_SOURCE_REVISION \
   SYNTH_DESKTOP_DEV_OAUTH_STATE_FILE SYNTH_COMPUTER_USE_PARENT_REQUIREMENT CARGO_TARGET_DIR; do
   [[ ",$build_names," == *",$required,"* ]] || { echo "launch env missing $required" >&2; exit 1; }
 done
@@ -311,6 +319,22 @@ esac
 rg -q 'wait_for_health_instance' "$ROOT/scripts/desktop-instance.sh"
 rg -q 'print_runtime_identity' "$ROOT/scripts/desktop-instance.sh"
 rg -q 'verify_packaged_provenance' "$ROOT/scripts/desktop-instance.sh"
+rg -q 'build_revision.*==.*SOURCE_REVISION' "$ROOT/scripts/desktop-instance.sh"
+rg -q 'executable_digest.*==.*expected_digest' "$ROOT/scripts/desktop-instance.sh"
+rg -q 'rm -f "\$DATA_ROOT/eval-driver.json"' "$ROOT/scripts/desktop-instance.sh"
+rebuild_body="$(sed -n '/^rebuild_run_instance()/,/^}/p' "$ROOT/scripts/desktop-instance.sh")"
+case "$rebuild_body" in
+  *"observe_rebuild_readiness &"*"exec_isolated_cua_bundle"*) ;;
+  *) echo "rebuild-run did not keep the app on cua-run's foreground exec path" >&2; exit 1 ;;
+esac
+case "$rebuild_body" in
+  *'exec_isolated_cua_bundle &'*|*'"$CUA_EXE" &'*) echo "rebuild-run launched the app asynchronously" >&2; exit 1 ;;
+  *) ;;
+esac
+readiness_body="$(sed -n '/^observe_rebuild_readiness()/,/^}/p' "$ROOT/scripts/desktop-instance.sh")"
+grep -q 'trap - EXIT' <<<"$readiness_body"
+grep -q 'wait_for_health_instance' <<<"$readiness_body"
+grep -q 'print_runtime_identity' <<<"$readiness_body"
 set +e
 drift_out="$($ROOT/scripts/desktop-instance.sh cua-run alpha 2>&1)"
 drift_status=$?

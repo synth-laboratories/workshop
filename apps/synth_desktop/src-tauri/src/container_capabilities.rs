@@ -1133,6 +1133,7 @@ mod tests {
             pool_id: None,
             task_family: Some("craftax".into()),
             last_rollout_id: None,
+            current_failure_id: None,
             health: json!({"ok": status == READY_STATUS}),
             metadata,
             created_at: NOW.into(),
@@ -1382,6 +1383,24 @@ mod tests {
         assert!(error.retryable);
         assert!(error.remediation.contains("container_probe"));
         assert_eq!(error.base_url.as_deref(), Some("http://127.0.0.1:8104"));
+    }
+
+    #[test]
+    fn cached_catalog_does_not_satisfy_live_readiness_when_unhealthy() {
+        let mut metadata = hydrated(Some(&normalized_info()), now());
+        metadata["taskCatalog"] = json!({"tasks": [{"id": "a"}, {"id": "b"}]});
+        metadata["taskCatalogFreshness"] = json!({
+            "kind": "cached",
+            "observedAt": NOW,
+            "reason": null
+        });
+        metadata["info"]["capabilities"] = json!({
+            "protocol": LIVE_EVAL_PROTOCOL,
+            "operations": {"rollouts.prepare": true}
+        });
+        let record = container("unhealthy", metadata);
+        let error = preflight_prepare(&record, &prepare_request(), now()).unwrap_err();
+        assert_eq!(error.code, CODE_UNHEALTHY);
     }
 
     #[test]

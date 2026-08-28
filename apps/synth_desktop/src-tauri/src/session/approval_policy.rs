@@ -121,24 +121,61 @@ mod tests {
     }
 
     #[test]
-    fn permissive_policy_auto_approves_with_the_declared_cap() {
-        match auto_decision("never", &paid()).unwrap() {
-            Some(ApprovalDecision::ApproveWithCap { cap }) => {
-                assert_eq!(cap.max_rollouts, Some(8));
-                assert_eq!(cap.max_cost_usd_micros, None);
-            }
-            other => panic!("expected capped decision, got {other:?}"),
+    fn paid_compute_always_uses_the_native_approval_modal() {
+        for policy in ["never", "on-request", "untrusted"] {
+            assert!(auto_decision(policy, &paid()).unwrap().is_none());
         }
     }
 
     #[test]
-    fn paid_and_credentials_are_never_implicitly_remembered() {
+    fn paid_and_credentials_always_use_native_approval_modals() {
         assert!(auto_decision("on-request", &paid()).unwrap().is_none());
-        let credential = ApprovalKind::CredentialAccess {
-            provider: "openai".into(),
-            purpose: "bounded optimizer recipe".into(),
+        for consent in [
+            crate::session::approval::CredentialConsent::RememberLocator,
+            crate::session::approval::CredentialConsent::RegisterSource,
+            crate::session::approval::CredentialConsent::IssueLease,
+        ] {
+            let credential = ApprovalKind::CredentialAccess {
+                consent,
+                provider: "openai".into(),
+                purpose: "bounded optimizer recipe".into(),
+                locator_id: None,
+                display_path: None,
+                variable: None,
+                switch_from_display: None,
+            };
+            for policy in ["never", "on-request", "untrusted"] {
+                assert!(auto_decision(policy, &credential).unwrap().is_none());
+            }
+        }
+    }
+
+    #[test]
+    fn container_replacement_always_uses_a_once_only_native_modal() {
+        let replacement = ApprovalKind::ContainerLifecycle {
+            container_id: "ctr_craftax".into(),
+            declaration_id: "nanohorizon-craftax".into(),
+            declaration_digest: "sha256:declaration".into(),
+            manifest_path: "/approved/workshop.containers.toml".into(),
+            source_root: "/approved".into(),
+            source_revision: Some("revision".into()),
+            source_digest: Some("sha256:source".into()),
+            action: "force_replace".into(),
+            effect: "replace the declared workload".into(),
         };
-        assert!(auto_decision("on-request", &credential).unwrap().is_none());
+        for policy in ["never", "on-request", "untrusted"] {
+            assert!(auto_decision(policy, &replacement).unwrap().is_none());
+        }
+        replacement
+            .validate_decision(&ApprovalDecision::Approve {
+                scope: crate::session::approval::ApprovalScope::Once,
+            })
+            .unwrap();
+        assert!(replacement
+            .validate_decision(&ApprovalDecision::Approve {
+                scope: crate::session::approval::ApprovalScope::Session,
+            })
+            .is_err());
     }
 
     #[test]
@@ -195,8 +232,13 @@ mod tests {
             always_supported: true,
         };
         let credential = ApprovalKind::CredentialAccess {
+            consent: crate::session::approval::CredentialConsent::IssueLease,
             provider: "openai".into(),
             purpose: "bounded optimizer recipe".into(),
+            locator_id: None,
+            display_path: None,
+            variable: None,
+            switch_from_display: None,
         };
         let kinds = [
             shell,

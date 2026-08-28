@@ -1150,7 +1150,10 @@ mod tests {
             .share_seal(seal.receipt_digest.clone(), origin, SLOT_KEY.into())
             .await
             .expect_err("partial upload must fail closed");
-        assert!(error.to_string().contains("upload failed"), "unexpected error: {error}");
+        assert!(
+            error.to_string().contains("upload failed"),
+            "unexpected error: {error}"
+        );
         let status = reports
             .upload_status(seal.receipt_digest)
             .await
@@ -1174,7 +1177,10 @@ mod tests {
             )
             .await
             .expect_err("index.html is not a Report URL");
-        assert!(error.to_string().contains("not a direct asset"), "unexpected error: {error}");
+        assert!(
+            error.to_string().contains("not a direct asset"),
+            "unexpected error: {error}"
+        );
     }
 
     #[tokio::test]

@@ -1,12 +1,12 @@
 //! Import local OSS optimizer workspaces (GEPA event feed / GELO events.jsonl).
 
+use super::models::TrainingJobStatus;
 use anyhow::{anyhow, bail, Context, Result};
 use serde_json::{json, Map, Value};
 use std::{
     fs,
     path::{Path, PathBuf},
 };
-use super::models::TrainingJobStatus;
 
 #[derive(Clone, Debug)]
 pub struct LocalOptimizerImport {
@@ -429,11 +429,13 @@ fn sniff_algorithm_id_from_sample(sample: &str) -> Option<String> {
             .or_else(|| value.get("algorithm"))
             .and_then(Value::as_str)
         {
-            let normalized = id.trim().to_ascii_lowercase().replace('_', "-");
+            let normalized = id.trim().to_ascii_lowercase();
             match normalized.as_str() {
                 "sft" => return Some("sft".into()),
-                "go-ex" | "goex" | "go-explore" => return Some("go-ex".into()),
+                "go-ex" => return Some("go-ex".into()),
                 "gepa" => return Some("gepa".into()),
+                "eval" => return Some("eval".into()),
+                "cispo" => return Some("cispo".into()),
                 other if !other.is_empty() => return Some(other.to_string()),
                 _ => {}
             }

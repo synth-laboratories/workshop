@@ -1,5 +1,9 @@
-//! Hosted Craftax GELO recipe. optimizers-beta owns algorithm execution and
-//! canonical optimizer events; Containers owns child rollout streams.
+//! Hosted Craftax GELO recipe. Canonical algorithm id is `go-ex`; GELO is the
+//! display label and this recipe id. `gelo` / `hosted_gelo` are not algorithm
+//! ids and must not be folded into `go-ex`.
+//!
+//! optimizers-beta owns algorithm execution and canonical optimizer events;
+//! Containers owns child rollout streams.
 
 use super::events::OptimizerEventDraft;
 use super::{
@@ -95,6 +99,7 @@ pub fn recipe_catalog() -> Value {
         "id": HOSTED_GELO_CRAFTAX_RECIPE,
         "title": "Hosted GELO · Craftax",
         "algorithmId": "go-ex",
+        "algorithmDisplay": "GELO",
         "task": "craftax",
         "availability": availability,
         "limits": {
@@ -240,7 +245,7 @@ async fn spawn_worker(
     run_id: String,
     config: Value,
 ) {
-    let (cancel_tx, cancel_rx) = watch::channel(false);
+    let (cancel_tx, cancel_rx) = watch::channel(None);
     service
         .register_local_recipe(run_id.clone(), cancel_tx)
         .await;
@@ -249,8 +254,8 @@ async fn spawn_worker(
         if let Err(error) =
             run_worker(worker.clone(), client, run_id.clone(), config, cancel_rx).await
         {
-            eprintln!("hosted GELO worker {run_id} failed: {error:#}");
-            let _ = append_terminal(&worker, &run_id, "failed", Some(error.to_string())).await;
+            crate::platform::logging::report("optimizers", "eprintln", format!("hosted GELO worker {run_id} failed: {error:#}"));
+            let _ = append_terminal(&worker, &run_id, "failed", Some(format!("{error:#}"))).await;
         }
         worker.unregister_local_recipe(&run_id).await;
     });
@@ -261,7 +266,7 @@ async fn run_worker(
     client: HostedOptimizerClient,
     run_id: String,
     config: Value,
-    mut cancel: watch::Receiver<bool>,
+    mut cancel: super::CancelObserver,
 ) -> Result<()> {
     client.submit_json("go-ex", &run_id, config).await?;
     let mut upstream_cursor = 0u64;
@@ -285,9 +290,20 @@ async fn run_worker(
         }
         tokio::select! {
             changed = cancel.changed() => {
-                if changed.is_ok() && *cancel.borrow() {
+                if changed.is_ok() && cancel.borrow().is_some() {
                     let _ = client.cancel(&run_id).await;
-                    append_terminal(&service, &run_id, "cancelled", None).await?;
+                    let request = cancel
+                        .borrow()
+                        .as_ref()
+                        .cloned()
+                        .expect("cancel observer changed with a request");
+                    service
+                        .settle_run(
+                            run_id.clone(),
+                            super::kernel::SettleCause::Cancelled { request },
+                            None,
+                        )
+                        .await?;
                     return Ok(());
                 }
             }
@@ -353,23 +369,22 @@ async fn append_terminal(
     status: &str,
     error: Option<String>,
 ) -> Result<()> {
-    let mut draft = OptimizerEventDraft::new(
-        match status {
-            "completed" => "optimizer.run.completed",
-            "cancelled" => "optimizer.run.cancelled",
-            _ => "optimizer.run.failed",
+    let error_payload = error.clone().map(|message| json!({ "message": message }));
+    let cause = match status {
+        "completed" => super::kernel::SettleCause::Completed,
+        "cancelled" => super::kernel::SettleCause::Cancelled {
+            request: std::sync::Arc::new(super::kernel::CancellationRequest::new(
+                super::kernel::CancellationCause::ContainerRequested,
+                "go-ex:remote",
+                format!("run:{run_id}"),
+            )),
         },
-        "go-ex",
-    )
-    .idempotency_key(format!("terminal:{status}"))
-    .level(if status == "failed" { "error" } else { "info" })
-    .delta(Map::from_iter([("status".into(), json!(status))]))
-    .raw(json!({"source": "optimizers-beta"}));
-    if let Some(message) = error {
-        draft = draft.error(json!({ "message": message }));
-    }
+        _ => super::kernel::SettleCause::Failed {
+            detail: error.unwrap_or_else(|| "hosted GELO run failed".into()),
+        },
+    };
     service
-        .append_event_payloads(run_id.to_string(), vec![draft])
+        .settle_run(run_id.to_string(), cause, error_payload)
         .await?;
     Ok(())
 }

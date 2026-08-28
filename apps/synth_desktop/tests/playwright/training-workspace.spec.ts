@@ -26,12 +26,19 @@ test.beforeEach(async ({ page }) => {
 			getContainer: async () => { throw new Error("container detail unavailable"); },
 			registerContainer: async () => { throw new Error("registration unavailable"); },
 			probeContainer: async () => { throw new Error("probe unavailable"); },
+			reconcileContainer: async () => { throw new Error("reconcile unavailable"); },
+			restartContainer: async () => { throw new Error("restart unavailable"); },
 			listTraces: async () => [],
 			listUsage: async () => [],
 			counts: async () => ({ containers: 1, traces: 0, usage: 0 })
 		};
 		(window as any).synthOptimizers = {
-			listAlgorithms: async () => [], list: async () => [], listRecipes: async () => [], listCloud: async () => [],
+			listAlgorithms: async () => [], list: async () => [], listRecipes: async () => [{
+				id: "sft.banking77.nemotron-lightning.tinker.v1",
+				title: "Banking77 Tinker SFT",
+				availability: "available",
+				limits: { trainingSteps: 30 }
+			}], listCloud: async () => [],
 			hostedTrainingModels: async () => ({ revision: "unavailable", models: [] }), searchSavedLoras: async () => ({ items: [], total: 0 }),
 			startRecipe: async () => { throw new Error("native optimizer runtime unavailable"); },
 			refresh: async () => ({ status: "idle" }), eventsAfter: async () => [],
@@ -41,6 +48,7 @@ test.beforeEach(async ({ page }) => {
 	await page.reload();
 	await page.getByTestId("titlebar").waitFor();
 	await page.getByRole("button", { name: "Optimizers" }).click();
+	await page.getByTestId("optimizer-tab-launch").click();
 	await expect(page.getByTestId("training-workspace")).toBeVisible();
 });
 
@@ -99,6 +107,7 @@ test("a run cannot start until an exact training workload is advertised", async 
 	await page.reload();
 	await page.getByTestId("titlebar").waitFor();
 	await page.getByRole("button", { name: "Optimizers" }).click();
+	await page.getByTestId("optimizer-tab-launch").click();
 	await page.getByTestId("training-tab-train").click();
 	await expect(
 		page.getByRole("alert").filter({ hasText: "No training workload" })
