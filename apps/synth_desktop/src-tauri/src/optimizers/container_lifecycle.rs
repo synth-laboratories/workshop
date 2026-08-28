@@ -12,6 +12,7 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::{
     collections::HashMap,
+    os::unix::process::CommandExt,
     path::Path,
     process::{Child, Command, Stdio},
     sync::{Arc, Mutex, OnceLock},
@@ -21,9 +22,40 @@ use uuid::Uuid;
 
 const HEALTH_POLL: Duration = Duration::from_millis(200);
 
-fn children() -> &'static Mutex<HashMap<String, Child>> {
-    static CHILDREN: OnceLock<Mutex<HashMap<String, Child>>> = OnceLock::new();
+fn children() -> &'static Mutex<HashMap<u32, Child>> {
+    static CHILDREN: OnceLock<Mutex<HashMap<u32, Child>>> = OnceLock::new();
     CHILDREN.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// A launch remains armed until readiness has been established against the
+/// declaration that started it. Dropping an armed launch (including when an
+/// async ensure future is cancelled) terminates the whole launch process
+/// group, so a slow builder cannot replace an already-validated endpoint
+/// later.
+struct LaunchedCommand {
+    pid: u32,
+    start_identity: String,
+    shutdown_grace: Duration,
+    armed: bool,
+}
+
+impl LaunchedCommand {
+    fn receipt(&self) -> (u32, String) {
+        (self.pid, self.start_identity.clone())
+    }
+
+    fn commit(mut self) -> (u32, String) {
+        self.armed = false;
+        (self.pid, self.start_identity.clone())
+    }
+}
+
+impl Drop for LaunchedCommand {
+    fn drop(&mut self) {
+        if self.armed {
+            terminate_process_group(self.pid, self.shutdown_grace);
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -240,20 +272,17 @@ pub async fn ensure_from_session(
     ensure_spec(db, &spec).await
 }
 
-pub async fn ensure_spec(
-    db: &Arc<Database>,
-    spec: &ContainerSpec,
-) -> Result<EnsuredContainer> {
-    let (base_url, process) = if let Some(url) = spec.url.as_deref() {
+pub async fn ensure_spec(db: &Arc<Database>, spec: &ContainerSpec) -> Result<EnsuredContainer> {
+    let (base_url, launch) = if let Some(url) = spec.url.as_deref() {
         let base = url.trim_end_matches('/').to_string();
-        let process = if spec.command.is_empty() {
+        let launch = if spec.command.is_empty() {
             None
         } else if healthy_now(&base, &spec.health, spec).await? {
             None
         } else {
             Some(start_command(spec)?)
         };
-        (base, process)
+        (base, launch)
     } else {
         bail!(
             "container `{}` must declare url so Workshop can probe /health without scanning ports",
@@ -261,7 +290,11 @@ pub async fn ensure_spec(
         );
     };
     wait_healthy(&base_url, &spec.health, spec).await?;
+    let process = launch.as_ref().map(LaunchedCommand::receipt);
     let container_id = upsert_ready(db, spec, &base_url, process).await?;
+    if let Some(launch) = launch {
+        launch.commit();
+    }
     Ok(EnsuredContainer {
         container_id,
         base_url,
@@ -287,9 +320,11 @@ pub async fn replace_declared(
         .filter(|value| !value.is_empty())
         .map(|value| value.trim_end_matches('/').to_string())
         .ok_or_else(|| anyhow!("container `{}` must declare url", spec.id))?;
-    let process = start_command(spec)?;
+    let launch = start_command(spec)?;
     wait_healthy(&base_url, &spec.health, spec).await?;
+    let process = launch.receipt();
     let container_id = upsert_ready(db, spec, &base_url, Some(process)).await?;
+    launch.commit();
     Ok(EnsuredContainer {
         container_id,
         base_url,
@@ -298,7 +333,7 @@ pub async fn replace_declared(
     })
 }
 
-fn start_command(spec: &ContainerSpec) -> Result<(u32, String)> {
+fn start_command(spec: &ContainerSpec) -> Result<LaunchedCommand> {
     let source_root = spec
         .origin
         .source_root
@@ -339,6 +374,7 @@ fn start_command(spec: &ContainerSpec) -> Result<(u32, String)> {
     command
         .args(&spec.command[1..])
         .current_dir(&cwd)
+        .process_group(0)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
@@ -351,8 +387,54 @@ fn start_command(spec: &ContainerSpec) -> Result<(u32, String)> {
     children()
         .lock()
         .expect("container process table")
-        .insert(spec.id.clone(), child);
-    Ok((pid, start))
+        .insert(pid, child);
+    Ok(LaunchedCommand {
+        pid,
+        start_identity: start,
+        shutdown_grace: Duration::from_secs(spec.launch.shutdown_grace_seconds),
+        armed: true,
+    })
+}
+
+fn terminate_process_group(pid: u32, shutdown_grace: Duration) {
+    let Some(mut child) = children()
+        .lock()
+        .expect("container process table")
+        .remove(&pid)
+    else {
+        return;
+    };
+    // Every declared launch receives its own process group. Signalling the
+    // group is essential for shell launchers: killing only the shell leaves a
+    // docker build or delayed replacement child free to mutate the endpoint.
+    unsafe {
+        libc::kill(-(pid as libc::pid_t), libc::SIGTERM);
+    }
+    let deadline = Instant::now() + shutdown_grace;
+    let mut leader_reaped = false;
+    loop {
+        if !leader_reaped {
+            leader_reaped = matches!(child.try_wait(), Ok(Some(_)));
+        }
+        let group_exists = unsafe { libc::kill(-(pid as libc::pid_t), 0) == 0 }
+            || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM);
+        if !group_exists {
+            if !leader_reaped {
+                let _ = child.wait();
+            }
+            return;
+        }
+        if Instant::now() >= deadline {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    unsafe {
+        libc::kill(-(pid as libc::pid_t), libc::SIGKILL);
+    }
+    if !leader_reaped {
+        let _ = child.wait();
+    }
 }
 
 pub async fn stop(db: &Arc<Database>, container_id: &str) -> Result<StoppedContainer> {
@@ -387,13 +469,12 @@ pub async fn stop(db: &Arc<Database>, container_id: &str) -> Result<StoppedConta
     if actual_start.as_deref() != Some(expected_start.as_str()) {
         bail!("container `{container_id}` process identity is stale; refusing to signal PID {pid}");
     }
-    if let Some(mut child) = children()
+    if children()
         .lock()
         .expect("container process table")
-        .remove(&spec_id)
+        .contains_key(&pid)
     {
-        child.kill().context("stop supervised container")?;
-        let _ = child.wait();
+        terminate_process_group(pid, Duration::from_secs(5));
     } else {
         let result = unsafe { libc::kill(pid as libc::pid_t, libc::SIGTERM) };
         if result != 0 {
@@ -449,7 +530,10 @@ async fn wait_healthy(base_url: &str, health_path: &str, spec: &ContainerSpec) -
                     .await
                     .context("health_contract_invalid: response is not JSON")?;
                 validate_health_identity(spec, &payload)?;
-                return Ok(());
+                match validate_declared_runtime_identity(&client, base_url, spec).await {
+                    Ok(()) => return Ok(()),
+                    Err(error) => last = error.to_string(),
+                }
             }
             Ok(response) => last = format!("HTTP {}", response.status()),
             Err(error) => last = error.to_string(),
@@ -484,7 +568,57 @@ async fn healthy_now(base_url: &str, health_path: &str, spec: &ContainerSpec) ->
         .await
         .context("health_contract_invalid: response is not JSON")?;
     validate_health_identity(spec, &payload)?;
-    Ok(true)
+    Ok(validate_declared_runtime_identity(&client, base_url, spec)
+        .await
+        .is_ok())
+}
+
+/// Bind readiness to the immutable runtime pins carried by the launch
+/// declaration. A matching health target alone is not enough during
+/// replacement: an old process at the same URL can recover while a slow
+/// launcher is still building its successor.
+async fn validate_declared_runtime_identity(
+    client: &reqwest::Client,
+    base_url: &str,
+    spec: &ContainerSpec,
+) -> Result<()> {
+    let expected_image = spec.environment.get("SYNTH_CONTAINER_IMAGE_DIGEST");
+    let expected_producer = spec
+        .environment
+        .get("SYNTH_CONTAINER_PRODUCER_SOURCE_REVISION");
+    if expected_image.is_none() && expected_producer.is_none() {
+        return Ok(());
+    }
+    let info_url = format!("{}/info", base_url.trim_end_matches('/'));
+    let response = client
+        .get(&info_url)
+        .send()
+        .await
+        .with_context(|| format!("container_identity_pending: query {info_url}"))?;
+    anyhow::ensure!(
+        response.status().is_success(),
+        "container_identity_pending: {info_url} returned HTTP {}",
+        response.status()
+    );
+    let info = response
+        .json::<Value>()
+        .await
+        .context("container_identity_pending: /info response is not JSON")?;
+    if let Some(expected) = expected_image {
+        let actual = info.get("imageDigest").and_then(Value::as_str);
+        anyhow::ensure!(
+            actual == Some(expected.as_str()),
+            "container_identity_pending: expected imageDigest {expected}, got {actual:?}"
+        );
+    }
+    if let Some(expected) = expected_producer {
+        let actual = info.get("producerSourceRevision").and_then(Value::as_str);
+        anyhow::ensure!(
+            actual == Some(expected.as_str()),
+            "container_identity_pending: expected producerSourceRevision {expected}, got {actual:?}"
+        );
+    }
+    Ok(())
 }
 
 fn validate_health_identity(spec: &ContainerSpec, payload: &serde_json::Value) -> Result<()> {
@@ -871,6 +1005,31 @@ include = ["launch-a.sh", "launch-b.sh"]
         fs::set_permissions(path, permissions).unwrap();
     }
 
+    fn write_delayed_launcher(path: &Path, delay_seconds: u64, linger: bool) {
+        fs::write(
+            path,
+            format!(
+                "#!/bin/sh\nsleep {delay_seconds}\nprintf '%s\\n' \"$1\" > \"$2\"\n{}\n",
+                if linger { "exec sleep 30" } else { "" }
+            ),
+        )
+        .unwrap();
+        let mut permissions = fs::metadata(path).unwrap().permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(path, permissions).unwrap();
+    }
+
+    fn write_detached_delayed_launcher(path: &Path) {
+        fs::write(
+            path,
+            "#!/bin/sh\n(trap '' TERM; sleep 2; printf '%s\\n' \"$1\" > \"$2\") &\nexit 0\n",
+        )
+        .unwrap();
+        let mut permissions = fs::metadata(path).unwrap().permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(path, permissions).unwrap();
+    }
+
     fn register_declared(db: &Arc<Database>, root: &Path, spec: &ContainerSpec, status: &str) {
         db.with_conn(|conn| {
             conn.execute(
@@ -906,6 +1065,53 @@ include = ["launch-a.sh", "launch-b.sh"]
                         let mut request = [0_u8; 1024];
                         let _ = stream.read(&mut request);
                         let body = format!(r#"{{"status":"ok","target":"{target}"}}"#);
+                        let response = format!(
+                            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                            body.len(), body
+                        );
+                        let _ = stream.write_all(response.as_bytes());
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        thread::sleep(Duration::from_millis(5));
+                    }
+                    Err(_) => break,
+                }
+            }
+        })
+    }
+
+    fn serve_pinned_health(
+        listener: TcpListener,
+        target: String,
+        replacement_marker: std::path::PathBuf,
+        live: Arc<AtomicBool>,
+    ) -> thread::JoinHandle<()> {
+        listener.set_nonblocking(true).unwrap();
+        let first_health = Arc::new(AtomicBool::new(true));
+        thread::spawn(move || {
+            while live.load(Ordering::Acquire) {
+                match listener.accept() {
+                    Ok((mut stream, _)) => {
+                        let mut request = [0_u8; 1024];
+                        let count = stream.read(&mut request).unwrap_or(0);
+                        let request = String::from_utf8_lossy(&request[..count]);
+                        let is_info = request.starts_with("GET /info ");
+                        if !is_info && first_health.swap(false, Ordering::AcqRel) {
+                            // Force healthy_now's single 500ms request to miss,
+                            // while leaving the old endpoint available to the
+                            // readiness loop immediately afterward.
+                            thread::sleep(Duration::from_millis(650));
+                        }
+                        let replaced = replacement_marker.exists();
+                        let body = if is_info {
+                            json!({
+                                "imageDigest": if replaced { "sha256:new" } else { "sha256:old" },
+                                "producerSourceRevision": if replaced { "producer@new" } else { "producer@old" },
+                            })
+                            .to_string()
+                        } else {
+                            json!({"status": "ok", "target": target}).to_string()
+                        };
                         let response = format!(
                             "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
                             body.len(), body
@@ -1128,5 +1334,96 @@ include = ["launch-a.sh", "launch-b.sh"]
         );
         live.store(false, Ordering::Release);
         server.join().unwrap();
+    }
+
+    #[tokio::test]
+    async fn slow_replacement_is_not_masked_by_the_old_healthy_endpoint() {
+        let dir = tempdir().unwrap();
+        let root = dir.path().join("source");
+        fs::create_dir_all(&root).unwrap();
+        write_delayed_launcher(&root.join("launch-a.sh"), 1, true);
+        write_launcher(&root.join("launch-b.sh"));
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let marker = root.join("launch-marker");
+        let live = Arc::new(AtomicBool::new(true));
+        let server = serve_pinned_health(
+            listener,
+            "fixture-target".into(),
+            marker.clone(),
+            live.clone(),
+        );
+        write_manifest(&root, "launch-a.sh", port, "fixture-target");
+        let mut spec = workspace_recipe::find_container_spec(&root, "fixture-container").unwrap();
+        spec.environment
+            .insert("SYNTH_CONTAINER_IMAGE_DIGEST".into(), "sha256:new".into());
+        spec.environment.insert(
+            "SYNTH_CONTAINER_PRODUCER_SOURCE_REVISION".into(),
+            "producer@new".into(),
+        );
+        let db = Arc::new(Database::open(dir.path().join("state.sqlite3")).unwrap());
+
+        let ensured = ensure_spec(&db, &spec).await.unwrap();
+        assert!(
+            marker.exists(),
+            "old health must not let ensure return before the declared replacement is live"
+        );
+
+        stop(&db, &ensured.container_id).await.unwrap();
+        live.store(false, Ordering::Release);
+        server.join().unwrap();
+    }
+
+    #[tokio::test]
+    async fn readiness_timeout_terminates_the_launcher_process_group() {
+        let dir = tempdir().unwrap();
+        let root = dir.path().join("source");
+        fs::create_dir_all(&root).unwrap();
+        write_delayed_launcher(&root.join("launch-a.sh"), 2, false);
+        write_launcher(&root.join("launch-b.sh"));
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        drop(listener);
+        write_manifest(&root, "launch-a.sh", port, "fixture-target");
+        let mut spec = workspace_recipe::find_container_spec(&root, "fixture-container").unwrap();
+        spec.launch.readiness_timeout_seconds = 1;
+        spec.launch.shutdown_grace_seconds = 1;
+        let db = Arc::new(Database::open(dir.path().join("state.sqlite3")).unwrap());
+
+        let error = ensure_spec(&db, &spec).await.unwrap_err().to_string();
+        assert!(error.contains("readiness_timeout"), "{error}");
+        tokio::time::sleep(Duration::from_millis(1_250)).await;
+        assert!(
+            !root.join("launch-marker").exists(),
+            "a timed-out launcher must not remain able to mutate the runtime"
+        );
+    }
+
+    #[tokio::test]
+    async fn cancelled_readiness_wait_terminates_the_launcher_process_group() {
+        let dir = tempdir().unwrap();
+        let root = dir.path().join("source");
+        fs::create_dir_all(&root).unwrap();
+        write_detached_delayed_launcher(&root.join("launch-a.sh"));
+        write_launcher(&root.join("launch-b.sh"));
+        write_manifest(&root, "launch-a.sh", 31999, "fixture-target");
+        let spec = workspace_recipe::find_container_spec(&root, "fixture-container").unwrap();
+
+        let cancelled = tokio::time::timeout(Duration::from_millis(150), async {
+            let launch = start_command(&spec)?;
+            wait_healthy("http://127.0.0.1:31999", "/health", &spec).await?;
+            launch.commit();
+            Ok::<_, anyhow::Error>(())
+        })
+        .await;
+        assert!(
+            cancelled.is_err(),
+            "the readiness future should be cancelled"
+        );
+        tokio::time::sleep(Duration::from_millis(1_100)).await;
+        assert!(
+            !root.join("launch-marker").exists(),
+            "cancelling ensure must reap the launcher and its delayed children"
+        );
     }
 }
