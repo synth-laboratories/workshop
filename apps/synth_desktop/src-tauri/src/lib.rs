@@ -2289,6 +2289,12 @@ async fn visual_stream_poll(
     let declared = declared_urls
         .iter()
         .any(|url| url == request.poll_url.as_str());
+    // The receipt reads the same canonical `live_sse` bindings this check
+    // reads, and keeps what a receipt additionally has to name: the stream id
+    // the renderer polls under, and the declared streams that carry no durable
+    // poll authority at all. Nothing here decides whether a poll is allowed —
+    // `declared_urls` above remains the only authority for that.
+    let receipt_streams = visuals::stream_receipt::declared_streams(&visual.bindings);
     // Every renderer poll of a live stream lands here, so this is where a live
     // stream going quiet becomes a record rather than an empty pane.
     let diagnose_at = |severity: diagnostics::Severity,
@@ -2329,6 +2335,22 @@ async fn visual_stream_poll(
             false,
             serde_json::json!({"declared_stream_count": declared_urls.len()}),
         );
+        // The refusal belongs on the receipt too. A visual whose only poll was
+        // refused has still never had a stream opened, and the receipt is what
+        // says so out loud instead of leaving it resting in `declared`.
+        visuals::stream_receipt::record_poll_failure(
+            &visual.id,
+            visual.current_revision,
+            &receipt_streams,
+            &request.poll_url,
+            visuals::stream_receipt::StreamPollFailure {
+                code: diagnostics::codes::VISUAL_BINDING_UNRESOLVED.to_string(),
+                message: "visual stream poll URL is not declared on this visual".to_string(),
+                status: None,
+                retryable: false,
+                observed_at: chrono::Utc::now().to_rfc3339(),
+            },
+        );
         return Err(AppError::from(anyhow::anyhow!(
             "visual stream poll URL is not declared on this visual; \
              the visual declares {} live stream(s)",
@@ -2337,6 +2359,15 @@ async fn visual_stream_poll(
     }
     let limit = request.limit.clamp(1, 500);
     let started = std::time::Instant::now();
+    // Recorded before the request, not after it. Without the attempt, a stream
+    // that is being asked and a stream nobody asked read identically, and
+    // `replaying` would be a state the host could never observe.
+    visuals::stream_receipt::record_poll_attempt(
+        &visual.id,
+        visual.current_revision,
+        &receipt_streams,
+        &request.poll_url,
+    );
     let response = async {
         reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(10))
@@ -2368,6 +2399,40 @@ async fn visual_stream_poll(
                 .and_then(|cursor| cursor.get("closed"))
                 .and_then(serde_json::Value::as_bool)
                 .unwrap_or(false);
+            // Fold nothing, record everything the page can be asked about
+            // without folding: identity, sequence, kind, cursor, latency. The
+            // renderer still folds; this is the copy nobody has to be trusted
+            // to report.
+            let outcome = visuals::stream_receipt::record_poll_page(
+                &visual.id,
+                visual.current_revision,
+                &receipt_streams,
+                &request.poll_url,
+                &page,
+            );
+            // `STREAM_REPLAY_GAP` has had a code and a remediation and no
+            // emitter. This is the emitter: once per gap rather than once per
+            // poll, because a 500 ms loop over a permanent hole would otherwise
+            // file the same diagnostic twice a second forever.
+            for gap in &outcome.new_gaps {
+                diagnose_at(
+                    diagnostics::Severity::Error,
+                    "stream.replay.gap",
+                    diagnostics::codes::STREAM_REPLAY_GAP,
+                    format!(
+                        "replayed history skips sequence {} to {} on scope {}",
+                        gap.after, gap.before, gap.scope
+                    ),
+                    true,
+                    serde_json::json!({
+                        "scope": gap.scope,
+                        "after": gap.after,
+                        "before": gap.before,
+                        "missing": gap.before.saturating_sub(gap.after).saturating_sub(1),
+                        "transport_state": outcome.state_str(),
+                    }),
+                );
+            }
             diagnose_at(
                 diagnostics::Severity::Debug,
                 if closed {
@@ -2392,23 +2457,39 @@ async fn visual_stream_poll(
                     "high_water": cursor.and_then(|cursor| cursor.get("high_water")),
                     "closed": closed,
                     "duration_ms": started.elapsed().as_millis() as u64,
+                    "transport_state": outcome.state_str(),
                 }),
             );
             Ok(contract::specta::OpaqueJson(page))
         }
         Err(error) => {
             let status = error.status().map(|status| status.as_u16());
+            // A refused or 5xx poll may recover; a 4xx says the stream is
+            // gone and retrying only repeats the question.
+            let retryable =
+                error.is_timeout() || error.is_connect() || status.is_none_or(|code| code >= 500);
             fail(
                 diagnostics::codes::STREAM_INTERRUPTED,
                 error.to_string(),
-                // A refused or 5xx poll may recover; a 4xx says the stream is
-                // gone and retrying only repeats the question.
-                error.is_timeout() || error.is_connect() || status.is_none_or(|code| code >= 500),
+                retryable,
                 serde_json::json!({
                     "status": status,
                     "after": request.after,
                     "duration_ms": started.elapsed().as_millis() as u64,
                 }),
+            );
+            visuals::stream_receipt::record_poll_failure(
+                &visual.id,
+                visual.current_revision,
+                &receipt_streams,
+                &request.poll_url,
+                visuals::stream_receipt::StreamPollFailure {
+                    code: diagnostics::codes::STREAM_INTERRUPTED.to_string(),
+                    message: error.to_string(),
+                    status,
+                    retryable,
+                    observed_at: chrono::Utc::now().to_rfc3339(),
+                },
             );
             Err(AppError::from(error))
         }

@@ -12,6 +12,7 @@ mod renditions;
 pub mod sourced;
 #[cfg(target_os = "macos")]
 pub mod snapshot;
+pub mod stream_receipt;
 pub mod systems;
 mod templates;
 
