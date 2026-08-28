@@ -108,7 +108,9 @@ if [[ -z "$WHEEL" ]]; then
   echo "[optimizers-runtime] build omitted synth-optimizers==$VERSION" >&2
   exit 1
 fi
-cp "$WHEEL" "$STAGING/wheels/"
+if [[ "$(dirname "$WHEEL")" != "$STAGING/wheels" ]]; then
+  cp "$WHEEL" "$STAGING/wheels/"
+fi
 
 python3 - "$STAGING" "$VERSION" "$SOURCE_REVISION" "$LOCK_SHA256" <<'PY'
 import hashlib
