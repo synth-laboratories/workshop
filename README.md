@@ -87,5 +87,5 @@ Read [`SECURITY.md`](SECURITY.md) before reporting a vulnerability and
 contains product and build source; the private release verification corpus is
 maintained separately.
 
-Copyright Synth Laboratories. The OSS license for the v0.8 publication must be
-selected and added before the repository's visibility is changed to public.
+Copyright 2026 Synth Laboratories. Licensed under the
+[Apache License 2.0](LICENSE). See [NOTICE](NOTICE) for attribution notices.

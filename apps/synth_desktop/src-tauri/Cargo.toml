@@ -2,6 +2,7 @@
 name = "synth-desktop"
 version = "0.8.0"
 description = "Synth Workshop Tauri host"
+license = "Apache-2.0"
 edition = "2021"
 default-run = "synth-desktop"
 
