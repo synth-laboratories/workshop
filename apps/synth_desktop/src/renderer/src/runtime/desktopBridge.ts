@@ -488,6 +488,25 @@ window.synthTelemetry ??= isTauri
 			flushNow: async () => 0
 		};
 	})();
+window.synthReleaseTier ??= isTauri
+	? { get: () => fromGenerated(spectaCommands.releaseTierGet()) }
+	: {
+		// Browser mode has no host binary: report the bundle's own tier with
+		// an empty feature envelope rather than inventing host inclusions.
+		get: async () => ({
+			tier: __WORKSHOP_TIER__,
+			contractVersion: "workshop.release-tiers.v1",
+			features: []
+		})
+	};
+if (isTauri) {
+	// A host/bundle tier mismatch is a packaging defect; surface it loudly at
+	// startup instead of letting the envelopes silently disagree.
+	void window.synthReleaseTier
+		.get()
+		.then((report) => import("../flags/tier").then(({ verifyHostTier }) => verifyHostTier(report)))
+		.catch(() => undefined);
+}
 window.synthCodexOauth ??= isTauri
 	? {
 		begin: () => fromGenerated(spectaCommands.codexOauthBegin()),
@@ -1092,6 +1111,9 @@ export const bridges = {
 	},
 	get telemetry() {
 		return window.synthTelemetry;
+	},
+	get releaseTier() {
+		return window.synthReleaseTier;
 	},
 	get terminal() {
 		return window.synthTerminal;

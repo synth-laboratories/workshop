@@ -6,6 +6,11 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 # shellcheck source=scripts/mcp-adapters.sh
 source "$ROOT/scripts/mcp-adapters.sh"
 REPO_SIBLING_ROOT="$(dirname "$ROOT")"
+# Dev instances compile the widest maturity envelope (contracts/
+# release-tiers-v1.toml): tier-dev cargo features for the host, and the same
+# tier for the renderer bundle through Vite's WORKSHOP_TIER define. Packaged
+# releases keep the stable default by not going through this script.
+export WORKSHOP_TIER="${WORKSHOP_TIER:-dev}"
 GIT_COMMON_DIR="$(git -C "$ROOT" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)"
 if [[ -n "$GIT_COMMON_DIR" ]]; then
   PRIMARY_REPO_SIBLING_ROOT="$(dirname "$(dirname "$GIT_COMMON_DIR")")"
@@ -1256,7 +1261,7 @@ dev_instance() {
     echo "[desktop:$NAME] building embedded-agent MCP adapters"
     cargo build \
       --manifest-path "$ROOT/apps/synth_desktop/src-tauri/Cargo.toml" \
-      --features eval-driver \
+      --features eval-driver,tier-dev \
       "${adapter_bin_args[@]}"
   else
     echo "[desktop:$NAME] reusing embedded-agent MCP adapters (set SYNTH_DESKTOP_REBUILD_ADAPTERS=1 to refresh)"
@@ -1292,7 +1297,7 @@ dev_instance() {
     fi
     export SYNTH_MLX_RL_PROJECT_ROOT
     "$ROOT/scripts/stage-mlx-runtime-distribution.sh"
-    npx tauri build --debug --features eval-driver --bundles app --config "$PACKAGE_CONFIG" --config "$CONFIG"
+    npx tauri build --debug --features eval-driver,tier-dev --bundles app --config "$PACKAGE_CONFIG" --config "$CONFIG"
     local app_bundle="$CARGO_TARGET_DIR/debug/bundle/macos/$APP_TITLE.app"
     local app_executable="$CUA_EXE"
     if [[ ! -x "$app_executable" ]]; then
@@ -1318,7 +1323,7 @@ dev_instance() {
     exec_isolated_cua_bundle
   fi
   release_operation_lock_before_exec
-  exec npx tauri dev --features eval-driver --config "$PACKAGE_CONFIG" --config "$CONFIG"
+  exec npx tauri dev --features eval-driver,tier-dev --config "$PACKAGE_CONFIG" --config "$CONFIG"
 }
 
 clean_instance() {

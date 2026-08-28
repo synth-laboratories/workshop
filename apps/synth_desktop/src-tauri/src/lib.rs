@@ -46,6 +46,7 @@ mod optimizers;
 mod plugins;
 pub mod presentation;
 pub mod recovery;
+pub mod release_tier;
 mod reports;
 mod runtime;
 mod secrets;

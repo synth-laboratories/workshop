@@ -92,9 +92,24 @@ objc2-web-kit = { version = "0.3", default-features = false, features = [
 ] }
 
 [features]
+# Maturity envelope (contracts/release-tiers-v1.toml). Exactly one point on
+# the chain selects the build tier; each tier structurally includes everything
+# below it, and packaging defaults to the stable envelope. release_tier.rs
+# rejects tier-less and incompatible configurations at compile time.
+default = ["tier-stable"]
+tier-core = []
+tier-stable = ["tier-core"]
+tier-beta = ["tier-stable"]
+tier-alpha = ["tier-beta"]
+tier-dev = ["tier-alpha"]
 # QA control plane. Never a default: release artifacts must not contain the
-# eval-driver route table at all. Instance builds opt in (desktop-instance.sh).
+# eval-driver route table at all. Instance builds opt in (desktop-instance.sh)
+# and must sit inside a beta-or-wider envelope.
 eval-driver = []
+
+[[bin]]
+name = "workshop-tier-plan"
+path = "src/bin/workshop_tier_plan.rs"
 
 [[bin]]
 name = "synth-visuals-mcp"

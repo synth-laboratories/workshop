@@ -489,6 +489,11 @@ export const commands = {
 	 *  without current consent it ships nothing and reports zero.
 	 */
 	productTelemetryFlushNow: () => typedError<number, AppError>(__TAURI_INVOKE("product_telemetry_flush_now")),
+	/**
+	 *  Display-safe build envelope for the renderer: the compiled tier and the
+	 *  per-feature included/enabled resolution.
+	 */
+	releaseTierGet: () => __TAURI_INVOKE<ReleaseTierReport>("release_tier_get"),
 };
 
 /* Types */
@@ -1019,6 +1024,14 @@ export type DiagnosticReportRequest = {
 	details?: unknown,
 };
 
+export type Enforcement =
+/**  A cargo feature compiles the host code out of excluded tiers. */
+"compiled" |
+/**  A Vite define statically eliminates the renderer code in excluded tiers. */
+"bundled" |
+/**  Maturity classification only; pre-envelope code, not yet gated. */
+"declared";
+
 export type EntityCount = {
 	found: number,
 	imported: number,
@@ -1252,6 +1265,20 @@ export type ExperimentRelateRequest = {
 };
 
 export type ExperimentStatus = "planned" | "running" | "completed" | "failed" | "aborted" | "superseded" | "excluded";
+
+export type FeatureReport = {
+	name: string,
+	summary: string,
+	owner: string,
+	minTier: Tier,
+	enforcement: Enforcement,
+	/**  Classified inside this build's envelope (min_tier ≤ build tier). */
+	included: boolean,
+	/**  Actually in the binary: `included`, or grandfathered pre-envelope code. */
+	present: boolean,
+	enabled: boolean,
+	runtimeFlag: string | null,
+};
 
 export type HostedTrainingModel = {
 	modelId: string,
@@ -2135,6 +2162,12 @@ export type RecoveryPrompt = {
 	clientMessageId?: string | null,
 };
 
+export type ReleaseTierReport = {
+	tier: Tier,
+	contractVersion: string,
+	features: FeatureReport[],
+};
+
 /**  What `remove` did, for the receipt. G7. */
 export type RemovalReport = {
 	bundleRemoved: boolean,
@@ -2773,6 +2806,12 @@ export type TerminalInfo = {
 	createdAt: number,
 	exitCode: number | null,
 };
+
+/**
+ *  Maturity tiers, narrowest to widest. Declaration order is the envelope
+ *  order, so `Ord` compares inclusion breadth.
+ */
+export type Tier = "core" | "stable" | "beta" | "alpha" | "dev";
 
 export type TraceBundleIngestRequest = {
 	sourcePath: string,
