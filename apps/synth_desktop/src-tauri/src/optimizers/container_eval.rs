@@ -35,7 +35,6 @@ const EXPERIMENT_SCHEMA: &str = "synth.experiment.overview.v1";
 /// snapshot, so it keeps filling in while the campaign runs.
 const WORKBENCH_TEMPLATE: &str = "trace.workbench.v1";
 const EVAL_ALGORITHM_ID: &str = "eval";
-const POLL_TIMEOUT: Duration = Duration::from_secs(120);
 const POLL_INTERVAL: Duration = Duration::from_millis(80);
 const DEFAULT_BLOCKING_EVAL_HTTP_TIMEOUT: Duration = crate::limits::CONTAINER_POLICY_ROLLOUT_TIMEOUT;
 
@@ -195,6 +194,20 @@ impl EvalSpec {
             )
         });
         capability_bound.map_or(configured, |bound| configured.max(bound))
+    }
+
+    /// Keep terminal observation alive for the full approved credential lease.
+    /// A harness may spend most of its model-call window before running a
+    /// verifier, and revoking at the shorter HTTP default would orphan that
+    /// otherwise bounded work.
+    fn terminal_poll_timeout(&self) -> Duration {
+        let lease_seconds = self
+            .admitted_use_policy
+            .as_ref()
+            .map(|policy| policy.lifetime_seconds)
+            .unwrap_or_else(|| crate::limits::SECRETS_CAPABILITY_TTL.as_secs());
+        self.blocking_http_timeout()
+            .max(Duration::from_secs(lease_seconds))
     }
 
     fn from_workspace(recipe: &WorkspaceRecipe, workspace: &std::path::Path) -> Result<Self> {
@@ -2223,19 +2236,33 @@ fn container_proxy_policy(spec: &EvalSpec) -> crate::secrets::SecretsUsePolicy {
         if let Some(model) = spec.model.strip_prefix("openai/") {
             models.push(model.to_string());
         }
+        models.sort();
+        models.dedup();
     }
+    // The exact Codex SWE policy runs Luna with high reasoning. Bind that
+    // workload-owned setting into the same narrow capability; every other
+    // recipe keeps its declared effort.
+    let exact_codex_swe_pin = spec.harness.eq_ignore_ascii_case("openrouter")
+        && spec.policy_config == "codex-cli-openrouter-swe-proxy-v1"
+        && spec.provider.eq_ignore_ascii_case("openrouter")
+        && spec.model == "openai/gpt-5.6-luna";
+    let reasoning_efforts = if exact_codex_swe_pin {
+        vec!["high".to_string()]
+    } else {
+        spec.policy
+            .get("reasoning_effort")
+            .or_else(|| spec.policy.get("effort"))
+            .and_then(Value::as_str)
+            .map(|value| vec![value.to_string()])
+            .unwrap_or_default()
+    };
     super::admission::provider_use_policy_from_bounds(
         vec![
             "chat.completions.create".into(),
             "responses.create".into(),
         ],
         models,
-        spec.policy
-            .get("reasoning_effort")
-            .or_else(|| spec.policy.get("effort"))
-            .and_then(Value::as_str)
-            .map(|value| vec![value.to_string()])
-            .unwrap_or_default(),
+        reasoning_efforts,
         total_calls.min(u32::MAX as u64) as u32,
         (spec.cost_ceiling_usd * 1_000_000.0).round().max(0.0) as u64,
         crate::limits::SECRETS_CAPABILITY_TTL.as_secs(),
@@ -4097,7 +4124,13 @@ async fn run_one_example(
     };
 
     if !rollout_terminal(&state)? {
-        state = poll_until_terminal(ctx.client, ctx.base, &rollout_id).await?;
+        state = poll_until_terminal(
+            ctx.client,
+            ctx.base,
+            &rollout_id,
+            spec.terminal_poll_timeout(),
+        )
+        .await?;
     }
     let reported_status = RolloutReportedStatus::parse(&state)?;
     if !reported_status.is_terminal() {
@@ -4409,8 +4442,9 @@ async fn poll_until_terminal(
     client: &reqwest::Client,
     base: &str,
     rollout_id: &str,
+    timeout: Duration,
 ) -> Result<Value> {
-    let deadline = Instant::now() + POLL_TIMEOUT;
+    let deadline = Instant::now() + timeout;
     let outage_wait = crate::limits::OPTIMIZER_RUN_INDEX_WAIT;
     let mut event_endpoint_outage_started: Option<Instant> = None;
     loop {
@@ -4445,7 +4479,9 @@ async fn poll_until_terminal(
             Ok(_) => {
                 // Non-gateway, non-success: the rollout is not terminal yet
                 // (or the container is still admitting). Keep polling until
-                // POLL_TIMEOUT, as before.
+                // the same bounded timeout as the rollout's blocking HTTP
+                // request. Long-running harnesses can legitimately outlive a
+                // generic UI request timeout.
             }
             Err(error) if super::manager::observer_error_is_transient_gateway(&error) => {
                 let started = event_endpoint_outage_started.get_or_insert_with(Instant::now);
@@ -7143,6 +7179,67 @@ max_total_rollouts = 4
         assert_eq!(body["config"]["base_url"], proxy);
         assert_eq!(body["config"]["api_key_env"], "OPENAI_API_KEY");
         assert!(!body.to_string().contains("openrouter.ai"));
+    }
+
+    #[test]
+    fn container_proxy_policy_uses_the_approved_credential_scope() {
+        let mut spec = EvalSpec::classify_fixture();
+        let mut admitted = crate::secrets::SecretsUsePolicy::default();
+        admitted.operations = vec!["responses.create".into()];
+        admitted.lifetime_seconds = 1_234;
+        admitted.models = vec!["gpt-4.1-nano".into(), "openai/gpt-4.1-nano".into()];
+        spec.admitted_use_policy = Some(admitted);
+
+        let policy = container_proxy_policy(&spec);
+
+        assert_eq!(policy.operations, vec!["responses.create"]);
+        assert_eq!(policy.lifetime_seconds, 1_234);
+        assert_eq!(policy.models, vec!["gpt-4.1-nano", "openai/gpt-4.1-nano"]);
+    }
+
+    #[test]
+    fn container_proxy_policy_authorizes_exact_codex_swe_reasoning_effort() {
+        let mut spec = EvalSpec::classify_fixture();
+        spec.harness = "openrouter".into();
+        spec.policy_config = "codex-cli-openrouter-swe-proxy-v1".into();
+        spec.provider = "openrouter".into();
+        spec.model = "openai/gpt-5.6-luna".into();
+
+        let policy = container_proxy_policy(&spec);
+
+        assert_eq!(policy.reasoning_efforts, vec!["high"]);
+        assert_eq!(policy.models, vec!["gpt-5.6-luna", "openai/gpt-5.6-luna"]);
+    }
+
+    #[test]
+    fn long_running_rollouts_use_the_approved_lease_for_terminal_polling() {
+        let mut spec = EvalSpec::classify_fixture();
+        spec.policy.remove("timeout_seconds");
+        let mut admitted = crate::secrets::SecretsUsePolicy::default();
+        admitted.lifetime_seconds = 3_600;
+        spec.admitted_use_policy = Some(admitted);
+        assert_eq!(
+            spec.blocking_http_timeout(),
+            DEFAULT_BLOCKING_EVAL_HTTP_TIMEOUT
+        );
+        assert!(spec.blocking_http_timeout() > Duration::from_secs(120));
+        assert_eq!(spec.terminal_poll_timeout(), Duration::from_secs(3_600));
+
+        spec.policy.insert("timeout_seconds".into(), json!(30));
+        spec.maximum_model_calls_per_rollout = 40;
+        assert_eq!(spec.blocking_http_timeout(), Duration::from_secs(1_260));
+        assert_eq!(spec.terminal_poll_timeout(), Duration::from_secs(3_600));
+    }
+
+    #[test]
+    fn workspace_eval_proxy_policy_retains_chat_completions_default() {
+        let spec = EvalSpec::classify_fixture();
+
+        let policy = container_proxy_policy(&spec);
+
+        assert_eq!(policy.operations, vec!["chat.completions.create"]);
+        assert_eq!(policy.models, vec!["openai/gpt-4.1-nano"]);
+        assert_eq!(policy.reasoning_efforts, vec!["medium"]);
     }
 
     #[test]

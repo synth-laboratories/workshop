@@ -18,6 +18,65 @@ use std::num::NonZeroU32;
 use std::process::Command;
 
 const INLINE_PROVIDER_OPERATION: &str = "chat.completions.create";
+const OPENROUTER_CODEX_SWE_NAMESPACE: &str = "openrouter";
+const OPENROUTER_CODEX_SWE_POLICY: &str = "codex-cli-openrouter-swe-proxy-v1";
+const OPENROUTER_CODEX_SWE_MODEL: &str = "openai/gpt-5.6-luna";
+const RESPONSES_CREATE: &str = "responses.create";
+// Capabilities name concrete proxy wire operations. `provider.request` was
+// never routed, so a capability scoped to it failed every first model call
+// with operation_denied; the generic scope is the routed chat operation.
+const GENERIC_PROVIDER_OPERATION: &str = "chat.completions.create";
+
+/// Select the least-privileged provider operation for a validated inline
+/// policy. Only the exact OpenRouter Codex SWE policy/model pin may use the
+/// Responses route; every unrelated pin keeps the generic compatibility
+/// operation.
+pub(super) fn credential_capability_scope_for_policy(
+    namespace: &str,
+    name: &str,
+    provider: &str,
+    model: &str,
+    configuration: &Value,
+) -> admission::CredentialCapabilityScope {
+    let exact_codex_swe_pin = namespace.eq_ignore_ascii_case(OPENROUTER_CODEX_SWE_NAMESPACE)
+        && name == OPENROUTER_CODEX_SWE_POLICY
+        && provider.eq_ignore_ascii_case(OPENROUTER_CODEX_SWE_NAMESPACE)
+        && model == OPENROUTER_CODEX_SWE_MODEL;
+    let empty_configuration = configuration
+        .as_object()
+        .is_some_and(serde_json::Map::is_empty);
+    let responses_declared = configuration
+        .get("api")
+        .and_then(Value::as_str)
+        .is_some_and(|value| value.eq_ignore_ascii_case("responses"))
+        || configuration
+            .get("workload")
+            .and_then(Value::as_str)
+            .is_some_and(|value| value.eq_ignore_ascii_case("codex_responses"))
+        || configuration
+            .get("operation")
+            .and_then(Value::as_str)
+            .is_some_and(|value| value.eq_ignore_ascii_case(RESPONSES_CREATE))
+        || configuration
+            .get("operations")
+            .and_then(Value::as_array)
+            .is_some_and(|values| {
+                values.iter().any(|value| {
+                    value
+                        .as_str()
+                        .is_some_and(|operation| operation.eq_ignore_ascii_case(RESPONSES_CREATE))
+                })
+            });
+    let operation = if exact_codex_swe_pin && (empty_configuration || responses_declared) {
+        RESPONSES_CREATE
+    } else {
+        GENERIC_PROVIDER_OPERATION
+    };
+    admission::CredentialCapabilityScope::new(
+        [operation.to_string()],
+        crate::limits::DEEPSWE_HARBOR_CAPABILITY_TTL_SECONDS,
+    )
+}
 
 /// Resolve current authority, construct the default inline recipe, validate it,
 /// and assign its immutable digest. No recipe catalog is consulted here.
@@ -202,11 +261,23 @@ async fn discovery_context(
         .first()
         .context("no matching registered container")?;
     request.container_id = Some(selected.container_id.clone());
+    let materialization_limits = json!({
+        "max_calls": request
+            .maximum_model_calls_per_rollout
+            .context("inline evaluation requires maximumModelCallsPerRollout before task materialization")?,
+        "max_steps": request
+            .maximum_steps_per_rollout
+            .context("inline evaluation requires maximumStepsPerRollout before task materialization")?,
+        "max_cost_usd": request
+            .hard_total_cost_usd
+            .context("inline evaluation requires hardTotalCostUsd before task materialization")?,
+    });
     materialize_seed_instances(
         selected_base_url
             .as_deref()
             .context("registered container has no base URL")?,
         &request.seeds,
+        materialization_limits,
     )
     .await?;
     let revision = policy_revisions
@@ -231,11 +302,17 @@ async fn discovery_context(
         .provider
         .clone()
         .context("inline evaluation requires provider")?;
-    // Capabilities name concrete proxy wire operations. `provider.request`
-    // was never routed, so valid inline runs reached the container and then
-    // failed every first model call with operation_denied.
-    let scope =
-        admission::CredentialCapabilityScope::new([INLINE_PROVIDER_OPERATION.to_string()], 3_600);
+    let scope = credential_capability_scope_for_policy(
+        &namespace,
+        &name,
+        provider.as_str(),
+        request
+            .model_id
+            .as_ref()
+            .map(|model| model.as_str())
+            .unwrap_or_default(),
+        declared_configuration.as_value(),
+    );
     Ok((
         DiscoveryContext {
             containers: candidates,
@@ -259,11 +336,16 @@ async fn discovery_context(
     ))
 }
 
-async fn materialize_seed_instances(base_url: &str, seeds: &[admission::Seed]) -> Result<()> {
+async fn materialize_seed_instances(
+    base_url: &str,
+    seeds: &[admission::Seed],
+    limits: Value,
+) -> Result<()> {
     anyhow::ensure!(
         !seeds.is_empty(),
         "inline evaluation requires at least one seed"
     );
+    let expected_limits = limits.clone();
     let client = crate::http::http_client_builder().build()?;
     let task = client
         .get(format!("{}/task_info", base_url.trim_end_matches('/')))
@@ -286,7 +368,7 @@ async fn materialize_seed_instances(base_url: &str, seeds: &[admission::Seed]) -
             "{}/task_instances/materialize",
             base_url.trim_end_matches('/')
         ))
-        .json(&json!({"task_id": task_id, "seeds": requested}))
+        .json(&json!({"task_id": task_id, "seeds": requested, "limits": limits}))
         .send()
         .await
         .context("POST /task_instances/materialize")?;
@@ -315,6 +397,11 @@ async fn materialize_seed_instances(base_url: &str, seeds: &[admission::Seed]) -
             instance.get("task_instance_id").and_then(Value::as_str) == Some(expected.as_str())
                 && instance.get("seed").and_then(Value::as_i64) == Some(seed.0),
             "task_instance_identity_mismatch: expected {expected}"
+        );
+        anyhow::ensure!(
+            instance.get("limits") == Some(&expected_limits),
+            "task_instance_limits_mismatch: expected {}",
+            expected_limits
         );
     }
     Ok(())
@@ -611,5 +698,73 @@ mod tests {
             material.content_digest,
             admission::digest_bytes(policy_source.as_bytes())
         );
+    }
+
+    use serde_json::json;
+
+    const TARGET_NAMESPACE: &str = "openrouter";
+    const TARGET_POLICY: &str = "codex-cli-openrouter-swe-proxy-v1";
+    const TARGET_PROVIDER: &str = "openrouter";
+    const TARGET_MODEL: &str = "openai/gpt-5.6-luna";
+
+    #[test]
+    fn unrelated_policy_keeps_the_generic_provider_operation() {
+        let scope = credential_capability_scope_for_policy(
+            "openrouter",
+            "ordinary-chat-policy",
+            TARGET_PROVIDER,
+            TARGET_MODEL,
+            &json!({"api": "chat_completions"}),
+        );
+        assert_eq!(scope.operations, ["chat.completions.create"]);
+    }
+
+    #[test]
+    fn the_openrouter_codex_swe_policy_selects_responses_create() {
+        let scope = credential_capability_scope_for_policy(
+            TARGET_NAMESPACE,
+            TARGET_POLICY,
+            TARGET_PROVIDER,
+            TARGET_MODEL,
+            &json!({
+                "api": "responses",
+                "workload": "codex_responses",
+                "operation": "responses.create"
+            }),
+        );
+        assert_eq!(scope.operations, ["responses.create"]);
+    }
+
+    #[test]
+    fn responses_config_does_not_widen_an_unrelated_policy() {
+        let scope = credential_capability_scope_for_policy(
+            TARGET_NAMESPACE,
+            "another-policy",
+            TARGET_PROVIDER,
+            TARGET_MODEL,
+            &json!({"api": "responses", "operation": "responses.create"}),
+        );
+        assert_eq!(scope.operations, ["chat.completions.create"]);
+    }
+
+    #[test]
+    fn empty_config_is_only_accepted_for_the_exact_registered_codex_swe_pin() {
+        let scope = credential_capability_scope_for_policy(
+            TARGET_NAMESPACE,
+            TARGET_POLICY,
+            TARGET_PROVIDER,
+            TARGET_MODEL,
+            &json!({}),
+        );
+        assert_eq!(scope.operations, ["responses.create"]);
+
+        let wrong_model = credential_capability_scope_for_policy(
+            TARGET_NAMESPACE,
+            TARGET_POLICY,
+            TARGET_PROVIDER,
+            "openai/another-model",
+            &json!({}),
+        );
+        assert_eq!(wrong_model.operations, ["chat.completions.create"]);
     }
 }

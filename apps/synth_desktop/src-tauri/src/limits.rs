@@ -37,11 +37,40 @@ pub const VISUALS_IPC_ROLL_TIMEOUT: Duration = Duration::from_secs(10);
 // closed independently.
 pub const CONTAINER_POLICY_ROLLOUT_TIMEOUT: Duration = Duration::from_secs(60 * 60);
 
+/// Native scope used by the DeepSWE Harbor task's 5400-second agent bound.
+/// Keeping this value in the host makes the approval disclosure, issued
+/// capability, and credential-proxy stream use the same lifetime instead of
+/// allowing post-expiry 401s.
+pub const DEEPSWE_HARBOR_CAPABILITY_TTL_SECONDS: u32 = 5_400;
+pub const DEEPSWE_HARBOR_CAPABILITY_TTL: Duration =
+    Duration::from_secs(DEEPSWE_HARBOR_CAPABILITY_TTL_SECONDS as u64);
+
 /// Account snapshot HTTP budget.
 pub const ACCOUNT_CLOUD_TIMEOUT: Duration = Duration::from_secs(12);
 
 /// Credential broker upstream (full streamed cloud turn).
-pub const CREDENTIAL_UPSTREAM_TIMEOUT: Duration = Duration::from_secs(900);
+///
+/// DeepSWE's Harbor process may legitimately hold one Luna request for the
+/// full task lifetime, so this must stay aligned with the approved capability
+/// rather than the short default HTTP timeout.
+pub const CREDENTIAL_UPSTREAM_TIMEOUT: Duration = DEEPSWE_HARBOR_CAPABILITY_TTL;
+
+/// Minimum interval between provider request starts for one capability. Luna
+/// carries the growing Codex transcript on every tool turn, so token-per-minute
+/// pressure becomes the binding limit well before request-per-minute pressure.
+/// The OpenRouter SWE route admitted useful completions 351--367 seconds apart
+/// in the observed DeepSWE trace. A 370-second floor avoids burning capability
+/// reservations on attempts that the provider cannot yet admit.
+pub const CREDENTIAL_UPSTREAM_MIN_INTERVAL: Duration = Duration::from_secs(370);
+
+/// Number of additional upstream attempts the proxy makes for a 429 response.
+/// The logical capability call is reserved once and remains one call across
+/// these provider-level retries.
+pub const CREDENTIAL_UPSTREAM_MAX_RATE_LIMIT_RETRIES: u32 = 4;
+
+/// Deterministic floor for rate-limit retry backoff. The per-capability pacer
+/// independently enforces the request-start cadence.
+pub const CREDENTIAL_UPSTREAM_RATE_LIMIT_BACKOFF: Duration = Duration::from_secs(370);
 
 /// Desktop update manifest fetch.
 pub const UPDATE_MANIFEST_TIMEOUT: Duration = Duration::from_secs(5);
@@ -115,3 +144,25 @@ pub const IMAGE_PREVIEW_MAX_BYTES: u64 = 20 * 1024 * 1024;
 /// Sealed trace artifact cap for a container import. Above this a trace belongs
 /// in a bundle the user moves deliberately, not in a loopback fetch.
 pub const MAX_IMPORTED_TRACE_BYTES: u64 = 256 * 1024 * 1024;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn credential_proxy_covers_deepswe_capability_lifetime() {
+        assert_eq!(CREDENTIAL_UPSTREAM_TIMEOUT, DEEPSWE_HARBOR_CAPABILITY_TTL);
+        assert_eq!(
+            CREDENTIAL_UPSTREAM_TIMEOUT.as_secs(),
+            u64::from(DEEPSWE_HARBOR_CAPABILITY_TTL_SECONDS)
+        );
+        assert_eq!(CREDENTIAL_UPSTREAM_TIMEOUT.as_secs(), 5_400);
+    }
+
+    #[test]
+    fn credential_proxy_rate_limit_guard_is_conservative_and_bounded() {
+        assert!(CREDENTIAL_UPSTREAM_MIN_INTERVAL >= Duration::from_secs(6));
+        assert!(CREDENTIAL_UPSTREAM_MAX_RATE_LIMIT_RETRIES > 0);
+        assert!(CREDENTIAL_UPSTREAM_RATE_LIMIT_BACKOFF >= CREDENTIAL_UPSTREAM_MIN_INTERVAL);
+    }
+}

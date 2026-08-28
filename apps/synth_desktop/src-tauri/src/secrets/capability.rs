@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 use uuid::Uuid;
 
 use super::audit::{self, SecretAuditEvent};
@@ -257,6 +258,7 @@ pub struct MeasuredUsage {
 #[derive(Default)]
 pub struct CapabilityStore {
     by_handle: Mutex<HashMap<String, LiveCapability>>,
+    next_request_at: Mutex<HashMap<String, Instant>>,
 }
 
 impl CapabilityStore {
@@ -291,6 +293,10 @@ impl CapabilityStore {
                 live.status = CapabilityStatus::Revoked.as_str().into();
             }
         }
+        self.next_request_at
+            .lock()
+            .expect("capability request pacer")
+            .remove(handle);
     }
 
     pub fn revoke_run(&self, run_id: &str) -> Vec<String> {
@@ -316,7 +322,44 @@ impl CapabilityStore {
                 handles.push(live.handle.clone());
             }
         }
+        let mut pacing = self
+            .next_request_at
+            .lock()
+            .expect("capability request pacer");
+        for handle in &handles {
+            pacing.remove(handle);
+        }
         handles
+    }
+
+    /// Claim the provider request-start boundary only when it is currently
+    /// eligible. Waiters observe the same boundary without pushing later
+    /// requests into speculative future slots.
+    fn request_start_delay_at(&self, handle: &str, now: Instant, interval: Duration) -> Duration {
+        let mut next = self
+            .next_request_at
+            .lock()
+            .expect("capability request pacer");
+        let eligible_at = next.get(handle).copied().unwrap_or(now);
+        let delay = eligible_at.saturating_duration_since(now);
+        if delay.is_zero() {
+            next.insert(handle.to_owned(), now + interval);
+        }
+        delay
+    }
+
+    pub async fn pace_request_start(&self, handle: &str) {
+        loop {
+            let delay = self.request_start_delay_at(
+                handle,
+                Instant::now(),
+                crate::limits::CREDENTIAL_UPSTREAM_MIN_INTERVAL,
+            );
+            if delay.is_zero() {
+                return;
+            }
+            tokio::time::sleep(delay).await;
+        }
     }
 
     pub fn list_active(&self) -> Vec<LiveCapability> {
@@ -811,5 +854,29 @@ mod tests {
             )
             .unwrap();
         assert_eq!(summary_from_live(&still_unknown, None).used_cost_usd, None);
+    }
+
+    #[test]
+    fn request_pacer_does_not_stack_waiters_into_future_windows() {
+        let store = CapabilityStore::new();
+        let now = Instant::now();
+        let interval = Duration::from_secs(6);
+
+        assert_eq!(
+            store.request_start_delay_at("wcap_test", now, interval),
+            Duration::ZERO
+        );
+        assert_eq!(
+            store.request_start_delay_at("wcap_test", now, interval),
+            interval
+        );
+        assert_eq!(
+            store.request_start_delay_at("wcap_test", now + interval, interval),
+            Duration::ZERO
+        );
+        assert_eq!(
+            store.request_start_delay_at("wcap_other", now, interval),
+            Duration::ZERO
+        );
     }
 }
