@@ -60,6 +60,7 @@ const MIGRATIONS: &[&str] = &[
     MIGRATION_55,
     MIGRATION_56,
     MIGRATION_57,
+    MIGRATION_58,
 ];
 
 /// Apply every migration the database has not reached yet.
@@ -3467,6 +3468,85 @@ UPDATE secret_capabilities
 SET used_cost_known = CASE WHEN used_calls = 0 THEN 1 ELSE 0 END;
 "#;
 
+/// Phase-5 Stage 0: make the optimizer event log queryable without decoding
+/// every envelope. `occurred_at` remains the producer clock for compatibility;
+/// `ingested_at` is the host witness used for rates and resume diagnostics.
+/// Legacy rows use their producer timestamp as an explicitly named fallback,
+/// while every new append records the host clock at the write boundary.
+/// `payload_cas_digest` reserves the future replay-CAS cutover; it stays NULL
+/// until every historical replay reader can hydrate through ContentStore.
+const MIGRATION_58: &str = r#"
+ALTER TABLE optimizer_events ADD COLUMN rollout_id TEXT;
+ALTER TABLE optimizer_events ADD COLUMN kind TEXT;
+ALTER TABLE optimizer_events ADD COLUMN step INTEGER;
+ALTER TABLE optimizer_events ADD COLUMN span_id TEXT;
+ALTER TABLE optimizer_events ADD COLUMN producer_occurred_at TEXT;
+ALTER TABLE optimizer_events ADD COLUMN ingested_at TEXT;
+ALTER TABLE optimizer_events ADD COLUMN ingest_witness TEXT;
+ALTER TABLE optimizer_events ADD COLUMN producer_digest TEXT;
+ALTER TABLE optimizer_events ADD COLUMN payload_cas_digest TEXT;
+
+UPDATE optimizer_events
+SET kind = COALESCE(
+        json_extract(payload_json, '$.delta.container_event.kind'),
+        json_extract(payload_json, '$.delta.containerEvent.kind'),
+        json_extract(payload_json, '$.raw.container_event.kind'),
+        json_extract(payload_json, '$.raw.containerEvent.kind'),
+        event_type
+    ),
+    rollout_id = COALESCE(
+        json_extract(payload_json, '$.delta.container_event.rollout_id'),
+        json_extract(payload_json, '$.delta.container_event.rolloutId'),
+        json_extract(payload_json, '$.delta.containerEvent.rollout_id'),
+        json_extract(payload_json, '$.delta.containerEvent.rolloutId'),
+        json_extract(payload_json, '$.raw.container_event.rollout_id'),
+        json_extract(payload_json, '$.raw.containerEvent.rolloutId'),
+        json_extract(payload_json, '$.raw.rollout_id')
+    ),
+    step = CAST(COALESCE(
+        json_extract(payload_json, '$.delta.container_event.payload.step'),
+        json_extract(payload_json, '$.delta.containerEvent.payload.step'),
+        json_extract(payload_json, '$.raw.container_event.payload.step'),
+        json_extract(payload_json, '$.raw.containerEvent.payload.step'),
+        json_extract(payload_json, '$.raw.container_event.step'),
+        json_extract(payload_json, '$.raw.step')
+    ) AS INTEGER),
+    span_id = COALESCE(
+        json_extract(payload_json, '$.delta.container_event.payload.span_id'),
+        json_extract(payload_json, '$.delta.container_event.payload.spanId'),
+        json_extract(payload_json, '$.delta.containerEvent.payload.span_id'),
+        json_extract(payload_json, '$.delta.containerEvent.payload.spanId'),
+        json_extract(payload_json, '$.raw.container_event.payload.span_id'),
+        json_extract(payload_json, '$.raw.container_event.payload.spanId'),
+        json_extract(payload_json, '$.raw.container_event.span_id'),
+        json_extract(payload_json, '$.raw.span_id')
+    ),
+    producer_occurred_at = COALESCE(
+        json_extract(payload_json, '$.delta.container_event.occurred_at'),
+        json_extract(payload_json, '$.delta.containerEvent.occurredAt'),
+        json_extract(payload_json, '$.raw.container_event.occurred_at'),
+        json_extract(payload_json, '$.raw.containerEvent.occurredAt'),
+        occurred_at
+    ),
+    ingested_at = occurred_at,
+    ingest_witness = 'legacy_producer_clock',
+    producer_digest = COALESCE(
+        json_extract(payload_json, '$.delta.container_event.digest'),
+        json_extract(payload_json, '$.delta.containerEvent.digest'),
+        json_extract(payload_json, '$.raw.container_event.digest'),
+        json_extract(payload_json, '$.raw.containerEvent.digest'),
+        json_extract(payload_json, '$.raw.digest')
+    )
+WHERE kind IS NULL;
+
+CREATE INDEX IF NOT EXISTS optimizer_events_run_kind
+ON optimizer_events(optimizer_run_id, kind, sequence_number);
+CREATE INDEX IF NOT EXISTS optimizer_events_rollout_step
+ON optimizer_events(rollout_id, step, sequence_number);
+CREATE INDEX IF NOT EXISTS optimizer_events_ingested
+ON optimizer_events(optimizer_run_id, ingested_at, sequence_number);
+"#;
+
 #[cfg(test)]
 mod tests {
     /// Derived, not pinned: adding a migration should not mean editing
@@ -4668,5 +4748,106 @@ mod tests {
             duplicate_in_one_run.is_err(),
             "one run must not contain duplicate work-item identities"
         );
+    }
+
+    #[test]
+    fn migration_58_backfills_query_fields_with_an_explicit_legacy_clock_witness() {
+        let conn = seed_at_version(57);
+        conn.execute(
+            "INSERT INTO optimizer_runs(
+                id, algorithm_id, status, source, created_at, payload_json, updated_at
+             ) VALUES('eval-legacy','eval','running','container','2026-08-27T00:00:00Z','{}',
+                      '2026-08-27T00:00:00Z')",
+            [],
+        )
+        .unwrap();
+        let payload = serde_json::json!({
+            "schemaVersion": "optimizer_event.v1",
+            "eventId": "eval-legacy:7",
+            "type": "eval.trial.event",
+            "sequenceNumber": 7,
+            "occurredAt": "2026-08-27T00:00:01Z",
+            "optimizerRunId": "eval-legacy",
+            "algorithmId": "eval",
+            "delta": {
+                "container_event": {
+                    "rollout_id": "rollout-780005",
+                    "kind": "frame",
+                    "occurred_at": "2026-08-27T00:00:00.500Z",
+                    "digest": "sha256:producer",
+                    "payload": {"step": 42, "span_id": "span-42"}
+                }
+            },
+            "raw": {}
+        })
+        .to_string();
+        conn.execute(
+            "INSERT INTO optimizer_events(
+                event_id, optimizer_run_id, sequence_number, event_type,
+                algorithm_id, occurred_at, payload_json
+             ) VALUES('eval-legacy:7','eval-legacy',7,'eval.trial.event','eval',
+                      '2026-08-27T00:00:01Z',?1)",
+            [payload],
+        )
+        .unwrap();
+
+        assert_eq!(apply_migrations(&conn).unwrap(), LATEST_VERSION);
+        let fields: (
+            String,
+            String,
+            i64,
+            String,
+            String,
+            String,
+            String,
+            Option<String>,
+            Option<String>,
+        ) = conn
+            .query_row(
+                "SELECT rollout_id, kind, step, span_id, producer_occurred_at,
+                        ingested_at, ingest_witness, producer_digest, payload_cas_digest
+                 FROM optimizer_events WHERE event_id='eval-legacy:7'",
+                [],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                        row.get(5)?,
+                        row.get(6)?,
+                        row.get(7)?,
+                        row.get(8)?,
+                    ))
+                },
+            )
+            .unwrap();
+        assert_eq!(fields.0, "rollout-780005");
+        assert_eq!(fields.1, "frame");
+        assert_eq!(fields.2, 42);
+        assert_eq!(fields.3, "span-42");
+        assert_eq!(fields.4, "2026-08-27T00:00:00.500Z");
+        assert_eq!(fields.5, "2026-08-27T00:00:01Z");
+        assert_eq!(fields.6, "legacy_producer_clock");
+        assert_eq!(fields.7.as_deref(), Some("sha256:producer"));
+        assert_eq!(fields.8, None, "legacy replay payload remains inline");
+
+        for index in [
+            "optimizer_events_run_kind",
+            "optimizer_events_rollout_step",
+            "optimizer_events_ingested",
+        ] {
+            let present: bool = conn
+                .query_row(
+                    "SELECT EXISTS(
+                        SELECT 1 FROM sqlite_master WHERE type='index' AND name=?1
+                     )",
+                    [index],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert!(present, "migration 58 must create {index}");
+        }
     }
 }
