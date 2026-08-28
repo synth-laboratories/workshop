@@ -1,0 +1,163 @@
+[package]
+name = "synth-desktop"
+version = "0.8.0"
+description = "Synth Workshop Tauri host"
+edition = "2021"
+default-run = "synth-desktop"
+
+[lib]
+name = "synth_desktop_lib"
+# Desktop-only app: the bin links the rlib. staticlib/cdylib are mobile-template
+# artifacts and each forces a full extra codegen+link pass of the whole lib.
+crate-type = ["rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+anyhow = "1"
+base64 = "0.22"
+bytes = "1"
+chrono = { version = "0.4", default-features = false, features = ["clock", "std", "serde"] }
+dirs = "6"
+futures-util = "0.3"
+tokio-tungstenite = "0.30"
+fs2 = "0.4"
+# The credential proxy: a loopback Responses endpoint that holds the Synth key
+# so `codex app-server` never receives it. All three already build as reqwest
+# dependencies; only the server-side features are new.
+http-body-util = "0.1"
+hyper = { version = "1", features = ["http1", "server"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
+# Local secrets vault: macOS Keychain / Windows Credential Manager / Linux Secret Service.
+keyring = "3"
+libc = "0.2"
+mermaid-to-svg = { path = "third_party/mermaid-to-svg" }
+portable-pty = "0.9"
+png = "0.17"
+rand = "0.9"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
+rusqlite = { version = "0.32", features = ["bundled"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+# Wave 2 boundary codegen (tauri-specta). Pin RC versions together — specta
+# RCs are not semver-stable across minor bumps.
+specta = { version = "=2.0.0-rc.25", features = ["derive", "serde_json"] }
+specta-typescript = "0.0.12"
+toml = "0.8"
+tauri = { version = "2", features = ["specta"] }
+tauri-plugin-dialog = "2"
+tauri-plugin-opener = "2"
+tauri-plugin-single-instance = "2"
+tauri-specta = { version = "=2.0.0-rc.25", features = ["derive", "typescript"] }
+tokio = { version = "1", features = ["fs", "io-util", "macros", "net", "process", "rt-multi-thread", "sync", "time"] }
+uuid = { version = "1", features = ["v4"] }
+zip = { version = "2", default-features = false, features = ["deflate"] }
+
+# Host-owned review capture: the WKWebView snapshot runs inside the signed app
+# process, so visual review needs no Screen Recording TCC grant and no
+# `screencapture` shell-out. Feature lists mirror wry's (plus the snapshot and
+# bitmap classes) so cargo's feature union stays one rebuild, not a cascade.
+[target.'cfg(target_os = "macos")'.dependencies]
+block2 = "0.6"
+objc2 = "0.6"
+objc2-foundation = { version = "0.3", default-features = false, features = [
+    "std",
+    "NSArray",
+    "NSData",
+    "NSDictionary",
+    "NSEnumerator",
+    "NSError",
+    "NSString",
+    "NSValue",
+] }
+objc2-app-kit = { version = "0.3", default-features = false, features = [
+    "std",
+    "objc2-core-foundation",
+    "NSBitmapImageRep",
+    "NSGraphics",
+    "NSImage",
+    "NSImageRep",
+    "NSResponder",
+    "NSView",
+] }
+objc2-web-kit = { version = "0.3", default-features = false, features = [
+    "std",
+    "objc2-core-foundation",
+    "objc2-app-kit",
+    "block2",
+    "WKWebView",
+    "WKWebViewConfiguration",
+    "WKSnapshotConfiguration",
+] }
+
+[features]
+# Maturity envelope (contracts/release-tiers-v1.toml). Exactly one point on
+# the chain selects the build tier; each tier structurally includes everything
+# below it, and packaging defaults to the stable envelope. release_tier.rs
+# rejects tier-less and incompatible configurations at compile time.
+default = ["tier-stable"]
+tier-core = []
+tier-stable = ["tier-core"]
+tier-beta = ["tier-stable"]
+tier-alpha = ["tier-beta"]
+tier-dev = ["tier-alpha"]
+# QA control plane. Never a default: release artifacts must not contain the
+# eval-driver route table at all. Instance builds opt in (desktop-instance.sh)
+# and must sit inside a beta-or-wider envelope.
+eval-driver = []
+
+[[bin]]
+name = "workshop-tier-plan"
+path = "src/bin/workshop_tier_plan.rs"
+
+[[bin]]
+name = "synth-visuals-mcp"
+path = "src/bin/synth_visuals_mcp.rs"
+
+[[bin]]
+name = "synth-containers-mcp"
+path = "src/bin/synth_containers_mcp.rs"
+
+[[bin]]
+name = "synth-optimizers-mcp"
+path = "src/bin/synth_optimizers_mcp.rs"
+
+[[bin]]
+name = "synth-plugins-mcp"
+path = "src/bin/synth_plugins_mcp.rs"
+
+[[bin]]
+name = "synth-computer-use-mcp"
+path = "src/bin/synth_computer_use_mcp.rs"
+
+[[bin]]
+name = "synth-browser-mcp"
+path = "src/bin/synth_browser_mcp.rs"
+
+[[bin]]
+name = "synth-session-mcp"
+path = "src/bin/synth_session_mcp.rs"
+
+[[bin]]
+name = "synth-traces-mcp"
+path = "src/bin/synth_traces_mcp.rs"
+
+[[bin]]
+name = "synth-diagnostics-mcp"
+path = "src/bin/synth_diagnostics_mcp.rs"
+
+[[bin]]
+name = "synth-secrets-mcp"
+path = "src/bin/synth_secrets_mcp.rs"
+
+[dev-dependencies]
+tauri = { version = "2", features = ["test"] }
+tempfile = "3"
+
+# Local installs rebuild the whole app crate for any one-line change; release
+# incremental turns that ~35s codegen pass into a few seconds. Cargo applies
+# incremental only to workspace crates, so registry deps stay sccache-cached.
+[profile.release]
+incremental = true

@@ -1,0 +1,16 @@
+{
+  "schemaVersion": "synth.visual-template.v1",
+  "id": "diagram.mermaid.v1",
+  "title": "Mermaid diagram",
+  "genre": "diagram",
+  "version": "1.0.0",
+  "description": "Agent-authored Mermaid source rendered by Desktop. Canonical bytes are the visual content field; this template has no example diagram.",
+  "accent": "#2563EB",
+  "rendererKind": "mermaid",
+  "tags": [
+    "diagram",
+    "mermaid",
+    "uml"
+  ],
+  "inputs": []
+}

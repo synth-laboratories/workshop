@@ -1,0 +1,1058 @@
+/* Synth Desktop visual chrome — light Poolside-compatible, Synth orange accent */
+:root,
+.synth-visual-root {
+  --sv-accent: #b94712;
+  --sv-accent-hot: #a83a08;
+  --sv-accent-soft: rgba(240, 95, 34, 0.12);
+  --sv-surface: #ffffff;
+  --sv-surface-muted: #f6f7f9;
+  --sv-border: #e8eaee;
+  --sv-border-strong: #d5dae2;
+  --sv-text: #1a1d23;
+  --sv-text-muted: #5c6573;
+  --sv-text-faint: #687180;
+  --sv-radius: 10px;
+
+  /* ── Scale ── the vocabulary components consume instead of inline literals.
+     Same discipline as the desktop renderer: six sizes, six spaces, three
+     radii. If a value is not here, reuse its nearest neighbour. */
+  --sv-sp-1: 4px;
+  --sv-sp-2: 8px;
+  --sv-sp-3: 12px;
+  --sv-sp-4: 16px;
+  --sv-sp-5: 20px;
+  --sv-sp-6: 28px;
+
+  --sv-fs-micro: 10px;
+  --sv-fs-meta: 11px;
+  --sv-fs-body: 12px;
+  --sv-fs-strong: 13px;
+  --sv-fs-title: 15px;
+  --sv-fs-hero: 18px;
+
+  --sv-radius-sm: 7px;
+  --sv-radius-lg: 12px;
+
+  /* ── Tone ── status colors as pairs, so a component never mixes its own.
+     These are the values the chips already used, lifted into tokens. */
+  --sv-ok-bg: #ecf7f0;
+  --sv-ok-fg: #1e7a43;
+  --sv-ok-edge: #b7dcc4;
+  --sv-bad-bg: #fbefee;
+  --sv-bad-fg: #b23830;
+  --sv-bad-edge: #ecc4c0;
+  --sv-warn-bg: #fbf5e7;
+  --sv-warn-fg: #92660c;
+  --sv-warn-edge: #ecd9b0;
+  /* The neutral second series on charts and the base arm in comparisons. */
+  --sv-series-b: #5c6573;
+  --sv-font: "IBM Plex Sans", "Segoe UI", system-ui, sans-serif;
+  --sv-mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+/* One keyboard-focus contract for every shared visual template. Individual
+   genres may override the color, but must not remove the visible ring. */
+.synth-visual-root :where(button, input, select, textarea, summary, a[href], [tabindex]):focus-visible {
+  outline: 2px solid var(--sv-accent);
+  outline-offset: 2px;
+}
+
+.synth-visual-root {
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+  color: var(--sv-text);
+  background: var(--sv-surface);
+  font-family: var(--sv-font);
+  font-size: 13px;
+  line-height: 1.45;
+  padding: 16px 18px 20px;
+  min-height: 100%;
+}
+
+.synth-visual-root *,
+.synth-visual-root *::before,
+.synth-visual-root *::after {
+  box-sizing: border-box;
+  min-width: 0;
+}
+
+.sv-kicker {
+  margin: 0 0 4px;
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--sv-accent);
+  font-weight: 600;
+}
+
+.sv-title {
+  margin: 0 0 6px;
+  font-size: 18px;
+  font-weight: 650;
+  letter-spacing: -0.02em;
+  color: var(--sv-text);
+}
+
+.sv-lede {
+  margin: 0 0 16px;
+  color: var(--sv-text-muted);
+  max-width: 52ch;
+}
+
+.sv-section {
+  margin-top: 18px;
+}
+
+.sv-section-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+
+.sv-section-head h3 {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.sv-section-head span {
+  color: var(--sv-text-faint);
+  font-size: 11px;
+  font-family: var(--sv-mono);
+}
+
+.sv-metrics {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.sv-metric {
+  flex: 1 1 100px;
+  background: var(--sv-surface-muted);
+  border: 1px solid var(--sv-border);
+  border-radius: 8px;
+  padding: 8px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.sv-metric span {
+  font-size: 10px;
+  color: var(--sv-text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.sv-metric strong {
+  font-size: 15px;
+  font-variant-numeric: tabular-nums;
+  color: var(--sv-text);
+}
+
+.sv-scrubber {
+  width: 100%;
+  accent-color: var(--sv-accent);
+  cursor: pointer;
+}
+
+.sv-btn {
+  appearance: none;
+  border: 1px solid var(--sv-border-strong);
+  background: var(--sv-surface);
+  color: var(--sv-text);
+  border-radius: 8px;
+  padding: 6px 10px;
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.sv-btn:hover {
+  border-color: var(--sv-accent);
+  color: var(--sv-accent);
+}
+
+.sv-btn[aria-pressed="true"],
+.sv-btn.sv-btn-primary {
+  background: var(--sv-accent);
+  border-color: var(--sv-accent);
+  color: #fff;
+}
+
+.sv-mono {
+  font-family: var(--sv-mono);
+  font-size: 11px;
+}
+
+.sv-live-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--sv-accent-hot);
+  box-shadow: 0 0 0 3px var(--sv-accent-soft);
+  margin-right: 6px;
+  vertical-align: middle;
+}
+
+.sv-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+.sv-table th,
+.sv-table td {
+  text-align: left;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--sv-border);
+}
+
+.sv-table th {
+  color: var(--sv-text-muted);
+  font-weight: 600;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.sv-table tr:hover td {
+  background: var(--sv-surface-muted);
+}
+
+/* ── Optimizer workspace ── */
+
+.sv-workspace {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.sv-workspace-header {
+  position: sticky;
+  top: 0;
+  z-index: 6;
+  margin: -16px -18px 0;
+  padding: 12px 18px 10px;
+  background: var(--sv-surface);
+  border-bottom: 1px solid var(--sv-border);
+  box-shadow: 0 10px 18px -16px rgba(26, 29, 35, 0.35);
+}
+
+.sv-workspace-header-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.sv-workspace-metrics {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.sv-workspace-metric {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 4px 9px;
+  border: 1px solid var(--sv-border);
+  border-radius: 7px;
+  background: var(--sv-surface-muted);
+  min-width: 74px;
+}
+
+.sv-workspace-metric span {
+  font-size: 9px;
+  color: var(--sv-text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.sv-workspace-metric strong {
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+}
+
+.sv-terminal-receipt {
+  margin-top: var(--sv-sp-2);
+  padding: 8px 10px;
+  border: 1px solid var(--sv-bad-edge);
+  border-left: 4px solid var(--sv-bad-fg);
+  border-radius: var(--sv-radius-sm);
+  background: var(--sv-bad-bg);
+}
+
+.sv-terminal-receipt-provenance {
+  margin-top: 4px;
+  overflow: hidden;
+  color: var(--sv-text-muted);
+  font-size: 10px;
+  line-height: 1.4;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sv-terminal-receipt .sv-section-head {
+  margin-bottom: var(--sv-sp-2);
+}
+
+.sv-terminal-receipt ul {
+  margin: 0;
+  padding-left: 18px;
+  color: var(--sv-bad-fg);
+  font-size: var(--sv-fs-micro);
+}
+
+@media (max-width: 520px) {
+  .sv-workspace-header {
+    padding-block: 8px;
+  }
+
+  .sv-workspace-header-row > span:not(.sv-chip),
+  .sv-workspace-metrics .sv-workspace-metric:nth-child(n + 4) {
+    display: none;
+  }
+
+  .sv-terminal-receipt {
+    padding-block: 6px;
+  }
+}
+
+.sv-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 9px;
+  border-radius: 999px;
+  border: 1px solid var(--sv-border-strong);
+  background: var(--sv-surface-muted);
+  color: var(--sv-text-muted);
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.sv-chip[data-tone="live"] {
+  border-color: var(--sv-accent);
+  color: var(--sv-accent);
+  background: var(--sv-accent-soft);
+}
+
+.sv-chip[data-tone="ok"] {
+  border-color: #b7dcc4;
+  color: #1e7a43;
+  background: #ecf7f0;
+}
+
+.sv-chip[data-tone="bad"] {
+  border-color: #ecc4c0;
+  color: #b23830;
+  background: #fbefee;
+}
+
+.sv-chip[data-tone="warn"] {
+  border-color: #ecd9b0;
+  color: #92660c;
+  background: #fbf5e7;
+}
+
+.sv-lane {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  padding: 3px 9px;
+  border: 1px solid var(--sv-border);
+  border-radius: 7px;
+  background: var(--sv-surface);
+  font-size: 11px;
+  color: var(--sv-text-muted);
+}
+
+.sv-lane[data-active="true"] {
+  border-color: var(--sv-accent);
+  background: var(--sv-accent-soft);
+  color: var(--sv-text);
+}
+
+.sv-stageline {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.sv-stage {
+  appearance: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 10px;
+  border: 1px solid var(--sv-border);
+  border-radius: 8px;
+  background: var(--sv-surface);
+  color: var(--sv-text-muted);
+  font: inherit;
+  font-size: 11.5px;
+  cursor: pointer;
+}
+
+.sv-stage[data-status="completed"] {
+  color: var(--sv-text);
+  border-color: var(--sv-border-strong);
+}
+
+.sv-stage[data-status="active"] {
+  color: var(--sv-text);
+  border-color: var(--sv-accent);
+  background: var(--sv-accent-soft);
+}
+
+.sv-stage[data-status="skipped"] {
+  border-style: dashed;
+  color: var(--sv-text-faint);
+}
+
+.sv-stage[data-status="failed"] {
+  border-color: #ecc4c0;
+  color: #b23830;
+}
+
+.sv-stage[data-selected="true"] {
+  outline: 2px solid var(--sv-border-strong);
+  outline-offset: 1px;
+}
+
+.sv-stage-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--sv-border-strong);
+  flex-shrink: 0;
+}
+
+.sv-stage[data-status="completed"] .sv-stage-dot {
+  background: var(--sv-text-muted);
+}
+
+.sv-stage[data-status="active"] .sv-stage-dot {
+  background: var(--sv-accent-hot);
+  animation: sv-stage-pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes sv-stage-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 var(--sv-accent-soft); }
+  50% { box-shadow: 0 0 0 4px var(--sv-accent-soft); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sv-stage[data-status="active"] .sv-stage-dot { animation: none; }
+}
+
+.sv-workspace-canvas {
+  display: grid;
+  grid-template-columns: minmax(300px, 1.05fr) minmax(320px, 1fr);
+  gap: 14px;
+  align-items: start;
+}
+
+@media (max-width: 860px) {
+  .sv-workspace-canvas { grid-template-columns: 1fr; }
+}
+
+/* GEPA uses dense evidence receipts.  The desktop grid preserves comparison at
+   a glance; compact panes put the meter below its label and receipt instead of
+   forcing a horizontally scrollable pseudo-table. */
+.sv-gepa-limit-row {
+  grid-template-columns: minmax(0, 120px) minmax(0, 1fr) minmax(0, 180px);
+}
+
+.sv-gepa-explore-row {
+  grid-template-columns: minmax(0, 110px) minmax(0, 1fr) minmax(0, 135px);
+}
+
+.sv-gepa-frontier-grid {
+  grid-template-columns: minmax(0, .7fr) minmax(0, 1.3fr);
+}
+
+@media (max-width: 520px) {
+  .sv-gepa-limit-row,
+  .sv-gepa-explore-row {
+    grid-template-columns: minmax(0, 1fr) auto;
+    column-gap: 8px;
+    row-gap: 5px;
+  }
+
+  .sv-gepa-limit-meter,
+  .sv-gepa-explore-meter {
+    grid-column: 1 / -1;
+    grid-row: 2;
+  }
+
+  .sv-gepa-limit-receipt,
+  .sv-gepa-explore-receipt {
+    min-width: 0;
+    text-align: right;
+    overflow-wrap: anywhere;
+  }
+
+  .sv-gepa-frontier-grid {
+    grid-template-columns: minmax(0, .78fr) minmax(0, 1.22fr);
+  }
+}
+
+.sv-candidate-card {
+  width: 100%;
+  appearance: none;
+  text-align: left;
+  padding: 9px 11px;
+  border: 1px solid var(--sv-border);
+  border-radius: 9px;
+  background: var(--sv-surface);
+  color: var(--sv-text);
+  font: inherit;
+  cursor: pointer;
+}
+
+.sv-candidate-card:hover {
+  border-color: var(--sv-border-strong);
+}
+
+.sv-candidate-card[data-selected="true"] {
+  border-color: var(--sv-text-muted);
+  background: var(--sv-surface-muted);
+  box-shadow: inset 0 0 0 1px var(--sv-text-muted);
+}
+
+.sv-diff ins {
+  background: #e2f4e8;
+  color: #14532d;
+  text-decoration: none;
+}
+
+.sv-diff del {
+  background: #fbe4e2;
+  color: #991b1b;
+  text-decoration: line-through;
+}
+
+.sv-trace-steps {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  border-left: 2px solid var(--sv-border);
+}
+
+.sv-trace-step {
+  position: relative;
+  padding: 4px 0 4px 14px;
+  font-size: 12px;
+}
+
+.sv-trace-step::before {
+  content: "";
+  position: absolute;
+  left: -5px;
+  top: 10px;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--sv-border-strong);
+}
+
+.sv-trace-step[data-kind="output"]::before,
+.sv-trace-step[data-kind="candidate"]::before {
+  background: var(--sv-accent);
+}
+
+.sv-trace-step[data-live="true"]::before {
+  background: var(--sv-accent-hot);
+  animation: sv-stage-pulse 1.4s ease-in-out infinite;
+}
+
+/* ── Evidence panels ──────────────────────────────────────────────────────
+   Shared parts for the optimizer workspaces. Built on the scale above; no
+   literal sizes or colors below this line. */
+
+.sv-panel {
+  border: 1px solid var(--sv-border);
+  border-radius: var(--sv-radius);
+  background: var(--sv-surface);
+  overflow: hidden;
+}
+
+.sv-panel-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--sv-sp-3);
+  padding: var(--sv-sp-3) var(--sv-sp-4);
+  border-bottom: 1px solid var(--sv-border);
+  background: var(--sv-surface-muted);
+}
+
+.sv-panel-head h4 {
+  margin: 0;
+  font-size: var(--sv-fs-strong);
+  font-weight: 650;
+}
+
+.sv-panel-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sv-sp-4);
+  padding: var(--sv-sp-4);
+}
+
+/* Real-time Craftax evidence: engine-rendered frames plus rollout telemetry. */
+.sv-craftax-live-grid {
+  display: grid;
+  grid-template-columns: minmax(260px, 1.25fr) minmax(220px, 0.75fr);
+  gap: var(--sv-sp-4);
+  align-items: start;
+}
+
+.sv-craftax-frame {
+  margin: 0;
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid var(--sv-border);
+  border-radius: var(--sv-radius);
+  background: #05090d;
+}
+
+.sv-craftax-frame img {
+  display: block;
+  width: 100%;
+  aspect-ratio: 1;
+  object-fit: contain;
+  image-rendering: pixelated;
+}
+
+.sv-craftax-frame-empty {
+  display: grid;
+  place-items: center;
+  aspect-ratio: 1;
+  padding: var(--sv-sp-4);
+  color: var(--sv-text-muted);
+  text-align: center;
+}
+
+.sv-craftax-frame figcaption {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sv-sp-2);
+  align-items: center;
+  padding: var(--sv-sp-2) var(--sv-sp-3);
+  border-top: 1px solid var(--sv-border);
+  background: var(--sv-surface-muted);
+}
+
+.sv-craftax-telemetry { display: grid; gap: var(--sv-sp-3); }
+.sv-craftax-telemetry section { min-width: 0; }
+.sv-craftax-actions {
+  margin: 0;
+  color: var(--sv-accent);
+  font-family: var(--sv-mono);
+  overflow-wrap: anywhere;
+}
+
+.sv-craftax-stats,
+.sv-craftax-achievements {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sv-sp-2);
+}
+
+.sv-craftax-stats > span:not(.sv-empty) {
+  display: grid;
+  min-width: 68px;
+  padding: var(--sv-sp-2);
+  border: 1px solid var(--sv-border);
+  border-radius: var(--sv-radius-sm);
+  color: var(--sv-text-muted);
+  font-size: var(--sv-text-xs);
+}
+
+.sv-craftax-stats strong { color: var(--sv-text); font-size: var(--sv-fs-title); }
+
+.sv-craftax-distribution { margin-top: var(--sv-sp-4); }
+.sv-craftax-bars {
+  display: flex;
+  align-items: end;
+  gap: var(--sv-sp-2);
+  min-height: 116px;
+  padding: var(--sv-sp-3);
+  border: 1px solid var(--sv-border);
+  border-radius: var(--sv-radius);
+  background: var(--sv-surface-muted);
+}
+
+.sv-craftax-bars > span:not(.sv-empty) {
+  display: grid;
+  grid-template-rows: 80px auto;
+  align-items: end;
+  min-width: 24px;
+  flex: 1 1 28px;
+  text-align: center;
+}
+
+.sv-craftax-bars i {
+  display: block;
+  width: 100%;
+  min-height: 4px;
+  border-radius: 3px 3px 0 0;
+  background: linear-gradient(to top, var(--sv-accent), color-mix(in srgb, var(--sv-accent), white 35%));
+}
+
+.sv-craftax-bars small { color: var(--sv-text-muted); font-family: var(--sv-font-mono); }
+
+.sv-craftax-rollout-strip {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: var(--sv-sp-2);
+  margin-top: var(--sv-sp-4);
+}
+
+.sv-craftax-rollout-strip article {
+  display: grid;
+  grid-template-columns: 52px 1fr;
+  gap: var(--sv-sp-2);
+  min-width: 0;
+  padding: var(--sv-sp-2);
+  border: 1px solid var(--sv-border);
+  border-radius: var(--sv-radius-sm);
+  background: var(--sv-surface-muted);
+}
+
+.sv-craftax-rollout-strip article[data-status="running"] { border-color: var(--sv-accent); }
+.sv-craftax-rollout-strip img {
+  width: 52px;
+  height: 52px;
+  object-fit: cover;
+  image-rendering: pixelated;
+  border-radius: 3px;
+}
+.sv-craftax-rollout-strip article > div { display: grid; min-width: 0; }
+.sv-craftax-rollout-strip small { color: var(--sv-text-muted); }
+
+@media (max-width: 620px) {
+  .sv-craftax-live-grid { grid-template-columns: 1fr; }
+  .sv-craftax-rollout-strip { grid-template-columns: 1fr 1fr; }
+}
+
+/* Small uppercase label above a group. One per group, never per row. */
+.sv-micro-label {
+  display: block;
+  font-size: var(--sv-fs-micro);
+  font-weight: 700;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--sv-text-muted);
+}
+
+/* The honest empty state: says what would appear and why it has not. */
+.sv-empty {
+  margin: 0;
+  padding: var(--sv-sp-4);
+  border: 1px dashed var(--sv-border-strong);
+  border-radius: var(--sv-radius-sm);
+  color: var(--sv-text-faint);
+  font-size: var(--sv-fs-body);
+  line-height: 1.5;
+}
+
+/* Label / value rows for identity and provenance. */
+.sv-kv {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 0;
+  margin: 0;
+}
+
+.sv-kv dt,
+.sv-kv dd {
+  margin: 0;
+  padding: var(--sv-sp-2) 0;
+  border-bottom: 1px solid var(--sv-border);
+  font-size: var(--sv-fs-body);
+}
+
+.sv-kv dt { color: var(--sv-text-faint); }
+
+.sv-kv dd {
+  text-align: right;
+  color: var(--sv-text);
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+
+/* Side-by-side arm statistics in a comparison. */
+.sv-arms {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: var(--sv-sp-2);
+}
+
+.sv-arm {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sv-sp-1);
+  padding: var(--sv-sp-3);
+  border: 1px solid var(--sv-border);
+  border-radius: var(--sv-radius-sm);
+  background: var(--sv-surface-muted);
+}
+
+.sv-arm strong {
+  font-size: var(--sv-fs-hero);
+  font-variant-numeric: tabular-nums;
+  line-height: 1.15;
+}
+
+.sv-arm[data-arm="trained"] {
+  border-color: var(--sv-accent);
+  background: var(--sv-accent-soft);
+}
+
+/* A signed delta. Direction is carried by the sign and the word, not by hue
+   alone — the tone is a second channel, never the only one. */
+.sv-delta {
+  display: inline-flex;
+  align-items: baseline;
+  gap: var(--sv-sp-2);
+  font-variant-numeric: tabular-nums;
+  font-weight: 650;
+}
+
+.sv-delta[data-dir="up"] { color: var(--sv-ok-fg); }
+.sv-delta[data-dir="down"] { color: var(--sv-bad-fg); }
+.sv-delta[data-dir="flat"] { color: var(--sv-text-muted); }
+.sv-delta[data-dir="unknown"] { color: var(--sv-text-faint); }
+
+/* Horizontal proportion bar for funnels and win/loss splits. */
+.sv-bar {
+  display: flex;
+  height: 8px;
+  border-radius: var(--sv-radius-sm);
+  overflow: hidden;
+  background: var(--sv-surface-muted);
+}
+
+.sv-bar span { display: block; height: 100%; }
+.sv-bar span[data-tone="ok"] { background: var(--sv-ok-fg); }
+.sv-bar span[data-tone="bad"] { background: var(--sv-bad-fg); }
+.sv-bar span[data-tone="flat"] { background: var(--sv-border-strong); }
+.sv-bar span[data-tone="accent"] { background: var(--sv-accent); }
+
+.sv-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sv-sp-3);
+  font-size: var(--sv-fs-meta);
+  color: var(--sv-text-muted);
+}
+
+.sv-legend span {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sv-sp-1);
+}
+
+.sv-swatch {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+}
+
+/* Rows in the checkpoint rail and other single-line records. */
+.sv-rail-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sv-sp-2);
+  padding: var(--sv-sp-3);
+  border: 1px solid var(--sv-border);
+  border-radius: var(--sv-radius-sm);
+}
+
+.sv-rail-row[data-promoted="true"] {
+  border-color: var(--sv-accent);
+  background: var(--sv-accent-soft);
+}
+
+.sv-rail-row-end {
+  margin-left: auto;
+  display: inline-flex;
+  gap: var(--sv-sp-1);
+}
+
+/* Coverage chips — one per achievement/seed, wrapping. */
+.sv-coverage {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sv-sp-1);
+}
+
+.sv-coverage code {
+  padding: 2px var(--sv-sp-2);
+  border-radius: var(--sv-radius-sm);
+  background: var(--sv-surface-muted);
+  color: var(--sv-text-muted);
+  font-family: var(--sv-mono);
+  font-size: var(--sv-fs-micro);
+}
+
+.sv-coverage code[data-state="gained"] {
+  background: var(--sv-ok-bg);
+  color: var(--sv-ok-fg);
+}
+
+.sv-coverage code[data-state="lost"] {
+  background: var(--sv-bad-bg);
+  color: var(--sv-bad-fg);
+}
+
+/* Per-seed outcome cell in the paired matrix. */
+.sv-outcome {
+  font-variant-numeric: tabular-nums;
+  font-weight: 650;
+}
+
+.sv-outcome[data-outcome="win"] { color: var(--sv-ok-fg); }
+.sv-outcome[data-outcome="loss"] { color: var(--sv-bad-fg); }
+.sv-outcome[data-outcome="tie"] { color: var(--sv-text-muted); }
+.sv-outcome[data-outcome="unpaired"] { color: var(--sv-text-faint); }
+
+.sv-stack {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sv-sp-3);
+  min-width: 0;
+}
+
+.sv-stack-tight { gap: var(--sv-sp-2); }
+
+/* ── Eval: candidate comparison and the trial matrix ─────────────────────── */
+
+/* Stage heading inside a panel that carries more than one stage. */
+.sv-subhead {
+  margin: var(--sv-sp-3) 0 var(--sv-sp-2);
+  font-size: var(--sv-fs-micro);
+  font-weight: 650;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+  color: var(--sv-text-faint);
+}
+.sv-subhead:first-child { margin-top: 0; }
+
+/* Inline qualifier on a candidate: baseline, winner, eliminated. */
+.sv-tag {
+  display: inline-block;
+  margin-left: var(--sv-sp-2);
+  padding: 0 var(--sv-sp-2);
+  border: 1px solid var(--sv-border);
+  border-radius: var(--sv-radius-sm);
+  background: var(--sv-surface-muted);
+  color: var(--sv-text-muted);
+  font-family: var(--sv-mono);
+  font-size: var(--sv-fs-micro);
+  font-weight: 500;
+  vertical-align: middle;
+}
+.sv-tag[data-tone="ok"] {
+  border-color: var(--sv-ok-edge);
+  background: var(--sv-ok-bg);
+  color: var(--sv-ok-fg);
+}
+.sv-tag[data-tone="warn"] {
+  border-color: var(--sv-warn-edge);
+  background: var(--sv-warn-bg);
+  color: var(--sv-warn-fg);
+}
+
+/* Parenthetical detail that must not compete with the number beside it. */
+.sv-hint { color: var(--sv-text-faint); font-size: var(--sv-fs-micro); }
+
+/* A statement about the evidence, not a decoration. */
+.sv-note {
+  margin: var(--sv-sp-3) 0 0;
+  padding: var(--sv-sp-2) var(--sv-sp-3);
+  border-left: 2px solid var(--sv-border-strong);
+  color: var(--sv-text-muted);
+  font-size: var(--sv-fs-meta);
+}
+.sv-note[data-tone="bad"] {
+  border-left-color: var(--sv-bad-edge);
+  background: var(--sv-bad-bg);
+  color: var(--sv-bad-fg);
+}
+
+/* One candidate's seeds across a stage. */
+.sv-matrix-row {
+  display: flex;
+  align-items: center;
+  gap: var(--sv-sp-3);
+  padding: var(--sv-sp-1) 0;
+  min-width: 0;
+}
+.sv-matrix-label {
+  flex: 0 0 auto;
+  min-width: 8rem;
+  font-size: var(--sv-fs-meta);
+  color: var(--sv-text);
+}
+.sv-matrix-cells { display: flex; flex-wrap: wrap; gap: var(--sv-sp-1); min-width: 0; }
+
+/* Status is carried by form as well as colour: a failed trial is outlined,
+   an unfinished one is faint, so the matrix reads without relying on hue. */
+.sv-matrix-cell {
+  display: inline-grid;
+  place-items: center;
+  min-width: 2.25rem;
+  padding: 0 var(--sv-sp-1);
+  border: 1px solid var(--sv-border);
+  border-radius: var(--sv-radius-sm);
+  background: var(--sv-surface-muted);
+  color: var(--sv-text-muted);
+  font-family: var(--sv-mono);
+  font-size: var(--sv-fs-micro);
+  font-variant-numeric: tabular-nums;
+}
+.sv-matrix-cell[data-valid="true"] {
+  border-color: var(--sv-ok-edge);
+  background: var(--sv-ok-bg);
+  color: var(--sv-ok-fg);
+}
+.sv-matrix-cell[data-status="failed"],
+.sv-matrix-cell[data-status="timeout"] {
+  border-color: var(--sv-bad-edge);
+  border-style: dashed;
+  background: var(--sv-bad-bg);
+  color: var(--sv-bad-fg);
+}
+.sv-matrix-cell[data-status="running"] {
+  border-color: var(--sv-accent);
+  color: var(--sv-accent);
+}
+.sv-matrix-cell[data-status="cancelled"] { color: var(--sv-text-faint); }
+
+/* Lift direction, so a sign survives a greyscale screenshot. */
+.sv-table td[data-direction="up"] { color: var(--sv-ok-fg); }
+.sv-table td[data-direction="down"] { color: var(--sv-bad-fg); }
+.sv-table tr[data-winner="true"] th { font-weight: 700; }
+.sv-table tr[data-eliminated="true"] { color: var(--sv-text-faint); }

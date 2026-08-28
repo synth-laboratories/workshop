@@ -1,0 +1,139 @@
+{
+  "schema": "synth.visual.rollout_steps.v1",
+  "id": "rollout_fixture_001",
+  "model": "Laguna XS",
+  "scenario": "craftax_open",
+  "seed": 42,
+  "total_reward": 4.2,
+  "steps": [
+    {
+      "index": 0,
+      "turn": 0,
+      "action": "noop",
+      "reward": 0,
+      "observation_text": "Player (12,17) · HP 9 · wood 0 · empty inventory",
+      "achievements": [],
+      "metrics": { "health": 9, "food": 9, "drink": 9, "energy": 9 },
+      "meta": {
+        "hud": {
+          "pos": [12, 17],
+          "vitals": { "health": 9, "food": 9, "drink": 9, "energy": 9, "mana": 0 },
+          "inventory": {}
+        },
+        "frame_tiles": 96
+      }
+    },
+    {
+      "index": 1,
+      "turn": 1,
+      "action": "move_left",
+      "reward": 0.1,
+      "observation_text": "Player (11,17) · HP 9 · wood 0 · sapling nearby",
+      "achievements": [],
+      "metrics": { "health": 9, "food": 9, "drink": 8, "energy": 8 },
+      "meta": {
+        "hud": {
+          "pos": [11, 17],
+          "vitals": { "health": 9, "food": 9, "drink": 8, "energy": 8, "mana": 0 },
+          "inventory": {}
+        }
+      }
+    },
+    {
+      "index": 2,
+      "turn": 2,
+      "action": "do",
+      "reward": 1.0,
+      "observation_text": "Player (11,17) · HP 9 · unlocked drink · wood 0",
+      "achievements": ["drink"],
+      "metrics": { "health": 9, "food": 9, "drink": 9, "energy": 8 },
+      "meta": {
+        "hud": {
+          "pos": [11, 17],
+          "vitals": { "health": 9, "food": 9, "drink": 9, "energy": 8, "mana": 0 },
+          "inventory": {}
+        }
+      }
+    },
+    {
+      "index": 3,
+      "turn": 3,
+      "action": "move_up",
+      "reward": 0.1,
+      "observation_text": "Player (11,16) · HP 9 · tree in front",
+      "achievements": ["drink"],
+      "metrics": { "health": 9, "food": 8, "drink": 9, "energy": 7 },
+      "meta": {
+        "hud": {
+          "pos": [11, 16],
+          "vitals": { "health": 9, "food": 8, "drink": 9, "energy": 7, "mana": 0 },
+          "inventory": {}
+        }
+      }
+    },
+    {
+      "index": 4,
+      "turn": 4,
+      "action": "do",
+      "reward": 1.0,
+      "observation_text": "Player (11,16) · HP 9 · wood 3 · unlocked wood",
+      "achievements": ["drink", "wood"],
+      "metrics": { "health": 9, "food": 8, "drink": 9, "energy": 7 },
+      "meta": {
+        "hud": {
+          "pos": [11, 16],
+          "vitals": { "health": 9, "food": 8, "drink": 9, "energy": 7, "mana": 0 },
+          "inventory": { "wood": 3 }
+        }
+      }
+    },
+    {
+      "index": 5,
+      "turn": 5,
+      "action": "move_right",
+      "reward": 0,
+      "observation_text": "Player (12,16) · HP 7 · zombie 4E — combat",
+      "achievements": ["drink", "wood"],
+      "metrics": { "health": 7, "food": 8, "drink": 8, "energy": 6 },
+      "meta": {
+        "hud": {
+          "pos": [12, 16],
+          "vitals": { "health": 7, "food": 8, "drink": 8, "energy": 6, "mana": 0 },
+          "inventory": { "wood": 3 }
+        }
+      }
+    },
+    {
+      "index": 6,
+      "turn": 6,
+      "action": "attack",
+      "reward": 1.0,
+      "observation_text": "Player (12,16) · HP 7 · unlocked zombie · wood 3",
+      "achievements": ["drink", "wood", "zombie"],
+      "metrics": { "health": 7, "food": 8, "drink": 8, "energy": 5 },
+      "meta": {
+        "hud": {
+          "pos": [12, 16],
+          "vitals": { "health": 7, "food": 8, "drink": 8, "energy": 5, "mana": 0 },
+          "inventory": { "wood": 3 }
+        }
+      }
+    },
+    {
+      "index": 7,
+      "turn": 7,
+      "action": "craft_table",
+      "reward": 1.0,
+      "observation_text": "Player (12,16) · HP 7 · unlocked table · wood 1",
+      "achievements": ["drink", "wood", "zombie", "table"],
+      "metrics": { "health": 7, "food": 7, "drink": 8, "energy": 5 },
+      "meta": {
+        "hud": {
+          "pos": [12, 16],
+          "vitals": { "health": 7, "food": 7, "drink": 8, "energy": 5, "mana": 0 },
+          "inventory": { "wood": 1, "table": 1 }
+        }
+      }
+    }
+  ]
+}

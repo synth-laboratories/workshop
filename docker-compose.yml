@@ -1,0 +1,149 @@
+# Synth Desktop — local compose stack
+#
+# MLX / Metal cannot run inside Linux containers. The `laguna` service here is:
+#   - mock backend in Compose (API-compatible, for CI / Linux)
+#   - OR point runtime at a host-native sidecar:
+#       SYNTH_LAGUNA_BASE_URL=http://host.docker.internal:7333
+#
+# Native Mac MLX (independent of Poolside.app):
+#   ./scripts/laguna/serve.sh --models-dir ~/.config/poolside/models
+#
+# Usage:
+#   docker compose -f docker-compose.yml up --build
+#   docker compose -f docker-compose.yml --profile mock up --build
+
+services:
+  runtime:
+    build:
+      context: .
+      dockerfile: services/local-runtime/Dockerfile
+    container_name: synth-desktop-runtime
+    environment:
+      SYNTH_RUNTIME_HOST: 0.0.0.0
+      SYNTH_RUNTIME_PORT: "8765"
+      SYNTH_RUNTIME_TOKEN: ${SYNTH_RUNTIME_TOKEN:-dev-runtime-token}
+      SYNTH_RUNTIME_DATA_DIR: /data/runtime
+      SYNTH_INTERN_DEMO: ${SYNTH_INTERN_DEMO:-1}
+      SYNTH_API_KEY: ${SYNTH_API_KEY:-}
+      SYNTH_BACKEND_URL: ${SYNTH_BACKEND_URL:-https://api.usesynth.ai}
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+      # Prefer host-native Laguna sidecar when present; else compose laguna:7333
+      SYNTH_LAGUNA_BASE_URL: ${SYNTH_LAGUNA_BASE_URL:-http://laguna:7333}
+      SYNTH_LAGUNA_API_KEY: ${SYNTH_LAGUNA_API_KEY:-synth-compose-laguna-key}
+      SYNTH_WORKSHOP_ROOT: /workshop
+      SYNTH_VISUALS_ROOT: /workshop/visuals
+    ports:
+      - "8765:8765"
+    volumes:
+      - synth_runtime_data:/data/runtime
+      - ./visuals:/workshop/visuals:ro
+      - ./services/local-runtime/src:/app/src:ro
+    depends_on:
+      laguna:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8765/v1/health')",
+        ]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    networks:
+      - synth_desktop
+
+  laguna:
+    build:
+      context: .
+      dockerfile: services/laguna-daemon/Dockerfile
+    container_name: synth-desktop-laguna
+    environment:
+      SYNTH_LAGUNA_HOST: 0.0.0.0
+      SYNTH_LAGUNA_PORT: "7333"
+      # Linux containers cannot use Metal MLX — mock keeps API parity in Compose.
+      SYNTH_LAGUNA_BACKEND: ${SYNTH_LAGUNA_BACKEND:-mock}
+      SYNTH_LAGUNA_API_KEY: ${SYNTH_LAGUNA_API_KEY:-synth-compose-laguna-key}
+      SYNTH_LAGUNA_DEFAULT_MODEL: poolside/Laguna-XS-2.1-NVFP4-mlx
+      SYNTH_LAGUNA_MODELS_DIR: /models
+      SYNTH_LAGUNA_AUTO_LOAD: "1"
+      SYNTH_LAGUNA_REQUIRE_AUTH: "1"
+    ports:
+      - "7333:7333"
+    volumes:
+      - ${SYNTH_LAGUNA_MODELS_DIR:-laguna_models}:/models
+      - synth_laguna_data:/data/laguna
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import os,urllib.request; req=urllib.request.Request('http://127.0.0.1:7333/health', headers={'Authorization':'Bearer '+os.environ['SYNTH_LAGUNA_API_KEY']}); urllib.request.urlopen(req)",
+        ]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    networks:
+      - synth_desktop
+
+  # Optional: expose a connection file-compatible hint for Electron on the host
+  # Adapter distribution rehearsal. Wasabi and MinIO differ only by
+  # endpoint_url, so the publish → download → verify path is proven here
+  # before a production credential exists.
+  minio:
+    image: minio/minio:latest
+    container_name: synth-adapters-minio
+    profiles: ["adapters"]
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: synth-local
+      MINIO_ROOT_PASSWORD: synth-local-secret
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - minio-adapters:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  connection-writer:
+    image: python:3.12-slim
+    profiles: ["host-hints"]
+    volumes:
+      - ${HOME}/.synth-desktop/runtime:/out
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        python - <<'PY'
+        import json, pathlib, time
+        out = pathlib.Path("/out/compose-connection.json")
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(json.dumps({
+          "url": "http://127.0.0.1:8765",
+          "token": "${SYNTH_RUNTIME_TOKEN:-dev-runtime-token}",
+          "lagunaUrl": "http://127.0.0.1:7333",
+          "lagunaApiKey": "${SYNTH_LAGUNA_API_KEY:-synth-compose-laguna-key}",
+          "writtenAt": time.time(),
+          "source": "docker-compose",
+        }, indent=2))
+        print("wrote", out)
+        PY
+    networks:
+      - synth_desktop
+
+volumes:
+  minio-adapters:
+  synth_runtime_data:
+  synth_laguna_data:
+  laguna_models:
+
+networks:
+  synth_desktop:
+    name: synth_desktop

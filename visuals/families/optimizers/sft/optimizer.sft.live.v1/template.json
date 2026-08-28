@@ -1,0 +1,45 @@
+{
+  "schemaVersion": "synth.visual-template.v1",
+  "id": "optimizer.sft.live.v1",
+  "title": "SFT live",
+  "genre": "optimizer",
+  "version": "1.0.0",
+  "description": "SFT training curves, job status, and live campaigns. Aligned metric records, not parallel-array point clouds.",
+  "accent": "#F05F22",
+  "shell": "shell.tsx",
+  "tags": [
+    "optimizer",
+    "sft",
+    "live"
+  ],
+  "observationContract": {
+    "schemaVersion": "synth.visual-observation-contract.v1",
+    "readiness": {
+      "rejectTransportStates": [
+        "idle",
+        "declared",
+        "replaying",
+        "error",
+        "connecting",
+        "reconnecting"
+      ],
+      "minimumRolloutCount": 0,
+      "minimumRenderedFrameCount": 0,
+      "minimumSemanticEventCount": 1,
+      "requireTerminal": true
+    }
+  },
+  "inputs": [
+    {
+      "name": "optimizer_run",
+      "description": "Optimizer run + optimizer_event.v1 training/campaign events",
+      "accepts": [
+        "optimizer_run",
+        "fixture",
+        "inline"
+      ],
+      "required": true,
+      "schema": "optimizer_event.v1"
+    }
+  ]
+}

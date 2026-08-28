@@ -1,0 +1,4 @@
+interface:
+  display_name: "Synth System Diagrams"
+  short_description: "Author UML, 2D maps, and Benjamin Dicken Style explainers"
+  default_prompt: "Use $author-synth-diagrams to choose and author the clearest system visual for this question."

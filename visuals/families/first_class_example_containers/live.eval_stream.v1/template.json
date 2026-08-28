@@ -1,0 +1,65 @@
+{
+  "schemaVersion": "synth.visual-template.v1",
+  "id": "live.eval_stream.v1",
+  "title": "Live eval stream",
+  "genre": "live",
+  "version": "1.0.0",
+  "description": "Shortcut whole pane for live eval / acceptance SSE. Host-owned ingest; advertised compose parts; no compose spec required.",
+  "accent": "#FF5C00",
+  "shell": "shell.tsx",
+  "tags": ["live", "sse", "eval", "acceptance"],
+  "observationContract": {
+    "schemaVersion": "synth.visual-observation-contract.v1",
+    "readiness": {
+      "rejectTransportStates": ["idle", "declared", "replaying", "error", "connecting", "reconnecting"],
+      "minimumRolloutCount": 0,
+      "minimumRenderedFrameCount": 0,
+      "minimumSemanticEventCount": 1,
+      "minimumTransportEnvelopeCount": 1,
+      "requireTerminal": false
+    }
+  },
+  "inputs": [
+    {
+      "name": "stream",
+      "description": "Live SSE endpoint or fixture event list",
+      "accepts": ["live_sse", "fixture", "inline"],
+      "required": true,
+      "schema": "synth.visual.live_eval_events.v1"
+    }
+  ],
+  "components": [
+    {
+      "id": "event_stream.v1",
+      "kind": "event_stream",
+      "protocolId": "event_stream.v1",
+      "consumes": ["stream"],
+      "emits": ["cursor"],
+      "description": "Live event log. Click emits a cursor for the in-pane detail overlay."
+    },
+    {
+      "id": "metrics.v1",
+      "kind": "metrics",
+      "protocolId": "metrics.reduce.v1",
+      "consumes": ["stream"],
+      "emits": [],
+      "description": "Reduce ingested events to a strip: count and last scalar reward/metric if present."
+    },
+    {
+      "id": "scrubber.v1",
+      "kind": "scrubber",
+      "protocolId": "scrubber.v1",
+      "consumes": ["stream"],
+      "emits": ["cursor"],
+      "description": "Sequence slider. Writes the in-pane cursor shared with the event log and detail overlay."
+    },
+    {
+      "id": "detail_modal.v1",
+      "kind": "detail_modal",
+      "protocolId": "detail_modal.v1",
+      "consumes": ["cursor"],
+      "emits": [],
+      "description": "In-pane overlay that inspects the envelope selected by the event log or scrubber."
+    }
+  ]
+}

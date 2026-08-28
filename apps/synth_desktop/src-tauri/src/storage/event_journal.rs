@@ -1,0 +1,592 @@
+use super::database::Database;
+use super::models::{AppEvent, EventSource, SessionRecord, APP_EVENT_SCHEMA_VERSION};
+use crate::domain::RuntimeTarget;
+use anyhow::{Context, Result};
+use chrono::Utc;
+use rusqlite::{params, Connection, OptionalExtension};
+use serde_json::{json, Value};
+use std::sync::Arc;
+use uuid::Uuid;
+
+#[derive(Clone, Debug)]
+pub struct EventAppend {
+    pub event_id: Option<String>,
+    pub session_id: Option<String>,
+    pub run_id: Option<String>,
+    pub source: EventSource,
+    pub kind: String,
+    pub payload: Value,
+    pub remote_sequence: Option<i64>,
+    pub command_id: Option<String>,
+    pub created_at: Option<String>,
+}
+
+impl EventAppend {
+    pub fn system(kind: impl Into<String>, payload: Value) -> Self {
+        Self {
+            event_id: None,
+            session_id: None,
+            run_id: None,
+            source: EventSource::System,
+            kind: kind.into(),
+            payload,
+            remote_sequence: None,
+            command_id: None,
+            created_at: None,
+        }
+    }
+
+    pub fn codex(session_id: impl Into<String>, kind: impl Into<String>, payload: Value) -> Self {
+        Self {
+            event_id: None,
+            session_id: Some(session_id.into()),
+            run_id: None,
+            source: EventSource::Codex,
+            kind: kind.into(),
+            payload,
+            remote_sequence: None,
+            command_id: None,
+            created_at: None,
+        }
+    }
+}
+
+#[derive(Clone)]
+pub struct EventJournal {
+    db: Arc<Database>,
+}
+
+impl EventJournal {
+    pub fn new(db: Arc<Database>) -> Self {
+        Self { db }
+    }
+
+    pub async fn append(&self, input: EventAppend) -> Result<AppEvent> {
+        let db = self.db.clone();
+        db.run_transaction(move |conn| append_event(conn, input))
+            .await
+    }
+
+    /// Append many events inside one transaction.
+    ///
+    /// The diagnostic writer batches on count or a short timer; one transaction
+    /// per event would put a durable fsync between every queued diagnostic and
+    /// turn a bounded background drain into a visible disk load.
+    pub async fn append_batch(&self, inputs: Vec<EventAppend>) -> Result<Vec<AppEvent>> {
+        if inputs.is_empty() {
+            return Ok(Vec::new());
+        }
+        let db = self.db.clone();
+        db.run_transaction(move |conn| {
+            let mut appended = Vec::with_capacity(inputs.len());
+            for input in inputs {
+                appended.push(append_event(conn, input)?);
+            }
+            Ok(appended)
+        })
+        .await
+    }
+
+    pub async fn events_after(&self, after_sequence: i64, limit: i64) -> Result<Vec<AppEvent>> {
+        let db = self.db.clone();
+        db.run(move |conn| list_events_after(conn, after_sequence, limit))
+            .await
+    }
+
+    /// Sequence-ordered scan restricted to specific event kinds. Restore paths
+    /// that only care about a handful of kinds must not materialize and JSON
+    /// parse every payload in the journal to find them.
+    pub async fn events_of_kinds_after(
+        &self,
+        after_sequence: i64,
+        kinds: Vec<String>,
+        limit: i64,
+    ) -> Result<Vec<AppEvent>> {
+        if kinds.is_empty() {
+            return Ok(Vec::new());
+        }
+        let db = self.db.clone();
+        db.run(move |conn| list_events_of_kinds_after(conn, after_sequence, &kinds, limit))
+            .await
+    }
+
+    pub async fn session_events_after(
+        &self,
+        session_id: String,
+        after_session_sequence: i64,
+        limit: i64,
+    ) -> Result<Vec<AppEvent>> {
+        let db = self.db.clone();
+        db.run(move |conn| {
+            list_session_events_after(conn, &session_id, after_session_sequence, limit)
+        })
+        .await
+    }
+
+    pub async fn session_events_tail(
+        &self,
+        session_id: String,
+        limit: i64,
+    ) -> Result<Vec<AppEvent>> {
+        let db = self.db.clone();
+        db.run(move |conn| list_session_events_tail(conn, &session_id, limit))
+            .await
+    }
+
+    pub async fn session_events_before(
+        &self,
+        session_id: String,
+        before_session_sequence: i64,
+        limit: i64,
+    ) -> Result<Vec<AppEvent>> {
+        let db = self.db.clone();
+        db.run(move |conn| {
+            list_session_events_before(conn, &session_id, before_session_sequence, limit)
+        })
+        .await
+    }
+
+    pub async fn upsert_codex_session(
+        &self,
+        session_id: String,
+        thread_id: String,
+        title: String,
+        model: String,
+        workspace: String,
+        status: String,
+    ) -> Result<SessionRecord> {
+        let db = self.db.clone();
+        db.run_transaction(move |conn| {
+            upsert_codex_session(
+                conn,
+                &session_id,
+                &thread_id,
+                &title,
+                &model,
+                &workspace,
+                &status,
+            )
+        })
+        .await
+    }
+
+    pub async fn set_session_status(&self, session_id: String, status: String) -> Result<()> {
+        let db = self.db.clone();
+        db.run(move |conn| {
+            conn.execute(
+                "UPDATE sessions SET status = ?1, updated_at = ?2 WHERE id = ?3",
+                params![status, Utc::now().to_rfc3339(), session_id],
+            )?;
+            Ok(())
+        })
+        .await
+    }
+
+    pub async fn head_sequence(&self) -> Result<i64> {
+        let db = self.db.clone();
+        db.run(|conn| {
+            let head: i64 = conn
+                .query_row("SELECT COALESCE(MAX(sequence), 0) FROM events", [], |row| {
+                    row.get(0)
+                })
+                .optional()?
+                .unwrap_or(0);
+            Ok(head)
+        })
+        .await
+    }
+}
+
+/// Append an event using the caller's connection.
+///
+/// Domain stores use this inside their own transaction so the state mutation and
+/// its durable journal record commit (or roll back) together.
+pub(crate) fn append_event(conn: &Connection, input: EventAppend) -> Result<AppEvent> {
+    let event_id = input
+        .event_id
+        .unwrap_or_else(|| format!("evt_{}", Uuid::new_v4()));
+    let created_at = input.created_at.unwrap_or_else(|| Utc::now().to_rfc3339());
+    let payload_json = serde_json::to_string(&input.payload)?;
+
+    if let (Some(session_id), Some(remote_sequence)) =
+        (input.session_id.as_ref(), input.remote_sequence)
+    {
+        if let Some(existing) = conn
+            .query_row(
+                "SELECT sequence FROM events
+                 WHERE session_id = ?1 AND source = ?2 AND remote_sequence = ?3",
+                params![session_id, input.source.as_str(), remote_sequence],
+                |row| row.get::<_, i64>(0),
+            )
+            .optional()?
+        {
+            return load_event(conn, existing);
+        }
+    }
+
+    let session_sequence = if let Some(session_id) = input.session_id.as_ref() {
+        ensure_session_exists(conn, session_id)?;
+        let next: i64 = conn.query_row(
+            "SELECT latest_cursor + 1 FROM sessions WHERE id = ?1",
+            params![session_id],
+            |row| row.get(0),
+        )?;
+        conn.execute(
+            "UPDATE sessions SET latest_cursor = ?1, updated_at = ?2 WHERE id = ?3",
+            params![next, &created_at, session_id],
+        )?;
+        Some(next)
+    } else {
+        None
+    };
+
+    conn.execute(
+        "INSERT INTO events(
+            event_id, session_id, session_sequence, run_id, source, kind,
+            payload_json, remote_sequence, command_id, created_at
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+        params![
+            event_id,
+            input.session_id,
+            session_sequence,
+            input.run_id,
+            input.source.as_str(),
+            input.kind,
+            payload_json,
+            input.remote_sequence,
+            input.command_id,
+            created_at,
+        ],
+    )
+    .context("insert journal event")?;
+
+    let sequence: i64 = conn.query_row("SELECT last_insert_rowid()", [], |row| row.get(0))?;
+    Ok(AppEvent {
+        schema_version: APP_EVENT_SCHEMA_VERSION.to_string(),
+        sequence,
+        event_id,
+        session_id: input.session_id,
+        session_sequence,
+        run_id: input.run_id,
+        source: input.source,
+        kind: input.kind,
+        payload: input.payload,
+        remote_sequence: input.remote_sequence,
+        command_id: input.command_id,
+        created_at,
+    })
+}
+
+fn ensure_session_exists(conn: &Connection, session_id: &str) -> Result<()> {
+    let exists: bool = conn
+        .query_row(
+            "SELECT 1 FROM sessions WHERE id = ?1",
+            params![session_id],
+            |_| Ok(true),
+        )
+        .optional()?
+        .unwrap_or(false);
+    if exists {
+        return Ok(());
+    }
+    let now = Utc::now().to_rfc3339();
+    let target = RuntimeTarget::local_laguna();
+    conn.execute(
+        "INSERT INTO sessions(
+            id, title, kind, target_json, runtime_target_kind, status, latest_cursor, metadata_json, created_at, updated_at
+         ) VALUES (?1, ?2, 'codex', ?3, ?4, 'created', 0, '{}', ?5, ?5)",
+        params![
+            session_id,
+            format!("Session {session_id}"),
+            target.to_json_value().to_string(),
+            target.kind_str(),
+            now
+        ],
+    )?;
+    Ok(())
+}
+
+fn upsert_codex_session(
+    conn: &Connection,
+    session_id: &str,
+    thread_id: &str,
+    title: &str,
+    model: &str,
+    workspace: &str,
+    status: &str,
+) -> Result<SessionRecord> {
+    let now = Utc::now().to_rfc3339();
+    let target = RuntimeTarget::local_laguna();
+    let metadata = json!({ "workspace": workspace, "model": model });
+    conn.execute(
+        "INSERT INTO sessions(
+            id, title, kind, target_json, runtime_target_kind, codex_thread_id, status, latest_cursor,
+            metadata_json, created_at, updated_at
+         ) VALUES (?1, ?2, 'codex', ?3, ?4, ?5, ?6, 0, ?7, ?8, ?8)
+         ON CONFLICT(id) DO UPDATE SET
+            title = excluded.title,
+            kind = excluded.kind,
+            target_json = excluded.target_json,
+            runtime_target_kind = excluded.runtime_target_kind,
+            codex_thread_id = excluded.codex_thread_id,
+            status = excluded.status,
+            metadata_json = excluded.metadata_json,
+            updated_at = excluded.updated_at",
+        params![
+            session_id,
+            title,
+            target.to_json_value().to_string(),
+            target.kind_str(),
+            thread_id,
+            status,
+            metadata.to_string(),
+            now
+        ],
+    )?;
+    load_session(conn, session_id)
+}
+
+fn load_session(conn: &Connection, session_id: &str) -> Result<SessionRecord> {
+    conn.query_row(
+        "SELECT id, title, kind, target_json, project_id, remote_id, codex_thread_id, status,
+                state_generation, latest_cursor, active_run_id, metadata_json, created_at, updated_at
+         FROM sessions WHERE id = ?1",
+        params![session_id],
+        |row| {
+            Ok(SessionRecord {
+                id: row.get(0)?,
+                title: row.get(1)?,
+                kind: row.get(2)?,
+                target: {
+                    let raw: String = row.get(3)?;
+                    let value: Value =
+                        serde_json::from_str(&raw).unwrap_or(Value::Null);
+                    RuntimeTarget::from_json_value_lenient(&value)
+                },
+                project_id: row.get(4)?,
+                remote_id: row.get(5)?,
+                codex_thread_id: row.get(6)?,
+                status: row.get(7)?,
+                state_generation: row.get(8)?,
+                latest_cursor: row.get(9)?,
+                active_run_id: row.get(10)?,
+                metadata: serde_json::from_str(&row.get::<_, String>(11)?).unwrap_or(json!({})),
+                created_at: row.get(12)?,
+                updated_at: row.get(13)?,
+            })
+        },
+    )
+    .context("load session")
+}
+
+fn load_event(conn: &Connection, sequence: i64) -> Result<AppEvent> {
+    conn.query_row(
+        "SELECT sequence, event_id, session_id, session_sequence, run_id, source, kind,
+                payload_json, remote_sequence, command_id, created_at
+         FROM events WHERE sequence = ?1",
+        params![sequence],
+        |row| {
+            Ok(AppEvent {
+                schema_version: APP_EVENT_SCHEMA_VERSION.to_string(),
+                sequence: row.get(0)?,
+                event_id: row.get(1)?,
+                session_id: row.get(2)?,
+                session_sequence: row.get(3)?,
+                run_id: row.get(4)?,
+                source: EventSource::parse(&row.get::<_, String>(5)?),
+                kind: row.get(6)?,
+                payload: serde_json::from_str(&row.get::<_, String>(7)?).unwrap_or(Value::Null),
+                remote_sequence: row.get(8)?,
+                command_id: row.get(9)?,
+                created_at: row.get(10)?,
+            })
+        },
+    )
+    .context("load event")
+}
+
+fn list_events_of_kinds_after(
+    conn: &Connection,
+    after_sequence: i64,
+    kinds: &[String],
+    limit: i64,
+) -> Result<Vec<AppEvent>> {
+    let placeholders = (0..kinds.len())
+        .map(|index| format!("?{}", index + 2))
+        .collect::<Vec<_>>()
+        .join(",");
+    let mut stmt = conn.prepare(&format!(
+        "SELECT sequence, event_id, session_id, session_sequence, run_id, source, kind,
+                payload_json, remote_sequence, command_id, created_at
+         FROM events
+         WHERE sequence > ?1 AND kind IN ({placeholders})
+         ORDER BY sequence ASC
+         LIMIT ?{}",
+        kinds.len() + 2
+    ))?;
+    let mut args: Vec<rusqlite::types::Value> = Vec::with_capacity(kinds.len() + 2);
+    args.push(after_sequence.into());
+    args.extend(kinds.iter().map(|kind| kind.clone().into()));
+    args.push(limit.into());
+    let rows = stmt.query_map(rusqlite::params_from_iter(args), map_event_row)?;
+    let mut events = Vec::new();
+    for row in rows {
+        events.push(row?);
+    }
+    Ok(events)
+}
+
+fn map_event_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<AppEvent> {
+    Ok(AppEvent {
+        schema_version: APP_EVENT_SCHEMA_VERSION.to_string(),
+        sequence: row.get(0)?,
+        event_id: row.get(1)?,
+        session_id: row.get(2)?,
+        session_sequence: row.get(3)?,
+        run_id: row.get(4)?,
+        source: EventSource::parse(&row.get::<_, String>(5)?),
+        kind: row.get(6)?,
+        payload: serde_json::from_str(&row.get::<_, String>(7)?).unwrap_or(Value::Null),
+        remote_sequence: row.get(8)?,
+        command_id: row.get(9)?,
+        created_at: row.get(10)?,
+    })
+}
+
+fn list_events_after(conn: &Connection, after_sequence: i64, limit: i64) -> Result<Vec<AppEvent>> {
+    let mut stmt = conn.prepare(
+        "SELECT sequence, event_id, session_id, session_sequence, run_id, source, kind,
+                payload_json, remote_sequence, command_id, created_at
+         FROM events
+         WHERE sequence > ?1
+         ORDER BY sequence ASC
+         LIMIT ?2",
+    )?;
+    let rows = stmt.query_map(params![after_sequence, limit], map_event_row)?;
+    let mut events = Vec::new();
+    for row in rows {
+        events.push(row?);
+    }
+    Ok(events)
+}
+
+fn list_session_events_after(
+    conn: &Connection,
+    session_id: &str,
+    after_session_sequence: i64,
+    limit: i64,
+) -> Result<Vec<AppEvent>> {
+    let mut stmt = conn.prepare(
+        "SELECT sequence, event_id, session_id, session_sequence, run_id, source, kind,
+                payload_json, remote_sequence, command_id, created_at
+         FROM events
+         WHERE session_id = ?1 AND session_sequence > ?2
+         ORDER BY session_sequence ASC
+         LIMIT ?3",
+    )?;
+    let rows = stmt.query_map(params![session_id, after_session_sequence, limit], |row| {
+        Ok(AppEvent {
+            schema_version: APP_EVENT_SCHEMA_VERSION.to_string(),
+            sequence: row.get(0)?,
+            event_id: row.get(1)?,
+            session_id: row.get(2)?,
+            session_sequence: row.get(3)?,
+            run_id: row.get(4)?,
+            source: EventSource::parse(&row.get::<_, String>(5)?),
+            kind: row.get(6)?,
+            payload: serde_json::from_str(&row.get::<_, String>(7)?).unwrap_or(Value::Null),
+            remote_sequence: row.get(8)?,
+            command_id: row.get(9)?,
+            created_at: row.get(10)?,
+        })
+    })?;
+    let mut events = Vec::new();
+    for row in rows {
+        events.push(row?);
+    }
+    Ok(events)
+}
+
+fn list_session_events_tail(
+    conn: &Connection,
+    session_id: &str,
+    limit: i64,
+) -> Result<Vec<AppEvent>> {
+    let mut stmt = conn.prepare(
+        "SELECT sequence, event_id, session_id, session_sequence, run_id, source, kind,
+                payload_json, remote_sequence, command_id, created_at
+         FROM (
+             SELECT sequence, event_id, session_id, session_sequence, run_id, source, kind,
+                    payload_json, remote_sequence, command_id, created_at
+             FROM events
+             WHERE session_id = ?1 AND session_sequence IS NOT NULL
+             ORDER BY session_sequence DESC
+             LIMIT ?2
+         )
+         ORDER BY session_sequence ASC",
+    )?;
+    let rows = stmt.query_map(params![session_id, limit], |row| {
+        Ok(AppEvent {
+            schema_version: APP_EVENT_SCHEMA_VERSION.to_string(),
+            sequence: row.get(0)?,
+            event_id: row.get(1)?,
+            session_id: row.get(2)?,
+            session_sequence: row.get(3)?,
+            run_id: row.get(4)?,
+            source: EventSource::parse(&row.get::<_, String>(5)?),
+            kind: row.get(6)?,
+            payload: serde_json::from_str(&row.get::<_, String>(7)?).unwrap_or(Value::Null),
+            remote_sequence: row.get(8)?,
+            command_id: row.get(9)?,
+            created_at: row.get(10)?,
+        })
+    })?;
+    let mut events = Vec::new();
+    for row in rows {
+        events.push(row?);
+    }
+    Ok(events)
+}
+
+fn list_session_events_before(
+    conn: &Connection,
+    session_id: &str,
+    before_session_sequence: i64,
+    limit: i64,
+) -> Result<Vec<AppEvent>> {
+    let mut stmt = conn.prepare(
+        "SELECT sequence, event_id, session_id, session_sequence, run_id, source, kind,
+                payload_json, remote_sequence, command_id, created_at
+         FROM (
+             SELECT sequence, event_id, session_id, session_sequence, run_id, source, kind,
+                    payload_json, remote_sequence, command_id, created_at
+             FROM events
+             WHERE session_id = ?1 AND session_sequence IS NOT NULL AND session_sequence < ?2
+             ORDER BY session_sequence DESC
+             LIMIT ?3
+         )
+         ORDER BY session_sequence ASC",
+    )?;
+    let rows = stmt.query_map(params![session_id, before_session_sequence, limit], |row| {
+        Ok(AppEvent {
+            schema_version: APP_EVENT_SCHEMA_VERSION.to_string(),
+            sequence: row.get(0)?,
+            event_id: row.get(1)?,
+            session_id: row.get(2)?,
+            session_sequence: row.get(3)?,
+            run_id: row.get(4)?,
+            source: EventSource::parse(&row.get::<_, String>(5)?),
+            kind: row.get(6)?,
+            payload: serde_json::from_str(&row.get::<_, String>(7)?).unwrap_or(Value::Null),
+            remote_sequence: row.get(8)?,
+            command_id: row.get(9)?,
+            created_at: row.get(10)?,
+        })
+    })?;
+    let mut events = Vec::new();
+    for row in rows {
+        events.push(row?);
+    }
+    Ok(events)
+}
+

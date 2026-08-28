@@ -1,0 +1,208 @@
+# Workshop release-tier contract.
+#
+# Single source of truth for two independent questions:
+#   1. Which maturity envelope does a Workshop build compile? (features)
+#   2. Which checks matter, and how much, for releasing at each tier? (verification)
+#
+# The desktop host embeds this file (src-tauri/src/release_tier.rs) and the
+# `workshop-tier-plan` binary resolves it for release tooling
+# (scripts/release-gate.sh). Editing it is a promotion decision, not a build
+# tweak: moving a feature between tiers must come with an updated maturity
+# assessment and the matching verification dispositions in the same change.
+#
+# Tiers form a strict envelope progression, narrowest to widest:
+#
+#     core ⊂ stable ⊂ beta ⊂ alpha ⊂ dev
+#
+# A build compiled at tier T contains every feature whose min_tier is at or
+# below T and is structurally unable to expose the rest (see the enforcement
+# field). Runtime flags may further disable an included feature; they can
+# never enable an excluded one.
+
+schema = 1
+contract_version = "workshop.release-tiers.v1"
+
+# Narrowest first. Code derives ordering from this array; never reorder it
+# without bumping contract_version.
+tier_order = ["core", "stable", "beta", "alpha", "dev"]
+
+# ---------------------------------------------------------------------------
+# Features
+#
+# enforcement says how the envelope is made structural for this feature:
+#   compiled — a cargo feature (named in cargo_feature) compiles the host code
+#              out of excluded tiers entirely.
+#   bundled  — a Vite define (__TIER_HAS_*__) makes the renderer code
+#              statically dead in excluded tiers, so it is eliminated from the
+#              production bundle.
+#   declared — maturity classification only; the code predates the envelope
+#              and is not yet gated. Only allowed at beta-or-below and only
+#              with grandfathered = true, so new pre-stable features cannot
+#              ship ungated.
+#
+# runtime_flag, when present, is the ordinary rollout switch *within* the
+# envelope: resolution is WORKSHOP_FLAG_<KEY> env override, else default.
+# ---------------------------------------------------------------------------
+
+[[feature]]
+name = "sessions_local_projects"
+summary = "Sessions, local projects, and the local-first storage they sit on"
+owner = "workshop-core-experience"
+min_tier = "core"
+enforcement = "declared"
+grandfathered = true
+
+[[feature]]
+name = "crash_recovery"
+summary = "Session crash recovery and the local essential-event ledger"
+owner = "workshop-reliability"
+min_tier = "core"
+enforcement = "declared"
+grandfathered = true
+
+[[feature]]
+name = "optimizer_eval_workflow"
+summary = "GEPA/GELO/SFT optimizer runs, eval workflows, and their visuals"
+owner = "workshop-research-loop"
+min_tier = "stable"
+enforcement = "declared"
+grandfathered = true
+
+[[feature]]
+name = "device_pairing_auth"
+summary = "Sign in with Synth via the browser device-pairing flow"
+owner = "workshop-identity"
+min_tier = "stable"
+enforcement = "declared"
+grandfathered = true
+
+[[feature]]
+name = "product_telemetry"
+summary = "Consent-gated product telemetry and its backend sync"
+owner = "workshop-reliability"
+min_tier = "stable"
+enforcement = "declared"
+grandfathered = true
+
+[[feature]]
+name = "diagnostics_export"
+summary = "Explicit user-initiated diagnostics export"
+owner = "workshop-reliability"
+min_tier = "stable"
+enforcement = "declared"
+grandfathered = true
+
+[[feature]]
+name = "hosted_workflows"
+summary = "Hosted synthesis, hosted training jobs, and their quota surfaces"
+owner = "workshop-distribution"
+min_tier = "beta"
+enforcement = "declared"
+grandfathered = true
+runtime_flag = { key = "hosted_workflows", default = true }
+
+[[feature]]
+name = "containers_computer_use"
+summary = "Container runtimes and the computer-use lane"
+owner = "workshop-research-loop"
+min_tier = "beta"
+enforcement = "declared"
+grandfathered = true
+runtime_flag = { key = "containers_computer_use", default = true }
+
+[[feature]]
+name = "prerelease_build_badge"
+summary = "Visible pre-release badge (titlebar top right + Settings → Build) on beta/alpha/dev bundles"
+owner = "workshop-distribution"
+min_tier = "beta"
+enforcement = "bundled"
+
+[[feature]]
+name = "qa_control_plane"
+summary = "The eval-driver loopback route table that lets QA harnesses drive the app"
+owner = "workshop-quality"
+min_tier = "beta"
+enforcement = "compiled"
+cargo_feature = "eval-driver"
+# Even inside the envelope the route table is opt-in per build
+# (desktop-instance.sh passes the cargo feature); it is never a default.
+
+[[feature]]
+name = "qa_harness_pages"
+summary = "experiment-qa/gepa-qa dev-server pages for live optimizer QA"
+owner = "workshop-quality"
+min_tier = "dev"
+enforcement = "bundled"
+# Vite only ever builds index.html; these pages exist solely on the dev server.
+
+# ---------------------------------------------------------------------------
+# Verification
+#
+# Each item carries a disposition for every tier:
+#   required    — must pass to release that tier.
+#   recommended — should run; skipping needs a recorded reason in the receipt.
+#   optional    — investigative coverage, selected when relevant.
+#   excluded    — invalid, unsafe, or irrelevant at that tier.
+#
+# kind = "test" | "eval" | "drill" | "manual". Non-manual items name a command
+# runnable from the repository root; manual items are recorded as
+# needs-human in the release receipt and block promotion until attested.
+# ---------------------------------------------------------------------------
+
+[[verification]]
+name = "host_unit_tests"
+kind = "test"
+command = "cargo test --manifest-path apps/synth_desktop/src-tauri/Cargo.toml"
+dispositions = { core = "required", stable = "required", beta = "required", alpha = "required", dev = "recommended" }
+
+[[verification]]
+name = "renderer_typecheck"
+kind = "test"
+command = "npm --prefix apps/synth_desktop run typecheck"
+dispositions = { core = "required", stable = "required", beta = "required", alpha = "required", dev = "recommended" }
+
+[[verification]]
+name = "app_css_lint"
+kind = "test"
+command = "npm --prefix apps/synth_desktop run lint:app-css"
+dispositions = { core = "required", stable = "required", beta = "required", alpha = "recommended", dev = "optional" }
+
+[[verification]]
+name = "playwright_suites"
+kind = "test"
+command = "npm --prefix apps/synth_desktop run test:playwright"
+dispositions = { core = "required", stable = "required", beta = "required", alpha = "recommended", dev = "optional" }
+
+[[verification]]
+name = "desktop_ui_gates"
+kind = "test"
+command = "npm --prefix apps/synth_desktop run test:ui-gates"
+dispositions = { core = "required", stable = "required", beta = "recommended", alpha = "optional", dev = "optional" }
+
+[[verification]]
+name = "crash_recovery_drill"
+kind = "drill"
+command = "scripts/crash-recovery-drill.sh"
+dispositions = { core = "required", stable = "required", beta = "required", alpha = "recommended", dev = "optional" }
+
+[[verification]]
+name = "auth_pre_release_live_driver"
+kind = "manual"
+command = "scripts/auth-pre-release.sh"
+dispositions = { core = "required", stable = "required", beta = "recommended", alpha = "optional", dev = "excluded" }
+# Live Clerk driver against a real slot; excluded from dev because fast local
+# iteration must not hit live identity.
+
+[[verification]]
+name = "release_provenance"
+kind = "manual"
+command = "scripts/release-artifact.sh"
+dispositions = { core = "required", stable = "required", beta = "required", alpha = "optional", dev = "excluded" }
+
+[[verification]]
+name = "cua_instance_harness"
+kind = "eval"
+command = "scripts/workshop-qa-driver.mjs"
+dispositions = { core = "excluded", stable = "excluded", beta = "optional", alpha = "required", dev = "recommended" }
+# Drives the qa_control_plane feature, which stable/core builds structurally
+# lack — running it there is invalid, not merely skipped.

@@ -1,0 +1,60 @@
+{
+  "name": "synth-workshop",
+  "private": true,
+  "version": "0.1.0",
+  "packageManager": "npm@11.17.0",
+  "workspaces": [
+    "apps/*",
+    "packages/*",
+    "visuals"
+  ],
+  "scripts": {
+    "dev": "node scripts/dev.mjs",
+    "dev:desktop": "npm run dev --workspace @synth/synth-desktop",
+    "desktop:dev": "./scripts/desktop-instance.sh dev codex",
+    "desktop:codex:status": "./scripts/desktop-instance.sh status codex",
+    "desktop:codex:stop": "./scripts/desktop-instance.sh stop codex",
+    "desktop:instance": "./scripts/desktop-instance.sh dev",
+    "desktop:instance:status": "./scripts/desktop-instance.sh status",
+    "desktop:instance:stop": "./scripts/desktop-instance.sh stop",
+    "desktop:instance:clean": "./scripts/desktop-instance.sh clean",
+    "desktop:check": "./scripts/desktop.sh check",
+    "desktop:build": "./scripts/desktop.sh build",
+    "build:graph": "turbo run frontend:build --filter=@synth/synth-desktop",
+    "check:graph": "turbo run typecheck",
+    "cache:rust:stats": "sccache --show-stats",
+    "desktop:install": "./scripts/desktop.sh install",
+    "desktop:install:release": "./scripts/desktop.sh install-release",
+    "desktop:restart": "./scripts/desktop.sh restart",
+    "desktop:stop": "./scripts/desktop.sh stop",
+    "desktop:status": "./scripts/desktop.sh status",
+    "dev:mock": "npm run dev --workspace synth-workshop-mock",
+    "dev:inference": "PYTHONPATH=services/local-inference python3 -m synth_inference --host 127.0.0.1 --port 7332",
+    "build": "npm run build --workspace @synth/synth-desktop",
+    "typecheck": "npm run typecheck --workspace @synth/synth-desktop",
+    "legacy-runtime:dev": "PYTHONPATH=services/local-runtime/src python3 -m synth_local_runtime --port 8765",
+    "legacy-runtime:stop": "PYTHONPATH=services/local-runtime/src python3 -m synth_local_runtime --stop",
+    "legacy-dogfood:models": "PYTHONPATH=services/local-runtime/src python3 scripts/dogfood_models.py",
+    "mcp:visuals": "cargo run --manifest-path apps/synth_desktop/src-tauri/Cargo.toml --bin synth-visuals-mcp",
+    "laguna:setup": "./scripts/laguna/setup.sh",
+    "laguna:serve": "./scripts/laguna/serve.sh",
+    "laguna:mock": "SYNTH_LAGUNA_BACKEND=mock ./scripts/laguna/serve.sh",
+    "compose:up": "docker compose --env-file .env.compose.example up --build -d",
+    "compose:down": "docker compose down",
+    "muse:serve": "./scripts/muse/serve.sh"
+  },
+  "engines": {
+    "node": ">=20",
+    "npm": ">=10"
+  },
+  "allowScripts": {
+    "electron@41.10.5": true,
+    "esbuild@0.25.12": true,
+    "esbuild@0.28.2": true,
+    "fsevents@2.3.2": true,
+    "fsevents@2.3.3": true
+  },
+  "devDependencies": {
+    "turbo": "^2.10.9"
+  }
+}

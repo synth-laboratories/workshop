@@ -1,0 +1,16 @@
+{
+  "run_id": "craftax-live-demo",
+  "events": [
+    {"occurred_at":"2026-08-09T15:00:00Z","run_id":"craftax-live-demo","kind":"stream.subscribed","payload":{"stream.id":"stream_craftax_demo","next_sequence":1,"ready":true}},
+    {"occurred_at":"2026-08-09T15:00:00Z","run_id":"craftax-live-demo","lane":"craftax#0","kind":"eval.phase","payload":{"phase":"rollout.opened","policy":{"model":"openai/gpt-5.6-luna"}}},
+    {"occurred_at":"2026-08-09T15:00:00Z","run_id":"craftax-live-demo","lane":"craftax#1","kind":"eval.phase","payload":{"phase":"rollout.opened","policy":{"model":"openai/gpt-5.6-luna"}}},
+    {"occurred_at":"2026-08-09T15:00:01Z","run_id":"craftax-live-demo","lane":"craftax#0","kind":"snapshot","payload":{"step":2,"reward":0,"progress":{"done":2,"total":10},"inventory":{"health":9,"food":8,"drink":8,"energy":9},"achievements":[]}},
+    {"occurred_at":"2026-08-09T15:00:01Z","run_id":"craftax-live-demo","lane":"craftax#1","kind":"snapshot","payload":{"step":3,"reward":0.1,"progress":{"done":3,"total":10},"inventory":{"health":8,"food":7,"drink":8,"energy":7},"achievements":{"collect_wood":1}}},
+    {"occurred_at":"2026-08-09T15:00:02Z","run_id":"craftax-live-demo","lane":"craftax#0","kind":"transcript","payload":{"kind":"action_applied","action":"move_east"}},
+    {"occurred_at":"2026-08-09T15:00:03Z","run_id":"craftax-live-demo","lane":"craftax#0","kind":"snapshot","payload":{"step":10,"reward":0.5,"progress":{"done":10,"total":10},"inventory":{"health":8,"food":7,"drink":7,"energy":8},"achievements":{"collect_wood":1,"place_table":1}}},
+    {"occurred_at":"2026-08-09T15:00:03Z","run_id":"craftax-live-demo","lane":"craftax#0","kind":"eval.run.terminal","payload":{"reward":0.5,"stopped_on":"max_steps"}},
+    {"occurred_at":"2026-08-09T15:00:04Z","run_id":"craftax-live-demo","lane":"craftax#1","kind":"snapshot","payload":{"step":10,"reward":0.2,"progress":{"done":10,"total":10},"inventory":{"health":7,"food":6,"drink":7,"energy":6},"achievements":{"collect_wood":1}}},
+    {"occurred_at":"2026-08-09T15:00:04Z","run_id":"craftax-live-demo","lane":"craftax#1","kind":"eval.run.terminal","payload":{"reward":0.2,"stopped_on":"max_steps"}},
+    {"occurred_at":"2026-08-09T15:00:04Z","run_id":"craftax-live-demo","kind":"eval.stream.terminal","payload":{"status":"completed"}}
+  ]
+}

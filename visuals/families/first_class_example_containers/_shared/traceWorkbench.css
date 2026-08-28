@@ -1,0 +1,44 @@
+/* The desktop can host this visual in a 320px pane while the application
+   window remains wide. Respond to that host pane, not the viewport. */
+@container visual-pane (max-width: 700px) {
+  .trace-workbench-layout {
+    --tw-main-columns: minmax(0, 1fr);
+    --tw-main-height: auto;
+  }
+
+  .trace-workbench-call-column {
+    --tw-call-rows: minmax(180px, 42vh) auto;
+  }
+}
+
+@container visual-pane (max-width: 420px) {
+  .synth-visual-root:has(.trace-workbench-layout) {
+    padding: 12px 10px 16px;
+  }
+
+  .synth-visual-root:has(.trace-workbench-layout) .sv-title,
+  .synth-visual-root:has(.trace-workbench-layout) .sv-lede {
+    overflow-wrap: anywhere;
+  }
+
+  .trace-workbench-aggregate {
+    position: static !important;
+    padding: var(--sv-sp-2) !important;
+  }
+
+  .trace-workbench-usage {
+    --tw-usage-columns: minmax(0, 1fr);
+  }
+
+  .trace-workbench-distributions {
+    --tw-distribution-columns: minmax(0, 1fr);
+  }
+
+  .trace-workbench-achievement {
+    --tw-achievement-columns: minmax(0, 1fr);
+  }
+
+  .trace-workbench-layout {
+    gap: var(--sv-sp-3) !important;
+  }
+}

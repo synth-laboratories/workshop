@@ -1,0 +1,34 @@
+{
+  "schema": "synth.visual.annotation_markers.v1",
+  "trace_id": "trace_v5_demo_sha256_abc",
+  "markers": [
+    {
+      "id": "m1",
+      "turn": 2,
+      "step_index": 2,
+      "label": "First achievement: drink",
+      "kind": "highlight"
+    },
+    {
+      "id": "m2",
+      "turn": 5,
+      "step_index": 5,
+      "label": "HP drop — zombie contact",
+      "kind": "bug",
+      "meta": { "health_before": 9, "health_after": 7 }
+    },
+    {
+      "id": "m3",
+      "turn": 7,
+      "step_index": 7,
+      "label": "Craft table unlocked",
+      "kind": "reward"
+    },
+    {
+      "id": "m4",
+      "step_index": 4,
+      "label": "Operator note: wood gather OK",
+      "kind": "note"
+    }
+  ]
+}

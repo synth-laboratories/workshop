@@ -1,0 +1,35 @@
+{
+  "openResponses": {
+    "date": "2026-04-24",
+    "version": "2.3.0",
+    "commit": "cd31bc2060a27ee87a05ec97f49c84027eb6c3ba"
+  },
+  "openAI": {
+    "commit": "c309ca176bc22c6075a0c2c2543f2ac4f307c447",
+    "upstreamSha256": "cdabcdfc529b1ec0582009bb2ef7d06b64a66d4f6644e66142305a48f0b7658d"
+  },
+  "generatedTypes": {
+    "package": "openresponses-types",
+    "version": "2.3.0.post1",
+    "specVersion": "2.3.0",
+    "specHash": "915047617fddd639c691fe1e00d5ba6917b7187d7abc62adf074fd7c823bad7f"
+  },
+  "files": [
+    {
+      "path": "schemas/openresponses/2026-04-24/openapi.json",
+      "sha256": "b445f548d7d13da7768c06cab4317c59928a46a35847d4a515b94c75b8294c87"
+    },
+    {
+      "path": "schemas/openresponses/2026-04-24/LICENSE",
+      "sha256": "43070e2d4e532684de521b885f385d0841030efa2b1a20bafb76133a5e1379c1"
+    },
+    {
+      "path": "schemas/openai/c309ca176bc22c6075a0c2c2543f2ac4f307c447/responses-extension-overlay.json",
+      "sha256": "23ae6c50b3209bbabffe193f778ecfa1c8dcffd328e86de654005f5dfbc93131"
+    },
+    {
+      "path": "schemas/openai/c309ca176bc22c6075a0c2c2543f2ac4f307c447/LICENSE",
+      "sha256": "bcba3de214851cce46ed5af42d6698044616eeace887c3231bc7a20474ab639e"
+    }
+  ]
+}

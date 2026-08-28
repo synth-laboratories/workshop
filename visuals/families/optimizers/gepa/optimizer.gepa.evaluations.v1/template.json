@@ -1,0 +1,45 @@
+{
+  "schemaVersion": "synth.visual-template.v1",
+  "id": "optimizer.gepa.evaluations.v1",
+  "title": "GEPA evaluations",
+  "genre": "optimizer",
+  "version": "1.0.0",
+  "description": "Child resource-ref links to Containers stream id and /reward. Does not flatten NEV.",
+  "accent": "#F05F22",
+  "shell": "shell.tsx",
+  "tags": [
+    "optimizer",
+    "gepa",
+    "evaluations"
+  ],
+  "observationContract": {
+    "schemaVersion": "synth.visual-observation-contract.v1",
+    "readiness": {
+      "rejectTransportStates": [
+        "idle",
+        "declared",
+        "replaying",
+        "error",
+        "connecting",
+        "reconnecting"
+      ],
+      "minimumRolloutCount": 0,
+      "minimumRenderedFrameCount": 0,
+      "minimumSemanticEventCount": 1,
+      "requireTerminal": true
+    }
+  },
+  "inputs": [
+    {
+      "name": "optimizer_run",
+      "description": "Optimizer run + child container_rollout resource-refs",
+      "accepts": [
+        "optimizer_run",
+        "fixture",
+        "inline"
+      ],
+      "required": true,
+      "schema": "optimizer_event.v1"
+    }
+  ]
+}

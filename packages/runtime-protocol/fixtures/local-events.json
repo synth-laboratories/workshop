@@ -1,0 +1,29 @@
+{
+  "events": [
+    {
+      "schemaVersion": "synth.desktop-runtime-event.v1",
+      "sessionId": "fixture-local",
+      "runId": "fixture-run",
+      "sequence": 1,
+      "remoteSequence": null,
+      "eventKind": "message.created",
+      "payload": {"messageId": "u1", "role": "user", "content": "Summarize this repository."},
+      "commandId": null,
+      "createdAt": "2026-08-08T12:00:00Z",
+      "source": "local"
+    },
+    {
+      "schemaVersion": "synth.desktop-runtime-event.v1",
+      "sessionId": "fixture-local",
+      "runId": "fixture-run",
+      "sequence": 2,
+      "remoteSequence": null,
+      "eventKind": "message.completed",
+      "payload": {"messageId": "a1", "role": "assistant", "content": "This is a local fixture."},
+      "commandId": null,
+      "createdAt": "2026-08-08T12:00:01Z",
+      "source": "local"
+    }
+  ],
+  "nextSequence": 2
+}

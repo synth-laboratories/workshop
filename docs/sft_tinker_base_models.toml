@@ -1,0 +1,48 @@
+# Supported Tinker student ids for hosted standalone SFT.
+# Source: https://tinker-docs.thinkingmachines.ai/tinker/models/
+# These are the exact strings for create_lora_training_client(base_model=...).
+#
+# A run picks one of these (agent-configurable). It is not a compile-time pin.
+# Desktop and synth_sft load this file (or the producer copy) at start.
+#
+# Recipe: sft.craftax.nemotron-nano.tinker.v1
+# Spec: docs/optimizers_beta_sft.md
+
+catalog_url = "https://tinker-docs.thinkingmachines.ai/tinker/models/"
+default = "nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16"
+
+[[model]]
+id = "nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16"
+label = "Nemotron 3.5 Lightning 30B-A3B"
+context = "64K"
+size = "medium"
+arch = "moe"
+default = true
+
+[[model]]
+id = "nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-BF16:peft:262144"
+label = "Nemotron 3.5 Lightning 30B-A3B (256K)"
+context = "256K"
+size = "medium"
+arch = "moe"
+default = false
+note = "Higher context tariff. Do not use unless the run needs 256K."
+
+[[model]]
+id = "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16"
+label = "Nemotron 3 Nano 30B-A3B"
+context = "64K"
+size = "medium"
+arch = "moe"
+default = false
+note = "Same size class as 3.5 Lightning. Not the default student."
+
+[[model]]
+id = "openai/gpt-oss-20b"
+label = "GPT-OSS 20B"
+context = "32K"
+size = "small"
+arch = "dense"
+default = false
+note = "Tinker SDK probe is 32K; backend hosted catalog lists max_context_length 131072. Workshop recipes use 32768 until Tinker confirms 131072."
+

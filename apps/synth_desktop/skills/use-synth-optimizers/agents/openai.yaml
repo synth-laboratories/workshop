@@ -1,0 +1,4 @@
+interface:
+  display_name: "Use Synth Optimizers"
+  short_description: "Start and follow GEPA, GELO, and SFT optimizer runs"
+  default_prompt: "Use $use-synth-optimizers to choose a GEPA, GELO, or SFT workflow, report its bounds, and follow the approved run through its visual and artifacts."

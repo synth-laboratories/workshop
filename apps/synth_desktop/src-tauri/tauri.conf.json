@@ -1,0 +1,48 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Synth Workshop",
+  "version": "0.8.0",
+  "identifier": "com.synth.desktop",
+  "build": {
+    "beforeDevCommand": "npm run frontend:dev",
+    "devUrl": "http://127.0.0.1:1420",
+    "beforeBuildCommand": "npm run package:prepare",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "security": {
+      "csp": "default-src 'self'; img-src 'self' asset: data: blob: http://127.0.0.1:* http://localhost:*; style-src 'self' 'unsafe-inline'; font-src 'self' data:; connect-src 'self' ipc: http://ipc.localhost http://127.0.0.1:* http://localhost:* ws://127.0.0.1:* ws://localhost:*; script-src 'self' data: 'unsafe-eval'; frame-src 'self'"
+    },
+    "windows": [
+      {
+        "label": "main",
+        "title": "Synth Workshop",
+        "width": 1280,
+        "height": 840,
+        "maximized": true,
+        "minWidth": 960,
+        "minHeight": 640,
+        "visible": false,
+        "backgroundColor": "#f3f5f8",
+        "titleBarStyle": "Overlay",
+        "hiddenTitle": true,
+        "trafficLightPosition": {
+          "x": 20,
+          "y": 22
+        }
+      }
+    ]
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "icon": [
+      "../resources/icon.png",
+      "../resources/icon.icns"
+    ],
+    "macOS": {
+      "minimumSystemVersion": "14.0",
+      "infoPlist": "Info.plist"
+    }
+  }
+}

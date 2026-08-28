@@ -1,0 +1,18 @@
+{
+  "sync": {
+    "objective": "Inspect the rollout and report the safest next step",
+    "idempotency_key": "desktop-create-sync-fixture",
+    "binding": {},
+    "metadata": {},
+    "execution_mode": "standard",
+    "require_operator_approval": true
+  },
+  "async": {
+    "objective": "Monitor the evaluation and surface regressions",
+    "idempotency_key": "desktop-create-async-fixture",
+    "binding": {},
+    "budget": { "maximum_concurrent_runs": 1 },
+    "metadata": {},
+    "factory_ready_wait_seconds": 0
+  }
+}

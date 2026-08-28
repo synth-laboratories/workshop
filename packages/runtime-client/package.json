@@ -1,0 +1,10 @@
+{
+  "name": "@synth/runtime-client",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@synth/runtime-protocol": "*"
+  },
+  "exports": "./src/index.ts"
+}

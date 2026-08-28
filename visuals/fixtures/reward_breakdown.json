@@ -1,0 +1,11 @@
+{
+  "schema": "synth.visual.reward_breakdown.v1",
+  "total": 4.2,
+  "components": [
+    { "name": "achievement", "value": 2.5, "type": "sparse" },
+    { "name": "survival", "value": 0.9, "type": "dense" },
+    { "name": "shaping", "value": 0.5, "type": "dense" },
+    { "name": "invalid_action_penalty", "value": -0.2, "type": "penalty" },
+    { "name": "length_bonus", "value": 0.5, "type": "bonus" }
+  ]
+}

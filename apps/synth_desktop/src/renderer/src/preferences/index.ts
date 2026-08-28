@@ -1,0 +1,62 @@
+export {
+	PREFERENCES_STORAGE_KEY,
+	PREFERENCES_SCHEMA_VERSION,
+	DEFAULT_PREFERENCES,
+	DEFAULT_LAYOUT,
+	DEFAULT_AUTO_COMPACT_TOKEN_LIMITS,
+	normalizePreferences,
+	normalizeLayoutSnapshot,
+	migrateLegacyPreferences,
+	clampNumber,
+	type DesktopPreferences,
+	type LayoutSnapshot,
+	type ToolActivityMode,
+	type ActiveEnterAction,
+	type CompactContextModel,
+	type AutoCompactTokenLimits,
+	type ThemePreference,
+	type ApprovalPolicyPreference,
+	type SandboxModePreference,
+	type ConversationMeta,
+	type QueuedPrompt
+} from "./schema";
+
+export {
+	loadPreferences,
+	getPreferences,
+	updatePreferences,
+	resetPreferences,
+	subscribePreferences,
+	setTheme,
+	setToolActivityMode,
+	setAutoCompactTokenLimit,
+	setActiveEnterAction,
+	setAppearanceFonts,
+	setShowMascot,
+	saveLayout,
+	saveLayoutAsDefault,
+	resetLayoutToDefault,
+	applyDefaultLayout,
+	setUnreadCompletedChats,
+	setApprovalModePreference,
+	setPermissionPreferences,
+	renameConversation,
+	pinConversation,
+	archiveConversation,
+	listArchivedConversationIds,
+	enqueuePrompt,
+	updateQueuedPrompt,
+	removeQueuedPrompt,
+	promptsForConversation,
+	nextQueuedPrompt,
+	applyPreferencesToDocument,
+	preferencesAdapter
+} from "./store";
+
+export {
+	presentActivityLines,
+	pairActivityGroupLines,
+	activityStatusAnnouncement,
+	type ActivityPresentationItem,
+	type ActivityTimelineRow
+} from "./activityPresentation";

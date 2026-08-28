@@ -1,0 +1,33 @@
+{
+  "schemaVersion": "synth.visual-template.v1",
+  "id": "experiment.overview.v1",
+  "title": "Experiment overview",
+  "genre": "experiment",
+  "version": "1.0.0",
+  "description": "A decision-first experiment record with an uncluttered hypothesis core and optional results, rollout, trace, task, runtime, artifact, and provenance modules.",
+  "accent": "#F05F22",
+  "shell": "shell.tsx",
+  "tags": [
+    "experiment",
+    "comparison",
+    "progress",
+    "evidence",
+    "traces",
+    "artifacts",
+    "provenance",
+    "lineage"
+  ],
+  "inputs": [
+    {
+      "name": "experiment",
+      "description": "The authoritative experiment overview projection. Missing measurements remain missing rather than being inferred or rendered as zero.",
+      "accepts": [
+        "inline",
+        "fixture",
+        "local_cas"
+      ],
+      "required": true,
+      "schema": "synth.experiment.overview.v1"
+    }
+  ]
+}

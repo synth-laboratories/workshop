@@ -1,0 +1,4 @@
+interface:
+  display_name: "Synth Visuals"
+  short_description: "Design evidence-grounded eval and trace visuals"
+  default_prompt: "Use $use-synth-visuals to turn this task, trace, or eval result into an informative visual."

@@ -1,0 +1,46 @@
+{
+  "schemaVersion": "synth.desktop-visual.v1",
+  "visual": {
+    "schemaVersion": "synth.desktop-visual.v1",
+    "id": "vis_reward_1",
+    "currentRevision": 1,
+    "title": "Reward breakdown",
+    "templateId": "reward-breakdown",
+    "status": "saved",
+    "rendererKind": "template",
+    "bindings": {
+      "steps": [0, 1, 2],
+      "rewards": [0.1, 0.4, 0.9]
+    },
+    "sessionId": "sess_local_1",
+    "messageId": "msg_1",
+    "runId": "run_1",
+    "traceId": null,
+    "parentVisualId": null,
+    "sourceAgentId": "codex",
+    "sourceModel": "laguna-xs-2.1",
+    "contentDigest": null,
+    "previewDigest": "12/1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
+    "metadata": {
+      "origin": "mcp"
+    },
+    "createdAt": "2026-08-08T20:00:02Z",
+    "updatedAt": "2026-08-08T20:00:02Z"
+  },
+  "revision": {
+    "visualId": "vis_reward_1",
+    "revision": 1,
+    "templateId": "reward-breakdown",
+    "rendererKind": "template",
+    "contentDigest": null,
+    "bindingsDigest": "ab/abcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcd",
+    "bindings": {
+      "steps": [0, 1, 2],
+      "rewards": [0.1, 0.4, 0.9]
+    },
+    "previewDigest": "12/1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
+    "authorAgentId": "codex",
+    "parentRevision": null,
+    "createdAt": "2026-08-08T20:00:02Z"
+  }
+}

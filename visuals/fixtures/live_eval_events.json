@@ -1,0 +1,103 @@
+{
+  "schema": "synth.visual.live_eval_events.v1",
+  "run_id": "eval_run_demo_01",
+  "events": [
+    {
+      "ts": "2026-08-08T19:59:59.000Z",
+      "run_id": "eval_run_demo_01",
+      "kind": "stream.subscribed",
+      "payload": {
+        "stream.id": "stream_eval_demo_01",
+        "next_sequence": 1,
+        "ready": true
+      }
+    },
+    {
+      "ts": "2026-08-08T20:00:00.000Z",
+      "run_id": "eval_run_demo_01",
+      "kind": "run_started",
+      "payload": {
+        "suite": "craftax_open",
+        "model": "Laguna XS",
+        "n_rows": 8
+      }
+    },
+    {
+      "ts": "2026-08-08T20:00:02.100Z",
+      "run_id": "eval_run_demo_01",
+      "kind": "job_status",
+      "payload": {
+        "job_id": "dock_42",
+        "status": "running",
+        "backend": "harbor",
+        "progress": 0.12
+      }
+    },
+    {
+      "ts": "2026-08-08T20:00:04.400Z",
+      "run_id": "eval_run_demo_01",
+      "kind": "rollout",
+      "payload": {
+        "rollout_id": "r_001",
+        "row": 0,
+        "reward": 3.1,
+        "achievements": 4,
+        "status": "ok"
+      }
+    },
+    {
+      "ts": "2026-08-08T20:00:06.800Z",
+      "run_id": "eval_run_demo_01",
+      "kind": "metric",
+      "payload": {
+        "name": "mean_achievements",
+        "value": 3.1,
+        "n": 1
+      }
+    },
+    {
+      "ts": "2026-08-08T20:00:09.200Z",
+      "run_id": "eval_run_demo_01",
+      "kind": "reward",
+      "payload": {
+        "components": {
+          "achievement": 2.0,
+          "survival": 0.8,
+          "shaping": 0.3
+        },
+        "total": 3.1
+      }
+    },
+    {
+      "ts": "2026-08-08T20:00:12.000Z",
+      "run_id": "eval_run_demo_01",
+      "kind": "acceptance",
+      "payload": {
+        "cell": "intern_sync",
+        "decision": "pass",
+        "note": "HUD projection matches frame"
+      }
+    },
+    {
+      "ts": "2026-08-08T20:00:15.500Z",
+      "run_id": "eval_run_demo_01",
+      "kind": "step",
+      "payload": {
+        "step": 3,
+        "action": "do",
+        "reward": 1.0
+      }
+    },
+    {
+      "ts": "2026-08-08T20:00:20.000Z",
+      "run_id": "eval_run_demo_01",
+      "kind": "run_finished",
+      "payload": {
+        "status": "ok",
+        "mean_reward": 3.4,
+        "mean_achievements": 4.2,
+        "cost_usd": 0.18
+      }
+    }
+  ]
+}
