@@ -3,7 +3,6 @@
 //! Optimizers-beta remains an internal training executor. Workshop starts, watches,
 //! cancels, and mirrors only public SFT runs before opening `optimizer.sft.live.v1`.
 
-use super::events::OptimizerEventDraft;
 use super::{
     ingest,
     models::{
@@ -689,7 +688,21 @@ async fn run_hosted_worker(
             changed = cancel.changed() => {
                 if changed.is_ok() && cancel.borrow().is_some() {
                     let _ = client.cancel(&run_id).await;
-                    append_status(&service, &run_id, "optimizer.run.cancelled", "cancelled").await?;
+                    service
+                        .settle_run(
+                            run_id.clone(),
+                            super::kernel::SettleCause::Cancelled {
+                                request: std::sync::Arc::new(
+                                    super::kernel::CancellationRequest::new(
+                                        super::kernel::CancellationCause::UserRequested,
+                                        "hosted-sft:watcher",
+                                        format!("run:{run_id}"),
+                                    ),
+                                ),
+                            },
+                            None,
+                        )
+                        .await?;
                     return Ok(());
                 }
             }
@@ -800,42 +813,13 @@ lr = 0.001
 /// Terminal failure with a readable reason. `optimizer.run.failed` carrying an
 /// empty delta tells a viewer nothing and hides producer-side success.
 async fn append_failure(service: &OptimizerService, run_id: &str, reason: &str) -> Result<()> {
-    // The event is what makes the run failed. Writing the status first and the
-    // event second let a status exist with no evidence behind it.
     service
-        .append_event_payloads(
+        .settle_run(
             run_id.to_string(),
-            vec![OptimizerEventDraft::new("optimizer.run.failed", "sft")
-                .idempotency_key("hosted:optimizer.run.failed")
-                .level("error")
-                .delta(serde_json::Map::from_iter([(
-                    "status".into(),
-                    json!("failed"),
-                )]))
-                .error(json!({ "message": reason }))
-                .raw(json!({"source": "hosted_sft"}))],
-        )
-        .await?;
-    Ok(())
-}
-
-async fn append_status(
-    service: &OptimizerService,
-    run_id: &str,
-    event_type: &str,
-    status: &str,
-) -> Result<()> {
-    service
-        .append_event_payloads(
-            run_id.to_string(),
-            vec![OptimizerEventDraft::new(event_type, "sft")
-                .idempotency_key(format!("hosted:{event_type}"))
-                .level("info")
-                .delta(serde_json::Map::from_iter([(
-                    "status".into(),
-                    json!(status),
-                )]))
-                .raw(json!({"source": "hosted_sft"}))],
+            super::kernel::SettleCause::Failed {
+                detail: reason.to_string(),
+            },
+            Some(json!({ "message": reason, "source": "hosted_sft" })),
         )
         .await?;
     Ok(())
@@ -852,19 +836,32 @@ async fn persist_remote_terminal(
     // second remote-status rewrite arm here.
     let status = OptimizerRunStatus::parse(remote_status)
         .with_context(|| format!("{remote_status} is not an OptimizerRunStatus"))?;
-    let mapped = status.as_str();
-    let mut run = service.get(run_id.to_string()).await?;
-    if run.status != mapped {
-        run.status = mapped.into();
-    }
-    if status != OptimizerRunStatus::Completed {
-        if let Some(message) = error.filter(|value| !value.is_empty()) {
-            run.error = Some(json!({"message": message}));
-        } else if run.error.is_none() {
-            run.error = Some(json!({"message": remote_status}));
-        }
-    }
-    service.persist_run(run).await?;
+    let detail = error
+        .filter(|value| !value.is_empty())
+        .unwrap_or(remote_status)
+        .to_string();
+    let cause = match status {
+        OptimizerRunStatus::Completed => super::kernel::SettleCause::Completed,
+        OptimizerRunStatus::Degraded => super::kernel::SettleCause::Degraded {
+            detail: detail.clone(),
+        },
+        OptimizerRunStatus::Cancelled => super::kernel::SettleCause::Cancelled {
+            request: std::sync::Arc::new(super::kernel::CancellationRequest::new(
+                super::kernel::CancellationCause::ContainerRequested,
+                "hosted-sft:remote",
+                format!("run:{run_id}"),
+            )),
+        },
+        OptimizerRunStatus::Failed => super::kernel::SettleCause::Failed {
+            detail: detail.clone(),
+        },
+        _ => bail!("{remote_status} is not terminal"),
+    };
+    let error_payload = (status != OptimizerRunStatus::Completed)
+        .then(|| json!({"message": detail, "source": "hosted_sft"}));
+    service
+        .settle_run(run_id.to_string(), cause, error_payload)
+        .await?;
     Ok(())
 }
 

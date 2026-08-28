@@ -450,17 +450,32 @@ pub fn revoke(
     Ok(())
 }
 
-pub fn revoke_run(conn: &Connection, store: &CapabilityStore, run_id: &str) -> Result<()> {
-    let handles = {
+pub fn run_id_for_capability(conn: &Connection, capability_id: &str) -> Result<Option<String>> {
+    conn.query_row(
+        "SELECT run_id FROM secret_capabilities WHERE id=?1",
+        [capability_id],
+        |row| row.get(0),
+    )
+    .optional()
+    .map_err(Into::into)
+}
+
+/// Revoke every live capability for `run_id`, returning the revoked
+/// capability ids so settlement can journal exactly what it revoked.
+pub fn revoke_run(conn: &Connection, store: &CapabilityStore, run_id: &str) -> Result<Vec<String>> {
+    let rows = {
         let mut stmt = conn.prepare(
-            "SELECT handle FROM secret_capabilities
+            "SELECT id, handle FROM secret_capabilities
              WHERE run_id=?1 AND status IN ('granted','active')",
         )?;
         let rows = stmt
-            .query_map([run_id], |row| row.get::<_, String>(0))?
+            .query_map([run_id], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         rows
     };
+    let (ids, handles): (Vec<String>, Vec<String>) = rows.into_iter().unzip();
     conn.execute(
         "UPDATE secret_capabilities SET status='revoked', revoked_at=?1
          WHERE run_id=?2 AND status IN ('granted','active')",
@@ -479,7 +494,7 @@ pub fn revoke_run(conn: &Connection, store: &CapabilityStore, run_id: &str) -> R
         event.detail = Some("run ended".into());
         audit::append(conn, &event)?;
     }
-    Ok(())
+    Ok(ids)
 }
 
 pub fn summary_from_live(

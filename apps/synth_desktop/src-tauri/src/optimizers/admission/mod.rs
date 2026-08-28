@@ -54,6 +54,7 @@ pub use spec::{
     PolicyMaterialRef, PolicyPin, RecipeSource, RecipeSourceKind, ResourceLimits, RolloutPlan,
     LIVE_EVAL_PROTOCOL_V1,
 };
+pub(crate) use spec::provider_use_policy_from_bounds;
 pub use state::{
     EvidenceGap, EvidenceRequirements, RolloutRecord, RolloutState, RolloutStateHolder,
     RunProgress, RunState, SettlementRefusal, StateTransitionError, TransitionKind,

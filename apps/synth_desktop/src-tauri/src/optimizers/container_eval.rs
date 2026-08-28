@@ -95,6 +95,7 @@ struct EvalSpec {
     cost_ceiling_usd: f64,
     maximum_model_calls_per_rollout: u32,
     maximum_steps_per_rollout: u32,
+    admitted_use_policy: Option<crate::secrets::SecretsUsePolicy>,
     requires_credential_advertisement: bool,
     relay: RelaySettings,
 }
@@ -115,6 +116,7 @@ impl EvalSpec {
             .ok_or_else(|| {
                 anyhow::anyhow!("approved inline policy configuration is not an object")
             })?;
+        let admitted_use_policy = execution.provider_use_policy();
         Ok(Self {
             recipe_id: format!("inline:{}", execution.digest()?.as_str()),
             family,
@@ -153,6 +155,7 @@ impl EvalSpec {
                 .0
                 .get(),
             maximum_steps_per_rollout: recipe.resource_limits.maximum_steps_per_rollout.0.get(),
+            admitted_use_policy: Some(admitted_use_policy),
             requires_credential_advertisement: false,
             relay: RelaySettings::default(),
         })
@@ -221,6 +224,7 @@ impl EvalSpec {
                 .and_then(|value| u32::try_from(value).ok())
                 .filter(|value| *value > 0)
                 .unwrap_or(1),
+            admitted_use_policy: None,
             requires_credential_advertisement: recipe.requires_credential_advertisement,
             relay: recipe.relay,
         })
@@ -250,6 +254,7 @@ impl EvalSpec {
             cost_ceiling_usd: 0.50,
             maximum_model_calls_per_rollout: 10,
             maximum_steps_per_rollout: 2_000,
+            admitted_use_policy: None,
             requires_credential_advertisement: false,
             relay: RelaySettings::default(),
         }
@@ -279,6 +284,7 @@ impl EvalSpec {
             cost_ceiling_usd: 0.50,
             maximum_model_calls_per_rollout: 8,
             maximum_steps_per_rollout: 64,
+            admitted_use_policy: None,
             requires_credential_advertisement: true,
             relay: RelaySettings::default(),
         }
@@ -1319,7 +1325,6 @@ async fn run_eval_worker(
     workbench_id: String,
     cancel: super::CancelObserver,
 ) -> Result<()> {
-    let _revoke = crate::secrets::RevokeRunOnDrop(run_id.clone());
     let _ownership = service.hold_run_ownership(&run_id)?;
     evidence(
         "run_started",
@@ -1778,23 +1783,17 @@ fn secrets_proxy_error(code: &str, message: &str) -> anyhow::Error {
 }
 
 fn container_proxy_policy(spec: &EvalSpec) -> crate::secrets::SecretsUsePolicy {
-    let mut policy = crate::secrets::SecretsUsePolicy::default();
-    policy.operations = vec!["chat.completions.create".into()];
-    if !spec.model.is_empty() {
-        policy.models = vec![spec.model.clone()];
+    if let Some(policy) = &spec.admitted_use_policy {
+        return policy.clone();
     }
-    policy.max_cost_usd = spec.cost_ceiling_usd;
     let trials = spec.examples().len() as u64;
     let calls_per_trial = spec.maximum_model_calls_per_rollout.max(1) as u64;
     let total_calls = trials.saturating_mul(calls_per_trial).max(1);
-    policy.max_calls = total_calls.min(u32::MAX as u64) as u32;
-    if let Some(context_tokens) = spec
+    let input_tokens = spec
         .policy
         .get("context_token_budget")
         .and_then(Value::as_u64)
-    {
-        policy.max_input_tokens = total_calls.saturating_mul(context_tokens);
-    }
+        .map(|context_tokens| total_calls.saturating_mul(context_tokens));
     let answer_tokens = spec
         .policy
         .get("answer_max_tokens")
@@ -1805,11 +1804,22 @@ fn container_proxy_policy(spec: &EvalSpec) -> crate::secrets::SecretsUsePolicy {
         .get("thinking_budget")
         .and_then(Value::as_u64)
         .unwrap_or(0);
-    if answer_tokens > 0 || thinking_tokens > 0 {
-        policy.max_output_tokens =
-            total_calls.saturating_mul(answer_tokens.saturating_add(thinking_tokens));
-    }
-    policy
+    let output_per_call = answer_tokens.saturating_add(thinking_tokens);
+    super::admission::provider_use_policy_from_bounds(
+        vec!["chat.completions.create".into()],
+        (!spec.model.is_empty()).then(|| spec.model.clone()).into_iter().collect(),
+        spec.policy
+            .get("reasoning_effort")
+            .and_then(Value::as_str)
+            .map(|value| vec![value.to_string()])
+            .unwrap_or_default(),
+        total_calls.min(u32::MAX as u64) as u32,
+        (spec.cost_ceiling_usd * 1_000_000.0).round().max(0.0) as u64,
+        crate::limits::SECRETS_CAPABILITY_TTL.as_secs(),
+        input_tokens,
+        (output_per_call > 0)
+            .then(|| total_calls.saturating_mul(output_per_call)),
+    )
 }
 
 fn container_openai_proxy_base(run_id: &str, spec: &EvalSpec) -> Result<String> {
@@ -3464,39 +3474,25 @@ async fn append_terminal(
     {
         return Ok(());
     }
-    let _ = service.seal_credential_chain(run_id).await;
-    let event_type = match status {
-        "completed" => "optimizer.run.completed",
-        "degraded" => "optimizer.run.degraded",
-        "failed" => "optimizer.run.failed",
-        "cancelled" => "optimizer.run.cancelled",
+    let cause = match status {
+        "completed" => super::kernel::SettleCause::Completed,
+        "degraded" => super::kernel::SettleCause::Degraded {
+            detail: detail.clone(),
+        },
+        "failed" => super::kernel::SettleCause::Failed {
+            detail: detail.clone(),
+        },
+        "cancelled" => super::kernel::SettleCause::Cancelled {
+            request: std::sync::Arc::new(super::kernel::CancellationRequest::new(
+                super::kernel::CancellationCause::ContainerRequested,
+                "container:terminal",
+                format!("run:{run_id}"),
+            )),
+        },
         other => bail!("unsupported terminal eval status `{other}`"),
     };
-    if status != "completed" && !detail.is_empty() {
-        let detail_event_type = if status == "degraded" {
-            "optimizer.run.warning"
-        } else {
-            "optimizer.run.error"
-        };
-        service
-            .append_event_payloads(
-                run_id.to_string(),
-                vec![
-                    OptimizerEventDraft::new(detail_event_type, EVAL_ALGORITHM_ID)
-                        .level(if status == "degraded" {
-                            "warn"
-                        } else {
-                            "error"
-                        })
-                        .error(json!({ "message": detail }))
-                        .raw(json!({ "source": "container_eval" })),
-                ],
-            )
-            .await?;
-    }
-    // The terminal lifecycle fact is last. Diagnostic detail is evidence for
-    // that ending, never a mutable event appended beyond a sealed sequence.
-    append_status(service, run_id, event_type, status).await?;
+    let error = (!detail.trim().is_empty()).then(|| json!({ "message": detail }));
+    service.settle_run(run_id.to_string(), cause, error).await?;
     Ok(())
 }
 
@@ -3515,19 +3511,13 @@ async fn append_cancelled_terminal(
     {
         return Ok(());
     }
-    let _ = service.seal_credential_chain(run_id).await;
     service
-        .append_event_payloads(
+        .settle_run(
             run_id.to_string(),
-            vec![
-                OptimizerEventDraft::new("optimizer.run.cancelled", EVAL_ALGORITHM_ID)
-                    .idempotency_key("eval:lifecycle:optimizer.run.cancelled")
-                    .delta(Map::from_iter([
-                        ("status".into(), json!("cancelled")),
-                        ("cancellation".into(), json!(request)),
-                    ]))
-                    .raw(json!({ "source": "container_eval" })),
-            ],
+            super::kernel::SettleCause::Cancelled {
+                request: std::sync::Arc::new(request.clone()),
+            },
+            None,
         )
         .await?;
     Ok(())

@@ -155,7 +155,7 @@ pub async fn start(
         )
         .await
         {
-            let _ = append_terminal(&worker, &run_id, true, error.to_string()).await;
+            let _ = append_terminal(&worker, &run_id, true, format!("{error:#}")).await;
         }
         worker.unregister_local_recipe(&run_id).await;
     });
@@ -250,7 +250,18 @@ async fn run_worker(
                 if changed.is_ok() && cancel.borrow().is_some() {
                     child.kill().await.context("cancel Craftax SFT process")?;
                     if let Some(craftax) = owned_craftax.as_mut() { let _ = craftax.kill().await; }
-                    append_status(&service, &run_id, "optimizer.run.cancelled", "cancelled").await?;
+                    let request = cancel
+                        .borrow()
+                        .as_ref()
+                        .cloned()
+                        .expect("cancel observer changed with a request");
+                    service
+                        .settle_run(
+                            run_id.clone(),
+                            super::kernel::SettleCause::Cancelled { request },
+                            None,
+                        )
+                        .await?;
                     return Ok(());
                 }
             }
@@ -554,18 +565,7 @@ async fn append_terminal(
     if matches!(run.status.as_str(), "completed" | "failed" | "cancelled") {
         return Ok(());
     }
-    append_status(
-        service,
-        run_id,
-        if failed {
-            "optimizer.run.failed"
-        } else {
-            "optimizer.run.completed"
-        },
-        if failed { "failed" } else { "completed" },
-    )
-    .await?;
-    if failed {
+    let error = if failed {
         let run = service.get(run_id.to_string()).await?;
         let stderr = run
             .summary
@@ -585,20 +585,23 @@ async fn append_terminal(
                     .rev()
                     .collect::<String>()
             });
-        let error = json!({"message":tail.as_deref().unwrap_or(&detail),"stderrTail":tail,"logPath":stderr});
-        service
-            .append_event_payloads(
-                run_id.to_string(),
-                vec![
-                    OptimizerEventDraft::new("optimizer.recipe.diagnostic", "sft")
-                        .idempotency_key("diagnostic")
-                        .level("error")
-                        .delta(map_of("status", json!("failed")))
-                        .error(error),
-                ],
-            )
-            .await?;
-    }
+        Some(json!({
+            "message": tail.as_deref().unwrap_or(&detail),
+            "supervisorDetail": detail,
+            "stderrTail": tail,
+            "logPath": stderr
+        }))
+    } else {
+        None
+    };
+    let cause = if failed {
+        super::kernel::SettleCause::Failed {
+            detail: detail.clone(),
+        }
+    } else {
+        super::kernel::SettleCause::Completed
+    };
+    service.settle_run(run_id.to_string(), cause, error).await?;
     Ok(())
 }
 

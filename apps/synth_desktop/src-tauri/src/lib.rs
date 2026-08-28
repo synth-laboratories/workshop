@@ -1062,11 +1062,61 @@ pub(crate) async fn authorize_optimizer_recipe_start(
     let credential_names = optimizer_recipe_credentials_from_catalog(&recipe, &request.recipe_id);
     if credential_names.iter().any(|name| name == "OPENAI_API_KEY") {
         if let Some(secrets) = crate::secrets::live() {
+            let models = recipe
+                .get("models")
+                .and_then(serde_json::Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(|model| {
+                    model
+                        .get("id")
+                        .and_then(serde_json::Value::as_str)
+                        .or_else(|| model.as_str())
+                        .map(str::to_string)
+                })
+                .collect::<Vec<_>>();
+            let calls_per_rollout = limits
+                .get("maximumModelCallsPerRollout")
+                .or_else(|| limits.get("maxCallsPerRollout"))
+                .and_then(serde_json::Value::as_u64)
+                .filter(|value| *value > 0)
+                .ok_or_else(|| {
+                    AppError::from(anyhow::anyhow!(
+                        "optimizer recipe `{}` has a provider credential but no admitted \
+                         maximumModelCallsPerRollout",
+                        request.recipe_id
+                    ))
+                })?;
+            let admitted_rollouts = max_rollouts.filter(|value| *value > 0).ok_or_else(|| {
+                AppError::from(anyhow::anyhow!(
+                    "optimizer recipe `{}` has a provider credential but no admitted rollout cap",
+                    request.recipe_id
+                ))
+            })?;
+            let admitted_cost_micros = paid_cap
+                .max_cost_usd_micros
+                .filter(|value| *value > 0)
+                .ok_or_else(|| {
+                    AppError::from(anyhow::anyhow!(
+                        "optimizer recipe `{}` has a provider credential but no admitted cost cap",
+                        request.recipe_id
+                    ))
+                })?;
+            let total_calls = admitted_rollouts
+                .saturating_mul(calls_per_rollout)
+                .min(u64::from(u32::MAX)) as u32;
+            let policy = optimizers::admission::provider_use_policy_from_bounds(
+                vec!["chat.completions.create".into()],
+                models,
+                Vec::new(),
+                total_calls,
+                admitted_cost_micros,
+                crate::limits::SECRETS_CAPABILITY_TTL.as_secs(),
+                None,
+                None,
+            );
             secrets
-                .preflight_openai_route(
-                    &request.recipe_id,
-                    crate::secrets::SecretsUsePolicy::default(),
-                )
+                .preflight_openai_route(&request.recipe_id, policy)
                 .map_err(AppError::from)?;
         } else {
             return Err(AppError::from(

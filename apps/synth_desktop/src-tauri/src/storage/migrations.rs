@@ -57,6 +57,7 @@ const MIGRATIONS: &[&str] = &[
     MIGRATION_52,
     MIGRATION_53,
     MIGRATION_54,
+    MIGRATION_55,
 ];
 
 /// Apply every migration the database has not reached yet.
@@ -208,6 +209,7 @@ const REQUIRED_TABLES: &[(&str, &str)] = &[
     ),
     ("experiment_lineage", MIGRATION_44),
     ("experiment_session_cursor", MIGRATION_44),
+    ("optimizer_cancellation_requests", MIGRATION_55),
 ];
 
 fn heal_missing_tables(conn: &Connection) -> Result<()> {
@@ -3318,6 +3320,26 @@ DROP TABLE optimizer_work_items_v53;
 
 CREATE INDEX optimizer_work_items_run
 ON optimizer_work_items(optimizer_run_id, lifecycle);
+"#;
+
+/// F2: cancellation as a durable command + receipt. A request row is written
+/// when the typed cancellation is issued; the sealing transaction backfills
+/// `settled_sequence`, turning the request into a receipt.
+const MIGRATION_55: &str = r#"
+CREATE TABLE IF NOT EXISTS optimizer_cancellation_requests (
+    request_id TEXT PRIMARY KEY,
+    run_id TEXT NOT NULL,
+    cause TEXT NOT NULL,
+    requested_by TEXT NOT NULL,
+    requested_at TEXT NOT NULL,
+    scope TEXT NOT NULL,
+    reason_code TEXT,
+    observed_at TEXT,
+    settled_sequence INTEGER
+);
+
+CREATE INDEX IF NOT EXISTS optimizer_cancellation_requests_run
+ON optimizer_cancellation_requests(run_id, settled_sequence);
 "#;
 
 #[cfg(test)]

@@ -13,6 +13,7 @@ use super::ids::{
     RolloutCount, Seed, SourceRevision, StepCount,
 };
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use std::fmt;
 
 /// The one live-eval protocol this pipeline admits. A container advertising
@@ -444,6 +445,77 @@ impl ExecutionSpec {
 
     pub fn digest(&self) -> Result<Digest, CanonicalError> {
         Ok(self.canonical()?.digest())
+    }
+
+    /// The only run-lease policy derived from an admitted execution spec.
+    /// Calls and cost come directly from the approved resource envelope;
+    /// operation/lifetime from its credential scope; model from its pin.
+    pub fn provider_use_policy(&self) -> crate::secrets::SecretsUsePolicy {
+        let recipe = &self.recipe;
+        let total_calls = u64::from(
+            recipe
+                .resource_limits
+                .maximum_model_calls_per_rollout
+                .0
+                .get(),
+        )
+        .saturating_mul(u64::from(recipe.rollout_plan.maximum_rollouts.0.get()))
+        .min(u64::from(u32::MAX)) as u32;
+        let configuration = recipe.policy.configuration.as_value();
+        let reasoning_efforts = configuration
+            .get("reasoning_effort")
+            .and_then(Value::as_str)
+            .map(|value| vec![value.to_string()])
+            .unwrap_or_default();
+        let input_per_call = configuration
+            .get("context_token_budget")
+            .and_then(Value::as_u64);
+        let output_per_call = configuration
+            .get("answer_max_tokens")
+            .and_then(Value::as_u64)
+            .unwrap_or(0)
+            .saturating_add(
+                configuration
+                    .get("thinking_budget")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0),
+            );
+        provider_use_policy_from_bounds(
+            recipe.credential_route.capability_scope().operations.clone(),
+            vec![recipe.model.model_id.as_str().to_string()],
+            reasoning_efforts,
+            total_calls,
+            recipe.resource_limits.hard_total_cost_micros.as_micros(),
+            u64::from(recipe.credential_route.capability_scope().lifetime_seconds),
+            input_per_call.map(|value| value.saturating_mul(u64::from(total_calls))),
+            (output_per_call > 0)
+                .then(|| output_per_call.saturating_mul(u64::from(total_calls))),
+        )
+    }
+}
+
+/// Explicit bounded-policy constructor for legacy catalog lanes while they
+/// converge on `ExecutionSpec`. It intentionally has no 40-call/$0.60
+/// fallback: every limit is supplied by admission data at the caller.
+pub(crate) fn provider_use_policy_from_bounds(
+    operations: Vec<String>,
+    models: Vec<String>,
+    reasoning_efforts: Vec<String>,
+    max_calls: u32,
+    max_cost_usd_micros: u64,
+    lifetime_seconds: u64,
+    max_input_tokens: Option<u64>,
+    max_output_tokens: Option<u64>,
+) -> crate::secrets::SecretsUsePolicy {
+    crate::secrets::SecretsUsePolicy {
+        operations,
+        models,
+        reasoning_efforts,
+        max_calls,
+        max_input_tokens: max_input_tokens.unwrap_or(u64::MAX),
+        max_output_tokens: max_output_tokens.unwrap_or(u64::MAX),
+        max_cost_usd: max_cost_usd_micros as f64 / 1_000_000.0,
+        lifetime_seconds,
     }
 }
 

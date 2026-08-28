@@ -3,10 +3,11 @@
 //! Workshop remaps the producer cursor onto the local SQLite cursor and stores
 //! `sourceSequenceNumber`. Heartbeats must not appear in the page.
 
+use super::events::OptimizerEventDraft;
 use super::models::OptimizerEventEnvelope;
 use super::{normalize, OptimizerService};
 use anyhow::{anyhow, bail, Result};
-use serde_json::{json, Value};
+use serde_json::{json, Map, Value};
 
 pub async fn ingest_event_page(
     service: &OptimizerService,
@@ -33,7 +34,79 @@ pub async fn ingest_event_page(
         service.get(run_id.to_string()).await?.cursor_seq,
         *upstream_cursor,
     )?;
-    if !events.is_empty() {
+    if let Some(terminal_at) = events.iter().position(|event| {
+        matches!(
+            event.event_type.as_str(),
+            "optimizer.run.completed"
+                | "optimizer.run.failed"
+                | "optimizer.run.degraded"
+                | "optimizer.run.cancelled"
+        )
+    }) {
+        let terminal = events[terminal_at].clone();
+        let before = events[..terminal_at].to_vec();
+        let after = events[terminal_at + 1..].to_vec();
+        if !before.is_empty() {
+            service.append_events(run_id.to_string(), before).await?;
+        }
+        let detail = terminal
+            .error
+            .as_ref()
+            .and_then(|value| value.get("message"))
+            .and_then(Value::as_str)
+            .unwrap_or_else(|| match terminal.event_type.as_str() {
+                "optimizer.run.degraded" => "hosted run degraded",
+                "optimizer.run.failed" => "hosted run failed",
+                _ => "hosted run settled",
+            })
+            .to_string();
+        let cause = match terminal.event_type.as_str() {
+            "optimizer.run.completed" => super::kernel::SettleCause::Completed,
+            "optimizer.run.degraded" => super::kernel::SettleCause::Degraded {
+                detail: detail.clone(),
+            },
+            "optimizer.run.cancelled" => super::kernel::SettleCause::Cancelled {
+                request: std::sync::Arc::new(super::kernel::CancellationRequest::new(
+                    super::kernel::CancellationCause::ContainerRequested,
+                    "hosted-ingest:remote",
+                    format!("run:{run_id}"),
+                )),
+            },
+            _ => super::kernel::SettleCause::Failed {
+                detail: detail.clone(),
+            },
+        };
+        service
+            .settle_run(run_id.to_string(), cause, terminal.error.clone())
+            .await?;
+        if !after.is_empty() {
+            let terminal_sequence = service
+                .terminal_manifest(run_id.to_string())
+                .await?
+                .and_then(|manifest| manifest.get("terminalCursor").and_then(Value::as_u64))
+                .ok_or_else(|| anyhow!("hosted ingest terminal seal omitted terminalCursor"))?;
+            let amendments = after
+                .into_iter()
+                .map(|fact| {
+                    OptimizerEventDraft::new("optimizer.evidence.amended", algorithm_id)
+                        .idempotency_key(format!(
+                            "hosted-ingest-post-terminal:{}",
+                            fact.event_id
+                                .clone()
+                                .unwrap_or_else(|| fact.sequence_number.to_string())
+                        ))
+                        .delta(Map::from_iter([
+                            ("terminalSequence".into(), json!(terminal_sequence)),
+                            ("postTerminalFact".into(), json!(fact)),
+                        ]))
+                        .raw(json!({"source":"hosted_event_ingest"}))
+                })
+                .collect();
+            service
+                .append_event_payloads(run_id.to_string(), amendments)
+                .await?;
+        }
+    } else if !events.is_empty() {
         service.append_events(run_id.to_string(), events).await?;
     }
     *upstream_cursor = next_cursor;
