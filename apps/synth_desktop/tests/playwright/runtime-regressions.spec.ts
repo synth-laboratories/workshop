@@ -1,5 +1,6 @@
 import type { Page } from "@playwright/test";
 import { expect, test } from "./browser.fixture";
+import { BROWSER_MODEL_CATALOG } from "../../src/renderer/src/runtime/modelCatalog";
 
 async function openSettings(page: Page) {
 	await page.getByTestId("account-menu-trigger").click();
@@ -44,7 +45,7 @@ async function installLagunaFixture(page: Page, phase: LagunaPhase): Promise<voi
 }
 
 async function installConfiguredOpenRouter(page: Page): Promise<void> {
-	await page.addInitScript(() => {
+	await page.addInitScript((catalog) => {
 		window.synthConfig = {
 			get: async () => ({
 				configPath: "/tmp/config.toml", envFile: "/tmp/.env", profile: "prod",
@@ -52,12 +53,14 @@ async function installConfiguredOpenRouter(page: Page): Promise<void> {
 				apiKeyConfigured: false, workerKeyConfigured: false,
 				openrouterApiKeyConfigured: true
 			}),
+			modelCatalog: async () => catalog,
+			refreshModelCatalog: async () => catalog,
 			update: async () => { throw new Error("unused"); },
 			listModelMultiAgent: async () => [], updateModelMultiAgent: async () => [],
 			getWorkspaceAccess: async () => ({ allowedRoots: [] }),
 			updateWorkspaceAccess: async () => ({ allowedRoots: [] })
 		};
-	});
+	}, BROWSER_MODEL_CATALOG);
 }
 
 test("native Laguna readiness overrides missing legacy runtime health", async ({ page }) => {
@@ -320,9 +323,10 @@ test("Settings identifies the exact running desktop build", async ({ page }) => 
 });
 
 test("Models lists only credentialed remote providers with pricing", async ({ page }) => {
-	await page.addInitScript(() => {
+	await page.addInitScript((catalog) => {
 		window.synthConfig = {
 			get: async () => ({ configPath: "/tmp/config.toml", envFile: "/tmp/.env", profile: "prod", backendUrl: "https://api.usesynth.ai", apiKeyEnv: "SYNTH_API_KEY", apiKeyConfigured: true, workerKeyConfigured: false, openrouterApiKeyConfigured: true }),
+			modelCatalog: async () => catalog, refreshModelCatalog: async () => catalog,
 			update: async () => { throw new Error("unused"); }, listModelMultiAgent: async () => [], updateModelMultiAgent: async () => [],
 			getWorkspaceAccess: async () => ({ allowedRoots: [] }), updateWorkspaceAccess: async () => ({ allowedRoots: [] })
 		};
@@ -334,7 +338,7 @@ test("Models lists only credentialed remote providers with pricing", async ({ pa
 				{ provider: "openrouter", modelId: "google/gemini-3.7-flash", inputUsdPerM: 0.375, outputUsdPerM: 1.875, cachedInputUsdPerM: 0.0375, cacheWriteUsdPerM: 0.02085 }
 			]
 		};
-	});
+	}, BROWSER_MODEL_CATALOG);
 	await page.reload();
 	await openSettings(page);
 	await page.getByRole("button", { name: "Models" }).click();
@@ -349,7 +353,7 @@ test("Models lists only credentialed remote providers with pricing", async ({ pa
 	await expect(models.getByTestId("authorized-model-openrouter-gemini-flash")).toContainText("$1.875");
 	await expect(models.getByTestId("authorized-model-synth-cloud-laguna-s")).toContainText("Plan");
 	const marks = models.locator(".authorized-model-mark");
-	await expect(marks).toHaveCount(6);
+	await expect(marks).toHaveCount(8);
 	const markBoxes = await marks.evaluateAll((elements) => elements.map((element) => {
 		const box = element.getBoundingClientRect();
 		return { width: box.width, height: box.height, centerX: box.left + box.width / 2 };
@@ -365,7 +369,7 @@ test("Models lists only credentialed remote providers with pricing", async ({ pa
 			return { fontSize: Number.parseFloat(style.fontSize), family: style.fontFamily };
 		})
 	);
-	expect(slugStyles).toHaveLength(6);
+	expect(slugStyles).toHaveLength(8);
 	for (const style of slugStyles) {
 		expect(style.fontSize, "model slugs stay subordinate to provider labels").toBeLessThanOrEqual(10);
 		expect(style.family).toMatch(/SFMono|Menlo|Monaco|Consolas|monospace/i);
@@ -863,7 +867,7 @@ test("changing providers mid-chat stays in the thread and switches on send", asy
 		threadId: "local-thread"
 	});
 	await expect.poll(() => page.evaluate(() => (window as typeof window & { __providerTurns: Array<{ sessionId: string; prompt: string; effort?: string }> }).__providerTurns.at(-1))).toMatchObject({ sessionId: "bound-local", prompt: "hello Luna", effort: "high" });
-	await expect.poll(() => page.evaluate(() => localStorage.getItem("synth.reasoningEffort"))).toBe("high");
+	await expect.poll(() => page.evaluate(() => localStorage.getItem("synth.models.openrouter-luna.reasoning"))).toBe("high");
 
 	await page.getByTestId("composer-model").click();
 	await page.getByTestId("composer-model-access-api").click();
@@ -1434,6 +1438,8 @@ test("native Codex tool use renders safe Poolside-style rows and a compact run s
 			baseUrl: "http://127.0.0.1:8098", taskFamily: "craftax-singleplayer",
 			lastRolloutId: "rollout-latest", health: { payload: { sessions: 2 } },
 			metadata: {
+				taskCatalogFreshness: { kind: "live", observedAt: "2026-08-09T10:00:00Z" },
+				interfaceFreshness: { kind: "live", observedAt: "2026-08-09T10:00:00Z" },
 				info: {
 					lane: "rust",
 					capabilities: {
@@ -1538,7 +1544,7 @@ test("native Codex tool use renders safe Poolside-style rows and a compact run s
 	await expect(containerPane).toBeVisible();
 	await expect(containerPane).toContainText("Craftax Rust");
 	await expect(containerPane).toContainText("craftax-singleplayer");
-	await expect(containerPane).toContainText("2 active sessions");
+	await expect(containerPane).toContainText("2 sessions");
 	await expect(containerPane.locator(".container-chip-grid")).toContainText("protocol");
 	await expect(containerPane.locator(".container-chip-grid")).toContainText("rollout_modes:blocking");
 	await expect(containerPane.locator(".container-chip-grid")).toContainText("policy_refs:1");
@@ -1565,11 +1571,11 @@ test("native Codex tool use renders safe Poolside-style rows and a compact run s
 	await expect(containerPane).toContainText("collect_wood");
 	await containerPane.getByTestId("container-pane-expand").click();
 	await expect(page.locator(".workbench")).toHaveClass(/container-expanded/);
-	await containerPane.getByRole("button", { name: "Refresh metadata" }).click();
+	await containerPane.getByRole("button", { name: "Refresh", exact: true }).click();
 	await expect(containerPane).toContainText("1 of 3 instances");
 	await expect(containerPane.locator(".container-facts")).toContainText("Definitions1");
-	await expect(containerPane.locator(".container-facts")).toContainText("Instances3");
-	await containerPane.getByRole("button", { name: "Refresh metadata" }).click();
+	await expect(containerPane.locator(".container-facts")).toContainText("Instances3 live");
+	await containerPane.getByRole("button", { name: "Refresh", exact: true }).click();
 	await expect(containerPane.getByRole("alert")).toContainText("Task metadata error: invalid task catalog: unsupported schema_version");
 
 	await page.evaluate(() => {
