@@ -51,6 +51,89 @@ pub struct OptimizerSnapshotImportRequest {
     pub expected_digest: Option<String>,
 }
 
+/// Deterministic, comparison-oriented projection over the immutable run
+/// evidence. This does not rewrite the source run's terminal usage lanes:
+/// container-reported per-rollout policy usage is kept separate and labeled
+/// with its own completeness signal.
+pub fn evidence_summary(snapshot: &OptimizerRunSnapshot) -> Value {
+    let records = snapshot
+        .run
+        .summary
+        .get("records")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let projected = records
+        .iter()
+        .map(|record| {
+            json!({
+                "rolloutId": record.get("rolloutId").cloned().unwrap_or(Value::Null),
+                "seed": record.get("seed").cloned().unwrap_or(Value::Null),
+                "status": record.get("status").cloned().unwrap_or(Value::Null),
+                "reward": record.get("reward").cloned().unwrap_or(Value::Null),
+                "costUsd": record.pointer("/usage/cost").cloned().unwrap_or(Value::Null),
+                "tokens": record.pointer("/usage/tokens").cloned().unwrap_or(Value::Null),
+            })
+        })
+        .collect::<Vec<_>>();
+    let rewards = projected
+        .iter()
+        .filter_map(|record| record.get("reward").and_then(Value::as_f64))
+        .collect::<Vec<_>>();
+    let costs = projected
+        .iter()
+        .filter_map(|record| record.get("costUsd").and_then(Value::as_f64))
+        .collect::<Vec<_>>();
+    let tokens = projected
+        .iter()
+        .filter_map(|record| record.get("tokens").and_then(Value::as_u64))
+        .collect::<Vec<_>>();
+    let total_reward = rewards.iter().sum::<f64>();
+    let total_cost = costs.iter().sum::<f64>();
+    let rollout_count = projected.len();
+    let reward_complete = rollout_count > 0 && rewards.len() == rollout_count;
+    let cost_complete = rollout_count > 0 && costs.len() == rollout_count;
+    let token_complete = rollout_count > 0 && tokens.len() == rollout_count;
+    let score_per_dollar =
+        (reward_complete && cost_complete && total_cost > 0.0).then_some(total_reward / total_cost);
+
+    json!({
+        "schemaVersion": "optimizer_evidence_summary.v1",
+        "runId": snapshot.source_run_id,
+        "status": snapshot.run.status,
+        "objective": snapshot.run.objective,
+        "policyRef": snapshot.run.summary.get("policyRef").cloned().unwrap_or(Value::Null),
+        "rolloutCount": rollout_count,
+        "records": projected,
+        "reward": {
+            "complete": reward_complete,
+            "reportedRollouts": rewards.len(),
+            "total": reward_complete.then_some(total_reward),
+            "mean": reward_complete.then_some(total_reward / rollout_count as f64),
+        },
+        "cost": {
+            "basis": "container_reported_rollout_policy_usage",
+            "complete": cost_complete,
+            "reportedRollouts": costs.len(),
+            "totalUsd": cost_complete.then_some(total_cost),
+        },
+        "tokens": {
+            "basis": "container_reported_rollout_policy_usage",
+            "complete": token_complete,
+            "reportedRollouts": tokens.len(),
+            "total": token_complete.then_some(tokens.iter().sum::<u64>()),
+        },
+        "efficiency": {
+            "basis": "total_reward_divided_by_container_reported_rollout_policy_cost",
+            "scorePerDollar": score_per_dollar,
+        },
+        "terminalUsage": snapshot.terminal_manifest.as_ref()
+            .and_then(|manifest| manifest.get("usage"))
+            .cloned()
+            .unwrap_or(Value::Null),
+    })
+}
+
 pub fn canonical_bytes(snapshot: &OptimizerRunSnapshot) -> Result<Vec<u8>> {
     validate(snapshot)?;
     serde_json::to_vec(snapshot).context("serialize optimizer snapshot")
@@ -278,5 +361,33 @@ mod tests {
             .unwrap_err()
             .to_string()
             .contains("event chain"));
+    }
+
+    #[test]
+    fn evidence_summary_aggregates_complete_rollout_usage_without_rewriting_terminal_usage() {
+        let mut snapshot = example();
+        snapshot.run.summary = json!({
+            "policyRef": {"model":"openai/gpt-5.6-luna","configId":"luna_high"},
+            "records": [
+                {"rolloutId":"r1","seed":1,"status":"completed","reward":10.0,"usage":{"cost":0.25,"tokens":100}},
+                {"rolloutId":"r2","seed":2,"status":"completed","reward":20.0,"usage":{"cost":0.5,"tokens":200}}
+            ]
+        });
+        snapshot.terminal_manifest = Some(json!({
+            "terminalStatus":"completed","terminalCursor":1,
+            "usage":{"costUsd":null,"costComplete":null}
+        }));
+        let summary = evidence_summary(&snapshot);
+        assert_eq!(summary.pointer("/reward/mean"), Some(&json!(15.0)));
+        assert_eq!(summary.pointer("/cost/totalUsd"), Some(&json!(0.75)));
+        assert_eq!(summary.pointer("/tokens/total"), Some(&json!(300)));
+        assert_eq!(
+            summary.pointer("/efficiency/scorePerDollar"),
+            Some(&json!(40.0))
+        );
+        assert_eq!(
+            summary.pointer("/terminalUsage/costUsd"),
+            Some(&Value::Null)
+        );
     }
 }

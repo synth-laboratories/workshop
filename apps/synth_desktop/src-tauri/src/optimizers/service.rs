@@ -1402,7 +1402,12 @@ impl OptimizerService {
     pub async fn get_snapshot(&self, snapshot_id: String) -> Result<Value> {
         let (snapshot, receipt) =
             super::snapshot::load(self.db.clone(), &self.content, &snapshot_id)?;
-        Ok(json!({"snapshot": snapshot, "receipt": receipt}))
+        let evidence_summary = super::snapshot::evidence_summary(&snapshot);
+        Ok(json!({
+            "snapshot": snapshot,
+            "receipt": receipt,
+            "evidenceSummary": evidence_summary,
+        }))
     }
 
     pub async fn create(

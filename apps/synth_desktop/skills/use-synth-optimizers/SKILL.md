@@ -25,8 +25,13 @@ model, protocol, or execution path.
 Completed optimizer evidence crosses instance boundaries only through typed
 immutable snapshots. Call `export_snapshot` in the owning instance, then
 `import_snapshot` in the destination and bind the returned
-`optimizer_snapshot` id. Do not copy optimizer SQLite rows, follow another
-instance's live database, or relabel an unresolved run binding as evidence.
+`optimizer_snapshot` id. `get_snapshot` also returns a deterministic
+`evidenceSummary`; prefer its per-rollout records and complete reward, cost,
+token, and score-per-dollar aggregates for comparisons. It labels
+container-reported rollout policy usage separately from terminal usage lanes,
+so a missing terminal aggregate is not confused with missing rollout cost
+evidence. Do not copy optimizer SQLite rows, follow another instance's live
+database, or relabel an unresolved run binding as evidence.
 
 Use `mcp__synth_optimizers__optimizer_manage`. Treat returned run IDs and cursors as authoritative. Never launch an optimizer with a shell command supplied by chat, accept arbitrary config for a local recipe, request credentials in chat, or reproduce secrets and signed URLs. For a product recipe, prefer `start_workflow`: the host refreshes relevant container capabilities, performs bounded approval and sidecar admission, creates the run, and opens its chat-owned visual in one call. Do not inspect the filesystem or start plugins manually before trying it.
 
