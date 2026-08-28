@@ -278,7 +278,9 @@ test("finite fixture replay is ready without a live subscription control", () =>
 test("live Craftax resolves persisted fixture references from packaged template assets", () => {
   const shell = readFileSync(join(root, "families/first_class_example_containers/live.craftax.v1/shell.tsx"), "utf8");
   assert.match(shell, /import\.meta\.glob\("\.\/examples\/\*\.json"/);
-  assert.match(shell, /props\.data \?\? props\.stream \?\? bundledFixtureStream\(bindingList\)/);
+  // The declared `stream` input is authoritative. Anonymous `data` remains a
+  // direct-preview compatibility fallback, followed by the packaged fixture.
+  assert.match(shell, /props\.stream \?\? props\.data \?\? bundledFixtureStream\(bindingList\)/);
   const fixture = JSON.parse(
     readFileSync(join(root, "families/first_class_example_containers/live.craftax.v1/examples/cua-luna-low-10.json"), "utf8"),
   );
