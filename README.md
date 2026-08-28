@@ -111,6 +111,31 @@ shows the profile and endpoint shape.
 
 Core loop: **observe → understand → modify → evaluate → fine-tune → deploy**
 
+## Release tiers
+
+Workshop builds compile one maturity envelope — `core ⊂ stable ⊂ beta ⊂ alpha ⊂ dev`
+— declared in [`contracts/release-tiers-v1.toml`](./contracts/release-tiers-v1.toml).
+A tier build contains every feature at or below its tier and is structurally
+unable to expose the rest (cargo `tier-*` features on the host, Vite defines in
+the renderer). Packaging defaults to `stable`; pre-release builds show their
+tier in the titlebar and in Settings → Build, and each tier reads only its own
+update channel (`/releases/<tier>/latest.json`).
+
+- **stable** — the supported public product (the default build; the `/download` channel)
+- **beta** — externally testable; packaging, recovery, and evals are hard gates
+- **alpha** — internal/design-partner builds; core journeys must pass
+- **dev** — full development surface (`scripts/desktop-instance.sh` builds this)
+- **core** — durability classification whose checks are required everywhere
+
+```bash
+scripts/build-tier.sh beta          # one tier-aligned app
+scripts/build-tier.sh all --debug   # all four channel apps, side by side
+scripts/release-gate.sh stable      # run that tier's required gates → receipt
+```
+
+See [`docs/RELEASE_TIERS.md`](./docs/RELEASE_TIERS.md) for the full model
+(enforcement classes, verification dispositions, promotion flow).
+
 ## Docs
 
 - [`WORKSHOP_QUALITY_STYLE_GUIDE.md`](./WORKSHOP_QUALITY_STYLE_GUIDE.md) — unified visual, interaction, runtime-honesty, accessibility, and test quality bar

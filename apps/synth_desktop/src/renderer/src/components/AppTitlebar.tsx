@@ -1,6 +1,7 @@
 import { SynthLogo } from "./SynthLogo";
 import { ProviderMark } from "./ProviderMark";
 import { truncate } from "../runtime/codexTurn";
+import { BUILD_TIER } from "../flags/tier";
 import type { SidePanelTab } from "../hooks/useShellLayout";
 
 function IconSidePanel() {
@@ -117,6 +118,18 @@ export function AppTitlebar({
 				>
 					v{appVersion}
 				</span>
+				{/* Statically eliminated from stable/core bundles — the badge is
+				    the beta-tier prerelease_build_badge feature, so the public
+				    app is structurally unable to render it. */}
+				{__TIER_HAS_BETA__ ? (
+					<span
+						className="tier-badge"
+						data-testid="titlebar-tier-badge"
+						title={`Pre-release ${BUILD_TIER} build — see Settings → Build`}
+					>
+						{BUILD_TIER}
+					</span>
+				) : null}
 			</div>
 		</header>
 	);
