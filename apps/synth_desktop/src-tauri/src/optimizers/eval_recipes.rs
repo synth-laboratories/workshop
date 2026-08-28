@@ -1467,7 +1467,7 @@ fn canonicalize(raw: &Value) -> Option<Canonical> {
             );
             delta.insert("trial_id".into(), raw.get("trial_id").cloned()?);
             delta.insert(
-                "containerEvent".into(),
+                "container_event".into(),
                 raw.get("container_event").cloned().unwrap_or(json!({})),
             );
             level = "debug";

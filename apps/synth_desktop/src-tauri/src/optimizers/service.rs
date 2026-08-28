@@ -3650,6 +3650,10 @@ fn commit_validated_events(
     mut events: Vec<OptimizerEventEnvelope>,
     contract: SequenceContract,
 ) -> Result<(OptimizerRunRecord, Option<AppEvent>)> {
+    // Normalize and validate the Optimizers-owned imported/relay slice before
+    // even computing the insert plan. Workshop-local event families bypass
+    // this gate and remain on the local contract path.
+    super::event_contract::normalize_and_validate_imported_eval_events(&mut events)?;
     let durable = durable_event_ids(conn, &run.id, &events)?;
     let plan = plan_batch(&run.id, run.cursor_seq, &durable, &events, contract)
         .with_context(|| format!("validate optimizer event batch for {}", run.id))?;
@@ -6798,6 +6802,85 @@ pub(in crate::optimizers) mod tests {
         let events = svc.events_after(run.id.clone(), 0, None).await.unwrap();
         let (again, _) = svc.append_events(run.id.clone(), events).await.unwrap();
         assert_eq!(again.cursor_seq, run.cursor_seq);
+    }
+
+    #[tokio::test]
+    async fn durable_eval_gate_canonicalizes_owner_carrier_and_leaves_local_events_alone() {
+        let (svc, _dir, _) = service().await;
+        let run = eval_run(&svc, "opt_eval_owner_gate", "session_owner_gate").await;
+        let occurred_at = "2026-08-27T00:00:00+00:00";
+        let carrier = json!({
+            "rollout_id": "rollout_0001",
+            "sequence": 3,
+            "kind": "reward_signal",
+            "occurred_at": occurred_at,
+            "digest": "0123456789abcdef",
+            "payload": {"value": 1}
+        });
+        let imported = evt(
+            "eval.trial.event",
+            1,
+            "eval",
+            &run.id,
+            occurred_at,
+            json!({"trial_id": "trial_0001", "containerEvent": carrier}),
+            None,
+            None,
+        );
+        svc.append_events(run.id.clone(), vec![imported])
+            .await
+            .unwrap();
+
+        let stored = svc.events_after(run.id.clone(), 0, None).await.unwrap();
+        assert_eq!(stored.len(), 1);
+        assert!(stored[0].delta.contains_key("container_event"));
+        assert!(!stored[0].delta.contains_key("containerEvent"));
+        let ipc = serde_json::to_value(&stored[0]).unwrap();
+        assert_eq!(ipc["schemaVersion"], "optimizer_event.v1");
+        assert_eq!(ipc["optimizerRunId"], run.id);
+        assert_eq!(ipc["sequenceNumber"], 1);
+        assert!(ipc.pointer("/delta/container_event").is_some());
+
+        let malformed = evt(
+            "eval.trial.event",
+            2,
+            "eval",
+            &run.id,
+            occurred_at,
+            json!({"trial_id": "trial_0002"}),
+            None,
+            None,
+        );
+        let error = svc
+            .append_events(run.id.clone(), vec![malformed])
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("container_event"), "{error}");
+        assert_eq!(svc.get(run.id.clone()).await.unwrap().cursor_seq, 1);
+        assert_eq!(
+            svc.events_after(run.id.clone(), 0, None)
+                .await
+                .unwrap()
+                .len(),
+            1,
+            "owner-contract rejection must happen before any row is inserted"
+        );
+
+        // Workshop's diagnostic/settlement vocabulary is not owned by the
+        // Optimizers schema and therefore does not inherit its carrier rule.
+        let local = evt(
+            "optimizer.recipe.diagnostic",
+            2,
+            "eval",
+            &run.id,
+            occurred_at,
+            json!({"message": "local receipt"}),
+            None,
+            None,
+        );
+        let (advanced, _) = svc.append_events(run.id, vec![local]).await.unwrap();
+        assert_eq!(advanced.cursor_seq, 2);
     }
 
     #[tokio::test]

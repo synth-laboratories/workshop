@@ -393,7 +393,7 @@
       "algorithmId": "eval",
       "artifactRefs": [],
       "delta": {
-        "containerEvent": {
+        "container_event": {
           "at": 1786811512.1970153,
           "event": "trial.started",
           "scenario": "craftax-default-48x48",
@@ -434,7 +434,7 @@
       "algorithmId": "eval",
       "artifactRefs": [],
       "delta": {
-        "containerEvent": {
+        "container_event": {
           "at": 1786811512.1980317,
           "event": "rollout.started",
           "max_steps": 500,
@@ -475,7 +475,7 @@
       "algorithmId": "eval",
       "artifactRefs": [],
       "delta": {
-        "containerEvent": {
+        "container_event": {
           "at": 1786811512.232303,
           "event": "trial.started",
           "scenario": "craftax-default-48x48",
@@ -516,7 +516,7 @@
       "algorithmId": "eval",
       "artifactRefs": [],
       "delta": {
-        "containerEvent": {
+        "container_event": {
           "at": 1786811512.2332523,
           "event": "rollout.started",
           "max_steps": 500,
@@ -557,7 +557,7 @@
       "algorithmId": "eval",
       "artifactRefs": [],
       "delta": {
-        "containerEvent": {
+        "container_event": {
           "at": 1786811512.2103975,
           "event": "trial.started",
           "scenario": "craftax-default-48x48",
@@ -598,7 +598,7 @@
       "algorithmId": "eval",
       "artifactRefs": [],
       "delta": {
-        "containerEvent": {
+        "container_event": {
           "at": 1786811512.2113242,
           "event": "rollout.started",
           "max_steps": 500,
@@ -639,7 +639,7 @@
       "algorithmId": "eval",
       "artifactRefs": [],
       "delta": {
-        "containerEvent": {
+        "container_event": {
           "at": 1786811512.2251587,
           "event": "trial.started",
           "scenario": "craftax-default-48x48",
@@ -680,7 +680,7 @@
       "algorithmId": "eval",
       "artifactRefs": [],
       "delta": {
-        "containerEvent": {
+        "container_event": {
           "at": 1786811512.2258265,
           "event": "rollout.started",
           "max_steps": 500,
@@ -721,7 +721,7 @@
       "algorithmId": "eval",
       "artifactRefs": [],
       "delta": {
-        "containerEvent": {
+        "container_event": {
           "achievements": 2.0,
           "at": 1786811580.4739783,
           "cost_usd": 0.009256,
@@ -1131,7 +1131,7 @@
       "algorithmId": "eval",
       "artifactRefs": [],
       "delta": {
-        "containerEvent": {
+        "container_event": {
           "achievements": 0.0,
           "at": 1786811592.3143232,
           "cost_usd": 0.009946,
@@ -1541,7 +1541,7 @@
       "algorithmId": "eval",
       "artifactRefs": [],
       "delta": {
-        "containerEvent": {
+        "container_event": {
           "achievements": 2.0,
           "at": 1786811615.0537543,
           "cost_usd": 0.013944,
@@ -1951,7 +1951,7 @@
       "algorithmId": "eval",
       "artifactRefs": [],
       "delta": {
-        "containerEvent": {
+        "container_event": {
           "achievements": 0.0,
           "at": 1786811637.5470097,
           "cost_usd": 0.016233,
