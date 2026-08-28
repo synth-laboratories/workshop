@@ -249,7 +249,11 @@ async fn spawn_worker(
         if let Err(error) =
             run_worker(worker.clone(), client, run_id.clone(), config, cancel_rx).await
         {
-            crate::platform::logging::report("optimizers", "eprintln", format!("hosted GELO worker {run_id} failed: {error:#}"));
+            crate::platform::logging::report(
+                "optimizers",
+                "eprintln",
+                format!("hosted GELO worker {run_id} failed: {error:#}"),
+            );
             let _ = append_terminal(&worker, &run_id, "failed", Some(error.to_string())).await;
         }
         worker.unregister_local_recipe(&run_id).await;

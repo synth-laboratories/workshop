@@ -27,6 +27,7 @@
 
 use super::{events::OptimizerEventDraft, service::OptimizerService};
 use crate::container_stream::{poll_event_list, STREAM_SUBSCRIBED_KIND};
+use crate::stream_fold::SequenceStep;
 use anyhow::{anyhow, bail, Context, Result};
 use serde_json::{json, Map, Value};
 use std::time::{Duration, Instant};
@@ -467,23 +468,22 @@ async fn drain(
             if event.get("kind").and_then(Value::as_str) == Some(STREAM_SUBSCRIBED_KIND) {
                 continue;
             }
-            if sequence <= *cursor {
+            match crate::stream_fold::sequence_step(*cursor, sequence) {
                 // A retried page. The idempotency key would collapse it anyway;
                 // skipping keeps the batch honest about what it appended.
-                continue;
-            }
-            if sequence != *cursor + 1 {
+                SequenceStep::Duplicate | SequenceStep::Replay => continue,
                 // Fail visibly. A gap means the producer's journal and this
                 // cursor disagree about history, and a viewer folded from a
                 // gapped stream shows a trajectory that never happened.
-                return Err(anyhow::Error::new(RelayIntegrityError {
-                    detail: format!(
-                        "event sequence gap on {}: expected {}, received {}",
-                        ctx.rollout_id,
-                        *cursor + 1,
-                        sequence
-                    ),
-                }));
+                SequenceStep::Gap { expected } => {
+                    return Err(anyhow::Error::new(RelayIntegrityError {
+                        detail: format!(
+                            "event sequence gap on {}: expected {}, received {}",
+                            ctx.rollout_id, expected, sequence
+                        ),
+                    }))
+                }
+                SequenceStep::Next => {}
             }
             let draft = relay_event(ctx, event, sequence, outcome).await?;
             drafts.push(draft);

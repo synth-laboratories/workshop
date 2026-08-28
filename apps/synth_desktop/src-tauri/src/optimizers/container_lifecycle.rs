@@ -128,10 +128,7 @@ pub async fn ensure_from_session(
     ensure_spec(db, &spec).await
 }
 
-pub async fn ensure_spec(
-    db: &Arc<Database>,
-    spec: &ContainerSpec,
-) -> Result<EnsuredContainer> {
+pub async fn ensure_spec(db: &Arc<Database>, spec: &ContainerSpec) -> Result<EnsuredContainer> {
     let (base_url, process) = if let Some(url) = spec.url.as_deref() {
         let base = url.trim_end_matches('/').to_string();
         let process = if spec.command.is_empty() {

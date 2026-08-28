@@ -4889,9 +4889,9 @@ max_total_rollouts = 4
         assert_eq!(traces["items"].as_array().unwrap().len(), 0);
         let errors = data["reconciliationErrors"].as_array().unwrap();
         assert!(
-            errors.iter().any(|error| error
-                .as_str()
-                .is_some_and(|text| text.contains("queued"))),
+            errors
+                .iter()
+                .any(|error| error.as_str().is_some_and(|text| text.contains("queued"))),
             "{errors:?}"
         );
         assert!(

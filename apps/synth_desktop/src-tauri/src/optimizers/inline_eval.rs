@@ -324,13 +324,12 @@ fn read_policy_source(
         .or_else(|| metadata.get("specId"))
         .and_then(Value::as_str)
         .unwrap_or("policy");
-    let origin = super::workspace_recipe::origin_from_metadata(metadata, spec_id).ok_or_else(
-        || {
+    let origin =
+        super::workspace_recipe::origin_from_metadata(metadata, spec_id).ok_or_else(|| {
             anyhow::anyhow!(
                 "policy_source_unavailable: container declaration has no approved source origin"
             )
-        },
-    )?;
+        })?;
     let resolved = super::workspace_recipe::resolve_repository_path(&origin, relative)
         .map_err(super::workspace_recipe::LaunchDeclarationError::into_anyhow)?;
     let source_code = if origin.source_digest.is_some() {

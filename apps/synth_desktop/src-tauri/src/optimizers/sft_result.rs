@@ -5,6 +5,7 @@
 //! Missing metrics serialize as `null` plus coverage, never numeric zero.
 
 use super::models::{OptimizerEventEnvelope, OptimizerRunRecord, TrainingJobStatus};
+use super::training_adapter::is_step_metrics_event;
 use super::OptimizerService;
 use anyhow::Result;
 use serde_json::{json, Map, Value};
@@ -202,7 +203,10 @@ fn metrics_from(events: &[OptimizerEventEnvelope]) -> Value {
     let mut validation_loss = None;
     let mut validation_coverage = "missing";
     for event in events {
-        if event.event_type != "sft.training.metrics" {
+        // Not a name list. `training_adapter` owns the one rule that names a
+        // step-metrics event and the closed set of names one can carry, so a
+        // CISPO run reaches this reader on either placement.
+        if !is_step_metrics_event(&event.event_type) {
             continue;
         }
         if let Some(value) = json_f64(event.delta.get("train_loss")) {
@@ -670,5 +674,50 @@ mod tests {
         let result = project_sft_result(&run(), &[], None);
         assert_eq!(result["config"]["adapter"], "lora_r8");
         assert_eq!(result["config"]["rank"], 8);
+    }
+
+    #[test]
+    fn cispo_step_metrics_reach_the_result_metrics_on_both_placements() {
+        // The hosted/adapter arm and the sidecar/MLX arm now name a CISPO step
+        // identically, so this fixture covers both. Before one rule owned the
+        // name, this reader matched `sft.training.metrics` alone and every
+        // CISPO run reported `null` train loss with `missing` coverage.
+        let name = crate::optimizers::training_adapter::step_metrics_event("cispo");
+        assert_eq!(name, "training.metrics");
+        let mut cispo = run();
+        cispo.id = "cispo_materialize".into();
+        cispo.algorithm_id = "cispo".into();
+        let events = vec![
+            evt(name, 1, json!({"step": 1, "train_loss": 0.9}), None),
+            evt(
+                name,
+                2,
+                json!({"step": 2, "train_loss": 0.4, "validation_loss": 0.5}),
+                None,
+            ),
+        ];
+        let result = project_sft_result(&cispo, &events, None);
+        assert_eq!(result["metrics"]["trainLoss"]["value"], 0.4);
+        assert_eq!(result["metrics"]["trainLoss"]["coverage"], "present");
+        assert_eq!(result["metrics"]["validationLoss"]["value"], 0.5);
+        assert_eq!(result["metrics"]["validationLoss"]["coverage"], "present");
+    }
+
+    #[test]
+    fn every_persisted_step_metrics_spelling_still_reaches_the_result() {
+        // A persisted row keeps its original name forever; the reader accepts
+        // the whole set the producers can have written.
+        for name in [
+            "sft.training.metrics",
+            "sft.step.metrics",
+            "training.metrics",
+        ] {
+            let events = vec![evt(name, 1, json!({"step": 1, "train_loss": 1.25}), None)];
+            let result = project_sft_result(&run(), &events, None);
+            assert_eq!(
+                result["metrics"]["trainLoss"]["value"], 1.25,
+                "`{name}` was dropped by the result reader"
+            );
+        }
     }
 }
