@@ -29,6 +29,7 @@ use super::{events::OptimizerEventDraft, service::OptimizerService};
 use crate::container_stream::{poll_event_list, STREAM_SUBSCRIBED_KIND};
 use anyhow::{anyhow, bail, Context, Result};
 use serde_json::{json, Map, Value};
+use sha2::{Digest, Sha256};
 use std::time::{Duration, Instant};
 use tokio::sync::watch;
 
@@ -230,6 +231,14 @@ pub(crate) struct RelayOutcome {
     pub relayed_events: usize,
     pub high_water: u64,
     pub journal_closed: bool,
+    /// Verified `synth.rollout.event-chain.v1` head. Present only when the
+    /// producer declares journal-v2 chain metadata and Workshop drains through
+    /// that exact high water.
+    pub journal_chain_head: Option<String>,
+    /// Highest producer sequence Workshop has durably acknowledged.
+    pub journal_acked: u64,
+    /// Producer-declared retention policy. Legacy journals leave this absent.
+    pub journal_retention: Option<Value>,
     pub frames_declared: usize,
     pub frames_retained: usize,
     /// Distinct content objects behind retained frame observations. Multiple
@@ -245,6 +254,9 @@ impl RelayOutcome {
             "relayedEvents": self.relayed_events,
             "highWater": self.high_water,
             "journalClosed": self.journal_closed,
+            "journalChainHead": self.journal_chain_head,
+            "journalAcked": self.journal_acked,
+            "journalRetention": self.journal_retention,
             "framesDeclared": self.frames_declared,
             "framesRetained": self.frames_retained,
             "frameObservationsDeclared": self.frames_declared,
@@ -300,6 +312,9 @@ where
 {
     let mut outcome = RelayOutcome::default();
     let mut cursor: u64 = 0;
+    let mut acked: u64 = 0;
+    let mut chain_head = journal_chain_genesis(ctx.rollout_id);
+    let mut journal_v2: Option<bool> = None;
     let mut rollout = Box::pin(rollout);
     let mut settled: Option<Result<Value>> = None;
     let mut settled_at: Option<Instant> = None;
@@ -314,7 +329,15 @@ where
             // episode when its client goes away. The journal it already wrote
             // is still drained below, so a cancelled trial keeps its evidence.
             drop(rollout);
-            let drained = drain(ctx, &mut cursor, &mut outcome).await;
+            let drained = drain(
+                ctx,
+                &mut cursor,
+                &mut acked,
+                &mut chain_head,
+                &mut journal_v2,
+                &mut outcome,
+            )
+            .await;
             if let Err(error) = drained {
                 outcome.note("relay_failed", format!("{error:#}"), 0);
             }
@@ -326,7 +349,16 @@ where
             return (Err(anyhow!("container eval cancelled")), outcome);
         }
 
-        match drain(ctx, &mut cursor, &mut outcome).await {
+        match drain(
+            ctx,
+            &mut cursor,
+            &mut acked,
+            &mut chain_head,
+            &mut journal_v2,
+            &mut outcome,
+        )
+        .await
+        {
             Ok(summary) => {
                 if summary.closed {
                     outcome.journal_closed = true;
@@ -451,17 +483,34 @@ struct DrainSummary {
     /// The page carried a `cursor` block at all. A producer without one cannot
     /// report closure, so its silence is a contract gap rather than a stall.
     declares_cursor: bool,
+    /// The page declared journal-v2 integrity or retention fields.
+    declares_v2: bool,
 }
 
 /// Read every page available at `cursor`, relaying each semantic event.
 async fn drain(
     ctx: &RelayContext<'_>,
     cursor: &mut u64,
+    acked: &mut u64,
+    chain_head: &mut String,
+    journal_v2: &mut Option<bool>,
     outcome: &mut RelayOutcome,
 ) -> Result<DrainSummary> {
     let mut summary = DrainSummary::default();
     loop {
-        let page = fetch_page(ctx, *cursor).await?;
+        let requested_ack = *cursor;
+        let page = fetch_page(ctx, *cursor, requested_ack).await?;
+        let page_v2 = page_declares_journal_v2(&page);
+        match *journal_v2 {
+            Some(expected) if expected != page_v2 => {
+                return Err(relay_integrity(format!(
+                    "journal contract version changed mid-rollout on {}",
+                    ctx.rollout_id
+                )));
+            }
+            None => *journal_v2 = Some(page_v2),
+            _ => {}
+        }
         let events = poll_event_list(&page);
         let mut drafts = Vec::new();
         for event in events {
@@ -491,6 +540,11 @@ async fn drain(
                     ),
                 }));
             }
+            if page_v2 {
+                let digest = verify_envelope_digest(event, sequence)
+                    .map_err(|error| relay_integrity(format!("{error:#}")))?;
+                *chain_head = journal_chain_extend(chain_head, digest);
+            }
             let draft = relay_event(ctx, event, sequence, outcome).await?;
             drafts.push(draft);
             *cursor = sequence;
@@ -508,11 +562,45 @@ async fn drain(
         }
         let cursor_block = page.get("cursor").filter(|value| value.is_object());
         summary.declares_cursor |= cursor_block.is_some();
+        summary.declares_v2 |= page_v2;
+        if page_v2 {
+            let echoed_ack = cursor_block
+                .and_then(|value| value.get("acked"))
+                .and_then(Value::as_u64)
+                .ok_or_else(|| relay_integrity("journal-v2 cursor omitted integer acked"))?;
+            if echoed_ack < requested_ack {
+                return Err(anyhow::Error::new(RelayIntegrityError {
+                    detail: format!(
+                        "journal ack regressed on {}: sent {}, producer reported {}",
+                        ctx.rollout_id, requested_ack, echoed_ack
+                    ),
+                }));
+            }
+            *acked = (*acked).max(echoed_ack);
+            outcome.journal_acked = outcome.journal_acked.max(echoed_ack);
+        }
         if let Some(high) = cursor_block
             .and_then(|value| value.get("high_water"))
             .and_then(Value::as_u64)
         {
             outcome.high_water = outcome.high_water.max(high);
+            if page_v2 && *cursor == high {
+                let declared_head = cursor_block
+                    .and_then(|value| value.get("chain_head"))
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| relay_integrity("journal-v2 cursor omitted chain_head"))?;
+                validate_chain_head(declared_head)
+                    .map_err(|error| relay_integrity(format!("{error:#}")))?;
+                if declared_head != chain_head {
+                    return Err(anyhow::Error::new(RelayIntegrityError {
+                        detail: format!(
+                            "journal chain head mismatch on {} at {}: computed {}, producer reported {}",
+                            ctx.rollout_id, high, chain_head, declared_head
+                        ),
+                    }));
+                }
+                outcome.journal_chain_head = Some(chain_head.clone());
+            }
         }
         if cursor_block
             .and_then(|value| value.get("closed"))
@@ -521,23 +609,44 @@ async fn drain(
         {
             summary.closed = true;
         }
+        if page_v2 {
+            outcome.journal_retention = Some(
+                validate_retention(&page, cursor_block)
+                    .map_err(|error| relay_integrity(format!("{error:#}")))?,
+            );
+        }
         let has_more = cursor_block
             .and_then(|value| value.get("has_more"))
             .and_then(Value::as_bool)
             == Some(true);
-        if !has_more || outcome.relayed_events >= ctx.settings.event_stream.max_events_per_rollout {
+        // A v2 producer may release the journal only after it observes an ack
+        // for Workshop's durably appended high water. The extra empty request
+        // is intentional: it carries that ack, verifies the final chain head,
+        // and closes the producer/consumer retention handshake.
+        let ack_pending = page_v2 && *acked < *cursor;
+        if (!has_more && !ack_pending)
+            || outcome.relayed_events >= ctx.settings.event_stream.max_events_per_rollout
+        {
             return Ok(summary);
         }
     }
 }
 
-async fn fetch_page(ctx: &RelayContext<'_>, after: u64) -> Result<Value> {
+async fn fetch_page(ctx: &RelayContext<'_>, after: u64, ack: u64) -> Result<Value> {
+    let wait_ms = ctx
+        .settings
+        .event_stream
+        .poll_interval
+        .as_millis()
+        .min(10_000) as u64;
     let response = ctx
         .client
         .get(ctx.poll_url)
         .query(&[
             ("after", after.to_string()),
             ("limit", ctx.settings.event_stream.page_limit.to_string()),
+            ("ack", ack.to_string()),
+            ("wait_ms", wait_ms.to_string()),
         ])
         .send()
         .await
@@ -550,6 +659,134 @@ async fn fetch_page(ctx: &RelayContext<'_>, after: u64) -> Result<Value> {
         .json::<Value>()
         .await
         .context("decode rollout event page")
+}
+
+fn page_declares_journal_v2(page: &Value) -> bool {
+    page.pointer("/cursor/chain_head").is_some()
+        || page.pointer("/cursor/acked").is_some()
+        || page.get("retention").is_some()
+}
+
+fn relay_integrity(detail: impl Into<String>) -> anyhow::Error {
+    anyhow::Error::new(RelayIntegrityError {
+        detail: detail.into(),
+    })
+}
+
+fn journal_chain_genesis(rollout_id: &str) -> String {
+    format!("{:x}", Sha256::digest(rollout_id.as_bytes()))
+}
+
+fn journal_chain_extend(head: &str, digest: &str) -> String {
+    format!("{:x}", Sha256::digest(format!("{head}{digest}").as_bytes()))
+}
+
+fn verify_envelope_digest(event: &Value, sequence: u64) -> Result<&str> {
+    let kind = event
+        .get("kind")
+        .and_then(Value::as_str)
+        .context("journal-v2 event omitted kind")?;
+    let payload = event
+        .get("payload")
+        .filter(|value| value.is_object())
+        .context("journal-v2 event payload must be an object")?;
+    let declared = event
+        .get("digest")
+        .and_then(Value::as_str)
+        .context("journal-v2 event omitted digest")?;
+    if declared.len() != 16
+        || !declared
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
+        bail!("journal-v2 event digest must be 16 lowercase hex characters");
+    }
+    let canonical = serde_json::to_vec(&json!({
+        "kind": kind,
+        "sequence": sequence,
+        "payload": payload,
+    }))
+    .context("encode canonical journal-v2 envelope")?;
+    let computed = format!("{:x}", Sha256::digest(canonical));
+    if declared != &computed[..16] {
+        return Err(anyhow::Error::new(RelayIntegrityError {
+            detail: format!(
+                "journal event digest mismatch at sequence {sequence}: computed {}, producer reported {declared}",
+                &computed[..16]
+            ),
+        }));
+    }
+    Ok(declared)
+}
+
+fn validate_chain_head(value: &str) -> Result<()> {
+    if value.len() != 64
+        || !value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
+        bail!("journal-v2 chain_head must be 64 lowercase hex characters");
+    }
+    Ok(())
+}
+
+fn validate_retention(page: &Value, cursor: Option<&Value>) -> Result<Value> {
+    let retention = page
+        .get("retention")
+        .filter(|value| value.is_object())
+        .context("journal-v2 page omitted retention contract")?;
+    if retention.get("policy").and_then(Value::as_str) != Some("until-acked-or-ttl") {
+        bail!("journal-v2 retention policy must be until-acked-or-ttl");
+    }
+    let ttl = retention
+        .get("ttl_seconds")
+        .and_then(Value::as_u64)
+        .context("journal-v2 retention omitted ttl_seconds")?;
+    if ttl == 0 {
+        bail!("journal-v2 retention ttl_seconds must be positive");
+    }
+    let retention_acked = retention
+        .get("acked")
+        .and_then(Value::as_u64)
+        .context("journal-v2 retention omitted acked")?;
+    let retention_high = retention
+        .get("high_water")
+        .and_then(Value::as_u64)
+        .context("journal-v2 retention omitted high_water")?;
+    let retention_closed = retention
+        .get("closed")
+        .and_then(Value::as_bool)
+        .context("journal-v2 retention omitted closed")?;
+    let cursor_acked = cursor
+        .and_then(|value| value.get("acked"))
+        .and_then(Value::as_u64)
+        .context("journal-v2 cursor omitted acked")?;
+    let cursor_high = cursor
+        .and_then(|value| value.get("high_water"))
+        .and_then(Value::as_u64)
+        .context("journal-v2 cursor omitted high_water")?;
+    let cursor_closed = cursor
+        .and_then(|value| value.get("closed"))
+        .and_then(Value::as_bool)
+        .context("journal-v2 cursor omitted closed")?;
+    if (retention_acked, retention_high, retention_closed)
+        != (cursor_acked, cursor_high, cursor_closed)
+    {
+        bail!("journal-v2 retention state contradicts cursor state");
+    }
+    if retention.get("released").and_then(Value::as_bool) == Some(true) {
+        let reason = retention
+            .get("released_reason")
+            .and_then(Value::as_str)
+            .context("released journal-v2 retention omitted released_reason")?;
+        if !retention_closed
+            || !matches!(reason, "acked" | "ttl_expired")
+            || (reason == "acked" && retention_acked < retention_high)
+        {
+            bail!("journal-v2 retention reported an invalid release state");
+        }
+    }
+    Ok(retention.clone())
 }
 
 /// Turn one producer envelope into one optimizer event.
@@ -613,7 +850,7 @@ async fn relay_event(
         ("pool".into(), json!(ctx.pool)),
         ("scenario".into(), json!(ctx.scenario)),
         ("message".into(), json!(kind)),
-        ("containerEvent".into(), container_event.clone()),
+        ("container_event".into(), container_event.clone()),
     ]);
 
     Ok(
@@ -1009,5 +1246,70 @@ mod tests {
         }
         .normalized();
         assert_eq!(settings.page_limit, 10_000);
+    }
+
+    #[test]
+    fn journal_v2_digest_and_chain_match_the_wire_contract() {
+        let event = json!({
+            "schema": "synth.trace-stream-event.v1",
+            "kind": "observation",
+            "sequence": 1,
+            "control": false,
+            "payload": {"x": 1},
+            "digest": "45cacf54f242eb54",
+        });
+        let digest = verify_envelope_digest(&event, 1).unwrap();
+        assert_eq!(
+            journal_chain_genesis("rollout-a"),
+            "4f2f400ce2fed9cfc505eea86b351792708ed8c26d08bc47ae97c6faeac4f5ae"
+        );
+        assert_eq!(
+            journal_chain_extend(&journal_chain_genesis("rollout-a"), digest),
+            "257568cd0eaf518bf39a455a1f09d901647a61645796d9322e783867bd31ef4e"
+        );
+    }
+
+    #[test]
+    fn journal_v2_refuses_payload_tampering_and_cursor_retention_contradictions() {
+        let tampered = json!({
+            "kind": "observation",
+            "sequence": 1,
+            "payload": {"x": 2},
+            "digest": "45cacf54f242eb54",
+        });
+        assert!(verify_envelope_digest(&tampered, 1)
+            .unwrap_err()
+            .to_string()
+            .contains("digest mismatch"));
+
+        let contradictory = json!({
+            "cursor": {
+                "kind": "sequence",
+                "after": 1,
+                "high_water": 1,
+                "closed": true,
+                "next": 1,
+                "has_more": false,
+                "chain_head": "257568cd0eaf518bf39a455a1f09d901647a61645796d9322e783867bd31ef4e",
+                "acked": 1,
+            },
+            "retention": {
+                "policy": "until-acked-or-ttl",
+                "ttl_seconds": 604800,
+                "acked": 0,
+                "high_water": 1,
+                "closed": true,
+                "released": false,
+                "released_reason": null,
+                "expires_at": null,
+            },
+            "events": [],
+        });
+        assert!(
+            validate_retention(&contradictory, contradictory.get("cursor"))
+                .unwrap_err()
+                .to_string()
+                .contains("contradicts")
+        );
     }
 }

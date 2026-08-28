@@ -3425,6 +3425,7 @@ mod tests {
     use hyper::StatusCode;
     use rusqlite::params;
     use serde_json::json;
+    use sha2::Digest;
     use std::collections::{BTreeMap, BTreeSet};
     use std::sync::{
         atomic::{AtomicUsize, Ordering},
@@ -4921,6 +4922,8 @@ max_total_rollouts = 4
 
     #[derive(Clone, Copy, Default)]
     struct CraftaxMockOptions {
+        /// Serve the additive journal-v2 chain/ack/retention contract.
+        journal_v2: bool,
         /// Every frame is the same image. Logical frame count must not change.
         identical_frames: bool,
         /// Serve a body that is a PNG header followed by garbage.
@@ -5110,11 +5113,27 @@ max_total_rollouts = 4
         if let Some(gap) = opts.skip_sequence {
             events.retain(|event| event.get("sequence").and_then(Value::as_u64) != Some(gap));
         }
+        if opts.journal_v2 {
+            for event in &mut events {
+                let kind = event.get("kind").and_then(Value::as_str).unwrap();
+                let sequence = event.get("sequence").and_then(Value::as_u64).unwrap();
+                let payload = event.get("payload").cloned().unwrap();
+                let canonical = serde_json::to_vec(&json!({
+                    "kind": kind,
+                    "sequence": sequence,
+                    "payload": payload,
+                }))
+                .unwrap();
+                event["digest"] =
+                    json!(format!("{:x}", sha2::Sha256::digest(canonical))[..16].to_string());
+            }
+        }
         events
     }
 
     struct CraftaxMock {
         base: String,
+        acks: Arc<Mutex<BTreeMap<String, u64>>>,
         task: tokio::task::JoinHandle<()>,
     }
 
@@ -5125,10 +5144,13 @@ max_total_rollouts = 4
         let addr = listener.local_addr().unwrap();
         let journals: Arc<Mutex<BTreeMap<String, (Vec<Value>, bool)>>> =
             Arc::new(Mutex::new(BTreeMap::new()));
+        let acks: Arc<Mutex<BTreeMap<String, u64>>> = Arc::new(Mutex::new(BTreeMap::new()));
+        let exposed_acks = acks.clone();
         let script = Arc::new(craftax_journal(opts));
         let task = tokio::spawn(async move {
             let _ = serve_json(listener, move |request: JsonHttpRequest| {
                 let journals = journals.clone();
+                let acks = acks.clone();
                 let script = script.clone();
                 async move {
                     let path = request.path.split('?').next().unwrap_or(&request.path).to_string();
@@ -5150,6 +5172,7 @@ max_total_rollouts = 4
                             let rollout_id = request.body.get("rollout_id").and_then(Value::as_str)
                                 .unwrap_or("roll_unknown").to_string();
                             journals.lock().unwrap().insert(rollout_id.clone(), (Vec::new(), false));
+                            acks.lock().unwrap().insert(rollout_id.clone(), 0);
                             JsonHttpResponse::ok(json!({
                                 "rollout_id": rollout_id,
                                 "stream": {
@@ -5182,6 +5205,17 @@ max_total_rollouts = 4
                             let high_water = events.last()
                                 .and_then(|event| event.get("sequence").and_then(Value::as_u64))
                                 .unwrap_or(0);
+                            let requested_ack = query.split('&')
+                                .find_map(|pair| pair.strip_prefix("ack="))
+                                .and_then(|value| value.parse::<u64>().ok())
+                                .unwrap_or(0)
+                                .min(high_water);
+                            let acked = {
+                                let mut guard = acks.lock().unwrap();
+                                let value = guard.entry(rollout_id.clone()).or_default();
+                                *value = (*value).max(requested_ack);
+                                *value
+                            };
                             let next = page.last()
                                 .and_then(|event| event.get("sequence").and_then(Value::as_u64))
                                 .unwrap_or(after);
@@ -5196,7 +5230,7 @@ max_total_rollouts = 4
                                 "payload": {"ready": true}
                             })];
                             rows.extend(page.clone());
-                            JsonHttpResponse::ok(json!({
+                            let mut response = json!({
                                 "rollout_id": rollout_id,
                                 "cursor": {
                                     "kind": "sequence",
@@ -5207,7 +5241,39 @@ max_total_rollouts = 4
                                     "has_more": available.len() > page.len(),
                                 },
                                 "events": rows,
-                            }))
+                            });
+                            if opts.journal_v2 {
+                                let mut chain_head = format!(
+                                    "{:x}",
+                                    sha2::Sha256::digest(rollout_id.as_bytes())
+                                );
+                                for event in events {
+                                    let digest = event.get("digest").and_then(Value::as_str).unwrap();
+                                    chain_head = format!(
+                                        "{:x}",
+                                        sha2::Sha256::digest(
+                                            format!("{chain_head}{digest}").as_bytes()
+                                        )
+                                    );
+                                }
+                                response["cursor"]["chain_head"] = json!(chain_head);
+                                response["cursor"]["acked"] = json!(acked);
+                                response["retention"] = json!({
+                                    "policy": "until-acked-or-ttl",
+                                    "ttl_seconds": 604800,
+                                    "acked": acked,
+                                    "high_water": high_water,
+                                    "closed": *closed,
+                                    "released": *closed && acked >= high_water,
+                                    "released_reason": if *closed && acked >= high_water {
+                                        Value::String("acked".into())
+                                    } else {
+                                        Value::Null
+                                    },
+                                    "expires_at": Value::Null,
+                                });
+                            }
+                            JsonHttpResponse::ok(response)
                         }
                         ("GET", path) if path.contains("/frames/") => {
                             let step: i64 = path.rsplit('/').next()
@@ -5256,6 +5322,19 @@ max_total_rollouts = 4
                                                 );
                                                 event["payload"]["url"] = json!(resolved);
                                             }
+                                            if opts.journal_v2 {
+                                                let canonical = serde_json::to_vec(&json!({
+                                                    "kind": event["kind"],
+                                                    "sequence": event["sequence"],
+                                                    "payload": event["payload"],
+                                                }))
+                                                .unwrap();
+                                                event["digest"] = json!(format!(
+                                                    "{:x}",
+                                                    sha2::Sha256::digest(canonical)
+                                                )[..16]
+                                                    .to_string());
+                                            }
                                             events.push(event);
                                         }
                                     }
@@ -5299,6 +5378,7 @@ max_total_rollouts = 4
         });
         CraftaxMock {
             base: format!("http://{addr}"),
+            acks: exposed_acks,
             task,
         }
     }
@@ -5402,7 +5482,7 @@ max_total_rollouts = 1
 
     fn kind_of(event: &Value) -> &str {
         event
-            .pointer("/delta/containerEvent/kind")
+            .pointer("/delta/container_event/kind")
             .and_then(Value::as_str)
             .unwrap_or("")
     }
@@ -5474,7 +5554,7 @@ max_total_rollouts = 1
             .collect();
         for frame in &frames {
             let media = frame
-                .pointer("/delta/containerEvent/payload/media")
+                .pointer("/delta/container_event/payload/media")
                 .expect("frame kept no media reference");
             let digest = media.get("casDigest").and_then(Value::as_str).unwrap();
             assert_eq!(digest.len(), 64, "casDigest must be a full SHA-256");
@@ -5511,6 +5591,40 @@ max_total_rollouts = 1
     }
 
     #[tokio::test]
+    async fn journal_v2_is_chain_verified_and_acked_after_durable_relay() {
+        let (svc, run_id, mock) = run_craftax(
+            CraftaxMockOptions {
+                journal_v2: true,
+                ..CraftaxMockOptions::default()
+            },
+            "",
+        )
+        .await;
+        let run = svc.get(run_id).await.unwrap();
+        let record = run.summary.pointer("/records/0").unwrap();
+        let rollout_id = record["rolloutId"]
+            .as_str()
+            .unwrap_or_else(|| panic!("journal-v2 rollout failed before receipt: {record}"));
+        let high_water = record["relay"]["highWater"].as_u64().unwrap();
+        assert!(high_water > 0);
+        assert_eq!(record["relay"]["journalAcked"], json!(high_water));
+        assert_eq!(
+            record["relay"]["journalChainHead"].as_str().unwrap().len(),
+            64
+        );
+        assert_eq!(
+            record["relay"]["journalRetention"]["policy"],
+            json!("until-acked-or-ttl")
+        );
+        assert_eq!(
+            mock.acks.lock().unwrap().get(rollout_id).copied(),
+            Some(high_water),
+            "producer never observed Workshop's durable high-water ack"
+        );
+        mock.task.abort();
+    }
+
+    #[tokio::test]
     async fn small_pages_relay_every_event_exactly_once() {
         let (svc, run_id, mock) = run_craftax(
             CraftaxMockOptions::default(),
@@ -5522,7 +5636,7 @@ max_total_rollouts = 1
             .into_iter()
             .filter_map(|event| {
                 event
-                    .pointer("/delta/containerEvent/sequence")
+                    .pointer("/delta/container_event/sequence")
                     .and_then(Value::as_u64)
             })
             .collect();
@@ -5580,7 +5694,7 @@ max_total_rollouts = 1
             .filter(|event| kind_of(event) == "frame")
             .filter_map(|event| {
                 event
-                    .pointer("/delta/containerEvent/payload/media/casDigest")
+                    .pointer("/delta/container_event/payload/media/casDigest")
                     .and_then(Value::as_str)
                     .map(str::to_string)
             })
@@ -5623,7 +5737,7 @@ max_total_rollouts = 1
             .into_iter()
             .filter(|event| {
                 event
-                    .pointer("/delta/containerEvent/payload/mediaError")
+                    .pointer("/delta/container_event/payload/mediaError")
                     .is_some()
             })
             .collect();
@@ -5664,7 +5778,7 @@ max_total_rollouts = 1
             .into_iter()
             .find_map(|event| {
                 event
-                    .pointer("/delta/containerEvent/payload/mediaError/detail")
+                    .pointer("/delta/container_event/payload/mediaError/detail")
                     .and_then(Value::as_str)
                     .map(str::to_string)
             })
@@ -5688,7 +5802,7 @@ max_total_rollouts = 1
             .into_iter()
             .find_map(|event| {
                 event
-                    .pointer("/delta/containerEvent/payload/mediaError/detail")
+                    .pointer("/delta/container_event/payload/mediaError/detail")
                     .and_then(Value::as_str)
                     .map(str::to_string)
             })
@@ -5710,7 +5824,7 @@ max_total_rollouts = 1
             container_events(&events)
                 .into_iter()
                 .filter(|event| event
-                    .pointer("/delta/containerEvent/payload/media")
+                    .pointer("/delta/container_event/payload/media")
                     .is_some())
                 .count(),
             0
@@ -5733,7 +5847,7 @@ max_total_rollouts = 1
         assert_eq!(count_kind(&events, "frame"), CRAFTAX_FRAMES);
         for event in container_events(&events) {
             let Some(digest) = event
-                .pointer("/delta/containerEvent/payload/media/casDigest")
+                .pointer("/delta/container_event/payload/media/casDigest")
                 .and_then(Value::as_str)
             else {
                 continue;
@@ -5751,7 +5865,7 @@ max_total_rollouts = 1
             .into_iter()
             .find_map(|event| {
                 event
-                    .pointer("/delta/containerEvent/payload/media/casDigest")
+                    .pointer("/delta/container_event/payload/media/casDigest")
                     .and_then(Value::as_str)
                     .map(str::to_string)
             })
@@ -5815,7 +5929,7 @@ max_total_rollouts = 1
             .into_iter()
             .find_map(|event| {
                 event
-                    .pointer("/delta/containerEvent/payload/media/casDigest")
+                    .pointer("/delta/container_event/payload/media/casDigest")
                     .and_then(Value::as_str)
                     .map(str::to_string)
             })
