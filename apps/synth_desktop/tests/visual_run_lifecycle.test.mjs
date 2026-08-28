@@ -84,6 +84,52 @@ test("an active run remains pending without fabricating failures or usage", () =
 	assert.equal(lifecycle.usage.costSource, "unavailable");
 });
 
+test("a completed run accepts sealed record evidence and preserves cost unavailability from a proxy receipt", () => {
+	const records = [65, 66, 85, 56, 31].map((steps, index) => ({
+		seed: 780005 + index,
+		rolloutId: `rollout-${index}`,
+		status: "completed",
+		evidenceState: "sealed_complete",
+		steps,
+		sealedTrace: { imported: true, traces: [{ digest: `sha256:${index}` }] }
+	}));
+	const lifecycle = projectVisualRunLifecycle({
+		id: "opt_eval_craftax_313e406208e5",
+		algorithmId: "eval",
+		status: "completed",
+		summary: {
+			bounds: { hardTotalCostUsd: 2.45 },
+			records,
+			progress: {
+				authoritative: {
+					runState: "terminal",
+					evidence: { completeness: "complete" }
+				}
+			}
+		},
+		usage: {
+			costUsd: null,
+			extra: {
+				providerUsageReceipt: {
+					authority: "workshop.secrets_proxy",
+					calls: 50,
+					costUsd: null,
+					capabilities: [{ provider: "openrouter" }]
+				}
+			}
+		}
+	}, { status: "completed", terminal: true });
+
+	assert.equal(lifecycle.evidence.state, "accepted");
+	assert.equal(lifecycle.evidence.valid, 5);
+	assert.equal(lifecycle.evidence.sealedTraces, 5);
+	assert.equal(lifecycle.evidence.missing, 0);
+	assert.equal(lifecycle.usage.calls, 50);
+	assert.equal(lifecycle.usage.costUsd, undefined);
+	assert.equal(lifecycle.usage.costSource, "workshop_proxy");
+	assert.equal(lifecycle.usage.provider, "openrouter");
+});
+
 test("sealed replay remains trustworthy when evaluator reward and declared terminal steps are missing", () => {
 	const records = [780005, 780006, 780007, 780008, 780009].map((seed) => ({
 		seed,

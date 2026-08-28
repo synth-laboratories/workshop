@@ -31,11 +31,15 @@ function loadEvents(rel) {
   return parsed.events ?? parsed;
 }
 
-test("v0.2 live templates bind slot stream only", () => {
+test("v0.2 live templates keep stream as transport and Craftax may add optimizer lifecycle", () => {
   for (const id of ["live.craftax.v1", "live.harbor_eval.v1"]) {
     const meta = JSON.parse(readFileSync(join(templatePath(id), "template.json"), "utf8"));
-    assert.deepEqual((meta.inputs ?? meta.slots).map((slot) => slot.name), ["stream"]);
+    assert.deepEqual(
+      (meta.inputs ?? meta.slots).map((slot) => slot.name),
+      id === "live.craftax.v1" ? ["stream", "optimizer_run"] : ["stream"]
+    );
     assert.equal(assertLiveEvalSlot("stream"), null);
+    if (id === "live.craftax.v1") assert.equal(assertLiveEvalSlot("optimizer_run", id), null);
     assert.match(assertLiveEvalSlot("live") ?? "", /Forbidden/);
     assert.match(assertLiveEvalSlot("jobs") ?? "", /Forbidden/);
   }

@@ -11,6 +11,13 @@ export const LIVE_EVAL_INPUT = "stream";
 export const LIVE_EVAL_SLOT = LIVE_EVAL_INPUT;
 export const FORBIDDEN_LIVE_EVAL_SLOTS = ["live", "jobs"] as const;
 
+function isDeclaredLiveEvalAuxiliary(slot: string, templateId: string): boolean {
+  // Craftax keeps `stream` as its only gameplay transport. The optional
+  // optimizer input contributes run lifecycle, evidence disposition, and
+  // proxy usage; it must never be interpreted as a replacement stream.
+  return templateId === "live.craftax.v1" && slot === "optimizer_run";
+}
+
 const LIVE_EVAL_TEMPLATE_PREFIXES = [
   "live.harbor",
   "live.container",
@@ -63,7 +70,7 @@ export function assertLiveEvalSlot(slot: string, templateId?: string): string | 
   if (FORBIDDEN_LIVE_EVAL_SLOTS.includes(slot as (typeof FORBIDDEN_LIVE_EVAL_SLOTS)[number])) {
     return `Forbidden live-eval input "${slot}"; bind input "${LIVE_EVAL_INPUT}"`;
   }
-  if (templateId && isLiveEvalTemplate(templateId) && slot !== LIVE_EVAL_INPUT) {
+  if (templateId && isLiveEvalTemplate(templateId) && slot !== LIVE_EVAL_INPUT && !isDeclaredLiveEvalAuxiliary(slot, templateId)) {
     return `Live eval template "${templateId}" must bind input "${LIVE_EVAL_INPUT}", not "${slot}"`;
   }
   return null;

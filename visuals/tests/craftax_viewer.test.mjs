@@ -11,6 +11,8 @@ import {
   scopeCraftaxEvents,
   replayMomentIndexes,
   craftaxReplayAvailability,
+  environmentStepCount,
+  mergeCraftaxOptimizerJournalEvents,
 } from "../families/first_class_example_containers/live.craftax.v1/projectCraftax.ts";
 
 function event(lane, kind, sequence, payload = {}, second = sequence) {
@@ -41,6 +43,80 @@ test("Craftax viewer isolates the selected lane in a time-ordered multiplex", ()
   const second = projectCraftaxViewer(events, "seed:1");
   assert.ok(second.visibleEvents.every((row) => row.lane === "seed:1"));
   assert.equal(second.reward, 5);
+});
+
+test("run-level optimizer lifecycle is retained but never selected as a rollout", () => {
+  const events = [
+    event("eval", "eval.run.started", 1, { status: "running" }, 0),
+    event("rollout-780005", "span.policy.opened", 1, {
+      call: { provider: "openrouter", model: "z-ai/glm-5.3-flash" },
+    }, 1),
+    event("rollout-780005", "span.policy.data", 2, {
+      assistant: "do",
+      actions: ["do"],
+    }, 2),
+    event("rollout-780006", "trace.opened", 1, {}, 3),
+    event("eval", "eval.run.terminal", 2, { status: "completed" }, 4),
+  ];
+
+  const projection = projectCraftaxViewer(events);
+  assert.deepEqual(projection.lanes, ["rollout-780005", "rollout-780006"]);
+  assert.equal(projection.selectedLane, "rollout-780005");
+  assert.equal(projection.traceEvents.length, 2, "the default lane exposes its retained policy call");
+  assert.ok(projection.ordered.some((row) => row.lane === "eval"), "run lifecycle remains in the durable journal");
+});
+
+test("terminal and enrichment optimizer lanes rejoin into 50 calls and 303 completed steps", () => {
+  let sequenceNumber = 1;
+  const optimizerEnvelope = (inner) => ({
+    schemaVersion: "optimizer_event.v1",
+    eventId: `optimizer:event:${sequenceNumber}`,
+    type: "eval.trial.event",
+    sequenceNumber: sequenceNumber++,
+    occurredAt: inner.ts,
+    optimizerRunId: "opt_eval_craftax_313e406208e5",
+    delta: {
+      trial_id: inner.lane,
+      container_event: {
+        kind: inner.kind,
+        rollout_id: inner.lane,
+        sequence: inner.sequence,
+        occurred_at: inner.ts,
+        payload: inner.payload,
+      },
+    },
+  });
+  const terminalEvents = [{
+    schemaVersion: "optimizer_event.v1",
+    eventId: "optimizer:started",
+    type: "optimizer.run.started",
+    sequenceNumber: 0,
+    occurredAt: "2026-08-28T15:17:44.000Z",
+    optimizerRunId: "opt_eval_craftax_313e406208e5",
+    delta: { status: "running" },
+  }];
+  const enrichmentEvents = [65, 66, 85, 56, 31].flatMap((stepCount, laneIndex) => {
+    const lane = `rollout-${laneIndex}`;
+    const calls = Array.from({ length: 10 }, (_, call) => [
+      optimizerEnvelope(event(lane, "span.policy.opened", call * 2 + 1, {
+        call: { provider: "openrouter", model: "z-ai/glm-5.3-flash" },
+      }, laneIndex + 1)),
+      optimizerEnvelope(event(lane, "span.policy.closed", call * 2 + 2, {}, laneIndex + 1)),
+    ]).flat();
+    const steps = Array.from({ length: stepCount }, (_, step) =>
+      optimizerEnvelope(event(lane, "span.step.closed", 100 + step, { step }, laneIndex + 1))
+    );
+    return [...calls, ...steps];
+  });
+
+  const merged = mergeCraftaxOptimizerJournalEvents(terminalEvents, enrichmentEvents);
+  const projection = projectCraftaxViewer(merged);
+  assert.equal(projection.lanes.length, 5);
+  assert.equal(projection.ordered.filter((row) => row.kind === "span.policy.opened").length, 50);
+  assert.equal(environmentStepCount(projection.ordered), 303);
+
+  const duplicated = mergeCraftaxOptimizerJournalEvents(terminalEvents, [...enrichmentEvents, enrichmentEvents[0]]);
+  assert.equal(duplicated.length, merged.length, "replayed optimizer envelopes are de-duplicated by durable identity");
 });
 
 test("native GameBench reward_signal reward alias remains visible during replay", () => {

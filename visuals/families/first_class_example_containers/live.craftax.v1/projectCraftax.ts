@@ -11,6 +11,40 @@ function finite(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value) ? value : undefined;
 }
 
+/** Rejoin the optimizer's frozen terminal lane with visual-only enrichment.
+ *
+ * Progress reducers intentionally keep these lanes separate so late evidence
+ * cannot rewrite a terminal result. A trace viewer has the opposite need: it
+ * must render both the frozen lifecycle and every retained trial envelope.
+ */
+export function mergeCraftaxOptimizerJournalEvents(
+  terminalEvents: LiveEvalEvent[] | undefined,
+  enrichmentEvents: LiveEvalEvent[] | undefined
+): LiveEvalEvent[] | undefined {
+  const combined = [...(terminalEvents ?? []), ...(enrichmentEvents ?? [])];
+  if (combined.length === 0) return undefined;
+  const seen = new Set<string>();
+  return combined.filter((event) => {
+    const raw = object(event);
+    const eventId = raw.eventId ?? raw.event_id;
+    const sequence = raw.sequenceNumber ?? raw.sequence_number;
+    const optimizerRunId = raw.optimizerRunId ?? raw.optimizer_run_id;
+    const identity = typeof eventId === "string" && eventId.length > 0
+      ? `event:${eventId}`
+      : (typeof sequence === "number" || typeof sequence === "string") && typeof optimizerRunId === "string"
+        ? `sequence:${optimizerRunId}:${sequence}`
+        : undefined;
+    if (!identity) return true;
+    if (seen.has(identity)) return false;
+    seen.add(identity);
+    return true;
+  }).sort((left, right) => {
+    const leftSequence = finite(object(left).sequenceNumber);
+    const rightSequence = finite(object(right).sequenceNumber);
+    return leftSequence != null && rightSequence != null ? leftSequence - rightSequence : 0;
+  });
+}
+
 /** Normalize host envelopes before semantic reducers call string methods. */
 export function craftaxEventKind(event: LiveEvalEvent): string {
   const record = object(event);
@@ -507,7 +541,14 @@ export function projectCraftaxViewer(
       left.arrival - right.arrival
     )
     .map(({ event }) => event);
-  const lanes = [...new Set(ordered.map(craftaxEventLane))];
+  const observedLanes = [...new Set(ordered.map(craftaxEventLane))];
+  // Optimizer journals include run-level lifecycle envelopes on a synthetic
+  // `eval` lane. It is useful durable evidence, but it is not a rollout and
+  // contains no gameplay or policy calls. Prefer actual rollout lanes whenever
+  // at least one exists so a completed evaluation never opens on an empty
+  // transcript merely because `eval` sorts first.
+  const rolloutLanes = observedLanes.filter((lane) => lane !== "eval");
+  const lanes = rolloutLanes.length > 0 ? rolloutLanes : observedLanes;
   const selectedLane = chosenLane && lanes.includes(chosenLane) ? chosenLane : lanes[0];
   const laneEvents = selectedLane
     ? ordered.filter((event) => craftaxEventLane(event) === selectedLane)
@@ -631,11 +672,20 @@ export function policyPartialDetail(event: LiveEvalEvent): string {
   return "—";
 }
 
-/** How many environment steps this rollout actually took.
+/** How many environment steps the retained evidence proves were completed.
  *
- * The count a reader means by "steps". Derived from the highest step the
- * environment reported, so it stays honest when events are still arriving. */
+ * Canonical producer journals emit one `span.step.closed` per completed step;
+ * count those across rollout lanes. Older native fixtures only expose indexed
+ * snapshots, so they retain the previous highest-index fallback. */
 export function environmentStepCount(ordered: LiveEvalEvent[]): number {
+  const closedSteps = new Set<string>();
+  for (const event of ordered) {
+    if (event.kind !== "span.step.closed") continue;
+    const step = eventStep(event);
+    if (step != null) closedSteps.add(`${craftaxEventLane(event)}:${step}`);
+  }
+  if (closedSteps.size > 0) return closedSteps.size;
+
   let highest = -1;
   for (const event of ordered) {
     const step = eventStep(event);

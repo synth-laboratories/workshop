@@ -14,6 +14,7 @@ import {
   craftaxTruthState,
   groupTraceByStep,
   craftaxReplayAvailability,
+  mergeCraftaxOptimizerJournalEvents,
   projectCraftaxViewer,
   scopeCraftaxEvents,
   environmentStepCount,
@@ -83,6 +84,10 @@ export type ShellProps = LiveTemplateProps & {
   bindings?: VisualBinding[] | { slots?: VisualBinding[] };
   visualMetadata?: VisualMetadata;
   runLifecycle?: RunLifecycle;
+  /** Durable optimizer journal envelopes supplied by VisualHost. */
+  events?: LiveEvalEvent[];
+  /** Post-terminal retained trial evidence; not authoritative for run status. */
+  enrichmentEvents?: LiveEvalEvent[];
 };
 
 const DEFAULT_CONFIG: ViewerConfig = {
@@ -112,7 +117,15 @@ function completeSum(values: Array<number | undefined>): number | undefined {
 
 function runCostLabel(lifecycle: RunLifecycle | undefined, producerCost: number | undefined): string {
   const cost = lifecycle?.usage.costUsd ?? producerCost;
-  if (cost == null) return "not emitted";
+  if (cost == null) {
+    if (lifecycle?.usage.costSource === "workshop_proxy") {
+      const calls = lifecycle.usage.calls;
+      return calls == null
+        ? "unavailable · Workshop proxy receipt omitted cost"
+        : `unavailable · Workshop proxy receipt counted ${calls} calls but omitted cost`;
+    }
+    return "not emitted";
+  }
   const amount = cost < 0.1 ? `$${cost.toFixed(4)}` : formatMissingUsd(cost);
   const source = lifecycle?.usage.costSource === "workshop_proxy" ? "Workshop proxy"
     : lifecycle?.usage.costSource === "provider" ? "provider receipt"
@@ -267,19 +280,34 @@ export function Shell(props: ShellProps) {
   const stream = asStream(props.stream ?? props.data ?? bundledFixtureStream(bindingList));
   const declaredStreamCount = props.replay?.streams.length ?? 0;
   const scope = stream.scope;
+  const optimizerEvents = useMemo(
+    () => mergeCraftaxOptimizerJournalEvents(props.events, props.enrichmentEvents),
+    [props.events, props.enrichmentEvents]
+  );
   // A fixture is authoring evidence. It never stands in for a declared stream,
   // and a declared stream is never inferred from the fixture's own fields.
   const fixtureEvents = useMemo(
-    () => (declaredStreamCount > 0 ? undefined : stream.events),
-    [declaredStreamCount, stream.events]
+    () => (optimizerEvents || declaredStreamCount > 0 ? undefined : stream.events),
+    [optimizerEvents, declaredStreamCount, stream.events]
   );
-  const { events, state, error, ready, recovered } = useLiveEvalStream({
+  const liveStream = useLiveEvalStream({
     replay: props.replay,
     fixtureEvents,
     replayMs: stream.replay_ms,
     visualId: props.visualId,
     revision: props.revision
   });
+  // Optimizer-run subscriptions are a durable journal, not an authoring
+  // fixture. Rendering them directly is both immediate and reopen-safe. The
+  // old fixture path replayed one of 3,354 envelopes every 800 ms, making a
+  // completed run look nearly empty for roughly 45 minutes.
+  const events = optimizerEvents ?? liveStream.events;
+  const state = optimizerEvents
+    ? props.runLifecycle?.terminal ? "terminal" : "live"
+    : liveStream.state;
+  const error = liveStream.error;
+  const ready = optimizerEvents ? true : liveStream.ready;
+  const recovered = liveStream.recovered;
   const frameBaseUrl = props.replay?.streams[0]?.sseUrl ?? props.replay?.streams[0]?.pollUrl;
   const missingTransportCount = props.replayMissingTransport?.length ?? 0;
   const bindingError = missingTransportCount > 0
@@ -449,6 +477,7 @@ export function Shell(props: ShellProps) {
 		data-testid="visual-live-craftax"
 		data-visual-landmark="gameplay-dashboard"
 		data-visual-transport-state={transportState}
+		data-visual-event-source={optimizerEvents ? "optimizer-journal" : declaredStreamCount > 0 ? "declared-stream" : "fixture"}
 		data-visual-rollout-count={lanes.length}
 		data-visual-rendered-frame-count={frameUrl ? frameEvents.length : 0}
 		data-visual-semantic-event-count={semanticTrace.length}
@@ -470,6 +499,7 @@ export function Shell(props: ShellProps) {
 
       <section className="cv-summary cv-surface-replay" aria-label="Run summary">
         <Metric label="Rollouts" value={String(lanes.length || "—")} />
+        <Metric label="Model calls" value={props.runLifecycle?.usage.calls == null ? "not emitted" : String(props.runLifecycle.usage.calls)} />
         <Metric label="Selected step" value={latest ? String(eventStep(latest, visibleIndex)) : "—"} />
         <Metric label="Reward" value={truthNumber(viewer.reward, viewer.terminal, (value) => formatMissingNumber(value))} />
         <Metric label="Achievements" value={String(achievements.length)} />
@@ -546,7 +576,7 @@ export function Shell(props: ShellProps) {
       </section> : null}
 
       <section className="cv-panel cv-transcript cv-surface-transcript" data-visual-landmark="agent-transcript">
-        <div className="cv-heading"><div><p className="cv-eyebrow">Chronological model calls</p><h3>Agent transcript</h3></div><div className="cv-trace-mode"><button type="button" aria-pressed={transcriptMode === "focus"} onClick={() => setTranscriptMode("focus")}>Focus</button><button type="button" aria-pressed={transcriptMode === "full"} onClick={() => setTranscriptMode("full")}>Full</button><span>{turns.calls.length} calls · cutoff seq {craftaxEventSequence(visibleEvents.at(-1) ?? ({} as LiveEvalEvent), 0)}</span></div></div>
+        <div className="cv-heading"><div><p className="cv-eyebrow">Chronological model calls</p><h3>Agent transcript</h3></div><div className="cv-trace-mode"><button type="button" aria-pressed={transcriptMode === "focus"} onClick={() => setTranscriptMode("focus")}>Focus</button><button type="button" aria-pressed={transcriptMode === "full"} onClick={() => setTranscriptMode("full")}>Full</button><span>{turns.calls.length} calls · selected rollout · cutoff seq {craftaxEventSequence(visibleEvents.at(-1) ?? ({} as LiveEvalEvent), 0)}</span></div></div>
         <div className="cv-step-links" role="navigation" aria-label="Environment step to policy navigation">{semanticTrace.filter((item) => item.kind === "environment.step").slice(-40).map((item) => { const callId = item.step == null ? callForSequence(turns.calls, item.sequenceStart)?.id : turns.callIdByEnvironmentStep.get(item.step); return <button type="button" key={item.id} disabled={!callId} onClick={() => { if (callId) setSelectedCallId(callId); }}>step {item.step ?? "—"}</button>; })}</div>
         <div className="cv-transcript-grid"><ol className="cv-call-list" aria-label="Model calls">{turns.calls.length > renderedCalls.length ? <li className="cv-call-window">Showing {renderedCalls.length} of {turns.calls.length} calls at this cutoff</li> : null}{renderedCalls.map((call) => <li key={call.id}><button type="button" aria-current={call.id === selectedCall?.id} onClick={() => setSelectedCallId(call.id)}><span>Call {call.callNumber}</span><strong>{call.model ?? "Model not recorded"}</strong><small>steps {call.environmentStepStart ?? "—"}{call.environmentStepEnd !== call.environmentStepStart ? `–${call.environmentStepEnd ?? "—"}` : ""} · seq {call.sourceSequenceStart}–{call.sourceSequenceEnd}</small></button></li>)}</ol>
           <article className="cv-call-card" aria-live="polite">{selectedCall ? <><header><div><p className="cv-eyebrow">Call {selectedCall.callNumber} · environment steps {selectedCall.environmentStepStart ?? "—"}–{selectedCall.environmentStepEnd ?? "—"}</p><h4>{selectedCall.model ?? "Model identity not recorded"}</h4></div><span>{selectedCall.outcome?.replaceAll("_", " ") ?? "streaming"}</span></header><dl><div><dt>Provider</dt><dd>{selectedCall.provider ?? "not emitted"}</dd></div><div><dt>Authority</dt><dd>{selectedCall.authority ?? "not emitted"}</dd></div><div><dt>Source</dt><dd>seq {selectedCall.sourceSequenceStart}–{selectedCall.sourceSequenceEnd}</dd></div><div><dt>Closure</dt><dd>{selectedCall.closure ? `${selectedCall.closure.reason.replaceAll("_", " ")} · ${selectedCall.closure.source}` : "pending"}</dd></div><div><dt>Envelopes</dt><dd>{selectedCall.rawEvents.length}</dd></div></dl>

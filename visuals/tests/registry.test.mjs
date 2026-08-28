@@ -79,12 +79,13 @@ test("visuals package exposes the registered templates", () => {
     if (!id.startsWith("diagram.") && meta.rendererKind !== "chart") {
       assert.ok(existsSync(join(path, "shell.tsx")));
     }
-    if (
-      id === "live.harbor_eval.v1" ||
-      id === "live.container_rollouts.v1" ||
-      id === "live.craftax.v1"
-    ) {
+    if (id === "live.harbor_eval.v1" || id === "live.container_rollouts.v1") {
       assert.deepEqual(declaredInputs(meta).map((slot) => slot.name), ["stream"]);
+    }
+    if (id === "live.craftax.v1") {
+      assert.deepEqual(declaredInputs(meta).map((slot) => slot.name), ["stream", "optimizer_run"]);
+      assert.equal(meta.inputs[0].required, true);
+      assert.equal(meta.inputs[1].required, false);
     }
     if (id === "live.eval_stream.v1") {
       assert.equal(meta.slots, undefined);

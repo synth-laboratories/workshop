@@ -113,6 +113,9 @@ export function projectVisualRunLifecycle(
 ): VisualRunLifecycle | undefined {
 	if (!run) return undefined;
 	const summary = record(run.summary);
+	const summaryRecords = rows(summary.records);
+	const authoritative = record(record(summary.progress).authoritative);
+	const authoritativeEvidence = record(authoritative.evidence);
 	const manifest = record(summary.terminalManifest);
 	const terminal = record(manifest.terminal);
 	const manifestEvidence = record(manifest.evidence);
@@ -134,7 +137,7 @@ export function projectVisualRunLifecycle(
 	const failed = ["failed", "failed_evidence", "degraded", "interrupted", "infrastructure_lost", "cap_reached"].includes(lifecycleStatus)
 		|| ["failed", "failed_evidence", "degraded", "interrupted", "infrastructure_lost", "cap_reached"].includes(run.status);
 
-	const failures = rows(summary.records).flatMap((item): VisualEvidenceFailure[] => {
+	const failures = summaryRecords.flatMap((item): VisualEvidenceFailure[] => {
 		const detail = text(item.error)
 			?? text(record(item.evidenceOutcome).detail)
 			?? text(record(item.evaluatorOutcome).detail)
@@ -153,7 +156,7 @@ export function projectVisualRunLifecycle(
 			detail
 		}];
 	});
-	const gaps = rows(summary.records).flatMap((item): VisualEvidenceGap[] => {
+	const gaps = summaryRecords.flatMap((item): VisualEvidenceGap[] => {
 		const detail = text(item.error)
 			?? text(record(item.evidenceOutcome).detail)
 			?? text(record(item.evaluatorOutcome).detail)
@@ -174,12 +177,21 @@ export function projectVisualRunLifecycle(
 		else if (state === "missing") counts.missing += 1;
 		return counts;
 	}, { valid: 0, missing: 0 });
-	const sealedTraces = rows(summary.records).filter((item) => {
+	const sealedTraces = summaryRecords.filter((item) => {
 		const sealed = record(item.sealedTrace);
 		return sealed.imported === true || rows(sealed.traces).length > 0;
 	}).length || rows(manifestEvidence.refs).length;
+	const acceptedRecords = summaryRecords.filter((item) => {
+		const evidenceState = text(item.evidenceState)?.toLowerCase();
+		const outcomeStatus = text(record(item.evidenceOutcome).status)?.toLowerCase();
+		return evidenceState === "sealed_complete"
+			|| evidenceState === "complete"
+			|| outcomeStatus === "sealed_complete"
+			|| outcomeStatus === "complete";
+	}).length;
+	const authoritativeComplete = text(authoritativeEvidence.completeness)?.toLowerCase() === "complete";
 	const rejected = failures.length;
-	const valid = ledgerCounts.valid;
+	const valid = ledgerCounts.valid || acceptedRecords || (authoritativeComplete ? sealedTraces : 0);
 	const missing = Math.max(0, ledgerCounts.missing - rejected);
 	const evidenceState: VisualRunLifecycle["evidence"]["state"] = rejected > 0
 		? "rejected"

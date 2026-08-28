@@ -289,6 +289,14 @@ test("live Craftax resolves persisted fixture references from packaged template 
   assert.equal(fixture.events.filter((event) => event.kind === "eval.run.terminal").length, 10);
 });
 
+test("live Craftax renders a subscribed optimizer journal immediately instead of fixture-throttling it", () => {
+  const shell = readFileSync(join(root, "families/first_class_example_containers/live.craftax.v1/shell.tsx"), "utf8");
+  assert.match(shell, /mergeCraftaxOptimizerJournalEvents\(props\.events, props\.enrichmentEvents\)/);
+  assert.match(shell, /const events = optimizerEvents \?\? liveStream\.events/);
+  assert.match(shell, /data-visual-event-source=\{optimizerEvents \? "optimizer-journal"/);
+  assert.match(shell, /optimizerEvents \|\| declaredStreamCount > 0 \? undefined : stream\.events/);
+});
+
 test("live Craftax keeps replay-driven call fallback out of passive state effects", () => {
   const shell = readFileSync(join(root, "families/first_class_example_containers/live.craftax.v1/shell.tsx"), "utf8");
   assert.match(shell, /const selectedCall = turns\.calls\.find/);
