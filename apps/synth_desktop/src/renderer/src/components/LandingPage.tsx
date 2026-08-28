@@ -52,7 +52,7 @@ export function ModelPicker({
 	const ref = useRef<HTMLDivElement>(null);
 	const selected = targetOptionForId(selectedTargetId) ?? EXECUTION_TARGETS[0];
 	const selectedLagunaPolicy = lagunaPolicies.find((policy) =>
-		policy.isBase ? selectedLagunaPolicyId === null : policy.modelId === selectedLagunaPolicyId
+		policy.modelId === selectedLagunaPolicyId || (policy.isBase && selectedLagunaPolicyId === null)
 	);
 	const selectedLabel = selectedTargetId === "local-laguna" && selectedLagunaPolicy
 		? policyLabel(selectedLagunaPolicy)

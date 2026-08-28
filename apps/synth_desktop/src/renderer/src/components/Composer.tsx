@@ -471,7 +471,7 @@ function ModelMenu({
 	const ref = useRef<HTMLDivElement>(null);
 	const [activeAccess, setActiveAccess] = useState<ModelAccessKind | null>(null);
 	const selectedLagunaPolicy = lagunaAdapter?.adapters.find((policy) =>
-		policy.isBase ? lagunaAdapter.selectedId === null : policy.modelId === lagunaAdapter.selectedId
+		policy.modelId === lagunaAdapter.selectedId || (policy.isBase && lagunaAdapter.selectedId === null)
 	);
 	const modelLabel = modelChipLabel(state, selectedLagunaPolicy);
 	const modelReady = !(
@@ -552,7 +552,8 @@ function ModelMenu({
 									if (target.id === "local-laguna" && lagunaAdapter?.adapters.length) {
 										return lagunaAdapter.adapters.map((policy) => {
 											const policyId = policy.isBase ? null : policy.modelId;
-											const selectedHere = state.selectedTargetId === target.id && lagunaAdapter.selectedId === policyId;
+											const selectedHere = state.selectedTargetId === target.id
+												&& (lagunaAdapter.selectedId === policyId || lagunaAdapter.selectedId === policy.modelId);
 											return (
 												<button
 													key={policy.modelId}
