@@ -337,7 +337,14 @@ test.describe("Craftax semantic viewer", () => {
 		// Fixture replay is interval-based; assert the terminal contract rather
 		// than an older copy label that no longer names the transport state.
 		await expect(viewer).toHaveAttribute("data-visual-terminal", "true", { timeout: 90_000 });
+		await expect(viewer.locator(".cv-topbar h2")).toHaveCSS("color", "rgb(244, 238, 230)");
+		await expect(viewer.locator(".cv-topbar .cv-eyebrow")).toHaveCSS("color", "rgb(255, 106, 42)");
 		const aggregateTimeline = viewer.getByTestId("craftax-aggregate-timeline");
+		expect(await viewer.evaluate((root) => {
+			const overview = root.querySelector('[data-visual-landmark="run-overview"]');
+			const aggregate = root.querySelector('[data-testid="craftax-aggregate-timeline"]');
+			return Boolean(overview && aggregate && (aggregate.compareDocumentPosition(overview) & Node.DOCUMENT_POSITION_FOLLOWING));
+		}), "aggregate outcomes should precede the run overview near the top").toBe(true);
 		await expect(aggregateTimeline.locator(".cv-rollout-line")).toHaveCount(2);
 		await expect(aggregateTimeline.locator(".cv-achievement-marker")).toHaveCount(2);
 		await expect(aggregateTimeline).toContainText("🪵");
