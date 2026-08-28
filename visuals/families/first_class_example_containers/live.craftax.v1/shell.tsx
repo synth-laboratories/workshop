@@ -23,6 +23,7 @@ import {
   type CraftaxSemanticTraceItem
 } from "./projectCraftax.ts";
 import { summarizeCraftaxRun, type CraftaxRolloutAggregate, type CraftaxRunAggregate } from "./aggregateCraftax.ts";
+import { craftaxStepPath, projectCraftaxAggregateTimeline } from "./aggregateTimeline.ts";
 import "./viewer.css";
 
 // Vite turns these template-local fixtures into packaged assets. Persisted
@@ -650,6 +651,19 @@ export function Shell(props: ShellProps) {
     else if (event.kind === "reward_signal") series.push(series.at(-1) ?? 0);
     return series;
   }, []);
+  const aggregateTimeline = useMemo(
+    () => projectCraftaxAggregateTimeline(
+      evaluationEvents,
+      lanes,
+      evaluationCutoff == null ? terminalRollouts : undefined
+    ),
+    [evaluationEvents, evaluationCutoff, lanes, terminalRollouts]
+  );
+  const aggregateMaxStep = Math.max(1, ...aggregateTimeline.map((timeline) => timeline.terminalStep));
+  const aggregateMinReward = Math.min(0, ...aggregateTimeline.flatMap((timeline) => timeline.points.map((point) => point.reward)));
+  const aggregateMaxReward = Math.max(1, ...aggregateTimeline.flatMap((timeline) => timeline.points.map((point) => point.reward)));
+  const aggregateX = (step: number) => 42 + (Math.max(0, step) / aggregateMaxStep) * 700;
+  const aggregateY = (reward: number) => 216 - ((reward - aggregateMinReward) / Math.max(1, aggregateMaxReward - aggregateMinReward)) * 194;
   const lastDurableSequence = craftaxEventSequence(fullProjection.ordered.at(-1) ?? ({} as LiveEvalEvent), -1);
   const journalHydrating = optimizerJournalBound && optimizerEvents === undefined && !bindingError && !error;
   // The transport state is the hook's; this only names it for a reader. Every
@@ -823,6 +837,40 @@ export function Shell(props: ShellProps) {
       </section>
 
       {config.showPlots ? <section className="cv-plots cv-surface-replay" data-visual-landmark="outcome-plots">
+        <article className="cv-panel cv-aggregate-timeline" data-testid="craftax-aggregate-timeline">
+          <div className="cv-heading"><div><p className="cv-eyebrow">Overall · all rollouts</p><h3>Cumulative reward and achievement unlocks</h3></div><strong>{aggregateTimeline.length} rollout{aggregateTimeline.length === 1 ? "" : "s"}</strong></div>
+          <div className="cv-aggregate-legend" aria-label="Aggregate rollout lines">
+            {aggregateTimeline.map((timeline, index) => {
+              const terminal = terminalByLane.get(timeline.lane);
+              return <button className={`series-${index % 6}`} key={timeline.lane} type="button" aria-current={timeline.lane === selectedLane} onClick={() => { setChosenLane(timeline.lane); setLaneCutoff(null); }}>
+                <i aria-hidden="true" /><span>{terminal?.seed != null ? `seed ${terminal.seed}` : <Identifier value={timeline.lane} max={18} copy={false} />}</span><strong>{formatMissingNumber(timeline.terminalReward)}</strong>
+              </button>;
+            })}
+          </div>
+          <svg viewBox="0 0 760 250" role="img" aria-label={`Cumulative reward by environment step for ${aggregateTimeline.length} rollouts, with achievement unlock icons`}>
+            <line className="cv-grid-line" x1="42" y1="216" x2="742" y2="216" />
+            <line className="cv-grid-line" x1="42" y1="22" x2="42" y2="216" />
+            <text className="cv-axis-label" x="42" y="240">step 0</text>
+            <text className="cv-axis-label" x="742" y="240" textAnchor="end">step {aggregateMaxStep}</text>
+            <text className="cv-axis-label" x="35" y="27" textAnchor="end">{formatMissingNumber(aggregateMaxReward)}</text>
+            {aggregateTimeline.map((timeline, index) => <g className={`cv-rollout-series series-${index % 6}${timeline.lane === selectedLane ? " selected" : ""}`} key={timeline.lane}>
+              <title>{timeline.lane} · terminal reward {timeline.terminalReward} · {timeline.terminalStep} steps</title>
+              <path className="cv-rollout-line" d={craftaxStepPath(timeline.points, aggregateMaxStep, aggregateMinReward, aggregateMaxReward)} />
+              {timeline.achievements.map((achievement, achievementIndex) => {
+                const markerX = aggregateX(achievement.step);
+                const markerY = aggregateY(achievement.reward);
+                const offset = 11 + ((index + achievementIndex) % 2) * 12;
+                return <g className="cv-achievement-marker" key={`${achievement.name}:${achievement.step}`} transform={`translate(${markerX.toFixed(1)} ${(markerY - offset).toFixed(1)})`} role="img" tabIndex={0} aria-label={`${achievement.name.replaceAll("_", " ")} · ${timeline.lane} · step ${achievement.step}`}>
+                  <title>{achievement.name.replaceAll("_", " ")} · {timeline.lane} · step {achievement.step}</title>
+                  <line x1="0" y1={String(offset - 8)} x2="0" y2={String(offset)} />
+                  <circle r="11" />
+                  <text textAnchor="middle" dominantBaseline="central">{achievement.icon}</text>
+                </g>;
+              })}
+            </g>)}
+          </svg>
+          <p className="cv-aggregate-note">Shared environment-step scale. Icons mark the first retained evidence for each achievement; select a line above to open that rollout.</p>
+        </article>
         <article className="cv-panel"><div className="cv-heading"><div><p className="cv-eyebrow">Selected rollout</p><h3>Cumulative reward</h3></div><strong>{formatMissingNumber(viewer.cumulativeReward)}</strong></div><svg viewBox="0 0 640 190" role="img" aria-label="Cumulative reward by step"><line x1="28" y1="166" x2="612" y2="166"/><polyline points={sparkline(rewardSeries)} /></svg></article>
         <article className="cv-panel"><div className="cv-heading"><div><p className="cv-eyebrow">Selected rollout</p><h3>Achievements through time</h3></div><strong>{achievements.length}</strong></div><svg viewBox="0 0 640 190" role="img" aria-label="Cumulative achievements by step"><line x1="28" y1="166" x2="612" y2="166"/><polyline className="secondary" points={sparkline(achievementSeries)} /></svg></article>
       </section> : null}

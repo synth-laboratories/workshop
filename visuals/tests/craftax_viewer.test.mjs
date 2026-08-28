@@ -15,6 +15,7 @@ import {
   mergeCraftaxOptimizerJournalEvents,
 } from "../families/first_class_example_containers/live.craftax.v1/projectCraftax.ts";
 import { summarizeCraftaxRun } from "../families/first_class_example_containers/live.craftax.v1/aggregateCraftax.ts";
+import { craftaxAchievementIcon, craftaxStepPath, projectCraftaxAggregateTimeline } from "../families/first_class_example_containers/live.craftax.v1/aggregateTimeline.ts";
 
 function event(lane, kind, sequence, payload = {}, second = sequence) {
   return {
@@ -161,6 +162,39 @@ test("run overview aggregates rollout distributions without inventing partial to
   assert.equal(partial.totalCostUsd, undefined, "one unpriced rollout makes the exact run total unavailable");
   assert.equal(partial.knownCostUsd, 0.002, "known rollout costs remain a labelled subtotal");
   assert.equal(partial.reportedCosts, 2);
+});
+
+test("aggregate Craftax timeline aligns rollout reward lines and achievement icons by environment step", () => {
+  const rows = [
+    event("rollout-a", "span.step.closed", 1, { step: 1 }),
+    event("rollout-a", "achievement_unlocked", 2, { step: 1, achievement: "collect_wood" }),
+    event("rollout-a", "reward_signal", 3, { step: 1, value: 1 }),
+    event("rollout-a", "span.step.closed", 4, { step: 4 }),
+    event("rollout-a", "achievement_unlocked", 5, { step: 4, achievement: "make_wood_pickaxe" }),
+    event("rollout-a", "reward_signal", 6, { step: 4, value: 2 }),
+    event("rollout-b", "snapshot", 1, { step: 2, total_reward: 2, achievements: { collect_stone: 1 } }),
+    event("rollout-b", "snapshot", 2, { step: 3, total_reward: 2, achievements: { collect_stone: 1 } }),
+  ];
+  const timelines = projectCraftaxAggregateTimeline(rows, ["rollout-a", "rollout-b"], [
+    { lane: "rollout-a", reward: 3, steps: 5 },
+    { lane: "rollout-b", reward: 2, steps: 3 },
+  ]);
+
+  assert.deepEqual(timelines[0].points, [
+    { step: 0, reward: 0 },
+    { step: 1, reward: 1 },
+    { step: 4, reward: 3 },
+    { step: 5, reward: 3 },
+  ]);
+  assert.deepEqual(timelines[0].achievements.map(({ step, reward, name, icon }) => ({ step, reward, name, icon })), [
+    { step: 1, reward: 1, name: "collect_wood", icon: "🪵" },
+    { step: 4, reward: 3, name: "make_wood_pickaxe", icon: "⛏" },
+  ]);
+  assert.deepEqual(timelines[1].achievements.map(({ step, reward, name }) => ({ step, reward, name })), [
+    { step: 2, reward: 2, name: "collect_stone" },
+  ], "snapshot achievements are marked once, at first retained evidence");
+  assert.equal(craftaxAchievementIcon("make_iron_sword"), "⚔");
+  assert.match(craftaxStepPath(timelines[0].points, 5, 0, 3), /^M .* H .* V /);
 });
 
 test("terminal overview replaces provisional rewards with scored record truth", () => {

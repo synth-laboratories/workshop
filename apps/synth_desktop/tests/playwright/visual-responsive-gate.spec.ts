@@ -240,21 +240,24 @@ test.describe("GEPA workspace on the real Sol run", () => {
 
 test.describe("Craftax semantic viewer", () => {
 	test("folds deltas, keeps hierarchy, and holds every breakpoint", async ({ page }) => {
-		// Fixture replay paces one durable event per 800ms; this run has ~45.
+		// Keep the synthetic replay fast; this gate measures the terminal visual,
+		// not transport pacing.
 		test.setTimeout(180_000);
 		const lane = "rollout_craftax_gate_2026_08_12";
+		const comparisonLane = "rollout_craftax_gate_2026_08_12_b";
 		const events: unknown[] = [];
 		let seq = 0;
-		const push = (kind: string, payload: Record<string, unknown> = {}) => {
+		const pushLane = (runId: string, kind: string, payload: Record<string, unknown> = {}) => {
 			seq += 1;
 			events.push({
 				kind,
 				sequence: seq,
 				occurred_at: new Date(Date.UTC(2026, 7, 12, 20, 0, 0, seq * 15)).toISOString(),
-				run_id: lane,
+				run_id: runId,
 				payload
 			});
 		};
+		const push = (kind: string, payload: Record<string, unknown> = {}) => pushLane(lane, kind, payload);
 		push("trace.opened");
 		push("observation", { readout: { env_steps: 0, observation_text: "Forest clearing", inventory: { health: 9, food: 8, drink: 7, energy: 9, wood: 2 } } });
 		push("span.policy.opened", { call: { provider: "openrouter", model: "gpt-5.6-luna" } });
@@ -269,6 +272,10 @@ test.describe("Craftax semantic viewer", () => {
 		push("achievement_unlocked", { achievement: "collect_wood" });
 		push("span.step.closed", { step: 1, action: "left" });
 		push("trace.reconciled", { digest: "d".repeat(64) });
+		pushLane(comparisonLane, "trace.opened");
+		pushLane(comparisonLane, "snapshot", { step: 0, total_reward: 0 });
+		pushLane(comparisonLane, "snapshot", { step: 2, total_reward: 2, achievements: { collect_stone: 1 } });
+		pushLane(comparisonLane, "trace.reconciled", { digest: "e".repeat(64) });
 
 		const visual = {
 			schemaVersion: "synth.desktop-visual.v1",
@@ -285,7 +292,8 @@ test.describe("Craftax semantic viewer", () => {
 					kind: "inline",
 					data: {
 						events,
-						scope: { campaign_id: "campaign_gate", rollout_ids: [lane], selection: { initial_rollout_id: lane } }
+						replay_ms: 1,
+						scope: { campaign_id: "campaign_gate", rollout_ids: [lane, comparisonLane], selection: { initial_rollout_id: lane } }
 					}
 				}]
 			},
@@ -326,8 +334,15 @@ test.describe("Craftax semantic viewer", () => {
 		// The template also renders in the gallery preview; measure the pane instance.
 		const viewer = page.getByTestId("visual-pane").getByTestId("visual-live-craftax");
 		await expect(viewer).toBeVisible();
-		// Fixture replay is interval-based; wait for the sealed terminal state.
-		await expect(viewer).toContainText("sealed/reconciled", { timeout: 90_000 });
+		// Fixture replay is interval-based; assert the terminal contract rather
+		// than an older copy label that no longer names the transport state.
+		await expect(viewer).toHaveAttribute("data-visual-terminal", "true", { timeout: 90_000 });
+		const aggregateTimeline = viewer.getByTestId("craftax-aggregate-timeline");
+		await expect(aggregateTimeline.locator(".cv-rollout-line")).toHaveCount(2);
+		await expect(aggregateTimeline.locator(".cv-achievement-marker")).toHaveCount(2);
+		await expect(aggregateTimeline).toContainText("🪵");
+		mkdirSync(SHOT_DIR, { recursive: true });
+		await aggregateTimeline.screenshot({ path: join(SHOT_DIR, "craftax-aggregate-timeline.png") });
 
 		// One folded policy-call row, not thirty token rows.
 		const traceButtons = viewer.locator(".cv-trace li button");
@@ -335,6 +350,7 @@ test.describe("Craftax semantic viewer", () => {
 		expect(rowCount, `trace rows should be folded, got ${rowCount}`).toBeLessThan(20);
 		// Transcript renders one normalized call card while preserving every
 		// delta under expandable Trace V5 evidence.
+		await viewer.getByRole("button", { name: "Agent transcript", exact: true }).click();
 		await expect(viewer.locator(".cv-call-list > li")).toHaveCount(1);
 		await expect(viewer.getByRole("heading", { name: "Agent transcript" })).toBeVisible();
 		const rawEvidence = viewer.getByText("Raw Trace V5 evidence (34 envelopes)");
@@ -344,7 +360,9 @@ test.describe("Craftax semantic viewer", () => {
 		await expect(viewer).toContainText("Step 0");
 		await expect(viewer).toContainText("collect_wood");
 
+		await viewer.getByRole("button", { name: "Replay", exact: true }).click();
 		await page.getByTestId("toggle-visual-expand").click();
 		await captureViewportSweep(page, "craftax");
+		await aggregateTimeline.screenshot({ path: join(SHOT_DIR, "craftax-aggregate-timeline-wide.png") });
 	});
 });
