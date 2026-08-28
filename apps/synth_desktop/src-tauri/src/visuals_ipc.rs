@@ -1530,7 +1530,72 @@ pub async fn dispatch(method: &str, path: &str, body: Value, core: &CoreRuntime)
                     })
                 })
                 .collect::<Vec<_>>();
-            Ok(json!({"sources": sources}))
+            // An empty list is an answer the agent cannot act on. Say whether
+            // no folder has ever been admitted (ask the user) or an admitted
+            // one has an unreadable manifest (ask the user to fix the file).
+            let readiness = crate::project_sources::readiness(
+                core.storage().database(),
+                crate::project_sources::Capability::Containers,
+                sources.len(),
+            );
+            Ok(json!({"sources": sources, "readiness": readiness}))
+        }
+        ("POST", "/v1/project-sources/request") => {
+            let path = body
+                .get("path")
+                .and_then(Value::as_str)
+                .ok_or_else(|| anyhow::anyhow!("path required"))?;
+            let reason = body
+                .get("reason")
+                .and_then(Value::as_str)
+                .ok_or_else(|| anyhow::anyhow!("reason required"))?;
+            // Absent `capabilities` means "this repository", which is what an
+            // agent that found a declaration is actually asking for.
+            let capabilities: Vec<String> = body
+                .get("capabilities")
+                .and_then(Value::as_array)
+                .map(|values| {
+                    values
+                        .iter()
+                        .filter_map(Value::as_str)
+                        .map(str::to_ascii_lowercase)
+                        .collect()
+                })
+                .unwrap_or_else(|| vec!["containers".into(), "recipes".into()]);
+            if let Some(unknown) = capabilities
+                .iter()
+                .find(|value| !matches!(value.as_str(), "containers" | "recipes"))
+            {
+                anyhow::bail!("unknown project source capability `{unknown}`");
+            }
+            let session_id = body
+                .get("sessionId")
+                .or_else(|| body.get("session_id"))
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty());
+            let request = crate::project_sources::request(
+                core.storage().database(),
+                session_id,
+                path,
+                reason,
+                capabilities.iter().any(|value| value == "containers"),
+                capabilities.iter().any(|value| value == "recipes"),
+                body.get("attachToConversation")
+                    .or_else(|| body.get("attach_to_conversation"))
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false),
+            )
+            .await?;
+            Ok(json!({
+                "request": request,
+                // Nothing is discoverable yet. Saying so plainly keeps an
+                // agent from reporting the folder as added.
+                "status": request.status,
+                "granted": false,
+                "message": "Awaiting the user's approval. Nothing has been added yet; \
+                            after approval, call container_discover again to get the source_id.",
+            }))
         }
         ("POST", "/v1/containers/ensure") => {
             let spec_id = body

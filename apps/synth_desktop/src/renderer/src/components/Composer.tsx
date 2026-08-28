@@ -27,7 +27,7 @@ import type { Skill } from "../runtime/skills";
 import type { ComposerImageAttachment, ConversationWorkspaceScope, WhisperRuntimeStatus } from "../bridge";
 import { WorkspaceScopeChip, workspaceLabel } from "./WorkspaceScopeChip";
 import type { LagunaPolicy } from "../bridge/types";
-import { policyLabel } from "../runtime/lagunaPolicies";
+import { LOCAL_BASE_POLICY, policyLabel } from "../runtime/lagunaPolicies";
 import { bridges } from "../runtime/desktopBridge";
 import {
 	armedPromptId,
@@ -385,7 +385,7 @@ function modelChipLabel(state: LandingState, policy?: LagunaPolicy): string {
 		if (state.model.status === "starting" || state.model.status === "loading") {
 			return "Laguna starting…";
 		}
-		return policy ? policyLabel(policy) : target?.label ?? `synth/${state.model.name}`;
+		return policy ? policyLabel(policy) : LOCAL_BASE_POLICY;
 	}
 	return target?.label ?? "Select model";
 }

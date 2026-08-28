@@ -42,6 +42,7 @@ use tokio::{
     time::sleep,
 };
 
+use super::eval_runtime::{fault as eval_fault, EvalRuntimeFault};
 use super::events::OptimizerEventDraft;
 use super::{
     models::{
@@ -105,18 +106,43 @@ fn config_path() -> PathBuf {
 /// `SYNTH_PYTHON` fallback: an interpreter that happens to be on the operator's
 /// PATH is not the one this feature was packaged against.
 fn resolve_python() -> Result<PathBuf> {
+    resolve_python_checked().map_err(anyhow::Error::from)
+}
+
+/// The Eval interpreter, or a structured reason there is none.
+///
+/// Every branch that used to swallow its error now names it. The lazy
+/// provisioning attempt in particular was `let _ = provision_from_disk();`,
+/// which meant a runtime that was installed but had a broken import, a stale
+/// digest, or a half-extracted interpreter all arrived at the same closing
+/// `bail!` -- "the local Optimizers runtime is not installed" -- and sent the
+/// operator to reinstall something that was already there.
+fn resolve_python_checked() -> std::result::Result<PathBuf, EvalRuntimeFault> {
     // Developer/QA builds stage one reviewed Optimizers checkout. Eval and
     // GEPA must execute that same runtime authority; falling through to the
     // previously selected installed version makes the catalog and worker
     // silently disagree (for example, 2 stale Craftax trials instead of the
     // staged digest-pinned 10-trial contract).
-    if let Some(project) = super::manager::optimizer_project_root()? {
-        return resolve_developer_python(&project);
+    match super::manager::optimizer_project_root() {
+        Ok(Some(project)) => {
+            return resolve_developer_python(&project).map_err(|error| {
+                EvalRuntimeFault::new(eval_fault::INTERPRETER_MISSING, error.to_string())
+            })
+        }
+        Ok(None) => {}
+        Err(error) => {
+            return Err(EvalRuntimeFault::new(
+                eval_fault::PLUGIN_NOT_INSTALLED,
+                error.to_string(),
+            ))
+        }
     }
-    let _ = super::eval_runtime::provision_from_disk();
-    if let Some(python) = super::eval_runtime::provisioned_python() {
-        return Ok(python);
-    }
+    // Keep the desktop-owned pin's reason. The layouts below are compatibility
+    // fallbacks; if none of them resolves, this is the honest answer.
+    let pinned = match super::eval_runtime::ready_python() {
+        Ok(python) => return Ok(python),
+        Err(fault) => fault,
+    };
     if let Ok(text) = fs::read_to_string(config_path()) {
         if let Some(configured) = text
             .lines()
@@ -128,11 +154,14 @@ fn resolve_python() -> Result<PathBuf> {
             if path.is_file() {
                 return Ok(path);
             }
-            bail!(
-                "{} sets python = {} but that interpreter does not exist",
-                config_path().display(),
-                path.display()
-            );
+            return Err(EvalRuntimeFault::new(
+                eval_fault::INTERPRETER_MISSING,
+                format!(
+                    "{} sets python = {} but that interpreter does not exist",
+                    config_path().display(),
+                    path.display()
+                ),
+            ));
         }
     }
     // The plugin installer stores immutable versioned runtimes and records
@@ -166,12 +195,20 @@ fn resolve_python() -> Result<PathBuf> {
     if owned.is_file() {
         return Ok(owned);
     }
-    bail!(
-        "the local Optimizers runtime is not installed; install it under {} \
-         or set python = \"…\" in {}",
-        owned.display(),
-        config_path().display()
-    )
+    // Only now is "not installed" the right thing to say, and only when that
+    // is what the pin actually reported.
+    if pinned.code == eval_fault::PLUGIN_NOT_INSTALLED {
+        return Err(EvalRuntimeFault::new(
+            eval_fault::PLUGIN_NOT_INSTALLED,
+            format!(
+                "the local Optimizers runtime is not installed; install it under {} \
+                 or set python = \"…\" in {}",
+                owned.display(),
+                config_path().display()
+            ),
+        ));
+    }
+    Err(pinned)
 }
 
 fn resolve_developer_python(project: &Path) -> Result<PathBuf> {
@@ -301,8 +338,9 @@ pub fn algorithm_entry() -> Value {
 }
 
 pub fn recipe_catalog() -> Vec<Value> {
-    let Ok(python) = resolve_python() else {
-        return offline_catalog("the local Optimizers runtime is not installed");
+    let python = match resolve_python_checked() {
+        Ok(python) => python,
+        Err(fault) => return offline_catalog(fault.code, &fault.message),
     };
     let home = eval_home().to_string_lossy().into_owned();
     match run_cli(&python, &["recipes", "--home", &home, "--json"]) {
@@ -320,7 +358,9 @@ pub fn recipe_catalog() -> Vec<Value> {
             })
             .map(normalize_builtin_recipe_contract)
             .collect(),
-        Err(error) => offline_catalog(&error.to_string()),
+        // The runtime resolved and ran; a failure here is the CLI's, not a
+        // missing install, and must not be reported as one.
+        Err(error) => offline_catalog("eval_cli_failed", &error.to_string()),
     }
 }
 
@@ -669,7 +709,15 @@ fn require_digest_pinned_target_with_policy(
     Ok(())
 }
 
-fn offline_catalog(reason: &str) -> Vec<Value> {
+/// The catalog when Eval cannot run, carrying *why*.
+///
+/// `availabilityCode` is the machine-readable half: `plugin_not_installed`,
+/// `eval_runtime_not_provisioned`, `eval_runtime_interpreter_missing`,
+/// `eval_runtime_import_failed`, `eval_runtime_digest_mismatch`, or
+/// `eval_cli_failed`. A recipe that is merely unpinned is marked unavailable
+/// by `mark_unreproducible_target_unavailable` with `target_not_digest_pinned`
+/// and never reaches this function -- that distinction is the point.
+fn offline_catalog(code: &str, reason: &str) -> Vec<Value> {
     EVAL_RECIPE_IDS
         .iter()
         .map(|id| {
@@ -677,6 +725,7 @@ fn offline_catalog(reason: &str) -> Vec<Value> {
                 "id": id,
                 "algorithmId": EVAL_ALGORITHM_ID,
                 "availability": "unavailable",
+                "availabilityCode": code,
                 "availabilityReason": reason,
                 "title": id,
             })

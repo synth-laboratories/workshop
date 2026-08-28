@@ -29,7 +29,6 @@ use uuid::Uuid;
 const EXPERIMENT_TEMPLATE: &str = "experiment.overview.v1";
 const EXPERIMENT_SCHEMA: &str = "synth.experiment.overview.v1";
 const EVAL_ALGORITHM_ID: &str = "eval";
-const COST_CEILING_USD: f64 = 0.50;
 const POLL_TIMEOUT: Duration = Duration::from_secs(120);
 const POLL_INTERVAL: Duration = Duration::from_millis(80);
 const BLOCKING_EVAL_HTTP_TIMEOUT: Duration = Duration::from_secs(10 * 60);
@@ -79,13 +78,32 @@ struct EvalSpec {
     evaluation_plan_ref: String,
     harness: String,
     policy_config: String,
+    policy_source: Option<std::path::PathBuf>,
+    source_root: std::path::PathBuf,
     provider: String,
     model: String,
+    credential_mode: String,
     concurrency: usize,
     train: Vec<i64>,
     heldout: Vec<i64>,
     cost_ceiling_usd: f64,
+    max_calls_per_rollout: Option<u32>,
     requires_credential_advertisement: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum EvalTrialPhase {
+    Started,
+    Terminal,
+}
+
+impl EvalTrialPhase {
+    const fn event_type(self) -> &'static str {
+        match self {
+            Self::Started => "eval.trial.started",
+            Self::Terminal => "eval.trial.terminal",
+        }
+    }
 }
 
 impl EvalSpec {
@@ -106,12 +124,19 @@ impl EvalSpec {
             evaluation_plan_ref: format!("{}_eval.v1", recipe.family),
             harness: recipe.harness.clone(),
             policy_config: recipe.policy_config.clone(),
+            policy_source: recipe
+                .policy_source
+                .as_ref()
+                .map(|path| recipe.source_root.join(path)),
+            source_root: recipe.source_root.clone(),
             provider: recipe.provider.clone(),
             model: recipe.model.clone(),
+            credential_mode: recipe.credential_mode.clone(),
             concurrency: recipe.concurrency,
             train: recipe.train_seeds.clone(),
             heldout: recipe.heldout_seeds.clone(),
             cost_ceiling_usd: recipe.bounds.max_cost_usd,
+            max_calls_per_rollout: recipe.policy_max_calls,
             requires_credential_advertisement: recipe.requires_credential_advertisement,
         }
     }
@@ -127,12 +152,16 @@ impl EvalSpec {
             evaluation_plan_ref: "banking77_eval.v1".into(),
             harness: "desktop_eval".into(),
             policy_config: "banking77_gpt_4_1_nano".into(),
+            policy_source: None,
+            source_root: std::path::PathBuf::new(),
             provider: "openrouter".into(),
             model: "openai/gpt-4.1-nano".into(),
+            credential_mode: "container".into(),
             concurrency: 10,
             train: (0..10).collect(),
             heldout: Vec::new(),
             cost_ceiling_usd: 0.50,
+            max_calls_per_rollout: None,
             requires_credential_advertisement: false,
         }
     }
@@ -148,12 +177,16 @@ impl EvalSpec {
             evaluation_plan_ref: "healthbench_eval.v1".into(),
             harness: "chat_completion".into(),
             policy_config: "openai_gpt41_mini".into(),
+            policy_source: None,
+            source_root: std::path::PathBuf::new(),
             provider: "openai".into(),
             model: "gpt-4.1-mini-2025-04-14".into(),
+            credential_mode: "proxy".into(),
             concurrency: 2,
             train: vec![0, 1],
             heldout: vec![100, 101],
             cost_ceiling_usd: 0.50,
+            max_calls_per_rollout: None,
             requires_credential_advertisement: true,
         }
     }
@@ -233,7 +266,7 @@ pub(super) async fn start(
         "policyRef": { "harness": spec.harness, "config": spec.policy_config },
         "taskPools": { "train": spec.train.len(), "heldout": spec.heldout.len() },
         "concurrency": spec.concurrency,
-        "costCeilingUsd": COST_CEILING_USD,
+        "costCeilingUsd": spec.cost_ceiling_usd,
         "records": [],
         "progress": { "completed": 0, "total": examples.len(), "failed": 0 },
     });
@@ -540,6 +573,43 @@ fn experiment_bindings(
 ) -> Value {
     let train_mean = mean_for_pool(records, "train");
     let heldout_mean = mean_for_pool(records, "heldout");
+    let usage = usage_from_records(records, spec.cost_ceiling_usd);
+    let phase = match status {
+        "running" => "running",
+        "completed" => "completed",
+        "failed" => "failed",
+        other => other,
+    };
+    let usage_label = if usage.prompt_tokens + usage.completion_tokens > 0 {
+        Some(format!(
+            "{} prompt · {} completion tokens",
+            usage.prompt_tokens, usage.completion_tokens
+        ))
+    } else {
+        None
+    };
+    let cost_label = usage.cost_usd.map(|cost| format!("${cost:.2}"));
+    let rollouts = records
+        .iter()
+        .map(|record| json!({
+            "id": record.get("rolloutId").cloned().unwrap_or(Value::Null),
+            "label": record.get("seed").and_then(Value::as_i64).map(|seed| format!("Seed {seed}")),
+            "seed": record.get("seed").cloned().unwrap_or(Value::Null),
+            "reward": record.get("reward").cloned().unwrap_or(Value::Null),
+            "steps": record.pointer("/trace/steps").cloned().unwrap_or(Value::Null),
+            "stopReason": record.pointer("/trace/stop_reason").cloned()
+                .or_else(|| record.get("status").cloned()).unwrap_or(Value::Null),
+            "status": record.get("status").cloned().unwrap_or(Value::Null),
+            "traceId": record.pointer("/trace/id").cloned().unwrap_or(Value::Null),
+        }))
+        .collect::<Vec<_>>();
+    let conclusion = if status == "completed" {
+        format!("Baseline policy completed all {total} declared rollouts; mean reward was {}.", mean_reward.map(|v| v.to_string()).unwrap_or_else(|| "not reported".into()))
+    } else if status == "failed" {
+        "The evaluation failed its execution or evidence contract. Inspect failed rollouts before interpreting reward.".into()
+    } else {
+        format!("Waiting for {} declared rollout(s).", total.saturating_sub(completed))
+    };
     json!({
         "schemaVersion": VISUAL_BINDINGS_SCHEMA_VERSION,
         "slots": [{
@@ -552,11 +622,32 @@ fn experiment_bindings(
                 "title": spec.title,
                 "question": spec.question,
                 "status": status,
+                "runtime": {
+                    "provider": spec.provider,
+                    "model": spec.model,
+                    "harness": spec.harness,
+                    "policy": spec.policy_config,
+                },
                 "progress": {
-                    "phase": if status == "completed" { "done" } else { "scoring" },
+                    "phase": phase,
                     "completed": completed,
                     "total": total,
+                    "usage": usage_label,
+                    "cost": cost_label,
                 },
+                "hypotheses": [{
+                    "id": "baseline-execution",
+                    "claim": "The declared baseline policy can be evaluated on every planned seed.",
+                    "verdict": if status == "completed" { "true" } else if status == "failed" { "false" } else { "unresolved" },
+                    "confidence": if status == "running" { "low" } else { "high" },
+                    "why": conclusion,
+                }],
+                "assessment": {
+                    "summary": conclusion,
+                    "confidence": if status == "running" { "low" } else { "high" },
+                    "nextStep": if status == "failed" { "Repair the named rollout or evidence failure, then rerun the same immutable plan." } else { "Compare a candidate policy against this baseline using the same seed ledger." }
+                },
+                "results": { "rollouts": rollouts },
                 "metrics": [
                     {"label": "Train mean", "value": train_mean, "detail": if train_mean.is_none() { "omitted until the split is complete" } else { "mean of present rewards" }},
                     {"label": "Heldout mean", "value": heldout_mean, "detail": if spec.heldout.is_empty() { "this recipe has no heldout pool" } else if heldout_mean.is_none() { "omitted until the split is complete" } else { "mean of present rewards" }},
@@ -619,16 +710,22 @@ async fn run_eval_worker(
     // HealthBench can make one policy call plus many rubric-grader calls, so
     // the generic UI HTTP timeout is not an honest bound for this endpoint.
     let client = crate::http::http_client_with_timeout(BLOCKING_EVAL_HTTP_TIMEOUT);
-    let info = match client
+    let info_response = client
         .get(format!("{}/info", container.base_url))
         .send()
         .await
-    {
-        Ok(response) if response.status().is_success() => {
-            response.json::<Value>().await.unwrap_or(json!({}))
-        }
-        _ => json!({}),
-    };
+        .context("container_info_unreachable: GET /info failed")?;
+    if !info_response.status().is_success() {
+        bail!(
+            "container_info_rejected: GET /info returned {}",
+            info_response.status()
+        );
+    }
+    let info = info_response
+        .json::<Value>()
+        .await
+        .context("container_info_invalid: GET /info did not return JSON")?;
+    install_declared_policy(&client, &container.base_url, spec).await?;
     let policy_pin =
         register_policy_pin(&client, &container.base_url, spec, &info, &run_id).await?;
     persist_policy_pin(&service, &run_id, &policy_pin).await?;
@@ -650,9 +747,10 @@ async fn run_eval_worker(
             bail!("container eval cancelled");
         }
         while tasks.len() < permits && halt.is_none() {
-            if over_cost_ceiling(&records) {
+            if over_cost_ceiling(&records, spec.cost_ceiling_usd) {
                 halt = Some(format!(
-                    "cost ceiling ${COST_CEILING_USD:.2} reached; remaining rollouts were not dispatched"
+                    "cost ceiling ${:.2} reached; remaining rollouts were not dispatched",
+                    spec.cost_ceiling_usd
                 ));
                 break;
             }
@@ -663,15 +761,20 @@ async fn run_eval_worker(
             let base = container.base_url.clone();
             let pin = policy_pin.clone();
             let spec = spec.clone();
+            let service = service.clone();
+            let run_id = run_id.clone();
             tasks.spawn(async move {
-                let result = run_one_example(&client, &base, &spec, example, &pin).await;
+                let result = run_one_example(
+                    &service, &run_id, &client, &base, &spec, example, &pin,
+                )
+                .await;
                 (example, result)
             });
         }
         let Some(joined) = tasks.join_next().await else {
             break;
         };
-        let record = match joined {
+        let mut record = match joined {
             Ok((_example, Ok(record))) => record,
             Ok((example, Err(error))) => {
                 failed_record(example, spec, &policy_pin, format!("{error:#}"))
@@ -682,6 +785,22 @@ async fn run_eval_worker(
                 "policyRef": policy_pin,
             }),
         };
+        if let Some(contract_error) = eval_record_contract_error(&record) {
+            if record.get("status").and_then(Value::as_str) == Some("completed") {
+                let object = record
+                    .as_object_mut()
+                    .context("eval_record_invalid: rollout result was not an object")?;
+                object.insert("status".into(), json!("failed"));
+                object.insert("errorCode".into(), json!(contract_error.code()));
+                object.insert(
+                    "error".into(),
+                    json!(format!(
+                        "rollout violated the terminal evidence contract: {}",
+                        contract_error.code()
+                    )),
+                );
+            }
+        }
         evidence(
             "trial_terminal",
             append_eval_terminal(&service, &run_id, spec, &record),
@@ -698,20 +817,26 @@ async fn run_eval_worker(
     }
 
     for example in remaining {
-        records.push(failed_record(
+        let record = failed_record(
             example,
             spec,
             &policy_pin,
             halt.clone()
                 .unwrap_or_else(|| "required rollout was not dispatched".into()),
-        ));
+        );
+        evidence(
+            "trial_terminal",
+            append_eval_terminal(&service, &run_id, spec, &record),
+        )
+        .await?;
+        records.push(record);
     }
 
     let failed = records
         .iter()
         .filter(|row| !is_successful_eval_record(row))
         .count();
-    let budget_exceeded = over_cost_ceiling(&records);
+    let budget_exceeded = over_cost_ceiling(&records, spec.cost_ceiling_usd);
     let status = if failed == 0 && records.len() == total && !budget_exceeded {
         "completed"
     } else {
@@ -734,7 +859,7 @@ async fn run_eval_worker(
             parts.push(format!("{failed} of {total} required rollouts failed"));
         }
         if budget_exceeded {
-            parts.push(format!("cost exceeded ${COST_CEILING_USD:.2}"));
+            parts.push(format!("cost exceeded ${:.2}", spec.cost_ceiling_usd));
         }
         if let Some(halt) = halt {
             parts.push(halt);
@@ -803,7 +928,7 @@ async fn append_eval_terminal(
     let seed = record.get("seed").cloned().unwrap_or(Value::Null);
     let id = format!("trial:{}:{}", spec.family, seed);
     let valid = is_successful_eval_record(record);
-    let mut draft = OptimizerEventDraft::new("eval.trial.terminal", EVAL_ALGORITHM_ID)
+    let mut draft = OptimizerEventDraft::new(EvalTrialPhase::Terminal.event_type(), EVAL_ALGORITHM_ID)
         // One settlement per trial. A retried append of the same trial is the
         // same fact, not a second completion.
         .idempotency_key(format!("eval:terminal:{id}"))
@@ -820,9 +945,38 @@ async fn append_eval_terminal(
             "raw": record,
         }))
         .raw(json!({ "source": "container_eval" }));
+    if let Some(usage) = record.get("usage").and_then(Value::as_object) {
+        draft = draft.usage_delta(usage.clone());
+    }
     if !valid {
         draft = draft.level("warn");
     }
+    service
+        .append_event_payloads(run_id.to_string(), vec![draft])
+        .await?;
+    Ok(())
+}
+
+async fn append_eval_started(
+    service: &OptimizerService,
+    run_id: &str,
+    spec: &EvalSpec,
+    example: EvalExample,
+    rollout_id: &str,
+) -> Result<()> {
+    let trial_id = format!("trial:{}:{}", spec.family, example.seed);
+    let draft = OptimizerEventDraft::new(EvalTrialPhase::Started.event_type(), EVAL_ALGORITHM_ID)
+        .idempotency_key(format!("eval:started:{trial_id}"))
+        .delta(Map::from_iter([
+            ("trial_id".into(), json!(trial_id)),
+            ("rollout_id".into(), json!(rollout_id)),
+            ("candidate_id".into(), json!(spec.policy_config)),
+            ("seed".into(), json!(example.seed)),
+            ("scenario".into(), json!(spec.family)),
+            ("stage".into(), json!("screen")),
+            ("pool".into(), json!(example.pool)),
+        ]))
+        .raw(json!({ "source": "container_eval" }));
     service
         .append_event_payloads(run_id.to_string(), vec![draft])
         .await?;
@@ -879,7 +1033,12 @@ fn container_proxy_policy(spec: &EvalSpec) -> crate::secrets::SecretsUsePolicy {
     }
     policy.max_cost_usd = spec.cost_ceiling_usd;
     let trials = spec.examples().len() as u64;
-    policy.max_calls = trials.saturating_mul(64).clamp(128, u32::MAX as u64) as u32;
+    policy.max_calls = match spec.max_calls_per_rollout {
+        Some(per_rollout) => trials
+            .saturating_mul(u64::from(per_rollout))
+            .min(u64::from(u32::MAX)) as u32,
+        None => trials.saturating_mul(64).clamp(128, u32::MAX as u64) as u32,
+    };
     policy
 }
 
@@ -935,7 +1094,8 @@ async fn register_policy_pin(
             entry.get("harness").and_then(Value::as_str) == Some(spec.harness.as_str())
                 && entry.get("config").and_then(Value::as_str) == Some(spec.policy_config.as_str())
         });
-    if !spec.requires_credential_advertisement() && advertised {
+    let uses_workshop_proxy = spec.credential_mode == "proxy";
+    if !uses_workshop_proxy && !spec.requires_credential_advertisement() && advertised {
         return Ok(json!({
             "harness": spec.harness,
             "config": spec.policy_config,
@@ -944,13 +1104,13 @@ async fn register_policy_pin(
             "authority": "container_advertisement",
         }));
     }
-    let openai_base = if spec.requires_credential_advertisement() {
+    let openai_base = if uses_workshop_proxy {
         Some(container_openai_proxy_base(run_id, spec)?)
     } else {
         None
     };
     let Some(body) = spec.policy_config_body(openai_base.as_deref()) else {
-        if spec.requires_credential_advertisement() {
+        if uses_workshop_proxy {
             return Err(secrets_proxy_error(
                 "secrets_proxy_route_unbound",
                 "this recipe requires a Workshop proxy base_url; refusing a public provider origin",
@@ -993,6 +1153,47 @@ async fn register_policy_pin(
     }))
 }
 
+async fn install_declared_policy(
+    client: &reqwest::Client,
+    base: &str,
+    spec: &EvalSpec,
+) -> Result<()> {
+    let Some(source) = spec.policy_source.as_ref() else {
+        return Ok(());
+    };
+    let root = spec
+        .source_root
+        .canonicalize()
+        .with_context(|| format!("canonicalize recipe source root {}", spec.source_root.display()))?;
+    let source = source
+        .canonicalize()
+        .with_context(|| format!("canonicalize declared policy source {}", source.display()))?;
+    if !source.starts_with(&root) {
+        bail!(
+            "declared policy source {} escapes recipe source root {}",
+            source.display(),
+            root.display()
+        );
+    }
+    let code = std::fs::read_to_string(&source)
+        .with_context(|| format!("read declared policy source {}", source.display()))?;
+    if code.len() > 1024 * 1024 {
+        bail!("declared policy source exceeds 1 MiB");
+    }
+    let response = client
+        .put(format!("{base}/policy"))
+        .json(&json!({ "code": code, "harness": spec.harness }))
+        .send()
+        .await
+        .context("PUT /policy")?;
+    if !response.status().is_success() {
+        let status = response.status();
+        let text = response.text().await.unwrap_or_default();
+        bail!("policy revision install failed: {status} {text}");
+    }
+    Ok(())
+}
+
 async fn persist_policy_pin(
     service: &OptimizerService,
     run_id: &str,
@@ -1029,11 +1230,46 @@ fn failed_record(
 }
 
 fn is_successful_eval_record(row: &Value) -> bool {
-    row.get("status").and_then(Value::as_str) == Some("completed")
+    eval_record_contract_error(row).is_none()
 }
 
-fn over_cost_ceiling(records: &[Value]) -> bool {
-    recorded_cost_usd(records).is_some_and(|cost| cost >= COST_CEILING_USD)
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum EvalRecordContractError {
+    StatusNotCompleted,
+    RolloutIdMissing,
+    RewardMissing,
+    UsageMissing,
+}
+
+impl EvalRecordContractError {
+    const fn code(self) -> &'static str {
+        match self {
+            Self::StatusNotCompleted => "eval_record_status_not_completed",
+            Self::RolloutIdMissing => "eval_record_rollout_id_missing",
+            Self::RewardMissing => "eval_record_reward_missing",
+            Self::UsageMissing => "eval_record_usage_missing",
+        }
+    }
+}
+
+fn eval_record_contract_error(row: &Value) -> Option<EvalRecordContractError> {
+    if row.get("status").and_then(Value::as_str) != Some("completed") {
+        return Some(EvalRecordContractError::StatusNotCompleted);
+    }
+    if row.get("rolloutId").and_then(Value::as_str).is_none() {
+        return Some(EvalRecordContractError::RolloutIdMissing);
+    }
+    if row.get("reward").and_then(Value::as_f64).is_none() {
+        return Some(EvalRecordContractError::RewardMissing);
+    }
+    if !row.get("usage").is_some_and(Value::is_object) {
+        return Some(EvalRecordContractError::UsageMissing);
+    }
+    None
+}
+
+fn over_cost_ceiling(records: &[Value], ceiling_usd: f64) -> bool {
+    recorded_cost_usd(records).is_some_and(|cost| cost >= ceiling_usd)
 }
 
 fn recorded_cost_usd(records: &[Value]) -> Option<f64> {
@@ -1072,7 +1308,8 @@ async fn persist_progress(
 ) -> Result<()> {
     let completed = records.len();
     let mean = mean_for_pool(records, "train").or_else(|| mean_reward(records));
-    let usage = usage_from_records(records);
+    let cost_ceiling_usd = spec.cost_ceiling_usd;
+    let usage = usage_from_records(records, cost_ceiling_usd);
     let failed_count = records
         .iter()
         .filter(|row| !is_successful_eval_record(row))
@@ -1098,7 +1335,7 @@ async fn persist_progress(
                 summary.insert("meanReward".into(), json!(mean));
             }
             summary.insert("evalStatus".into(), json!(status_value));
-            summary.insert("costCeilingUsd".into(), json!(COST_CEILING_USD));
+            summary.insert("costCeilingUsd".into(), json!(cost_ceiling_usd));
             if let Some(cost) = usage.cost_usd {
                 summary.insert("costUsd".into(), json!(cost));
             }
@@ -1162,7 +1399,10 @@ async fn persist_progress(
     Ok(())
 }
 
-fn usage_from_records(records: &[Value]) -> super::models::OptimizerUsageSummary {
+fn usage_from_records(
+    records: &[Value],
+    cost_ceiling_usd: f64,
+) -> super::models::OptimizerUsageSummary {
     let mut usage = super::models::OptimizerUsageSummary::default();
     usage.rollouts = records.len() as u64;
     let mut policy = LaneUsage::default();
@@ -1205,7 +1445,7 @@ fn usage_from_records(records: &[Value]) -> super::models::OptimizerUsageSummary
     }
     usage
         .extra
-        .insert("costCeilingUsd".into(), json!(COST_CEILING_USD));
+        .insert("costCeilingUsd".into(), json!(cost_ceiling_usd));
     usage.extra.insert("policyUsage".into(), policy.to_json());
     usage.extra.insert("graderUsage".into(), grader.to_json());
     usage
@@ -1264,6 +1504,8 @@ fn mean_reward(records: &[Value]) -> Option<f64> {
 }
 
 async fn run_one_example(
+    service: &OptimizerService,
+    run_id: &str,
     client: &reqwest::Client,
     base: &str,
     spec: &EvalSpec,
@@ -1285,6 +1527,9 @@ async fn run_one_example(
         example.seed,
         &Uuid::new_v4().simple().to_string()[..8]
     );
+    append_eval_started(service, run_id, spec, example, &rollout_id)
+        .await
+        .context("trial_lifecycle_write_failed: could not transition trial to started")?;
     let prepare = client
         .post(format!("{base}/rollouts/prepare"))
         .json(&json!({ "rollout_id": rollout_id, "telemetry": telemetry }))
@@ -1512,7 +1757,7 @@ async fn find_ready_container(
         }
         if matches && ready {
             if let Some(base_url) = base_url.filter(|value| !value.trim().is_empty()) {
-                if let Some(protocol) = advertised_gepa_v2_protocol(&metadata) {
+                if let Some(protocol) = advertised_eval_protocol(&metadata) {
                     ready_containers.push(ReadyContainer {
                         id: id.clone(),
                         base_url: base_url.trim_end_matches('/').to_string(),
@@ -1536,7 +1781,7 @@ async fn find_ready_container(
             .find(|container| container.id == requested_id)
             .ok_or_else(|| {
                 anyhow::anyhow!(
-                    "requested {family} container `{requested_id}` is not a ready GEPA v2 pool: {}",
+                    "requested {family} container `{requested_id}` is not a ready eval pool: {}",
                     seen.join(", ")
                 )
             });
@@ -1546,7 +1791,7 @@ async fn find_ready_container(
     }
     if ready_containers.len() > 1 {
         bail!(
-            "ambiguous registered {family} GEPA v2 pools: {}. Pass the explicit containerId selected in Data; refusing to substitute a container.",
+            "ambiguous registered {family} eval pools: {}. Pass the explicit containerId selected in Data; refusing to substitute a container.",
             ready_containers
                 .iter()
                 .map(|container| container.id.as_str())
@@ -1556,24 +1801,29 @@ async fn find_ready_container(
     }
     if seen.is_empty() {
         bail!(
-            "no registered {family} container. Register a healthy {family} GEPA v2 pool before starting this baseline eval."
+            "no registered {family} container. Register a healthy {family} eval pool before starting this baseline eval."
         );
     }
     bail!(
-        "registered {family} containers are not a ready GEPA v2 pool: {}. Probe until status is ready/healthy and the container advertises {}.",
+        "registered {family} containers are not a ready eval pool: {}. Probe until status is ready/healthy and the container advertises {} or {}.",
         seen.join(", "),
+        crate::container_capabilities::LIVE_EVAL_PROTOCOL,
         crate::container_capabilities::GEPA_V2_CONTRACT
     )
 }
 
-fn advertised_gepa_v2_protocol(metadata: &Value) -> Option<String> {
+fn advertised_eval_protocol(metadata: &Value) -> Option<String> {
     for pointer in [
         "/capabilities/protocol",
         "/optimizer_contracts/gepa/version",
         "/metadata/optimizer_contracts/gepa/version",
     ] {
         if let Some(version) = metadata.pointer(pointer).and_then(Value::as_str) {
-            if version == crate::container_capabilities::GEPA_V2_CONTRACT {
+            if matches!(
+                version,
+                crate::container_capabilities::GEPA_V2_CONTRACT
+                    | crate::container_capabilities::LIVE_EVAL_PROTOCOL
+            ) {
                 return Some(version.to_string());
             }
         }
@@ -2015,12 +2265,27 @@ mod tests {
         panic!("run {run_id} never sealed a terminal manifest");
     }
 
+    /// One declaration source for the whole test process.
+    ///
+    /// `recipe_on` calls this per request, and a test that builds two requests
+    /// used to remember two workspaces declaring the same recipe ids -- which
+    /// the catalog correctly rejects as an ambiguous duplicate, masking the
+    /// failure the test was actually asserting. The declarations are identical
+    /// every time, so one workspace is the honest fixture; remembering it
+    /// against each test's own database stays idempotent.
+    static EVAL_RECIPE_WORKSPACE: std::sync::OnceLock<std::path::PathBuf> =
+        std::sync::OnceLock::new();
+
     async fn declare_eval_recipes(svc: &OptimizerService, _session: &str) {
-        let workspace = tempfile::Builder::new()
-            .prefix("ws-eval-")
-            .tempdir()
-            .unwrap()
-            .into_path();
+        let workspace = EVAL_RECIPE_WORKSPACE
+            .get_or_init(|| {
+                tempfile::Builder::new()
+                    .prefix("ws-eval-")
+                    .tempdir()
+                    .unwrap()
+                    .into_path()
+            })
+            .clone();
         std::fs::create_dir_all(workspace.join("workshop.recipes")).unwrap();
         std::fs::write(
             workspace.join("workshop.recipes/classify.toml"),
@@ -2099,7 +2364,7 @@ max_total_rollouts = 4
     /// The reproduction, as a regression test.
     ///
     /// A ten-rollout campaign that succeeds must leave a complete, contiguous,
-    /// durable history — plan, ten queued, ten settlements, a selection, and a
+    /// durable history — plan, ten queued, ten started, ten settlements, a selection, and a
     /// terminal event — not a lone `optimizer.run.started`.
     #[tokio::test]
     async fn a_ten_rollout_eval_retains_its_whole_event_plan() {
@@ -2135,6 +2400,7 @@ max_total_rollouts = 4
         assert_eq!(count("optimizer.run.started"), 1);
         assert_eq!(count("eval.run.planned"), 1);
         assert_eq!(count("eval.trial.queued"), 10);
+        assert_eq!(count("eval.trial.started"), 10);
         assert_eq!(count("eval.trial.terminal"), 10);
         assert_eq!(count("eval.selection.completed"), 1);
         assert_eq!(count("optimizer.run.completed"), 1);
@@ -2148,6 +2414,35 @@ max_total_rollouts = 4
         assert_eq!(manifest["work"]["skipped"], json!(0));
         assert_eq!(manifest["terminalCursor"], json!(finished.cursor_seq));
         task.abort();
+    }
+
+    #[test]
+    fn completed_eval_records_require_reward_usage_and_rollout_identity() {
+        let valid = json!({
+            "status": "completed",
+            "rolloutId": "roll_1",
+            "reward": 0.0,
+            "usage": {"prompt_tokens": 1, "completion_tokens": 1}
+        });
+        assert_eq!(eval_record_contract_error(&valid), None);
+        assert_eq!(
+            eval_record_contract_error(&json!({
+                "status": "completed", "reward": 0.0, "usage": {}
+            })),
+            Some(EvalRecordContractError::RolloutIdMissing)
+        );
+        assert_eq!(
+            eval_record_contract_error(&json!({
+                "status": "completed", "rolloutId": "roll_1", "usage": {}
+            })),
+            Some(EvalRecordContractError::RewardMissing)
+        );
+        assert_eq!(
+            eval_record_contract_error(&json!({
+                "status": "completed", "rolloutId": "roll_1", "reward": 0.0
+            })),
+            Some(EvalRecordContractError::UsageMissing)
+        );
     }
 
     #[tokio::test]
@@ -2526,7 +2821,7 @@ max_total_rollouts = 4
         task.abort();
     }
     #[tokio::test]
-    async fn container_eval_refuses_a_ready_pool_that_does_not_advertise_gepa_v2() {
+    async fn container_eval_refuses_a_ready_pool_that_does_not_advertise_an_eval_protocol() {
         let (svc, _dir, _) = service().await;
         let (base, task, starts) = spawn_eval_mock("healthbench", BTreeMap::new()).await;
         let family = "healthbench".to_string();
@@ -2561,9 +2856,9 @@ max_total_rollouts = 4
             .map(|error| error.to_string())
             .unwrap();
         assert!(
-            error.contains("GEPA v2")
+            error.contains("ready eval pool")
                 && error.contains(crate::container_capabilities::GEPA_V2_CONTRACT),
-            "expected a GEPA v2 admission refusal, got {error}"
+            "expected an eval protocol admission refusal, got {error}"
         );
         assert!(
             error.contains("protocol=null"),
@@ -2571,6 +2866,19 @@ max_total_rollouts = 4
         );
         assert_eq!(starts.load(Ordering::SeqCst), 0);
         task.abort();
+    }
+
+    #[test]
+    fn container_eval_accepts_the_normalized_live_eval_protocol() {
+        let metadata = json!({
+            "capabilities": {
+                "protocol": crate::container_capabilities::LIVE_EVAL_PROTOCOL
+            }
+        });
+        assert_eq!(
+            advertised_eval_protocol(&metadata).as_deref(),
+            Some(crate::container_capabilities::LIVE_EVAL_PROTOCOL)
+        );
     }
 
     async fn recipe(svc: &OptimizerService, id: &str, session: &str) -> OptimizerRecipeRunRequest {
@@ -2628,7 +2936,7 @@ max_total_rollouts = 4
             .unwrap_err()
             .to_string();
         assert!(
-            error.contains("ambiguous registered banking77 GEPA v2 pools"),
+            error.contains("ambiguous registered banking77 eval pools"),
             "expected an ambiguous-pool refusal, got {error}"
         );
         assert!(
@@ -2742,7 +3050,7 @@ max_total_rollouts = 4
             .to_string();
         assert!(
             not_ready.contains(
-                "requested banking77 container `ctr_banking77_offline` is not a ready GEPA v2 pool"
+                "requested banking77 container `ctr_banking77_offline` is not a ready eval pool"
             ),
             "expected a fail-closed missing-ready-id error, got {not_ready}"
         );
@@ -2766,7 +3074,7 @@ max_total_rollouts = 4
             .to_string();
         assert!(
             wrong_family.contains(
-                "requested banking77 container `ctr_healthbench_ready` is not a ready GEPA v2 pool"
+                "requested banking77 container `ctr_healthbench_ready` is not a ready eval pool"
             ),
             "expected a fail-closed wrong-family error, got {wrong_family}"
         );
@@ -2840,7 +3148,7 @@ max_total_rollouts = 4
             .unwrap_err()
             .to_string();
         assert!(
-            error.contains("ambiguous registered banking77 GEPA v2 pools"),
+            error.contains("ambiguous registered banking77 eval pools"),
             "a newer updated_at must not restore first-match-wins, got {error}"
         );
         assert!(

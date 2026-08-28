@@ -150,7 +150,15 @@ mod tests {
     use serde_json::json;
     use std::fs;
 
-    fn isolated_root() -> (std::path::PathBuf, Option<std::ffi::OsString>) {
+    /// The guard travels with the root: releasing it at the end of this
+    /// function would leave the repointed environment visible to every other
+    /// test for the rest of the test body.
+    fn isolated_root() -> (
+        std::path::PathBuf,
+        Option<std::ffi::OsString>,
+        std::sync::MutexGuard<'static, ()>,
+    ) {
+        let guard = crate::instance::environment_lock();
         let isolated = std::env::temp_dir().join(format!(
             "synth-desktop-typed-caps-{}",
             std::process::id()
@@ -159,7 +167,7 @@ mod tests {
         fs::create_dir_all(&isolated).unwrap();
         let previous = std::env::var_os(crate::instance::DATA_ROOT_ENV);
         std::env::set_var(crate::instance::DATA_ROOT_ENV, &isolated);
-        (isolated, previous)
+        (isolated, previous, guard)
     }
 
     fn restore(previous: Option<std::ffi::OsString>, isolated: std::path::PathBuf) {
@@ -210,7 +218,7 @@ mod tests {
 
     #[test]
     fn artifact_list_inspect_export_delete() {
-        let (isolated, previous) = isolated_root();
+        let (isolated, previous, _guard) = isolated_root();
         let adapter = isolated.join("adapter");
         fs::create_dir_all(&adapter).unwrap();
         fs::write(adapter.join("weights.safetensors"), b"lora").unwrap();
@@ -263,7 +271,7 @@ mod tests {
 
     #[test]
     fn eval_launch_retains_artifact_id() {
-        let (isolated, previous) = isolated_root();
+        let (isolated, previous, _guard) = isolated_root();
         let artifact = TrainingArtifact::from_mlx_handoff(
             "run-eval",
             "sft",

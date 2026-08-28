@@ -144,6 +144,33 @@ pub struct DesktopPermissionUpdate {
     pub sandbox_mode: String,
 }
 
+/// One user-admitted project source root.
+///
+/// A project source is not a chat workspace. It is a folder Workshop is
+/// allowed to *discover executable declarations in* -- `workshop.containers.toml`
+/// and `workshop.recipe(s)` -- so the per-capability flags are part of the
+/// grant, not a display preference.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectSourceEntry {
+    pub path: String,
+    pub containers: bool,
+    pub recipes: bool,
+}
+
+#[derive(Clone, Debug, Serialize, PartialEq, Eq, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectSourceSettings {
+    pub config_path: String,
+    pub entries: Vec<ProjectSourceEntry>,
+}
+
+#[derive(Clone, Debug, Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectSourceUpdate {
+    pub entries: Vec<ProjectSourceEntry>,
+}
+
 const MODEL_MULTI_AGENT_PRESETS: &[(&str, &str, MultiAgentVersion)] = &[
     ("gpt-5.6-sol", "GPT-5.6 Sol", MultiAgentVersion::V2),
     ("gpt-5.6-terra", "GPT-5.6 Terra", MultiAgentVersion::V2),
@@ -220,10 +247,10 @@ pub struct ResolvedBackend {
 
 pub fn get() -> Result<BackendSettings> {
     let resolved = resolve()?;
-    let mut document = read_toml(&resolved.config_path)?;
-    if ensure_default_model_config(&mut document) {
-        write_toml(&resolved.config_path, &document)?;
-    }
+    let document = mutate_config(&resolved.config_path, |document| {
+        ensure_default_model_config(document);
+        Ok(document.clone())
+    })?;
     let intern = document.get("intern").and_then(toml::Value::as_table);
     let profile = intern
         .and_then(|value| value.get("profile"))
@@ -338,31 +365,32 @@ pub fn update(request: BackendSettingsUpdate) -> Result<BackendSettings> {
         &request.env_file,
         config_path.parent().unwrap_or(Path::new(".")),
     )?;
-    let mut document = read_toml(&config_path)?;
-    let root = document
-        .as_table_mut()
-        .ok_or_else(|| anyhow!("Synth config root must be a TOML table"))?;
-    let intern = root
-        .entry("intern")
-        .or_insert_with(|| toml::Value::Table(Default::default()))
-        .as_table_mut()
-        .ok_or_else(|| anyhow!("[intern] must be a TOML table"))?;
-    intern.insert("profile".into(), toml::Value::String(profile.clone()));
-    intern.insert(
-        "env_file".into(),
-        toml::Value::String(path_for_toml(&env_file)),
-    );
-    intern.insert(
-        "api_key_env".into(),
-        toml::Value::String(api_key_env.clone()),
-    );
-    let endpoints = intern
-        .entry("endpoints")
-        .or_insert_with(|| toml::Value::Table(Default::default()))
-        .as_table_mut()
-        .ok_or_else(|| anyhow!("[intern.endpoints] must be a TOML table"))?;
-    endpoints.insert(profile, toml::Value::String(backend_url));
-    write_toml(&config_path, &document)?;
+    mutate_config(&config_path, |document| {
+        let root = document
+            .as_table_mut()
+            .ok_or_else(|| anyhow!("Synth config root must be a TOML table"))?;
+        let intern = root
+            .entry("intern")
+            .or_insert_with(|| toml::Value::Table(Default::default()))
+            .as_table_mut()
+            .ok_or_else(|| anyhow!("[intern] must be a TOML table"))?;
+        intern.insert("profile".into(), toml::Value::String(profile.clone()));
+        intern.insert(
+            "env_file".into(),
+            toml::Value::String(path_for_toml(&env_file)),
+        );
+        intern.insert(
+            "api_key_env".into(),
+            toml::Value::String(api_key_env.clone()),
+        );
+        let endpoints = intern
+            .entry("endpoints")
+            .or_insert_with(|| toml::Value::Table(Default::default()))
+            .as_table_mut()
+            .ok_or_else(|| anyhow!("[intern.endpoints] must be a TOML table"))?;
+        endpoints.insert(profile.clone(), toml::Value::String(backend_url.clone()));
+        Ok(())
+    })?;
 
     if let Some(api_key) = request.api_key.as_deref() {
         store_api_key(api_key)?;
@@ -508,26 +536,22 @@ pub(crate) fn select_default_workspace_path(
 pub fn update_workspace_access(request: WorkspaceAccessUpdate) -> Result<WorkspaceAccessSettings> {
     let allowed_roots = validate_workspace_roots(request.allowed_roots)?;
     let path = config_path();
-    let mut document = read_toml(&path)?;
-    let root = document
-        .as_table_mut()
-        .ok_or_else(|| anyhow!("Synth config root must be a TOML table"))?;
-    let workspace = root
-        .entry("workspace")
-        .or_insert_with(|| toml::Value::Table(Default::default()))
-        .as_table_mut()
-        .ok_or_else(|| anyhow!("[workspace] must be a TOML table"))?;
-    workspace.insert(
-        "allowed_roots".into(),
-        toml::Value::Array(
-            allowed_roots
-                .iter()
-                .cloned()
-                .map(toml::Value::String)
-                .collect(),
-        ),
-    );
-    write_toml(&path, &document)?;
+    let stored = allowed_roots.clone();
+    mutate_config(&path, move |document| {
+        let root = document
+            .as_table_mut()
+            .ok_or_else(|| anyhow!("Synth config root must be a TOML table"))?;
+        let workspace = root
+            .entry("workspace")
+            .or_insert_with(|| toml::Value::Table(Default::default()))
+            .as_table_mut()
+            .ok_or_else(|| anyhow!("[workspace] must be a TOML table"))?;
+        workspace.insert(
+            "allowed_roots".into(),
+            toml::Value::Array(stored.into_iter().map(toml::Value::String).collect()),
+        );
+        Ok(())
+    })?;
     Ok(WorkspaceAccessSettings { allowed_roots })
 }
 
@@ -647,29 +671,30 @@ fn update_desktop_permissions_at(
     if !is_sandbox_mode(&request.sandbox_mode) {
         return Err(anyhow!("unsupported sandbox mode"));
     }
-    let mut document = read_toml(path)?;
-    let root = document
-        .as_table_mut()
-        .ok_or_else(|| anyhow!("Synth config root must be a TOML table"))?;
-    let desktop = root
-        .entry("desktop")
-        .or_insert_with(|| toml::Value::Table(Default::default()))
-        .as_table_mut()
-        .ok_or_else(|| anyhow!("[desktop] must be a TOML table"))?;
-    let permissions = desktop
-        .entry("permissions")
-        .or_insert_with(|| toml::Value::Table(Default::default()))
-        .as_table_mut()
-        .ok_or_else(|| anyhow!("[desktop.permissions] must be a TOML table"))?;
-    permissions.insert(
-        "approval_policy".into(),
-        toml::Value::String(request.approval_policy),
-    );
-    permissions.insert(
-        "sandbox_mode".into(),
-        toml::Value::String(request.sandbox_mode),
-    );
-    write_toml(path, &document)?;
+    mutate_config(path, |document| {
+        let root = document
+            .as_table_mut()
+            .ok_or_else(|| anyhow!("Synth config root must be a TOML table"))?;
+        let desktop = root
+            .entry("desktop")
+            .or_insert_with(|| toml::Value::Table(Default::default()))
+            .as_table_mut()
+            .ok_or_else(|| anyhow!("[desktop] must be a TOML table"))?;
+        let permissions = desktop
+            .entry("permissions")
+            .or_insert_with(|| toml::Value::Table(Default::default()))
+            .as_table_mut()
+            .ok_or_else(|| anyhow!("[desktop.permissions] must be a TOML table"))?;
+        permissions.insert(
+            "approval_policy".into(),
+            toml::Value::String(request.approval_policy),
+        );
+        permissions.insert(
+            "sandbox_mode".into(),
+            toml::Value::String(request.sandbox_mode),
+        );
+        Ok(())
+    })?;
     desktop_permission_settings_at(path)
 }
 
@@ -715,32 +740,33 @@ pub fn update_model_multi_agent(
         return Err(anyhow!("modelId is required"));
     }
     let path = config_path();
-    let mut document = read_toml(&path)?;
-    let root = document
-        .as_table_mut()
-        .ok_or_else(|| anyhow!("Synth config root must be a TOML table"))?;
-    let models = root
-        .entry("models")
-        .or_insert_with(|| toml::Value::Table(Default::default()))
-        .as_table_mut()
-        .ok_or_else(|| anyhow!("[models] must be a TOML table"))?;
-    let multi_agent = models
-        .entry("multi_agent")
-        .or_insert_with(|| toml::Value::Table(Default::default()))
-        .as_table_mut()
-        .ok_or_else(|| anyhow!("[models.multi_agent] must be a TOML table"))?;
-    match request.version {
-        Some(version) => {
-            multi_agent.insert(
-                model_id,
-                toml::Value::String(multi_agent_version_name(version).to_owned()),
-            );
+    mutate_config(&path, |document| {
+        let root = document
+            .as_table_mut()
+            .ok_or_else(|| anyhow!("Synth config root must be a TOML table"))?;
+        let models = root
+            .entry("models")
+            .or_insert_with(|| toml::Value::Table(Default::default()))
+            .as_table_mut()
+            .ok_or_else(|| anyhow!("[models] must be a TOML table"))?;
+        let multi_agent = models
+            .entry("multi_agent")
+            .or_insert_with(|| toml::Value::Table(Default::default()))
+            .as_table_mut()
+            .ok_or_else(|| anyhow!("[models.multi_agent] must be a TOML table"))?;
+        match request.version {
+            Some(version) => {
+                multi_agent.insert(
+                    model_id,
+                    toml::Value::String(multi_agent_version_name(version).to_owned()),
+                );
+            }
+            None => {
+                multi_agent.remove(&model_id);
+            }
         }
-        None => {
-            multi_agent.remove(&model_id);
-        }
-    }
-    write_toml(&path, &document)?;
+        Ok(())
+    })?;
     model_multi_agent_settings()
 }
 
@@ -929,12 +955,288 @@ fn read_toml(path: &Path) -> Result<toml::Value> {
     }
 }
 
+/// Serializes this process's config read-modify-write cycles.
+///
+/// `config.toml` carries permission state (workspace roots, project sources),
+/// so two concurrent settings updates must not be able to interleave a read of
+/// the old document with a write of a whole new one and drop a grant.
+static CONFIG_MUTATION: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// Read, edit, and durably replace `config.toml` as one operation.
+///
+/// The whole cycle is under [`CONFIG_MUTATION`], so a concurrent updater sees
+/// this edit rather than the document that preceded it.
+fn mutate_config<T>(path: &Path, edit: impl FnOnce(&mut toml::Value) -> Result<T>) -> Result<T> {
+    use fs2::FileExt;
+    let _guard = CONFIG_MUTATION
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let lock_path = path.with_extension("toml.lock");
+    let lock = fs::OpenOptions::new()
+        .create(true)
+        .read(true)
+        .write(true)
+        .open(&lock_path)
+        .with_context(|| format!("open config lock {}", lock_path.display()))?;
+    lock.lock_exclusive()
+        .with_context(|| format!("lock config {}", path.display()))?;
+    let mut document = read_toml(path)?;
+    let before = document.clone();
+    let outcome = edit(&mut document)?;
+    if document != before {
+        write_toml(path, &document)?;
+    }
+    Ok(outcome)
+}
+
+/// Replace `config.toml` atomically.
+///
+/// A torn write here is not a cosmetic problem: the next launch parses the
+/// truncated document, finds no `[workspace]` or `[desktop.project_sources]`,
+/// and silently drops every permission the user had granted. Render to a
+/// same-directory temporary file, fsync it, then rename over the target so a
+/// reader sees either the previous valid document or the new one.
 fn write_toml(path: &Path, document: &toml::Value) -> Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
-    fs::write(path, toml::to_string_pretty(document)?)?;
+    let rendered = toml::to_string_pretty(document)?;
+    let directory = path.parent().unwrap_or(Path::new("."));
+    let temporary = directory.join(format!(
+        ".{}.{}.tmp",
+        path.file_name()
+            .and_then(std::ffi::OsStr::to_str)
+            .unwrap_or("config.toml"),
+        std::process::id()
+    ));
+    let write_temporary = || -> std::io::Result<()> {
+        let mut file = fs::File::create(&temporary)?;
+        file.write_all(rendered.as_bytes())?;
+        file.sync_all()?;
+        Ok(())
+    };
+    if let Err(error) = write_temporary() {
+        let _ = fs::remove_file(&temporary);
+        return Err(error).with_context(|| format!("stage {}", temporary.display()));
+    }
+    // A config that already had restrictive permissions keeps them; the
+    // replacement must not widen access to a file that can name secret paths.
+    if let Ok(metadata) = fs::metadata(path) {
+        let _ = fs::set_permissions(&temporary, metadata.permissions());
+    }
+    if let Err(error) = fs::rename(&temporary, path) {
+        let _ = fs::remove_file(&temporary);
+        return Err(error).with_context(|| format!("replace {}", path.display()));
+    }
     Ok(())
+}
+
+/// Project source roots recorded for this Workshop instance.
+pub fn project_source_settings() -> Result<ProjectSourceSettings> {
+    let path = config_path();
+    Ok(ProjectSourceSettings {
+        config_path: path.display().to_string(),
+        entries: project_source_entries(&read_toml(&path)?),
+    })
+}
+
+/// Just the roots, without the config path. Used by the discovery resolver on
+/// every refresh, so it stays cheap and never fails on a missing file.
+pub fn project_source_roots() -> Vec<ProjectSourceEntry> {
+    read_toml(&config_path())
+        .as_ref()
+        .map(project_source_entries)
+        .unwrap_or_default()
+}
+
+/// Both accepted spellings of `[desktop.project_sources]`.
+///
+/// `roots = [...]` is the short form; `[[desktop.project_sources.entries]]`
+/// carries the per-capability flags. A short-form root grants both
+/// capabilities, which is what "add this repository" means.
+fn project_source_entries(document: &toml::Value) -> Vec<ProjectSourceEntry> {
+    let Some(table) = document
+        .get("desktop")
+        .and_then(|value| value.get("project_sources"))
+    else {
+        return Vec::new();
+    };
+    let mut entries: Vec<ProjectSourceEntry> = Vec::new();
+    let mut push = |entry: ProjectSourceEntry| {
+        if entry.path.trim().is_empty() {
+            return;
+        }
+        if let Some(existing) = entries
+            .iter_mut()
+            .find(|candidate| candidate.path == entry.path)
+        {
+            existing.containers |= entry.containers;
+            existing.recipes |= entry.recipes;
+            return;
+        }
+        entries.push(entry);
+    };
+    if let Some(roots) = table.get("roots").and_then(toml::Value::as_array) {
+        for root in roots.iter().filter_map(toml::Value::as_str) {
+            push(ProjectSourceEntry {
+                path: root.trim().to_owned(),
+                containers: true,
+                recipes: true,
+            });
+        }
+    }
+    if let Some(declared) = table.get("entries").and_then(toml::Value::as_array) {
+        for entry in declared {
+            let Some(path) = entry.get("path").and_then(toml::Value::as_str) else {
+                continue;
+            };
+            push(ProjectSourceEntry {
+                path: path.trim().to_owned(),
+                containers: entry
+                    .get("containers")
+                    .and_then(toml::Value::as_bool)
+                    .unwrap_or(true),
+                recipes: entry
+                    .get("recipes")
+                    .and_then(toml::Value::as_bool)
+                    .unwrap_or(true),
+            });
+        }
+    }
+    entries
+}
+
+/// Replace the persisted project-source list.
+///
+/// Callers own admission: this function records what it is given and does not
+/// decide whether a path was user-confirmed. It only refuses shapes that could
+/// not have been confirmed at all -- relative, blank, or duplicate paths, and
+/// entries that grant no capability.
+/// Admit one root, merging it into whatever the document already records.
+///
+/// The read and the write are one locked cycle. Doing this as
+/// `project_source_settings()` then `update_project_sources()` would read the
+/// old list outside the lock and write it back as the whole new list, so two
+/// approvals resolved at once would leave only the second -- silently dropping
+/// a grant the user had given.
+pub fn merge_project_source(entry: ProjectSourceEntry) -> Result<ProjectSourceSettings> {
+    mutate_project_sources(|entries| {
+        match entries
+            .iter_mut()
+            .find(|candidate| candidate.path == entry.path)
+        {
+            Some(existing) => {
+                existing.containers |= entry.containers;
+                existing.recipes |= entry.recipes;
+            }
+            None => entries.push(entry),
+        }
+    })
+}
+
+/// Drop one root, leaving every other entry as it stands.
+pub fn forget_project_source(path: &str) -> Result<ProjectSourceSettings> {
+    let path = path.trim().to_owned();
+    mutate_project_sources(|entries| entries.retain(|entry| entry.path != path))
+}
+
+fn mutate_project_sources(
+    edit: impl FnOnce(&mut Vec<ProjectSourceEntry>),
+) -> Result<ProjectSourceSettings> {
+    let path = config_path();
+    let entries = mutate_config(&path, |document| {
+        let mut entries = project_source_entries(document);
+        edit(&mut entries);
+        let validated = validate_project_sources(entries)?;
+        write_project_sources(document, validated.clone())?;
+        Ok(validated)
+    })?;
+    Ok(ProjectSourceSettings {
+        config_path: path.display().to_string(),
+        entries,
+    })
+}
+
+fn validate_project_sources(requested: Vec<ProjectSourceEntry>) -> Result<Vec<ProjectSourceEntry>> {
+    let mut entries: Vec<ProjectSourceEntry> = Vec::new();
+    for entry in requested {
+        let path = entry.path.trim().to_owned();
+        if path.is_empty() {
+            return Err(anyhow!("a project source path is required"));
+        }
+        if !Path::new(&path).is_absolute() {
+            return Err(anyhow!("project source paths must be absolute: {path}"));
+        }
+        if !entry.containers && !entry.recipes {
+            return Err(anyhow!(
+                "project source {path} must enable containers, recipes, or both"
+            ));
+        }
+        match entries.iter_mut().find(|candidate| candidate.path == path) {
+            // A repeated path is a merge, not an error: two callers may each
+            // hold half of the same grant.
+            Some(existing) => {
+                existing.containers |= entry.containers;
+                existing.recipes |= entry.recipes;
+            }
+            None => entries.push(ProjectSourceEntry {
+                path,
+                containers: entry.containers,
+                recipes: entry.recipes,
+            }),
+        }
+    }
+    Ok(entries)
+}
+
+fn write_project_sources(
+    document: &mut toml::Value,
+    entries: Vec<ProjectSourceEntry>,
+) -> Result<()> {
+    let root = document
+        .as_table_mut()
+        .ok_or_else(|| anyhow!("Synth config root must be a TOML table"))?;
+    let desktop = root
+        .entry("desktop")
+        .or_insert_with(|| toml::Value::Table(Default::default()))
+        .as_table_mut()
+        .ok_or_else(|| anyhow!("[desktop] must be a TOML table"))?;
+    let sources = desktop
+        .entry("project_sources")
+        .or_insert_with(|| toml::Value::Table(Default::default()))
+        .as_table_mut()
+        .ok_or_else(|| anyhow!("[desktop.project_sources] must be a TOML table"))?;
+    // The short `roots` spelling is accepted on read but never written back,
+    // so one document cannot carry two disagreeing lists.
+    sources.remove("roots");
+    sources.insert(
+        "entries".into(),
+        toml::Value::Array(
+            entries
+                .into_iter()
+                .map(|entry| {
+                    let mut table = toml::value::Table::new();
+                    table.insert("path".into(), toml::Value::String(entry.path));
+                    table.insert("containers".into(), toml::Value::Boolean(entry.containers));
+                    table.insert("recipes".into(), toml::Value::Boolean(entry.recipes));
+                    toml::Value::Table(table)
+                })
+                .collect(),
+        ),
+    );
+    Ok(())
+}
+
+/// Replace the persisted project-source list wholesale.
+///
+/// This is the Settings-shaped operation: the caller has the full list in
+/// front of them. Admission paths use [`merge_project_source`] instead, so a
+/// concurrent approval cannot be overwritten by a stale snapshot.
+pub fn update_project_sources(request: ProjectSourceUpdate) -> Result<ProjectSourceSettings> {
+    mutate_project_sources(move |entries| *entries = request.entries)
 }
 
 fn resolve_secret(key: &str, env_file: &Path) -> (Option<String>, Option<String>) {
@@ -1660,5 +1962,142 @@ operations = { "rollouts.prepare" = false }
         );
         assert_eq!(parse_multi_agent_version("v1"), Some(MultiAgentVersion::V1));
         assert_eq!(parse_multi_agent_version("V2"), Some(MultiAgentVersion::V2));
+    }
+
+    /// Both spellings of `[desktop.project_sources]` parse, and a path that
+    /// appears in both is one grant with the union of its capabilities.
+    #[test]
+    fn project_source_entries_accept_both_spellings_and_collapse_duplicates() {
+        let document: toml::Value = r#"
+[desktop.project_sources]
+roots = ["/repos/short-form", "/repos/both"]
+
+[[desktop.project_sources.entries]]
+path = "/repos/containers-only"
+containers = true
+recipes = false
+
+[[desktop.project_sources.entries]]
+path = "/repos/both"
+containers = false
+recipes = true
+"#
+        .parse()
+        .unwrap();
+        let entries = project_source_entries(&document);
+        assert_eq!(
+            entries
+                .iter()
+                .map(|entry| (entry.path.as_str(), entry.containers, entry.recipes))
+                .collect::<Vec<_>>(),
+            vec![
+                ("/repos/short-form", true, true),
+                ("/repos/both", true, true),
+                ("/repos/containers-only", true, false),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_document_without_project_sources_yields_none() {
+        let document: toml::Value = "[workspace]\nallowed_roots = []\n".parse().unwrap();
+        assert!(project_source_entries(&document).is_empty());
+    }
+
+    /// Writing project sources must not be a way to lose unrelated settings.
+    #[test]
+    fn an_atomic_rewrite_preserves_unrelated_settings_and_leaves_no_debris() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("config.toml");
+        fs::write(
+            &path,
+            "[intern]\nprofile = \"staging\"\n\n[workspace]\nallowed_roots = [\"/repos/keep\"]\n",
+        )
+        .unwrap();
+
+        let mut document = read_toml(&path).unwrap();
+        document
+            .as_table_mut()
+            .unwrap()
+            .insert("marker".into(), toml::Value::Boolean(true));
+        write_toml(&path, &document).unwrap();
+
+        let reloaded = read_toml(&path).unwrap();
+        assert_eq!(reloaded["intern"]["profile"].as_str(), Some("staging"));
+        assert_eq!(
+            reloaded["workspace"]["allowed_roots"][0].as_str(),
+            Some("/repos/keep")
+        );
+        assert_eq!(reloaded["marker"].as_bool(), Some(true));
+
+        let leftovers: Vec<_> = fs::read_dir(temp.path())
+            .unwrap()
+            .filter_map(|entry| entry.ok().map(|entry| entry.file_name()))
+            .filter(|name| name.to_string_lossy().ends_with(".tmp"))
+            .collect();
+        assert!(
+            leftovers.is_empty(),
+            "the staging file must not survive the rename: {leftovers:?}"
+        );
+    }
+
+    /// A config that was restricted stays restricted after a rewrite.
+    #[cfg(unix)]
+    #[test]
+    fn an_atomic_rewrite_preserves_file_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("config.toml");
+        fs::write(&path, "[intern]\nprofile = \"prod\"\n").unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+        write_toml(&path, &read_toml(&path).unwrap()).unwrap();
+        assert_eq!(
+            fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+    }
+
+    /// An interrupted write must not be able to leave a half-parsed document
+    /// where a permission list used to be.
+    #[test]
+    fn a_previous_config_survives_a_failed_write() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("config.toml");
+        let original = "[workspace]\nallowed_roots = [\"/repos/keep\"]\n";
+        fs::write(&path, original).unwrap();
+        // A directory cannot be renamed over by a file write, so this stands in
+        // for the write failing after the original was already on disk.
+        let blocked = temp.path().join("blocked");
+        fs::create_dir_all(&blocked).unwrap();
+        assert!(write_toml(&blocked, &read_toml(&path).unwrap()).is_err());
+        assert_eq!(fs::read_to_string(&path).unwrap(), original);
+    }
+
+    #[test]
+    fn a_project_source_update_refuses_shapes_no_picker_could_have_produced() {
+        let relative = ProjectSourceUpdate {
+            entries: vec![ProjectSourceEntry {
+                path: "relative/path".into(),
+                containers: true,
+                recipes: true,
+            }],
+        };
+        assert!(update_project_sources(relative).is_err());
+        let blank = ProjectSourceUpdate {
+            entries: vec![ProjectSourceEntry {
+                path: "   ".into(),
+                containers: true,
+                recipes: true,
+            }],
+        };
+        assert!(update_project_sources(blank).is_err());
+        let no_capability = ProjectSourceUpdate {
+            entries: vec![ProjectSourceEntry {
+                path: "/repos/thing".into(),
+                containers: false,
+                recipes: false,
+            }],
+        };
+        assert!(update_project_sources(no_capability).is_err());
     }
 }

@@ -34,6 +34,29 @@ local = "http://127.0.0.1:8000"
 [workspace]
 allowed_roots = ["/Users/you/Documents/GitHub"]
 
+# Project sources: folders Workshop may read `workshop.containers.toml`,
+# `workshop.recipe.toml`, and `workshop.recipes/*.toml` from. Container commands
+# declared in these folders can be started, after the usual execution approvals,
+# so this is a stronger grant than [workspace] above -- name the exact
+# repository, not a folder full of them.
+#
+# Normally written by Workshop, not by hand: an agent asks with
+# `project_source_request`, the user confirms the same folder in a native
+# picker, and Workshop records it here. Settings → Workspace → Project sources
+# shows every entry and removes them.
+#
+# Discovery merges these with any non-empty SYNTH_CONTAINER_SOURCE_ROOTS /
+# SYNTH_RECIPE_SOURCE_ROOTS override and with roots already discovered. Only
+# when all three are empty does it fall back to scanning ~/GitHub.
+# [[desktop.project_sources.entries]]
+# path = "/Users/you/GitHub/nanohorizon"
+# containers = true
+# recipes = true
+#
+# Short form, granting both capabilities:
+# [desktop.project_sources]
+# roots = ["/Users/you/GitHub/nanohorizon"]
+
 # Optional overrides for the provider-independent model presets shown in
 # Desktop Settings. Omit an entry to use its built-in preset.
 # [models.multi_agent]

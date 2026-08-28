@@ -41,6 +41,7 @@ const MIGRATIONS: &[&str] = &[
     MIGRATION_36,
     MIGRATION_37,
     MIGRATION_38,
+    MIGRATION_39,
 ];
 
 /// Apply every migration the database has not reached yet.
@@ -95,6 +96,7 @@ const REQUIRED_TABLES: &[(&str, &str)] = &[
     ("optimizer_run_ownership", MIGRATION_33),
     ("container_sources", MIGRATION_37),
     ("optimizer_recipe_sources", MIGRATION_38),
+    ("project_source_requests", MIGRATION_39),
 ];
 
 fn heal_missing_tables(conn: &Connection) -> Result<()> {
@@ -1796,6 +1798,36 @@ CREATE TABLE IF NOT EXISTS optimizer_recipe_sources (
 );
 CREATE INDEX IF NOT EXISTS optimizer_recipe_sources_updated_at ON optimizer_recipe_sources(updated_at DESC);
 "#;
+
+/// Pending agent requests to admit a folder as a project source.
+///
+/// Deliberately its own table rather than a flag on `workspace_grant_requests`:
+/// a workspace attachment lets a conversation read and write files, while a
+/// project source additionally lets Workshop discover and later execute the
+/// container commands declared beneath it. Folding the two together would make
+/// one approval silently answer both questions.
+///
+/// A row here is a *request*. It carries no authority: admission happens only
+/// when `config.toml` records the canonical path after the user re-confirms it
+/// in the native picker.
+const MIGRATION_39: &str = r#"
+CREATE TABLE IF NOT EXISTS project_source_requests (
+    id TEXT PRIMARY KEY,
+    session_id TEXT,
+    requested_path TEXT NOT NULL,
+    canonical_path TEXT NOT NULL,
+    reason TEXT NOT NULL,
+    containers INTEGER NOT NULL,
+    recipes INTEGER NOT NULL,
+    attach_to_conversation INTEGER NOT NULL,
+    status TEXT NOT NULL CHECK(status IN ('pending','approved','denied','expired')),
+    created_at TEXT NOT NULL,
+    resolved_at TEXT
+);
+CREATE INDEX IF NOT EXISTS project_source_requests_status ON project_source_requests(status, created_at DESC);
+CREATE INDEX IF NOT EXISTS project_source_requests_session ON project_source_requests(session_id, created_at DESC);
+"#;
+
 #[cfg(test)]
 mod tests {
     /// Derived, not pinned: adding a migration should not mean editing

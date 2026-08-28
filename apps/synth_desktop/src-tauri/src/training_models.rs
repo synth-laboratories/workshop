@@ -481,6 +481,7 @@ mod tests {
 
     #[test]
     fn training_models_root_follows_instance_data_root() {
+        let _environment = crate::instance::environment_lock();
         let isolated = std::env::temp_dir().join(format!(
             "synth-desktop-training-models-root-{}",
             std::process::id()

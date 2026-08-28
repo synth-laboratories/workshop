@@ -233,7 +233,7 @@ export type RunProgressProjection = {
 		suffix?: string;
 		usedCalls: number;
 		maxCalls: number;
-		usedCostUsd: number;
+		usedCostUsd?: number;
 		maxCostUsd: number;
 		note?: string;
 	};

@@ -19,7 +19,7 @@ export function providerAccessFromSecrets({
 		displaySuffix?: string | null;
 		usedCalls: number;
 		maxCalls: number;
-		usedCostUsd: number;
+		usedCostUsd?: number | null;
 		maxCostUsd: number;
 	};
 	grant?: {
@@ -44,7 +44,7 @@ export function providerAccessFromSecrets({
 			suffix: capability.displaySuffix ?? undefined,
 			usedCalls: capability.usedCalls,
 			maxCalls: capability.maxCalls,
-			usedCostUsd: capability.usedCostUsd,
+			usedCostUsd: capability.usedCostUsd ?? undefined,
 			maxCostUsd: capability.maxCostUsd,
 			note: status === "proxy_down"
 				? "Provider proxy is not running."
@@ -59,7 +59,7 @@ export function providerAccessFromSecrets({
 			status: "approval_required",
 			usedCalls: 0,
 			maxCalls: grant.maxCalls,
-			usedCostUsd: 0,
+			usedCostUsd: undefined,
 			maxCostUsd: grant.maxCostUsd,
 			note: "Allow this in Settings → Secrets"
 		};
@@ -70,7 +70,7 @@ export function providerAccessFromSecrets({
 			status: "proxy_down",
 			usedCalls: 0,
 			maxCalls: 0,
-			usedCostUsd: 0,
+			usedCostUsd: undefined,
 			maxCostUsd: 0,
 			note: "Provider proxy is not running."
 		};

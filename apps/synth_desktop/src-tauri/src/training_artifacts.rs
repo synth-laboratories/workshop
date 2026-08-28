@@ -525,7 +525,6 @@ mod tests {
     /// `state_root()` reads a process-global variable, so two tests holding
     /// different roots cannot run at the same time however carefully each one
     /// cleans up after itself.
-    static ROOT_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
     static ROOT_SEQUENCE: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
     /// A private data root for one test, restored when the test ends.
@@ -553,9 +552,7 @@ mod tests {
     }
 
     fn isolated_root() -> IsolatedRoot {
-        // A poisoned lock means some earlier test panicked; the root is still
-        // ours to take, so recover rather than cascade the failure.
-        let guard = ROOT_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+        let guard = crate::instance::environment_lock();
         let ordinal = ROOT_SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         let path = std::env::temp_dir().join(format!(
             "synth-desktop-training-artifacts-{}-{ordinal}",

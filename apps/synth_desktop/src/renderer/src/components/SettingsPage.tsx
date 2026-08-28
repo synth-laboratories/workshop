@@ -28,6 +28,8 @@ import { bridges } from "../runtime/desktopBridge";
 import { ChatgptCodexSubscriptionCard } from "./ChatgptCodexSubscriptionCard";
 import { ContextSettings } from "./ContextSettings";
 import { SecretsSettings } from "./SecretsSettings";
+import { ProjectSourcesSettings } from "./ProjectSourcesSettings";
+import { WorkspaceAccessSettings } from "./WorkspaceAccessSettings";
 
 type Props = {
 	onBack: () => void;
@@ -92,6 +94,14 @@ function IconPerson() {
 	);
 }
 
+function IconFolder() {
+	return (
+		<svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden>
+			<path d="M2 4h4.2l1.3 1.6H14v7a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V4z" stroke="currentColor" strokeWidth="1.3" strokeLinejoin="round" />
+		</svg>
+	);
+}
+
 function IconKey() {
 	return (
 		<svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden>
@@ -126,6 +136,7 @@ const SECTIONS = [
 	{ id: "models", label: "Models", icon: IconChip },
 	{ id: "inference", label: "Inference", icon: IconGauge },
 	{ id: "voice", label: "Voice", icon: IconMic },
+	{ id: "workspace", label: "Workspace", icon: IconFolder },
 	{ id: "account", label: "Account", icon: IconPerson },
 	{ id: "secrets", label: "Secrets", icon: IconKey },
 	{ id: "about", label: "About", icon: IconInfo }
@@ -551,6 +562,24 @@ export function SettingsPage({
 							onRefresh={account.onRefresh}
 							onOpenDeviceUsage={account.onOpenDeviceUsage}
 						/>
+					) : null}
+					{section === "workspace" ? (
+						<div className="settings-sections" data-testid="settings-workspace">
+							<SettingsCard
+								title="Project sources"
+								description="Where Workshop may discover container and optimizer recipe declarations."
+								className="settings-card-embed"
+							>
+								<ProjectSourcesSettings />
+							</SettingsCard>
+							<SettingsCard
+								title="Agent workspace access"
+								description="Folders a conversation may read and write. This does not authorize running anything."
+								className="settings-card-embed"
+							>
+								<WorkspaceAccessSettings />
+							</SettingsCard>
+						</div>
 					) : null}
 					{section === "secrets" ? <SecretsSettings /> : null}
 					{section === "about" ? (

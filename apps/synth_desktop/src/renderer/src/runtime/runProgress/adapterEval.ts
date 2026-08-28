@@ -40,6 +40,17 @@ import {
 const EVAL_COMPLETION_TYPES = ["eval.trial.terminal"];
 const EVAL_START_TYPES = new Set(["eval.trial.queued", "eval.trial.started"]);
 
+export enum EvalProjectionErrorCode {
+	TrialCountMismatch = "eval_trial_count_mismatch"
+}
+
+export class EvalProjectionError extends Error {
+	constructor(readonly code: EvalProjectionErrorCode, message: string) {
+		super(`${code}: ${message}`);
+		this.name = "EvalProjectionError";
+	}
+}
+
 const STAGE_ORDER: Array<{ id: string; label: string }> = [
 	{ id: "plan", label: "Plan" },
 	{ id: "screen", label: "Screen" },
@@ -239,6 +250,13 @@ export function projectEval(input: AdapterInput, projected: ProjectedState): Run
 	const terminal = base.terminal;
 	const failed = base.status === "failed";
 	const tally = counts(state);
+	const represented = tally.terminal + tally.running + tally.queued;
+	if (state.plannedTrials > 0 && represented > state.plannedTrials) {
+		throw new EvalProjectionError(
+			EvalProjectionErrorCode.TrialCountMismatch,
+			`plan declares ${state.plannedTrials} trials but lifecycle state contains ${represented}`
+		);
+	}
 	const { retried, lastRequeueMs } = retryEvidence(input.events);
 	const frozen = terminal ? frozenWork(input.run) : undefined;
 	// Terminal counts come from the sealed manifest when there is one, so a late

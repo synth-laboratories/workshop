@@ -1547,18 +1547,45 @@ export function eventsToLocalActivity(
 			continue;
 		}
 		if (!event.eventKind.startsWith("approval.")) continue;
+		// Policy-effective is durable configuration state, not conversation
+		// activity. Keep it in the journal/Advanced view and let the composer’s
+		// permissions control present the active policy in Synth’s canonical
+		// “Never ask · Full system access” language.
+		if (event.eventKind === "approval.policy.effective") continue;
 		const path = typeof payload.path === "string" ? payload.path : undefined;
 		const approvalKind = typeof payload.kind === "string" ? payload.kind : "permission";
-		const label = event.eventKind === "approval.requested" && approvalKind === "paid_compute" ? "Paid compute approval"
-			: event.eventKind === "approval.requested" && approvalKind === "credential_access" ? "Credential access"
-				: event.eventKind === "approval.requested" && approvalKind === "sidecar_lifecycle" ? "Sidecar lifecycle"
-			: event.eventKind === "approval.requested" && approvalKind === "plugin_lifecycle" ? "Plugin lifecycle"
-			: event.eventKind === "approval.requested" && approvalKind === "computer_use"
-				? (payload.hazard === true ? "Confirm this action" : "Allow app control")
-			: event.eventKind === "approval.requested" ? "Approval requested"
-			: event.eventKind === "approval.granted" ? "Approval granted"
-				: event.eventKind === "approval.rejected" ? "Approval rejected"
-					: event.eventKind === "approval.expired" ? "Approval expired" : "Approval updated";
+		const approvalSubject = approvalKind === "paid_compute" ? "Paid compute"
+			: approvalKind === "credential_access" ? "Credential access"
+				: approvalKind === "sidecar_lifecycle" ? "Sidecar lifecycle"
+					: approvalKind === "plugin_lifecycle" ? "Plugin lifecycle"
+						: approvalKind === "computer_use" ? "App control"
+							: approvalKind === "project_source" ? "Project source"
+								: "Permission";
+		let label: string | undefined;
+		switch (event.eventKind) {
+			case "approval.requested":
+				label = approvalKind === "paid_compute" ? "Paid compute approval"
+					: approvalKind === "credential_access" ? "Credential access"
+						: approvalKind === "sidecar_lifecycle" ? "Sidecar lifecycle"
+							: approvalKind === "plugin_lifecycle" ? "Plugin lifecycle"
+								: approvalKind === "computer_use"
+									? (payload.hazard === true ? "Confirm this action" : "Allow app control")
+									: "Approval requested";
+				break;
+			case "approval.granted":
+				label = `${approvalSubject} granted`;
+				break;
+			case "approval.rejected":
+				label = `${approvalSubject} rejected`;
+				break;
+			case "approval.expired":
+				label = `${approvalSubject} expired`;
+				break;
+			default:
+				// Unknown approval events remain available in Advanced without
+				// being mislabeled as user-visible approval activity.
+				continue;
+		}
 		const command = typeof payload.command === "string" ? payload.command : undefined;
 		const typedDetail = approvalKind === "credential_access"
 			? [payload.provider, payload.purpose].filter((value): value is string => typeof value === "string").join(" · ")

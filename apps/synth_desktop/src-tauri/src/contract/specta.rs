@@ -267,6 +267,13 @@ pub fn builder() -> Builder<tauri::Wry> {
         crate::workspace_scope_grants_list,
         crate::workspace_scope_approve_request,
         crate::workspace_scope_deny_request,
+        crate::project_sources_get,
+        crate::project_sources_refresh,
+        crate::project_source_add,
+        crate::project_source_remove,
+        crate::project_source_requests_list,
+        crate::project_source_approve,
+        crate::project_source_deny,
         crate::storage::legacy_migration::commands::migration_scan,
         crate::storage::legacy_migration::commands::migration_prepare,
         crate::storage::legacy_migration::commands::migration_apply,
@@ -473,8 +480,18 @@ mod tests {
         // (registration, not selection) plus `laguna_policies`.
         // 249 → 251: the published adapter's status and download.
         // 251 → 253: saved-LoRA checkpoint detail and artifact detail.
+        // 255 → 259: four commands landed on earlier lanes without bumping
+        // this count, so `cargo test` was already reporting drift here before
+        // the project-source work. Recording the real number rather than
+        // carrying the stale one forward.
+        // 259 → 266: project sources. Persistent, inspectable roots Workshop
+        // may discover executable declarations in -- get/refresh, human-only
+        // add/remove, and the pending agent-request inbox with its
+        // picker-confirmed approve and its deny. Creating a request is
+        // deliberately absent: only a conversation asks, over the loopback
+        // adapter, and only a person answers.
         assert_eq!(
-            exported, 255,
+            exported, 266,
             "generated bindings must contain the complete desktop command set"
         );
         assert_eq!(

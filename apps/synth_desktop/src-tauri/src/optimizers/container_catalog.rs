@@ -10,16 +10,16 @@ use crate::storage::Database;
 use anyhow::{anyhow, bail, Context, Result};
 use rusqlite::params;
 use sha2::{Digest, Sha256};
+use crate::project_sources::Capability;
 use std::{
     collections::HashSet,
-    env, fs,
+    fs,
     path::{Path, PathBuf},
     process::Command,
     sync::Arc,
 };
 
 const CONTAINERS_FILE: &str = "workshop.containers.toml";
-const SOURCE_ROOTS_ENV: &str = "SYNTH_CONTAINER_SOURCE_ROOTS";
 
 #[derive(Clone, Debug)]
 pub(crate) struct ContainerSource {
@@ -46,15 +46,15 @@ impl ContainerSource {
     }
 }
 
-/// Refresh the source catalog from the desktop's configured discovery roots.
+/// Refresh the source catalog from this desktop's effective project sources.
 ///
-/// The optional environment variable is a platform path list. In a developer
-/// install, `~/GitHub` is a useful, bounded default. We examine the root and
-/// its direct children only; this is intentional: discovery is not an
-/// arbitrary recursive filesystem search.
+/// Root policy -- approved sources, environment overrides, remembered
+/// provenance, the development fallback -- lives in [`crate::project_sources`]
+/// so the container and recipe catalogs cannot disagree about what is in scope.
+/// We examine each root and its direct children only; this is intentional:
+/// discovery is not an arbitrary recursive filesystem search.
 pub(crate) async fn discover(db: &Arc<Database>) -> Result<Vec<ContainerSource>> {
-    let mut roots = discovery_roots();
-    roots.extend(remembered_roots(db)?);
+    let roots = crate::project_sources::discovery_roots(db, Capability::Containers)?;
     let sources = discover_in_roots(&roots)?;
     persist(db, &sources).await?;
     Ok(sources)
@@ -71,7 +71,13 @@ pub(crate) async fn resolve(
         .await?
         .into_iter()
         .find(|source| source.id == source_id)
-        .ok_or_else(|| anyhow!("container source `{source_id}` is not currently discoverable"))?;
+        .ok_or_else(|| {
+            anyhow!(
+                "container source `{source_id}` is not currently discoverable; \
+                 its folder may have moved, or its project source may have been removed. \
+                 Call container_discover and read `readiness` before retrying."
+            )
+        })?;
     let spec = source.spec(&spec_id)?;
     Ok((source, spec))
 }
@@ -91,7 +97,11 @@ pub(crate) async fn resolve_unique(
         .collect();
     match matches.len() {
         1 => Ok(matches.into_iter().next().expect("one catalog match")),
-        0 => bail!("container spec `{spec_id}` was not found in the desktop container catalog"),
+        0 => bail!(
+            "container spec `{spec_id}` was not found in the desktop container catalog; \
+             call container_discover and read `readiness` to see whether a project source \
+             still needs to be approved"
+        ),
         _ => bail!(
             "container spec `{spec_id}` is ambiguous; discover sources and call container_ensure with source_id"
         ),
@@ -154,40 +164,6 @@ pub(crate) fn discover_in_roots(roots: &[PathBuf]) -> Result<Vec<ContainerSource
     }
     sources.sort_by(|left, right| left.id.cmp(&right.id));
     Ok(sources)
-}
-
-pub(crate) fn discovery_roots() -> Vec<PathBuf> {
-    let configured: Vec<PathBuf> = env::var_os(SOURCE_ROOTS_ENV)
-        .map(|value| env::split_paths(&value).collect())
-        .unwrap_or_default();
-    if !configured.is_empty() {
-        return configured;
-    }
-
-    let mut roots = Vec::new();
-    if let Some(home) = env::var_os("HOME") {
-        roots.push(PathBuf::from(home).join("GitHub"));
-    }
-    if let Some(workshop) = env::var_os("SYNTH_WORKSHOP_ROOT") {
-        roots.push(PathBuf::from(workshop));
-    }
-    roots
-}
-
-/// Previously discovered source directories remain catalogued across desktop
-/// restarts. They are still re-read and re-validated before use; a database
-/// row is provenance, never permission to execute a stale declaration.
-fn remembered_roots(db: &Database) -> Result<Vec<PathBuf>> {
-    db.with_conn(|conn| {
-        let mut statement = conn.prepare(
-            "SELECT canonical_path FROM container_sources ORDER BY updated_at DESC, canonical_path",
-        )?;
-        let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
-        let paths = rows
-            .collect::<std::result::Result<Vec<_>, _>>()
-            .map_err(anyhow::Error::from)?;
-        Ok(paths.into_iter().map(PathBuf::from).collect())
-    })
 }
 
 async fn persist(db: &Arc<Database>, sources: &[ContainerSource]) -> Result<()> {

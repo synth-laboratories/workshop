@@ -459,6 +459,7 @@ mod tests {
 
     #[test]
     fn staging_a_training_artifact_retains_identity() {
+        let _environment = crate::instance::environment_lock();
         let isolated = std::env::temp_dir().join(format!(
             "synth-desktop-eval-artifact-{}",
             uuid::Uuid::new_v4().simple()

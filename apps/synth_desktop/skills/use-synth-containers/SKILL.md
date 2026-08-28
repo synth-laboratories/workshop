@@ -5,19 +5,80 @@ description: Use for Synth container discovery, real workspace-owned rollout har
 
 # Use Synth containers
 
-Use `synth-containers-mcp` as the registry authority. Never scan ports or invent
-container records, endpoints, results, model metadata, token usage, or rewards.
+Use `synth-containers-mcp` as the authority for declarations and live
+observations. Registry observations are evidence, not immutable launch pins.
+Never scan ports or invent container records, endpoints, results, model
+metadata, token usage, or rewards.
 
 Codex exposes one compact tool,
 `mcp__synth_containers__container_manage`. Call it as `{ operation, arguments }`;
-do not call separate `container_discover` or `container_probe` tools, use a
-shell, or scan ports as a fallback. Legacy MCP names remain compatible for
-other clients but are intentionally not advertised to Codex.
+do not call separate `container_list`, `container_discover`, or
+`container_probe` tools or scan ports as a fallback. Those legacy MCP names
+remain compatible for other clients but are intentionally not advertised to
+Codex. Shell and repository inspection are allowed only for the source-derived
+setup workflow below; they are not substitutes for the normalized rollout
+contract.
+
+## Identity provenance and source-derived launch
+
+Keep three identity classes explicit:
+
+- **Declared identity — stable expectation:** container name, endpoint,
+  protocol, and task family.
+- **Observed identity — cached historical observation:** last source revision,
+  health response, capabilities, and `observed_at`.
+- **Launch identity — freshly derived target:** current commit,
+  launch-relevant dirty-content digest, launcher digest, and canonical cwd.
+
+> Never compare a fresh source-derived launch against the registered container’s last observed source revision when that container is unreachable. Treat the observation as historical. Derive and approve a new composite launch identity, then verify the launched service against that identity.
+
+When the user asks to set up, start, repair, or restart an unreachable local
+container, use this sequence:
+
+1. Resolve the exact declared container and its approved source checkout. The
+   unreachable container's observed revision, health response, capabilities,
+   and observation time are stale and non-binding.
+2. Inspect repository instructions and conventional launch surfaces with
+   `rg`/`rg --files`. Select exactly one repository-owned launcher that clearly
+   targets the declared endpoint and task family. Never read `.env`, `.env.*`,
+   Keychain, or secret values; a launcher may inherit an already-authorized
+   project-local environment without exposing it.
+3. Derive a composite launch identity from the current approved checkout. It
+   must include the current commit, a canonical digest of all launch-relevant
+   dirty contents when the checkout is dirty, the launcher digest, and the
+   canonical cwd. Dirty source is allowed only when that digest and the dirty
+   state are disclosed.
+4. Ask approval against that exact composite launch identity immediately before
+   the mutating launch. Approval of an old observation or a clean commit alone
+   does not approve undisclosed dirty content.
+5. Launch through the approved repository-owned path, then probe through the
+   registry.
+6. Compare the resulting service against both the stable declared identity and
+   the newly approved launch identity. Only post-launch verification may compare
+   live health identity or source identity.
+7. Refresh the registry with the new health, capabilities, source identity, and
+   observation time.
+8. Bind the refreshed, post-launch verified identity into the new inline
+   evaluation specification. Do not bind the stale pre-launch observation.
+
+Before launch, use only these specific failures for genuine launch-identity
+problems: `launcher_not_found`, `launcher_ambiguous`,
+`launch_source_unreadable`, and `launch_approval_denied`.
+`health_identity_mismatch` is not a pre-launch error and must only be raised
+after launch. Post-launch verification failures are `health_unreachable`,
+`declared_identity_mismatch`, `launched_source_identity_mismatch`, and
+`protocol_mismatch`.
+
+Do not kill an arbitrary process merely because it occupies the expected port.
+Stop a process only when a current runtime receipt or the repository/container
+runtime identifies it as the exact requested workload. Never fall back to a
+different endpoint or container.
 
 ## Discover the engine
 
 1. Call `container_manage` with `operation: "list"`, or `operation: "discover"`
-   when selecting a catalogued source to start.
+   when selecting a catalogued source to start. If `discover` returns no
+   sources, read `readiness` — see "When discovery finds nothing" below.
 2. Select a registered container by task family and by its typed
    `metadata.capabilities`, not by a guessed name or port.
 3. Refresh it with `operation: "probe"` and read it with `operation: "get"`.
@@ -26,6 +87,27 @@ other clients but are intentionally not advertised to Codex.
 5. Register a container only when the user or workspace gives an explicit URL.
    Use the legacy registration path only for a user- or workspace-supplied URL;
    never infer a localhost port.
+
+## When discovery finds nothing
+
+`discover` returns `readiness` alongside `sources`. An empty list is never the
+whole answer:
+
+- `readiness.code: "no_project_sources"` — no folder has been admitted as a
+  project source yet. Find the repository that declares the container (it
+  contains `workshop.containers.toml`), then call `container_manage` with
+  `operation: "request_project_source"` and
+  `arguments: { path, reason, capabilities, attachToConversation }`. Name the
+  **exact** repository folder, never its parent: approval confirms one folder
+  and does not extend to siblings.
+- `readiness.code: "project_sources_invalid"` — a folder was admitted and its
+  manifest could not be read. `readiness.sourceDiagnostics` names the file and
+  the parse failure. Fix the declaration; asking again will not help.
+
+`request_project_source` grants nothing. It opens a request the user answers in
+a native folder picker. Do not report the source as added, do not retry it in a
+loop, and do not work around it with a shell. After the user approves, call
+`discover` again to get the `source_id`.
 
 ## Select by capability, not by liveness
 

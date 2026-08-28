@@ -150,3 +150,35 @@ test("experiment overview does not offer a dead inspector action for lite seals"
 	assert.match(html, /Unavailable/);
 	assert.doesNotMatch(html, /data-reference-value="rollout_1"/);
 });
+
+test("executable eval projections reject terminal phase contradictions", () => {
+	const html = renderToStaticMarkup(createElement(Shell, { experiment: {
+		title: "Contradictory eval",
+		status: "failed",
+		runtime: { harness: "nanohorizon", model: "z-ai/glm-5.3-flash" },
+		progress: { phase: "scoring", completed: 5, total: 5 },
+		results: { rollouts: Array.from({ length: 5 }, (_, index) => ({ id: `r${index}` })) }
+	} }));
+	assert.match(html, /experiment_terminal_phase_mismatch/);
+	assert.match(html, /Terminal status failed cannot use phase scoring/);
+	assert.doesNotMatch(html, /Experiment · failed/);
+});
+
+test("executable eval projections reject missing model and rollout evidence", () => {
+	const missingModel = renderToStaticMarkup(createElement(Shell, { experiment: {
+		title: "Missing model",
+		status: "running",
+		runtime: { harness: "nanohorizon" },
+		progress: { phase: "running", completed: 0, total: 5 }
+	} }));
+	assert.match(missingModel, /experiment_model_missing/);
+
+	const missingRollouts = renderToStaticMarkup(createElement(Shell, { experiment: {
+		title: "Missing rollouts",
+		status: "completed",
+		runtime: { harness: "nanohorizon", model: "z-ai\/glm-5.3-flash" },
+		progress: { phase: "completed", completed: 5, total: 5 },
+		results: { rollouts: [] }
+	} }));
+	assert.match(missingRollouts, /experiment_terminal_rollouts_missing/);
+});

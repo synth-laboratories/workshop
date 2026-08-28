@@ -853,11 +853,23 @@ exec_isolated_cua_bundle() {
   local sft_train_jsonl="${SYNTH_MLX_SFT_TRAIN_JSONL:-}"
   local sft_eval_jsonl="${SYNTH_MLX_SFT_EVAL_JSONL:-}"
   local optimizer_wheel_file="${SYNTH_OPTIMIZER_WHEEL_FILE:-}"
-  # Container sources are an explicit desktop-level catalog input, not a chat
-  # workspace. Keep the non-secret list through the otherwise isolated CUA
-  # launch so the container manager can discover the same sources as a normal
-  # development launch.
-  local container_source_roots="${SYNTH_CONTAINER_SOURCE_ROOTS:-}"
+  # Container and recipe source roots are an explicit desktop-level catalog
+  # input, not a chat workspace. Keep the non-secret lists through the
+  # otherwise isolated CUA launch so the container manager can discover the
+  # same sources as a normal development launch.
+  #
+  # Pass them only when they actually name a path. `env -i FOO=` sets FOO to
+  # the empty string, and the Rust catalogs read the variable's *presence* as
+  # explicit configuration -- an empty value used to mean "configured with no
+  # roots", which silently disabled every fallback and persisted root and
+  # returned an empty source list.
+  local -a optional_env=()
+  if [[ -n "${SYNTH_CONTAINER_SOURCE_ROOTS:-}" ]]; then
+    optional_env+=("SYNTH_CONTAINER_SOURCE_ROOTS=$SYNTH_CONTAINER_SOURCE_ROOTS")
+  fi
+  if [[ -n "${SYNTH_RECIPE_SOURCE_ROOTS:-}" ]]; then
+    optional_env+=("SYNTH_RECIPE_SOURCE_ROOTS=$SYNTH_RECIPE_SOURCE_ROOTS")
+  fi
   local home_dir="${HOME:?HOME must be set to launch a CUA bundle}"
   local user_name="${USER:-$(id -un)}"
   local logname="${LOGNAME:-$user_name}"
@@ -888,7 +900,7 @@ exec_isolated_cua_bundle() {
     SYNTH_MLX_SFT_TRAIN_JSONL="$sft_train_jsonl" \
     SYNTH_MLX_SFT_EVAL_JSONL="$sft_eval_jsonl" \
     SYNTH_OPTIMIZER_WHEEL_FILE="$optimizer_wheel_file" \
-    SYNTH_CONTAINER_SOURCE_ROOTS="$container_source_roots" \
+    ${optional_env[@]+"${optional_env[@]}"} \
     "$CUA_EXE"
 }
 

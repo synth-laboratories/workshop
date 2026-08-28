@@ -148,7 +148,9 @@ export function RunProgressCard({ runId, sessionRef, onOpenFullRun }: Props) {
 							? ` · ${projection.providerAccess.usedCalls} / ${projection.providerAccess.maxCalls} calls`
 							: ""}
 						{projection.providerAccess.maxCostUsd > 0
-							? ` · $${projection.providerAccess.usedCostUsd.toFixed(2)} / $${projection.providerAccess.maxCostUsd.toFixed(2)}`
+							? projection.providerAccess.usedCostUsd != null
+								? ` · $${projection.providerAccess.usedCostUsd.toFixed(2)} / $${projection.providerAccess.maxCostUsd.toFixed(2)}`
+								: ` · cost unavailable / $${projection.providerAccess.maxCostUsd.toFixed(2)} ceiling`
 							: ""}
 					</span>
 				</div>

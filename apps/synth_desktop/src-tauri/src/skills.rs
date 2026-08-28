@@ -148,6 +148,35 @@ mod tests {
     }
 
     #[test]
+    fn container_skill_separates_declared_observed_and_launch_identity() {
+        let content = bundled_skill_content("use-synth-containers").expect("bundled skill");
+        let normalized = content.split_whitespace().collect::<Vec<_>>().join(" ");
+        let normalized = normalized.to_ascii_lowercase();
+        for phrase in [
+            "declared identity — stable expectation",
+            "observed identity — cached historical observation",
+            "launch identity — freshly derived target",
+            "treat the observation as historical",
+            "dirty source is allowed only when that digest and the dirty state are disclosed",
+            "`health_identity_mismatch` is not a pre-launch error",
+            "launcher_not_found",
+            "launcher_ambiguous",
+            "launch_source_unreadable",
+            "launch_approval_denied",
+            "health_unreachable",
+            "declared_identity_mismatch",
+            "launched_source_identity_mismatch",
+            "protocol_mismatch",
+            "bind the refreshed, post-launch verified identity into the new inline evaluation specification",
+        ] {
+            assert!(
+                normalized.contains(phrase),
+                "use-synth-containers lost identity-provenance rule: {phrase}"
+            );
+        }
+    }
+
+    #[test]
     fn parses_name_and_description_from_every_bundled_skill() {
         let hits = list_skills();
         assert_eq!(hits.len(), BUNDLED_SKILLS.len());

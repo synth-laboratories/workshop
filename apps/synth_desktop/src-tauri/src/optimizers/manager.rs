@@ -702,6 +702,25 @@ impl OptimizerManager {
             Some(spec.version.clone())
         );
         let _ = previous_selected;
+        // An install is not finished until what it installed can be used.
+        // Eval consumes this same distribution but keeps its own manifest and
+        // digest, and it used to be provisioned lazily by the first caller who
+        // happened to need it -- so the first workflow attempt after an install
+        // reported the runtime as missing, and only the second one worked.
+        //
+        // Eval is a sub-capability of this package, not the package: a sidecar
+        // that provisions GEPA correctly is still a good install, so a fault
+        // here is reported rather than raised.
+        match super::eval_runtime::provision_and_verify(&selected) {
+            Ok(manifest) => eprintln!(
+                "synth-desktop: provisioned eval runtime {} ({})",
+                manifest.version, manifest.digest
+            ),
+            Err(fault) => eprintln!(
+                "synth-desktop: optimizer {} installed without a usable eval runtime: {fault}",
+                spec.version
+            ),
+        }
         Ok(selected)
     }
 

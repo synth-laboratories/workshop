@@ -13,7 +13,7 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::{
     collections::{BTreeMap, HashSet},
-    env, fs,
+    fs,
     path::{Path, PathBuf},
     sync::Arc,
 };
@@ -25,8 +25,6 @@ pub const PRODUCT_MAX_TOTAL_ROLLOUTS: i64 = 240;
 const RECIPE_FILE: &str = "workshop.recipe.toml";
 const RECIPES_DIR: &str = "workshop.recipes";
 const CONTAINERS_FILE: &str = "workshop.containers.toml";
-const RECIPE_SOURCE_ROOTS_ENV: &str = "SYNTH_RECIPE_SOURCE_ROOTS";
-const CONTAINER_SOURCE_ROOTS_ENV: &str = "SYNTH_CONTAINER_SOURCE_ROOTS";
 
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -74,6 +72,8 @@ pub struct WorkspaceRecipe {
     pub family: String,
     pub harness: String,
     pub policy_config: String,
+    pub policy_source: Option<String>,
+    pub policy_max_calls: Option<u32>,
     pub train_seeds: Vec<i64>,
     pub heldout_seeds: Vec<i64>,
     pub concurrency: usize,
@@ -123,6 +123,10 @@ struct RecipeFile {
     #[serde(default)]
     policy_config: Option<String>,
     #[serde(default)]
+    policy_source: Option<String>,
+    #[serde(default)]
+    policy: Option<PolicyFile>,
+    #[serde(default)]
     proposer_model: Option<String>,
     #[serde(default)]
     requires_credential_advertisement: bool,
@@ -134,6 +138,11 @@ struct RecipeFile {
     train_seeds: Option<Vec<i64>>,
     #[serde(default)]
     heldout_seeds: Option<Vec<i64>>,
+}
+
+#[derive(Deserialize, Default)]
+struct PolicyFile {
+    max_calls: Option<u32>,
 }
 
 #[derive(Deserialize, Default)]
@@ -186,9 +195,7 @@ fn default_contract() -> String {
 /// configured roots and persisted desktop provenance, never from the active
 /// chat or its isolated workspace.
 pub fn catalog(db: &crate::storage::Database) -> Result<Vec<WorkspaceRecipe>> {
-    let mut roots = discovery_roots();
-    roots.extend(remembered_roots(db)?);
-    flatten_sources(discover_sources_in_roots(&roots)?)
+    flatten_sources(discover_sources_in_roots(&discovery_roots(db)?)?)
 }
 
 /// Resolve one recipe from the desktop catalog and retain its refreshed source
@@ -201,14 +208,22 @@ pub async fn resolve(
     if recipe_id.is_empty() || recipe_id.len() > 256 {
         bail!("recipe_id is required");
     }
-    let mut roots = discovery_roots();
-    roots.extend(remembered_roots(db)?);
-    let sources = discover_sources_in_roots(&roots)?;
+    let sources = discover_sources_in_roots(&discovery_roots(db)?)?;
     persist_sources(db, &sources).await?;
     flatten_sources(sources)?
         .into_iter()
         .find(|recipe| recipe.id == recipe_id)
         .ok_or_else(|| anyhow!("catalog recipe `{recipe_id}` is not declared"))
+}
+
+/// Rescan every effective recipe root and re-record its provenance.
+///
+/// This is what an admission or removal calls so the recipe catalog reflects
+/// the change without waiting for the next run to resolve a recipe.
+pub async fn refresh_sources(db: &Arc<crate::storage::Database>) -> Result<Vec<WorkspaceRecipe>> {
+    let sources = discover_sources_in_roots(&discovery_roots(db)?)?;
+    persist_sources(db, &sources).await?;
+    flatten_sources(sources)
 }
 
 /// Unit-test declarations are stored against the test database, so tests use
@@ -225,35 +240,10 @@ pub(crate) async fn remember_source_for_test(
     persist_sources(db, &sources).await
 }
 
-fn discovery_roots() -> Vec<PathBuf> {
-    let configured: Vec<PathBuf> = env::var_os(RECIPE_SOURCE_ROOTS_ENV)
-        .or_else(|| env::var_os(CONTAINER_SOURCE_ROOTS_ENV))
-        .map(|value| env::split_paths(&value).collect())
-        .unwrap_or_default();
-    if !configured.is_empty() {
-        return configured;
-    }
-    let mut roots = Vec::new();
-    if let Some(home) = env::var_os("HOME") {
-        roots.push(PathBuf::from(home).join("GitHub"));
-    }
-    if let Some(workshop) = env::var_os("SYNTH_WORKSHOP_ROOT") {
-        roots.push(PathBuf::from(workshop));
-    }
-    roots
-}
-
-fn remembered_roots(db: &crate::storage::Database) -> Result<Vec<PathBuf>> {
-    db.with_conn(|conn| {
-        let mut statement = conn.prepare(
-            "SELECT canonical_path FROM optimizer_recipe_sources ORDER BY updated_at DESC, canonical_path",
-        )?;
-        let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
-        let paths = rows
-            .collect::<std::result::Result<Vec<_>, _>>()
-            .map_err(anyhow::Error::from)?;
-        Ok(paths.into_iter().map(PathBuf::from).collect())
-    })
+/// Recipe roots come from the same shared authority the container catalog
+/// uses, so one approved repository is discoverable by both or by neither.
+fn discovery_roots(db: &crate::storage::Database) -> Result<Vec<PathBuf>> {
+    crate::project_sources::discovery_roots(db, crate::project_sources::Capability::Recipes)
 }
 
 fn discover_sources_in_roots(roots: &[PathBuf]) -> Result<Vec<RecipeSource>> {
@@ -508,6 +498,10 @@ fn parse_recipe(path: &Path) -> Result<WorkspaceRecipe> {
         .family
         .filter(|value| !value.trim().is_empty())
         .unwrap_or_else(|| parsed.container.clone());
+    let policy_max_calls = parsed.policy.as_ref().and_then(|policy| policy.max_calls);
+    if policy_max_calls == Some(0) {
+        bail!("recipe `{}` policy.max_calls must be greater than zero", parsed.id);
+    }
     Ok(WorkspaceRecipe {
         title: parsed
             .title
@@ -529,6 +523,8 @@ fn parse_recipe(path: &Path) -> Result<WorkspaceRecipe> {
         family,
         harness: parsed.harness.unwrap_or_else(|| "desktop_eval".into()),
         policy_config: parsed.policy_config.unwrap_or_else(|| "default".into()),
+        policy_source: parsed.policy_source,
+        policy_max_calls,
         train_seeds: parsed
             .train_seeds
             .unwrap_or_else(|| vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9]),
@@ -730,6 +726,8 @@ family = "classify"
 harness = "desktop_eval"
 policy_config = "classify_default"
 train_seeds = [0, 1]
+[policy]
+max_calls = 10
 [bounds]
 max_cost_usd = 0.50
 max_total_rollouts = 10
@@ -742,6 +740,7 @@ max_total_rollouts = 10
         assert_eq!(recipe.bounds.max_cost_usd, 0.50);
         assert_eq!(recipe.bounds.max_total_rollouts, 10);
         assert_eq!(recipe.train_seeds, vec![0, 1]);
+        assert_eq!(recipe.policy_max_calls, Some(10));
     }
 
     #[test]
