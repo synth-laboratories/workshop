@@ -2820,7 +2820,7 @@ pub(super) async fn reconcile_evidence(
                 super::admission::load_admitted_execution_spec(conn, &owned_run_id)?
                     .context("evaluation run has no approved execution specification")?;
             let kernel_state = super::kernel::persist::load_state(conn, &owned_run_id)?
-                .context("evaluation run has no durable kernel projection")?;
+                .context("evaluation run has no saved kernel projection")?;
             Ok((execution_spec, kernel_state))
         })
         .await?;
@@ -2894,7 +2894,7 @@ pub(super) async fn reconcile_evidence(
             .or_else(|| ledger_identity.and_then(|entry| entry.rollout_id.clone()))
             .with_context(|| {
                 format!(
-                    "terminal record and durable trial ledger for seed {seed} have no rolloutId"
+                    "terminal record and saved trial ledger for seed {seed} have no rolloutId"
                 )
             })?;
         let trial_id = record
@@ -2903,7 +2903,9 @@ pub(super) async fn reconcile_evidence(
             .map(str::to_string)
             .or_else(|| ledger_identity.and_then(|entry| entry.trial_id.clone()))
             .with_context(|| {
-                format!("terminal record and durable trial ledger for seed {seed} have no trialId")
+                format!(
+                    "terminal record and saved trial ledger for seed {seed} have no trialId"
+                )
             })?;
         // Repair the weaker summary copy from the append-only kernel ledger so
         // a successful evidence retry also leaves future readers consistent.
@@ -5938,7 +5940,7 @@ max_total_rollouts = 4
         assert_eq!(
             sequences,
             (1..=sequences.len() as u64).collect::<Vec<_>>(),
-            "the durable log must be contiguous from 1"
+            "the saved log must be contiguous from 1"
         );
         let count = |kind: &str| {
             events
@@ -8200,7 +8202,7 @@ max_total_rollouts = 1
         assert_eq!(
             mock.acks.lock().unwrap().get(rollout_id).copied(),
             Some(high_water),
-            "producer never observed Workshop's durable high-water ack"
+            "producer never observed Workshop's recorded high-water ack"
         );
         mock.task.abort();
     }

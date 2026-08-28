@@ -259,7 +259,7 @@ fn import_mlx_job(path: &Path) -> Result<LocalOptimizerImport> {
         execution_bindings: vec![super::models::OptimizerExecutionBinding {
             kind: "synth_mlx_rl".into(),
             id: path.display().to_string(),
-            label: Some("synth-mlx-rl durable local job".into()),
+            label: Some("synth-mlx-rl local job".into()),
             status: Some(status.into()),
             metadata: json!({"backend": backend, "jobId": run_id}),
         }],

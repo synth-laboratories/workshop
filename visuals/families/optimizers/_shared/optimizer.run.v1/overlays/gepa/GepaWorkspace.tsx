@@ -145,8 +145,8 @@ function JobTerminationNotice({
         {job.occurredAt ? <time style={{ marginLeft: "auto", color: "var(--sv-text-faint)", fontSize: 10 }}>{new Date(job.occurredAt).toLocaleString()}</time> : null}
       </div>
       <div style={{ marginTop: 4, fontSize: 12 }}>{reason}{rate ? ` · ${rate}` : ""}</div>
-      <div className="sv-terminal-receipt-provenance sv-mono" title={`Run ${runId} · ${durableEventCount} durable events`}>
-        Run {runId} · {durableEventCount} durable events
+      <div className="sv-terminal-receipt-provenance sv-mono" title={`Run ${runId} · ${durableEventCount} recorded events`}>
+        Run {runId} · {durableEventCount} recorded events
       </div>
       {gepa.heldout?.reward == null ? <div style={{ marginTop: 4, color: "var(--sv-text-muted)", fontSize: 11 }}>Heldout was not run; no score was imputed.</div> : null}
     </section>

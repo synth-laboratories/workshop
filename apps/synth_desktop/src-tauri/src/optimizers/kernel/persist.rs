@@ -164,7 +164,7 @@ pub fn load_state(conn: &Connection, run_id: &str) -> Result<Option<RunKernelSta
             },
         )
         .optional()
-        .context("load durable optimizer kernel state")?;
+        .context("load saved optimizer kernel state")?;
     let Some((
         algorithm_id,
         legacy_status,
@@ -359,7 +359,7 @@ fn rebuild_at_terminal_sequence(
     }
     if events.len() != terminal_sequence as usize {
         anyhow::bail!(
-            "optimizer run {run_id} terminal sequence {terminal_sequence} exceeds its durable event log"
+            "optimizer run {run_id} terminal sequence {terminal_sequence} exceeds its saved event log"
         );
     }
     let rebuilt =

@@ -181,8 +181,8 @@ const CHANGELOG = [
 			{
 				label: "Improved",
 				items: [
-					"Live visuals use one canonical binding envelope and durable replay through declared poll transports.",
-					"Generation-speed labels stay frozen at their historical cutoff, and completed turns show durable elapsed work time.",
+					"Live visuals use one canonical binding envelope and saved replay through declared poll transports.",
+					"Generation-speed labels stay frozen at their historical cutoff, and completed turns show elapsed work time.",
 					"Review captures use a dedicated window identity so capture sizing does not mutate the product window."
 				]
 			},
