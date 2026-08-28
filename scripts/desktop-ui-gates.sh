@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Default Workshop Desktop UI gate runner — streams Bombadil + Playwright live,
+# Default Workshop Desktop UI gate runner — streams visual component tests,
+# Bombadil, and Playwright live,
 # writes logs, and prints a clean issues table at the end.
 #
 # Usage:
@@ -115,6 +116,7 @@ BOMBADIL_SPECS=(
 
 BOMBADIL_EXIT=0
 PLAYWRIGHT_EXIT=0
+VISUAL_COMPONENT_EXIT=0
 BOMBADIL_RED_SPECS=0
 BOMBADIL_RED_PROPERTIES=0
 BOMBADIL_RED_HARNESS=0
@@ -123,6 +125,8 @@ PLAYWRIGHT_PASSED="—"
 PLAYWRIGHT_FAILED="—"
 PLAYWRIGHT_FLAKY="—"
 PLAYWRIGHT_SKIPPED="—"
+VISUAL_COMPONENT_PASSED="—"
+VISUAL_COMPONENT_FAILED="—"
 
 frontend_build_is_stale() {
 	local index="$APP/dist/index.html"
@@ -373,6 +377,26 @@ run_playwright() {
 	done <<<"$titles"
 }
 
+run_visual_component_tests() {
+	info "Visual component interaction suite"
+	note "logs → $RUN_DIR/visual-components.log"
+	set +e
+	run_stream "$RUN_DIR/visual-components.log" bash -c \
+		"cd \"$ROOT\" && node --test apps/synth_desktop/tests/*.test.mjs"
+	VISUAL_COMPONENT_EXIT=$?
+	set -e
+	VISUAL_COMPONENT_PASSED="$(grep -E '^# pass [0-9]+' "$RUN_DIR/visual-components.log" | tail -1 | awk '{print $3}' || true)"
+	VISUAL_COMPONENT_FAILED="$(grep -E '^# fail [0-9]+' "$RUN_DIR/visual-components.log" | tail -1 | awk '{print $3}' || true)"
+	VISUAL_COMPONENT_PASSED="${VISUAL_COMPONENT_PASSED:-0}"
+	VISUAL_COMPONENT_FAILED="${VISUAL_COMPONENT_FAILED:-0}"
+	if [[ "$VISUAL_COMPONENT_EXIT" -eq 0 ]]; then
+		ok "exit 0 — passed=$VISUAL_COMPONENT_PASSED failed=$VISUAL_COMPONENT_FAILED"
+	else
+		bad "exit $VISUAL_COMPONENT_EXIT — passed=$VISUAL_COMPONENT_PASSED failed=$VISUAL_COMPONENT_FAILED"
+		record_issue "visual" "test" "node-component-suite" "interaction tests failed; see visual-components.log"
+	fi
+}
+
 print_issues_table() {
 	info "Issues table"
 	if [[ ! -s "$ISSUES_TSV" ]]; then
@@ -406,13 +430,17 @@ case "$MODE" in
 		FINAL_EXIT=$BOMBADIL_EXIT
 		;;
 	playwright)
+		run_visual_component_tests
 		run_playwright
-		FINAL_EXIT=$PLAYWRIGHT_EXIT
+		if [[ "$VISUAL_COMPONENT_EXIT" -ne 0 || "$PLAYWRIGHT_EXIT" -ne 0 ]]; then
+			FINAL_EXIT=1
+		fi
 		;;
 	all)
+		run_visual_component_tests
 		run_bombadil
 		run_playwright
-		if [[ "$BOMBADIL_EXIT" -ne 0 || "$PLAYWRIGHT_EXIT" -ne 0 ]]; then
+		if [[ "$VISUAL_COMPONENT_EXIT" -ne 0 || "$BOMBADIL_EXIT" -ne 0 || "$PLAYWRIGHT_EXIT" -ne 0 ]]; then
 			FINAL_EXIT=1
 		fi
 		;;

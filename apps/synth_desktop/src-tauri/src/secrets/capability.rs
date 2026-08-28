@@ -204,6 +204,19 @@ impl CapabilityStore {
             .collect()
     }
 
+    /// Return every capability issued for a run, including terminal entries.
+    /// Revocation deliberately leaves the metering counters in memory so the
+    /// run's sealed receipt can preserve the authoritative proxy totals.
+    pub fn list_for_run(&self, run_id: &str) -> Vec<LiveCapability> {
+        self.by_handle
+            .lock()
+            .expect("capability store")
+            .values()
+            .filter(|live| live.run_id == run_id)
+            .cloned()
+            .collect()
+    }
+
     pub fn find_active(&self, secret_id: &str, run_id: &str) -> Option<LiveCapability> {
         self.list_active()
             .into_iter()

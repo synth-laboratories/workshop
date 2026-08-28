@@ -868,6 +868,7 @@ impl SecretsService {
     }
 
     pub fn seal_run_chain(&self, run_id: &str) -> Result<Option<Value>> {
+        let provider_usage = self.provider_usage_for_run(run_id);
         let _ = self.revoke_run(run_id);
         let mut chains = self.chains.lock().expect("credential chains");
         let Some(mut chain) = chains.get(run_id).cloned() else {
@@ -879,6 +880,9 @@ impl SecretsService {
                 json!(chrono::Utc::now().to_rfc3339()),
             );
             object.insert("capabilityRevoked".into(), json!(true));
+            if let Some(provider_usage) = provider_usage {
+                object.insert("providerUsage".into(), provider_usage);
+            }
         }
         chains.insert(run_id.to_string(), chain.clone());
         Ok(Some(chain))

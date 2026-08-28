@@ -560,6 +560,7 @@ async fn project_worker_failure_visual(
                     workbench_id,
                     progress.as_ref(),
                     run.started_at.as_deref().unwrap_or(&run.created_at),
+                    None,
                 )),
                 status: Some(VisualStatus::Failed),
                 renderer_kind: None,
@@ -770,6 +771,7 @@ async fn mint_experiment_visual(
                 "",
                 progress.as_ref(),
                 &run.created_at,
+                None,
             ),
             metadata: json!({
                 "optimizerRunId": run.id,
@@ -795,6 +797,7 @@ fn experiment_bindings(
     workbench_id: &str,
     progress_projection: Option<&Value>,
     started_at: &str,
+    provider_usage: Option<&Value>,
 ) -> Value {
     let train_mean = mean_for_pool(records, "train");
     let heldout_mean = mean_for_pool(records, "heldout");
@@ -846,8 +849,18 @@ fn experiment_bindings(
     } else {
         eta_label(&elapsed, completed, total)
     };
-    let usage_label = if total_tokens > 0 {
+    let provider_requests = provider_usage
+        .and_then(|usage| usage.get("requestAttempts"))
+        .and_then(Value::as_u64);
+    let usage_label = if total_tokens > 0 && provider_requests.is_some() {
+        format!(
+            "{total_tokens} tokens · {} provider requests",
+            provider_requests.unwrap_or_default()
+        )
+    } else if total_tokens > 0 {
         format!("{total_tokens} tokens")
+    } else if let Some(provider_requests) = provider_requests {
+        format!("{provider_requests} provider requests")
     } else if status == "running" {
         "awaiting telemetry".to_string()
     } else {
@@ -975,8 +988,10 @@ fn experiment_bindings(
                 "metrics": [
                     {"label": "Train mean", "value": train_mean, "detail": if train_mean.is_none() { "omitted until the split is complete" } else { "mean of present rewards" }},
                     {"label": "Heldout mean", "value": heldout_mean, "detail": if spec.heldout.is_empty() { "this recipe has no heldout pool" } else if heldout_mean.is_none() { "omitted until the split is complete" } else { "mean of present rewards" }},
-                    {"label": "Overall mean", "value": mean_reward, "detail": "missing rewards stay missing"}
+                    {"label": "Overall mean", "value": mean_reward, "detail": "missing rewards stay missing"},
+                    {"label": "Provider requests", "value": provider_requests, "detail": "authoritative Workshop proxy request attempts across the run"}
                 ],
+                "providerUsage": provider_usage,
                 "results": {
                     "rollouts": rollouts,
                 },
@@ -2121,6 +2136,8 @@ async fn persist_progress(
         .unwrap_or_else(|| records.iter().filter(|record| is_successful_eval_record(record)).count());
     let mean = mean_for_pool(records, "train").or_else(|| mean_reward(records));
     let usage = usage_from_records(records, spec.cost_ceiling_usd);
+    let provider_usage = crate::secrets::live()
+        .and_then(|secrets| secrets.provider_usage_for_run(run_id));
     let failed_count = records
         .iter()
         .filter(|row| !is_successful_eval_record(row))
@@ -2135,6 +2152,7 @@ async fn persist_progress(
         .unwrap_or(&run_before_patch.created_at)
         .to_string();
     let progress_for_summary = progress_projection.clone();
+    let provider_usage_for_summary = provider_usage.clone();
     // Patched under the durable record rather than written from a snapshot: a
     // worker that read the run before its own `started` event must not restore
     // that reading over the events it has since appended.
@@ -2156,6 +2174,9 @@ async fn persist_progress(
             }
             summary.insert("evalStatus".into(), json!(status_value));
             summary.insert("costCeilingUsd".into(), json!(cost_ceiling_usd));
+            if let Some(provider_usage) = provider_usage_for_summary.clone() {
+                summary.insert("providerUsage".into(), provider_usage);
+            }
             if let Some(cost) = usage.cost_usd {
                 summary.insert("costUsd".into(), json!(cost));
             }
@@ -2164,6 +2185,7 @@ async fn persist_progress(
                 json!({
                     "policy": usage.extra.get("policyUsage").cloned().unwrap_or(Value::Null),
                     "grader": usage.extra.get("graderUsage").cloned().unwrap_or(Value::Null),
+                    "provider": provider_usage_for_summary,
                 }),
             );
             run.summary = Value::Object(summary);
@@ -2194,6 +2216,7 @@ async fn persist_progress(
                     workbench_id,
                     progress_projection.as_ref(),
                     &started_at,
+                    provider_usage.as_ref(),
                 )),
                 status: Some(visual_status.clone()),
                 renderer_kind: None,
