@@ -126,6 +126,7 @@ import { responseTraceStore } from "../runtime/responseTraceStore";
 import {
 	EMPTY_VISUAL_REVISION_STATE,
 	newestVisualArtifact,
+	visualRevisionRefreshRequired,
 	visualRevisionReducer
 } from "../runtime/visualRevisionState";
 import type { MainView } from "../routes";
@@ -1451,7 +1452,12 @@ export function useAppController() {
 		// traces stay beside their catalog and chat-created visuals stay beside chat.
 	}, [viewKey]);
 
-	const reconcileOpenVisual = useCallback((visualId: string, minimumRevision = -1, open = false) => {
+	const reconcileOpenVisual = useCallback((
+		visualId: string,
+		minimumRevision = -1,
+		open = false,
+		authoritativeRefresh = false
+	) => {
 		if (!bridges.visuals) return;
 		const wasOpen = openArtifactIdRef.current === visualId;
 		if (open) {
@@ -1466,10 +1472,14 @@ export function useAppController() {
 			return;
 		}
 		if (
-			minimumRevision >= 0 &&
 			acceptedVisualRevisionRef.current.id === visualId &&
-			acceptedVisualRevisionRef.current.revision >= minimumRevision &&
-			(!open || wasOpen)
+			!visualRevisionRefreshRequired({
+				acceptedRevision: acceptedVisualRevisionRef.current.revision,
+				minimumRevision,
+				open,
+				wasOpen,
+				authoritativeRefresh
+			})
 		) return;
 		const pending = pendingVisualRefreshRef.current;
 		if (pending?.id === visualId && pending.minimumRevision >= minimumRevision) return;
@@ -1494,7 +1504,10 @@ export function useAppController() {
 
 	useEffect(() => {
 		if (openArtifactId && contextualArtifact?.visualId === openArtifactId) {
-			reconcileOpenVisual(openArtifactId, contextualArtifact.revision ?? -1);
+			// A transcript/Outputs artifact is the revision published into the chat,
+			// not proof that the durable visual is still at that revision. This one
+			// forced read is what makes reopen-after-restart converge to the registry.
+			reconcileOpenVisual(openArtifactId, contextualArtifact.revision ?? -1, false, true);
 		}
 	}, [contextualArtifact?.visualId, openArtifactId, reconcileOpenVisual]);
 
