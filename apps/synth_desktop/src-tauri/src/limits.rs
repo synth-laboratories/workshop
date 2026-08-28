@@ -135,6 +135,7 @@ pub const EVAL_DRIVER_MAX_BODY_BYTES: usize = 2 * 1024 * 1024;
 /// Provider-proxy request body cap. Oversized agent bodies fail closed.
 pub const SECRETS_PROXY_MAX_BODY_BYTES: usize = 2 * 1024 * 1024;
 
+
 /// Default lifetime of a run capability issued by the local secrets broker.
 pub const SECRETS_CAPABILITY_TTL: Duration = Duration::from_secs(30 * 60);
 

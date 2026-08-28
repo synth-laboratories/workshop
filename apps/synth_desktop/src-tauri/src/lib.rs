@@ -17,6 +17,7 @@ pub mod intern_protocol_test_support {
 }
 mod codex;
 mod codex_oauth;
+mod composition;
 mod computer_use;
 pub mod container_capabilities;
 pub mod container_stream;
@@ -62,9 +63,8 @@ mod skills;
 pub mod stream_fold;
 pub mod storage;
 mod synth_config;
-mod composition;
-mod adapters;
 mod tariffs;
+mod adapters;
 mod telemetry;
 mod terminal;
 pub mod trace_ingest;
@@ -204,12 +204,18 @@ fn desktop_image_preview(path: String) -> Result<String, AppError> {
         "jpg" | "jpeg" => "image/jpeg",
         "webp" => "image/webp",
         "gif" => "image/gif",
-        _ => return Err(AppError::invalid_argument("Screenshot format is unsupported")),
+        _ => {
+            return Err(AppError::invalid_argument(
+                "Screenshot format is unsupported",
+            ))
+        }
     };
     let metadata =
         std::fs::metadata(&path).map_err(|_| AppError::io("Screenshot is unavailable"))?;
     if !metadata.is_file() || metadata.len() > limits::IMAGE_PREVIEW_MAX_BYTES {
-        return Err(AppError::invalid_argument("Screenshot must be a file smaller than 20 MB"));
+        return Err(AppError::invalid_argument(
+            "Screenshot must be a file smaller than 20 MB",
+        ));
     }
     let bytes = std::fs::read(path).map_err(|_| AppError::io("Screenshot could not be read"))?;
     Ok(format!(
@@ -1291,9 +1297,7 @@ pub(crate) async fn authorize_inline_evaluation_start(
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .ok_or_else(|| {
-            AppError::invalid_argument(
-                "this mutation requires an agent session for approval",
-            )
+            AppError::invalid_argument("this mutation requires an agent session for approval")
         })?;
     let admissible = optimizers::inline_eval::admit_inline(state.optimizers(), request)
         .await
@@ -4292,7 +4296,11 @@ async fn account_sign_out(
     cloud.clear_cache();
     if let Some(telemetry) = crate::telemetry::live() {
         if let Err(error) = telemetry.on_sign_out() {
-            crate::platform::logging::report("lib", "eprintln", format!("synth-desktop: sign-out telemetry wipe failed: {error}"));
+            crate::platform::logging::report(
+                "lib",
+                "eprintln",
+                format!("synth-desktop: sign-out telemetry wipe failed: {error}"),
+            );
         }
     }
     core.reload_intern_config().await.map_err(AppError::from)?;
@@ -5143,7 +5151,9 @@ fn codex_default_workspace() -> Result<String, AppError> {
         .canonicalize()
         .map_err(|error| AppError::io(format!("Default workspace is unavailable: {error}")))?;
     if !path.is_dir() {
-        return Err(AppError::invalid_argument("Default workspace must be a directory"));
+        return Err(AppError::invalid_argument(
+            "Default workspace must be a directory",
+        ));
     }
     Ok(path.to_string_lossy().into_owned())
 }
@@ -5317,9 +5327,11 @@ pub fn run() {
             // those builds left behind in Desktop's own Codex homes.
             match credential_broker::redact_managed_shell_snapshots(&codex::codex_root()) {
                 Ok(0) => {}
-                Ok(count) => {
-                    crate::platform::logging::report("lib", "eprintln", format!("redacted provider secrets from {count} Codex shell snapshot(s)"))
-                }
+                Ok(count) => crate::platform::logging::report(
+                    "lib",
+                    "eprintln",
+                    format!("redacted provider secrets from {count} Codex shell snapshot(s)"),
+                ),
                 Err(error) => {
                     return Err(std::io::Error::other(format!(
                         "could not scrub provider secrets from Codex shell snapshots, so a \
@@ -5347,7 +5359,11 @@ pub fn run() {
                 })?,
             );
             if let Err(error) = core.secrets().start_proxy() {
-                crate::platform::logging::report("lib", "eprintln", format!("synth-desktop: provider proxy failed to start: {error:#}"));
+                crate::platform::logging::report(
+                    "lib",
+                    "eprintln",
+                    format!("synth-desktop: provider proxy failed to start: {error:#}"),
+                );
             }
             crate::secrets::install_live(core.secrets().clone());
             let telemetry = Arc::new(crate::telemetry::ProductTelemetry::new(
@@ -5430,13 +5446,25 @@ pub fn run() {
             let bootstrap_approvals = approvals.clone();
             tauri::async_runtime::spawn(async move {
                 if let Err(error) = bootstrap_core.bootstrap(&bootstrap_handle).await {
-                    crate::platform::logging::report("lib", "eprintln", format!("CoreRuntime bootstrap failed: {error}"));
+                    crate::platform::logging::report(
+                        "lib",
+                        "eprintln",
+                        format!("CoreRuntime bootstrap failed: {error}"),
+                    );
                 }
                 if let Err(error) = bootstrap_approvals.expire_restored(&bootstrap_handle).await {
-                    crate::platform::logging::report("lib", "eprintln", format!("approval restore failed: {error}"));
+                    crate::platform::logging::report(
+                        "lib",
+                        "eprintln",
+                        format!("approval restore failed: {error}"),
+                    );
                 }
                 if let Err(error) = bootstrap_core.resume_intern_providers().await {
-                    crate::platform::logging::report("lib", "eprintln", format!("Intern restart reconciliation failed: {error}"));
+                    crate::platform::logging::report(
+                        "lib",
+                        "eprintln",
+                        format!("Intern restart reconciliation failed: {error}"),
+                    );
                 }
                 // Fallback arm: if the main window never finished loading, the
                 // renderer's own failure still has somewhere to be recorded.
@@ -5481,7 +5509,11 @@ pub fn run() {
                             connection.url, connection.path
                         ));
                     }
-                    Err(error) => crate::platform::logging::report("lib", "eprintln", format!("Visuals IPC failed to start: {error}")),
+                    Err(error) => crate::platform::logging::report(
+                        "lib",
+                        "eprintln",
+                        format!("Visuals IPC failed to start: {error}"),
+                    ),
                 }
             });
 
@@ -5512,7 +5544,11 @@ pub fn run() {
                                 connection.path
                             ));
                         }
-                        Err(error) => crate::platform::logging::report("lib", "eprintln", format!("Eval driver failed to start: {error}")),
+                        Err(error) => crate::platform::logging::report(
+                            "lib",
+                            "eprintln",
+                            format!("Eval driver failed to start: {error}"),
+                        ),
                     }
                 });
             }

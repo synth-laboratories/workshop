@@ -212,9 +212,7 @@ fn bind_caller_session(args: &Value) -> Result<Value, String> {
         .map(str::to_owned);
     if let (Some(supplied), Some(current)) = (supplied.as_deref(), current.as_deref()) {
         if supplied != current {
-            return Err(
-                "sessionRef does not match the authenticated MCP caller session".into(),
-            );
+            return Err("sessionRef does not match the authenticated MCP caller session".into());
         }
     }
     if let Some(session) = current.or(supplied) {
@@ -795,7 +793,9 @@ mod tests {
         .unwrap();
         assert!(
             payload.get("sessionRef").is_none()
-                || payload["sessionRef"].as_str().is_some_and(|value| !value.is_empty())
+                || payload["sessionRef"]
+                    .as_str()
+                    .is_some_and(|value| !value.is_empty())
         );
     }
 }
