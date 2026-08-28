@@ -202,6 +202,12 @@ export function RunInspector({ run, executionLabel, children }: Props) {
 		: "";
 	const showEvalTrials = trials != null && trials.length > 0;
 	const showWorkItems = !showEvalTrials && workItems.length > 0;
+	// An imported run's seal is an opaque import: it carries no native
+	// step/frame identity, so frames and live telemetry never existed for it.
+	// Detectable from the record itself — the importer writes this objective.
+	const imported = run.objective?.startsWith("imported from ") ?? false;
+	const evidence = header?.terminal?.evidence ?? header?.evidence ?? null;
+	const evidenceIncomplete = evidence != null && evidence.completeness !== "complete";
 
 	return (
 		<div data-testid="optimizer-inspector">
@@ -243,6 +249,25 @@ export function RunInspector({ run, executionLabel, children }: Props) {
 				<p className="optimizer-inspector-view-error" data-testid="optimizer-view-error">
 					Kernel view unavailable · {viewError}
 				</p>
+			) : null}
+
+			{imported || evidenceIncomplete ? (
+				<section className="optimizer-evidence-note" role="note" data-testid="optimizer-evidence-note">
+					<span className="optimizer-eyebrow">Evidence</span>
+					{imported ? (
+						<p data-testid="optimizer-evidence-imported">
+							Imported run — the imported seal has no native step/frame identity.
+							Trials and scores reduce from the imported event log; per-step frames
+							and live telemetry were never captured natively for this run.
+						</p>
+					) : null}
+					{evidenceIncomplete ? (
+						<p data-testid="optimizer-evidence-completeness">
+							Evidence is {evidence.completeness}
+							{evidence.reason ? ` — ${evidence.reason}` : ""}.
+						</p>
+					) : null}
+				</section>
 			) : null}
 
 			{projection ? (

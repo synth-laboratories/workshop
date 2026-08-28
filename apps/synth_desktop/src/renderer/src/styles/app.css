@@ -7952,6 +7952,10 @@ html.visual-expanded .sidebar {
 .optimizer-run-id-row button { min-height: 27px; padding: 0 8px; white-space: nowrap; }
 .optimizer-inspector-digest { overflow-wrap: anywhere; font: var(--fs-micro)/var(--lh-tight) var(--code-font-family); }
 .optimizer-inspector-view-error { color: var(--tone-warn-fg); font-size:var(--fs-micro); }
+/* Evidence honesty: an imported or evidence-incomplete run says so up front,
+   before its numbers are read as natively-witnessed truth. */
+.optimizer-evidence-note { margin: 0 0 16px; padding: 9px 12px; border: 1px solid color-mix(in srgb, var(--tone-warn-fg) 30%, var(--color-border)); background: var(--tone-warn-bg); }
+.optimizer-inspector .optimizer-evidence-note p { margin: 4px 0 0; color: var(--tone-warn-fg); font-size:var(--fs-micro); line-height: var(--lh-body); }
 .optimizer-phase-strip { display: flex; flex-wrap: wrap; gap: 4px 6px; margin: 0 0 8px; padding: 0; list-style: none; }
 .optimizer-phase-strip li { display: inline-flex; align-items: baseline; gap: 5px; color: var(--color-text-faint); font-size:var(--fs-micro); font-weight: var(--fw-semi); }
 .optimizer-phase-strip li:not(:last-child)::after { content: "→"; color: var(--color-border-dashed); }
