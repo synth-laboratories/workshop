@@ -2233,16 +2233,16 @@ pub(super) async fn reconcile_evidence(
             .with_context(|| {
                 format!("terminal record for rollout `{rollout_id}` names no sealed trace")
             })?;
-        let imported = match service
-            .indexed_eval_trace(producer_trace_id, &container_id, &rollout_id)
-            .await?
-        {
-            Some(indexed) => indexed,
-            None => service
-                .import_container_trace(&container_id, &rollout_id, run_id, &trial_id)
-                .await
-                .with_context(|| format!("reconcile sealed trace for rollout `{rollout_id}`"))?,
-        };
+        // Always reopen the immutable container bundle, even when its trace
+        // identity is already indexed. Trace identity and optimizer-run media
+        // authority are separate bindings: the old index shortcut returned a
+        // trace id without replaying its frame artifacts into this run, which
+        // left a completed Craftax trace with only the live step-0 frame.
+        let imported = service
+            .import_container_trace(&container_id, &rollout_id, run_id, &trial_id)
+            .await
+            .with_context(|| format!("reconcile sealed trace for rollout `{rollout_id}`"))?;
+        verify_complete_native_frame_trace(record, &imported, &rollout_id)?;
         let trace_ref = imported
             .get("traces")
             .and_then(Value::as_array)
@@ -2253,6 +2253,11 @@ pub(super) async fn reconcile_evidence(
             .with_context(|| {
                 format!("sealed bundle for rollout `{rollout_id}` indexed no trace")
             })?;
+        if trace_ref != producer_trace_id {
+            bail!(
+                "trace_identity_mismatch: rollout `{rollout_id}` declared `{producer_trace_id}` but the immutable bundle indexed `{trace_ref}`"
+            );
+        }
         record
             .as_object_mut()
             .with_context(|| format!("terminal record for seed {seed} is not an object"))?
@@ -2299,6 +2304,57 @@ pub(super) async fn reconcile_evidence(
     )
     .await?;
     service.get(run_id.to_string()).await
+}
+
+fn verify_complete_native_frame_trace(
+    terminal_record: &Value,
+    imported: &Value,
+    rollout_id: &str,
+) -> Result<()> {
+    let steps = terminal_record
+        .get("steps")
+        .and_then(Value::as_u64)
+        .with_context(|| {
+            format!(
+                "full_trace_step_count_missing: rollout `{rollout_id}` has no terminal environment-step count"
+            )
+        })?;
+    let observed = imported
+        .get("importedFrameSteps")
+        .and_then(Value::as_array)
+        .context(
+            "full_trace_frame_steps_missing: imported Trace V5 bundle omitted frame-step coverage",
+        )?
+        .iter()
+        .map(|value| {
+            value
+                .as_u64()
+                .context("full_trace_frame_step_invalid: frame step is not an unsigned integer")
+        })
+        .collect::<Result<std::collections::BTreeSet<_>>>()?;
+    let expected = (0..=steps).collect::<std::collections::BTreeSet<_>>();
+    if observed != expected {
+        let missing = expected.difference(&observed).copied().collect::<Vec<_>>();
+        return Err(anyhow::Error::new(
+            crate::error::StructuredFailure::new(
+                "full_trace_frame_coverage_incomplete",
+                format!(
+                    "rollout `{rollout_id}` retained {} of {} required native frame steps",
+                    observed.len(),
+                    expected.len()
+                ),
+                "Re-import the immutable Trace V5 bundle after confirming the container sealed one native PNG for every environment step, including step 0.",
+            )
+            .retryable(true)
+            .with_details(json!({
+                "rolloutId": rollout_id,
+                "terminalSteps": steps,
+                "observedFrameSteps": observed,
+                "missingFrameSteps": missing,
+            })),
+        ));
+    }
+    Ok(())
 }
 
 fn is_successful_eval_record(row: &Value) -> bool {
@@ -5789,5 +5845,25 @@ max_total_rollouts = 1
             .unwrap()
             .is_some());
         mock.task.abort();
+    }
+
+    #[test]
+    fn terminal_trace_requires_every_native_frame_step() {
+        let terminal = json!({"steps": 3});
+        let complete = json!({"importedFrameSteps": [0, 1, 2, 3]});
+        verify_complete_native_frame_trace(&terminal, &complete, "roll_complete").unwrap();
+
+        let incomplete = json!({"importedFrameSteps": [0]});
+        let error =
+            verify_complete_native_frame_trace(&terminal, &incomplete, "roll_sparse").unwrap_err();
+        assert!(format!("{error:#}").contains("full_trace_frame_coverage_incomplete"));
+        assert!(format!("{error:#}").contains("1 of 4 required native frame steps"));
+    }
+
+    #[test]
+    fn terminal_trace_deduplicates_identical_frame_steps_not_observations() {
+        let terminal = json!({"steps": 2});
+        let imported = json!({"importedFrameSteps": [0, 1, 1, 2]});
+        verify_complete_native_frame_trace(&terminal, &imported, "roll_duplicate_blob").unwrap();
     }
 }

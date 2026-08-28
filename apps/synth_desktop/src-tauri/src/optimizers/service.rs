@@ -574,55 +574,12 @@ impl OptimizerService {
             .await?;
         }
         result["importedFrameCount"] = json!(frames.len());
+        result["importedFrameSteps"] =
+            json!(frames.iter().map(|frame| frame.step).collect::<Vec<_>>());
         if let Some(event) = event {
             let _ = self.events_tx.send(event);
         }
         Ok(result)
-    }
-
-    /// Resolve a trace by exact producer identity or exact import provenance.
-    ///
-    /// Import is intentionally idempotent across app and container restarts:
-    /// once the immutable trace identity is in Workshop's index, the container
-    /// is no longer required merely to bind that same evidence to its run.
-    pub(super) async fn indexed_eval_trace(
-        &self,
-        trace_id: &str,
-        container_id: &str,
-        rollout_id: &str,
-    ) -> Result<Option<Value>> {
-        let wanted_trace = trace_id.to_string();
-        let imported_title = format!("{rollout_id} · {container_id}");
-        let traces = self
-            .db
-            .clone()
-            .run(move |conn| {
-                let mut statement = conn
-                    .prepare("SELECT id, digest FROM traces WHERE id=?1 OR title=?2 ORDER BY id")?;
-                let rows = statement.query_map(params![wanted_trace, imported_title], |row| {
-                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-                })?;
-                rows.collect::<rusqlite::Result<Vec<_>>>()
-                    .map_err(Into::into)
-            })
-            .await?;
-        if traces.len() > 1 {
-            bail!("multiple indexed traces claim rollout `{rollout_id}`");
-        }
-        let Some((trace_id, trace_digest)) = traces.into_iter().next() else {
-            return Ok(None);
-        };
-        Ok(Some(json!({
-            "sourceKind": "workshop_trace_index",
-            "trusted": true,
-            "duplicate": true,
-            "inspectable": true,
-            "traces": [{"traceId": trace_id, "digest": trace_digest}],
-            "note": "The trace was already indexed under this exact container-and-rollout import provenance.",
-            // Retained frame steps are not execution-step telemetry. An old
-            // run that reported no execution step count must remain unknown.
-            "maxStep": Value::Null,
-        })))
     }
 
     /// Wire diagnostics in after both services exist. Idempotent; a service
