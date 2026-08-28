@@ -6,6 +6,7 @@ import { SynthLogo } from "./SynthLogo";
 import { ProviderMark, providerMarkForTarget } from "./ProviderMark";
 import type { LagunaPolicy } from "../bridge/types";
 import { policyLabel } from "../runtime/lagunaPolicies";
+import { bridges } from "../runtime/desktopBridge";
 
 type Props = {
 	state: LandingState;
@@ -326,6 +327,20 @@ export function LandingPage({
 	const [accountChoiceMade, setAccountChoiceMade] = useState(
 		() => window.localStorage.getItem("synth.accountChoiceMade") === "1"
 	);
+	// The consent ask is host-owned state, not localStorage: it shows whenever
+	// the host says a choice (under the current collection policy) is missing,
+	// and a policy bump re-asks. Until answered, telemetry stays local-only.
+	const [consentAskDue, setConsentAskDue] = useState(false);
+	useEffect(() => {
+		void bridges.telemetry
+			?.getPolicy()
+			.then((policy) => setConsentAskDue(policy.needsAsk))
+			.catch(() => setConsentAskDue(false));
+	}, []);
+	const answerConsent = (granted: boolean) => {
+		setConsentAskDue(false);
+		void bridges.telemetry?.setConsent(granted).catch(() => undefined);
+	};
 	return (
 		<div className="landing" data-testid="landing-page">
 			<div className="landing-hero">
@@ -360,6 +375,32 @@ export function LandingPage({
 						<button type="button" className="quick-card" onClick={onConfigureAccount}>
 							<span><strong>Sign in to Synth</strong><small>Connect cloud models</small></span>
 						</button>
+					</div>
+				) : null}
+				{consentAskDue ? (
+					<div className="landing-consent" data-testid="telemetry-consent-ask">
+						<span>
+							Share anonymous usage stats? Counts and outcomes only — never prompts,
+							files, or keys. Change anytime in Settings → Privacy.
+						</span>
+						<div className="landing-consent-actions">
+							<button
+								type="button"
+								className="settings-secondary-btn"
+								data-testid="telemetry-consent-allow"
+								onClick={() => answerConsent(true)}
+							>
+								Allow
+							</button>
+							<button
+								type="button"
+								className="settings-secondary-btn"
+								data-testid="telemetry-consent-decline"
+								onClick={() => answerConsent(false)}
+							>
+								No thanks
+							</button>
+						</div>
 					</div>
 				) : null}
 			</div>

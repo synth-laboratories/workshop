@@ -452,26 +452,40 @@ window.synthAccount ??= isTauri
 window.synthTelemetry ??= isTauri
 	? {
 		getPolicy: () => fromGenerated(spectaCommands.productTelemetryGetPolicy()),
-		setOptOut: (optOut) => fromGenerated(spectaCommands.productTelemetrySetOptOut(optOut))
+		setOptOut: (optOut) => fromGenerated(spectaCommands.productTelemetrySetOptOut(optOut)),
+		setConsent: (granted) => fromGenerated(spectaCommands.productTelemetrySetConsent(granted)),
+		recent: (limit) => fromGenerated(spectaCommands.productTelemetryRecent(limit)),
+		flushNow: () => fromGenerated(spectaCommands.productTelemetryFlushNow())
 	}
 	: (() => {
+		// Browser dev stand-in mirrors the host semantics: local recording on
+		// by default, three-state consent, nothing syncs without a grant.
+		let consent: import("../bridge").TelemetryConsentState = { state: "unset" };
 		let optionalEnabled = true;
+		const policy = () => ({
+			dictionaryVersion: "workshop.product-telemetry.v2",
+			collectionPolicyVersion: "workshop.product-telemetry.policy.v2",
+			optionalEnabled,
+			consent,
+			needsAsk: consent.state === "unset",
+			syncAllowed: consent.state === "granted",
+			lastSyncAt: null
+		});
+		const choose = (granted: boolean) => {
+			consent = {
+				state: granted ? "granted" : "declined",
+				version: "workshop.product-telemetry.policy.v2",
+				at: new Date().toISOString()
+			};
+			optionalEnabled = granted;
+			return policy();
+		};
 		return {
-			getPolicy: async () => ({
-				dictionaryVersion: "workshop.product-telemetry.v1",
-				collectionPolicyVersion: "workshop.product-telemetry.policy.v1",
-				optionalEnabled,
-				consentVersion: "workshop.product-telemetry.policy.v1"
-			}),
-			setOptOut: async (optOut: boolean) => {
-				optionalEnabled = !optOut;
-				return {
-					dictionaryVersion: "workshop.product-telemetry.v1",
-					collectionPolicyVersion: "workshop.product-telemetry.policy.v1",
-					optionalEnabled,
-					consentVersion: "workshop.product-telemetry.policy.v1"
-				};
-			}
+			getPolicy: async () => policy(),
+			setOptOut: async (optOut: boolean) => choose(!optOut),
+			setConsent: async (granted: boolean) => choose(granted),
+			recent: async () => [],
+			flushNow: async () => 0
 		};
 	})();
 window.synthCodexOauth ??= isTauri

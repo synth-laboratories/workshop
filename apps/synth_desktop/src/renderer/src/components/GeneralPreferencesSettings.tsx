@@ -16,7 +16,7 @@ import {
 } from "../preferences";
 import { SettingsCard, SettingsRow } from "./SettingsCard";
 import { bridges } from "../runtime/desktopBridge";
-import type { ProductTelemetryPolicy } from "../bridge";
+import type { ProductTelemetryEvent, ProductTelemetryPolicy } from "../bridge";
 
 type Props = {
 	preferences: DesktopPreferences;
@@ -84,24 +84,41 @@ function SegmentedControl<T extends string>({
 	);
 }
 
+function consentSummary(policy: ProductTelemetryPolicy | null): string {
+	if (!policy) return "Loading…";
+	switch (policy.consent.state) {
+		case "granted":
+			return `Sharing allowed ${new Date(policy.consent.at).toLocaleDateString()} · ${policy.consent.version}`;
+		case "declined":
+			return `Sharing declined ${new Date(policy.consent.at).toLocaleDateString()} · ${policy.consent.version}`;
+		default:
+			return "Not asked yet — nothing leaves this device until you allow sharing.";
+	}
+}
+
 function PrivacyTelemetrySettings() {
 	const [policy, setPolicy] = useState<ProductTelemetryPolicy | null>(null);
+	const [events, setEvents] = useState<ProductTelemetryEvent[] | null>(null);
+	const [flushNote, setFlushNote] = useState<string | null>(null);
 	useEffect(() => {
 		void bridges.telemetry?.getPolicy().then(setPolicy).catch(() => undefined);
 	}, []);
 	const optionalEnabled = policy?.optionalEnabled !== false;
+	const openEvents = () => {
+		void bridges.telemetry?.recent(50).then(setEvents).catch(() => setEvents([]));
+	};
 	return (
 		<SettingsCard
 			title="Privacy"
-			description="Optional product analytics never include prompts, traces, filenames, or secret values. Essential sign-in and billing still work when this is off. Sign out deletes optional events on this device; essential recovery events expire after 365 days."
+			description="Optional product analytics never include prompts, traces, filenames, or secret values. Essential sign-in and billing still work when this is off. Sign out deletes optional events on this device; essential recovery events stay local and expire after 365 days."
 			testId="settings-privacy"
 		>
 			<SettingsRow
-				label="Product analytics"
-				description="Download, first launch, signup, and activation funnel. Hosted usage remains server-authoritative either way."
+				label="Share usage stats"
+				description="Anonymous counts and outcomes — download, first launch, signup, and activation funnel. Allowing also syncs them to Synth; turning off deletes what is queued. Hosted usage remains server-authoritative either way."
 			>
 				<SegmentedControl
-					ariaLabel="Product analytics"
+					ariaLabel="Share usage stats"
 					options={[{ id: "on", label: "On" }, { id: "off", label: "Off" }]}
 					value={optionalEnabled ? "on" : "off"}
 					testIdPrefix="telemetry-optional"
@@ -113,9 +130,53 @@ function PrivacyTelemetrySettings() {
 					}}
 				/>
 			</SettingsRow>
-			<p className="settings-item-subhead" data-testid="telemetry-policy-version">
-				{policy?.dictionaryVersion ?? "workshop.product-telemetry.v1"} · 90-day optional retention
+			<p className="settings-item-subhead" data-testid="telemetry-consent-status">
+				{consentSummary(policy)}
 			</p>
+			<p className="settings-item-subhead" data-testid="telemetry-policy-version">
+				{policy?.dictionaryVersion ?? "workshop.product-telemetry.v2"} · 90-day optional retention
+				{policy?.lastSyncAt ? ` · last sync ${new Date(policy.lastSyncAt).toLocaleString()}` : " · never synced"}
+			</p>
+			<div className="settings-inline-actions">
+				<button
+					type="button"
+					className="settings-secondary-btn"
+					data-testid="telemetry-view-events"
+					onClick={openEvents}
+				>
+					View collected events
+				</button>
+				{policy?.syncAllowed ? (
+					<button
+						type="button"
+						className="settings-secondary-btn"
+						data-testid="telemetry-flush-now"
+						onClick={() => {
+							void bridges.telemetry?.flushNow().then((sent) => {
+								setFlushNote(sent > 0 ? `Synced ${sent} events` : "Nothing to sync");
+								void bridges.telemetry?.getPolicy().then(setPolicy).catch(() => undefined);
+							}).catch(() => setFlushNote("Sync failed — will retry in the background"));
+						}}
+					>
+						Sync now
+					</button>
+				) : null}
+				{flushNote ? <span className="settings-item-subhead">{flushNote}</span> : null}
+			</div>
+			{events !== null ? (
+				<div className="telemetry-event-list" data-testid="telemetry-event-list">
+					{events.length === 0 ? (
+						<p className="settings-item-subhead">No events stored on this device.</p>
+					) : (
+						events.map((event) => (
+							<div key={event.eventId} className="telemetry-event-row">
+								<span>{event.name}</span>
+								<small>{event.sensitivity} · {new Date(event.at).toLocaleString()}</small>
+							</div>
+						))
+					)}
+				</div>
+			) : null}
 		</SettingsCard>
 	);
 }

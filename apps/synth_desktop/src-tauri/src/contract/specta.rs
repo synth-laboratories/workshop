@@ -349,6 +349,9 @@ pub fn builder() -> Builder<tauri::Wry> {
             crate::secrets::secrets_deny_env_import,
             crate::telemetry::product_telemetry_get_policy,
             crate::telemetry::product_telemetry_set_opt_out,
+            crate::telemetry::product_telemetry_set_consent,
+            crate::telemetry::product_telemetry_recent,
+            crate::telemetry::product_telemetry_flush_now,
         ])
 }
 
@@ -478,8 +481,11 @@ mod tests {
         // bridge (`synth.visual.media.v1`), which serves one bounded frame by
         // digest to a visual bound to the run that produced it.
         // 265 → 268: bounded native optimizer-frame latest/list/content lane.
+        // 268 → 271: telemetry consent answer, transparency view of recent
+        // events, and the manual flush — all display-safe; event creation
+        // remains host-owned.
         assert_eq!(
-            exported, 268,
+            exported, 271,
             "generated bindings must contain the complete desktop command set"
         );
         assert_eq!(

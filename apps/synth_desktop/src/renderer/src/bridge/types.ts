@@ -1117,16 +1117,40 @@ export type SynthAccountBridge = {
 	openBilling?(action: SynthBillingAction, tier?: string): Promise<string>;
 };
 
+export type TelemetryConsentState =
+	| { state: "unset" }
+	| { state: "granted"; version: string; at: string }
+	| { state: "declined"; version: string; at: string };
+
 export type ProductTelemetryPolicy = {
 	dictionaryVersion: string;
 	collectionPolicyVersion: string;
 	optionalEnabled: boolean;
-	consentVersion: string;
+	consent: TelemetryConsentState;
+	/** The consent ask is due: never answered, or answered under an older policy. */
+	needsAsk: boolean;
+	/** Sync-eligible events may currently leave the device. */
+	syncAllowed: boolean;
+	lastSyncAt: string | null;
+};
+
+export type ProductTelemetryEvent = {
+	eventId: string;
+	name: string;
+	at: string;
+	sensitivity: string;
+	properties: unknown;
 };
 
 export type ProductTelemetryBridge = {
 	getPolicy(): Promise<ProductTelemetryPolicy>;
 	setOptOut(optOut: boolean): Promise<ProductTelemetryPolicy>;
+	/** First-run consent answer; granted also makes sync eligible. */
+	setConsent(granted: boolean): Promise<ProductTelemetryPolicy>;
+	/** Transparency view: recent locally stored events, exactly as they would sync. */
+	recent(limit: number): Promise<ProductTelemetryEvent[]>;
+	/** Manual flush; resolves to the number of events shipped (0 without consent). */
+	flushNow(): Promise<number>;
 };
 
 export type CodexOauthBegin = BeginResult;

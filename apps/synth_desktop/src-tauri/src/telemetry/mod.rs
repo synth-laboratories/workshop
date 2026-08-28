@@ -1,30 +1,34 @@
 //! Privacy-safe product telemetry.
 //!
-//! Optional funnel events are allowlisted, scanned, and dropped when the
-//! operator opts out. Essential reliability events still record. Nothing in
-//! this module accepts prompts, traces, filenames, or secret values.
+//! Modular pipeline: feature code emits against the embedded contract
+//! ([`contract`]), a pure gate ([`policy`]) decides recording, the SQLite
+//! outbox ([`store`]) is both the local record and the sync spool, and a
+//! background flusher ([`flush`]) ships consented, sync-eligible events to
+//! the profile-routed backend ([`sink_http`]). Consent ([`consent`]) is
+//! honest three-state bookkeeping — unset is not a choice — and essential
+//! events never leave the device regardless of it.
 
-mod dictionary;
+pub mod consent;
+pub mod contract;
+pub mod flush;
+mod policy;
 mod privacy;
+pub mod sink_http;
+pub mod store;
 
 use anyhow::{anyhow, Result};
-use chrono::{Duration, Utc};
-use rusqlite::params;
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use serde_json::{json, Map, Value};
 use std::sync::{Arc, OnceLock};
 use tauri::State;
-use uuid::Uuid;
 
 use crate::error::AppError;
 use crate::storage::Database;
 
-pub use dictionary::{spec, EventSpec, COLLECTION_POLICY_VERSION, DICTIONARY_VERSION, EVENTS};
+use consent::{ConsentChoice, ConsentState};
+use store::TelemetryStore;
 
 const ENABLED_KEY: &str = "telemetry.product.enabled";
-const INSTALL_ID_KEY: &str = "telemetry.install_id";
-const CONSENT_KEY: &str = "telemetry.consent_version";
-const FIRST_PREFIX: &str = "telemetry.first.";
 
 static LIVE: OnceLock<Arc<ProductTelemetry>> = OnceLock::new();
 
@@ -56,16 +60,22 @@ pub fn mark_once(name: &str, properties: Value) {
 
 #[derive(Clone)]
 pub struct ProductTelemetry {
-    db: Arc<Database>,
+    store: TelemetryStore,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, specta::Type)]
+#[derive(Clone, Debug, Serialize, PartialEq, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub struct TelemetryPolicy {
     pub dictionary_version: String,
     pub collection_policy_version: String,
     pub optional_enabled: bool,
-    pub consent_version: String,
+    pub consent: ConsentState,
+    /// The consent ask is due: never answered, or answered under an older
+    /// collection policy.
+    pub needs_ask: bool,
+    /// Sync-eligible events may currently leave the device.
+    pub sync_allowed: bool,
+    pub last_sync_at: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, specta::Type)]
@@ -81,113 +91,100 @@ pub struct TelemetryEventRecord {
 
 impl ProductTelemetry {
     pub fn new(db: Arc<Database>) -> Self {
-        Self { db }
+        Self {
+            store: TelemetryStore::new(db),
+        }
+    }
+
+    pub fn store(&self) -> &TelemetryStore {
+        &self.store
     }
 
     pub fn policy(&self) -> Result<TelemetryPolicy> {
+        let consent = consent::state(&self.store)?;
         Ok(TelemetryPolicy {
-            dictionary_version: DICTIONARY_VERSION.into(),
-            collection_policy_version: COLLECTION_POLICY_VERSION.into(),
+            dictionary_version: contract::dictionary_version().into(),
+            collection_policy_version: contract::collection_policy_version().into(),
             optional_enabled: self.optional_enabled()?,
-            consent_version: self
-                .read_setting(CONSENT_KEY)?
-                .unwrap_or_else(|| COLLECTION_POLICY_VERSION.into()),
+            needs_ask: consent::needs_ask(&consent),
+            sync_allowed: consent::sync_allowed(&consent),
+            last_sync_at: self.store.last_sync_at()?,
+            consent,
         })
     }
 
-    pub fn set_optional_enabled(&self, enabled: bool) -> Result<TelemetryPolicy> {
-        self.write_setting(ENABLED_KEY, if enabled { "true" } else { "false" })?;
-        self.write_setting(CONSENT_KEY, COLLECTION_POLICY_VERSION)?;
+    /// One decision covers recording and egress: granted turns optional
+    /// analytics on and makes sync-eligible events shippable; declined turns
+    /// optional analytics off and deletes what was queued.
+    pub fn set_consent(&self, choice: ConsentChoice) -> Result<TelemetryPolicy> {
+        consent::record_choice(&self.store, choice)?;
+        let enabled = choice == ConsentChoice::Granted;
+        self.store
+            .write_setting(ENABLED_KEY, if enabled { "true" } else { "false" })?;
         if !enabled {
-            self.delete_optional()?;
+            self.store.delete_optional()?;
         }
         self.policy()
+    }
+
+    /// Legacy settings toggle: an explicit user action, so it records the
+    /// same consent choice the first-run ask would.
+    pub fn set_optional_enabled(&self, enabled: bool) -> Result<TelemetryPolicy> {
+        self.set_consent(if enabled {
+            ConsentChoice::Granted
+        } else {
+            ConsentChoice::Declined
+        })
     }
 
     /// Sign-out and account deletion: drop optional analytics. Keep the
     /// install id and essential recovery events until retention expires.
     pub fn on_sign_out(&self) -> Result<()> {
-        self.delete_optional()?;
+        self.store.delete_optional()?;
         Ok(())
     }
 
     pub fn record(&self, name: &str, properties: Value, once: bool) -> Result<Option<String>> {
-        let spec =
-            dictionary::spec(name).ok_or_else(|| anyhow!("unknown telemetry event {name}"))?;
-        if spec.sensitivity == dictionary::Sensitivity::Optional && !self.optional_enabled()? {
+        let spec = contract::spec(name).ok_or_else(|| anyhow!("unknown telemetry event {name}"))?;
+        if once && self.store.first_marked(name)? {
             return Ok(None);
         }
-        if once
-            && self
-                .read_setting(&format!("{FIRST_PREFIX}{name}"))?
-                .is_some()
-        {
+        let decision = policy::gate(spec, self.optional_enabled()?, self.envelope()?, properties)?;
+        let policy::Decision::Record { properties } = decision else {
             return Ok(None);
-        }
-        if let Some(field) = privacy::forbidden_field(&properties) {
-            return Err(anyhow!(
-                "telemetry payload refused: forbidden field {field}"
-            ));
-        }
-        let properties = self.filter_properties(spec, properties)?;
-        let event_id = format!("pte_{}", Uuid::new_v4().simple());
-        let at = Utc::now().to_rfc3339();
-        let payload = serde_json::to_string(&properties)?;
-        self.db.with_conn(|conn| {
-            conn.execute(
-                "INSERT INTO product_telemetry_events(event_id, name, at, sensitivity, properties_json)
-                 VALUES (?1, ?2, ?3, ?4, ?5)",
-                params![
-                    event_id,
-                    spec.name,
-                    at,
-                    sensitivity_name(spec.sensitivity),
-                    payload
-                ],
-            )?;
-            Ok(())
-        })?;
+        };
+        let event_id = self
+            .store
+            .insert(&spec.name, spec.sensitivity, &properties)?;
         if once {
-            self.write_setting(&format!("{FIRST_PREFIX}{name}"), &at)?;
+            self.store.mark_first(name)?;
         }
-        self.prune()?;
         Ok(Some(event_id))
     }
 
     pub fn recent(&self, limit: i64) -> Result<Vec<TelemetryEventRecord>> {
-        self.db.with_conn(|conn| {
-            let mut stmt = conn.prepare(
-                "SELECT event_id, name, at, sensitivity, properties_json
-                 FROM product_telemetry_events ORDER BY at DESC LIMIT ?1",
-            )?;
-            let rows = stmt.query_map([limit.max(1).min(200)], |row| {
-                let raw: String = row.get(4)?;
-                Ok(TelemetryEventRecord {
-                    event_id: row.get(0)?,
-                    name: row.get(1)?,
-                    at: row.get(2)?,
-                    sensitivity: row.get(3)?,
-                    properties: serde_json::from_str(&raw).unwrap_or(Value::Null),
-                })
-            })?;
-            Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
-        })
+        Ok(self
+            .store
+            .recent(limit)?
+            .into_iter()
+            .map(
+                |(event_id, name, at, sensitivity, properties)| TelemetryEventRecord {
+                    event_id,
+                    name,
+                    at,
+                    sensitivity,
+                    properties,
+                },
+            )
+            .collect())
     }
 
     fn optional_enabled(&self) -> Result<bool> {
         Ok(self
+            .store
             .read_setting(ENABLED_KEY)?
             .map(|value| value != "false")
             .unwrap_or(true))
-    }
-
-    fn install_id(&self) -> Result<String> {
-        if let Some(existing) = self.read_setting(INSTALL_ID_KEY)? {
-            return Ok(existing);
-        }
-        let id = format!("ins_{}", Uuid::new_v4().simple());
-        self.write_setting(INSTALL_ID_KEY, &id)?;
-        Ok(id)
     }
 
     fn envelope(&self) -> Result<Map<String, Value>> {
@@ -200,119 +197,12 @@ impl ProductTelemetry {
         );
         map.insert("platform".into(), json!(std::env::consts::OS));
         map.insert("architecture".into(), json!(std::env::consts::ARCH));
-        map.insert("install_id".into(), json!(self.install_id()?));
+        map.insert("install_id".into(), json!(self.store.install_id()?));
         map.insert(
             "collection_policy_version".into(),
-            json!(COLLECTION_POLICY_VERSION),
+            json!(contract::collection_policy_version()),
         );
         Ok(map)
-    }
-
-    fn filter_properties(&self, spec: &EventSpec, properties: Value) -> Result<Value> {
-        let Value::Object(incoming) = properties else {
-            return Err(anyhow!("telemetry properties must be an object"));
-        };
-        let mut out = self.envelope()?;
-        for (key, value) in incoming {
-            if !dictionary::allowed_property(spec, &key) {
-                return Err(anyhow!(
-                    "telemetry payload refused: property {key} is not allowlisted"
-                ));
-            }
-            if matches!(value, Value::Object(_) | Value::Array(_)) {
-                return Err(anyhow!(
-                    "telemetry payload refused: nested values are not allowed"
-                ));
-            }
-            validate_property(&key, &value)?;
-            out.insert(key, value);
-        }
-        Ok(Value::Object(out))
-    }
-
-    fn prune(&self) -> Result<()> {
-        let optional_floor =
-            (Utc::now() - Duration::days(dictionary::RETENTION_DAYS_OPTIONAL)).to_rfc3339();
-        let essential_floor =
-            (Utc::now() - Duration::days(dictionary::RETENTION_DAYS_ESSENTIAL)).to_rfc3339();
-        self.db.with_conn(|conn| {
-            conn.execute(
-                "DELETE FROM product_telemetry_events
-                 WHERE (sensitivity = 'optional' AND at < ?1)
-                    OR (sensitivity = 'essential' AND at < ?2)",
-                params![optional_floor, essential_floor],
-            )?;
-            Ok(())
-        })
-    }
-
-    fn delete_optional(&self) -> Result<()> {
-        self.db.with_conn(|conn| {
-            conn.execute(
-                "DELETE FROM product_telemetry_events WHERE sensitivity = 'optional'",
-                [],
-            )?;
-            Ok(())
-        })
-    }
-
-    fn read_setting(&self, key: &str) -> Result<Option<String>> {
-        self.db.with_conn(|conn| {
-            let mut stmt =
-                conn.prepare("SELECT value_json FROM runtime_settings WHERE key = ?1")?;
-            let mut rows = stmt.query([key])?;
-            Ok(match rows.next()? {
-                Some(row) => {
-                    let raw: String = row.get(0)?;
-                    let parsed = serde_json::from_str::<String>(&raw).unwrap_or(raw);
-                    let trimmed = parsed.trim().trim_matches('"').to_owned();
-                    if trimmed.is_empty() {
-                        None
-                    } else {
-                        Some(trimmed)
-                    }
-                }
-                None => None,
-            })
-        })
-    }
-
-    fn write_setting(&self, key: &str, value: &str) -> Result<()> {
-        let payload = serde_json::to_string(value)?;
-        let at = Utc::now().to_rfc3339();
-        self.db.with_conn(|conn| {
-            conn.execute(
-                "INSERT INTO runtime_settings(key, value_json, updated_at) VALUES(?1, ?2, ?3)
-                 ON CONFLICT(key) DO UPDATE SET value_json=excluded.value_json, updated_at=excluded.updated_at",
-                params![key, payload, at],
-            )?;
-            Ok(())
-        })
-    }
-}
-
-fn validate_property(key: &str, value: &Value) -> Result<()> {
-    match key {
-        "outcome" => match value.as_str() {
-            Some("success" | "failure" | "cancelled") => Ok(()),
-            _ => Err(anyhow!(
-                "telemetry payload refused: outcome must be success, failure, or cancelled"
-            )),
-        },
-        "duration_ms" if value.as_u64().is_none() => Err(anyhow!(
-            "telemetry payload refused: duration_ms must be a non-negative integer"
-        )),
-        "workflow_family" | "error_class" if value.as_str().is_none() => Err(anyhow!(
-            "telemetry payload refused: property {key} must be a string"
-        )),
-        _ => Ok(()),
-    }
-}
-
-fn sensitivity_name(value: dictionary::Sensitivity) -> &'static str {
-    match value {
-        dictionary::Sensitivity::Optional => "optional",
-        dictionary::Sensitivity::Essential => "essential",
     }
 }
 
@@ -331,6 +221,47 @@ pub fn product_telemetry_set_opt_out(
     opt_out: bool,
 ) -> Result<TelemetryPolicy, AppError> {
     state.set_optional_enabled(!opt_out).map_err(AppError::from)
+}
+
+/// The first-run consent answer. `granted` enables optional analytics and
+/// sync; `declined` disables optional analytics and deletes queued events.
+#[tauri::command]
+#[specta::specta]
+pub fn product_telemetry_set_consent(
+    state: State<'_, Arc<ProductTelemetry>>,
+    granted: bool,
+) -> Result<TelemetryPolicy, AppError> {
+    state
+        .set_consent(if granted {
+            ConsentChoice::Granted
+        } else {
+            ConsentChoice::Declined
+        })
+        .map_err(AppError::from)
+}
+
+/// Transparency view: the most recent locally stored events, exactly as they
+/// would sync. Display-safe by construction — the gate refused anything else.
+#[tauri::command]
+#[specta::specta]
+pub fn product_telemetry_recent(
+    state: State<'_, Arc<ProductTelemetry>>,
+    limit: crate::contract::specta::OpaqueInteger<i64>,
+) -> Result<Vec<TelemetryEventRecord>, AppError> {
+    state.recent(limit.0).map_err(AppError::from)
+}
+
+/// Manual flush for Settings and QA. Reports the number of events shipped;
+/// without current consent it ships nothing and reports zero.
+#[tauri::command]
+#[specta::specta]
+pub async fn product_telemetry_flush_now(
+    flusher: State<'_, Arc<flush::Flusher>>,
+) -> Result<u32, AppError> {
+    match flusher.flush_once().await.map_err(AppError::from)? {
+        flush::FlushOutcome::Sent { events } => Ok(events as u32),
+        _ => Ok(0),
+    }
 }
 
 #[cfg(test)]
@@ -371,10 +302,8 @@ mod tests {
             "hosted_job_completed",
             "hosted_job_failed",
         ] {
-            assert!(spec(name).is_some(), "{name}");
+            assert!(contract::spec(name).is_some(), "{name}");
         }
-        assert!(EVENTS.iter().all(|event| !event.purpose.is_empty()));
-        assert!(EVENTS.iter().all(|event| !event.owner.is_empty()));
     }
 
     #[test]
@@ -391,7 +320,7 @@ mod tests {
         assert_eq!(event.properties["schema_version"], 1);
         assert_eq!(
             event.properties["collection_policy_version"],
-            COLLECTION_POLICY_VERSION
+            contract::collection_policy_version()
         );
         assert!(event.properties["install_id"]
             .as_str()
@@ -525,5 +454,26 @@ mod tests {
             .collect();
         assert!(!names.contains(&"signin_completed".to_string()));
         assert!(names.contains(&"recovery_attempted".to_string()));
+    }
+
+    #[test]
+    fn policy_reports_unset_consent_honestly_and_choice_flips_it() {
+        let (_dir, telemetry) = open();
+        let before = telemetry.policy().unwrap();
+        assert_eq!(before.consent, ConsentState::Unset);
+        assert!(before.needs_ask);
+        assert!(!before.sync_allowed);
+        // Recording stays on by default, local-only until consent.
+        assert!(before.optional_enabled);
+
+        let granted = telemetry.set_consent(ConsentChoice::Granted).unwrap();
+        assert!(!granted.needs_ask);
+        assert!(granted.sync_allowed);
+        assert!(granted.optional_enabled);
+
+        let declined = telemetry.set_consent(ConsentChoice::Declined).unwrap();
+        assert!(!declined.needs_ask);
+        assert!(!declined.sync_allowed);
+        assert!(!declined.optional_enabled);
     }
 }

@@ -1,0 +1,110 @@
+//! The pure recording gate.
+//!
+//! Given an event, the enablement state, and the host envelope, decide
+//! whether it records and with which properties. No I/O: the store owns
+//! persistence, this module owns the decision, and tests exercise it without
+//! a database.
+
+use anyhow::{anyhow, Result};
+use serde_json::{Map, Value};
+
+use super::contract::{self, EventSpec, Sensitivity};
+use super::privacy;
+
+pub enum Decision {
+    Record { properties: Value },
+    /// Optional analytics are disabled; the event is silently not recorded.
+    Drop,
+}
+
+pub fn gate(
+    spec: &EventSpec,
+    optional_enabled: bool,
+    envelope: Map<String, Value>,
+    properties: Value,
+) -> Result<Decision> {
+    if spec.sensitivity == Sensitivity::Optional && !optional_enabled {
+        return Ok(Decision::Drop);
+    }
+    if let Some(field) = privacy::forbidden_field(&properties) {
+        return Err(anyhow!(
+            "telemetry payload refused: forbidden field {field}"
+        ));
+    }
+    let Value::Object(incoming) = properties else {
+        return Err(anyhow!("telemetry properties must be an object"));
+    };
+    let mut out = envelope;
+    for (key, value) in incoming {
+        if !contract::allowed_property(spec, &key) {
+            return Err(anyhow!(
+                "telemetry payload refused: property {key} is not allowlisted"
+            ));
+        }
+        if matches!(value, Value::Object(_) | Value::Array(_)) {
+            return Err(anyhow!(
+                "telemetry payload refused: nested values are not allowed"
+            ));
+        }
+        validate_property(&key, &value)?;
+        out.insert(key, value);
+    }
+    Ok(Decision::Record {
+        properties: Value::Object(out),
+    })
+}
+
+fn validate_property(key: &str, value: &Value) -> Result<()> {
+    match key {
+        "outcome" => match value.as_str() {
+            Some("success" | "failure" | "cancelled") => Ok(()),
+            _ => Err(anyhow!(
+                "telemetry payload refused: outcome must be success, failure, or cancelled"
+            )),
+        },
+        "duration_ms" if value.as_u64().is_none() => Err(anyhow!(
+            "telemetry payload refused: duration_ms must be a non-negative integer"
+        )),
+        "workflow_family" | "error_class" if value.as_str().is_none() => Err(anyhow!(
+            "telemetry payload refused: property {key} must be a string"
+        )),
+        _ => Ok(()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn envelope() -> Map<String, Value> {
+        let mut map = Map::new();
+        map.insert("install_id".into(), json!("ins_test"));
+        map
+    }
+
+    #[test]
+    fn disabled_optional_drops_without_error() {
+        let spec = contract::spec("signin_completed").unwrap();
+        assert!(matches!(
+            gate(spec, false, envelope(), json!({"outcome": "success"})).unwrap(),
+            Decision::Drop
+        ));
+    }
+
+    #[test]
+    fn essential_records_even_when_disabled() {
+        let spec = contract::spec("recovery_attempted").unwrap();
+        assert!(matches!(
+            gate(spec, false, envelope(), json!({"error_class": "offline"})).unwrap(),
+            Decision::Record { .. }
+        ));
+    }
+
+    #[test]
+    fn forbidden_and_unlisted_fields_refuse() {
+        let spec = contract::spec("signin_completed").unwrap();
+        assert!(gate(spec, true, envelope(), json!({"prompt": "hi"})).is_err());
+        assert!(gate(spec, true, envelope(), json!({"unlisted_extra": "x"})).is_err());
+    }
+}

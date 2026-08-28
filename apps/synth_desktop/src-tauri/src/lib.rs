@@ -4857,6 +4857,15 @@ pub fn run() {
             ));
             crate::telemetry::install_live(telemetry.clone());
             crate::telemetry::mark_once("app_first_launch", serde_json::json!({}));
+            // Background sync of consented, sync-eligible telemetry. The
+            // flusher re-checks consent on every pass; without it nothing
+            // leaves the device.
+            let telemetry_flusher = Arc::new(crate::telemetry::flush::Flusher::new(
+                telemetry.store().clone(),
+                Arc::new(crate::telemetry::sink_http::HttpSink::new()),
+            ));
+            app.manage(telemetry_flusher.clone());
+            tauri::async_runtime::spawn(telemetry_flusher.run());
             let approvals = Arc::new(crate::session::approval::ApprovalBroker::new(
                 crate::session::SessionPersistence::from_core(Some(core.clone())),
             ));
