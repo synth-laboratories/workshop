@@ -12,6 +12,7 @@ import {
   localMapRows,
   reconcileCraftaxTrace
 } from "../runtime/craftaxTraceView.ts";
+import { evalAggregateV1, evalAggregateWorkFacts } from "../runtime/evalAggregate.ts";
 
 const CAS = (seed) => `ab${String(seed).padStart(62, "c")}`;
 
@@ -178,7 +179,7 @@ test("reward, achievements and state deltas attach to the call whose steps produ
 test("a policy call still in flight stays in the trajectory, marked running", () => {
   const view = foldCraftaxTrace(craftaxEvents(), identity);
   assert.equal(view.steps.length, 2);
-  assert.equal(view.steps[0].status, "complete");
+  assert.equal(view.steps[0].status, "completed");
   const open = view.steps[1];
   assert.equal(open.status, "running");
   assert.equal(open.content.reasoning, "stone next");
@@ -189,15 +190,21 @@ test("a policy call still in flight stays in the trajectory, marked running", ()
   assert.equal(view.run.usage.input_tokens, 240);
 });
 
-test("an unclosed policy call on terminal evidence is incomplete, never running", () => {
+test("an unclosed policy call on terminal evidence is aborted with typed closure", () => {
   const closed = foldCraftaxTrace(craftaxEvents(), {
     ...identity,
     status: "completed",
     relay: { ...identity.relay, journalClosed: true }
   });
   assert.equal(closed.coverage.closed, true);
-  assert.equal(closed.steps[0].status, "complete");
-  assert.equal(closed.steps[1].status, "incomplete");
+  assert.equal(closed.steps[0].status, "completed");
+  assert.equal(closed.steps[1].status, "aborted");
+  assert.deepEqual(closed.steps[1].closure, {
+    outcome: "aborted",
+    reason: "trace_closed_before_policy_close",
+    source: "relay.journal.closed",
+    sourceSequence: null
+  });
   assert.deepEqual(closed.steps[1].action.applied, []);
 
   const sealed = foldCraftaxTrace(craftaxEvents(), {
@@ -206,7 +213,8 @@ test("an unclosed policy call on terminal evidence is incomplete, never running"
     sealed: true
   });
   assert.equal(sealed.coverage.closed, true);
-  assert.equal(sealed.steps[1].status, "incomplete");
+  assert.equal(sealed.steps[1].status, "aborted");
+  assert.equal(sealed.steps[1].closure.source, "trace.sealed");
 });
 
 test("the default workstation never substitutes a symbolic map for native PNG evidence", () => {
@@ -339,6 +347,88 @@ test("current eval terminal work-item ids reconcile into five rollout trials and
   assert.deepEqual(trials.map((trial) => trial.trialId), seeds.map((seed) => `trial:craftax:${seed}`));
   assert.equal(trials.reduce((calls, trial) => calls + (trial.view.run.usage.calls ?? 0), 0), 50);
   assert.ok(trials.every((trial) => !trial.trialId.startsWith("eval:trial:")));
+});
+
+test("terminal V2 work truth closes queued/running trials and their open calls", () => {
+  const events = [
+    {
+      type: "eval.trial.queued",
+      sequenceNumber: 1,
+      delta: { trial_id: "trial:queued", seed: 1, workItemId: "eval:trial:0" }
+    },
+    {
+      type: "eval.trial.started",
+      sequenceNumber: 2,
+      delta: { trial_id: "trial:running", rollout_id: "rollout:running", seed: 2, workItemId: "eval:trial:1" }
+    },
+    {
+      type: "eval.trial.event",
+      sequenceNumber: 3,
+      delta: {
+        trial_id: "trial:running",
+        workItemId: "eval:trial:1",
+        containerEvent: { sequence: 1, kind: "span.policy.opened", payload: { call: 1 } }
+      }
+    }
+  ];
+  const runViewV2 = {
+    header: { lifecycle: "terminal" },
+    projection: {
+      workItems: [
+        { workItemId: "eval:trial:0", lifecycle: "terminal", terminal: "cancelled" },
+        { workItemId: "eval:trial:1", lifecycle: "terminal", terminal: "cancelled", externalRef: "rollout:running" }
+      ],
+      evidenceLedger: [
+        { workItemId: "eval:trial:0", trialId: "trial:queued" },
+        { workItemId: "eval:trial:1", trialId: "trial:running", rolloutId: "rollout:running" }
+      ]
+    }
+  };
+  const trials = craftaxTrialsFromRun({ summary: { task: "craftax" } }, events, runViewV2);
+  assert.deepEqual(trials.map((trial) => trial.state), ["failed", "failed"]);
+  assert.ok(trials.every((trial) => trial.state !== "queued" && trial.state !== "running"));
+  assert.equal(trials[1].view.steps[0].status, "aborted");
+  assert.deepEqual(trials[1].view.steps[0].closure, {
+    outcome: "aborted",
+    reason: "parent_terminal_before_policy_close",
+    source: "run.view.v2",
+    sourceSequence: null
+  });
+});
+
+test("trace workbench consumes the V2 aggregate and the canonical finished timestamp", () => {
+  const aggregate = evalAggregateV1({
+    schemaVersion: "eval.aggregate.v1",
+    runId: "run:1",
+    asOfSequence: 18,
+    projectionRevision: 4,
+    lifecycle: "terminal",
+    work: { planned: 5, queued: 0, running: 0, succeeded: 3, failed: 1, cancelled: 1 },
+    evidence: {},
+    selection: "promotion_not_applicable",
+    meanReward: 1.25,
+    scoredTrials: 3,
+    evaluatorEvidence: 3,
+    traceCount: 5,
+    evidenceRefCount: 5
+  }, "run:1");
+  assert.ok(aggregate);
+  assert.deepEqual(evalAggregateWorkFacts(aggregate), {
+    rolloutCount: 5,
+    terminalCount: 5,
+    running: 0,
+    queued: 0,
+    failed: 2,
+    started: 5
+  });
+  const shared = readFileSync(new URL(
+    "../families/first_class_example_containers/_shared/traceWorkbench.tsx",
+    import.meta.url
+  ), "utf8");
+  assert.match(shared, /runViewV2\?\.aggregate/);
+  assert.match(shared, /evalAggregateV1\(aggregateCandidate/);
+  assert.match(shared, /run\?\.finishedAt/);
+  assert.doesNotMatch(shared, /run\?\.completedAt/);
 });
 
 test("a sealed Trace V5 document folds through the same rules as the live relay", () => {

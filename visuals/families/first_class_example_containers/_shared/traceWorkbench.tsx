@@ -40,6 +40,11 @@ import {
   type TrialView
 } from "../../../runtime/craftaxTraceView.ts";
 import { NO_MEDIA, type LoadedMedia, type MediaClient } from "../../../runtime/mediaClient.ts";
+import {
+  evalAggregateV1,
+  evalAggregateWorkFacts,
+  type EvalAggregateV1
+} from "../../../runtime/evalAggregate.ts";
 
 type Any = Record<string, any>;
 
@@ -63,6 +68,7 @@ export type TraceWorkbenchProps = {
   title?: string;
   lede?: string;
   run?: Any;
+  runViewV2?: Any;
   events?: Any[];
   enrichmentEvents?: Any[];
   data?: Any;
@@ -118,26 +124,31 @@ const stepCount = (trial: TrialView): number | null => {
 
 function RunAggregateHeader({
   run,
+  aggregate,
   trials,
   filter,
   onFilter,
   testId
 }: {
   run: Any | null;
+  aggregate: EvalAggregateV1 | null;
   trials: TrialView[];
   filter: AggregateFilter;
   onFilter: (filter: AggregateFilter) => void;
   testId: string;
 }) {
-  const terminal = trials.filter((row) => row.state === "done" || row.state === "failed");
-  const startedTrials = trials.filter((row) => row.state !== "queued").length;
-  const running = trials.filter((row) => row.state === "running").length;
-  const queued = trials.filter((row) => row.state === "queued").length;
-  const failed = trials.filter((row) => row.state === "failed").length;
+  const terminalTrials = trials.filter((row) => row.state === "done" || row.state === "failed");
+  const aggregateWork = aggregate ? evalAggregateWorkFacts(aggregate) : null;
+  const rolloutCount = aggregateWork?.rolloutCount ?? trials.length;
+  const running = aggregateWork?.running ?? trials.filter((row) => row.state === "running").length;
+  const queued = aggregateWork?.queued ?? trials.filter((row) => row.state === "queued").length;
+  const failed = aggregateWork?.failed ?? trials.filter((row) => row.state === "failed").length;
+  const terminalCount = aggregateWork?.terminalCount ?? terminalTrials.length;
+  const startedTrials = aggregateWork?.started ?? trials.filter((row) => row.state !== "queued").length;
   const summary = (run?.summary ?? {}) as Any;
   const bounds = (summary.bounds ?? {}) as Any;
   const started = Date.parse(String(run?.startedAt ?? run?.started_at ?? summary.startedAt ?? ""));
-  const ended = Date.parse(String(run?.completedAt ?? run?.completed_at ?? ""));
+  const ended = Date.parse(String(run?.finishedAt ?? run?.finished_at ?? ""));
   const elapsedSeconds = Number.isFinite(started)
     ? Math.max(0, ((Number.isFinite(ended) ? ended : Date.now()) - started) / 1000)
     : null;
@@ -154,15 +165,21 @@ function RunAggregateHeader({
   const stepUsage = sumPresent(steps);
   const tokenUsage = sumPresent(tokenRows);
   const costUsage = sumPresent(costs);
-  const maxRollouts = finite(bounds.maximumRollouts) ?? (trials.length || null);
+  const maxRollouts = finite(bounds.maximumRollouts) ?? (rolloutCount || null);
   const callsPerRollout = finite(bounds.maximumModelCallsPerRollout);
   const stepsPerRollout = finite(bounds.maximumStepsPerRollout);
   const callLimit = callsPerRollout === null || maxRollouts === null ? null : callsPerRollout * maxRollouts;
   const stepLimit = stepsPerRollout === null || maxRollouts === null ? null : stepsPerRollout * maxRollouts;
   const tokenLimit = finite(bounds.maximumTokens);
   const costLimit = finite(bounds.hardTotalCostUsd ?? summary.costCeilingUsd);
-  const rewards = terminal.map((row) => row.reward).filter((value): value is number => value !== null).sort((a, b) => a - b);
-  const mean = rewards.length ? rewards.reduce((sum, value) => sum + value, 0) / rewards.length : null;
+  // Once V2 supplies the revision-addressed aggregate, raw rows remain drill-
+  // down evidence only. Recomputing counts/reward here would create a second
+  // aggregate with different validity and terminal rules.
+  const rewards = aggregate
+    ? []
+    : terminalTrials.map((row) => row.reward).filter((value): value is number => value !== null).sort((a, b) => a - b);
+  const mean = aggregate ? finite(aggregate.meanReward) : rewards.length ? rewards.reduce((sum, value) => sum + value, 0) / rewards.length : null;
+  const scoredTrials = aggregate ? aggregate.scoredTrials : rewards.length;
   const median = rewards.length
     ? rewards.length % 2
       ? rewards[(rewards.length - 1) / 2]
@@ -172,13 +189,13 @@ function RunAggregateHeader({
   const rewardMax = rewards.length ? rewards[rewards.length - 1] : null;
   const bucketCount = Math.min(5, Math.max(1, rewards.length));
   const span = rewardMin !== null && rewardMax !== null ? rewardMax - rewardMin : 0;
-  const buckets = Array.from({ length: bucketCount }, (_, index) => {
+  const buckets = rewards.length ? Array.from({ length: bucketCount }, (_, index) => {
     const low = rewardMin === null ? 0 : rewardMin + (span * index) / bucketCount;
     const high = rewardMax === null ? 0 : index === bucketCount - 1 ? rewardMax : rewardMin + (span * (index + 1)) / bucketCount;
     const inclusiveHigh = index === bucketCount - 1;
     const count = rewards.filter((value) => value >= low && (inclusiveHigh ? value <= high : value < high)).length;
     return { low, high, inclusiveHigh, count };
-  });
+  }) : [];
 
   const achievementEvents = trials.flatMap((trial) =>
     trial.view.events
@@ -218,7 +235,7 @@ function RunAggregateHeader({
           {usage.value === null ? "unavailable" : formatter(usage.value)} / {limit === null ? "no limit" : formatter(limit)}
         </strong>
         <div style={{ color: "var(--sv-text-faint)", fontSize: "var(--sv-fs-micro)" }}>
-          {usage.present}/{trials.length} seeds reported
+          {usage.present}/{rolloutCount} seeds reported
         </div>
         <div style={{ height: 3, marginTop: 4, borderRadius: 3, overflow: "hidden", background: "var(--sv-surface-muted)" }}>
           <span style={{ display: "block", height: "100%", width: `${Math.min(100, (ratio ?? 0) * 100)}%`, background: tone }} />
@@ -230,6 +247,8 @@ function RunAggregateHeader({
   return (
     <section
       data-testid={testId}
+      data-aggregate-schema={aggregate?.schemaVersion}
+      data-projection-revision={aggregate?.projectionRevision}
       style={{
         position: "sticky",
         top: 0,
@@ -244,14 +263,14 @@ function RunAggregateHeader({
     >
       <div style={{ display: "flex", justifyContent: "space-between", gap: "var(--sv-sp-3)", flexWrap: "wrap", marginBottom: "var(--sv-sp-3)" }}>
         <strong style={{ ...mono, fontSize: "var(--sv-fs-meta)" }}>
-          {terminal.length}/{trials.length} terminal · {running} running · {queued} queued · {failed} failed
+          {terminalCount}/{rolloutCount} terminal · {running} running · {queued} queued · {failed} failed
         </strong>
         <span style={{ color: "var(--sv-text-faint)", fontSize: "var(--sv-fs-micro)" }}>
           {formatDuration(elapsedSeconds)} · {finite(summary.concurrency) === null ? "concurrency unavailable" : `${summary.concurrency} parallel`}
         </span>
       </div>
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(130px,1fr))", gap: "var(--sv-sp-3)" }}>
-        {usageCard("Rollouts", { value: startedTrials, present: trials.length }, maxRollouts, (value) => String(value))}
+        {usageCard("Rollouts", { value: startedTrials, present: rolloutCount }, maxRollouts, (value) => String(value))}
         {usageCard("Model calls", callUsage, callLimit)}
         {usageCard("Environment steps", stepUsage, stepLimit)}
         {usageCard("Tokens", tokenUsage, tokenLimit)}
@@ -261,7 +280,8 @@ function RunAggregateHeader({
         <div>
           <div style={{ color: "var(--sv-text-faint)", fontSize: "var(--sv-fs-micro)", textTransform: "uppercase" }}>Rewards</div>
           <div style={{ ...mono, marginTop: 3, fontSize: "var(--sv-fs-meta)" }}>
-            {rewards.length}/{terminal.length} terminal rewards · mean {reward(mean)} · median {reward(median)} · range {reward(rewardMin)}–{reward(rewardMax)}
+            {scoredTrials}/{terminalCount} terminal rewards · mean {reward(mean)} · median {reward(median)} · range {reward(rewardMin)}–{reward(rewardMax)}
+            {aggregate ? ` · ${aggregate.evaluatorEvidence} evaluator evidence · ${aggregate.traceCount} traces` : ""}
           </div>
           <div style={{ display: "flex", alignItems: "end", gap: 4, height: 34, marginTop: 5 }}>
             {buckets.map((bucket, index) => (
@@ -581,7 +601,9 @@ function TrajectoryRail({
                 </span>
                 <span style={{ display: "flex", gap: 3, flexWrap: "wrap" }}>
                   {step.status === "running" ? <Chip label="running" tone="accent" /> : null}
-                  {step.status === "incomplete" ? <Chip label="incomplete" tone="bad" /> : null}
+                  {step.status !== "running" && step.status !== "completed" ? (
+                    <Chip label={step.status.replaceAll("_", " ")} tone="bad" />
+                  ) : null}
                   {step.achievements.map((name) => (
                     <Chip key={name} label={name} tone="warn" />
                   ))}
@@ -688,8 +710,8 @@ function CallDetail({ view, step }: { view: EvalTraceView; step: TraceStep | nul
           <p style={{ ...body, color: "var(--sv-text-faint)" }}>
             {step.status === "running"
               ? "This call is still open; the model has not answered yet."
-              : step.status === "incomplete"
-                ? "This call never closed before the trace became terminal."
+              : step.status === "aborted"
+                ? `This call was aborted: ${step.closure?.reason.replaceAll("_", " ") ?? "closure reason unavailable"} (${step.closure?.source ?? "source unavailable"}).`
               : "No reasoning or message was recorded for this call."}
           </p>
         ) : null}
@@ -819,6 +841,13 @@ function CallDetail({ view, step }: { view: EvalTraceView; step: TraceStep | nul
 
 export function TraceWorkbench({ branding, ...props }: TraceWorkbenchProps & { branding: TraceWorkbenchBranding }) {
   const run = (props.run ?? props.data?.run ?? null) as Any | null;
+  const aggregateCandidate = (
+    props.runViewV2?.aggregate
+    ?? props.data?.runViewV2?.aggregate
+    ?? props.data?.aggregate
+    ?? null
+  ) as Any | null;
+  const aggregate = evalAggregateV1(aggregateCandidate, typeof run?.id === "string" ? run.id : null);
   const optimizerEvents = useMemo(
     () => [
       ...(Array.isArray(props.events) ? props.events : []),
@@ -829,8 +858,8 @@ export function TraceWorkbench({ branding, ...props }: TraceWorkbenchProps & { b
   const media = props.media ?? NO_MEDIA;
 
 	const liveTrials = useMemo(
-    () => (run ? craftaxTrialsFromRun(run, optimizerEvents) : []),
-    [run, optimizerEvents]
+    () => (run ? craftaxTrialsFromRun(run, optimizerEvents, props.runViewV2 ?? props.data?.runViewV2 ?? null) : []),
+    [run, optimizerEvents, props.runViewV2, props.data?.runViewV2]
   );
 	const trials = useMemo(() => liveTrials.map((row) => {
 		const sealed = props.sealedTraceProjections?.find((candidate) =>
@@ -976,7 +1005,12 @@ export function TraceWorkbench({ branding, ...props }: TraceWorkbenchProps & { b
   }, [selectCall, gotoFrame, selectedCall, frameIndex, view?.steps.length]);
 
   const sealed = view?.integrity.status === "sealed";
-  const terminal = trial ? trial.state === "done" || trial.state === "failed" : false;
+  const terminal = aggregate
+    ? aggregate.lifecycle === "terminal"
+    : trial ? trial.state === "done" || trial.state === "failed" : false;
+  const aggregateWork = aggregate ? evalAggregateWorkFacts(aggregate) : null;
+  const aggregateRollouts = aggregateWork?.rolloutCount ?? null;
+  const aggregateTerminal = aggregateWork?.terminalCount ?? null;
   // An imported seal is an opaque import: it carries no native step/frame
   // identity, so frames never existed for it. A frame-free replay in a
   // non-frame-centric family is the same situation by declaration. Either way
@@ -996,14 +1030,14 @@ export function TraceWorkbench({ branding, ...props }: TraceWorkbenchProps & { b
 
   return (
     <VisualChrome
-      kicker={`${branding.label} · ${trials.filter((row) => row.state === "done" || row.state === "failed").length}/${trials.length} seeds`}
+      kicker={`${branding.label} · ${aggregateTerminal ?? trials.filter((row) => row.state === "done" || row.state === "failed").length}/${aggregateRollouts ?? trials.length} seeds`}
       title={props.title ?? branding.defaultTitle}
       lede={props.lede}
       live={!terminal}
       testId={branding.testId}
       observation={{
         transportState: props.loadError ? "error" : terminal ? "terminal" : "live",
-        rolloutCount: trials.length,
+        rolloutCount: aggregateRollouts ?? trials.length,
         renderedFrameCount: view?.frames.filter((row) => row.media).length ?? 0,
         semanticEventCount: view?.events.length ?? 0,
         terminal,
@@ -1031,6 +1065,7 @@ export function TraceWorkbench({ branding, ...props }: TraceWorkbenchProps & { b
 
       <RunAggregateHeader
         run={run}
+        aggregate={aggregate}
         trials={trials}
         filter={aggregateFilter}
         onFilter={setAggregateFilter}

@@ -21,8 +21,41 @@ test("projects multiple calls with ranges, step links, authority, and honest evi
   assert.equal(projection.calls[1].reasoning.state, "redacted");
   assert.equal(projection.calls[0].toolResults.state, "not_applicable");
   assert.equal(projection.calls[1].toolResults.state, "visible");
+  assert.equal(projection.calls[0].outcome, "completed");
+  assert.deepEqual(projection.calls[0].closure, {
+    outcome: "completed",
+    reason: "producer_completed",
+    source: "span.policy.closed",
+    sourceSequence: 4
+  });
   assert.equal(projection.callIdByEnvironmentStep.get(3), projection.calls[1].id);
   assert.equal(callForSequence(projection.calls, 11)?.id, projection.calls[1].id);
+});
+
+test("a parent terminal deterministically aborts an unresolved policy call", () => {
+  const projection = projectAgentTurns([
+    event("span.policy.opened", 1, { call: { provider: "openai", model: "codex" } }),
+    event("span.policy.data", 2, { delta: true, channel: "content", text: "partial" }),
+    event("eval.run.terminal", 3, { kind: "failed" })
+  ]);
+  assert.equal(projection.calls.length, 1);
+  assert.equal(projection.calls[0].outcome, "aborted");
+  assert.deepEqual(projection.calls[0].closure, {
+    outcome: "aborted",
+    reason: "parent_terminal_before_policy_close",
+    source: "eval.run.terminal",
+    sourceSequence: 3
+  });
+  assert.notEqual(projection.calls[0].output.state, "pending");
+});
+
+test("producer terminal outcomes stay inside the closed call enum", () => {
+  const projection = projectAgentTurns([
+    event("span.policy.opened", 1),
+    event("span.policy.closed", 2, { outcome: "timed_out" })
+  ]);
+  assert.equal(projection.calls[0].outcome, "timed_out");
+  assert.equal(projection.calls[0].closure.reason, "producer_timed_out");
 });
 
 test("focus chooses a policy call and selection survives incremental completion and reload", () => {
