@@ -710,6 +710,10 @@ mark_runtime() {
     [[ -f "$runtime_executable" ]] || runtime_executable="$EXE"
   fi
   digest="$(executable_digest "$runtime_executable")"
+  # The app owns `buildRevision`/`buildTimestamp`: only the running binary
+  # knows what it was compiled from. Retain those fields during one build's
+  # lifetime, but discard a runtime block belonging to an older source
+  # revision so the newly launched app can restamp it.
   jq \
     --arg status "$status" \
     --arg pid "$pid" \
@@ -719,13 +723,6 @@ mark_runtime() {
     --arg bootEpoch "$BOOT_EPOCH" \
     --arg processStartIdentity "$PROCESS_START_TIME" \
     --arg checkedAt "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" \
-    # The app owns `buildRevision`/`buildTimestamp`: only the running binary
-    # knows what it was compiled from. The launcher merges into the retained
-    # block so those survive a status change — but a retained block belonging
-    # to a *different* source revision describes the previous build, and
-    # carrying it forward is how a rebuilt instance came to report a fresh
-    # `sourceRevision` beside a stale `runtime.buildRevision`. Drop the whole
-    # retained block when the source revision moves; the app restamps it.
     '.runtime = ((if ((.runtime.sourceRevision // "") == $sourceRevision)
                   then (.runtime // {})
                   else {} end) + {
