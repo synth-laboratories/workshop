@@ -923,9 +923,10 @@ struct PaidComputeToml {
 }
 
 fn parse_paid_compute_table(value: &toml::Value) -> Result<PaidComputeAutoApprovalSettings> {
-    let parsed: PaidComputeToml = value.clone().try_into().map_err(|error| {
-        anyhow!("malformed [desktop.permissions.paid_compute]: {error}")
-    })?;
+    let parsed: PaidComputeToml = value
+        .clone()
+        .try_into()
+        .map_err(|error| anyhow!("malformed [desktop.permissions.paid_compute]: {error}"))?;
     let settings = PaidComputeAutoApprovalSettings {
         enabled: parsed.auto_approve,
         max_request_usd: parsed.max_request_usd,
@@ -947,7 +948,9 @@ pub(crate) fn parse_usd_micros(value: &str) -> Result<u64> {
         return Err(anyhow!("USD amount must not be signed: {value}"));
     }
     if trimmed.contains(['e', 'E']) {
-        return Err(anyhow!("USD amount must not use exponent notation: {value}"));
+        return Err(anyhow!(
+            "USD amount must not use exponent notation: {value}"
+        ));
     }
     let (whole, frac) = match trimmed.split_once('.') {
         Some((whole, frac)) => (whole, frac),
@@ -1003,7 +1006,10 @@ pub(crate) fn normalize_provider(value: &str) -> Result<String> {
     if normalized.is_empty() {
         return Err(anyhow!("paid-compute provider must not be empty"));
     }
-    if !normalized.chars().next().is_some_and(|c| c.is_ascii_lowercase())
+    if !normalized
+        .chars()
+        .next()
+        .is_some_and(|c| c.is_ascii_lowercase())
         || !normalized
             .chars()
             .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '-')
@@ -2276,7 +2282,9 @@ operations = { "rollouts.prepare" = false }
             "[desktop.permissions.paid_compute]\nauto_approve = true\nmax_request_usd = \"0.10\"\n",
         )
         .unwrap();
-        let error = desktop_permission_settings_at(&path).unwrap_err().to_string();
+        let error = desktop_permission_settings_at(&path)
+            .unwrap_err()
+            .to_string();
         assert!(error.contains("paid_compute"), "{error}");
 
         fs::write(
@@ -2338,8 +2346,7 @@ operations = { "rollouts.prepare" = false }
 
     #[test]
     fn isolated_desktop_inherits_canonical_paid_compute_policy() {
-        let root =
-            env::temp_dir().join(format!("synth-paid-inherit-{}", uuid::Uuid::new_v4()));
+        let root = env::temp_dir().join(format!("synth-paid-inherit-{}", uuid::Uuid::new_v4()));
         let isolated = root.join("instance/config.toml");
         let canonical = root.join("canonical/config.toml");
         fs::create_dir_all(isolated.parent().unwrap()).unwrap();

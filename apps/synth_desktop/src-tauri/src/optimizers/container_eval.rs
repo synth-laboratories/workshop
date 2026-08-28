@@ -2897,9 +2897,7 @@ pub(super) async fn reconcile_evidence(
             .map(str::to_string)
             .or_else(|| ledger_identity.and_then(|entry| entry.rollout_id.clone()))
             .with_context(|| {
-                format!(
-                    "terminal record and saved trial ledger for seed {seed} have no rolloutId"
-                )
+                format!("terminal record and saved trial ledger for seed {seed} have no rolloutId")
             })?;
         let trial_id = record
             .get("trialId")
@@ -2907,9 +2905,7 @@ pub(super) async fn reconcile_evidence(
             .map(str::to_string)
             .or_else(|| ledger_identity.and_then(|entry| entry.trial_id.clone()))
             .with_context(|| {
-                format!(
-                    "terminal record and saved trial ledger for seed {seed} have no trialId"
-                )
+                format!("terminal record and saved trial ledger for seed {seed} have no trialId")
             })?;
         // Repair the weaker summary copy from the append-only kernel ledger so
         // a successful evidence retry also leaves future readers consistent.
@@ -2949,11 +2945,8 @@ pub(super) async fn reconcile_evidence(
             .and_then(Value::as_array)
             .and_then(|traces| traces.first())
             .context("sealed bundle indexed no trace")?;
-        let (trace_ref, trace_digest) = verify_reconciled_trace_identity(
-            imported_trace,
-            producer_trace_id,
-            &rollout_id,
-        )?;
+        let (trace_ref, trace_digest) =
+            verify_reconciled_trace_identity(imported_trace, producer_trace_id, &rollout_id)?;
         record
             .as_object_mut()
             .with_context(|| format!("terminal record for seed {seed} is not an object"))?
@@ -3036,9 +3029,7 @@ fn verify_reconciled_trace_identity(
         .map(str::trim)
         .filter(|identity| !identity.is_empty())
         .with_context(|| {
-            format!(
-                "sealed bundle for rollout `{rollout_id}` indexed no producer trace identity"
-            )
+            format!("sealed bundle for rollout `{rollout_id}` indexed no producer trace identity")
         })?;
     if indexed_producer_trace_id != declared_producer_trace_id {
         bail!(
@@ -3066,7 +3057,11 @@ pub(super) async fn refresh_terminal_visual_projection_if_stale(
     run: &OptimizerRunRecord,
 ) -> Result<bool> {
     if run.algorithm_id != EVAL_ALGORITHM_ID
-        || run.summary.pointer("/recipeSourceKind").and_then(Value::as_str) != Some("inline")
+        || run
+            .summary
+            .pointer("/recipeSourceKind")
+            .and_then(Value::as_str)
+            != Some("inline")
         || !matches!(
             run.status.as_str(),
             "completed" | "failed" | "failed_evidence" | "cancelled" | "degraded"

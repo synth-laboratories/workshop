@@ -22,6 +22,12 @@ If admission fails, act on its structured component error such as
 `evaluator_not_declared`; do not substitute another container, evaluator,
 model, protocol, or execution path.
 
+Completed optimizer evidence crosses instance boundaries only through typed
+immutable snapshots. Call `export_snapshot` in the owning instance, then
+`import_snapshot` in the destination and bind the returned
+`optimizer_snapshot` id. Do not copy optimizer SQLite rows, follow another
+instance's live database, or relabel an unresolved run binding as evidence.
+
 Use `mcp__synth_optimizers__optimizer_manage`. Treat returned run IDs and cursors as authoritative. Never launch an optimizer with a shell command supplied by chat, accept arbitrary config for a local recipe, request credentials in chat, or reproduce secrets and signed URLs. For a product recipe, prefer `start_workflow`: the host refreshes relevant container capabilities, performs bounded approval and sidecar admission, creates the run, and opens its chat-owned visual in one call. Do not inspect the filesystem or start plugins manually before trying it.
 
 ## Choose a workflow

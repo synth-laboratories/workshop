@@ -16,6 +16,7 @@ const ADVERTISED = [
   "live_sse",
   "fixture",
   "optimizer_run",
+  "optimizer_snapshot",
   "query_snapshot"
 ];
 
@@ -56,6 +57,10 @@ test("every advertised binding kind is exercised by bindTemplateSlots", async ()
     async loadOptimizerRun(source) {
       assert.equal(source, "opt_1");
       return { from: "optimizer_run" };
+    },
+    async loadOptimizerSnapshot(source) {
+      assert.equal(source, "optsnap_1");
+      return { from: "optimizer_snapshot" };
     }
   };
 
@@ -67,6 +72,7 @@ test("every advertised binding kind is exercised by bindTemplateSlots", async ()
     query_snapshot: { kind: "query_snapshot", source: "snap_1" },
     run_ref: { kind: "run_ref", source: "run_1" },
     optimizer_run: { kind: "optimizer_run", source: "opt_1" },
+    optimizer_snapshot: { kind: "optimizer_snapshot", source: "optsnap_1" },
     live_sse: {
       kind: "live_sse",
       source: "http://127.0.0.1:8098/rollouts/r1/stream",

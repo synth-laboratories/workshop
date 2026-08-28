@@ -3341,6 +3341,16 @@ pub(crate) async fn dispatch_optimizer(
             let runs = optimizers.list(query).await?;
             Ok(json!({ "runs": runs }))
         }
+        ("POST", "/v1/optimizers/snapshots/import") => {
+            let request: crate::optimizers::OptimizerSnapshotImportRequest =
+                serde_json::from_value(body)?;
+            let receipt = optimizers.import_snapshot(request).await?;
+            Ok(json!({ "receipt": receipt }))
+        }
+        ("GET", path) if path.starts_with("/v1/optimizers/snapshots/") => {
+            let id = path.trim_start_matches("/v1/optimizers/snapshots/");
+            optimizers.get_snapshot(id.to_string()).await
+        }
         ("POST", "/v1/optimizers/runs") => {
             let request: crate::optimizers::OptimizerCreateRequest = serde_json::from_value(body)?;
             let (run, event) = optimizers.create(request).await?;
@@ -3491,6 +3501,15 @@ pub(crate) async fn dispatch_optimizer(
                 .trim_end_matches("/result");
             let result = optimizers.get_result(id.to_string()).await?;
             Ok(json!({ "result": result }))
+        }
+        ("POST", path)
+            if path.starts_with("/v1/optimizers/runs/") && path.ends_with("/snapshot") =>
+        {
+            let id = path
+                .trim_start_matches("/v1/optimizers/runs/")
+                .trim_end_matches("/snapshot");
+            let receipt = optimizers.export_snapshot(id.to_string()).await?;
+            Ok(json!({ "receipt": receipt }))
         }
         ("GET", path) if path.starts_with("/v1/optimizers/runs/") && path.ends_with("/ready") => {
             let id = path

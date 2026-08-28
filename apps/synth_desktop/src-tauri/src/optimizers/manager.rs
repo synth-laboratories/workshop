@@ -3274,10 +3274,17 @@ mod tests {
         let storage = Storage::open(dir.path().join("core")).unwrap();
         let journal = EventJournal::new(storage.database().clone());
         let content = ContentStore::new(storage.content_root());
-        let visuals = VisualRegistry::new(storage.database().clone(), journal.clone(), content);
+        let visuals =
+            VisualRegistry::new(storage.database().clone(), journal.clone(), content.clone());
         let (events_tx, events_rx) = tokio::sync::broadcast::channel(16);
         (
-            OptimizerService::new(storage.database().clone(), journal, visuals, events_tx),
+            OptimizerService::new(
+                storage.database().clone(),
+                journal,
+                content,
+                visuals,
+                events_tx,
+            ),
             dir,
             events_rx,
         )

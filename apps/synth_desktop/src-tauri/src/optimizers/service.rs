@@ -318,6 +318,7 @@ pub struct GrantedRunMedia {
 pub struct OptimizerService {
     db: Arc<Database>,
     frame_store: ContentStore,
+    content: ContentStore,
     #[allow(dead_code)]
     journal: EventJournal,
     visuals: VisualRegistry,
@@ -509,12 +510,14 @@ impl OptimizerService {
     pub fn new(
         db: Arc<Database>,
         journal: EventJournal,
+        content: ContentStore,
         visuals: VisualRegistry,
         events_tx: broadcast::Sender<AppEvent>,
     ) -> Self {
         Self::new_with_manager(
             db,
             journal,
+            content,
             visuals,
             events_tx,
             Arc::new(super::OptimizerManager::new()),
@@ -524,6 +527,7 @@ impl OptimizerService {
     pub fn new_with_manager(
         db: Arc<Database>,
         journal: EventJournal,
+        content: ContentStore,
         visuals: VisualRegistry,
         events_tx: broadcast::Sender<AppEvent>,
         manager: Arc<super::OptimizerManager>,
@@ -537,6 +541,7 @@ impl OptimizerService {
         Self {
             db,
             frame_store,
+            content,
             journal,
             visuals,
             local_recipes: Arc::new(Mutex::new(HashMap::new())),
@@ -1356,6 +1361,48 @@ impl OptimizerService {
             Ok(super::kernel::project_view_with_context(&state, &context))
         })
         .await
+    }
+
+    pub async fn export_snapshot(
+        &self,
+        optimizer_run_id: String,
+    ) -> Result<super::OptimizerSnapshotReceipt> {
+        let run = self.get(optimizer_run_id.clone()).await?;
+        let result = self.get_result(optimizer_run_id.clone()).await?;
+        let terminal_manifest = self.terminal_manifest(optimizer_run_id.clone()).await?;
+        let cursor = run.cursor_seq;
+        let db = self.db.clone();
+        let run_id = optimizer_run_id.clone();
+        let events = db
+            .run(move |conn| load_events_upto(conn, &run_id, cursor))
+            .await?;
+        let snapshot = super::snapshot::OptimizerRunSnapshot {
+            schema_version: super::snapshot::OPTIMIZER_SNAPSHOT_SCHEMA.into(),
+            source_instance_id: crate::instance::name().unwrap_or_else(|| "canonical".into()),
+            source_bundle_id: crate::instance::bundle_id().unwrap_or_else(|| "unknown".into()),
+            source_run_id: optimizer_run_id,
+            captured_at: Utc::now().to_rfc3339(),
+            terminal_cursor: cursor,
+            sealed: terminal_manifest.is_some(),
+            run,
+            result,
+            terminal_manifest,
+            events,
+        };
+        super::snapshot::persist(self.db.clone(), &self.content, &snapshot)
+    }
+
+    pub async fn import_snapshot(
+        &self,
+        request: super::OptimizerSnapshotImportRequest,
+    ) -> Result<super::OptimizerSnapshotReceipt> {
+        super::snapshot::import_path(self.db.clone(), &self.content, request)
+    }
+
+    pub async fn get_snapshot(&self, snapshot_id: String) -> Result<Value> {
+        let (snapshot, receipt) =
+            super::snapshot::load(self.db.clone(), &self.content, &snapshot_id)?;
+        Ok(json!({"snapshot": snapshot, "receipt": receipt}))
     }
 
     pub async fn create(
@@ -3337,9 +3384,8 @@ impl OptimizerService {
         let db = self.db.clone();
         db.run(move |conn| {
             let run = load_run(conn, &run_id)?;
-            let state = super::kernel::persist::load_state(conn, &run_id)?.ok_or_else(|| {
-                anyhow!("optimizer run {run_id} has no saved kernel projection")
-            })?;
+            let state = super::kernel::persist::load_state(conn, &run_id)?
+                .ok_or_else(|| anyhow!("optimizer run {run_id} has no saved kernel projection"))?;
             if state.aggregate_sequence != at_seq {
                 bail!(
                     "optimizer run {run_id} projection is at sequence {}, requested {at_seq}",
@@ -6475,7 +6521,8 @@ pub(in crate::optimizers) mod tests {
         let storage = Storage::open(dir.path().join("core")).unwrap();
         let journal = EventJournal::new(storage.database().clone());
         let content = ContentStore::new(storage.content_root());
-        let visuals = VisualRegistry::new(storage.database().clone(), journal.clone(), content);
+        let visuals =
+            VisualRegistry::new(storage.database().clone(), journal.clone(), content.clone());
         let (events_tx, _) = tokio::sync::broadcast::channel(16);
         let manager = Arc::new(crate::optimizers::OptimizerManager::with_home(
             dir.path().join("optimizer-home"),
@@ -6483,6 +6530,7 @@ pub(in crate::optimizers) mod tests {
         OptimizerService::new_with_manager(
             storage.database().clone(),
             journal,
+            content,
             visuals,
             events_tx,
             manager,
@@ -7283,7 +7331,8 @@ pub(in crate::optimizers) mod tests {
         let storage = Storage::open(dir.path().join("core")).unwrap();
         let journal = EventJournal::new(storage.database().clone());
         let content = ContentStore::new(storage.content_root());
-        let visuals = VisualRegistry::new(storage.database().clone(), journal.clone(), content);
+        let visuals =
+            VisualRegistry::new(storage.database().clone(), journal.clone(), content.clone());
         let (events_tx, events_rx) = tokio::sync::broadcast::channel(16);
         let manager = Arc::new(crate::optimizers::OptimizerManager::with_home(
             dir.path().join("optimizer-home"),
@@ -7314,6 +7363,7 @@ pub(in crate::optimizers) mod tests {
             OptimizerService::new_with_manager(
                 storage.database().clone(),
                 journal,
+                content,
                 visuals,
                 events_tx,
                 manager,
@@ -8984,7 +9034,12 @@ pub(in crate::optimizers) mod tests {
     #[tokio::test]
     async fn get_run_reprojects_a_historical_terminal_summary_from_canonical_evidence() {
         let (svc, _dir, _) = service().await;
-        let run = eval_run(&svc, "terminal_summary_evidence", "summary_evidence_session").await;
+        let run = eval_run(
+            &svc,
+            "terminal_summary_evidence",
+            "summary_evidence_session",
+        )
+        .await;
         let trace_id = "tracev5_summary_evidence";
         let trace_digest = "sha256:summary_evidence";
         svc.append_event_payloads(

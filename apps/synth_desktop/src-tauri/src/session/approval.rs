@@ -798,16 +798,8 @@ impl ApprovalBroker {
     ) -> Result<String> {
         kind.validate_decision(decision)?;
         let approval_id = format!("approval-auto-{}", uuid::Uuid::new_v4().simple());
-        self.write_auto_grant(
-            app,
-            session_id,
-            &approval_id,
-            kind,
-            decision,
-            policy,
-            None,
-        )
-        .await?;
+        self.write_auto_grant(app, session_id, &approval_id, kind, decision, policy, None)
+            .await?;
         Ok(approval_id)
     }
 
@@ -830,8 +822,7 @@ impl ApprovalBroker {
             payload["cap"] = serde_json::to_value(cap)?;
         }
         if let Some(extra) = extra {
-            if let (Some(object), Some(extra_object)) =
-                (payload.as_object_mut(), extra.as_object())
+            if let (Some(object), Some(extra_object)) = (payload.as_object_mut(), extra.as_object())
             {
                 for (key, value) in extra_object {
                     object.insert(key.clone(), value.clone());
@@ -2182,14 +2173,22 @@ mod tests {
         assert_eq!(granted.payload["conversationCapUsdMicros"], 250_000);
         assert_eq!(granted.payload["cap"]["maxCostUsdMicros"], 60_000);
         assert_eq!(granted.payload["kind"], "paid_compute");
-        assert!(granted.payload.get("approvalId").and_then(Value::as_str).is_some());
+        assert!(granted
+            .payload
+            .get("approvalId")
+            .and_then(Value::as_str)
+            .is_some());
     }
 
     #[tokio::test]
     async fn over_request_missing_ceiling_and_unlisted_provider_open_the_modal() {
         let (_guard, _temp, _core, broker, app) = sealed_broker(enabled_paid_compute()).await;
         assert!(broker
-            .try_auto_authorize_paid_compute(app.handle(), "sess-a", &openrouter_paid(Some(200_000)))
+            .try_auto_authorize_paid_compute(
+                app.handle(),
+                "sess-a",
+                &openrouter_paid(Some(200_000))
+            )
             .await
             .unwrap()
             .is_none());
@@ -2227,17 +2226,29 @@ mod tests {
             .unwrap()
             .unwrap();
         assert!(broker
-            .try_auto_authorize_paid_compute(app.handle(), "sess-a", &openrouter_paid(Some(200_000)))
+            .try_auto_authorize_paid_compute(
+                app.handle(),
+                "sess-a",
+                &openrouter_paid(Some(200_000))
+            )
             .await
             .unwrap()
             .is_none());
         broker
-            .try_auto_authorize_paid_compute(app.handle(), "sess-a", &openrouter_paid(Some(100_000)))
+            .try_auto_authorize_paid_compute(
+                app.handle(),
+                "sess-a",
+                &openrouter_paid(Some(100_000)),
+            )
             .await
             .unwrap()
             .unwrap();
         assert!(broker
-            .try_auto_authorize_paid_compute(app.handle(), "sess-a", &openrouter_paid(Some(100_000)))
+            .try_auto_authorize_paid_compute(
+                app.handle(),
+                "sess-a",
+                &openrouter_paid(Some(100_000))
+            )
             .await
             .unwrap()
             .is_none());
@@ -2258,7 +2269,11 @@ mod tests {
             let handle = handle.clone();
             tokio::spawn(async move {
                 broker
-                    .try_auto_authorize_paid_compute(&handle, "sess-a", &openrouter_paid(Some(100_000)))
+                    .try_auto_authorize_paid_compute(
+                        &handle,
+                        "sess-a",
+                        &openrouter_paid(Some(100_000)),
+                    )
                     .await
             })
         };
@@ -2266,7 +2281,11 @@ mod tests {
             let broker = broker.clone();
             tokio::spawn(async move {
                 broker
-                    .try_auto_authorize_paid_compute(&handle, "sess-a", &openrouter_paid(Some(100_000)))
+                    .try_auto_authorize_paid_compute(
+                        &handle,
+                        "sess-a",
+                        &openrouter_paid(Some(100_000)),
+                    )
                     .await
             })
         };
@@ -2302,7 +2321,11 @@ mod tests {
             .unwrap()
             .unwrap();
         let child = broker
-            .try_auto_authorize_paid_compute(app.handle(), "sess-b", &openrouter_paid(Some(100_000)))
+            .try_auto_authorize_paid_compute(
+                app.handle(),
+                "sess-b",
+                &openrouter_paid(Some(100_000)),
+            )
             .await
             .unwrap();
         assert!(child.is_some());

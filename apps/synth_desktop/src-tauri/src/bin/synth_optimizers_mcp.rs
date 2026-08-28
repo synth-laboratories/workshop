@@ -91,7 +91,7 @@ fn request_inner(
 
 fn tools() -> Value {
     let mut manifest = json!({"tools":[
-        {"name":"optimizer_manage","description":"Operate Synth optimizer runs and the checkpoint catalog. Inline evaluation is the default: draft and inspect the immutable spec, then start it with bounded approval. Catalog recipes are only for an explicit catalog request.","inputSchema":{"type":"object","properties":{"operation":{"type":"string","enum":["evaluation_spec_draft","evaluation_spec_validate","evaluation_spec_admit","evaluation_start","reconcile_evaluation_evidence","list_algorithms","list_recipes","start_workflow","prepare","open_visual","await_ready","start","start_recipe","stage_eval_candidates","launch_artifact_inference","inspect_local_mlx","inspect_training_runtime","install_training_runtime","plan_model_install","install_model_or_runtime","create_training_plan","list_training_artifacts","inspect_training_artifact","launch_artifact_eval","export_or_delete_artifact","list_runs","get_run","watch_run","get_state","get_result","reconcile_cloud","cancel_run","cancel","pause_run","resume_run","finalize","list_checkpoints","archive_checkpoint","import_checkpoint","infer_checkpoint","update_checkpoint","publish_checkpoint"]},"arguments":{"type":"object","additionalProperties":true}},"required":["operation","arguments"],"additionalProperties":false}},
+        {"name":"optimizer_manage","description":"Operate Synth optimizer runs and the checkpoint catalog. Inline evaluation is the default; completed evidence crosses instances through immutable optimizer snapshots.","inputSchema":{"type":"object","properties":{"operation":{"type":"string","enum":["evaluation_spec_draft","evaluation_spec_validate","evaluation_spec_admit","evaluation_start","reconcile_evaluation_evidence","list_algorithms","list_recipes","start_workflow","prepare","open_visual","await_ready","start","start_recipe","stage_eval_candidates","launch_artifact_inference","inspect_local_mlx","inspect_training_runtime","install_training_runtime","plan_model_install","install_model_or_runtime","create_training_plan","list_training_artifacts","inspect_training_artifact","launch_artifact_eval","export_or_delete_artifact","list_runs","get_run","watch_run","get_state","get_result","export_snapshot","import_snapshot","get_snapshot","reconcile_cloud","cancel_run","cancel","pause_run","resume_run","finalize","list_checkpoints","archive_checkpoint","import_checkpoint","infer_checkpoint","update_checkpoint","publish_checkpoint"]},"arguments":{"type":"object","additionalProperties":true}},"required":["operation","arguments"],"additionalProperties":false}},
         {"name":"optimizer_list_algorithms","description":"List optimizer algorithms and availability","inputSchema":{"type":"object","properties":{},"additionalProperties":false}},
         {"name":"optimizer_list_recipes","description":"List workspace-declared recipes for this session plus remaining product training recipes. Task GEPA/eval ids come from workshop.recipe.toml, never a shipped catalog.","inputSchema":{"type":"object","properties":{"session_ref":{"type":"string"}},"additionalProperties":false}},
         {"name":"optimizer_evaluation_spec_draft","description":"Default evaluation path. Construct, validate, pin, and hash an inline execution specification from the requested container, policy, model, seeds, and hard limits. Does not request approval or spend.","inputSchema":{"type":"object","properties":{"containerId":{"type":"string"},"family":{"type":"string"},"policyNamespace":{"type":"string"},"policyName":{"type":"string"},"policyOverrides":{"type":"object"},"provider":{"type":"string"},"modelId":{"type":"string"},"seeds":{"type":"array","items":{"type":"integer"},"minItems":1},"maximumRollouts":{"type":"integer","minimum":1},"maximumModelCallsPerRollout":{"type":"integer","minimum":1},"maximumStepsPerRollout":{"type":"integer","minimum":1},"hardTotalCostUsd":{"type":"number","exclusiveMinimum":0}},"required":["policyNamespace","policyName","provider","modelId","seeds","maximumRollouts","maximumModelCallsPerRollout","maximumStepsPerRollout","hardTotalCostUsd"],"additionalProperties":false}},
@@ -104,6 +104,9 @@ fn tools() -> Value {
         {"name":"optimizer_stage_eval_candidates","description":"Freeze bounded inline policy source into one immutable content-addressed candidate set and return its id. Candidate staging never reads a session workspace, source path, image, command, or environment variable.","inputSchema":{"type":"object","properties":{"candidates":{"type":"array","minItems":1,"maxItems":16,"items":{"type":"object","properties":{"label":{"type":"string"},"content":{"type":"string","description":"Policy source to store as app-owned data (maximum 1 MiB)."},"file_name":{"type":"string","description":"Optional simple file name; defaults to policy.py."},"entrypoint":{"type":"string"},"kind":{"type":"string"},"baseline":{"type":"boolean"}},"required":["label","content"],"additionalProperties":false}}},"required":["candidates"],"additionalProperties":false}},
         {"name":"optimizer_list_runs","description":"List local optimizer run mirrors","inputSchema":{"type":"object","properties":{"status":{"type":"string"},"algorithm_id":{"type":"string"},"source":{"type":"string"},"search":{"type":"string"}},"additionalProperties":false}},
         {"name":"optimizer_get_run","description":"Get one optimizer run mirror","inputSchema":{"type":"object","properties":{"optimizer_run_id":{"type":"string"}},"required":["optimizer_run_id"],"additionalProperties":false}},
+        {"name":"optimizer_export_snapshot","description":"Export a cursor-pinned, digest-addressed optimizer evidence snapshot from its owning instance","inputSchema":{"type":"object","properties":{"optimizer_run_id":{"type":"string"}},"required":["optimizer_run_id"],"additionalProperties":false}},
+        {"name":"optimizer_import_snapshot","description":"Validate and import an exported optimizer evidence snapshot into this instance","inputSchema":{"type":"object","properties":{"path":{"type":"string"},"expected_digest":{"type":"string"}},"required":["path"],"additionalProperties":false}},
+        {"name":"optimizer_get_snapshot","description":"Read one imported optimizer evidence snapshot by immutable id","inputSchema":{"type":"object","properties":{"snapshot_id":{"type":"string"}},"required":["snapshot_id"],"additionalProperties":false}},
         {"name":"optimizer_create_run","description":"Create an optimizer run (local stub, cloud-hosted, fixture, or local path import)","inputSchema":{"type":"object","properties":{"algorithm_id":{"type":"string"},"objective":{"type":"string"},"session_ref":{"type":"string"},"source":{"type":"string","enum":["local","cloud"]},"local_path":{"type":"string"},"seed_fixture":{"type":"string"},"cloud_config":{"type":"object"},"open_visual":{"type":"boolean"}},"required":["algorithm_id"],"additionalProperties":false}},
         {"name":"optimizer_import_local","description":"Import a local OSS GEPA or optimizers-beta GELO run directory / events.jsonl","inputSchema":{"type":"object","properties":{"path":{"type":"string"},"session_ref":{"type":"string"},"open_visual":{"type":"boolean"}},"required":["path"],"additionalProperties":false}},
         {"name":"optimizer_list_cloud","description":"List optimizer runs from Synth Cloud (optimizers-beta / hosted GEPA/GELO)","inputSchema":{"type":"object","properties":{"algorithm":{"type":"string"},"status":{"type":"string"},"limit":{"type":"integer"}},"additionalProperties":false}},
@@ -250,7 +253,7 @@ fn call_tool(name: &str, args: &Value) -> Result<Value, String> {
         let nested = args.get("arguments").cloned().unwrap_or_else(|| json!({}));
         let allow_path = matches!(
             operation,
-            "import_local" | "create_run" | "import_checkpoint"
+            "import_local" | "create_run" | "import_checkpoint" | "import_snapshot"
         );
         reject_secret_keys(&nested, allow_path)?;
         if operation.starts_with("evaluation_") {
@@ -285,6 +288,9 @@ fn call_tool(name: &str, args: &Value) -> Result<Value, String> {
             "finalize" => "optimizer_get_result",
             "list_runs" => "optimizer_list_runs",
             "get_run" => "optimizer_get_run",
+            "export_snapshot" => "optimizer_export_snapshot",
+            "import_snapshot" => "optimizer_import_snapshot",
+            "get_snapshot" => "optimizer_get_snapshot",
             "watch_run" => "optimizer_watch_run",
             "get_state" => "optimizer_get_state",
             "reconcile_cloud" => "optimizer_reconcile_cloud",
@@ -343,6 +349,27 @@ fn call_tool(name: &str, args: &Value) -> Result<Value, String> {
             )
         }
         "optimizer_list_algorithms" => request("GET", "/v1/optimizers/algorithms", None),
+        "optimizer_export_snapshot" => request(
+            "POST",
+            &format!("/v1/optimizers/runs/{}/snapshot", id()?),
+            Some(json!({})),
+        ),
+        "optimizer_import_snapshot" => request(
+            "POST",
+            "/v1/optimizers/snapshots/import",
+            Some(json!({"path": args.get("path"), "expectedDigest": args.get("expected_digest")})),
+        ),
+        "optimizer_get_snapshot" => {
+            let snapshot_id = args
+                .get("snapshot_id")
+                .and_then(Value::as_str)
+                .ok_or_else(|| "snapshot_id required".to_string())?;
+            request(
+                "GET",
+                &format!("/v1/optimizers/snapshots/{snapshot_id}"),
+                None,
+            )
+        }
         "optimizer_list_recipes" => request("GET", "/v1/optimizers/recipes", None),
         "optimizer_inspect_local_mlx" => request("GET", "/v1/mlx/inspect", None),
         "optimizer_inspect_training_runtime" => request("GET", "/v1/training/mlx-runtime", None),

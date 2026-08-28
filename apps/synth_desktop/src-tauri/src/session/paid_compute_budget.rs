@@ -97,13 +97,8 @@ pub(crate) fn try_reserve(
         return Ok(None);
     }
     let reserved = active_reservations(conn, session_id)?;
-    let used = budget
-        .settled_spend_usd_micros
-        .saturating_add(reserved);
-    let Some(remaining_before) = budget
-        .conversation_cap_usd_micros
-        .checked_sub(used)
-    else {
+    let used = budget.settled_spend_usd_micros.saturating_add(reserved);
+    let Some(remaining_before) = budget.conversation_cap_usd_micros.checked_sub(used) else {
         return Ok(None);
     };
     if requested_usd_micros > remaining_before {
@@ -166,17 +161,16 @@ pub(crate) fn settle(
     }
 }
 
-pub(crate) fn snapshot(conn: &Connection, session_id: &str) -> Result<Option<ConversationSnapshot>> {
+pub(crate) fn snapshot(
+    conn: &Connection,
+    session_id: &str,
+) -> Result<Option<ConversationSnapshot>> {
     let Some(budget) = load_budget(conn, session_id)? else {
         return Ok(None);
     };
     let reserved = active_reservations(conn, session_id)?;
-    let used = budget
-        .settled_spend_usd_micros
-        .saturating_add(reserved);
-    let remaining = budget
-        .conversation_cap_usd_micros
-        .saturating_sub(used);
+    let used = budget.settled_spend_usd_micros.saturating_add(reserved);
+    let remaining = budget.conversation_cap_usd_micros.saturating_sub(used);
     Ok(Some(ConversationSnapshot {
         conversation_cap_usd_micros: budget.conversation_cap_usd_micros,
         settled_spend_usd_micros: budget.settled_spend_usd_micros,
@@ -186,17 +180,18 @@ pub(crate) fn snapshot(conn: &Connection, session_id: &str) -> Result<Option<Con
     }))
 }
 
-pub(crate) fn budget_allows_provider(conn: &Connection, session_id: &str, provider: &str) -> Result<bool> {
+pub(crate) fn budget_allows_provider(
+    conn: &Connection,
+    session_id: &str,
+    provider: &str,
+) -> Result<bool> {
     let Some(budget) = load_budget(conn, session_id)? else {
         return Ok(false);
     };
     if budget.auto_disabled {
         return Ok(false);
     }
-    Ok(budget
-        .providers
-        .iter()
-        .any(|allowed| allowed == provider))
+    Ok(budget.providers.iter().any(|allowed| allowed == provider))
 }
 
 pub(crate) fn append_settlement_receipt(
@@ -337,12 +332,7 @@ fn apply_exact_settlement(
         "UPDATE paid_compute_reservations
          SET status=?1, settled_usd_micros=?2, updated_at=?3
          WHERE approval_id=?4 AND status='reserved'",
-        params![
-            status,
-            cost_usd_micros as i64,
-            now,
-            reservation.approval_id
-        ],
+        params![status, cost_usd_micros as i64, now, reservation.approval_id],
     )?;
     if cost_usd_micros > 0 {
         conn.execute(
@@ -464,8 +454,7 @@ mod tests {
         database
             .transaction(|conn| {
                 seed_conversation_budget(conn, "sess-a", &policy(true, 100_000, 250_000))?;
-                try_reserve(conn, "sess-a", "approval-1", None, 60_000)?
-                    .expect("first reserve");
+                try_reserve(conn, "sess-a", "approval-1", None, 60_000)?.expect("first reserve");
                 let second = try_reserve(conn, "sess-a", "approval-2", None, 100_000)?;
                 let third = try_reserve(conn, "sess-a", "approval-3", None, 100_000)?;
                 assert!(second.is_some(), "0.10 fits in the remaining 0.19");
@@ -483,8 +472,7 @@ mod tests {
             .with_conn(|conn| {
                 seed_conversation_budget(conn, "sess-a", &policy(true, 100_000, 250_000))?;
                 try_reserve(conn, "sess-a", "approval-1", Some("sha256:a"), 60_000)?;
-                settle(conn, "sess-a", "approval-1", SettlementOutcome::Unknown)?
-                    .unwrap();
+                settle(conn, "sess-a", "approval-1", SettlementOutcome::Unknown)?.unwrap();
                 let held = snapshot(conn, "sess-a")?.unwrap();
                 assert_eq!(held.reserved_usd_micros, 60_000);
                 assert_eq!(held.settled_spend_usd_micros, 0);
@@ -516,9 +504,7 @@ mod tests {
                     conn,
                     "sess-a",
                     "approval-1",
-                    SettlementOutcome::Exact {
-                        cost_usd_micros: 0,
-                    },
+                    SettlementOutcome::Exact { cost_usd_micros: 0 },
                 )?;
                 let snap = snapshot(conn, "sess-a")?.unwrap();
                 assert_eq!(snap.reserved_usd_micros, 0);

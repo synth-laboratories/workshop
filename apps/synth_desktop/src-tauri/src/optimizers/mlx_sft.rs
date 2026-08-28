@@ -360,7 +360,8 @@ mod tests {
         let storage = Storage::open(dir.path().join("core")).unwrap();
         let journal = EventJournal::new(storage.database().clone());
         let content = ContentStore::new(storage.content_root());
-        let visuals = VisualRegistry::new(storage.database().clone(), journal.clone(), content);
+        let visuals =
+            VisualRegistry::new(storage.database().clone(), journal.clone(), content.clone());
         let (events_tx, _) = tokio::sync::broadcast::channel(16);
         let manager = Arc::new(crate::optimizers::OptimizerManager::with_home(
             dir.path().join("optimizer-home"),
@@ -373,6 +374,7 @@ mod tests {
         let service = OptimizerService::new_with_manager(
             storage.database().clone(),
             journal,
+            content,
             visuals,
             events_tx,
             manager,

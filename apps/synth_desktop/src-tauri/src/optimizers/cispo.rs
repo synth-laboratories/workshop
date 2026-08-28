@@ -367,7 +367,7 @@ mod tests {
         let visuals = crate::visuals::VisualRegistry::new(
             storage.database().clone(),
             journal.clone(),
-            content,
+            content.clone(),
         );
         let (events_tx, _) = tokio::sync::broadcast::channel(16);
         let manager = std::sync::Arc::new(crate::optimizers::OptimizerManager::with_home(
@@ -378,6 +378,7 @@ mod tests {
         let service = OptimizerService::new_with_manager(
             storage.database().clone(),
             journal,
+            content,
             visuals,
             events_tx,
             manager,

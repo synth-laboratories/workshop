@@ -58,6 +58,7 @@ export type BindContext = {
   loadQuerySnapshot?: QuerySnapshotLoader;
   loadRun?: (runId: string) => Promise<unknown> | unknown;
   loadOptimizerRun?: (optimizerRunId: string) => Promise<unknown> | unknown;
+  loadOptimizerSnapshot?: (snapshotId: string) => Promise<unknown> | unknown;
   /** Declared create-rollout stream descriptor; required to bind guessed-looking URLs. */
   declaredStream?: import("./liveStream.ts").DeclaredStreamDescriptor | null;
   /** When true, missing optional inputs are ignored. */
@@ -128,6 +129,16 @@ async function resolveBinding(
         throw new Error(`No optimizer run loader for input "${bindingInputName(binding) ?? "?"}"`);
       }
       return dig(await ctx.loadOptimizerRun(binding.source!), binding.path);
+    }
+    case "optimizer_snapshot": {
+      if (binding.data !== undefined) return dig(binding.data, binding.path);
+      if (!binding.source) {
+        throw new Error(`optimizer_snapshot binding for slot "${binding.slot}" requires a snapshot id`);
+      }
+      if (!ctx.loadOptimizerSnapshot) {
+        throw new Error(`No optimizer snapshot loader for slot "${binding.slot}"`);
+      }
+      return dig(await ctx.loadOptimizerSnapshot(binding.source), binding.path);
     }
     case "live_sse": {
       if (!binding.source) throw new Error("live_sse binding requires a source");
@@ -283,6 +294,8 @@ const BINDING_KINDS: readonly string[] = [
   "live_sse",
   "fixture",
   "optimizer_run",
+  "query_snapshot",
+  "optimizer_snapshot",
   "query_snapshot",
   "workspace_file"
 ];

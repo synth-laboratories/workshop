@@ -65,6 +65,7 @@ const MIGRATIONS: &[&str] = &[
     MIGRATION_60,
     MIGRATION_61,
     MIGRATION_62,
+    MIGRATION_63,
 ];
 
 /// Apply every migration the database has not reached yet.
@@ -227,10 +228,8 @@ const REQUIRED_TABLES: &[(&str, &str)] = &[
         "paid_compute_conversation_budgets",
         PAID_COMPUTE_BUDGET_CREATE_ONLY,
     ),
-    (
-        "paid_compute_reservations",
-        PAID_COMPUTE_BUDGET_CREATE_ONLY,
-    ),
+    ("paid_compute_reservations", PAID_COMPUTE_BUDGET_CREATE_ONLY),
+    ("optimizer_snapshots", MIGRATION_63),
 ];
 
 const PROJECTION_OUTBOX_CREATE_ONLY: &str = r#"
@@ -3650,6 +3649,26 @@ CREATE INDEX IF NOT EXISTS project_source_requests_session ON project_source_req
 /// Conversation-scoped paid-compute auto-approval projection. Sealed at
 /// session start; reservations and settled spend survive Workshop restart.
 const MIGRATION_62: &str = PAID_COMPUTE_BUDGET_CREATE_ONLY;
+
+/// Immutable, content-addressed optimizer evidence imported across Workshop
+/// instance boundaries.
+const MIGRATION_63: &str = r#"
+CREATE TABLE IF NOT EXISTS optimizer_snapshots (
+    snapshot_id TEXT PRIMARY KEY,
+    schema_version TEXT NOT NULL,
+    content_digest TEXT NOT NULL UNIQUE,
+    source_instance_id TEXT NOT NULL,
+    source_run_id TEXT NOT NULL,
+    terminal_status TEXT,
+    terminal_cursor INTEGER NOT NULL,
+    sealed INTEGER NOT NULL CHECK(sealed IN (0,1)),
+    captured_at TEXT NOT NULL,
+    imported_at TEXT NOT NULL,
+    metadata_json TEXT NOT NULL DEFAULT '{}'
+);
+CREATE INDEX IF NOT EXISTS optimizer_snapshots_source_run
+ON optimizer_snapshots(source_instance_id, source_run_id, captured_at DESC);
+"#;
 
 #[cfg(test)]
 mod tests {
