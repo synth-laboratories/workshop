@@ -1,50 +1,32 @@
-//! Deterministic right-panel presentation, shared by the native UI and the
-//! agent-facing MCP facades.
+//! The trace pane: the first implementation of the panel host's vocabulary.
 //!
-//! Visual lifecycle for a domain record — identity, eligibility, binding,
-//! reuse, and the show event — lives here rather than in whichever caller got
-//! there first. The renderer's `DataPage` grew its own copy of this logic; a
-//! second copy on the agent path would have drifted from it immediately.
+//! Everything trace-shaped lives here — the inspector and catalog templates,
+//! the projection schema, eligibility, and the deterministic identity that
+//! makes a sealed archive reuse its visual. The host in `super` owns the
+//! lifecycle; this module answers only for traces.
 
 use anyhow::{bail, Result};
 use serde_json::{json, Value};
 
+use super::{Pane, Presentability, UnavailableReason};
 use crate::core_runtime::CoreRuntime;
 use crate::data::TraceRecord;
 use crate::visuals::{
     binding_descriptors, descriptor_input_name, VisualCreateRequest, VisualQuery, VisualRecord,
 };
 
+/// Shares the id namespace with plugins and with the `trace_*` tables.
+pub(super) const PROVIDER_ID: &str = "trace";
+
 pub const TRACE_INSPECTOR_TEMPLATE: &str = "trace.rollout_inspector.v1";
 pub const TRACE_PROJECTION_SCHEMA: &str = "synth.trace-projection.rollout-inspector.v1";
 
-/// Why a sealed trace may not be inspected. The catalog shows every trace and
-/// names the reason rather than silently omitting the unavailable ones.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum TraceInspectability {
-    Inspect,
-    Quarantined,
-    ArchiveIncomplete,
-    Unsupported,
-}
-
-impl TraceInspectability {
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::Inspect => "Inspect",
-            Self::Quarantined => "Quarantined",
-            Self::ArchiveIncomplete => "Archive incomplete",
-            Self::Unsupported => "Unsupported",
-        }
-    }
-
-    pub fn eligible(self) -> bool {
-        matches!(self, Self::Inspect)
-    }
-}
-
+/// Whether a sealed trace may be inspected, and when it may not, why — the
+/// host's law that the catalog names the reason rather than silently omitting
+/// the unavailable ones, answered for traces.
+///
 /// Mirrors `traceInspectability` in the renderer's runtime/traceInspector.ts.
-pub fn trace_inspectability(trace: &TraceRecord) -> TraceInspectability {
+pub(super) fn presentable(trace: &TraceRecord) -> Presentability {
     let metadata = &trace.metadata;
     let lower = |key: &str| {
         metadata
@@ -57,23 +39,28 @@ pub fn trace_inspectability(trace: &TraceRecord) -> TraceInspectability {
         || metadata.get("trusted").and_then(Value::as_bool) == Some(false)
         || matches!(validation.as_deref(), Some("invalid") | Some("quarantined"))
     {
-        return TraceInspectability::Quarantined;
+        return Presentability::Unavailable(UnavailableReason::Quarantined);
     }
     if metadata.get("selfContained").and_then(Value::as_bool) == Some(false) {
-        return TraceInspectability::ArchiveIncomplete;
+        return Presentability::Unavailable(UnavailableReason::ArchiveIncomplete);
     }
     if matches!(
         lower("compatibilityLevel").as_deref(),
         Some("invalid") | Some("opaque")
     ) {
-        return TraceInspectability::Unsupported;
+        return Presentability::Unavailable(UnavailableReason::Unsupported);
     }
-    TraceInspectability::Inspect
+    Presentability::Present
+}
+
+/// Whether one sealed trace may be inspected, through the panel host.
+pub fn trace_inspectability(trace: &TraceRecord) -> Presentability {
+    Pane::Trace(trace).presentable()
 }
 
 /// Deterministic per-sealed-archive identity, stable across restarts, windows,
 /// and callers.
-pub fn trace_inspector_visual_id(trace: &TraceRecord) -> String {
+pub(super) fn visual_id(trace: &TraceRecord) -> String {
     let digest: String = trace
         .digest
         .trim_start_matches("sha256:")
@@ -100,6 +87,11 @@ pub fn trace_inspector_visual_id(trace: &TraceRecord) -> String {
     }
 }
 
+/// The inspector visual identity for one sealed trace, through the panel host.
+pub fn trace_inspector_visual_id(trace: &TraceRecord) -> String {
+    Pane::Trace(trace).visual_id()
+}
+
 /// The digest a visual's projection input is bound to.
 pub fn trace_digest_binding(visual: &VisualRecord) -> Option<String> {
     if visual.template_id != TRACE_INSPECTOR_TEMPLATE {
@@ -120,8 +112,9 @@ pub fn trace_digest_binding(visual: &VisualRecord) -> Option<String> {
 }
 
 fn trace_inspector_create_request(trace: &TraceRecord) -> VisualCreateRequest {
+    let pane = Pane::Trace(trace);
     VisualCreateRequest {
-        template_id: TRACE_INSPECTOR_TEMPLATE.into(),
+        template_id: pane.template_id().into(),
         title: Some(trace.title.clone()),
         bindings: Some(json!({
             "schemaVersion": "synth.visual-bindings.v1",
@@ -129,10 +122,10 @@ fn trace_inspector_create_request(trace: &TraceRecord) -> VisualCreateRequest {
                 "input": "projection",
                 "kind": "trace_v5",
                 "source": trace.digest,
-                "schema": TRACE_PROJECTION_SCHEMA,
+                "schema": pane.projection_schema(),
             }]
         })),
-        id: Some(trace_inspector_visual_id(trace)),
+        id: Some(pane.visual_id()),
         status: None,
         renderer_kind: None,
         session_id: None,
@@ -146,7 +139,7 @@ fn trace_inspector_create_request(trace: &TraceRecord) -> VisualCreateRequest {
         metadata: Some(json!({
             "traceRecordId": trace.id,
             "traceDigest": trace.digest,
-            "projectionSchema": TRACE_PROJECTION_SCHEMA,
+            "projectionSchema": pane.projection_schema(),
         })),
     }
 }
@@ -158,12 +151,13 @@ fn trace_inspector_create_request(trace: &TraceRecord) -> VisualCreateRequest {
 /// matching on the id would present the previous archive under the new name.
 pub async fn ensure_trace_inspector(core: &CoreRuntime, trace_id: &str) -> Result<VisualRecord> {
     let trace = core.data().get_trace(trace_id.to_string()).await?;
-    let inspectability = trace_inspectability(&trace);
-    if !inspectability.eligible() {
+    let pane = Pane::Trace(&trace);
+    let presentability = pane.presentable();
+    if !presentability.eligible() {
         bail!(
             "trace `{}` cannot be inspected: {}",
             trace.id,
-            inspectability.label()
+            presentability.label()
         );
     }
 
@@ -172,7 +166,7 @@ pub async fn ensure_trace_inspector(core: &CoreRuntime, trace_id: &str) -> Resul
         .list(VisualQuery {
             status: None,
             session_id: None,
-            template_id: Some(TRACE_INSPECTOR_TEMPLATE.into()),
+            template_id: Some(pane.template_id().into()),
             search: None,
             limit: Some(500),
             offset: None,
@@ -189,7 +183,7 @@ pub async fn ensure_trace_inspector(core: &CoreRuntime, trace_id: &str) -> Resul
         return Ok(found);
     }
 
-    let visual_id = trace_inspector_visual_id(&trace);
+    let visual_id = pane.visual_id();
     match registry
         .create(trace_inspector_create_request(&trace))
         .await
@@ -292,6 +286,15 @@ mod tests {
     }
 
     #[test]
+    fn the_pane_answers_for_its_own_domain() {
+        let record = trace("sha256:aaaa1111", json!({}));
+        let pane = Pane::Trace(&record);
+        assert_eq!(pane.provider_id(), PROVIDER_ID);
+        assert_eq!(pane.template_id(), TRACE_INSPECTOR_TEMPLATE);
+        assert_eq!(pane.projection_schema(), TRACE_PROJECTION_SCHEMA);
+    }
+
+    #[test]
     fn identity_follows_the_digest_not_the_record() {
         let a = trace("sha256:aaaa1111", json!({}));
         let mut b = trace("sha256:bbbb2222", json!({}));
@@ -312,28 +315,47 @@ mod tests {
     fn every_unavailable_reason_is_named_rather_than_hidden() {
         assert_eq!(
             trace_inspectability(&trace("d", json!({"quarantined": true}))),
-            TraceInspectability::Quarantined
+            Presentability::Unavailable(UnavailableReason::Quarantined)
         );
         assert_eq!(
             trace_inspectability(&trace("d", json!({"trusted": false}))),
-            TraceInspectability::Quarantined
+            Presentability::Unavailable(UnavailableReason::Quarantined)
         );
         assert_eq!(
             trace_inspectability(&trace("d", json!({"validationStatus": "INVALID"}))),
-            TraceInspectability::Quarantined
+            Presentability::Unavailable(UnavailableReason::Quarantined)
         );
         assert_eq!(
             trace_inspectability(&trace("d", json!({"selfContained": false}))),
-            TraceInspectability::ArchiveIncomplete
+            Presentability::Unavailable(UnavailableReason::ArchiveIncomplete)
         );
         assert_eq!(
             trace_inspectability(&trace("d", json!({"compatibilityLevel": "opaque"}))),
-            TraceInspectability::Unsupported
+            Presentability::Unavailable(UnavailableReason::Unsupported)
         );
         assert_eq!(
             trace_inspectability(&trace("d", json!({}))),
-            TraceInspectability::Inspect
+            Presentability::Present
         );
+    }
+
+    #[test]
+    fn every_catalog_label_stays_on_the_wire_the_renderer_mirrors() {
+        assert_eq!(Presentability::Present.label(), "Inspect");
+        assert_eq!(
+            Presentability::Unavailable(UnavailableReason::Quarantined).label(),
+            "Quarantined"
+        );
+        assert_eq!(
+            Presentability::Unavailable(UnavailableReason::ArchiveIncomplete).label(),
+            "Archive incomplete"
+        );
+        assert_eq!(
+            Presentability::Unavailable(UnavailableReason::Unsupported).label(),
+            "Unsupported"
+        );
+        assert!(Presentability::Present.eligible());
+        assert!(!Presentability::Unavailable(UnavailableReason::Unsupported).eligible());
     }
 
     #[test]

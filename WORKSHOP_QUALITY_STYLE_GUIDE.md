@@ -38,7 +38,7 @@ Use the existing architecture before introducing a new pattern.
 | Data root and path resolution | `apps/synth_desktop/src-tauri/src/instance.rs` (`state_root()`) and `instance_paths.rs` |
 | Visual template roots | `apps/synth_desktop/src-tauri/src/visuals/templates.rs` |
 | Schema migration lineage | `apps/synth_desktop/src-tauri/src/storage/migrations.rs` |
-| Right-panel presentation lifecycle | `apps/synth_desktop/src-tauri/src/presentation.rs` |
+| Right-panel presentation lifecycle | `apps/synth_desktop/src-tauri/src/presentation/` |
 
 Do not create a second source of truth for a concern that already has one. A second token system, a component-local preference store, and a renderer-only source of runtime truth are the same defect.
 
