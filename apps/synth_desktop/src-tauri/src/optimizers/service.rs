@@ -517,6 +517,45 @@ impl OptimizerService {
             .await
     }
 
+    /// Durable media counts for one trial. Receipts use this index, never the
+    /// relay task's in-memory counters, so restart and replay report the same
+    /// retained objects and bytes.
+    pub(super) async fn run_media_totals(
+        &self,
+        run_id: &str,
+        trial_id: &str,
+    ) -> Result<(u64, u64)> {
+        let run_id = run_id.to_string();
+        let trial_id = trial_id.to_string();
+        self.db
+            .clone()
+            .run(move |conn| {
+                conn.query_row(
+                    "SELECT COUNT(*), COALESCE(SUM(m.byte_size), 0)
+                     FROM optimizer_run_media m
+                     WHERE m.optimizer_run_id=?1 AND m.media_type='image/png'
+                       AND EXISTS (
+                         SELECT 1 FROM optimizer_events e
+                         WHERE e.optimizer_run_id=m.optimizer_run_id
+                           AND json_extract(e.payload_json,'$.delta.trial_id')=?2
+                           AND json_extract(
+                             e.payload_json,
+                             '$.delta.container_event.payload.media.casDigest'
+                           )=m.cas_digest
+                       )",
+                    params![run_id, trial_id],
+                    |row| {
+                        Ok((
+                            row.get::<_, i64>(0)?.max(0) as u64,
+                            row.get::<_, i64>(1)?.max(0) as u64,
+                        ))
+                    },
+                )
+                .map_err(Into::into)
+            })
+            .await
+    }
+
     /// Decide whether `cas_digest` is media this run actually produced.
     ///
     /// The whole authorization for the media bridge lives here, and it is a
@@ -3789,6 +3828,11 @@ fn commit_validated_events(
             "work": state.work_summary(),
             "usage": state.usage(),
             "evidence": state.evidence_state(),
+            "evidenceLedger": state
+                .projection
+                .eval_evidence_ledger()
+                .map(|ledger| serde_json::to_value(ledger).unwrap_or(Value::Null))
+                .unwrap_or(Value::Null),
             "projectionRevision": state.projection_revision,
             "error": run.error.clone().unwrap_or(Value::Null),
         });
