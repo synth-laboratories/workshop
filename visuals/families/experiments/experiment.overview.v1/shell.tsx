@@ -549,7 +549,7 @@ function LiveGameClip({ frames, status }: { frames: LiveFrame[]; status?: string
       <span style={{ color: followingLive && live ? "#c2410c" : "#18794e" }}>{followingLive && live ? "● live" : playing ? "▶ replay" : "paused"} · frame {cursor + 1}/{frames.length} · {durationLabel(frame.elapsedMs)}</span>
     </div>
     <figure style={{ margin: 0, overflow: "hidden", border: "1px solid var(--sv-border)", borderRadius: 8, background: "#111" }}>
-      <img src={frame.dataUrl} alt={`RuneScape game client at ${durationLabel(frame.elapsedMs)}`} width={frame.width ?? 400} height={frame.height ?? 300} style={{ display: "block", width: "100%", height: "auto", imageRendering: "auto" }} />
+      <img src={frame.dataUrl} alt={`RuneScape game client at ${durationLabel(frame.elapsedMs)}`} width={frame.width ?? 400} height={frame.height ?? 300} style={{ display: "block", width: "100%", height: "min(52vh, 520px)", objectFit: "contain", imageRendering: "auto" }} />
       <figcaption title={frame.sha256} style={{ padding: "6px 8px", overflow: "hidden", color: "#cbd2dc", fontFamily: "var(--sv-mono)", fontSize: 8, textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{frame.sha256 ?? "frame digest unavailable"}</figcaption>
     </figure>
     <div style={{ display: "grid", gridTemplateColumns: "auto minmax(120px,1fr) auto", gap: 9, alignItems: "center", marginTop: 9 }}>
