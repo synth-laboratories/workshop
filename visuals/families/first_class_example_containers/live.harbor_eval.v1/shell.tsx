@@ -135,6 +135,19 @@ export function Shell(props: ShellProps) {
       lede={props.lede}
       testId="visual-live-harbor-eval"
       footer="live.harbor_eval.v1 · ATIF is a projection of this evidence, not the log"
+      observation={{
+        // The manifest declared an observationContract and this pane published
+        // nothing, so `capture_review` refused every capture with
+        // `visual_observation_unavailable` and the template could not be
+        // certified at all. One Harbor trial is one rollout; the pane renders
+        // no image frames.
+        transportState: state,
+        rolloutCount: trials.length,
+        renderedFrameCount: 0,
+        semanticEventCount: visibleEvents.length,
+        terminal,
+        error
+      }}
     >
       <MetricStrip
         metrics={[

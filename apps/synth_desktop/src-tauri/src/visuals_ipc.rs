@@ -16,12 +16,13 @@ use crate::reports::{
     ExperimentRecordUpsert, ReportAttachTrace, ReportCreateRequest, ReportQuery,
     ReportUpdateRequest, ReportVisibilityRequestCreate, ResearchLogAppend,
 };
+use crate::visuals::stream_receipt::{StreamReceipt, StreamTransportState};
 use crate::visuals::{
     assert_live_eval_slot, classify_live_eval_family, live_eval_bind_metadata,
     require_visualsbench_start_policy, VisualAnnotationCreate, VisualCreateRequest, VisualQuery,
     VisualStatus, VisualUpdateRequest, LIVE_EVAL_SLOT,
 };
-use crate::visuals::{TemplateMeta, TemplateObservationContract};
+use crate::visuals::{TemplateMeta, TemplateObservationContract, TemplateReadinessContract};
 use base64::Engine;
 
 const MAX_SCRIPTED_ROLLOUTS: u64 = 10;
@@ -150,6 +151,177 @@ fn validate_readiness_observation(
         anyhow::bail!("visual readiness requires rendered terminal evidence");
     }
     Ok(())
+}
+
+/// The host never folded this visual's streams at all.
+///
+/// Shares the code `capture_review` already returns for "the pane published no
+/// rendered observation", and for the same reason: both mean the visual was
+/// never actually shown in Desktop, and both are answered by showing it and
+/// retrying rather than by changing the visual.
+const STREAM_RECEIPT_NOT_OBSERVED: &str = "visual_observation_unavailable";
+/// The transport never settled: still `declared`, `replaying`, `idle`, or last
+/// seen failing.
+const STREAM_RECEIPT_UNSETTLED: &str = "visual_stream_unsettled";
+/// One envelope identity was delivered twice carrying two different bodies.
+const STREAM_RECEIPT_CONFLICT: &str = "visual_stream_conflict";
+/// The transport settled and carried nothing but control envelopes.
+const STREAM_RECEIPT_NO_EVIDENCE: &str = "visual_stream_no_evidence";
+
+/// The receipt's transport state, spelled the way the wire spells it.
+///
+/// `StreamTransportState::as_str` is private to the receipt module and this
+/// gate is not a reason to widen it; the enum's own `Serialize` is already the
+/// single authority on those six names.
+fn transport_state_name(state: StreamTransportState) -> String {
+    serde_json::to_value(state)
+        .ok()
+        .and_then(|value| value.as_str().map(str::to_owned))
+        .unwrap_or_else(|| "unknown".to_string())
+}
+
+/// Decide readiness from what the *host* saw the transport do, and return the
+/// certification record when it passes.
+///
+/// The rendered observation next door says what the pane drew; this says what
+/// arrived. They fail in different ways and a visual can look completely
+/// plausible while failing only this one: ten streams declared and none opened,
+/// or opened fine and carrying nothing but heartbeats, both render as a
+/// believable empty pane.
+///
+/// Every refusal is named. A gate that answers "not ready" tells an agent to
+/// try the same thing again; a gate that answers `visual_stream_unsettled`
+/// tells it the stream never started, which is a different repair from
+/// `stream_replay_gap`.
+fn stream_receipt_gate(
+    receipt: &StreamReceipt,
+    readiness: Option<&TemplateReadinessContract>,
+) -> Result<Value> {
+    let state = transport_state_name(receipt.state);
+    let minimum_envelopes = readiness
+        .map(|readiness| readiness.minimum_transport_envelope_count)
+        .unwrap_or(0);
+    let identity = json!({
+        "visualId": receipt.visual_id,
+        "revision": receipt.revision,
+        "state": state,
+    });
+    if !receipt.observed {
+        return Err(anyhow::Error::new(
+            crate::error::StructuredFailure::new(
+                STREAM_RECEIPT_NOT_OBSERVED,
+                format!(
+                    "the host recorded no stream poll for {} at revision {}",
+                    receipt.visual_id, receipt.revision
+                ),
+                "This visual declares live streams and Workshop never folded one for this revision: a browser preview polls with raw fetch and never reaches the host seam. Show the visual in Desktop, let the pane fold its streams, then mark it ready again.",
+            )
+            .retryable(true)
+            .with_details(identity),
+        ));
+    }
+    if !READY_TRANSPORT_STATES.contains(&state.as_str()) {
+        return Err(anyhow::Error::new(
+            crate::error::StructuredFailure::new(
+                STREAM_RECEIPT_UNSETTLED,
+                format!(
+                    "the host's stream receipt rests in {state} after {}ms; a ready visual is one of {}",
+                    receipt.time_in_state_ms,
+                    READY_TRANSPORT_STATES.join(", ")
+                ),
+                "The declared streams never settled. Confirm the producer is running and the declared poll URLs answer, then re-show the visual and let it reach live or terminal before marking it ready.",
+            )
+            .retryable(true)
+            .with_details(json!({
+                "visualId": receipt.visual_id,
+                "revision": receipt.revision,
+                "state": state,
+                "timeInStateMs": receipt.time_in_state_ms,
+                "everLeftDeclared": receipt.ever_left_declared,
+                "declaredStreamCount": receipt.declared_stream_count,
+                "respondingStreamCount": receipt.responding_stream_count,
+                "streamsMissingTransport": receipt.streams_missing_transport,
+            })),
+        ));
+    }
+    if !receipt.gaps.is_empty() {
+        return Err(anyhow::Error::new(
+            crate::error::StructuredFailure::new(
+                crate::diagnostics::codes::STREAM_REPLAY_GAP,
+                format!(
+                    "the host's stream receipt has {} sequence gap(s) in the replayed history",
+                    receipt.gaps.len()
+                ),
+                crate::diagnostics::codes::remediation(
+                    crate::diagnostics::codes::STREAM_REPLAY_GAP,
+                )
+                .unwrap_or(
+                    "Reload the stream from a durable snapshot; a partial history is not evidence.",
+                ),
+            )
+            .retryable(true)
+            .with_details(json!({
+                "visualId": receipt.visual_id,
+                "revision": receipt.revision,
+                "gaps": receipt.gaps,
+                "trackingTruncated": receipt.tracking_truncated,
+            })),
+        ));
+    }
+    if !receipt.conflicts.is_empty() {
+        return Err(anyhow::Error::new(
+            crate::error::StructuredFailure::new(
+                STREAM_RECEIPT_CONFLICT,
+                format!(
+                    "the host's stream receipt has {} envelope identit(ies) delivered twice with different bodies",
+                    receipt.conflicts.len()
+                ),
+                "The same envelope arrived twice carrying two different bodies, so the pane's fold depends on which copy it kept. Fix the producer's envelope identity or sequencing; a visual cannot be certified over a history that contradicts itself.",
+            )
+            .retryable(false)
+            .with_details(json!({
+                "visualId": receipt.visual_id,
+                "revision": receipt.revision,
+                "conflicts": receipt.conflicts,
+                "trackingTruncated": receipt.tracking_truncated,
+            })),
+        ));
+    }
+    if receipt.non_control_envelope_count < minimum_envelopes {
+        return Err(anyhow::Error::new(
+            crate::error::StructuredFailure::new(
+                STREAM_RECEIPT_NO_EVIDENCE,
+                format!(
+                    "the transport delivered {} non-control envelope(s) of the {minimum_envelopes} this template requires, out of {} total",
+                    receipt.non_control_envelope_count, receipt.envelope_count
+                ),
+                "The streams opened and carried only heartbeats, pings and subscription notices, which renders as a plausible empty pane. Run the producer until it emits real events, then re-show and mark ready.",
+            )
+            .retryable(true)
+            .with_details(json!({
+                "visualId": receipt.visual_id,
+                "revision": receipt.revision,
+                "nonControlEnvelopeCount": receipt.non_control_envelope_count,
+                "minimumTransportEnvelopeCount": minimum_envelopes,
+                "envelopesByKind": receipt.envelopes_by_kind,
+            })),
+        ));
+    }
+    Ok(json!({
+        "schemaVersion": receipt.schema_version,
+        "state": state,
+        "observed": true,
+        "everLeftDeclared": receipt.ever_left_declared,
+        "declaredStreamCount": receipt.declared_stream_count,
+        "respondingStreamCount": receipt.responding_stream_count,
+        "closedStreamCount": receipt.closed_stream_count,
+        "envelopeCount": receipt.envelope_count,
+        "nonControlEnvelopeCount": receipt.non_control_envelope_count,
+        "minimumTransportEnvelopeCount": minimum_envelopes,
+        "trackingTruncated": receipt.tracking_truncated,
+        "firstObservedAt": receipt.first_observed_at,
+        "lastObservedAt": receipt.last_observed_at,
+    }))
 }
 
 /// Decide readiness from the *latest* review at each viewport width, not from
@@ -2630,6 +2802,26 @@ pub async fn dispatch(method: &str, path: &str, body: Value, core: &CoreRuntime)
                 template.observation_contract.as_ref(),
                 bindings_digest.as_deref(),
             )?;
+            // Transport evidence, conditioned exactly the way the observation
+            // contract above is conditioned: a visual that declares no live
+            // stream has no transport to prove. Mermaid, charts and trace-bound
+            // projections pass vacuously because they declare no poll URL, not
+            // because anyone listed them.
+            let stream_certification = if crate::visuals::declared_poll_urls(&current.bindings)
+                .is_empty()
+            {
+                Value::Null
+            } else {
+                let declared = crate::visuals::stream_receipt::declared_streams(&current.bindings);
+                let receipt = crate::visuals::stream_receipt::receipt(id, revision, &declared);
+                stream_receipt_gate(
+                    &receipt,
+                    template
+                        .observation_contract
+                        .as_ref()
+                        .map(|contract| &contract.readiness),
+                )?
+            };
             if let Some(kind) = crate::visuals::systems::template_kind(&current.template_id) {
                 let asset = registry.visual_source(id.to_string()).await?;
                 let bytes = base64::engine::general_purpose::STANDARD
@@ -2672,6 +2864,7 @@ pub async fn dispatch(method: &str, path: &str, body: Value, core: &CoreRuntime)
                     "reviewCount": current_reviews.len(),
                     "certifiedBy": receipts,
                     "supersededReviewCount": current_reviews.len() - receipts.len(),
+                    "streamCertification": stream_certification,
                     "readyAt": chrono::Utc::now().to_rfc3339(),
                 }),
             );
@@ -4791,6 +4984,7 @@ mod tests {
                 minimum_rollout_count: 1,
                 minimum_rendered_frame_count: 1,
                 minimum_semantic_event_count: 1,
+                minimum_transport_envelope_count: 1,
                 require_terminal: true,
             },
         }
@@ -5054,6 +5248,230 @@ mod tests {
         .unwrap_err()
         .to_string()
         .contains("bindings"));
+    }
+
+    /// A settled receipt carrying real evidence, which each test below breaks
+    /// in exactly one way.
+    fn stream_receipt() -> StreamReceipt {
+        StreamReceipt {
+            schema_version: crate::visuals::stream_receipt::VISUAL_STREAM_RECEIPT_SCHEMA.into(),
+            visual_id: "vis_1".into(),
+            revision: 14,
+            state: StreamTransportState::Terminal,
+            time_in_state_ms: 120,
+            observed: true,
+            ever_left_declared: true,
+            declared_stream_count: 1,
+            responding_stream_count: 1,
+            closed_stream_count: 1,
+            streams_missing_transport: Vec::new(),
+            streams: Vec::new(),
+            gaps: Vec::new(),
+            conflicts: Vec::new(),
+            ready: true,
+            recovered: 12,
+            envelope_count: 14,
+            non_control_envelope_count: 12,
+            envelopes_by_kind: vec![crate::visuals::stream_receipt::StreamKindCount {
+                kind: "eval.phase".into(),
+                count: 12,
+                control: false,
+            }],
+            tracking_truncated: false,
+            first_observed_at: Some("2026-08-28T01:00:00Z".into()),
+            last_observed_at: Some("2026-08-28T01:00:09Z".into()),
+        }
+    }
+
+    #[test]
+    fn stream_receipt_certifies_a_settled_transport_that_carried_evidence() {
+        let contract = live_contract();
+        let certification = stream_receipt_gate(&stream_receipt(), Some(&contract.readiness))
+            .expect("a terminal receipt with twelve non-control envelopes is transport evidence");
+        assert_eq!(certification["state"], "terminal");
+        assert_eq!(certification["nonControlEnvelopeCount"], 12);
+        assert_eq!(certification["minimumTransportEnvelopeCount"], 1);
+        let mut live = stream_receipt();
+        live.state = StreamTransportState::Live;
+        live.closed_stream_count = 0;
+        stream_receipt_gate(&live, Some(&contract.readiness))
+            .expect("a live stream is caught up, not unfinished");
+    }
+
+    /// Every refusal names itself. "Not ready" tells an agent to try the same
+    /// thing again; these tell it which repair to make.
+    #[test]
+    fn stream_receipt_refusals_are_named_one_per_condition() {
+        let contract = live_contract();
+        let readiness = Some(&contract.readiness);
+
+        let mut unobserved = stream_receipt();
+        unobserved.observed = false;
+        assert!(stream_receipt_gate(&unobserved, readiness)
+            .unwrap_err()
+            .to_string()
+            .contains(STREAM_RECEIPT_NOT_OBSERVED));
+
+        for state in [
+            StreamTransportState::Idle,
+            StreamTransportState::Declared,
+            StreamTransportState::Replaying,
+            StreamTransportState::Error,
+        ] {
+            let mut unsettled = stream_receipt();
+            unsettled.state = state;
+            let error = stream_receipt_gate(&unsettled, readiness)
+                .unwrap_err()
+                .to_string();
+            assert!(
+                error.contains(STREAM_RECEIPT_UNSETTLED),
+                "{state:?} must be refused by name: {error}"
+            );
+        }
+
+        let mut gapped = stream_receipt();
+        gapped.gaps = vec![crate::visuals::stream_receipt::StreamGap {
+            scope: "roll_1".into(),
+            after: 4,
+            before: 9,
+        }];
+        assert!(stream_receipt_gate(&gapped, readiness)
+            .unwrap_err()
+            .to_string()
+            .contains(crate::diagnostics::codes::STREAM_REPLAY_GAP));
+
+        let mut conflicted = stream_receipt();
+        conflicted.conflicts = vec![crate::visuals::stream_receipt::StreamConflict {
+            identity: "roll_1:7".into(),
+            scope: "roll_1".into(),
+            message: "Conflicting duplicate envelope roll_1:7".into(),
+        }];
+        assert!(stream_receipt_gate(&conflicted, readiness)
+            .unwrap_err()
+            .to_string()
+            .contains(STREAM_RECEIPT_CONFLICT));
+
+        // Opened fine, carried only heartbeats: the failure that renders as a
+        // completely plausible empty pane.
+        let mut heartbeats_only = stream_receipt();
+        heartbeats_only.non_control_envelope_count = 0;
+        heartbeats_only.envelopes_by_kind = vec![crate::visuals::stream_receipt::StreamKindCount {
+            kind: "heartbeat".into(),
+            count: 14,
+            control: true,
+        }];
+        assert!(stream_receipt_gate(&heartbeats_only, readiness)
+            .unwrap_err()
+            .to_string()
+            .contains(STREAM_RECEIPT_NO_EVIDENCE));
+    }
+
+    /// The threshold comes from the template, not from a constant. A template
+    /// that sets nothing keeps the behaviour it had before this gate existed,
+    /// and a legitimately quiet transport is adjudicated by its own manifest.
+    #[test]
+    fn transport_envelope_threshold_is_the_templates_to_set() {
+        let mut quiet = stream_receipt();
+        quiet.non_control_envelope_count = 0;
+        quiet.envelope_count = 3;
+        stream_receipt_gate(&quiet, None)
+            .expect("a template with no observation contract sets no transport threshold");
+
+        let mut contract = live_contract();
+        contract.readiness.minimum_transport_envelope_count = 0;
+        stream_receipt_gate(&quiet, Some(&contract.readiness))
+            .expect("a template that deliberately allows an empty run must not be blocked");
+
+        contract.readiness.minimum_transport_envelope_count = 20;
+        assert!(stream_receipt_gate(&stream_receipt(), Some(&contract.readiness)).is_err());
+    }
+
+    /// The projector claim and the transport claim are answered by different
+    /// observers, so one must never be spent to satisfy the other.
+    #[test]
+    fn a_transport_count_never_satisfies_a_projector_claim() {
+        let mut contract = live_contract();
+        contract.readiness.minimum_semantic_event_count = 40;
+        contract.readiness.minimum_transport_envelope_count = 1;
+        // Twelve envelopes arrived, so the transport gate passes.
+        stream_receipt_gate(&stream_receipt(), Some(&contract.readiness)).unwrap();
+        // The fold produced 26, which is still short of the 40 the template
+        // asked its projector for, and the receipt does not answer for it.
+        let mut observation = rendered_observation();
+        observation.semantic_event_count = 26;
+        assert!(validate_readiness_observation(
+            &contract,
+            "vis_1",
+            14,
+            "bindings-14",
+            &observation
+        )
+        .unwrap_err()
+        .to_string()
+        .contains("semantic event evidence"));
+    }
+
+    /// Fixture-only visuals — mermaid, charts, trace projections — declare no
+    /// poll URL, so the receipt gate never runs for them. Same conditionality
+    /// as `observation_contract.is_some()` next door.
+    #[test]
+    fn a_visual_with_no_declared_stream_is_not_gated_on_a_transport() {
+        assert!(crate::visuals::declared_poll_urls(&json!({
+            "schemaVersion": crate::visuals::VISUAL_BINDINGS_SCHEMA_VERSION,
+            "inputs": [{
+                "input": "stream",
+                "kind": "inline",
+                "data": {"events": []}
+            }]
+        }))
+        .is_empty());
+        assert!(!crate::visuals::declared_poll_urls(&json!({
+            "schemaVersion": crate::visuals::VISUAL_BINDINGS_SCHEMA_VERSION,
+            "inputs": [{
+                "input": "stream",
+                "kind": "live_sse",
+                "source": "http://127.0.0.1:8114/rollouts/r1/stream",
+                "poll_url": "http://127.0.0.1:8114/rollouts/r1/events"
+            }]
+        }))
+        .is_empty());
+    }
+
+    /// These three shipped as live templates whose only gate was two
+    /// screenshots. Their contracts stay conservative on purpose: a threshold
+    /// no honest run can meet is a hard block, not a gate.
+    #[test]
+    fn every_live_template_declares_an_observation_contract() {
+        for id in [
+            "live.container_rollouts.v1",
+            "live.eval_stream.v1",
+            "live.intern_acceptance.v1",
+            "live.harbor_eval.v1",
+        ] {
+            let template = crate::visuals::resolve_template(id).unwrap();
+            let readiness = &template
+                .observation_contract
+                .as_ref()
+                .unwrap_or_else(|| panic!("{id} must declare an observation contract"))
+                .readiness;
+            assert_eq!(
+                readiness.minimum_transport_envelope_count, 1,
+                "{id} must require at least one non-control envelope"
+            );
+            assert!(
+                !readiness.require_terminal,
+                "{id} is a live pane; requiring terminal would block reviewing a running eval"
+            );
+            for state in READY_TRANSPORT_STATES {
+                assert!(
+                    !readiness
+                        .reject_transport_states
+                        .iter()
+                        .any(|rejected| rejected.as_str() == *state),
+                    "{id} rejects {state}, which is a state it must be able to be ready in"
+                );
+            }
+        }
     }
 
     #[test]

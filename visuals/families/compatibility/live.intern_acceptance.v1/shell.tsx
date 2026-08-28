@@ -54,6 +54,19 @@ export function Shell(props: ShellProps) {
       lede={props.lede ?? "Sync mailbox and async background acceptance gates."}
       testId="visual-live-intern-acceptance"
       footer="live.intern_acceptance.v1"
+      observation={{
+        // The manifest declares an observationContract, so the pane must
+        // publish what it actually rendered. `semanticEventCount` is every
+        // ingested envelope rather than the acceptance cells alone: a stream
+        // that carried events and has decided nothing yet is an honest render,
+        // not an empty one.
+        transportState: state,
+        rolloutCount: 0,
+        renderedFrameCount: 0,
+        semanticEventCount: events.length,
+        terminal: state === "terminal",
+        error
+      }}
     >
       <MetricStrip
         metrics={[
