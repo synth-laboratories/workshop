@@ -107,6 +107,13 @@ impl AlgorithmProjection {
         }
     }
 
+    pub fn eval_evidence_ledger(&self) -> Option<&[algorithms::eval::RolloutEvidenceEntry]> {
+        match self {
+            Self::Eval(projection) => Some(&projection.evidence_ledger),
+            _ => None,
+        }
+    }
+
     pub fn usage(&self) -> UsageCompleteness {
         match self {
             Self::Eval(p) => p.usage.clone(),
