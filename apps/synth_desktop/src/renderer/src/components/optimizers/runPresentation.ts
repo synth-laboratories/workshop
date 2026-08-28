@@ -38,6 +38,58 @@ export function statusChipClass(status: string): string {
 	return `optimizer-status ${status}`;
 }
 
+/** Middle truncation: run ids carry identity at both ends (family + suffix). */
+export function truncateMiddle(value: string, max = 24): string {
+	if (value.length <= max) return value;
+	const keep = Math.max(4, Math.floor((max - 1) / 2));
+	return `${value.slice(0, keep)}…${value.slice(-keep)}`;
+}
+
+export type SealedWorkCounts = {
+	planned?: number;
+	succeeded?: number;
+	failed?: number;
+	skipped?: number;
+};
+
+/**
+ * Work counts off the sealed terminal manifest the list payload already
+ * carries (`summary.terminalManifest.work`, written by the terminal writer).
+ * Live runs' counts live in the event log / kernel V2 view — not in the list
+ * record — so this returns null for them: absent is not zero, and the list
+ * must not fetch runViewV2 per row to invent a number.
+ */
+export function sealedWorkCounts(run: OptimizerRunRecord): SealedWorkCounts | null {
+	const summary = run.summary && typeof run.summary === "object"
+		? run.summary as Record<string, unknown>
+		: null;
+	const manifest = summary?.terminalManifest;
+	if (!manifest || typeof manifest !== "object" || Array.isArray(manifest)) return null;
+	const work = (manifest as Record<string, unknown>).work;
+	if (!work || typeof work !== "object" || Array.isArray(work)) return null;
+	const read = (key: string): number | undefined => {
+		const value = (work as Record<string, unknown>)[key];
+		return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+	};
+	const counts: SealedWorkCounts = {
+		...(read("planned") != null ? { planned: read("planned") } : {}),
+		...(read("succeeded") != null ? { succeeded: read("succeeded") } : {}),
+		...(read("failed") != null ? { failed: read("failed") } : {}),
+		...(read("skipped") != null ? { skipped: read("skipped") } : {})
+	};
+	return Object.keys(counts).length > 0 ? counts : null;
+}
+
+/** "8✓ 2✕ / 10" — only the counts the manifest actually recorded. */
+export function workFractionLabel(counts: SealedWorkCounts): string {
+	const parts: string[] = [];
+	if (counts.succeeded != null) parts.push(`${counts.succeeded}✓`);
+	if (counts.failed != null && counts.failed > 0) parts.push(`${counts.failed}✕`);
+	const head = parts.join(" ");
+	if (counts.planned != null) return `${head || "0"} / ${counts.planned}`;
+	return head;
+}
+
 export function runTitle(run: OptimizerRunRecord): string {
 	const objective = run.objective ?? run.id;
 	const importedPath = objective.startsWith("imported from ")

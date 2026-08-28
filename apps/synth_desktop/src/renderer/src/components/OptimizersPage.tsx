@@ -8,7 +8,7 @@ import { findPluginStatus, pluginPresentation, type PluginPresentation } from ".
 import { TrainingWorkspace } from "./TrainingWorkspace";
 import { TrainingEvaluationCurve } from "./TrainingEvaluationCurve";
 import { RunInspector } from "./optimizers/RunInspector";
-import { algorithmLabel, formatWhen, runTitle, statusChipClass, statusText } from "./optimizers/runPresentation";
+import { algorithmLabel, formatWhen, runTitle, sealedWorkCounts, statusChipClass, statusText, truncateMiddle, workFractionLabel } from "./optimizers/runPresentation";
 
 type OptimizerGuide = {
 	id: "gepa" | "go-ex" | "sft" | "cispo" | "ppo" | "eval";
@@ -1253,19 +1253,46 @@ export function OptimizersPage({
 				<section className="optimizer-runs" aria-label="Optimizer runs">
 					<div className="optimizer-section-head"><div><span className="optimizer-eyebrow">Runs</span><strong>{runs.length} total</strong></div></div>
 					<ul className="inventory-list optimizer-list">
-						{runs.map((run) => (
-							<li key={run.id}>
-								<button
-									type="button"
-									className={`inventory-row${selectedId === run.id ? " active" : ""}`}
-									data-testid={`optimizer-run-${run.id}`}
-									onClick={() => setSelectedId(run.id)}
-								>
-									<span className="optimizer-run-main"><span className="optimizer-algorithm">{algorithmLabel(run.algorithmId)}</span><strong>{runTitle(run)}</strong><small>{formatWhen(run.finishedAt ?? run.startedAt ?? run.createdAt)}</small></span>
-									<span className="optimizer-run-meta"><span className={statusChipClass(run.status)}>{statusText(run.status)}</span><small>{run.source} · {run.usage?.costUsd == null ? "—" : `$${run.usage.costUsd.toFixed(2)}`}</small></span>
-								</button>
-							</li>
-						))}
+						{runs.map((run) => {
+							// The mini-fraction comes from the sealed terminal manifest the
+							// list payload already carries. Live runs report their counts
+							// through the event log, not the list record, so they show the
+							// usage rollout floor when one exists and nothing otherwise —
+							// never a fabricated zero.
+							const counts = sealedWorkCounts(run);
+							const fraction = counts
+								? workFractionLabel(counts)
+								: run.usage?.rollouts
+									? `${run.usage.rollouts} rollouts`
+									: null;
+							return (
+								<li key={run.id}>
+									<button
+										type="button"
+										className={`inventory-row${selectedId === run.id ? " active" : ""}`}
+										data-testid={`optimizer-run-${run.id}`}
+										onClick={() => setSelectedId(run.id)}
+									>
+										<span className="optimizer-run-main">
+											<span className="optimizer-algorithm">{algorithmLabel(run.algorithmId)}</span>
+											<strong>{runTitle(run)}</strong>
+											<small>
+												<code className="optimizer-run-id-inline" title={run.id}>{truncateMiddle(run.id)}</code>
+												{" · "}
+												{run.finishedAt ? `finished ${formatWhen(run.finishedAt)}` : formatWhen(run.startedAt ?? run.createdAt)}
+											</small>
+										</span>
+										<span className="optimizer-run-meta">
+											<span className={statusChipClass(run.status)}>{statusText(run.status)}</span>
+											<small data-testid={`optimizer-run-facts-${run.id}`}>
+												{fraction ? `${fraction} · ` : ""}
+												{run.source} · {run.usage?.costUsd == null ? "—" : `$${run.usage.costUsd.toFixed(2)}`}
+											</small>
+										</span>
+									</button>
+								</li>
+							);
+						})}
 						{runs.length === 0 ? (
 							<li className="optimizer-empty" data-testid="optimizer-runs-empty">
 								<span className="optimizer-empty-icon" aria-hidden>↗</span>
