@@ -7,6 +7,7 @@ use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 use uuid::Uuid;
 
 use super::audit::{self, SecretAuditEvent};
@@ -149,6 +150,7 @@ pub struct MeasuredUsage {
 #[derive(Default)]
 pub struct CapabilityStore {
     by_handle: Mutex<HashMap<String, LiveCapability>>,
+    next_request_at: Mutex<HashMap<String, Instant>>,
 }
 
 impl CapabilityStore {
@@ -180,6 +182,10 @@ impl CapabilityStore {
         {
             live.status = "revoked".into();
         }
+        self.next_request_at
+            .lock()
+            .expect("capability request pacer")
+            .remove(handle);
     }
 
     pub fn revoke_run(&self, run_id: &str) -> Vec<String> {
@@ -191,7 +197,40 @@ impl CapabilityStore {
                 handles.push(live.handle.clone());
             }
         }
+        let mut pacing = self
+            .next_request_at
+            .lock()
+            .expect("capability request pacer");
+        for handle in &handles {
+            pacing.remove(handle);
+        }
         handles
+    }
+
+    /// Reserve the next provider request start for a capability. Reserving a
+    /// slot is separate from `reserve_call`: retries of one logical request
+    /// must be paced, but must not consume additional model-call budget.
+    fn request_start_delay_at(&self, handle: &str, now: Instant, interval: Duration) -> Duration {
+        let mut next = self
+            .next_request_at
+            .lock()
+            .expect("capability request pacer");
+        let start = next.get(handle).copied().unwrap_or(now);
+        let delay = start.saturating_duration_since(now);
+        let scheduled = if delay.is_zero() { now } else { start };
+        next.insert(handle.to_owned(), scheduled + interval);
+        delay
+    }
+
+    pub async fn pace_request_start(&self, handle: &str) {
+        let delay = self.request_start_delay_at(
+            handle,
+            Instant::now(),
+            crate::limits::CREDENTIAL_UPSTREAM_MIN_INTERVAL,
+        );
+        if !delay.is_zero() {
+            tokio::time::sleep(delay).await;
+        }
     }
 
     pub fn list_active(&self) -> Vec<LiveCapability> {
@@ -468,3 +507,32 @@ pub fn persist_status(conn: &Connection, live: &LiveCapability) -> Result<()> {
 
 /// Shared store used by the proxy and the issuer.
 pub type SharedCapabilityStore = Arc<CapabilityStore>;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn request_pacer_schedules_starts_at_the_configured_interval() {
+        let store = CapabilityStore::new();
+        let now = Instant::now();
+        let interval = Duration::from_secs(6);
+
+        assert_eq!(
+            store.request_start_delay_at("wcap_test", now, interval),
+            Duration::ZERO
+        );
+        assert_eq!(
+            store.request_start_delay_at("wcap_test", now, interval),
+            interval
+        );
+        assert_eq!(
+            store.request_start_delay_at("wcap_test", now + interval, interval),
+            interval
+        );
+        assert_eq!(
+            store.request_start_delay_at("wcap_other", now, interval),
+            Duration::ZERO
+        );
+    }
+}

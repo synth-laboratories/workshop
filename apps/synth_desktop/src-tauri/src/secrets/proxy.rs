@@ -3,6 +3,7 @@
 
 use anyhow::{anyhow, bail, Context, Result};
 use bytes::Bytes;
+use chrono::{DateTime, Utc};
 use futures_util::Stream;
 use http_body_util::{combinators::BoxBody, BodyExt, Full, StreamBody};
 use hyper::body::{Frame, Incoming};
@@ -287,6 +288,76 @@ fn classify_transport_error(error: &reqwest::Error) -> (StatusCode, &'static str
             "the approved provider endpoint is unavailable",
         )
     }
+}
+
+fn retry_after_hint_at(value: &str, now: DateTime<Utc>) -> Option<std::time::Duration> {
+    let value = value.trim();
+    if let Ok(seconds) = value.parse::<u64>() {
+        return Some(std::time::Duration::from_secs(seconds));
+    }
+    DateTime::parse_from_rfc2822(value)
+        .ok()
+        .and_then(|date| (date.with_timezone(&Utc) - now).to_std().ok())
+}
+
+fn rate_limit_retry_delay(
+    headers: &reqwest::header::HeaderMap,
+    retry_number: u32,
+) -> std::time::Duration {
+    let mut backoff = crate::limits::CREDENTIAL_UPSTREAM_RATE_LIMIT_BACKOFF;
+    for _ in 0..retry_number {
+        backoff = backoff.saturating_add(backoff);
+    }
+    let retry_after = headers
+        .get(reqwest::header::RETRY_AFTER)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| retry_after_hint_at(value, Utc::now()));
+    retry_after.map_or(backoff, |hint| hint.max(backoff))
+}
+
+enum UpstreamSendError {
+    Request(reqwest::Error),
+    RequestNotReusable,
+    CapabilityUnavailable,
+}
+
+fn capability_is_available(capabilities: &capability::CapabilityStore, handle: &str) -> bool {
+    capabilities.lookup(handle).is_some_and(|live| {
+        live.status != "revoked" && Utc::now().timestamp_millis() < live.expires_at_ms
+    })
+}
+
+/// Pace each attempt and retry only provider rate-limit responses. A retry is
+/// still one logical capability call: the reservation and eventual usage
+/// debit stay outside this function. Re-checking the live capability before
+/// every attempt prevents a delayed retry from crossing revocation/expiry.
+async fn send_with_rate_limit_retry(
+    state: &ProxyState,
+    handle: &str,
+    outbound: &reqwest::RequestBuilder,
+) -> std::result::Result<reqwest::Response, UpstreamSendError> {
+    for retry_number in 0..=crate::limits::CREDENTIAL_UPSTREAM_MAX_RATE_LIMIT_RETRIES {
+        if !capability_is_available(&state.capabilities, handle) {
+            return Err(UpstreamSendError::CapabilityUnavailable);
+        }
+        state.capabilities.pace_request_start(handle).await;
+        if !capability_is_available(&state.capabilities, handle) {
+            return Err(UpstreamSendError::CapabilityUnavailable);
+        }
+        let request = outbound
+            .try_clone()
+            .ok_or(UpstreamSendError::RequestNotReusable)?;
+        let response = request.send().await.map_err(UpstreamSendError::Request)?;
+        if response.status() != StatusCode::TOO_MANY_REQUESTS
+            || retry_number == crate::limits::CREDENTIAL_UPSTREAM_MAX_RATE_LIMIT_RETRIES
+        {
+            return Ok(response);
+        }
+        let delay = rate_limit_retry_delay(response.headers(), retry_number);
+        drop(response);
+        tokio::time::sleep(delay).await;
+    }
+    unreachable!("rate-limit retry loop always returns")
 }
 
 /// Record a provider call that never produced billable usage. Without this the
@@ -779,9 +850,9 @@ async fn handle(
     };
     drop(secret);
 
-    let upstream = match outbound.send().await {
+    let upstream = match send_with_rate_limit_retry(&state, &handle, &outbound).await {
         Ok(response) => response,
-        Err(error) => {
+        Err(UpstreamSendError::Request(error)) => {
             let (status, code, message) = classify_transport_error(&error);
             audit_provider_failure(
                 &state,
@@ -792,6 +863,36 @@ async fn handle(
                 None,
             );
             return Ok(json_error(status, code, message));
+        }
+        Err(UpstreamSendError::CapabilityUnavailable) => {
+            audit_provider_failure(
+                &state,
+                &reserved,
+                route.operation,
+                model.as_deref(),
+                "capability_unavailable",
+                None,
+            );
+            return Ok(json_error(
+                StatusCode::UNAUTHORIZED,
+                "unauthorized",
+                "capability is no longer valid",
+            ));
+        }
+        Err(UpstreamSendError::RequestNotReusable) => {
+            audit_provider_failure(
+                &state,
+                &reserved,
+                route.operation,
+                model.as_deref(),
+                "upstream_request_rejected",
+                None,
+            );
+            return Ok(json_error(
+                StatusCode::BAD_GATEWAY,
+                "upstream_request_rejected",
+                "the provider request could not be issued",
+            ));
         }
     };
     let status = upstream.status();
@@ -1137,6 +1238,87 @@ mod tests {
         ] {
             assert_eq!(providers::sanitize_error_message(code), code);
         }
+    }
+
+    #[test]
+    fn retry_after_seconds_override_the_exponential_floor() {
+        let mut headers = reqwest::header::HeaderMap::new();
+        headers.insert(reqwest::header::RETRY_AFTER, "17".parse().unwrap());
+        assert_eq!(
+            rate_limit_retry_delay(&headers, 0),
+            std::time::Duration::from_secs(17)
+        );
+        assert_eq!(
+            rate_limit_retry_delay(&headers, 1),
+            std::time::Duration::from_secs(17)
+        );
+    }
+
+    #[test]
+    fn retry_after_http_date_is_parsed_without_exposing_header_data() {
+        let now = DateTime::parse_from_rfc3339("2026-08-28T12:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let future = now + chrono::Duration::seconds(23);
+        let value = future.to_rfc2822();
+        assert_eq!(
+            retry_after_hint_at(&value, now),
+            Some(std::time::Duration::from_secs(23))
+        );
+    }
+
+    #[test]
+    fn malformed_retry_after_uses_deterministic_exponential_backoff() {
+        let mut headers = reqwest::header::HeaderMap::new();
+        headers.insert(reqwest::header::RETRY_AFTER, "not-a-delay".parse().unwrap());
+        assert_eq!(
+            rate_limit_retry_delay(&headers, 0),
+            crate::limits::CREDENTIAL_UPSTREAM_RATE_LIMIT_BACKOFF
+        );
+        assert_eq!(
+            rate_limit_retry_delay(&headers, 2),
+            crate::limits::CREDENTIAL_UPSTREAM_RATE_LIMIT_BACKOFF.saturating_mul(4)
+        );
+    }
+
+    #[test]
+    fn retry_guard_rejects_revocation_or_expiry_after_pacing_phase() {
+        let store = capability::CapabilityStore::new();
+        let live = capability::LiveCapability {
+            id: "cap_test".into(),
+            handle: "wcap_test".into(),
+            secret_id: "secret_test".into(),
+            run_id: "run_test".into(),
+            recipe_id: "recipe_test".into(),
+            provider: "openrouter".into(),
+            operations: vec!["responses.create".into()],
+            models: Vec::new(),
+            reasoning_efforts: Vec::new(),
+            max_calls: 80,
+            max_input_tokens: 1,
+            max_output_tokens: 1,
+            max_cost_usd_micros: 600_000,
+            used_calls: 1,
+            used_input_tokens: 0,
+            used_output_tokens: 0,
+            used_cost_usd_micros: 0,
+            status: "active".into(),
+            expires_at_ms: Utc::now().timestamp_millis() + 60_000,
+        };
+        store.insert(live.clone());
+        assert!(capability_is_available(&store, &live.handle));
+
+        store.revoke_handle(&live.handle);
+        assert!(!capability_is_available(&store, &live.handle));
+
+        let expired = capability::LiveCapability {
+            handle: "wcap_expired".into(),
+            status: "active".into(),
+            expires_at_ms: Utc::now().timestamp_millis() - 1,
+            ..live
+        };
+        store.insert(expired.clone());
+        assert!(!capability_is_available(&store, &expired.handle));
     }
 
     #[test]

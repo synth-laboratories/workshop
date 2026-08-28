@@ -51,6 +51,20 @@ pub const ACCOUNT_CLOUD_TIMEOUT: Duration = Duration::from_secs(12);
 /// rather than the short default HTTP timeout.
 pub const CREDENTIAL_UPSTREAM_TIMEOUT: Duration = DEEPSWE_HARBOR_CAPABILITY_TTL;
 
+/// Minimum interval between provider request starts for one capability. Luna
+/// emits many sequential tool calls, so keep the host-side cadence below the
+/// provider's likely per-minute limit instead of relying on SDK retries.
+pub const CREDENTIAL_UPSTREAM_MIN_INTERVAL: Duration = Duration::from_secs(6);
+
+/// Number of additional upstream attempts the proxy makes for a 429 response.
+/// The logical capability call is reserved once and remains one call across
+/// these provider-level retries.
+pub const CREDENTIAL_UPSTREAM_MAX_RATE_LIMIT_RETRIES: u32 = 3;
+
+/// Deterministic floor for rate-limit retry backoff. The per-capability pacer
+/// independently enforces the request-start cadence.
+pub const CREDENTIAL_UPSTREAM_RATE_LIMIT_BACKOFF: Duration = Duration::from_secs(6);
+
 /// Desktop update manifest fetch.
 pub const UPDATE_MANIFEST_TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -136,5 +150,12 @@ mod tests {
             u64::from(DEEPSWE_HARBOR_CAPABILITY_TTL_SECONDS)
         );
         assert_eq!(CREDENTIAL_UPSTREAM_TIMEOUT.as_secs(), 5_400);
+    }
+
+    #[test]
+    fn credential_proxy_rate_limit_guard_is_conservative_and_bounded() {
+        assert!(CREDENTIAL_UPSTREAM_MIN_INTERVAL >= Duration::from_secs(6));
+        assert!(CREDENTIAL_UPSTREAM_MAX_RATE_LIMIT_RETRIES > 0);
+        assert!(CREDENTIAL_UPSTREAM_RATE_LIMIT_BACKOFF >= CREDENTIAL_UPSTREAM_MIN_INTERVAL);
     }
 }
