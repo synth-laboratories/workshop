@@ -1202,5 +1202,3 @@ export function TraceWorkbench({ branding, ...props }: TraceWorkbenchProps & { b
     </VisualChrome>
   );
 }
-
-export default Shell;
