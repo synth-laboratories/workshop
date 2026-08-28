@@ -2449,7 +2449,10 @@ mod immutable_target_tests {
     #[test]
     fn a_mutable_tag_is_refused_before_the_run_is_created() {
         let error = refusal(&recipe(Some("ghcr.io/synth/craftax-eval:latest"), None));
-        assert!(error.contains("target_not_digest_pinned"), "{error}");
+        assert!(
+            error.contains("\"code\":\"target_digest_missing\""),
+            "{error}"
+        );
         assert!(error.contains("mutable tag"), "{error}");
         assert!(error.contains("\"substitutionAllowed\":false"), "{error}");
     }
