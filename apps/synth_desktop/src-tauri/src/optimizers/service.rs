@@ -6993,7 +6993,7 @@ pub(in crate::optimizers) mod tests {
     #[test]
     fn recipe_readiness_names_missing_contract_and_owner() {
         let projected = project_recipe_readiness(json!({
-            "id": "eval.fixture.policy-smoke.v1",
+            "id": "eval.craftax.code-policy.smoke.v1",
             "algorithmId": "eval",
             "availability": "available",
             "limits": {},
