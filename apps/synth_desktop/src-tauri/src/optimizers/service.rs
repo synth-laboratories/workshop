@@ -2317,6 +2317,7 @@ impl OptimizerService {
         session_ref: Option<String>,
     ) -> Result<(OptimizerRunRecord, Option<AppEvent>)> {
         let mut run = self.get(optimizer_run_id.clone()).await?;
+        super::container_eval::refresh_terminal_visual_projection_if_stale(self, &run).await?;
         let presentation_session_ref = session_ref.or_else(|| run.session_ref.clone());
         let title = format!(
             "{} · {}",
