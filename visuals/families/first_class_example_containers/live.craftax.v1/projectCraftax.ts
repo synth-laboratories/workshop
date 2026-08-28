@@ -11,6 +11,20 @@ function finite(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value) ? value : undefined;
 }
 
+/** Normalize host envelopes before semantic reducers call string methods. */
+export function craftaxEventKind(event: LiveEvalEvent): string {
+  const record = object(event);
+  for (const candidate of [record.kind, record.event_kind, record.eventKind, record.event_type, record.type]) {
+    if (typeof candidate === "string" && candidate.length > 0) return candidate;
+  }
+  return "unknown";
+}
+
+function normalizedCraftaxEvent(event: LiveEvalEvent): LiveEvalEvent {
+  const kind = craftaxEventKind(event);
+  return event.kind === kind ? event : { ...event, kind };
+}
+
 /** Canonical streams use `value`; native GameBench history used `reward`. */
 export function craftaxRewardValue(payload: unknown): number | undefined {
   const record = object(payload);
@@ -265,6 +279,7 @@ function policyCallItem(
 
 /** Collapse transport partials into user-facing policy calls and environment steps. */
 export function projectCraftaxSemanticTrace(events: LiveEvalEvent[]): CraftaxSemanticTraceItem[] {
+  events = events.map(normalizedCraftaxEvent);
   const items: CraftaxSemanticTraceItem[] = [];
   let currentPolicy: { events: LiveEvalEvent[]; openedIndex: number; ordinal: number } | null = null;
   let policyOrdinal = 0;
@@ -408,6 +423,7 @@ export function groupTraceByStep(items: CraftaxSemanticTraceItem[]): CraftaxTrac
  * Environment steps are reported separately by `environmentStepCount`.
  */
 export function replayMomentIndexes(ordered: LiveEvalEvent[]): number[] {
+  ordered = ordered.map(normalizedCraftaxEvent);
   const indexes: number[] = [];
   for (let index = 0; index < ordered.length; index += 1) {
     const kind = ordered[index].kind;
@@ -428,6 +444,7 @@ export function projectCraftaxViewer(
   cutoffIndex?: number | null
 ): CraftaxViewerProjection {
   const ordered = events
+    .map(normalizedCraftaxEvent)
     .map((event, arrival) => ({ event, arrival }))
     .sort((left, right) =>
       eventTime(left.event) - eventTime(right.event) ||

@@ -17,6 +17,8 @@ use serde_json::{json, Value};
 use std::num::NonZeroU32;
 use std::process::Command;
 
+const INLINE_PROVIDER_OPERATION: &str = "chat.completions.create";
+
 /// Resolve current authority, construct the default inline recipe, validate it,
 /// and assign its immutable digest. No recipe catalog is consulted here.
 pub async fn admit_inline(
@@ -229,7 +231,11 @@ async fn discovery_context(
         .provider
         .clone()
         .context("inline evaluation requires provider")?;
-    let scope = admission::CredentialCapabilityScope::new(["provider.request".to_string()], 3_600);
+    // Capabilities name concrete proxy wire operations. `provider.request`
+    // was never routed, so valid inline runs reached the container and then
+    // failed every first model call with operation_denied.
+    let scope =
+        admission::CredentialCapabilityScope::new([INLINE_PROVIDER_OPERATION.to_string()], 3_600);
     Ok((
         DiscoveryContext {
             containers: candidates,
@@ -324,13 +330,12 @@ fn read_policy_source(
         .or_else(|| metadata.get("specId"))
         .and_then(Value::as_str)
         .unwrap_or("policy");
-    let origin = super::workspace_recipe::origin_from_metadata(metadata, spec_id).ok_or_else(
-        || {
+    let origin =
+        super::workspace_recipe::origin_from_metadata(metadata, spec_id).ok_or_else(|| {
             anyhow::anyhow!(
                 "policy_source_unavailable: container declaration has no approved source origin"
             )
-        },
-    )?;
+        })?;
     let resolved = super::workspace_recipe::resolve_repository_path(&origin, relative)
         .map_err(super::workspace_recipe::LaunchDeclarationError::into_anyhow)?;
     let source_code = if origin.source_digest.is_some() {
@@ -470,4 +475,19 @@ pub fn approved_rollouts(value: u32) -> Result<RolloutCount> {
     Ok(RolloutCount(
         NonZeroU32::new(value).context("approved rollout cap must be non-zero")?,
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn inline_provider_scope_uses_the_routed_chat_operation() {
+        let scope = admission::CredentialCapabilityScope::new(
+            [INLINE_PROVIDER_OPERATION.to_string()],
+            3_600,
+        );
+        assert_eq!(scope.operations, ["chat.completions.create"]);
+        assert_ne!(scope.operations, ["provider.request"]);
+    }
 }

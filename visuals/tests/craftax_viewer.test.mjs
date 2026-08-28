@@ -285,3 +285,18 @@ test("missing PNG stays unavailable and does not fall back to ASCII", () => {
   assert.equal(fixtureAscii.ascii, "P....\n..T..");
   assert.equal(fixtureAscii.frameUnavailable, false);
 });
+
+test("host-envelope events without kind cannot crash the Craftax projection", () => {
+  const projection = projectCraftaxViewer([
+    {
+      event_type: "optimizer.run.failed",
+      sequence: 1,
+      occurred_at: "2026-08-28T00:00:00Z",
+      payload: { reason: "failed honestly" },
+    },
+  ]);
+
+  assert.equal(projection.ordered.length, 1);
+  assert.equal(projection.ordered[0].kind, "optimizer.run.failed");
+  assert.doesNotThrow(() => projectCraftaxSemanticTrace(projection.ordered));
+});
