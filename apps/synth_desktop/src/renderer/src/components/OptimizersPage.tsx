@@ -78,6 +78,8 @@ type Props = {
 	/** Owned by useAppController; this page no longer reads the registry itself. */
 	pluginStatuses?: readonly PluginStatus[] | null;
 	onRefreshPlugins?: () => Promise<void>;
+	initialRunId?: string | null;
+	onSelectedRunIdChange?: (runId: string | null) => void;
 };
 
 function isWorkspaceBaselineEval(recipe: OptimizerRecipeInfo): boolean {
@@ -260,7 +262,9 @@ export function OptimizersPage({
 	onBack,
 	selectedContainerId = null,
 	pluginStatuses = null,
-	onRefreshPlugins
+	onRefreshPlugins,
+	initialRunId = null,
+	onSelectedRunIdChange
 }: Props) {
 	const [tab, setTab] = useState<OptimizersTab>("runs");
 	const [runs, setRuns] = useState<OptimizerRunRecord[]>([]);
@@ -280,7 +284,7 @@ export function OptimizersPage({
 	const [error, setError] = useState<string | null>(null);
 	const [errorDetails, setErrorDetails] = useState<string | null>(null);
 	const [busy, setBusy] = useState(false);
-	const [selectedId, setSelectedId] = useState<string | null>(null);
+	const [selectedId, setSelectedId] = useState<string | null>(initialRunId);
 	const [startingAgent, setStartingAgent] = useState<OptimizerGuide["id"] | null>(null);
 	const [startingLocalSft, setStartingLocalSft] = useState(false);
 	const [startingLocalCispo, setStartingLocalCispo] = useState(false);
@@ -322,6 +326,10 @@ export function OptimizersPage({
 	const [changingReleaseChannel, setChangingReleaseChannel] = useState(false);
 	const plugin = pluginOverride ?? findPluginStatus(pluginStatuses, "optimizers");
 	const presentation = pluginPresentation(plugin);
+
+	useEffect(() => {
+		onSelectedRunIdChange?.(selectedId);
+	}, [onSelectedRunIdChange, selectedId]);
 
 	const [lifecycleBusy, setLifecycleBusy] = useState<PluginLifecycleOperation | null>(null);
 	const [receipt, setReceipt] = useState<PluginActionReceipt | null>(null);

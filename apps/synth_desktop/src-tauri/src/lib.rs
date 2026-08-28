@@ -109,6 +109,7 @@ use reports::{
 };
 use serde_json::Value;
 use std::sync::Arc;
+use std::time::Duration;
 use storage::{
     AppEvent, CoreDiagnostics, ModelPerformanceRepository, ModelPerformanceSummary,
     ModelPerformanceTurnSample,
@@ -4918,7 +4919,25 @@ pub fn run() {
     tauri::Builder::default()
         // This must be the first plugin registered. All app state, IPC, and
         // SQLite ownership belongs to the original process.
-        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+        .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
+            for raw in args.iter().filter(|arg| arg.starts_with("synth-workshop://")) {
+                match crate::instance::parse_workshop_deep_link(raw) {
+                    Ok(route) => {
+                        if let Err(error) = app.emit("desktop:deep-link", route) {
+                            crate::platform::logging::report(
+                                "lib",
+                                "deep_link",
+                                format!("could not dispatch Workshop deep link: {error}"),
+                            );
+                        }
+                    }
+                    Err(error) => crate::platform::logging::report(
+                        "lib",
+                        "deep_link",
+                        format!("refused Workshop deep link: {error}"),
+                    ),
+                }
+            }
             if let Some(window) = app.get_webview_window("main") {
                 let _ = window.show();
                 let _ = window.set_focus();
@@ -4949,6 +4968,45 @@ pub fn run() {
         })
         .setup(|app| {
             instance::mark_manifest_running();
+            // A renderer/bootstrap failure must never leave a running process
+            // as an invisible window. Page-load still owns the normal reveal.
+            let watchdog_app = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                tokio::time::sleep(Duration::from_secs(15)).await;
+                if let Some(window) = watchdog_app.get_webview_window("main") {
+                    if !window.is_visible().unwrap_or(false) {
+                        if let Err(error) = window.eval(
+                            "document.body.innerHTML='<main style=\"font:15px system-ui;padding:32px;color:#1f2937\"><h1>Workshop could not finish loading</h1><p>The renderer did not become ready within 15 seconds. Restart this instance; your runs and artifacts remain durable.</p></main>'"
+                        ) {
+                            crate::platform::logging::report(
+                                "lib",
+                                "page_load_watchdog",
+                                format!("could not install page-load failure view: {error}"),
+                            );
+                        }
+                        if let Err(error) = window.show() {
+                            crate::platform::logging::report(
+                                "lib",
+                                "page_load_watchdog",
+                                format!("could not show main window after page-load timeout: {error}"),
+                            );
+                        }
+                        if let Err(error) = watchdog_app.emit(
+                            "desktop:page-load-timeout",
+                            serde_json::json!({
+                                "code": "renderer_page_load_timeout",
+                                "message": "The renderer did not finish loading within 15 seconds."
+                            }),
+                        ) {
+                            crate::platform::logging::report(
+                                "lib",
+                                "page_load_watchdog",
+                                format!("could not emit page-load timeout: {error}"),
+                            );
+                        }
+                    }
+                }
+            });
             // Builds before the credential broker exported provider keys into
             // Codex, which recorded them in its shell snapshots. Scrub what
             // those builds left behind in Desktop's own Codex homes.

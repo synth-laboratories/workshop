@@ -33,6 +33,7 @@ import type {
 	UsageBridge,
 	VisualsBridge,
 	ReportsBridge,
+	RegisteredInstance,
 	WhisperBridge,
 	WorkspaceScopeBridge,
 	ComposerImageAttachment,
@@ -48,6 +49,7 @@ declare global {
 			chooseWorkspaceDirectory(): Promise<string | null>;
 			chooseImageFiles(): Promise<ComposerImageAttachment[]>;
 			getInstanceDiagnostics(): Promise<DesktopInstanceDiagnostics>;
+			getInstances(): Promise<RegisteredInstance[]>;
 		};
 		/** Browser fixture/explicit compatibility bridge; not installed by Tauri. */
 		synthRuntime?: RuntimeBridge;

@@ -578,7 +578,17 @@ async fn start_eval(
             // example when Workshop refuses to mint a secrets proxy).  Its
             // durable run is terminal in that case, so its chat-owned visual
             // must not survive as a false live/running artifact.
-            let _ = project_worker_failure_visual(
+            if let Err(settlement_error) = settle_worker_failure(&worker, &worker_run_id, error).await {
+                if let Err(record_error) = worker
+                    .record_visual_projection_delivery_failure(&worker_run_id, &settlement_error)
+                    .await
+                {
+                    crate::platform::logging::report(
+                        "container_eval", "projection_outbox",
+                        format!("could not record settlement delivery failure for {worker_run_id}: {record_error:#}"),
+                    );
+                }
+            } else if let Err(projection_error) = project_worker_failure_visual(
                 &worker,
                 &worker_run_id,
                 &worker_spec,
@@ -586,8 +596,18 @@ async fn start_eval(
                 &worker_workbench_id,
                 planned_trials,
             )
-            .await;
-            settle_worker_failure(&worker, &worker_run_id, error).await;
+            .await
+            {
+                if let Err(record_error) = worker
+                    .record_visual_projection_delivery_failure(&worker_run_id, &projection_error)
+                    .await
+                {
+                    crate::platform::logging::report(
+                        "container_eval", "projection_outbox",
+                        format!("could not record visual delivery failure for {worker_run_id}: {record_error:#}"),
+                    );
+                }
+            }
         }
         worker.unregister_local_recipe(&worker_run_id).await;
     });
@@ -763,13 +783,16 @@ async fn preflight_container_credentials(
 /// `degraded` with a named, retryable diagnostic, and the records it did gather
 /// stay in the summary. Either way the run reaches a terminal state — a worker
 /// that dies silently leaves a card spinning forever.
-async fn settle_worker_failure(service: &OptimizerService, run_id: &str, error: anyhow::Error) {
+async fn settle_worker_failure(
+    service: &OptimizerService,
+    run_id: &str,
+    error: anyhow::Error,
+) -> Result<()> {
     // Cancellation is not a generic application error. A typed cancellation
     // settles `cancelled` with its request as the terminal event's payload,
     // instead of laundering the interruption into `failed/producer_failed`.
     if let Some(cancelled) = error.downcast_ref::<super::kernel::CancelledError>() {
-        let _ = append_cancelled_terminal(service, run_id, &cancelled.request).await;
-        return;
+        return append_cancelled_terminal(service, run_id, &cancelled.request).await;
     }
     if let Some(failure) = error.downcast_ref::<EvidenceLaneFailure>() {
         let stage = failure.stage;
@@ -779,12 +802,12 @@ async fn settle_worker_failure(service: &OptimizerService, run_id: &str, error: 
             .await
             .is_ok()
         {
-            return;
+            return Ok(());
         }
         // The degraded settlement itself failed. Fall through: a terminal event
         // the user can see beats a run stuck at `running` with no explanation.
     }
-    let _ = append_terminal(service, run_id, "failed", format!("{error:#}")).await;
+    append_terminal(service, run_id, "failed", format!("{error:#}")).await
 }
 
 /// The Trace V5 workstation for this run's seeds.
@@ -1567,22 +1590,20 @@ async fn run_eval_worker(
     )
     .await?;
     let terminal_run = service.get(run_id.clone()).await?;
-    if terminal_run.status != status {
-        evidence(
-            "terminal_progress_projection",
-            persist_progress(
-                &service,
-                &run_id,
-                spec,
-                &visual_id,
-                &workbench_id,
-                &records,
-                total,
-                &terminal_run.status,
-            ),
-        )
-        .await?;
-    }
+    evidence(
+        "terminal_progress_projection",
+        persist_progress(
+            &service,
+            &run_id,
+            spec,
+            &visual_id,
+            &workbench_id,
+            &records,
+            total,
+            &terminal_run.status,
+        ),
+    )
+    .await?;
     Ok(())
 }
 
@@ -4461,7 +4482,7 @@ max_total_rollouts = 4
         )
         .await
         .unwrap_err();
-        settle_worker_failure(&svc, &run.id, failure).await;
+        settle_worker_failure(&svc, &run.id, failure).await.unwrap();
 
         let settled = svc.get(run.id.clone()).await.unwrap();
         assert_eq!(settled.status, "degraded");

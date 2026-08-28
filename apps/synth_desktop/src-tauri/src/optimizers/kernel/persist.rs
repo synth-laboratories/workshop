@@ -68,6 +68,7 @@ pub fn upsert_projection(conn: &Connection, state: &RunKernelState) -> Result<()
     .context("upsert optimizer algorithm projection")?;
     upsert_run_columns(conn, state)?;
     replace_work_items(conn, &state.run_id, state.projection.work_items())?;
+    super::outbox::enqueue(conn, &state.run_id, state.projection_revision)?;
     Ok(())
 }
 

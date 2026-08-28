@@ -8,6 +8,7 @@ import { invoke as __TAURI_INVOKE } from "@tauri-apps/api/core";
 export const commands = {
 	/**  Instance diagnostics command included in the generated desktop boundary. */
 	desktopInstanceDiagnostics: () => __TAURI_INVOKE<InstanceDiagnostics>("desktop_instance_diagnostics"),
+	desktopInstancesList: () => typedError<RegisteredInstance[], string>(__TAURI_INVOKE("desktop_instances_list")),
 	desktopImagePreview: (path: string) => typedError<string, AppError_Serialize>(__TAURI_INVOKE("desktop_image_preview", { path })),
 	coreDiagnostics: () => typedError<CoreDiagnostics, AppError_Serialize>(__TAURI_INVOKE("core_diagnostics")),
 	/**
@@ -2485,6 +2486,17 @@ export type RecoveryNotice = {
 export type RecoveryPrompt = {
 	text: string,
 	clientMessageId?: string | null,
+};
+
+export type RegisteredInstance = {
+	name: string,
+	displayName: string,
+	releaseLine: string | null,
+	bundleId: string,
+	appBundle: string,
+	status: string,
+	current: boolean,
+	deepLink: string,
 };
 
 /**  What `remove` did, for the receipt. G7. */

@@ -2,7 +2,8 @@ import { useEffect, useMemo, useRef, useState, type ReactElement } from "react";
 import { type LandingState } from "../types/landing";
 import { ModelDownloadBar } from "./ModelDownloadBar";
 import { LocalModelResidency } from "./LocalModelResidency";
-import type { LagunaStatus } from "../bridge";
+import type { LagunaStatus, RegisteredInstance } from "../bridge";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import { type AccountViewModel } from "../runtime/accountView";
 import { ConversationContextMenu } from "./GeneralPreferencesSettings";
 import { PaneResizeHandle } from "./PaneResizeHandle";
@@ -270,6 +271,7 @@ export function Sidebar({
 	const [accountMenuOpen, setAccountMenuOpen] = useState(false);
 	const [allowanceOpen, setAllowanceOpen] = useState(false);
 	const [codexUsageOpen, setCodexUsageOpen] = useState(false);
+	const [instances, setInstances] = useState<RegisteredInstance[]>([]);
 	const accountMenuRef = useRef<HTMLDivElement>(null);
 	const accountTriggerRef = useRef<HTMLButtonElement>(null);
 	const codexRemaining = codexUsage ? Math.max(0, Math.round(100 - codexUsage.usedPercent)) : null;
@@ -282,6 +284,14 @@ export function Sidebar({
 	// never replace signed-in or signed-out Synth account copy here.
 	const accountTitle = account.title;
 	const accountSubtitle = account.subtitle;
+
+	useEffect(() => {
+		let active = true;
+		void window.synthDesktop.getInstances()
+			.then((next) => { if (active) setInstances(next); })
+			.catch(() => { if (active) setInstances([]); });
+		return () => { active = false; };
+	}, []);
 
 	useEffect(() => {
 		if (!accountMenuOpen) return;
@@ -738,6 +748,22 @@ export function Sidebar({
 							<button type="button" className="account-menu-row" onClick={() => { setAccountMenuOpen(false); onSettings(); }} data-testid="account-menu-settings" role="menuitem">
 								<IconSettings /><span>Settings</span><kbd>⌘,</kbd>
 							</button>
+							{instances.length > 1 ? instances.map((instance) => (
+								<button
+									key={`${instance.bundleId}:${instance.name}`}
+									type="button"
+									className="account-menu-row"
+									disabled={instance.current}
+									onClick={() => { setAccountMenuOpen(false); void openUrl(instance.deepLink); }}
+									data-testid={`instance-switch-${instance.name}`}
+									role="menuitem"
+									title={instance.current ? "Current Workshop instance" : `Open ${instance.displayName}`}
+								>
+									<span className="account-menu-glyph" aria-hidden>{instance.current ? "●" : "○"}</span>
+									<span>{instance.displayName}</span>
+									<span className="account-menu-value">{instance.status}</span>
+								</button>
+							)) : null}
 							{account.signedIn ? <button type="button" className="account-menu-row" onClick={() => { setAccountMenuOpen(false); void onSignOut?.(); }} data-testid="account-log-out" role="menuitem"><span className="account-menu-glyph" aria-hidden>↪</span><span>Log out</span></button> : null}
 						</div>
 					) : null}
