@@ -1,0 +1,25 @@
+{
+  "schemaVersion": "synth.visual-template.v1",
+  "id": "document.viewer.v1",
+  "title": "Workspace document",
+  "genre": "document",
+  "version": "1.0.0",
+  "description": "A workspace file in the right panel: markdown typeset by default with a View source toggle, source files syntax highlighted with a language badge and copy, clickable breadcrumbs, and tabs. Host-rendered — like diagram.mermaid.v1 and analysis.chart.v1 it has no shell.tsx, because the pane reads its bytes through a scoped host command rather than through a bound payload.",
+  "accent": "#F05F22",
+  "tags": [
+    "document",
+    "markdown",
+    "workspace"
+  ],
+  "inputs": [
+    {
+      "name": "document",
+      "description": "Absolute path inside a workspace_scope session root. The pane may read this path and no other; the host re-resolves it against the conversation's roots on every read.",
+      "accepts": [
+        "workspace_file"
+      ],
+      "required": true,
+      "schema": "synth.workspace-document.v1"
+    }
+  ]
+}
