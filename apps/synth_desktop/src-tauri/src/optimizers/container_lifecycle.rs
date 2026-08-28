@@ -658,6 +658,18 @@ async fn upsert_ready(
     base_url: &str,
     process: Option<(u32, String)>,
 ) -> Result<String> {
+    let info = crate::http::http_client_builder()
+        .timeout(Duration::from_secs(2))
+        .build()?
+        .get(format!("{}/info", base_url.trim_end_matches('/')))
+        .send()
+        .await
+        .context("container_identity_pending: query /info before registration")?
+        .error_for_status()
+        .context("container_identity_pending: /info was not successful")?
+        .json::<Value>()
+        .await
+        .context("container_identity_pending: /info response is not JSON")?;
     let spec_id = spec.id.clone();
     let family = spec.family.clone();
     let contract = spec.contract.clone();
@@ -725,6 +737,7 @@ async fn upsert_ready(
                     "protocol": contract,
                     "revision": source_revision,
                 },
+                "info": info,
                 "supervisedPid": retained_pid,
                 "processStartIdentity": retained_start,
             }))?;
