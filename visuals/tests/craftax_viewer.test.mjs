@@ -182,6 +182,34 @@ test("image replay uses only ordered frame URLs emitted by Containers", () => {
   assert.equal(view.frameUrl, "http://container/frames/1.png");
 });
 
+test("retained CAS media keeps a PNG replayable when its container URL is gone", () => {
+  const casDigest = "a".repeat(64);
+  const view = projectCraftaxViewer([
+    event("seed:0", "frame", 1, {
+      digest: "producer-label",
+      format: "png",
+      step: 0,
+      media: {
+        casDigest,
+        mediaType: "image/png",
+        width: 768,
+        height: 768,
+        producerDigest: "producer-label",
+      },
+    }),
+  ]);
+  assert.equal(view.frameUrl, null);
+  assert.equal(view.frameUnavailable, false);
+  assert.equal(view.frameEvents.length, 1);
+  assert.deepEqual(view.frameMedia, {
+    casDigest,
+    mediaType: "image/png",
+    width: 768,
+    height: 768,
+    producerDigest: "producer-label",
+  });
+});
+
 test("real ReAct policy partials expose metadata, data, plan, usage, and fallback", () => {
   const events = [
     event("seed:0", "span.policy.opened", 1, {

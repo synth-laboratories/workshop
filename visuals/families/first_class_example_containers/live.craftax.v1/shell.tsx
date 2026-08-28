@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Identifier } from "../../../chrome/Identifier.tsx";
 import { useLiveEvalStream } from "../../../chrome/useLiveEvalStream.ts";
 import { formatMissingNumber, formatMissingUsd } from "../../../runtime/liveStream.ts";
+import { mediaRefFrom } from "../../../runtime/mediaClient.ts";
 import type { LiveTemplateProps } from "../../../runtime/replayClient.ts";
 import { callForSequence, projectAgentTurns, reconcileCallSelection, type EvidenceField } from "../../../runtime/agentTranscript.ts";
 import type { LiveEvalEvent, VisualBinding } from "../../../runtime/types.ts";
@@ -334,6 +335,8 @@ export function Shell(props: ShellProps) {
   const [framePlaying, setFramePlaying] = useState(false);
   const [frameFps, setFrameFps] = useState(4);
   const [failedFrameUrl, setFailedFrameUrl] = useState<string | null>(null);
+  const [loadedFrame, setLoadedFrame] = useState<{ digest: string; dataUrl: string } | null>(null);
+  const [failedMediaDigest, setFailedMediaDigest] = useState<string | null>(null);
   const moments = useMemo(() => replayMomentIndexes(fullProjection.ordered), [fullProjection.ordered]);
   const environmentSteps = useMemo(() => environmentStepCount(fullProjection.ordered), [fullProjection.ordered]);
   const replayAvailability = useMemo(
@@ -392,15 +395,59 @@ export function Shell(props: ShellProps) {
     ? traceGroups
     : traceGroups.slice(-TRACE_GROUP_WINDOW);
   const hiddenGroupCount = traceGroups.length - visibleGroups.length;
-  const frameUrl = useMemo(() => {
+  const retainedFrameDigests = useMemo(
+    () => frameEvents.flatMap((event) => {
+      const reference = mediaRefFrom(event.payload);
+      return reference ? [reference.casDigest] : [];
+    }),
+    [frameEvents]
+  );
+  const selectedMediaDigest = viewer.frameMedia?.casDigest;
+  useEffect(() => {
+    if (!selectedMediaDigest || !props.media) {
+      setLoadedFrame(null);
+      return;
+    }
+    const cached = props.media.peek(selectedMediaDigest);
+    if (cached) {
+      setLoadedFrame({ digest: selectedMediaDigest, dataUrl: cached.dataUrl });
+      setFailedMediaDigest(null);
+      return;
+    }
+    let cancelled = false;
+    const selectedIndex = Math.max(0, retainedFrameDigests.indexOf(selectedMediaDigest));
+    void props.media.warm(retainedFrameDigests, selectedIndex).then((loaded) => {
+      if (cancelled) return;
+      if (!loaded) {
+        setFailedMediaDigest(selectedMediaDigest);
+        return;
+      }
+      setLoadedFrame({ digest: loaded.casDigest, dataUrl: loaded.dataUrl });
+      setFailedMediaDigest(null);
+    }).catch(() => {
+      if (!cancelled) setFailedMediaDigest(selectedMediaDigest);
+    });
+    return () => { cancelled = true; };
+  }, [props.media, retainedFrameDigests, selectedMediaDigest]);
+  const directFrameUrl = useMemo(() => {
     if (!viewer.frameUrl || viewer.frameUrl === failedFrameUrl) return undefined;
     try {
       // Frame paths are relative to the stream that emitted them.
-      return new URL(viewer.frameUrl, frameBaseUrl ?? window.location.href).toString();
+      // Without a declared stream base, a relative rollout URL is not an
+      // authority: resolving it against tauri://localhost only creates a 404.
+      if (!frameBaseUrl && !/^https?:|^data:/i.test(viewer.frameUrl)) return undefined;
+      return frameBaseUrl
+        ? new URL(viewer.frameUrl, frameBaseUrl).toString()
+        : new URL(viewer.frameUrl).toString();
     } catch {
       return undefined;
     }
   }, [viewer.frameUrl, failedFrameUrl, frameBaseUrl]);
+  const retainedFrameUrl = loadedFrame?.digest === selectedMediaDigest && failedMediaDigest !== selectedMediaDigest
+    ? loadedFrame.dataUrl
+    : undefined;
+  const frameUrl = retainedFrameUrl ?? directFrameUrl;
+  const retainedFrameLoading = Boolean(selectedMediaDigest && props.media && !retainedFrameUrl && failedMediaDigest !== selectedMediaDigest);
   const rewardSeries = rewardSignals.length
     ? rewardSignals.reduce<number[]>((series, event) => {
         series.push((series.at(-1) ?? 0) + (craftaxRewardValue(event.payload) ?? 0));
@@ -535,7 +582,7 @@ export function Shell(props: ShellProps) {
         <article className="cv-panel cv-game">
           <div className="cv-heading"><div><p className="cv-eyebrow">Selected rollout</p><h3>{selectedLane ? <Identifier value={selectedLane} max={30} style={{ font: "inherit" }} /> : "Waiting for events"}</h3></div><span>{lifecycleFailed ? "failed" : viewer.terminal ? "finished" : visualLive ? "live" : "waiting"}</span></div>
           <div className="cv-frame">
-            {frameUrl ? <img src={frameUrl} alt="Craftax gameplay frame" onError={() => setFailedFrameUrl(viewer.frameUrl ?? null)} /> : (failedFrameUrl || viewer.frameUnavailable) ? <p>Gameplay PNG is unavailable. Reopen uses the live spool digest — this view does not substitute ASCII for a missing image.</p> : viewer.ascii ? <pre aria-label="Craftax symbolic gameplay frame">{viewer.ascii}</pre> : <p>No renderable gameplay frame was emitted at this point in the trace.</p>}
+            {frameUrl ? <img src={frameUrl} alt="Craftax gameplay frame" onError={() => retainedFrameUrl ? setFailedMediaDigest(selectedMediaDigest ?? null) : setFailedFrameUrl(viewer.frameUrl ?? null)} /> : retainedFrameLoading ? <p>Loading retained gameplay PNG…</p> : failedMediaDigest === selectedMediaDigest ? <p>Retained gameplay PNG failed integrity-checked media loading. No symbolic frame is substituted.</p> : (failedFrameUrl || viewer.frameUnavailable) ? <p>Gameplay PNG is unavailable. No symbolic frame is substituted for missing image evidence.</p> : viewer.ascii ? <pre aria-label="Craftax symbolic gameplay frame">{viewer.ascii}</pre> : <p>No renderable gameplay frame was emitted at this point in the trace.</p>}
             <div className="cv-frame-caption"><span>step {selectedEnvironmentStep ?? "—"}</span><span>{timeLabel(latest, true)}</span></div>
           </div>
           <div className="cv-video-controls" data-visual-landmark="image-replay">

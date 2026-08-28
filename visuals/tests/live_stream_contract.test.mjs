@@ -297,6 +297,15 @@ test("live Craftax renders a subscribed optimizer journal immediately instead of
   assert.match(shell, /optimizerEvents \|\| declaredStreamCount > 0 \? undefined : stream\.events/);
 });
 
+test("live Craftax loads retained frame CAS through the host and never guesses a relative rollout URL", () => {
+  const shell = readFileSync(join(root, "families/first_class_example_containers/live.craftax.v1/shell.tsx"), "utf8");
+  assert.match(shell, /props\.media\.warm\(retainedFrameDigests, selectedIndex\)/);
+  assert.match(shell, /loadedFrame\?\.digest === selectedMediaDigest/);
+  assert.match(shell, /if \(!frameBaseUrl && !\/\^https\?:\|\^data:\/i\.test\(viewer\.frameUrl\)\) return undefined/);
+  assert.doesNotMatch(shell, /frameBaseUrl \?\? window\.location\.href/);
+  assert.match(shell, /Loading retained gameplay PNG/);
+});
+
 test("live Craftax keeps replay-driven call fallback out of passive state effects", () => {
   const shell = readFileSync(join(root, "families/first_class_example_containers/live.craftax.v1/shell.tsx"), "utf8");
   assert.match(shell, /const selectedCall = turns\.calls\.find/);

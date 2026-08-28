@@ -1,4 +1,5 @@
 import { projectLiveEval } from "../../../runtime/liveEvalReducer.ts";
+import { mediaRefFrom, type MediaRef } from "../../../runtime/mediaClient.ts";
 import type { LiveEvalEvent } from "../../../runtime/types.ts";
 
 type Json = Record<string, unknown>;
@@ -232,6 +233,7 @@ export type CraftaxViewerProjection = {
   reward?: number;
   ascii: string | null;
   frameUrl: string | null;
+  frameMedia: MediaRef | null;
   frameUnavailable: boolean;
   frameEvents: LiveEvalEvent[];
   achievements: string[];
@@ -568,12 +570,16 @@ export function projectCraftaxViewer(
   }, undefined);
   const frame = lastKind(visibleEvents, "frame");
   const frameEvents = laneEvents.filter((event) =>
-    event.kind === "frame" && typeof event.payload.url === "string" && event.payload.url.length > 0
+    event.kind === "frame" && (
+      (typeof event.payload.url === "string" && event.payload.url.length > 0)
+      || mediaRefFrom(event.payload) !== null
+    )
   );
   const observation = lastKind(visibleEvents, "observation") ?? lastKind(visibleEvents, "snapshot");
   const frameUrl = typeof frame?.payload.url === "string" && frame.payload.url.length > 0
     ? frame.payload.url
     : null;
+  const frameMedia = mediaRefFrom(frame?.payload);
   const frameFormat = typeof frame?.payload.format === "string" ? frame.payload.format.toLowerCase() : "";
   const pngAdvertised = frameFormat === "png"
     || (typeof frameUrl === "string" && (frameUrl.includes(".png") || frameUrl.startsWith("data:image/png")));
@@ -582,7 +588,7 @@ export function projectCraftaxViewer(
     : typeof frame?.payload.text === "string"
       ? frame.payload.text
       : observationGrid(observation);
-  const frameUnavailable = Boolean(frame) && pngAdvertised && !frameUrl;
+  const frameUnavailable = Boolean(frame) && pngAdvertised && !frameUrl && !frameMedia;
   const achievements = [...new Set(visibleEvents.flatMap((event) => {
     if (event.kind === "achievement_unlocked") {
       const payload = object(event.payload);
@@ -623,6 +629,7 @@ export function projectCraftaxViewer(
     reward: cumulativeReward ?? (shared.reward ?? undefined),
     ascii,
     frameUrl,
+    frameMedia,
     frameUnavailable,
     frameEvents,
     achievements,
