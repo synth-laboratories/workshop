@@ -576,12 +576,16 @@ fn policy_from_eval_recipe(
     }
     let (max_usd, max_trials) =
         paid_compute_bounds_for_candidate_count(recipe, candidate_count.max(1))?;
-    let mut policy = crate::secrets::SecretsUsePolicy::default();
-    policy.operations = vec!["chat.completions.create".into()];
-    policy.models = models;
-    policy.max_cost_usd = max_usd.max(0.01);
-    policy.max_calls = max_trials.saturating_mul(16).clamp(40, u32::MAX as u64) as u32;
-    Ok(policy)
+    Ok(super::admission::provider_use_policy_from_bounds(
+        vec!["chat.completions.create".into()],
+        models,
+        Vec::new(),
+        max_trials.saturating_mul(16).min(u32::MAX as u64) as u32,
+        (max_usd * 1_000_000.0).round().max(0.0) as u64,
+        crate::limits::SECRETS_CAPABILITY_TTL.as_secs(),
+        None,
+        None,
+    ))
 }
 
 /// Trusted route binding. `synth-optimizers` must copy `provider_routes.openai`
@@ -964,7 +968,7 @@ pub async fn start(
         local_path: None,
     };
     let (run, event) = service.create(create).await?;
-    let (cancel_tx, cancel_rx) = watch::channel(false);
+    let (cancel_tx, cancel_rx) = watch::channel(None);
     service
         .register_local_recipe(run_id.clone(), cancel_tx)
         .await;
@@ -1032,9 +1036,8 @@ async fn run_worker(
     recipe: Value,
     candidate_count: u64,
     local_mlx_token: Option<String>,
-    mut cancel: watch::Receiver<bool>,
+    mut cancel: super::CancelObserver,
 ) -> Result<()> {
-    let _revoke = crate::secrets::RevokeRunOnDrop(run_id.clone());
     let _ownership = service.hold_run_ownership(&run_id)?;
     append_status(&service, &run_id, "optimizer.run.started", "running").await?;
     fs::create_dir_all(&run_dir).context("create eval run directory")?;
@@ -1172,7 +1175,7 @@ async fn run_worker(
                 return Ok(());
             }
             changed = cancel.changed() => {
-                if changed.is_ok() && *cancel.borrow() && cancelled_at.is_none() {
+                if changed.is_ok() && cancel.borrow().is_some() && cancelled_at.is_none() {
                     // Ask first: the worker still has containers to stop, leases
                     // to release, and evidence to seal.
                     fs::write(run_dir.join("CANCEL"), chrono::Utc::now().to_rfc3339()).ok();
@@ -1746,14 +1749,7 @@ async fn append_terminal(
     {
         return Ok(());
     }
-    let _ = service.seal_credential_chain(run_id).await;
-    let event_type = match status {
-        "failed" => "optimizer.run.failed",
-        "cancelled" => "optimizer.run.cancelled",
-        _ => "optimizer.run.completed",
-    };
-    append_status(service, run_id, event_type, status).await?;
-    if status == "failed" {
+    let error = if status == "failed" {
         let stderr = run
             .summary
             .get("runDirectory")
@@ -1761,23 +1757,29 @@ async fn append_terminal(
             .map(PathBuf::from)
             .map(|dir| dir.join("worker.stderr.log"));
         let tail = stderr.as_ref().and_then(|path| tail_text(path));
-        service
-            .append_event_payloads(
-                run_id.to_string(),
-                vec![
-                    OptimizerEventDraft::new("optimizer.recipe.diagnostic", EVAL_ALGORITHM_ID)
-                        .idempotency_key("diagnostic")
-                        .level("error")
-                        .delta(map_of("status", json!("failed")))
-                        .error(json!({
-                            "message": tail.as_deref().unwrap_or(&detail),
-                            "stderrTail": tail,
-                            "logPath": stderr
-                        })),
-                ],
-            )
-            .await?;
-    }
+        Some(json!({
+            "message": tail.as_deref().unwrap_or(&detail),
+            "supervisorDetail": detail,
+            "stderrTail": tail,
+            "logPath": stderr
+        }))
+    } else {
+        None
+    };
+    let cause = match status {
+        "failed" => super::kernel::SettleCause::Failed {
+            detail: detail.clone(),
+        },
+        "cancelled" => super::kernel::SettleCause::Cancelled {
+            request: std::sync::Arc::new(super::kernel::CancellationRequest::new(
+                super::kernel::CancellationCause::ContainerRequested,
+                "eval:worker",
+                format!("run:{run_id}"),
+            )),
+        },
+        _ => super::kernel::SettleCause::Completed,
+    };
+    service.settle_run(run_id.to_string(), cause, error).await?;
     Ok(())
 }
 

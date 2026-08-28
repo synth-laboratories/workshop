@@ -3,7 +3,7 @@
 //! paths, environment variables, or credentials.
 
 use anyhow::{anyhow, bail, Context, Result};
-use serde_json::{json, Value};
+use serde_json::{json, Map, Value};
 use std::{
     fs,
     path::{Path, PathBuf},
@@ -181,7 +181,7 @@ async fn start_inner(
         return Ok((run, event));
     }
     append_status_event(service, &run_id, "optimizer.run.queued", "queued").await?;
-    let (cancel_tx, cancel_rx) = watch::channel(false);
+    let (cancel_tx, cancel_rx) = watch::channel(None);
     service
         .register_local_recipe(run_id.clone(), cancel_tx)
         .await;
@@ -200,7 +200,8 @@ async fn start_inner(
         )
         .await
         {
-            let _ = append_terminal_event(&worker_service, &run_id, true, error.to_string()).await;
+            let _ = append_terminal_event(&worker_service, &run_id, true, format!("{error:#}"))
+                .await;
         }
         worker_manager.release_gepa_recipe(&run_id).await;
         worker_service.unregister_local_recipe(&run_id).await;
@@ -278,7 +279,7 @@ pub(super) async fn start_prepared(
     }
     let manager = service.manager().clone();
     append_status_event(service, run_id, "optimizer.run.queued", "queued").await?;
-    let (cancel_tx, cancel_rx) = watch::channel(false);
+    let (cancel_tx, cancel_rx) = watch::channel(None);
     service
         .register_local_recipe(run_id.to_string(), cancel_tx)
         .await;
@@ -297,8 +298,13 @@ pub(super) async fn start_prepared(
         )
         .await
         {
-            let _ = append_terminal_event(&worker_service, &worker_run_id, true, error.to_string())
-                .await;
+            let _ = append_terminal_event(
+                &worker_service,
+                &worker_run_id,
+                true,
+                format!("{error:#}"),
+            )
+            .await;
         }
         worker_manager.release_gepa_recipe(&worker_run_id).await;
         worker_service.unregister_local_recipe(&worker_run_id).await;
@@ -479,9 +485,8 @@ async fn run_recipe_worker(
     config_path: PathBuf,
     run_dir: PathBuf,
     manager: Arc<super::OptimizerManager>,
-    mut cancel_rx: watch::Receiver<bool>,
+    mut cancel_rx: super::CancelObserver,
 ) -> Result<()> {
-    let _revoke = crate::secrets::RevokeRunOnDrop(run_id.clone());
     let _ownership = service.hold_run_ownership(&run_id)?;
     append_status_event(&service, &run_id, "optimizer.run.started", "running").await?;
     let provider = fs::read_to_string(&config_path)
@@ -584,10 +589,14 @@ async fn run_recipe_worker(
                 let final_ingest =
                     ingest_available(&service, &manager, &run_id, &mut upstream_cursor).await;
                 if !status.success() {
+                    // A producer that never indexed this run emits no event
+                    // stream by definition; that expected absence must not
+                    // bury the process exit that actually ended the run.
                     let ingest_detail = final_ingest
                         .as_ref()
                         .err()
-                        .map(|error| format!("; final event ingestion also failed: {error:#}"))
+                        .filter(|error| !super::OptimizerManager::optimizer_run_not_indexed(error))
+                        .map(|error| format!("; final event ingestion also failed unexpectedly: {error:#}"))
                         .unwrap_or_default();
                     bail!(
                         "GEPA recipe {}{ingest_detail}; stdout={} stderr={}",
@@ -604,12 +613,23 @@ async fn run_recipe_worker(
                 return Ok(());
             }
             changed = cancel_rx.changed() => {
-                if changed.is_ok() && *cancel_rx.borrow() {
+                if changed.is_ok() && cancel_rx.borrow().is_some() {
                     manager.terminate_gepa_recipe(&run_id).await;
                     if child.try_wait()?.is_none() {
                         child.kill().await.context("cancel product-owned GEPA process")?;
                     }
-                    append_status_event(&service, &run_id, "optimizer.run.cancelled", "cancelled").await?;
+                    let request = cancel_rx
+                        .borrow()
+                        .as_ref()
+                        .cloned()
+                        .expect("cancel observer changed with a request");
+                    service
+                        .settle_run(
+                            run_id.clone(),
+                            super::kernel::SettleCause::Cancelled { request },
+                            None,
+                        )
+                        .await?;
                     return Ok(());
                 }
             }
@@ -676,23 +696,23 @@ fn resolve_provider_workload(
 }
 
 fn provider_use_policy(config_path: Option<&Path>) -> Result<crate::secrets::SecretsUsePolicy> {
-    let mut policy = crate::secrets::SecretsUsePolicy::default();
-    let Some(path) = config_path else {
-        return Ok(policy);
-    };
+    let path = config_path.context(
+        "run-scoped provider lease requires the admitted run-owned recipe configuration",
+    )?;
     let config = fs::read_to_string(path)
         .with_context(|| format!("read provider policy from {}", path.display()))?
         .parse::<toml::Value>()?;
     let proposer = config.get("proposer").and_then(toml::Value::as_table);
+    let mut reasoning_efforts = Vec::new();
     if let Some(effort) = proposer
         .and_then(|section| section.get("reasoning_effort"))
         .and_then(toml::Value::as_str)
         .map(str::trim)
         .filter(|value| !value.is_empty())
     {
-        policy.reasoning_efforts = vec![effort.to_string()];
+        reasoning_efforts.push(effort.to_string());
     }
-    policy.models = [
+    let mut models: Vec<String> = [
         config.get("model").and_then(toml::Value::as_str),
         proposer
             .and_then(|section| section.get("model"))
@@ -709,37 +729,42 @@ fn provider_use_policy(config_path: Option<&Path>) -> Result<crate::secrets::Sec
     .filter(|value| !value.is_empty())
     .map(str::to_string)
     .collect();
-    policy.models.sort();
-    policy.models.dedup();
+    models.sort();
+    models.dedup();
     let rollout_limit = config
         .get("bounds")
         .and_then(toml::Value::as_table)
         .and_then(|section| section.get("max_total_rollouts"))
         .and_then(toml::Value::as_integer)
         .and_then(|value| u64::try_from(value).ok())
-        .unwrap_or(0);
+        .filter(|value| *value > 0)
+        .context("run-owned recipe is missing bounds.max_total_rollouts")?;
+    let max_cost_usd = config
+        .get("bounds")
+        .and_then(toml::Value::as_table)
+        .and_then(|section| section.get("max_cost_usd"))
+        .and_then(|value| value.as_float().or_else(|| value.as_integer().map(|v| v as f64)))
+        .filter(|value| value.is_finite() && *value > 0.0)
+        .context("run-owned recipe is missing bounds.max_cost_usd")?;
     let rollout_output_limit = config
         .get("policy")
         .and_then(toml::Value::as_table)
         .and_then(|section| section.get("max_tokens"))
         .and_then(toml::Value::as_integer)
         .and_then(|value| u64::try_from(value).ok())
-        .unwrap_or(0);
-    if rollout_limit > 0 && rollout_output_limit > 0 {
-        // A recipe capability must cover every provider call admitted by the
-        // run's own rollout bound. The dollar ceiling remains authoritative;
-        // these token/call ceilings prevent the generic interactive defaults
-        // from terminating a valid bounded optimizer before held-out evidence.
-        let declared_output_tokens = rollout_limit.saturating_mul(rollout_output_limit);
-        policy.max_output_tokens = policy.max_output_tokens.max(declared_output_tokens);
-        policy.max_input_tokens = policy
-            .max_input_tokens
-            .max(declared_output_tokens.saturating_mul(4));
-        policy.max_calls = policy
-            .max_calls
-            .max(rollout_limit.saturating_mul(16).min(u64::from(u32::MAX)) as u32);
-    }
-    Ok(policy)
+        .filter(|value| *value > 0);
+    let declared_output_tokens = rollout_output_limit
+        .map(|limit| rollout_limit.saturating_mul(limit));
+    Ok(super::admission::provider_use_policy_from_bounds(
+        vec!["chat.completions.create".into()],
+        models,
+        reasoning_efforts,
+        rollout_limit.saturating_mul(16).min(u64::from(u32::MAX)) as u32,
+        (max_cost_usd * 1_000_000.0).round() as u64,
+        crate::limits::SECRETS_CAPABILITY_TTL.as_secs(),
+        declared_output_tokens.map(|tokens| tokens.saturating_mul(4)),
+        declared_output_tokens,
+    ))
 }
 
 fn recipe_id_for_lease(config_path: &Path) -> &str {
@@ -1195,24 +1220,55 @@ async fn append_terminal_event(
     detail: String,
 ) -> Result<()> {
     let run = service.get(run_id.to_string()).await?;
-    if matches!(run.status.as_str(), "completed" | "failed" | "cancelled") {
+    if service
+        .terminal_manifest(run_id.to_string())
+        .await?
+        .is_some()
+    {
         return Ok(());
     }
-    let status = if failed { "failed" } else { "completed" };
-    append_status_event(
-        service,
-        run_id,
-        if failed {
-            "optimizer.run.failed"
-        } else {
-            "optimizer.run.completed"
-        },
-        status,
-    )
-    .await?;
-    if failed {
-        append_diagnostic_event(service, run_id, detail).await?;
-    }
+    let error = if failed {
+        let run_directory = run
+            .summary
+            .get("runDirectory")
+            .and_then(serde_json::Value::as_str)
+            .map(PathBuf::from);
+        let stdout_path = run_directory
+            .as_ref()
+            .map(|directory| directory.join("workshop.stdout.log"));
+        let stderr_path = run_directory
+            .as_ref()
+            .map(|directory| directory.join("workshop.stderr.log"));
+        let stdout_tail = stdout_path
+            .as_ref()
+            .and_then(|path| bounded_log_tail(path, 4_000).ok())
+            .filter(|text| !text.trim().is_empty());
+        let stderr_tail = stderr_path
+            .as_ref()
+            .and_then(|path| bounded_log_tail(path, 4_000).ok())
+            .filter(|text| !text.trim().is_empty());
+        Some(json!({
+            "message": detail.trim().chars().take(1_000).collect::<String>(),
+            "supervisorDetail": detail.chars().take(4_000).collect::<String>(),
+            "stdoutTail": stdout_tail,
+            "stderrTail": stderr_tail,
+            "logPath": stderr_path,
+            "stdoutLogPath": stdout_path,
+            "stderrLogPath": stderr_path,
+        }))
+    } else {
+        None
+    };
+    let cause = if failed {
+        super::kernel::SettleCause::Failed {
+            detail: detail.clone(),
+        }
+    } else {
+        super::kernel::SettleCause::Completed
+    };
+    service
+        .settle_run(run_id.to_string(), cause, error)
+        .await?;
     Ok(())
 }
 
@@ -1247,18 +1303,35 @@ async fn append_diagnostic_event(
     // it: stderr may contain only a warning, which previously hid the actual
     // failure and produced a polished-looking lie in the run UI.
     let display_message = detail.trim();
-    let mut draft = OptimizerEventDraft::new("optimizer.recipe.diagnostic", "gepa")
-        .level("error")
-        .error(json!({
-            "message": display_message.chars().take(1_000).collect::<String>(),
-            "supervisorDetail": detail.chars().take(4_000).collect::<String>(),
-            "stdoutTail": stdout_tail,
-            "stderrTail": stderr_tail,
-            "logPath": stderr_path,
-            "stdoutLogPath": stdout_path,
-            "stderrLogPath": stderr_path,
-        }));
-    draft.delta.insert("status".into(), json!("failed"));
+    let diagnostic = json!({
+        "message": display_message.chars().take(1_000).collect::<String>(),
+        "supervisorDetail": detail.chars().take(4_000).collect::<String>(),
+        "stdoutTail": stdout_tail,
+        "stderrTail": stderr_tail,
+        "logPath": stderr_path,
+        "stdoutLogPath": stdout_path,
+        "stderrLogPath": stderr_path,
+    });
+    let mut draft = if let Some(manifest) = service.terminal_manifest(run_id.to_string()).await? {
+        let terminal_sequence = manifest
+            .get("terminalCursor")
+            .and_then(Value::as_u64)
+            .context("sealed terminal manifest is missing terminalCursor")?;
+        OptimizerEventDraft::new("optimizer.evidence.amended", "gepa")
+            .idempotency_key(format!("diagnostic-amendment:{terminal_sequence}"))
+            .level("error")
+            .delta(Map::from_iter([
+                ("terminalSequence".into(), json!(terminal_sequence)),
+                ("diagnostic".into(), diagnostic),
+            ]))
+    } else {
+        OptimizerEventDraft::new("optimizer.recipe.diagnostic", "gepa")
+            .level("error")
+            .error(diagnostic)
+    };
+    if draft.event_type != "optimizer.evidence.amended" {
+        draft.delta.insert("status".into(), json!("failed"));
+    }
     service
         .append_event_payloads(run_id.to_string(), vec![draft])
         .await?;
@@ -1344,12 +1417,17 @@ mod tests {
             r#"
 model = "openai/gpt-5.6-luna"
 
+[bounds]
+max_total_rollouts = 6
+max_cost_usd = 0.75
+
 [proposer]
 model = "openai/gpt-5.6-luna"
 reasoning_effort = "low"
 
 [policy]
 model = "openai/gpt-5.6-luna"
+max_tokens = 16000
 "#,
         )
         .unwrap();
@@ -1367,6 +1445,7 @@ model = "openai/gpt-5.6-luna"
             r#"
 [bounds]
 max_total_rollouts = 6
+max_cost_usd = 0.90
 
 [policy]
 max_tokens = 16000
@@ -1377,7 +1456,7 @@ max_tokens = 16000
         assert_eq!(policy.max_output_tokens, 96_000);
         assert_eq!(policy.max_input_tokens, 384_000);
         assert_eq!(policy.max_calls, 96);
-        assert_eq!(policy.max_cost_usd, 0.60);
+        assert_eq!(policy.max_cost_usd, 0.90);
     }
 
     #[test]

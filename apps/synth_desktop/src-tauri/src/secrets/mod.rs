@@ -1097,7 +1097,14 @@ impl SecretsService {
             .transaction(|conn| capability::revoke(conn, &self.capabilities, capability_id, actor))
     }
 
-    pub fn revoke_run(&self, run_id: &str) -> Result<()> {
+    pub fn capability_run_id(&self, capability_id: &str) -> Result<Option<String>> {
+        self.db
+            .with_conn(|conn| capability::run_id_for_capability(conn, capability_id))
+    }
+
+    /// Revoke every live capability for `run_id`, returning the revoked
+    /// capability ids so the caller can journal them.
+    pub fn revoke_run(&self, run_id: &str) -> Result<Vec<String>> {
         self.db
             .transaction(|conn| capability::revoke_run(conn, &self.capabilities, run_id))
     }
@@ -1448,13 +1455,34 @@ pub fn secrets_capabilities_list(
 
 #[tauri::command]
 #[specta::specta]
-pub fn secrets_revoke_capability(
+pub async fn secrets_revoke_capability(
     state: State<'_, Arc<SecretsService>>,
+    core: State<'_, Arc<crate::core_runtime::CoreRuntime>>,
     capability_id: String,
 ) -> Result<(), AppError> {
-    service(&state)?
+    let secrets = service(&state)?;
+    let run_id = secrets
+        .capability_run_id(&capability_id)
+        .map_err(AppError::from)?;
+    secrets
         .revoke_capability(&capability_id, "settings")
-        .map_err(AppError::from)
+        .map_err(AppError::from)?;
+    if let Some(run_id) = run_id {
+        let request = crate::optimizers::kernel::CancellationRequest::new(
+            crate::optimizers::kernel::CancellationCause::CredentialRevoked,
+            "user:settings",
+            format!("run:{run_id}"),
+        );
+        // The reverse edge is best-effort only for already-terminal runs: a
+        // manual capability revocation must otherwise become the typed cause
+        // of cancellation instead of a cascade of anonymous 401s.
+        match core.optimizers().cancel(run_id, request).await {
+            Ok(_) => {}
+            Err(error) if error.to_string().contains("sealed") => {}
+            Err(error) => return Err(AppError::from(error)),
+        }
+    }
+    Ok(())
 }
 
 #[derive(Clone, Debug, Deserialize, specta::Type)]

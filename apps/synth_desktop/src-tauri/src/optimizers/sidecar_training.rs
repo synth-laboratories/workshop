@@ -678,7 +678,7 @@ pub async fn spawn_watch_worker(
     run_id: String,
     cursor: u64,
 ) {
-    let (cancel_tx, cancel_rx) = watch::channel(false);
+    let (cancel_tx, cancel_rx) = watch::channel(None);
     if !service
         .try_register_local_recipe(run_id.clone(), cancel_tx)
         .await
@@ -701,13 +701,13 @@ async fn watch_job(
     client: SidecarTrainingClient,
     run_id: String,
     mut cursor: u64,
-    mut cancel: watch::Receiver<bool>,
+    mut cancel: super::CancelObserver,
 ) -> Result<()> {
     let mut errors = 0;
     let mut gap_errors = 0;
     let mut cancel_sent = false;
     loop {
-        if *cancel.borrow() && !cancel_sent {
+        if cancel.borrow().is_some() && !cancel_sent {
             client
                 .cancel(&run_id)
                 .await
@@ -778,7 +778,13 @@ async fn watch_job(
                     append_paired_sft_evaluation(&service, &run_id, &job).await?;
                 }
                 persist_handoff(&service, &client, &run_id).await?;
-                append_status(&service, &run_id, "optimizer.run.completed", "completed").await?;
+                service
+                    .settle_run(
+                        run_id.clone(),
+                        super::kernel::SettleCause::Completed,
+                        None,
+                    )
+                    .await?;
                 service.open_visual(run_id.clone()).await?;
                 return Ok(());
             }
@@ -800,7 +806,19 @@ async fn watch_job(
                 return Err(anyhow!("training job failed: {detail}"));
             }
             "cancelled" => {
-                append_status(&service, &run_id, "optimizer.run.cancelled", "cancelled").await?;
+                service
+                    .settle_run(
+                        run_id.clone(),
+                        super::kernel::SettleCause::Cancelled {
+                            request: Arc::new(super::kernel::CancellationRequest::new(
+                                super::kernel::CancellationCause::ContainerRequested,
+                                "sidecar-training:remote",
+                                format!("run:{run_id}"),
+                            )),
+                        },
+                        None,
+                    )
+                    .await?;
                 return Ok(());
             }
             _ => {}
@@ -900,14 +918,13 @@ pub async fn reconcile_persisted_sft(
         return Ok(false);
     };
     service
-        .append_event_payloads(
-            run_id.into(),
-            vec![
-                comparison,
-                OptimizerEventDraft::new("optimizer.run.completed", "sft")
-                    .delta(Map::from_iter([("status".into(), json!("completed"))]))
-                    .idempotency_key("local-sft:persisted-terminal-reconciliation"),
-            ],
+        .append_event_payloads(run_id.into(), vec![comparison])
+        .await?;
+    service
+        .settle_run(
+            run_id.to_string(),
+            super::kernel::SettleCause::Completed,
+            None,
         )
         .await?;
     Ok(true)
@@ -1189,40 +1206,14 @@ async fn persist_cursor(service: &OptimizerService, run_id: &str, cursor: u64) -
     Ok(())
 }
 
-async fn append_status(
-    service: &OptimizerService,
-    run_id: &str,
-    kind: &str,
-    status: &str,
-) -> Result<()> {
-    let algorithm = service.get(run_id.into()).await?.algorithm_id;
-    service
-        .append_event_payloads(
-            run_id.into(),
-            vec![OptimizerEventDraft::new(kind, algorithm)
-                .idempotency_key(format!("sidecar-training:{kind}"))
-                .delta(Map::from_iter([("status".into(), json!(status))]))
-                .raw(json!({"source":"sidecar-training"}))],
-        )
-        .await?;
-    Ok(())
-}
-
 async fn append_failure(service: &OptimizerService, run_id: &str, reason: &str) -> Result<()> {
-    let algorithm = service
-        .get(run_id.into())
-        .await
-        .map(|run| run.algorithm_id)
-        .unwrap_or_else(|_| "sft".into());
     service
-        .append_event_payloads(
-            run_id.into(),
-            vec![OptimizerEventDraft::new("optimizer.run.failed", algorithm)
-                .idempotency_key("sidecar-training:optimizer.run.failed")
-                .level("error")
-                .delta(Map::from_iter([("status".into(), json!("failed"))]))
-                .error(json!({"message": reason}))
-                .raw(json!({"source":"sidecar-training"}))],
+        .settle_run(
+            run_id.to_string(),
+            super::kernel::SettleCause::Failed {
+                detail: reason.to_string(),
+            },
+            Some(json!({"message": reason, "source": "sidecar-training"})),
         )
         .await?;
     Ok(())

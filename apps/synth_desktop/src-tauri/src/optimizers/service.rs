@@ -20,7 +20,7 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::{broadcast, watch, Mutex};
+use tokio::sync::{broadcast, Mutex};
 use uuid::Uuid;
 
 #[cfg(test)]
@@ -171,6 +171,49 @@ fn recipe_blocker(
 /// [`OptimizerRunStatus`] allows. `next` is passed in rather than derived so
 /// this and [`OptimizerService::command`], which performs the write, cannot
 /// disagree about what the command means.
+/// The terminal kind a sealed manifest records, across both manifest schemas.
+/// Legacy v1 statuses that widened `failed` (interrupted, infrastructure_lost,
+/// failed_evidence) read as failed; cap_reached reads as degraded.
+fn manifest_terminal_kind(manifest: &Value) -> super::kernel::TerminalKind {
+    use super::kernel::TerminalKind;
+    let status = manifest
+        .pointer("/terminal/kind")
+        .and_then(Value::as_str)
+        .or_else(|| manifest.get("terminalStatus").and_then(Value::as_str))
+        .unwrap_or("failed");
+    match status {
+        "completed" => TerminalKind::Completed,
+        "cancelled" => TerminalKind::Cancelled,
+        "degraded" | "cap_reached" => TerminalKind::Degraded,
+        _ => TerminalKind::Failed,
+    }
+}
+
+fn credential_revocation_amendment(
+    run: &OptimizerRunRecord,
+    terminal_sequence: u64,
+    capability_ids: Vec<String>,
+    cancellation: Option<&std::sync::Arc<super::kernel::CancellationRequest>>,
+) -> OptimizerEventDraft {
+    OptimizerEventDraft::new("optimizer.evidence.amended", &run.algorithm_id)
+        .idempotency_key(format!("credential-revoked:{terminal_sequence}"))
+        .level("info")
+        .delta(Map::from_iter([
+            ("terminalSequence".into(), json!(terminal_sequence)),
+            (
+                "credentialRevocation".into(),
+                json!({
+                    "kind": "credential.capability.revoked",
+                    "capabilityIds": capability_ids,
+                    "cause": "run_terminal",
+                    "cancellationRequestId": cancellation
+                        .map(|request| request.request_id.clone()),
+                }),
+            ),
+        ]))
+        .raw(json!({ "source": "settle_run" }))
+}
+
 fn validate_control(
     run: &OptimizerRunRecord,
     command: &str,
@@ -276,7 +319,7 @@ pub struct OptimizerService {
     #[allow(dead_code)]
     journal: EventJournal,
     visuals: VisualRegistry,
-    local_recipes: Arc<Mutex<HashMap<String, watch::Sender<bool>>>>,
+    local_recipes: Arc<Mutex<HashMap<String, super::CancelSignal>>>,
     events_tx: broadcast::Sender<AppEvent>,
     manager: Arc<super::OptimizerManager>,
     /// Attached once by the composition root. Optimizer lifecycle failures are
@@ -801,7 +844,7 @@ impl OptimizerService {
         results::from_kernel(&run, &state, settled, manifest.as_ref())
     }
 
-    pub(super) async fn register_local_recipe(&self, run_id: String, cancel: watch::Sender<bool>) {
+    pub(super) async fn register_local_recipe(&self, run_id: String, cancel: super::CancelSignal) {
         self.local_recipes.lock().await.insert(run_id, cancel);
     }
 
@@ -814,7 +857,7 @@ impl OptimizerService {
     pub(super) async fn try_register_local_recipe(
         &self,
         run_id: String,
-        cancel: watch::Sender<bool>,
+        cancel: super::CancelSignal,
     ) -> bool {
         let mut recipes = self.local_recipes.lock().await;
         if recipes.contains_key(&run_id) {
@@ -915,7 +958,22 @@ impl OptimizerService {
         let db = self.db.clone();
         db.run_transaction(move |conn| {
             let mut run = load_run(conn, &optimizer_run_id)?;
+            let eval_status_before = run.summary.get("evalStatus").cloned();
+            let progress_before = run.summary.get("progress").cloned();
             patch(&mut run)?;
+            // Once a terminal manifest exists, the summary progress lane is
+            // frozen by the sealing transaction. A racing worker projection
+            // must not rewrite it back to a pre-terminal reading — this was
+            // how `evalStatus=running` survived forever beside a sealed run.
+            let progress_changed = run.summary.get("evalStatus") != eval_status_before.as_ref()
+                || run.summary.get("progress") != progress_before.as_ref();
+            if progress_changed && terminal::load(conn, &run.id)?.is_some() {
+                anyhow::bail!(
+                    "optimizer run {} has a sealed terminal manifest; refusing a post-terminal \
+                     summary progress rewrite",
+                    run.id
+                );
+            }
             preserve_durable_authority(conn, &mut run)?;
             upsert_run(conn, &run)?;
             Ok(run)
@@ -1566,6 +1624,181 @@ impl OptimizerService {
     /// run with no evidence — is the exact defect this lane exists to remove.
     /// The run becomes terminal in the `degraded` state, which is retryable
     /// without re-running paid compute.
+    /// Settle a run through one typed command.
+    ///
+    /// The terminal event is appended through the standard transactional
+    /// append, so sealing, projection persistence, and the summary rewrite
+    /// all ride the same commit. A second settlement with the same terminal
+    /// kind is idempotent success; a different kind is a typed refusal. After
+    /// the terminal fact is durable, the run's provider capabilities are
+    /// revoked and the revocation is journaled on the amendment lane —
+    /// consequence of settlement, never its cause.
+    pub(super) async fn settle_run(
+        &self,
+        optimizer_run_id: String,
+        cause: super::kernel::SettleCause,
+        error: Option<Value>,
+    ) -> Result<OptimizerRunRecord> {
+        if let Some(manifest) = self.terminal_manifest(optimizer_run_id.clone()).await? {
+            cause
+                .accept_sealed(manifest_terminal_kind(&manifest), &optimizer_run_id)
+                .map_err(|error| anyhow!("{error}"))?;
+            // A compatible concurrent settlement still participates in the
+            // post-terminal cleanup. Revocation is idempotent, and this makes
+            // a crash between seal and cleanup repairable by retrying the
+            // settlement command.
+            self.revoke_credentials_post_terminal(&optimizer_run_id, cause.cancellation())
+                .await;
+            return self.get(optimizer_run_id).await;
+        }
+        let run = self.get(optimizer_run_id.clone()).await?;
+        if let Some(request) = cause.cancellation() {
+            self.record_cancellation_request(&optimizer_run_id, request)
+                .await?;
+            let request_event = OptimizerEventDraft::new(
+                "optimizer.run.cancel.requested",
+                &run.algorithm_id,
+            )
+            .idempotency_key(format!("cancel-request:{}", request.request_id))
+            .delta(Map::from_iter([(
+                "cancellation".into(),
+                json!(request.as_ref()),
+            )]))
+            .raw(json!({ "source": "settle_run" }));
+            self.append_event_payloads(optimizer_run_id.clone(), vec![request_event])
+                .await?;
+        }
+        // The error rides the terminal event itself, so `error_json` and the
+        // manifest's `error` are written by the same transaction. Evidence
+        // degradation also remains in the historical delta shape consumed by
+        // reducers; it is duplicated deliberately, not written later.
+        let error_payload = error.or_else(|| {
+            cause
+                .detail()
+                .filter(|detail| !detail.trim().is_empty())
+                .map(|detail| json!({ "message": detail }))
+        });
+        let mut delta = Map::from_iter([("status".into(), json!(cause.status()))]);
+        if let Some(request) = cause.cancellation() {
+            delta.insert("cancellation".into(), json!(request.as_ref()));
+        }
+        if cause.kind() == super::kernel::TerminalKind::Degraded {
+            if let Some(degradation) = error_payload.as_ref() {
+                delta.insert("degradation".into(), degradation.clone());
+            }
+        }
+        let mut draft = OptimizerEventDraft::new(cause.event_type(), &run.algorithm_id)
+            .idempotency_key(format!("settle:{}", cause.status()))
+            .delta(delta)
+            .raw(json!({ "source": "settle_run" }));
+        draft = match cause.kind() {
+            super::kernel::TerminalKind::Failed => draft.level("error"),
+            super::kernel::TerminalKind::Degraded => draft.level("warn"),
+            _ => draft,
+        };
+        if let Some(error_payload) = error_payload {
+            draft = draft.error(error_payload);
+        }
+        let run = match self
+            .append_event_payloads(optimizer_run_id.clone(), vec![draft])
+            .await
+        {
+            Ok((run, _)) => run,
+            Err(append_error) => {
+                // A concurrent writer may have sealed between the check and
+                // the append. Its seal wins when compatible; otherwise the
+                // refusal stands.
+                let Some(manifest) = self.terminal_manifest(optimizer_run_id.clone()).await?
+                else {
+                    return Err(append_error);
+                };
+                cause
+                    .accept_sealed(manifest_terminal_kind(&manifest), &optimizer_run_id)
+                    .map_err(|error| anyhow!("{error}"))?;
+                self.get(optimizer_run_id.clone()).await?
+            }
+        };
+        self.revoke_credentials_post_terminal(&optimizer_run_id, cause.cancellation())
+            .await;
+        // Return the post-cleanup row: the revocation amendment advances the
+        // final cursor and the credential chain is now sealed in the summary.
+        self.get(optimizer_run_id).await.or(Ok(run))
+    }
+
+    /// F3: capability revocation lives inside settlement. Runs only after the
+    /// terminal event is durable; the revocation is recorded on the amendment
+    /// lane linked to the terminal sequence, so the journal proves revocation
+    /// was a consequence of the run ending. Best-effort: a missing vault or a
+    /// failed amendment append never un-settles a settled run.
+    async fn revoke_credentials_post_terminal(
+        &self,
+        optimizer_run_id: &str,
+        cancellation: Option<&std::sync::Arc<super::kernel::CancellationRequest>>,
+    ) {
+        let Some(secrets) = crate::secrets::live() else {
+            return;
+        };
+        let capability_ids = match secrets.revoke_run(optimizer_run_id) {
+            Ok(ids) => ids,
+            Err(error) => {
+                crate::platform::logging::report(
+                    "optimizers",
+                    "eprintln",
+                    format!("revoke credentials for settled run {optimizer_run_id}: {error:#}"),
+                );
+                return;
+            }
+        };
+        if capability_ids.is_empty() {
+            // A retry after revocation still has to seal/persist the chain;
+            // there may be no newly-revoked ids on this attempt.
+            if let Err(error) = self.seal_credential_chain(optimizer_run_id).await {
+                crate::platform::logging::report(
+                    "optimizers",
+                    "eprintln",
+                    format!("seal credential chain for settled run {optimizer_run_id}: {error:#}"),
+                );
+            }
+            return;
+        }
+        let terminal_sequence = match self.terminal_manifest(optimizer_run_id.to_string()).await {
+            Ok(Some(manifest)) => manifest.get("terminalCursor").and_then(Value::as_u64),
+            _ => None,
+        };
+        let Some(terminal_sequence) = terminal_sequence else {
+            return;
+        };
+        let run = match self.get(optimizer_run_id.to_string()).await {
+            Ok(run) => run,
+            Err(_) => return,
+        };
+        let draft = credential_revocation_amendment(
+            &run,
+            terminal_sequence,
+            capability_ids,
+            cancellation,
+        );
+        if let Err(error) = self
+            .append_event_payloads(optimizer_run_id.to_string(), vec![draft])
+            .await
+        {
+            crate::platform::logging::report(
+                "optimizers",
+                "eprintln",
+                format!(
+                    "journal credential revocation for settled run {optimizer_run_id}: {error:#}"
+                ),
+            );
+        }
+        if let Err(error) = self.seal_credential_chain(optimizer_run_id).await {
+            crate::platform::logging::report(
+                "optimizers",
+                "eprintln",
+                format!("seal credential chain for settled run {optimizer_run_id}: {error:#}"),
+            );
+        }
+    }
+
     pub(super) async fn settle_evidence_degraded(
         &self,
         optimizer_run_id: String,
@@ -1605,15 +1838,15 @@ impl OptimizerService {
                 ]))
                 .raw(json!({ "source": "core_runtime" }))
         } else {
-            OptimizerEventDraft::new("optimizer.run.degraded", &run.algorithm_id)
-                .idempotency_key(format!("evidence-degraded:{stage}"))
-                .level("warn")
-                .delta(Map::from_iter([(
-                    "degradation".into(),
-                    degradation.clone(),
-                )]))
-                .error(degradation)
-                .raw(json!({ "source": "core_runtime" }))
+            return self
+                .settle_run(
+                    optimizer_run_id,
+                    super::kernel::SettleCause::Degraded {
+                        detail: reason.clone(),
+                    },
+                    Some(degradation),
+                )
+                .await;
         };
         let (run, _) = self
             .append_event_payloads(optimizer_run_id, vec![draft])
@@ -1699,37 +1932,114 @@ impl OptimizerService {
         .await
     }
 
-    pub async fn cancel(&self, id: String) -> Result<(OptimizerRunRecord, Option<AppEvent>)> {
+    pub async fn cancel(
+        &self,
+        id: String,
+        request: super::kernel::CancellationRequest,
+    ) -> Result<(OptimizerRunRecord, Option<AppEvent>)> {
+        let request = std::sync::Arc::new(request);
+        let run = self.get(id.clone()).await?;
+        if run.source == "cloud" {
+            self.record_cancellation_request(&id, &request).await?;
+            if let Ok(client) = super::cloud::CloudOptimizerClient::from_config() {
+                let _ = client.cancel_run(&id).await;
+            }
+            return self
+                .reconcile_cloud(super::models::OptimizerReconcileRequest {
+                    optimizer_run_id: id,
+                    after_seq: None,
+                    open_visual: Some(false),
+                })
+                .await;
+        }
+        // A run already sealed cancelled treats a second cancel as idempotent
+        // success; any other sealed outcome refuses — cancel cannot re-decide
+        // a settled record.
+        if let Some(manifest) = self.terminal_manifest(id.clone()).await? {
+            return match manifest_terminal_kind(&manifest) {
+                super::kernel::TerminalKind::Cancelled => Ok((run, None)),
+                sealed => Err(anyhow!(
+                    "cancel is not available for a run sealed {}",
+                    sealed.as_str()
+                )),
+            };
+        }
+        // The request becomes durable before anything acts on it: a receipt
+        // row, and a journal fact that owns a sequence. The sealing
+        // transaction later backfills `settled_sequence`, turning the request
+        // into a receipt.
+        self.record_cancellation_request(&id, &request).await?;
+        let drafts = vec![
+            OptimizerEventDraft::new("optimizer.run.cancel.requested", &run.algorithm_id)
+                .idempotency_key(format!("cancel-request:{}", request.request_id))
+                .delta(Map::from_iter([(
+                    "cancellation".into(),
+                    json!(request.as_ref()),
+                )]))
+                .raw(json!({ "source": "cancel" })),
+            OptimizerEventDraft::new("optimizer.run.cancelling", &run.algorithm_id)
+                .idempotency_key("cancel:cancelling")
+                .delta(Map::from_iter([("status".into(), json!("cancelling"))]))
+                .raw(json!({ "source": "cancel" })),
+        ];
+        let _ = self.append_event_payloads(id.clone(), drafts).await;
         if let Some(cancel) = self.local_recipes.lock().await.get(&id).cloned() {
-            cancel
-                .send(true)
-                .map_err(|_| anyhow!("local optimizer recipe is no longer running"))?;
-            return self.command(id, "cancel", "cancelled").await;
-        }
-        if let Ok(run) = self.get(id.clone()).await {
-            if run.source == "cloud" {
-                if let Ok(client) = super::cloud::CloudOptimizerClient::from_config() {
-                    let _ = client.cancel_run(&id).await;
-                }
-                return self
-                    .reconcile_cloud(super::models::OptimizerReconcileRequest {
-                        optimizer_run_id: id,
-                        after_seq: None,
-                        open_visual: Some(false),
-                    })
-                    .await;
+            if cancel.send(Some(request.clone())).is_ok() {
+                // A live worker owns settlement: it drains its children and
+                // routes through settle_run. The row is not written here.
+                return Ok((self.get(id).await?, None));
             }
-            if matches!(run.algorithm_id.as_str(), "sft" | "cispo") {
-                if let Ok(client) =
-                    super::sidecar_training::SidecarTrainingClient::from_manager(self.manager())
-                        .await
-                {
-                    let _ = client.cancel(&id).await;
-                    return self.command(id, "cancel", "cancelled").await;
-                }
+            // The sender is registered but its worker is gone; fall through
+            // and settle directly.
+        }
+        if matches!(run.algorithm_id.as_str(), "sft" | "cispo") {
+            if let Ok(client) =
+                super::sidecar_training::SidecarTrainingClient::from_manager(self.manager()).await
+            {
+                let _ = client.cancel(&id).await;
             }
         }
-        self.command(id, "cancel", "cancelled").await
+        let run = self
+            .settle_run(
+                id,
+                super::kernel::SettleCause::Cancelled {
+                    request: request.clone(),
+                },
+                None,
+            )
+            .await?;
+        Ok((run, None))
+    }
+
+    /// Durably record one typed cancellation request. Idempotent on
+    /// request_id; `settled_sequence` stays NULL until the sealing
+    /// transaction backfills it.
+    async fn record_cancellation_request(
+        &self,
+        run_id: &str,
+        request: &std::sync::Arc<super::kernel::CancellationRequest>,
+    ) -> Result<()> {
+        let db = self.db.clone();
+        let run_id = run_id.to_string();
+        let request = request.clone();
+        db.run_transaction(move |conn| {
+            conn.execute(
+                "INSERT OR IGNORE INTO optimizer_cancellation_requests(
+                    request_id, run_id, cause, requested_by, requested_at, scope, reason_code
+                 ) VALUES (?1,?2,?3,?4,?5,?6,?7)",
+                params![
+                    request.request_id,
+                    run_id,
+                    request.cause.as_str(),
+                    request.requested_by,
+                    request.requested_at,
+                    request.scope,
+                    request.reason_code,
+                ],
+            )?;
+            Ok(())
+        })
+        .await
     }
 
     pub async fn pause(&self, id: String) -> Result<(OptimizerRunRecord, Option<AppEvent>)> {
@@ -2137,7 +2447,95 @@ impl OptimizerService {
             db.run(move |conn| upsert_run(conn, &persisted)).await?;
             (run, None)
         } else {
-            let (mut run, event) = self.append_events(id.clone(), events).await?;
+            // Hosted terminal facts enter the same settlement command as
+            // local ones. Events before the terminal preserve their assigned
+            // order; genuinely later producer facts become linked
+            // amendments instead of violating the sealed-run journal.
+            let terminal_at = events.iter().position(|event| {
+                matches!(
+                    event.event_type.as_str(),
+                    "optimizer.run.completed"
+                        | "optimizer.run.failed"
+                        | "optimizer.run.degraded"
+                        | "optimizer.run.cancelled"
+                )
+            });
+            let (mut run, event) = if let Some(terminal_at) = terminal_at {
+                let terminal = events[terminal_at].clone();
+                let before = events[..terminal_at].to_vec();
+                let after = events[terminal_at + 1..].to_vec();
+                let event = if before.is_empty() {
+                    None
+                } else {
+                    self.append_events(id.clone(), before).await?.1
+                };
+                let cause = match terminal.event_type.as_str() {
+                    "optimizer.run.completed" => super::kernel::SettleCause::Completed,
+                    "optimizer.run.degraded" => super::kernel::SettleCause::Degraded {
+                        detail: terminal
+                            .error
+                            .as_ref()
+                            .and_then(|value| value.get("message"))
+                            .and_then(Value::as_str)
+                            .unwrap_or("hosted run degraded")
+                            .to_string(),
+                    },
+                    "optimizer.run.cancelled" => super::kernel::SettleCause::Cancelled {
+                        request: std::sync::Arc::new(
+                            super::kernel::CancellationRequest::new(
+                                super::kernel::CancellationCause::ContainerRequested,
+                                "cloud:remote",
+                                format!("run:{id}"),
+                            ),
+                        ),
+                    },
+                    _ => super::kernel::SettleCause::Failed {
+                        detail: terminal
+                            .error
+                            .as_ref()
+                            .and_then(|value| value.get("message"))
+                            .and_then(Value::as_str)
+                            .unwrap_or("hosted run failed")
+                            .to_string(),
+                    },
+                };
+                let mut settled = self
+                    .settle_run(id.clone(), cause, terminal.error.clone())
+                    .await?;
+                if !after.is_empty() {
+                    let terminal_sequence = self
+                        .terminal_manifest(id.clone())
+                        .await?
+                        .and_then(|manifest| {
+                            manifest.get("terminalCursor").and_then(Value::as_u64)
+                        })
+                        .context("hosted terminal seal is missing terminalCursor")?;
+                    let amendments = after
+                        .into_iter()
+                        .map(|fact| {
+                            OptimizerEventDraft::new(
+                                "optimizer.evidence.amended",
+                                &algorithm_id,
+                            )
+                            .idempotency_key(format!(
+                                "cloud-post-terminal:{}",
+                                fact.event_id
+                                    .clone()
+                                    .unwrap_or_else(|| fact.sequence_number.to_string())
+                            ))
+                            .delta(Map::from_iter([
+                                ("terminalSequence".into(), json!(terminal_sequence)),
+                                ("postTerminalFact".into(), json!(fact)),
+                            ]))
+                            .raw(json!({"source":"cloud_reconcile"}))
+                        })
+                        .collect();
+                    settled = self.append_event_payloads(id.clone(), amendments).await?.0;
+                }
+                (settled, event)
+            } else {
+                self.append_events(id.clone(), events).await?
+            };
             persist_cloud_event_seq(&mut run, next_cloud_seq);
             let db = self.db.clone();
             let persisted = run.clone();
@@ -3264,6 +3662,12 @@ fn commit_validated_events(
         }
         super::frames::persist_event_frame(conn, frame_store, event)?;
         insert_event(conn, event)?;
+        // Fold the event's error into the run record as it commits, so a
+        // terminal batch seals `error_json` and the manifest's error in the
+        // same transaction — they can no longer diverge by one event.
+        if let Some(error) = &event.error {
+            run.error = Some(error.clone());
+        }
         if event.event_type == "optimizer.evidence.amended" {
             evidence_amendments.push(event.clone());
         }
@@ -3365,6 +3769,13 @@ fn commit_validated_events(
         super::kernel::persist::upsert_projection(conn, &state)?;
     }
     if let Some(terminal_state) = state.terminal.as_ref() {
+        // The racing summary lane is rewritten from the terminal kernel state
+        // in the same transaction that seals the manifest, so a stale worker
+        // projection (`evalStatus: "running"`) can never survive beside a
+        // sealed terminal.
+        rewrite_terminal_summary_progress(&mut run, &state);
+        upsert_run(conn, &run)?;
+        settle_cancellation_receipts(conn, &run.id, terminal_state.final_sequence)?;
         let manifest = json!({
             "schemaVersion": "optimizer_terminal_manifest.v2",
             "optimizerRunId": state.run_id,
@@ -3375,6 +3786,7 @@ fn commit_validated_events(
             "usage": state.usage(),
             "evidence": state.evidence_state(),
             "projectionRevision": state.projection_revision,
+            "error": run.error.clone().unwrap_or(Value::Null),
         });
         let sealed = terminal::seal(conn, &run.id, &manifest)?;
         if let Some(object) = run.summary.as_object_mut() {
@@ -3407,6 +3819,103 @@ fn commit_validated_events(
         },
     )?;
     Ok((run, Some(app_event)))
+}
+
+/// Rewrite `summary.evalStatus` and `summary.progress` from the terminal
+/// kernel state. Called only inside the sealing transaction; `run.status` has
+/// already been set from `kernel_compatibility_status`.
+fn rewrite_terminal_summary_progress(
+    run: &mut OptimizerRunRecord,
+    state: &super::kernel::RunKernelState,
+) {
+    let mut summary = run.summary.as_object().cloned().unwrap_or_default();
+    summary.insert("evalStatus".into(), json!(run.status));
+    let work = state.work_summary();
+    let rollouts = state
+        .projection
+        .work_items()
+        .iter()
+        .enumerate()
+        .map(|(index, item)| {
+            let item_state = item
+                .terminal
+                .map(|terminal| terminal.as_str())
+                .unwrap_or_else(|| item.lifecycle.as_str());
+            (
+                index.to_string(),
+                json!({
+                    "state": item_state,
+                    "workItemId": item.work_item_id,
+                    "externalRef": item.external_ref,
+                }),
+            )
+        })
+        .collect::<Map<String, Value>>();
+    let authoritative = json!({
+        "schemaVersion": super::kernel::RUN_VIEW_SCHEMA_VERSION,
+        "asOfSequence": state.aggregate_sequence,
+        "projectionRevision": state.projection_revision,
+        "runState": state.lifecycle.as_str(),
+        "rolloutStateCounts": {
+            "queued": work.queued,
+            "running": work.running,
+            "completed": work.succeeded,
+            "failed": work.failed,
+            "cancelled": work.cancelled,
+        },
+        "inFlight": work.running,
+        "evidence": state.evidence_state(),
+        "rollouts": rollouts,
+    });
+    let mut progress = summary
+        .get("progress")
+        .and_then(Value::as_object)
+        .cloned()
+        .unwrap_or_default();
+    // Unmeasured counts stay whatever the worker last knew; measured ones are
+    // frozen from the kernel. `None` never overwrites with zero.
+    if let Some(planned) = work.planned {
+        progress.insert("total".into(), json!(planned));
+    }
+    if let Some(succeeded) = work.succeeded {
+        progress.insert("completed".into(), json!(succeeded));
+    }
+    if let Some(failed) = work.failed {
+        progress.insert("failed".into(), json!(failed));
+    }
+    progress.insert("authoritative".into(), authoritative);
+    summary.insert("progress".into(), Value::Object(progress));
+    run.summary = Value::Object(summary);
+}
+
+/// Turn every open cancellation request for this run into a receipt by
+/// stamping the terminal sequence it settled at. Runs inside the sealing
+/// transaction; tolerant of the table not existing yet (pre-migration DBs in
+/// unit fixtures).
+fn settle_cancellation_receipts(
+    conn: &Connection,
+    run_id: &str,
+    terminal_sequence: u64,
+) -> Result<()> {
+    let result = conn.execute(
+        "UPDATE optimizer_cancellation_requests
+         SET settled_sequence = ?2, observed_at = COALESCE(observed_at, ?3)
+         WHERE run_id = ?1 AND settled_sequence IS NULL",
+        params![
+            run_id,
+            i64::try_from(terminal_sequence).unwrap_or(i64::MAX),
+            Utc::now().to_rfc3339(),
+        ],
+    );
+    match result {
+        Ok(_) => Ok(()),
+        Err(rusqlite::Error::SqliteFailure(_, Some(message)))
+            if message.contains("no such table") =>
+        {
+            Ok(())
+        }
+        Err(error) => Err(error.into()),
+    }
 }
 
 fn persist_evidence_amendment(
@@ -5313,6 +5822,7 @@ pub(in crate::optimizers) mod tests {
     use super::*;
     use crate::storage::{ContentStore, Storage};
     use tempfile::tempdir;
+    use tokio::sync::watch;
 
     /// Reopen a service over an existing instance directory: an application
     /// restart, as far as the durable record is concerned.
@@ -5338,8 +5848,8 @@ pub(in crate::optimizers) mod tests {
     async fn local_recipe_watchers_have_one_owner() {
         let dir = tempdir().unwrap();
         let service = reopen(&dir).await;
-        let (first, _) = watch::channel(false);
-        let (duplicate, _) = watch::channel(false);
+        let (first, _) = watch::channel(None);
+        let (duplicate, _) = watch::channel(None);
 
         assert!(
             service
@@ -5353,7 +5863,7 @@ pub(in crate::optimizers) mod tests {
         );
 
         service.unregister_local_recipe("local-training-run").await;
-        let (replacement, _) = watch::channel(false);
+        let (replacement, _) = watch::channel(None);
         assert!(
             service
                 .try_register_local_recipe("local-training-run".into(), replacement)
@@ -7308,5 +7818,203 @@ pub(in crate::optimizers) mod tests {
             json!("evidence_unusable")
         );
         assert_ne!(svc.get(run.id).await.unwrap().status, "completed");
+    }
+
+    #[tokio::test]
+    async fn settle_run_is_concurrently_idempotent_and_seals_error_with_cursor() {
+        let (svc, _dir, _) = service().await;
+        let (run, _) = svc
+            .create(
+                serde_json::from_value(json!({
+                    "algorithmId": "gepa",
+                    "id": "settle_concurrent",
+                    "openVisual": false
+                }))
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+        svc.append_event_payloads(
+            run.id.clone(),
+            vec![gepa_draft("optimizer.run.started", json!({}))],
+        )
+        .await
+        .unwrap();
+
+        let left = svc.clone();
+        let right = svc.clone();
+        let left_id = run.id.clone();
+        let right_id = run.id.clone();
+        let cause = super::super::kernel::SettleCause::Failed {
+            detail: "worker chain: root cause".into(),
+        };
+        let (left_result, right_result) = tokio::join!(
+            left.settle_run(
+                left_id,
+                cause.clone(),
+                Some(json!({"message":"root cause","stderrTail":"bounded"})),
+            ),
+            right.settle_run(
+                right_id,
+                cause,
+                Some(json!({"message":"root cause","stderrTail":"bounded"})),
+            )
+        );
+        left_result.unwrap();
+        right_result.unwrap();
+
+        let sealed = svc.terminal_manifest(run.id.clone()).await.unwrap().unwrap();
+        let durable = svc.get(run.id.clone()).await.unwrap();
+        assert_eq!(sealed["terminalCursor"], json!(durable.cursor_seq));
+        assert_eq!(sealed["error"], durable.error.unwrap());
+        let terminal_count = svc
+            .events_after(run.id, 0, Some(100))
+            .await
+            .unwrap()
+            .into_iter()
+            .filter(|event| event.event_type == "optimizer.run.failed")
+            .count();
+        assert_eq!(terminal_count, 1);
+    }
+
+    #[tokio::test]
+    async fn patch_run_refuses_progress_after_seal_and_amendments_advance_only_final_cursor() {
+        let (svc, _dir, _) = service().await;
+        let (run, _) = svc
+            .create(
+                serde_json::from_value(json!({
+                    "algorithmId": "gepa",
+                    "id": "settle_patch_guard",
+                    "openVisual": false
+                }))
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+        svc.append_event_payloads(
+            run.id.clone(),
+            vec![gepa_draft("optimizer.run.started", json!({}))],
+        )
+        .await
+        .unwrap();
+        svc.settle_run(
+            run.id.clone(),
+            super::super::kernel::SettleCause::Failed {
+                detail: "boom".into(),
+            },
+            Some(json!({"message":"boom"})),
+        )
+        .await
+        .unwrap();
+        let sealed = svc.terminal_manifest(run.id.clone()).await.unwrap().unwrap();
+        let terminal_cursor = sealed["terminalCursor"].as_u64().unwrap();
+
+        let patch_error = svc
+            .patch_run(run.id.clone(), |run| {
+                run.summary["evalStatus"] = json!("running");
+                Ok(())
+            })
+            .await
+            .unwrap_err();
+        assert!(patch_error.to_string().contains("post-terminal"));
+
+        let amendment = OptimizerEventDraft::new("optimizer.evidence.amended", "gepa")
+            .idempotency_key("post-terminal-test-amendment")
+            .delta(Map::from_iter([
+                ("terminalSequence".into(), json!(terminal_cursor)),
+                ("diagnostic".into(), json!({"message":"late fact"})),
+            ]));
+        let (amended, _) = svc
+            .append_event_payloads(run.id.clone(), vec![amendment])
+            .await
+            .unwrap();
+        assert_eq!(amended.cursor_seq, terminal_cursor + 1);
+        let still_sealed = svc.terminal_manifest(run.id).await.unwrap().unwrap();
+        assert_eq!(still_sealed["terminalCursor"], json!(terminal_cursor));
+    }
+
+    #[tokio::test]
+    async fn credential_revocation_is_a_post_terminal_amendment_linked_to_the_seal() {
+        let (svc, _dir, _) = service().await;
+        let (run, _) = svc
+            .create(
+                serde_json::from_value(json!({
+                    "algorithmId": "gepa",
+                    "id": "revocation_ordering",
+                    "openVisual": false
+                }))
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+        let terminal_sequence = 17;
+        let draft = super::credential_revocation_amendment(
+            &run,
+            terminal_sequence,
+            vec!["cap_test".into()],
+            None,
+        );
+        assert_eq!(draft.event_type, "optimizer.evidence.amended");
+        assert_eq!(draft.delta["terminalSequence"], json!(terminal_sequence));
+        assert_eq!(
+            draft.delta["credentialRevocation"]["kind"],
+            json!("credential.capability.revoked")
+        );
+        assert_eq!(
+            draft.delta["credentialRevocation"]["cause"],
+            json!("run_terminal")
+        );
+        assert_eq!(draft.raw["source"], json!("settle_run"));
+    }
+
+    #[tokio::test]
+    async fn cancellation_request_becomes_a_receipt_at_the_terminal_sequence() {
+        let (svc, _dir, _) = service().await;
+        let (run, _) = svc
+            .create(
+                serde_json::from_value(json!({
+                    "algorithmId": "gepa",
+                    "id": "cancel_receipt",
+                    "openVisual": false
+                }))
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+        svc.append_event_payloads(
+            run.id.clone(),
+            vec![gepa_draft("optimizer.run.started", json!({}))],
+        )
+        .await
+        .unwrap();
+        let request = super::super::kernel::CancellationRequest::new(
+            super::super::kernel::CancellationCause::UserRequested,
+            "user:test",
+            format!("run:{}", run.id),
+        );
+        let request_id = request.request_id.clone();
+        svc.cancel(run.id.clone(), request).await.unwrap();
+        let terminal_cursor = svc
+            .terminal_manifest(run.id.clone())
+            .await
+            .unwrap()
+            .unwrap()["terminalCursor"]
+            .as_u64()
+            .unwrap();
+        let db = svc.db.clone();
+        let receipt = db
+            .run(move |conn| {
+                conn.query_row(
+                    "SELECT observed_at, settled_sequence FROM optimizer_cancellation_requests \
+                     WHERE request_id=?1",
+                    [request_id],
+                    |row| Ok((row.get::<_, Option<String>>(0)?, row.get::<_, Option<i64>>(1)?)),
+                )
+                .map_err(Into::into)
+            })
+            .await
+            .unwrap();
+        assert!(receipt.0.is_some());
+        assert_eq!(receipt.1, Some(terminal_cursor as i64));
     }
 }

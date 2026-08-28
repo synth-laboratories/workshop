@@ -84,6 +84,19 @@ impl AlgorithmProjection {
         }
     }
 
+    /// Close every open work item at the run's terminal seal. Interrupted
+    /// children settle `cancelled` — they did not fail — and so does planned
+    /// work that never dispatched; a sealed projection is closed-world.
+    pub fn close_open_work(&mut self) -> KernelResult<usize> {
+        match self {
+            Self::Eval(p) => p.close_open_work(),
+            Self::Gepa(p) => p.close_open_work(),
+            Self::GoEx(p) => p.close_open_work(),
+            Self::Sft(p) => p.close_open_work(),
+            Self::Cispo(p) => p.close_open_work(),
+        }
+    }
+
     pub fn evidence_state(&self) -> EvidenceState {
         match self {
             Self::Eval(p) => p.evidence_state(),

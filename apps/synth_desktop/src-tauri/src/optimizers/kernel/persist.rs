@@ -40,6 +40,11 @@ pub fn upsert_run_columns(conn: &Connection, state: &RunKernelState) -> Result<(
 }
 
 pub fn upsert_projection(conn: &Connection, state: &RunKernelState) -> Result<()> {
+    // Write-side twin of the read guard below: a terminal projection with
+    // open work must never become durable in the first place.
+    if state.lifecycle.is_terminal() || state.terminal.is_some() {
+        reject_active_terminal_work(&state.run_id, state.projection.work_items())?;
+    }
     let payload =
         serde_json::to_string(&state.projection).context("serialize algorithm projection")?;
     conn.execute(
@@ -370,13 +375,15 @@ fn rebuild_at_terminal_sequence(
     Ok(rebuilt)
 }
 
+/// A sealed run is closed-world: no work item may remain in any nonterminal
+/// lifecycle, `planned` included — the reducer's seal step closes interrupted
+/// and never-dispatched work as `cancelled`, so open work behind a terminal
+/// can only mean the closure invariant was bypassed.
 fn reject_active_terminal_work(run_id: &str, items: &[WorkItem]) -> Result<()> {
-    if let Some(item) = items.iter().find(|item| {
-        matches!(
-            item.lifecycle,
-            WorkItemLifecycle::Queued | WorkItemLifecycle::Starting | WorkItemLifecycle::Running
-        )
-    }) {
+    if let Some(item) = items
+        .iter()
+        .find(|item| item.lifecycle != WorkItemLifecycle::Terminal)
+    {
         anyhow::bail!(
             "optimizer run {run_id} is terminal but work item {} is still {}",
             item.work_item_id,
@@ -557,7 +564,42 @@ pub fn insert_spec(conn: &Connection, commit: &AdmissionCommit) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::optimizers::kernel::types::WorkItemKind;
+    use crate::optimizers::kernel::types::{TerminalKind, WorkItemKind};
+
+    #[test]
+    fn upsert_rejects_an_open_world_terminal_projection() {
+        let mut state = RunKernelState::new(
+            "run-open",
+            AlgorithmKind::Eval,
+            ExecutionPlacement::DirectContainerEvaluation,
+            "sha256:spec",
+        );
+        state.lifecycle = RunLifecycle::Terminal;
+        let mut running = WorkItem::planned("eval:trial:0", WorkItemKind::EvalTrial).unwrap();
+        running.transition(WorkItemLifecycle::Queued).unwrap();
+        running.transition(WorkItemLifecycle::Starting).unwrap();
+        running.transition(WorkItemLifecycle::Running).unwrap();
+        match &mut state.projection {
+            AlgorithmProjection::Eval(projection) => projection.work_items.push(running),
+            _ => unreachable!("eval admission produces an eval projection"),
+        }
+
+        // The closed-world guard refuses before any SQL executes, so an empty
+        // connection proves the write path itself is the gate.
+        let conn = Connection::open_in_memory().unwrap();
+        let error = upsert_projection(&conn, &state).unwrap_err().to_string();
+        assert!(error.contains("still running"), "{error}");
+
+        match &mut state.projection {
+            AlgorithmProjection::Eval(projection) => projection.work_items[0]
+                .seal_terminal(TerminalKind::Cancelled)
+                .unwrap(),
+            _ => unreachable!(),
+        }
+        // Closed work passes the guard and fails only on the absent tables.
+        let error = upsert_projection(&conn, &state).unwrap_err().to_string();
+        assert!(!error.contains("still running"), "{error}");
+    }
 
     #[test]
     fn terminal_projection_rejects_nested_running_work() {
@@ -572,14 +614,26 @@ mod tests {
         assert!(error.contains("still running"), "{error}");
     }
 
+    // Invariant change (reducer v2): a sealed run is closed-world. The seal
+    // step now closes never-started planned work as `cancelled`, so `planned`
+    // behind a terminal is no longer tolerated — it can only mean closure was
+    // bypassed. This test previously allowed it.
     #[test]
-    fn terminal_projection_allows_settled_and_never_started_work() {
+    fn terminal_projection_allows_only_settled_work() {
         let mut completed = WorkItem::planned("eval:trial:1", WorkItemKind::EvalTrial).unwrap();
         completed
             .seal_terminal(super::super::types::TerminalKind::Completed)
             .unwrap();
-        let skipped = WorkItem::planned("eval:trial:2", WorkItemKind::EvalTrial).unwrap();
+        let mut cancelled = WorkItem::planned("eval:trial:2", WorkItemKind::EvalTrial).unwrap();
+        cancelled
+            .seal_terminal(super::super::types::TerminalKind::Cancelled)
+            .unwrap();
+        reject_active_terminal_work("run-1", &[completed.clone(), cancelled]).unwrap();
 
-        reject_active_terminal_work("run-1", &[completed, skipped]).unwrap();
+        let never_started = WorkItem::planned("eval:trial:3", WorkItemKind::EvalTrial).unwrap();
+        let error = reject_active_terminal_work("run-1", &[completed, never_started])
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("still planned"), "{error}");
     }
 }

@@ -14,6 +14,7 @@ pub mod error;
 pub mod evidence;
 pub mod persist;
 pub mod sequences;
+pub mod settle;
 pub mod types;
 pub mod view;
 pub mod work;
@@ -24,15 +25,16 @@ pub use commit::{commit, settle_result, CommitPlan, RunKernelState};
 pub use driver::{resolve as resolve_driver, DriverKind, ExternalRunRef, SealedRunSpec};
 pub use error::{KernelError, KernelErrorCode, KernelResult};
 pub use evidence::{EvidenceAmendment, EvidenceState, SealedTerminal, UsageCompleteness};
+pub use settle::SettleCause;
 pub use sequences::{
     assign_aggregate_sequences, plan_producer_batch, CommittedEvent, DurableProducerLog,
     ProducerEvent, ProducerVerdict,
 };
 pub use types::{
-    classify_legacy_status, AdmissionState, AlgorithmKind, EvidenceCompleteness,
-    ExecutionPlacement, RunCondition, RunLifecycle, RunPhase, TerminalKind, TerminalReason,
-    WorkItemKind, WorkItemLifecycle, GELO_HOSTED_RECIPE_ID, KERNEL_SCHEMA_VERSION,
-    PRODUCER_EVENT_SCHEMA_VERSION, RUN_VIEW_SCHEMA_VERSION,
+    classify_legacy_status, AdmissionState, AlgorithmKind, CancellationCause, CancellationRequest,
+    CancelledError, EvidenceCompleteness, ExecutionPlacement, RunCondition, RunLifecycle, RunPhase,
+    TerminalKind, TerminalReason, WorkItemKind, WorkItemLifecycle, GELO_HOSTED_RECIPE_ID,
+    KERNEL_SCHEMA_VERSION, PRODUCER_EVENT_SCHEMA_VERSION, RUN_VIEW_SCHEMA_VERSION,
 };
 pub use view::{project_view, project_view_with_context, OptimizerRunViewV2};
 pub use work::{WorkItem, WorkSummary};

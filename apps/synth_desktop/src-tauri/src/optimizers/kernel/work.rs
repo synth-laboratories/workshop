@@ -81,6 +81,25 @@ impl WorkItem {
     }
 }
 
+/// Seal every nonterminal work item as `cancelled`.
+///
+/// Interrupted children did not fail; they were cut short by the run's own
+/// terminal fact, and `cancelled` is the only honest spelling of that. Planned
+/// work that never dispatched closes the same way: a sealed run may not carry
+/// open work of any lifecycle. Pure over the items, so calling it from the
+/// reducer's seal step makes closure a function of the terminal event that
+/// replay reproduces.
+pub fn close_open_items(items: &mut [WorkItem]) -> KernelResult<usize> {
+    let mut closed = 0usize;
+    for item in items.iter_mut() {
+        if item.lifecycle != WorkItemLifecycle::Terminal {
+            item.seal_terminal(TerminalKind::Cancelled)?;
+            closed += 1;
+        }
+    }
+    Ok(closed)
+}
+
 /// Counts a projection may report. Missing stays `None`; it is never zero.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, specta::Type)]
 #[serde(rename_all = "camelCase")]

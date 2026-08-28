@@ -38,6 +38,7 @@ pub(super) struct WorkCounts {
     pub planned: Option<u64>,
     pub succeeded: Option<u64>,
     pub failed: Option<u64>,
+    pub cancelled: Option<u64>,
     pub skipped: Option<u64>,
     pub unit: Option<&'static str>,
 }
@@ -48,6 +49,7 @@ impl WorkCounts {
             "planned": self.planned,
             "succeeded": self.succeeded,
             "failed": self.failed,
+            "cancelled": self.cancelled,
             "skipped": self.skipped,
             "unit": self.unit,
         })
@@ -93,6 +95,7 @@ fn kernel_work_counts(summary: &crate::optimizers::kernel::WorkSummary) -> WorkC
         planned: summary.planned,
         succeeded: summary.succeeded,
         failed: summary.failed,
+        cancelled: summary.cancelled,
         skipped: if summary.fixed_denominator {
             summary.planned.map(|planned| {
                 planned.saturating_sub(
@@ -265,6 +268,15 @@ pub(super) fn seal(conn: &Connection, run_id: &str, manifest: &Value) -> Result<
     let mut manifest = manifest.clone();
     populate_canonical_usage(conn, run_id, &mut manifest)?;
     let envelope = validate_manifest(run_id, &manifest)?;
+    // Write-side closed-world assertion: a terminal receipt claiming children
+    // are still running or queued describes a run that has not actually ended.
+    // Pre-existing sealed manifests are tolerated on read (see `load`); a new
+    // seal is not.
+    if let Some(open) = open_terminal_work(&manifest) {
+        anyhow::bail!(
+            "refusing to seal an open-world terminal manifest for {run_id}: {open}"
+        );
+    }
     conn.execute(
         "INSERT INTO optimizer_terminal_manifests(
             optimizer_run_id, schema_version, algorithm_id, terminal_status,
@@ -310,6 +322,21 @@ pub(crate) fn load(conn: &Connection, run_id: &str) -> Result<Option<Value>> {
     let payload: Value =
         serde_json::from_str(&payload).context("decode optimizer terminal manifest payload")?;
     let envelope = validate_manifest(run_id, &payload)?;
+    // Tolerate-or-migrate decision for legacy seals: tolerate on read, loudly.
+    // Manifests sealed before the closed-world write guard may carry
+    // running/queued counts; refusing them would make those runs unloadable
+    // (the incident this warns about), so they load with an operator-visible
+    // warning instead.
+    if let Some(open) = open_terminal_work(&payload) {
+        crate::platform::logging::report(
+            "optimizers",
+            "eprintln",
+            format!(
+                "optimizer run {run_id} has a legacy open-world terminal manifest ({open}); \
+                 loading it as sealed — its work counts predate reducer-level closure"
+            ),
+        );
+    }
     let terminal_cursor = u64::try_from(terminal_cursor)
         .context("optimizer terminal manifest has a negative cursor")?;
     if schema_version != envelope.schema_version
@@ -320,6 +347,23 @@ pub(crate) fn load(conn: &Connection, run_id: &str) -> Result<Option<Value>> {
         anyhow::bail!("optimizer terminal manifest {run_id} envelope disagrees with its payload");
     }
     Ok(Some(payload))
+}
+
+/// Nonterminal work a terminal manifest still claims, if any.
+///
+/// Counts that are absent make no claim; only explicit `running`/`queued`
+/// (v2 manifests freeze the kernel `WorkSummary` verbatim) above zero mark a
+/// manifest open-world.
+fn open_terminal_work(manifest: &Value) -> Option<String> {
+    let work = manifest.get("work")?.as_object()?;
+    let open: Vec<String> = ["running", "queued"]
+        .iter()
+        .filter_map(|key| {
+            let count = work.get(*key).and_then(Value::as_u64)?;
+            (count > 0).then(|| format!("work.{key}={count}"))
+        })
+        .collect();
+    (!open.is_empty()).then(|| open.join(", "))
 }
 
 struct ManifestEnvelope<'a> {
@@ -718,6 +762,56 @@ mod tests {
         .unwrap();
         let error = load(&conn, "run_1").unwrap_err().to_string();
         assert!(error.contains("envelope disagrees"), "{error}");
+    }
+
+    #[test]
+    fn sealing_refuses_an_open_world_terminal_manifest() {
+        let conn = Connection::open_in_memory().unwrap();
+        manifest_tables(&conn, true);
+        conn.execute(
+            "INSERT INTO optimizer_runs(id, usage_json) VALUES (?1, ?2)",
+            params!["run_1", json!({}).to_string()],
+        )
+        .unwrap();
+        let manifest = json!({
+            "schemaVersion": TERMINAL_MANIFEST_SCHEMA_V2,
+            "optimizerRunId": "run_1", "algorithmId": "eval", "terminalCursor": 8,
+            "terminal": { "kind": "failed" }, "usage": {},
+            "work": { "planned": 5, "running": 4, "queued": 0, "succeeded": 0, "failed": 1 }
+        });
+        let error = seal(&conn, "run_1", &manifest).unwrap_err().to_string();
+        assert!(error.contains("open-world"), "{error}");
+        assert!(error.contains("work.running=4"), "{error}");
+    }
+
+    /// Legacy seals from before the write guard must stay loadable: refusing
+    /// them is what made the incident run permanently unreadable. They load
+    /// as-is with an operator-visible warning.
+    #[test]
+    fn a_legacy_open_world_manifest_still_loads() {
+        let conn = Connection::open_in_memory().unwrap();
+        manifest_tables(&conn, false);
+        let payload = json!({
+            "schemaVersion": TERMINAL_MANIFEST_SCHEMA_V2,
+            "optimizerRunId": "run_1", "algorithmId": "eval", "terminalCursor": 8,
+            "terminal": { "kind": "failed" }, "usage": {},
+            "work": { "planned": 5, "running": 4, "queued": 0, "succeeded": 0, "failed": 1 }
+        });
+        conn.execute(
+            "INSERT INTO optimizer_terminal_manifests VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![
+                "run_1",
+                TERMINAL_MANIFEST_SCHEMA_V2,
+                "eval",
+                "failed",
+                8,
+                "now",
+                payload.to_string()
+            ],
+        )
+        .unwrap();
+        let loaded = load(&conn, "run_1").unwrap().expect("legacy manifest loads");
+        assert_eq!(loaded.pointer("/work/running"), Some(&json!(4)));
     }
 
     #[test]

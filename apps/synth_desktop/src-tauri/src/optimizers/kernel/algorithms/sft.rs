@@ -11,7 +11,7 @@ use crate::optimizers::kernel::sequences::CommittedEvent;
 use crate::optimizers::kernel::types::{
     EvidenceCompleteness, RunPhase, TerminalKind, WorkItemKind, WorkItemLifecycle,
 };
-use crate::optimizers::kernel::work::{WorkItem, WorkSummary};
+use crate::optimizers::kernel::work::{close_open_items, WorkItem, WorkSummary};
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, specta::Type)]
 #[serde(rename_all = "camelCase")]
@@ -129,6 +129,11 @@ impl SftProjection {
 
     pub fn work_summary(&self) -> WorkSummary {
         WorkSummary::from_items(&self.work_items, "checkpoint_evals", true)
+    }
+
+    /// Terminal seal closes interrupted children as `cancelled`, never failed.
+    pub fn close_open_work(&mut self) -> KernelResult<usize> {
+        close_open_items(&mut self.work_items)
     }
 
     pub fn evidence_state(&self) -> EvidenceState {
