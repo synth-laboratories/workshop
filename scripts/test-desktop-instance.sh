@@ -155,6 +155,8 @@ rg -q 'assert_bundle_identity' "$ROOT/scripts/desktop-instance.sh"
 rg -q 'record_bundle_signing "\$app_bundle"' "$ROOT/scripts/desktop-instance.sh"
 rg -Fq -- '--arg identity "${host_authority:-adhoc}"' "$ROOT/scripts/desktop-instance.sh"
 rg -q 'SYNTH_DESKTOP_REBUILD_ADAPTERS:-0' "$ROOT/scripts/desktop-instance.sh"
+rg -q 'cargo:rerun-if-changed=' "$ROOT/apps/synth_desktop/src-tauri/build.rs"
+rg -q 'symbolic-ref.*HEAD' "$ROOT/apps/synth_desktop/src-tauri/build.rs"
 rg -q 'SYNTH_OPTIMIZER_USE_LOCAL_SOURCE:-0' "$ROOT/scripts/desktop-instance.sh"
 rg -q 'SYNTH_COMPUTER_USE_PARENT_REQUIREMENT=' "$ROOT/scripts/desktop-instance.sh"
 rg -q 'optimizer runtime=immutable installed plugin' "$ROOT/scripts/desktop-instance.sh"
@@ -317,6 +319,9 @@ esac
 rg -q 'wait_for_health_instance' "$ROOT/scripts/desktop-instance.sh"
 rg -q 'print_runtime_identity' "$ROOT/scripts/desktop-instance.sh"
 rg -q 'verify_packaged_provenance' "$ROOT/scripts/desktop-instance.sh"
+rg -q 'build_revision.*==.*SOURCE_REVISION' "$ROOT/scripts/desktop-instance.sh"
+rg -q 'executable_digest.*==.*expected_digest' "$ROOT/scripts/desktop-instance.sh"
+rg -q 'rm -f "\$DATA_ROOT/eval-driver.json"' "$ROOT/scripts/desktop-instance.sh"
 rebuild_body="$(sed -n '/^rebuild_run_instance()/,/^}/p' "$ROOT/scripts/desktop-instance.sh")"
 case "$rebuild_body" in
   *"observe_rebuild_readiness &"*"exec_isolated_cua_bundle"*) ;;

@@ -1362,7 +1362,9 @@ clean_instance() {
 }
 
 wait_for_health_instance() {
-  local descriptor="$DATA_ROOT/eval-driver.json" i report url token instance
+  local descriptor="$DATA_ROOT/eval-driver.json" i report url token instance source_revision build_revision executable_digest
+  local expected_digest
+  expected_digest="$(jq -r '.provenance.executableDigest // .executableDigest // empty' "$MANIFEST")"
   for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30; do
     if [[ -f "$descriptor" ]]; then
       url="$(jq -r '.url // empty' "$descriptor" 2>/dev/null || true)"
@@ -1372,7 +1374,14 @@ wait_for_health_instance() {
         report="$(curl -sf --max-time 2 ${token:+-H "Authorization: Bearer $token"} "$url/health" 2>/dev/null)"
         set -e
         instance="$(printf '%s' "${report:-}" | jq -r '.instance.name // empty' 2>/dev/null || true)"
-        if [[ "$instance" == "$NAME" ]]; then
+        source_revision="$(printf '%s' "${report:-}" | jq -r '.instance.sourceRevision // empty' 2>/dev/null || true)"
+        build_revision="$(printf '%s' "${report:-}" | jq -r '.instance.buildRevision // empty' 2>/dev/null || true)"
+        executable_digest="$(printf '%s' "${report:-}" | jq -r '.instance.executableDigest // empty' 2>/dev/null || true)"
+        if [[ "$instance" == "$NAME" \
+          && "$source_revision" == "$SOURCE_REVISION" \
+          && "$build_revision" == "$SOURCE_REVISION" \
+          && -n "$expected_digest" \
+          && "$executable_digest" == "$expected_digest" ]]; then
           printf '%s\n' "$report"
           return 0
         fi
@@ -1380,7 +1389,7 @@ wait_for_health_instance() {
     fi
     sleep 2
   done
-  echo "[desktop:$NAME] ERROR /health.instance never matched $NAME" >&2
+  echo "[desktop:$NAME] ERROR health never matched packaged provenance instance=$NAME source=$SOURCE_REVISION digest=$expected_digest; last instance=${instance:-missing} source=${source_revision:-missing} build=${build_revision:-missing} digest=${executable_digest:-missing}" >&2
   return 1
 }
 
@@ -1422,6 +1431,10 @@ rebuild_run_instance() {
   COMMAND=cua-run
   verify_packaged_provenance
   export_instance_env
+  # The previous process's loopback descriptor can outlive the process. If it
+  # remains readable, the readiness observer may query the prior binary and
+  # report its build revision as the result of this rebuild.
+  rm -f "$DATA_ROOT/eval-driver.json"
   echo "[desktop:$NAME] launching recorded bundle from $INSTANCE_ROOT"
   cd "$INSTANCE_ROOT"
   observe_rebuild_readiness &

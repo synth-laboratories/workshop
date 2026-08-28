@@ -351,6 +351,8 @@ pub enum IdentityRefusal {
     DevBundleWithoutIdentity { bundle_id: String },
     /// A descriptor exists and cannot be used.
     UnusableDescriptor { detail: String },
+    /// The bundle descriptor and compiled binary name different source trees.
+    BuildRevisionMismatch { descriptor: String, binary: String },
 }
 
 impl IdentityRefusal {
@@ -361,6 +363,7 @@ impl IdentityRefusal {
             Self::EnvBundleMismatch { .. } => "bundle_id_mismatch",
             Self::DevBundleWithoutIdentity { .. } => "dev_bundle_without_identity",
             Self::UnusableDescriptor { .. } => "descriptor_unusable",
+            Self::BuildRevisionMismatch { .. } => "build_revision_mismatch",
         }
     }
 }
@@ -399,6 +402,10 @@ impl Display for IdentityRefusal {
             Self::UnusableDescriptor { detail } => {
                 write!(f, "the bundle descriptor cannot be used: {detail}")
             }
+            Self::BuildRevisionMismatch { descriptor, binary } => write!(
+                f,
+                "the bundle descriptor names source revision {descriptor:?}, but the compiled binary names {binary:?}; rebuild the instance before launching it"
+            ),
         }
     }
 }
@@ -557,7 +564,7 @@ pub fn instance_id() -> String {
 /// dialog so a double-clicked bundle explains itself instead of silently
 /// opening the wrong profile. The caller exits; this never returns a default.
 pub fn assert_boot_identity() -> Result<Identity, IdentityRefusal> {
-    match identity() {
+    match identity().and_then(|identity| verify_build_provenance(identity, compiled_revision())) {
         Ok(identity) => {
             crate::platform::logging::report("instance", "eprintln", format!(
                 "synth-desktop: instance identity source={:?} instance={} data_root={} bundle_id={}",
@@ -581,6 +588,33 @@ pub fn assert_boot_identity() -> Result<Identity, IdentityRefusal> {
             Err(refusal)
         }
     }
+}
+
+fn compiled_revision() -> &'static str {
+    option_env!("SYNTH_BUILD_REVISION").unwrap_or("unknown")
+}
+
+/// A packaged instance carries the launcher's source revision in its bundle.
+/// Compare that immutable receipt to the value compiled into the executable so
+/// a cached or copied binary cannot start under a newer manifest.
+fn verify_build_provenance(
+    identity: Identity,
+    build_revision: &str,
+) -> Result<Identity, IdentityRefusal> {
+    let descriptor_revision = identity
+        .descriptor
+        .as_ref()
+        .and_then(|descriptor| descriptor.source_revision.as_deref())
+        .filter(|revision| !revision.trim().is_empty());
+    if let Some(descriptor_revision) = descriptor_revision {
+        if descriptor_revision != build_revision {
+            return Err(IdentityRefusal::BuildRevisionMismatch {
+                descriptor: descriptor_revision.to_owned(),
+                binary: build_revision.to_owned(),
+            });
+        }
+    }
+    Ok(identity)
 }
 
 /// Best-effort native alert before any Tauri window exists. Detached: the
@@ -673,7 +707,7 @@ pub fn diagnostics() -> InstanceDiagnostics {
     // Integration tests include this module directly, outside the package
     // target that receives build.rs values. Keep those builds diagnostic-only
     // instead of making compile-time metadata a hard requirement.
-    let build_revision = option_env!("SYNTH_BUILD_REVISION").unwrap_or("unknown");
+    let build_revision = compiled_revision();
     let build_timestamp = option_env!("SYNTH_BUILD_TIMESTAMP").unwrap_or("unknown");
     InstanceDiagnostics {
         mode: if instance_name.is_some() {
@@ -1293,6 +1327,55 @@ mod tests {
             Some(Path::new("/tmp/instances/alpha/data"))
         );
         assert_eq!(identity.bundle_id.as_deref(), Some(DEV_BUNDLE));
+    }
+
+    #[test]
+    fn packaged_instance_requires_its_compiled_revision_to_match_the_descriptor() {
+        let identity = resolve_identity(
+            Some(Ok(descriptor(
+                "alpha",
+                "/tmp/instances/alpha/data",
+                DEV_BUNDLE,
+            ))),
+            &EnvIdentity::default(),
+            Some(DEV_BUNDLE),
+        )
+        .unwrap();
+        assert!(verify_build_provenance(identity.clone(), "abc").is_ok());
+
+        let refusal = verify_build_provenance(identity, "older").unwrap_err();
+        assert_eq!(refusal.code(), "build_revision_mismatch");
+        assert!(refusal.to_string().contains("abc"), "{refusal}");
+        assert!(refusal.to_string().contains("older"), "{refusal}");
+
+        let identity = resolve_identity(
+            Some(Ok(descriptor(
+                "alpha",
+                "/tmp/instances/alpha/data",
+                DEV_BUNDLE,
+            ))),
+            &EnvIdentity::default(),
+            Some(DEV_BUNDLE),
+        )
+        .unwrap();
+        assert_eq!(
+            verify_build_provenance(identity, "unknown")
+                .unwrap_err()
+                .code(),
+            "build_revision_mismatch"
+        );
+    }
+
+    #[test]
+    fn canonical_and_legacy_bundles_without_revision_receipts_remain_launchable() {
+        let canonical = resolve_identity(None, &EnvIdentity::default(), None).unwrap();
+        assert!(verify_build_provenance(canonical, "abc").is_ok());
+
+        let mut legacy = descriptor("alpha", "/tmp/instances/alpha/data", DEV_BUNDLE);
+        legacy.source_revision = None;
+        let legacy =
+            resolve_identity(Some(Ok(legacy)), &EnvIdentity::default(), Some(DEV_BUNDLE)).unwrap();
+        assert!(verify_build_provenance(legacy, "abc").is_ok());
     }
 
     #[test]
