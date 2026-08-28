@@ -300,7 +300,8 @@ test("live Craftax renders a subscribed optimizer journal immediately instead of
 test("live Craftax loads retained frame CAS through the host and never guesses a relative rollout URL", () => {
   const shell = readFileSync(join(root, "families/first_class_example_containers/live.craftax.v1/shell.tsx"), "utf8");
   assert.match(shell, /props\.media\.warm\(retainedFrameDigests, selectedIndex\)/);
-  assert.match(shell, /loadedFrame\?\.digest === selectedMediaDigest/);
+  assert.match(shell, /\? loadedFrame\?\.dataUrl/, "an absent selected frame must remain safe after production minification");
+  assert.match(shell, /loadedFrame\?\.digest === selectedMediaDigest && selectedMediaDigest != null/);
   assert.match(shell, /if \(!frameBaseUrl && !\/\^https\?:\|\^data:\/i\.test\(viewer\.frameUrl\)\) return undefined/);
   assert.doesNotMatch(shell, /frameBaseUrl \?\? window\.location\.href/);
   assert.match(shell, /Loading retained gameplay PNG/);

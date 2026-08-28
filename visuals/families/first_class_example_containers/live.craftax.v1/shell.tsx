@@ -443,8 +443,8 @@ export function Shell(props: ShellProps) {
       return undefined;
     }
   }, [viewer.frameUrl, failedFrameUrl, frameBaseUrl]);
-  const retainedFrameUrl = loadedFrame?.digest === selectedMediaDigest && failedMediaDigest !== selectedMediaDigest
-    ? loadedFrame.dataUrl
+  const retainedFrameUrl = loadedFrame?.digest === selectedMediaDigest && selectedMediaDigest != null && failedMediaDigest !== selectedMediaDigest
+    ? loadedFrame?.dataUrl
     : undefined;
   const frameUrl = retainedFrameUrl ?? directFrameUrl;
   const retainedFrameLoading = Boolean(selectedMediaDigest && props.media && !retainedFrameUrl && failedMediaDigest !== selectedMediaDigest);
