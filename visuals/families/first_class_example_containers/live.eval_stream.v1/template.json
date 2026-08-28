@@ -8,6 +8,17 @@
   "accent": "#FF5C00",
   "shell": "shell.tsx",
   "tags": ["live", "sse", "eval", "acceptance"],
+  "observationContract": {
+    "schemaVersion": "synth.visual-observation-contract.v1",
+    "readiness": {
+      "rejectTransportStates": ["idle", "declared", "replaying", "error", "connecting", "reconnecting"],
+      "minimumRolloutCount": 0,
+      "minimumRenderedFrameCount": 0,
+      "minimumSemanticEventCount": 1,
+      "minimumTransportEnvelopeCount": 1,
+      "requireTerminal": false
+    }
+  },
   "inputs": [
     {
       "name": "stream",

@@ -28,6 +28,7 @@
       "minimumRolloutCount": 0,
       "minimumRenderedFrameCount": 0,
       "minimumSemanticEventCount": 1,
+      "minimumTransportEnvelopeCount": 1,
       "requireTerminal": false
     }
   },

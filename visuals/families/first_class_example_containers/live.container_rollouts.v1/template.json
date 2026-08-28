@@ -15,6 +15,24 @@
     "rollout",
     "craftax"
   ],
+  "observationContract": {
+    "schemaVersion": "synth.visual-observation-contract.v1",
+    "readiness": {
+      "rejectTransportStates": [
+        "idle",
+        "declared",
+        "replaying",
+        "error",
+        "connecting",
+        "reconnecting"
+      ],
+      "minimumRolloutCount": 1,
+      "minimumRenderedFrameCount": 0,
+      "minimumSemanticEventCount": 1,
+      "minimumTransportEnvelopeCount": 1,
+      "requireTerminal": false
+    }
+  },
   "inputs": [
     {
       "name": "stream",

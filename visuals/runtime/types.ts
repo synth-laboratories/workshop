@@ -141,6 +141,13 @@ export type VisualTemplateMeta = {
       minimumRolloutCount?: number;
       minimumRenderedFrameCount?: number;
       minimumSemanticEventCount?: number;
+      /**
+       * Non-control envelopes the *transport* must have delivered, counted by
+       * the host's stream receipt at the poll seam. Deliberately separate from
+       * `minimumSemanticEventCount`, which is a claim about what the projector
+       * folded and only the fold can answer. Defaults to 0.
+       */
+      minimumTransportEnvelopeCount?: number;
       requireTerminal?: boolean;
     };
   };

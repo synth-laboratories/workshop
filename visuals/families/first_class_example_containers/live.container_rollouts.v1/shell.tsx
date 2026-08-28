@@ -115,7 +115,12 @@ export function Shell(props: ShellProps) {
   const recent = visibleEvents.slice(-8).reverse();
   const streamBase = stream.sse_url ? new URL(stream.sse_url, window.location.href) : null;
 
-  return <VisualChrome kicker="Container eval · live" live={live} title={props.title ?? "Live rollout progress"} lede={props.lede ?? "Watch real rollout position, outcomes, and engine activity as they arrive."} testId="visual-live-container-rollouts" footer="live.container_rollouts.v1 · synth.rollout.event.v1">
+  // The manifest declares an observationContract, so the pane publishes what it
+  // actually rendered — the lanes and frames on screen at the current cursor,
+  // not what the transport delivered. Workshop counts envelopes itself.
+  const renderedFrameCount = streamBase ? lanes.filter((lane) => lane.frameUrl).length : 0;
+
+  return <VisualChrome kicker="Container eval · live" live={live} title={props.title ?? "Live rollout progress"} lede={props.lede ?? "Watch real rollout position, outcomes, and engine activity as they arrive."} testId="visual-live-container-rollouts" footer="live.container_rollouts.v1 · synth.rollout.event.v1" observation={{ transportState: state, rolloutCount: lanes.length, renderedFrameCount, semanticEventCount: visibleEvents.length, terminal: lanes.length > 0 && done === lanes.length, error }}>
     <MetricStrip metrics={[{ label: "Rollouts", value: `${done}/${lanes.length || "—"} done` }, { label: "Total reward", value: formatMissingNumber(totalReward) }, { label: "Achievements", value: String(allAchievements.size) }, { label: "Stream", value: !hasSource ? "awaiting source" : !ready ? "connecting" : live ? "receiving" : done ? "complete" : "waiting" }]} />
     <section className="sv-section" aria-label="Evaluation replay"><div className="sv-section-head"><h3>Evaluation time</h3><time className="sv-mono">{events.length ? displayTime(timestamp(events[selectedGlobal])) : "Waiting for an event"}</time></div><input type="range" min={0} max={Math.max(0, events.length - 1)} value={selectedGlobal} onChange={(event) => setGlobalCursor(Number(event.currentTarget.value))} disabled={!events.length} aria-label="Replay the complete evaluation" style={{ width: "100%" }} /></section>
     {error ? <p role="alert" style={{ color: "#c2553f" }}>{error}</p> : null}

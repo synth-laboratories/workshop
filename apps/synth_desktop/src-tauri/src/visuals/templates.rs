@@ -9,6 +9,16 @@ use std::{
 
 const MANAGED_TEMPLATE_MAX_BYTES: u64 = 1_500_000;
 
+/// What a template requires before its current revision can be called ready.
+///
+/// Two different observers answer these. `minimum_rollout_count`,
+/// `minimum_rendered_frame_count`, `minimum_semantic_event_count` and
+/// `require_terminal` are read from the *rendered* observation the pane
+/// publishes: claims about what the projector folded and the DOM then drew.
+/// `minimum_transport_envelope_count` is read from the host's own stream
+/// receipt at the poll seam: a claim about what arrived, before any fold has an
+/// opinion about it. Keeping them separate is the whole point — see that
+/// field's note.
 #[derive(Clone, Debug, Serialize, Deserialize, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub struct TemplateReadinessContract {
@@ -23,6 +33,24 @@ pub struct TemplateReadinessContract {
     #[serde(default)]
     #[specta(type = specta_typescript::Number)]
     pub minimum_semantic_event_count: u64,
+    /// Non-control envelopes the transport must have delivered, counted by the
+    /// host's stream receipt rather than by the pane.
+    ///
+    /// Deliberately *not* `minimum_semantic_event_count`. That number is a
+    /// claim about what the projector produced, and only the fold can answer
+    /// it; the receipt counts at the transport level, where a heartbeat and a
+    /// verifier result are told apart by envelope kind and nothing more. A
+    /// template that renders one summary line out of a hundred envelopes, and a
+    /// template that fans one envelope into a hundred rows, both exist — so
+    /// satisfying a projector claim with a transport count would certify a fold
+    /// nobody ran, and satisfying a transport claim with a projector count
+    /// would veto a stream that did arrive. Two observers, two knobs.
+    ///
+    /// Defaults to 0, so a template that says nothing here keeps exactly the
+    /// behaviour it had before the receipt gate existed.
+    #[serde(default)]
+    #[specta(type = specta_typescript::Number)]
+    pub minimum_transport_envelope_count: u64,
     #[serde(default)]
     pub require_terminal: bool,
 }

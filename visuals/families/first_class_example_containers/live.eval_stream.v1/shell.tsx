@@ -58,6 +58,18 @@ export function Shell(props: ShellProps) {
       lede={props.lede}
       testId="visual-live-eval-stream"
       footer="live.eval_stream.v1"
+      observation={{
+        // The manifest declares an observationContract, so the pane must
+        // publish what it actually rendered or `capture_review` has no evidence
+        // to attach. Counts, never a passing boolean: Workshop owns the
+        // readiness decision. This pane draws no rollouts and no image frames.
+        transportState: state,
+        rolloutCount: 0,
+        renderedFrameCount: 0,
+        semanticEventCount: events.length,
+        terminal: state === "terminal",
+        error
+      }}
     >
       <Metrics events={events} />
       <Scrubber
