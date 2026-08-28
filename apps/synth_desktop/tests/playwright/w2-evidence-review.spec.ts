@@ -55,11 +55,13 @@ test("W2 revised evidence review is rendered and legible wide and compact", asyn
 	await page.getByTestId("titlebar").waitFor();
 	await page.getByTestId("open-visuals").click();
 	await page.getByTestId(`visuals-card-${visual.id}`).getByRole("button", { name: "Open" }).click();
+	await expect(page.locator(".toast")).toHaveCount(0);
+	await page.getByTestId("toggle-visual-expand").click();
+	await expect(page.getByTestId("toggle-visual-expand")).toHaveAttribute("aria-pressed", "true");
 	mkdirSync(PROOF_DIR, { recursive: true });
 
 	for (const state of [{ name: "wide", width: 1280, height: 900 }, { name: "compact", width: 768, height: 1024 }]) {
 		await page.setViewportSize({ width: state.width, height: state.height });
-		if (state.name === "compact") await page.getByTestId("toggle-visual-expand").click();
 		await page.waitForTimeout(250);
 		const summary = page.getByTestId("visual-pane").getByTestId("trace-evidence-summary");
 		await expect(summary).toBeVisible();
@@ -75,6 +77,5 @@ test("W2 revised evidence review is rendered and legible wide and compact", asyn
 		expect(geometry.summary?.left).toBeGreaterThanOrEqual(0);
 		expect(geometry.summary?.right).toBeLessThanOrEqual(state.width + 1);
 		await page.screenshot({ path: resolve(PROOF_DIR, `${state.name}-${state.width}x${state.height}.png`), fullPage: true });
-		if (state.name === "compact") await page.getByTestId("toggle-visual-expand").click();
 	}
 });

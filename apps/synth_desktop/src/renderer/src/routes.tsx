@@ -40,7 +40,7 @@ import { ResponsesTracePanel } from "./components/ResponsesTracePanel";
 import { DiagnosticsPanel } from "./components/DiagnosticsPanel";
 import { ErrorsLogsPanel } from "./components/ErrorsLogsPanel";
 import { sessionIsLocalChat } from "./runtime/sessionView";
-import { bridges } from "./runtime/desktopBridge";
+import { bridges, isDesktopApp } from "./runtime/desktopBridge";
 import {
 	openTraceReference,
 	VISUAL_OPS_FOLLOW_EVENT,
@@ -265,6 +265,7 @@ export function MainRoutes(props: MainRoutesProps): ReactNode {
 		loadOlderTranscript
 	} = props;
 	useEffect(() => {
+		if (!isDesktopApp()) return;
 		let disposed = false;
 		let unlisten: (() => void) | undefined;
 		void listen<{ instance?: string | null; view: string; runId?: string | null }>(
