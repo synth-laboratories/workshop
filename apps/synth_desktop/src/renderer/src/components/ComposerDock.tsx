@@ -88,7 +88,7 @@ function recoveryMessage(notice: RecoveryNotice): string {
 	if (notice.externalObjectId) {
 		return `Workshop exited after this task started ${notice.externalObjectId}.`;
 	}
-	return "Workshop exited while this task was running.";
+	return "Workshop restarted while this task was running. Continue on the same thread.";
 }
 
 /**
@@ -220,8 +220,8 @@ export function ComposerDock({
 					: recoveryNotice && activeChat?.id
 						? {
 							message: recoveryMessage(recoveryNotice),
-							actionLabel: "Restart",
-							onRetry: recoveryNotice.restartable && recoveryNotice.lastUserMessage?.text
+							actionLabel: "Continue",
+							onRetry: recoveryNotice.restartable
 								? () => onRestartRecovered?.(activeChat.id)
 								: undefined
 						}

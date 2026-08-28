@@ -48,6 +48,9 @@ compile("src/renderer/src/runtime/lagunaPolicies.ts", "lagunaPolicies.ts");
 const { restoreCodexSession } = await import(
 	compile("src/renderer/src/runtime/nativeCodex.ts", "nativeCodexRecovery.mjs")
 );
+const { restartContinuationPrompt } = await import(
+	compile("src/renderer/src/runtime/restartRecovery.ts", "restartRecovery.mjs")
+);
 
 function notice(overrides = {}) {
 	return {
@@ -229,6 +232,19 @@ test("restarting clears the notice and starts a new attempt", () => {
 	assert.equal(restarted.liveTurns["sess-1"], "turn-2");
 	assert.equal(sessionRecoveryNotice(restarted.sessions[0]), null);
 	assert.equal(selectChatPresence(restarted.sessions[0], restarted.liveTurns), "working");
+});
+
+test("restart continues the existing thread without replaying the user prompt", () => {
+	const recovery = notice({
+		lastActivity: { kind: "item/completed", label: "container_list", at: "2026-08-16T21:34:01.000Z" },
+		lastUserMessage: { text: "Launch five paid rollouts", clientMessageId: "user-1" }
+	});
+	const prompt = restartContinuationPrompt(recovery);
+
+	assert.match(prompt, /Continue from where this thread stopped/);
+	assert.match(prompt, /last durably recorded activity was container_list/);
+	assert.match(prompt, /Do not repeat completed work/);
+	assert.doesNotMatch(prompt, /Launch five paid rollouts/);
 });
 
 test("five chats abandoned by a crash all present as recovering and stay archivable", () => {

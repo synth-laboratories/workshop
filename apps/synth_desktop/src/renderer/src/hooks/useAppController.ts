@@ -65,6 +65,7 @@ import {
 import { chatInferencePhase } from "../runtime/chatWarmingState";
 import { approvalModeFromConfig, codexStartRequest, coreEventToRuntime, createCodexSession, restoreCodexSession, type ApprovalMode, type ApprovalPolicy, type SandboxMode } from "../runtime/nativeCodex";
 import { LOCAL_BASE_POLICY } from "../runtime/lagunaPolicies";
+import { restartContinuationPrompt } from "../runtime/restartRecovery";
 import type { LagunaPolicy } from "../bridge/types";
 import {
 	loadModelKnobValues,
@@ -1737,19 +1738,11 @@ export function useAppController() {
 		void sendToSession(pending.sessionId, pending.text, { messageId: pending.messageId });
 	}, [failedSend, sendToSession]);
 
-	/**
-	 * Send the abandoned turn's original prompt again as a new attempt.
-	 *
-	 * A fresh message id, deliberately: reusing the crashed turn's id would
-	 * merge the retry into the bubble that failed, and the whole point is that
-	 * the interrupted attempt stays visible in history. The host records the
-	 * link (`recoveredFromRunId`) on the new run.
-	 */
+	/** Continue the same Codex thread without replaying its abandoned prompt. */
 	const restartRecoveredChat = useCallback((sessionId: string) => {
 		const notice = recoveryNotices[sessionId];
-		const prompt = notice?.lastUserMessage?.text;
-		if (!notice || !prompt) {
-			showToast("This chat has no recorded message to restart from.");
+		if (!notice) {
+			showToast("This chat no longer needs recovery.");
 			return;
 		}
 		if (!notice.restartable) {
@@ -1760,7 +1753,10 @@ export function useAppController() {
 			);
 			return;
 		}
-		void sendToSession(sessionId, prompt);
+		// sendToSession performs the atomic thread/resume + turn/start handshake.
+		// The continuation is a new turn on that thread; it never duplicates the
+		// original user request, which is already present in Codex history.
+		void sendToSession(sessionId, restartContinuationPrompt(notice));
 	}, [recoveryNotices, sendToSession, showToast]);
 
 	const onComposerSend = useCallback(
