@@ -93,10 +93,10 @@ use intern_api::{
 use laguna::{LagunaManager, LagunaModelHit, LagunaStatus};
 use optimizers::{
     kernel::OptimizerRunViewV2, CheckpointInferRequest, HostedTrainingModelCatalog,
-    OptimizerCreateRequest, OptimizerEventEnvelope, OptimizerImportLocalRequest, OptimizerQuery,
-    OptimizerRecipeRunRequest, OptimizerReconcileRequest, OptimizerRelationship,
-    OptimizerRunRecord, OptimizerStateSlice, SavedLoraCheckpoint, SavedLoraCheckpointPage,
-    SavedLoraCheckpointQuery, SavedLoraDownload,
+    OptimizerArtifactPage, OptimizerArtifactRange, OptimizerCreateRequest, OptimizerEventEnvelope,
+    OptimizerImportLocalRequest, OptimizerQuery, OptimizerRecipeRunRequest,
+    OptimizerReconcileRequest, OptimizerRelationship, OptimizerRunRecord, OptimizerStateSlice,
+    SavedLoraCheckpoint, SavedLoraCheckpointPage, SavedLoraCheckpointQuery, SavedLoraDownload,
     SavedLoraPatchRequest,
 };
 use plugins::PluginStatus;
@@ -1549,6 +1549,46 @@ async fn optimizers_events_after(
 
 #[tauri::command]
 #[specta::specta]
+async fn optimizers_artifacts_list(
+    state: State<'_, Arc<CoreRuntime>>,
+    optimizer_run_id: String,
+    after_sequence: Option<contract::specta::OpaqueInteger<u64>>,
+    limit: Option<contract::specta::OpaqueInteger<i64>>,
+) -> Result<OptimizerArtifactPage, AppError> {
+    state
+        .optimizers()
+        .artifacts_list(
+            optimizer_run_id,
+            after_sequence.map(|value| value.0).unwrap_or(0),
+            limit.map(|value| value.0),
+        )
+        .await
+        .map_err(AppError::from)
+}
+
+#[tauri::command]
+#[specta::specta]
+async fn optimizers_artifact_read_range(
+    state: State<'_, Arc<CoreRuntime>>,
+    optimizer_run_id: String,
+    artifact_id: String,
+    offset: contract::specta::OpaqueInteger<u64>,
+    length: contract::specta::OpaqueInteger<u64>,
+) -> Result<OptimizerArtifactRange, AppError> {
+    state
+        .optimizers()
+        .artifact_read_range(
+            optimizer_run_id,
+            artifact_id,
+            offset.0,
+            length.0,
+        )
+        .await
+        .map_err(AppError::from)
+}
+
+#[tauri::command]
+#[specta::specta]
 async fn optimizers_frames_latest(
     state: State<'_, Arc<CoreRuntime>>,
     optimizer_run_id: String,
@@ -2564,7 +2604,7 @@ const VISUAL_MEDIA_MAX_BYTES: u64 = 16 * 1024 * 1024;
 /// Media types a pane is allowed to be handed. An allowlist, not a denylist:
 /// the store also holds trace archives and accessibility trees, and none of
 /// them should ever reach a renderer through an image request.
-const VISUAL_MEDIA_ALLOWED_TYPES: &[&str] = &["image/png"];
+const VISUAL_MEDIA_ALLOWED_TYPES: &[&str] = &["application/json", "image/png", "video/mp4"];
 
 #[derive(Clone, Debug, serde::Deserialize, specta::Type)]
 #[serde(rename_all = "camelCase")]

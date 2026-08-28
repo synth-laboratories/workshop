@@ -130,6 +130,8 @@ pub fn builder() -> Builder<tauri::Wry> {
             crate::optimizers_create,
             crate::optimizers_refresh,
             crate::optimizers_events_after,
+            crate::optimizers_artifacts_list,
+            crate::optimizers_artifact_read_range,
             crate::optimizers_frames_latest,
             crate::optimizers_frames_list,
             crate::optimizers_frame_content,
@@ -507,8 +509,9 @@ mod tests {
         // 276 → 277: `optimizers_run_view_v2` — versioned kernel projection.
         // 277 → 283: credential roots, bindings, locators, external remember,
         // register, and forget commands.
+        // 283 → 285: durable optimizer artifact list and bounded range read.
         assert_eq!(
-            exported, 283,
+            exported, 285,
             "generated bindings must contain the complete desktop command set"
         );
         assert_eq!(

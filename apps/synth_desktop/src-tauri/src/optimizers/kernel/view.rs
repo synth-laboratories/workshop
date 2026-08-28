@@ -11,7 +11,8 @@ use super::types::{
 };
 use super::work::WorkSummary;
 use crate::optimizers::models::{
-    OptimizerExecutionBinding, OptimizerResourceRef, OptimizerRunRecord,
+    EffectiveContract, OptimizerExecutionBinding, OptimizerResourceRef, OptimizerRunArtifact,
+    OptimizerRunRecord,
 };
 
 /// Product metadata stored on the admitted run record rather than re-derived
@@ -23,6 +24,8 @@ pub struct RunViewContext {
     pub input_refs: Vec<OptimizerResourceRef>,
     pub output_refs: Vec<OptimizerResourceRef>,
     pub visual_refs: Vec<OptimizerResourceRef>,
+    pub artifacts: Vec<OptimizerRunArtifact>,
+    pub effective_contract: Option<EffectiveContract>,
 }
 
 impl From<&OptimizerRunRecord> for RunViewContext {
@@ -32,6 +35,8 @@ impl From<&OptimizerRunRecord> for RunViewContext {
             input_refs: run.input_refs.clone(),
             output_refs: run.output_refs.clone(),
             visual_refs: run.visual_refs.clone(),
+            artifacts: vec![],
+            effective_contract: None,
         }
     }
 }
@@ -54,6 +59,9 @@ pub struct OptimizerRunHeader {
     pub input_refs: Vec<OptimizerResourceRef>,
     pub output_refs: Vec<OptimizerResourceRef>,
     pub visual_refs: Vec<OptimizerResourceRef>,
+    pub artifacts: Vec<OptimizerRunArtifact>,
+    #[serde(default)]
+    pub effective_contract: Option<EffectiveContract>,
     pub usage: UsageCompleteness,
     pub work: WorkSummary,
     pub evidence: EvidenceState,
@@ -140,6 +148,8 @@ pub fn project_view_with_context(
         input_refs: context.input_refs.clone(),
         output_refs: context.output_refs.clone(),
         visual_refs: context.visual_refs.clone(),
+        artifacts: context.artifacts.clone(),
+        effective_contract: context.effective_contract.clone(),
         usage: state.usage(),
         work: state.work_summary(),
         evidence: state.evidence_state(),
@@ -156,13 +166,13 @@ pub fn project_view_with_context(
             Some(AlgorithmResult::Eval(result)),
         ) => OptimizerRunViewV2::Eval(EvalRunView {
             header,
-            projection: projection.clone(),
+            projection: eval_projection_with_artifacts(projection, &context.artifacts),
             result: Some(result),
         }),
         (super::algorithm::AlgorithmProjection::Eval(projection), _) => {
             OptimizerRunViewV2::Eval(EvalRunView {
                 header,
-                projection: projection.clone(),
+                projection: eval_projection_with_artifacts(projection, &context.artifacts),
                 result: None,
             })
         }
@@ -227,6 +237,26 @@ pub fn project_view_with_context(
             })
         }
     }
+}
+
+fn eval_projection_with_artifacts(
+    projection: &super::algorithms::eval::EvalProjection,
+    artifacts: &[OptimizerRunArtifact],
+) -> super::algorithms::eval::EvalProjection {
+    let mut projection = projection.clone();
+    for item in &mut projection.work_items {
+        item.artifact_refs = artifacts
+            .iter()
+            .filter(|artifact| {
+                artifact.work_item_id.as_deref() == Some(item.work_item_id.as_str())
+                    || item.external_ref.as_deref().is_some_and(|external| {
+                        artifact.rollout_id.as_deref() == Some(external)
+                    })
+            })
+            .cloned()
+            .collect();
+    }
+    projection
 }
 
 #[cfg(test)]

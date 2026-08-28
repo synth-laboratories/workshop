@@ -43,10 +43,17 @@ pub struct TemplateMeta {
     pub title: String,
     #[serde(default)]
     pub genre: Option<String>,
+    /// Optional container/eval family this live template is registered to
+    /// represent. Tags remain descriptive/search metadata and are not an
+    /// ownership claim when this field is present on another template.
+    #[serde(default)]
+    pub family: Option<String>,
     #[serde(default)]
     pub version: Option<String>,
     #[serde(default)]
     pub description: Option<String>,
+    #[serde(default)]
+    pub tags: Vec<String>,
     #[serde(default)]
     pub path: Option<String>,
     #[serde(default)]
@@ -422,11 +429,23 @@ fn load_template_meta(path: &Path) -> anyhow::Result<TemplateMeta> {
             .get("genre")
             .and_then(Value::as_str)
             .map(str::to_string),
+        family: value
+            .get("family")
+            .and_then(Value::as_str)
+            .map(str::to_string),
         version,
         description: value
             .get("description")
             .and_then(Value::as_str)
             .map(str::to_string),
+        tags: value
+            .get("tags")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+            .map(str::to_string)
+            .collect(),
         path: None,
         shell_path: None,
         renderer_path: None,
