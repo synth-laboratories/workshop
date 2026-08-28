@@ -234,7 +234,7 @@ fn certification_receipts(
     Ok(receipts)
 }
 
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use hyper::StatusCode;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -657,6 +657,12 @@ async fn dispatch_request(
     if method == "POST" && path == "/v1/sessions/present" {
         return present_session(app, core, json_body).await;
     }
+    if method == "POST" && path == "/v1/sessions/approvals/list" {
+        return list_session_approvals(app, json_body).await;
+    }
+    if method == "POST" && path == "/v1/sessions/approvals/resolve" {
+        return resolve_session_approval(app, json_body).await;
+    }
     if path.starts_with("/v1/optimizers")
         || path.starts_with("/v1/training")
         || path.starts_with("/v1/mlx")
@@ -946,6 +952,95 @@ fn png_dimensions(bytes: &[u8]) -> Option<(u32, u32)> {
 
 fn json_field<'a>(body: &'a Value, camel: &str, snake: &str) -> Option<&'a Value> {
     body.get(camel).or_else(|| body.get(snake))
+}
+
+/// Opt-in that lets a non-human caller settle an approval a person is
+/// supposed to settle. Deliberately an environment variable on the Workshop
+/// process: it cannot be turned on by the agent, only by whoever launched the
+/// instance, and it does not survive into a shipped build's default posture.
+const AGENT_HUMAN_APPROVAL_ENV: &str = "SYNTH_DESKTOP_ALLOW_AGENT_HUMAN_APPROVALS";
+
+fn agent_may_settle_human_approvals() -> bool {
+    std::env::var(AGENT_HUMAN_APPROVAL_ENV)
+        .map(|value| value.trim() == "1")
+        .unwrap_or(false)
+}
+
+/// Pending approvals, so a caller can see a request instead of blocking on a
+/// modal raised against a conversation nobody has open.
+async fn list_session_approvals(app: &AppHandle, body: Value) -> Result<Value> {
+    let session_id = json_field(&body, "sessionId", "session_id")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned);
+    let codex = app.state::<Arc<crate::codex::CodexManager>>();
+    let approvals = codex
+        .approvals
+        .pending_summaries(session_id.as_deref())
+        .await;
+    Ok(json!({
+        "approvals": approvals,
+        "agentMaySettleHumanApprovals": agent_may_settle_human_approvals(),
+    }))
+}
+
+/// Settle one pending approval.
+///
+/// Spending and credential consent stay human by default: an agent that can
+/// approve its own paid compute has no spending gate left, and an approval
+/// receipt would stop being evidence that a person consented. The opt-in is
+/// for local development, and the receipt records that a non-human settled it
+/// so acceptance evidence can tell the two apart.
+async fn resolve_session_approval(app: &AppHandle, body: Value) -> Result<Value> {
+    let session_id = json_field(&body, "sessionId", "session_id")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .context("sessionId is required")?
+        .to_owned();
+    let approval_id = json_field(&body, "approvalId", "approval_id")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .context("approvalId is required")?
+        .to_owned();
+    let decision = json_field(&body, "decision", "decision")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .context("decision is required")?
+        .to_owned();
+    let codex = app.state::<Arc<crate::codex::CodexManager>>();
+    let requires_human = codex
+        .approvals
+        .pending_requires_human(&approval_id)
+        .await
+        .with_context(|| format!("approval is no longer pending: {approval_id}"))?;
+    if requires_human && !agent_may_settle_human_approvals() {
+        bail!(
+            "approval `{approval_id}` must be settled by a person; \
+             set {AGENT_HUMAN_APPROVAL_ENV}=1 on the Workshop process to allow \
+             a non-human caller to settle spending and credential consent"
+        );
+    }
+    codex
+        .resolve_approval(
+            app.clone(),
+            crate::codex::CodexApprovalDecisionRequest {
+                session_id: session_id.clone(),
+                approval_id: approval_id.clone(),
+                decision,
+            },
+        )
+        .await?;
+    Ok(json!({
+        "ok": true,
+        "sessionId": session_id,
+        "approvalId": approval_id,
+        "requiredHuman": requires_human,
+        "settledBy": if requires_human { "agent_opt_in" } else { "agent" },
+    }))
 }
 
 async fn present_session(app: &AppHandle, core: &CoreRuntime, body: Value) -> Result<Value> {

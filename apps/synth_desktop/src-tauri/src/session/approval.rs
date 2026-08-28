@@ -708,6 +708,47 @@ impl ApprovalBroker {
         Ok(())
     }
 
+    /// Every approval still awaiting a decision, newest-agnostic, optionally
+    /// narrowed to one session.
+    ///
+    /// A request raised against a conversation nobody has open is invisible
+    /// until it times out, and the caller that raised it just blocks. Listing
+    /// is read-only and carries only `safe_payload`, so it discloses exactly
+    /// what the modal would and nothing more.
+    pub(crate) async fn pending_summaries(&self, session_id: Option<&str>) -> Vec<Value> {
+        self.pending
+            .lock()
+            .await
+            .iter()
+            .filter(|(_, pending)| {
+                session_id.is_none_or(|wanted| pending.origin.session_id == wanted)
+            })
+            .map(|(approval_id, pending)| {
+                let mut payload = pending.kind.safe_payload(approval_id);
+                if let Some(object) = payload.as_object_mut() {
+                    object.insert("sessionId".into(), json!(pending.origin.session_id));
+                    // The gate a caller must clear to settle this one without
+                    // a person, stated up front rather than discovered by a
+                    // refusal.
+                    object.insert("requiresHuman".into(), json!(pending.kind.requires_human()));
+                }
+                payload
+            })
+            .collect()
+    }
+
+    /// Whether the pending approval is one a person must settle.
+    ///
+    /// `None` when it is not pending at all, so a caller cannot infer the
+    /// gate from a missing id.
+    pub(crate) async fn pending_requires_human(&self, approval_id: &str) -> Option<bool> {
+        self.pending
+            .lock()
+            .await
+            .get(approval_id)
+            .map(|pending| pending.kind.requires_human())
+    }
+
     pub(crate) async fn resolve<R: tauri::Runtime>(
         &self,
         app: &AppHandle<R>,
@@ -1495,6 +1536,103 @@ mod tests {
             scope: ApprovalScope::Session,
         })
         .unwrap();
+    }
+
+    /// A request nobody can see is a request that only ends by timing out.
+    /// Listing has to name the session it belongs to and say, per approval,
+    /// whether a person has to settle it — otherwise the caller learns the
+    /// gate only by being refused.
+    #[tokio::test]
+    async fn pending_summaries_disclose_the_session_and_the_human_gate() {
+        let broker = ApprovalBroker::new(SessionPersistence::Null);
+        let app = tauri::test::mock_app();
+        let handle = app.handle().clone();
+        let expired = Arc::new(AtomicUsize::new(0));
+        let origin = |session: &str| ApprovalOrigin {
+            session_id: session.into(),
+            instance_id: "process-1".into(),
+        };
+        let shell = broker
+            .request(
+                &handle,
+                origin("session-a"),
+                ApprovalKind::ShellCommand {
+                    request_method: "execCommandApproval".into(),
+                    detail: "ls".into(),
+                    scope: None,
+                    always_supported: false,
+                },
+                Arc::new(RecordingResolver {
+                    expired: expired.clone(),
+                }),
+            )
+            .await
+            .unwrap();
+        let paid = broker
+            .request(
+                &handle,
+                origin("session-b"),
+                ApprovalKind::PaidCompute {
+                    operation: "optimizer.evaluation.inline.start".into(),
+                    parameters: json!({}),
+                    estimated_cost_usd_micros: None,
+                    requested_cap: PaidComputeCap {
+                        max_cost_usd_micros: Some(2_450_000),
+                        max_rollouts: Some(5),
+                    },
+                    requesting_agent: "Agent session session-b".into(),
+                    recipe_id: None,
+                    dataset: None,
+                    proposer_model: None,
+                    evaluator_model: None,
+                    timeout_seconds: None,
+                    credential_names: vec!["openrouter:workshop_secrets_proxy".into()],
+                    preparation_digest: None,
+                },
+                Arc::new(RecordingResolver {
+                    expired: expired.clone(),
+                }),
+            )
+            .await
+            .unwrap();
+
+        let all = broker.pending_summaries(None).await;
+        assert_eq!(all.len(), 2);
+        let one = broker.pending_summaries(Some("session-b")).await;
+        assert_eq!(one.len(), 1, "listing narrows to the named session");
+        assert_eq!(one[0]["approvalId"], json!(paid));
+        assert_eq!(one[0]["sessionId"], json!("session-b"));
+        assert_eq!(
+            one[0]["requiresHuman"],
+            json!(true),
+            "spending consent is a person's to give"
+        );
+
+        let shell_row = broker.pending_summaries(Some("session-a")).await;
+        assert_eq!(shell_row[0]["requiresHuman"], json!(false));
+
+        assert_eq!(broker.pending_requires_human(&paid).await, Some(true));
+        assert_eq!(broker.pending_requires_human(&shell).await, Some(false));
+        // Absent rather than false: a caller must not read "no gate" out of an
+        // id that was never pending.
+        assert_eq!(broker.pending_requires_human("approval-missing").await, None);
+
+        broker
+            .resolve(
+                &handle,
+                "session-a",
+                &shell,
+                ApprovalDecision::Approve {
+                    scope: ApprovalScope::Once,
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            broker.pending_summaries(Some("session-a")).await.len(),
+            0,
+            "a settled approval leaves the pending listing"
+        );
     }
 
     #[tokio::test]
