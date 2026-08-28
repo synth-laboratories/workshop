@@ -11,6 +11,7 @@ use std::convert::Infallible;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::Duration;
 
 /// Syntactic stand-in for SDKs that require `OPENAI_API_KEY`. Not a credential.
 pub const API_KEY_SENTINEL: &str = "workshop-proxy";
@@ -231,6 +232,44 @@ fn bind_unix_listener(path: &Path) -> Result<std::os::unix::net::UnixListener> {
 pub const RELAY_ORIGIN_HEADER: &str = "x-workshop-proxy-origin";
 pub const RELAY_ORIGIN_PROXY: &str = "proxy";
 pub const RELAY_ORIGIN_UPSTREAM: &str = "upstream";
+const OPENROUTER_GENERATION_URL: &str = "https://openrouter.ai/api/v1/generation";
+
+/// OpenRouter documents generation lookup as the authoritative fallback when
+/// inline accounting is not yet present. A short bounded poll closes the
+/// receipt before Workshop debits the capability; it never guesses cost from
+/// token tariffs and never changes the bytes returned to the worker.
+async fn reconcile_openrouter_generation(
+    http: &reqwest::Client,
+    secret: &super::backend::SecretBytes,
+    response_id: &str,
+) -> Option<MeasuredUsage> {
+    let key = secret.as_utf8().ok()?;
+    for delay_ms in [0, 100, 250, 500, 1_000] {
+        if delay_ms > 0 {
+            tokio::time::sleep(Duration::from_millis(delay_ms)).await;
+        }
+        let Ok(response) = http
+            .get(OPENROUTER_GENERATION_URL)
+            .query(&[("id", response_id)])
+            .bearer_auth(key)
+            .send()
+            .await
+        else {
+            continue;
+        };
+        if !response.status().is_success() {
+            continue;
+        }
+        let Ok(body) = response.json::<Value>().await else {
+            continue;
+        };
+        let usage = providers::parse_openrouter_generation_usage(&body);
+        if usage.cost_usd.is_some() {
+            return Some(usage);
+        }
+    }
+    None
+}
 
 /// Secret-free classification of a transport failure. `reqwest::Error`'s
 /// `Display` embeds the request URL — which carries the capability handle — so
@@ -591,8 +630,6 @@ async fn handle(
             ))
         }
     };
-    drop(secret);
-
     let upstream = match outbound.send().await {
         Ok(response) => response,
         Err(error) => {
@@ -639,16 +676,16 @@ async fn handle(
         }
     };
     let bytes = sanitize_upstream_body(status, bytes);
-    let usage = if content_type.contains("json") {
-        serde_json::from_slice::<Value>(&bytes)
-            .ok()
-            .map(|body| parse_usage(&body))
-            .unwrap_or(MeasuredUsage {
-                calls: 1,
-                input_tokens: 0,
-                output_tokens: 0,
-                cost_usd: None,
-            })
+    let response_body = content_type
+        .contains("json")
+        .then(|| serde_json::from_slice::<Value>(&bytes).ok())
+        .flatten();
+    let provider_response_id = response_body
+        .as_ref()
+        .and_then(providers::response_id)
+        .map(str::to_owned);
+    let mut usage = if let Some(body) = response_body.as_ref() {
+        parse_usage(body)
     } else {
         MeasuredUsage {
             calls: 1,
@@ -657,6 +694,24 @@ async fn handle(
             cost_usd: None,
         }
     };
+    let mut cost_reconciled = false;
+    if status.is_success() && route.provider == "openrouter" && usage.cost_usd.is_none() {
+        if let Some(response_id) = provider_response_id.as_deref() {
+            if let Some(reconciled) =
+                reconcile_openrouter_generation(&http, &secret, response_id).await
+            {
+                if usage.input_tokens == 0 {
+                    usage.input_tokens = reconciled.input_tokens;
+                }
+                if usage.output_tokens == 0 {
+                    usage.output_tokens = reconciled.output_tokens;
+                }
+                usage.cost_usd = reconciled.cost_usd;
+                cost_reconciled = usage.cost_usd.is_some();
+            }
+        }
+    }
+    drop(secret);
     if status.is_success() {
         if let Ok(live) = state.capabilities.debit_usage(&handle, &usage) {
             let _ = state.db.with_conn(|conn| {
@@ -673,6 +728,9 @@ async fn handle(
                     "input_tokens": usage.input_tokens,
                     "output_tokens": usage.output_tokens,
                     "cost_usd": usage.cost_usd,
+                    "cost_complete": usage.cost_usd.is_some(),
+                    "cost_reconciled": cost_reconciled,
+                    "provider_response_id": provider_response_id,
                 }));
                 audit::append(conn, &event)
             });
