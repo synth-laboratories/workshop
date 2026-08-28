@@ -82,17 +82,18 @@ rg -q '^OPENROUTER_API_KEY=.openrouter-fixture.$' "$alpha_env"
 
 # Packaged apps must run exclusively from their isolated instance. A cwd or
 # runtime fallback under ~/Documents causes macOS Files & Folders prompts.
+dev_instance_body="$(sed -n '/^dev_instance()/,/^}/p' "$ROOT/scripts/desktop-instance.sh")"
 awk '
-  /if \[\[ "\$COMMAND" == "cua"/{in_cua=1}
-  in_cua && /cd "\$INSTANCE_ROOT"/ && !safe_cwd {safe_cwd=NR}
-  in_cua && /exec_isolated_cua_bundle/ && !launch_line {launch_line=NR}
+  /cd "\$INSTANCE_ROOT"/ && !safe_cwd {safe_cwd=NR}
+  /exec_isolated_cua_bundle/ && !launch_line {launch_line=NR}
   END { exit !(safe_cwd && launch_line && safe_cwd < launch_line) }
-' "$ROOT/scripts/desktop-instance.sh"
+' <<<"$dev_instance_body"
 # The helper itself must end in an environment-scrubbed exec of the recorded
 # bundle executable; checking a removed inline exec made this gate stale while
 # missing the stronger isolation contract.
 isolated_exec="$(sed -n '/^exec_isolated_cua_bundle()/,/^}/p' "$ROOT/scripts/desktop-instance.sh")"
-grep -q 'exec env -i' <<<"$isolated_exec"
+grep -q 'local isolated_env=(env -i' <<<"$isolated_exec"
+grep -Fq 'exec "${isolated_env[@]}"' <<<"$isolated_exec"
 grep -q 'PWD="\$INSTANCE_ROOT"' <<<"$isolated_exec"
 grep -q 'SYNTH_OPTIMIZER_PROJECT_ROOT="\$optimizer_project_root"' <<<"$isolated_exec"
 grep -q '"\$CUA_EXE"' <<<"$isolated_exec"
@@ -176,9 +177,10 @@ env_names_for() {
 }
 build_names="$(env_names_for cua-build)"
 run_names="$(env_names_for cua-run)"
-[[ -n "$build_names" && "$build_names" == "$run_names" ]]
-for required in SYNTH_DESKTOP_INSTANCE SYNTH_DESKTOP_DATA_ROOT SYNTH_DESKTOP_CONFIG SYNTH_CODEX_HOME \
-  SYNTH_DESKTOP_INSTANCE_MANIFEST SYNTH_DESKTOP_SOURCE_REVISION \
+rebuild_names="$(env_names_for rebuild-run)"
+[[ -n "$build_names" && "$build_names" == "$run_names" && "$run_names" == "$rebuild_names" ]]
+for required in SYNTH_DESKTOP_DATA_ROOT SYNTH_DESKTOP_CONFIG SYNTH_CODEX_HOME \
+  SYNTH_DESKTOP_SOURCE_REVISION \
   SYNTH_DESKTOP_DEV_OAUTH_STATE_FILE SYNTH_COMPUTER_USE_PARENT_REQUIREMENT CARGO_TARGET_DIR; do
   [[ ",$build_names," == *",$required,"* ]] || { echo "launch env missing $required" >&2; exit 1; }
 done
@@ -311,6 +313,15 @@ esac
 rg -q 'wait_for_health_instance' "$ROOT/scripts/desktop-instance.sh"
 rg -q 'print_runtime_identity' "$ROOT/scripts/desktop-instance.sh"
 rg -q 'verify_packaged_provenance' "$ROOT/scripts/desktop-instance.sh"
+rebuild_body="$(sed -n '/^rebuild_run_instance()/,/^}/p' "$ROOT/scripts/desktop-instance.sh")"
+case "$rebuild_body" in
+  *"exec_isolated_cua_bundle background"*) ;;
+  *) echo "rebuild-run did not share cua-run's isolated launch environment" >&2; exit 1 ;;
+esac
+case "$rebuild_body" in
+  *'"$CUA_EXE" &'*) echo "rebuild-run bypassed the canonical isolated launcher" >&2; exit 1 ;;
+  *) ;;
+esac
 set +e
 drift_out="$($ROOT/scripts/desktop-instance.sh cua-run alpha 2>&1)"
 drift_status=$?

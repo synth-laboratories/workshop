@@ -858,6 +858,7 @@ stage_gepa_runtime() {
 # small. Provider credentials live in the named instance's private .env and
 # are loaded by the app, never inherited here.
 exec_isolated_cua_bundle() {
+  local launch_mode="${1:-foreground}"
   local oauth_file="${SYNTH_DESKTOP_DEV_OAUTH_FILE:-}"
   local oauth_state="${SYNTH_DESKTOP_DEV_OAUTH_STATE_FILE:-}"
   local sft_train_jsonl="${SYNTH_MLX_SFT_TRAIN_JSONL:-}"
@@ -876,7 +877,7 @@ exec_isolated_cua_bundle() {
 
   mark_runtime "launching" "$$"
   release_operation_lock_before_exec
-  exec env -i \
+  local isolated_env=(env -i \
     PATH="$PATH" \
     HOME="$home_dir" \
     USER="$user_name" \
@@ -901,7 +902,12 @@ exec_isolated_cua_bundle() {
     SYNTH_OPTIMIZER_PROJECT_ROOT="$optimizer_project_root" \
     SYNTH_OPTIMIZER_WHEEL_FILE="$optimizer_wheel_file" \
     SYNTH_MLX_RL_URL="$mlx_rl_url" \
-    "$CUA_EXE"
+    "$CUA_EXE")
+  if [[ "$launch_mode" == "background" ]]; then
+    "${isolated_env[@]}" &
+  else
+    exec "${isolated_env[@]}"
+  fi
 }
 
 stage_instance() {
@@ -1388,13 +1394,12 @@ rebuild_run_instance() {
   fi
   COMMAND=cua-build
   dev_instance
-  COMMAND=rebuild-run
+  COMMAND=cua-run
   verify_packaged_provenance
   export_instance_env
   echo "[desktop:$NAME] launching recorded bundle from $INSTANCE_ROOT"
   cd "$INSTANCE_ROOT"
-  mark_runtime "launching" "$$"
-  "$CUA_EXE" &
+  exec_isolated_cua_bundle background
   wait_for_health_instance >/dev/null
   print_runtime_identity
 }
