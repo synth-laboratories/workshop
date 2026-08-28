@@ -444,14 +444,8 @@ fn normalize_builtin_recipe_contract(mut recipe: Value) -> Value {
         .entry("limits")
         .or_insert_with(|| Value::Object(Map::new()));
     if let Some(limits) = limits.as_object_mut() {
-        limits.insert(
-            "trials".into(),
-            json!(trials),
-        );
-        limits.insert(
-            "trialAuthority".into(),
-            json!(authority),
-        );
+        limits.insert("trials".into(), json!(trials));
+        limits.insert("trialAuthority".into(), json!(authority));
     }
     recipe
 }
@@ -644,10 +638,7 @@ fn policy_from_eval_recipe(
         reasoning_efforts.push(effort.to_string());
     }
     Ok(super::admission::provider_use_policy_from_bounds(
-        vec![
-            "chat.completions.create".into(),
-            "responses.create".into(),
-        ],
+        vec!["chat.completions.create".into(), "responses.create".into()],
         models,
         reasoning_efforts,
         max_trials.saturating_mul(16).clamp(40, u32::MAX as u64) as u32,

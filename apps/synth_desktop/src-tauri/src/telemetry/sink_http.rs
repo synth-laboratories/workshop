@@ -157,18 +157,23 @@ mod tests {
     async fn flush_through_http_sink_ships_the_backend_wire_contract() {
         let (origin, server) = spawn_ingestion_server(200);
         let (_dir, store) = consented_store_with_events();
-        let sink = Arc::new(HttpSink::with_endpoint(&origin, Some("sk_synth_user_sinktest")));
+        let sink = Arc::new(HttpSink::with_endpoint(
+            &origin,
+            Some("sk_synth_user_sinktest"),
+        ));
         let flusher = Flusher::new(store.clone(), sink);
 
         let outcome = flusher.flush_once().await.unwrap();
-        assert_eq!(outcome, crate::telemetry::flush::FlushOutcome::Sent { events: 2 });
+        assert_eq!(
+            outcome,
+            crate::telemetry::flush::FlushOutcome::Sent { events: 2 }
+        );
 
         let request = server.join().unwrap();
         let head = request.to_ascii_lowercase();
         assert!(head.starts_with("post /api/v1/product/usage-events"));
         assert!(head.contains("authorization: bearer sk_synth_user_sinktest"));
-        let body: Value =
-            serde_json::from_str(request.split("\r\n\r\n").nth(1).unwrap()).unwrap();
+        let body: Value = serde_json::from_str(request.split("\r\n\r\n").nth(1).unwrap()).unwrap();
         assert_eq!(body["schema_version"], 1);
         assert_eq!(body["product"], "workshop");
         let events = body["events"].as_array().unwrap();

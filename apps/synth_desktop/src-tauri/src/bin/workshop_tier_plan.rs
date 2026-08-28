@@ -66,5 +66,8 @@ fn main() {
             "excluded": items(&plan.excluded),
         },
     });
-    println!("{}", serde_json::to_string_pretty(&output).expect("plan serializes"));
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&output).expect("plan serializes")
+    );
 }

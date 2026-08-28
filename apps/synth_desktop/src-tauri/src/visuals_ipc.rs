@@ -3737,13 +3737,7 @@ fn parse_secrets_request<T: serde::de::DeserializeOwned>(body: Value) -> Result<
         object.keys().any(|key| {
             matches!(
                 key.to_ascii_lowercase().as_str(),
-                "value"
-                    | "secret"
-                    | "apikey"
-                    | "api_key"
-                    | "token"
-                    | "password"
-                    | "credential"
+                "value" | "secret" | "apikey" | "api_key" | "token" | "password" | "credential"
             )
         })
     }) {
@@ -4633,9 +4627,11 @@ fn extract_imported_trace_frames(
                 width,
                 height,
                 step,
-                producer_digest: event.pointer("/payload/source_event_digest")
+                producer_digest: event
+                    .pointer("/payload/source_event_digest")
                     .or_else(|| event.pointer("/detail/source_event_digest"))
-                    .and_then(Value::as_str).map(str::to_string),
+                    .and_then(Value::as_str)
+                    .map(str::to_string),
             });
             imported_artifacts.insert(artifact_id.to_string());
         }

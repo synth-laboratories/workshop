@@ -35,7 +35,9 @@ pub enum FlushOutcome {
     ConsentWithheld,
     /// Nothing past the watermark.
     Empty,
-    Sent { events: usize },
+    Sent {
+        events: usize,
+    },
 }
 
 pub struct Flusher {
@@ -123,7 +125,12 @@ mod tests {
         }
     }
 
-    fn fixture() -> (tempfile::TempDir, TelemetryStore, Arc<CapturingSink>, Flusher) {
+    fn fixture() -> (
+        tempfile::TempDir,
+        TelemetryStore,
+        Arc<CapturingSink>,
+        Flusher,
+    ) {
         let dir = tempfile::tempdir().unwrap();
         let storage = Storage::open(dir.path()).unwrap();
         let store = TelemetryStore::new(storage.database().clone());

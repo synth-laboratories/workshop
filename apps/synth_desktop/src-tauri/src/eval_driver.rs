@@ -2487,9 +2487,10 @@ mod tests {
     /// OpenRouter session silently violated ChatGPT-only task contracts.
     #[test]
     fn session_routes_require_an_explicit_provider() {
-        let error = require_explicit_provider(&json!({"model": "openai/gpt-5.6-luna"}), "create_session")
-            .unwrap_err()
-            .to_string();
+        let error =
+            require_explicit_provider(&json!({"model": "openai/gpt-5.6-luna"}), "create_session")
+                .unwrap_err()
+                .to_string();
         assert!(error.contains("requires an explicit `provider`"), "{error}");
         assert!(error.contains("never defaults"), "{error}");
         assert_eq!(
@@ -2759,10 +2760,7 @@ mod tests {
             policy_rollout_timeout_seconds(&json!({})),
             crate::limits::CONTAINER_POLICY_ROLLOUT_TIMEOUT.as_secs()
         );
-        assert_eq!(
-            policy_rollout_timeout_seconds(&json!({"timeoutS": 90})),
-            90
-        );
+        assert_eq!(policy_rollout_timeout_seconds(&json!({"timeoutS": 90})), 90);
     }
 
     #[test]

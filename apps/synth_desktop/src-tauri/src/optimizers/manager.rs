@@ -25,7 +25,9 @@ use sha2::{Digest, Sha256};
 use std::{
     cell::Cell,
     collections::HashMap,
-    env, ffi::OsString, fs,
+    env,
+    ffi::OsString,
+    fs,
     io::Write,
     path::{Path, PathBuf},
     process::Stdio,

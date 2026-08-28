@@ -559,12 +559,14 @@ mod tests {
         // Read-only on purpose — there is no write, no delete, and no
         // arbitrary-path read, because a viewer that could also write would
         // need the approval machinery the agent's own tools already own.
-        // → +7 (phase-A project sources): persistent, inspectable roots
+        // → 302 (+7, phase-A project sources): persistent, inspectable roots
         // Workshop may discover executable declarations in — get/refresh,
         // human-only add/remove, and the pending agent-request inbox with its
         // picker-confirmed approve and its deny.
+        // → 304 (+2, DeepSWE lifecycle): source-bound pre-spend approval
+        // reverification and durable run-lifecycle inspection.
         assert_eq!(
-            exported, 295,
+            exported, 304,
             "generated bindings must contain the complete desktop command set"
         );
         assert_eq!(

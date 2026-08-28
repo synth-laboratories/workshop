@@ -15,6 +15,7 @@ pub mod intern_protocol_test_support {
         SyncCreateRequest,
     };
 }
+mod adapters;
 mod codex;
 mod codex_oauth;
 mod composition;
@@ -57,15 +58,14 @@ mod secrets;
 mod services;
 mod session;
 mod skills;
+pub mod storage;
 /// The one fold: envelope identity, dedupe, conflict, gap scan, projection,
 /// and the cursor arithmetic every ordered-journal reader in this crate used
 /// to write for itself. See its module header for the rules and the
 /// golden-fixture suite that pins the TypeScript mirror to it.
 pub mod stream_fold;
-pub mod storage;
 mod synth_config;
 mod tariffs;
-mod adapters;
 mod telemetry;
 mod terminal;
 pub mod trace_ingest;
@@ -108,6 +108,7 @@ use optimizers::{
     SavedLoraPatchRequest,
 };
 use plugins::PluginStatus;
+use project_sources::{ProjectSourceApproval, ProjectSourceCatalog, ProjectSourceRequest};
 use reports::{
     ExperimentRecord, ExperimentRecordUpsert, ReportAudienceRequest, ReportAudienceState,
     ReportComment, ReportCommentCreate, ReportCreateRequest, ReportQuery, ReportRecord,
@@ -136,7 +137,6 @@ use visuals::{
     VisualCreateRequest, VisualQuery, VisualRecord, VisualRendition, VisualRevision, VisualSeal,
     VisualSealBundle, VisualUpdateRequest, VisualUpload,
 };
-use project_sources::{ProjectSourceApproval, ProjectSourceCatalog, ProjectSourceRequest};
 use workspace_scope::WorkspaceGrantRequest;
 use workspace_scope::{ConversationWorkspaceScope, WorkspaceAccessMode};
 
@@ -996,8 +996,7 @@ pub(crate) async fn authorize_optimizer_recipe_start(
                 .iter()
                 .filter(|entry| {
                     entry.get("source").and_then(Value::as_str) == Some("workspace")
-                        && entry.get("availability").and_then(Value::as_str)
-                            == Some("unavailable")
+                        && entry.get("availability").and_then(Value::as_str) == Some("unavailable")
                 })
                 .find_map(|entry| entry.get("availabilityReason").and_then(Value::as_str));
             match workspace_blocker {
@@ -1647,12 +1646,7 @@ async fn optimizers_artifact_read_range(
 ) -> Result<OptimizerArtifactRange, AppError> {
     state
         .optimizers()
-        .artifact_read_range(
-            optimizer_run_id,
-            artifact_id,
-            offset.0,
-            length.0,
-        )
+        .artifact_read_range(optimizer_run_id, artifact_id, offset.0, length.0)
         .await
         .map_err(AppError::from)
 }
@@ -2756,17 +2750,14 @@ async fn visual_stream_poll(
             // which is the same O(page history) the renderer's own ingest
             // already pays on every batch; if that bites, the fix is an
             // incremental fold inside `stream_fold`, not a second projector.
-            let projection = visuals::live_eval::observed_projection(
-                &visual.id,
-                visual.current_revision,
-                None,
-            )
-            .transpose()
-            .map_err(AppError::from)?
-            .map(|projection| visuals::live_eval::projection_view(&projection))
-            .transpose()
-            .map_err(AppError::from)?
-            .map(contract::specta::OpaqueJson);
+            let projection =
+                visuals::live_eval::observed_projection(&visual.id, visual.current_revision, None)
+                    .transpose()
+                    .map_err(AppError::from)?
+                    .map(|projection| visuals::live_eval::projection_view(&projection))
+                    .transpose()
+                    .map_err(AppError::from)?
+                    .map(contract::specta::OpaqueJson);
             Ok(VisualStreamPollResult {
                 schema_version: VISUAL_STREAM_POLL_SCHEMA.to_string(),
                 events: contract::specta::OpaqueJson(serde_json::Value::Array(
@@ -4806,7 +4797,10 @@ async fn workspace_scope_approve_request(
 /// Shared by every project-source command so admission always originates from
 /// a selection the person at the keyboard made in a native dialog, never from
 /// a path the renderer or an agent supplied.
-async fn pick_project_folder(app: &tauri::AppHandle, title: &str) -> Result<Option<String>, AppError> {
+async fn pick_project_folder(
+    app: &tauri::AppHandle,
+    title: &str,
+) -> Result<Option<String>, AppError> {
     let (sender, receiver) = tokio::sync::oneshot::channel();
     app.dialog()
         .file()
@@ -5249,7 +5243,9 @@ async fn codex_approval_resolve(
             .pending_kind(&request.approval_id)
             .await
             .and_then(|kind| kind.approval_digest().map(str::to_owned));
-        if request.decision != "reject" && digest_bound.is_some() && request.approval_digest.is_none()
+        if request.decision != "reject"
+            && digest_bound.is_some()
+            && request.approval_digest.is_none()
         {
             return Err(AppError::invalid_argument(
                 "paid-compute approval requires the active proposal digest",
@@ -5272,10 +5268,9 @@ async fn codex_approval_resolve(
         return Ok(());
     }
     if let Some(digest) = request.approval_digest.as_deref() {
-        let decision = crate::session::approval::ApprovalDecision::from_shell_wire(
-            &request.decision,
-        )
-        .map_err(AppError::from)?;
+        let decision =
+            crate::session::approval::ApprovalDecision::from_shell_wire(&request.decision)
+                .map_err(AppError::from)?;
         if approvals
             .was_resolved_exact(&request.session_id, digest, &decision)
             .await

@@ -218,8 +218,8 @@ async fn start_inner(
         )
         .await
         {
-            let _ = append_terminal_event(&worker_service, &run_id, true, format!("{error:#}"))
-                .await;
+            let _ =
+                append_terminal_event(&worker_service, &run_id, true, format!("{error:#}")).await;
         }
         worker_manager.release_gepa_recipe(&run_id).await;
         worker_service.unregister_local_recipe(&run_id).await;
@@ -321,13 +321,9 @@ pub(super) async fn start_prepared(
         )
         .await
         {
-            let _ = append_terminal_event(
-                &worker_service,
-                &worker_run_id,
-                true,
-                format!("{error:#}"),
-            )
-            .await;
+            let _ =
+                append_terminal_event(&worker_service, &worker_run_id, true, format!("{error:#}"))
+                    .await;
         }
         worker_manager.release_gepa_recipe(&worker_run_id).await;
         worker_service.unregister_local_recipe(&worker_run_id).await;
@@ -771,7 +767,11 @@ fn provider_use_policy(config_path: Option<&Path>) -> Result<crate::secrets::Sec
         .get("bounds")
         .and_then(toml::Value::as_table)
         .and_then(|section| section.get("max_cost_usd"))
-        .and_then(|value| value.as_float().or_else(|| value.as_integer().map(|v| v as f64)))
+        .and_then(|value| {
+            value
+                .as_float()
+                .or_else(|| value.as_integer().map(|v| v as f64))
+        })
         .filter(|value| value.is_finite() && *value > 0.0)
         .context("run-owned recipe is missing bounds.max_cost_usd")?;
     let rollout_output_limit = config
@@ -781,8 +781,8 @@ fn provider_use_policy(config_path: Option<&Path>) -> Result<crate::secrets::Sec
         .and_then(toml::Value::as_integer)
         .and_then(|value| u64::try_from(value).ok())
         .filter(|value| *value > 0);
-    let declared_output_tokens = rollout_output_limit
-        .map(|limit| rollout_limit.saturating_mul(limit));
+    let declared_output_tokens =
+        rollout_output_limit.map(|limit| rollout_limit.saturating_mul(limit));
     Ok(super::admission::provider_use_policy_from_bounds(
         vec!["chat.completions.create".into()],
         models,
@@ -1294,9 +1294,7 @@ async fn append_terminal_event(
     } else {
         super::kernel::SettleCause::Completed
     };
-    service
-        .settle_run(run_id.to_string(), cause, error)
-        .await?;
+    service.settle_run(run_id.to_string(), cause, error).await?;
     Ok(())
 }
 

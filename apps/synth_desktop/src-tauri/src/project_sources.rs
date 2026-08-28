@@ -967,10 +967,22 @@ mod tests {
         r#"
 [[container]]
 id = "demo-service"
-command = ["true"]
 url = "http://127.0.0.1:9999"
 locality = "container"
 family = "demo"
+[container.launch]
+schema_version = "synth.container-launch.v1"
+working_directory = "."
+command = ["true"]
+readiness_timeout_seconds = 30
+shutdown_grace_seconds = 5
+expected_port = 9999
+image_ref = "fixture"
+health_target = "fixture"
+[container.launch.source]
+revision_policy = "exact-or-dirty-digest"
+tracked_revision = "fixture-revision"
+include = ["workshop.containers.toml"]
 "#
     }
 
@@ -1117,9 +1129,21 @@ family = "demo"
             r#"
 [[container]]
 id = "escaping"
-command = ["true"]
-cwd = ".."
+url = "http://127.0.0.1:9999"
 locality = "container"
+[container.launch]
+schema_version = "synth.container-launch.v1"
+working_directory = ".."
+command = ["true"]
+readiness_timeout_seconds = 30
+shutdown_grace_seconds = 5
+expected_port = 9999
+image_ref = "fixture"
+health_target = "fixture"
+[container.launch.source]
+revision_policy = "exact-or-dirty-digest"
+tracked_revision = "fixture-revision"
+include = ["workshop.containers.toml"]
 "#,
         );
         let inspection = inspect(temp.path());
@@ -1129,7 +1153,7 @@ locality = "container"
             Some("container_manifest_invalid")
         );
         assert!(
-            inspection.message.unwrap_or_default().contains("escapes"),
+            inspection.message.unwrap_or_default().contains("outside"),
             "the diagnostic must say why the manifest was refused"
         );
     }

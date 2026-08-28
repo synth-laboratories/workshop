@@ -819,12 +819,9 @@ async fn handle(
     let parsed: Value = serde_json::from_slice(&collected).unwrap_or(Value::Null);
     let model = request_model(&parsed).map(str::to_owned);
     let effort = request_effort(&parsed).map(str::to_owned);
-    if let Err(error) = capability::authorize_request(
-        &live,
-        route.operation,
-        model.as_deref(),
-        effort.as_deref(),
-    ) {
+    if let Err(error) =
+        capability::authorize_request(&live, route.operation, model.as_deref(), effort.as_deref())
+    {
         return Ok(json_error(
             StatusCode::FORBIDDEN,
             "policy_denied",

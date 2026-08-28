@@ -649,8 +649,7 @@ mod tests {
             assert_harbor_live_frames(&json!({"capabilities": {"live_frames": true}})).is_err()
         );
         assert!(
-            assert_harbor_live_frames(&json!({"capabilities": {"live_frames": "native"}}))
-                .is_err()
+            assert_harbor_live_frames(&json!({"capabilities": {"live_frames": "native"}})).is_err()
         );
         assert!(assert_harbor_live_frames(
             &json!({"metadata": {"capabilities": {"live_frames": true}}})

@@ -152,10 +152,11 @@ fn tools() -> Value {
         ,{"name":"container_poll_rollout","description":"Resume the exact declared poll stream after a sequence cursor. Returns events plus authoritative high_water and closed cursor state; it never re-executes the rollout.","inputSchema":{"type":"object","properties":{"container_id":{"type":"string"},"rollout_id":{"type":"string"},"stream":{"type":"object"},"after":{"type":"integer","minimum":0}},"required":["container_id","rollout_id","stream"],"additionalProperties":false},"annotations":{"readOnlyHint":true,"destructiveHint":false,"idempotentHint":true,"openWorldHint":false}}
         ,{"name":"container_run_rollouts","description":"Scripted engine-acceptance only: 1-10 bounded rollouts with an explicit action list. Not a ReAct or model evaluation. Live policy evals use container_prepare_rollout then container_start_prepared_rollout with policy_ref.","inputSchema":{"type":"object","properties":{"container_id":{"type":"string"},"count":{"type":"integer","minimum":1,"maximum":10},"seeds":{"type":"array","items":{"type":"integer"},"maxItems":10},"actions":{"type":"array","items":{"type":"string"},"minItems":1,"maxItems":64}},"required":["container_id","count","actions"],"additionalProperties":false},"annotations":{"readOnlyHint":false,"destructiveHint":false,"idempotentHint":false,"openWorldHint":true}}
     ]});
-    if let Some(facade) = catalog["tools"]
-        .as_array_mut()
-        .and_then(|items| items.iter_mut().find(|tool| tool["name"] == "container_manage"))
-    {
+    if let Some(facade) = catalog["tools"].as_array_mut().and_then(|items| {
+        items
+            .iter_mut()
+            .find(|tool| tool["name"] == "container_manage")
+    }) {
         facade["inputSchema"]["properties"]["operation"]["enum"] = Value::Array(
             CONTAINER_OPERATIONS
                 .iter()

@@ -280,9 +280,7 @@ pub(super) fn seal(conn: &Connection, run_id: &str, manifest: &Value) -> Result<
     // Pre-existing sealed manifests are tolerated on read (see `load`); a new
     // seal is not.
     if let Some(open) = open_terminal_work(&manifest) {
-        anyhow::bail!(
-            "refusing to seal an open-world terminal manifest for {run_id}: {open}"
-        );
+        anyhow::bail!("refusing to seal an open-world terminal manifest for {run_id}: {open}");
     }
     conn.execute(
         "INSERT INTO optimizer_terminal_manifests(
@@ -437,8 +435,7 @@ fn populate_canonical_usage(conn: &Connection, run_id: &str, manifest: &mut Valu
         .with_context(|| format!("optimizer run {run_id} disappeared before terminal sealing"))?;
     let usage: OptimizerUsageSummary = serde_json::from_str(&usage_json)
         .with_context(|| format!("decode canonical usage for optimizer run {run_id}"))?;
-    let (committed_prompt, committed_completion, completeness) =
-        usage_evidence(conn, run_id)?;
+    let (committed_prompt, committed_completion, completeness) = usage_evidence(conn, run_id)?;
     if usage.prompt_tokens < committed_prompt || usage.completion_tokens < committed_completion {
         anyhow::bail!(
             "canonical terminal usage for {run_id} is below committed policy spans: \
@@ -503,9 +500,7 @@ fn usage_evidence(conn: &Connection, run_id: &str) -> Result<(u64, u64, &'static
             .and_then(Value::as_object)
             .and_then(|container| container.get("kind"))
             .and_then(Value::as_str);
-        if event.event_type == "eval.trial.event"
-            && container_kind == Some("span.policy.data")
-        {
+        if event.event_type == "eval.trial.event" && container_kind == Some("span.policy.data") {
             if let Some(delta) = event.usage_delta.as_ref() {
                 committed_prompt = committed_prompt.saturating_add(
                     delta
@@ -537,14 +532,10 @@ fn usage_evidence(conn: &Connection, run_id: &str) -> Result<(u64, u64, &'static
     }
     let completeness = if provider_reconciled {
         "reconciled"
-    } else if terminal_markers.iter().any(|value| value == "partial")
-        || terminal_markers.is_empty()
+    } else if terminal_markers.iter().any(|value| value == "partial") || terminal_markers.is_empty()
     {
         "partial"
-    } else if terminal_markers
-        .iter()
-        .all(|value| value == "reconciled")
-    {
+    } else if terminal_markers.iter().all(|value| value == "reconciled") {
         "reconciled"
     } else {
         "container_reported"
@@ -830,7 +821,10 @@ mod tests {
         let sealed = seal(&conn, "run_1", &manifest).unwrap();
         assert_eq!(sealed.pointer("/usage/costUsd"), Some(&json!(1.25)));
         assert_eq!(sealed.pointer("/usage/rollouts"), Some(&json!(4)));
-        assert_eq!(sealed.pointer("/usage/completeness"), Some(&json!("partial")));
+        assert_eq!(
+            sealed.pointer("/usage/completeness"),
+            Some(&json!("partial"))
+        );
         assert_eq!(
             sealed.pointer("/paidComputeApproval/approvalId"),
             Some(&json!("approval-1"))
@@ -914,7 +908,9 @@ mod tests {
             ],
         )
         .unwrap();
-        let loaded = load(&conn, "run_1").unwrap().expect("legacy manifest loads");
+        let loaded = load(&conn, "run_1")
+            .unwrap()
+            .expect("legacy manifest loads");
         assert_eq!(loaded.pointer("/work/running"), Some(&json!(4)));
     }
 

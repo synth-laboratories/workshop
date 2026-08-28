@@ -782,11 +782,7 @@ async fn watch_job(
                 }
                 persist_handoff(&service, &client, &run_id).await?;
                 service
-                    .settle_run(
-                        run_id.clone(),
-                        super::kernel::SettleCause::Completed,
-                        None,
-                    )
+                    .settle_run(run_id.clone(), super::kernel::SettleCause::Completed, None)
                     .await?;
                 service.open_visual(run_id.clone()).await?;
                 return Ok(());

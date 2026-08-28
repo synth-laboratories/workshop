@@ -515,8 +515,16 @@ mod tests {
         let events = vec![
             eval_event(1, "optimizer.run.started", json!({})),
             eval_event(2, "eval.run.planned", json!({"plannedTrials": 5})),
-            eval_event(3, "eval.trial.started", json!({"workItemId": "eval:trial:0"})),
-            eval_event(4, "eval.trial.started", json!({"workItemId": "eval:trial:1"})),
+            eval_event(
+                3,
+                "eval.trial.started",
+                json!({"workItemId": "eval:trial:0"}),
+            ),
+            eval_event(
+                4,
+                "eval.trial.started",
+                json!({"workItemId": "eval:trial:1"}),
+            ),
             eval_event(5, "optimizer.run.cancelled", json!({})),
         ];
         let batch = commit(admit_eval(), &DurableProducerLog::default(), &events, "now").unwrap();

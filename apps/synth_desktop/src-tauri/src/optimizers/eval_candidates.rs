@@ -410,7 +410,14 @@ mod tests {
 
     #[test]
     fn inline_source_file_names_cannot_escape_the_candidate_store() {
-        for file_name in ["", ".", "..", "../secrets", "policy/source.py", "policy\\source.py"] {
+        for file_name in [
+            "",
+            ".",
+            "..",
+            "../secrets",
+            "policy/source.py",
+            "policy\\source.py",
+        ] {
             let source = EvalCandidateSource {
                 label: "test".into(),
                 content: "pass\n".into(),
@@ -420,7 +427,8 @@ mod tests {
                 baseline: None,
                 legacy_path: None,
             };
-            let staging = std::env::temp_dir().join(format!("eval-inline-{}", uuid::Uuid::new_v4()));
+            let staging =
+                std::env::temp_dir().join(format!("eval-inline-{}", uuid::Uuid::new_v4()));
             assert!(write_inline_source(&staging, &source).is_err());
             let _ = fs::remove_dir_all(staging);
         }
@@ -439,7 +447,10 @@ mod tests {
             legacy_path: None,
         };
         assert_eq!(write_inline_source(&staging, &source).unwrap(), "policy.py");
-        assert_eq!(fs::read_to_string(staging.join("policy.py")).unwrap(), source.content);
+        assert_eq!(
+            fs::read_to_string(staging.join("policy.py")).unwrap(),
+            source.content
+        );
         let _ = fs::remove_dir_all(staging);
     }
 

@@ -505,7 +505,8 @@ impl VisualState {
         }
         book.bytes += size;
         book.kept += 1;
-        self.evidence.push((stream_id.to_string(), envelope.clone()));
+        self.evidence
+            .push((stream_id.to_string(), envelope.clone()));
         true
     }
 
@@ -1639,7 +1640,10 @@ mod tests {
         let card = receipt(&visual, 1, &declared);
         assert!(card.ready, "the subscription notice reached the receipt");
         assert_eq!(card.envelope_count, 4);
-        assert_eq!(card.recovered, 2, "the duplicate frame is not evidence twice");
+        assert_eq!(
+            card.recovered, 2,
+            "the duplicate frame is not evidence twice"
+        );
 
         let (events, truncated) = observed_evidence(&visual, 1, &stream_id).unwrap();
         assert!(!truncated);

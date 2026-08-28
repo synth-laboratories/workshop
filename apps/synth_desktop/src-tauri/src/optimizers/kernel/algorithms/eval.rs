@@ -206,7 +206,8 @@ impl EvalProjection {
                 if let Some(id) = work_id(event) {
                     let entry = self.ensure_evidence_entry(&id);
                     entry.state = RolloutEvidenceState::Open;
-                    entry.rollout_id = string_field(&event.producer.payload, "rolloutId", "rollout_id");
+                    entry.rollout_id =
+                        string_field(&event.producer.payload, "rolloutId", "rollout_id");
                     entry.trial_id = string_field(&event.producer.payload, "trialId", "trial_id");
                 }
             }
@@ -309,12 +310,8 @@ impl EvalProjection {
                     }
                 }
                 let entry = self.ensure_evidence_entry(&work_item_id);
-                entry.rollout_id = string_field(
-                    &event.producer.payload,
-                    "rolloutId",
-                    "rollout_id",
-                )
-                .or_else(|| entry.rollout_id.clone());
+                entry.rollout_id = string_field(&event.producer.payload, "rolloutId", "rollout_id")
+                    .or_else(|| entry.rollout_id.clone());
                 entry.trial_id = string_field(&event.producer.payload, "trialId", "trial_id")
                     .or_else(|| entry.trial_id.clone());
                 entry.last_observed_step = event
@@ -499,15 +496,14 @@ impl EvalProjection {
             .iter()
             .filter(|entry| entry.state == RolloutEvidenceState::Missing)
             .count();
-        let completeness = if !self.evidence_ledger.is_empty()
-            && sealed_complete == self.evidence_ledger.len()
-        {
-            EvidenceCompleteness::Complete
-        } else if terminal > 0 || sealed_complete > 0 || sealed_partial > 0 || aborted > 0 {
-            EvidenceCompleteness::Partial
-        } else {
-            EvidenceCompleteness::Absent
-        };
+        let completeness =
+            if !self.evidence_ledger.is_empty() && sealed_complete == self.evidence_ledger.len() {
+                EvidenceCompleteness::Complete
+            } else if terminal > 0 || sealed_complete > 0 || sealed_partial > 0 || aborted > 0 {
+                EvidenceCompleteness::Partial
+            } else {
+                EvidenceCompleteness::Absent
+            };
         EvidenceState {
             completeness,
             reason: (completeness != EvidenceCompleteness::Complete).then(|| {

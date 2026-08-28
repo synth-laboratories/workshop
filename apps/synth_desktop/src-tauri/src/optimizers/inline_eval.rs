@@ -166,7 +166,11 @@ pub async fn reverify(
         .and_then(|policy| policy.revision.as_ref())
         .context("current policy revision is unresolved")?;
     approved
-        .reverify(&container.source_revision, declaration_digest, policy_revision)
+        .reverify(
+            &container.source_revision,
+            declaration_digest,
+            policy_revision,
+        )
         .map_err(anyhow::Error::new)
 }
 

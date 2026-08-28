@@ -77,8 +77,7 @@ pub fn contract() -> &'static Contract {
             // The essential class exists for local recovery/debugging only;
             // marking one sync-eligible is a contract error, not a choice.
             assert!(
-                !(event.sensitivity == Sensitivity::Essential
-                    && event.sync == SyncClass::Eligible),
+                !(event.sensitivity == Sensitivity::Essential && event.sync == SyncClass::Eligible),
                 "essential telemetry event {} must be local_only",
                 event.name
             );

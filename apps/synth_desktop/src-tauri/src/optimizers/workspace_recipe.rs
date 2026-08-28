@@ -1031,7 +1031,10 @@ pub fn compile_gepa_native_config(
         .filter(|value| !value.is_empty())
         .ok_or_else(|| anyhow!("GEPA recipe `{}` must declare proposer_model", recipe.id))?;
     if recipe.train_seeds.is_empty() {
-        bail!("GEPA recipe `{}` must declare at least one train seed", recipe.id);
+        bail!(
+            "GEPA recipe `{}` must declare at least one train seed",
+            recipe.id
+        );
     }
 
     let task_ids = |seeds: &[i64]| {
@@ -1078,7 +1081,10 @@ pub fn compile_gepa_native_config(
     policy.insert("enabled".into(), toml::Value::Boolean(true));
     policy.insert("model".into(), toml::Value::String(recipe.model.clone()));
     policy.insert("api_family".into(), toml::Value::String(api_family.clone()));
-    policy.insert("proxy_mode".into(), toml::Value::String("proxy_only".into()));
+    policy.insert(
+        "proxy_mode".into(),
+        toml::Value::String("proxy_only".into()),
+    );
     if let Some(max_tokens) = max_tokens {
         policy.insert("max_tokens".into(), max_tokens);
     }
@@ -1089,7 +1095,10 @@ pub fn compile_gepa_native_config(
         .remove("proposer")
         .and_then(|value| value.as_table().cloned())
         .unwrap_or_default();
-    proposer.insert("backend".into(), toml::Value::String("chat_completions".into()));
+    proposer.insert(
+        "backend".into(),
+        toml::Value::String("chat_completions".into()),
+    );
     proposer.insert("model".into(), toml::Value::String(proposer_model.into()));
     proposer.insert("api_family".into(), toml::Value::String(api_family));
     proposer.insert("auth_mode".into(), toml::Value::String("api_key".into()));
@@ -1107,10 +1116,7 @@ pub fn compile_gepa_native_config(
         "rollout".into(),
         toml::Value::Integer(recipe.concurrency as i64),
     )]));
-    let pipeline = toml::Value::Table(toml::map::Map::from_iter([(
-        "workers".into(),
-        workers,
-    )]));
+    let pipeline = toml::Value::Table(toml::map::Map::from_iter([("workers".into(), workers)]));
     let mut gepa = toml::map::Map::from_iter([
         (
             "max_cost_usd".into(),
@@ -2118,7 +2124,10 @@ model = "openai/gpt-5.6-luna"
             table["policy"]["base_url"].as_str().unwrap(),
             "http://127.0.0.1:9/providers/openrouter"
         );
-        assert_eq!(table["proposer"]["provider"].as_str().unwrap(), "openrouter");
+        assert_eq!(
+            table["proposer"]["provider"].as_str().unwrap(),
+            "openrouter"
+        );
         assert_eq!(
             table["proposer"]["base_url"].as_str().unwrap(),
             "http://127.0.0.1:9/providers/openrouter"
@@ -2127,10 +2136,7 @@ model = "openai/gpt-5.6-luna"
             table["proposer"]["api_key_env"].as_str().unwrap(),
             "OPENROUTER_API_KEY"
         );
-        assert_eq!(
-            table["taskset"]["train_ids"].as_array().unwrap().len(),
-            5
-        );
+        assert_eq!(table["taskset"]["train_ids"].as_array().unwrap().len(), 5);
         assert!(table["taskset"]["heldout_ids"]
             .as_array()
             .unwrap()
@@ -2142,15 +2148,9 @@ model = "openai/gpt-5.6-luna"
                 .len(),
             5
         );
+        assert_eq!(table["gepa"]["max_train_rollouts"].as_integer(), Some(25));
         assert_eq!(
-            table["gepa"]["max_train_rollouts"].as_integer(),
-            Some(25)
-        );
-        assert_eq!(
-            table["candidate"]["target_modules"]
-                .as_array()
-                .unwrap()[0]
-                .as_str(),
+            table["candidate"]["target_modules"].as_array().unwrap()[0].as_str(),
             Some("classification_system_prompt")
         );
     }
@@ -2204,7 +2204,10 @@ provider = "openrouter"
         )
         .unwrap_err()
         .to_string();
-        assert!(error.contains("contradicts the top-level provider"), "{error}");
+        assert!(
+            error.contains("contradicts the top-level provider"),
+            "{error}"
+        );
     }
 
     #[test]
@@ -2241,9 +2244,14 @@ provider = "openrouter"
         let [diagnostic] = outcome.diagnostics.as_slice() else {
             panic!("expected exactly one diagnostic");
         };
-        assert_eq!(diagnostic.recipe_id.as_deref(), Some("gepa.invalid-policy.v1"));
+        assert_eq!(
+            diagnostic.recipe_id.as_deref(),
+            Some("gepa.invalid-policy.v1")
+        );
         assert!(
-            diagnostic.message.contains("policy.provider is not an admitted policy option"),
+            diagnostic
+                .message
+                .contains("policy.provider is not an admitted policy option"),
             "{}",
             diagnostic.message
         );
@@ -2591,7 +2599,10 @@ command = ["python3", "serve.py"]
         let error = find_container_spec_in_roots(&[parent], "banking77").unwrap_err();
         let message = format!("{error:#}");
         assert!(message.contains("declared but invalid"), "{message}");
-        assert!(message.contains("parse workshop.containers.toml"), "{message}");
+        assert!(
+            message.contains("parse workshop.containers.toml"),
+            "{message}"
+        );
     }
 
     #[test]

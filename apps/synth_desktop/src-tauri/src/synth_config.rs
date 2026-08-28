@@ -236,7 +236,6 @@ pub struct ProjectSourceUpdate {
     pub entries: Vec<ProjectSourceEntry>,
 }
 
-
 const MODEL_MULTI_AGENT_PRESETS: &[(&str, &str, MultiAgentVersion)] = &[
     ("gpt-5.6-sol", "GPT-5.6 Sol", MultiAgentVersion::V2),
     ("gpt-5.6-terra", "GPT-5.6 Terra", MultiAgentVersion::V2),

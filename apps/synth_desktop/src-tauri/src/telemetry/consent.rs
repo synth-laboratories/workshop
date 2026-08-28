@@ -28,8 +28,14 @@ pub enum ConsentChoice {
 pub enum ConsentState {
     /// Never asked (or the stored record is unreadable — treated as unasked).
     Unset,
-    Granted { version: String, at: String },
-    Declined { version: String, at: String },
+    Granted {
+        version: String,
+        at: String,
+    },
+    Declined {
+        version: String,
+        at: String,
+    },
 }
 
 pub fn state(store: &TelemetryStore) -> Result<ConsentState> {

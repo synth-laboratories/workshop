@@ -691,7 +691,8 @@ pub(crate) fn environment_lock() -> std::sync::MutexGuard<'static, ()> {
     // A poisoned lock means an earlier test panicked while holding it. The
     // environment is still ours to take; cascading the panic just hides the
     // original failure behind a dozen unrelated ones.
-    LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+    LOCK.lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 /// Product-owned durable data. Named instances always resolve to their private

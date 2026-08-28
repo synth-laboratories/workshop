@@ -6,11 +6,11 @@
 //! of the session/fork/reopen lifecycle.
 
 use super::workspace_recipe::{self, ContainerSpec};
+use crate::project_sources::Capability;
 use crate::storage::Database;
 use anyhow::{anyhow, bail, Context, Result};
 use rusqlite::params;
 use sha2::{Digest, Sha256};
-use crate::project_sources::Capability;
 use std::{
     collections::HashSet,
     fs,
@@ -251,9 +251,21 @@ mod tests {
                 r#"
 [[container]]
 id = "{spec_id}"
-command = ["true"]
 url = "http://127.0.0.1:9999"
 locality = "container"
+[container.launch]
+schema_version = "synth.container-launch.v1"
+working_directory = "."
+command = ["true"]
+readiness_timeout_seconds = 30
+shutdown_grace_seconds = 5
+expected_port = 9999
+image_ref = "fixture"
+health_target = "fixture"
+[container.launch.source]
+revision_policy = "exact-or-dirty-digest"
+tracked_revision = "fixture-revision"
+include = ["workshop.containers.toml"]
 "#
             ),
         )

@@ -26,11 +26,11 @@ pub use commit::{commit, settle_result, CommitPlan, RunKernelState};
 pub use driver::{resolve as resolve_driver, DriverKind, ExternalRunRef, SealedRunSpec};
 pub use error::{KernelError, KernelErrorCode, KernelResult};
 pub use evidence::{EvidenceAmendment, EvidenceState, SealedTerminal, UsageCompleteness};
-pub use settle::SettleCause;
 pub use sequences::{
     assign_aggregate_sequences, plan_producer_batch, CommittedEvent, DurableProducerLog,
     ProducerEvent, ProducerVerdict,
 };
+pub use settle::SettleCause;
 pub use types::{
     classify_legacy_status, AdmissionState, AlgorithmKind, CancellationCause, CancellationRequest,
     CancelledError, EvidenceCompleteness, ExecutionPlacement, RunCondition, RunLifecycle, RunPhase,

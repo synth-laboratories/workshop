@@ -488,7 +488,11 @@ mod tests {
     #[test]
     fn stable_release_gates_are_hard() {
         let plan = plan_for(Tier::Stable);
-        let required: Vec<&str> = plan.required.iter().map(|item| item.name.as_str()).collect();
+        let required: Vec<&str> = plan
+            .required
+            .iter()
+            .map(|item| item.name.as_str())
+            .collect();
         for name in [
             "host_unit_tests",
             "renderer_typecheck",

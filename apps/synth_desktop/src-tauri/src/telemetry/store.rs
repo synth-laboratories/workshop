@@ -39,7 +39,12 @@ impl TelemetryStore {
         Self { db }
     }
 
-    pub fn insert(&self, name: &str, sensitivity: Sensitivity, properties: &Value) -> Result<String> {
+    pub fn insert(
+        &self,
+        name: &str,
+        sensitivity: Sensitivity,
+        properties: &Value,
+    ) -> Result<String> {
         let event_id = format!("pte_{}", Uuid::new_v4().simple());
         let at = Utc::now().to_rfc3339();
         let payload = serde_json::to_string(properties)?;

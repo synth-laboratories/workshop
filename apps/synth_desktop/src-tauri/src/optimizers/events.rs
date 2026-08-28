@@ -545,6 +545,8 @@ mod tests {
             .iter()
             .all(|event| !serde_json::to_string(event).unwrap().contains(prefix)));
         assert!(page.iter().all(|event| event.item.is_none()));
-        assert!(serde_json::to_string(&page[0]).unwrap().contains("casDigest"));
+        assert!(serde_json::to_string(&page[0])
+            .unwrap()
+            .contains("casDigest"));
     }
 }

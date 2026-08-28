@@ -2780,10 +2780,7 @@ async fn a_reconstructed_manager_does_not_resume_a_thread_across_providers() {
     );
     let mut switched = request.clone();
     switched.provider_name = Some("openrouter".into());
-    manager
-        .start(app_handle.clone(), switched)
-        .await
-        .unwrap();
+    manager.start(app_handle.clone(), switched).await.unwrap();
     let thread_methods: Vec<String> = fixture_requests(&codex_root, "cold-provider-identity")
         .iter()
         .filter_map(|message| message["method"].as_str())
@@ -2889,7 +2886,10 @@ async fn an_explicit_thread_id_with_a_contradicting_provider_fails_closed() {
         .start(app_handle.clone(), request.clone())
         .await
         .unwrap();
-    manager.close("explicit-thread-contradiction").await.unwrap();
+    manager
+        .close("explicit-thread-contradiction")
+        .await
+        .unwrap();
     drop(manager);
 
     let manager = CodexManager::with_paths(
