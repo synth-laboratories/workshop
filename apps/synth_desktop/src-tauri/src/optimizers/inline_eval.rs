@@ -341,6 +341,7 @@ async fn materialize_seed_instances(
         !seeds.is_empty(),
         "inline evaluation requires at least one seed"
     );
+    let expected_limits = limits.clone();
     let client = crate::http::http_client_builder().build()?;
     let task = client
         .get(format!("{}/task_info", base_url.trim_end_matches('/')))
@@ -392,6 +393,11 @@ async fn materialize_seed_instances(
             instance.get("task_instance_id").and_then(Value::as_str) == Some(expected.as_str())
                 && instance.get("seed").and_then(Value::as_i64) == Some(seed.0),
             "task_instance_identity_mismatch: expected {expected}"
+        );
+        anyhow::ensure!(
+            instance.get("limits") == Some(&expected_limits),
+            "task_instance_limits_mismatch: expected {}",
+            expected_limits
         );
     }
     Ok(())
