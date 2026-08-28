@@ -34,7 +34,6 @@ const EXPERIMENT_SCHEMA: &str = "synth.experiment.overview.v1";
 /// snapshot, so it keeps filling in while the campaign runs.
 const WORKBENCH_TEMPLATE: &str = "craftax.trace_workbench.v1";
 const EVAL_ALGORITHM_ID: &str = "eval";
-const POLL_TIMEOUT: Duration = Duration::from_secs(120);
 const POLL_INTERVAL: Duration = Duration::from_millis(80);
 const DEFAULT_BLOCKING_EVAL_HTTP_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 
@@ -3004,7 +3003,13 @@ async fn run_one_example(
     let mut state = started?;
 
     if !rollout_terminal(&state)? {
-        state = poll_until_terminal(ctx.client, ctx.base, &rollout_id).await?;
+        state = poll_until_terminal(
+            ctx.client,
+            ctx.base,
+            &rollout_id,
+            spec.blocking_http_timeout(),
+        )
+        .await?;
     }
     let reported_status = RolloutReportedStatus::parse(&state)?;
     if !reported_status.is_terminal() {
@@ -3196,8 +3201,9 @@ async fn poll_until_terminal(
     client: &reqwest::Client,
     base: &str,
     rollout_id: &str,
+    timeout: Duration,
 ) -> Result<Value> {
-    let deadline = Instant::now() + POLL_TIMEOUT;
+    let deadline = Instant::now() + timeout;
     let outage_wait = crate::limits::OPTIMIZER_RUN_INDEX_WAIT;
     let mut event_endpoint_outage_started: Option<Instant> = None;
     loop {
@@ -3232,7 +3238,9 @@ async fn poll_until_terminal(
             Ok(_) => {
                 // Non-gateway, non-success: the rollout is not terminal yet
                 // (or the container is still admitting). Keep polling until
-                // POLL_TIMEOUT, as before.
+                // the same bounded timeout as the rollout's blocking HTTP
+                // request. Long-running harnesses can legitimately outlive a
+                // generic UI request timeout.
             }
             Err(error) if super::manager::observer_error_is_transient_gateway(&error) => {
                 let started = event_endpoint_outage_started.get_or_insert_with(Instant::now);
@@ -4892,6 +4900,21 @@ max_total_rollouts = 4
 
         assert_eq!(policy.reasoning_efforts, vec!["high"]);
         assert_eq!(policy.models, vec!["gpt-5.6-luna", "openai/gpt-5.6-luna"]);
+    }
+
+    #[test]
+    fn long_running_rollouts_use_the_bounded_blocking_timeout() {
+        let mut spec = EvalSpec::classify_fixture();
+        spec.policy.remove("timeout_seconds");
+        assert_eq!(
+            spec.blocking_http_timeout(),
+            DEFAULT_BLOCKING_EVAL_HTTP_TIMEOUT
+        );
+        assert!(spec.blocking_http_timeout() > Duration::from_secs(120));
+
+        spec.policy.insert("timeout_seconds".into(), json!(30));
+        spec.maximum_model_calls_per_rollout = 40;
+        assert_eq!(spec.blocking_http_timeout(), Duration::from_secs(1_260));
     }
 
     #[test]
