@@ -1,6 +1,6 @@
 import { VisualChrome } from "../../../chrome/VisualChrome.tsx";
 import type { VisualBinding } from "../../../runtime/types.ts";
-import type { ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 
 type Progress = {
   phase?: string;
@@ -443,17 +443,16 @@ function latestHeartbeatElapsed(events: OptimizerEvent[] | undefined): number | 
   return undefined;
 }
 
-function latestLiveFrame(events: OptimizerEvent[] | undefined): LiveFrame | undefined {
-  if (!Array.isArray(events)) return undefined;
-  for (let index = events.length - 1; index >= 0; index -= 1) {
-    const event = events[index];
-    if (event.type !== "eval.trial.event") continue;
+function liveFrames(events: OptimizerEvent[] | undefined): LiveFrame[] {
+  if (!Array.isArray(events)) return [];
+  const frames = events.flatMap((event) => {
+    if (event.type !== "eval.trial.event") return [];
     const container = record(event.delta?.containerEvent ?? event.delta?.container_event);
-    if (!["frame", "game.frame"].includes(text(container?.kind ?? container?.event) ?? "")) continue;
+    if (!["frame", "game.frame"].includes(text(container?.kind ?? container?.event) ?? "")) return [];
     const payload = record(container?.payload) ?? container;
     const dataUrl = text(payload?.data_url ?? payload?.dataUrl);
-    if (!dataUrl?.startsWith("data:image/")) continue;
-    return {
+    if (!dataUrl?.startsWith("data:image/")) return [];
+    return [{
       sequence: finiteNumber(event.sequenceNumber) ?? 0,
       frameIndex: finiteNumber(payload?.frame_index ?? payload?.frameIndex) ?? 0,
       elapsedMs: finiteNumber(payload?.elapsed_ms ?? payload?.elapsedMs) ?? 0,
@@ -461,9 +460,11 @@ function latestLiveFrame(events: OptimizerEvent[] | undefined): LiveFrame | unde
       sha256: text(payload?.sha256),
       width: finiteNumber(payload?.width),
       height: finiteNumber(payload?.height)
-    };
-  }
-  return undefined;
+    }];
+  });
+  const unique = new Map<number, LiveFrame>();
+  for (const frame of frames) unique.set(frame.frameIndex, frame);
+  return [...unique.values()].sort((a, b) => a.frameIndex - b.frameIndex || a.sequence - b.sequence);
 }
 
 function durationLabel(milliseconds: number): string {
@@ -511,18 +512,52 @@ function LiveSkillTrajectory({ samples, status }: { samples: SkillSample[]; stat
   </section>;
 }
 
-function LiveGameFrame({ frame, status }: { frame?: LiveFrame; status?: string }) {
-  if (!frame) return null;
+function LiveGameClip({ frames, status }: { frames: LiveFrame[]; status?: string }) {
   const live = !["completed", "failed", "cancelled", "canceled"].includes(status ?? "running");
-  return <section className="sv-section" aria-label="Live RuneBench game frame" data-testid="runebench-live-frame">
+  const [cursor, setCursor] = useState(Math.max(0, frames.length - 1));
+  const [playing, setPlaying] = useState(true);
+  const [followingLive, setFollowingLive] = useState(true);
+  const lastIndex = Math.max(0, frames.length - 1);
+  useEffect(() => {
+    if (followingLive) setCursor(lastIndex);
+  }, [followingLive, lastIndex]);
+  useEffect(() => {
+    if (!playing || frames.length < 2 || (followingLive && live)) return;
+    const timer = window.setInterval(() => {
+      setCursor((current) => {
+        if (current >= lastIndex) return live ? current : 0;
+        return current + 1;
+      });
+    }, 500);
+    return () => window.clearInterval(timer);
+  }, [frames.length, lastIndex, live, playing, followingLive]);
+  if (!frames.length) return null;
+  const frame = frames[Math.min(cursor, lastIndex)] ?? frames[lastIndex];
+  const jumpToLive = () => {
+    setFollowingLive(true);
+    setPlaying(true);
+    setCursor(lastIndex);
+  };
+  const scrub = (next: number) => {
+    setCursor(next);
+    setFollowingLive(next === lastIndex);
+    if (next !== lastIndex) setPlaying(false);
+  };
+  return <section className="sv-section" aria-label="Live RuneBench game clip" data-testid="runebench-live-frame">
     <div className="sv-section-head">
-      <h3>Game client</h3>
-      <span style={{ color: live ? "#c2410c" : "#18794e" }}>{live ? "● live" : "final live frame"} · frame {frame.frameIndex + 1} · {durationLabel(frame.elapsedMs)}</span>
+      <h3>Game client clip</h3>
+      <span style={{ color: followingLive && live ? "#c2410c" : "#18794e" }}>{followingLive && live ? "● live" : playing ? "▶ replay" : "paused"} · frame {cursor + 1}/{frames.length} · {durationLabel(frame.elapsedMs)}</span>
     </div>
     <figure style={{ margin: 0, overflow: "hidden", border: "1px solid var(--sv-border)", borderRadius: 8, background: "#111" }}>
       <img src={frame.dataUrl} alt={`RuneScape game client at ${durationLabel(frame.elapsedMs)}`} width={frame.width ?? 400} height={frame.height ?? 300} style={{ display: "block", width: "100%", height: "auto", imageRendering: "auto" }} />
       <figcaption title={frame.sha256} style={{ padding: "6px 8px", overflow: "hidden", color: "#cbd2dc", fontFamily: "var(--sv-mono)", fontSize: 8, textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{frame.sha256 ?? "frame digest unavailable"}</figcaption>
     </figure>
+    <div style={{ display: "grid", gridTemplateColumns: "auto minmax(120px,1fr) auto", gap: 9, alignItems: "center", marginTop: 9 }}>
+      <button type="button" onClick={() => { setPlaying((value) => !value); setFollowingLive(false); }} aria-label={playing ? "Pause clip" : "Play clip"} style={{ padding: "5px 9px", border: "1px solid var(--sv-border)", borderRadius: 6, background: "#fff", cursor: "pointer", fontSize: 10 }}>{playing ? "Pause" : "Play"}</button>
+      <input type="range" min={0} max={lastIndex} value={Math.min(cursor, lastIndex)} onChange={(event) => scrub(Number(event.currentTarget.value))} aria-label="Rollout frame timeline" style={{ width: "100%", accentColor: "#f05f22" }} />
+      <button type="button" onClick={jumpToLive} disabled={followingLive && cursor === lastIndex} style={{ padding: "5px 9px", border: "1px solid var(--sv-border)", borderRadius: 6, background: followingLive ? "#f4f5f7" : "#fff7ed", color: followingLive ? "var(--sv-text-faint)" : "#c2410c", cursor: followingLive ? "default" : "pointer", fontSize: 10 }}>Jump to live</button>
+    </div>
+    <div style={{ display: "flex", justifyContent: "space-between", marginTop: 5, color: "var(--sv-text-faint)", fontFamily: "var(--sv-mono)", fontSize: 8 }}><span>{durationLabel(frames[0].elapsedMs)}</span><span>{frames.length} retained frames · replay 2 fps</span><span>{durationLabel(frames[lastIndex].elapsedMs)}</span></div>
   </section>;
 }
 
@@ -602,10 +637,10 @@ export function Shell(props: ShellProps) {
   const hasContext = contextRecords.some((group) => Object.keys(group.data ?? {}).length);
   const hasMethod = Boolean(experiment.lineage?.length || experiment.limitations?.length);
   const skillSamples = liveSkillSamples(props.events);
-  const liveFrame = latestLiveFrame(props.events);
+  const frames = liveFrames(props.events);
   return <VisualChrome kicker={`Experiment · ${status}`} title={props.title ?? experiment.title ?? "Experiment overview"} lede={props.lede ?? experiment.question ?? experiment.hypothesis} testId="visual-experiment-overview">
     <OverviewStrip status={status} arms={experiment.arms ?? []} model={experiment.runtime?.model} progress={progress} />
-    <LiveGameFrame frame={liveFrame} status={props.run?.status ?? status} />
+    <LiveGameClip frames={frames} status={props.run?.status ?? status} />
     <LiveSkillTrajectory samples={skillSamples} status={props.run?.status ?? status} />
     {experiment.hypothesis || experiment.hypotheses?.length ? <Hypotheses legacyHypothesis={experiment.hypothesis} hypotheses={experiment.hypotheses ?? []} /> : null}
     {hasResults ? <Disclosure title="Comparison & results" summary={progressSummary} defaultOpen>
