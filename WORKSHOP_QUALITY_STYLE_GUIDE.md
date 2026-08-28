@@ -34,8 +34,13 @@ Use the existing architecture before introducing a new pattern.
 | Sessions, runs, events, inventory, visuals, and lifecycle state | Rust CoreRuntime + SQLite in `apps/synth_desktop/src-tauri` |
 | CUA findings and shipped/flagged polish | `apps/synth_desktop/polish.md` |
 | Test commands and coverage boundaries | `testing.md` |
+| Live-event fold and projection | `visuals/runtime/liveStream.ts` + `visuals/runtime/liveEvalReducer.ts` |
+| Data root and path resolution | `apps/synth_desktop/src-tauri/src/instance.rs` (`state_root()`) and `instance_paths.rs` |
+| Visual template roots | `apps/synth_desktop/src-tauri/src/visuals/templates.rs` |
+| Schema migration lineage | `apps/synth_desktop/src-tauri/src/storage/migrations.rs` |
+| Right-panel presentation lifecycle | `apps/synth_desktop/src-tauri/src/presentation.rs` |
 
-Do not create a second token system, a component-local preference store, or a renderer-only source of runtime truth.
+Do not create a second source of truth for a concern that already has one. A second token system, a component-local preference store, and a renderer-only source of runtime truth are the same defect.
 
 ## 3. Visual foundations
 
@@ -234,12 +239,16 @@ UI polish cannot make a false runtime contract acceptable.
 
 - Rust CoreRuntime/SQLite owns durable sessions, runs, events, approvals, inventory, visuals, and lifecycle state.
 - The renderer renders projections and sends typed commands; it does not invent durable state.
+- One fold per event stream; a projection has exactly one implementation.
+- One path helper per root; a local re-derivation is a defect regardless of whether it is correct.
 - On restart, stale `running` records are reconciled to an honest terminal/interrupted/unhealthy state.
 - Stop is idempotent when the process is already gone.
 - Attachment generations are fenced so an old process cannot detach a replacement.
 - Provider/model capability registration is declarative and validated at the boundary.
 - Secrets never render in tool arguments, terminal output, traces, logs, or screenshots.
 - New persistence is versioned, normalized, and migration-tested.
+- A seal stores outputs, never a reference to code that may not exist later.
+- Plugins declare vocabulary; they never supply trust primitives.
 
 ## 9. Testing and dogfood gates
 

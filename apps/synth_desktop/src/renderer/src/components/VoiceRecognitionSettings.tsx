@@ -9,7 +9,7 @@ function formatBytes(bytes: number): string {
 	return gib >= 1 ? `${gib.toFixed(1)} GB` : `${(bytes / 1024 ** 2).toFixed(0)} MB`;
 }
 
-const DEFAULT_MODELS_ROOT = "~/.synth/whisper-models";
+const DEFAULT_MODELS_ROOT = "~/.synth-desktop/models/whisper";
 
 /** Static fallback catalog shown until `bridges.whisper.listModels()` reports real hits. */
 const STATIC_CATALOG: WhisperModelHit[] = [
