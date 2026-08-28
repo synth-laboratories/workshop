@@ -179,6 +179,15 @@ impl EvalSpec {
         Duration::from_secs_f64((per_call * calls + 60.0).clamp(60.0, 86_400.0))
     }
 
+    /// Keep terminal observation alive for the full approved credential lease.
+    /// A harness may spend most of its model-call window before running a
+    /// verifier, and revoking at the shorter HTTP default would orphan that
+    /// otherwise bounded work.
+    fn terminal_poll_timeout(&self) -> Duration {
+        self.blocking_http_timeout()
+            .max(Duration::from_secs(self.credential_lifetime_seconds))
+    }
+
     fn from_workspace(recipe: &WorkspaceRecipe, workspace: &std::path::Path) -> Result<Self> {
         let policy_code = recipe
             .policy_source
@@ -3007,7 +3016,7 @@ async fn run_one_example(
             ctx.client,
             ctx.base,
             &rollout_id,
-            spec.blocking_http_timeout(),
+            spec.terminal_poll_timeout(),
         )
         .await?;
     }
@@ -4903,18 +4912,21 @@ max_total_rollouts = 4
     }
 
     #[test]
-    fn long_running_rollouts_use_the_bounded_blocking_timeout() {
+    fn long_running_rollouts_use_the_approved_lease_for_terminal_polling() {
         let mut spec = EvalSpec::classify_fixture();
         spec.policy.remove("timeout_seconds");
+        spec.credential_lifetime_seconds = 3_600;
         assert_eq!(
             spec.blocking_http_timeout(),
             DEFAULT_BLOCKING_EVAL_HTTP_TIMEOUT
         );
         assert!(spec.blocking_http_timeout() > Duration::from_secs(120));
+        assert_eq!(spec.terminal_poll_timeout(), Duration::from_secs(3_600));
 
         spec.policy.insert("timeout_seconds".into(), json!(30));
         spec.maximum_model_calls_per_rollout = 40;
         assert_eq!(spec.blocking_http_timeout(), Duration::from_secs(1_260));
+        assert_eq!(spec.terminal_poll_timeout(), Duration::from_secs(3_600));
     }
 
     #[test]
