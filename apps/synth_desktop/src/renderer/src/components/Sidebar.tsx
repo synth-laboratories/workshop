@@ -3,7 +3,7 @@ import { type LandingState } from "../types/landing";
 import { ModelDownloadBar } from "./ModelDownloadBar";
 import { LocalModelResidency } from "./LocalModelResidency";
 import type { LagunaStatus, RegisteredInstance } from "../bridge";
-import { openUrl } from "@tauri-apps/plugin-opener";
+import { openPath } from "@tauri-apps/plugin-opener";
 import { type AccountViewModel } from "../runtime/accountView";
 import { ConversationContextMenu } from "./GeneralPreferencesSettings";
 import { PaneResizeHandle } from "./PaneResizeHandle";
@@ -754,7 +754,7 @@ export function Sidebar({
 									type="button"
 									className="account-menu-row"
 									disabled={instance.current}
-									onClick={() => { setAccountMenuOpen(false); void openUrl(instance.deepLink); }}
+									onClick={() => { setAccountMenuOpen(false); void openPath(instance.appBundle); }}
 									data-testid={`instance-switch-${instance.name}`}
 									role="menuitem"
 									title={instance.current ? "Current Workshop instance" : `Open ${instance.displayName}`}
