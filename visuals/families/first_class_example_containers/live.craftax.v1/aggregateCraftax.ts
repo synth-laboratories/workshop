@@ -8,11 +8,22 @@ import {
 
 export type CraftaxRolloutAggregate = {
   lane: string;
+  status?: string;
   reward?: number;
-  steps: number;
-  calls: number;
+  steps?: number;
+  calls?: number;
   tokens?: number;
   achievements: string[];
+};
+
+export type CraftaxTerminalRollout = {
+  lane: string;
+  status: string;
+  reward?: number;
+  steps?: number;
+  calls?: number;
+  tokens?: number;
+  achievements?: string[];
 };
 
 export type CraftaxRunAggregate = {
@@ -21,15 +32,19 @@ export type CraftaxRunAggregate = {
   rewardMin?: number;
   rewardMax?: number;
   reportedRewards: number;
-  totalSteps: number;
-  minSteps: number;
-  maxSteps: number;
-  totalCalls: number;
-  minCalls: number;
-  maxCalls: number;
+  totalSteps?: number;
+  minSteps?: number;
+  maxSteps?: number;
+  reportedSteps: number;
+  totalCalls?: number;
+  minCalls?: number;
+  maxCalls?: number;
+  reportedCalls: number;
   totalTokens?: number;
+  reportedTokens: number;
   achievementNames: string[];
   achievementRollouts: number;
+  reportedAchievements: number;
 };
 
 function finite(value: unknown): number | undefined {
@@ -40,10 +55,18 @@ function sum(values: number[]): number {
   return values.reduce((total, value) => total + value, 0);
 }
 
-/** Run-wide facts derived exclusively from the retained rollout journals. */
-export function summarizeCraftaxRun(events: LiveEvalEvent[]): CraftaxRunAggregate {
+/**
+ * Run-wide facts. During a live run the retained journal is the only source;
+ * after terminal settlement, scored outcomes and terminal step/token facts
+ * come from the terminal records. Journal calls remain useful replay evidence,
+ * but are not silently promoted into provider-billed call totals.
+ */
+export function summarizeCraftaxRun(
+  events: LiveEvalEvent[],
+  terminalRollouts?: CraftaxTerminalRollout[]
+): CraftaxRunAggregate {
   const overall = projectCraftaxViewer(events);
-  const rollouts = overall.lanes.map((lane) => {
+  const journalRollouts = new Map(overall.lanes.map((lane) => {
     const laneEvents = overall.ordered.filter((event) => craftaxEventLane(event) === lane);
     const projection = projectCraftaxViewer(laneEvents, lane);
     const calls = projectAgentTurns(projection.visibleEvents).calls;
@@ -51,36 +74,55 @@ export function summarizeCraftaxRun(events: LiveEvalEvent[]): CraftaxRunAggregat
     const tokens = calls.length > 0 && tokenValues.every((value) => value !== undefined)
       ? sum(tokenValues as number[])
       : undefined;
-    return {
+    return [lane, {
       lane,
       reward: projection.reward,
       steps: environmentStepCount(projection.visibleEvents),
       calls: calls.length,
       tokens,
       achievements: projection.achievements
-    };
-  });
+    }] as const;
+  }));
+  const rollouts: CraftaxRolloutAggregate[] = terminalRollouts
+    ? terminalRollouts.map((terminal) => {
+        const journal = journalRollouts.get(terminal.lane);
+        return {
+          lane: terminal.lane,
+          status: terminal.status,
+          // Terminal omissions are meaningful. Never resurrect a provisional
+          // reward from an earlier journal event after scoring has settled.
+          ...(terminal.reward != null ? { reward: terminal.reward } : {}),
+          ...(terminal.steps != null ? { steps: terminal.steps } : {}),
+          ...(journal?.calls != null ? { calls: journal.calls } : terminal.calls != null ? { calls: terminal.calls } : {}),
+          ...(terminal.tokens != null ? { tokens: terminal.tokens } : {}),
+          achievements: terminal.achievements ?? []
+        };
+      })
+    : [...journalRollouts.values()];
   const rewards = rollouts.flatMap((rollout) => rollout.reward == null ? [] : [rollout.reward]);
-  const stepValues = rollouts.map((rollout) => rollout.steps);
-  const callValues = rollouts.map((rollout) => rollout.calls);
-  const tokenValues = rollouts.map((rollout) => rollout.tokens);
-  const totalTokens = rollouts.length > 0 && tokenValues.every((value) => value !== undefined)
-    ? sum(tokenValues as number[])
+  const stepValues = rollouts.flatMap((rollout) => rollout.steps == null ? [] : [rollout.steps]);
+  const callValues = rollouts.flatMap((rollout) => rollout.calls == null ? [] : [rollout.calls]);
+  const tokenValues = rollouts.flatMap((rollout) => rollout.tokens == null ? [] : [rollout.tokens]);
+  const totalTokens = rollouts.length > 0 && tokenValues.length === rollouts.length
+    ? sum(tokenValues)
     : undefined;
+  const achievementsReported = terminalRollouts
+    ? terminalRollouts.filter((rollout) => rollout.achievements !== undefined).length
+    : rollouts.length;
   return {
     rollouts,
     rewardMean: rewards.length ? sum(rewards) / rewards.length : undefined,
     rewardMin: rewards.length ? Math.min(...rewards) : undefined,
     rewardMax: rewards.length ? Math.max(...rewards) : undefined,
     reportedRewards: rewards.length,
-    totalSteps: sum(stepValues),
-    minSteps: stepValues.length ? Math.min(...stepValues) : 0,
-    maxSteps: stepValues.length ? Math.max(...stepValues) : 0,
-    totalCalls: sum(callValues),
-    minCalls: callValues.length ? Math.min(...callValues) : 0,
-    maxCalls: callValues.length ? Math.max(...callValues) : 0,
+    ...(stepValues.length ? { totalSteps: sum(stepValues), minSteps: Math.min(...stepValues), maxSteps: Math.max(...stepValues) } : {}),
+    reportedSteps: stepValues.length,
+    ...(callValues.length ? { totalCalls: sum(callValues), minCalls: Math.min(...callValues), maxCalls: Math.max(...callValues) } : {}),
+    reportedCalls: callValues.length,
     totalTokens,
+    reportedTokens: tokenValues.length,
     achievementNames: [...new Set(rollouts.flatMap((rollout) => rollout.achievements))].sort(),
-    achievementRollouts: rollouts.filter((rollout) => rollout.achievements.length > 0).length
+    achievementRollouts: rollouts.filter((rollout) => rollout.achievements.length > 0).length,
+    reportedAchievements: achievementsReported
   };
 }

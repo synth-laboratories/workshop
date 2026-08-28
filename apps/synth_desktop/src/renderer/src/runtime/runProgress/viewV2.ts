@@ -56,6 +56,10 @@ function metric(value: number | null | undefined, source: CoveredMetric["source"
 		: { value, source, observedUnits: 1 };
 }
 
+function finite(value: unknown): number | undefined {
+	return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
 function usageOf(
 	usage: UsageCompleteness,
 	reportedTerminalWork: number | undefined,
@@ -77,14 +81,31 @@ function usageOf(
 		? receiptRecord.authority
 		: undefined;
 	const usageSource: CoveredMetric["source"] = receiptAuthority === "workshop.secrets_proxy" ? "proxy" : "provider";
-	const costUsd = metric(usage.costUsd, usageSource);
 	const receiptCalls = typeof receiptRecord?.calls === "number" && Number.isFinite(receiptRecord.calls)
 		? receiptRecord.calls
 		: undefined;
+	// V2 projections may briefly omit usage while a newer partial reducer page
+	// lands. The run record and proxy receipt are cumulative durable facts, so a
+	// missing field must not erase a previously known subtotal from the card.
+	const costUsd = metric(
+		finite(usage.costUsd) ?? finite(receiptRecord?.costUsd) ?? finite(run.usage?.costUsd),
+		usageSource
+	);
+	const promptTokens = metric(
+		finite(usage.promptTokens) ?? finite(receiptRecord?.promptTokens) ?? finite(run.usage?.promptTokens),
+		usageSource
+	);
+	const completionTokens = metric(
+		finite(usage.completionTokens) ?? finite(receiptRecord?.completionTokens) ?? finite(run.usage?.completionTokens),
+		usageSource
+	);
+	const withReceipt = (value: CoveredMetric): CoveredMetric => receiptCalls == null
+		? value
+		: { ...value, receiptCalls };
 	return {
-		costUsd: usageSource === "proxy" && receiptCalls != null ? { ...costUsd, receiptCalls } : costUsd,
-		promptTokens: metric(usage.promptTokens, usageSource),
-		completionTokens: metric(usage.completionTokens, usageSource),
+		costUsd: withReceipt(costUsd),
+		promptTokens: withReceipt(promptTokens),
+		completionTokens: withReceipt(completionTokens),
 		rollouts: metric(reportedTerminalWork, "derived")
 	};
 }

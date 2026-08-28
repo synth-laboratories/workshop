@@ -305,9 +305,12 @@ test("live Craftax names durable-journal hydration and exposes a run-wide compar
   assert.match(shell, /Counts and replay controls will appear only after the journal is available/);
   assert.match(shell, /Overall · all rollouts/);
   assert.match(shell, /Achievement coverage/);
-  assert.match(shell, /role="table" aria-label="Reward, environment steps, and model calls by rollout"/);
+  assert.match(shell, /role="table" aria-label="Terminal reward, environment steps, and retained call starts by rollout"/);
+  assert.match(shell, /Mean terminal reward/);
+  assert.match(shell, /Workshop receipt covers/);
   assert.match(css, /\.cv-overview-grid\{display:grid/);
   assert.match(css, /@media\(max-width:760px\).*\.cv-overview-grid\{grid-template-columns:1fr 1fr\}/s);
+  assert.doesNotMatch(css, /\.cv-comparison-table\{min-width:470px\}/);
 });
 
 test("live Craftax loads retained frame CAS through the host and never guesses a relative rollout URL", () => {

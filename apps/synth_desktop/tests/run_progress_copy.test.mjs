@@ -143,11 +143,11 @@ test("a reported zero is a value and reads as one", () => {
 
 test("proxy-metered cost names Workshop as the source", () => {
 	const metered = coveredMetric(0.018659, "proxy", 1, 1);
-	assert.equal(costSummary(metered), "$0.0187 · metered by Workshop proxy");
+	assert.equal(costSummary(metered), "$0.018659 · metered by Workshop proxy");
 	assert.match(metricExplanation(metered), /metered by Workshop proxy/);
 	assert.equal(
 		costSummary({ ...metered, receiptCalls: 37 }),
-		"$0.0187 · provider receipt (37 calls) via Workshop proxy"
+		"$0.018659 · provider receipt (37 calls) via Workshop proxy"
 	);
 });
 

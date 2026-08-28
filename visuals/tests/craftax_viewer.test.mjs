@@ -155,6 +155,34 @@ test("run overview aggregates rollout distributions without inventing partial to
   assert.equal(partial.totalTokens, undefined, "one call without usage makes the run token total unavailable");
 });
 
+test("terminal overview replaces provisional rewards with scored record truth", () => {
+  const journal = [
+    event("rollout-5", "reward_signal", 1, { value: 3 }),
+    event("rollout-6", "reward_signal", 1, { value: 5 }),
+    event("rollout-7", "reward_signal", 1, { value: 5 }),
+    event("rollout-8", "reward_signal", 1, { value: 6 }),
+    event("rollout-9", "reward_signal", 1, { value: 5 }),
+    ...["rollout-5", "rollout-6", "rollout-7", "rollout-8", "rollout-9"].flatMap((lane) =>
+      [event(lane, "span.policy.opened", 2, { call: { provider: "openrouter", model: "z-ai/glm-5.3-flash" } })]
+    )
+  ];
+  const terminal = [
+    { lane: "rollout-5", status: "failed", steps: 46 },
+    { lane: "rollout-6", status: "failed", steps: 60 },
+    { lane: "rollout-7", status: "failed", steps: 58 },
+    { lane: "rollout-8", status: "completed", reward: 6, steps: 40, achievements: ["collect_wood"] },
+    { lane: "rollout-9", status: "failed", steps: 80 }
+  ];
+  const aggregate = summarizeCraftaxRun(journal, terminal);
+  assert.equal(aggregate.rewardMean, 6);
+  assert.equal(aggregate.reportedRewards, 1);
+  assert.deepEqual(aggregate.rollouts.map((rollout) => rollout.reward), [undefined, undefined, undefined, 6, undefined]);
+  assert.equal(aggregate.totalSteps, 284);
+  assert.equal(aggregate.reportedSteps, 5);
+  assert.equal(aggregate.totalCalls, 5, "retained call starts remain a separately labelled journal count");
+  assert.equal(aggregate.reportedAchievements, 1);
+});
+
 test("native GameBench reward_signal reward alias remains visible during replay", () => {
   const projection = projectCraftaxViewer([
     event("seed:2001", "rollout.progress", 1, { status: "running", reward: 0 }),

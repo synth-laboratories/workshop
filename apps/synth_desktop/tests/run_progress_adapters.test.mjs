@@ -758,6 +758,42 @@ test("a production V2 view drives GO-EX without raw events", () => {
 	assert.equal(projection.usage.costUsd.source, "unavailable");
 });
 
+test("a partial V2 page cannot erase a durable proxy subtotal or describe it as one trial", () => {
+	const run = {
+		id: "eval_proxy_partial",
+		algorithmId: "eval",
+		status: "running",
+		objective: "Craftax",
+		createdAt: at(0),
+		startedAt: at(0),
+		usage: {
+			costUsd: 0.0111,
+			promptTokens: 80000,
+			completionTokens: 5000,
+			extra: {
+				providerUsageReceipt: {
+					authority: "workshop.secrets_proxy",
+					calls: 31,
+					costUsd: 0.0111,
+					promptTokens: 80000,
+					completionTokens: 5000
+				}
+			}
+		}
+	};
+	const projection = projectRunProgress(
+		snapshot(run, [], { viewV2: v2View("eval", run.id) }),
+		NOW
+	);
+	assert.equal(projection.usage.costUsd.value, 0.0111);
+	assert.equal(projection.usage.costUsd.source, "proxy");
+	assert.equal(projection.usage.costUsd.receiptCalls, 31);
+	assert.equal(projection.usage.promptTokens.value, 80000);
+	assert.match(costSummary(projection.usage.costUsd), /\$0\.0111 · provider receipt \(31 calls\)/);
+	assert.match(metricExplanation(projection.usage.costUsd, "trial"), /across 31 provider calls · run-level receipt/);
+	assert.doesNotMatch(metricExplanation(projection.usage.costUsd, "trial"), /1 trial/);
+});
+
 test("V2 progress is determinate only from an explicit fixed plan", () => {
 	const run = {
 		id: "eval_v2",

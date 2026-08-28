@@ -18,12 +18,25 @@ export type VisualEvidenceGap = {
 	detail: string;
 };
 
+export type VisualRunRollout = {
+	lane: string;
+	seed?: number;
+	status: string;
+	reward?: number;
+	steps?: number;
+	calls?: number;
+	tokens?: number;
+	achievements?: string[];
+};
+
 export type VisualRunLifecycle = {
 	status: string;
 	terminal: boolean;
 	failed: boolean;
 	reason?: string;
 	work: { planned?: number; failed?: number; succeeded?: number };
+	/** Terminal record facts. Missing fields stay absent and never fall back to provisional journal values. */
+	rollouts: VisualRunRollout[];
 	evidence: {
 		state: "pending" | "accepted" | "partial" | "missing" | "rejected";
 		valid: number;
@@ -39,6 +52,8 @@ export type VisualRunLifecycle = {
 		costCapUsd?: number;
 		costSource: "workshop_proxy" | "provider" | "container" | "unavailable";
 		provider?: string;
+		promptTokens?: number;
+		completionTokens?: number;
 	};
 };
 
@@ -58,6 +73,15 @@ function finite(value: unknown): number | undefined {
 
 function text(value: unknown): string | undefined {
 	return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+function stringList(value: unknown): string[] | undefined {
+	if (!Array.isArray(value)) return undefined;
+	return value.filter((item): item is string => typeof item === "string" && item.trim().length > 0);
+}
+
+function reportedFact(item: Record<string, unknown>, name: string): unknown {
+	return record(record(item.reportedFacts)[name]).value;
 }
 
 function terminalStatus(status: string): boolean {
@@ -204,6 +228,8 @@ export function projectVisualRunLifecycle(
 					: "missing";
 	const receiptAuthority = text(receipt.authority);
 	const costUsd = finite(receipt.costUsd) ?? finite(manifestUsage.costUsd) ?? finite(runUsage.costUsd);
+	const promptTokens = finite(receipt.promptTokens) ?? finite(manifestUsage.promptTokens) ?? finite(runUsage.promptTokens);
+	const completionTokens = finite(receipt.completionTokens) ?? finite(manifestUsage.completionTokens) ?? finite(runUsage.completionTokens);
 	const costSource = receiptAuthority === "workshop.secrets_proxy"
 		? "workshop_proxy" as const
 		: costUsd == null
@@ -211,6 +237,27 @@ export function projectVisualRunLifecycle(
 			: receiptAuthority
 				? "provider" as const
 				: "container" as const;
+	const rollouts = summaryRecords.map((item): VisualRunRollout => {
+		const usage = record(item.usage);
+		const seed = finite(item.seed);
+		const lane = text(item.rolloutId) ?? text(item.trialId) ?? (seed == null ? "unknown rollout" : `seed:${seed}`);
+		const reward = finite(item.reward) ?? finite(record(item.evaluatorOutcome).reward);
+		const steps = finite(reportedFact(item, "steps")) ?? finite(item.steps);
+		const calls = finite(reportedFact(item, "calls")) ?? finite(usage.calls);
+		const tokens = finite(reportedFact(item, "tokens")) ?? finite(usage.total_tokens);
+		const achievements = stringList(reportedFact(item, "achievements"))
+			?? stringList(item.checkpointAchievements);
+		return {
+			lane,
+			...(seed != null ? { seed } : {}),
+			status: text(item.status) ?? text(item.reportedStatus) ?? "unknown",
+			...(reward != null ? { reward } : {}),
+			...(steps != null ? { steps } : {}),
+			...(calls != null ? { calls } : {}),
+			...(tokens != null ? { tokens } : {}),
+			...(achievements ? { achievements } : {})
+		};
+	}).sort((left, right) => (left.seed ?? Number.MAX_SAFE_INTEGER) - (right.seed ?? Number.MAX_SAFE_INTEGER));
 
 	return {
 		status: lifecycleStatus,
@@ -224,13 +271,16 @@ export function projectVisualRunLifecycle(
 			failed: finite(work.failed),
 			succeeded: finite(work.succeeded)
 		},
+		rollouts,
 		evidence: { state: evidenceState, valid, rejected, missing, sealedTraces, failures, gaps },
 		usage: {
 			calls: finite(receipt.calls) ?? finite(manifestUsage.calls) ?? finite(runUsage.calls),
 			costUsd,
 			costCapUsd: finite(bounds.hardTotalCostUsd) ?? finite(summary.costCeilingUsd),
 			costSource,
-			provider: text(receiptCapabilities[0]?.provider) ?? text(credentialChain.provider)
+			provider: text(receiptCapabilities[0]?.provider) ?? text(credentialChain.provider),
+			...(promptTokens != null ? { promptTokens } : {}),
+			...(completionTokens != null ? { completionTokens } : {})
 		}
 	};
 }

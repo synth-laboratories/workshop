@@ -53,6 +53,16 @@ type RunLifecycle = {
   terminal: boolean;
   failed: boolean;
   reason?: string;
+  rollouts: Array<{
+    lane: string;
+    seed?: number;
+    status: string;
+    reward?: number;
+    steps?: number;
+    calls?: number;
+    tokens?: number;
+    achievements?: string[];
+  }>;
   evidence: {
     state: "pending" | "accepted" | "partial" | "missing" | "rejected";
     valid: number;
@@ -68,6 +78,8 @@ type RunLifecycle = {
     costCapUsd?: number;
     costSource: "workshop_proxy" | "provider" | "container" | "unavailable";
     provider?: string;
+    promptTokens?: number;
+    completionTokens?: number;
   };
 };
 type ViewerConfig = {
@@ -128,7 +140,7 @@ function runCostLabel(lifecycle: RunLifecycle | undefined, producerCost: number 
     }
     return "not emitted";
   }
-  const amount = cost < 0.1 ? `$${cost.toFixed(4)}` : formatMissingUsd(cost);
+  const amount = cost < 0.1 ? `$${cost.toFixed(6).replace(/0+$/, "").replace(/\.$/, "")}` : formatMissingUsd(cost);
   const source = lifecycle?.usage.costSource === "workshop_proxy" ? "Workshop proxy"
     : lifecycle?.usage.costSource === "provider" ? "provider receipt"
       : lifecycle?.usage.costSource === "container" ? "container telemetry"
@@ -270,7 +282,8 @@ function OverviewStat({ label, value, detail }: { label: string; value: string; 
   return <div className="cv-stat"><span>{label}</span><strong>{value}</strong><small>{detail}</small></div>;
 }
 
-function rangeLabel(min: number, max: number, suffix: string): string {
+function rangeLabel(min: number | undefined, max: number | undefined, suffix: string): string {
+  if (min == null || max == null) return `No ${suffix} reported`;
   return min === max ? `${min} ${suffix} each` : `${min}–${max} ${suffix} per rollout`;
 }
 
@@ -295,17 +308,17 @@ function comparisonWidth(value: number | undefined, maximum: number): string {
 
 function RolloutComparison({ rollouts }: { rollouts: CraftaxRolloutAggregate[] }) {
   const maxReward = Math.max(0, ...rollouts.flatMap((rollout) => rollout.reward == null ? [] : [Math.abs(rollout.reward)]));
-  const maxSteps = Math.max(0, ...rollouts.map((rollout) => rollout.steps));
-  const maxCalls = Math.max(0, ...rollouts.map((rollout) => rollout.calls));
+  const maxSteps = Math.max(0, ...rollouts.flatMap((rollout) => rollout.steps == null ? [] : [rollout.steps]));
+  const maxCalls = Math.max(0, ...rollouts.flatMap((rollout) => rollout.calls == null ? [] : [rollout.calls]));
   return <figure className="cv-comparison" aria-label="Rollout comparison">
-    <figcaption><strong>Rollout comparison</strong><span>Reward · environment steps · model calls</span></figcaption>
-    <div className="cv-comparison-table" role="table" aria-label="Reward, environment steps, and model calls by rollout">
-      <div className="cv-comparison-head" role="row"><span role="columnheader">Rollout</span><span role="columnheader">Reward</span><span role="columnheader">Steps</span><span role="columnheader">Calls</span></div>
-      {rollouts.map((rollout) => <div className="cv-comparison-row" role="row" key={rollout.lane} aria-label={`${rollout.lane}: reward ${formatMissingNumber(rollout.reward)}, ${rollout.steps} environment steps, ${rollout.calls} model calls`}>
-        <span role="cell"><Identifier value={rollout.lane} max={16} copy={false} /></span>
+    <figcaption><strong>Rollout comparison</strong><span>Terminal reward · steps · retained call starts</span></figcaption>
+    <div className="cv-comparison-table" role="table" aria-label="Terminal reward, environment steps, and retained call starts by rollout">
+      <div className="cv-comparison-head" role="row"><span role="columnheader">Rollout</span><span role="columnheader">Reward</span><span role="columnheader">Steps</span><span role="columnheader">Retained calls</span></div>
+      {rollouts.map((rollout) => <div className="cv-comparison-row" role="row" data-rollout-status={rollout.status} key={rollout.lane} aria-label={`${rollout.lane}: terminal status ${rollout.status ?? "unknown"}, reward ${formatMissingNumber(rollout.reward)}, ${formatMissingNumber(rollout.steps, 0)} environment steps, ${formatMissingNumber(rollout.calls, 0)} retained call starts`}>
+        <span role="cell"><Identifier value={rollout.lane} max={16} copy={false} />{rollout.status ? <em>{rollout.status}</em> : null}</span>
         <span role="cell"><i aria-hidden="true" className={rollout.reward != null && rollout.reward < 0 ? "negative" : ""} style={{ width: comparisonWidth(rollout.reward, maxReward) }} /><b>{formatMissingNumber(rollout.reward)}</b></span>
-        <span role="cell"><i aria-hidden="true" style={{ width: comparisonWidth(rollout.steps, maxSteps) }} /><b>{rollout.steps}</b></span>
-        <span role="cell"><i aria-hidden="true" style={{ width: comparisonWidth(rollout.calls, maxCalls) }} /><b>{rollout.calls}</b></span>
+        <span role="cell"><i aria-hidden="true" style={{ width: comparisonWidth(rollout.steps, maxSteps) }} /><b>{formatMissingNumber(rollout.steps, 0)}</b></span>
+        <span role="cell"><i aria-hidden="true" style={{ width: comparisonWidth(rollout.calls, maxCalls) }} /><b>{formatMissingNumber(rollout.calls, 0)}</b></span>
       </div>)}
     </div>
   </figure>;
@@ -396,10 +409,18 @@ export function Shell(props: ShellProps) {
     () => evaluationIndex < 0 ? [] : fullProjection.ordered.slice(0, evaluationIndex + 1),
     [evaluationIndex, fullProjection.ordered]
   );
+  const lifecycleTerminal = props.runLifecycle?.terminal === true;
+  const lifecycleFailed = props.runLifecycle?.failed === true;
   const viewer = useMemo(() => projectCraftaxViewer(evaluationEvents, chosenLane, laneCutoff), [evaluationEvents, chosenLane, laneCutoff]);
   const { lanes, selectedLane, laneEvents, visibleEvents, visibleIndex, rewardSignals, achievements, traceEvents, semanticTrace, frameEvents, policy } = viewer;
   const laneSummaries = useMemo(() => summarizeLanes(evaluationEvents), [evaluationEvents]);
-  const runAggregate = useMemo(() => summarizeCraftaxRun(evaluationEvents), [evaluationEvents]);
+  const terminalRollouts = lifecycleTerminal && props.runLifecycle?.rollouts?.length
+    ? props.runLifecycle.rollouts
+    : undefined;
+  const runAggregate = useMemo(
+    () => summarizeCraftaxRun(evaluationEvents, terminalRollouts),
+    [evaluationEvents, terminalRollouts]
+  );
   const latest = visibleEvents.at(-1);
   const selectedEnvironmentStep = useMemo(
     () => [...visibleEvents].reverse().map(eventStep).find((step) => step != null),
@@ -408,10 +429,26 @@ export function Shell(props: ShellProps) {
   const observation = latestObservation(visibleEvents);
   const inventory = inventoryFrom(observation);
   const runCost = runCostSummary(props.runLifecycle, finite(policy.usage.cost_usd));
-  const terminalLanes = [...laneSummaries.values()].filter((summary) => summary.terminal).length;
+  const receiptCalls = props.runLifecycle?.usage.calls;
+  const retainedCalls = runAggregate.totalCalls;
+  const callValue = receiptCalls == null ? formatMissingNumber(retainedCalls, 0) : `${formatMissingNumber(receiptCalls, 0)} billed`;
+  const callDetail = receiptCalls == null
+    ? `${runAggregate.reportedCalls}/${runAggregate.rollouts.length} rollout journals reported calls`
+    : retainedCalls == null
+      ? `Workshop proxy receipt · retained call starts unavailable`
+      : `${formatMissingNumber(retainedCalls, 0)} retained call starts · Workshop receipt covers ${formatMissingNumber(receiptCalls, 0)}`;
+  const promptTokens = props.runLifecycle?.usage.promptTokens;
+  const completionTokens = props.runLifecycle?.usage.completionTokens;
+  const receiptTokens = promptTokens != null && completionTokens != null ? promptTokens + completionTokens : undefined;
+  const tokenValue = receiptTokens ?? runAggregate.totalTokens;
+  const tokenDetail = receiptTokens != null
+    ? `${formatMissingNumber(promptTokens, 0)} prompt + ${formatMissingNumber(completionTokens, 0)} completion · Workshop receipt`
+    : tokenValue == null
+      ? `${runAggregate.reportedTokens}/${runAggregate.rollouts.length} rollouts reported complete token usage`
+      : `Complete across ${runAggregate.reportedTokens} rollout records`;
+  const terminalByLane = new Map((terminalRollouts ?? []).map((rollout) => [rollout.lane, rollout]));
+  const terminalLanes = terminalRollouts?.length ?? [...laneSummaries.values()].filter((summary) => summary.terminal).length;
   const allLanesTerminal = lanes.length > 0 && terminalLanes === lanes.length;
-  const lifecycleTerminal = props.runLifecycle?.terminal === true;
-  const lifecycleFailed = props.runLifecycle?.failed === true;
   const lifecycleGaps = props.runLifecycle?.evidence.gaps ?? [];
   const missingRewardFacts = lifecycleGaps.filter((gap) => gap.code === "evaluator_numeric_reward_missing").length;
   const missingStepFacts = lifecycleGaps.filter((gap) => gap.code === "full_trace_step_count_missing").length;
@@ -605,13 +642,13 @@ export function Shell(props: ShellProps) {
         <div className="cv-overview-heading"><div><p className="cv-eyebrow">Overall · all rollouts</p><h3>Run overview</h3></div><span>At the current evaluation cutoff</span></div>
         <div className="cv-overview-grid">
           <OverviewStat label="Rollouts" value={String(runAggregate.rollouts.length || "—")} detail={`${terminalLanes} terminal`} />
-          <OverviewStat label="Mean reward" value={formatMissingNumber(runAggregate.rewardMean)} detail={runAggregate.reportedRewards ? `${formatMissingNumber(runAggregate.rewardMin)}–${formatMissingNumber(runAggregate.rewardMax)} · ${runAggregate.reportedRewards}/${runAggregate.rollouts.length} reported` : "No numeric rewards emitted"} />
-          <OverviewStat label="Environment steps" value={formatMissingNumber(runAggregate.totalSteps, 0)} detail={rangeLabel(runAggregate.minSteps, runAggregate.maxSteps, "steps")} />
-          <OverviewStat label="Model calls" value={formatMissingNumber(runAggregate.totalCalls, 0)} detail={rangeLabel(runAggregate.minCalls, runAggregate.maxCalls, "calls")} />
-          <OverviewStat label="Total tokens" value={runAggregate.totalTokens == null ? "Not emitted" : formatMissingNumber(runAggregate.totalTokens, 0)} detail={runAggregate.totalTokens == null ? "One or more calls omitted usage" : "Complete across counted calls"} />
-          <OverviewStat label="Achievement coverage" value={`${runAggregate.achievementNames.length} unique`} detail={`${runAggregate.achievementRollouts}/${runAggregate.rollouts.length} rollouts unlocked ≥1`} />
+          <OverviewStat label="Mean terminal reward" value={formatMissingNumber(runAggregate.rewardMean)} detail={runAggregate.reportedRewards ? `${formatMissingNumber(runAggregate.rewardMin)}–${formatMissingNumber(runAggregate.rewardMax)} · ${runAggregate.reportedRewards}/${runAggregate.rollouts.length} scored` : "No terminal numeric rewards reported"} />
+          <OverviewStat label="Environment steps" value={formatMissingNumber(runAggregate.totalSteps, 0)} detail={`${rangeLabel(runAggregate.minSteps, runAggregate.maxSteps, "steps")} · ${runAggregate.reportedSteps}/${runAggregate.rollouts.length} reported`} />
+          <OverviewStat label="Provider calls" value={callValue} detail={callDetail} />
+          <OverviewStat label="Provider tokens" value={tokenValue == null ? "Not emitted" : formatMissingNumber(tokenValue, 0)} detail={tokenDetail} />
+          <OverviewStat label="Achievement coverage" value={`${runAggregate.achievementNames.length} unique`} detail={`${runAggregate.achievementRollouts} unlocked ≥1 · ${runAggregate.reportedAchievements}/${runAggregate.rollouts.length} reported`} />
         </div>
-        <div className="cv-cost-line"><span>Run cost</span><strong>{runCost.value}</strong><small>{runCost.detail}</small></div>
+        <div className="cv-cost-line" data-cost-authority={props.runLifecycle?.usage.costSource}><span>Run cost</span><strong>{runCost.value}</strong><small>{runCost.detail}</small></div>
         {runAggregate.achievementNames.length ? <div className="cv-coverage" aria-label="Achievements unlocked across all rollouts"><span>Across run</span>{runAggregate.achievementNames.map((name) => <i key={name}>{name}</i>)}</div> : null}
         <RolloutComparison rollouts={runAggregate.rollouts} />
       </section>
@@ -629,9 +666,10 @@ export function Shell(props: ShellProps) {
       <nav className="cv-lanes cv-surface-replay" aria-label="Rollout lanes">
         {lanes.map((lane) => {
           const summary = laneSummaries.get(lane);
+          const terminal = terminalByLane.get(lane);
           return <button key={lane} type="button" aria-current={lane === selectedLane} aria-label={`Select rollout ${lane}`} onClick={() => { setChosenLane(lane); setLaneCutoff(null); }}>
-            <span><Identifier value={lane} max={20} copy={false} style={{ fontWeight: 700 }} /><em>{summary?.terminal ? "done" : lifecycleFailed ? "failed" : "live"}</em></span>
-            <small>reward {formatMissingNumber(summary?.reward)} · {summary?.achievements ?? 0} achievements</small>
+            <span><Identifier value={lane} max={20} copy={false} style={{ fontWeight: 700 }} /><em>{terminal?.status ?? (summary?.terminal ? "done" : lifecycleFailed ? "failed" : "live")}</em></span>
+            <small>terminal reward {formatMissingNumber(terminalRollouts ? terminal?.reward : summary?.reward)} · {terminalRollouts ? terminal?.achievements?.length ?? "—" : summary?.achievements ?? 0} achievements</small>
           </button>;
         })}
       </nav>
@@ -743,7 +781,7 @@ export function Shell(props: ShellProps) {
         </div>
       </section> : null}
 
-      <section className="cv-panel cv-surface-metrics cv-facts"><div className="cv-heading"><div><p className="cv-eyebrow">At current cutoff</p><h3>Metrics</h3></div></div><dl><div><dt>Model calls</dt><dd>{turns.calls.length}</dd></div><div><dt>Total tokens</dt><dd>{totalTokens === undefined ? "not emitted" : formatMissingNumber(totalTokens, 0)}</dd></div><div><dt>Latency</dt><dd>{totalLatencyMs === undefined ? "not emitted" : `${formatMissingNumber(totalLatencyMs, 0)} ms`}</dd></div><div><dt>Run cost</dt><dd>{runCostLabel(props.runLifecycle, totalCostUsd)}</dd></div><div><dt>Reward</dt><dd>{truthNumber(viewer.reward, viewer.terminal, formatMissingNumber)}</dd></div><div><dt>Authority</dt><dd>{[...new Set(turns.calls.map((call) => call.authority).filter(Boolean))].join(", ") || "not emitted"}</dd></div></dl></section>
+      <section className="cv-panel cv-surface-metrics cv-facts"><div className="cv-heading"><div><p className="cv-eyebrow">At current cutoff</p><h3>Metrics</h3></div></div><dl><div><dt>Selected retained calls</dt><dd>{turns.calls.length}</dd></div><div><dt>Run provider calls</dt><dd>{receiptCalls == null ? "not emitted" : `${formatMissingNumber(receiptCalls, 0)} billed`}</dd></div><div><dt>Selected retained tokens</dt><dd>{totalTokens === undefined ? "not emitted" : formatMissingNumber(totalTokens, 0)}</dd></div><div><dt>Run provider tokens</dt><dd>{receiptTokens == null ? "not emitted" : formatMissingNumber(receiptTokens, 0)}</dd></div><div><dt>Latency</dt><dd>{totalLatencyMs === undefined ? "not emitted" : `${formatMissingNumber(totalLatencyMs, 0)} ms`}</dd></div><div><dt>Run cost</dt><dd>{runCostLabel(props.runLifecycle, totalCostUsd)}</dd></div><div><dt>Reward</dt><dd>{truthNumber(viewer.reward, viewer.terminal, formatMissingNumber)}</dd></div><div><dt>Authority</dt><dd>{[...new Set(turns.calls.map((call) => call.authority).filter(Boolean))].join(", ") || "not emitted"}</dd></div></dl></section>
       <section className="cv-panel cv-surface-integrity cv-integrity"><div className="cv-heading"><div><p className="cv-eyebrow">Evidence health</p><h3>Integrity</h3></div><span>{props.runLifecycle?.evidence.state === "rejected" ? "rejected" : lifecycleGaps.length > 0 ? "trace sealed · facts incomplete" : viewer.terminal ? "sealed/reconciled" : "live · unsealed"}</span></div><ul><li><strong>Reconciliation</strong><span>{props.runLifecycle?.evidence.state === "rejected" ? `${props.runLifecycle.evidence.rejected} rejected · ${props.runLifecycle.evidence.sealedTraces} sealed` : lifecycleGaps.length > 0 && props.runLifecycle ? `${props.runLifecycle.evidence.sealedTraces} sealed trace${props.runLifecycle.evidence.sealedTraces === 1 ? "" : "s"} retained · evaluation facts incomplete` : semanticTrace.some((item) => item.kind === "trace.reconciled") ? "recorded and visible" : viewer.terminal ? "missing due to producer-contract defect" : "pending"}</span></li><li><strong>Model identity</strong><span>{turns.calls.every((call) => call.model && call.provider) ? "recorded and visible" : "missing on one or more calls"}</span></li><li><strong>Repairs / fallbacks</strong><span>{policy.fallback ? "recorded fallback" : "none recorded"}</span></li><li><strong>Malformed calls</strong><span>{turns.missingPolicyEnvelopeCount || "none"}</span></li><li><strong>Reasoning disclosure</strong><span>{turns.calls.some((call) => call.reasoning.state === "visible") ? "provider emitted visible reasoning evidence" : "Thinking not emitted"}</span></li></ul>{props.runLifecycle?.evidence.state === "rejected" ? <p className="cv-control-reason" data-testid="craftax-seal-disabled-reason">Seal unavailable — run failed because {props.runLifecycle.evidence.rejected} rollout journal{props.runLifecycle.evidence.rejected === 1 ? " was" : "s were"} rejected.</p> : lifecycleFailed && props.runLifecycle && props.runLifecycle.evidence.sealedTraces > 0 ? <p className="cv-control-reason" data-testid="craftax-trace-retained-status">Trace replay remains available from {props.runLifecycle.evidence.sealedTraces} sealed trace{props.runLifecycle.evidence.sealedTraces === 1 ? "" : "s"}; the evaluation failure does not reject them.</p> : null}</section>
       </>}
 

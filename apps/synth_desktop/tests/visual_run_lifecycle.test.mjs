@@ -84,6 +84,53 @@ test("an active run remains pending without fabricating failures or usage", () =
 	assert.equal(lifecycle.usage.costSource, "unavailable");
 });
 
+test("failed terminal Craftax exposes only scored rewards and the exact provider receipt", () => {
+	const records = [
+		{ seed: 780005, rolloutId: "rollout-5", status: "failed", reward: null, reportedFacts: { steps: { value: 46 }, achievements: { value: null } } },
+		{ seed: 780006, rolloutId: "rollout-6", status: "failed", reward: null, reportedFacts: { steps: { value: 60 }, achievements: { value: null } } },
+		{ seed: 780007, rolloutId: "rollout-7", status: "failed", reward: null, reportedFacts: { steps: { value: 58 }, achievements: { value: null } } },
+		{ seed: 780008, rolloutId: "rollout-8", status: "completed", reward: 6, reportedFacts: { steps: { value: 40 }, calls: { value: 10 }, tokens: { value: 25891 }, achievements: { value: ["collect_wood"] } } },
+		{ seed: 780009, rolloutId: "rollout-9", status: "failed", reward: null, reportedFacts: { steps: { value: 80 }, achievements: { value: null } } }
+	];
+	const lifecycle = projectVisualRunLifecycle({
+		id: "opt_eval_craftax_4857b3526ac9",
+		algorithmId: "eval",
+		status: "failed",
+		summary: {
+			records,
+			terminalManifest: {
+				terminal: { kind: "failed" },
+				evidence: { completeness: "partial" },
+				evidenceLedger: records.map((record) => ({ state: record.status === "completed" ? "complete" : "missing" })),
+				usage: {
+					providerReceipt: {
+						authority: "workshop.secrets_proxy",
+						calls: 50,
+						costUsd: 0.017912,
+						promptTokens: 116993,
+						completionTokens: 6964,
+						capabilities: [{ provider: "openrouter" }]
+					}
+				},
+				work: { planned: 5, failed: 4, succeeded: 1 }
+			}
+		},
+		usage: {}
+	}, { status: "failed", terminal: true });
+
+	assert.deepEqual(lifecycle.rollouts.map(({ seed, reward, steps }) => ({ seed, reward, steps })), [
+		{ seed: 780005, reward: undefined, steps: 46 },
+		{ seed: 780006, reward: undefined, steps: 60 },
+		{ seed: 780007, reward: undefined, steps: 58 },
+		{ seed: 780008, reward: 6, steps: 40 },
+		{ seed: 780009, reward: undefined, steps: 80 }
+	]);
+	assert.equal(lifecycle.rollouts.filter((rollout) => rollout.reward != null).length, 1);
+	assert.equal(lifecycle.usage.calls, 50);
+	assert.equal(lifecycle.usage.costUsd, 0.017912);
+	assert.equal(lifecycle.usage.promptTokens + lifecycle.usage.completionTokens, 123957);
+});
+
 test("a completed run accepts sealed record evidence and preserves cost unavailability from a proxy receipt", () => {
 	const records = [65, 66, 85, 56, 31].map((steps, index) => ({
 		seed: 780005 + index,

@@ -50,7 +50,7 @@ export function emptyUsage(): RunUsageProjection {
 
 export function formatUsd(value: number): string {
 	const absolute = Math.abs(value);
-	if (absolute > 0 && absolute < 0.1) return `$${value.toFixed(4).replace(/0+$/, "").replace(/\.$/, "")}`;
+	if (absolute > 0 && absolute < 0.1) return `$${value.toFixed(6).replace(/0+$/, "").replace(/\.$/, "")}`;
 	return `$${value.toFixed(2)}`;
 }
 
@@ -96,6 +96,9 @@ export function metricSummary(
 /** The dialog's fuller line: adds the observed/expected counts behind the share. */
 export function metricExplanation(metric: CoveredMetric, unit = "unit"): string {
 	const source = SOURCE_WORDS[metric.source];
+	if (metric.receiptCalls != null && (metric.source === "proxy" || metric.source === "provider")) {
+		return `${source} across ${formatCount(metric.receiptCalls)} provider call${metric.receiptCalls === 1 ? "" : "s"} · run-level receipt`;
+	}
 	if (metric.expectedUnits == null) {
 		return metric.observedUnits > 0
 			? `${source} by ${formatCount(metric.observedUnits)} ${unit}${metric.observedUnits === 1 ? "" : "s"}; no denominator declared`
