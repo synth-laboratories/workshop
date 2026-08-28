@@ -133,6 +133,35 @@ monotonicity, stable hard gates, structural exclusion of QA surfaces) fail on
 a contract edit that weakens the rules, and the specta gate pins the
 `release_tier_get` boundary.
 
+## Releases: channels in the frontend
+
+The frontend release authority (`frontend/src/lib/desktopRelease.ts`) already
+models one channel: every catalog line is `channel: "stable"`, served through
+`/releases/stable/latest.json` (the manifest the desktop's passive update
+check reads), the `/download` page, and `/workshop/releases` notes. Tiers
+extend that shape rather than replace it — **channel = tier**:
+
+- The catalog's `channel` field widens to `"stable" | "beta" | "alpha" | "dev"`,
+  and each published line stays bound to an immutable artifact URL + SHA-256
+  exactly as today. A beta line is a `build-tier.sh beta` artifact
+  (tier-suffixed product name and bundle id), never a re-labeled stable one.
+- Each channel gets its own manifest, `/releases/<channel>/latest.json`. The
+  desktop side is already wired: `update_check::CHANNEL` defaults to the
+  compiled `BUILD_TIER`, so a beta app polls the beta manifest and can never
+  offer itself a cross-channel update; the separate bundle identifiers keep
+  installs side by side.
+- **Advertising**: `/download` keeps serving stable only. A beta channel, when
+  opened, gets its own section/page with beta expectations text; alpha and dev
+  are never listed publicly — they are distributed directly to internal and
+  design-partner testers.
+- The env conventions extend per channel (`SYNTH_DESKTOP_BETA_VERSION`,
+  `SYNTH_DESKTOP_ARTIFACT_URL_*` pairs per line) so one deploy-time value
+  flips a channel's published line, same as stable today.
+
+The frontend half lands when the first non-stable line is actually published;
+until then the desktop's non-stable channels simply find no manifest, which
+the update check already treats as "no update known".
+
 ## Typical channel usage
 
 - `dev` — fast local iteration; the whole feature surface, mostly recommended checks.

@@ -54,7 +54,7 @@ pub enum Tier {
 impl Tier {
     pub const ALL: [Tier; 5] = [Tier::Core, Tier::Stable, Tier::Beta, Tier::Alpha, Tier::Dev];
 
-    pub fn name(self) -> &'static str {
+    pub const fn name(self) -> &'static str {
         match self {
             Tier::Core => "core",
             Tier::Stable => "stable",

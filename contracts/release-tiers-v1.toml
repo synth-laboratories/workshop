@@ -112,7 +112,7 @@ runtime_flag = { key = "containers_computer_use", default = true }
 
 [[feature]]
 name = "prerelease_build_badge"
-summary = "Visible pre-release badge in Settings on beta/alpha/dev bundles"
+summary = "Visible pre-release badge (titlebar top right + Settings → Build) on beta/alpha/dev bundles"
 owner = "workshop-distribution"
 min_tier = "beta"
 enforcement = "bundled"

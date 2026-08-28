@@ -6,6 +6,14 @@ async function openSettings(page: Page) {
 	await page.getByTestId("account-menu-settings").click();
 }
 
+test("pre-release builds badge the titlebar top right", async ({ page }) => {
+	// The dev server compiles the dev tier; stable/core bundles have this
+	// element statically eliminated.
+	const badge = page.getByTestId("titlebar-tier-badge");
+	await expect(badge).toBeVisible();
+	await expect(badge).toHaveText("dev");
+});
+
 test("Settings → Build shows the maturity envelope and the dev-server pre-release badge", async ({ page }) => {
 	await openSettings(page);
 	const card = page.getByTestId("settings-build-tier");
