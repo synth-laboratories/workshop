@@ -458,6 +458,21 @@ pub fn store_api_key(secret: &str) -> Result<()> {
     write_env_secret(&resolved.env_file, &api_key_env, secret)
 }
 
+/// The Synth API key held in the private env file, ignoring any
+/// process-environment override — an externally supplied key is not the
+/// app's to revoke at sign-out.
+pub fn desktop_managed_api_key() -> Result<Option<String>> {
+    let resolved = resolve()?;
+    let document = read_toml(&resolved.config_path)?;
+    let api_key_env = document
+        .get("intern")
+        .and_then(toml::Value::as_table)
+        .and_then(|value| value.get("api_key_env"))
+        .and_then(toml::Value::as_str)
+        .unwrap_or(DEFAULT_API_KEY_ENV);
+    Ok(read_env_value(&resolved.env_file, api_key_env))
+}
+
 /// Removes the desktop-managed Synth API key from the private env file.
 /// A process-environment override cannot be erased by the app and remains
 /// visible through the redacted settings snapshot.

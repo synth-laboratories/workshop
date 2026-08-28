@@ -1070,11 +1070,15 @@ export type SemanticEvalApi = {
 
 export type SynthSignInBegin = {
 	verificationUri: string;
+	/** Pairing code the browser approval page also shows; the user confirms they match. */
+	userCode?: string | null;
 	expiresAtEpochS: number;
+	/** Host-directed poll cadence (RFC 8628 `interval`). */
+	intervalS?: number;
 };
 
 export type SynthSignInPoll =
-	| { status: "pending" }
+	| { status: "pending"; retryInS?: number }
 	| { status: "active" }
 	| { status: "expired"; reason: string };
 

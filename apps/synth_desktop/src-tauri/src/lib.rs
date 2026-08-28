@@ -4255,8 +4255,23 @@ async fn account_open_billing(
 async fn account_sign_out(
     core: State<'_, Arc<CoreRuntime>>,
     cloud: State<'_, Arc<account_cloud::AccountCloudClient>>,
+    manager: State<'_, Arc<device_auth::DeviceAuthManager>>,
 ) -> Result<BackendSettings, AppError> {
+    // Capture the desktop-managed key before deletion so it can be revoked
+    // server-side. Local removal is authoritative and never waits on the
+    // network; revocation after it is best-effort.
+    let revocable_key = synth_config::desktop_managed_api_key().ok().flatten();
     synth_config::remove_api_key().map_err(AppError::from)?;
+    if let Some(key) = revocable_key {
+        let origin = device_auth::workshop_origin();
+        if let Err(error) = manager.revoke_key(&origin, &key).await {
+            crate::platform::logging::report(
+                "lib",
+                "eprintln",
+                format!("synth-desktop: sign-out key revocation failed (key removed locally): {error:#}"),
+            );
+        }
+    }
     // Cloud facts belong to the signed-out session; local history and the
     // device ledger stay untouched. Optional analytics drop; the install id
     // and essential recovery events remain until retention expires.

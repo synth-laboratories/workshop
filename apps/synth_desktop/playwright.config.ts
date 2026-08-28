@@ -20,6 +20,9 @@ export default defineConfig({
 	reporter: [["line"]],
 	outputDir: "./test-results/playwright",
 	use: {
+		launchOptions: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH
+			? { executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH }
+			: undefined,
 		// Full traces on every failure are expensive locally; keep them for CI.
 		trace: process.env.CI ? "retain-on-failure" : "on-first-retry",
 		screenshot: "only-on-failure"

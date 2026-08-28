@@ -17,18 +17,39 @@ change must update this document in the same pull request.
 ```text
 Desktop "Sign in with browser"
   → Rust POST {workshop}/api/auth/device/init
-  → system browser: Clerk sign-in or signup + verification
-  → /device asks "Connect Synth Desktop?" and the user approves
+    (device_code + user_code + interval; RFC 8628 field names)
+  → desktop shows the pairing code; system browser: Clerk sign-in or signup
+  → /device shows the same code and asks "Connect Synth Desktop?"
+    — the user approves only if the codes match
   → POST /api/auth/device/complete
-  → Rust polls POST /api/auth/device/token
-  → synth_api_key is written to a 0600 env file
+  → Rust polls POST /api/auth/device/token at the server-directed interval
+    (429 is a slow-down signal, never an error)
+  → a per-device synth_api_key is minted for this pairing and written to a
+    0600 env file
   → fail-closed runtime reload
   → badge: Authenticated
 ```
 
-Sign out removes the desktop-managed key from the private env file and reloads
-the runtime fail-closed. A process-level `SYNTH_API_KEY` override is intentionally
-outside the app's custody and must be removed by the launching environment.
+The pairing code (`user_code`) is hash-derived from the device code on the
+server; the desktop learns it from the init response and the `/device` page
+derives it again, so the two displays agree without a schema change. It is a
+comparison aid against consent phishing (someone else's pairing link), not a
+credential.
+
+Each pairing mints its own API key (atomic single consumption of the device
+code), so one desktop's key can be revoked without touching any other device.
+The desktop refuses to open a verification link that is not on the Workshop
+origin the pairing started against.
+
+Sign out removes the desktop-managed key from the private env file, reloads
+the runtime fail-closed, and then best-effort revokes that key server-side via
+`POST /api/auth/device/revoke` (bearer-authenticated by the key itself; local
+deletion never waits on the network). The route is public at the Clerk proxy
+boundary because the bearer key is its authority, and success is exactly
+`204 No Content`; redirects or HTML `200` responses are treated as failures.
+A process-level `SYNTH_API_KEY` override
+is intentionally outside the app's custody, is never revoked by the app, and
+must be removed by the launching environment.
 
 ## V1 — OAuth 2.1 + PKCE
 
