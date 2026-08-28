@@ -22,6 +22,16 @@ use uuid::Uuid;
 
 const HEALTH_POLL: Duration = Duration::from_millis(200);
 
+fn declaration_manifest_hash(spec: &ContainerSpec) -> Result<String> {
+    let bytes = std::fs::read(&spec.origin.manifest_path).with_context(|| {
+        format!(
+            "read container declaration {}",
+            spec.origin.manifest_path.display()
+        )
+    })?;
+    Ok(format!("sha256:{:x}", Sha256::digest(bytes)))
+}
+
 fn children() -> &'static Mutex<HashMap<u32, Child>> {
     static CHILDREN: OnceLock<Mutex<HashMap<u32, Child>>> = OnceLock::new();
     CHILDREN.get_or_init(|| Mutex::new(HashMap::new()))
@@ -687,7 +697,7 @@ async fn upsert_ready(
     });
     let policy_source_path = spec.policy_source.clone();
     let source_revision = spec.source_revision.clone();
-    let manifest_digest = spec.manifest_digest.clone();
+    let manifest_digest = Some(declaration_manifest_hash(spec)?);
     let base_url = base_url.to_string();
     let (supervised_pid, process_start_identity) = process
         .map(|(pid, start)| (Some(pid), Some(start)))
@@ -785,7 +795,7 @@ fn merge_declaration_metadata(
     });
     let spec_id = spec.id.clone();
     let source_revision = spec.source_revision.clone();
-    let manifest_digest = spec.manifest_digest.clone();
+    let manifest_digest = Some(declaration_manifest_hash(spec)?);
     let policy_source_path = spec.policy_source.clone();
     db.with_conn(move |conn| {
         let raw: String = conn.query_row(
