@@ -21,6 +21,7 @@ use crate::container_stream::{
 };
 use crate::visuals::{VisualStatus, VisualUpdateRequest, VISUAL_BINDINGS_SCHEMA_VERSION};
 use anyhow::{bail, Context, Result};
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 use std::time::{Duration, Instant};
 use tokio::sync::watch;
@@ -1240,32 +1241,21 @@ fn seed_row(
     workbench_id: &str,
 ) -> Value {
     let seed = json!(example.seed);
-    let relay = record.and_then(|record| record.get("relay"));
-    let frames = relay
-        .and_then(|relay| relay.get("frameObservationsRetained"))
+    let reported_facts = record
+        .and_then(|record| record.get("reportedFacts"))
+        .cloned()
+        .unwrap_or(Value::Null);
+    let frames = reported_facts
+        .pointer("/frames/value")
         .and_then(Value::as_u64);
-    let declared = relay
-        .and_then(|relay| relay.get("frameObservationsDeclared"))
-        .and_then(Value::as_u64);
-    let blobs = relay
-        .and_then(|relay| relay.get("uniqueFrameBlobs"))
-        .and_then(Value::as_u64);
-    // The frame count is stated as retained-of-declared. "0 native frames" was
-    // once printed for a rollout that rendered thirteen, and a single number
-    // cannot tell those two situations apart.
-    let summary = match (frames, declared) {
-        (Some(frames), Some(declared)) if declared > 0 => {
-            let blob_detail = blobs
-                .map(|value| {
-                    format!(
-                        " · {value} unique CAS blob{}",
-                        if value == 1 { "" } else { "s" }
-                    )
-                })
-                .unwrap_or_default();
-            format!("{frames}/{declared} native frame observations retained{blob_detail}")
-        }
-        _ => "no relay receipt was recorded for this seed".to_string(),
+    let frame_reason = reported_facts
+        .pointer("/frames/unavailableReason")
+        .and_then(Value::as_str);
+    let summary = match frames {
+        Some(frames) => format!("{frames} trusted native frame observations retained"),
+        None => frame_reason
+            .map(|reason| format!("frames unavailable · {reason}"))
+            .unwrap_or_else(|| "rollout telemetry has not settled".to_string()),
     };
     json!({
         "id": record.and_then(|record| record.get("rolloutId")).cloned().unwrap_or_else(|| json!(format!("planned:{}", example.seed))),
@@ -1278,21 +1268,21 @@ fn seed_row(
         // environment's reported execution-step count. If the rollout omitted
         // `steps`, the honest value is unavailable even when its trace happens
         // to contain a maximum frame step.
-        "steps": record.and_then(|record| record.get("steps").filter(|value| !value.is_null())).cloned().unwrap_or(Value::Null),
-        "modelCalls": record.and_then(|record| record.pointer("/usage/calls")).cloned().unwrap_or(Value::Null),
-        "tokens": record.and_then(|record| record.get("usage")).map(total_tokens_from_usage).flatten(),
-        "costUsd": record.and_then(|record| record.get("usage")).and_then(lane_cost_usd),
+        "steps": reported_facts.pointer("/steps/value").cloned().unwrap_or(Value::Null),
+        "modelCalls": reported_facts.pointer("/calls/value").cloned().unwrap_or(Value::Null),
+        "tokens": reported_facts.pointer("/tokens/value").cloned().unwrap_or(Value::Null),
+        "costUsd": reported_facts.pointer("/costUsd/value").cloned().unwrap_or(Value::Null),
         "traceId": record.and_then(|record| {
             record
                 .pointer("/sealedTrace/traces/0/traceId")
                 .or_else(|| record.pointer("/trace/bundle_trace_id"))
                 .or_else(|| record.pointer("/trace/trace_id"))
         }).cloned().unwrap_or(Value::Null),
-        "achievements": record
-            .and_then(|record| record
-            .get("checkpointAchievements")
-            .and_then(Value::as_array))
+        "achievements": reported_facts
+            .pointer("/achievements/value")
+            .and_then(Value::as_array)
             .map(Vec::len),
+        "reportedFacts": reported_facts,
         "summary": summary,
         "visualId": workbench_id,
     })
@@ -1308,17 +1298,6 @@ fn rollout_stop_reason(record: &Value) -> Option<Value> {
         );
     }
     record.get("rewardStatus").cloned()
-}
-
-fn total_tokens_from_usage(usage: &Value) -> Option<Value> {
-    if let Some(total) = u64_field(usage, &["total_tokens", "totalTokens"]) {
-        return Some(json!(total));
-    }
-    let prompt = u64_field(usage, &["prompt_tokens", "promptTokens"]);
-    let completion = u64_field(usage, &["completion_tokens", "completionTokens"]);
-    prompt
-        .zip(completion)
-        .map(|(prompt, completion)| json!(prompt + completion))
 }
 
 fn elapsed_label(started_at: &str) -> String {
@@ -2536,7 +2515,7 @@ fn failed_record(
     policy_pin: &Value,
     error: String,
 ) -> Value {
-    json!({
+    let mut record = json!({
         "pool": example.pool,
         "seed": example.seed,
         "taskInstanceId": format!("seed:{}", example.seed),
@@ -2557,7 +2536,9 @@ fn failed_record(
         },
         "policyRef": policy_pin,
         "worldRef": spec.world_ref,
-    })
+    });
+    attach_reported_facts(&mut record);
+    record
 }
 
 /// Settle one child's error into its trial record: a typed cancellation
@@ -2590,7 +2571,7 @@ fn cancelled_record(
     request: &std::sync::Arc<super::kernel::CancellationRequest>,
     detail: String,
 ) -> Value {
-    json!({
+    let mut record = json!({
         "pool": example.pool,
         "seed": example.seed,
         "taskInstanceId": format!("seed:{}", example.seed),
@@ -2612,7 +2593,9 @@ fn cancelled_record(
         },
         "policyRef": policy_pin,
         "worldRef": spec.world_ref,
-    })
+    });
+    attach_reported_facts(&mut record);
+    record
 }
 
 /// Retry only the evidence lane of an existing inline evaluation.
@@ -2772,6 +2755,7 @@ pub(super) async fn reconcile_evidence(
             .as_object_mut()
             .with_context(|| format!("terminal record for seed {seed} is not an object"))?
             .insert("sealedTrace".into(), imported);
+        attach_reported_facts(record);
         evidence_refs.push(json!({
             "kind": "trace",
             "id": trace_ref,
@@ -3459,6 +3443,173 @@ enum EvaluatorFailureReason {
     NumericRewardMissing,
 }
 
+/// Authority for one independently reported rollout fact. An unavailable fact
+/// still names the authority that was asked; absence is not a synthetic zero.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum ReportedFactSource {
+    ContainerRuntime,
+    RetainedEventLog,
+    TrustedTraceV5,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum ReportedFactUnavailableReason {
+    CallsNotReported,
+    StepsNotReported,
+    TokensNotReported,
+    CostNotReported,
+    AchievementsNotReported,
+    FramesNotRetained,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ReportedFact {
+    value: Value,
+    source: ReportedFactSource,
+    unavailable_reason: Option<ReportedFactUnavailableReason>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RolloutReportedFacts {
+    calls: ReportedFact,
+    steps: ReportedFact,
+    tokens: ReportedFact,
+    cost_usd: ReportedFact,
+    achievements: ReportedFact,
+    frames: ReportedFact,
+}
+
+fn reported_fact(
+    value: Option<Value>,
+    source: ReportedFactSource,
+    unavailable_reason: ReportedFactUnavailableReason,
+) -> ReportedFact {
+    let value = value.filter(|value| !value.is_null());
+    ReportedFact {
+        unavailable_reason: value.is_none().then_some(unavailable_reason),
+        value: value.unwrap_or(Value::Null),
+        source,
+    }
+}
+
+fn usage_lanes(usage: &Value) -> Option<Vec<&Value>> {
+    if usage.get("policy").is_some() || usage.get("grader").is_some() {
+        Some(
+            [usage.get("policy"), usage.get("grader")]
+                .into_iter()
+                .flatten()
+                .filter(|lane| lane.is_object())
+                .collect(),
+        )
+    } else {
+        usage.is_object().then(|| vec![usage])
+    }
+}
+
+fn lane_calls(lane: &Value) -> Option<u64> {
+    u64_field(lane, &["calls", "model_calls", "modelCalls"])
+}
+
+fn lane_tokens(lane: &Value) -> Option<u64> {
+    if let Some(total) = u64_field(lane, &["total_tokens", "totalTokens"]) {
+        return Some(total);
+    }
+    let prompt = u64_field(lane, &["prompt_tokens", "promptTokens"])?;
+    let completion = u64_field(lane, &["completion_tokens", "completionTokens"])?;
+    Some(prompt.saturating_add(completion))
+}
+
+fn complete_usage_u64_sum(
+    usage: &Value,
+    read: impl Fn(&Value) -> Option<u64>,
+) -> Option<u64> {
+    let lanes = usage_lanes(usage)?;
+    if lanes.is_empty() {
+        return None;
+    }
+    lanes
+        .into_iter()
+        .try_fold(0_u64, |sum, lane| read(lane).and_then(|value| sum.checked_add(value)))
+}
+
+fn complete_usage_cost_sum(usage: &Value) -> Option<f64> {
+    let lanes = usage_lanes(usage)?;
+    if lanes.is_empty() {
+        return None;
+    }
+    lanes.into_iter().try_fold(0.0, |sum, lane| {
+        lane_cost_usd(lane).map(|value| sum + value)
+    })
+}
+
+fn rollout_reported_facts(record: &Value) -> RolloutReportedFacts {
+    let usage = record.get("usage").unwrap_or(&Value::Null);
+    let calls = complete_usage_u64_sum(usage, lane_calls).map(|value| json!(value));
+    let tokens = complete_usage_u64_sum(usage, lane_tokens).map(|value| json!(value));
+    let cost = complete_usage_cost_sum(usage)
+        .filter(|value| value.is_finite() && *value >= 0.0)
+        .map(|value| json!(value));
+    let steps = record
+        .get("steps")
+        .and_then(Value::as_u64)
+        .map(|value| json!(value));
+    let achievements = record
+        .get("checkpointAchievements")
+        .filter(|value| value.is_array())
+        .cloned();
+    let frames = record
+        .pointer("/sealedTrace/importedFrameSteps")
+        .and_then(Value::as_array)
+        .and_then(|steps| {
+            steps
+                .iter()
+                .map(Value::as_u64)
+                .collect::<Option<std::collections::BTreeSet<_>>>()
+        })
+        .map(|steps| json!(steps.len()));
+    RolloutReportedFacts {
+        calls: reported_fact(
+            calls,
+            ReportedFactSource::ContainerRuntime,
+            ReportedFactUnavailableReason::CallsNotReported,
+        ),
+        steps: reported_fact(
+            steps,
+            ReportedFactSource::ContainerRuntime,
+            ReportedFactUnavailableReason::StepsNotReported,
+        ),
+        tokens: reported_fact(
+            tokens,
+            ReportedFactSource::ContainerRuntime,
+            ReportedFactUnavailableReason::TokensNotReported,
+        ),
+        cost_usd: reported_fact(
+            cost,
+            ReportedFactSource::ContainerRuntime,
+            ReportedFactUnavailableReason::CostNotReported,
+        ),
+        achievements: reported_fact(
+            achievements,
+            ReportedFactSource::RetainedEventLog,
+            ReportedFactUnavailableReason::AchievementsNotReported,
+        ),
+        frames: reported_fact(
+            frames,
+            ReportedFactSource::TrustedTraceV5,
+            ReportedFactUnavailableReason::FramesNotRetained,
+        ),
+    }
+}
+
+fn attach_reported_facts(record: &mut Value) {
+    record["reportedFacts"] = serde_json::to_value(rollout_reported_facts(record))
+        .expect("rollout reported facts serialize");
+}
+
 impl EvaluatorFailureReason {
     fn as_str(self) -> &'static str {
         match self {
@@ -3657,7 +3808,7 @@ async fn run_one_example(
             } else {
                 "aborted"
             };
-            return Ok(json!({
+            let mut record = json!({
                 "rolloutId": rollout_id,
                 "trialId": trial_id,
                 "pool": example.pool,
@@ -3692,7 +3843,9 @@ async fn run_one_example(
                     "eventsUrl": poll_url,
                     "abortedByCancellation": true,
                 }
-            }));
+            });
+            attach_reported_facts(&mut record);
+            return Ok(record);
         }
     };
 
@@ -3882,6 +4035,7 @@ async fn run_one_example(
             "source": "optional_trace_import",
         });
     }
+    attach_reported_facts(&mut record);
     Ok(record)
 }
 
@@ -5439,6 +5593,19 @@ max_total_rollouts = 4
                     && item["raw"]["error"]
                         .as_str()
                         .is_some_and(|error| error.starts_with("evaluator_measurement_missing:"))
+            })
+        }));
+        assert!(terminals.iter().all(|event| {
+            event.item.as_ref().is_some_and(|item| {
+                ["calls", "steps", "tokens", "costUsd", "achievements", "frames"]
+                    .iter()
+                    .all(|name| {
+                        let fact = &item["raw"]["reportedFacts"][name];
+                        fact.is_object()
+                            && fact.get("value").is_some()
+                            && fact.get("source").and_then(Value::as_str).is_some()
+                            && fact.get("unavailableReason").is_some()
+                    })
             })
         }));
         let selection = events
@@ -7861,5 +8028,59 @@ max_total_rollouts = 1
         ];
         assert_eq!(mean_for_pool(&records, "train"), Some(1.0));
         assert_eq!(mean_reward(&records), Some(1.0));
+    }
+
+    #[test]
+    fn rollout_facts_distinguish_authoritative_empty_values_from_unavailable() {
+        let mut reported = json!({
+            "usage": {
+                "calls": 3,
+                "prompt_tokens": 10,
+                "completion_tokens": 2,
+                "cost_usd": 0.25,
+            },
+            "steps": 4,
+            "checkpointAchievements": [],
+            "sealedTrace": {"importedFrameSteps": [0, 1, 2, 3, 4]},
+        });
+        attach_reported_facts(&mut reported);
+        assert_eq!(reported["reportedFacts"]["calls"]["value"], json!(3));
+        assert_eq!(reported["reportedFacts"]["steps"]["value"], json!(4));
+        assert_eq!(reported["reportedFacts"]["tokens"]["value"], json!(12));
+        assert_eq!(reported["reportedFacts"]["costUsd"]["value"], json!(0.25));
+        assert_eq!(
+            reported["reportedFacts"]["achievements"]["value"],
+            json!([])
+        );
+        assert_eq!(reported["reportedFacts"]["frames"]["value"], json!(5));
+        assert_eq!(
+            reported["reportedFacts"]["achievements"]["source"],
+            json!("retained_event_log")
+        );
+        assert_eq!(
+            reported["reportedFacts"]["frames"]["source"],
+            json!("trusted_trace_v5")
+        );
+        assert!(
+            ["calls", "steps", "tokens", "costUsd", "achievements", "frames"]
+                .iter()
+                .all(|name| reported["reportedFacts"][name]["unavailableReason"].is_null())
+        );
+
+        let mut missing = json!({});
+        attach_reported_facts(&mut missing);
+        assert_eq!(missing["reportedFacts"]["calls"]["value"], Value::Null);
+        assert_eq!(
+            missing["reportedFacts"]["calls"]["unavailableReason"],
+            json!("calls_not_reported")
+        );
+        assert_eq!(
+            missing["reportedFacts"]["achievements"]["unavailableReason"],
+            json!("achievements_not_reported")
+        );
+        assert_eq!(
+            missing["reportedFacts"]["frames"]["unavailableReason"],
+            json!("frames_not_retained")
+        );
     }
 }
