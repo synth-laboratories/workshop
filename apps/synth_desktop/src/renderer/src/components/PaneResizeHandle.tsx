@@ -81,6 +81,8 @@ export function PaneResizeHandle({
 }: Props) {
 	const handleRef = useRef<HTMLDivElement>(null);
 	const activePointer = useRef<number | null>(null);
+	const settling = useRef(false);
+	const settleFrame = useRef<number | null>(null);
 	const valueRef = useRef(value);
 	const onChangeRef = useRef(onChange);
 	const [maximum, setMaximum] = useState(value);
@@ -110,6 +112,27 @@ export function PaneResizeHandle({
 		if (Math.abs(cssWidth - valueRef.current) >= 1) onChangeRef.current(cssWidth);
 	}, [direction]);
 
+	const cancelSettlement = useCallback(() => {
+		if (settleFrame.current !== null) cancelAnimationFrame(settleFrame.current);
+		settleFrame.current = null;
+		settling.current = false;
+	}, []);
+
+	const settleAfterLayout = useCallback((target: HTMLElement) => {
+		cancelSettlement();
+		settling.current = true;
+		// Pointer capture is released before React is guaranteed to have painted
+		// the final drag value. Reconcile only after two layout frames so a stale
+		// pre-release box cannot overwrite the user's resize and snap the pane back.
+		settleFrame.current = requestAnimationFrame(() => {
+			settleFrame.current = requestAnimationFrame(() => {
+				settleFrame.current = null;
+				settling.current = false;
+				persistRealized(target);
+			});
+		});
+	}, [cancelSettlement, persistRealized]);
+
 	const resize = useCallback((clientX: number, target: HTMLElement) => {
 		const max = measureMaximum(target);
 		if (direction === "primary") {
@@ -137,8 +160,8 @@ export function PaneResizeHandle({
 		const pointerId = activePointer.current;
 		activePointer.current = null;
 		if (target && pointerId !== null && target.hasPointerCapture(pointerId)) target.releasePointerCapture(pointerId);
-		if (target) requestAnimationFrame(() => persistRealized(target));
-	}, [persistRealized]);
+		if (target) settleAfterLayout(target);
+	}, [settleAfterLayout]);
 
 	useEffect(() => {
 		const target = handleRef.current;
@@ -155,7 +178,7 @@ export function PaneResizeHandle({
 			const cssWidth = Math.round(named.getBoundingClientRect().width);
 			if (!Number.isFinite(cssWidth) || cssWidth < 1) return;
 			setRealized(cssWidth);
-			if (activePointer.current === null && Math.abs(cssWidth - valueRef.current) >= 1) {
+			if (activePointer.current === null && !settling.current && Math.abs(cssWidth - valueRef.current) >= 1) {
 				onChangeRef.current(cssWidth);
 			}
 		};
@@ -164,11 +187,19 @@ export function PaneResizeHandle({
 		if (parentObserved) observer.observe(parentObserved);
 		if (named) observer.observe(named);
 		window.addEventListener("blur", release);
-		return () => { observer.disconnect(); window.removeEventListener("blur", release); release(); };
-	}, [direction, measureMaximum, release]);
+		return () => {
+			observer.disconnect();
+			window.removeEventListener("blur", release);
+			cancelSettlement();
+			const pointerId = activePointer.current;
+			activePointer.current = null;
+			if (pointerId !== null && target.hasPointerCapture(pointerId)) target.releasePointerCapture(pointerId);
+		};
+	}, [cancelSettlement, direction, measureMaximum, release]);
 
 	const onPointerDown = (event: PointerEvent<HTMLDivElement>) => {
 		event.preventDefault();
+		cancelSettlement();
 		activePointer.current = event.pointerId;
 		event.currentTarget.setPointerCapture(event.pointerId);
 		resize(event.clientX, event.currentTarget);
@@ -218,7 +249,7 @@ export function PaneResizeHandle({
 		onLostPointerCapture={() => {
 			activePointer.current = null;
 			const target = handleRef.current;
-			if (target) persistRealized(target);
+			if (target) settleAfterLayout(target);
 		}}
 		onKeyDown={onKeyDown}
 		onDoubleClick={() => onChange(clampPaneWidth(resolvedResetValue, minimum, maximum))}
